@@ -392,7 +392,7 @@ typed username and password; going forward again makes and shows a new key with 
 | step 5's code (or passkey) is in place but `factorSetupDone` is refused | unchanged (the pressed button keeps focus) | `role="alert"` banner: `factor.error.tooMany` for 429, `factor.error.network` for a dropped connection, else `factor.error.other` with `{code}` |
 | `devices.forget` on steps 4 and 5 (the only way out) | Cancel, Escape and close return focus to it; the confirm opens on Cancel | the dialog; a refused wipe is a `role="alert"` in it and focus goes to Cancel |
 
-Tab order inside each step: the fields in visual order, then (step 3) the checkbox, then `Print`, then the forward
+Tab order inside each step: the fields in visual order, then (step 3) `Print`, then the checkbox, then the forward
 button, then `Back` and `Already have an account? Sign in` (the prototype's row under the button), then (step 6) the
 codes' Copy and Print, the checkbox and `Open dilla`. There are no single-key shortcuts.
 

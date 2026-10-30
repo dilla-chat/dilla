@@ -99,8 +99,8 @@ function Factor() {
     <Step n={4} title={t('factor.choose.title')} footer={<Button variant="accent" type="submit">{t('factor.choose.next')}</Button>}>
       <p>{t('factor.choose.bodySignup')}</p>
       <ChoiceCards name="s-factor-kind" label={t('factor.choose.label')} value={value} onChange={setValue} options={[
-        { id: 'app', title: t('factor.choose.app'), hint: t('factor.choose.appHint') },
-        { id: 'passkey', title: t('factor.choose.passkey'), hint: t('factor.choose.passkeyHint') },
+        { id: 'app', title: t('factor.choose.app'), hint: t('factor.choose.appHint'), icon: 'smartphone' },
+        { id: 'passkey', title: t('factor.choose.passkey'), hint: t('factor.choose.passkeyHint'), icon: 'fingerprint' },
       ]} />
     </Step>
   );
@@ -122,8 +122,8 @@ function Code({ initial = '' }: { initial?: string }) {
           </div>
         </div>
       </div>
-      <CodeBoxes id="s-factor-code" label={t('factor.totp.code')} value={code} onChange={setCode} describedBy="s-factor-code-hint" />
       <p id="s-factor-code-hint" className="dw-factor-code-hint">{t('factor.totp.codeHint')}</p>
+      <CodeBoxes id="s-factor-code" label={t('factor.totp.code')} value={code} onChange={setCode} describedBy="s-factor-code-hint" />
     </Step>
   );
 }
@@ -146,8 +146,9 @@ function Done({ codes = true, saved = false, panel = true }: { codes?: boolean; 
           <p>{t('onboarding.done.codesBody')}</p>
           <CodeList codes={CODES} label={t('factor.codes.label')} labels={{ copy: t('factor.codes.copy'), print: t('factor.codes.print') }}
             onCopy={noop} onPrint={noop} />
-          <div className="dw-signup-codes__ack">
-            <input id="s-codes-ack" type="checkbox" checked={ticked} onChange={e => setTicked(e.currentTarget.checked)} />
+          <div className="d-recovery-key__ack">
+            <input id="s-codes-ack" type="checkbox" className="d-recovery-key__box" checked={ticked} onChange={e => setTicked(e.currentTarget.checked)} />
+            <span className="d-recovery-key__tick" aria-hidden="true"><Icon name="check" size={11} stroke={3} /></span>
             <label htmlFor="s-codes-ack">{t('onboarding.done.codesAck')}</label>
           </div>
           {ticked ? null : <p id="s-codes-hint" className="d-sr-only">{t('onboarding.done.codesHint')}</p>}

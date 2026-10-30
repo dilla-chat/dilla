@@ -7,7 +7,7 @@
 // app or the passkey step, has no choice and no Back, and sends the step-up token its host holds as `stepup`.
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
-import { Banner, Button, ChoiceCards, CodeBoxes, CodeList, Dialog, OnboardingFrame, QrCode, TextField } from '@dilla/ui';
+import { Banner, Button, ChoiceCards, CodeBoxes, CodeList, Dialog, OnboardingFrame, QrCode, TextField, type IconName } from '@dilla/ui';
 import { browser } from '../../browser.ts';
 import { useCore } from '../../core/context.tsx';
 import { errorOf, type UiError } from '../../core/errors.ts';
@@ -59,6 +59,9 @@ const CODE_ERROR = 'factor-totp-code-error';
 const FIELD_NAME = 'factor-passkey-name';
 const BUTTON_PASSKEY = 'factor-passkey-submit';
 const KIND_GROUP = 'factor-kind';
+// Wave B task 3b: the prototype's card icons.
+const APP_ICON: IconName = 'smartphone';
+const PASSKEY_ICON: IconName = 'fingerprint';
 
 const NAME_MAX_BYTES = 64;
 const CONTROL = /\p{Cc}/u;
@@ -275,6 +278,8 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
       const r = v as { secret: string; uri: string };
       setKey({ secret: r.secret, uri: r.uri });
       setBusy(false);
+      // Wave B task 3b: the sign-up's code step opens on its boxes, as the prototype's does, so autofill offers itself.
+      if (origin === 'signup') requestFocus(FIELD_CODE);
     }).catch((e: unknown) => {
       if (!live(g)) return;
       const err = errorOf(e);
@@ -402,8 +407,8 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
   let content: React.JSX.Element;
   if (step === 'choose') {
     const options = [
-      ...(hasPassword ? [{ id: 'app', title: t('factor.choose.app'), hint: t('factor.choose.appHint') }] : []),
-      { id: 'passkey', title: t('factor.choose.passkey'), hint: t('factor.choose.passkeyHint'),
+      ...(hasPassword ? [{ id: 'app', title: t('factor.choose.app'), hint: t('factor.choose.appHint'), icon: APP_ICON }] : []),
+      { id: 'passkey', title: t('factor.choose.passkey'), hint: t('factor.choose.passkeyHint'), icon: PASSKEY_ICON,
         ...(usable ? {} : { disabled: true, reason: t('factor.choose.passkeyOff') }) },
     ];
     const cannot = effective === 'passkey' && !usable;
@@ -438,11 +443,14 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
             </div>
           </div>
         </div>
-        {/* Wave B task 3: the prototype's six code boxes over one input that takes paste and one-time-code autofill. */}
+        {/* Wave B task 3b (Jonas): the QR code, the setup key and the hint stay above the code boxes (an accepted deviation
+            from the prototype's code step, which has only the boxes). */}
+        <p id={CODE_HINT} className="dw-factor-code-hint">{t('factor.totp.codeHint')}</p>
+        {/* Wave B task 3: the prototype's six code boxes over one input that takes paste and one-time-code autofill. At sign-up
+            the boxes take focus once the key is shown (beginTotp), as the prototype's code step opens on them (its focusRef). */}
         <CodeBoxes id={FIELD_CODE} label={t('factor.totp.code')} value={code}
           onChange={(v) => { setCode(v); setCodeError(null); }} onComplete={(v) => { submitTotp(v); }}
           invalid={codeError !== null} describedBy={codeError === null ? CODE_HINT : `${CODE_HINT} ${CODE_ERROR}`} />
-        <p id={CODE_HINT} className="dw-factor-code-hint">{t('factor.totp.codeHint')}</p>
         {codeError === null ? null : <p id={CODE_ERROR} className="d-onboarding-frame__error" role="alert">{t(codeError)}</p>}
       </>);
   } else if (step === 'passkey') {

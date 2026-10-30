@@ -661,6 +661,11 @@ export const ICONS = {
     ['path', { d: 'M7.4 7.4a8 8 0 0 1 10.3 1 8 8 0 0 1 .9 10.2' }],
     ['path', { d: 'm2 2 20 20' }],
     ['path', { d: 'M12 12v-2' }],
+  // Wave B task 3b: the recovery key's Print, drawn as the prototype's key-step actions are (an icon before the label).
+  'printer': [
+    ['path', { d: 'M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2' }],
+    ['path', { d: 'M6 9V3a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v6' }],
+    ['rect', { x: '6', y: '14', width: '12', height: '8', rx: '1' }],
   ],
 } as const satisfies Record<string, readonly IconElement[]>;
 

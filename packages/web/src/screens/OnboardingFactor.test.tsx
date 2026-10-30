@@ -137,7 +137,12 @@ describe('steps 4 and 5: the second factor', () => {
     expect(screen.getByText('New account · step 5 of 6')).toBeInTheDocument();
     expect(h1()).toHaveTextContent('Enter your code');
     expect(screen.getByRole('textbox', { name: en['factor.totp.key'] })).toHaveValue(SECRET);
-    expect(screen.getByText(en['factor.totp.codeHint'])).toBeInTheDocument();
+    // The hint sits above the boxes, with the QR code and the setup key (Jonas, task 3b); the boxes take focus, as the
+    // prototype's code step opens on them, so a one-time-code autofill offers itself at once.
+    const hint = screen.getByText(en['factor.totp.codeHint']);
+    const code = screen.getByRole('textbox', { name: en['factor.totp.code'] });
+    expect(hint.compareDocumentPosition(code) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(code).toHaveFocus();
     expect(button('Verify')).toHaveAttribute('aria-disabled', 'true');
     expect(button('Back').closest('.d-onboarding-frame__nav')).not.toBeNull();
     await expectNoAxeViolations(view.container);
@@ -169,13 +174,15 @@ describe('steps 4 and 5: the second factor', () => {
   });
 
   it('keeps the codes out of every slice, the URL and storage', async () => {
+    const setItem = vi.spyOn(Storage.prototype, 'setItem');
     const { fake, user } = setup();
     await toFactor(user);
     await throughApp(user);
     await waitFor(() => { expect(h1()).toHaveTextContent('You’re in'); });
-    const everywhere = JSON.stringify(fake.calls) + window.location.href + JSON.stringify({ ...localStorage }) + JSON.stringify({ ...sessionStorage })
+    const everywhere = JSON.stringify(fake.calls) + window.location.href + JSON.stringify(setItem.mock.calls)
       + JSON.stringify(fake.get('account')) + JSON.stringify(fake.get('factors'));
     for (const code of CODES) expect(everywhere).not.toContain(code);
+    setItem.mockRestore();
   });
 
   it('copies the codes as plain lines and announces it', async () => {

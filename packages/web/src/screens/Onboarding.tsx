@@ -407,8 +407,11 @@ export function Onboarding(props: { onFinish(result: SignupResult): void }): Rea
             <CodeList codes={codes} label={t('factor.codes.label')} labels={{ copy: t('factor.codes.copy'), print: t('factor.codes.print') }}
               onCopy={() => { navigator.clipboard?.writeText(codes.join('\n')).then(() => { announce(t('factor.codes.copied')); }, () => undefined); }}
               onPrint={() => { browser.print(); }} />
-            <div className="dw-signup-codes__ack">
-              <input id="onboarding-codes-ack" type="checkbox" checked={codesSaved} onChange={(e) => { setCodesSaved(e.currentTarget.checked); }} />
+            {/* The key step's check box (RecoveryKey's), for the same act. */}
+            <div className="d-recovery-key__ack">
+              <input id="onboarding-codes-ack" type="checkbox" className="d-recovery-key__box" checked={codesSaved}
+                onChange={(e) => { setCodesSaved(e.currentTarget.checked); }} />
+              <span className="d-recovery-key__tick" aria-hidden="true"><Icon name={READY_ICON} size={11} stroke={3} /></span>
               <label htmlFor="onboarding-codes-ack">{t('onboarding.done.codesAck')}</label>
             </div>
             {codesSaved ? null : <p id="onboarding-codes-hint" className="d-sr-only">{t('onboarding.done.codesHint')}</p>}

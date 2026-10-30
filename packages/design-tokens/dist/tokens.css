@@ -90,6 +90,7 @@
   --danger-ring: rgba(255,110,110,0.15);
   --ok-panel: rgba(124,255,142,0.06);
   --ok-panel-text: #C9F7D0;
+  --choice-tile: #141820;
   --link-underline: 0;
   --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --font-serif-italic: "DM Serif Display", Georgia, serif;
@@ -309,6 +310,7 @@
   --danger-ring: rgba(255,110,110,0.15);
   --ok-panel: rgba(124,255,142,0.06);
   --ok-panel-text: #C9F7D0;
+  --choice-tile: #141820;
   --link-underline: 0;
   color-scheme: dark;
 }
@@ -403,6 +405,7 @@
   --danger-ring: rgba(179,38,30,0.2);
   --ok-panel: rgba(27,115,52,0.06);
   --ok-panel-text: #1B7334;
+  --choice-tile: #E6E9E6;
   --link-underline: 0;
   color-scheme: light;
 }
@@ -497,6 +500,7 @@
   --danger-ring: rgba(255,154,154,0.35);
   --ok-panel: rgba(155,255,168,0.1);
   --ok-panel-text: #9BFFA8;
+  --choice-tile: #101010;
   --link-underline: 1;
   color-scheme: dark;
 }
@@ -592,6 +596,7 @@
     --danger-ring: rgba(179,38,30,0.2);
     --ok-panel: rgba(27,115,52,0.06);
     --ok-panel-text: #1B7334;
+    --choice-tile: #E6E9E6;
     --link-underline: 0;
     color-scheme: light;
   }
@@ -688,6 +693,7 @@
     --danger-ring: rgba(255,154,154,0.35);
     --ok-panel: rgba(155,255,168,0.1);
     --ok-panel-text: #9BFFA8;
+    --choice-tile: #101010;
     --link-underline: 1;
     color-scheme: dark;
   }

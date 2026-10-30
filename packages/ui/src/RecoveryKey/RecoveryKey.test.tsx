@@ -60,19 +60,24 @@ describe('RecoveryKey', () => {
     expect(onAcknowledge).toHaveBeenLastCalledWith(false);
   });
 
-  it('is operable by keyboard: Tab reaches the checkbox first, Space ticks it, then print', async () => {
+  // Wave B task 3b: the prototype's order, the actions row (Print) under the grid and the check box under it.
+  it('is operable by keyboard: Tab reaches print first, then the checkbox, which Space ticks', async () => {
     const user = userEvent.setup();
     const onAcknowledge = vi.fn();
     const onPrint = vi.fn();
     renderKey({ onAcknowledge, onPrint });
     await user.tab();
-    expect(screen.getByRole('checkbox', { name: ACK })).toHaveFocus();
-    await user.keyboard(' ');
-    expect(onAcknowledge).toHaveBeenCalledWith(true);
-    await user.tab();
     expect(screen.getByRole('button', { name: PRINT })).toHaveFocus();
     await user.keyboard('{Enter}');
     expect(onPrint).toHaveBeenCalledTimes(1);
+    await user.tab();
+    expect(screen.getByRole('checkbox', { name: ACK })).toHaveFocus();
+    await user.keyboard(' ');
+    expect(onAcknowledge).toHaveBeenCalledWith(true);
+  });
+  it('names the grid for assistive technology only, as the prototype draws no label', () => {
+    renderKey();
+    expect(screen.getByText(LABEL)).toHaveClass('d-sr-only');
   });
 
   it('has no serious axe violations', async () => {

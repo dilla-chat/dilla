@@ -1400,7 +1400,9 @@ fn a_begin_after_a_reset_makes_a_new_recovery_key_the_old_one_cannot_open() {
         "a second begin over pending keys is refused"
     );
     core.signup_reset().expect("reset");
-    let new_text = core.signup_begin(&INSTANCE).expect("a new signup may start");
+    let new_text = core
+        .signup_begin(&INSTANCE)
+        .expect("a new signup may start");
     let new_rk = recovery_key_from_base32(&new_text).expect("decodes");
     assert_ne!(new_rk, old_rk, "a new recovery key");
     let root = meta(&c, "root_sealed").expect("a new root object");

@@ -54,6 +54,9 @@ export type ColorTokens = {
   // Wave B Task 3
   /** The sign-in done panel, each the prototype's literal: its 0.06 --ok fill and its #C9F7D0 text. */
   okPanel: string; okPanelText: string;
+  // Wave B Task 3b
+  /** The second factor's choice cards (the sign-up's step 4): the 32px icon tile's fill, the prototype's #141820. */
+  choiceTile: string;
   linkUnderline: 0 | 1;
 };
 
@@ -82,6 +85,8 @@ export const themes: Record<ThemeName, ColorTokens> = {
     dangerRing: 'rgba(255,110,110,0.15)',
     // Wave B Task 3
     okPanel: 'rgba(124,255,142,0.06)', okPanelText: '#C9F7D0',
+    // Wave B Task 3b
+    choiceTile: '#141820',
     linkUnderline: 0,
   },
   light: {
@@ -108,6 +113,8 @@ export const themes: Record<ThemeName, ColorTokens> = {
     dangerRing: 'rgba(179,38,30,0.2)',
     // Wave B Task 3
     okPanel: 'rgba(27,115,52,0.06)', okPanelText: '#1B7334',
+    // Wave B Task 3b
+    choiceTile: '#E6E9E6',
     linkUnderline: 0,
   },
   'high-contrast': {
@@ -134,6 +141,8 @@ export const themes: Record<ThemeName, ColorTokens> = {
     dangerRing: 'rgba(255,154,154,0.35)',
     // Wave B Task 3
     okPanel: 'rgba(155,255,168,0.1)', okPanelText: '#9BFFA8',
+    // Wave B Task 3b
+    choiceTile: '#101010',
     linkUnderline: 1,
   },
 };
