@@ -1,16 +1,17 @@
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import {
-  chmodSync, copyFileSync, cpSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync,
+  copyFileSync, cpSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync,
   unlinkSync, writeFileSync,
 } from 'node:fs';
 import { createServer } from 'node:net';
 import { createSocket } from 'node:dgram';
+import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
 /**
  * The side-effecting helpers of scripts/ci-local.mjs, each taking its directories as arguments so the tests drive them
- * in a temporary directory: the job environment, the machine-wide locks, the go-release snapshot, the clean tree and the
+ * in a temporary directory: the job environment, the per-user lane locks, the go-release snapshot, the clean tree and the
  * port probe.
  */
 
@@ -33,7 +34,7 @@ export function scrubEnv(env) {
   return out;
 }
 
-// ---------------------------------------------------------------- machine-wide locks
+// ---------------------------------------------------------------- per-user lane locks
 
 /** The start time of a process (clock ticks since boot, /proc/<pid>/stat field 22), or null when it is gone. */
 export function processStart(pid) {
@@ -65,11 +66,34 @@ function readOwner(path) {
   }
 }
 
-/** The lock directory, world-writable with the sticky bit like /tmp, so lanes of different users share it. */
-export function lockDir(base) {
-  mkdirSync(base, { recursive: true });
-  try { chmodSync(base, 0o1777); } catch { /* another user's directory */ }
-  return base;
+/**
+ * This user's lock directory: `$XDG_RUNTIME_DIR/dilla-ci-local-locks` when the session has one, else
+ * `<tmpdir>/dilla-ci-local-locks-<uid>`. The locks only coordinate this user's lanes; other users' listeners are what the
+ * port probe catches.
+ */
+export function lockDirPath({ env = process.env, tmp = tmpdir(), uid = process.getuid() } = {}) {
+  return env.XDG_RUNTIME_DIR ? join(env.XDG_RUNTIME_DIR, 'dilla-ci-local-locks') : join(tmp, `dilla-ci-local-locks-${uid}`);
+}
+
+/**
+ * The lock directory, created 0700 when missing (never chmodded). Before use it must be a real directory, not a
+ * symlink, owned by this uid and writable by no group or other user; anything else fails closed, because whoever
+ * controls the directory controls the locks.
+ */
+export function lockDir(dir, { uid = process.getuid(), stat = lstatSync } = {}) {
+  try {
+    mkdirSync(dir, { mode: 0o700 });
+  } catch (e) {
+    if (e.code !== 'EEXIST') throw e;
+  }
+  const st = stat(dir);
+  const why = st.isSymbolicLink() ? 'is a symlink'
+    : !st.isDirectory() ? 'is not a directory'
+      : st.uid !== uid ? `is owned by uid ${st.uid}, not ${uid}`
+        : (st.mode & 0o022) !== 0 ? `is writable by group or others (mode ${(st.mode & 0o777).toString(8)})`
+          : null;
+  if (why !== null) throw new Error(`ci-local: refusing the lock directory ${dir}: it ${why}. Remove it (or fix its owner and mode to 0700) and run again.`);
+  return dir;
 }
 
 /**

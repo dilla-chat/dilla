@@ -16,7 +16,7 @@ import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { computeAreas } from './ci-areas.mjs';
 import {
-  buildCleanTree, busyPorts, lockDir, recoverSnapshots, releaseLock, restoreSnapshot, scrubEnv, takeSnapshot, tryLock,
+  buildCleanTree, busyPorts, lockDir, lockDirPath, recoverSnapshots, releaseLock, restoreSnapshot, scrubEnv, takeSnapshot, tryLock,
 } from './ci-local-fs.mjs';
 import { randomBytes } from 'node:crypto';
 import {
@@ -28,7 +28,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = join(ROOT, 'target', 'ci-local');
 const RUNNER_TEMP = join(OUT, 'runner-temp');
 const ARTIFACTS = join(OUT, 'artifacts');
-const LOCK_DIR = join(tmpdir(), 'dilla-ci-local-locks');
+const LOCK_DIR = lockDirPath();
 const SNAPSHOTS = join(OUT, 'snapshots');
 const EVERYTHING = { go: true, core: true, web: true, e2e: true, text: true, code: true };
 
@@ -415,7 +415,7 @@ class Runner {
       }
       const env = this.baseEnv(job);
       const rewrites = [];
-      // Ports: a block of its own for the browser suites and the ui job, one machine-wide lock for the fixed-port suites.
+      // Ports: a block of its own for the browser suites and the ui job, one lock (across this user's lanes) for the fixed-port suites.
       if (info.ports === 'block' || info.ports === 'ui') {
         const k = await this.acquireBlock(id, write, info.ports);
         cleanups.push(() => this.releaseBlock(k));
@@ -631,7 +631,7 @@ class Runner {
   // -------------------------------------------------------------- ports and locks
 
   /**
-   * The first block from --base that no other run holds (a machine-wide lock) and whose ports nothing on this machine
+   * The first block from --base that no other run of this user holds (a per-user lock) and whose ports nothing on this machine
    * binds: a developer's own service on a suite port would otherwise answer the suite's requests.
    */
   async acquireBlock(id, write, kind) {

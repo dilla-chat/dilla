@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -14,7 +14,7 @@ import {
 import { changedOutputs, parseArgs, parseEnvFile, sarifBlocking } from './ci-local.mjs';
 import { checkLocalMirror } from './check-ci-workflow.mjs';
 import {
-  SCRUBBED_ENV, buildCleanTree, busyPorts, ownerAlive, processStart, recoverSnapshots, releaseLock, restoreSnapshot, scrubEnv, takeSnapshot, tryLock,
+  SCRUBBED_ENV, buildCleanTree, busyPorts, lockDir, lockDirPath, ownerAlive, processStart, recoverSnapshots, releaseLock, restoreSnapshot, scrubEnv, takeSnapshot, tryLock,
 } from './ci-local-fs.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -505,5 +505,42 @@ test('F8: the clean tree holds the listed files, not local build output, with a 
   writeFileSync(join(root, 'node_modules/keep'), 'k');
   buildCleanTree(root, dir, ['scripts/a.mjs']);
   assert.equal(readFileSync(join(root, 'node_modules/keep'), 'utf8'), 'k');
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('lock directory: per user, in the session runtime dir when there is one', () => {
+  assert.equal(lockDirPath({ env: { XDG_RUNTIME_DIR: '/run/user/1000' }, tmp: '/tmp', uid: 1000 }), '/run/user/1000/dilla-ci-local-locks');
+  assert.equal(lockDirPath({ env: {}, tmp: '/tmp', uid: 1000 }), '/tmp/dilla-ci-local-locks-1000');
+});
+
+test('lock directory: created 0700 and used as is; a later call accepts it unchanged', () => {
+  const root = scratch();
+  const dir = join(root, 'locks');
+  assert.equal(lockDir(dir), dir);
+  assert.equal(statSync(dir).mode & 0o777, 0o700);
+  assert.equal(lockDir(dir), dir);
+  assert.equal(statSync(dir).mode & 0o777, 0o700);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('lock directory: a symlink, a group- or world-writable directory, a foreign owner and a file are refused, never chmodded', () => {
+  const root = scratch();
+  const target = join(root, 'elsewhere');
+  mkdirSync(target, { mode: 0o700 });
+  const link = join(root, 'link');
+  symlinkSync(target, link);
+  assert.throws(() => lockDir(link), /is a symlink/);
+  const open = join(root, 'open');
+  mkdirSync(open);
+  chmodSync(open, 0o777);
+  assert.throws(() => lockDir(open), /writable by group or others \(mode 777\)/);
+  assert.equal(statSync(open).mode & 0o777, 0o777, 'refused, not chmodded');
+  const foreign = join(root, 'foreign');
+  mkdirSync(foreign, { mode: 0o700 });
+  const asOther = (p) => ({ ...lstatSync(p), isSymbolicLink: () => false, isDirectory: () => true, uid: process.getuid() + 1, mode: lstatSync(p).mode });
+  assert.throws(() => lockDir(foreign, { stat: asOther }), /is owned by uid \d+, not \d+/);
+  const file = join(root, 'file');
+  writeFileSync(file, '');
+  assert.throws(() => lockDir(file), /is not a directory/);
   rmSync(root, { recursive: true, force: true });
 });

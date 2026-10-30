@@ -17,7 +17,7 @@ import { parseYaml } from './ci-local-yaml.mjs';
  *   verdict) or 'steps' (default: the steps run).
  * - group: 'go' and 'e2e' jobs are the ones --stress squeezes.
  * - ports: 'block' (the core, web and voice suites: each run gets its own DILLA_E2E_PORT_OFFSET block), 'fixed' (suites
- *   whose ports are hard-coded: one machine-wide lock, so lanes queue instead of clashing) or 'ui' (Storybook's servers,
+ *   whose ports are hard-coded: one per-user lock, so lanes queue instead of clashing) or 'ui' (Storybook's servers,
  *   moved by the block's ui offset).
  * - locks: named locks held for the whole job (jobs that regenerate or check tracked files serialise on 'tracked-tree').
  * - exclusive: nothing else runs beside it; snapshot: paths copied aside before it and put back after it, as it was.

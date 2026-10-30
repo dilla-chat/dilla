@@ -68,13 +68,15 @@ and SFU port by `k*1000`; the suites span 7884–8615. Each job also gets its ow
 directory (`target/ci-local/e2e/<job>/`, which holds the traces and the testhost and dillabot logs). The ui job's
 Storybook ports move by `k*50`.
 
-The blocks are locked machine-wide (lock files under `$TMPDIR/dilla-ci-local-locks`), so two lanes on one machine
-never get the same block. A lock names its holder's pid and process start time; a lock whose holder is gone (or whose
+The blocks are locked across your lanes (lock files under `$XDG_RUNTIME_DIR/dilla-ci-local-locks`, or
+`$TMPDIR/dilla-ci-local-locks-<uid>` without a session runtime directory), so two of your lanes never get the same
+block. The directory is created 0700; ci-local refuses to use it (and says why) if it is a symlink, isn't owned by you,
+or is writable by group or others. Other users' services on a block's ports are caught by the port probe below. A lock names its holder's pid and process start time; a lock whose holder is gone (or whose
 pid now belongs to a later process) is taken over atomically. Before a block is handed out, its ports (TCP and UDP
 7884–8616 plus the offset, or the ui job's Storybook ports) are probed: a block with anything already listening, such
 as your own services, is skipped. `--base <n>` sets the first block to try (default 1; 0 is the CI ports, the most is 24), and `--e2e-jobs`
 sets how many browser jobs run at once (default 3). browser-spike and browser-media still use hard-coded ports, so
-they share one machine-wide lock: lanes queue for those two jobs instead of clashing.
+they share one lock: your lanes queue for those two jobs instead of clashing.
 
 ## The job environment
 
