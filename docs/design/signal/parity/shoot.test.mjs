@@ -145,3 +145,11 @@ test('validateSpec accepts an upload step with files and rejects one without', (
   assert.equal(validateSpec([{ ...app, app: { who: 'ada', steps: [{ upload: ['input[type=file]', 'a.png', 'b.txt'] }] } }]).length, 1);
   assert.throws(() => validateSpec([{ ...app, app: { who: 'ada', steps: [{ upload: ['input[type=file]'] }] } }]), /upload is \[selector, file/);
 });
+
+// Wave B task 3b: a step that reads the setup key a new account is shown and fills its code.
+test('validateSpec takes a totpFrom step of two selectors and refuses any other shape', () => {
+  const pair = { name: 'p', viewport: { width: 1280, height: 800 }, prototype: {}, app: { who: 'fresh', steps: [{ totpFrom: ['#factor-totp-key', '#factor-totp-code'] }] } };
+  validateSpec([pair]);
+  assert.throws(() => validateSpec([{ ...pair, app: { who: 'fresh', steps: [{ totpFrom: ['#k'] }] } }]), /totpFrom is \[setup key selector, code selector\]/);
+  assert.throws(() => validateSpec([{ ...pair, app: { who: 'fresh', steps: [{ totpFrom: ['#k', ''] }] } }]), /totpFrom/);
+});

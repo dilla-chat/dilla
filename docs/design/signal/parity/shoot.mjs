@@ -72,12 +72,14 @@ export function validateSpec(spec) {
     if (other.steps !== undefined && !Array.isArray(other.steps)) throw new Error(`${at} (${pair.name}): ${pair.story ? 'story' : 'app'}.steps must be an array`);
     [...(steps ?? []), ...(other.steps ?? [])].forEach((s, j) => {
       const keys = Object.keys(s ?? {});
-      const ok = keys.length === 1 && ['click', 'rightClick', 'hover', 'press', 'type', 'wait', 'waitFor', 'goto', 'totp', 'upload', 'dispatch'].includes(keys[0]);
-      if (!ok) throw new Error(`${at} (${pair.name}): step ${j} needs exactly one of click, rightClick, hover, press, type, wait, waitFor, goto, totp, upload, dispatch`);
+      const ok = keys.length === 1 && ['click', 'rightClick', 'hover', 'press', 'type', 'wait', 'waitFor', 'goto', 'totp', 'totpFrom', 'upload', 'dispatch'].includes(keys[0]);
+      if (!ok) throw new Error(`${at} (${pair.name}): step ${j} needs exactly one of click, rightClick, hover, press, type, wait, waitFor, goto, totp, totpFrom, upload, dispatch`);
       if (keys[0] === 'type' && !(Array.isArray(s.type) && s.type.length === 2 && s.type.every(x => typeof x === 'string'))) throw new Error(`${at} (${pair.name}): step ${j} type is [selector, text]`);
       if (keys[0] === 'wait' && typeof s.wait !== 'number') throw new Error(`${at} (${pair.name}): step ${j} wait is milliseconds`);
       if (keys[0] === 'goto' && typeof s.goto !== 'string') throw new Error(`${at} (${pair.name}): step ${j} goto is a path`);
       if (keys[0] === 'totp' && !(Array.isArray(s.totp) && s.totp.length === 2 && typeof s.totp[0] === 'string' && PEOPLE.includes(s.totp[1]))) throw new Error(`${at} (${pair.name}): step ${j} totp is [selector, who] with who one of ${PEOPLE.join(', ')}`);
+      // Wave B task 3b: an account the pair itself signs up is not in state.people; its code comes from the setup key on the page.
+      if (keys[0] === 'totpFrom' && !(Array.isArray(s.totpFrom) && s.totpFrom.length === 2 && s.totpFrom.every(x => typeof x === 'string' && x !== ''))) throw new Error(`${at} (${pair.name}): step ${j} totpFrom is [setup key selector, code selector]`);
       if (keys[0] === 'upload' && !(Array.isArray(s.upload) && s.upload.length >= 2 && s.upload.every(x => typeof x === 'string'))) throw new Error(`${at} (${pair.name}): step ${j} upload is [selector, file, ...] (files relative to the repo)`);
     });
   });
@@ -182,6 +184,12 @@ async function runSteps(page, steps, ctx = {}) {
     else if (s.totp) {
       const { nextCode } = await import(path.join(REPO, 'e2e/web/support/totp.ts'));
       await page.fill(s.totp[0], await nextCode(ctx.state.controlUrl, ctx.state.people[s.totp[1]].totp));
+    }
+    else if (s.totpFrom) {
+      // The setup key the page shows (a new account's, never stored here), then the code for it from the host's clock.
+      const { nextCode } = await import(path.join(REPO, 'e2e/web/support/totp.ts'));
+      const totpSecret = await page.inputValue(s.totpFrom[0]);
+      await page.fill(s.totpFrom[1], await nextCode(ctx.state.controlUrl, { totpSecret, lastCounter: -1 }));
     }
     else if (s.upload) await page.setInputFiles(s.upload[0], s.upload.slice(1).map(f => path.resolve(REPO, f)));
     else if (s.dispatch) await page.locator(s.dispatch).first().dispatchEvent('click');

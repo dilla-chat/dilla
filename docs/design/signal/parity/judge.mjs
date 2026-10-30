@@ -39,6 +39,7 @@ export function secretReason(pair) {
   for (const s of steps) {
     if (!isObject(s)) continue;
     if (s.totp !== undefined) return 'secret: fills a one-time code';
+    if (s.totpFrom !== undefined) return 'secret: fills a one-time code from the setup key on the page';
     if (Array.isArray(s.type)) {
       if (/\{(password|recoveryKey):/.test(String(s.type[1]))) return 'secret: types a password or recovery key';
       if (/password|recovery|one-time-code|totp/i.test(String(s.type[0]))) return 'secret: types into a secret field';

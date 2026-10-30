@@ -77,7 +77,8 @@ A pair has `prototype` plus **either** `story` **or** `app`; one spec may mix bo
   server, `{community}` to the server's own path (the phone's server list). Without a `path` the page stays where it is.
   After the capture the tool presses Escape twice and reloads `reset` (default: `path`, else the URL before the steps).
 - Extra step kinds on top of the prototype ones: `{ "goto": "/path" }`, `{ "totp": [selector, who] }` (fills the next
-  authenticator code of `state.people[who]`), `{ "upload": [selector, file...] }` (files relative to the repo, see
+  authenticator code of `state.people[who]`), `{ "totpFrom": [keySelector, codeSelector] }` (reads a setup key shown on the page, for an account
+  the pair signs up itself, and fills its next code; wave B task 3b), `{ "upload": [selector, file...] }` (files relative to the repo, see
   `app/fixtures/`), `{ "dispatch": selector }` (a click event without hit testing). Typed text expands
   `{password:who}` and `{recoveryKey:who}` from `state.people`.
 - Selectors on the app side can use Playwright roles: `role=button[name="Reminders"s]` (`s` = exact, `i` = case-insensitive).
