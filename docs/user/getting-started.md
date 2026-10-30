@@ -522,7 +522,7 @@ and a cancelled prompt says "No passkey was added. Try again, or use an authenti
 
 ### Backup codes are not the recovery key
 
-![Step 5, backup codes: the list of codes, Print, Copy, and the box to tick](screenshots/onboarding-5-factor-codes.png)
+![Step 6, backup codes: the list of codes, Print, Copy, and the box to tick](screenshots/onboarding-5-done.png)
 
 After the factor you get your backup codes, a list with **Print** and **Copy** (at sign-up they are on the last step, "You’re in"). Each code signs you in once in
 place of your second factor, which is what you reach for when you lose your phone or your passkey. "Backup codes are

@@ -7,8 +7,8 @@
 import { expect, type Page, type LaunchOptions, type PlaywrightWorkerArgs, type PlaywrightWorkerOptions, type TestInfo, type ViewportSize } from '@playwright/test';
 import { addServerVia,
   COPY, SIGNIN, TEST_TIMEOUT, WAIT, makeInviteLink, completeFactorStep, copy, expectAccessible, expectComposerReady, expectHeading, expectShell, splash,
-  keyField, keySubmit, keyText, newAccount, nextButton, openChannel, railItem, railNav, readRecoveryKey, sendText, signInToKeyStep,
-  signUp, submitButton, test, type Account, type Guard,
+  keyField, keySubmit, keyText, newAccount, openChannel, railItem, railNav, sendText, signInToKeyStep,
+  signUp, signUpToFactor, test, type Account, type Guard,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { launchSecond, secondProfileDir } from './support/second-harness';
@@ -47,24 +47,6 @@ async function resetFactors(control: string, username: string): Promise<void> {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username }),
   });
   expect(res.status, await res.text()).toBe(204);
-}
-
-/** Onboarding from its first step to the choice at step 5, however the page got there. Stops on `factor.choose.title`. */
-async function signUpToFactor(page: Page, account: Account): Promise<void> {
-  await expectHeading(page, COPY.connectTitle, { instance });
-  await nextButton(page).click();
-  await expectHeading(page, COPY.identityTitle);
-  await page.getByLabel(copy(COPY.usernameLabel), { exact: true }).fill(account.username);
-  await page.getByLabel(copy(COPY.displayLabel), { exact: true }).fill(account.display);
-  await page.getByLabel(copy(COPY.passwordLabel), { exact: true }).fill(account.password);
-  await nextButton(page).click();
-  await expectHeading(page, COPY.keysTitle);
-  account.recoveryKey = await readRecoveryKey(page);
-  await page.getByRole('checkbox', { name: copy(COPY.keysAcknowledge), exact: true }).check();
-  await nextButton(page).click();
-  await expectHeading(page, COPY.deviceTitle);
-  await submitButton(page).click();
-  await expectHeading(page, 'factor.choose.title');
 }
 
 /** The forced screen: the title, the required copy, and no way past it but the set-up (or forgetting the browser). */
@@ -120,7 +102,7 @@ async function cleoReopens(
     // which the page's img-src refuses (the page declares no icon link).
     await guard.attach(first);
     await p1.getByRole('link', { name: 'Open dilla in this browser', exact: true }).click();
-    await signUpToFactor(p1, cleo);
+    await signUpToFactor(p1, cleo, instance);
     // She closes the page (a blank tab keeps the browser, and so the profile, open) and opens the app again in it.
     const p2 = await first.newPage();
     await p1.close();

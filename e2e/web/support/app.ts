@@ -79,12 +79,13 @@ export const COPY = {
   inviteLabel: 'onboarding.connect.invite',
   identityTitle: 'onboarding.identity.title',
   usernameLabel: 'onboarding.identity.username',
-  displayLabel: 'onboarding.identity.display',
   passwordLabel: 'onboarding.identity.password',
   keysTitle: 'onboarding.keys.title',
   keysAcknowledge: 'onboarding.keys.acknowledge',
-  deviceTitle: 'onboarding.browser.title',
-  submit: 'onboarding.browser.submit',
+  // Wave B task 3b: step 2's Create account makes the keys; step 3's I saved it creates the account.
+  submit: 'onboarding.identity.submit',
+  keysSubmit: 'onboarding.keys.submit',
+  codesAck: 'onboarding.done.codesAck',
   doneTitle: 'onboarding.done.title',
   next: 'onboarding.next',
   finish: 'onboarding.done.next',
@@ -551,10 +552,12 @@ export async function expectHeading(page: Page, key: string, vars?: Record<strin
 }
 /** Any onboarding step (all five render inside OnboardingFrame). */
 export function onboardingFrame(page: Page): Locator { return page.locator(CLASS.onboardingFrame); }
-/** `Continue`, the forward button of steps 1-3. */
+/** `Continue`, the forward button of step 1. */
 export function nextButton(page: Page): Locator { return page.getByRole('button', { name: copy(COPY.next), exact: true }); }
-/** `Create account`, the forward button of step 4 and the only control that registers (L-COPY-01). */
+/** `Create account`, the forward button of step 2: it makes the keys (wave B task 3b); the account is created on step 3. */
 export function submitButton(page: Page): Locator { return page.getByRole('button', { name: copy(COPY.submit), exact: true }); }
+/** `I saved it`, the forward button of step 3 and the only control that registers (wave B task 3b). */
+export function keysSubmitButton(page: Page): Locator { return page.getByRole('button', { name: copy(COPY.keysSubmit), exact: true }); }
 export function railNav(page: Page): Locator { return page.getByRole('navigation', { name: copy(COPY.railLabel), exact: true }); }
 export function channelsNav(page: Page): Locator { return page.getByRole('navigation', { name: copy(COPY.channelsLabel), exact: true }); }
 export function logRegion(page: Page, channel: string): Locator {
@@ -596,46 +599,73 @@ export async function signUp(page: Page, invite: string, instanceName: string, d
   return completeSignUp(page, account, instanceName);
 }
 
-/** The five onboarding steps from the first one (`Join {instance}`), however the page got there: the invite link's
- *  landing page, or /welcome?invite=. Fills in `account` with what the person writes down. */
-export async function completeSignUp(page: Page, account: Account, instanceName: string): Promise<Account> {
+/** Steps 1 to 3 (wave B task 3b): the invite, the account (Create account makes the keys), the recovery key (I saved it,
+ *  once ticked, creates the account). Ends on step 4, the second factor's choice. Fills in the recovery key. */
+export async function signUpToFactor(page: Page, account: Account, instanceName: string,
+  onStep?: (state: 'invite' | 'account' | 'keys') => Promise<void>): Promise<void> {
   await expectHeading(page, COPY.connectTitle, { instance: instanceName });
+  await onStep?.('invite');
   await nextButton(page).click();
   await expectHeading(page, COPY.identityTitle);
   await page.getByLabel(copy(COPY.usernameLabel), { exact: true }).fill(account.username);
-  await page.getByLabel(copy(COPY.displayLabel), { exact: true }).fill(account.display);
-  await page.getByLabel(copy(COPY.passwordLabel), { exact: true }).fill(account.password);
-  await nextButton(page).click();
+  const password = page.getByLabel(copy(COPY.passwordLabel), { exact: true });
+  if (await password.count() > 0) await password.fill(account.password);
+  await onStep?.('account');
+  await submitButton(page).click();
   await expectHeading(page, COPY.keysTitle);
   account.recoveryKey = await readRecoveryKey(page);
   await page.getByRole('checkbox', { name: copy(COPY.keysAcknowledge), exact: true }).check();
-  await nextButton(page).click();
-  await expectHeading(page, COPY.deviceTitle);
-  await submitButton(page).click();
+  await onStep?.('keys');
+  await keysSubmitButton(page).click();
+  await expectHeading(page, 'factor.choose.title');
+}
+
+/** The six onboarding steps from the first one (`Join with an invite`), however the page got there: the invite link's
+ *  landing page, or /welcome?invite=. Fills in `account` with what the person writes down. Sign-up asks for no display
+ *  name (Jonas, task 3b), so an account given one sets it afterwards in Settings → Profile, as a person would. */
+export async function completeSignUp(page: Page, account: Account, instanceName: string): Promise<Account> {
+  await signUpToFactor(page, account, instanceName);
   await completeFactorStep(page, account);
   await expectHeading(page, COPY.doneTitle);
   await page.getByRole('button', { name: copy(COPY.finish), exact: true }).click();
   await expectShell(page);
+  if (account.display !== '' && account.display !== account.username) await setDisplayName(page, account.display);
   return account;
 }
 
-/** web3.6 sign-up step 5: choose the authenticator app, copy the setup key, confirm with a code, tick the backup codes. */
+/** Settings → Profile: the display name, saved as it is typed; waits for "Profile saved" and closes Settings. */
+export async function setDisplayName(page: Page, display: string): Promise<void> {
+  const settings = await openSettings(page, 'profile');
+  await settings.getByRole('textbox', { name: copy('profile.display.label'), exact: true }).fill(display);
+  await expect(settings.getByRole('status').filter({ hasText: copy('profile.saved') })).toBeVisible({ timeout: WAIT });
+  await closeSettings(page);
+}
+
+/** The second factor from its choice: the authenticator app, the setup key, the code (the sixth digit sends it), then the
+ *  backup codes. At sign-up (wave B task 3b) the codes are on the done step, whose box this ticks and whose Open dilla it
+ *  leaves to the caller; elsewhere (sign-in, the forced screen) they are their own step, ticked and continued here. */
 export async function completeFactorStep(page: Page, account: Account, onStep?: (state: 'choose' | 'totp' | 'codes') => Promise<void>): Promise<void> {
   await expectHeading(page, 'factor.choose.title');
   await onStep?.('choose');
   await page.getByRole('radio', { name: new RegExp(escapeRegExp(copy('factor.choose.app'))) }).check();
   await page.getByRole('button', { name: copy('factor.choose.next'), exact: true }).click();
-  await expectHeading(page, 'factor.totp.title');
+  await expect(page.getByRole('heading', { level: 1, name: new RegExp(`^(${escapeRegExp(copy('factor.totp.title'))}|${escapeRegExp(copy('factor.totp.titleSignup'))})$`) }))
+    .toBeVisible({ timeout: WAIT });
   const key = page.getByLabel(copy('factor.totp.key'), { exact: true });
   await expect(key).toHaveValue(/^[A-Z2-7]{16,}$/, { timeout: WAIT });
   await onStep?.('totp');
   account.totpSecret = await key.inputValue();
   // Wave B task 3: the sixth digit in the code boxes sends the code; there is no button to press.
   await page.getByLabel(copy('factor.totp.code'), { exact: true }).fill(await nextCode(account.control, account));
-  await expectHeading(page, 'factor.codes.title');
+  const list = page.getByRole('list', { name: copy('factor.codes.label'), exact: true });
+  await expect(list).toBeVisible({ timeout: WAIT });
+  const signup = await heading(page, COPY.doneTitle).count() > 0;
   await onStep?.('codes');
-  account.backupCodes = (await page.getByRole('list', { name: copy('factor.codes.label'), exact: true }).locator('li').allInnerTexts())
-    .map((c) => c.replace(/\s+/g, ''));
+  account.backupCodes = (await list.locator('li').allInnerTexts()).map((c) => c.replace(/\s+/g, ''));
+  if (signup) {
+    await page.getByRole('checkbox', { name: copy(COPY.codesAck), exact: true }).check();
+    return;
+  }
   await page.getByRole('checkbox', { name: copy('factor.codes.ack'), exact: true }).check();
   await page.getByRole('button', { name: copy('factor.codes.next'), exact: true }).click();
 }

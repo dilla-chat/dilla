@@ -1,7 +1,7 @@
 import { expect } from '@playwright/test';
 import {
   CLASS, COPY, HEX32, PUBLIC_URL, RK_GROUP, TEST_TIMEOUT, WAIT, copy, escapeRegExp, expectHeading, expectShell, nextButton, onboardingFrame,
-  completeFactorStep, newAccount, openChannel, railItem, railNav, readKekRecord, readRecoveryKey, submitButton, test,
+  completeFactorStep, keysSubmitButton, newAccount, openChannel, railItem, railNav, readKekRecord, readRecoveryKey, submitButton, test,
 } from './support/app';
 
 test.describe.configure({ timeout: TEST_TIMEOUT });
@@ -16,11 +16,12 @@ test('a server invite, a name and a written-down key make an account that lands 
   await expect(page.getByLabel(copy(COPY.inviteLabel), { exact: true })).toHaveValue(invite);
   await nextButton(page).click();
 
+  // Wave B task 3b: step 2 asks for a username and a password only; Create account makes the keys, nothing more.
   await expectHeading(page, COPY.identityTitle);
+  await expect(page.getByLabel(/Display name/)).toHaveCount(0);
   await page.getByLabel(copy(COPY.usernameLabel), { exact: true }).fill(`w${setup.user_id.slice(0, 8)}`);
-  await page.getByLabel(copy(COPY.displayLabel), { exact: true }).fill('signup tester');
   await page.getByLabel(copy(COPY.passwordLabel), { exact: true }).fill('e2e-password-1234');
-  await nextButton(page).click();
+  await submitButton(page).click();
 
   // The recovery key: 13 groups of 4 Crockford characters, selectable, never offered for copying (F2).
   await expectHeading(page, COPY.keysTitle);
@@ -28,15 +29,14 @@ test('a server invite, a name and a written-down key make an account that lands 
   expect(groups).toHaveLength(13);
   for (const group of groups) expect(group).toMatch(RK_GROUP);
   await expect(page.locator(CLASS.recoveryKey).getByRole('button', { name: /copy/i })).toHaveCount(0);
-  await expect(nextButton(page)).toBeDisabled();
+  await expect(keysSubmitButton(page)).toBeDisabled();
   await page.getByRole('checkbox', { name: copy(COPY.keysAcknowledge), exact: true }).check();
-  await expect(nextButton(page)).toBeEnabled();
-  await nextButton(page).click();
-
-  // Step 4 registers: its forward button is `Create account`, not `Continue` (L-COPY-01).
-  await expectHeading(page, COPY.deviceTitle);
-  await submitButton(page).click();
-  await completeFactorStep(page, newAccount());
+  await expect(keysSubmitButton(page)).toBeEnabled();
+  // Step 3 registers: its forward button is `I saved it`, and only once the key is ticked (task 3b).
+  await keysSubmitButton(page).click();
+  const account = newAccount();
+  await completeFactorStep(page, account);
+  expect(account.backupCodes.length).toBeGreaterThan(0);
   await expectHeading(page, COPY.doneTitle);
   await page.getByRole('button', { name: copy(COPY.finish), exact: true }).click();
   await expectShell(page);

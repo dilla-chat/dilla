@@ -8,7 +8,7 @@
 import { expect, type Locator, type Page } from '@playwright/test';
 import {
   COPY, SIGNIN, TEST_TIMEOUT, WAIT, completeFactorStep, copy, expectAccessible, expectHeading, expectShell, keyField, keySubmit,
-  keyText, newAccount, nextButton, readRecoveryKey, submitButton, test, type Account,
+  keyText, newAccount, nextButton, signUpToFactor, test, type Account,
   settingsGear,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
@@ -80,19 +80,7 @@ test('sign-in order: the password, then the factor, then the recovery key; a bac
   // 1. Ada signs up with the bootstrap invite and an authenticator app.
   const ada = newAccount('Ada', h.control);
   await page.goto(`/welcome?invite=${encodeURIComponent(h.invite.split(',')[0] ?? '')}`);
-  await expectHeading(page, COPY.connectTitle, { instance });
-  await nextButton(page).click();
-  await expectHeading(page, COPY.identityTitle);
-  await page.getByLabel(copy(COPY.usernameLabel), { exact: true }).fill(ada.username);
-  await page.getByLabel(copy(COPY.displayLabel), { exact: true }).fill(ada.display);
-  await page.getByLabel(copy(COPY.passwordLabel), { exact: true }).fill(ada.password);
-  await nextButton(page).click();
-  await expectHeading(page, COPY.keysTitle);
-  ada.recoveryKey = await readRecoveryKey(page);
-  await page.getByRole('checkbox', { name: copy(COPY.keysAcknowledge), exact: true }).check();
-  await nextButton(page).click();
-  await expectHeading(page, COPY.deviceTitle);
-  await submitButton(page).click();
+  await signUpToFactor(page, ada, instance);
   await completeFactorStep(page, ada);
   expect(ada.backupCodes).toHaveLength(10);
   await expectHeading(page, COPY.doneTitle);

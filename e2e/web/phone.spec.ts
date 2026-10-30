@@ -7,7 +7,7 @@ import { expect, type BrowserContext, type Locator, type Page, type PlaywrightWo
 import { mkdirSync, rmSync } from 'node:fs';
 import { addServerVia,
   COPY, SIGNIN, TEST_TIMEOUT, WAIT, channelRow, homeTile, newChannelButton, completeFactorStep, composerBox, copy, expectAccessible, expectComposerReady,
-  expectHeading, expectShell, nextButton, newAccount, railItem, railNav, readRecoveryKey, sendText, keyField, submitButton, test,
+  expectHeading, expectShell, nextButton, newAccount, railItem, railNav, readRecoveryKey, sendText, keyField, submitButton, keysSubmitButton, test,
   messageRow, signIn, type Account, membersToggle,
 } from './support/app';
 import { PROFILE_ROOT } from './support/persistent';
@@ -154,22 +154,20 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expectHeading(page, COPY.connectTitle, { instance });
       await expectFieldSizes(page, 'connect');
       await nextButton(page).click();
+      // Wave B task 3b: step 2 has the username and the password (no display name); Create account makes the keys and
+      // the key step's I saved it creates the account.
       await expectHeading(page, COPY.identityTitle);
-      await expectFieldSizes(page, 'identity', 3);
+      await expectFieldSizes(page, 'account', 2);
       await expectUnzoomedOnFocus(page, page.getByLabel(copy(COPY.usernameLabel), { exact: true }), 'the username');
       await page.getByLabel(copy(COPY.usernameLabel), { exact: true }).fill(ada.username);
-      await page.getByLabel(copy(COPY.displayLabel), { exact: true }).fill(ada.display);
       await expectUnzoomedOnFocus(page, page.getByLabel(copy(COPY.passwordLabel), { exact: true }), 'the password');
       await page.getByLabel(copy(COPY.passwordLabel), { exact: true }).fill(ada.password);
-      await nextButton(page).click();
+      await submitButton(page).click();
       await expectHeading(page, COPY.keysTitle);
       ada.recoveryKey = await readRecoveryKey(page);
       await expectFieldSizes(page, 'recovery key', 0);
       await page.getByRole('checkbox', { name: copy(COPY.keysAcknowledge), exact: true }).check();
-      await nextButton(page).click();
-      await expectHeading(page, COPY.deviceTitle);
-      await expectFieldSizes(page, 'browser', 0);
-      await submitButton(page).click();
+      await keysSubmitButton(page).click();
       await completeFactorStep(page, ada, async (state) => { await expectFieldSizes(page, `factor ${state}`, state === 'totp' ? 1 : 0); });
       await expectHeading(page, COPY.doneTitle);
       await page.getByRole('button', { name: copy(COPY.finish), exact: true }).click();

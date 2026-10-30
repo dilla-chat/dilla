@@ -2,7 +2,7 @@ import { expect } from '@playwright/test';
 import { nextCode } from './support/totp';
 import {
   CLASS, COPY, TEST_TIMEOUT, WAIT, channelRow, channelsNav, composerBox, copy, expectComposerReady, expectShell,
-  closeSettings, heading, instanceInvite, logRegion, messageRow, nextButton, openSettings, railItem, railNav, submitButton, tabTo, tag, test, newAccount, escapeRegExp,
+  closeSettings, heading, instanceInvite, logRegion, messageRow, nextButton, openSettings, railItem, railNav, submitButton, keysSubmitButton, tabTo, tag, test, newAccount, escapeRegExp,
 } from './support/app';
 
 test.describe.configure({ timeout: TEST_TIMEOUT });
@@ -21,43 +21,37 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
   await expect(heading(page, COPY.identityTitle)).toBeFocused({ timeout: WAIT });
   await tabTo(page, page.getByLabel(copy(COPY.usernameLabel), { exact: true }));
   await page.keyboard.type(`k${setup.user_id.slice(0, 8)}`);
-  await tabTo(page, page.getByLabel(copy(COPY.displayLabel), { exact: true }));
-  await page.keyboard.type('keyboard tester');
   await tabTo(page, page.getByLabel(copy(COPY.passwordLabel), { exact: true }));
   await page.keyboard.type('e2e-password-1234');
-  await tabTo(page, nextButton(page));
+  // Wave B task 3b: step 2's Create account makes the keys; step 3's I saved it, once ticked, creates the account.
+  await tabTo(page, submitButton(page));
   await press('Enter');
   await expect(heading(page, COPY.keysTitle)).toBeFocused({ timeout: WAIT });
   const acknowledge = page.getByRole('checkbox', { name: copy(COPY.keysAcknowledge), exact: true });
   await tabTo(page, acknowledge);
   await press('Space');
   await expect(acknowledge).toBeChecked();
-  await tabTo(page, nextButton(page));
+  await tabTo(page, keysSubmitButton(page));
   await press('Enter');
-  await expect(heading(page, COPY.deviceTitle)).toBeFocused({ timeout: WAIT });
-  await tabTo(page, submitButton(page));
-  await press('Enter');
-  // web3.6 step 5, by keyboard: the authenticator app is the default choice.
+  // Step 4, by keyboard: the authenticator app is the default choice.
   const account = newAccount();
   await expect(heading(page, 'factor.choose.title')).toBeFocused({ timeout: WAIT });
   await tabTo(page, page.getByRole('radio', { name: new RegExp(escapeRegExp(copy('factor.choose.app'))) }));
   await tabTo(page, page.getByRole('button', { name: copy('factor.choose.next'), exact: true }));
   await press('Enter');
-  await expect(heading(page, 'factor.totp.title')).toBeFocused({ timeout: WAIT });
+  await expect(heading(page, 'factor.totp.titleSignup')).toBeFocused({ timeout: WAIT });
   const setupKey = page.getByLabel(copy('factor.totp.key'), { exact: true });
   await expect(setupKey).toHaveValue(/^[A-Z2-7]{16,}$/, { timeout: WAIT });
   account.totpSecret = await setupKey.inputValue();
   await tabTo(page, page.getByLabel(copy('factor.totp.code'), { exact: true }));
   // Wave B task 3: the sixth digit typed into the code boxes sends the code; there is no button to press.
   await page.keyboard.type(await nextCode(account.control, account));
-  await expect(heading(page, 'factor.codes.title')).toBeFocused({ timeout: WAIT });
-  const ackCodes = page.getByRole('checkbox', { name: copy('factor.codes.ack'), exact: true });
+  // Step 6: the backup codes and their box gate Open dilla.
+  await expect(heading(page, COPY.doneTitle)).toBeFocused({ timeout: WAIT });
+  const ackCodes = page.getByRole('checkbox', { name: copy(COPY.codesAck), exact: true });
   await tabTo(page, ackCodes);
   await press('Space');
   await expect(ackCodes).toBeChecked();
-  await tabTo(page, page.getByRole('button', { name: copy('factor.codes.next'), exact: true }));
-  await press('Enter');
-  await expect(heading(page, COPY.doneTitle)).toBeFocused({ timeout: WAIT });
   await tabTo(page, page.getByRole('button', { name: copy(COPY.finish), exact: true }));
   await press('Enter');
   await expectShell(page);

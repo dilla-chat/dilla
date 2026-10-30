@@ -84,39 +84,50 @@ const row = (page, channel, text) => page.getByRole('log', { name: t('shell.log.
 const rail = (page) => byText(page, 'navigation', 'shell.rail.label');
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+/** Settings → Profile, as a person sets the display name after sign-up (wave B task 3b: sign-up asks for none). */
+async function setDisplay(page, display) {
+  if (!display) return;
+  await page.goto('/settings/profile');
+  const field = page.getByRole('textbox', { name: t('profile.display.label'), exact: true });
+  await field.waitFor({ timeout: WAIT });
+  await field.fill(display);
+  await page.getByRole('status').filter({ hasText: t('profile.saved') }).first().waitFor({ timeout: WAIT });
+  await page.keyboard.press('Escape');
+  await rail(page).waitFor({ timeout: WAIT });
+}
+
 async function onboard(page, person, invite) {
   await page.goto(`/welcome?invite=${encodeURIComponent(invite)}`);
   await page.locator('.d-onboarding-frame h1').waitFor({ timeout: WAIT });
   await byText(page, 'button', 'onboarding.next').click();
+  // Wave B task 3b: step 2 has the username and the password; Create account makes the keys, and the key step's
+  // I saved it creates the account. There is no display name at sign-up: Settings → Profile sets it below.
   await byText(page, 'heading', 'onboarding.identity.title').waitFor({ timeout: WAIT });
   await page.getByLabel(t('onboarding.identity.username'), { exact: true }).fill(person.username);
-  await page.getByLabel(t('onboarding.identity.display'), { exact: true }).fill(person.display);
   person.password = `ux-${person.username}-password`;
   const pw = page.getByLabel(t('onboarding.identity.password'), { exact: true });
   if (await pw.count() > 0) await pw.fill(person.password);
-  await byText(page, 'button', 'onboarding.next').click();
+  await byText(page, 'button', 'onboarding.identity.submit').click();
   await byText(page, 'heading', 'onboarding.keys.title').waitFor({ timeout: WAIT });
   await page.locator('.d-recovery-key li').first().waitFor({ timeout: WAIT });
   person.recoveryKey = (await page.locator('.d-recovery-key li').allTextContents()).join(' ');
   await byText(page, 'checkbox', 'onboarding.keys.acknowledge').check();
-  await byText(page, 'button', 'onboarding.next').click();
-  await byText(page, 'heading', 'onboarding.browser.title').waitFor({ timeout: WAIT });
-  await byText(page, 'button', 'onboarding.browser.submit').click();
+  await byText(page, 'button', 'onboarding.keys.submit').click();
   await byText(page, 'heading', 'factor.choose.title').waitFor({ timeout: WAIT });
   await page.getByRole('radio', { name: new RegExp(t('factor.choose.app')) }).check();
   await byText(page, 'button', 'factor.choose.next').click();
-  await byText(page, 'heading', 'factor.totp.title').waitFor({ timeout: WAIT });
+  await byText(page, 'heading', 'factor.totp.titleSignup').waitFor({ timeout: WAIT });
   await page.waitForFunction(() => /^[A-Z2-7]{16,}$/.test(document.querySelector('#factor-totp-key')?.value ?? ''), null, { timeout: WAIT });
   const a = { totpSecret: await page.getByLabel(t('factor.totp.key'), { exact: true }).inputValue(), lastCounter: -1 };
   authenticators[person.username] = a;
   // Wave B task 3: the sixth digit in the code boxes sends the code; there is no button to press.
   await page.getByLabel(t('factor.totp.code'), { exact: true }).fill(await nextCode(controlUrl, a));
-  await byText(page, 'heading', 'factor.codes.title').waitFor({ timeout: WAIT });
-  await byText(page, 'checkbox', 'factor.codes.ack').check();
-  await byText(page, 'button', 'factor.codes.next').click();
+  // Step 6: the backup codes, whose box gates Open dilla.
   await byText(page, 'heading', 'onboarding.done.title').waitFor({ timeout: WAIT });
+  await byText(page, 'checkbox', 'onboarding.done.codesAck').check();
   await byText(page, 'button', 'onboarding.done.next').click();
   await rail(page).waitFor({ timeout: WAIT });
+  await setDisplay(page, person.display);
   person.totp = a;
   state.people[person.username] = person;
   log('onboarded', person.username);

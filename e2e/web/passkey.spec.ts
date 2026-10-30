@@ -7,7 +7,7 @@
 import { expect, type Locator, type Page } from '@playwright/test';
 import {
   COPY, SIGNIN, TEST_TIMEOUT, WAIT, copy, escapeRegExp, expectAccessible, expectHeading, expectShell, keyField, keySubmit, keyText,
-  newAccount, nextButton, readRecoveryKey, submitButton, test,
+  newAccount, nextButton, signUpToFactor, test,
   settingsGear,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
@@ -79,20 +79,7 @@ test('passkeys: sign up with one, sign in with a copy of it, add the app, remove
   const authenticator = await addAuthenticator(page);
   const bjorn = newAccount(BJORN, h.control);
   await page.goto(`/welcome?invite=${encodeURIComponent(h.invite.split(',')[0] ?? '')}`);
-  await expectHeading(page, COPY.connectTitle, { instance });
-  await nextButton(page).click();
-  await expectHeading(page, COPY.identityTitle);
-  await page.getByLabel(copy(COPY.usernameLabel), { exact: true }).fill(bjorn.username);
-  await page.getByLabel(copy(COPY.displayLabel), { exact: true }).fill(bjorn.display);
-  await page.getByLabel(copy(COPY.passwordLabel), { exact: true }).fill(bjorn.password);
-  await nextButton(page).click();
-  await expectHeading(page, COPY.keysTitle);
-  bjorn.recoveryKey = await readRecoveryKey(page);
-  await page.getByRole('checkbox', { name: copy(COPY.keysAcknowledge), exact: true }).check();
-  await nextButton(page).click();
-  await expectHeading(page, COPY.deviceTitle);
-  await submitButton(page).click();
-  await expectHeading(page, 'factor.choose.title');
+  await signUpToFactor(page, bjorn, instance);
   await page.getByRole('radio', { name: new RegExp(escapeRegExp(copy('factor.choose.passkey'))) }).check();
   await page.getByRole('button', { name: copy('factor.choose.next'), exact: true }).click();
   await expectHeading(page, 'factor.passkey.title');
@@ -100,13 +87,12 @@ test('passkeys: sign up with one, sign in with a copy of it, add the app, remove
   await name.fill(PASSKEY);
   await expectAccessible(page, 'passkey: name');
   await button(page, 'factor.passkey.submit').click();
-  await expectHeading(page, 'factor.codes.title');
+  // Wave B task 3b: the backup codes are on the done step, whose Open dilla waits for their tick.
+  await expectHeading(page, COPY.doneTitle);
   bjorn.backupCodes = (await page.getByRole('list', { name: copy('factor.codes.label'), exact: true }).locator('li').allInnerTexts())
     .map((c) => c.replace(/\s+/g, ''));
   expect(bjorn.backupCodes).toHaveLength(10);
-  await page.getByRole('checkbox', { name: copy('factor.codes.ack'), exact: true }).check();
-  await page.getByRole('button', { name: copy('factor.codes.next'), exact: true }).click();
-  await expectHeading(page, COPY.doneTitle);
+  await page.getByRole('checkbox', { name: copy(COPY.codesAck), exact: true }).check();
   await page.getByRole('button', { name: copy(COPY.finish), exact: true }).click();
   await expectShell(page);
 
