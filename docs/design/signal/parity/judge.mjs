@@ -7,8 +7,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { SCALE, sideOf, validateSpec } from './shoot.mjs';
 import * as Q from './judge-questions.mjs';
+
+// No static import of shoot.mjs: `shoot.mjs --judge` imports this module while shoot.mjs is still running its top-level
+// `await main()`, so a static import back into shoot.mjs is a cycle that waits on itself and Node exits with "unsettled
+// top-level await" (exit 13). shoot.mjs is imported dynamically, only by this module's own CLI (judge.test.mjs checks both).
+/** Device pixels per CSS px of the captured frames; equal to shoot.mjs SCALE (asserted in judge.test.mjs). */
+export const SCALE = 2;
+/** Which second side a pair has (the same rule as shoot.mjs sideOf). Pure. */
+const sideOf = pair => (pair.app !== undefined ? 'app' : 'story');
 
 export const DEFAULT_KEY_FILE = path.join(process.env.HOME ?? '', '.config/typesafe/api-key');
 const isObject = v => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -675,6 +682,7 @@ export async function main(argv) {
     console.error('usage: judge.mjs <spec.json> <shotDir> [--out dir] [--only name,...] [--budget 0.50] [--dry-run] | --replay <name>.request.<side>.json');
     return 2;
   }
+  const { validateSpec } = await import('./shoot.mjs');
   const spec = validateSpec(JSON.parse(fs.readFileSync(a.specFile, 'utf8')));
   const { exit } = await judgeSpec(spec, a.shotDir, { outDir: a.outDir, only: a.only, budget: a.budget, dry: a.dry, reuse: a.reuse });
   return exit;

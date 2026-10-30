@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import {
   secretReason, validateJudge, planPrepare, withinLimits, boxToCss, regionCrop, buildQuestions, requestGroups, buildBody,
   decidePresence, decideState, decideCopy, decideTone, decideGeometry, classifyDeltas, decide, pairVerdict, parseJudgeArgs,
-  pngSize, send, REDACTED_HEADERS, qid, boxQuantum, reviewerLine, compareOf,
+  pngSize, send, REDACTED_HEADERS, qid, boxQuantum, reviewerLine, compareOf, SCALE,
 } from './judge.mjs';
 import { POS_TOL, MODEL, posTol, sizeTol } from './judge-questions.mjs';
-import { parseArgs } from './shoot.mjs';
+import { parseArgs, SCALE as SHOOT_SCALE } from './shoot.mjs';
 
 // No test asserts a model probability: the answers below are synthetic, to exercise the code's truth table.
 
@@ -267,6 +267,40 @@ test('boxQuantum: one Box step in CSS px per axis sets the geometry tolerance', 
   const g = decideGeometry([{ id: 'a' }, { id: 'b' }, { id: 'c' }], new Set(['a', 'b', 'c']), css);
   assert.equal(g.a.row, 'G1');
   assert.deepEqual(g.a.pos_tol_css, { x: 25.6, y: 16 });
+});
+
+test('shoot.mjs --judge cannot deadlock: judge.mjs never imports shoot.mjs statically (bug: unsettled top-level await)', async () => {
+  // shoot.mjs runs `await main()` at top level and imports judge.mjs from inside it; a static import path from judge.mjs back
+  // to shoot.mjs makes judge.mjs wait for shoot.mjs, which waits for judge.mjs, and Node exits 13.
+  const fs = await import('node:fs');
+  const { fileURLToPath } = await import('node:url');
+  const pathMod = await import('node:path');
+  const seen = new Set();
+  const walk = file => {
+    if (seen.has(file)) return;
+    seen.add(file);
+    const src = fs.readFileSync(file, 'utf8');
+    for (const m of src.matchAll(/^\s*(?:import|export)\s[^'"]*?from\s+['"](\.{1,2}\/[^'"]+)['"]|^\s*import\s+['"](\.{1,2}\/[^'"]+)['"]/gm)) walk(pathMod.resolve(pathMod.dirname(file), m[1] ?? m[2]));
+  };
+  walk(fileURLToPath(new URL('./judge.mjs', import.meta.url)));
+  assert.ok(seen.size >= 2, 'the walk found judge-questions.mjs');
+  assert.ok(![...seen].some(f => f.endsWith('/shoot.mjs')), `static imports from judge.mjs reach shoot.mjs: ${[...seen].join(', ')}`);
+  assert.equal(SCALE, SHOOT_SCALE);
+});
+
+test('judge.mjs CLI still validates the spec through a dynamic import of shoot.mjs (no network, no browser)', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const pathMod = await import('node:path');
+  const dir = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'judge-cli-'));
+  fs.writeFileSync(pathMod.join(dir, 'spec.json'), JSON.stringify([{ name: 'p', viewport: { width: 1280, height: 800 }, prototype: {}, story: { id: 'a--b' } }]));
+  const r = spawnSync(process.execPath, [new URL('./judge.mjs', import.meta.url).pathname, pathMod.join(dir, 'spec.json'), dir, '--dry-run'], { encoding: 'utf8', timeout: 60_000 });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /not-judged:no-elements/);
+  const bad = spawnSync(process.execPath, [new URL('./judge.mjs', import.meta.url).pathname, pathMod.join(dir, 'spec.json'), dir, '--dry-run'].map((a, i) => (i === 1 ? pathMod.join(dir, 'nope.json') : a)), { encoding: 'utf8', timeout: 60_000 });
+  assert.notEqual(bad.status, 0);
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test('shoot.mjs --judge: parseArgs strips the flag and reports it', () => {
