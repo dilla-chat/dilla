@@ -85,6 +85,8 @@ describe('structural tokens', () => {
       // Task 9
       card: '0.9375rem',
       heading: '1.25rem',
+      // Task 7
+      'poll-voter': '0.4375rem',
     });
     for (const [step, size] of Object.entries(structural.text)) {
       expect(size, `--text-${step} must be rem so browser text size and 200 % zoom scale it`).toMatch(/rem$/);
@@ -152,4 +154,12 @@ it('Task 6: uses the prototype success result fill', () => {
 it('Task 6 I2: the Not confirmed chip uses the prototype warning fill and ink', () => {
   expect(themes.signal.warnResult).toBe('rgba(255,209,106,.1)');
   expect(themes.signal.warnResultText).toBe('#FFD16A');
+});
+
+// Task 7
+it('preserves the prototype poll fill and winner tokens', () => {
+  expect(themes.signal.pollMineFill).toBe('rgba(90,168,230,.2)');
+  expect(themes.signal.pollWinnerFill).toBe('rgba(124,255,142,.12)');
+  expect(themes.signal.pollFill).toBe('rgba(255,255,255,.05)');
+  expect(themes.signal.pollWinnerEdge).toBe('rgba(124,255,142,.5)');
 });

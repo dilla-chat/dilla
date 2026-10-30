@@ -2,11 +2,12 @@ import { createElement, useEffect } from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { decode, encode as importEncode, fromHex, PERM, type BotUtilities, type CoreClient, type CommandContext as Binding, type CommandResult, type PollSummary, type ReminderSummary } from '@dilla/client-core';
+import { COMMANDS, decode, encode as importEncode, fromHex, PERM, type BotUtilities, type CoreClient, type CommandContext as Binding, type CommandResult, type PollSummary, type ReminderSummary } from '@dilla/client-core';
 import * as ClientCore from '@dilla/client-core';
 import { FakeClient } from '../../test/fake-client.ts';
 import type { CommandExecutionContext } from './command-types.ts';
 import { finalPollMarker, PollCard } from './PollCard.tsx';
+import { CommandPicker } from './CommandPicker.tsx';
 import { notifyReminder, reminderFromArgs, useUtilityCommandProvider } from './UtilityCommandProvider.tsx';
 
 const COMMUNITY = '11'.repeat(16); const CHANNEL = '22'.repeat(16); const USER = '33'.repeat(16);
@@ -58,7 +59,7 @@ function utilityFixture() {
       return { responses: responses.filter(response => operations.includes(response.operation) && (ids === undefined || ids.includes(response.requestId))), through: null, blocked: false }; }
     if (command.m === 'ackBotInteractionResponses') return null; return null;
   });
-  return { client: core, requests, responses, get poll() { return row; }, get reminder() { return reminder; }, failNext(operation: number, apply = true) { failOperation = operation; failApplies = apply; },
+  return { client: core, requests, responses, get poll() { return row; }, setPoll(over: Partial<PollSummary>) { row = { ...row, ...over }; }, get reminder() { return reminder; }, failNext(operation: number, apply = true) { failOperation = operation; failApplies = apply; },
     markReminderDue() { if (reminder !== null) reminder = [...reminder.slice(0, 2), BigInt(Math.floor(Date.now() / 1000)) - 60n, ...reminder.slice(3, 6), 1n, BigInt(reminder[7] as bigint) + 1n]; } };
 }
 function commandContext(client: CoreClient, requestId: string, over: Partial<CommandExecutionContext> = {}): CommandExecutionContext {
@@ -72,10 +73,24 @@ function mount(client: CoreClient, community: string | null = COMMUNITY, onNavig
 afterEach(() => { vi.restoreAllMocks(); });
 
 describe('utility command provider', () => {
+  it('/poll create from the picker opens the New poll dialog', async () => {
+    const f = utilityFixture();
+    function Picker() {
+      const provider = useUtilityCommandProvider(f.client, COMMUNITY);
+      return <>{provider.dialogs}<CommandPicker definitions={COMMANDS} initialText="/" contextKey="poll-picker-test"
+        suggest={() => Promise.resolve([])} onExecute={() => Promise.resolve({ status: 'success', private: true, message: '' })} onCancel={() => {}} onSendLiteral={() => {}}
+        onRunDetached={invocation => { void provider.handlers['poll create']!(invocation, commandContext(f.client, 'af'.repeat(16))); }} /> </>;
+    }
+    render(<Picker />);
+    await userEvent.click(screen.getByRole('option', { name: /^\/poll create,/ }));
+    expect(await screen.findByRole('dialog', { name: 'New poll in #lobby' })).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('the bridge')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  });
   it('publishes a poll through the adapter from the focused create dialog', async () => {
     const user = userEvent.setup(); const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
     let run!: Promise<unknown>; act(() => { run = mounted.captured.value!.handlers['poll create']!({ commandId: 'poll create', args: { question: 'Lunch?', answers: 'Soup, Salad', multiple: 'on' } }, commandContext(f.client, 'aa'.repeat(16))); });
-    await screen.findByRole('heading', { name: 'Create a poll' }); await user.click(screen.getByRole('button', { name: 'Save' }));
+    await screen.findByRole('heading', { name: 'New poll in #lobby' }); await user.click(screen.getByRole('button', { name: 'Post poll' }));
     const result = await run; expect(result).toMatchObject({ status: 'success', private: true });
     expect(f.requests.filter(row => row.operation === 70)).toHaveLength(1);
     const created = f.requests.find(row => row.operation === 70)!; expect(created.requestId).toBe('aa'.repeat(16));
@@ -87,9 +102,9 @@ describe('utility command provider', () => {
     const invocation = { commandId: 'poll create', args: { question: 'Original?', answers: 'A, B' } };
     const context = commandContext(f.client, 'ac'.repeat(16)); let run!: Promise<unknown>;
     act(() => { run = mounted.captured.value!.handlers['poll create']!(invocation, context); });
-    await screen.findByRole('heading', { name: 'Create a poll' });
+    await screen.findByRole('heading', { name: 'New poll in #lobby' });
     await user.clear(screen.getByLabelText('Question')); await user.type(screen.getByLabelText('Question'), 'Edited?');
-    f.failNext(70); await user.click(screen.getByRole('button', { name: 'Save' })); expect(await run).toMatchObject({ status: 'uncertain' });
+    f.failNext(70); await user.click(screen.getByRole('button', { name: 'Post poll' })); expect(await run).toMatchObject({ status: 'uncertain' });
     const botPost = { key: 's9', state: 'ok' as const, reason: '', senderUser: BOT, senderDevice: null, own: false, web: false, bot: true,
       ts: 1_800_000_000, body: `Edited?\n[dilla-poll:v1:${context.requestId}]`, msgId: 'bc'.repeat(16), seq: '9', edited: false, reply: null,
       reactions: [], pinned: false, attachments: [], mention: false, actions: [], thread: null };
@@ -108,8 +123,8 @@ describe('utility command provider', () => {
     const user = userEvent.setup(); const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
     let bits = PERM.sendMessages; const context = commandContext(f.client, 'b1'.repeat(16), { getCurrentBinding: () => ({ communityId: COMMUNITY, channelId: CHANNEL, bits }) });
     const invoke = () => mounted.captured.value!.handlers['poll create']!({ commandId: 'poll create', args: { question: 'Q?', answers: 'A, B' } }, context);
-    let run!: Promise<unknown>; act(() => { run = invoke(); }); await screen.findByRole('heading', { name: 'Create a poll' });
-    f.failNext(70); await user.click(screen.getByRole('button', { name: 'Save' })); expect(await run).toMatchObject({ status: 'uncertain' });
+    let run!: Promise<unknown>; act(() => { run = invoke(); }); await screen.findByRole('heading', { name: 'New poll in #lobby' });
+    f.failNext(70); await user.click(screen.getByRole('button', { name: 'Post poll' })); expect(await run).toMatchObject({ status: 'uncertain' });
     bits = 0; expect(await invoke()).toMatchObject({ status: 'uncertain' });
     expect(f.requests.filter(row => row.operation === 70).map(row => row.requestId)).toEqual(['b1'.repeat(16)]); mounted.unmount();
   });
@@ -149,18 +164,18 @@ describe('utility command provider', () => {
   it('keeps the poll question limit in Unicode code points', async () => {
     const user = userEvent.setup(); const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
     let run!: Promise<unknown>; act(() => { run = mounted.captured.value!.handlers['poll create']!({ commandId: 'poll create', args: { question: 'Q', answers: 'A, B' } }, commandContext(f.client, 'b0'.repeat(16))); });
-    await screen.findByRole('heading', { name: 'Create a poll' }); const question = screen.getByLabelText('Question');
+    await screen.findByRole('heading', { name: 'New poll in #lobby' }); const question = screen.getByLabelText('Question');
     fireEvent.change(question, { target: { value: '😀'.repeat(300) } }); expect(question).toHaveValue('😀'.repeat(300));
-    expect(screen.getByText('300 of 300 characters')).toBeInTheDocument();
-    fireEvent.change(question, { target: { value: '😀'.repeat(301) } }); expect(question).toHaveValue('😀'.repeat(300));
+    expect(screen.getByText('300 / 300')).toBeInTheDocument();
+    fireEvent.change(question, { target: { value: '😀'.repeat(301) } }); expect(question).toHaveValue('😀'.repeat(301)); expect(screen.getByText('301 / 300')).toHaveAttribute('data-danger', 'true');
     await user.click(screen.getByRole('button', { name: 'Cancel' })); await run; mounted.unmount();
   });
   it('closes a creation dialog when live send permission is revoked', async () => {
     const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
     let bits = PERM.sendMessages | PERM.manageMessages; const context = commandContext(f.client, 'b1'.repeat(16), { getCurrentBinding: () => ({ communityId: COMMUNITY, channelId: CHANNEL, bits }) });
     let run!: Promise<unknown>; act(() => { run = mounted.captured.value!.handlers['poll create']!({ commandId: 'poll create', args: { question: 'Q?', answers: 'A, B' } }, context); });
-    await screen.findByRole('heading', { name: 'Create a poll' }); bits = PERM.manageMessages;
-    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Create a poll' })).not.toBeInTheDocument());
+    await screen.findByRole('heading', { name: 'New poll in #lobby' }); bits = PERM.manageMessages;
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'New poll in #lobby' })).not.toBeInTheDocument());
     expect(await run).toMatchObject({ status: 'failure' }); expect(f.requests.some(row => row.operation === 70)).toBe(false); mounted.unmount();
   });
   it('replaces a vote with the selected answer and reports the returned count', async () => {
@@ -356,15 +371,17 @@ describe('poll card binding', () => {
     const user = userEvent.setup(); const f = utilityFixture();
     render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null, body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: 0 }));
     expect(await screen.findByRole('heading', { name: 'Lunch?' })).toBeInTheDocument(); expect(f.requests.some(row => row.operation === 71)).toBe(true);
-    await user.click(screen.getByRole('button', { name: '0 · Soup' })); expect(await screen.findByText('Ada')).toBeInTheDocument();
-    const choices = screen.getAllByRole('checkbox'); await user.click(choices[0]); await user.click(choices[1]); await user.click(screen.getByRole('button', { name: 'Submit vote' }));
+    await waitFor(() => expect(screen.getAllByRole('img', { name: 'Ada' })).toHaveLength(2));
+    const choices = screen.getAllByRole('button', { name: /^(Soup|Salad)/ }); await user.click(choices[0]); await user.click(choices[1]);
     await waitFor(() => expect(f.poll.myChoices).toEqual([0, 1]));
-    await user.click(screen.getByRole('button', { name: 'Withdraw vote' })); await waitFor(() => expect(f.poll.myChoices).toEqual([]));
+    await user.click(choices[0]); await user.click(choices[1]); await waitFor(() => expect(f.poll.myChoices).toEqual([]));
     await user.click(screen.getByRole('button', { name: 'Close poll' })); await waitFor(() => expect(f.poll.closed).toBe(true));
-    expect(f.requests.filter(row => row.operation === 73).map(row => row.requestId)).toHaveLength(2); expect(f.requests.some(row => row.operation === 74)).toBe(true);
+    expect(f.requests.filter(row => row.operation === 73).map(row => row.requestId)).toHaveLength(4); expect(f.requests.some(row => row.operation === 74)).toBe(true);
   });
   it('finishes an authenticated poll read when its next refresh tick arrives before the response', async () => {
     const f = utilityFixture(); const base = f.client.handler;
+    const real = ClientCore.createBotUtilities(f.client, COMMUNITY);
+    vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ ...real, get binding() { return real.binding; }, pollVoters: () => Promise.resolve({ voters: [], nextCursor: null }) });
     let tick!: () => void; let firstRead: (() => void) | undefined; let firstRequest: string | undefined;
     const setInterval = window.setInterval.bind(window);
     vi.spyOn(window, 'setInterval').mockImplementation(((fn: () => void, ms: number) => {
@@ -391,47 +408,41 @@ describe('poll card binding', () => {
     act(() => { tick(); });
     await waitFor(() => expect(f.requests.filter(row => row.operation === 71)).toHaveLength(2));
   });
-  it('shows an authenticated voter page after an ordinary poll refresh completes while it is pending', async () => {
-    const f = utilityFixture(); const base = f.client.handler; let release: (() => void) | undefined; let tick!: () => void;
+  it.each([false, true])('keeps or supersedes a voter preview across refresh (new revision: %s)', async changed => {
+    const f = utilityFixture(); const real = ClientCore.createBotUtilities(f.client, COMMUNITY);
+    let tick!: () => void; let release!: () => void; let started = false;
     const setInterval = window.setInterval.bind(window);
     vi.spyOn(window, 'setInterval').mockImplementation(((fn: () => void, ms: number) => {
       if (ms === 30_000) { tick = fn; return 900001; }
       return setInterval(fn, ms);
     }) as never);
-    f.client.handler = command => command.m === 'readBotInteractionResponses' && command.operations.includes(75)
-      ? new Promise(resolve => { release = () => { void base(command).then(resolve); }; }) : base(command);
-    const user = userEvent.setup();
-    render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
-      body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: 0 }));
-    await screen.findByRole('heading', { name: 'Lunch?' });
-    await user.click(screen.getByRole('button', { name: '0 · Soup' }));
-    await waitFor(() => expect(release).toBeDefined());
-    act(() => { tick(); });
-    await waitFor(() => expect(f.requests.filter(row => row.operation === 71)).toHaveLength(3));
-    act(() => { release!(); });
-    expect(await screen.findByText('Ada')).toBeInTheDocument();
-  });
-  it('keeps the latest requested answer when authenticated voter pages complete out of order', async () => {
-    const f = utilityFixture(); const base = f.client.handler;
-    f.client.handler = async command => {
-      const result = await base(command);
-      if (command.m === 'humanInteractionRequest' && command.operation === 75 && command.args[1] === 1)
-        f.responses.find(row => row.requestId === command.requestId)!.data = wire([1n, [], null]);
-      return result;
-    };
-    const real = ClientCore.createBotUtilities(f.client, COMMUNITY); const pending = new Map<number, () => void>();
-    vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ ...real, get binding() { return real.binding; }, pollVoters: async input => {
-      const page = await real.pollVoters(input); return new Promise(resolve => { pending.set(input.option, () => resolve(page)); });
+    vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ ...real, get binding() { return real.binding; }, pollVoters: async () => {
+      if (!started) { started = true; return new Promise(resolve => { release = () => resolve({ voters: [USER], nextCursor: null }); }); }
+      return { voters: [], nextCursor: null };
     } });
-    const user = userEvent.setup();
     render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
       body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: 0 }));
-    await screen.findByRole('heading', { name: 'Lunch?' });
-    await user.click(screen.getByRole('button', { name: '0 · Soup' })); await waitFor(() => expect(pending.has(0)).toBe(true));
-    await user.click(screen.getByRole('button', { name: '0 · Salad' })); await waitFor(() => expect(pending.has(1)).toBe(true));
-    act(() => { pending.get(1)!(); }); await screen.findByText('No votes yet.');
-    await act(async () => { pending.get(0)!(); await Promise.resolve(); });
-    expect(screen.queryByText('Ada')).not.toBeInTheDocument(); expect(screen.getByText('No votes yet.')).toBeInTheDocument();
+    await waitFor(() => expect(release).toBeDefined());
+    await act(async () => { await Promise.resolve(); });
+    if (changed) f.setPoll({ revision: 2n });
+    act(() => { tick(); });
+    await waitFor(() => expect(f.requests.filter(row => row.operation === 71)).toHaveLength(2));
+    await act(async () => { release(); await Promise.resolve(); });
+    if (changed) {
+      await screen.findByText('Open for 1 hour · pick any · 0 voters');
+      expect(screen.queryByRole('img', { name: 'Ada' })).not.toBeInTheDocument();
+    } else expect(await screen.findByRole('img', { name: 'Ada' })).toBeInTheDocument();
+  });
+  it('loads an independent first-page preview for every answer', async () => {
+    const f = utilityFixture(); const real = ClientCore.createBotUtilities(f.client, COMMUNITY);
+    vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ ...real, get binding() { return real.binding; }, pollVoters: async input => {
+      await real.pollVoters(input); return { voters: input.option === 0 ? [USER] : [], nextCursor: null };
+    } });
+    render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
+      body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: 0 }));
+    expect(await screen.findByRole('img', { name: 'Ada' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Soup/ }).querySelector('[role="img"]')).not.toBeNull();
+    expect(screen.getByRole('button', { name: /^Salad/ }).querySelector('[role="img"]')).toBeNull();
   });
   it.each(['access', 'owner', 'installation'] as const)('rejects a pending voter page after its %s context changes', async change => {
     const f = utilityFixture(); const base = f.client.handler; let replaced = false;
@@ -439,13 +450,12 @@ describe('poll card binding', () => {
       ? Promise.resolve({ installationId: 'ab'.repeat(16), botUserId: BOT, state: 3, revision: '1' }) : base(command);
     const real = ClientCore.createBotUtilities(f.client, COMMUNITY); let release: (() => void) | undefined;
     vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ ...real, get binding() { return real.binding; }, pollVoters: async input => {
-      const page = await real.pollVoters(input); return new Promise(resolve => { release = () => resolve(page); });
+      const page = await real.pollVoters(input); if (input.option !== 0) return page; return new Promise(resolve => { release = () => resolve(page); });
     } });
-    const user = userEvent.setup();
     render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
       body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: 0 }));
     await screen.findByRole('heading', { name: 'Lunch?' });
-    await user.click(screen.getByRole('button', { name: '0 · Soup' })); await waitFor(() => expect(release).toBeDefined());
+     await waitFor(() => expect(release).toBeDefined());
     if (change === 'access') {
       const access = f.client.get(`permissions:${COMMUNITY}`)!;
       f.client.publish(`permissions:${COMMUNITY}`, { ...access, loaded: false });
@@ -453,7 +463,7 @@ describe('poll card binding', () => {
     } else if (change === 'owner') f.client.publish('account', { ...f.client.get('account')!, deviceId: 'ac'.repeat(16) });
     else replaced = true;
     await act(async () => { release!(); await Promise.resolve(); });
-    expect(screen.queryByText('Ada')).not.toBeInTheDocument();
+    expect(screen.queryByRole('img', { name: 'Ada' })).not.toBeInTheDocument();
   });
   it('retries an uncertain poll vote with the same request id', async () => {
     const user = userEvent.setup(); const f = utilityFixture();
@@ -461,14 +471,14 @@ describe('poll card binding', () => {
     const view = render(createElement(PollCard, props));
     expect(await screen.findByRole('heading', { name: 'Lunch?' })).toBeInTheDocument();
     f.failNext(73, false);
-    await user.click(screen.getAllByRole('checkbox')[0]); await user.click(screen.getByRole('button', { name: 'Submit vote' }));
+    await user.click(screen.getAllByRole('button', { name: /^(Soup|Salad)/ })[0]);
     await screen.findByText('The vote result is uncertain. Refresh the poll before trying again.');
     const first = f.requests.find(row => row.operation === 73)!;
     view.rerender(createElement(PollCard, { ...props, bits: PERM.viewChannel | PERM.sendMessages }));
-    expect(screen.getAllByRole('checkbox')[0]).toBeChecked(); view.unmount();
+    expect(screen.getAllByRole('button', { name: /^(Soup|Salad)/ })[0]).toHaveAttribute('aria-pressed', 'true'); view.unmount();
     render(createElement(PollCard, { ...props, bits: PERM.viewChannel | PERM.sendMessages }));
-    expect(await screen.findByRole('button', { name: 'Retry vote' })).toBeEnabled(); expect(screen.getAllByRole('checkbox')[0]).toBeChecked();
-    await user.click(screen.getByRole('button', { name: 'Retry vote' }));
+    expect(await screen.findByRole('button', { name: /^Soup/ })).toBeEnabled(); expect(screen.getAllByRole('button', { name: /^(Soup|Salad)/ })[0]).toHaveAttribute('aria-pressed', 'true');
+    await user.click(screen.getByRole('button', { name: /^Soup/ }));
     await screen.findByText('The vote result is uncertain. Refresh the poll before trying again.');
     const mutations = f.requests.filter(row => row.operation === 73);
     expect(mutations.length).toBeGreaterThan(0); expect(mutations.every(row => row.requestId === first.requestId)).toBe(true);
@@ -483,12 +493,12 @@ describe('poll card binding', () => {
     const user = userEvent.setup(); const props = { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
       body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: PERM.viewChannel | PERM.sendMessages };
     const view = render(createElement(PollCard, props)); await screen.findByRole('heading', { name: 'Lunch?' }); f.failNext(73, false);
-    await user.click(screen.getAllByRole('checkbox')[0]); await user.click(screen.getByRole('button', { name: 'Submit vote' }));
+    await user.click(screen.getAllByRole('button', { name: /^(Soup|Salad)/ })[0]);
     await screen.findByText('The vote result is uncertain. Refresh the poll before trying again.');
-    const originalId = f.requests.find(row => row.operation === 73)!.requestId; ready = false; await user.click(screen.getByRole('button', { name: 'Retry vote' }));
+    const originalId = f.requests.find(row => row.operation === 73)!.requestId; ready = false; await user.click(screen.getByRole('button', { name: /^Soup/ }));
     await waitFor(() => expect(screen.queryByRole('heading', { name: 'Lunch?' })).not.toBeInTheDocument());
     ready = true; act(() => { refresh(); }); await screen.findByRole('heading', { name: 'Lunch?' });
-    await user.click(screen.getByRole('button', { name: 'Retry vote' }));
+    await user.click(screen.getByRole('button', { name: /^Soup/ }));
     expect(f.requests.filter(row => row.operation === 73).every(row => row.requestId === originalId)).toBe(true); view.unmount();
   });
   it('reconciles a threaded poll from its authoritative host items, independent of quote metadata', async () => {
@@ -497,7 +507,7 @@ describe('poll card binding', () => {
     const binding = { communityId: COMMUNITY, channelId: CHANNEL, threadId: rootId, bits: PERM.sendMessages | PERM.viewChannel };
     const context = commandContext(f.client, requestId, { binding, getCurrentBinding: () => binding }); const invocation = { commandId: 'poll create', args: { question: 'Thread poll?', answers: 'A, B' } };
     let run!: Promise<unknown>; act(() => { run = mounted.captured.value!.handlers['poll create']!(invocation, context); });
-    await screen.findByRole('heading', { name: 'Create a poll' }); f.failNext(70); await user.click(screen.getByRole('button', { name: 'Save' })); expect(await run).toMatchObject({ status: 'uncertain' });
+    await screen.findByRole('heading', { name: 'New poll in #lobby' }); f.failNext(70); await user.click(screen.getByRole('button', { name: 'Post poll' })); expect(await run).toMatchObject({ status: 'uncertain' });
     const message = { key: 's10', state: 'ok' as const, reason: '', senderUser: BOT, senderDevice: null, own: false, web: false, bot: true, ts: 1_800_000_000,
       body: `Thread poll?\n[dilla-poll:v1:${requestId}]`, msgId: 'be'.repeat(16), seq: '10', edited: false,
       reply: { msgId: 'bf'.repeat(16), senderUser: BOT, seq: null, excerpt: 'quoted from another thread', state: 'ok' as const, threadRoot: 'c0'.repeat(16) },
@@ -535,19 +545,18 @@ describe('utility outcome and privacy regressions', () => {
     const user = userEvent.setup(); const view = render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
       body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: PERM.viewChannel | PERM.sendMessages }));
     await screen.findByRole('heading', { name: 'Lunch?' }); f.failNext(operation, false);
-    if (operation === 73) await user.click(screen.getAllByRole('checkbox')[0]);
-    await user.click(screen.getByRole('button', { name: operation === 73 ? 'Submit vote' : 'Close poll' }));
+    await user.click(screen.getByRole('button', { name: operation === 73 ? /^Soup/ : 'Close poll' }));
     await waitFor(() => expect(uncertain && failedRead).toBe(true));
     const originalId = f.requests.find(row => row.operation === operation)!.requestId;
     act(() => { refresh(); });
-    const retry = await screen.findByRole('button', { name: operation === 73 ? 'Retry vote' : 'Retry close' });
-    expect(retry).toBeEnabled(); expect(screen.getAllByRole('checkbox')[0]).toBeDisabled();
-    if (operation === 73) expect(screen.getAllByRole('checkbox')[0]).toBeChecked();
+    const retry = await screen.findByRole('button', { name: operation === 73 ? /^Soup/ : 'Close poll' });
+    expect(retry).toBeEnabled(); expect(screen.getAllByRole('button', { name: /^(Soup|Salad)/ })[0])[operation === 73 ? 'toBeEnabled' : 'toBeDisabled']();
+    if (operation === 73) expect(screen.getAllByRole('button', { name: /^(Soup|Salad)/ })[0]).toHaveAttribute('aria-pressed', 'true');
     corrupt = false; await user.click(retry);
     // The transport retains its original undecodable receipt even after the wire recovers.
     await waitFor(() => expect(retry).toBeEnabled());
     expect(attemptedIds).toEqual([originalId, originalId]);
-    expect(screen.getAllByRole('checkbox')[0]).toBeDisabled();
+    expect(screen.getAllByRole('button', { name: /^(Soup|Salad)/ })[0])[operation === 73 ? 'toBeEnabled' : 'toBeDisabled']();
     view.unmount();
   });
 
@@ -563,14 +572,13 @@ describe('utility outcome and privacy regressions', () => {
     const user = userEvent.setup(); const view = render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
       body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: PERM.viewChannel | PERM.sendMessages }));
     await screen.findByRole('heading', { name: 'Lunch?' });
-    if (operation === 73) await user.click(screen.getAllByRole('checkbox')[0]);
-    await user.click(screen.getByRole('button', { name: operation === 73 ? 'Submit vote' : 'Close poll' }));
+    await user.click(screen.getByRole('button', { name: operation === 73 ? /^Soup/ : 'Close poll' }));
     await waitFor(() => expect(failedRead).toBe(true));
-    await waitFor(() => expect(screen.getAllByRole('checkbox')[0]).toBeEnabled());
+    await waitFor(() => expect(screen.getAllByRole('button', { name: /^(Soup|Salad)/ })[0]).toBeEnabled());
     expect(screen.queryByRole('button', { name: /Retry/ })).not.toBeInTheDocument();
     act(() => { refresh(); });
-    if (operation === 74) await screen.findByText('Poll closed');
-    else await waitFor(() => expect(screen.getByRole('button', { name: '1 · Soup' })).toBeInTheDocument());
+    if (operation === 74) await screen.findByText('CLOSED');
+    else await waitFor(() => expect(screen.getByRole('button', { name: /^Soup/ })).toBeInTheDocument());
     expect(f.requests.filter(row => row.operation === operation)).toHaveLength(1); view.unmount();
   });
   it('keeps a typed accepted close definitive when the following capability check fails', async () => {
@@ -581,7 +589,7 @@ describe('utility outcome and privacy regressions', () => {
     const user = userEvent.setup(); const view = render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
       body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: PERM.viewChannel | PERM.sendMessages }));
     await screen.findByRole('heading', { name: 'Lunch?' }); await user.click(screen.getByRole('button', { name: 'Close poll' }));
-    await screen.findByText('Poll closed'); expect(screen.queryByRole('button', { name: /Retry/ })).not.toBeInTheDocument();
+    await screen.findByText('CLOSED'); expect(screen.queryByRole('button', { name: /Retry/ })).not.toBeInTheDocument();
     expect(f.requests.filter(row => row.operation === 74)).toHaveLength(1); view.unmount();
   });
   it.each([73, 74] as const)('keeps operation %s uncertain across unrelated typed capability statuses', async operation => {
@@ -592,18 +600,17 @@ describe('utility outcome and privacy regressions', () => {
     const user = userEvent.setup(); const view = render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
       body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: PERM.viewChannel | PERM.sendMessages }));
     await screen.findByRole('heading', { name: 'Lunch?' }); f.failNext(operation, false);
-    if (operation === 73) await user.click(screen.getAllByRole('checkbox')[0]);
-    await user.click(screen.getByRole('button', { name: operation === 73 ? 'Submit vote' : 'Close poll' }));
+    await user.click(screen.getByRole('button', { name: operation === 73 ? /^Soup/ : 'Close poll' }));
     await screen.findByText('The vote result is uncertain. Refresh the poll before trying again.');
     const original = f.requests.find(row => row.operation === operation)!.requestId;
     for (const status of [2, 3, 4]) {
-      rejectedStatus = status; await user.click(screen.getByRole('button', { name: operation === 73 ? 'Retry vote' : 'Retry close' }));
+      rejectedStatus = status; await user.click(screen.getByRole('button', { name: operation === 73 ? /^Soup/ : 'Close poll' }));
       await waitFor(() => expect(screen.queryByRole('heading', { name: 'Lunch?' })).not.toBeInTheDocument());
       rejectedStatus = null; act(() => { refresh(); }); await screen.findByRole('heading', { name: 'Lunch?' });
-      expect(screen.getByRole('button', { name: operation === 73 ? 'Retry vote' : 'Retry close' })).toBeEnabled();
-      if (operation === 73) expect(screen.getAllByRole('checkbox')[0]).toBeChecked();
+      expect(screen.getByRole('button', { name: operation === 73 ? /^Soup/ : 'Close poll' })).toBeEnabled();
+      if (operation === 73) expect(screen.getAllByRole('button', { name: /^(Soup|Salad)/ })[0]).toHaveAttribute('aria-pressed', 'true');
     }
-    await user.click(screen.getByRole('button', { name: operation === 73 ? 'Retry vote' : 'Retry close' }));
+    await user.click(screen.getByRole('button', { name: operation === 73 ? /^Soup/ : 'Close poll' }));
     expect(f.requests.filter(row => row.operation === operation).every(row => row.requestId === original)).toBe(true); view.unmount();
   });
   it.each(['reminders list', 'reminders cancel', 'reminders dismiss', 'partial list'] as const)('%s validates a superseded snapshot after community revocation', async action => {
@@ -640,10 +647,9 @@ describe('utility outcome and privacy regressions', () => {
     const user = userEvent.setup(); const view = render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
       body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: PERM.viewChannel | PERM.sendMessages }));
     await screen.findByRole('heading', { name: 'Lunch?' }); f.failNext(operation, false);
-    if (operation === 73) await user.click(screen.getAllByRole('checkbox')[0]);
-    await user.click(screen.getByRole('button', { name: operation === 73 ? 'Submit vote' : 'Close poll' }));
+    await user.click(screen.getByRole('button', { name: operation === 73 ? /^Soup/ : 'Close poll' }));
     await screen.findByText('The vote result is uncertain. Refresh the poll before trying again.');
-    expect(screen.getByRole('button', { name: operation === 73 ? 'Retry vote' : 'Retry close' })).toBeEnabled(); view.unmount();
+    expect(screen.getByRole('button', { name: operation === 73 ? /^Soup/ : 'Close poll' })).toBeEnabled(); view.unmount();
   });
   it.each([73, 74] as const)('releases a fresh operation %s when its preflight proves nothing was dispatched', async operation => {
     const f = utilityFixture(); const real = ClientCore.createBotUtilities(f.client, COMMUNITY); let reject = false;
@@ -654,8 +660,8 @@ describe('utility outcome and privacy regressions', () => {
     const user = userEvent.setup(); const view = render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
       body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: PERM.viewChannel | PERM.sendMessages }));
     await screen.findByRole('heading', { name: 'Lunch?' }); reject = true;
-    await user.click(screen.getByRole('button', { name: operation === 73 ? 'Submit vote' : 'Close poll' }));
-    await waitFor(() => expect(screen.getAllByRole('checkbox')[0]).toBeEnabled());
+    await user.click(screen.getByRole('button', { name: operation === 73 ? /^Soup/ : 'Close poll' }));
+    await waitFor(() => expect(screen.getAllByRole('button', { name: /^(Soup|Salad)/ })[0]).toBeEnabled());
     expect(screen.queryByRole('button', { name: /Retry/ })).not.toBeInTheDocument(); expect(f.requests.some(row => row.operation === operation)).toBe(false); view.unmount();
   });
   it('keeps an accepted vote definitive when its following capability check fails', async () => {
@@ -665,9 +671,9 @@ describe('utility outcome and privacy regressions', () => {
       pollVote: async input => { const result = await real.pollVote(input); reject = true; return result; } });
     const user = userEvent.setup(); const view = render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
       body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: PERM.viewChannel | PERM.sendMessages }));
-    await screen.findByRole('heading', { name: 'Lunch?' }); await user.click(screen.getAllByRole('checkbox')[0]); await user.click(screen.getByRole('button', { name: 'Submit vote' }));
-    await waitFor(() => expect(screen.getAllByRole('checkbox')[0]).toBeEnabled()); expect(screen.getAllByRole('checkbox')[0]).toBeChecked();
-    await user.click(screen.getAllByRole('checkbox')[1]); await user.click(screen.getByRole('button', { name: 'Submit vote' }));
+    await screen.findByRole('heading', { name: 'Lunch?' }); await user.click(screen.getAllByRole('button', { name: /^(Soup|Salad)/ })[0]);
+    await waitFor(() => expect(screen.getAllByRole('button', { name: /^(Soup|Salad)/ })[0]).toBeEnabled()); expect(screen.getAllByRole('button', { name: /^(Soup|Salad)/ })[0]).toHaveAttribute('aria-pressed', 'true');
+    await user.click(screen.getAllByRole('button', { name: /^(Soup|Salad)/ })[1]);
     await waitFor(() => expect(f.poll.myChoices).toEqual([0, 1])); expect(new Set(f.requests.filter(row => row.operation === 73).map(row => row.requestId)).size).toBe(2); view.unmount();
   });
   it.each(['disabled', 'reinstalled', 'device'] as const)('revalidates %s before returning an earlier community reminder page', async change => {
@@ -701,11 +707,11 @@ describe('utility outcome and privacy regressions', () => {
       body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: PERM.viewChannel | PERM.sendMessages }));
     await screen.findByRole('heading', { name: 'Lunch?' });
     for (const terminal of [2, 3, 4]) {
-      status = terminal; await user.click(screen.getByRole('button', { name: operation === 73 ? 'Submit vote' : 'Close poll' }));
-      await waitFor(() => expect(screen.getAllByRole('checkbox')[0]).toBeEnabled());
+      status = terminal; await user.click(screen.getByRole('button', { name: operation === 73 ? /^Soup/ : 'Close poll' }));
+      await waitFor(() => expect(screen.getAllByRole('button', { name: /^(Soup|Salad)/ })[0]).toBeEnabled());
       expect(screen.queryByRole('button', { name: /Retry/ })).not.toBeInTheDocument();
     }
-    status = null; await user.click(screen.getByRole('button', { name: operation === 73 ? 'Submit vote' : 'Close poll' }));
+    status = null; await user.click(screen.getByRole('button', { name: operation === 73 ? /^Soup/ : 'Close poll' }));
     await waitFor(() => expect(f.requests.some(row => row.operation === operation)).toBe(true));
     expect(new Set(ids).size).toBe(3); expect(ids).not.toContain(f.requests.find(row => row.operation === operation)!.requestId); view.unmount();
   });

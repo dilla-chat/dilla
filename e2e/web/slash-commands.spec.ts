@@ -360,21 +360,24 @@ async function stopAppBeforeHost(page: Page, host: StartedHost | null): Promise<
 }
 
 async function openPollDialog(page: Page, box: Locator, question: string, answers = 'Soup, Salad'): Promise<void> {
-  // The form command opens its dialog as soon as the full invocation enters command mode.
-  await box.fill(`/poll create question:"${question}" answers:"${answers}" multiple:on`);
-  const dialog = page.getByRole('dialog', { name: 'Create a poll', exact: true });
+  await chooseCommand(box, page, 'poll create');
+  const dialog = page.getByRole('dialog', { name: /^New poll in #/ });
   await expect(dialog).toBeVisible({ timeout: BOT_WAIT });
-  await expect(dialog.getByRole('textbox', { name: 'Question', exact: true })).toHaveValue(question);
-  await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+  await dialog.getByRole('textbox', { name: 'Question', exact: true }).fill(question);
+  const choices = answers.split(',').map(answer => answer.trim());
+  for (const [index, answer] of choices.entries()) {
+    if (index >= 2) await dialog.getByRole('button', { name: 'Add answer', exact: true }).click();
+    await dialog.getByRole('textbox', { name: `Answer ${index + 1}`, exact: true }).fill(answer);
+  }
+  await dialog.getByRole('button', { name: 'Post poll', exact: true }).click();
   await expect(dialog).toBeHidden({ timeout: BOT_WAIT });
   await leaveCommandMode(page);
 }
 
 async function pollOption(card: Locator, answer: string): Promise<Locator> {
-  // Shipping labels include the live vote count in the checkbox's accessible name (for
-  // example, "Soup 0"). Match the exact answer plus its numeric count.
-  const option = card.getByRole('checkbox', { name: new RegExp(`^${answer}\\s+\\d+$`, 'u') });
+  const option = card.getByRole('button', { name: new RegExp(`^${answer}\\b`, 'u') });
   await expect(option).toHaveCount(1, { timeout: WAIT });
+  await expect(option).toBeEnabled({ timeout: BOT_WAIT });
   return option;
 }
 
@@ -573,26 +576,22 @@ test('polls publish in channels and threads, accept real votes, reject forged ma
       return reattachedTarget !== undefined && leftAt >= 0 && observer!.transitions.slice(leftAt + 1)
         .some(entry => entry.target === reattachedTarget && entry.intersecting);
     }), { timeout: WAIT, message: 'the browser IntersectionObserver must reactivate the card on return' }).toBe(true);
-    await (await pollOption(memberCard, 'Soup')).check();
-    await memberCard.getByRole('button', { name: 'Submit vote', exact: true }).click();
-    const soupResults = memberCard.getByRole('button', { name: /1 · Soup/ });
+    await (await pollOption(memberCard, 'Soup')).click();
+    const soupResults = await pollOption(memberCard, 'Soup');
     await expect(soupResults).toBeVisible({ timeout: BOT_WAIT });
-    await soupResults.click();
-    try { await expect(memberCard).toContainText('Bea', { timeout: BOT_WAIT }); }
+    await expect(soupResults).toHaveAttribute('aria-pressed', 'true', { timeout: BOT_WAIT });
+    try { await expect(memberCard.getByRole('img', { name: 'Bea' })).toBeVisible({ timeout: BOT_WAIT }); }
     catch (error) {
       const evidence = { card: await memberCard.evaluate(element => (element as HTMLElement).outerHTML), worker: await pollFailureEvidence(member, question) };
       await testInfo.attach('slash-poll-voters.json', { body: Buffer.from(JSON.stringify(evidence, null, 2)), contentType: 'application/json' });
       throw error;
     }
-    await (await pollOption(memberCard, 'Soup')).uncheck();
-    await (await pollOption(memberCard, 'Salad')).check();
-    const submitChangedVote = memberCard.getByRole('button', { name: 'Submit vote', exact: true });
-    await expect(submitChangedVote).toBeEnabled({ timeout: BOT_WAIT });
-    await submitChangedVote.click();
-    await expect(memberCard.getByRole('button', { name: /1 · Salad/ })).toBeVisible({ timeout: BOT_WAIT });
-    await expect(memberCard).toContainText('Bea', { timeout: BOT_WAIT });
-    await memberCard.getByRole('button', { name: 'Withdraw vote', exact: true }).click();
-    await expect(memberCard.getByRole('button', { name: /1 · Salad/ })).toHaveCount(0, { timeout: BOT_WAIT });
+    await (await pollOption(memberCard, 'Salad')).click();
+    await expect(await pollOption(memberCard, 'Salad')).toHaveAttribute('aria-pressed', 'true', { timeout: BOT_WAIT });
+    await expect(await pollOption(memberCard, 'Soup')).toHaveAttribute('aria-pressed', 'false', { timeout: BOT_WAIT });
+    await expect(memberCard.getByRole('img', { name: 'Bea' })).toBeVisible({ timeout: BOT_WAIT });
+    await (await pollOption(memberCard, 'Salad')).click();
+    await expect(await pollOption(memberCard, 'Salad')).toHaveAttribute('aria-pressed', 'false', { timeout: BOT_WAIT });
 
     const rootText = `Poll thread ${Date.now()}`;
     await sendText(page, GENERAL, rootText);
@@ -609,7 +608,7 @@ test('polls publish in channels and threads, accept real votes, reject forged ma
 
     await thread.getByRole('button', { name: copy('thread.close'), exact: true }).click();
     await card.getByRole('button', { name: 'Close poll', exact: true }).click();
-    await expect(card).toContainText('Poll closed', { timeout: BOT_WAIT });
+    await expect(card).toContainText('CLOSED', { timeout: BOT_WAIT });
     const communityId = await page.evaluate(() => {
       const trace = (window as unknown as { __slashWorkerTrace?: { calls: unknown[] } }).__slashWorkerTrace;
       const request = trace?.calls.map(value => value as { command?: { m?: string; operation?: number; communityId?: string } })
@@ -628,7 +627,7 @@ test('polls publish in channels and threads, accept real votes, reject forged ma
     if (afterEnable.installationId === beforeDisable.installationId && afterEnable.botUserId === beforeDisable.botUserId) {
       // Re-enabling the same authenticated installation keeps this closed backing poll valid.
       await expect(card).toBeVisible({ timeout: BOT_WAIT });
-      await expect(card).toContainText('Poll closed', { timeout: BOT_WAIT });
+      await expect(card).toContainText('CLOSED', { timeout: BOT_WAIT });
     } else {
       await expect(card).toHaveCount(0, { timeout: BOT_WAIT });
     }

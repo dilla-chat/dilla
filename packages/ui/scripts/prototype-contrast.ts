@@ -7,6 +7,9 @@
 export const CONVERSATION_PROTOTYPE_CONTRAST: readonly { selector: string; simple: string; why: string }[] = [
   // Wave B Task 6: the phone’s quiet time, exactly as specified.
   { selector: '.d-bot-result__time', simple: '.d-bot-result__time', why: 'a private result phone time in #636A75 on bg (3.65:1)' },
+  // Wave B Task 7: the poll dialog's prototype counter and inactive Post poll text (Ruling Y).
+  { selector: '.d-poll-dialog__counter[data-danger="false"]', simple: '.d-poll-dialog__counter', why: 'the poll question counter in #636A75 on #0D1014 (3.49:1)' },
+  { selector: '.d-poll-dialog__post[data-ready="false"]', simple: '.d-poll-dialog__post', why: 'the inactive Post poll text in #767D89 on #1A1E25 (4.03:1)' },
   { selector: '.d-message-row__gutter', simple: '.d-message-row__gutter', why: 'the time gutter in #5C636E on bg (3.28:1)' },
   { selector: '.d-message-row__time', simple: '.d-message-row__time', why: 'a phone row\'s time beside the name in #636A75 (3.65:1)' },
   { selector: '.d-composer[data-empty="true"] .d-composer__send', simple: '.d-composer__send', why: 'the empty composer\'s send in #5C636E on #171B22 (2.84:1)' },

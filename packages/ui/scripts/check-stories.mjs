@@ -65,6 +65,46 @@ try {
           new Promise(resolve => setTimeout(resolve, 2_000)),
         ]));
         await checkStory(page, story);
+        // Task 7: the poll's exact prototype geometry and winner style (Ruling C).
+        if (story.id.startsWith('conversation-pollcard--')) {
+          const got = await page.evaluate(() => {
+            const card = document.querySelector('.d-poll-card');
+            const option = card.querySelector('.d-poll-card__option');
+            const text = option.querySelector('.d-poll-card__text');
+            const avatar = card.querySelector('.d-avatar');
+            return { width: card.getBoundingClientRect().width, max: getComputedStyle(card).maxWidth, border: getComputedStyle(card).borderColor,
+              row: option.getBoundingClientRect().height, weight: getComputedStyle(text).fontWeight,
+              avatar: avatar.getBoundingClientRect().width, fill: getComputedStyle(option.querySelector('.d-poll-card__fill')).backgroundColor };
+          });
+          if (got.width !== 466 || got.max !== '440px' || got.border !== 'rgb(37, 42, 51)' || got.row !== 36 || got.avatar !== 18) throw new Error(`PollCard geometry: ${JSON.stringify(got)}`);
+          if (got.weight !== (story.id.endsWith('--closed') ? '700' : '400')) throw new Error(`PollCard winner weight: ${JSON.stringify(got)}`);
+          const fill = story.id.endsWith('--closed') ? 'rgba(124, 255, 142, 0.12)' : story.id.endsWith('--voted') || story.id.endsWith('--multi-choice') ? 'rgba(90, 168, 230, 0.2)' : 'rgba(255, 255, 255, 0.05)';
+          if (got.fill !== fill) throw new Error(`PollCard fill: ${JSON.stringify(got)}`);
+          if (story.id.endsWith('--closed')) {
+            await page.locator('.d-poll-card__option').first().hover();
+            await page.waitForFunction(() => getComputedStyle(document.querySelector('.d-poll-card__option')).borderColor === 'rgb(37, 42, 51)', undefined, { timeout: 2000 });
+            const border = await page.locator('.d-poll-card__option').first().evaluate(el => getComputedStyle(el).borderColor);
+            if (border !== 'rgb(37, 42, 51)') throw new Error(`PollCard closed winner hover: ${border}`);
+          }
+        }
+        if (story.id.startsWith('form-polldialog--')) {
+          const check = async phone => {
+            const got = await page.evaluate(() => {
+              const dialog = document.querySelector('.d-poll-dialog dialog');
+              const input = dialog.querySelector('input');
+              const selected = dialog.querySelector('[aria-pressed="true"]');
+              return { width: dialog.getBoundingClientRect().width, top: dialog.getBoundingClientRect().top,
+                font: getComputedStyle(input).fontSize, weight: getComputedStyle(input).fontWeight, height: input.getBoundingClientRect().height,
+                answer: dialog.querySelector('.d-poll-dialog__answer input').getBoundingClientRect().height, header: dialog.querySelector('.d-dialog__head').getBoundingClientRect().height,
+                field: getComputedStyle(input).backgroundColor, segment: getComputedStyle(selected.parentElement).backgroundColor, selected: getComputedStyle(selected).backgroundColor, footerButtons: Array.from(dialog.querySelectorAll('.d-dialog__footer button')).filter(b => getComputedStyle(b).display !== 'none').length };
+            });
+            if (got.width !== (phone ? 366 : 520) || Math.abs(got.top - (phone ? 20 : page.viewportSize().height * .12)) > 1 || got.height !== 40 || got.answer !== 36 || got.header !== 57 || got.weight !== '400' || got.font !== (phone ? '16px' : '13px') || got.field !== 'rgb(15, 18, 22)' || got.segment !== 'rgb(15, 18, 22)' || got.selected !== 'rgb(90, 168, 230)' || got.footerButtons !== 2) throw new Error(`PollDialog geometry: ${JSON.stringify(got)}`);
+          };
+          await check(false);
+          await page.setViewportSize({ width: 390, height: 844 });
+          await check(true);
+        }
+
         // Task 10b fix round 1: a press on the sensitivity meter sets the value under the pointer (the slider's thumb is 2px,
         // so the native value and the drawn line agree at every point, ends included).
         if (story.id === 'settings-sensitivitymeter--manual-drag') {

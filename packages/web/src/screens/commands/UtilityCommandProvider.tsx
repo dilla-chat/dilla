@@ -1,12 +1,11 @@
 import { createElement, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
-import { Button, Dialog, RemindersPopover, type ReminderItem } from '@dilla/ui';
+import { Button, PollDialog, RemindersPopover, showToast, type PollDraft, type ReminderItem } from '@dilla/ui';
 import { BotUtilitiesError, BotUtilitiesProviderUnavailableError, BotUtilitiesStatusError, BotUtilitiesUncertainMutationError,
   createBotUtilities, encode, fromHex, parseReminderTime, resolveReminderTimeCandidate,
   type BotUtilities, type CoreClient, type ReminderSummary, type ReminderTimeResult } from '@dilla/client-core';
 import { channelBitsOf, PERM, type CommandContext as Binding, type CommandInvocation, type CommandResult } from '@dilla/client-core';
 import { BOT_ACCOUNT_KIND } from '../bot-member.ts';
 import { shouldNotify, notificationCtor } from '../../notify.ts';
-import { t } from '../../strings/index.ts';
 import type { CommandExecutionContext, CommandProviderHandlers, CommandSuggestion, CommandSuggestionProvider } from './command-types.ts';
 import { utilityText as copy } from './utility-copy.ts';
 import './UtilityCards.css';
@@ -102,45 +101,39 @@ export function reminderFromArgs(args: Readonly<Record<string, string>>, now: Da
   return { value: { when: args.when ?? '', text, timezone, result } };
 }
 
-export function UtilityCommandDialogs({ dialog }: { dialog: UtilityDialogState | null }): React.JSX.Element | null {
+export function UtilityCommandDialogs({ dialog, channelName, botName }: { dialog: UtilityDialogState | null; channelName: string; botName: string }): React.JSX.Element | null {
   useEffect(() => {
     if (dialog === null) return;
     const timer = window.setInterval(() => { if (!dialog.isCurrent()) dialog.onCancel(); }, 100);
     return () => window.clearInterval(timer);
   }, [dialog]);
   if (dialog === null) return null;
-  return <PollCreateDialog key="poll" dialog={dialog} />;
+  return <PollEditor key="poll" dialog={dialog} channelName={channelName} botName={botName} />;
 }
-function PollCreateDialog({ dialog }: { dialog: Extract<UtilityDialogState, { kind: 'poll' }> }): React.JSX.Element {
-  const [question, setQuestion] = useState(dialog.question); const [answers, setAnswers] = useState(dialog.answers);
-  const [multi, setMulti] = useState(dialog.multi); const [duration, setDuration] = useState(dialog.duration); const [error, setError] = useState('');
-  const lines = answers.split(/\r?\n/u).map(value => value.trim());
-  let bytes: number | null = null; let aggregateError = false;
-  if (duration in DURATIONS && question.trim() !== '' && lines.length >= 2 && lines.length <= 10 && lines.every(value => value !== '')) {
-    try { bytes = encode([1n, fromHex(dialog.channelId), dialog.threadId === null ? null : fromHex(dialog.threadId), question.trim(), lines, multi ? 1n : 0n, BigInt(DURATIONS[duration]) ]).length; aggregateError = bytes > 1800; }
-    catch { aggregateError = new TextEncoder().encode(question + lines.join('')).length > 1600; }
-  }
-  const liveError = question.trim() === '' || Array.from(question).length > 300 || lines.length < 2 || lines.length > 10
-    || lines.some(value => value === '' || Array.from(value).length > 100) || new Set(lines).size !== lines.length || !(duration in DURATIONS)
-    ? copy('poll.validation') : aggregateError ? copy('poll.aggregateValidation') : '';
+function PollEditor({ dialog, channelName, botName }: { dialog: UtilityDialogState; channelName: string; botName: string }): React.JSX.Element {
+  const [value, setValue] = useState<PollDraft>(() => {
+    const answers = dialog.answers ? dialog.answers.split(/\r?\n/u) : ['', ''];
+    while (answers.length < 2) answers.push('');
+    return { question: dialog.question, answers, multi: dialog.multi, duration: (dialog.duration in DURATIONS ? dialog.duration : '24h') as PollDraft['duration'] };
+  });
+  const [error, setError] = useState<string | null>(null);
   const submit = () => {
-    if (liveError !== '') { setError(liveError); return; }
-    dialog.onSubmit({ question: question.trim(), answers: lines, multi, duration: DURATIONS[duration] });
+    const question = value.question.trim(); const answers = value.answers.map(answer => answer.trim()).filter(Boolean);
+    let invalid: string | null = question === '' ? copy('poll.questionRequired') : Array.from(question).length > 300 ? copy('poll.questionLong')
+      : answers.length < 2 ? copy('poll.answersRequired') : answers.some(answer => Array.from(answer).length > 100) ? copy('poll.answerLong')
+      : answers.length > 10 || new Set(answers).size !== answers.length ? copy('poll.duplicates') : null;
+    if (invalid === null) {
+      let aggregateError = false;
+      try { aggregateError = encode([1n, fromHex(dialog.channelId), dialog.threadId === null ? null : fromHex(dialog.threadId), question, answers, value.multi ? 1n : 0n, BigInt(DURATIONS[value.duration])]).length > 1800; }
+      catch { aggregateError = new TextEncoder().encode(question + answers.join('')).length > 1600; }
+      if (aggregateError) invalid = copy('poll.aggregateValidation');
+    }
+    setError(invalid);
+    if (invalid === null) dialog.onSubmit({ question, answers, multi: value.multi, duration: DURATIONS[value.duration] });
   };
-  return <Dialog open title={copy('poll.createTitle')} closeLabel={t('dialog.close')} onClose={() => dialog.onCancel()}
-    footer={<><Button onClick={() => dialog.onCancel()}>{t('chperm.cancel')}</Button><Button variant="accent" onClick={submit}>{t('botCommand.save')}</Button></>}>
-    <label>{copy('poll.question')}<textarea value={question} onChange={event => {
-      const next = event.currentTarget.value;
-      if (Array.from(next).length <= 300) setQuestion(next);
-    }} data-autofocus /></label>
-    <p>{copy('poll.charCount', { current: Array.from(question).length, limit: 300 })}</p>
-    <label>{copy('poll.answers')}<textarea value={answers} onChange={event => setAnswers(event.currentTarget.value)} /></label><p>{copy('poll.answerHelp')}</p>
-    <p>{copy('poll.byteCount', { current: bytes ?? new TextEncoder().encode(question + lines.join('')).length, limit: 1800 })}{aggregateError ? <span role="alert">{copy('poll.aggregateLimit')}</span> : null}</p>
-    <label><input type="checkbox" checked={multi} onChange={event => setMulti(event.currentTarget.checked)} />{copy('poll.multiple')}</label>
-    <label>{copy('poll.duration')}<select value={duration} onChange={event => setDuration(event.currentTarget.value)}>
-      {Object.keys(DURATIONS).map(value => <option key={value} value={value}>{value}</option>)}</select></label>
-    {error ? <p role="alert">{error}</p> : null}
-  </Dialog>;
+  return <PollDialog open channelName={channelName} bot={{ name: botName }} value={value} error={error}
+    canPost={value.question.trim() !== '' && value.answers.filter(answer => answer.trim()).length >= 2}
+    onChange={next => { setValue(next); setError(null); }} onPost={submit} onCancel={() => dialog.onCancel()} />;
 }
 export interface ReminderInboxEntry { communityId: string; reminder: ReminderSummary; }
 export type UtilityNavigate = (communityId: string, channelId: string, threadId: string | null) => void;
@@ -353,7 +346,7 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
           const poll = await utility.pollGet(context.requestId, { channelId: context.binding.channelId, threadId: thread(context.binding) });
           if (poll.question === saved?.question && poll.answers.join('\u0000') === saved?.answers.join('\u0000')
             && poll.multi === saved?.multi && pollPublished(context, poll.id, context.binding.channelId, thread(context.binding), caps.botUserId)) {
-            attempts.delete(context.requestId); return success(copy('poll.created') + ` ${poll.id}`);
+            attempts.delete(context.requestId); showToast(copy('poll.created')); return success(copy('poll.created') + ` ${poll.id}`);
           }
           if (receipt?.status === 0 || (receipt !== null && receipt?.status !== 5)) return uncertain(copy('poll.createdUncertain'));
         } catch { return uncertain(copy('poll.createdUncertain')); }
@@ -368,7 +361,7 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
       try { if (!canCreateFromContext(context, communityId)) return uncertain(copy('poll.createdUncertain'));
         const poll = await utility.pollCreate({ requestId: context.requestId, channelId: context.binding.channelId, threadId: thread(context.binding), question: submitted.question, answers: submitted.answers, multi: submitted.multi, durationSeconds: submitted.duration });
         attempts.delete(context.requestId);
-        return success(copy('poll.created') + ` ${poll.id}`);
+        showToast(copy('poll.created')); return success(copy('poll.created') + ` ${poll.id}`);
       } catch (error) {
         if (error instanceof BotUtilitiesStatusError && (error.status === 4 || (!prior && error.status !== 5))) attempts.delete(context.requestId);
         return caught(error);
@@ -575,7 +568,7 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
     {remindersPanel('popover', () => triggerRef.current)}</span>;
   const dueReminders = currentRecords.filter(row => row.reminder.state === 'due')
     .map(row => ({ key: `${row.communityId}:${row.reminder.id}`, text: row.reminder.text, where: sourceWhere(client, row) }));
-  return { handlers: commandHandlers, suggest, dialogs: createElement(UtilityCommandDialogs, { dialog: visibleDialog }), inbox, dueCount, dueReminders,
+  return { handlers: commandHandlers, suggest, dialogs: createElement(UtilityCommandDialogs, { dialog: visibleDialog, channelName: client.get(`channels:${communityId}`)?.find(row => row.id === visibleDialog?.channelId)?.name ?? '', botName: client.get(`members:${communityId}`)?.find(row => row.kind === BOT_ACCOUNT_KIND)?.display || copy('poll.botName') }), inbox, dueCount, dueReminders,
     remindersOpen: inboxOpen, openInbox, closeInbox, remindersPanel };
 }
 

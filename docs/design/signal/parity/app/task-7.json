@@ -1,0 +1,2059 @@
+[
+  {
+    "name": "task7-dialog-empty-desktop",
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "type": [
+            "main textarea",
+            "/poll create"
+          ]
+        },
+        {
+          "wait": 400
+        },
+        {
+          "click": "b:has-text(\"/poll create\")"
+        },
+        {
+          "wait": 400
+        }
+      ]
+    },
+    "app": {
+      "who": "mira",
+      "path": "{server}",
+      "steps": [
+        {
+          "type": [
+            "main textarea.d-composer__input",
+            "/"
+          ]
+        },
+        {
+          "waitFor": "textarea[aria-label=\"Command\"]"
+        },
+        {
+          "wait": 8000
+        },
+        {
+          "type": [
+            "textarea[aria-label=\"Command\"]",
+            "/poll create"
+          ]
+        },
+        {
+          "click": "role=option[name=/^\\/poll create,/]"
+        },
+        {
+          "waitFor": ".d-poll-dialog dialog[open]"
+        }
+      ]
+    }
+  },
+  {
+    "name": "task7-dialog-filled-desktop",
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "type": [
+            "main textarea",
+            "/poll create"
+          ]
+        },
+        {
+          "wait": 400
+        },
+        {
+          "click": "b:has-text(\"/poll create\")"
+        },
+        {
+          "wait": 400
+        },
+        {
+          "type": [
+            "input[placeholder=\"What should we raid on Friday?\"]",
+            "What should we raid on Friday? dialog-filled"
+          ]
+        },
+        {
+          "type": [
+            "input[placeholder=\"the bridge\"]",
+            "the bridge"
+          ]
+        },
+        {
+          "type": [
+            "input[placeholder=\"the harbour\"]",
+            "the harbour"
+          ]
+        }
+      ]
+    },
+    "app": {
+      "who": "mira",
+      "path": "{server}",
+      "steps": [
+        {
+          "type": [
+            "main textarea.d-composer__input",
+            "/"
+          ]
+        },
+        {
+          "waitFor": "textarea[aria-label=\"Command\"]"
+        },
+        {
+          "wait": 8000
+        },
+        {
+          "type": [
+            "textarea[aria-label=\"Command\"]",
+            "/poll create"
+          ]
+        },
+        {
+          "click": "role=option[name=/^\\/poll create,/]"
+        },
+        {
+          "waitFor": ".d-poll-dialog dialog[open]"
+        },
+        {
+          "type": [
+            "role=textbox[name=\"Question\"s]",
+            "What should we raid on Friday? dialog-filled"
+          ]
+        },
+        {
+          "type": [
+            "role=textbox[name=\"Answer 1\"s]",
+            "the bridge"
+          ]
+        },
+        {
+          "type": [
+            "role=textbox[name=\"Answer 2\"s]",
+            "the harbour"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "task7-dialog-error-desktop",
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "type": [
+            "main textarea",
+            "/poll create"
+          ]
+        },
+        {
+          "wait": 400
+        },
+        {
+          "click": "b:has-text(\"/poll create\")"
+        },
+        {
+          "wait": 400
+        },
+        {
+          "click": "text=Post poll"
+        },
+        {
+          "wait": 400
+        }
+      ]
+    },
+    "app": {
+      "who": "mira",
+      "path": "{server}",
+      "steps": [
+        {
+          "type": [
+            "main textarea.d-composer__input",
+            "/"
+          ]
+        },
+        {
+          "waitFor": "textarea[aria-label=\"Command\"]"
+        },
+        {
+          "wait": 8000
+        },
+        {
+          "type": [
+            "textarea[aria-label=\"Command\"]",
+            "/poll create"
+          ]
+        },
+        {
+          "click": "role=option[name=/^\\/poll create,/]"
+        },
+        {
+          "waitFor": ".d-poll-dialog dialog[open]"
+        },
+        {
+          "click": "role=button[name=\"Post poll\"s]"
+        },
+        {
+          "waitFor": ".d-poll-dialog__error"
+        }
+      ]
+    }
+  },
+  {
+    "name": "task7-card-open-desktop",
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "type": [
+            "main textarea",
+            "/poll create"
+          ]
+        },
+        {
+          "wait": 400
+        },
+        {
+          "click": "b:has-text(\"/poll create\")"
+        },
+        {
+          "wait": 400
+        },
+        {
+          "type": [
+            "input[placeholder=\"What should we raid on Friday?\"]",
+            "What should we raid on Friday? card-open"
+          ]
+        },
+        {
+          "type": [
+            "input[placeholder=\"the bridge\"]",
+            "the bridge"
+          ]
+        },
+        {
+          "type": [
+            "input[placeholder=\"the harbour\"]",
+            "the harbour"
+          ]
+        },
+        {
+          "click": "text=Post poll"
+        },
+        {
+          "wait": 3200
+        }
+      ]
+    },
+    "app": {
+      "who": "mira",
+      "path": "{server}",
+      "steps": [
+        {
+          "type": [
+            "main textarea.d-composer__input",
+            "/"
+          ]
+        },
+        {
+          "waitFor": "textarea[aria-label=\"Command\"]"
+        },
+        {
+          "wait": 8000
+        },
+        {
+          "type": [
+            "textarea[aria-label=\"Command\"]",
+            "/poll create"
+          ]
+        },
+        {
+          "click": "role=option[name=/^\\/poll create,/]"
+        },
+        {
+          "waitFor": ".d-poll-dialog dialog[open]"
+        },
+        {
+          "type": [
+            "role=textbox[name=\"Question\"s]",
+            "What should we raid on Friday? card-open"
+          ]
+        },
+        {
+          "type": [
+            "role=textbox[name=\"Answer 1\"s]",
+            "the bridge"
+          ]
+        },
+        {
+          "type": [
+            "role=textbox[name=\"Answer 2\"s]",
+            "the harbour"
+          ]
+        },
+        {
+          "click": "role=button[name=\"Post poll\"s]"
+        },
+        {
+          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-open\")"
+        },
+        {
+          "wait": 1000
+        }
+      ]
+    }
+  },
+  {
+    "name": "task7-card-voted-desktop",
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "type": [
+            "main textarea",
+            "/poll create"
+          ]
+        },
+        {
+          "wait": 400
+        },
+        {
+          "click": "b:has-text(\"/poll create\")"
+        },
+        {
+          "wait": 400
+        },
+        {
+          "type": [
+            "input[placeholder=\"What should we raid on Friday?\"]",
+            "What should we raid on Friday? card-voted"
+          ]
+        },
+        {
+          "type": [
+            "input[placeholder=\"the bridge\"]",
+            "the bridge"
+          ]
+        },
+        {
+          "type": [
+            "input[placeholder=\"the harbour\"]",
+            "the harbour"
+          ]
+        },
+        {
+          "click": "text=Post poll"
+        },
+        {
+          "wait": 3200
+        },
+        {
+          "click": "div[style*=\"max-width: 440px\"]:has-text(\"What should we raid on Friday? card-voted\") >> text=\"the bridge\""
+        },
+        {
+          "wait": 600
+        }
+      ]
+    },
+    "app": {
+      "who": "mira",
+      "path": "{server}",
+      "steps": [
+        {
+          "type": [
+            "main textarea.d-composer__input",
+            "/"
+          ]
+        },
+        {
+          "waitFor": "textarea[aria-label=\"Command\"]"
+        },
+        {
+          "wait": 8000
+        },
+        {
+          "type": [
+            "textarea[aria-label=\"Command\"]",
+            "/poll create"
+          ]
+        },
+        {
+          "click": "role=option[name=/^\\/poll create,/]"
+        },
+        {
+          "waitFor": ".d-poll-dialog dialog[open]"
+        },
+        {
+          "type": [
+            "role=textbox[name=\"Question\"s]",
+            "What should we raid on Friday? card-voted"
+          ]
+        },
+        {
+          "type": [
+            "role=textbox[name=\"Answer 1\"s]",
+            "the bridge"
+          ]
+        },
+        {
+          "type": [
+            "role=textbox[name=\"Answer 2\"s]",
+            "the harbour"
+          ]
+        },
+        {
+          "click": "role=button[name=\"Post poll\"s]"
+        },
+        {
+          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-voted\")"
+        },
+        {
+          "wait": 1000
+        },
+        {
+          "click": ".d-poll-card:has-text(\"What should we raid on Friday? card-voted\") >> role=button[name=/^the bridge/]"
+        },
+        {
+          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-voted\") .d-poll-card__option:enabled"
+        }
+      ]
+    }
+  },
+  {
+    "name": "task7-card-multi-desktop",
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "type": [
+            "main textarea",
+            "/poll create"
+          ]
+        },
+        {
+          "wait": 400
+        },
+        {
+          "click": "b:has-text(\"/poll create\")"
+        },
+        {
+          "wait": 400
+        },
+        {
+          "type": [
+            "input[placeholder=\"What should we raid on Friday?\"]",
+            "What should we raid on Friday? card-multi"
+          ]
+        },
+        {
+          "type": [
+            "input[placeholder=\"the bridge\"]",
+            "the bridge"
+          ]
+        },
+        {
+          "type": [
+            "input[placeholder=\"the harbour\"]",
+            "the harbour"
+          ]
+        },
+        {
+          "click": "text=Allow several answers"
+        },
+        {
+          "click": "text=Post poll"
+        },
+        {
+          "wait": 3200
+        },
+        {
+          "click": "div[style*=\"max-width: 440px\"]:has-text(\"What should we raid on Friday? card-multi\") >> text=\"the bridge\""
+        },
+        {
+          "wait": 600
+        },
+        {
+          "click": "div[style*=\"max-width: 440px\"]:has-text(\"What should we raid on Friday? card-multi\") >> text=\"the harbour\""
+        },
+        {
+          "wait": 600
+        }
+      ]
+    },
+    "app": {
+      "who": "mira",
+      "path": "{server}",
+      "steps": [
+        {
+          "type": [
+            "main textarea.d-composer__input",
+            "/"
+          ]
+        },
+        {
+          "waitFor": "textarea[aria-label=\"Command\"]"
+        },
+        {
+          "wait": 8000
+        },
+        {
+          "type": [
+            "textarea[aria-label=\"Command\"]",
+            "/poll create"
+          ]
+        },
+        {
+          "click": "role=option[name=/^\\/poll create,/]"
+        },
+        {
+          "waitFor": ".d-poll-dialog dialog[open]"
+        },
+        {
+          "type": [
+            "role=textbox[name=\"Question\"s]",
+            "What should we raid on Friday? card-multi"
+          ]
+        },
+        {
+          "type": [
+            "role=textbox[name=\"Answer 1\"s]",
+            "the bridge"
+          ]
+        },
+        {
+          "type": [
+            "role=textbox[name=\"Answer 2\"s]",
+            "the harbour"
+          ]
+        },
+        {
+          "click": "role=switch[name=\"Allow several answers\"s]"
+        },
+        {
+          "click": "role=button[name=\"Post poll\"s]"
+        },
+        {
+          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-multi\")"
+        },
+        {
+          "wait": 1000
+        },
+        {
+          "click": ".d-poll-card:has-text(\"What should we raid on Friday? card-multi\") >> role=button[name=/^the bridge/]"
+        },
+        {
+          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-multi\") .d-poll-card__option:enabled"
+        },
+        {
+          "click": ".d-poll-card:has-text(\"What should we raid on Friday? card-multi\") >> role=button[name=/^the harbour/]"
+        },
+        {
+          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-multi\") .d-poll-card__option:enabled"
+        }
+      ]
+    }
+  },
+  {
+    "name": "task7-card-closed-winner-desktop",
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "type": [
+            "main textarea",
+            "/poll create"
+          ]
+        },
+        {
+          "wait": 400
+        },
+        {
+          "click": "b:has-text(\"/poll create\")"
+        },
+        {
+          "wait": 400
+        },
+        {
+          "type": [
+            "input[placeholder=\"What should we raid on Friday?\"]",
+            "What should we raid on Friday? card-closed-winner"
+          ]
+        },
+        {
+          "type": [
+            "input[placeholder=\"the bridge\"]",
+            "the bridge"
+          ]
+        },
+        {
+          "type": [
+            "input[placeholder=\"the harbour\"]",
+            "the harbour"
+          ]
+        },
+        {
+          "click": "text=Post poll"
+        },
+        {
+          "wait": 3200
+        },
+        {
+          "click": "div[style*=\"max-width: 440px\"]:has-text(\"What should we raid on Friday? card-closed-winner\") >> text=\"the bridge\""
+        },
+        {
+          "wait": 600
+        },
+        {
+          "click": "div[style*=\"max-width: 440px\"]:has-text(\"What should we raid on Friday? card-closed-winner\") >> text=\"Close poll\""
+        },
+        {
+          "wait": 2800
+        }
+      ]
+    },
+    "app": {
+      "who": "mira",
+      "path": "{server}",
+      "steps": [
+        {
+          "type": [
+            "main textarea.d-composer__input",
+            "/"
+          ]
+        },
+        {
+          "waitFor": "textarea[aria-label=\"Command\"]"
+        },
+        {
+          "wait": 8000
+        },
+        {
+          "type": [
+            "textarea[aria-label=\"Command\"]",
+            "/poll create"
+          ]
+        },
+        {
+          "click": "role=option[name=/^\\/poll create,/]"
+        },
+        {
+          "waitFor": ".d-poll-dialog dialog[open]"
+        },
+        {
+          "type": [
+            "role=textbox[name=\"Question\"s]",
+            "What should we raid on Friday? card-closed-winner"
+          ]
+        },
+        {
+          "type": [
+            "role=textbox[name=\"Answer 1\"s]",
+            "the bridge"
+          ]
+        },
+        {
+          "type": [
+            "role=textbox[name=\"Answer 2\"s]",
+            "the harbour"
+          ]
+        },
+        {
+          "click": "role=button[name=\"Post poll\"s]"
+        },
+        {
+          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-closed-winner\")"
+        },
+        {
+          "wait": 1000
+        },
+        {
+          "click": ".d-poll-card:has-text(\"What should we raid on Friday? card-closed-winner\") >> role=button[name=/^the bridge/]"
+        },
+        {
+          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-closed-winner\") .d-poll-card__option:enabled"
+        },
+        {
+          "click": ".d-poll-card:has-text(\"What should we raid on Friday? card-closed-winner\") >> role=button[name=\"Close poll\"s]"
+        },
+        {
+          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-closed-winner\")[data-closed=\"true\"]"
+        },
+        {
+          "wait": 2800
+        }
+      ]
+    }
+  },
+  {
+    "name": "task7-card-creator-close-desktop",
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "type": [
+            "main textarea",
+            "/poll create"
+          ]
+        },
+        {
+          "wait": 400
+        },
+        {
+          "click": "b:has-text(\"/poll create\")"
+        },
+        {
+          "wait": 400
+        },
+        {
+          "type": [
+            "input[placeholder=\"What should we raid on Friday?\"]",
+            "What should we raid on Friday? card-creator-close"
+          ]
+        },
+        {
+          "type": [
+            "input[placeholder=\"the bridge\"]",
+            "the bridge"
+          ]
+        },
+        {
+          "type": [
+            "input[placeholder=\"the harbour\"]",
+            "the harbour"
+          ]
+        },
+        {
+          "click": "text=Post poll"
+        },
+        {
+          "wait": 3200
+        }
+      ]
+    },
+    "app": {
+      "who": "mira",
+      "path": "{server}",
+      "steps": [
+        {
+          "type": [
+            "main textarea.d-composer__input",
+            "/"
+          ]
+        },
+        {
+          "waitFor": "textarea[aria-label=\"Command\"]"
+        },
+        {
+          "wait": 8000
+        },
+        {
+          "type": [
+            "textarea[aria-label=\"Command\"]",
+            "/poll create"
+          ]
+        },
+        {
+          "click": "role=option[name=/^\\/poll create,/]"
+        },
+        {
+          "waitFor": ".d-poll-dialog dialog[open]"
+        },
+        {
+          "type": [
+            "role=textbox[name=\"Question\"s]",
+            "What should we raid on Friday? card-creator-close"
+          ]
+        },
+        {
+          "type": [
+            "role=textbox[name=\"Answer 1\"s]",
+            "the bridge"
+          ]
+        },
+        {
+          "type": [
+            "role=textbox[name=\"Answer 2\"s]",
+            "the harbour"
+          ]
+        },
+        {
+          "click": "role=button[name=\"Post poll\"s]"
+        },
+        {
+          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-creator-close\")"
+        },
+        {
+          "wait": 1000
+        }
+      ]
+    }
+  },
+  {
+    "name": "task7-dialog-empty-phone",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside >> text=general >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "type": [
+            "main textarea",
+            "/poll create"
+          ]
+        },
+        {
+          "wait": 400
+        },
+        {
+          "click": "b:has-text(\"/poll create\")"
+        },
+        {
+          "wait": 400
+        }
+      ]
+    },
+    "app": {
+      "who": "mira",
+      "path": "{server}",
+      "steps": [
+        {
+          "type": [
+            "main textarea.d-composer__input",
+            "/"
+          ]
+        },
+        {
+          "waitFor": "textarea[aria-label=\"Command\"]"
+        },
+        {
+          "wait": 8000
+        },
+        {
+          "type": [
+            "textarea[aria-label=\"Command\"]",
+            "/poll create"
+          ]
+        },
+        {
+          "click": "role=option[name=/^\\/poll create,/]"
+        },
+        {
+          "waitFor": ".d-poll-dialog dialog[open]"
+        }
+      ]
+    }
+  },
+  {
+    "name": "task7-dialog-filled-phone",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside >> text=general >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "type": [
+            "main textarea",
+            "/poll create"
+          ]
+        },
+        {
+          "wait": 400
+        },
+        {
+          "click": "b:has-text(\"/poll create\")"
+        },
+        {
+          "wait": 400
+        },
+        {
+          "type": [
+            "input[placeholder=\"What should we raid on Friday?\"]",
+            "What should we raid on Friday? dialog-filled phone"
+          ]
+        },
+        {
+          "type": [
+            "input[placeholder=\"the bridge\"]",
+            "the bridge"
+          ]
+        },
+        {
+          "type": [
+            "input[placeholder=\"the harbour\"]",
+            "the harbour"
+          ]
+        }
+      ]
+    },
+    "app": {
+      "who": "mira",
+      "path": "{server}",
+      "steps": [
+        {
+          "type": [
+            "main textarea.d-composer__input",
+            "/"
+          ]
+        },
+        {
+          "waitFor": "textarea[aria-label=\"Command\"]"
+        },
+        {
+          "wait": 8000
+        },
+        {
+          "type": [
+            "textarea[aria-label=\"Command\"]",
+            "/poll create"
+          ]
+        },
+        {
+          "click": "role=option[name=/^\\/poll create,/]"
+        },
+        {
+          "waitFor": ".d-poll-dialog dialog[open]"
+        },
+        {
+          "type": [
+            "role=textbox[name=\"Question\"s]",
+            "What should we raid on Friday? dialog-filled phone"
+          ]
+        },
+        {
+          "type": [
+            "role=textbox[name=\"Answer 1\"s]",
+            "the bridge"
+          ]
+        },
+        {
+          "type": [
+            "role=textbox[name=\"Answer 2\"s]",
+            "the harbour"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "task7-dialog-error-phone",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside >> text=general >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "type": [
+            "main textarea",
+            "/poll create"
+          ]
+        },
+        {
+          "wait": 400
+        },
+        {
+          "click": "b:has-text(\"/poll create\")"
+        },
+        {
+          "wait": 400
+        },
+        {
+          "click": "text=Post poll"
+        },
+        {
+          "wait": 400
+        }
+      ]
+    },
+    "app": {
+      "who": "mira",
+      "path": "{server}",
+      "steps": [
+        {
+          "type": [
+            "main textarea.d-composer__input",
+            "/"
+          ]
+        },
+        {
+          "waitFor": "textarea[aria-label=\"Command\"]"
+        },
+        {
+          "wait": 8000
+        },
+        {
+          "type": [
+            "textarea[aria-label=\"Command\"]",
+            "/poll create"
+          ]
+        },
+        {
+          "click": "role=option[name=/^\\/poll create,/]"
+        },
+        {
+          "waitFor": ".d-poll-dialog dialog[open]"
+        },
+        {
+          "click": "role=button[name=\"Post poll\"s]"
+        },
+        {
+          "waitFor": ".d-poll-dialog__error"
+        }
+      ]
+    }
+  },
+  {
+    "name": "task7-card-open-phone",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside >> text=general >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "type": [
+            "main textarea",
+            "/poll create"
+          ]
+        },
+        {
+          "wait": 400
+        },
+        {
+          "click": "b:has-text(\"/poll create\")"
+        },
+        {
+          "wait": 400
+        },
+        {
+          "type": [
+            "input[placeholder=\"What should we raid on Friday?\"]",
+            "What should we raid on Friday? card-open phone"
+          ]
+        },
+        {
+          "type": [
+            "input[placeholder=\"the bridge\"]",
+            "the bridge"
+          ]
+        },
+        {
+          "type": [
+            "input[placeholder=\"the harbour\"]",
+            "the harbour"
+          ]
+        },
+        {
+          "click": "text=Post poll"
+        },
+        {
+          "wait": 3200
+        }
+      ]
+    },
+    "app": {
+      "who": "mira",
+      "path": "{server}",
+      "steps": [
+        {
+          "type": [
+            "main textarea.d-composer__input",
+            "/"
+          ]
+        },
+        {
+          "waitFor": "textarea[aria-label=\"Command\"]"
+        },
+        {
+          "wait": 8000
+        },
+        {
+          "type": [
+            "textarea[aria-label=\"Command\"]",
+            "/poll create"
+          ]
+        },
+        {
+          "click": "role=option[name=/^\\/poll create,/]"
+        },
+        {
+          "waitFor": ".d-poll-dialog dialog[open]"
+        },
+        {
+          "type": [
+            "role=textbox[name=\"Question\"s]",
+            "What should we raid on Friday? card-open phone"
+          ]
+        },
+        {
+          "type": [
+            "role=textbox[name=\"Answer 1\"s]",
+            "the bridge"
+          ]
+        },
+        {
+          "type": [
+            "role=textbox[name=\"Answer 2\"s]",
+            "the harbour"
+          ]
+        },
+        {
+          "click": "role=button[name=\"Post poll\"s]"
+        },
+        {
+          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-open phone\")"
+        },
+        {
+          "wait": 1000
+        }
+      ]
+    }
+  },
+  {
+    "name": "task7-card-voted-phone",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside >> text=general >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "type": [
+            "main textarea",
+            "/poll create"
+          ]
+        },
+        {
+          "wait": 400
+        },
+        {
+          "click": "b:has-text(\"/poll create\")"
+        },
+        {
+          "wait": 400
+        },
+        {
+          "type": [
+            "input[placeholder=\"What should we raid on Friday?\"]",
+            "What should we raid on Friday? card-voted phone"
+          ]
+        },
+        {
+          "type": [
+            "input[placeholder=\"the bridge\"]",
+            "the bridge"
+          ]
+        },
+        {
+          "type": [
+            "input[placeholder=\"the harbour\"]",
+            "the harbour"
+          ]
+        },
+        {
+          "click": "text=Post poll"
+        },
+        {
+          "wait": 3200
+        },
+        {
+          "click": "div[style*=\"max-width: 440px\"]:has-text(\"What should we raid on Friday? card-voted phone\") >> text=\"the bridge\""
+        },
+        {
+          "wait": 600
+        }
+      ]
+    },
+    "app": {
+      "who": "mira",
+      "path": "{server}",
+      "steps": [
+        {
+          "type": [
+            "main textarea.d-composer__input",
+            "/"
+          ]
+        },
+        {
+          "waitFor": "textarea[aria-label=\"Command\"]"
+        },
+        {
+          "wait": 8000
+        },
+        {
+          "type": [
+            "textarea[aria-label=\"Command\"]",
+            "/poll create"
+          ]
+        },
+        {
+          "click": "role=option[name=/^\\/poll create,/]"
+        },
+        {
+          "waitFor": ".d-poll-dialog dialog[open]"
+        },
+        {
+          "type": [
+            "role=textbox[name=\"Question\"s]",
+            "What should we raid on Friday? card-voted phone"
+          ]
+        },
+        {
+          "type": [
+            "role=textbox[name=\"Answer 1\"s]",
+            "the bridge"
+          ]
+        },
+        {
+          "type": [
+            "role=textbox[name=\"Answer 2\"s]",
+            "the harbour"
+          ]
+        },
+        {
+          "click": "role=button[name=\"Post poll\"s]"
+        },
+        {
+          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-voted phone\")"
+        },
+        {
+          "wait": 1000
+        },
+        {
+          "click": ".d-poll-card:has-text(\"What should we raid on Friday? card-voted phone\") >> role=button[name=/^the bridge/]"
+        },
+        {
+          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-voted phone\") .d-poll-card__option:enabled"
+        }
+      ]
+    }
+  },
+  {
+    "name": "task7-card-multi-phone",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside >> text=general >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "type": [
+            "main textarea",
+            "/poll create"
+          ]
+        },
+        {
+          "wait": 400
+        },
+        {
+          "click": "b:has-text(\"/poll create\")"
+        },
+        {
+          "wait": 400
+        },
+        {
+          "type": [
+            "input[placeholder=\"What should we raid on Friday?\"]",
+            "What should we raid on Friday? card-multi phone"
+          ]
+        },
+        {
+          "type": [
+            "input[placeholder=\"the bridge\"]",
+            "the bridge"
+          ]
+        },
+        {
+          "type": [
+            "input[placeholder=\"the harbour\"]",
+            "the harbour"
+          ]
+        },
+        {
+          "click": "text=Allow several answers"
+        },
+        {
+          "click": "text=Post poll"
+        },
+        {
+          "wait": 3200
+        },
+        {
+          "click": "div[style*=\"max-width: 440px\"]:has-text(\"What should we raid on Friday? card-multi phone\") >> text=\"the bridge\""
+        },
+        {
+          "wait": 600
+        },
+        {
+          "click": "div[style*=\"max-width: 440px\"]:has-text(\"What should we raid on Friday? card-multi phone\") >> text=\"the harbour\""
+        },
+        {
+          "wait": 600
+        }
+      ]
+    },
+    "app": {
+      "who": "mira",
+      "path": "{server}",
+      "steps": [
+        {
+          "type": [
+            "main textarea.d-composer__input",
+            "/"
+          ]
+        },
+        {
+          "waitFor": "textarea[aria-label=\"Command\"]"
+        },
+        {
+          "wait": 8000
+        },
+        {
+          "type": [
+            "textarea[aria-label=\"Command\"]",
+            "/poll create"
+          ]
+        },
+        {
+          "click": "role=option[name=/^\\/poll create,/]"
+        },
+        {
+          "waitFor": ".d-poll-dialog dialog[open]"
+        },
+        {
+          "type": [
+            "role=textbox[name=\"Question\"s]",
+            "What should we raid on Friday? card-multi phone"
+          ]
+        },
+        {
+          "type": [
+            "role=textbox[name=\"Answer 1\"s]",
+            "the bridge"
+          ]
+        },
+        {
+          "type": [
+            "role=textbox[name=\"Answer 2\"s]",
+            "the harbour"
+          ]
+        },
+        {
+          "click": "role=switch[name=\"Allow several answers\"s]"
+        },
+        {
+          "click": "role=button[name=\"Post poll\"s]"
+        },
+        {
+          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-multi phone\")"
+        },
+        {
+          "wait": 1000
+        },
+        {
+          "click": ".d-poll-card:has-text(\"What should we raid on Friday? card-multi phone\") >> role=button[name=/^the bridge/]"
+        },
+        {
+          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-multi phone\") .d-poll-card__option:enabled"
+        },
+        {
+          "click": ".d-poll-card:has-text(\"What should we raid on Friday? card-multi phone\") >> role=button[name=/^the harbour/]"
+        },
+        {
+          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-multi phone\") .d-poll-card__option:enabled"
+        }
+      ]
+    }
+  },
+  {
+    "name": "task7-card-closed-winner-phone",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside >> text=general >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "type": [
+            "main textarea",
+            "/poll create"
+          ]
+        },
+        {
+          "wait": 400
+        },
+        {
+          "click": "b:has-text(\"/poll create\")"
+        },
+        {
+          "wait": 400
+        },
+        {
+          "type": [
+            "input[placeholder=\"What should we raid on Friday?\"]",
+            "What should we raid on Friday? card-closed-winner phone"
+          ]
+        },
+        {
+          "type": [
+            "input[placeholder=\"the bridge\"]",
+            "the bridge"
+          ]
+        },
+        {
+          "type": [
+            "input[placeholder=\"the harbour\"]",
+            "the harbour"
+          ]
+        },
+        {
+          "click": "text=Post poll"
+        },
+        {
+          "wait": 3200
+        },
+        {
+          "click": "div[style*=\"max-width: 440px\"]:has-text(\"What should we raid on Friday? card-closed-winner phone\") >> text=\"the bridge\""
+        },
+        {
+          "wait": 600
+        },
+        {
+          "click": "div[style*=\"max-width: 440px\"]:has-text(\"What should we raid on Friday? card-closed-winner phone\") >> text=\"Close poll\""
+        },
+        {
+          "wait": 2800
+        }
+      ]
+    },
+    "app": {
+      "who": "mira",
+      "path": "{server}",
+      "steps": [
+        {
+          "type": [
+            "main textarea.d-composer__input",
+            "/"
+          ]
+        },
+        {
+          "waitFor": "textarea[aria-label=\"Command\"]"
+        },
+        {
+          "wait": 8000
+        },
+        {
+          "type": [
+            "textarea[aria-label=\"Command\"]",
+            "/poll create"
+          ]
+        },
+        {
+          "click": "role=option[name=/^\\/poll create,/]"
+        },
+        {
+          "waitFor": ".d-poll-dialog dialog[open]"
+        },
+        {
+          "type": [
+            "role=textbox[name=\"Question\"s]",
+            "What should we raid on Friday? card-closed-winner phone"
+          ]
+        },
+        {
+          "type": [
+            "role=textbox[name=\"Answer 1\"s]",
+            "the bridge"
+          ]
+        },
+        {
+          "type": [
+            "role=textbox[name=\"Answer 2\"s]",
+            "the harbour"
+          ]
+        },
+        {
+          "click": "role=button[name=\"Post poll\"s]"
+        },
+        {
+          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-closed-winner phone\")"
+        },
+        {
+          "wait": 1000
+        },
+        {
+          "click": ".d-poll-card:has-text(\"What should we raid on Friday? card-closed-winner phone\") >> role=button[name=/^the bridge/]"
+        },
+        {
+          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-closed-winner phone\") .d-poll-card__option:enabled"
+        },
+        {
+          "click": ".d-poll-card:has-text(\"What should we raid on Friday? card-closed-winner phone\") >> role=button[name=\"Close poll\"s]"
+        },
+        {
+          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-closed-winner phone\")[data-closed=\"true\"]"
+        },
+        {
+          "wait": 2800
+        }
+      ]
+    }
+  },
+  {
+    "name": "task7-card-creator-close-phone",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside >> text=general >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "type": [
+            "main textarea",
+            "/poll create"
+          ]
+        },
+        {
+          "wait": 400
+        },
+        {
+          "click": "b:has-text(\"/poll create\")"
+        },
+        {
+          "wait": 400
+        },
+        {
+          "type": [
+            "input[placeholder=\"What should we raid on Friday?\"]",
+            "What should we raid on Friday? card-creator-close phone"
+          ]
+        },
+        {
+          "type": [
+            "input[placeholder=\"the bridge\"]",
+            "the bridge"
+          ]
+        },
+        {
+          "type": [
+            "input[placeholder=\"the harbour\"]",
+            "the harbour"
+          ]
+        },
+        {
+          "click": "text=Post poll"
+        },
+        {
+          "wait": 3200
+        }
+      ]
+    },
+    "app": {
+      "who": "mira",
+      "path": "{server}",
+      "steps": [
+        {
+          "type": [
+            "main textarea.d-composer__input",
+            "/"
+          ]
+        },
+        {
+          "waitFor": "textarea[aria-label=\"Command\"]"
+        },
+        {
+          "wait": 8000
+        },
+        {
+          "type": [
+            "textarea[aria-label=\"Command\"]",
+            "/poll create"
+          ]
+        },
+        {
+          "click": "role=option[name=/^\\/poll create,/]"
+        },
+        {
+          "waitFor": ".d-poll-dialog dialog[open]"
+        },
+        {
+          "type": [
+            "role=textbox[name=\"Question\"s]",
+            "What should we raid on Friday? card-creator-close phone"
+          ]
+        },
+        {
+          "type": [
+            "role=textbox[name=\"Answer 1\"s]",
+            "the bridge"
+          ]
+        },
+        {
+          "type": [
+            "role=textbox[name=\"Answer 2\"s]",
+            "the harbour"
+          ]
+        },
+        {
+          "click": "role=button[name=\"Post poll\"s]"
+        },
+        {
+          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-creator-close phone\")"
+        },
+        {
+          "wait": 1000
+        }
+      ]
+    }
+  },
+  {
+    "name": "standing-desktop-chat",
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "wait": 600
+        },
+        {
+          "click": "main header >> text=6"
+        },
+        {
+          "wait": 900
+        }
+      ]
+    },
+    "app": {
+      "who": "ada",
+      "path": "{server}",
+      "steps": [
+        {
+          "click": "role=button[name=/^Members/]"
+        },
+        {
+          "wait": 900
+        }
+      ]
+    }
+  },
+  {
+    "name": "standing-desktop-members-open",
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "wait": 1200
+        }
+      ]
+    },
+    "app": {
+      "who": "ada",
+      "path": "{server}"
+    }
+  },
+  {
+    "name": "standing-voice-focus",
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "wait": 600
+        },
+        {
+          "click": "aside >> text=harbour >> nth=0"
+        },
+        {
+          "wait": 1200
+        }
+      ]
+    },
+    "app": {
+      "who": "ada",
+      "path": "{server}",
+      "steps": [
+        {
+          "click": "role=button[name=\"voice harbour\"i]"
+        },
+        {
+          "wait": 7000
+        }
+      ]
+    }
+  },
+  {
+    "name": "standing-phone-list",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app",
+        "device": "phone"
+      }
+    },
+    "app": {
+      "who": "phone",
+      "path": "{community}"
+    }
+  },
+  {
+    "name": "standing-phone-conversation",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 600
+        },
+        {
+          "click": "aside >> text=general >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0"
+        },
+        {
+          "wait": 900
+        }
+      ]
+    },
+    "app": {
+      "who": "phone",
+      "path": "{community}",
+      "steps": [
+        {
+          "click": "role=button[name=\"general\"s]"
+        },
+        {
+          "wait": 1200
+        }
+      ]
+    },
+    "judge": {
+      "elements": [
+        {
+          "id": "header",
+          "name": "the channel header at the top of the screen, with a back arrow",
+          "edge": "top"
+        },
+        {
+          "id": "header_topic",
+          "name": "the grey channel topic next to the channel name in the header",
+          "compare": [
+            "presence"
+          ]
+        },
+        {
+          "id": "members_button",
+          "name": "the members button with a number near the right end of the header",
+          "compare": [
+            "presence"
+          ]
+        },
+        {
+          "id": "code_block",
+          "name": "the code block with line numbers in the conversation",
+          "data": true
+        },
+        {
+          "id": "composer",
+          "name": "the message composer above the bottom tab bar",
+          "edge": "bottom"
+        },
+        {
+          "id": "send_button",
+          "name": "the send button at the right end of the message composer",
+          "compare": [
+            "presence",
+            "size"
+          ],
+          "state": {
+            "active": {
+              "phrase": "drawn as ready to send",
+              "true": "the button has a filled blue background",
+              "false": "the button has a dark background like the composer around it"
+            }
+          }
+        },
+        {
+          "id": "tab_bar",
+          "name": "the bottom tab bar with Home, Activity and You tabs",
+          "edge": "bottom"
+        },
+        {
+          "id": "home_tab",
+          "name": "the Home tab of the bottom tab bar",
+          "compare": [
+            "presence"
+          ],
+          "state": {
+            "selected": {
+              "phrase": "drawn as the selected tab",
+              "true": "a blue line above the tab and brighter text than the other tabs",
+              "false": "no line above the tab and the same grey text as the other tabs"
+            }
+          }
+        }
+      ]
+    }
+  }
+]

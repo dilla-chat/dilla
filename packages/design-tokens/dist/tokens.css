@@ -95,6 +95,11 @@
   --warn-result: rgba(255,209,106,.1);
   --warn-result-text: #FFD16A;
   --link-underline: 0;
+  --poll-mine-fill: rgba(90,168,230,.2);
+  --poll-winner-fill: rgba(124,255,142,.12);
+  --poll-fill: rgba(255,255,255,.05);
+  --poll-winner-edge: rgba(124,255,142,.5);
+  --poll-idle: #1A1E25;
   --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --font-serif-italic: "DM Serif Display", Georgia, serif;
   --text-pico: 0.40625rem;
@@ -120,6 +125,7 @@
   --text-face: 2.125rem;
   --text-card: 0.9375rem;
   --text-heading: 1.25rem;
+  --text-poll-voter: 0.4375rem;
   --weight-display: 700;
   --weight-body: 420;
   --weight-label: 600;
@@ -319,6 +325,11 @@
   --warn-result: rgba(255,209,106,.1);
   --warn-result-text: #FFD16A;
   --link-underline: 0;
+  --poll-mine-fill: rgba(90,168,230,.2);
+  --poll-winner-fill: rgba(124,255,142,.12);
+  --poll-fill: rgba(255,255,255,.05);
+  --poll-winner-edge: rgba(124,255,142,.5);
+  --poll-idle: #1A1E25;
   color-scheme: dark;
 }
 
@@ -417,6 +428,11 @@
   --warn-result: rgba(138,90,0,.1);
   --warn-result-text: #8A5A00;
   --link-underline: 0;
+  --poll-mine-fill: rgba(0,87,153,.2);
+  --poll-winner-fill: rgba(27,115,52,.12);
+  --poll-fill: rgba(0,0,0,.05);
+  --poll-winner-edge: #1B7334;
+  --poll-idle: #E3E6E3;
   color-scheme: light;
 }
 
@@ -515,6 +531,11 @@
   --warn-result: rgba(255,224,138,.1);
   --warn-result-text: #FFE08A;
   --link-underline: 1;
+  --poll-mine-fill: rgba(156,203,255,.2);
+  --poll-winner-fill: rgba(155,255,168,.12);
+  --poll-fill: rgba(255,255,255,.1);
+  --poll-winner-edge: #9BFFA8;
+  --poll-idle: #161616;
   color-scheme: dark;
 }
 
@@ -614,6 +635,11 @@
     --warn-result: rgba(138,90,0,.1);
     --warn-result-text: #8A5A00;
     --link-underline: 0;
+    --poll-mine-fill: rgba(0,87,153,.2);
+    --poll-winner-fill: rgba(27,115,52,.12);
+    --poll-fill: rgba(0,0,0,.05);
+    --poll-winner-edge: #1B7334;
+    --poll-idle: #E3E6E3;
     color-scheme: light;
   }
 }
@@ -714,6 +740,11 @@
     --warn-result: rgba(255,224,138,.1);
     --warn-result-text: #FFE08A;
     --link-underline: 1;
+    --poll-mine-fill: rgba(156,203,255,.2);
+    --poll-winner-fill: rgba(155,255,168,.12);
+    --poll-fill: rgba(255,255,255,.1);
+    --poll-winner-edge: #9BFFA8;
+    --poll-idle: #161616;
     color-scheme: dark;
   }
 }
