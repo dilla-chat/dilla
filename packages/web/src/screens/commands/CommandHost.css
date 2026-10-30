@@ -1,0 +1,4 @@
+.dw-command-confirm { padding: 10px 12px; border: 1px solid var(--hairline); border-radius: var(--r-lg); display: grid; gap: 4px; font-size: var(--text-btn); color: var(--fg); }
+.dw-command-confirm > div { display: flex; gap: 10px; }
+.dw-command-confirm > div > span { width: 64px; flex: none; color: var(--fg-3); }
+.dw-command-confirm-description { margin: 0; font-size: var(--text-ui); color: var(--fg-2); text-wrap: pretty; }

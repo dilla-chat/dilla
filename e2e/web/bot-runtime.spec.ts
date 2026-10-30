@@ -184,11 +184,11 @@ test('literal music command text never executes through the native runtime', asy
     await openChannel(page, SERVER, 'general');
     for (const text of ['/music', '/play northern lights']) {
       await composerBox(page, 'general').fill(`/${text}`);
-      await page.getByRole('button', { name: 'Send as text', exact: true }).click();
+      await page.getByRole('textbox', { name: 'Command', exact: true }).press('Enter');
       await expect(messageRow(page, 'general', text)).toHaveAttribute('data-state', 'ok');
     }
-    await expect(page.locator('[data-kind=bot]')).toHaveCount(0);
-    await expect(secondPage.locator('[data-kind=bot]')).toHaveCount(0);
+    await expect(page.getByRole('log').locator('.d-message-row [data-kind=bot]')).toHaveCount(0);
+    await expect(secondPage.getByRole('log').locator('.d-message-row [data-kind=bot]')).toHaveCount(0);
 
   } finally {
     await secondContext?.close();

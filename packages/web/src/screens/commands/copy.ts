@@ -30,3 +30,17 @@ export const commandPickerCopy = {
   completed: 'Command completed.',
   runningPrivately: 'Running command privately…',
 } as const;
+
+export const privateResultCopy = {
+  author: { bot: 'Glenn', builtin: 'dilla' },
+  labels: { status: { pending: 'Working', success: 'Done', failed: 'Failed', cancelled: 'Not confirmed' }, onlyYou: 'Only you can see this', dismiss: 'Dismiss', tag: 'bot' },
+  pending: (id: string) => id === 'remind' ? 'Saving your reminder…' : id === 'help' ? 'Looking that up…' : ['play', 'pause', 'resume', 'skip', 'stop', 'queue', 'volume'].includes(id) ? 'Checking your voice channel…' : `/${id}…`,
+  unavailable: 'This command is temporarily unavailable.',
+  joinVoice: 'Join a voice channel first. Glenn plays where you are.',
+  cancelled: (action: string) => `${action} cancelled. Nothing changed.`,
+  action: { kick: 'Kick', ban: 'Ban' },
+  title: (action: string, name: string, server: string) => `${action} ${name} from ${server}?`,
+  kickBody: (name: string) => `${name} leaves now and can come back only with a new invite.`,
+  banBody: (name: string, duration: string) => `${name} leaves now and can’t rejoin for ${duration}.`,
+  server: 'this server', duration: 'Duration', reason: 'Reason', noReason: 'none given', logged: 'Logged', loggedNote: 'modlog · visible to moderators', cancel: 'Cancel',
+} as const;

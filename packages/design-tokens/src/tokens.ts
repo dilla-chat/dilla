@@ -57,6 +57,8 @@ export type ColorTokens = {
   // Wave B Task 3b
   /** The second factor's choice cards (the sign-up's step 4): the 32px icon tile's fill, the prototype's #141820. */
   choiceTile: string;
+  // Task 6
+  okResult: string;
   linkUnderline: 0 | 1;
 };
 
@@ -87,6 +89,8 @@ export const themes: Record<ThemeName, ColorTokens> = {
     okPanel: 'rgba(124,255,142,0.06)', okPanelText: '#C9F7D0',
     // Wave B Task 3b
     choiceTile: '#141820',
+    // Task 6
+    okResult: 'rgba(124,255,142,.1)',
     linkUnderline: 0,
   },
   light: {
@@ -115,6 +119,8 @@ export const themes: Record<ThemeName, ColorTokens> = {
     okPanel: 'rgba(27,115,52,0.06)', okPanelText: '#1B7334',
     // Wave B Task 3b
     choiceTile: '#E6E9E6',
+    // Task 6
+    okResult: 'rgba(27,115,52,.1)',
     linkUnderline: 0,
   },
   'high-contrast': {
@@ -143,6 +149,8 @@ export const themes: Record<ThemeName, ColorTokens> = {
     okPanel: 'rgba(155,255,168,0.1)', okPanelText: '#9BFFA8',
     // Wave B Task 3b
     choiceTile: '#101010',
+    // Task 6
+    okResult: 'rgba(155,255,168,.1)',
     linkUnderline: 1,
   },
 };
@@ -277,7 +285,9 @@ export const structural = {
     // Task 10b: the sensitivity meter's segment fade (70ms). Like `meter`, a live level readout: never zeroed under reduced motion.
     meterSegment: '70ms',
     // Wave B Task 2: the command list's row background (the prototype's 100ms).
-    cmdRow: '100ms' },
+    cmdRow: '100ms',
+    // Task 6: the private result's pending loader.
+    resultSpin: '900ms' },
   sounds: ['join', 'leave', 'mention', 'mute', 'unmute', 'deafen', 'undeafen', 'ping', 'error'] as const,
 } as const;
 

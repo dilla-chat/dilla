@@ -11,6 +11,7 @@ import { en } from '../../strings/index.ts';
 import { formatTime } from '../../strings/index.ts';
 import { A, GEN, NOW, MEMBERS, O1, P1, P2, PEER, ownRow, peerRow } from '../../test/conversation.tsx';
 import { ThreadView } from './ThreadView.tsx';
+import { privateResults } from "../commands/private-results.ts";
 import type { ProfileOpener } from './MessageItem.tsx';
 import { toolbarButton, toolbarLabels } from '../../test/toolbar.ts';
 
@@ -312,3 +313,18 @@ describe('ThreadView (web3.7)', () => {
 });
 
 void act; void PEER;
+
+it('shows only this thread’s private results and dismisses without a request', async () => {
+  const { fake, user } = setup(); const self = fake.get('account');
+  const scope = `${self?.instance?.id ?? ''}:${self?.user?.id ?? ''}`;
+  act(() => {
+    privateResults(fake, scope, `${A}/${GEN}/`).add({ at: 1, status: 'success', text: 'channel private', provider: 'builtin' });
+    privateResults(fake, scope, `${A}/${GEN}/${ROOT}`).add({ at: 2, status: 'success', text: 'thread private', provider: 'builtin' });
+  });
+  expect(screen.queryByText('channel private')).not.toBeInTheDocument();
+  expect(screen.getByText('thread private')).toBeInTheDocument();
+  const calls = fake.calls.length;
+  await user.click(screen.getByRole('button', { name: 'Dismiss' }));
+  expect(screen.queryByText('thread private')).not.toBeInTheDocument();
+  expect(fake.calls).toHaveLength(calls);
+});

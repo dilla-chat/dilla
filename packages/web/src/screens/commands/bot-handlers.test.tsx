@@ -138,7 +138,7 @@ describe('Bot slash command provider', () => {
     const f = fixture(); const capture: { value?: ReturnType<typeof useBotCommandProvider> } = {};
     mountProvider(f.client, capture); await waitFor(() => expect(capture.value).toBeDefined());
     const result = await capture.value!.handlers.pause!({ commandId: 'pause', args: {} }, commandContext(f.client, { getCall: () => ({ channelId: VOICE, session: null } as never) }));
-    expect(result).toMatchObject({ status: 'failure', private: true });
+    expect(result).toMatchObject({ status: 'failure', private: true, message: 'Join a voice channel first. Glenn plays where you are.' });
     expect(f.requests.filter(row => row.m === 'humanInteractionRequest')).toHaveLength(0);
   });
 

@@ -3,6 +3,7 @@ import { act, waitFor, fireEvent, screen, within } from '@testing-library/react'
 import { en } from '../../strings/en.ts';
 import { formatDay, formatTime } from '../../strings/index.ts';
 import { REACTION_EMOJI } from '../../emoji.ts';
+import { privateResults } from "../commands/private-results.ts";
 import { ME } from '../../test/fixtures.ts';
 import { PHONE_QUERY } from '../../layout.ts';
 import { expectNoAxeViolations } from '../../test/setup.ts';
@@ -589,4 +590,22 @@ describe('received reactions', () => {
     await user.click(chip);
     expect(fake.callsOf('react')).toEqual([{ m: 'react', channelId: GEN, msgId: P1, emoji, on: true }]);
   });
+});
+
+it('renders private results after messages, in time order, with authors and a local dismiss', async () => {
+  const { fake, user } = renderConversation({ items: [peerRow(P1, '1', 'public text')] });
+  const account = fake.get('account');
+  const store = privateResults(fake, `${account?.instance?.id ?? ''}:${account?.user?.id ?? ''}`, `${A}/${GEN}/`);
+  act(() => {
+    store.add({ at: 20, status: 'success', text: 'bot result', provider: 'bot' });
+    store.add({ at: 10, status: 'failed', text: 'builtin result', provider: 'builtin' });
+  });
+  const rows = [...document.querySelectorAll('.d-message-log__rows > .d-message-row')];
+  expect(rows.map(row => row.textContent)).toEqual([expect.stringContaining('public text'), expect.stringContaining('builtin result'), expect.stringContaining('bot result')]);
+  expect(within(rows[1] as HTMLElement).getByText('dilla')).toBeInTheDocument();
+  expect(within(rows[2] as HTMLElement).getByText('Glenn')).toBeInTheDocument();
+  const calls = fake.calls.length;
+  await user.click(within(rows[2] as HTMLElement).getByRole('button', { name: 'Dismiss' }));
+  expect(screen.queryByText('bot result')).not.toBeInTheDocument();
+  expect(fake.calls).toHaveLength(calls);
 });

@@ -20,6 +20,7 @@ export interface PickerFrame { top: ReactNode; input: ReactNode; draft: string; 
 export interface CommandComposerProps {
   definitions: readonly CommandDefinition[];
   initialText: string;
+  onUnknown?: (text: string) => void;
   onExecute: (invocation: CommandInvocation) => Promise<CommandResult>;
   onCancel: (text: string) => void;
   onSendLiteral: (text: string) => void;
@@ -271,7 +272,7 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
       if (enterTyped()) return;
       // The prototype's send(): an unknown name says so (Task 6 turns this into a failed private result).
       const name = draft.slice(1).trim().split(/\s+/u)[0] ?? '';
-      if (name !== '') setListError(copy.notACommand(name.toLowerCase()));
+      if (name !== '') { const text = copy.notACommand(name.toLowerCase()); if (props.onUnknown !== undefined) props.onUnknown(text); else setListError(text); }
       return;
     }
     if (event.key === 'Escape') {
@@ -475,7 +476,7 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
     inFlight.current = true;
     const generation = ++submitGeneration.current;
     const context = props.contextKey;
-    setPending(true); setError(null); setStatus(copy.runningPrivately);
+    setPending(true); setError(null); setStatus('');
     try {
       const response = await props.onExecute({ commandId: selected.id, args: valid.args });
       if (submitGeneration.current !== generation || contextNow.current !== context) return;

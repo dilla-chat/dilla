@@ -144,3 +144,7 @@ describe('Wave B Task 2 command picker tokens', () => {
     expect(structural.motion.cmdRow).toBe('100ms');
   });
 });
+
+it('Task 6: uses the prototype success result fill', () => {
+  expect(themes.signal.okResult).toBe('rgba(124,255,142,.1)');
+});

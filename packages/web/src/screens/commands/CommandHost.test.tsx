@@ -1,3 +1,5 @@
+import * as ClientCore from '@dilla/client-core';
+import { useUtilityCommandProvider } from './UtilityCommandProvider.tsx';
 import { useState } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -7,6 +9,7 @@ import { FakeClient } from '../../test/fake-client.ts';
 import { clearCommandDraftMemory, CommandHost } from './CommandHost.tsx';
 import { CommandProvider } from './CommandContext.tsx';
 import type { CommandProviderHandlers } from './command-types.ts';
+import { privateResults } from "./private-results.ts";
 
 beforeEach(() => clearCommandDraftMemory());
 
@@ -32,7 +35,7 @@ function hostHarness(fake = new FakeClient()) {
   return { user, view, fake, literals, channelId };
 }
 
-function moderationHarness(joined = true) {
+function moderationHarness(joined = true, action: 'kick' | 'ban' = 'kick') {
   const core = new FakeClient(); const communityId = '55'.repeat(16); const selfId = '66'.repeat(16);
   const access = { loaded: true, top: 4, owner: false, manageCommunity: false, kickMembers: true, banMembers: true,
     moderateMembers: true, manageMessages: false, manageRoles: true, manageChannels: true, createInvite: true,
@@ -48,8 +51,8 @@ function moderationHarness(joined = true) {
   core.set('communities', [{ id: communityId, name: 'Town', owner: '77'.repeat(16) }]);
   core.set(`permissions:${communityId}`, access); core.set(`roles:${communityId}`, roles);
   core.set(`members:${communityId}`, joined ? members : members.slice(0, 1));
-  render(<CoreProvider client={core}><CommandHost communityId={communityId} channelId={'44'.repeat(16)} bits={1 << 12}
-    items={[]} selfId={selfId} draft="/kick" onDraft={() => undefined} onSendLiteral={() => undefined}
+  render(<CoreProvider client={core}><CommandHost communityId={communityId} channelId={'44'.repeat(16)} bits={(1 << 12) | (1 << 13)}
+    items={[]} selfId={selfId} draft={`/${action}`} onDraft={() => undefined} onSendLiteral={() => undefined}
     encodeMessage={text => text} openGif={() => undefined} gifsEnabled /></CoreProvider>);
   return { core, communityId, access, roles, members, user: userEvent.setup() };
 }
@@ -281,4 +284,142 @@ it('reopens autocomplete after canceling and clearing the slash draft', async ()
   fireEvent.change(message, { target: { value: '' } });
   fireEvent.change(message, { target: { value: '/' } });
   await screen.findByRole('textbox', { name: 'Command' });
+});
+
+it.each(['success', 'failure', 'uncertain'] as const)('adds a pending private result then maps %s with the handler message', async status => {
+  const core = new FakeClient();
+  let finish!: (value: { status: typeof status; private: boolean; message: string }) => void;
+  const handlers: CommandProviderHandlers = { me: () => new Promise(resolve => { finish = resolve; }) };
+  render(<CoreProvider client={core}><CommandProvider handlers={handlers}>
+    <CommandHost communityId={null} channelId="private-test" items={[]} selfId={null} draft="/me hello" onDraft={() => undefined}
+      onSendLiteral={() => undefined} encodeMessage={text => text} openGif={() => undefined} gifsEnabled />
+  </CommandProvider></CoreProvider>);
+  const store = privateResults(core, ':', 'dm/private-test/');
+  await userEvent.setup().click(await screen.findByRole('button', { name: 'send' }));
+  expect(store.rows()[0]).toMatchObject({ status: 'pending', provider: 'builtin' });
+  expect(screen.queryByText('Running command privately…')).not.toBeInTheDocument();
+  await act(() => { finish({ status, private: true, message: 'handler message' }); return Promise.resolve(); });
+  expect(store.rows()[0]).toMatchObject({ status: status === 'success' ? 'success' : 'failed', text: 'handler message' });
+});
+
+it('Enter on an unknown command adds the exact failed private result', async () => {
+  const { user, fake, channelId } = hostHarness();
+  fireEvent.change(screen.getByRole('textbox', { name: 'message' }), { target: { value: '/xyz' } });
+  const field = await screen.findByRole('textbox', { name: 'Command' });
+  await user.click(field); await user.keyboard('{Enter}');
+  expect(privateResults(fake, ':', `dm/${channelId}/`).rows()[0]).toMatchObject({ status: 'failed', text: '/xyz isn’t a command here. To post it as text, start with //.' });
+  expect(fake.calls).toEqual([]);
+});
+
+it.each([['kick', false], ['kick', true], ['ban', false], ['ban', true]] as const)('%s confirmation has the prototype copy and accepts=%s exactly once', async (action, accepted) => {
+  const { core, user } = moderationHarness(true, action);
+  const label = action === 'kick' ? 'Kick' : 'Ban';
+  await user.type(await screen.findByRole('combobox', { name: 'user' }), 'Bea');
+  await user.click(await screen.findByRole('option', { name: /^Bea,/ }));
+  await user.click(screen.getByRole('button', { name: 'send' }));
+  expect(await screen.findByRole('dialog', { name: `${label} Bea from Town?` })).toBeInTheDocument();
+  expect(screen.getByText(action === 'kick' ? 'Bea leaves now and can come back only with a new invite.' : 'Bea leaves now and can’t rejoin for 1 day.')).toBeInTheDocument();
+  expect(screen.getByText('modlog · visible to moderators')).toBeInTheDocument();
+  expect(screen.getAllByRole('button', { name: /^(Close|Cancel|Kick|Ban)$/ })).toHaveLength(2);
+  if (action === 'kick') expect(screen.queryByText('Reason')).not.toBeInTheDocument();
+  else expect(screen.getByText('Duration')).toBeInTheDocument();
+  expect(privateResults(core, ':', `${'55'.repeat(16)}/${'44'.repeat(16)}/`).rows()).toHaveLength(0);
+  await user.click(screen.getByRole('button', { name: accepted ? label : 'Cancel' }));
+  await waitFor(() => expect(privateResults(core, ':', `${'55'.repeat(16)}/${'44'.repeat(16)}/`).rows()[0].status).toBe(accepted ? 'success' : 'cancelled'));
+  expect(core.callsOf(action === 'kick' ? 'kickMember' : 'banMember')).toHaveLength(accepted ? 1 : 0);
+});
+
+it('remind starts with the prototype pending text and records a dropped capability failure', async () => {
+  const core = new FakeClient(); const channel = '11'.repeat(16); const community = '22'.repeat(16);
+  let resolve!: (value: { status: 'failure'; private: true; message: string }) => void;
+  const handler = vi.fn(() => new Promise<{ status: 'failure'; private: true; message: string }>(done => { resolve = done; }));
+  render(<CoreProvider client={core}><CommandProvider handlers={{ remind: handler }}>
+    <CommandHost communityId={community} channelId={channel} items={[]} selfId={null} draft="/remind" onDraft={() => undefined}
+      onSendLiteral={() => undefined} encodeMessage={text => text} openGif={() => undefined} gifsEnabled />
+  </CommandProvider></CoreProvider>);
+  const user = userEvent.setup();
+  await user.type(await screen.findByRole('combobox', { name: 'when' }), 'in 1 hour');
+  await user.click(screen.getByRole('textbox', { name: 'text' }));
+  await user.type(screen.getByRole('textbox', { name: 'text' }), 'bring two ropes');
+  await user.click(screen.getByRole('button', { name: 'send' }));
+  const store = privateResults(core, ':', `${community}/${channel}/`);
+  expect(store.rows()[0]).toMatchObject({ status: 'pending', text: 'Saving your reminder…', provider: 'bot' });
+  await act(() => { resolve({ status: 'failure', private: true, message: 'This command is temporarily unavailable.' }); return Promise.resolve(); });
+  expect(store.rows()[0]).toMatchObject({ status: 'failed', text: 'This command is temporarily unavailable.' });
+  expect(handler).toHaveBeenCalledOnce();
+});
+
+
+it('a capability disabled with remind chips open becomes the existing unavailable failed result', async () => {
+  const core = new FakeClient(); const cid = '31'.repeat(16); const channel = '32'.repeat(16);
+  let enabled = true;
+  const capabilities = vi.fn(() => Promise.resolve({ installationId: '33'.repeat(16), botUserId: '34'.repeat(16), version: 1 as const, supportedOperations: enabled ? [80] : [] }));
+  const spy = vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ capabilities } as unknown as ClientCore.BotUtilities);
+  function Harness() {
+    const provider = useUtilityCommandProvider(core, cid);
+    return <CommandProvider handlers={provider.handlers}><CommandHost communityId={cid} channelId={channel} bits={ClientCore.PERM.sendMessages}
+      items={[]} selfId={null} draft="/remind" onDraft={() => undefined} onSendLiteral={() => undefined} encodeMessage={text => text} openGif={() => undefined} gifsEnabled /></CommandProvider>;
+  }
+  try {
+    render(<CoreProvider client={core}><Harness /></CoreProvider>);
+    const user = userEvent.setup();
+    await user.type(await screen.findByRole('combobox', { name: 'when' }), 'in 1 hour');
+    await user.type(screen.getByRole('textbox', { name: 'text' }), 'bring two ropes');
+    enabled = false;
+    await user.click(screen.getByRole('button', { name: 'send' }));
+    await waitFor(() => expect(privateResults(core, ':', `${cid}/${channel}/`).rows()[0]).toMatchObject({ status: 'failed', text: 'Reminders are unavailable in this channel.', provider: 'bot' }));
+    expect(core.calls).toEqual([]);
+  } finally { spy.mockRestore(); }
+});
+
+it('returns to the empty chat composer while a private command is pending, as in the prototype', async () => {
+  const core = new FakeClient();
+  let finish!: (value: unknown) => void;
+  core.handler = call => call.m === 'send' ? new Promise(resolve => { finish = resolve; }) : Promise.resolve(null);
+  const { user } = hostHarness(core);
+  fireEvent.change(screen.getByRole('textbox', { name: 'message' }), { target: { value: '/me' } });
+  await user.type(await screen.findByRole('textbox', { name: 'text' }), 'hello');
+  await user.click(screen.getByRole('button', { name: 'send' }));
+  expect(screen.getByText('chat mode')).toBeInTheDocument();
+  expect(screen.getByRole('textbox', { name: 'message' })).toHaveValue('');
+  expect(screen.queryByRole('textbox', { name: 'text' })).not.toBeInTheDocument();
+  await act(() => { finish(null); return Promise.resolve(); });
+});
+
+it('clears the private announcement when the conversation changes', async () => {
+  const core = new FakeClient(); const handlers: CommandProviderHandlers = { me: () => Promise.resolve({ status: 'success', private: true, message: 'old private result' }) };
+  const host = (channel: string, draft: string) => <CoreProvider client={core}><CommandProvider handlers={handlers}>
+    <CommandHost communityId={null} channelId={channel} items={[]} selfId={null} draft={draft} onDraft={() => undefined}
+      onSendLiteral={() => undefined} encodeMessage={text => text} openGif={() => undefined} gifsEnabled />
+  </CommandProvider></CoreProvider>;
+  const view = render(host('one', '/me hello'));
+  await userEvent.setup().click(await screen.findByRole('button', { name: 'send' }));
+  await screen.findByText('old private result');
+  view.rerender(host('two', ''));
+  expect(screen.queryByText('old private result')).not.toBeInTheDocument();
+});
+
+it('retains the request ID when an uncertain response arrives after the host unmounts', async () => {
+  const core = new FakeClient(); const ids: string[] = [];
+  let finish!: (value: { status: 'uncertain'; private: true; message: string }) => void;
+  const handlers: CommandProviderHandlers = { me: (_invocation, context) => {
+    ids.push(context.requestId);
+    return ids.length === 1 ? new Promise(resolve => { finish = resolve; }) : Promise.resolve({ status: 'success', private: true, message: 'retried safely' });
+  } };
+  function Harness() {
+    const [mounted, setMounted] = useState(true); const [draft, setDraft] = useState('/me hello');
+    return <CommandProvider handlers={handlers}><button onClick={() => setMounted(value => !value)}>toggle pending host</button>
+      {mounted ? <CommandHost communityId={null} channelId="late-result" items={[]} selfId={null} draft={draft} onDraft={setDraft}
+        onSendLiteral={() => undefined} encodeMessage={text => text} openGif={() => undefined} gifsEnabled /> : null}
+    </CommandProvider>;
+  }
+  render(<CoreProvider client={core}><Harness /></CoreProvider>);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('button', { name: 'send' }));
+  await user.click(screen.getByRole('button', { name: 'toggle pending host' }));
+  await act(() => { finish({ status: 'uncertain', private: true, message: 'check before retrying' }); return Promise.resolve(); });
+  await user.click(screen.getByRole('button', { name: 'toggle pending host' }));
+  await user.click(await screen.findByRole('button', { name: 'send' }));
+  expect(ids).toHaveLength(2);
+  expect(ids[1]).toBe(ids[0]);
 });

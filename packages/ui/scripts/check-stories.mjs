@@ -81,6 +81,27 @@ try {
             if (Math.abs(centre - expected) > 1.5) throw new Error(`SensitivityMeter: the line is at ${centre}, the value at ${expected}`);
           }
         }
+        // Wave B Task 6: private result geometry and the prototype's chip colours, on both layouts.
+        if (story.id.startsWith('conversation-botresult--')) {
+          const got = await page.evaluate(() => {
+            const row = document.querySelector('.d-bot-result');
+            const chip = row.querySelector('.d-bot-result__status');
+            const cs = getComputedStyle(chip);
+            const avatar = row.querySelector('.d-message-row__avatar');
+            return { status: row.dataset.status, chipHeight: chip.getBoundingClientRect().height,
+              font: cs.fontSize, bg: cs.backgroundColor, fg: cs.color, radius: cs.borderRadius,
+              avatar: [avatar.getBoundingClientRect().width, avatar.getBoundingClientRect().height],
+              spin: getComputedStyle(row.querySelector('.d-bot-result__icon') ?? chip).animationDuration,
+              columns: getComputedStyle(row).gridTemplateColumns.split(' ').slice(0, 2),
+              phone: document.querySelector('[data-layout="phone"]') !== null };
+          });
+          if (got.chipHeight !== 18 || got.font !== '10.5px' || got.radius !== '4px') throw new Error(`BotResult: wrong chip geometry ${JSON.stringify(got)}`);
+          if (got.avatar.some(size => size !== 30)) throw new Error(`BotResult: wrong avatar ${got.avatar}`);
+          if (got.columns[0] !== (got.phone ? '4px' : '44px') || got.columns[1] !== '30px') throw new Error(`BotResult: wrong row columns ${got.columns}`);
+          const fills = { pending: 'rgba(90, 168, 230, 0.12)', success: 'rgba(124, 255, 142, 0.1)', failed: 'rgba(255, 110, 110, 0.1)', cancelled: 'rgb(20, 23, 28)' };
+          if (got.bg !== fills[got.status]) throw new Error(`BotResult: wrong fill ${got.bg}`);
+          if (got.status === 'pending' && got.spin !== '0.9s') throw new Error(`BotResult: wrong spinner duration ${got.spin}`);
+        }
         // Wave B Task 2: the command picker's prototype geometry (a 260px list, rows of at least 40px, the chip rings) and
         // no keyboard hints on a phone.
         if (story.id.startsWith('conversation-commandpicker--')) {

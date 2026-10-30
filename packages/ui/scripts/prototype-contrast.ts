@@ -5,6 +5,9 @@
  * every theme) can put in a `:not()`; the runner above keeps light and high-contrast strict. No imports: Storybook bundles it.
  */
 export const CONVERSATION_PROTOTYPE_CONTRAST: readonly { selector: string; simple: string; why: string }[] = [
+  // Wave B Task 6: the cancelled result's --fg-3 on --hover, and a phone's quiet time, exactly as specified.
+  { selector: '.d-bot-result[data-status="cancelled"] .d-bot-result__status', simple: '.d-bot-result__status', why: 'the Not confirmed chip in #767D89 on #14171C (4.33:1)' },
+  { selector: '.d-bot-result__time', simple: '.d-bot-result__time', why: 'a private result phone time in #636A75 on bg (3.65:1)' },
   { selector: '.d-message-row__gutter', simple: '.d-message-row__gutter', why: 'the time gutter in #5C636E on bg (3.28:1)' },
   { selector: '.d-message-row__time', simple: '.d-message-row__time', why: 'a phone row\'s time beside the name in #636A75 (3.65:1)' },
   { selector: '.d-composer[data-empty="true"] .d-composer__send', simple: '.d-composer__send', why: 'the empty composer\'s send in #5C636E on #171B22 (2.84:1)' },

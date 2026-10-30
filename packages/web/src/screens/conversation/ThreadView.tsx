@@ -1,15 +1,17 @@
 // A public thread (flow 11, state 11): the root, its replies and a composer whose sends carry the thread. It reads its own
 // slices, so a shell mounts it and nothing else: mounted it opens the thread, unmounted it closes it and gives focus back.
-import { useEffect, useMemo, useReducer, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore, type KeyboardEvent } from 'react';
 import { encodeMentions, PERM, type TimelineItem } from '@dilla/client-core';
-import { Button, Dialog, EmojiGrid, MessageLog, ThreadPane } from '@dilla/ui';
+import { BotResult, Button, Dialog, EmojiGrid, MessageLog, ThreadPane } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
 import { errorOf } from '../../core/errors.ts';
 import { useChannelBits } from '../../core/use-channel-bits.ts';
 import { useSlice } from '../../core/use-slice.ts';
 import { REACTION_EMOJI } from '../../emoji.ts';
 import { useRoute } from '../../router.ts';
-import { t } from '../../strings/index.ts';
+import { privateResults } from '../commands/private-results.ts';
+import { privateResultCopy } from '../commands/copy.ts';
+import { t, formatTime } from '../../strings/index.ts';
 import { editableText, editRoles, excerpt, mentionCandidates, mentionMembers, mentionRoles, nameBook, plainBody, withSenders } from '../shell-model.ts';
 import { AttachmentLightbox, type LightboxState } from './Attachments.tsx';
 import { ComposerArea, type OutgoingMessage } from './ComposerArea.tsx';
@@ -36,6 +38,8 @@ export function ThreadView(p: {
   const communityId = route.name === 'channel' ? route.communityId : null;
   const thread = useSlice(`thread:${p.channelId}`);
   const account = useSlice('account');
+  const privateStore = privateResults(client, `${account?.instance?.id ?? ''}:${account?.user?.id ?? ''}`, `${communityId ?? 'dm'}/${p.channelId}/${p.rootMsgId}`);
+  const privateRows = useSyncExternalStore(privateStore.subscribe, privateStore.rows);
   const members = useSlice(`members:${communityId ?? ''}`);
   const roles = useSlice(`roles:${communityId ?? ''}`);
   const bits = useChannelBits(communityId, p.channelId);
@@ -237,6 +241,8 @@ export function ThreadView(p: {
         }>
         <MessageLog label={t('thread.title')} emptyLabel={current === null ? '' : t('thread.noReplies')} busy={current === null}>
           {items.map(item => row(item, item.key, item.key === active))}
+          {privateRows.map(row => <BotResult key={row.id} author={{ name: privateResultCopy.author[row.provider], avatarName: privateResultCopy.author[row.provider], shape: row.provider === 'bot' ? 'bot' : 'circle' }}
+            time={formatTime(row.at / 1000)} status={row.status} body={row.text} labels={privateResultCopy.labels} onDismiss={() => privateStore.dismiss(row.id)} />)}
         </MessageLog>
       </ThreadPane>
       <Dialog open={emojiFor !== null} title={t('shell.emoji.label')} closeLabel={t('dialog.close')} onClose={() => setEmojiFor(null)}>

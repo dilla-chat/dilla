@@ -1,12 +1,15 @@
 // The open conversation: folded rows, navigation, reactions, pins and overlays.
 import { phoneNow } from '../../layout.ts';
-import { Fragment, useEffect, useLayoutEffect, useReducer, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useReducer, useRef, useState, useSyncExternalStore, type KeyboardEvent, type PointerEvent } from 'react';
 import { encodeMentions, PERM, type MentionMember, type RoleSummary, type TimelineItem, type TimelineState } from '@dilla/client-core';
-import { Banner, Button, DateDivider, Dialog, DropOverlay, EmojiGrid, MessageLog, type IconName } from '@dilla/ui';
+import { BotResult, Banner, Button, DateDivider, Dialog, DropOverlay, EmojiGrid, MessageLog, type IconName } from '@dilla/ui';
+import { privateResults } from '../commands/private-results.ts';
+import { privateResultCopy } from '../commands/copy.ts';
+import { useSlice } from '../../core/use-slice.ts';
 import { useCore } from '../../core/context.tsx';
 import { useRoute } from '../../router.ts';
 import { REACTION_EMOJI } from '../../emoji.ts';
-import { t } from '../../strings/index.ts';
+import { t, formatTime } from '../../strings/index.ts';
 import { madeHere } from '../Create.tsx';
 import { authorName, editableText, excerpt, editRoles, mentionRoles, plainBody, withRoles, withSenders, type NameBook } from '../shell-model.ts';
 import { attachFiles, AttachmentLightbox, type LightboxState } from './Attachments.tsx';
@@ -81,6 +84,9 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
   const client = useCore();
   const [route] = useRoute();
   const communityId = route.name === 'channel' ? route.communityId : null;
+  const account = useSlice('account');
+  const privateStore = privateResults(client, `${account?.instance?.id ?? ''}:${account?.user?.id ?? ''}`, `${communityId ?? 'dm'}/${props.channelId}/`);
+  const privateRows = useSyncExternalStore(privateStore.subscribe, privateStore.rows);
   // Role names and colours, and the broadcast right, once known; until then the shell's own book and rule stand.
   const bits = props.bits ?? null;
   const broadcast = bits !== null ? (bits & PERM.mentionEveryone) !== 0 : props.broadcast;
@@ -380,6 +386,8 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
         {...(p.onOpenThread !== undefined ? { onOpenThread: p.onOpenThread } : {})}
         {...(p.onOpenProfile !== undefined ? { onOpenProfile: p.onOpenProfile } : {})} />
       </Fragment>)}
+      {privateRows.map(row => <BotResult key={row.id} author={{ name: privateResultCopy.author[row.provider], avatarName: privateResultCopy.author[row.provider], shape: row.provider === 'bot' ? 'bot' : 'circle' }}
+        time={formatTime(row.at / 1000)} status={row.status} body={row.text} labels={privateResultCopy.labels} onDismiss={() => privateStore.dismiss(row.id)} />)}
     </MessageLog>
     <div className="dw-overlay">{emojiFor !== null && gridPos !== null ? <div ref={gridRef} style={gridPos}
       onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) closeEmoji(false); }}>

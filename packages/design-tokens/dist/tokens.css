@@ -91,6 +91,7 @@
   --ok-panel: rgba(124,255,142,0.06);
   --ok-panel-text: #C9F7D0;
   --choice-tile: #141820;
+  --ok-result: rgba(124,255,142,.1);
   --link-underline: 0;
   --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --font-serif-italic: "DM Serif Display", Georgia, serif;
@@ -211,6 +212,7 @@
   --duration-step: 360ms;
   --duration-meter-segment: 70ms;
   --duration-cmd-row: 100ms;
+  --duration-result-spin: 900ms;
   --row-pad-y: 0.375rem;
   --row-pad-x: 1.125rem;
   --row-gap: 0.125rem;
@@ -311,6 +313,7 @@
   --ok-panel: rgba(124,255,142,0.06);
   --ok-panel-text: #C9F7D0;
   --choice-tile: #141820;
+  --ok-result: rgba(124,255,142,.1);
   --link-underline: 0;
   color-scheme: dark;
 }
@@ -406,6 +409,7 @@
   --ok-panel: rgba(27,115,52,0.06);
   --ok-panel-text: #1B7334;
   --choice-tile: #E6E9E6;
+  --ok-result: rgba(27,115,52,.1);
   --link-underline: 0;
   color-scheme: light;
 }
@@ -501,6 +505,7 @@
   --ok-panel: rgba(155,255,168,0.1);
   --ok-panel-text: #9BFFA8;
   --choice-tile: #101010;
+  --ok-result: rgba(155,255,168,.1);
   --link-underline: 1;
   color-scheme: dark;
 }
@@ -597,6 +602,7 @@
     --ok-panel: rgba(27,115,52,0.06);
     --ok-panel-text: #1B7334;
     --choice-tile: #E6E9E6;
+    --ok-result: rgba(27,115,52,.1);
     --link-underline: 0;
     color-scheme: light;
   }
@@ -694,6 +700,7 @@
     --ok-panel: rgba(155,255,168,0.1);
     --ok-panel-text: #9BFFA8;
     --choice-tile: #101010;
+    --ok-result: rgba(155,255,168,.1);
     --link-underline: 1;
     color-scheme: dark;
   }
