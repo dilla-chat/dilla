@@ -237,6 +237,10 @@ await byText(ada, 'button', 'admin.open').click().then(() => byText(ada, 'menuit
 const settings = byText(ada, 'dialog', 'admin.title');
 await settings.waitFor({ timeout: WAIT });
 await settings.getByRole('navigation', { name: t('admin.nav'), exact: true }).getByRole('button', { name: t('workspace.invites'), exact: true }).click();
+// Task 3b review I1: unlimited uses, so every parity pair that signs up through it (task 3b's six steps, desktop and
+// phone) also joins the server, and the done step's panel can name it.
+await settings.getByRole('radiogroup', { name: t('serverSettings.invites.uses'), exact: true })
+  .getByRole('radio', { name: t('serverSettings.invites.uses.unlimited'), exact: true }).click();
 // Signal task 10c: the link shows once in the Invites card (no dialog).
 await settings.getByRole('button', { name: t('serverSettings.invites.make'), exact: true }).click();
 const inv = settings;

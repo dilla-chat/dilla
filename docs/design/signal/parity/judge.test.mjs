@@ -325,3 +325,18 @@ test('pngSize reads IHDR; parseJudgeArgs reads the flags', () => {
   assert.deepEqual(parseJudgeArgs(['s.json', 'shots', '--only', 'a,b', '--budget', '0.2', '--out', 'o']), { replay: undefined, specFile: 's.json', shotDir: 'shots', outDir: 'o', only: ['a', 'b'], budget: 0.2 });
   assert.equal(parseJudgeArgs(['--replay', 'x.request.app.json']).replay, 'x.request.app.json');
 });
+
+// Task 3b security review LOW-5: a pair that reaches a secret screen without typing a password is excluded by the rule itself.
+test('secretReason catches the recovery key, the setup key and the backup codes by selector or copy', () => {
+  const pair = (steps) => ({ name: 'p', prototype: {}, app: { who: 'fresh', steps } });
+  for (const steps of [
+    [{ waitFor: '.d-recovery-key li' }],
+    [{ waitFor: '#factor-totp-key[value]' }],
+    [{ waitFor: '.d-code-list' }],
+    [{ click: 'role=button[name="I saved it"s]' }],
+    [{ waitFor: 'role=heading[name="You’re in"s]' }],
+    [{ waitFor: 'role=heading[name="Add a second factor"s]' }],
+    [{ click: 'text=Use a backup code' }],
+  ]) assert.match(secretReason(pair(steps)) ?? '', /^secret: /, JSON.stringify(steps));
+  assert.equal(secretReason(pair([{ waitFor: '#onboarding-username' }, { click: 'role=button[name="Continue"s]' }])), null);
+});

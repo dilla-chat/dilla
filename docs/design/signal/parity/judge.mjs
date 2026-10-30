@@ -34,6 +34,9 @@ export const isPhone = pair => pair.viewport.width < Q.PHONE_MAX_WIDTH;
  * `{password:…}` or `{recoveryKey:…}`, types into a password, recovery-key or one-time-code field, fills a `totp`, or waits
  * for the recovery-key screen. A partial capture of such a pair can show a typed secret. Pure.
  */
+const SECRET_SCREEN = /d-recovery-key|d-code-list|factor-totp/i;
+const SECRET_COPY = /recovery[- ]key|totp|setup key|backup code|You.re in|I saved it|Add a second factor/i;
+
 export function secretReason(pair) {
   const steps = [...(pair.prototype?.steps ?? []), ...(pair.app?.steps ?? []), ...(pair.story?.steps ?? [])];
   for (const s of steps) {
@@ -45,6 +48,14 @@ export function secretReason(pair) {
       if (/password|recovery|one-time-code|totp/i.test(String(s.type[0]))) return 'secret: types into a secret field';
     }
     if (typeof s.waitFor === 'string' && /recovery key|one-time-code/i.test(s.waitFor)) return 'secret: waits for a secret entry screen';
+    // Task 3b security review LOW-5: the screens that show a secret, however the pair reaches them: the recovery key
+    // (.d-recovery-key), the TOTP setup key and QR code (#factor-totp-key), the backup codes (.d-code-list), and the steps
+    // that lead to or show them by their copy.
+    for (const sel of [s.waitFor, s.click]) {
+      if (typeof sel !== 'string') continue;
+      if (SECRET_SCREEN.test(sel)) return 'secret: reaches a screen that shows a recovery key, setup key or backup codes';
+      if (SECRET_COPY.test(sel)) return 'secret: a step on the way to or on a secret screen';
+    }
   }
   return null;
 }

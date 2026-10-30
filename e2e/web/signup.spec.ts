@@ -1,4 +1,6 @@
 import { expect } from '@playwright/test';
+import { readFileSync } from 'node:fs';
+import { instanceSlug } from '../../packages/web/src/screens/recovery-file';
 import {
   CLASS, COPY, HEX32, PUBLIC_URL, RK_GROUP, TEST_TIMEOUT, WAIT, copy, escapeRegExp, expectHeading, expectShell, nextButton, onboardingFrame,
   completeFactorStep, keysSubmitButton, newAccount, openChannel, railItem, railNav, readKekRecord, readRecoveryKey, submitButton, test,
@@ -29,6 +31,17 @@ test('a server invite, a name and a written-down key make an account that lands 
   expect(groups).toHaveLength(13);
   for (const group of groups) expect(group).toMatch(RK_GROUP);
   await expect(page.locator(CLASS.recoveryKey).getByRole('button', { name: /copy/i })).toHaveCount(0);
+  // Task 3b security review MEDIUM-1: Save as file reaches the browser's download in this engine (chromium, firefox, webkit),
+  // as a file whose bytes are the explanation, a blank line and the key once.
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByRole('button', { name: copy('onboarding.keys.save'), exact: true }).click(),
+  ]);
+  expect(download.suggestedFilename()).toBe(`dilla-recovery-key-${instanceSlug(instanceName)}.txt`);
+  const saved = readFileSync(await download.path(), 'utf8');
+  expect(saved).toBe(`${copy('onboarding.keys.fileBody', { instance: instanceName })}\n\n${groups.join('-')}\n`);
+  expect(saved.split(groups.join('-'))).toHaveLength(2);
+  await download.delete();
   await expect(keysSubmitButton(page)).toBeDisabled();
   await page.getByRole('checkbox', { name: copy(COPY.keysAcknowledge), exact: true }).check();
   await expect(keysSubmitButton(page)).toBeEnabled();
