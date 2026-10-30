@@ -7,7 +7,7 @@
  */
 import { spawn, spawnSync } from 'node:child_process';
 import {
-  closeSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync,
+  closeSync, copyFileSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync,
   writeFileSync, writeSync,
 } from 'node:fs';
 import { availableParallelism, tmpdir } from 'node:os';
@@ -16,7 +16,11 @@ import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { computeAreas } from './ci-areas.mjs';
 import {
-  DEFAULT_BASE, EXTRA_JOBS, JOB_MAP, MAX_BLOCK, PINNED_PORT_ENV, blockPorts, classifyStep, e2eBlockEnv, evalIf, loadWorkflow,
+  buildCleanTree, busyPorts, lockDir, recoverSnapshots, releaseLock, restoreSnapshot, scrubEnv, takeSnapshot, tryLock,
+} from './ci-local-fs.mjs';
+import { randomBytes } from 'node:crypto';
+import {
+  DEFAULT_BASE, E2E_PORT_SPAN, EXTRA_JOBS, JOB_MAP, MAX_BLOCK, UI_PORT_SPAN, blockPorts, classifyStep, e2eBlockEnv, evalIf, loadWorkflow,
   localMirrorProblems, mapService, moveUiPorts, selectJobs, skipReason, substitute,
 } from './ci-local-plan.mjs';
 
@@ -25,6 +29,7 @@ const OUT = join(ROOT, 'target', 'ci-local');
 const RUNNER_TEMP = join(OUT, 'runner-temp');
 const ARTIFACTS = join(OUT, 'artifacts');
 const LOCK_DIR = join(tmpdir(), 'dilla-ci-local-locks');
+const SNAPSHOTS = join(OUT, 'snapshots');
 const EVERYTHING = { go: true, core: true, web: true, e2e: true, text: true, code: true };
 
 const USAGE = `usage: npm run ci:local -- [options]
@@ -215,31 +220,6 @@ function compareVersions(a, b) {
 
 // ---------------------------------------------------------------- locks across lanes
 
-const pidAlive = (pid) => {
-  try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
-};
-
-/** A machine-wide lock (a directory under the system tmp dir), so two lanes on one machine never share ports. */
-function tryMachineLock(name, owner) {
-  mkdirSync(LOCK_DIR, { recursive: true });
-  const dir = join(LOCK_DIR, `${name}.lock`);
-  try {
-    mkdirSync(dir);
-  } catch (e) {
-    if (e.code !== 'EEXIST') throw e;
-    let holder = null;
-    try { holder = JSON.parse(readFileSync(join(dir, 'owner.json'), 'utf8')); } catch { /* being written, or stale */ }
-    const age = Date.now() - statSync(dir).mtimeMs;
-    if ((holder !== null && !pidAlive(holder.pid)) || (holder === null && age > 30_000)) {
-      rmSync(dir, { recursive: true, force: true });
-      return tryMachineLock(name, owner);
-    }
-    return null;
-  }
-  writeFileSync(join(dir, 'owner.json'), JSON.stringify({ pid: process.pid, root: ROOT, ...owner }));
-  return dir;
-}
-
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ---------------------------------------------------------------- the run
@@ -263,9 +243,10 @@ class Runner {
     this.memo = new Map();
     this.locks = new Set();
     this.machineLocks = new Set();
-    this.blocks = new Set();
+    this.blocks = new Map();
     this.containers = new Set();
-    this.snapshots = new Map();
+    this.snapshots = new Set();
+    this.groups = new Set();
     this.extraPath = [];
     this.loadGens = [];
     this.stopping = false;
@@ -283,7 +264,7 @@ class Runner {
 
   baseEnv(job) {
     const env = {};
-    for (const [k, v] of Object.entries(process.env)) if (!PINNED_PORT_ENV.test(k)) env[k] = v;
+    Object.assign(env, scrubEnv(process.env));
     const ctx = { root: ROOT, runnerTemp: RUNNER_TEMP, jobName: job.name, matrix: job.matrix };
     Object.assign(env, {
       CI: 'true', GITHUB_WORKSPACE: ROOT, RUNNER_TEMP, RUNNER_OS: 'Linux', RUNNER_ARCH: process.arch === 'arm64' ? 'ARM64' : 'X64', GITHUB_JOB: job.name,
@@ -385,6 +366,18 @@ class Runner {
     for (const [pid, st] of this.state) if (st.status === 'pending') this.finish(pid, 'cancelled', `not started: ${id} failed first`);
   }
 
+  /** Resolves once every process group a step started is gone, SIGKILLing what is left after `graceMs`. */
+  async waitChildren(graceMs = 10_000) {
+    const alive = () => [...this.groups].filter((pgid) => {
+      try { process.kill(-pgid, 0); return true; } catch { this.groups.delete(pgid); return false; }
+    });
+    const deadline = Date.now() + graceMs;
+    while (alive().length > 0 && Date.now() < deadline) await sleep(200);
+    for (const pgid of alive()) { try { process.kill(-pgid, 'SIGKILL'); } catch { /* gone */ } }
+    const hard = Date.now() + 5_000;
+    while (alive().length > 0 && Date.now() < hard) await sleep(100);
+  }
+
   killAll() {
     for (const child of this.children) {
       try { process.kill(-child.pid, 'SIGTERM'); } catch { /* gone */ }
@@ -424,7 +417,7 @@ class Runner {
       const rewrites = [];
       // Ports: a block of its own for the browser suites and the ui job, one machine-wide lock for the fixed-port suites.
       if (info.ports === 'block' || info.ports === 'ui') {
-        const k = await this.acquireBlock(id, write);
+        const k = await this.acquireBlock(id, write, info.ports);
         cleanups.push(() => this.releaseBlock(k));
         if (info.ports === 'block') Object.assign(env, e2eBlockEnv(k, id, ROOT, join(tmpdir(), 'dilla-ci-local')));
         const { uiOffset } = blockPorts(k);
@@ -436,13 +429,15 @@ class Runner {
         cleanups.push(() => this.releaseMachineLock(lock));
       }
       if (info.snapshot) {
-        for (const p of info.snapshot) this.snapshot(p);
+        for (const p of info.snapshot) {
+          takeSnapshot(ROOT, SNAPSHOTS, p);
+          this.snapshots.add(p);
+        }
         cleanups.push(() => { for (const p of info.snapshot) this.restore(p); });
       }
       for (const [name, body] of Object.entries(job.services)) {
         const svc = mapService(name, body);
-        const started = await this.startService(id, svc, write);
-        cleanups.push(() => this.stopService(started.container));
+        const started = await this.startService(id, svc, write, cleanups);
         for (const p of svc.ports) rewrites.push((s) => s.replaceAll(`127.0.0.1:${p.host}`, `127.0.0.1:${started.ports[p.host]}`).replaceAll(`localhost:${p.host}`, `localhost:${started.ports[p.host]}`));
       }
       const stress = this.stressCpus !== null && ['go', 'e2e'].includes(info.group);
@@ -507,6 +502,8 @@ class Runner {
       }
       return failed ? { status: 'fail', reason: failure } : { status: 'pass', reason: '' };
     } finally {
+      // A job that rewrites the tree runs alone: its processes are all gone before the snapshot goes back.
+      if (!(id in EXTRA_JOBS) && this.info(id).snapshot) await this.waitChildren();
       for (const c of cleanups.reverse()) {
         try { c(); } catch (e) { write(`cleanup failed: ${e.message}`); }
       }
@@ -545,33 +542,17 @@ class Runner {
     return entry.promise;
   }
 
-  /** A fresh copy of the working tree's tracked and untracked-unignored files, a git index over them and the root
-   *  node_modules linked in: what a runner's checkout plus npm ci holds, without any local build output. */
+  /** A fresh copy of the working tree's tracked and untracked-unignored files: what a runner's checkout holds. */
   cleanTree(id) {
-    const dir = join(OUT, 'clean-tree', id);
-    rmSync(dir, { recursive: true, force: true });
-    mkdirSync(dir, { recursive: true });
     const files = git(['ls-files', '-z', '--cached', '--others', '--exclude-standard']).stdout.split('\0').filter(Boolean);
-    for (const f of files) {
-      const from = join(ROOT, f);
-      let st;
-      try { st = lstatSync(from); } catch { continue; }
-      mkdirSync(dirname(join(dir, f)), { recursive: true });
-      if (st.isSymbolicLink()) symlinkSync(readlinkSync(from), join(dir, f));
-      else if (st.isFile()) copyFileSync(from, join(dir, f));
-    }
-    symlinkSync(join(ROOT, 'node_modules'), join(dir, 'node_modules'));
-    for (const a of [['init', '-q'], ['add', '-A']]) {
-      const r = spawnSync('git', a, { cwd: dir, encoding: 'utf8' });
-      if (r.status !== 0) throw new Error(`git ${a.join(' ')} in the clean tree failed: ${r.stderr}`);
-    }
-    return dir;
+    return buildCleanTree(ROOT, join(OUT, 'clean-tree', id), files);
   }
 
   spawnLogged(cmd, cmdArgs, env, fd, timeoutMs, cwd = ROOT) {
     return new Promise((done) => {
       const child = spawn(cmd, cmdArgs, { cwd, env, stdio: ['ignore', fd, fd], detached: true });
       this.children.add(child);
+      this.groups.add(child.pid);
       let timedOut = false;
       const timer = Number.isFinite(timeoutMs) ? setTimeout(() => {
         timedOut = true;
@@ -641,51 +622,52 @@ class Runner {
     return { ok: true, why: '' };
   }
 
-  snapshot(p) {
-    const from = join(ROOT, p);
-    const to = join(OUT, 'snapshots', p);
-    rmSync(to, { recursive: true, force: true });
-    if (existsSync(from)) cpSync(from, to, { recursive: true });
-    this.snapshots.set(p, existsSync(to));
-  }
-
   restore(p) {
     if (!this.snapshots.has(p)) return;
-    const to = join(ROOT, p);
-    rmSync(to, { recursive: true, force: true });
-    if (this.snapshots.get(p)) cpSync(join(OUT, 'snapshots', p), to, { recursive: true });
+    restoreSnapshot(ROOT, SNAPSHOTS, p);
     this.snapshots.delete(p);
   }
 
   // -------------------------------------------------------------- ports and locks
 
-  async acquireBlock(id, write) {
+  /**
+   * The first block from --base that no other run holds (a machine-wide lock) and whose ports nothing on this machine
+   * binds: a developer's own service on a suite port would otherwise answer the suite's requests.
+   */
+  async acquireBlock(id, write, kind) {
     let waited = false;
     for (;;) {
       for (let k = this.args.base; k <= MAX_BLOCK; k++) {
         if (this.blocks.has(k)) continue;
-        const lock = tryMachineLock(`port-block-${k}`, { job: id });
-        if (lock !== null) {
-          this.blocks.add(k);
-          this.machineLocks.add(lock);
-          return k;
+        const lock = tryLock(lockDir(LOCK_DIR), `port-block-${k}`, { job: id, root: ROOT });
+        if (lock === null) continue;
+        const { offset, uiOffset } = blockPorts(k);
+        const busy = kind === 'ui'
+          ? await busyPorts(UI_PORT_SPAN[0] + uiOffset, UI_PORT_SPAN[1] + uiOffset)
+          : await busyPorts(E2E_PORT_SPAN[0] + offset, E2E_PORT_SPAN[1] + offset, { udp: true });
+        if (busy.length > 0) {
+          releaseLock(lock);
+          write(`ports: block ${k} skipped, in use on this machine: ${busy.slice(0, 5).join(', ')}${busy.length > 5 ? ` and ${busy.length - 5} more` : ''}`);
+          continue;
         }
+        this.blocks.set(k, lock);
+        return k;
       }
-      if (!waited) write(`ports: every block from ${this.args.base} to ${MAX_BLOCK} is taken (other lanes); waiting`);
+      if (!waited) write(`ports: every block from ${this.args.base} to ${MAX_BLOCK} is taken or busy; waiting`);
       waited = true;
       await sleep(5_000);
     }
   }
 
   releaseBlock(k) {
+    releaseLock(this.blocks.get(k) ?? null);
     this.blocks.delete(k);
-    this.releaseMachineLock(join(LOCK_DIR, `port-block-${k}.lock`));
   }
 
   async waitMachineLock(name, id, write) {
     let waited = false;
     for (;;) {
-      const lock = tryMachineLock(name, { job: id });
+      const lock = tryLock(lockDir(LOCK_DIR), name, { job: id, root: ROOT });
       if (lock !== null) {
         this.machineLocks.add(lock);
         return lock;
@@ -696,17 +678,17 @@ class Runner {
     }
   }
 
-  releaseMachineLock(dir) {
-    rmSync(dir, { recursive: true, force: true });
-    this.machineLocks.delete(dir);
+  releaseMachineLock(lock) {
+    releaseLock(lock);
+    this.machineLocks.delete(lock);
   }
 
   // -------------------------------------------------------------- services
 
-  async startService(id, svc, write) {
+  async startService(id, svc, write, cleanups) {
     const runtime = has('podman') ? 'podman' : has('docker') ? 'docker' : null;
     if (runtime === null) throw new Error(`job ${id} needs a ${svc.name} container: install ${TOOL_HINTS.container}`);
-    const container = `dilla-ci-local-${process.pid}-${id}-${svc.name}`;
+    const container = `dilla-ci-local-${process.pid}-${randomBytes(3).toString('hex')}-${id}-${svc.name}`;
     const ports = {};
     const publish = [];
     for (const p of svc.ports) {
@@ -719,6 +701,8 @@ class Runner {
     const r = spawnSync(runtime, runArgs, { encoding: 'utf8' });
     if (r.status !== 0) throw new Error(`${runtime} run ${svc.image} failed: ${r.stderr}`);
     this.containers.add({ runtime, container });
+    // Removed when the job ends, whatever happens next (a health wait that times out included).
+    cleanups.push(() => this.stopService(container));
     const deadline = Date.now() + 180_000;
     for (;;) {
       if (svc.health === null) break;
@@ -790,9 +774,11 @@ class Runner {
   cleanupSync() {
     for (const c of this.containers) spawnSync(c.runtime, ['rm', '-f', c.container], { stdio: 'ignore' });
     this.containers.clear();
-    for (const p of [...this.snapshots.keys()]) this.restore(p);
-    for (const l of this.machineLocks) rmSync(l, { recursive: true, force: true });
+    for (const p of [...this.snapshots]) this.restore(p);
+    for (const l of this.machineLocks) releaseLock(l);
     this.machineLocks.clear();
+    for (const l of this.blocks.values()) releaseLock(l);
+    this.blocks.clear();
     for (const g of this.loadGens) { try { process.kill(-g.pid, 'SIGKILL'); } catch { /* gone */ } }
     this.loadGens = [];
   }
@@ -884,6 +870,8 @@ async function main() {
     console.log(USAGE);
     return;
   }
+  // A run that died during go-release left the real client in internal/web/dist: put the tracked tree back first.
+  for (const p of recoverSnapshots(ROOT, SNAPSHOTS)) console.log(`ci-local: restored ${p} from the snapshot an interrupted run left`);
   const { text, workflow, jobs } = loadWorkflow(ROOT);
   const problems = localMirrorProblems(text);
   if (problems.length > 0) {
@@ -956,11 +944,12 @@ async function main() {
     runner.stopping = true;
     for (const id of runner.running.keys()) runner.state.get(id).cancelled = true;
     runner.killAll();
-    setTimeout(() => {
+    // The tree is restored only once every step's processes are gone, so a dying go build cannot write after it.
+    runner.waitChildren().then(() => {
       runner.cleanupSync();
       console.log(`\n${runner.summary()}`);
       process.exit(130);
-    }, 3_000);
+    });
   };
   process.on('SIGINT', onSignal);
   process.on('SIGTERM', onSignal);

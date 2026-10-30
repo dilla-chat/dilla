@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -175,13 +175,22 @@ function relativeReads(file, text) {
 
 test('every path the code reads from another place is covered by a rule', () => {
   const found = [];
-  for (const file of trackedFiles()) {
+  // Only tracked targets: a runner's checkout holds nothing else, so a local build output (packages/web/dist after a
+  // web build) is not a path a change can touch.
+  const tracked = trackedFiles();
+  const trackedSet = new Set(tracked);
+  const trackedDirs = new Set();
+  for (const f of tracked) {
+    const parts = f.split('/');
+    for (let i = 1; i < parts.length; i++) trackedDirs.add(parts.slice(0, i).join('/'));
+  }
+  for (const file of tracked) {
     const area = READER_AREA[file.split('/')[0]];
     if (area === undefined || UNRUN_READERS.includes(file) || !/\.(go|rs|ts|tsx|mjs|js)$/.test(file) || !existsSync(join(REPO_ROOT, file))) continue;
     for (const read of relativeReads(file, readFileSync(join(REPO_ROOT, file), 'utf8'))) {
       const target = relative(REPO_ROOT, resolve(REPO_ROOT, dirname(file), read));
-      if (target.startsWith('..') || !existsSync(join(REPO_ROOT, target))) continue;
-      const probe = statSync(join(REPO_ROOT, target)).isDirectory() ? `${target}/x` : target;
+      if (target.startsWith('..') || !(trackedSet.has(target) || trackedDirs.has(target))) continue;
+      const probe = trackedDirs.has(target) ? `${target}/x` : target;
       found.push({ file, area, target, probe });
     }
   }

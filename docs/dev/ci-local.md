@@ -39,7 +39,7 @@ Steps that only make sense on GitHub are mapped to local equivalents:
 
 The node job's `npm run test:ci-check` runs in a fresh copy of the tracked and untracked files
 (`target/ci-local/clean-tree/node`), as on a runner's checkout. ci-areas.test.mjs's reader scan skips paths that
-don't exist, so a local `packages/web/dist` left by web-build or an earlier run would otherwise fail it.
+aren't tracked, so a local `packages/web/dist` doesn't trip it either way.
 
 Steps that several jobs share run once per run: `npm ci` (before any job, so it never removes `node_modules` from
 under a running job), the `install-ci-tool.sh` installs, the `wasm-pack build`s and the Playwright installs. The pinned
@@ -68,12 +68,21 @@ and SFU port by `k*1000`; the suites span 7884–8615. Each job also gets its ow
 directory (`target/ci-local/e2e/<job>/`, which holds the traces and the testhost and dillabot logs). The ui job's
 Storybook ports move by `k*50`.
 
-The blocks are locked machine-wide (under `$TMPDIR/dilla-ci-local-locks`), so two lanes on one machine never get the
-same block. `--base <n>` sets the first block to try (default 1; 0 is the CI ports, the most is 24), and `--e2e-jobs`
+The blocks are locked machine-wide (lock files under `$TMPDIR/dilla-ci-local-locks`), so two lanes on one machine
+never get the same block. A lock names its holder's pid and process start time; a lock whose holder is gone (or whose
+pid now belongs to a later process) is taken over atomically. Before a block is handed out, its ports (TCP and UDP
+7884–8616 plus the offset, or the ui job's Storybook ports) are probed: a block with anything already listening, such
+as your own services, is skipped. `--base <n>` sets the first block to try (default 1; 0 is the CI ports, the most is 24), and `--e2e-jobs`
 sets how many browser jobs run at once (default 3). browser-spike and browser-media still use hard-coded ports, so
 they share one machine-wide lock: lanes queue for those two jobs instead of clashing.
 
-ci-local drops any `DILLA_E2E_*PORT*` or `DILLA_MUSIC_PORT` variable your shell sets, so the block decides the ports.
+## The job environment
+
+Every job starts from your environment without the variables that change what a test touches or where a build goes:
+every `DILLA_*` (among them `DILLA_TEST_PG`, which points the store and API tests at a server they create and drop
+databases on, and the e2e port pins), `PG*`, `DATABASE_URL`, and the tool overrides `GO`, `NPM`, `CARGO`, `WASM_PACK`
+and `CARGO_TARGET_DIR`. A job then gets only what ci.yml sets, so go-postgres's `DILLA_TEST_PG` points only at its own
+throwaway container. `CI=true` and the `GITHUB_*`/`RUNNER_*` variables are set as on a runner.
 
 ## Modes
 
@@ -97,7 +106,10 @@ ci-local drops any `DILLA_E2E_*PORT*` or `DILLA_MUSIC_PORT` variable your shell 
 
 The jobs run on the working tree as it is. go-sqlc and the vectors checks require a clean tree, as CI sees the pushed
 commit, so commit before the run that gates your push. go-release runs alone because it replaces the placeholder in
-`internal/web/dist` with the real client. ci-local copies that directory aside first and puts it back afterwards.
+`internal/web/dist` with the real client. ci-local copies that directory aside first and puts it back afterwards
+(copied beside it, then swapped in by rename), once every process the job started is gone, Ctrl-C included. If a run
+is killed outright during go-release, the next run puts the directory back from the pending snapshot before it does
+anything else.
 
 ## Prerequisites
 

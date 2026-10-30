@@ -108,8 +108,15 @@ export function e2eBlockEnv(k, job, root, tmp) {
   };
 }
 
-/** Port env vars a caller's shell may carry that would pin a suite to one port whatever the block: ci-local drops them. */
-export const PINNED_PORT_ENV = /^DILLA_(E2E_[A-Z0-9_]*PORT[0-9]*|MUSIC_PORT)$/;
+/**
+ * The ports a block covers before its offset, probed free before the block is handed out: the browser suites' host,
+ * control and SFU ports (TCP and UDP) and the ui job's Storybook ports (TCP). The sync test holds the sources to them.
+ */
+export const E2E_PORT_SPAN = [7884, 8616];
+export const UI_PORT_SPAN = [6006, 6038];
+
+/** The workflow-level keys ci-local reads or knows to be inert locally; any other (`defaults:`, …) fails the sync check. */
+export const TOP_LEVEL_KEYS = ['name', 'on', 'permissions', 'concurrency', 'env', 'jobs'];
 
 /** The ui job's fixed Storybook ports (`--port N`, `127.0.0.1:N`, `shoot-stories.mjs N`) moved by the block's ui offset. */
 export function moveUiPorts(script, uiOffset) {
@@ -383,6 +390,9 @@ export function localMirrorProblems(text) {
     jobs = expandJobs(workflow);
   } catch (e) {
     return [`ci-local: ${e.message}`];
+  }
+  for (const key of Object.keys(workflow ?? {})) {
+    if (!TOP_LEVEL_KEYS.includes(key)) problems.push(`ci-local: workflow-level key "${key}" is unmapped (TOP_LEVEL_KEYS in scripts/ci-local-plan.mjs)`);
   }
   const names = new Set(jobs.map((j) => j.name));
   for (const name of names) if (!(name in JOB_MAP)) problems.push(`ci-local: job "${name}" is neither mapped nor skipped in JOB_MAP (scripts/ci-local-plan.mjs)`);
