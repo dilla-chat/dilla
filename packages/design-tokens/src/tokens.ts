@@ -59,6 +59,8 @@ export type ColorTokens = {
   choiceTile: string;
   // Task 6
   okResult: string;
+  // Task 6 fix round 1: the prototype Not confirmed chip.
+  warnResult: string; warnResultText: string;
   linkUnderline: 0 | 1;
 };
 
@@ -91,6 +93,8 @@ export const themes: Record<ThemeName, ColorTokens> = {
     choiceTile: '#141820',
     // Task 6
     okResult: 'rgba(124,255,142,.1)',
+    // Task 6 fix round 1
+    warnResult: 'rgba(255,209,106,.1)', warnResultText: '#FFD16A',
     linkUnderline: 0,
   },
   light: {
@@ -121,6 +125,8 @@ export const themes: Record<ThemeName, ColorTokens> = {
     choiceTile: '#E6E9E6',
     // Task 6
     okResult: 'rgba(27,115,52,.1)',
+    // Task 6 fix round 1
+    warnResult: 'rgba(138,90,0,.1)', warnResultText: '#8A5A00',
     linkUnderline: 0,
   },
   'high-contrast': {
@@ -151,6 +157,8 @@ export const themes: Record<ThemeName, ColorTokens> = {
     choiceTile: '#101010',
     // Task 6
     okResult: 'rgba(155,255,168,.1)',
+    // Task 6 fix round 1
+    warnResult: 'rgba(255,224,138,.1)', warnResultText: '#FFE08A',
     linkUnderline: 1,
   },
 };

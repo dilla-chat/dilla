@@ -92,14 +92,18 @@ try {
               font: cs.fontSize, bg: cs.backgroundColor, fg: cs.color, radius: cs.borderRadius,
               avatar: [avatar.getBoundingClientRect().width, avatar.getBoundingClientRect().height],
               spin: getComputedStyle(row.querySelector('.d-bot-result__icon') ?? chip).animationDuration,
+              tileRadius: row.querySelector('.d-bot-result__tile') ? getComputedStyle(row.querySelector('.d-bot-result__tile')).borderRadius : null,
+              icon: chip.querySelector('[data-icon]')?.getAttribute('data-icon'),
               columns: getComputedStyle(row).gridTemplateColumns.split(' ').slice(0, 2),
               phone: document.querySelector('[data-layout="phone"]') !== null };
           });
           if (got.chipHeight !== 18 || got.font !== '10.5px' || got.radius !== '4px') throw new Error(`BotResult: wrong chip geometry ${JSON.stringify(got)}`);
           if (got.avatar.some(size => size !== 30)) throw new Error(`BotResult: wrong avatar ${got.avatar}`);
           if (got.columns[0] !== (got.phone ? '4px' : '44px') || got.columns[1] !== '30px') throw new Error(`BotResult: wrong row columns ${got.columns}`);
-          const fills = { pending: 'rgba(90, 168, 230, 0.12)', success: 'rgba(124, 255, 142, 0.1)', failed: 'rgba(255, 110, 110, 0.1)', cancelled: 'rgb(20, 23, 28)' };
+          const fills = { pending: 'rgba(90, 168, 230, 0.12)', success: 'rgba(124, 255, 142, 0.1)', failed: 'rgba(255, 110, 110, 0.1)', cancelled: 'rgba(255, 209, 106, 0.1)' };
           if (got.bg !== fills[got.status]) throw new Error(`BotResult: wrong fill ${got.bg}`);
+          if (got.tileRadius !== null && got.tileRadius !== '4px') throw new Error(`BotResult: wrong D tile radius ${got.tileRadius}`);
+          if (got.status === 'cancelled' && (got.fg !== 'rgb(255, 209, 106)' || got.icon !== 'triangle-alert')) throw new Error(`BotResult: wrong Not confirmed ink/icon ${got.fg} ${got.icon}`);
           if (got.status === 'pending' && got.spin !== '0.9s') throw new Error(`BotResult: wrong spinner duration ${got.spin}`);
         }
         // Wave B Task 2: the command picker's prototype geometry (a 260px list, rows of at least 40px, the chip rings) and

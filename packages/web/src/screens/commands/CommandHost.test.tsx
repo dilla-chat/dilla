@@ -51,10 +51,10 @@ function moderationHarness(joined = true, action: 'kick' | 'ban' = 'kick') {
   core.set('communities', [{ id: communityId, name: 'Town', owner: '77'.repeat(16) }]);
   core.set(`permissions:${communityId}`, access); core.set(`roles:${communityId}`, roles);
   core.set(`members:${communityId}`, joined ? members : members.slice(0, 1));
-  render(<CoreProvider client={core}><CommandHost communityId={communityId} channelId={'44'.repeat(16)} bits={(1 << 12) | (1 << 13)}
+  const view = render(<CoreProvider client={core}><CommandHost communityId={communityId} channelId={'44'.repeat(16)} bits={(1 << 12) | (1 << 13)}
     items={[]} selfId={selfId} draft={`/${action}`} onDraft={() => undefined} onSendLiteral={() => undefined}
     encodeMessage={text => text} openGif={() => undefined} gifsEnabled /></CoreProvider>);
-  return { core, communityId, access, roles, members, user: userEvent.setup() };
+  return { core, communityId, access, roles, members, view, user: userEvent.setup() };
 }
 
 describe('CommandHost', () => {
@@ -65,7 +65,7 @@ describe('CommandHost', () => {
     const field = screen.getByRole('textbox', { name: 'text' });
     await user.type(field, 'waves');
     await user.click(screen.getByRole('button', { name: 'send' }));
-    await screen.findByText('Sent.');
+    await waitFor(() => expect(privateResults(fake, ':', `dm/${channelId}/`).rows()[0]?.text).toBe('Sent.'));
     expect(fake.callsOf('send')).toEqual([{ m: 'send', channelId, text: '_waves_' }]);
   });
 
@@ -77,7 +77,7 @@ describe('CommandHost', () => {
     await user.keyboard('{Enter}');
     expect(await screen.findByRole('textbox', { name: 'text' })).toHaveValue('waves hello');
     await user.click(screen.getByRole('button', { name: 'send' }));
-    await screen.findByText('Sent.');
+    await waitFor(() => expect(privateResults(fake, ':', `dm/${channelId}/`).rows()[0]?.text).toBe('Sent.'));
     expect(fake.callsOf('send')).toEqual([{ m: 'send', channelId, text: '_waves hello_' }]);
   });
 
@@ -196,7 +196,7 @@ describe('CommandHost', () => {
     const user = userEvent.setup();
     render(<CoreProvider client={fake}><Harness /></CoreProvider>);
     await user.click(await screen.findByRole('button', { name: 'send' }));
-    await screen.findByText('uncertain');
+    await waitFor(() => expect(privateResults(fake, ':', `dm/${channelId}/`).rows()[0]?.text).toBe('uncertain'));
     const first = ids[0];
     await user.click(screen.getByRole('button', { name: 'toggle host' }));
     await user.click(screen.getByRole('button', { name: 'toggle host' }));
@@ -211,14 +211,15 @@ describe('CommandHost', () => {
     const handlers: CommandProviderHandlers = { me: (_invocation, context) => {
       ids.push(context.requestId); return Promise.resolve({ status: 'success' as const, private: true, message: 'done' });
     } };
-    render(<CoreProvider client={new FakeClient()}><CommandProvider handlers={handlers}>
+    const fake = new FakeClient();
+    render(<CoreProvider client={fake}><CommandProvider handlers={handlers}>
       <CommandHost communityId={null} channelId={channelId} items={[]} selfId={null} draft="/me hello" onDraft={() => undefined}
         onSendLiteral={() => undefined} encodeMessage={text => text} openGif={() => undefined} gifsEnabled />
     </CommandProvider></CoreProvider>);
     const user = userEvent.setup();
     const run = await screen.findByRole('button', { name: 'send' });
     await user.click(run);
-    await screen.findByText('done');
+    await waitFor(() => expect(privateResults(fake, ':', `dm/${channelId}/`).rows()[0]?.text).toBe('done'));
     await user.click(screen.getByRole('button', { name: 'send' }));
     await waitFor(() => expect(ids).toHaveLength(2));
     expect(ids[1]).not.toBe(ids[0]);
@@ -303,12 +304,13 @@ it.each(['success', 'failure', 'uncertain'] as const)('adds a pending private re
 });
 
 it('Enter on an unknown command adds the exact failed private result', async () => {
-  const { user, fake, channelId } = hostHarness();
+  const { user, fake, channelId, literals } = hostHarness();
   fireEvent.change(screen.getByRole('textbox', { name: 'message' }), { target: { value: '/xyz' } });
   const field = await screen.findByRole('textbox', { name: 'Command' });
   await user.click(field); await user.keyboard('{Enter}');
   expect(privateResults(fake, ':', `dm/${channelId}/`).rows()[0]).toMatchObject({ status: 'failed', text: '/xyz isn’t a command here. To post it as text, start with //.' });
   expect(fake.calls).toEqual([]);
+  expect(literals).toEqual([]);
 });
 
 it.each([['kick', false], ['kick', true], ['ban', false], ['ban', true]] as const)('%s confirmation has the prototype copy and accepts=%s exactly once', async (action, accepted) => {
@@ -317,16 +319,22 @@ it.each([['kick', false], ['kick', true], ['ban', false], ['ban', true]] as cons
   await user.type(await screen.findByRole('combobox', { name: 'user' }), 'Bea');
   await user.click(await screen.findByRole('option', { name: /^Bea,/ }));
   await user.click(screen.getByRole('button', { name: 'send' }));
-  expect(await screen.findByRole('dialog', { name: `${label} Bea from Town?` })).toBeInTheDocument();
-  expect(screen.getByText(action === 'kick' ? 'Bea leaves now and can come back only with a new invite.' : 'Bea leaves now and can’t rejoin for 1 day.')).toBeInTheDocument();
+  expect(await screen.findByRole('dialog', { name: `${label} \u2068Bea\u2069 from \u2068Town\u2069?` })).toBeInTheDocument();
+  expect(screen.getByText(action === 'kick' ? '\u2068Bea\u2069 leaves now and can come back only with a new invite.' : '\u2068Bea\u2069 leaves now and can’t rejoin for 1 day.')).toBeInTheDocument();
   expect(screen.getByText('modlog · visible to moderators')).toBeInTheDocument();
   expect(screen.getAllByRole('button', { name: /^(Close|Cancel|Kick|Ban)$/ })).toHaveLength(2);
   if (action === 'kick') expect(screen.queryByText('Reason')).not.toBeInTheDocument();
   else expect(screen.getByText('Duration')).toBeInTheDocument();
   expect(privateResults(core, ':', `${'55'.repeat(16)}/${'44'.repeat(16)}/`).rows()).toHaveLength(0);
-  await user.click(screen.getByRole('button', { name: accepted ? label : 'Cancel' }));
+  if (accepted) {
+    const confirm = screen.getByRole('button', { name: label });
+    await user.keyboard('{Enter>3/}');
+    expect(core.callsOf(action === 'kick' ? 'kickMember' : 'banMember')).toHaveLength(0);
+    await user.dblClick(confirm);
+  } else await user.click(screen.getByRole('button', { name: 'Cancel' }));
   await waitFor(() => expect(privateResults(core, ':', `${'55'.repeat(16)}/${'44'.repeat(16)}/`).rows()[0].status).toBe(accepted ? 'success' : 'cancelled'));
   expect(core.callsOf(action === 'kick' ? 'kickMember' : 'banMember')).toHaveLength(accepted ? 1 : 0);
+  if (!accepted) expect(privateResults(core, ':', `${'55'.repeat(16)}/${'44'.repeat(16)}/`).rows()[0].text).toBe(`${label} cancelled. Nothing changed.`);
 });
 
 it('remind starts with the prototype pending text and records a dropped capability failure', async () => {
@@ -386,17 +394,12 @@ it('returns to the empty chat composer while a private command is pending, as in
   await act(() => { finish(null); return Promise.resolve(); });
 });
 
-it('clears the private announcement when the conversation changes', async () => {
-  const core = new FakeClient(); const handlers: CommandProviderHandlers = { me: () => Promise.resolve({ status: 'success', private: true, message: 'old private result' }) };
-  const host = (channel: string, draft: string) => <CoreProvider client={core}><CommandProvider handlers={handlers}>
-    <CommandHost communityId={null} channelId={channel} items={[]} selfId={null} draft={draft} onDraft={() => undefined}
-      onSendLiteral={() => undefined} encodeMessage={text => text} openGif={() => undefined} gifsEnabled />
-  </CommandProvider></CoreProvider>;
-  const view = render(host('one', '/me hello'));
-  await userEvent.setup().click(await screen.findByRole('button', { name: 'send' }));
-  await screen.findByText('old private result');
-  view.rerender(host('two', ''));
-  expect(screen.queryByText('old private result')).not.toBeInTheDocument();
+it('does not create a duplicate host live region for a completed private result', async () => {
+  const { user, fake, channelId } = hostHarness();
+  fireEvent.change(screen.getByRole('textbox', { name: 'message' }), { target: { value: '/me hello' } });
+  await user.click(await screen.findByRole('button', { name: 'send' }));
+  await waitFor(() => expect(privateResults(fake, ':', `dm/${channelId}/`).rows()[0]?.status).toBe('success'));
+  expect(document.querySelector('[data-command-result]')).toBeNull();
 });
 
 it('retains the request ID when an uncertain response arrives after the host unmounts', async () => {
@@ -422,4 +425,113 @@ it('retains the request ID when an uncertain response arrives after the host unm
   await user.click(await screen.findByRole('button', { name: 'send' }));
   expect(ids).toHaveLength(2);
   expect(ids[1]).toBe(ids[0]);
+});
+
+it('permanent ban passes from the picker through confirmation to banMember with null seconds', async () => {
+  const { core, user } = moderationHarness(true, 'ban');
+  await user.type(await screen.findByRole('combobox', { name: 'user' }), 'Bea');
+  await user.click(await screen.findByRole('option', { name: /^Bea,/ }));
+  await user.type(screen.getByRole('combobox', { name: 'duration' }), 'permanent');
+  await user.click(screen.getByRole('button', { name: 'send' }));
+  const dialog = await screen.findByRole('dialog');
+  expect(dialog).toHaveTextContent('\u2068Bea\u2069 leaves now and can’t rejoin permanently.');
+  expect(dialog).toHaveTextContent('permanent');
+  await user.click(screen.getByRole('button', { name: 'Ban' }));
+  await waitFor(() => expect(core.callsOf('banMember')).toEqual([{ m: 'banMember', communityId: '55'.repeat(16), userId: '88'.repeat(16), reason: '', seconds: null }]));
+});
+
+it.each(['conversation', 'account', 'unmount', 'backdrop'])('confirmation teardown on %s creates no result and never clears the next draft', async reason => {
+  const { core, view, user } = moderationHarness();
+  await user.type(await screen.findByRole('combobox', { name: 'user' }), 'Bea');
+  await user.click(await screen.findByRole('option', { name: /^Bea,/ }));
+  await user.click(screen.getByRole('button', { name: 'send' }));
+  await screen.findByRole('dialog');
+  const onDraft = vi.fn();
+  if (reason === 'unmount') view.unmount();
+  else if (reason === 'backdrop') fireEvent.click(screen.getByRole('dialog'));
+  else view.rerender(<CoreProvider client={core}><CommandHost communityId={'55'.repeat(16)} channelId={reason === 'conversation' ? 'new-channel' : '44'.repeat(16)} items={[]}
+    selfId={reason === 'account' ? 'new-account' : '66'.repeat(16)} draft="Keep this draft" onDraft={onDraft} onSendLiteral={() => undefined}
+    encodeMessage={text => text} openGif={() => undefined} gifsEnabled /></CoreProvider>);
+  await act(() => Promise.resolve());
+  expect(privateResults(core, ':', `${'55'.repeat(16)}/${'44'.repeat(16)}/`).rows()).toEqual([]);
+  expect(onDraft).not.toHaveBeenCalled();
+  expect(core.callsOf('kickMember')).toEqual([]);
+});
+
+it('an explicit non-moderation Cancel closes silently without a private result', async () => {
+  const core = new FakeClient();
+  const handlers: CommandProviderHandlers = { me: async (_invocation, context) => ({ status: await context.confirm('Proceed?', 'Confirm this action') ? 'success' : 'failure', private: true, message: 'Cancelled.' }) };
+  render(<CoreProvider client={core}><CommandProvider handlers={handlers}><CommandHost communityId={null} channelId="other-confirm" items={[]} selfId={null} draft="/me hello"
+    onDraft={() => undefined} onSendLiteral={() => undefined} encodeMessage={text => text} openGif={() => undefined} gifsEnabled /></CommandProvider></CoreProvider>);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('button', { name: 'send' }));
+  await user.click(await screen.findByRole('button', { name: 'Cancel' }));
+  await waitFor(() => expect(privateResults(core, ':', 'dm/other-confirm/').rows()).toEqual([]));
+});
+
+it('isolates RTL names in the moderation title and body', async () => {
+  const { core, communityId, members, user } = moderationHarness();
+  core.publish(`members:${communityId}`, members.map(member => member.username === 'bea' ? { ...member, display: 'ليلى' } : member));
+  await user.type(await screen.findByRole('combobox', { name: 'user' }), 'ليلى');
+  await user.click(await screen.findByRole('option', { name: /^ليلى,/ }));
+  await user.click(screen.getByRole('button', { name: 'send' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Kick \u2068ليلى\u2069 from \u2068Town\u2069?' });
+  expect(dialog).toHaveTextContent('\u2068ليلى\u2069 leaves now and can come back only with a new invite.');
+});
+
+it('a thrown command reports a generic failure and logs the original error', async () => {
+  const core = new FakeClient(); const cause = new Error('private transport detail');
+  const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  try {
+    render(<CoreProvider client={core}><CommandProvider handlers={{ me: () => Promise.reject(cause) }}><CommandHost communityId={null} channelId="throws" items={[]} selfId={null} draft="/me hello"
+      onDraft={() => undefined} onSendLiteral={() => undefined} encodeMessage={text => text} openGif={() => undefined} gifsEnabled /></CommandProvider></CoreProvider>);
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'send' }));
+    await waitFor(() => expect(privateResults(core, ':', 'dm/throws/').rows()[0]).toMatchObject({ status: 'failed', text: 'That didn’t work. Try again.' }));
+    expect(log).toHaveBeenCalledWith('Command failed', cause);
+    expect(screen.queryByText('private transport detail')).not.toBeInTheDocument();
+  } finally { log.mockRestore(); }
+});
+
+it('a literal send abandons confirmation without running Cancel or clearing the next draft', async () => {
+  const core = new FakeClient(); const onDraft = vi.fn(); const literal = vi.fn();
+  const handlers: CommandProviderHandlers = { me: async (_invocation, context) => ({ status: await context.confirm('Proceed?', 'Confirm this action') ? 'success' : 'failure', private: true, message: 'Cancelled.' }) };
+  function Harness() {
+    const [draft, setDraft] = useState('/me hello');
+    return <><input aria-label="external draft" value={draft} onChange={e => setDraft(e.currentTarget.value)} />
+      <CommandProvider handlers={handlers}><CommandHost communityId={null} channelId="literal-confirm" items={[]} selfId={null} draft={draft}
+        onDraft={text => { onDraft(text); setDraft(text); }} onSendLiteral={literal} encodeMessage={text => text} openGif={() => undefined} gifsEnabled /></CommandProvider></>;
+  }
+  render(<CoreProvider client={core}><Harness /></CoreProvider>);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('button', { name: 'send' }));
+  await screen.findByRole('dialog');
+  fireEvent.change(screen.getByRole('textbox', { name: 'external draft' }), { target: { value: '/xyz' } });
+  const send = await screen.findByRole('button', { name: 'Send as text' });
+  onDraft.mockClear(); fireEvent.click(send);
+  await act(() => Promise.resolve());
+  expect(literal).toHaveBeenCalledWith('/xyz');
+  expect(onDraft).not.toHaveBeenCalled();
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  expect(privateResults(core, ':', 'dm/literal-confirm/').rows()).toEqual([]);
+});
+
+it('Escape explicitly cancels a kick with the approved capitalised row and no mutation', async () => {
+  const { core, user } = moderationHarness();
+  await user.type(await screen.findByRole('combobox', { name: 'user' }), 'Bea');
+  await user.click(await screen.findByRole('option', { name: /^Bea,/ }));
+  await user.click(screen.getByRole('button', { name: 'send' }));
+  await screen.findByRole('dialog'); await user.keyboard('{Escape}');
+  await waitFor(() => expect(privateResults(core, ':', `${'55'.repeat(16)}/${'44'.repeat(16)}/`).rows()[0]).toMatchObject({ status: 'cancelled', text: 'Kick cancelled. Nothing changed.' }));
+  expect(core.callsOf('kickMember')).toEqual([]);
+});
+
+it.each(['kick', 'ban'] as const)('holding Enter on %s Confirm runs the existing command path once', async action => {
+  const { core, user } = moderationHarness(true, action);
+  await user.type(await screen.findByRole('combobox', { name: 'user' }), 'Bea');
+  await user.click(await screen.findByRole('option', { name: /^Bea,/ }));
+  await user.click(screen.getByRole('button', { name: 'send' }));
+  const confirm = await screen.findByRole('button', { name: action === 'kick' ? 'Kick' : 'Ban' });
+  act(() => confirm.focus());
+  await user.keyboard('{Enter>3/}');
+  await waitFor(() => expect(core.callsOf(action === 'kick' ? 'kickMember' : 'banMember')).toHaveLength(1));
 });

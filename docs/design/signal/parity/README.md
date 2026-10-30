@@ -172,3 +172,9 @@ Each element gets a presence Noul and a Box on both images, plus optional `state
   about 3,200, a close-up crop about 1,100. **A pair costs about $0.0003-0.0005** (7,000-12,000 tokens); a run over the 12
   judged pairs costs about $0.0045, and every app pair in the specs would be about $0.02-0.03.
 - Tests: `node --test docs/design/signal/parity/judge.test.mjs` (pure; no network).
+
+### Task 6 accepted deviations (Jonas, 2026-10-30)
+
+| Pairs | Accepted difference from the raw prototype | Decision |
+|---|---|---|
+| `private-result-confirm-kick-desktop`, `private-result-confirm-kick-phone` | The kick modal omits “Duration —” and “Reason none given”. Its Logged row remains. | Q4 / M2: kick has no reason field until wave C; duration is shown only for ban. This is intentional, not a parity defect. |

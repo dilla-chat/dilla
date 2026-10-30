@@ -17,6 +17,7 @@ import { builtinHandlers, eligibleAssignableRole, eligibleModerationTarget } fro
 import type { CommandExecutionContext, CommandSuggestionList } from './command-types.ts';
 import type { TimelineItem } from '@dilla/client-core';
 
+type ConfirmationChoice = 'confirm' | 'cancel' | 'abandon';
 interface Confirmation { title: string; body: string; moderation?: { name: string; action: 'kick' | 'ban'; duration: string; reason: string } }
 interface SavedDraft { text: string; requestId: string; invocationKey: string; mode: 'active' | 'canceled' | 'consumed' }
 const clientOwners = new WeakMap<object, number>();
@@ -82,12 +83,11 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
   const [active, setActive] = useState(() => memory.get(key)?.mode === 'active');
   const [commandText, setCommandText] = useState(() => memory.get(key)?.text ?? '');
   const confirmationBodyId = useId();
-  const [announcement, setAnnouncement] = useState('');
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [modlogOpen, setModlogOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
   const inviteResolve = useRef<((created: boolean) => void) | null>(null);
-  const confirmationResolve = useRef<((accepted: boolean) => void) | null>(null);
+  const confirmationResolve = useRef<((choice: ConfirmationChoice) => void) | null>(null);
   const suppress = useRef<string | null>(null);
   const seenSlashSubmission = useRef<number | null>(null);
   const activeRef = useRef(false); activeRef.current = active;
@@ -110,7 +110,7 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
   useLayoutEffect(() => {
     if (previousLayoutKey.current !== key) {
       generation.current++;
-      confirmationResolve.current?.(false); confirmationResolve.current = null; setConfirmation(null);
+      confirmationResolve.current?.('abandon'); confirmationResolve.current = null; setConfirmation(null);
       inviteResolve.current?.(false); inviteResolve.current = null; setInviteOpen(false);
       setModlogOpen(false);
     }
@@ -127,14 +127,13 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
     mounted.current = true;
     return () => {
       mounted.current = false;
-      confirmationResolve.current?.(false); confirmationResolve.current = null;
+      confirmationResolve.current?.('abandon'); confirmationResolve.current = null;
       inviteResolve.current?.(false); inviteResolve.current = null;
     };
   }, []);
   useLayoutEffect(() => {
-    setAnnouncement('');
     generation.current++;
-    confirmationResolve.current?.(false); confirmationResolve.current = null; setConfirmation(null);
+    confirmationResolve.current?.('abandon'); confirmationResolve.current = null; setConfirmation(null);
     inviteResolve.current?.(false); inviteResolve.current = null; setInviteOpen(false);
     setModlogOpen(false);
     const saved = memory.get(key);
@@ -194,7 +193,7 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
     let resultId: string | undefined;
     const pendingResult = () => { resultId ??= resultStore.add({ at: Date.now(), status: 'pending', text: resultCopy.pending(invocation.commandId), provider }); return resultId; };
     if (!moderation) pendingResult();
-    let declined = false;
+    let confirmationChoice: ConfirmationChoice | null = null;
     if (handler === undefined) {
       resultStore.update(pendingResult(), { status: 'failed', text: resultCopy.unavailable });
       return Promise.resolve({ status: 'failure', private: true, message: resultCopy.unavailable });
@@ -208,9 +207,14 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
     const generationSnapshot = generation.current;
     const isCurrent = () => mounted.current && currentOwner.current === ownerSnapshot && currentKey.current === key && generation.current === generationSnapshot;
     const confirm = (title: string, body: string) => new Promise<boolean>(resolve => {
-      if (!isCurrent()) { resolve(false); return; }
-      confirmationResolve.current?.(false);
-      confirmationResolve.current = accepted => { declined = !accepted; if (accepted) pendingResult(); leaveAfterRun(); resolve(accepted); };
+      if (!isCurrent()) { confirmationChoice = 'abandon'; resolve(false); return; }
+      confirmationResolve.current?.('abandon');
+      confirmationResolve.current = choice => {
+        confirmationChoice = isCurrent() ? choice : 'abandon';
+        if (confirmationChoice === 'confirm') pendingResult();
+        if (confirmationChoice !== 'abandon') leaveAfterRun();
+        resolve(confirmationChoice === 'confirm');
+      };
       const action = invocation.commandId;
       if (action === 'kick' || action === 'ban') {
         const member = client.get(`members:${binding.communityId ?? ''}`)?.find(row => row.userId === invocation.args.user);
@@ -234,9 +238,13 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
       openGif: query => { if (isCurrent()) openGif(query); }, openModerationLog };
     if (!moderation) leaveAfterRun();
     return Promise.resolve().then(() => handler(invocation, context)).then(response => {
+      if (confirmationChoice === 'abandon' || confirmationChoice === 'cancel' && !moderation) {
+        if (resultId !== undefined) resultStore.dismiss(resultId);
+        return response;
+      }
       resultStore.update(pendingResult(), {
-        status: declined ? 'cancelled' : response.status === 'success' ? 'success' : response.status === 'pending' ? 'pending' : 'failed',
-        text: declined ? resultCopy.cancelled(resultCopy.action[invocation.commandId as 'kick' | 'ban'] ?? invocation.commandId)
+        status: confirmationChoice === 'cancel' ? 'cancelled' : response.status === 'success' ? 'success' : response.status === 'pending' ? 'pending' : 'failed',
+        text: confirmationChoice === 'cancel' ? resultCopy.cancelled(invocation.commandId as 'kick' | 'ban')
           : response.message ?? commandPickerCopy.completedPrivately,
       });
       if (response.status === 'success' || response.status === 'failure') {
@@ -248,16 +256,15 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
         remember(memory, key, { text: commandText, requestId: attempt, invocationKey, mode: 'active' });
         if (isCurrent()) { setCommandText(commandText); setActive(true); activeRef.current = true; onModeChange(true); }
       }
-      // Speak the result once after the chip composer has left; the feed draws the private card.
-      // Cleared first, then set on the next task: the same text twice in a row is spoken twice.
-      if (isCurrent()) {
-        setAnnouncement('');
-        const text = response.message ?? '';
-        window.setTimeout(() => { if (isCurrent()) setAnnouncement(text); }, 50);
-      }
       return response;
     }, cause => {
-      const text = cause instanceof Error ? cause.message : commandPickerCopy.couldNotConfirm;
+      // eslint-disable-next-line no-console -- M6: keep diagnostics in the console, never in the private result copy.
+      console.error('Command failed', cause);
+      const text = resultCopy.failed();
+      if (confirmationChoice === 'abandon' || confirmationChoice === 'cancel' && !moderation) {
+        if (resultId !== undefined) resultStore.dismiss(resultId);
+        return { status: 'failure', private: true, message: text };
+      }
       resultStore.update(pendingResult(), { status: 'failed', text });
       return { status: 'failure', private: true, message: text };
     });
@@ -314,7 +321,7 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
     const saved = memory.get(key);
     remember(memory, key, { text, requestId: saved?.requestId ?? requestId(), invocationKey: saved?.invocationKey ?? text, mode: 'canceled' });
     generation.current++;
-    confirmationResolve.current?.(false); confirmationResolve.current = null; setConfirmation(null);
+    confirmationResolve.current?.('abandon'); confirmationResolve.current = null; setConfirmation(null);
     inviteResolve.current?.(false); inviteResolve.current = null; setInviteOpen(false);
     setModlogOpen(false);
     setCommandText(''); setActive(false); onModeChange?.(false); activeRef.current = false;
@@ -325,7 +332,7 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
     const saved = memory.get(key);
     remember(memory, key, { text: '', requestId: saved?.requestId ?? requestId(), invocationKey: '', mode: 'consumed' });
     generation.current++;
-    confirmationResolve.current?.(false); confirmationResolve.current = null;
+    confirmationResolve.current?.('abandon'); confirmationResolve.current = null; setConfirmation(null);
     inviteResolve.current?.(false); inviteResolve.current = null;
     setCommandText(''); setActive(false); onModeChange?.(false); activeRef.current = false;
     props.onSendLiteral(text);
@@ -335,19 +342,24 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
     leaveAfterRun();
     void done.catch(() => undefined);
   };
+  const abandonDialog = () => {
+    const resolve = confirmationResolve.current; confirmationResolve.current = null;
+    setConfirmation(null); resolve?.('abandon');
+    setActive(false); activeRef.current = false; onModeChange(false);
+  };
   const saved = memory.get(key)?.text ?? commandText;
   const community = binding.communityId === null ? null : client.get('communities')?.find(row => row.id === binding.communityId) ?? null;
-  return <><p className="d-sr-only" role="status" data-command-result="">{announcement}</p>{inviteOpen && community !== null ? <InviteFlow open community={{ id: community.id, name: community.name }} onClose={() => { setInviteOpen(false); inviteResolve.current?.(false); inviteResolve.current = null; }} onCreated={() => { inviteResolve.current?.(true); inviteResolve.current = null; }} /> : null}
+  return <>{inviteOpen && community !== null ? <InviteFlow open community={{ id: community.id, name: community.name }} onClose={() => { setInviteOpen(false); inviteResolve.current?.(false); inviteResolve.current = null; }} onCreated={() => { inviteResolve.current?.(true); inviteResolve.current = null; }} /> : null}
     {modlogOpen && binding.communityId !== null ? <Dialog open title={t('admin.bot.moderationLog.title')} closeLabel={t('dialog.close')} onClose={() => setModlogOpen(false)}><ModerationLog communityId={binding.communityId} /></Dialog> : null}
     {confirmation?.moderation !== undefined ? <Dialog open kind="confirm" title={confirmation.title} describedBy={confirmationBodyId} description={<p id={confirmationBodyId} className="dw-command-confirm-description">{confirmation.body}</p>}
-      lead={<Avatar name={confirmation.moderation.name} size="confirm" />} closeLabel={resultCopy.cancel}
-      onClose={() => { setConfirmation(null); confirmationResolve.current?.(false); confirmationResolve.current = null; }}
-      footer={<Button variant="danger" onClick={() => { const resolve = confirmationResolve.current; confirmationResolve.current = null; setConfirmation(null); resolve?.(true); }}><Icon name={confirmation.moderation.action === 'kick' ? 'user-x' : 'ban'} size={14} />{resultCopy.action[confirmation.moderation.action]}</Button>}>
+      lead={<Avatar name={confirmation.moderation.name} size="confirm" />} closeLabel={resultCopy.cancel} onBackdrop={abandonDialog}
+      onClose={() => { setConfirmation(null); confirmationResolve.current?.('cancel'); confirmationResolve.current = null; }}
+      footer={<Button variant="danger" onClick={() => { const resolve = confirmationResolve.current; confirmationResolve.current = null; setConfirmation(null); resolve?.('confirm'); }}><Icon name={confirmation.moderation.action === 'kick' ? 'user-x' : 'ban'} size={14} />{resultCopy.action[confirmation.moderation.action]}</Button>}>
       <div className="dw-command-confirm">{confirmation.moderation.action === 'ban' ? <><div><span>{resultCopy.duration}</span>{confirmation.moderation.duration}</div><div><span>{resultCopy.reason}</span>{confirmation.moderation.reason}</div></> : null}
         <div><span>{resultCopy.logged}</span>{resultCopy.loggedNote}</div></div>
-    </Dialog> : confirmation !== null ? <ConfirmDialog open title={confirmation.title} body={confirmation.body} confirmLabel="Continue" busyLabel="Working…" cancelLabel="Cancel" busy={false} error={null}
-    onConfirm={() => { setConfirmation(null); confirmationResolve.current?.(true); confirmationResolve.current = null; }}
-    onClose={() => { setConfirmation(null); confirmationResolve.current?.(false); confirmationResolve.current = null; }} /> : null}{active ? <CommandPicker key={contextKey} definitions={definitions} initialText={saved}
+    </Dialog> : confirmation !== null ? <ConfirmDialog open title={confirmation.title} body={confirmation.body} confirmLabel="Continue" busyLabel="Working…" cancelLabel="Cancel" onBackdrop={abandonDialog} busy={false} error={null}
+    onConfirm={() => { setConfirmation(null); confirmationResolve.current?.('confirm'); confirmationResolve.current = null; }}
+    onClose={() => { setConfirmation(null); confirmationResolve.current?.('cancel'); confirmationResolve.current = null; }} /> : null}{active ? <CommandPicker key={contextKey} definitions={definitions} initialText={saved}
     onUnknown={text => { resultStore.add({ at: Date.now(), status: 'failed', text, provider: 'builtin' }); leaveAfterRun(); }} onExecute={execution} onCancel={cancel} onDone={leaveAfterRun} onSendLiteral={sendLiteral} suggest={suggest} suggestionSources={suggestionSources} contextKey={contextKey}
     listed={listed} room={room} onRunDetached={runDetached} {...(botName !== undefined ? { botName } : {})} {...(props.renderFrame !== undefined ? { frame: props.renderFrame } : {})}
     onDraftChange={text => { setCommandText(text); const row = memory.get(key); remember(memory, key, { text, requestId: row?.requestId ?? requestId(), invocationKey: row?.invocationKey ?? text, mode: 'active' }); }} /> : null}</>;

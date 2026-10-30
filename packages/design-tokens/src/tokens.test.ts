@@ -148,3 +148,8 @@ describe('Wave B Task 2 command picker tokens', () => {
 it('Task 6: uses the prototype success result fill', () => {
   expect(themes.signal.okResult).toBe('rgba(124,255,142,.1)');
 });
+
+it('Task 6 I2: the Not confirmed chip uses the prototype warning fill and ink', () => {
+  expect(themes.signal.warnResult).toBe('rgba(255,209,106,.1)');
+  expect(themes.signal.warnResultText).toBe('#FFD16A');
+});

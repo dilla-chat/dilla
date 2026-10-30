@@ -6,6 +6,7 @@ import { CoreProvider } from "../../core/context.tsx";
 import { FakeClient } from "../../test/fake-client.ts";
 import { account, ME } from "../../test/fixtures.ts";
 import { CommandHost, clearCommandDraftMemory } from "./CommandHost.tsx";
+import { privateResults } from "./private-results.ts";
 import { CommandProvider } from "./CommandContext.tsx";
 import { Shell } from "../Shell.tsx";
 import { replaceHistoryState } from "../../router.ts";
@@ -130,7 +131,7 @@ describe("Task4 fix1 focused lifecycle probes", () => {
     await user.type(screen.getByRole("combobox", { name: "user" }), "bob");
     await user.click(await screen.findByRole("option", { name: /^bob/ }));
     await user.click(screen.getByRole("button", { name: "send" }));
-    await screen.findByText("pending");
+    await waitFor(() => expect(privateResults(fake, ":", `${CID}/${CH}/`).rows().at(-1)?.text).toBe("pending"));
     v.unmount();
     render(<Host fake={fake} handlers={handlers} />);
     await user.click(screen.getByRole("button", { name: "send" }));
@@ -440,7 +441,7 @@ describe("Task4 fix1 focused lifecycle probes", () => {
     for (let n = 0; n < 2; n++) {
       await user.click(screen.getByRole("button", { name: "send" }));
       await user.click(await screen.findByRole("button", { name: "Continue" }));
-      await screen.findByText(/result is uncertain \(E_NETWORK\)/);
+      await waitFor(() => expect(privateResults(fake, ":", `${CID}/${CH}/`).rows().at(-1)?.text).toMatch(/result is uncertain \(E_NETWORK\)/));
     }
     expect(ids).toHaveLength(2);
     expect(ids[1]).toBe(ids[0]);

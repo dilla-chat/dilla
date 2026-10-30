@@ -437,7 +437,7 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
         if (field.selected === undefined) { fail(index, copy.chooseEntity(option.name)); return null; }
         args[option.name] = field.selected.value;
       } else if (meta.suggest === 'duration') {
-        if (selected.id === 'ban' && text.toLowerCase() === PERMANENT) continue;
+        if (selected.id === 'ban' && text.toLowerCase() === PERMANENT) { args[option.name] = PERMANENT; continue; }
         args[option.name] = registryDuration(text) ?? text;
       } else if (meta.suggest === 'when') {
         const result = whenOf(text);

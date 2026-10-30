@@ -1,3 +1,5 @@
+import { t } from '../../strings/index.ts';
+const isolate = (name: string) => `\u2068${name}\u2069`;
 // The command picker's copy (Signal wave B Task 2): the prototype's, verbatim, curly quotes as drawn.
 export const commandPickerCopy = {
   region: 'Command composer',
@@ -28,7 +30,6 @@ export const commandPickerCopy = {
   couldNotConfirm: 'The command could not be confirmed. Your draft is still here.',
   completedPrivately: 'Command completed privately.',
   completed: 'Command completed.',
-  runningPrivately: 'Running command privately…',
 } as const;
 
 export const privateResultCopy = {
@@ -37,10 +38,12 @@ export const privateResultCopy = {
   pending: (id: string) => id === 'remind' ? 'Saving your reminder…' : id === 'help' ? 'Looking that up…' : ['play', 'pause', 'resume', 'skip', 'stop', 'queue', 'volume'].includes(id) ? 'Checking your voice channel…' : `/${id}…`,
   unavailable: 'This command is temporarily unavailable.',
   joinVoice: 'Join a voice channel first. Glenn plays where you are.',
-  cancelled: (action: string) => `${action} cancelled. Nothing changed.`,
+  cancelled: (action: 'kick' | 'ban') => t(`privateResult.cancelled.${action}`),
+  dismissName: (text: string) => t('privateResult.dismiss', { text }),
+  failed: () => t('privateResult.failed'),
   action: { kick: 'Kick', ban: 'Ban' },
-  title: (action: string, name: string, server: string) => `${action} ${name} from ${server}?`,
-  kickBody: (name: string) => `${name} leaves now and can come back only with a new invite.`,
-  banBody: (name: string, duration: string) => `${name} leaves now and can’t rejoin for ${duration}.`,
+  title: (action: string, name: string, server: string) => `${action} ${isolate(name)} from ${isolate(server)}?`,
+  kickBody: (name: string) => `${isolate(name)} leaves now and can come back only with a new invite.`,
+  banBody: (name: string, duration: string) => `${isolate(name)} leaves now and can’t rejoin ${duration === 'permanent' ? 'permanently' : `for ${duration}`}.`,
   server: 'this server', duration: 'Duration', reason: 'Reason', noReason: 'none given', logged: 'Logged', loggedNote: 'modlog · visible to moderators', cancel: 'Cancel',
 } as const;

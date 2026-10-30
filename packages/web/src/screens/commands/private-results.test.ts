@@ -22,3 +22,21 @@ describe('privateResults', () => {
     stop(); store.add(row); expect(listener).toHaveBeenCalledTimes(3);
   });
 });
+
+it('evicts the least recently viewed conversation beyond fifty, preserving recent results', () => {
+  const client = {};
+  for (let i = 0; i < 50; i++) privateResults(client, 'ada', String(i)).add(row);
+  privateResults(client, 'ada', '0');
+  privateResults(client, 'ada', '50').add(row);
+  expect(privateResults(client, 'ada', '0').rows()).toHaveLength(1);
+  expect(privateResults(client, 'ada', '1').rows()).toEqual([]);
+});
+it('never evicts a viewed conversation, but can evict it after leaving', () => {
+  const client = {}; const viewed = privateResults(client, 'ada', 'viewed');
+  viewed.add(row); const leave = viewed.subscribe(() => undefined);
+  for (let i = 0; i < 60; i++) privateResults(client, 'ada', String(i)).add(row);
+  expect(privateResults(client, 'ada', 'viewed').rows()).toHaveLength(1);
+  leave();
+  for (let i = 60; i < 120; i++) privateResults(client, 'ada', String(i));
+  expect(privateResults(client, 'ada', 'viewed').rows()).toEqual([]);
+});

@@ -417,7 +417,7 @@
           "click": "button.d-composer__send"
         },
         {
-          "waitFor": "role=dialog[name=/^Kick Björn from/]"
+          "waitFor": "role=dialog[name=/^Kick /]"
         }
       ]
     }
@@ -510,7 +510,7 @@
           "click": "button.d-composer__send"
         },
         {
-          "waitFor": "role=dialog[name=/^Kick Björn from/]"
+          "waitFor": "role=dialog[name=/^Kick /]"
         },
         {
           "click": "role=dialog >> role=button[name=\"Cancel\"s]"
@@ -615,7 +615,7 @@
           "click": "button.d-composer__send"
         },
         {
-          "waitFor": "role=dialog[name=/^Ban Björn from/]"
+          "waitFor": "role=dialog[name=/^Ban /]"
         }
       ]
     }
@@ -720,7 +720,7 @@
           "click": "button.d-composer__send"
         },
         {
-          "waitFor": "role=dialog[name=/^Ban Björn from/]"
+          "waitFor": "role=dialog[name=/^Ban /]"
         },
         {
           "click": "role=dialog >> role=button[name=\"Cancel\"s]"
@@ -1244,7 +1244,7 @@
           "click": "button.d-composer__send"
         },
         {
-          "waitFor": "role=dialog[name=/^Kick Björn from/]"
+          "waitFor": "role=dialog[name=/^Kick /]"
         }
       ]
     }
@@ -1356,7 +1356,7 @@
           "click": "button.d-composer__send"
         },
         {
-          "waitFor": "role=dialog[name=/^Kick Björn from/]"
+          "waitFor": "role=dialog[name=/^Kick /]"
         },
         {
           "click": "role=dialog >> role=button[name=\"Cancel\"s]"
@@ -1480,7 +1480,7 @@
           "click": "button.d-composer__send"
         },
         {
-          "waitFor": "role=dialog[name=/^Ban Björn from/]"
+          "waitFor": "role=dialog[name=/^Ban /]"
         }
       ]
     }
@@ -1604,7 +1604,7 @@
           "click": "button.d-composer__send"
         },
         {
-          "waitFor": "role=dialog[name=/^Ban Björn from/]"
+          "waitFor": "role=dialog[name=/^Ban /]"
         },
         {
           "click": "role=dialog >> role=button[name=\"Cancel\"s]"

@@ -115,9 +115,9 @@ async function invoke(box: ReturnType<typeof composerBox>, page: Page, command: 
   await region.getByRole('button', { name: copy('shell.composer.send'), exact: true }).click();
 }
 
-/** The last command result the host spoke (a run that ended well leaves command mode). */
+/** The last private command result in the feed. */
 function commandResult(page: Page): Locator {
-  return page.locator('[data-command-result]');
+  return page.locator('.d-bot-result .d-message-row__body').last();
 }
 
 async function chooseCommand(box: ReturnType<typeof composerBox>, page: Page, command: string): Promise<Locator> {
@@ -398,12 +398,16 @@ test('composer keeps private results private, publishes only explicit text, and 
     await expect(logRegion(page, GENERAL).locator('.d-bot-result')).toContainText('Only you can see this');
     await expect(logRegion(page, GENERAL).locator('.d-bot-result .d-message-row__author')).toHaveText('dilla');
     await expect(logRegion(page, GENERAL).locator('.d-bot-result')).toHaveCount(1);
-    await logRegion(page, GENERAL).locator('.d-bot-result').getByRole('button', { name: 'Dismiss', exact: true }).click();
+    await expect(logRegion(page, GENERAL).locator('.d-message-row[data-msg-id]').filter({ hasText: '/help' })).toHaveCount(0);
+    await page.reload();
+    await openChannel(page, COMMUNITY, GENERAL);
+    await expect(root).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
     await expect(logRegion(page, GENERAL).locator('.d-bot-result')).toHaveCount(0);
+    await expect(logRegion(page, GENERAL).locator('.d-message-row[data-msg-id]').filter({ hasText: '/help' })).toHaveCount(0);
     await box.fill('/xyz');
     await page.getByRole('textbox', { name: 'Command', exact: true }).press('Enter');
     await expect(logRegion(page, GENERAL).locator('.d-bot-result[data-status="failed"]')).toContainText('/xyz isn’t a command here. To post it as text, start with //.');
-    await logRegion(page, GENERAL).locator('.d-bot-result').getByRole('button', { name: 'Dismiss', exact: true }).click();
+    await logRegion(page, GENERAL).locator('.d-bot-result').getByRole('button', { name: /^Dismiss:/ }).click();
     await expect(composer).toHaveCount(0, { timeout: WAIT });
 
     const shrug = await chooseCommand(box, page, 'shrug');
@@ -669,7 +673,7 @@ musicTest('music snapshot and clear report privately or explain unavailable encr
         await invoke(composerBox(page, GENERAL), page, command);
         await expect(page.getByRole('region', { name: 'Command composer', exact: true })).toHaveCount(0);
         await expect(logRegion(page, GENERAL).locator('.d-bot-result[data-status="failed"]')).toContainText('Join a voice channel first. Glenn plays where you are.');
-        await logRegion(page, GENERAL).locator('.d-bot-result').getByRole('button', { name: 'Dismiss', exact: true }).click();
+        await logRegion(page, GENERAL).locator('.d-bot-result').getByRole('button', { name: /^Dismiss:/ }).click();
         await leaveCommandMode(page);
       }
       expect(await page.evaluate(() => {
@@ -697,15 +701,20 @@ musicTest('music snapshot and clear report privately or explain unavailable encr
     await expect(voiceRow(page, GENERAL)).toContainText('connected', { timeout: WAIT });
     await expect(page.getByRole('toolbar', { name: 'voice controls', exact: true })).toBeVisible({ timeout: WAIT });
     const box = composerBox(page, GENERAL);
-    await invoke(box, page, '/queue');
+    // The member list need not include the Bot yet. Compare with CommandHost's live source tag in the picker.
+    await box.fill('/');
+    const commands = page.getByRole('region', { name: 'Command composer', exact: true });
+    const botName = await commands.getByRole('option', { name: /^\/queue,/ }).locator('.d-cmd-row__source').innerText();
+    await commands.getByRole('textbox', { name: 'Command', exact: true }).fill('/queue');
+    await commands.getByRole('button', { name: copy('shell.composer.send'), exact: true }).click();
     await expect(commandResult(page)).toContainText(/music queue is empty/i, { timeout: BOT_WAIT });
-    await expect(logRegion(page, GENERAL).locator('.d-bot-result .d-message-row__author')).toHaveText('Glenn');
-    await logRegion(page, GENERAL).locator('.d-bot-result').getByRole('button', { name: 'Dismiss', exact: true }).click();
+    await expect(logRegion(page, GENERAL).locator('.d-bot-result .d-message-row__author')).toHaveText(botName);
+    await logRegion(page, GENERAL).locator('.d-bot-result').getByRole('button', { name: /^Dismiss:/ }).click();
     await leaveCommandMode(page);
     await invoke(box, page, '/queue clear');
     await expect(commandResult(page)).toContainText('Music queue cleared.', { timeout: BOT_WAIT });
-    await expect(logRegion(page, GENERAL).locator('.d-bot-result .d-message-row__author')).toHaveText('Glenn');
-    await logRegion(page, GENERAL).locator('.d-bot-result').getByRole('button', { name: 'Dismiss', exact: true }).click();
+    await expect(logRegion(page, GENERAL).locator('.d-bot-result .d-message-row__author')).toHaveText(botName);
+    await logRegion(page, GENERAL).locator('.d-bot-result').getByRole('button', { name: /^Dismiss:/ }).click();
   } catch (error) {
     primaryFailure = error;
     const evidence = await page.evaluate(() => {
@@ -775,7 +784,7 @@ test('moderation requires confirmation and applies to a distinct joined member',
     await expect(confirmation).toBeVisible({ timeout: WAIT });
     await confirmation.getByRole('button', { name: 'Cancel', exact: true }).click();
     await expect(confirmation).toBeHidden();
-    await expect(logRegion(page, GENERAL).locator('.d-bot-result[data-status="cancelled"]')).toContainText('Not confirmed');
+    await expect(logRegion(page, GENERAL).locator('.d-bot-result[data-status="cancelled"]')).toContainText('Kick cancelled. Nothing changed.');
     await leaveCommandMode(page);
     await expect(page.getByRole('navigation', { name: copy('shell.rail.label'), exact: true }).getByRole('button', { name: COMMUNITY })).toBeVisible();
 

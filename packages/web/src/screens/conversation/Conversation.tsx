@@ -85,6 +85,9 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
   const [route] = useRoute();
   const communityId = route.name === 'channel' ? route.communityId : null;
   const account = useSlice('account');
+  const resultMembers = useSlice(`members:${communityId ?? ''}`);
+  const botMember = resultMembers?.find(member => member.kind === 1);
+  const botName = botMember?.display || botMember?.username || privateResultCopy.author.bot;
   const privateStore = privateResults(client, `${account?.instance?.id ?? ''}:${account?.user?.id ?? ''}`, `${communityId ?? 'dm'}/${props.channelId}/`);
   const privateRows = useSyncExternalStore(privateStore.subscribe, privateStore.rows);
   // Role names and colours, and the broadcast right, once known; until then the shell's own book and rule stand.
@@ -386,8 +389,8 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
         {...(p.onOpenThread !== undefined ? { onOpenThread: p.onOpenThread } : {})}
         {...(p.onOpenProfile !== undefined ? { onOpenProfile: p.onOpenProfile } : {})} />
       </Fragment>)}
-      {privateRows.map(row => <BotResult key={row.id} author={{ name: privateResultCopy.author[row.provider], avatarName: privateResultCopy.author[row.provider], shape: row.provider === 'bot' ? 'bot' : 'circle' }}
-        time={formatTime(row.at / 1000)} status={row.status} body={row.text} labels={privateResultCopy.labels} onDismiss={() => privateStore.dismiss(row.id)} />)}
+      {privateRows.map(row => <BotResult key={row.id} author={{ name: (row.provider === 'bot' ? botName : privateResultCopy.author.builtin), avatarName: (row.provider === 'bot' ? botName : privateResultCopy.author.builtin), shape: row.provider === 'bot' ? 'bot' : 'circle' }}
+        time={formatTime(row.at / 1000)} status={row.status} body={row.text} labels={{ ...privateResultCopy.labels, dismissName: privateResultCopy.dismissName(row.text) }} onDismiss={() => privateStore.dismiss(row.id)} />)}
     </MessageLog>
     <div className="dw-overlay">{emojiFor !== null && gridPos !== null ? <div ref={gridRef} style={gridPos}
       onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) closeEmoji(false); }}>

@@ -26,6 +26,7 @@ export interface ConfirmDialogProps {
   children?: ReactNode;
   onConfirm(): void;
   onClose(): void;
+  onBackdrop?(): void;
 }
 
 /**
@@ -35,7 +36,7 @@ export interface ConfirmDialogProps {
  */
 export function ConfirmDialog({
   open, title, body, confirmLabel, busyLabel, cancelLabel, tone = 'danger', busy, error, attempt = 0, canConfirm = true,
-  person, children, onConfirm, onClose,
+  person, children, onConfirm, onClose, onBackdrop,
 }: ConfirmDialogProps) {
   const bodyRef = useRef<HTMLDivElement>(null);
   // After Dialog's own open effect (a child's effects run first): a field or Cancel holds focus, not the dialog.
@@ -56,7 +57,7 @@ export function ConfirmDialog({
   }, [busy, open, error]);
   const bodyId = `${useId()}-body`;
   return (
-    <Dialog open={open} kind="confirm" title={title} closeLabel={cancelLabel} onClose={onClose} describedBy={bodyId}
+    <Dialog open={open} kind="confirm" title={title} closeLabel={cancelLabel} onClose={onClose} onBackdrop={onBackdrop} describedBy={bodyId}
       lead={person === undefined ? undefined : <span className="d-confirm-dialog__avatar" aria-hidden="true"><Avatar name={person} size="confirm" /></span>}
       description={<p id={bodyId} className="d-confirm-dialog__body">{body}</p>}
       footer={<Button variant={tone} type="button" disabled={!canConfirm || busy} onClick={onConfirm}>{busy ? busyLabel : confirmLabel}</Button>}>

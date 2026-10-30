@@ -181,8 +181,9 @@ const entries: Record<string, CommandHandler> = {
     const member = moderationTarget(context, invocation.args.user, 'ban');
     if (!member) return failure('This member cannot be banned with your current permissions and rank.');
     const durationText = invocation.args.duration ?? '1d';
-    const seconds = durationSeconds(durationText);
-    if (seconds === null || seconds < 3600 || seconds > 3_153_600_000) return failure('Ban duration must be from 1h to 100y.');
+    const permanent = durationText === 'permanent';
+    const seconds = permanent ? null : durationSeconds(durationText);
+    if (!permanent && (seconds === null || seconds < 3600 || seconds > 3_153_600_000)) return failure('Ban duration must be from 1h to 100y.');
     const reason = (invocation.args.reason ?? '').trim();
     if (reasonProblem(reason)) return failure('Reason must be at most 512 UTF-8 bytes and contain no control characters.');
     if (!await context.confirm(`Ban ${member.name}?`, `Ban length: ${durationText}. ${reason || 'No reason supplied.'}`)) return failure('Cancelled.');

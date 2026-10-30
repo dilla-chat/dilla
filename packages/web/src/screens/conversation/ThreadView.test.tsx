@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { PERM, type ThreadState } from '@dilla/client-core';
@@ -324,7 +324,25 @@ it('shows only this thread’s private results and dismisses without a request',
   expect(screen.queryByText('channel private')).not.toBeInTheDocument();
   expect(screen.getByText('thread private')).toBeInTheDocument();
   const calls = fake.calls.length;
-  await user.click(screen.getByRole('button', { name: 'Dismiss' }));
+  await user.click(screen.getByRole('button', { name: 'Dismiss: thread private' }));
   expect(screen.queryByText('thread private')).not.toBeInTheDocument();
+  expect(box()).toHaveFocus();
   expect(fake.calls).toHaveLength(calls);
+});
+
+it('thread Bot results use the live renamed member', () => {
+  const { fake } = setup(); const self = fake.get('account');
+  act(() => {
+    fake.publish(`members:${A}`, [...MEMBERS, { userId: 'ab'.repeat(16), username: 'bot', display: 'Freja', kind: 1, roleIds: [] }]);
+    privateResults(fake, `${self?.instance?.id ?? ''}:${self?.user?.id ?? ''}`, `${A}/${GEN}/${ROOT}`).add({ at: 1, status: 'success', text: 'thread Bot result', provider: 'bot' });
+  });
+  const row = document.querySelector('.d-bot-result') as HTMLElement;
+  expect(within(row).getByText('Freja')).toBeInTheDocument();
+  expect(within(row).getByRole('img', { name: 'Freja' })).toBeInTheDocument();
+});
+it('CommandHost and ThreadView share the production thread result key', async () => {
+  const { user } = setup();
+  fireEvent.change(box(), { target: { value: '/help' } });
+  await user.click(await screen.findByRole('button', { name: 'send' }));
+  await waitFor(() => expect(document.querySelector('.d-thread-pane__replies .d-bot-result[data-status="success"]')).toHaveTextContent('/help'));
 });

@@ -3,6 +3,8 @@ import { Button } from '../Button/Button.tsx';
 import './Dialog.css';
 
 export type DialogProps = { open: boolean; title: string; onClose: () => void; children: ReactNode; footer?: ReactNode; closeLabel?: string;
+  /** Optional distinct handling for abandoning a modal via its backdrop instead of choosing Cancel. */
+  onBackdrop?: () => void;
   /** The id of the element inside that describes the dialog (a confirmation's body). */
   describedBy?: string;
   /**
@@ -57,7 +59,7 @@ function marked(root: HTMLElement): HTMLElement | null {
   return Array.from(root.querySelectorAll<HTMLElement>(AUTOFOCUS)).find(e => !hiddenIn(e, root)) ?? null;
 }
 
-export function Dialog({ open, title, onClose, children, footer, closeLabel, describedBy, initialFocus = 'dialog', returnFocus, kind = 'form', lead, description }: DialogProps) {
+export function Dialog({ open, title, onClose, onBackdrop, children, footer, closeLabel, describedBy, initialFocus = 'dialog', returnFocus, kind = 'form', lead, description }: DialogProps) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   // What had focus when the dialog opened, and the latest fallback (read at close time, so never stale).
@@ -120,7 +122,7 @@ export function Dialog({ open, title, onClose, children, footer, closeLabel, des
     <dialog ref={ref} className="d-dialog" data-kind={kind} aria-labelledby={titleId} aria-describedby={open ? describedBy : undefined} aria-modal="true" tabIndex={-1}
       onCancel={e => { e.preventDefault(); onClose(); }}
       onKeyDown={e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); onClose(); } }}
-      onClick={e => { if (e.target === ref.current) onClose(); }}>
+      onClick={e => { if (e.target === ref.current) (onBackdrop ?? onClose)(); }}>
       {/* Contents exist only while open: a closed dialog leaks no hidden text. */}
       {open ? (
         <div className="d-dialog__panel" onClick={e => e.stopPropagation()}>

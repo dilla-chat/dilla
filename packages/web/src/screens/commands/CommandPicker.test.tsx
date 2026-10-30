@@ -7,6 +7,7 @@ import { CommandPicker, type CommandComposerProps, type CommandSuggestion } from
 import { CoreProvider } from '../../core/context.tsx';
 import { FakeClient } from '../../test/fake-client.ts';
 import { clearCommandDraftMemory, CommandHost } from './CommandHost.tsx';
+import { privateResults } from './private-results.ts';
 import { CommandProvider } from './CommandContext.tsx';
 import type { CommandProviderHandlers } from './command-types.ts';
 import { expectNoAxeViolations } from '../../test/setup.ts';
@@ -490,7 +491,7 @@ describe('CommandPicker in CommandHost', () => {
     const user = userEvent.setup();
     render(<CoreProvider client={fake}><Harness /></CoreProvider>);
     await user.click(await screen.findByRole('button', { name: 'send' }));
-    await screen.findByText('uncertain');
+    await waitFor(() => expect(privateResults(fake, ':', `dm/${channelId}/`).rows().at(-1)?.text).toBe('uncertain'));
     await user.click(screen.getByRole('button', { name: 'send' }));
     await waitFor(() => expect(ids).toHaveLength(2));
     await user.click(screen.getByRole('button', { name: 'toggle host' }));

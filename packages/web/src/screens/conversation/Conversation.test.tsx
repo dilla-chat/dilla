@@ -605,7 +605,32 @@ it('renders private results after messages, in time order, with authors and a lo
   expect(within(rows[1] as HTMLElement).getByText('dilla')).toBeInTheDocument();
   expect(within(rows[2] as HTMLElement).getByText('Glenn')).toBeInTheDocument();
   const calls = fake.calls.length;
-  await user.click(within(rows[2] as HTMLElement).getByRole('button', { name: 'Dismiss' }));
+  await user.click(within(rows[2] as HTMLElement).getByRole('button', { name: 'Dismiss: bot result' }));
   expect(screen.queryByText('bot result')).not.toBeInTheDocument();
+  expect(composer()).toHaveFocus();
   expect(fake.calls).toHaveLength(calls);
+});
+
+it('uses the Bot’s current display name, and falls back to Glenn when unknown', () => {
+  const { fake } = renderConversation(); const account = fake.get('account');
+  const store = privateResults(fake, `${account?.instance?.id ?? ''}:${account?.user?.id ?? ''}`, `${A}/${GEN}/`);
+  act(() => { store.add({ at: 1, status: 'success', text: 'bot result', provider: 'bot' }); });
+  expect(screen.getByText('Glenn')).toBeInTheDocument();
+  act(() => fake.publish(`members:${A}`, [...MEMBERS, { userId: 'ab'.repeat(16), username: 'bot', display: 'Freja', kind: 1, roleIds: [] }]));
+  const row = document.querySelector('.d-bot-result') as HTMLElement;
+  expect(within(row).getByText('Freja')).toBeInTheDocument();
+  expect(within(row).getByRole('img', { name: 'Freja' })).toBeInTheDocument();
+});
+it('CommandHost and Conversation share the production result key', async () => {
+  const { user } = renderConversation();
+  fireEvent.change(composer(), { target: { value: '/help' } });
+  await user.click(await screen.findByRole('button', { name: 'send' }));
+  const row = await waitFor(() => {
+    const result = document.querySelector('.d-message-log .d-bot-result[data-status="success"]');
+    expect(result).not.toBeNull(); return result as HTMLElement;
+  });
+  expect(row).toHaveTextContent('/help');
+  expect(row).toHaveTextContent('dilla');
+  expect(row.querySelectorAll('[aria-live="polite"]')).toHaveLength(1);
+  expect(document.querySelector('[data-command-result]')).toBeNull();
 });

@@ -37,6 +37,10 @@ import { settingsWorkspace } from './settingsWorkspace.ts';
 import { botCommand } from './botCommand.ts';
 import { utility } from './utility.ts';
 export const en = {
+  'privateResult.dismiss': 'Dismiss: {text}',
+  'privateResult.failed': 'That didn’t work. Try again.',
+  'privateResult.cancelled.kick': 'Kick cancelled. Nothing changed.',
+  'privateResult.cancelled.ban': 'Ban cancelled. Nothing changed.',
   ...utility,
   ...botCommand,
   ...settingsWorkspace,
