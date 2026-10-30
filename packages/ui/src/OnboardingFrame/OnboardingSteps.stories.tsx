@@ -86,7 +86,8 @@ function Keys({ initiallyAcknowledged, registering, network }: { initiallyAcknow
       {network ? <Banner tone="danger" action={{ label: t('onboarding.error.reload'), onAction: noop }}>{t('onboarding.error.network')}</Banner> : null}
       <p>{t('onboarding.keys.body')}</p>
       <RecoveryKey groups={KEY} label={t('onboarding.keys.label')} acknowledgeLabel={t('onboarding.keys.acknowledge')}
-        acknowledged={acknowledged} onAcknowledge={setAcknowledged} printLabel={t('onboarding.keys.print')} onPrint={noop} />
+        acknowledged={acknowledged} onAcknowledge={setAcknowledged} printLabel={t('onboarding.keys.print')} onPrint={noop}
+        saveLabel={t('onboarding.keys.save')} onSave={noop} />
       {acknowledged ? null : <p id="story-ack-hint" className="d-sr-only">{t('onboarding.keys.ackHint')}</p>}
       {registering ? <p role="status">{t('onboarding.keys.registering', { instance })}</p> : null}
     </Step>
@@ -141,6 +142,7 @@ function Done({ codes = true, saved = false, panel = true }: { codes?: boolean; 
           <span>{t('onboarding.done.ready', { server: 'Midgard Crew', channel: 'general' })}</span>
         </div>
       ) : null}
+      <p className="d-onboarding-frame__note">{t('onboarding.done.note')}</p>
       {codes ? (
         <div className="dw-signup-codes">
           <p>{t('onboarding.done.codesBody')}</p>

@@ -154,6 +154,15 @@ export function Onboarding(props: { onFinish(result: SignupResult): void }): Rea
   const joinedId = shown === 'done' ? finished?.communityId ?? null : null;
   const joined = joinedId === null ? null : communities?.find(c => c.id === joinedId) ?? null;
   const [joinedChannels] = useSlices(joined === null ? [] : [`channels:${joined.id}` as const]);
+  // The worker reads a server's channels when it is selected; the done step selects the joined server (Open dilla lands
+  // there next) so the panel can name its first text channel. Once per server; a refusal only leaves the panel out.
+  const selectedFor = useRef<string | null>(null);
+  const joinedReady = joined?.id ?? null;
+  useEffect(() => {
+    if (joinedReady === null || selectedFor.current === joinedReady) return;
+    selectedFor.current = joinedReady;
+    client.call({ m: 'selectCommunity', communityId: joinedReady }).catch(() => undefined);
+  }, [client, joinedReady]);
 
   // OnboardingFrame focuses its heading when the title changes; this effect runs after the frame's
   // (child effects first), so a field request after a step change lands on the field.
@@ -399,6 +408,9 @@ export function Onboarding(props: { onFinish(result: SignupResult): void }): Rea
             <span>{t('onboarding.done.ready', { server: joined.name, channel: channel.name })}</span>
           </div>
         )}
+        {/* Task 3b (Jonas): the note the removed "What this browser keeps" step carried, as small print under the panel. There
+            is no private-window detection to pair it with: a private window that refuses storage never reaches this step. */}
+        <p className="d-onboarding-frame__note">{t('onboarding.done.note')}</p>
         {/* Task 3b (Jonas): the backup codes, which the prototype does not show, sit on its done step (accepted deviation),
             and Open dilla waits for their tick as I saved it waits for the key's. */}
         {codes.length === 0 ? null : (
@@ -459,7 +471,12 @@ export function Onboarding(props: { onFinish(result: SignupResult): void }): Rea
         {key === null ? <p role="status">{t('onboarding.keys.preparing')}</p> : (
           <RecoveryKey groups={key} label={t('onboarding.keys.label')} acknowledgeLabel={t('onboarding.keys.acknowledge')}
             acknowledged={acknowledged} onAcknowledge={(v) => { if (!blocked) setAcknowledged(v); }}
-            printLabel={t('onboarding.keys.print')} onPrint={() => browser.print()} />
+            printLabel={t('onboarding.keys.print')} onPrint={() => browser.print()}
+            saveLabel={t('onboarding.keys.save')} onSave={() => {
+              // Jonas (task 3b): a text file the person places; the key goes into it once and nowhere else.
+              browser.download(t('onboarding.keys.fileName', { instance: name }),
+                `${t('onboarding.keys.fileBody', { instance: name })}\n\n${key.join('-')}\n`);
+            }} />
         )}
         {/* The prototype says this with a toast on the press; here it is the blocked button's description. */}
         {acknowledged ? null : <p id="onboarding-ack-hint" className="d-sr-only">{t('onboarding.keys.ackHint')}</p>}

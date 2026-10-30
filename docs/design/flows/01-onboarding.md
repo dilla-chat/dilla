@@ -455,6 +455,9 @@ What a page closed (or reloaded) at each step leaves, which is the same as befor
 | `onboarding.keys.acknowledge` | `I saved my recovery key somewhere safe` | checkbox label, step 3 |
 | `onboarding.keys.ackHint` | `Tick the box to continue.` | the blocked (`aria-disabled`) `I saved it`'s description (visually hidden; the prototype uses a toast) |
 | `onboarding.keys.print` | `Print` | button, step 3 |
+| `onboarding.keys.save` | `Save as file` | button beside Print, step 3: downloads a text file with the key (Jonas, task 3b) |
+| `onboarding.keys.fileName` | `dilla-recovery-key-{instance}.txt` | the saved file's suggested name |
+| `onboarding.keys.fileBody` | `Your dilla recovery key for {instance}. You need it to add another browser to your account. Keep this file away from this computer, and delete it here once it is stored elsewhere.` | the saved file's first line; the key follows once, its 13 groups joined by hyphens |
 | `onboarding.keys.preparing` | `Making your keys` | status line, step 3, while the key is not there yet |
 | `onboarding.keys.submit` | `I saved it` | button, step 3 (creates the account) |
 | `onboarding.keys.submitting` | `Creating account…` | button, step 3 while registering |
@@ -465,6 +468,7 @@ What a page closed (or reloaded) at each step leaves, which is the same as befor
 | `onboarding.done.codesBody` | `Each backup code signs you in once if you lose your second factor. Keep them with your recovery key.` | paragraph over the backup codes, step 6 |
 | `onboarding.done.codesAck` | `I saved my backup codes somewhere safe` | checkbox label, step 6 |
 | `onboarding.done.codesHint` | `Tick the box to continue.` | the blocked `Open dilla`'s description (visually hidden) |
+| `onboarding.done.note` | `Messages sent before another browser joins are not shown there.` | small print (`.d-onboarding-frame__note`) under the panel, step 6 |
 | `onboarding.done.next` | `Open dilla` | button, step 6 |
 | `onboarding.error.inviteRequired` | `Paste the invite you were given.` | field error, invite, mode 0, empty on `Continue` |
 | `onboarding.error.inviteInvalid` | `This invite is expired, used up or unknown. Ask for a new one.` | field error, invite, after `E_INVITE_INVALID` |

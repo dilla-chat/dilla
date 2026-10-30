@@ -209,11 +209,13 @@ describe('steps 4 and 5: the second factor', () => {
       ]);
       return Promise.resolve({ communityId: COMMUNITY, joinError: null });
     };
-    const { user } = setup(script);
+    const { user, fake } = setup(script);
     await toFactor(user);
     await throughApp(user);
     await waitFor(() => { expect(h1()).toHaveTextContent('You’re in'); });
     expect(screen.getByText('Midgard Crew is waiting in #general.')).toBeInTheDocument();
+    // The worker reads a server's channels once it is selected: the done step selects the joined one, once.
+    expect(fake.callsOf('selectCommunity')).toEqual([{ m: 'selectCommunity', communityId: COMMUNITY }]);
   });
 
   it('holds the factor screen until the join has answered, then hands over the joined server', async () => {

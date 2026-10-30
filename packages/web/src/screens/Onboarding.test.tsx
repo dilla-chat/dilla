@@ -230,6 +230,29 @@ describe('step 3: recovery key', () => {
     await expectNoAxeViolations(view.container);
     print.mockRestore();
   });
+  // Jonas (task 3b): Save as file, beside Print. The file carries the key exactly once, with a short explanation; nothing
+  // else of it is stored; Copy stays forbidden (protocol/03).
+  it('saves the key as a text file that carries it exactly once, and offers no copy', async () => {
+    const download = vi.spyOn(browser, 'download').mockImplementation(() => {});
+    const setItem = vi.spyOn(Storage.prototype, 'setItem');
+    const { user, fake } = setup();
+    await toKeys(user);
+    const save = button('Save as file');
+    expect(save.closest('.d-recovery-key__actions')).toBe(button('Print').closest('.d-recovery-key__actions'));
+    await user.click(save);
+    expect(download).toHaveBeenCalledTimes(1);
+    const [name, text] = download.mock.calls[0];
+    expect(name).toBe('dilla-recovery-key-dilla.test.txt');
+    const grouped = KEY.join('-');
+    expect(text.split(grouped)).toHaveLength(2);
+    expect(text).toContain('Your dilla recovery key for dilla.test.');
+    expect(screen.queryByRole('button', { name: /copy/i })).toBeNull();
+    expect(JSON.stringify(setItem.mock.calls)).not.toContain(KEY[0]);
+    expect(window.location.href).not.toContain(KEY[0]);
+    expect(fake.callsOf('signupSubmit')).toEqual([]);
+    download.mockRestore();
+    setItem.mockRestore();
+  });
   it('waits for the key before showing it', async () => {
     const { user, fake } = setup();
     fake.handler = () => Promise.resolve(null);
@@ -313,6 +336,8 @@ describe('creating the account (step 3, I saved it)', () => {
     expect(document.activeElement).toBe(h1());
     expect(screen.getByText('New account · step 6 of 6')).toBeInTheDocument();
     expect(screen.getByText('Your account is ready.')).toBeInTheDocument();
+    // Jonas (task 3b): the removed step's note, as small print.
+    expect(screen.getByText('Messages sent before another browser joins are not shown there.')).toHaveClass('d-onboarding-frame__note');
     await user.click(button('Open dilla'));
     expect(onFinish).toHaveBeenCalledWith({ communityId: null, joinError: null, invite: 'ABCD-EFGH' });
   });

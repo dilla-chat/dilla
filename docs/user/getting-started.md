@@ -641,8 +641,10 @@ There is no display name here. Until you set one in Settings → Profile, people
 button](screenshots/onboarding-3-recovery-key.png)
 
 "Shown once. You need it to add another browser." The key is 13 groups of 4 characters. **Print** opens the
-browser's print dialog; the printed page holds the key, not the rest of the screen. There is no copy button, on
-purpose: the clipboard is readable by other programs. You can still select the text yourself.
+browser's print dialog; the printed page holds the key, not the rest of the screen. **Save as file** downloads a small
+text file with the key; your browser asks where it goes, and dilla keeps no copy. Move it off this computer once it is
+stored somewhere else. There is no copy button, on purpose: the clipboard is readable by other programs. You can still
+select the text yourself.
 
 The key is the only way to get your account back or to add another browser. If every browser you use loses its data
 and you do not have the key, the account and its history are gone, and the host cannot bring them back.
@@ -682,7 +684,8 @@ browser or phone fills in. For a passkey, your browser asks where to keep it, an
 
 ![Step 6: "You’re in", "Your account is ready.", the backup codes and the Open dilla button](screenshots/onboarding-5-done.png)
 
-"Your account is ready." If the invite was for a server, a green panel says "{server} is waiting in #{channel}."
+"Your account is ready." If the invite was for a server, a green panel says "{server} is waiting in #{channel}." Under it:
+"Messages sent before another browser joins are not shown there."
 
 Under it are your backup codes, with **Copy** and **Print**: "Each backup code signs you in once if you lose your
 second factor. Keep them with your recovery key." Tick "I saved my backup codes somewhere safe"; **Open dilla** opens

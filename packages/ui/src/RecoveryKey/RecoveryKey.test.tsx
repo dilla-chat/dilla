@@ -41,6 +41,17 @@ describe('RecoveryKey', () => {
     expect(screen.queryByText(/copy/i)).toBeNull();
   });
 
+  // Wave B task 3b (Jonas): Save as file beside Print; still no copy control (protocol/03).
+  it('offers Save as file beside Print when the host gives it, and still no copy control', async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    renderKey({ saveLabel: 'Save as file', onSave });
+    expect(screen.getAllByRole('button').map(b => b.textContent)).toEqual([PRINT, 'Save as file']);
+    expect(screen.queryByRole('button', { name: /copy/i })).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Save as file' }));
+    expect(onSave).toHaveBeenCalledTimes(1);
+  });
+
   it('does not cancel copying the key text', () => {
     renderKey();
     expect(fireEvent.copy(screen.getByRole('list', { name: LABEL }))).toBe(true);

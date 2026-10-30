@@ -11,6 +11,9 @@ export interface RecoveryKeyProps {
   onAcknowledge(value: boolean): void;
   printLabel: string;
   onPrint(): void;
+  /** Wave B task 3b (Jonas): the prototype's "Save as file", beside Print. Optional; never a copy control (protocol/03). */
+  saveLabel?: string;
+  onSave?(): void;
 }
 
 /**
@@ -19,12 +22,12 @@ export interface RecoveryKeyProps {
  * kind (protocol/03 "Recovery"), and no handler interferes with selecting or
  * copying the text; the person may print it or write it down.
  */
-export function RecoveryKey({ groups, label, acknowledgeLabel, acknowledged, onAcknowledge, printLabel, onPrint }: RecoveryKeyProps) {
+export function RecoveryKey({ groups, label, acknowledgeLabel, acknowledged, onAcknowledge, printLabel, onPrint, saveLabel, onSave }: RecoveryKeyProps) {
   const labelId = useId();
   const ackId = useId();
   // Wave B task 3b, the prototype's key step: the grid (its name is for assistive technology only; the prototype draws no
-  // label), the row of actions under it (Print stands where the prototype has Copy and Save as file: protocol/03 forbids a
-  // copy control), then the 16px check box and its 12px label. The native checkbox covers the whole row, transparent, so
+  // label), the row of actions under it (Print where the prototype has Copy, which protocol/03 forbids, then Save as file),
+  // then the 16px check box and its 12px label. The native checkbox covers the whole row, transparent, so
   // the row is its target; the drawn box follows its state.
   return (
     <div className="d-recovery-key">
@@ -34,6 +37,9 @@ export function RecoveryKey({ groups, label, acknowledgeLabel, acknowledged, onA
       </ol>
       <div className="d-recovery-key__actions">
         <Button className="d-recovery-key__print" onClick={onPrint}><Icon name="printer" size={13} />{printLabel}</Button>
+        {onSave && saveLabel ? (
+          <Button className="d-recovery-key__print" onClick={onSave}><Icon name="download" size={13} />{saveLabel}</Button>
+        ) : null}
       </div>
       <div className="d-recovery-key__ack">
         <input id={ackId} type="checkbox" className="d-recovery-key__box" checked={acknowledged}
