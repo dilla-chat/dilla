@@ -687,6 +687,7 @@ browser or phone fills in. For a passkey, your browser asks where to keep it, an
 "Your account is ready." If the invite was for a server, a green panel says "{server} is waiting in #{channel}." Under it:
 "Messages sent before another browser joins are not shown there."
 
+On a phone, the backup codes are behind **Show**.
 Under it are your backup codes, with **Copy** and **Print**: "Each backup code signs you in once if you lose your
 second factor. Keep them with your recovery key." Tick "I saved my backup codes somewhere safe"; **Open dilla** opens
 the app once the box is ticked. The codes are shown once; if you close the tab before you saved them, make new ones

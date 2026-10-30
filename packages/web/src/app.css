@@ -222,6 +222,10 @@ html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[d
    with the key step's check box (RecoveryKey's classes) gating Open dilla. */
 .dw-signup-codes { display: grid; gap: 10px; min-width: 0; }
 .dw-signup-codes > p { margin: 0; }
+.dw-signup-codes .d-code-list__summary { display: flex; align-items: center; gap: 8px; font-size: var(--text-btn); color: var(--fg-3); }
+.dw-signup-codes .d-code-list__summary > span { flex: none; }
+.dw-signup-codes .d-code-list__summary > .d-code-list__actions { flex: 1; }
+.dw-signup-codes .d-code-list__summary .d-code-list__actions .d-btn { min-width: 0; padding-inline: 4px; }
 .dw-signup-codes .d-code-list { gap: 10px; }
 /* Task 3b review M3: the codes' Copy and Print drawn as the key step's actions (RecoveryKey.css): 32px, sharing the row,
    --control-edge-field, radius 7, 12px. */

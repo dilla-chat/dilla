@@ -4,6 +4,8 @@ import './CodeList.css';
 
 export interface CodeListProps {
   codes: readonly string[];
+  /** Optional in-memory disclosure; collapsed codes are absent from the DOM. */
+  disclosure?: { expanded: boolean; onToggle(): void; count: string; show: string; hide: string };
   label: string;
   /** Receives the codes exactly as shown, one per line, in the form client-core's normaliseBackupCode accepts. */
   onCopy(text: string): void;
@@ -31,30 +33,40 @@ function groups(code: string): string[] {
  * fives joined by hyphens (the server's own spelling). A group never breaks inside; a code that does not fit on
  * a line wraps between groups. The columns are as many as fit, so a code never overflows its cell.
  */
-export function CodeList({ codes, label, onCopy, onPrint, labels }: CodeListProps) {
+export function CodeList({ codes, label, onCopy, onPrint, labels, disclosure }: CodeListProps) {
   const labelId = useId();
+  const listId = useId();
   const shown = codes.map(c => groups(c));
+  const actions = (
+    <div className="d-code-list__actions">
+      <Button onClick={() => { onCopy(shown.map(gs => gs.join('')).join('\n')); }}>{labels.copy}</Button>
+      <Button onClick={onPrint}>{labels.print}</Button>
+      {disclosure ? <Button aria-expanded={disclosure.expanded} aria-controls={listId} onClick={disclosure.onToggle}>
+        {disclosure.expanded ? disclosure.hide : disclosure.show}
+      </Button> : null}
+    </div>
+  );
   return (
     <div className="d-code-list">
-      <p id={labelId} className="d-code-list__label d-label">{label}</p>
-      <ol role="list" className="d-code-list__grid" aria-labelledby={labelId}>
-        {shown.map((gs, i) => (
-          <li key={i} className="d-code-list__code">
-            <span className="d-code-list__text">
-              {gs.map((g, j) => (
-                <Fragment key={j}>
-                  {j > 0 ? <wbr /> : null}
-                  <span className="d-code-list__group">{g}</span>
-                </Fragment>
-              ))}
-            </span>
-          </li>
-        ))}
-      </ol>
-      <div className="d-code-list__actions">
-        <Button onClick={() => { onCopy(shown.map(gs => gs.join('')).join('\n')); }}>{labels.copy}</Button>
-        <Button onClick={onPrint}>{labels.print}</Button>
-      </div>
+      {disclosure ? <div className="d-code-list__summary"><span>{disclosure.count}</span>{actions}</div> : null}
+      {!disclosure || disclosure.expanded ? <>
+        <p id={labelId} className="d-code-list__label d-label">{label}</p>
+        <ol id={listId} role="list" className="d-code-list__grid" aria-labelledby={labelId}>
+          {shown.map((gs, i) => (
+            <li key={i} className="d-code-list__code">
+              <span className="d-code-list__text">
+                {gs.map((g, j) => (
+                  <Fragment key={j}>
+                    {j > 0 ? <wbr /> : null}
+                    <span className="d-code-list__group">{g}</span>
+                  </Fragment>
+                ))}
+              </span>
+            </li>
+          ))}
+        </ol>
+      </> : null}
+      {disclosure ? null : actions}
     </div>
   );
 }

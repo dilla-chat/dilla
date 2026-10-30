@@ -11,6 +11,7 @@ import { CodeList } from '../CodeList/CodeList.tsx';
 import { Icon } from '../Icon/Icon.tsx';
 import { QrCode } from '../QrCode/QrCode.tsx';
 // The shipped copy of @dilla/web, so the F16 screenshots show exactly what the app says.
+import { usePhoneLayout } from '../../../web/src/layout.ts';
 import { t } from '../../../web/src/strings/index.ts';
 
 // Wave B task 3b: the prototype's six new-account steps, composed exactly as packages/web/src/screens/Onboarding.tsx
@@ -130,8 +131,10 @@ function Code({ initial = '' }: { initial?: string }) {
   );
 }
 /** Onboarding.tsx's done step: the prototype's panel, then the backup codes and their tick (accepted deviation). */
-function Done({ codes = true, saved = false, panel = true }: { codes?: boolean; saved?: boolean; panel?: boolean }) {
+function Done({ codes = true, saved = false, panel = true, backupCodes = CODES }: { codes?: boolean; saved?: boolean; panel?: boolean; backupCodes?: string[] }) {
   const [ticked, setTicked] = useState(saved);
+  const phone = usePhoneLayout();
+  const [expanded, setExpanded] = useState(false);
   const owed = codes && !ticked;
   return (
     <OnboardingFrame title={t('onboarding.done.title')} stepLabel={t('onboarding.step', { n: 6, total: 6 })} progress={{ n: 6, total: 6 }}
@@ -147,7 +150,11 @@ function Done({ codes = true, saved = false, panel = true }: { codes?: boolean; 
       {codes ? (
         <div className="dw-signup-codes">
           <p>{t('onboarding.done.codesBody')}</p>
-          <CodeList codes={CODES} label={t('factor.codes.label')} labels={{ copy: t('factor.codes.copy'), print: t('factor.codes.print') }}
+          <CodeList disclosure={phone ? {
+            expanded, onToggle: () => { setExpanded(v => !v); },
+            count: t('onboarding.done.codesCount', { count: backupCodes.length }),
+            show: t('onboarding.done.codesShow'), hide: t('onboarding.done.codesHide'),
+          } : undefined} codes={backupCodes} label={t('factor.codes.label')} labels={{ copy: t('factor.codes.copy'), print: t('factor.codes.print') }}
             onCopy={noop} onPrint={noop} />
           <div className="d-recovery-key__ack">
             <input id="s-codes-ack" type="checkbox" className="d-recovery-key__box" checked={ticked} onChange={e => setTicked(e.currentTarget.checked)} />
@@ -183,6 +190,21 @@ export const Factor_: Story = { name: 'Factor', render: () => <Factor /> };
 export const Code_: Story = { name: 'Code', render: () => <Code /> };
 export const CodeTyped: Story = { render: () => <Code initial="482" /> };
 export const Done_: Story = { name: 'Done', render: () => <Done /> };
+export const DonePhone: Story = {
+  parameters: { phoneViewport: true },
+  globals: { viewport: { value: 'phone' } },
+  render: () => <Done backupCodes={Array.from({ length: 10 }, (_, i) => CODES[i % CODES.length])} />,
+  play: ({ canvasElement }) => {
+    if (canvasElement.querySelector('.d-code-list__code')) throw new Error('Phone codes must start outside the DOM');
+    const row = canvasElement.querySelector<HTMLElement>('.d-code-list__summary');
+    if (!row || row.scrollWidth > row.clientWidth) throw new Error('Ten codes and all three actions must fit in one row');
+    const buttons = [...canvasElement.querySelectorAll('button')];
+    const show = buttons.find(b => b.textContent === t('onboarding.done.codesShow'));
+    if (show?.getAttribute('aria-expanded') !== 'false') throw new Error('Phone codes must start collapsed');
+    const open = buttons.find(b => b.textContent === t('onboarding.done.next'));
+    if (!open || open.getBoundingClientRect().bottom > window.innerHeight) throw new Error('Open dilla must fit on the first phone screen');
+  },
+};
 export const DoneCodesSaved: Story = { render: () => <Done saved /> };
 export const DoneNoServer: Story = { render: () => <Done panel={false} /> };
 export const DonePrototype: Story = { render: () => <Done codes={false} /> };

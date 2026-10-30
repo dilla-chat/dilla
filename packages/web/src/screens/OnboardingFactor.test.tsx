@@ -1,6 +1,6 @@
 // web3.6 W2, wave B task 3b: the second factor as steps 4 (choice) and 5 (code) of 6 of the sign-up, and the backup codes on
 // the done step, 6 (flow 10 state 1; flow 01).
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent, { type UserEvent } from '@testing-library/user-event';
 import type { AccountState, Command, FactorsState } from '@dilla/client-core';
@@ -11,6 +11,8 @@ import { expectNoAxeViolations } from '../test/setup.ts';
 import { en } from '../strings/index.ts';
 import { liveRegions, watchRegion } from '../test/live-regions.ts';
 import { Onboarding } from './Onboarding.tsx';
+import { browser } from '../browser.ts';
+import { PHONE_QUERY } from '../layout.ts';
 import { COMPLETE_DELAY_MS } from '@dilla/ui';
 // Wave B task 3 fix round 1: the code boxes send the sixth digit after the prototype's 350 ms.
 const settleCode = () => act(async () => { await new Promise<void>((resolve) => { setTimeout(resolve, COMPLETE_DELAY_MS + 20); }); });
@@ -72,6 +74,74 @@ async function throughApp(user: UserEvent) {
   await user.type(screen.getByRole('textbox', { name: en['factor.totp.code'] }), '123456');
   await settleCode();
 }
+
+afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+function phoneViewport() {
+  vi.stubGlobal('matchMedia', (query: string) => ({
+    matches: query === PHONE_QUERY, media: query, onchange: null,
+    addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {}, dispatchEvent: () => true,
+  }));
+}
+
+async function phoneDone() {
+  phoneViewport();
+  const context = setup();
+  await toFactor(context.user);
+  await throughApp(context.user);
+  await screen.findByRole('heading', { name: 'You’re in' });
+  return context;
+}
+
+describe('phone done step backup codes', () => {
+  it('omits codes from the DOM until Show, and Hide removes them with matching aria-expanded', async () => {
+    const { user, view } = await phoneDone();
+    expect(screen.getByText('2 backup codes')).toBeInTheDocument();
+    expect(view.container.querySelector('.d-code-list__code')).toBeNull();
+    const show = button('Show');
+    expect(show).toHaveAttribute('aria-expanded', 'false');
+    const listId = show.getAttribute('aria-controls');
+    expect(document.getElementById(listId!)).toBeNull();
+    await user.click(show);
+    expect(button('Hide')).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('list', { name: en['factor.codes.label'] })).toHaveAttribute('id', listId);
+    expect(view.container.querySelectorAll('.d-code-list__code')).toHaveLength(2);
+    await user.click(button('Hide'));
+    expect(button('Show')).toHaveAttribute('aria-expanded', 'false');
+    expect(view.container.querySelector('.d-code-list__code')).toBeNull();
+  });
+
+  it('copies all codes while collapsed', async () => {
+    const { user } = await phoneDone();
+    await user.click(button('Copy'));
+    expect(await navigator.clipboard.readText()).toBe(CODES.join('\n'));
+    expect(screen.queryByRole('list', { name: en['factor.codes.label'] })).toBeNull();
+  });
+
+  it('prints all codes while collapsed and removes them afterwards', async () => {
+    const { user } = await phoneDone();
+    const print = vi.spyOn(browser, 'print').mockImplementation(() => {
+      expect(screen.getByRole('list', { name: en['factor.codes.label'] }).querySelectorAll('li')).toHaveLength(2);
+    });
+    await user.click(button('Print'));
+    expect(print).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('list', { name: en['factor.codes.label'] })).toBeNull();
+  });
+
+  it('requires the saved tick before Open dilla while collapsed or expanded', async () => {
+    const { user, onFinish } = await phoneDone();
+    expect(button('Open dilla')).toHaveAttribute('aria-disabled', 'true');
+    await user.click(button('Open dilla'));
+    expect(onFinish).not.toHaveBeenCalled();
+    await user.click(button('Show'));
+    expect(button('Open dilla')).toHaveAttribute('aria-disabled', 'true');
+    await user.click(button('Hide'));
+    await user.click(screen.getByRole('checkbox', { name: CODES_ACK }));
+    expect(button('Open dilla')).not.toHaveAttribute('aria-disabled');
+    await user.click(button('Open dilla'));
+    expect(onFinish).toHaveBeenCalledOnce();
+  });
+});
 
 describe('steps 4 and 5: the second factor', () => {
   it('wave B task 3: the app step asks for its code in six boxes over one input, and the sixth digit sends it', async () => {
@@ -151,7 +221,7 @@ describe('steps 4 and 5: the second factor', () => {
     expect(screen.getByText('New account · step 4 of 6')).toBeInTheDocument();
   });
 
-  it('sends factorSetupDone with the invite after the code, then shows done with the backup codes, gating Open dilla on their tick', async () => {
+  it('desktop sends factorSetupDone with the invite after the code, then shows done with the backup codes, gating Open dilla on their tick', async () => {
     const { fake, user, onFinish, view } = setup();
     await toFactor(user);
     await throughApp(user);

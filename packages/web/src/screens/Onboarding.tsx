@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
+import { usePhoneLayout } from '../layout.ts';
 import type { FormEvent, ReactNode } from 'react';
 import { Banner, Button, CodeList, Icon, OnboardingFrame, RecoveryKey, Splash, TextField, type IconName } from '@dilla/ui';
 import { browser } from '../browser.ts';
@@ -131,6 +133,9 @@ export function Onboarding(props: { onFinish(result: SignupResult): void }): Rea
   // Task 3b: the backup codes the factor's add returned, shown on the done step. They live in this component's state only
   // (never a slice, the URL, storage or a log) and are gone when it unmounts.
   const [codes, setCodes] = useState<string[]>([]);
+  const phone = usePhoneLayout();
+  const [codesExpanded, setCodesExpanded] = useState(false);
+  const [printingCodes, setPrintingCodes] = useState(false);
   const [codesSaved, setCodesSaved] = useState(false);
   const { text: announcement, announce } = useAnnouncer();
   const [focusRequest, setFocusRequest] = useState<{ target: FocusTarget; n: number }>({ target: 'heading', n: 0 });
@@ -417,9 +422,18 @@ export function Onboarding(props: { onFinish(result: SignupResult): void }): Rea
         {codes.length === 0 ? null : (
           <div className="dw-signup-codes">
             <p>{t('onboarding.done.codesBody')}</p>
-            <CodeList codes={codes} label={t('factor.codes.label')} labels={{ copy: t('factor.codes.copy'), print: t('factor.codes.print') }}
+            <CodeList disclosure={phone ? {
+              expanded: codesExpanded || printingCodes,
+              onToggle: () => { setCodesExpanded(v => !v); },
+              count: t('onboarding.done.codesCount', { count: codes.length }),
+              show: t('onboarding.done.codesShow'), hide: t('onboarding.done.codesHide'),
+            } : undefined} codes={codes} label={t('factor.codes.label')} labels={{ copy: t('factor.codes.copy'), print: t('factor.codes.print') }}
               onCopy={() => { navigator.clipboard?.writeText(codes.join('\n')).then(() => { announce(t('factor.codes.copied')); }, () => undefined); }}
-              onPrint={() => { browser.print(); }} />
+              onPrint={() => {
+                // window.print snapshots the DOM: mount from memory only for the print dialog, then restore the disclosure.
+                flushSync(() => { setPrintingCodes(true); });
+                try { browser.print(); } finally { setPrintingCodes(false); }
+              }} />
             {/* The key step's check box (RecoveryKey's), for the same act. */}
             <div className="d-recovery-key__ack">
               <input id="onboarding-codes-ack" type="checkbox" className="d-recovery-key__box" checked={codesSaved}
