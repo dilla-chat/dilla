@@ -16,9 +16,10 @@ import { installWorkerPort, portSlice } from './support/worker-port';
 import type { ChannelSummary } from '../../packages/client-core/src/state/types';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
 import { rmSync } from 'node:fs';
+import { e2ePort } from './support/ports';
 
 /** Its own ports: the suite's shared host (8463/8464) has servers in it by now. */
-const EMPTY: HostConfig = { port: 8477, control: 8478, webRoot: 'packages/web/dist' };
+const EMPTY: HostConfig = { port: e2ePort(8477), control: e2ePort(8478), webRoot: 'packages/web/dist' };
 const SERVER = 'Midgard Crew';
 const OWNER = 'Ada';
 const FRIEND = 'Björn';

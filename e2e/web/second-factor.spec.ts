@@ -15,9 +15,10 @@ import { launchSecond, secondProfileDir } from './support/second-harness';
 import { hostNow, totp } from './support/totp';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
 import { rmSync } from 'node:fs';
+import { e2ePort } from './support/ports';
 
 /** Its own ports (E1 reservation). */
-const EMPTY: HostConfig = { port: 8495, control: 8496, webRoot: 'packages/web/dist' };
+const EMPTY: HostConfig = { port: e2ePort(8495), control: e2ePort(8496), webRoot: 'packages/web/dist' };
 const ADA = 'Ada';
 
 let host: StartedHost | null = null;

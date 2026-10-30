@@ -5,8 +5,9 @@ import { addServerVia, completeSignUp, copy, makeInviteLink, messageRow, newAcco
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
+import { e2ePort } from './support/ports';
 
-const HOST: HostConfig = { port: 8533, control: 8534, webRoot: 'packages/web/dist', advanceClockWithWall: true };
+const HOST: HostConfig = { port: e2ePort(8533), control: e2ePort(8534), webRoot: 'packages/web/dist', advanceClockWithWall: true };
 const SERVER = 'Removal Lab';
 const OWNER = 'Ada';
 const MODERATOR = 'Bea';

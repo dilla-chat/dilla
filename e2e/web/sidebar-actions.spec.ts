@@ -10,8 +10,9 @@ import { addServerVia,
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { launchSecond, secondProfileDir } from './support/second-harness';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
+import { e2ePort } from './support/ports';
 
-const EMPTY: HostConfig = { port: 8523, control: 8524, webRoot: 'packages/web/dist' };
+const EMPTY: HostConfig = { port: e2ePort(8523), control: e2ePort(8524), webRoot: 'packages/web/dist' };
 const SERVER = 'Midgard Crew';
 const OWNER = 'Ada';
 const FRIEND = 'Björn';

@@ -14,8 +14,9 @@ import { PROFILE_ROOT } from './support/persistent';
 import { nextCode } from './support/totp';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
+import { e2ePort } from './support/ports';
 
-const PHONE_PORT = Number(process.env.DILLA_E2E_PHONE_PORT ?? 8557);
+const PHONE_PORT = Number(process.env.DILLA_E2E_PHONE_PORT ?? e2ePort(8557));
 const HOST: HostConfig = { port: PHONE_PORT, control: PHONE_PORT + 1, webRoot: 'packages/web/dist' };
 const SERVER = 'Midgard Crew';
 const PHONE = { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 3 } as const;

@@ -23,10 +23,11 @@ import { removeHostData, startTestHost, type HostConfig, type StartedHost } from
 import { chromiumMediaArgs, FIREFOX_MEDIA_PREFS, writeFixtures } from '../media/support/fixtures';
 import { arr, decode, encode } from '../../packages/client-core/src/cbor/index';
 import { mkdirSync, rmSync } from 'node:fs';
+import { e2ePort } from './support/ports';
 
 const CHECK_WEBROOT = process.env.DILLA_E2E_CHECK_WEBROOT === undefined ? null : relative(REPO_ROOT, resolve(process.env.DILLA_E2E_CHECK_WEBROOT));
-const LAYOUT_PORT = Number(process.env.DILLA_E2E_LAYOUT_PORT ?? 8555);
-const LAYOUT_SFU_PORT = Number(process.env.DILLA_E2E_LAYOUT_SFU_PORT ?? 8559);
+const LAYOUT_PORT = Number(process.env.DILLA_E2E_LAYOUT_PORT ?? e2ePort(8555));
+const LAYOUT_SFU_PORT = Number(process.env.DILLA_E2E_LAYOUT_SFU_PORT ?? e2ePort(8559));
 const EMPTY: HostConfig = { port: LAYOUT_PORT, control: LAYOUT_PORT + 1, webRoot: 'packages/web/dist', sfu: { port: LAYOUT_SFU_PORT, udpPort: LAYOUT_SFU_PORT + 2 }, ...(CHECK_WEBROOT === null ? {} : { keepData: true }) };
 const SERVER = 'Midgard Crew';
 const OWNER = 'Ada';

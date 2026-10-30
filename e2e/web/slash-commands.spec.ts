@@ -10,8 +10,9 @@ import { installWorkerPort, portCall, portSlice } from './support/worker-port';
 import { connected, dock, joinVoice, voiceRow } from '../voice/support/voice';
 import { leaveIfInCall } from '../voice/support/peer-browser';
 import { FIREFOX_MEDIA_PREFS } from '../media/support/fixtures';
+import { e2ePort } from './support/ports';
 
-const PORT = Number(process.env.DILLA_E2E_SLASH_PORT ?? 8581);
+const PORT = Number(process.env.DILLA_E2E_SLASH_PORT ?? e2ePort(8581));
 const HOST: HostConfig = { port: PORT, control: PORT + 1, webRoot: 'packages/web/dist', botRuntime: true, advanceClockWithWall: true };
 const COMMUNITY = 'Slash command acceptance';
 const GENERAL = 'general';

@@ -16,9 +16,10 @@ import { nextCode } from './support/totp';
 import { addAuthenticator, copyCredentials } from './support/webauthn';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
 import { rmSync } from 'node:fs';
+import { e2ePort } from './support/ports';
 
 /** Its own ports (E2 reservation). The page is opened at localhost, the relying party's origin. */
-const EMPTY: HostConfig = { port: 8497, control: 8498, webRoot: 'packages/web/dist', webauthnOrigin: 'http://localhost:8497' };
+const EMPTY: HostConfig = { port: e2ePort(8497), control: e2ePort(8498), webRoot: 'packages/web/dist', webauthnOrigin: `http://localhost:${String(e2ePort(8497))}` };
 const BJORN = 'Björn';
 const PASSKEY = 'Laptop';
 
@@ -26,7 +27,7 @@ let host: StartedHost | null = null;
 let instance = '';
 
 test.describe.configure({ mode: 'serial', timeout: TEST_TIMEOUT });
-test.use({ baseURL: 'http://localhost:8497' });
+test.use({ baseURL: `http://localhost:${String(e2ePort(8497))}` });
 test.skip(({ browserName }) => browserName !== 'chromium', 'CDP virtual authenticator');
 
 test.beforeAll(async () => {
@@ -111,7 +112,7 @@ test('passkeys: sign up with one, sign in with a copy of it, add the app, remove
 
   // 2. A second browser holding a copy of the passkey: the passkey on the login step, no password typed; then the key.
   const secondDir = secondProfileDir(testInfo.project.name, testInfo.workerIndex);
-  const second = await launchSecond(playwright, browserName, { launchOptions, headless, channel, viewport, baseURL: 'http://localhost:8497' }, secondDir);
+  const second = await launchSecond(playwright, browserName, { launchOptions, headless, channel, viewport, baseURL: `http://localhost:${String(e2ePort(8497))}` }, secondDir);
   try {
     await guard.attach(second);
     // Wave B task 3: where the browser has conditional mediation, the login step offers passkeys in the username field's

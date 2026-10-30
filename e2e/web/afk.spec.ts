@@ -41,9 +41,10 @@ import { PROFILE_ROOT } from './support/persistent';
 import { FIREFOX_MEDIA_PREFS, chromiumMediaArgs, writeFixtures } from '../media/support/fixtures';
 import { connected, dock, micLive, noiseOff, phaseOf, sendsAudio, stage, voiceRow, watchAudio } from '../voice/support/voice';
 import { arr, decode, encode, type CborInput, type CborValue } from '../../packages/client-core/src/cbor/index';
+import { e2ePort } from './support/ports';
 
 /** Its own ports (web3.9 reservation): the host, its control listener, and its LiveKit's signalling and ICE ports. */
-const HOST: HostConfig = { port: 8613, control: 8614, webRoot: 'packages/web/dist', keepData: true, sfu: { port: 7896, udpPort: 7898 } };
+const HOST: HostConfig = { port: e2ePort(8613), control: e2ePort(8614), webRoot: 'packages/web/dist', keepData: true, sfu: { port: e2ePort(7896), udpPort: e2ePort(7898) } };
 const ORIGIN = `http://127.0.0.1:${String(HOST.port)}`;
 const SERVER = 'Midgard Crew';
 const OWNER = 'Ada';

@@ -7,8 +7,9 @@
 import { expect, test } from '@playwright/test';
 import { copy } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
+import { e2ePort } from './support/ports';
 
-const HOST: HostConfig = { port: 8515, control: 8516, webRoot: 'packages/web/dist' };
+const HOST: HostConfig = { port: e2ePort(8515), control: e2ePort(8516), webRoot: 'packages/web/dist' };
 const WAIT = process.env.CI === 'true' ? 90_000 : 30_000;
 
 let host: StartedHost | null = null;

@@ -14,9 +14,10 @@ import { startTestHost, type HostConfig, type StartedHost } from './support/host
 import { launchSecond, secondProfileDir } from './support/second-harness';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
 import { rmSync } from 'node:fs';
+import { e2ePort } from './support/ports';
 
 /** Its own ports (E3 reservation). */
-const EMPTY: HostConfig = { port: 8499, control: 8500, webRoot: 'packages/web/dist' };
+const EMPTY: HostConfig = { port: e2ePort(8499), control: e2ePort(8500), webRoot: 'packages/web/dist' };
 const SERVER = 'Midgard Crew';
 
 let host: StartedHost | null = null;

@@ -10,8 +10,9 @@ import { addServerVia,
 import { WebDriver } from './support/driver';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
+import { e2ePort } from './support/ports';
 
-const HOST: HostConfig = { port: 8503, control: 8504, webRoot: 'packages/web/dist' };
+const HOST: HostConfig = { port: e2ePort(8503), control: e2ePort(8504), webRoot: 'packages/web/dist' };
 const PHONE = { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 3 } as const;
 const GENERAL = 'general';
 const SECOND = 'general-2';

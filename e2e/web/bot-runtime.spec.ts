@@ -7,8 +7,9 @@ import {
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
 import { installWorkerPort, portCall } from './support/worker-port';
+import { e2ePort } from './support/ports';
 
-const BOT_RUNTIME_PORT = Number(process.env.DILLA_E2E_BOT_RUNTIME_PORT ?? 8491);
+const BOT_RUNTIME_PORT = Number(process.env.DILLA_E2E_BOT_RUNTIME_PORT ?? e2ePort(8491));
 const HOST: HostConfig = { port: BOT_RUNTIME_PORT, control: BOT_RUNTIME_PORT + 1, webRoot: 'packages/web/dist', botRuntime: true, advanceClockWithWall: true };
 const ROLE_PANEL_PORT = Number(process.env.DILLA_E2E_ROLE_PANEL_PORT ?? HOST.port);
 const ROLE_PANEL_HOST: HostConfig = { ...HOST, port: ROLE_PANEL_PORT, control: ROLE_PANEL_PORT + 1, advanceClockWithWall: true };

@@ -2,12 +2,13 @@ import { defineConfig, devices } from '@playwright/test';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { HostConfig } from './web/support/host.ts';
+import { e2ePort } from './web/support/ports.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 // The web app suite (task 25): packages/web/dist served by dilla-testhost on 8463/8464. DILLA_E2E_PORT and DILLA_E2E_PORT2 move the
 // pair (a lane that shares its machine); web/support/app.ts reads the same two.
-const hostPort = Number(process.env.DILLA_E2E_PORT ?? 8463);
-const controlPort = Number(process.env.DILLA_E2E_PORT2 ?? 8464);
+const hostPort = Number(process.env.DILLA_E2E_PORT ?? e2ePort(8463));
+const controlPort = Number(process.env.DILLA_E2E_PORT2 ?? e2ePort(8464));
 const dillaHost: HostConfig = { port: hostPort, control: controlPort, webRoot: 'packages/web/dist' };
 
 export default defineConfig({
@@ -15,6 +16,8 @@ export default defineConfig({
   // A project's own testIgnore replaces this one, so a project that ignores more repeats these names.
   testIgnore: /(^|\/)(support|core-worker|spike-joinall)\.spec\.ts$/,
   globalSetup: resolve(here, 'web', 'support', 'host.ts'),
+  // DILLA_E2E_OUTPUT_DIR: a run of its own (scripts/ci-local.mjs) keeps its traces and host logs apart from a parallel run's.
+  outputDir: process.env.DILLA_E2E_OUTPUT_DIR ?? resolve(here, 'test-results'),
   // prebuildBotRuntime: the global setup builds dillabot and dilla-bot-core once, so no Bot test pays a cold build.
   metadata: { dillaHost, prebuildBotRuntime: true },
   fullyParallel: false,

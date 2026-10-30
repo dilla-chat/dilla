@@ -16,9 +16,10 @@ import { launchSecond, secondProfileDir } from './support/second-harness';
 import { nextCode } from './support/totp';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
 import { rmSync } from 'node:fs';
+import { e2ePort } from './support/ports';
 
 /** Its own ports (web3.8 reservation). */
-const EMPTY: HostConfig = { port: 8513, control: 8514, webRoot: 'packages/web/dist' };
+const EMPTY: HostConfig = { port: e2ePort(8513), control: e2ePort(8514), webRoot: 'packages/web/dist' };
 
 let host: StartedHost | null = null;
 let instance = '';

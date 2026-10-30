@@ -17,11 +17,12 @@ import { ABORT_WINDOW_MS, isCancelledFetchLine, isNavigationAbortLine } from './
 import { arr, decode } from '../../../packages/client-core/src/cbor/index';
 import { en } from '../../../packages/web/src/strings/en';
 import { t } from '../../../packages/web/src/strings/index';
+import { e2ePort } from './ports';
 
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 /** The suite's shared host. A lane that shares its machine with others moves it with DILLA_E2E_PORT and DILLA_E2E_PORT2 (playwright.web.config.ts reads the same two). */
-export const HOST_PORT = Number(process.env.DILLA_E2E_PORT ?? 8463);
-export const CONTROL_PORT = Number(process.env.DILLA_E2E_PORT2 ?? 8464);
+export const HOST_PORT = Number(process.env.DILLA_E2E_PORT ?? e2ePort(8463));
+export const CONTROL_PORT = Number(process.env.DILLA_E2E_PORT2 ?? e2ePort(8464));
 export const HOST = `127.0.0.1:${String(HOST_PORT)}`;
 export const PUBLIC_URL = `http://${HOST}`;
 export const CONTROL_URL = `http://127.0.0.1:${String(CONTROL_PORT)}`;

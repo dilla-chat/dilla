@@ -3,8 +3,9 @@ import {
   addServerVia, completeSignUp, composerBox, copy, makeInviteLink, messageRow, newAccount, openChannel, railItem, signUp, test, WAIT,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
+import { e2ePort } from './support/ports';
 
-const hostPort = Number(process.env.DILLA_E2E_AUTOMOD_PORT ?? 8511);
+const hostPort = Number(process.env.DILLA_E2E_AUTOMOD_PORT ?? e2ePort(8511));
 const HOST: HostConfig = {
   port: hostPort, control: hostPort + 1, webRoot: 'packages/web/dist', botRuntime: true, advanceClockWithWall: true,
 };

@@ -3,8 +3,9 @@ import { expect } from '@playwright/test';
 import { arr, decode, encode } from '../../packages/client-core/src/cbor/index';
 import { test as appTest, addServerVia, completeSignUp, copy, makeInviteLink, newAccount, signUp, type Account } from './support/app';
 import { prepareBotRuntimeBinaries, startTestHost, type HostConfig, type StartedHost } from './support/host';
+import { e2ePort } from './support/ports';
 
-const HOST: HostConfig = { port: 8521, control: 8522, webRoot: 'packages/web/dist', botRuntime: true, advanceClockWithWall: true };
+const HOST: HostConfig = { port: e2ePort(8521), control: e2ePort(8522), webRoot: 'packages/web/dist', botRuntime: true, advanceClockWithWall: true };
 const SERVER = 'Announcement Scheduler Acceptance';
 const MESSAGE = `scheduled browser notice ${randomBytes(5).toString('hex')}`;
 

@@ -1,9 +1,10 @@
 import { expect } from '@playwright/test';
 import { addServerVia, completeSignUp, copy, makeInviteLink, newAccount, openChannel, railItem, signUp, test } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
+import { e2ePort } from './support/ports';
 
 const HOST: HostConfig = {
-  port: 8495, control: 8496, webRoot: 'packages/web/dist', botRuntime: true, advanceClockWithWall: true,
+  port: e2ePort(8495), control: e2ePort(8496), webRoot: 'packages/web/dist', botRuntime: true, advanceClockWithWall: true,
 };
 const SERVER = 'Moderation Evidence';
 const OWNER = 'Ada';

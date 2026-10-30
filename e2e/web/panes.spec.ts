@@ -5,8 +5,9 @@ import { expect, type Page } from '@playwright/test';
 import { addServerVia, TEST_TIMEOUT, WAIT, copy, expectAccessible, expectComposerReady, railNav, signUp, test } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
+import { e2ePort } from './support/ports';
 
-const EMPTY: HostConfig = { port: 8521, control: 8522, webRoot: 'packages/web/dist' };
+const EMPTY: HostConfig = { port: e2ePort(8521), control: e2ePort(8522), webRoot: 'packages/web/dist' };
 const SERVER = 'Midgard Crew';
 
 let host: StartedHost | null = null;

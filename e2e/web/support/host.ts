@@ -21,6 +21,8 @@ export const BOT_HELPER_BIN = join(CARGO_TARGET_ROOT, 'release', 'dilla-bot-core
 export const WASI_CORE = join(REPO_ROOT, 'internal', 'mlswasi', 'testdata', 'dilla_core_wasi.wasm');
 const WAIT_MS = process.env.CI === 'true' ? 90_000 : 60_000;
 const HOST_DATA_ROOT = process.env.DILLA_E2E_HOST_DATA_ROOT ?? '/tmp/dw';
+/** The suite's Playwright outputDir (DILLA_E2E_OUTPUT_DIR, as the configs read it): the host and Bot logs go beside the traces. */
+export const RESULTS_DIR = process.env.DILLA_E2E_OUTPUT_DIR ?? join(REPO_ROOT, 'e2e', 'test-results');
 const hostDataDir = (port: number): string => join(HOST_DATA_ROOT, `host-${String(port)}`);
 
 function ensureShippingCoreWasm(): void {
@@ -115,7 +117,7 @@ export interface StartedHost { url: string; control: string; invite: string; run
 /**
  * Starts target/dilla-testhost (already built) with `c`, in a fresh data directory under `DILLA_E2E_HOST_DATA_ROOT`
  * (default `/tmp/dw`), logging to
- * e2e/test-results/testhost-<port>.log with the invite redacted. The host starts empty: one instance, its bootstrap
+ * <RESULTS_DIR>/testhost-<port>.log (e2e/test-results by default) with the invite redacted. The host starts empty: one instance, its bootstrap
  * invite, no account, no server, no channel (v0.1.0-web3.1's create-flow suite starts a second one of these).
  */
 export async function startTestHost(c: HostConfig): Promise<StartedHost> {
@@ -133,10 +135,10 @@ export async function startTestHost(c: HostConfig): Promise<StartedHost> {
   const dataDir = hostDataDir(c.port);
   if (c.keepData !== true) rmSync(dataDir, { recursive: true, force: true });
   mkdirSync(HOST_DATA_ROOT, { recursive: true });
-  mkdirSync(join(REPO_ROOT, 'e2e', 'test-results'), { recursive: true });
+  mkdirSync(RESULTS_DIR, { recursive: true });
   // Appended, not truncated: tests in one file share a port, so a truncating open let the next test erase the log of the
   // one that failed (PR #121, bot-runtime.spec.ts device 2). Each start writes a header to tell the runs apart.
-  const log = createWriteStream(join(REPO_ROOT, 'e2e', 'test-results', `testhost-${c.port}.log`), { flags: 'a' });
+  const log = createWriteStream(join(RESULTS_DIR, `testhost-${c.port}.log`), { flags: 'a' });
   log.write(`=== testhost start ${new Date().toISOString()} ===\n`);
   const host = spawn(TESTHOST_BIN, hostArgs(c, dataDir), { stdio: ['ignore', 'pipe', 'pipe'] });
   let bot: ChildProcess | null = null;
@@ -272,7 +274,7 @@ async function startBotRuntime(baseURL: string, dataDir: string, port: number, c
   const runtimeToken = join(dataDir, 'bot-runtime.token');
   const stateDir = join(dataDir, 'bot-state');
   const configPath = join(dataDir, 'bot.toml');
-  const runtimeLogPath = join(REPO_ROOT, 'e2e', 'test-results', `dillabot-${port}.log`);
+  const runtimeLogPath = join(RESULTS_DIR, `dillabot-${port}.log`);
   const discoveryResponse = await fetch(`${baseURL}/v1/instance`, { headers: { accept: 'application/cbor' } });
   if (!discoveryResponse.ok) throw new Error(`bot test discovery failed: HTTP ${discoveryResponse.status}`);
   const instanceIdBytes = arr(decode(new Uint8Array(await discoveryResponse.arrayBuffer())))[3];
