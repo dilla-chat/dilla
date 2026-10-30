@@ -315,9 +315,15 @@ describe('steps 4 and 5: the second factor', () => {
       await toFactor(user);
       await throughApp(user);
       expect(await screen.findByRole('alert')).toHaveTextContent(en['factor.error.network']);
-      // The factor is in place; the step that retries says so.
-      await waitFor(() => { expect(h1()).toHaveTextContent(en['factor.done.title']); });
-      await user.click(button(en['factor.done.next']));
+      // Security review LOW-4: the factor is in place, so the retry shows the backup codes and their tick before Continue
+      // retries the finish; a page closed now has still shown them.
+      await waitFor(() => { expect(h1()).toHaveTextContent(en['factor.codes.title']); });
+      expect(screen.getByRole('list', { name: en['factor.codes.label'] }).querySelectorAll('li')).toHaveLength(CODES.length);
+      expect(button(en['factor.codes.next'])).toHaveAttribute('aria-disabled', 'true');
+      await user.click(button(en['factor.codes.next']));
+      expect(fake.callsOf('factorSetupDone')).toHaveLength(1);
+      await user.click(screen.getByRole('checkbox', { name: en['factor.codes.ack'] }));
+      await user.click(button(en['factor.codes.next']));
       await waitFor(() => { expect(h1()).toHaveTextContent('You’re in'); });
       expect(fake.callsOf('factorSetupDone')).toHaveLength(2);
       expect(fake.callsOf('factorTotpConfirm')).toHaveLength(1);

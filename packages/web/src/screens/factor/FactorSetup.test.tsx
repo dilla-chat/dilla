@@ -139,6 +139,14 @@ describe('choose', () => {
 });
 
 describe('authenticator app', () => {
+  // Task 3b review M1 (ruling): only the sign-up's code step puts the hint above the boxes; every other set-up keeps it under.
+  it.each([['signup', true], ['signin', false], ['required', false]] as const)('origin %s: the hint above the boxes is %s', async (origin, above) => {
+    const { user } = setup({ origin, stepLabel: '' });
+    await toTotp(user);
+    const hint = screen.getByText(en['factor.totp.codeHint']);
+    const following = (hint.compareDocumentPosition(codeField()) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+    expect(following).toBe(above);
+  });
   it('begins without a step-up, shows the loading line, then the QR code, the setup key and the code field', async () => {
     let release: (v: unknown) => void = () => undefined;
     const { fake, user } = setup({}, { handler: (c) => c.m === 'factorTotpBegin' ? new Promise(r => { release = r; }) : happy(c, fake) });

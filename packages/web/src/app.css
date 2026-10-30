@@ -223,6 +223,11 @@ html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[d
 .dw-signup-codes { display: grid; gap: 10px; min-width: 0; }
 .dw-signup-codes > p { margin: 0; }
 .dw-signup-codes .d-code-list { gap: 10px; }
+/* Task 3b review M3: the codes' Copy and Print drawn as the key step's actions (RecoveryKey.css): 32px, sharing the row,
+   --control-edge-field, radius 7, 12px. */
+.dw-signup-codes .d-code-list__actions { flex-wrap: nowrap; gap: 8px; }
+.dw-signup-codes .d-code-list__actions .d-btn { flex: 1 1 0; justify-content: center; height: 32px; min-height: 32px; padding: 0 12px; background: transparent; border: 1px solid var(--control-edge-field); border-radius: var(--r-seg); font-size: var(--text-ui); font-weight: var(--weight-body); color: var(--fg); }
+.dw-signup-codes .d-code-list__actions .d-btn:hover { border-color: var(--accent); background: transparent; }
 @media (max-width: 30rem) { .dw-factor-key .d-qr { width: 160px; height: 160px; } }
 @media (max-width: 30rem) {
   .dw-factor-key__field { flex-wrap: wrap; }

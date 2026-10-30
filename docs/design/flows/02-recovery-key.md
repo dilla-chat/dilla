@@ -10,7 +10,7 @@ that they wrote it down before continuing, and the screen offers no copy button.
 **Wave B task 3b (2026-10-30).** The step follows the Signal prototype's "Save your recovery key": one paragraph
 (`onboarding.keys.body`), the grid (its name `onboarding.keys.label` is for assistive technology only), the actions row
 under it with `Print` (where the prototype has Copy, which protocol/03 forbids) and `Save as file` (`onboarding.keys.save`: a
-text file with the key, made in the page, its object URL revoked at once), the 16px check
+text file with the key, made in the page, its object URL revoked shortly after the download starts), the 16px check
 box `onboarding.keys.acknowledge`, and the button `I saved it` (`onboarding.keys.submit`), blocked until the tick, which
 creates the account (protocol/03: the key is shown before the account is registered). Back and a refused creation discard
 the key; the next pass shows a new one. The wireframes below are the web-1 layout.

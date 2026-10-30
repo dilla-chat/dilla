@@ -247,6 +247,9 @@ describe('step 3: recovery key', () => {
     expect(text.split(grouped)).toHaveLength(2);
     expect(text).toContain('Your dilla recovery key for dilla.test.');
     expect(screen.queryByRole('button', { name: /copy/i })).toBeNull();
+    // Security review LOW-3: the printed sheet names itself and the instance (print-only, so the screen keeps parity).
+    expect(screen.getByText('dilla recovery key for dilla.test. You need it to add another browser to your account.'))
+      .toHaveClass('d-onboarding-frame__print-only');
     expect(JSON.stringify(setItem.mock.calls)).not.toContain(KEY[0]);
     expect(window.location.href).not.toContain(KEY[0]);
     expect(fake.callsOf('signupSubmit')).toEqual([]);

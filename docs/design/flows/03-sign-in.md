@@ -43,7 +43,7 @@ On a closed instance (registration mode 2) the closed frame of `01-onboarding.md
 button stands under the closed frame's paragraph instead (see "States"): a closed instance still has
 accounts that want a second browser.
 
-Worker commands (R6, R7). `Use an existing account` sends `signInBegin` (phase `signin-login`). Step 1 asks
+Worker commands (R6, R7). `Already have an account? Sign in` (onboarding steps 1 to 3) sends `signInBegin` (phase `signin-login`). Step 1 asks
 for the username and the password, and its `Continue` sends `signInLogin` with them and no key. The login
 and the second factor never register this browser: the worker holds the settled assertion (`Enrol.hold`)
 and registers only inside `signInKey`, back to back with the fetch, the enrolment and the list `PUT`, so
@@ -634,7 +634,7 @@ phase to `signin-login`, and the person signs in again.
 Tab order inside each step: the fields in visual order, then the footer: on step 1 (the login)
 `Have an invite? Create an account`, then `Continue`; on the second factor and on the key step,
 `Cancel`, then the forward button. On onboarding step 1: the
-invite field, `Use an existing account`, `Continue`. On the closed frame: `Use an existing account`.
+invite field, `Continue`, `Already have an account? Sign in`. On the closed frame: `Already have an account? Sign in`.
 There are no single-key shortcuts.
 
 ## Error placement

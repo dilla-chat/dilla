@@ -67,4 +67,7 @@
 .d-onboarding-frame__ready { display: flex; align-items: center; gap: 12px; padding: 14px; background: var(--ok-panel); border: 1px solid var(--ok-border); border-radius: var(--r-menu); margin-bottom: -2px /* 12px over the button */; font-size: var(--text-ui); color: var(--ok-panel-text); animation: d-up var(--duration-step) var(--ease-out) both; }
 .d-onboarding-frame__ready-mark { flex: none; width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; border-radius: var(--r-pill); background: var(--ok); color: var(--ok-ink); }
 @media (prefers-reduced-motion: reduce) { .d-onboarding-frame__ready { animation: none; } }
+/* Wave B task 3b (security review LOW-3): a line the printed key sheet carries and the screen does not. */
+.d-onboarding-frame__print-only { display: none; }
+@media print { .d-onboarding-frame__print-only { display: block; } }
 @media print { .d-onboarding-frame__bar, .d-onboarding-frame__head, .d-onboarding-frame__footer { display: none; } .d-onboarding-frame { color-scheme: light; } .d-onboarding-frame, .d-onboarding-frame__card, .d-onboarding-frame__title, .d-onboarding-frame__body { color: CanvasText; background: Canvas; border-color: CanvasText; box-shadow: none; } }

@@ -10,6 +10,7 @@ import { useRoute } from '../router.ts';
 import { t, type StringKey } from '../strings/index.ts';
 import { useAnnouncer } from './announcer.ts';
 import { orderChannels } from './shell-model.ts';
+import { recoveryKeyFile } from './recovery-file.ts';
 import { doneProblem, type DoneProblem } from './factor/doneRefusal.ts';
 import { FactorSetup, type FactorSetupResult } from './factor/FactorSetup.tsx';
 import { ForgetBrowser } from './factor/ForgetBrowser.tsx';
@@ -468,14 +469,16 @@ export function Onboarding(props: { onFinish(result: SignupResult): void }): Rea
         'aria-describedby': acknowledged ? undefined : 'onboarding-ack-hint',
       }), <>
         <p>{t('onboarding.keys.body')}</p>
+        {/* Security review LOW-3: the printed sheet says what it is and for which instance; the screen keeps the prototype. */}
+        <p className="d-onboarding-frame__print-only">{t('onboarding.keys.printTitle', { instance: name })}</p>
         {key === null ? <p role="status">{t('onboarding.keys.preparing')}</p> : (
           <RecoveryKey groups={key} label={t('onboarding.keys.label')} acknowledgeLabel={t('onboarding.keys.acknowledge')}
             acknowledged={acknowledged} onAcknowledge={(v) => { if (!blocked) setAcknowledged(v); }}
             printLabel={t('onboarding.keys.print')} onPrint={() => browser.print()}
             saveLabel={t('onboarding.keys.save')} onSave={() => {
-              // Jonas (task 3b): a text file the person places; the key goes into it once and nowhere else.
-              browser.download(t('onboarding.keys.fileName', { instance: name }),
-                `${t('onboarding.keys.fileBody', { instance: name })}\n\n${key.join('-')}\n`);
+              // Jonas (task 3b): a text file, usually saved into Downloads; the key goes into it once and nowhere else.
+              const file = recoveryKeyFile(name, key);
+              browser.download(file.name, file.text);
             }} />
         )}
         {/* The prototype says this with a toast on the press; here it is the blocked button's description. */}

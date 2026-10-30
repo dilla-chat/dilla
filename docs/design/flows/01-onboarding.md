@@ -221,9 +221,8 @@ Step 6, done:
 ## Wireframes at 360 × 740
 
 The column takes the full width less 1.5rem on each side; nothing scrolls sideways (WCAG 1.4.10). The
-footer buttons wrap to a second line when they do not fit, forward button last. On step 1 the ghost
-button `Use an existing account` stands on its own line under the invite hint, above the footer, when
-the instance offers it.
+footer buttons wrap to a second line when they do not fit, forward button last. On steps 1 to 3 the link
+`Already have an account? Sign in` sits at the right of the row under the forward button (wave B task 3b), when the instance offers it.
 
 ```
 +--------------------------------------+   +--------------------------------------+
@@ -294,7 +293,7 @@ Step 5 at 360 × 740 (flow 10 draws it in full; the ChoiceCards stack and the ex
 ## States
 
 The closed frame (`instance.registrationMode` is 2, or a submit refused with `E_FORBIDDEN`): the heading
-and one paragraph; no step line and no field. Its one button is `Use an existing account`, shown when
+and one paragraph; no step line and no field. Its one control is the link `Already have an account? Sign in`, shown when
 `instance.passwordSignup` is true, because a closed instance still has accounts that want a second
 browser (`03-sign-in.md`). Focus moves to its heading.
 
@@ -455,6 +454,7 @@ What a page closed (or reloaded) at each step leaves, which is the same as befor
 | `onboarding.keys.acknowledge` | `I saved my recovery key somewhere safe` | checkbox label, step 3 |
 | `onboarding.keys.ackHint` | `Tick the box to continue.` | the blocked (`aria-disabled`) `I saved it`'s description (visually hidden; the prototype uses a toast) |
 | `onboarding.keys.print` | `Print` | button, step 3 |
+| `onboarding.keys.printTitle` | `dilla recovery key for {instance}. You need it to add another browser to your account.` | printed sheet only (`.d-onboarding-frame__print-only`): names what the sheet is (task 3b security review LOW-3) |
 | `onboarding.keys.save` | `Save as file` | button beside Print, step 3: downloads a text file with the key (Jonas, task 3b) |
 | `onboarding.keys.fileName` | `dilla-recovery-key-{instance}.txt` | the saved file's suggested name |
 | `onboarding.keys.fileBody` | `Your dilla recovery key for {instance}. You need it to add another browser to your account. Keep this file away from this computer, and delete it here once it is stored elsewhere.` | the saved file's first line; the key follows once, its 13 groups joined by hyphens |

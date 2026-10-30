@@ -9,26 +9,16 @@ import { en, t } from '../../strings/index.ts';
 import { formatSize } from '../shell-model.ts';
 import type { ConversationAction } from './Conversation.tsx';
 import { useBlobUrl } from './useBlobUrl.tsx';
+import { saveBlob } from '../../save-blob.ts';
 
-export const REVOKE_SAVED_AFTER_MS = 10_000;
+// The saver is shared with the recovery key's Save as file (wave B task 3b).
+export { REVOKE_SAVED_AFTER_MS, saveBlob } from '../../save-blob.ts';
 export interface Opened { blob: Blob; name: string; mime: string }
 
 export function isOpened(v: unknown): v is Opened {
   if (typeof v !== 'object' || v === null) return false;
   const o = v as Record<string, unknown>;
   return o.blob instanceof Blob && typeof o.name === 'string' && typeof o.mime === 'string';
-}
-
-export function saveBlob(blob: Blob, name: string): void {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = name;
-  a.rel = 'noopener';
-  document.body.append(a);
-  a.click();
-  a.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), REVOKE_SAVED_AFTER_MS);
 }
 
 /**

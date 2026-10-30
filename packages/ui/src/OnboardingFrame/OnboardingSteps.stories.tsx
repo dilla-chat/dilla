@@ -85,6 +85,7 @@ function Keys({ initiallyAcknowledged, registering, network }: { initiallyAcknow
         </Button></>}>
       {network ? <Banner tone="danger" action={{ label: t('onboarding.error.reload'), onAction: noop }}>{t('onboarding.error.network')}</Banner> : null}
       <p>{t('onboarding.keys.body')}</p>
+      <p className="d-onboarding-frame__print-only">{t('onboarding.keys.printTitle', { instance })}</p>
       <RecoveryKey groups={KEY} label={t('onboarding.keys.label')} acknowledgeLabel={t('onboarding.keys.acknowledge')}
         acknowledged={acknowledged} onAcknowledge={setAcknowledged} printLabel={t('onboarding.keys.print')} onPrint={noop}
         saveLabel={t('onboarding.keys.save')} onSave={noop} />

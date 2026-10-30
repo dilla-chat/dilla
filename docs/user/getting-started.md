@@ -642,8 +642,8 @@ button](screenshots/onboarding-3-recovery-key.png)
 
 "Shown once. You need it to add another browser." The key is 13 groups of 4 characters. **Print** opens the
 browser's print dialog; the printed page holds the key, not the rest of the screen. **Save as file** downloads a small
-text file with the key; your browser asks where it goes, and dilla keeps no copy. Move it off this computer once it is
-stored somewhere else. There is no copy button, on purpose: the clipboard is readable by other programs. You can still
+text file with the key, usually into your Downloads folder, and dilla keeps no copy. Move it somewhere safe off this
+computer and delete it here. There is no copy button, on purpose: the clipboard is readable by other programs. You can still
 select the text yourself.
 
 The key is the only way to get your account back or to add another browser. If every browser you use loses its data
@@ -692,9 +692,9 @@ second factor. Keep them with your recovery key." Tick "I saved my backup codes 
 the app once the box is ticked. The codes are shown once; if you close the tab before you saved them, make new ones
 in Settings → Sign-in.
 
-If the invite was for a server, you land in that server. Creating the account uses the invite once and
-joining the server uses it a second time, so an invite that can be used only once creates the account and
-then shows the join dialog with "This invite is expired, used up or unknown."; ask for a new server invite.
+If the invite was for a server, you land in that server. The invite counts once: creating the account records the
+use, and joining its server takes that recorded use, so an invite with one use left both creates the account and
+joins you.
 If the invite was for the instance only, the app shows "You are not in a server yet" with **Start a server**
 ([Start a server](#start-a-server)) and **Join a server**.
 
@@ -984,12 +984,12 @@ backup code), then your recovery key, then done. The recovery key comes last on 
 who you are, and the key is what adds this browser to your account, so nothing is added until you give it. The key is
 never written to the browser's storage.
 
-![Onboarding step 1 on a new browser, with the button "Use an existing account" under the invite
-field](screenshots/signin-0-entry.png)
+![Onboarding step 1 on a new browser, with the link "Already have an account? Sign in" under the Continue
+button](screenshots/signin-0-entry.png)
 
-On the new browser, open the instance's address and choose **Use an existing account** under the invite
-field. The instance offers it only when it takes password logins. An instance that takes no new accounts
-still shows the button.
+On the new browser, open the instance's address and choose **Already have an account? Sign in** under the Continue
+button. The instance offers it only when it takes password logins. An instance that takes no new accounts
+still shows the link.
 
 ### Step 1 of 4: Sign in to {instance}
 
@@ -1063,7 +1063,7 @@ nothing was used up, not even a backup code.
 | "This is not the recovery key of this account. Check every character." | The key is wrong (a typo, or another account's key). Correct it and continue |
 | "Adding this browser took longer than 5 minutes, so the sign-in ran out. Sign in again." | The five minutes after the second factor ran out while you read the key. Sign in again from step 1; nothing was used up |
 | "Someone else is signing in to this account. Change your password from a device you still have, or ask the operator." | Another sign-in with your password took this browser's place before it was added. If that was not you, someone else has your password. The web client cannot change a password yet, so tell whoever runs the instance; meanwhile your other browsers keep working, and a device that signed in with the password alone cannot read anything. You land on step 1 or on the first page; sign in again once it is sorted out |
-| "The account’s devices changed while you were signing in. Sign in again." | Another of your browsers changed the account's devices meanwhile. This browser's data was cleared; start again from **Use an existing account** |
+| "The account’s devices changed while you were signing in. Sign in again." | Another of your browsers changed the account's devices meanwhile. This browser's data was cleared; start again from **Already have an account? Sign in** |
 | "This account already has as many devices as {instance} allows. Remove one in Settings on another device first." | Remove a device in Settings → Devices on a browser you still have, then continue |
 | "Too many sign-in attempts. Try again in {seconds} s." | Wait that long, then continue |
 | "This browser cannot use passkeys here. Use a backup code instead, or sign in from a browser that can." | The account's factor is a passkey and this browser cannot run one at this address. Type a backup code, or use another browser |

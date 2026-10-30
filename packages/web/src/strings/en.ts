@@ -165,6 +165,7 @@ export const en = {
   'onboarding.keys.ackHint': 'Tick the box to continue.',
   'onboarding.keys.print': 'Print',
   'onboarding.keys.save': 'Save as file',
+  'onboarding.keys.printTitle': 'dilla recovery key for {instance}. You need it to add another browser to your account.',
   'onboarding.keys.fileName': 'dilla-recovery-key-{instance}.txt',
   'onboarding.keys.fileBody': 'Your dilla recovery key for {instance}. You need it to add another browser to your account. Keep this file away from this computer, and delete it here once it is stored elsewhere.',
   'onboarding.keys.preparing': 'Making your keys',

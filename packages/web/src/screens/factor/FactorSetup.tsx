@@ -263,9 +263,15 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
         toChoose();
         return;
       }
-      // Sign-up: another refusal of the finish leaves the factor in place; the done step here retries it (the host's banner
-      // says why), with the same codes.
-      if (origin === 'signup' && mounted.current) { setKey(null); setBusy(false); setStep('done'); }
+      // Sign-up: another refusal of the finish leaves the factor in place. Security review LOW-4: the person must not leave
+      // without the backup codes, so the retry is the codes step (the codes and their tick, then Continue retries the
+      // finish); with no codes to show (a factor already in place), the done step retries it. The host's banner says why.
+      if (origin === 'signup' && mounted.current) {
+        setKey(null);
+        setBusy(false);
+        if (handedCodes.current.length > 0) { setCodes(handedCodes.current); setAcknowledged(false); setStep('codes'); }
+        else setStep('done');
+      }
     });
   };
 
@@ -404,6 +410,7 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
     </div>
   );
 
+  const hint = <p id={CODE_HINT} className="dw-factor-code-hint">{t('factor.totp.codeHint')}</p>;
   let content: React.JSX.Element;
   if (step === 'choose') {
     const options = [
@@ -443,14 +450,15 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
             </div>
           </div>
         </div>
-        {/* Wave B task 3b (Jonas): the QR code, the setup key and the hint stay above the code boxes (an accepted deviation
-            from the prototype's code step, which has only the boxes). */}
-        <p id={CODE_HINT} className="dw-factor-code-hint">{t('factor.totp.codeHint')}</p>
+        {/* Wave B task 3b (Jonas): at sign-up the QR code, the setup key and the hint stay above the code boxes (an accepted
+            deviation from the prototype's code step, which has only the boxes); every other set-up keeps the hint under them. */}
+        {origin === 'signup' ? hint : null}
         {/* Wave B task 3: the prototype's six code boxes over one input that takes paste and one-time-code autofill. At sign-up
             the boxes take focus once the key is shown (beginTotp), as the prototype's code step opens on them (its focusRef). */}
         <CodeBoxes id={FIELD_CODE} label={t('factor.totp.code')} value={code}
           onChange={(v) => { setCode(v); setCodeError(null); }} onComplete={(v) => { submitTotp(v); }}
           invalid={codeError !== null} describedBy={codeError === null ? CODE_HINT : `${CODE_HINT} ${CODE_ERROR}`} />
+        {origin === 'signup' ? null : hint}
         {codeError === null ? null : <p id={CODE_ERROR} className="d-onboarding-frame__error" role="alert">{t(codeError)}</p>}
       </>);
   } else if (step === 'passkey') {
