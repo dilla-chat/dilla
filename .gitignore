@@ -40,3 +40,5 @@ packages/client-core/harness-dist/
 
 # go build output when run from the repository root (CI builds it in a runner)
 /dillad
+# the testkit binary the browser and harness jobs download (npm run ci:local copies it here too)
+/artifacts/

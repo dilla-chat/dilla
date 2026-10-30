@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { gateExpression, JOB_GATES, jobRuns, reachableOutputs } from './ci-areas.mjs';
+import { localMirrorProblems } from './ci-local-plan.mjs';
 
 /**
  * Every job the workflow must carry (interfaces §5). Ruling L added the two Go jobs: they landed with
@@ -1058,9 +1059,17 @@ export function checkReleaseWorkflow(root) {
   return problems;
 }
 
+/**
+ * `npm run ci:local` derives its jobs from ci.yml (scripts/ci-local-plan.mjs): a job, step, action, service, `if:` or
+ * expression it cannot map or explicitly skip fails here, so the local mirror cannot fall behind the workflow.
+ */
+export function checkLocalMirror(root) {
+  return localMirrorProblems(readFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'utf8'));
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
   const root = process.argv[2] ?? process.cwd();
-  const problems = [...checkWorkflow(root), ...checkReleaseWorkflow(root)];
+  const problems = [...checkWorkflow(root), ...checkReleaseWorkflow(root), ...checkLocalMirror(root)];
   for (const p of problems) console.error(p);
   process.exit(problems.length === 0 ? 0 : 1);
 }
