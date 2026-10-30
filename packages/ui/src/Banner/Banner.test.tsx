@@ -4,7 +4,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { Banner } from './Banner.tsx';
 import { expectNoAxeViolations } from '../test/setup.ts';
 
-// L-COPY-01: onboarding.error.network, onboarding.browser.registering, onboarding.error.rateLimitedNoWait, onboarding.error.reload.
+// L-COPY-01: onboarding.error.network, onboarding.keys.registering, onboarding.error.rateLimitedNoWait, onboarding.error.reload.
 const NETWORK = 'The connection dropped while creating your account. Reload the page to finish.';
 const REGISTERING = 'Creating your account on dilla.thim.dev…';
 

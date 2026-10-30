@@ -218,6 +218,14 @@ html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[d
 .dw-factor-ack { display: flex; align-items: flex-start; gap: 0.5rem; min-height: 24px; }
 .dw-factor-ack > label { padding-top: 2px; }
 .dw-factor-ack > input { width: 24px; height: 24px; flex: none; margin: 0; }
+/* Wave B task 3b: the sign-up's done step holds the backup codes (accepted deviation, Jonas) under the prototype's panel,
+   with the key step's check box (10px gap, 12px --fg-strong text, the 1.5rem box in the accent) gating Open dilla. */
+.dw-signup-codes { display: grid; gap: 10px; min-width: 0; }
+.dw-signup-codes > p { margin: 0; }
+.dw-signup-codes .d-code-list { gap: 10px; }
+.dw-signup-codes__ack { display: flex; align-items: flex-start; gap: 10px; font-size: var(--text-ui); color: var(--fg-strong); }
+.dw-signup-codes__ack > input { width: 1.5rem; height: 1.5rem; margin: 0; flex: none; accent-color: var(--accent); cursor: pointer; }
+.dw-signup-codes__ack > label { padding-top: 0.125rem; cursor: pointer; }
 @media (max-width: 30rem) { .dw-factor-key .d-qr { width: 160px; height: 160px; } }
 @media (max-width: 30rem) {
   .dw-factor-key__field { flex-wrap: wrap; }

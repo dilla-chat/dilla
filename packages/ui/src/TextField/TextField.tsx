@@ -25,6 +25,8 @@ export interface TextFieldProps {
   initialFocus?: boolean;
   /** Called when the field gains focus (the sign-in step starts its passkey autofill then, wave B task 3). */
   onFocus?(): void;
+  /** The input's placeholder (wave B task 3b: the prototype's auth fields, e.g. "at least 12 characters"). */
+  placeholder?: string;
 }
 
 /**
@@ -34,7 +36,7 @@ export interface TextFieldProps {
  */
 export function TextField({
   id, label, value, onChange, type, hint, note, error, required, disabled, readOnly, autoComplete, inputMode, maxLength, spellCheck, multiline, rows, initialFocus,
-  onFocus,
+  onFocus, placeholder,
 }: TextFieldProps) {
   const hintId = `${id}-hint`;
   const noteId = `${id}-note`;
@@ -55,7 +57,7 @@ export function TextField({
           onChange={e => onChange(e.currentTarget.value)} aria-describedby={describedBy}
           aria-invalid={error ? true : undefined} required={required} disabled={disabled} readOnly={readOnly}
           autoComplete={autoComplete} inputMode={inputMode} maxLength={maxLength} spellCheck={spellCheck}
-          data-autofocus={initialFocus ? '' : undefined} onFocus={onFocus} />
+          data-autofocus={initialFocus ? '' : undefined} onFocus={onFocus} placeholder={placeholder} />
       )}
       {hint ? <p id={hintId} className="d-text-field__hint">{hint}</p> : null}
       {note ? <p id={noteId} className="d-text-field__hint">{note}</p> : null}

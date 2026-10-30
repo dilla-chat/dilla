@@ -6,7 +6,7 @@ Every human account on an instance has a second factor, and the server enforces 
 
 | State | What shows | Copy keys |
 |---|---|---|
-| 1. Choose, for sign-up | Step 5 of 6 of onboarding, in `OnboardingFrame`. `ChoiceCards` with the authenticator app and the passkey, and `Button` Continue. | `factor.choose.title`, `factor.choose.body`, `factor.choose.label`, `factor.choose.app`, `factor.choose.appHint`, `factor.choose.passkey`, `factor.choose.passkeyHint`, `factor.choose.next` |
+| 1. Choose, for sign-up | Step 4 of 6 of onboarding (wave B task 3b; its code step is step 5 and the backup codes are on the done step, 6), in `OnboardingFrame`. `ChoiceCards` with the authenticator app and the passkey, and `Button` Continue. | `factor.choose.title`, `factor.choose.body`, `factor.choose.label`, `factor.choose.app`, `factor.choose.appHint`, `factor.choose.passkey`, `factor.choose.passkeyHint`, `factor.choose.next` |
 | 2. Choose, when forced | The same screen, mounted by App for an account that owes a factor. It adds the required paragraph. There is no skip and no cancel control. The one way out is the ghost button `devices.forget` under the frame (all three set-up views have it): it opens a confirm (`devices.forgetTitle`, `devices.forgetBody`, `devices.confirmForget`, `devices.working`, `signin.cancel`) that sends `forgetBrowser` and nothing else. It clears this browser; it never marks the factor as set and never reaches the shell. | `factor.choose.required`, `devices.forget`, `devices.forgetTitle`, `devices.forgetBody`, `devices.confirmForget`, `devices.working` |
 | 3. Passkey unusable | The passkey card is disabled and shows its reason. The app card stays selectable. | `factor.choose.passkeyOff` |
 | 4. No-password account | Only the passkey card, preselected, with its reason. | `factor.choose.noPassword` |
@@ -67,16 +67,18 @@ Polite, through the screen's `useAnnouncer` (it queues, so two in a row are both
 
 - `factor.choose.title='Add a second factor'`
 - `factor.choose.body='Every account on {instance} needs a second factor. Signing in on a new browser then takes your password and a code from an authenticator app, or a passkey on its own.'`
+- `factor.choose.bodySignup='Required for signing in on a new browser.'` (wave B task 3b: the sign-up's step 4, the prototype's subtitle)
 - `factor.choose.required='Your account needs a second factor before you can continue. {instance} asks every account for one.'`
 - `factor.choose.label='Second factor'`
-- `factor.choose.app='authenticator app'`
-- `factor.choose.appHint='An app on your phone that shows a new six-digit code every 30 seconds.'`
-- `factor.choose.passkey='passkey'`
-- `factor.choose.passkeyHint='Your phone, a security key or this computer confirms it is you with a fingerprint, your face or a PIN. A passkey signs you in on its own.'`
+- `factor.choose.app='Authenticator app'`
+- `factor.choose.appHint='A six-digit code that changes every 30 s'`
+- `factor.choose.passkey='Passkey'`
+- `factor.choose.passkeyHint='Touch ID, Windows Hello or a security key'`
 - `factor.choose.passkeyOff='Passkeys cannot be used here. Use an authenticator app.'`
 - `factor.choose.noPassword='Your account has no password, so its second factor is a passkey.'`
 - `factor.choose.next='Continue'`
 - `factor.totp.title='Set up your authenticator app'`
+- `factor.totp.titleSignup='Enter your code'` (wave B task 3b: the sign-up's step 5, the prototype's title; the QR code, the setup key and the hint stay)
 - `factor.totp.body='In the app, add an account and scan this code. If you cannot scan it, type the setup key instead.'`
 - `factor.totp.qr='QR code to add {username} on {instance} to an authenticator app'`
 - `factor.totp.key='Setup key'`
@@ -86,6 +88,7 @@ Polite, through the screen's `useAnnouncer` (it queues, so two in a row are both
 - `factor.totp.codeHint='Six digits. The app shows a new one every 30 seconds.'`
 - `factor.totp.loading='Making a setup key…'`
 - `factor.totp.submit='Continue'`
+- `factor.totp.verify='Verify'` (wave B task 3b: the sign-up's code step, the prototype's button)
 - `factor.totp.working='Checking…'`
 - `factor.passkey.title='Add a passkey'`
 - `factor.passkey.body='Your browser asks where to keep the passkey: on this computer, your phone or a security key. Keep it on this computer only if no one else uses it.'`

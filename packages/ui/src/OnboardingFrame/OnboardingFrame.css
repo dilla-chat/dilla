@@ -34,6 +34,8 @@
 .d-onboarding-frame__footer > .d-btn[data-variant="ghost"] { height: auto; min-height: 1.5rem; margin-bottom: -3.5px; padding: 0; font-size: var(--text-btn); color: var(--fg-link); }
 .d-onboarding-frame__footer > .d-btn[data-variant="ghost"]:hover { color: var(--accent-2); background: transparent; }
 .d-onboarding-frame .d-text-field__input { height: 2.5rem; }
+/* Wave B task 3b: the prototype's auth placeholders ("https://", "at least 12 characters") in --fg-3. */
+.d-onboarding-frame .d-text-field__input::placeholder { color: var(--fg-3); opacity: 1; }
 .d-onboarding-frame__footer .d-btn[data-variant="accent"]::after { content: "" / ""; flex: none; width: 15px; height: 15px; background: currentColor; mask: var(--d-mask-arrow-right) center / contain no-repeat; }
 /* min-height: the prototype's 40px on a phone too (rule 0), over Button.css's 44px phone tier. */
 .d-onboarding-frame__footer .d-btn[data-variant="accent"] { justify-content: center; height: 2.5rem /* 40px */; min-height: 2.5rem; border-radius: var(--r-lg); font-size: var(--text-input); font-weight: var(--weight-display); }

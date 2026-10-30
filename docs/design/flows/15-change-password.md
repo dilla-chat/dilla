@@ -59,14 +59,14 @@ Polite, through the Settings announcer: `settings.password.changed` after a chan
 `settings.password.username='Username'`
 `settings.password.old='Current password'`
 `settings.password.new='New password'`
-`settings.password.newHint='At least 8 characters.'`
+`settings.password.newHint='At least 12 characters.'`
 `settings.password.confirm='New password again'`
 `settings.password.confirmChange='Change password'`
 `settings.password.confirmSet='Set password'`
 `settings.password.busy='Saving…'`
 `settings.password.cancel='Cancel'`
 `settings.password.error.oldRequired='Type your current password.'`
-`settings.password.error.short='Use at least 8 characters.'`
+`settings.password.error.short='Use at least 12 characters.'`
 `settings.password.error.mismatch='The two passwords do not match.'`
 `settings.password.error.wrong='That password did not work.'`
 `settings.password.error.stale='That took too long. Try again.'`

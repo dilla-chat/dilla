@@ -418,13 +418,13 @@ describe('App onboarding', () => {
     };
     replaceHistoryState(null, '', '/welcome?invite=ABCD-EFGH');
     const view = render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
-    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Join dilla.test');
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Join with an invite');
     await user.click(screen.getByRole('button', { name: 'Continue' }));
     await user.type(screen.getByRole('textbox', { name: 'Username' }), 'ada');
-    await user.click(screen.getByRole('button', { name: 'Continue' }));
-    await user.click(screen.getByRole('checkbox', { name: 'I have written down or printed my recovery key' }));
-    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    // Wave B task 3b: Create account makes the keys; I saved it, once ticked, creates the account.
     await user.click(screen.getByRole('button', { name: 'Create account' }));
+    await user.click(screen.getByRole('checkbox', { name: 'I saved my recovery key somewhere safe' }));
+    await user.click(screen.getByRole('button', { name: 'I saved it' }));
     act(() => fake.set('account', account({ phase: 'ready' })));
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('You’re in');
     const depth = window.history.length;
@@ -459,6 +459,71 @@ describe('App onboarding', () => {
     expect(readJoinError(window.history.state)).toBeNull();
     expect(readJoinError(undefined)).toBeNull();
     expect(readJoinError({ joinError: 'E_X' })).toBeNull();
+  });
+  // Wave B task 3b: a sign-up abandoned at any step reopens where it did before the six-step rebuild. The page has sent
+  // signupSubmit only once step 3's box was ticked and I saved it pressed; the worker's boot then gives the phase named
+  // (Signup.resume and enterReady, tested in client-core), and the App shows the screen for it.
+  describe('abandoned at each step and reopened', () => {
+    const KEY = ['7K2M', 'QX9D', 'H4TB', 'R8NW', 'C3VF', 'J6PZ', 'A1GE', 'Y5KS', 'M0QT', 'B7XH', 'W2DN', 'F9RC', 'P4ZA'];
+    const FORCED = 'Your account needs a second factor before you can continue. dilla.test asks every account for one.';
+    type Reached = 1 | 2 | 3 | 'registered' | 4 | 5 | 6;
+    async function walkTo(fake: FakeClient, reached: Reached) {
+      const user = userEvent.setup();
+      fake.set('account', account({ phase: 'needs-signup', user: null }));
+      fake.handler = c => {
+        if (c.m === 'signupBegin') fake.set('account', account({ phase: 'signup-keys', user: null, recoveryKey: KEY }));
+        if (c.m === 'signupReset') fake.set('account', account({ phase: 'needs-signup', user: null, recoveryKey: null }));
+        return c.m === 'signupSubmit' ? new Promise(() => {}) : Promise.resolve(null);
+      };
+      replaceHistoryState(null, '', '/welcome?invite=ABCD-EFGH');
+      const view = render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
+      if (reached === 1) return view;
+      await user.click(screen.getByRole('button', { name: 'Continue' }));
+      await user.type(screen.getByRole('textbox', { name: 'Username' }), 'ada');
+      if (reached === 2) return view;
+      await user.click(screen.getByRole('button', { name: 'Create account' }));
+      await user.click(screen.getByRole('checkbox', { name: 'I saved my recovery key somewhere safe' }));
+      // Until here nothing has gone to the instance: the keys are only in this browser.
+      expect(fake.callsOf('signupSubmit')).toEqual([]);
+      if (reached === 3) return view;
+      await user.click(screen.getByRole('button', { name: 'I saved it' }));
+      expect(fake.callsOf('signupSubmit')).toHaveLength(1);
+      if (reached === 'registered') return view;
+      act(() => fake.set('account', account({ phase: 'factor-setup', factorSetup: { origin: 'signup' }, recoveryKey: null })));
+      if (reached === 6) act(() => fake.set('account', account({ phase: 'ready' })));
+      return view;
+    }
+    const reopen = (fake: FakeClient, phase: Parameters<typeof account>[0]) => {
+      act(() => fake.set('account', account({ phase: 'loading', user: null, instance: null })));
+      act(() => fake.set('account', account(phase)));
+    };
+    it.each([1, 2, 3] as const)('step %s: no account was created, and the reopen is step 1 with no key', async (reached) => {
+      const fake = new FakeClient();
+      await walkTo(fake, reached);
+      expect(fake.callsOf('signupSubmit')).toEqual([]);
+      // Signup.resume finds keys and no session, resets them and answers needs-signup.
+      reopen(fake, { phase: 'needs-signup', user: null, recoveryKey: null });
+      expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Join with an invite');
+      expect(screen.queryByText(KEY[0])).toBeNull();
+    });
+    it.each(['registered', 4, 5] as const)('%s: the account exists and owes its factor, and the reopen is the forced screen', async (reached) => {
+      const fake = new FakeClient();
+      await walkTo(fake, reached);
+      reopen(fake, { phase: 'factor-setup', factorSetup: { origin: 'required' }, recoveryKey: null });
+      expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Add a second factor');
+      expect(screen.getByText(FORCED)).toBeInTheDocument();
+      expect(screen.queryByText(KEY[0])).toBeNull();
+    });
+    it('step 6: the factor is in place, and the reopen is the shell (the backup codes shown before are gone)', async () => {
+      const fake = new FakeClient();
+      fake.set('communities', []);
+      await walkTo(fake, 6);
+      cleanup();
+      fake.set('account', account({ phase: 'ready' }));
+      render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
+      expect(screen.getByRole('navigation', { name: 'servers' })).toBeInTheDocument();
+      expect(screen.queryByRole('heading', { name: 'You’re in' })).toBeNull();
+    });
   });
   it('never shows onboarding to an account that is already ready', () => {
     const fake = new FakeClient();
@@ -501,7 +566,7 @@ describe('App sign-in', () => {
     const user = userEvent.setup();
     const fake = new FakeClient();
     startAt(fake);
-    await user.click(screen.getByRole('button', { name: 'Use an existing account' }));
+    await user.click(screen.getByRole('button', { name: 'Already have an account? Sign in' }));
     await user.type(screen.getByRole('textbox', { name: 'Username' }), 'ada');
     await user.type(screen.getByLabelText('Password'), 'correct horse');
     await user.click(screen.getByRole('button', { name: 'Continue' }));
@@ -524,7 +589,7 @@ describe('App sign-in', () => {
     const user = userEvent.setup();
     const fake = new FakeClient();
     startAt(fake);
-    await user.click(screen.getByRole('button', { name: 'Use an existing account' }));
+    await user.click(screen.getByRole('button', { name: 'Already have an account? Sign in' }));
     // web3.8 (R6, R7): the login first, then the recovery key, which adds this browser.
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Sign in to dilla.test');
     expect(screen.getByText('Sign in · step 1 of 4')).toBeInTheDocument();
@@ -551,9 +616,9 @@ describe('App sign-in', () => {
     const user = userEvent.setup();
     const fake = new FakeClient();
     startAt(fake);
-    await user.click(screen.getByRole('button', { name: 'Use an existing account' }));
+    await user.click(screen.getByRole('button', { name: 'Already have an account? Sign in' }));
     await user.click(screen.getByRole('button', { name: 'Have an invite? Create an account' }));
-    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Join dilla.test');
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Join with an invite');
     act(() => fake.set('account', account({ phase: 'ready' })));
     expect(screen.getByText('New account · step 6 of 6')).toBeInTheDocument();
     expect(screen.queryByText(/This browser is now one of your devices/)).toBeNull();
@@ -565,7 +630,7 @@ describe('App sign-in', () => {
     const user = userEvent.setup();
     const fake = new FakeClient();
     startAt(fake);
-    await user.click(screen.getByRole('button', { name: 'Use an existing account' }));
+    await user.click(screen.getByRole('button', { name: 'Already have an account? Sign in' }));
     await user.type(screen.getByRole('textbox', { name: 'Username' }), 'ada');
     await user.type(screen.getByLabelText('Password'), 'correct horse');
     await user.click(screen.getByRole('button', { name: 'Continue' }));
@@ -573,10 +638,10 @@ describe('App sign-in', () => {
     // The reload: the boot runs again and finds no enrolment.
     act(() => fake.set('account', account({ phase: 'loading', user: null, instance: null })));
     act(() => fake.set('account', account({ phase: 'needs-signup', user: null, instance: { ...account().instance!, passwordSignup: true } })));
-    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Join dilla.test');
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Join with an invite');
     expect(screen.queryByRole('textbox', { name: 'Recovery key' })).toBeNull();
     expect(screen.queryByRole('alert')).toBeNull();
-    await user.click(screen.getByRole('button', { name: 'Use an existing account' }));
+    await user.click(screen.getByRole('button', { name: 'Already have an account? Sign in' }));
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Sign in to dilla.test');
     expect(screen.getByText('Sign in · step 1 of 4')).toBeInTheDocument();
     expect(screen.getByRole('textbox', { name: 'Username' })).toHaveValue('');

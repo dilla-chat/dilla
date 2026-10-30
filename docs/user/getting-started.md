@@ -509,7 +509,7 @@ You choose one of two kinds, and can have both:
 
 ### Setting it up
 
-At sign-up it is [step 5 of 6](#step-5-of-6-add-a-second-factor). The same screens appear when an account has none
+At sign-up it is [step 4 of 6](#step-4-of-6-add-a-second-factor), then step 5. The same screens appear when an account has none
 (see [After the upgrade](#after-the-upgrade-to-web-36)) and in Settings → Sign-in.
 
 ![Step 5, authenticator app: the QR code, the setup key with Copy, and the field "Code from the app"](screenshots/onboarding-5-factor-app.png)
@@ -524,7 +524,7 @@ and a cancelled prompt says "No passkey was added. Try again, or use an authenti
 
 ![Step 5, backup codes: the list of codes, Print, Copy, and the box to tick](screenshots/onboarding-5-factor-codes.png)
 
-After the factor you get "Your backup codes", a list with **Print** and **Copy**. Each code signs you in once in
+After the factor you get your backup codes, a list with **Print** and **Copy** (at sign-up they are on the last step, "You’re in"). Each code signs you in once in
 place of your second factor, which is what you reach for when you lose your phone or your passkey. "Backup codes are
 not your recovery key. You still need the recovery key to add a browser." The recovery key (step 3 of the sign-up)
 is what adds a browser to your account; a backup code never does. Keep both away from this computer. The codes are shown once. A code is 26 letters and digits; hyphens and spaces do not matter when you type one. The number of
@@ -607,82 +607,87 @@ first step.
 
 ## 2. Sign up: six steps
 
-All six steps happen in the same tab. **Continue** (or Enter in a field) moves forward, **Back** goes back
-one step, and nothing is created on the instance until step 4.
+All six steps happen in the same tab. The button under each step (or Enter in a field) moves forward, and **Back**,
+under it on the left, goes back one step. Nothing is created on the instance until you press **I saved it** on step
+3, after you saved your recovery key.
 
-### Step 1 of 6: Join
+### Step 1 of 6: Join with an invite
 
-![Step 1: "Join dilla.test" with the invite field filled in](screenshots/onboarding-1-invite.png)
+![Step 1: "Join with an invite" with the invite link filled in](screenshots/onboarding-1-invite.png)
 
-"You need an invite from someone on {instance}. Paste it below." The field takes "A code or a link, as you
-received it." If the invite is refused when the account is created, you are brought back here with "This
-invite is expired, used up or unknown. Ask for a new one." An instance that takes no new accounts shows
-"{instance} is not taking new accounts" instead of this step.
+"Paste the link someone sent you." The field ("Invite link") takes the link or just its code. If the invite is refused
+when the account is created, you are brought back here with "This invite is expired, used up or unknown. Ask for a
+new one." An instance that takes no new accounts shows "{instance} is not taking new accounts" instead of this step.
+Where the instance takes passwords, "Already have an account? Sign in" under the button starts the sign-in instead.
 
-### Step 2 of 6: Choose your name
+### Step 2 of 6: Create your account
 
-![Step 2: "Choose your name" with the username mira, the display name Mira and a password](screenshots/onboarding-2-name.png)
+![Step 2: "Create your account" with the username mira and a password](screenshots/onboarding-2-name.png)
 
-"People on {instance} see these next to your messages."
+"Pick a username and a password. Your username is how people mention you."
 
-- **Username**: "3 to 32 characters: a–z, 0–9, dot, underscore or hyphen." Capital letters are turned into
-  lower case. If someone has it already: "That username is taken. Try another."
-- **Display name (optional)**: "Up to 64 characters. Your username is shown when this is empty." This is
-  the name shown on your messages.
-- **Password**: only when the instance offers passwords. "At least 8 characters." Keep it: a second browser
-  asks for this password, the code of your second factor and, last, your recovery key.
+- **Username**: 3 to 32 characters: a–z, 0–9, dot, underscore or hyphen. Capital letters are turned into lower case.
+  Anything else says "Use 3 to 32 characters: a–z, 0–9, dot, underscore or hyphen, with no dot at the start or end."
+- **Password**: only when the instance offers passwords, "at least 12 characters". Keep it: a second browser asks
+  for this password, the code of your second factor and, last, your recovery key.
 
-Going forward from this step makes your keys. That can take a moment ("Making your keys").
+There is no display name here. Until you set one in Settings → Profile, people see your username.
 
-### Step 3 of 6: Your recovery key
+**Create account** makes your keys in this browser ("Making your keys"). The account itself is created on step 3.
 
-![Step 3: "Your recovery key", thirteen groups of four characters, the box to tick and the Print
+### Step 3 of 6: Save your recovery key
+
+![Step 3: "Save your recovery key", thirteen groups of four characters, the box to tick and the Print
 button](screenshots/onboarding-3-recovery-key.png)
 
-The key is 13 groups of 4 characters. "This key is shown once and is kept nowhere. Write it down or print
-it, and keep it away from this computer." **Print** opens the browser's print dialog; the printed page holds
-the key and the two paragraphs, not the rest of the screen. There is no copy button, on purpose: the
-clipboard is readable by other programs. You can still select the text yourself.
+"Shown once. You need it to add another browser." The key is 13 groups of 4 characters. **Print** opens the
+browser's print dialog; the printed page holds the key, not the rest of the screen. There is no copy button, on
+purpose: the clipboard is readable by other programs. You can still select the text yourself.
 
-The screen says: "This key is the only way to get your account back or to add another browser. If every browser you use loses its data and you do not have the key, the account and its history are gone, and the host cannot bring them back." It cannot be shown again after you leave this step.
+The key is the only way to get your account back or to add another browser. If every browser you use loses its data
+and you do not have the key, the account and its history are gone, and the host cannot bring them back.
 
-Tick "I have written down or printed my recovery key" to continue ("Tick the box to continue.").
+Tick "I saved my recovery key somewhere safe", then press **I saved it**. That creates the account on the instance
+("Creating your account on {instance}…").
 
-### Step 4 of 6: What this browser keeps
+- If the username is taken, you are back on step 2 with "That username is taken. Try another." Other refusals bring
+  you back to step 2 too, with the reason. The key you saw is thrown away; the next **Create account** makes a new
+  one, which you save again.
+- **Back** also throws the key away, and so does closing the tab before **I saved it**: nothing was created, and the
+  next visit starts at step 1.
+- If the connection drops while the account is created, the screen says "The connection dropped while creating your
+  account. Reload the page to finish." Reload: the account may already exist, and the reload finishes it.
 
-![Step 4: "What this browser keeps", four paragraphs and the Create account button](screenshots/onboarding-4-browser.png)
+### Step 4 of 6: Add a second factor
 
-- "This browser now holds the key of this device, in its storage for {instance}. The key never leaves this
-  browser."
-- "Clearing this site’s data removes the key and the messages kept here, and this browser stops being your
-  device."
-- "To use this account in another browser, sign in there with your password and the second factor you add next, then this recovery key. Messages sent before that browser joins are not shown in it."
-- "A private window forgets all of this when it closes."
+![Step 4: "Add a second factor" with the choices Authenticator app and Passkey and the button Continue](screenshots/onboarding-5-factor-choose.png)
 
-**Create account** creates the account on the instance ("Creating your account on {instance}…").
+"Required for signing in on a new browser." Choose **Authenticator app** ("A six-digit code that changes every 30 s")
+or **Passkey** ("Touch ID, Windows Hello or a security key"), then **Continue**. The step is described in full under
+[Second factor](#second-factor).
 
-### Step 5 of 6: Add a second factor
-
-![Step 5: "Add a second factor" with the choices authenticator app and passkey and the button Continue](screenshots/onboarding-5-factor-choose.png)
-
-"Every account on {instance} needs a second factor. Signing in on a new browser then takes your password and a code
-from an authenticator app, or a passkey on its own." Choose **authenticator app** or **passkey** and then
-**Continue**. The step is described in full under [Second factor](#second-factor). In short:
-
-- **authenticator app**: scan the QR code with an authenticator app, or type the setup key, then type the code the
-  app shows ("Code from the app").
-- **passkey**: your browser asks where to keep the passkey. You can name it ("Passkey name").
-- Then comes "Your backup codes". Write or print them, tick "I have written down or printed my backup codes" and
-  choose **Continue**.
-
-There is no way to skip this step. The account exists already (step 4 made it); if you close the tab here, the
+There is no way to skip this step and no way back to the key: the account exists now. If you close the tab here, the
 next time you open dilla in this browser it asks for the second factor before anything else.
+
+### Step 5 of 6: Enter your code
+
+![Step 5: "Enter your code" with the QR code, the setup key and the six code boxes](screenshots/onboarding-5-factor-app.png)
+
+For an authenticator app: scan the QR code with the app, or type the setup key, then type the six digits the app
+shows. The sixth digit sends the code; **Verify** does the same. Pasting the code works, and so does a code your
+browser or phone fills in. For a passkey, your browser asks where to keep it, and you can name it ("Passkey name").
+**Back** returns to the choice.
 
 ### Step 6 of 6: You’re in
 
-![Step 6: "You’re in", "You are mira on dilla.test" and the Open dilla button](screenshots/onboarding-5-done.png)
+![Step 6: "You’re in", "Your account is ready.", the backup codes and the Open dilla button](screenshots/onboarding-5-done.png)
 
-"You are {username} on {instance}." **Open dilla** opens the app.
+"Your account is ready." If the invite was for a server, a green panel says "{server} is waiting in #{channel}."
+
+Under it are your backup codes, with **Copy** and **Print**: "Each backup code signs you in once if you lose your
+second factor. Keep them with your recovery key." Tick "I saved my backup codes somewhere safe"; **Open dilla** opens
+the app once the box is ticked. The codes are shown once; if you close the tab before you saved them, make new ones
+in Settings → Sign-in.
 
 If the invite was for a server, you land in that server. Creating the account uses the invite once and
 joining the server uses it a second time, so an invite that can be used only once creates the account and

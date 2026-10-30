@@ -12,7 +12,7 @@ describe('flow 10 (v0.1.0-web3.6, second factor)', () => {
   const pairs = [...copy.matchAll(/`([a-zA-Z][\w.]*)='([^`]*)'`/g)].map(m => [m[1], m[2]] as const);
   it('strings: every flow-10 copy key equals en.ts byte for byte, and every new key is in the flow', () => {
     const table = en as Readonly<Record<string, string>>;
-    expect(pairs.length).toBe(136); // Task 11 (Q7): the prototype's Sign-in copy
+    expect(pairs.length).toBe(139); // Wave B task 3b: the sign-up's factor and code steps in the prototype's words
     for (const [key, value] of pairs) expect(table[key], key).toBe(value);
     for (const [key, value] of pairs) {
       for (const f of FORBIDDEN as { word: string; re: RegExp }[]) expect(f.re.test(value), `${key}: ${f.word}`).toBe(false);
@@ -34,8 +34,6 @@ describe('flow 10 (v0.1.0-web3.6, second factor)', () => {
     expect(rows.length - 1).toBeGreaterThanOrEqual(22);
   });
   const LOWER: readonly string[] = [
-    'factor.choose.app',
-    'factor.choose.passkey',
     'factorSettings.nav',
     'factorSettings.totp.add',
     'factorSettings.totp.remove',
@@ -45,10 +43,11 @@ describe('flow 10 (v0.1.0-web3.6, second factor)', () => {
     'factorSettings.passkeys.removeLabel',
     'factorSettings.codes.make',
   ];
-// Signal task 10 fix round 1 (Jonas, prototype wins): settings chrome follows the prototype's sentence case.
+// Signal task 10 fix round 1 (Jonas, prototype wins): settings chrome follows the prototype's sentence case. Wave B task 3b:
+// so do the choice's cards ("Authenticator app", "Passkey"), the prototype's new-account step 4.
   it('chrome: the settings chrome keys are sentence case, the others lower case', () => {
     const table = en as Readonly<Record<string, string>>;
-    expect(LOWER.length).toBe(10);
+    expect(LOWER.length).toBe(8);
     for (const key of LOWER) expect(table[key], key).toMatch(key.startsWith('factorSettings.') ? /^[A-Z]/ : /^[a-z]/);
   });
 });

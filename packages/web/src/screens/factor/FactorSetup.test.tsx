@@ -63,7 +63,7 @@ function setup(over: Partial<FactorSetupProps> = {}, opts: { handler?: Handler; 
   const announce = vi.fn();
   const onDone = vi.fn();
   const user = userEvent.setup();
-  const props: FactorSetupProps = { origin: 'signup', stepLabel: 'New account · step 5 of 6', instanceName: 'dilla.test', username: 'ada', announce, onDone, ...over };
+  const props: FactorSetupProps = { origin: 'signin', stepLabel: 'Sign in · step 3 of 4', instanceName: 'dilla.test', username: 'ada', announce, onDone, ...over };
   const view = render(<div className="d-root"><CoreProvider client={fake}><FactorSetup {...props} /></CoreProvider></div>);
   return { fake, announce, onDone, user, view };
 }
@@ -83,14 +83,23 @@ async function toPasskey(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe('choose', () => {
-  it('shows both cards with the app preselected, the step line and the body for a sign-up', () => {
+  it('shows both cards with the app preselected, the step line and the body for a sign-in', () => {
     setup();
     expect(h1()).toHaveTextContent(en['factor.choose.title']);
     expect(h1()).toHaveFocus();
-    expect(screen.getByText('New account · step 5 of 6')).toBeInTheDocument();
+    expect(screen.getByText('Sign in · step 3 of 4')).toBeInTheDocument();
     expect(screen.getByText(/Every account on dilla.test needs a second factor/)).toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: en['factor.choose.app'] })).toBeChecked();
-    expect(screen.getByRole('radio', { name: en['factor.choose.passkey'] })).toBeEnabled();
+    expect(screen.getByRole('radio', { name: new RegExp(en['factor.choose.app']) })).toBeChecked();
+    expect(screen.getByRole('radio', { name: new RegExp(en['factor.choose.passkey']) })).toBeEnabled();
+  });
+  // Wave B task 3b: the sign-up's step 4 in the prototype's words, its cards with the prototype's names and lines.
+  it('shows the prototype copy for a sign-up: step 4, its subtitle and the two cards', () => {
+    setup({ origin: 'signup', stepLabel: 'New account · step 4 of 6', laterStep: { stepLabel: 'New account · step 5 of 6' } });
+    expect(h1()).toHaveTextContent('Add a second factor');
+    expect(screen.getByText('New account · step 4 of 6')).toBeInTheDocument();
+    expect(screen.getByText('Required for signing in on a new browser.')).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: /^Authenticator app/ })).toHaveAccessibleDescription(expect.stringContaining('A six-digit code that changes every 30 s'));
+    expect(screen.getByRole('radio', { name: /^Passkey/ })).toHaveAccessibleDescription(expect.stringContaining('Touch ID, Windows Hello or a security key'));
   });
   it('says the account owes a factor when mounted for a required set-up', () => {
     setup({ origin: 'required', stepLabel: '' });
@@ -507,12 +516,19 @@ describe('forced set-up ends with a done step', () => {
     expect(await screen.findByText(en['factor.done.passkey'])).toBeInTheDocument();
     expect(announce).toHaveBeenCalledWith(en['factor.added']);
   });
-  it('does not announce a done step for a sign-up', async () => {
-    const { user, announce } = setup({ origin: 'signup' });
+  // Wave B task 3b: a sign-up has no codes step here: the codes go to the host (its done step), with no announcement.
+  it('does not announce a done step for a sign-up, and hands the codes to the host instead of showing them', async () => {
+    const { user, announce, onDone } = setup({ origin: 'signup', stepLabel: 'New account · step 4 of 6', laterStep: { stepLabel: 'New account · step 5 of 6' } });
     await toTotp(user);
+    expect(screen.getByText('New account · step 5 of 6')).toBeInTheDocument();
+    expect(h1()).toHaveTextContent('Enter your code');
+    expect(button('Verify')).toHaveAttribute('aria-disabled', 'true');
     await user.type(codeField(), '123456');
     await settleCode();
-    await screen.findByRole('heading', { level: 1, name: en['factor.codes.title'] });
+    await waitFor(() => { expect(onDone).toHaveBeenCalledTimes(1); });
+    expect(onDone).toHaveBeenCalledWith({ kind: 'totp', backupCodes: CODES });
+    expect(screen.queryByRole('heading', { level: 1, name: en['factor.codes.title'] })).toBeNull();
+    expect(screen.queryByRole('list', { name: en['factor.codes.label'] })).toBeNull();
     expect(announce).not.toHaveBeenCalledWith(en['factor.added']);
   });
   it('has no axe violations on the done step', async () => {

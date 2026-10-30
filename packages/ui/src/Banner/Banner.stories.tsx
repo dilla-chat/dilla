@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { Banner } from './Banner.tsx';
 
-// Every string is L-COPY-01's (onboarding.browser.registering, onboarding.error.*).
+// Every string is L-COPY-01's (onboarding.keys.registering, onboarding.error.*).
 const meta = { title: 'Form/Banner', component: Banner, args: { tone: 'info', children: 'Creating your account on dilla.thim.dev…' } } satisfies Meta<typeof Banner>;
 export default meta;
 type Story = StoryObj<typeof meta>;

@@ -872,9 +872,7 @@ while a command runs, when they do nothing. Focus then returns to the button tha
 
 | key | text | where |
 |---|---|---|
-| `onboarding.connect.signIn` | `Use an existing account` | ghost button under the invite field, onboarding step 1, and under the closed frame's paragraph, when `instance.passwordSignup` |
-| `onboarding.keys.loss` | `This key is the only way to get your account back or to add another browser. If every browser you use loses its data and you do not have the key, the account and its history are gone, and the host cannot bring them back.` | second paragraph, onboarding step 3 (changed for web-2a) |
-| `onboarding.browser.oneBrowser` | `To use this account in another browser, sign in there with your password and the second factor you add next, then this recovery key. Messages sent before that browser joins are not shown in it.` | third paragraph, onboarding step 4 (changed for web-2a and web3.6) |
+| `onboarding.connect.signIn` | `Already have an account? Sign in` | ghost button under the invite field, onboarding step 1, and under the closed frame's paragraph, when `instance.passwordSignup` |
 | `signin.step` | `Sign in · step {n} of {total}` | step line, steps 1–4 (Signal task 10: {total} is 4, or 3 with no factor step shown; the dots follow it) |
 | `signin.login.title` | `Sign in to {instance}` | step heading, step 1 |
 | `signin.login.body` | `Use your dilla username and password.` | paragraph, step 1 |

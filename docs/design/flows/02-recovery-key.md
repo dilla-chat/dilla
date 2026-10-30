@@ -107,11 +107,10 @@ The print rules use system colours (`CanvasText` on `Canvas`), because browsers 
 
 | key | text |
 |---|---|
-| `onboarding.keys.title` | `Your recovery key` |
-| `onboarding.keys.body` | `This key is shown once and is kept nowhere. Write it down or print it, and keep it away from this computer.` |
-| `onboarding.keys.loss` | `This key is the only way to get your account back or to add another browser. If every browser you use loses its data and you do not have the key, the account and its history are gone, and the host cannot bring them back.` |
+| `onboarding.keys.title` | `Save your recovery key` |
+| `onboarding.keys.body` | `Shown once. You need it to add another browser.` |
 | `onboarding.keys.label` | `Recovery key` |
-| `onboarding.keys.acknowledge` | `I have written down or printed my recovery key` |
+| `onboarding.keys.acknowledge` | `I saved my recovery key somewhere safe` |
 | `onboarding.keys.ackHint` | `Tick the box to continue.` |
 | `onboarding.keys.print` | `Print` |
 | `onboarding.keys.preparing` | `Making your keys` |

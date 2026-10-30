@@ -29,7 +29,9 @@ describe('the copy rules', () => {
   });
   it('never exclaims and never reassures', () => {
     for (const [key, value] of values) {
-      expect(value, key).not.toMatch(/!|\bsecure\b|\bsafe\b|\bprotected\b|\u{1F512}/iu);
+      // Wave B task 3b: "somewhere safe" is the prototype's instruction where to keep a key or codes (its check-box labels),
+      // not a claim about dilla; any other "safe" still fails.
+      expect(value.replace(/\bsomewhere safe\b/g, ''), key).not.toMatch(/!|\bsecure\b|\bsafe\b|\bprotected\b|\u{1F512}/iu);
     }
   });
   it('keeps the boot truth rule of L-COPY-01 and names the dialog close button', () => {
@@ -37,9 +39,11 @@ describe('the copy rules', () => {
     expect(en['boot.storeLost.detail']).not.toMatch(/recovery/i);
     expect(en['dialog.close']).toBe('Close');
   });
-  it('says what the recovery key does now, and promises no history on a second browser (L-COPY-02)', () => {
-    expect(en['onboarding.keys.loss']).toBe('This key is the only way to get your account back or to add another browser. If every browser you use loses its data and you do not have the key, the account and its history are gone, and the host cannot bring them back.');
-    expect(en['onboarding.browser.oneBrowser']).toBe('To use this account in another browser, sign in there with your password and the second factor you add next, then this recovery key. Messages sent before that browser joins are not shown in it.');
+  // Wave B task 3b (Jonas, "match the prototype"): the key step says it in the prototype's words; the loss paragraph and
+  // the "What this browser keeps" step are gone.
+  it('says what the recovery key does now, in the words of the prototype (L-COPY-02, task 3b)', () => {
+    expect(en['onboarding.keys.body']).toBe('Shown once. You need it to add another browser.');
+    expect(Object.keys(en).filter(k => k.startsWith('onboarding.browser.') || k === 'onboarding.keys.loss')).toEqual([]);
     expect(en['signin.done.body']).toBe('This browser is now one of your devices.');
     expect(en['signin.step']).toBe('Sign in · step {n} of {total}');
     expect(en['signin.error.totpFailed']).toBe('That code did not work. Sign in again with a fresh code.');

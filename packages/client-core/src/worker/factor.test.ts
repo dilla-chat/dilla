@@ -109,6 +109,33 @@ describe('the factor-setup phase (web3.6 C2)', () => {
     expect(plain(r.last('settings'))).not.toContain('friends-code');
   });
 
+  // Wave B task 3b: the page creates the account only at the key step's "I saved it". A refused creation leaves the keys
+  // pending with no session; the page then discards them (signupReset), and its next Create account makes new ones. No
+  // second key is ever shown for the same pending keys: signupBegin is refused while they are pending.
+  it('a refused signupSubmit registers nothing; signupReset forgets the keys, and only then does signupBegin make new ones', async () => {
+    const w = world({ phase: 0, owed: true });
+    await toKeys(w);
+    w.signup.submit.mockImplementationOnce(() => Promise.reject(refusal(409, 'E_INVALID_REQUEST')));
+    w.call(3, SUBMIT);
+    expect(await answered(w, 3)).toMatchObject({ ok: false, error: { code: 'E_INVALID_REQUEST', status: 409 } });
+    expect(w.account()).toMatchObject({ phase: 'signup-keys', error: { code: 'E_INVALID_REQUEST' } });
+    expect(w.state.phase).toBe(1);
+    // A second begin over pending keys is not accepted in this phase.
+    w.call(4, { m: 'signupBegin' });
+    expect(await answered(w, 4)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY' } });
+    w.call(5, { m: 'signupReset' });
+    expect(await answered(w, 5)).toMatchObject({ ok: true });
+    expect(w.account()).toMatchObject({ phase: 'needs-signup', recoveryKey: null });
+    expect(w.state.resets).toBe(1);
+    w.call(6, { m: 'signupBegin' });
+    expect(await answered(w, 6)).toMatchObject({ ok: true });
+    expect(w.account()?.phase).toBe('signup-keys');
+    w.call(7, SUBMIT);
+    expect(await answered(w, 7)).toMatchObject({ ok: true, value: { factorOwed: true } });
+    expect(w.signup.submit).toHaveBeenCalledTimes(2);
+    expect(w.account()).toMatchObject({ phase: 'factor-setup', factorSetup: { origin: 'signup' }, recoveryKey: null });
+  });
+
   it('factorSetupDone without a pending join redeems the invite it is given', async () => {
     const w = world({ phase: 2, owed: true });
     w.call(1, { m: 'start' });
