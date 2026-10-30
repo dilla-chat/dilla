@@ -507,6 +507,12 @@ func (d Deps) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "the new password is empty"))
 		return
 	}
+	// Measured before the old password or the step-up is checked: a short new password spends no guess
+	// and no token. A stored password below the minimum still signs in; only the new one is measured.
+	if auth.PasswordTooShort(req.New) {
+		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "the new password is shorter than %d characters", auth.PasswordMinChars))
+		return
+	}
 	ctx := r.Context()
 	phc, err := d.Repo.GetPasswordCredential(ctx, sess.UserID)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {

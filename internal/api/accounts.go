@@ -169,6 +169,11 @@ func (d Deps) CreateAccount(w http.ResponseWriter, r *http.Request) {
 				"this instance does not accept a password at registration"))
 			return
 		}
+		if auth.PasswordTooShort(*req.Password) {
+			server.WriteError(w, server.Errorf(server.CodeInvalidRequest,
+				"the password is shorter than %d characters", auth.PasswordMinChars))
+			return
+		}
 		phc, err = d.Hasher.Hash(ctx, *req.Password)
 		if err != nil {
 			server.WriteError(w, err)
