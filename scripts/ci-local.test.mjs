@@ -204,6 +204,12 @@ test('step mapping: GitHub-only steps become local equivalents, the rest runs as
   assert.deepEqual(steps('rust-wasi').at(-1), { kind: 'upload', name: 'dilla-core-wasi', paths: ['target/wasm32-wasip1/release/dilla_core_wasi.wasm'], required: true });
 });
 
+test('the node job runs test:ci-check on a clean tree, and a cleanTree entry that is no step fails the sync check', () => {
+  assert.deepEqual(JOB_MAP.node.cleanTree, ['npm run test:ci-check']);
+  const gone = REAL_CI.replace('      - run: npm run test:ci-check\n', '');
+  assert.ok(localMirrorProblems(gone).some((p) => p.includes('cleanTree names "npm run test:ci-check"')));
+});
+
 test('expressions in steps that run: workspace, runner.temp and matrix values, nothing else', () => {
   const ctx = { root: '/r', runnerTemp: '/t', jobName: 'j', matrix: { arch: 'amd64' } };
   assert.equal(substitute('${{ github.workspace }}/artifacts/dilla-testkit', ctx), '/r/artifacts/dilla-testkit');

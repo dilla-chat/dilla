@@ -7,7 +7,8 @@
  */
 import { spawn, spawnSync } from 'node:child_process';
 import {
-  closeSync, copyFileSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync, writeSync,
+  closeSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync,
+  writeFileSync, writeSync,
 } from 'node:fs';
 import { availableParallelism, tmpdir } from 'node:os';
 import { createServer } from 'node:net';
@@ -488,7 +489,13 @@ class Runner {
           }
           if (m.note) write(`    mapped: ${m.note}`);
           const stepMs = Math.min(deadline - Date.now(), step['timeout-minutes'] === undefined ? Infinity : Number(step['timeout-minutes']) * 60_000);
-          const r = await this.runStep({ id, n, script, env: stepEnv, fd, write, memo: m.memo, timeoutMs: stepMs, stress, stepDir, stepsOut, stepId: step.id, jobEnv: env });
+          let cwd = ROOT;
+          if ((info.cleanTree ?? []).includes(m.script)) {
+            cwd = this.cleanTree(id);
+            stepEnv.GITHUB_WORKSPACE = cwd;
+            write(`    mapped: runs in a clean copy of the tree (${relative(ROOT, cwd)}), as on a fresh checkout without build output`);
+          }
+          const r = await this.runStep({ id, n, script, env: stepEnv, fd, write, memo: m.memo, timeoutMs: stepMs, stress, stepDir, stepsOut, stepId: step.id, jobEnv: env, cwd });
           ok = r.ok;
           why = r.why;
         }
@@ -507,7 +514,7 @@ class Runner {
     }
   }
 
-  async runStep({ id, n, script, env, fd, write, memo, timeoutMs, stress, stepDir, stepsOut, stepId, jobEnv }) {
+  async runStep({ id, n, script, env, fd, write, memo, timeoutMs, stress, stepDir, stepsOut, stepId, jobEnv, cwd = ROOT }) {
     if (memo !== null && this.memo.has(memo)) {
       const prior = this.memo.get(memo);
       write(`    shared step: \`${memo}\` runs once per ci-local run; waiting for ${prior.by}`);
@@ -522,7 +529,7 @@ class Runner {
       for (const f of Object.values(files)) writeFileSync(f, '');
       write(script.split('\n').map((l) => `    $ ${l}`).join('\n'));
       const cmd = stress ? ['taskset', ['-c', this.stressCpus, 'bash', '--noprofile', '--norc', '-eo', 'pipefail', file]] : ['bash', ['--noprofile', '--norc', '-eo', 'pipefail', file]];
-      const r = await this.spawnLogged(cmd[0], cmd[1], { ...env, ...files }, fd, timeoutMs);
+      const r = await this.spawnLogged(cmd[0], cmd[1], { ...env, ...files }, fd, timeoutMs, cwd);
       // GITHUB_PATH and GITHUB_ENV carry into the later steps, GITHUB_PATH into every job (a shared tool install).
       for (const p of readFileSync(files.GITHUB_PATH, 'utf8').split('\n').map((s) => s.trim()).filter(Boolean)) {
         if (!this.extraPath.includes(p)) this.extraPath.unshift(p);
@@ -538,9 +545,32 @@ class Runner {
     return entry.promise;
   }
 
-  spawnLogged(cmd, cmdArgs, env, fd, timeoutMs) {
+  /** A fresh copy of the working tree's tracked and untracked-unignored files, a git index over them and the root
+   *  node_modules linked in: what a runner's checkout plus npm ci holds, without any local build output. */
+  cleanTree(id) {
+    const dir = join(OUT, 'clean-tree', id);
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(dir, { recursive: true });
+    const files = git(['ls-files', '-z', '--cached', '--others', '--exclude-standard']).stdout.split('\0').filter(Boolean);
+    for (const f of files) {
+      const from = join(ROOT, f);
+      let st;
+      try { st = lstatSync(from); } catch { continue; }
+      mkdirSync(dirname(join(dir, f)), { recursive: true });
+      if (st.isSymbolicLink()) symlinkSync(readlinkSync(from), join(dir, f));
+      else if (st.isFile()) copyFileSync(from, join(dir, f));
+    }
+    symlinkSync(join(ROOT, 'node_modules'), join(dir, 'node_modules'));
+    for (const a of [['init', '-q'], ['add', '-A']]) {
+      const r = spawnSync('git', a, { cwd: dir, encoding: 'utf8' });
+      if (r.status !== 0) throw new Error(`git ${a.join(' ')} in the clean tree failed: ${r.stderr}`);
+    }
+    return dir;
+  }
+
+  spawnLogged(cmd, cmdArgs, env, fd, timeoutMs, cwd = ROOT) {
     return new Promise((done) => {
-      const child = spawn(cmd, cmdArgs, { cwd: ROOT, env, stdio: ['ignore', fd, fd], detached: true });
+      const child = spawn(cmd, cmdArgs, { cwd, env, stdio: ['ignore', fd, fd], detached: true });
       this.children.add(child);
       let timedOut = false;
       const timer = Number.isFinite(timeoutMs) ? setTimeout(() => {

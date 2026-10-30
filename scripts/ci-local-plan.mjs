@@ -21,11 +21,14 @@ import { parseYaml } from './ci-local-yaml.mjs';
  *   moved by the block's ui offset).
  * - locks: named locks held for the whole job (jobs that regenerate or check tracked files serialise on 'tracked-tree').
  * - exclusive: nothing else runs beside it; snapshot: paths copied aside before it and put back after it, as it was.
+ * - cleanTree: run steps (exact commands) that run in a copy of the tracked and untracked-unignored files, as on a fresh
+ *   checkout: a test that looks at the disk must not see build output (packages/web/dist, …) the runner never has.
  */
 export const JOB_MAP = {
   changes: { kind: 'areas', weight: 0 },
   docs: { weight: 1 },
-  node: { weight: 2, locks: ['tracked-tree'] },
+  // ci-areas.test.mjs's reader scan skips targets that do not exist: on a runner packages/web/dist never does when it runs.
+  node: { weight: 2, locks: ['tracked-tree'], cleanTree: ['npm run test:ci-check'] },
   ui: { weight: 3, ports: 'ui' },
   'rust-wasm-node': { weight: 4 },
   'rust-native': { weight: 4 },
@@ -394,6 +397,9 @@ export function localMirrorProblems(text) {
       for (const v of Object.values(job.env)) substitute(v, { root: '/', runnerTemp: '/', jobName: job.name, matrix: job.matrix });
     } catch (e) {
       problems.push(`${where}: ${e.message}`);
+    }
+    for (const command of JOB_MAP[job.name]?.cleanTree ?? []) {
+      if (!job.steps.some((s) => typeof s.run === 'string' && s.run.trim() === command)) problems.push(`${where}: cleanTree names "${command}", which is not a run step of the job`);
     }
     const kind = JOB_MAP[job.name]?.kind ?? 'steps';
     if (kind !== 'steps') continue;

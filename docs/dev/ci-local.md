@@ -37,6 +37,10 @@ Steps that only make sense on GitHub are mapped to local equivalents:
 | `changes` | computed in process by `scripts/ci-areas.mjs`: every area for a full run, the diff's areas for `--changed` |
 | `ci-ok` | the summary's verdict |
 
+The node job's `npm run test:ci-check` runs in a fresh copy of the tracked and untracked files
+(`target/ci-local/clean-tree/node`), as on a runner's checkout. ci-areas.test.mjs's reader scan skips paths that
+don't exist, so a local `packages/web/dist` left by web-build or an earlier run would otherwise fail it.
+
 Steps that several jobs share run once per run: `npm ci` (before any job, so it never removes `node_modules` from
 under a running job), the `install-ci-tool.sh` installs, the `wasm-pack build`s and the Playwright installs. The pinned
 CI tools that `install-ci-tool.sh` downloads (golangci-lint with its gosec rules, wasm-pack, wasm-bindgen, binaryen,
