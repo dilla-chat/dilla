@@ -832,7 +832,10 @@ fn decode_password_login(bytes: &[u8]) -> Result<PasswordLogin, CborError> {
         // Wave B task 3: a login owing a factor appends passkey (uint 0|1); the testkit does not use it.
         let len = d.array_len()?;
         if !(2..=3).contains(&len) {
-            return Err(CborError::WrongArrayLen { expected: 2, actual: len });
+            return Err(CborError::WrongArrayLen {
+                expected: 2,
+                actual: len,
+            });
         }
         let assertion = d.text()?.to_owned();
         let needs = match d.uint()? {
