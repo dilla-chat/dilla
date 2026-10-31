@@ -87,12 +87,22 @@ try {
             if (border !== 'rgb(37, 42, 51)') throw new Error(`PollCard closed winner hover: ${border}`);
           }
         }
+        if (story.id.startsWith('conversation-pollcard--')) {
+          const motion = await page.evaluate(() => ({ card: getComputedStyle(document.querySelector('.d-poll-card')).animationDuration, ease: getComputedStyle(document.querySelector('.d-poll-card')).animationTimingFunction,
+            pop: getComputedStyle(document.querySelector('.d-poll-card__voters > span')).animationDuration,
+            check: getComputedStyle(document.querySelector('.d-poll-card__check')).transitionDuration }));
+          if (motion.ease !== 'ease' || motion.card !== '0.36s' || motion.pop !== '0.36s' || motion.check !== '0.16s') throw new Error(`Poll motion: ${JSON.stringify(motion)}`);
+          await page.emulateMedia({ reducedMotion: 'reduce' });
+          const reduced = await page.locator('.d-poll-card').evaluate(el => getComputedStyle(el).animationName);
+          if (reduced !== 'none' || await page.locator('.d-poll-card__check').first().evaluate(el => getComputedStyle(el).transitionDuration) !== '0s' || await page.locator('.d-poll-card__voters > span').first().evaluate(el => getComputedStyle(el).animationName) !== 'none') throw new Error(`Poll reduced motion: ${reduced}`);
+          await page.emulateMedia({ reducedMotion: 'no-preference' });
+        }
         if (story.id.startsWith('form-polldialog--')) {
           const check = async phone => {
             const got = await page.evaluate(() => {
               const dialog = document.querySelector('.d-poll-dialog dialog');
               const input = dialog.querySelector('input');
-              const selected = dialog.querySelector('[aria-pressed="true"]');
+              const selected = dialog.querySelector('[role="radio"][aria-checked="true"]');
               return { width: dialog.getBoundingClientRect().width, top: dialog.getBoundingClientRect().top,
                 font: getComputedStyle(input).fontSize, weight: getComputedStyle(input).fontWeight, height: input.getBoundingClientRect().height,
                 answer: dialog.querySelector('.d-poll-dialog__answer input').getBoundingClientRect().height, header: dialog.querySelector('.d-dialog__head').getBoundingClientRect().height,
@@ -100,6 +110,16 @@ try {
             });
             if (got.width !== (phone ? 366 : 520) || Math.abs(got.top - (phone ? 20 : page.viewportSize().height * .12)) > 1 || got.height !== 40 || got.answer !== 36 || got.header !== 57 || got.weight !== '400' || got.font !== (phone ? '16px' : '13px') || got.field !== 'rgb(15, 18, 22)' || got.segment !== 'rgb(15, 18, 22)' || got.selected !== 'rgb(90, 168, 230)' || got.footerButtons !== 2) throw new Error(`PollDialog geometry: ${JSON.stringify(got)}`);
           };
+          const motion = await page.evaluate(() => ({ answer: getComputedStyle(document.querySelector('.d-poll-dialog__answer')).animationDuration,
+            press: getComputedStyle(document.querySelector('.d-poll-dialog__post')).transitionDuration }));
+          if (motion.answer !== '0.22s' || motion.press !== '0.16s') throw new Error(`Poll dialog motion: ${JSON.stringify(motion)}`);
+          await page.locator('.d-poll-dialog__post').hover(); await page.mouse.down();
+          await page.waitForFunction(() => Math.abs(new DOMMatrix(getComputedStyle(document.querySelector('.d-poll-dialog__post')).transform).a - .96) < .001);
+          await page.mouse.up();
+          await page.emulateMedia({ reducedMotion: 'reduce' });
+          if (await page.locator('.d-poll-dialog__answer').first().evaluate(el => getComputedStyle(el).animationName) !== 'none') throw new Error('Poll answer reduced motion');
+          await page.emulateMedia({ reducedMotion: 'no-preference' });
+          await page.evaluate(() => Promise.all(document.getAnimations().filter(a => a.effect?.getTiming().iterations !== Infinity).map(a => a.finished.catch(() => {}))));
           await check(false);
           await page.setViewportSize({ width: 390, height: 844 });
           await check(true);

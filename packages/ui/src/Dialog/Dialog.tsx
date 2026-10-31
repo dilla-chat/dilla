@@ -5,6 +5,8 @@ import './Dialog.css';
 export type DialogProps = { open: boolean; title: string; onClose: () => void; children: ReactNode; footer?: ReactNode; closeLabel?: string;
   /** Optional distinct handling for abandoning a modal via its backdrop instead of choosing Cancel. */
   onBackdrop?: () => void;
+  /** A caller providing its own close control can omit the default footer action. */
+  showDefaultClose?: boolean;
   /** The id of the element inside that describes the dialog (a confirmation's body). */
   describedBy?: string;
   /**
@@ -59,7 +61,7 @@ function marked(root: HTMLElement): HTMLElement | null {
   return Array.from(root.querySelectorAll<HTMLElement>(AUTOFOCUS)).find(e => !hiddenIn(e, root)) ?? null;
 }
 
-export function Dialog({ open, title, onClose, onBackdrop, children, footer, closeLabel, describedBy, initialFocus = 'dialog', returnFocus, kind = 'form', lead, description }: DialogProps) {
+export function Dialog({ open, title, onClose, onBackdrop, children, footer, closeLabel, describedBy, initialFocus = 'dialog', returnFocus, kind = 'form', lead, description, showDefaultClose = true }: DialogProps) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   // What had focus when the dialog opened, and the latest fallback (read at close time, so never stale).
@@ -135,7 +137,7 @@ export function Dialog({ open, title, onClose, onBackdrop, children, footer, clo
           </div>
           {children === undefined || children === null || children === false ? null : <div className="d-dialog__body">{children}</div>}
           <div className="d-dialog__footer">
-            <Button variant="ghost" onClick={onClose}>{closeLabel ?? 'Close'}</Button>
+            {showDefaultClose ? <Button variant="ghost" onClick={onClose}>{closeLabel ?? 'Close'}</Button> : null}
             {footer}
           </div>
         </div>

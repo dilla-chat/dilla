@@ -178,3 +178,9 @@ Each element gets a presence Noul and a Box on both images, plus optional `state
 | Pairs | Accepted difference from the raw prototype | Decision |
 |---|---|---|
 | `private-result-confirm-kick-desktop`, `private-result-confirm-kick-phone` | The kick modal omits “Duration —” and “Reason none given”. Its Logged row remains. | Q4 / M2: kick has no reason field until wave C; duration is shown only for ban. This is intentional, not a parity defect. |
+
+### Task 7 intentional deviations (Jonas, 2026-10-31)
+
+- **Q-A:** the question counter counts Unicode code points, matching the server's rune limit. The prototype counts UTF-16 code units, so supplementary characters such as emoji count differently. The displayed counter and the 300-character validation deliberately agree with the server.
+- **Q-B:** an uncertain vote retries only from the answer that triggered it; the other answers are inert until it settles. Copy: “Your vote may not have counted. Tap it again to retry.”
+- **Q-C:** a capped multi-choice voter walk displays the distinct count read so far as “{n}+ voters”. Reads are bounded to ten pages per poll and ten per answer, with at most two answer walks in flight.

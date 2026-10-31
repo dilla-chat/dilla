@@ -163,3 +163,7 @@ it('preserves the prototype poll fill and winner tokens', () => {
   expect(themes.signal.pollFill).toBe('rgba(255,255,255,.05)');
   expect(themes.signal.pollWinnerEdge).toBe('rgba(124,255,142,.5)');
 });
+
+it('reuses hoverHi without a duplicate pollIdle token', () => {
+  for (const theme of Object.values(themes)) expect(theme).not.toHaveProperty('pollIdle');
+});

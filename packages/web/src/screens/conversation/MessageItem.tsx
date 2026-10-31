@@ -157,7 +157,7 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
     ? <MusicMessageCard client={p.client} communityId={p.communityId ?? null} voiceChannelId={music.voiceChannelId} item={music.item} bot={author} />
     : marker !== null && p.client !== undefined ? <PollCard client={p.client} communityId={p.communityId ?? null} channelId={p.channelId} threadId={p.threadId ?? null}
     body={item.body} authorId={item.senderUser} bot={bot} edited={item.edited} deleted={item.state !== 'ok'} selfId={p.book.self?.id ?? null} bits={p.bits ?? null}
-    onOpenThread={p.onOpenThread} /> : undefined;
+    /> : undefined;
   const gutterTime = formatTime(item.ts);
   const openProfile = p.onOpenProfile;
   return <MessageRow rowRef={el => { rowEl.current = el; p.rowRef(el); }} author={author} time={time} gutterTime={gutterTime}

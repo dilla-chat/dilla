@@ -8,6 +8,7 @@ import { BOT_ACCOUNT_KIND } from '../bot-member.ts';
 import { shouldNotify, notificationCtor } from '../../notify.ts';
 import type { CommandExecutionContext, CommandProviderHandlers, CommandSuggestion, CommandSuggestionProvider } from './command-types.ts';
 import { utilityText as copy } from './utility-copy.ts';
+import { pollDialogLabels } from './poll-dialog-labels.ts';
 import './UtilityCards.css';
 
 const DURATIONS: Readonly<Record<string, number>> = { '1h': 3600, '4h': 14_400, '8h': 28_800, '24h': 86_400, '3d': 259_200, '7d': 604_800 };
@@ -131,7 +132,7 @@ function PollEditor({ dialog, channelName, botName }: { dialog: UtilityDialogSta
     setError(invalid);
     if (invalid === null) dialog.onSubmit({ question, answers, multi: value.multi, duration: DURATIONS[value.duration] });
   };
-  return <PollDialog open channelName={channelName} bot={{ name: botName }} value={value} error={error}
+  return <PollDialog labels={pollDialogLabels} open channelName={channelName} bot={{ name: botName }} value={value} error={error}
     canPost={value.question.trim() !== '' && value.answers.filter(answer => answer.trim()).length >= 2}
     onChange={next => { setValue(next); setError(null); }} onPost={submit} onCancel={() => dialog.onCancel()} />;
 }
@@ -346,7 +347,7 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
           const poll = await utility.pollGet(context.requestId, { channelId: context.binding.channelId, threadId: thread(context.binding) });
           if (poll.question === saved?.question && poll.answers.join('\u0000') === saved?.answers.join('\u0000')
             && poll.multi === saved?.multi && pollPublished(context, poll.id, context.binding.channelId, thread(context.binding), caps.botUserId)) {
-            attempts.delete(context.requestId); showToast(copy('poll.created')); return success(copy('poll.created') + ` ${poll.id}`);
+            attempts.delete(context.requestId); showToast(copy('poll.created')); return success(copy('poll.created'));
           }
           if (receipt?.status === 0 || (receipt !== null && receipt?.status !== 5)) return uncertain(copy('poll.createdUncertain'));
         } catch { return uncertain(copy('poll.createdUncertain')); }
@@ -359,9 +360,9 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
       const attempt = prior ?? { kind: 'poll' as const, scope, installationId: caps.installationId, value: { ...raw, answers: [...raw.answers] } };
       attempts.set(context.requestId, attempt);
       try { if (!canCreateFromContext(context, communityId)) return uncertain(copy('poll.createdUncertain'));
-        const poll = await utility.pollCreate({ requestId: context.requestId, channelId: context.binding.channelId, threadId: thread(context.binding), question: submitted.question, answers: submitted.answers, multi: submitted.multi, durationSeconds: submitted.duration });
+        await utility.pollCreate({ requestId: context.requestId, channelId: context.binding.channelId, threadId: thread(context.binding), question: submitted.question, answers: submitted.answers, multi: submitted.multi, durationSeconds: submitted.duration });
         attempts.delete(context.requestId);
-        showToast(copy('poll.created')); return success(copy('poll.created') + ` ${poll.id}`);
+        showToast(copy('poll.created')); return success(copy('poll.created'));
       } catch (error) {
         if (error instanceof BotUtilitiesStatusError && (error.status === 4 || (!prior && error.status !== 5))) attempts.delete(context.requestId);
         return caught(error);

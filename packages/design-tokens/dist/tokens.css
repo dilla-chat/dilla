@@ -99,7 +99,6 @@
   --poll-winner-fill: rgba(124,255,142,.12);
   --poll-fill: rgba(255,255,255,.05);
   --poll-winner-edge: rgba(124,255,142,.5);
-  --poll-idle: #1A1E25;
   --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --font-serif-italic: "DM Serif Display", Georgia, serif;
   --text-pico: 0.40625rem;
@@ -329,7 +328,6 @@
   --poll-winner-fill: rgba(124,255,142,.12);
   --poll-fill: rgba(255,255,255,.05);
   --poll-winner-edge: rgba(124,255,142,.5);
-  --poll-idle: #1A1E25;
   color-scheme: dark;
 }
 
@@ -432,7 +430,6 @@
   --poll-winner-fill: rgba(27,115,52,.12);
   --poll-fill: rgba(0,0,0,.05);
   --poll-winner-edge: #1B7334;
-  --poll-idle: #E3E6E3;
   color-scheme: light;
 }
 
@@ -535,7 +532,6 @@
   --poll-winner-fill: rgba(155,255,168,.12);
   --poll-fill: rgba(255,255,255,.1);
   --poll-winner-edge: #9BFFA8;
-  --poll-idle: #161616;
   color-scheme: dark;
 }
 
@@ -639,7 +635,6 @@
     --poll-winner-fill: rgba(27,115,52,.12);
     --poll-fill: rgba(0,0,0,.05);
     --poll-winner-edge: #1B7334;
-    --poll-idle: #E3E6E3;
     color-scheme: light;
   }
 }
@@ -744,7 +739,6 @@
     --poll-winner-fill: rgba(155,255,168,.12);
     --poll-fill: rgba(255,255,255,.1);
     --poll-winner-edge: #9BFFA8;
-    --poll-idle: #161616;
     color-scheme: dark;
   }
 }

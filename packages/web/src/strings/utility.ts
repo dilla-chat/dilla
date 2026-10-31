@@ -1,6 +1,6 @@
 export const utility = {
   'poll.botName': 'Glenn',
-  'poll.title': 'New poll in #{channel}', 'poll.closedTag': 'CLOSED', 'poll.cancel': 'Cancel', 'poll.post': 'Post poll', 'poll.dismiss': 'Close',
+  'poll.titleWithoutChannel': 'New poll', 'poll.title': 'New poll in #{channel}', 'poll.closedTag': 'CLOSED', 'poll.cancel': 'Cancel', 'poll.post': 'Post poll', 'poll.dismiss': 'Close',
   'poll.questionPlaceholder': 'What should we raid on Friday?', 'poll.answerFirst': 'the bridge', 'poll.answerSecond': 'the harbour', 'poll.answerAnother': 'another answer',
   'poll.answerRange': '2–10', 'poll.addAnswer': 'Add answer', 'poll.removeAnswer': 'Remove answer {number}', 'poll.answerLabel': 'Answer {number}',
   'poll.counter': '{n} / 300', 'poll.footer': 'Voters are shown by name. Anyone can change or withdraw their vote.',
@@ -11,6 +11,7 @@ export const utility = {
   'poll.hours': '{count} hours', 'poll.hour': '1 hour', 'poll.days': '{count} days',
   'poll.close': 'Close poll', 'poll.closed': 'Poll closed',
   'poll.conflict': 'The poll changed. Review the latest results before voting again.', 'poll.closeConflict': 'The poll changed. Review the latest results before closing it again.',
+  'poll.voteUncertain': 'Your vote may not have counted. Tap it again to retry.', 'poll.voterLowerBound': '{count}+ voters',
   'poll.uncertain': 'The vote result is uncertain. Refresh the poll before trying again.', 'poll.readError': 'Could not load voter names.',
   'poll.created': 'Poll posted', 'poll.createdUncertain': 'The poll may have been published. Check this conversation before retrying.',
   'poll.results': '{question}\n{answers}', 'poll.noPolls': 'There are no polls in this conversation.',

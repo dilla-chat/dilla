@@ -63,7 +63,7 @@ export type ColorTokens = {
   warnResult: string; warnResultText: string;
   linkUnderline: 0 | 1;
   // Task 7
-  pollMineFill: string; pollWinnerFill: string; pollFill: string; pollWinnerEdge: string; pollIdle: string;
+  pollMineFill: string; pollWinnerFill: string; pollFill: string; pollWinnerEdge: string;
 };
 
 export const themes: Record<ThemeName, ColorTokens> = {
@@ -99,7 +99,7 @@ export const themes: Record<ThemeName, ColorTokens> = {
     warnResult: 'rgba(255,209,106,.1)', warnResultText: '#FFD16A',
     linkUnderline: 0,
     // Task 7
-    pollMineFill: 'rgba(90,168,230,.2)', pollWinnerFill: 'rgba(124,255,142,.12)', pollFill: 'rgba(255,255,255,.05)', pollWinnerEdge: 'rgba(124,255,142,.5)', pollIdle: '#1A1E25',
+    pollMineFill: 'rgba(90,168,230,.2)', pollWinnerFill: 'rgba(124,255,142,.12)', pollFill: 'rgba(255,255,255,.05)', pollWinnerEdge: 'rgba(124,255,142,.5)',
   },
   light: {
     bg: '#F5F6F5', bg2: '#ECEEEC', bg3: '#E3E6E3', surface: '#FFFFFF', surface2: '#E6E9E6', surfaceHi: '#DDE1DD',
@@ -133,7 +133,7 @@ export const themes: Record<ThemeName, ColorTokens> = {
     warnResult: 'rgba(138,90,0,.1)', warnResultText: '#8A5A00',
     linkUnderline: 0,
     // Task 7
-    pollMineFill: 'rgba(0,87,153,.2)', pollWinnerFill: 'rgba(27,115,52,.12)', pollFill: 'rgba(0,0,0,.05)', pollWinnerEdge: '#1B7334', pollIdle: '#E3E6E3',
+    pollMineFill: 'rgba(0,87,153,.2)', pollWinnerFill: 'rgba(27,115,52,.12)', pollFill: 'rgba(0,0,0,.05)', pollWinnerEdge: '#1B7334',
   },
   'high-contrast': {
     bg: '#000000', bg2: '#000000', bg3: '#0A0A0A', surface: '#000000', surface2: '#101010', surfaceHi: '#1C1C1C',
@@ -167,7 +167,7 @@ export const themes: Record<ThemeName, ColorTokens> = {
     warnResult: 'rgba(255,224,138,.1)', warnResultText: '#FFE08A',
     linkUnderline: 1,
     // Task 7
-    pollMineFill: 'rgba(156,203,255,.2)', pollWinnerFill: 'rgba(155,255,168,.12)', pollFill: 'rgba(255,255,255,.1)', pollWinnerEdge: '#9BFFA8', pollIdle: '#161616',
+    pollMineFill: 'rgba(156,203,255,.2)', pollWinnerFill: 'rgba(155,255,168,.12)', pollFill: 'rgba(255,255,255,.1)', pollWinnerEdge: '#9BFFA8',
   },
 };
 

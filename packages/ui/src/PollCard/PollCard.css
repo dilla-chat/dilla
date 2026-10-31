@@ -7,7 +7,7 @@
 .d-poll-card__option:disabled { cursor: default; opacity: 1; }
 .d-poll-card__option[data-winner='true'] { border-color: var(--poll-winner-edge); }
 .d-poll-card__option[data-mine='true'] { border-color: var(--accent); }
-.d-poll-card__option:enabled:hover { border-color: var(--accent); }
+.d-poll-card__option:enabled:not([aria-disabled='true']):hover { border-color: var(--accent); }
 .d-poll-card__fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--poll-fill); transition: width 520ms var(--ease-out); }
 .d-poll-card__option[data-winner='true'] .d-poll-card__fill { background: var(--poll-winner-fill); }
 .d-poll-card__option[data-mine='true'] .d-poll-card__fill { background: var(--poll-mine-fill); }
@@ -30,3 +30,11 @@
 /* A closed winner keeps the prototype's quiet row border on hover; your own pick stays accented. */
 .d-poll-card[data-closed='true'] .d-poll-card__option:hover { border-color: var(--control-edge-field); }
 .d-poll-card[data-closed='true'] .d-poll-card__option[data-mine='true']:hover { border-color: var(--accent); }
+
+@keyframes d-poll-card-entry { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes d-poll-voter-pop { 0% { transform: scale(.3); } 60% { transform: scale(1.2); } 100% { transform: scale(1); } }
+.d-poll-card { animation: d-poll-card-entry var(--duration-step) ease both; }
+.d-poll-card__voters > span { animation: d-poll-voter-pop var(--duration-step) ease both; }
+.d-poll-card__check { transition: all var(--duration-focus) ease; }
+.d-poll-card__option[aria-disabled='true'] { cursor: default; }
+@media (prefers-reduced-motion: reduce) { .d-poll-card, .d-poll-card *, .d-poll-card__voters > span { animation: none; transition: none; } }

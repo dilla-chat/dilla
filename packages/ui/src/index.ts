@@ -194,4 +194,4 @@ export type { CodeBoxesProps } from './CodeBoxes/CodeBoxes.tsx';
 export { COMPLETE_DELAY_MS } from './CodeBoxes/CodeBoxes.tsx';
 export { BotResult, type BotResultProps, type BotStatus } from './BotResult/BotResult.tsx';
 export { PollCard, type PollCardProps, type PollCardOption } from './PollCard/PollCard.tsx';
-export { PollDialog, type PollDialogProps, type PollDraft } from './PollDialog/PollDialog.tsx';
+export { PollDialog, type PollDialogProps, type PollDialogLabels, type PollDraft } from './PollDialog/PollDialog.tsx';

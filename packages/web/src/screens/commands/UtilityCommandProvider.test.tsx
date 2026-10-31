@@ -91,7 +91,7 @@ describe('utility command provider', () => {
     const user = userEvent.setup(); const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
     let run!: Promise<unknown>; act(() => { run = mounted.captured.value!.handlers['poll create']!({ commandId: 'poll create', args: { question: 'Lunch?', answers: 'Soup, Salad', multiple: 'on' } }, commandContext(f.client, 'aa'.repeat(16))); });
     await screen.findByRole('heading', { name: 'New poll in #lobby' }); await user.click(screen.getByRole('button', { name: 'Post poll' }));
-    const result = await run; expect(result).toMatchObject({ status: 'success', private: true });
+    const result = await run; expect(result).toMatchObject({ status: 'success', private: true, message: 'Poll posted' });
     expect(f.requests.filter(row => row.operation === 70)).toHaveLength(1);
     const created = f.requests.find(row => row.operation === 70)!; expect(created.requestId).toBe('aa'.repeat(16));
     expect(decode(created.args[0] as Uint8Array)).toMatchObject([1n, asBytes(CHANNEL), null, 'Lunch?', ['Soup', 'Salad'], 1n, 86_400n]);
@@ -112,7 +112,7 @@ describe('utility command provider', () => {
     act(() => { run = mounted.captured.value!.handlers['poll create']!(invocation, context); });
     expect(await run).toMatchObject({ status: 'uncertain' });
     act(() => { run = mounted.captured.value!.handlers['poll create']!(invocation, retryContext); });
-    expect(await run).toMatchObject({ status: 'success' });
+    expect(await run).toMatchObject({ status: 'success', message: 'Poll posted' });
     const writes = f.requests.filter(row => row.operation === 70); expect(writes).toHaveLength(1);
     expect(new Set(writes.map(row => row.requestId))).toEqual(new Set(['ac'.repeat(16)]));
     const payloads = writes.map(row => decode(row.args[0] as Uint8Array) as unknown[]);
@@ -368,7 +368,7 @@ describe('poll card binding', () => {
     expect(screen.queryByRole('heading', { name: 'Lunch?' })).not.toBeInTheDocument();
   });
   it('loads a bot-authored record and supports multivote replacement, withdrawal, voters and creator close', async () => {
-    const user = userEvent.setup(); const f = utilityFixture();
+    const user = userEvent.setup(); const f = utilityFixture(); f.setPoll({ counts: [1n, 1n] });
     render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null, body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: 0 }));
     expect(await screen.findByRole('heading', { name: 'Lunch?' })).toBeInTheDocument(); expect(f.requests.some(row => row.operation === 71)).toBe(true);
     await waitFor(() => expect(screen.getAllByRole('img', { name: 'Ada' })).toHaveLength(2));
@@ -408,8 +408,8 @@ describe('poll card binding', () => {
     act(() => { tick(); });
     await waitFor(() => expect(f.requests.filter(row => row.operation === 71)).toHaveLength(2));
   });
-  it.each([false, true])('keeps or supersedes a voter preview across refresh (new revision: %s)', async changed => {
-    const f = utilityFixture(); const real = ClientCore.createBotUtilities(f.client, COMMUNITY);
+  it.each([false, true])('keeps a pending walk and refreshes changed revisions on the next cadence (%s)', async changed => {
+    const f = utilityFixture(); f.setPoll({ counts: [1n, 1n] }); let clock = performance.now(); vi.spyOn(performance, 'now').mockImplementation(() => clock); const real = ClientCore.createBotUtilities(f.client, COMMUNITY);
     let tick!: () => void; let release!: () => void; let started = false;
     const setInterval = window.setInterval.bind(window);
     vi.spyOn(window, 'setInterval').mockImplementation(((fn: () => void, ms: number) => {
@@ -425,16 +425,18 @@ describe('poll card binding', () => {
     await waitFor(() => expect(release).toBeDefined());
     await act(async () => { await Promise.resolve(); });
     if (changed) f.setPoll({ revision: 2n });
-    act(() => { tick(); });
+    act(() => { clock += 30_000; tick(); });
     await waitFor(() => expect(f.requests.filter(row => row.operation === 71)).toHaveLength(2));
     await act(async () => { release(); await Promise.resolve(); });
+    await screen.findByText('Open for 1 hour · pick any · 1 voter');
     if (changed) {
+      act(() => { clock += 30_000; tick(); });
       await screen.findByText('Open for 1 hour · pick any · 0 voters');
       expect(screen.queryByRole('img', { name: 'Ada' })).not.toBeInTheDocument();
     } else expect(await screen.findByRole('img', { name: 'Ada' })).toBeInTheDocument();
   });
   it('loads an independent first-page preview for every answer', async () => {
-    const f = utilityFixture(); const real = ClientCore.createBotUtilities(f.client, COMMUNITY);
+    const f = utilityFixture(); f.setPoll({ counts: [1n, 1n] }); const real = ClientCore.createBotUtilities(f.client, COMMUNITY);
     vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ ...real, get binding() { return real.binding; }, pollVoters: async input => {
       await real.pollVoters(input); return { voters: input.option === 0 ? [USER] : [], nextCursor: null };
     } });
@@ -445,7 +447,7 @@ describe('poll card binding', () => {
     expect(screen.getByRole('button', { name: /^Salad/ }).querySelector('[role="img"]')).toBeNull();
   });
   it.each(['access', 'owner', 'installation'] as const)('rejects a pending voter page after its %s context changes', async change => {
-    const f = utilityFixture(); const base = f.client.handler; let replaced = false;
+    const f = utilityFixture(); f.setPoll({ counts: [1n, 1n] }); const base = f.client.handler; let replaced = false;
     f.client.handler = command => replaced && command.m === 'getBotCommandStatus'
       ? Promise.resolve({ installationId: 'ab'.repeat(16), botUserId: BOT, state: 3, revision: '1' }) : base(command);
     const real = ClientCore.createBotUtilities(f.client, COMMUNITY); let release: (() => void) | undefined;
@@ -472,14 +474,14 @@ describe('poll card binding', () => {
     expect(await screen.findByRole('heading', { name: 'Lunch?' })).toBeInTheDocument();
     f.failNext(73, false);
     await user.click(screen.getAllByRole('button', { name: /^(Soup|Salad)/ })[0]);
-    await screen.findByText('The vote result is uncertain. Refresh the poll before trying again.');
+    await screen.findByText('Your vote may not have counted. Tap it again to retry.');
     const first = f.requests.find(row => row.operation === 73)!;
     view.rerender(createElement(PollCard, { ...props, bits: PERM.viewChannel | PERM.sendMessages }));
     expect(screen.getAllByRole('button', { name: /^(Soup|Salad)/ })[0]).toHaveAttribute('aria-pressed', 'true'); view.unmount();
     render(createElement(PollCard, { ...props, bits: PERM.viewChannel | PERM.sendMessages }));
     expect(await screen.findByRole('button', { name: /^Soup/ })).toBeEnabled(); expect(screen.getAllByRole('button', { name: /^(Soup|Salad)/ })[0]).toHaveAttribute('aria-pressed', 'true');
     await user.click(screen.getByRole('button', { name: /^Soup/ }));
-    await screen.findByText('The vote result is uncertain. Refresh the poll before trying again.');
+    await screen.findByText('Your vote may not have counted. Tap it again to retry.');
     const mutations = f.requests.filter(row => row.operation === 73);
     expect(mutations.length).toBeGreaterThan(0); expect(mutations.every(row => row.requestId === first.requestId)).toBe(true);
     const selectedMutation = mutations[0]; expect(selectedMutation).toBeDefined();
@@ -494,7 +496,7 @@ describe('poll card binding', () => {
       body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: PERM.viewChannel | PERM.sendMessages };
     const view = render(createElement(PollCard, props)); await screen.findByRole('heading', { name: 'Lunch?' }); f.failNext(73, false);
     await user.click(screen.getAllByRole('button', { name: /^(Soup|Salad)/ })[0]);
-    await screen.findByText('The vote result is uncertain. Refresh the poll before trying again.');
+    await screen.findByText('Your vote may not have counted. Tap it again to retry.');
     const originalId = f.requests.find(row => row.operation === 73)!.requestId; ready = false; await user.click(screen.getByRole('button', { name: /^Soup/ }));
     await waitFor(() => expect(screen.queryByRole('heading', { name: 'Lunch?' })).not.toBeInTheDocument());
     ready = true; act(() => { refresh(); }); await screen.findByRole('heading', { name: 'Lunch?' });
@@ -601,7 +603,7 @@ describe('utility outcome and privacy regressions', () => {
       body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: PERM.viewChannel | PERM.sendMessages }));
     await screen.findByRole('heading', { name: 'Lunch?' }); f.failNext(operation, false);
     await user.click(screen.getByRole('button', { name: operation === 73 ? /^Soup/ : 'Close poll' }));
-    await screen.findByText('The vote result is uncertain. Refresh the poll before trying again.');
+    await screen.findByText(operation === 73 ? 'Your vote may not have counted. Tap it again to retry.' : 'The vote result is uncertain. Refresh the poll before trying again.');
     const original = f.requests.find(row => row.operation === operation)!.requestId;
     for (const status of [2, 3, 4]) {
       rejectedStatus = status; await user.click(screen.getByRole('button', { name: operation === 73 ? /^Soup/ : 'Close poll' }));
@@ -648,7 +650,7 @@ describe('utility outcome and privacy regressions', () => {
       body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: PERM.viewChannel | PERM.sendMessages }));
     await screen.findByRole('heading', { name: 'Lunch?' }); f.failNext(operation, false);
     await user.click(screen.getByRole('button', { name: operation === 73 ? /^Soup/ : 'Close poll' }));
-    await screen.findByText('The vote result is uncertain. Refresh the poll before trying again.');
+    await screen.findByText(operation === 73 ? 'Your vote may not have counted. Tap it again to retry.' : 'The vote result is uncertain. Refresh the poll before trying again.');
     expect(screen.getByRole('button', { name: operation === 73 ? /^Soup/ : 'Close poll' })).toBeEnabled(); view.unmount();
   });
   it.each([73, 74] as const)('releases a fresh operation %s when its preflight proves nothing was dispatched', async operation => {

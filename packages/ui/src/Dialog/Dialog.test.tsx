@@ -257,3 +257,8 @@ it('distinguishes a backdrop dismissal from an explicit close choice', async () 
   await userEvent.click(screen.getByRole('button', { name: 'Close' }));
   expect(close).toHaveBeenCalledOnce();
 });
+
+it('omits its default Close when showDefaultClose is false', () => {
+  render(<Dialog open title="New poll" onClose={() => {}} showDefaultClose={false} footer={<button>Post poll</button>}>Fields</Dialog>);
+  expect(screen.queryByRole('button', { name: 'Close' })).not.toBeInTheDocument(); expect(screen.getByRole('button', { name: 'Post poll' })).toBeInTheDocument();
+});
