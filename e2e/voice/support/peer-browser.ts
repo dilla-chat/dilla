@@ -324,6 +324,13 @@ export async function leaveIfInCall(page: Page): Promise<void> {
     await expect(strip.locator('xpath=descendant-or-self::*[@data-phase]').first()).not.toHaveAttribute('data-phase', 'connecting', { timeout: WAIT });
     await leaveControl(page).click();
     await expect(strip).toHaveCount(0, { timeout: WAIT });
+  } else {
+    // A phone on the call stage has no strip: leave through the stage's own Leave.
+    const stageLeave = page.locator('.dw-voice-stage [data-control="leave"]');
+    if (await stageLeave.count() > 0) {
+      await stageLeave.first().click();
+      await expect(stageLeave).toHaveCount(0, { timeout: WAIT });
+    }
   }
   await expect.poll(() => mediaWorkers(page).length, { timeout: WAIT, message: 'the media worker ends after the leave' }).toBe(0);
 }
