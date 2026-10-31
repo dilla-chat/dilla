@@ -8,7 +8,7 @@ import { mkdirSync, rmSync } from 'node:fs';
 import { addServerVia,
   COPY, SIGNIN, TEST_TIMEOUT, WAIT, channelRow, homeTile, newChannelButton, completeFactorStep, composerBox, copy, expectAccessible, expectComposerReady,
   expectHeading, expectShell, nextButton, newAccount, railItem, railNav, readRecoveryKey, sendText, keyField, submitButton, keysSubmitButton, test,
-  messageRow, signIn, type Account, membersToggle,
+  messageRow, signIn, signUp, type Account, membersToggle,
 } from './support/app';
 import { PROFILE_ROOT } from './support/persistent';
 import { nextCode } from './support/totp';
@@ -646,13 +646,32 @@ test('the sign-in fields stay at 16 px and unzoomed on a phone', async ({ playwr
 // coarse pointer under 32rem tall gives it the phone one, the container rules' data-layout twins apply, and the page lock is
 // the attribute the phone shell sets.
 test('a landscape phone (844 x 390) gets the phone layout', async ({ playwright, browserName, launchOptions, headless, channel, guard }, testInfo) => {
-  started();
+  const h = started();
+  // This test is selectable on its own: create its account and server without relying on the earlier portrait test.
+  // Close that browser before opening the landscape one, so sign-in still exercises a fresh phone browser.
+  const seedDir = phoneDir(testInfo.project.name, testInfo.workerIndex, 4);
+  const seed = await phoneContext({ playwright, browserName, launchOptions, headless, channel }, seedDir);
+  await guard.attach(seed);
+  let account: Account;
+  try {
+    const setup = await seed.newPage();
+    account = await signUp(setup, h.invite.split(',')[0], instance, 'Ada', h.control);
+    await addServerVia(setup, 'create');
+    const dialog = setup.getByRole('dialog', { name: copy('create.server.title'), exact: true });
+    const name = dialog.getByRole('textbox', { name: copy('create.server.name'), exact: true });
+    await name.fill(SERVER);
+    await name.press('Enter');
+    await expect(dialog).toBeHidden({ timeout: WAIT });
+    await expectComposerReady(setup, 'general');
+  } finally {
+    await guard.collectWorkers();
+    await seed.close();
+    rmSync(seedDir, { recursive: true, force: true });
+  }
   const dir = phoneDir(testInfo.project.name, testInfo.workerIndex, 3);
   const context = await phoneContext({ playwright, browserName, launchOptions, headless, channel }, dir, LANDSCAPE);
   await guard.attach(context);
   const page = await context.newPage();
-  if (signedUp === null) throw new Error('the phone shell test did not sign up an account');
-  const account = signedUp;
   try {
     await signIn(page, account, instance);
     await expect(page.locator('.d-app-shell')).toHaveAttribute('data-layout', 'phone');
