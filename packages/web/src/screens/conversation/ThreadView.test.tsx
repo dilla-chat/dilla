@@ -1,3 +1,4 @@
+import * as ClientCore from '@dilla/client-core';
 import { describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -72,9 +73,9 @@ describe('ThreadView (web3.7)', () => {
   });
   it('opens the thread on mount and closes it on unmount, in that order', () => {
     const { fake, view } = setup();
-    expect(fake.calls).toEqual([{ m: 'openThread', channelId: GEN, rootMsgId: ROOT }]);
+    expect(fake.calls.filter(call => call.m !== 'getBotCommandStatus')).toEqual([{ m: 'openThread', channelId: GEN, rootMsgId: ROOT }]);
     view.unmount();
-    expect(fake.calls).toEqual([{ m: 'openThread', channelId: GEN, rootMsgId: ROOT }, { m: 'closeThread', channelId: GEN }]);
+    expect(fake.calls.filter(call => call.m !== 'getBotCommandStatus')).toEqual([{ m: 'openThread', channelId: GEN, rootMsgId: ROOT }, { m: 'closeThread', channelId: GEN }]);
   });
   it('shows the title, a close control, the root and the replies', () => {
     const { onClose } = setup();
@@ -330,15 +331,17 @@ it('shows only this thread’s private results and dismisses without a request',
   expect(fake.calls).toHaveLength(calls);
 });
 
-it('thread Bot results use the live renamed member', () => {
+it('thread Bot results use the live renamed member', async () => {
+  const spy = vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ capabilities: () => Promise.resolve({ botUserId: 'ab'.repeat(16), supportedOperations: [] }) } as unknown as ClientCore.BotUtilities);
   const { fake } = setup(); const self = fake.get('account');
   act(() => {
     fake.publish(`members:${A}`, [...MEMBERS, { userId: 'ab'.repeat(16), username: 'bot', display: 'Freja', kind: 1, roleIds: [] }]);
     privateResults(fake, `${self?.instance?.id ?? ''}:${self?.user?.id ?? ''}`, `${A}/${GEN}/${ROOT}`).add({ at: 1, status: 'success', text: 'thread Bot result', provider: 'bot' });
   });
   const row = document.querySelector('.d-bot-result') as HTMLElement;
-  expect(within(row).getByText('Freja')).toBeInTheDocument();
+  await waitFor(() => expect(within(row).getByText('Freja')).toBeInTheDocument());
   expect(within(row).getByRole('img', { name: 'Freja' })).toBeInTheDocument();
+  spy.mockRestore();
 });
 it('CommandHost and ThreadView share the production thread result key', async () => {
   const { user } = setup();

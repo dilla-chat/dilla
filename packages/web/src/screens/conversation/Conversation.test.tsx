@@ -1,3 +1,4 @@
+import * as ClientCore from '@dilla/client-core';
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { act, waitFor, fireEvent, screen, within } from '@testing-library/react';
 import { en } from '../../strings/en.ts';
@@ -611,15 +612,17 @@ it('renders private results after messages, in time order, with authors and a lo
   expect(fake.calls).toHaveLength(calls);
 });
 
-it('uses the Bot’s current display name, and falls back to Glenn when unknown', () => {
+it('uses the Bot’s current display name, and falls back to Glenn when unknown', async () => {
+  const spy = vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ capabilities: () => Promise.resolve({ botUserId: 'ab'.repeat(16), supportedOperations: [] }) } as unknown as ClientCore.BotUtilities);
   const { fake } = renderConversation(); const account = fake.get('account');
   const store = privateResults(fake, `${account?.instance?.id ?? ''}:${account?.user?.id ?? ''}`, `${A}/${GEN}/`);
   act(() => { store.add({ at: 1, status: 'success', text: 'bot result', provider: 'bot' }); });
   expect(screen.getByText('Glenn')).toBeInTheDocument();
   act(() => fake.publish(`members:${A}`, [...MEMBERS, { userId: 'ab'.repeat(16), username: 'bot', display: 'Freja', kind: 1, roleIds: [] }]));
   const row = document.querySelector('.d-bot-result') as HTMLElement;
-  expect(within(row).getByText('Freja')).toBeInTheDocument();
+  await waitFor(() => expect(within(row).getByText('Freja')).toBeInTheDocument());
   expect(within(row).getByRole('img', { name: 'Freja' })).toBeInTheDocument();
+  spy.mockRestore();
 });
 it('CommandHost and Conversation share the production result key', async () => {
   const { user } = renderConversation();

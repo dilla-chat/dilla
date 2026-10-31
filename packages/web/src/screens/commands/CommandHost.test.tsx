@@ -535,3 +535,12 @@ it.each(['kick', 'ban'] as const)('holding Enter on %s Confirm runs the existing
   await user.keyboard('{Enter>3/}');
   await waitFor(() => expect(core.callsOf(action === 'kick' ? 'kickMember' : 'banMember')).toHaveLength(1));
 });
+
+it('double-clicking Kick confirms exactly once', async () => {
+  const { core, user } = moderationHarness(true, 'kick');
+  await user.type(await screen.findByRole('combobox', { name: 'user' }), 'Bea');
+  await user.click(await screen.findByRole('option', { name: /^Bea,/ }));
+  await user.click(screen.getByRole('button', { name: 'send' }));
+  await user.dblClick(await screen.findByRole('button', { name: 'Kick' }));
+  await waitFor(() => expect(core.callsOf('kickMember')).toHaveLength(1));
+});

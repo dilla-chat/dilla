@@ -67,7 +67,7 @@ it('walks once per cadence across two vote revisions and keeps the last count wh
   f.pollVoters.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
   f.tick(); await waitFor(() => expect(release).toBeDefined());
   expect(screen.getByText('Open for 24 hours · pick any · 2 voters')).toBeInTheDocument();
-  expect(screen.queryByRole('img', { name: 'Ada' })).not.toBeInTheDocument();
+  expect(screen.getAllByRole('img', { name: 'Ada' })).toHaveLength(2);
   release({ voters: [selfId, 'new1', 'new2'], nextCursor: null });
   await screen.findByText('Open for 24 hours · pick any · 3 voters');
 });

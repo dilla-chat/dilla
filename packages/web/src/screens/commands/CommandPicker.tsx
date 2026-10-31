@@ -1,3 +1,4 @@
+import { privateResultCopy } from './copy.ts';
 // Signal wave B Task 2 (README §6.1): the prototype's command picker, in place of the old search-and-dialog composer.
 // `/` at the start of the draft lists the commands above the composer; picking one turns the composer's input row into
 // chips, one per argument, with suggestions above the active chip and a one-line bar above the chips. The host
@@ -150,7 +151,7 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
   contextNow.current = props.contextKey;
 
   const definitionsById = useMemo(() => new Map(definitions.map(command => [command.id, command])), [definitions]);
-  const botName = props.botName ?? copy.bot;
+  const botName = props.botName ?? privateResultCopy.author.bot;
   const entries = useMemo(() => new Map(definitions.map(command => [command.id, pickerEntry(command, botName)])), [definitions, botName]);
   const listedCommands = useMemo(() => definitions.filter(command => props.listed === undefined || props.listed.has(command.id)), [definitions, props.listed]);
   const entry: PickerEntry | null = selected === null ? null : entries.get(selected.id) ?? pickerEntry(selected, botName);

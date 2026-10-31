@@ -644,6 +644,7 @@ musicTest('music snapshot and clear report privately or explain unavailable encr
     host = await startTestHost(VOICE_HOST);
     await traceCoreWorker(page);
     await traceNativeVoice(page);
+    await installWorkerPort(page.context());
     const owner = await signUp(page, host.invite.split(',')[0] ?? '', instanceName, 'Ada', host.control);
     await createCommunity(page);
     await enableBot(page, owner.password, ['music']);
@@ -703,7 +704,18 @@ musicTest('music snapshot and clear report privately or explain unavailable encr
     // The member list need not include the Bot yet. Compare with CommandHost's live source tag in the picker.
     await box.fill('/');
     const commands = page.getByRole('region', { name: 'Command composer', exact: true });
-    const botName = await commands.getByRole('option', { name: /^\/queue,/ }).locator('.d-cmd-row__source').innerText();
+    const source = commands.getByRole('option', { name: /^\/queue,/ }).locator('.d-cmd-row__source');
+    const communityId = new URL(page.url()).pathname.split('/')[2]!;
+    const identity = await currentBotIdentity(page, communityId);
+    let realName = '';
+    await expect.poll(async () => {
+      const members = await portSlice<{ userId: string; display: string; username: string }[]>(page, `members:${communityId}`);
+      const bot = members?.find(member => member.userId === identity.botUserId);
+      realName = bot?.display || bot?.username || '';
+      return realName;
+    }, { timeout: BOT_WAIT }).not.toBe('');
+    await expect(source).toHaveText(realName, { timeout: BOT_WAIT });
+    const botName = await source.innerText();
     await commands.getByRole('textbox', { name: 'Command', exact: true }).fill('/queue');
     await commands.getByRole('button', { name: copy('shell.composer.send'), exact: true }).click();
     await expect(commandResult(page)).toContainText(/music queue is empty/i, { timeout: BOT_WAIT });

@@ -1,3 +1,4 @@
+import { installationBotName } from './bot-name.ts';
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Avatar, Button, ConfirmDialog, Dialog, Icon } from '@dilla/ui';
 import { privateResults } from './private-results.ts';
@@ -172,8 +173,7 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
   const bot = useCommandBot(client, props.communityId, active);
   const listed = useMemo(() => new Set(definitions.filter(command => commandListed(command, bot.operations)).map(command => command.id)), [definitions, bot.operations]);
   const members = useSlice(`members:${props.communityId ?? ''}`);
-  const botMember = bot.botUserId === null ? undefined : members?.find(row => row.userId === bot.botUserId);
-  const botName = botMember === undefined ? undefined : botMember.display || botMember.username;
+  const botName = installationBotName(members, bot.botUserId);
   const channels = useSlice(`channels:${props.communityId ?? ''}`);
   const callChannel = runtime?.call?.channelId ?? null;
   const room = callChannel === null ? null : channels?.find(row => row.id === callChannel)?.name ?? null;

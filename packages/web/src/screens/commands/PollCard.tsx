@@ -260,7 +260,7 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
     <SignalPollCard question={poll.question} closed={poll.closed} multi={poll.multi} meta={meta}
       options={poll.answers.map((text, index) => ({ text, pct: votes > 0n ? Math.round(Number(poll.counts[index] ?? 0n) / Number(votes) * 100) : 0,
         mine: visibleSelected.includes(index), winner: poll.closed && max > 0n && poll.counts[index] === max,
-        voters: (currentVoters?.revision === poll.revision ? currentVoters.previews[index] ?? [] : []).map(id => { const member = props.client.get(`members:${props.communityId}`)?.find(row => row.userId === id); return { name: member?.display || member?.username || id.slice(0, 8) }; }) }))}
+        voters: (currentVoters?.previews[index] ?? []).map(id => { const member = props.client.get(`members:${props.communityId}`)?.find(row => row.userId === id); return { name: member?.display || member?.username || id.slice(0, 8) }; }) }))}
       canVote={attempt === null || (attempt.scope === scopeKey && attempt.kind === 'vote')} canClose={canClose} busy={busy} pendingAnswer={attempt?.kind === 'vote' ? attempt.answer : undefined}
       labels={{ closed: t('poll.closedTag'), close: t('poll.close') }} onVote={vote} onClose={() => void close()} />
     {error ? <p role="alert">{error}</p> : null}
