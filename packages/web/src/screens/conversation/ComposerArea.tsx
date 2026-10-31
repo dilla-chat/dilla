@@ -10,6 +10,7 @@ import { t } from '../../strings/index.ts';
 import { editableText, mentionOptions, mentionRoles, offeredRoles, type NameBook } from '../shell-model.ts';
 import { attachFiles, TrayList } from './Attachments.tsx';
 import { GifPickerPanel } from './GifPicker.tsx';
+import { useGifCommunity } from './use-gif-community.ts';
 import type { ConversationAction, ConversationUi } from './Conversation.tsx';
 import { formatWait, spokenStep } from './slow.ts';
 import { CommandHost } from '../commands/CommandHost.tsx';
@@ -54,10 +55,7 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
   const bits = p.bits ?? null;
   const sliceSlow = useSlice(`slow:${p.channelId}`);
   const [route] = useRoute();
-  // E8: the GIF button exists only in a channel of a server that has a Giphy key; a direct message has none, and
-  // asks nothing, and a thread's composer has none. The key is a per-server setting, so the status is read per server (a failed read means no button).
-  const gifCommunity = route.name === 'channel' && p.threadId === undefined ? route.communityId : null;
-  const [gifStatus, setGifStatus] = useState<{ communityId: string; on: boolean } | null>(null);
+  const gifCommunity = useGifCommunity(p.channelId, p.threadId);
   const [gifOpen, setGifOpen] = useState(false);
   const [gifQuery, setGifQuery] = useState('');
   const gifButton = useRef<HTMLButtonElement>(null);
@@ -73,16 +71,7 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
     pendingCaret.current = from + emoji.length;
     p.onDraft(p.draft.slice(0, from) + emoji + p.draft.slice(to));
   };
-  useEffect(() => {
-    if (gifCommunity === null) return;
-    let cancelled = false;
-    void client.call({ m: 'gifStatus', communityId: gifCommunity }).then(value => {
-      const on = typeof value === 'object' && value !== null && (value as Record<string, unknown>).on === true;
-      if (!cancelled) setGifStatus({ communityId: gifCommunity, on });
-    }, () => { if (!cancelled) setGifStatus({ communityId: gifCommunity, on: false }); });
-    return () => { cancelled = true; };
-  }, [client, gifCommunity]);
-  const gifsOn = gifCommunity !== null && gifStatus?.communityId === gifCommunity && gifStatus.on;
+  const gifsOn = gifCommunity !== null;
   const channels = useSlice(`channels:${route.name === 'channel' ? route.communityId : ''}`);
   const announcement = p.announcement ?? channels?.find(c => c.id === p.channelId)?.announcement === true;
   const bypass = p.bypass ?? (bits !== null && (bits & PERM.bypassSlowmode) !== 0);
@@ -234,7 +223,7 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
       search={{ label: t('shell.composer.emojiSearch'), placeholder: t('shell.composer.emojiSearch') }}
       onPick={emoji => { setEmojiOpen(false); insertEmoji(emoji); }}
       onClose={() => { setEmojiOpen(false); emojiButton.current?.focus(); }} /> : null}
-    {gifsOn && gifOpen && blocked === null && gifCommunity !== null ? <GifPickerPanel id={`${id}-gifs`} communityId={gifCommunity} channelId={p.channelId} initialQuery={gifQuery} dispatch={a => { p.dispatch(a); }}
+    {gifsOn && gifOpen && blocked === null && gifCommunity !== null ? <GifPickerPanel key={`${gifCommunity}/${p.channelId}`} id={`${id}-gifs`} communityId={gifCommunity} channelId={p.channelId} initialQuery={gifQuery} dispatch={a => { p.dispatch(a); }}
       {...(p.announce !== undefined ? { announce: p.announce } : {})}
       onClose={reason => {
         setGifOpen(false);

@@ -9,7 +9,7 @@ const encoder = new TextEncoder();
 const whiteSpaceOnly = /^\p{White_Space}*$/u;
 const ID_HEX = /^[0-9a-f]{32}$/u;
 const POLL_DURATIONS = new Set([3600n, 14_400n, 28_800n, 86_400n, 259_200n, 604_800n]);
-const KNOWN_OPERATIONS = new Set([0, 1, 2, 3, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+const KNOWN_OPERATIONS = new Set([0, 1, 2, 3, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
   30, 31, 40, 50, 51, 52, 60, 61, 62, 63, 64, 70, 71, 72, 73, 74, 75, 80, 81, 82, 83, 84]);
 const POLL_OPERATIONS = new Set([70, 71, 72, 73, 74, 75]);
 const REMINDER_OPERATIONS = new Set([80, 81, 82, 83, 84]);

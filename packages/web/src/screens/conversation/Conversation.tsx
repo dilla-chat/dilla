@@ -193,7 +193,17 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
   const jump = (msgId: string) => p.dispatch({ type: 'jump', msgId });
   // Focusing a reply button on pointer down activates its row. In a narrow log the toolbar then enters the layout
   // and moves the button before pointer up, so no click reaches it. The jump itself supplies the focus target.
-  const keepJumpPointerStable = (e: PointerEvent<HTMLButtonElement>) => e.preventDefault();
+  const pointerJump = useRef(false);
+  const pointerJumpRow = useRef<HTMLElement | null>(null);
+  const clearPointerJump = () => {
+    pointerJump.current = false;
+    pointerJumpRow.current?.removeAttribute('data-jump');
+    pointerJumpRow.current = null;
+  };
+  const keepJumpPointerStable = (e: PointerEvent<HTMLButtonElement>) => {
+    pointerJump.current = true;
+    e.preventDefault();
+  };
 
   useEffect(() => {
     if (deleteFor !== null || deleted.current === null) return;
@@ -211,6 +221,8 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
   useEffect(() => {
     const target = jumpTarget;
     if (target === null) return;
+    const byPointer = pointerJump.current;
+    clearPointerJump();
     const item = jumpInputs.current.items.find(i => i.msgId === target.msgId);
     if (item === undefined) {
       jumpInputs.current.dispatch({ type: 'notice', notice: 'shell.message.replyNotLoaded' });
@@ -218,6 +230,10 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
     }
     setActiveKey(item.key);
     const row = rowEls.current.get(item.key);
+    if (byPointer && row) {
+      row.dataset.jump = 'pointer';
+      pointerJumpRow.current = row;
+    }
     row?.focus();
     const behavior = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
     row?.scrollIntoView?.({ block: 'center', behavior });
@@ -346,7 +362,7 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
       pointerTimer.current = window.setTimeout(() => { byPointer.current = false; }, POINTER_FOCUS_MS);
     }}
     onClickCapture={() => { byPointer.current = false; }}
-    onKeyDownCapture={e => { byPointer.current = false; if (SCROLL_KEYS.includes(e.key)) markUserScroll(); }}
+    onKeyDownCapture={e => { byPointer.current = false; clearPointerJump(); if (SCROLL_KEYS.includes(e.key)) markUserScroll(); }}
     onFocus={e => { const row = (e.target as Element).closest<HTMLElement>('.d-message-row'); if (row) {
       const key = items.find(i => rowEls.current.get(i.key) === row)?.key;
       if (key) setActiveKey(key);

@@ -113,6 +113,7 @@ describe('utility response decoders', () => {
       [1n, id(7), id(8), 1n, [70n, 70n]],
       [1n, id(7), id(8), 1n, [71n, 70n]],
       [1n, id(7), id(8), 1n, [999n]],
+      [1n, id(7), id(8), 1n, [3n, 26n]],
       [2n, id(7), id(8), 1n, [3n]],
     ]) expect(() => decodeBotUtilityCapabilities(data(value))).toThrow(BotUtilitiesError);
   });
@@ -261,6 +262,16 @@ const reminderSummaryForId = (idValue: string) => data([1n, [
 ]]);
 
 describe('createBotUtilities facade', () => {
+  it('keeps utility capabilities available when the live Bot advertises Music announce (operation 25)', async () => {
+    const operations = [3, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+      70, 71, 72, 73, 74, 75, 80, 81, 82, 83, 84];
+    const f = fakeUtilityCore({ response: () => ({ data: capabilityData(operations) }) });
+    const api = createBotUtilities(f.client, COMMUNITY);
+    expect(await api.capabilities()).toEqual({ version: 1, installationId: INSTALLATION, botUserId: BOT_USER,
+      supportedOperations: operations });
+    expect(api.binding).toEqual({ installationId: INSTALLATION, botUserId: BOT_USER });
+  });
+
   it('binds returned capabilities to live installation and bot identity', async () => {
     const f = fakeUtilityCore({ response: () => ({ data: capabilityData() }) });
     const api = createBotUtilities(f.client, COMMUNITY);

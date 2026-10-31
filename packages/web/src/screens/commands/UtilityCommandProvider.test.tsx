@@ -128,12 +128,24 @@ describe('utility command provider', () => {
     bits = 0; expect(await invoke()).toMatchObject({ status: 'uncertain' });
     expect(f.requests.filter(row => row.operation === 70).map(row => row.requestId)).toEqual(['b1'.repeat(16)]); mounted.unmount();
   });
+  it('uses the prototype reminder reply with a local zoned time and text, without the id', async () => {
+    const f = utilityFixture(); const mounted = mount(f.client);
+    await waitFor(() => expect(mounted.captured.value).toBeDefined());
+    const requestId = 'c2'.repeat(16);
+    const invocation = { commandId: 'remind', args: { when: 'in 1h', text: 'bring two ropes', timezone: 'Europe/Stockholm' } };
+    let result!: CommandResult;
+    await act(async () => { result = await mounted.captured.value!.handlers.remind!(invocation, commandContext(f.client, requestId)); });
+    const due = Number(f.reminder![2]);
+    const time = new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' }).format(new Date(due * 1000));
+    expect(result).toMatchObject({ status: 'success', message: `Saved. I’ll remind you ${time}: bring two ropes` });
+    expect(result.message).not.toContain(requestId); mounted.unmount();
+  });
   it('reconciles an accepted reminder from its owner list before opening a retry dialog', async () => {
     const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
     const context = commandContext(f.client, 'b2'.repeat(16)); const invoke = () => mounted.captured.value!.handlers.remind!({ commandId: 'remind', args: { when: 'in 1h', text: 'Keep one copy' } }, context);
     let run!: Promise<unknown>; f.failNext(80); act(() => { run = invoke(); });
     expect(await run).toMatchObject({ status: 'uncertain' }); expect(f.reminder).not.toBeNull();
-    act(() => { run = invoke(); }); expect(await run).toMatchObject({ status: 'success' });
+    act(() => { run = invoke(); }); const recovered = await run as CommandResult; expect(recovered).toMatchObject({ status: 'success' }); expect(recovered.message).toContain('Saved. I’ll remind you '); expect(recovered.message).toContain(': Keep one copy'); expect(recovered.message).not.toContain(context.requestId);
     expect(screen.queryByRole('heading', { name: 'Set a reminder' })).not.toBeInTheDocument();
     expect(f.requests.filter(row => row.operation === 80).map(row => row.requestId)).toEqual(['b2'.repeat(16)]); mounted.unmount();
   });

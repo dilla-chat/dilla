@@ -26,6 +26,8 @@ export interface CommandExecutionContext {
   openInvite(): Promise<boolean>;
   openGif(query: string): void;
   openModerationLog(): void;
+  /** A form-backed command starts its feed result only after the person submits it. */
+  startResult?(): void;
 }
 
 export type CommandHandler = (invocation: CommandInvocation, context: CommandExecutionContext) => Promise<CommandResult>;

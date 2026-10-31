@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { BotUtilitiesStatusError, BotUtilitiesUncertainMutationError, PERM, createBotUtilities, decodePollVote, decodePollClose, type CoreClient, type PollSummary } from '@dilla/client-core';
 import { PollCard as SignalPollCard, showToast } from '@dilla/ui';
 import { utilityText as t } from './utility-copy.ts';
@@ -44,6 +44,8 @@ function definiteMutationError(cause: unknown, attempt: PollAttempt, operation: 
 export interface PollCardProps {
   client: CoreClient; communityId: string | null; channelId: string; threadId: string | null; body: string;
   authorId: string | null; bot: boolean; edited: boolean; deleted: boolean; selfId: string | null; bits: number | null;
+  /** Update the message heading before paint, without replacing its focusable row. */
+  onVerified?: (poll: PollSummary | null) => void;
 }
 
 /** A poll is interactive only after the authenticated bot author, final marker and durable record agree. */
@@ -161,6 +163,11 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
     return () => { window.clearInterval(timer); currentGeneration.current++; currentVoterGeneration.current++; voterTarget.current = null; };
   }, [active, refresh]);
   const poll = sourceAccessible && record?.client === props.client && record.scope === scopeKey && verifiedScope === scopeKey ? record.poll : null;
+  const { onVerified } = props;
+  useLayoutEffect(() => {
+    onVerified?.(poll);
+    return () => onVerified?.(null);
+  }, [onVerified, poll]);
   const canClose = poll !== null && (poll.creatorId === props.selfId || (props.bits !== null && (props.bits & PERM.manageMessages) !== 0));
   if (poll === null) return <div ref={ref} className="dw-poll-card" aria-hidden="true" />;
   const visibleSelected = selected ?? poll.myChoices ?? [];

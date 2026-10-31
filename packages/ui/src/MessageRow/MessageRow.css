@@ -12,6 +12,8 @@
 .d-message-row[data-replying="true"] { background: var(--accent-faint); box-shadow: inset 2px 0 0 var(--accent); }
 /* The ring sits inside the row, so the log's edge never clips it. */
 .d-message-row:focus-visible { outline-offset: -2px; }
+/* A pointer reply jump keeps focus here without inheriting the composer's keyboard ring. */
+.d-message-row[data-jump="pointer"]:focus-visible { outline: none; }
 
 /* The gutter: 10.5px tabular, right-aligned. Shown on a group's first row; on a follow-up only on hover or focus. */
 .d-message-row__gutter { font-size: var(--text-meta); line-height: 1.5; color: transparent; text-align: right; padding-top: 1.125rem /* 18px */; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; transition: color var(--duration-press); }

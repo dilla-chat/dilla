@@ -92,10 +92,18 @@ try {
         }
         if (story.id === 'conversation-messagerow--signal-reply-flash') {
           await page.emulateMedia({ reducedMotion: 'reduce' });
+          await page.locator('[data-flash="true"]').evaluate(el => {
+            const composer = document.createElement('textarea');
+            document.body.append(composer); composer.focus();
+            el.tabIndex = -1; el.dataset.jump = 'pointer'; el.focus(); composer.remove();
+          });
           const flash = await page.locator('[data-flash="true"]').evaluate(el => {
             const s = getComputedStyle(el); return { fill: s.backgroundColor, edge: s.boxShadow, outline: s.outlineStyle };
           });
           if (flash.fill !== 'rgba(90, 168, 230, 0.18)' || !flash.edge.includes('inset') || flash.outline !== 'none') throw new Error(`gap44 reply flash: ${JSON.stringify(flash)}`);
+          await page.locator('[data-flash="true"]').evaluate(el => el.removeAttribute('data-jump'));
+          await page.keyboard.press('Shift');
+          if (await page.locator('[data-flash="true"]').evaluate(el => getComputedStyle(el).outlineStyle) !== 'solid') throw new Error('gap44: keyboard focus must keep its ring');
         }
         if (story.id === 'conversation-messagerow--signal-attachments') {
           const sizes = await page.evaluate(() => {
@@ -104,6 +112,15 @@ try {
             return { image: [image.width, image.height], file: [file.width, file.height], top: image.top === file.top };
           });
           if (sizes.image[0] !== 280 || sizes.image[1] !== 210 || sizes.file[0] !== 300 || sizes.file[1] !== 210 || !sizes.top) throw new Error(`gap52 sent attachments: ${JSON.stringify(sizes)}`);
+        }
+        if (story.id === 'voice-nowplaying--no-permission') {
+          await page.setViewportSize({ width: 390, height: 844 });
+          await page.locator('.d-np button[aria-disabled="true"]').first().dispatchEvent('click');
+          const toast = await page.locator('.d-np-toast').evaluate(el => {
+            const r = el.getBoundingClientRect(), stack = el.parentElement.getBoundingClientRect();
+            return { width: r.width, left: stack.left, right: stack.right };
+          });
+          if (toast.left !== 16 || toast.right !== 374 || toast.width < 250) throw new Error(`Phone toast must use full viewport gutters: ${JSON.stringify(toast)}`);
         }
         // Task 7: the poll's exact prototype geometry and winner style (Ruling C).
         if (story.id.startsWith('conversation-pollcard--')) {
@@ -143,11 +160,15 @@ try {
               const dialog = document.querySelector('.d-poll-dialog dialog');
               const input = dialog.querySelector('input');
               const selected = dialog.querySelector('[role="radio"][aria-checked="true"]');
+              const icon = dialog.querySelector('.d-poll-dialog__bot').getBoundingClientRect();
+              const title = dialog.querySelector('.d-dialog__title').getBoundingClientRect();
               return { width: dialog.getBoundingClientRect().width, top: dialog.getBoundingClientRect().top,
+                titleGap: title.left - icon.right,
                 font: getComputedStyle(input).fontSize, weight: getComputedStyle(input).fontWeight, height: input.getBoundingClientRect().height,
                 answer: dialog.querySelector('.d-poll-dialog__answer input').getBoundingClientRect().height, header: dialog.querySelector('.d-dialog__head').getBoundingClientRect().height,
                 field: getComputedStyle(input).backgroundColor, segment: getComputedStyle(selected.parentElement).backgroundColor, selected: getComputedStyle(selected).backgroundColor, footerButtons: Array.from(dialog.querySelectorAll('.d-dialog__footer button')).filter(b => getComputedStyle(b).display !== 'none').length };
             });
+            if (Math.abs(got.titleGap - 10) > .05) throw new Error(`PollDialog title must start 10px after the Bot icon: ${JSON.stringify(got)}`);
             if (got.width !== (phone ? 366 : 520) || Math.abs(got.top - (phone ? 20 : page.viewportSize().height * .12)) > 1 || got.height !== 40 || got.answer !== 36 || got.header !== 57 || got.weight !== '400' || got.font !== (phone ? '16px' : '13px') || got.field !== 'rgb(15, 18, 22)' || got.segment !== 'rgb(15, 18, 22)' || got.selected !== 'rgb(90, 168, 230)' || got.footerButtons !== 2) throw new Error(`PollDialog geometry: ${JSON.stringify(got)}`);
           };
           const motion = await page.evaluate(() => ({ answer: getComputedStyle(document.querySelector('.d-poll-dialog__answer')).animationDuration,

@@ -18,6 +18,7 @@ import { JoinCommunity } from './JoinCommunity.tsx';
 import { CreateChannelFlow, CreateServerFlow } from './Create.tsx';
 import { Conversation, focusComposer, focusLog, useConversationUi, type ConversationAction, type ConversationUi } from './conversation/Conversation.tsx';
 import { ComposerArea, type OutgoingMessage } from './conversation/ComposerArea.tsx';
+import { communityActivityOwner, rememberCommunityActivity } from './community-activity.ts';
 import type { ProfileOpener } from './conversation/MessageItem.tsx';
 import { ThreadView } from './conversation/ThreadView.tsx';
 import { Search, type SearchHitView } from './Search.tsx';
@@ -225,6 +226,12 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   useEffect(() => {
     if (routeCommunity !== null) setLastCommunity(routeCommunity);
   }, [routeCommunity]);
+  const activityOwner = communityActivityOwner(account);
+  useEffect(() => {
+    if (base.name === 'channel' && routeCommunity !== null && communities?.some(row => row.id === routeCommunity)) {
+      rememberCommunityActivity(client, activityOwner, routeCommunity);
+    }
+  }, [client, activityOwner, base.name, routeCommunity, communities]);
   const fallbackCommunity = lastCommunity !== null && communities?.some(c => c.id === lastCommunity) === true
     ? lastCommunity : communities?.[0]?.id ?? null;
   const communityId = routeCommunity ?? (dmId !== null || base.name === 'dms' ? fallbackCommunity : null);
@@ -1058,7 +1065,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     {...(channel !== null ? { onOpenThread: openThread } : {})}
     welcome={channel !== null
       ? { icon: channel.announcement ? 'megaphone' : 'hash', title: t('shell.log.welcome', { channel: channel.name }), body: t('shell.log.welcomeBody', { channel: channel.name }) }
-      : { icon: 'at-sign', title: dm?.name ?? '', body: '' }}
+      : { icon: 'at-sign', title: dm?.name ?? '', body: t('shell.log.welcomeDmBody') }}
     onOpenProfile={openProfile} />;
   const openFailed = (id: string, error: UiError) => (
     <EmptyState title={t('shell.openFailed.title')} body={t('shell.openFailed.body', { code: error.code })}
@@ -1310,7 +1317,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     sidebar = (<div className="dw-sidebar">
       <ChannelList label={t(onDms ? 'shell.dms.label' : 'shell.channels.label')}
         title={onDms ? t('shell.dms.title') : community?.name ?? account?.instance?.name ?? t('shell.status.unknown')}
-        {...(onDms ? { sectionLabel: t('shell.dms.section'), stats: [{ text: t('shell.dms.online', { n: dmOnline }), live: true }, { text: t('shell.dms.count', { n: (dms ?? []).length }) }] } : {})}
+        {...(onDms ? { sectionLabel: t('shell.dms.section'), stats: [{ text: t('shell.dms.online', { n: dmOnline }), live: true }, { text: t((dms ?? []).length === 1 ? 'shell.dms.countOne' : 'shell.dms.count', { n: (dms ?? []).length }) }] } : {})}
         headerAction={headerAction}
         // A1: with no categories the new-channel "+" sits in the head beside the gear (headerAction); with them each
         // category header carries its own, for a person who can manage channels.

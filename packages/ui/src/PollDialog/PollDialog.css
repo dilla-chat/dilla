@@ -5,8 +5,8 @@
 .d-poll-dialog [data-danger='true'], .d-poll-dialog__error { color: var(--danger); }
 .d-poll-dialog input { box-sizing: content-box; height: 34px; padding: 0 10px; background: var(--surface-2); border: 1px solid var(--control-edge-field); border-radius: 7px; color: var(--fg); font: inherit; font-size: var(--text-input); outline: none; }
 .d-poll-dialog input:focus { border-color: var(--accent); }
+.d-poll-dialog input:focus-visible { outline: none; }
 .d-poll-dialog__question input { height: 38px; padding: 0 12px; }
-.d-poll-dialog__question input:focus { box-shadow: 0 0 0 3px var(--accent-ring); }
 .d-poll-dialog__question > span > span { font-variant-numeric: tabular-nums; }
 .d-poll-dialog__answer { display: flex; align-items: center; gap: 6px; }
 .d-poll-dialog__answer > span { width: 18px; font-size: var(--text-meta); color: var(--fg-faint); text-align: right; font-variant-numeric: tabular-nums; }
@@ -50,7 +50,7 @@
 .d-poll-dialog .d-dialog { max-height: calc(var(--d-vvh, 100dvh) - 40px); }
 
 /* The prototype uses content-box inputs: the declared 38/34px plus its two 1px borders. */
-.d-poll-dialog .d-dialog__heading { min-height: 28px; justify-content: center; }
+.d-poll-dialog .d-dialog__heading { min-height: 28px; align-content: center; }
 .d-poll-dialog .d-dialog__panel { font-weight: var(--weight-btn); }
 
 @keyframes d-poll-answer-entry { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }

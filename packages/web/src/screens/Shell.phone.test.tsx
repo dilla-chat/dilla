@@ -41,6 +41,16 @@ const here = () => window.location.pathname;
 const manage = (fake: ReturnType<typeof renderVoiceShell>['client']) =>
   act(() => { fake.publish(`permissions:${A}`, { loaded: true, manageChannels: true } as never); });
 
+describe('the DM list conversation count', () => {
+  it.each([[0, '0 conversations'], [1, '1 conversation'], [2, '2 conversations']] as const)('shows %s with the correct plural', async (count, expected) => {
+    const { client } = phone({ path: '/dm' });
+    await screen.findByRole('navigation', { name: t('shell.dms.label') });
+    const dm = client.get('dms')![0];
+    act(() => client.set('dms', Array.from({ length: count }, (_, i) => ({ ...dm, id: `${i}`.padStart(32, '0'), name: `person ${i}` }))));
+    expect(screen.getByText(expected)).toBeInTheDocument();
+  });
+});
+
 describe('the phone shell: the servers list', () => {
   it('shows the tab bar, stays on the server (no first-channel redirect) and has no status bar or sidebar tabs, and exactly three tabs', async () => {
     phone({ path: `/c/${A}` });
@@ -193,7 +203,8 @@ describe('the phone shell: pushed views', () => {
 
   // Ruling Z: a DM's phone header is back, name, topic and Search; its pins (and call) are in the DM row's context menu.
   it('opens a DM as a pushed view whose header has search alone; pins are in its row menu', async () => {
-    const { user } = phone({ path: '/dm' });
+    const { user, client } = phone({ path: '/dm' });
+    act(() => client.set(`timeline:${DM}`, { channelId: DM, group: 'active', items: [], hasEarlier: false }));
     let menu = await openRowMenu(user, 'bob', 'dms');
     expect(within(menu).getAllByRole('menuitem').map(i => i.textContent)).toEqual([t('call.start'), t('shell.pins.open')]);
     expect(within(menu).getByRole('menuitemcheckbox', { name: t('notify.mute') })).toBeInTheDocument();
@@ -201,7 +212,7 @@ describe('the phone shell: pushed views', () => {
     await user.click(await screen.findByRole('button', { name: 'bob' }));
     expect(here()).toBe(`/dm/${DM}`);
     expect(document.querySelector('.d-phone-header__topic')).toHaveTextContent('@bob · offline');
-    expect(screen.queryByText(t('shell.log.welcomeDmBody'))).not.toBeInTheDocument();
+    expect(screen.getByText(t('shell.log.welcomeDmBody'))).toBeInTheDocument();
     expect(window.history.state).toMatchObject({ phoneBack: true });
     expect(tabs()).not.toBeNull();
     const actions = document.querySelector<HTMLElement>('.d-phone-header__actions')!;
@@ -323,14 +334,15 @@ describe('the phone shell: tabs', () => {
   });
 
   it('Home opens where it was left: a DM, then a channel', async () => {
-    const { user } = phone({ path: `/dm/${DM}` });
+    const { user, client } = phone({ path: `/dm/${DM}` });
+    act(() => client.set(`timeline:${DM}`, { channelId: DM, group: 'active', items: [], hasEarlier: false }));
     await screen.findByRole('main');
     goto('/activity', { phoneBack: true });
     await screen.findByText(t('activity.emptyTitle'));
     await user.click(tab('Home'));
     expect(here()).toBe(`/dm/${DM}`);
     expect(document.querySelector('.d-phone-header__topic')).toHaveTextContent('@bob · offline');
-    expect(screen.queryByText(t('shell.log.welcomeDmBody'))).not.toBeInTheDocument();
+    expect(screen.getByText(t('shell.log.welcomeDmBody'))).toBeInTheDocument();
     goto(`/c/${A}/${TEXT}`, { phoneBack: true });
     goto('/activity', { phoneBack: true });
     await user.click(tab('Home'));
@@ -447,12 +459,13 @@ describe('the phone shell: tabs', () => {
   });
 
   it('a DM opened from the @ list: the current Home tab goes back to /dm', async () => {
-    const { user } = phone({ path: `/c/${A}` });
+    const { user, client } = phone({ path: `/c/${A}` });
+    act(() => client.set(`timeline:${DM}`, { channelId: DM, group: 'active', items: [], hasEarlier: false }));
     await user.click(homeTile());
     await user.click(await screen.findByRole('button', { name: 'bob' }));
     expect(here()).toBe(`/dm/${DM}`);
     expect(document.querySelector('.d-phone-header__topic')).toHaveTextContent('@bob · offline');
-    expect(screen.queryByText(t('shell.log.welcomeDmBody'))).not.toBeInTheDocument();
+    expect(screen.getByText(t('shell.log.welcomeDmBody'))).toBeInTheDocument();
     await screen.findByRole('textbox');
     await user.click(tab('Home'));
     await waitFor(() => expect(here()).toBe('/dm'));

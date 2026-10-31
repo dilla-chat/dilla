@@ -8,6 +8,7 @@ import { BOT_ACCOUNT_KIND } from '../bot-member.ts';
 import { shouldNotify, notificationCtor } from '../../notify.ts';
 import type { CommandExecutionContext, CommandProviderHandlers, CommandSuggestion, CommandSuggestionProvider } from './command-types.ts';
 import { utilityText as copy } from './utility-copy.ts';
+import { localUtilityTime } from './utility-time.ts';
 import { pollDialogLabels } from './poll-dialog-labels.ts';
 import './UtilityCards.css';
 
@@ -356,6 +357,7 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
       // part of the retry even though the original request ID is body-bound.
       const raw = saved ?? await open({ kind: 'poll', question: invocation.args.question ?? '', answers: answers.replace(/\s*,\s*/gu, '\n'), multi: invocation.args.multiple === 'on', duration: invocation.args.duration ?? '24h', channelId: context.binding.channelId, threadId: thread(context.binding) }, context) as { question: string; answers: string[]; multi: boolean; duration: number } | null;
       if (raw === null) return prior ? uncertain(copy('poll.createdUncertain')) : failure('Poll creation cancelled.');
+      context.startResult?.();
       const submitted = saved ?? raw;
       const attempt = prior ?? { kind: 'poll' as const, scope, installationId: caps.installationId, value: { ...raw, answers: [...raw.answers] } };
       attempts.set(context.requestId, attempt);
@@ -434,7 +436,7 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
             || found?.sourceChannelId === null && found.sourceThreadId === null;
           if (found && found.text === saved?.text && canonicalTimezone(found.timezone) !== null
             && canonicalTimezone(found.timezone) === canonicalTimezone(saved?.timezone ?? '') && sourceMatches) {
-            attempts.delete(context.requestId); refreshRequestId(); return success(`${copy('reminder.created')} ${found.id}`);
+            attempts.delete(context.requestId); refreshRequestId(); return success(copy('reminder.created', { time: localUtilityTime(Number(found.dueUnixSeconds)) ?? '', text: found.text }));
           }
           return uncertain(copy('reminder.uncertain'));
         } catch { return uncertain(copy('reminder.uncertain')); }
@@ -452,7 +454,7 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
           when: submitted.result.mode === 'relative' ? submitted.result.seconds : submitted.result.unixSeconds,
           text: submitted.text, timezone: submitted.timezone, sourceChannelId: context.binding.channelId, sourceThreadId: thread(context.binding) });
         attempts.delete(context.requestId);
-        refreshRequestId(); return success(`${copy('reminder.created')} ${reminder.id}`);
+        refreshRequestId(); return success(copy('reminder.created', { time: localUtilityTime(Number(reminder.dueUnixSeconds)) ?? '', text: reminder.text }));
       } catch (error) {
         if (error instanceof BotUtilitiesStatusError && (error.status === 4 || (!prior && error.status !== 5))) attempts.delete(context.requestId);
         return caught(error, 'reminder');

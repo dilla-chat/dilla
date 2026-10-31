@@ -1,4 +1,5 @@
 export const utility = {
+  'poll.asked': '{name} asked:',
   'poll.botName': 'Glenn',
   'poll.titleWithoutChannel': 'New poll', 'poll.title': 'New poll in #{channel}', 'poll.closedTag': 'CLOSED', 'poll.cancel': 'Cancel', 'poll.post': 'Post poll', 'poll.dismiss': 'Close',
   'poll.questionPlaceholder': 'What should we raid on Friday?', 'poll.answerFirst': 'the bridge', 'poll.answerSecond': 'the harbour', 'poll.answerAnother': 'another answer',
@@ -20,7 +21,7 @@ export const utility = {
   'reminder.text': 'Reminder',
   'reminder.timeChoice': '{choice} · {preview}', 'reminder.dueWithZone': '{time} · {timezone}',
   'reminder.textTooLong': 'A reminder is at most 1500 bytes. Shorten the text.', 'reminder.invalid': 'Choose a valid time from 1 minute to 365 days away and enter reminder text.',
-  'reminder.ambiguous': 'This local time occurs twice. Choose which time you mean.', 'reminder.earlier': 'Earlier · {offset}', 'reminder.later': 'Later · {offset}', 'reminder.created': 'Reminder set.',
+  'reminder.ambiguous': 'This local time occurs twice. Choose which time you mean.', 'reminder.earlier': 'Earlier · {offset}', 'reminder.later': 'Later · {offset}', 'reminder.created': 'Saved. I’ll remind you {time}: {text}',
   'reminder.uncertain': 'The reminder may have been set. Check your reminders before trying again.', 'reminder.list': '{count} reminder(s): {items}', 'reminder.empty': 'You have no reminders.',
   'reminder.cancelled': 'Reminder cancelled.', 'reminder.dismissed': 'Reminder dismissed.', 'reminder.inbox': 'Reminders', 'reminder.inboxTitle': 'Your reminders', 'reminder.due': 'Due', 'reminder.upcoming': 'Upcoming',
   'reminder.loading': 'Loading reminders…', 'reminder.loadError': 'Some reminders could not be loaded. Try again shortly.', 'reminder.emptyInbox': 'No reminders are due or scheduled.',

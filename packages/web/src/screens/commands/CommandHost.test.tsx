@@ -544,3 +544,40 @@ it('double-clicking Kick confirms exactly once', async () => {
   await user.dblClick(await screen.findByRole('button', { name: 'Kick' }));
   await waitFor(() => expect(core.callsOf('kickMember')).toHaveLength(1));
 });
+
+it.each(['post', 'cancel'] as const)('keeps poll dialog out of the feed until Post poll (%s)', async action => {
+  const core = new FakeClient(); const cid = 'd1'.repeat(16), channel = 'd2'.repeat(16), selfId = 'd3'.repeat(16), botId = 'd4'.repeat(16), installationId = 'd5'.repeat(16);
+  core.set('account', { user: { id: selfId }, instance: { id: 'instance' }, deviceId: 'device' } as never);
+  core.set('communities', [{ id: cid, name: 'Town', owner: selfId }]);
+  core.set(`channels:${cid}`, [{ id: channel, name: 'general', kind: 0, group: 'active' }] as never);
+  let complete!: () => void;
+  const pollCreate = vi.fn(() => new Promise<void>(resolve => { complete = resolve; }));
+  const spy = vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ capabilities: () => Promise.resolve({ installationId, botUserId: botId, supportedOperations: [70] }), pollCreate,
+    reminderList: () => Promise.resolve({ items: [], nextCursor: null }) } as unknown as ClientCore.BotUtilities);
+  function Harness() {
+    const provider = useUtilityCommandProvider(core, cid);
+    const [draft, setDraft] = useState('/poll create');
+    return <CommandProvider handlers={provider.handlers}>{provider.dialogs}<CommandHost communityId={cid} channelId={channel} bits={ClientCore.PERM.sendMessages}
+      items={[]} selfId={selfId} draft={draft} onDraft={setDraft} onSendLiteral={() => undefined} encodeMessage={text => text} openGif={() => undefined} gifsEnabled /></CommandProvider>;
+  }
+  try {
+    const view = render(<CoreProvider client={core}><Harness /></CoreProvider>);
+    const user = userEvent.setup();
+    await screen.findByRole('dialog', { name: 'New poll in #general' });
+    const store = privateResults(core, `instance:${selfId}`, `${cid}/${channel}/`);
+    expect(store.rows()).toEqual([]);
+    if (action === 'cancel') {
+      await user.click(screen.getByRole('button', { name: 'Cancel' }));
+      expect(store.rows()).toEqual([]); expect(pollCreate).not.toHaveBeenCalled();
+    } else {
+      await user.type(screen.getByRole('textbox', { name: /Question/ }), 'Lunch?');
+      await user.type(screen.getByRole('textbox', { name: 'Answer 1' }), 'Soup');
+      await user.type(screen.getByRole('textbox', { name: 'Answer 2' }), 'Salad');
+      await user.click(screen.getByRole('button', { name: 'Post poll' }));
+      await waitFor(() => expect(store.rows()[0]).toMatchObject({ status: 'pending', provider: 'bot' }));
+      expect(pollCreate).toHaveBeenCalledOnce(); await act(() => { complete(); return Promise.resolve(); });
+      await waitFor(() => expect(store.rows()[0]).toMatchObject({ status: 'success', text: 'Poll posted' }));
+    }
+    view.unmount();
+  } finally { spy.mockRestore(); }
+});

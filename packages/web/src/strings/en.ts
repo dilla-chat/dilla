@@ -313,6 +313,7 @@ export const en = {
   'shell.dms.section': 'Direct messages',
   'shell.dms.online': '{n} online',
   'shell.dms.count': '{n} conversations',
+  'shell.dms.countOne': '1 conversation',
   'shell.dms.empty': 'no direct messages yet',
   'shell.dms.new': 'message someone',
   'shell.dms.newTitle': 'Message someone',

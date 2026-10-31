@@ -192,7 +192,8 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
     const moderation = invocation.commandId === 'kick' || invocation.commandId === 'ban';
     let resultId: string | undefined;
     const pendingResult = () => { resultId ??= resultStore.add({ at: Date.now(), status: 'pending', text: resultCopy.pending(invocation.commandId), provider }); return resultId; };
-    if (!moderation) pendingResult();
+    const formResult = invocation.commandId === 'poll create';
+    if (!moderation && !formResult) pendingResult();
     let confirmationChoice: ConfirmationChoice | null = null;
     if (handler === undefined) {
       resultStore.update(pendingResult(), { status: 'failed', text: resultCopy.unavailable });
@@ -230,7 +231,7 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
     const openInvite = () => new Promise<boolean>(resolve => { if (!isCurrent()) { resolve(false); return; } inviteResolve.current?.(false); inviteResolve.current = resolve; setInviteOpen(true); });
     const openModerationLog = () => { if (!isCurrent()) return; setModlogOpen(true); runtime?.openModerationLog?.(); };
     const context: CommandExecutionContext = { requestId: attempt, binding: snapshot, getCurrentBinding: () => latestBinding.current, client,
-      isCurrent,
+      isCurrent, startResult: () => { if (isCurrent()) pendingResult(); },
       getCall: () => runtime?.getCall?.() ?? runtime?.call ?? ({} as never),
       call: runtime?.call ?? ({} as never), navigate: route => { if (isCurrent()) runtime?.navigate(route); },
       openThread: root => { if (isCurrent()) runtime?.openThread(root); }, openSearch: (query, scope) => { if (isCurrent()) runtime?.openSearch(query, scope); },
@@ -242,6 +243,7 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
         if (resultId !== undefined) resultStore.dismiss(resultId);
         return response;
       }
+      if (formResult && resultId === undefined && response.message === 'Poll creation cancelled.') return response;
       resultStore.update(pendingResult(), {
         status: confirmationChoice === 'cancel' ? 'cancelled' : response.status === 'success' ? 'success' : response.status === 'pending' ? 'pending' : 'failed',
         text: confirmationChoice === 'cancel' ? resultCopy.cancelled(invocation.commandId as 'kick' | 'ban')

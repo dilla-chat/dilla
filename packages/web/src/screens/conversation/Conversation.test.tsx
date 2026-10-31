@@ -327,13 +327,25 @@ describe('the reply line and the jump (brief:186)', () => {
   it('keeps a pointer press on the reply jump from activating and moving the log before release', () => {
     renderConversation({ items: [peerRow(P1, '1', 'the original'), ownRow(O1, '2', 'my answer', { reply: reply() })] });
     const jump = replyButton(rowOf(O1));
-    composer().focus();
+    act(() => composer().focus());
     const down = new Event('pointerdown', { bubbles: true, cancelable: true });
     jump.dispatchEvent(down);
     expect(down.defaultPrevented).toBe(true);
     expect(composer()).toHaveFocus();
     fireEvent.click(jump);
     expect(rowOf(P1)).toHaveFocus();
+    expect(rowOf(P1)).toHaveAttribute('data-jump', 'pointer');
+  });
+  it('restores keyboard focus styling after a pointer reply jump and keeps it for a keyboard jump', async () => {
+    const { user } = renderConversation({ items: [peerRow(P1, '1', 'the original'), ownRow(O1, '2', 'my answer', { reply: reply() })] });
+    await user.click(replyButton(rowOf(O1)));
+    expect(rowOf(P1)).toHaveAttribute('data-jump', 'pointer');
+    await user.keyboard('{ArrowDown}');
+    expect(rowOf(P1)).not.toHaveAttribute('data-jump');
+    act(() => replyButton(rowOf(O1)).focus());
+    await user.keyboard('{Enter}');
+    expect(rowOf(P1)).toHaveFocus();
+    expect(rowOf(P1)).not.toHaveAttribute('data-jump');
   });
   it('jumps to a loaded original, focuses it and flashes it for 1.4 s', () => {
     vi.useFakeTimers();
@@ -566,7 +578,7 @@ describe('grouping, day dividers and the present bar (R29)', () => {
     await user.click(screen.getByRole('button', { name: en['layout.log.jump'] }));
     expect(log.scrollTop).toBe(1500);
   });
-  it('tags a web client and a bot always', () => {
+  it('omits WEB from human message headers and keeps the BOT tag', () => {
     const glenn = '9f'.repeat(16);
     renderConversation({
       items: [ownRow(O1, '1', 'sent here'), peerRow(P1, '2', 'sent by a bot', { bot: true, senderUser: glenn, ts: NOON + 3600 })],
@@ -574,7 +586,7 @@ describe('grouping, day dividers and the present bar (R29)', () => {
       before: fake => fake.set(`members:${A}`, [...MEMBERS, { userId: glenn, username: 'glenn', display: 'Glenn', kind: 1, roleIds: [] }]),
     });
     expect(rowOf(O1).querySelector('[data-reveal]')).toBeNull();
-    expect(rowOf(O1).querySelector('.d-tag')).toHaveAttribute('data-kind', 'web');
+    expect(rowOf(O1).querySelector('.d-tag')).toBeNull();
     expect(rowOf(P1).querySelector('[data-reveal]')).toBeNull();
     expect(rowOf(P1).querySelector('.d-tag')).toHaveAttribute('data-kind', 'bot');
   });
@@ -654,8 +666,8 @@ it('keeps the phone toolbar view free of the extra older-messages bar (gap89)', 
   } finally { Reflect.deleteProperty(window, 'matchMedia'); }
 });
 
-it('omits the extra empty-state sentence from an empty DM (gap97)', () => {
+it('keeps the DM welcome subtitle while omitting the separate empty-state sentence (gap97)', () => {
   renderConversation({ dm: true });
   expect(document.querySelector('.d-message-log__empty')).toBeNull();
-  expect(document.querySelector('.d-message-log__welcome-body')).toBeNull();
+  expect(document.querySelector('.d-message-log__welcome-body')).toHaveTextContent('This is the start of your conversation.');
 });
