@@ -6,7 +6,7 @@ import { ReactionBar } from '../ReactionBar/ReactionBar.tsx';
 import { AttachmentCard } from '../AttachmentCard/AttachmentCard.tsx';
 import { PhoneLayoutProvider } from '../internal/phoneLayout.ts';
 import { useDrawnImage } from '../internal/drawn-image.ts';
-import { GeneralLog, RAID_JSON, Row, rowReactions, yamlBody } from './conversation.fixture.tsx';
+import { GeneralLog, RAID_JSON, RAID_YAML, Row, rowReactions, yamlBody } from './conversation.fixture.tsx';
 
 // The state strings are task 24's to own in en.ts; these are the drafts it starts from.
 const meta = {
@@ -117,14 +117,14 @@ export const Grouped: Story = { args: { grouped: true, time: '10:06 PM', body: '
 export const DeviceTagAlways: Story = { args: { author: 'björn', body: 'after nine, still on the boat', tag: 'web' } };
 const phoneToolbar = (
   <MessageToolbar moreLabel="more actions" label="actions for this message" tabbable items={[
-    { id: 'react', label: 'react', onAction: () => {} }, { id: 'reply', label: 'reply', onAction: () => {} }, { id: 'pin', label: 'pin', onAction: () => {} },
+    { id: 'react', label: 'react', onAction: () => {} }, { id: 'reply', label: 'reply', onAction: () => {} }, { id: 'thread', label: 'reply in thread', onAction: () => {} }, { id: 'pin', label: 'pin', onAction: () => {} },
   ]} />
 );
 function PhoneRow({ startRevealed }: { startRevealed: boolean }) {
   const [revealed, setRevealed] = useState(startRevealed);
   return (
     <PhoneLayoutProvider value>
-      <div data-layout="phone" style={{ maxWidth: 390 }}>
+      <div className="d-app-shell" data-layout="phone" style={{ maxWidth: 390, display: 'block', position: 'relative', height: 'auto', background: 'var(--bg)' }}>
         <MessageRow author="ada" time="21:02" body="anyone up for a round tonight?" state="ok" toolbar={phoneToolbar} revealed={revealed} onReveal={setRevealed} />
       </div>
     </PhoneLayoutProvider>
@@ -175,3 +175,5 @@ export const SignalGifAttachment: Story = { ...signal, render: () => <SignalGif 
 export const SignalReplyingTarget: Story = { ...signal, render: () => <Row author="Ada" time="20:27" replying body="raid tonight at 20:00? bring the good shields" nameColor={0xE9B6EC} /> };
 /** The prototype's #general feed, top to bottom (the now-playing card is Task 8b's). */
 export const SignalFeed: Story = { globals: { theme: 'signal' }, decorators: [Story => <div style={{ height: 720, maxWidth: 1000, display: 'flex', flexDirection: 'column' }}><Story /></div>], render: () => <GeneralLog /> };
+
+export const SignalCodeOnly: Story = { ...signal, render: () => <Row author="Björn" time="20:29" grouped forceHover body={[{ kind: 'codeblock', lang: 'yaml', text: RAID_YAML }]} /> };

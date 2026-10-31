@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validateSpec, storyUrl, patchDataProps, DEFAULT_GLOBALS, padClip, localFontCss, appUrl, sideOf, pairFile, parseArgs, expandText, orderPairs } from './shoot.mjs';
+import { validateSpec, storyUrl, patchDataProps, DEFAULT_GLOBALS, padClip, localFontCss, appUrl, sideOf, pairFile, parseArgs, expandText, orderPairs, uploadFixture } from './shoot.mjs';
 
 const good = { name: 'a', viewport: { width: 1280, height: 800 }, prototype: {}, story: { id: 'x--y' } };
 
@@ -152,4 +152,24 @@ test('validateSpec takes a totpFrom step of two selectors and refuses any other 
   validateSpec([pair]);
   assert.throws(() => validateSpec([{ ...pair, app: { who: 'fresh', steps: [{ totpFrom: ['#k'] }] } }]), /totpFrom is \[setup key selector, code selector\]/);
   assert.throws(() => validateSpec([{ ...pair, app: { who: 'fresh', steps: [{ totpFrom: ['#k', ''] }] } }]), /totpFrom/);
+});
+
+test('Task 8 generated upload fixtures preserve exact cap sizes without committed binaries', () => {
+  const file = uploadFixture('@bytes/26214401/huge.bin');
+  assert.equal(file.name, 'huge.bin');
+  assert.equal(file.buffer.length, 25 * 1024 * 1024 + 1);
+  assert.equal(file.mimeType, 'application/octet-stream');
+  assert.throws(() => uploadFixture('@bytes/0/empty'), /fixture/);
+});
+
+test('Task 8 manifest covers both viewports, conversation findings and standing screens', async () => {
+  const { readFileSync } = await import('node:fs');
+  const pairs = validateSpec(JSON.parse(readFileSync(new URL('./app/task-8.json', import.meta.url), 'utf8')));
+  for (const state of ['threads-direct', 'over-25-mb-toast', 'waiting-toast', 'reaction-tooltip']) {
+    for (const size of ['desktop', 'phone']) assert.ok(pairs.some(pair => pair.name === `task8-${state}-${size}`));
+  }
+  for (const gap of ['gap44', 'gap47', 'gap49', 'gap52', 'gap53', 'gap89', 'gap90', 'gap97']) {
+    for (const width of [390, 1280]) assert.ok(pairs.some(pair => pair.name.startsWith(gap) && pair.viewport.width === width));
+  }
+  assert.equal(pairs.filter(pair => pair.name.startsWith('standing-')).length, 5);
 });

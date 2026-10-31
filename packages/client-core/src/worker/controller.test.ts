@@ -6195,7 +6195,7 @@ describe('Controller say more (L-TS-34, L-TS-35, L-TS-36)', () => {
     await vi.waitFor(() => expect(trayOf(w)?.[0]?.phase).toBe('ready'));
   });
 
-  it('attachFiles refuses five files and an oversize file by code, before any upload', async () => {
+  it('attachFiles refuses five files and keeps an oversize failed card without upload', async () => {
     const w = world();
     await toReady(w);
     await openGeneral(w);
@@ -6205,7 +6205,8 @@ describe('Controller say more (L-TS-34, L-TS-35, L-TS-36)', () => {
     await vi.waitFor(() => expect(w.ret(6)).toBeDefined());
     await vi.waitFor(() => expect(w.ret(5)).toBeDefined());
     expect((w.ret(4) as Refused).error).toMatchObject({ code: 'E_ATTACHMENT_COUNT', status: 0 });
-    expect((w.ret(5) as Refused).error).toMatchObject({ code: 'E_ATTACHMENT_TOO_LARGE', status: 0 });
+    expect(w.ret(5)).toMatchObject({ ok: true });
+    expect(w.last(`tray:${CH_HEX}`)).toEqual([expect.objectContaining({ name: 'big.bin', phase: 'failed', reason: 'E_ATTACHMENT_TOO_LARGE' })]);
     expect((w.ret(6) as Refused).error).toEqual({ code: 'E_BAD_INPUT', detail: '', status: 0, retryAfterMs: null });
     expect(w.routes.putBlob).not.toHaveBeenCalled();
   });

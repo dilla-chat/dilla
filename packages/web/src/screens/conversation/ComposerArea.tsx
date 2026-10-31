@@ -1,7 +1,7 @@
 // The open conversation's draft, mentions, replies and file tray.
 import { useEffect, useId, useLayoutEffect, useReducer, useRef, useState, type ReactNode } from 'react';
 import { encodeMentions, mentionQuery, PERM, type MemberSummary, type MentionMember, type RoleSummary, type SlowState, type TimelineItem } from '@dilla/client-core';
-import { Composer, EmojiGrid, MentionList, ReplyChip } from '@dilla/ui';
+import { Composer, EmojiGrid, MentionList, ReplyChip, ToastHost, newToastHostId, showToast } from '@dilla/ui';
 import { REACTION_EMOJI } from '../../emoji.ts';
 import { useCore } from '../../core/context.tsx';
 import { useSlice } from '../../core/use-slice.ts';
@@ -37,6 +37,7 @@ export interface ComposerAreaProps { channelId: string; label: string; placehold
   typing?: ReactNode }
 
 export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
+  const [toastId] = useState(newToastHostId);
   const client = useCore();
   const tray = useSlice(`tray:${p.channelId}`) ?? [];
   const selfId = useSlice('account')?.user?.id ?? null;
@@ -173,7 +174,7 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
       return;
     }
     if (tray.some(a => a.phase !== 'ready')) {
-      p.dispatch({ type: 'trayError', text: t('shell.tray.notReady') });
+      showToast(t('shell.tray.notReady'));
       return;
     }
     p.dispatch({ type: 'trayError', text: null });
@@ -225,6 +226,7 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
       onPasteFiles={files => { void attachFiles(client, p.channelId, files, a => p.dispatch(a)); }} textareaRef={textareaRef}
       canSendEmpty={tray.length > 0} />;
   return <>
+    <ToastHost id={toastId} />
     <div className="d-composer-pop">
     {emojiOpen && blocked === null ? <EmojiGrid id={`${id}-emoji`} label={t('shell.composer.emoji')} items={REACTION_EMOJI.map(a => ({ emoji: a.emoji, name: t(a.key) }))}
       search={{ label: t('shell.composer.emojiSearch'), placeholder: t('shell.composer.emojiSearch') }}

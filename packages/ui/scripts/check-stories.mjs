@@ -65,6 +65,41 @@ try {
           new Promise(resolve => setTimeout(resolve, 2_000)),
         ]));
         await checkStory(page, story);
+        // Task 8: actual browser geometry and hit testing for the conversation findings.
+        if (story.id === 'conversation-messagerow--signal-code-only') {
+          const copy = page.getByRole('button', { name: 'Copy', exact: true });
+          await page.locator('.d-message-row').hover();
+          const reachable = await copy.evaluate(button => {
+            const r = button.getBoundingClientRect();
+            return button.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2));
+          });
+          if (!reachable) throw new Error('gap53: the floating toolbar covers code Copy');
+          await copy.click();
+          await page.getByRole('button', { name: 'Copied', exact: true }).waitFor();
+        }
+        if (story.id === 'conversation-messagerow--phone-revealed') {
+          const pill = page.locator('.d-message-toolbar');
+          const geometry = await pill.evaluate(el => {
+            const r = el.getBoundingClientRect(), row = el.closest('.d-message-row').getBoundingClientRect();
+            return { height: r.height, top: r.top - row.top, buttons: el.querySelectorAll('button').length };
+          });
+          if (Math.abs(geometry.height - 30) > 0.05 || Math.abs(geometry.top + 12) > 0.05 || geometry.buttons !== 4) throw new Error(`gap89 phone toolbar: ${JSON.stringify(geometry)}`);
+        }
+        if (story.id === 'conversation-messagerow--signal-reply-flash') {
+          await page.emulateMedia({ reducedMotion: 'reduce' });
+          const flash = await page.locator('[data-flash="true"]').evaluate(el => {
+            const s = getComputedStyle(el); return { fill: s.backgroundColor, edge: s.boxShadow, outline: s.outlineStyle };
+          });
+          if (flash.fill !== 'rgba(90, 168, 230, 0.18)' || !flash.edge.includes('inset') || flash.outline !== 'none') throw new Error(`gap44 reply flash: ${JSON.stringify(flash)}`);
+        }
+        if (story.id === 'conversation-messagerow--signal-attachments') {
+          const sizes = await page.evaluate(() => {
+            const image = document.querySelector('.d-attachment-card__open').getBoundingClientRect();
+            const file = document.querySelector('.d-attachment-card__file').getBoundingClientRect();
+            return { image: [image.width, image.height], file: [file.width, file.height], top: image.top === file.top };
+          });
+          if (sizes.image[0] !== 218 || sizes.image[1] !== 146 || sizes.file[0] !== 234 || sizes.file[1] !== 40 || !sizes.top) throw new Error(`gap52 sent attachments: ${JSON.stringify(sizes)}`);
+        }
         // Task 7: the poll's exact prototype geometry and winner style (Ruling C).
         if (story.id.startsWith('conversation-pollcard--')) {
           const got = await page.evaluate(() => {

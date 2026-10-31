@@ -167,3 +167,7 @@ it('preserves the prototype poll fill and winner tokens', () => {
 it('reuses hoverHi without a duplicate pollIdle token', () => {
   for (const theme of Object.values(themes)) expect(theme).not.toHaveProperty('pollIdle');
 });
+
+it('pins the Task 8 reaction tooltip shadow to the prototype', () => {
+  expect(structural.shadow.reaction).toBe('0 12px 30px rgba(0,0,0,0.55)');
+});

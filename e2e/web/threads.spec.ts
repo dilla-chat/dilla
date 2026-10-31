@@ -178,6 +178,14 @@ test('a reply in a thread shows its count on both sides, the pane sits in the as
       await expect(threadPane(page)).toBeHidden();
       await expect(chip(rootRow, 'thread.summary.other', 2)).toBeFocused();
 
+      // Q9: Threads reopens the last thread directly, without a list in between.
+      await page.getByRole('button', { name: copy('layout.header.threads'), exact: true }).click();
+      await expect(threadPane(page)).toBeVisible({ timeout: WAIT });
+      await expect(page.getByRole('complementary', { name: copy('thread.list'), exact: true })).toHaveCount(0);
+      await expect(paneRow(page, ok)).toBeVisible({ timeout: WAIT });
+      await threadPane(page).getByRole('button', { name: copy('thread.close'), exact: true }).click();
+      await expect(threadPane(page)).toBeHidden();
+
       // A real pointer click on the chip opens it (pointerdown must not move the chip out from under the pointer).
       await chip(rootRow, 'thread.summary.other', 2).click();
       await expect(threadPane(page)).toBeVisible({ timeout: WAIT });

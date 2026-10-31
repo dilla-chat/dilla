@@ -68,7 +68,7 @@
 .d-message-row__reply-excerpt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .d-message-row__reply-state { font-style: italic; color: var(--fg-3); }
 
-.d-message-row__attachments { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.25rem; }
+.d-message-row__attachments { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.25rem; }
 /* Fix round 3: a card (Glenn's now-playing) is a block, not a flex item, so it takes its 440px (the prototype's max-width)
    instead of shrinking to its content. */
 .d-message-row__attachments.d-message-row__card { display: block; margin-top: 6px; }
@@ -97,7 +97,7 @@ button.d-mention:hover, button.d-mention:focus-visible { text-decoration: underl
 .d-message-row[data-flash="true"] { animation: d-row-flash var(--duration-flash) ease-out; }
 @keyframes d-row-flash { 0%, 30% { background: var(--accent-flash); } 100% { background: transparent; } }
 @media (prefers-reduced-motion: reduce) {
-  .d-message-row[data-flash="true"] { animation: none; outline: 2px solid var(--accent); outline-offset: -2px; }
+  .d-message-row[data-flash="true"] { animation: none; background: var(--accent-flash); box-shadow: inset 2px 0 var(--accent); }
 }
 /* The thread chip under the body (§5.5): 24px, radius 5px, a hairline frame, the accent text; the accent frame on hover. */
 .d-message-row__thread { display: inline-flex; align-items: center; gap: 0.375rem; justify-self: start; max-width: 100%; min-width: 0; height: 1.5rem; margin-top: 0.25rem; padding: 0 0.5rem; font: inherit; font-size: var(--text-xs); color: var(--accent); background: transparent; border: 1px solid var(--hairline-2); border-radius: var(--r-row); cursor: pointer; transition: background var(--duration-fast), border-color var(--duration-fast); }

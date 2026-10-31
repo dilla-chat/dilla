@@ -23,11 +23,11 @@ describe('flow 16 (the GIF picker and the server’s Giphy setting, E8)', () => 
   it('the words are lower case except the attribution Giphy asks for, the Giphy product name and the hint sentence', () => {
     const table = en as Readonly<Record<string, string>>;
     for (const [key, value] of pairs) {
-      if (key === 'gif.powered') expect(value).toBe('Powered by GIPHY');
-      else if (key === 'gif.settings.title' || key === 'gif.settings.hint') expect(value[0], key).toBe(value[0]?.toUpperCase());
+      if (key === 'gif.powered') expect(value).toBe('VIA GIPHY');
+      else if (key === 'gif.settings.title' || key === 'gif.settings.hint' || key === 'gif.search.placeholder') expect(value[0], key).toBe(value[0]?.toUpperCase());
       else expect(value, key).toBe(value.toLowerCase());
     }
-    expect(table['gif.powered']).toBe('Powered by GIPHY');
+    expect(table['gif.powered']).toBe('VIA GIPHY');
   });
   it('sections: States, Keyboard map, Focus rules and Announcements have content', () => {
     const body = (title: string) => {

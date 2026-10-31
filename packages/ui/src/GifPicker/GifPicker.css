@@ -21,3 +21,7 @@
 /* Jonas's 44px primary-target rule: on a phone the result cells and the more button are at least 44 px tall. */
 [data-layout="phone"] .d-gif-picker__grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 [data-layout="phone"] .d-gif-picker__search { font-size: 1rem; }
+
+.d-gif-picker__field { display: flex; align-items: center; gap: 0.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--hairline); }
+.d-gif-picker__field .d-gif-picker__search { flex: 1; min-width: 0; width: auto; }
+.d-gif-picker__powered { flex: none; white-space: nowrap; }

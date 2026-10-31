@@ -278,15 +278,15 @@ describe('reactions (Q18, ruling 28)', () => {
     ] })] });
     const bar = within(rowOf(P1)).getByRole('group', { name: 'reactions' });
     expect(within(bar).getByRole('button', { name: 'thumbs up, 2' })).toHaveAttribute('aria-pressed', 'true');
-    expect(within(bar).getByRole('button', { name: 'tears of joy, 1' })).toHaveAttribute('aria-pressed', 'false');
+    expect(within(bar).getByRole('button', { name: 'joy, 1' })).toHaveAttribute('aria-pressed', 'false');
     expect(within(bar).getByRole('button', { name: '\u{1F984}, 1' })).toBeInTheDocument();
     await user.click(within(bar).getByRole('button', { name: 'thumbs up, 2' }));
-    await user.click(within(bar).getByRole('button', { name: 'tears of joy, 1' }));
+    await user.click(within(bar).getByRole('button', { name: 'joy, 1' }));
     const react = toolbarButton(toolbarOf(rowOf(P1)), 'react');
     await user.click(react);
     const grid = screen.getByRole('dialog', { name: 'pick a reaction' });
     expect(within(grid).getAllByRole('button').map(b => b.getAttribute('aria-label'))).toEqual(REACTION_EMOJI.map(e => en[e.key]));
-    await user.click(within(grid).getByRole('button', { name: 'rocket' }));
+    await user.click(within(grid).getByRole('button', { name: 'shield' }));
     expect(screen.queryByRole('dialog', { name: 'pick a reaction' })).toBeNull();
     expect(react).toHaveFocus();
     const add = within(bar).getByRole('button', { name: 'add a reaction' });
@@ -303,7 +303,7 @@ describe('reactions (Q18, ruling 28)', () => {
     expect(fake.callsOf('react')).toEqual([
       { m: 'react', channelId: GEN, msgId: P1, emoji: '\u{1F44D}', on: false },
       { m: 'react', channelId: GEN, msgId: P1, emoji: '\u{1F602}', on: true },
-      { m: 'react', channelId: GEN, msgId: P1, emoji: '\u{1F680}', on: true },
+      { m: 'react', channelId: GEN, msgId: P1, emoji: '🛡️', on: true },
       { m: 'react', channelId: GEN, msgId: P1, emoji: '\u{1F44D}', on: false },
     ]);
   });
@@ -442,7 +442,7 @@ describe('focus handoffs (F4)', () => {
     await user.click(within(rowOf(P1)).getByRole('button', { name: 'thumbs up, 1' }));
     act(() => fake.set(`timeline:${GEN}`, { channelId: GEN, group: 'active', hasEarlier: false,
       items: [peerRow(P1, '1', 'x', { reactions: [reactions[1]] })] }));
-    expect(within(rowOf(P1)).getByRole('button', { name: 'crab, 2' })).toBeInTheDocument();
+    expect(within(rowOf(P1)).getByRole('button', { name: '🦀, 2' })).toBeInTheDocument();
     expect(rowOf(P1)).toHaveFocus();
   });
   it('dismisses the reply not loaded banner to the active log row', async () => {
@@ -613,15 +613,18 @@ it('renders private results after messages, in time order, with authors and a lo
 });
 
 it('uses the Bot’s current display name, and falls back to Glenn when unknown', async () => {
-  const spy = vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ capabilities: () => Promise.resolve({ botUserId: 'ab'.repeat(16), supportedOperations: [] }) } as unknown as ClientCore.BotUtilities);
+  const spy = vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ capabilities: () => Promise.resolve({ botUserId: 'ab'.repeat(16), supportedOperations: [80] }) } as unknown as ClientCore.BotUtilities);
   const { fake } = renderConversation(); const account = fake.get('account');
   const store = privateResults(fake, `${account?.instance?.id ?? ''}:${account?.user?.id ?? ''}`, `${A}/${GEN}/`);
   act(() => { store.add({ at: 1, status: 'success', text: 'bot result', provider: 'bot' }); });
   expect(screen.getByText('Glenn')).toBeInTheDocument();
-  act(() => fake.publish(`members:${A}`, [...MEMBERS, { userId: 'ab'.repeat(16), username: 'bot', display: 'Freja', kind: 1, roleIds: [] }]));
+  act(() => fake.publish(`members:${A}`, [...MEMBERS, { userId: 'cd'.repeat(16), username: 'wrong', display: 'Other Bot', kind: 1, roleIds: [] }, { userId: 'ab'.repeat(16), username: 'bot', display: 'Freja', kind: 1, roleIds: [] }]));
   const row = document.querySelector('.d-bot-result') as HTMLElement;
   await waitFor(() => expect(within(row).getByText('Freja')).toBeInTheDocument());
   expect(within(row).getByRole('img', { name: 'Freja' })).toBeInTheDocument();
+  fireEvent.change(composer(), { target: { value: '/' } });
+  await waitFor(() => expect([...document.querySelectorAll('.d-cmd-row__source')].map(tag => tag.textContent)).toContain('Freja'));
+  expect([...document.querySelectorAll('.d-cmd-row__source')].map(tag => tag.textContent)).not.toContain('Other Bot');
   spy.mockRestore();
 });
 it('CommandHost and Conversation share the production result key', async () => {
@@ -636,4 +639,23 @@ it('CommandHost and Conversation share the production result key', async () => {
   expect(row).toHaveTextContent('dilla');
   expect(row.querySelectorAll('[aria-live="polite"]')).toHaveLength(1);
   expect(document.querySelector('[data-command-result]')).toBeNull();
+});
+
+it('keeps the phone toolbar view free of the extra older-messages bar (gap89)', () => {
+  window.matchMedia = vi.fn((query: string) => ({ matches: query === PHONE_QUERY, media: query, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
+  try {
+    renderConversation({ items: [peerRow(P1, '1', 'one')] });
+    const log = screen.getByRole('log');
+    Object.defineProperty(log, 'scrollHeight', { configurable: true, value: 2000 });
+    Object.defineProperty(log, 'clientHeight', { configurable: true, value: 500 });
+    log.scrollTop = 200;
+    fireEvent.scroll(log);
+    expect(document.querySelector('.d-message-log__present')).toBeNull();
+  } finally { Reflect.deleteProperty(window, 'matchMedia'); }
+});
+
+it('omits the extra empty-state sentence from an empty DM (gap97)', () => {
+  renderConversation({ dm: true });
+  expect(document.querySelector('.d-message-log__empty')).toBeNull();
+  expect(document.querySelector('.d-message-log__welcome-body')).toBeNull();
 });

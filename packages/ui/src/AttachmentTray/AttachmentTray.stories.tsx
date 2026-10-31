@@ -26,7 +26,7 @@ export const EveryPhase: Story = {};
 // The refusal the page shows above the tray is not this component's: this story is one failed entry.
 export const TooLarge: Story = {
   args: {
-    items: [{ id: 't0', name: 'harbour-video.mov', size: '31.5 MB', step: 'failed', failed: true, phase: 'failed (E_ATTACHMENT_TOO_LARGE)',
+    items: [{ id: 't0', name: 'harbour-video.mov', size: '31.5 MB', step: 'failed', failed: true, phase: 'Over 25 MB',
       hint: HINT, removeLabel: 'remove harbour-video.mov', onRemove: () => {} }],
   },
 };

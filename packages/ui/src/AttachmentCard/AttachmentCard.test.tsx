@@ -30,8 +30,8 @@ describe('AttachmentCard', () => {
     const img = screen.getByRole('img', { name: 'drawn.png' });
     expect(img).toHaveAttribute('src', 'blob:http://127.0.0.1/thumb');
     expect(img).toHaveAttribute('data-thumb', 'ready');
-    expect(open.style.getPropertyValue('--d-card-ratio')).toBe('640 / 480');
-    expect(open.style.getPropertyValue('--d-card-w')).toBe('17.5rem');
+    expect(open.style.getPropertyValue('--d-card-ratio')).toBe('218 / 146');
+    expect(open.style.getPropertyValue('--d-card-w')).toBe('13.625rem');
     await userEvent.click(open);
     expect(onOpen).toHaveBeenCalledTimes(1);
   });

@@ -1,4 +1,4 @@
-import { cloneElement, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type FocusEvent, type PointerEvent, type ReactElement } from 'react';
+import { cloneElement, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type FocusEvent, type PointerEvent, type ReactElement, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { KeyHint } from '../KeyHint/KeyHint.tsx';
 import './Tooltip.css';
@@ -8,6 +8,8 @@ export type TooltipProps = {
   label: string;
   /** The chord, drawn as a KeyHint chip at the right and read once as the control's description. */
   keys?: string[];
+  /** Rich tooltip content, using the same hover, focus and placement behavior. */
+  content?: ReactNode;
   placement?: 'top' | 'bottom' | 'right';
   /** Exactly one focusable element. */
   children: ReactElement<{ 'aria-describedby'?: string }>;
@@ -33,7 +35,7 @@ function canFocusVisible(el: Element): boolean {
  * is consumed only while a tooltip is shown, so a dialog behind it still closes on the next press; focus stays where it was.
  * The tooltip is drawn in a portal with position: fixed, so no list or rail that clips its overflow can cut it off.
  */
-export function Tooltip({ label, keys, placement = 'top', children }: TooltipProps) {
+export function Tooltip({ label, keys, content, placement = 'top', children }: TooltipProps) {
   const id = useId();
   const chordId = `${id}-chord`;
   const anchor = useRef<HTMLSpanElement>(null);
@@ -140,7 +142,7 @@ export function Tooltip({ label, keys, placement = 'top', children }: TooltipPro
       {shown ? createPortal(
         <span ref={tip} role="tooltip" className="d-tooltip" data-placement={placement === 'top' && flipped ? 'bottom' : placement}
           style={{ left: pos.left, top: pos.top }}>
-          <span className="d-tooltip__label">{label}</span>
+          <span className="d-tooltip__label">{content ?? label}</span>
           {keys?.length ? <span aria-hidden="true"><KeyHint keys={keys} /></span> : null}
         </span>,
         document.body,

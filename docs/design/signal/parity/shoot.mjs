@@ -65,6 +65,7 @@ export function validateSpec(spec) {
     const other = pair.story ?? pair.app;
     if (pair.app !== undefined) {
       const a = pair.app;
+      if (a.holdUploads !== undefined && typeof a.holdUploads !== 'boolean') throw new Error(`${at}: app.holdUploads must be a boolean`);
       if (!isObject(a) || !APP_WHO.includes(a.who)) throw new Error(`${at} (${pair.name}): app.who must be one of ${APP_WHO.join(', ')}`);
       for (const k of ['path', 'clip', 'reset']) if (a[k] !== undefined && typeof a[k] !== 'string') throw new Error(`${at} (${pair.name}): app.${k} must be a string`);
     }
@@ -178,6 +179,15 @@ async function settle(page) {
   await page.waitForTimeout(SETTLE_MS);
 }
 
+/** On-demand upload bytes for cap-boundary captures; ordinary fixture paths stay unchanged. */
+export function uploadFixture(file) {
+  if (!file.startsWith('@bytes/')) return path.resolve(REPO, file);
+  const match = /^@bytes\/(\d+)\/([^/]+)$/.exec(file);
+  const size = Number(match?.[1]);
+  if (!match || !Number.isSafeInteger(size) || size <= 0 || size > 26 * 1024 * 1024) throw new Error('Invalid generated upload fixture');
+  return { name: match[2], mimeType: 'application/octet-stream', buffer: Buffer.alloc(size) };
+}
+
 async function runSteps(page, steps, ctx = {}) {
   for (const s of steps ?? []) {
     if (s.goto !== undefined) { await page.goto(appUrl(ctx.state, s.goto), { waitUntil: 'load' }); await page.waitForTimeout(300); }
@@ -191,7 +201,7 @@ async function runSteps(page, steps, ctx = {}) {
       const totpSecret = await page.inputValue(s.totpFrom[0]);
       await page.fill(s.totpFrom[1], await nextCode(ctx.state.controlUrl, { totpSecret, lastCounter: -1 }));
     }
-    else if (s.upload) await page.setInputFiles(s.upload[0], s.upload.slice(1).map(f => path.resolve(REPO, f)));
+    else if (s.upload) await page.setInputFiles(s.upload[0], s.upload.slice(1).map(uploadFixture));
     else if (s.dispatch) await page.locator(s.dispatch).first().dispatchEvent('click');
     else if (s.click) await page.click(s.click);
     else if (s.rightClick) await page.click(s.rightClick, { button: 'right' });
@@ -284,7 +294,12 @@ async function shootApp(browser, state, pair, out) {
   const { page, cdp, done } = await openAppPage(browser, state, pair);
   const fresh = a.who === 'fresh' || a.who === 'freshPhone';
   let back = a.reset ?? a.path;
+  let releaseUpload;
+  const uploadGate = new Promise(resolve => { releaseUpload = resolve; });
+  const holdUpload = async route => { await uploadGate; await route.continue().catch(() => {}); };
+  const uploadPattern = /\/v1\/channels\/[0-9a-f]{32}\/blobs\/[0-9a-f]+$/;
   try {
+    if (a.holdUploads) await page.route(uploadPattern, holdUpload);
     if (!fresh) back = back ?? new URL(page.url()).pathname + new URL(page.url()).search;
     if (a.path !== undefined) await page.goto(appUrl(state, a.path), { waitUntil: 'load' });
     else if (fresh) await page.goto(appUrl(state, '/'), { waitUntil: 'load' });
@@ -293,6 +308,8 @@ async function shootApp(browser, state, pair, out) {
     await runSteps(page, a.steps, { state });
     await capture(page, out, a.clip, cdp);
   } finally {
+    releaseUpload();
+    if (a.holdUploads) await page.unroute(uploadPattern, holdUpload);
     if (!fresh) {
       await page.keyboard.press('Escape').catch(() => {});
       await page.keyboard.press('Escape').catch(() => {});

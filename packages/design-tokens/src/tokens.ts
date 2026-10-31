@@ -261,7 +261,9 @@ export const structural = {
     // Task 9: the profile card (the prototype's 0 24px 60px .6) and the user panel's status menu (0 16px 40px .55).
     profile: '0 24px 60px rgba(0,0,0,0.6)', status: '0 16px 40px rgba(0,0,0,0.55)',
     // Task 10: the sign-in card.
-    card: '0 30px 80px rgba(0,0,0,0.55)' },
+    card: '0 30px 80px rgba(0,0,0,0.55)',
+    // Task 8: the prototype reaction tooltip.
+    reaction: '0 12px 30px rgba(0,0,0,0.55)' },
   /**
    * Pane widths stay px: they are furniture the user drags, and a rail or a
    * sidebar that grew with the text size would eat the message pane. The

@@ -1,8 +1,8 @@
 // Page-side attachment cards, downloads, lightbox and upload tray.
 import { phoneNow } from '../../layout.ts';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { BROWSER_ATTACHMENT_CAP, safeName, type AttachmentSummary, type CoreClient, type TimelineItem, type TrayItem } from '@dilla/client-core';
-import { AttachmentCard, AttachmentTray, Lightbox } from '@dilla/ui';
+import { BROWSER_ATTACHMENT_CAP, MAX_ATTACHMENTS, safeName, type AttachmentSummary, type CoreClient, type TimelineItem, type TrayItem } from '@dilla/client-core';
+import { AttachmentCard, AttachmentTray, Lightbox, showToast } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
 import { errorOf } from '../../core/errors.ts';
 import { en, t } from '../../strings/index.ts';
@@ -40,10 +40,11 @@ function previewOf(file: File): TrayPreview | null {
   return null;
 }
 
-export async function attachFiles(client: Pick<CoreClient, 'call'>, channelId: string, files: readonly File[], dispatch: (a: ConversationAction) => void): Promise<boolean> {
+export async function attachFiles(client: Pick<CoreClient, 'call' | 'get'>, channelId: string, files: readonly File[], dispatch: (a: ConversationAction) => void): Promise<boolean> {
   if (files.length === 0) return true;
-  const queued = files.map((file): PendingPreview => ({ channelId, preview: previewOf(file) }));
+  const queued = files.map((file): PendingPreview => ({ channelId, preview: file.size > BROWSER_ATTACHMENT_CAP ? null : previewOf(file) }));
   pendingPreviews.push(...queued);
+  if (files.some(file => file.size > BROWSER_ATTACHMENT_CAP) && (client.get(`tray:${channelId}`)?.length ?? 0) + files.length <= MAX_ATTACHMENTS) showToast(t('shell.tray.overLimitToast'));
   try {
     await client.call({ m: 'attachFiles', channelId, files });
     dispatch({ type: 'trayError', text: null });
@@ -56,7 +57,7 @@ export async function attachFiles(client: Pick<CoreClient, 'call'>, channelId: s
     }
     const code = errorOf(err).code;
     const text = code === 'E_ATTACHMENT_TOO_LARGE'
-      ? t('shell.tray.tooLarge', { name: safeName(files.find(f => f.size > BROWSER_ATTACHMENT_CAP)?.name ?? files[0]?.name ?? '', t('shell.attachment.unnamed')) })
+      ? t('shell.tray.overLimitToast')
       : code === 'E_ATTACHMENT_COUNT' ? t('shell.tray.tooMany') : t('shell.banner.commandError', { code });
     dispatch({ type: 'trayError', text });
     return false;
@@ -273,7 +274,7 @@ export function TrayList(p: { channelId: string; items: readonly TrayItem[]; onE
   return <AttachmentTray label={t('shell.tray.label')} removeTip={t('shell.tray.removeTip')} items={p.items.map((a, i) => ({
     ...(previews[i] ? { preview: previews[i] } : {}),
     id: a.id, name: a.name, size: formatSize(a.size),
-    phase: a.phase === 'failed' ? t('shell.tray.failed', { code: a.reason }) : t(`shell.tray.${a.phase}`),
+    phase: a.phase === 'failed' ? a.reason === 'E_ATTACHMENT_TOO_LARGE' ? t('shell.tray.overLimit') : t('shell.tray.failed', { code: a.reason }) : t(`shell.tray.${a.phase}`),
     failed: a.phase === 'failed', step: a.phase,
     ...(a.phase === 'failed' ? { hint: t('shell.tray.failedHint') } : {}),
     removeLabel: t('shell.tray.remove', { name: a.name }),

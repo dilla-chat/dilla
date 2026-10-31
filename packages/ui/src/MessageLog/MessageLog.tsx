@@ -111,10 +111,10 @@ export function MessageLog({ label, children, earlier, emptyLabel, busy, onKeyDo
         <div className="d-message-log__welcome">
           <span className="d-message-log__welcome-tile" aria-hidden="true"><Icon name={welcome.icon} size={20} /></span>
           <p className="d-message-log__welcome-title">{welcome.title}</p>
-          <p className="d-message-log__welcome-body">{welcome.body}</p>
+          {welcome.body ? <p className="d-message-log__welcome-body">{welcome.body}</p> : null}
         </div>
       ) : null}
-      {Children.count(children) === 0 ? <p className="d-message-log__empty">{emptyLabel}</p> : null}
+      {Children.count(children) === 0 && emptyLabel ? <p className="d-message-log__empty">{emptyLabel}</p> : null}
       <div ref={rowsRef} className="d-message-log__rows">{children}</div>
     </div>
   );

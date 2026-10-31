@@ -20,7 +20,6 @@ import { Conversation, focusComposer, focusLog, useConversationUi, type Conversa
 import { ComposerArea, type OutgoingMessage } from './conversation/ComposerArea.tsx';
 import type { ProfileOpener } from './conversation/MessageItem.tsx';
 import { ThreadView } from './conversation/ThreadView.tsx';
-import { ThreadList } from './conversation/ThreadList.tsx';
 import { Search, type SearchHitView } from './Search.tsx';
 import { actionsProvider, channelsProvider, messagesProvider, paletteGroups, peopleProvider, settingsProvider, type PaletteProvider } from './palette.ts';
 import { messageTime } from './shell-model.ts';
@@ -150,7 +149,7 @@ type ListRow = { id: string; name: string; kind: 'text' | 'voice' | 'dm' | 'anno
   person?: { sub?: string; presence?: 'online' | 'idle' | 'dnd' | 'offline'; group?: boolean; initials?: string } };
 
 /** What the aside shows instead of the member list (web3.7): a channel's thread, or the list of its threads. */
-type Side = { channelId: string; view: 'list' } | { channelId: string; view: 'thread'; rootMsgId: string };
+type Side = { channelId: string; view: 'empty' } | { channelId: string; view: 'thread'; rootMsgId: string };
 
 function restoredConversationUi(value: unknown): ConversationUi | null {
   if (typeof value !== 'object' || value === null) return null;
@@ -364,6 +363,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   // web3.7: one aside. A thread or the thread list of the open channel takes the member list's place; the members' own state is kept
   // under it, so closing the thread gives back what was there. The toggle shows the members and ends the thread.
   const [side, setSide] = useState<Side | null>(null);
+  const lastThread = useRef(new Map<string, string>());
+  const channelThreads = useSlice(`threads:${channelId ?? ''}`);
+  useEffect(() => { lastThread.current.clear(); }, [account?.instance?.id, account?.user?.id]);
   const [threadDraft, setThreadDraft] = useState<{ channelId: string; rootMsgId: string; text: string } | null>(null);
   const threadDrafts = useRef(new Map<string, string>());
   const threadDraftKey = (channelId: string, rootMsgId: string) => `${channelId}/${rootMsgId}`;
@@ -1056,7 +1058,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     {...(channel !== null ? { onOpenThread: openThread } : {})}
     welcome={channel !== null
       ? { icon: channel.announcement ? 'megaphone' : 'hash', title: t('shell.log.welcome', { channel: channel.name }), body: t('shell.log.welcomeBody', { channel: channel.name }) }
-      : { icon: 'at-sign', title: dm?.name ?? '', body: t('shell.log.welcomeDmBody') }}
+      : { icon: 'at-sign', title: dm?.name ?? '', body: '' }}
     onOpenProfile={openProfile} />;
   const openFailed = (id: string, error: UiError) => (
     <EmptyState title={t('shell.openFailed.title')} body={t('shell.openFailed.body', { code: error.code })}
@@ -1506,6 +1508,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   function openThread(rootMsgId: string): void {
     if (channel === null) return;
     noteOpener();
+    lastThread.current.set(channel.id, rootMsgId);
     sideRoot.current = rootMsgId;
     setSide({ channelId: channel.id, view: 'thread', rootMsgId });
   }
@@ -1519,14 +1522,23 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     if (channel === null) return;
     takeThreadRequest();
     sideOpener.current = null;
+    lastThread.current.set(channel.id, threadRequest.rootMsgId);
     sideRoot.current = threadRequest.rootMsgId;
     if (phone) setMembersOpen(false);
     setSide({ channelId: channel.id, view: 'thread', rootMsgId: threadRequest.rootMsgId });
   }, [threadRequest, channelId, channel, phone]);
-  function openList(): void {
+  const openChannelRef = useRef(channelId);
+  openChannelRef.current = channelId;
+  function openHeaderThread(): void {
     if (channel === null) return;
     noteOpener();
-    setSide({ channelId: channel.id, view: 'list' });
+    void client.call({ m: 'loadThreads', channelId: channel.id }).then(() => {
+      if (openChannelRef.current !== channel.id) return;
+      const threads = client.get(`threads:${channel.id}`) ?? channelThreads ?? [];
+      const root = lastThread.current.get(channel.id) ?? [...threads].sort((a, b) => b.lastTs - a.lastTs)[0]?.rootMsgId;
+      if (root !== undefined) openThread(root);
+      else setSide({ channelId: channel.id, view: 'empty' });
+    }, report);
   }
   const sideReturn = useMemo<RefObject<HTMLElement | null>>(() => ({
     get current() {
@@ -1537,7 +1549,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     },
   }), []);
   // The list ends on Escape from wherever focus is (the pane is no drawer in a wide shell), and focus goes back to its button.
-  const listOpen = sideNow?.view === 'list';
+  const listOpen = sideNow?.view === 'empty';
   useEffect(() => {
     if (!listOpen) return;
     const onKey = (e: KeyboardEvent) => {
@@ -1579,7 +1591,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     }
     const other = others[0];
     if (other === undefined) return undefined;
-    return other.statusMsg ? t('shell.dm.topic', { handle: other.username, status: other.statusMsg }) : t('shell.dm.topicHandle', { handle: other.username });
+    return other.statusMsg ? t('shell.dm.topic', { handle: other.username, status: other.statusMsg }) : t('shell.dm.topic', { handle: other.username, status: t(`presence.${presenceOf(other.userId)}`) });
   };
   // E2: the voice stage's phone header carries search too (a touch device has no Control+K).
   // Signal §5.5, §5.10 (Ruling U): a channel's header has the prototype's controls. Threads (its icon and label; an icon alone on a
@@ -1590,7 +1602,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   const membersName = memberCount === null ? t('layout.header.members') : t('layout.header.membersCount', { n: memberCount });
   // Task 11 (the prototype's thrBg): Threads is pressed while the aside shows a thread or the thread list; a press closes it.
   const threadsOn = sideNow !== null;
-  const toggleThreads = () => (threadsOn ? closeSide() : openList());
+  const toggleThreads = () => (threadsOn ? closeSide() : openHeaderThread());
   const membersButton = (
     <Tooltip label={t('layout.header.members')}>
       <Button variant="ghost" mark={false} data-members-toggle="" aria-label={membersName} pressed={membersShown} onClick={toggleMembers}>
@@ -1693,6 +1705,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
       leaveSearchLayer();
       // The palette is gone, so the root's row is where focus goes back to; a phone's members sheet gives way to the thread.
       sideOpener.current = null;
+      lastThread.current.set(hit.channelId, threadRoot);
       sideRoot.current = threadRoot;
       if (phone) setMembersOpen(false);
       setSide({ channelId: hit.channelId, view: 'thread', rootMsgId: threadRoot });
@@ -1968,7 +1981,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
           setDraft({ channelId: saved.draft.channelId, text: saved.draft.text });
           if (saved.draft.channelId !== null) rememberDraft(ordinaryDrafts.current, saved.draft.channelId, saved.draft.text);
         }
-        if (saved.side?.channelId === channelId && (saved.side.view === 'list'
+        if (saved.side?.channelId === channelId && (saved.side.view === 'empty'
           || (saved.side.view === 'thread' && typeof saved.side.rootMsgId === 'string' && HEX32.test(saved.side.rootMsgId)))) setSide(saved.side);
         if (channelId !== null && saved.threadDraft !== null && saved.threadDraft?.channelId === channelId
           && typeof saved.threadDraft.rootMsgId === 'string' && HEX32.test(saved.threadDraft.rootMsgId)
@@ -2161,16 +2174,16 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
             initialDraft={threadDrafts.current.get(threadDraftKey(channel.id, sideNow.rootMsgId)) ?? (threadDraft?.channelId === channel.id && threadDraft.rootMsgId === sideNow.rootMsgId ? threadDraft.text : '')}
             onEditingChange={setThreadEditing} onOpenProfile={openProfile}
             onDraftChange={text => { rememberDraft(threadDrafts.current, threadDraftKey(channel.id, sideNow.rootMsgId), text); setThreadDraft({ channelId: channel.id, rootMsgId: sideNow.rootMsgId, text }); }} />
-          : sideNow?.view === 'list' && channel !== null
-            ? <ThreadPane title={t('thread.list')} closeLabel={t(phone ? 'nav.back' : 'dialog.close')} onClose={closeSide} phone={phone} root={null} composer={null}>
-              <ThreadList channelId={channel.id} channelName={channel.name} communityId={communityId} onOpen={openThread} heading={false} />
+          : sideNow?.view === 'empty' && channel !== null
+            ? <ThreadPane title={t('thread.title')} closeLabel={t(phone ? 'nav.back' : 'dialog.close')} onClose={closeSide} phone={phone} root={null} composer={null}>
+              <p className="dw-thread-empty">{t('shell.thread.empty')}</p>
             </ThreadPane>
             : membersShown && community !== null && self !== null ? <MemberPane communityId={community.id} selfId={self.id}
               onMessage={startDm} onCompare={userId => void navigate({ name: 'settings', section: 'privacy', from: null, compare: userId })}
               onMention={mentionFromMembers}
               announce={announce} messageCard={profileCard} onCardOpen={() => setProfileCard(null)}
               onClose={phone ? () => { memberSheet.close(); } : () => setMembersOpen(false)} /> : undefined}
-        asideLabel={sideNow?.view === 'thread' ? t('thread.title') : sideNow?.view === 'list' ? t('thread.list')
+        asideLabel={sideNow?.view === 'thread' ? t('thread.title') : sideNow?.view === 'empty' ? t('thread.title')
           : community === null ? undefined : t('members.region', { server: community.name })}
         asideOpen={asideShown}
         onAsideClose={sideNow !== null ? closeSide : phone ? memberSheet.close : () => setMembersOpen(false)}

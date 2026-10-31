@@ -78,7 +78,10 @@ describe('the gif button (E8)', () => {
     await waitFor(() => expect(cells()).toHaveLength(3));
     expect(searches).toEqual([{ q: '', offset: 0 }]);
     expect(fake.callsOf('gifSearch')).toEqual([{ m: 'gifSearch', communityId: A, q: '', offset: 0 }]);
-    expect(screen.getByText('Powered by GIPHY')).toBeInTheDocument();
+    expect(screen.getByText('VIA GIPHY')).toBeInTheDocument();
+    const search = screen.getByPlaceholderText('Search Giphy');
+    expect(search.parentElement).toContainElement(screen.getByText('VIA GIPHY'));
+    expect(screen.queryByText(/POWERED BY GIPHY/i)).not.toBeInTheDocument();
     expect(cells().map(c => c.getAttribute('aria-label'))).toEqual(['title t1', 'title t2', 'title t3']);
   });
 });

@@ -1,5 +1,5 @@
 /* README §6.4, the prototype's code card: 8px card on bg-2 with a hairline-2 frame, a 30px bg-3 header, a numbered body that scrolls sideways. */
-.d-code-block { max-width: 40rem /* 640px */; min-width: 0; border: 1px solid var(--hairline-2); border-radius: var(--r-lg); background: var(--bg-2); overflow: hidden; animation: d-up var(--duration-slow) var(--ease-out) both; }
+.d-code-block { max-width: 40rem /* 640px */; min-width: 0; border: 1px solid var(--hairline-2); border-radius: var(--r-lg); background: var(--bg-2); overflow: hidden; animation: d-up var(--duration-slow) var(--ease-out) backwards; }
 .d-code-block__head { display: flex; align-items: center; gap: 0.5rem; height: 1.875rem /* 30px */; padding: 0 0.375rem 0 0.75rem; border-bottom: 1px solid var(--hairline); background: var(--bg-3); }
 .d-code-block__lang { font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking-wide); text-transform: uppercase; color: var(--accent-2); }
 .d-code-block__count { font-size: var(--text-micro); color: var(--fg-faint); }
@@ -20,3 +20,6 @@
 .d-code-block [data-tok="kw"] { color: var(--code-keyword); }
 .d-code-block [data-tok="punct"] { color: var(--fg-2); }
 @media (prefers-reduced-motion: reduce) { .d-code-block { animation: none; } }
+
+/* Copy must remain above the floating message toolbar where their hit areas meet. */
+.d-code-block__copy { position: relative; z-index: 3; }

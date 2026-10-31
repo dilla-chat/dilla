@@ -184,3 +184,5 @@ Each element gets a presence Noul and a Box on both images, plus optional `state
 - **Q-A:** the question counter counts Unicode code points, matching the server's rune limit. The prototype counts UTF-16 code units, so supplementary characters such as emoji count differently. The displayed counter and the 300-character validation deliberately agree with the server.
 - **Q-B:** an uncertain vote retries only from the answer that triggered it; the other answers are inert until it settles. Copy: “Your vote may not have counted. Tap it again to retry.”
 - **Q-C:** a capped multi-choice voter walk displays the distinct count read so far as “{n}+ voters”. Reads are bounded to ten pages per poll and ten per answer, with at most two answer walks in flight.
+
+Task 8 upload captures can use `@bytes/26214401/huge.bin` in an upload step. The runner creates the bytes in memory, so a 25 MB fixture is not stored in Git. An app side with `holdUploads: true` holds blob uploads until its frame is captured, then releases them; the waiting-toast state is reached by picking a file and pressing Send normally. ReactionTooltip pairs use a UI story under Q6 (web wiring is wave C).

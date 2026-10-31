@@ -91,7 +91,7 @@ describe('the copy rules', () => {
     // Task 11: the DM composer's placeholder, the prototype's 'Message {name}' (the label keeps 'message @{name}').
     expect(en['shell.dm.placeholder']).toBe('Message {name}');
     // Task 11 (Jonas, Q2): the DM list's head: shell.dms.title, section, online and count.
-    expect(Object.keys(en).filter(k => k.startsWith('shell.'))).toHaveLength(218);
+    expect(Object.keys(en).filter(k => k.startsWith('shell.'))).toHaveLength(220);
   });
   it('holds the conversation copy of L-COPY-03: chrome lower case, dialogs and refusals sentence case', () => {
     expect(Object.keys(en).filter(k => k.startsWith('shell.emoji.'))).toHaveLength(33);
@@ -112,7 +112,8 @@ describe('the copy rules', () => {
     expect(en['shell.message.attachmentGone']).toBe('A file of this message is no longer on the server. Discard it and attach the file again.');
     expect(Object.keys(en)).not.toContain('shell.composer.mentionHere');
     expect(en['shell.drop.body']).toBe('Up to 4 files, 25 MB each.');
-    expect(en['shell.tray.tooLarge']).toBe('{name} is over 25 MB and cannot be sent from a browser.');
+    expect(en['shell.tray.overLimitToast']).toBe('Files over 25 MB can’t be sent from a browser');
+    expect(Object.keys(en)).not.toContain('shell.tray.tooLarge');
     expect(en['shell.pins.by']).toBe('pinned by {name}');
   });
 

@@ -204,7 +204,7 @@ describe('attaching (L-TS-35, Q16)', () => {
     expect(fake.callsOf('attachFiles')[1]).toEqual({ m: 'attachFiles', channelId: GEN, files: [b] });
   });
   it.each([
-    ['E_ATTACHMENT_TOO_LARGE', 'huge.bin is over 25 MB and cannot be sent from a browser.'],
+    ['E_ATTACHMENT_TOO_LARGE', 'Files over 25 MB can’t be sent from a browser'],
     ['E_ATTACHMENT_COUNT', 'A message carries at most 4 files.'],
     ['E_NETWORK', 'That did not work (E_NETWORK). Try again, or reload the page.'],
   ])('shows the refusal %s by its code, never its detail', async (code, text) => {
@@ -273,7 +273,7 @@ describe('attaching (L-TS-35, Q16)', () => {
     const { fake, user } = renderConversation({ before: f => f.set(`tray:${GEN}`, [entry('t1', 'ready'), entry('t2', 'uploading')]) });
     await user.type(box(), 'x{Enter}');
     expect(fake.callsOf('send')).toEqual([]);
-    expect(screen.getByRole('alert')).toHaveTextContent('Wait until every file is ready, or remove it.');
+    expect(await screen.findByText('Waiting for uploads to finish')).toBeInTheDocument();
     act(() => fake.set(`tray:${GEN}`, [entry('t1', 'ready'), entry('t2', 'ready')]));
     await user.keyboard('{Enter}');
     expect(fake.callsOf('send')).toEqual([{ m: 'send', channelId: GEN, text: 'x', attachments: ['t1', 't2'] }]);
@@ -331,4 +331,27 @@ describe('tray focus handoff (F4)', () => {
     act(() => fake.set(`tray:${GEN}`, [entry('t2', 'ready')]));
     expect(box()).toHaveFocus();
   });
+});
+
+it('Send while an upload is unfinished toasts and sends nothing', async () => {
+  const { fake, user } = renderConversation({ before: f => f.set(`tray:${GEN}`, [entry('pending', 'uploading')]) });
+  await user.type(box(), 'wait for this');
+  await user.click(screen.getByRole('button', { name: 'send' }));
+  expect(await screen.findByText('Waiting for uploads to finish')).toBeInTheDocument();
+  expect(fake.callsOf('send')).toHaveLength(0);
+});
+
+it('retains an oversized card with Over 25 MB meta and toasts once for the whole pick', async () => {
+  const { fake } = renderConversation();
+  fake.handler = command => {
+    if (command.m === 'attachFiles') fake.publish(`tray:${GEN}`, command.files.map((f, i) => entry(String(i), 'failed', { name: f.name, size: f.size, reason: 'E_ATTACHMENT_TOO_LARGE' })));
+    return Promise.resolve(null);
+  };
+  const huge = new File(['x'], 'huge.bin');
+  Object.defineProperty(huge, 'size', { value: BROWSER_ATTACHMENT_CAP + 1 });
+  fireEvent.change(input(), { target: { files: [huge, huge] } });
+  expect(await screen.findByText('Files over 25 MB can’t be sent from a browser')).toBeInTheDocument();
+  expect(document.querySelectorAll('.d-np-toast')).toHaveLength(1);
+  expect(screen.getAllByText('Over 25 MB')).toHaveLength(2);
+  expect(document.querySelectorAll('.d-attachment-tray__item[data-failed="true"]')).toHaveLength(2);
 });

@@ -200,6 +200,8 @@ describe('the phone shell: pushed views', () => {
     await user.keyboard('{Escape}');
     await user.click(await screen.findByRole('button', { name: 'bob' }));
     expect(here()).toBe(`/dm/${DM}`);
+    expect(document.querySelector('.d-phone-header__topic')).toHaveTextContent('@bob · offline');
+    expect(screen.queryByText(t('shell.log.welcomeDmBody'))).not.toBeInTheDocument();
     expect(window.history.state).toMatchObject({ phoneBack: true });
     expect(tabs()).not.toBeNull();
     const actions = document.querySelector<HTMLElement>('.d-phone-header__actions')!;
@@ -327,6 +329,8 @@ describe('the phone shell: tabs', () => {
     await screen.findByText(t('activity.emptyTitle'));
     await user.click(tab('Home'));
     expect(here()).toBe(`/dm/${DM}`);
+    expect(document.querySelector('.d-phone-header__topic')).toHaveTextContent('@bob · offline');
+    expect(screen.queryByText(t('shell.log.welcomeDmBody'))).not.toBeInTheDocument();
     goto(`/c/${A}/${TEXT}`, { phoneBack: true });
     goto('/activity', { phoneBack: true });
     await user.click(tab('Home'));
@@ -447,6 +451,8 @@ describe('the phone shell: tabs', () => {
     await user.click(homeTile());
     await user.click(await screen.findByRole('button', { name: 'bob' }));
     expect(here()).toBe(`/dm/${DM}`);
+    expect(document.querySelector('.d-phone-header__topic')).toHaveTextContent('@bob · offline');
+    expect(screen.queryByText(t('shell.log.welcomeDmBody'))).not.toBeInTheDocument();
     await screen.findByRole('textbox');
     await user.click(tab('Home'));
     await waitFor(() => expect(here()).toBe('/dm'));
@@ -882,4 +888,10 @@ describe('the phone shell: Mention', () => {
     expect(box.value).toBe('@bob ');
     expect(box.selectionStart).toBe(box.value.length);
   });
+});
+
+it('keeps the channel topic in the phone conversation header (gap49/gap89)', async () => {
+  const { client } = phone({ path: `/c/${A}/${TEXT}` });
+  act(() => client.publish(`channels:${A}`, CHANNELS.map(channel => channel.id === TEXT ? { ...channel, topic: 'raids, plans and the bridge troll' } : channel)));
+  await waitFor(() => expect(document.querySelector('.d-phone-header__topic')).toHaveTextContent('raids, plans and the bridge troll'));
 });

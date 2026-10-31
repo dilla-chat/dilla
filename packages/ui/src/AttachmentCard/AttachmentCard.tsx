@@ -34,26 +34,17 @@ function fileMeta(name: string, size: string): string {
   return dot > 0 && dot < name.length - 1 ? `${size} · ${name.slice(dot + 1).toUpperCase()}` : size;
 }
 
-/** The longest side of an image card, in CSS px: the prototype's 280px image (§6.8), 240px for a GIF. */
-const CARD_MAX_PX = 280;
+/** Task 8's sent image tile is 218×146; GIF cards retain the prototype's 240px width. */
+const CARD_MAX_PX = 218;
 const GIF_MAX_PX = 240;
-
-/**
- * The card's box: its width in rem (the image scaled so its longer side is at most 280 px, 240 for a GIF, never up) and its
- * aspect ratio, as custom properties the CSS reads. Unknown or non-positive sizes give a box of 4 / 3 at the most.
- */
 function cardBox(w: number | null, h: number | null, max = CARD_MAX_PX): CSSProperties {
-  if (w === null || h === null || !(w > 0) || !(h > 0)) {
-    return { '--d-card-w': `${String(max / 16)}rem`, '--d-card-ratio': '4 / 3' } as CSSProperties;
-  }
-  const px = w * Math.min(1, max / Math.max(w, h));
-  const rem = Math.round(px * 1000 / 16) / 1000;
-  return { '--d-card-w': `${String(rem)}rem`, '--d-card-ratio': `${String(w)} / ${String(h)}` } as CSSProperties;
+  if (w !== null && h !== null && w > 0 && h > 0 && w <= max && h <= 146) return { '--d-card-w': `${String(w / 16)}rem`, '--d-card-ratio': `${String(w)} / ${String(h)}` } as CSSProperties;
+  return { '--d-card-w': `${String(max / 16)}rem`, '--d-card-ratio': max === GIF_MAX_PX ? '4 / 3' : '218 / 146' } as CSSProperties;
 }
 
 /**
  * One attachment of a message. An image card is one button (named `openLabel`) holding the thumbnail, whose alt
- * text is the file's shown name, or a neutral box of the image's proportions while there is none (never a broken
+ * text is the file's shown name, or a neutral box of the same tile size while there is none (never a broken
  * image). A file card shows a glyph, the name and the size, and a save button only when `onSave` is given. A card
  * too large for a browser has no button. `stateText` follows the card (opening, could not open, too large).
  * An audio or video card with a `player` shows the name and size, the inline MediaPlayer and the save button, which
@@ -117,7 +108,7 @@ export function AttachmentCard({
     );
   }
   return (
-    <div className="d-attachment-card" data-kind={kind} data-state={state} data-gif={badge !== undefined ? 'true' : undefined}>
+    <div className="d-attachment-card" style={kind === 'image' ? cardBox(w, h, badge !== undefined ? GIF_MAX_PX : CARD_MAX_PX) : undefined} data-kind={kind} data-state={state} data-gif={badge !== undefined ? 'true' : undefined}>
       {content}
       {stateText !== undefined ? <p className="d-attachment-card__state">{stateText}</p> : null}
     </div>

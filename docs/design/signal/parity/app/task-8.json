@@ -1,0 +1,2096 @@
+[
+  {
+    "name": "gap44-reply-jump-flash",
+    "mutates": true,
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "hover": "article >> nth=0"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "click": "article >> nth=0 >> div[style*='top: -12px'] > span >> nth=1"
+        },
+        {
+          "type": [
+            "main textarea",
+            "two ropes. final answer."
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=raid tonight at 20:00"
+        },
+        {
+          "wait": 200
+        }
+      ]
+    },
+    "app": {
+      "who": "ada",
+      "path": "{server}",
+      "steps": [
+        {
+          "hover": "role=article >> nth=1"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "click": "role=button[name=/^reply/i] >> nth=0"
+        },
+        {
+          "type": [
+            "role=textbox[name=/^message/i]",
+            "two ropes. final answer."
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "wait": 1500
+        },
+        {
+          "click": "role=button[name=/^Björn.*in\\./]"
+        },
+        {
+          "wait": 200
+        }
+      ]
+    }
+  },
+  {
+    "name": "gap44-reply-jump-flash-phone",
+    "mutates": true,
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 600
+        },
+        {
+          "click": "aside >> text=general >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0"
+        },
+        {
+          "wait": 600
+        },
+        {
+          "wait": 900
+        },
+        {
+          "hover": "article >> nth=0"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "click": "article >> nth=0 >> div[style*='top: -12px'] > span >> nth=1"
+        },
+        {
+          "type": [
+            "main textarea",
+            "two ropes. final answer."
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=raid tonight at 20:00"
+        },
+        {
+          "wait": 200
+        }
+      ]
+    },
+    "app": {
+      "who": "phone",
+      "path": "{server}",
+      "steps": [
+        {
+          "hover": "role=article >> nth=1"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "click": "role=button[name=/^reply/i] >> nth=0"
+        },
+        {
+          "type": [
+            "role=textbox[name=/^message/i]",
+            "two ropes. final answer."
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "wait": 1500
+        },
+        {
+          "click": "role=button[name=/^Björn.*in\\./]"
+        },
+        {
+          "wait": 200
+        }
+      ]
+    }
+  },
+  {
+    "name": "gap47-gif-picker",
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "click": "main span:text-is('GIF')"
+        },
+        {
+          "wait": 700
+        }
+      ]
+    },
+    "app": {
+      "who": "ada",
+      "path": "{server}",
+      "steps": [
+        {
+          "click": "role=button[name=\"add a gif\"s]"
+        },
+        {
+          "wait": 1500
+        }
+      ]
+    }
+  },
+  {
+    "name": "gap47-gif-picker-phone",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 600
+        },
+        {
+          "click": "aside >> text=general >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0"
+        },
+        {
+          "wait": 600
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "main span:text-is('GIF')"
+        },
+        {
+          "wait": 700
+        }
+      ]
+    },
+    "app": {
+      "who": "phone",
+      "path": "{server}",
+      "steps": [
+        {
+          "click": "role=button[name=\"add a gif\"s]"
+        },
+        {
+          "wait": 1500
+        }
+      ]
+    }
+  },
+  {
+    "name": "gap49-tray-images-and-files",
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "upload": [
+            "input[type=file]",
+            "docs/design/signal/parity/app/fixtures/harbour.png",
+            "docs/design/signal/parity/app/fixtures/lantern.png",
+            "docs/design/signal/parity/app/fixtures/raid-notes.txt"
+          ]
+        },
+        {
+          "wait": 200
+        }
+      ]
+    },
+    "app": {
+      "who": "ada",
+      "path": "{server}",
+      "steps": [
+        {
+          "upload": [
+            "input[type=file]",
+            "docs/design/signal/parity/app/fixtures/harbour.png",
+            "docs/design/signal/parity/app/fixtures/lantern.png",
+            "docs/design/signal/parity/app/fixtures/raid-notes.txt"
+          ]
+        },
+        {
+          "wait": 200
+        }
+      ]
+    }
+  },
+  {
+    "name": "gap49-tray-images-and-files-phone",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 600
+        },
+        {
+          "click": "aside >> text=general >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0"
+        },
+        {
+          "wait": 600
+        },
+        {
+          "wait": 900
+        },
+        {
+          "upload": [
+            "input[type=file]",
+            "docs/design/signal/parity/app/fixtures/harbour.png",
+            "docs/design/signal/parity/app/fixtures/lantern.png",
+            "docs/design/signal/parity/app/fixtures/raid-notes.txt"
+          ]
+        },
+        {
+          "wait": 200
+        }
+      ]
+    },
+    "app": {
+      "who": "phone",
+      "path": "{server}",
+      "steps": [
+        {
+          "upload": [
+            "input[type=file]",
+            "docs/design/signal/parity/app/fixtures/harbour.png",
+            "docs/design/signal/parity/app/fixtures/lantern.png",
+            "docs/design/signal/parity/app/fixtures/raid-notes.txt"
+          ]
+        },
+        {
+          "wait": 200
+        }
+      ]
+    }
+  },
+  {
+    "name": "gap52-sent-image-and-file",
+    "mutates": true,
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "upload": [
+            "input[type=file]",
+            "docs/design/signal/parity/app/fixtures/harbour.png",
+            "docs/design/signal/parity/app/fixtures/raid-notes.txt"
+          ]
+        },
+        {
+          "wait": 3500
+        },
+        {
+          "click": "main textarea"
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "wait": 1500
+        }
+      ]
+    },
+    "app": {
+      "who": "ada",
+      "path": "{server}",
+      "steps": [
+        {
+          "upload": [
+            "input[type=file]",
+            "docs/design/signal/parity/app/fixtures/harbour.png",
+            "docs/design/signal/parity/app/fixtures/raid-notes.txt"
+          ]
+        },
+        {
+          "wait": 3500
+        },
+        {
+          "click": "role=textbox[name=/^message/i]"
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "wait": 3000
+        }
+      ]
+    },
+    "judge": {
+      "elements": [
+        {
+          "id": "search",
+          "name": "the search box at the top centre of the window"
+        },
+        {
+          "id": "composer",
+          "name": "the message composer at the bottom of the main column"
+        },
+        {
+          "id": "members_heading",
+          "name": "the Members heading at the top of the right-hand panel"
+        },
+        {
+          "id": "image_tile",
+          "name": "the image preview tile in the last message, to the left of the file card"
+        },
+        {
+          "id": "file_card",
+          "name": "the file attachment card in the last message of the conversation, with a document icon and a download button",
+          "anchor": "image_tile"
+        },
+        {
+          "id": "download_button",
+          "name": "the download button at the right end of the file attachment card",
+          "compare": [
+            "presence",
+            "size"
+          ]
+        },
+        {
+          "id": "file_meta",
+          "name": "the small grey size line under the file name in the file attachment card",
+          "compare": [
+            "presence"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "gap52-sent-image-and-file-phone",
+    "mutates": true,
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 600
+        },
+        {
+          "click": "aside >> text=general >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0"
+        },
+        {
+          "wait": 600
+        },
+        {
+          "wait": 900
+        },
+        {
+          "upload": [
+            "input[type=file]",
+            "docs/design/signal/parity/app/fixtures/harbour.png",
+            "docs/design/signal/parity/app/fixtures/raid-notes.txt"
+          ]
+        },
+        {
+          "wait": 3500
+        },
+        {
+          "click": "main textarea"
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "wait": 1500
+        }
+      ]
+    },
+    "app": {
+      "who": "phone",
+      "path": "{server}",
+      "steps": [
+        {
+          "upload": [
+            "input[type=file]",
+            "docs/design/signal/parity/app/fixtures/harbour.png",
+            "docs/design/signal/parity/app/fixtures/raid-notes.txt"
+          ]
+        },
+        {
+          "wait": 3500
+        },
+        {
+          "click": "role=textbox[name=/^message/i]"
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "wait": 3000
+        }
+      ]
+    },
+    "judge": {
+      "elements": [
+        {
+          "id": "search",
+          "name": "the search box at the top centre of the window"
+        },
+        {
+          "id": "composer",
+          "name": "the message composer at the bottom of the main column"
+        },
+        {
+          "id": "members_heading",
+          "name": "the Members heading at the top of the right-hand panel"
+        },
+        {
+          "id": "image_tile",
+          "name": "the image preview tile in the last message, to the left of the file card"
+        },
+        {
+          "id": "file_card",
+          "name": "the file attachment card in the last message of the conversation, with a document icon and a download button",
+          "anchor": "image_tile"
+        },
+        {
+          "id": "download_button",
+          "name": "the download button at the right end of the file attachment card",
+          "compare": [
+            "presence",
+            "size"
+          ]
+        },
+        {
+          "id": "file_meta",
+          "name": "the small grey size line under the file name in the file attachment card",
+          "compare": [
+            "presence"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "gap53-code-block-copied",
+    "mutates": true,
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "click": "main >> text=Copy >> nth=0"
+        },
+        {
+          "wait": 400
+        }
+      ]
+    },
+    "app": {
+      "who": "ada",
+      "path": "{server}",
+      "steps": [
+        {
+          "click": "role=textbox[name=/^message/i]"
+        },
+        {
+          "type": [
+            "role=textbox[name=/^message/i]",
+            "```yaml\nraid:\n  where: the bridge\n  bring:\n    - rope\n```"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "wait": 2500
+        },
+        {
+          "dispatch": ".d-code-block__copy >> nth=-1"
+        },
+        {
+          "wait": 400
+        }
+      ]
+    },
+    "judge": {
+      "elements": [
+        {
+          "id": "search",
+          "name": "the search box at the top centre of the window"
+        },
+        {
+          "id": "composer",
+          "name": "the message composer at the bottom of the main column"
+        },
+        {
+          "id": "members_heading",
+          "name": "the Members heading at the top of the right-hand panel"
+        },
+        {
+          "id": "code_block",
+          "name": "the code block with line numbers and a language label in the conversation",
+          "data": true
+        },
+        {
+          "id": "copied_button",
+          "name": "the button at the top right corner of the code block",
+          "copy": "Copied",
+          "data": true,
+          "state": {
+            "unobstructed": {
+              "phrase": "fully visible",
+              "true": "nothing covers any part of the button",
+              "false": "another floating element covers part of the button"
+            }
+          }
+        },
+        {
+          "id": "check_icon",
+          "name": "a check mark inside the button at the top right corner of the code block",
+          "compare": [
+            "presence"
+          ],
+          "small": true,
+          "region": {
+            "x": 870,
+            "y": 150,
+            "width": 170,
+            "height": 560
+          }
+        },
+        {
+          "id": "message_toolbar",
+          "name": "the small floating toolbar of message action icons at the right of the message with the code block",
+          "compare": [
+            "presence"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "gap53-code-block-copied-phone",
+    "mutates": true,
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 600
+        },
+        {
+          "click": "aside >> text=general >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0"
+        },
+        {
+          "wait": 600
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "main >> text=Copy >> nth=0"
+        },
+        {
+          "wait": 400
+        }
+      ]
+    },
+    "app": {
+      "who": "phone",
+      "path": "{server}",
+      "steps": [
+        {
+          "click": "role=textbox[name=/^message/i]"
+        },
+        {
+          "type": [
+            "role=textbox[name=/^message/i]",
+            "```yaml\nraid:\n  where: the bridge\n  bring:\n    - rope\n```"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "wait": 2500
+        },
+        {
+          "dispatch": ".d-code-block__copy >> nth=-1"
+        },
+        {
+          "wait": 400
+        }
+      ]
+    },
+    "judge": {
+      "elements": [
+        {
+          "id": "search",
+          "name": "the search box at the top centre of the window"
+        },
+        {
+          "id": "composer",
+          "name": "the message composer at the bottom of the main column"
+        },
+        {
+          "id": "members_heading",
+          "name": "the Members heading at the top of the right-hand panel"
+        },
+        {
+          "id": "code_block",
+          "name": "the code block with line numbers and a language label in the conversation",
+          "data": true
+        },
+        {
+          "id": "copied_button",
+          "name": "the button at the top right corner of the code block",
+          "copy": "Copied",
+          "data": true,
+          "state": {
+            "unobstructed": {
+              "phrase": "fully visible",
+              "true": "nothing covers any part of the button",
+              "false": "another floating element covers part of the button"
+            }
+          }
+        },
+        {
+          "id": "check_icon",
+          "name": "a check mark inside the button at the top right corner of the code block",
+          "compare": [
+            "presence"
+          ],
+          "small": true,
+          "region": {
+            "x": 870,
+            "y": 150,
+            "width": 170,
+            "height": 560
+          }
+        },
+        {
+          "id": "message_toolbar",
+          "name": "the small floating toolbar of message action icons at the right of the message with the code block",
+          "compare": [
+            "presence"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "gap89-phone-message-toolbar",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 600
+        },
+        {
+          "click": "aside >> text=general >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "article >> nth=2"
+        },
+        {
+          "wait": 700
+        }
+      ]
+    },
+    "app": {
+      "who": "phone",
+      "path": "{community}",
+      "steps": [
+        {
+          "click": "role=button[name=\"general\"s]"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "click": "role=article >> nth=2"
+        },
+        {
+          "wait": 700
+        }
+      ]
+    },
+    "judge": {
+      "elements": [
+        {
+          "id": "header",
+          "name": "the channel header at the top of the screen, with a back arrow",
+          "edge": "top"
+        },
+        {
+          "id": "header_topic",
+          "name": "the grey channel topic next to the channel name in the header",
+          "compare": [
+            "presence"
+          ]
+        },
+        {
+          "id": "toolbar",
+          "name": "the small pill-shaped toolbar of message action icons floating over the conversation",
+          "edge": "top"
+        },
+        {
+          "id": "first_message",
+          "name": "the first message in the conversation",
+          "compare": [
+            "presence"
+          ],
+          "state": {
+            "selected": {
+              "phrase": "drawn as the selected message",
+              "true": "the message has a blue bar on its left edge",
+              "false": "the message has no bar on its left edge, like the messages below it"
+            }
+          }
+        },
+        {
+          "id": "code_block",
+          "name": "the code block with line numbers in the conversation",
+          "data": true
+        },
+        {
+          "id": "composer",
+          "name": "the message composer above the bottom tab bar",
+          "edge": "bottom"
+        },
+        {
+          "id": "tab_bar",
+          "name": "the bottom tab bar with Home, Activity and You tabs",
+          "edge": "bottom"
+        },
+        {
+          "id": "older_bar",
+          "name": "a bar saying that older messages are being viewed, with a link to jump to the present",
+          "expect": "absent"
+        }
+      ]
+    }
+  },
+  {
+    "name": "gap89-phone-message-toolbar-desktop",
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "click": "article >> nth=2"
+        },
+        {
+          "wait": 700
+        }
+      ]
+    },
+    "app": {
+      "who": "ada",
+      "path": "{server}",
+      "steps": [
+        {
+          "click": "role=article >> nth=2"
+        },
+        {
+          "wait": 700
+        }
+      ]
+    },
+    "judge": {
+      "elements": [
+        {
+          "id": "header",
+          "name": "the channel header at the top of the screen, with a back arrow",
+          "edge": "top"
+        },
+        {
+          "id": "header_topic",
+          "name": "the grey channel topic next to the channel name in the header",
+          "compare": [
+            "presence"
+          ]
+        },
+        {
+          "id": "toolbar",
+          "name": "the small pill-shaped toolbar of message action icons floating over the conversation",
+          "edge": "top"
+        },
+        {
+          "id": "first_message",
+          "name": "the first message in the conversation",
+          "compare": [
+            "presence"
+          ],
+          "state": {
+            "selected": {
+              "phrase": "drawn as the selected message",
+              "true": "the message has a blue bar on its left edge",
+              "false": "the message has no bar on its left edge, like the messages below it"
+            }
+          }
+        },
+        {
+          "id": "code_block",
+          "name": "the code block with line numbers in the conversation",
+          "data": true
+        },
+        {
+          "id": "composer",
+          "name": "the message composer above the bottom tab bar",
+          "edge": "bottom"
+        },
+        {
+          "id": "tab_bar",
+          "name": "the bottom tab bar with Home, Activity and You tabs",
+          "edge": "bottom"
+        },
+        {
+          "id": "older_bar",
+          "name": "a bar saying that older messages are being viewed, with a link to jump to the present",
+          "expect": "absent"
+        }
+      ]
+    }
+  },
+  {
+    "name": "gap90-phone-emoji-picker",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 600
+        },
+        {
+          "click": "aside >> text=general >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "span[title='Emoji']"
+        },
+        {
+          "wait": 700
+        }
+      ]
+    },
+    "app": {
+      "who": "phone",
+      "path": "{community}",
+      "steps": [
+        {
+          "click": "role=button[name=\"general\"s]"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "click": "role=button[name=\"Emoji\"s]"
+        },
+        {
+          "wait": 700
+        }
+      ]
+    }
+  },
+  {
+    "name": "gap90-phone-emoji-picker-desktop",
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "click": "span[title='Emoji']"
+        },
+        {
+          "wait": 700
+        }
+      ]
+    },
+    "app": {
+      "who": "ada",
+      "path": "{server}",
+      "steps": [
+        {
+          "click": "role=button[name=\"Emoji\"s]"
+        },
+        {
+          "wait": 700
+        }
+      ]
+    }
+  },
+  {
+    "name": "gap90-phone-gif-picker",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 600
+        },
+        {
+          "click": "aside >> text=general >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "main span:text-is('GIF')"
+        },
+        {
+          "wait": 700
+        }
+      ]
+    },
+    "app": {
+      "who": "phone",
+      "path": "{community}",
+      "steps": [
+        {
+          "click": "role=button[name=\"general\"s]"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "click": "role=button[name=\"add a gif\"s]"
+        },
+        {
+          "wait": 1500
+        }
+      ]
+    }
+  },
+  {
+    "name": "gap90-phone-gif-picker-desktop",
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "click": "main span:text-is('GIF')"
+        },
+        {
+          "wait": 700
+        }
+      ]
+    },
+    "app": {
+      "who": "ada",
+      "path": "{server}",
+      "steps": [
+        {
+          "click": "role=button[name=\"add a gif\"s]"
+        },
+        {
+          "wait": 1500
+        }
+      ]
+    }
+  },
+  {
+    "name": "gap90-phone-tray",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 600
+        },
+        {
+          "click": "aside >> text=general >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "upload": [
+            "input[type=file]",
+            "docs/design/signal/parity/app/fixtures/harbour.png",
+            "docs/design/signal/parity/app/fixtures/raid-notes.txt"
+          ]
+        },
+        {
+          "wait": 200
+        }
+      ]
+    },
+    "app": {
+      "who": "phone",
+      "path": "{community}",
+      "steps": [
+        {
+          "click": "role=button[name=\"general\"s]"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "upload": [
+            "input[type=file]",
+            "docs/design/signal/parity/app/fixtures/harbour.png",
+            "docs/design/signal/parity/app/fixtures/raid-notes.txt"
+          ]
+        },
+        {
+          "wait": 200
+        }
+      ]
+    },
+    "judge": {
+      "elements": [
+        {
+          "id": "header",
+          "name": "the channel header at the top of the screen, with a back arrow",
+          "edge": "top"
+        },
+        {
+          "id": "tray",
+          "name": "the row of attachment previews just above the message composer",
+          "edge": "bottom"
+        },
+        {
+          "id": "image_preview",
+          "name": "the image preview tile at the left of the attachment row",
+          "anchor": "tray"
+        },
+        {
+          "id": "image_remove",
+          "name": "the round X remove button on the corner of the image preview tile",
+          "compare": [
+            "presence",
+            "size"
+          ]
+        },
+        {
+          "id": "file_preview",
+          "name": "the file preview card in the attachment row, with a document icon",
+          "anchor": "tray"
+        },
+        {
+          "id": "composer",
+          "name": "the message composer above the bottom tab bar",
+          "edge": "bottom"
+        },
+        {
+          "id": "send_button",
+          "name": "the send button at the right end of the message composer",
+          "compare": [
+            "presence",
+            "size"
+          ],
+          "state": {
+            "active": {
+              "phrase": "drawn as ready to send",
+              "true": "the button has a filled blue background",
+              "false": "the button has a dark background like the composer around it"
+            }
+          }
+        },
+        {
+          "id": "tab_bar",
+          "name": "the bottom tab bar with Home, Activity and You tabs",
+          "edge": "bottom"
+        }
+      ]
+    }
+  },
+  {
+    "name": "gap90-phone-tray-desktop",
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "upload": [
+            "input[type=file]",
+            "docs/design/signal/parity/app/fixtures/harbour.png",
+            "docs/design/signal/parity/app/fixtures/raid-notes.txt"
+          ]
+        },
+        {
+          "wait": 200
+        }
+      ]
+    },
+    "app": {
+      "who": "ada",
+      "path": "{server}",
+      "steps": [
+        {
+          "upload": [
+            "input[type=file]",
+            "docs/design/signal/parity/app/fixtures/harbour.png",
+            "docs/design/signal/parity/app/fixtures/raid-notes.txt"
+          ]
+        },
+        {
+          "wait": 200
+        }
+      ]
+    },
+    "judge": {
+      "elements": [
+        {
+          "id": "header",
+          "name": "the channel header at the top of the screen, with a back arrow",
+          "edge": "top"
+        },
+        {
+          "id": "tray",
+          "name": "the row of attachment previews just above the message composer",
+          "edge": "bottom"
+        },
+        {
+          "id": "image_preview",
+          "name": "the image preview tile at the left of the attachment row",
+          "anchor": "tray"
+        },
+        {
+          "id": "image_remove",
+          "name": "the round X remove button on the corner of the image preview tile",
+          "compare": [
+            "presence",
+            "size"
+          ]
+        },
+        {
+          "id": "file_preview",
+          "name": "the file preview card in the attachment row, with a document icon",
+          "anchor": "tray"
+        },
+        {
+          "id": "composer",
+          "name": "the message composer above the bottom tab bar",
+          "edge": "bottom"
+        },
+        {
+          "id": "send_button",
+          "name": "the send button at the right end of the message composer",
+          "compare": [
+            "presence",
+            "size"
+          ],
+          "state": {
+            "active": {
+              "phrase": "drawn as ready to send",
+              "true": "the button has a filled blue background",
+              "false": "the button has a dark background like the composer around it"
+            }
+          }
+        },
+        {
+          "id": "tab_bar",
+          "name": "the bottom tab bar with Home, Activity and You tabs",
+          "edge": "bottom"
+        }
+      ]
+    }
+  },
+  {
+    "name": "gap97-phone-dm-conversation",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 600
+        },
+        {
+          "click": "d-icon[name='at-sign'] >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=Ada >> nth=0"
+        },
+        {
+          "wait": 1200
+        }
+      ]
+    },
+    "app": {
+      "who": "phone",
+      "path": "{community}",
+      "steps": [
+        {
+          "click": "role=button[name=/^direct messages/]"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "click": "role=button[name=/^Mira/] >> nth=0"
+        },
+        {
+          "wait": 1500
+        }
+      ]
+    }
+  },
+  {
+    "name": "gap97-phone-dm-conversation-desktop",
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "wait": 600
+        },
+        {
+          "click": "d-icon[name='at-sign'] >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=Ada >> nth=0"
+        },
+        {
+          "wait": 1200
+        }
+      ]
+    },
+    "app": {
+      "who": "ada",
+      "path": "{community}",
+      "steps": [
+        {
+          "click": "role=button[name=/^direct messages/]"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "click": "role=button[name=/^Mira/] >> nth=0"
+        },
+        {
+          "wait": 1500
+        }
+      ]
+    }
+  },
+  {
+    "name": "task8-threads-direct-desktop",
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "wait": 600
+        },
+        {
+          "click": "main header d-icon[name='messages-square']"
+        },
+        {
+          "wait": 500
+        }
+      ]
+    },
+    "app": {
+      "who": "ada",
+      "path": "{server}",
+      "steps": [
+        {
+          "click": "role=button[name=\"Threads\"s]"
+        },
+        {
+          "waitFor": ".d-thread-pane"
+        },
+        {
+          "waitFor": ".d-thread-pane .d-message-row"
+        }
+      ]
+    }
+  },
+  {
+    "name": "task8-over-25-mb-toast-desktop",
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "wait": 600
+        },
+        {
+          "upload": [
+            "input[type=file]",
+            "@bytes/26214401/huge.bin"
+          ]
+        },
+        {
+          "wait": 100
+        }
+      ]
+    },
+    "app": {
+      "who": "ada",
+      "path": "{server}",
+      "steps": [
+        {
+          "upload": [
+            "input[type=file]",
+            "@bytes/26214401/huge.bin"
+          ]
+        },
+        {
+          "waitFor": ".d-attachment-tray__item[data-failed=\"true\"]"
+        },
+        {
+          "waitFor": ".d-np-toast"
+        }
+      ]
+    }
+  },
+  {
+    "name": "task8-waiting-toast-desktop",
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "wait": 600
+        },
+        {
+          "upload": [
+            "input[type=file]",
+            "@bytes/1048576/waiting.bin"
+          ]
+        },
+        {
+          "click": "main textarea"
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "wait": 100
+        }
+      ]
+    },
+    "app": {
+      "who": "ada",
+      "path": "{server}",
+      "holdUploads": true,
+      "steps": [
+        {
+          "upload": [
+            "input[type=file]",
+            "@bytes/1048576/waiting.bin"
+          ]
+        },
+        {
+          "waitFor": ".d-attachment-tray__item[data-phase=\"uploading\"]"
+        },
+        {
+          "click": "textarea.d-composer__input"
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "waitFor": ".d-np-toast"
+        }
+      ]
+    }
+  },
+  {
+    "name": "task8-reaction-tooltip-desktop",
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "wait": 600
+        },
+        {
+          "hover": "article >> nth=1 >> span:has-text('🛡️') >> nth=0"
+        },
+        {
+          "wait": 500
+        }
+      ]
+    },
+    "story": {
+      "id": "conversation-reactiontooltip--default",
+      "steps": [
+        {
+          "hover": "button"
+        },
+        {
+          "waitFor": "[role=tooltip]"
+        }
+      ]
+    }
+  },
+  {
+    "name": "task8-threads-direct-phone",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 600
+        },
+        {
+          "click": "aside >> text=general >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0"
+        },
+        {
+          "click": "main header d-icon[name='messages-square']"
+        },
+        {
+          "wait": 500
+        }
+      ]
+    },
+    "app": {
+      "who": "phone",
+      "path": "{server}",
+      "steps": [
+        {
+          "click": "role=button[name=\"Threads\"s]"
+        },
+        {
+          "waitFor": ".d-thread-pane"
+        },
+        {
+          "waitFor": ".d-thread-pane .d-message-row"
+        }
+      ]
+    }
+  },
+  {
+    "name": "task8-over-25-mb-toast-phone",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 600
+        },
+        {
+          "click": "aside >> text=general >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0"
+        },
+        {
+          "upload": [
+            "input[type=file]",
+            "@bytes/26214401/huge.bin"
+          ]
+        },
+        {
+          "wait": 100
+        }
+      ]
+    },
+    "app": {
+      "who": "phone",
+      "path": "{server}",
+      "steps": [
+        {
+          "upload": [
+            "input[type=file]",
+            "@bytes/26214401/huge.bin"
+          ]
+        },
+        {
+          "waitFor": ".d-attachment-tray__item[data-failed=\"true\"]"
+        },
+        {
+          "waitFor": ".d-np-toast"
+        }
+      ]
+    }
+  },
+  {
+    "name": "task8-waiting-toast-phone",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 600
+        },
+        {
+          "click": "aside >> text=general >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0"
+        },
+        {
+          "upload": [
+            "input[type=file]",
+            "@bytes/1048576/waiting.bin"
+          ]
+        },
+        {
+          "click": "main textarea"
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "wait": 100
+        }
+      ]
+    },
+    "app": {
+      "who": "phone",
+      "path": "{server}",
+      "holdUploads": true,
+      "steps": [
+        {
+          "upload": [
+            "input[type=file]",
+            "@bytes/1048576/waiting.bin"
+          ]
+        },
+        {
+          "waitFor": ".d-attachment-tray__item[data-phase=\"uploading\"]"
+        },
+        {
+          "click": "textarea.d-composer__input"
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "waitFor": ".d-np-toast"
+        }
+      ]
+    }
+  },
+  {
+    "name": "task8-reaction-tooltip-phone",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 600
+        },
+        {
+          "click": "aside >> text=general >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0"
+        },
+        {
+          "hover": "article >> nth=1 >> span:has-text('🛡️') >> nth=0"
+        },
+        {
+          "wait": 500
+        }
+      ]
+    },
+    "story": {
+      "id": "conversation-reactiontooltip--default",
+      "steps": [
+        {
+          "hover": "button"
+        },
+        {
+          "waitFor": "[role=tooltip]"
+        }
+      ]
+    }
+  },
+  {
+    "name": "standing-desktop-chat",
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "wait": 600
+        },
+        {
+          "click": "main header >> text=6"
+        },
+        {
+          "wait": 900
+        }
+      ]
+    },
+    "app": {
+      "who": "ada",
+      "path": "{server}",
+      "steps": [
+        {
+          "click": "role=button[name=/^Members/]"
+        },
+        {
+          "wait": 900
+        }
+      ]
+    }
+  },
+  {
+    "name": "standing-desktop-members-open",
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "wait": 1200
+        }
+      ]
+    },
+    "app": {
+      "who": "ada",
+      "path": "{server}"
+    }
+  },
+  {
+    "name": "standing-voice-focus",
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "wait": 600
+        },
+        {
+          "click": "aside >> text=harbour >> nth=0"
+        },
+        {
+          "wait": 1200
+        }
+      ]
+    },
+    "app": {
+      "who": "ada",
+      "path": "{server}",
+      "steps": [
+        {
+          "click": "role=button[name=\"voice harbour\"i]"
+        },
+        {
+          "wait": 7000
+        }
+      ]
+    }
+  },
+  {
+    "name": "standing-phone-list",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app",
+        "device": "phone"
+      }
+    },
+    "app": {
+      "who": "phone",
+      "path": "{community}"
+    }
+  },
+  {
+    "name": "standing-phone-conversation",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 600
+        },
+        {
+          "click": "aside >> text=general >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0"
+        },
+        {
+          "wait": 900
+        }
+      ]
+    },
+    "app": {
+      "who": "phone",
+      "path": "{community}",
+      "steps": [
+        {
+          "click": "role=button[name=\"general\"s]"
+        },
+        {
+          "wait": 1200
+        }
+      ]
+    },
+    "judge": {
+      "elements": [
+        {
+          "id": "header",
+          "name": "the channel header at the top of the screen, with a back arrow",
+          "edge": "top"
+        },
+        {
+          "id": "header_topic",
+          "name": "the grey channel topic next to the channel name in the header",
+          "compare": [
+            "presence"
+          ]
+        },
+        {
+          "id": "members_button",
+          "name": "the members button with a number near the right end of the header",
+          "compare": [
+            "presence"
+          ]
+        },
+        {
+          "id": "code_block",
+          "name": "the code block with line numbers in the conversation",
+          "data": true
+        },
+        {
+          "id": "composer",
+          "name": "the message composer above the bottom tab bar",
+          "edge": "bottom"
+        },
+        {
+          "id": "send_button",
+          "name": "the send button at the right end of the message composer",
+          "compare": [
+            "presence",
+            "size"
+          ],
+          "state": {
+            "active": {
+              "phrase": "drawn as ready to send",
+              "true": "the button has a filled blue background",
+              "false": "the button has a dark background like the composer around it"
+            }
+          }
+        },
+        {
+          "id": "tab_bar",
+          "name": "the bottom tab bar with Home, Activity and You tabs",
+          "edge": "bottom"
+        },
+        {
+          "id": "home_tab",
+          "name": "the Home tab of the bottom tab bar",
+          "compare": [
+            "presence"
+          ],
+          "state": {
+            "selected": {
+              "phrase": "drawn as the selected tab",
+              "true": "a blue line above the tab and brighter text than the other tabs",
+              "false": "no line above the tab and the same grey text as the other tabs"
+            }
+          }
+        }
+      ]
+    }
+  }
+]

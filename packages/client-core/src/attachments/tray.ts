@@ -26,13 +26,12 @@ export class Tray {
   private changed(): void { this.deps.onChange(this.entries()); }
   async add(files: readonly File[]): Promise<string[]> {
     if (this.list.length + files.length > MAX_ATTACHMENTS) throw new AttachmentError('E_ATTACHMENT_COUNT');
-    for (const file of files) if (file.size > BROWSER_ATTACHMENT_CAP) {
-      throw new AttachmentError('E_ATTACHMENT_TOO_LARGE', file.name);
-    }
     const fresh = files.map((file): Internal => {
       const mime = file.type && new TextEncoder().encode(file.type).length <= 255 ? file.type : 'application/octet-stream';
       return { file, id: String(++this.next), name: safeName(file.name, ''), size: file.size, mime,
-        image: RENDERABLE_IMAGE.includes(mime), phase: 'reading', reason: '', descriptor: null,
+        image: file.size <= BROWSER_ATTACHMENT_CAP && RENDERABLE_IMAGE.includes(mime),
+        phase: file.size > BROWSER_ATTACHMENT_CAP ? 'failed' : 'reading',
+        reason: file.size > BROWSER_ATTACHMENT_CAP ? 'E_ATTACHMENT_TOO_LARGE' : '', descriptor: null,
         uploaded: false, removed: false, blobId: null };
     });
     this.list.push(...fresh);
@@ -45,7 +44,7 @@ export class Tray {
     try { await this.deps.routes.deleteBlob(this.deps.channelId, blobId); } catch { /* pending_ttl expires a failed cleanup */ }
   }
   private async process(e: Internal): Promise<void> {
-    if (e.removed) return;
+    if (e.removed || e.phase === 'failed') return;
     try {
       const bytes = new Uint8Array(await e.file.arrayBuffer());
       if (e.removed) return;

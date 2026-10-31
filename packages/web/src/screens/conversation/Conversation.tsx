@@ -1,7 +1,7 @@
 import { installationBotName } from '../commands/bot-name.ts';
 import { useCommandBot } from '../commands/capabilities.ts';
 // The open conversation: folded rows, navigation, reactions, pins and overlays.
-import { phoneNow } from '../../layout.ts';
+import { phoneNow, usePhoneLayout } from '../../layout.ts';
 import { Fragment, useEffect, useLayoutEffect, useReducer, useRef, useState, useSyncExternalStore, type KeyboardEvent, type PointerEvent } from 'react';
 import { encodeMentions, PERM, type MentionMember, type RoleSummary, type TimelineItem, type TimelineState } from '@dilla/client-core';
 import { BotResult, Banner, Button, DateDivider, Dialog, DropOverlay, EmojiGrid, MessageLog, type IconName } from '@dilla/ui';
@@ -83,6 +83,7 @@ export interface ConversationProps { channelId: string; logKey: string; label: s
   welcome?: { icon: IconName; title: string; body: string } }
 
 export function Conversation(props: ConversationProps): React.JSX.Element {
+  const phone = usePhoneLayout();
   const client = useCore();
   const [route] = useRoute();
   const communityId = route.name === 'channel' ? route.communityId : null;
@@ -365,10 +366,10 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
       noticeDismissed.current = true; p.dispatch({ type: 'notice', notice: null });
     }}>{t('shell.banner.dismiss')}</Button></Banner> : null}
     <MessageLog key={p.logKey} label={p.label} emptyLabel={p.timeline === undefined ? t('shell.log.loading')
-      : t(madeHere(client, p.channelId) ? 'shell.log.emptyMade' : 'shell.log.empty')}
+      : communityId === null ? '' : t(madeHere(client, p.channelId) ? 'shell.log.emptyMade' : 'shell.log.empty')}
       earlier={p.timeline?.hasEarlier ? { label: t('shell.log.earlier'), onLoad: () => p.onLoadEarlier() } : undefined}
       busy={p.timeline === undefined || p.loadingEarlier} onKeyDown={rowKey}
-      present={{ atPresent: awayFrom !== p.logKey, olderLabel: t('layout.log.older'), jumpLabel: t('layout.log.jump'), onJumpToPresent: jumpToPresent }}
+      {...(!phone ? { present: { atPresent: awayFrom !== p.logKey, olderLabel: t('layout.log.older'), jumpLabel: t('layout.log.jump'), onJumpToPresent: jumpToPresent } } : {})}
       {...(p.welcome !== undefined && p.timeline !== undefined && !p.timeline.hasEarlier ? { welcome: p.welcome } : {})}>
       {items.map((item, index) => <Fragment key={item.key}>
         {startsDay(items[index - 1], item) ? <DateDivider label={dayLabel(item.ts, now)} /> : null}

@@ -63,10 +63,10 @@ GIFs are a per-server setting. A person who manages a server enters that server'
 `gif.button='add a gif'`
 `gif.picker='gifs'`
 `gif.search='search gifs'`
-`gif.search.placeholder='search giphy'`
+`gif.search.placeholder='Search Giphy'`
 `gif.untitled='gif'`
 `gif.more='more'`
-`gif.powered='Powered by GIPHY'`
+`gif.powered='VIA GIPHY'`
 `gif.loading='searching'`
 `gif.empty='no gifs for that'`
 `gif.error='could not reach the gif service'`

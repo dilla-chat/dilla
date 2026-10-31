@@ -44,7 +44,7 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
 /* The conversation log fills the pane; the drop overlay is positioned against it. */
 .dw-conversation { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .dw-conversation > .d-message-log, .dw-conversation > .d-message-log-frame { flex: 1 1 auto; }
-.dw-attachments { display: flex; flex-wrap: wrap; gap: var(--row-gap); }
+.dw-attachments { display: flex; align-items: flex-start; flex-wrap: wrap; gap: var(--row-gap); }
 .dw-overlay { position: absolute; inset: 0; pointer-events: none; }
 .dw-overlay > * { pointer-events: auto; position: absolute; }
 
