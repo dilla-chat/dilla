@@ -293,7 +293,7 @@ test('voice focus captures refuse a world without its shared-screen fixture', as
   assert.doesNotThrow(() => validateWorldForPair({}, { name: 'ordinary-chat' }));
 });
 
-test('standing pairs capture the fresh voice fixture before any browser reloads or mutations', () => {
+test('standing voice captures the fresh fixture before other standing reloads, read-only pairs and mutations', () => {
   const pairs = [
     { name: 'command-list' },
     { name: 'post-reminder', mutates: true },
@@ -304,10 +304,23 @@ test('standing pairs capture the fresh voice fixture before any browser reloads 
     { name: 'standing-phone-conversation' },
   ];
   assert.deepEqual(orderPairs(pairs).map(pair => pair.name), [
-    'standing-desktop-chat', 'standing-voice-focus', 'standing-phone-conversation',
+    'standing-voice-focus', 'standing-desktop-chat', 'standing-phone-conversation',
     'command-list', 'poll-dialog', 'post-reminder', 'post-poll',
   ]);
   assert.equal(pairs[0].name, 'command-list', 'ordering must not rewrite the input manifest');
+});
+
+test('real standing and task 6–8 manifests shoot voice first without reordering the remaining standing frames', async () => {
+  const { readFileSync } = await import('node:fs');
+  for (const manifest of ['standing', 'task-6', 'task-7', 'task-8']) {
+    const pairs = JSON.parse(readFileSync(new URL(`./app/${manifest}.json`, import.meta.url)));
+    const original = pairs.map(pair => pair.name);
+    const ordered = orderPairs(pairs).map(pair => pair.name);
+    assert.equal(ordered[0], 'standing-voice-focus', `${manifest} must use the fresh voice fixture before Ada reloads`);
+    assert.deepEqual(ordered.slice(1).filter(name => name.startsWith('standing-')),
+      original.filter(name => name.startsWith('standing-') && name !== 'standing-voice-focus'));
+    assert.deepEqual(pairs.map(pair => pair.name), original, `${manifest} ordering must not mutate the manifest`);
+  }
 });
 
 test('signed-in captures wait past Starting dilla until the app shell is visible, while fresh auth does not', async () => {
@@ -548,6 +561,43 @@ test('Task 4 captures the volatile Music Bot menu before own voice and AFK navig
   }
 });
 
+test('Task 4 captures the live call bar before any other pair can reload Ada', async () => {
+  const { readFileSync } = await import('node:fs');
+  const pairs = JSON.parse(readFileSync(new URL('./app/task-4.json', import.meta.url)));
+  assert.equal(orderPairs(pairs)[0].name, 't4-call-bar-keycaps-desktop');
+});
+
+test('Task 4 call bar requires the actual screen, Bot and playing stage player before capture', async () => {
+  const { readFileSync } = await import('node:fs');
+  const pairs = JSON.parse(readFileSync(new URL('./app/task-4.json', import.meta.url)));
+  const callbar = pairs.find(pair => pair.name === 't4-call-bar-keycaps-desktop');
+  const waits = callbar.app.steps.filter(step => step.waitFor).map(step =>
+    typeof step.waitFor === 'string' ? step.waitFor : step.waitFor.selector);
+  for (const selector of [
+    '.dw-voice-stage .d-call-tile[data-source="screen"]',
+    '.dw-voice-stage .d-call-tile[data-bot="true"]',
+    '.dw-voice-stage .d-np--stage[data-playing="true"]',
+  ]) assert.ok(waits.includes(selector), `call bar must wait for ${selector}, not only the join controls or sidebar LIVE flag`);
+});
+
+test('every focused voice frame requires live screen media, Bot and playing stage player before hover', async () => {
+  const { readFileSync } = await import('node:fs');
+  for (const manifest of ['standing', 'task-6', 'task-7', 'task-8', 'wave-a-gaps']) {
+    const pairs = JSON.parse(readFileSync(new URL(`./app/${manifest}.json`, import.meta.url)));
+    const name = manifest === 'wave-a-gaps' ? 'gap75-focused-tile-fullscreen' : 'standing-voice-focus';
+    const focus = pairs.find(pair => pair.name === name);
+    const hover = focus.app.steps.findIndex(step => step.hover);
+    const beforeHover = hover === -1 ? focus.app.steps : focus.app.steps.slice(0, hover);
+    const waits = beforeHover.filter(step => step.waitFor).map(step =>
+      typeof step.waitFor === 'string' ? step.waitFor : step.waitFor.selector);
+    for (const selector of [
+      '.d-call-stage__tile[data-source="screen"][data-focused="true"] .d-call-tile[data-media="true"]',
+      '.dw-voice-stage .d-call-tile[data-bot="true"]',
+      '.dw-voice-stage .d-np--stage[data-playing="true"]',
+    ]) assert.ok(waits.includes(selector), `${manifest} voice focus must wait for ${selector}`);
+  }
+});
+
 test('wheel step requires a target and two finite native wheel deltas', () => {
   const pair = wheel => ({ ...good, prototype: { steps: [{ wheel }] } });
   validateSpec([pair(['main', 0, -180])]);
@@ -599,4 +649,43 @@ test('poll votes use native initial scrolling and phone multichoice keeps consec
     const i = toolbar[side].steps.findIndex(step => step.hover);
     assert.deepEqual(toolbar[side].steps[i - 1].wheel, [toolbar[side].steps[i].hover, 0, -200]);
   }
+});
+
+test('phone reply-jump preparation taps the message body without invoking nested reply-count controls', async () => {
+  const { readFileSync } = await import('node:fs');
+  const pairs = JSON.parse(readFileSync(new URL('./app/task-8.json', import.meta.url)));
+  const phone = pairs.find(pair => pair.name === 'gap44-reply-jump-flash-phone');
+  assert.deepEqual(phone.app.steps.find(step => step.click), { click: 'role=article >> nth=1 >> .d-message-row__body' });
+  for (const side of ['prototype', 'app']) assert.equal(phone[side].steps.some(step => step.hover), false, 'phone jump must retain touch behavior');
+});
+
+test('desktop reply-jump frames finish hovering the flashed target on both sides', async () => {
+  const { readFileSync } = await import('node:fs');
+  for (const manifest of ['task-8', 'wave-a-gaps']) {
+    const pairs = JSON.parse(readFileSync(new URL(`./app/${manifest}.json`, import.meta.url)));
+    const desktop = pairs.find(pair => pair.name === 'gap44-reply-jump-flash');
+    assert.deepEqual(desktop.app.steps.at(-1), { hover: '.d-message-row[data-flash="true"]' }, manifest);
+    assert.deepEqual(desktop.prototype.steps.at(-1), { hover: 'article >> nth=0' }, manifest);
+  }
+});
+
+
+test('prototype reply-jump frames activate the newly sent reply excerpt rather than the original body', async () => {
+  const { readFile } = await import('node:fs/promises');
+  for (const specName of ['task-8', 'wave-a-gaps']) {
+    const spec = JSON.parse(await readFile(new URL(`./app/${specName}.json`, import.meta.url), 'utf8'));
+    for (const pair of spec.filter(pair => pair.name.startsWith('gap44-reply-jump-flash'))) {
+      const clicks = pair.prototype.steps.filter(step => step.click);
+      assert.equal(clicks.at(-1).click, 'article >> nth=-1 >> text=raid tonight at 20:00', `${specName}/${pair.name}`);
+    }
+  }
+});
+
+test('phone reply-jump preparation waits for posting permission and scrolls natively before tapping', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const spec = JSON.parse(await readFile(new URL('./app/task-8.json', import.meta.url), 'utf8'));
+  const steps = spec.find(pair => pair.name === 'gap44-reply-jump-flash-phone').app.steps;
+  const tap = steps.findIndex(step => step.click === 'role=article >> nth=1 >> .d-message-row__body');
+  assert.ok(steps.slice(0, tap).some(step => step.waitFor === 'main textarea.d-composer__input:enabled:not([readonly])'));
+  assert.ok(steps.slice(0, tap).some(step => step.wheel?.[0] === '[role="log"]' && step.wheel[2] < 0));
 });

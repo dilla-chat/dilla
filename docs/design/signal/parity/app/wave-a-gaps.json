@@ -69,8 +69,8 @@
   {
     "name": "gap44-reply-jump-flash", "mutates": true,
     "viewport": { "width": 1280, "height": 800 },
-    "prototype": { "props": { "startAt": "app" }, "steps": [{ "wait": 900 }, { "hover": "article >> nth=0" }, { "wait": 300 }, { "click": "article >> nth=0 >> div[style*='top: -12px'] > span >> nth=1" }, { "type": ["main textarea", "two ropes. final answer."] }, { "press": "Enter" }, { "wait": 900 }, { "click": "text=raid tonight at 20:00" }, { "wait": 200 }] },
-    "app": { "who": "ada", "path": "{server}", "steps": [{ "hover": "role=article >> nth=1" }, { "wait": 300 }, { "click": "role=button[name=/^reply/i] >> nth=0" }, { "type": ["role=textbox[name=/^message/i]", "two ropes. final answer."] }, { "press": "Enter" }, { "wait": 1500 }, { "click": "role=button[name=/^Björn.*in\\./]" }, { "wait": 200 }] }
+    "prototype": { "props": { "startAt": "app" }, "steps": [{ "wait": 900 }, { "hover": "article >> nth=0" }, { "wait": 300 }, { "click": "article >> nth=0 >> div[style*='top: -12px'] > span >> nth=1" }, { "type": ["main textarea", "two ropes. final answer."] }, { "press": "Enter" }, { "wait": 900 }, { "click": "article >> nth=-1 >> text=raid tonight at 20:00" }, { "wait": 200 }, { "hover": "article >> nth=0" }] },
+    "app": { "who": "ada", "path": "{server}", "steps": [{ "hover": "role=article >> nth=1" }, { "wait": 300 }, { "click": "role=button[name=/^reply/i] >> nth=0" }, { "type": ["role=textbox[name=/^message/i]", "two ropes. final answer."] }, { "press": "Enter" }, { "wait": 1500 }, { "click": "role=button[name=/^Björn.*in\\./]" }, { "wait": 200 }, { "hover": ".d-message-row[data-flash=\"true\"]" }] }
   },
   {
     "name": "gap47-gif-picker",
@@ -139,7 +139,7 @@
     "name": "gap75-focused-tile-fullscreen",
     "viewport": { "width": 1280, "height": 800 },
     "prototype": { "props": { "startAt": "app" }, "steps": [{ "wait": 600 }, { "click": "aside >> text=harbour >> nth=0" }, { "wait": 1500 }, { "hover": "main d-icon[name='maximize'] >> nth=0" }, { "wait": 500 }] },
-    "app": { "who": "ada", "path": "{server}", "steps": [{"click":"role=button[name=\"voice harbour\"i]"},{"waitFor":{"selector":".d-call-stage__tile[data-source=\"screen\"][data-focused=\"true\"] .d-call-tile[data-media=\"true\"]","timeout":120000}},{"hover":".d-call-stage__tile[data-source=\"screen\"][data-focused=\"true\"] .d-call-tile__fullscreen"},{"wait":500}] }
+    "app": { "who": "ada", "path": "{server}", "steps": [{"click":"role=button[name=\"voice harbour\"i]"},{"waitFor":{"selector":".d-call-stage__tile[data-source=\"screen\"][data-focused=\"true\"] .d-call-tile[data-media=\"true\"]","timeout":120000}},{"waitFor":{"selector":".dw-voice-stage .d-call-tile[data-bot=\"true\"]","timeout":60000}},{"waitFor":{"selector":".dw-voice-stage .d-np--stage[data-playing=\"true\"]","timeout":60000}},{"hover":".d-call-stage__tile[data-source=\"screen\"][data-focused=\"true\"] .d-call-tile__fullscreen"},{"wait":500}] }
   },
   {
     "name": "gap79-voice-ptt-listening", "mutates": true,

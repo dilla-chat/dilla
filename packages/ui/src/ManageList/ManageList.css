@@ -12,4 +12,4 @@
 .d-manage-list__empty { margin: 0; font-family: var(--font-mono); font-size: var(--text-xs); color: var(--fg-3); }
 /* The trailing area: the text action, then the icon slots; its right edge is one line down the list. */
 .d-manage-list__trail { display: flex; align-items: center; justify-content: flex-end; flex: none; gap: 4px; }
-.d-manage-list__trail > .d-btn { height: 1.75rem /* 28px */; padding: 0 10px; font-size: var(--text-xs); border-color: var(--control-edge); }
+.d-manage-list__trail > .d-btn { height: 1.875rem /* 28px content + 2px border */; padding: 0 10px; font-size: var(--text-xs); border-color: var(--control-edge); }

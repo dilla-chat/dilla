@@ -1723,6 +1723,18 @@
             "selector": ".d-call-stage__tile[data-source=\"screen\"][data-focused=\"true\"] .d-call-tile[data-media=\"true\"]",
             "timeout": 120000
           }
+        },
+        {
+          "waitFor": {
+            "selector": ".dw-voice-stage .d-call-tile[data-bot=\"true\"]",
+            "timeout": 60000
+          }
+        },
+        {
+          "waitFor": {
+            "selector": ".dw-voice-stage .d-np--stage[data-playing=\"true\"]",
+            "timeout": 60000
+          }
         }
       ]
     }

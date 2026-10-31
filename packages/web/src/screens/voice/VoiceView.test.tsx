@@ -1680,6 +1680,16 @@ describe('wave B task 4: your own voice menu and the rest of the person menu', (
     expect(document.querySelector('[data-id="move:r1"] .d-action-menu__label')).toHaveAttribute('title', 'Late night lounge for people');
   });
 
+  it('a bot person menu uses the plain name while its tile retains playback only', async () => {
+    const app = await inVoice({ voice: room([{ userId: CAROL, deviceId: CAROL_DEV, name: 'glenn', flags: 0, own: false, web: false, bot: true }]) });
+    act(() => app.session.update({ tiles: [{ ...bobTile, deviceId: CAROL_DEV, userId: CAROL }] }));
+    await waitFor(() => expect(li(`${CAROL_DEV}:person`)).not.toBeNull());
+    expect(within(li(`${CAROL_DEV}:person`)).getByText('glenn · playback only')).toBeInTheDocument();
+    fireEvent.contextMenu(li(`${CAROL_DEV}:person`), { clientX: 20, clientY: 20 });
+    await screen.findByRole('menu', { name: t('callStage.menu.label', { name: 'glenn' }) });
+    expect(document.querySelector('.d-person-menu__name')).toHaveTextContent(/^glenn$/);
+  });
+
   it('a bot person menu opens the real DM flow from Message', async () => {
     const app = await inVoice({ voice: room([{ userId: CAROL, deviceId: CAROL_DEV, name: 'glenn', flags: 0, own: false, web: false, bot: true }]) });
     act(() => app.session.update({ tiles: [{ ...bobTile, deviceId: CAROL_DEV, userId: CAROL }] }));

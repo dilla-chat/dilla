@@ -358,6 +358,64 @@ async function checkReactionHitAreas(page: Page, context: StoryContext): Promise
 }
 const REACTION_HIT_STORIES = (id: string) => id.startsWith('conversation-reactionbar--') || id === 'conversation-messagerow--signal-reactions';
 
+/** Native prototype .dc.html:533/535; Question alone has the 3px, 15%-accent outer shadow. */
+export async function checkPollFieldFocus(page: Page): Promise<void> {
+  const fields = page.locator('.d-poll-dialog input');
+  for (const index of [0, 1]) {
+    const field = fields.nth(index);
+    for (const mode of ['pointer', 'keyboard']) {
+      if (mode === 'pointer') await field.click();
+      else {
+        await fields.first().focus();
+        await page.keyboard.press('Tab');
+        if (index === 0) await page.keyboard.press('Shift+Tab');
+      }
+      const got = await field.evaluate(el => {
+        const s = getComputedStyle(el);
+        const probe = document.createElement('span');
+        probe.style.color = 'var(--accent)';
+        probe.style.boxShadow = el.matches('.d-poll-dialog__question input') ? '0 0 0 3px var(--accent-ring)' : 'none';
+        el.parentElement?.appendChild(probe);
+        const expected = getComputedStyle(probe);
+        const result = { active: document.activeElement === el, border: s.borderColor, shadow: s.boxShadow,
+          outline: s.outlineStyle, offset: s.outlineOffset, accent: expected.color, expectedShadow: expected.boxShadow };
+        probe.remove();
+        return result;
+      });
+      if (!got.active || got.border !== got.accent || got.shadow !== got.expectedShadow || got.outline !== 'none' || got.offset !== '0px') {
+        throw new Error(`PollDialog ${index === 0 ? 'Question' : 'Answer'} ${mode} focus differs from the native prototype: ${JSON.stringify(got)}`);
+      }
+      await field.evaluate(el => el.blur());
+    }
+  }
+  const answer = fields.nth(1);
+  const original = await answer.inputValue();
+  await answer.fill('x'.repeat(101));
+  const expected = await answer.evaluate(el => {
+    const probe = document.createElement('span');
+    el.parentElement?.appendChild(probe);
+    probe.style.color = 'var(--accent)';
+    const accent = getComputedStyle(probe).color;
+    probe.style.color = 'var(--danger)';
+    const danger = getComputedStyle(probe).color;
+    probe.remove();
+    return { accent, danger };
+  });
+  for (const mode of ['pointer', 'keyboard']) {
+    await fields.first().focus();
+    const blurred = await answer.evaluate(el => getComputedStyle(el).borderColor);
+    if (blurred !== expected.danger) throw new Error(`PollDialog overlong Answer must restore its danger border on blur: ${blurred}`);
+    if (mode === 'pointer') await answer.click();
+    else await page.keyboard.press('Tab');
+    const focused = await answer.evaluate(el => ({ active: document.activeElement === el, border: getComputedStyle(el).borderColor }));
+    if (!focused.active || focused.border !== expected.accent) {
+      throw new Error(`PollDialog overlong Answer ${mode} focus must override its danger border: ${JSON.stringify(focused)}`);
+    }
+  }
+  await answer.fill(original);
+  await answer.evaluate(el => el.blur());
+}
+
 export async function checkStory(page: Page, context: StoryContext): Promise<void> {
     if (context.id === 'settings-settingsframe--phone-index') {
       await page.setViewportSize({ width: 640, height: 400 });
@@ -443,8 +501,8 @@ export async function checkStory(page: Page, context: StoryContext): Promise<voi
         const sides = [b.borderTopColor, b.borderRightColor, b.borderBottomColor, b.borderLeftColor];
         composer = { border: sides.every(c => c === sides[0]) ? sides[0] : sides.join(' / '), accent, outlineColor: s.outlineColor };
       }
-      // Jonas D6: poll fields show focus through all four accent borders, with no outline or shadow ring.
-      let pollField: { borders: { side: string; color: string; style: string; width: string }[]; accent: string; outline: string; shadow: string } | null = null;
+      // Jonas 2026-10-31 supersedes D6: match the native prototype; Question adds a 3px accent shadow, answers keep the accent border.
+      let pollField: { borders: { side: string; color: string; style: string; width: string }[]; accent: string; outline: string; offset: string; shadow: string; expectedShadow: string } | null = null;
       if (el.matches('.d-poll-dialog input')) {
         for (const a of el.getAnimations()) a.finish();
         const probe = document.createElement('span');
@@ -452,9 +510,13 @@ export async function checkStory(page: Page, context: StoryContext): Promise<voi
         el.parentElement?.appendChild(probe);
         const accent = getComputedStyle(probe).color;
         probe.remove();
+        probe.style.boxShadow = el.matches('.d-poll-dialog__question input') ? '0 0 0 3px var(--accent-ring)' : 'none';
+        el.parentElement?.appendChild(probe);
+        const expectedShadow = getComputedStyle(probe).boxShadow;
+        probe.remove();
         pollField = { borders: ['top', 'right', 'bottom', 'left'].map(side => ({ side,
           color: s.getPropertyValue(`border-${side}-color`), style: s.getPropertyValue(`border-${side}-style`), width: s.getPropertyValue(`border-${side}-width`),
-        })), accent, outline: s.outlineStyle, shadow: s.boxShadow };
+        })), accent, outline: s.outlineStyle, offset: s.outlineOffset, shadow: s.boxShadow, expectedShadow };
       }
       // Ruling AK (Jonas, task 9 fix round 1): the search palette's textbox draws no ring either (the caret shows focus).
       const palette = el.matches('.d-search-palette input') ? s.outlineColor : null;
@@ -513,8 +575,9 @@ export async function checkStory(page: Page, context: StoryContext): Promise<voi
         }
       }
       if (pollField.outline !== 'none') bad.push(`outline-style ${pollField.outline}, expected none`);
-      if (pollField.shadow !== 'none') bad.push(`box-shadow ${pollField.shadow}, expected none`);
-      if (bad.length > 0) throw new Error(`${context.title} / ${context.name}: the focused poll field should show focus through its accent border without a ring (${bad.join('; ')})`);
+      if (pollField.offset !== '0px') bad.push(`outline-offset ${pollField.offset}, expected 0px`);
+      if (pollField.shadow !== pollField.expectedShadow) bad.push(`box-shadow ${pollField.shadow}, expected ${pollField.expectedShadow}`);
+      if (bad.length > 0) throw new Error(`${context.title} / ${context.name}: the focused poll field should match the native prototype accent border and Question ring (${bad.join('; ')})`);
     } else if (focused?.palette != null) {
       if (focused.palette !== 'rgba(0, 0, 0, 0)') throw new Error(`${context.title} / ${context.name}: the palette textbox draws a ring (${focused.palette}); Ruling AK wants none`);
     } else if (focused && (focused.outlineStyle !== 'solid' || focused.outlineWidth !== '2px')) {

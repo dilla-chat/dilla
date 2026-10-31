@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { Button } from './Button.tsx';
 import { Icon } from '../Icon/Icon.tsx';
+import { phonePrototypeCases } from './phonePrototypeCases.ts';
 
 const meta = { title: 'Primitives/Button', component: Button, args: { children: 'Save changes' } } satisfies Meta<typeof Button>;
 export default meta;
@@ -31,3 +32,23 @@ export const Ghost: Story = { args: { variant: 'ghost', children: 'Cancel', keyH
 export const Unpressed: Story = { args: { pressed: false, children: 'Mute', keyHint: 'M' } };
 export const Pressed: Story = { args: { pressed: true, children: 'Mute', keyHint: 'M' } };
 export const Small: Story = { args: { size: 'sm', children: 'Verify' } };
+
+// Contexts share the real Button and auth frame; exact geometry also runs at the declared phone viewport.
+const prototypeHeights: Story = {
+  render: () => <div data-phone-button-audit="">
+    <style>{'[data-phone-button-audit] * { animation: none !important; transition: none !important; }'}</style>
+    {phonePrototypeCases.map(({ name, content, fixtureIndex }, i) => fixtureIndex === undefined ? <section key={name}>
+      <h2 style={{ fontSize: 14 }}>{name}</h2>
+      <div data-button-case={i}>{content}</div>
+    </section> : null)}
+  </div>,
+  play: ({ canvasElement }) => {
+    phonePrototypeCases.forEach(({ name, selector, height, fixtureIndex }, i) => {
+      const control = canvasElement.querySelector(`[data-button-case="${fixtureIndex ?? i}"] ${selector}`);
+      const actual = control?.getBoundingClientRect().height;
+      if (actual !== height) throw new Error(`${name}: expected ${height}px, got ${actual}px`);
+    });
+  },
+};
+export const DesktopPrototypeHeights: Story = { ...prototypeHeights };
+export const PhonePrototypeHeights: Story = { ...prototypeHeights, parameters: { phoneViewport: true } };

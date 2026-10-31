@@ -317,11 +317,11 @@ describe('the reply line and the jump (brief:186)', () => {
   let scroll: ReturnType<typeof vi.fn>;
   beforeEach(() => {
     scroll = vi.fn();
-    Object.defineProperty(Element.prototype, 'scrollIntoView', { configurable: true, writable: true, value: scroll });
+    Object.defineProperty(Element.prototype, 'scrollBy', { configurable: true, writable: true, value: scroll });
   });
   afterEach(() => {
     vi.useRealTimers();
-    delete (Element.prototype as unknown as Record<string, unknown>).scrollIntoView;
+    delete (Element.prototype as unknown as Record<string, unknown>).scrollBy;
     delete (window as unknown as Record<string, unknown>).matchMedia;
   });
   it('keeps a pointer press on the reply jump from activating and moving the log before release', () => {
@@ -347,10 +347,12 @@ describe('the reply line and the jump (brief:186)', () => {
     expect(rowOf(P1)).toHaveFocus();
     expect(rowOf(P1)).not.toHaveAttribute('data-jump');
   });
-  it('jumps to a loaded original, focuses it and flashes it for 1.4 s', () => {
+  it('jumps to the prototype 80px feed offset, focuses the original and flashes it for 1.4 s', () => {
     vi.useFakeTimers();
     renderConversation({ items: [peerRow(P1, '1', 'the original'), ownRow(O1, '2', 'my answer', { reply: reply() })] });
     const jump = replyButton(rowOf(O1));
+    vi.spyOn(rowOf(P1), 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 300, 200, 40));
+    vi.spyOn(screen.getByRole('log'), 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 40, 200, 500));
     expect(jump).toHaveTextContent('bob');
     expect(jump).toHaveTextContent('the original');
     expect(jump).toHaveAccessibleName('bob the original');
@@ -358,7 +360,7 @@ describe('the reply line and the jump (brief:186)', () => {
     fireEvent.click(jump);
     expect(rowOf(P1)).toHaveFocus();
     expect(rowOf(P1)).toHaveAttribute('data-flash', 'true');
-    expect(scroll).toHaveBeenCalledWith({ block: 'center', behavior: 'smooth' });
+    expect(scroll).toHaveBeenCalledWith({ top: 180, behavior: 'smooth' });
     act(() => { vi.advanceTimersByTime(1399); });
     expect(rowOf(P1)).toHaveAttribute('data-flash', 'true');
     act(() => { vi.advanceTimersByTime(1); });
@@ -369,8 +371,10 @@ describe('the reply line and the jump (brief:186)', () => {
       value: (q: string) => ({ matches: q === '(prefers-reduced-motion: reduce)', media: q, onchange: null,
         addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {}, dispatchEvent: () => false }) });
     renderConversation({ items: [peerRow(P1, '1', 'the original'), ownRow(O1, '2', 'my answer', { reply: reply() })] });
+    vi.spyOn(rowOf(P1), 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 300, 200, 40));
+    vi.spyOn(screen.getByRole('log'), 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 40, 200, 500));
     fireEvent.click(replyButton(rowOf(O1)));
-    expect(scroll).toHaveBeenCalledWith({ block: 'center', behavior: 'auto' });
+    expect(scroll).toHaveBeenCalledWith({ top: 180, behavior: 'auto' });
     expect(rowOf(P1)).toHaveAttribute('data-flash', 'true');
   });
   it('says the original is further back when it is not loaded, and the notice can be dismissed', async () => {

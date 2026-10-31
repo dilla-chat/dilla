@@ -4,8 +4,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
 
-// R9 (web3.9): tap targets in two tiers. Primary controls are 44 x 44 on a phone layout (a finger), secondary ones are
-// at least 24 x 24 (WCAG 2.5.8). A CSS-text pin: the sizes live in stylesheets, and jsdom has no layout.
+// R9 (web3.9): icon/segmented controls and rows retain their shared phone tier. Buttons follow their
+// prototype context heights (Jonas 2026-10-31), pinned in Button/phoneTargets.css.test.ts.
+// Secondary targets remain at least 24 x 24. These CSS pins complement the native Storybook geometry checks.
 const SRC = fileURLToPath(new URL('..', import.meta.url));
 const TOKENS = fileURLToPath(new URL('../../../design-tokens/dist/tokens.css', import.meta.url));
 const strip = (css: string) => css.replace(/\/\*[\s\S]*?\*\//g, '');
@@ -40,10 +41,10 @@ function ruleFor(css: string, selector: string): string {
   return css.slice(i, css.indexOf('}', i) + 1);
 }
 
-describe('R9: the primary tier is 44 x 44 on a phone layout', () => {
-  it('gives .d-btn, .d-segmented__option and .d-icon-button a 44px minimum, both ways', () => {
+describe('R9: shared phone tiers for icon/segmented controls and rows', () => {
+  it('keeps .d-segmented__option and .d-icon-button at a 44px minimum, both ways', () => {
     // Not inside the phone header's actions: those are the prototype's 28 high (Jonas 2026-10-27, PhoneHeader.css).
-    const rule = ruleFor(base, `${PHONE} :is(.d-btn, .d-segmented__option, .d-icon-button):not(.d-phone-header__actions *, .d-channel-list__head-btn, .d-user-panel *)`);
+    const rule = ruleFor(base, `${PHONE} :is(.d-segmented__option, .d-icon-button):not(.d-phone-header__actions *, .d-channel-list__head-btn, .d-user-panel *)`);
     expect(px(decl(rule, 'min-height'))).toBeGreaterThanOrEqual(44);
     expect(px(decl(rule, 'min-width'))).toBeGreaterThanOrEqual(44);
   });

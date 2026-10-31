@@ -359,7 +359,7 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
       lead={<Avatar name={confirmation.moderation.name} size="confirm" />} closeLabel={resultCopy.cancel} onBackdrop={abandonDialog}
       onClose={() => { setConfirmation(null); confirmationResolve.current?.('cancel'); confirmationResolve.current = null; }}
       footer={<Button variant="danger" onClick={() => { const resolve = confirmationResolve.current; confirmationResolve.current = null; setConfirmation(null); resolve?.('confirm'); }}><Icon name={confirmation.moderation.action === 'kick' ? 'user-x' : 'ban'} size={14} />{resultCopy.action[confirmation.moderation.action]}</Button>}>
-      <div className="dw-command-confirm">{confirmation.moderation.action === 'ban' ? <><div><span>{resultCopy.duration}</span>{confirmation.moderation.duration}</div><div><span>{resultCopy.reason}</span>{confirmation.moderation.reason}</div></> : null}
+      <div className="dw-command-confirm"><div><span>{resultCopy.duration}</span>{confirmation.moderation.action === 'kick' ? '—' : confirmation.moderation.duration}</div><div><span>{resultCopy.reason}</span>{confirmation.moderation.reason}</div>
         <div><span>{resultCopy.logged}</span>{resultCopy.loggedNote}</div></div>
     </Dialog> : confirmation !== null ? <ConfirmDialog open title={confirmation.title} body={confirmation.body} confirmLabel="Continue" busyLabel="Working…" cancelLabel="Cancel" onBackdrop={abandonDialog} busy={false} error={null}
     onConfirm={() => { setConfirmation(null); confirmationResolve.current?.('confirm'); confirmationResolve.current = null; }}

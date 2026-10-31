@@ -108,11 +108,12 @@ export function validateSpec(spec) {
 }
 
 /**
- * Standing screens see the fresh world before any browser reloads can end Mira's share. Then read-only pairs run, followed by
- * `mutates: true` pairs (send messages, add a device or role, switch a setting). Order is stable inside each group; input is unchanged.
+ * Voice focus sees the fresh world before other standing frames can reload Ada and lose live media. Other standing screens
+ * follow, then read-only pairs, then `mutates: true` pairs. Order is stable inside each group; input is unchanged.
  */
 export const orderPairs = spec => [
-  ...spec.filter(p => p.name.startsWith('standing-')),
+  ...spec.filter(p => p.name === 'standing-voice-focus'),
+  ...spec.filter(p => p.name.startsWith('standing-') && p.name !== 'standing-voice-focus'),
   ...spec.filter(p => !p.name.startsWith('standing-') && p.mutates !== true),
   ...spec.filter(p => !p.name.startsWith('standing-') && p.mutates === true),
 ];

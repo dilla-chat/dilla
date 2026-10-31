@@ -8,7 +8,7 @@
 .d-recovery-key__grid { list-style: none; margin: 0 0 10px; padding: 12px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; background: var(--surface-2); border: 1px solid var(--control-edge-field); border-radius: var(--r-lg); counter-reset: d-rk; user-select: text; }
 .d-recovery-key__group { counter-increment: d-rk; padding: 4px 0; text-align: center; font-size: var(--text-input); font-weight: var(--weight-label); letter-spacing: 0.06em; color: var(--fg); white-space: nowrap; }
 .d-recovery-key__actions { display: flex; gap: 8px; margin-bottom: 14px; }
-.d-recovery-key .d-recovery-key__print { flex: 1 1 0; justify-content: center; gap: 6px; height: 32px; min-height: 32px; padding: 0 12px; background: transparent; border: 1px solid var(--control-edge-field); border-radius: var(--r-seg); font-size: var(--text-ui); font-weight: var(--weight-body); color: var(--fg); transition: border-color var(--duration-tab); }
+.d-recovery-key .d-recovery-key__print { flex: 1 1 0; justify-content: center; gap: 6px; height: 34px; min-height: 34px; padding: 0 12px; background: transparent; border: 1px solid var(--control-edge-field); border-radius: var(--r-seg); font-size: var(--text-ui); font-weight: var(--weight-body); color: var(--fg); transition: border-color var(--duration-tab); }
 .d-recovery-key .d-recovery-key__print .d-btn__label { display: inline-flex; align-items: center; gap: 6px; }
 .d-recovery-key .d-recovery-key__print:hover { border-color: var(--accent); background: transparent; }
 .d-recovery-key__ack { position: relative; display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-size: var(--text-ui); color: var(--fg-strong); cursor: pointer; }

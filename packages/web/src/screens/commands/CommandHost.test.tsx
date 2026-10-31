@@ -3,7 +3,7 @@ import * as ClientCore from '@dilla/client-core';
 import { useUtilityCommandProvider } from './UtilityCommandProvider.tsx';
 import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { CoreProvider } from '../../core/context.tsx';
 import { FakeClient } from '../../test/fake-client.ts';
@@ -328,18 +328,23 @@ it('Enter on an unknown command adds the exact failed private result', async () 
   expect(literals).toEqual([]);
 });
 
-it.each([['kick', false], ['kick', true], ['ban', false], ['ban', true]] as const)('%s confirmation has the prototype copy and accepts=%s exactly once', async (action, accepted) => {
+it.each([['kick', false], ['kick', true], ['ban', false], ['ban', true]] as const)('%s confirmation retains the prototype read-only details and accepts=%s exactly once', async (action, accepted) => {
   const { core, user } = moderationHarness(true, action);
   const label = action === 'kick' ? 'Kick' : 'Ban';
   await user.type(await screen.findByRole('combobox', { name: 'user' }), 'Bea');
   await user.click(await screen.findByRole('option', { name: /^Bea,/ }));
   await user.click(screen.getByRole('button', { name: 'send' }));
-  expect(await screen.findByRole('dialog', { name: `${label} \u2068Bea\u2069 from \u2068Town\u2069?` })).toBeInTheDocument();
+  const dialog = await screen.findByRole('dialog', { name: `${label} \u2068Bea\u2069 from \u2068Town\u2069?` });
   expect(screen.getByText(action === 'kick' ? '\u2068Bea\u2069 leaves now and can come back only with a new invite.' : '\u2068Bea\u2069 leaves now and can’t rejoin for 1 day.')).toBeInTheDocument();
   expect(screen.getByText('modlog · visible to moderators')).toBeInTheDocument();
   expect(screen.getAllByRole('button', { name: /^(Close|Cancel|Kick|Ban)$/ })).toHaveLength(2);
-  if (action === 'kick') expect(screen.queryByText('Reason')).not.toBeInTheDocument();
-  else expect(screen.getByText('Duration')).toBeInTheDocument();
+  expect(within(dialog).getByText('Duration').parentElement).toHaveTextContent(action === 'kick' ? /^Duration—$/ : /^Duration1 day$/);
+  expect(within(dialog).getByText('Reason').parentElement).toHaveTextContent(/^Reasonnone given$/);
+  expect(within(dialog).getByText('Logged').parentElement).toHaveTextContent(/^Loggedmodlog · visible to moderators$/);
+  if (action === 'kick') {
+    expect(screen.queryByRole('textbox', { name: 'reason' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'reason' })).not.toBeInTheDocument();
+  }
   expect(privateResults(core, ':', `${'55'.repeat(16)}/${'44'.repeat(16)}/`).rows()).toHaveLength(0);
   if (accepted) {
     const confirm = screen.getByRole('button', { name: label });

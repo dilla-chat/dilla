@@ -77,15 +77,15 @@ async function throughApp(user: UserEvent) {
 
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
-function phoneViewport() {
+function setViewport(phone: boolean) {
   vi.stubGlobal('matchMedia', (query: string) => ({
-    matches: query === PHONE_QUERY, media: query, onchange: null,
+    matches: phone && query === PHONE_QUERY, media: query, onchange: null,
     addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {}, dispatchEvent: () => true,
   }));
 }
 
-async function phoneDone() {
-  phoneViewport();
+async function doneAtViewport(phone: boolean) {
+  setViewport(phone);
   const context = setup();
   await toFactor(context.user);
   await throughApp(context.user);
@@ -93,9 +93,9 @@ async function phoneDone() {
   return context;
 }
 
-describe('phone done step backup codes', () => {
+describe.each([{ layout: 'desktop', phone: false }, { layout: 'phone', phone: true }])('$layout done step backup codes', ({ phone }) => {
   it('omits codes from the DOM until Show, and Hide removes them with matching aria-expanded', async () => {
-    const { user, view } = await phoneDone();
+    const { user, view } = await doneAtViewport(phone);
     expect(screen.getByText('2 backup codes')).toBeInTheDocument();
     expect(view.container.querySelector('.d-code-list__code')).toBeNull();
     const show = button('Show');
@@ -112,14 +112,14 @@ describe('phone done step backup codes', () => {
   });
 
   it('copies all codes while collapsed', async () => {
-    const { user } = await phoneDone();
+    const { user } = await doneAtViewport(phone);
     await user.click(button('Copy'));
     expect(await navigator.clipboard.readText()).toBe(CODES.join('\n'));
     expect(screen.queryByRole('list', { name: en['factor.codes.label'] })).toBeNull();
   });
 
   it('prints all codes while collapsed and removes them afterwards', async () => {
-    const { user } = await phoneDone();
+    const { user } = await doneAtViewport(phone);
     const print = vi.spyOn(browser, 'print').mockImplementation(() => {
       expect(screen.getByRole('list', { name: en['factor.codes.label'] }).querySelectorAll('li')).toHaveLength(2);
     });
@@ -129,7 +129,7 @@ describe('phone done step backup codes', () => {
   });
 
   it('requires the saved tick before Open dilla while collapsed or expanded', async () => {
-    const { user, onFinish } = await phoneDone();
+    const { user, onFinish } = await doneAtViewport(phone);
     expect(button('Open dilla')).toHaveAttribute('aria-disabled', 'true');
     await user.click(button('Open dilla'));
     expect(onFinish).not.toHaveBeenCalled();
@@ -229,8 +229,8 @@ describe('steps 4 and 5: the second factor', () => {
     await waitFor(() => { expect(h1()).toHaveTextContent('You’re in'); });
     expect(screen.getByText('New account · step 6 of 6')).toBeInTheDocument();
     expect(screen.getByText('Your account is ready.')).toBeInTheDocument();
-    const list = screen.getByRole('list', { name: en['factor.codes.label'] });
-    expect(list.querySelectorAll('li')).toHaveLength(CODES.length);
+    expect(screen.queryByRole('list', { name: en['factor.codes.label'] })).toBeNull();
+    expect(button('Show')).toHaveAttribute('aria-expanded', 'false');
     expect(screen.queryByRole('heading', { name: en['factor.codes.title'] })).toBeNull();
     expect(button('Open dilla')).toHaveAttribute('aria-disabled', 'true');
     expect(button('Open dilla')).toHaveAccessibleDescription('Tick the box to continue.');
@@ -397,6 +397,8 @@ describe('steps 4 and 5: the second factor', () => {
       await waitFor(() => { expect(h1()).toHaveTextContent('You’re in'); });
       expect(fake.callsOf('factorSetupDone')).toHaveLength(2);
       expect(fake.callsOf('factorTotpConfirm')).toHaveLength(1);
+      expect(screen.queryByRole('list', { name: en['factor.codes.label'] })).toBeNull();
+      await user.click(button('Show'));
       expect(screen.getByRole('list', { name: en['factor.codes.label'] }).querySelectorAll('li')).toHaveLength(CODES.length);
       await user.click(screen.getByRole('checkbox', { name: CODES_ACK }));
       await user.click(button('Open dilla'));

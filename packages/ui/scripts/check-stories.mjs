@@ -3,7 +3,7 @@
 // Playwright directly while preserving the checks in story-a11y.ts.
 import { chromium } from 'playwright';
 import { VIEWPORT, declaredViewport, storyParameters } from './shoot-stories.mjs';
-import { checkStory } from './story-a11y.ts';
+import { checkStory, checkPollFieldFocus } from './story-a11y.ts';
 
 const base = process.argv[2] === '--url' ? process.argv[3] : (process.argv[2] ?? 'http://127.0.0.1:6006');
 const url = new URL(base);
@@ -116,11 +116,27 @@ try {
         if (story.id === 'voice-nowplaying--no-permission') {
           await page.setViewportSize({ width: 390, height: 844 });
           await page.locator('.d-np button[aria-disabled="true"]').first().dispatchEvent('click');
-          const toast = await page.locator('.d-np-toast').evaluate(el => {
-            const r = el.getBoundingClientRect(), stack = el.parentElement.getBoundingClientRect();
-            return { width: r.width, left: stack.left, right: stack.right };
+          const toast = await page.locator('.d-np-toast').evaluate(async el => {
+            await Promise.all(el.getAnimations().map(a => a.finished));
+            const r = el.getBoundingClientRect();
+            return { width: r.width, height: r.height, left: r.left, right: r.right };
           });
-          if (toast.left !== 16 || toast.right !== 374 || toast.width < 250) throw new Error(`Phone toast must use full viewport gutters: ${JSON.stringify(toast)}`);
+          if (Math.abs((toast.left + toast.right) / 2 - 195) > .5 || toast.left < 8 || toast.right > 382 || toast.height !== 38) throw new Error(`Phone toast must keep its intrinsic centered line within the viewport: ${JSON.stringify(toast)}`);
+        }
+        if (story.id === 'feedback-toast--over-25-mb') {
+          for (const width of [390, 320]) {
+            await page.setViewportSize({ width, height: 844 });
+            await page.getByRole('button', { name: 'Show toast', exact: true }).click();
+            const toast = await page.locator('.d-np-toast').evaluate(async el => {
+              await Promise.all(el.getAnimations().map(a => a.finished));
+              const r = el.getBoundingClientRect();
+              return { width: r.width, height: r.height, left: r.left, right: r.right, overflows: el.scrollWidth > el.clientWidth + 1 };
+            });
+            if (Math.abs((toast.left + toast.right) / 2 - width / 2) > .5 || toast.left < 8 || toast.right > width - 8 || toast.overflows
+              || (width === 390 ? Math.abs(toast.width - 367) > .5 || toast.height !== 38 : toast.width !== 304 || toast.height <= 38)) {
+              throw new Error(`Over-25-MB toast must keep one intrinsic line at 390px and clamp narrower screens: ${JSON.stringify(toast)}`);
+            }
+          }
         }
         // Task 7: the poll's exact prototype geometry and winner style (Ruling C).
         if (story.id.startsWith('conversation-pollcard--')) {
@@ -185,8 +201,10 @@ try {
           await page.emulateMedia({ reducedMotion: 'no-preference' });
           await page.evaluate(() => Promise.all(document.getAnimations().filter(a => a.effect?.getTiming().iterations !== Infinity).map(a => a.finished.catch(() => {}))));
           await check(false);
+          await checkPollFieldFocus(page);
           await page.setViewportSize({ width: 390, height: 844 });
           await check(true);
+          await checkPollFieldFocus(page);
         }
 
         // Task 10b fix round 1: a press on the sensitivity meter sets the value under the pointer (the slider's thumb is 2px,

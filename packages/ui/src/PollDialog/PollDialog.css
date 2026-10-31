@@ -4,8 +4,8 @@
 .d-poll-dialog__question > span, .d-poll-dialog__label { display: flex; justify-content: space-between; font-size: var(--text-xs); color: var(--fg-2); }
 .d-poll-dialog [data-danger='true'], .d-poll-dialog__error { color: var(--danger); }
 .d-poll-dialog input { box-sizing: content-box; height: 34px; padding: 0 10px; background: var(--surface-2); border: 1px solid var(--control-edge-field); border-radius: 7px; color: var(--fg); font: inherit; font-size: var(--text-input); outline: none; }
-.d-poll-dialog input:focus { border-color: var(--accent); }
-.d-poll-dialog input:focus-visible { outline: none; }
+.d-poll-dialog input:focus-visible { outline: none; outline-offset: 0; }
+.d-poll-dialog__question input:focus { box-shadow: 0 0 0 3px var(--accent-ring); }
 .d-poll-dialog__question input { height: 38px; padding: 0 12px; }
 .d-poll-dialog__question > span > span { font-variant-numeric: tabular-nums; }
 .d-poll-dialog__answer { display: flex; align-items: center; gap: 6px; }
@@ -43,6 +43,8 @@
 .d-poll-dialog__close { position: absolute; top: 14px; right: 16px; width: 28px; height: 28px; padding: 0; display: flex; align-items: center; justify-content: center; border: 0; border-radius: 6px; background: transparent; color: var(--fg-2); }
 .d-poll-dialog__close:hover { background: var(--hover); color: var(--fg); }
 .d-poll-dialog input[data-danger='true'] { border-color: var(--danger); color: var(--fg); }
+/* Native style-focus wins over an overlong answer's danger border until blur. */
+.d-poll-dialog input:focus { border-color: var(--accent); }
 .d-poll-dialog__question > span > span { color: var(--fg-faint); }
 .d-poll-dialog__question > span > span[data-danger='true'] { color: var(--danger); }
 .d-poll-dialog__duration button { color: var(--fg-strong); }

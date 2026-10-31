@@ -36,10 +36,13 @@
           "wait": 900
         },
         {
-          "click": "text=raid tonight at 20:00"
+          "click": "article >> nth=-1 >> text=raid tonight at 20:00"
         },
         {
           "wait": 200
+        },
+        {
+          "hover": "article >> nth=0"
         }
       ]
     },
@@ -73,6 +76,9 @@
         },
         {
           "wait": 200
+        },
+        {
+          "hover": ".d-message-row[data-flash=\"true\"]"
         }
       ]
     }
@@ -130,7 +136,7 @@
           "wait": 900
         },
         {
-          "click": "text=raid tonight at 20:00"
+          "click": "article >> nth=-1 >> text=raid tonight at 20:00"
         },
         {
           "wait": 200
@@ -142,7 +148,17 @@
       "path": "{server}",
       "steps": [
         {
-          "click": "role=article >> nth=1"
+          "waitFor": "main textarea.d-composer__input:enabled:not([readonly])"
+        },
+        {
+          "wheel": [
+            "[role=\"log\"]",
+            0,
+            -10000
+          ]
+        },
+        {
+          "click": "role=article >> nth=1 >> .d-message-row__body"
         },
         {
           "wait": 300
@@ -2005,6 +2021,18 @@
           "waitFor": {
             "selector": ".d-call-stage__tile[data-source=\"screen\"][data-focused=\"true\"] .d-call-tile[data-media=\"true\"]",
             "timeout": 120000
+          }
+        },
+        {
+          "waitFor": {
+            "selector": ".dw-voice-stage .d-call-tile[data-bot=\"true\"]",
+            "timeout": 60000
+          }
+        },
+        {
+          "waitFor": {
+            "selector": ".dw-voice-stage .d-np--stage[data-playing=\"true\"]",
+            "timeout": 60000
           }
         }
       ]

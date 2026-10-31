@@ -99,7 +99,7 @@ never compared with the shipped client.
 The prototype requests Lucide 0.460.0 `home.svg`, an unpublished static filename. The shooter resolves that exact URL to the pinned official `house.svg` asset: the same release exports `Home = House`. Its source and hash are in `app/fixtures/lucide-house-0.460.0.provenance.txt`. The prototype source stays unchanged, and captures wait for the visible Home glyph to finish loading.
 
 **Pairs that change the world.** A pair marked `"mutates": true` sends messages, adds a device or role or switches a setting
-(gap04, gap44, gap52, gap53, gap79, gap83). The tool runs `standing-*` screens first, before browser reloads can end Mira's screen share, then the other read-only pairs, then mutating pairs. Order stays stable inside each group. The
+(gap04, gap44, gap52, gap53, gap79, gap83). The tool runs `standing-voice-focus` first, before other standing frames reload Ada's page and can lose the live screen or Music fixture. Other `standing-*` screens follow, then other read-only pairs, then mutating pairs. Order stays stable inside each group. The
 world cannot be rewound under live browsers (restoring the server would leave the browsers' own state ahead of it), so
 **restart the world before shooting again**, and shoot `standing.json` before a spec with mutating pairs or on a fresh world.
 Never point `--out` (the world's or the shooter's) into a tracked path: `state.json` and some PNGs hold throwaway passwords and
@@ -156,10 +156,13 @@ The wave B ledger records these alongside Q1–Q10 and the task-specific rulings
 below: recovery-key entry keeps the character count, 52-character requirement
 and disabled button; authenticator setup keeps the QR code, setup key and hint;
 removing another browser keeps recovery-key confirmation; the sign-in done step
-has no invite link. The phone You tab has no Status menu. Shortcut keycaps follow the platform. Signup steps 4–6 drop the Sign-in row; steps 4 and 6 drop Back; step 5 (`task3b-code`) keeps Back to the choice. The code step has no passkey or backup links. On phones the done step folds backup codes behind Show.
+has no invite link. The phone You tab has no Status menu. Shortcut keycaps follow the platform. Signup steps 4–6 drop the Sign-in row; steps 4 and 6 drop Back; step 5 (`task3b-code`) keeps Back to the choice. The code step has no passkey or backup links. The done step folds backup codes behind Show at every width, keeping the codes out of the DOM until disclosure (Jonas, 2026-10-31).
 The following decisions also apply:
 
+- Recovery-key actions keep **Print** and **Save as file**; **Copy** remains forbidden (Jonas, 2026-10-30).
 - A manager keeps the new-channel **+** in the server header while the server has no categories, on desktop and phone (Ruling AB; Jonas, 2026-10-27, explicitly reaffirmed 2026-10-30). With categories it moves to their headers. The uncategorized capture world therefore shows this deliberate extra control.
+- The sign-in code step offers Use a passkey only when the account has one and the browser can use it; unavailable routes are hidden (Jonas, 2026-10-30, Task 3 / passkey-after-password decision).
+- The command picker lists all available real commands with their proposed icons, including commands absent from the prototype (Q2; Jonas, 2026-10-30, wave B plan §Decisions). Extra command rows are this explicit decision, not sample-data exclusions.
 - Person menus omit Move to, Server mute and Disconnect until wave C.
 - DM GIFs require a named shared-server privacy notice and account/device-local consent; only an explicit button press checks keys, and changing the proxy asks again. Privacy settings can revoke the choice (Jonas, 2026-10-31 security follow-up).
 - The DM list keeps Message someone (✎) and the notification-default menu (⌄). DMs have no Threads button until wave C (Jonas, 2026-10-27/28).
@@ -168,10 +171,10 @@ The following decisions also apply:
 - Settings navigation keeps live extra sections **after the prototype’s entries** in each workspace. You keeps Appearance, Privacy and Diagnostics; Server keeps Channels, GIFs, Members, Self-assignable roles, Welcome messages, Join roles, Automoderation, Moderation log, Bans and Ownership (D2; Jonas, 2026-10-31).
 - Overview shows the Server name row only to people with Manage server (D3; Jonas, 2026-10-31). The owner fixture therefore sees this row.
 - Noise suppression defaults to Lightweight until the Automatic engine qualifies. Its selected state therefore has no Automatic hint or BETA tag (D8; Jonas, 2026-10-31).
-- Poll dialog fields show an accent border only while focused, with no extra outline or shadow (D6; Jonas, 2026-10-31, following Ruling AK).
-- Poll creation has no private Working card while its dialog is open. Its private result appears only after Post poll (D10; Jonas, 2026-10-31).
-- Phone toasts keep the explicitly requested 16px left/right gutters; copy wider than that available space wraps. The prototype's intrinsic nowrap toast can exceed those gutters (round-1 toast instruction, 2026-10-31).
+- Poll dialog focus matches the prototype: the Question field has an accent border plus its 3px soft outer ring; answer fields retain their native-prototype accent border without that shadow. This replaces the earlier D6 border-only decision, which rested on a wrong premise (Jonas, 2026-10-31, round 3).
+- Poll creation has no private Working card while its dialog is open (D10; Jonas, 2026-10-31). After Post poll, keep the private **Poll posted** success result alongside the poll card, although the prototype draws only the card (Jonas, 2026-10-31, round-3 explicit decision).
 - Reduced-motion reply jumps keep the prototype's initial tint and accent bar without animation (Jonas, 2026-10-30).
+- Phone buttons follow each prototype context's actual height; the former global 44px minimum is removed, including inside the phone shell. Preserve the prototype's explicit auth and dialog sizes rather than impose a blanket minimum (Jonas, 2026-10-31, round 3).
 - Phone inputs keep the [phone grammar's 16px text](../README.md) to prevent iOS focus zoom, including sign-in and poll fields.
 
 These are accepted only for the named state; unrelated differences still need
@@ -244,7 +247,6 @@ Each element gets a presence Noul and a Box on both images, plus optional `state
 
 | Pairs | Accepted difference from the raw prototype | Decision |
 |---|---|---|
-| `private-result-confirm-kick-desktop`, `private-result-confirm-kick-phone` | The kick modal omits “Duration —” and “Reason none given”. Its Logged row remains. | Q4 / M2: kick has no reason field until wave C; duration is shown only for ban. This is intentional, not a parity defect. |
 | `private-result-cancelled-{kick,ban}-{desktop,phone}` | Cancel closes command mode and shows a private “Not confirmed” result, although the raw prototype returns to its command chips. | Q4 in the task-9 brief explicitly pulls the confirm modal and “Not confirmed” into wave B. |
 
 ### Task 7 intentional deviations (Jonas, 2026-10-31)

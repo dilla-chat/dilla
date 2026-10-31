@@ -72,9 +72,10 @@ describe('IconButton', () => {
       for (const size of [28, 32, 40, 44]) expect(cssText()).toMatch(new RegExp(`\\.d-icon-button\\[data-size="${size}"\\] \\{[^}]*width: ${size / 16}rem`));
       expect(cssText()).toMatch(/\.d-icon-button\[aria-pressed="true"\] \{[^}]*color: var\(--accent\)[^}]*box-shadow: inset 0 -2px 0 0 var\(--accent\)/);
     });
-    // Except in the phone header's actions, drawn at the prototype's sizes (Jonas 2026-10-27).
+    // IconButton retains its phone tier outside the prototype header (Jonas 2026-10-27);
+    // Button follows its context height instead (Jonas 2026-10-31, phoneTargets.css.test.ts).
     it('on a phone layout the hit area is 44 whatever the size (H4), outside the phone header\'s actions', () => {
-      expect(baseText()).toMatch(/\.d-app-shell\[data-layout="phone"\] :is\(\.d-btn, \.d-segmented__option, \.d-icon-button\):not\(\.d-phone-header__actions \*, \.d-channel-list__head-btn, \.d-user-panel \*\) \{ min-height: 2\.75rem; min-width: 2\.75rem; \}/);
+      expect(baseText()).toMatch(/\.d-app-shell\[data-layout="phone"\] :is\(\.d-segmented__option, \.d-icon-button\):not\(\.d-phone-header__actions \*, \.d-channel-list__head-btn, \.d-user-panel \*\) \{ min-height: 2\.75rem; min-width: 2\.75rem; \}/);
     });
   });
 });

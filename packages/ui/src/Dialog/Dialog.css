@@ -26,7 +26,8 @@
 .d-dialog[data-kind="confirm"] .d-dialog__body { padding: 12px 18px 0; }
 .d-dialog[data-kind="confirm"] .d-dialog__footer { padding: 16px 18px; border-top: 0; }
 /* The prototype's dialog buttons: 34px, 7px corners, 12px; Cancel --fg-chip on nothing, the action filled and bold. */
-.d-dialog__footer .d-btn { height: 34px; padding: 0 14px; font-size: var(--text-ui); border-radius: var(--r-seg); }
+.d-dialog__footer .d-btn { height: 34px; padding: 0 14px; font-size: var(--text-ui); border: 0; border-radius: var(--r-seg); }
+.d-dialog__footer .d-btn__label { gap: 6px; }
 .d-dialog__footer .d-btn[data-variant="ghost"] { color: var(--fg-chip); }
 .d-dialog__footer .d-btn[data-variant="ghost"]:hover { color: var(--fg-chip); background: var(--hover); }
 .d-dialog__footer .d-btn:is([data-variant="accent"], [data-variant="danger"]) { padding: 0 16px; font-weight: var(--weight-display); }

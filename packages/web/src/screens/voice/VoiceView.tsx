@@ -229,7 +229,7 @@ function callTiles(v: VoiceContext, channelId: string, roomName: string): CallTi
     const title = view.bot ? t('callStage.tile.bot', { name }) : undefined;
     return deviceTiles({ view, own: false, volume: volumeOf(v.settings, tile.userId), labels: tileLabels(name) },
     { camera: tile.video, screen: tile.screen, sharing: false, mirrorCamera: false, name, ...(title !== undefined ? { title } : {}),
-      menu: source => personMenu(v, roomName, { userId: tile.userId, name, bot: view.bot, own: false, ...(title !== undefined ? { title } : {}) }, source, tile.screenAudio),
+      menu: source => personMenu(v, roomName, { userId: tile.userId, name, bot: view.bot, own: false }, source, tile.screenAudio),
       remoteScreen: { screenAudio: tile.screenAudio },
       // Task 8c fix round 1: the ping that device publishes about itself (its `dilla.rtt`), never this page's own link.
       ...(tile.rttMs != null ? { personStat: t('callStage.stat.ping', { ms: tile.rttMs }) } : {}) });

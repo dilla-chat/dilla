@@ -105,6 +105,7 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
   const [moderateDialogOpen, setModerateDialogOpen] = useState(false);
   const [lightbox, setLightbox] = useState<LightboxState | null>(null);
   const [flashKey, setFlashKey] = useState<string | null>(null);
+  const [jumpScroll, setJumpScroll] = useState<{ key: string; behavior: ScrollBehavior } | null>(null);
   const [dragDepth, setDragDepth] = useState(0);
   const [gridPos, setGridPos] = useState<{ top: number; left: number } | null>(null);
   // R30: one revealed row at a time (phone), hidden by a second tap, Escape or a new scroll of the log.
@@ -237,13 +238,21 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
       row.dataset.jump = 'pointer';
       pointerJumpRow.current = row;
     }
-    row?.focus();
+    row?.focus({ preventScroll: true });
     const behavior = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
-    row?.scrollIntoView?.({ block: 'center', behavior });
     setFlashKey(item.key);
+    setJumpScroll({ key: item.key, behavior });
     if (flashTimer.current !== null) window.clearTimeout(flashTimer.current);
     flashTimer.current = window.setTimeout(() => setFlashKey(null), FLASH_MS);
   }, [jumpTarget]);
+  useLayoutEffect(() => {
+    // Apply the prototype's 80px feed offset after active/flash/focus rendering
+    // and MessageLog's child layout effect, so pinning cannot undo this jump.
+    if (jumpScroll === null) return;
+    const row = rowEls.current.get(jumpScroll.key);
+    const log = row?.closest<HTMLElement>('[role="log"]');
+    if (row && log) log.scrollBy?.({ top: row.getBoundingClientRect().top - log.getBoundingClientRect().top - 80, behavior: jumpScroll.behavior });
+  }, [jumpScroll]);
   useLayoutEffect(() => {
     if (!noticeDismissed.current || p.ui.notice !== null) return;
     noticeDismissed.current = false;

@@ -37,7 +37,7 @@
 /* Wave B task 3b: the prototype's auth placeholders ("https://", "at least 12 characters") in --fg-3. */
 .d-onboarding-frame .d-text-field__input::placeholder { color: var(--fg-3); opacity: 1; }
 .d-onboarding-frame__footer .d-btn[data-variant="accent"]::after { content: "" / ""; flex: none; width: 15px; height: 15px; background: currentColor; mask: var(--d-mask-arrow-right) center / contain no-repeat; }
-/* min-height: the prototype's 40px on a phone too (rule 0), over Button.css's 44px phone tier. */
+/* The prototype's auth action is 40px on desktop and phone (prototype line 80). */
 .d-onboarding-frame__footer .d-btn[data-variant="accent"] { justify-content: center; height: 2.5rem /* 40px */; min-height: 2.5rem; border-radius: var(--r-lg); font-size: var(--text-input); font-weight: var(--weight-display); }
 /* Wave B task 3, the prototype's code step: its links row ("Use a passkey", "Use a backup code") is 11.5px --fg-link text 14px
    apart, 6px over the button; the code's error sits under the boxes. A primary action that is not ready yet (a short code, a
