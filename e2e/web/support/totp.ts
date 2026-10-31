@@ -50,19 +50,29 @@ export async function advanceClock(control: string, seconds: number): Promise<vo
 
 /**
  * The next code the server will accept. With the host clock at counter c the server takes c-1..c+1 and refuses a
- * counter at or below the last one used, so the pick is max(c-1, last+1). While that is past c+1 the host clock moves
- * 30 s at a time. Records the counter in `account.lastCounter`.
+ * counter at or below the last one used, so the pick is max(c, last+1). Prefer the current window: picking c-1 would
+ * expire if the host ticks between reading its clock and the browser's auto-submit. While the next unspent counter
+ * is past c+1 the host clock moves 30 s at a time, only as far as needed. Records the counter in `account.lastCounter`.
  */
-export async function nextCode(control: string, account: { totpSecret: string | null; lastCounter: number }): Promise<string> {
+export async function nextCode(control: string, account: { totpSecret: string | null; lastCounter: number }, options: {
+  /** Visual worlds tick naturally; never skew their signed Bot clock or force retention through a synthetic advance. */
+  wallClock?: boolean;
+  sleep?: (ms: number) => Promise<void>;
+} = {}): Promise<string> {
   if (account.totpSecret === null) throw new Error('this account has no authenticator secret');
+  const deadline = Date.now() + TOTP_STEP * 1000;
   for (;;) {
     const c = Math.floor((await hostNow(control)) / TOTP_STEP);
-    const n = Math.max(c - 1, account.lastCounter + 1);
+    const n = Math.max(c, account.lastCounter + 1);
     if (n <= c + 1) {
       account.lastCounter = n;
       return totp(account.totpSecret, n * TOTP_STEP);
     }
-    await advanceClock(control, TOTP_STEP);
+    if (options.wallClock === true) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Error('the host clock did not reach the next TOTP window within 30 seconds');
+      await (options.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms))))(Math.min(1000, remaining));
+    } else await advanceClock(control, TOTP_STEP);
   }
 }
 

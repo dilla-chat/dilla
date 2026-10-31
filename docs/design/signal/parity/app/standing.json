@@ -1,42 +1,233 @@
 [
   {
     "name": "standing-desktop-chat",
-    "viewport": { "width": 1280, "height": 800 },
-    "prototype": { "props": { "startAt": "app" }, "steps": [{ "wait": 600 }, { "click": "main header >> text=6" }, { "wait": 900 }] },
-    "app": { "who": "ada", "path": "{server}", "steps": [{ "click": "role=button[name=/^Members/]" }, { "wait": 900 }] }
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "wait": 600
+        },
+        {
+          "click": "main header >> text=6"
+        },
+        {
+          "wait": 900
+        }
+      ]
+    },
+    "app": {
+      "who": "ada",
+      "path": "{server}",
+      "steps": [
+        {
+          "click": "role=button[name=/^Members/]"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "waitFor": "button[aria-label=\"add a gif\"]:enabled"
+        }
+      ]
+    }
   },
   {
     "name": "standing-desktop-members-open",
-    "viewport": { "width": 1280, "height": 800 },
-    "prototype": { "props": { "startAt": "app" }, "steps": [{ "wait": 1200 }] },
-    "app": { "who": "ada", "path": "{server}" }
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "wait": 1200
+        }
+      ]
+    },
+    "app": {
+      "who": "ada",
+      "path": "{server}",
+      "steps": [
+        {
+          "waitFor": "button[aria-label=\"add a gif\"]:enabled"
+        }
+      ]
+    }
   },
   {
     "name": "standing-voice-focus",
-    "viewport": { "width": 1280, "height": 800 },
-    "prototype": { "props": { "startAt": "app" }, "steps": [{ "wait": 600 }, { "click": "aside >> text=harbour >> nth=0" }, { "wait": 1200 }] },
-    "app": { "who": "ada", "path": "{server}", "steps": [{ "click": "role=button[name=\"voice harbour\"i]" }, { "wait": 7000 }] }
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "wait": 600
+        },
+        {
+          "click": "aside >> text=harbour >> nth=0"
+        },
+        {
+          "wait": 1200
+        }
+      ]
+    },
+    "app": {
+      "who": "ada",
+      "path": "{server}",
+      "steps": [
+        {
+          "click": "role=button[name=\"voice harbour\"i]"
+        },
+        {
+          "waitFor": {
+            "selector": ".d-call-stage__tile[data-source=\"screen\"][data-focused=\"true\"] .d-call-tile[data-media=\"true\"]",
+            "timeout": 120000
+          }
+        }
+      ]
+    }
   },
   {
     "name": "standing-phone-list",
-    "viewport": { "width": 390, "height": 844 },
-    "prototype": { "props": { "startAt": "app", "device": "phone" } },
-    "app": { "who": "phone", "path": "{community}" }
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app",
+        "device": "phone"
+      }
+    },
+    "app": {
+      "who": "phone",
+      "path": "{community}"
+    }
   },
   {
     "name": "standing-phone-conversation",
-    "viewport": { "width": 390, "height": 844 },
-    "prototype": { "props": { "startAt": "app", "device": "phone" }, "steps": [{ "wait": 600 }, { "click": "aside >> text=general >> nth=0" }, { "wait": 900 }, { "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0" }, { "wait": 900 }] },
-    "app": { "who": "phone", "path": "{community}", "steps": [{ "click": "role=button[name=\"general\"s]" }, { "wait": 1200 }] },
-    "judge": { "elements": [
-      {"id":"header","name":"the channel header at the top of the screen, with a back arrow","edge":"top"},
-      {"id":"header_topic","name":"the grey channel topic next to the channel name in the header","compare":["presence"]},
-      {"id":"members_button","name":"the members button with a number near the right end of the header","compare":["presence"]},
-      {"id":"code_block","name":"the code block with line numbers in the conversation","data":true},
-      {"id":"composer","name":"the message composer above the bottom tab bar","edge":"bottom"},
-      {"id":"send_button","name":"the send button at the right end of the message composer","compare":["presence","size"],"state":{"active":{"phrase":"drawn as ready to send","true":"the button has a filled blue background","false":"the button has a dark background like the composer around it"}}},
-      {"id":"tab_bar","name":"the bottom tab bar with Home, Activity and You tabs","edge":"bottom"},
-      {"id":"home_tab","name":"the Home tab of the bottom tab bar","compare":["presence"],"state":{"selected":{"phrase":"drawn as the selected tab","true":"a blue line above the tab and brighter text than the other tabs","false":"no line above the tab and the same grey text as the other tabs"}}}
-    ] }
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 600
+        },
+        {
+          "click": "aside >> text=general >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0"
+        },
+        {
+          "wait": 900
+        }
+      ]
+    },
+    "app": {
+      "who": "phone",
+      "path": "{community}",
+      "steps": [
+        {
+          "click": "role=button[name=\"general\"s]"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "waitFor": "button[aria-label=\"add a gif\"]:enabled"
+        }
+      ]
+    },
+    "judge": {
+      "elements": [
+        {
+          "id": "header",
+          "name": "the channel header at the top of the screen, with a back arrow",
+          "edge": "top"
+        },
+        {
+          "id": "header_topic",
+          "name": "the grey channel topic next to the channel name in the header",
+          "compare": [
+            "presence"
+          ]
+        },
+        {
+          "id": "members_button",
+          "name": "the members button with a number near the right end of the header",
+          "compare": [
+            "presence"
+          ]
+        },
+        {
+          "id": "code_block",
+          "name": "the code block with line numbers in the conversation",
+          "data": true
+        },
+        {
+          "id": "composer",
+          "name": "the message composer above the bottom tab bar",
+          "edge": "bottom"
+        },
+        {
+          "id": "send_button",
+          "name": "the send button at the right end of the message composer",
+          "compare": [
+            "presence",
+            "size"
+          ],
+          "state": {
+            "active": {
+              "phrase": "drawn as ready to send",
+              "true": "the button has a filled blue background",
+              "false": "the button has a dark background like the composer around it"
+            }
+          }
+        },
+        {
+          "id": "tab_bar",
+          "name": "the bottom tab bar with Home, Activity and You tabs",
+          "edge": "bottom"
+        },
+        {
+          "id": "home_tab",
+          "name": "the Home tab of the bottom tab bar",
+          "compare": [
+            "presence"
+          ],
+          "state": {
+            "selected": {
+              "phrase": "drawn as the selected tab",
+              "true": "a blue line above the tab and brighter text than the other tabs",
+              "false": "no line above the tab and the same grey text as the other tabs"
+            }
+          }
+        }
+      ]
+    }
   }
 ]

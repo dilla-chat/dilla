@@ -106,51 +106,6 @@
   }
  },
  {
-  "name": "gap96-status-menu-phone",
-  "viewport": {
-   "width": 390,
-   "height": 844
-  },
-  "prototype": {
-   "props": {
-    "startAt": "app",
-    "device": "phone"
-   },
-   "steps": [
-    {
-     "wait": 600
-    },
-    {
-     "click": "text=You >> nth=-1"
-    },
-    {
-     "wait": 700
-    },
-    {
-     "click": "text=Status"
-    },
-    {
-     "wait": 700
-    }
-   ]
-  },
-  "app": {
-   "who": "phone",
-   "path": "{community}",
-   "steps": [
-    {
-     "click": "role=link[name=\"You\"s]"
-    },
-    {
-     "wait": 1000
-    },
-    {
-     "wait": 700
-    }
-   ]
-  }
- },
- {
   "name": "gap85-devices-remove-other-browser",
   "viewport": {
    "width": 1280,
@@ -241,6 +196,12 @@
     },
     {
      "wait": 1500
+    },
+    {
+     "click": "role=button[name=/^Members/]"
+    },
+    {
+     "waitFor": ".d-member-list__open"
     }
    ]
   }
@@ -486,6 +447,9 @@
     },
     {
      "wait": 900
+    },
+    {
+     "waitFor": "button[aria-label=\"add a gif\"]:enabled"
     }
    ]
   }
@@ -508,7 +472,12 @@
   },
   "app": {
    "who": "ada",
-   "path": "{server}"
+   "path": "{server}",
+   "steps": [
+    {
+     "waitFor": "button[aria-label=\"add a gif\"]:enabled"
+    }
+   ]
   }
  },
  {
@@ -558,7 +527,7 @@
    ]
   },
   "app": {
-   "who": "ada",
+   "who": "phone",
    "path": "{community}",
    "steps": [
     {
@@ -569,6 +538,9 @@
     },
     {
      "wait": 800
+    },
+    {
+     "waitFor": "button[aria-label=\"add a gif\"]:enabled"
     }
    ]
   }

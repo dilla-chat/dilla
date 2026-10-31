@@ -16,7 +16,7 @@ Output goes to `<outDir>/<name>.prototype.png`, `<name>.story.png` and `<name>.p
 repo. One line is printed per pair (`ok` or `FAIL`); the exit code is non-zero if any side fails to load.
 `examples/shell.json` is a working spec (desktop shell and phone shell).
 
-The tool's own tests: `node --test docs/design/signal/parity/shoot.test.mjs` (pure helpers; not part of the root
+The tool's own tests: `node --test docs/design/signal/parity/shoot.test.mjs` (helpers and a local browser readiness check; no world or screenshots; not part of the root
 `npm test`, there is no pattern for design-tooling tests there).
 
 ## Write a spec
@@ -41,16 +41,19 @@ A spec is a JSON array of pairs:
   The prototype reads them from the `data-props` attribute of its `script[data-dc-script]` (`parseDataProps` in
   `support.js`; each entry's `default` becomes `this.props`). The tool rewrites that attribute before the prototype's
   scripts run (a MutationObserver installed with `addInitScript`), so the file on disk is never modified.
-- `prototype.steps` run in order after load: one of `click`, `rightClick`, `hover`, `waitFor` (selectors; `waitFor` waits up to 30s for a
-  state the prototype reaches on its own clock, such as a speaker), `press` (a key), `type`
+- `prototype.steps` run in order after load: one of `click`, `rightClick`, `hover`, `waitFor` (selectors; default 30s, or `{ "waitFor": { "selector": ".d-poll-card", "timeout": 120000 } }` for a
+  Bot post or other state reached on its own clock), `press` (a key), `type`
   (`[selector, text]`) or `wait` (ms) per step.
+- `wheel: [selector, deltaX, deltaY]` moves the pointer over the target and sends native wheel input in pixels. Use it when the UI must observe manual scrolling (such as leaving the conversation's pinned end); it does not assign scroll offsets. Wheel's incidental hover is cleared unless the side also requests an explicit `hover` step.
 - `clip` (either side) crops to the first element matching the selector; without it the whole viewport is shot.
 - `story.id` is the Storybook story id (`<title-slug>--<story-slug>`, see `storybook-static/index.json`).
   `story.globals` defaults to `theme:signal;motion:reduced`.
 - Both sides run with `prefers-reduced-motion: reduce` at deviceScaleFactor 2, wait for `document.fonts.ready` and 600 ms.
+  A side can set `settleMs` to override its post-step delay (including zero for a short pending result); fonts are still awaited.
   The prototype's Google Fonts requests are intercepted and answered with `@font-face` rules built from the repo's own
   `@fontsource-variable/jetbrains-mono` and `@fontsource/dm-serif-display` files, so no network is needed and both sides
   use the same font files.
+- Signed-in world pages wait for a visible app shell before steps. Every app side waits for the actual Signal theme before capture; no theme setting is overridden. Standing chat pairs explicitly wait for the seeded GIF button. Inside the visible capture region it also waits for required sidebar/account names and the online stat to load, while allowing blank custom status and zero online. Before capturing, the tool also waits for visible `aria-busy="true"` and “Loading…” copy to clear inside the crop (or viewport). Unrelated loading outside a crop does not block it. Incidental click hover is cleared; an explicit `hover` step preserves the requested state.
 - A `clip` crop gets 8px of padding on every side (both frames), so edges, rings and shadows are visible.
 
 ## The rule
@@ -72,7 +75,7 @@ A pair has `prototype` plus **either** `story` **or** `app`; one spec may mix bo
 
 - `who`: `ada`, `bjorn`, `mira`, `phone` are the world's browsers, attached over CDP (their window is emulated at the
   pair's viewport and scale 2 and restored afterwards); `fresh` and `freshPhone` are new signed-out contexts at
-  `state.publicUrl` (1280x800 and 390x844 touch).
+  `state.publicUrl` (1280x800 and 390x844 touch), with the same supported virtual platform authenticator as the passkey e2e tests. Fresh contexts use `state.authUrl` (`localhost`) with a matching WebAuthn relying party, while connected world profiles retain numeric `state.publicUrl` for RTC/CSP compatibility. The browser’s conditional passkey request remains real.
 - `path` is opened before the steps. `{invite}` expands to `state.invitePath`, `{server}` to `#general` of the world's
   server, `{community}` to the server's own path (the phone's server list). Without a `path` the page stays where it is.
   After the capture the tool presses Escape twice and reloads `reset` (default: `path`, else the URL before the steps).
@@ -89,12 +92,12 @@ npm run ux:world -w @dilla/e2e -- --base 8611 --out target/ui-screens/signal-b  
 node docs/design/signal/parity/shoot.mjs docs/design/signal/parity/app/standing.json <outDir> --app [target/ui-screens/signal-b/state.json]
 ```
 
-The world, its builds and ports are in `e2e/ux/README.md`. `app/standing.json` is the five standing whole screens (desktop
+The world, its builds and ports are in `e2e/ux/README.md`. Its wall clock opts out of forced per-second test-clock retention (`wallClockSweep: false`), and the shooter waits for natural TOTP counters instead of advancing that clock. This fixture adaptation avoids triggering the known Bot `E_PRUNED` scan failure on every tick; production retention and the underlying Bot bug are unchanged. `app/standing.json` is the five standing whole screens (desktop
 chat, members open, voice focus, phone list, phone conversation); `app/wave-a-gaps.json` is the wave A states that were
 never compared with the shipped client.
 
 **Pairs that change the world.** A pair marked `"mutates": true` sends messages, adds a device or role or switches a setting
-(gap04, gap44, gap52, gap53, gap79, gap83). The tool runs those after all other pairs of a spec, and says so at the end. The
+(gap04, gap44, gap52, gap53, gap79, gap83). The tool runs `standing-*` screens first, before browser reloads can end Mira's screen share, then the other read-only pairs, then mutating pairs. Order stays stable inside each group. The
 world cannot be rewound under live browsers (restoring the server would leave the browsers' own state ahead of it), so
 **restart the world before shooting again**, and shoot `standing.json` before a spec with mutating pairs or on a fresh world.
 Never point `--out` (the world's or the shooter's) into a tracked path: `state.json` and some PNGs hold throwaway passwords and
@@ -102,7 +105,7 @@ recovery keys.
 
 The GIF pairs depend on the world's dummy Giphy key (set by `ux:world` through Server settings -> GIFs; without a key the GIF
 button does not show). Giphy is unreachable, so only the picker frame is comparable. The standing voice-focus pair needs the
-world's screen share (Mira shares in `harbour`, `state.miraShares`).
+world's screen share (Mira shares in `harbour`, `state.miraShares`); the world and shooter fail explicitly if that fixture is missing. The phone is enrolled into #general before seeded messages, and the world seeds its topic, a hoisted Raid leaders role and a thread with a reply. Poll-card steps wait up to 120 seconds for the actual Bot card. A bounded optional Music seed uses real provider tools and playback; `state.botPlays` and `state.botPlayError` record whether the voice Bot fixture is available. The Bot menu pair targets its voice tile, so a provider failure remains a reported capture failure.
 
 **What is not judged.** The app's sample data (server Midgard Crew; Ada, Björn, Mira, Liv; timestamps, device names,
 counts) differs from the prototype's (Mira, Ada, Björn, Kari, Ole, Glenn playing music). Compare styling, structure and
@@ -125,16 +128,13 @@ node docs/design/signal/parity/shoot.mjs docs/design/signal/parity/app/standing.
 Shoot one spec at a time. Stop with Ctrl+C and restart the world after a spec
 with mutating pairs. Use a subdirectory per spec: several specs repeat the
 standing pair names. The closeout set is `standing`, `wave-a-gaps`, `task-2`,
-`task-3`, `task-3b`, `task-4`, `task-5`, `task-6`, `task-7` and `task-8`.
-Task 8 also has two ReactionTooltip story pairs (Q6); build and serve Storybook
-and pass `--storybook http://127.0.0.1:<port>` for those.
+`task-3` (sign-in only), `task-3b` (the replacement signup flow), `task-4`, `task-5`, `task-6`, `task-7` and `task-8`.
+Task 8 also has two ReactionTooltip story pairs (Q6), using the existing `conversation-reactiontooltip--default` story. Build and serve `packages/ui/storybook-static` so `/iframe.html?id=conversation-reactiontooltip--default` is reachable, and pass `--storybook http://127.0.0.1:<port>` for those.
 
 Do not pass `--judge` for the closeout. Read each pair and record **match**,
 **differs**, or **accepted deviation**, with its file path and a reason, in
 `task-9/results.md`. A capture failure is **differs** with its error and intended
-path; it is not evidence of a visual match. If its target was explicitly removed
-by an accepted decision (such as phone Status), record that accepted absence and
-the capture failure together. Route differences to the controller.
+path; it is not evidence of a visual match. Targets explicitly removed by a decision are absent from the manifest: the phone Status pair was dropped (accepted absence, Jonas 2026-10-30). Route differences to the controller.
 Keep world state and screenshots containing throwaway secrets in ignored paths.
 
 The user-doc shooter can reuse a READY world with the managed Bot:
@@ -154,7 +154,18 @@ The wave B ledger records these alongside Q1–Q10 and the task-specific rulings
 below: recovery-key entry keeps the character count, 52-character requirement
 and disabled button; authenticator setup keeps the QR code, setup key and hint;
 removing another browser keeps recovery-key confirmation; the sign-in done step
-has no invite link. The phone You tab has no Status menu. Shortcut keycaps follow the platform. The ledger accepts removing Back and Sign in on signup steps 4–6. On phones the done step folds backup codes behind Show.
+has no invite link. The phone You tab has no Status menu. Shortcut keycaps follow the platform. Signup steps 4–6 drop the Sign-in row; steps 4 and 6 drop Back; step 5 (`task3b-code`) keeps Back to the choice. The code step has no passkey or backup links. On phones the done step folds backup codes behind Show.
+The following decisions also apply:
+
+- Person menus omit Move to, Server mute and Disconnect until wave C.
+- The DM list keeps Message someone (✎) and the notification-default menu (⌄). DMs have no Threads button until wave C (Jonas, 2026-10-27/28).
+- Keyboard settings list the prototype’s shortcuts first, then other real shortcuts such as Open search and Call the open DM. Keycaps and device names reflect the actual platform (“Ctrl K”, “System default”; Jonas, 2026-10-30).
+- The role editor folds real extra permissions into the prototype’s four groups: Attach files, Add reactions, Read message history, Create invites, Kick members and the other supported permissions (Ruling AS; Jonas, 2026-10-29).
+- Settings navigation keeps live extra sections **after the prototype’s entries** in each workspace. You keeps Appearance, Privacy and Diagnostics; Server keeps Channels, GIFs, Members, Self-assignable roles, Welcome messages, Join roles, Automoderation, Moderation log, Bans and Ownership (D2; Jonas, 2026-10-31).
+- Noise suppression defaults to Lightweight until the Automatic engine qualifies. Its selected state therefore has no Automatic hint or BETA tag (D8; Jonas, 2026-10-31).
+- Poll creation has no private Working card while its dialog is open. Its private result appears only after Post poll (D10; Jonas, 2026-10-31).
+- Phone inputs keep the [phone grammar's 16px text](../README.md) to prevent iOS focus zoom, including sign-in and poll fields.
+
 These are accepted only for the named state; unrelated differences still need
 routing.
 
@@ -226,6 +237,7 @@ Each element gets a presence Noul and a Box on both images, plus optional `state
 | Pairs | Accepted difference from the raw prototype | Decision |
 |---|---|---|
 | `private-result-confirm-kick-desktop`, `private-result-confirm-kick-phone` | The kick modal omits “Duration —” and “Reason none given”. Its Logged row remains. | Q4 / M2: kick has no reason field until wave C; duration is shown only for ban. This is intentional, not a parity defect. |
+| `private-result-cancelled-{kick,ban}-{desktop,phone}` | Cancel closes command mode and shows a private “Not confirmed” result, although the raw prototype returns to its command chips. | Q4 in the task-9 brief explicitly pulls the confirm modal and “Not confirmed” into wave B. |
 
 ### Task 7 intentional deviations (Jonas, 2026-10-31)
 

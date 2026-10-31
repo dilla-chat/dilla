@@ -109,13 +109,13 @@
           "wait": 900
         },
         {
-          "hover": "article >> nth=0"
+          "click": "article >> nth=0"
         },
         {
           "wait": 300
         },
         {
-          "click": "article >> nth=0 >> div[style*='top: -12px'] > span >> nth=1"
+          "click": "article >> nth=0 >> d-icon[name='reply'] >> xpath=.."
         },
         {
           "type": [
@@ -142,7 +142,7 @@
       "path": "{server}",
       "steps": [
         {
-          "hover": "role=article >> nth=1"
+          "click": "role=article >> nth=1"
         },
         {
           "wait": 300
@@ -599,6 +599,9 @@
           "wait": 900
         },
         {
+          "hover": "article:has-text(\"put it in the raid file so nobody argues later:\")"
+        },
+        {
           "click": "main >> text=Copy >> nth=0"
         },
         {
@@ -616,7 +619,7 @@
         {
           "type": [
             "role=textbox[name=/^message/i]",
-            "```yaml\nraid:\n  where: the bridge\n  bring:\n    - rope\n```"
+            "put it in the raid file so nobody argues later:\n```yaml\nraid:\n  when: \"2026-10-30T20:00\"\n  where: the bridge\n  bring:\n    - rope      # two, Mira insists\n    - torches\n    - snacks\n  troll: true\n  max_party: 6\n```"
           ]
         },
         {
@@ -626,7 +629,13 @@
           "wait": 2500
         },
         {
-          "dispatch": ".d-code-block__copy >> nth=-1"
+          "waitFor": ".d-message-row[data-state=\"ok\"]:has(.d-code-block):has-text(\"put it in the raid file so nobody argues later:\") >> nth=-1"
+        },
+        {
+          "hover": ".d-message-row:has(.d-code-block) >> nth=-1"
+        },
+        {
+          "click": ".d-code-block__copy >> nth=-1"
         },
         {
           "wait": 400
@@ -721,6 +730,9 @@
           "wait": 900
         },
         {
+          "hover": "article:has-text(\"put it in the raid file so nobody argues later:\")"
+        },
+        {
           "click": "main >> text=Copy >> nth=0"
         },
         {
@@ -738,7 +750,7 @@
         {
           "type": [
             "role=textbox[name=/^message/i]",
-            "```yaml\nraid:\n  where: the bridge\n  bring:\n    - rope\n```"
+            "put it in the raid file so nobody argues later:\n```yaml\nraid:\n  when: \"2026-10-30T20:00\"\n  where: the bridge\n  bring:\n    - rope      # two, Mira insists\n    - torches\n    - snacks\n  troll: true\n  max_party: 6\n```"
           ]
         },
         {
@@ -748,7 +760,13 @@
           "wait": 2500
         },
         {
-          "dispatch": ".d-code-block__copy >> nth=-1"
+          "waitFor": ".d-message-row[data-state=\"ok\"]:has(.d-code-block):has-text(\"put it in the raid file so nobody argues later:\") >> nth=-1"
+        },
+        {
+          "hover": ".d-message-row:has(.d-code-block) >> nth=-1"
+        },
+        {
+          "click": ".d-code-block__copy >> nth=-1"
         },
         {
           "wait": 400
@@ -932,7 +950,14 @@
       },
       "steps": [
         {
-          "click": "article >> nth=2"
+          "wheel": [
+            "article >> nth=2",
+            0,
+            -200
+          ]
+        },
+        {
+          "hover": "article >> nth=2"
         },
         {
           "wait": 700
@@ -944,7 +969,14 @@
       "path": "{server}",
       "steps": [
         {
-          "click": "role=article >> nth=2"
+          "wheel": [
+            "role=article >> nth=2",
+            0,
+            -200
+          ]
+        },
+        {
+          "hover": "role=article >> nth=2"
         },
         {
           "wait": 700
@@ -1655,7 +1687,7 @@
       "id": "conversation-reactiontooltip--default",
       "steps": [
         {
-          "hover": "button"
+          "hover": "button[aria-label=\"shield, 3\"]"
         },
         {
           "waitFor": "[role=tooltip]"
@@ -1868,7 +1900,7 @@
       "id": "conversation-reactiontooltip--default",
       "steps": [
         {
-          "hover": "button"
+          "hover": "button[aria-label=\"shield, 3\"]"
         },
         {
           "waitFor": "[role=tooltip]"
@@ -1907,6 +1939,9 @@
         },
         {
           "wait": 900
+        },
+        {
+          "waitFor": "button[aria-label=\"add a gif\"]:enabled"
         }
       ]
     }
@@ -1929,7 +1964,12 @@
     },
     "app": {
       "who": "ada",
-      "path": "{server}"
+      "path": "{server}",
+      "steps": [
+        {
+          "waitFor": "button[aria-label=\"add a gif\"]:enabled"
+        }
+      ]
     }
   },
   {
@@ -1962,7 +2002,10 @@
           "click": "role=button[name=\"voice harbour\"i]"
         },
         {
-          "wait": 7000
+          "waitFor": {
+            "selector": ".d-call-stage__tile[data-source=\"screen\"][data-focused=\"true\"] .d-call-tile[data-media=\"true\"]",
+            "timeout": 120000
+          }
         }
       ]
     }
@@ -2022,6 +2065,9 @@
         },
         {
           "wait": 1200
+        },
+        {
+          "waitFor": "button[aria-label=\"add a gif\"]:enabled"
         }
       ]
     },

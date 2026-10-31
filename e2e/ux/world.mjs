@@ -8,6 +8,8 @@
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { spawnSync } from 'node:child_process';
+import { waitForVoiceJoin } from './voice-fixture.mjs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -21,6 +23,7 @@ const { build } = require('esbuild');
 const { t } = await import(path.join(REPO, 'packages/web/src/strings/index.ts'));
 const { chromiumMediaArgs, writeFixtures } = await import(path.join(REPO, 'e2e/media/support/fixtures.ts'));
 const { nextCode } = await import(path.join(REPO, 'e2e/web/support/totp.ts'));
+const { addAuthenticator } = await import(path.join(REPO, 'e2e/web/support/webauthn.ts'));
 
 // The world never builds: it needs the web client, the testhost and bot binaries and the core wasm already built (see README).
 import { existsSync } from 'node:fs';
@@ -42,7 +45,10 @@ await build({ entryPoints: [hostSrc], outfile: hostBundle, bundle: true, platfor
 const { startTestHost } = await import(pathToFileURL(hostBundle).href);
 
 const PORT = BASE, CONTROL = BASE + 1, SFU = BASE + 2, SFU_UDP = BASE + 4;
+// Connected RTC profiles match the testhost's numeric signalling origin and CSP.
+// Only fresh auth captures use localhost, a valid WebAuthn RP hostname.
 const publicUrl = `http://127.0.0.1:${PORT}`;
+const authUrl = `http://localhost:${PORT}`;
 const controlUrl = `http://127.0.0.1:${CONTROL}`;
 const WAIT = 60_000;
 mkdirSync(OUT, { recursive: true });
@@ -51,7 +57,7 @@ rmSync(DATA, { recursive: true, force: true });
 mkdirSync(DATA, { recursive: true });
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 
-const host = await startTestHost({ port: PORT, control: CONTROL, webRoot: 'packages/web/dist', botRuntime: true, advanceClockWithWall: true, prebuilt: true,
+const host = await startTestHost({ port: PORT, control: CONTROL, webRoot: 'packages/web/dist', webauthnOrigin: authUrl, botRuntime: true, advanceClockWithWall: true, wallClockSweep: false, prebuilt: true,
   sfu: { port: SFU, udpPort: SFU_UDP } });
 const invite0 = host.invite.split(',')[0];
 log('host up');
@@ -59,7 +65,7 @@ const crash = (e) => { console.error(e); host.stop().finally(() => process.exit(
 process.on('uncaughtException', crash);
 process.on('unhandledRejection', crash);
 const fixtures = writeFixtures(path.join(DATA, 'media'));
-const state = { publicUrl, controlUrl, people: {}, cdp: {} };
+const state = { publicUrl, authUrl, controlUrl, people: {}, cdp: {} };
 const authenticators = {};
 let cdpPort = BASE + 10;
 const save = () => writeFileSync(path.join(OUT, 'state.json'), JSON.stringify(state, null, 2));
@@ -69,7 +75,7 @@ async function open(who, extra = {}) {
   const ctx = await chromium.launchPersistentContext(path.join(DATA, `profile-${who}`), {
     headless: true, viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1, colorScheme: 'dark', reducedMotion: 'reduce',
     locale: 'en-GB', timezoneId: 'Europe/Stockholm', baseURL: publicUrl,
-    args: [...chromiumMediaArgs(fixtures), `--remote-debugging-port=${port}`],
+    args: [...chromiumMediaArgs(fixtures), '--auto-select-desktop-capture-source=Entire screen', `--remote-debugging-port=${port}`],
     permissions: ['microphone', 'camera', 'clipboard-read', 'clipboard-write'], ...extra,
   });
   state.cdp[who] = port;
@@ -121,7 +127,7 @@ async function onboard(page, person, invite) {
   const a = { totpSecret: await page.getByLabel(t('factor.totp.key'), { exact: true }).inputValue(), lastCounter: -1 };
   authenticators[person.username] = a;
   // Wave B task 3: the sixth digit in the code boxes sends the code; there is no button to press.
-  await page.getByLabel(t('factor.totp.code'), { exact: true }).fill(await nextCode(controlUrl, a));
+  await page.getByLabel(t('factor.totp.code'), { exact: true }).fill(await nextCode(controlUrl, a, { wallClock: true }));
   // Step 6: the backup codes, whose box gates Open dilla.
   await byText(page, 'heading', 'onboarding.done.title').waitFor({ timeout: WAIT });
   await byText(page, 'checkbox', 'onboarding.done.codesAck').check();
@@ -133,25 +139,31 @@ async function onboard(page, person, invite) {
   log('onboarded', person.username);
 }
 
-const openChannel = async (page, name) => {
-  await page.getByRole('navigation', { name: t('shell.channels.label'), exact: true }).getByRole('button', { name: new RegExp(`^${escape(name)}(,|$)`) }).first().click();
-  await composer(page, name).and(page.locator(':enabled')).waitFor({ timeout: WAIT });
+const openChannel = async (page, name, remaining = () => WAIT) => {
+  await page.getByRole('navigation', { name: t('shell.channels.label'), exact: true }).getByRole('button', { name: new RegExp(`^${escape(name)}(,|$)`) }).first().click({ timeout: remaining() });
+  // Reading an announcement channel does not grant write permission. Its
+  // disabled composer still confirms navigation; send() waits for write-ready.
+  await composer(page, name).waitFor({ timeout: remaining() });
 };
-async function send(page, channel, text) {
-  if (!(await composer(page, channel).isVisible().catch(() => false))) await openChannel(page, channel);
+async function send(page, channel, text, budget) {
+  // Optional unread/announcement decoration shares one deadline across every
+  // operation and retry. Required conversation seeding keeps the full WAIT.
+  const deadline = budget === undefined ? null : Date.now() + budget;
+  const remaining = () => deadline === null ? WAIT : Math.max(1, deadline - Date.now());
+  if (!(await composer(page, channel).isVisible().catch(() => false))) await openChannel(page, channel, remaining);
   const box = composer(page, channel);
-  await box.and(page.locator(':not([readonly])')).waitFor({ timeout: WAIT });
-  await box.fill(text);
-  await box.press('Enter');
+  await box.and(page.locator(':enabled:not([readonly])')).waitFor({ timeout: remaining() });
+  await box.fill(text, { timeout: remaining() });
+  await box.press('Enter', { timeout: remaining() });
   const target = row(page, channel, text.split('\n')[0]);
   for (let i = 0; i < 3; i++) {
-    await target.and(page.locator('[data-state="ok"], [data-state="failed"]')).last().waitFor({ timeout: WAIT });
-    if (await target.last().getAttribute('data-state') !== 'failed') break;
-    await target.last().getByRole('button', { name: t('shell.message.retry'), exact: true }).click();
-    await page.waitForTimeout(1500);
+    await target.and(page.locator('[data-state="ok"], [data-state="failed"]')).last().waitFor({ timeout: remaining() });
+    if (await target.last().getAttribute('data-state', { timeout: remaining() }) !== 'failed') break;
+    await target.last().getByRole('button', { name: t('shell.message.retry'), exact: true }).click({ timeout: remaining() });
+    await page.waitForTimeout(Math.min(1500, remaining()));
   }
 }
-const trySend = async (...a) => { try { await send(...a); } catch (e) { log('send failed', a[1], String(e).slice(0, 200)); } };
+const trySend = async (page, channel, text) => { try { await send(page, channel, text, 10_000); } catch (e) { log('optional send failed', channel, String(e).slice(0, 200)); } };
 
 const SERVER = 'Midgard Crew';
 const USER_AGENT = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1';
@@ -175,13 +187,13 @@ const closeSettings = async () => {
     await ada.waitForTimeout(500);
   }
 };
-// The Bot: installed through Server settings -> Bot with Polls and Reminders on (Music is left off: with it on the Bot's commands never reach the picker, see the 2026-10-30 wave B note), as e2e/web/bot-runtime.spec.ts does. Its display
+// The Bot: installed through Server settings -> Bot with Polls, Reminders and Music on, as e2e/web/bot-runtime.spec.ts does. Its display
 // name goes to state.botName.
 {
   await byText(ada, 'button', 'admin.open').click().then(() => byText(ada, 'menuitem', 'signalSettings.menu.serverSettings').click());
   const bs = byText(ada, 'dialog', 'admin.title');
   await bs.getByRole('navigation', { name: t('admin.nav'), exact: true }).getByRole('button', { name: t('workspace.bot'), exact: true }).click();
-  for (const cap of ['polls', 'reminders']) {
+  for (const cap of ['polls', 'reminders', 'music']) {
     const sw = bs.getByRole('switch', { name: t(`serverSettings.bot.cap.${cap}`), exact: true });
     await sw.waitFor({ timeout: WAIT });
     if ((await sw.getAttribute('aria-checked')) !== 'true') await sw.click();
@@ -251,6 +263,35 @@ const inviteLink = await link.inputValue();
 const invitePath = new URL(inviteLink).pathname;
 const invite = decodeURIComponent(invitePath.slice(3));
 state.invitePath = invitePath;
+// Give whole-screen captures the prototype's channel topic and a real hoisted group.
+await settings.getByRole('navigation', { name: t('admin.nav'), exact: true }).getByRole('button', { name: t('workspace.channels'), exact: true }).click();
+await settings.getByRole('listitem').filter({ hasText: '#general' }).getByRole('button', { name: t('admin.channels.editLabel', { name: 'general' }), exact: true }).click();
+const channelEdit = byText(ada, 'dialog', 'admin.channel.titleText', { name: 'general' });
+await channelEdit.getByRole('textbox', { name: t('admin.channel.topic'), exact: true }).fill('raids, plans and the bridge troll');
+await channelEdit.getByRole('button', { name: t('admin.channel.save'), exact: true }).click();
+await channelEdit.waitFor({ state: 'hidden', timeout: WAIT });
+await settings.getByRole('navigation', { name: t('admin.nav'), exact: true }).getByRole('button', { name: t('workspace.roles'), exact: true }).click();
+await settings.getByRole('button', { name: t('serverSettings.roles.new'), exact: true }).click();
+const roleName = settings.getByRole('textbox', { name: t('roles.editor.name'), exact: true });
+await roleName.waitFor({ timeout: WAIT });
+const roleField = await roleName.elementHandle();
+await ada.waitForFunction(({ field, value }) => field.value === value, { field: roleField, value: t('serverSettings.roles.newName') }, { timeout: WAIT });
+await roleField.dispose();
+await roleName.fill('Raid leaders');
+await roleName.press('Enter');
+const raidRole = settings.getByRole('list', { name: t('serverSettings.roles.list'), exact: true }).getByRole('button', { name: /^Raid leaders, \d+ members?/ });
+await raidRole.waitFor({ timeout: WAIT });
+// Mira's persistent voice session owns the optional playback fixture. Give the
+// existing hoisted fixture role the real DJ permission before assigning it.
+const musicPermission = byText(settings, 'switch', 'perm.music');
+if (await musicPermission.getAttribute('aria-checked') !== 'true') await musicPermission.click();
+await musicPermission.and(ada.locator('[aria-checked="true"]')).waitFor({ timeout: WAIT });
+await raidRole.focus();
+await ada.keyboard.press('Shift+F10');
+const hoist = byText(ada, 'menuitemcheckbox', 'serverSettings.roles.menu.hoist');
+await hoist.click();
+await ada.waitForFunction(() => document.querySelector('[role="menuitemcheckbox"][aria-checked="true"]') !== null, null, { timeout: WAIT });
+await ada.keyboard.press('Escape');
 await ada.keyboard.press('Escape');
 await settings.waitFor({ state: 'hidden', timeout: WAIT });
 log('invite', invitePath);
@@ -261,6 +302,70 @@ for (const who of ['bjorn', 'mira', 'liv']) {
   pages[who] = await open(who);
   await onboard(pages[who], P[who], invite);
   await composer(pages[who], 'general').and(pages[who].locator(':enabled')).waitFor({ timeout: WAIT });
+}
+// Assign the hoisted role once members have joined.
+// Channel creation leaves Ada on the last voice page, whose header has no
+// Members action. Enter the text channel before opening the member fixture.
+await openChannel(ada, 'general');
+const members = byText(ada, 'complementary', 'members.region', { server: SERVER });
+if (!(await members.isVisible().catch(() => false))) await ada.getByRole('button', { name: /^Members/ }).first().click();
+for (const name of ['Björn', 'Mira']) {
+  await members.getByRole('listitem').filter({ hasText: name }).locator('.d-member-list__open').click();
+  await ada.getByRole('dialog', { name, exact: true }).getByRole('button', { name: t('layout.profile.manageRoles'), exact: true }).click();
+  const assignRole = byText(ada, 'dialog', 'roles.assign.title', { name });
+  // This is server-controlled: wait for the authoritative role slice after clicking.
+  await assignRole.getByRole('checkbox', { name: 'Raid leaders', exact: true }).click();
+  await assignRole.getByRole('checkbox', { name: 'Raid leaders', exact: true, checked: true }).waitFor({ timeout: WAIT });
+  await assignRole.getByRole('button', { name: t('roles.assign.close'), exact: true }).click();
+}
+await openChannel(ada, 'general');
+state.serverPath = new URL(ada.url()).pathname;
+// Ada's phone: a mobile-emulated Chromium profile (390x844, touch, coarse pointer), signed in as Ada's second device through the
+// real sign-in flow. Its sign-in screens are shot on the way; ux:shots drives it afterwards (who = "phone").
+try {
+  const ada1 = state.people.ada;
+  const ctx = await chromium.launchPersistentContext(path.join(DATA, 'profile-phone'), {
+    headless: true, viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true,
+    userAgent: USER_AGENT,
+    colorScheme: 'dark', reducedMotion: 'reduce', locale: 'en-GB', timezoneId: 'Europe/Stockholm', baseURL: publicUrl,
+    args: [...chromiumMediaArgs(fixtures), `--remote-debugging-port=${BASE + 19}`], permissions: ['microphone', 'camera'],
+  });
+  const page = ctx.pages()[0] ?? await ctx.newPage();
+  await addAuthenticator(page);
+  const shot = async (n) => { await page.waitForTimeout(300); await page.screenshot({ path: path.join(OUT, `${n}.png`) }); log('shot', n); };
+  await page.goto('/welcome');
+  await byText(page, 'button', 'onboarding.connect.signIn').waitFor({ timeout: WAIT });
+  await shot('p390-signal-signin-0-entry');
+  await byText(page, 'button', 'onboarding.connect.signIn').click();
+  await page.getByRole('heading', { name: /^Sign in to / }).waitFor({ timeout: WAIT });
+  await page.getByLabel(t('signin.login.username'), { exact: true }).fill('ada');
+  await page.getByLabel(t('signin.login.password'), { exact: true }).fill(ada1.password);
+  await shot('p390-signal-signin-1-login');
+  await page.getByLabel(t('signin.login.password'), { exact: true }).focus();
+  await page.setViewportSize({ width: 390, height: 844 - 336 });
+  await shot('p390-signal-signin-1-login-keyboard');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await byText(page, 'button', 'signin.login.submit').click();
+  await byText(page, 'heading', 'signin.totp.title').waitFor({ timeout: WAIT });
+  await page.getByLabel(t('signin.totp.code'), { exact: true }).fill(await nextCode(controlUrl, ada1.totp, { wallClock: true }));
+  await shot('p390-signal-signin-2-code');
+  await byText(page, 'heading', 'signin.key.title').waitFor({ timeout: WAIT });
+  await page.getByRole('textbox', { name: t('signin.key.label'), exact: true }).fill(ada1.recoveryKey);
+  await shot('p390-signal-signin-3-recovery-key');
+  await byText(page, 'button', 'signin.key.submit').click();
+  await byText(page, 'heading', 'signin.done.title').waitFor({ timeout: WAIT });
+  await shot('p390-signal-signin-4-done');
+  await byText(page, 'button', 'signin.done.next').click();
+  await page.waitForTimeout(3000);
+  // Join the channel's MLS group before any seeded history is encrypted.
+  await page.goto(state.serverPath);
+  await composer(page, 'general').and(page.locator(':enabled')).waitFor({ timeout: WAIT });
+  pages.phone = page;
+  state.cdp.phone = BASE + 19;
+  log('phone ready');
+} catch (e) {
+  state.ready = false; state.notReady = 'phone: ' + String(e).slice(0, 300); save();
+  throw new Error('the phone browser did not sign in: ' + String(e).slice(0, 300));
 }
 await openChannel(ada, 'general');
 await ada.waitForTimeout(3000);
@@ -274,6 +379,22 @@ const CONV = [
 ];
 for (const [who, body] of CONV) await send(pages[who], 'general', body);
 log('conversation done');
+// Seed one real reply so Q9's Threads button can reopen it directly. Visit the
+// thread in both Ada profiles: the last-opened thread is local browser state.
+const threadRoot = row(ada, 'general', CONV[1][1]);
+await threadRoot.hover();
+await threadRoot.getByRole('button', { name: t('thread.open'), exact: true }).click();
+const threadReply = ada.getByRole('textbox', { name: t('thread.composer'), exact: true });
+await threadReply.fill('two ropes. final answer.');
+await threadReply.press('Enter');
+await byText(ada, 'complementary', 'thread.title').getByText('two ropes. final answer.', { exact: true }).waitFor({ timeout: WAIT });
+await byText(ada, 'button', 'thread.close').click();
+const phoneRoot = row(pages.phone, 'general', CONV[1][1]);
+await phoneRoot.getByRole('button', { name: t('thread.summary.one'), exact: true }).click();
+await byText(pages.phone, 'complementary', 'thread.title').getByText('two ropes. final answer.', { exact: true }).waitFor({ timeout: WAIT });
+await byText(pages.phone, 'button', 'thread.close').click();
+log('thread done');
+
 // Every member enters every text channel once (joins its group), then returns to #general.
 for (const who of ['bjorn', 'mira']) {
   for (const n of [...TEXT, 'news']) { try { await openChannel(pages[who], n); } catch (e) { log(who, 'open', n, String(e).slice(0, 120)); } }
@@ -310,12 +431,18 @@ delete state.cdp.liv;
 // Voice: Björn and Mira join harbour (a click on a voice row joins on a desktop).
 const joinVoice = async (page, name) => {
   await page.getByRole('button', { name: t('voice.open', { name }), exact: true }).first().click();
-  const join = page.locator('.dw-voice-stage').getByRole('button', { name: t('voice.join'), exact: true });
-  await page.locator('[data-call-phase="in"]').first().waitFor({ timeout: 5000 }).catch(async () => { await join.click(); });
-  await page.locator('[data-call-phase="in"]').first().waitFor({ timeout: WAIT });
+  await waitForVoiceJoin(page, { timeout: WAIT, joinLabel: t('callStage.preview.join') });
 };
 for (const who of ['bjorn', 'mira']) {
-  try { await joinVoice(pages[who], 'harbour'); log(who, 'in voice'); } catch (e) { log(who, 'voice failed', String(e).slice(0, 300)); }
+  try { await joinVoice(pages[who], 'harbour'); log(who, 'in voice'); } catch (e) {
+    const diagnostics = { url: pages[who].url(), error: String(e),
+      stage: await pages[who].locator('.dw-voice-stage').innerText({ timeout: 1000 }).catch(() => '(no stage)'),
+      body: (await pages[who].locator('body').innerText({ timeout: 1000 }).catch(() => '(no body)')).slice(0, 8000) };
+    writeFileSync(path.join(OUT, `voice-${who}-failure.json`), JSON.stringify(diagnostics, null, 2));
+    await pages[who].screenshot({ path: path.join(OUT, `voice-${who}-failure.png`) }).catch(() => {});
+    state.ready = false; state.notReady = `${who} voice: ${String(e).slice(0, 500)}`; save();
+    throw new Error(state.notReady);
+  }
 }
 // Mira shares her screen (the fake UI picks the screen), so the stage opens in the share focus layout, as in the prototype.
 try {
@@ -325,14 +452,60 @@ try {
   await picker.waitFor({ timeout: WAIT });
   await picker.getByRole('button', { name: t('callStage.share.go'), exact: true }).click();
   await picker.waitFor({ state: 'hidden', timeout: WAIT });
+  await pages.mira.locator('.d-call-tile[data-source="screen"]').first().waitFor({ timeout: WAIT });
+  await pages.bjorn.locator('.d-call-tile[data-source="screen"]').first().waitFor({ timeout: WAIT });
   state.miraShares = true;
   log('mira shares her screen');
-} catch (e) { log('mira share failed', String(e).slice(0, 300)); }
+} catch (e) {
+  state.ready = false; state.notReady = 'Mira screen share: ' + String(e).slice(0, 300); save();
+  throw new Error(state.notReady);
+}
+// Optional real Music playback gives the voice Bot menu a real tile. A world
+// still becomes ready when external provider tools/network are unavailable;
+// record that boundary instead of silently capturing the member-list menu.
+state.botPlays = false;
+const missingMusicTools = [['yt-dlp', '--version'], ['ffmpeg', '-version'], ['bwrap', '--version']]
+  .filter(([tool, versionFlag]) => spawnSync(tool, [versionFlag], { timeout: 5000, stdio: 'ignore' }).status !== 0).map(([tool]) => tool);
+if (missingMusicTools.length > 0) {
+  state.botPlayError = 'Missing Music provider tools: ' + missingMusicTools.join(', ');
+  log('music fixture unavailable', state.botPlayError);
+} else {
+  const requester = pages.mira;
+  try {
+    // Channel-row navigation preserves Mira's joined call and live screen share.
+    // Ada's capture reloads must never own the Music requester's voice lifecycle.
+    await openChannel(requester, 'general');
+    await composer(requester, 'general').fill('/');
+    const command = requester.getByRole('textbox', { name: 'Command', exact: true });
+    await command.waitFor({ timeout: WAIT });
+    await command.fill('/play');
+    await requester.getByRole('option').filter({ has: requester.getByText('/play', { exact: true }) }).waitFor({ timeout: WAIT });
+    await command.press('Enter');
+    await requester.getByRole('combobox', { name: 'query-or-url', exact: true }).fill('https://www.youtube.com/watch?v=aqz-KE-bpKQ');
+    await requester.locator('button.d-composer__send').click();
+    const botTile = pages.bjorn.locator('.d-call-tile[data-bot="true"]').first();
+    await botTile.waitFor({ timeout: 90_000 });
+    // Exercise the same independent Ada reload a parity pair performs. Mira
+    // remains in voice and sharing throughout; the Bot must survive that reload.
+    await ada.reload({ waitUntil: 'load' });
+    await rail(ada).waitFor({ timeout: WAIT });
+    await botTile.waitFor({ timeout: 10_000 });
+    state.botPlays = true;
+    log('Bot is in harbour after Ada reload');
+  } catch (e) {
+    state.botPlayError = String(e).slice(0, 300);
+    log('music fixture unavailable', state.botPlayError);
+  } finally {
+    await requester.keyboard.press('Escape');
+    // Keep the requester in the call. Only its visible text channel changes.
+    await openChannel(requester, 'general');
+  }
+}
 // The voice view's path, so the shots can open it without a click that joins.
 state.voicePath = new URL(pages.bjorn.url()).pathname;
 for (const who of ['bjorn', 'mira']) { try { await openChannel(pages[who], 'general'); } catch { /* the voice view stays */ } }
 // The built-in AFK channel: Ada opens it once to learn its path and is back in #general. Since web3.11 the desktop click
-// marks her away (no call); a later post of hers in this server takes her off the away list.
+// opens its page without marking her away; Go AFK is the explicit action.
 try {
   await ada.getByRole('button', { name: t('voice.open', { name: 'AFK' }), exact: true }).first().click();
   await ada.waitForURL((u) => u.pathname !== new URL(state.voicePath, publicUrl).pathname && /\/c\/[0-9a-f]{32}\/[0-9a-f]{32}$/.test(u.pathname), { timeout: 10_000 });
@@ -345,48 +518,6 @@ await openChannel(ada, 'general');
 state.serverPath = new URL(ada.url()).pathname;
 save();
 
-// Ada's phone: a mobile-emulated Chromium profile (390x844, touch, coarse pointer), signed in as Ada's second device through the
-// real sign-in flow. Its sign-in screens are shot on the way; ux:shots drives it afterwards (who = "phone").
-try {
-  const ada1 = state.people.ada;
-  const ctx = await chromium.launchPersistentContext(path.join(DATA, 'profile-phone'), {
-    headless: true, viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true,
-    userAgent: USER_AGENT,
-    colorScheme: 'dark', reducedMotion: 'reduce', locale: 'en-GB', timezoneId: 'Europe/Stockholm', baseURL: publicUrl,
-    args: [...chromiumMediaArgs(fixtures), `--remote-debugging-port=${BASE + 19}`], permissions: ['microphone', 'camera'],
-  });
-  const page = ctx.pages()[0] ?? await ctx.newPage();
-  const shot = async (n) => { await page.waitForTimeout(300); await page.screenshot({ path: path.join(OUT, `${n}.png`) }); log('shot', n); };
-  await page.goto('/welcome');
-  await byText(page, 'button', 'onboarding.connect.signIn').waitFor({ timeout: WAIT });
-  await shot('p390-signal-signin-0-entry');
-  await byText(page, 'button', 'onboarding.connect.signIn').click();
-  await page.getByRole('heading', { name: /^Sign in to / }).waitFor({ timeout: WAIT });
-  await page.getByLabel(t('signin.login.username'), { exact: true }).fill('ada');
-  await page.getByLabel(t('signin.login.password'), { exact: true }).fill(ada1.password);
-  await shot('p390-signal-signin-1-login');
-  await page.getByLabel(t('signin.login.password'), { exact: true }).focus();
-  await page.setViewportSize({ width: 390, height: 844 - 336 });
-  await shot('p390-signal-signin-1-login-keyboard');
-  await page.setViewportSize({ width: 390, height: 844 });
-  await byText(page, 'button', 'signin.login.submit').click();
-  await byText(page, 'heading', 'signin.totp.title').waitFor({ timeout: WAIT });
-  await page.getByLabel(t('signin.totp.code'), { exact: true }).fill(await nextCode(controlUrl, ada1.totp));
-  await shot('p390-signal-signin-2-code');
-  await byText(page, 'heading', 'signin.key.title').waitFor({ timeout: WAIT });
-  await page.getByRole('textbox', { name: t('signin.key.label'), exact: true }).fill(ada1.recoveryKey);
-  await shot('p390-signal-signin-3-recovery-key');
-  await byText(page, 'button', 'signin.key.submit').click();
-  await byText(page, 'heading', 'signin.done.title').waitFor({ timeout: WAIT });
-  await shot('p390-signal-signin-4-done');
-  await byText(page, 'button', 'signin.done.next').click();
-  await page.waitForTimeout(3000);
-  state.cdp.phone = BASE + 19;
-  log('phone ready');
-} catch (e) {
-  state.ready = false; state.notReady = 'phone: ' + String(e).slice(0, 300); save();
-  throw new Error('the phone browser did not sign in: ' + String(e).slice(0, 300));
-}
 // A dummy Giphy key (8 to 64 letters and digits) so the composer's GIF button shows. The pickers then sit in their "searching"
 // state: the world cannot reach Giphy. Nothing else reads the key. Set last: setting it earlier stalled the first message send.
 {

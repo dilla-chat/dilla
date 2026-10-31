@@ -12,7 +12,7 @@ import { arr, decode } from '../../../packages/client-core/src/cbor/index';
  *  so a second host on the same ports serves the same accounts (the caller removes it with `removeHostData`).
  *  L-E2E-31: `sfu` starts the host's in-process LiveKit (`-sfu -sfu-port -sfu-udp-port`); the voice suite sets it.
  *  `departureTimeout` (seconds, `-sfu-departure-timeout`) lengthens the rooms' departure timeout (task-10 fix review N3). */
-export interface HostConfig { port: number; control: number; webRoot: string | null; webauthnOrigin?: string; wire?: number; keepData?: boolean; botRuntime?: boolean; prebuilt?: boolean; botReconcileInterval?: string; advanceClockWithWall?: boolean; sfu?: { port: number; udpPort: number; departureTimeout?: number } }
+export interface HostConfig { port: number; control: number; webRoot: string | null; webauthnOrigin?: string; wire?: number; keepData?: boolean; botRuntime?: boolean; prebuilt?: boolean; botReconcileInterval?: string; advanceClockWithWall?: boolean; wallClockSweep?: boolean; sfu?: { port: number; udpPort: number; departureTimeout?: number } }
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 export const TESTHOST_BIN = join(REPO_ROOT, 'target', 'dilla-testhost');
 export const DILLABOT_BIN = join(REPO_ROOT, 'target', 'dillabot');
@@ -175,7 +175,7 @@ export async function startTestHost(c: HostConfig): Promise<StartedHost> {
         if (seconds < 1) return;
         clockTickInFlight = true;
         void fetch(clockURL, {
-          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ seconds }),
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ seconds, ...(c.wallClockSweep === false ? { sweep: false } : {}) }),
         }).then((response) => {
           if (response.ok) advancedThrough += seconds * 1_000;
         }).catch(() => undefined).finally(() => { clockTickInFlight = false; });

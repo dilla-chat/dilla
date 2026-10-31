@@ -3,40 +3,33 @@
     "name": "gap03-signin-recover-desktop",
     "viewport": { "width": 1280, "height": 800 },
     "prototype": { "props": { "startAt": "signin" }, "steps": [{ "wait": 500 }, { "click": "text=Continue" }, { "wait": 500 }, { "type": ["input[inputmode=numeric]", "123456"] }, { "wait": 900 }] },
-    "app": { "who": "fresh", "path": "/welcome", "steps": [
-      { "click": "role=button[name=\"Use an existing account\"s]" }, { "type": ["#signin-username", "mira"] }, { "type": ["#signin-password", "{password:mira}"] },
-      { "click": "role=button[name=\"Continue\"s]" }, { "waitFor": "input[autocomplete=one-time-code]" }, { "totp": ["input[autocomplete=one-time-code]", "mira"] },
-      { "click": "role=button[name=\"Continue\"s]" }, { "waitFor": "text=Your recovery key" }, { "wait": 600 }] }
+    "app": { "who": "fresh", "path": "/welcome", "steps": [{"click":"role=button[name=\"Already have an account? Sign in\"s]"},{"type":["#signin-username","mira"]},{"type":["#signin-password","{password:mira}"]},{"click":"role=button[name=\"Continue\"s]"},{"waitFor":"input[autocomplete=one-time-code]"},{"totp":["input[autocomplete=one-time-code]","mira"]},{"waitFor":"#signin-key"},{"wait":600}] }
   },
   {
     "name": "gap04-signin-done-desktop", "mutates": true,
     "viewport": { "width": 1280, "height": 800 },
     "prototype": { "props": { "startAt": "signin" }, "steps": [{ "wait": 500 }, { "click": "text=Continue" }, { "wait": 500 }, { "type": ["input[inputmode=numeric]", "123456"] }, { "wait": 900 }, { "click": "text=Add browser" }, { "wait": 900 }] },
-    "app": { "who": "fresh", "path": "/welcome", "steps": [
-      { "click": "role=button[name=\"Use an existing account\"s]" }, { "type": ["#signin-username", "bjorn"] }, { "type": ["#signin-password", "{password:bjorn}"] },
-      { "click": "role=button[name=\"Continue\"s]" }, { "waitFor": "input[autocomplete=one-time-code]" }, { "totp": ["input[autocomplete=one-time-code]", "bjorn"] },
-      { "click": "role=button[name=\"Continue\"s]" }, { "waitFor": "text=Your recovery key" }, { "type": ["input[autocomplete=off], input[name=key], textarea", "{recoveryKey:bjorn}"] },
-      { "click": "role=button[name=\"Add this browser\"s]" }, { "waitFor": "text=You’re in" }, { "wait": 900 }] }
+    "app": { "who": "fresh", "path": "/welcome", "steps": [{"click":"role=button[name=\"Already have an account? Sign in\"s]"},{"type":["#signin-username","bjorn"]},{"type":["#signin-password","{password:bjorn}"]},{"click":"role=button[name=\"Continue\"s]"},{"waitFor":"input[autocomplete=one-time-code]"},{"totp":["input[autocomplete=one-time-code]","bjorn"]},{"waitFor":"#signin-key"},{"type":["#signin-key","{recoveryKey:bjorn}"]},{"click":"role=button[name=\"Add browser\"s]"},{"waitFor":"text=You’re in"},{"wait":900}] }
   },
   {
     "name": "gap11-auth-phone-creds",
     "viewport": { "width": 390, "height": 844 },
     "prototype": { "props": { "startAt": "signin", "device": "phone" }, "steps": [{ "wait": 900 }] },
-    "app": { "who": "freshPhone", "path": "/welcome", "steps": [{ "click": "role=button[name=\"Use an existing account\"s]" }, { "wait": 600 }] }
+    "app": { "who": "freshPhone", "path": "/welcome", "steps": [{ "click": "role=button[name=\"Already have an account? Sign in\"s]" }, { "wait": 600 }] }
   },
   {
     "name": "gap11-auth-phone-code",
     "viewport": { "width": 390, "height": 844 },
     "prototype": { "props": { "startAt": "signin", "device": "phone" }, "steps": [{ "wait": 500 }, { "click": "text=Continue" }, { "wait": 900 }] },
     "app": { "who": "freshPhone", "path": "/welcome", "steps": [
-      { "click": "role=button[name=\"Use an existing account\"s]" }, { "type": ["#signin-username", "mira"] }, { "type": ["#signin-password", "{password:mira}"] },
+      { "click": "role=button[name=\"Already have an account? Sign in\"s]" }, { "type": ["#signin-username", "mira"] }, { "type": ["#signin-password", "{password:mira}"] },
       { "click": "role=button[name=\"Continue\"s]" }, { "waitFor": "input[autocomplete=one-time-code]" }, { "wait": 600 }] }
   },
   {
     "name": "gap16-reminders-empty-due",
     "viewport": { "width": 1280, "height": 800 },
     "prototype": { "props": { "startAt": "app" }, "steps": [{ "wait": 300 }, { "click": "div[data-rem='1'] > div >> nth=0" }, { "wait": 500 }, { "click": "div[data-rem='1'] >> text=Dismiss" }, { "wait": 3600 }] },
-    "app": { "who": "ada", "path": "{server}", "steps": [{ "click": "role=button[name=\"Reminders\"s]" }, { "wait": 2500 }] },
+    "app": { "who": "ada", "path": "{server}", "steps": [{"click":"role=button[name=\"Reminders\"s]"},{"wait":2500},{"waitFor":".d-reminders__empty"},{"click":"role=tab[name=/^Due/]"},{"wait":600}] },
     "judge": { "elements": [
       {"id":"search","name":"the search box at the top centre of the window"},
       {"id":"composer","name":"the message composer at the bottom of the main column"},
@@ -54,7 +47,7 @@
     "name": "gap16-reminders-empty-upcoming",
     "viewport": { "width": 1280, "height": 800 },
     "prototype": { "props": { "startAt": "app" }, "steps": [{ "wait": 300 }, { "click": "div[data-rem='1'] > div >> nth=0" }, { "wait": 500 }, { "click": "div[data-rem='1'] >> text=Dismiss" }, { "wait": 400 }, { "click": "div[data-rem='1'] >> text=Upcoming" }, { "wait": 400 }, { "click": "div[data-rem='1'] >> text=Cancel" }, { "wait": 3600 }] },
-    "app": { "who": "ada", "path": "{server}", "steps": [{ "click": "role=button[name=\"Reminders\"s]" }, { "wait": 400 }, { "click": "role=tab[name=/Upcoming/]" }, { "wait": 2500 }] }
+    "app": { "who": "ada", "path": "{server}", "steps": [{"click":"role=button[name=\"Reminders\"s]"},{"wait":400},{"click":"role=tab[name=/Upcoming/]"},{"wait":2500},{"waitFor":".d-reminders__empty"}] }
   },
   {
     "name": "gap24-status-menu-desktop",
@@ -72,12 +65,6 @@
       {"id":"invisible_row","name":"the fourth row of the status menu","copy":"invisible","anchor":"status_menu"},
       {"id":"online_dot","name":"the green dot at the left of the first row of the status menu","compare":["presence"],"small":true,"region":{"x":40,"y":590,"width":270,"height":180}}
     ] }
-  },
-  {
-    "name": "gap96-status-menu-phone",
-    "viewport": { "width": 390, "height": 844 },
-    "prototype": { "props": { "startAt": "app", "device": "phone" }, "steps": [{ "wait": 600 }, { "click": "text=You >> nth=-1" }, { "wait": 700 }, { "click": "text=Status" }, { "wait": 700 }] },
-    "app": { "who": "phone", "path": "{community}", "steps": [{ "click": "role=link[name=\"You\"s]" }, { "wait": 1000 }, { "click": "role=button[name=/status/i] >> nth=0" }, { "wait": 700 }] }
   },
   {
     "name": "gap44-reply-jump-flash", "mutates": true,
@@ -115,8 +102,8 @@
   {
     "name": "gap53-code-block-copied", "mutates": true,
     "viewport": { "width": 1280, "height": 800 },
-    "prototype": { "props": { "startAt": "app" }, "steps": [{ "wait": 900 }, { "click": "main >> text=Copy >> nth=0" }, { "wait": 400 }] },
-    "app": { "who": "ada", "path": "{server}", "steps": [{ "click": "role=textbox[name=/^message/i]" }, { "type": ["role=textbox[name=/^message/i]", "```yaml\nraid:\n  where: the bridge\n  bring:\n    - rope\n```"] }, { "press": "Enter" }, { "wait": 2500 }, { "dispatch": ".d-code-block__copy >> nth=-1" }, { "wait": 400 }] },
+    "prototype": { "props": { "startAt": "app" }, "steps": [{"wait":900},{"hover":"article:has-text(\"put it in the raid file so nobody argues later:\")"},{"click":"main >> text=Copy >> nth=0"},{"wait":400}] },
+    "app": { "who": "ada", "path": "{server}", "steps": [{"click":"role=textbox[name=/^message/i]"},{"type":["role=textbox[name=/^message/i]","put it in the raid file so nobody argues later:\n```yaml\nraid:\n  when: \"2026-10-30T20:00\"\n  where: the bridge\n  bring:\n    - rope      # two, Mira insists\n    - torches\n    - snacks\n  troll: true\n  max_party: 6\n```"]},{"press":"Enter"},{"wait":2500},{"waitFor":".d-message-row[data-state=\"ok\"]:has(.d-code-block):has-text(\"put it in the raid file so nobody argues later:\") >> nth=-1"},{"hover":".d-message-row:has(.d-code-block) >> nth=-1"},{"click":".d-code-block__copy >> nth=-1"},{"wait":400}] },
     "judge": { "elements": [
       {"id":"search","name":"the search box at the top centre of the window"},
       {"id":"composer","name":"the message composer at the bottom of the main column"},
@@ -152,7 +139,7 @@
     "name": "gap75-focused-tile-fullscreen",
     "viewport": { "width": 1280, "height": 800 },
     "prototype": { "props": { "startAt": "app" }, "steps": [{ "wait": 600 }, { "click": "aside >> text=harbour >> nth=0" }, { "wait": 1500 }, { "hover": "main d-icon[name='maximize'] >> nth=0" }, { "wait": 500 }] },
-    "app": { "who": "ada", "path": "{server}", "steps": [{ "click": "role=button[name=\"voice harbour\"i]" }, { "wait": 3000 }, { "click": "role=button[name=/\\(you\\)/]" }, { "wait": 800 }, { "hover": "role=button[name=/full screen/i] >> nth=0" }, { "wait": 500 }] }
+    "app": { "who": "ada", "path": "{server}", "steps": [{"click":"role=button[name=\"voice harbour\"i]"},{"waitFor":{"selector":".d-call-stage__tile[data-source=\"screen\"][data-focused=\"true\"] .d-call-tile[data-media=\"true\"]","timeout":120000}},{"hover":".d-call-stage__tile[data-source=\"screen\"][data-focused=\"true\"] .d-call-tile__fullscreen"},{"wait":500}] }
   },
   {
     "name": "gap79-voice-ptt-listening", "mutates": true,
@@ -182,7 +169,7 @@
     "name": "gap87-phone-members-sheet",
     "viewport": { "width": 390, "height": 844 },
     "prototype": { "props": { "startAt": "app", "device": "phone" }, "steps": [{ "wait": 600 }, { "click": "aside >> text=general >> nth=0" }, { "wait": 1200 }] },
-    "app": { "who": "phone", "path": "{community}", "steps": [{ "click": "role=button[name=\"general\"s]" }, { "wait": 1500 }] },
+    "app": { "who": "phone", "path": "{community}", "steps": [{"click":"role=button[name=\"general\"s]"},{"wait":1500},{"click":"role=button[name=/^Members/]"},{"waitFor":".d-member-list__open"}] },
     "judge": { "elements": [
       {"id":"sheet_heading","name":"the Members heading at the top left of the sheet","copy":"Members","edge":"top"},
       {"id":"close","name":"the X close button at the top right of the sheet","compare":["presence","size"]},

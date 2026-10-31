@@ -43,8 +43,12 @@
         },
         {
           "press": "Enter"
+        },
+        {
+          "wait": 100
         }
-      ]
+      ],
+      "settleMs": 0
     },
     "app": {
       "who": "mira",
@@ -60,7 +64,7 @@
           "waitFor": "textarea[aria-label=\"Command\"]"
         },
         {
-          "wait": 8000
+          "waitFor": ".d-cmd-row[aria-label^=\"/remind,\"]"
         },
         {
           "type": [
@@ -92,7 +96,8 @@
         {
           "waitFor": ".d-bot-result[data-status=\"pending\"]"
         }
-      ]
+      ],
+      "settleMs": 0
     }
   },
   {
@@ -159,7 +164,7 @@
           "waitFor": "textarea[aria-label=\"Command\"]"
         },
         {
-          "wait": 8000
+          "waitFor": ".d-cmd-row[aria-label^=\"/remind,\"]"
         },
         {
           "type": [
@@ -249,7 +254,7 @@
           "waitFor": "textarea[aria-label=\"Command\"]"
         },
         {
-          "wait": 8000
+          "waitFor": ".d-cmd-row[aria-label^=\"/play,\"]"
         },
         {
           "type": [
@@ -262,7 +267,7 @@
         },
         {
           "type": [
-            "role=textbox[name=\"query-or-url\"s]",
+            "role=combobox[name=\"query-or-url\"s]",
             "sea shanty"
           ]
         },
@@ -318,7 +323,7 @@
           "waitFor": "textarea[aria-label=\"Command\"]"
         },
         {
-          "wait": 8000
+          "waitFor": ".d-cmd-row[aria-label^=\"/play,\"]"
         },
         {
           "type": [
@@ -372,7 +377,7 @@
           "press": "Enter"
         },
         {
-          "click": "main d-icon[name='send'] >> xpath=.."
+          "waitFor": "text=Kick Björn from"
         },
         {
           "wait": 600
@@ -393,7 +398,7 @@
           "waitFor": "textarea[aria-label=\"Command\"]"
         },
         {
-          "wait": 8000
+          "waitFor": ".d-cmd-row[aria-label^=\"/play,\"]"
         },
         {
           "type": [
@@ -459,13 +464,13 @@
           "press": "Enter"
         },
         {
-          "click": "main d-icon[name='send'] >> xpath=.."
+          "waitFor": "text=Kick Björn from"
         },
         {
           "wait": 600
         },
         {
-          "click": "div[style*='z-index:47'] >> text=Cancel"
+          "click": "span:text-is(\"Cancel\")"
         },
         {
           "wait": 600
@@ -486,7 +491,7 @@
           "waitFor": "textarea[aria-label=\"Command\"]"
         },
         {
-          "wait": 8000
+          "waitFor": ".d-cmd-row[aria-label^=\"/play,\"]"
         },
         {
           "type": [
@@ -555,16 +560,16 @@
           ]
         },
         {
-          "press": "Enter"
-        },
-        {
           "type": [
             "main input[placeholder='permanent']",
             "1 day"
           ]
         },
         {
-          "click": "main d-icon[name='send'] >> xpath=.."
+          "press": "Enter"
+        },
+        {
+          "waitFor": "text=Ban Björn from"
         },
         {
           "wait": 600
@@ -585,7 +590,7 @@
           "waitFor": "textarea[aria-label=\"Command\"]"
         },
         {
-          "wait": 8000
+          "waitFor": ".d-cmd-row[aria-label^=\"/play,\"]"
         },
         {
           "type": [
@@ -654,22 +659,22 @@
           ]
         },
         {
-          "press": "Enter"
-        },
-        {
           "type": [
             "main input[placeholder='permanent']",
             "1 day"
           ]
         },
         {
-          "click": "main d-icon[name='send'] >> xpath=.."
+          "press": "Enter"
+        },
+        {
+          "waitFor": "text=Ban Björn from"
         },
         {
           "wait": 600
         },
         {
-          "click": "div[style*='z-index:47'] >> text=Cancel"
+          "click": "span:text-is(\"Cancel\")"
         },
         {
           "wait": 600
@@ -690,7 +695,7 @@
           "waitFor": "textarea[aria-label=\"Command\"]"
         },
         {
-          "wait": 8000
+          "waitFor": ".d-cmd-row[aria-label^=\"/play,\"]"
         },
         {
           "type": [
@@ -788,8 +793,12 @@
         },
         {
           "press": "Enter"
+        },
+        {
+          "wait": 100
         }
-      ]
+      ],
+      "settleMs": 0
     },
     "app": {
       "who": "phone",
@@ -811,7 +820,7 @@
           "waitFor": "textarea[aria-label=\"Command\"]"
         },
         {
-          "wait": 8000
+          "waitFor": ".d-cmd-row[aria-label^=\"/remind,\"]"
         },
         {
           "type": [
@@ -843,7 +852,8 @@
         {
           "waitFor": ".d-bot-result[data-status=\"pending\"]"
         }
-      ]
+      ],
+      "settleMs": 0
     }
   },
   {
@@ -929,7 +939,7 @@
           "waitFor": "textarea[aria-label=\"Command\"]"
         },
         {
-          "wait": 8000
+          "waitFor": ".d-cmd-row[aria-label^=\"/remind,\"]"
         },
         {
           "type": [
@@ -1038,7 +1048,7 @@
           "waitFor": "textarea[aria-label=\"Command\"]"
         },
         {
-          "wait": 8000
+          "waitFor": ".d-cmd-row[aria-label^=\"/play,\"]"
         },
         {
           "type": [
@@ -1051,7 +1061,7 @@
         },
         {
           "type": [
-            "role=textbox[name=\"query-or-url\"s]",
+            "role=combobox[name=\"query-or-url\"s]",
             "sea shanty"
           ]
         },
@@ -1126,7 +1136,7 @@
           "waitFor": "textarea[aria-label=\"Command\"]"
         },
         {
-          "wait": 8000
+          "waitFor": ".d-cmd-row[aria-label^=\"/play,\"]"
         },
         {
           "type": [
@@ -1193,7 +1203,7 @@
           "press": "Enter"
         },
         {
-          "click": "main d-icon[name='send'] >> xpath=.."
+          "waitFor": "text=Kick Björn from"
         },
         {
           "wait": 600
@@ -1201,7 +1211,7 @@
       ]
     },
     "app": {
-      "who": "ada",
+      "who": "phone",
       "path": "{community}",
       "steps": [
         {
@@ -1220,7 +1230,7 @@
           "waitFor": "textarea[aria-label=\"Command\"]"
         },
         {
-          "wait": 8000
+          "waitFor": ".d-cmd-row[aria-label^=\"/play,\"]"
         },
         {
           "type": [
@@ -1299,13 +1309,13 @@
           "press": "Enter"
         },
         {
-          "click": "main d-icon[name='send'] >> xpath=.."
+          "waitFor": "text=Kick Björn from"
         },
         {
           "wait": 600
         },
         {
-          "click": "div[style*='z-index:47'] >> text=Cancel"
+          "click": "span:text-is(\"Cancel\")"
         },
         {
           "wait": 600
@@ -1313,7 +1323,7 @@
       ]
     },
     "app": {
-      "who": "ada",
+      "who": "phone",
       "path": "{community}",
       "steps": [
         {
@@ -1332,7 +1342,7 @@
           "waitFor": "textarea[aria-label=\"Command\"]"
         },
         {
-          "wait": 8000
+          "waitFor": ".d-cmd-row[aria-label^=\"/play,\"]"
         },
         {
           "type": [
@@ -1414,16 +1424,16 @@
           ]
         },
         {
-          "press": "Enter"
-        },
-        {
           "type": [
             "main input[placeholder='permanent']",
             "1 day"
           ]
         },
         {
-          "click": "main d-icon[name='send'] >> xpath=.."
+          "press": "Enter"
+        },
+        {
+          "waitFor": "text=Ban Björn from"
         },
         {
           "wait": 600
@@ -1431,7 +1441,7 @@
       ]
     },
     "app": {
-      "who": "ada",
+      "who": "phone",
       "path": "{community}",
       "steps": [
         {
@@ -1450,7 +1460,7 @@
           "waitFor": "textarea[aria-label=\"Command\"]"
         },
         {
-          "wait": 8000
+          "waitFor": ".d-cmd-row[aria-label^=\"/play,\"]"
         },
         {
           "type": [
@@ -1532,22 +1542,22 @@
           ]
         },
         {
-          "press": "Enter"
-        },
-        {
           "type": [
             "main input[placeholder='permanent']",
             "1 day"
           ]
         },
         {
-          "click": "main d-icon[name='send'] >> xpath=.."
+          "press": "Enter"
+        },
+        {
+          "waitFor": "text=Ban Björn from"
         },
         {
           "wait": 600
         },
         {
-          "click": "div[style*='z-index:47'] >> text=Cancel"
+          "click": "span:text-is(\"Cancel\")"
         },
         {
           "wait": 600
@@ -1555,7 +1565,7 @@
       ]
     },
     "app": {
-      "who": "ada",
+      "who": "phone",
       "path": "{community}",
       "steps": [
         {
@@ -1574,7 +1584,7 @@
           "waitFor": "textarea[aria-label=\"Command\"]"
         },
         {
-          "wait": 8000
+          "waitFor": ".d-cmd-row[aria-label^=\"/play,\"]"
         },
         {
           "type": [
@@ -1646,6 +1656,9 @@
         },
         {
           "wait": 900
+        },
+        {
+          "waitFor": "button[aria-label=\"add a gif\"]:enabled"
         }
       ]
     }
@@ -1668,7 +1681,12 @@
     },
     "app": {
       "who": "ada",
-      "path": "{server}"
+      "path": "{server}",
+      "steps": [
+        {
+          "waitFor": "button[aria-label=\"add a gif\"]:enabled"
+        }
+      ]
     }
   },
   {
@@ -1701,7 +1719,10 @@
           "click": "role=button[name=\"voice harbour\"i]"
         },
         {
-          "wait": 7000
+          "waitFor": {
+            "selector": ".d-call-stage__tile[data-source=\"screen\"][data-focused=\"true\"] .d-call-tile[data-media=\"true\"]",
+            "timeout": 120000
+          }
         }
       ]
     }
@@ -1761,6 +1782,9 @@
         },
         {
           "wait": 1200
+        },
+        {
+          "waitFor": "button[aria-label=\"add a gif\"]:enabled"
         }
       ]
     },

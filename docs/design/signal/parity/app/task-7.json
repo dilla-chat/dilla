@@ -44,7 +44,7 @@
           "waitFor": "textarea[aria-label=\"Command\"]"
         },
         {
-          "wait": 8000
+          "waitFor": ".d-cmd-row[aria-label^=\"/poll create,\"]"
         },
         {
           "type": [
@@ -124,7 +124,7 @@
           "waitFor": "textarea[aria-label=\"Command\"]"
         },
         {
-          "wait": 8000
+          "waitFor": ".d-cmd-row[aria-label^=\"/poll create,\"]"
         },
         {
           "type": [
@@ -210,7 +210,7 @@
           "waitFor": "textarea[aria-label=\"Command\"]"
         },
         {
-          "wait": 8000
+          "waitFor": ".d-cmd-row[aria-label^=\"/poll create,\"]"
         },
         {
           "type": [
@@ -302,7 +302,7 @@
           "waitFor": "textarea[aria-label=\"Command\"]"
         },
         {
-          "wait": 8000
+          "waitFor": ".d-cmd-row[aria-label^=\"/poll create,\"]"
         },
         {
           "type": [
@@ -338,7 +338,10 @@
           "click": "role=button[name=\"Post poll\"s]"
         },
         {
-          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-open\")"
+          "waitFor": {
+            "selector": ".d-poll-card:has-text(\"What should we raid on Friday? card-open\")",
+            "timeout": 120000
+          }
         },
         {
           "wait": 1000
@@ -421,7 +424,7 @@
           "waitFor": "textarea[aria-label=\"Command\"]"
         },
         {
-          "wait": 8000
+          "waitFor": ".d-cmd-row[aria-label^=\"/poll create,\"]"
         },
         {
           "type": [
@@ -457,16 +460,29 @@
           "click": "role=button[name=\"Post poll\"s]"
         },
         {
-          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-voted\")"
+          "waitFor": {
+            "selector": ".d-poll-card:has-text(\"What should we raid on Friday? card-voted\")",
+            "timeout": 120000
+          }
         },
         {
           "wait": 1000
         },
         {
+          "wheel": [
+            ".d-poll-card:has-text(\"What should we raid on Friday? card-voted\")",
+            0,
+            -180
+          ]
+        },
+        {
           "click": ".d-poll-card:has-text(\"What should we raid on Friday? card-voted\") >> role=button[name=/^the bridge/]"
         },
         {
-          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-voted\") .d-poll-card__option:enabled"
+          "waitFor": {
+            "selector": ".d-poll-card:has-text(\"What should we raid on Friday? card-voted\") .d-poll-card__option[data-mine=\"true\"][aria-disabled=\"false\"]:has-text(\"the bridge\")",
+            "timeout": 120000
+          }
         }
       ]
     }
@@ -555,7 +571,7 @@
           "waitFor": "textarea[aria-label=\"Command\"]"
         },
         {
-          "wait": 8000
+          "waitFor": ".d-cmd-row[aria-label^=\"/poll create,\"]"
         },
         {
           "type": [
@@ -594,22 +610,45 @@
           "click": "role=button[name=\"Post poll\"s]"
         },
         {
-          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-multi\")"
+          "waitFor": {
+            "selector": ".d-poll-card:has-text(\"What should we raid on Friday? card-multi\")",
+            "timeout": 120000
+          }
         },
         {
           "wait": 1000
         },
         {
+          "wheel": [
+            ".d-poll-card:has-text(\"What should we raid on Friday? card-multi\")",
+            0,
+            -180
+          ]
+        },
+        {
           "click": ".d-poll-card:has-text(\"What should we raid on Friday? card-multi\") >> role=button[name=/^the bridge/]"
         },
         {
-          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-multi\") .d-poll-card__option:enabled"
+          "waitFor": {
+            "selector": ".d-poll-card:has-text(\"What should we raid on Friday? card-multi\") .d-poll-card__option[data-mine=\"true\"][aria-disabled=\"false\"]:has-text(\"the bridge\")",
+            "timeout": 120000
+          }
+        },
+        {
+          "wheel": [
+            ".d-poll-card:has-text(\"What should we raid on Friday? card-multi\")",
+            0,
+            -180
+          ]
         },
         {
           "click": ".d-poll-card:has-text(\"What should we raid on Friday? card-multi\") >> role=button[name=/^the harbour/]"
         },
         {
-          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-multi\") .d-poll-card__option:enabled"
+          "waitFor": {
+            "selector": ".d-poll-card:has-text(\"What should we raid on Friday? card-multi\") .d-poll-card__option[data-mine=\"true\"][aria-disabled=\"false\"]:has-text(\"the harbour\")",
+            "timeout": 120000
+          }
         }
       ]
     }
@@ -695,7 +734,7 @@
           "waitFor": "textarea[aria-label=\"Command\"]"
         },
         {
-          "wait": 8000
+          "waitFor": ".d-cmd-row[aria-label^=\"/poll create,\"]"
         },
         {
           "type": [
@@ -731,22 +770,38 @@
           "click": "role=button[name=\"Post poll\"s]"
         },
         {
-          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-closed-winner\")"
+          "waitFor": {
+            "selector": ".d-poll-card:has-text(\"What should we raid on Friday? card-closed-winner\")",
+            "timeout": 120000
+          }
         },
         {
           "wait": 1000
         },
         {
+          "wheel": [
+            ".d-poll-card:has-text(\"What should we raid on Friday? card-closed-winner\")",
+            0,
+            -180
+          ]
+        },
+        {
           "click": ".d-poll-card:has-text(\"What should we raid on Friday? card-closed-winner\") >> role=button[name=/^the bridge/]"
         },
         {
-          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-closed-winner\") .d-poll-card__option:enabled"
+          "waitFor": {
+            "selector": ".d-poll-card:has-text(\"What should we raid on Friday? card-closed-winner\") .d-poll-card__option[data-mine=\"true\"][aria-disabled=\"false\"]:has-text(\"the bridge\")",
+            "timeout": 120000
+          }
         },
         {
           "click": ".d-poll-card:has-text(\"What should we raid on Friday? card-closed-winner\") >> role=button[name=\"Close poll\"s]"
         },
         {
-          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-closed-winner\")[data-closed=\"true\"]"
+          "waitFor": {
+            "selector": ".d-poll-card:has-text(\"What should we raid on Friday? card-closed-winner\")[data-closed=\"true\"]:has(.d-poll-card__option[data-winner=\"true\"])",
+            "timeout": 120000
+          }
         },
         {
           "wait": 2800
@@ -823,7 +878,7 @@
           "waitFor": "textarea[aria-label=\"Command\"]"
         },
         {
-          "wait": 8000
+          "waitFor": ".d-cmd-row[aria-label^=\"/poll create,\"]"
         },
         {
           "type": [
@@ -859,7 +914,10 @@
           "click": "role=button[name=\"Post poll\"s]"
         },
         {
-          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-creator-close\")"
+          "waitFor": {
+            "selector": ".d-poll-card:has-text(\"What should we raid on Friday? card-creator-close\")",
+            "timeout": 120000
+          }
         },
         {
           "wait": 1000
@@ -925,7 +983,7 @@
           "waitFor": "textarea[aria-label=\"Command\"]"
         },
         {
-          "wait": 8000
+          "waitFor": ".d-cmd-row[aria-label^=\"/poll create,\"]"
         },
         {
           "type": [
@@ -1018,7 +1076,7 @@
           "waitFor": "textarea[aria-label=\"Command\"]"
         },
         {
-          "wait": 8000
+          "waitFor": ".d-cmd-row[aria-label^=\"/poll create,\"]"
         },
         {
           "type": [
@@ -1117,7 +1175,7 @@
           "waitFor": "textarea[aria-label=\"Command\"]"
         },
         {
-          "wait": 8000
+          "waitFor": ".d-cmd-row[aria-label^=\"/poll create,\"]"
         },
         {
           "type": [
@@ -1222,7 +1280,7 @@
           "waitFor": "textarea[aria-label=\"Command\"]"
         },
         {
-          "wait": 8000
+          "waitFor": ".d-cmd-row[aria-label^=\"/poll create,\"]"
         },
         {
           "type": [
@@ -1258,7 +1316,10 @@
           "click": "role=button[name=\"Post poll\"s]"
         },
         {
-          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-open phone\")"
+          "waitFor": {
+            "selector": ".d-poll-card:has-text(\"What should we raid on Friday? card-open phone\")",
+            "timeout": 120000
+          }
         },
         {
           "wait": 1000
@@ -1354,7 +1415,7 @@
           "waitFor": "textarea[aria-label=\"Command\"]"
         },
         {
-          "wait": 8000
+          "waitFor": ".d-cmd-row[aria-label^=\"/poll create,\"]"
         },
         {
           "type": [
@@ -1390,16 +1451,29 @@
           "click": "role=button[name=\"Post poll\"s]"
         },
         {
-          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-voted phone\")"
+          "waitFor": {
+            "selector": ".d-poll-card:has-text(\"What should we raid on Friday? card-voted phone\")",
+            "timeout": 120000
+          }
         },
         {
           "wait": 1000
         },
         {
+          "wheel": [
+            ".d-poll-card:has-text(\"What should we raid on Friday? card-voted phone\")",
+            0,
+            -180
+          ]
+        },
+        {
           "click": ".d-poll-card:has-text(\"What should we raid on Friday? card-voted phone\") >> role=button[name=/^the bridge/]"
         },
         {
-          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-voted phone\") .d-poll-card__option:enabled"
+          "waitFor": {
+            "selector": ".d-poll-card:has-text(\"What should we raid on Friday? card-voted phone\") .d-poll-card__option[data-mine=\"true\"][aria-disabled=\"false\"]:has-text(\"the bridge\")",
+            "timeout": 120000
+          }
         }
       ]
     }
@@ -1501,7 +1575,7 @@
           "waitFor": "textarea[aria-label=\"Command\"]"
         },
         {
-          "wait": 8000
+          "waitFor": ".d-cmd-row[aria-label^=\"/poll create,\"]"
         },
         {
           "type": [
@@ -1540,22 +1614,45 @@
           "click": "role=button[name=\"Post poll\"s]"
         },
         {
-          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-multi phone\")"
+          "waitFor": {
+            "selector": ".d-poll-card:has-text(\"What should we raid on Friday? card-multi phone\")",
+            "timeout": 120000
+          }
         },
         {
           "wait": 1000
         },
         {
+          "wheel": [
+            ".d-poll-card:has-text(\"What should we raid on Friday? card-multi phone\")",
+            0,
+            -180
+          ]
+        },
+        {
           "click": ".d-poll-card:has-text(\"What should we raid on Friday? card-multi phone\") >> role=button[name=/^the bridge/]"
         },
         {
-          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-multi phone\") .d-poll-card__option:enabled"
+          "waitFor": {
+            "selector": ".d-poll-card:has-text(\"What should we raid on Friday? card-multi phone\") .d-poll-card__option[data-mine=\"true\"][aria-disabled=\"false\"]:has-text(\"the bridge\")",
+            "timeout": 120000
+          }
+        },
+        {
+          "wheel": [
+            ".d-poll-card:has-text(\"What should we raid on Friday? card-multi phone\")",
+            0,
+            -180
+          ]
         },
         {
           "click": ".d-poll-card:has-text(\"What should we raid on Friday? card-multi phone\") >> role=button[name=/^the harbour/]"
         },
         {
-          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-multi phone\") .d-poll-card__option:enabled"
+          "waitFor": {
+            "selector": ".d-poll-card:has-text(\"What should we raid on Friday? card-multi phone\") .d-poll-card__option[data-mine=\"true\"][aria-disabled=\"false\"]:has-text(\"the harbour\")",
+            "timeout": 120000
+          }
         }
       ]
     }
@@ -1654,7 +1751,7 @@
           "waitFor": "textarea[aria-label=\"Command\"]"
         },
         {
-          "wait": 8000
+          "waitFor": ".d-cmd-row[aria-label^=\"/poll create,\"]"
         },
         {
           "type": [
@@ -1690,22 +1787,38 @@
           "click": "role=button[name=\"Post poll\"s]"
         },
         {
-          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-closed-winner phone\")"
+          "waitFor": {
+            "selector": ".d-poll-card:has-text(\"What should we raid on Friday? card-closed-winner phone\")",
+            "timeout": 120000
+          }
         },
         {
           "wait": 1000
         },
         {
+          "wheel": [
+            ".d-poll-card:has-text(\"What should we raid on Friday? card-closed-winner phone\")",
+            0,
+            -180
+          ]
+        },
+        {
           "click": ".d-poll-card:has-text(\"What should we raid on Friday? card-closed-winner phone\") >> role=button[name=/^the bridge/]"
         },
         {
-          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-closed-winner phone\") .d-poll-card__option:enabled"
+          "waitFor": {
+            "selector": ".d-poll-card:has-text(\"What should we raid on Friday? card-closed-winner phone\") .d-poll-card__option[data-mine=\"true\"][aria-disabled=\"false\"]:has-text(\"the bridge\")",
+            "timeout": 120000
+          }
         },
         {
           "click": ".d-poll-card:has-text(\"What should we raid on Friday? card-closed-winner phone\") >> role=button[name=\"Close poll\"s]"
         },
         {
-          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-closed-winner phone\")[data-closed=\"true\"]"
+          "waitFor": {
+            "selector": ".d-poll-card:has-text(\"What should we raid on Friday? card-closed-winner phone\")[data-closed=\"true\"]:has(.d-poll-card__option[data-winner=\"true\"])",
+            "timeout": 120000
+          }
         },
         {
           "wait": 2800
@@ -1795,7 +1908,7 @@
           "waitFor": "textarea[aria-label=\"Command\"]"
         },
         {
-          "wait": 8000
+          "waitFor": ".d-cmd-row[aria-label^=\"/poll create,\"]"
         },
         {
           "type": [
@@ -1831,7 +1944,10 @@
           "click": "role=button[name=\"Post poll\"s]"
         },
         {
-          "waitFor": ".d-poll-card:has-text(\"What should we raid on Friday? card-creator-close phone\")"
+          "waitFor": {
+            "selector": ".d-poll-card:has-text(\"What should we raid on Friday? card-creator-close phone\")",
+            "timeout": 120000
+          }
         },
         {
           "wait": 1000
@@ -1870,6 +1986,9 @@
         },
         {
           "wait": 900
+        },
+        {
+          "waitFor": "button[aria-label=\"add a gif\"]:enabled"
         }
       ]
     }
@@ -1892,7 +2011,12 @@
     },
     "app": {
       "who": "ada",
-      "path": "{server}"
+      "path": "{server}",
+      "steps": [
+        {
+          "waitFor": "button[aria-label=\"add a gif\"]:enabled"
+        }
+      ]
     }
   },
   {
@@ -1925,7 +2049,10 @@
           "click": "role=button[name=\"voice harbour\"i]"
         },
         {
-          "wait": 7000
+          "waitFor": {
+            "selector": ".d-call-stage__tile[data-source=\"screen\"][data-focused=\"true\"] .d-call-tile[data-media=\"true\"]",
+            "timeout": 120000
+          }
         }
       ]
     }
@@ -1944,7 +2071,8 @@
     },
     "app": {
       "who": "phone",
-      "path": "{community}"
+      "path": "{community}",
+      "steps": []
     }
   },
   {
@@ -1985,6 +2113,9 @@
         },
         {
           "wait": 1200
+        },
+        {
+          "waitFor": "button[aria-label=\"add a gif\"]:enabled"
         }
       ]
     },

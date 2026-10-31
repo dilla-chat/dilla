@@ -63,6 +63,9 @@ export function validateSpec(spec) {
     if (props !== undefined && !isObject(props)) throw new Error(`${at} (${pair.name}): prototype.props must be an object`);
     if (steps !== undefined && !Array.isArray(steps)) throw new Error(`${at} (${pair.name}): prototype.steps must be an array`);
     const other = pair.story ?? pair.app;
+    for (const side of [pair.prototype, other]) {
+      if (side?.settleMs !== undefined && !(typeof side.settleMs === 'number' && Number.isFinite(side.settleMs) && side.settleMs >= 0)) throw new Error(`${at} (${pair.name}): settleMs must be finite non-negative milliseconds`);
+    }
     if (pair.app !== undefined) {
       const a = pair.app;
       if (!isObject(a) || !APP_WHO.includes(a.who)) throw new Error(`${at} (${pair.name}): app.who must be one of ${APP_WHO.join(', ')}`);
@@ -73,10 +76,12 @@ export function validateSpec(spec) {
     if (other.steps !== undefined && !Array.isArray(other.steps)) throw new Error(`${at} (${pair.name}): ${pair.story ? 'story' : 'app'}.steps must be an array`);
     [...(steps ?? []), ...(other.steps ?? [])].forEach((s, j) => {
       const keys = Object.keys(s ?? {});
-      const ok = keys.length === 1 && ['click', 'rightClick', 'hover', 'press', 'type', 'wait', 'waitFor', 'goto', 'totp', 'totpFrom', 'upload', 'dispatch'].includes(keys[0]);
-      if (!ok) throw new Error(`${at} (${pair.name}): step ${j} needs exactly one of click, rightClick, hover, press, type, wait, waitFor, goto, totp, totpFrom, upload, dispatch`);
+      const ok = keys.length === 1 && ['click', 'rightClick', 'hover', 'wheel', 'press', 'type', 'wait', 'waitFor', 'goto', 'totp', 'totpFrom', 'upload', 'dispatch'].includes(keys[0]);
+      if (!ok) throw new Error(`${at} (${pair.name}): step ${j} needs exactly one of click, rightClick, hover, wheel, press, type, wait, waitFor, goto, totp, totpFrom, upload, dispatch`);
+      if (keys[0] === 'wheel' && !(Array.isArray(s.wheel) && s.wheel.length === 3 && typeof s.wheel[0] === 'string' && s.wheel[0] !== '' && s.wheel.slice(1).every(n => typeof n === 'number' && Number.isFinite(n)))) throw new Error(`${at} (${pair.name}): step ${j} wheel is [selector, finite deltaX, finite deltaY]`);
       if (keys[0] === 'type' && !(Array.isArray(s.type) && s.type.length === 2 && s.type.every(x => typeof x === 'string'))) throw new Error(`${at} (${pair.name}): step ${j} type is [selector, text]`);
       if (keys[0] === 'wait' && typeof s.wait !== 'number') throw new Error(`${at} (${pair.name}): step ${j} wait is milliseconds`);
+      if (keys[0] === 'waitFor' && !(typeof s.waitFor === 'string' && s.waitFor !== '' || isObject(s.waitFor) && typeof s.waitFor.selector === 'string' && s.waitFor.selector !== '' && Number.isFinite(s.waitFor.timeout) && s.waitFor.timeout > 0)) throw new Error(`${at} (${pair.name}): step ${j} waitFor is a selector or { selector, timeout } with a positive timeout`);
       if (keys[0] === 'goto' && typeof s.goto !== 'string') throw new Error(`${at} (${pair.name}): step ${j} goto is a path`);
       if (keys[0] === 'totp' && !(Array.isArray(s.totp) && s.totp.length === 2 && typeof s.totp[0] === 'string' && PEOPLE.includes(s.totp[1]))) throw new Error(`${at} (${pair.name}): step ${j} totp is [selector, who] with who one of ${PEOPLE.join(', ')}`);
       // Wave B task 3b: an account the pair itself signs up is not in state.people; its code comes from the setup key on the page.
@@ -88,10 +93,14 @@ export function validateSpec(spec) {
 }
 
 /**
- * Pairs that change the world (send messages, add a device or role, switch a setting) are marked `mutates: true`. They run after every
- * other pair, in spec order, so the read-only pairs always see the world as it was built. Pure; does not reorder otherwise.
+ * Standing screens see the fresh world before any browser reloads can end Mira's share. Then read-only pairs run, followed by
+ * `mutates: true` pairs (send messages, add a device or role, switch a setting). Order is stable inside each group; input is unchanged.
  */
-export const orderPairs = spec => [...spec.filter(p => p.mutates !== true), ...spec.filter(p => p.mutates === true)];
+export const orderPairs = spec => [
+  ...spec.filter(p => p.name.startsWith('standing-')),
+  ...spec.filter(p => !p.name.startsWith('standing-') && p.mutates !== true),
+  ...spec.filter(p => !p.name.startsWith('standing-') && p.mutates === true),
+];
 
 /** The URL a path has in the running app; `{invite}` expands to state.invitePath (the world's invite link path) and `{server}` to state.serverPath (#general of the world's server), `{community}` to the server's own path (the phone's server list). Pure. */
 export function appUrl(state, p) {
@@ -100,6 +109,12 @@ export function appUrl(state, p) {
   if (p.includes('{server}') && typeof state.serverPath !== 'string') throw new Error('state has no serverPath for {server}');
   const rel = p.replace(/\{invite\}/g, state.invitePath ?? '').replace(/\{server\}/g, state.serverPath ?? '').replace(/\{community\}/g, (state.serverPath ?? '').split('/').slice(0, 3).join('/'));
   return root + (rel.startsWith('/') ? rel : `/${rel}`);
+}
+
+/** Fresh auth pages need a valid WebAuthn RP hostname; existing RTC profiles keep the world's numeric origin. */
+export function stateForApp(state, who) {
+  return (who === 'fresh' || who === 'freshPhone') && state.authUrl !== undefined
+    ? { ...state, publicUrl: state.authUrl } : state;
 }
 
 /** Typed text in an app step: `{password:who}` and `{recoveryKey:who}` expand from state.people. Pure. */
@@ -174,9 +189,9 @@ function installPropsInjection(props) {
   document.addEventListener('DOMContentLoaded', () => document.querySelectorAll('script[data-dc-script]').forEach(patch), { capture: true });
 }
 
-async function settle(page) {
+async function settle(page, milliseconds = SETTLE_MS) {
   await page.evaluate(() => document.fonts.ready);
-  await page.waitForTimeout(SETTLE_MS);
+  if (milliseconds > 0) await page.waitForTimeout(milliseconds);
 }
 
 /** On-demand upload bytes for cap-boundary captures; ordinary fixture paths stay unchanged. */
@@ -188,33 +203,107 @@ export function uploadFixture(file) {
   return { name: match[2], mimeType: 'application/octet-stream', buffer: Buffer.alloc(size) };
 }
 
-async function runSteps(page, steps, ctx = {}) {
+export async function runSteps(page, steps, ctx = {}) {
   for (const s of steps ?? []) {
     if (s.goto !== undefined) { await page.goto(appUrl(ctx.state, s.goto), { waitUntil: 'load' }); await page.waitForTimeout(300); }
     else if (s.totp) {
       const { nextCode } = await import(path.join(REPO, 'e2e/web/support/totp.ts'));
-      await page.fill(s.totp[0], await nextCode(ctx.state.controlUrl, ctx.state.people[s.totp[1]].totp));
+      await page.fill(s.totp[0], await nextCode(ctx.state.controlUrl, ctx.state.people[s.totp[1]].totp, { wallClock: true }));
     }
     else if (s.totpFrom) {
       // The setup key the page shows (a new account's, never stored here), then the code for it from the host's clock.
       const { nextCode } = await import(path.join(REPO, 'e2e/web/support/totp.ts'));
       const totpSecret = await page.inputValue(s.totpFrom[0]);
-      await page.fill(s.totpFrom[1], await nextCode(ctx.state.controlUrl, { totpSecret, lastCounter: -1 }));
+      await page.fill(s.totpFrom[1], await nextCode(ctx.state.controlUrl, { totpSecret, lastCounter: -1 }, { wallClock: true }));
     }
     else if (s.upload) await page.setInputFiles(s.upload[0], s.upload.slice(1).map(uploadFixture));
     else if (s.dispatch) await page.locator(s.dispatch).first().dispatchEvent('click');
     else if (s.click) await page.click(s.click);
     else if (s.rightClick) await page.click(s.rightClick, { button: 'right' });
-    else if (s.waitFor) await page.waitForSelector(s.waitFor, { timeout: 30_000 });
+    else if (s.waitFor) await page.waitForSelector(typeof s.waitFor === 'string' ? s.waitFor : s.waitFor.selector, { timeout: typeof s.waitFor === 'string' ? 30_000 : s.waitFor.timeout });
     else if (s.hover) await page.hover(s.hover);
+    else if (s.wheel) {
+      await page.hover(s.wheel[0]);
+      await page.mouse.wheel(s.wheel[1], s.wheel[2]);
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    }
     else if (s.press) await page.keyboard.press(s.press);
     else if (s.type) await page.fill(s.type[0], ctx.state ? expandText(ctx.state, s.type[1]) : s.type[1]);
     else if (typeof s.wait === 'number') await page.waitForTimeout(s.wait);
   }
-  if ((steps ?? []).length > 0) await settle(page);
+  // A click leaves the pointer over its target (notably the signup password
+  // field). Preserve hover only when a pair explicitly asks to compare it.
+  if (!(steps ?? []).some(s => s.hover)) await page.mouse.move(0, 0);
+  if ((steps ?? []).length > 0) await settle(page, ctx.settleMs);
+}
+
+/** Wait for transient UI in the captured region, leaving unrelated panels alone. */
+export async function waitForCaptureReady(page, clip) {
+  const root = await page.locator(clip ?? 'body').first().elementHandle();
+  if (!root) throw new Error(`capture region ${clip ?? 'body'}: not found`);
+  try {
+    await page.waitForFunction(el => {
+      const visible = node => {
+        const style = getComputedStyle(node);
+        return node.getClientRects().length > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+      };
+      if ([el, ...el.querySelectorAll('[aria-busy="true"]')].some(node => node.getAttribute('aria-busy') === 'true' && visible(node))) return false;
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      while (walker.nextNode()) {
+        if (/^Loading(?:\s|…|\.)/i.test(walker.currentNode.textContent.trim()) && visible(walker.currentNode.parentElement)) return false;
+      }
+      return true;
+    }, root, { timeout: 30_000 });
+  } finally { await root.dispose(); }
+}
+
+export function validateWorldForPair(state, pair) {
+  if (['standing-voice-focus', 'gap75-focused-tile-fullscreen'].includes(pair.name) && state.miraShares !== true) {
+    throw new Error(`${pair.name}: the world has no confirmed Mira screen share; restart the world before capturing voice focus`);
+  }
+}
+
+/** A world page can finish its document load while the worker still shows the startup splash. */
+export async function waitForAppReady(page, who) {
+  if (who !== 'fresh' && who !== 'freshPhone') await page.waitForSelector('.d-app-shell', { state: 'visible', timeout: 60_000 });
+  // All app parity pairs compare Signal. A restored preference may arrive after
+  // the shell; observe it rather than capturing a transient light frame.
+  await page.waitForSelector('html[data-theme="signal"]', { state: 'attached', timeout: 60_000 });
+}
+
+/** Another CDP observer can reset target-wide media during a long Bot wait. Restore the runner's OS contract, then observe the app. */
+export async function prepareAppCapture(page, who, clip) {
+  await page.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' });
+  await waitForAppReady(page, who);
+  await waitForAppMetadata(page, who, clip);
+}
+
+/** Shell mounting precedes account/community slices. Check only metadata actually in this frame. */
+export async function waitForAppMetadata(page, who, clip) {
+  if (who === 'fresh' || who === 'freshPhone') return;
+  const root = await page.locator(clip ?? 'body').first().elementHandle();
+  if (!root) throw new Error(`capture region ${clip ?? 'body'}: not found`);
+  try {
+    await page.waitForFunction(el => {
+      const bounds = el.getBoundingClientRect();
+      const visible = node => {
+        const style = getComputedStyle(node);
+        return style.visibility !== 'hidden' && style.display !== 'none' && [...node.getClientRects()].some(r =>
+          r.height > 0 && r.bottom > Math.max(0, bounds.top) && r.top < Math.min(innerHeight, bounds.bottom)
+          && r.right >= Math.max(0, bounds.left) && r.left <= Math.min(innerWidth, bounds.right));
+      };
+      const nodes = selector => [...(el.matches(selector) ? [el] : []), ...el.querySelectorAll(selector)].filter(visible);
+      // Shell's unknown identity is an en dash; blank custom status is legitimate.
+      if (nodes('.d-channel-list__title, .d-user-panel__name').some(node => !node.textContent.trim() || node.textContent.trim() === '–')) return false;
+      // Shell deliberately omits the live online part until members AND presence
+      // arrive. Zero online still has this part. No stat line is also valid (e.g. no membership).
+      return nodes('.d-channel-list__stats').every(node => [...node.querySelectorAll('[data-live="true"]')].some(part => part.textContent.trim()));
+    }, root, { timeout: 60_000 });
+  } finally { await root.dispose(); }
 }
 
 async function capture(page, out, clip, cdp) {
+  await waitForCaptureReady(page, clip);
   // With `cdp` (a world browser, emulated at scale 2 through CDP) the frame comes from Page.captureScreenshot: Playwright's own
   // screenshot would ignore an emulation it did not set.
   const grab = async region => {
@@ -240,7 +329,7 @@ export async function shootPrototype(browser, pair, out) {
     await page.addInitScript(installPropsInjection, pair.prototype.props ?? {});
     await page.goto(pathToFileURL(PROTOTYPE).href, { waitUntil: 'load' });
     await settle(page);
-    await runSteps(page, pair.prototype.steps);
+    await runSteps(page, pair.prototype.steps, { settleMs: pair.prototype.settleMs });
     await capture(page, out, pair.prototype.clip);
   } finally { await context.close(); }
 }
@@ -253,9 +342,15 @@ async function shootStory(browser, pair, base, out) {
     if (!response?.ok()) throw new Error(`story ${pair.story.id}: HTTP ${response?.status()}`);
     await page.waitForSelector('#storybook-root > *', { state: 'attached', timeout: 30_000 });
     await settle(page);
-    await runSteps(page, pair.story.steps);
+    await runSteps(page, pair.story.steps, { settleMs: pair.story.settleMs });
     await capture(page, out, pair.story.clip);
   } finally { await context.close(); }
+}
+
+/** A real platform authenticator seam, matching the passkey e2e fixture; no WebAuthn API overrides. */
+export async function prepareFreshPage(page) {
+  const { addAuthenticator } = await import(path.join(REPO, 'e2e/web/support/webauthn.ts'));
+  await addAuthenticator(page);
 }
 
 /** The page of one of the world's browsers (CDP), or a new signed-out context. Returns { page, done } */
@@ -268,6 +363,7 @@ async function openAppPage(browser, state, pair) {
       ...(mobile ? { isMobile: true, hasTouch: true } : {}),
     });
     const page = await context.newPage();
+    await prepareFreshPage(page);
     await routeFonts(page);
     return { page, mobile, cdp: undefined, restore: async () => {}, done: () => context.close() };
   }
@@ -290,7 +386,9 @@ async function openAppPage(browser, state, pair) {
 }
 
 async function shootApp(browser, state, pair, out) {
+  validateWorldForPair(state, pair);
   const a = pair.app;
+  const appState = stateForApp(state, a.who);
   const { page, cdp, done } = await openAppPage(browser, state, pair);
   const fresh = a.who === 'fresh' || a.who === 'freshPhone';
   let back = a.reset ?? a.path;
@@ -301,11 +399,13 @@ async function shootApp(browser, state, pair, out) {
   try {
     if (a.holdUploads) await page.route(uploadPattern, holdUpload);
     if (!fresh) back = back ?? new URL(page.url()).pathname + new URL(page.url()).search;
-    if (a.path !== undefined) await page.goto(appUrl(state, a.path), { waitUntil: 'load' });
-    else if (fresh) await page.goto(appUrl(state, '/'), { waitUntil: 'load' });
+    if (a.path !== undefined) await page.goto(appUrl(appState, a.path), { waitUntil: 'load' });
+    else if (fresh) await page.goto(appUrl(appState, '/'), { waitUntil: 'load' });
+    await waitForAppReady(page, a.who);
     await page.mouse.move(-10, -10).catch(() => {});
     await settle(page);
-    await runSteps(page, a.steps, { state });
+    await runSteps(page, a.steps, { state: appState, settleMs: a.settleMs });
+    await prepareAppCapture(page, a.who, a.clip);
     await capture(page, out, a.clip, cdp);
   } finally {
     releaseUpload();
