@@ -87,7 +87,13 @@ function setup(o: { phone?: boolean; base?: number; path?: string; timeout?: str
 }
 const members = () => screen.queryByRole('complementary', { name: 'members of Midgard' });
 const threadPane = () => screen.queryByRole('complementary', { name: en['thread.title'] });
-const listPane = () => document.querySelector('.dw-thread-list');
+function expectThreadAside() {
+  const aside = screen.getByRole('complementary', { name: en['thread.title'] });
+  expect(aside.tagName).toBe('ASIDE');
+  expect(within(aside).getByRole('heading', { name: en['thread.title'], level: 2 })).toBeInTheDocument();
+  expect(screen.queryByRole('complementary', { name: en['layout.header.threads'] })).toBeNull();
+  expect(screen.queryByRole('list', { name: en['layout.header.threads'] })).toBeNull();
+}
 const toggle = () => screen.getByRole('button', { name: /^Members/ });
 const wait = (fake: FakeClient) => fake.set(`slow:${GEN}`, { until: Date.now() + 60_000, queued: false });
 
@@ -187,7 +193,7 @@ describe('Threads header opens directly (Q9)', () => {
     await user.click(await screen.findByRole('button', { name: en['layout.header.threads'] }));
     await screen.findByRole('complementary', { name: en['thread.title'] });
     expect(fake.callsOf('openThread').at(-1)).toEqual({ m: 'openThread', channelId: GEN, rootMsgId: ROOT2 });
-    expect(listPane()).toBeNull();
+    expectThreadAside();
   });
   it('remembers the last opened thread in this channel ahead of activity order', async () => {
     const { fake, user } = setup();
@@ -203,7 +209,7 @@ describe('Threads header opens directly (Q9)', () => {
     await user.click(await screen.findByRole('button', { name: en['layout.header.threads'] }));
     const aside = await screen.findByRole('complementary', { name: en['thread.title'] });
     expect(within(aside).getByText('No threads yet')).toBeInTheDocument();
-    expect(listPane()).toBeNull();
+    expectThreadAside();
     expect(fake.callsOf('openThread')).toHaveLength(0);
   });
 });
@@ -276,7 +282,7 @@ describe('threads on a phone (a sheet)', () => {
     expect(window.history.state).toMatchObject({ phoneSheet: 'thread' });
     const length = window.history.length;
     expect(await screen.findByRole('complementary', { name: en['thread.title'] })).toBeInTheDocument();
-    expect(listPane()).toBeNull();
+    expectThreadAside();
     expect(window.history.length).toBe(length);
     act(() => { window.history.back(); });
     await waitFor(() => expect(threadPane()).toBeNull());
