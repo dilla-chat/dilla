@@ -1,7 +1,7 @@
 // The open conversation's draft, mentions, replies and file tray.
 import { useEffect, useId, useLayoutEffect, useReducer, useRef, useState, type ReactNode } from 'react';
 import { encodeMentions, mentionQuery, PERM, type MemberSummary, type MentionMember, type RoleSummary, type SlowState, type TimelineItem } from '@dilla/client-core';
-import { Composer, EmojiGrid, MentionList, ReplyChip, ToastHost, newToastHostId, showToast } from '@dilla/ui';
+import { Composer, ConfirmDialog, EmojiGrid, MentionList, ReplyChip, ToastHost, newToastHostId, showToast } from '@dilla/ui';
 import { REACTION_EMOJI } from '../../emoji.ts';
 import { useCore } from '../../core/context.tsx';
 import { useSlice } from '../../core/use-slice.ts';
@@ -11,6 +11,7 @@ import { editableText, mentionOptions, mentionRoles, offeredRoles, type NameBook
 import { attachFiles, TrayList } from './Attachments.tsx';
 import { GifPickerPanel } from './GifPicker.tsx';
 import { useGifCommunity } from './use-gif-community.ts';
+import { dmGifConsentKey } from './dm-gif-consent.ts';
 import type { ConversationAction, ConversationUi } from './Conversation.tsx';
 import { formatWait, spokenStep } from './slow.ts';
 import { CommandHost } from '../commands/CommandHost.tsx';
@@ -62,10 +63,51 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
   const bits = p.bits ?? null;
   const sliceSlow = useSlice(`slow:${p.channelId}`);
   const [route] = useRoute();
-  const gifCommunity = useGifCommunity(p.channelId, p.threadId);
+  const gifSource = useGifCommunity(p.channelId, p.threadId);
+  const gifCommunity = gifSource.communityId;
+  const gifSettings = useSlice('settings');
+  const gifAccount = useSlice('account');
+  const gifServers = useSlice('communities');
+  const consentKey = dmGifConsentKey(gifAccount);
+  const consent = consentKey === null ? undefined : gifSettings?.[consentKey];
   const [gifOpen, setGifOpen] = useState(false);
   const [gifQuery, setGifQuery] = useState('');
   const gifButton = useRef<HTMLButtonElement>(null);
+  const [gifNotice, setGifNotice] = useState<{ communityId: string; settingKey: string; busy: boolean; error: string | null } | null>(null);
+  const gifRequest = useRef(0);
+  useEffect(() => () => { gifRequest.current += 1; }, []);
+  const gifPermitted = !gifSource.direct || consent === gifCommunity;
+  useEffect(() => { if (!gifPermitted) setGifOpen(false); }, [gifPermitted]);
+  const openGifs = async (query = '') => {
+    setEmojiOpen(false);
+    if (!gifSource.direct) { setGifQuery(query); setGifOpen(true); return; }
+    if (consentKey === null) return;
+    const request = ++gifRequest.current;
+    const communityId = await gifSource.findCommunity(() => gifRequest.current === request);
+    if (gifRequest.current !== request || dmGifConsentKey(client.get('account')) !== consentKey) return;
+    if (communityId === null) { showToast(t('gif.unavailable')); return; }
+    setGifQuery(query);
+    if (client.get('settings')?.[consentKey] === communityId) setGifOpen(true);
+    else setGifNotice({ communityId, settingKey: consentKey, busy: false, error: null });
+  };
+  const closeGifNotice = () => {
+    gifRequest.current += 1;
+    setGifNotice(null);
+    setGifOpen(false);
+    gifButton.current?.focus();
+  };
+  const acceptGifNotice = () => {
+    if (gifNotice === null || gifNotice.busy) return;
+    const request = gifRequest.current;
+    setGifNotice({ ...gifNotice, busy: true, error: null });
+    void client.call({ m: 'setSetting', key: gifNotice.settingKey, value: gifNotice.communityId }).then(() => {
+      if (gifRequest.current !== request || dmGifConsentKey(client.get('account')) !== gifNotice.settingKey) return;
+      setGifNotice(null);
+      setGifOpen(true);
+    }, () => {
+      if (gifRequest.current === request) setGifNotice({ ...gifNotice, busy: false, error: t('workspace.preference.error') });
+    });
+  };
   // Task 7 (README §5.5): the footer's emoji picker inserts at the caret; Escape gives focus back to its button.
   const [emojiOpen, setEmojiOpen] = useState(false);
   const emojiButton = useRef<HTMLButtonElement>(null);
@@ -78,7 +120,7 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
     pendingCaret.current = from + emoji.length;
     p.onDraft(p.draft.slice(0, from) + emoji + p.draft.slice(to));
   };
-  const gifsOn = gifCommunity !== null;
+  const gifsOn = gifSource.available;
   const channels = useSlice(`channels:${route.name === 'channel' ? route.communityId : ''}`);
   const announcement = p.announcement ?? channels?.find(c => c.id === p.channelId)?.announcement === true;
   const bypass = p.bypass ?? (bits !== null && (bits & PERM.bypassSlowmode) !== 0);
@@ -198,7 +240,7 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
       sendLabel={t('shell.composer.send')} showSend={p.threadId === undefined}
       counterLabel={n => n < 0 ? t('shell.composer.over', { n: -n }) : t('shell.composer.remaining', { n })}
       attachLabel={t('shell.composer.attach')} onAttach={() => inputRef.current?.click()}
-      {...(gifsOn ? { gif: { label: t('gif.button'), open: gifOpen && blocked === null, controls: `${id}-gifs`, onToggle: () => { setEmojiOpen(false); setGifOpen(o => !o); }, buttonRef: gifButton } } : {})}
+      {...(gifsOn ? { gif: { label: t('gif.button'), open: gifOpen && blocked === null, controls: `${id}-gifs`, onToggle: () => { if (gifOpen) setGifOpen(false); else void openGifs(); }, buttonRef: gifButton } } : {})}
       emoji={{ label: t('shell.composer.emoji'), open: emojiOpen && blocked === null, controls: `${id}-emoji`, onToggle: () => { setGifOpen(false); setEmojiOpen(o => !o); }, buttonRef: emojiButton }}
       codeLabel={t('shell.composer.code')} hint={t('shell.composer.newLine')} typing={p.typing} replying={p.ui.reply !== null}
       {...(noticeBody !== null ? { notice: noticeBody } : {})}
@@ -225,12 +267,18 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
       canSendEmpty={tray.length > 0} />;
   return <>
     <ToastHost id={toastId} />
+    {gifNotice !== null && gifNotice.settingKey === consentKey && gifNotice.communityId === gifCommunity && blocked === null ? <ConfirmDialog
+      open title={t('gif.dm.title')} body={t('gif.dm.notice', { server: gifServers?.find(server => server.id === gifNotice.communityId)?.name ?? '' })}
+      confirmLabel={t('gif.dm.use')} cancelLabel={t('gif.dm.notNow')} busyLabel={t('gif.dm.saving')} tone="accent"
+      busy={gifNotice.busy} canClose={!gifNotice.busy} error={gifNotice.error} onConfirm={acceptGifNotice} onClose={closeGifNotice} onBackdrop={closeGifNotice} /> : null}
     <div className="d-composer-pop">
     {emojiOpen && blocked === null ? <EmojiGrid id={`${id}-emoji`} label={t('shell.composer.emoji')} items={REACTION_EMOJI.map(a => ({ emoji: a.emoji, name: t(a.key) }))}
       search={{ label: t('shell.composer.emojiSearch'), placeholder: t('shell.composer.emojiSearch') }}
       onPick={emoji => { setEmojiOpen(false); insertEmoji(emoji); }}
       onClose={() => { setEmojiOpen(false); emojiButton.current?.focus(); }} /> : null}
-    {gifsOn && gifOpen && blocked === null && gifCommunity !== null ? <GifPickerPanel key={`${gifCommunity}/${p.channelId}`} id={`${id}-gifs`} communityId={gifCommunity} channelId={p.channelId} initialQuery={gifQuery} dispatch={a => { p.dispatch(a); }}
+    {gifsOn && gifOpen && gifPermitted && blocked === null && gifCommunity !== null ? <GifPickerPanel key={`${gifCommunity}/${p.channelId}`} id={`${id}-gifs`} communityId={gifCommunity} channelId={p.channelId} initialQuery={gifQuery}
+      canLoad={gifSource.direct ? () => consentKey !== null && dmGifConsentKey(client.get('account')) === consentKey && client.get('settings')?.[consentKey] === gifCommunity : undefined}
+      dispatch={a => { p.dispatch(a); }}
       {...(p.announce !== undefined ? { announce: p.announce } : {})}
       onClose={reason => {
         setGifOpen(false);
@@ -243,7 +291,7 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
     <CommandHost communityId={route.name === 'channel' ? route.communityId : null} channelId={p.channelId}
       {...(p.threadId !== undefined ? { threadId: p.threadId } : {})} {...(bits !== null ? { bits } : {})}
       items={p.items} selfId={selfId} draft={p.draft} onDraft={text => p.onDraft(text)}
-      encodeMessage={text => encodeMentions(text, p.encodeWith, broadcast, roleMentions)} openGif={query => { setGifQuery(query); setGifOpen(true); }} gifsEnabled={gifsOn}
+      encodeMessage={text => encodeMentions(text, p.encodeWith, broadcast, roleMentions)} openGif={query => { void openGifs(query); }} gifsEnabled={gifsOn}
       onSendLiteral={text => { p.onDraft(''); send(text, true); }} onModeChange={(active, exitFocus) => { restoreAfterCommand.current = exitFocus !== 'preserve'; setCommandMode(active); }} slashSubmission={slashSubmission}
       renderFrame={parts => composer(parts)} />
     {!commandMode ? composer() : null}

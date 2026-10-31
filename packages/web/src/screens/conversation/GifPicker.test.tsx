@@ -3,12 +3,20 @@ import { act, cleanup, renderHook, screen, waitFor, within } from '@testing-libr
 import type { Command } from '@dilla/client-core';
 import { refusal } from '../../test/fake-client.ts';
 import { expectNoAxeViolations } from '../../test/setup.ts';
-import { A, DM, GEN, MEMBERS, PEER, STRANGER, renderConversation, stubBlobUrls } from '../../test/conversation.tsx';
+import { A, DM, GEN, MEMBERS, PEER, STRANGER, renderConversation as renderBaseConversation, stubBlobUrls } from '../../test/conversation.tsx';
 import { account, ME } from '../../test/fixtures.ts';
 import { replaceHistoryState } from '../../router.ts';
 import { CoreProvider } from '../../core/context.tsx';
 import { FakeClient } from '../../test/fake-client.ts';
 import { useGifCommunity } from './use-gif-community.ts';
+
+const CONSENT = `privacy.dmGifs.${'aa'.repeat(16)}.${ME.id}.${'cc'.repeat(16)}`;
+function renderConversation(opts: Parameters<typeof renderBaseConversation>[0] = {}) {
+  return renderBaseConversation({ ...opts, before: fake => {
+    if (opts.dm) fake.set('settings', { [CONSENT]: A });
+    opts.before?.(fake);
+  } });
+}
 
 const GIF_BYTES = new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0, 0]);
 const gifBlob = () => new Blob([GIF_BYTES], { type: 'image/gif' });
@@ -62,10 +70,10 @@ describe('the gif button (E8)', () => {
     expect(fake.callsOf('gifStatus')).toEqual([{ m: 'gifStatus', communityId: A }]);
   });
 
-  it('offers GIFs in a DM using a shared server, with community order as the fallback before any visit', async () => {
+  it('offers the DM GIF button without probing shared servers on conversation open', async () => {
     const { fake } = await open({ dm: true });
     expect(await screen.findByRole('button', { name: 'add a gif' })).toBeInTheDocument();
-    expect(fake.callsOf('gifStatus')).toEqual([{ m: 'gifStatus', communityId: A }]);
+    expect(fake.callsOf('gifStatus')).toEqual([]);
   });
 
   it('is absent when reading the status fails', async () => {
@@ -318,6 +326,7 @@ describe('DM GIF server selection', () => {
   it('skips the most recent shared server without a key and unrelated servers, and attaches only to the DM', async () => {
     const { fake, user } = renderConversation({
       before: f => {
+        f.set('settings', { [CONSENT]: A });
         f.set('communities', [A, B, C].map(id => ({ id, name: id === A ? 'Midgard' : id === B ? 'Asgard' : 'Other', owner: ME.id })));
         f.set(`members:${B}`, MEMBERS);
         f.set(`members:${C}`, MEMBERS.filter(member => member.userId !== PEER));
@@ -332,8 +341,9 @@ describe('DM GIF server selection', () => {
     fake.calls.length = 0;
     await visit(`/dm/${DM}`);
     await screen.findByRole('button', { name: 'add a gif' });
-    expect(fake.callsOf('gifStatus')).toEqual([{ m: 'gifStatus', communityId: B }, { m: 'gifStatus', communityId: A }]);
+    expect(fake.callsOf('gifStatus')).toEqual([]);
     await user.click(button());
+    expect(fake.callsOf('gifStatus')).toEqual([{ m: 'gifStatus', communityId: B }, { m: 'gifStatus', communityId: A }]);
     await waitFor(() => expect(cells()).toHaveLength(1));
     await user.click(cells()[0]);
     await waitFor(() => expect(fake.callsOf('attachFiles')).toHaveLength(1));
@@ -343,10 +353,12 @@ describe('DM GIF server selection', () => {
     expect(fake.callsOf('send')).toEqual([]);
   });
 
-  it('has no GIF button when every shared server has no key', async () => {
-    const { fake } = renderConversation({ dm: true, handler: c => Promise.resolve(c.m === 'gifStatus' ? { on: false, rating: 'pg-13' } : null) });
-    await waitFor(() => expect(fake.callsOf('gifStatus')).toEqual([{ m: 'gifStatus', communityId: A }]));
-    expect(screen.queryByRole('button', { name: 'add a gif' })).toBeNull();
+  it('keeps the DM picker closed when every shared server has no key', async () => {
+    const { fake, user } = renderConversation({ dm: true, handler: c => Promise.resolve(c.m === 'gifStatus' ? { on: false, rating: 'pg-13' } : null) });
+    await user.click(button());
+    expect(fake.callsOf('gifStatus')).toEqual([{ m: 'gifStatus', communityId: A }]);
+    expect(button()).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 
   it.each(['not shared', 'group DM'])('does not borrow a key for a %s conversation', async kind => {
@@ -363,7 +375,7 @@ describe('DM GIF server selection', () => {
 
   it('loads missing membership through the existing member refresh before selecting a shared key', async () => {
     let refreshMembers = () => {};
-    const { fake } = renderConversation({ dm: true,
+    const { fake, user } = renderConversation({ dm: true,
       before: f => {
         f.set('communities', [...f.get('communities')!, { id: B, name: 'Asgard', owner: ME.id }]);
         f.set(`members:${A}`, MEMBERS.filter(member => member.userId !== PEER));
@@ -374,15 +386,17 @@ describe('DM GIF server selection', () => {
       },
     });
     expect(await screen.findByRole('button', { name: 'add a gif' })).toBeInTheDocument();
+    await user.click(button());
     expect(fake.callsOf('refreshTrust')).toHaveLength(1);
     expect(fake.callsOf('gifStatus')).toEqual([{ m: 'gifStatus', communityId: B }]);
   });
 
   it('ignores a pending key status from a previous account', async () => {
     let release: (value: unknown) => void = () => {};
-    const { fake } = renderConversation({ dm: true,
+    const { fake, user } = renderConversation({ dm: true,
       handler: c => c.m === 'gifStatus' ? new Promise(resolve => { release = resolve; }) : Promise.resolve(null),
     });
+    await user.click(button());
     await waitFor(() => expect(fake.callsOf('gifStatus')).toHaveLength(1));
     act(() => fake.set('account', { ...account(), user: { id: STRANGER, username: 'other' } }));
     await act(async () => { release({ on: true, rating: 'pg-13' }); await Promise.resolve(); });
@@ -391,9 +405,10 @@ describe('DM GIF server selection', () => {
 
   it('ignores a pending key status after the peer leaves the shared server', async () => {
     let release: (value: unknown) => void = () => {};
-    const { fake } = renderConversation({ dm: true,
+    const { fake, user } = renderConversation({ dm: true,
       handler: c => c.m === 'gifStatus' ? new Promise(resolve => { release = resolve; }) : Promise.resolve(null),
     });
+    await user.click(button());
     await waitFor(() => expect(fake.callsOf('gifStatus')).toHaveLength(1));
     act(() => fake.set(`members:${A}`, MEMBERS.filter(member => member.userId !== PEER)));
     await act(async () => { release({ on: true, rating: 'pg-13' }); await Promise.resolve(); });
@@ -408,7 +423,7 @@ describe('DM GIF server selection', () => {
       wrapper: ({ children }) => <CoreProvider client={fake}>{children}</CoreProvider>,
     });
     await act(async () => { await Promise.resolve(); });
-    expect(result.current).toBeNull();
+    expect(result.current.communityId).toBeNull();
     expect(fake.callsOf('gifStatus')).toEqual([]);
   });
 
@@ -428,12 +443,15 @@ describe('DM GIF server selection', () => {
     const { result, rerender } = renderHook(() => useGifCommunity(DM), {
       wrapper: ({ children }) => <CoreProvider client={current}>{children}</CoreProvider>,
     });
-    await waitFor(() => expect(result.current).toBe(A));
+    await act(async () => { await result.current.findCommunity(); });
+    expect(result.current.communityId).toBe(A);
     current = second;
     rerender();
-    expect(result.current).toBeNull();
-    await act(async () => { release({ on: false, rating: 'pg-13' }); await Promise.resolve(); });
-    expect(result.current).toBeNull();
+    expect(result.current.communityId).toBeNull();
+    let done: Promise<string | null>;
+    act(() => { done = result.current.findCommunity(); });
+    await act(async () => { release({ on: false, rating: 'pg-13' }); await done; });
+    expect(result.current.communityId).toBeNull();
   });
 
   it('discards a full GIF when shared-server membership is revoked during its fetch', async () => {

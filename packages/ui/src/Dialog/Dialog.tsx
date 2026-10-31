@@ -7,6 +7,8 @@ export type DialogProps = { open: boolean; title: string; onClose: () => void; c
   onBackdrop?: () => void;
   /** A caller providing its own close control can omit the default footer action. */
   showDefaultClose?: boolean;
+  /** False disables the close action, Escape and backdrop dismissal during an indivisible local operation. */
+  canClose?: boolean;
   /** The id of the element inside that describes the dialog (a confirmation's body). */
   describedBy?: string;
   /**
@@ -61,7 +63,7 @@ function marked(root: HTMLElement): HTMLElement | null {
   return Array.from(root.querySelectorAll<HTMLElement>(AUTOFOCUS)).find(e => !hiddenIn(e, root)) ?? null;
 }
 
-export function Dialog({ open, title, onClose, onBackdrop, children, footer, closeLabel, describedBy, initialFocus = 'dialog', returnFocus, kind = 'form', lead, description, showDefaultClose = true }: DialogProps) {
+export function Dialog({ open, title, onClose, onBackdrop, children, footer, closeLabel, describedBy, initialFocus = 'dialog', returnFocus, kind = 'form', lead, description, showDefaultClose = true, canClose = true }: DialogProps) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   // What had focus when the dialog opened, and the latest fallback (read at close time, so never stale).
@@ -122,9 +124,9 @@ export function Dialog({ open, title, onClose, onBackdrop, children, footer, clo
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <dialog ref={ref} className="d-dialog" data-kind={kind} aria-labelledby={titleId} aria-describedby={open ? describedBy : undefined} aria-modal="true" tabIndex={-1}
-      onCancel={e => { e.preventDefault(); onClose(); }}
-      onKeyDown={e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); onClose(); } }}
-      onClick={e => { if (e.target === ref.current) (onBackdrop ?? onClose)(); }}>
+      onCancel={e => { e.preventDefault(); if (canClose) onClose(); }}
+      onKeyDown={e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); if (canClose) onClose(); } }}
+      onClick={e => { if (canClose && e.target === ref.current) (onBackdrop ?? onClose)(); }}>
       {/* Contents exist only while open: a closed dialog leaks no hidden text. */}
       {open ? (
         <div className="d-dialog__panel" onClick={e => e.stopPropagation()}>
@@ -137,7 +139,7 @@ export function Dialog({ open, title, onClose, onBackdrop, children, footer, clo
           </div>
           {children === undefined || children === null || children === false ? null : <div className="d-dialog__body">{children}</div>}
           <div className="d-dialog__footer">
-            {showDefaultClose ? <Button variant="ghost" onClick={onClose}>{closeLabel ?? 'Close'}</Button> : null}
+            {showDefaultClose ? <Button variant="ghost" disabled={!canClose} onClick={onClose}>{closeLabel ?? 'Close'}</Button> : null}
             {footer}
           </div>
         </div>

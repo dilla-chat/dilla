@@ -1299,14 +1299,27 @@ the one above or below.
 Picking a GIF adds it to "files to send" like any file you attach, named `giphy-{id}.gif`, and puts focus in the message
 field; press Enter to send it, with or without text, or **remove** it. Nothing is sent until you do.
 
-Known limits: there are no GIFs in direct messages, and a thread's reply box has no **gif** button.
+In direct messages, GIFs are opt-in for each account on each device. Opening a DM makes no GIF requests.
+Pressing **gif** checks only which shared server has a Giphy key, starting with the one where you were most recently
+active. It then shows: “GIF searches and picks in direct messages go through {server name} and Giphy. They are not
+end-to-end encrypted.” **Use GIFs** saves your choice on this device and opens the picker. **Not now** closes the notice
+without searching or loading GIFs and asks again next time. With no usable shared server, the picker stays closed and
+says “GIFs aren't available here”. A thread's reply box has no **gif** button.
+
+The choice is kept in the client's local settings store, not on a server and not synced to your other devices.
+**Settings → Privacy → GIFs in direct messages** shows the choice and lets you turn it off. Turning it back on asks for
+the named-server notice before the next use. If a different shared server must be used later, the notice names that
+server and asks again. Revoking consent closes an open picker, stops further searches and media requests, and discards
+a GIF download still in flight. A file already added to the tray stays there until you send or remove it; requests
+already sent cannot be recalled.
 
 For a server manager: in server settings → GIFs, the "GIFs (Giphy)" row takes the server's Giphy API key (get one at
 developers.giphy.com). Type it, press **save**, and the page confirms a key is set: the key is never shown again, only
 **replace** (type a new one) or **remove**. The **rating** select (pg-13 by default) limits what search returns.
 
 Two things to know about privacy. Your searches go to {instance}, which asks Giphy for you using the server's key, so
-Giphy sees the instance and not you; the instance itself sees what you search for and which GIF you pick. The GIF is
+Giphy sees the instance and not your client; the instance and Giphy see the search text and GIF requests. The instance
+can also correlate the pick with a later encrypted DM upload by timing and size, and infer which GIF was sent. The GIF is
 downloaded by the instance and sent to the conversation as an ordinary file, protected like any other, so the people who
 read it never contact giphy.com.
 

@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import type { TrustSummary } from '@dilla/client-core';
 import { Button, SettingsRow, TrustAlert } from '@dilla/ui';
 import { t } from '../../strings/index.ts';
@@ -7,9 +8,10 @@ import { t } from '../../strings/index.ts';
  * comparison), verified (the compared public key) or first seen here. Names and the shared flag come from the worker's
  * trust slice only; the worker and core own every trust decision.
  */
-export function Privacy({ records, onCompare }: { records: readonly TrustSummary[]; onCompare: (record: TrustSummary) => void }): React.JSX.Element {
+export function Privacy({ records, onCompare, children }: { children?: ReactNode; records: readonly TrustSummary[]; onCompare: (record: TrustSummary) => void }): React.JSX.Element {
   return <section className="dw-settings-section" data-doc-state="trust-privacy" aria-labelledby="privacy-title">
     <h2 id="privacy-title" tabIndex={-1} data-privacy-heading>{t('privacy.section')}</h2>
+    {children}
     <ul className="dw-trust-list">{records.map(record => {
       const compare = () => onCompare(record);
       // C1: a changed-key verdict with no pending key is changed too, but there is no key to compare; only a Remove ends it.

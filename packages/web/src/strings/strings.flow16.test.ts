@@ -10,11 +10,13 @@ describe('flow 16 (the GIF picker and the server’s Giphy setting, E8)', () => 
   const doc = readFileSync(fileURLToPath(new URL('../../../../docs/design/flows/16-gif-picker.md', import.meta.url)), 'utf8');
   const copy = doc.slice(doc.indexOf('## Copy'));
   const pairs = [...copy.matchAll(/`([a-zA-Z][\w.-]*)='([^`]*)'`/g)].map(m => [m[1], m[2]] as const);
-  it('strings: every flow-15 copy key equals en.ts byte for byte, and every gif key is in the flow', () => {
+  it('strings: every flow-16 copy key equals en.ts byte for byte, and every gif key is in the flow', () => {
     const table = en as Readonly<Record<string, string>>;
-    expect(pairs.length).toBe(35);
+    expect(pairs.length).toBe(42);
     for (const [key, value] of pairs) expect(table[key], key).toBe(value);
     for (const [key, value] of pairs) {
+      // Jonas 2026-10-31 explicitly requires the privacy disclosure; these two keys live in the lint-allowed privacy module.
+      if (key === 'gif.dm.notice' || key === 'gif.dm.hint') continue;
       for (const f of FORBIDDEN as { word: string; re: RegExp }[]) expect(f.re.test(value), `${key}: ${f.word}`).toBe(false);
     }
     const listed = new Set(pairs.map(([key]) => key));
@@ -24,7 +26,7 @@ describe('flow 16 (the GIF picker and the server’s Giphy setting, E8)', () => 
     const table = en as Readonly<Record<string, string>>;
     for (const [key, value] of pairs) {
       if (key === 'gif.powered') expect(value).toBe('VIA GIPHY');
-      else if (key === 'gif.settings.title' || key === 'gif.settings.hint' || key === 'gif.search.placeholder') expect(value[0], key).toBe(value[0]?.toUpperCase());
+      else if (key.startsWith('gif.dm.') || key === 'gif.unavailable' || key === 'gif.settings.title' || key === 'gif.settings.hint' || key === 'gif.search.placeholder') expect(value[0], key).toBe(value[0]?.toUpperCase());
       else expect(value, key).toBe(value.toLowerCase());
     }
     expect(table['gif.powered']).toBe('VIA GIPHY');

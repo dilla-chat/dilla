@@ -9,6 +9,7 @@ import { SignInFactors } from './settings/SignInFactors.tsx';
 import { useAnnouncer } from './announcer.ts';
 import { Notifications } from './settings/Notifications.tsx';
 import { Privacy } from './settings/Privacy.tsx';
+import { DmGifPrivacySetting } from './settings/DmGifPrivacySetting.tsx';
 import { Diagnostics } from './settings/Diagnostics.tsx';
 import { Keyboard } from './settings/Keyboard.tsx';
 import { Voice } from './settings/Voice.tsx';
@@ -134,7 +135,7 @@ function SettingsWorkspaceScreen({ activity, activityVisible, communityId = null
         : activeSection === 'notifications' ? <Notifications communityId={communityId} />
           : activeSection === 'appearance' ? <Appearance />
             : activeSection === 'voice' ? <Voice />
-              : activeSection === 'privacy' ? <Privacy records={records} onCompare={compare} />
+              : activeSection === 'privacy' ? <Privacy records={records} onCompare={compare}><DmGifPrivacySetting /></Privacy>
                 : activeSection === 'keyboard' ? <Keyboard />
                   : <Diagnostics data={diagnostics ?? { connection: 'offline', generation: null, instance: '', devices: 0, errors: [] }}
                     instanceName={account?.instance?.name ?? null} writeText={text => navigator.clipboard?.writeText(text) ?? Promise.resolve()} />;

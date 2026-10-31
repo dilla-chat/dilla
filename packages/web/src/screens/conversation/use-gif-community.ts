@@ -1,11 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useCore } from '../../core/context.tsx';
 import { useSlice, useSlices } from '../../core/use-slice.ts';
 import { useRoute } from '../../router.ts';
 import { communityActivityOwner, recentCommunities } from '../community-activity.ts';
 
-/** A GIF proxy server supplies media; the selected conversation remains the attachment/send destination. */
-export function useGifCommunity(channelId: string, threadId?: string): string | null {
+/** A GIF proxy supplies media; the selected conversation remains the attachment/send destination. */
+export function useGifCommunity(channelId: string, threadId?: string) {
   const client = useCore();
   const account = useSlice('account');
   const communities = useSlice('communities');
@@ -25,43 +25,54 @@ export function useGifCommunity(channelId: string, threadId?: string): string | 
   const ordered = [...recent.filter(id => ids.includes(id)), ...ids.filter(id => !recent.includes(id))];
   const candidateKey = ordered.join('/');
   const memberLists = useSlices(ordered.map(id => `members:${id}` as const));
-  const membershipKey = memberLists.map(list => list === undefined ? '?' : list.some(row => row.userId === self)
-    && list.some(row => row.userId === peer) ? 'shared' : 'other').join('/');
-  const key = `${owner ?? ''}/${scope}/${candidateKey}/${membershipKey}`;
+  const shared = (communityId: string) => {
+    const members = client.get(`members:${communityId}`);
+    return members?.some(row => row.userId === self) === true && members.some(row => row.userId === peer);
+  };
+  const missingMembers = memberLists.some(list => list === undefined);
+  const key = `${owner ?? ''}/${account?.deviceId ?? ''}/${scope}/${candidateKey}`;
+  const current = useRef({ client, key }); current.current = { client, key };
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const [selected, setSelected] = useState<{ client: typeof client; key: string; communityId: string } | null>(null);
-  const refreshes = useRef(new Map<string, { client: typeof client; promise: Promise<unknown> }>());
+
+  // In DMs this is called only by the GIF button (or the explicit /gif action), never by opening the conversation.
+  const findCommunity = useCallback(async (wanted: () => boolean = () => true): Promise<string | null> => {
+    const live = () => mounted.current && current.current.client === client && current.current.key === key && wanted();
+    if (scope === '' || !live()) return null;
+    if (server === null && missingMembers) {
+      // The existing trust refresh loads membership; no DM identity or content is sent to a GIF route.
+      await client.call({ m: 'refreshTrust' }).catch(() => undefined);
+    }
+    for (const communityId of server === null ? candidateKey.split('/').filter(Boolean) : [server]) {
+      if (!live()) return null;
+      const isShared = () => {
+        const members = client.get(`members:${communityId}`);
+        return members?.some(row => row.userId === self) === true && members.some(row => row.userId === peer);
+      };
+      if (server === null && !isShared()) continue;
+      try {
+        const result = await client.call({ m: 'gifStatus', communityId }) as { on?: boolean } | null;
+        if (!live()) return null;
+        if (result?.on === true && (server !== null || isShared())) {
+          setSelected({ client, key, communityId });
+          return communityId;
+        }
+      } catch { /* Try the next shared server when this key is absent or unavailable. */ }
+    }
+    if (live()) setSelected(null);
+    return null;
+  }, [client, key, scope, server, candidateKey, missingMembers, self, peer]);
 
   useEffect(() => {
-    if (scope === '') return;
+    if (server === null) return; // No gifStatus on DM open, even with remembered consent.
     let cancelled = false;
-    const choose = async () => {
-      if (server === null && membershipKey.includes('?')) {
-        const refreshKey = `${owner}/${candidateKey}`;
-        const previous = refreshes.current.get(refreshKey);
-        let refreshing = previous?.client === client ? previous.promise : undefined;
-        if (refreshing === undefined) {
-          // refreshTrust already reloads all listed member slices; no server selection or new worker/API route is needed.
-          refreshing = client.call({ m: 'refreshTrust' }).catch(() => undefined);
-          refreshes.current.set(refreshKey, { client, promise: refreshing });
-        }
-        await refreshing;
-      }
-      for (const communityId of server === null ? candidateKey.split('/').filter(Boolean) : [server]) {
-        if (cancelled) return;
-        if (server === null) {
-          const members = client.get(`members:${communityId}`);
-          if (!members?.some(row => row.userId === self) || !members.some(row => row.userId === peer)) continue;
-        }
-        try {
-          const result = await client.call({ m: 'gifStatus', communityId }) as { on?: boolean } | null;
-          if (cancelled) return;
-          if (result?.on === true) { setSelected({ client, key, communityId }); return; }
-        } catch { /* Try the next shared server when this key is absent or unavailable. */ }
-      }
-    };
-    void choose();
+    void findCommunity(() => !cancelled);
     return () => { cancelled = true; };
-  }, [client, key, scope, server, owner, candidateKey, membershipKey, self, peer]);
+  }, [server, findCommunity]);
 
-  return selected?.client === client && selected.key === key ? selected.communityId : null;
+  const communityId = selected?.client === client && selected.key === key
+    && (server !== null || shared(selected.communityId)) ? selected.communityId : null;
+  return { communityId, direct, findCommunity,
+    available: direct ? missingMembers || ordered.some(shared) : communityId !== null };
 }

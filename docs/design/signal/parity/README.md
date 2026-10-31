@@ -161,6 +161,7 @@ The following decisions also apply:
 
 - A manager keeps the new-channel **+** in the server header while the server has no categories, on desktop and phone (Ruling AB; Jonas, 2026-10-27, explicitly reaffirmed 2026-10-30). With categories it moves to their headers. The uncategorized capture world therefore shows this deliberate extra control.
 - Person menus omit Move to, Server mute and Disconnect until wave C.
+- DM GIFs require a named shared-server privacy notice and account/device-local consent; only an explicit button press checks keys, and changing the proxy asks again. Privacy settings can revoke the choice (Jonas, 2026-10-31 security follow-up).
 - The DM list keeps Message someone (✎) and the notification-default menu (⌄). DMs have no Threads button until wave C (Jonas, 2026-10-27/28).
 - Keyboard settings list the prototype’s shortcuts first, then other real shortcuts such as Open search and Call the open DM. Keycaps and device names reflect the actual platform (“Ctrl K”, “System default”; Jonas, 2026-10-30).
 - The role editor folds real extra permissions into the prototype’s four groups: Attach files, Add reactions, Read message history, Create invites, Kick members and the other supported permissions (Ruling AS; Jonas, 2026-10-29).

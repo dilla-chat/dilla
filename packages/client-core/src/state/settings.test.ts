@@ -218,3 +218,14 @@ describe('channels.collapsed.<categoryHex> (R36)', () => {
     expect(isSettingKey(`channels.collapsed.${HEX}0`)).toBe(false);
   });
 });
+
+
+it('accepts bounded account/device-scoped DM GIF consent and its last disclosed proxy', () => {
+  const key = `privacy.dmGifs.${'aa'.repeat(16)}.${'bb'.repeat(16)}.${'cc'.repeat(16)}`;
+  expect(isSettingKey(key)).toBe(true);
+  expect(isSettingValue(key, 'on')).toBe(true);
+  expect(isSettingValue(key, 'dd'.repeat(16))).toBe(true);
+  for (const value of ['', 'true', 'https://giphy.com', 'd'.repeat(31)]) expect(isSettingValue(key, value)).toBe(false);
+  expect(isSettingKey('privacy.dmGifs')).toBe(false);
+  expect(isSettingKey(key + '.other')).toBe(false);
+});
