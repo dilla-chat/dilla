@@ -68,7 +68,7 @@
 .d-message-row__reply-excerpt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .d-message-row__reply-state { font-style: italic; color: var(--fg-3); }
 
-.d-message-row__attachments { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.25rem; }
+.d-message-row__attachments { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.25rem; }
 /* Fix round 3: a card (Glenn's now-playing) is a block, not a flex item, so it takes its 440px (the prototype's max-width)
    instead of shrinking to its content. */
 .d-message-row__attachments.d-message-row__card { display: block; margin-top: 6px; }
@@ -115,3 +115,6 @@ button.d-mention:hover, button.d-mention:focus-visible { text-decoration: underl
 .d-message-row__code { font-family: var(--font-mono); font-size: 0.9em; background: transparent; border: 1px solid var(--hairline-2); border-radius: 0; padding: 0 0.25rem; }
 .d-message-row__quote { margin: 0.125rem 0; padding: 0 0 0 0.75rem; border-left: 2px solid var(--fg-2); color: var(--fg-2); }
 @media (prefers-reduced-motion: reduce) { .d-message-row, .d-message-row__thread, .d-message-row__toolbar { transition: none; } }
+
+/* A code-only row has no introductory line: lift the complete pill clear of Copy. */
+.d-message-row:has(.d-message-row__body > .d-code-block:only-child) .d-message-row__toolbar { top: -1.875rem; }

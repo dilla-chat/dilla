@@ -44,7 +44,7 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
 /* The conversation log fills the pane; the drop overlay is positioned against it. */
 .dw-conversation { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .dw-conversation > .d-message-log, .dw-conversation > .d-message-log-frame { flex: 1 1 auto; }
-.dw-attachments { display: flex; align-items: flex-start; flex-wrap: wrap; gap: var(--row-gap); }
+.dw-attachments { display: flex; flex-wrap: wrap; gap: var(--row-gap); }
 .dw-overlay { position: absolute; inset: 0; pointer-events: none; }
 .dw-overlay > * { pointer-events: auto; position: absolute; }
 
@@ -309,19 +309,6 @@ html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[d
 
 
 /* web3.7: the threads of a channel, rows like the channel list's. */
-.dw-thread-list { padding: 0.5rem var(--row-pad-x, 0.75rem); }
-.dw-thread-list__title { margin: 0 0 0.5rem; font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking); text-transform: uppercase; color: var(--fg-3); }
-.dw-thread-list__empty { margin: 0; font-size: var(--text-base); color: var(--fg-3); }
-.dw-thread-list ul { margin: 0; padding: 0; list-style: none; }
-.dw-thread-list__row { display: flex; flex-direction: column; align-items: stretch; gap: 2px; width: 100%; min-height: 1.75rem; padding: var(--row-pad-y) 8px; margin: var(--row-gap) 0; font: inherit; font-size: var(--text-base); color: var(--fg-2); background: transparent; border: 0; border-radius: var(--r-md); text-align: left; cursor: pointer; transition: background var(--duration-fast), color var(--duration-fast); }
-.dw-thread-list__author { font-size: var(--text-micro); color: var(--fg-3); }
-.dw-thread-list__excerpt { min-width: 0; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
-.dw-thread-list__count { font-size: var(--text-micro); color: var(--fg-3); }
-.dw-thread-list__row:hover { background: var(--surface-2); color: var(--fg); }
-@container d-shell (max-width: 47.99rem) {
-  .dw-thread-list__row { min-height: 2.75rem; }
-}
-[data-layout="phone"] .dw-thread-list__row { min-height: 2.75rem; }
 /* The thread pane fills the aside or the phone sheet, so its composer sits at the bottom. */
 .dw-thread { height: 100%; min-height: 0; }
 /* The thread composer's label is its accessible name; the pane's title gives the context. */

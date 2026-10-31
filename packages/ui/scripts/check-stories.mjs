@@ -69,11 +69,16 @@ try {
         if (story.id === 'conversation-messagerow--signal-code-only') {
           const copy = page.getByRole('button', { name: 'Copy', exact: true });
           await page.locator('.d-message-row').hover();
-          const reachable = await copy.evaluate(button => {
+          const targets = page.locator('.d-message-toolbar button, .d-code-block__copy');
+          if (await targets.count() !== 5) throw new Error('gap53: expected four toolbar controls and Copy');
+          const reachable = await targets.evaluateAll(buttons => buttons.every(button => {
             const r = button.getBoundingClientRect();
-            return button.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2));
-          });
-          if (!reachable) throw new Error('gap53: the floating toolbar covers code Copy');
+            return [[r.width / 2, 1], [r.width / 2, r.height - 1], [1, r.height / 2], [r.width - 1, r.height / 2], [r.width / 2, r.height / 2]]
+              .every(([x, y]) => button.contains(document.elementFromPoint(r.x + x, r.y + y)));
+          }));
+          const separated = await page.evaluate(() => document.querySelector('.d-message-toolbar').getBoundingClientRect().bottom
+            <= document.querySelector('.d-code-block__copy').getBoundingClientRect().top);
+          if (!reachable || !separated) throw new Error('gap53: toolbar and Copy must be fully reachable without overlap');
           await copy.click();
           await page.getByRole('button', { name: 'Copied', exact: true }).waitFor();
         }
@@ -98,7 +103,7 @@ try {
             const file = document.querySelector('.d-attachment-card__file').getBoundingClientRect();
             return { image: [image.width, image.height], file: [file.width, file.height], top: image.top === file.top };
           });
-          if (sizes.image[0] !== 218 || sizes.image[1] !== 146 || sizes.file[0] !== 234 || sizes.file[1] !== 40 || !sizes.top) throw new Error(`gap52 sent attachments: ${JSON.stringify(sizes)}`);
+          if (sizes.image[0] !== 280 || sizes.image[1] !== 210 || sizes.file[0] !== 300 || sizes.file[1] !== 210 || !sizes.top) throw new Error(`gap52 sent attachments: ${JSON.stringify(sizes)}`);
         }
         // Task 7: the poll's exact prototype geometry and winner style (Ruling C).
         if (story.id.startsWith('conversation-pollcard--')) {

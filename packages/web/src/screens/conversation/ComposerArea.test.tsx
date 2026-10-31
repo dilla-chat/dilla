@@ -1,3 +1,4 @@
+import * as Ui from '@dilla/ui';
 import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { BROWSER_ATTACHMENT_CAP, type TrayItem } from '@dilla/client-core';
@@ -204,7 +205,6 @@ describe('attaching (L-TS-35, Q16)', () => {
     expect(fake.callsOf('attachFiles')[1]).toEqual({ m: 'attachFiles', channelId: GEN, files: [b] });
   });
   it.each([
-    ['E_ATTACHMENT_TOO_LARGE', 'Files over 25 MB can’t be sent from a browser'],
     ['E_ATTACHMENT_COUNT', 'A message carries at most 4 files.'],
     ['E_NETWORK', 'That did not work (E_NETWORK). Try again, or reload the page.'],
   ])('shows the refusal %s by its code, never its detail', async (code, text) => {
@@ -342,6 +342,7 @@ it('Send while an upload is unfinished toasts and sends nothing', async () => {
 });
 
 it('retains an oversized card with Over 25 MB meta and toasts once for the whole pick', async () => {
+  const toast = vi.spyOn(Ui, 'showToast');
   const { fake } = renderConversation();
   fake.handler = command => {
     if (command.m === 'attachFiles') fake.publish(`tray:${GEN}`, command.files.map((f, i) => entry(String(i), 'failed', { name: f.name, size: f.size, reason: 'E_ATTACHMENT_TOO_LARGE' })));
@@ -351,7 +352,21 @@ it('retains an oversized card with Over 25 MB meta and toasts once for the whole
   Object.defineProperty(huge, 'size', { value: BROWSER_ATTACHMENT_CAP + 1 });
   fireEvent.change(input(), { target: { files: [huge, huge] } });
   expect(await screen.findByText('Files over 25 MB can’t be sent from a browser')).toBeInTheDocument();
-  expect(document.querySelectorAll('.d-np-toast')).toHaveLength(1);
+  expect(toast).toHaveBeenCalledExactlyOnceWith('Files over 25 MB can’t be sent from a browser');
+  toast.mockRestore();
   expect(screen.getAllByText('Over 25 MB')).toHaveLength(2);
   expect(document.querySelectorAll('.d-attachment-tray__item[data-failed="true"]')).toHaveLength(2);
+});
+
+it('sends a ready file beside an oversized card, ignoring the failed card', async () => {
+  const { fake, user } = renderConversation({ before: f => f.set(`tray:${GEN}`, [entry('huge', 'failed', { reason: 'E_ATTACHMENT_TOO_LARGE' }), entry('ready', 'ready')]) });
+  await user.click(screen.getByRole('button', { name: 'send' }));
+  expect(fake.callsOf('send')).toEqual([{ m: 'send', channelId: GEN, text: '', attachments: ['ready'] }]);
+  expect(screen.queryByText('Waiting for uploads to finish')).toBeNull();
+});
+it('an oversized card alone sends nothing and never shows a waiting toast', async () => {
+  const { fake, user } = renderConversation({ before: f => f.set(`tray:${GEN}`, [entry('huge', 'failed', { reason: 'E_ATTACHMENT_TOO_LARGE' })]) });
+  await user.click(screen.getByRole('button', { name: 'send' }));
+  expect(fake.callsOf('send')).toEqual([]);
+  expect(screen.queryByText('Waiting for uploads to finish')).toBeNull();
 });

@@ -1518,7 +1518,8 @@ export class Controller {
       case 'gifSearch': return this.routes.gifSearch(fromHex(command.communityId), command.q, command.offset);
       case 'gifFetch': return this.routes.gifMedia(fromHex(command.communityId), command.gifId, command.variant)
         .then(bytes => ({ blob: new Blob([bytes as Uint8Array<ArrayBuffer>], { type: 'image/gif' }) }));
-      case 'refreshTrust': return this.refreshTrust();
+      case 'refreshTrust': return Promise.all((this.slices.get('communities') ?? []).map(community =>
+        this.reloadMembers(community.id).catch(() => undefined))).then(() => this.refreshTrust());
       case 'verifyContact': return this.verifyContact(command.userId, command.umk);
       case 'safetyNumber': return Promise.resolve(this.safetyNumber(command.userId, command.umk));
       case 'search': return this.search(command, searchId ?? this.searchGate.next());

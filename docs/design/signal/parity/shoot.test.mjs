@@ -173,3 +173,7 @@ test('Task 8 manifest covers both viewports, conversation findings and standing 
   }
   assert.equal(pairs.filter(pair => pair.name.startsWith('standing-')).length, 5);
 });
+
+test('rejects a null app before reading its upload options and names the pair', () => {
+  assert.throws(() => validateSpec([{ name: 'null-app', viewport: { width: 390, height: 844 }, prototype: {}, app: null }]), /null-app.*app.who/);
+});

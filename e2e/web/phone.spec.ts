@@ -660,6 +660,8 @@ test('a landscape phone (844 x 390) gets the phone layout', async ({ playwright,
     await test.step('three tabs, the @ tile, and a /dm deep link at 844 x 390', async () => {
       await expect(tabBar(page).getByRole('link')).toHaveCount(3);
       await expectTapTargets(tabBar(page).getByRole('link'), 'the tab bar at 844 x 390');
+      // Sign-in restores the conversation; Home returns to the list where the rail is visible.
+      await tab(page, 'home.tab').tap();
       await expectPrototypeSize(homeTile(page), 'the @ tile at 844 x 390', { w: 38, h: 38 });
       await homeTile(page).tap();
       await expect(homeTile(page)).toHaveAttribute('aria-current', 'page');

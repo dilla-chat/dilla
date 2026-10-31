@@ -1,9 +1,9 @@
-import { privateResultCopy } from './copy.ts';
 // Signal wave B Task 2 (README §6.1): the prototype's command picker, in place of the old search-and-dialog composer.
 // `/` at the start of the draft lists the commands above the composer; picking one turns the composer's input row into
 // chips, one per argument, with suggestions above the active chip and a one-line bar above the chips. The host
 // (CommandHost) keeps the draft memory, the request ids and the generation guards; this component keeps the draft, the
 // active chip and the one run in flight.
+import { privateResultCopy } from './copy.ts';
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { parseCommand, validateCommandArgs, type CommandDefinition, type CommandInvocation, type CommandOption, type CommandResult } from '@dilla/client-core';
 import { CommandBar, CommandChips, CommandField, CommandList, CommandSuggestions, Composer, commandOptionId, type CommandListItem, type CommandSuggestion as UiSuggestion, type IconName } from '@dilla/ui';

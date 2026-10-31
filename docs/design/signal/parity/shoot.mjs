@@ -65,8 +65,8 @@ export function validateSpec(spec) {
     const other = pair.story ?? pair.app;
     if (pair.app !== undefined) {
       const a = pair.app;
-      if (a.holdUploads !== undefined && typeof a.holdUploads !== 'boolean') throw new Error(`${at}: app.holdUploads must be a boolean`);
       if (!isObject(a) || !APP_WHO.includes(a.who)) throw new Error(`${at} (${pair.name}): app.who must be one of ${APP_WHO.join(', ')}`);
+      if (a.holdUploads !== undefined && typeof a.holdUploads !== 'boolean') throw new Error(`${at} (${pair.name}): app.holdUploads must be a boolean`);
       for (const k of ['path', 'clip', 'reset']) if (a[k] !== undefined && typeof a[k] !== 'string') throw new Error(`${at} (${pair.name}): app.${k} must be a string`);
     }
     // Task 8b: a story may take the same steps (a press that shows a toast), run after it settles. An app side takes them too.

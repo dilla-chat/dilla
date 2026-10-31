@@ -614,7 +614,7 @@ it('renders private results after messages, in time order, with authors and a lo
 
 it('uses the Bot’s current display name, and falls back to Glenn when unknown', async () => {
   const spy = vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ capabilities: () => Promise.resolve({ botUserId: 'ab'.repeat(16), supportedOperations: [80] }) } as unknown as ClientCore.BotUtilities);
-  const { fake } = renderConversation(); const account = fake.get('account');
+  const { fake } = renderConversation({ handler: command => Promise.resolve(command.m === 'getBotCommandStatus' ? { botUserId: 'ab'.repeat(16) } : null) }); const account = fake.get('account');
   const store = privateResults(fake, `${account?.instance?.id ?? ''}:${account?.user?.id ?? ''}`, `${A}/${GEN}/`);
   act(() => { store.add({ at: 1, status: 'success', text: 'bot result', provider: 'bot' }); });
   expect(screen.getByText('Glenn')).toBeInTheDocument();

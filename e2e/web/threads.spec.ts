@@ -181,7 +181,7 @@ test('a reply in a thread shows its count on both sides, the pane sits in the as
       // Q9: Threads reopens the last thread directly, without a list in between.
       await page.getByRole('button', { name: copy('layout.header.threads'), exact: true }).click();
       await expect(threadPane(page)).toBeVisible({ timeout: WAIT });
-      await expect(page.getByRole('complementary', { name: copy('thread.list'), exact: true })).toHaveCount(0);
+      await expect(page.locator('.dw-thread-list')).toHaveCount(0);
       await expect(paneRow(page, ok)).toBeVisible({ timeout: WAIT });
       await threadPane(page).getByRole('button', { name: copy('thread.close'), exact: true }).click();
       await expect(threadPane(page)).toBeHidden();

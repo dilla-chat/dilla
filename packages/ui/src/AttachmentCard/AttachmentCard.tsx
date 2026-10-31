@@ -34,12 +34,11 @@ function fileMeta(name: string, size: string): string {
   return dot > 0 && dot < name.length - 1 ? `${size} · ${name.slice(dot + 1).toUpperCase()}` : size;
 }
 
-/** Task 8's sent image tile is 218×146; GIF cards retain the prototype's 240px width. */
-const CARD_MAX_PX = 218;
+/** Prototype sent images use a 280×210 cover tile; GIF cards retain their 240px width. */
+const CARD_MAX_PX = 280;
 const GIF_MAX_PX = 240;
-function cardBox(w: number | null, h: number | null, max = CARD_MAX_PX): CSSProperties {
-  if (w !== null && h !== null && w > 0 && h > 0 && w <= max && h <= 146) return { '--d-card-w': `${String(w / 16)}rem`, '--d-card-ratio': `${String(w)} / ${String(h)}` } as CSSProperties;
-  return { '--d-card-w': `${String(max / 16)}rem`, '--d-card-ratio': max === GIF_MAX_PX ? '4 / 3' : '218 / 146' } as CSSProperties;
+function cardBox(_w: number | null, _h: number | null, max = CARD_MAX_PX): CSSProperties {
+  return { '--d-card-w': `${String(max / 16)}rem`, '--d-card-ratio': '4 / 3' } as CSSProperties;
 }
 
 /**

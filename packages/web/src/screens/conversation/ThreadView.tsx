@@ -1,7 +1,6 @@
-import { installationBotName } from '../commands/bot-name.ts';
-import { useCommandBot } from '../commands/capabilities.ts';
 // A public thread (flow 11, state 11): the root, its replies and a composer whose sends carry the thread. It reads its own
 // slices, so a shell mounts it and nothing else: mounted it opens the thread, unmounted it closes it and gives focus back.
+import { useResultBotName } from '../commands/result-bot-name.ts';
 import { useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore, type KeyboardEvent } from 'react';
 import { encodeMentions, PERM, type TimelineItem } from '@dilla/client-core';
 import { BotResult, Button, Dialog, EmojiGrid, MessageLog, ThreadPane } from '@dilla/ui';
@@ -41,10 +40,9 @@ export function ThreadView(p: {
   const thread = useSlice(`thread:${p.channelId}`);
   const account = useSlice('account');
   const privateStore = privateResults(client, `${account?.instance?.id ?? ''}:${account?.user?.id ?? ''}`, `${communityId ?? 'dm'}/${p.channelId}/${p.rootMsgId}`);
-  const privateRows = useSyncExternalStore(privateStore.subscribe, privateStore.rows);
   const members = useSlice(`members:${communityId ?? ''}`);
-  const bot = useCommandBot(client, communityId);
-  const botName = installationBotName(members, bot.botUserId);
+  const privateRows = useSyncExternalStore(privateStore.subscribe, privateStore.rows);
+  const botName = useResultBotName(client, communityId, members, privateRows.some(row => row.provider === 'bot'));
   const roles = useSlice(`roles:${communityId ?? ''}`);
   const bits = useChannelBits(communityId, p.channelId);
   const self = account?.user ?? null;

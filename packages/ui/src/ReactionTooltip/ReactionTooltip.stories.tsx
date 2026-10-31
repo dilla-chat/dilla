@@ -3,7 +3,7 @@ import { ReactionTooltip } from './ReactionTooltip.tsx';
 import { Tooltip } from '../Tooltip/Tooltip.tsx';
 const meta = {
   title: 'Conversation/ReactionTooltip', component: ReactionTooltip,
-  args: { text: 'Ada, Björn and you reacted with 🛡️', avatars: [{ name: 'Ada' }, { name: 'Björn' }, { name: 'Mira' }] },
+  args: { emoji: '🛡️', text: 'Ada, Björn and you reacted with 🛡️', avatars: [{ name: 'Ada' }, { name: 'Björn' }, { name: 'Mira' }] },
   render: args => <Tooltip label={args.text} content={<ReactionTooltip {...args} />}><button type="button" aria-label="shield, 3">🛡️ 3</button></Tooltip>,
   decorators: [Story => <div style={{ padding: 80 }}><Story /></div>],
 } satisfies Meta<typeof ReactionTooltip>;

@@ -162,3 +162,15 @@ describe('Tray (L-TS-32, ruling 7)', () => {
     expect(h.tray.entries().map((entry) => entry.id)).toEqual([a]);
   });
 });
+
+it('checkpoint files omit oversized and other failed entries without reading them', async () => {
+  const h = harness();
+  const good = spyFile('ready.txt', 3, 'text/plain');
+  const huge = spyFile('huge.bin', BROWSER_ATTACHMENT_CAP + 1, 'application/octet-stream');
+  await h.tray.add([good.file, huge.file]);
+  expect(h.tray.files()).toEqual([good.file]);
+  expect(huge.read).not.toHaveBeenCalled();
+  const failed = harness({ failPut: new Error('offline') });
+  await failed.tray.add([good.file]);
+  expect(failed.tray.files()).toEqual([]);
+});

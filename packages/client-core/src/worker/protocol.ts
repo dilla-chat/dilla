@@ -123,7 +123,7 @@ export type Command =
   | { m: 'gifSetRating'; communityId: string; rating: 'g' | 'pg' | 'pg-13' | 'r' }        // ready → null (a server manager)
   | { m: 'gifSearch'; communityId: string; q: string; offset: number }                    // ready → { items: [{ id, title, width, height }], next }
   | { m: 'gifFetch'; communityId: string; gifId: string; variant: 'preview' | 'full' }     // ready → { blob } (image/gif)
-  | { m: 'refreshTrust' } // ready: bounded signed-list refresh
+  | { m: 'refreshTrust' } // ready: refresh cached contact names and bounded signed lists
   | { m: 'verifyContact'; userId: string; umk: string }
   // ready → string: the digits for exactly `umk` (64 lowercase hex), the key the dialog will hand to verifyContact
   // (changedUmk ?? umk); E_DEVICE_LIST_STALE when it is no longer the core's comparison key. Without `umk` (until the page

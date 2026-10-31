@@ -657,6 +657,9 @@ export async function completeFactorStep(page: Page, account: Account, onStep?: 
   account.totpSecret = await key.inputValue();
   // Wave B task 3: the sixth digit in the code boxes sends the code; there is no button to press.
   await page.getByLabel(copy('factor.totp.code'), { exact: true }).fill(await nextCode(account.control, account));
+  const showCodes = page.getByRole('button', { name: copy('onboarding.done.codesShow'), exact: true });
+  await expect(page.getByRole('list', { name: copy('factor.codes.label'), exact: true }).or(showCodes)).toBeVisible({ timeout: WAIT });
+  if (await showCodes.isVisible()) await showCodes.click();
   const list = page.getByRole('list', { name: copy('factor.codes.label'), exact: true });
   await expect(list).toBeVisible({ timeout: WAIT });
   const signup = await heading(page, COPY.doneTitle).count() > 0;
@@ -670,14 +673,22 @@ export async function completeFactorStep(page: Page, account: Account, onStep?: 
   await page.getByRole('button', { name: copy('factor.codes.next'), exact: true }).click();
 }
 
-/** The shell is up (the rail is present, even with no server) and no onboarding step is showing. */
+/** The shell is up: desktop rail or phone tabs, and no onboarding step is showing. A phone conversation has no rail. */
 export async function expectShell(page: Page): Promise<void> {
-  await expect(railNav(page)).toBeVisible({ timeout: WAIT });
+  await expect(page.locator('.d-app-shell')).toBeVisible({ timeout: WAIT });
+  const phone = await page.evaluate(() => matchMedia('(max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem)').matches);
+  if (phone) await expect(page.getByRole('navigation', { name: copy('nav.tabs.label'), exact: true })).toBeVisible({ timeout: WAIT });
+  else await expect(railNav(page)).toBeVisible({ timeout: WAIT });
   await expect(onboardingFrame(page)).toHaveCount(0);
 }
 
 /** The rail's one "+" tile opens the add dialog (web3.9); its choice opens the existing join or create flow. */
 export async function addServerVia(page: Page, choice: 'join' | 'create'): Promise<void> {
+  // Profile setup closes onto You on a phone; the server rail belongs to Home's list view.
+  if (await page.locator('.d-app-shell').getAttribute('data-layout') === 'phone' && !(await railNav(page).isVisible())) {
+    await page.getByRole('navigation', { name: copy('nav.tabs.label'), exact: true })
+      .getByRole('link', { name: copy('home.tab'), exact: true }).click();
+  }
   await railNav(page).getByRole('button', { name: copy('layout.rail.add'), exact: true }).click();
   await page.getByRole('dialog', { name: copy('layout.add.title'), exact: true })
     .getByRole('button', { name: copy(choice === 'join' ? 'layout.add.join' : 'layout.add.create'), exact: true }).click();

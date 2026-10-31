@@ -22,7 +22,7 @@ export class Tray {
       ({ id, name, size, mime, image, phase, reason, descriptor }));
   }
   /** Export the original File handles for a one-time, encrypted local update checkpoint. */
-  files(): File[] { return this.list.map(({ file }) => file); }
+  files(): File[] { return this.list.filter(entry => entry.phase !== 'failed').map(({ file }) => file); }
   private changed(): void { this.deps.onChange(this.entries()); }
   async add(files: readonly File[]): Promise<string[]> {
     if (this.list.length + files.length > MAX_ATTACHMENTS) throw new AttachmentError('E_ATTACHMENT_COUNT');

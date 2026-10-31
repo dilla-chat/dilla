@@ -25,9 +25,10 @@ function thread(over: Partial<ThreadState> = {}): ThreadState {
   };
 }
 
-function setup(over: { thread?: ThreadState | null; phone?: boolean; initialDraft?: string; blocked?: string | null; onDraftChange?: (text: string) => void; onOpenProfile?: ProfileOpener } = {}) {
+function setup(over: { handler?: FakeClient['handler']; thread?: ThreadState | null; phone?: boolean; initialDraft?: string; blocked?: string | null; onDraftChange?: (text: string) => void; onOpenProfile?: ProfileOpener } = {}) {
   window.history.replaceState(null, '', `/c/${A}/${GEN}`);
   const fake = new FakeClient();
+  if (over.handler) fake.handler = over.handler;
   fake.set('account', account());
   fake.set(`members:${A}`, MEMBERS);
   fake.set(`thread:${GEN}`, over.thread === undefined ? thread() : over.thread);
@@ -333,7 +334,7 @@ it('shows only this thread’s private results and dismisses without a request',
 
 it('thread Bot results use the live renamed member', async () => {
   const spy = vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ capabilities: () => Promise.resolve({ botUserId: 'ab'.repeat(16), supportedOperations: [] }) } as unknown as ClientCore.BotUtilities);
-  const { fake } = setup(); const self = fake.get('account');
+  const { fake } = setup({ handler: command => Promise.resolve(command.m === 'getBotCommandStatus' ? { botUserId: 'ab'.repeat(16) } : null) }); const self = fake.get('account');
   act(() => {
     fake.publish(`members:${A}`, [...MEMBERS, { userId: 'ab'.repeat(16), username: 'bot', display: 'Freja', kind: 1, roleIds: [] }]);
     privateResults(fake, `${self?.instance?.id ?? ''}:${self?.user?.id ?? ''}`, `${A}/${GEN}/${ROOT}`).add({ at: 1, status: 'success', text: 'thread Bot result', provider: 'bot' });

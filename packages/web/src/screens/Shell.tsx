@@ -148,7 +148,7 @@ function focusEmptyAction(pane: 'content' | 'sidebar'): boolean {
 type ListRow = { id: string; name: string; kind: 'text' | 'voice' | 'dm' | 'announcement'; badge?: string; readable: boolean; unread: number; mentions: number; muted: boolean; parentId?: string | null;
   person?: { sub?: string; presence?: 'online' | 'idle' | 'dnd' | 'offline'; group?: boolean; initials?: string } };
 
-/** What the aside shows instead of the member list (web3.7): a channel's thread, or the list of its threads. */
+/** What the aside shows instead of the member list (web3.7): a channel's thread, or its empty thread aside. */
 type Side = { channelId: string; view: 'empty' } | { channelId: string; view: 'thread'; rootMsgId: string };
 
 function restoredConversationUi(value: unknown): ConversationUi | null {
@@ -360,7 +360,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     query.addEventListener('change', onChange);
     return () => query.removeEventListener('change', onChange);
   }, []);
-  // web3.7: one aside. A thread or the thread list of the open channel takes the member list's place; the members' own state is kept
+  // web3.7: one aside. A thread or the empty aside of the open channel takes the member list's place; the members' own state is kept
   // under it, so closing the thread gives back what was there. The toggle shows the members and ends the thread.
   const [side, setSide] = useState<Side | null>(null);
   const lastThread = useRef(new Map<string, string>());
@@ -1535,7 +1535,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     void client.call({ m: 'loadThreads', channelId: channel.id }).then(() => {
       if (openChannelRef.current !== channel.id) return;
       const threads = client.get(`threads:${channel.id}`) ?? channelThreads ?? [];
-      const root = lastThread.current.get(channel.id) ?? [...threads].sort((a, b) => b.lastTs - a.lastTs)[0]?.rootMsgId;
+      const remembered = lastThread.current.get(channel.id);
+      const root = threads.some(thread => thread.rootMsgId === remembered && thread.rootSeq !== null) ? remembered : [...threads].sort((a, b) => b.lastTs - a.lastTs)[0]?.rootMsgId;
       if (root !== undefined) openThread(root);
       else setSide({ channelId: channel.id, view: 'empty' });
     }, report);
@@ -1600,7 +1601,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   // search is the top bar's (and Control/⌘+K) on a desktop, the reminders inbox the top bar's bell or the phone's Activity tab.
   const memberCount = members == null ? null : members.length;
   const membersName = memberCount === null ? t('layout.header.members') : t('layout.header.membersCount', { n: memberCount });
-  // Task 11 (the prototype's thrBg): Threads is pressed while the aside shows a thread or the thread list; a press closes it.
+  // Task 11 (the prototype's thrBg): Threads is pressed while the thread aside is open; a press closes it.
   const threadsOn = sideNow !== null;
   const toggleThreads = () => (threadsOn ? closeSide() : openHeaderThread());
   const membersButton = (

@@ -1,6 +1,5 @@
-import { installationBotName } from '../commands/bot-name.ts';
-import { useCommandBot } from '../commands/capabilities.ts';
 // The open conversation: folded rows, navigation, reactions, pins and overlays.
+import { useResultBotName } from '../commands/result-bot-name.ts';
 import { phoneNow, usePhoneLayout } from '../../layout.ts';
 import { Fragment, useEffect, useLayoutEffect, useReducer, useRef, useState, useSyncExternalStore, type KeyboardEvent, type PointerEvent } from 'react';
 import { encodeMentions, PERM, type MentionMember, type RoleSummary, type TimelineItem, type TimelineState } from '@dilla/client-core';
@@ -89,10 +88,9 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
   const communityId = route.name === 'channel' ? route.communityId : null;
   const account = useSlice('account');
   const resultMembers = useSlice(`members:${communityId ?? ''}`);
-  const bot = useCommandBot(client, communityId);
-  const botName = installationBotName(resultMembers, bot.botUserId);
   const privateStore = privateResults(client, `${account?.instance?.id ?? ''}:${account?.user?.id ?? ''}`, `${communityId ?? 'dm'}/${props.channelId}/`);
   const privateRows = useSyncExternalStore(privateStore.subscribe, privateStore.rows);
+  const botName = useResultBotName(client, communityId, resultMembers, privateRows.some(row => row.provider === 'bot'));
   // Role names and colours, and the broadcast right, once known; until then the shell's own book and rule stand.
   const bits = props.bits ?? null;
   const broadcast = bits !== null ? (bits & PERM.mentionEveryone) !== 0 : props.broadcast;

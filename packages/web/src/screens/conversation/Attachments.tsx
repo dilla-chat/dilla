@@ -56,9 +56,7 @@ export async function attachFiles(client: Pick<CoreClient, 'call' | 'get'>, chan
       if (at >= 0) { pendingPreviews.splice(at, 1); revoke(q.preview); }
     }
     const code = errorOf(err).code;
-    const text = code === 'E_ATTACHMENT_TOO_LARGE'
-      ? t('shell.tray.overLimitToast')
-      : code === 'E_ATTACHMENT_COUNT' ? t('shell.tray.tooMany') : t('shell.banner.commandError', { code });
+    const text = code === 'E_ATTACHMENT_COUNT' ? t('shell.tray.tooMany') : t('shell.banner.commandError', { code });
     dispatch({ type: 'trayError', text });
     return false;
   }

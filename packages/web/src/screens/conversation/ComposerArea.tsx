@@ -173,13 +173,15 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
       setSlashSubmission({ text: value, id: ++slashSubmissionId.current });
       return;
     }
-    if (tray.some(a => a.phase !== 'ready')) {
+    if (tray.some(a => a.phase !== 'ready' && a.phase !== 'failed')) {
       showToast(t('shell.tray.notReady'));
       return;
     }
+    const ready = tray.filter(a => a.phase === 'ready');
+    if (value.trim() === '' && ready.length === 0) return;
     p.dispatch({ type: 'trayError', text: null });
     p.onSend({ raw: value, text: encodeMentions(value, p.encodeWith, broadcast, roleMentions), replyTo: p.ui.reply?.msgId ?? null,
-      attachments: tray.map(a => a.id), ...(p.threadId !== undefined ? { threadId: p.threadId } : {}) });
+      attachments: ready.map(a => a.id), ...(p.threadId !== undefined ? { threadId: p.threadId } : {}) });
   };
   // Advisory: the instance decides, and W2b enforces it. The composer stays mounted, read-only with its reason (the draft,
   // the file tray, the reply chip and the focus all stay); the shell speaks the state once through its announcer.

@@ -69,6 +69,8 @@ function SettingsWorkspaceScreen({ activity, activityVisible, communityId = null
   // README §5.10 (Signal task 10 fix round 1): no index page on a phone either; /settings opens Profile, as the prototype's
   // You tab does, with the nav's chips above it.
   const activeSection: UserSettingsSection = section ?? 'profile';
+  // Other people's profile edits arrive on member-list reads. Refresh those names with the trust view.
+  useEffect(() => { if (activeSection === 'privacy') void client.call({ m: 'refreshTrust' }).catch(() => undefined); }, [client, activeSection]);
   const contentRef = useSettingsFocus(activeSection, anchor);
   const compareUser = route.name === 'settings' ? route.compare ?? null : null;
   const compared = useRef<string | null>(null);

@@ -1,5 +1,7 @@
 // Flow 16 (E8): the GIF picker and the server's Giphy setting. The picker's own strings and most setting labels stay lower case; the settings title and hint are sentence case (Signal, Ruling AJ); the attribution is Giphy's own wording.
 export const gif = {
+  'gif.search.placeholder': 'Search Giphy',
+  'gif.powered': 'VIA GIPHY',
   'gif.button': 'add a gif',
   'gif.picker': 'gifs',
   'gif.search': 'search gifs',

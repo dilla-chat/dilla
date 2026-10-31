@@ -166,6 +166,11 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
   const visibleSelected = selected ?? poll.myChoices ?? [];
   const live = () => isSameOwner() && sourceAccessibleRef.current && accessScopeRef.current === accessScope && scopeRef.current === scopeKey
     && installationRef.current === installationId;
+  const dropWithdrawnSelf = (choices: readonly number[] | null) => {
+    if (choices === null) return;
+    setVoterData(current => current?.scope === scopeKey ? { ...current,
+      previews: current.previews.map((ids, index) => choices.includes(index) ? ids : ids.filter(id => id !== props.selfId)) } : current);
+  };
   const reconcile = async (prior: PollAttempt, operation: 73 | 74): Promise<'accepted' | 'conflict' | 'unknown' | 'stale'> => {
     let accepted = false;
     try {
@@ -185,7 +190,7 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
       const latest = await utilities.pollGet(poll.id, { channelId: props.channelId, threadId: props.threadId });
       if (!live() || latest.channelId !== props.channelId || latest.threadId !== props.threadId) return 'stale';
       setRecord({ client: props.client, scope: scopeKey, poll: latest }); setVerifiedScope(scopeKey);
-      setSelected(latest.myChoices ?? []);
+      setSelected(latest.myChoices ?? []); dropWithdrawnSelf(latest.myChoices);
       return 'accepted';
     } catch (cause) { return accepted ? 'accepted' : definiteMutationError(cause, prior, operation) ? 'conflict' : 'unknown'; }
   };
@@ -204,7 +209,7 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
       accepted = true;
       const after = await utilities.capabilities();
       if (!live() || after.installationId !== installationId || after.botUserId !== props.authorId) return;
-      setRecord({ client: props.client, scope: scopeKey, poll: updated }); setSelected(updated.myChoices ?? []); rememberAttempt(null); await refresh();
+      setRecord({ client: props.client, scope: scopeKey, poll: updated }); setSelected(updated.myChoices ?? []); dropWithdrawnSelf(updated.myChoices); rememberAttempt(null); await refresh();
     } catch (cause) {
       if (!live()) return;
       if (accepted || (attempt === null && !started)) { rememberAttempt(null); await refresh(); setError(t('poll.readError')); }

@@ -30,17 +30,17 @@ describe('AttachmentCard', () => {
     const img = screen.getByRole('img', { name: 'drawn.png' });
     expect(img).toHaveAttribute('src', 'blob:http://127.0.0.1/thumb');
     expect(img).toHaveAttribute('data-thumb', 'ready');
-    expect(open.style.getPropertyValue('--d-card-ratio')).toBe('218 / 146');
-    expect(open.style.getPropertyValue('--d-card-w')).toBe('13.625rem');
+    expect(open.style.getPropertyValue('--d-card-ratio')).toBe('4 / 3');
+    expect(open.style.getPropertyValue('--d-card-w')).toBe('17.5rem');
     await userEvent.click(open);
     expect(onOpen).toHaveBeenCalledTimes(1);
   });
 
-  it('draws a neutral box until the thumbnail is there, and sizes a small image by its own size', () => {
+  it('draws a neutral box and keeps the prototype tile size for a small image', () => {
     const { container } = render(<AttachmentCard {...BASE} thumbUrl={null} w={100} h={50} />);
     expect(screen.queryByRole('img')).toBeNull();
     expect(container.querySelector('.d-attachment-card__box')).toHaveAttribute('aria-hidden', 'true');
-    expect(screen.getByRole('button', { name: 'open drawn.png' }).style.getPropertyValue('--d-card-w')).toBe('6.25rem');
+    expect(screen.getByRole('button', { name: 'open drawn.png' }).style.getPropertyValue('--d-card-w')).toBe('17.5rem');
   });
 
   it('a file card shows its name and size and is one save button', async () => {

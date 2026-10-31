@@ -87,7 +87,7 @@ function setup(o: { phone?: boolean; base?: number; path?: string; timeout?: str
 }
 const members = () => screen.queryByRole('complementary', { name: 'members of Midgard' });
 const threadPane = () => screen.queryByRole('complementary', { name: en['thread.title'] });
-const listPane = () => screen.queryByRole('complementary', { name: en['thread.list'] });
+const listPane = () => document.querySelector('.dw-thread-list');
 const toggle = () => screen.getByRole('button', { name: /^Members/ });
 const wait = (fake: FakeClient) => fake.set(`slow:${GEN}`, { until: Date.now() + 60_000, queued: false });
 
@@ -487,4 +487,13 @@ describe('the channel header of an announcement channel (walk 17)', () => {
     expect(plain.closest('.d-channel-header__title')!.textContent).toBe('general');
     expect(plain.closest('.d-channel-header__title')!.querySelector('[data-icon="hash"]')).not.toBeNull();
   });
+});
+
+it('falls back to recent activity when the remembered thread root was removed', async () => {
+  const { fake, user } = setup();
+  await user.click(await screen.findByRole('button', { name: '2 replies' }));
+  await user.click(await screen.findByRole('button', { name: en['thread.close'] }));
+  act(() => fake.set(`threads:${GEN}`, [{ rootMsgId: ROOT2, rootSeq: '4', count: 1, lastTs: 9, excerpt: 'the second root' }]));
+  await user.click(screen.getByRole('button', { name: en['layout.header.threads'] }));
+  await waitFor(() => expect(fake.callsOf('openThread').at(-1)).toEqual({ m: 'openThread', channelId: GEN, rootMsgId: ROOT2 }));
 });
