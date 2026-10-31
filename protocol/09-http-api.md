@@ -1041,7 +1041,8 @@ are CBOR as everywhere else.
 
 An optional GIF picker, per server. A server manager enters that server's Giphy API key in its settings; a server
 without a key has no GIFs (every search and media route answers `404 E_NOT_FOUND`), and the web client shows no
-picker. There are no GIFs in direct messages: the routes belong to a community. Every route is `E`.
+picker. A DM client may use a shared community's existing routes after explicit consent; there is no DM GIF route,
+and the existing community membership checks still apply. Every route is `E`.
 
 | Method and path | Request | Response | Errors |
 |---|---|---|---|
@@ -1060,6 +1061,18 @@ picker. There are no GIFs in direct messages: the routes belong to a community. 
   person. The instance sees the search terms and which GIF a member picked and when, and can probably link a pick to
   the attachment that follows from its timing and size; it cannot read the message or learn who reads it. The GIF
   is sent as an ordinary encrypted attachment (`04` § Envelope), so a reader's client never contacts Giphy.
+- **Client privacy in DMs.** Opening a DM performs no GIF status, search or media request. Only an explicit GIF-button
+  press may check shared communities' status, most recently active first, to find a key. That status request contains
+  no DM id, peer, content or search text. The client then names the selected server in a privacy notice; no search
+  (including trending), preview or full media request is permitted before **Use GIFs**. **Not now** stores no consent.
+  No available key leaves the picker closed. Consent and the last disclosed proxy are persisted only in the existing
+  client settings store, scoped to instance, account and device, never sent as a server setting or synced to another
+  device. Settings → Privacy reflects and revokes it; enabling there still requires the named-server notice before
+  loading GIFs. A different selected proxy requires a fresh notice. Revocation stops subsequent requests and discards
+  pending downloads; a file already added to the attachment tray remains there, and an already dispatched request
+  cannot be recalled. The proxy and Giphy observe search text and media
+  identifiers outside DM E2EE. Correlating a full fetch with the following encrypted upload's timing and size can let
+  the instance infer which GIF was attached to the DM; encryption does not hide that correlation.
 - **No URL comes from the caller.** The instance builds the one upstream URL from the checked `gif_id` and a host on a
   fixed allow-list of Giphy's own hosts, over HTTPS; a redirect off the list, a non-GIF content type or magic, a body
   over the cap (counted on the bytes, not the header), a timeout, a connection to a non-public address, or no free
