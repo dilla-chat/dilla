@@ -1,7 +1,7 @@
 # Getting started with the dilla web client
 
 This page is for a person who has been sent an invite to a dilla instance, and for the first person on a new
-one. It describes the web client as it is on 2026-10-21 ("web3.11"): starting a server, inviting people and adding
+one. It describes the web client with the Signal wave B redesign: starting a server, inviting people and adding
 channels, roles, slow mode, announcement channels and threads, signing up, the second factor every account has, using the account in a second browser, devices, channels,
 direct messages, badges and notifications, saying more (edits, deletes, reactions, replies, pins, mentions,
 images and files), the app on a phone, contacts and safety numbers, search, settings and a second tab, and what the
@@ -244,16 +244,13 @@ inside the message, Enter opens the card and Escape closes it and returns to whe
 left the server opens a card with no roles and no actions, titled "former member" because the server no longer tells us their name, and only while one of their messages is still
 held in this browser. Role mentions and @everyone are not clickable. In direct messages a mention is plain text for now.
 
-**kick** asks "Kick {name} from {server}?": "{name} leaves every channel and call of {server} at once. They can
-join again with an invite. Messages they already received stay on their devices." Focus starts on **Cancel**. **Kick**
-says "Kicking…", then "{name} was kicked."
+**Kick** and **Ban** ask you to confirm. For a ban, choose its length and, if needed, a reason. A kicked person
+can join again with an invite; a banned person must wait until the ban ends or is lifted. Messages they already
+received stay on their devices. The server checks your permission and rank again.
 
-**ban** asks "Ban {name} from {server}?": "{name} leaves every channel and call of {server} at once and cannot join
-again until the ban ends or is lifted. Messages they already received stay on their devices." Choose "Ban length"
-(1 hour, 1 day, 7 days, 30 days or until lifted) and, if you like, a "Reason" ("Optional. Shown to moderators in the
-ban list, not to {name}. Up to 512 characters (fewer for some letters)."). **Ban** says "Banning…", then "{name} was banned." A refused kick or ban
-says so in the dialog: "You cannot kick {name}. Their highest role is at or above yours, or your roles do not allow
-kicking." (and the same for banning), or "{name} is no longer in {server}."
+The **/kick** and **/ban** commands have a confirmation with the person’s avatar and a Logged row; Ban also shows
+Duration and Reason. Cancelling one of those command confirmations adds a private **Not confirmed** row. Actions
+opened from a profile card do not add a command result. See [Bot commands](bot-commands.md).
 
 ### Leave, hand over and delete
 
@@ -485,9 +482,9 @@ A thread keeps the replies to one message together, out of the channel's main co
 - In a thread you can react to a message, and edit or delete your own. Pin and reply stay in the channel.
 - **close thread** (the ×), the phone's own back or Escape closes it, and the cursor returns to the message or chip you
   opened it from.
-- **threads** in the channel header (an icon alone on a phone) lists every thread in the channel. A channel
-  with none says "No threads in #{name} yet." If the list cannot be read it says "Threads could not be loaded." A
-  thread whose first message is not available to you says "The message that started this thread cannot be shown here."
+- **Threads** in the channel header opens the last thread you opened in this channel, or the most recently active
+  thread if you have not opened one. With no threads, the thread aside says “No threads yet”. It opens directly on
+  phones too. A thread whose first message is unavailable says “The message that started this thread cannot be shown here.”
 - Replies in a thread do not appear in the channel, but they still count as unread and as mentions. Opening the channel
   marks its thread replies read; a thread has no unread count of its own.
 
@@ -539,7 +536,7 @@ step 2 asks for the factor you set up, and the recovery key comes last, as step 
 - a passkey: the browser asks for it on **Use passkey**. Under the password field of step 1 there is also
   **Sign in with a passkey**, which takes a passkey instead of the password. If the passkey did not check that it is
   you, the instance also asks for your code;
-- a backup code: **Use a backup code instead**, instead of the code or the passkey. It works once, and the last
+- a backup code: **Use a backup code**, instead of the code or the passkey. It works once, and the last
   screen says how many you have left.
 
 **Browsers that are already set up do not ask again.** A browser that has been added to your account signs in with
@@ -571,7 +568,7 @@ There are three ways back, in this order of ease:
 
 1. **A browser that is still set up.** Open Settings → Sign-in there, add a new authenticator app or passkey, then
    remove the old one.
-2. **A backup code.** On the new browser, step 2 of the sign-in has **Use a backup code instead**. Then add a new
+2. **A backup code.** On the new browser, step 2 of the sign-in has **Use a backup code**. Then add a new
    factor in Settings → Sign-in and make new backup codes.
 3. **The operator.** Ask whoever runs {instance} to reset your second factor. They check that it is you before they
    do (by a means other than dilla), and the reset removes your authenticator app, passkeys and backup codes.
@@ -607,8 +604,9 @@ first step.
 
 ## 2. Sign up: six steps
 
-All six steps happen in the same tab. The button under each step (or Enter in a field) moves forward, and **Back**,
-under it on the left, goes back one step. Nothing is created on the instance until you press **I saved it** on step
+All six steps happen in the same tab. The button under each step (or Enter in a field) moves forward.
+**Back** returns to the preceding step before account creation. After creation you cannot return to the key or
+Sign in; the authenticator code step has Back to change your factor choice. Nothing is created on the instance until you press **I saved it** on step
 3, after you saved your recovery key.
 
 ### Step 1 of 6: Join with an invite
@@ -637,8 +635,7 @@ There is no display name here. Until you set one in Settings → Profile, people
 
 ### Step 3 of 6: Save your recovery key
 
-![Step 3: "Save your recovery key", thirteen groups of four characters, the box to tick and the Print
-button](screenshots/onboarding-3-recovery-key.png)
+![Step 3: "Save your recovery key", thirteen groups of four characters, the box to tick, Print and Save as file](screenshots/onboarding-3-recovery-key.png)
 
 "Shown once. You need it to add another browser." The key is 13 groups of 4 characters. **Print** opens the
 browser's print dialog; the printed page holds the key, not the rest of the screen. **Save as file** downloads a small
@@ -678,7 +675,7 @@ next time you open dilla in this browser it asks for the second factor before an
 For an authenticator app: scan the QR code with the app, or type the setup key, then type the six digits the app
 shows. The sixth digit sends the code; **Verify** does the same. Pasting the code works, and so does a code your
 browser or phone fills in. For a passkey, your browser asks where to keep it, and you can name it ("Passkey name").
-**Back** returns to the choice.
+**Back** returns to the second-factor choice; it does not return to the recovery key.
 
 ### Step 6 of 6: You’re in
 
@@ -688,6 +685,9 @@ browser or phone fills in. For a passkey, your browser asks where to keep it, an
 "Messages sent before another browser joins are not shown there."
 
 On a phone, the backup codes are behind **Show**.
+
+![The phone done step with 10 backup codes behind Show and Open dilla on screen](screenshots/onboarding-6-done-phone.png)
+
 Under it are your backup codes, with **Copy** and **Print**: "Each backup code signs you in once if you lose your
 second factor. Keep them with your recovery key." Tick "I saved my backup codes somewhere safe"; **Open dilla** opens
 the app once the box is ticked. The codes are shown once; if you close the tab before you saved them, make new ones
@@ -898,8 +898,8 @@ for a screen reader).
   channels with something new ("{count} new"). Each row says where it is (the server and channel, or "Direct message")
   over who wrote what; tap it to go there. Nothing new says "Nothing new. Mentions and direct messages show up here."
 - **you** shows your name with "@{handle} · {status}", one box with the connection ("Connected to {host} · {ms} ms",
-  the round trip of the link) over this browser ("{browser} on {os} · device {id}"), and three rows: **Settings**,
-  **Status** (online, idle, do not disturb or invisible) and **Sign out**. The full facts of the link (node,
+  the round trip of the link) over this browser ("{browser} on {os} · device {id}"), and two rows: **Settings**
+  and **Sign out**. The full facts of the link (node,
   generation, devices) are in Settings → Diagnostics.
 
 ![The activity tab: "Activity" over a direct message from Ada and #loot of Midgard Crew with "1 new"](screenshots/phone-activity.png)
@@ -979,8 +979,17 @@ a short code (for example `E_CORE_MLS`) instead of its text. Nothing in this ver
 
 ## 6. Use your account in a second browser
 
-You need three things: your username, your password and the recovery key you wrote down at sign-up. The
-sign-in has four steps, in this order: your username and password, then your second factor (a code, a passkey or a
+When your browser supports passkey autofill, focus the username field and choose your passkey from its suggestions.
+Otherwise use **Sign in with a passkey**. A passkey on the code step must belong to the account whose password you
+just entered. Another account’s passkey is refused; choose the right passkey or use your code.
+
+Type or paste the six-digit authenticator code into the code boxes. The sixth digit submits it; an incomplete code stays in the boxes so you can finish it. A refused code asks you to sign in again. Backup codes use their own field. New or changed passwords need at least
+12 characters; an existing shorter password still signs in.
+
+![The six-digit sign-in code step](screenshots/signal-code-step.png)
+
+
+You need the recovery key you saved at sign-up in either case. With a password, sign-in has four steps, in this order: your username and password, then your second factor (a code, a passkey or a
 backup code), then your recovery key, then done. The recovery key comes last on purpose: the password and the code say
 who you are, and the key is what adds this browser to your account, so nothing is added until you give it. The key is
 never written to the browser's storage.
@@ -997,10 +1006,9 @@ still shows the link.
 ![Step 1: "Sign in to dilla.test" with the username mira and a password](screenshots/signin-1-login.png)
 
 "Use your dilla username and password." **Continue** checks them ("Checking…"). A
-wrong pair says "That username and password did not work." and empties the password field. **Create a new account
-instead** goes back to the sign-up.
+wrong pair says "That username and password did not work." and empties the password field. **Have an invite? Create an account** goes back to the sign-up.
 
-Under the password, **Sign in with a passkey** (shown when this browser and the instance can use passkeys) signs in
+Under the password, **Sign in with a passkey** (shown when passkeys work here and autofill is unavailable) signs in
 with a passkey instead of the password; it goes to step 3, the recovery key, or to step 2 when the passkey did not
 check that it is you.
 
@@ -1008,21 +1016,22 @@ An account that has no second factor (one from before web-3.6, or one reset by t
 the recovery key, as step 2, and then to "Add a second factor" as step 3; see [Second factor](#second-factor). There is
 no skip.
 
-### Step 2 of 4: Your second factor
+### Step 2 of 4: Enter your code
 
-![Step 2: "Your second factor" with the six-digit code typed in](screenshots/signin-2-code.png)
+![Step 2: "Enter your code" with six code boxes](screenshots/signin-2-code.png)
 
-For an authenticator app: "Enter the six-digit code from your authenticator app." A wrong code sends you back to
+For an authenticator app: "Six digits from your authenticator app." Type or paste the code; the sixth digit submits it, and **Verify** does the same. A wrong code sends you back to
 step 1 with "That code did not work. Sign in again with a fresh code.", because the instance has used up that login;
 type the password again and then a new code. A right code goes on to the recovery key.
 
 For an account whose factor is a passkey, step 2 is "Use your passkey": "This account signs in with a passkey. Your
-browser asks for it when you continue." The button is **Use passkey**. If the passkey did not check that it is you,
+browser asks for it when you continue." The button is **Use passkey**. A passkey from another account says “That passkey belongs to another account.” Choose the right key, your app code or a backup code.
+If the passkey did not check that it is you,
 the screen asks for your code as well: "This passkey did not check that it is you, so {instance} also asks for your
 code." A passkey the instance does not know says "{instance} does not know this passkey. It may belong to another
 account or another server."
 
-**Use a backup code instead** replaces either with one of your backup codes: "Type one of the backup codes you saved
+**Use a backup code** replaces either with one of your backup codes: "Type one of the backup codes you saved
 when you added your second factor. Each code works once." The page keeps the code until the last step and does not
 use it up before: it is checked, and spent, when you give the recovery key. A backup code does not replace the
 recovery key. A code that did not work says "That backup code did not work. Sign in again and try another one." and
@@ -1030,13 +1039,12 @@ takes you back to step 1. Under the code form: "Lost your phone? Use a backup co
 to reset your second factor." After a backup code, step 4 says "You have {count} backup codes left. Make new ones in
 Settings, under sign-in."
 
-### Step 3 of 4: Your recovery key
+### Step 3 of 4: Add this browser
 
-![Step 3: "Your recovery key", the key typed in groups and "52 of 52 characters"](screenshots/signin-3-recovery-key.png)
+![Step 3: "Add this browser", the key typed in groups and "52 of 52 characters"](screenshots/signin-3-recovery-key.png)
 
-"Type or paste the 52-character recovery key you wrote down when you created the account. Spaces and hyphens do not
-matter. Backup codes are not your recovery key: they stand in for the app code." The line under the field counts
-what you typed ("{n} of 52 characters"); **Add this browser** works once it reads 52 ("A recovery key has 52
+"This browser is new. Paste your recovery key to read your conversations here." Spaces and hyphens do not matter. The line under the field counts
+what you typed ("{n} of 52 characters"); **Add browser** works once it reads 52 ("A recovery key has 52
 characters."). A key that cannot be a recovery key is refused before anything is added to your account, and a key of
 another account once the instance has answered; either way this step shows again with what you typed and "This is
 not the recovery key of this account. Check every character." Adding the browser says "Adding this browser to your
@@ -1054,7 +1062,8 @@ nothing was used up, not even a backup code.
 
 ![Step 4: "You’re in" and the Open dilla button](screenshots/signin-4-done.png)
 
-"This browser is now a device of {username} on {instance}. Messages sent before now are not shown here."
+"This browser is now one of your devices." If you joined a server, the panel says "{server} is waiting in #{channel}."
+The small print says "Messages sent before another browser joins are not shown there."
 **Open dilla** opens the app. The new browser sees new messages, not what was said before it joined.
 
 ### If the sign-in stops
@@ -1251,8 +1260,9 @@ list "files to send" with packing-list.txt and bridge-sketch.png, both ready](sc
 25 MB each.") or pasting them into the message field adds them to "files to send". Each file goes through
 "reading", "preparing", "uploading" and "ready", or shows "failed ({code})"; **remove {name}** takes it off the
 list. A message carries at most four files ("A message carries at most 4 files."), each at most 25 MB
-(26,214,400 bytes) in a browser ("{name} is over 25 MB and cannot be sent from a browser."). The message goes when
-every file is ready ("Wait until every file is ready, or remove it."), with or without text. Files are uploaded
+(26,214,400 bytes) in a browser. An oversized card says “Over 25 MB” and the toast says “Files over 25 MB can’t be sent from a browser”. The message goes when
+its uploads are ready, with or without text. Pressing Send while an upload is pending shows “Waiting for uploads to finish”.
+Failed cards stay visible; remove one and attach the file again to retry. They do not stop your text and ready files from being sent. Files are uploaded
 as soon as you add them and become part of the conversation only when the message is sent; a file that is never
 sent is removed by the instance after a while (after 24 hours, unless the instance is set otherwise). If a file
 you attached is no longer on the server when the message is sent (an upload left for more than a day), the
@@ -1279,7 +1289,7 @@ with the message. When a message with files is deleted, its files are deleted fr
 When the server's managers have entered a Giphy key (server settings → GIFs, "GIFs (Giphy)"), a **gif** button
 (named "add a gif") sits next to **attach files** in that server's channels. It opens a small picker above the message
 field: type to search (or leave it empty for what is trending), use the arrow keys or Tab to move over the results, and
-press Enter, Space or click to pick one. **more** loads the next page. The footer says "Powered by GIPHY". Escape closes
+press Enter, Space or click to pick one. **more** loads the next page. The search row says "Search Giphy" with "VIA GIPHY" beside it. Escape closes
 the picker and puts focus back on the **gif** button.
 
 The results are a grid of three columns (two on a phone), each GIF shown whole at its own proportions, so tall and wide ones sit
@@ -1553,6 +1563,17 @@ dilla-testkit --release --locked`, or `DILLA_TESTKIT=/path`) and Playwright's Ch
 127.0.0.1:8471 and 8472 (`node e2e/scripts/shoot-docs.mjs --port P --control C` picks others), with the host's
 LiveKit on 7888 and 7890, and writes
 `docs/user/screenshots/*.png`.
+
+The command list, chips, private result, poll dialog and card, and code step use a separate READY UX world
+with the managed Bot. Build the world prerequisites in `e2e/ux/README.md`, then run from the repository root:
+
+```sh
+npm run ux:world -w @dilla/e2e -- --base 9311 --out "$PWD/target/ui-screens/task-9-world"
+# In another terminal, after READY:
+npm run docs:shots -w @dilla/e2e -- --wave-b-state "$PWD/target/ui-screens/task-9-world/state.json"
+```
+
+This posts a reminder and a poll. Stop and restart the world before another parity run.
 
 Chromium keeps sockets in its profile directories, so the script needs a short temporary directory: when
 `TMPDIR` is a long path, run it with `TMPDIR=/tmp`.

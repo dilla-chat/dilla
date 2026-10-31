@@ -110,6 +110,54 @@ copy, not names. Other known capture differences: the prototype draws a phone fr
 the app finish instantly (the prototype's progress bar is mid-way at capture), Giphy is unreachable from the world (the
 picker shows its error state), and reduced motion (both sides) replaces animations such as the reply-jump flash.
 
+### Closing a wave with app captures
+
+Build the prerequisites in `e2e/ux/README.md`, then start one world on a private
+base port block. Pass an **absolute** `--out` path: npm workspace scripts run
+from `e2e/`, while a shooter started at the repository root resolves relative
+paths from that root. Wait for `READY` before driving any world browser.
+
+```
+npm run ux:world -w @dilla/e2e -- --base 9311 --out "$PWD/target/ui-screens/task-9-world"
+node docs/design/signal/parity/shoot.mjs docs/design/signal/parity/app/standing.json .superpowers/sdd/2026-10-30-signal-wave-b/parity/task-9/standing --app target/ui-screens/task-9-world/state.json
+```
+
+Shoot one spec at a time. Stop with Ctrl+C and restart the world after a spec
+with mutating pairs. Use a subdirectory per spec: several specs repeat the
+standing pair names. The closeout set is `standing`, `wave-a-gaps`, `task-2`,
+`task-3`, `task-3b`, `task-4`, `task-5`, `task-6`, `task-7` and `task-8`.
+Task 8 also has two ReactionTooltip story pairs (Q6); build and serve Storybook
+and pass `--storybook http://127.0.0.1:<port>` for those.
+
+Do not pass `--judge` for the closeout. Read each pair and record **match**,
+**differs**, or **accepted deviation**, with its file path and a reason, in
+`task-9/results.md`. A capture failure is **differs** with its error and intended
+path; it is not evidence of a visual match. If its target was explicitly removed
+by an accepted decision (such as phone Status), record that accepted absence and
+the capture failure together. Route differences to the controller.
+Keep world state and screenshots containing throwaway secrets in ignored paths.
+
+The user-doc shooter can reuse a READY world with the managed Bot:
+
+```
+npm run docs:shots -w @dilla/e2e -- --wave-b-state "$PWD/target/ui-screens/task-9-world/state.json"
+```
+
+This adds the command list, chips, private result, poll dialog/card and sign-in
+code step to `docs/user/screenshots`. It posts a reminder and a poll, so restart
+the world before further parity captures. The ordinary `docs:shots` command
+refreshes the rest of the guide's screenshots using its own host.
+
+### Other accepted deviations recorded by Jonas
+
+The wave B ledger records these alongside Q1–Q10 and the task-specific rulings
+below: recovery-key entry keeps the character count, 52-character requirement
+and disabled button; authenticator setup keeps the QR code, setup key and hint;
+removing another browser keeps recovery-key confirmation; the sign-in done step
+has no invite link. The phone You tab has no Status menu. Shortcut keycaps follow the platform. The ledger accepts removing Back and Sign in on signup steps 4–6. On phones the done step folds backup codes behind Show.
+These are accepted only for the named state; unrelated differences still need
+routing.
+
 ## Judge a pair (TypeSafe, advisory only)
 
 `judge.mjs` asks TypeSafe's Jev (`jev-1.14.0`, pinned) the same questions about the prototype frame and the app (or story)
