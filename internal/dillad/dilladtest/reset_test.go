@@ -267,3 +267,75 @@ func TestTheResetCutsALiveCall(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+// A ticking visual world must keep the host aligned with signed Bot time without
+// forcing delivery retention on every second. Explicit time-travel scenarios keep
+// their historical synchronous sweep unless they opt out.
+func TestTheClockRouteCanAdvanceWithoutForcingRetention(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		sweep      *bool
+		wantPruned bool
+	}{
+		{name: "default sweeps", wantPruned: true},
+		{name: "explicit true sweeps", sweep: new(true), wantPruned: true},
+		{name: "explicit false preserves ciphertext", sweep: new(false), wantPruned: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := sfuHost(t, false)
+			control := httptest.NewServer(ControlHandler(h))
+			t.Cleanup(control.Close)
+			user, device, _ := seedPerson(t, h, "alice")
+			repo := h.Server().Repo()
+			before := h.Clock().Now().Unix()
+			group := store.GroupRow{GroupID: id.New(), Binding: []byte{0x80}, TargetID: id.New(),
+				Ciphersuite: 1, Epoch: 1, Seq: 1, ExternalSenderKeyID: id.New(),
+				E2EEVersion: 1, MediaVersion: 1, PolicyVersion: 1, Created: before}
+			if err := repo.CreateGroup(t.Context(), group); err != nil {
+				t.Fatalf("CreateGroup: %v", err)
+			}
+			if _, err := repo.NextSeq(t.Context(), group.GroupID); err != nil {
+				t.Fatalf("NextSeq: %v", err)
+			}
+			if err := repo.ReplaceMembers(t.Context(), group.GroupID, 1, []store.MemberRow{{
+				GroupID: group.GroupID, LeafIndex: 0, UserID: user, DeviceID: device,
+				SignatureKey: make([]byte, 32), AddedEpoch: 1,
+			}}); err != nil {
+				t.Fatalf("ReplaceMembers: %v", err)
+			}
+			if err := repo.PutCursor(t.Context(), device, group.GroupID, 1, 1, before); err != nil {
+				t.Fatalf("PutCursor: %v", err)
+			}
+			if err := repo.PutAppMessage(t.Context(), store.AppMessageRow{GroupID: group.GroupID,
+				Seq: 1, Epoch: 1, UploaderDevice: device, Blob: []byte("ciphertext"),
+				CommitmentC: make([]byte, 32), FrankingTag: make([]byte, 32), Size: 10,
+				Created: before}); err != nil {
+				t.Fatalf("PutAppMessage: %v", err)
+			}
+			body := map[string]any{"seconds": 2}
+			if tc.sweep != nil {
+				body["sweep"] = *tc.sweep
+			}
+			if status := controlPost(t, control.URL, "/debug/clock", body); status != http.StatusNoContent {
+				t.Fatalf("POST /debug/clock = %d, want 204", status)
+			}
+			if now := h.Clock().Now().Unix(); now != before+2 {
+				t.Fatalf("clock = %d, want %d", now, before+2)
+			}
+			rows, err := repo.ListAppMessages(t.Context(), group.GroupID, 0, 10)
+			if err != nil {
+				t.Fatalf("ListAppMessages: %v", err)
+			}
+			got, err := repo.GetGroup(t.Context(), group.GroupID)
+			if err != nil {
+				t.Fatalf("GetGroup: %v", err)
+			}
+			if tc.wantPruned && (len(rows) != 0 || got.PrunedBelow != 1) {
+				t.Fatalf("default retention: rows=%d pruned_below=%d, want 0 and 1", len(rows), got.PrunedBelow)
+			}
+			if !tc.wantPruned && (len(rows) != 1 || got.PrunedBelow != 0) {
+				t.Fatalf("clock-only advance: rows=%d pruned_below=%d, want 1 and 0", len(rows), got.PrunedBelow)
+			}
+		})
+	}
+}
