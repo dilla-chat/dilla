@@ -421,7 +421,7 @@ export async function checkStory(page: Page, context: StoryContext): Promise<voi
     // row's inset bar, the pressed button's underline) cannot swallow it.
     // Tab once: if anything takes focus, its computed outline must be the
     // 2px solid accent ring.
-    // One exception (Jonas, 2026-10-14): the composer's textarea draws no visible ring; its box shows
+    // Composer exception (Jonas, 2026-10-14): the composer's textarea draws no visible ring; its box shows
     // focus instead, its border turning the resolved --accent (WCAG 2.4.7 still holds). The textarea keeps
     // a transparent outline, so under Windows forced colors it is painted and focus still shows.
     await page.keyboard.press('Tab');
@@ -443,6 +443,19 @@ export async function checkStory(page: Page, context: StoryContext): Promise<voi
         const sides = [b.borderTopColor, b.borderRightColor, b.borderBottomColor, b.borderLeftColor];
         composer = { border: sides.every(c => c === sides[0]) ? sides[0] : sides.join(' / '), accent, outlineColor: s.outlineColor };
       }
+      // Jonas D6: poll fields show focus through all four accent borders, with no outline or shadow ring.
+      let pollField: { borders: { side: string; color: string; style: string; width: string }[]; accent: string; outline: string; shadow: string } | null = null;
+      if (el.matches('.d-poll-dialog input')) {
+        for (const a of el.getAnimations()) a.finish();
+        const probe = document.createElement('span');
+        probe.style.color = 'var(--accent)';
+        el.parentElement?.appendChild(probe);
+        const accent = getComputedStyle(probe).color;
+        probe.remove();
+        pollField = { borders: ['top', 'right', 'bottom', 'left'].map(side => ({ side,
+          color: s.getPropertyValue(`border-${side}-color`), style: s.getPropertyValue(`border-${side}-style`), width: s.getPropertyValue(`border-${side}-width`),
+        })), accent, outline: s.outlineStyle, shadow: s.boxShadow };
+      }
       // Ruling AK (Jonas, task 9 fix round 1): the search palette's textbox draws no ring either (the caret shows focus).
       const palette = el.matches('.d-search-palette input') ? s.outlineColor : null;
       // Wave B task 3: the code boxes' input is transparent; the box at the caret shows focus with the accent edge and ring.
@@ -458,7 +471,7 @@ export async function checkStory(page: Page, context: StoryContext): Promise<voi
         const c = caret ? getComputedStyle(caret) : null;
         codeBox = { border: c?.borderTopColor ?? 'none', shadow: c?.boxShadow ?? 'none', accent };
       }
-      return { tag: el.tagName.toLowerCase(), outlineStyle: s.outlineStyle, outlineWidth: s.outlineWidth, composer, palette, codeBox };
+      return { tag: el.tagName.toLowerCase(), outlineStyle: s.outlineStyle, outlineWidth: s.outlineWidth, composer, palette, codeBox, pollField };
     });
     if (focused?.composer) {
       const { composer } = focused;
@@ -491,6 +504,17 @@ export async function checkStory(page: Page, context: StoryContext): Promise<voi
       if (codeBox.border !== codeBox.accent || codeBox.shadow === 'none') {
         throw new Error(`${context.title} / ${context.name}: the focused code boxes show no caret box in the accent (border ${codeBox.border}, ring ${codeBox.shadow}; expected --accent ${codeBox.accent})`);
       }
+    } else if (focused?.pollField) {
+      const { pollField } = focused;
+      const bad: string[] = [];
+      for (const border of pollField.borders) {
+        if (border.color !== pollField.accent || border.style !== 'solid' || parseFloat(border.width) < 1) {
+          bad.push(`${border.side} border ${border.width} ${border.style} ${border.color}, expected at least 1px solid --accent ${pollField.accent}`);
+        }
+      }
+      if (pollField.outline !== 'none') bad.push(`outline-style ${pollField.outline}, expected none`);
+      if (pollField.shadow !== 'none') bad.push(`box-shadow ${pollField.shadow}, expected none`);
+      if (bad.length > 0) throw new Error(`${context.title} / ${context.name}: the focused poll field should show focus through its accent border without a ring (${bad.join('; ')})`);
     } else if (focused?.palette != null) {
       if (focused.palette !== 'rgba(0, 0, 0, 0)') throw new Error(`${context.title} / ${context.name}: the palette textbox draws a ring (${focused.palette}); Ruling AK wants none`);
     } else if (focused && (focused.outlineStyle !== 'solid' || focused.outlineWidth !== '2px')) {

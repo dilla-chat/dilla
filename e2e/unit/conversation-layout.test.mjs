@@ -24,6 +24,7 @@ before(async () => {
       import { Conversation, conversationReducer, INITIAL_UI } from './packages/web/src/screens/conversation/Conversation.tsx';
       import { nameBook } from './packages/web/src/screens/shell-model.ts';
       import { account, timelineItem } from './packages/web/src/test/fixtures.ts';
+      import { PhoneLayoutProvider } from './packages/ui/src/internal/phoneLayout.ts';
       import { PollDialog } from './packages/ui/src/PollDialog/PollDialog.tsx';
       import { POLL_DIALOG_LABELS } from './packages/ui/src/PollDialog/PollDialog.fixture.tsx';
       import { ToastHost, showToast } from './packages/ui/src/Toast/Toast.tsx';
@@ -42,11 +43,17 @@ before(async () => {
       function App() {
         const [ui, dispatch] = useReducer(conversationReducer, INITIAL_UI);
         const poll = new URLSearchParams(location.search).has('poll');
+        const phoneReveal = new URLSearchParams(location.search).has('phone-reveal');
+        const shownItems = phoneReveal ? Array.from({ length: 30 }, (_, index) => timelineItem({
+          key: 'h' + index, msgId: (index + 10).toString(16).padStart(32, '0'), seq: String(index + 10), ts: index * 600,
+          senderUser: me.user.id, body: 'history row ' + index + ': keep actions visible after this tap',
+        })) : items;
         return <CoreProvider client={client}><div className="d-root" data-theme="signal">
           <textarea aria-label="composer" />
-          <div style={{ height: 500 }}><Conversation channelId={channel} logKey="layout" label="messages" timeline={{ channelId: channel, group: 'active', items, hasEarlier: false }}
-            book={nameBook(me.user, [])} encodeWith={[]} broadcast={false} pinsTitle="Pins" ui={ui} dispatch={dispatch} loadingEarlier={false} onLoadEarlier={() => {}} onError={e => { throw e; }} /></div>
-          <button onClick={() => showToast('Files over 25 MB can’t be sent from a browser')}>Show toast</button><ToastHost id={1} />
+          <PhoneLayoutProvider value={phoneReveal}><div data-layout={phoneReveal ? 'phone' : undefined} style={{ height: phoneReveal ? 360 : 500 }}><Conversation channelId={channel} logKey="layout" label="messages" timeline={{ channelId: channel, group: 'active', items: shownItems, hasEarlier: false }}
+            book={nameBook(me.user, [])} encodeWith={[]} broadcast={false} pinsTitle="Pins" ui={ui} dispatch={dispatch} loadingEarlier={false} onLoadEarlier={() => {}} onError={e => { throw e; }} /></div></PhoneLayoutProvider>
+          <button onClick={() => showToast('Files over 25 MB can’t be sent from a browser')}>Show toast</button>
+          <button onClick={() => showToast('Waiting for uploads to finish')}>Show short toast</button><ToastHost id={1} />
           {poll && <PollDialog labels={POLL_DIALOG_LABELS} open channelName="general" bot={{ name: 'Glenn' }} value={{ question: '', answers: ['', ''], duration: '24h', multi: false }} error={null} canPost={false} onChange={() => {}} onPost={() => {}} onCancel={() => {}} />}
         </div></CoreProvider>;
       }
@@ -152,14 +159,66 @@ test('phone toast uses the viewport width between 16px gutters', async () => {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 }, reducedMotion: 'reduce' });
   try {
     await page.goto(url);
-    await page.getByRole('button', { name: 'Show toast' }).click();
+    await page.getByRole('button', { name: 'Show short toast', exact: true }).click();
+    const short = await page.locator('.d-np-toast').boundingBox();
+    assert.equal(short.height, 38); // prototype content height36 plus its two 1px borders
+    await page.getByRole('button', { name: 'Show toast', exact: true }).click();
     const geometry = await page.locator('.d-np-toast').evaluate(el => {
       const r = el.getBoundingClientRect(), stack = el.parentElement.getBoundingClientRect();
-      return { width: r.width, height: r.height, left: stack.left, right: stack.right };
+      return { width: r.width, height: r.height, left: stack.left, right: stack.right, toastLeft: r.left, toastRight: r.right,
+        overflows: el.scrollWidth > el.clientWidth + 1, transform: getComputedStyle(el.parentElement).transform };
     });
     assert.equal(geometry.left, 16);
     assert.equal(geometry.right, 374);
-    assert.ok(geometry.width > 300, JSON.stringify(geometry));
-    assert.ok(geometry.height < 65, JSON.stringify(geometry));
+    assert.equal(geometry.toastLeft, 16);
+    assert.equal(geometry.toastRight, 374);
+    assert.equal(geometry.width, 358);
+    assert.ok(geometry.height > 38 && geometry.height < 65, JSON.stringify(geometry));
+    assert.equal(geometry.overflows, false);
+    assert.equal(geometry.transform, 'none');
+  } finally { await page.close(); }
+});
+
+
+test('phone reveal after a native wheel survives layout scrolling until a new wheel', async () => {
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 }, reducedMotion: 'reduce' });
+  try {
+    // Keep old and new events inside the production 800ms window even on a slow CI host; timers and rendering remain real.
+    await page.clock.setFixedTime(new Date('2026-10-31T16:00:00Z'));
+    await page.goto(url + '?phone-reveal');
+    const log = page.getByRole('log');
+    const row = page.locator('.d-message-row').nth(4);
+    await row.waitFor();
+    await page.evaluate(() => document.fonts.ready);
+    assert.ok(await log.evaluate(el => el.scrollHeight > el.clientHeight + 200));
+    await log.evaluate(el => new Promise(resolve => {
+      el.addEventListener('scroll', () => requestAnimationFrame(() => resolve()), { once: true });
+      el.scrollTop = 0;
+    }));
+    await log.hover();
+    await page.mouse.wheel(0, 80);
+    await page.waitForFunction(() => document.querySelector('[role="log"]').scrollTop > 0);
+    await row.locator('.d-message-row__body').click();
+    assert.equal(await row.getAttribute('data-revealed'), 'true');
+    await log.evaluate(el => new Promise(resolve => {
+      el.addEventListener('scroll', () => requestAnimationFrame(() => resolve()), { once: true });
+      el.scrollTop += 12;
+    }));
+    await page.mouse.move(380, 700); // reveal paint must survive after pointer hover leaves the row
+    const revealed = await row.evaluate(el => {
+      const style = getComputedStyle(el), toolbar = el.querySelector('.d-message-row__toolbar');
+      return { on: el.dataset.revealed, fill: style.backgroundColor, stripe: style.boxShadow,
+        toolbar: toolbar && getComputedStyle(toolbar).visibility };
+    });
+    assert.equal(revealed.on, 'true');
+    assert.equal(revealed.fill, 'rgb(13, 16, 20)');
+    assert.match(revealed.stripe, /rgb\(90, 168, 230\).*inset/);
+    assert.equal(revealed.toolbar, 'visible');
+    const before = await log.evaluate(el => el.scrollTop);
+    await log.hover();
+    await page.mouse.wheel(0, 80);
+    await page.waitForFunction(top => document.querySelector('[role="log"]').scrollTop > top, before);
+    await page.waitForFunction(() => document.querySelectorAll('.d-message-row[data-revealed="true"]').length === 0);
+    assert.equal(await row.locator('.d-message-row__toolbar').count(), 0);
   } finally { await page.close(); }
 });

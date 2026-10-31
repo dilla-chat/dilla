@@ -24,11 +24,28 @@ export const CurrentYou: Story = {
 
 /** Signal §5.10 (the prototype's phone tabs): Home, Activity (a count) and You, Home current. */
 const SIGNAL_ITEMS = (current: string): TabBarItem[] => [
-  { id: 'home', label: 'Home', href: '#home', icon: 'house', current: current === 'home' },
+  { id: 'home', label: 'Home', href: '#home', icon: 'home', current: current === 'home' },
   { id: 'activity', label: 'Activity', href: '#activity', icon: 'bell', current: current === 'activity', count: 2, countLabel: 'Activity, 2 unread' },
   { id: 'you', label: 'You', href: '#you', icon: 'user', current: current === 'you' },
 ];
+const checkHomeGlyph = (canvasElement: HTMLElement, current: boolean) => {
+  const home = canvasElement.querySelector<HTMLAnchorElement>('a[href="#home"]')!;
+  const glyph = home.querySelector<SVGSVGElement>('svg')!;
+  const size = glyph.getBoundingClientRect();
+  const color = getComputedStyle(glyph).color;
+  const expectedColor = current ? 'rgb(228, 232, 238)' : 'rgb(118, 125, 137)';
+  if (glyph.querySelectorAll('path').length !== 2 || size.width !== 19 || size.height !== 19
+    || glyph.getAttribute('stroke-width') !== '2' || color !== expectedColor) {
+    throw new Error(`Home must draw the pinned Lucide Home/House glyph: ${JSON.stringify({ width: size.width, height: size.height, color, expectedColor })}`);
+  }
+};
 export const Signal: Story = {
   args: { label: 'main', items: SIGNAL_ITEMS('home'), onSelect: () => {} }, globals: { theme: 'signal' },
   render: args => <div style={{ maxWidth: 390 }}><TabBar {...args} /></div>,
+  play: ({ canvasElement }) => checkHomeGlyph(canvasElement, true),
+};
+export const SignalInactiveHome: Story = {
+  args: { label: 'main', items: SIGNAL_ITEMS('activity'), onSelect: () => {} }, globals: { theme: 'signal' },
+  render: args => <div style={{ maxWidth: 390 }}><TabBar {...args} /></div>,
+  play: ({ canvasElement }) => checkHomeGlyph(canvasElement, false),
 };

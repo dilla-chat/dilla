@@ -50,6 +50,13 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
   const [dismissed, setDismissed] = useState<number | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const wasCommandMode = useRef(false);
+  const restoreAfterCommand = useRef(true);
+  useLayoutEffect(() => {
+    // Command chips replace the textarea. When they leave, the new field needs the cursor back (prototype runCommand).
+    if (wasCommandMode.current && !commandMode && restoreAfterCommand.current) textareaRef.current?.focus();
+    wasCommandMode.current = commandMode;
+  }, [commandMode]);
   const pendingCaret = useRef<number | null>(null);
   const id = useId().replace(/:/g, '-');
   const bits = p.bits ?? null;
@@ -188,7 +195,7 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
       onChange={text => { if (cmd !== undefined) return; p.onDraft(text); setActive(0);
         setCaret(textareaRef.current?.selectionStart ?? text.length); }}
       disabled={blocked !== null} disabledReason={blocked ?? undefined} onSend={cmd === undefined ? send : () => cmd.run()}
-      sendLabel={t('shell.composer.send')}
+      sendLabel={t('shell.composer.send')} showSend={p.threadId === undefined}
       counterLabel={n => n < 0 ? t('shell.composer.over', { n: -n }) : t('shell.composer.remaining', { n })}
       attachLabel={t('shell.composer.attach')} onAttach={() => inputRef.current?.click()}
       {...(gifsOn ? { gif: { label: t('gif.button'), open: gifOpen && blocked === null, controls: `${id}-gifs`, onToggle: () => { setEmojiOpen(false); setGifOpen(o => !o); }, buttonRef: gifButton } } : {})}
@@ -237,7 +244,7 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
       {...(p.threadId !== undefined ? { threadId: p.threadId } : {})} {...(bits !== null ? { bits } : {})}
       items={p.items} selfId={selfId} draft={p.draft} onDraft={text => p.onDraft(text)}
       encodeMessage={text => encodeMentions(text, p.encodeWith, broadcast, roleMentions)} openGif={query => { setGifQuery(query); setGifOpen(true); }} gifsEnabled={gifsOn}
-      onSendLiteral={text => { p.onDraft(''); send(text, true); }} onModeChange={setCommandMode} slashSubmission={slashSubmission}
+      onSendLiteral={text => { p.onDraft(''); send(text, true); }} onModeChange={(active, exitFocus) => { restoreAfterCommand.current = exitFocus !== 'preserve'; setCommandMode(active); }} slashSubmission={slashSubmission}
       renderFrame={parts => composer(parts)} />
     {!commandMode ? composer() : null}
     <p className="d-sr-only" role="status" data-slow="">{spoken.text}</p>

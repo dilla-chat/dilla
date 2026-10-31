@@ -1,7 +1,8 @@
-import { ICONS, type IconElement, type IconName } from './icons.ts';
+import { ICONS, type IconElement, type IconName as CanonicalIconName } from './icons.ts';
 import './Icon.css';
 
-export type { IconName } from './icons.ts';
+/** Lucide 0.460.0 exports Home = House; its static package names the SVG house.svg. */
+export type IconName = CanonicalIconName | 'home';
 
 export interface IconProps {
   name: IconName;
@@ -16,7 +17,7 @@ export interface IconProps {
  * forced colours. Always decorative: `aria-hidden` and unfocusable, so the control around it carries the name.
  */
 export function Icon({ name, size = 20, stroke = 2 }: IconProps) {
-  const nodes: readonly IconElement[] = ICONS[name];
+  const nodes: readonly IconElement[] = ICONS[name === 'home' ? 'house' : name];
   return (
     <svg className="d-icon" data-icon={name} xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none"
       stroke="currentColor" strokeWidth={stroke} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">

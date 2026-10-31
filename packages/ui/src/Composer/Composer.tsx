@@ -20,6 +20,8 @@ export interface ComposerProps {
   disabledReason?: string;
   onSend(text: string): void;
   sendLabel: string;
+  /** The thread reply line sends with Enter and has no visible send control. Defaults to true. */
+  showSend?: boolean;
   counterLabel(remaining: number): string;
   /** The attach button (`+`) before the textarea, shown when both are given. */
   attachLabel?: string;
@@ -105,7 +107,7 @@ function labelParts(label: string): { lead: string; target: string | null } {
 export function Composer({
   label, placeholder, maxLength, value, onChange, disabled, disabledReason, onSend, sendLabel, counterLabel,
   attachLabel, onAttach, gif, top, notice, measure, combobox, onCaret, onArrowUpEmpty, onPasteFiles, textareaRef, canSendEmpty,
-  emoji, codeLabel, typing, hint, replying, input,
+  emoji, codeLabel, typing, hint, replying, input, showSend = true,
 }: ComposerProps) {
   const ownInput = useRef<HTMLTextAreaElement | null>(null);
   const pendingCaret = useRef<number | null>(null);
@@ -236,10 +238,10 @@ export function Composer({
           {input !== undefined ? input : <textarea ref={setInput} id={inputId} className="d-composer__input" rows={1} value={value} placeholder={placeholder}
             readOnly={disabled} aria-disabled={disabled ? true : undefined} aria-describedby={describedBy} {...listAttributes}
             onChange={onInput} onKeyDown={onKeyDown} onSelect={reportCaret} onKeyUp={reportCaret} onPaste={onPaste} />}
-          <button type="submit" className="d-composer__send" disabled={disabled === true}
+          {showSend ? <button type="submit" className="d-composer__send" disabled={disabled === true}
             aria-disabled={sendRefused ? true : undefined} aria-describedby={sendRefused ? counterId : undefined}>
             {sendLabel}<span className="d-composer__send-key" aria-hidden="true"> ↵</span>
-          </button>
+          </button> : null}
         </div>
         <div className="d-composer__foot">
           {attachLabel !== undefined && onAttach ? (

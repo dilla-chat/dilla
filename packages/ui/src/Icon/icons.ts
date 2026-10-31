@@ -75,7 +75,7 @@
  *   icons/youtube.svg  5de2a980d0eb396d510d7a74dd7e4f9def3d10cfcad2015e51f991c517e3c720  (exception: lucide-static@0.460.0, not 1.57.0)
  *   icons/square.svg  ea98f50de2f267b4d866a77d4425fa3da2dec239d3c13a0e2cbde0bdf95dfe37
  *   icons/arrow-right.svg  164b39628bfea3792dca3163c5f67b97ee0d11000489e7d201418d7f671a08b5
- *   icons/house.svg  3ce1e3be357b3d704af39405df420cfd8ebc6b5d73b017f95492f43e09d07dc9
+ *   icons/house.svg  9a58539fef2871ca76cae55ae876273db11caa5d3ae9e92630ff22fc00dd9feb  (exception: lucide-static@0.460.0, not 1.57.0)
  *   icons/alarm-clock.svg  b6d5c6298468151d429c184ccb404fae746f4abe34579289d9946aab167a078b
  *   icons/smile-plus.svg  394b13141695981e7cb6e0684bdd92c98dea8ec48cc0b2b771303323d7cf7c69
  *   icons/code-xml.svg  f0782c1c2078078fe8017b713d7da1e118023caeff579f6f1de177b608da2ce9
@@ -480,9 +480,10 @@ export const ICONS = {
     ['path', { d: 'M5 12h14' }],
     ['path', { d: 'm12 5 7 7-7 7' }],
   ],
+  // The prototype's Home glyph: Lucide 0.460.0 exports Home = House; lucide-static names the asset house.svg.
   'house': [
     ['path', { d: 'M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8' }],
-    ['path', { d: 'M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z' }],
+    ['path', { d: 'M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z' }],
   ],
   'alarm-clock': [
     ['circle', { cx: '12', cy: '13', r: '8' }],

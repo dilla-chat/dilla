@@ -1639,13 +1639,6 @@
           }
         },
         {
-          "wheel": [
-            ".d-poll-card:has-text(\"What should we raid on Friday? card-multi phone\")",
-            0,
-            -180
-          ]
-        },
-        {
           "click": ".d-poll-card:has-text(\"What should we raid on Friday? card-multi phone\") >> role=button[name=/^the harbour/]"
         },
         {

@@ -64,6 +64,72 @@ test('localFontCss declares JetBrains Mono 400-700 and DM Serif Display italic f
   assert.doesNotMatch(css, /https?:/);
 });
 
+test('prototype Home loader resolves its original static URL through the official House alias', async () => {
+  const { chromium } = await import('playwright');
+  const { routePrototypeAssets } = await import('./shoot.mjs');
+  const browser = await chromium.launch({ headless: true });
+  const homeUrl = 'https://cdn.jsdelivr.net/npm/lucide-static@0.460.0/icons/home.svg';
+  try {
+    const page = await browser.newPage();
+    const requested = [];
+    await page.route('https://cdn.jsdelivr.net/**', route => {
+      requested.push(route.request().url());
+      return route.fulfill({ status: 404, headers: { 'access-control-allow-origin': '*' }, body: 'Missing static alias' });
+    });
+    const load = async () => {
+      await page.setContent('<nav style="color:#E4E8EE"><d-icon name="home" size="19"></d-icon></nav>');
+      await page.addScriptTag({ path: new URL('../prototype/dilla-icons.js', import.meta.url).pathname });
+      await page.waitForFunction(() => customElements.get('d-icon'));
+    };
+    const missing = page.waitForResponse(response => response.url() === homeUrl);
+    await load();
+    await missing;
+    assert.deepEqual(requested, [homeUrl], 'the unmodified prototype requests the obsolete home.svg URL');
+    assert.equal(await page.locator('d-icon svg path').count(), 0, 'a 404 leaves the real loader with a blank Home glyph');
+    // Reload the document to clear the loader's cached failed request.
+    await page.goto('about:blank');
+    await routePrototypeAssets(page);
+    await load();
+    await page.locator('d-icon svg path').first().waitFor({ timeout: 1000 });
+    const glyph = await page.locator('d-icon svg').evaluate(svg => ({
+      paths: [...svg.querySelectorAll('path')].map(path => path.getAttribute('d')),
+      width: svg.getAttribute('width'), height: svg.getAttribute('height'),
+      stroke: svg.getAttribute('stroke'), strokeWidth: svg.getAttribute('stroke-width'),
+      color: getComputedStyle(svg).color,
+    }));
+    assert.deepEqual(glyph, {
+      paths: [
+        'M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8',
+        'M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z',
+      ],
+      width: '19', height: '19', stroke: 'currentColor', strokeWidth: '2', color: 'rgb(228, 232, 238)',
+    });
+    assert.equal(await page.evaluate(async () => (await fetch('https://cdn.jsdelivr.net/npm/lucide-static@0.460.0/icons/unknown.svg')).status), 404, 'the alias route must leave other assets alone');
+  } finally { await browser.close(); }
+});
+
+test('prototype icon readiness holds the capture until the visible Home glyph finishes loading', async () => {
+  const { chromium } = await import('playwright');
+  const { routePrototypeAssets, waitForPrototypeIcons } = await import('./shoot.mjs');
+  const browser = await chromium.launch({ headless: true });
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  try {
+    const page = await browser.newPage();
+    await routePrototypeAssets(page);
+    await page.route('https://cdn.jsdelivr.net/npm/lucide-static@0.460.0/icons/home.svg', async route => { await held; await route.fallback(); });
+    await page.setContent('<d-icon name="home" size="19"></d-icon>');
+    await page.addScriptTag({ path: new URL('../prototype/dilla-icons.js', import.meta.url).pathname });
+    let ready = false;
+    const pending = waitForPrototypeIcons(page).then(() => { ready = true; });
+    await page.waitForTimeout(70);
+    assert.equal(ready, false, 'the document and its empty SVG can be ready before the glyph response');
+    release();
+    await pending;
+    assert.equal(await page.locator('d-icon svg path').count(), 2);
+  } finally { release(); await browser.close(); }
+});
+
 const app = { name: 'b', viewport: { width: 1280, height: 800 }, prototype: {}, app: { who: 'ada' } };
 
 test('validateSpec accepts a pair with app and no story, and rejects both or neither', () => {
@@ -264,6 +330,32 @@ test('signed-in captures wait past Starting dilla until the app shell is visible
     await waitForAppReady(page, 'fresh');
     await waitForAppReady(page, 'freshPhone');
     assert.equal(await page.locator('.d-app-shell').count(), 0, 'signed-out flows do not require a shell');
+  } finally { await browser.close(); }
+});
+
+test('fresh invite entry can click through the server landing before requiring the app theme', async () => {
+  const { chromium } = await import('playwright');
+  const { waitForAppReady } = await import('./shoot.mjs');
+  const browser = await chromium.launch({ headless: true });
+  try {
+    for (const who of ['fresh', 'freshPhone']) {
+      const page = await browser.newPage();
+      await page.setContent('<a href="#app">Open dilla in this browser</a>');
+      let entered = false;
+      const entry = waitForAppReady(page, who, { beforeSteps: true }).then(() => { entered = true; }).catch(() => {});
+      await page.waitForTimeout(80);
+      assert.equal(entered, true, 'the landing page has no app theme yet');
+      await entry;
+      let ready = false;
+      const capture = waitForAppReady(page, who).then(() => { ready = true; }).catch(() => {});
+      await page.waitForTimeout(80);
+      assert.equal(ready, false, 'the final capture still waits for the real app theme');
+      await page.getByRole('link').click();
+      await page.evaluate(() => { document.documentElement.dataset.theme = 'signal'; });
+      await capture;
+      assert.equal(ready, true);
+      await page.close();
+    }
   } finally { await browser.close(); }
 });
 
@@ -483,17 +575,23 @@ test('targeted wheel delivers trusted manual scrolling and clears its incidental
   } finally { await browser.close(); }
 });
 
-test('poll vote inputs use native wheel before each answer and desktop toolbar wheels before explicit hover', async () => {
+test('poll votes use native initial scrolling and phone multichoice keeps consecutive taps', async () => {
   const { readFileSync } = await import('node:fs');
   const polls = JSON.parse(readFileSync(new URL('./app/task-7.json', import.meta.url)));
   let votes = 0;
   for (const pair of polls) {
+    let previousVote = -1;
     for (const [i, step] of (pair.app.steps ?? []).entries()) {
       if (!step.click?.includes('.d-poll-card:') || !step.click.includes('role=button[name=/^the ')) continue;
       votes++;
-      assert.deepEqual(pair.app.steps[i - 1].wheel, [step.click.split(' >> ')[0], 0, -180], pair.name);
+      if (pair.name === 'task7-card-multi-phone' && previousVote !== -1) {
+        // A fresh wheel dismisses the first reveal (R30), changing the second tap's meaning.
+        assert.equal(pair.app.steps.slice(previousVote + 1, i).some(step => step.wheel), false, 'phone votes must be consecutive taps, like the prototype');
+      } else assert.deepEqual(pair.app.steps[i - 1].wheel, [step.click.split(' >> ')[0], 0, -180], pair.name);
+      previousVote = i;
       assert.equal(pair.app.steps.some(step => step.hover), false, 'polls must clear incidental wheel hover');
     }
+    if (pair.name === 'task7-card-multi-phone') assert.equal(pair.app.steps.filter(step => step.wheel).length, 1, 'only the initial native scroll precedes the phone votes');
   }
   assert.equal(votes, 8);
   const toolbar = JSON.parse(readFileSync(new URL('./app/task-8.json', import.meta.url))).find(pair => pair.name === 'gap89-phone-message-toolbar-desktop');

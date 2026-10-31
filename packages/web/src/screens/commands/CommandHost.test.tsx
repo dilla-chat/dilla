@@ -1,7 +1,8 @@
+import { readFileSync } from 'node:fs';
 import * as ClientCore from '@dilla/client-core';
 import { useUtilityCommandProvider } from './UtilityCommandProvider.tsx';
 import { useState } from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { CoreProvider } from '../../core/context.tsx';
@@ -11,7 +12,17 @@ import { CommandProvider } from './CommandContext.tsx';
 import type { CommandProviderHandlers } from './command-types.ts';
 import { privateResults } from "./private-results.ts";
 
-beforeEach(() => clearCommandDraftMemory());
+let focusStyle: HTMLStyleElement;
+beforeEach(() => {
+  clearCommandDraftMemory();
+  focusStyle = document.createElement('style');
+  // jsdom does not resolve token colors here: supply literal fixture values, then exercise the real CSS selector.
+  focusStyle.textContent = '.d-composer__box { border: 1px solid #232831; box-shadow: none; }' +
+    readFileSync('src/screens/commands/CommandHost.css', 'utf8')
+      .replaceAll('var(--accent)', '#5aa8e6').replaceAll('var(--accent-soft)', 'rgba(90, 168, 230, 0.12)');
+  document.head.append(focusStyle);
+});
+afterEach(() => focusStyle.remove());
 
 function hostHarness(fake = new FakeClient()) {
   const channelId = crypto.randomUUID().replaceAll('-', '').slice(0, 32);
@@ -51,9 +62,13 @@ function moderationHarness(joined = true, action: 'kick' | 'ban' = 'kick') {
   core.set('communities', [{ id: communityId, name: 'Town', owner: '77'.repeat(16) }]);
   core.set(`permissions:${communityId}`, access); core.set(`roles:${communityId}`, roles);
   core.set(`members:${communityId}`, joined ? members : members.slice(0, 1));
-  const view = render(<CoreProvider client={core}><CommandHost communityId={communityId} channelId={'44'.repeat(16)} bits={(1 << 12) | (1 << 13)}
-    items={[]} selfId={selfId} draft={`/${action}`} onDraft={() => undefined} onSendLiteral={() => undefined}
-    encodeMessage={text => text} openGif={() => undefined} gifsEnabled /></CoreProvider>);
+  function Harness() {
+    const [draft, setDraft] = useState(`/${action}`);
+    return <CommandHost communityId={communityId} channelId={'44'.repeat(16)} bits={(1 << 12) | (1 << 13)}
+      items={[]} selfId={selfId} draft={draft} onDraft={setDraft} onSendLiteral={() => undefined}
+      encodeMessage={text => text} openGif={() => undefined} gifsEnabled />;
+  }
+  const view = render(<CoreProvider client={core}><Harness /></CoreProvider>);
   return { core, communityId, access, roles, members, view, user: userEvent.setup() };
 }
 
@@ -523,6 +538,35 @@ it('Escape explicitly cancels a kick with the approved capitalised row and no mu
   await screen.findByRole('dialog'); await user.keyboard('{Escape}');
   await waitFor(() => expect(privateResults(core, ':', `${'55'.repeat(16)}/${'44'.repeat(16)}/`).rows()[0]).toMatchObject({ status: 'cancelled', text: 'Kick cancelled. Nothing changed.' }));
   expect(core.callsOf('kickMember')).toEqual([]);
+});
+
+it.each([
+  { action: 'kick' as const, trigger: 'keyboard' }, { action: 'kick' as const, trigger: 'pointer' },
+  { action: 'ban' as const, trigger: 'keyboard' }, { action: 'ban' as const, trigger: 'pointer' },
+])('keeps $action suggestions and composer focus paint behind the $trigger confirmation while focus stays in the dialog', async ({ action, trigger }) => {
+  const { core, user } = moderationHarness(true, action);
+  await user.type(await screen.findByRole('combobox', { name: 'user' }), 'Bea');
+  await user.click(await screen.findByRole('option', { name: /^Bea,/ }));
+  const field = screen.getByRole('combobox', { name: action === 'kick' ? 'user' : 'duration' });
+  await user.click(field);
+  const suggestions = await screen.findByRole('listbox', { name: action === 'kick' ? 'Members' : 'Durations' });
+  expect(suggestions).toBeVisible();
+  if (trigger === 'keyboard') await user.keyboard('{Enter}');
+  else await user.click(screen.getByRole('button', { name: 'send' }));
+  const dialog = await screen.findByRole('dialog');
+  expect(dialog).toContainElement(document.activeElement as HTMLElement);
+  const retained = screen.getByRole('listbox', { name: action === 'kick' ? 'Members' : 'Durations' });
+  expect(retained).toBeVisible();
+  expect(dialog).not.toContainElement(retained);
+  const box = document.querySelector('.d-composer__box') as HTMLElement;
+  expect(box.closest('.dw-command-picker')).toHaveAttribute('data-confirming', 'true');
+  expect(getComputedStyle(box).borderColor).toBe('rgb(90, 168, 230)');
+  expect(getComputedStyle(box).boxShadow).toBe('0 0 0 3px rgba(90, 168, 230, 0.12)');
+  expect(core.callsOf(action === 'kick' ? 'kickMember' : 'banMember')).toEqual([]);
+  await user.keyboard('{Escape}');
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(screen.queryByRole('listbox')).toBeNull();
+  expect(core.callsOf(action === 'kick' ? 'kickMember' : 'banMember')).toEqual([]);
 });
 
 it.each(['kick', 'ban'] as const)('holding Enter on %s Confirm runs the existing command path once', async action => {

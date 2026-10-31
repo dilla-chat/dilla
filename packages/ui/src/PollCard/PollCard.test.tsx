@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
@@ -19,9 +20,10 @@ it('keeps vote focus while busy and blocks aria-disabled actions', async () => {
   expect(answer).toHaveFocus(); expect(answer).not.toBeDisabled(); expect(answer).toHaveAttribute('aria-disabled', 'true');
   await userEvent.click(answer); expect(onVote).not.toHaveBeenCalled();
 });
-it('moves close focus to the heading after closing', async () => {
+it('moves keyboard close focus to the heading after closing', async () => {
   const onClose = vi.fn(); const view = render(<PollCard {...props} onClose={onClose} />);
-  await userEvent.click(screen.getByRole('button', { name: 'Close poll' }));
+  screen.getByRole('button', { name: 'Close poll' }).focus();
+  await userEvent.keyboard('{Enter}');
   view.rerender(<PollCard {...props} onClose={onClose} busy />);
   expect(screen.getByRole('button', { name: 'Close poll' })).not.toBeDisabled();
   screen.getByRole('button', { name: 'Close poll' }).blur(); // Native removal can drop focus to body before the layout effect.
@@ -34,5 +36,49 @@ it('uses whole graphemes for voter initials', () => {
 it('focuses the heading when a remote close disables the focused answer', () => {
   const view = render(<PollCard {...props} />); const answer = screen.getByRole('button', { name: /Harbour/ });
   answer.focus(); answer.blur(); view.rerender(<PollCard {...props} closed />);
+  expect(screen.getByRole('heading', { name: 'Raid?' })).toHaveFocus();
+});
+
+
+function InteractivePoll() {
+  const [choice, setChoice] = useState<number | null>(null);
+  const [closed, setClosed] = useState(false);
+  return <><label>Message<input /></label><PollCard {...props} closed={closed} onVote={setChoice} onClose={() => setClosed(true)} />
+    <output>{choice === null ? 'No choice' : `Selected ${choice}`}</output></>;
+}
+it('mouse votes and Close preserve the outside composer focus while performing their actions', async () => {
+  render(<InteractivePoll />);
+  const user = userEvent.setup();
+  const composer = screen.getByRole('textbox', { name: 'Message' });
+  composer.focus();
+  await user.click(screen.getByRole('button', { name: /Harbour/ }));
+  expect(screen.getByText('Selected 1')).toBeInTheDocument();
+  expect(composer).toHaveFocus();
+  await user.click(screen.getByRole('button', { name: 'Close poll' }));
+  expect(screen.getByText('CLOSED')).toBeInTheDocument();
+  expect(composer).toHaveFocus();
+});
+it('mouse Close preserves body focus when no field was focused', async () => {
+  render(<InteractivePoll />);
+  // A prior keyboard visit must not leave a stale inside-card focus marker.
+  const answer = screen.getByRole('button', { name: /Harbour/ });
+  answer.focus(); answer.blur();
+  expect(document.body).toHaveFocus();
+  await userEvent.click(screen.getByRole('button', { name: 'Close poll' }));
+  expect(screen.getByText('CLOSED')).toBeInTheDocument();
+  expect(document.body).toHaveFocus();
+});
+it.each(['{Enter}', ' '])('keyboard %s votes from the focused answer and Close hands focus to the heading', async key => {
+  render(<InteractivePoll />);
+  const user = userEvent.setup();
+  const answer = screen.getByRole('button', { name: /Harbour/ });
+  answer.focus();
+  await user.keyboard(key);
+  expect(screen.getByText('Selected 1')).toBeInTheDocument();
+  expect(answer).toHaveFocus();
+  const close = screen.getByRole('button', { name: 'Close poll' });
+  close.focus();
+  await user.keyboard(key);
+  expect(screen.getByText('CLOSED')).toBeInTheDocument();
   expect(screen.getByRole('heading', { name: 'Raid?' })).toHaveFocus();
 });

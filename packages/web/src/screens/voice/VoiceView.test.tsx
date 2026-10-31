@@ -1680,13 +1680,15 @@ describe('wave B task 4: your own voice menu and the rest of the person menu', (
     expect(document.querySelector('[data-id="move:r1"] .d-action-menu__label')).toHaveAttribute('title', 'Late night lounge for people');
   });
 
-  it('a bot has the volume, Profile, Mention, Mute for me and Copy username; no Message', async () => {
+  it('a bot person menu opens the real DM flow from Message', async () => {
     const app = await inVoice({ voice: room([{ userId: CAROL, deviceId: CAROL_DEV, name: 'glenn', flags: 0, own: false, web: false, bot: true }]) });
     act(() => app.session.update({ tiles: [{ ...bobTile, deviceId: CAROL_DEV, userId: CAROL }] }));
     await waitFor(() => expect(li(`${CAROL_DEV}:person`)).not.toBeNull());
     fireEvent.contextMenu(li(`${CAROL_DEV}:person`), { clientX: 20, clientY: 20 });
     const menu = await screen.findByRole('menu', { name: t('callStage.menu.label', { name: 'glenn' }) });
-    expect(names(menu)).toEqual(['Profile', 'Mention', 'Mute for me', 'Copy username']);
+    expect(names(menu)).toEqual(['Profile', 'Message', 'Mention', 'Mute for me', 'Copy username']);
+    await app.user.click(within(menu).getByRole('menuitem', { name: 'Message' }));
+    await waitFor(() => expect(app.client.callsOf('openDm')).toContainEqual({ m: 'openDm', userId: CAROL }));
   });
 });
 

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { MessageRow } from './MessageRow.tsx';
 import { MessageToolbar } from '../MessageToolbar/MessageToolbar.tsx';
+import { PollCard } from '../PollCard/PollCard.tsx';
 import { ReactionBar } from '../ReactionBar/ReactionBar.tsx';
 import { AttachmentCard } from '../AttachmentCard/AttachmentCard.tsx';
 import { PhoneLayoutProvider } from '../internal/phoneLayout.ts';
@@ -132,6 +133,26 @@ function PhoneRow({ startRevealed }: { startRevealed: boolean }) {
 }
 export const PhoneHidden: Story = { render: () => <PhoneRow startRevealed={false} /> };
 export const PhoneRevealed: Story = { render: () => <PhoneRow startRevealed /> };
+
+/** A phone poll lives in the same revealed message row as any other card. */
+function PhonePollRow({ initialClosed = false, multi = false }: { initialClosed?: boolean; multi?: boolean }) {
+  const [revealed, setRevealed] = useState(!multi);
+  const [closed, setClosed] = useState(initialClosed);
+  const [choices, setChoices] = useState<number[]>(initialClosed ? [] : multi ? [0, 1] : [0]);
+  return <PhoneLayoutProvider value><div className="d-app-shell" data-layout="phone"
+    style={{ width: 390, maxWidth: '100%', display: 'block', position: 'relative', height: 'auto', paddingTop: 16, background: 'var(--bg)' }}>
+    <MessageRow author="Glenn" time="21:02" body="Mira asked:" state="ok" tag="bot" toolbar={phoneToolbar}
+      revealed={revealed} onReveal={setRevealed} card={<PollCard question="What should we raid on Friday?" closed={closed} multi={multi}
+        canVote={!closed} canClose meta={`${closed ? 'Final results' : 'Open for 24 hours'} · ${multi ? 'pick any' : 'pick one'} · 3 voters`}
+        options={[{ text: 'the bridge', pct: 67, mine: choices.includes(0), winner: closed, voters: [{ name: 'Ada' }, { name: 'Kari' }] },
+          { text: 'the harbour', pct: 33, mine: choices.includes(1), winner: false, voters: [{ name: 'Björn' }] }]}
+        labels={{ closed: 'CLOSED', close: 'Close poll' }} onClose={() => setClosed(true)}
+        onVote={index => setChoices(current => current.includes(index) ? current.filter(choice => choice !== index) : multi ? [...current, index] : [index])} />} />
+  </div></PhoneLayoutProvider>;
+}
+export const PhonePollVoted: Story = { globals: { theme: 'signal' }, render: () => <PhonePollRow /> };
+export const PhonePollMultiChoice: Story = { globals: { theme: 'signal' }, render: () => <PhonePollRow multi /> };
+export const PhonePollClosedWinner: Story = { globals: { theme: 'signal' }, render: () => <PhonePollRow initialClosed /> };
 
 // ---- Task 7 (Signal §8): the prototype's conversation states, with the props packages/web passes (conversation.fixture.tsx).
 const wide = (Story: () => ReactNode) => <div style={{ maxWidth: 900, paddingTop: 16, background: 'var(--bg)' }}><Story /></div>;

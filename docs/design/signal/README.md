@@ -386,7 +386,7 @@ All sizes are at a 16px root, desktop unless noted. Below **770px of shell width
   author in bold and a one-line excerpt in `--fg-3`. Click it to scroll to the original, which flashes
   `--accent-soft` for 1.4s.
 - Reactions: 22px chips, radius 5px. Your own are `--accent-soft` with an `--accent` border. Hover shows a
-  tooltip ("Ada, Björn and you reacted with 🛡️"). Click toggles.
+  tooltip ("Ada, Björn and you reacted with :shield:"). Click toggles.
 
 ### 6.6 Music (now playing)
 

@@ -32,8 +32,8 @@ const SIGNAL_ICONS = {
   'youtube': ['M2.5 17a24.12 24.12 0 0 1 0-10 2 2 0 0 1 1.4-1.4 49.56 49.56 0 0 1 16.2 0A2 2 0 0 1 21.5 7a24.12 24.12 0 0 1 0 10 2 2 0 0 1-1.4 1.4 49.55 49.55 0 0 1-16.2 0A2 2 0 0 1 2.5 17', 'm10 15 5-3-5-3z'],
   'square': ['rect'],
   'arrow-right': ['M5 12h14', 'm12 5 7 7-7 7'],
-  // Task 6 fix round 1: the phone's Home tab (the prototype's house).
-  'house': ['M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8', 'M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z'],
+  // The prototype loader's pinned Lucide 0.460.0 Home = House alias.
+  'house': ['M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8', 'M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z'],
   // Task 6b fix round 1: the reminders popover's row icon (the prototype's alarm-clock).
   'alarm-clock': ['circle', 'M12 9v4l2 2', 'M5 3 2 6', 'm22 6-3-3', 'M6.38 18.7 4 21', 'M17.64 18.67 20 21'],
   // Task 7: the reaction bar's add button and the composer's </> button.
@@ -82,7 +82,7 @@ describe('Icon', () => {
     expect(Object.keys(ICONS).sort()).toEqual([...NAMES, ...SHELL_NAMES, ...SIGNAL_NAMES].sort());
   });
 
-  it.each(SIGNAL_NAMES)('%s renders an svg with its Lucide 1.57.0 geometry', (name) => {
+  it.each(SIGNAL_NAMES)('%s renders an svg with its pinned Lucide geometry', (name) => {
     const { container } = render(<Icon name={name} />);
     const svg = container.querySelector('svg');
     expect(svg).toHaveAttribute('data-icon', name);

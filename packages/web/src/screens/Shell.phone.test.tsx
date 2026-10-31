@@ -305,12 +305,17 @@ describe('the phone shell: tabs', () => {
     expect(await screen.findByRole('heading', { level: 2, name: t('you.title') })).toBeInTheDocument();
   });
 
-  it('counts DMs unread on Home, and activity as channel mentions plus DM unread', async () => {
+  it('keeps Home unbadged while Activity and the @ tile report positive DM unread', async () => {
     const { client } = phone({ path: '/dm' });
     await screen.findByRole('button', { name: 'bob' });
     act(() => client.set('badges', { [TEXT]: { unread: 5, mentions: 2 }, [DM]: { unread: 3, mentions: 0 } }));
-    expect(tab(t('nav.tab.unread', { name: 'Home', count: 3 }))).toBeInTheDocument();
-    expect(tab(t('nav.tab.unread', { name: 'Activity', count: 5 }))).toBeInTheDocument();
+    expect(tab('Home')).not.toHaveAttribute('aria-label');
+    expect(tab('Home').querySelector('.d-tab-bar__dot')).toBeNull();
+    const activity = tab(t('nav.tab.unread', { name: 'Activity', count: 5 }));
+    expect(activity.querySelector('.d-tab-bar__dot')).toBeInTheDocument();
+    const dmTile = within(screen.getByRole('navigation', { name: t('shell.rail.label') }))
+      .getByRole('button', { name: t('home.tileLabel', { unread: 3, mentions: 0 }) });
+    expect(dmTile).toHaveAttribute('data-unread', '3');
   });
 
   it('opens a tab where it was left', async () => {

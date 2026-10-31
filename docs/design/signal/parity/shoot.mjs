@@ -41,6 +41,21 @@ async function routeFonts(page) {
   await page.route(/^https:\/\/fonts\.gstatic\.com\//, r => r.abort());
 }
 
+/** The prototype requests Lucide's Home alias; its pinned static package only publishes the canonical house.svg. */
+export async function routePrototypeAssets(page) {
+  await page.route('https://cdn.jsdelivr.net/npm/lucide-static@0.460.0/icons/home.svg', route => route.fulfill({
+    status: 200, contentType: 'image/svg+xml', headers: { 'access-control-allow-origin': '*' },
+    path: path.join(HERE, 'app/fixtures/lucide-house-0.460.0.svg'),
+  }));
+}
+
+/** The loader fills its SVG asynchronously, after document load; a visible Home tab must have its glyph before capture. */
+export async function waitForPrototypeIcons(page) {
+  await page.waitForFunction(() => [...document.querySelectorAll('d-icon[name="home"]')]
+    .filter(icon => icon.getClientRects().length > 0 && getComputedStyle(icon).visibility !== 'hidden')
+    .every(icon => icon.shadowRoot?.querySelector('svg path')), null, { timeout: 30_000 });
+}
+
 const isObject = v => typeof v === 'object' && v !== null && !Array.isArray(v);
 
 /** Validates a parity spec (an array of pairs). Returns the pairs, or throws naming the first problem. */
@@ -264,7 +279,10 @@ export function validateWorldForPair(state, pair) {
 }
 
 /** A world page can finish its document load while the worker still shows the startup splash. */
-export async function waitForAppReady(page, who) {
+export async function waitForAppReady(page, who, { beforeSteps = false } = {}) {
+  // A fresh invite starts on the server landing page. Its steps enter the app;
+  // the final prepareAppCapture still observes the real Signal theme.
+  if (beforeSteps && (who === 'fresh' || who === 'freshPhone')) return;
   if (who !== 'fresh' && who !== 'freshPhone') await page.waitForSelector('.d-app-shell', { state: 'visible', timeout: 60_000 });
   // All app parity pairs compare Signal. A restored preference may arrive after
   // the shell; observe it rather than capturing a transient light frame.
@@ -326,10 +344,12 @@ export async function shootPrototype(browser, pair, out) {
   try {
     const page = await context.newPage();
     await routeFonts(page);
+    await routePrototypeAssets(page);
     await page.addInitScript(installPropsInjection, pair.prototype.props ?? {});
     await page.goto(pathToFileURL(PROTOTYPE).href, { waitUntil: 'load' });
     await settle(page);
     await runSteps(page, pair.prototype.steps, { settleMs: pair.prototype.settleMs });
+    await waitForPrototypeIcons(page);
     await capture(page, out, pair.prototype.clip);
   } finally { await context.close(); }
 }
@@ -401,7 +421,7 @@ async function shootApp(browser, state, pair, out) {
     if (!fresh) back = back ?? new URL(page.url()).pathname + new URL(page.url()).search;
     if (a.path !== undefined) await page.goto(appUrl(appState, a.path), { waitUntil: 'load' });
     else if (fresh) await page.goto(appUrl(appState, '/'), { waitUntil: 'load' });
-    await waitForAppReady(page, a.who);
+    await waitForAppReady(page, a.who, { beforeSteps: true });
     await page.mouse.move(-10, -10).catch(() => {});
     await settle(page);
     await runSteps(page, a.steps, { state: appState, settleMs: a.settleMs });

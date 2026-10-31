@@ -73,6 +73,25 @@ describe('a message row on a phone (R30)', () => {
       expect(toolbar(rowOf(P1))).toBeNull();
     }
   });
+  it.each(['wheel', 'touch drag', 'PageDown'])('a tap after %s supersedes old scroll intent until the reader scrolls again', async kind => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const { user } = renderConversation({ items: rows() });
+    const log = screen.getByRole('log');
+    const scrollIntent = () => {
+      if (kind === 'wheel') fireEvent.wheel(log);
+      else if (kind === 'PageDown') fireEvent.keyDown(log, { key: 'PageDown' });
+      else { fireEvent.touchStart(log); fireEvent.touchMove(log); fireEvent.touchEnd(log); }
+    };
+    scrollIntent();
+    await user.click(body(rowOf(P1)));
+    fireEvent.scroll(log); // layout/re-pin after the tap, still within the earlier scroll's 800ms window
+    expect(toolbar(rowOf(P1))).not.toBeNull();
+    expect(rowOf(P1)).toHaveAttribute('data-revealed', 'true');
+    scrollIntent();
+    fireEvent.scroll(log);
+    expect(toolbar(rowOf(P1))).toBeNull();
+    expect(rowOf(P1)).not.toHaveAttribute('data-revealed');
+  });
   it('keeps it for a scroll the log makes itself: a message arriving, or the row growing under a tap', async () => {
     const { user } = renderConversation({ items: rows() });
     const log = screen.getByRole('log');

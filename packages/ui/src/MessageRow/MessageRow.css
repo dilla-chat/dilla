@@ -7,7 +7,7 @@
      paint over this row's open ⋯ menu (fix round 1, item 9). */
   animation: d-up var(--duration-enter) var(--ease-out) backwards; animation-delay: calc(var(--d-enter-i, 0) * var(--duration-stagger)); }
 .d-message-row[data-grouped="true"] { padding: 0.0625rem 1rem 0.0625rem 0 /* 1px 16px */; }
-.d-message-row:hover, .d-message-row[data-hover="true"] { background: var(--bg-3); box-shadow: inset 2px 0 0 var(--accent); }
+.d-message-row:hover, .d-message-row[data-hover="true"], .d-message-row[data-revealed="true"] { background: var(--bg-3); box-shadow: inset 2px 0 0 var(--accent); }
 .d-message-row[data-mention="true"] { background: var(--warn-soft); box-shadow: inset 2px 0 0 var(--mention); }
 .d-message-row[data-replying="true"] { background: var(--accent-faint); box-shadow: inset 2px 0 0 var(--accent); }
 /* The ring sits inside the row, so the log's edge never clips it. */

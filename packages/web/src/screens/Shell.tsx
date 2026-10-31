@@ -428,6 +428,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   const pendingFocus = useRef<{ id: string; from: string | null } | null>(null);
   // The DM picker (requirement 5).
   const [pickerOpen, setPickerOpen] = useState(false);
+  const pickerOpenRef = useRef(pickerOpen); pickerOpenRef.current = pickerOpen;
   const [pickerBusy, setPickerBusy] = useState(false);
   const [pickerError, setPickerError] = useState<UiError | null>(null);
 
@@ -990,7 +991,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
           void navigate({ name: 'dm', channelId: id });
         }
       } catch (e) {
-        setPickerError(errorOf(e));
+        if (pickerOpenRef.current) setPickerError(errorOf(e)); else report(e);
       } finally {
         picking.current = false;
         setPickerBusy(false);
@@ -1829,11 +1830,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     }
     return tabRoot(to);
   };
-  // Home's badge is what the `@` tile carries: unread direct messages (servers carry theirs on the rail).
-  const homeCount = dmCounts.unread;
   const activityCount = railItems.reduce((n, item) => n + item.mentions, 0) + dmCounts.unread;
   const tabLabel = (to: PhoneTab) => t(to === 'home' ? 'home.tab' : `nav.tab.${to}`);
-  const tabItem = (to: PhoneTab, icon: 'house' | 'bell' | 'user', count?: number) => ({
+  const tabItem = (to: PhoneTab, icon: 'home' | 'bell' | 'user', count?: number) => ({
     id: to, label: tabLabel(to), href: routePath(tabTarget(to)), icon, current: phoneTab === to,
     ...(count !== undefined && count > 0 ? { count, countLabel: t('nav.tab.unread', { name: tabLabel(to), count }) } : {}),
   });
@@ -1871,7 +1870,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
         });
       } else openTab(to, current);
     }} items={[
-      tabItem('home', 'house', homeCount), tabItem('activity', 'bell', activityCount), tabItem('you', 'user'),
+      tabItem('home', 'home'), tabItem('activity', 'bell', activityCount), tabItem('you', 'user'),
     ]} />
   );
   // The call bar stands on a phone while this device is in a call and its stage is not on screen.

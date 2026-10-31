@@ -73,12 +73,6 @@ export function ThreadView(p: {
       .catch((e: unknown) => dispatch({ type: 'trayError', text: t('shell.banner.commandError', { code: errorOf(e).code }) }));
     return () => { client.call({ m: 'closeThread', channelId: p.channelId }).catch(() => undefined); };
   }, [client, p.channelId, p.rootMsgId]);
-  // Opening puts the cursor in the thread's composer, except on a phone, where script focus opens no keyboard.
-  const phoneRef = useRef(p.phone);
-  phoneRef.current = p.phone;
-  useEffect(() => {
-    if (!phoneRef.current) root.current?.querySelector<HTMLTextAreaElement>('.d-composer textarea')?.focus();
-  }, [p.rootMsgId]);
   // Closing hands focus back to the control that opened it, else to the root's row in the channel (contract 2).
   useEffect(() => () => {
     queueMicrotask(() => {

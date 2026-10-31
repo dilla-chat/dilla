@@ -1817,6 +1817,18 @@ describe('direct messages', () => {
       .toHaveTextContent('That did not work (E_FORBIDDEN). Try again, or reload the page.');
     expect(path()).toBe('/dm');
   });
+  it('shows a refused Bot Message action when the member picker is closed', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`, { before: f => {
+      withDms(f);
+      f.set(`timeline:${GEN}`, timeline({ items: [item({ key: 'bot-message', senderUser: BOT, bot: true, body: 'hello' })] }));
+    } });
+    fake.handler = c => c.m === 'openDm' ? Promise.reject(refusal({ code: 'E_FORBIDDEN', status: 403 })) : Promise.resolve(null);
+    await user.click(within(screen.getByRole('log')).getByRole('button', { name: 'Helper' }));
+    await user.click(within(await screen.findByRole('dialog', { name: 'Helper' })).getByRole('button', { name: 'Message' }));
+    await waitFor(() => expect(fake.callsOf('openDm')).toEqual([{ m: 'openDm', userId: BOT }]));
+    expect(await screen.findByText('That did not work (E_FORBIDDEN). Try again, or reload the page.')).toBeVisible();
+    expect(screen.queryByRole('dialog', { name: 'Message someone' })).toBeNull();
+  });
 });
 
 describe('badges', () => {

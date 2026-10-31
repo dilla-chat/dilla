@@ -103,9 +103,21 @@ describe('ThreadView (web3.7)', () => {
     expect(document.querySelector('.d-thread-pane')).toHaveAttribute('data-phone', 'true');
     expect(screen.getByRole('button', { name: en['thread.close'] })).toBeInTheDocument();
   });
-  it('focuses the thread composer on opening', () => {
+  it('leaves the thread composer unfocused on opening', () => {
     setup();
+    expect(box()).not.toHaveFocus();
+  });
+  it.each([false, true])('has no Send button with empty or nonempty replies on phone=%s and sends with Enter', async phone => {
+    const { fake, user } = setup({ phone });
+    const composer = within(document.querySelector('.d-thread-pane__composer') as HTMLElement);
+    expect(composer.queryByRole('button', { name: 'send' })).toBeNull();
+    await user.type(box(), 'a thread reply');
+    expect(composer.queryByRole('button', { name: 'send' })).toBeNull();
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(fake.callsOf('send')).toEqual([{ m: 'send', channelId: GEN, text: 'a thread reply', threadId: ROOT }]));
+    expect(box()).toHaveValue('');
     expect(box()).toHaveFocus();
+    expect(composer.queryByRole('button', { name: 'send' })).toBeNull();
   });
   it('focuses no field on a phone (script focus opens no keyboard there)', () => {
     setup({ phone: true });
@@ -113,6 +125,7 @@ describe('ThreadView (web3.7)', () => {
   });
   it('closes on Escape inside it', async () => {
     const { user, onClose } = setup();
+    await user.click(box());
     await user.keyboard('{Escape}');
     expect(onClose).toHaveBeenCalledTimes(1);
   });
@@ -281,7 +294,7 @@ describe('ThreadView (web3.7)', () => {
     const user = userEvent.setup();
     render(<CoreProvider client={fake}><Host /></CoreProvider>);
     await user.click(screen.getByRole('button', { name: 'open it' }));
-    expect(box()).toHaveFocus();
+    expect(screen.getByRole('button', { name: 'open it' })).toHaveFocus();
     await user.click(screen.getByRole('button', { name: en['thread.close'] }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'open it' })).toHaveFocus());
   });
@@ -347,6 +360,7 @@ it('thread Bot results use the live renamed member', async () => {
 it('CommandHost and ThreadView share the production thread result key', async () => {
   const { user } = setup();
   fireEvent.change(box(), { target: { value: '/help' } });
-  await user.click(await screen.findByRole('button', { name: 'send' }));
+  await screen.findByRole('combobox', { name: 'command' });
+  await user.keyboard('{Enter}');
   await waitFor(() => expect(document.querySelector('.d-thread-pane__replies .d-bot-result[data-status="success"]')).toHaveTextContent('/help'));
 });

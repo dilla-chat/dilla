@@ -1,4 +1,5 @@
 import * as Ui from '@dilla/ui';
+import * as ClientCore from '@dilla/client-core';
 import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { BROWSER_ATTACHMENT_CAP, type TrayItem } from '@dilla/client-core';
@@ -6,7 +7,7 @@ import { refusal } from '../../test/fake-client.ts';
 import { PHONE_QUERY } from '../../layout.ts';
 import { expectNoAxeViolations } from '../../test/setup.ts';
 import { clearCommandDraftMemory } from '../commands/CommandHost.tsx';
-import { GEN, O1, O2, P1, PEER, ownRow, peerRow, renderConversation, rowOf } from '../../test/conversation.tsx';
+import { A, GEN, O1, O2, P1, PEER, ownRow, peerRow, renderConversation, rowOf } from '../../test/conversation.tsx';
 
 const box = (name = 'message #general') => screen.getByRole('textbox', { name });
 const chip = () => document.querySelector('.d-reply-chip');
@@ -19,6 +20,87 @@ const entry = (id: string, phase: TrayItem['phase'], over: Partial<TrayItem> = {
   ({ id, name: `${id}.txt`, size: 5, mime: 'text/plain', image: false, phase, reason: '', ...over });
 
 beforeEach(() => clearCommandDraftMemory());
+
+describe('command composer focus', () => {
+  it.each([
+    { phone: false, action: 'keyboard' }, { phone: false, action: 'pointer' },
+    { phone: true, action: 'keyboard' }, { phone: true, action: 'pointer' },
+  ])('returns to the empty composer after $action /help on phone=$phone', async ({ phone, action }) => {
+    if (phone) window.matchMedia = vi.fn((query: string) => ({
+      matches: query === PHONE_QUERY, media: query, addEventListener: () => undefined, removeEventListener: () => undefined,
+    })) as unknown as typeof window.matchMedia;
+    try {
+      const { fake, user } = renderConversation();
+      fireEvent.change(box(), { target: { value: '/help' } });
+      await screen.findByRole('combobox', { name: 'command' });
+      if (action === 'keyboard') await user.keyboard('{Enter}');
+      else await user.click(screen.getByRole('button', { name: 'send' }));
+      await waitFor(() => expect(document.querySelector('.d-bot-result[data-status="success"]')).toHaveTextContent('/help'));
+      expect(box()).toHaveValue('');
+      expect(box()).toHaveFocus();
+      await user.keyboard('next message{Enter}');
+      await waitFor(() => expect(fake.callsOf('send')).toEqual([{ m: 'send', channelId: GEN, text: 'next message' }]));
+    } finally {
+      if (phone) Reflect.deleteProperty(window, 'matchMedia');
+    }
+  });
+});
+
+describe('poll form composer focus', () => {
+  it.each([
+    { phone: false, trigger: 'keyboard', close: 'post' }, { phone: false, trigger: 'pointer', close: 'post' },
+    { phone: false, trigger: 'keyboard', close: 'cancel' }, { phone: false, trigger: 'pointer', close: 'cancel' },
+    { phone: true, trigger: 'keyboard', close: 'post' }, { phone: true, trigger: 'pointer', close: 'post' },
+    { phone: true, trigger: 'keyboard', close: 'cancel' }, { phone: true, trigger: 'pointer', close: 'cancel' },
+  ])('leaves the ordinary composer unfocused after $trigger poll $close on phone=$phone', async ({ phone, trigger, close }) => {
+    const spy = vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({
+      capabilities: () => Promise.resolve({ installationId: 'd1'.repeat(16), botUserId: 'd2'.repeat(16), supportedOperations: [70] }),
+      pollCreate: () => Promise.resolve(),
+    } as unknown as ClientCore.BotUtilities);
+    if (phone) window.matchMedia = vi.fn((query: string) => ({
+      matches: query === PHONE_QUERY, media: query, addEventListener: () => undefined, removeEventListener: () => undefined,
+    })) as unknown as typeof window.matchMedia;
+    try {
+      const { fake, user } = renderConversation({ before: core => {
+        core.set('communities', [{ id: A, name: 'Midgard', owner: core.get('account')!.user!.id }]);
+        core.set(`roles:${A}`, []); core.set(`overwrites:${A}`, {});
+        core.set(`permissions:${A}`, { loaded: true, top: 0, owner: true, manageCommunity: true, kickMembers: true,
+          banMembers: true, manageMessages: true, manageRoles: true, manageChannels: true, createInvite: true,
+          everyoneId: 'e0'.repeat(16), overwritesLoaded: true });
+      } });
+      fireEvent.change(box(), { target: { value: '/' } });
+      await screen.findByRole('option', { name: /^\/poll create,/ });
+      fireEvent.change(screen.getByRole('textbox', { name: 'Command' }), { target: { value: '/poll create' } });
+      if (trigger === 'keyboard') await user.keyboard('{Enter}');
+      else await user.click(screen.getByRole('option', { name: /^\/poll create,/ }));
+      const dialog = await screen.findByRole('dialog', { name: 'New poll in #general' });
+      expect(dialog).toContainElement(document.activeElement as HTMLElement);
+      expect(box()).not.toHaveFocus();
+      if (close === 'post') {
+        await user.type(within(dialog).getByRole('textbox', { name: /Question/ }), 'Lunch?');
+        await user.type(within(dialog).getByRole('textbox', { name: 'Answer 1' }), 'Soup');
+        await user.type(within(dialog).getByRole('textbox', { name: 'Answer 2' }), 'Salad');
+      }
+      const finish = within(dialog).getByRole('button', { name: close === 'post' ? 'Post poll' : 'Cancel' });
+      if (trigger === 'keyboard') {
+        for (let n = 0; n < 25 && document.activeElement !== finish; n++) await user.tab();
+        expect(finish).toHaveFocus();
+        await user.keyboard('{Enter}');
+      } else await user.click(finish);
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'New poll in #general' })).toBeNull());
+      if (close === 'post') await waitFor(() => expect(document.querySelector('.d-bot-result[data-status="success"]')).toHaveTextContent('Poll posted'));
+      else expect(document.querySelector('.d-bot-result')).toBeNull();
+      expect(box()).toHaveValue('');
+      expect(box()).not.toHaveFocus();
+      await user.click(box());
+      await user.keyboard('after poll{Enter}');
+      await waitFor(() => expect(fake.callsOf('send')).toEqual([{ m: 'send', channelId: GEN, text: 'after poll' }]));
+    } finally {
+      spy.mockRestore();
+      if (phone) Reflect.deleteProperty(window, 'matchMedia');
+    }
+  });
+});
 
 describe('mentions in the composer (L-TS-37)', () => {
   it('renders the GIF search picker while a slash command is active', async () => {

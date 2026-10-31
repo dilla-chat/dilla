@@ -281,11 +281,13 @@ await roleName.fill('Raid leaders');
 await roleName.press('Enter');
 const raidRole = settings.getByRole('list', { name: t('serverSettings.roles.list'), exact: true }).getByRole('button', { name: /^Raid leaders, \d+ members?/ });
 await raidRole.waitFor({ timeout: WAIT });
-// Mira's persistent voice session owns the optional playback fixture. Give the
-// existing hoisted fixture role the real DJ permission before assigning it.
-const musicPermission = byText(settings, 'switch', 'perm.music');
-if (await musicPermission.getAttribute('aria-checked') !== 'true') await musicPermission.click();
-await musicPermission.and(ada.locator('[aria-checked="true"]')).waitFor({ timeout: WAIT });
+// Mira owns playback and, like the prototype's Raid lead, may pin messages. The
+// latter gives her message toolbar its real More action instead of an empty menu.
+for (const key of ['perm.music', 'perm.pin']) {
+  const permission = byText(settings, 'switch', key);
+  if (await permission.getAttribute('aria-checked') !== 'true') await permission.click();
+  await permission.and(ada.locator('[aria-checked="true"]')).waitFor({ timeout: WAIT });
+}
 await raidRole.focus();
 await ada.keyboard.press('Shift+F10');
 const hoist = byText(ada, 'menuitemcheckbox', 'serverSettings.roles.menu.hoist');
@@ -382,7 +384,9 @@ log('conversation done');
 // Seed one real reply so Q9's Threads button can reopen it directly. Visit the
 // thread in both Ada profiles: the last-opened thread is local browser state.
 const threadRoot = row(ada, 'general', CONV[1][1]);
-await threadRoot.hover();
+// Keyboard focus keeps the toolbar present while arriving history can move the
+// row away from the mouse. Use the normal visible action after focus.
+await threadRoot.focus();
 await threadRoot.getByRole('button', { name: t('thread.open'), exact: true }).click();
 const threadReply = ada.getByRole('textbox', { name: t('thread.composer'), exact: true });
 await threadReply.fill('two ropes. final answer.');

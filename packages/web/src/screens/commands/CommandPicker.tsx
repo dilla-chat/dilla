@@ -28,6 +28,8 @@ export interface CommandComposerProps {
   suggest: (commandId: string, option: CommandOption, query: string, values?: Readonly<Record<string, string>>) => Promise<CommandSuggestionList>;
   /** Live snapshots that invalidate cached entity queries without editing the draft. */
   suggestionSources?: readonly unknown[];
+  /** Preserve the panel and composer focus paint behind a moderation confirmation; the native modal owns focus. */
+  moderationConfirmOpen?: boolean;
   contextKey: string;
   disabledReason?: string;
   onDraftChange?: (text: string) => void;
@@ -340,7 +342,7 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
   const activeSelected = activeOption === undefined ? undefined : fields[activeOption.name]?.selected;
   const exact = activeSelected !== undefined && sg.some(s => s.value === activeSelected.value && s.chosen === activeSelected.chosen)
     || sg.some(s => s.chosen === undefined && (s.label.toLowerCase() === activeText.toLowerCase() || s.value.toLowerCase() === activeText.toLowerCase()));
-  const sugOpen = selected !== null && focused && sg.length > 0;
+  const sugOpen = selected !== null && (focused || props.moderationConfirmOpen === true) && sg.length > 0;
 
   // Entity suggestions come from the providers: fetched for a chip with text, and for the active member chip while empty
   // (the prototype lists the members as soon as the chip is active).
@@ -599,7 +601,7 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
 
   const parts: PickerFrame = { top, input, draft: selected === null ? draft : '', run: () => { if (selected === null) { if (draft.startsWith('//')) sendLiteralOnce(draft.slice(1)); else enterTyped(); } else void run(); } };
   const frame = props.frame ?? defaultFrame;
-  return <section aria-label={copy.region} style={{ display: 'contents' }} data-pending={pending ? 'true' : undefined}>
+  return <section className="dw-command-picker" data-confirming={props.moderationConfirmOpen ? 'true' : undefined} aria-label={copy.region} style={{ display: 'contents' }} data-pending={pending ? 'true' : undefined}>
     {frame(parts)}
     <p className="d-sr-only" role="status" aria-live="polite">{status}</p>
   </section>;

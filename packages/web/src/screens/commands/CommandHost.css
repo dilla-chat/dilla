@@ -2,3 +2,6 @@
 .dw-command-confirm > div { display: flex; gap: 10px; }
 .dw-command-confirm > div > span { width: 64px; flex: none; color: var(--fg-3); }
 .dw-command-confirm-description { margin: 0; font-size: var(--text-ui); color: var(--fg-2); text-wrap: pretty; }
+
+/* The prototype retains the composer's focus paint behind moderation confirmation; the native dialog keeps actual focus. */
+.dw-command-picker[data-confirming="true"] .d-composer__box { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }

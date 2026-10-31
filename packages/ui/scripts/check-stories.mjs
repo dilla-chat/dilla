@@ -131,17 +131,20 @@ try {
             const avatar = card.querySelector('.d-avatar');
             return { width: card.getBoundingClientRect().width, max: getComputedStyle(card).maxWidth, border: getComputedStyle(card).borderColor,
               row: option.getBoundingClientRect().height, weight: getComputedStyle(text).fontWeight,
-              avatar: avatar.getBoundingClientRect().width, fill: getComputedStyle(option.querySelector('.d-poll-card__fill')).backgroundColor };
+              avatar: avatar.getBoundingClientRect().width, fill: getComputedStyle(option.querySelector('.d-poll-card__fill')).backgroundColor,
+              closed: card.dataset.closed === 'true', winner: option.dataset.winner === 'true', mine: option.dataset.mine === 'true' };
           });
           if (got.width !== 466 || got.max !== '440px' || got.border !== 'rgb(37, 42, 51)' || got.row !== 36 || got.avatar !== 18) throw new Error(`PollCard geometry: ${JSON.stringify(got)}`);
-          if (got.weight !== (story.id.endsWith('--closed') ? '700' : '400')) throw new Error(`PollCard winner weight: ${JSON.stringify(got)}`);
-          const fill = story.id.endsWith('--closed') ? 'rgba(124, 255, 142, 0.12)' : story.id.endsWith('--voted') || story.id.endsWith('--multi-choice') ? 'rgba(90, 168, 230, 0.2)' : 'rgba(255, 255, 255, 0.05)';
+          // Plays may vote and close the poll. Check its rendered state, including a winner that is also the viewer's pick.
+          if (got.weight !== (got.winner ? '700' : '400')) throw new Error(`PollCard winner weight: ${JSON.stringify(got)}`);
+          const fill = got.mine ? 'rgba(90, 168, 230, 0.2)' : got.winner ? 'rgba(124, 255, 142, 0.12)' : 'rgba(255, 255, 255, 0.05)';
           if (got.fill !== fill) throw new Error(`PollCard fill: ${JSON.stringify(got)}`);
-          if (story.id.endsWith('--closed')) {
+          if (got.closed) {
+            const expectedBorder = got.mine ? 'rgb(90, 168, 230)' : 'rgb(37, 42, 51)';
             await page.locator('.d-poll-card__option').first().hover();
-            await page.waitForFunction(() => getComputedStyle(document.querySelector('.d-poll-card__option')).borderColor === 'rgb(37, 42, 51)', undefined, { timeout: 2000 });
+            await page.waitForFunction(expected => getComputedStyle(document.querySelector('.d-poll-card__option')).borderColor === expected, expectedBorder, { timeout: 2000 });
             const border = await page.locator('.d-poll-card__option').first().evaluate(el => getComputedStyle(el).borderColor);
-            if (border !== 'rgb(37, 42, 51)') throw new Error(`PollCard closed winner hover: ${border}`);
+            if (border !== expectedBorder) throw new Error(`PollCard closed winner hover: ${border}`);
           }
         }
         if (story.id.startsWith('conversation-pollcard--')) {

@@ -60,7 +60,7 @@ A spec is a JSON array of pairs:
 
 A pair matches when **colour, size, spacing, radius, type and copy** agree. The contrast fixes in the plan's Global
 Constraints (for example `--edge` instead of the prototype's `#2A303A` on controls whose border is their only boundary,
-and `fg-3` text never on `surfaceHi`) are the only accepted deviations. Anything else that differs is a bug in the
+and `fg-3` text never on `surfaceHi`), together with Jonas's explicitly recorded decisions below, are the only accepted deviations. Anything else that differs is a bug in the
 story or component, not in the prototype.
 
 ## Shoot the running app instead of a story (`--app`)
@@ -96,6 +96,8 @@ The world, its builds and ports are in `e2e/ux/README.md`. Its wall clock opts o
 chat, members open, voice focus, phone list, phone conversation); `app/wave-a-gaps.json` is the wave A states that were
 never compared with the shipped client.
 
+The prototype requests Lucide 0.460.0 `home.svg`, an unpublished static filename. The shooter resolves that exact URL to the pinned official `house.svg` asset: the same release exports `Home = House`. Its source and hash are in `app/fixtures/lucide-house-0.460.0.provenance.txt`. The prototype source stays unchanged, and captures wait for the visible Home glyph to finish loading.
+
 **Pairs that change the world.** A pair marked `"mutates": true` sends messages, adds a device or role or switches a setting
 (gap04, gap44, gap52, gap53, gap79, gap83). The tool runs `standing-*` screens first, before browser reloads can end Mira's screen share, then the other read-only pairs, then mutating pairs. Order stays stable inside each group. The
 world cannot be rewound under live browsers (restoring the server would leave the browsers' own state ahead of it), so
@@ -105,7 +107,7 @@ recovery keys.
 
 The GIF pairs depend on the world's dummy Giphy key (set by `ux:world` through Server settings -> GIFs; without a key the GIF
 button does not show). Giphy is unreachable, so only the picker frame is comparable. The standing voice-focus pair needs the
-world's screen share (Mira shares in `harbour`, `state.miraShares`); the world and shooter fail explicitly if that fixture is missing. The phone is enrolled into #general before seeded messages, and the world seeds its topic, a hoisted Raid leaders role and a thread with a reply. Poll-card steps wait up to 120 seconds for the actual Bot card. A bounded optional Music seed uses real provider tools and playback; `state.botPlays` and `state.botPlayError` record whether the voice Bot fixture is available. The Bot menu pair targets its voice tile, so a provider failure remains a reported capture failure.
+world's screen share (Mira shares in `harbour`, `state.miraShares`); the world and shooter fail explicitly if that fixture is missing. The phone is enrolled into #general before seeded messages, and the world seeds its topic, a hoisted Raid leaders role with the prototype’s Pin messages permission (and real DJ playback permission), and a thread with a reply. Poll-card steps wait up to 120 seconds for the actual Bot card. A bounded optional Music seed uses real provider tools and playback; `state.botPlays` and `state.botPlayError` record whether the voice Bot fixture is available. The Bot menu pair targets its voice tile, so a provider failure remains a reported capture failure.
 
 **What is not judged.** The app's sample data (server Midgard Crew; Ada, Björn, Mira, Liv; timestamps, device names,
 counts) differs from the prototype's (Mira, Ada, Björn, Kari, Ole, Glenn playing music). Compare styling, structure and
@@ -157,13 +159,18 @@ removing another browser keeps recovery-key confirmation; the sign-in done step
 has no invite link. The phone You tab has no Status menu. Shortcut keycaps follow the platform. Signup steps 4–6 drop the Sign-in row; steps 4 and 6 drop Back; step 5 (`task3b-code`) keeps Back to the choice. The code step has no passkey or backup links. On phones the done step folds backup codes behind Show.
 The following decisions also apply:
 
+- A manager keeps the new-channel **+** in the server header while the server has no categories, on desktop and phone (Ruling AB; Jonas, 2026-10-27, explicitly reaffirmed 2026-10-30). With categories it moves to their headers. The uncategorized capture world therefore shows this deliberate extra control.
 - Person menus omit Move to, Server mute and Disconnect until wave C.
 - The DM list keeps Message someone (✎) and the notification-default menu (⌄). DMs have no Threads button until wave C (Jonas, 2026-10-27/28).
 - Keyboard settings list the prototype’s shortcuts first, then other real shortcuts such as Open search and Call the open DM. Keycaps and device names reflect the actual platform (“Ctrl K”, “System default”; Jonas, 2026-10-30).
 - The role editor folds real extra permissions into the prototype’s four groups: Attach files, Add reactions, Read message history, Create invites, Kick members and the other supported permissions (Ruling AS; Jonas, 2026-10-29).
 - Settings navigation keeps live extra sections **after the prototype’s entries** in each workspace. You keeps Appearance, Privacy and Diagnostics; Server keeps Channels, GIFs, Members, Self-assignable roles, Welcome messages, Join roles, Automoderation, Moderation log, Bans and Ownership (D2; Jonas, 2026-10-31).
+- Overview shows the Server name row only to people with Manage server (D3; Jonas, 2026-10-31). The owner fixture therefore sees this row.
 - Noise suppression defaults to Lightweight until the Automatic engine qualifies. Its selected state therefore has no Automatic hint or BETA tag (D8; Jonas, 2026-10-31).
+- Poll dialog fields show an accent border only while focused, with no extra outline or shadow (D6; Jonas, 2026-10-31, following Ruling AK).
 - Poll creation has no private Working card while its dialog is open. Its private result appears only after Post poll (D10; Jonas, 2026-10-31).
+- Phone toasts keep the explicitly requested 16px left/right gutters; copy wider than that available space wraps. The prototype's intrinsic nowrap toast can exceed those gutters (round-1 toast instruction, 2026-10-31).
+- Reduced-motion reply jumps keep the prototype's initial tint and accent bar without animation (Jonas, 2026-10-30).
 - Phone inputs keep the [phone grammar's 16px text](../README.md) to prevent iOS focus zoom, including sign-in and poll fields.
 
 These are accepted only for the named state; unrelated differences still need

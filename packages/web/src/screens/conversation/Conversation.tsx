@@ -107,7 +107,7 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
   const [flashKey, setFlashKey] = useState<string | null>(null);
   const [dragDepth, setDragDepth] = useState(0);
   const [gridPos, setGridPos] = useState<{ top: number; left: number } | null>(null);
-  // R30: one revealed row at a time (phone), hidden by a second tap, Escape or a scroll of the log. `at` is when it was shown.
+  // R30: one revealed row at a time (phone), hidden by a second tap, Escape or a new scroll of the log.
   const [revealFor, setRevealFor] = useState<{ log: string; key: string } | null>(null);
   const revealedKey = revealFor !== null && revealFor.log === p.logKey && items.some(i => i.key === revealFor.key) ? revealFor.key : null;
   // The reader's own scrolling (wheel, touch, scroll keys); a scroll with none of these before it is the log's own.
@@ -118,8 +118,11 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
   const dragged = useRef(false); // a touch that moved is a scroll; one that did not is a tap, and a tap's reveal grows the row
   const markUserScroll = () => { userScrollAt.current = Date.now(); };
   const reveal = (key: string, on: boolean) => {
-    if (on) setRevealFor({ log: p.logKey, key });
-    else setRevealFor(cur => (cur?.key === key ? null : cur));
+    if (on) {
+      // A new tap/focus supersedes the earlier scroll gesture; a poll update can re-pin within its remaining 800ms window.
+      userScrollAt.current = 0;
+      setRevealFor({ log: p.logKey, key });
+    } else setRevealFor(cur => (cur?.key === key ? null : cur));
   };
   // R29: the log is away from the newest message (the "viewing older messages" bar), per log.
   const [awayFrom, setAwayFrom] = useState<string | null>(null);

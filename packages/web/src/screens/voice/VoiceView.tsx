@@ -139,15 +139,13 @@ export function personMenu(v: Pick<VoiceContext, 'call' | 'settings' | 'members'
     };
   }
   const person = !stream && people !== undefined;
-  const human = person && !p.bot;
   return {
     ...head,
     ...(tunable ? { volume: { label: t(stream ? 'callStage.menu.streamVolume' : 'callStage.menu.volume'), value: level,
       valueText: t('callStage.menu.value', { n: level }), onChange: set } } : {}),
     items: [
       ...(person ? [{ id: 'profile', label: t('members.menu.profile'), icon: 'user' as const }] : []),
-      // A bot has no keys to message with: the prototype's Glenn menu has Profile, Mention and Edit roles, no Message here.
-      ...(human ? [{ id: 'message', label: t('members.menu.message'), icon: 'message-square' as const }] : []),
+      ...(person ? [{ id: 'message', label: t('members.menu.message'), icon: 'message-square' as const }] : []),
       ...(person && people.onMention !== undefined ? [{ id: 'mention', label: t('members.menu.mention'), icon: 'at-sign' as const }] : []),
       ...(tunable ? [{ id: 'mute', label: t('callStage.menu.muteForMe'), icon: 'volume-x' as const, check: level === 0 }] : []),
       { id: 'copy', label: t('callStage.menu.copy'), icon: 'copy' as const },

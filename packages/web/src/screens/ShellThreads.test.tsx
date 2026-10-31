@@ -346,11 +346,12 @@ async function searchThread(fake: FakeClient, user: ReturnType<typeof userEvent.
 }
 
 describe('where focus lands (fix round 2)', () => {
-  it('lands in the thread composer when Threads opens directly', async () => {
+  it('keeps focus on Threads when it opens the thread directly', async () => {
     const { user } = setup();
     await user.click(await screen.findByRole('button', { name: en['layout.header.threads'] }));
     await screen.findByRole('complementary', { name: en['thread.title'] });
-    await waitFor(() => expect(threadBox()).toHaveFocus());
+    expect(threadBox()).not.toHaveFocus();
+    expect(screen.getByRole('button', { name: en['layout.header.threads'] })).toHaveFocus();
   });
 
   it('returns to the root row when a thread opened from a search hit closes', async () => {

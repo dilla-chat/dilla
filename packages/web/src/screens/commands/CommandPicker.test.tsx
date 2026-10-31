@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { useState } from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -334,6 +335,42 @@ describe('CommandPicker: chips', () => {
     expect(screen.getByRole('combobox', { name: 'scope' })).toHaveValue('all');
     await user.click(send());
     await waitFor(() => expect(props.onExecute).toHaveBeenCalledWith({ commandId: 'search', args: { query: 'hello', scope: 'all' } }));
+  });
+
+  it('removes confirmation focus paint when the presentation override ends while the chip is blurred', async () => {
+    const user = userEvent.setup();
+    const style = document.createElement('style');
+    style.textContent = '.d-composer__box { border: 1px solid #232831; box-shadow: none; }' +
+      readFileSync('src/screens/commands/CommandHost.css', 'utf8')
+        .replaceAll('var(--accent)', '#5aa8e6').replaceAll('var(--accent-soft)', 'rgba(90, 168, 230, 0.12)');
+    document.head.append(style);
+    try {
+      const view = renderPicker({ initialText: '/remind' });
+      render(<button type="button">elsewhere</button>);
+      await user.click(screen.getByRole('button', { name: 'elsewhere' }));
+      view.rerender(<div className="d-root"><CommandPicker {...view.props} moderationConfirmOpen /></div>);
+      const box = document.querySelector('.d-composer__box') as HTMLElement;
+      expect(getComputedStyle(box).borderColor).toBe('rgb(90, 168, 230)');
+      expect(getComputedStyle(box).boxShadow).toBe('0 0 0 3px rgba(90, 168, 230, 0.12)');
+      view.rerender(<div className="d-root"><CommandPicker {...view.props} moderationConfirmOpen={false} /></div>);
+      expect(box.closest('.dw-command-picker')).not.toHaveAttribute('data-confirming');
+      expect(getComputedStyle(box).borderColor).toBe('rgb(35, 40, 49)');
+      expect(getComputedStyle(box).boxShadow).toBe('none');
+      expect(screen.queryByRole('listbox', { name: 'When' })).toBeNull();
+    } finally { style.remove(); }
+  });
+
+  it('hides argument suggestions on ordinary blur and restores them when the chip regains focus', async () => {
+    const user = userEvent.setup();
+    renderPicker({ initialText: '/remind' });
+    render(<button type="button">elsewhere</button>);
+    const field = screen.getByRole('combobox', { name: 'when' });
+    await user.click(field);
+    expect(screen.getByRole('listbox', { name: 'When' })).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'elsewhere' }));
+    expect(screen.queryByRole('listbox', { name: 'When' })).toBeNull();
+    await user.click(field);
+    expect(screen.getByRole('listbox', { name: 'When' })).toBeVisible();
   });
 
   it('discards stale suggestions after a context switch', async () => {

@@ -47,9 +47,11 @@ function remember(memory: Map<string, SavedDraft>, key: string, value: SavedDraf
   while (memory.size > LIMIT) memory.delete(memory.keys().next().value!);
 }
 
+export type CommandExitFocus = 'restore' | 'preserve';
+
 export interface CommandHostProps {
   communityId: string | null; channelId: string; threadId?: string; bits?: number; items: readonly TimelineItem[]; selfId: string | null;
-  draft: string; onDraft(text: string): void; onSendLiteral(text: string): void; onModeChange?(active: boolean): void; encodeMessage(text: string): string; openGif(query: string): void; gifsEnabled: boolean;
+  draft: string; onDraft(text: string): void; onSendLiteral(text: string): void; onModeChange?(active: boolean, exitFocus?: CommandExitFocus): void; encodeMessage(text: string): string; openGif(query: string): void; gifsEnabled: boolean;
   slashSubmission?: { text: string; id: number } | null;
   /** Wave B Task 2: draws the composer around the picker (ComposerArea's Composer, its frame kept). */
   renderFrame?: (parts: PickerFrame) => ReactNode;
@@ -61,7 +63,7 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
   const propsRef = useRef(props);
   propsRef.current = props;
   const onDraft = useCallback((text: string) => propsRef.current.onDraft(text), []);
-  const onModeChange = useCallback((active: boolean) => propsRef.current.onModeChange?.(active), []);
+  const onModeChange = useCallback((active: boolean, exitFocus?: CommandExitFocus) => propsRef.current.onModeChange?.(active, exitFocus), []);
   const encodeMessage = useCallback((text: string) => propsRef.current.encodeMessage(text), []);
   const openGif = useCallback((query: string) => propsRef.current.openGif(query), []);
   const account = client.get('account');
@@ -179,10 +181,10 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
   const room = callChannel === null ? null : channels?.find(row => row.id === callChannel)?.name ?? null;
   // A validated run leaves an empty composer while its private card works. Keep the generation and request id so
   // an open dialog stays current and an uncertain response can restore this same draft for a safe retry.
-  const leaveAfterRun = useCallback(() => {
+  const leaveAfterRun = useCallback((exitFocus: CommandExitFocus = 'restore') => {
     const saved = memory.get(key);
     remember(memory, key, { text: '', requestId: saved?.requestId ?? requestId(), invocationKey: saved?.invocationKey ?? '', mode: 'canceled' });
-    setCommandText(''); setActive(false); onModeChange?.(false); activeRef.current = false;
+    setCommandText(''); setActive(false); onModeChange(false, exitFocus); activeRef.current = false;
     suppress.current = '';
     onDraft('');
   }, [memory, key, onDraft, onModeChange]);
@@ -197,6 +199,7 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
     let confirmationChoice: ConfirmationChoice | null = null;
     if (handler === undefined) {
       resultStore.update(pendingResult(), { status: 'failed', text: resultCopy.unavailable });
+      if (formResult) leaveAfterRun('restore');
       return Promise.resolve({ status: 'failure', private: true, message: resultCopy.unavailable });
     }
     const invocationKey = `${contextKey}\u0000${invocation.commandId}\u0000${JSON.stringify(invocation.args)}`;
@@ -237,7 +240,7 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
       openThread: root => { if (isCurrent()) runtime?.openThread(root); }, openSearch: (query, scope) => { if (isCurrent()) runtime?.openSearch(query, scope); },
       items, selfId, encodeMessage, confirm, openInvite,
       openGif: query => { if (isCurrent()) openGif(query); }, openModerationLog };
-    if (!moderation) leaveAfterRun();
+    if (!moderation) leaveAfterRun(formResult ? 'preserve' : 'restore');
     return Promise.resolve().then(() => handler(invocation, context)).then(response => {
       if (confirmationChoice === 'abandon' || confirmationChoice === 'cancel' && !moderation) {
         if (resultId !== undefined) resultStore.dismiss(resultId);
@@ -340,9 +343,8 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
     props.onSendLiteral(text);
   };
   const runDetached = (invocation: CommandInvocation) => {
-    const done = execution(invocation);
-    leaveAfterRun();
-    void done.catch(() => undefined);
+    // execution owns leaving command mode, including the form command's focus disposition.
+    void execution(invocation).catch(() => undefined);
   };
   const abandonDialog = () => {
     const resolve = confirmationResolve.current; confirmationResolve.current = null;
@@ -363,6 +365,6 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
     onConfirm={() => { setConfirmation(null); confirmationResolve.current?.('confirm'); confirmationResolve.current = null; }}
     onClose={() => { setConfirmation(null); confirmationResolve.current?.('cancel'); confirmationResolve.current = null; }} /> : null}{active ? <CommandPicker key={contextKey} definitions={definitions} initialText={saved}
     onUnknown={text => { resultStore.add({ at: Date.now(), status: 'failed', text, provider: 'builtin' }); leaveAfterRun(); }} onExecute={execution} onCancel={cancel} onDone={leaveAfterRun} onSendLiteral={sendLiteral} suggest={suggest} suggestionSources={suggestionSources} contextKey={contextKey}
-    listed={listed} room={room} onRunDetached={runDetached} {...(botName !== undefined ? { botName } : {})} {...(props.renderFrame !== undefined ? { frame: props.renderFrame } : {})}
+    moderationConfirmOpen={confirmation?.moderation !== undefined} listed={listed} room={room} onRunDetached={runDetached} {...(botName !== undefined ? { botName } : {})} {...(props.renderFrame !== undefined ? { frame: props.renderFrame } : {})}
     onDraftChange={text => { setCommandText(text); const row = memory.get(key); remember(memory, key, { text, requestId: row?.requestId ?? requestId(), invocationKey: row?.invocationKey ?? text, mode: 'active' }); }} /> : null}</>;
 }
