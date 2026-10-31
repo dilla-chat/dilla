@@ -96,3 +96,38 @@ func TestDeferredMusicRestoreKeepsRetainedInteractionRuntime(t *testing.T) {
 		t.Fatal("permanent restore failure retained an invalid runtime")
 	}
 }
+
+func TestCacheCapacityDeferralKeepsRuntimeAndDoesNotHidePermanentErrors(t *testing.T) {
+	c, err := client.New(client.Config{BaseURL: "https://example.test", InstanceID: id.New(), RateLimits: client.RateLimits{DeviceCacheLimit: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = c.SessionForDevice("first", id.New()); err != nil {
+		t.Fatal(err)
+	}
+	_, capacity := c.SessionForDevice("second", id.New())
+	if !errors.Is(capacity, client.ErrRateCacheCapacity) {
+		t.Fatalf("not capacity: %v", capacity)
+	}
+	if !client.IsDeferred(capacity) || client.RateLimitError(capacity) == nil {
+		t.Fatalf("capacity is not retry safe: %v", capacity)
+	}
+	permanent := errors.New("state write failed")
+	if client.IsDeferred(errors.Join(capacity, permanent)) || client.RateLimitError(errors.Join(capacity, permanent)) != nil {
+		t.Fatal("capacity hid a permanent failure")
+	}
+	if client.IsDeferred(&client.APIError{Status: 503, Code: "E_UNAVAILABLE", Outcome: client.OutcomeDefinitive}) {
+		t.Fatal("unrelated server failure became capacity deferral")
+	}
+	community, installation := id.New(), id.New()
+	source := &runtimeStateNative{binding: native.Binding{Instance: id.New(), Community: community, Installation: installation}, rows: map[string]native.StateValue{}}
+	registry := newMusicQueueRegistry()
+	t.Cleanup(func() { _ = registry.Close() })
+	if err = registry.RetainInteractions(installation, community, source); err != nil {
+		t.Fatal(err)
+	}
+	cleanupUnreadyInstallation(installation, false, capacity, registry, newAutoModerationEventState())
+	if cleanupFailedMusicRestore(installation, capacity, registry) == nil || source.closed || registry.Native(installation, community) != source {
+		t.Fatal("capacity destroyed retained runtime")
+	}
+}

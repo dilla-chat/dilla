@@ -19,21 +19,40 @@ import (
 // RateLimits may be overridden by [rate_limits] in bot.toml. Zero fields use
 // conservative defaults below the instance's default per-device allowances.
 type RateLimits struct {
-	WritePerSecond      float64 `toml:"write_per_second"`
-	WriteBurst          int     `toml:"write_burst"`
-	ReadPerSecond       float64 `toml:"read_per_second"`
-	ReadBurst           int     `toml:"read_burst"`
-	MessagePerSecond    float64 `toml:"message_per_second"`
-	MessageBurst        int     `toml:"message_burst"`
-	CommitPerSecond     float64 `toml:"commit_per_second"`
-	CommitBurst         int     `toml:"commit_burst"`
-	ProposalPerSecond   float64 `toml:"proposal_per_second"`
-	ProposalBurst       int     `toml:"proposal_burst"`
-	KeyPackagePerSecond float64 `toml:"keypackage_per_second"`
-	KeyPackageBurst     int     `toml:"keypackage_burst"`
+	DeviceCacheLimit       int     `toml:"device_cache_limit"`
+	TargetCacheLimit       int     `toml:"target_cache_limit"`
+	GlobalTargetCacheLimit int     `toml:"global_target_cache_limit"`
+	WritePerSecond         float64 `toml:"write_per_second"`
+	WriteBurst             int     `toml:"write_burst"`
+	ReadPerSecond          float64 `toml:"read_per_second"`
+	ReadBurst              int     `toml:"read_burst"`
+	MessagePerSecond       float64 `toml:"message_per_second"`
+	MessageBurst           int     `toml:"message_burst"`
+	CommitPerSecond        float64 `toml:"commit_per_second"`
+	CommitBurst            int     `toml:"commit_burst"`
+	ProposalPerSecond      float64 `toml:"proposal_per_second"`
+	ProposalBurst          int     `toml:"proposal_burst"`
+	KeyPackagePerSecond    float64 `toml:"keypackage_per_second"`
+	KeyPackageBurst        int     `toml:"keypackage_burst"`
 }
 
+// Validate checks operator overrides without constructing a client or contacting an instance.
+func (r RateLimits) Validate() error { _, err := r.defaults(); return err }
+
 func (r RateLimits) defaults() (RateLimits, error) {
+	for _, limit := range []struct {
+		value         *int
+		fallback, max int
+	}{
+		{&r.DeviceCacheLimit, 1024, 1 << 20}, {&r.TargetCacheLimit, 2048, 1 << 20}, {&r.GlobalTargetCacheLimit, 16384, 1 << 24},
+	} {
+		if *limit.value == 0 {
+			*limit.value = limit.fallback
+		}
+		if *limit.value < 1 || *limit.value > limit.max {
+			return r, ErrInvalidConfig
+		}
+	}
 	for _, v := range []struct {
 		rate         *float64
 		burst        *int
@@ -94,6 +113,9 @@ type priorityLimiter struct {
 	background     int
 	interactiveRun int
 	changed        chan struct{}
+	// Cache lifecycle fields are protected by Client.rateMu.
+	lastUsed time.Time
+	inUse    int
 }
 
 func newPriorityLimiter(limit rate.Limit, burst int) *priorityLimiter {
@@ -185,6 +207,8 @@ func (l *priorityLimiter) Wait(ctx context.Context) error {
 type deviceLimiter struct {
 	write, read, message, commit, proposal *priorityLimiter
 	keypackages                            map[string]*priorityLimiter
+	lastUsed                               time.Time
+	inUse                                  int
 }
 
 func tokenKey(token string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(token))) }
@@ -200,23 +224,36 @@ func (c *Client) SessionForDevice(token string, device id.ID) (*Session, error) 
 		return nil, ErrInvalidConfig
 	}
 	c.rateMu.Lock()
+	defer c.rateMu.Unlock()
 	key, deviceKey := tokenKey(token), "device/"+device.String()
+	if owner, ok := c.devices[key]; ok && owner != deviceKey {
+		return nil, ErrInvalidConfig
+	}
+	now := time.Now()
+	fallback, deviceBucket := c.buckets[key], c.buckets[deviceKey]
+	if fallback != nil && deviceBucket != nil && fallback != deviceBucket {
+		if fallback.inUse > 0 || !c.canMergeTargetsLocked(deviceBucket, fallback, now) {
+			return nil, c.rateCapacityLocked()
+		}
+		c.mergeBucketsLocked(deviceBucket, fallback, now)
+		delete(c.buckets, key)
+	} else if deviceBucket == nil && fallback != nil {
+		c.buckets[deviceKey] = fallback
+		delete(c.buckets, key)
+	} else if deviceBucket == nil {
+		if _, err := c.deviceBucketLocked(deviceKey, now); err != nil {
+			return nil, err
+		}
+	}
+	c.buckets[deviceKey].lastUsed = now
 	for retired, owner := range c.devices {
 		if owner == deviceKey && retired != key {
 			delete(c.devices, retired)
 			delete(c.buckets, retired)
 		}
 	}
-	// A restored token may already have a fallback budget; retain it on binding.
-	if b := c.buckets[key]; b != nil {
-		if c.buckets[deviceKey] == nil {
-			c.buckets[deviceKey] = b
-		}
-		delete(c.buckets, key)
-	}
 	c.devices[key] = deviceKey
 	s.deviceRateKey = deviceKey
-	c.rateMu.Unlock()
 	return s, nil
 }
 
@@ -263,29 +300,44 @@ func (c *Client) waitRate(ctx context.Context, token, method, path string) error
 	} else if device, ok := c.devices[key]; ok {
 		key = device
 	}
-	b := c.buckets[key]
-	if b == nil {
-		b = &deviceLimiter{
-			commit:      newPriorityLimiter(rate.Limit(c.rates.CommitPerSecond), c.rates.CommitBurst),
-			proposal:    newPriorityLimiter(rate.Limit(c.rates.ProposalPerSecond), c.rates.ProposalBurst),
-			keypackages: make(map[string]*priorityLimiter),
-			write:       newPriorityLimiter(rate.Limit(c.rates.WritePerSecond), c.rates.WriteBurst),
-			read:        newPriorityLimiter(rate.Limit(c.rates.ReadPerSecond), c.rates.ReadBurst),
-			message:     newPriorityLimiter(rate.Limit(c.rates.MessagePerSecond), c.rates.MessageBurst),
-		}
-		c.buckets[key] = b
-	}
+	now := time.Now()
 	class := requestClass(method, path)
+	// Do not allocate a new anonymous identity when its first target request
+	// cannot be admitted. Known device bindings already own their bounded slot.
+	if c.buckets[key] == nil && class == "keypackage" && c.targetBuckets >= c.rates.GlobalTargetCacheLimit && !c.evictTargetLocked(nil, now) {
+		err := c.rateCapacityLocked()
+		c.rateMu.Unlock()
+		return err
+	}
+	b, err := c.deviceBucketLocked(key, now)
+	if err != nil {
+		c.rateMu.Unlock()
+		return err
+	}
 	var keypackage *priorityLimiter
 	if class == "keypackage" {
 		target := strings.Split(strings.Trim(path, "/"), "/")[1]
-		keypackage = b.keypackages[target]
-		if keypackage == nil {
-			keypackage = newPriorityLimiter(rate.Limit(c.rates.KeyPackagePerSecond), c.rates.KeyPackageBurst)
-			b.keypackages[target] = keypackage
+		keypackage, err = c.targetBucketLocked(b, target, now)
+		if err != nil {
+			c.rateMu.Unlock()
+			return err
 		}
+		keypackage.inUse++
+		keypackage.lastUsed = now
 	}
+	b.inUse++
+	b.lastUsed = now
 	c.rateMu.Unlock()
+	defer func() {
+		c.rateMu.Lock()
+		defer c.rateMu.Unlock()
+		b.inUse--
+		b.lastUsed = time.Now()
+		if keypackage != nil {
+			keypackage.inUse--
+			keypackage.lastUsed = b.lastUsed
+		}
+	}()
 	limiter := b.write
 	switch class {
 	case "commit":

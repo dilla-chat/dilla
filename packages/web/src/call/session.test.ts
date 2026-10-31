@@ -706,6 +706,24 @@ describe('the page call session (L-WEB-50)', () => {
     expect(f.calls.filter((c) => c.m === 'callRefresh')).toHaveLength(2);
   });
 
+  it('keeps one coarse report in flight when the worker is slow, and drops missed ticks', async () => {
+    const f = fakes();
+    const original = f.deps.bridge.call.bind(f.deps.bridge);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let started = 0;
+    f.deps.bridge.call = command => {
+      if (command.m === 'callStats') { started++; return gate.then(() => original(command)); }
+      return original(command);
+    };
+    await start(f);
+    await f.advance(90_000);
+    expect(started).toBe(1);
+    release(); await flush();
+    await f.advance(10_000);
+    expect(started).toBe(2);
+  });
+
   it('sends one callStats report per 10 s while connected', async () => {
     const f = fakes({ statsError: Object.assign(new Error('E_RATE_LIMITED'), { code: 'E_RATE_LIMITED', status: 429 }) });
     const call = await start(f);

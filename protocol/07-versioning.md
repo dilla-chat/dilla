@@ -8,7 +8,7 @@ Three independent unsigned integers:
 |---|---|---|
 | 2026-10-21 | e2ee 1, media 1, wire 3 | The unreleased Bot send receipt in `10` changes to twelve fields with logical operation and exact ciphertext attempt IDs, predecessor, generation, class, outcome and original send response. A serialized resolve route closes unused attempts and records uncertainty after restore; only a durable nonacceptance permits a successor. Helper op7/op8 and shared codecs/vectors advance together. Human uploads and E2EE/media formats stay unchanged. |
 | 2026-10-21 | e2ee 1, media 1, wire 3 | Managed Bot KeyPackage inventory adds a read-only collection GET in `09`/`10`: current generation, server time, active ordinary count and fallback availability under the publication authority fences. Historical receipts remain separate. The authenticated timestamp supports safe obsolete-intent recovery without trusting the bot host clock. No MLS or browser ABI change. |
-| `wire_version` | HTTP API paths under `/v1`, gateway frame layouts | 4 |
+| `wire_version` | HTTP API paths under `/v1`, gateway frame layouts | 5 |
 | `e2ee_version` | `01-groups.md`, `02`, `03`, `04`, `06` | 1 |
 | `media_version` | `05-media-frames.md` | 1 |
 
@@ -26,8 +26,8 @@ supports. Both sides MUST support the current version and the two before it (**N
 version** published with each release and refuse instances below it, showing the advisory that
 explains why.
 
-Wire 4 advertises `[4,3,2]` (Task S1 part 2: the account-kind attestation). Human clients offer
-`[4,3,2]`; managed Bots offer and negotiate wire 3 only (their routes require exactly 3), so a Bot
+Wire 5 advertises `[5,4,3,2]` (Task S1 part 2: the account-kind attestation). Human clients offer
+`[5,4,3,2]`; managed Bots offer and negotiate wire 3 only (their routes require exactly 3), so a Bot
 session reads the four-element device-list head and its core keeps the transition rule of
 `03` § Account kind attestation until the Bot runtime moves to wire 4. Wire 3 remains supported for
 managed Bots and for human clients that do not offer 4 yet; wire 2 remains supported for
@@ -38,6 +38,14 @@ wire-4 client that stored an attestation from it leaves every user without one p
 so a downgraded instance stops showing other people's messages to those clients. Likewise the web
 client's app schema 13 is refused by an older bundle (`E_STORE_NEWER`): a rolled-back web build cannot
 open a browser store a wire-4 build has opened.
+
+Wire 5 adds only ephemeral gateway transport (ops 56–58): served-build notices, actual input activity
+and coarse call reports. E2EE, media and the browser store schema stay unchanged. Wire-5 clients
+retain the wire-4 HTTP baseline and attestation. Older instances negotiate 4, 3 or 2 and retain
+HTTP fallback; old sessions resumed under a wire-5 instance keep their actual selected version.
+Managed Bots remain on 3. Migration 00055 admits 5 without changing legacy sessions; its down
+migration maps 5 to 4, preserving bearer sessions for rollback to a wire-4 build. Never roll back
+below the existing attestation/store floor described above.
 
 Wire 4 compatibility:
 
@@ -67,6 +75,7 @@ Encrypted envelopes and media stay at version1; no existing MLS group migrates.
 
 | date | version | change |
 |---|---|---|
+| 2026-10-31 | e2ee 1, media 1, wire 5 | Ephemeral ops 56–58 move build notices, actual input activity and coarse call telemetry onto the existing gateway. Ready/resumed shapes and replay numbers are unchanged. Human offers `[5,4,3,2]`; managed Bots stay on 3; HTTP remains the compatibility fallback. |
 | 2026-10-29 | e2ee 1, media 1, wire 4 | `09` § Voice: `POST /v1/calls/{call_id}/rtt` (`[ms]` 0..5000 or `[]`) lets a call member report its RTT to the SFU, which the instance writes as its `dilla.rtt` participant attribute (one per 1.5 s per device, current leaves only); call tokens state that they never carry LiveKit's own-metadata right (an attribute flood). `08` records the RTT's visibility. The default `livekit.max_share_bitrate_kbps` rises from 2500 to 8000. A new route on the unreleased wire, no version bump. |
 | 2026-10-28 | e2ee 1, media 1, wire 4 | **Wire 4: the instance-signed account kind** (Task S1 part 2). `03` gains § Account kind attestation: the external-sender key signs `"dilla account kind v1" \|\| CBOR([1, instance_id, user_id, kind])` (Ruling AW: no key; the attestation holds for every key of the account), encoded `[1, key_id, kind, sig]`; clients judge every leaf's credential kind against it, with a one-way per-instance "attestation seen" flag (missing = pending once seen). `09`'s `GET /v1/users/{id}/device-list` head gains the attestation as a fifth element on wire-4 sessions only; wire 2 and 3 heads are unchanged. Sessions may record wire 4 (store migration 00051). The browser core's app schema goes to 13 (`app_account_kinds`; older clients refuse the store) and gains `account_kind_ingest`. `vectors/identity.json` gains `account_kind`. Managed Bots stay on wire 3. The compatibility matrix is in § Negotiation. |
 | 2026-10-22 | e2ee 1, media 1, wire 3 | The unreleased typed Bot interaction binding in `01` adds the human participant device ID as its twelfth field; the draft eleven-field form is rejected. Legacy v1 interaction bindings remain readable, while Bot admission stays disabled until the server, native client and dispatcher validate the installation and authenticated MLS roster end to end. No shipped format or version axis changes. |

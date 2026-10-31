@@ -97,16 +97,22 @@ type dedupKey struct {
 }
 
 type Engine struct {
-	mu        sync.Mutex
-	enabled   bool
-	actions   map[Rule]Action
-	exempt    map[string]struct{}
-	timeout   time.Duration
-	stateCap  int
-	dedupCap  int
-	users     map[userKey]*userState
-	dedup     map[dedupKey]struct{}
-	dedupFIFO []dedupKey
+	mu              sync.Mutex
+	enabled         bool
+	actions         map[Rule]Action
+	exempt          map[string]struct{}
+	timeout         time.Duration
+	stateCap        int
+	dedupCap        int
+	users           map[userKey]*userState
+	dedup           map[dedupKey]struct{}
+	dedupFIFO       []dedupKey
+	dedupOwners     map[dedupKey]userKey
+	dedupOrder      map[dedupKey]uint64
+	checkpointOrder uint64
+	checkpointTime  time.Time
+	dedupReceived   map[dedupKey]time.Time
+	dirty           map[byte]bool
 }
 
 type userKey struct {
@@ -140,7 +146,8 @@ func New(config Config) *Engine {
 		}
 	}
 	return &Engine{enabled: config.Enabled, actions: actions, exempt: exempt, timeout: timeout,
-		stateCap: stateCap, dedupCap: dedupCap, users: make(map[userKey]*userState), dedup: make(map[dedupKey]struct{})}
+		stateCap: stateCap, dedupCap: dedupCap, users: make(map[userKey]*userState), dedup: make(map[dedupKey]struct{}),
+		dedupOwners: make(map[dedupKey]userKey), dedupOrder: make(map[dedupKey]uint64), dedupReceived: make(map[dedupKey]time.Time), dirty: make(map[byte]bool)}
 }
 
 // Evaluate counts each source/revision once. now is the local processing time;
@@ -163,7 +170,10 @@ func (e *Engine) Evaluate(in Input, now time.Time) Decision {
 		d.DuplicateDelivery = true
 		return d
 	}
-	e.remember(key)
+	if now.After(e.checkpointTime) {
+		e.checkpointTime = now
+	}
+	e.remember(key, userKey{community: in.CommunityID, user: in.UserID}, in.ReceivedAt)
 	if !e.enabled || in.Bot || in.Owner || in.Admin {
 		return d
 	}
@@ -251,11 +261,19 @@ func (e *Engine) actionFor(rules []Rule) Action {
 	return best
 }
 
-func (e *Engine) remember(key dedupKey) {
+func (e *Engine) remember(key dedupKey, owner userKey, receivedAt time.Time) {
+	e.dedupReceived[key] = receivedAt
 	e.dedup[key] = struct{}{}
+	e.checkpointOrder++
+	e.dedupOwners[key], e.dedupOrder[key] = owner, e.checkpointOrder
+	e.dirty[checkpointShard(owner)] = true
 	e.dedupFIFO = append(e.dedupFIFO, key)
 	if len(e.dedupFIFO) > e.dedupCap {
 		old := e.dedupFIFO[0]
+		e.dirty[checkpointShard(e.dedupOwners[old])] = true
+		delete(e.dedupOwners, old)
+		delete(e.dedupOrder, old)
+		delete(e.dedupReceived, old)
 		e.dedupFIFO = e.dedupFIFO[1:]
 		delete(e.dedup, old)
 	}
@@ -271,6 +289,7 @@ func (e *Engine) evictOldestUser() {
 		}
 	}
 	if haveOldest {
+		e.dirty[checkpointShard(oldestID)] = true
 		delete(e.users, oldestID)
 	}
 }

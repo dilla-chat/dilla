@@ -44,7 +44,7 @@ func TestAWire3SessionSurvivesTheWire4Migration(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `UPDATE sessions SET wire_version = 4 WHERE token_hash = ?`, token); err == nil {
 		t.Fatal("wire 4 was accepted before the migration")
 	}
-	if _, err := p.Up(ctx); err != nil {
+	if _, err := p.UpTo(ctx, 51); err != nil {
 		t.Fatalf("up: %v", err)
 	}
 	var wire, e2ee int

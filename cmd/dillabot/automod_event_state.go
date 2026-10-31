@@ -31,10 +31,9 @@ type autoModerationEventStateEntry struct {
 	runtime               *service.AutoModerationRuntime
 }
 
-// autoModerationEventState preserves rolling evaluator state during a process
-// lifetime and snapshots a conservative replay barrier at process start or
-// after a config revision changes. The helper's acknowledged cursor remains
-// the durable delivery cursor across restarts.
+// autoModerationEventState coordinates each installation's durable evaluator,
+// pending actions and activation barrier. Native state restores them before
+// classifying historical deliveries; legacy installs seed a barrier once.
 type autoModerationEventState struct {
 	lifecycle installationLifecycle
 	epoch     uint64 // removal fence, protected by mu
@@ -75,32 +74,22 @@ func configureAutoModeration(ctx context.Context, state *autoModerationEventStat
 
 func prepareAutoModerationDependencies(n *native.Client, session *client.Session, community id.ID, cfg moderation.Config) (service.ModerationActorAuthority, *service.ModerationCaseSink, error) {
 	var authority service.ModerationActorAuthority
-	var backend service.ModerationEnforcementBackend
 	if cfg.Enabled {
 		resolved, err := service.NewCommunityActorAuthority(session, community, nil)
 		if err != nil {
 			return nil, nil, err
 		}
 		authority = resolved
-		if moderationBackendRequired(cfg) {
-			resolved, err := service.NewModerationRemovalBackend(n, session)
-			if err != nil {
-				return nil, nil, err
-			}
-			backend = resolved
-		}
+	}
+	// Disabled/log-only policies must still reconcile receipts of older pending
+	// decisions. The runtime alone decides whether a request is receipt-only;
+	// constructing this adapter does not authorize a new enforcement effect.
+	backend, err := service.NewModerationRemovalBackend(n, session)
+	if err != nil {
+		return nil, nil, err
 	}
 	sink, err := service.NewModerationCaseSink(n, backend, nil)
 	return authority, sink, err
-}
-
-func moderationBackendRequired(cfg moderation.Config) bool {
-	for _, action := range cfg.Actions {
-		if action == moderation.ActionRemove || action == moderation.ActionWarn || action == moderation.ActionTimeout {
-			return true
-		}
-	}
-	return false
 }
 
 func setModerationActionsLogOnly(cfg *moderation.Config) {
@@ -144,7 +133,9 @@ func (s *autoModerationEventState) Configure(ctx context.Context, source groupEv
 		// A stale reconciliation must not roll back an acknowledged settings PUT.
 		return entry.runtime, entry.replayThrough, entry.replayReceivedThrough, nil
 	}
-	if exists && entry.community == community && entry.revision == revision {
+	// A replacement helper opens the same durable store through a new client.
+	// Reattach its checkpoints rather than retaining the retired client's handles.
+	if exists && entry.source == source && entry.community == community && entry.revision == revision && entry.runtime.ConfigurationReady() {
 		entry.runtime.UpdateActionDependencies(authority, sink)
 		s.mu.Lock()
 		if s.epoch == epoch {
@@ -165,11 +156,17 @@ func (s *autoModerationEventState) Configure(ctx context.Context, source groupEv
 		return nil, 0, 0, errors.New("invalid automatic moderation event high-water mark")
 	}
 	runtime := service.NewAutoModerationRuntime(cfg, authority, sink, s.now)
-	replayReceivedThrough, err = runtime.ActivateConfig(ctx, service.AutoModerationActivation{Config: cfg, Revision: revision, ReplayThrough: page.HighWater, ReplayReceivedThrough: replayReceivedThrough, Authority: authority, Sink: sink}, func() error { return nil })
+	_, err = runtime.ActivateConfig(ctx, service.AutoModerationActivation{Config: cfg, Revision: revision, ReplayThrough: page.HighWater, ReplayReceivedThrough: replayReceivedThrough, Authority: authority, Sink: sink}, func() error { return nil })
 	if err != nil {
 		return nil, 0, 0, err
 	}
-	entry = autoModerationEventStateEntry{source: source, community: community, revision: revision, replayThrough: page.HighWater,
+	if durable, ok := source.(service.AutoModerationStateClient); ok {
+		if err := runtime.AttachDurableState(ctx, durable); err != nil {
+			return nil, 0, 0, err
+		}
+	}
+	replayThrough, replayReceivedThrough := runtime.ReplayBoundary()
+	entry = autoModerationEventStateEntry{source: source, community: community, revision: revision, replayThrough: replayThrough,
 		replayReceivedThrough: replayReceivedThrough, runtime: runtime}
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -81,7 +81,7 @@ func (d Deps) InstanceDocument(w http.ResponseWriter, r *http.Request) {
 	wire := d.WireVersions
 	if len(wire) == 0 {
 		// Match dillad's production offer when a focused handler test omits composition wiring.
-		wire = []uint64{4, 3, 2}
+		wire = []uint64{5, 4, 3, 2}
 	}
 	e2ee := d.E2EEVersions
 	if len(e2ee) == 0 {

@@ -279,6 +279,8 @@ export const en = {
   'update.failed': 'The update is ready, but this tab could not save your work. Try again.',
   'update.restoreFailed': 'The update is ready, but this tab could not restore your work. Try again.',
   'update.retry': 'Try update again',
+  'update.beforeLogin': 'An update is ready. Finish or copy your current work before reloading.',
+  'update.finishCall': 'An update is ready. It will apply after your call ends, keeping your draft.',
   'update.finishDialog': 'An update is ready. Finish your edit or close the current dialog to apply it.',
   'update.noStorage': 'An update is ready, but this browser cannot save your unsent work. Finish or copy it before reloading.',
   'update.reloadNow': 'Reload now',

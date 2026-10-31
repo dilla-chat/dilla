@@ -336,7 +336,12 @@ func TestAutoModerationRuntimeConsumesDefinitiveRevocationButRetriesUnknownOutco
 	cfg := moderation.Config{Enabled: true, Actions: map[moderation.Rule]moderation.Action{moderation.RuleRate: moderation.ActionRemove}}
 	event := native.GroupEvent{DeliveryID: 1, Community: id.New(), Group: id.New(), Channel: id.New(), SourceSequence: 1,
 		ReceivedAt: uint64(now.Unix()), SenderUser: id.New(), SenderDevice: id.New(), Message: id.New(), EnvelopeType: 0, Body: &body}
-	sink := automodSinkFunc(func(context.Context, ModerationAction) error { return ErrModerationActionRefused })
+	sink := automodSinkFunc(func(_ context.Context, a ModerationAction) error {
+		if a.Decision.Action == moderation.ActionLog {
+			return nil
+		}
+		return ErrModerationActionRefused
+	})
 	runtime := NewAutoModerationRuntime(cfg, automodAuthorityFunc(ordinaryAutomodAuthority), sink, func() time.Time { return now })
 	for i := 0; i < 6; i++ {
 		event.SourceSequence++

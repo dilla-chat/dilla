@@ -192,7 +192,10 @@ fn spawn(path: &PathBuf, stream: &UnixStream) -> std::process::Child {
             .env_clear()
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            // Nobody reads child.stderr in this fixture. SQLCipher diagnostics
+            // under a small memlock budget can fill that pipe and deadlock the
+            // helper while the parent waits for its protocol response.
+            .stderr(Stdio::inherit());
         c.pre_exec(move || {
             if libc::dup2(fd, 3) < 0 {
                 return Err(std::io::Error::last_os_error());

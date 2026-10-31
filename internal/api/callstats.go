@@ -9,7 +9,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/clock"
+	"github.com/jonasthim/dilla/internal/gateway"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/server"
 	"github.com/jonasthim/dilla/internal/store"
@@ -41,49 +43,11 @@ const (
 	statsSweepEvery = time.Minute
 )
 
-// The report's ranges (protocol/09 § Voice, Call stats).
-const (
-	candidateRelay   = 3
-	maxCandidateType = 3
-	maxRelayProtocol = 2
-	maxRTTms         = 60_000
-	maxLostPermille  = 1000
-	// maxFramesPerReport bounds decrypt_failures and frames_encrypted (review I2). It is generous —
-	// 25 subscribed tracks at 110 frames a second for 30 s is under 100 000, and a backgrounded
-	// tab's long interval still fits — and with one report per device per 5 s no sum can wrap and
-	// no counter be poisoned.
-	maxFramesPerReport = 1 << 20
-)
+const candidateRelay = 3
 
 // statsReport is `[candidate_type, relay_protocol|null, rtt_ms, fraction_lost_permille,
 // decrypt_failures, frames_encrypted]`; the last two count since the device's previous report.
-type statsReport struct {
-	_                    struct{} `cbor:",toarray"`
-	CandidateType        uint64
-	RelayProtocol        *uint64
-	RTTms                uint32
-	FractionLostPermille uint64
-	DecryptFailures      uint64
-	FramesEncrypted      uint64
-}
-
-func (q statsReport) validate() error {
-	switch {
-	case q.CandidateType > maxCandidateType:
-		return server.Errorf(server.CodeInvalidRequest, "candidate_type is 0 host, 1 srflx, 2 prflx or 3 relay")
-	case q.RelayProtocol != nil && q.CandidateType != candidateRelay:
-		return server.Errorf(server.CodeInvalidRequest, "relay_protocol is null unless candidate_type is 3 (relay)")
-	case q.RelayProtocol != nil && *q.RelayProtocol > maxRelayProtocol:
-		return server.Errorf(server.CodeInvalidRequest, "relay_protocol is 0 udp, 1 tcp or 2 tls")
-	case q.RTTms > maxRTTms:
-		return server.Errorf(server.CodeInvalidRequest, "rtt_ms is at most 60000")
-	case q.FractionLostPermille > maxLostPermille:
-		return server.Errorf(server.CodeInvalidRequest, "fraction_lost_permille is at most 1000")
-	case q.DecryptFailures > maxFramesPerReport || q.FramesEncrypted > maxFramesPerReport:
-		return server.Errorf(server.CodeInvalidRequest, "decrypt_failures and frames_encrypted are at most 1048576")
-	}
-	return nil
-}
+type statsReport = gateway.CallStatsReport
 
 // saturatingAdd is a + b, or the largest uint64 where that would wrap.
 func saturatingAdd(a, b uint64) uint64 {
@@ -114,20 +78,29 @@ type CallStats struct {
 	m     CallMetrics
 	clk   clock.Clock
 
-	mu     sync.Mutex
-	byCall map[id.ID]map[id.ID]*deviceStats
-	last   map[id.ID]time.Time // device → its last accepted report
-	swept  time.Time
+	mu             sync.Mutex
+	byCall         map[id.ID]map[id.ID]*deviceStats
+	last           map[id.ID]time.Time // device → its last accepted report
+	swept          time.Time
+	pending        map[id.ID]bool
+	resolveSession func(context.Context, []byte) (auth.Session, error)
 }
 
 // NewCallStats builds the stats route over the call routes' gates.
 func NewCallStats(repo store.Repository, calls *Calls, m CallMetrics, clk clock.Clock) *CallStats {
 	return &CallStats{repo: repo, calls: calls, m: m, clk: clk,
-		byCall: map[id.ID]map[id.ID]*deviceStats{}, last: map[id.ID]time.Time{}}
+		byCall: map[id.ID]map[id.ID]*deviceStats{}, last: map[id.ID]time.Time{}, pending: map[id.ID]bool{}}
 }
 
 func (s *CallStats) Register(mux *server.Mux) {
 	mux.HandleFunc("POST /v1/calls/{call_id}/stats", s.report)
+}
+
+// WithSessionResolver installs the production current-session recheck. Bare handler integrations
+// may supply an already-authorized context as before; the composition root always installs it.
+func (s *CallStats) WithSessionResolver(resolve func(context.Context, []byte) (auth.Session, error)) *CallStats {
+	s.resolveSession = resolve
+	return s
 }
 
 // report is POST /v1/calls/{call_id}/stats: 204, from a current leaf of a live call's group whose
@@ -135,16 +108,16 @@ func (s *CallStats) Register(mux *server.Mux) {
 // interval is checked before anything reads the store (review M3), so a device that floods the
 // route costs no database round trip; only an accepted report starts the next interval.
 func (s *CallStats) report(w http.ResponseWriter, r *http.Request) {
-	sess, err := enrolledSession(r)
+	session, err := enrolledSession(r)
 	if err != nil {
 		server.WriteError(w, err)
 		return
 	}
-	if wait := s.wait(sess.DeviceID, s.clk.Now()); wait > 0 {
+	if wait := s.wait(session.DeviceID, s.clk.Now()); wait > 0 {
 		server.WriteError(w, server.RateLimitedAfter(wait))
 		return
 	}
-	sess, row, _, bits, err := s.calls.callOf(r)
+	callID, err := server.PathID(r, "call_id")
 	if err != nil {
 		server.WriteError(w, err)
 		return
@@ -154,35 +127,90 @@ func (s *CallStats) report(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	if err := req.validate(); err != nil {
+	if err := s.AcceptCallStats(r.Context(), session, callID, req); err != nil {
 		server.WriteError(w, err)
 		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// AcceptCallStats is the sole acceptance service for HTTP and WSS. Its reservation is taken
+// atomically BEFORE repository work and returned on refusal; only acceptance spends five seconds.
+func (s *CallStats) AcceptCallStats(ctx context.Context, sess auth.Session, callID id.ID, req gateway.CallStatsReport) error {
+	if sess.Scope != auth.ScopeEnrolled || sess.FactorOwed {
+		return server.Errorf(server.CodeUnauthenticated, "")
+	}
+	if err := req.Validate(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	wait := s.waitLocked(sess.DeviceID, s.clk.Now())
+	if wait > 0 || s.pending[sess.DeviceID] {
+		s.mu.Unlock()
+		if wait <= 0 {
+			wait = statsReportInterval
+		}
+		return server.RateLimitedAfter(wait)
+	}
+	s.pending[sess.DeviceID] = true
+	s.mu.Unlock()
+	defer func() { s.mu.Lock(); delete(s.pending, sess.DeviceID); s.mu.Unlock() }()
+	fresh := func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if s.resolveSession == nil {
+			return nil
+		}
+		current, err := s.resolveSession(ctx, sess.TokenHash)
+		if err != nil {
+			return err
+		}
+		if current.UserID != sess.UserID || current.DeviceID != sess.DeviceID || current.Scope != auth.ScopeEnrolled || current.FactorOwed {
+			return server.Errorf(server.CodeUnauthenticated, "")
+		}
+		return nil
+	}
+	if err := fresh(); err != nil {
+		return err
+	}
+	_, row, ch, bits, err := s.calls.callForSession(ctx, sess, callID)
+	if err != nil {
+		return err
 	}
 	if row.Ended != nil {
-		server.WriteError(w, server.Errorf(server.CodeNotFound, "the call has ended"))
-		return
+		return server.Errorf(server.CodeNotFound, "the call has ended")
 	}
-	// As for a share (review I4): a leaf whose user lost connect is being cut from the call.
 	if !bits.Has(PermConnect) {
-		server.WriteError(w, server.Errorf(server.CodeForbidden, "you may not connect to this call"))
-		return
+		return server.Errorf(server.CodeForbidden, "you may not connect to this call")
 	}
-	if err := s.calls.requireLeafOfCall(r.Context(), row, sess.DeviceID); err != nil {
-		server.WriteError(w, err)
-		return
+	if err := s.calls.requireLeafOfCall(ctx, row, sess.DeviceID); err != nil {
+		return err
 	}
-	ch, err := s.repo.GetChannel(r.Context(), row.ChannelID)
-	if err != nil {
-		server.WriteError(w, notFound(err))
-		return
+	if err := s.calls.refuseBarred(ctx, s.repo, sess.DeviceID); err != nil {
+		return err
 	}
-	if err := s.calls.refuseBarred(r.Context(), s.repo, sess.DeviceID); err != nil {
-		server.WriteError(w, err)
-		return
+	if err := requireCommunityWire(ctx, s.repo, sess.WireVersion, ch.CommunityID); err != nil {
+		return err
 	}
-	if err := requireCommunityWire(r.Context(), s.repo, sess.WireVersion, ch.CommunityID); err != nil {
-		server.WriteError(w, err)
-		return
+	// The database may have stalled: do not record after a disconnect, revocation, call end,
+	// membership removal or permission change that happened while processing this sample.
+	if err := fresh(); err != nil {
+		return err
+	}
+	if _, live, err := s.calls.liveRow(ctx, s.repo, row); err != nil {
+		return err
+	} else if !live {
+		return server.Errorf(server.CodeNotFound, "the call has ended")
+	}
+	if row.GroupID == nil {
+		return server.Errorf(server.CodeLeafNotCurrent, "")
+	}
+	if err := s.calls.stillEntitled(ctx, sess, ch, *row.GroupID); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	now := s.clk.Now()
 	relay := req.CandidateType == candidateRelay
@@ -190,8 +218,7 @@ func (s *CallStats) report(w http.ResponseWriter, r *http.Request) {
 	// Checked again under the lock: two reports of one device may have passed the first check at once.
 	if wait := s.waitLocked(sess.DeviceID, now); wait > 0 {
 		s.mu.Unlock()
-		server.WriteError(w, server.RateLimitedAfter(wait))
-		return
+		return server.RateLimitedAfter(wait)
 	}
 	if now.Sub(s.swept) >= statsSweepEvery {
 		s.dropOlderLocked(now.Add(-statsKeep))
@@ -219,7 +246,7 @@ func (s *CallStats) report(w http.ResponseWriter, r *http.Request) {
 	if s.m != nil {
 		s.m.StatsReport(relay, req.RTTms, req.DecryptFailures)
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return nil
 }
 
 // wait is how long dev must still wait before its next report is accepted; 0 when it may report.

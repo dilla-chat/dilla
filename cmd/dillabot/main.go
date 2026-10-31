@@ -95,6 +95,9 @@ func loadConfig(path string) (config, error) {
 		return c, errConfigInvalid
 	}
 	var errs []error
+	if err := c.RateLimits.Validate(); err != nil {
+		errs = append(errs, errors.New("rate_limits requires positive finite rates and bounded cache capacities"))
+	}
 	if c.BaseURL == "" {
 		errs = append(errs, errors.New("base_url is required"))
 	}

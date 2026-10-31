@@ -19,6 +19,10 @@ func RateLimitError(err error) *APIError {
 		if err == nil {
 			return true
 		}
+		if capacity, ok := err.(*rateCacheCapacityError); ok { //nolint:errorlint // Inspect this tree node; errors.As would hide mixed permanent joins.
+			refusal = capacity.api
+			return true
+		}
 		if joined, ok := err.(interface{ Unwrap() []error }); ok {
 			for _, cause := range joined.Unwrap() {
 				if !transient(cause) {
@@ -50,6 +54,10 @@ func IsDeferred(err error) bool {
 	var transient func(error) bool
 	transient = func(err error) bool {
 		if err == nil {
+			return true
+		}
+		if _, ok := err.(*rateCacheCapacityError); ok { //nolint:errorlint // Inspect this tree node; errors.As would hide mixed permanent joins.
+			found = true
 			return true
 		}
 		if joined, ok := err.(interface{ Unwrap() []error }); ok {

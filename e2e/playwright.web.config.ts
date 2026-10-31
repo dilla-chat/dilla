@@ -32,6 +32,6 @@ export default defineConfig({
     { name: 'firefox-web', testIgnore: /(^|\/)(support|core-worker|spike-joinall|channel-list)\.spec\.ts$/, use: { ...devices['Desktop Firefox'] } },
     // Keep the WebKit set explicit: these specs use the shipping web client without enabling
     // microphone-only Chromium fixtures, and slash commands are part of the cross-engine contract.
-    { name: 'webkit-web', testMatch: /(^|\/)(signup|reload|phone|signin-order|private-window|layout|search-settings|reload-mid-sync|slash-commands)\.spec\.ts$/, use: { ...devices['Desktop Safari'] } },
+    { name: 'webkit-web', testMatch: /(^|\/)(signup|reload|phone|signin-order|private-window|layout|search-settings|reload-mid-sync|slash-commands|realtime-transport)\.spec\.ts$/, use: { ...devices['Desktop Safari'] } },
   ],
 });

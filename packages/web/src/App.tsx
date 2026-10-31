@@ -1,5 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import type { BootPhase, FactorSetupOrigin } from '@dilla/client-core';
+import { Banner } from '@dilla/ui';
+import { t } from './strings/index.ts';
 import { browser } from './browser.ts';
 import { useCore } from './core/context.tsx';
 import { errorOf, type UiError } from './core/errors.ts';
@@ -59,6 +61,13 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
     spotifyCallbackScrubbed.current = true;
   }, [route.name, callbackSearch]);
   const account = useSlice('account');
+  const updateSignedIn = account?.phase === 'ready';
+  const [preLoginUpdate, setPreLoginUpdate] = useState(false);
+  useEffect(() => {
+    if (props.update === undefined || updateSignedIn) return;
+    return props.update.watch({ currentEntry: props.update.currentEntry, fetch: window.fetch.bind(window),
+      changed: () => setPreLoginUpdate(true) });
+  }, [props.update, updateSignedIn]);
   const checkpointOwner = useRef<CheckpointScope | null>(null);
   useEffect(() => {
     if (props.update === undefined) return;
@@ -106,26 +115,23 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
   const reloaded = useRef(false);
   const reload = props.reload;
   const phase = account?.phase;
-  // One active tab refreshes its device's activity at most once a minute. Hidden tabs send no
+  // Real input in the active tab refreshes its device at most once every five seconds. Hidden tabs send no
   // keepalive; the server derives Idle after ten minutes without activity on every live device.
   useEffect(() => {
     if (phase !== 'ready') return;
-    let last = 0;
+    let last = -Infinity;
     const activity = () => {
-      if (document.visibilityState !== 'visible' || Date.now() - last < 60_000) return;
+      if (document.visibilityState !== 'visible' || Date.now() - last < 5_000) return;
       last = Date.now();
       void client.call({ m: 'presenceActivity' }).catch(() => undefined);
     };
     window.addEventListener('pointerdown', activity);
     window.addEventListener('pointermove', activity);
     window.addEventListener('keydown', activity);
-    document.addEventListener('visibilitychange', activity);
-    activity();
     return () => {
       window.removeEventListener('pointerdown', activity);
       window.removeEventListener('pointermove', activity);
       window.removeEventListener('keydown', activity);
-      document.removeEventListener('visibilitychange', activity);
     };
   }, [client, phase]);
   // Walk M9: the forced screen holds dilla as the shell does, so a tab that asks for it ("Use this tab") is answered there too.
@@ -271,7 +277,8 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
   else if (phase === 'other-tab') body = <OtherTab phase={tabPhase === 'paused' ? 'other-tab' : tabPhase} onUse={() => takeThisTab()}
     onRetry={() => takeThisTab()} onConfirm={() => takeThisTab(true)} onKeep={keepCall} />;
   else body = screenBody();
-  return <>{body}{pausedView}{route.name === 'spotifyCallback' ? <SpotifyCallback search={spotifyCallbackSearch.current} /> : null}</>;
+  return <>{preLoginUpdate && account?.phase !== 'ready' ? <Banner tone="info"
+    action={{ label: t('update.reloadNow'), onAction: () => props.update?.reload() }}>{t('update.beforeLogin')}</Banner> : null}{body}{pausedView}{route.name === 'spotifyCallback' ? <SpotifyCallback search={spotifyCallbackSearch.current} /> : null}</>;
 
   function screenBody(): ReactNode {
     if (screen === 'signin' || (signingIn && phase === 'ready')) return <SignIn onFinish={finishSignIn} />;

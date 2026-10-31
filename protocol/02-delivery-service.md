@@ -354,6 +354,46 @@ dense on every device of its audience; `group_id` is null.
 | 53 | `call_ring` | S→C | `[call_id(bstr 16), channel_id(bstr 16), user_id(bstr 16), state(uint 0..2), expires_ts(uint)]` |
 | 54 | `community_changed` | S→C | `[community_id(bstr 16)]` |
 | 55 | `afk_away` | S→C | `[community_id(bstr 16), user_id(bstr 16), since_ts(uint)]` |
+| 56 | `app_build` | S→C, wire ≥5 | `[entry(tstr)]` |
+| 57 | `presence_activity` | C→S, wire ≥5 | `[]` |
+| 58 | `call_stats` | C→S, wire ≥5 | `[call_id(bstr 16), report(array)]` |
+
+`app_build` follows ready/resumed and names the entry from the verified, currently served web
+handler. It is at most 512 characters, matches `/assets/[A-Za-z0-9_./-]+.js`, and contains no `..`.
+It is a hint: the page verifies `/app-version.json` once, deduplicates notices and in-flight
+checks, and defers automatic reload throughout a live or recovering call. The existing draft/file
+checkpoint precedes any automatic update. No staged file or unverified directory is advertised.
+The current web app never polls versions periodically, including before login and on older or
+disconnected sockets. Startup, foreground, online and reconnect still reconcile. An unresolved
+new hint retries with bounded exponential backoff; successful verification stops retries.
+Malformed hints are ignored. Frames
+56–58 never consume replay numbers or appear in the replay ring.
+
+`presence_activity` contains no client identity, input details or timestamp. It is accepted only
+on a ready wire-5 human enrolled session, revalidated from the connection's stored token hash,
+with no factor debt or revocation. It shares one allowance per device per five seconds with the
+HTTP activity route, across sockets and reconnects. Duplicate input is silently coalesced. The
+allowance cache admits at most 8192 devices in a five-second window and refuses excess work
+without refreshing presence. No activity is queued for reconnect. Heartbeat's legacy `active`
+field is ignored for presence; current clients send zero. Wire 5 starts Idle until real input;
+legacy connections retain their initial Online behavior. Ten minutes without accepted input
+means Idle; DND and invisible choices retain precedence. AFK voice admission/speech/activity
+and away-roster rules are unchanged.
+
+`call_stats` carries the existing six-element report from `09` § Call stats, with payload at most
+1 KiB. The current connection supplies identity and session authority. Processing uses eight
+workers and at most 128 device slots globally (running slots included), one running and one
+replaceable latest sample per device. Malformed/oversized frames are rejected before admission;
+coalesced, congested, expired (older than ten seconds) or cancelled samples are discarded. A
+worker has a two-second processing budget. Disconnect cancels queued/running work; each queued
+sample revalidates the current bearer session and the shared acceptance service rechecks the
+live call, current leaf, view/connect permissions, barred-device state and protocol authority.
+Only accepted reports spend the same atomic five-second device allowance used by HTTP. A
+reserved device cannot run another acceptance concurrently. No sample is persisted or replayed.
+Clients send at most one current sample every ten seconds, drop when WebSocket bufferedAmount
+exceeds 64 KiB, and drop the sample if the ready wire-5 path is unavailable. The current web
+app has no HTTP fallback for activity or coarse stats; an ambiguous send is never repeated. The page keeps only one pending stats read or
+worker request, and its local UI measurements retain their independent cadence.
 
 Presence status values are `0` Offline, `1` Online, `2` Idle and `3` Do Not Disturb.
 Invisible is an account choice, exposed to other members as Offline. The frame is sent only to

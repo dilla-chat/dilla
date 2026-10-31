@@ -89,9 +89,8 @@ func (d Deps) AcceptBotModerationAction(w http.ResponseWriter, r *http.Request) 
 		installation, err := tx.GetActiveBotInstallationByCommunity(r.Context(), communityID)
 		if err != nil || installation.ID != installationID || installation.State != store.BotInstallationReady ||
 			installation.RemovedAt != nil || installation.UserID == nil || *installation.UserID != s.UserID ||
-			installation.DeviceID == nil || *installation.DeviceID != s.DeviceID ||
-			installation.Capabilities&uint16(botCapWarnings) == 0 || s.Bot.Capabilities&uint16(botCapWarnings) == 0 {
-			return server.Errorf(server.CodeForbidden, "ready warning-capable Bot installation required")
+			installation.DeviceID == nil || *installation.DeviceID != s.DeviceID {
+			return server.Errorf(server.CodeForbidden, "ready Bot installation required")
 		}
 		prior, priorErr := tx.GetBotOperation(r.Context(), communityID, req.RequestID)
 		if priorErr == nil {
@@ -104,6 +103,14 @@ func (d Deps) AcceptBotModerationAction(w http.ResponseWriter, r *http.Request) 
 		}
 		if !errors.Is(priorErr, store.ErrNotFound) {
 			return priorErr
+		}
+		if r.URL.Query().Get("receipt_only") == "1" {
+			return server.Errorf(server.CodeNotFound, "moderation receipt not found")
+		}
+		// A matching immutable receipt belongs to this installation even if the
+		// capability for creating a new effect has since been revoked.
+		if installation.Capabilities&uint16(botCapWarnings) == 0 || s.Bot.Capabilities&uint16(botCapWarnings) == 0 {
+			return server.Errorf(server.CodeForbidden, "warning capability required")
 		}
 		now := d.Clock.Now().Unix()
 		nowUnix, ok := checkedUint64(now)

@@ -127,6 +127,10 @@ func (h *moderationRemovalAPI) accept(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, h.deps.storeError(r, priorErr))
 		return
 	}
+	if r.URL.Query().Get("receipt_only") == "1" {
+		server.WriteError(w, server.Errorf(server.CodeNotFound, "moderation receipt not found"))
+		return
+	}
 	now := h.deps.Clock.Now().Unix()
 	nowUnix, ok := checkedUint64(now)
 	if !ok || protocol.ValidateRemovalContext(proof, communityID, groupID, s.UserID, s.DeviceID, nowUnix) != nil {

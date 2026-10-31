@@ -203,6 +203,13 @@ func (p *GroupEventPoller) PollOnce(ctx context.Context, handler GroupEventHandl
 			return result, nil // The refusal is reported as pending work in result.RateLimited, not a failed pass.
 		}
 		if err := handlingErr; err != nil {
+			var moderationErr AutoModerationStageError
+			if errors.As(err, &moderationErr) || errors.Is(err, ErrModerationCheckpoint) || errors.Is(err, ErrModerationPendingCapacity) {
+				// Durable moderation has not transferred completion responsibility
+				// away from this journal entry. Aging it out would orphan accepted
+				// effects or ACK an evaluation that was never committed.
+				return result, &GroupEventHandlerError{DeliveryID: event.DeliveryID, Err: err}
+			}
 			if ctx.Err() != nil {
 				// Never skip, and never start an event's age, on a cancelled pass.
 				return result, &GroupEventHandlerError{DeliveryID: event.DeliveryID, Err: err}

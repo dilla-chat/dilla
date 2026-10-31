@@ -181,26 +181,20 @@ func TestModerationRemovalBackendReturnsTypedServerAcceptance(t *testing.T) {
 	}
 }
 
-func TestModerationRemovalBackendResignsOnlyAfterDefinitiveExpiry(t *testing.T) {
+func TestModerationRemovalBackendNeverExtendsExpiredPendingProof(t *testing.T) {
 	n := &removalSignerFake{binding: native.Binding{Instance: testID(8), Community: testID(1), Installation: testID(9)}}
-	s := &removalSessionFake{errs: []error{&client.APIError{Code: "E_REMOVAL_PROOF_EXPIRED", Outcome: client.OutcomeDefinitive}, nil}}
-	b, err := newModerationRemovalBackend(n, s)
+	session := &removalSessionFake{errs: []error{&client.APIError{Code: "E_REMOVAL_PROOF_EXPIRED", Outcome: client.OutcomeDefinitive}, nil}}
+	b, err := newModerationRemovalBackend(n, session)
 	if err != nil {
 		t.Fatal(err)
 	}
-	a := removalAction(moderation.ActionRemove)
-	a.ReceivedAt = time.Now().Add(-time.Minute)
-	if err := b.EnforceModerationAction(context.Background(), a); err != nil {
-		t.Fatal(err)
+	action := removalAction(moderation.ActionRemove)
+	action.ReceivedAt = time.Now().Add(-time.Minute)
+	if err = b.EnforceModerationAction(t.Context(), action); !errors.Is(err, ErrModerationActionRefused) {
+		t.Fatalf("expired proof must be terminal: %v", err)
 	}
-	if len(n.ids) != 2 || n.ids[0] != n.ids[1] || len(s.bodies) != 2 || string(s.bodies[0]) == string(s.bodies[1]) {
-		t.Fatalf("expired proof retry = signs %d ids %v bodies %d, want same request with fresh proof", len(n.ids), n.ids, len(s.bodies))
-	}
-	if n.expires[0] > uint64(time.Now().Unix()) {
-		t.Fatalf("test did not start with an expired event-time proof: expiry=%d", n.expires[0])
-	}
-	if n.expires[1] <= uint64(time.Now().Unix()) {
-		t.Fatalf("fresh proof expiry %d is not in the future", n.expires[1])
+	if len(n.ids) != 1 || len(session.bodies) != 1 {
+		t.Fatal("expired acceptance window extended")
 	}
 }
 

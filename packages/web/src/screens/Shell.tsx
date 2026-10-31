@@ -1854,6 +1854,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   // These dialogs own form drafts in their own components. Apply the update after the person finishes the form.
   const updateBlocked = overlay || joinOpen || pickerOpen || createOpen || channelOpen
     || editChannelId !== null || adminFor !== null || ui.editing !== null || threadEditing;
+  const updateCallBlocked = call.channelId !== null || call.recoveryChannelId !== null;
   const updateVoiceActive = useRef(false);
   updateVoiceActive.current = call.channelId !== null || call.recoveryChannelId !== null || recentUpdateCall !== null;
   const [updateError, setUpdateError] = useState(false);
@@ -1969,14 +1970,17 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   }, [pendingCamera, call]);
   useEffect(() => {
     if (update === undefined || !restoreDone) return;
-    return update.watch({ currentEntry: update.currentEntry, fetch: window.fetch.bind(window), intervalMs: 30_000,
-      voiceIntervalMs: 3_000,
+    return update.watch({ currentEntry: update.currentEntry, fetch: window.fetch.bind(window),
+      realtime: {
+        state: () => { const c = client.get('connection'); return { ready: c?.status === 'online' && (c.wireVersion ?? 0) >= 5, entry: c?.appBuild ?? null }; },
+        subscribe: listener => client.subscribe('connection', listener),
+      },
       changed: entry => { upgradeRejoinUntil.current = Date.now() + 120_000; setUpdateEntry(entry); },
-      shouldCheck: () => updateVoiceActive.current });
-  }, [update, restoreDone]);
+      callActive: () => updateVoiceActive.current });
+  }, [update, restoreDone, client]);
   useEffect(() => {
     if (updateEntry === null || update === undefined || updateScope === null || !restoreDone || updating.current || updateBlocked
-      || updateError) return;
+      || updateCallBlocked || updateError) return;
     updating.current = true;
     const lock = document.querySelector<HTMLElement>('.d-root');
     if (lock !== null) lock.inert = true;
@@ -1999,14 +2003,14 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
         if (lock !== null) lock.inert = false;
       }
     })();
-  }, [updateEntry, updateRetry, update, updateScope, restoreDone, updateBlocked, updateError, targetId, client, draft, side, threadDraft, membersOpen, ui, homeSelected,
+  }, [updateEntry, updateRetry, update, updateScope, restoreDone, updateBlocked, updateCallBlocked, updateError, targetId, client, draft, side, threadDraft, membersOpen, ui, homeSelected,
     searchOpen, searchQuery, call, recentUpdateCall]);
   // The /search command opens the palette with its query; like the palette, it searches everywhere (its scope argument no longer narrows).
   const openCommandSearch = (query: string) => {
     setSearchQuery(query); setSearchOpen(true); if (query.trim().length >= 2) issueSearch(query, 'all', null);
   };
   const updateNoStorage = updateEntry !== null && updateScope === null;
-  const updateNotice = updateNoStorage || (updateEntry !== null && updateBlocked) || updateError || restoreError || sharingStopped
+  const updateNotice = updateNoStorage || (updateEntry !== null && (updateBlocked || updateCallBlocked)) || updateError || restoreError || sharingStopped
     || call.recoveryChannelId !== null;
   const closeSettings = () => {
     const from = route.name === 'settings' || route.name === 'serverSettings' ? route.from : null;
@@ -2035,7 +2039,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
       {updateNotice ? <div className="dw-update-notice" role="status">
           {updateNoStorage ? <Banner tone="warn" action={{ label: t('update.reloadNow'), onAction: () => update?.reload() }}>
             {t('update.noStorage')}</Banner> : null}
-          {updateEntry !== null && updateScope !== null && updateBlocked ? <Banner tone="info">{t('update.finishDialog')}</Banner> : null}
+          {updateEntry !== null && updateScope !== null && updateCallBlocked ? <Banner tone="info">{t('update.finishCall')}</Banner> : null}
+          {updateEntry !== null && updateScope !== null && updateBlocked && !updateCallBlocked ? <Banner tone="info">{t('update.finishDialog')}</Banner> : null}
           {updateError ? <Banner tone="warn" action={{ label: t('update.retry'), onAction: () => {
             setUpdateError(false);
             setUpdateRetry(n => n + 1);

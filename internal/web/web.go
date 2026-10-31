@@ -70,6 +70,7 @@ type file struct {
 type Handler struct {
 	files   map[string]file
 	version []byte
+	entry   string
 }
 
 type manifestEntry struct {
@@ -190,6 +191,7 @@ func New(fsys fs.FS) (*Handler, error) {
 			return nil, fmt.Errorf("web: index.html references missing entry %s", entry)
 		}
 	}
+	h.entry = entry
 	h.version, _ = json.Marshal(struct {
 		Entry string `json:"entry"`
 	}{entry})
@@ -290,3 +292,6 @@ func (h *Handler) Fallback(mux *server.Mux) http.Handler {
 		h.ServeHTTP(w, r)
 	})
 }
+
+// BuildEntry identifies the verified bundle actually served by this immutable handler.
+func (h *Handler) BuildEntry() string { return h.entry }

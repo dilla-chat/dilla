@@ -7355,3 +7355,18 @@ describe('threads (web3.7 TB2)', () => {
     expect(thread(w)?.items.at(-1)?.reply?.threadRoot).toBe(ROOT_HEX);
   });
 });
+
+it('sends input activity only over WSS and drops unavailable samples with no HTTP', async () => {
+  let now = 100_000;
+  const w = world({ now: () => now }); await toReady(w);
+  w.gateway.sendPresenceActivity.mockReturnValue(true);
+  w.call(91, { m: 'presenceActivity' }); await settle();
+  w.call(92, { m: 'presenceActivity' }); await settle();
+  expect(w.routes.sendPresenceActivity).not.toHaveBeenCalled();
+  expect(w.gateway.sendPresenceActivity).toHaveBeenCalledTimes(1);
+  // Fresh input during an outage is dropped rather than rerouted through HTTP.
+  w.gateway.sendPresenceActivity.mockReturnValue(false);
+  now += 5000;
+  w.call(93, { m: 'presenceActivity' }); await settle();
+  expect(w.routes.sendPresenceActivity).not.toHaveBeenCalled();
+});

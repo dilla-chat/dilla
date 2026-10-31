@@ -1,5 +1,5 @@
 // web3.8, E2: a tab speaking an older wire version than the host offers is told so, and the reload it offers keeps the work.
-// The current browser bundle offers wires 4, 3 and 2. A host started with `-wire 5` offers a newer, unsupported wire, so the
+// The current browser bundle offers wires 5, 4, 3 and 2. A host started with `-wire 6` offers a newer, unsupported wire, so the
 // client is refused two ways: the hello has no common version (the client closes the socket itself), and the server closes
 // 4006. Both
 // put the worker offline with reason 'version' (no reconnect loop), and the page shows `shell.banner.clientTooOld` with
@@ -11,7 +11,7 @@ import { hostArgs, removeHostData, startTestHost, type HostConfig, type StartedH
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
 
 const WIRE2: HostConfig = { port: 8515, control: 8516, webRoot: 'packages/web/dist', keepData: true, wire: 2 };
-const WIRE5: HostConfig = { ...WIRE2, wire: 5 };
+const WIRE6: HostConfig = { ...WIRE2, wire: 6 };
 const SERVER = 'Midgard Crew';
 const DRAFT = 'a half-written thought that must outlive the reload';
 const QUIET_MS = 4_000;
@@ -97,7 +97,7 @@ async function expectNoReconnect(page: Page, sockets: () => number): Promise<voi
 
 test('a tab older than the host is refused two ways: banner, no reconnect, and Reload keeps the draft', async ({ page }) => {
   expect(hostArgs(WIRE2, '/tmp/dilla-version-reload-wire2'), 'the baseline host offers only wire 2').toContain('-wire=2');
-  expect(hostArgs(WIRE5, '/tmp/dilla-version-reload-wire5'), 'the replacement host offers only wire 5').toContain('-wire=5');
+  expect(hostArgs(WIRE6, '/tmp/dilla-version-reload-wire6'), 'the replacement host offers only wire 6').toContain('-wire=6');
   const h = host;
   if (h === null) throw new Error('the test host did not start');
   await page.setViewportSize({ width: 1280, height: 800 });
@@ -112,13 +112,13 @@ test('a tab older than the host is refused two ways: banner, no reconnect, and R
   await expect(banner(page)).toHaveCount(0);
   await composerBox(page, 'general').fill(DRAFT);
 
-  // The wire-2 host goes, a wire-5 host takes its ports. Assert the replacement host advertises the unsupported wire
+  // The wire-2 host goes, a wire-6 host takes its ports. Assert the replacement host advertises the unsupported wire
   // before waiting for the worker's version refusal and reload banner.
-  await swapHost(WIRE5);
+  await swapHost(WIRE6);
   const replacement = await fetch(`${h.url}/v1/instance`, { headers: { accept: 'application/cbor' } });
   expect(replacement.status, 'replacement GET /v1/instance').toBe(200);
   const replacementDocument = arr(decode(new Uint8Array(await replacement.arrayBuffer())));
-  expect(replacementDocument[0], 'replacement host advertises only unsupported wire 5').toEqual([5n]);
+  expect(replacementDocument[0], 'replacement host advertises only unsupported wire 6').toEqual([6n]);
   // The tab was backing off (up to 30 s) while no host answered, so the next attempt can be that far away.
   await expect(banner(page)).toBeVisible({ timeout: BACKOFF_WAIT });
   await expect(reloadButton(page)).toBeVisible();

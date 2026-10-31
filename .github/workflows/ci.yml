@@ -260,6 +260,12 @@ jobs:
           sudo prlimit --pid "$$" --memlock=268435456:268435456
           cargo test --workspace --all-features --locked
       - run: cargo build -p dilla-testkit --release --locked
+      - run: cargo build -p dilla-bot-core --release --locked
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: dilla-bot-core
+          path: target/release/dilla-bot-core
+          if-no-files-found: error
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: dilla-testkit
@@ -1441,6 +1447,39 @@ jobs:
       - name: Static release build
         run: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' ./cmd/dillad
 
+  go-native:
+    needs: [changes, rust-wasi, rust-native]
+    if: needs.changes.outputs.go != 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # Keep compiled-helper integration and its cold Rust peer build out of the unit job's budget.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - name: Fetch the native helper built from this commit
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-bot-core
+          path: target/release
+      - run: chmod +x target/release/dilla-bot-core
+      # The adapter starts this peer through cargo, then allows 90 s for readiness. Compile before
+      # that runtime deadline so a cold Go runner reports compiler errors here instead of timing out.
+      - name: Compile the Rust peer before its bounded readiness check
+        run: cargo test -p dilla-core --test native_bot_group_peer_fixture --no-run --locked
+      - name: Compiled helper and production moderation recovery integration
+        run: go test -race ./internal/bot/native ./cmd/dillabot
+        env:
+          DILLA_BOT_HELPER_INTEGRATION: '1'
+          DILLA_BOT_HELPER_BIN: ${{ github.workspace }}/target/release/dilla-bot-core
+
   go-ds:
     needs: [changes, rust-wasi]
     if: needs.changes.outputs.go != 'false'
@@ -1668,7 +1707,7 @@ jobs:
   # One check for the whole workflow, so that a required-check list needs only this name: it is red when any job
   # failed or was cancelled (a failed `changes` included) and green when the rest passed or were skipped by design.
   ci-ok:
-    needs: [changes, docs, node, ui, rust-wasm-node, rust-native, rust-wasi, vectors, browser-spike, browser-media, web-build, chromium-core, chromium-voice, chromium-web-1, chromium-web-2, chromium-web-3, firefox-core, firefox-voice, firefox-web-1, firefox-web-2, firefox-web-3, webkit-web, deny, go, go-ds, go-api, go-harness, go-fts5-arm64, go-lint, go-vuln, go-sqlc, go-postgres, go-release, spotify-helper]
+    needs: [changes, docs, node, ui, rust-wasm-node, rust-native, rust-wasi, vectors, browser-spike, browser-media, web-build, chromium-core, chromium-voice, chromium-web-1, chromium-web-2, chromium-web-3, firefox-core, firefox-voice, firefox-web-1, firefox-web-2, firefox-web-3, webkit-web, deny, go, go-native, go-ds, go-api, go-harness, go-fts5-arm64, go-lint, go-vuln, go-sqlc, go-postgres, go-release, spotify-helper]
     if: always()
     runs-on: ubuntu-latest
     steps:

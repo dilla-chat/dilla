@@ -25,6 +25,7 @@ export const REQUIRED_JOBS = [
   'browser-media',
   'deny',
   'go',
+  'go-native',
   // internal/ds under -race in a job of its own (fix wave, CI run 36697379567): it is the slowest
   // package by far, and in the go job it pushed a 4-vCPU runner past the job's 25 minutes.
   'go-ds',

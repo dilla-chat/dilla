@@ -54,16 +54,18 @@ type Config struct {
 }
 
 type Client struct {
-	base          *url.URL
-	http          *http.Client
-	instance      id.ID
-	timeout       time.Duration
-	allowLoopback bool
-	discovered    atomic.Bool
-	rateMu        sync.Mutex
-	rates         RateLimits
-	buckets       map[string]*deviceLimiter
-	devices       map[string]string
+	base                           *url.URL
+	http                           *http.Client
+	instance                       id.ID
+	timeout                        time.Duration
+	allowLoopback                  bool
+	discovered                     atomic.Bool
+	rateMu                         sync.Mutex
+	rates                          RateLimits
+	buckets                        map[string]*deviceLimiter
+	devices                        map[string]string
+	targetBuckets                  int
+	cacheEvictions, cacheDeferrals uint64
 }
 
 type Runtime struct {

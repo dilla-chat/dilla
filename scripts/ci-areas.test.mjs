@@ -46,7 +46,7 @@ test('a UI-only change runs the web jobs and the browsers, no Go jobs', () => {
   assert.deepEqual(outputs, { go: false, core: false, web: true, e2e: true, text: false, code: true });
   const ran = ranJobs(outputs);
   for (const job of ['node', 'ui', 'rust-wasm-node', 'browser-spike', 'browser-media', 'web-build', 'rust-native', 'rust-wasi', 'go-release', ...BROWSERS]) assert.ok(ran.includes(job), job);
-  for (const job of ['vectors', 'deny', 'go', 'go-ds', 'go-api', 'go-harness', 'go-fts5-arm64', 'go-lint', 'go-vuln', 'go-sqlc', 'go-postgres']) assert.ok(!ran.includes(job), job);
+  for (const job of ['vectors', 'deny', 'go', 'go-native', 'go-ds', 'go-api', 'go-harness', 'go-fts5-arm64', 'go-lint', 'go-vuln', 'go-sqlc', 'go-postgres']) assert.ok(!ran.includes(job), job);
 });
 
 test('the design tokens are read by a Go test, so they run the Go jobs too', () => {
@@ -66,7 +66,7 @@ test('a Go-only change runs the Go jobs and the browsers, no rust or ui unit job
   const outputs = areasFor(['internal/api/messages.go', 'go.sum']);
   assert.deepEqual(outputs, { go: true, core: false, web: false, e2e: true, text: false, code: true });
   const ran = ranJobs(outputs);
-  for (const job of ['go', 'go-ds', 'go-api', 'go-harness', 'go-lint', 'go-postgres', 'go-release', 'web-build', 'browser-spike', ...BROWSERS]) assert.ok(ran.includes(job), job);
+  for (const job of ['go', 'go-native', 'go-ds', 'go-api', 'go-harness', 'go-lint', 'go-postgres', 'go-release', 'web-build', 'browser-spike', ...BROWSERS]) assert.ok(ran.includes(job), job);
   for (const job of ['ui', 'rust-wasm-node', 'vectors', 'deny']) assert.ok(!ran.includes(job), job);
 });
 
@@ -157,6 +157,9 @@ test('JOB_GATES names exactly the jobs of ci.yml but changes, docs and ci-ok', (
 // Readers that no CI job runs (pre-existing): e2e/scripts/shoot-docs.test.mjs reads docs/user/*.md, and nothing runs it.
 const UNRUN_READERS = ['e2e/scripts/shoot-docs.test.mjs'];
 const READER_AREA = { internal: 'go', cmd: 'go', packages: 'web', core: 'core', testkit: 'core', e2e: 'e2e' };
+// This build-tagged Go test runs only in web-build/go-release, both gated by the web area.
+// A local generated dist must not make the scanner mistake it for an ordinary Go-job reader.
+const READER_PATH_AREA = { 'internal/web/webdist_test.go': 'web' };
 
 function relativeReads(file, text) {
   const reads = [];
@@ -176,7 +179,7 @@ function relativeReads(file, text) {
 test('every path the code reads from another place is covered by a rule', () => {
   const found = [];
   for (const file of trackedFiles()) {
-    const area = READER_AREA[file.split('/')[0]];
+    const area = READER_PATH_AREA[file] ?? READER_AREA[file.split('/')[0]];
     if (area === undefined || UNRUN_READERS.includes(file) || !/\.(go|rs|ts|tsx|mjs|js)$/.test(file) || !existsSync(join(REPO_ROOT, file))) continue;
     for (const read of relativeReads(file, readFileSync(join(REPO_ROOT, file), 'utf8'))) {
       const target = relative(REPO_ROOT, resolve(REPO_ROOT, dirname(file), read));

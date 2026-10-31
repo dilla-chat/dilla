@@ -389,19 +389,24 @@ func (h *Calls) callOf(r *http.Request) (auth.Session, store.VoiceSessionRow, st
 	if err != nil {
 		return s, store.VoiceSessionRow{}, store.ChannelRow{}, 0, err
 	}
-	row, err := h.repo.GetVoiceSession(r.Context(), callID)
+	return h.callForSession(r.Context(), s, callID)
+}
+
+// callForSession is the common authority path for HTTP and connection-derived telemetry.
+func (h *Calls) callForSession(ctx context.Context, s auth.Session, callID id.ID) (auth.Session, store.VoiceSessionRow, store.ChannelRow, Bits, error) {
+	row, err := h.repo.GetVoiceSession(ctx, callID)
 	if err != nil {
 		return s, store.VoiceSessionRow{}, store.ChannelRow{}, 0, notFound(err)
 	}
-	ch, err := h.repo.GetChannel(r.Context(), row.ChannelID)
+	ch, err := h.repo.GetChannel(ctx, row.ChannelID)
 	if err != nil {
 		return s, store.VoiceSessionRow{}, store.ChannelRow{}, 0, notFound(err)
 	}
-	bits, err := h.res.Resolve(r.Context(), s.UserID, ch)
+	bits, err := h.res.Resolve(ctx, s.UserID, ch)
 	if err != nil {
 		return s, store.VoiceSessionRow{}, store.ChannelRow{}, 0, err
 	}
-	if err := h.botCanUseSession(r.Context(), s, ch); err != nil {
+	if err := h.botCanUseSession(ctx, s, ch); err != nil {
 		return s, store.VoiceSessionRow{}, store.ChannelRow{}, 0, err
 	}
 	if !bits.Has(PermViewChannel) {

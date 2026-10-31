@@ -692,3 +692,26 @@ func TestTheEnrolmentLimitsRoundTripThroughWriteToAndLoad(t *testing.T) {
 		t.Fatalf("after Load = %d, %d; want 5, 7", back.Auth.Session.MaxDevicesPerUser, back.Auth.Session.EnrolmentsPerHour)
 	}
 }
+
+func TestOrdinaryBodyReadBudgetIsConfigurableAndValidated(t *testing.T) {
+	body, err := os.ReadFile("testdata/minimal.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	writeSecrets(t, dir)
+	t.Chdir(dir)
+	path := filepath.Join(dir, "dilla.toml")
+	for _, budget := range []string{"40ms", "-1s", "invalid"} {
+		if err := os.WriteFile(path, append(append([]byte{}, body...), []byte("\n[server]\nread_body_timeout = \""+budget+"\"\n")...), 0600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := config.Load(path)
+		if budget == "40ms" && err != nil {
+			t.Fatalf("valid body budget refused: %v", err)
+		}
+		if budget != "40ms" && err == nil {
+			t.Fatalf("invalid body budget %q accepted", budget)
+		}
+	}
+}

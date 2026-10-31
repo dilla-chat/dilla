@@ -43,6 +43,10 @@ export interface WorkerError { code: string; detail: string; status: number; ret
 export interface ConnectionState { status: 'offline' | 'connecting' | 'online'; generation: string | null;
   /** Task 11: the last gateway heartbeat's round trip in ms while online; absent before the first ack or while not online. */
   pingMs?: number;
+  /** Actual current socket selection, cleared on disconnect. */
+  wireVersion?: number;
+  /** Verified entry hint from a wire-5 socket; the page still verifies the manifest. */
+  appBuild?: string;
   reason?: 'version'; }                        // only while idle because the server refused this client's version (gateway close 4006)
 /** owner: the 32-hex user id of the server's owner (GET /v1/communities element 2). The owner holds every permission; the
  *  instance serves no role bits, so it is the one permission fact a page has (v0.1.0-web3.1: who may add a channel). */

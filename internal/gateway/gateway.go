@@ -22,6 +22,8 @@ import (
 // Options configures a Gateway. Every duration and byte count has a default; withDefaults fills
 // them and enforces the ring-vs-queue contract.
 type Options struct {
+	// CurrentAppEntry returns the verified served web entry, never a staged file.
+	CurrentAppEntry func() string
 	// OnPresenceChanged publishes an account's newly derived presence to shared communities.
 	OnPresenceChanged func(id.ID)
 	// Store is deliberately narrow: the gateway calls exactly three storage methods, and holding
@@ -237,8 +239,9 @@ type Gateway struct {
 	// delivery service publishes a later one.
 	generation atomic.Uint64
 
-	mu       sync.Mutex
-	draining bool
+	mu        sync.Mutex
+	draining  bool
+	telemetry *telemetryPool
 }
 
 func New(o Options) *Gateway {
@@ -343,6 +346,7 @@ func (g *Gateway) registerVersions(ctx context.Context, session auth.Session, s 
 		c.currentWriter().stop()
 		return nil, err
 	}
+	g.sendAppBuild(c)
 	// The connection joins the live registry only once `ready` is on its writer. reg.add before
 	// sendReady publishes the connection while sendReady is still doing three store round-trips,
 	// so a DeliverGroup landing in that window takes n = 1 and `ready` then carries n = 2 —
@@ -395,7 +399,10 @@ func (g *Gateway) touch(ctx context.Context, device id.ID, now time.Time) {
 // connections and not the number ever opened.
 func (g *Gateway) addLive(c *conn) {
 	g.reg.add(c)
-	g.presence.activity(c.deviceID, c.userID)
+	// Legacy clients retain their connection-time initial presence. Wire 5 only counts real input.
+	if g.connectionWire(c) < 5 {
+		g.presence.activity(c.deviceID, c.userID)
+	}
 	if g.opts.OnPresenceChanged != nil {
 		g.opts.OnPresenceChanged(c.userID)
 	}
@@ -408,6 +415,9 @@ func (g *Gateway) addLive(c *conn) {
 // call is the one that removed it.
 func (g *Gateway) removeLive(c *conn) {
 	if removed, last := g.reg.remove(c); removed {
+		if pool := g.telemetryPool(); pool != nil {
+			pool.disconnect(c)
+		}
 		// A shutdown's closes are no user going offline: the stored away roster outlives a
 		// restart for the users who reconnect (AW2, R-AW5).
 		if last && g.opts.OnUserOffline != nil && !g.isDraining() {
@@ -779,6 +789,10 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 	g.draining = true
 	g.mu.Unlock()
 
+	var telemetryErr error
+	if pool := g.telemetryPool(); pool != nil {
+		telemetryErr = pool.stop(ctx)
+	}
 	conns := g.reg.all()
 	p, err := ReconnectPayload("going away", 2500)
 	if err != nil {
@@ -793,7 +807,7 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 		w.sink.close(CloseGoingAway, "going away")
 		g.removeLive(c)
 	}
-	return nil
+	return telemetryErr
 }
 
 // Handler serves the /gateway upgrade over HTTP/1.1 only: a WebSocket needs Hijacker, so
@@ -838,4 +852,5 @@ var opNames = map[Op]string{
 	OpPresence: "presence", OpTyping: "typing", OpVoiceState: "voice_state",
 	OpTypingSet: "typing_set", OpVoiceSelf: "voice_self", OpCallRing: "call_ring",
 	OpCommunityChanged: "community_changed", OpAFKAway: "afk_away",
+	OpAppBuild: "app_build", OpPresenceActivity: "presence_activity", OpCallStats: "call_stats",
 }

@@ -569,3 +569,19 @@ describe('fail closed (security round 1)', () => {
     await waitFor(() => expect(mute()).toHaveAttribute('aria-pressed', 'true'));
   });
 });
+
+it('defers an available update for a live call and leaves the call connected', async () => {
+  let changed!: (entry: string) => void;
+  const reload = vi.fn();
+  const save = vi.fn(async () => {});
+  const app = shell({ update: { currentEntry: '/assets/old.js',
+    watch: options => { changed = entry => options.changed(entry); return () => {}; },
+    store: { load: () => Promise.resolve(null), save, remove: async () => {} }, reload } });
+  await joinVoice(app);
+  act(() => changed('/assets/new.js'));
+  expect(await screen.findByText(t('update.finishCall'))).toBeInTheDocument();
+  await new Promise(resolve => setTimeout(resolve, 30));
+  expect(reload).not.toHaveBeenCalled();
+  expect(save).not.toHaveBeenCalled();
+  expect(app.sessions[0].state.phase).not.toBe('ended');
+});

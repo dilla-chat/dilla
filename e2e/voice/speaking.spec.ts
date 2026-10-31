@@ -8,9 +8,9 @@
 //
 // Bounds. MUTED_BOUND: a mute closes the microphone at the press and the detector is reset at once, so the own tile is
 // not speaking within 400 ms (pre-flight C-20; the 300 ms hold does not apply to a mute, only to silence in the signal).
-// ONSET_BOUND: the detector's own onset is at most about 75 ms after the sound reaches the analyser; the poll adds a
-// page round trip per probe and the unmute adds the microphone reopening, so 400 ms leaves several times the worst case
-// and stays well under the 1 s of the old SFU flag (400 ms interval + smoothing, so about 1 s). Bob's view of alice adds
+// ONSET_BOUND: the detector's own onset is at most about 75 ms after the sound reaches the analyser; unmute also reopens
+// the microphone, so 400 ms leaves several times the detector's worst case. The browser owns the assertion's retry loop,
+// keeping driver round trips out of that short budget, well under the old SFU flag's 1 s. Bob's view of alice adds
 // the network and the receive-side jitter buffer to that, so it gets REMOTE_BOUND, 600 ms: still clearly under 1 s.
 import { expect, test } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
@@ -75,7 +75,10 @@ test('alice speaking lights her tile and bob\'s tile for her within a beat, and 
       const t0 = Date.now();
       await mute.click();
       await expect(mute).not.toHaveAttribute('data-on');
-      await expect.poll(() => ownSpeaking(alice.page), { timeout: ONSET_BOUND, message: 'alice is speaking again on her own tile' }).toBe(true);
+      // Retry in the browser: driver-side polling spends this short budget on round trips,
+      // and its last probe can observe true yet arrive after the driver's deadline.
+      await expect(stage(alice.page).locator('.d-call-tile[data-own]:not([data-source="screen"])').first(),
+        'alice is speaking again on her own tile').toHaveAttribute('data-speaking', 'true', { timeout: ONSET_BOUND });
       const own = Date.now() - t0;
       await expect(seen).toHaveAttribute('data-speaking', 'true', { timeout: REMOTE_BOUND });
       const remote = Date.now() - t0;

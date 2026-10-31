@@ -707,3 +707,33 @@ describe('App settings and notifications', () => {
     focus.mockRestore();
   });
 });
+
+it('checks for builds before login without interrupting the form', async () => {
+  const fake = new FakeClient();
+  fake.set('account', account({ phase: 'signin-login', signIn: { username: null, factor: null } }));
+  const reload = vi.fn();
+  let changed!: (entry: string) => void;
+  const watch = vi.fn((options: import('./update.ts').UpdateWatcher) => { changed = entry => options.changed(entry); return () => {}; });
+  render(<CoreProvider client={fake}><App fatal={null} update={{ currentEntry: '/assets/old.js', watch,
+    store: { load: () => Promise.resolve(null), save: async () => {}, remove: async () => {} }, reload }} /></CoreProvider>);
+  await waitFor(() => expect(watch).toHaveBeenCalled());
+  act(() => changed('/assets/new.js'));
+  expect(await screen.findByText('An update is ready. Finish or copy your current work before reloading.')).toBeInTheDocument();
+  expect(reload).not.toHaveBeenCalled();
+});
+
+it('sends coalesced input activity, with no activity on mount or foreground alone', async () => {
+  const fake = new FakeClient(); fake.set('account', account());
+  let now = Date.now(); const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+  const view = render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
+  await waitFor(() => expect(fake.callsOf('start')).toHaveLength(1));
+  document.dispatchEvent(new Event('visibilitychange'));
+  expect(fake.callsOf('presenceActivity')).toHaveLength(0);
+  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'a' }));
+  window.dispatchEvent(new Event('pointermove'));
+  expect(fake.callsOf('presenceActivity')).toHaveLength(1);
+  now += 5000;
+  window.dispatchEvent(new Event('pointerdown'));
+  expect(fake.callsOf('presenceActivity')).toHaveLength(2);
+  view.unmount(); clock.mockRestore();
+});

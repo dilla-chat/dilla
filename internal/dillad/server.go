@@ -294,6 +294,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 
 	var presence *api.PresenceService
 	gw := gateway.New(gateway.Options{
+		CurrentAppEntry: client.BuildEntry,
 		OnPresenceChanged: func(user id.ID) {
 			if presence != nil {
 				presence.Changed(context.Background(), user)

@@ -102,7 +102,7 @@ func TestTheHostsWireVersionsReachTheHelloAndTheInstanceDocument(t *testing.T) {
 		t.Fatalf("NewHost: %v", err)
 	}
 	t.Cleanup(func() { _ = d.Close(context.Background()) })
-	if hello, instance := wireLists(t, d); !slices.Equal(hello, []uint64{4, 3, 2}) || !slices.Equal(instance, []uint64{4, 3, 2}) {
+	if hello, instance := wireLists(t, d); !slices.Equal(hello, []uint64{5, 4, 3, 2}) || !slices.Equal(instance, []uint64{5, 4, 3, 2}) {
 		t.Fatalf("the default host: hello %v, instance %v; want [4 3 2] and [4 3 2]", hello, instance)
 	}
 }

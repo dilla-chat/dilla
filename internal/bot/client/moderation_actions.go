@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/jonasthim/dilla/internal/bot/moderation/operationid"
@@ -24,6 +25,16 @@ type ModerationActionReceipt struct {
 // and returns the immutable receipt used for idempotent recovery.
 func (s *Session) AcceptBotModerationAction(ctx context.Context, installation, request, group id.ID, sequence uint64,
 	action string, rules []string, timeoutMillis, expires uint64) (ModerationActionReceipt, error) {
+	return s.botModerationAction(ctx, installation, request, group, sequence, action, rules, timeoutMillis, expires, false)
+}
+
+// LookupBotModerationAction resolves an existing acceptance and cannot create an effect.
+func (s *Session) LookupBotModerationAction(ctx context.Context, installation, request, group id.ID, sequence uint64,
+	action string, rules []string, timeoutMillis, expires uint64) (ModerationActionReceipt, error) {
+	return s.botModerationAction(ctx, installation, request, group, sequence, action, rules, timeoutMillis, expires, true)
+}
+func (s *Session) botModerationAction(ctx context.Context, installation, request, group id.ID, sequence uint64,
+	action string, rules []string, timeoutMillis, expires uint64, receiptOnly bool) (ModerationActionReceipt, error) {
 	if s == nil || s.c == nil || installation.IsZero() || group.IsZero() || sequence == 0 || sequence > math.MaxInt64 ||
 		request != operationid.Automatic(group, sequence) || expires == 0 || expires > math.MaxInt64 ||
 		len(rules) == 0 || len(rules) > 3 {
@@ -48,7 +59,11 @@ func (s *Session) AcceptBotModerationAction(ctx context.Context, installation, r
 		return ModerationActionReceipt{}, ErrInvalidConfig
 	}
 	path := "bot-runtime/installations/" + installation.String() + "/moderation/actions"
-	raw, _, err := s.do(ctx, http.MethodPost, path, nil, body, MaxModerationActionBody, true)
+	var query url.Values
+	if receiptOnly {
+		query = url.Values{"receipt_only": {"1"}}
+	}
+	raw, _, err := s.do(ctx, http.MethodPost, path, query, body, MaxModerationActionBody, true)
 	if err != nil {
 		return ModerationActionReceipt{}, err
 	}

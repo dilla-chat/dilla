@@ -47,6 +47,28 @@ func TestGroupEventPollerGivesTextEventsTwentyFourHours(t *testing.T) {
 	}
 }
 
+func TestGroupEventPollerNeverAgesOutDurableModerationCompletion(t *testing.T) {
+	for _, stage := range []string{"checkpoint_persistence", "pending_capacity", "case_state_write", "pending_completion"} {
+		t.Run(stage, func(t *testing.T) {
+			q := ageTestQueue()
+			q.interaction = q.interaction[1:]
+			fail := AutoModerationStageError{Stage: stage, cause: ErrModerationCheckpoint}
+			handler := failingHead(fail)
+			start := time.Unix(1_800_000_000, 0)
+			for _, at := range []time.Time{start, start.Add(time.Hour), start.Add(2 * time.Hour), start.Add(48 * time.Hour)} {
+				result, err := pollAt(t, t.Context(), q, at, handler)
+				if err == nil || q.acked != 0 || len(result.Skipped) != 0 {
+					t.Fatalf("durable %s abandoned at %s: result=%+v ack=%d err=%v", stage, at.Sub(start), result, q.acked, err)
+				}
+			}
+			result, err := pollAt(t, t.Context(), q, start.Add(49*time.Hour), groupEventHandlerFunc(func(context.Context, native.GroupEvent) error { return nil }))
+			if err != nil || result.Handled != 2 || q.acked != 2 {
+				t.Fatalf("completion did not resume: %+v ack=%d err=%v", result, q.acked, err)
+			}
+		})
+	}
+}
+
 // Jonas 2026-10-30: an event HELD because its sender's trust cannot be refreshed is dropped after
 // one hour (with the same three failed passes), whether it is a command or a text-channel event;
 // it is never dispatched. A text event failing for any other reason keeps its 24 hours.
