@@ -72,6 +72,7 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
   const [verifiedScope, setVerifiedScope] = useState<string | null>(null);
   const [active, setActive] = useState(false);
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(busy); busyRef.current = busy;
   const [error, setError] = useState('');
   const [selected, setSelected] = useState<number[] | null>(null);
   const selectedRef = useRef<number[] | null>(selected); selectedRef.current = selected;
@@ -112,7 +113,7 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
       const retained = [...attemptMap(props.client)].find(([key]) => key.startsWith(`${identityScope}:`))?.[1];
       if (retained?.scope !== undefined && retained.scope !== boundScope) setError(t('poll.uncertain'));
       if (selectedRef.current === null) setSelected(retained?.choices ?? poll.myChoices ?? []);
-      setError(''); return poll;
+      return poll;
     } catch { if (generation.current === current) invalidate(); return null; }
   }, [utilities, isSameOwner, invalidate, identityScope, sourceAccessible, accessScope, props.client, props.authorId, props.pollId, props.channelId, props.threadId]);
   useEffect(() => {
@@ -127,13 +128,14 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
     const currentVoterGeneration = voterGeneration;
     // A complete authenticated refresh can span several Bot gateway rounds. A
     // cadence tick must not supersede that read before its record can be shown.
+    // Mutations also own their refresh until the action finishes.
     let pending = false;
     const update = async () => {
       if (pending) return;
       pending = true;
       try { await refresh(); } finally { pending = false; }
     };
-    void update(); const timer = window.setInterval(() => { void update(); }, 30_000);
+    void update(); const timer = window.setInterval(() => { if (!busyRef.current) void update(); }, 30_000);
     return () => { window.clearInterval(timer); currentGeneration.current++; currentVoterGeneration.current++; };
   }, [active, refresh]);
   const poll = sourceAccessible && record?.client === props.client && record.scope === scopeKey && verifiedScope === scopeKey ? record.poll : null;
@@ -170,7 +172,7 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
     const pending = attempt ?? { id: requestId(), kind: 'vote' as const, choices: [...choices], revision: poll.revision.toString(), scope: scopeKey };
     if (pending.scope !== scopeKey || pending.kind !== 'vote') return;
     const immutable = { ...pending, choices: [...pending.choices] };
-    rememberAttempt(immutable); setBusy(true); setError('');
+    rememberAttempt(immutable); setBusy(true);
     let started = false; let accepted = false;
     try {
       const caps = await utilities.capabilities();
@@ -180,14 +182,14 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
       accepted = true;
       const after = await utilities.capabilities();
       if (!live() || after.installationId !== installationId || after.botUserId !== props.authorId) return;
-      setRecord({ client: props.client, scope: scopeKey, poll: updated }); setSelected(updated.myChoices ?? []); rememberAttempt(null);
+      setRecord({ client: props.client, scope: scopeKey, poll: updated }); setSelected(updated.myChoices ?? []); rememberAttempt(null); setError('');
     } catch (cause) {
       if (!live()) return;
       if (accepted || (attempt === null && !started)) { rememberAttempt(null); await refresh(); setError(t('poll.readError')); }
       else if (definiteMutationError(cause, immutable, 73)) { rememberAttempt(null); await refresh(); setError(t('poll.conflict')); }
       else if (cause instanceof BotUtilitiesUncertainMutationError) {
         const recovered = await reconcile(immutable, 73);
-        if (recovered === 'accepted') rememberAttempt(null);
+        if (recovered === 'accepted') { rememberAttempt(null); setError(''); }
         else if (recovered === 'conflict') { rememberAttempt(null); await refresh(); setError(t('poll.conflict')); }
         else if (recovered !== 'stale') { await refresh(); setError(t('poll.uncertain')); }
       } else { await refresh(); setError(t('poll.uncertain')); }
@@ -195,24 +197,39 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
   };
   const close = async () => {
     if (!canClose || busy || (attempt !== null && attempt.kind !== 'close')) return;
-    const pending = attempt ?? { id: requestId(), kind: 'close' as const, choices: [], revision: poll.revision.toString(), scope: scopeKey };
+    let pending = attempt ?? { id: requestId(), kind: 'close' as const, choices: [], revision: poll.revision.toString(), scope: scopeKey };
     if (pending.scope !== scopeKey || pending.kind !== 'close') return;
-    rememberAttempt(pending); setBusy(true); setError('');
-    let started = false; let accepted = false;
+    rememberAttempt(pending); setBusy(true);
+    let started = false; let accepted = false; let refreshed = false;
     try { const caps = await utilities.capabilities(); if (!live() || caps.installationId !== installationId || caps.botUserId !== props.authorId) { await refresh(); return; }
       started = true;
-      const updated = await utilities.pollClose({ requestId: pending.id, pollId: poll.id, channelId: poll.channelId, threadId: poll.threadId, revision: pending.revision });
+      let updated: PollSummary;
+      try {
+        updated = await utilities.pollClose({ requestId: pending.id, pollId: poll.id, channelId: poll.channelId, threadId: poll.threadId, revision: pending.revision });
+      } catch (cause) {
+        if (!live() || !definiteMutationError(cause, pending, 74) || !(cause instanceof BotUtilitiesStatusError) || cause.status !== 4) throw cause;
+        // A confirmed revision refusal has no effect. Read current results and
+        // make one fresh close attempt; uncertain outcomes retain their exact ID.
+        rememberAttempt(null);
+        const latest = await refresh(); refreshed = true;
+        if (!live()) return;
+        if (latest === null) { setError(t('poll.readError')); return; }
+        if (latest.closed) { setError(''); return; }
+        pending = { ...pending, id: requestId(), revision: latest.revision.toString() };
+        rememberAttempt(pending);
+        updated = await utilities.pollClose({ requestId: pending.id, pollId: latest.id, channelId: latest.channelId, threadId: latest.threadId, revision: pending.revision });
+      }
       accepted = true;
       const after = await utilities.capabilities(); if (!live() || after.installationId !== installationId || after.botUserId !== props.authorId) return;
-      setRecord({ client: props.client, scope: scopeKey, poll: updated }); rememberAttempt(null); }
+      setRecord({ client: props.client, scope: scopeKey, poll: updated }); rememberAttempt(null); setError(''); }
     catch (cause) {
       if (!live()) return;
       if (accepted || (attempt === null && !started)) { rememberAttempt(null); await refresh(); setError(t('poll.readError')); }
-      else if (definiteMutationError(cause, pending, 74)) { rememberAttempt(null); await refresh(); setError(t('poll.closeConflict')); }
+      else if (definiteMutationError(cause, pending, 74)) { rememberAttempt(null); if (!refreshed) await refresh(); setError(t('poll.closeConflict')); }
       else if (cause instanceof BotUtilitiesUncertainMutationError) {
         const recovered = await reconcile(pending, 74);
-        if (recovered === 'accepted') rememberAttempt(null);
-        else if (recovered === 'conflict') { rememberAttempt(null); await refresh(); setError(t('poll.closeConflict')); }
+        if (recovered === 'accepted') { rememberAttempt(null); setError(''); }
+        else if (recovered === 'conflict') { rememberAttempt(null); if (!refreshed) await refresh(); setError(t('poll.closeConflict')); }
         else if (recovered !== 'stale') { await refresh(); setError(t('poll.uncertain')); }
       } else { await refresh(); setError(t('poll.uncertain')); }
     }
@@ -226,7 +243,7 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
       const caps = await utilities.capabilities();
       if (!isSameOwner() || identity !== owner || installationRef.current !== installation || scopeRef.current !== source || voterGeneration.current !== request
         || accessScopeRef.current !== accessScope || !sourceAccessibleRef.current || caps.installationId !== installation || caps.botUserId !== props.authorId) return;
-      setVoters(previous => ({ option, ids: cursor !== null && previous?.option === option ? [...previous.ids, ...page.voters] : page.voters, cursor: page.nextCursor })); }
+      setVoters(previous => ({ option, ids: cursor !== null && previous?.option === option ? [...previous.ids, ...page.voters] : page.voters, cursor: page.nextCursor })); setError(''); }
     catch { if (voterGeneration.current === request && scopeRef.current === source && isSameOwner()) setError(t('poll.readError')); }
   };
   const toggle = (index: number) => setSelected(current => {
