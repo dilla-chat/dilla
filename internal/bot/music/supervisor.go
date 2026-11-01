@@ -55,6 +55,10 @@ type Supervisor struct {
 	starting                   *startRun
 	startRequest               uint64
 	logger                     *slog.Logger
+	pausedPlayback             bool
+	pauseTimer                 Timer
+	pauseGen                   uint64
+	pauseAfter                 func(time.Duration, func()) Timer
 	// Task 10c: leave the voice room after nothing has played for idleFor() (read when the
 	// supervisor goes idle, so a changed setting applies to the next idle period).
 	idleFor   func() time.Duration
@@ -83,7 +87,7 @@ func (s *Supervisor) idleCheckLocked() {
 	if s.idleFor == nil {
 		return
 	}
-	if s.playback != nil || s.starting != nil || s.closed {
+	if (s.playback != nil && !s.pausedPlayback) || s.starting != nil || s.closed {
 		if s.idleTimer != nil {
 			s.idleTimer.Stop()
 			s.idleTimer = nil
@@ -104,11 +108,12 @@ func (s *Supervisor) idleCheckLocked() {
 
 func (s *Supervisor) leaveIdle(gen uint64) {
 	s.mu.Lock()
-	if s.closed || s.idleTimer == nil || s.idleGen != gen || s.playback != nil || s.starting != nil {
+	if s.closed || s.idleTimer == nil || s.idleGen != gen || (s.playback != nil && !s.pausedPlayback) || s.starting != nil {
 		s.mu.Unlock()
 		return
 	}
 	s.idleTimer = nil
+	s.closePlaybackLocked()
 	leaver, ok := s.starter.(IdleLeaver)
 	s.mu.Unlock()
 	if ok {
@@ -216,20 +221,35 @@ func (s *Supervisor) applyLocked(ctx context.Context, expected uint64, op Operat
 	if op.NowMS == 0 {
 		op.NowMS = time.Now().UnixMilli()
 	}
-	next, err := Apply(s.state, expected, op)
+	wasPaused := s.pausedPlayback
+	if op.Kind == OpPause {
+		if _, ok := s.playback.(Pausable); ok {
+			s.pausePlaybackLocked()
+		}
+	}
+	base := cloneState(s.state)
+	next, err := Apply(base, expected, op)
 	if err != nil {
 		return cloneState(s.state), err
 	}
 	revision, err := s.store.Save(ctx, s.channel, s.revision, next)
 	if err != nil {
+		if !wasPaused && s.pausedPlayback {
+			s.resumePlaybackLocked()
+		}
 		return cloneState(s.state), err
 	}
 	s.state, s.revision = next, revision
 	if op.Kind == OpResume {
 		s.startRequest++
 	}
-	if op.Kind == OpPause || op.Kind == OpStop || op.Kind == OpClear || op.Kind == OpSkip {
+	if op.Kind == OpPause {
+		s.pausePlaybackLocked()
+	} else if op.Kind == OpStop || op.Kind == OpClear || op.Kind == OpSkip {
 		s.closePlaybackLocked()
+	}
+	if op.Kind == OpResume {
+		s.resumePlaybackLocked()
 	}
 	if !s.state.Paused && s.state.Current != nil && s.playback == nil && async {
 		s.scheduleStartLocked()
@@ -287,11 +307,15 @@ func (s *Supervisor) ApplyPersistedSnapshot(ctx context.Context, committed State
 		return s.revision, ErrRevisionConflict
 	}
 	state := cloneState(committed)
-	if state.Paused || state.Current == nil || s.state.Current == nil || state.Current.ID != s.state.Current.ID {
+	if state.Current == nil || s.state.Current == nil || state.Current.ID != s.state.Current.ID {
 		s.closePlaybackLocked()
 	}
 	s.state, s.revision = cloneState(state), revision
+	if state.Paused {
+		s.pausePlaybackLocked()
+	}
 	if startPlayback {
+		s.resumePlaybackLocked()
 		s.startRequest++
 	}
 	if startPlayback && !state.Paused && state.Current != nil && s.playback == nil {
@@ -334,8 +358,12 @@ func (s *Supervisor) adoptLocked(state State, revision uint64) {
 		// Durable reads are restart-safe (paused), not a live playback command.
 		// Metadata adoption must retain both a live track and an in-flight start.
 		state.Paused = s.state.Paused
-		if state.Paused {
-			s.closePlaybackLocked()
+		if state.Paused && !s.pausedPlayback {
+			s.pausePlaybackLocked()
+		}
+		if s.pausedPlayback {
+			state.PositionMS = s.state.PositionMS
+			state.PositionAtMS = 0
 		}
 	} else {
 		s.closePlaybackLocked()
@@ -363,10 +391,11 @@ func (s *Supervisor) SchedulePersistedSnapshot(ctx context.Context, state State,
 		// restart-safe store view (paused). This explicit, committed Resume
 		// still owns its hand-off; a newer Pause/Skip revision would fail the
 		// revision check above instead of reviving an obsolete start.
-		if s.state.Paused && s.playback == nil {
+		if s.state.Paused {
 			s.state = cloneState(state)
 			s.signalLocked()
 		}
+		s.resumePlaybackLocked()
 		if !s.state.Paused && s.state.Current != nil && s.playback == nil {
 			s.scheduleStartLocked()
 		}
@@ -486,15 +515,16 @@ func (s *Supervisor) startLocked(ctx context.Context, explicit bool, budget *sta
 			return skips, s.pauseLocked(ctx)
 		}
 		track := *s.state.Current
+		startCtx := WithStartAtMS(runCtx, s.state.PositionMS)
 		s.mu.Unlock()
 		var p Playback
 		var err error
 		if starter, ok := s.starter.(interface {
 			StartExplicit(context.Context, Track) (Playback, error)
 		}); explicit && ok {
-			p, err = starter.StartExplicit(runCtx, track)
+			p, err = starter.StartExplicit(startCtx, track)
 		} else {
-			p, err = s.starter.Start(runCtx, track)
+			p, err = s.starter.Start(startCtx, track)
 		}
 		s.mu.Lock()
 		if run.interrupted || s.closed || s.state.Paused || s.state.Current == nil || s.state.Current.ID != track.ID {
@@ -556,7 +586,10 @@ func (s *Supervisor) startLocked(ctx context.Context, explicit bool, budget *sta
 		timeout.Stop()
 		go func() { <-p.Done(); cancel() }()
 		s.playback = p
-		s.state.PositionMS, s.state.PositionAtMS = 0, time.Now().UnixMilli()
+		if track.Provider == ProviderSpotify {
+			s.state.PositionMS = 0
+		}
+		s.state.PositionAtMS = time.Now().UnixMilli()
 		go s.monitor(p, budget)
 		return skips, nil
 	}
@@ -573,6 +606,12 @@ func (s *Supervisor) monitor(p Playback, budget *startBudget) {
 		return
 	}
 	s.playback = nil
+	if s.pausedPlayback {
+		s.cancelPauseLocked()
+		s.signalLocked()
+		s.idleCheckLocked()
+		return
+	}
 	logger := s.logger
 	if logger == nil {
 		logger = slog.Default()
@@ -674,6 +713,7 @@ func (s *Supervisor) RoomOccupied() {
 }
 
 func (s *Supervisor) closePlaybackLocked() {
+	s.cancelPauseLocked()
 	s.startRequest++
 	if s.starting != nil {
 		s.starting.interrupted = true

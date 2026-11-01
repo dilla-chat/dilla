@@ -5,8 +5,10 @@ package runtime
 import (
 	"context"
 	"errors"
+	"github.com/jonasthim/dilla/internal/bot/music"
 	"io"
 	"sync"
+	"sync/atomic"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/music/encode"
@@ -32,6 +34,7 @@ type Session struct {
 	done     chan struct{}
 	mu       sync.RWMutex
 	err      error
+	source   *gatedPCM
 }
 
 // Start creates a bounded Opus provider and starts encoding source in the
@@ -48,8 +51,9 @@ func Start(ctx context.Context, source io.ReadCloser, format PCMFormat, capacity
 	}
 	runCtx, cancel := context.WithCancel(client.WithoutCooperativeStop(client.WithBackground(ctx)))
 	s := &Session{provider: provider, cancel: cancel, done: make(chan struct{})}
+	s.source = &gatedPCM{ReadCloser: source, provider: provider, ctx: runCtx}
 	go func() {
-		err := encode.BridgeWithOptions(runCtx, source, format.SampleRate, format.Channels, provider, options)
+		err := encode.BridgeWithOptions(runCtx, s.source, format.SampleRate, format.Channels, provider, options)
 		s.mu.Lock()
 		s.err = err
 		s.mu.Unlock()
@@ -78,4 +82,38 @@ func (s *Session) Wait() error {
 func (s *Session) Close() error {
 	s.cancel()
 	return s.Wait()
+}
+
+type gatedPCM struct {
+	io.ReadCloser
+	provider *media.LiveOpusProvider
+	ctx      context.Context
+	failed   atomic.Bool
+}
+
+func (p *gatedPCM) Read(b []byte) (int, error) {
+	if err := p.provider.WaitUnpaused(p.ctx); err != nil {
+		return 0, err
+	}
+	n, err := p.ReadCloser.Read(b)
+	if err != nil {
+		p.failed.Store(true)
+	}
+	return n, err
+}
+func (s *Session) Pause()            { s.provider.Pause() }
+func (s *Session) PositionMS() int64 { return s.provider.PositionMS() }
+func (s *Session) Resume() error {
+	select {
+	case <-s.done:
+		return music.ErrSourceGone
+	default:
+	}
+	if s.source.failed.Load() {
+		return music.ErrSourceGone
+	}
+	if p, ok := s.source.ReadCloser.(interface{ SourceGone() bool }); ok && p.SourceGone() {
+		return music.ErrSourceGone
+	}
+	return s.provider.Resume()
 }

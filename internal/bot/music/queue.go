@@ -144,10 +144,8 @@ func Apply(state State, expectedRevision uint64, op Operation) (State, error) {
 			startNext(&next)
 		}
 		if next.Current != nil {
-			// Fix round 2 (Ruling AI, the truth): a provider starts a track from its beginning; it has no offset.
-			if next.Paused {
-				next.PositionMS = 0
-			}
+			// Ruling AI: warm resume retains the playhead; cold YouTube starts seek to it.
+			// Spotify has no seek and resets its playhead only after a cold start.
 			next.Paused = false
 		}
 	case OpStop:

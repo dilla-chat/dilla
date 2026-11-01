@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
+	"github.com/jonasthim/dilla/internal/bot/music"
 	"github.com/jonasthim/dilla/internal/bot/music/encode"
 	"github.com/jonasthim/dilla/internal/bot/music/livekit"
 	musicruntime "github.com/jonasthim/dilla/internal/bot/music/runtime"
@@ -47,7 +48,14 @@ func (s YouTubePCM) Start(ctx context.Context, track string) (io.ReadCloser, err
 	if err != nil || kind != "video" || normalized != canonical {
 		return nil, youtube.ErrInvalidInput
 	}
-	pcm, err := s.Source.Start(ctx, canonical)
+	var pcm io.ReadCloser
+	if source, ok := s.Source.(interface {
+		StartAt(context.Context, string, int64) (io.ReadCloser, error)
+	}); ok {
+		pcm, err = source.StartAt(ctx, canonical, music.StartAtMS(ctx))
+	} else {
+		pcm, err = s.Source.Start(ctx, canonical)
+	}
 	if err != nil {
 		if pcm != nil {
 			_ = pcm.Close()
@@ -165,3 +173,5 @@ func (s YouTubePCM) Check(ctx context.Context) error {
 	}
 	return nil
 }
+
+func (p *prefetchedYouTubePCM) SourceGone() bool { return p.source.SourceGone() }

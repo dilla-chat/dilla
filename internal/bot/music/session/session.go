@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
@@ -277,22 +278,29 @@ func Start(ctx context.Context, o Options) (*Session, error) {
 		return nil, err
 	}
 	_ = music.StartStage(ctx, "published", nil)
-	s := &Session{lease: lease, pcm: pcm, encoder: encoder, publisher: pub, done: make(chan struct{}), stop: make(chan struct{})}
+	startAt := music.StartAtMS(ctx)
+	if provider == music.ProviderSpotify {
+		startAt = 0
+	}
+	s := &Session{startAtMS: startAt, lease: lease, pcm: pcm, encoder: encoder, publisher: pub, done: make(chan struct{}), stop: make(chan struct{})}
 	failed = false
 	go s.monitor(ctx)
 	return s, nil
 }
 
 type Session struct {
-	pcm       io.ReadCloser
-	lease     Lease
-	encoder   Encoder
-	publisher Publisher
-	done      chan struct{}
-	stop      chan struct{}
-	once      sync.Once
-	mu        sync.RWMutex
-	err       error
+	pcm        io.ReadCloser
+	lease      Lease
+	encoder    Encoder
+	publisher  Publisher
+	done       chan struct{}
+	stop       chan struct{}
+	once       sync.Once
+	mu         sync.RWMutex
+	err        error
+	paused     bool
+	sourceGone bool
+	startAtMS  int64
 }
 
 func (s *Session) monitor(ctx context.Context) {
@@ -302,7 +310,21 @@ func (s *Session) monitor(ctx context.Context) {
 	case <-s.publisher.Done():
 		s.finish(s.publisher.Wait())
 	case <-s.encoder.Done():
-		s.finish(s.encoder.Wait())
+		s.mu.Lock()
+		paused := s.paused
+		s.sourceGone = true
+		s.mu.Unlock()
+		if paused { // Keep the published silence until Resume or the pause bound closes it.
+			select {
+			case <-ctx.Done():
+				s.finish(ctx.Err())
+			case <-s.publisher.Done():
+				s.finish(s.publisher.Wait())
+			case <-s.stop:
+			}
+		} else {
+			s.finish(s.encoder.Wait())
+		}
 	case <-s.stop:
 	}
 	close(s.done)
@@ -340,8 +362,9 @@ func AcquireSpotify(m *music.SpotifyLeaseManager) LeaseAcquire {
 // provider's PCM format (Spotify is 48 kHz; YouTube is 44.1 kHz).
 type ownedPCM struct {
 	io.ReadCloser
-	once sync.Once
-	err  error
+	failed atomic.Bool
+	once   sync.Once
+	err    error
 }
 
 func (p *ownedPCM) Close() error { p.once.Do(func() { p.err = p.ReadCloser.Close() }); return p.err }
@@ -376,3 +399,63 @@ func (e *providerFailureClass) Unwrap() error        { return e.error }
 func (e *providerFailureClass) FailureClass() string { return e.class }
 
 func (e *providerFailureClass) PermanentPlaybackFailure() bool { return e.permanent }
+
+func (p *ownedPCM) Read(b []byte) (int, error) {
+	n, err := p.ReadCloser.Read(b)
+	if err != nil {
+		p.failed.Store(true)
+	}
+	return n, err
+}
+func (p *ownedPCM) SourceGone() bool {
+	if p.failed.Load() {
+		return true
+	}
+	if src, ok := p.ReadCloser.(interface{ SourceGone() bool }); ok {
+		return src.SourceGone()
+	}
+	return false
+}
+func (s *Session) Pause() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.paused = true
+	if p, ok := s.encoder.(music.Pausable); ok {
+		p.Pause()
+	}
+}
+func (s *Session) PositionMS() int64 {
+	if p, ok := s.encoder.(music.Pausable); ok {
+		return s.startAtMS + p.PositionMS()
+	}
+	return s.startAtMS
+}
+func (s *Session) Resume() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sourceGone {
+		return music.ErrSourceGone
+	}
+	select {
+	case <-s.encoder.Done():
+		return music.ErrSourceGone
+	default:
+	}
+	select {
+	case <-s.done:
+		return music.ErrSourceGone
+	default:
+	}
+	if p, ok := s.pcm.(interface{ SourceGone() bool }); ok && p.SourceGone() {
+		return music.ErrSourceGone
+	}
+	if p, ok := s.encoder.(music.Pausable); ok {
+		if err := p.Resume(); err != nil {
+			return err
+		}
+	}
+	s.paused = false
+	return nil
+}
+
+var _ music.Pausable = (*Session)(nil)

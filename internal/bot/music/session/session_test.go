@@ -479,3 +479,50 @@ func TestStartClosesAudioAndLeaseOnLateCallFailure(t *testing.T) {
 		})
 	}
 }
+
+func TestSessionResumeDetectsSourceDeathWhilePaused(t *testing.T) {
+	for _, kind := range []string{"process_exit", "read_error", "encoder_exit"} {
+		t.Run(kind, func(t *testing.T) {
+			lease := &leaseStub{}
+			enc := &encoderStub{done: make(chan struct{})}
+			pub := &pubStub{done: make(chan struct{})}
+			pcm := &healthPCM{}
+			o := options(&pcmStart{lease: lease}, enc, pub, lease)
+			o.Call.GroupID = o.Group
+			o.PCM = healthPCMStart{pcm}
+			s, err := Start(t.Context(), o)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			s.Pause()
+			switch kind {
+			case "process_exit":
+				pcm.gone.Store(true)
+			case "read_error":
+				pcm.readErr.Store(true)
+				_, _ = s.pcm.Read(make([]byte, 4))
+			case "encoder_exit":
+				close(enc.done)
+			}
+			if err = s.Resume(); !errors.Is(err, music.ErrSourceGone) {
+				t.Fatalf("resume=%v", err)
+			}
+		})
+	}
+}
+
+type healthPCM struct{ gone, readErr atomic.Bool }
+
+func (p *healthPCM) Read([]byte) (int, error) {
+	if p.readErr.Load() {
+		return 0, io.ErrUnexpectedEOF
+	}
+	return 0, nil
+}
+func (*healthPCM) Close() error       { return nil }
+func (p *healthPCM) SourceGone() bool { return p.gone.Load() }
+
+type healthPCMStart struct{ p *healthPCM }
+
+func (p healthPCMStart) Start(context.Context, string) (io.ReadCloser, error) { return p.p, nil }

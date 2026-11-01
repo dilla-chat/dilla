@@ -66,7 +66,7 @@ func (s PCMStarter) startIsolated(ctx context.Context, source string) (io.ReadCl
 	if node != "" {
 		tools = append(tools, node)
 	}
-	args := []string{"pcm", ytdlp, ffmpeg, node, source, strconv.FormatInt(limit, 10)}
+	args := []string{"pcm", ytdlp, ffmpeg, node, source, strconv.FormatInt(limit, 10), strconv.FormatFloat(float64(max(0, s.StartAtMS))/1000, 'f', 3, 64)}
 	process, err := launchNetworkWorker(ctx, bwrap, python, tools, args, startupTimeout, maxDuration)
 	if err != nil {
 		return nil, err
@@ -401,4 +401,13 @@ func (p *isolatedPCM) startupFailure(cause error) *ProcessError {
 // the completed process diagnostics for either pipe termination signal.
 func processReadEnded(err error) bool {
 	return errors.Is(err, io.EOF) || errors.Is(err, os.ErrClosed) || errors.Is(err, io.ErrClosedPipe)
+}
+
+func (r *boundedProcessPCM) SourceGone() bool {
+	select {
+	case <-r.process.done:
+		return true
+	default:
+		return false
+	}
 }

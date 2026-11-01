@@ -68,8 +68,9 @@ def main(argv):
     if not argv:
         return 125
     mode = argv[0]
-    if mode == "pcm" and len(argv) == 6:
-        ytdlp, ffmpeg, node, source, max_pcm = argv[1:]
+    if mode == "pcm" and len(argv) in (6, 7):
+        ytdlp, ffmpeg, node, source, max_pcm = argv[1:6]
+        start_at = argv[6] if len(argv) == 7 else "0.000"
         command = None
         output_limit = max_pcm
     elif mode == "exec" and len(argv) >= 3:
@@ -192,10 +193,15 @@ def main(argv):
         yt = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=None, env=env, close_fds=True)
         children.append(yt)
         ff = subprocess.Popen(
-            [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-i", "pipe:0", "-f", "s16le", "-ar", "44100", "-ac", "2", "pipe:1"],
+            [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-i", "pipe:0", "-ss", start_at, "-f", "s16le", "-ar", "44100", "-ac", "2", "pipe:1"],
             stdin=yt.stdout, stdout=subprocess.PIPE, stderr=None, env=env, close_fds=True,
         )
         children.append(ff)
+        def watch_failure(child):
+            if child.wait() != 0 and not stopping.is_set():
+                os._exit(1)
+        for child in (yt, ff):
+            threading.Thread(target=watch_failure, args=(child,), daemon=True).start()
         yt.stdout.close()
         total = 0
         too_large = False

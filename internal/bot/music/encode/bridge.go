@@ -109,6 +109,10 @@ func BridgeWithOptions(ctx context.Context, pcm io.Reader, sampleRate, channels 
 			_ = provider.CloseInput()
 			return ctx.Err()
 		case <-timer.C:
+			if provider.Paused() {
+				resetTimer()
+				continue
+			}
 			cancel()
 			closeReader(pcm)
 			<-result
