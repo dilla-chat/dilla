@@ -1,4 +1,4 @@
-import type { IconName } from '@dilla/ui';
+import type { IconName } from '@dilla/ui/icons';
 import { t, type StringKey } from '../strings/index.ts';
 
 export type SettingsSection = 'profile' | 'signin' | 'devices' | 'appearance' | 'notifications' | 'voice' | 'keyboard' | 'privacy' | 'diagnostics';

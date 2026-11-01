@@ -95,3 +95,16 @@ test('window controls are a closed capability for the owning window only', () =>
  for (const action of ['close', 'minimize', 'toggle-maximize']) assert.deepEqual(validateCommand({ type: 'window-control', action }), { type: 'window-control', action });
  for (const command of [{ type: 'window-control', action: 'exec' }, { type: 'window-control', action: 'close', windowId: 1 }, { type: 'window-control', action: 'resize', width: 400 }]) assert.throws(() => validateCommand(command));
 });
+
+test('server settings remain trusted bundled routes, with only registered sections admitted', async () => {
+ const { SETTINGS_REGISTRY } = await import('../../web/src/settings/registry.ts');
+ const base = 'https://chat.test/', prefix = base + 'c/' + 'a'.repeat(32) + '/settings';
+ assert.equal(isAppNavigation(prefix, base), true);
+ for (const section of SETTINGS_REGISTRY.filter(entry => entry.scope === 'server')) {
+  const url = `${prefix}/${section.id}`;
+  assert.equal(isAppNavigation(url, base), true, section.id);
+  assert.equal(trustedFrame({ url, top: true }, base), true, section.id);
+  assert.equal(trustedFrame({ url, top: false }, base), false);
+ }
+ for (const path of ['/unknown', '/invites/v1/evil', '/invites?token=secret']) assert.equal(isAppNavigation(prefix + path, base), false);
+});

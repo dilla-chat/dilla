@@ -1,4 +1,5 @@
 import { themes } from '../../design-tokens/src/tokens.ts';
+import { SETTINGS_REGISTRY } from '../../web/src/settings/registry.ts';
 import { createHash } from 'node:crypto';
 import type { DesktopCommand } from './contract.ts';
 
@@ -52,6 +53,8 @@ export function isAppNavigation(input: string, instance: string): boolean {
         && [...url.searchParams.values()].every(value => /^[A-Za-z0-9_-]{0,128}$/.test(value));
     }
     if (url.search) return false;
+    const serverSettings = /^\/c\/[a-f0-9]{32}\/settings(?:\/([A-Za-z]+))?$/.exec(path);
+    if (serverSettings) return !serverSettings[1] || SETTINGS_REGISTRY.some(entry => entry.scope === 'server' && entry.id === serverSettings[1]);
     return path === '/' || /^\/(dm(?:\/[a-f0-9]{32})?|activity|you)$/.test(path)
       || /^\/c\/[a-f0-9]{32}(?:\/[a-f0-9]{32})?$/.test(path)
       || /^\/settings(?:\/(profile|devices|signin|notifications|appearance|voice|privacy|keyboard|diagnostics))?$/.test(path);
