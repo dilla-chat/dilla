@@ -115,6 +115,17 @@ test('protected reload needs an explicit native confirmation and cancelling reta
 
 test('an explicit focused video action can enter and leave HTML fullscreen', async () => {
  const page = await app.firstWindow();
+ // Video lives in the resizable workspace, never in the compact login dialog.
+ await page.evaluate(() => (window as any).dillaDesktop.send({ type: 'window-mode', mode: 'workspace', height: null }));
+ await page.evaluate(() => { document.documentElement.dataset.desktopWindow = 'workspace'; });
+ await app.evaluate(({ BrowserWindow }) => {
+  const win = BrowserWindow.getAllWindows()[0];
+  const transitions: string[] = [];
+  (globalThis as any).__fullscreenTransitions = transitions;
+  for (const event of ['enter-full-screen', 'leave-full-screen', 'enter-html-full-screen', 'leave-html-full-screen'] as const) {
+   win.on(event, () => transitions.push(event));
+  }
+ });
  await page.evaluate(() => {
   const button = document.createElement('button'); button.textContent = 'Fullscreen acceptance';
   button.onclick = () => { void button.requestFullscreen().catch(() => {}); };
@@ -122,8 +133,19 @@ test('an explicit focused video action can enter and leave HTML fullscreen', asy
  });
  await page.getByRole('button', { name: 'Fullscreen acceptance', exact: true }).click();
  await expect.poll(() => page.evaluate(() => document.fullscreenElement?.textContent)).toBe('Fullscreen acceptance');
+ // Cocoa transitions are asynchronous. DOM fullscreen becoming visible does
+ // not mean the native window has finished entering its fullscreen Space.
+ if (process.platform === 'darwin') {
+  await expect.poll(() => app.evaluate(({ BrowserWindow }) => ({
+   resizable: BrowserWindow.getAllWindows()[0].isResizable(),
+   entered: (globalThis as any).__fullscreenTransitions.includes('enter-full-screen'),
+  })), { message: 'The workspace must finish its native fullscreen transition before exiting' }).toEqual({ resizable: true, entered: true });
+ }
  await page.evaluate(() => document.exitFullscreen());
  await expect.poll(() => page.evaluate(() => document.fullscreenElement)).toBeNull();
+ if (process.platform === 'darwin') {
+  await expect.poll(() => app.evaluate(() => (globalThis as any).__fullscreenTransitions)).toEqual(expect.arrayContaining(['enter-full-screen', 'leave-full-screen', 'enter-html-full-screen', 'leave-html-full-screen']));
+ }
 });
 
 test('rejects malicious IPC and remote document navigation and keeps storage across reload', async () => {
