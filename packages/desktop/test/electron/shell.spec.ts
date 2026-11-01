@@ -122,9 +122,10 @@ test('an explicit focused video action can enter and leave HTML fullscreen', asy
   const win = BrowserWindow.getAllWindows()[0];
   const transitions: string[] = [];
   (globalThis as any).__fullscreenTransitions = transitions;
-  for (const event of ['enter-full-screen', 'leave-full-screen', 'enter-html-full-screen', 'leave-html-full-screen'] as const) {
-   win.on(event, () => transitions.push(event));
-  }
+  win.on('enter-full-screen', () => transitions.push('enter-full-screen'));
+  win.on('leave-full-screen', () => transitions.push('leave-full-screen'));
+  win.on('enter-html-full-screen', () => transitions.push('enter-html-full-screen'));
+  win.on('leave-html-full-screen', () => transitions.push('leave-html-full-screen'));
  });
  await page.evaluate(() => {
   const button = document.createElement('button'); button.textContent = 'Fullscreen acceptance';

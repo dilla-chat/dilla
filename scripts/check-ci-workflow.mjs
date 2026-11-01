@@ -699,6 +699,9 @@ export function checkWorkflow(root) {
   if (!/^concurrency:$/m.test(text) || !/cancel-in-progress: true/.test(text)) {
     problems.push('ci.yml: missing the workflow-level concurrency block with cancel-in-progress: true');
   }
+  if (!/^concurrency:\n {2}group: \$\{\{ github\.workflow \}\}-\$\{\{ github\.ref \}\}\n {2}cancel-in-progress: true$/m.test(text)) {
+    problems.push('ci.yml: concurrency group must be workflow/ref so newer commits cancel obsolete runs for the same pull request');
+  }
   if (!/^permissions:\n {2}contents: read$/m.test(text)) {
     problems.push('ci.yml: the workflow-level token must be read-only (permissions: contents: read)');
   }

@@ -646,6 +646,11 @@ test('a missing concurrency block is reported', () => {
   assert.ok(problems.some((p) => p.includes('concurrency')), problems.join('\n'));
 });
 
+test('commit-specific concurrency groups cannot leave obsolete pull-request runs alive', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace('group: ${{ github.workflow }}-${{ github.ref }}', 'group: ${{ github.workflow }}-${{ github.ref }}-${{ github.sha }}')));
+  assert.ok(problems.some((p) => p.includes('concurrency group')), problems.join('\n'));
+});
+
 test('a workflow token without read-only permissions is reported', () => {
   const problems = checkWorkflow(fixture(GOOD.replace('permissions:\n  contents: read\n', '')));
   assert.ok(problems.some((p) => p.includes('permissions: contents: read')), problems.join('\n'));
