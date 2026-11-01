@@ -292,7 +292,8 @@ test('a server run from an empty instance: members, rename, channel edit, kick, 
     await expect(nav).toHaveText([
       copy('workspace.profile'), copy('workspace.signin'), copy('workspace.devices'), copy('workspace.notifications'), copy('workspace.voice'),
       copy('workspace.keyboard'), copy('workspace.appearance'), copy('workspace.privacy'), copy('workspace.diagnostics'),
-      copy('workspace.members'), copy('workspace.invites'), copy('workspace.selfRoles'), copy('workspace.danger'),
+      // Jonas 2026-10-31 (parity D2): the prototype's own server sections first, in its order (Invites before Members).
+      copy('workspace.invites'), copy('workspace.members'), copy('workspace.selfRoles'), copy('workspace.danger'),
     ]);
     // WS8: the sidebar has no leave button; leave is a section of server settings.
     await expect(page2.locator('.d-channel-list').getByRole('button', { name: copy('admin.leave.open'), exact: true })).toHaveCount(0);
