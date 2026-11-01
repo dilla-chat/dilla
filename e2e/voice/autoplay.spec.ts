@@ -52,7 +52,7 @@ function holdAudioBack(): void {
   Object.defineProperty(window, 'AudioContext', { value: HeldBack, configurable: true, writable: true });
 }
 
-test('call audio the browser holds back comes back with one press of turn on audio', async ({ peerBrowser, browserName }) => {
+test('call audio the browser holds back comes back with one press of turn on audio', async ({ peerBrowser, browserName }, testInfo) => {
   test.skip(browserName !== 'chromium', 'web3.4 V3: the held-back rule tightens the suite’s Chromium autoplay switch');
   const peer = peerBrowser.track(await VoicePeer.start());
   const alice = await peerBrowser.open('alice');
@@ -87,6 +87,28 @@ test('call audio the browser holds back comes back with one press of turn on aud
       await expect(turnOn).toHaveCount(0);
     });
   } finally {
+    // A test's finally runs before Playwright finalizes its failed status. Keep
+    // the actual receiver graph and worker counters before closing either peer.
+    for (const person of [alice, bob]) {
+      const audio = await person.page.evaluate(() => {
+        const rec = (window as unknown as { __dw?: { contexts: AudioContext[]; remoteTracks: Set<string>; remoteAnalysers: AnalyserNode[] } }).__dw;
+        return {
+          contexts: rec?.contexts.map(context => ({ state: context.state, time: context.currentTime, sampleRate: context.sampleRate })),
+          remoteTracks: rec ? [...rec.remoteTracks] : [],
+          analysers: rec?.remoteAnalysers.map(analyser => {
+            const samples = new Float32Array(analyser.fftSize); analyser.getFloatTimeDomainData(samples);
+            return { state: analyser.context.state, time: analyser.context.currentTime, rms: Math.sqrt(samples.reduce((sum, sample) => sum + sample * sample, 0) / samples.length) };
+          }),
+        };
+      }).catch(error => ({ error: String(error) }));
+      const workers = await Promise.all(person.page.workers().map(worker => worker.evaluate(() => {
+        const stats = (globalThis as unknown as { __dillaMediaStats?: Record<string, unknown> }).__dillaMediaStats;
+        if (!stats) return null;
+        const { encrypted, decrypted, verified, emptyFrames, dropped, passedThrough } = stats;
+        return { encrypted, decrypted, verified, emptyFrames, dropped, passedThrough };
+      }).catch(error => ({ error: String(error) }))));
+      await testInfo.attach(`autoplay-${person.name}`, { body: JSON.stringify({ audio, workers }), contentType: 'application/json' });
+    }
     await peerBrowser.close(bob);
     await peerBrowser.close(alice);
     await peer.close();

@@ -9,7 +9,10 @@ export async function nativeTrace(context: BrowserContext, info?: TestInfo): Pro
  let stopped = false;
  return async () => {
   if (stopped) return; stopped = true;
-  if (info.status === info.expectedStatus) { await context.tracing.stop(); return; }
+  // A test-body finally can close a peer before Playwright records its failure.
+  // Save every explicitly traced context, including passing tests: deciding from
+  // the current status silently loses the renderer that encountered the error.
+  // trace:off above still avoids all recording overhead in performance runs.
   const path = info.outputPath(`electron-${randomUUID()}.zip`);
   await context.tracing.stop({ path });
   await info.attach('Electron renderer trace', { path, contentType: 'application/zip' });
