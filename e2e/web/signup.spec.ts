@@ -1,3 +1,4 @@
+import { clickNative } from './support/native-click.ts';
 import { desktopApplication, desktopE2E } from './support/electron.ts';
 import { expect } from '@playwright/test';
 import {
@@ -66,12 +67,20 @@ test('a server invite, a name and a written-down key make an account that lands 
     await page.setViewportSize({ width: 360, height: 400 });
     expect(await page.evaluate(() => [innerWidth, innerHeight])).toEqual([900, 600]);
     await expect(page.locator('[data-layout=phone]')).toHaveCount(0);
+    const search = page.getByRole('button', { name: copy('topbar.search'), exact: true });
+    for (const target of [search, search.locator('.d-topbar__search-text'), search.locator('kbd')]) {
+      await clickNative(app, page, target);
+      await expect(page.locator('.d-search-palette')).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(page.locator('.d-search-palette')).toBeHidden();
+      await expect(page.locator('.d-topbar .dw-desktop-titlebar')).toBeVisible();
+    }
     await page.screenshot({ path: 'desktop-client-results/workspace-signup.png' });
-    await page.getByRole('button', { name: copy('workspace.open'), exact: true }).click();
+    await clickNative(app, page, page.getByRole('button', { name: copy('workspace.open'), exact: true }));
     const settings = page.locator('dialog.d-settings-frame[open]');
     await expect(settings.locator('.dw-desktop-titlebar')).toBeVisible();
     if ((await app.evaluate(() => process.platform)) !== 'darwin') {
-      await settings.getByRole('button', { name: 'Minimize window', exact: true }).click();
+      await clickNative(app, page, settings.getByRole('button', { name: 'Minimize window', exact: true }));
       await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isMinimized())).toBe(true);
       await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].restore());
     }

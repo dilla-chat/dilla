@@ -54,7 +54,7 @@ test('runs the installed React client in an isolated sandbox without executing s
   await page.evaluate(() => (window as any).dillaDesktop.send({ type: 'window-mode', mode: 'workspace', height: null }));
   await page.evaluate(() => { document.documentElement.dataset.desktopWindow = 'workspace'; });
   await expect(page.getByRole('button', { name: 'Dilla menu', exact: true })).toBeVisible();
-  expect(await page.locator('.dw-desktop-titlebar').evaluate(node => Math.round(node.getBoundingClientRect().height))).toBe(44);
+  expect(await page.locator('.dw-desktop-titlebar__menu').evaluate(node => Math.round(node.getBoundingClientRect().height))).toBe(28);
   expect(await page.locator('.d-splash, .d-onboarding-frame').first().evaluate(node => node.getBoundingClientRect().top)).toBe(0);
   await page.screenshot({ path: 'test-results/integrated-titlebar.png' });
   expect(info.capabilities.applicationAudio).toBe(true);

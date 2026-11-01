@@ -1,19 +1,21 @@
 /* Desktop controls share Signal's existing 44px top bar. There is no second row. */
 html[data-desktop] { --dw-titlebar-h: 0px; --d-shell-h: 100dvh; --d-vvtop: 0px; --d-vvh: 100dvh; }
 html[data-desktop] #root { min-height: 100dvh; }
-html[data-desktop] .d-topbar { padding-left: 46px; padding-right: 132px; -webkit-app-region: drag; app-region: drag; }
+html[data-desktop] .d-topbar { padding-left: 46px; padding-right: 132px; -webkit-app-region: no-drag; app-region: no-drag; }
+html[data-desktop] .d-topbar__brand { align-self: stretch; -webkit-app-region: drag; app-region: drag; }
 html[data-desktop] .d-topbar :is(button, input, a, [role="dialog"]) { -webkit-app-region: no-drag; app-region: no-drag; }
 html[data-desktop-platform="darwin"] .d-topbar { padding-left: 112px; padding-right: 12px; }
-.dw-desktop-titlebar { position: fixed; z-index: 10000; top: 0; left: 0; width: 100%; height: var(--topbar-h); display: flex; align-items: center; justify-content: space-between; pointer-events: none; box-sizing: border-box; color: var(--fg-3); user-select: none; }
-.dw-desktop-titlebar__menu { display: grid; place-items: center; width: 32px; height: 28px; margin-left: 6px; padding: 0; color: var(--fg-2); background: transparent; border: 0; border-radius: var(--r-sm); cursor: pointer; pointer-events: auto; -webkit-app-region: no-drag; app-region: no-drag; }
-.dw-desktop-titlebar[data-platform="darwin"] .dw-desktop-titlebar__menu { margin-left: 78px; }
-.dw-desktop-titlebar__controls { display: flex; height: 100%; }
+.dw-desktop-titlebar { display: contents; color: var(--fg-3); user-select: none; }
+.dw-desktop-titlebar__menu { position: fixed; z-index: 10000; top: 8px; left: 6px; display: grid; place-items: center; width: 32px; height: 28px; margin: 0; padding: 0; color: var(--fg-2); background: transparent; border: 0; border-radius: var(--r-sm); cursor: pointer; pointer-events: auto; -webkit-app-region: no-drag; app-region: no-drag; }
+.dw-desktop-titlebar[data-platform="darwin"] .dw-desktop-titlebar__menu { left: 78px; }
+.dw-desktop-titlebar__controls { position: fixed; z-index: 10000; top: 0; right: 0; display: flex; height: var(--topbar-h); -webkit-app-region: no-drag; app-region: no-drag; }
 .dw-desktop-titlebar__controls button, .dw-desktop-card-close { display: grid; place-items: center; width: 40px; padding: 0; color: var(--fg-2); background: transparent; border: 0; pointer-events: auto; -webkit-app-region: no-drag; app-region: no-drag; cursor: pointer; }
 .dw-desktop-titlebar__controls svg, .dw-desktop-card-close svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.25; }
 .dw-desktop-titlebar__menu:hover, .dw-desktop-titlebar__controls button:hover, .dw-desktop-card-close:hover { background: var(--hover); color: var(--fg); }
 .dw-desktop-titlebar__menu:focus-visible, .dw-desktop-titlebar__controls button:focus-visible, .dw-desktop-card-close:focus-visible { outline: var(--focus-ring); outline-offset: -3px; }
 /* A settings modal covers the page below the existing header. Window controls
    join its top layer so close/minimize remain usable during modal work. */
+html[data-desktop] dialog:has(> .dw-desktop-titlebar) { animation: none; }
 html[data-desktop] .d-settings-frame { top: var(--topbar-h); height: calc(100dvh - var(--topbar-h)); }
 .dw-desktop-card-close, .dw-desktop-card-drag { display: none; }
 html:is([data-desktop-window="starting"], [data-desktop-window="authentication"]) .dw-desktop-titlebar { display: none; }
