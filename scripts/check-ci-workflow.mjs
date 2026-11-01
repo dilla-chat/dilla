@@ -1092,14 +1092,14 @@ export function checkDesktopWorkflow(root) {
     'shard: [1, 2, 3]', 'os: [ubuntu-24.04, windows-latest, macos-15-intel, macos-15]',
     'os: ubuntu-24.04, platform: linux, arch: x64', 'os: windows-latest, platform: win, arch: x64',
     'os: macos-15-intel, platform: mac, arch: x64', 'os: macos-15, platform: mac, arch: arm64',
-    'name: dilla-core-wasi', 'cargo build -p dilla-testkit --release --locked',
+    'name: dilla-core-wasi', 'cargo build -p dilla-testkit --release --locked', 'node packages/desktop/scripts/prepare-browser-sandbox.mjs',
     'playwright test --config playwright.desktop.config.ts --project=electron-client --shard=${{ matrix.shard }}/3',
   ]) if (!client.includes(required)) problems.push(`${file}: shared Electron client coverage missing ${required}`);
   const voice = text.split('\n  voice:\n')[1]?.split(/\n  [a-z][a-z0-9-]*:\n/)[0] ?? '';
   for (const required of ['desktop-voice-${{ matrix.platform }}-${{ matrix.arch }}',
     'os: [ubuntu-24.04, windows-latest, macos-15-intel, macos-15]',
     'playwright.desktop-voice.config.ts --project=electron-voice --workers=1', 'DILLA_E2E_NOTIFICATIONS', 'dunst',
-    'name: dilla-core-wasi', 'cargo build -p dilla-testkit --release --locked',
+    'name: dilla-core-wasi', 'cargo build -p dilla-testkit --release --locked', 'node packages/desktop/scripts/prepare-browser-sandbox.mjs',
     'name: Desktop performance comparison', 'node packages/desktop/scripts/run-performance.mjs', 'name: desktop-performance-']) {
     if (!voice.includes(required)) problems.push(`${file}: Electron voice coverage missing ${required}`);
   }

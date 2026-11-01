@@ -64,7 +64,7 @@ test('the invite page names the community, keeps its limits and is shot in both 
   // /favicon.ico request as a CSP refusal, which is that CSP working and not the web client's guard to judge.
   // Invite HTML belongs in the system browser. Electron's document allowlist
   // must continue to refuse loading server-provided HTML into the app window.
-  const external = desktopE2E() ? await playwright.chromium.launch({ headless: true, chromiumSandbox: true }) : null;
+  const external = desktopE2E() ? await playwright.chromium.launch({ channel: 'chromium', headless: true, chromiumSandbox: true }) : null;
   const context = await (external ?? browser).newContext({ baseURL: h.url, viewport: { width: 1280, height: 800 } });
   try {
     const view = await context.newPage();

@@ -148,6 +148,8 @@ jobs:
       - name: Test-host directory locks retain shared and exclusive semantics
         run: go test ./internal/ops -run 'Lock|BackupAndServe|ServeAdmits'
       - run: npm exec -w @dilla/e2e -- playwright install --with-deps chromium
+      - if: runner.os == 'Linux'
+        run: node packages/desktop/scripts/prepare-browser-sandbox.mjs
       - run: cargo build -p dilla-testkit --release --locked
       - run: npm run build -w @dilla/desktop -- --existing-client
       - if: runner.os == 'Linux'
@@ -219,6 +221,8 @@ jobs:
       - name: Test-host directory locks retain shared and exclusive semantics
         run: go test ./internal/ops -run 'Lock|BackupAndServe|ServeAdmits'
       - run: npm exec -w @dilla/e2e -- playwright install --with-deps chromium
+      - if: runner.os == 'Linux'
+        run: node packages/desktop/scripts/prepare-browser-sandbox.mjs
       - run: cargo build -p dilla-testkit --release --locked
       - run: npm run build -w @dilla/desktop -- --existing-client
       - if: runner.os == 'Linux'

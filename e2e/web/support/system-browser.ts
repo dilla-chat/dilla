@@ -13,7 +13,7 @@ export async function systemBrowserAuthenticator(desktopPage: Page): Promise<Vir
  const context = desktopPage.context(), application = desktopApplication(context);
  const instance = await desktopPage.evaluate(async () => (await (window as any).dillaDesktop.info()).instance as string);
  const base = canonicalInstance(instance, true);
- const browser = await chromium.launch({ headless: true, chromiumSandbox: true });
+ const browser = await chromium.launch({ channel: 'chromium', headless: true, chromiumSandbox: true });
  const secret = '/' + randomBytes(32).toString('hex');
  const server = createServer();
  const stop = async () => { server.closeAllConnections(); await new Promise<void>(done => server.close(() => done())); await browser.close(); };
