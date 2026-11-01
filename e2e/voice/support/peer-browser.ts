@@ -11,6 +11,9 @@ import { copy, FIREFOX_FAVICON_LINE, isFirefoxBrowserFaviconViolation, recordNot
 import { desktopE2E } from '../../web/support/electron.ts';
 import { desktopVoiceContext } from './desktop.ts';
 import { observeNativeNotifications } from './native-notifications.ts';
+import { writeFixtures } from '../../media/support/fixtures.ts';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 /** One wait for one state (Global Constraints: at least 30 s locally, 90 s in CI). voice.ts re-exports it. */
 export const WAIT = process.env.CI === 'true' ? 90_000 : 30_000;
@@ -359,6 +362,7 @@ export const test = base.extend<{ peerBrowser: PeerBrowsers }>({
     const open: Person[] = [];
     const peers: { close(): Promise<void> }[] = [];
     const leaveFailures: string[] = [];
+    let microphone = 0;
     const people: PeerBrowsers = {
       guard,
       track(peer) {
@@ -367,8 +371,16 @@ export const test = base.extend<{ peerBrowser: PeerBrowsers }>({
       },
       async open(name, opts) {
         if (desktopE2E() && opts?.browser) throw new Error('Browser tab capture requires a native application-audio counterpart');
+        let media = opts?.launchOptions ?? launchOptions;
+        if (desktopE2E() && !opts?.launchOptions) {
+          // Identical looped tones at both ends can be cancelled as echo by the
+          // shipping AEC, especially on macOS. Give independent desktop devices
+          // distinct capture sources, as the comparative call benchmark does.
+          const capture = writeFixtures(join(tmpdir(), 'dilla-media-fixtures'), [1000, 600, 1400, 1800][microphone++ % 4]);
+          media = { ...media, args: media.args?.map(arg => arg.startsWith('--use-file-for-fake-audio-capture=') ? `--use-file-for-fake-audio-capture=${capture.wav}` : arg) };
+        }
         const context = desktopE2E()
-          ? await desktopVoiceContext({ baseURL, permissions, launchOptions: opts?.launchOptions ?? launchOptions, viewport: opts?.viewport ?? viewport })
+          ? await desktopVoiceContext({ baseURL, permissions, launchOptions: media, viewport: opts?.viewport ?? viewport })
           : await openContext(opts?.browser ?? browser, { baseURL, permissions, viewport: opts?.viewport ?? viewport });
         await guard.attach(context);
         await context.addInitScript(installRecorders);

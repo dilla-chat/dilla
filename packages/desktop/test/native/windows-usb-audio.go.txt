@@ -1,0 +1,27 @@
+// CI entry point for the pinned BSD-2-Clause Virtual-Cables implementation.
+// Copied into its source module so its internal packages remain private.
+// The USB/IP server listens on loopback only; Windows uses its USB audio driver.
+package main
+
+import (
+	"context"
+	"log"
+	"os"
+	"os/signal"
+
+	"virtualcables/internal/uac1"
+	"virtualcables/internal/usbip"
+)
+
+func main() {
+	device, err := uac1.NewDevice(1, 250)
+	if err != nil {
+		log.Fatal(err)
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	server := usbip.NewServer("127.0.0.1:3240", []*uac1.Device{device}, log.Default())
+	if err := server.Serve(ctx); err != nil {
+		log.Fatal(err)
+	}
+}

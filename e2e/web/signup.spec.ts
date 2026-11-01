@@ -61,8 +61,16 @@ test('a server invite, a name and a written-down key make an account that lands 
     await expect(page.locator('.d-topbar .dw-desktop-titlebar')).toBeVisible();
     const header = await page.locator('.d-topbar').boundingBox();
     expect(header?.y).toBe(0); expect(header?.height).toBe(44);
-    const close = await page.getByRole('button', { name: 'Close window', exact: true }).boundingBox();
-    if (close) expect(close.y + close.height / 2).toBe(header!.height / 2);
+    if (process.platform === 'darwin') {
+      // macOS keeps its native traffic lights in the integrated header.
+      await expect(page.getByRole('button', { name: 'Close window', exact: true })).toHaveCount(0);
+      expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isClosable())).toBe(true);
+      expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getWindowButtonPosition())).toEqual({ x: 12, y: 16 });
+    } else {
+      const close = await page.getByRole('button', { name: 'Close window', exact: true }).boundingBox();
+      expect(close).not.toBeNull();
+      expect(close!.y + close!.height / 2).toBe(header!.height / 2);
+    }
 
     await page.setViewportSize({ width: 360, height: 400 });
     expect(await page.evaluate(() => [innerWidth, innerHeight])).toEqual([900, 600]);

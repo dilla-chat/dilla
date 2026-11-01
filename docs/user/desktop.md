@@ -52,8 +52,9 @@ path-scoped invite URLs do not yet have a deep-link representation.
 
 Application audio and the system-browser sign-in handoff are implemented. Linux
 selected-application capture passes its encrypted delivery and exclusion checks.
-The Windows hosted CI runner has no audio endpoint; macOS unrelated-application
-exclusion still needs a passing native gate. A failed capture must remain a visible
+Windows hosted CI provisions a signed virtual USB audio device; its actual capture
+acceptance and macOS unrelated-application exclusion still need passing native
+gates. A failed capture must remain a visible
 error rather than substitute whole-system or unencrypted audio. Password,
 second-factor, passkey and recovery flows retain the existing worker and device
 model. Real passkey browser handoff and recovery have local acceptance coverage;

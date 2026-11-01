@@ -99,7 +99,7 @@ passing a hardware gate.
 |---|---|---|---|
 | Bundled shell and encrypted loopback video | Passed locally and CI | Native tests pass; audio preflight blocks | Native CI gates present |
 | Real encrypted SFU call; mic/camera permission denial | Voice CI passed; denial coverage open | Voice CI pending | Voice CI pending |
-| Selected application audio and own-call exclusion; no plaintext | Actual native gate passed | Implemented; hosted runner has no audio endpoint | Implemented; unrelated-app leakage still blocks launch pending LaunchServices test |
+| Selected application audio and own-call exclusion; no plaintext | Actual native gate passed | Signed virtual USB audio provisioning added; actual capture gate pending | Implemented; unrelated-app leakage still blocks launch pending LaunchServices test |
 | Persistent sign-in, enrolment and recovery | Actual bundled-client tests pass; full parity open | Full parity pending | Full parity pending |
 | Passkey/OIDC system-browser handoff, single-use PKCE completion | Actual passkey ceremony and protocol tests pass | Platform acceptance pending | Platform acceptance pending |
 | Background Answer/Decline, ringing, sleep/resume/reconnect | Native ringing actions pass; sleep/resume open | Platform acceptance pending | Platform acceptance pending |

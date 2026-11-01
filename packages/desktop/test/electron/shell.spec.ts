@@ -1,4 +1,5 @@
 import { useNativeViewport } from '../support/viewport.ts';
+import { nativeTrace } from '../support/trace.ts';
 import { captureNativeDownload } from '../support/download.ts';
 import { test as base, expect, _electron, type ElectronApplication } from '@playwright/test';
 import { createServer } from 'node:http';
@@ -6,8 +7,10 @@ import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
+import { en } from '../../../web/src/strings/en.ts';
 
 let app: ElectronApplication;
+let stopTrace: (() => Promise<void>) | undefined;
 let profile: string;
 let instance: string;
 const test = base.extend<{ instanceSuffix: string; multiInstance: boolean }>({ instanceSuffix: ['', { option: true }], multiInstance: [false, { option: true }] });
@@ -36,13 +39,18 @@ test.beforeAll(async () => {
   instance = `http://127.0.0.1:${(server.address() as { port: number }).port}/`;
 });
 test.afterAll(async () => { await new Promise<void>(done => server.close(() => done())); });
-test.beforeEach(async ({ instanceSuffix, multiInstance }) => {
+test.beforeEach(async ({ instanceSuffix, multiInstance }, info) => {
   profile = await mkdtemp(join(tmpdir(), 'dilla-electron-'));
   if (multiInstance) await writeFile(join(profile, 'desktop.json'), JSON.stringify({ version: 1, instances: [instance, instance + 'team/'], autostart: false }));
   app = await _electron.launch({ chromiumSandbox: true, args: [resolve('.'), `--profile=${profile}`, `--instance=${instance}${instanceSuffix}`, '--allow-loopback'], timeout: 30_000 });
+  stopTrace = await nativeTrace(app.context(), info);
   const page = await app.firstWindow(); await page.waitForLoadState('load'); await useNativeViewport(app, page);
+  // The worker starts after the document loads. Do not race its initial React
+  // window-mode effect when a test deliberately enters the workspace below.
+  await page.waitForFunction(starting => (document.getElementById('root')?.childElementCount ?? 0) > 0
+    && document.querySelector('.d-splash__line')?.textContent !== starting, en['boot.loading.status']);
 });
-test.afterEach(async () => { await app?.close(); await rm(profile, { recursive: true, force: true }); });
+test.afterEach(async () => { try { await stopTrace?.(); } finally { await app?.close(); await rm(profile, { recursive: true, force: true }); } });
 
 test('runs the installed React client in an isolated sandbox without executing server HTML', async () => {
   const page = await app.firstWindow();
@@ -118,6 +126,7 @@ test('an explicit focused video action can enter and leave HTML fullscreen', asy
  // Video lives in the resizable workspace, never in the compact login dialog.
  await page.evaluate(() => (window as any).dillaDesktop.send({ type: 'window-mode', mode: 'workspace', height: null }));
  await page.evaluate(() => { document.documentElement.dataset.desktopWindow = 'workspace'; });
+ expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isResizable())).toBe(true);
  await app.evaluate(({ BrowserWindow }) => {
   const win = BrowserWindow.getAllWindows()[0];
   const transitions: string[] = [];
@@ -137,10 +146,8 @@ test('an explicit focused video action can enter and leave HTML fullscreen', asy
  // Cocoa transitions are asynchronous. DOM fullscreen becoming visible does
  // not mean the native window has finished entering its fullscreen Space.
  if (process.platform === 'darwin') {
-  await expect.poll(() => app.evaluate(({ BrowserWindow }) => ({
-   resizable: BrowserWindow.getAllWindows()[0].isResizable(),
-   entered: (globalThis as any).__fullscreenTransitions.includes('enter-full-screen'),
-  })), { message: 'The workspace must finish its native fullscreen transition before exiting' }).toEqual({ resizable: true, entered: true });
+  await expect.poll(() => app.evaluate(() => (globalThis as any).__fullscreenTransitions.includes('enter-full-screen')),
+   { message: 'The workspace must finish its native fullscreen transition before exiting' }).toBe(true);
  }
  await page.evaluate(() => document.exitFullscreen());
  await expect.poll(() => page.evaluate(() => document.fullscreenElement)).toBeNull();

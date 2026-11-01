@@ -1,6 +1,7 @@
 import { useNativeViewport } from '../../../packages/desktop/test/support/viewport.ts';
+import { nativeTrace } from '../../../packages/desktop/test/support/trace.ts';
 import { canonicalInstance } from '../../../packages/desktop/src/policy.ts';
-import { _electron, type BrowserContext, type BrowserContextOptions, type LaunchOptions, type Page, type ElectronApplication } from '@playwright/test';
+import { _electron, test as playwrightTest, type BrowserContext, type BrowserContextOptions, type LaunchOptions, type Page, type ElectronApplication, type TestInfo } from '@playwright/test';
 import { mkdtemp, mkdir, rm, access, writeFile } from 'node:fs/promises';
 import { once } from 'node:events';
 import { spawnSync } from 'node:child_process';
@@ -26,7 +27,10 @@ export function desktopApplication(context: BrowserContext): ElectronApplication
 
 /** Each browser-profile fixture becomes an actual sandboxed desktop process.
  * The installed client and its worker keep their normal origin/storage boundary. */
-export async function launchDesktopContext(profile: string | null, options: BrowserContextOptions & { launchOptions?: LaunchOptions }, claimWindow = true, temporary = profile === null): Promise<BrowserContext> {
+export async function launchDesktopContext(profile: string | null, options: BrowserContextOptions & { launchOptions?: LaunchOptions }, claimWindow = true, temporary = profile === null, info?: TestInfo): Promise<BrowserContext> {
+ // Secondary-device and voice helpers also launch directly. Capture their
+ // current test so failures retain the device that actually encountered them.
+ if (!info) { try { info = playwrightTest.info(); } catch { /* Standalone diagnostic scripts have no test. */ } }
  const directory = profile ?? await mkdtemp(join(tmpdir(), 'dilla-client-e2e-'));
  await mkdir(directory, { recursive: true });
  const instance = options.baseURL ?? `http://127.0.0.1:${process.env.DILLA_E2E_PORT ?? '8463'}/`;
@@ -45,6 +49,7 @@ export async function launchDesktopContext(profile: string | null, options: Brow
  };
  process.once('exit', terminate);
  const context = app.context(), first = await app.firstWindow();
+ const stopTrace = await nativeTrace(context, info);
  // Navigation in these specs is an explicit person action. Answer the native
  // reload confirmation without racing it through CDP's browser-dialog adapter.
  // Native shell acceptance separately proves both Stay and Reload choices.
@@ -102,7 +107,7 @@ export async function launchDesktopContext(profile: string | null, options: Brow
  suspensions.set(context, async () => {
   retainProfile = true;
   await context.close();
-  return () => launchDesktopContext(directory, options, false, temporary);
+  return () => launchDesktopContext(directory, options, false, temporary, info);
  });
  context.newPage = async (): Promise<Page> => {
   if (!firstTaken && !first.isClosed()) { firstTaken = true; return first; }
@@ -112,6 +117,8 @@ export async function launchDesktopContext(profile: string | null, options: Brow
  };
  context.close = async () => {
   if (closed) return; closed = true;
+  try { await stopTrace(); }
+  catch (error) { await info?.attach('Electron tracing error', { body: String(error), contentType: 'text/plain' }); }
   const process = app.process();
   if (process.exitCode === null && process.signalCode === null) {
    const fallback = setTimeout(() => terminate(), 10000);
