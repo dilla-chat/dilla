@@ -1,5 +1,5 @@
 import { test, expect, _electron, type ElectronApplication } from '@playwright/test';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { spawn, execFile, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import { tmpdir } from 'node:os';
@@ -33,6 +33,24 @@ test.beforeEach(async () => {
   selected = start('pw-play', ['--target=0', '--properties={ application.name="Dilla Selected Acceptance" }', join(root, 'selected.wav')]);
   other = start('pw-play', ['--target=0', '--properties={ application.name="Dilla Other Acceptance" }', join(root, 'other.wav')]);
   selectedPIDs = [(selected as ChildProcess).pid!];
+ } else if (process.platform === 'darwin') {
+  const executable = join(root, 'TonePlayer');
+  await exec('swiftc', ['-O', resolve('test/support/TonePlayer.swift'), '-o', executable], { env, timeout: 60000 });
+  for (const [name, frequency] of [['selected', 1000], ['other', 880]] as const) {
+   const bundle = join(root, name + '.app'), contents = join(bundle, 'Contents');
+   await mkdir(join(contents, 'MacOS'), { recursive: true });
+   await exec('cp', [executable, join(contents, 'MacOS/TonePlayer')], { env });
+   await writeFile(join(contents, 'Info.plist'), `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleExecutable</key><string>TonePlayer</string><key>CFBundleIdentifier</key><string>dev.dilla.acceptance.${name}</string><key>CFBundleName</key><string>Dilla ${name} audio acceptance</string><key>CFBundlePackageType</key><string>APPL</string></dict></plist>`);
+   await exec('codesign', ['--force', '--sign', '-', bundle], { env, timeout: 10000 });
+   const file = join(root, name + '.wav'); await writeFile(file, wave(frequency));
+   const actor = start(join(contents, 'MacOS/TonePlayer'), [file]);
+   await new Promise<void>((done, reject) => {
+    let output = ''; const timeout = setTimeout(() => reject(new Error('Independent macOS playback did not start: ' + diagnostic)), 15000);
+    actor.once('exit', code => { clearTimeout(timeout); reject(new Error('macOS playback exited: ' + code + ' ' + diagnostic)); });
+    actor.stdout!.on('data', data => { output += String(data); if (output.includes('NATIVE_TONE_READY ')) { clearTimeout(timeout); console.log(output.trim()); done(); } });
+   });
+   if (name === 'selected') { selected = actor; selectedPIDs = [actor.pid!]; } else other = actor;
+  }
  } else {
   // Independent real playback applications, without fake media devices or PCM injection.
   const actor = join(root, 'tone.cjs');
