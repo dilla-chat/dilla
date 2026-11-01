@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { once } from 'node:events';
+import { EventEmitter, once } from 'node:events';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { WebSocketServer } from 'ws';
-import { SIGNAL_PREFIX, installSignalObserver, signalObservation, sdkSignalEvent } from '../voice/support/signal-lifecycle.ts';
+import { SIGNAL_PREFIX, installSignalObserver, markSignalLifecycle, signalLifecycleDiagnostics, signalObservation, sdkSignalEvent } from '../voice/support/signal-lifecycle.ts';
 
 async function server(body) {
   const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
@@ -84,4 +87,45 @@ test('allowlists retain lifecycle facts while dropping arbitrary console fields,
   assert.deepEqual(sdkSignalEvent('client leave request received (action=0) {reason: 1, room: SECRET}'), { event: 'server-leave', action: 0 });
   assert.deepEqual(sdkSignalEvent('signal connecting to ws://SECRET/rtc/v1?access_token=SECRET'), { event: 'signal-connecting' });
   assert.equal(sdkSignalEvent('unrelated PRIVATE_SECRET'), null);
+});
+
+test('AFK diagnostics persist a real abrupt close between explicit leave and host-stop boundaries, then release the page', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dilla-signal-diagnostic-'));
+  try {
+    await server(async (server, origin) => {
+      const page = new EventEmitter();
+      const native = { WebSocket, URL, performance, console: { info: text => page.emit('console', { text: () => text }) } };
+      Object.assign(page, {
+        context: () => ({ addInitScript: async () => {} }),
+        evaluate: async fn => fn === installSignalObserver
+          ? runInNewContext(`(${fn.toString()})()`, native) : { phase: 'in', hasLeave: true },
+        isClosed: () => false, workers: () => [],
+      });
+      const attachments = [];
+      const diagnostics = signalLifecycleDiagnostics({ outputPath: name => join(dir, name), attach: async (...args) => attachments.push(args) }, 'afk');
+      await assert.rejects(diagnostics.watch({ name: 'PRIVATE_SECRET', page }), /Unknown signal diagnostic actor/);
+      await diagnostics.watch({ name: 'bjorn', page });
+      const connected = once(server, 'connection');
+      const socket = new native.WebSocket(`${origin}/rtc/v1?access_token=PRIVATE_SECRET`);
+      await once(socket, 'open');
+      const [remote] = await connected;
+      await markSignalLifecycle(page, 'before-leave');
+      const closed = once(socket, 'close');
+      remote.terminate();
+      await closed;
+      await markSignalLifecycle(page, 'before-host-stop');
+      await diagnostics.save();
+      const saved = JSON.parse(await readFile(join(dir, 'signal-lifecycle.json'), 'utf8'));
+      assert.equal(saved.suite, 'afk');
+      assert.equal(saved.events.every(event => event.actor === 'bjorn'), true);
+      const cut = saved.events.findIndex(event => event.event === 'closed');
+      assert.equal(saved.events[cut].code, 1006);
+      assert.equal(saved.events[cut].clientClose, false);
+      assert.ok(saved.events.findIndex(event => event.mark === 'before-leave') < cut);
+      assert.ok(saved.events.findIndex(event => event.mark === 'before-host-stop') > cut);
+      assert.equal(/PRIVATE_SECRET|access_token|127\.0\.0\.1/.test(JSON.stringify(saved)), false);
+      assert.equal(attachments.length, 1);
+      assert.equal(page.listenerCount('console'), 0);
+    });
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });

@@ -77,15 +77,17 @@ export function sdkSignalEvent(text: string): SdkSignalEvent | null {
   return null;
 }
 
-type Mark = 'body-complete' | 'before-leave' | 'before-context-close' | 'after-context-close';
-type Actor = 'alice' | 'bob';
+type Mark = 'body-complete' | 'before-leave' | 'after-leave' | 'before-context-close' | 'after-context-close'
+  | 'before-host-stop' | 'after-host-stop' | 'before-host-start' | 'after-host-start'
+  | 'before-page-reload' | 'after-page-reload' | 'before-context-suspend' | 'after-context-resume' | 'case-start';
+type Actor = 'alice' | 'bob' | 'ada' | 'bjorn' | 'phone';
 type Recorder = (mark: Mark) => Promise<void>;
 const recorders = new WeakMap<Page, Recorder>();
 
-/** Only the CSP case registers a recorder. Other voice tests retain their existing teardown verbatim. */
+/** Only explicitly diagnosed cases register a recorder. Other tests retain their existing teardown verbatim. */
 export async function markSignalLifecycle(page: Page, mark: Mark): Promise<void> { await recorders.get(page)?.(mark); }
 
-export function signalLifecycleDiagnostics(info: TestInfo): {
+export function signalLifecycleDiagnostics(info: TestInfo, suite: 'csp-axe' | 'afk' = 'csp-axe'): {
   watch(person: { name: string; page: Page }): Promise<void>; save(): Promise<void>;
 } {
   const started = Date.now();
@@ -101,8 +103,8 @@ export function signalLifecycleDiagnostics(info: TestInfo): {
   };
   return {
     async watch(person) {
-      if (person.name !== 'alice' && person.name !== 'bob') throw new Error('Unknown signal diagnostic actor');
-      const actor = person.name;
+      if (!['alice', 'bob', 'ada', 'bjorn', 'phone'].includes(person.name)) throw new Error('Unknown signal diagnostic actor');
+      const actor = person.name as Actor;
       const listener = (message: ConsoleMessage) => {
         const text = message.text(), socket = signalObservation(text), sdk = sdkSignalEvent(text);
         if (socket) append(actor, 'websocket', socket);
@@ -128,7 +130,7 @@ export function signalLifecycleDiagnostics(info: TestInfo): {
     },
     async save() {
       const path = info.outputPath('signal-lifecycle.json');
-      await writeFile(path, JSON.stringify({ version: 1, suite: 'csp-axe', platform: process.platform, dropped, events }));
+      await writeFile(path, JSON.stringify({ version: 1, suite, platform: process.platform, dropped, events }));
       await info.attach('Signal lifecycle diagnostic', { path, contentType: 'application/json' });
       for (const release of dispose) release();
     },

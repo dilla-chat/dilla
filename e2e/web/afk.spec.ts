@@ -42,6 +42,7 @@ import { PROFILE_ROOT } from './support/persistent';
 import { desktopApplication, desktopE2E, launchDesktopContext, suspendDesktopContext } from './support/electron.ts';
 import { FIREFOX_MEDIA_PREFS, chromiumMediaArgs, writeFixtures } from '../media/support/fixtures';
 import { closeSettings, connected, dock, micLive, noiseOff, openVoiceSettings, phaseOf, sendsAudio, stage, voiceRow, watchAudio } from '../voice/support/voice';
+import { markSignalLifecycle, signalLifecycleDiagnostics } from '../voice/support/signal-lifecycle.ts';
 import { arr, decode, encode, type CborInput, type CborValue } from '../../packages/client-core/src/cbor/index';
 
 /** Its own ports (web3.9 reservation): the host, its control listener, and its LiveKit's signalling and ICE ports. */
@@ -65,10 +66,11 @@ let bjornAccount: Account | null = null;
 
 /** One person's client: a persistent context of its own (Electron in the desktop lane, otherwise the project's browser), its page, the bearer the
  *  page's worker last sent (for the spec's reads), and what it printed that the guard refuses. */
-interface Person { name: string; context: BrowserContext; page: Page; bearer: string; errors: string[]; afkPosts: number; awayPuts: number }
+interface Person { name: string; diagnosticActor: 'ada' | 'bjorn' | 'phone'; context: BrowserContext; page: Page; bearer: string; errors: string[]; afkPosts: number; awayPuts: number }
 let ada: Person | null = null;
 let bjorn: Person | null = null;
 let phone: Person | null = null;
+let signalDiagnostics: ReturnType<typeof signalLifecycleDiagnostics> | null = null;
 /** While the host restarts, a browser's refused connections are expected; nothing else is. */
 let restarting = false;
 /** While a move's cut is expected (steps 4, 6 and 8), LiveKit's lines about it are; nowhere else. */
@@ -110,12 +112,12 @@ async function openPerson(name: string, f: Launch, projectName: string, workerIn
     headless: f.headless, channel: f.channel, baseURL: ORIGIN, ...shape,
     ...(firefox ? { firefoxUserPrefs: FIREFOX_MEDIA_PREFS } : { args: chromiumMediaArgs(fixtures), permissions: ['microphone'] }),
   });
-  return observePerson(name, context, firefox);
+  return observePerson(name, context, firefox, undefined, device === 'phone' ? 'phone' : name === OWNER ? 'ada' : 'bjorn');
 }
 
 /** Attach the same evidence collectors after an actual desktop process restart as after its first launch. */
-async function observePerson(name: string, context: BrowserContext, firefox = false, prior?: Person): Promise<Person> {
-  const p: Person = { name, context, page: context.pages()[0] ?? (await context.newPage()),
+async function observePerson(name: string, context: BrowserContext, firefox = false, prior?: Person, actor: Person['diagnosticActor'] = prior?.diagnosticActor ?? 'bjorn'): Promise<Person> {
+  const p: Person = { name, diagnosticActor: actor, context, page: context.pages()[0] ?? (await context.newPage()),
     bearer: prior?.bearer ?? '', errors: prior?.errors ?? [], afkPosts: prior?.afkPosts ?? 0, awayPuts: prior?.awayPuts ?? 0 };
   if (desktopE2E()) {
     // A secondary person must exercise the shipping native transport and sandbox too. A browser launched directly
@@ -156,6 +158,8 @@ async function observePerson(name: string, context: BrowserContext, firefox = fa
     p.errors.push(`${name}: ${text}`);
   });
   context.on('weberror', (e) => { p.errors.push(`${name}: ${String(e.error())}`); });
+  // A resumed process has a new page: retain its native signal evidence in the current case too.
+  if (signalDiagnostics) await signalDiagnostics.watch({ name: p.diagnosticActor, page: p.page });
   // Every live region's text as it changes: what a screen reader would be given to say, in order.
   await context.addInitScript(() => {
     const w = window as unknown as { __said: string[] };
@@ -319,8 +323,25 @@ test.afterAll(async () => {
   removeHostData(HOST.port);
 });
 // eslint-disable-next-line no-empty-pattern
+test.beforeEach(async ({}, testInfo) => {
+  signalDiagnostics = signalLifecycleDiagnostics(testInfo, 'afk');
+  for (const p of [ada, bjorn, phone]) {
+    if (p === null || p.page.isClosed()) continue;
+    await signalDiagnostics.watch({ name: p.diagnosticActor, page: p.page });
+    await markSignalLifecycle(p.page, 'case-start');
+  }
+});
+// eslint-disable-next-line no-empty-pattern
 test.afterEach(async ({}, testInfo) => {
   cutting = false;
+  // Save before the error guard: a console-only failure otherwise misses the failure attachment branch below.
+  // Each allowlisted event is also printed immediately, surviving fast cancellation of the large trace upload.
+  try {
+    for (const p of [ada, bjorn, phone]) if (p !== null) await markSignalLifecycle(p.page, 'body-complete');
+  } finally {
+    await signalDiagnostics?.save();
+    signalDiagnostics = null;
+  }
   // The runner traces only its own context: on a failure the people's pages are attached as they stand.
   if (testInfo.status !== testInfo.expectedStatus) {
     for (const p of [ada, bjorn, phone]) {
@@ -599,7 +620,9 @@ test('5. Björn goes back to general with his own mute state and leaves the rost
 
   // R-AW3: Ada chooses AFK. Her call is left first (the dock goes), and no call starts in Idle.
   const posts = a.afkPosts;
+  await markSignalLifecycle(a.page, 'before-leave');
   await voiceRow(a.page, RENAMED).click();
+  await markSignalLifecycle(a.page, 'after-leave');
   await expect(dock(a.page).locator('.d-voice-dock')).toHaveCount(0, { timeout: WAIT });
   for (const p of [a, b]) await expect(awayPeople(p.page, RENAMED).filter({ hasText: OWNER })).toHaveCount(1, { timeout: WAIT });
   await expect(roomPeople(b.page, 'general').filter({ hasText: OWNER })).toHaveCount(0, { timeout: WAIT });
@@ -693,7 +716,11 @@ test('7. with view_channel left out of his roles community-wide, Björn still se
   const b = person(bjorn, FRIEND);
   // The browser phone case ends his call. Desktop omits that mobile case, so leave the call from step 5 explicitly;
   // going AFK here would pre-mark him away and stop the permission test below from proving its own AFK click.
-  if (desktopE2E()) await stage(b.page).locator('[data-control="leave"]').click();
+  if (desktopE2E()) {
+    await markSignalLifecycle(b.page, 'before-leave');
+    await stage(b.page).locator('[data-control="leave"]').click();
+    await markSignalLifecycle(b.page, 'after-leave');
+  }
   await expect(dock(b.page).locator('.d-voice-dock')).toHaveCount(0, { timeout: WAIT });
   // The role editor: @everyone loses "view channels", so none of Björn's roles grants it anywhere (R35).
   await setEveryone(a, 'perm.view', false);
@@ -722,6 +749,7 @@ test('8. Q2 (revised, AW2 final): his last connection closing keeps Björn away 
   const posts = b.afkPosts;
   // The desktop admits only application navigation. Stop the real process and retain its encrypted profile;
   // an about:blank navigation is a browser-only way to close the last gateway connection.
+  await markSignalLifecycle(b.page, 'before-context-suspend');
   const resume = desktopE2E() ? await suspendDesktopContext(b.context) : null;
   if (resume === null) await b.page.goto('about:blank');
   // A reload or a short drop keeps him away: the grace (afkOfflineGrace, 30 s) runs on the host's clock, which stands still
@@ -735,6 +763,7 @@ test('8. Q2 (revised, AW2 final): his last connection closing keeps Björn away 
   await advanceClock(11);
   await expect(awayPeople(a.page, RENAMED)).toHaveCount(0, { timeout: WAIT });
   if (resume !== null) { b = await observePerson(b.name, await resume(), false, b); bjorn = b; }
+  await markSignalLifecycle(b.page, 'after-context-resume');
   await b.page.goto(`/c/${communityId}`);
   await expect(railItem(b.page, SERVER)).toBeVisible({ timeout: WAIT });
   await expect(voiceRow(b.page, RENAMED)).toBeVisible({ timeout: WAIT });
@@ -780,7 +809,9 @@ test('9. a web3.8 pick: after the upgrade the server has a new AFK, and lounge a
   await connected(b.page);
   await sendsAudio(b);
   // Signal §5.6: on the joined channel's stage the dock draws nothing; leave from the call bar.
+  await markSignalLifecycle(b.page, 'before-leave');
   await stage(b.page).locator('[data-control="leave"]').click();
+  await markSignalLifecycle(b.page, 'after-leave');
   await expect(dock(b.page).locator('.d-voice-dock')).toHaveCount(0, { timeout: WAIT });
 
   // The old Idle is a plain voice channel too: it has its delete and its permissions; only the new AFK has neither.
@@ -840,11 +871,17 @@ test('10. accessible: the channel list, the AFK row with its away roster and ser
 async function restart(people: Person[]): Promise<void> {
   restarting = true;
   try {
+    for (const p of people) await markSignalLifecycle(p.page, 'before-host-stop');
     await started().stop();
+    for (const p of people) await markSignalLifecycle(p.page, 'after-host-stop');
+    for (const p of people) await markSignalLifecycle(p.page, 'before-host-start');
     host = await startTestHost(HOST);
+    for (const p of people) await markSignalLifecycle(p.page, 'after-host-start');
     for (const p of people) {
+      await markSignalLifecycle(p.page, 'before-page-reload');
       await p.page.reload();
       await expect(railItem(p.page, SERVER)).toBeVisible({ timeout: WAIT });
+      await markSignalLifecycle(p.page, 'after-page-reload');
     }
     // The page's worker sends its bearer again once it is up.
     await expect.poll(async () => (await fetch(`${ORIGIN}/v1/communities/${communityId}/afk`, {
