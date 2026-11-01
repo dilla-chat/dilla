@@ -59,6 +59,8 @@ type Server struct {
 	// (a channel group being populated after its 201) before it stops the delivery service they
 	// issue proposals through.
 	groups *api.Groups
+	// presence drains committed profile hints before the gateway and repository stop.
+	presence *api.PresenceService
 	// events is the dispatcher of the SFU's webhooks and the delivery service's call evictor
 	// (dilla-media task 12).
 	events *api.CallEvents
@@ -362,7 +364,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		FramesPerSecond: float64(o.Config.Gateway.FrameBurst),
 		FrameBurst:      o.Config.Gateway.FrameBurstMax,
 	})
-	presence = api.NewPresenceService(o.Repo, gw, o.Clock)
+	presence = api.NewPresenceService(o.Repo, gw, o.Clock, o.Log)
 	deps.Presence = presence
 	channels, acl := deliverySeams(o)
 	delivery, err = ds.New(ds.Options{
@@ -649,7 +651,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 
 	s := &Server{
 		o: o, mux: mux, handler: h, sessions: sessions, instance: instance,
-		wasm: wasm, ownsWasm: ownsWasm, gw: gw, cutDevice: cutFromCalls, ds: delivery, groups: groups, events: events,
+		wasm: wasm, ownsWasm: ownsWasm, gw: gw, cutDevice: cutFromCalls, ds: delivery, groups: groups, presence: presence, events: events,
 		calls: callRoutes,
 		blobs: blobs, ownsBlobs: ownsBlobs,
 		throttle: throttle, limiter: limiter, passkeys: passkeys,
@@ -796,6 +798,9 @@ func (s *Server) shutdown(ctx context.Context) error {
 	// populating a registered group finish before the delivery service they propose through stops.
 	if gerr := s.groups.Drain(ctx); gerr != nil {
 		keep(fmt.Errorf("dillad: wait for the registered groups being populated: %w", gerr))
+	}
+	if perr := s.presence.Drain(ctx); perr != nil {
+		keep(fmt.Errorf("dillad: drain profile hints: %w", perr))
 	}
 	if s.maintenance != nil {
 		s.maintenance()

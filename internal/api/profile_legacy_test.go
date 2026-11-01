@@ -15,7 +15,7 @@ func TestALegacyDisplayNameIsKeptAndDoesNotBlockOtherFields(t *testing.T) {
 	user, _, token := seedSession(t, deps)
 	ctx := context.Background()
 	legacy := "Ada" + string(rune(0x200b)) + "L"
-	if err := deps.Repo.UpdateProfile(ctx, user.ID, profileStr(legacy), nil, nil); err != nil {
+	if _, err := deps.Repo.UpdateProfile(ctx, user.ID, profileStr(legacy), nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	var me []cbor.RawMessage

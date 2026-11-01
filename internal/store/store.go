@@ -355,8 +355,9 @@ type Accounts interface {
 	// UpdateProfile writes the display name, status message and bio in one statement (EOD E6); the
 	// caller has validated them. A nil field is left as it is (COALESCE in SQL, so two writers that
 	// change different fields never overwrite each other); "" clears one. ErrNotFound for an unknown
-	// or tombstoned user.
-	UpdateProfile(ctx context.Context, userID id.ID, display, statusMsg, bio *string) error
+	// or tombstoned user. The bool reports whether stored values actually changed,
+	// decided by the UPDATE itself (including under concurrent PATCHes).
+	UpdateProfile(ctx context.Context, userID id.ID, display, statusMsg, bio *string) (bool, error)
 	// SetFactorOwed writes users.factor_owed (web3.6 S1); ErrNotFound for an unknown user.
 	SetFactorOwed(ctx context.Context, userID id.ID, owed bool) error
 	// MarkFactorOwedWithoutFactor sets factor_owed on every live human account that holds no

@@ -304,6 +304,9 @@ const updateProfile = `-- name: UpdateProfile :execrows
 UPDATE users SET display = COALESCE(?1, display), status_msg = COALESCE(?2, status_msg),
                  bio = COALESCE(?3, bio)
 WHERE id = ?4 AND deleted_at IS NULL
+  AND (display <> COALESCE(?1, display)
+    OR status_msg <> COALESCE(?2, status_msg)
+    OR bio <> COALESCE(?3, bio))
 `
 
 type UpdateProfileParams struct {

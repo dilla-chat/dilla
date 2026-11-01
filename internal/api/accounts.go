@@ -340,17 +340,10 @@ func (d Deps) PatchMe(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	old, err := d.Repo.GetUser(r.Context(), sess.UserID)
+	// The UPDATE compares and writes in one statement; a concurrent PATCH cannot
+	// invalidate the change decision. Null fields preserve another device's edits.
+	visibleChanged, err := d.Repo.UpdateProfile(r.Context(), sess.UserID, display, status, bio)
 	if err != nil {
-		server.WriteError(w, d.storeError(r, err))
-		return
-	}
-	// Compare normalized values, including bio (returned with the member list's profile).
-	visibleChanged := display != nil && *display != old.Display ||
-		status != nil && *status != old.StatusMsg || bio != nil && *bio != old.Bio
-	// One UPDATE that names only the given fields, so two devices changing different fields never
-	// overwrite each other (a null leaves the column as it is).
-	if err := d.Repo.UpdateProfile(r.Context(), sess.UserID, display, status, bio); err != nil {
 		server.WriteError(w, d.storeError(r, err))
 		return
 	}

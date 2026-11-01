@@ -64,7 +64,8 @@ func (d Deps) PatchBotProfile(w http.ResponseWriter, r *http.Request) {
 		if _, err := tx.GetMember(r.Context(), cid, bot.ID); err != nil {
 			return server.Errorf(server.CodeUnavailable, "managed bot membership is unavailable")
 		}
-		return tx.UpdateProfile(r.Context(), bot.ID, &display, nil, nil)
+		_, err = tx.UpdateProfile(r.Context(), bot.ID, &display, nil, nil)
+		return err
 	})
 	if err != nil {
 		server.WriteError(w, d.storeError(r, err))

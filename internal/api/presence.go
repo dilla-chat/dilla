@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -22,71 +23,158 @@ type PresenceGateway interface {
 }
 
 type PresenceService struct {
-	repo           store.Repository
-	gw             PresenceGateway
-	clk            clock.Clock
-	mu             sync.Mutex
-	last           map[id.ID]uint8
-	profilePending map[id.ID]struct{}
+	repo store.Repository
+	gw   PresenceGateway
+	clk  clock.Clock
+	log  *slog.Logger
+	mu   sync.Mutex
+	last map[id.ID]uint8
+
+	// Profile scheduling is independent of the presence broadcast lock. All editors
+	// (and all their devices) share one fixed window for each community.
+	profileMu       sync.Mutex
+	profilePending  map[id.ID]map[id.ID]struct{}
+	profileEdits    map[id.ID][]time.Time
+	profileSweep    time.Time
+	profileWork     inFlight
+	profileCtx      context.Context
+	profileCancel   context.CancelFunc
+	profileFlush    chan struct{}
+	profileDraining bool
 }
 
-func NewPresenceService(repo store.Repository, gw PresenceGateway, clk clock.Clock) *PresenceService {
-	return &PresenceService{repo: repo, gw: gw, clk: clk, last: map[id.ID]uint8{}, profilePending: map[id.ID]struct{}{}}
+func NewPresenceService(repo store.Repository, gw PresenceGateway, clk clock.Clock, log *slog.Logger) *PresenceService {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &PresenceService{
+		repo: repo, gw: gw, clk: clk, log: log, last: map[id.ID]uint8{},
+		profilePending: map[id.ID]map[id.ID]struct{}{}, profileEdits: map[id.ID][]time.Time{},
+		profileCtx: ctx, profileCancel: cancel, profileFlush: make(chan struct{}),
+	}
 }
 
-// ProfileChanged coalesces a user's committed profile edits over a fixed two-second window,
-// across devices. The trailing hint sees the final profile and current membership; continuously
-// editing cannot postpone delivery indefinitely or trigger more than one fan-out per window.
-// DeliverUser sends to live connections only, with no persistence or offline replay.
-func (p *PresenceService) ProfileChanged(ctx context.Context, user id.ID) {
+// ProfileChanged schedules a committed edit's hints. Six changed edits per rolling
+// minute per editor may produce hints; further edits still save normally. Timers
+// and rate accounting use wall time, independent of the presence/AFK instance clock.
+// Each community receives at most one profile-caused op 54 per fixed ten-second
+// window, regardless of the number of editors or devices.
+func (p *PresenceService) ProfileChanged(_ context.Context, user id.ID) {
 	if p == nil {
 		return
 	}
-	p.mu.Lock()
-	if _, pending := p.profilePending[user]; pending {
-		p.mu.Unlock()
+	p.profileMu.Lock()
+	defer p.profileMu.Unlock()
+	if p.profileDraining {
 		return
 	}
-	p.profilePending[user] = struct{}{}
-	// This transport debounce follows wall time, independently of the instance clock
-	// used for presence/AFK expiry (which the testhost can freeze or jump).
-	timer := clock.System().NewTimer(2 * time.Second)
-	p.mu.Unlock()
-	ctx = context.WithoutCancel(ctx)
+	now := time.Now()
+	// Expire inactive editors opportunistically, without a goroutine per editor.
+	if !now.Before(p.profileSweep) {
+		for editor, edits := range p.profileEdits {
+			if now.Sub(edits[len(edits)-1]) >= time.Minute {
+				delete(p.profileEdits, editor)
+			}
+		}
+		p.profileSweep = now.Add(time.Minute)
+	}
+	edits := p.profileEdits[user]
+	for len(edits) > 0 && now.Sub(edits[0]) >= time.Minute {
+		edits = edits[1:]
+	}
+	if len(edits) >= 6 {
+		return
+	}
+	p.profileEdits[user] = append(edits, now)
+	p.profileWork.start()
 	go func() {
-		defer timer.Stop()
-		<-timer.C()
-		p.mu.Lock()
-		delete(p.profilePending, user)
-		p.mu.Unlock()
-		// Request cancellation must not lose the committed hint, but failed storage must not
-		// leave its fan-out running without a bound.
-		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer p.profileWork.done()
+		ctx, cancel := context.WithTimeout(p.profileCtx, 10*time.Second)
 		defer cancel()
-		communities, err := p.repo.ListCommunitiesForUser(ctx, user)
-		if err != nil {
+		if !p.profileVisible(ctx, user) {
 			return
 		}
+		communities, err := p.repo.ListCommunitiesForUser(ctx, user)
+		if err != nil {
+			p.log.ErrorContext(ctx, "listing communities for profile hint failed", "user", user, "err", err)
+			return
+		}
+		p.profileMu.Lock()
+		defer p.profileMu.Unlock()
 		for _, community := range communities {
-			payload, err := gateway.CommunityChangedPayload(community.ID)
-			if err != nil {
+			if editors, pending := p.profilePending[community.ID]; pending {
+				editors[user] = struct{}{}
 				continue
 			}
-			members, err := communityMemberIDs(ctx, p.repo, community.ID)
-			if err != nil {
-				continue
-			}
-			frame := gateway.Frame{Op: gateway.OpCommunityChanged, Payload: payload}
-			seen := make(map[id.ID]struct{}, len(members))
-			for _, member := range members {
-				if _, sent := seen[member]; sent {
-					continue
-				}
-				seen[member] = struct{}{}
-				p.gw.DeliverUser(member, frame)
-			}
+			p.profilePending[community.ID] = map[id.ID]struct{}{user: {}}
+			timer := clock.System().NewTimer(10 * time.Second)
+			p.profileWork.start()
+			go p.profileHint(community.ID, timer)
 		}
 	}()
+}
+
+func (p *PresenceService) profileVisible(ctx context.Context, user id.ID) bool {
+	choice, err := p.repo.GetPresenceChoice(ctx, user)
+	if err != nil {
+		p.log.ErrorContext(ctx, "reading presence for profile hint failed", "user", user, "err", err)
+		return false
+	}
+	return choice != 4 // Invisible edits appear only on the next normal member-list read.
+}
+
+func (p *PresenceService) profileHint(community id.ID, timer clock.Timer) {
+	defer p.profileWork.done()
+	defer timer.Stop()
+	select {
+	case <-timer.C():
+	case <-p.profileFlush: // Flush pending hints while the gateway and store are still alive.
+	case <-p.profileCtx.Done():
+		return
+	}
+	p.profileMu.Lock()
+	editors := p.profilePending[community]
+	delete(p.profilePending, community)
+	p.profileMu.Unlock()
+	ctx, cancel := context.WithTimeout(p.profileCtx, 10*time.Second)
+	defer cancel()
+	// At least one editor must still belong to this live community and remain
+	// visible. Membership of recipients is also read at delivery by StructureNotifier.
+	if _, err := p.repo.GetCommunity(ctx, community); err != nil {
+		if !errors.Is(err, store.ErrNotFound) {
+			p.log.ErrorContext(ctx, "reading community for profile hint failed", "community", community, "err", err)
+		}
+		return
+	}
+	for editor := range editors {
+		if _, err := p.repo.GetMember(ctx, community, editor); err != nil {
+			if !errors.Is(err, store.ErrNotFound) {
+				p.log.ErrorContext(ctx, "reading membership for profile hint failed", "community", community, "user", editor, "err", err)
+			}
+			continue
+		}
+		if !p.profileVisible(ctx, editor) {
+			continue
+		}
+		// Share StructureNotifier's store/encode error logging and live-only fan-out.
+		NewStructureNotifier(p.gw, p.repo, p.log).Changed(ctx, community)
+		return
+	}
+}
+
+// Drain flushes pending hints and waits within ctx before Shutdown stops their
+// gateway/repository. Late handlers cannot add work after draining begins.
+func (p *PresenceService) Drain(ctx context.Context) error {
+	if p == nil {
+		return nil
+	}
+	p.profileMu.Lock()
+	if !p.profileDraining {
+		p.profileDraining = true
+		close(p.profileFlush)
+	}
+	p.profileMu.Unlock()
+	err := p.profileWork.wait(ctx)
+	p.profileCancel()
+	return err
 }
 
 func (p *PresenceService) status(ctx context.Context, user id.ID) (uint8, error) {

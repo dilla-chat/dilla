@@ -330,16 +330,25 @@ func (r *Repo) TombstoneUser(ctx context.Context, userID id.ID, at int64) error 
 	}))
 }
 
-// UpdateProfile is ErrNotFound unless the UPDATE matched a live user's row.
-func (r *Repo) UpdateProfile(ctx context.Context, userID id.ID, display, statusMsg, bio *string) error {
+// UpdateProfile reports changes from the UPDATE predicate, never from a prior read.
+func (r *Repo) UpdateProfile(ctx context.Context, userID id.ID, display, statusMsg, bio *string) (bool, error) {
 	n, err := r.w.UpdateProfile(ctx, pgdb.UpdateProfileParams{Display: nullString(display), StatusMsg: nullString(statusMsg), Bio: nullString(bio), ID: userID})
 	if err != nil {
-		return wrap(err)
+		return false, wrap(err)
 	}
-	if n != 1 {
-		return store.ErrNotFound
+	if n == 1 {
+		return true, nil
 	}
-	return nil
+	// This read distinguishes a no-op from a missing/tombstoned account only;
+	// whether a hint is needed was already decided atomically by the UPDATE.
+	user, err := r.GetUser(ctx, userID)
+	if err != nil {
+		return false, err
+	}
+	if user.DeletedAt != nil {
+		return false, store.ErrNotFound
+	}
+	return false, nil
 }
 
 // SetFactorOwed is ErrNotFound unless the UPDATE matched the user's row.

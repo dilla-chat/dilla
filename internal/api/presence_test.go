@@ -3,8 +3,12 @@ package api_test
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -13,6 +17,8 @@ import (
 	"github.com/fxamacker/cbor/v2"
 
 	"github.com/jonasthim/dilla/internal/api"
+	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/gateway"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/store"
@@ -60,7 +66,7 @@ func (g *presenceGatewayFake) snapshot() ([]id.ID, []gateway.Frame) {
 
 func TestPresenceChoiceAndSnapshotAreMemberScoped(t *testing.T) {
 	gw := &presenceGatewayFake{live: map[id.ID]bool{}}
-	h, deps := newTestAPIWired(t, func(d *api.Deps) { d.Presence = api.NewPresenceService(d.Repo, gw, d.Clock) })
+	h, deps := newTestAPIWired(t, func(d *api.Deps) { d.Presence = api.NewPresenceService(d.Repo, gw, d.Clock, d.Log) })
 	owner, _, ownerToken := seedSession(t, deps)
 	peer, _, peerToken := seedSession(t, deps)
 	stranger, _, strangerToken := seedSession(t, deps)
@@ -155,7 +161,7 @@ func TestPresenceBroadcastRetriesAfterAudienceReadFailure(t *testing.T) {
 		}
 	}
 	gw := &presenceGatewayFake{live: map[id.ID]bool{owner.ID: true}}
-	service := api.NewPresenceService(&flakyPresenceMembers{Repository: deps.Repo, fail: true}, gw, deps.Clock)
+	service := api.NewPresenceService(&flakyPresenceMembers{Repository: deps.Repo, fail: true}, gw, deps.Clock, deps.Log)
 	service.Changed(ctx, owner.ID)
 	if len(gw.to) != 0 {
 		t.Fatalf("broadcast after failed audience read: %v", gw.to)
@@ -180,9 +186,18 @@ type profilePresenceEnv struct {
 }
 
 func newProfilePresenceEnv(t *testing.T) profilePresenceEnv {
+	return newProfilePresenceEnvWithRepo(t, nil)
+}
+
+func newProfilePresenceEnvWithRepo(t *testing.T, wrap func(store.Repository) store.Repository) profilePresenceEnv {
 	t.Helper()
 	gw := &presenceGatewayFake{live: map[id.ID]bool{}}
-	h, deps := newTestAPIWired(t, func(d *api.Deps) { d.Presence = api.NewPresenceService(d.Repo, gw, d.Clock) })
+	h, deps := newTestAPIWired(t, func(d *api.Deps) {
+		if wrap != nil {
+			d.Repo = wrap(d.Repo)
+		}
+		d.Presence = api.NewPresenceService(d.Repo, gw, d.Clock, d.Log)
+	})
 	owner, _, _ := seedSession(t, deps)
 	peer, _, token := seedSession(t, deps)
 	stranger, _, _ := seedSession(t, deps)
@@ -249,7 +264,7 @@ func TestPatchMeTellsCoMembersToReReadTheMemberList(t *testing.T) {
 				body := []any{nil, nil, nil}
 				body[field] = "Björn"
 				e.patch(t, body)
-				e.advance(2 * time.Second)
+				e.advance(10 * time.Second)
 				e.wantHints(t, 1)
 			})
 		})
@@ -259,12 +274,12 @@ func TestPatchMeTellsCoMembersToReReadTheMemberList(t *testing.T) {
 func TestPatchMeNoVisibleChangeSendsNothing(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		e := newProfilePresenceEnv(t)
-		if err := e.deps.Repo.UpdateProfile(t.Context(), e.peer, profileStr("Björn"), profileStr("working"), profileStr("hello")); err != nil {
+		if _, err := e.deps.Repo.UpdateProfile(t.Context(), e.peer, profileStr("Björn"), profileStr("working"), profileStr("hello")); err != nil {
 			t.Fatal(err)
 		}
 		e.patch(t, []any{nil, nil, nil})
 		e.patch(t, []any{"Björn", "  working  ", "hello"})
-		e.advance(3 * time.Second)
+		e.advance(11 * time.Second)
 		if _, frames := e.gw.snapshot(); len(frames) != 0 {
 			t.Fatalf("no-op patches sent %d frames", len(frames))
 		}
@@ -278,7 +293,7 @@ func TestPatchMeRapidEditsCoalesce(t *testing.T) {
 		e.advance(time.Second)
 		e.patch(t, []any{nil, "working", nil})
 		e.patch(t, []any{nil, nil, "hello"})
-		e.advance(999 * time.Millisecond)
+		e.advance(8999 * time.Millisecond)
 		if _, frames := e.gw.snapshot(); len(frames) != 0 {
 			t.Fatal("burst notified before the coalescing window elapsed")
 		}
@@ -290,7 +305,7 @@ func TestPatchMeRapidEditsCoalesce(t *testing.T) {
 			t.Fatalf("profile = %+v, %v", user, err)
 		}
 		e.patch(t, []any{nil, "available", nil})
-		e.advance(2 * time.Second)
+		e.advance(10 * time.Second)
 		e.wantHints(t, 2)
 	})
 }
@@ -303,7 +318,7 @@ func TestPatchMeOnlyNotifiesCommunitiesTheUserBelongsTo(t *testing.T) {
 		if err := e.deps.Repo.DeleteMember(t.Context(), e.communities[1], e.peer); err != nil {
 			t.Fatal(err)
 		}
-		e.advance(2 * time.Second)
+		e.advance(10 * time.Second)
 		to, frames := e.gw.snapshot()
 		if len(frames) != 2 {
 			t.Fatalf("got %d hints, want 2 for the remaining community", len(frames))
@@ -316,6 +331,312 @@ func TestPatchMeOnlyNotifiesCommunitiesTheUserBelongsTo(t *testing.T) {
 			if to[i] == e.stranger || frame.Op != gateway.OpCommunityChanged || !bytes.Equal(frame.Payload, want) {
 				t.Fatalf("hint escaped the user's community: %s %+v", to[i], frame)
 			}
+		}
+	})
+}
+
+func TestPatchMeTwoEditorsCoalescePerCommunity(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newProfilePresenceEnv(t)
+		e.patch(t, []any{"Björn", nil, nil})
+		e.advance(5 * time.Second)
+		if _, err := e.deps.Repo.UpdateProfile(t.Context(), e.owner, profileStr("Owner edited"), nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		e.deps.Presence.ProfileChanged(t.Context(), e.owner)
+		e.advance(4999 * time.Millisecond)
+		if _, frames := e.gw.snapshot(); len(frames) != 0 {
+			t.Fatal("hint before 10 seconds")
+		}
+		e.advance(time.Millisecond)
+		e.wantHints(t, 1)
+		e.advance(5 * time.Second)
+		// The owner's third community has its own window, started at t=5.
+		_, frames := e.gw.snapshot()
+		if len(frames) != 6 {
+			t.Fatalf("got %d hints, want one per member of each community", len(frames))
+		}
+	})
+}
+
+func TestPatchMeOneEditorThreeCommunities(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newProfilePresenceEnv(t)
+		if err := e.deps.Repo.PutMember(t.Context(), store.MemberOfCommunityRow{CommunityID: e.communities[2], UserID: e.peer, Joined: 1}); err != nil {
+			t.Fatal(err)
+		}
+		for round := 1; round <= 2; round++ {
+			e.patch(t, []any{fmt.Sprintf("name %d", round), nil, nil})
+			e.advance(10 * time.Second)
+			to, frames := e.gw.snapshot()
+			if len(frames) != 7*round {
+				t.Fatalf("got %d hints, want %d", len(frames), 7*round)
+			}
+			for _, cid := range e.communities {
+				want, _ := cbor.Marshal([]any{cid})
+				count := 0
+				for i, frame := range frames {
+					if to[i] == e.peer && bytes.Equal(frame.Payload, want) {
+						count++
+					}
+				}
+				if count != round {
+					t.Fatalf("community %s: %d hints, want %d", cid, count, round)
+				}
+			}
+		}
+	})
+}
+
+func TestPatchMeHintStormIsBounded(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newProfilePresenceEnv(t)
+		for i := 0; i < 100; i++ {
+			e.patch(t, []any{fmt.Sprintf("name %d", i), nil, nil})
+			e.deps.Clock.(*clock.Fake).Advance(600 * time.Millisecond)
+			e.advance(600 * time.Millisecond)
+		}
+		e.advance(10 * time.Second)
+		_, frames := e.gw.snapshot()
+		if len(frames) > 24 {
+			t.Fatalf("100 edits sent %d hints, want at most 6 per community/recipient", len(frames))
+		}
+		user, err := e.deps.Repo.GetUser(t.Context(), e.peer)
+		if err != nil || user.Display != "name 99" {
+			t.Fatalf("rate cap lost saved profile: %+v, %v", user, err)
+		}
+	})
+}
+
+func TestPatchMeEditorHintRateResetsAfterAMinute(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newProfilePresenceEnv(t)
+		for i := 0; i < 6; i++ {
+			e.patch(t, []any{fmt.Sprintf("name %d", i), nil, nil})
+		}
+		e.advance(10 * time.Second)
+		e.wantHints(t, 1)
+		e.patch(t, []any{"over budget", nil, nil})
+		e.advance(10 * time.Second)
+		e.wantHints(t, 1)
+		e.advance(40 * time.Second)
+		e.patch(t, []any{"next minute", nil, nil})
+		e.advance(10 * time.Second)
+		e.wantHints(t, 2)
+	})
+}
+
+func TestPatchMeInvisibleSendsNoHint(t *testing.T) {
+	for _, invisibleAtDelivery := range []bool{false, true} {
+		t.Run(fmt.Sprint(invisibleAtDelivery), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				e := newProfilePresenceEnv(t)
+				if invisibleAtDelivery {
+					e.patch(t, []any{"Björn", nil, nil})
+					e.advance(time.Second)
+				}
+				if err := e.deps.Repo.SetPresenceChoice(t.Context(), e.peer, 4); err != nil {
+					t.Fatal(err)
+				}
+				if !invisibleAtDelivery {
+					e.patch(t, []any{"Björn", nil, nil})
+				}
+				e.advance(11 * time.Second)
+				if _, frames := e.gw.snapshot(); len(frames) != 0 {
+					t.Fatalf("Invisible edit sent %d hints", len(frames))
+				}
+				user, err := e.deps.Repo.GetUser(t.Context(), e.peer)
+				if err != nil || user.Display != "Björn" {
+					t.Fatalf("invisible edit not saved: %+v %v", user, err)
+				}
+			})
+		})
+	}
+}
+
+func TestPatchMeTwoDevicesCoalesce(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newProfilePresenceEnv(t)
+		_, device, private := seedAPIDevice(t, e.deps)
+		device.ID, device.UserID = id.New(), e.peer
+		if err := e.deps.Repo.CreateDevice(t.Context(), device); err != nil {
+			t.Fatal(err)
+		}
+		nonce, _, err := e.deps.Sessions.Challenge(t.Context(), device.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		preimage := auth.SessionPreimage(e.deps.Sessions.InstanceID(), device.ID, nonce, auth.PurposeSession)
+		second, err := e.deps.Sessions.Establish(t.Context(), auth.EstablishRequest{
+			DeviceID: device.ID, Nonce: nonce, Purpose: auth.PurposeSession, Sig: ed25519.Sign(private, preimage),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		e.patch(t, []any{"Björn", nil, nil})
+		e.advance(5 * time.Second)
+		e.token = second.Token
+		e.patch(t, []any{nil, "second device", nil})
+		e.advance(5 * time.Second)
+		e.wantHints(t, 1)
+		e.advance(10 * time.Second)
+		e.wantHints(t, 1)
+	})
+}
+
+func TestPatchMeCoMemberLeavingDuringWindowGetsNoHint(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newProfilePresenceEnv(t)
+		leaver, _, _ := seedSession(t, e.deps)
+		e.gw.live[leaver.ID] = true
+		if err := e.deps.Repo.PutMember(t.Context(), store.MemberOfCommunityRow{CommunityID: e.communities[1], UserID: leaver.ID, Joined: 1}); err != nil {
+			t.Fatal(err)
+		}
+		e.patch(t, []any{"Björn", nil, nil})
+		e.advance(time.Second)
+		if err := e.deps.Repo.DeleteMember(t.Context(), e.communities[1], leaver.ID); err != nil {
+			t.Fatal(err)
+		}
+		e.advance(9 * time.Second)
+		e.wantHints(t, 1) // Only the two remaining members of each community receive hints.
+		to, _ := e.gw.snapshot()
+		for _, recipient := range to {
+			if recipient == leaver.ID {
+				t.Fatal("former co-member got a hint")
+			}
+		}
+	})
+}
+
+// Stall an UPDATE after the old implementation's separate read. Another PATCH and
+// its hint finish first, then this request restores the original display value.
+type stalledProfileUpdate struct {
+	store.Repository
+	entered, release chan struct{}
+}
+
+func (r *stalledProfileUpdate) UpdateProfile(ctx context.Context, user id.ID, display, status, bio *string) (bool, error) {
+	if display != nil && *display == "User" {
+		close(r.entered)
+		<-r.release
+	}
+	return r.Repository.UpdateProfile(ctx, user, display, status, bio)
+}
+
+func TestPatchMeConcurrentPatchDecidesChangeAtUpdate(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var stalled *stalledProfileUpdate
+		e := newProfilePresenceEnvWithRepo(t, func(repo store.Repository) store.Repository {
+			stalled = &stalledProfileUpdate{Repository: repo, entered: make(chan struct{}), release: make(chan struct{})}
+			return stalled
+		})
+		done := make(chan int, 1)
+		go func() {
+			done <- cborCall(t, e.h, http.MethodPatch, "/v1/accounts/me", e.token, []any{"User", nil, nil}).Code
+		}()
+		<-stalled.entered
+		e.patch(t, []any{"Björn", nil, nil})
+		e.advance(10 * time.Second)
+		e.wantHints(t, 1)
+		close(stalled.release)
+		if code := <-done; code != http.StatusNoContent {
+			t.Fatalf("concurrent PATCH = %d", code)
+		}
+		e.advance(10 * time.Second)
+		e.wantHints(t, 2)
+		user, err := e.deps.Repo.GetUser(t.Context(), e.peer)
+		if err != nil || user.Display != "User" {
+			t.Fatalf("final profile = %+v, %v", user, err)
+		}
+	})
+}
+
+func TestProfileHintsDrainFlushesPendingAndStopsNewWork(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newProfilePresenceEnv(t)
+		e.patch(t, []any{"Björn", nil, nil})
+		synctest.Wait()
+		drainer, ok := any(e.deps.Presence).(interface{ Drain(context.Context) error })
+		if !ok {
+			t.Fatal("profile hints cannot drain on shutdown")
+		}
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+		if err := drainer.Drain(ctx); err != nil {
+			t.Fatalf("drain = %v", err)
+		}
+		e.wantHints(t, 1)
+		e.patch(t, []any{"after shutdown", nil, nil})
+		e.advance(11 * time.Second)
+		e.wantHints(t, 1)
+		if err := drainer.Drain(ctx); err != nil {
+			t.Fatalf("second drain = %v", err)
+		}
+	})
+}
+
+// Faults are at the store boundary; scheduling, encoding, fan-out and logs remain real.
+type profileHintFailureRepo struct {
+	store.Repository
+	operation string
+	entered   chan struct{}
+}
+
+func (r *profileHintFailureRepo) ListCommunitiesForUser(ctx context.Context, user id.ID) ([]store.CommunityRow, error) {
+	if r.operation == "communities" {
+		return nil, errors.New("profile hint store fault")
+	}
+	return r.Repository.ListCommunitiesForUser(ctx, user)
+}
+func (r *profileHintFailureRepo) ListMembersOfCommunity(ctx context.Context, community, after id.ID, limit int32) ([]store.MemberOfCommunityRow, error) {
+	if r.operation == "members" {
+		return nil, errors.New("profile hint store fault")
+	}
+	if r.operation == "blocked" {
+		r.entered <- struct{}{}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return r.Repository.ListMembersOfCommunity(ctx, community, after, limit)
+}
+
+func TestProfileHintsLogStoreErrors(t *testing.T) {
+	for _, operation := range []string{"communities", "members"} {
+		t.Run(operation, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				e := newProfilePresenceEnv(t)
+				var logs bytes.Buffer
+				service := api.NewPresenceService(&profileHintFailureRepo{Repository: e.deps.Repo, operation: operation}, e.gw, e.deps.Clock, slog.New(slog.NewTextHandler(&logs, nil)))
+				service.ProfileChanged(t.Context(), e.peer)
+				e.advance(10 * time.Second)
+				if !strings.Contains(logs.String(), "profile hint store fault") {
+					t.Fatalf("missing store failure log: %s", logs.String())
+				}
+				if _, frames := e.gw.snapshot(); len(frames) != 0 {
+					t.Fatalf("failed reads sent %d hints", len(frames))
+				}
+			})
+		})
+	}
+}
+
+func TestProfileHintsDrainHonorsDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newProfilePresenceEnv(t)
+		entered := make(chan struct{}, 2)
+		service := api.NewPresenceService(&profileHintFailureRepo{Repository: e.deps.Repo, operation: "blocked", entered: entered}, e.gw, e.deps.Clock, e.deps.Log)
+		service.ProfileChanged(t.Context(), e.peer)
+		e.advance(10 * time.Second)
+		<-entered
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+		if err := service.Drain(ctx); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("drain = %v, want deadline", err)
+		}
+		synctest.Wait()
+		if _, frames := e.gw.snapshot(); len(frames) != 0 {
+			t.Fatal("cancelled hint delivered")
 		}
 	})
 }
