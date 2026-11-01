@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"syscall"
 )
 
 // ErrLocked is returned when another dillad holds the data directory in a mode
@@ -25,30 +24,29 @@ const LockFile = "dilla.lock"
 // and a shared hold does not exclude a second `serve`.
 const ServeLockFile = "dilla.serve.lock"
 
-// Lock is one or more advisory flocks inside a data directory. syscall.Flock is
-// stdlib, so no dependency is added; a lock belongs to its open file
-// description and is released by Release or by the process exiting.
+// Lock holds shared/exclusive file locks inside a data directory. The OS drops
+// them on Release or process exit (flock on Unix, LockFileEx on Windows).
 type Lock struct{ files []*os.File }
 
 // AcquireLock takes LOCK_EX|LOCK_NB on dilla.lock: it fails with ErrLocked
 // while any other holder, shared or exclusive, has the directory. `restore`
 // takes it.
-func AcquireLock(dir string) (*Lock, error) { return acquire(dir, LockFile, syscall.LOCK_EX) }
+func AcquireLock(dir string) (*Lock, error) { return acquire(dir, LockFile, true) }
 
 // AcquireSharedLock takes LOCK_SH|LOCK_NB on dilla.lock. Several shared
 // holders coexist; an exclusive holder excludes them all and is excluded by any
 // of them. `backup` takes it.
-func AcquireSharedLock(dir string) (*Lock, error) { return acquire(dir, LockFile, syscall.LOCK_SH) }
+func AcquireSharedLock(dir string) (*Lock, error) { return acquire(dir, LockFile, false) }
 
 // AcquireServeLock is `serve`'s pair: LOCK_EX on dilla.serve.lock, so a second
 // `serve` is refused, then LOCK_SH on dilla.lock, so a `backup` may run beside
 // it and a `restore` may not.
 func AcquireServeLock(dir string) (*Lock, error) {
-	serve, err := acquire(dir, ServeLockFile, syscall.LOCK_EX)
+	serve, err := acquire(dir, ServeLockFile, true)
 	if err != nil {
 		return nil, err
 	}
-	shared, err := acquire(dir, LockFile, syscall.LOCK_SH)
+	shared, err := acquire(dir, LockFile, false)
 	if err != nil {
 		_ = serve.Release()
 		return nil, err
@@ -56,7 +54,7 @@ func AcquireServeLock(dir string) (*Lock, error) {
 	return &Lock{files: append(serve.files, shared.files...)}, nil
 }
 
-func acquire(dir, name string, how int) (*Lock, error) {
+func acquire(dir, name string, exclusive bool) (*Lock, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
@@ -64,9 +62,9 @@ func acquire(dir, name string, how int) (*Lock, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(f.Fd()), how|syscall.LOCK_NB); err != nil {
+	if err := tryFileLock(f, exclusive); err != nil {
 		_ = f.Close()
-		if errors.Is(err, syscall.EWOULDBLOCK) {
+		if errors.Is(err, ErrLocked) {
 			return nil, fmt.Errorf("%w: %s", ErrLocked, dir)
 		}
 		return nil, fmt.Errorf("ops: lock %s: %w", dir, err)
@@ -82,7 +80,7 @@ func (l *Lock) Release() error {
 	var err error
 	for i := len(l.files) - 1; i >= 0; i-- {
 		f := l.files[i]
-		if uerr := syscall.Flock(int(f.Fd()), syscall.LOCK_UN); uerr != nil && err == nil {
+		if uerr := unlockFile(f); uerr != nil && err == nil {
 			err = uerr
 		}
 		if cerr := f.Close(); cerr != nil && err == nil {
