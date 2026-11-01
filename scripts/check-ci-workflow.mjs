@@ -42,8 +42,8 @@ export const REQUIRED_JOBS = [
   'go-sqlc',
   'go-postgres',
   'go-release',
-  // Task 26 (web-1): build the client once and run its browser integration suites; web-2c splits the suites into one
-  // job per Playwright engine and suite (BROWSER_WEB_JOBS below, which checkWorkflow adds to this list).
+  // Build the bundled client once for Electron and retain shared encrypted-core
+  // integration (BROWSER_WEB_JOBS below) without browser compatibility lanes.
   'web-build',
   'desktop',
 ];
@@ -62,6 +62,7 @@ export const CHANGE_GATE_EXEMPT = ['changes', 'docs', 'ci-ok'];
  * `if: always()` form — `if: ${{ always() }}` is the more common of the two in practice.
  */
 const FORBIDDEN = [
+  { re: /run:.*playwright\s+install[^\n]*\b(?:firefox|webkit)\b/, what: 'unsupported browser engine in desktop-only CI' },
   { re: /\|\|\s*true/, what: '|| true' },
   { re: /continue-on-error/, what: 'continue-on-error' },
   { re: /if:.*always\(\)/, what: 'if: always()' },
@@ -79,29 +80,11 @@ const FORBIDDEN = [
 export const NON_RACE_STEP =
   "go test -timeout 5m ./cmd/dilla-loadrig ./cmd/dilla-mediabot ./internal/media ./internal/sfu -run 'TestALoopbackCellDecryptsEverything|TestTwoBotsDecryptEachOtherThroughTheSFU|TestGoPublisherToGoSubscriberDecryptsThroughTheSFU|TestTheSFUOfferCarriesOnlyTheDillaCodecs|TestPromotionAddsTheVideoSourcesAndDemotionRemovesThem'";
 
-/**
- * Browser suites run in parallel, one job per Playwright engine and suite. One job per engine ran core, web and voice
- * in sequence: Chromium took about 2 minutes of core, 46 of web (113 tests, one worker; 45.6 minutes in run 40968460827
- * on 2026-10-29, which hit the old 70-minute cap before voice) and 10 of voice, and Firefox's web suite reached 47
- * minutes on 2026-10-26. Jonas's ruling of 2026-10-30 splits them: a core job (20 minutes), a voice job (30) and the web
- * suite as three Playwright shards (`--shard=i/3`) of 35 minutes each, 40 for Firefox's, which is the slower engine.
- * Each shard is about a third of the web suite plus about 3 minutes of setup, so the caps keep margin. WebKit runs only
- * the signup and reload specs (ruling 22), too few to shard, and keeps its single 30-minute web job. `suite` is the
- * Playwright suite the job runs, `shard` its 1-based shard of WEB_SHARDS (null for an unsharded job).
- */
+/** Shared core-worker/OPFS integration uses the Chromium engine embedded in
+ * Electron. Product chat and voice acceptance run only in desktop.yml. */
 export const WEB_SHARDS = 3;
 export const BROWSER_WEB_JOBS = {
-  'chromium-core': { engine: 'chromium', suite: 'core', shard: null, timeout: 20 },
-  'chromium-voice': { engine: 'chromium', suite: 'voice', shard: null, timeout: 30 },
-  'chromium-web-1': { engine: 'chromium', suite: 'web', shard: 1, timeout: 35 },
-  'chromium-web-2': { engine: 'chromium', suite: 'web', shard: 2, timeout: 35 },
-  'chromium-web-3': { engine: 'chromium', suite: 'web', shard: 3, timeout: 35 },
-  'firefox-core': { engine: 'firefox', suite: 'core', shard: null, timeout: 20 },
-  'firefox-voice': { engine: 'firefox', suite: 'voice', shard: null, timeout: 30 },
-  'firefox-web-1': { engine: 'firefox', suite: 'web', shard: 1, timeout: 40 },
-  'firefox-web-2': { engine: 'firefox', suite: 'web', shard: 2, timeout: 40 },
-  'firefox-web-3': { engine: 'firefox', suite: 'web', shard: 3, timeout: 40 },
-  'webkit-web': { engine: 'webkit', suite: 'web', shard: null, timeout: 30 },
+  'core-integration': { engine: 'chromium', suite: 'core', shard: null, timeout: 20 },
 };
 export const MIN_BROWSER_WEB_TIMEOUT = 20;
 
@@ -258,7 +241,7 @@ const REQUIRED_STEPS = {
     'wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/media/wasm',
     'go build -o target/dilla-mediabot ./cmd/dilla-mediabot',
     'node packages/media/scripts/extract-rnnoise-wasm.mjs',
-    'npx playwright install --with-deps chromium firefox',
+    'npx playwright install --with-deps chromium',
     'sh scripts/ci-audio-server.sh',
     'npm run test:e2e:media -w @dilla/e2e',
     'unsupported-sfu-codec.spec.ts',

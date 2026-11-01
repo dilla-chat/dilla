@@ -12,7 +12,7 @@ const REPO_ROOT = join(dirname(SCRIPT), '..');
 
 const NONE = { go: false, core: false, web: false, e2e: false, text: false, code: false };
 const ALL = { go: true, core: true, web: true, e2e: true, text: true, code: true };
-const BROWSERS = ['chromium-core', 'chromium-voice', 'chromium-web-1', 'chromium-web-2', 'chromium-web-3', 'firefox-core', 'firefox-voice', 'firefox-web-1', 'firefox-web-2', 'firefox-web-3', 'webkit-web'];
+const BROWSERS = ['core-integration'];
 const ranJobs = (outputs) => Object.keys(JOB_GATES).filter((job) => jobRuns(job, outputs));
 
 test('docs-only changes set no area', () => {

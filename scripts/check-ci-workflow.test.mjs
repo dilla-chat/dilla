@@ -16,6 +16,20 @@ const REAL_RELEASE = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'relea
 
 const REAL_DESKTOP = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'desktop.yml'), 'utf8');
 
+test('desktop-only CI keeps shared core security and removes unsupported browser client lanes', () => {
+  assert.doesNotMatch(REAL_CI, /^  (?:firefox-[^:]+|webkit-[^:]+|chromium-(?:web-[123]|voice|core)):/m);
+  assert.match(REAL_CI, /^  core-integration:/m);
+  assert.match(REAL_CI, /uses: \.\/.github\/workflows\/desktop.yml/);
+  const scripts = JSON.parse(readFileSync(join(REPO_ROOT, 'e2e/package.json'), 'utf8')).scripts;
+  for (const name of ['test:e2e:matrix', 'test:e2e:media', 'test:e2e:spike', 'test:e2e:core']) assert.doesNotMatch(scripts[name], /firefox|webkit/);
+});
+
+test('CI refuses reinstalling an unsupported compatibility browser in shared harness jobs', () => {
+  const changed = GOOD.replace('npx playwright install --with-deps chromium', 'npx playwright install --with-deps chromium firefox');
+  assert.notEqual(changed, GOOD);
+  assert.ok(checkWorkflow(fixture(changed)).some(problem => problem.includes('unsupported browser engine')));
+});
+
 test('desktop acceptance requires every native target, Electron tests, packaging and fuse verification', () => {
   assert.deepEqual(checkDesktopWorkflow(REPO_ROOT), []);
   for (const removed of ['node packages/desktop/scripts/prepare-browser-sandbox.mjs', 'node packages/desktop/scripts/run-performance.mjs', 'name: Desktop performance comparison', 'name: desktop-performance-', 'playwright.desktop-voice.config.ts', 'DILLA_E2E_NOTIFICATIONS', 'dunst', 'with-window-manager.sh', 'prepare-windows-audio.ps1', '--grep-invert "application-audio.spec.ts"', 'Application audio encryption and exclusion', 'application-audio.spec.ts', 'os: macos-15-intel', 'os: macos-15,', 'npm run typecheck -w @dilla/desktop', 'npm run build:validation -w @dilla/desktop', 'node packages/desktop/scripts/check-fuses.mjs', 'node --test packages/desktop/test/native/mac-upgrade.test.mjs', 'npm run dist -w @dilla/desktop', 'shard: [1, 2, 3]', 'os: [ubuntu-24.04, windows-latest, macos-15-intel, macos-15]', 'playwright.desktop.config.ts']) {
@@ -72,7 +86,7 @@ test('workflow steps execute only commit-pinned GitHub actions', () => {
 
 test('clang 23 build jobs stay on the Ubuntu 24.04 image they install packages for', () => {
   for (const job of ['rust-wasm-node', 'browser-spike', 'browser-media', 'web-build']) {
-    assert.match(REAL_CI, new RegExp(`^  ${job}:\\n(?:    (?:needs|if):.*\\n)*    runs-on: ubuntu-24\\.04$`, 'm'));
+    assert.match(REAL_CI, new RegExp(`^  ${job}:\\n(?:    (?:name|needs|if):.*\\n)*    runs-on: ubuntu-24\\.04$`, 'm'));
   }
   assert.match(REAL_RELEASE, /^  web-build:\n    runs-on: ubuntu-24\.04$/m);
 });
@@ -311,7 +325,7 @@ jobs:
       - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/media/wasm
       - run: go build -o target/dilla-mediabot ./cmd/dilla-mediabot
       - run: node packages/media/scripts/extract-rnnoise-wasm.mjs
-      - run: npx playwright install --with-deps chromium firefox
+      - run: npx playwright install --with-deps chromium
       - run: sh scripts/ci-audio-server.sh
       - run: npm run test:e2e:media -w @dilla/e2e
         env:
@@ -687,7 +701,7 @@ test('a workflow without the go-harness job is reported', () => {
 });
 
 test('a go-harness job that lost its own timeout is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace(/(  go-harness:\n(?:    (?:needs|if):.*\n)*    runs-on: ubuntu-latest\n)    timeout-minutes: 45\n/, '$1')));
+  const problems = checkWorkflow(fixture(GOOD.replace(/(  go-harness:\n(?:    (?:name|needs|if):.*\n)*    runs-on: ubuntu-latest\n)    timeout-minutes: 45\n/, '$1')));
   assert.ok(problems.some((p) => p.includes('timeout-minutes: 45')), problems.join('\n'));
 });
 
@@ -1027,7 +1041,7 @@ for (const needle of [
   'name: dilla-testkit',
   'wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/media/wasm',
   'go build -o target/dilla-mediabot ./cmd/dilla-mediabot',
-  'npx playwright install --with-deps chromium firefox',
+  'npx playwright install --with-deps chromium',
   'npm run test:e2e:media -w @dilla/e2e',
   'DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit',
 ]) {
@@ -1231,168 +1245,24 @@ for (const job of Object.keys(BROWSER_WEB_JOBS)) {
   }
 }
 
-// Jonas, 2026-10-30: each engine splits into a core job, a voice job and the web suite as three Playwright shards, one
-// job each. Dropping a job, folding suites back into one job, an unpinned shard or two jobs uploading one artifact name
-// (upload-artifact v4+ refuses a duplicate) is reported.
-test('the browser job table covers core, voice and three web shards for Chromium and Firefox, and WebKit web', () => {
-  const rows = Object.entries(BROWSER_WEB_JOBS).map(([job, { engine, suite, shard, timeout }]) => `${job} ${engine} ${suite} ${shard} ${timeout}`);
-  assert.deepEqual(rows, [
-    'chromium-core chromium core null 20',
-    'chromium-voice chromium voice null 30',
-    'chromium-web-1 chromium web 1 35',
-    'chromium-web-2 chromium web 2 35',
-    'chromium-web-3 chromium web 3 35',
-    'firefox-core firefox core null 20',
-    'firefox-voice firefox voice null 30',
-    'firefox-web-1 firefox web 1 40',
-    'firefox-web-2 firefox web 2 40',
-    'firefox-web-3 firefox web 3 40',
-    'webkit-web webkit web null 30',
-  ]);
-  assert.equal(WEB_SHARDS, 3);
+test('shared core integration uses only the Electron-compatible engine', () => {
+  assert.deepEqual(BROWSER_WEB_JOBS, { 'core-integration': { engine: 'chromium', suite: 'core', shard: null, timeout: 20 } });
+  assert.equal(browserSuiteCommand(BROWSER_WEB_JOBS['core-integration']), 'npm run test:e2e:core:chromium -w @dilla/e2e');
+  assert.equal(WEB_SHARDS, 3, 'desktop client acceptance still has three shards');
 });
 
-test('the shard commands are the web suite with --shard=i/3', () => {
-  assert.equal(browserSuiteCommand(BROWSER_WEB_JOBS['chromium-web-2']), 'npm run test:e2e:web:chromium -w @dilla/e2e -- --shard=2/3');
-  assert.equal(browserSuiteCommand(BROWSER_WEB_JOBS['firefox-voice']), 'npm run test:e2e:voice:firefox -w @dilla/e2e');
-  assert.equal(browserSuiteCommand(BROWSER_WEB_JOBS['webkit-web']), 'npm run test:e2e:web:webkit -w @dilla/e2e');
-});
-
-test('the old per-engine jobs are no longer accepted', () => {
-  assert.ok(!('chromium-web' in BROWSER_WEB_JOBS) && !('firefox-web' in BROWSER_WEB_JOBS));
-  const old = '  chromium-web:\n    needs: [changes, rust-native, rust-wasi, web-build]\n    if: needs.changes.outputs.e2e != \'false\'\n    steps:\n      - run: npm run test:e2e:core:chromium -w @dilla/e2e\n';
-  const problems = checkWorkflow(fixture(GOOD.replace('  deny:', () => `${old}\n  deny:`)));
-  assert.ok(problems.some((p) => p.includes('"chromium-web"') && p.includes('JOB_GATES')), problems.join('\n'));
-});
-
-test('a workflow missing one split job is reported, also when another job runs that suite', () => {
-  const shard = jobBody('chromium-web-2');
-  const problems = checkWorkflow(fixture(GOOD.replace(shard, '')));
-  assert.ok(problems.some((p) => p.includes('missing job "chromium-web-2"')), problems.join('\n'));
-  const merged = jobBody('chromium-web-1').replace(
-    '      - run: npm run test:e2e:web:chromium -w @dilla/e2e -- --shard=1/3\n',
-    '      - run: npm run test:e2e:web:chromium -w @dilla/e2e -- --shard=1/3\n        env:\n          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit\n      - run: npm run test:e2e:web:chromium -w @dilla/e2e -- --shard=2/3\n',
-  );
-  const folded = checkWorkflow(fixture(GOOD.replace(shard, '').replace(jobBody('chromium-web-1'), () => merged)));
-  assert.ok(folded.some((p) => p.includes('missing job "chromium-web-2"')), folded.join('\n'));
-  assert.ok(folded.some((p) => p.includes('"chromium-web-1"') && p.includes('exactly one Playwright suite')), folded.join('\n'));
-});
-
-test('a job that also runs another suite is reported', () => {
-  const body = jobBody('chromium-core');
+test('the core security job cannot be deleted, folded into another suite or given too little time', () => {
+  const body = jobBody('core-integration');
+  assert.ok(checkWorkflow(fixture(GOOD.replace(body, ''))).some(p => p.includes('missing job "core-integration"')));
   const both = body.replace('    steps:\n', '    steps:\n      - run: npm run test:e2e:voice:chromium -w @dilla/e2e\n');
-  const problems = checkWorkflow(fixture(GOOD.replace(body, () => both)));
-  assert.ok(problems.some((p) => p.includes('"chromium-core"') && p.includes('exactly one Playwright suite')), problems.join('\n'));
+  assert.ok(checkWorkflow(fixture(GOOD.replace(body, () => both))).some(p => p.includes('exactly one Playwright suite')));
+  assert.ok(BROWSER_WEB_JOBS['core-integration'].timeout >= MIN_BROWSER_WEB_TIMEOUT);
 });
 
-for (const [job, spec] of Object.entries(BROWSER_WEB_JOBS).filter(([, { shard }]) => shard !== null)) {
-  test(`a ${job} job running the wrong shard, or the whole suite, is reported`, () => {
-    const body = jobBody(job);
-    const command = browserSuiteCommand(spec);
-    assert.ok(body.includes(command), 'fixture sanity: the shard command');
-    const other = spec.shard === 1 ? 2 : 1;
-    for (const changed of [
-      command.replace(`--shard=${spec.shard}/3`, `--shard=${other}/3`),
-      command.replace(`--shard=${spec.shard}/3`, `--shard=${spec.shard}/4`),
-      command.replace(' -- --shard=' + spec.shard + '/3', ''),
-    ]) {
-      const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace(command, changed))));
-      assert.ok(problems.some((p) => p.includes(`"${job}"`) && p.includes(command)), `${changed}: ${problems.join('\n')}`);
-    }
-  });
-}
-
-// Web-3 task 10: Firefox's voice suite runs after the audio server, as browser-media's does.
-test('firefox-voice must start an audio server before the voice suite', () => {
-  const body = jobBody('firefox-voice');
-  const audio = '      - run: sh scripts/ci-audio-server.sh\n';
-  const voice = '      - run: npm run test:e2e:voice:firefox -w @dilla/e2e\n';
-  assert.ok(body.includes(audio) && body.includes(voice), 'fixture sanity: the audio server and the voice suite');
-  const late = body.replace(audio, '').replace(voice + '        env:\n          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit\n', (m) => m + audio);
-  const problems = checkWorkflow(fixture(GOOD.replace(body, () => late)));
-  assert.ok(problems.some((p) => p.includes('firefox-voice') && p.includes('audio server must start before the voice suite')), problems.join('\n'));
-});
-
-// Web3.9 CI2: the web suite has calls too (afk.spec's idle move, the layout's AFK preview). Without the audio server
-// Firefox's AudioContext stays suspended, so a fake microphone's tone reaches no local meter and counts as speech.
-for (const shard of [1, 2, 3]) {
-  const job = `firefox-web-${shard}`;
-  test(`${job} must start an audio server before the web suite`, () => {
-    const body = jobBody(job);
-    const audio = '      - run: sh scripts/ci-audio-server.sh\n';
-    const env = '        env:\n          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit\n';
-    const web = `      - run: npm run test:e2e:web:firefox -w @dilla/e2e -- --shard=${shard}/3\n`;
-    assert.ok(body.includes(audio) && body.includes(web), 'fixture sanity: the audio server and the web suite');
-    const late = body.replace(audio, '').replace(web + env, (m) => m + audio);
-    const problems = checkWorkflow(fixture(GOOD.replace(body, () => late)));
-    assert.ok(problems.some((p) => p.includes(job) && p.includes('audio server must start before the web suite')), problems.join('\n'));
-    const missing = checkWorkflow(fixture(GOOD.replace(body, () => body.replace(audio, ''))));
-    assert.ok(missing.some((p) => p.includes(`"${job}"`) && p.includes('ci-audio-server.sh')), missing.join('\n'));
-  });
-}
-
-test('firefox-core and the Chromium and WebKit jobs need no audio server', () => {
-  for (const job of ['firefox-core', 'chromium-core', 'chromium-voice', 'chromium-web-1', 'webkit-web']) {
-    assert.ok(!jobBody(job).includes('ci-audio-server.sh'), job);
-  }
-  assert.deepEqual(checkWorkflow(fixture(GOOD)), []);
-});
-
-// Web-3 task 10 (review M10): the suite rules match steps, so a comment never satisfies them, and the suite step's own
-// env is required.
-for (const [job, spec] of Object.entries(BROWSER_WEB_JOBS)) {
-  const command = browserSuiteCommand(spec);
-  const step = `      - run: ${command}\n`;
-  const env = '        env:\n          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit\n';
-  test(`a ${job} suite step that is only a comment is reported`, () => {
-    const body = jobBody(job);
-    assert.ok(body.includes(step), 'fixture sanity: the suite step');
-    const commented = body.replace(step, `      # - run: ${command}\n`);
-    const problems = checkWorkflow(fixture(GOOD.replace(body, () => commented)));
-    assert.ok(problems.some((p) => p.includes(`"${job}" is missing: ${command}`)), problems.join('\n'));
-  });
-  test(`a ${job} suite step without its own DILLA_TESTKIT env is reported`, () => {
-    const body = jobBody(job);
-    assert.ok(body.includes(step + env), 'fixture sanity: the suite step and its env');
-    const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace(step + env, step))));
-    assert.ok(problems.some((p) => p.includes(`"${job}"`) && p.includes('without its own env')), problems.join('\n'));
-  });
-}
-
-test('a comment naming the audio server above the suite step does not stand in for the real step after it', () => {
-  const body = jobBody('firefox-voice');
-  const audio = '      - run: sh scripts/ci-audio-server.sh\n';
-  const voice = '      - run: npm run test:e2e:voice:firefox -w @dilla/e2e\n        env:\n          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit\n';
-  assert.ok(body.includes(audio) && body.includes(voice), 'fixture sanity: the audio server, then the voice suite');
-  const sneaky = body.replace(audio, '      # sh scripts/ci-audio-server.sh\n').replace(voice, `${voice}${audio}`);
-  const problems = checkWorkflow(fixture(GOOD.replace(body, () => sneaky)));
-  assert.ok(problems.some((p) => p.includes('firefox-voice') && p.includes('audio server must start before')), problems.join('\n'));
-  const commentOnly = body.replace(audio, '      # - run: sh scripts/ci-audio-server.sh\n');
-  const missing = checkWorkflow(fixture(GOOD.replace(body, () => commentOnly)));
-  assert.ok(missing.some((p) => p.includes('"firefox-voice"') && p.includes('ci-audio-server.sh')), missing.join('\n'));
-});
-
-test('jobSteps drops comment lines and keeps each step\'s own lines', () => {
-  const steps = jobSteps('    steps:\n      # - run: a\n      - run: b\n        env:\n          X: 1\n      # c\n      - uses: d\n');
-  assert.deepEqual(steps, [['run: b', 'env:', 'X: 1'], ['uses: d']]);
-});
-
-test('the browser budgets keep margin over the measured durations', () => {
-  // Chromium's whole web suite took 45.6 minutes on one worker, Firefox's about 47: a third of it plus about 3 minutes of
-  // setup is about 19 minutes, so a shard's cap must not sink under 30.
-  for (const [job, { suite, engine, timeout }] of Object.entries(BROWSER_WEB_JOBS)) {
-    if (suite === 'web' && engine !== 'webkit') assert.ok(timeout >= 35, `${job}: ${timeout}`);
-    if (suite === 'voice') assert.ok(timeout >= 30, `${job}: ${timeout}`);
-    if (suite === 'core') assert.ok(timeout >= 20, `${job}: ${timeout}`);
-  }
-  assert.equal(BROWSER_WEB_JOBS['webkit-web'].timeout, 30);
-});
-
-test('two browser jobs uploading one artifact name are reported', () => {
-  const body = jobBody('firefox-web-2');
-  const shared = body.replace('name: browser-web-results-firefox-web-2', 'name: browser-web-results-firefox-web-1');
-  const problems = checkWorkflow(fixture(GOOD.replace(body, () => shared)));
-  assert.ok(problems.some((p) => p.includes('"firefox-web-2"') && p.includes('browser-web-results-firefox-web-2')), problems.join('\n'));
+test('unsupported browser client jobs are rejected when reintroduced', () => {
+  const old = '  firefox-web-1:\n    needs: [changes]\n    if: needs.changes.outputs.e2e != \'false\'\n    steps:\n      - run: npm run test:e2e:web:firefox -w @dilla/e2e\n';
+  const problems = checkWorkflow(fixture(GOOD.replace('  deny:', () => old + '  deny:')));
+  assert.ok(problems.some(p => p.includes('firefox-web-1') && p.includes('JOB_GATES')));
 });
 
 test('every browser job has its own artifact name in the real ci.yml', () => {
@@ -1406,9 +1276,9 @@ test('the real ci-ok job needs every browser job', () => {
   for (const job of Object.keys(BROWSER_WEB_JOBS)) assert.ok(new RegExp(`needs:[^\\n]*[ \\[]${job}[,\\]]`).test(body), job);
 });
 
-test('a ci-ok job that forgot a browser shard is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace(/(  ci-ok:\n    needs: \[[^\]]*), firefox-web-3/, '$1')));
-  assert.ok(problems.some((p) => p.includes('"ci-ok"') && p.includes('"firefox-web-3"')), problems.join('\n'));
+test('a ci-ok job that forgot core security integration is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace(/(  ci-ok:\n    needs: \[[^\]]*), core-integration/, '$1')));
+  assert.ok(problems.some((p) => p.includes('"ci-ok"') && p.includes('"core-integration"')), problems.join('\n'));
 });
 
 test('a browser job without the e2e gate is reported', () => {

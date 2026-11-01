@@ -6,12 +6,12 @@
   "type": "module",
   "scripts": {
     "test": "node --test unit/peer-seed.test.mjs unit/totp.test.mjs",
-    "test:e2e": "playwright test --config playwright.config.ts --project=chromium",
-    "test:e2e:matrix": "playwright test --config playwright.config.ts --project=chromium --project=firefox --project=webkit --project=firefox-persistent",
-    "test:e2e:media": "playwright test --config playwright.media.config.ts --project=chromium-media --project=firefox-media",
-    "test:e2e:spike": "playwright test --config playwright.media.config.ts --project=spike-chromium --project=spike-firefox",
-    "test:e2e:core": "playwright test --config playwright.core.config.ts --project=chromium-core --project=firefox-core",
-    "test:e2e:web": "playwright test --config playwright.web.config.ts --project=chromium-web --project=firefox-web --project=webkit-web",
+    "test:e2e": "playwright test --config playwright.desktop.config.ts --project=electron-client",
+    "test:e2e:matrix": "playwright test --config playwright.config.ts --project=chromium",
+    "test:e2e:media": "playwright test --config playwright.media.config.ts --project=chromium-media",
+    "test:e2e:spike": "playwright test --config playwright.media.config.ts --project=spike-chromium",
+    "test:e2e:core": "playwright test --config playwright.core.config.ts --project=chromium-core",
+    "test:e2e:web": "playwright test --config playwright.desktop.config.ts --project=electron-client",
     "test:e2e:core:chromium": "playwright test --config playwright.core.config.ts --project=chromium-core",
     "test:e2e:core:firefox": "playwright test --config playwright.core.config.ts --project=firefox-core",
     "test:e2e:web:chromium": "playwright test --config playwright.web.config.ts --project=chromium-web",
@@ -25,7 +25,8 @@
     "docs:shots": "node scripts/shoot-docs.mjs",
     "ux:world": "node ux/world.mjs",
     "ux:shots": "node ux/shots.mjs",
-    "ux:sheets": "node ux/sheets.mjs"
+    "ux:sheets": "node ux/sheets.mjs",
+    "test:e2e:voice": "playwright test --config playwright.desktop-voice.config.ts --project=electron-voice"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",

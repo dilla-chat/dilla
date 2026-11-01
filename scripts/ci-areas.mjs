@@ -57,7 +57,7 @@ export const PATH_RULES = [
   { areas: ['web'], patterns: ['internal/sfu/testdata/**'] },
 ];
 
-/** What an area drags in with it: the WASI core is used by the Go tests, and the browser suites run the server and the client together. */
+/** What an area drags in with it: the WASI core is used by the Go tests, and desktop acceptance runs the server and bundled client together. */
 export const FORCES = {
   ci: ['go', 'core', 'web', 'e2e', 'text'],
   core: ['go', 'web', 'e2e'],
@@ -70,7 +70,7 @@ export const FORCES = {
 /**
  * The outputs each job of ci.yml is gated on (OR). A job missing here is `changes` or `docs`, which always run.
  * Because the areas imply each other (FORCES), `e2e` is in practice "any code" and `web` is "web or core".
- * - rust-native and rust-wasi run for any code: go-harness and the browser suites download the testkit binary and
+ * - rust-native and rust-wasi run for any code: go-harness and shared integration and desktop suites download the testkit binary and
  *   the WASI core they build. rust-native's lint and test steps are gated on core at step level.
  * - go-release builds the embedded client.
  */
@@ -87,17 +87,7 @@ export const JOB_GATES = {
   'browser-media': ['e2e'],
   'web-build': ['e2e'],
   desktop: ['e2e'],
-  'chromium-core': ['e2e'],
-  'chromium-voice': ['e2e'],
-  'chromium-web-1': ['e2e'],
-  'chromium-web-2': ['e2e'],
-  'chromium-web-3': ['e2e'],
-  'firefox-core': ['e2e'],
-  'firefox-voice': ['e2e'],
-  'firefox-web-1': ['e2e'],
-  'firefox-web-2': ['e2e'],
-  'firefox-web-3': ['e2e'],
-  'webkit-web': ['e2e'],
+  'core-integration': ['e2e'],
   deny: ['core'],
   go: ['go'],
   'go-native': ['go'],

@@ -20,7 +20,9 @@ together; mobile, package-manager distributions and global push-to-talk are excl
   stages replacement on the destination filesystem with a retained working backup.
 - AppImage, per-user NSIS and ad-hoc macOS packaging configuration. Hardened packaged
   fuses are checked on the binary. CI adds all four native targets without deleting
-  any browser job. Validation does not publish artifacts as desktop releases.
+  the shared protocol/security jobs. Product client/voice acceptance runs in Electron
+  on each target; Firefox/WebKit and duplicate browser client jobs are retired.
+  Validation does not publish artifacts as desktop releases.
 
 - Linux PipeWire, Windows WASAPI process-loopback and macOS ScreenCaptureKit
   capture backends, with native process identity checks, bounded audio buffers and
@@ -112,8 +114,10 @@ required independent security review of the completed native application.
 
 After every gate passes, prepare migration instructions and download routes while
 preserving API/WSS, authentication handoff, invite routes and existing browser device
-data. Only then may browser visits become downloads. Browser CI can be removed only
-after equivalent Electron coverage exists. No server rollout or browser retirement
+data. Only then may browser visits become downloads. Desktop client and voice jobs replace the former browser compatibility matrix.
+The encrypted-store/core-worker and media protocol harnesses remain on Chromium
+for shared security checks; browser authentication/invite ceremonies remain covered
+from Electron. Unsupported Firefox/WebKit engines are no longer installed in CI. No server rollout or browser retirement
 has been made here.
 
 ## References checked during implementation

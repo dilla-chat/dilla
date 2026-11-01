@@ -337,6 +337,7 @@ jobs:
       - run: cargo run -p dilla-testkit --bin dilla-testkit --locked -- vectors
 
   browser-spike:
+    name: encrypted-store-integration
     needs: [changes]
     if: needs.changes.outputs.e2e != 'false'
     runs-on: ubuntu-24.04
@@ -384,22 +385,21 @@ jobs:
       - run: bash scripts/install-ci-tool.sh binaryen
       - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir spike/pkg
       - run: npm ci
-      # Deviation A2-6: the persistence matrix asserts Firefox private-browsing and WebKit
-      # ephemeral behaviour, so those engines must be installed too.
+      # The shared encrypted-store harness runs only the Electron-compatible engine.
       - id: apt-browser-spike-key
         run: echo "suffix=$(bash scripts/ci-apt-cache.sh key)" >> "$GITHUB_OUTPUT"
       - id: apt-browser-spike
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/apt-debs
-          key: apt-debs-${{ runner.arch }}-${{ steps.apt-browser-spike-key.outputs.suffix }}-chromium+firefox+webkit-${{ hashFiles('package-lock.json') }}
+          key: apt-debs-${{ runner.arch }}-${{ steps.apt-browser-spike-key.outputs.suffix }}-chromium-${{ hashFiles('package-lock.json') }}
           restore-keys: |
-            apt-debs-${{ runner.arch }}-${{ steps.apt-browser-spike-key.outputs.suffix }}-chromium+firefox+webkit-
+            apt-debs-${{ runner.arch }}-${{ steps.apt-browser-spike-key.outputs.suffix }}-chromium-
             apt-debs-${{ runner.arch }}-${{ steps.apt-browser-spike-key.outputs.suffix }}-
       - run: bash scripts/ci-apt-cache.sh prepare
-      - name: playwright install (chromium+firefox+webkit)
+      - name: playwright install (chromium)
         timeout-minutes: 8
-        run: npx playwright install --with-deps chromium firefox webkit
+        run: npx playwright install --with-deps chromium
       - run: bash scripts/ci-apt-cache.sh stash
       - if: steps.apt-browser-spike.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -411,6 +411,7 @@ jobs:
       - run: npm run test:e2e:matrix -w @dilla/e2e
 
   browser-media:
+    name: media-protocol-integration
     needs: [changes, rust-native, rust-wasi]
     if: needs.changes.outputs.e2e != 'false'
     runs-on: ubuntu-24.04
@@ -482,14 +483,14 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/apt-debs
-          key: apt-debs-${{ runner.arch }}-${{ steps.apt-browser-media-key.outputs.suffix }}-chromium+firefox-${{ hashFiles('package-lock.json') }}
+          key: apt-debs-${{ runner.arch }}-${{ steps.apt-browser-media-key.outputs.suffix }}-chromium-${{ hashFiles('package-lock.json') }}
           restore-keys: |
-            apt-debs-${{ runner.arch }}-${{ steps.apt-browser-media-key.outputs.suffix }}-chromium+firefox-
+            apt-debs-${{ runner.arch }}-${{ steps.apt-browser-media-key.outputs.suffix }}-chromium-
             apt-debs-${{ runner.arch }}-${{ steps.apt-browser-media-key.outputs.suffix }}-
       - run: bash scripts/ci-apt-cache.sh prepare
-      - name: playwright install (chromium+firefox)
+      - name: playwright install (chromium)
         timeout-minutes: 8
-        run: npx playwright install --with-deps chromium firefox
+        run: npx playwright install --with-deps chromium
       - run: bash scripts/ci-apt-cache.sh stash
       - if: steps.apt-browser-media.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -516,7 +517,7 @@ jobs:
     needs: [changes]
     if: needs.changes.outputs.e2e != 'false'
     runs-on: ubuntu-24.04
-    # C9: the web client is built once here and handed to the chromium-*, firefox-* and webkit-web jobs and go-release, so every
+    # Build the bundled UI once for Electron, shared core integration and go-release, so every
     # consumer tests or ships the same bytes. The webdist test is web.New's manifest check over
     # packages/web/dist, where the build left it: nothing is copied into internal/web/dist (ruling 38).
     timeout-minutes: 15
@@ -598,7 +599,7 @@ jobs:
     needs: [changes, web-build, rust-wasi]
     if: needs.changes.outputs.e2e != 'false'
     uses: ./.github/workflows/desktop.yml
-  chromium-core:
+  core-integration:
     needs: [changes, rust-native, rust-wasi, web-build]
     if: needs.changes.outputs.e2e != 'false'
     runs-on: ubuntu-latest
@@ -638,26 +639,26 @@ jobs:
           name: dilla-core-harness
           path: packages/client-core/harness-dist
       - run: npm ci
-      - id: apt-chromium-core-key
+      - id: apt-core-integration-key
         run: echo "suffix=$(bash scripts/ci-apt-cache.sh key)" >> "$GITHUB_OUTPUT"
-      - id: apt-chromium-core
+      - id: apt-core-integration
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/apt-debs
-          key: apt-debs-${{ runner.arch }}-${{ steps.apt-chromium-core-key.outputs.suffix }}-chromium-${{ hashFiles('package-lock.json') }}
+          key: apt-debs-${{ runner.arch }}-${{ steps.apt-core-integration-key.outputs.suffix }}-chromium-${{ hashFiles('package-lock.json') }}
           restore-keys: |
-            apt-debs-${{ runner.arch }}-${{ steps.apt-chromium-core-key.outputs.suffix }}-chromium-
-            apt-debs-${{ runner.arch }}-${{ steps.apt-chromium-core-key.outputs.suffix }}-
+            apt-debs-${{ runner.arch }}-${{ steps.apt-core-integration-key.outputs.suffix }}-chromium-
+            apt-debs-${{ runner.arch }}-${{ steps.apt-core-integration-key.outputs.suffix }}-
       - run: bash scripts/ci-apt-cache.sh prepare
       - name: playwright install (chromium)
         timeout-minutes: 8
         run: npx playwright install --with-deps chromium
       - run: bash scripts/ci-apt-cache.sh stash
-      - if: steps.apt-chromium-core.outputs.cache-hit != 'true'
+      - if: steps.apt-core-integration.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/apt-debs
-          key: ${{ steps.apt-chromium-core.outputs.cache-primary-key }}
+          key: ${{ steps.apt-core-integration.outputs.cache-primary-key }}
       - run: npm run test:e2e:core:chromium -w @dilla/e2e
         env:
           DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
@@ -665,740 +666,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: failure()
         with:
-          name: browser-web-results-chromium-core
-          path: e2e/test-results
-          if-no-files-found: error
-
-  chromium-voice:
-    needs: [changes, rust-native, rust-wasi, web-build]
-    if: needs.changes.outputs.e2e != 'false'
-    runs-on: ubuntu-latest
-    # web-3 task 10: VOICE-E2E in Chromium, two browsers through the test host's in-process LiveKit (its globalSetup builds the host).
-    # The wasm arrives inside the two builds; no Rust toolchain here.
-    # Budget: voice took about 10 minutes plus about 3 of setup; 30 minutes leaves margin.
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-core-wasi
-          path: internal/mlswasi/testdata
-      - name: Fetch the testkit binary built by the rust-native job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-testkit
-          path: artifacts
-      - run: chmod +x artifacts/dilla-testkit
-      - name: Fetch the web client built by the web-build job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-web-dist
-          path: packages/web/dist
-      - name: Fetch the core-worker harness built by the web-build job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-core-harness
-          path: packages/client-core/harness-dist
-      - run: npm ci
-      - id: apt-chromium-voice-key
-        run: echo "suffix=$(bash scripts/ci-apt-cache.sh key)" >> "$GITHUB_OUTPUT"
-      - id: apt-chromium-voice
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/apt-debs
-          key: apt-debs-${{ runner.arch }}-${{ steps.apt-chromium-voice-key.outputs.suffix }}-chromium-${{ hashFiles('package-lock.json') }}
-          restore-keys: |
-            apt-debs-${{ runner.arch }}-${{ steps.apt-chromium-voice-key.outputs.suffix }}-chromium-
-            apt-debs-${{ runner.arch }}-${{ steps.apt-chromium-voice-key.outputs.suffix }}-
-      - run: bash scripts/ci-apt-cache.sh prepare
-      - name: playwright install (chromium)
-        timeout-minutes: 8
-        run: npx playwright install --with-deps chromium
-      - run: bash scripts/ci-apt-cache.sh stash
-      - if: steps.apt-chromium-voice.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/apt-debs
-          key: ${{ steps.apt-chromium-voice.outputs.cache-primary-key }}
-      - run: npm run test:e2e:voice:chromium -w @dilla/e2e
-        env:
-          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
-      # upload-artifact v4+ refuses a second artifact of the same name in one run: one name per job.
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        if: failure()
-        with:
-          name: browser-web-results-chromium-voice
-          path: e2e/test-results
-          if-no-files-found: error
-
-  chromium-web-1:
-    needs: [changes, rust-native, rust-wasi, web-build]
-    if: needs.changes.outputs.e2e != 'false'
-    runs-on: ubuntu-latest
-    # C18: shard 1/3 of the web suite in Chromium, against the test host serving the build same-origin, with the native testkit peer.
-    # The wasm arrives inside the two builds; no Rust toolchain here.
-    # Budget: the whole web suite took 46 minutes in Chromium and 47 in Firefox on one worker (2026-10-26 and 2026-10-29), so a third
-    # of it plus about 3 minutes of setup is about 19; 35 minutes leaves margin for an uneven split of the specs.
-    timeout-minutes: 35
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-core-wasi
-          path: internal/mlswasi/testdata
-      - name: Fetch the testkit binary built by the rust-native job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-testkit
-          path: artifacts
-      - run: chmod +x artifacts/dilla-testkit
-      - name: Fetch the web client built by the web-build job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-web-dist
-          path: packages/web/dist
-      - name: Fetch the core-worker harness built by the web-build job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-core-harness
-          path: packages/client-core/harness-dist
-      - run: npm ci
-      - id: apt-chromium-web-1-key
-        run: echo "suffix=$(bash scripts/ci-apt-cache.sh key)" >> "$GITHUB_OUTPUT"
-      - id: apt-chromium-web-1
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/apt-debs
-          key: apt-debs-${{ runner.arch }}-${{ steps.apt-chromium-web-1-key.outputs.suffix }}-chromium-${{ hashFiles('package-lock.json') }}
-          restore-keys: |
-            apt-debs-${{ runner.arch }}-${{ steps.apt-chromium-web-1-key.outputs.suffix }}-chromium-
-            apt-debs-${{ runner.arch }}-${{ steps.apt-chromium-web-1-key.outputs.suffix }}-
-      - run: bash scripts/ci-apt-cache.sh prepare
-      - name: playwright install (chromium)
-        timeout-minutes: 8
-        run: npx playwright install --with-deps chromium
-      - run: bash scripts/ci-apt-cache.sh stash
-      - if: steps.apt-chromium-web-1.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/apt-debs
-          key: ${{ steps.apt-chromium-web-1.outputs.cache-primary-key }}
-      - run: npm run test:e2e:web:chromium -w @dilla/e2e -- --shard=1/3
-        env:
-          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
-      # upload-artifact v4+ refuses a second artifact of the same name in one run: one name per job.
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        if: failure()
-        with:
-          name: browser-web-results-chromium-web-1
-          path: e2e/test-results
-          if-no-files-found: error
-
-  chromium-web-2:
-    needs: [changes, rust-native, rust-wasi, web-build]
-    if: needs.changes.outputs.e2e != 'false'
-    runs-on: ubuntu-latest
-    # C18: shard 2/3 of the web suite in Chromium, against the test host serving the build same-origin, with the native testkit peer.
-    # The wasm arrives inside the two builds; no Rust toolchain here.
-    # Budget: the whole web suite took 46 minutes in Chromium and 47 in Firefox on one worker (2026-10-26 and 2026-10-29), so a third
-    # of it plus about 3 minutes of setup is about 19; 35 minutes leaves margin for an uneven split of the specs.
-    timeout-minutes: 35
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-core-wasi
-          path: internal/mlswasi/testdata
-      - name: Fetch the testkit binary built by the rust-native job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-testkit
-          path: artifacts
-      - run: chmod +x artifacts/dilla-testkit
-      - name: Fetch the web client built by the web-build job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-web-dist
-          path: packages/web/dist
-      - name: Fetch the core-worker harness built by the web-build job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-core-harness
-          path: packages/client-core/harness-dist
-      - run: npm ci
-      - id: apt-chromium-web-2-key
-        run: echo "suffix=$(bash scripts/ci-apt-cache.sh key)" >> "$GITHUB_OUTPUT"
-      - id: apt-chromium-web-2
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/apt-debs
-          key: apt-debs-${{ runner.arch }}-${{ steps.apt-chromium-web-2-key.outputs.suffix }}-chromium-${{ hashFiles('package-lock.json') }}
-          restore-keys: |
-            apt-debs-${{ runner.arch }}-${{ steps.apt-chromium-web-2-key.outputs.suffix }}-chromium-
-            apt-debs-${{ runner.arch }}-${{ steps.apt-chromium-web-2-key.outputs.suffix }}-
-      - run: bash scripts/ci-apt-cache.sh prepare
-      - name: playwright install (chromium)
-        timeout-minutes: 8
-        run: npx playwright install --with-deps chromium
-      - run: bash scripts/ci-apt-cache.sh stash
-      - if: steps.apt-chromium-web-2.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/apt-debs
-          key: ${{ steps.apt-chromium-web-2.outputs.cache-primary-key }}
-      - run: npm run test:e2e:web:chromium -w @dilla/e2e -- --shard=2/3
-        env:
-          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
-      # upload-artifact v4+ refuses a second artifact of the same name in one run: one name per job.
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        if: failure()
-        with:
-          name: browser-web-results-chromium-web-2
-          path: e2e/test-results
-          if-no-files-found: error
-
-  chromium-web-3:
-    needs: [changes, rust-native, rust-wasi, web-build]
-    if: needs.changes.outputs.e2e != 'false'
-    runs-on: ubuntu-latest
-    # C18: shard 3/3 of the web suite in Chromium, against the test host serving the build same-origin, with the native testkit peer.
-    # The wasm arrives inside the two builds; no Rust toolchain here.
-    # Budget: the whole web suite took 46 minutes in Chromium and 47 in Firefox on one worker (2026-10-26 and 2026-10-29), so a third
-    # of it plus about 3 minutes of setup is about 19; 35 minutes leaves margin for an uneven split of the specs.
-    timeout-minutes: 35
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-core-wasi
-          path: internal/mlswasi/testdata
-      - name: Fetch the testkit binary built by the rust-native job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-testkit
-          path: artifacts
-      - run: chmod +x artifacts/dilla-testkit
-      - name: Fetch the web client built by the web-build job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-web-dist
-          path: packages/web/dist
-      - name: Fetch the core-worker harness built by the web-build job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-core-harness
-          path: packages/client-core/harness-dist
-      - run: npm ci
-      - id: apt-chromium-web-3-key
-        run: echo "suffix=$(bash scripts/ci-apt-cache.sh key)" >> "$GITHUB_OUTPUT"
-      - id: apt-chromium-web-3
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/apt-debs
-          key: apt-debs-${{ runner.arch }}-${{ steps.apt-chromium-web-3-key.outputs.suffix }}-chromium-${{ hashFiles('package-lock.json') }}
-          restore-keys: |
-            apt-debs-${{ runner.arch }}-${{ steps.apt-chromium-web-3-key.outputs.suffix }}-chromium-
-            apt-debs-${{ runner.arch }}-${{ steps.apt-chromium-web-3-key.outputs.suffix }}-
-      - run: bash scripts/ci-apt-cache.sh prepare
-      - name: playwright install (chromium)
-        timeout-minutes: 8
-        run: npx playwright install --with-deps chromium
-      - run: bash scripts/ci-apt-cache.sh stash
-      - if: steps.apt-chromium-web-3.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/apt-debs
-          key: ${{ steps.apt-chromium-web-3.outputs.cache-primary-key }}
-      - run: npm run test:e2e:web:chromium -w @dilla/e2e -- --shard=3/3
-        env:
-          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
-      # upload-artifact v4+ refuses a second artifact of the same name in one run: one name per job.
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        if: failure()
-        with:
-          name: browser-web-results-chromium-web-3
-          path: e2e/test-results
-          if-no-files-found: error
-
-  firefox-core:
-    needs: [changes, rust-native, rust-wasi, web-build]
-    if: needs.changes.outputs.e2e != 'false'
-    runs-on: ubuntu-latest
-    # C18: the core-worker suite in Firefox, against the test host serving the build same-origin, with the native testkit peer.
-    # The wasm arrives inside the two builds; no Rust toolchain here.
-    # Budget: core took about 2 minutes plus about 3 of setup; 20 minutes leaves wide margin.
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-core-wasi
-          path: internal/mlswasi/testdata
-      - name: Fetch the testkit binary built by the rust-native job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-testkit
-          path: artifacts
-      - run: chmod +x artifacts/dilla-testkit
-      - name: Fetch the web client built by the web-build job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-web-dist
-          path: packages/web/dist
-      - name: Fetch the core-worker harness built by the web-build job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-core-harness
-          path: packages/client-core/harness-dist
-      - run: npm ci
-      - id: apt-firefox-core-key
-        run: echo "suffix=$(bash scripts/ci-apt-cache.sh key)" >> "$GITHUB_OUTPUT"
-      - id: apt-firefox-core
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/apt-debs
-          key: apt-debs-${{ runner.arch }}-${{ steps.apt-firefox-core-key.outputs.suffix }}-firefox-${{ hashFiles('package-lock.json') }}
-          restore-keys: |
-            apt-debs-${{ runner.arch }}-${{ steps.apt-firefox-core-key.outputs.suffix }}-firefox-
-            apt-debs-${{ runner.arch }}-${{ steps.apt-firefox-core-key.outputs.suffix }}-
-      - run: bash scripts/ci-apt-cache.sh prepare
-      - name: playwright install (firefox)
-        timeout-minutes: 8
-        run: npx playwright install --with-deps firefox
-      - run: bash scripts/ci-apt-cache.sh stash
-      - if: steps.apt-firefox-core.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/apt-debs
-          key: ${{ steps.apt-firefox-core.outputs.cache-primary-key }}
-      - run: npm run test:e2e:core:firefox -w @dilla/e2e
-        env:
-          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
-      # upload-artifact v4+ refuses a second artifact of the same name in one run: one name per job.
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        if: failure()
-        with:
-          name: browser-web-results-firefox-core
-          path: e2e/test-results
-          if-no-files-found: error
-
-  firefox-voice:
-    needs: [changes, rust-native, rust-wasi, web-build]
-    if: needs.changes.outputs.e2e != 'false'
-    runs-on: ubuntu-latest
-    # web-3 task 10: VOICE-E2E in Firefox, two browsers through the test host's in-process LiveKit (its globalSetup builds the host).
-    # The wasm arrives inside the two builds; no Rust toolchain here.
-    # Budget: voice took about 10 minutes plus about 3 of setup; 30 minutes leaves margin.
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-core-wasi
-          path: internal/mlswasi/testdata
-      - name: Fetch the testkit binary built by the rust-native job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-testkit
-          path: artifacts
-      - run: chmod +x artifacts/dilla-testkit
-      - name: Fetch the web client built by the web-build job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-web-dist
-          path: packages/web/dist
-      - name: Fetch the core-worker harness built by the web-build job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-core-harness
-          path: packages/client-core/harness-dist
-      - run: npm ci
-      - id: apt-firefox-voice-key
-        run: echo "suffix=$(bash scripts/ci-apt-cache.sh key)" >> "$GITHUB_OUTPUT"
-      - id: apt-firefox-voice
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/apt-debs
-          key: apt-debs-${{ runner.arch }}-${{ steps.apt-firefox-voice-key.outputs.suffix }}-firefox-${{ hashFiles('package-lock.json') }}
-          restore-keys: |
-            apt-debs-${{ runner.arch }}-${{ steps.apt-firefox-voice-key.outputs.suffix }}-firefox-
-            apt-debs-${{ runner.arch }}-${{ steps.apt-firefox-voice-key.outputs.suffix }}-
-      - run: bash scripts/ci-apt-cache.sh prepare
-      - name: playwright install (firefox)
-        timeout-minutes: 8
-        run: npx playwright install --with-deps firefox
-      - run: bash scripts/ci-apt-cache.sh stash
-      - if: steps.apt-firefox-voice.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/apt-debs
-          key: ${{ steps.apt-firefox-voice.outputs.cache-primary-key }}
-      # Headless Firefox needs an audio server, or every AudioContext stays suspended. The web suite's afk and layout specs
-      # place calls too (a suspended context reads no level, so the fake microphone's tone counts as speech and an idle
-      # desktop is never moved), and so does voice.
-      - run: sh scripts/ci-audio-server.sh
-      - run: npm run test:e2e:voice:firefox -w @dilla/e2e
-        env:
-          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
-      # upload-artifact v4+ refuses a second artifact of the same name in one run: one name per job.
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        if: failure()
-        with:
-          name: browser-web-results-firefox-voice
-          path: e2e/test-results
-          if-no-files-found: error
-
-  firefox-web-1:
-    needs: [changes, rust-native, rust-wasi, web-build]
-    if: needs.changes.outputs.e2e != 'false'
-    runs-on: ubuntu-latest
-    # C18: shard 1/3 of the web suite in Firefox, against the test host serving the build same-origin, with the native testkit peer.
-    # The wasm arrives inside the two builds; no Rust toolchain here.
-    # Budget: the whole web suite took 46 minutes in Chromium and 47 in Firefox on one worker (2026-10-26 and 2026-10-29), so a third
-    # of it plus about 3 minutes of setup is about 19; 40 minutes leaves margin for an uneven split of the specs.
-    timeout-minutes: 40
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-core-wasi
-          path: internal/mlswasi/testdata
-      - name: Fetch the testkit binary built by the rust-native job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-testkit
-          path: artifacts
-      - run: chmod +x artifacts/dilla-testkit
-      - name: Fetch the web client built by the web-build job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-web-dist
-          path: packages/web/dist
-      - name: Fetch the core-worker harness built by the web-build job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-core-harness
-          path: packages/client-core/harness-dist
-      - run: npm ci
-      - id: apt-firefox-web-1-key
-        run: echo "suffix=$(bash scripts/ci-apt-cache.sh key)" >> "$GITHUB_OUTPUT"
-      - id: apt-firefox-web-1
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/apt-debs
-          key: apt-debs-${{ runner.arch }}-${{ steps.apt-firefox-web-1-key.outputs.suffix }}-firefox-${{ hashFiles('package-lock.json') }}
-          restore-keys: |
-            apt-debs-${{ runner.arch }}-${{ steps.apt-firefox-web-1-key.outputs.suffix }}-firefox-
-            apt-debs-${{ runner.arch }}-${{ steps.apt-firefox-web-1-key.outputs.suffix }}-
-      - run: bash scripts/ci-apt-cache.sh prepare
-      - name: playwright install (firefox)
-        timeout-minutes: 8
-        run: npx playwright install --with-deps firefox
-      - run: bash scripts/ci-apt-cache.sh stash
-      - if: steps.apt-firefox-web-1.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/apt-debs
-          key: ${{ steps.apt-firefox-web-1.outputs.cache-primary-key }}
-      # Headless Firefox needs an audio server, or every AudioContext stays suspended. The web suite's afk and layout specs
-      # place calls too (a suspended context reads no level, so the fake microphone's tone counts as speech and an idle
-      # desktop is never moved), and so does voice.
-      - run: sh scripts/ci-audio-server.sh
-      - run: npm run test:e2e:web:firefox -w @dilla/e2e -- --shard=1/3
-        env:
-          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
-      # upload-artifact v4+ refuses a second artifact of the same name in one run: one name per job.
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        if: failure()
-        with:
-          name: browser-web-results-firefox-web-1
-          path: e2e/test-results
-          if-no-files-found: error
-
-  firefox-web-2:
-    needs: [changes, rust-native, rust-wasi, web-build]
-    if: needs.changes.outputs.e2e != 'false'
-    runs-on: ubuntu-latest
-    # C18: shard 2/3 of the web suite in Firefox, against the test host serving the build same-origin, with the native testkit peer.
-    # The wasm arrives inside the two builds; no Rust toolchain here.
-    # Budget: the whole web suite took 46 minutes in Chromium and 47 in Firefox on one worker (2026-10-26 and 2026-10-29), so a third
-    # of it plus about 3 minutes of setup is about 19; 40 minutes leaves margin for an uneven split of the specs.
-    timeout-minutes: 40
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-core-wasi
-          path: internal/mlswasi/testdata
-      - name: Fetch the testkit binary built by the rust-native job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-testkit
-          path: artifacts
-      - run: chmod +x artifacts/dilla-testkit
-      - name: Fetch the web client built by the web-build job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-web-dist
-          path: packages/web/dist
-      - name: Fetch the core-worker harness built by the web-build job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-core-harness
-          path: packages/client-core/harness-dist
-      - run: npm ci
-      - id: apt-firefox-web-2-key
-        run: echo "suffix=$(bash scripts/ci-apt-cache.sh key)" >> "$GITHUB_OUTPUT"
-      - id: apt-firefox-web-2
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/apt-debs
-          key: apt-debs-${{ runner.arch }}-${{ steps.apt-firefox-web-2-key.outputs.suffix }}-firefox-${{ hashFiles('package-lock.json') }}
-          restore-keys: |
-            apt-debs-${{ runner.arch }}-${{ steps.apt-firefox-web-2-key.outputs.suffix }}-firefox-
-            apt-debs-${{ runner.arch }}-${{ steps.apt-firefox-web-2-key.outputs.suffix }}-
-      - run: bash scripts/ci-apt-cache.sh prepare
-      - name: playwright install (firefox)
-        timeout-minutes: 8
-        run: npx playwright install --with-deps firefox
-      - run: bash scripts/ci-apt-cache.sh stash
-      - if: steps.apt-firefox-web-2.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/apt-debs
-          key: ${{ steps.apt-firefox-web-2.outputs.cache-primary-key }}
-      # Headless Firefox needs an audio server, or every AudioContext stays suspended. The web suite's afk and layout specs
-      # place calls too (a suspended context reads no level, so the fake microphone's tone counts as speech and an idle
-      # desktop is never moved), and so does voice.
-      - run: sh scripts/ci-audio-server.sh
-      - run: npm run test:e2e:web:firefox -w @dilla/e2e -- --shard=2/3
-        env:
-          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
-      # upload-artifact v4+ refuses a second artifact of the same name in one run: one name per job.
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        if: failure()
-        with:
-          name: browser-web-results-firefox-web-2
-          path: e2e/test-results
-          if-no-files-found: error
-
-  firefox-web-3:
-    needs: [changes, rust-native, rust-wasi, web-build]
-    if: needs.changes.outputs.e2e != 'false'
-    runs-on: ubuntu-latest
-    # C18: shard 3/3 of the web suite in Firefox, against the test host serving the build same-origin, with the native testkit peer.
-    # The wasm arrives inside the two builds; no Rust toolchain here.
-    # Budget: the whole web suite took 46 minutes in Chromium and 47 in Firefox on one worker (2026-10-26 and 2026-10-29), so a third
-    # of it plus about 3 minutes of setup is about 19; 40 minutes leaves margin for an uneven split of the specs.
-    timeout-minutes: 40
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-core-wasi
-          path: internal/mlswasi/testdata
-      - name: Fetch the testkit binary built by the rust-native job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-testkit
-          path: artifacts
-      - run: chmod +x artifacts/dilla-testkit
-      - name: Fetch the web client built by the web-build job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-web-dist
-          path: packages/web/dist
-      - name: Fetch the core-worker harness built by the web-build job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-core-harness
-          path: packages/client-core/harness-dist
-      - run: npm ci
-      - id: apt-firefox-web-3-key
-        run: echo "suffix=$(bash scripts/ci-apt-cache.sh key)" >> "$GITHUB_OUTPUT"
-      - id: apt-firefox-web-3
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/apt-debs
-          key: apt-debs-${{ runner.arch }}-${{ steps.apt-firefox-web-3-key.outputs.suffix }}-firefox-${{ hashFiles('package-lock.json') }}
-          restore-keys: |
-            apt-debs-${{ runner.arch }}-${{ steps.apt-firefox-web-3-key.outputs.suffix }}-firefox-
-            apt-debs-${{ runner.arch }}-${{ steps.apt-firefox-web-3-key.outputs.suffix }}-
-      - run: bash scripts/ci-apt-cache.sh prepare
-      - name: playwright install (firefox)
-        timeout-minutes: 8
-        run: npx playwright install --with-deps firefox
-      - run: bash scripts/ci-apt-cache.sh stash
-      - if: steps.apt-firefox-web-3.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/apt-debs
-          key: ${{ steps.apt-firefox-web-3.outputs.cache-primary-key }}
-      # Headless Firefox needs an audio server, or every AudioContext stays suspended. The web suite's afk and layout specs
-      # place calls too (a suspended context reads no level, so the fake microphone's tone counts as speech and an idle
-      # desktop is never moved), and so does voice.
-      - run: sh scripts/ci-audio-server.sh
-      - run: npm run test:e2e:web:firefox -w @dilla/e2e -- --shard=3/3
-        env:
-          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
-      # upload-artifact v4+ refuses a second artifact of the same name in one run: one name per job.
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        if: failure()
-        with:
-          name: browser-web-results-firefox-web-3
-          path: e2e/test-results
-          if-no-files-found: error
-
-  webkit-web:
-    needs: [changes, rust-native, rust-wasi, web-build]
-    if: needs.changes.outputs.e2e != 'false'
-    runs-on: ubuntu-latest
-    # C18: the web suite (signup and reload) in WebKit, against the test host serving the build same-origin, with the native testkit peer.
-    # The wasm arrives inside the two builds; no Rust toolchain here.
-    # Budget (L-CI-21, ruling of 2026-10-13: one job per Playwright project; too few specs to shard): max(30, ceil(5 x 3.0) + 10) = 30,
-    # from web-1's 3.0 min WebKit allowance (signup and reload only; ruling 22 keeps WebKit to those two specs).
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-core-wasi
-          path: internal/mlswasi/testdata
-      - name: Fetch the testkit binary built by the rust-native job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-testkit
-          path: artifacts
-      - run: chmod +x artifacts/dilla-testkit
-      - name: Fetch the web client built by the web-build job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-web-dist
-          path: packages/web/dist
-      - name: Fetch the core-worker harness built by the web-build job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-core-harness
-          path: packages/client-core/harness-dist
-      - run: npm ci
-      - id: apt-webkit-web-key
-        run: echo "suffix=$(bash scripts/ci-apt-cache.sh key)" >> "$GITHUB_OUTPUT"
-      - id: apt-webkit-web
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/apt-debs
-          key: apt-debs-${{ runner.arch }}-${{ steps.apt-webkit-web-key.outputs.suffix }}-webkit-${{ hashFiles('package-lock.json') }}
-          restore-keys: |
-            apt-debs-${{ runner.arch }}-${{ steps.apt-webkit-web-key.outputs.suffix }}-webkit-
-            apt-debs-${{ runner.arch }}-${{ steps.apt-webkit-web-key.outputs.suffix }}-
-      - run: bash scripts/ci-apt-cache.sh prepare
-      - name: playwright install (webkit)
-        timeout-minutes: 8
-        run: npx playwright install --with-deps webkit
-      - run: bash scripts/ci-apt-cache.sh stash
-      - if: steps.apt-webkit-web.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/apt-debs
-          key: ${{ steps.apt-webkit-web.outputs.cache-primary-key }}
-      - run: npm run test:e2e:web:webkit -w @dilla/e2e
-        env:
-          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
-      # upload-artifact v4+ refuses a second artifact of the same name in one run: one name per engine.
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        if: failure()
-        with:
-          name: browser-web-results-webkit-web
+          name: browser-web-results-core-integration
           path: e2e/test-results
           if-no-files-found: error
 
@@ -1723,7 +991,7 @@ jobs:
   # One check for the whole workflow, so that a required-check list needs only this name: it is red when any job
   # failed or was cancelled (a failed `changes` included) and green when the rest passed or were skipped by design.
   ci-ok:
-    needs: [changes, docs, node, ui, rust-wasm-node, rust-native, rust-wasi, vectors, browser-spike, browser-media, web-build, desktop, chromium-core, chromium-voice, chromium-web-1, chromium-web-2, chromium-web-3, firefox-core, firefox-voice, firefox-web-1, firefox-web-2, firefox-web-3, webkit-web, deny, go, go-native, go-ds, go-api, go-harness, go-fts5-arm64, go-lint, go-vuln, go-sqlc, go-postgres, go-release, spotify-helper]
+    needs: [changes, docs, node, ui, rust-wasm-node, rust-native, rust-wasi, vectors, browser-spike, browser-media, web-build, desktop, core-integration, deny, go, go-native, go-ds, go-api, go-harness, go-fts5-arm64, go-lint, go-vuln, go-sqlc, go-postgres, go-release, spotify-helper]
     if: always()
     runs-on: ubuntu-latest
     steps:
