@@ -1,6 +1,6 @@
 // VOICE-E2E (web-3 task 10): the mute and deafen shortcuts (decision 1, Control+Shift+M and Control+Shift+D) as the
 // other browser sees them, and push to talk (decision 2): the other side verifies alice's frames only while her key is
-// held. Frame counts are compared over a fixed number of bob's own encrypted frames, never over a sleep (lesson c).
+// held. Frame counts use actual encrypted frames as their clock, never a sleep (lesson c).
 import { expect, test } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
 import { desktopE2E } from '../web/support/electron.ts';
@@ -68,7 +68,11 @@ test('Control+Shift+M and Control+Shift+D show alice muted and deafened to bob; 
       let held = 0;
       try {
         const held0 = await heardCount(bob.page, a.device);
-        await framesPass(bob.page, await sentCount(bob.page), WINDOW);
+        // Separate desktop processes can packetize at different rates. While
+        // held, measure delivery of Alice's actual encrypted frames; Bob's
+        // sender remains the clock during idle/release, when Alice sends none.
+        const clock = desktopE2E() ? alice.page : bob.page;
+        await framesPass(clock, await sentCount(clock), WINDOW);
         held = (await heardCount(bob.page, a.device)) - held0;
       } finally {
         await alice.page.keyboard.up('Insert');
@@ -79,7 +83,7 @@ test('Control+Shift+M and Control+Shift+D show alice muted and deafened to bob; 
       await framesPass(bob.page, await sentCount(bob.page), WINDOW);
       const after = (await heardCount(bob.page, a.device)) - after0;
 
-      const deltas = `idle ${idle}, held ${held}, after ${after} frames per ${WINDOW} of bob's own`;
+      const deltas = `idle ${idle}, held ${held}, after ${after} frames per ${WINDOW} encrypted frames (${desktopE2E() ? 'Alice while held, Bob while idle/released' : 'Bob'})`;
       test.info().annotations.push({ type: 'push to talk', description: deltas });
       console.log(`push to talk (${browserName}): ${deltas}`);
       expect(held, deltas).toBeGreaterThanOrEqual(WINDOW / 2);

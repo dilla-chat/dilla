@@ -16,6 +16,7 @@ import { expect, test } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
 import { VoicePeer, WAIT, copy, heard, joinVoice, noiseOff, onboard, self, stage, tile } from './support/voice';
 import type { Page } from '@playwright/test';
+import { desktopE2E } from '../web/support/electron';
 
 watchContexts(test);
 
@@ -72,6 +73,36 @@ test('alice speaking lights her tile and bob\'s tile for her within a beat, and 
     });
 
     await test.step('an unmute lights them again within a beat, far under the old second', async () => {
+      if (desktopE2E()) {
+        // Native window focus checks are driver round trips. Measure the actual
+        // click and DOM flips inside each renderer, keeping the same 400/600 ms
+        // bounds without spending them on the automation transport.
+        const ownTile = stage(alice.page).locator('.d-call-tile[data-own]:not([data-source="screen"])').first();
+        for (const target of [seen, ownTile]) await target.evaluate(element => {
+          const record = { click: 0, lit: 0 };
+          (window as unknown as { __speakingTiming: typeof record }).__speakingTiming = record;
+          const observer = new MutationObserver(() => {
+            if (element.getAttribute('data-speaking') === 'true') { record.lit = Date.now(); observer.disconnect(); }
+          });
+          observer.observe(element, { attributes: true, attributeFilter: ['data-speaking'] });
+        });
+        await mute.evaluate(element => element.addEventListener('click', () => {
+          (window as unknown as { __speakingTiming: { click: number } }).__speakingTiming.click = Date.now();
+        }, { once: true, capture: true }));
+        await mute.click();
+        for (const person of [alice, bob]) await person.page.waitForFunction(() =>
+          (window as unknown as { __speakingTiming: { lit: number } }).__speakingTiming.lit > 0, undefined, { timeout: WAIT });
+        const own = await alice.page.evaluate(() => (window as unknown as { __speakingTiming: { click: number; lit: number } }).__speakingTiming);
+        const remote = await bob.page.evaluate(() => (window as unknown as { __speakingTiming: { lit: number } }).__speakingTiming);
+        const timings = `actual unmute click to speaking: own ${own.lit - own.click} ms, remote ${remote.lit - own.click} ms`;
+        console.log(timings);
+        expect(own.click).toBeGreaterThan(0);
+        expect(own.lit - own.click, timings).toBeGreaterThanOrEqual(0);
+        expect(own.lit - own.click, timings).toBeLessThanOrEqual(ONSET_BOUND);
+        expect(remote.lit - own.click, timings).toBeGreaterThanOrEqual(0);
+        expect(remote.lit - own.click, timings).toBeLessThanOrEqual(REMOTE_BOUND);
+        return;
+      }
       const t0 = Date.now();
       await mute.click();
       await expect(mute).not.toHaveAttribute('data-on');
