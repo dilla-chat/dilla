@@ -1,6 +1,7 @@
+import { captureNativeDownload } from '../support/download.ts';
 import { test as base, expect, _electron, type ElectronApplication } from '@playwright/test';
 import { createServer } from 'node:http';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -164,4 +165,18 @@ test('short startup content keeps an opaque theme-matched background across wind
       expect(samples[0].slice(1)).toEqual([size.height, size.height, size.height]);
     }
   }
+});
+
+
+test('downloads a decrypted local attachment while refusing blob document navigation', async () => {
+  const page = await app.firstWindow();
+  await expect(page.locator('#root')).not.toBeEmpty();
+  const download = await captureNativeDownload(app, page, () => page.evaluate(() => {
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['decrypted local attachment'], { type: 'text/plain' })); a.download = 'attachment.txt'; document.body.append(a); a.click(); a.remove();
+  }));
+  expect(await readFile(download.path, 'utf8')).toBe('decrypted local attachment');
+  expect(download.filename).toBe('attachment.txt');
+  await page.evaluate(() => { location.href = URL.createObjectURL(new Blob(['<script>globalThis.blobDocumentExecuted=true</script>'], { type: 'text/html' })); });
+  expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.getURL())).toBe(instance);
+  expect(await page.evaluate(() => (globalThis as any).blobDocumentExecuted)).toBeUndefined();
 });

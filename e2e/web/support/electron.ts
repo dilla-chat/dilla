@@ -9,6 +9,10 @@ import { fileURLToPath } from 'node:url';
 export const desktopE2E = () => process.env.DILLA_ELECTRON_E2E === '1';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const applications = new WeakMap<BrowserContext, ElectronApplication>();
+export function desktopApplication(context: BrowserContext): ElectronApplication {
+ const application = applications.get(context); if (!application) throw new Error('No desktop application owns this test context');
+ return application;
+}
 
 /** Each browser-profile fixture becomes an actual sandboxed desktop process.
  * The installed client and its worker keep their normal origin/storage boundary. */

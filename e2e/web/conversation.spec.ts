@@ -1,3 +1,4 @@
+import { saveDownload } from './support/download';
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { expect, type Page } from '@playwright/test';
@@ -291,19 +292,16 @@ test('images and files go both ways', async ({ page, peer, instanceName }) => {
   const full = box.getByRole('img', { name: 'map.png', exact: true });
   await expect.poll(() => full.evaluate((el: HTMLImageElement) => (el.complete ? el.naturalWidth : 0)), { timeout: WAIT }).toBe(320);
   await expectAccessible(page, 'lightbox');
-  const [mapDownload] = await Promise.all([
-    page.waitForEvent('download', { timeout: WAIT }),
-    box.getByRole('button', { name: copy('shell.lightbox.save'), exact: true }).click(),
-  ]);
-  expect(sha256Hex(readFileSync(await mapDownload.path()))).toBe(map.sha256);
+  const mapDownload = await saveDownload(page, () => box.getByRole('button', { name: copy('shell.lightbox.save'), exact: true }).click());
+  expect(sha256Hex(readFileSync(mapDownload.path))).toBe(map.sha256);
   await page.keyboard.press('Escape');
   await expect(box).toHaveCount(0);
 
   const save = messageRow(page, channel, dataBody).getByRole('button', { name: copy('shell.attachment.save', { name: 'data.bin' }), exact: true });
   await expect(save).toBeVisible({ timeout: WAIT });
-  const [download] = await Promise.all([page.waitForEvent('download', { timeout: WAIT }), save.click()]);
-  expect(download.suggestedFilename()).toBe('data.bin');
-  expect(sha256Hex(readFileSync(await download.path()))).toBe(dataSent.sha256);
+  const download = await saveDownload(page, () => save.click());
+  expect(download.filename).toBe('data.bin');
+  expect(sha256Hex(readFileSync(download.path))).toBe(dataSent.sha256);
 
   // Deleting the browser's message removes its references from the instance.
   for (const x of received.attachments) expect(await peer.blobStatus(x.blob_id)).toBe(200);
@@ -413,16 +411,13 @@ test('B sees what A makes', async ({ page, peer, second, instanceName }) => {
   await expect(box).toBeVisible({ timeout: WAIT });
   const full = box.getByRole('img', { name: 'drawn.png', exact: true });
   await expect.poll(() => full.evaluate((el: HTMLImageElement) => (el.complete ? el.naturalWidth : 0)), { timeout: WAIT }).toBe(320);
-  const [imageDownload] = await Promise.all([
-    b.waitForEvent('download', { timeout: WAIT }),
-    box.getByRole('button', { name: copy('shell.lightbox.save'), exact: true }).click(),
-  ]);
-  expect(sha256Hex(readFileSync(await imageDownload.path()))).toBe(drawn.sha256);
+  const imageDownload = await saveDownload(b, () => box.getByRole('button', { name: copy('shell.lightbox.save'), exact: true }).click());
+  expect(sha256Hex(readFileSync(imageDownload.path))).toBe(drawn.sha256);
   await b.keyboard.press('Escape');
   await expect(box).toHaveCount(0);
   const save = rowB.getByRole('button', { name: copy('shell.attachment.save', { name: 'notes.bin' }), exact: true });
-  const [download] = await Promise.all([b.waitForEvent('download', { timeout: WAIT }), save.click()]);
-  expect(sha256Hex(readFileSync(await download.path()))).toBe(sha256Hex(notes));
+  const download = await saveDownload(b, () => save.click());
+  expect(sha256Hex(readFileSync(download.path))).toBe(sha256Hex(notes));
   expect(drawn.sha256).toMatch(/^[0-9a-f]{64}$/);
 });
 
