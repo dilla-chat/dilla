@@ -14,10 +14,10 @@ import { arr, decode } from '../../../packages/client-core/src/cbor/index';
  *  `departureTimeout` (seconds, `-sfu-departure-timeout`) lengthens the rooms' departure timeout (task-10 fix review N3). */
 export interface HostConfig { port: number; control: number; webRoot: string | null; webauthnOrigin?: string; wire?: number; keepData?: boolean; botRuntime?: boolean; botReconcileInterval?: string; advanceClockWithWall?: boolean; sfu?: { port: number; udpPort: number; departureTimeout?: number } }
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-export const TESTHOST_BIN = join(REPO_ROOT, 'target', 'dilla-testhost');
-export const DILLABOT_BIN = join(REPO_ROOT, 'target', 'dillabot');
+export const TESTHOST_BIN = join(REPO_ROOT, 'target', process.platform === 'win32' ? 'dilla-testhost.exe' : 'dilla-testhost');
+export const DILLABOT_BIN = join(REPO_ROOT, 'target', process.platform === 'win32' ? 'dillabot.exe' : 'dillabot');
 const CARGO_TARGET_ROOT = resolve(REPO_ROOT, process.env.CARGO_TARGET_DIR ?? 'target');
-export const BOT_HELPER_BIN = join(CARGO_TARGET_ROOT, 'release', 'dilla-bot-core');
+export const BOT_HELPER_BIN = join(CARGO_TARGET_ROOT, 'release', process.platform === 'win32' ? 'dilla-bot-core.exe' : 'dilla-bot-core');
 export const WASI_CORE = join(REPO_ROOT, 'internal', 'mlswasi', 'testdata', 'dilla_core_wasi.wasm');
 const WAIT_MS = process.env.CI === 'true' ? 90_000 : 60_000;
 const HOST_DATA_ROOT = process.env.DILLA_E2E_HOST_DATA_ROOT ?? '/tmp/dw';

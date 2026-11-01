@@ -1224,7 +1224,11 @@ func (d Deps) StartOIDC(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	o.Stash(state, auth.Pending{Nonce: nonce, Verifier: verifier, DesktopRequest: desktopRequest}, oidcStateTTL)
-	http.SetCookie(w, auth.StateCookie(oidcStateCookie, state, int(oidcStateTTL/time.Second)))
+	if desktopRequest != "" {
+		http.SetCookie(w, auth.DesktopOIDCStateCookie(state, int(oidcStateTTL/time.Second)))
+	} else {
+		http.SetCookie(w, auth.StateCookie(oidcStateCookie, state, int(oidcStateTTL/time.Second)))
+	}
 	http.Redirect(w, r, target, http.StatusFound)
 }
 
@@ -1266,6 +1270,7 @@ func (d Deps) CallbackOIDC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.SetCookie(w, auth.StateCookie(oidcStateCookie, "", -1))
+	http.SetCookie(w, auth.DesktopOIDCStateCookie("", -1))
 
 	// One answer for a cancelled consent, a forged state, a replayed callback
 	// and an id_token that did not verify: none of them is something a client
@@ -1281,15 +1286,17 @@ func (d Deps) CallbackOIDC(w http.ResponseWriter, r *http.Request) {
 		refuse("api: oidc callback carried an error", "error", e)
 		return
 	}
-	cookie, cerr := r.Cookie(oidcStateCookie)
 	state := q.Get("state")
-	if cerr != nil || state == "" ||
-		subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(state)) != 1 {
+	legacyCookie, legacyErr := r.Cookie(oidcStateCookie)
+	browserCookie, browserErr := r.Cookie("__Secure-dilla-desktop-oidc")
+	legacyMatch := legacyErr == nil && subtle.ConstantTimeCompare([]byte(legacyCookie.Value), []byte(state)) == 1
+	desktopMatch := browserErr == nil && subtle.ConstantTimeCompare([]byte(browserCookie.Value), []byte(state)) == 1
+	if state == "" || (!legacyMatch && !desktopMatch) {
 		refuse("api: oidc callback state does not match the cookie")
 		return
 	}
 	pend, ok := o.Spend(state)
-	if !ok {
+	if !ok || (pend.DesktopRequest != "" && !desktopMatch) || (pend.DesktopRequest == "" && !legacyMatch) {
 		refuse("api: oidc callback has no pending login")
 		return
 	}
@@ -1347,7 +1354,8 @@ func (d Deps) CallbackOIDC(w http.ResponseWriter, r *http.Request) {
 			server.WriteError(w, server.Errorf(server.CodeUnauthenticated, "desktop browser request expired"))
 			return
 		}
-		http.Redirect(w, r, "/desktop-auth/"+pend.DesktopRequest+"?done=1", http.StatusFound)
+		w.Header().Set("Location", "../../../desktop-auth/"+pend.DesktopRequest+"/?done=1")
+		w.WriteHeader(http.StatusFound)
 		return
 	}
 	http.Redirect(w, r, d.oidcReturnURL(assertion), http.StatusFound)

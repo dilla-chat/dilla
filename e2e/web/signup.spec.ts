@@ -1,3 +1,4 @@
+import { desktopE2E } from './support/electron.ts';
 import { expect } from '@playwright/test';
 import {
   CLASS, COPY, HEX32, PUBLIC_URL, RK_GROUP, TEST_TIMEOUT, WAIT, copy, escapeRegExp, expectHeading, expectShell, nextButton, onboardingFrame,
@@ -58,7 +59,7 @@ test('a server invite, a name and a written-down key make an account that lands 
       return [name, sessionStorage.getItem(name)];
     }) }));
   expect(webStorage).toEqual({ local: 0, cookie: '',
-    session: [['dilla.update.tab', expect.stringMatching(/^[0-9a-f]{32}$/)]] });
+    session: desktopE2E() ? [] : [['dilla.update.tab', expect.stringMatching(/^[0-9a-f]{32}$/)]] });
   expect(await context.cookies()).toEqual([]);
 
   // The device KEK is wrapped by a non-extractable WebCrypto key (C7, L-TS-05).

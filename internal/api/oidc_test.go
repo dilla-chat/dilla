@@ -429,7 +429,7 @@ func TestDesktopOIDCCallbackCompletesOnlyThePKCEInitiator(t *testing.T) {
 	if created.Code != 201 || json.Unmarshal(created.Body.Bytes(), &request) != nil {
 		t.Fatal(created.Code, created.Body)
 	}
-	page := getWithCookies(h, "/desktop-auth/"+request.ID)
+	page := getWithCookies(h, "/desktop-auth/"+request.ID+"/")
 	cookie := setCookie(t, page, "__Secure-dilla-desktop")
 	launch := post("/desktop-auth/"+request.ID+"/oidc", `{}`, cookie)
 	var ticket struct {
@@ -449,8 +449,8 @@ func TestDesktopOIDCCallbackCompletesOnlyThePKCEInitiator(t *testing.T) {
 	if replay := getWithCookies(h, startURL); replay.Code != 401 {
 		t.Fatal("browser ticket replay", replay.Code)
 	}
-	callback := getWithCookies(h, "/v1/auth/oidc/callback?code=code-good&state="+q.Get("state"), setCookie(t, start, oidcStateCookieName))
-	if callback.Code != 302 || callback.Header().Get("Location") != "/desktop-auth/"+request.ID+"?done=1" {
+	callback := getWithCookies(h, "/v1/auth/oidc/callback?code=code-good&state="+q.Get("state"), setCookie(t, start, "__Secure-dilla-desktop-oidc"))
+	if callback.Code != 302 || callback.Header().Get("Location") != "../../../desktop-auth/"+request.ID+"/?done=1" {
 		t.Fatal(callback.Code, callback.Header())
 	}
 	if strings.Contains(callback.Header().Get("Location"), "assertion") {

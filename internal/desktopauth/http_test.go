@@ -7,7 +7,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -45,7 +47,7 @@ func TestHTTPBrowserHandoffRequiresCookieOriginAndPKCE(t *testing.T) {
 		ID string `json:"id"`
 	}
 	json.Unmarshal(w.Body.Bytes(), &created)
-	page := call("GET", created.ID, "", "", nil)
+	page := call("GET", created.ID+"/", "", "", nil)
 	if page.Code != 200 || !strings.Contains(page.Header().Get("Content-Security-Policy"), "frame-ancestors 'none'") {
 		t.Fatal(page.Code, page.Header())
 	}
@@ -74,5 +76,41 @@ func TestHTTPBrowserHandoffRequiresCookieOriginAndPKCE(t *testing.T) {
 	}
 	if w = call("POST", created.ID+"/consume", `{"verifier":"`+verifier+`"}`, "", nil); w.Code != 404 {
 		t.Fatal(w.Code)
+	}
+}
+
+func TestBrowserProofRemainsScopedUnderAReverseProxyBasePath(t *testing.T) {
+	b := New(time.Now)
+	id, err := b.Create(Request{Kind: "get", Challenge: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", Options: `{"publicKey":{"challenge":"AAAAAAAAAAAAAAAAAAAAAA"}}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var handler http.Handler
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.StripPrefix("/team", handler).ServeHTTP(w, r) }))
+	defer srv.Close()
+	handler = Handler(b, srv.URL, nil)
+	client := srv.Client()
+	client.Jar, _ = cookiejar.New(nil)
+	pageRequest, _ := http.NewRequestWithContext(context.Background(), "GET", srv.URL+"/team/desktop-auth/"+id, nil)
+	page, err := client.Do(pageRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page.Body.Close()
+	if page.StatusCode != 200 {
+		t.Fatal(page.StatusCode)
+	}
+	optionsRequest, _ := http.NewRequestWithContext(context.Background(), "GET", srv.URL+"/team/desktop-auth/"+id+"/options", nil)
+	options, err := client.Do(optionsRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	options.Body.Close()
+	if options.StatusCode != 200 {
+		t.Fatalf("browser proof lost under base path: %d", options.StatusCode)
+	}
+	unrelated, _ := url.Parse(srv.URL + "/other/desktop-auth/" + id + "/options")
+	if len(client.Jar.Cookies(unrelated)) != 0 {
+		t.Fatal("browser proof escaped its instance base path")
 	}
 }

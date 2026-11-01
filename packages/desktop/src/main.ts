@@ -16,6 +16,7 @@ import type { DesktopEvent, DesktopInfo } from './contract.ts';
 protocol.registerSchemesAsPrivileged([{ scheme: 'dilla-internal', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 app.enableSandbox();
 app.setName('Dilla');
+if (process.platform === 'win32') app.setAppUserModelId('dev.dilla.desktop');
 const arg = (name: string): string | undefined => process.argv.find(value => value.startsWith(`--${name}=`))?.slice(name.length + 3);
 const allowLoopback = !app.isPackaged && process.argv.includes('--allow-loopback');
 if (!app.isPackaged && arg('profile')) app.setPath('userData', arg('profile')!);

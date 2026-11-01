@@ -1082,9 +1082,18 @@ export function checkDesktopWorkflow(root) {
     'npm run build -w @dilla/desktop -- --existing-client', 'npm run build:validation -w @dilla/desktop',
     'xvfb-run -a dbus-run-session -- npm run test:electron -w @dilla/desktop',
     'run: npm run test:electron -w @dilla/desktop', 'npm run pack -w @dilla/desktop',
-    'node packages/desktop/scripts/check-fuses.mjs',
+    'node packages/desktop/scripts/check-fuses.mjs', 'node --test packages/desktop/test/native/mac-upgrade.test.mjs',
+    'npm run dist -w @dilla/desktop', 'name: desktop-installers-${{ matrix.platform }}-${{ matrix.arch }}',
   ]) if (!text.includes(required)) problems.push(`${file}: missing ${required}`);
   if (/--no-sandbox|contents: write|--publish always/.test(text)) problems.push(`${file}: desktop validation must keep sandboxing and cannot publish`);
+  const client = text.split('\n  client:\n')[1]?.split(/\n  [a-z][a-z0-9-]*:\n/)[0] ?? '';
+  for (const required of [
+    'shard: [1, 2, 3]', 'os: [ubuntu-24.04, windows-latest, macos-15-intel, macos-15]',
+    'os: ubuntu-24.04, platform: linux, arch: x64', 'os: windows-latest, platform: win, arch: x64',
+    'os: macos-15-intel, platform: mac, arch: x64', 'os: macos-15, platform: mac, arch: arm64',
+    'name: dilla-core-wasi', 'cargo build -p dilla-testkit --release --locked',
+    'playwright test --config playwright.desktop.config.ts --project=electron-client --shard=${{ matrix.shard }}/3',
+  ]) if (!client.includes(required)) problems.push(`${file}: shared Electron client coverage missing ${required}`);
   assertEveryUploadFailsOnNoFiles(text, problems, file);
   return problems;
 }

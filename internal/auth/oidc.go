@@ -212,3 +212,11 @@ func StateCookie(name, value string, maxAge int) *http.Cookie {
 		MaxAge: maxAge, Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode,
 	}
 }
+
+// DesktopOIDCStateCookie uses the browser's default path so an instance hosted
+// under a reverse-proxy prefix keeps the proof on its own OIDC directory. The
+// callback matches it only to a pending desktop ceremony, separately from the
+// legacy browser cookie.
+func DesktopOIDCStateCookie(value string, maxAge int) *http.Cookie {
+	return &http.Cookie{Name: "__Secure-dilla-desktop-oidc", Value: value, MaxAge: maxAge, Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode}
+}

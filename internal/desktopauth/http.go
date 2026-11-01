@@ -11,7 +11,7 @@ import (
 //go:embed browser.js
 var browserJS []byte
 
-const page = `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Dilla desktop sign-in</title><h1>Dilla desktop sign-in</h1><p>Continue only if you started this request in your Dilla desktop app.</p><p id="status">Your passkey stays in your authenticator.</p><button id="continue" type="button">Continue</button><script src="./app.js"></script></html>`
+const page = `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Dilla desktop sign-in</title><h1>Dilla desktop sign-in</h1><p>Continue only if you started this request in your Dilla desktop app.</p><p id="status">Your passkey stays in your authenticator.</p><button id="continue" type="button">Continue</button><script src="../app.js"></script></html>`
 
 // Handler is an optional, same-origin browser ceremony surface. The caller meters
 // requests before dispatch. Only opaque identifiers occur in navigation URLs.
@@ -76,12 +76,18 @@ func Handler(b *Broker, origin string, allow func(*http.Request) bool) http.Hand
 		}
 		id := parts[0]
 		if len(parts) == 1 && r.Method == "GET" {
+			w.Header().Set("Location", "./"+id+"/")
+			w.WriteHeader(http.StatusSeeOther)
+			return
+		}
+		if len(parts) == 2 && parts[1] == "" && r.Method == "GET" {
 			_, cookie, err := b.Browser(id)
 			if err != nil {
 				reject(404)
 				return
 			}
-			http.SetCookie(w, &http.Cookie{Name: "__Secure-dilla-desktop", Value: cookie, Path: "/desktop-auth/" + id + "/", MaxAge: 120, Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode})
+			// Cookie default-path retains the public reverse-proxy prefix and scopes this ceremony.
+			http.SetCookie(w, &http.Cookie{Name: "__Secure-dilla-desktop", Value: cookie, MaxAge: 120, Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode})
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			_, _ = io.WriteString(w, page)
 			return

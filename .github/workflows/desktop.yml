@@ -59,6 +59,20 @@ jobs:
         env:
           CSC_FOR_PULL_REQUEST: 'true' # Only the configured ad-hoc identity; no commercial signing credentials.
       - run: node packages/desktop/scripts/check-fuses.mjs
+      - name: Build installable desktop artifacts
+        run: npm run dist -w @dilla/desktop -- --config.electronDist=../../node_modules/electron/dist --${{ matrix.platform }} --${{ matrix.arch }}
+        env:
+          CSC_FOR_PULL_REQUEST: 'true' # Ad-hoc Mac signing only; no private release keys in CI.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: desktop-installers-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            packages/desktop/out/*.AppImage
+            packages/desktop/out/*.exe
+            packages/desktop/out/*.dmg
+            packages/desktop/out/*.zip
+          if-no-files-found: error
+
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: desktop-validation-${{ matrix.platform }}-${{ matrix.arch }}
@@ -69,4 +83,75 @@ jobs:
         with:
           name: desktop-failure-${{ matrix.platform }}-${{ matrix.arch }}
           path: packages/desktop/test-results
+          if-no-files-found: error
+
+  client:
+    name: desktop-client-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.shard }}
+    needs: [native]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+        os: [ubuntu-24.04, windows-latest, macos-15-intel, macos-15]
+        include:
+          - { os: ubuntu-24.04, platform: linux, arch: x64 }
+          - { os: windows-latest, platform: win, arch: x64 }
+          - { os: macos-15-intel, platform: mac, arch: x64 }
+          - { os: macos-15, platform: mac, arch: arm64 }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: desktop-client-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+      - run: rustup show active-toolchain
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-web-dist
+          path: packages/web/dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-desktop-core
+          path: packages/core-wasm/pkg
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev pipewire wireplumber xvfb dbus-x11 libgbm1 libnss3 libasound2t64
+      - run: npm ci
+      - run: node node_modules/electron/install.js
+      - run: npm exec -w @dilla/e2e -- playwright install --with-deps chromium
+      - run: cargo build -p dilla-testkit --release --locked
+      - run: npm run build -w @dilla/desktop -- --existing-client
+      - if: runner.os == 'Linux'
+        run: |
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+      - name: Shared client end-to-end coverage in Electron
+        if: runner.os == 'Linux'
+        run: xvfb-run -a dbus-run-session -- npm exec -w @dilla/e2e -- playwright test --config playwright.desktop.config.ts --project=electron-client --shard=${{ matrix.shard }}/3 --max-failures=3
+      - name: Shared client end-to-end coverage in Electron
+        if: runner.os != 'Linux'
+        run: npm exec -w @dilla/e2e -- playwright test --config playwright.desktop.config.ts --project=electron-client --shard=${{ matrix.shard }}/3 --max-failures=3
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: desktop-client-failure-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.shard }}
+          path: |
+            e2e/desktop-client-results
+            e2e/desktop-client-report
           if-no-files-found: error

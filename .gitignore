@@ -53,3 +53,6 @@ packages/desktop/native-bin/
 packages/desktop/.native-tools/
 
 packages/desktop/acceptance-bin/
+
+e2e/desktop-client-report/
+e2e/desktop-client-results/

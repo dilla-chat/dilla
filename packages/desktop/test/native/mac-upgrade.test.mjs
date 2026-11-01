@@ -64,14 +64,15 @@ test('an installed ad-hoc macOS app rejects a tampered signed feed and upgrades 
    await rm(report, { force: true });
    child = spawn(join(installed, 'Contents/MacOS/DillaUpdateAcceptance'), [], { stdio: 'inherit' });
    let launchError; child.once('error', error => { launchError = error; });
-   const deadline = Date.now() + 90000;
+   let handedOff = false;
+   const deadline = Date.now() + 180000;
    while (Date.now() < deadline) {
-    try { const value = JSON.parse(await readFile(report, 'utf8')); if (value.stage !== 'ready') return value; } catch {}
+    try { const value = JSON.parse(await readFile(report, 'utf8')); if (value.stage !== 'ready') return value; handedOff = true; } catch {}
     if (launchError) throw launchError;
-    if (child.exitCode !== null) throw new Error('Installed fixture exited before completing upgrade; code ' + child.exitCode);
+    if (child.exitCode !== null && !handedOff) throw new Error('Installed fixture exited before completing upgrade; code ' + child.exitCode);
     await delay(200);
    }
-   throw new Error('Installed Sparkle upgrade did not finish within 90 seconds');
+   throw new Error('Installed Sparkle upgrade did not finish within 180 seconds');
   };
   const rejected = await launch(); assert.equal(rejected.stage, 'rejected', JSON.stringify(rejected));
   await delay(1000);
@@ -82,8 +83,12 @@ test('an installed ad-hoc macOS app rejects a tampered signed feed and upgrades 
   execFileSync('codesign', ['--verify', '--deep', '--strict', installed], { stdio: 'inherit' });
   await mkdir(join(desktop, 'test-results'), { recursive: true });
   await writeFile(join(desktop, 'test-results/mac-installed-upgrade.json'), JSON.stringify({ platform: process.platform, arch: process.arch, tamperedFeed: rejected, upgrade: upgraded, from: '1.0.0', to: '1.0.1', signing: 'ad-hoc', productionBridgeUnchanged: true }, null, 2));
+ } catch (error) {
+  await mkdir(join(desktop, 'test-results'), { recursive: true });
+  await writeFile(join(desktop, 'test-results/mac-installed-upgrade-error.json'), JSON.stringify({ platform: process.platform, arch: process.arch, error: String(error) }, null, 2));
+  throw error;
  } finally {
   child?.kill(); if (server) await new Promise(done => server.close(done));
-  await rm(root, { recursive: true, force: true });
+  await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
  }
 });

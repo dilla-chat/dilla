@@ -16,7 +16,8 @@
     "pack": "electron-builder --config electron-builder.cjs --dir --publish never",
     "test:electron": "playwright test --config playwright.config.ts",
     "build:native": "node scripts/build-native.mjs",
-    "test:native:linux": "dbus-run-session -- node --test test/native/linux-audio.test.ts"
+    "test:native:linux": "dbus-run-session -- node --test test/native/linux-audio.test.ts",
+    "dist": "electron-builder --config electron-builder.cjs --publish never"
   },
   "dependencies": {
     "electron-updater": "6.8.11"
