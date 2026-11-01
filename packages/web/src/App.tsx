@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import type { BootPhase, FactorSetupOrigin } from '@dilla/client-core';
 import { Banner } from '@dilla/ui';
-import { startDesktopWindowLayout } from './desktop.ts';
+import { desktopBridge, startDesktopWindowLayout } from './desktop.ts';
 import { t } from './strings/index.ts';
 import { browser } from './browser.ts';
 import { useCore } from './core/context.tsx';
@@ -266,7 +266,12 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
   };
   const windowMode = screen === 'shell' && !onboarding && !signingIn ? 'workspace'
     : screen === 'boot' ? 'starting' : 'authentication';
-  useLayoutEffect(() => startDesktopWindowLayout(windowMode), [windowMode, screen, phase]);
+  const [workspaceReady, setWorkspaceReady] = useState(() => !desktopBridge());
+  useLayoutEffect(() => {
+    const bridge = desktopBridge(); if (!bridge) return;
+    if (windowMode !== 'workspace') setWorkspaceReady(false);
+    return startDesktopWindowLayout(windowMode, bridge, () => setWorkspaceReady(true));
+  }, [windowMode, screen, phase]);
   const failed = props.fatal ?? startError;
   if (failed) return <Boot fatal={failed} />;
   // The paused view keeps its place after the screens, so it stays mounted (and focused) while the shell goes.
@@ -293,7 +298,7 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
       case 'boot': return <Boot fatal={null} />;
       // Settings opens over the shell, which stays mounted and shows the route Settings was opened from (L-TS-27).
       case 'shell': return route.name === 'spotifyCallback' ? null
-        : <Shell update={props.update} />;
+        : workspaceReady ? <Shell update={props.update} /> : <Boot fatal={null} />;
     }
   }
 }

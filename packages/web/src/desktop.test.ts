@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { DesktopBridge, DesktopCommand, DesktopEvent } from '../../desktop/src/contract.ts';
-import { desktopNotificationCtor, startDesktopLifecycle, setDesktopGuard } from './desktop.ts';
+import { desktopNotificationCtor, startDesktopLifecycle, setDesktopGuard, startDesktopWindowLayout } from './desktop.ts';
 
 function bridge() {
   const commands: DesktopCommand[] = [];
@@ -86,4 +86,23 @@ it('ring actions are delivered only to the live notification and retired on clos
  fixture.emit({ type: 'notification-action', id: 'dilla-ring-stale', action: 'answer' }); expect(action).toBe('');
  fixture.emit({ type: 'notification-action', id: 'dilla-ring-current', action: 'decline' }); expect(action).toBe('decline');
  fixture.emit({ type: 'notification-action', id: 'dilla-ring-current', action: 'answer' }); expect(action).toBe('decline');
+});
+
+
+it('initializes the desktop workspace only after the native resize has reached the renderer', async () => {
+ const fixture = bridge(), ready = vi.fn();
+ const width = Object.getOwnPropertyDescriptor(window, 'innerWidth')!;
+ const height = Object.getOwnPropertyDescriptor(window, 'innerHeight')!;
+ let frame: FrameRequestCallback | undefined;
+ vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { frame = callback; return 1; });
+ vi.stubGlobal('cancelAnimationFrame', vi.fn());
+ Object.defineProperty(window, 'innerWidth', { configurable: true, value: 400 });
+ Object.defineProperty(window, 'innerHeight', { configurable: true, value: 500 });
+ const stop = startDesktopWindowLayout('workspace', fixture.desktop, ready);
+ try {
+  await Promise.resolve(); expect(ready).not.toHaveBeenCalled();
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1240 });
+  Object.defineProperty(window, 'innerHeight', { configurable: true, value: 820 });
+  frame?.(0); expect(ready).toHaveBeenCalledOnce();
+ } finally { stop(); Object.defineProperty(window, 'innerWidth', width); Object.defineProperty(window, 'innerHeight', height); vi.unstubAllGlobals(); }
 });

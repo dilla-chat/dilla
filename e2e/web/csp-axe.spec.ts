@@ -1,3 +1,4 @@
+import { desktopE2E, desktopApplication } from './support/electron.ts';
 import { themes } from '../../packages/design-tokens/src/tokens';
 import { expect } from '@playwright/test';
 import { addServerVia,
@@ -146,11 +147,19 @@ test('every state of the slice passes axe with target-size, in the Signal theme,
   }
   expect(backgrounds.size).toBe(Object.keys(themes).length);
 
-  const second = await context.newPage();
-  await second.goto('/');
-  await expect(splash(second, COPY.otherTab)).toBeVisible({ timeout: WAIT });
-  await expectAccessible(second, 'other-tab');
-  await second.close();
+  if (desktopE2E()) {
+    const app = desktopApplication(context);
+    const id = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].id);
+    await app.evaluate(({ app }) => { app.emit('activate'); });
+    expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map(window => window.id))).toEqual([id]);
+    await expectAccessible(page, 'the same desktop instance after activation');
+  } else {
+    const second = await context.newPage();
+    await second.goto('/');
+    await expect(splash(second, COPY.otherTab)).toBeVisible({ timeout: WAIT });
+    await expectAccessible(second, 'other-tab');
+    await second.close();
+  }
 
   await guard.collectWorkers();
   expect(guard.cspViolations).toEqual([]);

@@ -1,3 +1,4 @@
+import { WORKSPACE_MINIMUM } from '../../desktop/src/window-layout.ts';
 import type { DesktopBridge } from '../../desktop/src/contract.ts';
 import type { NotificationCtor, NotificationHandle } from './notify.ts';
 
@@ -66,18 +67,23 @@ export function startDesktopLifecycle(bridge = desktopBridge()): () => void {
 
 /** Size the same native window for startup, authentication and the workspace.
  * Only natural card height crosses this capability; no arbitrary window bounds. */
-export function startDesktopWindowLayout(mode: import('../../desktop/src/window-layout.ts').WindowMode, bridge = desktopBridge()): () => void {
+export function startDesktopWindowLayout(mode: import('../../desktop/src/window-layout.ts').WindowMode, bridge = desktopBridge(), ready?: () => void): () => void {
  if (!bridge) return () => {};
  document.documentElement.dataset.desktopWindow = mode;
  const card = mode === 'authentication' ? document.querySelector<HTMLElement>('.d-onboarding-frame__card') : null;
- let last = '';
+ let last = '', animation = 0, live = true;
+ const settled = () => {
+  if (!live) return;
+  if (window.innerWidth >= WORKSPACE_MINIMUM.width && window.innerHeight >= WORKSPACE_MINIMUM.height) ready?.();
+  else animation = requestAnimationFrame(settled);
+ };
  const update = () => {
   const height = card ? Math.max(160, Math.min(1600, Math.ceil(card.offsetHeight))) : null;
   const key = `${mode}:${height}`; if (key === last) return; last = key;
-  void bridge.send({ type: 'window-mode', mode, height }).catch(() => {});
+  void bridge.send({ type: 'window-mode', mode, height }).then(() => { if (mode === 'workspace') settled(); }).catch(() => {});
  };
  update();
  const observer = card && typeof ResizeObserver !== 'undefined' ? new ResizeObserver(update) : null;
  if (card) observer?.observe(card);
- return () => { observer?.disconnect(); };
+ return () => { live = false; cancelAnimationFrame(animation); observer?.disconnect(); };
 }
