@@ -153,80 +153,6 @@ jobs:
             ${{ runner.temp }}/dilla-windows-audio/*.err
           if-no-files-found: error
 
-  client:
-    name: desktop-client-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.shard }}
-    needs: test-tools
-    env:
-      DILLA_E2E_TOOLING_DIR: ${{ github.workspace }}/artifacts/e2e-test-tools
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
-    strategy:
-      fail-fast: true
-      matrix:
-        shard: [1, 2, 3]
-        os: [ubuntu-24.04, windows-latest, macos-15-intel, macos-15]
-        include:
-          - { os: ubuntu-24.04, platform: linux, arch: x64 }
-          - { os: windows-latest, platform: win, arch: x64 }
-          - { os: macos-15-intel, platform: mac, arch: x64 }
-          - { os: macos-15, platform: mac, arch: arm64 }
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      # Default download scope is this workflow run; verification also binds checkout SHA and native OS/arch.
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-e2e-tools-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.sha }}
-          path: artifacts/e2e-test-tools
-      - run: node scripts/e2e-test-tools.mjs verify artifacts/e2e-test-tools
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-web-dist
-          path: packages/web/dist
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-desktop-core
-          path: packages/core-wasm/pkg
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-core-wasi
-          path: internal/mlswasi/testdata
-      - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev pipewire wireplumber xvfb openbox x11-utils dbus-x11 libgbm1 libnss3 libasound2t64
-      - run: npm ci
-      - run: node node_modules/electron/install.js
-      - name: Test-host directory locks retain shared and exclusive semantics
-        run: go test ./internal/ops -run 'Lock|BackupAndServe|ServeAdmits'
-      - run: npm exec -w @dilla/e2e -- playwright install --with-deps chromium
-      - if: runner.os == 'Linux'
-        run: node packages/desktop/scripts/prepare-browser-sandbox.mjs
-      - run: npm run build -w @dilla/desktop -- --existing-client
-      - if: runner.os == 'Linux'
-        run: |
-          sudo chown root:root node_modules/electron/dist/chrome-sandbox
-          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
-      - name: Shared client end-to-end coverage in Electron
-        if: runner.os == 'Linux'
-        run: xvfb-run -a dbus-run-session -- bash packages/desktop/scripts/with-window-manager.sh npm exec -w @dilla/e2e -- playwright test --config playwright.desktop.config.ts --project=electron-client --shard=${{ matrix.shard }}/3 --max-failures=1
-      - name: Shared client end-to-end coverage in Electron
-        if: runner.os != 'Linux'
-        run: npm exec -w @dilla/e2e -- playwright test --config playwright.desktop.config.ts --project=electron-client --shard=${{ matrix.shard }}/3 --max-failures=1
-      - if: failure()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: desktop-client-failure-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.shard }}
-          path: |
-            e2e/desktop-client-results
-            e2e/desktop-client-report
-          if-no-files-found: error
-
   voice:
     name: desktop-voice-${{ matrix.platform }}-${{ matrix.arch }}
     needs: test-tools
@@ -321,4 +247,78 @@ jobs:
             e2e/desktop-voice-report
             e2e/performance-results-browser
             e2e/performance-results-desktop
+          if-no-files-found: error
+
+  client:
+    name: desktop-client-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.shard }}
+    needs: test-tools
+    env:
+      DILLA_E2E_TOOLING_DIR: ${{ github.workspace }}/artifacts/e2e-test-tools
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: true
+      matrix:
+        shard: [1, 2, 3]
+        os: [ubuntu-24.04, windows-latest, macos-15-intel, macos-15]
+        include:
+          - { os: ubuntu-24.04, platform: linux, arch: x64 }
+          - { os: windows-latest, platform: win, arch: x64 }
+          - { os: macos-15-intel, platform: mac, arch: x64 }
+          - { os: macos-15, platform: mac, arch: arm64 }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      # Default download scope is this workflow run; verification also binds checkout SHA and native OS/arch.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-e2e-tools-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.sha }}
+          path: artifacts/e2e-test-tools
+      - run: node scripts/e2e-test-tools.mjs verify artifacts/e2e-test-tools
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-web-dist
+          path: packages/web/dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-desktop-core
+          path: packages/core-wasm/pkg
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev pipewire wireplumber xvfb openbox x11-utils dbus-x11 libgbm1 libnss3 libasound2t64
+      - run: npm ci
+      - run: node node_modules/electron/install.js
+      - name: Test-host directory locks retain shared and exclusive semantics
+        run: go test ./internal/ops -run 'Lock|BackupAndServe|ServeAdmits'
+      - run: npm exec -w @dilla/e2e -- playwright install --with-deps chromium
+      - if: runner.os == 'Linux'
+        run: node packages/desktop/scripts/prepare-browser-sandbox.mjs
+      - run: npm run build -w @dilla/desktop -- --existing-client
+      - if: runner.os == 'Linux'
+        run: |
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+      - name: Shared client end-to-end coverage in Electron
+        if: runner.os == 'Linux'
+        run: xvfb-run -a dbus-run-session -- bash packages/desktop/scripts/with-window-manager.sh npm exec -w @dilla/e2e -- playwright test --config playwright.desktop.config.ts --project=electron-client --shard=${{ matrix.shard }}/3 --max-failures=1
+      - name: Shared client end-to-end coverage in Electron
+        if: runner.os != 'Linux'
+        run: npm exec -w @dilla/e2e -- playwright test --config playwright.desktop.config.ts --project=electron-client --shard=${{ matrix.shard }}/3 --max-failures=1
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: desktop-client-failure-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.shard }}
+          path: |
+            e2e/desktop-client-results
+            e2e/desktop-client-report
           if-no-files-found: error

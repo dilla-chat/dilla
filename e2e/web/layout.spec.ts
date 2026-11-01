@@ -340,7 +340,7 @@ test('the layout grammar holds at desktop, tablet, phone, narrow and keyboard-he
   const secondDir = secondProfileDir(testInfo.project.name, testInfo.workerIndex);
   const second = await launchSecond(playwright, browserName, { launchOptions: friendLaunch(browserName, launchOptions), headless, channel, viewport: { width: 1440, height: 900 }, baseURL: h.url }, secondDir);
   const phoneDir = `${PROFILE_ROOT}/${testInfo.project.name}-${testInfo.workerIndex}-phone`;
-  let phoneContext: BrowserContext | null = null;
+  const phoneContext: { current: BrowserContext | null } = { current: null };
   try {
     if (browserName === 'chromium') await second.grantPermissions(['microphone']);
     const mira = second.pages()[0] ?? (await second.newPage());
@@ -387,45 +387,48 @@ test('the layout grammar holds at desktop, tablet, phone, narrow and keyboard-he
     await test.step('a collapsed category keeps its current and unread rows', async () => { await attempt('collapsed category', () => collapsedCategory(page, serverPath)); });
 
     lap('desktop and search and collapse done');
-    // 4. Phone: a touch phone where the engine has one (Chromium, WebKit), Ada's second device; Firefox has no mobile emulation,
-    // and 390 and 360 wide is a phone layout there too, so its own page is resized.
-    let phone: Page = page;
-    if (browserName !== 'firefox') {
-      rmSync(phoneDir, { recursive: true, force: true });
-      mkdirSync(phoneDir, { recursive: true });
-      phoneContext = await playwright[browserName].launchPersistentContext(phoneDir, {
-        ...launchOptions, headless, channel, ...PHONE, viewport: { width: 390, height: 844 }, baseURL: h.url,
-      });
-      await guard.attach(phoneContext);
-      phone = await phoneContext.newPage();
-      await signIn(phone, ada, instance);
-    }
-    lap('phone signed in');
-    // The phone joined after the first long message, so it cannot read it: Ada writes another for the phone's log.
-    await openPath(page, serverPath);
-    await channelRow(page, 'general').click();
-    if (phone !== page) {
-      // A new device joins each group on its own after it signs in (one external commit per group), so Ada writes only
-      // once the phone holds #general and her desktop has its join: the phone's composer opens when it holds the group,
-      // and the desktop reading a line the phone wrote there is past that join. Written earlier, Ada's line raced the
-      // join (a 422 for her stale epoch, or a line the phone never read, CI run 39664262787), and the phone's first
-      // view reloaded its page while it was still syncing. Now the phone stays on #general until the line is in.
-      await openPath(phone, serverPath);
-      await expectComposerReady(phone, 'general');
-      const here = `the phone is in ${String(Date.now())}`;
-      await sendText(phone, 'general', here);
-      await expect(messageRow(page, 'general', here)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
-    }
-    const again = `and again ${LONG_WORD}`;
-    await sendText(page, 'general', again);
-    if (phone !== page) await expect(messageRow(phone, 'general', again)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
-    for (const size of SIZES.filter(s => s.phone)) {
-      await phone.setViewportSize({ width: size.width, height: size.height });
-      await test.step(`phone ${size.tag}`, async () => { await attempt(`phone ${size.tag}`, () => phoneGrammar(phone, size, serverPath, voicePath)); });
-    }
+    await test.step('mobile viewport grammar', async step => {
+      step.skip(desktopE2E(), 'Mobile UI is outside the desktop release; native minimum window sizes cannot emulate a phone. The browser layout lane retains these mobile assertions.');
+      // 4. Phone: a touch phone where the engine has one (Chromium, WebKit), Ada's second device; Firefox has no mobile emulation,
+      // and 390 and 360 wide is a phone layout there too, so its own page is resized.
+      let phone: Page = page;
+      if (browserName !== 'firefox') {
+        rmSync(phoneDir, { recursive: true, force: true });
+        mkdirSync(phoneDir, { recursive: true });
+        phoneContext.current = await playwright[browserName].launchPersistentContext(phoneDir, {
+          ...launchOptions, headless, channel, ...PHONE, viewport: { width: 390, height: 844 }, baseURL: h.url,
+        });
+        await guard.attach(phoneContext.current);
+        phone = await phoneContext.current.newPage();
+        await signIn(phone, ada, instance);
+      }
+      lap('phone signed in');
+      // The phone joined after the first long message, so it cannot read it: Ada writes another for the phone's log.
+      await openPath(page, serverPath);
+      await channelRow(page, 'general').click();
+      if (phone !== page) {
+        // A new device joins each group on its own after it signs in (one external commit per group), so Ada writes only
+        // once the phone holds #general and her desktop has its join: the phone's composer opens when it holds the group,
+        // and the desktop reading a line the phone wrote there is past that join. Written earlier, Ada's line raced the
+        // join (a 422 for her stale epoch, or a line the phone never read, CI run 39664262787), and the phone's first
+        // view reloaded its page while it was still syncing. Now the phone stays on #general until the line is in.
+        await openPath(phone, serverPath);
+        await expectComposerReady(phone, 'general');
+        const here = `the phone is in ${String(Date.now())}`;
+        await sendText(phone, 'general', here);
+        await expect(messageRow(page, 'general', here)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
+      }
+      const again = `and again ${LONG_WORD}`;
+      await sendText(page, 'general', again);
+      if (phone !== page) await expect(messageRow(phone, 'general', again)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
+      for (const size of SIZES.filter(s => s.phone)) {
+        await phone.setViewportSize({ width: size.width, height: size.height });
+        await test.step(`phone ${size.tag}`, async () => { await attempt(`phone ${size.tag}`, () => phoneGrammar(phone, size, serverPath, voicePath)); });
+      }
+    });
   } finally {
     await guard.collectWorkers();
-    await phoneContext?.close();
+    await phoneContext.current?.close();
     await second.close();
     rmSync(secondDir, { recursive: true, force: true });
     rmSync(phoneDir, { recursive: true, force: true });
