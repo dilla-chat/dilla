@@ -38,8 +38,11 @@ if ($endpoints.Count -eq 0) {
   }
   $roots = Get-TrustedRoots
   $transport = Join-Path $work 'USBip'
-  Write-Output 'Installing the verified USB/IP transport'
-  $setup = Start-Process -FilePath $installer -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/COMPONENTS=main,client', "/DIR=`"$transport`"", "/LOG=`"$work\install.log`"") -PassThru
+  # Install only the matching signed user-space tools. The installer's `client`
+  # component runs pnputil /install against EVERY USB 3 root hub, and hangs on
+  # the hosted VM. Stage the extension below before creating our new controller.
+  Write-Output 'Installing the verified USB/IP user-space tools'
+  $setup = Start-Process -FilePath $installer -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/COMPONENTS=main', "/DIR=`"$transport`"", "/LOG=`"$work\install.log`"") -PassThru
   if (-not $setup.WaitForExit(120000)) {
     & taskkill /PID $setup.Id /T /F
     throw 'Signed USB/IP installation did not complete within two minutes; see install.log'
@@ -47,6 +50,38 @@ if ($endpoints.Count -eq 0) {
   Write-Output "USB/IP installer exit: $($setup.ExitCode)"
   if (@(Compare-Object $roots (Get-TrustedRoots)).Count -ne 0) { throw 'The USB/IP installer changed a trusted certificate root store' }
   if ($setup.ExitCode -ne 0) { throw "Signed USB/IP installation failed or requires a reboot: $($setup.ExitCode)" }
+  $drivers = Join-Path $work 'drivers'
+  New-Item -ItemType Directory -Path $drivers -Force | Out-Null
+  $files = @{
+    'usbip2_filter.cat' = 'efdb52949e258b79fc60cf522898b67f390856210421fa9b293d89c3ab93eacf'
+    'usbip2_filter.inf' = 'a3bd59c2d564dbf388ffd3c7a73fbb2fe2235a477fb1061d83a3fc69c25b5911'
+    'usbip2_filter.sys' = 'b4e794626a067af8ba92ef608c049905ac21e312b18ed1da4338d4f155a3fb49'
+    'usbip2_ude.cat' = '3587f744766f3a55845e3dc9d990730ce6e779c0d67594b748f351d51eb501b3'
+    'usbip2_ude.inf' = 'ce84dbdb634e620bdd9b1c2117155b4b04efa1a357b2247b98049989f98ee9b2'
+    'usbip2_ude.sys' = '434ab4426dd877f632b0afd4d5a365f2c41bdeb8fea1308fd0fe5042cf1de9ea'
+  }
+  foreach ($file in $files.Keys) {
+    Get-PinnedFile "https://github.com/OSSign/vadimgrn--usbip-win2-old/releases/download/0.9.7.5-preview/$file" (Join-Path $drivers $file) $files[$file]
+  }
+  foreach ($name in @('usbip2_ude', 'usbip2_filter')) {
+    $signed = Get-AuthenticodeSignature (Join-Path $drivers "$name.cat")
+    if ($signed.Status -ne 'Valid' -or $signed.SignerCertificate.Subject -notlike '*CN=Microsoft Windows Hardware Compatibility Publisher*') {
+      throw "Downloaded USB/IP kernel catalog lacks valid Microsoft attestation: $name"
+    }
+  }
+  function Invoke-AudioDeviceSetup([string]$File, [string[]]$Arguments, [string]$Label) {
+    Write-Output "USB/IP device setup: $Label"
+    $owned = Start-Process -FilePath $File -ArgumentList $Arguments -PassThru -NoNewWindow -RedirectStandardOutput (Join-Path $work "$Label.out") -RedirectStandardError (Join-Path $work "$Label.err")
+    if (-not $owned.WaitForExit(60000)) {
+      & taskkill /PID $owned.Id /T /F
+      throw "USB/IP device setup timed out: $Label"
+    }
+    if ($owned.ExitCode -ne 0) { throw "USB/IP device setup failed: $Label ($($owned.ExitCode))" }
+  }
+  # Pre-stage only: no /install and no restart of unrelated root hubs. Windows
+  # applies this signed extension when the new USB/IP controller enumerates.
+  Invoke-AudioDeviceSetup "$env:windir\System32\pnputil.exe" @('/add-driver', "`"$drivers\usbip2_filter.inf`"") 'stage-filter'
+  Invoke-AudioDeviceSetup (Join-Path $transport 'devnode.exe') @('install', "`"$drivers\usbip2_ude.inf`"", 'ROOT\USBIP_WIN2\UDE') 'create-controller'
   # Verify the installed kernel packages, including the Microsoft attestation.
   foreach ($name in @('usbip2_ude', 'usbip2_filter')) {
     $catalog = Get-ChildItem "$env:windir\System32\DriverStore\FileRepository\$name.inf_amd64_*\$name.cat" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
