@@ -352,3 +352,54 @@ func TestMusicCallJoinUnusablePendingLogsOnceAtInteraction(t *testing.T) {
 		t.Fatalf("logs=%s", logs.String())
 	}
 }
+
+type memberCalls struct {
+	musicJoinCallsFake
+	httpReads, writes int
+}
+
+func (c *memberCalls) ChannelCall(ctx context.Context, ch id.ID) (client.ChannelCallState, error) {
+	c.httpReads++
+	return c.musicJoinCallsFake.ChannelCall(ctx, ch)
+}
+func (c *memberCalls) GroupPage(context.Context, id.ID, string, uint64, uint64) (client.Page, error) {
+	c.httpReads++
+	return client.Page{}, nil
+}
+func (c *memberCalls) Resync(context.Context, id.ID, []byte, []byte) (client.SequenceResult, error) {
+	c.writes++
+	return client.SequenceResult{}, errors.New("unexpected resync")
+}
+
+type memberCore struct {
+	musicJoinCoreFake
+	helperReads, writes int
+}
+
+func (c *memberCore) Groups(context.Context) ([]native.GroupInfo, error) {
+	c.helperReads++
+	return []native.GroupInfo{{ID: c.group, State: 2}}, nil
+}
+func (c *memberCore) CallMediaEpoch(context.Context, id.ID) (native.CallMediaEpoch, error) {
+	c.helperReads++
+	return native.CallMediaEpoch{}, nil
+}
+func (c *memberCore) TrustSender(context.Context, id.ID, uint64, id.ID, []byte, []byte, uint64) (native.GroupTrustVerdict, error) {
+	c.writes++
+	return native.GroupTrustVerdict{}, errors.New("unexpected trust")
+}
+func TestMemberBranchMakesNoJoinWrites(t *testing.T) {
+	calls := &memberCalls{musicJoinCallsFake: musicJoinCallsFake{channel: id.New(), group: id.New()}}
+	core := &memberCore{musicJoinCoreFake: musicJoinCoreFake{group: calls.group}}
+	var logs bytes.Buffer
+	ctx := music.WithPlaybackLogger(t.Context(), slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	if err := musicCallGroupJoinAttempt(ctx, calls, core, id.New(), id.New(), calls.channel, 1); err != nil {
+		t.Fatal(err)
+	}
+	if calls.httpReads != 2 || core.helperReads != 2 || core.joins != 0 || calls.writes != 0 || core.writes != 0 {
+		t.Fatalf("http=%d helper=%d joins=%d writes=%d/%d", calls.httpReads, core.helperReads, core.joins, calls.writes, core.writes)
+	}
+	if !strings.Contains(logs.String(), `"branch":"already_member"`) || !strings.Contains(logs.String(), `"elapsed_ms":`) {
+		t.Fatalf("missing branch/timing: %s", logs.String())
+	}
+}

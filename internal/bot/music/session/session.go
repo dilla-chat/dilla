@@ -112,7 +112,7 @@ func (s QueueStarter) StartExplicit(ctx context.Context, track music.Track) (mus
 			return nil, err
 		}
 	}
-	ctx = context.WithValue(ctx, explicitStartKey{}, true)
+	ctx = context.WithValue(client.WithInteractive(ctx), explicitStartKey{}, true)
 	playback, err := s.Start(ctx, track)
 	if !errors.Is(err, livekit.ErrBinding) || ctx.Err() != nil || s.ResetConnection == nil {
 		return playback, err
@@ -208,7 +208,7 @@ func Start(ctx context.Context, o Options) (*Session, error) {
 	if o.Community.IsZero() || o.Channel.IsZero() || o.Track == "" || o.PCM == nil || o.Encoder == nil || o.Publisher == nil || o.Epochs == nil || (o.PrepareCall == nil && (o.Call.CallID.IsZero() || o.Group.IsZero() || o.Call.GroupID != o.Group)) || (provider != music.ProviderSpotify && provider != music.ProviderYouTube) || (provider == music.ProviderSpotify && o.Acquire == nil) {
 		return nil, music.StartStage(ctx, "provider_check", ErrInvalid)
 	}
-	ctx = client.WithoutCooperativeStop(client.WithBackground(ctx))
+	ctx = music.WithCallJoinTrace(client.WithoutCooperativeStop(ctx))
 	if !o.Group.IsZero() {
 		ctx = music.WithPlaybackGroup(ctx, o.Group)
 	}

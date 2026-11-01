@@ -5,7 +5,6 @@ package runtime
 import (
 	"context"
 	"errors"
-	"github.com/jonasthim/dilla/internal/bot/music"
 	"io"
 	"sync"
 	"sync/atomic"
@@ -13,6 +12,8 @@ import (
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/music/encode"
 	"github.com/jonasthim/dilla/internal/media"
+
+	"github.com/jonasthim/dilla/internal/bot/music"
 )
 
 var ErrInvalidConfig = errors.New("music runtime: invalid configuration")

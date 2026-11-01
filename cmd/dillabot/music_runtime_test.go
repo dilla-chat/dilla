@@ -1053,7 +1053,7 @@ func TestMusicSupervisorAutoAdvanceDoesNotInheritCooperativeStop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	probe := &probeIntakePriority{api: api}
+	probe := &probeIntakePriority{api: api, want: 1}
 	published := make(chan *liveRuntimePublisher, 2)
 	starter, err := newMusicQueueStarter(musicRuntimeDeps{Community: community, Channel: channel,
 		Calls:         boundaryCalls{probe, client.Call{CallID: channel, GroupID: group, LiveKitURL: "wss://example.invalid", Token: "test"}},
@@ -1081,6 +1081,7 @@ func TestMusicSupervisorAutoAdvanceDoesNotInheritCooperativeStop(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := <-published
+	probe.want = 0 // EOF advances are background; the explicit setup start is interactive.
 	pending.Store(true)
 	close(first.done)
 	select {
@@ -1333,4 +1334,63 @@ func TestMusicNoticeHolderIsSharedAcrossDisableAndReenable(t *testing.T) {
 	if registry.SkipNotices(installation) != first {
 		t.Fatal("re-enable replaced the shared holder")
 	}
+}
+
+func TestExplicitStartRunsAtInteractivePriority(t *testing.T) {
+	community, channel, group := id.New(), id.New(), id.New()
+	n := &runtimeStateNative{binding: native.Binding{Instance: id.New(), Community: community, Installation: id.New()}, rows: map[string]native.StateValue{}}
+	store, err := persistence.New(n, community)
+	if err != nil {
+		t.Fatal(err)
+	}
+	priorities := make(chan int, 2)
+	published := make(chan *liveRuntimePublisher, 2)
+	starter, err := newMusicQueueStarter(musicRuntimeDeps{Community: community, Channel: channel, Calls: &runtimeCalls{call: client.Call{CallID: channel, GroupID: group, LiveKitURL: "wss://example.invalid", Token: "test"}}, JoinCallGroup: func(ctx context.Context) error { priorities <- client.RequestPriority(ctx); return nil }, YouTubePCM: liveRuntimePCM{}, Encoder: liveRuntimeEncoderStarter{}, Publisher: boundaryPublisher{published}, Epochs: runtimeEpochs{}, Lifetime: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := newMusicSupervisor(t.Context(), channel, store, starter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	tracks := []music.Track{{ID: "a", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "A", RequesterID: "m"}, {ID: "b", Provider: music.ProviderYouTube, CanonicalID: "bcdefghijkl", Title: "B", RequesterID: "m"}}
+	state, err := music.Apply(music.InitialState(), 0, music.Operation{Kind: music.OpEnqueue, Tracks: tracks})
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := store.Save(t.Context(), channel, 0, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err = music.Apply(saved.State, saved.Revision, music.Operation{Kind: music.OpResume})
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err = store.Save(t.Context(), channel, saved.Revision, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.SchedulePersistedSnapshot(t.Context(), saved.State, saved.Revision, true); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case priority := <-priorities:
+		if priority < 1 {
+			t.Errorf("explicit JoinCallGroup priority=%d", priority)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("explicit join missing")
+	}
+	first := <-published
+	close(first.done)
+	select {
+	case priority := <-priorities:
+		if priority != 0 {
+			t.Errorf("EOF JoinCallGroup priority=%d", priority)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("EOF join missing")
+	}
+	<-published
 }

@@ -1,9 +1,11 @@
 package session
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -418,8 +420,8 @@ func TestExplicitStartRefreshesBindingAfterDelayedRoomDisconnect(t *testing.T) {
 type schedulingPCM struct{ api *client.Client }
 
 func (p schedulingPCM) Start(ctx context.Context, _ string) (io.ReadCloser, error) {
-	if client.RequestPriority(ctx) != 0 || client.CooperativeCheckpoint(ctx) != nil {
-		return nil, errors.New("playback retained a worker turn")
+	if client.RequestPriority(ctx) < 1 || client.CooperativeCheckpoint(ctx) != nil {
+		return nil, errors.New("playback lost interactive priority or retained cooperative stop")
 	}
 	_, err := p.api.Discover(ctx)
 	var response *client.APIError
@@ -434,7 +436,7 @@ type schedulingTransport struct{}
 func (schedulingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	return &http.Response{StatusCode: 503, Header: http.Header{"Content-Type": []string{"application/cbor"}}, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
 }
-func TestPlaybackSessionClearsInteractiveScheduling(t *testing.T) {
+func TestPlaybackSessionPreservesInteractivePriorityAndClearsCooperativeStop(t *testing.T) {
 	api, err := client.New(client.Config{BaseURL: "https://example.invalid", InstanceID: id.New(), HTTPClient: &http.Client{Transport: schedulingTransport{}}})
 	if err != nil {
 		t.Fatal(err)
@@ -526,3 +528,24 @@ func (p *healthPCM) SourceGone() bool { return p.gone.Load() }
 type healthPCMStart struct{ p *healthPCM }
 
 func (p healthPCMStart) Start(context.Context, string) (io.ReadCloser, error) { return p.p, nil }
+
+func TestPublishedStageIncludesJoinBranch(t *testing.T) {
+	lease := &leaseStub{}
+	enc := &encoderStub{done: make(chan struct{})}
+	pub := &pubStub{done: make(chan struct{})}
+	o := options(&pcmStart{lease: lease}, enc, pub, lease)
+	o.PrepareCall = func(ctx context.Context) (client.Call, error) {
+		music.RecordCallJoinBranch(ctx, "already_member")
+		return client.Call{CallID: id.New(), GroupID: id.New()}, nil
+	}
+	var logs bytes.Buffer
+	ctx := music.WithPlaybackLogger(t.Context(), slog.New(slog.NewJSONHandler(&logs, nil)))
+	s, err := Start(ctx, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if !strings.Contains(logs.String(), `"branch":"already_member"`) || !strings.Contains(logs.String(), `"stage":"published"`) {
+		t.Fatalf("missing published branch: %s", logs.String())
+	}
+}

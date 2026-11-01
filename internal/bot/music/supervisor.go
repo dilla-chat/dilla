@@ -243,12 +243,12 @@ func (s *Supervisor) applyLocked(ctx context.Context, expected uint64, op Operat
 	if op.Kind == OpResume {
 		s.startRequest++
 	}
-	if op.Kind == OpPause {
+	switch op.Kind {
+	case OpPause:
 		s.pausePlaybackLocked()
-	} else if op.Kind == OpStop || op.Kind == OpClear || op.Kind == OpSkip {
+	case OpStop, OpClear, OpSkip:
 		s.closePlaybackLocked()
-	}
-	if op.Kind == OpResume {
+	case OpResume:
 		s.resumePlaybackLocked()
 	}
 	if !s.state.Paused && s.state.Current != nil && s.playback == nil && async {
@@ -480,6 +480,11 @@ func (s *Supervisor) startLocked(ctx context.Context, explicit bool, budget *sta
 		if s.closed || s.state.Paused || s.state.Current == nil || s.playback != nil {
 			return nil, nil
 		}
+	}
+	if explicit {
+		ctx = client.WithInteractive(ctx)
+	} else {
+		ctx = client.WithBackground(ctx)
 	}
 	runCtx, cancelCause := context.WithCancelCause(ctx)
 	cancel := func() { cancelCause(context.Canceled) }

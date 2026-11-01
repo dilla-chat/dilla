@@ -3,12 +3,13 @@ package runtime
 import (
 	"context"
 	"errors"
-	"github.com/jonasthim/dilla/internal/media"
 	"io"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jonasthim/dilla/internal/media"
 )
 
 type testSource struct {
