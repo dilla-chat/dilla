@@ -64,7 +64,7 @@ forward button `Add this browser` sends `signInKey` with the key and runs the fe
 `PUT` without registering again. An account that owes a factor and sets one up after the enrolment meets
 the set-up as step 3 (flow 10). The assertion lives five minutes: reading the key off paper for longer
 than that after the factor costs a new login, and the page shows `enrol.expired` (a 401 from `register`,
-or from `enrol.backupCode` on the backup-code path) and returns to step 1. `Create a new account instead`
+or from `enrol.backupCode` on the backup-code path) and returns to step 1. `Have an invite? Create an account`
 on step 1, and `Cancel` on steps 2 and 3, send `signInCancel` and the page shows onboarding step 1. The
 step shown follows `account.phase` and the key the page holds, never the command the page sent: a refusal
 of the login, of the second factor or of the registration leaves the phase at `signin-login` or returns it
@@ -103,7 +103,7 @@ the passkey screen: step 2 opens as the backup-code form, with `Cancel` in place
 `factorSignin.passkey.unusable` above the body.
 Each of the first three is one `<form noValidate>`: `Enter` in a field submits the step, as does its
 forward button (`type="submit"`). The back button comes first in the footer, is `type="button"` and never
-submits: `Create a new account instead` (a ghost button) on step 1 before the login, which has no `Cancel`,
+submits: `Have an invite? Create an account` (a ghost button) on step 1 before the login, which has no `Cancel`,
 and `Cancel` on steps 2 and 3 and on step 1 of a registered enrolment. A submit with an empty `Username`,
 `Password` or `Code` sends nothing (see "Empty fields" under "States"). Step 4's only button is `Open dilla`,
 which navigates to `/`, replacing the history entry. The working status line `signin.key.working`
@@ -163,7 +163,7 @@ Step 1, login:
 |                      | ••••••••••                                       |                    |
 |                      +--------------------------------------------------+                    |
 |                      --------------------------------------------------                      |
-|                           [ Create a new account instead ]  [ Continue ]                     |
+|                           [ Have an invite? Create an account ]  [ Continue ]                     |
 +----------------------------------------------------------------------------------------------+
 ```
 
@@ -200,7 +200,7 @@ Step 1 where the instance offers passkeys and the browser can use them (the ghos
 |                      +--------------------------------------------------+                    |
 |                      [ Sign in with a passkey ]                           (ghost button)     |
 |                      --------------------------------------------------                      |
-|                           [ Create a new account instead ]  [ Continue ]                     |
+|                           [ Have an invite? Create an account ]  [ Continue ]                     |
 ```
 
 Step 2, code form after a passkey that did not check the person (the note sits above the code field):
@@ -331,7 +331,7 @@ field keeps one line and scrolls inside itself.
 |  | ••••••••••                     |  |   +--------------------------------------+
 |  +--------------------------------+  |
 |  ------------------------------      |
-|  [ Create a new account instead ]    |
+|  [ Have an invite? Create an account ]    |
 |                     [ Continue ]     |
 +--------------------------------------+
 
@@ -628,7 +628,7 @@ phase to `signin-login`, and the person signs in again.
 | the count reaches 52 | unchanged | `Add this browser` loses the description `signin.error.keyLength` |
 
 Tab order inside each step: the fields in visual order, then the footer: on step 1 (the login)
-`Create a new account instead`, then `Continue`; on the second factor and on the key step,
+`Have an invite? Create an account`, then `Continue`; on the second factor and on the key step,
 `Cancel`, then the forward button. On onboarding step 1: the
 invite field, `Use an existing account`, `Continue`. On the closed frame: `Use an existing account`.
 There are no single-key shortcuts.
@@ -662,15 +662,17 @@ and judged by the instance, which answers the same way for every wrong pair.
 
 ## Settings → Devices, and the revoke and sign-out ceremonies
 
-Settings is a modal `<dialog>` over the shell (`SettingsFrame`), reached at `/settings/devices` from the
-rail's last button (`shell.rail.settings`). Its `<h1>` is `settings.title` and takes focus when the frame
-opens; its navigation (`settings.nav.label`) is one tab stop over three buttons with roving focus
-(`ArrowUp`/`ArrowDown`, `Home`/`End`), the current one `aria-current="page"`; the close button is
-`settings.close`; `Escape` closes the frame and returns to the route the person came from and to the
-rail's settings button. `Escape` inside one of the dialogs below closes only that dialog. On opening the
-Devices section the page sends `refreshDevices`.
+Settings is a fullscreen native modal `<dialog>` over the mounted shell (`SettingsFrame`).
+The user panel opens `/settings`: Profile on desktop, a grouped index on phones.
+`/settings/devices` remains a direct link to Devices. Account identity precedes search;
+roving navigation uses ArrowUp/ArrowDown and Home/End. A section change focuses its
+heading; a search result focuses its named setting. Close and Escape return to the
+originating screen through the draft guard. Nested authentication and confirmation
+dialogs consume Escape first. Opening Devices sends `refreshDevices`.
 
-At 1280 the frame is 960 × 640 with a 220px navigation (brief "Layout"):
+The viewport is filled; a 15rem navigation column and content are centered within
+80rem. The following Devices content sketch illustrates rows, not frame geometry.
+See [fullscreen settings](18-fullscreen-settings.md) for navigation and saving.
 
 ```
 +----------------------------------------------------------------------------------------------+
@@ -748,7 +750,7 @@ zero-width character (the display-name rule); the page and the worker refuse the
 dialogs (listed and not yet listed) show the device first as its name, when it has one, and the first eight characters
 of its id, so the person confirms the id and not a name the server could have swapped. Under the list stand
 the count line and `devices.refresh`; under a hairline, `devices.signOut` and `devices.forget`. The count
-line is `devices.cap.other` (`{n} devices`), or `devices.cap.one` (`one device`) when the count is 1; it
+line is `devices.cap.other` (`{n} devices`), or `devices.cap.one` (`One device`) when the count is 1; it
 counts the devices that are not removed, this browser included, and the instance's cap is not shown
 (ruling 33).
 
@@ -869,14 +871,14 @@ while a command runs, when they do nothing. Focus then returns to the button tha
 | `onboarding.connect.signIn` | `Use an existing account` | ghost button under the invite field, onboarding step 1, and under the closed frame's paragraph, when `instance.passwordSignup` |
 | `onboarding.keys.loss` | `This key is the only way to get your account back or to add another browser. If every browser you use loses its data and you do not have the key, the account and its history are gone, and the host cannot bring them back.` | second paragraph, onboarding step 3 (changed for web-2a) |
 | `onboarding.browser.oneBrowser` | `To use this account in another browser, sign in there with your password and the second factor you add next, then this recovery key. Messages sent before that browser joins are not shown in it.` | third paragraph, onboarding step 4 (changed for web-2a and web3.6) |
-| `signin.step` | `Step {n} of 4` | step line, steps 1–4 |
+| `signin.step` | `Sign in · step {n} of {total}` | step line, steps 1–4 (Signal task 10: {total} is 4, or 3 with no factor step shown; the dots follow it) |
 | `signin.login.title` | `Sign in to {instance}` | step heading, step 1 |
-| `signin.login.body` | `Use the username and password of your account on {instance}.` | paragraph, step 1 |
+| `signin.login.body` | `Use your dilla username and password.` | paragraph, step 1 |
 | `signin.login.username` | `Username` | field label, step 1 |
 | `signin.login.password` | `Password` | field label, step 1 |
 | `signin.login.submit` | `Continue` | button, forward on steps 1 (login) and 2 (second factor) |
 | `signin.login.working` | `Checking…` | the forward button of steps 1 and 2 while their command runs |
-| `signin.login.createInstead` | `Create a new account instead` | ghost button, first in the footer of step 1; sends `signInCancel` |
+| `signin.login.createInstead` | `Have an invite? Create an account` | ghost button, first in the footer of step 1; sends `signInCancel` |
 | `signin.totp.title` | `Your second factor` | step heading, step 2 |
 | `signin.totp.body` | `Enter the six-digit code from your authenticator app.` | paragraph, step 2 |
 | `signin.totp.code` | `Code` | field label, step 2 |
@@ -906,32 +908,32 @@ while a command runs, when they do nothing. Focus then returns to the button tha
 | `shell.rail.settings` | `settings` | the rail's last button, which opens Settings |
 | `settings.title` | `Settings` | the settings frame's `<h1>` |
 | `settings.close` | `Close settings` | the settings frame's close button |
-| `settings.nav.label` | `settings sections` | accessible name of the settings navigation |
-| `settings.nav.devices` | `devices` | navigation button |
-| `settings.nav.notifications` | `notifications` | navigation button |
-| `settings.nav.appearance` | `appearance` | navigation button |
+| `settings.nav.label` | `Settings sections` | accessible name of the settings navigation |
+| `settings.nav.devices` | `Devices` | navigation button |
+| `settings.nav.notifications` | `Notifications` | navigation button |
+| `settings.nav.appearance` | `Appearance` | navigation button |
 | `devices.title` | `Devices` | section heading (`<h2>`, `tabIndex=-1`), Devices |
-| `devices.body` | `Every browser and app signed in to your account. Removing a device needs your recovery key.` | paragraph under the heading, Devices |
-| `devices.thisBrowser` | `this browser` | tag on this browser's row |
-| `devices.tier.web` | `browser` | tier tag of a browser |
-| `devices.tier.native` | `app` | tier tag of an app |
+| `devices.body` | `Every browser that holds your keys.` | paragraph under the heading, Devices (Signal task 10, Ruling AM: the prototype's line) |
+| `devices.thisBrowser` | `This browser` | tag on this browser's row |
+| `devices.tier.web` | `Browser` | tier tag of a browser |
+| `devices.tier.native` | `App` | tier tag of an app |
 | `devices.lastSeen` | `last seen {when}` | second line of every row |
 | `devices.unlisted` | `not yet in the device list` | state of a device the newest device list does not name |
 | `devices.revoked` | `removed` | state of a removed device |
-| `devices.cap.one` | `one device` | line under the list when one device is not removed |
+| `devices.cap.one` | `One device` | line under the list when one device is not removed |
 | `devices.cap.other` | `{n} devices` | line under the list; `{n}` counts the devices that are not removed, when that is not 1 |
 | `devices.keyLabel` | `Recovery key` | field label, the two key dialogs of Settings → Devices |
-| `devices.refresh` | `refresh` | button under the list; sends `refreshDevices` |
-| `devices.revoke` | `remove` | button on the row of every other device that is not removed |
-| `devices.rename` | `rename` | button on the row of every device that is not removed, this browser included; opens the name dialog |
+| `devices.refresh` | `Refresh` | button under the list; sends `refreshDevices` |
+| `devices.revoke` | `Remove` | button on the row of every other device that is not removed |
+| `devices.rename` | `Rename` | button on the row of every device that is not removed, this browser included; opens the name dialog |
 | `devices.renameTitle` | `Name this device` | dialog title, the name dialog |
 | `devices.renameBody` | `The server can change it, so check a device by its id before you remove it.` | dialog body, the name dialog |
 | `devices.renameLabel` | `Device name` | field label, the name dialog (at most 64 characters) |
 | `devices.renameServerReads` | `The server can read this, like your display name.` | a second quiet hint line under the name field, in its description after `devices.renameBody` (web3.12.1) |
 | `devices.renameSave` | `Save` | submit, the name dialog |
 | `devices.renameSuggestion` | `{browser} on {os}` | the name dialog's start text on this browser when it has no name yet, e.g. `Firefox on Linux`; nothing when the browser or system is not recognised |
-| `devices.signOut` | `sign out and remove this browser` | button under the hairline |
-| `devices.forget` | `forget this browser` | button under the hairline |
+| `devices.signOut` | `Sign out and remove this browser` | button under the hairline |
+| `devices.forget` | `Forget this browser` | button under the hairline |
 | `devices.revokeTitle` | `Remove this device?` | dialog title, remove another device |
 | `devices.revokeBody` | `The device is signed out everywhere and leaves every conversation. Enter your recovery key to confirm.` | dialog body, remove another device |
 | `devices.removeUnlistedTitle` | `Remove this device?` | dialog title, remove a device that is not in the device list |

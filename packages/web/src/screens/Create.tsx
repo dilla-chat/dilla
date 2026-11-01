@@ -452,7 +452,7 @@ function inviteMemory(client: object): Map<string, { url: string; at: number }> 
  * and calls back, and the shell opens Server settings on its invites tab (flow 08).
  */
 export function InviteFlow(props: {
-  open: boolean; community: { id: string; name: string } | null; onClose(): void; onMoreOptions?: (() => void) | undefined;
+  open: boolean; community: { id: string; name: string } | null; onClose(): void; onCreated?: (() => void) | undefined; onMoreOptions?: (() => void) | undefined;
 }): React.JSX.Element {
   const client = useCore();
   const [state, setState] = useState<'creating' | 'ready' | 'failed'>('creating');
@@ -462,6 +462,8 @@ export function InviteFlow(props: {
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
   const communityId = props.community?.id ?? null;
+  const onCreated = useRef(props.onCreated);
+  onCreated.current = props.onCreated;
 
   useEffect(() => {
     if (!props.open || communityId === null) {
@@ -488,6 +490,7 @@ export function InviteFlow(props: {
         setUrl(held.url);
         setDays(Math.min(INVITE_TTL_DAYS, Math.ceil((held.at + INVITE_TTL_DAYS * DAY_MS - now) / DAY_MS)));
         setState('ready');
+        onCreated.current?.();
         if (now - opened > AUTO_COPY_MS) return;
         const ok = await copied(held.url);
         if (live) setStatus(t(ok ? 'invite.copied' : 'invite.blocked'));

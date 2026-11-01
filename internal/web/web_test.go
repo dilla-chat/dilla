@@ -113,6 +113,9 @@ func TestBuildVersionEndpointTracksTheEntryAsset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if h.BuildEntry() != "/assets/app-1a2b.js" {
+		t.Fatalf("served build=%q", h.BuildEntry())
+	}
 	got := do(t, h, http.MethodGet, "/app-version.json", nil)
 	if got.Code != http.StatusOK || got.Body.String() != `{"entry":"/assets/app-1a2b.js"}` {
 		t.Fatalf("version = %d %q", got.Code, got.Body.String())

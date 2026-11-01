@@ -20,7 +20,9 @@ test('on a phone the call bar opens the stage, which holds the one mute button, 
 
     const bar = page.locator('.d-call-bar');
     const tabs = page.getByRole('navigation', { name: copy('nav.tabs.label'), exact: true });
-    const mute = page.getByRole('button', { name: copy('voice.mute'), exact: true });
+    // The call's own mute: the stage's (Signal §5.6, named by its word) or the call bar's; one of them is in the DOM. The phone
+    // home's user panel (Ruling AE) has a mute of its own, which is not the call's.
+    const mute = page.locator('.dw-voice-stage [data-control="mute"], .d-call-bar__mute');
     const back = page.getByRole('button', { name: copy('nav.back'), exact: true });
     const title = page.locator('.d-app-shell__main .d-phone-header__title');
 
@@ -72,20 +74,21 @@ test('on a phone without getDisplayMedia the stage offers no share button', asyn
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(stage(page)).toBeVisible({ timeout: WAIT });
     const toolbar = stage(page).getByRole('toolbar');
-    const share = toolbar.getByRole('button', { name: copy('voice.shareOn'), exact: true });
-    const mute = toolbar.getByRole('button', { name: copy('voice.mute'), exact: true });
+    const share = toolbar.locator('[data-control="share"]');
+    const mute = toolbar.locator('[data-control="mute"]');
     await expect(mute).toBeVisible({ timeout: WAIT });
     await expect(share).toHaveCount(1);
 
     await page.evaluate(() => { Reflect.deleteProperty(MediaDevices.prototype, 'getDisplayMedia'); });
     expect(await page.evaluate(() => typeof navigator.mediaDevices.getDisplayMedia)).toBe('undefined');
-    // Any change of the call renders the toolbar again: a mute and an unmute.
-    await mute.click();
-    await expect(mute).toHaveAttribute('aria-pressed', 'true', { timeout: WAIT });
-    await mute.click();
-    await expect(mute).toHaveAttribute('aria-pressed', 'false', { timeout: WAIT });
+    // Any change of the call renders the toolbar again: a mute and an unmute. The first toggle is a key press: the
+    // toolbar may re-flow without Share mid-click (any call-state render), which moves Mute under a pointer click.
+    await mute.press('Enter');
+    await expect(mute).toHaveAttribute('data-on', 'true', { timeout: WAIT });
     await expect(share).toHaveCount(0);
-    const leave = toolbar.getByRole('button', { name: copy('voice.leave'), exact: true });
+    await mute.click();
+    await expect(mute).not.toHaveAttribute('data-on', { timeout: WAIT });
+    const leave = toolbar.locator('[data-control="leave"]');
     await expect(leave).toBeVisible();
     await leave.click();
     await expect(toolbar).toHaveCount(0, { timeout: WAIT });

@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
-import { ComposedShell, fixtureStatusBar } from './AppShell.fixture.tsx';
+import { ComposedShell, fixtureTopBar } from './AppShell.fixture.tsx';
 import { AppShell } from './AppShell.tsx';
 import { CommunityRail } from '../CommunityRail/CommunityRail.tsx';
 import { expectNoAxeViolations } from '../test/setup.ts';
@@ -25,20 +25,28 @@ describe('AppShell', () => {
     expect(screen.getByRole('button', { name: 'send' })).toHaveFocus();
   });
 
-  // web3.8 (R4): the status bar is optional on desktop; without one there is no wrapper and no grid row.
-  it('desktop with no statusBar renders no status wrapper; with one it follows main in the focus order', async () => {
+  // Signal task 5: the top bar spans the desktop shell above the rail and main; without one there is no wrapper (and no row).
+  it('desktop renders topBar in .d-app-shell__topbar above the rail and main, first after the skip link', async () => {
     const user = userEvent.setup();
     const { container, rerender } = render(<ComposedShell />);
-    expect(container.querySelector('.d-app-shell__status')).toBeNull();
-    rerender(<ComposedShell shell={{ statusBar: null }} />);
-    expect(container.querySelector('.d-app-shell__status')).toBeNull();
-    rerender(<ComposedShell shell={{ statusBar: false }} />);
-    expect(container.querySelector('.d-app-shell__status')).toBeNull();
-    rerender(<ComposedShell shell={{ statusBar: fixtureStatusBar }} />);
-    expect(container.querySelector('.d-app-shell__status')).not.toBeNull();
-    screen.getByRole('button', { name: 'send' }).focus();
+    expect(container.querySelector('.d-app-shell__topbar')).toBeNull();
+    rerender(<ComposedShell shell={{ topBar: null }} />);
+    expect(container.querySelector('.d-app-shell__topbar')).toBeNull();
+    rerender(<ComposedShell shell={{ topBar: fixtureTopBar }} />);
+    const bar = container.querySelector('.d-app-shell__topbar')!;
+    expect(bar).toContainElement(container.querySelector('header.d-topbar'));
+    const rail = container.querySelector('.d-app-shell__rail')!;
+    expect(bar.compareDocumentPosition(rail) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(bar.compareDocumentPosition(screen.getByRole('main')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     await user.tab();
-    expect(screen.getByRole('button', { name: /connection/ })).toHaveFocus();
+    expect(screen.getByRole('link', { name: 'skip to messages' })).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole('button', { name: 'Search or jump to…' })).toHaveFocus();
+  });
+  it('a phone shell renders no top bar', () => {
+    const { container } = render(<AppShell layout="phone" skipLabel="skip" topBar={fixtureTopBar} rail={null} sidebar={<p>list</p>} header={null} composer={null}>main</AppShell>);
+    expect(container.querySelector('.d-app-shell__topbar')).toBeNull();
+    expect(container.querySelector('.d-topbar')).toBeNull();
   });
 
   // web3.8 (U3, R23): the bottom-left area (the voice dock over the user panel), after the sidebar and before main.
@@ -151,18 +159,6 @@ describe('AppShell aside', () => {
     screen.getByRole('button', { name: 'send' }).focus();
     await user.tab();
     expect(screen.getByRole('button', { name: 'pane control' })).toHaveFocus();
-    width.mockRestore();
-  });
-
-  it('with a status bar the focus order runs main, aside, status bar', async () => {
-    const user = userEvent.setup();
-    const width = vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(1280);
-    render(<ComposedShell shell={open({ statusBar: fixtureStatusBar })} />);
-    screen.getByRole('button', { name: 'send' }).focus();
-    await user.tab();
-    expect(screen.getByRole('button', { name: 'pane control' })).toHaveFocus();
-    await user.tab();
-    expect(screen.getByRole('button', { name: /connection/ })).toHaveFocus();
     width.mockRestore();
   });
 
@@ -410,6 +406,8 @@ describe('phone layout', () => {
     const { container } = render(<ComposedShell shell={phone({ phonePane: 'view', aside: <button type="button">pane</button>, asideLabel: 'members', asideOpen: true, onAsideClose: vi.fn() })} />);
     expect(screen.getByRole('complementary', { name: 'members' })).toBeInTheDocument();
     expect(container.querySelector('.d-app-shell__backdrop')).not.toBeNull();
+    // Fix round 2: the full-screen sheet covers the tab bar (Task 11, Q4), so the bar is inert under it.
+    expect(container.querySelector('.d-app-shell__tabbar')).toHaveAttribute('inert');
   });
 
   it('the phone drops the rail settings tile; the desktop keeps it', () => {

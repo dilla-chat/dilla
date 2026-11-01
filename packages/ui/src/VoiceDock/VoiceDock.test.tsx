@@ -13,7 +13,7 @@ const dock: VoiceDockProps = {
   labels: {
     region: 'voice controls', connecting: 'connecting', where: 'harbour · Midgard Crew', reconnecting: 'reconnecting',
     paused: 'paused', mute: 'mute', deafen: 'deafen', leave: 'leave', camera: 'camera', share: 'share screen',
-    ping: '{ms} ms', pingSub: '<1 ms', pingNone: '— ms', rate: '↑{up} ↓{down} kb/s',
+    ping: '{ms} ms', pingSub: '<1 ms', pingNone: '— ms', rate: '↑ {up} ↓ {down} kb/s',
     stats: 'Ping {ms} milliseconds, {quality}. Sending {up}, receiving {down} kilobits per second.',
     quality: { good: 'good', poor: 'poor', bad: 'bad' },
   },
@@ -40,19 +40,19 @@ describe('VoiceDock (MP5)', () => {
     expect(container.querySelector('.d-voice-dock__line1')).toHaveAttribute('title', 'harbour · Midgard Crew');
   });
 
-  it('line 2 reads the ping and the rates, e.g. "24 ms · ↑48 ↓96 kb/s"', () => {
+  it('line 2 reads the ping and the rates, e.g. "24 ms · ↑ 48 ↓ 96 kb/s"', () => {
     const { container } = render(<VoiceDock {...dock} stats={link} />);
-    expect(container.querySelector('.d-voice-dock__where')).toHaveTextContent('24 ms · ↑48 ↓96 kb/s');
+    expect(container.querySelector('.d-voice-dock__where')).toHaveTextContent('24 ms · ↑ 48 ↓ 96 kb/s');
   });
 
   it('FD1: a ping that rounds to 0 reads "<1 ms", not "0 ms"', () => {
     const { container } = render(<VoiceDock {...dock} stats={{ ...link, rttMs: 0 }} />);
-    expect(container.querySelector('.d-voice-dock__where')).toHaveTextContent('<1 ms · ↑48 ↓96 kb/s');
+    expect(container.querySelector('.d-voice-dock__where')).toHaveTextContent('<1 ms · ↑ 48 ↓ 96 kb/s');
   });
 
   it('L5: a direction that could not be read is a dash, never "null" or 0', () => {
     const { container } = render(<VoiceDock {...dock} stats={{ ...link, upKbps: null }} />);
-    expect(container.querySelector('.d-voice-dock__where')).toHaveTextContent('24 ms · ↑— ↓96 kb/s');
+    expect(container.querySelector('.d-voice-dock__where')).toHaveTextContent('24 ms · ↑ — ↓ 96 kb/s');
     expect(container.querySelector('.d-voice-dock__stats')).not.toHaveTextContent('null');
   });
 
@@ -113,14 +113,14 @@ describe('VoiceDock (MP5)', () => {
     expect(screen.getByText('harbour · Midgard Crew')).toHaveClass('d-sr-only'); // the server is read in plain text too
   });
 
-  it('camera, share and leave are 32px icon buttons in one toolbar, each with a tooltip anchor; there is no mute or deafen', () => {
+  it('camera, share and leave are 28px icon buttons in one toolbar, each with a tooltip anchor; there is no mute or deafen', () => {
     const { container } = render(<VoiceDock {...dock} onMute={() => {}} onDeafen={() => {}} />);
     const group = screen.getByRole('toolbar', { name: 'voice controls' });
     const buttons = within(group).getAllByRole('button');
     expect(buttons.map(b => b.getAttribute('aria-label'))).toEqual(['camera', 'share screen', 'leave']);
     for (const b of buttons) {
       expect(b).toHaveClass('d-icon-button');
-      expect(b).toHaveAttribute('data-size', '32');
+      expect(b).toHaveAttribute('data-size', '28');
       expect(b.parentElement).toHaveClass('d-tooltip-anchor');
     }
     expect(screen.queryByRole('button', { name: 'mute' })).toBeNull();
@@ -192,7 +192,7 @@ describe('VoiceDock (MP5)', () => {
   });
 
   it.each([['connecting', 'span.d-state-dot[data-tone="pending"]'], ['reconnecting', 'span.d-state-dot[data-tone="pending"]'],
-    ['connected', 'span.d-state-dot[data-tone="ok"]'], ['paused', 'svg[data-icon="pause"]']] as const)('the %s phase marker is drawn, not a font glyph', (phase, sel) => {
+    ['connected', 'span.d-voice-dock__bars'], ['paused', 'svg[data-icon="pause"]']] as const)('the %s phase marker is drawn, not a font glyph', (phase, sel) => {
     const { container } = render(<VoiceDock {...dock} phase={phase} />);
     expect(container.querySelector(`.d-voice-dock__glyph ${sel}`)).not.toBeNull();
     expect(container.querySelector('.d-voice-dock__glyph')?.textContent).toBe('');
@@ -268,29 +268,35 @@ describe('VoiceDock (MP5)', () => {
     for (const name of ['camera', 'share screen']) expect(b(name)).not.toHaveAttribute('aria-describedby');
   });
 
-  it('has no card: a hairline top, the panel inset, no radius and no fill (CSS pin, E1, E2)', () => {
+  it('is the Signal card: the --live tints, radius 8px, padding 10px, margin 0 8px 8px, rising in over 340ms (CSS pin, §5.4)', () => {
     const rule = css.match(/^\.d-voice-dock \{([^}]*)\}/m)![1]!;
-    expect(rule).toMatch(/border-top: 1px solid var\(--hairline\)/);
-    expect(rule).toMatch(/padding: 0\.75rem/);
-    expect(rule).not.toMatch(/border-radius|background|border: 1px/);
+    expect(rule).toMatch(/background: var\(--ok-soft\);/);
+    expect(rule).toMatch(/border: 1px solid var\(--ok-soft-border\);/);
+    expect(rule).toMatch(/border-radius: var\(--r-lg\);/);
+    expect(rule).toMatch(/padding: 10px;/);
+    expect(rule).toMatch(/margin: 0 8px 8px;/);
+    expect(rule).toMatch(/animation: d-up var\(--duration-dock\) var\(--ease-out\) both;/);
+    expect(css).toMatch(/\.d-voice-dock__line1 \{[^}]*font-size: var\(--text-ui\);[^}]*color: var\(--ok-text\);/);
+    expect(css).toMatch(/\.d-voice-dock \.d-voice-dock__leave:hover \{ color: var\(--danger-ink\); background: var\(--danger\); \}/);
   });
 
   it('the controls are one flex row (CSS pin)', () => {
     expect(css).toMatch(/\.d-voice-dock__controls \{[^}]*display: flex/);
   });
 
-  it('V3: camera, share and leave sit together at the right end, with no auto margin on leave (CSS pin)', () => {
-    expect(css).toMatch(/\.d-voice-dock__controls \{[^}]*justify-content: flex-end/);
+  it('V3: camera, share and leave sit together at the right end (the status takes the free width), with no auto margin on leave (CSS pin)', () => {
+    expect(css).toMatch(/\.d-voice-dock__status \{[^}]*flex: 1;/);
+    expect(css).toMatch(/\.d-voice-dock__controls \{[^}]*flex: none;/);
     expect(css).not.toMatch(/margin-left: auto/);
   });
 
-  it.each(['mesh', 'light', 'high-contrast'])('passes axe with all controls in %s', async theme => {
+  it.each(['signal', 'light', 'high-contrast'])('passes axe with all controls in %s', async theme => {
     document.documentElement.dataset.theme = theme;
     const { container } = render(<div className="d-root"><VoiceDock {...dock} onStatus={() => {}} camera canShare={false} /></div>);
     expect((await axe(container, { rules: { 'color-contrast': { enabled: false } } })).violations).toEqual([]);
   });
 
-  it.each(['mesh', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {
+  it.each(['signal', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {
     document.documentElement.dataset.theme = theme;
     const { container } = render(<div className="d-root"><VoiceDock {...(meta.args as VoiceDockProps)} /></div>);
     // jsdom has no layout or canvas, so contrast is left to the Storybook axe run in a real browser.

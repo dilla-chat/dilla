@@ -1,5 +1,8 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { CallControls } from './CallControls.tsx';
+import { useState } from 'react';
+import { HarbourStage, PICKER_DEFAULT, personTile, pickerProps, stageControls } from '../CallStage/stage.fixture.tsx';
+import type { SharePickerValue } from '../SharePicker/SharePicker.tsx';
 
 /**
  * Flow 06 and task 7 step 3: every voice or player control (button, disclosure summary, volume range) is at least
@@ -7,7 +10,9 @@ import { CallControls } from './CallControls.tsx';
  */
 export function expectVoiceTargets(root: HTMLElement, story: string): void {
   const min = window.innerWidth < 768 ? 44 : 40;
-  for (const el of Array.from(root.querySelectorAll<HTMLElement>('button, summary, input[type="range"]'))) {
+  // Signal (rule 0): the call bar's controls and the tile tools are the prototype's sizes, measured in scripts/story-a11y.ts instead.
+  // The ring banner's Answer and Decline are Task 8's 32px restyle (no prototype counterpart; flagged in the task 8c report).
+  for (const el of Array.from(root.querySelectorAll<HTMLElement>('button, summary, input[type="range"]')).filter(e => e.closest('.d-call-controls--bar, .d-call-tile__tools, .d-call-stage__code, .d-ring-banner') === null)) {
     if (el.getClientRects().length === 0) continue; // not drawn (a phone-only control on a desktop width): no target
     const r = el.getBoundingClientRect();
     const range = el instanceof HTMLInputElement;
@@ -77,3 +82,61 @@ export const TooltipOnFocus: Story = {
     expectTipTakesNoPointer(canvasElement, 'CallControls');
   },
 };
+
+// ---- Signal §5.6: the call bar (the web's channel stage passes `labels.bar`): 40px controls with their words and keycaps ----
+/** The call bar as it ends the stage (the prototype's stove, joined): the room, the stats, the controls. */
+const inBar = (controls: React.ReactNode) => (
+  <div style={{ width: 980, height: 756, display: 'grid', gridTemplateRows: 'minmax(0, 1fr)', background: 'var(--bg)', margin: -16 }}>
+    <HarbourStage name="stove" topic="2 in voice" stats="24 ms · ↑ 38 ↓ 71 kb/s · hearing 1 of 1" controls={controls}
+      tiles={[personTile('Liv', { stat: '18 ms' }), personTile('Mira', { own: true, title: 'Mira (you)', stat: 'opus 48k' })]} />
+  </div>
+);
+const barPlay = ({ canvasElement }: { canvasElement: HTMLElement }) => { expectOneRow(canvasElement, 'CallBar'); };
+export const Default: Story = { render: () => inBar(stageControls()), play: barPlay };
+export const Muted: Story = { render: () => inBar(stageControls({ muted: true })), play: barPlay };
+export const Deafened: Story = { render: () => inBar(stageControls({ muted: true, deafened: true })), play: barPlay };
+export const CameraOn: Story = { render: () => inBar(stageControls({ camera: true })), play: barPlay };
+export const Sharing: Story = { render: () => inBar(stageControls({ sharing: true })), play: barPlay };
+// ---- Task 8c (Signal §5.6): the share picker over the call bar, as VoiceView passes it (useSharePicker) ----
+function PickerBar({ value, sharing = false, tabOnly = false, noSource = false }: { value?: Partial<SharePickerValue>; sharing?: boolean; tabOnly?: boolean; noSource?: boolean }) {
+  const [v, setV] = useState<SharePickerValue>({ ...PICKER_DEFAULT, ...value });
+  const [open, setOpen] = useState(true);
+  return inBar(stageControls({ sharing, picker: { ...pickerProps(v, { tabOnly, noSource, onChange: setV }), open, onOpenChange: setOpen } }));
+}
+const pickerPlay = async ({ canvasElement }: { canvasElement: HTMLElement }) => {
+  expectOneRow(canvasElement, 'SharePicker');
+  await nextFrame();
+  // The picker enters with d-modal (a small rise and scale): measure where it comes to rest.
+  await Promise.all(document.getAnimations().filter(a => a.effect?.getTiming().iterations !== Infinity).map(a => a.finished.catch(() => undefined)));
+  const pop = canvasElement.querySelector<HTMLElement>('.d-share-picker');
+  const anchor = canvasElement.querySelector<HTMLElement>('[data-control="quality"], [data-control="share"][aria-expanded="true"]');
+  if (pop === null || anchor === null) throw new Error('SharePicker: the picker is not open over its control');
+  const p = pop.getBoundingClientRect();
+  const a = anchor.getBoundingClientRect();
+  // The prototype's placement: the picker's right edge on its control's, its bottom 10px above it.
+  if (Math.abs(p.right - a.right) > 1 || Math.abs(a.top - p.bottom - 10) > 1) throw new Error(`SharePicker: placed at right ${String(p.right)} bottom ${String(p.bottom)}, control right ${String(a.right)} top ${String(a.top)}`);
+  // The prototype's sizes (Ruling C: measured in a real browser): 340px wide, 28px options, the 96px preview (98 with its edge), the 36 × 20 switch, 34px Go live.
+  const size = (sel: string) => pop.querySelector<HTMLElement>(sel)?.getBoundingClientRect() ?? null;
+  const want: Array<[string, 'width' | 'height', number]> = [
+    ['.d-segmented__option', 'height', 28], ['.d-share-picker__go', 'height', 34], ['.d-share-picker__close', 'width', 26],
+    ['.d-share-picker__preview', 'height', 98], ['.d-toggle__track', 'width', 36], ['.d-toggle__track', 'height', 20],
+  ];
+  if (Math.abs(p.width - 340) > 0.5) throw new Error(`SharePicker: ${String(p.width)} px wide, want 340`);
+  for (const [sel, dim, px] of want) {
+    const r = size(sel);
+    if (r !== null && Math.abs(r[dim] - px) > 0.5) throw new Error(`SharePicker: ${sel} ${dim} ${String(r[dim])}, want ${String(px)}`);
+  }
+};
+export const SharePickerOpen: Story = { render: () => <PickerBar />, play: pickerPlay };
+export const SharePickerWindow: Story = { render: () => <PickerBar value={{ source: 'window' }} />, play: pickerPlay };
+export const SharePickerTab: Story = { render: () => <PickerBar value={{ source: 'tab' }} />, play: pickerPlay };
+export const SharePicker720p: Story = { render: () => <PickerBar value={{ resolution: '720p' }} />, play: pickerPlay };
+export const SharePicker60fps: Story = { render: () => <PickerBar value={{ fps: 60 }} />, play: pickerPlay };
+export const SharePickerHeavy: Story = { render: () => <PickerBar value={{ resolution: 'source', fps: 60 }} />, play: pickerPlay };
+export const SharePickerAudioOff: Story = { render: () => <PickerBar value={{ audio: false }} />, play: pickerPlay };
+/** While sharing: the chevron's Stream quality picker with Apply. */
+export const SharePickerSharing: Story = { render: () => <PickerBar sharing />, play: pickerPlay };
+/** Chromium on Linux: a screen's sound cannot be shared, so the row says so and draws no switch. */
+export const SharePickerTabOnly: Story = { render: () => <PickerBar tabOnly />, play: pickerPlay };
+/** Firefox and Safari: no source choice and no sound (the browser ignores both), so neither row is drawn. */
+export const SharePickerNoSource: Story = { render: () => <PickerBar noSource />, play: pickerPlay };

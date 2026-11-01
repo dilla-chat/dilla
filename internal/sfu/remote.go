@@ -33,6 +33,9 @@ func (r *Remote) CreateRoom(ctx context.Context, room string) error {
 func (r *Remote) UpdatePermission(ctx context.Context, room, identity string, perm *livekit.ParticipantPermission) error {
 	return r.control.UpdatePermission(ctx, room, identity, perm)
 }
+func (r *Remote) UpdateAttributes(ctx context.Context, room, identity string, attrs map[string]string) error {
+	return r.control.UpdateAttributes(ctx, room, identity, attrs)
+}
 func (r *Remote) RemoveParticipants(ctx context.Context, room string, device id.ID) error {
 	return r.control.RemoveParticipants(ctx, room, device)
 }

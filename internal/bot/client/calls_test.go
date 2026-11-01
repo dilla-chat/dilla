@@ -1,8 +1,11 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -173,4 +176,34 @@ func TestChannelCallAcceptsOpenGroupWithoutLiveCall(t *testing.T) {
 
 func callStartBody(channel, group interface{}) []any {
 	return []any{channel, group, "wss://media.example.invalid/rtc", "secret-token", []any{}, []any{uint64(64000), uint64(1000000), uint64(1)}}
+}
+
+// Task 8c fix round 2: the bot reports its RTT through dillad (POST /v1/calls/{call_id}/rtt [ms]); out of range is refused
+// before any request.
+func TestReportCallRTTPostsTheValue(t *testing.T) {
+	callID := testID(51)
+	var gotPath, gotMethod string
+	var gotBody []byte
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/instance" {
+			reply(w, http.StatusOK, discovery(testID(99)))
+			return
+		}
+		gotPath, gotMethod = r.URL.Path, r.Method
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/cbor")
+		w.WriteHeader(http.StatusNoContent)
+	}, 0)
+	s, _ := c.Session("call-session")
+	if err := s.ReportCallRTT(context.Background(), callID, 63); err != nil {
+		t.Fatal(err)
+	}
+	want, _ := encode([]any{uint32(63)})
+	if gotMethod != http.MethodPost || gotPath != "/v1/calls/"+callID.String()+"/rtt" || !bytes.Equal(gotBody, want) {
+		t.Fatalf("request = %s %s %x, want POST rtt %x", gotMethod, gotPath, gotBody, want)
+	}
+	gotPath = ""
+	if err := s.ReportCallRTT(context.Background(), callID, MaxCallRTTMS+1); !errors.Is(err, ErrInvalidConfig) || gotPath != "" {
+		t.Fatalf("an out-of-range rtt = %v (path %q), want ErrInvalidConfig and no request", err, gotPath)
+	}
 }

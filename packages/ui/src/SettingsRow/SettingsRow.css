@@ -1,15 +1,36 @@
-/* R17, I2: a label column and a 16rem control column, a hairline under each row. The control column is fixed so every
-   control of a section starts at one x; on a phone or a narrow frame the label stacks over a full-width control (base.css). */
-.d-settings-row { display: grid; grid-template-columns: minmax(0, 1fr) 16rem; align-items: center; gap: 0.75rem 1.5rem; padding: 0.75rem 0; border-bottom: 1px solid var(--hairline); min-width: 0; }
-/* Every row carries its own hairline: rows in different parents (list items, a section's last row before a dialog) each keep exactly one. */
-.d-settings-row__text { min-width: 0; }
-.d-settings-row__label { display: block; margin: 0; font-size: var(--text-base); font-weight: var(--weight-label); color: var(--fg); }
-.d-settings-row__hint { margin: 0.125rem 0 0; max-width: 60ch; font-size: var(--text-sm); color: var(--fg-3); }
-.d-settings-row__control { min-width: 0; max-width: 100%; }
-.d-settings-row__control .d-btn { height: auto; min-height: 1.75rem; max-width: 100%; padding-block: 0.25rem; text-align: start; }
-.d-settings-row__control .d-btn[data-size="sm"] { min-height: 1.5rem; padding-block: 0.125rem; }
-/* web3.9 AUDIT-2 (H4): these two rules beat Button.css by specificity, so a phone repeats the 44 tier here (the refresh button was 24). Selects in a row (Select.css draws them 36) get it too. */
-@media (max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem) {
-  .d-settings-row__control .d-btn, .d-settings-row__control .d-btn[data-size="sm"] { min-height: 2.75rem; }
-  .d-settings-row__control select { min-height: 2.75rem; }
-}
+/* README §5.9 (task 10): a row is at least 56px with 10px 16px padding and wraps on narrow widths: an optional 32px icon
+   tile (radius 8, the accent glyph on --surface-tile), the label (12.5/600) over its description (11px --fg-2), and the
+   control on the right. Consecutive rows draw one group with a 10px radius and hairlines between them: every row draws
+   its own full hairline box and overlaps the one above by 1px, so a row is never without its line (also a row that is
+   the only child of a list item: the items of one list form the group). */
+.d-settings-row { box-sizing: border-box; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; min-height: 3.5rem /* 56px */; min-width: 0; padding: 10px 16px; border: 1px solid var(--hairline); border-radius: var(--r-xl); }
+/* Fix round 2: a group steps as the prototype's (a 1px-edged box of 56px rows, each after the first drawing its hairline inside
+   its 56): the edges are the rows' own, so the first row adds the top edge, the last the bottom edge, and no row overlaps
+   another (a group of n is 56n + 2). */
+.d-settings-row { min-height: calc(3.5rem + 2px); }
+.d-settings-row:has(+ .d-settings-row), li:has(+ li) > .d-settings-row { min-height: calc(3.5rem + 1px); border-bottom: 0; border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.d-settings-row + .d-settings-row, li + li > .d-settings-row { min-height: calc(3.5rem + 1px); border-top-left-radius: 0; border-top-right-radius: 0; }
+.d-settings-row + .d-settings-row:has(+ .d-settings-row), li + li:has(+ li) > .d-settings-row { min-height: 3.5rem; }
+.d-settings-row__icon { display: flex; align-items: center; justify-content: center; flex: none; width: 2rem; height: 2rem; color: var(--accent); background: var(--surface-tile); border-radius: var(--r-lg); }
+.d-settings-row__text { display: grid; flex: 1 1 220px; min-width: 0; line-height: 1.4; }
+.d-settings-row__label { display: flex; align-items: center; gap: 8px; margin: 0; font-size: var(--text-sm); font-weight: var(--weight-label); line-height: 1.4; color: var(--fg); }
+.d-settings-row__tag { padding: 0 5px; font-size: var(--text-chip); font-weight: var(--weight-label); letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent-2); background: var(--accent-tag); border-radius: var(--r-tag); }
+.d-settings-row__hint { margin: 0; max-width: 60ch; font-size: var(--text-xs); line-height: 1.4; color: var(--fg-2); }
+/* margin-left: auto keeps a control that wrapped under its text (a long note beside the button) on the row's right edge. */
+.d-settings-row__control { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; min-width: 0; max-width: 100%; margin-left: auto; }
+.d-settings-row.d-settings-row--stacked { flex-direction: column; align-items: stretch; gap: 14px; padding: 16px; }
+.d-settings-row--stacked .d-settings-row__text { flex: none; }
+.d-settings-row--stacked .d-settings-row__control { display: grid; gap: 1rem; justify-items: start; width: 100%; }
+.d-settings-row--stacked .d-text-field { width: min(100%, 32rem); }
+/* The prototype's settings button: 30px of content in a 1px border, radius 6, 11.5px; a destructive one has the 0.4 danger edge. */
+.d-settings-row__control .d-btn { height: auto; min-height: 2rem; max-width: 100%; padding-block: 0.25rem; text-align: start; }
+.d-settings-row__control .d-btn[data-variant="danger"] { border-color: var(--danger-edge); }
+.d-settings-row__control .d-btn[data-variant="danger"]:hover { background: var(--danger-faint); }
+.d-settings-row__control .d-btn[data-size="sm"] { min-height: 2rem; padding-inline: 12px; font-size: var(--text-btn); }
+/* Selects in a row are the prototype's 36px fields in --control-edge-field. */
+.d-settings-row__control select { box-sizing: border-box; min-height: 2.25rem; }
+/* Fix round 3 (rule 0): a row's switch is laid out as the prototype's 36 x 20 track (its right edge on the row's padding
+   edge, the text as wide as the prototype's); the larger target (44 x 24, 44 x 44 on a phone; Toggle.css) reaches past the
+   track into the row's padding instead of growing the row or narrowing the text. */
+.d-settings-row__control .d-toggle__switch { margin: -2px -4px; }
+[data-layout="phone"] .d-settings-row__control .d-toggle__switch, [data-phone] .d-settings-row__control .d-toggle__switch { margin-block: -12px; }

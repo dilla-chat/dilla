@@ -4,7 +4,7 @@ import { Enrol } from '../account/enrol';
 import { Session } from '../account/session';
 import type { Signup } from '../account/signup';
 import { encode, type CborInput } from '../cbor';
-import { CoreError, type ActivityRow, type ApplyResult, type AttachmentDescriptor, type CorePort, type GroupInfo, type HumanInteractionEventPage, type IdentityInfo, type ManualRemovalEvidence, type ManualWarningEvidence, type OutboxRow, type OwnDeviceList, type PinRow, type PurgeRow, type SealedObjects, type SendRequest, type SessionRecord, type ThreadRow, type SignedLists, type TimelineRow, type TrustBlock, type TrustRecord } from '../core-port';
+import { CoreError, type ActivityRow, type ApplyResult, type AttachmentDescriptor, type CorePort, type GroupInfo, type HumanInteractionEvent, type HumanInteractionEventPage, type IdentityInfo, type ManualRemovalEvidence, type ManualWarningEvidence, type OutboxRow, type OwnDeviceList, type PinRow, type PurgeRow, type SealedObjects, type SendRequest, type SessionRecord, type ThreadRow, type SignedLists, type TimelineRow, type TrustBlock, type TrustRecord } from '../core-port';
 import { Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
 import { toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
@@ -182,6 +182,8 @@ export class GatewayDouble {
   stop(): void { this.stops += 1; this.log.push('gateway.stop'); }
   subscribe(listener: (e: GatewayEvent) => void): () => void { this.listeners.push(listener); return () => {}; }
   commitAck(): void {}
+  sendCallStats = vi.fn(() => false);
+  sendPresenceActivity = vi.fn(() => false);
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the arguments make the double match the gateway
   sendTyping = vi.fn((_channel: Uint8Array, _on: boolean): void => {});
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the arguments make the double match the gateway
@@ -311,7 +313,9 @@ export function world(opts: {
     humanInteractionSendPrepare: vi.fn((requestId: Uint8Array, _communityId: Uint8Array, _groupId: Uint8Array,
       _requestBody: Uint8Array, _now: bigint) => requestId),
     humanInteractionEventsRead: vi.fn((_after: bigint, _limit: number): HumanInteractionEventPage => ({ events: [], next: 0n, highWater: 0n })),
+    humanInteractionReceiptsRead: vi.fn((_communityId: Uint8Array, _installationId: Uint8Array, _botUserId: Uint8Array, _requestIds: readonly Uint8Array[]): HumanInteractionEvent[] => []),
     humanInteractionEventsAck: vi.fn((_through: bigint) => {}),
+    humanInteractionEventsAckSelected: vi.fn((_deliveryIds: readonly bigint[]) => {}),
     sendEncrypt: vi.fn((_msgId: Uint8Array) => ({ groupId: new Uint8Array(16).fill(0x52), messageBody: new Uint8Array([0xa1]) })),
     sendConfirm: vi.fn((_msgId: Uint8Array, _response: Uint8Array) => ({ groupId: new Uint8Array(16).fill(0x52), seq: 1n })),
     sendRetry: vi.fn((_msgId: Uint8Array) => {}),
@@ -375,6 +379,7 @@ export function world(opts: {
     deviceListIngestAdd: vi.fn(() => ({ version: 1n, changed: false, quarantined: 0 })),
     deviceListIngest: vi.fn((_group: Uint8Array, _leaf: number, _user: Uint8Array, _history: Uint8Array, _head: Uint8Array, _now: bigint) =>
       ({ version: 1n, changed: true, quarantined: 1 })),
+    accountKindIngest: vi.fn((_user: Uint8Array, _attestation: Uint8Array) => undefined),
     revalidatePending: vi.fn(() => 0),
     trustState: vi.fn((): TrustRecord[] => []),
     trustGeneration: vi.fn(() => 0n),
@@ -438,6 +443,7 @@ export function world(opts: {
     postModerationRemoval: vi.fn((_groupId: Uint8Array, _body: Uint8Array) => Promise.resolve()),
     postMessage: vi.fn((_groupId: Uint8Array, _body: Uint8Array) => Promise.resolve({ raw: encode([1n]), seq: 1n })),
     getBotInstallation: vi.fn((_id: Uint8Array) => Promise.resolve(null)),
+    getBotCommandStatus: vi.fn((_id: Uint8Array) => Promise.resolve({ installationId: new Uint8Array(16).fill(0x73), botUserId: USER, state: 3, revision: 1n })),
     armAutoModerationGrant: vi.fn((_group: Uint8Array, _requestId: Uint8Array, _community: Uint8Array, _revision: bigint,
       _expires: bigint, _hash: Uint8Array, _stepUp: string) => Promise.resolve({ token: 'opaque-grant-token', expires: NOW_S + 60n })),
     configureBotInstallation: vi.fn((_id: Uint8Array, _requestId: Uint8Array, _revision: bigint | null, _capabilities: number, _stepUp: string) =>
@@ -510,8 +516,11 @@ export function world(opts: {
       calls.push(`getBackup(${kind})`); return Promise.resolve({ object: kind === 0 ? ROOT : STATE_OBJECT, created: 1n });
     }),
     putBackup: vi.fn((kind: 0 | 1, _object: Uint8Array) => { calls.push(`putBackup(${kind})`); return Promise.resolve({ blobId: new Uint8Array(32), size: 3, created: false }); }),
-    getDeviceList: vi.fn((_user: Uint8Array) => { calls.push('getDeviceList'); return Promise.resolve({ version: 1n, blob: new Uint8Array([9]),
-      raw: toHex(_user) === toHex(STRANGER) ? encode([1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32)]) : LIST_RAW }); }),
+    getDeviceList: vi.fn((_user: Uint8Array) => {
+      calls.push('getDeviceList');
+      const raw = toHex(_user) === toHex(STRANGER) ? encode([1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32)]) : LIST_RAW;
+      return Promise.resolve({ version: 1n, blob: new Uint8Array([9]), raw });
+    }),
     getDeviceListHistory: vi.fn((_user: Uint8Array, _after: bigint) => Promise.resolve({
       raw: encode([[1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32)]]), count: 1, lastVersion: 1n,
     })),

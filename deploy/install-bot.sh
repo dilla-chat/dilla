@@ -28,6 +28,8 @@ options:
   --module FILE           local dilla_core_wasi.wasm module
   --sums FILE             checksums for supplied local assets
   --upgrade               replace Bot binaries and unit; preserve config, credential and state
+  --keep-backups N        after a successful upgrade keep the N newest pre-upgrade copies
+                          under /var/backups/dillabot, the new one included (N >= 1, default 3)
   --insecure-skip-verify  allow supplied local assets without --sums
   --check-args            validate options without changing anything
   -h, --help              show this help
@@ -48,13 +50,14 @@ MODULE=""
 SUMS=""
 INSECURE=0
 UPGRADE=0
+KEEP_BACKUPS=3
 CHECK_ARGS=0
 while [ "$#" -gt 0 ]; do
 	flag="$1"; value=""
 	case "$flag" in
 	--*=*) value="${flag#*=}"; flag="${flag%%=*}"; shift ;;
 	--check-args | --insecure-skip-verify | --upgrade | -h | --help) shift ;;
-	--base-url | --instance-id | --dillad-config | --version | --release-url | --binary | --helper | --module | --sums)
+	--base-url | --instance-id | --dillad-config | --version | --release-url | --binary | --helper | --module | --sums | --keep-backups)
 		[ "$#" -ge 2 ] || die "$flag needs a value"
 		value="$2"; shift 2 ;;
 	-*) usage; die "unknown option $flag" ;;
@@ -70,6 +73,7 @@ while [ "$#" -gt 0 ]; do
 	--helper) HELPER="$value" ;;
 	--module) MODULE="$value" ;;
 	--sums) SUMS="$value" ;;
+	--keep-backups) KEEP_BACKUPS="$value" ;;
 	--insecure-skip-verify) INSECURE=1 ;;
 	--check-args) CHECK_ARGS=1 ;;
 	--upgrade) UPGRADE=1 ;;
@@ -77,6 +81,11 @@ while [ "$#" -gt 0 ]; do
 	*) usage; die "unknown option $flag" ;;
 	esac
 done
+
+case "$KEEP_BACKUPS" in
+'' | *[!0-9]*) die "--keep-backups must be a whole number of at least 1" ;;
+esac
+[ "${#KEEP_BACKUPS}" -le 6 ] && [ "$KEEP_BACKUPS" -ge 1 ] || die "--keep-backups must be a whole number of at least 1"
 
 if [ "$UPGRADE" -eq 0 ]; then
 	[ -n "$BASE_URL" ] || die "--base-url is required"
@@ -213,13 +222,16 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-PrivateDevices=yes
+# Bubblewrap mounts /proc and /dev inside its own user namespace; PrivateDevices
+# blocks that nested mount in the supported Debian LXC deployment.
+DevicePolicy=closed
 ProtectProc=invisible
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
-RestrictSUIDSGID=yes
+# RestrictSUIDSGID blocks bubblewrap's bind mounts in this LXC. The service
+# remains unprivileged, with NoNewPrivileges=yes and a private state directory.
 LockPersonality=yes
 # The bot's WASI MLS engine uses wazero's compiler backend, which needs
 # executable generated memory. MemoryDenyWriteExecute would break startup.
@@ -237,8 +249,27 @@ install_assets() {
 	install -m 0644 "$WORK/dillabot.service" "$UNIT.new" || return 1
 	mv -f "$UNIT.new" "$UNIT" || return 1
 }
+# service_path prints the PATH the Bot service runs with, so the doctor's
+# dependency check sees what the service sees rather than the caller's PATH
+# (pct exec into the LXC has no /usr/local/bin). Order: an Environment=PATH in
+# the installed unit, then systemd's manager default, then its documented value.
+service_path() {
+	sp=""
+	if [ -r "$UNIT" ]; then
+		sp="$(sed -n 's/^Environment=["]*PATH=\([^" ]*\)["]*[[:space:]]*$/\1/p' "$UNIT" | tail -n 1)"
+	fi
+	if [ -z "$sp" ]; then
+		sp="$(systemctl show-environment 2>/dev/null | sed -n 's/^PATH=//p' | head -n 1)"
+	fi
+	[ -n "$sp" ] || sp="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
+	printf '%s\n' "$sp"
+}
 run_bot_doctor() {
-	runuser -u dillabot -- "$BIN_DIR/dillabot" doctor --config="$CONF"
+	doctor_runuser="$(command -v runuser)" || return 1
+	doctor_env="$(command -v env)" || return 1
+	doctor_path="$(service_path)"
+	log "running dillabot doctor with the service PATH $doctor_path"
+	"$doctor_runuser" -u dillabot -- "$doctor_env" "PATH=$doctor_path" "$BIN_DIR/dillabot" doctor --config="$CONF"
 }
 
 rollback_upgrade() { # BACKUP WAS_ACTIVE
@@ -258,6 +289,30 @@ rollback_upgrade() { # BACKUP WAS_ACTIVE
 	cp -a "$backup/state" "$DATA_DIR" || log "rollback failed for Bot state; use $backup/state"
 	systemctl daemon-reload || log "rollback daemon-reload failed"
 	if [ "$was_active" -eq 1 ]; then systemctl start dillabot || log "previous Bot service did not restart; use systemctl status dillabot"; fi
+}
+
+# Keep the newest KEEP pre-upgrade copies. Only plain directories whose names
+# match the installer's own pattern are touched, ordered by that name (the UTC
+# timestamp prefix sorts chronologically); symlinks and other files are skipped.
+# NEW, the copy this run made, is never a candidate: it counts as one of the KEEP
+# whatever its random suffix sorts to within its second.
+prune_backups() { # PARENT KEEP NEW
+	parent="$1"; keep=$(($2 - 1)); new="$3"
+	set --
+	for dir in "$parent"/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z-????????; do
+		case "${dir##*/}" in
+		*[!0-9A-Za-z-]*) continue ;;
+		esac
+		if [ -L "$dir" ] || [ ! -d "$dir" ] || [ "$dir" = "$new" ]; then continue; fi
+		set -- "$@" "$dir"
+	done
+	[ "$#" -gt "$keep" ] || return 0
+	remove=$(($# - keep))
+	for dir in "$@"; do
+		[ "$remove" -gt 0 ] || break
+		remove=$((remove - 1))
+		if rm -rf "$dir"; then log "removed old pre-upgrade copy $dir"; else log "warning: could not remove old pre-upgrade copy $dir"; fi
+	done
 }
 
 if [ "$UPGRADE" -eq 1 ]; then
@@ -293,6 +348,7 @@ if [ "$UPGRADE" -eq 1 ]; then
 	fi
 	log "Bot binaries upgraded; preserved config, runtime credential and state"
 	log "cold pre-upgrade copy retained at $BACKUP (root-only; includes the database key)"
+	prune_backups "$BACKUP_PARENT" "$KEEP_BACKUPS" "$BACKUP"
 else
 	if id dillabot >/dev/null 2>&1; then die "the dillabot account already exists; inspect it and any Bot files before installing"; fi
 	useradd --system --user-group --no-create-home --home-dir /var/lib/dillabot --shell /usr/sbin/nologin dillabot

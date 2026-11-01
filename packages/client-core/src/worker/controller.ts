@@ -17,7 +17,7 @@ import { decodeBotResponse, encodeBotRequestBytes, validateBotResponseForRequest
 import { arr, decode as decodeCbor, type CborInput } from '../cbor';
 import {
   CoreError, storeNewerOf, type ActivityRow, type ApplyResult, type AttachmentDescriptor, type CorePort, type ExpectedGroup, type GroupInfo, type Id,
-  type OutboxRow, type SearchCursor, type SendRequest, type SignedLists, type TimelineRow, type TrustRecord,
+  type HumanInteractionEvent, type OutboxRow, type SearchCursor, type SendRequest, type SignedLists, type TimelineRow, type TrustRecord,
 } from '../core-port';
 import { CLIENT_CLOSE, GATEWAY, Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
 import { Op, afkAwayOf, communityChangedOf, voiceStateOf, type AFKAwayFrame, type Frame } from '../gateway/frames';
@@ -26,13 +26,13 @@ import { HttpClient } from '../http/client';
 import { DillaHttpError } from '../http/errors';
 import {
   BIO_MAX_CHARS, CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, DISPLAY_MAX_CHARS, GIF_OFFSET_MAX, GIF_QUERY_MAX_BYTES,
-  INVITE_TTL_MAX_S, INVITE_USES_MAX, STATUS_MAX_CHARS, Routes, nameProblem, profileTextProblem, profileTextValue,
+  INVITE_TTL_MAX_S, INVITE_USES_MAX, BOT_CAPABILITIES_MAX, BOT_MUSIC_VOLUMES, BOT_MUSIC_IDLE_MINUTES, STATUS_MAX_CHARS, Routes, nameProblem, profileTextProblem, profileTextValue,
   type ChannelRow, type BotInstallationRow, type BotSpotifyAttempt, type Factors, type Instance, type Limits, type MemberRow, type NewChannelKind,
 } from '../http/routes';
 import { NOTICE_READ_MAX, appendNotices, buildBadges, noticeOf, type NoticeDraft } from '../state/badges';
 import { buildTimeline, channelGroup, channelGroupState, type GroupMembership } from '../state/derive';
 import { PENDING_JOIN_KEY, PENDING_ROLE_PANEL_ACTION_PREFIX, isSettingKey, isSettingValue, pageSettings } from '../state/settings';
-import { historyFrom, readDeviceListHistory, signedHeadList } from '../state/trust';
+import { chainRow, historyFrom, ingestAccountKind, readDeviceListHistory, signedHeadList } from '../state/trust';
 import { SliceStore } from '../state/store';
 import {
   TIMELINE_PAGE, type AccountState, type BootPhase, type ChannelGroupState, type ChannelSummary, type ConnectionState,
@@ -198,6 +198,8 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'createInvite',
   'refreshCommunities',
   'getBotInstallation',
+  'getBotCommandStatus',
+  'getBotSpotifyConfig',
   'patchBotProfile',
   'listModerationCases',
   'listManualModerationEvidence',
@@ -208,8 +210,8 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'ackHumanInteractionResponses',
   'getBotJoinRole',
   'configureBotJoinRole',
-  'getBotDjRoles',
-  'configureBotDjRoles',
+  'restartBot',
+  'setBotMusicSettings',
   'listSelfRoles',
   'configureSelfRoles',
   'selectSelfRole',
@@ -293,6 +295,7 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'callJoin',
   'callLeave',
   'callShare',
+  'callRtt',
   'callRefresh',
   'callStats',
   'callNote',
@@ -348,6 +351,9 @@ const botInstallationView = (row: BotInstallationRow) => ({
   revision: row.revision.toString(), userId: row.userId === null ? null : toHex(row.userId),
   deviceId: row.deviceId === null ? null : toHex(row.deviceId), capabilities: row.capabilities,
   updatedAt: row.updatedAt.toString(),
+  // Task 10c: only a widened read carries these; a mutation's answer leaves them out.
+  ...(row.extra === undefined ? {} : { restartRequested: row.extra.restartRequested.toString(), restartHandled: row.extra.restartHandled.toString(),
+    version: row.extra.version, musicVolume: row.extra.musicVolume, musicIdleMinutes: row.extra.musicIdleMinutes }),
 });
 const TOTP = /^[0-9]{6}$/;
 /** A backup code (web3.6): 26 base32 characters once '-' and spaces are dropped and it is upper-cased. */
@@ -386,6 +392,8 @@ function awayPatched(away: readonly { userId: string; since: number }[], change:
 const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'callId' | 'msgId' | 'deviceId' | 'userId' | 'inviteId' | 'roleId' | 'targetId' | 'rootMsgId' | 'requestId' | 'attemptId' | 'installationId' | 'proofRequestId')[]>> = {
   selectCommunity: ['communityId'],
   getBotInstallation: ['communityId'],
+  getBotCommandStatus: ['communityId'],
+  getBotSpotifyConfig: ['communityId'],
   patchBotProfile: ['communityId'],
   listModerationCases: ['communityId', 'requestId'],
   listManualModerationEvidence: ['communityId', 'requestId'],
@@ -396,8 +404,8 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   ackHumanInteractionResponses: ['communityId'],
   getBotJoinRole: ['communityId'],
   configureBotJoinRole: ['communityId', 'requestId', 'roleId', 'installationId'],
-  getBotDjRoles: ['communityId'],
-  configureBotDjRoles: ['communityId', 'requestId', 'installationId'],
+  restartBot: ['communityId', 'installationId'],
+  setBotMusicSettings: ['communityId', 'installationId'],
   listSelfRoles: ['communityId'],
   configureSelfRoles: ['communityId', 'requestId'],
   selectSelfRole: ['communityId', 'roleId', 'requestId'],
@@ -502,6 +510,8 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'createInvite',
     'refreshCommunities',
     'getBotInstallation',
+    'getBotCommandStatus',
+    'getBotSpotifyConfig',
     'patchBotProfile',
     'listModerationCases',
     'listManualModerationEvidence',
@@ -512,8 +522,8 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'ackHumanInteractionResponses',
     'getBotJoinRole',
     'configureBotJoinRole',
-    'getBotDjRoles',
-    'configureBotDjRoles',
+    'restartBot',
+    'setBotMusicSettings',
     'listSelfRoles',
     'configureSelfRoles',
     'selectSelfRole',
@@ -588,6 +598,7 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'callJoin',
     'callLeave',
     'callShare',
+    'callRtt',
     'callRefresh',
     'callStats',
     'callNote',
@@ -706,11 +717,12 @@ function invalid(command: Record<string, unknown>): string | null {
   }
   if (m === 'createInvite') {
     const { maxUses, ttlSeconds } = command;
-    if (typeof maxUses !== 'number' || !Number.isSafeInteger(maxUses) || maxUses < 1 || maxUses > INVITE_USES_MAX) {
-      return `maxUses is not an integer 1..${String(INVITE_USES_MAX)}`;
+    // 0 is "∞" uses and "never" expires (Task 10c); the instance asks manage_community for either.
+    if (typeof maxUses !== 'number' || !Number.isSafeInteger(maxUses) || maxUses < 0 || maxUses > INVITE_USES_MAX) {
+      return `maxUses is not an integer 0..${String(INVITE_USES_MAX)}`;
     }
-    if (typeof ttlSeconds !== 'number' || !Number.isSafeInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > INVITE_TTL_MAX_S) {
-      return `ttlSeconds is not an integer 1..${String(INVITE_TTL_MAX_S)}`;
+    if (typeof ttlSeconds !== 'number' || !Number.isSafeInteger(ttlSeconds) || ttlSeconds < 0 || ttlSeconds > INVITE_TTL_MAX_S) {
+      return `ttlSeconds is not an integer 0..${String(INVITE_TTL_MAX_S)}`;
     }
   }
   if (m === 'configureSelfRoles') {
@@ -719,9 +731,8 @@ function invalid(command: Record<string, unknown>): string | null {
       || new Set(command.roleIds).size !== command.roleIds.length) return 'roleIds are invalid';
   }
   if (m === 'configureBotJoinRole' && typeof command.roleId !== 'string') return 'roleId is invalid';
-  if (m === 'configureBotDjRoles' && (!Array.isArray(command.roleIds) || command.roleIds.length > 250
-    || command.roleIds.some((value: unknown) => typeof value !== 'string' || !ID.test(value))
-    || new Set(command.roleIds).size !== command.roleIds.length)) return 'roleIds are invalid';
+  if (m === 'setBotMusicSettings' && (!(BOT_MUSIC_VOLUMES as readonly unknown[]).includes(command.volume)
+    || !(BOT_MUSIC_IDLE_MINUTES as readonly unknown[]).includes(command.idleMinutes))) return 'volume or idle minutes are not an option';
   if (m === 'registerRolePanel') {
     const seq = command.messageSeq;
     if (typeof seq !== 'string' || !/^[1-9][0-9]{0,18}$/u.test(seq) || BigInt(seq) > 0x7fff_ffff_ffff_ffffn) return 'messageSeq is invalid';
@@ -741,14 +752,19 @@ function invalid(command: Record<string, unknown>): string | null {
   if (m === 'humanInteractionRequest') {
     const operation = command.operation;
     if (typeof operation !== 'number' || !Number.isInteger(operation)
-      || !(operation === 1 || operation === 2 || operation >= 10 && operation <= 23 || operation === 31 || operation >= 50 && operation <= 52 || operation === 61 || operation === 62 || operation === 63)) return 'interaction operation is invalid';
+      || !(operation === 0 || operation === 1 || operation === 2 || operation === 3 || operation >= 10 && operation <= 25 || operation === 31
+        || operation >= 50 && operation <= 52 || operation >= 61 && operation <= 63 || operation >= 70 && operation <= 75
+        || operation >= 80 && operation <= 84)) return 'interaction operation is invalid';
     if (command.requestId === '0'.repeat(32)) return 'requestId must be nonzero';
-    const music = operation >= 10 && operation <= 23;
+    const music = operation >= 10 && operation <= 23 || operation === 25;
     if (command.channelId !== null && (typeof command.channelId !== 'string' || !ID.test(command.channelId))) return 'channelId is invalid';
     if (music !== (typeof command.channelId === 'string')) return 'interaction channel context is invalid';
-    const count = operation === 1 || operation === 50 || [11, 12, 17, 18, 20, 21].includes(operation) ? 1
-      : operation === 2 || operation === 22 || operation === 31 || operation === 51 || operation === 52 || operation === 63 ? 2 : operation === 61 ? 3 : 0;
-    if (!Array.isArray(command.args) || command.args.length !== count) return 'interaction arguments are invalid';
+    const count = operation === 1 || operation === 50 || [11, 12, 17, 18, 20, 21, 25, 70, 71, 74, 80, 81, 82, 83, 84].includes(operation) ? 1
+      : operation === 2 || operation === 22 || operation === 31 || operation === 51 || operation === 52 || operation === 63 || operation === 73 ? 2
+        : operation === 61 || operation === 72 || operation === 75 ? 3 : 0;
+    if (!Array.isArray(command.args) || command.args.length !== count && !(operation === 15 && command.args.length === 1)) return 'interaction arguments are invalid';
+    if (operation === 15 && command.args.length === 1 && (typeof command.args[0] !== 'string' || command.args[0] !== ''
+      && (!ID.test(command.args[0]) || command.args[0] === '0'.repeat(32)))) return 'skip current item is invalid';
     if (operation === 62 && command.args.length !== 0) return 'automatic moderation read arguments are invalid';
     if ((operation === 1 || operation === 2) && (typeof command.args[0] !== 'number' || !Number.isInteger(command.args[0]) || command.args[0] < 0 || command.args[0] > 5)) return 'settings section is invalid';
     if (operation === 2 && (!(command.args[1] instanceof Uint8Array) || command.args[1].length === 0 || command.args[1].length > 2400)) return 'settings document is invalid';
@@ -769,19 +785,26 @@ function invalid(command: Record<string, unknown>): string | null {
     if ([17, 18, 20].includes(operation) && (typeof command.args[0] !== 'number' || !Number.isSafeInteger(command.args[0])
       || command.args[0] < 0 || command.args[0] > (operation === 18 ? 100 : operation === 20 ? 2 : Number.MAX_SAFE_INTEGER))) return 'music numeric argument is invalid';
     if ((operation === 21 || operation === 22) && (typeof command.args[0] !== 'string' || !ID.test(command.args[0]))) return 'music queue item id is invalid';
+    if (operation === 25 && (typeof command.args[0] !== 'string' || !ID.test(command.args[0]) || command.revision !== '0')) return 'music announcement is invalid';
     if (operation === 22 && command.args[1] !== null && (typeof command.args[1] !== 'string' || !ID.test(command.args[1]))) return 'music destination id is invalid';
-    const mutation = operation === 2 || operation >= 12 && operation <= 23 || operation === 31 || operation === 51 || operation === 52 || operation === 61 || operation === 63;
+    const mutation = operation === 2 || operation >= 12 && operation <= 23 || operation === 25 || operation === 31 || operation === 51 || operation === 52
+      || operation === 61 || operation === 63 || operation === 70 || operation === 73 || operation === 74 || operation === 80
+      || operation === 82 || operation === 83;
     const revision = command.revision;
     if (mutation ? typeof revision !== 'string' || !/^(0|[1-9][0-9]{0,19})$/u.test(revision) || BigInt(revision) > 0xffff_ffff_ffff_ffffn
       : revision !== null) return 'interaction revision is invalid';
   }
   if (m === 'readBotInteractionResponses' && (!Array.isArray(command.operations) || command.operations.length === 0
-    || command.operations.length > 15 || command.operations.some((op: unknown) => typeof op !== 'number' || !Number.isInteger(op)
-    || !(op === 1 || op === 2 || op >= 10 && op <= 23 || op === 31 || op >= 50 && op <= 52 || op === 61 || op === 62 || op === 63)) || new Set(command.operations).size !== command.operations.length)) return 'response operations are invalid';
-  if (m === 'ackHumanInteractionResponses' && (typeof command.through !== 'string' || !/^[1-9][0-9]{0,18}$/u.test(command.through)
-    || BigInt(command.through) > 0x7fff_ffff_ffff_ffffn)) return 'through is invalid';
-  if (m === 'ackBotInteractionResponses' && (typeof command.through !== 'string' || !/^[1-9][0-9]{0,18}$/u.test(command.through)
-    || BigInt(command.through) > 0x7fff_ffff_ffff_ffffn)) return 'through is invalid';
+    || command.operations.length > 35 || command.operations.some((op: unknown) => typeof op !== 'number' || !Number.isInteger(op)
+    || !(op === 0 || op === 1 || op === 2 || op === 3 || op >= 10 && op <= 25 || op === 31 || op >= 50 && op <= 52
+      || op >= 61 && op <= 63 || op >= 70 && op <= 75 || op >= 80 && op <= 84))
+    || new Set(command.operations).size !== command.operations.length)) return 'response operations are invalid';
+  if ((m === 'readBotInteractionResponses' || m === 'readHumanInteractionResponses') && command.requestIds !== undefined
+    && (!Array.isArray(command.requestIds) || command.requestIds.length < 1 || command.requestIds.length > 100
+      || command.requestIds.some((id: unknown) => typeof id !== 'string' || !ID.test(id))
+      || new Set(command.requestIds).size !== command.requestIds.length)) return 'response request ids are invalid';
+  if (m === 'ackHumanInteractionResponses' && (typeof command.through !== 'string' || !/^[0-9a-f]{32}$/u.test(command.through))) return 'through is invalid';
+  if (m === 'ackBotInteractionResponses' && (typeof command.through !== 'string' || !/^[0-9a-f]{32}$/u.test(command.through))) return 'through is invalid';
   if (m === 'selectSelfRole' && typeof command.enabled !== 'boolean') return 'enabled is invalid';
   if (m === 'configureBotInstallation' || m === 'disableBotInstallation') {
     const revision = command.expectedRevision;
@@ -791,14 +814,15 @@ function invalid(command: Record<string, unknown>): string | null {
     }
     if (m === 'configureBotInstallation') {
       const caps = command.capabilities;
-      if (typeof caps !== 'number' || !Number.isSafeInteger(caps) || caps < 0 || caps > 255) return 'capabilities are not 0..255';
+      if (typeof caps !== 'number' || !Number.isSafeInteger(caps) || caps < 0 || caps > BOT_CAPABILITIES_MAX) return 'capabilities are not 0..1023';
       if (typeof command.stepUp !== 'string' || command.stepUp.length < 1 || command.stepUp.length > 4096) return 'stepUp is invalid';
     }
   }
   if (m === 'patchBotProfile' && (typeof command.display !== 'string' || command.display.trim() === ''
     || profileTextProblem(command.display, DISPLAY_MAX_CHARS, false) !== null)) return 'bot display name is invalid';
-  if (m === 'beginBotSpotifyAttempt' && (typeof command.stepUp !== 'string' || command.stepUp.length < 1 || command.stepUp.length > 4096)) {
-    return 'stepUp is invalid';
+  if (m === 'beginBotSpotifyAttempt' && (typeof command.stepUp !== 'string' || command.stepUp.length < 1 || command.stepUp.length > 4096
+    || typeof command.clientId !== 'string' || !/^[A-Za-z0-9]{1,256}$/u.test(command.clientId))) {
+    return 'Spotify application setting is invalid';
   }
   if (m === 'callbackBotSpotifyAttempt') {
     if (typeof command.state !== 'string' || UTF8.encode(command.state).length < 1 || UTF8.encode(command.state).length > 256
@@ -905,6 +929,7 @@ function invalid(command: Record<string, unknown>): string | null {
   if (m === 'callJoin' && !validVdec(command.vdec)) return 'vdec is not a list of distinct decoders';
   if (m === 'callLeave' && command.reason !== 'user' && command.reason !== 'pagehide' && command.reason !== 'switch' && command.reason !== 'lost') return 'invalid leave reason';
   if (m === 'callShare' && typeof command.on !== 'boolean') return 'on is not a boolean';
+  if (m === 'callRtt' && command.ms !== null && (typeof command.ms !== 'number' || !Number.isInteger(command.ms) || command.ms < 0 || command.ms > 5000)) return 'ms is not null or 0..5000';
   if (m === 'callStats' && !validReport(command.report)) return 'invalid call stats report';
   if (m === 'callNote' && !CALL_NOTES.has(command.code as string)) return 'not a call note code';
   if (m === 'loadVoice' && (!optionalId(command.communityId) || !optionalId(command.channelId)
@@ -985,8 +1010,9 @@ export class Controller {
   private core: CorePort | null = null;
   private readonly acceptedHumanInteractionSends = new Set<string>();
   private readonly autoModerationGrants = new Map<string, { token: string; groupId: Id; requestExpires: bigint; revision: string; document: Uint8Array }>();
-  private readonly pendingHumanInteractionAcks = new Map<string, string>();
-  private readonly pendingBotInteractionAcks = new Map<string, string>();
+  private readonly pendingHumanInteractionAcks = new Map<string, bigint[]>();
+  private readonly pendingBotInteractionAcks = new Map<string, bigint[]>();
+  private interactionAckLeaseGeneration = 0;
   /** The store this worker paused when it released the lead: resumed, not opened again, when it leads again (C2). */
   private pausedCore: CorePort | null = null;
   private me: { userId: Id; deviceId: Id } | null = null;
@@ -1011,6 +1037,7 @@ export class Controller {
   private gateway: Gateway | null = null;
   private sync: SyncEngine | null = null;
   private wasDown = false;
+  private lastPresenceActivityAt = -Infinity;
   private selected: string | null = null;
   /** The pending debounced list read per community (op 54 and the unexpected-Welcome belt), by community hex. */
   private readonly communityReloads = new Map<string, number>();
@@ -1146,6 +1173,7 @@ export class Controller {
     this.calls = new CallController({
       core: () => this.core,
       routes: this.routes,
+      sendStats: (callId, report) => this.gateway?.sendCallStats(callId, report) ?? false,
       post: (message, transfer) => { deps.post(message, transfer); },
       publish: (name, value) => {
         if (name === 'voice') this.slices.set('voice', this.visibleVoice(value as VoiceState));
@@ -1397,18 +1425,20 @@ export class Controller {
       case 'createInvite': return this.createInvite(command.communityId, command.maxUses, command.ttlSeconds);
       case 'refreshCommunities': return this.refreshCommunities().then(() => null);
       case 'getBotInstallation': return this.getBotInstallation(command.communityId);
+      case 'getBotCommandStatus': return this.getBotCommandStatus(command.communityId);
+      case 'getBotSpotifyConfig': return this.getBotSpotifyConfig(command.communityId);
       case 'patchBotProfile': return this.patchBotProfile(command.communityId, command.display);
       case 'listModerationCases': return this.listModerationCases(command);
       case 'listManualModerationEvidence': return this.listManualModerationEvidence(command);
       case 'humanInteractionRequest': return this.humanInteractionRequest(command);
-      case 'readBotInteractionResponses': return Promise.resolve(this.readBotInteractionResponses(command.communityId, command.operations));
+      case 'readBotInteractionResponses': return this.readBotInteractionResponses(command.communityId, command.operations, command.requestIds);
       case 'ackBotInteractionResponses': return Promise.resolve(this.ackBotInteractionResponses(command.communityId, command.through));
-      case 'readHumanInteractionResponses': return this.readHumanInteractionResponses(command.communityId);
+      case 'readHumanInteractionResponses': return this.readHumanInteractionResponses(command.communityId, command.requestIds);
       case 'ackHumanInteractionResponses': return this.ackHumanInteractionResponses(command.communityId, command.through);
       case 'getBotJoinRole': return this.getBotJoinRole(command.communityId);
       case 'configureBotJoinRole': return this.configureBotJoinRole(command);
-      case 'getBotDjRoles': return this.getBotDjRoles(command.communityId);
-      case 'configureBotDjRoles': return this.configureBotDjRoles(command);
+      case 'restartBot': return this.restartBot(command);
+      case 'setBotMusicSettings': return this.setBotMusicSettings(command);
       case 'listSelfRoles': return this.listSelfRoles(command.communityId);
       case 'configureSelfRoles': return this.configureSelfRoles(command);
       case 'selectSelfRole': return this.selectSelfRole(command);
@@ -1458,7 +1488,11 @@ export class Controller {
       case 'setSetting': return this.setSetting(command.key, command.value);
       case 'setPresenceChoice': return this.setPresenceChoice(command.choice);
       case 'updateProfile': return this.updateProfile(command);
-      case 'presenceActivity': return this.routes.sendPresenceActivity().then(() => null);
+      case 'presenceActivity':
+        if (this.deps.now() - this.lastPresenceActivityAt < 5000) return Promise.resolve(null);
+        this.lastPresenceActivityAt = this.deps.now();
+        this.gateway?.sendPresenceActivity();
+        return Promise.resolve(null);
       case 'getAFKSettings': return this.routes.getAFKSettings(fromHex(command.communityId))
         .then(settings => ({ channelId: settings.channelId === null ? null : toHex(settings.channelId),
           timeoutSeconds: settings.timeoutSeconds }));
@@ -1500,6 +1534,7 @@ export class Controller {
       case 'callJoin': return this.calls.join(command.channelId, command.vdec);
       case 'callLeave': return this.calls.leave(false, command.reason === 'lost');
       case 'callShare': return this.calls.share(command.on);
+      case 'callRtt': return this.calls.rtt(command.ms);
       case 'callRefresh': return this.calls.refresh();
       case 'callStats': return this.calls.stats(command.report);
       case 'callNote': this.recordError(command.code); return Promise.resolve(null);
@@ -1540,6 +1575,18 @@ export class Controller {
     return row === null ? null : botInstallationView(row);
   }
 
+  private async getBotCommandStatus(communityId: string) {
+    if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    const row = await this.routes.getBotCommandStatus(fromHex(communityId));
+    return row === null ? null : { installationId: toHex(row.installationId),
+      botUserId: row.botUserId === null ? null : toHex(row.botUserId), state: row.state, revision: row.revision.toString() };
+  }
+
+  private async getBotSpotifyConfig(communityId: string): Promise<{ clientId: string; redirectUrl: string }> {
+    if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    return this.routes.getBotSpotifyConfig(fromHex(communityId));
+  }
+
   private async patchBotProfile(communityId: string, display: string): Promise<string> {
     if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
     const saved = await this.routes.patchBotProfile(fromHex(communityId), display);
@@ -1553,11 +1600,14 @@ export class Controller {
     const activeGroups = () => core.groups().filter((row) => row.kind === 3 && row.state === 2
       && row.communityId !== null && toHex(row.communityId) === communityHex);
     let rows = activeGroups();
-    for (let attempt = 0; rows.length === 0 && attempt < 8; attempt++) {
+    // Registration follows the daemon's 30-second reconciliation interval. Keep
+    // the original request pending while its per-device Welcome is being issued.
+    const welcomeAttempts = 90;
+    for (let attempt = 0; rows.length === 0 && attempt < welcomeAttempts; attempt++) {
       if (sync.stopped()) throw new SyncError('E_SYNC_STOPPED');
       await sync.pollWelcomes();
       rows = activeGroups();
-      if (rows.length === 0 && attempt < 7) await this.deps.sleep(500);
+      if (rows.length === 0 && attempt + 1 < welcomeAttempts) await this.deps.sleep(500);
     }
     return rows;
   }
@@ -1583,10 +1633,16 @@ export class Controller {
     if (groupRows.length !== 1) throw new Refusal('E_CORE_STATE', groupRows.length === 0
       ? 'no active interaction group for this community' : 'multiple active interaction groups make the Bot target ambiguous');
     const groupId = groupRows[0].groupId;
-    const mutation = operation === 2 || operation >= 12 && operation <= 23 || operation === 31 || operation === 51 || operation === 52 || operation === 61 || operation === 63;
+    const mutation = operation === 2 || operation >= 12 && operation <= 23 || operation === 25 || operation === 31 || operation === 51 || operation === 52
+      || operation === 61 || operation === 63 || operation === 70 || operation === 73 || operation === 74 || operation === 80
+      || operation === 82 || operation === 83;
+    const idArgument = (index: number): boolean =>
+      ((operation === 21 || operation === 25) && index === 0 || operation === 22 && (index === 0 || index === 1) || operation === 31 && index === 0
+        || operation === 51 && index === 0 || operation === 52 && index === 0 || operation === 61 && index === 0
+        || operation === 71 && index === 0 || operation === 72 && (index === 0 || index === 1) || operation === 73 && index === 0
+        || operation === 74 && index === 0 || operation === 75 && index === 0 || (operation === 82 || operation === 83) && index === 0);
     const args: CborInput[] = command.args.map((value, index) =>
-      (operation === 21 && index === 0 || operation === 22 && (index === 0 || index === 1) || operation === 31 && index === 0
-        || operation === 51 && index === 0 || operation === 52 && index === 0 || operation === 61 && index === 0) && typeof value === 'string'
+      idArgument(index) && typeof value === 'string'
         ? fromHex(value) : value);
     const sync = this.requireSync();
     return sync.runOnGroup(groupId, async () => {
@@ -1653,45 +1709,97 @@ export class Controller {
     });
   }
 
-  private readBotInteractionResponses(communityHex: string, operations: readonly number[]): {
+  private async readBotInteractionResponses(communityHex: string, operations: readonly number[], requestIds?: readonly string[]): Promise<{
     responses: { deliveryId: string; requestId: string; communityId: string; operation: number; channelId: string | null;
       status: number; revision: string | null; data: Uint8Array; sourceSeq: string }[];
     through: string | null; blocked: boolean;
-  } {
+  }> {
     if (!this.listed(communityHex)) throw new Refusal('E_BAD_INPUT', 'unknown community');
     const allowed = new Set(operations);
-    const page = this.requireCore().humanInteractionEventsRead(0n, 100);
-    const responses = page.events.filter(event => toHex(event.communityId) === communityHex && allowed.has(event.operation)).map(event => {
+    const requested = requestIds === undefined ? null : new Set(requestIds);
+    const rows = this.readAllHumanInteractionEvents();
+    const pendingEvents = rows.filter(event => toHex(event.communityId) === communityHex && allowed.has(event.operation)
+      && (requested === null || requested.has(toHex(event.requestId)))).slice(0, 100);
+    let archivedEvents: HumanInteractionEvent[] = [];
+    if (requestIds !== undefined && requestIds.length > 0) {
+      const status = await this.routes.getBotCommandStatus(fromHex(communityHex));
+      if (status === null || status.state !== 3 || status.botUserId === null) {
+        throw new Refusal('E_FORBIDDEN', 'current active Bot installation and community membership are required');
+      }
+      archivedEvents = this.requireCore().humanInteractionReceiptsRead(
+        fromHex(communityHex), status.installationId, status.botUserId, requestIds.map(fromHex))
+        .filter(event => toHex(event.communityId) === communityHex && allowed.has(event.operation)
+          && requested?.has(toHex(event.requestId)));
+    }
+    const byRequest = new Map<string, HumanInteractionEvent>();
+    for (const event of [...pendingEvents, ...archivedEvents]) {
+      const requestId = toHex(event.requestId);
+      const prior = byRequest.get(requestId);
+      if (prior !== undefined) {
+        if (prior.deliveryId !== event.deliveryId || prior.body !== event.body || prior.operation !== event.operation
+          || toHex(prior.groupId) !== toHex(event.groupId)) {
+          throw new Refusal('E_CORE_STATE', 'contradictory duplicate Bot interaction receipts');
+        }
+        continue;
+      }
+      byRequest.set(requestId, event);
+    }
+    const events = [...byRequest.values()].slice(0, 100);
+    const mapResponse = (event: HumanInteractionEvent) => {
       const response = decodeBotResponse(event.body);
       validateBotResponseForRequest(response, fromHex(communityHex), event.requestId);
       return { deliveryId: String(event.deliveryId), requestId: toHex(event.requestId), communityId: communityHex,
         operation: event.operation, channelId: event.channelId === null ? null : toHex(event.channelId),
         status: response.status, revision: response.revision?.toString() ?? null, data: response.data,
         sourceSeq: String(event.sourceSeq) };
-    });
-    const firstBlocked = page.events.findIndex(event => toHex(event.communityId) !== communityHex || !allowed.has(event.operation));
-    const ackable = firstBlocked < 0 ? page.events : page.events.slice(0, firstBlocked);
-    const throughValue = firstBlocked < 0 ? page.next : ackable.at(-1)?.deliveryId ?? 0n;
-    const through = throughValue > 0n ? String(throughValue) : null;
-    if (through !== null) {
-      this.pendingBotInteractionAcks.set(`${communityHex}:${through}`, through);
-      while (this.pendingBotInteractionAcks.size > 32) {
-        const oldest = this.pendingBotInteractionAcks.keys().next().value;
-        if (oldest === undefined) break;
-        this.pendingBotInteractionAcks.delete(oldest);
-      }
-    }
-    return { responses, through, blocked: firstBlocked >= 0 };
+      };
+    const responses = events.map(mapResponse);
+    const through = this.issueInteractionAckLease(communityHex, pendingEvents
+      .filter(event => byRequest.get(toHex(event.requestId))?.deliveryId === event.deliveryId)
+      .map(event => event.deliveryId), this.pendingBotInteractionAcks);
+    return { responses, through, blocked: false };
   }
 
   private ackBotInteractionResponses(communityHex: string, through: string): null {
     const key = `${communityHex}:${through}`;
-    if (!this.listed(communityHex) || this.pendingBotInteractionAcks.get(key) !== through) {
+    const deliveryIds = this.pendingBotInteractionAcks.get(key);
+    if (!this.listed(communityHex) || deliveryIds === undefined) {
       throw new Refusal('E_BAD_INPUT', 'interaction response acknowledgement was not authorized');
     }
-    this.requireCore().humanInteractionEventsAck(BigInt(through));
+    const core = this.requireCore();
+    core.humanInteractionEventsAckSelected(deliveryIds);
     this.pendingBotInteractionAcks.delete(key);
     return null;
+  }
+
+  private readAllHumanInteractionEvents(): HumanInteractionEvent[] {
+    const events: HumanInteractionEvent[] = [];
+    let cursor = 0n;
+    let targetHighWater: bigint | null = null;
+    for (let pageNo = 0; pageNo < 41; pageNo++) {
+      const page = this.requireCore().humanInteractionEventsRead(cursor, 100);
+      targetHighWater ??= page.highWater;
+      events.push(...page.events.filter(event => event.deliveryId <= targetHighWater!));
+      if (page.next <= cursor || page.next >= targetHighWater) break;
+      cursor = page.next;
+    }
+    return events;
+  }
+
+  private issueInteractionAckLease(communityHex: string, deliveryIds: bigint[], leases: Map<string, bigint[]>): string | null {
+    if (deliveryIds.length === 0) return null;
+    let token: string;
+    do {
+      token = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
+    } while (leases.has(`${communityHex}:${token}`));
+    const key = `${communityHex}:${token}`;
+    leases.set(key, deliveryIds);
+    while (leases.size > 128) {
+      const oldest = leases.keys().next().value;
+      if (oldest === undefined) break;
+      leases.delete(oldest);
+    }
+    return token;
   }
 
   /** The first shipping human-side Bot request is a read-only moderation page. Its plaintext and
@@ -1764,7 +1872,7 @@ export class Controller {
       return { requestId: requestHex, status: 'accepted' };
     });
   }
-  private async readHumanInteractionResponses(communityHex: string): Promise<{
+  private async readHumanInteractionResponses(communityHex: string, requestIds?: readonly string[]): Promise<{
     authorized: boolean; responses: { deliveryId: string; requestId: string; status: number;
       cases: { key: string; channelId: string; actorId: string; messageId: string; revision: string;
         reason: string; action: string; excerpt: string; receivedAt: string }[]; hasMore: boolean; nextCursor: string | null }[];
@@ -1778,15 +1886,35 @@ export class Controller {
     if ((permissions.bits & BigInt(PERM.viewAuditLog)) === 0n) {
       return { authorized: false, responses: [], through: null, blocked: false };
     }
-    const page = this.requireCore().humanInteractionEventsRead(0n, 100);
+    const requested = requestIds === undefined ? null : new Set(requestIds);
+    const rows = this.readAllHumanInteractionEvents();
     const isModerationRead = (operation: number): boolean => operation === 60 || operation === 64;
-    const firstOtherCommunity = page.events.findIndex(event => toHex(event.communityId) !== communityHex || !isModerationRead(event.operation));
-    // The journal ack is global, so this screen may consume only the contiguous prefix for its
-    // community. Events for another server stay pending and are handled in that server's Bot tab.
-    // The journal is global and read pages are bounded. Show only this community's decoded
-    // responses even when another community occurs earlier in the page; only the contiguous
-    // current-community prefix is eligible for acknowledgement below.
-    const visibleEvents = page.events.filter(event => toHex(event.communityId) === communityHex && isModerationRead(event.operation));
+    const pendingEvents = rows.filter(event => toHex(event.communityId) === communityHex && isModerationRead(event.operation)
+      && (requested === null || requested.has(toHex(event.requestId)))).slice(0, 100);
+    let archivedEvents: HumanInteractionEvent[] = [];
+    if (requestIds !== undefined) {
+      const status = await this.routes.getBotCommandStatus(communityId);
+      if (status === null || status.state !== 3 || status.botUserId === null) {
+        return { authorized: false, responses: [], through: null, blocked: false };
+      }
+      archivedEvents = this.requireCore().humanInteractionReceiptsRead(
+        communityId, status.installationId, status.botUserId, requestIds.map(fromHex))
+        .filter(event => toHex(event.communityId) === communityHex && isModerationRead(event.operation)
+          && requested?.has(toHex(event.requestId)));
+    }
+    const eventsByRequest = new Map<string, HumanInteractionEvent>();
+    for (const event of [...pendingEvents, ...archivedEvents]) {
+      const requestId = toHex(event.requestId);
+      const prior = eventsByRequest.get(requestId);
+      if (prior !== undefined) {
+        if (prior.deliveryId !== event.deliveryId || prior.body !== event.body || prior.operation !== event.operation) {
+          throw new Refusal('E_CORE_STATE', 'contradictory duplicate moderation receipts');
+        }
+        continue;
+      }
+      eventsByRequest.set(requestId, event);
+    }
+    const visibleEvents = [...eventsByRequest.values()].slice(0, 100);
     const responses = visibleEvents.map(event => {
       const response = decodeBotResponse(event.body);
       validateBotResponseForRequest(response, communityId, event.requestId);
@@ -1833,31 +1961,27 @@ export class Controller {
       }
       return { deliveryId: String(event.deliveryId), requestId: toHex(event.requestId), status: response.status, cases, hasMore, nextCursor };
     });
-    const ackableEvents = firstOtherCommunity < 0 ? page.events : page.events.slice(0, firstOtherCommunity);
-    const throughValue = firstOtherCommunity < 0 ? page.next : ackableEvents.at(-1)?.deliveryId ?? 0n;
-    const through = throughValue > 0n ? String(throughValue) : null;
-    if (through !== null) {
-      const key = `${communityHex}:${through}`;
-      this.pendingHumanInteractionAcks.set(key, through);
-      while (this.pendingHumanInteractionAcks.size > 32) {
-        const oldest = this.pendingHumanInteractionAcks.keys().next().value;
-        if (oldest === undefined) break;
-        this.pendingHumanInteractionAcks.delete(oldest);
-      }
-    }
-    return { authorized: true, responses, through, blocked: firstOtherCommunity >= 0 };
+    const ackable = pendingEvents.filter(event => eventsByRequest.get(toHex(event.requestId))?.deliveryId === event.deliveryId);
+    const through = this.issueInteractionAckLease(communityHex, ackable.map(event => event.deliveryId), this.pendingHumanInteractionAcks);
+    return { authorized: true, responses, through, blocked: false };
   }
 
   private async ackHumanInteractionResponses(communityHex: string, through: string): Promise<null> {
     const key = `${communityHex}:${through}`;
-    if (!this.listed(communityHex) || this.pendingHumanInteractionAcks.get(key) !== through) {
+    const deliveryIds = this.pendingHumanInteractionAcks.get(key);
+    if (!this.listed(communityHex) || deliveryIds === undefined) {
       throw new Refusal('E_BAD_INPUT', 'interaction response acknowledgement was not authorized');
     }
+    const core = this.requireCore();
+    const generation = this.interactionAckLeaseGeneration;
     const permissions = await this.routes.getPermissions(fromHex(communityHex));
+    if (generation !== this.interactionAckLeaseGeneration || core !== this.core || this.pendingHumanInteractionAcks.get(key) !== deliveryIds) {
+      throw new Refusal('E_BAD_INPUT', 'interaction response acknowledgement is stale');
+    }
     if ((permissions.bits & BigInt(PERM.viewAuditLog)) === 0n) {
       throw new Refusal('E_FORBIDDEN', 'current view-audit-log permission is required');
     }
-    this.requireCore().humanInteractionEventsAck(BigInt(through));
+    core.humanInteractionEventsAckSelected(deliveryIds);
     this.pendingHumanInteractionAcks.delete(key);
     return null;
   }
@@ -1874,17 +1998,18 @@ export class Controller {
     return { installationId: toHex(installationId) };
   }
 
-  private async getBotDjRoles(communityId: string): Promise<{ roleIds: string[]; installationId: string } | null> {
-    if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
-    const row = await this.routes.getBotDjRoles(fromHex(communityId));
-    return row === null ? null : { roleIds: row.roleIds.map(toHex), installationId: toHex(row.installationId) };
+  /** Task 10c: Glenn's Restart. Answers the restart counters as decimal strings. */
+  private async restartBot(command: Extract<Command, { m: 'restartBot' }>): Promise<{ requested: string; handled: string }> {
+    if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    const row = await this.routes.restartBot(fromHex(command.communityId), fromHex(command.installationId));
+    return { requested: row.requested.toString(), handled: row.handled.toString() };
   }
 
-  private async configureBotDjRoles(command: Extract<Command, { m: 'configureBotDjRoles' }>): Promise<{ acceptedCount: number }> {
+  /** Task 10c: the Music page's default volume and idle-leave minutes. */
+  private async setBotMusicSettings(command: Extract<Command, { m: 'setBotMusicSettings' }>): Promise<ReturnType<typeof botInstallationView>> {
     if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
-    const acceptedCount = await this.routes.configureBotDjRoles(fromHex(command.communityId), fromHex(command.requestId),
-      fromHex(command.installationId), command.roleIds.map(fromHex));
-    return { acceptedCount };
+    return botInstallationView(await this.routes.setBotMusicSettings(fromHex(command.communityId), fromHex(command.installationId),
+      command.volume, command.idleMinutes));
   }
 
   private async listSelfRoles(communityId: string): Promise<{ id: string; name: string; position: number; selfSelected: boolean }[]> {
@@ -1975,7 +2100,7 @@ export class Controller {
     attemptId: string; authorizeUrl: string; expires: string;
   }> {
     if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
-    const attempt: BotSpotifyAttempt = await this.routes.beginBotSpotifyAttempt(fromHex(command.communityId), command.stepUp);
+    const attempt: BotSpotifyAttempt = await this.routes.beginBotSpotifyAttempt(fromHex(command.communityId), command.stepUp, command.clientId);
     return { attemptId: toHex(attempt.attemptId), authorizeUrl: attempt.authorizeUrl, expires: attempt.expires.toString() };
   }
 
@@ -2093,6 +2218,7 @@ export class Controller {
       }
       if (outcome.kind === 'store-lost') { this.setAccount({ phase: 'store-lost' }); return; }
       const core = outcome.core;
+      if (this.core !== core) this.clearInteractionAckLeases();
       this.core = core;
       this.seenTrustGeneration = core.trustGeneration();
       const now = (): number => this.deps.now();
@@ -2324,6 +2450,7 @@ export class Controller {
       clearTimeout: (handle) => { this.deps.clearTimeout(handle); },
       onGroupChanged: (g, result) => { this.onGroupChanged(g, result); },
       onTrustChanged: () => { this.safely(() => this.refreshTrustGeneration()); },
+      onError: (code) => { this.recordError(code); },
       trackJob: (job) => { void this.barrier.track(job).catch(() => undefined); },
       // Ruling 8: the core records a delete's purge when the type-2 row is confirmed, which the engine reports here.
       onOutboxChanged: (g) => { this.safely(() => { this.touchGroup(g); }); this.runPurges(); },
@@ -2405,7 +2532,8 @@ export class Controller {
       const { generation } = this.connectionState;
       this.connectionState = e.status === 'idle' && e.closeCode === CLIENT_CLOSE.version
         ? { status, generation, reason: 'version' }
-        : { status, generation };
+        : { status, generation, ...(status === 'online' && this.gateway?.acceptedVersions !== undefined && this.gateway.acceptedVersions !== null
+          ? { wireVersion: Number(this.gateway.acceptedVersions.wire) } : {}) };
       this.slices.set('connection', this.connectionState);
       if (status === 'online') this.safely(() => { this.sendOfflineSelf(); });
       if (status === 'offline') for (const community of this.slices.get('communities') ?? []) {
@@ -2413,8 +2541,16 @@ export class Controller {
         this.clearAFK(community.id);
       }
       this.stopTypingIfUnviewable();
+    } else if (e.type === 'rtt') {
+      // Task 11 (Jonas, Q3): the You tab's "Connected to {host} · {ping}"; published only while online and on a change.
+      if (this.connectionState.status === 'online' && this.connectionState.pingMs !== e.ms) {
+        this.connectionState = { ...this.connectionState, pingMs: e.ms };
+        this.slices.set('connection', this.connectionState);
+      }
     } else if (e.type === 'ready') {
       this.onReady(e.info);
+    } else if (e.type === 'frame' && e.frame.op === Op.appBuild) {
+      this.setConnection({ appBuild: e.frame.payload[0] as string });
     } else if (e.type === 'frame' && e.frame.op === Op.presence) {
       this.incomingPresence(e.frame.payload);
     } else if (e.type === 'frame' && e.frame.op === Op.typing) {
@@ -4022,7 +4158,7 @@ export class Controller {
       if (list === null) throw new Error('E_NO_BACKUP');
       const now = this.nowS();
       const sign = (stateSealed: Uint8Array): SignedLists =>
-        core.deviceListRevoke({ recoveryKey, rootSealed: root.object, stateSealed, listBody: list.raw, deviceIds: ids, now });
+        core.deviceListRevoke({ recoveryKey, rootSealed: root.object, stateSealed, listBody: chainRow(list.raw), deviceIds: ids, now });
       let signed: SignedLists;
       try {
         try {
@@ -4223,6 +4359,7 @@ export class Controller {
    * else or reset the store before this one leads again, so the next lead rebuilds from the store alone.
    */
   private forgetAccount(): void {
+    this.clearInteractionAckLeases();
     this.selfDisplay = null;
     this.clearReauthTimer();
     for (const handle of this.communityReloads.values()) this.deps.clearTimeout(handle);
@@ -4281,6 +4418,12 @@ export class Controller {
     this.calls.reset();
     this.lastVoiceSelf = null; this.ownInCall.clear(); this.selfResends = null; this.selfOffline = null;
     this.setConnection({ status: 'offline', generation: null });
+  }
+
+  private clearInteractionAckLeases(): void {
+    this.interactionAckLeaseGeneration++;
+    this.pendingBotInteractionAcks.clear();
+    this.pendingHumanInteractionAcks.clear();
   }
 
   // ---- channels and timelines ----
@@ -4742,7 +4885,10 @@ export class Controller {
         const { head, history } = signed;
         let verdict: { version: bigint; changed: boolean; quarantined: number };
         const own = this.me !== null && toHex(this.me.userId) === user;
-        try { verdict = core.deviceListIngest(leaf.groupId, leaf.leafIndex, leaf.userId, history, signedHeadList(head), this.nowS()); }
+        try {
+          ingestAccountKind(core, leaf.userId, head, code => this.recordError(code));
+          verdict = core.deviceListIngest(leaf.groupId, leaf.leafIndex, leaf.userId, history, signedHeadList(head), this.nowS());
+        }
         catch (e) {
           // Only the core's own leaf verdicts say the device is off the list; a stale read or limit says nothing about it.
           // The refusal writes nothing in the core, so the worker keeps it. An own-user history under another key is an
@@ -5331,7 +5477,7 @@ export class Controller {
     let row = core.manualRemovalEvidence().find((entry) => toHex(entry.proofRequestId) === proofRequestHex);
     if (row === undefined) throw new Refusal('E_NOT_FOUND', 'manual removal request is no longer pending');
     if (row.state === 1) {
-      try { await recoverModerationRemovals(core, this.routes, row.groupId); } catch { /* absence or outage is not proof of rejection */ }
+      try { await recoverModerationRemovals(core, this.routes, row.groupId, code => this.recordError(code)); } catch { /* absence or outage is not proof of rejection */ }
       row = core.manualRemovalEvidence().find((entry) => toHex(entry.proofRequestId) === proofRequestHex);
       if (row === undefined) throw new Refusal('E_NOT_FOUND', 'manual removal request is no longer pending');
     }
@@ -5382,7 +5528,7 @@ export class Controller {
       if (saved.state === 1) {
         // Feed ingestion promotes only an authenticated proof matching this exact actor, device,
         // group, community and sequence. A failed lookup leaves the outcome unknown.
-        try { await recoverModerationRemovals(core, this.routes, saved.groupId); } catch { /* retry next ready */ }
+        try { await recoverModerationRemovals(core, this.routes, saved.groupId, code => this.recordError(code)); } catch { /* retry next ready */ }
       }
       let current = core.manualRemovalEvidence().find((entry) => toHex(entry.proofRequestId) === toHex(saved.proofRequestId));
       if (current === undefined) continue;

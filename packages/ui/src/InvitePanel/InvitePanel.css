@@ -1,0 +1,39 @@
+/* README §5.9, the prototype's Server settings → Invites (Task 10c). The maker is one 10px-radius card (16px padding,
+   14px between its parts); the two choices wrap 16px apart, each an 11px --fg-2 label 6px above its segmented control. */
+.d-invite-panel { min-width: 0; font-family: var(--font-mono); }
+.d-invite-panel__card { display: grid; gap: 14px; padding: 16px; border: 1px solid var(--hairline); border-radius: var(--r-xl); }
+.d-invite-panel__choices { display: flex; flex-wrap: wrap; gap: 16px; }
+.d-invite-panel__choice { display: grid; gap: 6px; }
+.d-invite-panel__label { font-size: var(--text-xs); color: var(--fg-2); }
+
+/* The accent buttons ("Make invite link", Copy): 36px, 14px across, radius 7, 12px/700 on --accent, pressed to .96. */
+.d-invite-panel__primary { box-sizing: border-box; display: inline-flex; flex: none; align-items: center; gap: 6px; height: 2.25rem; padding: 0 14px; font: inherit; font-size: var(--text-ui); font-weight: var(--weight-display); color: var(--accent-ink); background: var(--accent); border: 0; border-radius: var(--r-seg); cursor: pointer; transition: transform var(--duration-press); }
+.d-invite-panel__primary:active { transform: scale(0.96); }
+.d-invite-panel__primary[aria-disabled="true"] { cursor: progress; opacity: var(--opacity-muted); }
+.d-invite-panel__make { justify-self: start; }
+
+/* The link, shown once: a 36px field ringed in the accent, 12.5px, cut with an ellipsis, beside Copy (8px apart). */
+.d-invite-panel__made { display: flex; gap: 8px; animation: d-invite-up var(--duration-slow) var(--ease-out) both; }
+.d-invite-panel__link { box-sizing: content-box /* the prototype: 36px of content plus its 1px accent ring */; flex: 1; min-width: 0; height: 2.25rem; padding: 0 12px; font: inherit; font-size: var(--text-sm); color: var(--fg); text-overflow: ellipsis; white-space: nowrap; background: var(--surface-2); border: 1px solid var(--accent); border-radius: var(--r-seg); }
+.d-invite-panel__note { margin: -4px 0 0; font-size: var(--text-xs); color: var(--fg-2); }
+.d-invite-panel__message { margin: 0; font-size: var(--text-xs); color: var(--fg-2); }
+.d-invite-panel__message[role="alert"] { color: var(--danger); }
+
+/* "Active links — n": the uppercase micro label (22px above, 8px below), then a 10px-radius group of 48px rows with
+   hairlines between: the masked code 12px (flex 1 1 200px), uses and expiry 11px --fg-2 at 110px each, and Revoke. */
+/* Fix round 2: scoped under the panel so a settings section's h3 reset (0 margins) cannot drop the prototype's 22px. */
+.d-invite-panel .d-invite-panel__title { margin: 22px 0 8px; font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking-wide); text-transform: uppercase; color: var(--fg-3); }
+.d-invite-panel__list { display: grid; margin: 0; padding: 0; overflow: hidden; list-style: none; border: 1px solid var(--hairline); border-radius: var(--r-xl); }
+.d-invite-panel__row { box-sizing: border-box; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; min-height: 3rem; padding: 8px 16px; animation: d-invite-up var(--duration-slow) var(--ease-out) both; }
+.d-invite-panel__row + .d-invite-panel__row { border-top: 1px solid var(--hairline); }
+.d-invite-panel__code { flex: 1 1 200px; min-width: 0; font-size: var(--text-ui); color: var(--fg); }
+.d-invite-panel__meta { width: 110px; font-size: var(--text-xs); color: var(--fg-2); }
+.d-invite-panel__revoke { box-sizing: content-box /* 28px plus the 1px edge, as the prototype */; display: inline-flex; align-items: center; height: 1.75rem; padding: 0 10px; font: inherit; font-size: var(--text-xs); color: var(--danger); background: transparent; border: 1px solid var(--danger-edge); border-radius: var(--r-md); cursor: pointer; }
+.d-invite-panel__revoke:hover { background: var(--danger-faint); }
+.d-invite-panel__revoke[aria-disabled="true"] { cursor: progress; opacity: var(--opacity-muted); }
+
+@keyframes d-invite-up { from { opacity: 0; transform: translateY(8px); } }
+@media (prefers-reduced-motion: reduce) {
+  .d-invite-panel__made, .d-invite-panel__row { animation: none; }
+  .d-invite-panel__primary { transition: none; }
+}

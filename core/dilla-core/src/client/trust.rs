@@ -953,6 +953,12 @@ fn leaf_verdict(
     ) {
         return Ok(Err(ClientError::from(e).code));
     }
+    // Task S1 part 2: the credential's self-signed kind must be the kind the instance attests
+    // for the account (account_kind.rs). A wrong kind is E_CREDENTIAL; a missing or unverifiable
+    // attestation, once this client has seen one, leaves the leaf pending.
+    if let Some(code) = super::account_kind::leaf_kind_verdict(c, &leaf.credential)? {
+        return Ok(Err(code));
+    }
     // A cached list without its pin (never written apart by ingest) vouches for nobody.
     Ok(if pin.is_some() {
         Ok(())
@@ -2063,6 +2069,8 @@ mod tests {
              CREATE TABLE app_device_lists(user_id BLOB PRIMARY KEY,version INTEGER,list BLOB,umk_pub BLOB,ssk_pub BLOB,credential BLOB);",
         )
         .expect("trust tables");
+        db.execute_batch(super::super::account_kind::ACCOUNT_KINDS_SCHEMA)
+            .expect("account-kind table");
         if with_pin {
             write_pin(
                 &db,
@@ -3144,5 +3152,192 @@ mod tests {
                 "removing the forged leaf cannot release the changed leaf's block"
             );
         }
+    }
+
+    // ---- Task S1: the instance-signed account kind (account_kind.rs; Ruling AW: no key) ----
+
+    const INSTANCE: [u8; 16] = [0x51; 16];
+
+    fn instance_key() -> ed25519_dalek::SigningKey {
+        ed25519_dalek::SigningKey::from_bytes(&[0x52; 32])
+    }
+
+    /// Store an attestation row as `account_kind_ingest` does: `stored_kind` in the row, the
+    /// signature over `signed` = (instance, user, kind) under `key`; the seen flag set.
+    fn attest(
+        db: &rusqlite::Connection,
+        user: &[u8; 16],
+        stored_kind: u8,
+        signed: (&[u8; 16], &[u8; 16], u8),
+        key: &ed25519_dalek::SigningKey,
+    ) {
+        use ed25519_dalek::Signer;
+        let message =
+            super::super::account_kind::account_kind_message(signed.0, signed.1, signed.2);
+        let sig = key.sign(&message).to_bytes();
+        db.execute(
+            "INSERT OR REPLACE INTO app_account_kinds(user_id,kind,key_id,signature,instance_key,instance_id) VALUES(?1,?2,?3,?4,?5,?6)",
+            params![
+                user.as_slice(),
+                i64::from(stored_kind),
+                [0x53u8; 16].as_slice(),
+                sig.as_slice(),
+                instance_key().verifying_key().to_bytes().as_slice(),
+                INSTANCE.as_slice()
+            ],
+        )
+        .expect("attestation row");
+        schema::meta_put(db, super::super::account_kind::ACCOUNT_KIND_SEEN, &[1]).expect("seen");
+    }
+
+    fn bot_leaf(leaf: &mut LeafEvidence) {
+        let ssk = SskSigner::from_bytes(&[0x42; 32]);
+        leaf.credential.kind = Kind::Bot;
+        leaf.credential.sig_ssk_dev = ssk.sign_device(
+            &leaf.credential.device_id,
+            &leaf.dsk_pub,
+            Kind::Bot,
+            leaf.credential.tier,
+            leaf.credential.signer_tier,
+        );
+    }
+
+    #[test]
+    fn account_kind_absent_and_never_seen_keeps_the_earlier_rule() {
+        let (leaf, list) = fixture();
+        let db = interaction_trust_db(&leaf, &list, true);
+        assert_eq!(leaf_verdict(&db, &leaf).expect("verdict"), Ok(()));
+    }
+
+    #[test]
+    fn a_valid_attestation_of_the_credentials_kind_passes() {
+        let (leaf, list) = fixture();
+        let db = interaction_trust_db(&leaf, &list, true);
+        let user = *leaf.credential.user_id.as_bytes();
+        attest(&db, &user, 0, (&INSTANCE, &user, 0), &instance_key());
+        assert_eq!(leaf_verdict(&db, &leaf).expect("verdict"), Ok(()));
+        // An existing Bot account keeps working: a Bot-kind leaf attested as a Bot passes.
+        let (mut bot, bot_list) = fixture();
+        bot_leaf(&mut bot);
+        let db = interaction_trust_db(&bot, &bot_list, true);
+        attest(&db, &user, 1, (&INSTANCE, &user, 1), &instance_key());
+        assert_eq!(leaf_verdict(&db, &bot).expect("verdict"), Ok(()));
+    }
+
+    #[test]
+    fn a_human_whose_credential_claims_bot_kind_is_refused() {
+        let (mut leaf, list) = fixture();
+        bot_leaf(&mut leaf);
+        let db = interaction_trust_db(&leaf, &list, true);
+        let user = *leaf.credential.user_id.as_bytes();
+        attest(&db, &user, 0, (&INSTANCE, &user, 0), &instance_key());
+        assert_eq!(
+            leaf_verdict(&db, &leaf).expect("verdict"),
+            Err(E_CREDENTIAL)
+        );
+    }
+
+    #[test]
+    fn an_attestation_that_is_not_the_instances_statement_leaves_the_leaf_pending() {
+        let (leaf, list) = fixture();
+        let user = *leaf.credential.user_id.as_bytes();
+        let other_key = ed25519_dalek::SigningKey::from_bytes(&[0x77; 32]);
+        type Signed = ([u8; 16], [u8; 16], u8);
+        let cases: [(&str, Signed, &ed25519_dalek::SigningKey); 4] = [
+            ("another user", (INSTANCE, [0x99; 16], 0), &instance_key()),
+            ("another instance", ([0x98; 16], user, 0), &instance_key()),
+            (
+                "another key (bad signature)",
+                (INSTANCE, user, 0),
+                &other_key,
+            ),
+            (
+                "a signed kind that is not the stored kind",
+                (INSTANCE, user, 1),
+                &instance_key(),
+            ),
+        ];
+        for (name, signed, key) in cases {
+            let db = interaction_trust_db(&leaf, &list, true);
+            attest(&db, &user, 0, (&signed.0, &signed.1, signed.2), key);
+            assert_eq!(
+                leaf_verdict(&db, &leaf).expect("verdict"),
+                Err(E_DEVICE_LIST_STALE),
+                "{name}"
+            );
+        }
+    }
+
+    /// Ruling AW: once seen, a user with no verifying attestation stays pending, whether or not
+    /// the person verified the key (the round-3 fallback is gone).
+    #[test]
+    fn once_an_attestation_was_seen_a_missing_one_is_refused_even_under_a_verified_key() {
+        let (leaf, list) = fixture();
+        let db = interaction_trust_db(&leaf, &list, true); // the fixture's pin is person-verified
+        schema::meta_put(&db, super::super::account_kind::ACCOUNT_KIND_SEEN, &[1]).expect("seen");
+        assert_eq!(
+            leaf_verdict(&db, &leaf).expect("verdict"),
+            Err(E_DEVICE_LIST_STALE)
+        );
+    }
+
+    /// The attestation states the account's kind, not a key's: after the user moves to another UMK,
+    /// the same attestation still decides for the new key's leaves.
+    #[test]
+    fn the_attestation_applies_to_every_key_of_the_user() {
+        let (mut leaf, _) = fixture();
+        let user = *leaf.credential.user_id.as_bytes();
+        let list = substitute_leaf_keys(&mut leaf, 0x91);
+        let db = interaction_trust_db(&leaf, &list, true);
+        attest(&db, &user, 0, (&INSTANCE, &user, 0), &instance_key());
+        assert_eq!(leaf_verdict(&db, &leaf).expect("verdict"), Ok(()));
+        leaf.credential.kind = Kind::Bot;
+        leaf.credential.sig_ssk_dev = SskSigner::from_bytes(&[0x92; 32]).sign_device(
+            &leaf.credential.device_id,
+            &leaf.dsk_pub,
+            Kind::Bot,
+            leaf.credential.tier,
+            leaf.credential.signer_tier,
+        );
+        assert_eq!(
+            leaf_verdict(&db, &leaf).expect("verdict"),
+            Err(E_CREDENTIAL)
+        );
+    }
+
+    #[test]
+    fn the_attestation_wire_shape_is_strict() {
+        use super::super::account_kind::AccountKindAttestation;
+        let good = AccountKindAttestation {
+            key_id: [1; 16],
+            kind: 1,
+            signature: [2; 64],
+        };
+        assert_eq!(
+            AccountKindAttestation::decode(&good.encode()).expect("decode"),
+            good
+        );
+        let mut e = crate::cbor::Encoder::new();
+        e.array(4).uint(1).bytes(&[1; 16]).uint(2).bytes(&[2; 64]);
+        assert!(
+            AccountKindAttestation::decode(&e.into_vec()).is_err(),
+            "kind 2"
+        );
+        let mut e = crate::cbor::Encoder::new();
+        e.array(4).uint(2).bytes(&[1; 16]).uint(0).bytes(&[2; 64]);
+        assert!(
+            AccountKindAttestation::decode(&e.into_vec()).is_err(),
+            "version 2"
+        );
+        let mut trailing = good.encode();
+        trailing.push(0);
+        assert!(
+            AccountKindAttestation::decode(&trailing).is_err(),
+            "trailing byte"
+        );
+        assert!(
+            AccountKindAttestation::decode(&[0x80]).is_err(),
+            "empty array"
+        );
     }
 }

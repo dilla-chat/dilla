@@ -1,11 +1,14 @@
-.d-pins-dialog__note { margin: 0 0 0.75rem; font-size: var(--text-sm); color: var(--fg-2); }
-.d-pins-dialog__empty { margin: 0; color: var(--fg-2); }
-.d-pins-dialog__list { display: grid; gap: 0.75rem; max-height: 60vh; overflow-y: auto; margin: 0; padding: 0; list-style: none; }
-.d-pins-dialog__item { display: grid; gap: 0.25rem; padding-top: 0.75rem; border-top: 1px solid var(--hairline); }
-.d-pins-dialog__item:first-child { padding-top: 0; border-top: 0; }
-.d-pins-dialog__head { margin: 0; display: flex; align-items: baseline; gap: 0.5rem; font-size: var(--text-sm); }
-.d-pins-dialog__author { font-weight: var(--weight-display); color: var(--fg); }
-.d-pins-dialog__time { font-size: var(--text-xs); color: var(--fg-3); }
-.d-pins-dialog__excerpt { margin: 0; color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere; }
-.d-pins-dialog__foot { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
-.d-pins-dialog__by { margin: 0 auto 0 0; font-size: var(--text-xs); color: var(--fg-3); }
+/* Task 9: the pins in the prototype's list language: rows over --hairline rules, the 12.5px bold author with a 10.5px --fg-3 time,
+   the 12.5px --fg-body excerpt, who pinned it in 10.5px --fg-3, and the 28px row actions. */
+.d-pins-dialog__note { margin: 0 0 12px; font-size: var(--text-meta); color: var(--fg-3); }
+.d-pins-dialog__empty { margin: 0; padding: 12px 0; text-align: center; font-size: var(--text-ui); color: var(--fg-3); }
+.d-pins-dialog__list { display: grid; max-height: 60vh; overflow-y: auto; margin: 0 -16px; padding: 0; list-style: none; }
+.d-pins-dialog__item { display: grid; gap: 4px; padding: 10px 16px; border-top: 1px solid var(--hairline); }
+.d-pins-dialog__item:first-child { border-top: 0; padding-top: 0; }
+.d-pins-dialog__head { margin: 0; display: flex; align-items: baseline; gap: 8px; }
+.d-pins-dialog__author { font-size: var(--text-sm); font-weight: var(--weight-display); color: var(--fg); }
+.d-pins-dialog__time { font-size: var(--text-meta); color: var(--fg-3); }
+.d-pins-dialog__excerpt { margin: 0; font-size: var(--text-sm); color: var(--fg-body); white-space: pre-wrap; overflow-wrap: anywhere; }
+.d-pins-dialog__foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.d-pins-dialog__by { margin: 0 auto 0 0; font-size: var(--text-meta); color: var(--fg-3); }
+.d-pins-dialog__foot .d-btn { height: 28px; padding: 0 10px; font-size: var(--text-xs); border-radius: var(--r-md); }

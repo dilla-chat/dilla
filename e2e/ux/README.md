@@ -11,7 +11,7 @@ Build first: `npm run build -w @dilla/web`, `go build -o target/dilla-testhost .
    a conversation, unread counts, a DM from Mira, Björn and Mira in `harbour`, and Ada's phone as a second device. Each browser
    keeps a CDP port (9611 up, the phone 9620); `state.json` is written when it prints `READY`. It holds until Ctrl+C.
 2. `npm run ux:shots -w @dilla/e2e` shoots every step; `node e2e/ux/shots.mjs --list` names them, and
-   `node e2e/ux/shots.mjs shell dm --size 1440 --theme mesh` runs some. Files are `<d|p><width>-<theme>-<step>.png`.
+   `node e2e/ux/shots.mjs shell dm --size 1440 --theme signal` runs some. Files are `<d|p><width>-<theme>-<step>.png`.
 3. `npm run ux:sheets -w @dilla/e2e` composes one contact sheet per width and theme into `sheets/`.
 
 `run.mjs` is the runner a one-off step file uses: `node e2e/ux/run.mjs <ada|bjorn|mira|phone> <step.mjs> [args]`.

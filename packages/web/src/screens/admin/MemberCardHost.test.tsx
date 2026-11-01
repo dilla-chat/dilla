@@ -29,6 +29,28 @@ function open(member: MemberSummary) {
 }
 
 describe('the member profile card (EOD E6)', () => {
+  it('reanchors a list card only to the row inside its scoped workspace', () => {
+    const fake = new FakeClient();
+    fake.set('account', account());
+    fake.set('communities', [{ id: CID, name: 'Midgard', owner: ME.id }]);
+    fake.set(`members:${CID}`, [peer()]);
+    fake.set(`presence:${CID}`, {});
+    fake.set(`roles:${CID}`, []);
+    const background = document.createElement('button');
+    background.dataset.focusKey = `member:${PEER}`;
+    document.body.append(background);
+    const scope = document.createElement('div');
+    const row = document.createElement('button');
+    row.dataset.focusKey = `member:${PEER}`;
+    scope.append(row);
+    const staleAnchor = document.createElement('button');
+    const onCard = vi.fn();
+    render(<div className="d-root"><CoreProvider client={fake}><MemberCardHost communityId={CID} selfId={ME.id}
+      card={{ id: PEER, source: 'list', anchor: staleAnchor }} onCard={onCard} onMessage={vi.fn()} onCompare={vi.fn()}
+      announce={vi.fn()} focusScope={scope} /></CoreProvider></div>);
+    expect(onCard).toHaveBeenCalledWith(expect.objectContaining({ anchor: row }));
+    background.remove();
+  });
   it('shows the member status message after the presence word, and the bio under the head', () => {
     open(peer({ statusMsg: 'on a call', bio: 'Builds things.\nSecond line.' }));
     const card = screen.getByRole('dialog', { name: 'Bob' });
@@ -40,6 +62,6 @@ describe('the member profile card (EOD E6)', () => {
     open(peer());
     const card = screen.getByRole('dialog', { name: 'Bob' });
     expect(within(card).queryByRole('group', { name: t('profile.card.about') })).toBeNull();
-    expect(card.querySelector('.d-profile-card__status')?.textContent).toBe('offline');
+    expect(card.querySelector('.d-profile-card__status')?.textContent).toBe('@bob · offline');
   });
 });

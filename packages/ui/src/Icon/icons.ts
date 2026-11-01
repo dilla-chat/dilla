@@ -5,7 +5,9 @@
  * viewBox with fill none, stroke currentColor, stroke width 2 and round caps and joins (the Icon component sets these).
  * Do not edit by hand: re-fetch at a pinned tag and regenerate with packages/ui/scripts/vendor-icons.mjs.
  *
- * SHA-256 of each upstream file at 1.57.0:
+ * SHA-256 of each upstream file at 1.57.0 (the Signal wave A icons, from smile on, are hashed from the lucide-static@1.57.0
+ * package files, which carry a licence banner the GitHub files lack; the geometry is the same). An icon marked "exception"
+ * comes from another release and is hashed from that one:
  *   icons/mic.svg  9b940cd735d1ffa270ba670c4e677d9a09400f3fa81d6b3f405b12a3b67a59a8
  *   icons/mic-off.svg  bcb5a033b4ecd182ec8d0d0945810ccc5147219b1a21c017b47fd4d5ae3a8320
  *   icons/headphones.svg  7719585dafa921805aefc21fc3262bbcc621507610a653b84e1632236650b35a
@@ -55,6 +57,46 @@
  *   icons/arrow-up.svg  8c22c25874c80bb062bef985d207d8f1d4a4d7847237d0a8cf720a3235968518
  *   icons/arrow-down.svg  2b641c7a59d39450edfed72067fcc9940a1a316a737346af23b4b9103c0689f2
  *   icons/crown.svg  544c1b6181749ae4b4c98861a5a6ed1242940239cda97cc13c74e84a03fd68c0
+ *   icons/smile.svg  771cabee7210123710fa75e8e678447019556f9f1760d0bd5d973dc7737f4524
+ *   icons/reply.svg  680ce38573a81869c3895215dd947ce98e72db3721c1d1fc2dd6c613966dc38b
+ *   icons/paperclip.svg  c07feb190928247e678da6792825c1d202eb8eec5277a81b40419474df175b5e
+ *   icons/bell.svg  6d7dea6c129327853cd604404b13bfdc064950084f20663d819039ddeacd2da3
+ *   icons/inbox.svg  eab9633ac534d1d3636ef3f04c161dac329a91464fef0e426552d5dcdb7bc3e4
+ *   icons/copy.svg  e62cbf8dee74b569c565fc34af61829627f97f0478b38b07db8ddf4d30fc6126
+ *   icons/download.svg  34b08d12b6283b9077769106ee0e6aa4d0c2c080a13580eec106f80f6cd3f8f1
+ *   icons/loader.svg  8f4029c4b4c3b00e2969d5eec220b3db73370e6ad21a04b87c22b04ff7cd70ec
+ *   icons/moon.svg  98404a105593855d5182a42ef60dbe8e3ad463159940a744da109ca1b9997af8
+ *   icons/link.svg  bfb93210dc01fd4735bac6370b471e1512972230f5a00d7582f194fe5c3e5a1f
+ *   icons/trash-2.svg  b1fbab898c2066f0b6842e25220c6d1494d558e687fa40f0b728d1cf205c9338
+ *   icons/chevron-up.svg  b4bd4d46387207f4e22cc2565a937edf9d830620c0eee4c4bdfb12b7f1b14779
+ *   icons/fingerprint.svg  51c89ddf8c0d8690fb07fbe3223fb6718ed5d0c367d4ac75499ee6c4db155070
+ *   icons/smartphone.svg  81dd05ac118e3a75719846184185bf0b49075774beb208bbcb4c00e60d2d41a2
+ *   icons/key.svg  cd3106e07e1bdf6e22dd5908269f9a8db974be672d858f57ad8285bd7773f2d4  (exception: lucide-static@0.460.0, not 1.57.0)
+ *   icons/youtube.svg  5de2a980d0eb396d510d7a74dd7e4f9def3d10cfcad2015e51f991c517e3c720  (exception: lucide-static@0.460.0, not 1.57.0)
+ *   icons/square.svg  ea98f50de2f267b4d866a77d4425fa3da2dec239d3c13a0e2cbde0bdf95dfe37
+ *   icons/arrow-right.svg  164b39628bfea3792dca3163c5f67b97ee0d11000489e7d201418d7f671a08b5
+ *   icons/house.svg  3ce1e3be357b3d704af39405df420cfd8ebc6b5d73b017f95492f43e09d07dc9
+ *   icons/alarm-clock.svg  b6d5c6298468151d429c184ccb404fae746f4abe34579289d9946aab167a078b
+ *   icons/smile-plus.svg  394b13141695981e7cb6e0684bdd92c98dea8ec48cc0b2b771303323d7cf7c69
+ *   icons/code-xml.svg  f0782c1c2078078fe8017b713d7da1e118023caeff579f6f1de177b608da2ce9
+ *   icons/layout-grid.svg  ae25ece718b9968c27a80c68f91e75bb2cf625764aa2cbf9cd78a31179614bc2
+ *   icons/skip-forward.svg  f6bdc4b8d453332bafcf1366a48d5ece4bd4f15eced97c85c3676bd22c5cadf9
+ *   icons/list-music.svg  e86c9d93aab1828013afca1ecc679f9eea432881ea373f97064801b5768d2580
+ *   icons/music.svg  8721b8a3594219c1313c4083049e5a5c049f49c47b1cd93fdb61d52a0803e42b
+ *   icons/bot.svg  2f2c5f54b3bebde64e6b512907a47ff02eae0a121b2291df70e9663adec127b0
+ *   icons/palette.svg  2f4d3f7b955a0fbe480ab1fd0fdc892f3af1520b209438db1f3ecbbea699ac0b
+ *   icons/ban.svg  4fdd1a1ec4c5e9a805291cc78a8a3c4e3a961b9ddffddaded7869c33ee303448
+ *   icons/scroll-text.svg  6ee58b7cd70b4e5c8f088532bd4d179401ef523c27ad82c7aed2d3f9e9812150
+ *   icons/user-plus.svg  d240a2837b326aa764cbac57dba3d3edea17dd05d32379eb6a0cd416874936c2
+ *   icons/monitor.svg  c57d88797dec20426a97b89a681d6b9f10ce24eaca766e5caf680617f01ce22b
+ *   icons/app-window.svg  f9483395f089d415deac76611f5965e4464db90846668c478d548a872c98fcb0
+ *   icons/globe.svg  ec53caa9a0fcbde692c18e638eb5ded4079788008ede4e98d1cc3e860e8f553e
+ *   icons/vote.svg  85e2683d9b4e3ff9e196dc677b3ab414b363e7307e2c9d01c141386cbe3d87a9
+ *   icons/disc-3.svg  0999011166bff18ba9cc477ab70607bafa887771e4ae58dc7766b5824149e5e0
+ *   icons/timer.svg  d258a860a48e05c6c1aa0984008368ec16a59ff2907695a782ed6ef7f31eed76
+ *   icons/hand.svg  fdd60b469094d42d8abec6ef4afa0552e792fa25047aaeccd5c6f0aded10e05e
+ *   icons/user-x.svg  7fcc94a0ad34c466b6800fee162b447332e6e48e3d3ce9bd40afd2023c0897c7
+ *   icons/message-square-x.svg  2d14420bdf28bf3d41690aebbc20be5e050efcd204d35db41f00c00adfb1b674
  *
  * Lucide's licence (LICENSE at 1.57.0):
  *
@@ -74,7 +116,7 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *
- * headphones, server, chevron-left, chevron-right, chevron-down, x, check, hash, plus, maximize, minimize, search, lock, log-out, at-sign, arrow-up, arrow-down are derived from the Feather project, under:
+ * headphones, server, chevron-left, chevron-right, chevron-down, x, check, hash, plus, maximize, minimize, search, lock, log-out, at-sign, arrow-up, arrow-down, smile, download, loader, moon, link, trash-2, chevron-up, smartphone, key, square, arrow-right, music, monitor are derived from the Feather project, under:
  *
  * The MIT License (MIT) (for the icons listed above)
  *
@@ -101,6 +143,7 @@
 
 export type IconElement =
   | readonly ['path', { readonly d: string }]
+  | readonly ['polyline', { readonly points: string }]
   | readonly ['rect', { readonly x?: string; readonly y?: string; readonly width: string; readonly height: string; readonly rx?: string; readonly ry?: string }]
   | readonly ['circle', { readonly cx: string; readonly cy: string; readonly r: string }]
   | readonly ['line', { readonly x1: string; readonly y1: string; readonly x2: string; readonly y2: string }];
@@ -336,6 +379,224 @@ export const ICONS = {
   'crown': [
     ['path', { d: 'M11.562 3.266a.5.5 0 0 1 .876 0L15.39 8.87a1 1 0 0 0 1.516.294L21.183 5.5a.5.5 0 0 1 .798.519l-2.834 10.246a1 1 0 0 1-.956.734H5.81a1 1 0 0 1-.957-.734L2.02 6.02a.5.5 0 0 1 .798-.519l4.276 3.664a1 1 0 0 0 1.516-.294z' }],
     ['path', { d: 'M5 21h14' }],
+  ],
+  'smile': [
+    ['path', { d: 'M15 10V9' }],
+    ['path', { d: 'M16.472 15a6 6 0 01-8.943 0' }],
+    ['path', { d: 'M9 10V9' }],
+    ['circle', { cx: '12', cy: '12', r: '10' }],
+  ],
+  'reply': [
+    ['path', { d: 'M20 18v-2a4 4 0 0 0-4-4H4' }],
+    ['path', { d: 'm9 17-5-5 5-5' }],
+  ],
+  'paperclip': [
+    ['path', { d: 'm16 6-8.414 8.586a2 2 0 0 0 2.829 2.829l8.414-8.586a4 4 0 1 0-5.657-5.657l-8.379 8.551a6 6 0 1 0 8.485 8.485l8.379-8.551' }],
+  ],
+  'bell': [
+    ['path', { d: 'M10.268 21a2 2 0 0 0 3.464 0' }],
+    ['path', { d: 'M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326' }],
+  ],
+  'inbox': [
+    ['polyline', { points: '22 12 16 12 14 15 10 15 8 12 2 12' }],
+    ['path', { d: 'M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z' }],
+  ],
+  'copy': [
+    ['rect', { width: '14', height: '14', x: '8', y: '8', rx: '2', ry: '2' }],
+    ['path', { d: 'M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2' }],
+  ],
+  'download': [
+    ['path', { d: 'M12 15V3' }],
+    ['path', { d: 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4' }],
+    ['path', { d: 'm7 10 5 5 5-5' }],
+  ],
+  'loader': [
+    ['path', { d: 'M12 2v4' }],
+    ['path', { d: 'm16.2 7.8 2.9-2.9' }],
+    ['path', { d: 'M18 12h4' }],
+    ['path', { d: 'm16.2 16.2 2.9 2.9' }],
+    ['path', { d: 'M12 18v4' }],
+    ['path', { d: 'm4.9 19.1 2.9-2.9' }],
+    ['path', { d: 'M2 12h4' }],
+    ['path', { d: 'm4.9 4.9 2.9 2.9' }],
+  ],
+  'moon': [
+    ['path', { d: 'M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401' }],
+  ],
+  'link': [
+    ['path', { d: 'M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71' }],
+    ['path', { d: 'M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71' }],
+  ],
+  'trash-2': [
+    ['path', { d: 'M10 11v6' }],
+    ['path', { d: 'M14 11v6' }],
+    ['path', { d: 'M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6' }],
+    ['path', { d: 'M3 6h18' }],
+    ['path', { d: 'M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2' }],
+  ],
+  'chevron-up': [
+    ['path', { d: 'm18 15-6-6-6 6' }],
+  ],
+  'fingerprint': [
+    ['path', { d: 'M12 10a2 2 0 0 0-2 2c0 1.02-.1 2.51-.26 4' }],
+    ['path', { d: 'M14 13.12c0 2.38 0 6.38-1 8.88' }],
+    ['path', { d: 'M17.29 21.02c.12-.6.43-2.3.5-3.02' }],
+    ['path', { d: 'M2 12a10 10 0 0 1 18-6' }],
+    ['path', { d: 'M2 16h.01' }],
+    ['path', { d: 'M21.8 16c.2-2 .131-5.354 0-6' }],
+    ['path', { d: 'M5 19.5C5.5 18 6 15 6 12a6 6 0 0 1 .34-2' }],
+    ['path', { d: 'M8.65 22c.21-.66.45-1.32.57-2' }],
+    ['path', { d: 'M9 6.8a6 6 0 0 1 9 5.2v2' }],
+  ],
+  'smartphone': [
+    ['rect', { width: '14', height: '20', x: '5', y: '2', rx: '2', ry: '2' }],
+    ['path', { d: 'M12 18h.01' }],
+  ],
+  // Fix round 3: the prototype's key (lucide-static 0.460.0, the version its icon loader fetches): the bow at the lower left.
+  'key': [
+    ['path', { d: 'm15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4' }],
+    ['path', { d: 'm21 2-9.6 9.6' }],
+    ['circle', { cx: '7.5', cy: '15.5', r: '5.5' }],
+  ],
+  // Fix round 3: the prototype's YouTube provider glyph (lucide-static 0.460.0 'youtube', which its icon loader fetches).
+  'youtube': [
+    ['path', { d: 'M2.5 17a24.12 24.12 0 0 1 0-10 2 2 0 0 1 1.4-1.4 49.56 49.56 0 0 1 16.2 0A2 2 0 0 1 21.5 7a24.12 24.12 0 0 1 0 10 2 2 0 0 1-1.4 1.4 49.55 49.55 0 0 1-16.2 0A2 2 0 0 1 2.5 17' }],
+    ['path', { d: 'm10 15 5-3-5-3z' }],
+  ],
+  'square': [
+    ['rect', { width: '18', height: '18', x: '3', y: '3', rx: '2' }],
+  ],
+  'arrow-right': [
+    ['path', { d: 'M5 12h14' }],
+    ['path', { d: 'm12 5 7 7-7 7' }],
+  ],
+  'house': [
+    ['path', { d: 'M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8' }],
+    ['path', { d: 'M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z' }],
+  ],
+  'alarm-clock': [
+    ['circle', { cx: '12', cy: '13', r: '8' }],
+    ['path', { d: 'M12 9v4l2 2' }],
+    ['path', { d: 'M5 3 2 6' }],
+    ['path', { d: 'm22 6-3-3' }],
+    ['path', { d: 'M6.38 18.7 4 21' }],
+    ['path', { d: 'M17.64 18.67 20 21' }],
+  ],
+  'smile-plus': [
+    ['path', { d: 'M13.267 2.08a10 10 0 108.653 8.653' }],
+    ['path', { d: 'M15 10V9' }],
+    ['path', { d: 'M16 5h6' }],
+    ['path', { d: 'M16.472 15a6 6 0 01-8.943 0' }],
+    ['path', { d: 'M19 2v6' }],
+    ['path', { d: 'M9 10V9' }],
+  ],
+  'code-xml': [
+    ['path', { d: 'm18 16 4-4-4-4' }],
+    ['path', { d: 'm6 8-4 4 4 4' }],
+    ['path', { d: 'm14.5 4-5 16' }],
+  ],
+  'layout-grid': [
+    ['rect', { width: '7', height: '7', x: '3', y: '3', rx: '1' }],
+    ['rect', { width: '7', height: '7', x: '14', y: '3', rx: '1' }],
+    ['rect', { width: '7', height: '7', x: '14', y: '14', rx: '1' }],
+    ['rect', { width: '7', height: '7', x: '3', y: '14', rx: '1' }],
+  ],
+  'skip-forward': [
+    ['path', { d: 'M21 4v16' }],
+    ['path', { d: 'M6.029 4.285A2 2 0 0 0 3 6v12a2 2 0 0 0 3.029 1.715l9.997-5.998a2 2 0 0 0 .003-3.432z' }],
+  ],
+  'list-music': [
+    ['path', { d: 'M16 5H3' }],
+    ['path', { d: 'M11 12H3' }],
+    ['path', { d: 'M11 19H3' }],
+    ['path', { d: 'M21 16V5' }],
+    ['circle', { cx: '18', cy: '16', r: '3' }],
+  ],
+  'music': [
+    ['path', { d: 'M9 18V5l12-2v13' }],
+    ['circle', { cx: '6', cy: '18', r: '3' }],
+    ['circle', { cx: '18', cy: '16', r: '3' }],
+  ],
+  'bot': [
+    ['path', { d: 'M12 8V4H8' }],
+    ['rect', { width: '16', height: '12', x: '4', y: '8', rx: '2' }],
+    ['path', { d: 'M2 14h2' }],
+    ['path', { d: 'M20 14h2' }],
+    ['path', { d: 'M15 13v2' }],
+    ['path', { d: 'M9 13v2' }],
+  ],
+  'palette': [
+    ['path', { d: 'M12 22a1 1 0 0 1 0-20 10 9 0 0 1 10 9 5 5 0 0 1-5 5h-2.25a1.75 1.75 0 0 0-1.4 2.8l.3.4a1.75 1.75 0 0 1-1.4 2.8z' }],
+    ['circle', { cx: '13.5', cy: '6.5', r: '.5' }],
+    ['circle', { cx: '17.5', cy: '10.5', r: '.5' }],
+    ['circle', { cx: '6.5', cy: '12.5', r: '.5' }],
+    ['circle', { cx: '8.5', cy: '7.5', r: '.5' }],
+  ],
+  'ban': [
+    ['circle', { cx: '12', cy: '12', r: '10' }],
+    ['path', { d: 'M4.929 4.929 19.07 19.071' }],
+  ],
+  'scroll-text': [
+    ['path', { d: 'M15 12h-5' }],
+    ['path', { d: 'M15 8h-5' }],
+    ['path', { d: 'M19 17V5a2 2 0 0 0-2-2H4' }],
+    ['path', { d: 'M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3' }],
+  ],
+  'user-plus': [
+    ['path', { d: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2' }],
+    ['circle', { cx: '9', cy: '7', r: '4' }],
+    ['line', { x1: '19', x2: '19', y1: '8', y2: '14' }],
+    ['line', { x1: '22', x2: '16', y1: '11', y2: '11' }],
+  ],
+  // Task 8c: the share picker's sources.
+  'monitor': [
+    ['rect', { width: '20', height: '14', x: '2', y: '3', rx: '2' }],
+    ['line', { x1: '8', x2: '16', y1: '21', y2: '21' }],
+    ['line', { x1: '12', x2: '12', y1: '17', y2: '21' }],
+  ],
+  'app-window': [
+    ['rect', { x: '2', y: '4', width: '20', height: '16', rx: '2' }],
+    ['path', { d: 'M10 4v4' }],
+    ['path', { d: 'M2 8h20' }],
+    ['path', { d: 'M6 4v4' }],
+  ],
+  'globe': [
+    ['circle', { cx: '12', cy: '12', r: '10' }],
+    ['path', { d: 'M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20' }],
+    ['path', { d: 'M2 12h20' }],
+  ],
+  'vote': [
+    ['path', { d: 'm9 12 2 2 4-4' }],
+    ['path', { d: 'M5 7c0-1.1.9-2 2-2h10a2 2 0 0 1 2 2v12H5V7Z' }],
+    ['path', { d: 'M22 19H2' }],
+  ],
+  'disc-3': [
+    ['circle', { cx: '12', cy: '12', r: '10' }],
+    ['path', { d: 'M6 12c0-1.7.7-3.2 1.8-4.2' }],
+    ['circle', { cx: '12', cy: '12', r: '2' }],
+    ['path', { d: 'M18 12c0 1.7-.7 3.2-1.8 4.2' }],
+  ],
+  'timer': [
+    ['line', { x1: '10', x2: '14', y1: '2', y2: '2' }],
+    ['line', { x1: '12', x2: '15', y1: '14', y2: '11' }],
+    ['circle', { cx: '12', cy: '14', r: '8' }],
+  ],
+  'hand': [
+    ['path', { d: 'M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2' }],
+    ['path', { d: 'M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2' }],
+    ['path', { d: 'M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8' }],
+    ['path', { d: 'M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15' }],
+  ],
+  'user-x': [
+    ['path', { d: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2' }],
+    ['circle', { cx: '9', cy: '7', r: '4' }],
+    ['line', { x1: '17', x2: '22', y1: '8', y2: '13' }],
+    ['line', { x1: '22', x2: '17', y1: '8', y2: '13' }],
+  ],
+  'message-square-x': [
+    ['path', { d: 'M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z' }],
+    ['path', { d: 'm14.5 8.5-5 5' }],
+    ['path', { d: 'm9.5 8.5 5 5' }],
   ],
 } as const satisfies Record<string, readonly IconElement[]>;
 

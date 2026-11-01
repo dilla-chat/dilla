@@ -1,25 +1,54 @@
-/* The member profile: a popover beside the row on a desktop, a sheet from the bottom on a phone. */
-.d-profile-card { box-sizing: border-box; z-index: 40; display: grid; gap: 0.75rem; width: min(20rem, calc(100vw - 1rem)); max-height: calc(100dvh - 1rem); overflow-y: auto; padding: 1rem; font-family: var(--font-mono); color: var(--fg); background: var(--surface); border: 1px solid var(--accent); border-radius: var(--r-lg); box-shadow: var(--shadow-2); }
+/* Signal §5.7 (task 9), the prototype's profile card: a 300px popover beside the row (a sheet from the bottom on a phone), --surface-2
+   in the --control-edge-field line, 12px corners, the 0 24px 60px shadow; d-modal 260ms. */
+.d-profile-card {
+  position: relative; box-sizing: content-box; z-index: 40; width: 300px; max-width: calc(100vw - 16px); max-height: calc(100dvh - 16px); overflow: hidden auto;
+  font-family: var(--font-mono); color: var(--fg); background: var(--surface-2); border: 1px solid var(--control-edge-field); border-radius: var(--r-xxl);
+  box-shadow: var(--shadow-profile); animation: d-modal var(--duration-profile) var(--ease-out) both;
+}
 .d-profile-card:focus-visible { outline: none; }
-.d-profile-card__head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 0.75rem; }
-.d-profile-card__who { display: grid; gap: 0.125rem; min-width: 0; align-content: center; min-height: 4rem; }
-.d-profile-card__name { margin: 0; overflow-wrap: anywhere; font-size: var(--text-lg); font-weight: var(--weight-display); letter-spacing: 0.02em; }
-.d-profile-card__username, .d-profile-card__status { margin: 0; overflow-wrap: anywhere; font-size: var(--text-sm); color: var(--fg-2); }
-.d-profile-card__close { display: inline-flex; align-items: center; justify-content: center; min-width: 2rem; min-height: 2rem; padding: 0; color: var(--fg-2); background: transparent; border: 1px solid transparent; border-radius: var(--r-md); cursor: pointer; }
-.d-profile-card__close:hover { color: var(--fg); background: var(--surface-2); border-color: var(--edge); }
-.d-profile-card__about { min-width: 0; max-height: 8rem; overflow-y: auto; }
+/* The 56px band: the person's hue, 45% saturation, 30% to 16% light at 135°. */
+.d-profile-card__band { height: 56px; background: linear-gradient(135deg, hsl(var(--avatar-hue) var(--avatar-s, 45%) 30%), hsl(var(--avatar-hue) var(--avatar-s, 45%) 16%)); }
+.d-profile-card__body { margin-top: -28px; padding: 0 16px 16px; }
+.d-profile-card__avatar { display: inline-flex; }
+.d-profile-card__avatar .d-avatar { box-shadow: 0 0 0 4px var(--surface-2); }
+.d-profile-card__avatar .d-avatar[data-shape="circle"] { border-radius: var(--r-avatar); }
+/* The name 15px 700, the crown 13px --warn, the client tag 9px --fg-2 in a --control-edge-key line. */
+.d-profile-card__title { display: flex; align-items: center; gap: 6px; min-width: 0; margin-top: 10px; }
+.d-profile-card__name { margin: 0; min-width: 0; overflow-wrap: anywhere; font-size: var(--text-card); font-weight: var(--weight-display); line-height: 1.5; }
+.d-profile-card__crown { display: inline-flex; flex: none; color: var(--warn); }
+.d-profile-card__client { flex: none; padding: 0 4px; font-size: var(--text-badge); line-height: 14px; letter-spacing: var(--label-tracking); color: var(--fg-2); border: 1px solid var(--control-edge-key); border-radius: var(--r-tag); }
+.d-profile-card__status { margin: 0; overflow-wrap: anywhere; font-size: var(--text-xs); color: var(--fg-2); }
+.d-profile-card__about { min-width: 0; max-height: 8rem; margin-top: 10px; overflow-y: auto; }
 .d-profile-card__about:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.d-profile-card__bio { margin: 0; overflow-y: auto; overflow-wrap: anywhere; white-space: pre-wrap; font-size: var(--text-sm); color: var(--fg); }
-.d-profile-card__marks { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0; }
-.d-profile-card__mark { display: inline-flex; align-items: center; gap: 0.25rem; padding: 0 0.375rem; font-size: var(--text-xs); color: var(--fg-2); border: 1px solid var(--edge); border-radius: var(--r-md); }
-.d-profile-card__roles { display: flex; flex-wrap: wrap; gap: 0.375rem; margin: 0; padding: 0; list-style: none; }
-.d-profile-card__role { display: inline-flex; align-items: center; gap: 0.375rem; padding: 0.125rem 0.5rem; font-size: var(--text-xs); color: var(--fg); background: var(--surface-2); border: 1px solid var(--edge); border-radius: var(--r-pill); }
-.d-profile-card__actions { display: grid; gap: 0.25rem; }
-.d-profile-card__action { min-height: 2rem; padding: 0 0.625rem; font: inherit; font-size: var(--text-sm); text-align: start; color: var(--fg); background: transparent; border: 1px solid transparent; border-radius: var(--r-md); cursor: pointer; }
-.d-profile-card__action:hover { background: var(--surface-2); border-color: var(--edge); }
-.d-profile-card__action[data-danger="true"] { color: var(--danger); }
-/* The phone sheet: a scrim over the screen and the card pinned to its bottom edge, 44px targets. */
-.d-profile-card__scrim { position: fixed; inset: 0; z-index: 40; background: rgba(0, 0, 0, 0.6); }
-.d-profile-card[data-layout="sheet"] { position: fixed; right: 0; bottom: 0; left: 0; width: auto; max-height: 85dvh; padding-bottom: max(1rem, env(safe-area-inset-bottom)); border-inline: 0; border-bottom: 0; border-radius: var(--r-lg) var(--r-lg) 0 0; }
-.d-profile-card[data-layout="sheet"] .d-profile-card__action { min-height: 2.75rem; }
-.d-profile-card[data-layout="sheet"] .d-profile-card__close { min-width: 2.75rem; min-height: 2.75rem; }
+.d-profile-card__bio { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; text-wrap: pretty; font-size: var(--text-ui); color: var(--fg-strong); }
+/* A role chip: 2px 8px, 4px corners in the --control-edge-field line, 10.5px --fg-chip, a 6px dot in the role's colour. */
+.d-profile-card__roles { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 0; padding: 0; list-style: none; }
+.d-profile-card__role { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; font-size: var(--text-meta); color: var(--fg-chip); border: 1px solid var(--control-edge-field); border-radius: var(--r-sm); }
+.d-profile-card__role-dot { width: 6px; height: 6px; flex: none; border-radius: var(--r-pill); background: var(--fg-2); }
+/* The row: Message (34px, 7px corners, --accent, 12px 700 --accent-ink, a 14px glyph), then the 34px glyph buttons. */
+.d-profile-card__actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 14px; }
+.d-profile-card__actions[data-primary] { display: grid; grid-template-columns: 1fr; grid-auto-flow: column; grid-auto-columns: auto; }
+.d-profile-card__action {
+  display: flex; align-items: center; justify-content: center; gap: 6px; height: 34px; padding: 0 12px; font: inherit; font-size: var(--text-ui); font-weight: var(--weight-display);
+  color: var(--accent-ink); background: var(--accent); border: 0; border-radius: var(--r-seg); cursor: pointer; transition: transform var(--duration-press);
+}
+.d-profile-card__action:active { transform: scale(0.97); }
+.d-profile-card__icon-action {
+  display: flex; align-items: center; justify-content: center; width: 34px; height: 34px; padding: 0; font: inherit; font-size: var(--text-xs);
+  color: var(--fg-chip); background: transparent; border: 1px solid var(--control-edge-field); border-radius: var(--r-seg); cursor: pointer;
+}
+.d-profile-card__icon-action:hover { border-color: var(--accent); }
+.d-profile-card__icon-action[data-danger="true"] { color: var(--danger); }
+/* The keyboard's close: invisible until focused, then a 28px × over the band's corner. */
+.d-profile-card__close {
+  position: absolute; top: 8px; right: 8px; display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0;
+  color: var(--fg); background: var(--surface-2); border: 0; border-radius: var(--r-md); cursor: pointer; opacity: 0;
+}
+.d-profile-card__close:focus-visible { opacity: 1; }
+/* The phone sheet: the card pinned to the bottom over the --scrim, 16px 16px 0 0 corners, d-sheet-up. */
+.d-profile-card__scrim { position: fixed; inset: 0; z-index: 40; background: var(--scrim); animation: d-fade var(--duration-popover) both; }
+.d-profile-card[data-layout="sheet"] {
+  position: fixed; right: 0; bottom: 0; left: 0; width: auto; max-width: none; max-height: 85dvh; padding-bottom: env(safe-area-inset-bottom);
+  border-radius: var(--r-sheet) var(--r-sheet) 0 0; animation-name: d-sheet-up;
+}
+@media (prefers-reduced-motion: reduce) { .d-profile-card, .d-profile-card__scrim { animation: none; } }

@@ -5,7 +5,7 @@ import {
   CLASS, HEX32, TEST_TIMEOUT, WAIT, attachInput, channelRow, composerBox, copy, deleteDialog, drawImage, editorBox,
   expectAccessible, expectComposerReady, flashSeen, instanceInvite, joinCommunity, lightbox, logRegion, mentionList,
   PERM_PIN, messageRow, openChannel, pinsDialog, reactionChip, rowAction, rowById, rowToolbar, sendText, sha256Hex, shownName,
-  signIn, signUp, tag, trayEntries, watchFlash, type Peer,
+  signIn, signUp, tag, trayEntries, watchFlash, type Peer, channelRowMenuItem, expectRowMenuAction
 } from './support/app';
 import { test } from './support/second';
 
@@ -116,10 +116,10 @@ test('edit, reply, react, pin and delete between the browser and the peer', asyn
   // server's owner, first gives everyone that right, and the browser's toolbar then offers it.
   await peer.allowEveryone(PERM_PIN);
   await target.focus();
-  await expect(rowToolbar(target).getByRole('button', { name: copy('shell.message.pin'), exact: true })).toBeVisible({ timeout: WAIT });
+  await expectRowMenuAction(target, 'pin', true);
   await rowAction(target, 'pin');
   await expect(target).toHaveAttribute('data-pinned', 'true', { timeout: WAIT });
-  await page.locator(CLASS.channelHeader).getByRole('button', { name: copy('shell.pins.open'), exact: true }).click();
+  await channelRowMenuItem(page, channel, 'shell.pins.open');
   const pins = pinsDialog(page, channel);
   await expect(pins).toBeVisible({ timeout: WAIT });
   await expect(pins).toContainText(copy('shell.pins.by', { name: account.display }), { timeout: WAIT });
@@ -127,14 +127,14 @@ test('edit, reply, react, pin and delete between the browser and the peer', asyn
   await expectAccessible(page, 'pins dialog');
   await pins.getByRole('button', { name: copy('shell.pins.jump'), exact: true }).click();
   await expect(target).toBeFocused();
-  await page.locator(CLASS.channelHeader).getByRole('button', { name: copy('shell.pins.open'), exact: true }).click();
+  await channelRowMenuItem(page, channel, 'shell.pins.open');
   await expect(pins).toBeVisible({ timeout: WAIT });
   await page.keyboard.press('Escape');
   await expect(pins).toBeHidden();
   await peer.waitForRow((m) => m.type === 5 && m.reply_to === sent.msg_id && m.sender_user === user, 'the browser’s pin');
 
   // Unpin from the dialog: the row loses the pin and the peer receives type 6.
-  await page.locator(CLASS.channelHeader).getByRole('button', { name: copy('shell.pins.open'), exact: true }).click();
+  await channelRowMenuItem(page, channel, 'shell.pins.open');
   await expect(pins).toBeVisible({ timeout: WAIT });
   await pins.getByRole('button', { name: copy('shell.message.unpin'), exact: true }).click();
   await expect(target).not.toHaveAttribute('data-pinned', 'true', { timeout: WAIT });
@@ -387,7 +387,7 @@ test('B sees what A makes', async ({ page, peer, second, instanceName }) => {
   // A plain member may not pin (flow 09): the peer, the server's owner, gives everyone that right first.
   await peer.allowEveryone(PERM_PIN);
   await own.focus();
-  await expect(rowToolbar(own).getByRole('button', { name: copy('shell.message.pin'), exact: true })).toBeVisible({ timeout: WAIT });
+  await expectRowMenuAction(own, 'pin', true);
   await rowAction(own, 'pin');
   await expect(inB).toHaveAttribute('data-pinned', 'true', { timeout: WAIT });
 

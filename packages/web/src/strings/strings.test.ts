@@ -41,7 +41,7 @@ describe('the copy rules', () => {
     expect(en['onboarding.keys.loss']).toBe('This key is the only way to get your account back or to add another browser. If every browser you use loses its data and you do not have the key, the account and its history are gone, and the host cannot bring them back.');
     expect(en['onboarding.browser.oneBrowser']).toBe('To use this account in another browser, sign in there with your password and the second factor you add next, then this recovery key. Messages sent before that browser joins are not shown in it.');
     expect(en['signin.done.body']).toBe('This browser is now a device of {username} on {instance}. Messages sent before now are not shown here.');
-    expect(en['signin.step']).toBe('Step {n} of 4');
+    expect(en['signin.step']).toBe('Sign in · step {n} of {total}');
     expect(en['signin.error.totpFailed']).toBe('That code did not work. Sign in again with a fresh code.');
     expect(en['signin.error.required']).toBe('Fill in this field.');
     expect(en['signin.error.evicted']).toBe('Someone else is signing in to this account. Change your password from a device you still have, or ask the operator.');
@@ -52,12 +52,12 @@ describe('the copy rules', () => {
   it('names settings in lower case in the chrome and sentence case on its surfaces (Q14)', () => {
     for (const k of ['settings.nav.devices', 'settings.nav.notifications', 'settings.nav.appearance', 'devices.revoke', 'devices.rename', 'devices.refresh',
       'devices.signOut', 'devices.forget', 'notify.channel.default', 'notify.mute', 'appearance.theme.contrast',
-      'notify.permission.label', 'notify.permission.ask', 'notify.default.label', 'appearance.theme.label'] as const) expect(en[k], k).toMatch(/^[a-z#]/);
+      'notify.permission.label', 'notify.permission.ask', 'notify.default.label', 'appearance.theme.label'] as const) expect(en[k], k).toMatch(/^[A-Z#]/); // Signal task 10: sentence case
     for (const k of ['settings.title', 'devices.title', 'devices.revokeTitle', 'devices.removeUnlistedTitle', 'devices.signOutTitle',
       'devices.forgetTitle', 'devices.keyLabel', 'notify.title', 'appearance.title', 'notify.channels.title'] as const) expect(en[k], k).toMatch(/^[A-Z]/);
     expect(en['notify.title.channel']).toBe('#{channel} · {server}');
     expect(en['devices.cap.other']).toBe('{n} devices');
-    expect(en['devices.cap.one']).toBe('one device');
+    expect(en['devices.cap.one']).toBe('One device');
     // EOD E7: a device can be named; the body says who can read the name.
     expect(en['devices.renameBody']).toBe('The server can change it, so check a device by its id before you remove it.');
     expect(en['devices.renameSuggestion']).toBe('{browser} on {os}');
@@ -66,7 +66,7 @@ describe('the copy rules', () => {
     expect(en['devices.rootMismatch']).toBe('The recovery data stored for this account on {instance} is not this account’s. The recovery key will not work until the operator resets it.');
     // Flow 15 (change password) adds 23: settings.password.*.
     // Flow 06 (web-3) adds 19: settings.nav.voice, settings.voice.* (15), settings.notify.sounds and settings.sound.voice / .ring.
-    expect(Object.keys(en).filter(k => /^(settings|devices|notify|appearance)\./.test(k))).toHaveLength(150); // flow 17 adds settings.nav.profile, EOD E7 adds six devices.rename*, web3.12.1 devices.renameServerReads
+    expect(Object.keys(en).filter(k => /^(settings|devices|notify|appearance)\./.test(k))).toHaveLength(154); // fix round 2 adds devices.subOwn and devices.subOther; flow 17 adds settings.nav.profile, EOD E7 adds six devices.rename*, web3.12.1 devices.renameServerReads; Signal task 10 fix round 1 adds the twelve notify.* of the prototype's rows and drops settings.voice.automaticBeta; task 10b drops the nine strings of the record-and-play test and the input meter (Let's check is signalSettings.voice.*)
     expect(Object.keys(en)).not.toContain('devices.error.other');
     expect(Object.keys(en)).not.toContain('devices.cap');
   });
@@ -81,12 +81,18 @@ describe('the copy rules', () => {
     expect(en['shell.dm.composer']).toBe('message @{name}');
     // Flow 07 and 04 add the start-server, empty-DM, empty-log and GIF copy; Bot moderation adds recovery copy.
     // The later GIF attachment label adds one more shell key.
-    expect(Object.keys(en).filter(k => k.startsWith('shell.'))).toHaveLength(195);
+    // Task 6b fix round 1 (Ruling Z): the DM header topic adds shell.dm.topic, topicHandle, topicGroup and you.
+    // Task 7 (Signal §5.5, §6.4, §6.8): the toolbar's "more", the code block's four, the composer's five, the welcome's three
+    // and the tray's remove tooltip. shell.composer.attach is the prototype's sentence-case tooltip (fix round 1).
+    // Task 11: the DM composer's placeholder, the prototype's 'Message {name}' (the label keeps 'message @{name}').
+    expect(en['shell.dm.placeholder']).toBe('Message {name}');
+    // Task 11 (Jonas, Q2): the DM list's head: shell.dms.title, section, online and count.
+    expect(Object.keys(en).filter(k => k.startsWith('shell.'))).toHaveLength(218);
   });
   it('holds the conversation copy of L-COPY-03: chrome lower case, dialogs and refusals sentence case', () => {
     expect(Object.keys(en).filter(k => k.startsWith('shell.emoji.'))).toHaveLength(33);
     for (const k of ['shell.message.toolbar', 'shell.message.react', 'shell.message.edited', 'shell.message.replyJump', 'shell.message.saving',
-      'shell.emoji.label', 'shell.edit.label', 'shell.edit.hint', 'shell.composer.attach', 'shell.composer.mentions', 'shell.pins.open',
+      'shell.emoji.label', 'shell.edit.label', 'shell.edit.hint', 'shell.composer.mentions', 'shell.pins.open',
       'shell.pins.by', 'shell.tray.label', 'shell.tray.ready', 'shell.attachment.open', 'shell.attachment.unnamed'] as const) {
       expect(en[k], k).toMatch(/^[a-z]/);
     }
@@ -129,13 +135,14 @@ describe('flow 06 (L-COPY-05)', () => {
   });
   it('fills each placeholder the flow names and keeps chrome lower case', () => {
     expect(en['voice.paused'].match(/\{name\}/g)).toHaveLength(2);
-    for (const k of ['voice.join', 'voice.mute', 'voice.leave', 'call.ring.answer', 'call.ring.decline', 'media.save', 'settings.nav.voice',
-      'settings.notify.sounds', 'settings.sound.voice', 'settings.sound.ring', 'voice.audioStart'] as const) expect(en[k], k).toMatch(/^[a-z]/);
+    for (const k of ['voice.join', 'voice.mute', 'voice.leave', 'call.ring.answer', 'call.ring.decline', 'media.save', 'voice.audioStart'] as const) expect(en[k], k).toMatch(/^[a-z]/);
+    // Signal task 10: the settings chrome is sentence case.
+    for (const k of ['settings.nav.voice', 'settings.notify.sounds', 'settings.sound.voice', 'settings.sound.ring'] as const) expect(en[k], k).toMatch(/^[A-Z]/);
   });
   it('MP5: the dock names the channel and shows ping and rates; the flow lists the eight keys, and "voice connected" is gone', () => {
     const table = en as Readonly<Record<string, string>>;
     const expected = {
-      'voice.dock.ping': '{ms} ms', 'voice.dock.pingSub': '<1 ms', 'voice.dock.pingNone': '— ms', 'voice.dock.rate': '↑{up} ↓{down} kb/s',
+      'voice.dock.ping': '{ms} ms', 'voice.dock.pingSub': '<1 ms', 'voice.dock.pingNone': '— ms', 'voice.dock.rate': '↑ {up} ↓ {down} kb/s',
       'voice.dock.stats': 'Ping {ms} milliseconds, {quality}. Sending {up}, receiving {down} kilobits per second.',
       'voice.dock.quality.good': 'good', 'voice.dock.quality.poor': 'poor', 'voice.dock.quality.bad': 'bad',
     };
@@ -175,7 +182,8 @@ describe('flow 07 (v0.1.0-web3.1, the create flow)', () => {
 
 describe('flow 08 (v0.1.0-web3.4, server admin and moderation)', () => {
   it('keeps the admin and members chrome lower case', () => {
-    for (const k of ['members.toggle', 'members.menu.message', 'members.menu.compare', 'members.menu.kick', 'members.menu.ban',
+    // Task 9 (Rulings T/AA): the members head and the card's Message follow the prototype's case.
+    for (const k of ['members.menu.compare', 'members.menu.kick', 'members.menu.ban',
       'admin.open', 'admin.nav.overview', 'admin.nav.channels', 'admin.nav.invites', 'admin.nav.bans', 'admin.nav.delete', 'admin.nav.leave', 'admin.nav.transfer',
       'admin.channels.edit', 'admin.channels.up', 'admin.channels.down', 'admin.channels.delete', 'admin.channels.newCategory',
       'admin.invites.new', 'admin.invites.revoke',

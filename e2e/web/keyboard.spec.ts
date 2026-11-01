@@ -1,7 +1,7 @@
 import { expect } from '@playwright/test';
 import { nextCode } from './support/totp';
 import {
-  CLASS, COPY, TEST_TIMEOUT, WAIT, channelsNav, composerBox, copy, expectComposerReady, expectShell,
+  CLASS, COPY, TEST_TIMEOUT, WAIT, channelRow, channelsNav, composerBox, copy, expectComposerReady, expectShell,
   closeSettings, heading, instanceInvite, logRegion, messageRow, nextButton, openSettings, railItem, railNav, submitButton, tabTo, tag, test, newAccount, escapeRegExp,
 } from './support/app';
 
@@ -103,11 +103,9 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
   const received = await peer.waitFor(`${first}\nline two`);
   expect(received.tier).toBe(1);
 
-  // Shift+Tab crosses the attach button into the newest row. Tab enters its toolbar; Escape returns to the row,
-  // then to the composer.
+  // Task 7 (Signal §5.5): the composer's tools sit in the footer under the textarea, so Shift+Tab goes straight into the
+  // newest row. Tab enters its toolbar; Escape returns to the row, then to the composer.
   await expect(composerBox(page, channel)).toBeFocused();
-  await press('Shift+Tab');
-  await expect(page.getByRole('button', { name: copy('shell.composer.attach'), exact: true })).toBeFocused();
   await press('Shift+Tab');
   const newest = logRegion(page, channel).locator(CLASS.messageRow).last();
   await expect(newest).toBeFocused();
@@ -123,13 +121,23 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
   await press('Escape');
   await expect(composerBox(page, channel)).toBeFocused();
 
-  // The header folds only below 36rem of its own width: here every action shows once and the "more" trigger is not there.
+  // Signal §5.5 (Ruling X, Jonas 2026-10-27): the header has exactly the prototype's Threads and Members; no "more" menu (pins and
+  // edit channel are in the channel row's context menu, search is the top bar's).
   const bar = page.locator(CLASS.channelHeader);
-  await expect(bar.getByRole('button', { name: copy('layout.header.more'), exact: true })).toBeHidden();
-  for (const key of ['shell.pins.open', 'thread.list', 'search.open', 'members.toggle']) {
-    await expect(bar.getByRole('button', { name: copy(key), exact: true }), key).toHaveCount(1);
-    await expect(bar.getByRole('button', { name: copy(key), exact: true }), key).toBeVisible();
-  }
+  await expect(bar.getByRole('button', { name: copy('layout.header.threads'), exact: true })).toBeVisible();
+  await expect(bar.getByRole('button', { name: /^Members/ })).toBeVisible();
+  await expect(bar.getByRole('button')).toHaveCount(2);
+  for (const key of ['layout.header.more', 'shell.pins.open', 'search.open']) await expect(bar.getByRole('button', { name: copy(key), exact: true }), key).toHaveCount(0);
+  // Ruling X: Shift+F10 on a focused channel row opens its context menu (pins); Escape gives focus back to the row.
+  const row = channelRow(page, channel);
+  await row.focus();
+  await press('Shift+F10');
+  const rowMenu = page.getByRole('menu', { name: copy('nav.channel.menuOf', { name: channel }), exact: true });
+  await expect(rowMenu).toBeVisible();
+  await expect(rowMenu.getByRole('menuitem', { name: copy('shell.pins.open'), exact: true })).toBeFocused();
+  await press('Escape');
+  await expect(rowMenu).toHaveCount(0);
+  await expect(row).toBeFocused();
   // One Tab lap from the skip link, in the order the Global Constraints fix.
   const regions = [
     page.getByRole('link', { name: copy(COPY.skipLink), exact: true }),   // 0 skip link
@@ -156,12 +164,13 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
   }
   await expect(skip).toBeFocused();
   const seen: number[] = [0];
-  // 16 Tabs: the channel header carries a search button (walk 1); the sidebar splitter is its own stop between the channel
-  // list and the user panel (web3.8, item 10), and the panel is three stops (the name block, which opens the status menu; its
-  // mute and deafen toolbar; then the gear) before the header; the lap ends at the composer (web3.8, R4: no status bar).
+  // 20 Tabs (Signal: the top bar adds its search, bell and gear before the rail, outside every region): the channel header carries a search button (walk 1); the sidebar splitter is its own stop between the channel
+  // list and the user panel (web3.8, item 10), and the panel is two stops (the name block, which opens the status menu; its
+  // mute and deafen toolbar; Signal §5.4: no gear, the top bar holds it) before the header; the lap ends at the composer
+  // (web3.8, R4: no status bar).
   const splitter = page.getByRole('separator', { name: copy('pane.resize.sidebar'), exact: true });
   let splitterAt = -1;
-  for (let i = 0; i < 16; i++) {
+  for (let i = 0; i < 20; i++) {
     await press('Tab');
     if (await splitter.evaluate(el => el === document.activeElement)) splitterAt = i;
     seen.push(await regionOfFocus());
@@ -172,8 +181,7 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
   expect(seen.slice(0, splitterAt + 1), 'the splitter comes after the channel list').toContain(2);
   expect(seen[splitterAt + 2], 'the stop after the splitter is the user panel\'s name block (the status menu)').toBe(3);
   expect(seen[splitterAt + 3], 'the toolbar is the panel\'s second stop').toBe(3);
-  expect(seen[splitterAt + 4], 'the gear is the panel\'s third stop').toBe(3);
-  expect(seen[splitterAt + 5], 'the stop after the panel is in the channel header').toBe(4);
+  expect(seen[splitterAt + 4], 'the stop after the panel is in the channel header').toBe(4);
   const start = seen.indexOf(0);
   expect(start, `the skip link is a tab stop (regions seen: ${seen.join(' ')})`).toBeGreaterThanOrEqual(0);
   const lap: number[] = [];
@@ -195,7 +203,7 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
   // web3.9: the sidebar tabs are gone (the @ tile holds direct messages), so the sidebar is the gear and the rows.
   expect(stops.get(2), 'the sidebar is two tab stops: the "server settings" gear and the rows').toBe(2);
   expect(stops.get(1), 'the rail is one tab stop, its "+" tile included').toBe(1);
-  expect(stops.get(3), 'the user panel is three tab stops: the status menu button, mute and deafen as one toolbar, and the gear').toBe(3);
+  expect(stops.get(3), 'the user panel is two tab stops: the status menu button, and mute and deafen as one toolbar').toBe(2);
 
   // web3.8 (R4): node, link, generation and devices live in Settings → Diagnostics, each with a value.
   const settings = await openSettings(page, 'diagnostics');

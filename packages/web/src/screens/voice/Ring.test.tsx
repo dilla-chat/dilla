@@ -9,7 +9,7 @@ const main = () => within(screen.getByRole('main'));
 /** In voice 'general': the join answered and the worker reports the call in. */
 async function inVoice(o: VoiceHarnessOptions = {}) {
   const app = renderVoiceShell(o);
-  await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+  await app.user.click(await main().findByRole('button', { name: 'Join voice' }));
   await waitFor(() => expect(app.sessions).toHaveLength(1));
   app.client.publish('call', callState({ phase: 'in', channelId: GENV, callId: GENV }));
   await main().findByRole('toolbar', { name: 'voice channel controls' });
@@ -213,7 +213,7 @@ describe('rings (flow 06, R1–R8)', () => {
     // A ring that ends while focus is elsewhere leaves focus alone.
     app.client.publish('rings', [ring()]);
     await screen.findByRole('alert');
-    const join = main().getByRole('button', { name: 'join voice' });
+    const join = main().getByRole('button', { name: 'Join voice' });
     join.focus();
     app.client.publish('rings', []);
     expect(join).toHaveFocus();

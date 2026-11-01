@@ -37,6 +37,7 @@ type interactionRegistrationNativeAPI interface {
 	Bootstrap(context.Context, [32]byte) (native.BootstrapResult, error)
 	Identity(context.Context) (native.Identity, error)
 	CreateInteractionGroup(context.Context, id.ID, native.InteractionGroupExpected, []byte, []byte) (native.InteractionGroupCreateResult, error)
+	InspectInteractionGroup(context.Context, native.InteractionGroupExpected, []byte) (native.InteractionGroupInspectResult, error)
 	GroupRegistered(context.Context, id.ID, id.ID, uint64) error
 	StateGet(context.Context, uint64, []byte) (native.StateValue, error)
 	StateTransaction(context.Context, id.ID, []native.StateChange) ([]uint64, error)
@@ -191,7 +192,7 @@ func (c *InteractionRegistrationCoordinator) Register(ctx context.Context, req I
 				if errors.As(err, &apiErr) && apiErr.Status == 403 {
 					return InteractionRegistrationResult{}, fmt.Errorf("%w: %w", ErrInteractionNotEligible, err)
 				}
-				return InteractionRegistrationResult{}, fmt.Errorf("%w: admission request remains pending: %w", ErrInteractionRegistrationRecovery, err)
+				return InteractionRegistrationResult{}, interactionRegistrationError(ErrInteractionRegistrationRecovery, "admission request remains pending", err)
 			}
 			revision, err = c.saveInteractionRegistration(ctx, key, revision, in)
 			if err != nil {
@@ -201,7 +202,7 @@ func (c *InteractionRegistrationCoordinator) Register(ctx context.Context, req I
 		if len(in.Snapshot) == 0 {
 			in.Snapshot, err = c.session.BotInteractionContextSnapshot(ctx, c.installation, in.AdmissionRequest, in.Group, in.ParticipantUser, in.ParticipantDevice)
 			if err != nil {
-				return InteractionRegistrationResult{}, fmt.Errorf("%w: context snapshot unavailable: %w", ErrInteractionRegistrationRecovery, err)
+				return InteractionRegistrationResult{}, interactionRegistrationError(ErrInteractionRegistrationRecovery, "context snapshot unavailable", err)
 			}
 			revision, err = c.saveInteractionRegistration(ctx, key, revision, in)
 			if err != nil {
@@ -217,7 +218,7 @@ func (c *InteractionRegistrationCoordinator) Register(ctx context.Context, req I
 		if len(in.KeyPackage) == 0 {
 			in.KeyPackage, err = c.session.KeyPackage(ctx, in.ParticipantDevice)
 			if err != nil || len(in.KeyPackage) == 0 || len(in.KeyPackage) > 65505 {
-				return InteractionRegistrationResult{}, fmt.Errorf("%w: exact participant KeyPackage unavailable: %w", ErrInteractionRegistrationRecovery, err)
+				return InteractionRegistrationResult{}, interactionRegistrationError(ErrInteractionRegistrationRecovery, "exact participant KeyPackage unavailable", err)
 			}
 			revision, err = c.saveInteractionRegistration(ctx, key, revision, in)
 			if err != nil {
@@ -243,7 +244,7 @@ func (c *InteractionRegistrationCoordinator) Register(ctx context.Context, req I
 				}
 				return InteractionRegistrationResult{}, ErrInteractionRegistrationRecovery
 			}
-			return InteractionRegistrationResult{}, fmt.Errorf("%w: native create remains pending: %w", ErrInteractionRegistrationRecovery, err)
+			return InteractionRegistrationResult{}, interactionRegistrationError(ErrInteractionRegistrationRecovery, "native create remains pending", err)
 		}
 		if !validInteractionCreateResult(created, expected, d) {
 			return InteractionRegistrationResult{}, ErrInteractionRegistrationRecovery
@@ -268,7 +269,7 @@ func (c *InteractionRegistrationCoordinator) Register(ctx context.Context, req I
 		return c.acceptInteractionReceipt(ctx, key, revision, in, receipt)
 	}
 	if !errors.Is(err, client.ErrRegistrationReceiptNotFound) {
-		return InteractionRegistrationResult{}, fmt.Errorf("%w: receipt lookup failed: %w", ErrInteractionRegistrationOutcomeUnknown, err)
+		return InteractionRegistrationResult{}, interactionRegistrationError(ErrInteractionRegistrationOutcomeUnknown, "receipt lookup failed", err)
 	}
 	if in.Submitted {
 		// A 404 receipt is not a cancellation fence: the original POST may still
@@ -291,14 +292,21 @@ func (c *InteractionRegistrationCoordinator) Register(ctx context.Context, req I
 	if postErr == nil {
 		return c.acceptInteractionReceipt(ctx, key, revision, in, receipt)
 	}
+	if client.IsDeferred(postErr) {
+		// The middleware did not run registration. Make the exact durable intent
+		// retryable instead of treating it as an ambiguously submitted request.
+		in.Submitted = false
+		_, saveErr := c.saveInteractionRegistration(ctx, key, revision, in)
+		return InteractionRegistrationResult{}, errors.Join(postErr, saveErr)
+	}
 	receipt, err = c.session.BotGroupRegistrationReceipt(ctx, c.installation, in.Operation)
 	if err == nil {
 		return c.acceptInteractionReceipt(ctx, key, revision, in, receipt)
 	}
 	if !errors.Is(err, client.ErrRegistrationReceiptNotFound) {
-		return InteractionRegistrationResult{}, fmt.Errorf("%w: receipt lookup failed: %w", ErrInteractionRegistrationOutcomeUnknown, err)
+		return InteractionRegistrationResult{}, interactionRegistrationError(ErrInteractionRegistrationOutcomeUnknown, "receipt lookup failed", err)
 	}
-	return InteractionRegistrationResult{}, fmt.Errorf("%w: registration response lost: %w", ErrInteractionRegistrationOutcomeUnknown, postErr)
+	return InteractionRegistrationResult{}, interactionRegistrationError(ErrInteractionRegistrationOutcomeUnknown, "registration response lost", postErr)
 }
 
 // InspectInteractionRegistrationRecovery lists manual-recovery intents and
@@ -389,7 +397,7 @@ func (c *InteractionRegistrationCoordinator) RecoverInteractionRegistration(ctx 
 	}
 	receipt, err := c.session.BotGroupRegistrationReceipt(ctx, c.installation, in.Operation)
 	if err != nil {
-		return InteractionRegistrationResult{}, fmt.Errorf("%w: authoritative receipt unavailable: %w", ErrInteractionRegistrationManualRecovery, err)
+		return InteractionRegistrationResult{}, interactionRegistrationError(ErrInteractionRegistrationManualRecovery, "authoritative receipt unavailable", err)
 	}
 	if !validInteractionReceipt(in, receipt) || (in.Phase == 1 && in.Receipt != receipt) {
 		return InteractionRegistrationResult{}, ErrInteractionRegistrationRecovery
@@ -404,6 +412,79 @@ func (c *InteractionRegistrationCoordinator) RecoverInteractionRegistration(ctx 
 		}
 	}
 	return c.resolveInteractionReceipt(ctx, key, revision, in, receipt)
+}
+
+// ReadmitInteractionRegistration gives an exact, previously submitted group a fresh
+// admission when its first POST had an unknown outcome and no receipt is available.
+// It reuses the original operation ID, group ID, and registration body. The server's
+// atomic operation and group uniqueness checks therefore fence a late original POST:
+// at most one can commit, and either receipt must match these same bytes.
+func (c *InteractionRegistrationCoordinator) ReadmitInteractionRegistration(ctx context.Context, group id.ID) (InteractionRegistrationResult, error) {
+	if c == nil || group.IsZero() {
+		return InteractionRegistrationResult{}, ErrInteractionRegistrationRecovery
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	key := interactionRegistrationKey(group)
+	value, err := c.native.StateGet(ctx, interactionRegistrationStateArea, key)
+	if err != nil || value.Revision == 0 || value.Tombstone {
+		return InteractionRegistrationResult{}, ErrInteractionRegistrationRecovery
+	}
+	in, err := decodeInteractionRegistrationIntent(value.Value)
+	if err != nil || in.Group != group || !in.ManualRecovery || !in.Submitted || len(in.Body) == 0 || in.Phase != 0 {
+		return InteractionRegistrationResult{}, ErrInteractionRegistrationRecovery
+	}
+	if receipt, lookupErr := c.session.BotGroupRegistrationReceipt(ctx, c.installation, in.Operation); lookupErr == nil {
+		return c.acceptInteractionReceipt(ctx, key, value.Revision, in, receipt)
+	} else if !errors.Is(lookupErr, client.ErrRegistrationReceiptNotFound) {
+		return InteractionRegistrationResult{}, interactionRegistrationError(ErrInteractionRegistrationManualRecovery, "receipt lookup failed", lookupErr)
+	}
+	discovery, err := c.discovery.Discover(ctx)
+	if err != nil || discovery.InstanceID != c.instance || discovery.Generation != in.Generation || discovery.PolicyVersion != in.Policy ||
+		len(discovery.ExternalSenderPub) != 32 || allZeroBytes(discovery.ExternalSenderPub) {
+		return InteractionRegistrationResult{}, ErrInteractionRegistrationRecovery
+	}
+	identity, err := c.native.Identity(ctx)
+	if err != nil || identity.Phase != 2 || identity.Instance == nil || *identity.Instance != c.instance ||
+		identity.User == nil || *identity.User != in.BotUser || identity.Device == nil || *identity.Device != in.BotDevice {
+		return InteractionRegistrationResult{}, ErrInteractionRegistrationRecovery
+	}
+	requestID := id.New()
+	if _, err := c.session.IssueBotInteractionAdmission(ctx, c.installation, requestID, in.Group, in.ParticipantUser, in.ParticipantDevice); err != nil {
+		return InteractionRegistrationResult{}, interactionRegistrationError(ErrInteractionRegistrationManualRecovery, "fresh admission unavailable", err)
+	}
+	wire, err := c.session.BotInteractionContextSnapshot(ctx, c.installation, requestID, in.Group, in.ParticipantUser, in.ParticipantDevice)
+	if err != nil {
+		return InteractionRegistrationResult{}, interactionRegistrationError(ErrInteractionRegistrationManualRecovery, "fresh context unavailable", err)
+	}
+	snapshot, err := interactionSnapshotDetailsFromWire(wire)
+	if err != nil || snapshot.Request != requestID || snapshot.Instance != c.instance || snapshot.Installation != c.installation ||
+		snapshot.Community != c.community || snapshot.BotUser != in.BotUser || snapshot.BotDevice != in.BotDevice ||
+		snapshot.ParticipantUser != in.ParticipantUser || snapshot.ParticipantDevice != in.ParticipantDevice ||
+		snapshot.Group != in.Group || snapshot.PolicyVersion != in.Policy || snapshot.MinimumRevision == 0 ||
+		!containsVersion(discovery.E2EEVersions, snapshot.E2EEVersion) || snapshot.MediaVersion != 0 {
+		return InteractionRegistrationResult{}, ErrInteractionRegistrationRecovery
+	}
+	expected := native.InteractionGroupExpected{Instance: c.instance, Installation: c.installation, Community: c.community,
+		BotUser: in.BotUser, BotDevice: in.BotDevice, ParticipantUser: in.ParticipantUser, ParticipantDevice: in.ParticipantDevice,
+		Group: in.Group, MinimumEligibilityRevision: snapshot.MinimumRevision, ServerNow: snapshot.Now, PolicyVersion: in.Policy}
+	inspected, err := c.native.InspectInteractionGroup(ctx, expected, wire)
+	if err != nil || inspected.Binding.Instance != c.instance || inspected.Binding.Installation != c.installation ||
+		inspected.Binding.Community != c.community || inspected.Binding.BotUser != in.BotUser || inspected.BotDevice != in.BotDevice ||
+		inspected.Binding.ParticipantUser != in.ParticipantUser || inspected.Binding.ParticipantDevice != in.ParticipantDevice ||
+		inspected.Binding.PolicyVersion != in.Policy || inspected.Binding.E2EEVersion != snapshot.E2EEVersion ||
+		inspected.Binding.MediaVersion != snapshot.MediaVersion || inspected.Epoch != interactionRegistrationInitialEpoch ||
+		inspected.State != 0 || inspected.NextSequence != interactionRegistrationInitialSequence || inspected.PendingCommit {
+		return InteractionRegistrationResult{}, ErrInteractionRegistrationRecovery
+	}
+	receipt, postErr := c.session.RegisterBotGroupWithAdmissionRequest(ctx, c.installation, in.Operation, in.Generation, in.Body, requestID)
+	if postErr != nil {
+		receipt, err = c.session.BotGroupRegistrationReceipt(ctx, c.installation, in.Operation)
+		if err != nil {
+			return InteractionRegistrationResult{}, interactionRegistrationError(ErrInteractionRegistrationManualRecovery, "readmission outcome unknown", postErr)
+		}
+	}
+	return c.acceptInteractionReceipt(ctx, key, value.Revision, in, receipt)
 }
 
 func validInteractionReceipt(in interactionRegistrationIntent, r client.BotGroupRegistrationReceipt) bool {
@@ -455,14 +536,14 @@ func (c *InteractionRegistrationCoordinator) InteractionSnapshot(ctx context.Con
 func (c *InteractionRegistrationCoordinator) proveInteractionRetrySafe(ctx context.Context, in interactionRegistrationIntent) error {
 	d, err := c.discovery.Discover(ctx)
 	if err != nil {
-		return fmt.Errorf("%w: generation unavailable: %w", ErrInteractionRegistrationOutcomeUnknown, err)
+		return interactionRegistrationError(ErrInteractionRegistrationOutcomeUnknown, "generation unavailable", err)
 	}
 	if d.InstanceID != c.instance || d.Generation != in.Generation {
 		return ErrInteractionRegistrationOutcomeUnknown
 	}
 	absent, err := c.session.BotInteractionGroupAbsent(ctx, c.installation, in.AdmissionRequest)
 	if err != nil {
-		return fmt.Errorf("%w: cannot prove group absence: %w", ErrInteractionRegistrationOutcomeUnknown, err)
+		return interactionRegistrationError(ErrInteractionRegistrationOutcomeUnknown, "cannot prove group absence", err)
 	}
 	if !absent {
 		return ErrInteractionRegistrationRecovery
@@ -485,7 +566,7 @@ func (c *InteractionRegistrationCoordinator) acceptInteractionReceipt(ctx contex
 
 func (c *InteractionRegistrationCoordinator) resolveInteractionReceipt(ctx context.Context, key []byte, revision uint64, in interactionRegistrationIntent, r client.BotGroupRegistrationReceipt) (InteractionRegistrationResult, error) {
 	if err := c.native.GroupRegistered(ctx, in.Operation, in.Group, r.NextSequence); err != nil {
-		return InteractionRegistrationResult{}, fmt.Errorf("%w: native resolution failed: %w", ErrInteractionRegistrationRecovery, err)
+		return InteractionRegistrationResult{}, interactionRegistrationError(ErrInteractionRegistrationRecovery, "native resolution failed", err)
 	}
 	in.Phase = 2
 	in.Receipt = r
@@ -693,3 +774,12 @@ func decodeInteractionRegistrationIntent(raw []byte) (interactionRegistrationInt
 }
 
 var _ = fmt.Sprintf
+
+// A recovery category is context, not an independent failure. Keep definitive
+// rate refusals intact so dispatch/reconciliation can defer them without aging.
+func interactionRegistrationError(category error, detail string, cause error) error {
+	if client.IsDeferred(cause) {
+		return cause
+	}
+	return fmt.Errorf("%w: %s: %w", category, detail, cause)
+}

@@ -87,8 +87,8 @@ test('Control+Shift+M and Control+Shift+D show alice muted and deafened to bob; 
     });
 
     await test.step('product walk M7 and I4: the stage status line names the key (web3.9: not the dock, which has no meter or lines), and at 360 px the call bar stays on screen over a text channel', async () => {
-      await expect(alice.page.locator('.dw-voice-stage .dw-voice-dock__mode')).toHaveText(copy('voice.dock.ptt', { key: 'Insert' }));
-      await expect(alice.page.locator('.dw-voice-dock .dw-voice-dock__mode, .dw-voice-dock [role="meter"]')).toHaveCount(0);
+      // Fix round 1 (Jonas): no push-to-talk line on the stage or in the dock; the dock has no meter.
+      await expect(alice.page.locator('.dw-voice-dock__mode, .dw-voice-dock [role="meter"]')).toHaveCount(0);
       await alice.page.setViewportSize({ width: 360, height: 740 });
       // The phone shell holds the call in a bar and shows no dock: step off the stage, onto the text channel.
       await alice.page.getByRole('button', { name: copy('nav.back'), exact: true }).click();

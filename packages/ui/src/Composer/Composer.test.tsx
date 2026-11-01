@@ -310,12 +310,13 @@ describe('Composer', () => {
   });
 
   // ---- web-2b (L-UI-53) ----
-  it('offers attach before the textarea and renders the top slot above the box', async () => {
+  it('offers attach in the footer under the textarea (a paperclip) and renders the top slot above the box', async () => {
     const onAttach = vi.fn();
     const { textarea } = setup({ attachLabel: 'attach files', onAttach, top: <p>replying to björn</p> });
     const attach = screen.getByRole('button', { name: 'attach files' });
-    expect(attach.textContent).toBe('+');
-    expect(attach.compareDocumentPosition(textarea) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(attach.querySelector('svg')).not.toBeNull();
+    expect(attach.closest('.d-composer__foot')).not.toBeNull();
+    expect(textarea.compareDocumentPosition(attach) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     const form = textarea.closest('form')!;
     expect(form.querySelector('.d-composer__top')?.textContent).toBe('replying to björn');
     expect(form.querySelector('.d-composer__top')!.compareDocumentPosition(form.querySelector('.d-composer__box')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -436,5 +437,61 @@ describe('the composer label and band (G1, G3)', () => {
     const label = textarea.closest('form')?.querySelector('label');
     expect(label).toHaveClass('d-sr-only');
     expect(screen.getByRole('textbox', { name: 'message #general' })).toBe(textarea);
+  });
+});
+
+// Task 7 (README §5.5): the prototype's composer.
+describe('the Signal composer (task 7)', () => {
+  it('styles send as disabled (data-empty) with no text, and as live once there is text or a file to send', async () => {
+    const { textarea } = setup();
+    const form = textarea.closest('form')!;
+    expect(form).toHaveAttribute('data-empty', 'true');
+    await userEvent.type(textarea, 'hi');
+    expect(form).not.toHaveAttribute('data-empty');
+    await userEvent.clear(textarea);
+    expect(form).toHaveAttribute('data-empty', 'true');
+  });
+
+  it('is not empty-styled with only a file in the tray', () => {
+    const { textarea } = setup({ canSendEmpty: true });
+    expect(textarea.closest('form')).not.toHaveAttribute('data-empty');
+  });
+
+  it('names send by its word; the ↵ is decoration', () => {
+    setup();
+    const send = screen.getByRole('button', { name: 'send' });
+    expect(send).toHaveTextContent('send ↵');
+  });
+
+  it('squares the box\'s top corners for the reply bar (data-replying)', () => {
+    const { textarea } = setup({ replying: true });
+    expect(textarea.closest('form')).toHaveAttribute('data-replying', 'true');
+  });
+
+  it('the </> button inserts a yaml fence and puts the caret on its empty line', async () => {
+    const { textarea, props } = setup({ codeLabel: 'code block' }, { initial: 'see' });
+    await userEvent.click(screen.getByRole('button', { name: 'code block' }));
+    const fence = '`'.repeat(3);
+    expect(props.onChange).toHaveBeenLastCalledWith(`see\n${fence}yaml\n\n${fence}`);
+    expect(textarea).toHaveFocus();
+    expect(textarea.selectionStart).toBe(`see\n${fence}yaml\n`.length);
+  });
+
+  it('offers the emoji toggle in the footer with its popup state', async () => {
+    const onToggle = vi.fn();
+    setup({ emoji: { label: 'emoji', open: true, controls: 'emoji-1', onToggle } });
+    const emoji = screen.getByRole('button', { name: 'emoji' });
+    expect(emoji).toHaveAttribute('aria-expanded', 'true');
+    expect(emoji).toHaveAttribute('aria-controls', 'emoji-1');
+    await userEvent.click(emoji);
+    expect(onToggle).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the typing text in the footer and sweeps the box while someone types; the hint is decoration', () => {
+    const { textarea } = setup({ typing: <span role="status">Björn is typing…</span>, hint: '⇧↵ new line' });
+    const form = textarea.closest('form')!;
+    expect(form).toHaveAttribute('data-typing', 'true');
+    expect(screen.getByText('Björn is typing…').closest('.d-composer__foot')).not.toBeNull();
+    expect(screen.getByText('⇧↵ new line')).toHaveAttribute('aria-hidden', 'true');
   });
 });

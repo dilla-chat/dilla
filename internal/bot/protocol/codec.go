@@ -35,23 +35,27 @@ var (
 type Operation uint64
 
 const (
-	OpOverviewGet            Operation = 0
-	OpSettingsGet            Operation = 1
-	OpSettingsPut            Operation = 2
-	OpMusicState             Operation = 10
-	OpMusicSearch            Operation = 11
-	OpMusicEnqueue           Operation = 12
-	OpMusicPause             Operation = 13
-	OpMusicResume            Operation = 14
-	OpMusicSkip              Operation = 15
-	OpMusicStop              Operation = 16
-	OpMusicSeek              Operation = 17
-	OpMusicVolume            Operation = 18
-	OpMusicShuffle           Operation = 19
-	OpMusicRepeat            Operation = 20
-	OpMusicRemove            Operation = 21
-	OpMusicMove              Operation = 22
-	OpMusicClear             Operation = 23
+	OpOverviewGet          Operation = 0
+	OpSettingsGet          Operation = 1
+	OpSettingsPut          Operation = 2
+	OpMusicState           Operation = 10
+	OpMusicSearch          Operation = 11
+	OpMusicEnqueue         Operation = 12
+	OpMusicPause           Operation = 13
+	OpMusicResume          Operation = 14
+	OpMusicSkip            Operation = 15
+	OpMusicStop            Operation = 16
+	OpMusicSeek            Operation = 17
+	OpMusicVolume          Operation = 18
+	OpMusicShuffle         Operation = 19
+	OpMusicRepeat          Operation = 20
+	OpMusicRemove          Operation = 21
+	OpMusicMove            Operation = 22
+	OpMusicClear           Operation = 23
+	OpMusicProvidersStatus Operation = 24
+	// OpMusicAnnounce posts "<requester> started music in <voice channel>" with the player marker in the text channel
+	// the requester names (args[0]); the request's channel is the voice channel. Revision must be 0.
+	OpMusicAnnounce          Operation = 25
 	OpWelcomePreview         Operation = 30
 	OpRolePanelPublish       Operation = 31
 	OpRolesList              Operation = 40
@@ -63,6 +67,18 @@ const (
 	OpAutoModerationGet      Operation = 62
 	OpAutoModerationPut      Operation = 63
 	OpModerationEvidenceList Operation = 64
+	OpCapabilities           Operation = 3
+	OpPollCreate             Operation = 70
+	OpPollGet                Operation = 71
+	OpPollList               Operation = 72
+	OpPollVote               Operation = 73
+	OpPollClose              Operation = 74
+	OpPollVoters             Operation = 75
+	OpReminderCreate         Operation = 80
+	OpReminderList           Operation = 81
+	OpReminderCancel         Operation = 82
+	OpReminderDismiss        Operation = 83
+	OpReminderDue            Operation = 84
 )
 
 type Request struct {
@@ -201,7 +217,7 @@ func validateRequest(r Request) error {
 		return invalid()
 	}
 	mut, channel, count := requestShape(r.Operation)
-	if count < 0 || len(r.Args) != count {
+	if count < 0 || len(r.Args) != count && (r.Operation != OpMusicSkip || len(r.Args) != 1) {
 		return invalid()
 	}
 	if channel != (r.ChannelID != nil) || (r.ChannelID != nil && !isID(*r.ChannelID)) {
@@ -213,7 +229,7 @@ func validateRequest(r Request) error {
 	if !mut && (r.Revision != nil || r.Expires != nil) {
 		return invalid()
 	}
-	if r.Operation == OpRolePanelPublish && *r.Revision != 0 {
+	if (r.Operation == OpRolePanelPublish || r.Operation == OpPollCreate || r.Operation == OpReminderCreate || r.Operation == OpMusicAnnounce) && *r.Revision != 0 {
 		return invalid()
 	}
 	if err := validateArgs(r.Operation, r.Args); err != nil {
@@ -223,7 +239,7 @@ func validateRequest(r Request) error {
 }
 func requestShape(op Operation) (mutation, channel bool, count int) {
 	switch op {
-	case OpOverviewGet:
+	case OpOverviewGet, OpCapabilities, OpMusicProvidersStatus:
 		return false, false, 0
 	case OpMusicState:
 		return false, true, 0
@@ -241,7 +257,7 @@ func requestShape(op Operation) (mutation, channel bool, count int) {
 		return true, true, 1
 	case OpMusicSeek, OpMusicVolume, OpMusicRepeat:
 		return true, true, 1
-	case OpMusicRemove:
+	case OpMusicRemove, OpMusicAnnounce:
 		return true, true, 1
 	case OpAnnouncementsDelete:
 		return true, false, 2
@@ -255,6 +271,16 @@ func requestShape(op Operation) (mutation, channel bool, count int) {
 		return false, false, 0
 	case OpAutoModerationPut:
 		return true, false, 2
+	case OpPollCreate, OpReminderCreate:
+		return true, false, 1
+	case OpPollGet, OpPollClose, OpReminderCancel, OpReminderDismiss:
+		return op == OpPollClose || op == OpReminderCancel || op == OpReminderDismiss, false, 1
+	case OpPollList, OpPollVoters:
+		return false, false, 3
+	case OpPollVote:
+		return true, false, 2
+	case OpReminderList, OpReminderDue:
+		return false, false, 1
 	default:
 		return false, false, -1
 	}
@@ -284,8 +310,21 @@ func validateArgs(op Operation, a []any) error {
 		return ok && len(v) >= minimum && len(v) <= maximum && validArray(v)
 	}
 	switch op {
-	case OpOverviewGet, OpMusicState, OpMusicPause, OpMusicResume, OpMusicSkip, OpMusicStop, OpMusicShuffle, OpMusicClear:
+	case OpOverviewGet, OpCapabilities, OpMusicState, OpMusicProvidersStatus, OpMusicPause, OpMusicResume, OpMusicStop, OpMusicShuffle, OpMusicClear:
 		return nil
+	case OpMusicSkip:
+		if len(a) == 0 {
+			return nil
+		}
+		expected, ok := a[0].(string)
+		if !ok {
+			return invalid()
+		}
+		if expected == "" {
+			return nil
+		}
+		item, err := id.Parse(expected)
+		return boolErr(err == nil && !item.IsZero())
 	case OpSettingsGet:
 		return boolErr(u(0, 5))
 	case OpSettingsPut:
@@ -312,7 +351,7 @@ func validateArgs(op Operation, a []any) error {
 		return boolErr(u(0, 100))
 	case OpMusicRepeat:
 		return boolErr(u(0, 2))
-	case OpMusicRemove:
+	case OpMusicRemove, OpMusicAnnounce:
 		return boolErr(idarg(0))
 	case OpAnnouncementsDelete:
 		if len(a) != 2 {
@@ -336,6 +375,20 @@ func validateArgs(op Operation, a []any) error {
 		return nil
 	case OpAutoModerationPut:
 		return boolErr(str(0, 1, 512, true) && data(1, 1, 2400))
+	case OpPollCreate:
+		return boolErr(validateUtilityPayload(a[0], true) == nil)
+	case OpReminderCreate:
+		return boolErr(validateUtilityPayload(a[0], false) == nil)
+	case OpPollGet, OpPollClose, OpReminderCancel, OpReminderDismiss:
+		return boolErr(idarg(0))
+	case OpPollList:
+		return boolErr(idarg(0) && nullableID(a[1]) && validCursor(a[2]))
+	case OpPollVote:
+		return boolErr(idarg(0) && validatePollSelection(a[1]) == nil)
+	case OpPollVoters:
+		return boolErr(idarg(0) && u(1, 9) && validCursor(a[2]))
+	case OpReminderList, OpReminderDue:
+		return boolErr(validCursor(a[0]))
 	default:
 		return invalid()
 	}
@@ -399,7 +452,7 @@ func isNullableIDNode(n node) bool   { return n.null || (n.major == 2 && len(n.b
 func isNullableUintNode(n node) bool { return n.null || n.major == 0 }
 func requestIDs(op Operation, a []any) {
 	switch op {
-	case OpMusicRemove, OpAnnouncementsDelete:
+	case OpMusicRemove, OpAnnouncementsDelete, OpMusicAnnounce:
 		initIDs(a, 0)
 	case OpMusicMove:
 		initIDs(a, 0, 1)
@@ -409,7 +462,145 @@ func requestIDs(op Operation, a []any) {
 		initIDs(a, 0)
 	case OpRolePanelPublish:
 		initIDs(a, 0)
+	case OpPollGet, OpPollClose, OpPollVote, OpPollVoters, OpReminderCancel, OpReminderDismiss:
+		initIDs(a, 0)
+	case OpPollList:
+		initIDs(a, 0, 1)
 	}
+}
+
+func validCursor(v any) bool {
+	if v == nil {
+		return true
+	}
+	b, ok := v.([]byte)
+	return ok && len(b) >= 1 && len(b) <= MaxModerationCursorBytes
+}
+
+func validatePollSelection(v any) error {
+	b, ok := v.([]byte)
+	if !ok || len(b) == 0 || len(b) > 2200 || !validArray(b) {
+		return invalid()
+	}
+	var values []any
+	if cborx.Unmarshal(b, &values) != nil || len(values) > 10 {
+		return invalid()
+	}
+	seen := map[uint64]bool{}
+	for _, value := range values {
+		n, ok := value.(uint64)
+		if !ok || n > 9 || seen[n] {
+			return invalid()
+		}
+		seen[n] = true
+	}
+	return nil
+}
+
+func validateUtilityPayload(v any, poll bool) error {
+	b, ok := v.([]byte)
+	maxBytes := 2200
+	if poll {
+		maxBytes = 1800
+	}
+	if !ok || len(b) == 0 || len(b) > maxBytes || !validArray(b) {
+		return invalid()
+	}
+	var fields []any
+	if cborx.Unmarshal(b, &fields) != nil {
+		return invalid()
+	}
+	if poll {
+		if len(fields) != 7 || fields[0] != uint64(1) {
+			return invalid()
+		}
+		if _, ok := asNonzeroID(fields[1]); !ok {
+			return invalid()
+		}
+		if fields[2] != nil {
+			if _, ok := asNonzeroID(fields[2]); !ok {
+				return invalid()
+			}
+		}
+		question, ok := fields[3].(string)
+		if !ok || !utf8.ValidString(question) || strings.TrimSpace(question) == "" || utf8.RuneCountInString(question) > 300 {
+			return invalid()
+		}
+		answers, ok := fields[4].([]any)
+		if !ok || len(answers) < 2 || len(answers) > 10 {
+			return invalid()
+		}
+		seen := map[string]bool{}
+		for _, item := range answers {
+			s, ok := item.(string)
+			if !ok || !utf8.ValidString(s) || strings.TrimSpace(s) == "" || utf8.RuneCountInString(s) > 100 || seen[s] {
+				return invalid()
+			}
+			seen[s] = true
+		}
+		multi, ok := fields[5].(uint64)
+		if !ok || multi > 1 {
+			return invalid()
+		}
+		duration, ok := fields[6].(uint64)
+		if !ok {
+			return invalid()
+		}
+		switch duration {
+		case 3600, 14400, 28800, 86400, 259200, 604800:
+		default:
+			return invalid()
+		}
+		return nil
+	}
+	if len(fields) != 7 || fields[0] != uint64(1) {
+		return invalid()
+	}
+	kind, ok := fields[1].(uint64)
+	if !ok || kind > 1 {
+		return invalid()
+	}
+	when, ok := fields[2].(uint64)
+	if !ok {
+		return invalid()
+	}
+	if (kind == 0 && (when < 60 || when > 31536000)) || (kind == 1 && (when < 1 || when > 253402300799)) {
+		return invalid()
+	}
+	text, ok := fields[3].(string)
+	if !ok || !utf8.ValidString(text) || len([]byte(text)) < 1 || len([]byte(text)) > 1500 {
+		return invalid()
+	}
+	tz, ok := fields[4].(string)
+	if !ok || !utf8.ValidString(tz) || len([]byte(tz)) < 1 || len([]byte(tz)) > 100 {
+		return invalid()
+	}
+	channel, channelOK := asNullableID(fields[5])
+	thread, threadOK := asNullableID(fields[6])
+	if !channelOK || !threadOK || (thread != nil && channel == nil) {
+		return invalid()
+	}
+	return nil
+}
+
+func asNonzeroID(v any) (id.ID, bool) {
+	b, ok := v.([]byte)
+	if !ok || len(b) != 16 {
+		return id.ID{}, false
+	}
+	var out id.ID
+	copy(out[:], b)
+	return out, isID(out)
+}
+func asNullableID(v any) (*id.ID, bool) {
+	if v == nil {
+		return nil, true
+	}
+	out, ok := asNonzeroID(v)
+	if !ok {
+		return nil, false
+	}
+	return &out, true
 }
 func validArray(b []byte) bool { n, e := parse(b); return e == nil && n.major == 4 }
 

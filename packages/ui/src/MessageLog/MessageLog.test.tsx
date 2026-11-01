@@ -93,6 +93,51 @@ describe('MessageLog', () => {
       vi.unstubAllGlobals();
     });
 
+    it('re-pins when a row grows without a render of the log, though the pin\'s own scroll event already saw the growth', () => {
+      // 2026-10-30 CI (Firefox): two rows arrived and were pinned; an image card then grew as its thumbnail decoded,
+      // before the browser sent the pin's scroll event. That event saw the log 29 px short of the end and unpinned it.
+      install();
+      const { rerender } = render(log(['a']));
+      const el = screen.getByRole('log');
+      const m = { scrollHeight: 1000, clientHeight: 400 };
+      metrics(el, m);
+      // A browser clamps scrollTop to scrollHeight - clientHeight, so the pin lands at the end (600), not at 1000.
+      let top = 0;
+      Object.defineProperty(el, 'scrollTop', { configurable: true, get: () => top,
+        set: (v: number) => { top = Math.max(0, Math.min(v, m.scrollHeight - m.clientHeight)); } });
+      rerender(log(['a', 'b']));
+      expect(el.scrollTop).toBe(600);
+      // The row grows by 29 px with no render of the log; the pin's own scroll event comes after, still at 600, and sees
+      // the log 29 px (more than PIN_SLACK_PX) short of the end. It is the log's own move, so it must not unpin.
+      m.scrollHeight = 1029;
+      expect(m.scrollHeight - el.scrollTop - m.clientHeight).toBeGreaterThan(24);
+      fireEvent.scroll(el);
+      callbacks.forEach(cb => cb());
+      expect(el.scrollTop).toBe(629);
+      // Still pinned: the next row that arrives is followed to the end too.
+      m.scrollHeight = 1100;
+      rerender(log(['a', 'b', 'c']));
+      expect(el.scrollTop).toBe(700);
+      // In a browser only an observed element calls back: the rows themselves must be observed, not only the log.
+      expect(observed).toContain(el.querySelector('.d-message-log__rows'));
+      vi.unstubAllGlobals();
+    });
+
+    it('a reader who scrolls up after a pin is not pulled back by a row that grows', () => {
+      install();
+      const { rerender } = render(log(['a']));
+      const el = screen.getByRole('log');
+      const m = { scrollHeight: 1000, clientHeight: 400 };
+      metrics(el, m);
+      rerender(log(['a', 'b']));
+      el.scrollTop = 300;
+      fireEvent.scroll(el);
+      m.scrollHeight = 1029;
+      callbacks.forEach(cb => cb());
+      expect(el.scrollTop).toBe(300);
+      vi.unstubAllGlobals();
+    });
+
     it('leaves the scroll position alone when the reader had scrolled up', () => {
       install();
       render(log(['a', 'b']));
@@ -131,6 +176,24 @@ describe('MessageLog', () => {
     fireEvent.scroll(el);
     m.scrollHeight = 1100;
     rerender(log(['a', 'b', 'c']));
+    expect(el.scrollTop).toBe(1100);
+  });
+
+  it('a render that adds no height leaves a reader near the end where they are, so a press is not moved under the pointer', () => {
+    // 2026-10-30 CI (Firefox): "save data.bin" was pressed with the log 20 px short of the end; the row taking focus
+    // re-rendered the log, which jumped to the end between press and release, and no click reached the button.
+    const { rerender } = render(log(['a', 'b']));
+    const el = screen.getByRole('log');
+    const m = { scrollHeight: 1000, clientHeight: 200 };
+    metrics(el, m);
+    rerender(log(['a', 'b', 'c']));
+    expect(el.scrollTop).toBe(1000);
+    el.scrollTop = 780;
+    fireEvent.scroll(el);
+    rerender(log(['a', 'b', 'c']));
+    expect(el.scrollTop).toBe(780);
+    m.scrollHeight = 1100;
+    rerender(log(['a', 'b', 'c', 'd']));
     expect(el.scrollTop).toBe(1100);
   });
 

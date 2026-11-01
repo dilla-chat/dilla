@@ -18,8 +18,9 @@ function colourOf(member: MemberSummary, roles: readonly RoleSummary[]): number 
 }
 
 /**
- * Groups by each member's highest hoisted role (position, highest first); everyone else goes in the last, role-less
- * group. Names sort with localeCompare. Each row is tagged owner, you or bot.
+ * Groups by each member's highest hoisted role (position, highest first); everyone else goes in the role-less group, then the
+ * bots in their own group (the prototype's "Bots", task 9), then (with presence) the offline people. Names sort with
+ * localeCompare. Each row is tagged owner, you or bot.
  */
 export function memberGroups(members: readonly MemberSummary[], roles: readonly RoleSummary[], ownerId: string, selfId: string,
   presence?: Readonly<Record<string, PresenceStatus>>): MemberGroup[] {
@@ -27,6 +28,7 @@ export function memberGroups(members: readonly MemberSummary[], roles: readonly 
   const byId = new Map(hoisted.map(r => [r.id, r]));
   const buckets = new Map<string, MemberRow[]>();
   const plain: MemberRow[] = [];
+  const bots: MemberRow[] = [];
   const offline: MemberRow[] = [];
   for (const m of members) {
     let best: RoleSummary | null = null;
@@ -39,7 +41,8 @@ export function memberGroups(members: readonly MemberSummary[], roles: readonly 
     if (m.userId === selfId) tags.push('you');
     if (m.kind === 1) tags.push('bot');
     const row: MemberRow = { userId: m.userId, name: memberName(m), tags, color: colourOf(m, roles) };
-    if (presence !== undefined && (presence[m.userId] ?? 'offline') === 'offline') offline.push(row);
+    if (m.kind === 1) bots.push(row);
+    else if (presence !== undefined && (presence[m.userId] ?? 'offline') === 'offline') offline.push(row);
     else if (best === null) plain.push(row);
     else {
       const list = buckets.get(best.id) ?? [];
@@ -51,6 +54,7 @@ export function memberGroups(members: readonly MemberSummary[], roles: readonly 
   const groups: MemberGroup[] = hoisted.filter(r => buckets.has(r.id))
     .map(r => ({ id: r.id, role: r, members: (buckets.get(r.id) ?? []).sort(byName) }));
   groups.push({ id: 'members', role: null, members: plain.sort(byName) });
+  groups.push({ id: 'bots', role: null, members: bots.sort(byName) });
   if (presence !== undefined) groups.push({ id: 'offline', role: null, members: offline.sort(byName) });
   return groups;
 }

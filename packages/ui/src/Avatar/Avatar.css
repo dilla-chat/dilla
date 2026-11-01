@@ -1,6 +1,23 @@
-.d-avatar { position: relative; display: inline-flex; align-items: center; justify-content: center; width: var(--avatar-size); height: var(--avatar-size); border-radius: var(--r-avatar); background: hsl(var(--avatar-hue) 45% 42%); color: #fff; font-weight: 700; font-size: var(--text-xs); flex-shrink: 0; }
+.d-avatar { position: relative; display: inline-flex; align-items: center; justify-content: center; width: var(--avatar-size); height: var(--avatar-size); border-radius: var(--r-avatar); background: hsl(var(--avatar-hue) var(--avatar-s, 45%) var(--avatar-l, 42%)); color: #fff; font-weight: 700; font-size: var(--text-xs); flex-shrink: 0; }
+.d-avatar[data-shape="bot"] { border-radius: var(--r-bot); background: var(--brand); }
+/* Signal §5.4: an 18px voice occupant, 7.5px initials; the bot's square is 5px at this size (the prototype's avR). */
+.d-avatar[data-size="voice"] { width: 1.125rem /* 18px */; height: 1.125rem; font-size: var(--text-mini); }
+.d-avatar[data-size="voice"][data-shape="bot"] { border-radius: var(--r-row); }
+/* Signal §5.4: the user panel's 30px avatar, 10px initials. */
+.d-avatar[data-size="panel"] { width: 1.875rem /* 30px */; height: 1.875rem; font-size: var(--text-micro); }
 .d-avatar[data-size="sm"] { width: 1.25rem /* 20px */; height: 1.25rem /* 20px */; font-size: 0.5625rem /* 9px */; }
 .d-avatar[data-size="xs"] { width: 1.5rem /* 24px */; height: 1.5rem /* 24px */; font-size: 0.5625rem /* 9px */; }
+.d-avatar[data-size="member"] { width: 1.75rem /* 28px */; height: 1.75rem; font-size: var(--text-micro); }
 .d-avatar[data-size="row"] { width: 2rem /* 32px */; height: 2rem /* 32px */; font-size: var(--text-xs); }
 .d-avatar[data-size="lg"] { width: 4rem /* 64px */; height: 4rem /* 64px */; font-size: var(--text-lg); }
-.d-avatar__presence { position: absolute; right: -4px; bottom: -4px; width: 0.75rem /* 12px */; height: 0.75rem /* 12px */; border-radius: var(--r-pill); display: flex; align-items: center; justify-content: center; background: var(--bg-2); }
+.d-avatar__presence { position: absolute; right: -1px; bottom: -1px; width: 0.5625rem /* 9px */; height: 0.5625rem; border-radius: var(--r-pill); display: flex; align-items: center; justify-content: center; background: var(--bg-2); box-shadow: 0 0 0 2px var(--bg-2); }
+.d-avatar__presence .d-state-dot[data-size] { width: 100%; height: 100%; }
+/* Signal §5.5 (task 7): a message's 30px avatar with 10.5px initials, and a reply line's 14px mini avatar (6.5px; a bot's square is 3px). */
+.d-avatar[data-size="msg"] { width: 1.875rem /* 30px */; height: 1.875rem; font-size: var(--text-meta); }
+.d-avatar[data-size="mini"] { width: 0.875rem /* 14px */; height: 0.875rem; font-size: var(--text-pico); }
+.d-avatar[data-size="mini"][data-shape="bot"] { border-radius: var(--r-tag); }
+.d-avatar[data-size="sug"] { width: 1.375rem /* 22px */; height: 1.375rem; font-size: var(--text-tag); }
+/* Task 9: a confirmation's 40px avatar (12px initials) and the profile card's 56px (17px initials; a bot's square is 12px). */
+.d-avatar[data-size="confirm"] { width: 2.5rem /* 40px */; height: 2.5rem; font-size: var(--text-ui); }
+.d-avatar[data-size="card"] { width: 3.5rem /* 56px */; height: 3.5rem; font-size: var(--text-lg); }
+.d-avatar[data-size="card"][data-shape="bot"] { border-radius: var(--r-xxl); }

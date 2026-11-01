@@ -19,14 +19,17 @@ it('explains the beta before opt-in, preserves legacy On, and lets the user leav
   };
   const user = userEvent.setup();
   render(<CoreProvider client={fake}><Voice /></CoreProvider>);
-  expect(screen.getByRole('radio', { name: 'lightweight' })).toHaveAttribute('aria-checked', 'true');
+  expect(screen.getByRole('radio', { name: 'Lightweight' })).toHaveAttribute('aria-checked', 'true');
   expect(fake.callsOf('setSetting')).toHaveLength(0);
   expect(screen.getByText(/beta.*audio glitches/i)).toBeVisible();
-  await user.click(screen.getByRole('radio', { name: 'automatic (beta)' }));
+  expect(screen.queryByText('BETA')).toBeNull();
+  await user.click(screen.getByRole('radio', { name: 'Automatic' }));
   expect(fake.get('settings')?.['voice.noise']).toBe('automatic');
-  expect(screen.getByRole('radio', { name: 'automatic (beta)' })).toHaveAttribute('aria-checked', 'true');
-  await user.click(screen.getByRole('radio', { name: 'lightweight' }));
+  expect(screen.getByRole('radio', { name: 'Automatic' })).toHaveAttribute('aria-checked', 'true');
+  // Signal task 10 fix round 1 (README §5.9): the beta is the row's BETA tag while Automatic is picked.
+  expect(screen.getByText('BETA')).toBeVisible();
+  await user.click(screen.getByRole('radio', { name: 'Lightweight' }));
   expect(fake.get('settings')?.['voice.noise']).toBe('lightweight');
-  await user.click(screen.getByRole('radio', { name: 'off' }));
+  await user.click(screen.getByRole('radio', { name: 'Off' }));
   expect(fake.get('settings')?.['voice.noise']).toBe('off');
 });

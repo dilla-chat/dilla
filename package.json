@@ -13,7 +13,7 @@
     "e2e"
   ],
   "scripts": {
-    "test": "npm run check:docs && npm run check:brief && npm run check:copy && npm run check:css && npm run check:ci && npm test --workspaces --if-present && npm run lint",
+    "test": "npm run check:docs && npm run check:brief && npm run check:copy && npm run check:css && npm run check:ci && npm run test:bot-ops-check && npm run check:bot-ops && npm test --workspaces --if-present && npm run lint",
     "lint": "eslint --max-warnings 0 --no-error-on-unmatched-pattern packages/client-core packages/web",
     "check:docs": "node scripts/check-protocol-docs.mjs",
     "test:docs-check": "node --test scripts/check-protocol-docs.test.mjs",
@@ -24,6 +24,8 @@
     "test:css-check": "node --test scripts/check-css-vars.test.mjs",
     "test:copy-check": "node --test scripts/check-ui-copy.test.mjs",
     "check:ci": "node scripts/check-ci-workflow.mjs",
+    "check:bot-ops": "node scripts/check-bot-operations.mjs",
+    "test:bot-ops-check": "node --test scripts/check-bot-operations.test.mjs",
     "typecheck:e2e": "tsc --noEmit -p e2e/tsconfig.json",
     "test:ci-check": "node --test scripts/check-ci-workflow.test.mjs scripts/ci-areas.test.mjs scripts/install-ci-tool.test.mjs scripts/fetch-retry.test.mjs",
     "test:manifest-writer": "node --test scripts/write-manifest.test.mjs",

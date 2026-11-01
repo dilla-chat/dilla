@@ -16,7 +16,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const THEMES = ['mesh', 'light', 'high-contrast'];
+export const THEMES = ['signal', 'light', 'high-contrast'];
 export const VIEWPORT = { width: 1280, height: 800 };
 /** The viewport a story declaring `phoneViewport: true` is visited at, as in .storybook/test-runner.ts. */
 export const PHONE_VIEWPORT = { width: 360, height: 740 };

@@ -131,21 +131,21 @@ describe('the channel permissions section', () => {
     const { fake, user } = setup([ow(0, PLAYERS, 0, 0)]);
     fake.handler = () => Promise.reject(refusal({ code: 'E_BAD_INPUT' }));
     await user.click(disclosure('Players'));
-    await user.click(within(screen.getByRole('radiogroup', { name: 'send messages' })).getByRole('radio', { name: 'deny' }));
+    await user.click(within(screen.getByRole('radiogroup', { name: 'Send messages' })).getByRole('radio', { name: 'Deny' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not read who can see this channel.');
   });
   it('words an overwrite’s 400 E_INVALID_REQUEST by its code, not as the lockout', async () => {
     const { fake, user } = setup([ow(0, PLAYERS, 0, 0)]);
     fake.handler = () => Promise.reject(refusal({ code: 'E_INVALID_REQUEST', status: 400 }));
     await user.click(disclosure('Players'));
-    await user.click(within(screen.getByRole('radiogroup', { name: 'send messages' })).getByRole('radio', { name: 'deny' }));
+    await user.click(within(screen.getByRole('radiogroup', { name: 'Send messages' })).getByRole('radio', { name: 'Deny' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not save the permissions (E_INVALID_REQUEST). Try again.');
   });
   it('maps a 400 that is not E_INVALID_REQUEST to the generic copy', async () => {
     const { fake, user } = setup([ow(0, PLAYERS, 0, 0)]);
     fake.handler = () => Promise.reject(refusal({ code: 'E_OTHER', status: 400 }));
     await user.click(disclosure('Players'));
-    await user.click(within(screen.getByRole('radiogroup', { name: 'send messages' })).getByRole('radio', { name: 'deny' }));
+    await user.click(within(screen.getByRole('radiogroup', { name: 'Send messages' })).getByRole('radio', { name: 'Deny' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not save the permissions (E_OTHER). Try again.');
   });
   it('says the read failed once the access is read but the overwrites are not, with no private toggle', () => {
@@ -174,8 +174,8 @@ describe('the channel permissions section', () => {
       return null;
     };
     await user.click(disclosure('Players'));
-    await user.click(within(screen.getByRole('radiogroup', { name: 'send messages' })).getByRole('radio', { name: 'deny' }));
-    await user.click(within(screen.getByRole('radiogroup', { name: 'attach files' })).getByRole('radio', { name: 'deny' }));
+    await user.click(within(screen.getByRole('radiogroup', { name: 'Send messages' })).getByRole('radio', { name: 'Deny' }));
+    await user.click(within(screen.getByRole('radiogroup', { name: 'Attach files' })).getByRole('radio', { name: 'Deny' }));
     expect(fake.callsOf('setOverwrite')).toHaveLength(1);
     release();
     await waitFor(() => expect(fake.callsOf('setOverwrite')).toHaveLength(2));
@@ -212,8 +212,8 @@ describe('the channel permissions section', () => {
     const { user } = setup([ow(0, PLAYERS, 0, 0)]);
     await user.click(disclosure('Players'));
     expect(disclosure('Players')).toHaveAttribute('aria-expanded', 'true');
-    expect(screen.getByRole('radiogroup', { name: 'view channels' })).toBeInTheDocument();
-    expect(screen.getByRole('radiogroup', { name: 'send messages' })).toBeInTheDocument();
+    expect(screen.getByRole('radiogroup', { name: 'View channels' })).toBeInTheDocument();
+    expect(screen.getByRole('radiogroup', { name: 'Send messages' })).toBeInTheDocument();
     for (const hidden of ['kick members', 'ban members', 'manage roles', 'manage server', 'administrator', 'view audit log', 'manage nicknames', en['perm.moderate']]) {
       expect(screen.queryByRole('radiogroup', { name: hidden })).toBeNull();
     }
@@ -221,8 +221,8 @@ describe('the channel permissions section', () => {
   it('sends setOverwrite with the changed bit and announces it', async () => {
     const { fake, user, announce } = setup([ow(0, PLAYERS, PERM.pinMessages, 0)]);
     await user.click(disclosure('Players'));
-    expect(within(screen.getByRole('radiogroup', { name: 'pin messages' })).getByRole('radio', { name: 'allow' })).toHaveAttribute('aria-checked', 'true');
-    await user.click(within(screen.getByRole('radiogroup', { name: 'send messages' })).getByRole('radio', { name: 'deny' }));
+    expect(within(screen.getByRole('radiogroup', { name: 'Pin messages' })).getByRole('radio', { name: 'Allow' })).toHaveAttribute('aria-checked', 'true');
+    await user.click(within(screen.getByRole('radiogroup', { name: 'Send messages' })).getByRole('radio', { name: 'Deny' }));
     await waitFor(() => expect(fake.callsOf('setOverwrite')).toEqual([
       { m: 'setOverwrite', channelId: CH, kind: 0, targetId: PLAYERS, allow: PERM.pinMessages, deny: PERM.sendMessages }]));
     await waitFor(() => expect(announce).toHaveBeenCalledWith('Permissions of #lobby saved.'));
@@ -241,14 +241,14 @@ describe('the channel permissions section', () => {
   it('disables the rows of a role at or above mine, and bits I lack, with the forbidden reason', async () => {
     const { user } = setup([ow(0, COUNCIL, 0, 0), ow(0, PLAYERS, 0, 0)]);
     await user.click(disclosure('Council'));
-    const sendGroup = screen.getByRole('radiogroup', { name: 'send messages' });
+    const sendGroup = screen.getByRole('radiogroup', { name: 'Send messages' });
     expect(sendGroup).toHaveAttribute('aria-disabled', 'true');
     expect(sendGroup).toHaveAccessibleDescription(expect.stringContaining('You cannot change this.'));
     await user.click(disclosure('Council'));
     await user.click(disclosure('Players'));
-    expect(screen.getByRole('radiogroup', { name: 'send messages' })).not.toHaveAttribute('aria-disabled');
+    expect(screen.getByRole('radiogroup', { name: 'Send messages' })).not.toHaveAttribute('aria-disabled');
     // I do not hold manage messages here, so I cannot set it.
-    expect(screen.getByRole('radiogroup', { name: 'manage messages' })).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByRole('radiogroup', { name: 'Manage messages' })).toHaveAttribute('aria-disabled', 'true');
   });
   it('offers the roles and people below me with no entry, and sends nothing until a value changes', async () => {
     const { fake, user } = setup([ow(0, PLAYERS, 0, 0)]);
@@ -263,7 +263,7 @@ describe('the channel permissions section', () => {
     const { fake, user } = setup([ow(0, PLAYERS, 0, 0)]);
     fake.handler = () => Promise.reject(refusal({ code: 'E_NETWORK' }));
     await user.click(disclosure('Players'));
-    await user.click(within(screen.getByRole('radiogroup', { name: 'send messages' })).getByRole('radio', { name: 'allow' }));
+    await user.click(within(screen.getByRole('radiogroup', { name: 'Send messages' })).getByRole('radio', { name: 'Allow' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not save the permissions (E_NETWORK). Try again.');
   });
   it('has no serious axe violations with an entry open', async () => {

@@ -12,6 +12,7 @@ import (
 
 	"github.com/jonasthim/dilla/internal/auth"
 	botaccess "github.com/jonasthim/dilla/internal/bot/access"
+	"github.com/jonasthim/dilla/internal/bot/identity"
 	"github.com/jonasthim/dilla/internal/bot/protocol"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
@@ -63,6 +64,40 @@ func (d Deps) CreateDevice(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := d.Sessions.ProveDeviceKey(req.DeviceID, req.DSKPub, body.Nonce, body.Sig); err != nil {
 		server.WriteError(w, err)
+		return
+	}
+	// Task 8b security review M1 (fail closed): the credential is decoded and verified by the same WASI core every other
+	// credential boundary uses (canonical CBOR, the UMK→SSK and SSK→device signatures over this dsk_pub). It must name
+	// this device, its tiers, and the account's own kind — a member cannot register a bot-kind credential and speak as
+	// a Bot to clients that trust a bot-kind sender. Its user id is the session's, or zero (the unbound human form
+	// signup issues and the core uses until the server assigns the id). Anything that does not verify is refused.
+	if d.BotIdentity == nil {
+		server.WriteError(w, server.Errorf(server.CodeInternal, "credential verifier is not wired"))
+		return
+	}
+	credential, verifyErr := d.BotIdentity.Verify(r.Context(), req.Credential, req.DSKPub)
+	if verifyErr != nil {
+		if errors.Is(verifyErr, identity.ErrUnavailable) {
+			server.WriteError(w, server.Errorf(server.CodeInternal, "credential verifier unavailable"))
+		} else {
+			server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "device credential is invalid"))
+		}
+		return
+	}
+	account, accountErr := d.Repo.GetUser(r.Context(), sess.UserID)
+	if accountErr != nil {
+		server.WriteError(w, d.storeError(r, accountErr))
+		return
+	}
+	// Task S1: the credential is also bound to the account's own identity keys, as signup binds the
+	// first device's (accounts.go): its UMK, its SSK and the UMK's signature over that SSK are the
+	// ones users holds. A credential under any other UMK/SSK pair is a device of another identity.
+	if uint64(credential.Kind) != uint64(account.Kind) || credential.DeviceID != req.DeviceID ||
+		(credential.UserID != (id.ID{}) && credential.UserID != sess.UserID) ||
+		credential.Tier != req.Tier || credential.SignerTier != req.SignerTier ||
+		!bytes.Equal(credential.UMKPub[:], account.UMKPub) || !bytes.Equal(credential.SSKPub[:], account.SSKPub) ||
+		!bytes.Equal(credential.SigUMKSSK[:], account.SigUMKSSK) {
+		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "device credential does not match the account or device"))
 		return
 	}
 	now := d.Clock.Now().Unix()
@@ -480,7 +515,30 @@ func (d Deps) GetDeviceList(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, d.storeError(r, err))
 		return
 	}
-	d.write(w, r, http.StatusOK, []any{row.Version, row.Blob, row.SSKSignature, row.PrevHash})
+	head := []any{row.Version, row.Blob, row.SSKSignature, row.PrevHash}
+	// Wire 4 (Task S1 part 2): the head carries the instance-signed account-kind attestation as
+	// its fifth element; a wire-2 or wire-3 session reads the four elements it always has.
+	if sess.WireVersion >= accountKindWire {
+		account, err := d.Repo.GetUser(r.Context(), userID)
+		if err != nil {
+			server.WriteError(w, d.storeError(r, err))
+			return
+		}
+		// A tombstoned account is served no attestation (fix round 1, kept by Ruling AW): its
+		// identity is purged, and a client that verified one before keeps it.
+		if account.DeletedAt != nil {
+			d.write(w, r, http.StatusOK, head)
+			return
+		}
+		attestation, err := AccountKindAttestation(d.SignAccountKind, d.Instance.InstanceID, d.Instance.ExternalSenderKeyID, account)
+		if err != nil {
+			d.logf(r, "api: account-kind attestation", "err", err)
+			server.WriteError(w, server.Errorf(server.CodeInternal, "account-kind attestation unavailable"))
+			return
+		}
+		head = append(head, attestation)
+	}
+	d.write(w, r, http.StatusOK, head)
 }
 
 // nullableTime renders a nullable unix second as a CBOR uint or null.

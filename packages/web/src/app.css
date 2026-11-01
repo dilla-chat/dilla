@@ -1,13 +1,29 @@
 html, body { margin: 0; height: 100%; background: var(--bg); }
 #root { min-height: 100%; }
 
-/* Settings sections (task 19): tokens only. The 960x640 frame, the 220px navigation and the narrow layout are SettingsFrame's. */
+/* Settings sections use the fullscreen frame and its shared content widths. */
 .dw-settings-section { display: flex; flex-direction: column; gap: var(--group-gap); }
 .dw-settings-section h2, .dw-settings-section h3 { margin: 0; }
 .dw-settings-section p { margin: 0; color: var(--fg-2); }
-.dw-profile-form { display: flex; flex-direction: column; gap: var(--group-gap); max-width: 32rem; }
-.dw-profile-form__actions { display: flex; align-items: center; gap: var(--group-gap); }
-.dw-profile-form__saved { min-height: 1lh; }
+/* Task 11 (Jonas, Q7): the prototype's Profile: the fields (14px apart) and, beside them, the 260px preview card (24px gap; one
+   column on a phone, the card under the fields). The card: radius 10px, --control-edge-field edge, the 52px band in the
+   person's colour, the 48px avatar 24px up with a 4px ring, the name 14px/700, "@handle · status" 11px --fg-2, the bio 11.5px. */
+.dw-profile { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 24px; align-items: start; }
+[data-layout="phone"] .dw-profile, .d-settings-frame[data-layout="phone"] .dw-profile { grid-template-columns: minmax(0, 1fr); }
+.dw-profile-form { display: grid; gap: 14px; }
+/* Fix round 2: the prototype's profile fields are 36px of content inside a 1px edge (38), and the bio's three rows sit in 10px
+   12px of padding; the preview's bio keeps its 8px top margin over the section's paragraph reset. */
+.dw-profile-form .d-text-field__input { height: 2.375rem; }
+.dw-profile-form textarea.d-text-field__input { height: auto; padding: 10px 12px; line-height: 1.5; }
+.dw-profile-form__note { margin: 0; font-size: var(--text-xs); color: var(--fg-3); }
+.dw-profile-form__saved { margin: 0; min-height: 1lh; font-size: var(--text-xs); color: var(--fg-3); }
+.dw-profile-preview { overflow: hidden; background: var(--bg-3); border: 1px solid var(--control-edge-field); border-radius: 10px; }
+.dw-profile-preview__band { height: 52px; background: linear-gradient(135deg, hsl(var(--avatar-hue) var(--avatar-s, 45%) 32%), hsl(var(--avatar-hue) var(--avatar-s, 45%) 18%)); }
+.dw-profile-preview__body { padding: 0 14px 14px; margin-top: -24px; }
+.dw-profile-preview__body .d-avatar { width: 48px; height: 48px; font-size: var(--text-ui); box-shadow: 0 0 0 4px var(--bg-3); }
+.dw-profile-preview__name { margin-top: 8px; font-weight: var(--weight-display); font-size: var(--text-md); }
+.dw-profile-preview__line { font-size: var(--text-xs); color: var(--fg-2); }
+.dw-profile-preview .dw-profile-preview__bio { margin: 8px 0 0; font-size: var(--text-btn); color: var(--fg-strong) /* the prototype's #B9BFC8 */; white-space: pre-wrap; overflow-wrap: anywhere; }
 .dw-device-list, .dw-notify-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--row-gap); }
 .dw-notify-list > li + li { border-top: 1px solid var(--hairline); padding-top: var(--row-gap); }
 /* Buttons and controls side by side keep the group gap: --row-gap is 0 at compact density, where they would touch. */
@@ -40,15 +56,15 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
 .dw-trust-state[data-tone="warn"] { border-left-color: var(--warn); }
 .dw-trust-state[data-tone="danger"] { border-left-color: var(--danger); }
 /* W-06: the phone search, a modal <dialog> filling the visual viewport; the top layer makes the shell beneath it inert. A desktop search is the palette's own dialog (R-S4). */
-.dw-search { position: fixed; inset: var(--d-vvtop, 0px) 0 0 0; width: 100%; height: var(--d-vvh, 100%); max-width: none; max-height: none; margin: 0; border: 0; box-sizing: border-box; overflow: auto; background: var(--bg); color: var(--fg); padding: var(--group-gap); }
-.dw-search::backdrop { background: var(--bg); }
+/* Task 9: the prototype's phone palette: the card 12px from the top and sides over the --scrim (the dialog still fills the viewport). */
+.dw-search { position: fixed; inset: var(--d-vvtop, 0px) 0 0 0; width: 100%; height: var(--d-vvh, 100%); max-width: none; max-height: none; margin: 0; border: 0; box-sizing: border-box; overflow: auto; background: transparent; color: var(--fg); padding: 12px; }
+.dw-search::backdrop { background: var(--scrim); }
+.dw-search > .d-search-palette { max-height: 100%; animation: d-modal var(--duration-normal) var(--ease-out) backwards; }
 .dw-search :focus-visible, .dw-trust-list :focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
 .dw-other-tab { min-height: 100vh; display: grid; place-items: center; padding: var(--group-gap); }
 .dw-other-tab--overlay { position: fixed; inset: var(--d-vvtop, 0px) 0 0 0; z-index: 50; background: var(--bg); }
 .dw-trust-key { overflow-wrap: anywhere; word-break: break-all; }
-@media (max-width: 360px) {
-  .dw-search { padding: var(--row-gap); }
-}
+
 /* web-3 (flow 06): the sidebar holds the channel list and, while in voice, the dock under it (above the user panel). */
 .dw-sidebar { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .dw-sidebar > .d-channel-list { flex: 1 1 auto; min-height: 0; }
@@ -70,51 +86,22 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
 /* The voice view fills the main pane; a DM's call stage sits above the log at 40 % of it, the log and composer below. */
 .dw-voice-channel { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .dw-voice-channel > .dw-voice-stage { flex: 1 1 auto; height: auto; }
-.dw-voice-music { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: var(--group-gap); padding: 0.625rem var(--row-pad-x); border-top: 1px solid var(--hairline); }
-.dw-voice-music[hidden] { display: none; }
-.dw-voice-music__heading { display: flex; align-items: center; gap: 0.5rem; }
-.dw-voice-music h2, .dw-voice-music h3, .dw-voice-music p { margin: 0; }
-.dw-voice-music h2 { font-size: var(--text-sm); }
-.dw-voice-music h3 { font-size: var(--text-sm); }
-.dw-voice-music__heading > span, .dw-voice-music__now > span, .dw-voice-music__artist { color: var(--fg-2); font-size: var(--text-xs); }
-.dw-voice-music p { color: var(--fg-2); font-size: var(--text-sm); }
-.dw-voice-music__content { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; min-width: 0; }
-.dw-voice-music__now { display: grid; min-width: 6rem; }
-.dw-voice-music__controls, .dw-voice-music__queue-actions { display: flex; align-items: center; gap: 0.25rem; }
-.dw-voice-music__seek, .dw-voice-music__volume { display: flex; align-items: center; gap: 0.375rem; white-space: nowrap; font-size: var(--text-xs); }
-.dw-voice-music__seek input { width: min(16vw, 12rem); }
-.dw-voice-music__volume input { width: 5rem; }
-.dw-voice-music__search { display: flex; flex: 1 1 18rem; flex-direction: column; gap: 0.5rem; min-width: min(18rem, 100%); }
-.dw-voice-music__search form { display: flex; align-items: end; gap: 0.5rem; min-width: 0; }
-.dw-voice-music__search label { display: grid; flex: 1 1 auto; gap: 0.25rem; min-width: 0; font-size: var(--text-xs); }
-.dw-voice-music__search input { box-sizing: border-box; width: 100%; min-width: 0; }
-.dw-voice-music__search button { min-height: 2.5rem; }
-.dw-voice-music__results { display: grid; gap: 0.25rem; margin: 0; padding-left: 1.5rem; }
-.dw-voice-music__results li { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
-.dw-voice-music__queue-wrap[hidden] { display: none; }
-.dw-voice-music__queue-wrap:not([hidden]) { display: block; flex: 1 1 100%; min-width: 0; }
-.dw-voice-music[data-availability="available"]:has(.dw-voice-music__queue-wrap:not([hidden])) { flex-wrap: wrap; }
-.dw-voice-music[data-availability="available"]:has(.dw-voice-music__queue-wrap:not([hidden])) .dw-voice-music__content { flex: 1 1 100%; flex-wrap: wrap; }
-.dw-voice-music__open { display: none; }
-.dw-voice-music__queue { margin: 0; padding-left: 1.5rem; }
-.dw-voice-music__queue li { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; padding-block: 0.5rem; }
-.dw-voice-music :is(button, select, input):focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
-.dw-voice-music button:disabled { opacity: 0.55; cursor: not-allowed; }
 .dw-voice-stage { height: 100%; min-height: 0; overflow-y: auto; scroll-padding-bottom: 4.5rem; /* the pinned toolbar: button + 2 x 0.5rem */ }
-/* web3.8: on desktop the stage fills its pane and its toolbar is pinned to the bottom centre of it (the dock keeps its own). */
-/* web3.9 (controller addition, UI-4): the composer's resting band is as tall as the desktop user panel (3.25rem = 52px, measured in e2e/web/panes.spec.ts), so their tops meet; a phone has no user panel. */
-.d-app-shell:not([data-layout="phone"]) { --d-composer-band: 3.25rem; }
+/* web3.8: on desktop the stage fills its pane and its toolbar is pinned to the bottom centre of it (the dock keeps its own).
+   Signal task 8: a channel's stage ends in the 64px call bar (CallStage `bar`, data-bar), which these toolbar rules leave alone. */
+/* web3.9 (controller addition, UI-4): the composer's resting band is as tall as the desktop user panel (--panel-h, 64px, measured in e2e/web/panes.spec.ts), so their tops meet; a phone has no user panel. */
+.d-app-shell:not([data-layout="phone"]) { --d-composer-band: var(--panel-h); }
 .d-app-shell:not([data-layout="phone"]) .dw-voice-stage:not(.dw-dm-call .dw-voice-stage) { overflow: hidden; }
 .d-app-shell:not([data-layout="phone"]) .dw-voice-stage:not(.dw-dm-call .dw-voice-stage) .d-call-stage { height: 100%; min-height: 0; box-sizing: border-box; }
 /* web3.8 WS7: the grid or the focused tile fills what the heading, the notice and the toolbar leave. */
 .d-app-shell:not([data-layout="phone"]) .dw-voice-stage:not(.dw-dm-call .dw-voice-stage) .d-call-stage__tiles[data-tiles="stage"] { flex: 1 1 auto; min-height: 0; }
-.d-app-shell:not([data-layout="phone"]) .dw-voice-stage:not(.dw-dm-call .dw-voice-stage) .d-call-stage__controls { position: sticky; bottom: 0; margin-top: auto; padding-block: 0.5rem; background: var(--bg); }
+.d-app-shell:not([data-layout="phone"]) .dw-voice-stage:not(.dw-dm-call .dw-voice-stage) .d-call-stage__controls:not([data-bar]) { position: sticky; bottom: 0; margin-top: auto; padding-block: 0.5rem; background: var(--bg); }
 /* web3.9 FA2 (N4): the voice preview (no call yet: data-call-phase="idle") is one column at the top: the title bar, the note, the people, then the join, left on the stage's gutter and not pinned 760px under its copy. */
 .d-app-shell:not([data-layout="phone"]) .dw-voice-stage[data-call-phase="idle"]:not(.dw-dm-call .dw-voice-stage) .d-call-stage__tiles[data-tiles="stage"] { flex: 0 1 auto; min-height: 0; }
 .d-app-shell:not([data-layout="phone"]) .dw-voice-stage[data-call-phase="idle"]:not(.dw-dm-call .dw-voice-stage) .d-call-stage__controls { position: static; margin-top: 0; padding-block: 0; justify-content: flex-start; background: none; }
 /* The empty voice room: the message and the join button are one group in the middle of the stage (the rule above is for a room with people). */
 .d-app-shell:not([data-layout="phone"]) .dw-voice-stage[data-call-phase="idle"]:not(.dw-dm-call .dw-voice-stage) .d-call-stage__empty ~ .d-call-stage__controls { position: static; margin-top: 0.75rem; justify-content: center; background: none; }
-.dw-voice-stage[data-call-phase="idle"] .d-call-stage > .d-call-stage__empty ~ .d-call-stage__controls { position: static; margin-top: 0.75rem; margin-bottom: auto; padding-block: 0; justify-content: center; background: none; }
+.dw-voice-stage[data-call-phase="idle"] .d-call-stage > .d-call-stage__empty ~ .d-call-stage__controls:not([data-bar]) { position: static; margin-top: 0.75rem; margin-bottom: auto; padding-block: 0; justify-content: center; background: none; }
 .d-app-shell__content:has(> .dw-dm-call, > .dw-call-strip) { display: flex; flex-direction: column; }
 .d-app-shell__content:has(> .dw-dm-call, > .dw-call-strip) > .dw-conversation { flex: 1 1 auto; min-height: 0; height: auto; }
 .dw-dm-call { flex: 0 0 auto; max-height: 40%; min-height: 0; overflow-y: auto; border-bottom: 1px solid var(--hairline); }
@@ -144,7 +131,7 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
   .dw-voice-stage .d-call-stage__tiles:not([data-tiles="stage"]) { grid-template-columns: repeat(auto-fill, minmax(min(100%, 9rem), 1fr)); }
   .dw-voice-stage .d-call-tile:not([data-stage]) { min-height: 0; padding: 0.5rem; }
   /* Product walk I5: at 360 the stage is in normal flow, its controls under the tiles; nothing floats over a tile. */
-  .dw-voice-stage .d-call-stage__controls { position: static; padding-block: 0.5rem; }
+  .dw-voice-stage .d-call-stage__controls:not([data-bar]) { position: static; padding-block: 0.5rem; }
   .dw-dm-call .d-call-stage__controls { position: static; }
   /* web3.9 FA2 (D4): the voice stage fills its pane, its tiles scroll inside it and its controls stand at its foot, directly above the tab bar (in normal flow, so nothing floats over a tile). */
   .dw-voice-stage:not(.dw-dm-call .dw-voice-stage) { overflow: hidden; }
@@ -168,7 +155,7 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
 [data-layout="phone"] .dw-dm-call[data-view="messages"] .dw-voice-stage { display: none; }
 [data-layout="phone"] .dw-voice-stage .d-call-stage__tiles:not([data-tiles="stage"]) { grid-template-columns: repeat(auto-fill, minmax(min(100%, 9rem), 1fr)); }
 [data-layout="phone"] .dw-voice-stage .d-call-tile:not([data-stage]) { min-height: 0; padding: 0.5rem; }
-[data-layout="phone"] .dw-voice-stage .d-call-stage__controls { position: static; padding-block: 0.5rem; }
+[data-layout="phone"] .dw-voice-stage .d-call-stage__controls:not([data-bar]) { position: static; padding-block: 0.5rem; }
 /* H7: the voice preview's join is a primary target (44) and sits in the stage's 18px gutter (--d-stage-px, CallStage). */
 [data-layout="phone"] .dw-voice-stage .dw-voice-join { min-height: 2.75rem; width: 100%; }
 [data-layout="phone"] .dw-voice-stage[data-call-phase="idle"] .d-call-stage > .d-call-stage__empty ~ .d-call-stage__controls .dw-voice-join { min-height: 2.75rem; width: auto; padding-inline: 1.5rem; }
@@ -188,22 +175,13 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
 [data-layout="phone"] .dw-voice-stage[data-call-phase="idle"]:not(.dw-dm-call .dw-voice-stage) .d-call-stage__tiles[data-tiles="stage"] { flex: 0 1 auto; min-height: 0; }
 [data-layout="phone"] .dw-voice-stage[data-call-phase="idle"]:not(.dw-dm-call .dw-voice-stage) .d-call-stage__controls { margin-top: 0; }
 [data-layout="phone"] .dw-voice-dock__paused .d-btn, [data-layout="phone"] .dw-voice-dock__audio .d-btn { min-height: 2.75rem; }
-[data-layout="phone"] .dw-voice-music__open { display: inline-flex; }
-[data-layout="phone"] .dw-voice-music--full { position: fixed; inset: 0; width: 100vw; max-width: none; height: 100dvh; max-height: none; margin: 0; z-index: 100; display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; gap: 1rem; overflow-y: auto; padding: max(1rem, env(safe-area-inset-top)) var(--row-pad-x) max(1rem, env(safe-area-inset-bottom)); border: 0; background: var(--bg); }
-[data-layout="phone"] .dw-voice-music--full::backdrop { background: rgb(0 0 0 / 0.45); }
-[data-layout="phone"] .dw-voice-music--full .dw-voice-music__heading { justify-content: space-between; }
-[data-layout="phone"] .dw-voice-music--full .dw-voice-music__content { align-items: stretch; flex-direction: column; gap: 1rem; }
-[data-layout="phone"] .dw-voice-music--full .dw-voice-music__now { min-height: 8rem; align-content: end; }
-[data-layout="phone"] .dw-voice-music--full .dw-voice-music__controls { flex-wrap: wrap; }
-[data-layout="phone"] .dw-voice-music--full .dw-voice-music__seek,
-[data-layout="phone"] .dw-voice-music--full .dw-voice-music__volume { display: grid; }
-[data-layout="phone"] .dw-voice-music--full .dw-voice-music__seek input,
-[data-layout="phone"] .dw-voice-music--full .dw-voice-music__volume input { width: 100%; min-height: 2.5rem; }
-[data-layout="phone"] .dw-voice-music--full .dw-voice-music__queue-wrap:not([hidden]) { display: block; }
-[data-layout="phone"] .dw-voice-music--full .dw-voice-music__queue li { align-items: flex-start; flex-direction: column; }
-[data-layout="phone"] .dw-voice-music--full .dw-voice-music__queue-actions { width: 100%; }
-[data-layout="phone"] .dw-voice-music--full .dw-voice-music__queue-actions button { min-height: 2.75rem; }
 [data-layout="phone"] .dw-voice-dock__mode .d-btn { min-height: 2.75rem; }
+/* Fix round 1: the call code dialog (from the voice row's menu): the digits large and tabular, the help under them. */
+.dw-call-code__digits { margin: 0; font-size: var(--text-md); letter-spacing: var(--label-tracking); font-variant-numeric: tabular-nums; color: var(--fg); }
+.dw-call-code__help { margin: 0.5rem 0 0; font-size: var(--text-xs); color: var(--fg-2); }
+/* Signal §5.6: on its own joined channel stage the dock draws nothing (the call bar is there); its status region stays. */
+.dw-voice-dock[data-on-stage] .d-voice-dock { margin: 0; padding: 0; border: 0; background: none; animation: none; }
+.dw-voice-dock[data-on-stage] :is(.d-voice-dock__row, .d-np--compact) { display: none; }
 html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[data-reduce-motion="on"] *::after {
   animation-duration: 0.01ms !important; transition-duration: 0.01ms !important;
 }
@@ -253,11 +231,9 @@ html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[d
   .dw-factor-key__field > .d-btn { margin-left: 0; margin-top: var(--row-gap); border-radius: var(--r-md); }
 }
 .dw-factor-exit { display: flex; justify-content: center; padding: var(--row-gap); }
-/* Flow 10 at 1280: the backup codes in two columns (walk M2). Two whole codes side by side need about 42rem; the onboarding
-   column is 37rem, so on a window with room the box of codes leaves it by 3rem each side (its label and buttons stay in
-   the column), and a dialog that shows codes is wider. */
-@media (min-width: 52rem) { .d-onboarding-frame .dw-factor-codes .d-code-list__grid { margin-inline: -3rem; } }
-.d-dialog:has(.d-code-list) { max-width: min(46rem, calc(100vw - 32px)); }
+/* Task 10: the onboarding card is the prototype's 400px, so its backup codes stand in one column; a dialog that shows codes
+   is wider and keeps two (walk M2). Task 9: the dialog is a fixed width, so the wider one sets width, not max-width. */
+.d-dialog:has(.d-code-list) { width: min(46rem, calc(100vw - 24px)); }
 /* Settings → Sign-in, flow 10 state 19 (walk I3): the passkeys as one group, its heading as a row title, its rows set in
    under it and its add button after them. */
 .dw-factor-group { display: grid; gap: var(--row-gap); padding: 0.625rem 0; border-bottom: 1px solid var(--hairline); min-width: 0; }
@@ -279,24 +255,44 @@ html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[d
 .dw-phone-row__line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dw-phone-row__who { font-weight: var(--weight-display); }
 .dw-phone-row__meta { font-size: var(--text-xs); color: var(--fg-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dw-phone-note { margin: 0; padding: 0.75rem var(--row-pad-x); font-size: var(--text-xs); color: var(--fg-3); }
-.dw-you__account { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem var(--row-pad-x) 1rem; }
-.dw-you__presence { margin-bottom: 1rem; border-top: 1px solid var(--hairline); }
-.dw-presence-picker__choices { background: var(--surface-2); }
-.dw-presence-picker__choices .dw-phone-row { padding-left: calc(var(--row-pad-x) + 1rem); }
 .dw-panel-error { margin: 0; padding: 0.25rem 0.5rem; font-size: var(--text-xs); color: var(--danger); background: var(--bg-2); }
-.dw-you__who { display: grid; gap: 0.125rem; min-width: 0; }
-.dw-you__name { font-weight: var(--weight-display); font-size: var(--text-md); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dw-you__card { margin: 0 var(--row-pad-x) 1rem; background: var(--surface-2); border: 1px solid var(--hairline-2); border-radius: var(--r-md); }
-.dw-you__cardhead { margin: 0; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--hairline-2); }
-.dw-you__facts { margin: 0; padding: 0; }
-.dw-you__fact { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; min-height: 2.25rem; padding: 0 0.75rem; font-size: var(--text-sm); }
-.dw-you__fact dt, .dw-you__fact dd { margin: 0; }
-.dw-you__fact dd { display: inline-flex; align-items: center; gap: 0.5rem; min-width: 0; overflow-wrap: anywhere; text-align: right; }
-.dw-you__listhead { margin: 0; padding: 0.25rem var(--row-pad-x) 0.5rem; }
-.dw-you__signout { border-bottom: 1px solid var(--hairline); }
-.dw-you__signout .d-btn { width: 100%; min-height: 2.75rem; justify-content: flex-start; padding: 0.5rem var(--row-pad-x); background: transparent; border: 0; border-radius: 0; box-shadow: none; font-size: var(--text-sm); color: var(--danger); }
-.dw-you__signout .d-btn:hover { background: var(--surface-2); }
+/* Task 11 (Jonas, Q3): the prototype's Activity: the heading 14px/700 (.08em) at 18px 18px 10px, then one list of rows, 8px in:
+   12px 10px, radius 8px, gap 12px, the 32px avatar (a circle, the Bot's too; a channel's # glyph), "where" 10.5px --fg-3 over
+   "who text" 12.5px. */
+.dw-activity .d-phone-header { min-height: 0; height: auto; padding: 18px 18px 10px; border-bottom: 0; background: transparent; }
+.dw-activity .d-phone-header__title { font-size: var(--text-md); font-weight: var(--weight-display); letter-spacing: 0.08em; }
+.dw-activity__list { list-style: none; margin: 0; padding: 0 8px; }
+.dw-activity__row { display: flex; gap: 12px; width: 100%; padding: 12px 10px; font: inherit; color: var(--fg); text-align: left; background: transparent; border: 0; border-radius: 8px; cursor: pointer; transition: background var(--duration-hover); }
+.dw-activity__row:hover { background: var(--hover); }
+.dw-activity__row:focus-visible { outline: var(--focus-ring); outline-offset: -2px; }
+.dw-activity__avatar { display: inline-flex; flex: none; }
+.dw-activity__avatar .d-avatar { border-radius: var(--r-pill); font-size: var(--text-meta); }
+.dw-activity__glyph { display: inline-flex; align-items: center; justify-content: center; width: 2rem; height: 2rem; border-radius: var(--r-pill); background: var(--surface-2); color: var(--fg-3); }
+.dw-activity__text { display: grid; gap: 2px; min-width: 0; }
+.dw-activity__where { font-size: var(--text-meta); color: var(--fg-3); }
+.dw-activity__line { font-size: var(--text-sm); overflow-wrap: anywhere; }
+.dw-activity__line strong { font-weight: var(--weight-display); }
+/* Task 11 (Jonas, Q3): the prototype's You: 24px 18px, 18px apart; the 56px avatar, the name 16px/700 over "@handle · status"
+   11.5px --fg-2; one box (12px, radius 8px, the hairline) with the connection and this device, 11px --fg-3, 4px apart; one box
+   of 48px rows (0 14px, gap 12px, the hairline between), Sign out in --danger. */
+.dw-you { padding: 24px 18px; display: grid; align-content: start; gap: 18px; overflow-y: auto; }
+.dw-you__account { display: flex; align-items: center; gap: 14px; }
+.dw-you__who { display: grid; min-width: 0; line-height: 1.35; }
+.dw-you__name { font-weight: var(--weight-display); font-size: var(--text-preview); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dw-you__line { font-size: var(--text-btn); color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dw-you__facts { display: grid; gap: 4px; padding: 12px; font-size: var(--text-xs); color: var(--fg-3); border: 1px solid var(--hairline); border-radius: 8px; overflow-wrap: anywhere; }
+.dw-you__rows { display: grid; border: 1px solid var(--hairline); border-radius: 8px; overflow: hidden; }
+.dw-you__row { display: flex; align-items: center; gap: 12px; height: 48px; padding: 0 14px; font: inherit; color: var(--fg); text-align: left; background: transparent; border: 0; border-bottom: 1px solid var(--hairline); cursor: pointer; transition: background var(--duration-hover); }
+.dw-you__row:last-child { border-bottom: 0; }
+.dw-you__row:hover { background: var(--hover); }
+.dw-you__row:focus-visible { outline: var(--focus-ring); outline-offset: -2px; }
+.dw-you__row[data-danger="true"] { color: var(--danger); }
+.dw-you__row[data-danger="true"]:hover { background: var(--danger-faint); }
+.dw-you__choice { padding-left: 30px; background: var(--surface-2); }
+.dw-you__label { flex: 1; min-width: 0; }
+.dw-you__value { font-size: var(--text-btn); color: var(--fg-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dw-you__dot { display: inline-flex; margin: 0 4px; }
+.dw-you__error { margin: 0; font-size: var(--text-xs); color: var(--danger); }
 
 /* Settings on a phone (R40): the frame fills the screen, one column, the PhoneHeader in place of the section nav. */
 @media (max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem) {
@@ -304,13 +300,6 @@ html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[d
      sign-in have no shell and keep their page scroll above the keyboard. The layout.ts hook sets the attribute while the phone
      shell is mounted (R10). */
   html[data-phone-shell], html[data-phone-shell] body { overflow: hidden; }
-  .d-settings-frame:has(.d-phone-header) { max-width: none; max-height: none; margin: 0; border: 0; border-radius: 0; }
-  .d-settings-frame:has(.d-phone-header) .d-settings-frame__panel { display: block; }
-  .d-settings-frame:has(.d-phone-header) .d-settings-frame__side, .d-settings-frame:has(.d-phone-header) .d-settings-frame__bar { display: none; }
-  .d-settings-frame:has(.d-phone-header) .d-settings-frame__pane { height: 100%; }
-  .d-settings-frame:has(.d-phone-header) .d-settings-frame__body { padding: 0 0 1.5rem; }
-  .d-settings-frame:has(.d-phone-header) .d-settings-frame__body > :not(.d-phone-header):not(dialog) { margin-left: var(--row-pad-x); margin-right: var(--row-pad-x); }
-  .d-settings-frame:has(.d-phone-header) .d-settings-frame__body > .d-phone-header + * { margin-top: 1rem; }
 }
 
 

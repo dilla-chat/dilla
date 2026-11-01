@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { CallBar, type CallBarProps } from './CallBar.tsx';
 
-// Switch the theme in the toolbar (mesh, light, high-contrast). A real 390px phone width.
+// Switch the theme in the toolbar (signal, light, high-contrast). A real 390px phone width.
 const meta = { title: 'Voice/CallBar', component: CallBar, parameters: { layout: 'fullscreen' } } satisfies Meta<typeof CallBar>;
 export default meta;
 type Story = StoryObj<typeof meta>;

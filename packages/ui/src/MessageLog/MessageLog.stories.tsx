@@ -32,7 +32,7 @@ function FocusActiveRow({ children }: { children: ReactNode }) {
 }
 
 const toolbar = (tabbable: boolean) => (
-  <MessageToolbar label="actions for this message" tabbable={tabbable} items={[
+  <MessageToolbar moreLabel="more actions" label="actions for this message" tabbable={tabbable} items={[
     { id: 'react', label: 'react', onAction: () => {} }, { id: 'reply', label: 'reply', onAction: () => {} }, { id: 'pin', label: 'pin', onAction: () => {} },
   ]} />
 );

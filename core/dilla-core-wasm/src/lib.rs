@@ -119,7 +119,7 @@ pub fn core_version() -> String {
 }
 
 /// The browser binding ABI. Independent of the wasi request ABI.
-pub const BROWSER_ABI_VERSION: u32 = 13;
+pub const BROWSER_ABI_VERSION: u32 = 15;
 
 #[wasm_bindgen]
 pub fn abi_version() -> u32 {
@@ -566,6 +566,6 @@ mod tests {
     fn the_version_getters_match_dilla_core() {
         assert_eq!(core_version(), dilla_core::CORE_VERSION);
         assert_eq!(abi_version(), BROWSER_ABI_VERSION);
-        assert_eq!(BROWSER_ABI_VERSION, 13);
+        assert_eq!(BROWSER_ABI_VERSION, 15);
     }
 }

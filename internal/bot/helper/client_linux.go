@@ -86,16 +86,20 @@ func (w *privateDiagnosticWriter) Write(p []byte) (int, error) {
 func isPrivateBotDiagnostic(line string) bool {
 	const trustPrefix = "dilla_bot_helper trust_sender_refusal="
 	const createPrefix = "dilla_bot_helper interaction_create_refusal="
+	const readPrefix = "dilla_bot_helper interaction_read_refusal="
 	prefix := trustPrefix
 	if len(line) >= len(createPrefix) && line[:len(createPrefix)] == createPrefix {
 		prefix = createPrefix
+	}
+	if len(line) >= len(readPrefix) && line[:len(readPrefix)] == readPrefix {
+		prefix = readPrefix
 	}
 	if len(line) <= len(prefix) || line[:len(prefix)] != prefix {
 		return false
 	}
 	switch line[len(prefix):] {
 	case "binding", "credential", "device_list_stale", "device_unlisted", "tier_mismatch", "umk_changed", "core_input", "core_state", "core_storage", "other",
-		"snapshot_verification", "snapshot_pin_unavailable", "key_package_decode", "key_package_kind", "key_package_validation", "clock_unavailable", "snapshot_expired", "welcome_missing", "candidate_shape":
+		"snapshot_clock", "device_trust_changed", "binding_mismatch", "user_pin_unavailable", "device_pin_unavailable", "group_exists", "participant_exists", "intent_conflict", "group_load", "group_unavailable", "snapshot_verification", "snapshot_pin_unavailable", "key_package_decode", "key_package_kind", "key_package_validation", "clock_unavailable", "snapshot_expired", "welcome_missing", "candidate_shape":
 		return true
 	default:
 		return false

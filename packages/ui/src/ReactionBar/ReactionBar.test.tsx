@@ -26,7 +26,7 @@ describe('ReactionBar', () => {
     expect(thumbs).toHaveAttribute('data-emoji', '👍');
     expect(thumbs.textContent).toBe('👍3');
     expect(screen.getAllByRole('button').map((b) => b.getAttribute('aria-label'))).toEqual(['thumbs up, 3', 'crab, 1', 'add a reaction']);
-    expect(container.querySelector('.d-reaction-bar__add')?.textContent).toBe('+');
+    expect(container.querySelector('.d-reaction-bar__add svg')).toHaveAttribute('data-icon', 'smile-plus');
   });
 
   it('toggles a chip by its emoji and opens the grid from the add button, passing the button', async () => {

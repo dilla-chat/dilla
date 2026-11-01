@@ -51,7 +51,7 @@ func (d Deps) loadBotInteractionRegistrationPreflight(ctx context.Context, req B
 	}
 	var now int64
 	var minimumRevision uint64
-	err := d.Repo.Tx(ctx, func(tx store.Repository) error {
+	err := d.withDeviceListTransaction(ctx, func(ctx context.Context, tx store.Repository) error {
 		if err := tx.LockCommunity(ctx, req.Session.Bot.CommunityID); err != nil {
 			return err
 		}

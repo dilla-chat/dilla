@@ -1,0 +1,30 @@
+/* README §5.9, the prototype's Server settings → Roles (Task 10c): a 200px role list beside the editor, 18px apart, top
+   aligned; at a phone's width (the editor's own width, so it also holds in a narrow frame) the list sits above it. */
+.d-role-editor { container-type: inline-size; min-width: 0; font-family: var(--font-mono); }
+/* The prototype's role editor sets no box-sizing on a permission row: 46px of content, then the 6px padding and the
+   hairline, 59px in all. Channel permissions keep PermissionGrid's own 46px rows (fix round 1, M5). */
+.d-role-editor .d-permission-grid__row { box-sizing: content-box; }
+.d-role-editor__grid { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 18px; align-items: start; }
+@container (max-width: 34rem) { .d-role-editor__grid { grid-template-columns: minmax(0, 1fr); } }
+
+/* The list: 36px rows 2px apart, radius 6; the selected row on --surface-hi, a hover on --hover over 140ms; a 10px colour
+   dot, the name 12.5px, the member count 10.5px --fg-3. "New role" is the accent's 12px row with a 14px plus. */
+.d-role-editor__list { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.d-role-editor__role, .d-role-editor__new { box-sizing: border-box; display: flex; align-items: center; width: 100%; height: 2.25rem; padding: 0 10px; font: inherit; text-align: start; background: transparent; border: 0; border-radius: var(--r-md); cursor: pointer; transition: background var(--duration-hover); }
+.d-role-editor__role { gap: 10px; color: var(--fg); }
+.d-role-editor__role:hover, .d-role-editor__new:hover { background: var(--hover); }
+.d-role-editor__role[aria-current="true"] { background: var(--surface-hi); }
+.d-role-editor__dot { flex: none; width: 10px; height: 10px; background: var(--d-role-dot); border-radius: var(--r-pill); transition: background var(--duration-turn); }
+.d-role-editor__name { flex: 1; min-width: 0; overflow: hidden; font-size: var(--text-sm); text-overflow: ellipsis; white-space: nowrap; }
+.d-role-editor__count { font-size: var(--text-meta); color: var(--fg-3); }
+.d-role-editor__new { gap: 8px; font-size: var(--text-ui); color: var(--accent); }
+
+/* The editor: 16px between its parts; the name field (flex 1 1 200px) and the colours wrap on one line, bottom aligned. */
+.d-role-editor__editor { display: grid; gap: 16px; min-width: 0; }
+.d-role-editor__head { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-end; }
+.d-role-editor__field { flex: 1 1 200px; }
+.d-role-editor__head .d-color-swatches__group { padding: 0; }
+.d-role-editor__status { margin: 0; font-size: var(--text-xs); color: var(--fg-2); }
+.d-role-editor__status:empty { display: none; }
+.d-role-editor__status[role="alert"] { color: var(--danger); }
+@media (prefers-reduced-motion: reduce) { .d-role-editor__role, .d-role-editor__new, .d-role-editor__dot { transition: none; } }

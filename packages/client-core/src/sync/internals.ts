@@ -41,6 +41,8 @@ export interface SyncInternals {
   /** `${group hex}:${msg hex}` of rows a leaf verdict refused at send_encrypt: their one trust refresh is out, or done. */
   trustRetried: Map<string, 'pending' | 'done'>;
   resyncTried: Set<string>;
+  /** Advances only after a successful replacement of local membership. */
+  readonly recoveryGeneration: Map<string, bigint>;
   quiet: Set<string>;
   /** Unexpected groups already reported to onUnexpectedWelcome; cleared when the expected set changes. */
   unexpectedReported: Set<string>;

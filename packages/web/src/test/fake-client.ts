@@ -1,17 +1,16 @@
-import { createElement, type FunctionComponent, type ReactNode } from 'react';
+import { createElement, type FunctionComponent } from 'react';
 import { vi } from 'vitest';
 import { act, render } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { CallKeys, CallState, ChannelSummary, Command, CoreClient, DmSummary, MemberSummary, Ring, SliceName, SliceTypes,
   SendBlocksState, TrustSummary, VoiceState } from '@dilla/client-core';
 import { CALL_IDLE } from '@dilla/client-core';
-import type { PageCall, PageCallState } from '../call/session.ts';
+import type { PageCall, PageCallState, ShareOptions, TileStats } from '../call/session.ts';
 import type { UiError } from '../core/errors.ts';
 import { CoreProvider } from '../core/context.tsx';
-import { Settings } from '../screens/Settings.tsx';
 import { Shell } from '../screens/Shell.tsx';
 import { VoiceDepsContext, type VoiceDeps, type VoiceModule } from '../screens/voice/useCall.tsx';
-import { useRoute } from '../router.ts';
+import { replaceHistoryState } from '../router.ts';
 import { account, ME } from './fixtures.ts';
 
 /** What a refused call rejects with: the four fields of the worker's error, as the bridge's CoreCallError carries them. */
@@ -128,7 +127,7 @@ export function bobChanged(): TrustSummary {
 export class FakeSession implements PageCall {
   state: PageCallState = { phase: 'connected', muted: false, deafened: false, camera: false, sharing: false, paused: false, mic: 'ok',
     tiles: [], level: 0, error: null, mode: 'vad', speaking: false, localCamera: null, localScreen: null, shareAudio: null, shareSource: null, noise: 'on', audioBlocked: false,
-    audio: { attached: 0, expected: 0 } };
+    audio: { attached: 0, expected: 0 }, shareCapBps: 2_500_000 };
   readonly log: string[];
   private readonly fns = new Set<() => void>();
   readonly setPaused = vi.fn((on: boolean) => { this.log.push(`setPaused:${String(on)}`); this.update({ paused: on }); return Promise.resolve(); });
@@ -164,10 +163,25 @@ export class FakeSession implements PageCall {
   }
   readonly setMode = vi.fn((mode: 'vad' | 'ptt') => { this.log.push(`mode:${mode}`); this.update({ mode }); });
   readonly setNoise = vi.fn((noise: 'on' | 'off') => { this.log.push(`noise:${noise}`); this.update({ noise }); return Promise.resolve(); });
+  // Signal task 10b: Settings → Voice's levels and switches during the call.
+  readonly setInputVolume = vi.fn((p: number) => { this.log.push(`inputVolume:${p}`); });
+  readonly setOutputVolume = vi.fn((p: number) => { this.log.push(`outputVolume:${p}`); });
+  readonly setSensitivity = vi.fn((s: { auto: boolean; thresholdDb: number }) => { this.log.push(`sensitivity:${s.auto ? 'auto' : s.thresholdDb}`); });
+  readonly setPttRelease = vi.fn((ms: number) => { this.log.push(`pttRelease:${ms}`); });
+  readonly setProcessing = vi.fn((p: { echo: boolean; agc: boolean }) => { this.log.push(`processing:${p.echo ? 'echo' : '-'}/${p.agc ? 'agc' : '-'}`); return Promise.resolve(); });
   setMuted(on: boolean): void { this.log.push(`muted:${String(on)}`); this.update({ muted: on }); }
   setDeafened(on: boolean): void { this.log.push(`deafened:${String(on)}`); this.update({ deafened: on, muted: on || this.state.muted }); }
   readonly setCamera = vi.fn((on: boolean): Promise<void> => { this.update({ camera: on }); return Promise.resolve(); });
-  setSharing(on: boolean): Promise<void> { this.update({ sharing: on }); return Promise.resolve(); }
+  /** Task 8c: the options of the last share start and Apply. */
+  shareOptions: ShareOptions | undefined;
+  setSharing(on: boolean, options?: ShareOptions): Promise<void> {
+    if (on) this.shareOptions = options;
+    this.update({ sharing: on });
+    return Promise.resolve();
+  }
+  readonly setShareOptions = vi.fn((options: ShareOptions): Promise<void> => { this.shareOptions = options; return Promise.resolve(); });
+  tileStatsValue: TileStats = { ownAudio: null, ownScreen: null, screens: {} };
+  readonly tileStats = vi.fn((): Promise<TileStats> => Promise.resolve(this.tileStatsValue));
 }
 
 export interface FakeSounds { played: ('join' | 'leave')[]; ringing: boolean; starts: number }
@@ -204,15 +218,13 @@ export interface VoiceHarnessOptions {
 /** A call AudioContext double (VoiceDeps.createCallContext): which one, and whether it was closed. */
 export interface FakeCallContext { n: number; closed: boolean; close(): Promise<void> }
 
-function Root({ withSettings, update }: { withSettings: boolean; update?: import('../screens/Shell.tsx').ShellUpdateDeps }) {
-  const [route] = useRoute();
-  // As App does: Settings goes to the shell as its page, which a phone puts inside the shell and a desktop after it.
-  return createElement(Shell as FunctionComponent<{ update?: import('../screens/Shell.tsx').ShellUpdateDeps; page?: ReactNode }>,
-    { update, page: withSettings && route.name === 'settings' ? createElement(Settings) : null });
+function Root({ update }: { update?: import('../screens/Shell.tsx').ShellUpdateDeps }) {
+  // The shipping Shell owns both settings workspaces and keeps the media runtime mounted beneath them.
+  return createElement(Shell as FunctionComponent<{ update?: import('../screens/Shell.tsx').ShellUpdateDeps }>, { update });
 }
 
 export function renderVoiceShell(o: VoiceHarnessOptions = {}) {
-  window.history.replaceState(null, '', o.path ?? `/c/${A}/${GENV}`);
+  replaceHistoryState(null, '', o.path ?? `/c/${A}/${GENV}`);
   const log: string[] = [];
   const sessions: FakeSession[] = [];
   const notifications: FakeNote[] = [];
@@ -324,7 +336,7 @@ export function renderVoiceShell(o: VoiceHarnessOptions = {}) {
     }),
   };
   const user = userEvent.setup();
-  const tree = createElement(VoiceDepsContext.Provider, { value: deps }, createElement(Root, { withSettings: o.withSettings ?? false, update: o.update }));
+  const tree = createElement(VoiceDepsContext.Provider, { value: deps }, createElement(Root, { update: o.update }));
   const view = render(createElement('div', { className: 'd-root' }, createElement(CoreProvider, { client: fake, children: tree })));
   return {
     client: fake,

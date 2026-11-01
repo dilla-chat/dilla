@@ -21,8 +21,9 @@ import (
 )
 
 var (
-	ErrBinding      = errors.New("music livekit: call media binding rejected")
-	ErrEpochChanged = errors.New("music livekit: call media epoch changed")
+	ErrBinding        = errors.New("music livekit: call media binding rejected")
+	ErrEpochChanged   = errors.New("music livekit: call media epoch changed")
+	ErrRoomConnection = errors.New("music livekit: room connection failed")
 )
 
 const epochPollInterval = 2 * time.Second
@@ -42,17 +43,22 @@ type sourceLifecycle interface {
 	Close() error
 }
 
-// Session owns a LiveKit connection and the bounded music encoder session.
-// It ends when the parent context is cancelled, its lifetime expires, the
-// encoder ends, or the call's MLS epoch changes.
+// Session owns one LiveKit track publication and its bounded music encoder
+// session. A standalone session also owns its room; a pooled session leaves
+// the authorized room connected when the track completes.
 type Session struct {
-	room   publisherRoom
-	source sourceLifecycle
-	cancel context.CancelFunc
-	done   chan struct{}
-	mu     sync.RWMutex
-	err    error
-	once   sync.Once
+	room       publisherRoom
+	source     sourceLifecycle
+	cancel     context.CancelFunc
+	done       chan struct{}
+	unpublish  func() error
+	stopParent func() bool
+	pool       *Pool
+	generation uint64
+	sender     *sframe.Sender
+	mu         sync.RWMutex
+	err        error
+	once       sync.Once
 }
 
 // Start validates the call/group binding, obtains the current MLS sender,
@@ -63,61 +69,65 @@ func Start(ctx context.Context, call client.Call, boundGroup id.ID, epochs Epoch
 		boundGroup.IsZero() || call.GroupID != boundGroup || call.LiveKitURL == "" || call.Token == "" {
 		return nil, ErrBinding
 	}
+	ctx = client.WithoutCooperativeStop(client.WithBackground(ctx))
 	epoch, err := epochs.CallMediaEpoch(ctx, boundGroup)
-	if err != nil {
-		_ = source.Close()
-		return nil, errors.New("music livekit: call media key lookup failed")
+	if err == nil {
+		err = validateSenderEpoch(epoch)
 	}
-	if err := validateSenderEpoch(epoch); err != nil {
+	if err = startStage(ctx, "media_epoch", err); err != nil {
 		_ = source.Close()
 		return nil, err
 	}
 	state, ok := epochs.(counter.State)
 	if !ok {
 		_ = source.Close()
-		return nil, ErrBinding
+		return nil, startStage(ctx, "counter_reserve", ErrBinding)
 	}
 	sender, err := senderForReservedEpoch(ctx, state, boundGroup, epoch)
-	if err != nil {
+	if err = startStage(ctx, "counter_reserve", err); err != nil {
 		_ = source.Close()
 		return nil, err
 	}
+
 	if err := ctx.Err(); err != nil {
 		_ = source.Close()
-		return nil, err
+		return nil, startStage(ctx, "room_connect", err)
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	callback := publisherRoomCallback(cancel)
-	room, err := lksdk.ConnectToRoomWithToken(call.LiveKitURL, call.Token, callback, lksdk.WithAutoSubscribe(false))
+	logger := newSDKLogger(ctx)
+	room, err := lksdk.ConnectToRoomWithToken(call.LiveKitURL, call.Token, callback, lksdk.WithAutoSubscribe(false), lksdk.WithLogger(logger))
 	if err != nil {
 		cancel()
 		_ = source.Close()
-		return nil, errors.New("music livekit: room connection failed")
+		return nil, startStage(ctx, "room_connect", connectionFailure(logger.wrap(err)))
 	}
 	if err := runCtx.Err(); err != nil {
 		room.Disconnect()
 		cancel()
 		_ = source.Close()
-		return nil, err
+		return nil, startStage(ctx, "room_connect", err)
 	}
 	if err := revalidateEpoch(runCtx, boundGroup, epochs, epoch); err != nil {
 		room.Disconnect()
 		cancel()
 		_ = source.Close()
-		return nil, err
+		return nil, startStage(ctx, "room_connect", err)
 	}
+	_ = startStage(ctx, "room_connect", nil)
 	if _, err := media.PublishLiveOpus(room, source.Provider(), sender); err != nil {
 		room.Disconnect()
 		cancel()
 		_ = source.Close()
-		return nil, errors.New("music livekit: track publication failed")
+		return nil, startStage(ctx, "track_publish", err)
 	}
 	if err := runCtx.Err(); err != nil {
 		room.Disconnect()
 		cancel()
 		_ = source.Close()
-		return nil, err
+		return nil, startStage(ctx, "track_publish", err)
 	}
+	_ = startStage(ctx, "track_publish", nil)
 	s := &Session{room: room, source: source, cancel: cancel, done: make(chan struct{})}
 	go s.monitor(runCtx, boundGroup, epochs, epoch, lifetime)
 	return s, nil
@@ -138,7 +148,7 @@ func senderForReservedEpoch(ctx context.Context, state counter.State, group id.I
 	leaf := uint16(epoch.OwnLeaf)
 	reserved, err := counter.Reserve(ctx, state, group, epoch.Epoch, leaf)
 	if err != nil {
-		return nil, errors.New("music livekit: sender counter reservation failed")
+		return nil, fmt.Errorf("music livekit: sender counter reservation failed: %w", err)
 	}
 	sender, err := sframe.NewSenderRange(epoch.BaseKey, leaf, epoch.Epoch, reserved.Start, reserved.End)
 	if err != nil {
@@ -196,7 +206,7 @@ func (s *Session) monitor(ctx context.Context, groupID id.ID, epochs EpochSource
 func revalidateEpoch(ctx context.Context, callID id.ID, epochs EpochSource, initial native.CallMediaEpoch) error {
 	current, err := epochs.CallMediaEpoch(ctx, callID)
 	if err != nil {
-		return errors.New("music livekit: call media key lookup failed")
+		return fmt.Errorf("music livekit: call media key lookup failed: %w", err)
 	}
 	return epochStillBound(current, initial)
 }
@@ -217,14 +227,26 @@ func epochStillBound(current, initial native.CallMediaEpoch) error {
 }
 
 func (s *Session) finish(err error) {
+	var unpublishErr error
 	s.once.Do(func() {
 		s.mu.Lock()
 		s.err = err
 		s.mu.Unlock()
 		s.cancel()
-		s.room.Disconnect()
+		if s.stopParent != nil {
+			s.stopParent()
+		}
+		if s.unpublish != nil {
+			unpublishErr = s.unpublish()
+		}
+		if s.room != nil {
+			s.room.Disconnect()
+		}
 		_ = s.source.Close()
 	})
+	if unpublishErr != nil && s.pool != nil {
+		s.pool.markDead(s.generation, errors.New("music livekit: track unpublication failed"))
+	}
 }
 
 // Done closes after room and encoder cleanup have completed.

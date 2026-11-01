@@ -7,9 +7,10 @@ require (
 	github.com/coder/websocket v1.8.15
 	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/fxamacker/cbor/v2 v2.9.4
-	github.com/go-jose/go-jose/v4 v4.1.5
+	github.com/go-jose/go-jose/v4 v4.1.6
 	github.com/go-logr/logr v1.4.4
 	github.com/go-webauthn/webauthn v0.18.2
+	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/libdns/libdns v1.1.1
 	github.com/livekit/livekit-server v1.13.7
@@ -36,6 +37,7 @@ require (
 	github.com/twitchtv/twirp v8.1.3+incompatible
 	golang.org/x/crypto v0.57.0
 	golang.org/x/oauth2 v0.37.0
+	golang.org/x/sys v0.48.0
 	golang.org/x/text v0.42.0
 	golang.org/x/time v0.16.0
 	google.golang.org/protobuf v1.36.12
@@ -72,7 +74,6 @@ require (
 	github.com/google/go-tpm v0.9.8 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/google/wire v0.7.0 // indirect
-	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 // indirect
 	github.com/hashicorp/go-cleanhttp v0.5.2 // indirect
 	github.com/hashicorp/go-retryablehttp v0.7.8 // indirect
 	github.com/hashicorp/go-version v1.9.0 // indirect
@@ -148,7 +149,6 @@ require (
 	golang.org/x/mod v0.41.0 // indirect
 	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
-	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/tools v0.49.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260831171406-18b4a7587f8a // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260831171406-18b4a7587f8a // indirect
@@ -167,3 +167,6 @@ replace github.com/pion/webrtc/v4 => github.com/livekit/webrtc-pion/v4 v4.2.18-w
 replace github.com/pion/dtls/v3 => github.com/livekit/dtls/v3 v3.1.5-warp.1
 
 replace github.com/pion/ice/v4 => github.com/livekit/ice/v4 v4.4.0-warp.2
+
+// Pion's published permission timer race fix, backported without the transport/v5 API migration.
+replace github.com/pion/turn/v5 => ./third_party/pion-turn

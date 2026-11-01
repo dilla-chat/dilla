@@ -25,15 +25,71 @@ function setup(path: string, from: string | null, seed?: (fake: FakeClient) => v
   const view = render(<div className="d-root"><CoreProvider client={fake}><Settings /></CoreProvider></div>);
   return { fake, user, view };
 }
-const nav = () => screen.getByRole('navigation', { name: 'settings sections' });
+const nav = () => screen.getByRole('navigation', { name: 'Settings sections' });
+const navButton = (name: string) => within(nav()).getByRole('button', { name: new RegExp(`^${name}$`, 'i') });
 
 describe('Settings', () => {
+  // Task 11 (Jonas, Q7): Profile saves as you type; the shared footer shows only while a change cannot be saved.
+  it('saves Profile edits as you type, with no footer', async () => {
+    const { fake, user } = setup('/settings/profile', null);
+    const status = screen.getByRole('textbox', { name: /status message/i });
+    await user.type(status, 'here');
+    expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+    await waitFor(() => expect(fake.callsOf('updateProfile')).toEqual([{ m: 'updateProfile', statusMsg: 'here' }]), { timeout: 3000 });
+    expect(await screen.findByText('Profile saved')).toBeInTheDocument();
+  });
+  it('keeps failed Profile edits available in the footer and resets them to the latest account values', async () => {
+    const { fake, user } = setup('/settings/profile', null);
+    const status = screen.getByRole('textbox', { name: /status message/i });
+    fake.handler = () => Promise.reject(refusal({ code: 'E_NETWORK', status: 0 }));
+    await user.type(status, 'draft');
+    expect(await screen.findByRole('alert', {}, { timeout: 3000 })).toHaveTextContent('Could not save your profile. Try again.');
+    expect(status).toHaveValue('draft');
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
+    await user.click(screen.getByRole('button', { name: 'Reset' }));
+    expect(status).toHaveValue('');
+    expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+  });
   it('focuses every selected section heading', async () => {
     const { user } = setup('/settings/devices', null);
-    for (const [section, heading] of [['sign-in', 'Sign-in'], ['notifications', 'Notifications'], ['appearance', 'Appearance'], ['voice', 'Voice'], ['privacy', 'Privacy'], ['keyboard', 'Keyboard'], ['diagnostics', 'Diagnostics'], ['devices', 'Devices']]) {
-      await user.click(within(nav()).getByRole('button', { name: section }));
+    for (const [section, heading] of [['Sign-in', 'Sign-in'], ['Notifications', 'Notifications'], ['Appearance', 'Appearance'], ['Voice', 'Voice'], ['Privacy', 'Privacy'], ['Keyboard', 'Keyboard'], ['Diagnostics', 'Diagnostics'], ['Devices', 'Devices']]) {
+      await user.click(navButton(section));
       expect(screen.getByRole('heading', { name: heading, level: 2 })).toHaveFocus();
     }
+  });
+  // Task 10 fix round 1 (README §5.10): a phone has no settings index; /settings opens Profile, as the prototype's You tab
+  // does, with the nav's chips above it; the chips switch sections.
+  it('opens Profile on a phone, and a section keeps the nav as chips', async () => {
+    window.matchMedia = ((query: string) => ({ matches: query === PHONE_QUERY, media: query,
+      addEventListener: () => undefined, removeEventListener: () => undefined })) as unknown as typeof window.matchMedia;
+    try {
+      const { user } = setup('/settings', '/you');
+      const dialog = screen.getByRole('dialog', { name: 'Settings' });
+      expect(dialog).toHaveAttribute('data-phone-page', 'section');
+      expect(within(dialog).getByRole('heading', { level: 2, name: 'Profile' })).toBeInTheDocument();
+      expect(within(dialog).getByRole('button', { name: 'Profile' })).toHaveAttribute('aria-current', 'page');
+      await user.click(within(dialog).getByRole('button', { name: 'Devices' }));
+      expect(window.location.pathname).toBe('/settings/devices');
+      expect(within(dialog).queryByRole('button', { name: 'Back to settings' })).toBeNull();
+      expect(within(dialog).getByRole('button', { name: 'Close settings' })).toBeInTheDocument();
+    } finally { Reflect.deleteProperty(window, 'matchMedia'); }
+  });
+  it('does not focus a matching heading outside the settings content after a privacy comparison', async () => {
+    const record = { userId: 'aa'.repeat(16), name: 'Ada', shared: true, umk: 'bb'.repeat(32), firstSeen: 1, verified: false, changedUmk: null };
+    const { fake, user } = setup('/settings/privacy', null, client => client.set('trust', [record]));
+    fake.handler = command => command.m === 'safetyNumber' ? Promise.resolve('00001 '.repeat(11) + '00012') : Promise.resolve(null);
+    const outside = document.createElement('h2');
+    outside.dataset.privacyHeading = '';
+    outside.textContent = 'Privacy outside settings';
+    document.body.append(outside);
+    try {
+      await user.click(screen.getByRole('button', { name: 'Compare with Ada' }));
+      await screen.findByText('00012');
+      await user.click(screen.getByRole('checkbox', { name: 'Yes, all 12 blocks match' }));
+      await user.click(screen.getByRole('button', { name: 'All 12 blocks match' }));
+      await waitFor(() => expect(screen.getByRole('heading', { name: 'Privacy', level: 2 })).toHaveFocus());
+      expect(outside).not.toHaveFocus();
+    } finally { outside.remove(); }
   });
   it('keeps comparison open and reports a refused changed-key verification', async () => {
     const userId = 'aa'.repeat(16);
@@ -104,10 +160,10 @@ describe('Settings', () => {
   it('opens as a dialog on the section of the path, with its heading focused', async () => {
     const { fake, view } = setup('/settings/devices', `/c/${C}/${CH}`);
     const dialog = screen.getByRole('dialog', { name: 'Settings' });
-    expect(within(dialog).getByRole('heading', { level: 1, name: 'Settings' })).toHaveFocus();
+    expect(within(dialog).getByRole('heading', { level: 2, name: 'Devices' })).toHaveFocus();
     const items = within(nav()).getAllByRole('button');
-    expect(items).toEqual(['profile', 'devices', 'sign-in', 'notifications', 'appearance', 'voice', 'privacy', 'keyboard', 'diagnostics'].map(name => within(nav()).getByRole('button', { name })));
-    expect(within(nav()).getByRole('button', { name: 'devices' })).toHaveAttribute('aria-current', 'page');
+    expect(items).toEqual(['Profile', 'Sign-in', 'Devices', 'Notifications', 'Voice', 'Keyboard', 'Appearance', 'Privacy', 'Diagnostics'].map(name => navButton(name)));
+    expect(navButton('Devices')).toHaveAttribute('aria-current', 'page');
     expect(screen.getByRole('heading', { level: 2, name: 'Devices' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Close settings' })).toBeInTheDocument();
     expect(fake.callsOf('refreshDevices')).toEqual([{ m: 'refreshDevices' }]);
@@ -116,14 +172,14 @@ describe('Settings', () => {
   it('switches sections in place, keeping where it came from', async () => {
     const { user, view } = setup('/settings/devices', `/c/${C}/${CH}`);
     const depth = window.history.length;
-    await user.click(within(nav()).getByRole('button', { name: 'notifications' }));
+    await user.click(navButton('Notifications'));
     expect(window.location.pathname).toBe('/settings/notifications');
     expect(window.history.length).toBe(depth);
-    expect(window.history.state).toEqual({ settingsFrom: `/c/${C}/${CH}` });
+    expect(window.history.state).toMatchObject({ settingsFrom: `/c/${C}/${CH}` });
     expect(screen.getByRole('heading', { level: 2, name: 'Notifications' })).toBeInTheDocument();
-    expect(within(nav()).getByRole('button', { name: 'notifications' })).toHaveAttribute('aria-current', 'page');
+    expect(navButton('Notifications')).toHaveAttribute('aria-current', 'page');
     await expectNoAxeViolations(view.container);
-    await user.click(within(nav()).getByRole('button', { name: 'appearance' }));
+    await user.click(navButton('Appearance'));
     expect(screen.getByRole('heading', { level: 2, name: 'Appearance' })).toBeInTheDocument();
     await expectNoAxeViolations(view.container);
   });
@@ -133,7 +189,7 @@ describe('Settings', () => {
     await user.keyboard('{Escape}');
     expect(window.location.pathname).toBe(`/c/${C}/${CH}`);
     expect(window.history.length).toBe(depth);
-    expect(window.history.state).toBeNull();
+    expect((window.history.state as Record<string, unknown>)?.settingsFrom).toBeUndefined();
     expect(screen.queryByRole('dialog')).toBeNull();
   });
   it('closes by the live layout: a viewport flipped back to desktop closes the desktop way in the same tick', async () => {
@@ -152,7 +208,7 @@ describe('Settings', () => {
   });
   it('closes to / from a deep link, by the close button', async () => {
     const { user } = setup('/settings', null);
-    expect(screen.getByRole('heading', { level: 2, name: 'Devices' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 2, name: 'Profile' })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Close settings' }));
     expect(window.location.pathname).toBe('/');
   });
@@ -166,8 +222,8 @@ describe('Settings', () => {
     const { fake, user, view } = setup('/settings/devices', null, client => {
       client.set('trust', [{ userId, name: 'Ada', shared: true, umk, firstSeen: 1, verified: false, changedUmk: null }]);
     });
-    expect(within(nav()).getAllByRole('button').map(button => button.textContent)).toEqual(['profile', 'devices', 'sign-in', 'notifications', 'appearance', 'voice', 'privacy', 'keyboard', 'diagnostics']);
-    await user.click(within(nav()).getByRole('button', { name: 'privacy' }));
+    expect(within(nav()).getAllByRole('button').map(button => button.textContent)).toEqual(['Profile', 'Sign-in', 'Devices', 'Notifications', 'Voice', 'Keyboard', 'Appearance', 'Privacy', 'Diagnostics']);
+    await user.click(navButton('Privacy'));
     expect(screen.getByRole('heading', { name: 'Privacy' })).toBeInTheDocument();
     expect(screen.getByText('Ada')).toBeInTheDocument();
     expect(screen.getByText('First seen here — not verified')).toBeInTheDocument();
@@ -182,7 +238,7 @@ describe('Settings', () => {
     const { user } = setup('/settings/privacy', null, client => {
       client.set('trust', [{ userId: 'aa'.repeat(16), name: 'Ada', shared: false, umk: 'bb'.repeat(32), firstSeen: 1, verified: false, changedUmk: null }]);
     });
-    await user.click(within(nav()).getByRole('button', { name: 'privacy' }));
+    await user.click(navButton('Privacy'));
     expect(screen.getByText('Open a conversation with this person to compare numbers.')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Compare with Ada' })).toBeNull();
   });
@@ -255,16 +311,16 @@ describe('Settings', () => {
     const { fake, user } = setup('/settings/devices', `/c/${C}/${CH}`);
     fake.handler = c => (c.m === 'revokeDevice' ? new Promise(() => {}) : Promise.resolve(null));
     act(() => fake.set('devices', devices));
-    await user.click(screen.getByRole('button', { name: 'remove' }));
+    await user.click(screen.getByRole('button', { name: 'Remove' }));
     expect(screen.getByRole('dialog', { name: 'Remove this device?' })).toBeInTheDocument();
     await user.keyboard('{Escape}');
     expect(screen.queryByRole('dialog', { name: 'Remove this device?' })).toBeNull();
     expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument();
     expect(window.location.pathname).toBe('/settings/devices');
-    await user.click(screen.getByRole('button', { name: 'remove' }));
+    await user.click(screen.getByRole('button', { name: 'Remove' }));
     await user.click(screen.getByRole('textbox', { name: 'Recovery key' }));
     await user.paste('7K2M-QX9D-H4TB-R8NW-C3VF-J6PZ-A1GE-Y5KS-M0QT-B7XH-W2DN-F9RC-P4ZA');
-    await user.click(screen.getByRole('button', { name: 'Remove' }));
+    await user.click(within(screen.getByRole('dialog', { name: 'Remove this device?' })).getByRole('button', { name: 'Remove' }));
     expect(screen.getByRole('button', { name: 'Working…' })).toHaveFocus();
     await user.keyboard('{Escape}');
     expect(fake.callsOf('revokeDevice')).toHaveLength(1);

@@ -1030,3 +1030,26 @@ func TestPrivateMessageAADRefusesAnythingButThirtyTwoBytes(t *testing.T) {
 		}
 	}
 }
+
+// A deferred cleanup trap can poison a handle after its last nominal result.
+// No subsequent public call may invoke even a healthy-looking guest through it.
+func TestCallRejectsPoisonedLeaseBeforeGuestInvocation(t *testing.T) {
+	var calls int
+	r := newTestRuntime(t, Options{PoolSize: 1, OnCall: func(string) { calls++ }})
+	inst, err := r.Acquire(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer inst.Release()
+	inst.poisoned = true
+	req, err := encodeRequest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := inst.Call(t.Context(), "dilla_abi", req); !errors.Is(err, ErrTrap) {
+		t.Fatalf("poisoned call error=%v want ErrTrap", err)
+	}
+	if calls != 0 {
+		t.Fatalf("poisoned lease invoked guest %d times", calls)
+	}
+}

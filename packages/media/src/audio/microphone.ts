@@ -13,11 +13,18 @@ export interface ProcessorStatus {
   browserNoise: BrowserNoise;
   vad: 'rnnoise' | 'unavailable';
 }
+/** Signal task 10b: the browser's echo cancellation and automatic gain control (Settings → Voice → Processing), on by default. */
+export interface CaptureProcessing { echo: boolean; agc: boolean }
+export const DEFAULT_PROCESSING: CaptureProcessing = { echo: true, agc: true };
+/** The capture constraints for the processing switches. */
+export function processingConstraints(p: CaptureProcessing = DEFAULT_PROCESSING): { echoCancellation: boolean; autoGainControl: boolean } {
+  return { echoCancellation: p.echo, autoGainControl: p.agc };
+}
 /** Never infer successful constraint application merely because its Promise resolved. */
-export async function setBrowserSuppression(track: MediaStreamTrack, enabled: boolean): Promise<BrowserNoise> {
+export async function setBrowserSuppression(track: MediaStreamTrack, enabled: boolean, processing: CaptureProcessing = DEFAULT_PROCESSING): Promise<BrowserNoise> {
   const supported = typeof navigator === 'undefined' ? undefined : navigator.mediaDevices?.getSupportedConstraints?.().noiseSuppression;
   if (supported === false) return 'unsupported';
-  try { await track.applyConstraints({ ...track.getConstraints(), noiseSuppression: enabled, echoCancellation: true, autoGainControl: true }); } catch { /* inspect actual settings below */ }
+  try { await track.applyConstraints({ ...track.getConstraints(), noiseSuppression: enabled, ...processingConstraints(processing) }); } catch { /* inspect actual settings below */ }
   const actual = track.getSettings?.().noiseSuppression;
   return actual === true ? 'on' : actual === false ? 'off' : 'unknown';
 }
@@ -37,6 +44,8 @@ export interface MicrophoneOptions {
   mode?: GateMode;
   allowed?: boolean;
   onStatus?(status: ProcessorStatus): void;
+  /** Signal task 10b: echo cancellation and automatic gain for every capture this processor opens or reshapes. */
+  processing?: CaptureProcessing;
   createEnhanced?(options: EnhancedOptions): Promise<InnerProcessor | null>;
   createLightweight?(options: RnnoiseProcessorOptions): InnerProcessor;
 }
@@ -58,18 +67,20 @@ export class DillaMicrophoneProcessor implements TrackProcessor<Track.Kind.Audio
   private restarting = 0;
   private pendingFallback: ProcessorStatus['reason'] | undefined;
   private destroying?: Promise<void>;
+  private processing: CaptureProcessing;
   constructor(private readonly options: MicrophoneOptions) {
+    this.processing = options.processing ?? DEFAULT_PROCESSING;
     this.allowed = options.allowed ?? false; this.mode = options.mode ?? 'vad';
     this.status = { requested: options.preference, effective: 'initializing', reason: null, browserNoise: 'unknown', vad: 'unavailable' };
   }
   private report(patch: Partial<ProcessorStatus>): void { this.status = { ...this.status, ...patch }; this.options.onStatus?.(this.status); }
   /** Chromium can fix NS for a capture's lifetime. Reopen the same device only after the engine is ready. */
   private async capture(track: MediaStreamTrack, enabled: boolean, generation: number): Promise<{track: MediaStreamTrack; noise: BrowserNoise}> {
-    const noise = await setBrowserSuppression(track, enabled);
+    const noise = await setBrowserSuppression(track, enabled, this.processing);
     const deviceId = track.getSettings?.().deviceId;
     if (generation !== this.generation || noise === (enabled ? 'on' : 'off') || noise === 'unsupported' || !deviceId || typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) return {track,noise};
     let abandoned = false, timer: ReturnType<typeof setTimeout> | undefined;
-    const pending = navigator.mediaDevices.getUserMedia({audio:{...track.getConstraints(), deviceId:{exact:deviceId}, channelCount:1, sampleRate:48000, noiseSuppression:enabled, echoCancellation:true, autoGainControl:true}}).then(stream => {
+    const pending = navigator.mediaDevices.getUserMedia({audio:{...track.getConstraints(), deviceId:{exact:deviceId}, channelCount:1, sampleRate:48000, noiseSuppression:enabled, ...processingConstraints(this.processing)}}).then(stream => {
       for (const t of stream.getTracks()) t.enabled = false;
       if (abandoned || generation !== this.generation) { for (const t of stream.getTracks()) t.stop(); throw Error('Capture cancelled'); }
       return stream;
@@ -123,7 +134,7 @@ export class DillaMicrophoneProcessor implements TrackProcessor<Track.Kind.Audio
         await inner.destroy();
         if (generation !== this.generation) return;
         this.inner = undefined; this.processedTrack = this.fallbackTrack = opts.track.clone();
-        this.report({ effective: 'browser', reason: 'browser-refused', browserNoise: await setBrowserSuppression(opts.track, true), vad: 'unavailable' });
+        this.report({ effective: 'browser', reason: 'browser-refused', browserNoise: await setBrowserSuppression(opts.track, true, this.processing), vad: 'unavailable' });
       } else {
         this.processedTrack = inner.processedTrack;
         this.report({ engineName: effective === 'deepfilter' ? 'DeepFilterNet3' : 'RNNoise', effective: this.options.preference === 'off' ? 'off' : effective, browserNoise, vad: 'rnnoise', reason: browserNoise === 'on' || browserNoise === 'unknown' ? 'browser-refused' : reason });
@@ -202,6 +213,8 @@ export class DillaMicrophoneProcessor implements TrackProcessor<Track.Kind.Audio
     for (const track of this.replacement?.getTracks() ?? []) track.enabled = send;
     if (this.processedTrack) this.processedTrack.enabled = send;
   }
+  /** Signal task 10b: the processing switches for the next capture (the session restarts the track to apply them). */
+  setProcessing(processing: CaptureProcessing): void { this.processing = processing; }
   setPttActive(active: boolean): void { this.ptt = active; this.inner?.setPttActive(active); this.setCaptureAllowed(this.allowed); }
   setMode(mode: GateMode): void { this.mode = mode; this.inner?.setMode?.(mode); this.setCaptureAllowed(this.allowed); }
   flush(): void { this.inner?.flush?.(); }

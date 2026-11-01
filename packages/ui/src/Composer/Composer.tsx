@@ -1,8 +1,8 @@
 import {
-  useId, useState, type ChangeEvent, type ClipboardEvent, type FormEvent, type KeyboardEvent, type ReactNode, type Ref,
+  useId, useLayoutEffect, useRef, useState, type ChangeEvent, type ClipboardEvent, type FormEvent, type KeyboardEvent, type ReactNode, type Ref,
   type SyntheticEvent,
 } from 'react';
-import { Button } from '../Button/Button.tsx';
+import { Icon } from '../Icon/Icon.tsx';
 import './Composer.css';
 
 /** The keys the composer hands to an attached list (the mention list) before its own rules. */
@@ -52,6 +52,26 @@ export interface ComposerProps {
   textareaRef?: Ref<HTMLTextAreaElement>;
   /** Send a blank text (an attachment-only message): the owner passes it while the tray holds an entry. */
   canSendEmpty?: boolean;
+  /**
+   * The emoji picker's opener in the footer (README §5.5): toggles the owner's picker panel, as `gif` does. A pick is the
+   * owner's to insert (`insertAtCaret` on the textarea ref is not needed: the owner holds the text).
+   */
+  emoji?: { label: string; open: boolean; controls?: string; onToggle(): void; buttonRef?: Ref<HTMLButtonElement> };
+  /** The `</>` button: inserts a fenced code block and puts the caret inside it. `label` names it. */
+  codeLabel?: string;
+  /** Someone else typing: the footer's "Björn is typing…" (a TypingIndicator); the box's top edge sweeps while it shows. */
+  typing?: ReactNode;
+  /** The footer's "⇧↵ new line" hint (hidden on a phone). */
+  hint?: string;
+  /** A reply bar sits on the box (in `top`): the box's top corners square off so the two join. */
+  replying?: boolean;
+}
+
+/** The prototype's `</>` insert: the draft (ending in one line break) and a yaml fence, the caret on the empty line inside. */
+export function insertCodeFence(draft: string): { text: string; caret: number } {
+  const fence = '`'.repeat(3);
+  const text = (draft === '' ? '' : draft.replace(/\n?$/, '\n')) + fence + 'yaml\n\n' + fence;
+  return { text, caret: text.length - 4 };
 }
 
 const ENCODER = new TextEncoder();
@@ -79,7 +99,29 @@ function labelParts(label: string): { lead: string; target: string | null } {
 export function Composer({
   label, placeholder, maxLength, value, onChange, disabled, disabledReason, onSend, sendLabel, counterLabel,
   attachLabel, onAttach, gif, top, notice, measure, combobox, onCaret, onArrowUpEmpty, onPasteFiles, textareaRef, canSendEmpty,
+  emoji, codeLabel, typing, hint, replying,
 }: ComposerProps) {
+  const ownInput = useRef<HTMLTextAreaElement | null>(null);
+  const pendingCaret = useRef<number | null>(null);
+  const setInput = (el: HTMLTextAreaElement | null) => {
+    ownInput.current = el;
+    if (typeof textareaRef === 'function') textareaRef(el);
+    else if (textareaRef) (textareaRef as { current: HTMLTextAreaElement | null }).current = el;
+  };
+  useLayoutEffect(() => {
+    if (pendingCaret.current === null || ownInput.current === null) return;
+    const at = pendingCaret.current;
+    pendingCaret.current = null;
+    ownInput.current.focus();
+    ownInput.current.setSelectionRange(at, at);
+    onCaret?.(at);
+  });
+  const insertCode = () => {
+    if (disabled) return;
+    const next = insertCodeFence(value);
+    pendingCaret.current = next.caret;
+    onChange(next.text);
+  };
   const inputId = useId();
   const reasonId = useId();
   const counterId = useId();
@@ -168,31 +210,60 @@ export function Composer({
     submit();
   };
 
+  const empty = value.trim() === '' && canSendEmpty !== true;
+  const showTyping = typing !== undefined && typing !== null && typing !== false;
+
   return (
-    <form className="d-composer" data-disabled={disabled ? 'true' : undefined} noValidate onSubmit={onSubmit}>
+    <form className="d-composer" data-disabled={disabled ? 'true' : undefined} data-empty={empty ? 'true' : undefined}
+      data-replying={replying ? 'true' : undefined} data-typing={showTyping ? 'true' : undefined} noValidate onSubmit={onSubmit}>
       {top !== undefined ? <div className="d-composer__top">{top}</div> : null}
       {showNotice ? <div id={noticeId} className="d-composer__notice">{notice}</div> : null}
       <label className="d-composer__label d-label d-sr-only" htmlFor={inputId}>
         {lead}{target === null ? null : <span className="d-composer__target">{target}</span>}
       </label>
       <div className="d-composer__box">
-        {attachLabel !== undefined && onAttach ? (
-          <button type="button" className="d-composer__attach" aria-label={attachLabel} disabled={disabled === true} onClick={() => onAttach()}>
-            <span aria-hidden="true">+</span>
+        {/* The 2px typing sweep on the box's top edge (§5.5), shown while someone else types. */}
+        <div className="d-composer__sweep" aria-hidden="true"><span /></div>
+        <div className="d-composer__row">
+          <span className="d-composer__prompt" aria-hidden="true">›</span>
+          <textarea ref={setInput} id={inputId} className="d-composer__input" rows={1} value={value} placeholder={placeholder}
+            readOnly={disabled} aria-disabled={disabled ? true : undefined} aria-describedby={describedBy} {...listAttributes}
+            onChange={onInput} onKeyDown={onKeyDown} onSelect={reportCaret} onKeyUp={reportCaret} onPaste={onPaste} />
+          <button type="submit" className="d-composer__send" disabled={disabled === true}
+            aria-disabled={sendRefused ? true : undefined} aria-describedby={sendRefused ? counterId : undefined}>
+            {sendLabel}<span className="d-composer__send-key" aria-hidden="true"> ↵</span>
           </button>
-        ) : null}
-        {gif !== undefined ? (
-          <button ref={gif.buttonRef} type="button" className="d-composer__gif" aria-label={gif.label} aria-haspopup="dialog"
-            aria-expanded={gif.open} aria-controls={gif.open ? gif.controls : undefined} data-gif-toggle="" disabled={disabled === true}
-            onClick={() => gif.onToggle()}>
-            <span aria-hidden="true">gif</span>
-          </button>
-        ) : null}
-        <textarea ref={textareaRef} id={inputId} className="d-composer__input" rows={1} value={value} placeholder={placeholder}
-          readOnly={disabled} aria-disabled={disabled ? true : undefined} aria-describedby={describedBy} {...listAttributes}
-          onChange={onInput} onKeyDown={onKeyDown} onSelect={reportCaret} onKeyUp={reportCaret} onPaste={onPaste} />
-        <Button type="submit" variant="accent" disabled={disabled === true}
-          aria-disabled={sendRefused ? true : undefined} aria-describedby={sendRefused ? counterId : undefined}>{sendLabel}</Button>
+        </div>
+        <div className="d-composer__foot">
+          {attachLabel !== undefined && onAttach ? (
+            <button type="button" className="d-composer__tool d-composer__attach" aria-label={attachLabel} title={attachLabel} disabled={disabled === true} onClick={() => onAttach()}>
+              <Icon name="paperclip" size={14} />
+            </button>
+          ) : null}
+          {emoji !== undefined ? (
+            <button ref={emoji.buttonRef} type="button" className="d-composer__tool d-composer__emoji" aria-label={emoji.label} title={emoji.label} aria-haspopup="dialog"
+              aria-expanded={emoji.open} aria-controls={emoji.open ? emoji.controls : undefined} data-emoji-toggle="" disabled={disabled === true}
+              onClick={() => emoji.onToggle()}>
+              <Icon name="smile" size={14} />
+            </button>
+          ) : null}
+          {gif !== undefined ? (
+            <button ref={gif.buttonRef} type="button" className="d-composer__tool d-composer__gif" aria-label={gif.label} aria-haspopup="dialog"
+              aria-expanded={gif.open} aria-controls={gif.open ? gif.controls : undefined} data-gif-toggle="" disabled={disabled === true}
+              onClick={() => gif.onToggle()}>
+              <span aria-hidden="true">GIF</span>
+            </button>
+          ) : null}
+          {codeLabel !== undefined ? (
+            <button type="button" className="d-composer__tool d-composer__code" aria-label={codeLabel} title={codeLabel} disabled={disabled === true}
+              onClick={insertCode}>
+              <Icon name="code-xml" size={14} />
+            </button>
+          ) : null}
+          <span className="d-composer__spacer" />
+          {showTyping ? <span className="d-composer__typing">{typing}</span> : null}
+          {hint !== undefined ? <span className="d-composer__hint" aria-hidden="true">{hint}</span> : null}
+        </div>
       </div>
       {showReason ? <p id={reasonId} className="d-composer__reason">{disabledReason}</p> : null}
       {showCounter ? (

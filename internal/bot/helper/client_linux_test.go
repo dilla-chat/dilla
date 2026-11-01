@@ -28,7 +28,10 @@ func TestPrivateDiagnosticWriterForwardsOnlyFixedTrustClasses(t *testing.T) {
 	if _, err := w.Write([]byte("dilla_bot_helper interaction_create_refusal=snapshot_expired\n")); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := out.String(), "dilla_bot_helper trust_sender_refusal=device_list_stale\ndilla_bot_helper interaction_create_refusal=core_state\ndilla_bot_helper interaction_create_refusal=snapshot_expired\n"; got != want {
+	if _, err := w.Write([]byte("dilla_bot_helper interaction_read_refusal=snapshot_clock\ndilla_bot_helper interaction_read_refusal=private material\n")); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := out.String(), "dilla_bot_helper trust_sender_refusal=device_list_stale\ndilla_bot_helper interaction_create_refusal=core_state\ndilla_bot_helper interaction_create_refusal=snapshot_expired\ndilla_bot_helper interaction_read_refusal=snapshot_clock\n"; got != want {
 		t.Fatalf("diagnostic output = %q, want %q", got, want)
 	}
 }

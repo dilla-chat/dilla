@@ -11,16 +11,16 @@ test('a missing enhanced model visibly falls back; Off avoids all enhancement as
     await alice.context.route('**/assets/noise-model-*.bin',route=>route.fulfill({status:404,body:'fixture: model unavailable'}));
     alice.context.on('request',r=>{if(/noise-(model|wasm|glue)-/.test(r.url()))assets.push(r.url());});
     const dialog=await openVoiceSettings(alice.page);
-    await dialog.getByRole('radio',{name:copy(process.env.DILLA_NOISE_MODE==='beta'?'settings.voice.automaticBeta':'settings.voice.automatic'),exact:true}).click();
-    await dialog.getByRole('button',{name:copy('settings.voice.test'),exact:true}).click();
+    await dialog.getByRole('radio',{name:copy('settings.voice.automatic'),exact:true}).click();
+    await dialog.getByRole('button',{name:copy('signalSettings.voice.testStart'),exact:true}).click();
     await expect(dialog.getByText(copy('settings.voice.processor',{processor:'RNNoise'}),{exact:false})).toBeVisible({timeout:WAIT});
     await expect(dialog.getByText(copy('settings.voice.fallback.enhanced-failed'),{exact:false})).toBeVisible();
-    await dialog.getByRole('button',{name:copy('settings.voice.testClose'),exact:true}).click();
+    await dialog.getByRole('button',{name:copy('signalSettings.voice.testStop'),exact:true}).click();
     expect(assets.length).toBeGreaterThan(0);assets.length=0;
     await dialog.getByRole('radio',{name:copy('settings.voice.off'),exact:true}).click();
-    await dialog.getByRole('button',{name:copy('settings.voice.test'),exact:true}).click();
+    await dialog.getByRole('button',{name:copy('signalSettings.voice.testStart'),exact:true}).click();
     await expect(dialog.getByText(copy('settings.voice.processor',{processor:copy('settings.voice.processor.off')}),{exact:false})).toBeVisible({timeout:WAIT});
-    await dialog.getByRole('button',{name:copy('settings.voice.testClose'),exact:true}).click();
+    await dialog.getByRole('button',{name:copy('signalSettings.voice.testStop'),exact:true}).click();
     expect(assets).toEqual([]);await closeSettings(alice.page);
   }finally{await peerBrowser.close(alice);await peer.close();}
 });

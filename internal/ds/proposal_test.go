@@ -1259,3 +1259,30 @@ func readGatewayOp(t *testing.T, ctx context.Context, c *websocket.Conn) gateway
 	}
 	return gateway.Op(op)
 }
+
+func TestAnInstanceRemoveWithoutTargetLeafDoesNotPanicAfterPersisting(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := t.Context()
+	reg, _ := h.mustRegister(t)
+	row, err := h.repo.GetGroup(ctx, reg.GroupID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst, err := h.wasm.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := testInstanceKeys(t)
+	blob, err := inst.ExternalProposeRemove(ctx, reg.GroupID[:], row.Epoch, 1, keys.ExternalSenderPriv[:])
+	inst.Release()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ds.StoreInstanceProposalForTest(h.ds, ctx, reg.GroupID, row, blob, store.ProposalRow{Kind: uint8(mlswasi.ProposalRemove), Origin: 0, ActionID: id.New()}); err != nil {
+		t.Fatal(err)
+	}
+	proposals, err := h.repo.ListProposals(ctx, reg.GroupID, row.Epoch, false)
+	if err != nil || len(proposals) != 1 {
+		t.Fatalf("durable proposals = %+v, %v; want one", proposals, err)
+	}
+}

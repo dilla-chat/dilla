@@ -1,8 +1,9 @@
 .d-app-shell { container: d-shell / inline-size; position: relative; height: var(--d-shell-h, 100dvh); background: var(--bg); color: var(--fg); }
-.d-app-shell__grid { display: grid; height: 100%; grid-template-columns: var(--rail-w) var(--d-sidebar-w, var(--sidebar-w)) minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto; grid-template-areas: "banner banner banner" "rail sidebar main" "panel panel main"; }
+/* Signal (README §5.1): the top bar's row over every column, then the banner, then rail | sidebar | main. A row with no item
+   (no top bar, no banner) is 0 high. The aside is the fourth column (base.css, from 64rem of shell width). */
+.d-app-shell__grid { display: grid; height: 100%; grid-template-columns: var(--rail-w) var(--d-sidebar-w, var(--sidebar-w)) minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr) auto; grid-template-areas: "topbar topbar topbar" "banner banner banner" "rail sidebar main" "rail panel main"; }
+.d-app-shell__topbar { grid-area: topbar; min-width: 0; }
 .d-app-shell__banner { grid-area: banner; min-width: 0; }
-/* web3.8 (R4, R23): a shell that still passes a statusBar gets its row below the panel; without one there is no status row. */
-.d-app-shell__grid:has(> .d-app-shell__status) { grid-template-rows: auto minmax(0, 1fr) auto auto; grid-template-areas: "banner banner banner" "rail sidebar main" "panel panel main" "status status status"; }
 /* The bottom-left area spans under the rail and the sidebar (the voice dock over the user panel); main spans its row too. */
 .d-app-shell__panel { grid-area: panel; min-width: 0; min-height: 0; }
 .d-app-shell__rail { grid-area: rail; min-height: 0; }
@@ -11,14 +12,13 @@
 /* The phone's list pane keeps main in the DOM, hidden; the flex display above must not win over the attribute. */
 .d-app-shell__main[hidden] { display: none; }
 .d-app-shell__content { flex: 1; min-height: 0; }
-.d-app-shell__status { grid-area: status; min-width: 0; }
 /* A page above a phone shell (Settings) wraps no box of its own: it is fixed, and only the wrapper marks its place in the DOM. */
 .d-app-shell__page { display: contents; }
 .d-app-shell__skip { position: absolute; top: 0.5rem; left: 0.5rem; padding: 0.375rem 0.75rem; font-size: var(--text-sm); color: var(--accent-ink); background: var(--accent); border-radius: var(--r-md); transform: translateY(-300%); }
 .d-app-shell__skip:focus { transform: none; }
 /* web3.4: the aside is an overlay drawer from the right of the shell (its containing block: the shell is a size
    container). From 64rem of shell width base.css makes it a fourth grid column. */
-.d-app-shell__aside { position: absolute; top: 0; right: 0; bottom: 0; z-index: 25; width: min(20rem, 100%); overflow-y: auto; background: var(--surface); border-left: 1px solid var(--hairline); box-shadow: var(--shadow-2); }
+.d-app-shell__aside { position: absolute; top: 0; right: 0; bottom: 0; z-index: 25; width: min(20rem, 100%); overflow-y: auto; background: var(--bg-2); border-left: 1px solid var(--hairline); box-shadow: var(--shadow-2); }
 /* Final fix I2: the drawer's close button, at its top and to the right (the side the drawer came from). */
 /* web3.9 (B1, UI-3 review I1): it sits inside the aside's own 48 bar (the members bar), not in a row above it, so the bar
    lands at the same y as the main header in every layout. */

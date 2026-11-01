@@ -147,7 +147,7 @@ export const Appearance: Story = {
         <h2 id="s-appearance">{t('appearance.title')}</h2>
         <SettingsRow id="s-theme-row" label={t('appearance.theme.label')}>
           <Segmented id="s-theme" label={t('appearance.theme.label')} value="system" onChange={noop} options={[
-            { value: 'system', label: t('appearance.theme.system') }, { value: 'mesh', label: t('appearance.theme.mesh') },
+            { value: 'system', label: t('appearance.theme.system') }, { value: 'signal', label: t('appearance.theme.signal') },
             { value: 'light', label: t('appearance.theme.light') }, { value: 'high-contrast', label: t('appearance.theme.contrast') }]} />
         </SettingsRow>
       </section>

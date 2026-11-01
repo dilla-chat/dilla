@@ -32,12 +32,10 @@ test('Automatic enhances the local test and encrypted calls, enforces PTT, and r
     await peer.setup();await onboard(alice,peer,'alice');await onboard(bob,peer,'bob');await peer.seat(2);
     let dialog=await openVoiceSettings(alice.page);
     await dialog.getByRole('radio',{name:copy('settings.voice.automatic'),exact:true}).click();
-    await dialog.getByRole('button',{name:copy('settings.voice.test'),exact:true}).click();
+    await dialog.getByRole('button',{name:copy('signalSettings.voice.testStart'),exact:true}).click();
     await expect(dialog.getByText(copy('settings.voice.processor',{processor:'DeepFilterNet3'}),{exact:false})).toBeVisible({timeout:WAIT});
     await expect(dialog.getByText(copy('settings.voice.fallback.evaluation'),{exact:false})).toBeVisible();
-    await dialog.getByRole('button',{name:copy('settings.voice.testStop'),exact:true}).click();
-    await expect(dialog.getByLabel(copy('settings.voice.testPlayback'),{exact:true})).toHaveAttribute('src',/^blob:/);
-    await dialog.getByRole('button',{name:copy('settings.voice.testClose'),exact:true}).click();await closeSettings(alice.page);
+    await dialog.getByRole('button',{name:copy('signalSettings.voice.testStop'),exact:true}).click();await closeSettings(alice.page);
     await noiseOff(bob.page);await pushToTalk(alice.page,'Insert');
     await joinVoice(alice.page,peer.communityName,peer.voiceName);await joinVoice(bob.page,peer.communityName,peer.voiceName);
     dialog=await openVoiceSettings(alice.page);

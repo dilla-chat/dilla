@@ -21,7 +21,7 @@ pub const HANDSHAKE_TAIL: usize = 64;
 
 /// The highest app schema this build reads and migrates to. A store whose `app_meta` schema is
 /// above it was written by a newer client and is refused untouched (`StorageError::StoreNewer`).
-pub const APP_SCHEMA_SUPPORTED: u32 = 12;
+pub const APP_SCHEMA_SUPPORTED: u32 = 13;
 
 pub(crate) const SCHEMA: &str = "schema";
 pub(crate) const SIGNUP: &str = "signup";
@@ -411,6 +411,28 @@ CREATE TABLE IF NOT EXISTS app_human_interaction_events (
   UNIQUE(group_id,source_seq)
 );
 CREATE INDEX IF NOT EXISTS app_human_interaction_events_page ON app_human_interaction_events(delivery_id);
+-- Consumed Bot responses stay encrypted in the native client database so an acknowledged
+-- result can be recovered after a process restart. This is deliberately a separate bounded
+-- archive: it never counts against or evicts pending journal rows.
+CREATE TABLE IF NOT EXISTS app_human_interaction_receipts (
+  receipt_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  delivery_id INTEGER NOT NULL UNIQUE,
+  group_id BLOB NOT NULL CHECK(length(group_id)=16),
+  community_id BLOB NOT NULL CHECK(length(community_id)=16),
+  request_id BLOB NOT NULL CHECK(length(request_id)=16),
+  source_seq INTEGER NOT NULL CHECK(source_seq>0),
+  epoch INTEGER NOT NULL,
+  recv_ts INTEGER NOT NULL,
+  sender_user BLOB NOT NULL CHECK(length(sender_user)=16),
+  sender_device BLOB NOT NULL CHECK(length(sender_device)=16),
+  sender_leaf INTEGER NOT NULL,
+  sender_credential BLOB NOT NULL,
+  sender_sig_key BLOB NOT NULL CHECK(length(sender_sig_key)=32),
+  message_id BLOB NOT NULL CHECK(length(message_id)=16),
+  body TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS app_human_interaction_receipts_request
+  ON app_human_interaction_receipts(community_id,request_id,receipt_id);
 CREATE TABLE IF NOT EXISTS app_human_interaction_event_state (
   singleton INTEGER PRIMARY KEY CHECK(singleton=1),
   ack_delivery_id INTEGER NOT NULL DEFAULT 0,
@@ -636,6 +658,16 @@ pub(crate) fn migrate_conn(c: &rusqlite::Connection) -> Result<u64, StorageError
                BEGIN SELECT RAISE(ABORT,'interaction scope pair required'); END;",
         )?;
         meta_put(c, SCHEMA, &[12])?;
+    }
+    // Schema 13 (Task S1 part 2): the instance-signed account-kind attestations. An older client
+    // refuses a schema-13 store (`refuse_newer`), so a downgrade cannot shed the "attestation seen"
+    // flag and fall back to trusting a credential's self-signed kind.
+    c.execute_batch(super::account_kind::ACCOUNT_KINDS_SCHEMA)?;
+    // An unreleased schema-13 build (S1 fix rounds 2-3) staged attestations in a table that fix
+    // round 4 removed; a development store that ran it drops the orphan (Task 11).
+    c.execute_batch("DROP TABLE IF EXISTS app_account_kind_staged;")?;
+    if found < 13 {
+        meta_put(c, SCHEMA, &[13])?;
     }
     Ok(found)
 }
@@ -975,13 +1007,13 @@ mod newer_store_tests {
         .expect("index query")
     }
 
-    /// A store as this build leaves it, then moved on as a newer client might: schema 13 and one
+    /// A store as this build leaves it, then moved on as a newer client might: schema 14 and one
     /// app table gone (renamed or dropped by its migration), which `APP_SCHEMA` would recreate.
-    fn v13_store() -> rusqlite::Connection {
+    fn v14_store() -> rusqlite::Connection {
         let db = rusqlite::Connection::open_in_memory().expect("db");
         assert_eq!(migrate_conn(&db).expect("fresh"), 3);
-        db.execute_batch("UPDATE app_meta SET v = x'0d' WHERE k = 'schema'; DROP TABLE app_roles;")
-            .expect("simulate a v13 store");
+        db.execute_batch("UPDATE app_meta SET v = x'0e' WHERE k = 'schema'; DROP TABLE app_roles;")
+            .expect("simulate a v14 store");
         db
     }
 
@@ -1002,8 +1034,8 @@ mod newer_store_tests {
     }
 
     #[test]
-    fn the_supported_schema_is_12() {
-        assert_eq!(APP_SCHEMA_SUPPORTED, 12);
+    fn the_supported_schema_is_13() {
+        assert_eq!(APP_SCHEMA_SUPPORTED, 13);
     }
 
     #[test]
@@ -1100,7 +1132,7 @@ mod newer_store_tests {
             "INSERT INTO app_groups(group_id,kind,community_id,target_id,state,interaction_device_id) VALUES(?1,3,?2,?3,0,?4)",
             rusqlite::params![[17u8; 16].as_slice(), [21u8; 16].as_slice(), [22u8; 16].as_slice(), [18u8; 16].as_slice()],
         ).is_err(), "upgraded schema rejects a partial interaction scope");
-        assert_eq!(meta_get(&db, SCHEMA).expect("schema read"), Some(vec![12]));
+        assert_eq!(meta_get(&db, SCHEMA).expect("schema read"), Some(vec![13]));
     }
 
     #[test]
@@ -1109,7 +1141,7 @@ mod newer_store_tests {
         assert_eq!(migrate_conn(&db).expect("migrates"), 4);
         assert!(has_column(&db, "app_messages", "thread_id").expect("columns"));
         assert!(has_thread_index(&db), "app_messages_by_thread exists");
-        assert_eq!(schema_of(&db), vec![0x0c]);
+        assert_eq!(schema_of(&db), vec![0x0d]);
         // The column's check: a thread id is exactly 16 bytes or NULL.
         let insert = |thread: &[u8]| {
             db.execute(
@@ -1123,10 +1155,10 @@ mod newer_store_tests {
     }
 
     #[test]
-    fn a_fresh_store_ends_at_12_with_the_thread_column_and_bot_journals() {
+    fn a_fresh_store_ends_at_13_with_the_thread_column_and_bot_journals() {
         let db = rusqlite::Connection::open_in_memory().expect("db");
         assert_eq!(migrate_conn(&db).expect("fresh"), 3);
-        assert_eq!(schema_of(&db), vec![0x0c]);
+        assert_eq!(schema_of(&db), vec![0x0d]);
         assert!(has_column(&db, "app_messages", "thread_id").expect("columns"));
         assert!(has_thread_index(&db));
         db.query_row(
@@ -1141,25 +1173,69 @@ mod newer_store_tests {
         .expect("intent table");
     }
 
+    /// Task S1 fix round 1: a schema-12 store gains the account-kind tables and reads 13, and the
+    /// "attestation seen" flag is absent: the earlier rule holds until a verified attestation.
     #[test]
-    fn a_v12_store_opens_untouched() {
+    fn a_v12_store_gains_the_account_kind_tables_without_the_seen_flag() {
+        let db = rusqlite::Connection::open_in_memory().expect("db");
+        migrate_conn(&db).expect("fresh");
+        db.execute_batch(
+            "DROP TABLE app_account_kinds; UPDATE app_meta SET v = x'0c' WHERE k = 'schema';",
+        )
+        .expect("simulate a v12 store");
+        assert_eq!(migrate_conn(&db).expect("migrates"), 12);
+        assert_eq!(schema_of(&db), vec![0x0d]);
+        let n: i64 = db
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='app_account_kinds'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("sqlite_master");
+        assert_eq!(n, 1, "app_account_kinds exists");
+        assert_eq!(
+            meta_get(&db, super::super::account_kind::ACCOUNT_KIND_SEEN).expect("meta"),
+            None
+        );
+    }
+
+    /// Task 11: a schema-13 development store holding the removed staging table loses it on open.
+    #[test]
+    fn a_v13_store_drops_the_orphan_staging_table() {
+        let db = rusqlite::Connection::open_in_memory().expect("db");
+        migrate_conn(&db).expect("fresh");
+        db.execute_batch("CREATE TABLE app_account_kind_staged (user_id BLOB PRIMARY KEY);")
+            .expect("simulate the orphan");
+        assert_eq!(migrate_conn(&db).expect("current"), 13);
+        let n: i64 = db
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='app_account_kind_staged'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("sqlite_master");
+        assert_eq!(n, 0, "the staging table is gone");
+    }
+
+    #[test]
+    fn a_v13_store_opens_untouched() {
         let db = rusqlite::Connection::open_in_memory().expect("db");
         migrate_conn(&db).expect("fresh");
         let before = snapshot(&db);
-        assert_eq!(migrate_conn(&db).expect("current"), 12);
+        assert_eq!(migrate_conn(&db).expect("current"), 13);
         assert_eq!(snapshot(&db), before, "no table, index or meta row changed");
     }
 
     #[test]
-    fn a_v13_store_is_refused_with_both_numbers_and_left_unchanged() {
-        let db = v13_store();
+    fn a_v14_store_is_refused_with_both_numbers_and_left_unchanged() {
+        let db = v14_store();
         let before = snapshot(&db);
         let changes = db.total_changes();
         match migrate_conn(&db) {
             Err(StorageError::StoreNewer { found, supported }) => {
-                assert_eq!((found, supported), (13, 12));
+                assert_eq!((found, supported), (14, 13));
             }
-            other => panic!("a v13 store must be refused as StoreNewer, got {other:?}"),
+            other => panic!("a v14 store must be refused as StoreNewer, got {other:?}"),
         }
         assert_eq!(snapshot(&db), before, "no table, index or meta row changed");
         assert_eq!(db.total_changes(), changes, "no row written");
@@ -1178,7 +1254,7 @@ mod newer_store_tests {
     }
 
     #[test]
-    fn schemas_up_to_6_still_migrate_and_end_at_12() {
+    fn schemas_up_to_6_still_migrate_and_end_at_13() {
         for found in [3u8, 4, 5, 6] {
             let db = if found == 5 || found == 6 {
                 let db = rusqlite::Connection::open_in_memory().expect("db");
@@ -1207,7 +1283,7 @@ mod newer_store_tests {
                 db
             };
             assert_eq!(migrate_conn(&db).expect("migrates"), u64::from(found));
-            assert_eq!(schema_of(&db), vec![0x0c]);
+            assert_eq!(schema_of(&db), vec![0x0d]);
             assert!(has_column(&db, "app_messages", "thread_id").expect("columns"));
             if found == 6 {
                 db.query_row("SELECT v FROM app_meta WHERE k='legacy_marker'", [], |r| {
@@ -1236,6 +1312,6 @@ mod newer_store_tests {
         )
         .expect("meta table");
         assert_eq!(migrate_conn(&db).expect("fresh"), 3);
-        assert_eq!(migrate_conn(&db).expect("current"), 12);
+        assert_eq!(migrate_conn(&db).expect("current"), 13);
     }
 }

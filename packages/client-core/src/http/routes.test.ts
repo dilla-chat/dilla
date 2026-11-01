@@ -139,15 +139,35 @@ it('reads the active bot join-role setting and writes it with a request ID', asy
     body: encode([USER, ROLE, BOT]), idempotent: true });
 });
 
-it('reads and writes DJ roles with the ready installation fence', async () => {
+// Task 10c: Glenn's Restart and the Music page's defaults; DJ is the control_music role bit, not a route any more.
+it('asks for a Bot restart bound to the installation and reads the restart counters', async () => {
   const { routes, t, http } = setup();
-  t.replies.push(cborReply(200, [[ROLE], BOT]));
-  await expect(routes.getBotDjRoles(COMMUNITY)).resolves.toEqual({ roleIds: [ROLE], installationId: BOT });
-  expect(http.requests[0]).toMatchObject({ method: 'GET', path: `/v1/communities/${hex(COMMUNITY)}/music/dj-roles` });
-  t.replies.push(cborReply(200, [USER, 1]));
-  await expect(routes.configureBotDjRoles(COMMUNITY, USER, BOT, [ROLE])).resolves.toBe(1);
-  expect(http.requests[1]).toMatchObject({ method: 'PUT', path: `/v1/communities/${hex(COMMUNITY)}/music/dj-roles`,
-    body: encode([USER, BOT, [ROLE]]), idempotent: true });
+  t.replies.push(cborReply(200, [2, 1]));
+  await expect(routes.restartBot(COMMUNITY, BOT)).resolves.toEqual({ requested: 2n, handled: 1n });
+  expect(http.requests[0]).toMatchObject({ method: 'POST', path: `/v1/communities/${hex(COMMUNITY)}/bot/restart`,
+    body: encode([BOT]), idempotent: true });
+  t.replies.push(cborReply(200, [1, 2]));
+  await expect(routes.restartBot(COMMUNITY, BOT)).rejects.toMatchObject({ code: 'E_CBOR_RANGE' });
+});
+
+it('writes the music defaults and reads the widened installation back', async () => {
+  const { routes, t, http } = setup();
+  const widened = [BOT, COMMUNITY, 3, 4, USER, ROLE, 1 | 1 << 8 | 1 << 9, 99, 1, 1, '0.4.2', 50, 15];
+  t.replies.push(cborReply(200, widened));
+  await expect(routes.setBotMusicSettings(COMMUNITY, BOT, 50, 15)).resolves.toMatchObject({
+    capabilities: 0x301, extra: { restartRequested: 1n, restartHandled: 1n, version: '0.4.2', musicVolume: 50, musicIdleMinutes: 15 } });
+  expect(http.requests[0]).toMatchObject({ method: 'PUT', path: `/v1/communities/${hex(COMMUNITY)}/bot/music-settings`,
+    body: encode([BOT, 50, 15]), idempotent: true });
+  await expect(routes.setBotMusicSettings(COMMUNITY, BOT, 60, 15)).rejects.toThrow(/^E_ROUTE_INPUT: /);
+  await expect(routes.setBotMusicSettings(COMMUNITY, BOT, 50, 10)).rejects.toThrow(/^E_ROUTE_INPUT: /);
+  expect(http.requests).toHaveLength(1);
+  for (const bad of [[...widened.slice(0, 11), 60, 15], [...widened.slice(0, 8), 1, 2, null, 50, 15], [...widened.slice(0, 10), '', 50, 15],
+    [...widened.slice(0, 6), 1 << 10, 99]]) {
+    t.replies.push(cborReply(200, bad));
+    await expect(routes.getBotInstallation(COMMUNITY)).rejects.toThrow(/^E_CBOR_(RANGE|SHAPE)/);
+  }
+  t.replies.push(cborReply(200, widened.slice(0, 8)));
+  await expect(routes.getBotInstallation(COMMUNITY)).resolves.not.toHaveProperty('extra');
 });
 
 function member(i: number): Uint8Array {
@@ -267,6 +287,7 @@ const CASES: Case[] = [
     method: 'GET', path: `/v1/users/${hex(USER)}/device-list`, bucket: 'read', idempotent: true, auth: true, sent: null,
     reply: () => cborReply(200, [1, BLOB, SIG, ZERO32]), expected: { version: 1n, blob: BLOB, raw: encode([1, BLOB, SIG, ZERO32]) },
   },
+
   {
     name: 'getDeviceList answers null for a 404', call: (r) => r.getDeviceList(USER),
     method: 'GET', path: `/v1/users/${hex(USER)}/device-list`, bucket: 'read', idempotent: true, auth: true, sent: null,
@@ -649,16 +670,16 @@ const FACTOR_CASES: Case[] = [
     reply: () => cborReply(200, [ASSERTION, 2]), expected: { assertion: ASSERTION, needs: 2 },
   },
   {
-    name: 'getFactors reads the five elements', call: (r) => r.getFactors(),
+    name: 'getFactors reads the six elements (Task 11: password_changed)', call: (r) => r.getFactors(),
     method: 'GET', path: '/v1/auth/factors', bucket: 'read', idempotent: true, auth: true, sent: null,
-    reply: () => cborReply(200, [1, 1_800_000_000, [[CRED, 'Laptop', 1_800_000_100, null], [fill(16, 0x22), 'Phone', 1_800_000_200, 1_800_000_300]], 4, 1, 'appended']),
-    expected: { owed: true, totp: 1_800_000_000, backupCodesLeft: 4, hasPassword: true,
+    reply: () => cborReply(200, [1, 1_800_000_000, [[CRED, 'Laptop', 1_800_000_100, null], [fill(16, 0x22), 'Phone', 1_800_000_200, 1_800_000_300]], 4, 1, 1_800_000_400, 'appended']),
+    expected: { owed: true, totp: 1_800_000_000, backupCodesLeft: 4, hasPassword: true, passwordChanged: 1_800_000_400,
       passkeys: [{ credId: CRED, name: 'Laptop', created: 1_800_000_100, lastUsed: null }, { credId: fill(16, 0x22), name: 'Phone', created: 1_800_000_200, lastUsed: 1_800_000_300 }] },
   },
   {
     name: 'getFactors of an account with no app and no password', call: (r) => r.getFactors(),
     method: 'GET', path: '/v1/auth/factors', bucket: 'read', idempotent: true, auth: true, sent: null,
-    reply: () => cborReply(200, [0, null, [], 0, 0]), expected: { owed: false, totp: null, passkeys: [], backupCodesLeft: 0, hasPassword: false },
+    reply: () => cborReply(200, [0, null, [], 0, 0]), expected: { owed: false, totp: null, passkeys: [], backupCodesLeft: 0, hasPassword: false, passwordChanged: null },
   },
   {
     name: 'totpEnroll without a step-up sends null', call: (r) => r.totpEnroll(null),
@@ -969,10 +990,11 @@ describe('Routes: retries and inputs', () => {
       () => routes.createChannel(COMMUNITY, { kind: 'text', name: 'x', position: -1 }),
       () => routes.createChannel(COMMUNITY, { kind: 'text', name: 'x', position: 2 ** 31 }),
       () => routes.createChannel(new Uint8Array(15), { kind: 'text', name: 'x', position: 0 }),
-      () => routes.createInvite(COMMUNITY, { maxUses: 0, ttlSeconds: 60 }),
+      // 0 uses and 0 ttl are "∞" and "never" (Task 10c); negative ones are not.
+      () => routes.createInvite(COMMUNITY, { maxUses: -1, ttlSeconds: 60 }),
       () => routes.createInvite(COMMUNITY, { maxUses: 1001, ttlSeconds: 60 }),
       () => routes.createInvite(COMMUNITY, { maxUses: 1.5, ttlSeconds: 60 }),
-      () => routes.createInvite(COMMUNITY, { maxUses: 10, ttlSeconds: 0 }),
+      () => routes.createInvite(COMMUNITY, { maxUses: 10, ttlSeconds: -1 }),
       () => routes.createInvite(COMMUNITY, { maxUses: 10, ttlSeconds: 30 * 24 * 3600 + 1 }),
       () => routes.createInvite(new Uint8Array(17), { maxUses: 10, ttlSeconds: 60 }),
     ];
@@ -1410,6 +1432,19 @@ describe('Routes: web-3 calls (L-TS-55)', () => {
     await expect(routes.endCallIfAlone(CALL)).rejects.toMatchObject({ status: 403, code: 'E_FORBIDDEN' });
   });
 
+  it('task 8c: rtt is POST /v1/calls/{call_id}/rtt with [ms] or [] to clear, and a 429 is not waited out', async () => {
+    const { t, routes } = setup();
+    t.replies.push(noContent(), noContent());
+    await routes.postCallRtt(CALL, 24);
+    await routes.postCallRtt(CALL, null);
+    expect(t.seen.map((s) => `${s.method} ${new URL(s.url).pathname}`)).toEqual([`POST /v1/calls/${hex(CALL)}/rtt`, `POST /v1/calls/${hex(CALL)}/rtt`]);
+    expect(t.seen[0].body).toEqual(encode([24]));
+    expect(t.seen[1].body).toEqual(encode([]));
+    t.replies.push(refusal(429, 'E_RATE_LIMITED', '', 1500));
+    await expect(routes.postCallRtt(CALL, 30)).rejects.toMatchObject({ status: 429 });
+    expect(t.sleeps).toEqual([]);
+  });
+
   it('a 429 on the stats route is not waited out', async () => {
     const { t, routes } = setup();
     t.replies.push(refusal(429, 'E_RATE_LIMITED', '', 4000));
@@ -1713,12 +1748,12 @@ describe('Routes: wave 2a roles, overwrites and private channel create (internal
       () => routes.createRole(COMMUNITY, { ...NEW_ROLE, color: 0x1000000 }),
       () => routes.createRole(COMMUNITY, { ...NEW_ROLE, position: 0 }),
       () => routes.createRole(COMMUNITY, { ...NEW_ROLE, position: 2 ** 31 }),
-      () => routes.createRole(COMMUNITY, { ...NEW_ROLE, allow: 0x2000000 }),
+      () => routes.createRole(COMMUNITY, { ...NEW_ROLE, allow: 0x4000000 }),
       () => routes.createRole(COMMUNITY, { ...NEW_ROLE, deny: -1 }),
       () => routes.patchRole(ROLE_2, { color: -1 }),
       () => routes.patchRole(ROLE_2, { deny: 1.5 }),
       () => routes.putOverwrite(CHANNEL, 2 as 0, TARGET, { allow: 0, deny: 0 }),
-      () => routes.putOverwrite(CHANNEL, 0, TARGET, { allow: 0x2000000, deny: 0 }),
+      () => routes.putOverwrite(CHANNEL, 0, TARGET, { allow: 0x4000000, deny: 0 }),
       () => routes.deleteOverwrite(CHANNEL, 2 as 0, TARGET),
       () => routes.grantRole(new Uint8Array(15), TARGET, ROLE_2),
       () => routes.createChannel(COMMUNITY, { kind: 'text', name: 'a', position: 0, overwrites: [{ kind: 0, targetId: new Uint8Array(15), allow: 0, deny: 1 }] }),
@@ -1732,9 +1767,9 @@ describe('Routes: wave 2a roles, overwrites and private channel create (internal
   it('accepts moderate_members on create and a role row masks only the next unknown bit', async () => {
     const created = await one(cborReply(201, [ROLE_2]), (r) => r.createRole(COMMUNITY, { ...NEW_ROLE, allow: 1 << 24 }));
     expect(created.seen.body).toEqual(encode(['Crew', 0x30a46c, 1, 1 << 24, 0, 1, 1]));
-    const row = [ROLE, 'mods', 0xff8800, 5, 2 ** 40 + 2 ** 24 + 8, 2 ** 40 + 2 ** 25, 0, 1];
+    const row = [ROLE, 'mods', 0xff8800, 5, 2 ** 40 + 2 ** 25 + 2 ** 24 + 8, 2 ** 40 + 2 ** 26, 0, 1];
     const { result } = await one(cborReply(200, [row]), (r) => r.listRoles(COMMUNITY));
-    expect(result).toEqual([{ id: ROLE, name: 'mods', color: 0xff8800, position: 5, allow: (1 << 24) + 8, deny: 0, hoist: false, mentionable: true }]);
+    expect(result).toEqual([{ id: ROLE, name: 'mods', color: 0xff8800, position: 5, allow: 2 ** 25 + (1 << 24) + 8, deny: 0, hoist: false, mentionable: true }]);
   });
   it('listOverwrites reads [channel_id, kind, target_id, allow, deny] rows', async () => {
     const { result, seen, http } = await one(cborReply(200, [[CHANNEL, 0, ROLE, 0, 1], [CHANNEL, 1, TARGET, 2, 0]]), (r) => r.listOverwrites(COMMUNITY));
@@ -1746,8 +1781,8 @@ describe('Routes: wave 2a roles, overwrites and private channel create (internal
     expect([http.requests[0].bucket, http.requests[0].idempotent]).toEqual(['read', true]);
   });
   it('an overwrite row keeps moderate_members and masks the next unknown bit', async () => {
-    const { result } = await one(cborReply(200, [[CHANNEL, 0, ROLE, 2 ** 40 + 2 ** 24 + 8, 2 ** 25 + 1]]), (r) => r.listOverwrites(COMMUNITY));
-    expect(result).toEqual([{ channelId: CHANNEL, kind: 0, targetId: ROLE, allow: (1 << 24) + 8, deny: 1 }]);
+    const { result } = await one(cborReply(200, [[CHANNEL, 0, ROLE, 2 ** 40 + 2 ** 25 + 2 ** 24 + 8, 2 ** 26 + 1]]), (r) => r.listOverwrites(COMMUNITY));
+    expect(result).toEqual([{ channelId: CHANNEL, kind: 0, targetId: ROLE, allow: 2 ** 25 + (1 << 24) + 8, deny: 1 }]);
   });
   it('listOverwrites refuses a kind of 2, a short row and 10 001 rows', async () => {
     const bad = async (reply: Response, code: string) => {
@@ -1778,7 +1813,7 @@ describe('Routes: wave 2a roles, overwrites and private channel create (internal
       .rejects.toThrow(/^E_ROUTE_INPUT: /);
     await expect(routes.createChannel(COMMUNITY, { kind: 'text', name: 'a', position: 0, overwrites: [{ ...entry, kind: 2 as 0 }] }))
       .rejects.toThrow(/^E_ROUTE_INPUT: /);
-    await expect(routes.createChannel(COMMUNITY, { kind: 'text', name: 'a', position: 0, overwrites: [{ ...entry, deny: 0x2000000 }] }))
+    await expect(routes.createChannel(COMMUNITY, { kind: 'text', name: 'a', position: 0, overwrites: [{ ...entry, deny: 0x4000000 }] }))
       .rejects.toThrow(/^E_ROUTE_INPUT: /);
     expect(t.seen).toHaveLength(0);
     t.replies.push(cborReply(201, [CHANNEL, 0, 0]));
@@ -1997,11 +2032,26 @@ describe('managed community bot installation routes', () => {
     await expect(routes.getBotInstallation(COMMUNITY)).rejects.toMatchObject({ status: 403 });
   });
 
+  it('reads member-safe command status without exposing installation configuration', async () => {
+    const { routes, t } = setup();
+    t.replies.push(cborReply(200, [1, BOT, USER, 3, 9]));
+    await expect(routes.getBotCommandStatus(COMMUNITY)).resolves.toEqual({
+      installationId: BOT, botUserId: USER, state: 3, revision: 9n,
+    });
+    expect(t.seen[0]).toMatchObject({ method: 'GET', url: `https://dilla.test/v1/communities/${hex(COMMUNITY)}/bot/command-status` });
+    t.replies.push(cborReply(200, null));
+    await expect(routes.getBotCommandStatus(COMMUNITY)).resolves.toBeNull();
+    t.replies.push(cborReply(200, [1, BOT, null, 4, 10]));
+    await expect(routes.getBotCommandStatus(COMMUNITY)).resolves.toMatchObject({ state: 4, botUserId: null });
+    t.replies.push(cborReply(200, [2, BOT, USER, 3, 9]));
+    await expect(routes.getBotCommandStatus(COMMUNITY)).rejects.toMatchObject({ code: 'E_CBOR_SHAPE' });
+  });
+
   it('sends exact request ID, revision, capabilities and step-up for configure', async () => {
     const { routes, t } = setup();
     t.replies.push(cborReply(201, installation));
     await routes.configureBotInstallation(COMMUNITY, USER, null, 1, 'stepup');
-    expect(t.seen[0]).toMatchObject({ method: 'PUT', url: `https://dilla.test/v1/communities/${hex(COMMUNITY)}/bot` });
+    expect(t.seen[0]).toMatchObject({ method: 'PUT', url: `https://dilla.test/v1/communities/${hex(COMMUNITY)}/bot?v=2` });
     expect(Array.from(t.seen[0].body ?? [])).toEqual(Array.from(encode([USER, null, 1, 'stepup'])));
   });
 
@@ -2016,7 +2066,7 @@ describe('managed community bot installation routes', () => {
     const rows = [installation.slice(0, 7), [BOT, USER, 1, 3, USER, DEVICE, 1, 1_800_000_000],
       [BOT, COMMUNITY, 1, 0, USER, DEVICE, 1, 1_800_000_000],
       [BOT, COMMUNITY, 6, 3, USER, DEVICE, 1, 1_800_000_000],
-      [BOT, COMMUNITY, 1, 3, USER, DEVICE, 256, 1_800_000_000]];
+      [BOT, COMMUNITY, 1, 3, USER, DEVICE, 1024, 1_800_000_000]];
     for (const row of rows) {
       const { routes, t } = setup();
       t.replies.push(cborReply(200, row));
@@ -2042,10 +2092,10 @@ describe('bot Spotify authorization routes', () => {
   it('starts an attempt, forwards state/code once, and cancels with no content', async () => {
     const { routes, t } = setup();
     t.replies.push(cborReply(200, [ATTEMPT, authorizeUrl, 1_800_000_000]));
-    await expect(routes.beginBotSpotifyAttempt(COMMUNITY, 'step-up')).resolves.toEqual({
+    await expect(routes.beginBotSpotifyAttempt(COMMUNITY, 'step-up', 'client')).resolves.toEqual({
       attemptId: ATTEMPT, authorizeUrl, expires: 1_800_000_000n,
     });
-    expect(t.seen[0]).toMatchObject({ method: 'POST', url: `https://dilla.test/v1/communities/${hex(COMMUNITY)}/bot/spotify/attempts`, body: encode(['step-up']) });
+    expect(t.seen[0]).toMatchObject({ method: 'POST', url: `https://dilla.test/v1/communities/${hex(COMMUNITY)}/bot/spotify/attempts`, body: encode(['step-up', 'client']) });
     t.replies.push(cborReply(202, [1]));
     await expect(routes.callbackBotSpotifyAttempt(COMMUNITY, ATTEMPT, STATE, CODE)).resolves.toBeUndefined();
     expect(t.seen[1]).toMatchObject({ method: 'POST', url: `https://dilla.test/v1/communities/${hex(COMMUNITY)}/bot/spotify/attempts/${hex(ATTEMPT)}/callback`, body: encode([STATE, CODE]) });
@@ -2056,7 +2106,7 @@ describe('bot Spotify authorization routes', () => {
   it('surfaces authorization refusals and rejects malformed broker replies', async () => {
     const refused = setup();
     refused.t.replies.push(refusal(403, 'E_FORBIDDEN', 'step-up required'));
-    await expect(refused.routes.beginBotSpotifyAttempt(COMMUNITY, 'stale')).rejects.toMatchObject({ status: 403, code: 'E_FORBIDDEN' });
+    await expect(refused.routes.beginBotSpotifyAttempt(COMMUNITY, 'stale', 'client')).rejects.toMatchObject({ status: 403, code: 'E_FORBIDDEN' });
     const withQuery = (mutate: (url: URL) => void): string => { const url = new URL(authorizeUrl); mutate(url); return url.toString(); };
     const invalidUrls = ['https://evil.test/authorize', withQuery(u => { u.port = '444'; }),
       withQuery(u => { u.searchParams.append('state', STATE); }), withQuery(u => { u.searchParams.set('client_id', ''); }),
@@ -2064,10 +2114,18 @@ describe('bot Spotify authorization routes', () => {
     for (const reply of [...invalidUrls.map(url => [ATTEMPT, url, 1_800_000_000]), [ATTEMPT, authorizeUrl], [ATTEMPT, authorizeUrl, 0]]) {
       const { routes, t } = setup();
       t.replies.push(cborReply(200, reply));
-      await expect(routes.beginBotSpotifyAttempt(COMMUNITY, 'step-up')).rejects.toMatchObject({ code: /E_CBOR_/ });
+      await expect(routes.beginBotSpotifyAttempt(COMMUNITY, 'step-up', 'client')).rejects.toMatchObject({ code: /E_CBOR_/ });
     }
     const malformedAck = setup();
     malformedAck.t.replies.push(cborReply(202, [2]));
     await expect(malformedAck.routes.callbackBotSpotifyAttempt(COMMUNITY, ATTEMPT, STATE, CODE)).rejects.toMatchObject({ code: 'E_CBOR_SHAPE' });
   });
+});
+
+// Task 10c: an open-ended invite is max_uses 0 and ttl_seconds 0 on the wire; the answer's expires is 0 for "never".
+it('sends "never" and "∞" as zeros and reads a never-expiring answer', async () => {
+  const { routes, t, http } = setup();
+  t.replies.push(cborReply(201, [BOT, 'code1234', 'https://dilla.test/i/code1234', 0]));
+  await expect(routes.createInvite(COMMUNITY, { maxUses: 0, ttlSeconds: 0 })).resolves.toMatchObject({ expires: 0n });
+  expect(http.requests[0].body).toEqual(encode([0, 0, 0]));
 });

@@ -25,6 +25,7 @@ export const REQUIRED_JOBS = [
   'browser-media',
   'deny',
   'go',
+  'go-native',
   // internal/ds under -race in a job of its own (fix wave, CI run 36697379567): it is the slowest
   // package by far, and in the go job it pushed a 4-vCPU runner past the job's 25 minutes.
   'go-ds',
@@ -42,11 +43,8 @@ export const REQUIRED_JOBS = [
   'go-postgres',
   'go-release',
   // Task 26 (web-1): build the client once and run its browser integration suites; web-2c splits the suites into one
-  // job per Playwright engine (BROWSER_WEB_JOBS below).
+  // job per Playwright engine and suite (BROWSER_WEB_JOBS below, which checkWorkflow adds to this list).
   'web-build',
-  'chromium-web',
-  'firefox-web',
-  'webkit-web',
   'desktop',
 ];
 
@@ -82,25 +80,43 @@ export const NON_RACE_STEP =
   "go test -timeout 5m ./cmd/dilla-loadrig ./cmd/dilla-mediabot ./internal/media ./internal/sfu -run 'TestALoopbackCellDecryptsEverything|TestTwoBotsDecryptEachOtherThroughTheSFU|TestGoPublisherToGoSubscriberDecryptsThroughTheSFU|TestTheSFUOfferCarriesOnlyTheDillaCodecs|TestPromotionAddsTheVideoSourcesAndDemotionRemovesThem'";
 
 /**
- * Browser suites run in parallel, one job per Playwright engine. Hosted Chromium and Firefox
- * jobs took about 35–38 minutes on 2026-10-24, and one Firefox job reached the old 38-minute
- * cap during its voice step. Allow 50 minutes for runner variance. WebKit runs fewer suites and
- * retains its 30-minute cap. `core` and `voice` identify the suites each engine runs.
+ * Browser suites run in parallel, one job per Playwright engine and suite. One job per engine ran core, web and voice
+ * in sequence: Chromium took about 2 minutes of core, 46 of web (113 tests, one worker; 45.6 minutes in run 40968460827
+ * on 2026-10-29, which hit the old 70-minute cap before voice) and 10 of voice, and Firefox's web suite reached 47
+ * minutes on 2026-10-26. Jonas's ruling of 2026-10-30 splits them: a core job (20 minutes), a voice job (30) and the web
+ * suite as three Playwright shards (`--shard=i/3`) of 35 minutes each, 40 for Firefox's, which is the slower engine.
+ * Each shard is about a third of the web suite plus about 3 minutes of setup, so the caps keep margin. WebKit runs only
+ * the signup and reload specs (ruling 22), too few to shard, and keeps its single 30-minute web job. `suite` is the
+ * Playwright suite the job runs, `shard` its 1-based shard of WEB_SHARDS (null for an unsharded job).
  */
+export const WEB_SHARDS = 3;
 export const BROWSER_WEB_JOBS = {
-  'chromium-web': { engine: 'chromium', timeout: 50, core: true, voice: true },
-  'firefox-web': { engine: 'firefox', timeout: 50, core: true, voice: true },
-  'webkit-web': { engine: 'webkit', timeout: 30, core: false, voice: false },
+  'chromium-core': { engine: 'chromium', suite: 'core', shard: null, timeout: 20 },
+  'chromium-voice': { engine: 'chromium', suite: 'voice', shard: null, timeout: 30 },
+  'chromium-web-1': { engine: 'chromium', suite: 'web', shard: 1, timeout: 35 },
+  'chromium-web-2': { engine: 'chromium', suite: 'web', shard: 2, timeout: 35 },
+  'chromium-web-3': { engine: 'chromium', suite: 'web', shard: 3, timeout: 35 },
+  'firefox-core': { engine: 'firefox', suite: 'core', shard: null, timeout: 20 },
+  'firefox-voice': { engine: 'firefox', suite: 'voice', shard: null, timeout: 30 },
+  'firefox-web-1': { engine: 'firefox', suite: 'web', shard: 1, timeout: 40 },
+  'firefox-web-2': { engine: 'firefox', suite: 'web', shard: 2, timeout: 40 },
+  'firefox-web-3': { engine: 'firefox', suite: 'web', shard: 3, timeout: 40 },
+  'webkit-web': { engine: 'webkit', suite: 'web', shard: null, timeout: 30 },
 };
-export const MIN_BROWSER_WEB_TIMEOUT = 30;
+export const MIN_BROWSER_WEB_TIMEOUT = 20;
 
 /** The testkit binary's env line, which every suite step that drives the native peer carries. */
 const TESTKIT_ENV = 'DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit';
 
-/** The steps every per-engine browser job must carry: the four downloads, its one engine, its suites, its own artifact. */
-function browserWebSteps({ engine, timeout, core, voice }) {
+/** The one suite command a browser job runs, a shard of the web suite carrying its `--shard=i/3` flag. */
+export function browserSuiteCommand({ engine, suite, shard }) {
+  return `npm run test:e2e:${suite}:${engine} -w @dilla/e2e${shard === null ? '' : ` -- --shard=${shard}/${WEB_SHARDS}`}`;
+}
+
+/** The steps every browser job must carry: the four downloads, its one engine, its one suite, its own artifact. */
+function browserWebSteps(job, spec) {
   return [
-    `timeout-minutes: ${timeout}`,
+    `timeout-minutes: ${spec.timeout}`,
     'name: dilla-core-wasi',
     'path: internal/mlswasi/testdata',
     'name: dilla-testkit',
@@ -108,14 +124,13 @@ function browserWebSteps({ engine, timeout, core, voice }) {
     'path: packages/web/dist',
     'name: dilla-core-harness',
     'path: packages/client-core/harness-dist',
-    `npx playwright install --with-deps ${engine}`,
-    ...(core ? [`npm run test:e2e:core:${engine} -w @dilla/e2e`] : []),
-    `npm run test:e2e:web:${engine} -w @dilla/e2e`,
-    // The voice legs (and Firefox's audio server) are checked as steps, not as substrings: checkVoiceSteps.
+    `npx playwright install --with-deps ${spec.engine}`,
+    browserSuiteCommand(spec),
+    // The suite step's own env and (for Firefox) the audio server are checked as steps, not as substrings: checkSuiteSteps.
     TESTKIT_ENV,
     'if: failure()',
-    // upload-artifact v4+ refuses a duplicate name within a run: one artifact name per engine.
-    `name: browser-web-results-${engine}`,
+    // upload-artifact v4+ refuses a duplicate name within a run: one artifact name per job.
+    `name: browser-web-results-${job}`,
     'path: e2e/test-results',
   ];
 }
@@ -270,7 +285,7 @@ const REQUIRED_STEPS = {
     'path: packages/client-core/harness-dist/',
   ],
   // Task 26/C18: each engine and the native peer against the downloaded web and core builds, one job per engine.
-  ...Object.fromEntries(Object.entries(BROWSER_WEB_JOBS).map(([job, spec]) => [job, browserWebSteps(spec)])),
+  ...Object.fromEntries(Object.entries(BROWSER_WEB_JOBS).map(([job, spec]) => [job, browserWebSteps(job, spec)])),
   deny: ['cargo deny --all-features check advisories bans licenses sources'],
   // Ruling M. The first two lines are the hand-off from `rust-wasi`: without the download, or with it
   // landing anywhere but `internal/mlswasi/testdata`, the wazero tests skip themselves and the job is
@@ -290,11 +305,11 @@ const REQUIRED_STEPS = {
   ],
   // The one package the go job leaves out, with the wasi core it needs and a budget of its own.
   'go-ds': [
-    'timeout-minutes: 40',
+    'timeout-minutes: 55',
     'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8',
     'name: dilla-core-wasi',
     'path: internal/mlswasi/testdata',
-    'go test -race -shuffle=on -timeout 30m ./internal/ds/...',
+    'go test -race -shuffle=on -timeout 45m ./internal/ds/...',
   ],
   // The other package the go job leaves out, with the same wasi hand-off and a budget that leaves margin.
   'go-api': [
@@ -612,29 +627,31 @@ export function jobSteps(body) {
 }
 
 /**
- * Web-3 task 10 (review M10): each voice leg is a `run:` step of its own whose `env` carries the testkit binary, and in
- * Firefox an audio-server `run:` step comes before it (headless Firefox's AudioContext stays suspended without one, as
- * in browser-media). Matched on steps, never on substrings, so a commented-out step or a comment naming the command
- * satisfies nothing, and the voice step's own env is required, not the web step's.
+ * Each browser job is a `run:` step of its own for its one suite, carrying the testkit binary in its own env, and it runs
+ * no other `test:e2e` suite (a job folded back into several suites would hide a split job's budget). In Firefox an
+ * audio-server `run:` step comes before the web and voice suites (headless Firefox's AudioContext stays suspended
+ * without one, as in browser-media; web3.9 CI2: the web suite places calls too, and a suspended context reads no level, so
+ * the fake microphone's tone counts as speech). Matched on steps, never on substrings, so a commented-out step or a
+ * comment naming the command satisfies nothing.
  */
-function checkVoiceSteps(jobs, problems) {
-  for (const [job, { engine, voice }] of Object.entries(BROWSER_WEB_JOBS)) {
-    if (!voice || !(job in jobs)) continue;
+function checkSuiteSteps(jobs, problems) {
+  for (const [job, spec] of Object.entries(BROWSER_WEB_JOBS)) {
+    if (!(job in jobs)) continue;
     const steps = jobSteps(jobs[job]);
-    const command = `npm run test:e2e:voice:${engine} -w @dilla/e2e`;
-    const voiceAt = steps.findIndex((s) => s[0] === `run: ${command}`);
-    if (voiceAt < 0) problems.push(`ci.yml: job "${job}" is missing: ${command} (a run step of its own)`);
-    else if (!steps[voiceAt].includes(TESTKIT_ENV)) {
+    const command = browserSuiteCommand(spec);
+    const suiteAt = steps.findIndex((s) => s[0] === `run: ${command}`);
+    if (suiteAt < 0) problems.push(`ci.yml: job "${job}" is missing: ${command} (a run step of its own)`);
+    else if (!steps[suiteAt].includes(TESTKIT_ENV)) {
       problems.push(`ci.yml: job "${job}" runs ${command} without its own env ${TESTKIT_ENV}`);
     }
-    if (engine !== 'firefox') continue;
+    const suites = steps.filter((s) => /^run: .*test:e2e/.test(s[0]));
+    if (suites.length !== 1 || (suiteAt >= 0 && suites[0] !== steps[suiteAt])) {
+      problems.push(`ci.yml: job "${job}" must run exactly one Playwright suite, ${command}, and no other test:e2e step`);
+    }
+    if (spec.engine !== 'firefox' || spec.suite === 'core') continue;
     const audioAt = steps.findIndex((s) => s[0] === 'run: sh scripts/ci-audio-server.sh');
     if (audioAt < 0) problems.push(`ci.yml: job "${job}" is missing: sh scripts/ci-audio-server.sh (a run step of its own)`);
-    else if (voiceAt >= 0 && audioAt > voiceAt) problems.push(`ci.yml: ${job} audio server must start before the voice suite`);
-    // Web3.9 CI2: the web suite places calls too (afk.spec's idle move, the layout's AFK preview), so it needs the
-    // running AudioContext as well: suspended, a fake microphone's tone reaches no local meter and counts as speech.
-    const webAt = steps.findIndex((s) => s[0] === `run: npm run test:e2e:web:${engine} -w @dilla/e2e`);
-    if (audioAt >= 0 && webAt >= 0 && audioAt > webAt) problems.push(`ci.yml: ${job} audio server must start before the web suite`);
+    else if (suiteAt >= 0 && audioAt > suiteAt) problems.push(`ci.yml: ${job} audio server must start before the ${spec.suite} suite`);
   }
 }
 
@@ -711,7 +728,7 @@ export function checkWorkflow(root) {
   }
 
   const jobs = splitJobs(text);
-  for (const name of REQUIRED_JOBS) {
+  for (const name of [...REQUIRED_JOBS, ...Object.keys(BROWSER_WEB_JOBS)]) {
     if (!(name in jobs)) {
       problems.push(`ci.yml: missing job "${name}"`);
       continue;
@@ -838,7 +855,7 @@ export function checkWorkflow(root) {
     }
   }
 
-  checkVoiceSteps(jobs, problems);
+  checkSuiteSteps(jobs, problems);
 
   // Task 26: every artifact consumer waits for the producer in the same workflow run.
   for (const [job, needs] of [

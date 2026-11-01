@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -23,11 +24,13 @@ const (
 )
 
 var (
-	ErrSpotifyCredentials    = errors.New("spotify credentials unavailable")
-	ErrSpotifyState          = errors.New("invalid spotify credential state")
-	ErrSpotifyConflict       = errors.New("spotify credential state changed")
-	ErrSpotifyNoPending      = errors.New("no pending spotify authorization")
-	ErrSpotifyRelinkRequired = errors.New("spotify authorization was consumed; relink required")
+	ErrSpotifyCredentials       = errors.New("spotify credentials unavailable")
+	ErrSpotifyNotLinked         = fmt.Errorf("%w: no linked account", ErrSpotifyCredentials)
+	ErrSpotifyState             = errors.New("invalid spotify credential state")
+	ErrSpotifyCredentialBinding = errors.New("spotify credential installation binding mismatch")
+	ErrSpotifyConflict          = errors.New("spotify credential state changed")
+	ErrSpotifyNoPending         = errors.New("no pending spotify authorization")
+	ErrSpotifyRelinkRequired    = errors.New("spotify authorization was consumed; relink required")
 )
 
 type spotifyCredentialRuntime interface {
@@ -85,6 +88,19 @@ func NewSpotifyCredentials(runtime spotifyCredentialRuntime, n spotifyCredential
 	s := newSpotifyCredentials(runtime, n, spotifyHTTPExchanger{clientID: clientID, redirect: redirectURL})
 	s.profile, s.guard = spotifyHTTPProfiler{}, guard
 	return s, nil
+}
+
+// NewSpotifyCredentialStatusReader binds the read-only credential inspector to
+// the actual installation without requiring OAuth configuration.
+func NewSpotifyCredentialStatusReader(runtime spotifyCredentialRuntime, n spotifyCredentialNative, guard *SpotifyAccountGuard) (*SpotifyCredentials, error) {
+	if runtime == nil || n == nil || guard == nil {
+		return nil, ErrSpotifyCredentials
+	}
+	binding := n.Binding()
+	if binding.Instance.IsZero() || binding.Community.IsZero() || binding.Installation.IsZero() {
+		return nil, ErrSpotifyCredentials
+	}
+	return &SpotifyCredentials{runtime: runtime, native: n, binding: binding, guard: guard}, nil
 }
 
 func newSpotifyCredentials(runtime spotifyCredentialRuntime, n spotifyCredentialNative, x spotifyTokenExchanger) *SpotifyCredentials {
@@ -167,7 +183,7 @@ func (s *SpotifyCredentials) Load(ctx context.Context) (spotifyauth.Token, error
 		return spotifyauth.Token{}, err
 	}
 	if state == nil {
-		return spotifyauth.Token{}, ErrSpotifyCredentials
+		return spotifyauth.Token{}, ErrSpotifyNotLinked
 	}
 	if state.legacy {
 		state, revision, err = s.migrateLegacy(ctx, state, revision)
@@ -199,6 +215,38 @@ func (s *SpotifyCredentials) Load(ctx context.Context) (spotifyauth.Token, error
 	return tok, nil
 }
 
+// InspectStatus checks only the already-stored encrypted token and the local
+// installation binding. It never claims OAuth state, migrates, refreshes or writes.
+func (s *SpotifyCredentials) InspectStatus(ctx context.Context) (ProviderAccount, ProviderReason) {
+	if s == nil || ctx == nil || s.native == nil || s.guard == nil || s.binding.Installation.IsZero() {
+		return ProviderAccountUnknown, ProviderReasonUnavailable
+	}
+	state, _, err := s.read(ctx)
+	if err != nil {
+		if errors.Is(err, ErrSpotifyCredentialBinding) {
+			return ProviderAccountNeedsAttention, ProviderReasonBindingMismatch
+		}
+		if errors.Is(err, ErrSpotifyState) {
+			return ProviderAccountNeedsAttention, ProviderReasonInvalidCredentials
+		}
+		return ProviderAccountUnknown, ProviderReasonUnavailable
+	}
+	if state == nil {
+		return ProviderAccountNotLinked, ProviderReasonMissingCredentials
+	}
+	accountID, err := s.guard.read()
+	if errors.Is(err, os.ErrNotExist) {
+		return ProviderAccountNeedsAttention, ProviderReasonAccountMismatch
+	}
+	if err != nil {
+		return ProviderAccountUnknown, ProviderReasonUnavailable
+	}
+	if accountID != state.accountID {
+		return ProviderAccountNeedsAttention, ProviderReasonAccountMismatch
+	}
+	return ProviderAccountLinked, ProviderReasonNone
+}
+
 type spotifyCredentialState struct {
 	attempt         id.ID
 	access, refresh string
@@ -210,7 +258,7 @@ type spotifyCredentialState struct {
 func (s *SpotifyCredentials) read(ctx context.Context) (*spotifyCredentialState, uint64, error) {
 	v, err := s.native.StateGet(ctx, spotifyCredentialArea, s.key())
 	if err != nil {
-		return nil, 0, ErrSpotifyCredentials
+		return nil, 0, &spotifyCredentialLoadError{cause: err}
 	}
 	if v.Tombstone {
 		return nil, v.Revision, ErrSpotifyState
@@ -235,8 +283,11 @@ func (s *SpotifyCredentials) read(ctx context.Context) (*spotifyCredentialState,
 	instance, iok := spotifyStateID(a[1])
 	community, cok := spotifyStateID(a[2])
 	installation, ok := spotifyStateID(a[3])
-	if !iok || !cok || !ok || instance != s.binding.Instance || community != s.binding.Community || installation != s.binding.Installation {
+	if !iok || !cok || !ok {
 		return nil, v.Revision, ErrSpotifyState
+	}
+	if instance != s.binding.Instance || community != s.binding.Community || installation != s.binding.Installation {
+		return nil, v.Revision, errors.Join(ErrSpotifyState, ErrSpotifyCredentialBinding)
 	}
 	attempt, ok := spotifyStateID(a[4])
 	if !ok || attempt.IsZero() {
@@ -360,8 +411,13 @@ func (s *SpotifyCredentials) validateAccount(state *spotifyCredentialState) erro
 }
 
 func (s *SpotifyCredentials) key() []byte {
-	return []byte(fmt.Sprintf("dilla.bot.spotify.v1/%x/%x/%x", s.binding.Instance, s.binding.Community, s.binding.Installation))
+	return []byte(fmt.Sprintf("dilla.bot.spotify.v1/%s/%s/%s", s.binding.Instance, s.binding.Community, s.binding.Installation))
 }
 func validSpotifySecret(v string) bool {
 	return v != "" && len(v) <= 8192 && !strings.ContainsAny(v, "\r\n\x00")
 }
+
+type spotifyCredentialLoadError struct{ cause error }
+
+func (e *spotifyCredentialLoadError) Error() string   { return ErrSpotifyCredentials.Error() }
+func (e *spotifyCredentialLoadError) Unwrap() []error { return []error{ErrSpotifyCredentials, e.cause} }

@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
 import { ChannelList, type ChannelListProps } from './ChannelList.tsx';
@@ -241,7 +241,7 @@ describe('ChannelList, one list with voice rooms in place', () => {
     { id: 'l', name: 'lfg', kind: 'text', readable: false },
   ];
   const voice = (over: Partial<NonNullable<ChannelListProps['voice']>> = {}): NonNullable<ChannelListProps['voice']> => ({
-    labels: { open: 'voice {name}', count: '{n} in voice', canHear: 'can hear', join: 'join voice', joined: 'connected', state },
+    labels: { open: 'voice {name}', count: '{n} in voice', playbackOnly: 'playback only', join: 'join voice', joined: 'connected', state },
     rooms: { v1: { joined: false, participants: [person('ada', { speaking: true }), person('bo', { muted: true })] } },
     onJoin: vi.fn(), ...over,
   });
@@ -326,7 +326,7 @@ describe('ChannelList, categories', () => {
   ];
   const categories = [{ id: 'raids', name: 'raids', collapsed: true }, { id: 'lounge', name: 'lounge', collapsed: false }];
   const names = () => [...document.querySelectorAll('.d-channel-list__list > li')].map(li => li.querySelector('.d-chrow__name, .d-channel-list__cat-label, .d-voice-row__name')?.textContent);
-  const voice = { labels: { open: 'voice {name}', count: '{n} in voice', canHear: 'can hear', join: 'join voice', joined: 'connected',
+  const voice = { labels: { open: 'voice {name}', count: '{n} in voice', playbackOnly: 'playback only', join: 'join voice', joined: 'connected',
     state: { speaking: 'speaking', muted: 'muted', deafened: 'deafened', notHeard: 'not heard yet', unverified: 'unverified stream', connecting: 'connecting', video: 'camera on', screen: 'sharing screen', web: 'web', bot: 'bot', noSound: 'no sound' } },
     rooms: {} };
 
@@ -415,5 +415,134 @@ describe('ChannelList, categories', () => {
       rerender(<ChannelList {...props({ channels: rows.slice(1), categories: cats })} />);
       expect(names().map(n => n?.replace(/[#\s]+/g, ''))).toEqual(['general', 'one', 'harbour', 'two', 'keep']);
     });
+  });
+});
+
+// Signal §5.4 (fix round 2): the stat line. The live dot belongs to the online part alone; a screen reader hears a comma
+// between the parts in place of the decorative "·".
+describe('the stat line', () => {
+  const base = { label: 'channels', title: 'Midgard Crew', channels: [], activeId: null, onSelect: () => {}, emptyLabel: 'none' };
+  it('draws the dot only before a live part, and a hidden comma between parts', () => {
+    const { container, rerender } = render(<ChannelList {...base} stats={[{ text: '3 online', live: true }, { text: '5 in voice' }]} />);
+    const parts = [...container.querySelectorAll('.d-channel-list__stat')];
+    expect(parts[0].querySelector('.d-channel-list__live')).not.toBeNull();
+    expect(parts[1].querySelector('.d-channel-list__live')).toBeNull();
+    expect(parts[1].querySelector('.d-sr-only')?.textContent).toBe(', ');
+    expect(parts[1].querySelector('.d-channel-list__sep')).toHaveAttribute('aria-hidden', 'true');
+    rerender(<ChannelList {...base} stats={[{ text: '5 in voice' }]} />);
+    expect(container.querySelector('.d-channel-list__live')).toBeNull();
+    expect(container.querySelector('.d-channel-list__sep')).toBeNull();
+  });
+});
+
+describe('the row context menu (Ruling X: pins and edit channel)', () => {
+  // jsdom has no PointerEvent: a MouseEvent named like one, carrying pointerType, is what React reads.
+  const touch = (el: Element, type: 'pointerdown' | 'pointerup', at = { clientX: 20, clientY: 30 }) =>
+    act(() => { el.dispatchEvent(Object.assign(new MouseEvent(type, { bubbles: true, ...at }), { pointerType: 'touch' })); });
+  const rowMenu = (onSelect = vi.fn()) => ({
+    label: (name: string) => `${name} menu`,
+    items: (id: string) => id === 'g' ? [{ id: 'pins', label: 'pinned messages' }, { id: 'edit', label: 'edit channel' }] : [{ id: 'pins', label: 'pinned messages' }],
+    onSelect,
+  });
+  it('a right-click on a text row opens its menu at the pointer, without selecting the row', async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    render(<ChannelList {...props({ onSelect, rowMenu: rowMenu() })} />);
+    await user.pointer({ keys: '[MouseRight]', target: screen.getByRole('button', { name: 'general' }) });
+    const menu = screen.getByRole('menu', { name: 'general menu' });
+    expect(within(menu).getAllByRole('menuitem').map(i => i.textContent)).toEqual(['pinned messages', 'edit channel']);
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+  it('Shift+F10 on a focused row opens it; a choice reports the channel and the item and focus returns to the row', async () => {
+    const user = userEvent.setup();
+    const chosen = vi.fn();
+    render(<ChannelList {...props({ rowMenu: rowMenu(chosen) })} />);
+    screen.getByRole('button', { name: 'general' }).focus();
+    await user.keyboard('{Shift>}{F10}{/Shift}');
+    expect(screen.getByRole('menuitem', { name: 'pinned messages' })).toHaveFocus();
+    await user.keyboard('{ArrowDown}{Enter}');
+    expect(chosen).toHaveBeenCalledWith('g', 'edit');
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(screen.getByRole('button', { name: 'general' })).toHaveFocus();
+  });
+  it('the ContextMenu key opens it too; Escape closes it back to the row', async () => {
+    const user = userEvent.setup();
+    render(<ChannelList {...props({ rowMenu: rowMenu() })} />);
+    screen.getByRole('button', { name: 'loot' }).focus();
+    await user.keyboard('{ContextMenu}');
+    expect(screen.getByRole('menu', { name: 'loot menu' })).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(screen.getByRole('button', { name: 'loot' })).toHaveFocus();
+  });
+  it('a long press on a touch screen opens it and the tap that ends it does not open the channel', () => {
+    vi.useFakeTimers();
+    try {
+      const onSelect = vi.fn();
+      render(<ChannelList {...props({ onSelect, rowMenu: rowMenu() })} />);
+      const row = screen.getByRole('button', { name: 'general' });
+      touch(row, 'pointerdown');
+      act(() => { vi.advanceTimersByTime(500); });
+      expect(screen.getByRole('menu', { name: 'general menu' })).toBeInTheDocument();
+      touch(row, 'pointerup');
+      fireEvent.click(row);
+      expect(onSelect).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+  it('a long press that no click follows (a touch platform that sends none) does not eat the next tap', () => {
+    vi.useFakeTimers();
+    try {
+      const onSelect = vi.fn();
+      render(<ChannelList {...props({ onSelect, rowMenu: rowMenu() })} />);
+      const row = screen.getByRole('button', { name: 'general' });
+      touch(row, 'pointerdown');
+      act(() => { vi.advanceTimersByTime(500); });
+      touch(row, 'pointerup');
+      // No click. The menu is dismissed, then a later ordinary tap opens a channel.
+      act(() => { fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' }); });
+      act(() => { vi.advanceTimersByTime(2000); });
+      const loot = screen.getByRole('button', { name: 'loot' });
+      touch(loot, 'pointerdown');
+      touch(loot, 'pointerup');
+      fireEvent.click(loot);
+      expect(onSelect).toHaveBeenCalledWith('t');
+    } finally { vi.useRealTimers(); }
+  });
+  it('a long press with no click is forgotten by the next pointerdown, even before its timeout', () => {
+    vi.useFakeTimers();
+    try {
+      const onSelect = vi.fn();
+      render(<ChannelList {...props({ onSelect, rowMenu: rowMenu() })} />);
+      const row = screen.getByRole('button', { name: 'general' });
+      touch(row, 'pointerdown');
+      act(() => { vi.advanceTimersByTime(500); });
+      touch(row, 'pointerup');
+      act(() => { fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' }); });
+      const loot = screen.getByRole('button', { name: 'loot' });
+      touch(loot, 'pointerdown');
+      touch(loot, 'pointerup');
+      fireEvent.click(loot);
+      expect(onSelect).toHaveBeenCalledWith('t');
+    } finally { vi.useRealTimers(); }
+  });
+  it('a short tap still opens the channel', () => {
+    vi.useFakeTimers();
+    try {
+      const onSelect = vi.fn();
+      render(<ChannelList {...props({ onSelect, rowMenu: rowMenu() })} />);
+      const row = screen.getByRole('button', { name: 'general' });
+      touch(row, 'pointerdown');
+      act(() => { vi.advanceTimersByTime(200); });
+      touch(row, 'pointerup');
+      fireEvent.click(row);
+      expect(onSelect).toHaveBeenCalledWith('g');
+      expect(screen.queryByRole('menu')).toBeNull();
+    } finally { vi.useRealTimers(); }
+  });
+  it('without rowMenu a right-click does nothing of its own', async () => {
+    const user = userEvent.setup();
+    render(<ChannelList {...props()} />);
+    await user.pointer({ keys: '[MouseRight]', target: screen.getByRole('button', { name: 'general' }) });
+    expect(screen.queryByRole('menu')).toBeNull();
   });
 });

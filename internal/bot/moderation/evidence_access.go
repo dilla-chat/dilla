@@ -334,7 +334,7 @@ func (r *EvidenceReader) List(ctx context.Context, actor id.ID, after []byte, li
 			return nil, nil, ErrEvidenceAccess
 		}
 		consumed = append(consumed[:0], entry.Key...)
-		if string(entry.Key) == memberRegistrationCatchupStateKey {
+		if isEvidenceAuxiliaryKey(entry.Key) {
 			continue
 		}
 		if entry.Tombstone || entry.Revision == 0 {
@@ -477,7 +477,7 @@ func (w *EvidenceWriter) PurgeExpired(ctx context.Context, after []byte) (int, [
 	now := time.Now().UTC().Unix()
 	removed := 0
 	for _, entry := range page.Entries {
-		if string(entry.Key) == memberRegistrationCatchupStateKey {
+		if isEvidenceAuxiliaryKey(entry.Key) {
 			continue
 		}
 		if entry.Tombstone {
@@ -577,4 +577,10 @@ func evidenceExpiry(raw []byte, binding native.Binding, key []byte) (int64, erro
 		return 0, ErrEvidenceWrite
 	}
 	return int64(expires), nil
+}
+
+// Registration progress and durable audio counters share area 9 with evidence.
+// Skip only known auxiliary namespaces; unknown/corrupt evidence stays fail-closed.
+func isEvidenceAuxiliaryKey(key []byte) bool {
+	return string(key) == memberRegistrationCatchupStateKey || bytes.HasPrefix(key, []byte("sframe.mic.v1\x00"))
 }

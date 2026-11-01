@@ -120,8 +120,14 @@ type BotInteractionAdmissionReceipts interface {
 	UpdateBotInteractionAdmissionReceipt(context.Context, BotInteractionAdmissionReceipt) error
 	// Compaction removes expired payloads immediately and forgets request hashes after
 	// 30 days past expiry. IDs are immutable during that window; after it, reuse is allowed.
+	// One call forgets at most BotInteractionAdmissionTombstoneBatch hashes, oldest first, so a
+	// backlog (after an upgrade or a long Bot outage) drains over later admissions instead of
+	// holding the single writer; a hash may therefore outlive its 30 days, never fall short of them.
 	CompactExpiredBotInteractionAdmissionReceipts(context.Context, id.ID, int64) error
 }
+
+// BotInteractionAdmissionTombstoneBatch bounds the tombstones one compaction deletes.
+const BotInteractionAdmissionTombstoneBatch = 512
 
 // BotGroupRegistrationAdmissionReceipts atomically records the accepted
 // registration consumed by one kind-3 admission request. The bool is true for
@@ -413,6 +419,12 @@ type Sessions interface {
 type Auth interface {
 	PutPasswordCredential(ctx context.Context, userID id.ID, phc string, updated int64) error
 	GetPasswordCredential(ctx context.Context, userID id.ID) (string, error)
+	// ChangePasswordCredential stores a changed password and records when it changed (Task 11, Q7), in one statement, so the
+	// hash is never written without its change time (fix round 2, security L1).
+	ChangePasswordCredential(ctx context.Context, userID id.ID, phc string, at int64) error
+	// GetPasswordChangedAt is that time, or nil when it is unknown (set before migration 00052, or never changed since sign-up);
+	// ErrNotFound when the account has no password.
+	GetPasswordChangedAt(ctx context.Context, userID id.ID) (*int64, error)
 	PutTOTP(ctx context.Context, t TOTPRow) error
 	GetTOTP(ctx context.Context, userID id.ID) (TOTPRow, error)
 	// DeleteTOTP drops the user's TOTP secret, confirmed or not; no row is not an error.
@@ -527,6 +539,13 @@ type MLS interface {
 	PutProposal(ctx context.Context, p ProposalRow) error
 	ListProposals(ctx context.Context, groupID id.ID, epoch uint64, includeVoid bool) ([]ProposalRow, error)
 	VoidProposal(ctx context.Context, groupID id.ID, ref []byte, at int64) error
+	// ListClosedGroupLiveProposals is up to limit non-void proposals, of any epoch, of closed
+	// groups, ordered by group and ref: the sweep voids them, since no commit lands in a closed
+	// group and none is reopened.
+	ListClosedGroupLiveProposals(ctx context.Context, limit int32) ([]ProposalRow, error)
+	// CountLiveInstanceProposals counts non-void instance proposals (origin 0) by kind at open
+	// groups' current epoch, plus every epoch of closed groups: the outstanding gauge's seed.
+	CountLiveInstanceProposals(ctx context.Context) (map[uint8]int64, error)
 	DeleteProposals(ctx context.Context, groupID id.ID, refs [][]byte) error
 	ReissueProposal(ctx context.Context, oldRef []byte, p ProposalRow) error // keeps action_id
 	ReplaceMembers(ctx context.Context, groupID id.ID, epoch uint64, m []MemberRow) error
@@ -787,10 +806,6 @@ type Communities interface {
 	// Callers hold LockCommunity in the same transaction.
 	SetSelfRolePolicy(ctx context.Context, communityID id.ID, approver id.ID, roles []id.ID, approvedAt int64) error
 	ListSelfRolePolicy(ctx context.Context, communityID id.ID) ([]SelfRolePolicyRow, error)
-	// SetDJRolePolicy atomically replaces the installation's approved DJ role IDs.
-	// Callers hold LockCommunity in the same transaction.
-	SetDJRolePolicy(ctx context.Context, installationID id.ID, approver id.ID, roles []id.ID, approvedAt int64) error
-	ListDJRolePolicy(ctx context.Context, installationID id.ID) ([]DJRolePolicyRow, error)
 	// ListMemberRoles is Plan 2's P2-D7b: GET /v1/communities/{id}/members must
 	// list each member's roles and the permission resolver needs the set a user
 	// holds, which deriving from ListRoles would make a full scan per member.
@@ -806,14 +821,6 @@ type SelfRolePolicyRow struct {
 	RoleID      id.ID
 	ApprovedBy  id.ID
 	ApprovedAt  int64
-}
-
-// DJRolePolicyRow is a manager-approved role in one installation's DJ authority allowlist.
-type DJRolePolicyRow struct {
-	InstallationID id.ID
-	RoleID         id.ID
-	ApprovedBy     id.ID
-	ApprovedAt     int64
 }
 
 const (

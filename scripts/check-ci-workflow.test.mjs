@@ -6,13 +6,14 @@ import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gateExpression, JOB_GATES } from './ci-areas.mjs';
-import { BROWSER_WEB_JOBS, checkDesktopWorkflow, checkReleaseWorkflow, checkWorkflow, jobSteps, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEP, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION } from './check-ci-workflow.mjs';
+import { BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopWorkflow, checkReleaseWorkflow, checkWorkflow, jobSteps, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEP, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION, WEB_SHARDS } from './check-ci-workflow.mjs';
 
 const NPM_TEST = "      - if: needs.changes.outputs.web != 'false'\n        run: npm test\n";
 const SCRIPT_PATH = fileURLToPath(new URL('./check-ci-workflow.mjs', import.meta.url));
 const REPO_ROOT = join(dirname(SCRIPT_PATH), '..');
 const REAL_CI = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
 const REAL_RELEASE = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'release.yml'), 'utf8');
+
 const REAL_DESKTOP = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'desktop.yml'), 'utf8');
 
 test('desktop acceptance requires every native target, Electron tests, packaging and fuse verification', () => {
@@ -23,6 +24,28 @@ test('desktop acceptance requires every native target, Electron tests, packaging
     writeFileSync(join(root, '.github/workflows/desktop.yml'), REAL_DESKTOP.replaceAll(removed, 'removed'));
     assert.ok(checkDesktopWorkflow(root).length > 0, removed);
   }
+});
+
+test('compiled helper recovery tests receive the same-commit helper and cannot silently skip', () => {
+  const native = REAL_CI.split('\n  rust-native:\n')[1].split('\n  spotify-helper:\n')[0];
+  const unit = REAL_CI.split('\n  go:\n')[1].split('\n  go-native:\n')[0];
+  const go = REAL_CI.split('\n  go-native:\n')[1]?.split('\n  go-ds:\n')[0] ?? '';
+  assert.ok(go, 'native integrations need a separate bounded job instead of consuming the unit job budget');
+  assert.match(go, /timeout-minutes: 15/);
+  assert.match(unit, /timeout-minutes: 30/);
+  assert.doesNotMatch(unit, /DILLA_BOT_HELPER_INTEGRATION/);
+  assert.match(native, /cargo build -p dilla-bot-core --release --locked/);
+  assert.match(native, /name: dilla-bot-core\n\s+path: target\/release\/dilla-bot-core/);
+  assert.match(go, /needs:.*rust-native/);
+  assert.match(go, /name: dilla-bot-core\n\s+path: target\/release/);
+  const run = jobSteps(go).find(step => step.some(line => line.includes('go test -race ./internal/bot/native ./cmd/dillabot')));
+  assert.ok(run, 'the native adapter and production dependency tests must run with the compiled helper');
+  assert.ok(run.some(line => line.includes("DILLA_BOT_HELPER_INTEGRATION: '1'")));
+  assert.ok(run.some(line => line.includes('DILLA_BOT_HELPER_BIN: ${{ github.workspace }}/target/release/dilla-bot-core')));
+  const steps = jobSteps(go);
+  const fixtureBuild = steps.findIndex(step => step.some(line => line.includes('cargo test -p dilla-core --test native_bot_group_peer_fixture --no-run --locked')));
+  const integration = steps.findIndex(step => step.some(line => line.includes('go test -race ./internal/bot/native ./cmd/dillabot')));
+  assert.ok(fixtureBuild >= 0 && fixtureBuild < integration, 'compile the Rust peer before the integration test starts its bounded readiness wait');
 });
 
 test('workflow steps execute only commit-pinned GitHub actions', () => {
@@ -76,6 +99,42 @@ test('Rust CI and release setup use the pinned rustup toolchain without third-pa
 
 // The go job's test step: every package but internal/ds and internal/api, which go-ds and go-api run (CI budget, fix wave).
 const GO_TEST = 'go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx -e github.com/jonasthim/dilla/internal/ds -e github.com/jonasthim/dilla/internal/api)';
+
+/** The browser jobs of GOOD, generated from BROWSER_WEB_JOBS: one job per engine, suite and web shard. */
+function browserJobsFixture() {
+  return Object.entries(BROWSER_WEB_JOBS).map(([job, spec]) => `  ${job}:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${spec.timeout}
+    needs: [rust-native, rust-wasi, web-build]
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-testkit
+          path: artifacts
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-web-dist
+          path: packages/web/dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-core-harness
+          path: packages/client-core/harness-dist
+      - run: npx playwright install --with-deps ${spec.engine}
+${spec.engine === 'firefox' && spec.suite !== 'core' ? '      - run: sh scripts/ci-audio-server.sh\n' : ''}      - run: ${browserSuiteCommand(spec)}
+        env:
+          DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: failure()
+        with:
+          name: browser-web-results-${job}
+          path: e2e/test-results
+          if-no-files-found: error
+`).join('\n');
+}
 
 const GOOD_BASE = `name: ci
 on:
@@ -281,125 +340,28 @@ jobs:
           path: packages/client-core/harness-dist/
           if-no-files-found: error
 
-  chromium-web:
+${browserJobsFixture()}
+  go-native:
     runs-on: ubuntu-latest
-    timeout-minutes: ${BROWSER_WEB_JOBS['chromium-web'].timeout}
-    needs: [rust-native, rust-wasi, web-build]
+    timeout-minutes: 15
+    needs: [rust-wasi, rust-native]
     steps:
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-core-wasi
-          path: internal/mlswasi/testdata
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-testkit
-          path: artifacts
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-web-dist
-          path: packages/web/dist
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-core-harness
-          path: packages/client-core/harness-dist
-      - run: npx playwright install --with-deps chromium
-      - run: npm run test:e2e:core:chromium -w @dilla/e2e
+      - run: cargo test -p dilla-core --test native_bot_group_peer_fixture --no-run --locked
+      - run: go test -race ./internal/bot/native ./cmd/dillabot
         env:
-          DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
-      - run: npm run test:e2e:web:chromium -w @dilla/e2e
-        env:
-          DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
-      - run: npm run test:e2e:voice:chromium -w @dilla/e2e
-        env:
-          DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        if: failure()
-        with:
-          name: browser-web-results-chromium
-          path: e2e/test-results
-          if-no-files-found: error
-
-  firefox-web:
-    runs-on: ubuntu-latest
-    timeout-minutes: ${BROWSER_WEB_JOBS['firefox-web'].timeout}
-    needs: [rust-native, rust-wasi, web-build]
-    steps:
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-core-wasi
-          path: internal/mlswasi/testdata
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-testkit
-          path: artifacts
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-web-dist
-          path: packages/web/dist
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-core-harness
-          path: packages/client-core/harness-dist
-      - run: npx playwright install --with-deps firefox
-      - run: npm run test:e2e:core:firefox -w @dilla/e2e
-        env:
-          DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
-      - run: sh scripts/ci-audio-server.sh
-      - run: npm run test:e2e:web:firefox -w @dilla/e2e
-        env:
-          DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
-      - run: npm run test:e2e:voice:firefox -w @dilla/e2e
-        env:
-          DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        if: failure()
-        with:
-          name: browser-web-results-firefox
-          path: e2e/test-results
-          if-no-files-found: error
-
-  webkit-web:
-    runs-on: ubuntu-latest
-    timeout-minutes: ${BROWSER_WEB_JOBS['webkit-web'].timeout}
-    needs: [rust-native, rust-wasi, web-build]
-    steps:
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-core-wasi
-          path: internal/mlswasi/testdata
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-testkit
-          path: artifacts
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-web-dist
-          path: packages/web/dist
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-core-harness
-          path: packages/client-core/harness-dist
-      - run: npx playwright install --with-deps webkit
-      - run: npm run test:e2e:web:webkit -w @dilla/e2e
-        env:
-          DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        if: failure()
-        with:
-          name: browser-web-results-webkit
-          path: e2e/test-results
-          if-no-files-found: error
+          DILLA_BOT_HELPER_INTEGRATION: '1'
+          DILLA_BOT_HELPER_BIN: \${{ github.workspace }}/target/release/dilla-bot-core
 
   go-ds:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 55
     needs: [rust-wasi]
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
-      - run: go test -race -shuffle=on -timeout 30m ./internal/ds/...
+      - run: go test -race -shuffle=on -timeout 45m ./internal/ds/...
 
   go-api:
     runs-on: ubuntu-latest
@@ -685,14 +647,14 @@ test('a go job without needs: rust-wasi is reported', () => {
 });
 
 test('a go-harness job without needs: rust-wasi is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('    needs: [changes, rust-wasi, rust-native]\n', '    needs: [changes, rust-native]\n')));
+  const problems = checkWorkflow(fixture(editJob('go-harness', b => b.replace('    needs: [changes, rust-wasi, rust-native]\n', '    needs: [changes, rust-native]\n'))));
   assert.ok(problems.some((p) => p.includes('"go-harness"') && p.includes('needs: rust-wasi')), problems.join('\n'));
 });
 
 // The edges are order-independent to GitHub, so the ordering rule must accept either order.
 test('a go-harness job whose needs: lists the two edges in the other order passes', () => {
   assert.deepEqual(
-    checkWorkflow(fixture(GOOD.replace('needs: [changes, rust-wasi, rust-native]', 'needs: [changes, rust-native, rust-wasi]'))),
+    checkWorkflow(fixture(editJob('go-harness', b => b.replace('needs: [changes, rust-wasi, rust-native]', 'needs: [changes, rust-native, rust-wasi]')))),
     [],
   );
 });
@@ -726,7 +688,7 @@ test('a node job that stopped running the checker\'s own tests is reported', () 
 // deviation B15 text) is the untested combination B15 existed to prevent. The checker owns the
 // cross-plan ordering rule already, so it must own this half of the hand-off too.
 test('a go-harness job without needs: rust-native is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('needs: [changes, rust-wasi, rust-native]', 'needs: [changes, rust-wasi]')));
+  const problems = checkWorkflow(fixture(editJob('go-harness', b => b.replace('needs: [changes, rust-wasi, rust-native]', 'needs: [changes, rust-wasi]'))));
   assert.ok(problems.some((p) => p.includes('needs: rust-native')), problems.join('\n'));
 });
 
@@ -821,23 +783,23 @@ test('a workflow without the go-ds job is reported', () => {
 
 test('a go-ds job that stopped running internal/ds is reported', () => {
   const problems = checkWorkflow(
-    fixture(GOOD.replace('      - run: go test -race -shuffle=on -timeout 30m ./internal/ds/...\n', '')),
+    fixture(GOOD.replace('      - run: go test -race -shuffle=on -timeout 45m ./internal/ds/...\n', '')),
   );
   assert.ok(problems.some((p) => p.includes('"go-ds"') && p.includes('./internal/ds/...')), problems.join('\n'));
 });
 
 test('a go-ds job with a shorter test budget is reported', () => {
   const problems = checkWorkflow(
-    fixture(GOOD.replace('      - run: go test -race -shuffle=on -timeout 30m ./internal/ds/...', '      - run: go test -race -shuffle=on -timeout 20m ./internal/ds/...')),
+    fixture(GOOD.replace('      - run: go test -race -shuffle=on -timeout 45m ./internal/ds/...', '      - run: go test -race -shuffle=on -timeout 20m ./internal/ds/...')),
   );
-  assert.ok(problems.some((p) => p.includes('"go-ds"') && p.includes('-timeout 30m')), problems.join('\n'));
+  assert.ok(problems.some((p) => p.includes('"go-ds"') && p.includes('-timeout 45m')), problems.join('\n'));
 });
 
 test('a go-ds job with too little wall-clock margin is reported', () => {
   const start = GOOD.indexOf('  go-ds:\n');
   const body = GOOD.slice(start, GOOD.indexOf('\n\n', start));
-  const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace('timeout-minutes: 40', 'timeout-minutes: 25'))));
-  assert.ok(problems.some((p) => p.includes('"go-ds"') && p.includes('timeout-minutes: 40')), problems.join('\n'));
+  const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace('timeout-minutes: 55', 'timeout-minutes: 25'))));
+  assert.ok(problems.some((p) => p.includes('"go-ds"') && p.includes('timeout-minutes: 55')), problems.join('\n'));
 });
 
 test('a workflow without the go-api job is reported', () => {
@@ -1207,10 +1169,9 @@ for (const [job, needle] of [
   ['web-build', 'path: packages/web/dist/'],
   ['web-build', 'name: dilla-core-harness'],
   ['web-build', 'path: packages/client-core/harness-dist/'],
-  ...Object.entries(BROWSER_WEB_JOBS).flatMap(([job, { engine, core, voice, timeout }]) => [
-    [job, `timeout-minutes: ${timeout}`],
-    ...(voice ? [[job, `npm run test:e2e:voice:${engine} -w @dilla/e2e`]] : []),
-    ...(voice && engine === 'firefox' ? [[job, 'sh scripts/ci-audio-server.sh']] : []),
+  ...Object.entries(BROWSER_WEB_JOBS).flatMap(([job, spec]) => [
+    [job, `timeout-minutes: ${spec.timeout}`],
+    ...(spec.engine === 'firefox' && spec.suite !== 'core' ? [[job, 'sh scripts/ci-audio-server.sh']] : []),
     [job, 'name: dilla-core-wasi'],
     [job, 'path: internal/mlswasi/testdata'],
     [job, 'name: dilla-testkit'],
@@ -1218,12 +1179,11 @@ for (const [job, needle] of [
     [job, 'path: packages/web/dist'],
     [job, 'name: dilla-core-harness'],
     [job, 'path: packages/client-core/harness-dist'],
-    [job, `npx playwright install --with-deps ${engine}`],
-    ...(core ? [[job, `npm run test:e2e:core:${engine} -w @dilla/e2e`]] : []),
-    [job, `npm run test:e2e:web:${engine} -w @dilla/e2e`],
+    [job, `npx playwright install --with-deps ${spec.engine}`],
+    [job, browserSuiteCommand(spec)],
     [job, 'DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit'],
     [job, 'if: failure()'],
-    [job, `name: browser-web-results-${engine}`],
+    [job, `name: browser-web-results-${job}`],
     [job, 'path: e2e/test-results'],
   ]),
   ['go-release', 'name: dilla-web-dist'],
@@ -1258,78 +1218,145 @@ for (const job of Object.keys(BROWSER_WEB_JOBS)) {
   }
 }
 
-// Ruling of 2026-10-13: browser-web is one job per engine. Dropping an engine's job, folding the engines back into
-// one job, or two engines uploading one artifact name (upload-artifact v4+ refuses a duplicate) is reported.
-test('a workflow missing one engine job is reported, also when another job runs that engine', () => {
-  const firefox = jobBody('firefox-web');
-  const problems = checkWorkflow(fixture(GOOD.replace(firefox, '')));
-  assert.ok(problems.some((p) => p.includes('missing job "firefox-web"')), problems.join('\n'));
-  const merged = jobBody('chromium-web')
-    .replace('npx playwright install --with-deps chromium', 'npx playwright install --with-deps chromium firefox')
-    .replace('npm run test:e2e:web:chromium -w @dilla/e2e', 'npm run test:e2e:web -w @dilla/e2e');
-  const folded = checkWorkflow(fixture(GOOD.replace(firefox, '').replace(jobBody('chromium-web'), () => merged)));
-  assert.ok(folded.some((p) => p.includes('missing job "firefox-web"')), folded.join('\n'));
-  assert.ok(folded.some((p) => p.includes('"chromium-web"') && p.includes('test:e2e:web:chromium')), folded.join('\n'));
+// Jonas, 2026-10-30: each engine splits into a core job, a voice job and the web suite as three Playwright shards, one
+// job each. Dropping a job, folding suites back into one job, an unpinned shard or two jobs uploading one artifact name
+// (upload-artifact v4+ refuses a duplicate) is reported.
+test('the browser job table covers core, voice and three web shards for Chromium and Firefox, and WebKit web', () => {
+  const rows = Object.entries(BROWSER_WEB_JOBS).map(([job, { engine, suite, shard, timeout }]) => `${job} ${engine} ${suite} ${shard} ${timeout}`);
+  assert.deepEqual(rows, [
+    'chromium-core chromium core null 20',
+    'chromium-voice chromium voice null 30',
+    'chromium-web-1 chromium web 1 35',
+    'chromium-web-2 chromium web 2 35',
+    'chromium-web-3 chromium web 3 35',
+    'firefox-core firefox core null 20',
+    'firefox-voice firefox voice null 30',
+    'firefox-web-1 firefox web 1 40',
+    'firefox-web-2 firefox web 2 40',
+    'firefox-web-3 firefox web 3 40',
+    'webkit-web webkit web null 30',
+  ]);
+  assert.equal(WEB_SHARDS, 3);
 });
 
+test('the shard commands are the web suite with --shard=i/3', () => {
+  assert.equal(browserSuiteCommand(BROWSER_WEB_JOBS['chromium-web-2']), 'npm run test:e2e:web:chromium -w @dilla/e2e -- --shard=2/3');
+  assert.equal(browserSuiteCommand(BROWSER_WEB_JOBS['firefox-voice']), 'npm run test:e2e:voice:firefox -w @dilla/e2e');
+  assert.equal(browserSuiteCommand(BROWSER_WEB_JOBS['webkit-web']), 'npm run test:e2e:web:webkit -w @dilla/e2e');
+});
+
+test('the old per-engine jobs are no longer accepted', () => {
+  assert.ok(!('chromium-web' in BROWSER_WEB_JOBS) && !('firefox-web' in BROWSER_WEB_JOBS));
+  const old = '  chromium-web:\n    needs: [changes, rust-native, rust-wasi, web-build]\n    if: needs.changes.outputs.e2e != \'false\'\n    steps:\n      - run: npm run test:e2e:core:chromium -w @dilla/e2e\n';
+  const problems = checkWorkflow(fixture(GOOD.replace('  deny:', () => `${old}\n  deny:`)));
+  assert.ok(problems.some((p) => p.includes('"chromium-web"') && p.includes('JOB_GATES')), problems.join('\n'));
+});
+
+test('a workflow missing one split job is reported, also when another job runs that suite', () => {
+  const shard = jobBody('chromium-web-2');
+  const problems = checkWorkflow(fixture(GOOD.replace(shard, '')));
+  assert.ok(problems.some((p) => p.includes('missing job "chromium-web-2"')), problems.join('\n'));
+  const merged = jobBody('chromium-web-1').replace(
+    '      - run: npm run test:e2e:web:chromium -w @dilla/e2e -- --shard=1/3\n',
+    '      - run: npm run test:e2e:web:chromium -w @dilla/e2e -- --shard=1/3\n        env:\n          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit\n      - run: npm run test:e2e:web:chromium -w @dilla/e2e -- --shard=2/3\n',
+  );
+  const folded = checkWorkflow(fixture(GOOD.replace(shard, '').replace(jobBody('chromium-web-1'), () => merged)));
+  assert.ok(folded.some((p) => p.includes('missing job "chromium-web-2"')), folded.join('\n'));
+  assert.ok(folded.some((p) => p.includes('"chromium-web-1"') && p.includes('exactly one Playwright suite')), folded.join('\n'));
+});
+
+test('a job that also runs another suite is reported', () => {
+  const body = jobBody('chromium-core');
+  const both = body.replace('    steps:\n', '    steps:\n      - run: npm run test:e2e:voice:chromium -w @dilla/e2e\n');
+  const problems = checkWorkflow(fixture(GOOD.replace(body, () => both)));
+  assert.ok(problems.some((p) => p.includes('"chromium-core"') && p.includes('exactly one Playwright suite')), problems.join('\n'));
+});
+
+for (const [job, spec] of Object.entries(BROWSER_WEB_JOBS).filter(([, { shard }]) => shard !== null)) {
+  test(`a ${job} job running the wrong shard, or the whole suite, is reported`, () => {
+    const body = jobBody(job);
+    const command = browserSuiteCommand(spec);
+    assert.ok(body.includes(command), 'fixture sanity: the shard command');
+    const other = spec.shard === 1 ? 2 : 1;
+    for (const changed of [
+      command.replace(`--shard=${spec.shard}/3`, `--shard=${other}/3`),
+      command.replace(`--shard=${spec.shard}/3`, `--shard=${spec.shard}/4`),
+      command.replace(' -- --shard=' + spec.shard + '/3', ''),
+    ]) {
+      const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace(command, changed))));
+      assert.ok(problems.some((p) => p.includes(`"${job}"`) && p.includes(command)), `${changed}: ${problems.join('\n')}`);
+    }
+  });
+}
+
 // Web-3 task 10: Firefox's voice suite runs after the audio server, as browser-media's does.
-test('firefox-web must start an audio server before the voice suite', () => {
-  const body = jobBody('firefox-web');
+test('firefox-voice must start an audio server before the voice suite', () => {
+  const body = jobBody('firefox-voice');
   const audio = '      - run: sh scripts/ci-audio-server.sh\n';
   const voice = '      - run: npm run test:e2e:voice:firefox -w @dilla/e2e\n';
   assert.ok(body.includes(audio) && body.includes(voice), 'fixture sanity: the audio server and the voice suite');
-  const late = body.replace(audio, '').replace(voice, voice + audio);
+  const late = body.replace(audio, '').replace(voice + '        env:\n          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit\n', (m) => m + audio);
   const problems = checkWorkflow(fixture(GOOD.replace(body, () => late)));
-  assert.ok(problems.some((p) => p.includes('firefox-web') && p.includes('audio server') && p.includes('before')), problems.join('\n'));
+  assert.ok(problems.some((p) => p.includes('firefox-voice') && p.includes('audio server must start before the voice suite')), problems.join('\n'));
 });
 
 // Web3.9 CI2: the web suite has calls too (afk.spec's idle move, the layout's AFK preview). Without the audio server
 // Firefox's AudioContext stays suspended, so a fake microphone's tone reaches no local meter and counts as speech.
-test('firefox-web must start an audio server before the web suite', () => {
-  const body = jobBody('firefox-web');
-  const audio = '      - run: sh scripts/ci-audio-server.sh\n';
-  const web = '      - run: npm run test:e2e:web:firefox -w @dilla/e2e\n';
-  const voice = '      - run: npm run test:e2e:voice:firefox -w @dilla/e2e\n';
-  assert.ok(body.includes(audio) && body.includes(web), 'fixture sanity: the audio server and the web suite');
-  const late = body.replace(audio, '').replace(voice, audio + voice);
-  const problems = checkWorkflow(fixture(GOOD.replace(body, () => late)));
-  assert.ok(problems.some((p) => p.includes('firefox-web') && p.includes('audio server must start before the web suite')), problems.join('\n'));
+for (const shard of [1, 2, 3]) {
+  const job = `firefox-web-${shard}`;
+  test(`${job} must start an audio server before the web suite`, () => {
+    const body = jobBody(job);
+    const audio = '      - run: sh scripts/ci-audio-server.sh\n';
+    const env = '        env:\n          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit\n';
+    const web = `      - run: npm run test:e2e:web:firefox -w @dilla/e2e -- --shard=${shard}/3\n`;
+    assert.ok(body.includes(audio) && body.includes(web), 'fixture sanity: the audio server and the web suite');
+    const late = body.replace(audio, '').replace(web + env, (m) => m + audio);
+    const problems = checkWorkflow(fixture(GOOD.replace(body, () => late)));
+    assert.ok(problems.some((p) => p.includes(job) && p.includes('audio server must start before the web suite')), problems.join('\n'));
+    const missing = checkWorkflow(fixture(GOOD.replace(body, () => body.replace(audio, ''))));
+    assert.ok(missing.some((p) => p.includes(`"${job}"`) && p.includes('ci-audio-server.sh')), missing.join('\n'));
+  });
+}
+
+test('firefox-core and the Chromium and WebKit jobs need no audio server', () => {
+  for (const job of ['firefox-core', 'chromium-core', 'chromium-voice', 'chromium-web-1', 'webkit-web']) {
+    assert.ok(!jobBody(job).includes('ci-audio-server.sh'), job);
+  }
+  assert.deepEqual(checkWorkflow(fixture(GOOD)), []);
 });
 
-// Web-3 task 10 (review M10): the voice rules match steps, so a comment never satisfies them, and the voice step's own
+// Web-3 task 10 (review M10): the suite rules match steps, so a comment never satisfies them, and the suite step's own
 // env is required.
-for (const engine of ['chromium', 'firefox']) {
-  const job = `${engine}-web`;
-  const voice = `      - run: npm run test:e2e:voice:${engine} -w @dilla/e2e\n`;
-  test(`a ${job} voice step that is only a comment is reported`, () => {
+for (const [job, spec] of Object.entries(BROWSER_WEB_JOBS)) {
+  const command = browserSuiteCommand(spec);
+  const step = `      - run: ${command}\n`;
+  const env = '        env:\n          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit\n';
+  test(`a ${job} suite step that is only a comment is reported`, () => {
     const body = jobBody(job);
-    assert.ok(body.includes(voice), 'fixture sanity: the voice step');
-    const commented = body.replace(voice, `      # - run: npm run test:e2e:voice:${engine} -w @dilla/e2e\n`);
+    assert.ok(body.includes(step), 'fixture sanity: the suite step');
+    const commented = body.replace(step, `      # - run: ${command}\n`);
     const problems = checkWorkflow(fixture(GOOD.replace(body, () => commented)));
-    assert.ok(problems.some((p) => p.includes(`"${job}" is missing: npm run test:e2e:voice:${engine}`)), problems.join('\n'));
+    assert.ok(problems.some((p) => p.includes(`"${job}" is missing: ${command}`)), problems.join('\n'));
   });
-  test(`a ${job} voice step without its own DILLA_TESTKIT env is reported, though the web step has one`, () => {
+  test(`a ${job} suite step without its own DILLA_TESTKIT env is reported`, () => {
     const body = jobBody(job);
-    const env = '        env:\n          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit\n';
-    assert.ok(body.includes(voice + env), 'fixture sanity: the voice step and its env');
-    const bare = body.replace(voice + env, voice);
-    const problems = checkWorkflow(fixture(GOOD.replace(body, () => bare)));
+    assert.ok(body.includes(step + env), 'fixture sanity: the suite step and its env');
+    const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace(step + env, step))));
     assert.ok(problems.some((p) => p.includes(`"${job}"`) && p.includes('without its own env')), problems.join('\n'));
   });
 }
 
-test('a comment naming the audio server above the voice step does not stand in for the real step after it', () => {
-  const body = jobBody('firefox-web');
+test('a comment naming the audio server above the suite step does not stand in for the real step after it', () => {
+  const body = jobBody('firefox-voice');
   const audio = '      - run: sh scripts/ci-audio-server.sh\n';
-  const voice = '      - run: npm run test:e2e:voice:firefox -w @dilla/e2e\n';
-  const env = '        env:\n          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit\n';
-  assert.ok(body.includes(audio) && body.includes(voice + env), 'fixture sanity: the audio server, then the voice suite');
-  const sneaky = body.replace(audio, '      # sh scripts/ci-audio-server.sh\n').replace(voice + env, `${voice}${env}${audio}`);
+  const voice = '      - run: npm run test:e2e:voice:firefox -w @dilla/e2e\n        env:\n          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit\n';
+  assert.ok(body.includes(audio) && body.includes(voice), 'fixture sanity: the audio server, then the voice suite');
+  const sneaky = body.replace(audio, '      # sh scripts/ci-audio-server.sh\n').replace(voice, `${voice}${audio}`);
   const problems = checkWorkflow(fixture(GOOD.replace(body, () => sneaky)));
-  assert.ok(problems.some((p) => p.includes('firefox-web') && p.includes('audio server') && p.includes('before')), problems.join('\n'));
+  assert.ok(problems.some((p) => p.includes('firefox-voice') && p.includes('audio server must start before')), problems.join('\n'));
   const commentOnly = body.replace(audio, '      # - run: sh scripts/ci-audio-server.sh\n');
   const missing = checkWorkflow(fixture(GOOD.replace(body, () => commentOnly)));
-  assert.ok(missing.some((p) => p.includes('"firefox-web"') && p.includes('ci-audio-server.sh')), missing.join('\n'));
+  assert.ok(missing.some((p) => p.includes('"firefox-voice"') && p.includes('ci-audio-server.sh')), missing.join('\n'));
 });
 
 test('jobSteps drops comment lines and keeps each step\'s own lines', () => {
@@ -1337,19 +1364,48 @@ test('jobSteps drops comment lines and keeps each step\'s own lines', () => {
   assert.deepEqual(steps, [['run: b', 'env:', 'X: 1'], ['uses: d']]);
 });
 
-test('the browser budgets cover observed hosted-runner durations', () => {
-  for (const job of ['chromium-web', 'firefox-web']) {
-    const { timeout } = BROWSER_WEB_JOBS[job];
-    assert.ok(timeout >= 50, `${job}: ${timeout}`);
+test('the browser budgets keep margin over the measured durations', () => {
+  // Chromium's whole web suite took 45.6 minutes on one worker, Firefox's about 47: a third of it plus about 3 minutes of
+  // setup is about 19 minutes, so a shard's cap must not sink under 30.
+  for (const [job, { suite, engine, timeout }] of Object.entries(BROWSER_WEB_JOBS)) {
+    if (suite === 'web' && engine !== 'webkit') assert.ok(timeout >= 35, `${job}: ${timeout}`);
+    if (suite === 'voice') assert.ok(timeout >= 30, `${job}: ${timeout}`);
+    if (suite === 'core') assert.ok(timeout >= 20, `${job}: ${timeout}`);
   }
-  assert.equal(BROWSER_WEB_JOBS['webkit-web'].voice, false);
+  assert.equal(BROWSER_WEB_JOBS['webkit-web'].timeout, 30);
 });
 
-test('two engine jobs uploading one artifact name are reported', () => {
-  const body = jobBody('firefox-web');
-  const shared = body.replace('name: browser-web-results-firefox', 'name: browser-web-results-chromium');
+test('two browser jobs uploading one artifact name are reported', () => {
+  const body = jobBody('firefox-web-2');
+  const shared = body.replace('name: browser-web-results-firefox-web-2', 'name: browser-web-results-firefox-web-1');
   const problems = checkWorkflow(fixture(GOOD.replace(body, () => shared)));
-  assert.ok(problems.some((p) => p.includes('"firefox-web"') && p.includes('browser-web-results-firefox')), problems.join('\n'));
+  assert.ok(problems.some((p) => p.includes('"firefox-web-2"') && p.includes('browser-web-results-firefox-web-2')), problems.join('\n'));
+});
+
+test('every browser job has its own artifact name in the real ci.yml', () => {
+  const names = Object.keys(BROWSER_WEB_JOBS).map((job) => `name: browser-web-results-${job}`);
+  assert.equal(new Set(names).size, names.length);
+  for (const name of names) assert.equal(REAL_CI.split('\n').filter((l) => l.trim() === name).length, 1, name);
+});
+
+test('the real ci-ok job needs every browser job', () => {
+  const body = REAL_CI.slice(REAL_CI.indexOf('\n  ci-ok:'));
+  for (const job of Object.keys(BROWSER_WEB_JOBS)) assert.ok(new RegExp(`needs:[^\\n]*[ \\[]${job}[,\\]]`).test(body), job);
+});
+
+test('a ci-ok job that forgot a browser shard is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace(/(  ci-ok:\n    needs: \[[^\]]*), firefox-web-3/, '$1')));
+  assert.ok(problems.some((p) => p.includes('"ci-ok"') && p.includes('"firefox-web-3"')), problems.join('\n'));
+});
+
+test('a browser job without the e2e gate is reported', () => {
+  for (const job of Object.keys(BROWSER_WEB_JOBS)) {
+    const body = jobBody(job);
+    const ungated = body.replace("    if: needs.changes.outputs.e2e != 'false'\n", '');
+    assert.notEqual(ungated, body, `fixture sanity: ${job} gate`);
+    const problems = checkWorkflow(fixture(GOOD.replace(body, () => ungated)));
+    assert.ok(problems.some((p) => p.includes(`"${job}"`) && p.includes("needs.changes.outputs.e2e != 'false'")), `${job}: ${problems.join('\n')}`);
+  }
 });
 
 test('go-release must point the webdist test at the downloaded client', () => {
@@ -1864,7 +1920,7 @@ test('the CLI checks release.yml too', () => {
 });
 
 test('a job that lost its change gate is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace("    if: needs.changes.outputs.go != 'false'\n    runs-on: ubuntu-latest\n    timeout-minutes: 40\n", '    runs-on: ubuntu-latest\n    timeout-minutes: 40\n')));
+  const problems = checkWorkflow(fixture(GOOD.replace("    if: needs.changes.outputs.go != 'false'\n    runs-on: ubuntu-latest\n    timeout-minutes: 55\n", '    runs-on: ubuntu-latest\n    timeout-minutes: 55\n')));
   assert.ok(problems.some((p) => p.includes('must carry the job-level if:')), problems.join('\n'));
 });
 

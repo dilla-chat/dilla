@@ -117,7 +117,7 @@ func (q *Queries) DeleteSessionsByUser(ctx context.Context, arg DeleteSessionsBy
 }
 
 const getSessionByHash = `-- name: GetSessionByHash :one
-SELECT s.token_hash, s.device_id, s.user_id, s.scope, s.tier, s.created, s.expires, s.idle_expires, s.wire_version, s.e2ee_version, s.media_version, u.factor_owed FROM sessions s JOIN users u ON u.id = s.user_id
+SELECT s.token_hash, s.device_id, s.user_id, s.scope, s.tier, s.created, s.expires, s.idle_expires, s.e2ee_version, s.media_version, s.wire_version, u.factor_owed FROM sessions s JOIN users u ON u.id = s.user_id
 WHERE s.token_hash = ? AND s.expires > ? AND s.idle_expires > ?
 `
 
@@ -136,9 +136,9 @@ type GetSessionByHashRow struct {
 	Created      int64
 	Expires      int64
 	IdleExpires  int64
-	WireVersion  int64
 	E2eeVersion  int64
 	MediaVersion int64
+	WireVersion  int64
 	FactorOwed   int64
 }
 
@@ -156,9 +156,9 @@ func (q *Queries) GetSessionByHash(ctx context.Context, arg GetSessionByHashPara
 		&i.Created,
 		&i.Expires,
 		&i.IdleExpires,
-		&i.WireVersion,
 		&i.E2eeVersion,
 		&i.MediaVersion,
+		&i.WireVersion,
 		&i.FactorOwed,
 	)
 	return i, err

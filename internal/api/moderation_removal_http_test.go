@@ -73,9 +73,17 @@ func TestSignedModeratorRemovalTombstonesAndPagesDurably(t *testing.T) {
 	if notifications != 0 {
 		t.Fatalf("invalid signature sent %d deletion notifications", notifications)
 	}
+	lookup := doCBORAuth(h, http.MethodPost, path+"?receipt_only=1", postBody, token.Token)
+	if lookup.Code != 404 || notifications != 0 {
+		t.Fatalf("receipt lookup created removal: %d notifications=%d", lookup.Code, notifications)
+	}
 	accepted := doCBORAuth(h, http.MethodPost, path, postBody, token.Token)
 	if accepted.Code != http.StatusOK {
 		t.Fatalf("moderator removal = %d %x, want 200", accepted.Code, accepted.Body.Bytes())
+	}
+	lookup = doCBORAuth(h, http.MethodPost, path+"?receipt_only=1", postBody, token.Token)
+	if lookup.Code != 200 || !bytes.Equal(lookup.Body.Bytes(), accepted.Body.Bytes()) {
+		t.Fatalf("receipt lookup=%d", lookup.Code)
 	}
 	if notifications != 1 {
 		t.Fatalf("new acceptance notifications = %d, want 1", notifications)

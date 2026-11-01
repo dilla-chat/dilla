@@ -1,5 +1,6 @@
 // W-Shell: the shell wires the channel bits, roles, lost access and the role flows (web3.5, flow 09).
 import { afterEach, describe, it, expect } from 'vitest';
+import { rowMenuItem } from '../test/row-menu.ts';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { PERM, type ChannelSummary, type CommunityAccess, type MemberSummary, type RoleSummary } from '@dilla/client-core';
@@ -53,7 +54,7 @@ it('keeps account presence in the user panel, no select in the sidebar, and no c
   expect(screen.queryByRole('combobox', { name: 'Your status' })).toBeNull();
   expect(screen.getByRole('button', { name: /your status: online$/ }).closest('.d-user-panel')).not.toBeNull();
   expect(screen.queryByText('online', { selector: '.d-chunk__v' })).toBeNull();
-  expect(screen.queryByRole('region', { name: 'connection' })).toBeNull();
+  expect(screen.queryByRole('region', { name: 'Connection' })).toBeNull();
 });
 const box = () => screen.getByRole('textbox', { name: 'message #general' });
 // Waits in real time outside act, so React flushes each announcer step instead of batching them.
@@ -114,10 +115,10 @@ describe('the channel edit dialog', () => {
   it('speaks its saves through the shell announcer', async () => {
     const { fake, user } = setup({ acc: { manageChannels: true, manageRoles: true }, overwrites: { [GEN]: [{ kind: 0, targetId: GAME, allow: 0, deny: 0 }] } });
     fake.handler = () => Promise.resolve(null);
-    await user.click(screen.getByRole('button', { name: 'edit channel' }));
+    await rowMenuItem(user, 'general', 'edit channel');
     const dialog = screen.getByRole('dialog', { name: 'Edit #general' });
     await user.click(within(dialog).getByRole('button', { name: /^Game Night/ }));
-    await user.click(within(within(dialog).getByRole('radiogroup', { name: 'send messages' })).getByRole('radio', { name: 'deny' }));
+    await user.click(within(within(dialog).getByRole('radiogroup', { name: 'Send messages' })).getByRole('radio', { name: 'Deny' }));
     expect(await screen.findByText('Permissions of #general saved.', { selector: '[data-testid="shell-announcer"]' })).toBeInTheDocument();
   });
 });
@@ -125,7 +126,7 @@ describe('the channel edit dialog', () => {
 describe('the pins panel', () => {
   it('states the pin rule once the bits are known', async () => {
     const { user } = setup();
-    await user.click(screen.getByRole('button', { name: 'pinned' }));
+    await rowMenuItem(user, 'general', 'pinned');
     expect(screen.getByText('A pin shows while the person who pinned it may pin in this channel.')).toBeInTheDocument();
   });
 });
@@ -158,7 +159,7 @@ describe('lost access', () => {
   it('announces, moves to the first listed channel, keeps the draft and closes the channel dialog', async () => {
     const { fake, user } = setup({ acc: { manageChannels: true } });
     await user.type(box(), 'still here');
-    await user.click(screen.getByRole('button', { name: 'edit channel' }));
+    await rowMenuItem(user, 'general', 'edit channel');
     expect(screen.getByRole('dialog', { name: 'Edit #general' })).toBeInTheDocument();
     act(() => { fake.publish(`channels:${A}`, [ch(LOBBY, 'lobby', 1)]); });
     expect(await screen.findByText('#general is no longer available to you.', { selector: '[data-testid="shell-announcer"]' })).toBeInTheDocument();
@@ -218,21 +219,22 @@ describe('the role flows', () => {
     window.matchMedia = ((query: string) => ({ matches: false, media: query, addEventListener: () => undefined, removeEventListener: () => undefined,
       addListener: () => undefined, removeListener: () => undefined, onchange: null, dispatchEvent: () => false }));
     const { user } = setup({ acc: { manageRoles: true } });
-    await user.click(screen.getByRole('button', { name: /^members/ }));
+    await user.click(screen.getByRole('button', { name: /^Members/ }));
     await user.click(screen.getByRole('button', { name: /\bBob\b/ }));
     await user.click(within(screen.getByRole('dialog', { name: 'Bob' })).getByRole('button', { name: 'edit roles' }));
     await screen.findByRole('dialog', { name: 'Roles of Bob' });
     await user.keyboard('{Escape}');
     expect(screen.getByRole('button', { name: /\bBob\b/ })).toHaveFocus();
     await user.click(screen.getByRole('button', { name: 'close members' }));
-    expect(screen.getByRole('button', { name: /^members/ })).toHaveFocus();
+    expect(screen.getByRole('button', { name: /^Members/ })).toHaveFocus();
   });
   it('the roles tab of server settings routes with manageRoles', async () => {
     const { user } = setup({ acc: { manageRoles: true } });
-    await user.click(screen.getByRole('button', { name: 'server settings' }));
+    await user.click(screen.getByRole('button', { name: 'server settings' })); await user.click(await screen.findByRole('menuitem', { name: 'Server settings' })); // Signal task 10 fix round 2: the ⌄ is a menu
     const dialog = screen.getByRole('dialog', { name: /settings/i });
-    await user.click(within(dialog).getByRole('button', { name: 'roles' }));
-    expect(within(dialog).getByRole('button', { name: 'roles', current: 'page' })).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Members', current: 'page' })).toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: 'Roles' }));
+    expect(within(dialog).getByRole('button', { name: 'Roles', current: 'page' })).toBeInTheDocument();
     expect(within(dialog).getByRole('heading', { name: 'Roles' })).toBeInTheDocument();
   });
 });

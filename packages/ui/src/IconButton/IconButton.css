@@ -1,15 +1,16 @@
 .d-icon-button {
   display: inline-flex; align-items: center; justify-content: center; flex: none; padding: 0;
-  font: inherit; color: var(--fg-2); background: transparent; border: 0; border-radius: 0; cursor: pointer;
-  transition: background var(--duration-fast), color var(--duration-fast);
+  font: inherit; color: var(--fg-2); background: transparent; border: 0; border-radius: var(--r-md); cursor: pointer;
+  transition: background var(--duration-fast), color var(--duration-fast), transform var(--duration-press) var(--ease-out);
 }
 .d-icon-button[data-size="28"] { width: 1.75rem /* 28px */; height: 1.75rem; }
 .d-icon-button[data-size="32"] { width: 2rem /* 32px */; height: 2rem; }
 .d-icon-button[data-size="40"] { width: 2.5rem /* 40px */; height: 2.5rem; }
 .d-icon-button[data-size="44"] { width: 2.75rem /* 44px */; height: 2.75rem; }
-.d-icon-button:hover { color: var(--fg); background: var(--surface-hi); }
+.d-icon-button:hover { color: var(--fg); background: var(--hover); }
+.d-icon-button:active:not(:disabled):not([aria-disabled="true"]) { transform: scale(0.94); }
 /* Pressed is never colour alone (R27): the accent glyph and a 2px bar under it. */
 .d-icon-button[aria-pressed="true"] { color: var(--accent); box-shadow: inset 0 -2px 0 0 var(--accent); }
 .d-icon-button:disabled, .d-icon-button[aria-disabled="true"] { opacity: 0.4; cursor: not-allowed; }
 .d-icon-button:disabled:hover { color: var(--fg-2); background: transparent; }
-@media (prefers-reduced-motion: reduce) { .d-icon-button { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .d-icon-button { transition: none; } .d-icon-button:active { transform: none; } }

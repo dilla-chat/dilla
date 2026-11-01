@@ -157,16 +157,16 @@ func requireManagedBotFactorException(ctx context.Context, repo store.Repository
 		return true, server.Errorf(server.CodeTargetNoFactor, "managed bot identity is not verified for moderator authority")
 	}
 	var approved Bits
-	if installation.Capabilities&uint8(botCapWarnings) != 0 {
+	if installation.Capabilities&uint16(botCapWarnings) != 0 {
 		approved |= PermModerateMembers
 	}
-	if installation.Capabilities&uint8(botCapRemoval) != 0 {
+	if installation.Capabilities&uint16(botCapRemoval) != 0 {
 		approved |= PermManageMessages
 	}
-	if installation.Capabilities&uint8(botCapKick) != 0 {
+	if installation.Capabilities&uint16(botCapKick) != 0 {
 		approved |= PermKickMembers
 	}
-	if installation.Capabilities&uint8(botCapBan) != 0 {
+	if installation.Capabilities&uint16(botCapBan) != 0 {
 		approved |= PermBanMembers
 	}
 	if roleBits&moderatorBits&^approved != 0 {

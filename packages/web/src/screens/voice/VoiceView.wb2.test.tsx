@@ -1,5 +1,6 @@
 // The second whole-branch fix wave of web-3 (review/wb-product-walk.md): the shell's side.
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { dmMenuItems, startDmCall } from '../../test/row-menu.ts';
 import { act, screen, waitFor, within } from '@testing-library/react';
 import { t } from '../../strings/index.ts';
 import { A, MUSIC, BOB, BOB_DEV, bobChanged, callState, DM, GENV, OWN_DEV, renderVoiceShell } from '../../test/fake-client.ts';
@@ -14,7 +15,7 @@ const dockStatus = () => document.querySelector('.d-voice-dock [role="status"]')
 /** Starts a DM call with bob from the DM's strip; the worker then reports it in with `outgoing`. */
 async function calling(outgoing: { ringing: string[]; declined: string[]; notRung: string[] }) {
   const app = renderVoiceShell({ path: `/dm/${DM}` });
-  await app.user.click(await main().findByRole('button', { name: 'call' }));
+  await startDmCall(app.user, 'bob');
   await waitFor(() => expect(app.sessions).toHaveLength(1));
   app.client.publish('call', callState({ phase: 'in', channelId: DM, callId: DM, outgoing }));
   return app;
@@ -43,7 +44,7 @@ describe('the outgoing ring says what the instance did (product walk I6)', () =>
     await waitFor(() => expect(app.session.leave).toHaveBeenCalledWith('user'));
     const strip = document.querySelector('.dw-call-strip__notice');
     await waitFor(() => expect(strip).toHaveTextContent('bob declined.'));
-    expect(main().getByRole('button', { name: 'call' })).toBeInTheDocument();
+    expect(await dmMenuItems(app.user, 'bob')).toContain('call');
   });
 
   it('a call someone answered never ends by itself when they leave again', async () => {
@@ -70,7 +71,7 @@ async function inHarbour(o: Parameters<typeof renderVoiceShell>[0] = {}) {
     ] } },
     ...o,
   });
-  await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+  await app.user.click(await main().findByRole('button', { name: 'Join voice' }));
   await waitFor(() => expect(app.sessions).toHaveLength(1));
   app.client.publish('call', callState({ phase: 'in', channelId: GENV, callId: GENV }));
   await main().findByRole('toolbar', { name: 'voice channel controls' });
@@ -140,8 +141,10 @@ describe('the stage shows what is sent and shared (product walk I2, I3, M4, M13)
       { userId: BOB, deviceId: BOB_DEV, name: 'bob', flags: 0, own: false, web: false, bot: false },
       { userId: ME.id, deviceId: OWN_DEV, name: 'me', flags: 0, own: true, web: true, bot: false },
     ] } } });
-    await main().findByRole('button', { name: 'join voice' });
-    await waitFor(() => expect(main().getAllByRole('listitem')).toHaveLength(2));
+    await main().findByRole('button', { name: 'Join voice' });
+    // Signal §5.6: the not-joined preview shows the people as faces, with no tag of any kind.
+    await waitFor(() => expect(document.querySelectorAll('.d-call-stage__face')).toHaveLength(2));
+    expect(document.querySelector('.d-call-stage__preview .d-call-tile__tag')).toBeNull();
     expect(main().queryByText(t('voice.tag.web'), { exact: true })).toBeNull();
   });
 
@@ -217,7 +220,7 @@ describe('Settings → Voice follows the call (product walk M1)', () => {
   it('V1 fix 1: an output chosen while the call is still starting is applied once the call is up', async () => {
     const app = renderVoiceShell({ settings: { 'voice.output': 'spk' } });
     const release = app.holdStart();
-    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    await app.user.click(await main().findByRole('button', { name: 'Join voice' }));
     await waitFor(() => expect(app.module.startPageCall).toHaveBeenCalledTimes(1));
     app.client.publish('settings', { 'voice.output': 'headset' });
     release();
@@ -228,25 +231,14 @@ describe('Settings → Voice follows the call (product walk M1)', () => {
 });
 
 describe('the dock says where and how (product walk M7, M8)', () => {
-  it('M7: push to talk names its key on a line of its own', async () => {
-    const app = await inHarbour({ settings: { 'voice.mode': 'ptt', 'voice.pttKey': 'Pause' } });
-    void app;
-    const line = await waitFor(() => { const l = document.querySelector('.dw-voice-dock__mode'); expect(l).not.toBeNull(); return l!; });
-    expect(line).toHaveTextContent(t('voice.dock.ptt', { key: 'Pause' }));
-    expect(line.closest('.d-audio-meter')).toBeNull();
-  });
-
-  it('M7: push to talk with no key set says so and leads to Settings → Voice', async () => {
-    const app = await inHarbour({ settings: { 'voice.mode': 'ptt' } });
-    const line = await waitFor(() => { const l = document.querySelector('.dw-voice-dock__mode'); expect(l).not.toBeNull(); return l!; });
-    expect(line).toHaveTextContent(t('voice.dock.pttNoKey'));
-    await app.user.click(within(line as HTMLElement).getByRole('button', { name: t('voice.dock.pttSetKey') }));
-    await waitFor(() => expect(window.location.pathname).toBe('/settings/voice'));
+  it('M7, fix round 1 (Jonas): push to talk has no line on the stage or in the dock', async () => {
+    await inHarbour({ settings: { 'voice.mode': 'ptt', 'voice.pttKey': 'Pause' } });
+    expect(document.querySelector('.dw-voice-dock__mode')).toBeNull();
   });
 
   it('M8: a DM call reads as the call with its person, in the dock and what is said', async () => {
     const app = renderVoiceShell({ path: `/dm/${DM}` });
-    await app.user.click(await main().findByRole('button', { name: 'call' }));
+    await startDmCall(app.user, 'bob');
     await waitFor(() => expect(app.sessions).toHaveLength(1));
     const where = t('call.where', { name: 'bob' });
     await waitFor(() => expect(document.querySelector('.d-voice-dock__text')).toHaveTextContent(where));
@@ -264,13 +256,13 @@ describe('removed from the server while in voice (product walk I8)', () => {
       error: { code: 'E_NOT_FOUND', detail: '', status: 404, retryAfterMs: null } }));
     expect(await main().findByText(t('voice.removedNotMember'))).toBeInTheDocument();
     expect(main().queryByText(t('voice.removed'))).toBeNull();
-    expect(main().queryByRole('button', { name: 'join voice' })).toBeNull();
+    expect(main().queryByRole('button', { name: 'Join voice' })).toBeNull();
     const row = [...document.querySelectorAll('.d-voice-item')].find(li => li.querySelector('[aria-label="voice general"]') !== null);
     expect(row).toBeDefined();
     expect(row!.querySelector('.d-voice-row__join')).toBeNull();
     // A removal from the call alone (the channel still visible) keeps the join.
     app.client.publish('call', callState({ phase: 'removed', channelId: GENV }));
-    expect(await main().findByRole('button', { name: 'join voice' })).toBeInTheDocument();
+    expect(await main().findByRole('button', { name: 'Join voice' })).toBeInTheDocument();
     expect(row!.querySelector('.d-voice-row__join')).not.toBeNull();
   });
 });
@@ -289,7 +281,7 @@ describe('mute is kept across a reload (product walk M5)', () => {
 
   it('a call started after a reload starts muted when this browser was muted', async () => {
     const app = renderVoiceShell({ settings: { 'voice.self': 'muted' } });
-    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    await app.user.click(await main().findByRole('button', { name: 'Join voice' }));
     await waitFor(() => expect(app.module.startPageCall).toHaveBeenCalled());
     expect(vi.mocked(app.module.startPageCall).mock.calls[0][2]).toMatchObject({ self: 'muted' });
   });
@@ -311,14 +303,14 @@ describe('the identity refusals lead somewhere (product walk M9, M10)', () => {
     const app = await inHarbour({ sendBlocks: {} });
     app.client.publish('call', callState({ phase: 'blocked', channelId: GENV, callId: GENV, error: { ...UMK, code: 'E_DEVICE_UNLISTED' } }));
     expect(await main().findByText(t('voice.blockedLeft'))).toBeInTheDocument();
-    expect(main().getByRole('button', { name: 'join voice' })).toBeInTheDocument();
+    expect(main().getByRole('button', { name: 'Join voice' })).toBeInTheDocument();
     expect(main().queryByText(/paused/)).toBeNull();
   });
 
   it('M10: a refused join that offers the join again never says joining is paused', async () => {
     renderVoiceShell({ sendBlocks: {}, call: callState({ phase: 'blocked', channelId: GENV, error: { ...UMK, code: 'E_DEVICE_UNLISTED' } }) });
     expect(await main().findByText(t('voice.blockedRetry'))).toBeInTheDocument();
-    expect(main().getByRole('button', { name: 'join voice' })).toBeInTheDocument();
+    expect(main().getByRole('button', { name: 'Join voice' })).toBeInTheDocument();
     expect(main().queryByText(/paused/)).toBeNull();
   });
 });

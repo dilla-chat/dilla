@@ -177,6 +177,31 @@ test('an operator reset reaches a live page with no reload', async ({ page }) =>
   await sendText(page, 'general', 'after the set-up');
 });
 
+// Signal task 10 fix round 3: Forget this browser lives on the forced-factor screen (Settings → Devices draws the prototype's rows).
+// It clears this browser and signs it out; it sends forgetBrowser only, never a removal, so the device stays in the account's list
+// (the worker's contract, ForgetBrowser.tsx). The page lands on the connect step and stays there after a reload: nothing is left.
+test('the forced screen\u2019s Forget this browser clears this browser and leaves the account\u2019s device listed', async ({ page }) => {
+  const h = started();
+  const ada = await adaInTheShell(page, h);
+  await resetFactors(h.control, ada.username);
+  await expectForced(page);
+  const removals: string[] = [];
+  // A device's removal is DELETE /v1/devices/{id}; forget ends this browser's own sessions (DELETE …/{id}/sessions), which
+  // signs it out and leaves the device listed (internal/api/api.go), so only the bare device path counts.
+  page.on('request', request => { if (request.method() === 'DELETE' && /\/v1\/devices\/[^/?]+$/.test(new URL(request.url()).pathname)) removals.push(request.url()); });
+  await page.getByRole('button', { name: copy('devices.forget'), exact: true }).click();
+  const confirm = page.getByRole('dialog', { name: copy('devices.forgetTitle'), exact: true });
+  await expect(confirm).toContainText(copy('devices.forgetBody'));
+  await expectAccessible(page, 'forced screen: forget this browser');
+  await confirm.getByRole('button', { name: copy('devices.confirmForget'), exact: true }).click();
+  await expectHeading(page, COPY.connectTitle, { instance });
+  await page.reload();
+  await expectHeading(page, COPY.connectTitle, { instance });
+  await expect(splash(page, COPY.storeLost)).toHaveCount(0);
+  await expect(railNav(page)).toHaveCount(0);
+  expect(removals, 'forget removes no device from the account').toEqual([]);
+});
+
 // Walk M9, fixed: "Use this tab" in a second tab answered "Close the other tab" while the first was on the forced screen,
 // which did not answer the hand-over. The forced screen now hands dilla over as the shell does.
 test('a second tab takes dilla over from a tab on the forced screen', async ({ page, context }) => {
@@ -209,11 +234,11 @@ test('after a reset, a fresh browser takes the password and then the set-up, not
     const p = context.pages()[0] ?? (await context.newPage());
     // web3.8 (R7): the login, then the key as step 2 (no code was asked for), then the set-up as step 3.
     await signInToKeyStep(p, ada, instance);
-    await expect(p.getByText(copy(SIGNIN.step, { n: 2 }), { exact: true })).toBeVisible();
+    await expect(p.getByText(copy(SIGNIN.step, { n: 2, total: 3 }), { exact: true })).toBeVisible();
     await keyField(p).fill(keyText(ada));
     await keySubmit(p).click();
     await expectHeading(p, 'factor.choose.title');
-    await expect(p.getByText(copy(SIGNIN.step, { n: 3 }), { exact: true })).toBeVisible();
+    await expect(p.getByText(copy(SIGNIN.step, { n: 3, total: 4 }), { exact: true })).toBeVisible();
     await expect(p.getByRole('heading', { level: 1, name: copy('signin.totp.title'), exact: true })).toHaveCount(0);
     ada.lastCounter = -1;
     await completeFactorStep(p, ada);

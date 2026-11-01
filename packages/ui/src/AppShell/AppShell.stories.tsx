@@ -1,11 +1,18 @@
+import { useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { ComposedShell, fixtureStatusBar } from './AppShell.fixture.tsx';
+import { ComposedShell, fixtureTopBar, SignalShell } from './AppShell.fixture.tsx';
+import { HarbourPreview, HarbourStage, harbourTiles, PICKER_DEFAULT, pickerProps, stageControls } from '../CallStage/stage.fixture.tsx';
+import { harbourStageBar } from '../NowPlaying/np.fixture.tsx';
+import { GeneralThread } from '../MessageRow/conversation.fixture.tsx';
+import { REMINDERS_DUE } from '../internal/sample/midgard.ts';
+// The web's voice pane classes (dw-voice-channel, dw-voice-stage): app.css lays the stage out in the main pane.
+import { TopBar } from '../TopBar/TopBar.tsx';
 import { LinkBanner } from '../LinkBanner/LinkBanner.tsx';
 import { MemberList } from '../MemberList/MemberList.tsx';
 import { UserPanel } from '../UserPanel/UserPanel.tsx';
 import { VoiceDock } from '../VoiceDock/VoiceDock.tsx';
 
-const meta: Meta = { title: 'Shell/AppShell' };
+const meta: Meta = { title: 'Shell/AppShell', parameters: { webStyles: true } };
 export default meta;
 type Story = StoryObj;
 // 1280×800 less the preview decorator's 16px padding on each side.
@@ -22,6 +29,21 @@ const members = (
 );
 const withAside = { aside: members, asideLabel: 'members', asideOpen: true, onAsideClose: () => {}, asideCloseLabel: 'close members' };
 export const AsideWide: Story = { render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={withAside} /></div> };
+// Signal (README §5.1): the column aside is 232 (members) or 340 (thread); closed, it stays mounted at 0, hidden and inert.
+export const AsideThread: Story = { render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={{ ...withAside, asideKind: 'thread' }} /></div> };
+export const AsideClosed: Story = { render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={{ ...withAside, asideOpen: false }} /></div> };
+// The web app's path (fix round 2): the content goes together with the close, and the same aside animates to 0. A button
+// outside the shell toggles it; story-a11y clicks it and reads the width mid-transition.
+function LiveAside() {
+  const [open, setOpen] = useState(true);
+  return (
+    <div style={{ ['--d-shell-h' as string]: '736px' }}>
+      <button type="button" className="story-aside-toggle" onClick={() => setOpen(o => !o)}>toggle members</button>
+      <ComposedShell shell={{ aside: open ? members : undefined, asideLabel: 'members', asideOpen: open, onAsideClose: () => setOpen(false), asideCloseLabel: 'close members' }} />
+    </div>
+  );
+}
+export const AsideCloseLive: Story = { render: () => <LiveAside /> };
 export const AsideMedium: Story = { render: () => <div style={{ width: 900, ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={withAside} /></div> };
 // Final fix I2: the drawer's close button, at the top of the overlay (a column has none).
 export const AsideNarrowClose: Story = {
@@ -51,8 +73,8 @@ export const LinkBannerDesktop: Story = {
     </div>
   ),
 };
-// The optional status row, still available to a shell that passes one.
-export const WithStatusBar: Story = { render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={{ statusBar: fixtureStatusBar }} /></div> };
+// Signal (README §5.1): the top bar over the whole shell.
+export const WithTopBar: Story = { render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={{ topBar: fixtureTopBar }} /></div> };
 // web3.8 (U2): both splitters at 1280 (the aside is a column), with widths already dragged. Strict target size applies here (Shell/).
 export const Splitters: Story = {
   render: () => (
@@ -62,7 +84,7 @@ export const Splitters: Story = {
   ),
 };
 
-// web3.8 (U3, R23): the bottom-left area spans under the rail and the sidebar: the voice dock over the user panel.
+// web3.8 (U3, R23), Signal §5.1: the bottom-left area sits under the sidebar (the rail runs the full height): the voice dock over the user panel.
 const userPanel = (
   <UserPanel name="Ada Lovelace" username="ada" muted={false} deafened={false} shortcuts={{ mute: 'Ctrl+Shift+M', deafen: 'Ctrl+Shift+D' }}
     labels={{ region: 'your account', mute: 'mute', deafen: 'deafen', settings: 'settings' }}
@@ -82,12 +104,12 @@ const bottomPlay = ({ canvasElement }: { canvasElement: HTMLElement }) => {
   const main = canvasElement.querySelector<HTMLElement>('.d-app-shell__main');
   if (panel === null || rail === null || main === null) throw new Error('the shell has no panel, rail or main');
   const [p, r, m] = [panel, rail, main].map(e => e.getBoundingClientRect());
-  if (p.left > r.left + 1 || p.top < r.bottom - 1) throw new Error('the panel does not sit under the rail');
+  if (Math.abs(p.left - r.right) > 1 || r.bottom < p.bottom - 1) throw new Error('the panel does not sit right of the full-height rail');
   if (p.right > m.left + 1) throw new Error('the panel overlaps main');
 };
 export const BottomPanel: Story = {
   render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={{ bottom: <>{dock}{userPanel}</> }} /></div>,
-  globals: { theme: 'mesh' }, play: bottomPlay,
+  globals: { theme: 'signal' }, play: bottomPlay,
 };
 /** MP8: the sidebar splitter runs from the sidebar's top to the panel's bottom, and a drag from the panel's edge resizes the sidebar. */
 const fullHeightPlay = async ({ canvasElement }: { canvasElement: HTMLElement }) => {
@@ -122,18 +144,18 @@ const fullHeightPlay = async ({ canvasElement }: { canvasElement: HTMLElement })
 };
 export const BottomPanelSplitter: Story = {
   render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={{ bottom: <>{dock}{userPanel}</>, paneWidths: { sidebar: 240, aside: 264 }, onPaneResize: () => {}, resizeLabels: { sidebar: 'resize the channel list', aside: 'resize the member list' } }} /></div>,
-  globals: { theme: 'mesh' }, play: fullHeightPlay,
+  globals: { theme: 'signal' }, play: fullHeightPlay,
 };
-/** MP8: with a status bar the splitter stops above the status row. */
-export const BottomPanelSplitterStatus: Story = {
-  render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={{ bottom: <>{dock}{userPanel}</>, statusBar: fixtureStatusBar, paneWidths: { sidebar: 240, aside: 264 }, onPaneResize: () => {}, resizeLabels: { sidebar: 'resize the channel list', aside: 'resize the member list' } }} /></div>,
-  globals: { theme: 'mesh' },
+/** MP8 with the top bar: the splitter starts under the bar, at the sidebar's top. */
+export const BottomPanelSplitterTopBar: Story = {
+  render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={{ topBar: fixtureTopBar, bottom: <>{dock}{userPanel}</>, paneWidths: { sidebar: 244, aside: 264 }, onPaneResize: () => {}, resizeLabels: { sidebar: 'resize the channel list', aside: 'resize the member list' } }} /></div>,
+  globals: { theme: 'signal' },
   play: async ({ canvasElement }) => {
     await fullHeightPlay({ canvasElement });
     const sep = canvasElement.querySelector<HTMLElement>('[role="separator"][aria-label="resize the channel list"]');
-    const status = canvasElement.querySelector<HTMLElement>('.d-app-shell__status');
-    if (sep === null || status === null) throw new Error('no splitter or status bar');
-    if (sep.getBoundingClientRect().bottom > status.getBoundingClientRect().top + 1) throw new Error('the splitter runs into the status bar');
+    const bar = canvasElement.querySelector<HTMLElement>('.d-app-shell__topbar');
+    if (sep === null || bar === null) throw new Error('no splitter or top bar');
+    if (sep.getBoundingClientRect().top < bar.getBoundingClientRect().bottom - 1) throw new Error('the splitter runs into the top bar');
   },
 };
 export const BottomPanelLight: Story = {
@@ -144,25 +166,14 @@ export const BottomPanelHighContrast: Story = {
   render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={{ bottom: <>{dock}{userPanel}</> }} /></div>,
   globals: { theme: 'high-contrast' }, play: bottomPlay,
 };
-/** The user panel alone, with the optional status bar still passed: the status row stays below the panel (C-22). */
-export const BottomPanelWithStatus: Story = {
-  render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={{ bottom: userPanel, statusBar: fixtureStatusBar, aside: members, asideLabel: 'members', asideOpen: true, onAsideClose: () => {}, asideCloseLabel: 'close members' }} /></div>,
-  play: ({ canvasElement }) => {
-    bottomPlay({ canvasElement });
-    const status = canvasElement.querySelector<HTMLElement>('.d-app-shell__status');
-    const panel = canvasElement.querySelector<HTMLElement>('.d-app-shell__panel');
-    if (status === null || panel === null) throw new Error('no status bar or panel');
-    if (status.getBoundingClientRect().top < panel.getBoundingClientRect().bottom - 1) throw new Error('the status bar is not below the panel');
-  },
-};
-
 /**
- * B1, R12: the main header and the members bar both have their hairline at y=48 from the shell's top, and the user panel is 52 high.
+ * B1, R12: under the 44px top bar, the main header and the members bar both have their hairline at y=44+44 from the shell's
+ * top, and the user panel is 64 high (--panel-h).
  * (The sidebar head is UI-2's half of the same line; the E-GEO rect checks cover all four at integration.)
  */
 export const Desktop: Story = {
-  render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={{ ...withAside, bottom: userPanel }} /></div>,
-  globals: { theme: 'mesh' },
+  render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={{ ...withAside, topBar: fixtureTopBar, bottom: userPanel }} /></div>,
+  globals: { theme: 'signal' },
   play: ({ canvasElement }) => {
     const shell = canvasElement.querySelector<HTMLElement>('.d-app-shell')!.getBoundingClientRect();
     const edge = (selector: string) => {
@@ -172,9 +183,73 @@ export const Desktop: Story = {
     };
     for (const selector of ['.d-channel-header', '.d-member-list__bar']) {
       const y = edge(selector);
-      if (Math.abs(y - 48) > 0.5) throw new Error(`Desktop: the hairline of ${selector} is at y=${String(y)}, not 48`);
+      if (Math.abs(y - 88) > 0.5) throw new Error(`Desktop: the hairline of ${selector} is at y=${String(y)}, not 88`);
     }
     const panel = canvasElement.querySelector<HTMLElement>('.d-user-panel')!.getBoundingClientRect();
-    if (Math.abs(panel.height - 52) > 0.5) throw new Error(`Desktop: the user panel is ${String(panel.height)} high, not 52`);
+    if (Math.abs(panel.height - 64) > 0.5) throw new Error(`Desktop: the user panel is ${String(panel.height)} high, not 64`);
   },
+};
+
+// Signal task 5: the whole desktop frame at 1280×800 (the decorator's padding taken back), as the prototype starts in the app.
+const frame = { width: 1280, height: 800, margin: -16, ['--d-shell-h' as string]: '800px' };
+const topBar = (p: { voice?: boolean; due?: number }) => (
+  <TopBar searchLabel="Search or jump to…" searchShortcut="⌘K" onSearch={() => {}} remindersDue={p.due ?? 0} onReminders={() => {}} onSettings={() => {}}
+    voice={p.voice === true ? { room: 'harbour', pingMs: 24, onOpen: () => {} } : undefined}
+    labels={{ reminders: 'Reminders', settings: 'Open settings', voice: 'open the call in harbour', remindersDue: n => `${String(n)} due` }} />
+);
+// Task 11: the prototype's sample has one reminder due ("bring two ropes"), so the bell carries 1 on every whole screen.
+const due = REMINDERS_DUE;
+export const Frame: Story = {
+  parameters: { layout: 'fullscreen' },
+  // Task 6b fix round 2 (rule 3d): the frame as packages/web composes it in Signal (SignalShell), not the older composition.
+  render: () => <div style={frame}><SignalShell shell={{ topBar: topBar({ due }) }} /></div>,
+};
+export const FrameMembers: Story = {
+  parameters: { layout: 'fullscreen' },
+  render: () => <div style={frame}><SignalShell shell={{ ...withAside, topBar: topBar({ due }) }} /></div>,
+};
+export const FrameMembersClosed: Story = {
+  parameters: { layout: 'fullscreen' },
+  render: () => <div style={frame}><SignalShell shell={{ ...withAside, asideOpen: false, topBar: topBar({ due }) }} /></div>,
+};
+/** Task 11: the @ home with Ada's DM open (Shell.tsx's DM list and DM conversation). */
+export const FrameDm: Story = {
+  parameters: { layout: 'fullscreen' },
+  render: () => <div style={frame}><SignalShell dm shell={{ topBar: topBar({ due }) }} /></div>,
+};
+/** Task 11: #general with Björn's thread open in the 340px aside (Shell.tsx's side panel with ThreadView), Threads pressed. */
+export const FrameThread: Story = {
+  parameters: { layout: 'fullscreen' },
+  render: () => <div style={frame}><SignalShell shell={{ aside: <GeneralThread />, asideLabel: 'Thread', asideOpen: true, asideKind: 'thread',
+    onAsideClose: () => {}, topBar: topBar({ due }) }} /></div>,
+};
+export const FrameInVoice: Story = {
+  parameters: { layout: 'fullscreen' },
+  render: () => <div style={frame}><ComposedShell shell={{ topBar: topBar({ voice: true, due: 2 }), bottom: <>{dock}{userPanel}</> }} /></div>,
+};
+
+// Task 8 (rule 3e): the whole desktop frame on the voice channel harbour, as Shell.tsx composes it (no channel header, no
+// composer, no aside; VoiceView's stage in main with the voice header, the call bar and, joined, the top bar's voice chip).
+const voiceMain = (stage: React.ReactNode) => <div className="dw-voice-channel"><div className="dw-voice-stage" data-call-phase="in">{stage}</div></div>;
+export const FrameVoice: Story = {
+  parameters: { layout: 'fullscreen' },
+  render: () => <div style={frame}><SignalShell voice={{ joined: true }} shell={{ topBar: topBar({ voice: true, due: 1 }) }}
+    main={voiceMain(<HarbourStage tiles={harbourTiles('Björn')} focus="d-Ada:screen" nowPlaying={harbourStageBar} />)} /></div>,
+};
+/** Task 8c: the same frame with Share pressed: the share picker open over the call bar (VoiceView's useSharePicker). */
+export const FrameVoiceSharePicker: Story = {
+  parameters: { layout: 'fullscreen' },
+  render: () => <div style={frame}><SignalShell voice={{ joined: true }} shell={{ topBar: topBar({ voice: true, due: 1 }) }}
+    main={voiceMain(<HarbourStage tiles={harbourTiles('Björn')} focus="d-Ada:screen" nowPlaying={harbourStageBar}
+      controls={stageControls({ picker: pickerProps(PICKER_DEFAULT) })} />)} /></div>,
+};
+export const FrameVoiceGrid: Story = {
+  parameters: { layout: 'fullscreen' },
+  render: () => <div style={frame}><SignalShell voice={{ joined: true }} shell={{ topBar: topBar({ voice: true, due: 1 }) }}
+    main={voiceMain(<HarbourStage tiles={harbourTiles()} focus={null} nowPlaying={harbourStageBar} />)} /></div>,
+};
+export const FrameVoicePreview: Story = {
+  parameters: { layout: 'fullscreen' },
+  render: () => <div style={frame}><SignalShell voice={{ joined: false }} shell={{ topBar: topBar({ due: 1 }) }}
+    main={<div className="dw-voice-channel"><div className="dw-voice-stage" data-call-phase="idle"><HarbourPreview /></div></div>} /></div>,
 };

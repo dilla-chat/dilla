@@ -7,7 +7,7 @@ import { CoreProvider } from '../core/context.tsx';
 import { FakeClient } from '../test/fake-client.ts';
 import { account, timelineItem } from '../test/fixtures.ts';
 import { PHONE_QUERY } from '../layout.ts';
-import { en, t } from '../strings/index.ts';
+import { en } from '../strings/index.ts';
 import { Shell } from './Shell.tsx';
 
 const A = 'a1'.repeat(16);
@@ -56,7 +56,7 @@ function setup(threadRoot: string | null) {
 describe('Activity on a phone shell', () => {
   it('a thread reply’s row opens its channel and the thread', async () => {
     const { fake, user } = setup(ROOT);
-    await user.click(await screen.findByRole('button', { name: new RegExp(t('activity.mention', { channel: 'general' })) }));
+    await user.click(await screen.findByRole('button', { name: /mentioned you/ }));
     expect(window.location.pathname).toBe(`/c/${A}/${GEN}`);
     expect(await screen.findByRole('complementary', { name: en['thread.title'] })).toBeInTheDocument();
     expect(fake.callsOf('openThread')).toEqual([{ m: 'openThread', channelId: GEN, rootMsgId: ROOT }]);
@@ -64,7 +64,7 @@ describe('Activity on a phone shell', () => {
 
   it('a channel message’s row opens its channel only', async () => {
     const { fake, user } = setup(null);
-    await user.click(await screen.findByRole('button', { name: new RegExp(t('activity.mention', { channel: 'general' })) }));
+    await user.click(await screen.findByRole('button', { name: /mentioned you/ }));
     expect(window.location.pathname).toBe(`/c/${A}/${GEN}`);
     await screen.findByText('the root');
     expect(screen.queryByRole('complementary', { name: en['thread.title'] })).toBeNull();

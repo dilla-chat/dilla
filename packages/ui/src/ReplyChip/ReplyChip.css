@@ -1,5 +1,11 @@
-.d-reply-chip { display: flex; align-items: center; gap: 0.75rem; min-width: 0; padding: 0.125rem 0.25rem 0.125rem 0.75rem; font-size: var(--text-sm); background: var(--surface-2); border: 1px solid var(--hairline-2); border-radius: var(--r-md); }
-.d-reply-chip__label { flex-shrink: 0; color: var(--fg-2); white-space: nowrap; }
-.d-reply-chip__excerpt { flex: 1; min-width: 0; color: var(--fg-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.d-reply-chip__cancel { flex-shrink: 0; display: inline-grid; place-items: center; width: 1.5rem; height: 1.5rem; padding: 0; font: inherit; font-size: var(--text-base); line-height: 1; color: var(--fg-2); background: transparent; border: 0; border-radius: var(--r-sm); cursor: pointer; }
-.d-reply-chip__cancel:hover { color: var(--fg); background: var(--surface-hi); }
+/* §5.5 (task 7): the prototype's reply bar. It sits on the box (margin −1px, no bottom edge, 8px top corners). */
+.d-reply-chip { display: flex; align-items: center; gap: 0.5rem; min-width: 0; padding: 0.375rem 0.625rem; margin-bottom: -1px; font-size: var(--text-btn); color: var(--fg-2);
+  background: var(--surface-2); border: 1px solid var(--hairline-2); border-bottom: 0; border-radius: var(--r-lg) var(--r-lg) 0 0; animation: d-up var(--duration-normal) both; }
+.d-reply-chip__text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.d-reply-chip__label b { color: var(--fg); font-weight: var(--weight-display); }
+.d-reply-chip__excerpt { color: var(--fg-3); }
+.d-reply-chip__cancel { position: relative; flex-shrink: 0; display: inline-flex; padding: 0; font: inherit; color: inherit; background: transparent; border: 0; cursor: pointer; }
+.d-reply-chip__cancel:hover { color: var(--fg); }
+/* A 24px hit area around the 13px ×. */
+.d-reply-chip__cancel::before { content: ""; position: absolute; inset: -0.375rem; }
+@media (prefers-reduced-motion: reduce) { .d-reply-chip { animation: none; } }

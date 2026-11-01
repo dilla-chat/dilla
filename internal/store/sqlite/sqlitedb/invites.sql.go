@@ -13,21 +13,22 @@ import (
 )
 
 const createInvite = `-- name: CreateInvite :exec
-INSERT INTO invites (id, code_hash, community_id, created_by, grants_admin, max_uses, used_count, created, expires_at, revoked_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO invites (id, code_hash, community_id, created_by, grants_admin, max_uses, used_count, created, expires_at, revoked_at, unlimited_uses)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type CreateInviteParams struct {
-	ID          id.ID
-	CodeHash    []byte
-	CommunityID *id.ID
-	CreatedBy   *id.ID
-	GrantsAdmin int64
-	MaxUses     int64
-	UsedCount   int64
-	Created     int64
-	ExpiresAt   int64
-	RevokedAt   sql.NullInt64
+	ID            id.ID
+	CodeHash      []byte
+	CommunityID   *id.ID
+	CreatedBy     *id.ID
+	GrantsAdmin   int64
+	MaxUses       int64
+	UsedCount     int64
+	Created       int64
+	ExpiresAt     int64
+	RevokedAt     sql.NullInt64
+	UnlimitedUses int64
 }
 
 func (q *Queries) CreateInvite(ctx context.Context, arg CreateInviteParams) error {
@@ -42,12 +43,13 @@ func (q *Queries) CreateInvite(ctx context.Context, arg CreateInviteParams) erro
 		arg.Created,
 		arg.ExpiresAt,
 		arg.RevokedAt,
+		arg.UnlimitedUses,
 	)
 	return err
 }
 
 const getInviteByHash = `-- name: GetInviteByHash :one
-SELECT id, code_hash, community_id, created_by, grants_admin, max_uses, used_count, created, expires_at, revoked_at FROM invites WHERE code_hash = ?
+SELECT id, code_hash, community_id, created_by, grants_admin, max_uses, used_count, created, expires_at, revoked_at, unlimited_uses FROM invites WHERE code_hash = ?
 `
 
 type GetInviteByHashParams struct {
@@ -68,12 +70,13 @@ func (q *Queries) GetInviteByHash(ctx context.Context, arg GetInviteByHashParams
 		&i.Created,
 		&i.ExpiresAt,
 		&i.RevokedAt,
+		&i.UnlimitedUses,
 	)
 	return i, err
 }
 
 const listInvites = `-- name: ListInvites :many
-SELECT id, code_hash, community_id, created_by, grants_admin, max_uses, used_count, created, expires_at, revoked_at FROM invites ORDER BY created DESC
+SELECT id, code_hash, community_id, created_by, grants_admin, max_uses, used_count, created, expires_at, revoked_at, unlimited_uses FROM invites ORDER BY created DESC
 `
 
 func (q *Queries) ListInvites(ctx context.Context) ([]Invites, error) {
@@ -96,6 +99,7 @@ func (q *Queries) ListInvites(ctx context.Context) ([]Invites, error) {
 			&i.Created,
 			&i.ExpiresAt,
 			&i.RevokedAt,
+			&i.UnlimitedUses,
 		); err != nil {
 			return nil, err
 		}
@@ -111,7 +115,7 @@ func (q *Queries) ListInvites(ctx context.Context) ([]Invites, error) {
 }
 
 const listInvitesByCommunity = `-- name: ListInvitesByCommunity :many
-SELECT id, code_hash, community_id, created_by, grants_admin, max_uses, used_count, created, expires_at, revoked_at FROM invites WHERE community_id = ? ORDER BY created DESC
+SELECT id, code_hash, community_id, created_by, grants_admin, max_uses, used_count, created, expires_at, revoked_at, unlimited_uses FROM invites WHERE community_id = ? ORDER BY created DESC
 `
 
 type ListInvitesByCommunityParams struct {
@@ -138,6 +142,7 @@ func (q *Queries) ListInvitesByCommunity(ctx context.Context, arg ListInvitesByC
 			&i.Created,
 			&i.ExpiresAt,
 			&i.RevokedAt,
+			&i.UnlimitedUses,
 		); err != nil {
 			return nil, err
 		}
@@ -169,8 +174,8 @@ func (q *Queries) PutInviteSignup(ctx context.Context, arg PutInviteSignupParams
 
 const redeemInvite = `-- name: RedeemInvite :one
 UPDATE invites SET used_count = used_count + 1
-WHERE code_hash = ? AND used_count < max_uses AND revoked_at IS NULL AND expires_at > ?
-RETURNING id, code_hash, community_id, created_by, grants_admin, max_uses, used_count, created, expires_at, revoked_at
+WHERE code_hash = ? AND (unlimited_uses = 1 OR used_count < max_uses) AND revoked_at IS NULL AND expires_at > ?
+RETURNING id, code_hash, community_id, created_by, grants_admin, max_uses, used_count, created, expires_at, revoked_at, unlimited_uses
 `
 
 type RedeemInviteParams struct {
@@ -192,6 +197,7 @@ func (q *Queries) RedeemInvite(ctx context.Context, arg RedeemInviteParams) (Inv
 		&i.Created,
 		&i.ExpiresAt,
 		&i.RevokedAt,
+		&i.UnlimitedUses,
 	)
 	return i, err
 }

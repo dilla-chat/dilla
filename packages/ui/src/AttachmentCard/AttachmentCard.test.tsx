@@ -31,7 +31,7 @@ describe('AttachmentCard', () => {
     expect(img).toHaveAttribute('src', 'blob:http://127.0.0.1/thumb');
     expect(img).toHaveAttribute('data-thumb', 'ready');
     expect(open.style.getPropertyValue('--d-card-ratio')).toBe('640 / 480');
-    expect(open.style.getPropertyValue('--d-card-w')).toBe('20rem');
+    expect(open.style.getPropertyValue('--d-card-w')).toBe('17.5rem');
     await userEvent.click(open);
     expect(onOpen).toHaveBeenCalledTimes(1);
   });
@@ -48,8 +48,10 @@ describe('AttachmentCard', () => {
     render(<AttachmentCard {...BASE} kind="file" name="route.gpx" size="12.4 KB" thumbUrl={null} w={null} h={null}
       openLabel="open route.gpx" onOpen={undefined} saveLabel="save route.gpx" onSave={onSave} />);
     expect(screen.getByText('route.gpx')).toBeInTheDocument();
-    expect(screen.getByText('12.4 KB')).toBeInTheDocument();
+    // The prototype's meta line (§6.8): the size and the extension.
+    expect(screen.getByText('12.4 KB · GPX')).toBeInTheDocument();
     const save = screen.getByRole('button', { name: 'save route.gpx' });
+    expect(save.querySelector('svg')).toHaveAttribute('data-icon', 'download');
     expect(screen.getAllByRole('button')).toEqual([save]);
     await userEvent.click(save);
     expect(onSave).toHaveBeenCalledTimes(1);
@@ -129,7 +131,7 @@ describe('AttachmentCard', () => {
     expect(screen.queryByRole('button')).toBeNull();
   });
 
-  it.each(['mesh', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {
+  it.each(['signal', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {
     document.documentElement.dataset.theme = theme;
     const { container } = render(<div className="d-root"><AttachmentCard {...(meta.args as AttachmentCardProps)} /></div>);
     // jsdom has no layout or canvas, so contrast is left to the Storybook axe run in a real browser.

@@ -12,7 +12,7 @@ describe('flow 12 (v0.1.0-web3.7, phone shell)', () => {
   const pairs = [...copy.matchAll(/`([a-zA-Z][\w.]*)='([^`]*)'`/g)].map(m => [m[1], m[2]] as const);
   it('strings: every flow-12 copy key equals en.ts byte for byte, and every new key is in the flow', () => {
     const table = en as Readonly<Record<string, string>>;
-    expect(pairs.length).toBe(23);
+    expect(pairs.length).toBe(35); // Task 11 (Q3): the prototype's Activity and You copy
     for (const [key, value] of pairs) expect(table[key], key).toBe(value);
     for (const [key, value] of pairs) {
       for (const f of FORBIDDEN as { word: string; re: RegExp }[]) expect(f.re.test(value), `${key}: ${f.word}`).toBe(false);
@@ -36,23 +36,17 @@ describe('flow 12 (v0.1.0-web3.7, phone shell)', () => {
   const LOWER: readonly string[] = [
     'nav.tabs.label',
     'nav.tab.servers',
-    'nav.tab.activity',
-    'nav.tab.you',
     'nav.back',
     'nav.server.menu',
     'nav.channel.menu',
     'nav.call.open',
-    'activity.title',
     'activity.mention',
-    'activity.dm',
-    'activity.elsewhere',
-    'you.title',
-    'you.status',
-    'you.settings',
   ];
   it('chrome: the lower-case chrome keys are lower case', () => {
     const table = en as Readonly<Record<string, string>>;
-    expect(LOWER.length).toBe(15);
+    // Ruling AA (Jonas 2026-10-27): the tab labels follow the prototype's case (Home, Activity, You). Task 11 (Q3): the Activity
+    // and You copy is the prototype's ("Activity", "Direct message", "Settings", "Status").
+    expect(LOWER.length).toBe(7);
     for (const key of LOWER) expect(table[key], key).toBe(table[key].toLowerCase());
   });
   it('the Activity empty title is a short sentence-case title, not the sentence under it', () => {

@@ -823,3 +823,283 @@ fn a_commit_intent_retains_all_256_real_welcome_bodies() {
     );
     drop(bot);
 }
+
+#[test]
+fn bot_external_join_after_call_group_forget_is_not_wedged() {
+    let mut inviter = ready_candidate([0x95; 16], "call creator");
+    let upload = inviter
+        .core
+        .call_group_create(&GROUP, Some(&COMMUNITY), &CHANNEL, 1, &[0x88; 32])
+        .expect("source call");
+    let mut relay = support::Relay::new(GROUP);
+    relay.register(&upload).expect("register source");
+    inviter
+        .core
+        .group_registered(&GROUP, 1)
+        .expect("source registered");
+    let mut bot = ready_bot(conn());
+    bot.bot_group_external_join(
+        &OP_JOIN,
+        &GROUP,
+        &CHANNEL,
+        1,
+        1,
+        &relay.info_body(),
+        &relay.tree_body(),
+    )
+    .expect("stage E");
+    bot.call_group_forget(&GROUP).expect("forget staged join");
+    assert_eq!(result(&bot, &OP_JOIN), Some((5, GROUP, 2, None)));
+    let rotation = inviter
+        .core
+        .call_rotate(&GROUP)
+        .expect("advance source epoch");
+    relay.commit(&rotation).expect("accept rotation");
+    inviter
+        .core
+        .commit_confirm(&GROUP)
+        .expect("confirm rotation");
+    bot.bot_group_external_join(
+        &[0x5e; 16],
+        &GROUP,
+        &CHANNEL,
+        1,
+        1,
+        &relay.info_body(),
+        &relay.tree_body(),
+    )
+    .expect("rejoin E+1");
+}
+
+#[test]
+fn bot_external_join_backstop_preserves_live_joining_record() {
+    let mut inviter = ready_candidate([0x95; 16], "call creator");
+    let upload = inviter
+        .core
+        .call_group_create(&GROUP, Some(&COMMUNITY), &CHANNEL, 1, &[0x88; 32])
+        .expect("source call");
+    let mut relay = support::Relay::new(GROUP);
+    relay.register(&upload).expect("register source");
+    let mut bot = ready_bot(conn());
+    let staged = bot
+        .bot_group_external_join(
+            &OP_JOIN,
+            &GROUP,
+            &CHANNEL,
+            1,
+            1,
+            &relay.info_body(),
+            &relay.tree_body(),
+        )
+        .expect("live join");
+    assert_eq!(
+        bot.bot_group_external_join(
+            &[0x5e; 16],
+            &GROUP,
+            &CHANNEL,
+            1,
+            1,
+            &relay.info_body(),
+            &relay.tree_body()
+        )
+        .expect_err("live join must conflict")
+        .code,
+        "E_CORE_STATE"
+    );
+    assert_eq!(result(&bot, &OP_JOIN), Some((5, GROUP, 0, Some(staged))));
+}
+
+#[test]
+fn bot_external_join_backstop_repairs_only_gone_or_missing_same_group() {
+    for state in [None, Some(0), Some(2), Some(3), Some(4)] {
+        let mut inviter = ready_candidate([0x95; 16], "call creator");
+        let upload = inviter
+            .core
+            .call_group_create(&GROUP, Some(&COMMUNITY), &CHANNEL, 1, &[0x88; 32])
+            .expect("source call");
+        let mut relay = support::Relay::new(GROUP);
+        relay.register(&upload).expect("register source");
+        inviter
+            .core
+            .group_registered(&GROUP, 1)
+            .expect("source registered");
+        let connection = conn();
+        let mut bot = ready_bot(connection.clone());
+        let staged = bot
+            .bot_group_external_join(
+                &OP_JOIN,
+                &GROUP,
+                &CHANNEL,
+                1,
+                1,
+                &relay.info_body(),
+                &relay.tree_body(),
+            )
+            .expect("stage join");
+        // An unrelated group's pending upload must survive both cleanup paths.
+        let other_upload = inviter
+            .core
+            .call_group_create(&GROUP_TWO, Some(&COMMUNITY), &[0x79; 16], 1, &[0x88; 32])
+            .expect("other source call");
+        let mut other_relay = support::Relay::new(GROUP_TWO);
+        other_relay
+            .register(&other_upload)
+            .expect("register other source");
+        bot.bot_group_external_join(
+            &OPERATION,
+            &GROUP_TWO,
+            &[0x79; 16],
+            1,
+            1,
+            &other_relay.info_body(),
+            &other_relay.tree_body(),
+        )
+        .expect("other pending join");
+        let other = result(&bot, &OPERATION);
+        // Reproduce historical storage left by the old forget path, independently of the new forget.
+        {
+            let c = connection.lock().unwrap();
+            match state {
+                Some(state) => {
+                    c.execute(
+                        "UPDATE app_groups SET state=?2 WHERE group_id=?1",
+                        rusqlite::params![GROUP.as_slice(), state],
+                    )
+                    .unwrap();
+                }
+                None => {
+                    c.execute(
+                        "DELETE FROM app_groups WHERE group_id=?1",
+                        [GROUP.as_slice()],
+                    )
+                    .unwrap();
+                }
+            }
+        }
+        let rotation = inviter.core.call_rotate(&GROUP).expect("advance epoch");
+        relay.commit(&rotation).expect("accept rotation");
+        inviter
+            .core
+            .commit_confirm(&GROUP)
+            .expect("confirm rotation");
+        drop(bot);
+        let mut bot = ClientCore::open(connection).expect("reopen historical orphan");
+        let rejoin = bot.bot_group_external_join(
+            &[0x5e; 16],
+            &GROUP,
+            &CHANNEL,
+            1,
+            1,
+            &relay.info_body(),
+            &relay.tree_body(),
+        );
+        if state.is_none() || state == Some(4) {
+            rejoin.expect("orphan repaired");
+            assert_eq!(result(&bot, &OP_JOIN), Some((5, GROUP, 2, None)));
+        } else {
+            assert_eq!(
+                rejoin.expect_err("live row still owns pending upload").code,
+                "E_CORE_STATE"
+            );
+            assert_eq!(result(&bot, &OP_JOIN), Some((5, GROUP, 0, Some(staged))));
+        }
+        assert_eq!(result(&bot, &OPERATION), other, "other group untouched");
+    }
+}
+
+#[test]
+fn bot_call_group_forget_rolls_back_intent_and_mls_together() {
+    let mut inviter = ready_candidate([0x95; 16], "call creator");
+    let upload = inviter
+        .core
+        .call_group_create(&GROUP, Some(&COMMUNITY), &CHANNEL, 1, &[0x88; 32])
+        .expect("source call");
+    let mut relay = support::Relay::new(GROUP);
+    relay.register(&upload).expect("register source");
+    let connection = conn();
+    let mut bot = ready_bot(connection.clone());
+    bot.bot_group_external_join(
+        &OP_JOIN,
+        &GROUP,
+        &CHANNEL,
+        1,
+        1,
+        &relay.info_body(),
+        &relay.tree_body(),
+    )
+    .expect("stage join");
+    let before = result(&bot, &OP_JOIN);
+    let mls_before = openmls_row_count(&connection.lock().unwrap());
+    connection.lock().unwrap().execute_batch("CREATE TRIGGER fail_forget BEFORE UPDATE OF state ON app_groups BEGIN SELECT RAISE(ABORT,'injected forget failure'); END").unwrap();
+    bot.call_group_forget(&GROUP).expect_err("injected failure");
+    assert_eq!(result(&bot, &OP_JOIN), before);
+    let c = connection.lock().unwrap();
+    assert_eq!(openmls_row_count(&c), mls_before);
+    assert_eq!(
+        c.query_row(
+            "SELECT state FROM app_groups WHERE group_id=?1",
+            [GROUP.as_slice()],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    c.execute_batch("DROP TRIGGER fail_forget").unwrap();
+    drop(c);
+    bot.call_group_forget(&GROUP).expect("retry forget");
+    assert_eq!(result(&bot, &OP_JOIN), Some((5, GROUP, 2, None)));
+}
+
+#[test]
+fn bot_call_group_forget_discards_create_and_commit_only_for_forgotten_group() {
+    for commit in [false, true] {
+        let connection = conn();
+        let mut bot = ready_bot(connection.clone());
+        bot.bot_group_create(&OPERATION, &GROUP, &CHANNEL, 1, 1, &[0x88; 32])
+            .expect("create call");
+        let op = if commit {
+            bot.bot_group_registered(&OPERATION, &GROUP, 1)
+                .expect("register call");
+            bot.bot_commit_build(&OP_COMMIT, &GROUP, &[0x80])
+                .expect("stage commit");
+            OP_COMMIT
+        } else {
+            OPERATION
+        };
+        bot.bot_group_create(&OP_JOIN, &GROUP_TWO, &[0x79; 16], 1, 1, &[0x88; 32])
+            .expect("other create");
+        bot.bot_group_registered(&OP_JOIN, &GROUP_TWO, 1)
+            .expect("other active group");
+        bot.bot_commit_build(&[0x5e; 16], &GROUP_TWO, &[0x80])
+            .expect("other live commit");
+        let other = result(&bot, &[0x5e; 16]);
+        let before = result(&bot, &op);
+        connection.lock().unwrap().execute_batch("CREATE TRIGGER fail_forget BEFORE UPDATE OF state ON app_groups BEGIN SELECT RAISE(ABORT,'injected forget failure'); END").unwrap();
+        bot.call_group_forget(&GROUP)
+            .expect_err("forget rolls back");
+        assert_eq!(result(&bot, &op), before);
+        connection
+            .lock()
+            .unwrap()
+            .execute_batch("DROP TRIGGER fail_forget")
+            .unwrap();
+        bot.call_group_forget(&GROUP).expect("forget");
+        assert_eq!(
+            result(&bot, &op),
+            Some((if commit { 9 } else { 2 }, GROUP, 2, None))
+        );
+        assert_eq!(
+            result(&bot, &[0x5e; 16]),
+            other,
+            "other active group's live record untouched"
+        );
+        // A late discard/abort is idempotent with the same resolution hash.
+        if commit {
+            bot.bot_commit_abort(&op, &GROUP).expect("late abort");
+        } else {
+            bot.bot_group_discard(&op, &GROUP).expect("late discard");
+        }
+        bot.call_group_forget(&GROUP)
+            .expect("gone forget remains idempotent");
+    }
+}

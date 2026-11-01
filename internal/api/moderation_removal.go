@@ -127,6 +127,10 @@ func (h *moderationRemovalAPI) accept(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, h.deps.storeError(r, priorErr))
 		return
 	}
+	if r.URL.Query().Get("receipt_only") == "1" {
+		server.WriteError(w, server.Errorf(server.CodeNotFound, "moderation receipt not found"))
+		return
+	}
 	now := h.deps.Clock.Now().Unix()
 	nowUnix, ok := checkedUint64(now)
 	if !ok || protocol.ValidateRemovalContext(proof, communityID, groupID, s.UserID, s.DeviceID, nowUnix) != nil {
@@ -261,7 +265,7 @@ func (h *moderationRemovalAPI) requireBotRemoval(r *http.Request, repo store.Rep
 		return err
 	}
 	installation, err := repo.GetActiveBotInstallationByCommunity(r.Context(), communityID)
-	if err != nil || installation.Capabilities&uint8(botCapRemoval) == 0 {
+	if err != nil || installation.Capabilities&uint16(botCapRemoval) == 0 {
 		return server.Errorf(server.CodeForbidden, "ready removal-capable Bot installation required")
 	}
 	return nil

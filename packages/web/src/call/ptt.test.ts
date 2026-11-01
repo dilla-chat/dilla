@@ -23,6 +23,22 @@ describe('push to talk (decision 2, flow 06)', () => {
     return { gate, changes, open };
   }
 
+  it('releases a held key and suspends shortcuts while a modal covers the call', () => {
+    const { open, changes } = bind();
+    document.dispatchEvent(key('keydown', 'F13'));
+    expect(open()).toBe(true);
+    const dialog = document.createElement('dialog');
+    dialog.open = true; dialog.setAttribute('aria-modal', 'true');
+    const button = document.createElement('button');
+    dialog.append(button); document.body.append(dialog); button.focus();
+    expect(open()).toBe(false);
+    button.dispatchEvent(key('keydown', 'F13'));
+    expect(changes).toEqual([true, false]);
+    dialog.remove();
+    document.dispatchEvent(key('keydown', 'F13'));
+    expect(open()).toBe(true);
+  });
+
   it('push-to-talk opens the gate only while held and never types into a field', () => {
     let focused = true;
     const { open, changes } = bind(() => focused);

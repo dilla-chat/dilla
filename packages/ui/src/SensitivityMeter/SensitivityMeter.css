@@ -1,0 +1,38 @@
+/* README §5.9 (task 10b), the prototype's Mic test meter: 50 segments 28px high, 2px apart, 2px corners (unlit --meter-off,
+   under the line --fg-4, over it --ok, over −10 dB --warn, each fading over 70ms); a 2px --fg line over the 6px padded box with
+   a 3px --bg halo and its 9.5px label 16px above; the scale 6px under it in 9.5px --fg-faint, tabular. */
+.d-sens { display: grid; gap: 6px; min-width: 0; font-family: var(--font-mono); }
+.d-sens__meter { position: relative; padding: 6px 0; }
+.d-sens__segs { display: flex; gap: 2px; height: 28px; }
+.d-sens__seg { flex: 1; border-radius: 2px; background: var(--meter-off); transition: background var(--duration-meter-segment); }
+.d-sens__seg[data-state="below"] { background: var(--fg-4); }
+.d-sens__seg[data-state="on"] { background: var(--ok); }
+.d-sens__seg[data-state="hot"] { background: var(--warn); }
+.d-sens__line {
+  position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--fg); border-radius: 2px;
+  box-shadow: 0 0 0 3px var(--bg); pointer-events: none;
+  transition: left var(--duration-normal) var(--ease-out), opacity var(--duration-turn);
+}
+.d-sens__value {
+  position: absolute; top: -16px; transform: translateX(-50%); font-size: var(--text-chip); line-height: 1.5; color: var(--fg);
+  white-space: nowrap; pointer-events: none; transition: left var(--duration-normal) var(--ease-out);
+}
+/* The slider: the whole meter is its track; it is drawn by the line above, so the native control is transparent. */
+.d-sens__input {
+  position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: ew-resize;
+  -webkit-appearance: none; appearance: none; background: transparent;
+}
+.d-sens__input:disabled { cursor: not-allowed; }
+/* Fix round 1: a 2px (WebKit) / 0 (Gecko) thumb, so a press anywhere maps to the value under the pointer and the drawn line
+   sits exactly where the native value is (a wide thumb would offset the value by half its width at the ends). */
+.d-sens__input::-webkit-slider-runnable-track { height: 100%; background: transparent; }
+.d-sens__input::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 2px; height: 100%; border: 0; background: transparent; }
+.d-sens__input::-moz-range-track { height: 100%; background: transparent; }
+.d-sens__input::-moz-range-thumb { width: 0; height: 100%; border: 0; background: transparent; }
+.d-sens__meter:has(.d-sens__input:focus-visible) .d-sens__line { outline: var(--focus-ring); outline-offset: 2px; }
+.d-sens__scale { display: flex; justify-content: space-between; font-size: var(--text-chip); line-height: 1.5; color: var(--fg-faint); font-variant-numeric: tabular-nums; }
+/* The line's travel is a reading aid, not decoration: it follows reduced motion like everything else; the segments do not. */
+@media (forced-colors: active) {
+  .d-sens__seg { forced-color-adjust: none; }
+  .d-sens__line { background: CanvasText; }
+}

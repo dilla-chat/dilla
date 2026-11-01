@@ -1,11 +1,13 @@
 import { afterEach, describe, it, expect } from 'vitest';
-import { act, render, screen, within } from '@testing-library/react';
+import { rowMenuItem } from '../test/row-menu.ts';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ChannelSummary, CommunityAccess, MemberSummary } from '@dilla/client-core';
 import { CoreProvider } from '../core/context.tsx';
 import { FakeClient } from '../test/fake-client.ts';
 import { account, ME } from '../test/fixtures.ts';
 import { Shell } from './Shell.tsx';
+import { replaceHistoryState } from '../router.ts';
 
 const A = 'a1'.repeat(16);
 const B = 'b2'.repeat(16);
@@ -23,7 +25,7 @@ const VOICE = 'e5'.repeat(16);
 const GEN_B = 'd4'.repeat(16);
 
 function setup(owner = OTHER, route = `/c/${A}/${GEN}`, channels = CHANNELS) {
-  window.history.replaceState(null, '', route);
+  replaceHistoryState(null, '', route);
   const fake = new FakeClient();
   fake.set('account', account());
   fake.set('connection', { status: 'online', generation: '7' });
@@ -37,7 +39,7 @@ function setup(owner = OTHER, route = `/c/${A}/${GEN}`, channels = CHANNELS) {
   return { fake, user };
 }
 
-afterEach(() => { Reflect.deleteProperty(window, 'matchMedia'); });
+afterEach(() => { Reflect.deleteProperty(window, 'matchMedia'); replaceHistoryState(null, '', '/'); });
 const wide = () => {
   window.matchMedia = ((query: string) => ({ matches: true, media: query, addEventListener: () => undefined, removeEventListener: () => undefined,
     addListener: () => undefined, removeListener: () => undefined, onchange: null, dispatchEvent: () => false }));
@@ -46,7 +48,7 @@ const wide = () => {
 describe('Shell, server admin and member list (flow 08)', () => {
   it('the members toggle opens and closes the member pane', async () => {
     const { user } = setup();
-    const toggle = screen.getByRole('button', { name: /members/ });
+    const toggle = screen.getByRole('button', { name: /^Members/ });
     expect(toggle).toHaveAttribute('aria-pressed', 'false');
     expect(screen.queryByRole('complementary')).toBeNull();
     await user.click(toggle);
@@ -66,14 +68,14 @@ describe('Shell, server admin and member list (flow 08)', () => {
     expect(screen.getByRole('button', { name: 'new channel' })).toBeInTheDocument();
   });
 
-  // Final fix B1/M2: "edit channel" left the sidebar; the channel header has it, for that channel.
-  it('the sidebar has no edit channel; the header has it with manageChannels and it opens the edit dialog of that channel', async () => {
+  // Final fix B1/M2: "edit channel" left the sidebar; Ruling X: it is in the channel row's context menu, for that channel.
+  it('the sidebar and header have no edit channel button; the row menu has it with manageChannels (Ruling X) and it opens the edit dialog of that channel', async () => {
     const { fake, user } = setup(ME.id);
     act(() => { fake.publish(`permissions:${A}`, access({ manageChannels: true })); });
     const sidebar = document.querySelector('.dw-sidebar') as HTMLElement;
     expect(within(sidebar).queryByRole('button', { name: 'edit channel' })).toBeNull();
-    const header = document.querySelector('.d-channel-header') as HTMLElement;
-    await user.click(within(header).getByRole('button', { name: 'edit channel' }));
+    expect(within(document.querySelector('.d-channel-header') as HTMLElement).queryByRole('button', { name: 'edit channel' })).toBeNull();
+    await rowMenuItem(user, 'general', 'edit channel');
     const dialog = screen.getByRole('dialog', { name: 'Edit #general' });
     expect(within(dialog).getByRole('textbox', { name: 'Channel name' })).toHaveValue('general');
     expect(screen.queryByRole('dialog', { name: /settings/i })).toBeNull();
@@ -97,7 +99,7 @@ describe('Shell, server admin and member list (flow 08)', () => {
     act(() => { for (const cb of [...listeners]) cb({ matches: false }); });
     expect(screen.queryByRole('complementary')).toBeNull();
     expect(document.querySelector('[inert]')).toBeNull();
-    const toggle = screen.getByRole('button', { name: /^members/ });
+    const toggle = screen.getByRole('button', { name: /^Members/ });
     expect(toggle).toHaveAttribute('aria-pressed', 'false');
     await user.click(toggle);
     expect(screen.getByRole('complementary', { name: 'members of Midgard' })).toBeInTheDocument();
@@ -109,7 +111,7 @@ describe('Shell, server admin and member list (flow 08)', () => {
       addEventListener: (_: string, cb: (e: { matches: boolean }) => void) => { listeners.push(cb); },
       removeEventListener: () => undefined, addListener: () => undefined, removeListener: () => undefined })) as unknown as typeof window.matchMedia;
     const { user } = setup();
-    const toggle = screen.getByRole('button', { name: /^members/ });
+    const toggle = screen.getByRole('button', { name: /^Members/ });
     await user.click(toggle);
     await user.click(toggle);
     expect(screen.getByRole('complementary', { name: 'members of Midgard' })).toBeInTheDocument();
@@ -124,7 +126,7 @@ describe('Shell, server admin and member list (flow 08)', () => {
       addEventListener: (_: string, cb: (e: { matches: boolean }) => void) => { listeners.push(cb); },
       removeEventListener: () => undefined, addListener: () => undefined, removeListener: () => undefined })) as unknown as typeof window.matchMedia;
     const { user } = setup();
-    await user.click(screen.getByRole('button', { name: /^members/ }));
+    await user.click(screen.getByRole('button', { name: /^Members/ }));
     act(() => { for (const cb of [...listeners]) cb({ matches: false }); });
     expect(screen.getByRole('complementary', { name: 'members of Midgard' })).toBeInTheDocument();
   });
@@ -132,7 +134,7 @@ describe('Shell, server admin and member list (flow 08)', () => {
   // Final fix I2: the drawer's own close control.
   it('the drawer has a close members button that closes it', async () => {
     const { user } = setup();
-    await user.click(screen.getByRole('button', { name: /^members/ }));
+    await user.click(screen.getByRole('button', { name: /^Members/ }));
     const side = screen.getByRole('complementary', { name: 'members of Midgard' });
     await user.click(within(side).getByRole('button', { name: 'close members' }));
     expect(screen.queryByRole('complementary')).toBeNull();
@@ -141,16 +143,17 @@ describe('Shell, server admin and member list (flow 08)', () => {
   // Final fix M5: the aside names the list; the list inside is no second region of the same name.
   it('the member list inside the aside is not a second region named like it', async () => {
     const { user } = setup();
-    await user.click(screen.getByRole('button', { name: /^members/ }));
+    await user.click(screen.getByRole('button', { name: /^Members/ }));
     expect(screen.queryByRole('region', { name: 'members of Midgard' })).toBeNull();
   });
 
-  it('the sidebar header holds one action, the gear named "server settings", beside the name; no leave button', () => {
+  // Ruling AB: the prototype's ⌄ (chevron-down), named "server settings", is the head's one action.
+  it('the sidebar header holds one action, the ⌄ named "server settings", beside the name; no leave button', () => {
     setup();
     const nav = screen.getByRole('navigation', { name: 'channels' });
     const gear = within(nav).getByRole('button', { name: 'server settings' });
     expect(gear.closest('.d-channel-list__head')).toContainElement(screen.getByRole('heading', { level: 1, name: 'Midgard' }));
-    expect(gear.querySelector('svg[data-icon="settings"]')).not.toBeNull();
+    expect(gear.querySelector('svg[data-icon="chevron-down"]')).not.toBeNull();
     expect(gear.textContent).toBe('');
     expect(screen.queryByRole('group', { name: 'server actions' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'leave server' })).toBeNull();
@@ -160,11 +163,11 @@ describe('Shell, server admin and member list (flow 08)', () => {
   it('a member reaches leave through server settings; the owner finds delete there', async () => {
     const { fake, user } = setup();
     act(() => { fake.publish(`permissions:${A}`, access()); });
-    await user.click(screen.getByRole('button', { name: 'server settings' }));
+    await user.click(screen.getByRole('button', { name: 'server settings' })); await user.click(await screen.findByRole('menuitem', { name: 'Server settings' })); // Signal task 10 fix round 2: the ⌄ is a menu
     const dialog = screen.getByRole('dialog');
-    await user.click(within(dialog).getByRole('button', { name: 'leave server' }));
+    await user.click(within(dialog).getByRole('button', { name: 'Ownership / Leave' }));
     expect(within(dialog).getByRole('heading', { level: 2, name: 'leave server' })).toBeInTheDocument();
-    expect(within(dialog).getByRole('button', { name: 'leave server', current: 'page' })).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Ownership / Leave', current: 'page' })).toBeInTheDocument();
   });
 
   it('closing server settings returns focus to the gear', async () => {
@@ -177,19 +180,19 @@ describe('Shell, server admin and member list (flow 08)', () => {
     expect(gear).toHaveFocus();
   });
 
-  it('server settings opens on the invites tab for a member who holds only create invite (R20)', async () => {
+  it('server settings opens Members and keeps Invites available to a member with create invite', async () => {
     const { fake, user } = setup();
     act(() => { fake.publish(`permissions:${A}`, access()); });
     expect(screen.queryByRole('button', { name: 'invite link' })).toBeNull();
-    await user.click(screen.getByRole('button', { name: 'server settings' }));
+    await user.click(screen.getByRole('button', { name: 'server settings' })); await user.click(await screen.findByRole('menuitem', { name: 'Server settings' })); // Signal task 10 fix round 2: the ⌄ is a menu
     const dialog = await screen.findByRole('dialog', { name: /settings/i });
-    expect(within(dialog).getByRole('button', { name: 'invites', current: 'page' })).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Members', current: 'page' })).toBeInTheDocument();
   });
 
   it('a removal from one server leaves the settings of another open', async () => {
     const { fake, user } = setup(OTHER, `/c/${B}/${GEN_B}`);
     act(() => { fake.publish(`permissions:${B}`, access()); });
-    await user.click(screen.getByRole('button', { name: 'server settings' }));
+    await user.click(screen.getByRole('button', { name: 'server settings' })); await user.click(await screen.findByRole('menuitem', { name: 'Server settings' })); // Signal task 10 fix round 2: the ⌄ is a menu
     act(() => { fake.publish('removals', [{ id: 3, communityId: A, name: 'Midgard' }]); });
     expect(screen.getByRole('dialog')).toBeInTheDocument();
   });
@@ -213,7 +216,7 @@ describe('Shell, server admin and member list (flow 08)', () => {
     wide();
     const voice: ChannelSummary = { ...CHANNELS[0], id: VOICE, kind: 1, name: 'lounge', group: 'unsupported' };
     setup(OTHER, `/c/${A}/${VOICE}`, [voice, ...CHANNELS]);
-    expect(screen.queryByRole('button', { name: /^members/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Members/ })).toBeNull();
     expect(screen.queryByRole('complementary')).toBeNull();
   });
 
@@ -226,14 +229,14 @@ describe('Shell, server admin and member list (flow 08)', () => {
   it('a removal shows the notice, leaves the server and closes its settings', async () => {
     const { fake, user } = setup();
     act(() => { fake.publish(`permissions:${A}`, access()); });
-    await user.click(screen.getByRole('button', { name: 'server settings' }));
+    await user.click(screen.getByRole('button', { name: 'server settings' })); await user.click(await screen.findByRole('menuitem', { name: 'Server settings' })); // Signal task 10 fix round 2: the ⌄ is a menu
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     act(() => {
       fake.publish('communities', [{ id: B, name: 'Valhalla', owner: OTHER }]);
       fake.publish('removals', [{ id: 1, communityId: A, name: 'Midgard' }]);
     });
     expect(screen.queryByRole('dialog')).toBeNull();
-    expect(window.location.pathname).toMatch(new RegExp(`^/c/${B}`));
+    await waitFor(() => expect(window.location.pathname).toMatch(new RegExp(`^/c/${B}`)));
     const notice = screen.getByText('You are no longer in Midgard.');
     await user.click(within(notice.parentElement as HTMLElement).getByRole('button', { name: 'dismiss' }));
     expect(screen.queryByText('You are no longer in Midgard.')).toBeNull();
@@ -242,15 +245,15 @@ describe('Shell, server admin and member list (flow 08)', () => {
   it('a removal closes the invites settings of that server even before the list changes', async () => {
     const { fake, user } = setup();
     act(() => { fake.publish(`permissions:${A}`, access()); });
-    await user.click(screen.getByRole('button', { name: 'server settings' }));
-    expect(await screen.findByRole('button', { name: 'invites', current: 'page' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'server settings' })); await user.click(await screen.findByRole('menuitem', { name: 'Server settings' })); // Signal task 10 fix round 2: the ⌄ is a menu
+    expect(await screen.findByRole('button', { name: 'Members', current: 'page' })).toBeInTheDocument();
     act(() => { fake.publish('removals', [{ id: 7, communityId: A, name: 'Midgard' }]); });
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(screen.getByText('You are no longer in Midgard.')).toBeInTheDocument();
   });
 
   it('a removal from the only server goes to the root', () => {
-    window.history.replaceState(null, '', `/c/${A}/${GEN}`);
+    replaceHistoryState(null, '', `/c/${A}/${GEN}`);
     const fake = new FakeClient();
     fake.set('account', account());
     fake.set('connection', { status: 'online', generation: '7' });
@@ -263,5 +266,24 @@ describe('Shell, server admin and member list (flow 08)', () => {
       fake.publish('removals', [{ id: 1, communityId: A, name: 'Midgard' }]);
     });
     expect(window.location.pathname).toBe('/');
+  });
+});
+
+
+describe('fullscreen server settings routes', () => {
+  it('opens server settings at its route while retaining the conversation', async () => {
+    const { fake, user } = setup();
+    act(() => fake.publish(`permissions:${A}`, access({ manageCommunity: true })));
+    await user.click(screen.getByRole('button', { name: 'server settings' })); await user.click(await screen.findByRole('menuitem', { name: 'Server settings' })); // Signal task 10 fix round 2: the ⌄ is a menu
+    expect(location.pathname).toBe(`/c/${A}/settings`);
+    expect(history.state).toMatchObject({ settingsFrom: `/c/${A}/${GEN}` });
+    expect(screen.getByRole('dialog', { name: 'Server settings' })).toHaveAttribute('aria-modal', 'true');
+    expect(fake.callsOf('callLeave')).toEqual([]);
+  });
+  it('mounts an authorized direct settings link after access arrives', async () => {
+    const { fake } = setup(OTHER, `/c/${A}/settings/members`);
+    act(() => fake.publish(`permissions:${A}`, access()));
+    expect(await screen.findByRole('dialog', { name: 'Server settings' })).toBeInTheDocument();
+    expect(fake.callsOf('getBotInstallation')).toEqual([]);
   });
 });

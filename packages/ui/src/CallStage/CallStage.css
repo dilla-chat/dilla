@@ -1,105 +1,134 @@
-.d-call-stage { --d-stage-px: 1rem; --d-stage-py: 0.75rem; display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: var(--d-stage-py) var(--d-stage-px); }
-.d-call-stage > * + * { margin-top: 0.75rem; }
-/* C4, R12: the header slot is the stage's 48 bar, bled out to the stage's edges, its hairline at y=48 like every other bar. */
-.d-call-stage__bar { box-sizing: border-box; height: var(--bar-h); margin: calc(-1 * var(--d-stage-py)) calc(-1 * var(--d-stage-px)) 0; border-bottom: 1px solid var(--hairline); flex: none; }
+/* The voice stage (Signal §5.6, the prototype's joined channel): the 44 header bar, the body (14px in, 10px between the
+   now-playing bar, the tiles and anything under them) and the 64px call bar. */
+.d-call-stage { --d-stage-pad: 0.875rem; --d-stage-gap: 0.625rem; --d-strip-w: 11.75rem; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+/* C4, R12: the header slot is the stage's top bar, its hairline at its foot like every other bar. */
+.d-call-stage__bar { box-sizing: border-box; height: var(--bar-h); border-bottom: 1px solid var(--hairline); flex: none; }
 .d-call-stage__bar > * { height: 100%; border-bottom: 0; }
-/* With the slot, the head holds only the hidden name unless there is a ring strip or a code: then it takes no room of its own. */
-.d-call-stage__head[data-bare]:not(:has(.d-call-stage__outgoing, .d-call-stage__code)) { margin-top: 0; }
-.d-call-stage__head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem 1rem; min-width: 0; }
+.d-call-stage__head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem 1rem; min-width: 0; padding: var(--d-stage-pad) var(--d-stage-pad) 0; }
+/* With the header slot and nothing else to say, the head holds only the hidden name and takes no room. */
+.d-call-stage__head[data-empty] { padding: 0; }
+.d-call-stage__head[data-empty]:not([data-bare]) { padding: var(--d-stage-pad) var(--d-stage-pad) 0; }
 .d-call-stage__title { margin: 0; min-width: 0; font-size: var(--text-md); font-weight: var(--weight-label); color: var(--fg); overflow-wrap: anywhere; }
-.d-call-stage__outgoing { margin: 0; font-size: var(--text-sm); color: var(--fg-2); }
-/* The disclosure is anchored at the end of the head: opened, its body grows leftwards under the summary, so the
-   summary never moves under the pointer. */
-.d-call-stage__code { display: grid; justify-items: end; margin-left: auto; font-size: var(--text-sm); color: var(--fg-2); }
-.d-call-stage__summary { display: inline-flex; align-items: center; min-height: 2.5rem; min-width: 2.5rem; padding: 0 0.5rem; cursor: pointer; list-style: none; border-radius: var(--r-md); }
+.d-call-stage__outgoing { margin: 0; font-size: var(--text-ui); color: var(--fg-2); }
+
+/* The call code of a DM call box: a disclosure in the head; opened, its body grows leftwards under the summary, so the
+   summary never moves under the pointer. (A channel's call code is in its voice row's context menu, fix round 1.) */
+.d-call-stage__code { position: relative; display: grid; justify-items: end; margin-left: auto; font-size: var(--text-meta); color: var(--fg-2); }
+.d-call-stage__summary { display: inline-flex; align-items: center; min-height: 1.75rem; padding: 0 0.5rem; cursor: pointer; list-style: none; border-radius: var(--r-md); }
 .d-call-stage__summary::-webkit-details-marker { display: none; }
 .d-call-stage__summary::before { content: "" / ""; display: inline-block; width: 0.875em; height: 0.875em; margin-right: 0.375rem; vertical-align: -0.125em; background: currentColor; mask: var(--d-mask-chevron-right) center / contain no-repeat; }
 .d-call-stage__code[open] .d-call-stage__summary::before { mask: var(--d-mask-chevron-down) center / contain no-repeat; }
 .d-call-stage__summary:hover { color: var(--fg); }
-.d-call-stage__code-body { justify-self: stretch; max-width: 26rem; margin-top: 0.375rem; padding: 0.5rem 0.75rem; background: var(--surface-2); border: 1px solid var(--hairline-2); border-radius: var(--r-md); }
-.d-call-stage__digits { margin: 0; font-size: var(--text-md); letter-spacing: 0.08em; color: var(--fg); font-variant-numeric: tabular-nums; }
-.d-call-stage__help { margin: 0.375rem 0 0; font-size: var(--text-xs); color: var(--fg-2); }
+.d-call-stage__summary:focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
+.d-call-stage__code-body { justify-self: stretch; max-width: 26rem; margin-top: 0.375rem; padding: 0.5rem 0.75rem; background: var(--surface-2); border: 1px solid var(--line-strong); border-radius: var(--r-md); }
+.d-call-stage__digits { margin: 0; font-size: var(--text-md); letter-spacing: var(--label-tracking); color: var(--fg); font-variant-numeric: tabular-nums; }
+.d-call-stage__help { margin: 0.375rem 0 0; font-size: var(--text-xs); color: var(--fg-2); white-space: normal; }
+
 /* The notice region is always in the tree (a live region must exist before its text); empty, it takes no room. */
-.d-call-stage__notice { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: baseline; gap: 0.5rem 0.75rem; padding: 0.625rem 0.75rem; background: var(--surface-2); border: 1px solid var(--warn); border-left-width: 3px; border-radius: var(--r-md); }
-.d-call-stage__notice[data-empty="true"] { margin-top: 0; padding: 0; border: 0; background: none; }
+.d-call-stage__notice { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: baseline; gap: 0.5rem 0.75rem; margin: var(--d-stage-pad) var(--d-stage-pad) 0; padding: 0.625rem 0.75rem; background: var(--surface-2); border: 1px solid var(--warn); border-left-width: 3px; border-radius: var(--r-md); }
+.d-call-stage__notice[data-empty="true"] { margin: 0; padding: 0; border: 0; background: none; }
 .d-call-stage__notice-glyph { color: var(--warn); }
-.d-call-stage__notice[data-kind="info"] { border-color: var(--edge); }
+.d-call-stage__notice[data-kind="info"] { border-color: var(--line-strong); }
 .d-call-stage__notice[data-kind="info"] .d-call-stage__notice-glyph { color: var(--fg-2); }
-.d-call-stage__notice-text { margin: 0; font-size: var(--text-sm); color: var(--fg); }
-.d-call-stage__notice .d-call-stage__notice-action { height: auto; min-height: 2.5rem; }
-.d-call-stage__empty { align-self: center; margin-bottom: 0; font-size: var(--text-sm); color: var(--fg-2); }
-/* An empty room (no tiles, no notice): the message and the controls under it are one group, centred on the whole stage. The
-   bar and the heading hold nothing else then (no code), so they leave the flow and stay at the top. */
-.d-call-stage:has(> .d-call-stage__empty) { position: relative; min-height: 100%; }
-.d-call-stage:has(> .d-call-stage__empty) > .d-call-stage__bar { position: absolute; inset: 0 0 auto 0; margin: 0; }
-.d-call-stage:has(> .d-call-stage__empty) > .d-call-stage__head:not(:has(.d-call-stage__outgoing)) { position: absolute; inset: var(--d-stage-py) var(--d-stage-px) auto var(--d-stage-px); margin: 0; }
-/* An outgoing line (the AFK preview says everyone is muted) is the top of the group: it leads and centres like the message. */
-.d-call-stage:has(> .d-call-stage__empty) > .d-call-stage__head:has(.d-call-stage__outgoing) { margin-top: auto; justify-content: center; text-align: center; }
-.d-call-stage > .d-call-stage__empty { margin-top: auto; text-align: center; }
-.d-call-stage > .d-call-stage__head:has(.d-call-stage__outgoing) ~ .d-call-stage__empty { margin-top: 0.75rem; }
-.d-call-stage > .d-call-stage__empty ~ .d-call-stage__controls { margin-bottom: auto; }
-.d-call-stage__tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 15rem), 1fr)); align-content: start; gap: 0.75rem; margin-bottom: 0; padding: 0; list-style: none; min-width: 0; }
+.d-call-stage__notice-text { margin: 0; font-size: var(--text-ui); color: var(--fg); }
+.d-call-stage__notice .d-call-stage__notice-action { height: auto; min-height: 2rem; }
+
+.d-call-stage__body { position: relative; flex: 1 1 auto; display: flex; flex-direction: column; gap: var(--d-stage-gap); min-width: 0; min-height: 0; padding: var(--d-stage-pad); box-sizing: border-box; }
+.d-call-stage__empty { align-self: center; margin: auto 0 0; font-size: var(--text-ui); color: var(--fg-2); text-align: center; }
+/* An empty room (the AFK page): the message and the controls under it are one group, centred on the stage (no padding above
+   the message, so the group, not the padded box, is what is centred: fix round 2). */
+.d-call-stage:has(.d-call-stage__empty) > .d-call-stage__body { flex: 0 0 auto; margin-top: auto; padding-top: 0; }
+.d-call-stage:has(.d-call-stage__empty) > .d-call-stage__controls { margin-bottom: auto; }
+/* An outgoing line (the AFK preview says everyone is muted) leads the group. */
+.d-call-stage:has(.d-call-stage__empty) > .d-call-stage__head:has(.d-call-stage__outgoing) { margin-top: auto; justify-content: center; text-align: center; }
+.d-call-stage:has(.d-call-stage__empty) > .d-call-stage__head:has(.d-call-stage__outgoing) ~ .d-call-stage__body { margin-top: 0; }
+
+/* The DM call box (no stage mode): compact cards in a grid. */
+.d-call-stage__tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 15rem), 1fr)); align-content: start; gap: var(--d-stage-gap); margin: 0; padding: 0; list-style: none; min-width: 0; }
 .d-call-stage__tile { min-width: 0; }
-/* D1: a partial last row is centred. Its tiles sit in the grid's first columns, so each moves right by half the empty
-   columns (the measured --d-stage-cols less the tiles in that row, --d-orphan-n) times a column and a gap. */
-.d-call-stage__tile[data-orphan] { translate: calc((var(--d-stage-cols, 1) - var(--d-orphan-n, 0)) * (var(--d-tile-w, 0px) + 0.75rem) / 2) 0; }
-/* Stage mode (U4: the caller passes `onFocus`, so `data-tiles="stage"`; callers without it keep the rules above). The tiles
-   fill the area above the pinned toolbar. `--d-stage-cols` and `--d-tile-w` are written by the stage's ResizeObserver from
-   `stageColumns`; tiles are 16:9 and centred. Without them (no observer) it is one column. */
+
+/* The grid (the prototype's wrapping row): 16:9 tiles, never stretched, centred both ways in the space; ≤2 tiles are
+   min(46%, 560px) wide, ≤4 min(46%, 420px), more min(31.5%, 340px). Each rises in (d-up 380ms, 60ms apart). */
 .d-call-stage__tiles[data-tiles="stage"] {
-  flex: 1 1 auto; min-height: 0; container-type: inline-size;
-  grid-template-columns: repeat(var(--d-stage-cols, 1), var(--d-tile-w, 100%));
-  justify-content: center; align-content: safe center; overflow: auto;
+  flex: 1 1 auto; min-height: 0; display: flex; flex-wrap: wrap; align-content: safe center; align-items: safe center; justify-content: safe center;
+  gap: var(--d-stage-gap); padding: 2px; overflow-x: hidden; overflow-y: auto; container-type: inline-size;
 }
-.d-call-stage__tile[data-stage] { position: relative; width: 100%; aspect-ratio: 16 / 9; }
-/* Focus (R27): CSS only, nothing moves in the DOM. The focused tile spans row 1; the others flow into row 2 as a
-   filmstrip above the toolbar and scroll sideways. The columns are explicit (`--d-strip-n` is the strip's count) so that
-   the focused tile has a span; it is as wide as the visible area (`100cqw`) and sticks to its left edge. */
+.d-call-stage__tile[data-stage] { position: relative; flex: none; width: min(31.5%, 21.25rem); aspect-ratio: 16 / 9; animation: d-up var(--duration-enter) var(--ease-out) both; }
+.d-call-stage__tiles[data-band="two"] > .d-call-stage__tile[data-stage] { width: min(46%, 35rem); }
+.d-call-stage__tiles[data-band="four"] > .d-call-stage__tile[data-stage] { width: min(46%, 26.25rem); }
+.d-call-stage__tile[data-stage]:nth-child(2) { animation-delay: calc(var(--duration-stagger) * 1.5); }
+.d-call-stage__tile[data-stage]:nth-child(3) { animation-delay: calc(var(--duration-stagger) * 3); }
+.d-call-stage__tile[data-stage]:nth-child(4) { animation-delay: calc(var(--duration-stagger) * 4.5); }
+.d-call-stage__tile[data-stage]:nth-child(n+5) { animation-delay: calc(var(--duration-stagger) * 6); }
+
+/* Focus (R27): CSS only, nothing moves in the DOM. The focused tile spans row 1 and is 16:9 at the row's height (never wider
+   than the stage); the others are the filmstrip in row 2, 188px wide, together and centred, scrolling sideways when they
+   overflow. The list bleeds one gap past each side, so the gutters' gaps do not push the strip in. */
 .d-call-stage[data-focused-stage] .d-call-stage__tiles[data-tiles="stage"] {
-  grid-template-columns: minmax(0, 1fr) repeat(var(--d-strip-n, 1), calc(7.5rem * 16 / 9)) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) 7.5rem;
-  grid-auto-flow: column; justify-content: stretch; align-content: stretch; overflow-x: auto; overflow-y: hidden;
+  display: grid; grid-template-columns: minmax(0, 1fr) repeat(var(--d-strip-n, 1), var(--d-strip-w)) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto; grid-auto-flow: column; justify-content: stretch; align-content: stretch;
+  margin-inline: calc(-1 * var(--d-stage-gap)); padding: 0; overflow-x: auto; overflow-y: hidden;
 }
-/* The strip tiles have fixed columns between two flexible gutters, so they sit together and are centred as a group. The
-   first gutter's column is held by a spacer, so the tiles start in column 2; with many tiles the gutters shrink to 0. */
 .d-call-stage[data-focused-stage] .d-call-stage__tiles[data-tiles="stage"]::before { content: ""; grid-row: 2; grid-column: 1; }
-.d-call-stage[data-focused-stage] .d-call-stage__tile[data-stage] { grid-row: 2; width: auto; height: 100%; justify-self: center; }
-/* The strip is for picking a tile: its volume overlay would cover the 7.5rem tile, so it stays on the focused or grid tile. */
-.d-call-stage[data-focused-stage] .d-call-stage__tile[data-stage][data-focused="false"] .d-call-tile__volume { display: none; }
+.d-call-stage[data-focused-stage] .d-call-stage__tile[data-stage] { grid-row: 2; width: var(--d-strip-w); }
+.d-call-stage[data-focused-stage] .d-call-stage__tile[data-stage][data-focused="false"] .d-call-tile__avatar { --d-face: 2.125rem; --d-face-text: var(--text-xs); }
 .d-call-stage[data-focused-stage] .d-call-stage__tile[data-stage][data-focused="true"] {
-  grid-row: 1; grid-column: 1 / -1; justify-self: start; position: sticky; left: 0; width: 100cqw; max-width: 100%; aspect-ratio: auto;
+  grid-row: 1; grid-column: 1 / -1; justify-self: start; position: sticky; left: var(--d-stage-gap); margin-left: var(--d-stage-gap);
+  width: calc(100cqw - 2 * var(--d-stage-gap)); height: 100%; aspect-ratio: auto; container-type: size; animation-name: none;
 }
-.d-call-stage__controls { display: flex; justify-content: center; }
-@media (max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem) {
-  .d-call-stage { --d-stage-px: 0.5rem; --d-stage-py: 0.5rem; }
-  .d-call-stage__tile[data-orphan] { translate: none; }
-  .d-call-stage__notice .d-call-stage__notice-action { grid-column: 2; justify-self: start; min-height: 2.75rem; }
-  .d-call-stage__summary { min-height: 2.75rem; min-width: 2.75rem; }
-  /* Phone (R9): no filmstrip. One column; the focused tile takes the full width and goes first, the others follow
-     below it in today's one-column flow. */
-  .d-call-stage__tiles[data-tiles="stage"], .d-call-stage[data-focused-stage] .d-call-stage__tiles[data-tiles="stage"] {
-    grid-template-columns: minmax(0, 1fr); grid-template-rows: none; grid-auto-flow: row; justify-content: stretch;
-    align-content: start; overflow-x: hidden; overflow-y: auto;
-  }
-  .d-call-stage[data-focused-stage] .d-call-stage__tiles[data-tiles="stage"]::before { display: none; }
-  /* web3.8 FX: a phone tile is as tall as what it holds (its 16:9 media or avatar, the caption, the volume under it). */
-  .d-call-stage__tile[data-stage], .d-call-stage[data-focused-stage] .d-call-stage__tile[data-stage],
-  .d-call-stage[data-focused-stage] .d-call-stage__tile[data-stage][data-focused="true"] {
-    grid-row: auto; grid-column: auto; position: relative; width: 100%; height: auto; aspect-ratio: auto; max-width: 100%;
-  }
-  /* web3.8 FX: up to two tiles fill the width one under the other; three or more go in two columns, a focused one first
-     and across both. */
-  .d-call-stage .d-call-stage__tiles[data-tiles="stage"][data-many], .d-call-stage[data-focused-stage] .d-call-stage__tiles[data-tiles="stage"][data-many] {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .d-call-stage[data-focused-stage] .d-call-stage__tile[data-stage][data-focused="true"] { order: -1; grid-column: 1 / -1; }
-  /* An odd last tile spans both columns rather than sitting alone at half width. With a focused tile first (it spans both
-     and is counted in the DOM), the rest pair up from child 2, so the odd one out is an even last child. */
-  .d-call-stage .d-call-stage__tiles[data-many] .d-call-stage__tile[data-stage]:last-child:nth-child(odd) { grid-column: 1 / -1; }
-  .d-call-stage[data-focused-stage] .d-call-stage__tiles[data-many] .d-call-stage__tile[data-stage]:last-child:nth-child(even) { grid-column: 1 / -1; }
-  .d-call-stage[data-focused-stage] .d-call-stage__tile[data-stage][data-focused="false"] .d-call-tile__volume { display: grid; }
+.d-call-stage[data-focused-stage] .d-call-stage__tile[data-stage][data-focused="true"]:hover { transform: none; }
+.d-call-stage__tile[data-focused="true"] > .d-call-tile[data-stage] {
+  width: min(100%, 100cqh * 16 / 9); height: 100%; margin-inline: auto; box-shadow: inset 0 0 0 1px var(--hairline-2);
+  animation: d-up var(--duration-focus-in) var(--ease-out) both;
 }
-/* D4, the phone layout (also a landscape phone, whose shell is wider than the media query): an 18px gutter, the avatars
-   centred in their tiles, the toolbar pinned to the foot of the stage, and no orphan shift (the phone has its own columns). */
-[data-layout="phone"] .d-call-stage { --d-stage-px: 1.125rem; padding-inline: 1.125rem; }
-[data-layout="phone"] .d-call-stage__tile[data-orphan] { translate: none; }
-[data-layout="phone"] .d-call-stage__controls { position: sticky; bottom: 0; z-index: 1; padding-block: 0.5rem; background: var(--bg); }
+.d-call-stage__tile[data-focused="true"] > .d-call-tile[data-stage][data-speaking="true"]:not([data-source="screen"]) { box-shadow: inset 0 0 0 1px var(--ok-edge); }
+/* Review 1: a focused share whose owner speaks takes the prototype's 0.55 --ok edge (and its caption's meter); in the grid it stays unlit. */
+.d-call-stage__tile[data-focused="true"] > .d-call-tile[data-stage][data-source="screen"][data-speaking="true"] { box-shadow: inset 0 0 0 1px var(--ok-edge-share); }
+.d-call-stage__tile[data-focused="true"] .d-call-tile__avatar { --d-face: 7.5rem; --d-face-text: var(--text-face); }
+.d-call-stage__tile[data-focused="true"] .d-call-tile__placeholder { gap: 0.5rem; font-size: var(--text-xs); }
+.d-call-stage__tile[data-focused="true"] .d-call-tile__placeholder .d-icon { width: 0.9375rem; height: 0.9375rem; }
+/* The focused caption: 24px over the top left (10px in), 11.5px 600 on the 0.82 scrim; LIVE at 9px. */
+.d-call-stage__tile[data-focused="true"] .d-call-tile[data-stage] .d-call-tile__caption {
+  left: 0.625rem; top: 0.625rem; bottom: auto; height: 1.5rem; padding: 0 0.5rem; font-size: var(--text-btn); background: var(--scrim-tile); border-radius: var(--r-md);
+}
+.d-call-stage__tile[data-focused="true"] .d-call-tile__live .d-tag[data-kind="live"] { padding: 0 4px; font-size: var(--text-badge); }
+
+/* The call bar (`bar`): 64px, a hairline above, --bg-2; the room and the stats on the left, the controls on the right. */
+.d-call-stage__controls { display: flex; justify-content: center; padding: 0 var(--d-stage-pad) var(--d-stage-pad); }
+.d-call-stage__controls[data-bar] {
+  flex: none; align-items: center; justify-content: flex-end; flex-wrap: nowrap; gap: 0.375rem; min-height: var(--panel-h); box-sizing: border-box;
+  padding: 0.625rem 1rem; border-top: 1px solid var(--hairline); background: var(--bg-2);
+}
+.d-call-stage__where { display: grid; flex: 1 1 0; min-width: 0; margin-right: auto; line-height: 1.3; overflow: hidden; white-space: nowrap; }
+.d-call-stage__room { display: flex; align-items: center; gap: 0.375rem; min-width: 0; font-size: var(--text-ui); font-weight: var(--weight-label); color: var(--fg); }
+.d-call-stage__dot { flex: none; width: 6px; height: 6px; border-radius: var(--r-pill); background: var(--ok); }
+.d-call-stage__stats { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: var(--text-meta); color: var(--fg-3); font-variant-numeric: tabular-nums; }
+
+/* Not joined (Signal §5.6): overlapping 48px faces (a 3px --bg gap, a 5px --ok ring on whoever speaks), the room 16px 700,
+   who is there 12px --fg-2, and the green Join voice (40px, 12.5px 700 on --ok). */
+.d-call-stage__preview { flex: 1 1 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1rem; padding: 0.625rem; text-align: center; animation: d-up var(--duration-focus-in) both; }
+.d-call-stage__faces { display: flex; }
+/* Fix round 2: each face is positioned, so its 3px --bg ring paints over the face before it (the avatar is positioned too and
+   would otherwise paint over every ring). */
+.d-call-stage__face { position: relative; z-index: 0; display: inline-flex; margin-left: -10px; border-radius: var(--r-avatar); box-shadow: 0 0 0 3px var(--bg), 0 0 0 0 transparent; transition: box-shadow var(--duration-focus); }
+.d-call-stage__face[data-speaking="true"] { box-shadow: 0 0 0 3px var(--bg), 0 0 0 5px var(--ok); }
+/* The prototype's preview draws the Bot round like everyone, in the brand colour (its square is the sidebar's and the tiles'). */
+.d-call-stage__face .d-avatar[data-shape="bot"] { border-radius: var(--r-avatar); }
+.d-call-stage__face .d-avatar { width: 3rem; height: 3rem; font-size: var(--text-md); }
+.d-call-stage__preview-text { display: grid; gap: 0.25rem; }
+.d-call-stage__preview-name { font-size: var(--text-preview); font-weight: var(--weight-display); color: var(--fg); }
+.d-call-stage__preview-who { font-size: var(--text-ui); color: var(--fg-2); }
+.d-call-stage__join {
+  display: inline-flex; align-items: center; gap: 0.5rem; height: 2.5rem; padding: 0 1.125rem; font: inherit; font-size: var(--text-sm); font-weight: var(--weight-display);
+  color: var(--ok-ink); background: var(--ok); border: 0; border-radius: var(--r-lg); cursor: pointer; transition: transform var(--duration-press);
+}
+.d-call-stage__join:active { transform: scale(0.96); }
+.d-call-stage__join:focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
+
+/* The phone (Signal §5.6, §5.10): one 16:9 tile per row across the width, a 150px filmstrip, and the call bar's icons only, centred. */
+[data-layout="phone"] .d-call-stage { --d-strip-w: 9.375rem; }
+[data-layout="phone"] .d-call-stage__tiles[data-tiles="stage"] > .d-call-stage__tile[data-stage] { width: 100%; }
+[data-layout="phone"] .d-call-stage[data-focused-stage] .d-call-stage__tiles[data-tiles="stage"] > .d-call-stage__tile[data-stage][data-focused="false"] { width: var(--d-strip-w); }
+[data-layout="phone"] .d-call-stage[data-focused-stage] .d-call-stage__tiles[data-tiles="stage"] > .d-call-stage__tile[data-stage][data-focused="true"] { width: calc(100cqw - 2 * var(--d-stage-gap)); }
+[data-layout="phone"] .d-call-stage__controls[data-bar] { justify-content: center; flex-wrap: wrap; height: auto; }
+[data-layout="phone"] .d-call-stage__where { display: none; }

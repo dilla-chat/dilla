@@ -20,20 +20,22 @@ export type Command =
   // a server whose create answer was lost, with the socket still up).
   | { m: 'refreshCommunities' }
   | { m: 'getBotInstallation'; communityId: string }
+  | { m: 'getBotCommandStatus'; communityId: string }
+  | { m: 'getBotSpotifyConfig'; communityId: string }
   | { m: 'patchBotProfile'; communityId: string; display: string }
   // Typed future request contract only. The worker refuses it until human kind-3 interaction groups are authenticated.
   | { m: 'listModerationCases'; communityId: string; requestId: string; offset: 0 }
   | { m: 'listManualModerationEvidence'; communityId: string; requestId: string; cursor: string | null }
   | { m: 'humanInteractionRequest'; communityId: string; channelId: string | null; requestId: string; operation: number;
       args: readonly (string | number | Uint8Array | null)[]; revision: string | null; stepUp?: string }
-  | { m: 'readBotInteractionResponses'; communityId: string; operations: readonly number[] }
+  | { m: 'readBotInteractionResponses'; communityId: string; operations: readonly number[]; requestIds?: readonly string[] }
   | { m: 'ackBotInteractionResponses'; communityId: string; through: string }
-  | { m: 'readHumanInteractionResponses'; communityId: string }
+  | { m: 'readHumanInteractionResponses'; communityId: string; requestIds?: readonly string[] }
   | { m: 'ackHumanInteractionResponses'; communityId: string; through: string }
   | { m: 'getBotJoinRole'; communityId: string }
   | { m: 'configureBotJoinRole'; communityId: string; requestId: string; roleId: string; installationId: string }
-  | { m: 'getBotDjRoles'; communityId: string }
-  | { m: 'configureBotDjRoles'; communityId: string; requestId: string; installationId: string; roleIds: string[] }
+  | { m: 'restartBot'; communityId: string; installationId: string }
+  | { m: 'setBotMusicSettings'; communityId: string; installationId: string; volume: number; idleMinutes: number }
   | { m: 'listSelfRoles'; communityId: string }
   | { m: 'configureSelfRoles'; communityId: string; requestId: string; roleIds: string[] }
   | { m: 'selectSelfRole'; communityId: string; roleId: string; requestId: string; enabled: boolean }
@@ -41,7 +43,7 @@ export type Command =
       options: readonly { emoji: string; roleId: string }[] }
   | { m: 'configureBotInstallation'; communityId: string; requestId: string; expectedRevision: string | null; capabilities: number; stepUp: string }
   | { m: 'disableBotInstallation'; communityId: string; requestId: string; expectedRevision: string }
-  | { m: 'beginBotSpotifyAttempt'; communityId: string; stepUp: string }
+  | { m: 'beginBotSpotifyAttempt'; communityId: string; stepUp: string; clientId: string }
   | { m: 'callbackBotSpotifyAttempt'; communityId: string; attemptId: string; state: string; code: string }
   | { m: 'cancelBotSpotifyAttempt'; communityId: string; attemptId: string }
   | { m: 'openChannel'; channelId: string }
@@ -139,6 +141,8 @@ export type Command =
   | { m: 'callShare'; on: boolean }                                                      // → null
   | { m: 'callRefresh' }                                                                 // → { token, iceServers }
   | { m: 'callStats'; report: CallStatsReport }                                          // → null
+  // Signal task 8c: this device's RTT to the SFU in whole ms (0..5000), or null to clear it (paused, reconnecting).
+  | { m: 'callRtt'; ms: number | null }                                                  // → boolean (false: refused, not stored)
   // fix/firefox-misrouted-audio: the page's media layer notes a case Diagnostics should show; code is one of CALL_NOTES.
   | { m: 'callNote'; code: 'E_MEDIA_MISROUTE' }                                         // → null
   | { m: 'loadVoice'; communityId: string | null; channelId: string | null }            // exactly one id → null

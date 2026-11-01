@@ -23,14 +23,19 @@ async function watchTiles(page: Page): Promise<void> {
     new MutationObserver((records) => {
       for (const r of records) {
         const target = r.target instanceof Element ? r.target : null;
-        if (target?.matches('.d-call-tile:not([data-own])')) note(target);
+        // A state the tile left before this callback ran (two commits in one task) is in the record's old value.
+        if (target?.matches('.d-call-tile:not([data-own])')) {
+          const name = target.querySelector('.d-call-tile__name')?.textContent ?? '';
+          if (r.oldValue !== null && seen.at(-1) !== `${name}:${r.oldValue}`) seen.push(`${name}:${r.oldValue}`);
+          note(target);
+        }
         for (const n of r.addedNodes) {
           if (!(n instanceof Element)) continue;
           if (n.matches('.d-call-tile:not([data-own])')) note(n);
           n.querySelectorAll('.d-call-tile:not([data-own])').forEach(note);
         }
       }
-    }).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-voice-state'] });
+    }).observe(document.body, { subtree: true, childList: true, attributes: true, attributeOldValue: true, attributeFilter: ['data-voice-state'] });
   });
 }
 const tileHistory = (page: Page) => page.evaluate(() => (window as unknown as { __dwTiles: string[] }).__dwTiles);
@@ -78,8 +83,11 @@ test('two browsers join one voice channel, see each other ok and hear each other
     // Alice's page loaded the member list before bob joined the server: his tile names him once the worker has read it
     // again (task 10, concern 4), so a state recorded before that is under his id's first 8 characters.
     const history = (await tileHistory(alice.page)).map((e) => e.replace(`${b.user.slice(0, 8)}:`, 'bob:'));
-    expect(history.indexOf('bob:connecting'), history.join(' ')).toBeGreaterThanOrEqual(0);
-    expect(history.indexOf('bob:connecting')).toBeLessThan(history.indexOf('bob:ok'));
+    // Task 8: `connecting` lasts only while alice's roster knows bob before the SFU does; when both land in one task React
+    // renders only the later state (the old stage's extra layout render used to split them). It is never after ok.
+    expect(history.indexOf('bob:ok'), history.join(' ')).toBeGreaterThanOrEqual(0);
+    if (history.includes('bob:connecting')) expect(history.indexOf('bob:connecting')).toBeLessThan(history.indexOf('bob:ok'));
+    else test.info().annotations.push({ type: 'tile history', description: history.join(' ') });
 
     // The voice row in the one channel list has both people nested under it, on both sides.
     for (const p of [alice.page, bob.page]) {

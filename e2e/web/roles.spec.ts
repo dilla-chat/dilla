@@ -7,7 +7,8 @@
 import { expect, type Locator, type Page } from '@playwright/test';
 import { addServerVia,
   CLASS, TEST_TIMEOUT, WAIT, makeInviteLink, newChannelButton, completeSignUp, copy, expectAccessible, expectComposerReady, newAccount, openChannel, railItem, railNav,
-  channelRow, composerBox, messageRow, pinsDialog, rowAction, rowToolbar, sendText, signUp, tag, test, mentionList, logRegion,
+  channelRow, composerBox, messageRow, pinsDialog, rowAction, rowToolbar, sendText, signUp, tag, test, mentionList, logRegion, channelRowMenuItem, expectRowMenuAction,
+ makeRole, roleButton, selectRole, setRolePermission,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { launchSecond, secondProfileDir } from './support/second-harness';
@@ -53,11 +54,13 @@ const groupHeading = (page: Page, count: number) =>
   membersRegion(page).getByRole('heading', { name: copy('members.group', { name: ROLE, count }), exact: true });
 /** The shell's polite live region: it holds the latest announcement until the next one replaces it. */
 const announcer = (page: Page) => page.getByTestId('shell-announcer');
+/** Server settings owns a separate live region while its modal is open. */
+const settingsAnnouncer = (settings: Locator) => settings.locator('p.d-sr-only[role="status"][aria-live="polite"]');
 const switchOf = (scope: Locator, key: string) => scope.getByRole('switch', { name: copy(key), exact: true });
 
 /** Opens "server settings" in the sidebar and returns the dialog, with the permissions read. */
 async function openSettings(page: Page): Promise<Locator> {
-  await button(page, 'admin.open').click();
+  await button(page, 'admin.open').click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
   const dialog = dialogOf(page, 'admin.title');
   await expect(dialog).toBeVisible({ timeout: WAIT });
   await expect(dialog.getByRole('navigation', { name: copy('admin.nav'), exact: true })).toBeVisible({ timeout: WAIT });
@@ -75,15 +78,6 @@ async function closeSettings(page: Page): Promise<void> {
 async function memberAction(page: Page, name: string, item: string): Promise<void> {
   await memberTrigger(page, name).click();
   await page.getByRole('dialog', { name }).getByRole('button', { name: copy(item), exact: true }).click();
-}
-/** The roles list row of a role: a listitem named by the role's name. */
-const roleRow = (settings: Locator, name: string) => settings.getByRole('list', { name: copy('roles.title'), exact: true }).getByRole('listitem').filter({ hasText: name });
-/** Opens the editor of the existing role `name` from the roles tab. */
-async function editRole(page: Page, settings: Locator, name: string): Promise<Locator> {
-  await roleRow(settings, name).getByRole('button', { name: copy('roles.editLabel', { name }), exact: true }).click();
-  const editor = dialogOf(page, 'roles.editor.titleEdit', { name });
-  await expect(editor).toBeVisible({ timeout: WAIT });
-  return editor;
 }
 async function setSwitch(toggle: Locator, on: boolean): Promise<void> {
   if ((await toggle.getAttribute('aria-checked')) !== String(on)) await toggle.click();
@@ -141,7 +135,7 @@ test('roles run from an empty instance: make, assign, pin by right, mention, dem
     await theirs.focus();
     await expect(rowToolbar(theirs)).toBeVisible();
     await expect(rowToolbar(theirs).getByRole('button', { name: copy('shell.message.react'), exact: true })).toBeVisible();
-    await expect(rowToolbar(theirs).getByRole('button', { name: copy('shell.message.pin'), exact: true })).toHaveCount(0);
+    await expectRowMenuAction(theirs, 'pin', false);
     const box2 = composerBox(page2, 'general');
     await box2.fill('@ev');
     await expect(mentionList(page2)).toHaveCount(0);
@@ -157,31 +151,16 @@ test('roles run from an empty instance: make, assign, pin by right, mention, dem
     // 3. Ada makes the role "Crew": green, shown separately, mentionable, may pin. Focus returns to "new role".
     let settings = await openSettings(page);
     await navItem(settings, 'roles.tab').click();
-    const newRole = button(settings, 'roles.new');
+    // Signal task 10c: the inline role editor. "New role" makes and opens "new role"; every change saves at once;
+    // "show separately" and "anyone can mention" are in the role's menu (Shift+F10).
+    const newRole = button(settings, 'serverSettings.roles.new');
     await expect(newRole).toBeVisible({ timeout: WAIT });
     await expectAccessible(page, 'the roles tab');
-    await newRole.click();
-    let editor = dialogOf(page, 'roles.editor.titleNew', { server: SERVER });
-    await expect(editor).toBeVisible({ timeout: WAIT });
-    // Escape in a dialog nested in settings closes only that dialog, and focus goes back to its opener.
-    await page.keyboard.press('Escape');
-    await expect(editor).toBeHidden();
-    await expect(settings).toBeVisible();
-    await expect(newRole).toBeFocused();
-    await newRole.click();
-    await expect(editor).toBeVisible({ timeout: WAIT });
-    await editor.getByRole('textbox', { name: copy('roles.editor.name'), exact: true }).fill(ROLE);
-    await editor.getByRole('radio', { name: copy('roles.color.green'), exact: true }).click();
-    await expect(editor.getByRole('radio', { name: copy('roles.color.green'), exact: true })).toHaveAttribute('aria-checked', 'true');
-    await setSwitch(switchOf(editor, 'roles.editor.hoist'), true);
-    await setSwitch(switchOf(editor, 'roles.editor.mentionable'), true);
-    await setSwitch(switchOf(editor, 'perm.pin'), true);
+    await makeRole(page, settings, ROLE, { color: 'green', perms: ['pin'], hoist: true, mentionable: true });
+    await expect(settings.getByRole('radio', { name: copy('roles.color.green'), exact: true })).toHaveAttribute('aria-checked', 'true');
+    await expect(settingsAnnouncer(settings)).toHaveText(copy('roles.editor.saved', { name: ROLE }), { timeout: WAIT });
     await expectAccessible(page, 'the role editor');
-    await button(editor, 'roles.editor.create').click();
-    await expect(editor).toBeHidden({ timeout: WAIT });
-    await expect(announcer(page)).toHaveText(copy('roles.editor.created', { name: ROLE }), { timeout: WAIT });
-    await expect(newRole).toBeFocused();
-    await expect(roleRow(settings, ROLE)).toContainText(copy('roles.row.other', { count: 0 }));
+    await expect(roleButton(settings, ROLE)).toHaveAccessibleName(copy('serverSettings.roles.row.other', { name: ROLE, count: 0 }));
     await closeSettings(page);
 
     // 4. Ada gives Björn the role from his member menu. "Done" returns focus to his menu trigger; both lists group "Crew — 1".
@@ -211,8 +190,9 @@ test('roles run from an empty instance: make, assign, pin by right, mention, dem
     await expect(theirs).toHaveAttribute('data-pinned', 'true', { timeout: WAIT });
     const mine = messageRow(page, 'general', hello);
     await expect(mine).toHaveAttribute('data-pinned', 'true', { timeout: WAIT });
-    const pinsButton = page.locator(CLASS.channelHeader).getByRole('button', { name: copy('shell.pins.open'), exact: true });
-    await pinsButton.click();
+    // Ruling X: pins open from the channel row's context menu; focus returns to the row.
+    const pinsButton = channelRow(page, 'general');
+    await channelRowMenuItem(page, 'general', 'shell.pins.open');
     const pins = pinsDialog(page, 'general');
     await expect(pins).toBeVisible({ timeout: WAIT });
     await expect(pins).toContainText(copy('shell.pins.by', { name: FRIEND }), { timeout: WAIT });
@@ -279,16 +259,12 @@ test('roles run from an empty instance: make, assign, pin by right, mention, dem
     // 7. Ada takes "pin messages" from Crew: Björn's pin stops counting. Ada's pins list no longer shows it, and her row loses the pin.
     settings = await openSettings(page);
     await navItem(settings, 'roles.tab').click();
-    editor = await editRole(page, settings, ROLE);
-    await expect(editor.getByRole('textbox', { name: copy('roles.editor.name'), exact: true })).toBeFocused();
-    await setSwitch(switchOf(editor, 'perm.pin'), false);
-    await button(editor, 'roles.editor.save').click();
-    await expect(editor).toBeHidden({ timeout: WAIT });
-    await expect(announcer(page)).toHaveText(copy('roles.editor.saved', { name: ROLE }), { timeout: WAIT });
-    await expect(roleRow(settings, ROLE).getByRole('button', { name: copy('roles.editLabel', { name: ROLE }), exact: true })).toBeFocused();
+    await selectRole(settings, ROLE);
+    await setRolePermission(settings, 'pin', false);
+    await expect(settingsAnnouncer(settings)).toHaveText(copy('roles.editor.saved', { name: ROLE }), { timeout: WAIT });
     await closeSettings(page);
     await expect(mine).not.toHaveAttribute('data-pinned', 'true', { timeout: WAIT });
-    await pinsButton.click();
+    await channelRowMenuItem(page, 'general', 'shell.pins.open');
     await expect(pins).toBeVisible({ timeout: WAIT });
     await expect(pins.getByText(copy('shell.pins.empty'), { exact: true })).toBeVisible({ timeout: WAIT });
     await expect(pins).not.toContainText(copy('shell.pins.by', { name: FRIEND }));
@@ -298,18 +274,17 @@ test('roles run from an empty instance: make, assign, pin by right, mention, dem
     // Björn's own app follows too: his offer to pin is gone with the right.
     await theirs.focus();
     await expect(theirs).not.toHaveAttribute('data-pinned', 'true', { timeout: WAIT });
-    await expect(rowToolbar(theirs).getByRole('button', { name: copy('shell.message.pin'), exact: true })).toHaveCount(0, { timeout: WAIT });
+    await expectRowMenuAction(theirs, 'pin', false);
 
     // Turning the right back on brings the same pin back: pins follow the current rights, in both directions.
     settings = await openSettings(page);
     await navItem(settings, 'roles.tab').click();
-    editor = await editRole(page, settings, ROLE);
-    await setSwitch(switchOf(editor, 'perm.pin'), true);
-    await button(editor, 'roles.editor.save').click();
-    await expect(editor).toBeHidden({ timeout: WAIT });
+    await selectRole(settings, ROLE);
+    await setRolePermission(settings, 'pin', true);
+    await expect(settingsAnnouncer(settings)).toHaveText(copy('roles.editor.saved', { name: ROLE }), { timeout: WAIT });
     await closeSettings(page);
     await expect(mine).toHaveAttribute('data-pinned', 'true', { timeout: WAIT });
-    await pinsButton.click();
+    await channelRowMenuItem(page, 'general', 'shell.pins.open');
     await expect(pins).toContainText(copy('shell.pins.by', { name: FRIEND }), { timeout: WAIT });
     await page.keyboard.press('Escape');
     await expect(pins).toBeHidden();
@@ -317,22 +292,25 @@ test('roles run from an empty instance: make, assign, pin by right, mention, dem
     // 8. Ada deletes Crew. Cancel (and Escape) close only the confirm; the delete returns focus to "new role" and Björn's group goes.
     settings = await openSettings(page);
     await navItem(settings, 'roles.tab').click();
-    const del = roleRow(settings, ROLE).getByRole('button', { name: copy('roles.deleteLabel', { name: ROLE }), exact: true });
-    await del.click();
+    // Signal task 10c: Delete role is in the role's menu (Shift+F10).
+    const openDelete = async () => {
+      await roleButton(settings, ROLE).focus();
+      await page.keyboard.press('Shift+F10');
+      await page.getByRole('menuitem', { name: copy('serverSettings.roles.menu.delete'), exact: true }).click();
+    };
+    await openDelete();
     const confirm = dialogOf(page, 'roles.deleteTitle', { name: ROLE });
     await expect(confirm).toBeVisible({ timeout: WAIT });
     await expect(button(confirm, 'roles.editor.cancel')).toBeFocused();
     await page.keyboard.press('Escape');
     await expect(confirm).toBeHidden();
     await expect(settings).toBeVisible();
-    await expect(del).toBeFocused();
-    await del.click();
+    await openDelete();
     await expect(confirm).toBeVisible({ timeout: WAIT });
     await button(confirm, 'roles.deleteConfirm').click();
     await expect(confirm).toBeHidden({ timeout: WAIT });
-    await expect(announcer(page)).toHaveText(copy('roles.deleted', { name: ROLE }), { timeout: WAIT });
-    await expect(button(settings, 'roles.new')).toBeFocused();
-    await expect(roleRow(settings, ROLE)).toHaveCount(0);
+    await expect(settingsAnnouncer(settings)).toHaveText(copy('roles.deleted', { name: ROLE }), { timeout: WAIT });
+    await expect(roleButton(settings, ROLE)).toHaveCount(0);
     await closeSettings(page);
     await expect(groupHeading(page, 1)).toHaveCount(0, { timeout: WAIT });
     await expect(groupHeading(page2, 1)).toHaveCount(0, { timeout: WAIT });

@@ -8,14 +8,14 @@ import { A, GEN, MOD, NOW, OTHER_ROLE, P1, P2, PEER, STRANGER, peerRow, renderCo
 afterEach(() => { Reflect.deleteProperty(window, 'matchMedia'); });
 
 const card = () => screen.getByRole('dialog');
-const actionNames = () => within(card()).queryAllByRole('button').filter(b => b.classList.contains('d-profile-card__action')).map(b => b.textContent);
+const actionNames = () => within(card()).queryAllByRole('button').filter(b => b.matches('.d-profile-card__action, .d-profile-card__icon-action')).map(b => b.getAttribute('aria-label') ?? b.textContent);
 
 describe('a mention and an author open the profile card (MP7)', () => {
   it('opens the card of the mentioned member from a click on the pill', async () => {
     const { user } = renderConversation({ items: [peerRow(P1, '1', `hello <@${PEER}>`)] });
     await user.click(within(rowOf(P1)).getByRole('button', { name: '@bob' }));
     expect(card()).toHaveAccessibleName('bob');
-    expect(actionNames()).toContain('message');
+    expect(actionNames()).toContain('Message');
   });
   it('leaves role and @everyone pills plain', () => {
     renderConversation({ items: [peerRow(P1, '1', `<@everyone> <@${OTHER_ROLE}>`, { mention: true })] });

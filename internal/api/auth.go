@@ -507,14 +507,16 @@ func (d Deps) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	if phc == "" {
 		// Spent after the hash, so a failed hash leaves the token for the retry. The spend is still
 		// the decision: of two requests that both passed the check, the one that finds the token
-		// spent is refused 403 E_STEP_UP. A store failure in PutPasswordCredential after the spend
+		// spent is refused 403 E_STEP_UP. A store failure in ChangePasswordCredential after the spend
 		// still spends it: the person steps up again.
 		if _, err := d.requireStepUp(ctx, sess, req.StepUp); err != nil {
 			server.WriteError(w, d.storeError(r, err))
 			return
 		}
 	}
-	if err := d.Repo.PutPasswordCredential(ctx, sess.UserID, next, d.Clock.Now().Unix()); err != nil {
+	now := d.Clock.Now().Unix()
+	// Task 11 (Q7): Settings → Sign-in says "Changed {relative}" from the change time, written with the hash in one statement.
+	if err := d.Repo.ChangePasswordCredential(ctx, sess.UserID, next, now); err != nil {
 		server.WriteError(w, d.storeError(r, err))
 		return
 	}
@@ -1853,7 +1855,9 @@ func (d Deps) FinishPasskeyStepUp(w http.ResponseWriter, r *http.Request) {
 }
 
 // Factors is GET /v1/auth/factors → [owed(uint), totp(uint|null), passkeys([[cred_id(bstr),
-// name(tstr), created(uint), last_used(uint|null)]]), backup_codes_left(uint), password(uint)].
+// name(tstr), created(uint), last_used(uint|null)]]), backup_codes_left(uint), password(uint),
+// password_changed(uint|null)]. password_changed (Task 11) is when the password was last changed,
+// null when unknown or there is none; an older client reads the first five elements.
 // totp is the confirmed_at of a CONFIRMED secret, else null; passkeys are this rp_id's, by created.
 //
 // An account marked as owing a factor that holds a usable one is settled here (web3.6 review I2):
@@ -1906,9 +1910,18 @@ func (d Deps) Factors(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	password := uint64(0)
+	var changed any
 	switch _, err := d.Repo.GetPasswordCredential(ctx, sess.UserID); {
 	case err == nil:
 		password = 1
+		at, err := d.Repo.GetPasswordChangedAt(ctx, sess.UserID)
+		if err != nil {
+			server.WriteError(w, d.storeError(r, err))
+			return
+		}
+		if at != nil {
+			changed = uint64(*at) //nolint:gosec // G115: a unix time after 1970
+		}
 	case !errors.Is(err, store.ErrNotFound):
 		server.WriteError(w, d.storeError(r, err))
 		return
@@ -1917,7 +1930,7 @@ func (d Deps) Factors(w http.ResponseWriter, r *http.Request) {
 	if u.FactorOwed {
 		owed = 1
 	}
-	d.write(w, r, http.StatusOK, []any{owed, totp, passkeys, uint64(left), password}) //nolint:gosec // G115: a count
+	d.write(w, r, http.StatusOK, []any{owed, totp, passkeys, uint64(left), password, changed}) //nolint:gosec // G115: a count
 }
 
 // The kinds of POST /v1/auth/factors/remove.

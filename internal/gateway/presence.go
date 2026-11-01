@@ -37,6 +37,7 @@ type presence struct {
 	signalSeen   map[id.ID]time.Time
 	signalSweep  time.Time
 	active       map[id.ID]deviceActivity
+	activityLast map[id.ID]time.Time
 }
 
 const presenceIdleAfter = 10 * time.Minute
@@ -47,7 +48,7 @@ type deviceActivity struct {
 }
 
 func newPresence(clk clock.Clock) *presence {
-	return &presence{clk: clk, typing: map[[2]id.ID]typingState{}, recentTyping: map[[2]id.ID]time.Time{}, cooldown: map[[2]id.ID]time.Time{}, signalBudget: map[id.ID]*rate.Limiter{}, signalSeen: map[id.ID]time.Time{}, active: map[id.ID]deviceActivity{}}
+	return &presence{clk: clk, typing: map[[2]id.ID]typingState{}, recentTyping: map[[2]id.ID]time.Time{}, cooldown: map[[2]id.ID]time.Time{}, signalBudget: map[id.ID]*rate.Limiter{}, signalSeen: map[id.ID]time.Time{}, active: map[id.ID]deviceActivity{}, activityLast: map[id.ID]time.Time{}}
 }
 
 func (p *presence) activity(device, user id.ID) {
@@ -82,11 +83,13 @@ func (p *presence) expireActivity(now time.Time) []id.ID {
 // Activity refreshes one live device's activity clock. It cannot make a disconnected device online.
 func (g *Gateway) Activity(device id.ID) {
 	conns := g.reg.connsOfDevice(device)
-	if len(conns) == 0 {
+	if len(conns) == 0 || conns[0].isBot || !g.presence.chargeActivity(device) {
 		return
 	}
 	user := conns[0].userID
-	g.presence.activity(device, user)
+	if !g.markPresenceInput(conns[0]) {
+		return
+	}
 	if g.opts.OnPresenceChanged != nil {
 		g.opts.OnPresenceChanged(user)
 	}
@@ -95,7 +98,8 @@ func (g *Gateway) Activity(device id.ID) {
 // PresenceStatus derives the visible status from the account choice and live active devices.
 // 0 offline, 1 online, 2 idle, 3 do not disturb. Invisible is always seen as offline.
 func (g *Gateway) PresenceStatus(user id.ID, choice uint8) uint8 {
-	if choice == 4 || len(g.reg.connsOfUser(user)) == 0 {
+	connections := g.reg.connsOfUser(user)
+	if choice == 4 || len(connections) == 0 {
 		return 0
 	}
 	if choice == 2 || choice == 3 {
@@ -104,7 +108,7 @@ func (g *Gateway) PresenceStatus(user id.ID, choice uint8) uint8 {
 	g.presence.mu.Lock()
 	defer g.presence.mu.Unlock()
 	now := g.opts.Clock.Now()
-	for _, c := range g.reg.connsOfUser(user) {
+	for _, c := range connections {
 		if state, ok := g.presence.active[c.deviceID]; ok && now.Sub(state.at) < presenceIdleAfter {
 			return 1
 		}

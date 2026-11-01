@@ -97,7 +97,7 @@ func (d Deps) verifyCurrentInteractionLiveState(ctx context.Context, current ds.
 		current.Registration.DeviceID != botDeviceID || current.Registration.GroupID.IsZero() || current.Registration.AcceptedAt < 0 {
 		return state, errors.New("current interaction identity mismatch")
 	}
-	check := func(tx store.Repository) error {
+	check := func(ctx context.Context, tx store.Repository) error {
 		if err := tx.LockCommunity(ctx, communityID); err != nil {
 			return err
 		}
@@ -191,9 +191,9 @@ func (d Deps) verifyCurrentInteractionLiveState(ctx context.Context, current ds.
 	}
 	var err error
 	if lockedTx != nil {
-		err = check(lockedTx)
+		err = check(ctx, lockedTx)
 	} else {
-		err = d.Repo.Tx(ctx, check)
+		err = d.withDeviceListTransaction(ctx, check)
 	}
 	if err != nil {
 		return currentInteractionLiveState{}, err
@@ -261,7 +261,9 @@ func (h *Groups) currentInteractionAdmissionContext(w http.ResponseWriter, r *ht
 	err = h.DS.WithCurrentBotInteractionGroupContext(r.Context(), groupID, func(latest ds.CurrentBotInteractionGroupContext) error {
 		// Device lists and policy above were read in their own transaction. Bind the
 		// signature to that exact MLS state, then keep the group's lock through signing.
-		if !reflect.DeepEqual(current, latest) {
+		if !reflect.DeepEqual(current.Registration, latest.Registration) || current.Binding != latest.Binding ||
+			current.Epoch != latest.Epoch || current.LeafCount != latest.LeafCount || !bytes.Equal(current.TreeHash, latest.TreeHash) ||
+			!reflect.DeepEqual(current.Roster, latest.Roster) {
 			return errors.New("current interaction group changed before signing")
 		}
 		var signErr error
@@ -273,4 +275,18 @@ func (h *Groups) currentInteractionAdmissionContext(w http.ResponseWriter, r *ht
 		return
 	}
 	d.write(w, r, http.StatusOK, []any{payload, sig})
+}
+
+// withDeviceListTransaction reserves a native verifier before the write transaction.
+// The verifier and all current authorization checks remain inside that transaction.
+func (d Deps) withDeviceListTransaction(ctx context.Context, fn func(context.Context, store.Repository) error) error {
+	if d.DeviceLists == nil {
+		// No native verifier exists to reserve. Preserve readiness's original
+		// transaction-scoped dependency refusal (pending prerequisites), including
+		// its earlier authority and replay checks. Non-nil providers must scope.
+		return d.Repo.Tx(ctx, func(tx store.Repository) error { return fn(ctx, tx) })
+	}
+	return d.DeviceLists.WithVerification(ctx, func(scoped context.Context) error {
+		return d.Repo.Tx(scoped, func(tx store.Repository) error { return fn(scoped, tx) })
+	})
 }

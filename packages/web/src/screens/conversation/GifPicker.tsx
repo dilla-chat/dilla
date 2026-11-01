@@ -34,6 +34,7 @@ const busy = (e: unknown): boolean => { const s = errorOf(e).status; return s ==
 export interface GifPickerPanelProps {
   id: string;
   communityId: string;
+  initialQuery?: string;
   channelId: string;
   dispatch(a: ConversationAction): void;
   /** Speaks a line once, politely (the shell's announcer). */
@@ -44,7 +45,7 @@ export interface GifPickerPanelProps {
 export function GifPickerPanel(p: GifPickerPanelProps): React.JSX.Element {
   const client = useCore();
   const { communityId } = p;
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = useState(p.initialQuery ?? '');
   const [items, setItems] = useState<Found[]>([]);
   const [next, setNext] = useState<number | null>(null);
   const [status, setStatus] = useState<GifPickerStatus | null>({ kind: 'loading', text: t('gif.loading') });

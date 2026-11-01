@@ -1,20 +1,24 @@
 // The shell's voice surfaces (web-3 task 9, flow 06): the voice view of a voice channel route, the DM call strip and
 // its stage, the voice rows' nested people in the channel list (ChannelList renders them) and the dock. Everything here is presentational over useCall's CallView and the
 // worker's `call` and `voice` slices; nothing here holds media or keys.
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import type { CallState, CoreClient, MemberSummary, SendBlocksState, TrustSummary, VoiceCall } from '@dilla/client-core';
-import { createVoiceMusicAdapter, SETTINGS } from '@dilla/client-core';
+import { SETTINGS } from '@dilla/client-core';
 import {
-  Avatar, Button, CallControls, CallStage, ChannelHeader, isPushToTalkKey, Select, VoiceDock,
-  type CallStageNotice, type CallTileProps, type VoiceDockProps, type VoiceParticipantView,
+  Avatar, Button, CallControls, CallStage, ChannelHeader, VoiceDock,
+  type CallControlsProps, type CallStageNotice, type CallTileProps, type SharePickerSource, type SharePickerValue, type TileMenu, type VoiceDockProps,
+  type VoiceParticipantView,
 } from '@dilla/ui';
 import { linkQuality } from '../../call/stats.ts';
+import { shareEstimate, shareSupport, supportedOptions, type ShareOptions, type ShareSupport, type ShareSurface } from '../../call/share-options.ts';
 import { en, t } from '../../strings/index.ts';
 import { micNoticeKey, participantView, selfName, userName, voiceStateLabels } from '../shell-model.ts';
 import { outgoingText, type CallView } from './useCall.tsx';
+import { MusicPlayer, type MusicPlayerView } from './music.tsx';
+import { codecStat, frameStat, useTileStats } from './tile-stats.ts';
+import type { TileStats } from '../../call/session.ts';
 import { usePhoneLayout } from '../../layout.ts';
 import { voiceShortcutText } from './shortcuts.ts';
-import { MusicPanel } from './MusicPanel.tsx';
 
 /** What the voice surfaces read besides the CallView. */
 export interface VoiceContext {
@@ -38,6 +42,9 @@ export interface VoiceContext {
    * it) and whether this user is away there; null for any other channel. `onJoinVoice` on it chooses AFK (useCall).
    */
   afkPage?(channelId: string): { people: readonly VoiceParticipantView[]; away: boolean } | null;
+  /** Task 8b: the music player of this device's call (useMusicPlayer), null while the Bot plays nothing there; the dock's row and
+   *  the stage's bar both read it. */
+  music?: MusicPlayerView | null;
 }
 
 const VOLUME = /^(0|[1-9]0|1[0-9]0|200)$/;
@@ -58,73 +65,139 @@ function tileLabels(name: string): CallTileProps['labels'] {
 /** The id of a tile in the stage (R27): one keyed list, `${deviceId}:${source}`. */
 const tileId = (deviceId: string, kind: 'person' | 'screen') => `${deviceId}:${kind}`;
 
-type TileBase = Omit<CallTileProps, 'media' | 'id' | 'source' | 'title' | 'fullscreenLabel' | 'mirror'>;
+type TileBase = Omit<CallTileProps, 'media' | 'id' | 'source' | 'title' | 'fullscreenLabel' | 'mirror' | 'menu'>;
 
 /**
- * One device's tiles (R27, pre-flight C-9): a person tile (its `source` is `camera` with a verified stream, else `avatar`, but its id is `:person` either way, so
- * turning a camera on or off keeps a focus on it) that keeps the
- * volume, the state glyphs and, for the own camera, the mirror, plus a `screen` tile while it shares (no volume, never
- * mirrored). A screen-only sharer therefore keeps an avatar tile.
+ * Fix round 1 (Jonas): the person menu of a voice occupant or a stage tile (Signal §5.4), with the client-side items only:
+ * the volume (0–200 %, `voice.volume.<user>`; a shared screen's own `voice.streamVolume.<user>`), Mute for me (the volume at 0,
+ * and back to what it was), Copy username. Not for yourself: no volume, no mute. A screen without sound has no volume.
+ * Wave C's Move to, Server mute and Disconnect are not offered.
+ */
+const beforeMute = new Map<string, number>();
+export function personMenu(v: Pick<VoiceContext, 'call' | 'settings' | 'members'>, room: string,
+  p: { userId: string; name: string; bot: boolean; own: boolean; title?: string }, source: 'person' | 'screen' = 'person', screenAudio = true): TileMenu {
+  const stream = source === 'screen';
+  const level = stream ? streamVolumeOf(v.settings, p.userId) : volumeOf(v.settings, p.userId);
+  const set = (n: number) => { if (stream) v.call.setStreamVolume(p.userId, n); else v.call.setVolume(p.userId, n); };
+  const key = `${stream ? 's' : 'v'}:${p.userId}`;
+  const tunable = !p.own && (!stream || screenAudio);
+  const username = v.members.find(m => m.userId === p.userId)?.username ?? p.name;
+  return {
+    person: { name: p.title ?? p.name, avatarName: p.name, where: t('callStage.menu.where', { room }), ...(p.bot ? { bot: true } : {}) },
+    label: t('callStage.menu.label', { name: p.name }),
+    ...(tunable ? { volume: { label: t(stream ? 'callStage.menu.streamVolume' : 'callStage.menu.volume'), value: level,
+      valueText: t('callStage.menu.value', { n: level }), onChange: set } } : {}),
+    items: [
+      ...(tunable ? [{ id: 'mute', label: t('callStage.menu.muteForMe'), icon: 'volume-x' as const, check: level === 0 }] : []),
+      { id: 'copy', label: t('callStage.menu.copy'), icon: 'copy' as const },
+    ],
+    onSelect: id => {
+      if (id === 'mute') {
+        if (level === 0) { set(beforeMute.get(key) ?? 100); beforeMute.delete(key); } else { beforeMute.set(key, level); set(0); }
+        return;
+      }
+      void navigator.clipboard?.writeText(`@${username}`).catch(() => undefined);
+      v.call.announce(t('callStage.menu.copied', { name: username }));
+    },
+  };
+}
+
+/**
+ * One device's tiles (R27, pre-flight C-9): a person tile (its `source` is `camera` with a verified stream, else `avatar`, but its
+ * id is `:person` either way, so turning a camera on or off keeps a focus on it) with the state glyphs, the person menu and, for
+ * the own camera, the mirror, plus a `screen` tile while it shares (never mirrored; its menu has the stream's own volume). A
+ * screen-only sharer therefore keeps an avatar tile.
  */
 function deviceTiles(base: TileBase, o: {
   camera: MediaStream | null; screen: MediaStream | null; sharing: boolean; mirrorCamera: boolean; name: string;
-  /** #37: a remote screen: whether it carries sound (the mark when not) and, when it does, its own volume and mute. */
-  remoteScreen?: { screenAudio: boolean; stream: NonNullable<CallTileProps['stream']> };
+  /** The person tile's shown name when it is not `name` (the own tile's "(you)", a bot's "· playback only"). */
+  title?: string;
+  /** The person menu (fix round 1) of the person tile and of the screen tile. */
+  menu: (source: 'person' | 'screen') => TileMenu;
+  /** #37: a remote screen: whether it carries sound (the mark when not). */
+  remoteScreen?: { screenAudio: boolean };
+  /** Task 8c fix round 1: the person tile's stat (another device's published ping, "18 ms"). */
+  personStat?: string;
 }): CallTileProps[] {
   const { view } = base;
   const fullscreenLabel = t('stage.fullscreen');
   const camera = o.camera !== null && view.state !== 'unverified';
   const out: CallTileProps[] = [{
     ...base, media: camera ? o.camera : null, source: camera ? 'camera' : 'avatar', id: tileId(view.deviceId, 'person'),
-    title: o.name, fullscreenLabel, mirror: camera && o.mirrorCamera,
+    title: o.title ?? o.name, fullscreenLabel, mirror: camera && o.mirrorCamera, menu: o.menu('person'),
+    ...(o.personStat !== undefined ? { stat: o.personStat } : {}),
   }];
   if (o.screen !== null || o.sharing) {
     out.push({ ...base, media: o.screen, source: 'screen', id: tileId(view.deviceId, 'screen'), title: t('stage.screen', { name: o.name }),
-      fullscreenLabel, mirror: false,
-      ...(o.remoteScreen !== undefined ? { silent: !o.remoteScreen.screenAudio, ...(o.remoteScreen.screenAudio ? { stream: o.remoteScreen.stream } : {}) } : {}) });
+      fullscreenLabel, mirror: false, menu: o.menu('screen'),
+      ...(o.remoteScreen !== undefined ? { silent: !o.remoteScreen.screenAudio } : {}) });
   }
   return out;
 }
 
-/** The tiles of the call this device is in: the own device first, then the others', each device's tiles together. */
-function callTiles(v: VoiceContext, channelId: string): CallTileProps[] {
+/** The tiles of the call this device is in: the shares first, then the people in the room's order (below). */
+function callTiles(v: VoiceContext, channelId: string, roomName: string): CallTileProps[] {
   const { call } = v;
   const state = call.state;
   const room = v.voice?.[channelId];
   // Product walk I3: the own tile is a self-view of what this device sends (the camera mirrored); M4: it is speaking when
   // the SFU hears this device, as the others' tiles are; M13: no tile carries the client tag (the page knows only its own).
   const ownName = selfName(v.self, v.members);
-  const own = v.self === null ? [] : deviceTiles({
+  const self = v.self;
+  // Signal §5.6: the own tile is "{name} (you)" and a bot "{name} · playback only", the prototype's tile names.
+  const ownTitle = t('callStage.tile.you', { name: ownName });
+  const own = self === null ? [] : deviceTiles({
     view: {
-      deviceId: v.ownDevice ?? 'own', userId: v.self.id, name: ownName, state: 'ok' as const,
+      deviceId: v.ownDevice ?? 'own', userId: self.id, name: ownName, state: 'ok' as const,
       speaking: state?.speaking ?? false, muted: state?.muted ?? false, deafened: state?.deafened ?? false, video: state?.camera ?? false,
       screen: state?.sharing ?? false, web: false, bot: false,
     },
-    own: true, volume: 100, labels: tileLabels(ownName), onVolume: () => undefined,
+    own: true, volume: 100, labels: tileLabels(ownName),
   }, { camera: state?.localCamera ?? null, screen: state?.localScreen ?? null, sharing: state?.sharing ?? false, mirrorCamera: true,
-    name: ownName });
+    name: ownName, title: ownTitle,
+    menu: source => personMenu(v, roomName, { userId: self.id, name: ownName, bot: false, own: true, title: ownTitle }, source) });
   const others = (state?.tiles ?? []).flatMap(tile => {
     const p = room?.participants.find(r => r.deviceId === tile.deviceId);
     const name = p?.name ?? userName(tile.userId, v.members, v.trust);
     const view = p !== undefined ? participantView(p, tile.state, tile.speaking)
       : { deviceId: tile.deviceId, userId: tile.userId, name, state: tile.state, speaking: tile.speaking, muted: false, deafened: false,
         video: tile.video !== null, screen: tile.screen !== null, web: false, bot: false };
-    return deviceTiles({ view, own: false, volume: volumeOf(v.settings, tile.userId), labels: tileLabels(name),
-      onVolume: (n: number) => call.setVolume(tile.userId, n) },
-    { camera: tile.video, screen: tile.screen, sharing: false, mirrorCamera: false, name,
-      remoteScreen: { screenAudio: tile.screenAudio, stream: {
-        volume: streamVolumeOf(v.settings, tile.userId), labels: { volume: t('voice.streamVolume', { name }), mute: en['voice.streamMute'] },
-        onVolume: (n: number) => call.setStreamVolume(tile.userId, n), onMute: () => call.toggleStreamMute(tile.userId, streamVolumeOf(v.settings, tile.userId)) } } });
+    const title = view.bot ? t('callStage.tile.bot', { name }) : undefined;
+    return deviceTiles({ view, own: false, volume: volumeOf(v.settings, tile.userId), labels: tileLabels(name) },
+    { camera: tile.video, screen: tile.screen, sharing: false, mirrorCamera: false, name, ...(title !== undefined ? { title } : {}),
+      menu: source => personMenu(v, roomName, { userId: tile.userId, name, bot: view.bot, own: false, ...(title !== undefined ? { title } : {}) }, source, tile.screenAudio),
+      remoteScreen: { screenAudio: tile.screenAudio },
+      // Task 8c fix round 1: the ping that device publishes about itself (its `dilla.rtt`), never this page's own link.
+      ...(tile.rttMs != null ? { personStat: t('callStage.stat.ping', { ms: tile.rttMs }) } : {}) });
   });
-  return [...own, ...others];
+  // Signal §5.6 (the prototype's stage): the shared screens first, then the people in the room's own order (yours where the room
+  // lists you); a device the room does not list yet keeps its place after them. One stable order, keyed by id (R27).
+  const order = new Map((room?.participants ?? []).map((p, i) => [p.deviceId, i]));
+  const rank = (tile: CallTileProps) => order.get(tile.view.deviceId) ?? order.size;
+  return [...own, ...others].map((tile, i) => ({ tile, i }))
+    .sort((a, b) => Number(b.tile.source === 'screen') - Number(a.tile.source === 'screen') || rank(a.tile) - rank(b.tile) || a.i - b.i)
+    .map(x => x.tile);
 }
 
-/** The people of a live call this device is not in, as avatar tiles without media. */
-function roomTiles(v: VoiceContext, channelId: string): CallTileProps[] {
-  return (v.voice?.[channelId]?.participants ?? []).map(p => ({
-    view: participantView(p), own: p.own, volume: volumeOf(v.settings, p.userId), media: null, labels: tileLabels(p.name),
-    onVolume: (n: number) => v.call.setVolume(p.userId, n), source: 'avatar' as const, id: tileId(p.deviceId, 'person'), title: p.name,
-  }));
+/**
+ * Task 8c (Signal §5.6): the tiles' stats from one read: the own person tile says what its microphone sends ("opus 48k"), a
+ * screen what is sent or received ("1440p · 30 fps", "· audio" with the own share's sound). Another person's tile keeps the ping
+ * callTiles gave it from that device's own published `dilla.rtt` (fix round 1), never this page's link.
+ */
+export function withTileStats(tiles: readonly CallTileProps[], stats: TileStats | null): CallTileProps[] {
+  if (stats === null) return [...tiles];
+  return tiles.map(tile => {
+    const stat = tile.own ? (tile.source === 'screen' ? frameStat(stats.ownScreen) : codecStat(stats.ownAudio))
+      : tile.source === 'screen' ? frameStat(stats.screens[tile.view.deviceId]) : undefined;
+    return stat === undefined ? tile : { ...tile, stat };
+  });
+}
+
+/** Signal §5.6: the not-joined preview's line: "Ada is here", "Ada and Björn are here", or that nobody is. */
+export function previewText(names: readonly string[]): string {
+  if (names.length === 0) return t('callStage.preview.nobody');
+  if (names.length === 1) return t('callStage.preview.one', { name: names[0] });
+  return t('callStage.preview.many', { names: names.join(t('callStage.preview.and')) });
 }
 
 /**
@@ -160,12 +233,9 @@ export function stageNotice(v: VoiceContext, channelId: string): CallStageNotice
     if (removedFromServer(v, channelId)) return { kind: 'info', text: t('voice.removedNotMember'), action: null, focusOnce: false };
   }
   if (v.call.notice?.channelId === channelId) {
-    // FX2: a silent share's notice offers the sound-source select (it takes the focus; the select shows with the notice).
-    const pool = v.call.sharePool;
-    const pick = v.call.notice.key.startsWith('voice.shareAudio.none') && pool !== null && pool.labeled && pool.sources.length > 0
-      ? { label: t('voice.shareAudio.pick'), onAction: () => document.querySelector<HTMLElement>('[data-share-sound] select')?.focus() } : null;
-    const text = v.call.notice.text ?? t(v.call.notice.key);
-    return { kind: 'info', text: pick !== null ? `${text} ${t('voice.shareAudio.pickHint')}` : text, action: pick, focusOnce: false };
+    // Fix round 1 (Jonas): the share's sound-source select is gone (a silent share keeps the default source), so the notice
+    // offers no pick.
+    return { kind: 'info', text: v.call.notice.text ?? t(v.call.notice.key), action: null, focusOnce: false };
   }
   const mic = v.call.channelId === channelId && v.call.state !== null ? micNoticeKey(v.call.state.mic) : null;
   return mic !== null ? { kind: 'info', text: t(mic), action: null, focusOnce: false } : null;
@@ -257,7 +327,7 @@ function stageTarget(root: HTMLElement | null, joined: boolean): HTMLElement | n
   if (root === null) return null;
   if (joined) return root.querySelector<HTMLElement>('[role="toolbar"] button');
   return root.querySelector<HTMLElement>('.d-call-stage__notice-action, .d-call-stage__notice[tabindex]')
-    ?? root.querySelector<HTMLElement>('.dw-voice-join');
+    ?? root.querySelector<HTMLElement>('.d-call-stage__join, .dw-voice-join');
 }
 
 /** The mute and deafen shortcuts as the tooltips write them; the platform cannot change during a session. */
@@ -271,43 +341,92 @@ function canCapture(): boolean {
   return typeof navigator !== 'undefined' && typeof navigator.mediaDevices?.getDisplayMedia === 'function';
 }
 
-/** web3.9 R26: the push-to-talk key and the hearing count left the dock; they stand under the stage's controls. */
+/** The DM call box has no call bar: its hearing line stands under its controls (fix round 1: no push-to-talk line any more). */
 function StageLines({ v }: { v: VoiceContext }) {
   const s = v.call.state;
-  const ptt = s?.mode === 'ptt';
-  const hearing = s?.audio !== undefined && s.audio.expected > 0 && s.deafened !== true && s.paused !== true;
-  if (!ptt && !hearing) return null;
-  return (
-    <div className="dw-voice-stage__lines">
-      {ptt ? <PttLine v={v} /> : null}
-      <HearingLine audio={s?.audio} silent={s?.deafened === true || s?.paused === true} />
-    </div>
-  );
+  if (!hears(s)) return null;
+  return <div className="dw-voice-stage__lines"><p><HearingLine audio={s?.audio} silent={false} /></p></div>;
+}
+
+/** Whether the hearing count shows: remote audio is expected, and nothing holds playback back (deafened, paused). */
+function hears(s: CallView['state']): boolean {
+  return s?.audio !== undefined && s.audio.expected > 0 && s.deafened !== true && s.paused !== true;
 }
 
 /**
- * FX2: the "sound from" select of a share. It shows while the share has no sound of the browser's own (a tab's or the
- * system's always wins) and lists the audio inputs the session offers, the call's own microphone left out. A device whose
- * label says monitor warns that others will hear themselves; picking it stays allowed.
+ * Signal §5.6: the call bar's stats line, "24 ms · ↑ 38 ↓ 71 kb/s · hearing 2 of 2": this device's link (as the dock reads it,
+ * call.state.link; "— ms" before the first read) and, while any is expected, how many remote tracks it plays.
  */
-function ShareSound({ v }: { v: VoiceContext }) {
+function StatsLine({ v }: { v: VoiceContext }) {
   const s = v.call.state;
-  const pool = v.call.sharePool;
-  if (pool === null || s?.sharing !== true) return null;
-  // M1: unlabeled inputs, in any browser, ask for the microphone before they can be told apart.
-  if (!pool.labeled) {
-    return <div className="dw-voice-stage__sound" data-share-sound><p className="dw-voice-stage__sound-note">{t('voice.shareAudio.needsPermission')}</p></div>;
-  }
-  if (pool.sources.length === 0) return null;
-  const value = s.shareSource ?? '';
-  const picked = pool.sources.find(d => d.id === value);
+  const link = s?.link;
+  const ping = link === undefined ? en['voice.dock.pingNone'] : link.rttMs < 1 ? en['voice.dock.pingSub'] : t('voice.dock.ping', { ms: link.rttMs });
+  const rate = link !== undefined && link.upKbps !== null && link.downKbps !== null ? t('voice.dock.rate', { up: link.upKbps, down: link.downKbps }) : null;
   return (
-    <div className="dw-voice-stage__sound" data-share-sound>
-      <Select label={t('voice.shareAudio.from')} value={value} {...(picked?.monitor === true ? { hint: t('voice.shareAudio.monitorWarn') } : {})}
-        options={[{ value: '', label: t('voice.shareAudio.fromNone') }, ...pool.sources.map(d => ({ value: d.id, label: d.label }))]}
-        onChange={id => v.call.setShareSource(id === '' ? null : id)} />
-    </div>
+    <>
+      {[ping, rate].filter((x): x is string => x !== null).join(' · ')}
+      {hears(s) ? <>{' · '}<HearingLine audio={s?.audio} silent={false} /></> : null}
+    </>
   );
+}
+
+/** Task 8c: what this browser's screen capture can act on, read once (the share picker draws only those controls). */
+const SHARE_SUPPORT: ShareSupport = (() => {
+  if (typeof navigator === 'undefined') return shareSupport({ ua: '' });
+  const data = (navigator as Navigator & { userAgentData?: { platform?: string; brands?: Array<{ brand: string }> } }).userAgentData;
+  return shareSupport({ ua: navigator.userAgent, uaPlatform: data?.platform, brands: data?.brands?.map(b => b.brand) });
+})();
+const PICKER_SOURCE: Record<ShareSurface, SharePickerSource> = { monitor: 'screen', window: 'window', browser: 'tab' };
+const SURFACE: Record<SharePickerSource, ShareSurface> = { screen: 'monitor', window: 'window', tab: 'browser' };
+const toPicker = (o: ShareOptions): SharePickerValue => ({ source: PICKER_SOURCE[o.surface], resolution: o.resolution, fps: o.fps, audio: o.systemAudio });
+const fromPicker = (p: SharePickerValue): ShareOptions => ({ surface: SURFACE[p.source], resolution: p.resolution, fps: p.fps, systemAudio: p.audio });
+
+/** The display's size in device pixels, as the share would capture it ("Display · 2560×1440"). */
+function displaySize(): { w: number; h: number } {
+  const ratio = typeof window === 'undefined' ? 1 : window.devicePixelRatio || 1;
+  const scr = typeof screen === 'undefined' ? { width: 0, height: 0 } : screen;
+  return { w: Math.round(scr.width * ratio), h: Math.round(scr.height * ratio) };
+}
+
+/**
+ * Task 8c (Signal §5.6): the call bar's share picker. It edits a draft of the call's share options (only what this browser can
+ * act on: SHARE_SUPPORT) and shows the upload estimate from the same table the session encodes with, under the instance's cap.
+ * Go live starts the share with them; Apply (while sharing) hands them to the running share.
+ */
+export function useSharePicker(v: VoiceContext, support: ShareSupport = SHARE_SUPPORT): NonNullable<CallControlsProps['picker']> {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState<ShareOptions>(v.call.shareOptions);
+  const sharing = v.call.state?.sharing ?? false;
+  const onOpenChange = (next: boolean) => {
+    if (next) setDraft(supportedOptions(v.call.shareOptions, support));
+    setOpen(next);
+  };
+  const value = supportedOptions(draft, support);
+  const tab = value.surface === 'browser';
+  const audio: 'toggle' | 'note' | 'none' = !support.surface ? 'none' : support.audio[value.surface] ? 'toggle' : 'note';
+  const estimate = shareEstimate(value, v.call.state?.shareCapBps ?? null);
+  const size = displaySize();
+  return {
+    open, onOpenChange, quality: t('callStage.share.quality'),
+    value: toPicker(value), onChange: p => { setDraft(fromPicker(p)); },
+    sources: support.surface ? ['screen', 'window', 'tab'] : [],
+    audio,
+    preview: value.surface === 'monitor' ? t('callStage.share.previewScreen', { w: size.w, h: size.h })
+      : t(tab ? 'callStage.share.previewTab' : 'callStage.share.previewWindow'),
+    estimate: { text: t(estimate.heavy ? 'callStage.share.estimateHeavy' : 'callStage.share.estimate', { mbps: estimate.mbps }), heavy: estimate.heavy },
+    labels: {
+      title: t('callStage.share.title'), titleSharing: t('callStage.share.titleSharing'), close: t('callStage.share.close'),
+      source: t('callStage.share.source'), resolution: t('callStage.share.resolution'), frameRate: t('callStage.share.frameRate'),
+      sources: { screen: t('callStage.share.screen'), window: t('callStage.share.window'), tab: t('callStage.share.tab') },
+      native: t('callStage.share.native'), audio: t('callStage.share.audio'),
+      audioNote: t(tab ? 'callStage.share.audioTab' : support.tabOnly ? 'callStage.share.audioTabOnly' : 'callStage.share.audioScreen'),
+      go: t('callStage.share.go'), apply: t('callStage.share.apply'),
+    },
+    // CallControls closes the picker first and hands focus back to its control.
+    onSubmit: () => {
+      if (sharing) v.call.applyShare(value); else v.call.startShare(value);
+    },
+  };
 }
 
 function Controls({ v, paused, dm }: { v: VoiceContext; paused: boolean; dm: boolean }) {
@@ -315,6 +434,7 @@ function Controls({ v, paused, dm }: { v: VoiceContext; paused: boolean; dm: boo
   const canShare = canCapture();
   const phone = usePhoneLayout();
   const hideShare = phone && !canShare;
+  const picker = useSharePicker(v);
   // WB a11y I4: the toggles keep one label; WB a11y m6: *call* names a DM call only, so a voice channel's toolbar has
   // its own name (the dock's is voice.dock.region).
   return (
@@ -322,7 +442,13 @@ function Controls({ v, paused, dm }: { v: VoiceContext; paused: boolean; dm: boo
       canCamera={!paused} canShare={!paused && canShare} hideShare={hideShare} busy={v.call.session === null}
       paused={paused} shortcuts={VOICE_SHORTCUT_TEXT} keyshortcuts={phone}
       labels={{ region: t(dm ? 'voice.controls.region' : 'voice.controls.voice'), mute: t('voice.mute'), deafen: t('voice.deafen'),
-        camera: t('voice.cameraOn'), share: t('voice.shareOn'), leave: t('voice.leave'), why: VOICE_WHY() }}
+        camera: t('voice.cameraOn'), share: t('voice.shareOn'), leave: t('voice.leave'), why: VOICE_WHY(),
+        // Signal §5.6: a channel's call bar shows the prototype's words (the DM call box keeps the icon toolbar).
+        ...(dm ? {} : { bar: { mute: t('callStage.bar.mute'), unmute: t('callStage.bar.unmute'), deafen: t('callStage.bar.deafen'), undeafen: t('callStage.bar.undeafen'),
+          camera: t('callStage.bar.camera'), share: t('callStage.bar.share'), stopShare: t('callStage.bar.stopShare'), leave: t('callStage.bar.leave') } }) }}
+      // Task 8c: a channel's call bar opens the share picker; the DM call box (no prototype counterpart) shares at once with the
+      // options last chosen there.
+      {...(dm ? {} : { picker })}
       onMute={v.call.toggleMute} onDeafen={v.call.toggleDeafen} onCamera={v.call.toggleCamera} onShare={v.call.toggleShare}
       onLeave={v.call.leave} />
   );
@@ -338,7 +464,7 @@ function liveScreenIds(v: VoiceContext, channelId: string, tiles: readonly CallT
 /**
  * R26: the one rule that focuses a tile by itself. A new screen tile of another person takes focus while no tile is
  * focused; an id the stage already offered in this call is never offered again until leave (a tile the person unfocused
- * stays unfocused, also across a pause that withholds every remote stream); the own screen never does. An id is forgotten
+ * stays unfocused, also across a pause that withholds every remote stream); the own screen never does here (Stage focuses it when this device starts it, Ruling AV). An id is forgotten
  * early only when its person's room flag says the share really ended, so a restarted share may focus again. Focus is
  * dropped when the focused tile goes away. The DM call box has no focus (`dm`): it stays the compact grid.
  */
@@ -363,7 +489,7 @@ function useAutoFocus(tiles: readonly CallTileProps[], live: readonly string[], 
   }, [dm, joined, idsKey, screensKey, liveKey, focusedId, setFocusedId]);
 }
 
-const STAGE_LABELS = () => ({ code: t('voice.code'), codeHelp: t('voice.codeHelp'), empty: t('voice.empty'), tiles: t('voice.tiles') });
+const STAGE_LABELS = () => ({ code: t('voice.code'), codeHelp: t('voice.codeHelp'), empty: t('voice.empty'), tiles: t('voice.tiles'), grid: t('callStage.grid') });
 
 /**
  * The stage of a voice channel or a DM call, whether this device is in its call, joining it or not (WB a11y I1, I2):
@@ -387,19 +513,43 @@ function Stage({ v, channelId, title, name, outgoing, dm }: { v: VoiceContext; c
   useEffect(() => { if (paused && pauseFocusPending) markPauseFocused(); }, [paused, pauseFocusPending, markPauseFocused]);
   const held = !joined && joinHeld(v, channelId);
   const docState = !joined && notice?.kind === 'blocked' ? 'voice-blocked' : 'voice-stage';
-  const allTiles = joined ? callTiles(v, channelId) : roomTiles(v, channelId);
+  const allTiles = joined ? callTiles(v, channelId, name ?? title) : [];
+  // Signal §5.6: a channel this device is not in shows the preview (who is inside, Join voice); a DM shows its strip instead.
+  const people = v.voice?.[channelId]?.participants ?? [];
+  const preview = !joined && !dm ? {
+    people: people.map(p => ({ id: p.deviceId, name: p.name, speaking: false, bot: p.bot })), name: name ?? title,
+    text: previewText(people.map(p => p.name)),
+    join: held ? null : { label: t('callStage.preview.join'), onJoin: () => { if (v.onJoinVoice) v.onJoinVoice(channelId); else v.call.join(channelId); } },
+  } : undefined;
   // The DM call box is the compact grid: its tiles have no full-screen button (that is positioned for stage tiles).
-  const tiles = dm ? allTiles.map(t => ({ ...t, fullscreenLabel: undefined })) : allTiles;
+  // Task 8c: a channel's stage samples its tiles' stats about once a second while it shows (not on a phone, which draws none,
+  // and not while paused, when no stream is shown).
+  const tileStats = useTileStats(v.call.session, joined && !dm && !phone && !paused);
+  const tiles = dm ? allTiles.map(t => ({ ...t, fullscreenLabel: undefined })) : withTileStats(allTiles, tileStats);
   // The state setter is stable, so the stage's pause effect does not re-run on every render (U4 review, M5).
   const [focusedId, setFocusedId] = useState<string | null>(null);
   useAutoFocus(tiles, liveScreenIds(v, channelId, tiles), joined, dm, focusedId, setFocusedId);
+  // Fix round 2 (Ruling AV): a share this device starts (Go live, or an Apply that restarts it) takes the focus, as the
+  // prototype's goLive does; other people's shares keep R26's rule.
+  const ownSharing = joined && !dm && (v.call.state?.sharing ?? false);
+  const wasSharing = useRef(ownSharing);
+  const ownScreen = tileId(v.ownDevice ?? 'own', 'screen');
+  useEffect(() => {
+    if (ownSharing && !wasSharing.current) setFocusedId(ownScreen);
+    wasSharing.current = ownSharing;
+  }, [ownSharing, ownScreen]);
   return (
     <div ref={ref} className="dw-voice-stage" data-doc-state={docState}
       data-call-phase={mine ? v.slice?.phase : joined ? 'joining' : 'idle'}>
-      <CallStage title={title} tiles={tiles} {...(name !== undefined && !phone ? { header: <ChannelHeader kind="voice" name={name} /> } : {})} {...(dm ? {} : { focusedId, onFocus: setFocusedId })} code={code} notice={notice}
+      <CallStage title={title} tiles={tiles} {...(name !== undefined && !phone ? { header: <ChannelHeader kind="voice" name={name}
+        // Ruling Z: the prototype's voice header: the name and its topic ("{n} in voice" once joined, else "voice channel"), no controls.
+        topic={joined ? t('voice.count', { n: v.voice?.[channelId]?.participants.length ?? 0 }) : t('voice.header.idle')} /> } : {})} {...(dm ? {} : { focusedId, onFocus: setFocusedId })} code={code} notice={notice}
         outgoing={joined ? outgoing : null}
-        controls={joined ? <><Controls v={v} paused={paused} dm={dm} /><ShareSound v={v} /><StageLines v={v} /></>
-          : held ? null : <Button variant="accent" className="dw-voice-join" onClick={() => v.onJoinVoice ? v.onJoinVoice(channelId) : v.call.join(channelId)}>{t('voice.join')}</Button>}
+        {...(joined && !dm && v.music != null && v.music.track !== undefined ? { nowPlaying: <MusicPlayer view={v.music} variant="stage" /> } : {})}
+        {...(preview !== undefined ? { preview } : {})}
+        {...(joined && !dm ? { bar: { name: name ?? title, stats: <StatsLine v={v} /> } } : {})}
+        controls={joined ? <>{<Controls v={v} paused={paused} dm={dm} />}{dm ? <StageLines v={v} /> : null}</>
+          : null}
         labels={STAGE_LABELS()} />
     </div>
   );
@@ -450,13 +600,11 @@ function AfkPage({ v, channelId, name, people, away }: { v: VoiceContext; channe
 }
 
 /** The voice view of a voice channel route (`/c/<community>/<voice channel>`). */
-export function VoiceView({ v, channelId, communityId, name }: { v: VoiceContext; channelId: string; communityId: string; name: string }): React.JSX.Element {
-  const music = useMemo(() => createVoiceMusicAdapter(v.client, communityId), [v.client, communityId]);
+export function VoiceView({ v, channelId, name }: { v: VoiceContext; channelId: string; name: string }): React.JSX.Element {
   const afk = v.afkPage?.(channelId) ?? null;
   if (afk !== null) return <AfkPage v={v} channelId={channelId} name={name} people={afk.people} away={afk.away} />;
   return <div className="dw-voice-channel">
     <Stage v={v} channelId={channelId} title={t('voice.open', { name })} name={name} outgoing={null} dm={false} />
-    <MusicPanel channelId={channelId} adapter={music} />
   </div>;
 }
 
@@ -546,7 +694,7 @@ export function speakingDevices(state: CallView['state'], ownDevice: string | nu
 }
 
 export function rowLabels() {
-  return { open: en['voice.open'], count: en['voice.count'], canHear: t('voice.bot.canHear'), state: voiceStateLabels(), away: t('afk.away') };
+  return { open: en['voice.open'], count: en['voice.count'], playbackOnly: t('voice.bot.playbackOnly'), state: voiceStateLabels(), away: t('afk.away') };
 }
 
 /** web3.4 V2: how many of the remote audio tracks this device is sent it plays ("hearing 1 of 2": one held back, as for a
@@ -557,22 +705,9 @@ function HearingLine({ audio, silent }: { audio: { attached: number; expected: n
   // Fix round 1: deafened or paused nothing plays, whatever is attached, so no line says it is heard.
   if (audio === undefined || audio.expected <= 0 || silent) return null;
   return (
-    <p className="dw-voice-dock__hearing" data-audio-attached={audio.attached} data-audio-expected={audio.expected}>
+    <span className="dw-voice-dock__hearing" data-audio-attached={audio.attached} data-audio-expected={audio.expected}>
       {t('voice.diag.tracks', { attached: audio.attached, expected: audio.expected })}
-    </p>
-  );
-}
-
-/** Product walk M7: push to talk in the dock names its key on a line of its own, or says no key is set, with a way to
- *  Settings → Voice. A stored key push to talk does not bind (an older rule's) counts as none, as Settings shows it. */
-function PttLine({ v }: { v: VoiceContext }) {
-  const key = v.settings[SETTINGS.voicePttKey];
-  if (key !== undefined && isPushToTalkKey(key)) return <p className="dw-voice-dock__mode">{t('voice.dock.ptt', { key })}</p>;
-  return (
-    <p className="dw-voice-dock__mode">
-      <span>{t('voice.dock.pttNoKey')}</span>
-      <Button size="sm" variant="ghost" onClick={() => v.onVoiceSettings()}>{t('voice.dock.pttSetKey')}</Button>
-    </p>
+    </span>
   );
 }
 
@@ -586,14 +721,14 @@ export function callPhase(v: Pick<VoiceContext, 'call' | 'slice'>): VoiceDockPro
 }
 
 /**
- * The call panel above the user panel while this device is in voice (flow 06), as Discord's (web3.9 R26, MP5): the channel name
- * (a button to Diagnostics; the server is its tooltip), the link stats ({ping} · ↑{up} ↓{down} kb/s, from call.state.link), then camera, share screen and leave (no meter and no line: the input level stays in
- * Settings → Voice, the push-to-talk and hearing lines on the stage; no mute or deafen: the user panel owns them, R3; the stage's controls, under the stage's rules: camera and share are aria-disabled
- * while paused, while joining, and share without screen capture), and the one polite status region. While the call is paused and its stage is not on screen, the pause banner and its
- * action stand above the dock.
+ * The call panel above the user panel while this device is in voice (flow 06; Signal §5.4, Ruling U): the channel name (the
+ * server is its tooltip and accessible name), the link stats ({ping} · ↑ {up} ↓ {down} kb/s, from call.state.link), and leave,
+ * as the prototype's dock. Camera and share are the stage's controls; Diagnostics is in Settings. No mute or deafen (the user
+ * panel owns them, R3), and the one polite status region. While the call is paused and its stage is not on screen, the pause
+ * banner and its action stand above the dock.
  */
-export function Dock({ v, where, server, stageShown, onStatus }: {
-  v: VoiceContext; where: string; /** The community of the call's channel; null for a DM call. */ server: string | null; stageShown: boolean; onStatus: () => void;
+export function Dock({ v, where, server, stageShown }: {
+  v: VoiceContext; where: string; /** The community of the call's channel; null for a DM call. */ server: string | null; stageShown: boolean;
 }): React.JSX.Element | null {
   const { call } = v;
   const bannerRef = useRef<HTMLDivElement>(null);
@@ -611,7 +746,9 @@ export function Dock({ v, where, server, stageShown, onStatus }: {
   const phase = callPhase(v);
   const link = call.state?.link;
   return (
-    <div className="dw-voice-dock" data-doc-state="voice-dock">
+    // Signal §5.6 (the prototype's showDock): while this channel's own stage is on screen, its call bar says where and how
+    // the call is, so the dock draws nothing; its status region stays (the one polite region of the call). A DM keeps it.
+    <div className="dw-voice-dock" data-doc-state="voice-dock" data-on-stage={stageShown && server !== null ? 'true' : undefined}>
       {banner !== null ? (
         <div ref={bannerRef} className="dw-voice-dock__paused" role="status">
           <p id="dw-voice-dock-paused">{banner.text}</p>
@@ -633,13 +770,13 @@ export function Dock({ v, where, server, stageShown, onStatus }: {
         canShare={!paused && canCapture()} busy={call.session === null} paused={paused}
         {...(link === undefined ? {} : { stats: { rttMs: link.rttMs, upKbps: link.upKbps, downKbps: link.downKbps, quality: linkQuality(link.rttMs, link.lossPct) } })}
         announcement={call.announcement}
+        {...(server !== null && !stageShown && v.music != null && v.music.track !== undefined ? { music: <MusicPlayer view={v.music} variant="compact" /> } : {})}
         labels={{ region: t('voice.dock.region'), connecting: t('voice.dock.connecting'),
           ping: en['voice.dock.ping'], pingSub: en['voice.dock.pingSub'], pingNone: en['voice.dock.pingNone'], rate: en['voice.dock.rate'], stats: en['voice.dock.stats'],
           quality: { good: en['voice.dock.quality.good'], poor: en['voice.dock.quality.poor'], bad: en['voice.dock.quality.bad'] },
           where: server === null ? where : t('layout.dock.where', { channel: where, server }),
           reconnecting: t('voice.dock.reconnecting'), paused: en['voice.dock.paused'], mute: t('voice.mute'),
           deafen: t('voice.deafen'), leave: t('voice.leave'), camera: t('voice.cameraOn'), share: t('voice.shareOn'), why: VOICE_WHY() }}
-        onStatus={onStatus} onCamera={call.toggleCamera} onShare={call.toggleShare}
         onLeave={call.leave} />
     </div>
   );

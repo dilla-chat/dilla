@@ -714,17 +714,18 @@ fn client_errors_render_and_convert_as_the_code_table_says() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// app schema v12 (per-device Bot interaction groups) and ClientCore::open
+// app schema v13 (v12's per-device Bot interaction groups; v13's account-kind attestations) and
+// ClientCore::open
 // (L-CORE-05)
 
 #[test]
-fn open_creates_app_schema_v12_and_reopens_idempotently() {
+fn open_creates_app_schema_v13_and_reopens_idempotently() {
     let c = conn();
     drop(ClientCore::open(c.clone()).expect("first open"));
     drop(ClientCore::open(c.clone()).expect("second open over the same database"));
     assert_eq!(
         migrate_app(&DillaStorage::new(c.clone())).expect("migrate_app is idempotent on its own"),
-        12
+        13
     );
     let guard = c.lock().expect("lock");
     let names: Vec<String> = guard
@@ -740,6 +741,7 @@ fn open_creates_app_schema_v12_and_reopens_idempotently() {
     assert_eq!(
         names,
         [
+            "app_account_kinds",
             "app_authority",
             "app_authority_known",
             "app_authority_mentionable",
@@ -759,6 +761,8 @@ fn open_creates_app_schema_v12_and_reopens_idempotently() {
             "app_human_interaction_event_state",
             "app_human_interaction_events",
             "app_human_interaction_events_page",
+            "app_human_interaction_receipts",
+            "app_human_interaction_receipts_request",
             "app_human_interaction_response_claims",
             "app_manual_removal_evidence",
             "app_manual_removal_evidence_pending",
@@ -806,7 +810,7 @@ fn open_creates_app_schema_v12_and_reopens_idempotently() {
             r.get(0)
         })
         .expect("schema row");
-    assert_eq!(schema, [0x0c]);
+    assert_eq!(schema, [0x0d]);
     let resync: i64 = guard
         .query_row(
             "SELECT count(*) FROM pragma_table_info('app_groups') WHERE name = 'resync'",
@@ -931,7 +935,7 @@ fn open_refuses_an_app_schema_newer_than_this_build() {
         .expect("lock")
         .execute_batch(
             "CREATE TABLE app_meta (k TEXT PRIMARY KEY, v BLOB NOT NULL) WITHOUT ROWID;
-             INSERT INTO app_meta (k, v) VALUES ('schema', x'0d');",
+             INSERT INTO app_meta (k, v) VALUES ('schema', x'0e');",
         )
         .expect("seed");
     let e = match ClientCore::open(Arc::clone(&c)) {
@@ -943,7 +947,7 @@ fn open_refuses_an_app_schema_newer_than_this_build() {
         e,
         ClientError {
             code: "E_STORE_NEWER",
-            detail: "found 13, supported 12".into()
+            detail: "found 14, supported 13".into()
         }
     );
     let app_tables: i64 = c
@@ -4332,4 +4336,112 @@ fn revoke_refuses_a_served_list_older_than_the_stored_newest() {
         }
     );
     assert_eq!(snapshot(&ac), before);
+}
+
+// ---- Task S1: account_kind_ingest verifies before it stores (Ruling AW: no key) ----
+
+/// The instance signer of the support fixtures: `INSTANCE_SIGNER_PUB` is the public half of seed 0x41.
+fn instance_signer() -> ed25519_dalek::SigningKey {
+    let key = ed25519_dalek::SigningKey::from_bytes(&[0x41; 32]);
+    assert_eq!(key.verifying_key().to_bytes(), INSTANCE_SIGNER_PUB);
+    key
+}
+
+fn signed_attestation(instance: &[u8; 16], user: &[u8; 16], kind: u8) -> Vec<u8> {
+    use ed25519_dalek::Signer;
+    let message = dilla_core::identity::account_kind_message(instance, user, kind);
+    let sig = instance_signer().sign(&message).to_bytes();
+    dilla_core::identity::AccountKindAttestation {
+        key_id: [0x53; 16],
+        kind,
+        signature: sig,
+    }
+    .encode()
+}
+
+fn raw_attestation(v: u64, kind: u64) -> Vec<u8> {
+    let mut e = Encoder::new();
+    e.array(4)
+        .uint(v)
+        .bytes(&[0x53; 16])
+        .uint(kind)
+        .bytes(&[0x54; 64]);
+    e.into_vec()
+}
+
+fn stored_signature(c: &ConnHandle, user: &[u8; 16]) -> Option<Vec<u8>> {
+    c.lock()
+        .expect("lock")
+        .query_row(
+            "SELECT signature FROM app_account_kinds WHERE user_id=?1",
+            [user.as_slice()],
+            |r| r.get(0),
+        )
+        .ok()
+}
+
+#[test]
+fn account_kind_ingest_needs_the_pinned_instance_key() {
+    let (mut fresh, _) = core();
+    assert_eq!(
+        err(fresh.account_kind_ingest(&USER, &raw_attestation(1, 0))).code,
+        "E_CORE_STATE"
+    );
+    assert!(!fresh.account_kind_seen().expect("seen"));
+}
+
+#[test]
+fn account_kind_ingest_verifies_before_it_stores_and_sets_seen_only_then() {
+    let (mut core, c, _, _, _) = signed_up();
+    let other = [0x77; 16];
+    // Malformed, or well formed but not the instance's statement about this user: refused
+    // (E_CORE_INPUT), nothing stored, no flag.
+    for bad in [
+        raw_attestation(2, 0),
+        raw_attestation(1, 2),
+        raw_attestation(1, 0),
+        signed_attestation(&[0x99; 16], &other, 0),
+        signed_attestation(&INSTANCE, &USER, 0),
+    ] {
+        assert_eq!(
+            err(core.account_kind_ingest(&other, &bad)).code,
+            "E_CORE_INPUT"
+        );
+    }
+    assert_eq!(
+        err(core.account_kind_ingest(&[0; 16], &raw_attestation(1, 0))).code,
+        "E_CORE_INPUT"
+    );
+    assert!(
+        !core.account_kind_seen().expect("seen"),
+        "a refused attestation sets nothing"
+    );
+    assert_eq!(stored_signature(&c, &other), None);
+
+    // The instance's statement about this user (no pin needed: it binds no key): stored, flag set,
+    // generation bumped once.
+    let before = core.trust_generation().expect("generation");
+    let good = signed_attestation(&INSTANCE, &other, 0);
+    core.account_kind_ingest(&other, &good).expect("ingest");
+    assert!(core.account_kind_seen().expect("seen"));
+    let after = core.trust_generation().expect("generation");
+    assert!(after > before, "a new attestation is a trust change");
+    let kept = stored_signature(&c, &other).expect("stored");
+
+    // The same attestation again is no write and no generation bump.
+    core.account_kind_ingest(&other, &good)
+        .expect("ingest again");
+    assert_eq!(core.trust_generation().expect("generation"), after);
+
+    // Never replaced by one that does not verify.
+    assert_eq!(
+        err(core.account_kind_ingest(&other, &raw_attestation(1, 1))).code,
+        "E_CORE_INPUT"
+    );
+    assert_eq!(
+        err(core.account_kind_ingest(&other, &[0x80])).code,
+        "E_CORE_INPUT"
+    );
+    assert_eq!(stored_signature(&c, &other), Some(kept));
+    assert_eq!(core.trust_generation().expect("generation"), after);
 }

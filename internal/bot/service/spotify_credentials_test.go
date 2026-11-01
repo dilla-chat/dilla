@@ -33,6 +33,7 @@ type spotifyTestNative struct {
 	binding  native.Binding
 	values   map[string]native.StateValue
 	fail     bool
+	stateErr error
 	calls    int
 	receipts map[id.ID][]uint64
 }
@@ -42,8 +43,14 @@ func (n *spotifyTestNative) StateGet(ctx context.Context, area uint64, key []byt
 	if err := ctx.Err(); err != nil {
 		return native.StateValue{}, err
 	}
+	if len(key) < 1 || len(key) > 128 {
+		return native.StateValue{}, errors.New("invalid native state key")
+	}
 	if area != spotifyCredentialArea {
 		return native.StateValue{}, errors.New("area")
+	}
+	if n.stateErr != nil {
+		return native.StateValue{}, n.stateErr
 	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -63,6 +70,9 @@ func (n *spotifyTestNative) StateTransaction(ctx context.Context, tx id.ID, chan
 		return nil, errors.New("transaction")
 	}
 	c := changes[0]
+	if len(c.Key) < 1 || len(c.Key) > 128 {
+		return nil, errors.New("invalid native state key")
+	}
 	v := n.values[string(c.Key)]
 	if v.Revision != c.ExpectedRevision {
 		return nil, ErrSpotifyConflict
@@ -317,6 +327,66 @@ func TestSpotifyCredentialsRejectWrongBindingMalformedAndTombstone(t *testing.T)
 	})
 }
 
+func TestSpotifyCredentialsInspectStatusIsReadOnlyAndDistinguishesMissingMalformedAndBinding(t *testing.T) {
+	t.Run("missing", func(t *testing.T) {
+		s, _, n, x := spotifyFixture(t)
+		state, reason := s.InspectStatus(context.Background())
+		if state != ProviderAccountNotLinked || reason != ProviderReasonMissingCredentials || n.calls != 0 || x.exchanges != 0 || x.refreshes != 0 {
+			t.Fatalf("status=%d reason=%d writes=%d exchanges=%d refreshes=%d", state, reason, n.calls, x.exchanges, x.refreshes)
+		}
+	})
+	t.Run("malformed", func(t *testing.T) {
+		s, _, n, x := spotifyFixture(t)
+		n.values[string(s.key())] = native.StateValue{Revision: 1, Value: []byte{0x80}}
+		state, reason := s.InspectStatus(context.Background())
+		if state != ProviderAccountNeedsAttention || reason != ProviderReasonInvalidCredentials || n.calls != 0 || x.exchanges != 0 || x.refreshes != 0 {
+			t.Fatalf("status=%d reason=%d writes=%d exchanges=%d refreshes=%d", state, reason, n.calls, x.exchanges, x.refreshes)
+		}
+	})
+	t.Run("store unavailable", func(t *testing.T) {
+		s, _, n, _ := spotifyFixture(t)
+		n.stateErr = errors.New("store")
+		state, reason := s.InspectStatus(context.Background())
+		if state != ProviderAccountUnknown || reason != ProviderReasonUnavailable || n.calls != 0 {
+			t.Fatalf("status=%d reason=%d writes=%d", state, reason, n.calls)
+		}
+	})
+	t.Run("valid stored credential", func(t *testing.T) {
+		s, runtime, n, x := spotifyFixture(t)
+		if err := s.Link(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		writes, exchanges, refreshes := n.calls, x.exchanges, x.refreshes
+		reader, err := NewSpotifyCredentialStatusReader(runtime, n, s.guard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		state, reason := reader.InspectStatus(context.Background())
+		if state != ProviderAccountLinked || reason != ProviderReasonNone || n.calls != writes || x.exchanges != exchanges || x.refreshes != refreshes {
+			t.Fatalf("status=%d reason=%d writes %d->%d exchanges %d->%d refreshes %d->%d", state, reason, writes, n.calls, exchanges, x.exchanges, refreshes, x.refreshes)
+		}
+	})
+	t.Run("wrong installation payload binding", func(t *testing.T) {
+		s, _, n, _ := spotifyFixture(t)
+		if err := s.Link(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		stored := n.values[string(s.key())]
+		var fields []any
+		if err := cborx.Unmarshal(stored.Value, &fields); err != nil {
+			t.Fatal(err)
+		}
+		wrongBinding := testSpotifyID(9)
+		fields[3] = wrongBinding[:]
+		stored.Value, _ = cborx.Marshal(fields)
+		n.values[string(s.key())] = stored
+		state, reason := s.InspectStatus(context.Background())
+		if state != ProviderAccountNeedsAttention || reason != ProviderReasonBindingMismatch {
+			t.Fatalf("status=%d reason=%d; want binding failure", state, reason)
+		}
+	})
+}
+
 func TestSpotifyCredentialsTransactionFailureAndContext(t *testing.T) {
 	s, _, n, x := spotifyFixture(t)
 	n.fail = true
@@ -371,5 +441,18 @@ func TestSpotifyCredentialsRefreshRotatesRefreshToken(t *testing.T) {
 	}
 	if persisted.refresh != "rotated" || n.values[string(s.key())].Revision != 2 {
 		t.Fatal("rotation was not persisted")
+	}
+}
+
+func TestSpotifyLoadDistinguishesNoAccountFromTransientRead(t *testing.T) {
+	credentials, _, state, _ := spotifyFixture(t)
+	if _, err := credentials.Load(t.Context()); !errors.Is(err, ErrSpotifyNotLinked) {
+		t.Fatalf("missing account=%v", err)
+	}
+	failure := errors.New("sensitive transient read details")
+	state.stateErr = failure
+	_, err := credentials.Load(t.Context())
+	if errors.Is(err, ErrSpotifyNotLinked) || !errors.Is(err, ErrSpotifyCredentials) || !errors.Is(err, failure) || err.Error() != ErrSpotifyCredentials.Error() {
+		t.Fatalf("read failure=%v", err)
 	}
 }

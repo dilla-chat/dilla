@@ -117,7 +117,7 @@ describe('frame shape', () => {
   it('pins the opcode numbers', () => {
     expect(Op).toEqual({ hello: 0, identify: 1, ready: 3, invalidSession: 5, heartbeat: 6, heartbeatAck: 7, reconnect: 8,
       error: 9, commitAck: 12, handshake: 16, commitNeeded: 17, epochChanged: 18, messageCt: 19, welcome: 20, messageDeleted: 21,
-      presence: 48, typing: 49, voiceState: 50, typingSet: 51, voiceSelf: 52, callRing: 53, communityChanged: 54, afkAway: 55 });
+      presence: 48, typing: 49, voiceState: 50, typingSet: 51, voiceSelf: 52, callRing: 53, communityChanged: 54, afkAway: 55, appBuild: 56, presenceActivity: 57, callStats: 58 });
   });
 });
 
@@ -233,4 +233,14 @@ describe('afk_away (op 55)', () => {
     expect(() => afkAwayOf({ op: Op.communityChanged, n: 0n, groupId: null, payload: [community, user, 1n] })).toThrow('E_FRAME_SHAPE');
     expect(() => afkAwayOf(decodeFrame(encodeFrame(Op.afkAway, 0, null, [community, user, 2n ** 60n])))).toThrow('E_FRAME_SHAPE');
   });
+});
+
+
+it('validates an ephemeral app-build hint and makes malformed hints droppable', () => {
+  expect(decodeFrame(encode([56, 0, null, ['/assets/index-new.js']])).op).toBe(56);
+  expect(DROPPABLE_OPS.has(56)).toBe(true);
+  for (const entry of ['https://other.test/a.js', '/assets/../a.js', '/assets/a.css', 'x'.repeat(513), 3]) {
+    expect(() => decodeFrame(encode([56, 0, null, [entry]]))).toThrow('E_FRAME_SHAPE');
+  }
+  expect(() => decodeFrame(encode([56, 1, null, ['/assets/a.js']]))).toThrow('E_FRAME_SHAPE');
 });

@@ -3,7 +3,7 @@ import { useState } from 'react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { axe } from 'vitest-axe';
-import { CallStage, stageColumns, type CallStageProps } from './CallStage.tsx';
+import { CallStage, type CallStageProps } from './CallStage.tsx';
 import type { CallTileProps } from '../CallTile/CallTile.tsx';
 import meta from './CallStage.stories.tsx';
 
@@ -19,7 +19,7 @@ function tile(name: string, media: MediaStream | null): CallTileProps {
   return {
     view: { deviceId: `d-${name}`, userId: `u-${name}`, name, state: 'ok', speaking: false, muted: false, deafened: false,
       video: media !== null, screen: false, web: true, bot: false },
-    own: false, volume: 100, media, labels: { state: stateLabels, volume: `volume for ${name}`, volumeValue: '{n} %' }, onVolume: () => {},
+    own: false, volume: 100, media, labels: { state: stateLabels, volume: `volume for ${name}`, volumeValue: '{n} %' },
   };
 }
 const labels: CallStageProps['labels'] = {
@@ -98,7 +98,7 @@ describe('CallStage', () => {
     expect(screen.getByText('Nobody is in voice yet.')).toBeInTheDocument();
   });
 
-  it.each(['mesh', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {
+  it.each(['signal', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {
     document.documentElement.dataset.theme = theme;
     const { container } = render(<div className="d-root"><CallStage {...(meta.args as CallStageProps)} /></div>);
     // jsdom has no layout or canvas, so contrast is left to the Storybook axe run in a real browser.
@@ -149,13 +149,25 @@ describe('CallStage', () => {
       vi.restoreAllMocks();
     });
 
-    it.each([
-      [1, 1200, 700, 1], [2, 1400, 600, 2], [2, 1200, 700, 1], [3, 1200, 700, 2], [2, 1024, 600, 2],
-      // D2 boundary (NARROW_STAGE_PX 1100, NEAR_TIE 0.95): 1099x640 is a 97 % near tie, so two columns; 1100 is not narrow, so the old rule keeps one;
-      // 1099x660 is a 94.5 % gap, outside the tie.
-      [2, 1099, 640, 2], [2, 1100, 640, 1], [2, 1099, 660, 1], [2, 1099, 700, 1], [4, 1200, 700, 2], [9, 1600, 900, 3], [2, 400, 900, 1], [5, 1200, 300, 3],
-    ])('stageColumns picks the column count that maximises the 16:9 tile: n=%i in %ix%i is %i', (n, w, h, cols) => {
-      expect(stageColumns(n, w, h, 12)).toBe(cols);
+    it('the grid band follows the count: two tiles, up to four, more (the prototype\'s tile widths)', () => {
+      const four = [src('ada', 'camera', sA), src('bo', 'camera', sB), src('cy', 'camera', null), src('di', 'camera', null)];
+      const { container, rerender } = render(<CallStage {...base} tiles={four.slice(0, 2)} focusedId={null} onFocus={() => {}} />);
+      const ul = () => container.querySelector<HTMLElement>('.d-call-stage__tiles')!;
+      expect(ul()).toHaveAttribute('data-band', 'two');
+      rerender(<CallStage {...base} tiles={four} focusedId={null} onFocus={() => {}} />);
+      expect(ul()).toHaveAttribute('data-band', 'four');
+      rerender(<CallStage {...base} tiles={[...four, src('ed', 'camera', null)]} focusedId={null} onFocus={() => {}} />);
+      expect(ul()).toHaveAttribute('data-band', 'many');
+    });
+
+    it('the focused tile has Grid (labels.grid), which clears the focus; other tiles have none', async () => {
+      const onFocus = vi.fn();
+      const tiles = [src('ada', 'camera', sA), src('bo', 'camera', sB)];
+      render(<CallStage {...base} tiles={tiles} focusedId={tiles[0].id} onFocus={onFocus} labels={{ ...base.labels, grid: 'Grid' }} />);
+      const grids = screen.getAllByRole('button', { name: 'Grid' });
+      expect(grids).toHaveLength(1);
+      await userEvent.click(grids[0]);
+      expect(onFocus).toHaveBeenCalledWith(null);
     });
 
     it('focus sets data-focused on the tile and data-focused-stage on the stage; a click on the focused tile unfocuses', async () => {
@@ -226,13 +238,12 @@ describe('CallStage', () => {
       expect(set).toHaveBeenCalledTimes(2);
     });
 
-    it('the focus button holds no button, input or link (R28); the volume and full screen are its siblings', () => {
+    it('the focus button holds no button, input or link (R28); a tile has no range of its own (fix round 1: the person menu)', () => {
       const { container } = render(<Harness />);
       const buttons = container.querySelectorAll('.d-call-tile__focus');
       expect(buttons).toHaveLength(3);
       buttons.forEach(b => expect(b.querySelector('button, input, a, [tabindex]')).toBeNull());
-      const li = buttons[0].closest('li')!;
-      expect(li.querySelector('input[type="range"]')!.closest('.d-call-tile__focus')).toBeNull();
+      expect(container.querySelector('input[type="range"]')).toBeNull();
     });
 
     it('data-source is on the li and on .d-call-tile, and one device with two sources has distinct keys', () => {
@@ -244,13 +255,13 @@ describe('CallStage', () => {
       expect(err.mock.calls.flat().join(' ')).not.toMatch(/same key|unique "key"/);
     });
 
-    it('a screen tile has no volume and no state glyphs; a person tile keeps both', () => {
+    it('a screen tile has no state glyphs; a person tile keeps them; neither has a range', () => {
       const t = src('bo', 'screen', sB, { view: { ...tile('bo', sB).view, muted: true, screen: true } });
       const { container } = render(<CallStage {...base} tiles={[t, src('bo', 'camera', null, { view: { ...tile('bo', null).view, muted: true } })]} focusedId={null} onFocus={() => {}} />);
       const [screenLi, personLi] = container.querySelectorAll('li');
       expect(screenLi.querySelector('input[type="range"]')).toBeNull();
       expect(screenLi.querySelector('[data-state]')).toBeNull();
-      expect(personLi.querySelector('input[type="range"]')).not.toBeNull();
+      expect(personLi.querySelector('input[type="range"]')).toBeNull();
       expect(personLi.querySelector('[data-state="muted"]')).not.toBeNull();
     });
 
@@ -258,7 +269,9 @@ describe('CallStage', () => {
       const bad = src('bo', 'screen', sB, { view: { ...tile('bo', sB).view, state: 'unverified' } });
       const { container } = render(<CallStage {...base} tiles={[bad, src('cy', 'avatar', null)]} focusedId={null} onFocus={() => {}} />);
       expect(container.querySelector('video')).toBeNull();
-      expect(container.querySelectorAll('.d-avatar')).toHaveLength(2);
+      // Signal: a screen without its picture is the striped placeholder, a person without media the avatar.
+      expect(container.querySelectorAll('.d-avatar')).toHaveLength(1);
+      expect(container.querySelectorAll('.d-call-tile__placeholder')).toHaveLength(1);
     });
 
     it('with a pause notice no screen tile renders and onFocus(null) is called once', () => {
@@ -280,7 +293,7 @@ describe('CallStage', () => {
       Object.defineProperty(HTMLElement.prototype, 'requestFullscreen', { configurable: true, value: request });
       Object.defineProperty(document, 'exitFullscreen', { configurable: true, value: exit });
       setFullscreen(true);
-      const { container } = render(<Harness />);
+      const { container } = render(<Harness initial="d-bo:screen" />);
       const btn = screen.getByRole('button', { name: 'full screen bo screen' });
       expect(btn).toHaveAttribute('aria-pressed', 'false');
       const li = container.querySelector('li[data-source="screen"]')!;
@@ -302,27 +315,19 @@ describe('CallStage', () => {
       expect(request).toHaveBeenCalledTimes(1);
     });
 
-    it('web3.8 FX m8: an avatar-only tile has no full-screen button and no double-click full screen; a tile with media has', async () => {
+    it('Signal: only the focused tile has the full-screen button (an avatar too, as the prototype); double-click needs media', async () => {
       const request = vi.fn(() => Promise.resolve());
       Object.defineProperty(HTMLElement.prototype, 'requestFullscreen', { configurable: true, value: request });
       setFullscreen(true);
-      render(<CallStage {...base} tiles={[src('ada', 'camera', sA), src('bo', 'camera', null), src('cy', 'avatar', null)]}
-        focusedId={null} onFocus={() => {}} />);
-      expect(screen.getByRole('button', { name: 'full screen ada' })).toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: 'full screen bo' })).toBeNull();
-      expect(screen.queryByRole('button', { name: 'full screen cy' })).toBeNull();
+      const tiles = [src('ada', 'camera', sA), src('bo', 'camera', null), src('cy', 'avatar', null)];
+      const { rerender } = render(<CallStage {...base} tiles={tiles} focusedId={null} onFocus={() => {}} />);
+      expect(screen.queryByRole('button', { name: /^full screen/ })).toBeNull();
+      rerender(<CallStage {...base} tiles={tiles} focusedId={tiles[2].id} onFocus={() => {}} />);
+      expect(screen.getByRole('button', { name: 'full screen cy' })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'full screen ada' })).toBeNull();
       await userEvent.dblClick(focusBtn('bo'));
       await userEvent.dblClick(focusBtn('cy'));
       expect(request).not.toHaveBeenCalled();
-    });
-
-    it('web3.8 FX: the stage list says when it holds more than two tiles (the phone lays those out in two columns)', () => {
-      const { container, rerender } = render(<CallStage {...base} tiles={[src('ada', 'camera', sA), src('bo', 'avatar', null)]}
-        focusedId={null} onFocus={() => {}} />);
-      expect(container.querySelector('ul')).not.toHaveAttribute('data-many');
-      rerender(<CallStage {...base} tiles={[src('ada', 'camera', sA), src('bo', 'avatar', null), src('cy', 'avatar', null)]}
-        focusedId={null} onFocus={() => {}} />);
-      expect(container.querySelector('ul')).toHaveAttribute('data-many', 'true');
     });
 
     it('there is no full-screen button when the document cannot do full screen', () => {
@@ -336,7 +341,7 @@ describe('CallStage', () => {
       Object.defineProperty(HTMLElement.prototype, 'requestFullscreen', { configurable: true, value: vi.fn(() => ({ catch: caught })) });
       Object.defineProperty(document, 'exitFullscreen', { configurable: true, value: vi.fn(() => ({ catch: caught })) });
       setFullscreen(true);
-      const { container } = render(<Harness />);
+      const { container } = render(<Harness initial="d-ada:camera" />);
       await userEvent.click(screen.getByRole('button', { name: 'full screen ada' }));
       setFullscreen(true, container.querySelector('li'));
       await userEvent.click(screen.getByRole('button', { name: 'full screen ada' }));
@@ -348,7 +353,7 @@ describe('CallStage', () => {
       render(<CallStage {...base} tiles={[bad]} focusedId={null} onFocus={() => {}} />);
       const button = focusBtn('cy');
       // jsdom does not fold a child image's aria-label into a description; a browser does, so the glyphs are pinned by id.
-      const states = document.getElementById(button.getAttribute('aria-describedby') ?? '')!;
+      const states = document.getElementById((button.getAttribute('aria-describedby') ?? '').split(' ')[0])!;
       expect(states).toContainElement(screen.getByRole('img', { name: 'muted' }));
       expect(states).toContainElement(screen.getByRole('img', { name: 'deafened' }));
       expect(button).toHaveAccessibleDescription(/unverified stream/);
@@ -361,48 +366,44 @@ describe('CallStage', () => {
       expect(container.querySelector('.d-call-stage__tiles')).not.toHaveAttribute('style', expect.stringContaining('--d-strip-n'));
     });
 
-    describe('stage mode is on only when onFocus is given (pre-flight C-2)', () => {
-      class FakeObserver { observe() {} disconnect() {} }
-      beforeEach(() => {
-        (globalThis as { ResizeObserver?: unknown }).ResizeObserver = FakeObserver;
-        Object.defineProperty(HTMLElement.prototype, 'clientWidth', { configurable: true, get: () => 1200 });
-        Object.defineProperty(HTMLElement.prototype, 'clientHeight', { configurable: true, get: () => 700 });
-      });
-      afterEach(() => {
-        Reflect.deleteProperty(globalThis, 'ResizeObserver');
-        Reflect.deleteProperty(HTMLElement.prototype, 'clientWidth');
-        Reflect.deleteProperty(HTMLElement.prototype, 'clientHeight');
-      });
+    it('stage mode is on only when onFocus is given (pre-flight C-2)', () => {
+      const { container, rerender } = render(<CallStage {...base} focusedId={null} onFocus={() => {}} />);
+      expect(container.querySelector('.d-call-stage__tiles')).toHaveAttribute('data-tiles', 'stage');
+      rerender(<CallStage {...base} />);
+      expect(container.querySelector('.d-call-stage__tiles')).not.toHaveAttribute('data-tiles');
+    });
+  });
 
-      it('with onFocus the tiles area is a stage grid and its columns and width are written', () => {
-        const { container } = render(<CallStage {...base} focusedId={null} onFocus={() => {}} />);
-        const ul = container.querySelector<HTMLElement>('.d-call-stage__tiles')!;
-        expect(ul).toHaveAttribute('data-tiles', 'stage');
-        expect(ul.style.getPropertyValue('--d-stage-cols')).toBe('1');
-        expect(ul.style.getPropertyValue('--d-tile-w')).not.toBe('');
-      });
+  describe('Signal §5.6: the not-joined preview and the call bar', () => {
+    const preview = { people: [{ id: 'a', name: 'Ada', speaking: true }, { id: 'b', name: 'Björn', speaking: false }], name: 'harbour',
+      text: 'Ada and Björn are here', join: { label: 'Join voice', onJoin: vi.fn() } };
 
-      it('D1: the last tile of a partial row is the orphan; full rows and a single column have none', () => {
-        const three = [src('ada', 'camera', sA), src('bo', 'camera', sB), src('cy', 'camera', null)];
-        const { container, rerender } = render(<CallStage {...base} tiles={three} focusedId={null} onFocus={() => {}} />);
-        const ul = container.querySelector<HTMLElement>('.d-call-stage__tiles')!;
-        expect(ul.style.getPropertyValue('--d-stage-cols')).toBe('2');
-        const lis = () => [...container.querySelectorAll('li.d-call-stage__tile')];
-        expect(lis().map(l => l.hasAttribute('data-orphan'))).toEqual([false, false, true]);
-        rerender(<CallStage {...base} tiles={[...three, src('di', 'camera', null)]} focusedId={null} onFocus={() => {}} />);
-        expect(lis().some(l => l.hasAttribute('data-orphan'))).toBe(false);
-        rerender(<CallStage {...base} tiles={three.slice(0, 2)} focusedId={null} onFocus={() => {}} />);
-        expect(ul.style.getPropertyValue('--d-stage-cols')).toBe('1');
-        expect(lis().some(l => l.hasAttribute('data-orphan'))).toBe(false);
-      });
+    it('the preview stands for the tiles and the call bar: faces, the room, who is there and Join voice', async () => {
+      const { container } = render(<CallStage {...base} preview={preview} controls={<button type="button">never</button>} />);
+      expect(container.querySelector('.d-call-stage__tiles')).toBeNull();
+      expect(screen.queryByRole('button', { name: 'never' })).toBeNull();
+      expect(container.querySelectorAll('.d-call-stage__face')).toHaveLength(2);
+      expect(container.querySelector('.d-call-stage__face[data-speaking="true"]')).not.toBeNull();
+      expect(screen.getByText('harbour')).toBeInTheDocument();
+      expect(screen.getByText('Ada and Björn are here')).toBeInTheDocument();
+      await userEvent.click(screen.getByRole('button', { name: 'Join voice' }));
+      expect(preview.join.onJoin).toHaveBeenCalledTimes(1);
+    });
 
-      it('without onFocus nothing is written and the area keeps the old layout', () => {
-        const { container } = render(<CallStage {...base} />);
-        const ul = container.querySelector<HTMLElement>('.d-call-stage__tiles')!;
-        expect(ul).not.toHaveAttribute('data-tiles');
-        expect(ul.style.getPropertyValue('--d-stage-cols')).toBe('');
-        expect(ul.style.getPropertyValue('--d-tile-w')).toBe('');
-      });
+    it('a held join shows no Join voice', () => {
+      render(<CallStage {...base} preview={{ ...preview, join: null }} />);
+      expect(screen.queryByRole('button', { name: 'Join voice' })).toBeNull();
+    });
+
+    it('with bar the controls region is the call bar: the room, the stats and the controls; no call code (fix round 1: the voice row menu)', () => {
+      const { container } = render(<CallStage {...base} code="284719306451873920465128390715" bar={{ name: 'harbour', stats: '24 ms · ↑ 38 ↓ 71 kb/s' }}
+        controls={<button type="button">Mute</button>} />);
+      const bar = container.querySelector('.d-call-stage__controls[data-bar]')!;
+      expect(bar).not.toBeNull();
+      expect(bar.querySelector('.d-call-stage__room')).toHaveTextContent('harbour');
+      expect(bar.querySelector('.d-call-stage__stats')).toHaveTextContent('24 ms · ↑ 38 ↓ 71 kb/s');
+      expect(container.querySelector('.d-call-stage__code')).toBeNull();
+      expect(bar).toContainElement(screen.getByRole('button', { name: 'Mute' }));
     });
   });
 });

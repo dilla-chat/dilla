@@ -4,8 +4,8 @@
 //   node e2e/ux/shots.mjs shell dm --size 1440     named steps, one width
 //   node e2e/ux/shots.mjs phone-servers --theme light
 // Files are target/ui-screens/web3.9/<d|p><width>-<theme>-<step>.png. A step that cannot run says so and the rest go on.
-// Desktop steps run in Ada's browser at 1440x900 and 1024x768 (mesh, light and high-contrast); phone steps run in her phone
-// (390x844 and 360x740; mesh and light); `auth` runs in browsers of its own (the invite page, a sign-up, a sign-in).
+// Desktop steps run in Ada's browser at 1440x900 and 1024x768 (signal, light and high-contrast); phone steps run in her phone
+// (390x844 and 360x740; signal and light); `auth` runs in browsers of its own (the invite page, a sign-up, a sign-in).
 import path from 'node:path';
 import { connect, readState, OUT_ROOT, REPO } from './run.mjs';
 import { createRequire } from 'node:module';
@@ -60,11 +60,11 @@ async function joinVoice(h, name) {
   await wait(h, 2500);
 }
 
-const desktop = { who: 'ada', sizes: [[1440, 900], [1024, 768]], themes: ['mesh', 'light', 'high-contrast'], tag: 'd' };
-const desktopMesh = { ...desktop, themes: ['mesh'] };
-const desktop1440 = { ...desktop, sizes: [[1440, 900]], themes: ['mesh'] };
-const phone = { who: 'phone', sizes: [[390, 844], [360, 740]], themes: ['mesh', 'light'], tag: 'p' };
-const phoneMesh = { ...phone, themes: ['mesh'] };
+const desktop = { who: 'ada', sizes: [[1440, 900], [1024, 768]], themes: ['signal', 'light', 'high-contrast'], tag: 'd' };
+const desktopSignal = { ...desktop, themes: ['signal'] };
+const desktop1440 = { ...desktop, sizes: [[1440, 900]], themes: ['signal'] };
+const phone = { who: 'phone', sizes: [[390, 844], [360, 740]], themes: ['signal', 'light'], tag: 'p' };
+const phoneSignal = { ...phone, themes: ['signal'] };
 
 // ---------------------------------------------------------------------------------------------------
 // The steps. Each is `{ ...matrix, run(h, v) }`, `v` being { name, tag, w, h, theme }.
@@ -103,7 +103,9 @@ export const steps = {
   } },
   'server-settings': { ...desktop, async run(h, v) {
     await desktopHome(h);
-    await h.page.locator('[data-admin-open]').first().click();
+    // Signal task 10 fix round 2: the server ⌄ is a menu; its first item opens the server's settings.
+    await h.page.locator('[data-focus-key="admin-open"]').first().click();
+    await h.page.getByRole('menuitem', { name: h.t('signalSettings.menu.serverSettings'), exact: true }).click();
     const admin = h.page.getByRole('dialog', { name: h.t('admin.title'), exact: true });
     await admin.waitFor();
     const nav = admin.getByRole('navigation', { name: h.t('admin.nav'), exact: true }).getByRole('button');
@@ -168,7 +170,7 @@ export const steps = {
     await joinVoice(h, 'harbour'); await h.settle();
     await h.shoot(`${v.tag}-stage-grid`);
   } },
-  'stage-focused': { ...desktopMesh, async run(h, v) {
+  'stage-focused': { ...desktopSignal, async run(h, v) {
     await desktopHome(h);
     await joinVoice(h, 'harbour');
     await h.page.locator('.d-call-tile__focus').first().click(); await wait(h, 800); await h.settle();
@@ -267,7 +269,7 @@ export const steps = {
       await back(h).click().catch(() => h.page.keyboard.press('Escape')); await wait(h, 400);
     }
   } },
-  'phone-stage': { ...phoneMesh, async run(h, v) {
+  'phone-stage': { ...phoneSignal, async run(h, v) {
     await phoneHome(h);
     await h.page.getByRole('button', { name: h.t('voice.open', { name: 'harbour' }), exact: true }).first().click(); await wait(h, 800);
     if (!(await h.page.locator('[data-call-phase="in"]').first().isVisible().catch(() => false))) {
@@ -290,7 +292,7 @@ export const steps = {
 // ---------------------------------------------------------------------------------------------------
 // The sign-up and sign-in screens: browsers of their own, through the invite and through Björn's account.
 
-steps.auth = { who: null, sizes: [[1440, 900]], themes: ['mesh'], tag: 'd', async run() { await authScreens(); } };
+steps.auth = { who: null, sizes: [[1440, 900]], themes: ['signal'], tag: 'd', async run() { await authScreens(); } };
 
 async function authScreens() {
   const { chromium } = require('@playwright/test');
@@ -298,8 +300,8 @@ async function authScreens() {
   const { nextCode } = await import(path.join(REPO, 'e2e/web/support/totp.ts'));
   const state = readState();
   const browser = await chromium.launch({ headless: true });
-  const variants = [['d1440-mesh', 1440, 900, 'dark', 'no-preference'], ['d1440-light', 1440, 900, 'light', 'no-preference'], ['d1440-high-contrast', 1440, 900, 'dark', 'more'],
-    ['d1024-mesh', 1024, 768, 'dark', 'no-preference'], ['p390-mesh', 390, 844, 'dark', 'no-preference']];
+  const variants = [['d1440-signal', 1440, 900, 'dark', 'no-preference'], ['d1440-light', 1440, 900, 'light', 'no-preference'], ['d1440-high-contrast', 1440, 900, 'dark', 'more'],
+    ['d1024-signal', 1024, 768, 'dark', 'no-preference'], ['p390-signal', 390, 844, 'dark', 'no-preference']];
   const open = async () => {
     const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: 'dark', reducedMotion: 'reduce', locale: 'en-GB', baseURL: state.publicUrl });
     return { ctx, page: await ctx.newPage() };

@@ -25,9 +25,9 @@ func (s *Session) IssueBotInteractionAdmission(ctx context.Context, installation
 	if err != nil {
 		return nil, err
 	}
-	raw, _, err := s.c.do(ctx, s.token, http.MethodPost,
+	raw, err := s.interactionProofRequest(ctx,
 		"bot-runtime/installations/"+inst+"/interaction-admissions",
-		nil, request, maxInteractionAdmissionResponse, true)
+		request, maxInteractionAdmissionResponse, true)
 	if err != nil {
 		return nil, err
 	}
@@ -59,7 +59,7 @@ func (s *Session) BotInteractionGroupAbsent(ctx context.Context, installation, r
 	if err != nil {
 		return false, err
 	}
-	raw, _, err := s.c.do(ctx, s.token, http.MethodGet,
+	raw, _, err := s.do(ctx, http.MethodGet,
 		"bot-runtime/installations/"+inst+"/interaction-admissions/"+request+"/group-absence",
 		nil, nil, 16, false)
 	if err != nil {

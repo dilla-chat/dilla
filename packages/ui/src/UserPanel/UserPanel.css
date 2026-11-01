@@ -1,29 +1,45 @@
-/* The desktop user panel (web3.8, item 13): avatar, name block, mute and deafen, the settings gear, in one row at the
-   bottom left under the rail and the sidebar. web3.9 (E3, G3): 52 high, its top meeting the composer band (UI-4 sets that
-   half), and its buttons are the dock's 32px IconButtons. */
-.d-user-panel { box-sizing: border-box; display: flex; align-items: center; gap: 0.5rem; height: 3.25rem; min-width: 0; padding: 0 0.75rem; background: var(--bg-2); border-top: 1px solid var(--hairline); }
-/* The avatar and name block is the status menu's trigger (a button, so keyboard reachable); the menu hangs above it. */
+/* The desktop user panel (Signal, README §5.4): --panel-h (64px) tall, the same height as the voice call bar, a hairline
+   above, padding 0 8px, gap 4px. The avatar and name block (the status menu's trigger), then mute and deafen. */
+.d-user-panel { box-sizing: border-box; display: flex; align-items: center; gap: 4px; height: var(--panel-h); min-width: 0; padding: 0 8px; background: var(--bg-2); border-top: 1px solid var(--hairline); }
+/* The avatar and name block is the status menu's trigger (a button, so keyboard reachable); the menu hangs above it.
+   Gap 9px, padding 3px 6px, radius 6px, the --hover fill on hover. */
 .d-user-panel__menu { display: flex; flex: 1 1 auto; min-width: 0; }
 .d-user-panel__who {
-  display: flex; flex: 1 1 auto; align-items: center; gap: 0.5rem; min-width: 0; min-height: 2rem; padding: 0 0.25rem; text-align: left; line-height: 1.25;
-  color: var(--fg); background: transparent; border: 1px solid transparent; border-radius: var(--r-md); cursor: pointer;
+  display: flex; flex: 1 1 auto; align-items: center; gap: 9px; min-width: 0; padding: 3px 6px; text-align: left; line-height: 1.3;
+  color: var(--fg); background: transparent; border: 0; border-radius: var(--r-md); cursor: pointer;
 }
-.d-user-panel__who:hover, .d-user-panel__who[aria-expanded="true"] { color: var(--fg); background: var(--surface-2); border-color: transparent; }
+.d-user-panel__who:hover, .d-user-panel__who[aria-expanded="true"] { color: var(--fg); background: var(--hover); }
 .d-user-panel__who:focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
 /* The status button fills the menu and starts its content at the left: ActionMenu's own trigger centres its content
    (inline-flex, justify-content: center) and loads after this sheet in the bundle, so its centring must be beaten here. */
 .d-user-panel .d-user-panel__menu { display: flex; }
-.d-user-panel__menu .d-user-panel__who { flex: 1 1 auto; justify-content: flex-start; }
+.d-user-panel__menu .d-user-panel__who { flex: 1 1 auto; justify-content: flex-start; padding: 3px 6px; border: 0; }
 .d-user-panel__text { display: grid; min-width: 0; }
-.d-user-panel__menu .d-action-menu__popup { left: 0; right: auto; }
-.d-user-panel__menu .d-action-menu__item[aria-checked="true"] { font-weight: var(--weight-display); box-shadow: inset 2px 0 0 var(--accent); }
-.d-user-panel__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-sm); color: var(--fg); }
-.d-user-panel__username { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-xs); color: var(--fg-2); }
-.d-user-panel__controls { display: flex; flex: none; align-items: center; gap: 0.125rem; }
-/* Muted and deafened read as the dock's pressed toggle (accent glyph, 2px bar), tinted danger because they silence you. */
-.d-user-panel .d-icon-button[aria-pressed="true"] { color: var(--danger); box-shadow: inset 0 -2px 0 0 var(--danger); }
+/* Task 9: the prototype's status menu: 220px above the block, 8px corners in the --control-edge-field line, its 0 16px 40px shadow, d-modal
+   200ms; an item 0 10px with its 8px status dot, the chosen one ticked. */
+.d-user-panel__menu .d-action-menu__popup { left: 0; right: auto; width: 220px; min-width: 0; border-color: var(--control-edge-field); border-radius: var(--r-lg); box-shadow: var(--shadow-status); animation-duration: var(--duration-popover); }
+.d-user-panel__menu .d-action-menu__item { padding: 0 10px; }
+.d-user-panel__menu .d-action-menu__item::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: var(--r-pill); background: var(--fg-3); }
+.d-user-panel__menu .d-action-menu__item[data-id="online"]::before { background: var(--ok); }
+.d-user-panel__menu .d-action-menu__item[data-id="idle"]::before { background: var(--warn); }
+.d-user-panel__menu .d-action-menu__item[data-id="dnd"]::before { background: var(--danger); }
+/* The name 12px/600, the line under it 10.5px --fg-3 (--fg-2 on the hovered fill: README §10.4 keeps --fg-3 off lifted fills). */
+.d-user-panel__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-ui); font-weight: var(--weight-label); color: var(--fg); }
+.d-user-panel__username { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-meta); color: var(--fg-3); }
+.d-user-panel__who:is(:hover, [aria-expanded="true"]) .d-user-panel__username { color: var(--fg-2); }
+.d-user-panel__controls { display: flex; flex: none; align-items: center; gap: 4px; }
+/* Mute and deafen (and the gear, when given): 30px, radius 6px, a 16px glyph in --fg-2; the --hover-hi fill on hover (140ms). */
+.d-user-panel .d-icon-button { width: 1.875rem /* 30px */; height: 1.875rem; border-radius: var(--r-md); color: var(--fg-2); transition: background var(--duration-hover), color var(--duration-hover), transform var(--duration-press) var(--ease-out); }
+.d-user-panel .d-icon-button svg { width: 16px; height: 16px; }
+.d-user-panel .d-icon-button:hover { background: var(--hover-hi); }
+/* On: the --danger glyph (mic-off, headphone-off) on the danger tint; the swapped glyph and aria-pressed carry the state. */
+.d-user-panel .d-icon-button[aria-pressed="true"] { color: var(--danger); background: var(--danger-soft); box-shadow: none; }
+/* The prototype's hover paints --hover-hi over the toggled-on tint too. */
+.d-user-panel .d-icon-button[aria-pressed="true"]:hover { background: var(--hover-hi); }
 /* Push-to-talk (web3.9): the tag sits on the mic button's corner, never colour alone; the avatar rings while the key is held. */
 .d-user-panel__mic { position: relative; display: inline-flex; }
-.d-user-panel__ptt { position: absolute; right: -2px; bottom: -2px; padding: 0 0.1875rem; font-size: 0.5625rem; line-height: 1rem; letter-spacing: 0.04em; color: var(--fg-2); background: var(--bg-2); border: 1px solid var(--hairline); border-radius: var(--r-sm); pointer-events: none; }
+.d-user-panel__ptt { position: absolute; right: -2px; bottom: -2px; padding: 0 0.1875rem; font-size: var(--text-badge); line-height: 1rem; letter-spacing: var(--tracking-soft); color: var(--fg-2); background: var(--bg-2); border: 1px solid var(--hairline); border-radius: var(--r-sm); pointer-events: none; }
 .d-user-panel__avatar { display: inline-flex; border-radius: var(--r-avatar); }
-.d-user-panel__avatar[data-speaking="true"] { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Speaking (push to talk held): the --live ring, 0 0 0 2px bg-2, 0 0 0 3.5px --ok, over 160ms (the prototype's meRing). */
+.d-user-panel__avatar .d-avatar { box-shadow: 0 0 0 0 transparent; transition: box-shadow var(--duration-tab); }
+.d-user-panel__avatar[data-speaking="true"] .d-avatar { box-shadow: 0 0 0 2px var(--bg-2), 0 0 0 3.5px var(--ok); }

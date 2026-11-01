@@ -1,4 +1,4 @@
-// web3.8, INV: the invite landing page in Mesh style. From an empty host, Ada starts "Midgard Crew", opens server settings,
+// web3.8, INV: the invite landing page in Signal style. From an empty host, Ada starts "Midgard Crew", opens server settings,
 // goes to Invites, makes a link there and reads its URL (never the sidebar's "invite link" action, which WS4 removes).
 // The page itself is the instance's static HTML under `default-src 'none'`: the spec asserts what it says, that it has
 // one same-origin link, that its headers are the unchanged four, and shoots it in both colour schemes at both sizes.
@@ -39,13 +39,13 @@ async function makeLink(page: Page, h: StartedHost): Promise<string> {
   await expect(start).toBeHidden({ timeout: WAIT });
   await expect(page).toHaveURL(/\/c\/[0-9a-f]{32}\/[0-9a-f]{32}$/, { timeout: WAIT });
 
-  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
   const settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
   const nav = settings.getByRole('navigation', { name: copy('admin.nav'), exact: true });
   await expect(nav).toBeVisible({ timeout: WAIT });
   await nav.getByRole('button', { name: copy('admin.nav.invites'), exact: true }).click();
-  await settings.getByRole('button', { name: copy('admin.invites.create'), exact: true }).click();
-  const link = page.getByRole('textbox', { name: copy('invite.link'), exact: true });
+  await settings.getByRole('button', { name: copy('serverSettings.invites.make'), exact: true }).click();
+  const link = settings.getByRole('textbox', { name: copy('serverSettings.invites.link'), exact: true });
   await expect(link).toBeVisible({ timeout: WAIT });
   const url = await link.inputValue();
   expect(url).toMatch(/^https?:\/\/[^/\s]+\/i\/[^/\s]+$/);

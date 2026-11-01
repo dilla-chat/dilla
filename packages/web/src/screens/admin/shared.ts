@@ -30,7 +30,7 @@ const IDLE: RunState = { busy: false, error: null, attempt: 0 };
  * contract needs to move focus to Cancel; `attempt` counts the refusals shown so the same text is announced again.
  * `run` resolves true when `work` resolved, false when it failed (and `say` named why) or another action was running.
  */
-export function useRun(): RunState & { run(work: () => Promise<unknown>, say: (e: UiError) => string): Promise<boolean>; reset(): void } {
+export function useRun(): RunState & { run(this: void, work: () => Promise<unknown>, say: (e: UiError) => string): Promise<boolean>; reset(this: void): void } {
   const [state, setState] = useState<RunState>(IDLE);
   const running = useRef(false);
   const run = useCallback(async (work: () => Promise<unknown>, say: (e: UiError) => string): Promise<boolean> => {

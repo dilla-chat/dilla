@@ -289,7 +289,7 @@ func TestDillabotDoctorChecksLocalDependenciesWithoutPrintingPathsOrSecrets(t *t
 	if code := runDoctorCommand([]string{"--config", config, "--youtube"}, &stdout, &stderr); code == 0 || !strings.Contains(stdout.String(), "youtube_dependencies FAIL") {
 		t.Fatalf("required YouTube check did not fail for missing yt-dlp (exit %d):\n%s", code, stdout.String())
 	}
-	if strings.Contains(stdout.String()+stderr.String(), credentialText) || strings.Contains(stdout.String()+stderr.String(), dir) {
+	if strings.Contains(stdout.String()+stderr.String(), credentialText) || strings.Contains(strings.ReplaceAll(stdout.String()+stderr.String(), config, ""), dir) {
 		t.Fatal("doctor output disclosed secret material or configured filesystem paths")
 	}
 }
@@ -418,5 +418,106 @@ func TestDillabotDoctorRejectsUntrustedOrUnexecutableCodeFiles(t *testing.T) {
 	}
 	if _, err := readDoctorWASI(fifo); err == nil {
 		t.Fatal("FIFO was accepted as a WASI module")
+	}
+}
+
+func TestDillabotDoctorDefaultsToTheInstalledConfigPath(t *testing.T) {
+	if defaultConfigPath != "/etc/dillabot/bot.toml" {
+		t.Fatalf("default config path = %q, want the path install-bot.sh writes and the unit reads", defaultConfigPath)
+	}
+	var stdout, stderr bytes.Buffer
+	runDoctorCommand([]string{"--help"}, &stdout, &stderr)
+	if !strings.Contains(stderr.String(), `(default "/etc/dillabot/bot.toml")`) {
+		t.Fatalf("doctor usage does not show the installed default:\n%s", stderr.String())
+	}
+}
+
+func writeDoctorTestConfig(t *testing.T, dir, token string) string {
+	t.Helper()
+	config := filepath.Join(dir, "bot.toml")
+	body := "base_url = \"https://dilla.example\"\n" +
+		"instance_id = \"01010101010101010101010101010101\"\n" +
+		"runtime_credential_file = \"" + token + "\"\n" +
+		"helper_executable = \"" + filepath.Join(dir, "helper") + "\"\n" +
+		"wasi_module = \"" + filepath.Join(dir, "m.wasm") + "\"\n" +
+		"state_dir = \"" + filepath.Join(dir, "state") + "\"\n" +
+		"reconcile_interval = \"30s\"\n"
+	if err := os.WriteFile(config, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return config
+}
+
+func TestDillabotDoctorDistinguishesMissingInvalidAndCredentialFailures(t *testing.T) {
+	dir := t.TempDir()
+	run := func(path string) string {
+		var stdout, stderr bytes.Buffer
+		if code := runDoctorCommand([]string{"--config", path}, &stdout, &stderr); code != 1 {
+			t.Fatalf("doctor exit code = %d, want 1:\n%s", code, stdout.String())
+		}
+		return stdout.String()
+	}
+	missing := filepath.Join(dir, "absent", "bot.toml")
+	out := run(missing)
+	if !strings.Contains(out, "FAIL config: no such file at "+missing) || strings.Contains(out, "credential") {
+		t.Fatalf("missing config message wrong:\n%s", out)
+	}
+
+	invalid := filepath.Join(dir, "invalid.toml")
+	if err := os.WriteFile(invalid, []byte("not = [valid"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out = run(invalid)
+	if !strings.Contains(out, "FAIL config: "+invalid+" is not a valid Bot configuration") || strings.Contains(out, "no such file") || strings.Contains(out, "credential") {
+		t.Fatalf("invalid config message wrong:\n%s", out)
+	}
+
+	secret := "dbr_super-secret-value-that-must-not-print"
+	token := filepath.Join(dir, "runtime.token")
+	if err := os.WriteFile(token, []byte(secret), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out = run(writeDoctorTestConfig(t, dir, token))
+	if !strings.Contains(out, "FAIL runtime_credential:") || strings.Contains(out, "no such file") || strings.Contains(out, secret) {
+		t.Fatalf("credential message wrong or leaked the secret:\n%s", out)
+	}
+}
+
+func TestDillabotDoctorNamesTheConfigAndSearchedPath(t *testing.T) {
+	dir := t.TempDir()
+	token := filepath.Join(dir, "runtime.token")
+	if err := os.WriteFile(token, []byte("dbr_"+base64.RawURLEncoding.EncodeToString(make([]byte, 32))), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config := writeDoctorTestConfig(t, dir, token)
+	t.Setenv("PATH", "/nonexistent-service-path")
+	old := doctorLookPath
+	doctorLookPath = func(string) (string, error) { return "", exec.ErrNotFound }
+	t.Cleanup(func() { doctorLookPath = old })
+	var stdout, stderr bytes.Buffer
+	runDoctorCommand([]string{"--config", config}, &stdout, &stderr)
+	for _, want := range []string{"config OK: read " + config, "youtube_dependencies WARN", "PATH searched: /nonexistent-service-path"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("doctor output lacks %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
+func TestDillabotDoctorYoutubeSandboxProbeReportsLaunchStderr(t *testing.T) {
+	bwrap := filepath.Join(t.TempDir(), "bwrap")
+	if err := os.WriteFile(bwrap, []byte("#!/bin/sh\nprintf 'namespace unavailable\\n'; printf 'namespace unavailable\\n' >&2\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	check := checkYouTubeSandbox(t.Context(), func(name string) (string, error) {
+		if name == "bwrap" {
+			return bwrap, nil
+		}
+		if name == "yt-dlp" {
+			return exec.LookPath("true")
+		}
+		return exec.LookPath(name)
+	})
+	if check.name != "youtube_sandbox" || check.status != "FAIL: sandbox_unavailable: namespace unavailable" {
+		t.Fatalf("check=%+v", check)
 	}
 }

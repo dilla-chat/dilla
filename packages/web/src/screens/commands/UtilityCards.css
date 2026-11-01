@@ -1,0 +1,25 @@
+.dw-poll-card, .dw-reminder-card {
+  box-sizing: border-box; max-width: 42rem; margin: 0.6rem 0 0.25rem; padding: 0.8rem 1rem;
+  border: 1px solid var(--hairline); border-left: 3px solid var(--accent); background: var(--surface-2); color: var(--fg);
+}
+.dw-poll-card h3 { margin: 0 0 0.6rem; font-size: 1rem; line-height: 1.35; }
+.dw-poll-card fieldset { display: grid; gap: 0.2rem; min-width: 0; margin: 0; padding: 0; border: 0; }
+.dw-poll-card legend { margin-bottom: 0.35rem; color: var(--fg-2); font-size: 0.86rem; }
+.dw-poll-card__answer { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 0.55rem; min-height: 2rem; }
+.dw-poll-card__answer input { accent-color: var(--accent); }
+.dw-poll-card__count { color: var(--fg-2); font-variant-numeric: tabular-nums; }
+.dw-poll-card__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem; margin-top: 0.55rem; }
+.dw-poll-card__due { margin: 0.5rem 0 0; color: var(--fg-2); font-size: 0.85rem; }
+.dw-poll-card__voters { display: inline-block; margin: 0.2rem 0.35rem 0 0; }
+.dw-poll-card__voter-list { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; margin-top: 0.35rem; color: var(--fg-2); font-size: 0.85rem; }
+.dw-reminder-badge { display: inline-grid; min-width: 1.35rem; height: 1.35rem; margin-left: 0.35rem; padding: 0 0.25rem; place-items: center; border-radius: 999px; background: var(--accent); color: var(--surface); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+.dw-reminder-inbox { box-sizing: border-box; width: min(100%, 38rem); max-height: min(70vh, 42rem); overflow: auto; overscroll-behavior: contain; }
+.dw-reminder-inbox section { margin: 0.75rem 0; }
+.dw-reminder-inbox h3 { margin: 0 0 0.35rem; color: var(--fg-2); font-size: 0.9rem; }
+.dw-reminder-inbox ul { display: grid; gap: 0.4rem; margin: 0; padding: 0; list-style: none; }
+.dw-reminder-card { overflow-wrap: anywhere; }
+.dw-reminder-card p { margin: 0 0 0.35rem; }
+.dw-reminder-card p + p { color: var(--fg-2); font-size: 0.85rem; }
+.dw-poll-card button:focus-visible, .dw-reminder-card button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 36rem) { .dw-poll-card, .dw-reminder-card { margin-right: 0; padding: 0.65rem; } }
+@media (prefers-reduced-motion: reduce) { .dw-poll-card *, .dw-reminder-card * { scroll-behavior: auto; } }

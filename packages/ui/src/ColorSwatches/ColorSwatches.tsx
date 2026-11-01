@@ -10,7 +10,8 @@ export interface ColorSwatchesProps {
   /** The chosen colour as 0xRRGGBB, or 0 for none. */
   value: number;
   options: readonly { value: number; name: string }[];
-  noneLabel: string;
+  /** The "no colour" choice drawn first; without it there is none (the Roles editor's six colours, Task 10c). */
+  noneLabel?: string;
   onChange(v: number): void;
 }
 
@@ -23,7 +24,7 @@ export interface ColorSwatchesProps {
 export function ColorSwatches({ label, hint, value, options, noneLabel, onChange }: ColorSwatchesProps) {
   const uid = useId();
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
-  const all = [{ value: 0, name: noneLabel }, ...options];
+  const all = noneLabel === undefined ? [...options] : [{ value: 0, name: noneLabel }, ...options];
   const checked = all.findIndex(o => o.value === value);
   const stop = checked >= 0 ? checked : 0;
 

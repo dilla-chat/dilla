@@ -117,14 +117,13 @@ export function GifsSettings({ communityId, announce }: { communityId: string; a
   const showField = loaded === 'ready' && (!on || editing);
 
   return (
-    <SettingsRow id={`${base}-row`} label={t('gif.settings.title')} hint={t('gif.settings.hint')}>
+    <SettingsRow id={`${base}-row`} label={t('gif.settings.title')} hint={t('gif.settings.hint')} layout="stacked">
       <div className="dw-gifs-settings">
         <a href={GIPHY_DEVELOPERS} target="_blank" rel="noopener noreferrer">{t('gif.settings.getKey')}</a>
         {loaded === 'error' ? <p role="alert">{t('gif.settings.loadError')}</p> : null}
         {loaded === 'ready' && on && !editing ? (
           <div className="dw-gifs-settings__set">
-            <span aria-hidden="true">{t('gif.settings.masked')}</span>
-            <span className="d-sr-only">{t('gif.settings.maskedLabel')}</span>
+            <span>{t('gif.settings.maskedLabel')}</span>
             <Button id={replaceId} type="button" onClick={() => { setEditing(true); setError(null); setFocus('field'); }}>{t('gif.settings.replace')}</Button>
             <Button type="button" variant="danger" aria-disabled={busy || undefined} onClick={remove}>{t('gif.settings.remove')}</Button>
           </div>

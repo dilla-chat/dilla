@@ -2,6 +2,7 @@ import { arr, decode, encode, u64, type CborInput, type CborValue } from '../cbo
 
 const MAX = (1n << 64n) - 1n;
 const enc = new TextEncoder();
+const unicodeWhitespaceOnly = /^\p{White_Space}*$/u;
 const PREFIX = 'dilla.bot/1:';
 const HELPER_MAX = 1_048_576;
 
@@ -65,25 +66,62 @@ export interface BotContext {
   now: bigint;
 }
 const ops: Record<number, { channel: boolean; mutation: boolean; count: number }> = {
-  0:{channel:false,mutation:false,count:0},1:{channel:false,mutation:false,count:1},2:{channel:false,mutation:true,count:2},
+  0:{channel:false,mutation:false,count:0},3:{channel:false,mutation:false,count:0},1:{channel:false,mutation:false,count:1},2:{channel:false,mutation:true,count:2},
   10:{channel:true,mutation:false,count:0},11:{channel:true,mutation:false,count:1},12:{channel:true,mutation:true,count:1},
   13:{channel:true,mutation:true,count:0},14:{channel:true,mutation:true,count:0},15:{channel:true,mutation:true,count:0},16:{channel:true,mutation:true,count:0},
   17:{channel:true,mutation:true,count:1},18:{channel:true,mutation:true,count:1},19:{channel:true,mutation:true,count:0},20:{channel:true,mutation:true,count:1},
-  21:{channel:true,mutation:true,count:1},22:{channel:true,mutation:true,count:2},23:{channel:true,mutation:true,count:0},
+  21:{channel:true,mutation:true,count:1},22:{channel:true,mutation:true,count:2},23:{channel:true,mutation:true,count:0},24:{channel:false,mutation:false,count:0},25:{channel:true,mutation:true,count:1},
   30:{channel:false,mutation:false,count:1},31:{channel:false,mutation:true,count:2},40:{channel:false,mutation:false,count:1},50:{channel:false,mutation:false,count:1},
   51:{channel:false,mutation:true,count:2},52:{channel:false,mutation:true,count:2},60:{channel:false,mutation:false,count:1},61:{channel:false,mutation:true,count:3},
   62:{channel:false,mutation:false,count:0},63:{channel:false,mutation:true,count:2},64:{channel:false,mutation:false,count:1},
+  70:{channel:false,mutation:true,count:1},71:{channel:false,mutation:false,count:1},72:{channel:false,mutation:false,count:3},73:{channel:false,mutation:true,count:2},74:{channel:false,mutation:true,count:1},75:{channel:false,mutation:false,count:3},
+  80:{channel:false,mutation:true,count:1},81:{channel:false,mutation:false,count:1},82:{channel:false,mutation:true,count:1},83:{channel:false,mutation:true,count:1},84:{channel:false,mutation:false,count:1},
 };
+function cursor(v: unknown): Uint8Array | null {
+  if (v === null) return null;
+  const b = bytes(v); if (b.length < 1 || b.length > 256) fail('E_BOT_RANGE'); return b;
+}
+function canonicalArray(raw: unknown, max: number): CborValue[] {
+  const b = bytes(raw); if (b.length < 1 || b.length > max) fail('E_BOT_RANGE');
+  const decoded = decode(b); if (!Array.isArray(decoded)) fail('E_BOT_SHAPE');
+  const values = decoded as CborValue[]; if (!sameBytes(encode(values), b)) fail('E_BOT_SHAPE'); return values;
+}
+function sameBytes(a: Uint8Array,b: Uint8Array): boolean { return a.length===b.length && a.every((v,i)=>v===b[i]); }
+function validatePollSelection(raw: unknown): Uint8Array {
+  const b=bytes(raw); const values=canonicalArray(b,2200); if(values.length>10) fail('E_BOT_SHAPE');
+  const seen=new Set<bigint>(); for(const v of values) { const n=u64(v); if(n>9n || seen.has(n)) fail('E_BOT_RANGE'); seen.add(n); }
+  return b;
+}
+function validateUtilityPayload(raw: unknown, poll: boolean): Uint8Array {
+  const b=bytes(raw); const f=canonicalArray(b,poll?1800:2200); if(f.length!==7 || u64(f[0])!==1n) fail('E_BOT_SHAPE');
+  if(poll) {
+    id(f[1]); nullable(f[2],id);
+    if(typeof f[3]!=='string' || unicodeWhitespaceOnly.test(f[3]) || Array.from(f[3]).length>300) fail('E_BOT_RANGE');
+    const answerValues=f[4]; if(!Array.isArray(answerValues) || answerValues.length<2 || answerValues.length>10) fail('E_BOT_SHAPE');
+    const answers=new Set<string>(); for(const x of answerValues as CborValue[]) { if(typeof x!=='string') fail('E_BOT_SHAPE'); const answer=x as string; if(unicodeWhitespaceOnly.test(answer) || Array.from(answer).length>100 || answers.has(answer)) fail('E_BOT_RANGE'); answers.add(answer); }
+    if(u64(f[5])>1n || ![3600n,14400n,28800n,86400n,259200n,604800n].includes(u64(f[6]))) fail('E_BOT_RANGE');
+  } else {
+    const kind=u64(f[1]); if(kind>1n) fail('E_BOT_RANGE');
+    const when=u64(f[2]); if((kind===0n && (when<60n || when>31536000n)) || (kind===1n && (when<1n || when>253402300799n))) fail('E_BOT_RANGE');
+    if(typeof f[3]!=='string' || enc.encode(f[3]).length<1 || enc.encode(f[3]).length>1500 || typeof f[4]!=='string' || enc.encode(f[4]).length<1 || enc.encode(f[4]).length>100) fail('E_BOT_RANGE');
+    const channel=nullable(f[5],id) as Uint8Array|null; const thread=nullable(f[6],id) as Uint8Array|null; if(thread!==null && channel===null) fail('E_BOT_SHAPE');
+  }
+  return b;
+}
 function validateArgs(op: number, a: unknown[]): void {
-  const spec = ops[op]; if (!spec) fail('E_BOT_OPERATION'); if (a.length !== spec.count) fail('E_BOT_SHAPE');
+  const spec = ops[op]; if (!spec) fail('E_BOT_OPERATION'); if (a.length !== spec.count && !(op === 15 && a.length === 1)) fail('E_BOT_SHAPE');
   const u = (i:number,min=0n,max=MAX) => { a[i]=uint(a[i],min,max); };
   const t = (i:number,min:number,max:number,ctrl=false) => { a[i]=text(a[i],min,max,ctrl); };
   const ident=(i:number)=>{a[i]=id(a[i]);};
   switch(op) {
     case 1: case 2: u(0,0n,5n); if(op===2) a[1]=cborBytes(a[1],1,2400); break;
     case 11: t(0,1,200,true); break; case 12: t(0,1,2048,true); break;
+    case 15:
+      if (a.length === 1 && (typeof a[0] !== 'string' || a[0] !== ''
+        && (!/^[0-9a-f]{32}$/u.test(a[0]) || a[0] === '0'.repeat(32)))) fail('E_BOT_SHAPE');
+      break;
     case 17: u(0); break; case 18: u(0,0n,100n); break; case 20: u(0,0n,2n); break;
-    case 21: ident(0); break; case 22: ident(0); a[1]=nullable(a[1],id); break;
+    case 21: case 25: ident(0); break; case 22: ident(0); a[1]=nullable(a[1],id); break;
     case 30: t(0,1,2000); break;
     case 31: {
       ident(0); const payload = cborBytes(a[1], 1, 2200); const rows = arr(decode(payload));
@@ -109,6 +147,13 @@ function validateArgs(op: number, a: unknown[]): void {
       else fail('E_BOT_SHAPE');
       break;
     case 63: t(0,1,512,true); a[1]=cborBytes(a[1],1,2400); break;
+    case 70: a[0]=validateUtilityPayload(a[0], true); break;
+    case 80: a[0]=validateUtilityPayload(a[0], false); break;
+    case 71: case 74: case 82: case 83: ident(0); break;
+    case 72: ident(0); a[1]=nullable(a[1],id); a[2]=cursor(a[2]); break;
+    case 73: ident(0); a[1]=validatePollSelection(a[1]); break;
+    case 75: ident(0); u(1,0n,9n); a[2]=cursor(a[2]); break;
+    case 81: case 84: a[0]=cursor(a[0]); break;
   }
 }
 function requestValue(x: BotRequest): CborInput[] {
@@ -118,7 +163,7 @@ function requestValue(x: BotRequest): CborInput[] {
   if (spec.channel !== (x.channelId !== null)) fail('E_BOT_CHANNEL');
   if (spec.mutation ? x.revision === null || x.expires === null : x.revision !== null || x.expires !== null) fail('E_BOT_CONTEXT');
   if(x.revision!==null)uint(x.revision); if(x.expires!==null)uint(x.expires);
-  if (x.operation === 31 && x.revision !== 0n) fail('E_BOT_CONTEXT');
+  if ((x.operation === 25 || x.operation === 31 || x.operation === 70 || x.operation === 80) && x.revision !== 0n) fail('E_BOT_CONTEXT');
   if (!Array.isArray(x.args)) fail('E_BOT_SHAPE');
   const args=[...x.args]; validateArgs(x.operation,args);
   return [1n,x.requestId,x.communityId,x.channelId,BigInt(x.operation),x.revision,x.expires,args];

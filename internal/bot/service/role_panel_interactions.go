@@ -184,7 +184,8 @@ func rolePanelMessage(options []rolePanelOption) (string, error) {
 			return "", errors.New("role panel message is too long")
 		}
 	}
-	return builder.String(), nil
+	// Security review (task 8b): option names never carry the music player marker.
+	return NeutralizeBotMarkers(builder.String()), nil
 }
 
 func rolePanelAttemptID(operation id.ID) id.ID {

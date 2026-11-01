@@ -12,6 +12,7 @@ import (
 
 	"github.com/livekit/protocol/livekit"
 
+	botaccess "github.com/jonasthim/dilla/internal/bot/access"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/sfu"
 	"github.com/jonasthim/dilla/internal/store"
@@ -123,15 +124,21 @@ const roomResync = "*"
 // syncRoomGrants is SyncCallGrants' visit of one live call. It runs on the retry loop (RequestSync),
 // so it waits for the call's lock no longer than a request does: a busy call is left as a pending
 // room resync, which the loop's next retry pass drives, rather than holding up the queue behind it.
-func (h *Calls) syncRoomGrants(ctx context.Context, d grantDeps, ch store.ChannelRow, row store.VoiceSessionRow, userID *id.ID) error {
+func (h *Calls) syncRoomGrants(ctx context.Context, d grantDeps, ch store.ChannelRow, row store.VoiceSessionRow, userID *id.ID) (result error) {
 	ctx, unlock, err := h.lock(ctx, row.CallID, callLockWait, callHoldBackground)
 	if err != nil {
+		h.resetBotOnly(row.CallID)
 		// The change is committed; the room converges on the retry loop instead.
 		h.leases.markPending(row.CallID, roomResync, pendingRepair{Room: row.LivekitRoom})
 		h.reportPending()
 		return fmt.Errorf("sync the grants of %s: %w", row.LivekitRoom, err)
 	}
 	defer unlock()
+	defer func() {
+		if result != nil {
+			h.resetBotOnly(row.CallID)
+		}
+	}()
 	cur, live, err := h.liveRow(ctx, d.repo, row)
 	if err != nil || !live {
 		return err
@@ -149,7 +156,12 @@ func (h *Calls) syncRoomGrants(ctx context.Context, d grantDeps, ch store.Channe
 // reached, is left as a pending room resync. The caller holds the call's lock; ctx carries the hold's
 // deadline.
 func (h *Calls) reconcileRoom(ctx context.Context, d grantDeps, ch store.ChannelRow, row store.VoiceSessionRow,
-	userID *id.ID, done map[string]bool, match func(string) bool) error {
+	userID *id.ID, done map[string]bool, match func(string) bool) (result error) {
+	defer func() {
+		if result != nil {
+			h.resetBotOnly(row.CallID)
+		}
+	}()
 	h.leases.dropStale(row.CallID, row.LivekitRoom)
 	lctx, cancel := sfuCtx(ctx)
 	parts, err := d.tokens.Participants(lctx, row.LivekitRoom)
@@ -199,7 +211,11 @@ func (h *Calls) reconcileRoom(ctx context.Context, d grantDeps, ch store.Channel
 		errs = append(errs, err)
 	}
 	if whole && complete {
-		h.trackAbsentLocked(ctx, row, parts, cut)
+		botsOnly, err := h.trackAbsentLocked(ctx, row, parts, cut)
+		errs = append(errs, err)
+		if botsOnly && errors.Join(errs...) == nil {
+			errs = append(errs, h.endOver(ctx, row, "bots_only"))
+		}
 	}
 	return errors.Join(errs...)
 }
@@ -311,6 +327,12 @@ func (h *Calls) reconcileOutcome(ctx context.Context, d grantDeps, ch store.Chan
 	leased := h.leases.held(row.CallID, row.LivekitRoom, dev) && !dropSlot && !penalised
 	keepsSlot := (bits.Has(PermVideo) || bits.Has(PermScreenShare)) && !dropSlot && !penalised
 	perm := sfu.PublishGrant(bits.Has(PermSpeak) && !penalised, bits.Has(PermVideo) && leased, bits.Has(PermScreenShare) && leased)
+	perm, err = restrictBotCallGrant(ctx, d.repo, dev, perm)
+	if err != nil {
+		return false, pending(errors.Join(fmt.Errorf("device %s: %w", dev, err), h.pushNone(ctx, d, row, dev)), dropSlot)
+	}
+	keepsSlot = keepsSlot && (slices.Contains(perm.CanPublishSources, livekit.TrackSource_CAMERA) ||
+		slices.Contains(perm.CanPublishSources, livekit.TrackSource_SCREEN_SHARE))
 	pctx, cancel := sfuCtx(ctx)
 	err = d.tokens.UpdatePermission(pctx, row.LivekitRoom, identity, perm)
 	cancel()
@@ -389,13 +411,18 @@ func (h *Calls) cutIdentity(ctx context.Context, d grantDeps, row store.VoiceSes
 // pushNone pushes dev the no-publish grant: the fallback of a cut or a lookup that failed. Its own
 // failure is reported; the caller records the repair either way.
 func (h *Calls) pushNone(ctx context.Context, d grantDeps, row store.VoiceSessionRow, dev id.ID) error {
+	perm, lookupErr := restrictBotCallGrant(ctx, d.repo, dev, sfu.PublishGrant(false, false, false))
+	if lookupErr != nil {
+		// An unknown account may be a bot. Never restore receive rights during a failure.
+		perm = &livekit.ParticipantPermission{}
+	}
 	pctx, cancel := sfuCtx(ctx)
-	err := d.tokens.UpdatePermission(pctx, row.LivekitRoom, dev.String(), sfu.PublishGrant(false, false, false))
+	err := d.tokens.UpdatePermission(pctx, row.LivekitRoom, dev.String(), perm)
 	cancel()
 	if err != nil && !errors.Is(err, sfu.ErrNoParticipant) {
-		return fmt.Errorf("fail-closed demotion of %s: %w", dev, err)
+		return errors.Join(lookupErr, fmt.Errorf("fail-closed demotion of %s: %w", dev, err))
 	}
-	return nil
+	return lookupErr
 }
 
 // drainPending retries at most limit pending repairs of row's call — only identity only's when only
@@ -566,6 +593,7 @@ func (h *Calls) SweepRooms(ctx context.Context) {
 	defer cancel()
 	rooms, err := h.listRooms(ctx)
 	if err != nil {
+		h.resetBotOnly(id.ID{})
 		h.log.WarnContext(ctx, "listing the SFU's rooms for the sweep failed", "err", err)
 		return
 	}
@@ -707,7 +735,7 @@ func (h *Calls) listRooms(ctx context.Context) ([]string, error) {
 // is gone (deleted) or whose call group is closed or gone is over (CALLS-1, CALLS-2): it is ended
 // and its room deleted, never skipped. Any other live call's room is reconciled under the call's
 // lock, every participant (sweep) or those match accepts (cut).
-func (h *Calls) sweepRoom(ctx context.Context, room string, match func(string) bool) error {
+func (h *Calls) sweepRoom(ctx context.Context, room string, match func(string) bool) (result error) {
 	callHex, _, ok := strings.Cut(room, "-")
 	callID, perr := id.Parse(callHex)
 	if !ok || perr != nil {
@@ -718,9 +746,16 @@ func (h *Calls) sweepRoom(ctx context.Context, room string, match func(string) b
 	}
 	ctx, unlock, err := h.lock(ctx, callID, callLockWait, callHoldBackground)
 	if err != nil {
+		h.resetBotOnly(callID)
 		return err
 	}
 	defer unlock()
+	defer func() {
+		if result != nil {
+			h.resetBotOnly(callID)
+		}
+	}()
+
 	row, err := h.repo.GetVoiceSession(ctx, callID)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
@@ -831,4 +866,24 @@ func (h *Calls) StartRetries(every time.Duration) (stop func()) {
 			<-done
 		})
 	}
+}
+
+// restrictBotCallGrant uses authoritative account identity for every grant seam. Managed
+// bots can send microphone audio when permitted, but can never receive tracks or send video.
+// Callers must propagate lookup failures; demotion uses a fully closed fallback instead.
+func restrictBotCallGrant(ctx context.Context, repo store.Repository, dev id.ID, perm *livekit.ParticipantPermission) (*livekit.ParticipantPermission, error) {
+	device, err := repo.GetDevice(ctx, dev)
+	if err != nil {
+		return nil, err
+	}
+	bot, err := botaccess.IsBotUser(ctx, repo, device.UserID)
+	if err != nil {
+		return nil, err
+	}
+	if !bot {
+		return perm, nil
+	}
+	grant := sfu.PublishGrant(perm.CanPublish && slices.Contains(perm.CanPublishSources, livekit.TrackSource_MICROPHONE), false, false)
+	grant.CanSubscribe = false
+	return grant, nil
 }

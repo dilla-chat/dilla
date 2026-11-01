@@ -254,3 +254,185 @@ func TestInteractionResponseOutboxRejectsSendCoordinatorForDifferentInstallation
 		t.Fatal("outbox accepted a coordinator bound to a different installation in the same community")
 	}
 }
+
+type closedResponseSession struct {
+	*sendSessionFake
+	state       *responseOutboxState
+	closeUpload bool
+	t           *testing.T
+}
+
+func (s *closedResponseSession) PostBotMessage(_ context.Context, community, group id.ID, upload client.BotMessageUpload) (protocol.SendReceipt, error) {
+	s.t.Helper()
+	saved, err := decodeInteractionResponseRecord(s.state.value.Value)
+	if err != nil || saved.AttemptID != upload.AttemptID || saved.OperationID != upload.OperationID {
+		s.t.Fatal("successor upload preceded durable identity")
+	}
+	s.uploads = append(s.uploads, upload)
+	receipt := sendReceipt(upload.OperationID, upload.AttemptID, group, upload.ExpectedGeneration, upload.Epoch, protocol.ReceiptAccepted)
+	receipt.CommunityID = community
+	receipt.PredecessorAttemptID = upload.PredecessorAttemptID
+	if s.closeUpload {
+		receipt.Outcome = protocol.ReceiptClosedNotAccepted
+		receipt.SendResponse = nil
+		s.receipts[upload.AttemptID] = receipt
+		return receipt, nil
+	}
+	s.receipts[upload.AttemptID] = receipt
+	return protocol.SendReceipt{}, errors.New("lost accepted upload reply")
+}
+func closedRecoveryFixture(t *testing.T) (*responseOutboxState, *sendNativeFake, *closedResponseSession, *SendCoordinator, *InteractionResponseOutbox, native.GroupEvent) {
+	t.Helper()
+	ctx := context.Background()
+	state, initial, event := responseOutboxFixture(t)
+	op, attempt := interactionID(30), interactionID(31)
+	first := newResponseOutbox(t, state, initial)
+	if _, err := first.Send(ctx, event, []byte("immutable private response"), op, attempt, 123, 8); err != nil {
+		t.Fatal(err)
+	}
+	closed := sendReceipt(op, attempt, event.Group, 8, 7, protocol.ReceiptClosedNotAccepted)
+	closed.CommunityID = state.binding.Community
+	n := &sendNativeFake{binding: state.binding, group: native.GroupInfo{ID: event.Group, Kind: 0, Community: &state.binding.Community, State: 2, Epoch: 8}, prepared: native.PreparedSend{Epoch: 8, Ciphertext: []byte("ciphertext")}}
+	coordinator, err := NewSendCoordinatorWithAdapters(n, sendAuthorityFake{discovery: client.Discovery{InstanceID: state.binding.Instance, Generation: 9}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := &closedResponseSession{sendSessionFake: &sendSessionFake{receipts: map[id.ID]protocol.SendReceipt{attempt: closed}}, state: state, t: t}
+	restart, err := NewInteractionResponseOutboxWithAdapters(state, coordinator, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return state, n, session, coordinator, restart, event
+}
+
+func TestInteractionResponseOutboxRecoversClosedAttemptWithoutRedispatch(t *testing.T) {
+	ctx := context.Background()
+	state, _, session, coordinator, restart, event := closedRecoveryFixture(t)
+	op, attempt := interactionID(30), interactionID(31)
+	checks := 0
+	receipt, found, err := restart.ResumeWithPreflight(ctx, event, func(context.Context) error { checks++; return nil })
+	if err != nil || !found || receipt.Outcome != protocol.ReceiptAccepted {
+		t.Fatalf("closed response blocked queue: found=%v outcome=%v err=%v", found, receipt.Outcome, err)
+	}
+	if len(session.uploads) != 1 || checks != 3 {
+		t.Fatalf("uploads=%d authorization checks=%d", len(session.uploads), checks)
+	}
+	upload := session.uploads[0]
+	if upload.OperationID != op || upload.AttemptID == attempt || upload.PredecessorAttemptID == nil || *upload.PredecessorAttemptID != attempt || upload.ExpectedGeneration != 9 {
+		t.Fatalf("invalid successor coordinates: %+v", upload)
+	}
+	persisted, ok, err := restart.Lookup(ctx, event)
+	if err != nil || !ok || string(persisted.Body) != "immutable private response" || persisted.OperationID != op {
+		t.Fatal("successor changed saved response")
+	}
+	again, err := NewInteractionResponseOutboxWithAdapters(state, coordinator, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, found, err = again.ResumeWithPreflight(ctx, event, func(context.Context) error { t.Fatal("accepted response was reauthorized or sent again"); return nil })
+	if err != nil || !found || receipt.Outcome != protocol.ReceiptAccepted || len(session.uploads) != 1 {
+		t.Fatal("restart did not resume exact accepted successor")
+	}
+}
+
+func TestInteractionResponseOutboxDeniedClosedReplayDoesNotPromote(t *testing.T) {
+	state, n, session, _, restart, event := closedRecoveryFixture(t)
+	before := append([]byte(nil), state.value.Value...)
+	denied := errors.New("permission revoked")
+	_, found, err := restart.ResumeWithPreflight(context.Background(), event, func(context.Context) error { return denied })
+	if !found || !errors.Is(err, denied) || len(session.uploads) != 0 || n.prepareCalls != 0 || string(state.value.Value) != string(before) {
+		t.Fatalf("denied replay promoted or sent: found=%v err=%v revisions=%d", found, err, state.value.Revision)
+	}
+}
+
+type lostSuccessorState struct {
+	*responseOutboxState
+	lost bool
+}
+
+func (s *lostSuccessorState) StateTransaction(ctx context.Context, tx id.ID, changes []native.StateChange) ([]uint64, error) {
+	result, err := s.responseOutboxState.StateTransaction(ctx, tx, changes)
+	if err == nil && !s.lost {
+		s.lost = true
+		return nil, errors.New("lost committed CAS reply")
+	}
+	return result, err
+}
+func TestInteractionResponseOutboxLostSuccessorCommitReusesWinningAttempt(t *testing.T) {
+	state, _, session, coordinator, _, event := closedRecoveryFixture(t)
+	uncertain := &lostSuccessorState{responseOutboxState: state}
+	outbox, err := NewInteractionResponseOutboxWithAdapters(uncertain, coordinator, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, found, err := outbox.Resume(context.Background(), event)
+	if err != nil || !found || receipt.Outcome != protocol.ReceiptAccepted || state.value.Revision != 2 || len(session.uploads) != 1 {
+		t.Fatalf("lost CAS did not reuse durable successor: found=%v err=%v revision=%d uploads=%d", found, err, state.value.Revision, len(session.uploads))
+	}
+}
+func TestInteractionResponseOutboxDoesNotPromoteUncertainOutcomes(t *testing.T) {
+	for _, outcome := range []protocol.SendOutcome{protocol.ReceiptAccepted, protocol.ReceiptUnknownAfterRestore} {
+		t.Run(string(rune('0'+outcome)), func(t *testing.T) {
+			state, n, session, _, outbox, event := closedRecoveryFixture(t)
+			old := session.receipts[interactionID(31)]
+			old.Outcome = outcome
+			if outcome == protocol.ReceiptAccepted {
+				accepted := sendReceipt(old.OperationID, old.AttemptID, old.GroupID, old.ExpectedGeneration, old.Epoch, outcome)
+				accepted.CommunityID = old.CommunityID
+				old = accepted
+			}
+			session.receipts[old.AttemptID] = old
+			before := append([]byte(nil), state.value.Value...)
+			_, _, _ = outbox.Resume(context.Background(), event)
+			if len(session.uploads) != 0 || n.prepareCalls != 0 || string(state.value.Value) != string(before) {
+				t.Fatal("terminal outcome created successor")
+			}
+		})
+	}
+}
+
+func TestInteractionResponseOutboxBoundsSuccessorsAndLinksRepeatedClosedAttempts(t *testing.T) {
+	state, _, session, _, outbox, event := closedRecoveryFixture(t)
+	session.closeUpload = true
+	receipt, found, err := outbox.Resume(context.Background(), event)
+	if err != nil || !found || receipt.Outcome != protocol.ReceiptClosedNotAccepted || state.value.Revision != 2 || len(session.uploads) != 1 {
+		t.Fatal("one call created unbounded successors")
+	}
+	prior := session.uploads[0].AttemptID
+	session.closeUpload = false
+	receipt, found, err = outbox.Resume(context.Background(), event)
+	if err != nil || !found || receipt.Outcome != protocol.ReceiptAccepted || state.value.Revision != 3 || len(session.uploads) != 2 || session.uploads[1].PredecessorAttemptID == nil || *session.uploads[1].PredecessorAttemptID != prior {
+		t.Fatalf("repeated closed recovery lost chain: err=%v", err)
+	}
+}
+func TestInteractionResponseOutboxRestartAfterPromotionPreservesAttemptOnAuthorizationFailure(t *testing.T) {
+	for _, denyAt := range []int{2, 3} {
+		t.Run(string(rune('0'+denyAt)), func(t *testing.T) {
+			state, _, session, coordinator, outbox, event := closedRecoveryFixture(t)
+			denied := errors.New("authorization changed")
+			checks := 0
+			_, found, err := outbox.ResumeWithPreflight(context.Background(), event, func(context.Context) error {
+				checks++
+				if checks == denyAt {
+					return denied
+				}
+				return nil
+			})
+			if !found || !errors.Is(err, denied) || state.value.Revision != 2 || len(session.uploads) != 0 {
+				t.Fatalf("authorization failure uploaded or discarded durable promotion: err=%v checks=%d", err, checks)
+			}
+			saved, _, err := outbox.Lookup(context.Background(), event)
+			if err != nil {
+				t.Fatal(err)
+			}
+			restarted, err := NewInteractionResponseOutboxWithAdapters(state, coordinator, session)
+			if err != nil {
+				t.Fatal(err)
+			}
+			receipt, found, err := restarted.ResumeWithPreflight(context.Background(), event, func(context.Context) error { return nil })
+			if err != nil || !found || receipt.Outcome != protocol.ReceiptAccepted || len(session.uploads) != 1 || session.uploads[0].AttemptID != saved.AttemptID || state.value.Revision != 2 {
+				t.Fatal("restart did not reuse exact promoted identity")
+			}
+		})
+	}
+}

@@ -6,6 +6,7 @@ import { ReactionBar } from '../ReactionBar/ReactionBar.tsx';
 import { AttachmentCard } from '../AttachmentCard/AttachmentCard.tsx';
 import { PhoneLayoutProvider } from '../internal/phoneLayout.ts';
 import { useDrawnImage } from '../internal/drawn-image.ts';
+import { GeneralLog, RAID_JSON, Row, rowReactions, yamlBody } from './conversation.fixture.tsx';
 
 // The state strings are task 24's to own in en.ts; these are the drafts it starts from.
 const meta = {
@@ -51,7 +52,7 @@ export const Everything: Story = {
     body: [{ kind: 'text', text: '' }, { kind: 'mention', label: '@mira', me: false, broadcast: false }, { kind: 'text', text: ' bring the map, ' },
       { kind: 'mention', label: '@everyone', me: true, broadcast: true }, { kind: 'text', text: ' meet at the harbour' }],
     reply: { label: 'reply to björn', author: 'björn', excerpt: 'after nine, still on the boat', state: 'ok', jumpLabel: 'go to the original message', onJump: () => {} },
-    toolbar: <MessageToolbar label="actions for this message" tabbable items={[
+    toolbar: <MessageToolbar moreLabel="more actions" label="actions for this message" tabbable items={[
       { id: 'react', label: 'react', onAction: () => {} }, { id: 'reply', label: 'reply', onAction: () => {} },
       { id: 'edit', label: 'edit', onAction: () => {} }, { id: 'pin', label: 'unpin', onAction: () => {} },
       { id: 'delete', label: 'delete', danger: true, onAction: () => {} },
@@ -105,7 +106,7 @@ export const ThreadChip: Story = {
 };
 export const ThreadChipActive: Story = {
   args: { author: 'ada', time: '21:02', body: 'anyone up for a round tonight?', active: true, thread: { label: '1 reply', onOpen: () => {} },
-    toolbar: <MessageToolbar label="actions for this message" tabbable items={[
+    toolbar: <MessageToolbar moreLabel="more actions" label="actions for this message" tabbable items={[
       { id: 'react', label: 'react', onAction: () => {} }, { id: 'reply', label: 'reply', onAction: () => {} },
       { id: 'thread', label: 'reply in thread', onAction: () => {} }, { id: 'pin', label: 'pin', onAction: () => {} },
     ]} /> },
@@ -115,7 +116,7 @@ export const ThreadChipActive: Story = {
 export const Grouped: Story = { args: { grouped: true, time: '10:06 PM', body: 'i have the map' } };
 export const DeviceTagAlways: Story = { args: { author: 'björn', body: 'after nine, still on the boat', tag: 'web' } };
 const phoneToolbar = (
-  <MessageToolbar label="actions for this message" tabbable items={[
+  <MessageToolbar moreLabel="more actions" label="actions for this message" tabbable items={[
     { id: 'react', label: 'react', onAction: () => {} }, { id: 'reply', label: 'reply', onAction: () => {} }, { id: 'pin', label: 'pin', onAction: () => {} },
   ]} />
 );
@@ -131,3 +132,46 @@ function PhoneRow({ startRevealed }: { startRevealed: boolean }) {
 }
 export const PhoneHidden: Story = { render: () => <PhoneRow startRevealed={false} /> };
 export const PhoneRevealed: Story = { render: () => <PhoneRow startRevealed /> };
+
+// ---- Task 7 (Signal §8): the prototype's conversation states, with the props packages/web passes (conversation.fixture.tsx).
+const wide = (Story: () => ReactNode) => <div style={{ maxWidth: 900, paddingTop: 16, background: 'var(--bg)' }}><Story /></div>;
+const signal = { globals: { theme: 'signal' }, decorators: [wide] };
+export const SignalFirst: Story = { ...signal, render: () => <Row author="Ada" time="20:27" body="raid tonight at 20:00? bring the good shields" nameColor={0xE9B6EC} /> };
+export const SignalFollowUp: Story = { ...signal, render: () => <>
+  <Row author="Ada" time="20:29" body="the map from saturday is in #loot, the one with the coffee stain" nameColor={0xE9B6EC} />
+  <Row author="Ada" time="20:29" grouped body="see you at the bridge" nameColor={0xE9B6EC} />
+</> };
+/** Hover forced (`forceHover`): the fill, the accent bar, the gutter time and the floating toolbar. */
+export const SignalHover: Story = { ...signal, render: () => <>
+  <Row author="Ada" time="20:29" body="the map from saturday is in #loot, the one with the coffee stain" nameColor={0xE9B6EC} />
+  <Row author="Ada" time="20:29" grouped forceHover body="see you at the bridge" nameColor={0xE9B6EC} />
+</> };
+export const SignalMentionOfYou: Story = { ...signal, render: () => <Row author="Liv" time="18:12" mention
+  body={[{ kind: 'text', text: 'me. ' }, { kind: 'mention', label: '@Mira', me: true, broadcast: false }, { kind: 'text', text: ' can you bring the cardamom?' }]} /> };
+const REPLY = { label: 'reply to Ada', author: 'Ada', excerpt: 'raid tonight at 20:00? bring the good shields', state: 'ok' as const, jumpLabel: 'go to the original message', onJump: () => {} };
+export const SignalReply: Story = { ...signal, render: () => <Row author="Mira" time="20:31" own reply={REPLY} body="two ropes. final answer." /> };
+export const SignalReplyFlash: Story = { ...signal, render: () => <Row author="Ada" time="20:27" flash body="raid tonight at 20:00? bring the good shields" nameColor={0xE9B6EC} /> };
+export const SignalReactions: Story = { ...signal, render: () => <Row author="Björn" time="20:27" body="in. last time the bridge troll took everything we had" forceHover
+  reactions={rowReactions([{ emoji: '🛡️', count: 3, mine: true, name: 'shield' }, { emoji: '🔥', count: 1, mine: false, name: 'fire' }])} /> };
+export const SignalThread: Story = { ...signal, render: () => <Row author="Björn" time="20:27" body="in. last time the bridge troll took everything we had"
+  thread={{ label: '2 replies', last: 'last 20:33', onOpen: () => {} }} /> };
+export const SignalCodeBlockYaml: Story = { ...signal, render: () => <Row author="Björn" time="20:29" body={yamlBody} /> };
+export const SignalCodeBlockJson: Story = { ...signal, render: () => <Row author="Björn" time="20:29"
+  body={[{ kind: 'text', text: 'same thing for the bot:' }, { kind: 'codeblock', lang: 'json', text: RAID_JSON }]} /> };
+function SignalFiles() {
+  const thumbUrl = useDrawnImage(560, 420);
+  return <Row author="Björn" time="19:02" body="uploaded the map. coffee stain is a feature" attachments={<>
+    <AttachmentCard kind="image" name="map.png" size="1.2 MB" thumbUrl={thumbUrl} w={560} h={420} openLabel="open map.png" onOpen={() => {}} saveLabel="save map.png" state="idle" tabbable={false} />
+    <AttachmentCard kind="file" name="route.gpx" size="12.4 KB" thumbUrl={null} w={null} h={null} openLabel="open route.gpx" saveLabel="save route.gpx" onSave={() => {}} state="idle" tabbable={false} />
+  </>} />;
+}
+export const SignalAttachments: Story = { ...signal, render: () => <SignalFiles /> };
+function SignalGif() {
+  const thumbUrl = useDrawnImage(480, 360);
+  return <Row author="Mira" time="20:32" own body={[]} attachments={<AttachmentCard kind="image" name="victory.gif" size="2.1 MB" thumbUrl={thumbUrl} w={480} h={360}
+    openLabel="open victory.gif" onOpen={() => {}} saveLabel="save victory.gif" state="idle" tabbable={false} badge="GIF" />} />;
+}
+export const SignalGifAttachment: Story = { ...signal, render: () => <SignalGif /> };
+export const SignalReplyingTarget: Story = { ...signal, render: () => <Row author="Ada" time="20:27" replying body="raid tonight at 20:00? bring the good shields" nameColor={0xE9B6EC} /> };
+/** The prototype's #general feed, top to bottom (the now-playing card is Task 8b's). */
+export const SignalFeed: Story = { globals: { theme: 'signal' }, decorators: [Story => <div style={{ height: 720, maxWidth: 1000, display: 'flex', flexDirection: 'column' }}><Story /></div>], render: () => <GeneralLog /> };

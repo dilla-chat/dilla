@@ -1,8 +1,21 @@
-.d-device-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 0.5rem 1rem; padding: 0.625rem 0; border-bottom: 1px solid var(--hairline); }
-.d-device-row__head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; min-width: 0; }
-.d-device-row__name { font-size: var(--text-base); color: var(--fg); font-variant-numeric: tabular-nums; }
-.d-device-row__tag { font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking); text-transform: uppercase; padding: 0 0.25rem; color: var(--fg-3); border: 1px solid var(--edge); border-radius: var(--r-md); }
-.d-device-row__tag[data-kind="own"] { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
-.d-device-row__meta { margin-top: 0.125rem; font-size: var(--text-sm); color: var(--fg-3); }
-.d-device-row__actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.5rem; }
-.d-device-row__id { font-size: var(--text-sm); color: var(--fg-3); font-variant-numeric: tabular-nums; }
+/* README §5.9 (task 10): a device is a setting row: the 32px monitor tile, the name (12.5/600) with its tags, the meta line
+   (11px --fg-2) and the actions on the right. The rows of one list draw one 10px-radius group with hairlines between. */
+.d-device-row { box-sizing: border-box; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; min-height: calc(3.5rem + 2px); min-width: 0; padding: 10px 16px; border: 1px solid var(--hairline); border-radius: var(--r-xl); }
+/* Fix round 2: the group steps as the prototype's (56px rows, each after the first drawing its hairline inside its 56, in a
+   1px-edged box): the first row adds the top edge, the last the bottom edge, and no row overlaps another (56n + 2). */
+.d-device-row:has(+ .d-device-row) { min-height: calc(3.5rem + 1px); border-bottom: 0; border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.d-device-row + .d-device-row { min-height: calc(3.5rem + 1px); border-top-left-radius: 0; border-top-right-radius: 0; }
+.d-device-row + .d-device-row:has(+ .d-device-row) { min-height: 3.5rem; }
+.d-device-row:has(+ .d-device-row) { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.d-device-row__icon { display: flex; align-items: center; justify-content: center; flex: none; width: 2rem; height: 2rem; color: var(--accent); background: var(--surface-tile); border-radius: var(--r-lg); }
+.d-device-row__main { display: grid; flex: 1 1 220px; min-width: 0; line-height: 1.4; }
+.d-device-row__head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.d-device-row__name { font-size: var(--text-sm); font-weight: var(--weight-label); color: var(--fg); font-variant-numeric: tabular-nums; }
+/* The prototype's row tag: 9.5px/600 uppercase on the accent tag tint; the tier tag the same shape in --fg-2. */
+.d-device-row__tag { padding: 0 5px; font-size: var(--text-chip); font-weight: var(--weight-label); letter-spacing: 0.06em; text-transform: uppercase; color: var(--fg-2); background: var(--surface-hi); border-radius: var(--r-tag); }
+.d-device-row__tag[data-kind="own"] { color: var(--accent-2); background: var(--accent-tag); }
+.d-device-row__meta { font-size: var(--text-xs); color: var(--fg-2); }
+.d-device-row__actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.d-device-row__actions .d-btn[data-variant="danger"] { border-color: var(--danger-edge); }
+.d-device-row__actions .d-btn[data-variant="danger"]:hover { background: var(--danger-faint); }
+.d-device-row__id { font-size: var(--text-xs); color: var(--fg-2); font-variant-numeric: tabular-nums; }

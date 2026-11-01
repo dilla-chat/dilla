@@ -1,0 +1,9 @@
+/* The prototype's toast (task 8b; task 8c's share toasts too). */
+/* The toast a blocked control shows (the prototype's toast): 36px, centred 24px above the bottom (76px over a phone's tab bar). */
+.d-np-toasts { position: fixed; left: 50%; bottom: 24px; z-index: 60; display: flex; flex-direction: column; align-items: center; gap: 6px; transform: translateX(-50%); pointer-events: none; }
+body:has([data-layout="phone"]) .d-np-toasts { bottom: 76px; }
+/* Fix round 2: never wider than the screen less 16px a side; a long message wraps and grows (the prototype's copy is one 36px line). */
+.d-np-toast { display: flex; align-items: center; gap: 8px; box-sizing: border-box; min-height: 2.25rem; max-width: calc(100vw - 32px); padding: 0.375rem 14px; font-family: var(--font-mono); font-size: var(--text-ui); white-space: normal; overflow-wrap: anywhere; color: var(--fg); background: var(--toast);
+  border: 1px solid var(--line-strong); border-radius: var(--r-lg); box-shadow: var(--shadow-toast); animation: d-toast var(--duration-toast) var(--ease-out) both; }
+.d-np-toast .d-icon { flex: none; color: var(--ok); }
+

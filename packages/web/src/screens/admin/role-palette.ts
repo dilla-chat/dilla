@@ -13,3 +13,17 @@ export function paletteFor(current: number): { value: number; name: string }[] {
   if (current !== 0 && !COLORS.some(c => c.value === current)) out.push({ value: current, name: t('roles.color.custom') });
   return out;
 }
+
+// Signal task 10c (README §5.9): the Roles editor's six swatches, the prototype's colours, named by the nearest of the
+// twelve names above so a colour is still never told by sight alone.
+const SIGNAL: readonly { value: number; key: string }[] = [
+  { value: 0xE9B6EC, key: 'pink' }, { value: 0x5AA8E6, key: 'blue' }, { value: 0xFFD16A, key: 'amber' },
+  { value: 0x7CFF8E, key: 'green' }, { value: 0xFF8A65, key: 'orange' }, { value: 0xB0BEC5, key: 'grey' },
+];
+
+/** The six swatches, plus the role's own colour as a seventh ("current colour") when it is set and not among them. */
+export function signalPalette(current: number): { value: number; name: string }[] {
+  const out: { value: number; name: string }[] = SIGNAL.map(c => ({ value: c.value, name: t(`roles.color.${c.key}` as StringKey) }));
+  if (current !== 0 && !SIGNAL.some(c => c.value === current)) out.push({ value: current, name: t('roles.color.custom') });
+  return out;
+}

@@ -62,7 +62,7 @@ func (d Deps) GrantBotJoinRole(w http.ResponseWriter, r *http.Request) {
 			installation.UserID == nil || *installation.UserID != s.UserID || installation.DeviceID == nil || *installation.DeviceID != s.DeviceID {
 			return server.Errorf(server.CodeForbidden, "ready bot installation required")
 		}
-		if installation.Capabilities&uint8(botCapRoles) == 0 || s.Bot.Capabilities&uint8(botCapRoles) == 0 {
+		if installation.Capabilities&uint16(botCapRoles) == 0 || s.Bot.Capabilities&uint16(botCapRoles) == 0 {
 			return server.Errorf(server.CodeForbidden, "roles capability required")
 		}
 		if _, err := tx.GetMember(r.Context(), cid, s.UserID); err != nil {

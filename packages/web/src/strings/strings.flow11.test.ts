@@ -12,7 +12,8 @@ describe('flow 11 (v0.1.0-web3.7, slow mode, announcements and threads)', () => 
   const pairs = [...copy.matchAll(/`([a-zA-Z][\w.]*)='([^`]*)'`/g)].map(m => [m[1], m[2]] as const);
   it('strings: every flow-11 copy key equals en.ts byte for byte, and every new key is in the flow', () => {
     const table = en as Readonly<Record<string, string>>;
-    expect(pairs.length).toBe(32);
+    // Task 7 (Signal §5.5) adds thread.summary.last.
+    expect(pairs.length).toBe(33);
     for (const [key, value] of pairs) expect(table[key], key).toBe(value);
     for (const [key, value] of pairs) {
       for (const f of FORBIDDEN as { word: string; re: RegExp }[]) expect(f.re.test(value), `${key}: ${f.word}`).toBe(false);
@@ -39,12 +40,12 @@ describe('flow 11 (v0.1.0-web3.7, slow mode, announcements and threads)', () => 
     'announce.kind',
     'thread.open',
     'thread.close',
-    'thread.composer',
+    // Task 9 fix round 1 (Ruling AL): the reply input reads the prototype's "Reply in thread".
     'thread.list',
   ];
   it('chrome: the lower-case chrome keys are lower case', () => {
     const table = en as Readonly<Record<string, string>>;
-    expect(LOWER.length).toBe(7);
+    expect(LOWER.length).toBe(6);
     for (const key of LOWER) expect(table[key], key).toBe(table[key].toLowerCase());
   });
 });

@@ -1,0 +1,31 @@
+/* The reminders popover (Signal README §6.7; the prototype's bell popover, read value for value): 342px on --surface-2 with the
+   --line-strong edge, radius 10, the popover shadow, rising in over 200ms. */
+.d-reminders { position: absolute; right: -6px; top: 36px; z-index: 42; width: 342px /* the prototype's 340 content + its 1px border */; max-width: calc(100vw - 16px); overflow: hidden; color: var(--fg); background: var(--surface-2); border: 1px solid var(--line-strong); border-radius: var(--r-xl); box-shadow: var(--shadow-popover); transform-origin: right top; animation: d-modal var(--duration-popover) var(--ease-out) both; text-align: left; }
+/* On a phone the same panel rises from the bottom, above the tab bar, full width. */
+.d-reminders[data-layout="sheet"] { position: fixed; top: auto; left: 8px; right: 8px; bottom: calc(3.5rem + 8px + env(safe-area-inset-bottom)); width: auto; max-width: none; transform-origin: center bottom; animation-name: d-sheet-up; }
+.d-reminders__head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--hairline); }
+.d-reminders__bot { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 22px; height: 22px; border-radius: var(--r-row); background: var(--brand); color: var(--brand-ink); font-size: var(--text-nano); font-weight: var(--weight-display); }
+.d-reminders__title { flex: 1; margin: 0; font-size: var(--text-sm); font-weight: var(--weight-display); }
+.d-reminders__tabs { display: flex; padding: 2px; background: var(--bg-2); border: 1px solid var(--hairline-2); border-radius: var(--r-md); }
+.d-reminders__tab { display: flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px; font: inherit; font-size: var(--text-xs); color: var(--fg-2); background: transparent; border: 0; border-radius: var(--r-sm); cursor: pointer; transition: background var(--duration-fast), color var(--duration-fast); }
+.d-reminders__tab[aria-selected="true"] { color: var(--fg); background: var(--hover-hi); }
+.d-reminders__count { opacity: 0.7; }
+.d-reminders__body { max-height: 300px; overflow: auto; padding: 4px; }
+.d-reminders__list { list-style: none; margin: 0; padding: 0; }
+.d-reminders__row { display: flex; align-items: flex-start; gap: 10px; padding: 10px 8px; border-radius: var(--r-seg); animation: d-up var(--duration-popover) both; }
+.d-reminders__row:hover { background: var(--hover); }
+.d-reminders__icon { display: flex; align-items: center; justify-content: center; flex: none; width: 26px; height: 26px; border-radius: var(--r-md); color: var(--fg-2); background: var(--hover); }
+.d-reminders__row[data-due="true"] .d-reminders__icon { color: var(--warn); background: var(--warn-tint); }
+.d-reminders__text { display: grid; flex: 1; gap: 2px; min-width: 0; line-height: 1.35; }
+.d-reminders__what { font-size: var(--text-sm); overflow-wrap: anywhere; }
+/* The text opens its source message: drawn as the text it is (the prototype has no link here), a button for the keyboard. */
+.d-reminders__open { padding: 0; font: inherit; font-size: var(--text-sm); text-align: left; color: inherit; background: transparent; border: 0; cursor: pointer; }
+.d-reminders__open:hover { text-decoration: underline; text-underline-offset: 0.2em; }
+.d-reminders__meta { font-size: var(--text-meta); color: var(--fg-3); }
+.d-reminders__action { display: flex; align-items: center; flex: none; height: 26px /* 24 + its 1px border, as the prototype draws it */; padding: 0 8px; font: inherit; font-size: var(--text-meta); white-space: nowrap; color: var(--fg-chip); background: transparent; border: 1px solid var(--line-strong); border-radius: var(--r-row); cursor: pointer; transition: border-color var(--duration-fast), color var(--duration-fast); }
+.d-reminders__action:hover:not(:disabled) { color: var(--fg); border-color: var(--accent); }
+.d-reminders__action:disabled { opacity: var(--opacity-muted); cursor: not-allowed; }
+.d-reminders__empty, .d-reminders__status { margin: 0; padding: 24px 12px; font-size: var(--text-ui); text-align: center; color: var(--fg-3); }
+.d-reminders__status { padding: 8px 12px; }
+.d-reminders__foot { margin: 0; padding: 8px 12px; font-size: var(--text-meta); color: var(--fg-3); border-top: 1px solid var(--hairline); }
+@media (prefers-reduced-motion: reduce) { .d-reminders, .d-reminders__row { animation: none; } }

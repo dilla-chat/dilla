@@ -188,6 +188,53 @@ func TestTheCallSweeperActsWithinThirtyFiveSecondsOfIssue(t *testing.T) {
 	}
 }
 
+// A call group is closed when its call ends, and the last device's leave has by then asked for the
+// Remove of its leaf (CT 144: 58 closed call groups, each with an instance Remove issued the second
+// it closed). Every proposal sweep walked only open groups, so that Remove stayed non-void forever
+// and kept dilla_ds_proposals raised. The sweep voids the live proposals of a closed group: nobody
+// can commit them, and a closed group is never reopened.
+func TestTheSweepVoidsTheLiveProposalsOfAClosedGroup(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, _ := h.mustRegister(t)
+	h.repo.markCall(reg.GroupID)
+	if err := h.ds.ProposeRemoveDevice(ctx, reg.GroupID, h.memberSession(t, reg.GroupID, 1).DeviceID, id.New()); err != nil {
+		t.Fatal(err)
+	}
+	h.putMemberRemove(t, reg.GroupID, 2, 3600) // a member's own Remove, not yet expired
+	if n := len(h.proposals(t, reg.GroupID, false)); n != 2 {
+		t.Fatalf("%d live proposals before the close, want 2", n)
+	}
+	for _, origin := range []uint8{0, 1} {
+		h.putProposalRow(t, reg.GroupID, 5, origin, h.clk.Now().Unix(), 3600)
+	}
+	if err := h.ds.Close(ctx, reg.GroupID); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	h.clk.Advance(31 * time.Second)
+	if _, err := h.ds.Sweep(ctx); err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if _, err := ds.SweepCallProposalsForTest(h.ds, ctx); err != nil {
+		t.Fatalf("call sweep: %v", err)
+	}
+	rows := h.proposals(t, reg.GroupID, true)
+	old, err := h.repo.ListProposals(ctx, reg.GroupID, 5, true)
+	if err != nil || len(old) != 2 {
+		t.Fatalf("old-epoch proposals = %v, %v, want 2", old, err)
+	}
+	rows = append(rows, old...)
+	if len(rows) != 4 {
+		t.Fatalf("%d rows after the sweep, want the 4 kept (voided, not re-driven or deleted)", len(rows))
+	}
+	for _, r := range rows {
+		if r.VoidAt == nil {
+			t.Errorf("proposal %x (kind %d, origin %d, issued %d, ttl %d) is still live in a closed group",
+				r.Ref[:4], r.Kind, r.Origin, r.IssuedAt, r.TTL)
+		}
+	}
+}
+
 // G29: every member-set writer hands the call evictor exactly the devices it removed — computed
 // before mls_members is rewritten, because a removed device has no row afterwards — and the evictor
 // runs after the group lock is released.

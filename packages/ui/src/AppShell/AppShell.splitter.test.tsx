@@ -238,8 +238,61 @@ describe('AppShell splitters', () => {
   it('a reset shows the default width again', () => {
     shellW = 1280; stubWidths();
     const { container } = render(<ComposedShell shell={shellProps({ paneWidths: {} })} />);
-    expect(sep(labels.sidebar)).toHaveAttribute('aria-valuenow', '240');
+    // --sidebar-w 244 (README §5.1) and --members-w 232.
+    expect(sep(labels.sidebar)).toHaveAttribute('aria-valuenow', '244');
+    expect(sep(labels.aside)).toHaveAttribute('aria-valuenow', '232');
     expect(container.querySelector('.d-app-shell')?.getAttribute('style') ?? '').not.toContain('--d-sidebar-w');
+  });
+
+  it('a closed column aside with content stays mounted closed: data-open false, inert, no splitter', () => {
+    shellW = 1280; stubWidths();
+    const { container, rerender } = render(<ComposedShell shell={shellProps()} />);
+    const el = container.querySelector('.d-app-shell__aside')!;
+    expect(el).toHaveAttribute('data-open', 'true');
+    expect(el).not.toHaveAttribute('inert');
+    rerender(<ComposedShell shell={shellProps({ asideOpen: false })} />);
+    const closed = container.querySelector('.d-app-shell__aside')!;
+    expect(closed).toBe(el);
+    expect(closed).toHaveAttribute('data-open', 'false');
+    expect(closed).toHaveAttribute('inert');
+    expect(screen.queryByRole('separator', { name: labels.aside })).toBeNull();
+  });
+
+  it('when the content goes with the close, the last content stays until the transition ends, then unmounts', () => {
+    vi.useFakeTimers();
+    try {
+      shellW = 1280; stubWidths();
+      const { container, rerender } = render(<ComposedShell shell={shellProps()} />);
+      const open = container.querySelector('.d-app-shell__aside');
+      expect(open).toHaveAttribute('data-open', 'true');
+      rerender(<ComposedShell shell={shellProps({ asideOpen: false, aside: undefined })} />);
+      const closing = container.querySelector('.d-app-shell__aside');
+      // The same element, so its width transitions (a new one would start at 0).
+      expect(closing).toBe(open);
+      expect(closing).toHaveAttribute('data-open', 'false');
+      expect(closing).toHaveTextContent('pane control');
+      // A quick reopen before the transition ends reuses it too.
+      rerender(<ComposedShell shell={shellProps()} />);
+      expect(container.querySelector('.d-app-shell__aside')).toBe(open);
+      expect(open).toHaveAttribute('data-open', 'true');
+      rerender(<ComposedShell shell={shellProps({ asideOpen: false, aside: undefined })} />);
+      expect(container.querySelector('.d-app-shell__aside')).toBe(open);
+      act(() => { closing!.dispatchEvent(Object.assign(new Event('transitionend'), { propertyName: 'width' })); });
+      expect(container.querySelector('.d-app-shell__aside')).toBeNull();
+      // Reduced motion fires no transitionend: a fallback timer unmounts it too.
+      rerender(<ComposedShell shell={shellProps()} />);
+      rerender(<ComposedShell shell={shellProps({ asideOpen: false, aside: undefined })} />);
+      expect(container.querySelector('.d-app-shell__aside')).not.toBeNull();
+      act(() => { vi.advanceTimersByTime(600); });
+      expect(container.querySelector('.d-app-shell__aside')).toBeNull();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('a thread aside defaults to --thread-w (340) and marks its column', () => {
+    shellW = 1280; stubWidths();
+    const { container } = render(<ComposedShell shell={shellProps({ paneWidths: {}, asideKind: 'thread' })} />);
+    expect(sep(labels.aside)).toHaveAttribute('aria-valuenow', '340');
+    expect(container.querySelector('.d-app-shell__grid')).toHaveAttribute('data-aside', 'thread');
   });
 
   it('a shrink only clamps what is shown: the stored width is never reported, and a wider window restores it', () => {

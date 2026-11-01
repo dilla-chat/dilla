@@ -5,5 +5,5 @@
     "allowImportingTsExtensions": true,
     "types": ["node"]
   },
-  "include": ["*.ts", "web", "voice", "media", "tests", "probe", "spikes"]
+  "include": ["*.ts", "web", "voice", "music", "media", "tests", "probe", "spikes"]
 }

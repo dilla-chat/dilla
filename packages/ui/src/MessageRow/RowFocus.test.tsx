@@ -10,7 +10,7 @@ import { AttachmentCard } from '../AttachmentCard/AttachmentCard.tsx';
 function Row({ n, active }: { n: number; active: boolean }) {
   return (
     <MessageRow author={`author ${n}`} time="21:0" body={`body ${n}`} state="ok" active={active} seq={String(n)}
-      toolbar={<MessageToolbar label="actions for this message" tabbable={active}
+      toolbar={<MessageToolbar moreLabel="more actions" label="actions for this message" tabbable={active}
         items={[{ id: 'react', label: 'react', onAction: () => {} }, { id: 'reply', label: 'reply', onAction: () => {} }]} />}
       reply={{ label: 'reply to ada', author: 'ada', excerpt: `quoted ${n}`, state: 'ok', jumpLabel: 'go to the original message', onJump: () => {} }}
       attachments={<AttachmentCard kind="file" name={`f${n}.txt`} size="1 KB" thumbUrl={null} w={null} h={null} openLabel={`open f${n}.txt`}

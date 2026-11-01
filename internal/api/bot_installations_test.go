@@ -252,8 +252,10 @@ func TestConfigureBotReplayPrecedesCurrentManagedRoleCeiling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current.Revision != revision+1 || current.Capabilities != 0 {
-		t.Fatalf("installation after C2 = revision %d capabilities %d, want %d and 0", current.Revision, current.Capabilities, revision+1)
+	// A legacy-shaped request (no ?v=2) keeps Polls and Reminders, which a new installation starts with
+	// (Task 10c fix round 1, I1).
+	if current.Revision != revision+1 || current.Capabilities != uint16(botPollsRemindersMask) {
+		t.Fatalf("installation after C2 = revision %d capabilities %d, want %d and %d", current.Revision, current.Capabilities, revision+1, botPollsRemindersMask)
 	}
 
 	// The manager retains C1's permission but now ranks below the managed bot role.
@@ -272,8 +274,9 @@ func TestConfigureBotReplayPrecedesCurrentManagedRoleCeiling(t *testing.T) {
 	if err := cborx.Unmarshal(replay.Body.Bytes(), &replayValue); err != nil {
 		t.Fatal(err)
 	}
-	if len(replayValue) < 7 || replayValue[3] != uint64(1) || replayValue[6] != uint64(16) {
-		t.Fatalf("wire-3 replay result = %#v, want historical revision 1 / capabilities 16", replayValue)
+	// The legacy create started with Polls and Reminders on (Task 10c fix round 1, I1).
+	if len(replayValue) < 7 || replayValue[3] != uint64(1) || replayValue[6] != uint64(16|botPollsRemindersMask) {
+		t.Fatalf("wire-3 replay result = %#v, want historical revision 1 / capabilities 16|768", replayValue)
 	}
 
 	negotiate(managerToken, 2)
@@ -291,8 +294,8 @@ func TestConfigureBotReplayPrecedesCurrentManagedRoleCeiling(t *testing.T) {
 		t.Fatalf("wire-2 fresh configure at managed-role ceiling = %d (%x), want 403 E_FORBIDDEN", fresh.Code, fresh.Body.Bytes())
 	}
 	unchanged, err := deps.Repo.GetActiveBotInstallationByCommunity(ctx, cid)
-	if err != nil || unchanged.Revision != currentRevision || unchanged.Capabilities != 0 {
-		t.Fatalf("installation after refused fresh configure = %+v, %v; want revision %d capabilities 0", unchanged, err, currentRevision)
+	if err != nil || unchanged.Revision != currentRevision || unchanged.Capabilities != botPollsRemindersMask {
+		t.Fatalf("installation after refused fresh configure = %+v, %v; want revision %d capabilities 768", unchanged, err, currentRevision)
 	}
 	if _, err := deps.Repo.GetBotOperation(ctx, cid, freshID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("fresh configure receipt lookup = %v, want no receipt", err)

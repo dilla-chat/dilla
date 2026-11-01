@@ -31,13 +31,39 @@ export function saveBlob(blob: Blob, name: string): void {
   window.setTimeout(() => URL.revokeObjectURL(url), REVOKE_SAVED_AFTER_MS);
 }
 
+/**
+ * Task 7 (Signal §6.8): the tray's previews. The core names a tray entry only once it is processed, but appends a batch's entries
+ * to the slice at once and in order, so the page keys a preview by the order of its files: each attach queues one entry per file
+ * (a blob: URL for a still image, a GIF mark for a GIF, nothing otherwise) and the tray hands them to its new ids in that order.
+ * A URL is revoked when its entry leaves the tray (removed or sent), when its batch is refused, and when the tray unmounts.
+ */
+interface PendingPreview { channelId: string; preview: TrayPreview | null }
+export interface TrayPreview { url?: string; gif?: boolean }
+const pendingPreviews: PendingPreview[] = [];
+const trayPreviews = new Map<string, TrayPreview | null>();
+const trayMounts = new Map<string, number>();
+const previewKey = (channelId: string, trayId: string) => `${channelId}:${trayId}`;
+const revoke = (preview: TrayPreview | null | undefined) => { if (preview?.url !== undefined) URL.revokeObjectURL(preview.url); };
+function previewOf(file: File): TrayPreview | null {
+  if (file.type === 'image/gif') return { gif: true };
+  if (file.type.startsWith('image/') && file.type !== 'image/svg+xml' && typeof URL.createObjectURL === 'function') return { url: URL.createObjectURL(file) };
+  return null;
+}
+
 export async function attachFiles(client: Pick<CoreClient, 'call'>, channelId: string, files: readonly File[], dispatch: (a: ConversationAction) => void): Promise<boolean> {
   if (files.length === 0) return true;
+  const queued = files.map((file): PendingPreview => ({ channelId, preview: previewOf(file) }));
+  pendingPreviews.push(...queued);
   try {
     await client.call({ m: 'attachFiles', channelId, files });
     dispatch({ type: 'trayError', text: null });
     return true;
   } catch (err) {
+    // A refused batch adds nothing to the tray: its previews go.
+    for (const q of queued) {
+      const at = pendingPreviews.indexOf(q);
+      if (at >= 0) { pendingPreviews.splice(at, 1); revoke(q.preview); }
+    }
     const code = errorOf(err).code;
     const text = code === 'E_ATTACHMENT_TOO_LARGE'
       ? t('shell.tray.tooLarge', { name: safeName(files.find(f => f.size > BROWSER_ATTACHMENT_CAP)?.name ?? files[0]?.name ?? '', t('shell.attachment.unnamed')) })
@@ -208,9 +234,45 @@ export function AttachmentLightbox(p: { channelId: string; state: LightboxState;
     next={p.state.index + 1 < p.state.images.length ? { label: t('shell.lightbox.next'), onNext: () => p.onIndex(p.state.index + 1) } : undefined} />;
 }
 
+/** Each tray entry's preview: a new id takes the next queued preview of its channel (see attachFiles). */
+function previewsFor(channelId: string, items: readonly TrayItem[]): (TrayPreview | null)[] {
+  return items.map(item => {
+    const key = previewKey(channelId, item.id);
+    if (!trayPreviews.has(key)) {
+      const at = pendingPreviews.findIndex(q => q.channelId === channelId);
+      trayPreviews.set(key, at >= 0 ? pendingPreviews.splice(at, 1)[0].preview : null);
+    }
+    return trayPreviews.get(key) ?? null;
+  });
+}
+
 export function TrayList(p: { channelId: string; items: readonly TrayItem[]; onError(e: unknown): void }): React.JSX.Element | null {
   const client = useCore();
   const pendingFocus = useRef<number | null>(null);
+  const previews = previewsFor(p.channelId, p.items);
+  // An entry that left the tray (removed, or sent) gives its URL back.
+  useEffect(() => {
+    const live = new Set(p.items.map(i => previewKey(p.channelId, i.id)));
+    for (const [key, preview] of trayPreviews) {
+      if (key.startsWith(`${p.channelId}:`) && !live.has(key)) { revoke(preview); trayPreviews.delete(key); }
+    }
+  }, [p.channelId, p.items]);
+  // Unmounting the tray gives back every URL of its channel (after a tick, so a remount of the same tray keeps them).
+  useEffect(() => {
+    trayMounts.set(p.channelId, (trayMounts.get(p.channelId) ?? 0) + 1);
+    return () => {
+      trayMounts.set(p.channelId, (trayMounts.get(p.channelId) ?? 1) - 1);
+      window.setTimeout(() => {
+        if ((trayMounts.get(p.channelId) ?? 0) > 0) return;
+        for (const [key, preview] of trayPreviews) {
+          if (key.startsWith(`${p.channelId}:`)) { revoke(preview); trayPreviews.delete(key); }
+        }
+        for (let i = pendingPreviews.length - 1; i >= 0; i--) {
+          if (pendingPreviews[i].channelId === p.channelId) { revoke(pendingPreviews[i].preview); pendingPreviews.splice(i, 1); }
+        }
+      }, 0);
+    };
+  }, [p.channelId]);
   useLayoutEffect(() => {
     if (pendingFocus.current === null) return;
     const buttons = document.querySelectorAll<HTMLButtonElement>('.d-attachment-tray__remove');
@@ -218,7 +280,8 @@ export function TrayList(p: { channelId: string; items: readonly TrayItem[]; onE
     pendingFocus.current = null;
   }, [p.items]);
   if (p.items.length === 0) return null;
-  return <AttachmentTray label={t('shell.tray.label')} items={p.items.map((a, i) => ({
+  return <AttachmentTray label={t('shell.tray.label')} removeTip={t('shell.tray.removeTip')} items={p.items.map((a, i) => ({
+    ...(previews[i] ? { preview: previews[i] } : {}),
     id: a.id, name: a.name, size: formatSize(a.size),
     phase: a.phase === 'failed' ? t('shell.tray.failed', { code: a.reason }) : t(`shell.tray.${a.phase}`),
     failed: a.phase === 'failed', step: a.phase,

@@ -715,6 +715,54 @@ pub fn run_identity() -> SuiteReport {
         cases[cases.len() - 2].ok && cases[cases.len() - 1].ok
     );
 
+    // The instance-signed account-kind attestation (protocol/03 § Account kind attestation):
+    // the message bytes, the signature under the instance key, and the decoded wire form.
+    let ak = &doc["account_kind"];
+    let instance_pub = unhex_n::<32>(ak["instance_pub"].as_str().unwrap_or(""));
+    let instance_id = unhex_n::<16>(ak["instance_id"].as_str().unwrap_or(""));
+    let ak_user = unhex_n::<16>(ak["user_id"].as_str().unwrap_or(""));
+    for case in ak["cases"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
+        let kind = u8::try_from(int(&case["kind"])).unwrap_or(u8::MAX);
+        let message = crate::identity::account_kind_message(&instance_id, &ak_user, kind);
+        cases.push(CaseReport::compare(
+            "account_kind",
+            "message",
+            expect_str(&case["message"]),
+            hex(&message),
+        ));
+        let decoded = crate::identity::AccountKindAttestation::decode(&unhex(
+            case["attestation"].as_str().unwrap_or(""),
+        ));
+        let verified = decoded.as_ref().is_ok_and(|a| {
+            a.kind == kind && ed25519_verifies(&instance_pub, &message, &a.signature)
+        });
+        cases.push(CaseReport::compare(
+            "account_kind",
+            "attestation",
+            "verified",
+            if verified { "verified" } else { "rejected" },
+        ));
+        // The decoded form re-encodes to the same bytes (deterministic CBOR, no lenient decode).
+        cases.push(CaseReport::compare(
+            "account_kind",
+            "reencode",
+            expect_str(&case["attestation"]),
+            decoded.map(|a| hex(&a.encode())).unwrap_or_default(),
+        ));
+    }
+    for reject in ak["rejects"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
+        let refused = crate::identity::AccountKindAttestation::decode(&unhex(
+            reject["attestation"].as_str().unwrap_or(""),
+        ))
+        .is_err();
+        cases.push(CaseReport::compare(
+            "account_kind",
+            "reject",
+            "refused",
+            if refused { "refused" } else { "accepted" },
+        ));
+    }
+
     SuiteReport {
         name: "identity",
         cases,

@@ -43,6 +43,23 @@ describe('welcome settings panel', () => {
     await waitFor(() => expect(ackSpy).toHaveBeenCalledWith(COMMUNITY, '1'));
   });
 
+  it('treats the ACK lease as opaque when delivery ids have advanced', async () => {
+    let requestId: string | null = null;
+    const ack = vi.fn(() => Promise.resolve(null));
+    const gateway: WelcomeSettingsGateway = {
+      request: input => { const id = input.requestId; requestId = id; return Promise.resolve({ requestId: id, upload: 'accepted' }); },
+      read: () => Promise.resolve({ responses: requestId === null ? [] : [{ deliveryId: '101', sourceSeq: '101', communityId: COMMUNITY,
+        channelId: null, requestId, operation: 1, status: 0, revision: '7', data: encodeWelcomeSettings(CONFIG) }],
+        through: requestId === null ? null : '1', blocked: false }),
+      ack,
+    };
+    render(<WelcomeSettingsPanel communityId={COMMUNITY} serverName="Midgard" channels={[{ id: CHANNEL, name: 'general' }]}
+      enabled canManage gateway={gateway} />);
+    fireEvent.click(screen.getByRole('button', { name: en['admin.bot.welcomeSettings.load'] }));
+    await screen.findByDisplayValue(CONFIG.template);
+    await waitFor(() => expect(ack).toHaveBeenCalledWith(COMMUNITY, '1'));
+  });
+
   it('does not report a save as complete until the exact request receives a successful revised response', async () => {
     const { requestSpy, ackSpy, getRequest, setResponse } = setup();
     fireEvent.click(screen.getByRole('button', { name: en['admin.bot.welcomeSettings.load'] }));
@@ -105,6 +122,22 @@ describe('welcome settings panel', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: en['admin.bot.welcomeSettings.save'] })).not.toHaveAttribute('aria-disabled', 'true'));
   });
 
+  it('preserves an edited template when a reload updates the confirmed baseline', async () => {
+    const { ackSpy, getRequest, setResponse } = setup();
+    fireEvent.click(screen.getByRole('button', { name: en['admin.bot.welcomeSettings.load'] }));
+    await waitFor(() => expect(getRequest()).toBeDefined());
+    setResponse({ requestId: getRequest()!.requestId, operation: 1, status: 0, revision: '7', data: encodeWelcomeSettings(CONFIG) });
+    await screen.findByDisplayValue(CONFIG.template);
+    await waitFor(() => expect(ackSpy).toHaveBeenCalledTimes(1));
+    fireEvent.change(screen.getByRole('textbox', { name: en['admin.bot.welcomeSettings.template'] }), { target: { value: 'My unsaved template' } });
+    const oldRequestId = getRequest()!.requestId;
+    fireEvent.click(screen.getByRole('button', { name: en['admin.bot.welcomeSettings.reload'] }));
+    await waitFor(() => expect(getRequest()?.requestId).not.toBe(oldRequestId));
+    setResponse({ requestId: getRequest()!.requestId, operation: 1, status: 0, revision: '8', data: encodeWelcomeSettings({ ...CONFIG, template: 'Updated elsewhere' }) });
+    await waitFor(() => expect(ackSpy).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole('textbox', { name: en['admin.bot.welcomeSettings.template'] })).toHaveValue('My unsaved template');
+  });
+
   it('hides the configured-message claim while the form has unsaved changes', async () => {
     const { getRequest, setResponse } = setup();
     fireEvent.click(screen.getByRole('button', { name: en['admin.bot.welcomeSettings.load'] }));
@@ -153,8 +186,8 @@ describe('welcome settings panel', () => {
     response = { requestId: requestB.requestId, operation: 1, status: 0, revision: '9', data: encodeWelcomeSettings(configB) };
 
     expect(await screen.findByDisplayValue(configB.template)).toBeInTheDocument();
-    expect(ackSpy).toHaveBeenCalledWith(communityB, '1');
-    expect(readSpy).toHaveBeenCalledWith(communityB, [1, 2]);
+    await waitFor(() => expect(ackSpy).toHaveBeenCalledWith(communityB, '1'));
+    expect(readSpy).toHaveBeenCalledWith(communityB, [1, 2], [requestB.requestId]);
   });
 
   it('never acknowledges a pending response cursor against a newly selected community', async () => {

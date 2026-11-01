@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"sync"
+	"time"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/native"
@@ -23,6 +24,8 @@ const (
 )
 
 var ErrMembershipUnproven = errors.New("welcome membership target is not currently authorized")
+
+var ErrMembershipReconcileBusy = errors.New("membership reconciliation is already active")
 
 // MembershipPhase identifies a fixed, non-sensitive step of membership reconciliation.
 type MembershipPhase uint8
@@ -98,14 +101,39 @@ type MembershipResult struct {
 }
 type MembershipReconciler struct {
 	mu        sync.Mutex
+	active    bool
 	native    membershipNative
 	binding   native.Binding
 	source    *SourceSync
 	pageLimit uint64
+	idlePolls *InteractionPollSchedule
+}
+
+// InteractionPollSchedule retains background backoff across reconciliation passes.
+// A schedule belongs to one installation, outliving its helper/reconciler objects.
+type InteractionPollSchedule struct {
+	mu     sync.Mutex
+	groups map[id.ID]interactionIdlePoll
+}
+
+// UseInteractionPollSchedule is called before polling when a reconciler is rebuilt.
+func (r *MembershipReconciler) UseInteractionPollSchedule(schedule *InteractionPollSchedule) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if schedule != nil {
+		r.idlePolls = schedule
+	}
+}
+
+// Only background sweeps back off; a gateway message always bypasses this cache.
+type interactionIdlePoll struct {
+	next       time.Time
+	delay      time.Duration
+	descriptor native.InteractionGroupDescriptor
 }
 
 // NewMembershipReconciler binds bounded membership work to one opened installation helper.
-func NewMembershipReconciler(n *native.Client, sourceOptions SourceSyncOptions, welcomePageLimit uint64) (*MembershipReconciler, error) {
+func NewMembershipReconciler(n membershipNative, sourceOptions SourceSyncOptions, welcomePageLimit uint64) (*MembershipReconciler, error) {
 	if n == nil {
 		return nil, errors.New("missing native client")
 	}
@@ -129,7 +157,7 @@ func newMembershipReconciler(n membershipNative, sourceOptions sourceSyncOptions
 	if err != nil {
 		return nil, err
 	}
-	return &MembershipReconciler{native: n, binding: b, source: source, pageLimit: options.WelcomePageLimit}, nil
+	return &MembershipReconciler{native: n, binding: b, source: source, pageLimit: options.WelcomePageLimit, idlePolls: &InteractionPollSchedule{}}, nil
 }
 
 // ReconcileOnce reads the bound community's current authorized channel view, applies one
@@ -146,8 +174,18 @@ func (r *MembershipReconciler) reconcileOnce(ctx context.Context, session member
 		return out, errors.New("invalid membership reconciliation")
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if err := ctx.Err(); err != nil {
+	if r.active {
+		r.mu.Unlock()
+		return MembershipResult{More: true}, ErrMembershipReconcileBusy
+	}
+	r.active = true
+	r.mu.Unlock()
+	defer func() {
+		r.mu.Lock()
+		r.active = false
+		r.mu.Unlock()
+	}()
+	if err := client.CooperativeCheckpoint(ctx); err != nil {
 		return out, err
 	}
 	own, err := session.Community(ctx, r.binding.Community)
@@ -278,7 +316,7 @@ func (r *MembershipReconciler) reconcileOnce(ctx context.Context, session member
 		out.More = uint64(len(welcomes)) == r.pageLimit
 	}
 	for _, g := range groups {
-		if err = ctx.Err(); err != nil {
+		if err = client.CooperativeCheckpoint(ctx); err != nil {
 			return out, err
 		}
 		if g.State != 2 || g.Community == nil || *g.Community != r.binding.Community {
@@ -296,12 +334,15 @@ func (r *MembershipReconciler) reconcileOnce(ctx context.Context, session member
 		}
 		res, e := r.source.sync(ctx, session, native.GroupExpected{Group: g.ID, Community: r.binding.Community, Channel: ch.ID, Kind: g.Kind})
 		if e != nil {
-			// A locally held group may no longer include this device in the server's
-			// current roster. Member-only source reads then answer 404 for either a
-			// text or call group. Keep other groups and readiness reconciliation
-			// moving; a later pass retries if membership returns.
+			// A locally held group can outlive its server membership. Ordinary
+			// member-only reads answer 404; the managed-session gate answers 403
+			// for a closed call group. Calls are optional, so neither refusal may
+			// block the installation's text/interaction reconciliation. Do not
+			// apply or acknowledge denied sources; retry on the next pass, with
+			// fresh call admission still required before music can publish.
 			var apiErr *client.APIError
-			if errors.As(e, &apiErr) && apiErr.Status == 404 && apiErr.Code == "E_NOT_FOUND" {
+			if errors.As(e, &apiErr) && (apiErr.Status == 404 && apiErr.Code == "E_NOT_FOUND" ||
+				g.Kind == 1 && apiErr.Status == 403 && apiErr.Code == "E_FORBIDDEN") {
 				continue
 			}
 			phase := MembershipPhaseTextSourceSync
@@ -310,6 +351,7 @@ func (r *MembershipReconciler) reconcileOnce(ctx context.Context, session member
 			}
 			return out, membershipPhaseError(phase, e)
 		}
+		out.More = out.More || res.More
 		out.GroupsSynced++
 		out.SourcePages += res.Pages
 	}
@@ -326,14 +368,70 @@ func (r *MembershipReconciler) ReconcileInteractionGroupsOnce(ctx context.Contex
 	return r.reconcileInteractionGroupsOnce(ctx, session)
 }
 
+// ReconcileInteractionGroupOnce catches up one active kind-3 interaction source: the gateway
+// fast path for a participant's message reads that group alone. Every descriptor is still
+// validated as in ReconcileInteractionGroupsOnce; an unknown or inactive group syncs nothing.
+func (r *MembershipReconciler) ReconcileInteractionGroupOnce(ctx context.Context, session *client.Session, group id.ID) (MembershipResult, error) {
+	if session == nil {
+		return MembershipResult{}, errors.New("missing device session")
+	}
+	return r.reconcileInteractionGroupOnce(ctx, session, group)
+}
+
+// ReconcileInteractionGroupBackgroundOnce catches up one active interaction group
+// at background priority, retaining the installation's idle polling schedule.
+func (r *MembershipReconciler) ReconcileInteractionGroupBackgroundOnce(ctx context.Context, session *client.Session, group id.ID) (MembershipResult, error) {
+	if session == nil {
+		return MembershipResult{}, errors.New("missing device session")
+	}
+	return r.reconcileInteractionGroupBackgroundOnce(ctx, session, group)
+}
+
+func (r *MembershipReconciler) reconcileInteractionGroupBackgroundOnce(ctx context.Context, session membershipSession, group id.ID) (MembershipResult, error) {
+	if group.IsZero() {
+		return MembershipResult{}, errors.New("invalid interaction group")
+	}
+	return r.reconcileInteractionGroups(client.WithBackground(ctx), session, &group, false)
+}
+
+// InteractionGroupDelay reports the remaining background idle delay without any
+// helper or HTTP work. A changed descriptor is immediately due.
+func (r *MembershipReconciler) InteractionGroupDelay(descriptor native.InteractionGroupDescriptor) time.Duration {
+	if r == nil {
+		return 0
+	}
+	r.mu.Lock()
+	schedule := r.idlePolls
+	r.mu.Unlock()
+	schedule.mu.Lock()
+	idle := schedule.groups[descriptor.Group]
+	schedule.mu.Unlock()
+	if idle.descriptor != descriptor {
+		return 0
+	}
+	return max(0, idle.next.Sub(r.source.options.now()))
+}
+
+func (r *MembershipReconciler) reconcileInteractionGroupOnce(ctx context.Context, session membershipSession, group id.ID) (MembershipResult, error) {
+	if group.IsZero() {
+		return MembershipResult{}, errors.New("invalid interaction group")
+	}
+	return r.reconcileInteractionGroups(client.WithInteractive(ctx), session, &group, true)
+}
+
 func (r *MembershipReconciler) reconcileInteractionGroupsOnce(ctx context.Context, session membershipSession) (MembershipResult, error) {
+	return r.reconcileInteractionGroups(ctx, session, nil, false)
+}
+
+func (r *MembershipReconciler) reconcileInteractionGroups(ctx context.Context, session membershipSession, only *id.ID, bypassIdle bool) (MembershipResult, error) {
 	var out MembershipResult
 	if r == nil || session == nil {
 		return out, errors.New("invalid interaction membership reconciliation")
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if err := ctx.Err(); err != nil {
+	schedule := r.idlePolls
+	r.mu.Unlock()
+	if err := client.CooperativeCheckpoint(ctx); err != nil {
 		return out, err
 	}
 	groups, err := r.native.Groups(ctx)
@@ -363,7 +461,22 @@ func (r *MembershipReconciler) reconcileInteractionGroupsOnce(ctx context.Contex
 	if len(interactionGroups) > maxMembershipGroups {
 		return out, errors.New("native interaction group set exceeds bound")
 	}
+	schedule.mu.Lock()
+	// Discard removed groups so the schedule stays bounded by the current set.
+	active := make(map[id.ID]bool, len(interactionGroups))
+	for _, g := range interactionGroups {
+		active[g.Group] = true
+	}
+	for group := range schedule.groups {
+		if !active[group] {
+			delete(schedule.groups, group)
+		}
+	}
+	schedule.mu.Unlock()
 	for i, g := range interactionGroups {
+		if err := client.CooperativeCheckpoint(ctx); err != nil {
+			return out, err
+		}
 		if g.Group.IsZero() || seenGroups[g.Group] || i > 0 && string(interactionGroups[i-1].Group[:]) >= string(g.Group[:]) {
 			return out, client.ErrProtocol
 		}
@@ -374,15 +487,34 @@ func (r *MembershipReconciler) reconcileInteractionGroupsOnce(ctx context.Contex
 			b.E2EEVersion != 1 || b.MediaVersion != 0 {
 			return out, client.ErrProtocol
 		}
-		if g.State != 2 {
+		if g.State != 2 || only != nil && g.Group != *only {
+			continue
+		}
+		now := r.source.options.now()
+		schedule.mu.Lock()
+		idle := schedule.groups[g.Group]
+		schedule.mu.Unlock()
+		if !bypassIdle && idle.descriptor == g && now.Before(idle.next) {
 			continue
 		}
 		res, syncErr := r.source.sync(ctx, session, native.GroupExpected{Group: g.Group, Community: r.binding.Community, Channel: b.ParticipantUser, Kind: 3})
 		if syncErr != nil {
 			return out, membershipPhaseError(MembershipPhaseInteractionSourceSync, syncErr)
 		}
+		out.More = out.More || res.More
 		out.GroupsSynced++
 		out.SourcePages += res.Pages
+		schedule.mu.Lock()
+		if schedule.groups == nil {
+			schedule.groups = make(map[id.ID]interactionIdlePoll)
+		}
+		if res.Pages == 0 {
+			delay := min(max(idle.delay*2, time.Second), 30*time.Second)
+			schedule.groups[g.Group] = interactionIdlePoll{next: now.Add(delay), delay: delay, descriptor: g}
+		} else {
+			delete(schedule.groups, g.Group)
+		}
+		schedule.mu.Unlock()
 	}
 	return out, nil
 }

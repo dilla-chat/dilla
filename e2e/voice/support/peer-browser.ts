@@ -307,7 +307,8 @@ export interface PeerBrowsers {
  *  the stage), else the phone's call bar. */
 export function leaveControl(page: Page): Locator {
   const leave = copy('voice.leave');
-  const stageLeave = page.locator('.dw-voice-stage').getByRole('button', { name: leave, exact: true });
+  // Signal §5.6: a channel's call bar names it Leave (the DM box keeps voice.leave); data-control names it either way.
+  const stageLeave = page.locator('.dw-voice-stage [data-control="leave"]');
   const dockLeave = page.locator('body:not(:has(.dw-voice-stage [data-control="leave"])) .dw-voice-dock').getByRole('button', { name: leave, exact: true });
   const barLeave = page.locator('.d-call-bar').getByRole('button', { name: leave, exact: true });
   return stageLeave.or(dockLeave).or(barLeave);
@@ -323,6 +324,13 @@ export async function leaveIfInCall(page: Page): Promise<void> {
     await expect(strip.locator('xpath=descendant-or-self::*[@data-phase]').first()).not.toHaveAttribute('data-phase', 'connecting', { timeout: WAIT });
     await leaveControl(page).click();
     await expect(strip).toHaveCount(0, { timeout: WAIT });
+  } else {
+    // A phone on the call stage has no strip: leave through the stage's own Leave.
+    const stageLeave = page.locator('.dw-voice-stage [data-control="leave"]');
+    if (await stageLeave.count() > 0) {
+      await stageLeave.first().click();
+      await expect(stageLeave).toHaveCount(0, { timeout: WAIT });
+    }
   }
   await expect.poll(() => mediaWorkers(page).length, { timeout: WAIT, message: 'the media worker ends after the leave' }).toBe(0);
 }

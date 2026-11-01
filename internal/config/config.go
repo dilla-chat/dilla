@@ -112,6 +112,7 @@ type Server struct {
 	PlainListen       string         `toml:"plain_listen"`
 	TrustedProxyCIDRs []netip.Prefix `toml:"trusted_proxy_cidrs"`
 	ReadHeaderTimeout Duration       `toml:"read_header_timeout"`
+	ReadBodyTimeout   Duration       `toml:"read_body_timeout"`
 	IdleTimeout       Duration       `toml:"idle_timeout"`
 	ShutdownGrace     Duration       `toml:"shutdown_grace"`
 }

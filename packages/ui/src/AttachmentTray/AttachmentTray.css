@@ -1,12 +1,30 @@
-.d-attachment-tray { display: grid; gap: 0.25rem; margin: 0; padding: 0; list-style: none; }
-.d-attachment-tray__item { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; align-items: center; gap: 0.5rem; padding: 0.125rem 0.25rem 0.125rem 0.75rem; font-size: var(--text-sm); background: var(--surface-2); border: 1px solid var(--hairline-2); border-radius: var(--r-md); }
-.d-attachment-tray__name { grid-row: 1; grid-column: 1; min-width: 0; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.d-attachment-tray__size { grid-row: 1; grid-column: 2; font-size: var(--text-xs); color: var(--fg-3); white-space: nowrap; }
-.d-attachment-tray__phase { grid-row: 1; grid-column: 3; font-size: var(--text-xs); color: var(--fg-2); white-space: nowrap; }
-.d-attachment-tray__remove { grid-row: 1; grid-column: 4; display: inline-grid; place-items: center; width: 1.5rem; height: 1.5rem; padding: 0; font: inherit; font-size: var(--text-base); line-height: 1; color: var(--fg-2); background: transparent; border: 0; border-radius: var(--r-sm); cursor: pointer; }
-.d-attachment-tray__remove:hover { color: var(--fg); background: var(--surface-hi); }
-/* The hint has its own line under the entry. */
-.d-attachment-tray__hint { grid-row: 2; grid-column: 1 / -1; margin: 0; font-size: var(--text-xs); color: var(--fg-2); }
-/* A failed entry: the danger tone and a glyph, so the state is never colour alone; the glyph has empty alt text. */
-.d-attachment-tray__item[data-failed="true"] .d-attachment-tray__phase { color: var(--danger); }
-.d-attachment-tray__item[data-failed="true"] .d-attachment-tray__phase::before { content: "" / ""; display: inline-block; width: 0.875em; height: 0.875em; margin-right: 0.25em; vertical-align: -0.125em; background: currentColor; mask: var(--d-mask-x) center / contain no-repeat; }
+/* §6.8 (task 7): the prototype's tray. A scrolling row of 84px cards on bg-3 in the hairline-2 line, radius 8px. */
+.d-attachment-tray { display: flex; gap: 0.5rem; overflow-x: auto; margin: 0; padding: 0 0 0.5rem; list-style: none; }
+.d-attachment-tray__item { position: relative; flex: none; width: 12.5rem /* 200px */; height: 5.25rem /* 84px */; box-sizing: border-box; display: flex; flex-direction: column; overflow: hidden;
+  background: var(--bg-3); border: 1px solid var(--hairline-2); border-radius: var(--r-lg); animation: d-up var(--duration-toggle) both; }
+.d-attachment-tray__item:is([data-kind="image"], [data-kind="gif"]) { width: 7rem /* 112px */; }
+.d-attachment-tray__item[data-failed="true"] { border-color: var(--danger-line); }
+.d-attachment-tray__preview { position: relative; flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; background-size: cover; background-position: center; }
+.d-attachment-tray__item[data-kind="gif"] .d-attachment-tray__preview { background: repeating-linear-gradient(135deg, var(--pattern-stripe) 0 6px, transparent 6px 12px), var(--hover); }
+/* The prototype's GIF tray card: its name centred, 9px uppercase, over the striped tile, the GIF mark at the top left. */
+.d-attachment-tray__gif-name { padding: 0 6px; font-size: var(--text-badge); letter-spacing: 0.06em; text-transform: uppercase; color: var(--fg-chip); text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.d-attachment-tray__gif { position: absolute; left: 4px; top: 4px; padding: 0 4px; border-radius: var(--r-tag); background: var(--scrim-tag); font-size: var(--text-tag); font-weight: var(--weight-display); letter-spacing: var(--label-tracking); line-height: 0.875rem; color: var(--fg); }
+.d-attachment-tray__file { flex: 1; min-height: 0; display: flex; align-items: center; gap: 0.5rem; padding: 0 0.625rem; min-width: 0; }
+/* A preview card shows the picture only; its name and phase stay for a screen reader. */
+.d-attachment-tray__item:is([data-kind="image"], [data-kind="gif"]) .d-attachment-tray__file { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.d-attachment-tray__glyph { width: 1.75rem; height: 1.75rem; flex: none; border-radius: var(--r-md); background: var(--hover); color: var(--accent-2); display: flex; align-items: center; justify-content: center; }
+.d-attachment-tray__text { display: grid; min-width: 0; line-height: 1.3; }
+.d-attachment-tray__name { font-size: var(--text-btn); color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.d-attachment-tray__meta { font-size: var(--text-micro); color: var(--fg-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.d-attachment-tray__item[data-failed="true"] .d-attachment-tray__meta { color: var(--danger); }
+/* The prototype's 3px progress line (Jonas, fix round 1): the accent fills in steps by phase (reading 25 %, preparing 50 %,
+   uploading 75 %), the whole line in ok once ready, in danger when it failed; each step eases over the prototype's 200ms. */
+.d-attachment-tray__bar { flex: none; height: 3px; background: var(--hover-hi); }
+.d-attachment-tray__bar > span { display: block; height: 100%; background: var(--accent); transition: width var(--duration-turn) linear; }
+.d-attachment-tray__item[data-phase="ready"] .d-attachment-tray__bar > span { background: var(--ok); }
+.d-attachment-tray__item[data-failed="true"] .d-attachment-tray__bar > span { background: var(--danger); }
+.d-attachment-tray__remove { position: absolute; top: 4px; right: 4px; width: 1.25rem; height: 1.25rem; padding: 0; display: flex; align-items: center; justify-content: center; font: inherit; color: var(--fg-chip); background: var(--scrim-tag); border: 0; border-radius: var(--r-pill); cursor: pointer; }
+.d-attachment-tray__remove:hover { background: var(--danger); color: var(--danger-ink); }
+/* A 24px hit area around the 20px button. */
+.d-attachment-tray__remove::before { content: ""; position: absolute; inset: -2px; }
+@media (prefers-reduced-motion: reduce) { .d-attachment-tray__item { animation: none; } .d-attachment-tray__bar > span { transition: none; } }

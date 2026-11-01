@@ -1,4 +1,8 @@
-.d-message-toolbar { display: flex; gap: 0.125rem; padding: 0.125rem; }
-/* The danger action sits among ghost buttons: its colour and its word, without the danger frame. */
-.d-message-toolbar .d-btn[data-variant="danger"] { border-color: transparent; }
-.d-message-toolbar .d-btn[data-variant="danger"]:hover { border-color: var(--danger); }
+/* §5.5 (task 7): the prototype's floating toolbar: 2px padding, 1px gaps, surface-2 with the #2A303A line, radius 6px, shadow-1. */
+.d-message-toolbar { display: flex; gap: 1px; padding: 2px; color: var(--fg-2); background: var(--surface-2); border: 1px solid var(--line-strong); border-radius: var(--r-md); box-shadow: var(--shadow-1); }
+.d-message-toolbar__btn, .d-message-toolbar .d-action-menu__trigger.d-message-toolbar__btn { display: inline-flex; align-items: center; justify-content: center; min-width: 0; min-height: 0; height: 1.5rem /* 24px */; padding: 0 0.375rem; font: inherit; color: inherit; background: transparent; border: 0; border-radius: var(--r-sm); cursor: pointer; }
+.d-message-toolbar__btn:hover, .d-message-toolbar .d-action-menu__trigger.d-message-toolbar__btn:hover,
+.d-message-toolbar .d-action-menu__trigger.d-message-toolbar__btn[aria-expanded="true"] { background: var(--hover-hi); color: var(--fg); border: 0; }
+.d-message-toolbar .d-action-menu { display: inline-flex; }
+/* The ⋯ menu is the prototype's popover: surface-2 in the #2A303A line, radius 10px, shadow-2 (fix round 1). */
+.d-message-toolbar .d-action-menu__popup { background: var(--surface-2); border-color: var(--line-strong); border-radius: var(--r-xl); box-shadow: var(--shadow-2); }

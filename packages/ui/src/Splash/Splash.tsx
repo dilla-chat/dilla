@@ -1,4 +1,4 @@
-import { BrandMark } from '../StatusBar/StatusBar.tsx';
+import { BrandMark } from '../TopBar/TopBar.tsx';
 import { Button } from '../Button/Button.tsx';
 import './Splash.css';
 

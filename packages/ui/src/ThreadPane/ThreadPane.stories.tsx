@@ -10,7 +10,7 @@ import { ChannelHeader } from '../ChannelHeader/ChannelHeader.tsx';
 import { CommunityRail } from '../CommunityRail/CommunityRail.tsx';
 
 // A public thread: the root, its replies and its own composer. Strings are flow 11's (strings/thread.ts), as en.ts holds
-// them. Switch the theme in the toolbar (mesh, light, high-contrast).
+// them. Switch the theme in the toolbar (signal, light, high-contrast).
 const meta = {
   title: 'Conversation/ThreadPane', component: ThreadPane, parameters: { layout: 'fullscreen' },
 } satisfies Meta<typeof ThreadPane>;
@@ -29,7 +29,7 @@ const replies = (
   </MessageLog>
 );
 const composer = (
-  <Composer label="reply in thread" placeholder="reply in thread" maxLength={4000} value="" onChange={noop} onSend={noop} sendLabel="send" counterLabel={n => `${n} left`} />
+  <Composer label="Reply in thread" placeholder="Reply in thread" maxLength={4000} value="" onChange={noop} onSend={noop} sendLabel="send" counterLabel={n => `${n} left`} />
 );
 
 const column: CSSProperties = { width: '20rem', height: 640, background: 'var(--surface)', border: '1px solid var(--hairline)' };
@@ -37,7 +37,7 @@ const Column = ({ children }: { children: ReactNode }) => <div style={{ ...colum
 const phoneFrame: CSSProperties = { width: 390, height: 844, margin: 0, position: 'relative' };
 
 export const Aside: Story = {
-  args: { title: 'Thread', closeLabel: 'close thread', onClose: noop, root, children: replies, composer },
+  args: { title: 'Thread', sub: '#general', repliesLabel: '3 replies', closeLabel: 'close thread', onClose: noop, root, children: replies, composer },
   render: args => <Column><ThreadPane {...args} /></Column>,
 };
 export const AsideMissingRoot: Story = {
@@ -85,7 +85,7 @@ export const InDesktopShell: Story = {
   render: args => {
     const [open, setOpen] = useState(true);
     return (
-      <AppShell skipLabel="skip to content" statusBar={null} rail={rail} sidebar={sidebar} header={<ChannelHeader name="general" />} composer={mainComposer}
+      <AppShell skipLabel="skip to content" rail={rail} sidebar={sidebar} header={<ChannelHeader name="general" />} composer={mainComposer}
         aside={<ThreadPane {...args} onClose={() => setOpen(false)} />} asideLabel="thread" asideOpen={open} onAsideClose={() => setOpen(false)}>
         {log}
       </AppShell>

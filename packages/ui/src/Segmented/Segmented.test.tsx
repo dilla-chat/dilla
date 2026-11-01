@@ -5,9 +5,9 @@ import { describe, it, expect, vi } from 'vitest';
 import { Segmented } from './Segmented.tsx';
 import { expectNoAxeViolations } from '../test/setup.ts';
 
-// L-COPY-02: appearance.theme.label and appearance.theme.{system,mesh,light,contrast}.
+// L-COPY-02: appearance.theme.label and appearance.theme.{system,signal,light,contrast}.
 const THEMES = [
-  { value: 'system', label: 'system' }, { value: 'mesh', label: 'mesh' },
+  { value: 'system', label: 'system' }, { value: 'signal', label: 'signal' },
   { value: 'light', label: 'light' }, { value: 'high-contrast', label: 'high contrast' },
 ] as const;
 
@@ -25,12 +25,12 @@ const radio = (name: string) => screen.getByRole('radio', { name });
 
 describe('Segmented', () => {
   it('is a radiogroup named by its label, one radio button per option, the value checked', () => {
-    const { container } = render(<Segmented id="theme" label="theme" options={THEMES} value="mesh" onChange={() => {}} />);
+    const { container } = render(<Segmented id="theme" label="theme" options={THEMES} value="signal" onChange={() => {}} />);
     const group = screen.getByRole('radiogroup', { name: 'theme' });
     expect(group).toHaveAttribute('id', 'theme');
     expect(container.firstElementChild).toHaveClass('d-segmented');
     const radios = screen.getAllByRole('radio');
-    expect(radios.map(r => r.textContent)).toEqual(['system', 'mesh', 'light', 'high contrast']);
+    expect(radios.map(r => r.textContent)).toEqual(['system', 'signal', 'light', 'high contrast']);
     expect(radios.map(r => r.tagName)).toEqual(['BUTTON', 'BUTTON', 'BUTTON', 'BUTTON']);
     expect(radios.map(r => r.getAttribute('aria-checked'))).toEqual(['false', 'true', 'false', 'false']);
   });
@@ -56,8 +56,8 @@ describe('Segmented', () => {
     await user.tab();
     expect(radio('system')).toHaveFocus();
     await user.keyboard('{ArrowRight}');
-    expect(radio('mesh')).toHaveFocus();
-    expect(radio('mesh')).toHaveAttribute('aria-checked', 'true');
+    expect(radio('signal')).toHaveFocus();
+    expect(radio('signal')).toHaveAttribute('aria-checked', 'true');
     await user.keyboard('{ArrowLeft}{ArrowLeft}');
     expect(radio('high contrast')).toHaveFocus();
     await user.keyboard('{ArrowDown}');
@@ -66,7 +66,7 @@ describe('Segmented', () => {
     expect(radio('high contrast')).toHaveFocus();
     await user.keyboard('{Home}');
     expect(radio('system')).toHaveAttribute('aria-checked', 'true');
-    expect(onValue.mock.calls.map(c => c[0])).toEqual(['mesh', 'system', 'high-contrast', 'system', 'high-contrast', 'system']);
+    expect(onValue.mock.calls.map(c => c[0])).toEqual(['signal', 'system', 'high-contrast', 'system', 'high-contrast', 'system']);
   });
 
   it('selects on click and leaves a modified arrow alone', async () => {

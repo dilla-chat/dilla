@@ -13,11 +13,11 @@ describe('bot Spotify worker commands', () => {
     const cancel = vi.fn(() => Promise.resolve());
     Object.assign(w.routes, { beginBotSpotifyAttempt: begin, callbackBotSpotifyAttempt: callback, cancelBotSpotifyAttempt: cancel });
     await toReady(w);
-    w.call(10, { m: 'beginBotSpotifyAttempt', communityId: toHex(COMMUNITY), stepUp: 'step-up' });
+    w.call(10, { m: 'beginBotSpotifyAttempt', communityId: toHex(COMMUNITY), stepUp: 'step-up', clientId: 'client' });
     await vi.waitFor(() => expect(w.ret(10)).toEqual({ t: 'ret', id: 10, ok: true, value: {
       attemptId: toHex(ATTEMPT), authorizeUrl: 'https://accounts.spotify.com/authorize?...', expires: '1800000000',
     } }));
-    expect(begin).toHaveBeenCalledWith(COMMUNITY, 'step-up');
+    expect(begin).toHaveBeenCalledWith(COMMUNITY, 'step-up', 'client');
     w.call(11, { m: 'callbackBotSpotifyAttempt', communityId: toHex(COMMUNITY), attemptId: toHex(ATTEMPT), state: STATE, code: 'oauth-code' });
     await vi.waitFor(() => expect(w.ret(11)).toMatchObject({ ok: true, value: null }));
     expect(callback).toHaveBeenCalledWith(COMMUNITY, ATTEMPT, STATE, 'oauth-code');
@@ -30,7 +30,7 @@ describe('bot Spotify worker commands', () => {
     const early = world();
     const begin = vi.fn();
     Object.assign(early.routes, { beginBotSpotifyAttempt: begin });
-    early.call(1, { m: 'beginBotSpotifyAttempt', communityId: toHex(COMMUNITY), stepUp: 'step-up' });
+    early.call(1, { m: 'beginBotSpotifyAttempt', communityId: toHex(COMMUNITY), stepUp: 'step-up', clientId: 'client' });
     await vi.waitFor(() => expect(early.ret(1)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY' } }));
     expect(begin).not.toHaveBeenCalled();
 
@@ -39,8 +39,8 @@ describe('bot Spotify worker commands', () => {
     const callback = vi.fn();
     Object.assign(w.routes, { beginBotSpotifyAttempt: start, callbackBotSpotifyAttempt: callback });
     await toReady(w);
-    w.call(2, { m: 'beginBotSpotifyAttempt', communityId: toHex(COMMUNITY), stepUp: '' });
-    w.call(3, { m: 'beginBotSpotifyAttempt', communityId: toHex(COMMUNITY), stepUp: 'x'.repeat(4097) });
+    w.call(2, { m: 'beginBotSpotifyAttempt', communityId: toHex(COMMUNITY), stepUp: '', clientId: 'client' });
+    w.call(3, { m: 'beginBotSpotifyAttempt', communityId: toHex(COMMUNITY), stepUp: 'x'.repeat(4097), clientId: 'client' });
     w.call(4, { m: 'callbackBotSpotifyAttempt', communityId: toHex(COMMUNITY), attemptId: toHex(ATTEMPT), state: '', code: 'oauth-code' });
     w.call(5, { m: 'callbackBotSpotifyAttempt', communityId: toHex(COMMUNITY), attemptId: toHex(ATTEMPT), state: STATE, code: 'x'.repeat(2049) });
     await vi.waitFor(() => expect(w.ret(5)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));

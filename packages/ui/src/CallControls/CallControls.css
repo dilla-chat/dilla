@@ -32,7 +32,7 @@
    changes nothing. The button keeps full opacity. */
 .d-voice-toolbar .d-voice-toolbar__control[aria-disabled="true"] { opacity: 1; border-style: dashed; }
 .d-voice-toolbar .d-voice-toolbar__control[aria-disabled="true"] .d-icon { opacity: 0.4; }
-.d-voice-toolbar .d-voice-toolbar__control[data-variant="default"][aria-disabled="true"]:hover { background: var(--surface-2); border-color: var(--edge); }
+.d-voice-toolbar .d-voice-toolbar__control[data-variant="default"][aria-disabled="true"]:hover { background: var(--surface-2); border-color: var(--control-edge); }
 .d-voice-toolbar .d-voice-toolbar__control[data-variant="danger"][aria-disabled="true"]:hover { background: transparent; border-color: var(--danger); }
 
 /* Windows High Contrast drops the underline (a box-shadow): a pressed control gets a double-weight Highlight edge. */
@@ -47,7 +47,7 @@
   position: absolute; z-index: 20; pointer-events: none;
   display: flex; align-items: baseline; gap: 0.5rem; padding: 0.25rem 0.5rem;
   font-size: var(--text-xs); font-weight: normal; white-space: nowrap; cursor: default;
-  color: var(--fg); background: var(--surface); border: 1px solid var(--edge); border-radius: var(--r-md);
+  color: var(--fg); background: var(--surface); border: 1px solid var(--control-edge); border-radius: var(--r-md);
 }
 .d-voice-toolbar__tip[hidden] { display: none; }
 .d-voice-toolbar__tip[data-origin="hover"] { pointer-events: auto; }
@@ -55,3 +55,52 @@
 .d-voice-toolbar__keys { font: inherit; color: var(--fg-2); }
 
 .d-call-controls { justify-content: center; }
+
+/* Signal's call bar (§5.6, `labels.bar`): 40px controls 6px apart, each the glyph (16px), its word (11.5px) and, for mute and
+   deafen, the shortcut (10px at 0.6); idle on --surface-tile with a --hairline-2 edge, 7px corners. A toggled-on mute or
+   deafen is the --danger tint (the 0.1 fill, the 0.45 edge, --danger glyph and word); Camera and a live Share are --accent with
+   --accent-ink. Leave is set 8px apart, --danger with --danger-ink, 700. Below a 1240px window the words and shortcuts are
+   hidden (they still name the controls); on the phone only the glyphs show, Leave's word too. The tooltip shows only then. */
+.d-call-controls--bar { flex-wrap: nowrap; align-items: center; gap: 0.375rem; }
+.d-call-controls--bar .d-voice-toolbar__divider { display: none; }
+.d-call-controls--bar .d-voice-toolbar__control.d-btn {
+  gap: 0.5rem; height: 2.5rem; min-height: 0; min-width: 2.75rem; padding: 0 0.75rem; box-sizing: border-box; justify-content: center;
+  font-size: var(--text-btn); color: var(--fg); background: var(--surface-tile); border: 1px solid var(--hairline-2); border-radius: var(--r-seg);
+  box-shadow: none; transition: all var(--duration-fast);
+}
+.d-call-controls--bar .d-voice-toolbar__control.d-btn:hover { background: var(--surface-tile); }
+.d-call-controls--bar .d-voice-toolbar__control.d-btn:active:not([aria-disabled="true"]) { transform: scale(0.96); }
+.d-call-controls--bar .d-voice-toolbar__control.d-btn > .d-btn__label { display: inline-flex; align-items: center; gap: 0.5rem; }
+.d-call-controls--bar .d-voice-toolbar__control.d-btn[data-on="true"] { color: var(--danger); background: var(--danger-soft); border-color: var(--danger-border); }
+.d-call-controls--bar .d-voice-toolbar__control.d-btn[data-tint="accent"][data-on="true"] { color: var(--accent-ink); background: var(--accent); border-color: var(--accent); }
+.d-call-controls--bar .d-voice-toolbar__control.d-btn[data-variant="danger"] {
+  margin-left: 0.5rem; padding: 0 0.875rem; font-weight: var(--weight-display); color: var(--danger-ink); background: var(--danger); border: 0;
+}
+.d-call-controls--bar .d-voice-toolbar__control.d-btn[data-variant="danger"]:hover { background: var(--danger-hover); }
+.d-voice-toolbar__keycap { font-size: var(--text-micro); }
+/* The prototype's 0.6 keycap is signal's alone (Ruling Y); light and high-contrast draw it at full strength. */
+:root[data-theme="signal"] .d-voice-toolbar__keycap { opacity: 0.6; }
+.d-call-controls--bar .d-voice-toolbar__control[aria-disabled="true"] { border-style: dashed; }
+/* Task 8c: a live Share with the prototype's Stream quality chevron 2px after it: Share's right corners go square; the chevron is
+   30 × 40, --accent with --accent-ink, its left edge the 0.25 ink seam, 7px corners on the right, a 14px glyph. */
+.d-call-controls--bar .d-voice-toolbar__control.d-btn[data-control="share"]:has(+ [data-control="quality"]) { border-radius: var(--r-seg) 0 0 var(--r-seg); }
+.d-call-controls--bar .d-voice-toolbar__control.d-btn[data-control="quality"] {
+  width: 30px; min-width: 0; padding: 0; margin-left: calc(2px - 0.375rem);
+  color: var(--accent-ink); background: var(--accent); border: 1px solid var(--accent); border-left-color: var(--accent-split); border-radius: 0 var(--r-seg) var(--r-seg) 0;
+}
+.d-call-controls--bar .d-voice-toolbar__control.d-btn[data-control="quality"]:hover { background: var(--accent); }
+.d-call-controls--bar .d-voice-toolbar__control[data-control="quality"] .d-icon { width: 14px; height: 14px; }
+/* The share picker hangs above its control (VoiceToolbar places it: right and bottom in px). */
+.d-voice-toolbar__popover { position: absolute; z-index: 12; }
+@media (max-width: 77.49rem) {
+  .d-call-controls--bar .d-voice-toolbar__control:not([data-variant="danger"]) :is(.d-voice-toolbar__text, .d-voice-toolbar__keycap) {
+    position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+  }
+}
+@media (min-width: 77.5rem) {
+  .d-call-controls--bar .d-voice-toolbar__tip { display: none; }
+}
+[data-layout="phone"] .d-call-controls--bar { flex-wrap: wrap; justify-content: center; }
+[data-layout="phone"] .d-call-controls--bar .d-voice-toolbar__control :is(.d-voice-toolbar__text, .d-voice-toolbar__keycap) {
+  position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+}

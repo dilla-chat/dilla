@@ -17,3 +17,12 @@ prefixed JSON controls from stdin, writes four-byte big-endian length
 prefixed status JSON to stderr, and writes `DPCM` version 1 frames to stdout.
 Each PCM payload is 3,528 bytes of 44.1 kHz stereo signed 16-bit little-endian
 audio. Diagnostics never include credential or provider response contents.
+
+Failure statuses distinguish `authorization/provider_connect` from
+`authorization/provider_connect_timeout` (the 35-second connection deadline),
+`startup/build_configuration`, and `playback/playback_timeout`. These pause the
+queue. Only a genuine `PlayerEvent::Unavailable` emits
+`playback/provider_unavailable`, which permits skipping that track. The Go
+adapter may also skip before invoking the helper when the integration is
+unconfigured or the requesting member has no linked account. Remote credential
+and connection failures never imply that a particular track is unavailable.

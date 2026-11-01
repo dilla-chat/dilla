@@ -9,6 +9,7 @@ import { en } from '../../strings/index.ts';
 import { GEN, MEMBERS, O1, P1, P2, peerRow, ownRow, timeline } from '../../test/conversation.tsx';
 import { nameBook } from '../shell-model.ts';
 import { Conversation, INITIAL_UI } from './Conversation.tsx';
+import { toolbarLabels as labelsOf } from '../../test/toolbar.ts';
 
 function log(items: ReturnType<typeof peerRow>[], onOpenThread: ((msgId: string) => void) | undefined) {
   const fake = new FakeClient();
@@ -23,7 +24,7 @@ function log(items: ReturnType<typeof peerRow>[], onOpenThread: ((msgId: string)
   return { view, user: userEvent.setup() };
 }
 const row = (id: string) => document.querySelector<HTMLElement>(`.d-message-row[data-msg-id="${id}"]`) as HTMLElement;
-const toolbarLabels = (id: string) => within(within(row(id)).getByRole('toolbar', { name: 'actions for this message' })).getAllByRole('button').map(b => b.textContent);
+const toolbarLabels = (id: string) => labelsOf(within(row(id)).getByRole('toolbar', { name: 'actions for this message' }));
 
 describe('thread entry points on a message (web3.7)', () => {
   it('puts reply in thread in the toolbar of a shown message and opens that message', async () => {

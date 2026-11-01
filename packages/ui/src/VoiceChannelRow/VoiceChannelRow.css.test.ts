@@ -48,24 +48,25 @@ describe('the voice row grammar (CSS pin)', () => {
     expect(d).toMatch(/height: var\(--row-h\);/);
     expect(d).toMatch(/margin: var\(--list-gap\) 0;/);
   });
-  it('the glyph column is 16px and does not shrink', () => {
+  it('the glyph column is 14px and does not shrink', () => {
     const d = rule(row, '.d-voice-row__glyph');
     expect(d).toMatch(/flex: none;/);
-    expect(d).toMatch(/width: 1rem/);
+    expect(d).toMatch(/width: 0\.875rem/);
   });
-  it('the people share one grid: a row is --row-h-sub tall, a subgrid of the list, and the list is indented to the name x (2rem: 8 + 16 + 8)', () => {
+  it('a person row is --row-h-sub (26px) tall, 12px --fg-strong, gap 8px; the list is 30px in (Signal §5.4)', () => {
     const d = rule(row, '.d-voice-row__person');
     expect(d).toMatch(/height: var\(--row-h-sub\);/);
-    expect(d).toMatch(/grid-template-columns: subgrid;/);
-    const l = rule(row, '.d-voice-row__people');
-    expect(l).toMatch(/grid-template-columns: 1\.5rem minmax\(2\.5rem, max-content\) minmax\(0, max-content\) 1fr minmax\(var\(--slot-w\), max-content\);/);
-    expect(l).toMatch(/padding: 0 0\.5rem 0 2rem;/);
+    expect(d).toMatch(/gap: 8px;/);
+    expect(d).toMatch(/font-size: var\(--text-ui\);/);
+    expect(d).toMatch(/color: var\(--fg-strong\);/);
+    expect(rule(row, '.d-voice-row__people')).toMatch(/padding: 0 0\.5rem 0 30px;/);
   });
   it('the join icon ring is inset', () => {
     expect(row).toMatch(/\.d-voice-row__join \.d-icon-button:focus-visible \{ outline-offset: -2px; \}/);
   });
-  it('the speaking ring is a 2px accent box-shadow on the square avatar', () => {
-    expect(row).toMatch(/\[data-speaking="true"\] \.d-avatar \{ box-shadow: 0 0 0 2px var\(--accent\); \}/);
+  it('speaking is only a ring on the avatar: 0 0 0 2px bg-2, 0 0 0 3.5px --live (--ok), over 150ms', () => {
+    expect(row).toMatch(/\[data-speaking="true"\] \.d-avatar \{ box-shadow: 0 0 0 2px var\(--bg-2\), 0 0 0 3\.5px var\(--ok\); \}/);
+    expect(rule(row, '.d-voice-row__avatar .d-avatar')).toMatch(/transition: box-shadow var\(--duration-fast\);/);
   });
   it('the join icon sits over the row slot at the same right edge and shows on hover or focus', () => {
     const d = rule(row, '.d-voice-row__join');
@@ -77,16 +78,23 @@ describe('the voice row grammar (CSS pin)', () => {
     expect(rule(row, '.d-voice-row__count')).toMatch(/flex: none;/);
     expect(rule(row, '.d-voice-row__name')).toMatch(/text-overflow: ellipsis;/);
   });
-  it('V1: a joined row has no accent glyph and no connected icon; its name is --fg at 600', () => {
+  it('V1, Signal: a joined row has the --live glyph and a --fg 600 name; the current row the accent glyph and the 2px bar', () => {
     expect(row).not.toContain('.d-voice-row__connected');
-    expect(row).not.toMatch(/\[data-joined="true"\] \.d-voice-row__glyph/);
-    expect(row).toMatch(/\.d-voice-row\[data-joined="true"\] \.d-voice-row__name \{ color: var\(--fg\); font-weight: 600; \}/);
+    expect(row).toMatch(/\.d-voice-row\[data-joined="true"\] \.d-voice-row__glyph \{ color: var\(--ok\); \}/);
+    expect(row).toMatch(/\.d-voice-row\[data-joined="true"\] \{ color: var\(--fg\); \}/);
+    expect(row).toMatch(/\[data-joined="true"\]\) \.d-voice-row__name \{ font-weight: var\(--weight-label\); \}/);
+    expect(row).toMatch(/\.d-voice-row\[aria-current="page"\] \.d-voice-row__bar \{ transform: scaleY\(1\); \}/);
   });
-  it('V2: the participant slot grows with its glyphs, 0.25rem apart, right-aligned to the row trailing edge', () => {
+  it('V2: the participant slot grows with its glyphs, 8px apart, right-aligned to the row trailing edge', () => {
     const d = rule(row, '.d-voice-row__person > .d-slot');
     expect(d).toMatch(/width: auto;/);
-    expect(d).toMatch(/min-width: var\(--slot-w\);/);
-    expect(d).toMatch(/gap: 0\.25rem;/);
+    expect(d).toMatch(/gap: 8px;/);
     expect(d).toMatch(/justify-content: flex-end;/);
+  });
+  it('the count is 10.5px --fg-3, tabular', () => {
+    const d = rule(row, '.d-voice-row__count');
+    expect(d).toMatch(/font-size: var\(--text-meta\);/);
+    expect(d).toMatch(/color: var\(--fg-3\);/);
+    expect(d).toMatch(/font-variant-numeric: tabular-nums;/);
   });
 });

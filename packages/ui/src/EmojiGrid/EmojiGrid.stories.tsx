@@ -17,3 +17,8 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const Grid: Story = {};
+/** Task 7 (§5.5): the composer's picker as ComposerArea opens it: the search field (focused) over the grid and the name line. */
+export const SignalComposerPicker: Story = {
+  globals: { theme: 'signal' },
+  args: { label: 'Emoji', search: { label: 'Search emoji', placeholder: 'Search emoji' } },
+};

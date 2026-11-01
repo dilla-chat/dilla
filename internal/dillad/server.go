@@ -207,6 +207,9 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		preimage := append([]byte("dilla bot interaction context snapshot v1\x00"), payload...)
 		return ed25519.Sign(private, preimage), nil
 	}
+	deps.SignAccountKind = func(message []byte) ([]byte, error) {
+		return ed25519.Sign(ed25519.NewKeyFromSeed(keys.ExternalSenderPriv[:]), message), nil
+	}
 	deps.SignBotCurrentInteractionContext = func(payload []byte) ([]byte, error) {
 		private := ed25519.NewKeyFromSeed(keys.ExternalSenderPriv[:])
 		preimage := append([]byte("dilla bot current interaction context v1\x00"), payload...)
@@ -291,6 +294,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 
 	var presence *api.PresenceService
 	gw := gateway.New(gateway.Options{
+		CurrentAppEntry: client.BuildEntry,
 		OnPresenceChanged: func(user id.ID) {
 			if presence != nil {
 				presence.Changed(context.Background(), user)

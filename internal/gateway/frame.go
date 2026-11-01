@@ -64,7 +64,10 @@ const (
 	// OpAFKAway tells the members who can see a community's AFK channel that a member became
 	// away there (since_ts > 0) or is no longer away (since_ts = 0) (AW3): S->C only, never
 	// persisted or replayed.
-	OpAFKAway Op = 55
+	OpAFKAway          Op = 55
+	OpAppBuild         Op = 56
+	OpPresenceActivity Op = 57
+	OpCallStats        Op = 58
 )
 
 // CloseCode is a WebSocket close code from RFC 6455's private range.
@@ -147,7 +150,10 @@ var opSpecs = map[Op]opSpec{
 	OpCommunityChanged: {elements: 1},
 	// [community_id, user_id, since_ts]. Server-to-client, so a client op 55 is E_FRAME_TYPE at
 	// the opcode check.
-	OpAFKAway: {elements: 3},
+	OpAFKAway:          {elements: 3},
+	OpAppBuild:         {elements: 1},
+	OpPresenceActivity: {elements: 0, fromClient: true},
+	OpCallStats:        {elements: 2, fromClient: true},
 }
 
 // FrameError is a structured refusal. Code is the E_FRAME_* string the client sees in an error

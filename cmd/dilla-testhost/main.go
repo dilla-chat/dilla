@@ -65,12 +65,15 @@ func parseFlags(args []string) (options, error) {
 	productionACL := fs.Bool("production-acl", false, "build the instance with production's ACL and channel seams (api.ResolverACL, api.StructureChannels) instead of the scenario harness's")
 	webauthnOrigin := fs.String("webauthn-origin", "", "the origin a browser reaches this host from (for example http://localhost:9999): passkeys bind to its hostname and rp_origins is exactly it (empty: the instance domain's own relying party)")
 	botRuntimeSecret := fs.String("bot-runtime-secret", "", "test only: create an operator runtime credential at this owner-only path")
-	wire := fs.Uint64("wire", dillad.WireVersion, "the one wire version the gateway's hello offers and GET /v1/instance advertises (version-reload e2e only)")
+	wire := fs.Uint64("wire", 0, "the one wire version the gateway's hello offers and GET /v1/instance advertises (version-reload e2e only); unset, the host offers dillad's production list (wire 4 for people, 3 for managed Bots, 2)")
 	if err := fs.Parse(args); err != nil {
 		return options{}, err
 	}
-	// Wire versions start at 1: a hello offering 0 names no version any client speaks.
-	if *wire < 1 {
+	// Wire versions start at 1: a hello offering 0 names no version any client speaks. An unset
+	// flag (0) keeps dillad's own list, so people negotiate wire 4 and managed Bots wire 3.
+	explicit := false
+	fs.Visit(func(f *flag.Flag) { explicit = explicit || f.Name == "wire" })
+	if explicit && *wire < 1 {
 		return options{}, fmt.Errorf("-wire %d: a wire version is 1 or more", *wire)
 	}
 	root := *webRoot
@@ -111,7 +114,10 @@ func (o options) hostOptions(dataDir, core, scrapeToken string) dilladtest.HostO
 		SFU: o.sfu.enabled, SFUPort: o.sfu.port, SFUUDPPort: o.sfu.udpPort,
 		SFUNoInternalIP: o.sfu.noInternalIP, SFUEnableAV1: o.sfu.av1, SFUDepartureTimeout: o.sfu.departure,
 		ScrapeToken: scrapeToken, WebRoot: o.webRoot, ProductionACL: o.productionACL,
-		WebAuthnOrigin: o.webauthnOrigin, WireVersions: []uint64{o.wire},
+		WebAuthnOrigin: o.webauthnOrigin,
+	}
+	if o.wire != 0 {
+		ho.WireVersions = []uint64{o.wire}
 	}
 	// A browser test (a web root) that calls (an SFU) reaches LiveKit through this host's own /rtc
 	// proxy over plain ws://: the instance domain's wss:// URL resolves to nothing on loopback.

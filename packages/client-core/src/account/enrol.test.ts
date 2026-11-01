@@ -725,3 +725,20 @@ describe('refreshOwnDeviceList', () => {
     expect(lines(e.server).slice(-2)).toEqual([`GET ${e.listPath}`, `GET ${e.listPath}?after=1`]);
   });
 });
+
+// Task S1 fix round 1: a wire-4 head carries the account-kind attestation as a fifth element; the list body the core's
+// enrolComplete decodes is the four-element chain row.
+describe('Enrol.fetch on a wire-4 head', () => {
+  it('hands the core the four-element chain row, not the raw five-element head', async () => {
+    const chain = encode([1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32)]);
+    const raw = encode([1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32), new Uint8Array([0x84])]);
+    const routes = {
+      getBackup: vi.fn((kind: number) => Promise.resolve({ object: new Uint8Array([kind + 1]) })),
+      getDeviceList: vi.fn(() => Promise.resolve({ version: 1n, blob: new Uint8Array([9]), raw })),
+    };
+    const enrol = new Enrol({ core: new FakeCore({}), routes: routes as never, session: {} as never, now: () => 0 });
+    const fetched = await enrol.fetch(new Uint8Array(16).fill(1));
+    expect(fetched.listBody).toEqual(chain);
+    expect(arr(decode(fetched.listBody), 4)).toHaveLength(4);
+  });
+});

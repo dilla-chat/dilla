@@ -20,7 +20,7 @@ const notice = (id: number, over: Partial<Notice>): Notice =>
   ({ id, channelId: LOOT, communityId: A, kind: 'mention', senderUser: null, senderName: 'ada', body: 'hello', ts: NOW - 60 * (10 - id), threadRoot: null, ...over });
 const ch = (id: string, name: string): ChannelSummary => ({ id, communityId: A, kind: 0, mode: 0, name, topic: '', parentId: null, position: 0, group: 'none', slowmode: 0, announcement: false });
 
-function setup(opts: { notices?: Notice[]; badges?: Record<string, { unread: number; mentions: number }> } = {}) {
+function setup(opts: { notices?: Notice[]; badges?: Record<string, { unread: number; mentions: number }>; reminders?: { due: { key: string; text: string; where: string }[]; onOpen(from: HTMLElement): void } } = {}) {
   const fake = new FakeClient();
   fake.set('account', account());
   fake.set('communities', [{ id: A, name: 'Midgard', owner: 'ee'.repeat(16) }]);
@@ -30,11 +30,31 @@ function setup(opts: { notices?: Notice[]; badges?: Record<string, { unread: num
   fake.set('badges', opts.badges ?? {});
   const onOpen = vi.fn();
   const user = userEvent.setup();
-  const view = render(<div className="d-root"><CoreProvider client={fake}><Activity onOpen={onOpen} /></CoreProvider></div>);
+  const view = render(<div className="d-root"><CoreProvider client={fake}><Activity onOpen={onOpen} {...(opts.reminders === undefined ? {} : { reminders: opts.reminders })} /></CoreProvider></div>);
   return { fake, user, view, onOpen };
 }
 
 describe('Activity', () => {
+  // Ruling X / Jonas 2026-10-27: one ordinary row per due reminder, first, as the prototype lists them; nothing when none is due.
+  it('lists each due reminder first ("Reminder · #general" over its text); a tap opens the reminders sheet from that row', async () => {
+    const onOpen = vi.fn();
+    const { user } = setup({ reminders: { due: [{ key: 'a:1', text: 'bring two ropes', where: '#general' }, { key: 'a:2', text: 'oil the oars', where: '' }], onOpen },
+      notices: [notice(2, { kind: 'mention', channelId: LOOT })] });
+    const rows = screen.getAllByRole('button');
+    expect(rows).toHaveLength(3);
+    expect(rows[0]).toHaveTextContent(t('activity.reminder', { where: '#general' }));
+    expect(rows[0]).toHaveTextContent('bring two ropes');
+    expect(rows[0]).toHaveAttribute('aria-haspopup', 'dialog');
+    expect(rows[1]).toHaveTextContent(t('reminder.text'));
+    expect(rows[1]).toHaveTextContent('oil the oars');
+    await user.click(rows[0]);
+    expect(onOpen).toHaveBeenCalledWith(rows[0]);
+  });
+  it('shows no reminder row when none is due', () => {
+    setup({ reminders: { due: [], onOpen: vi.fn() } });
+    expect(screen.queryByRole('button')).toBeNull();
+    expect(screen.queryByText(t('reminder.inbox'))).toBeNull();
+  });
   it('lists mentions and DMs newest first and leaves plain messages out', () => {
     setup({ notices: [
       notice(1, { kind: 'message', body: 'plain', channelId: GEN }),
@@ -44,24 +64,26 @@ describe('Activity', () => {
     expect(screen.getByRole('heading', { level: 2, name: t('activity.title') })).toBeInTheDocument();
     const rows = screen.getAllByRole('button');
     expect(rows).toHaveLength(2);
-    expect(rows[0]).toHaveTextContent(`bjorn · ${t('activity.dm')}`);
-    expect(rows[0]).toHaveTextContent('after nine');
-    expect(rows[1]).toHaveTextContent(`ada ${t('activity.mention', { channel: 'loot' })}`);
-    expect(rows[1]).toHaveTextContent('bring the tank gear');
+    // Task 11 (Jonas, Q3): "where" over "who text", as the prototype's rows.
+    expect(rows[0]).toHaveTextContent(t('activity.dm'));
+    expect(rows[0]).toHaveTextContent('bjorn after nine');
+    expect(rows[1]).toHaveTextContent(t('activity.where', { server: 'Midgard', channel: 'loot' }));
+    expect(rows[1]).toHaveTextContent(`ada ${t('activity.mention', { text: 'bring the tank gear' })}`);
     expect(screen.queryByText('plain')).toBeNull();
   });
 
-  it('lists what is unread elsewhere, once, with its count', () => {
+  // Task 11 (Jonas, Q3): what is unread elsewhere folds into the one list, after the notices, and there is no "since" note.
+  it('lists what is unread elsewhere, once, with its count, in the same list', () => {
     setup({
       notices: [notice(1, { kind: 'mention', channelId: LOOT })],
       badges: { [LOOT]: { unread: 4, mentions: 1 }, [GEN]: { unread: 3, mentions: 0 }, [DM2]: { unread: 2, mentions: 0 }, [LFG]: { unread: 0, mentions: 0 } },
     });
-    const section = screen.getByRole('region', { name: t('activity.elsewhere') });
-    const rows = within(section).getAllByRole('button');
-    expect(rows.map(r => r.textContent)).toEqual([expect.stringContaining('general'), expect.stringContaining('mira')]);
-    expect(within(rows[0]).getByText('3 unread')).toBeInTheDocument();
-    expect(within(section).queryByText('loot')).toBeNull();
-    expect(screen.getByText(t('activity.since'))).toBeInTheDocument();
+    const rows = within(screen.getByRole('list', { name: t('activity.title') })).getAllByRole('button');
+    expect(rows).toHaveLength(3);
+    expect(rows[1]).toHaveTextContent(`#general ${t('activity.newCount', { n: 3 })}`);
+    expect(rows[2]).toHaveTextContent(`mira ${t('activity.newCount', { n: 2 })}`);
+    expect(rows.filter(r => r.textContent?.includes(t('activity.mentionOne')))).toHaveLength(0); // #loot is listed once, by its notice
+    expect(screen.queryByText('Since this tab opened.')).toBeNull();
   });
 
   it('says there is nothing new when there are no notices and nothing unread', async () => {
@@ -71,7 +93,6 @@ describe('Activity', () => {
     const frame = screen.getByRole('region', { name: t('activity.emptyTitle') });
     expect(frame).toHaveClass('d-empty-state');
     expect(frame.parentElement).toHaveClass('dw-phone-pane__frame');
-    expect(within(frame).getByText(t('activity.since'))).toBeInTheDocument();
     await expectNoAxeViolations(view.container);
   });
 
@@ -98,8 +119,8 @@ describe('Activity', () => {
     const { fake } = setup({ badges: { [GEN]: { unread: 3, mentions: 1 } } });
     act(() => fake.set('settings', { [`mute.channel.${GEN}`]: '1' }));
     const row = screen.getByRole('button', { name: /general/ });
-    expect(row).toHaveTextContent('1 mention');
-    expect(row).not.toHaveTextContent('unread');
+    expect(row).toHaveTextContent(t('activity.mentionOne'));
+    expect(row).not.toHaveTextContent('new');
     expect(screen.queryByText(t('activity.emptyTitle'))).toBeNull();
   });
 

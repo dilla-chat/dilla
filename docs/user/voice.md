@@ -62,16 +62,14 @@ tile (under the name on a phone), never over the face. Your own tile has no volu
 ### The call panel
 
 At the bottom left, above your user panel, the call panel shows the channel name (hover it for the server) over your ping and data rates, like "24 ms · ↑48 ↓96 kb/s" (or "connecting", "reconnecting" or "paused
-in {where}" in place of the rates when that is so; before the first reading it says "— ms"). The figures change colour with the connection: the normal text colour under 150 ms, amber from 150 to 300 ms, and red above 300 ms or with more than 5 % of packets lost. The colour is never the only signal: a screen reader can read the quality ("good", "poor" or "bad") along with the ping and rates, and the numbers are not announced as they change. ↑ is what this device sends (voice, and camera or screen when they are on) and ↓ is what it receives, in kb/s, read every two seconds on your own device and never sent to the server. On the right of the panel are three icon buttons, in this order: **camera**,
-**share screen** and **leave**. Press the channel name to open Settings → Diagnostics, which shows the connection. The
+in {where}" in place of the rates when that is so; before the first reading it says "— ms"). The figures change colour with the connection: the normal text colour under 150 ms, amber from 150 to 300 ms, and red above 300 ms or with more than 5 % of packets lost. The colour is never the only signal: a screen reader can read the quality ("good", "poor" or "bad") along with the ping and rates, and the numbers are not announced as they change. ↑ is what this device sends (voice, and camera or screen when they are on) and ↓ is what it receives, in kb/s, read every two seconds on your own device and never sent to the server. On the right of the panel is one icon button, **leave**. Camera and share screen are on the stage's toolbar. Press the channel name to open Settings → Diagnostics, which shows the connection. The
 panel has no microphone meter: the level of your microphone is in Settings → Voice. It has no mute or deafen either:
 those are in the user panel under it, which is always there ([the user panel](getting-started.md#the-user-panel)). It
-stays on screen while you read other channels, so you can turn your camera or a share on and off, or leave, from
-anywhere. Point at an icon, or reach it with Tab and the arrow keys, and its name shows above it; Escape hides the name
+stays on screen while you read other channels, so you can leave from anywhere. Point at an icon, or reach it with Tab and the arrow keys, and its name shows above it; Escape hides the name
 again.
 
-![The call panel and the user panel up close: the channel, its ping and rates, then camera, share screen and
-leave, and under it Mira's name with mute, deafen and the gear](screenshots/dock-desktop.png)
+![The call panel and the user panel up close: the channel, its ping and rates and leave, and under it Mira's
+name with her status ("in harbour") and mute and deafen](screenshots/dock-desktop.png)
 
 ![Mira in #general while she stays in harbour: the channel list with the people nested under harbour, and the call
 panel above her user panel](screenshots/voice-dock-desktop.png)
@@ -92,10 +90,16 @@ sharing it is a grid.
   the grid. Each tile has a button that covers its picture, named by the tile and pressed while it is focused, so Tab
   and Enter or Space do the same.
 - **A new screen share** from someone else comes to the front on its own, when no tile is focused. It happens once
-  for a share: if you unfocus it, it stays a tile. Your own screen never takes the focus.
+  for a share: if you unfocus it, it stays a tile. Your own screen comes to the front when you start it (and after
+  **Apply** restarts it); a share someone starts while another tile is focused does not take over.
 - **Full screen** for one tile: the button in its top right corner, or a double-click on the picture. Only a tile that
   shows a camera or a screen has it (not an avatar), and only where the browser allows full screen. Escape leaves it.
 - Nothing restarts when you change the focus: the pictures keep playing.
+- **Stats** in a tile's corner (on a computer, not on a phone): your own tile shows what your microphone sends ("opus
+  48k"), another person's tile their ping to the server as their own browser (or the bot) measures and reports it
+  through the server ("18 ms"; none until it has one, and none while their call is paused or reconnecting), and a
+  focused screen its picture as it arrives ("1440p · 30 fps", with "· audio" on your own share when its sound goes too).
+  Your ping is visible to the others in the call this way.
 
 ![The same stage in the grid: Mira, Ada, Ada's screen and Björn as four tiles](screenshots/voice-stage-grid-desktop.png)
 
@@ -145,38 +149,63 @@ to come back.
 | Control/⌘+Shift+D | Deafens or undeafens, from anywhere in the app, in a call or out of one |
 | Arrow Left, Arrow Right, Home, End | Move between the buttons of the call panel, the user panel or the stage's controls |
 
-Control or ⌘ works on every system. There are no single-key shortcuts. Settings → keyboard lists both, next to the
-search shortcuts.
+Control or ⌘ works on every system. There are no single-key shortcuts. Settings → Keyboard lists both, next to the
+search shortcut.
 
 When push to talk is on, the mute button in the user panel carries a small "PTT" tag.
 
-**Voice activity** is the default: the microphone sends while you speak. To use **push to talk** instead:
+**Voice activity** is the default: the microphone sends while your voice is over the sensitivity line (below). To use
+**push to talk** instead:
 
-1. Open **Settings → voice**, and under "input mode" choose "push to talk". The microphone closes at once.
-2. Press **set key**: "Press the key to use. Escape cancels. It works only while dilla is the active tab."
+1. Open **Settings → Voice**, and under "Input mode" choose "Push to talk". The microphone closes at once.
+2. Next to "Shortcut", press **Change**. The row says "Press a key…" with **Cancel** (Escape cancels too). It works only
+   while dilla is the active tab.
 3. Press one key on its own: F13 to F24, Pause or Scroll Lock. Any other key, and any key held with Control, Alt, ⌘,
    Shift or AltGr, is refused with "That key types text, moves the focus or needs another key. Use one key on its own,
    such as Pause, Scroll Lock or F13 to F24." Insert works too, but screen readers use it as their own key, so it
    is not suggested.
 
-There is no key until you set one ("no key set"). Hold it to talk. It works only while the dilla tab is the active
-tab, never while you type in a text field. While push to talk is in force the call panel says "hold {key} to talk" (for
-example "hold Pause to talk"), or "push to talk: no key set" with **set a key**, which opens Settings → voice. The
-microphone test and its level meter are on the same page.
+There is no key until you set one ("No key set"). Hold it to talk. It works only while the dilla tab is the active
+tab, never while you type in a text field. **Release delay** (0 to 1000 ms, 200 ms unless you change it) keeps sending that
+long after you let go, so word endings are not cut; pressing the key again within the delay keeps the microphone open,
+and **mute** closes it at once. While push to talk is in force the call panel says "hold {key} to talk" (for example
+"hold Pause to talk"), or "push to talk: no key set" with **set a key**, which opens Settings → Voice.
 
-![Settings → Voice: input device, output device, input mode (voice activity), noise suppression and the input
-level](screenshots/voice-settings-desktop.png)
+![Settings → Voice: devices with their volumes, the mic test with its meter and sensitivity line, input mode, noise
+suppression and processing](screenshots/voice-settings-desktop.png)
 
-Settings → voice also holds:
+Settings → Voice has four groups:
 
-- **input device** and **output device**, or "system default". Choosing the output device works in Chrome and Edge,
-  and the call follows it: change the output device during a call and the sound moves at once. If the browser
-  refuses, the call panel says "The output device did not change. Call sound plays where it did before." Firefox plays call
-  sound on the system default device. A browser that cannot choose where sound plays says "This
-  browser plays voice on the system default device."
-- **noise suppression** has **Automatic (beta)**, **Lightweight** and **Off**. Lightweight uses RNNoise locally and remains the default, including existing On preferences. Automatic (beta) ships in every release, and Lightweight leaves the beta. It currently also uses Lightweight while enhanced suppression is evaluated. The screen shows the effective processor and explains fallback during a call. Off disables both application and browser noise suppression where supported; echo cancellation stays enabled. Browser suppression is disabled for neural processing, avoiding duplicate processing. Switching the setting during a call applies at once.
-- **Test microphone** records up to ten seconds locally. Capture stops before playback; **Close and discard** releases the recording. Testing is disabled during calls. It uses the selected input and suppression setting. No recording is uploaded.
-- **input level**: a meter of what your microphone hears.
+- **Devices**: **Input device** and **Output device** ("System default" unless you pick one), each with its **Volume**
+  (0 to 200 %, 100 % unless you change it). The input volume is applied in this browser before your voice is encrypted;
+  the output volume scales everyone you hear. Choosing the output device works in Chrome and Edge, and the call follows it:
+  change the output device during a call and the sound moves at once. If the browser refuses, the call panel says "The
+  output device did not change. Call sound plays where it did before." Firefox plays call sound on the system default
+  device, and a browser that cannot choose where sound plays says "This browser plays voice on the system default device."
+- **Mic test**: **Let’s check** plays your microphone back to you live for up to ten seconds, through the same chain a
+  call sends (echo cancellation and automatic gain, noise suppression, input volume and the sensitivity gate), on the
+  output device you chose; wear headphones, or your speakers feed back into the microphone. Nothing is recorded or
+  uploaded, and **Stop testing**, the ten seconds, leaving the page or changing a device releases the microphone. The
+  meter shows your level in 50 segments; the white line is the **sensitivity threshold**: dilla sends your voice only
+  while the level is over it. The pill says "Not testing", "You’re being heard" or "Too quiet to send", with the level and
+  the threshold in dB beside it. With **Set sensitivity automatically** on (the default), dilla puts the line 15 dB over
+  your room's noise (between −70 and −30 dB) and keeps it there as the room changes, never raising it into your voice.
+  Turn it off to drag the line yourself, or move it with the arrow keys (1 dB) and Page Up and Page Down (10 dB). A
+  voice under the line is not sent: the others receive silence, encrypted like everything else. The gate opens on the
+  first word at once (10 ms of look-ahead, so the word's start is kept) and stays open 300 ms after you stop. Settings
+  never opens the microphone except during Let’s check, and Let’s check is not available during a call.
+- **Input mode**: **Voice activity** or **Push to talk** (above). Push to talk turns the sensitivity gate off: the key
+  decides.
+- **Processing**: **Noise suppression** has **Automatic** (beta), **Lightweight** and **Off**. Lightweight uses RNNoise
+  locally and remains the default, including existing On preferences; Automatic picks the best processor this device can
+  run and falls back to RNNoise. The screen shows the effective processor and explains a fallback during a call. Off sends
+  the raw microphone. **Echo cancellation** ("Stops your speakers from feeding back into the mic") and **Automatic gain
+  control** ("Evens out loud and quiet speech") are on unless you turn them off; a switch the browser cannot apply is not
+  shown. A change during a call applies at once: the microphone is captured again on the same connection, and the
+  others notice nothing but the difference.
+
+If the browser cannot run the input volume and sensitivity (no AudioWorklet), Settings says "This browser cannot apply
+the input volume or sensitivity: your microphone is sent as it is."
 
 ![Settings → Voice at 360 pixels wide](screenshots/voice-settings-phone.png)
 
@@ -184,15 +213,30 @@ Settings → voice also holds:
 
 **camera** sends your camera to everyone in the call, and pressed again ends it; it and **share screen** are in the
 call panel as well as on the stage's toolbar, and show in green while they are on. Your own tile shows what you send:
-your camera, mirrored as a mirror shows you (the others see it the right way round). **share screen** lets the browser
-ask which screen, window or tab to share, and pressed again ends it. A share is its own tile, "{name}’s screen",
+your camera, mirrored as a mirror shows you (the others see it the right way round). In a voice channel, **Share**
+opens the share picker above it:
+
+- **Source**: Screen, Window or Tab, which the browser's own picker then opens on (Chrome and Edge; Firefox and Safari
+  ignore it and show their own choice, so the row is not there).
+- **Resolution**: 720p, 1080p, 1440p or Source, and **Frame rate**: 15, 30 or 60.
+- **Also share system audio**, where the browser can share sound from the picked source (see below).
+- The estimate, like "≈ 4.5 Mb/s up": what the stream will send. It is never above the server's share cap (8 Mb/s
+  unless the server's operator changed it; a share also sends a small lower-quality copy on top). Above 9 Mb/s, which
+  only Source and 1440p at 60 fps can ask for, and only a server whose cap its operator raised can send, it turns amber
+  and warns that your link may drop frames.
+- **Go live** starts the share ("You’re live"). While you share, **Share** reads **Stop sharing** and ends it at once, and the small
+  arrow beside it opens the same picker as **Stream quality**: **Apply** changes resolution and frame rate without
+  stopping ("Stream set to 1080p · 30 fps"); a new source or sound choice asks the browser again, and if you cancel the
+  browser's picker the running share goes on unchanged.
+
+In a DM call, **share screen** starts at once with your last choices. Pressed again it ends the share. A share is its own tile, "{name}’s screen",
 beside the person's own tile, so with the camera and a share both on, a person has two tiles
 ([The stage](#the-stage)). A share carries sound from:
 
 - A browser tab in Chrome or Edge (all platforms).
 - A screen or window on Windows and ChromeOS in Chrome and Edge (when you tick "Also share system audio" in the browser's picker); on macOS 14.2+ with Chrome 141+ too.
 - A browser tab on Linux (no screen or window audio).
-- No sound from Firefox or Safari by themselves; there you can pick an audio input as the stream's sound (see [Share sound from Firefox or Linux](#share-sound-from-firefox-or-linux)).
+- No sound from Firefox or Safari: they share the picture only.
 
 A game or app's own sound without a virtual device needs the desktop app (planned). dilla asks the browser to leave the call's own sound out of a shared screen. If a share has no sound, dilla tells the person sharing what their browser can do, and shows "no sound" on the screen tile for everyone watching. Each person's stream also gets its own volume and mute.
 
@@ -202,33 +246,14 @@ The notice to the person sharing depends on the browser:
 - In Chrome or Edge on Linux: only a browser tab can carry sound, so share a tab and keep "Also share tab audio" ticked.
 - In Chrome or Edge on Windows, ChromeOS or macOS: share a browser tab, or tick "Also share system audio" when you pick a screen.
 
-When the browser lists an audio input you can pick, the notice also says "You can also pick a sound source for the stream." and offers a **pick a sound source** button.
 
 ### Share sound from Firefox or Linux
 
-A browser cannot capture your computer's sound by itself on Linux, and Firefox cannot at all. dilla lets you choose any
-audio input as the stream's sound instead. While you share and the share has no sound of its own, a **sound from** list
-appears under the call controls: **none**, then every audio input the browser lists, except the microphone the call uses.
-Pick one and it is sent as the stream's sound, encrypted like the rest; everyone watching can set its volume or mute it.
-Choose **none** or stop sharing and it goes. A tab's or a screen's sound from the browser always wins, and then the list is not shown.
-If the list says "Allow the microphone to see sound sources.", the browser hides device names until the microphone is allowed.
-
-- **A monitor** ("Monitor of …") carries everything your computer plays, including this call, so the others will hear
-  themselves. Firefox lists these devices directly, and dilla warns when you pick one. Chrome and Edge on Linux do not list
-  monitors at all; use the recipe below there.
-- **One app only, and you still hear it** (Chrome, Edge and Firefox): give that app its own output, send a copy of it to
-  your speakers, and turn the output's monitor into an ordinary input. Each `pactl load-module` prints a number: note it,
-  because it is how you undo the step.
-  1. The output: `pactl load-module module-null-sink sink_name=dilla-share sink_properties=device.description=dilla-share`
-  2. A copy to your speakers, so you still hear the app: `pactl load-module module-loopback source=dilla-share.monitor`
-  3. An input made from the output's monitor: `pactl load-module module-remap-source master=dilla-share.monitor source_name=dilla-share-input source_properties=device.description=dilla-share-input`
-  4. Move the app's output to `dilla-share` in pavucontrol (Playback tab) or qpwgraph.
-  5. Start the share, and in **sound from** pick "dilla-share-input". The call keeps playing on your normal speakers and is not in the stream.
-
-  On PipeWire, `pw-loopback --capture-props='media.class=Audio/Sink node.name=dilla-share node.description=dilla-share'`
-  replaces steps 1 and 2 in one command (leave it running; Ctrl+C stops it); steps 3 to 5 stay the same.
-  To undo, run `pactl unload-module <number>` for each number you noted, last one first. Do not unload by module name: that
-  would also remove loopbacks and sinks you made for something else.
+A browser cannot capture your computer's sound by itself on Linux, and Firefox and Safari cannot at all, so there a screen
+or a window is shared without sound. For a video or a game's soundtrack, open it in a Chrome or Edge tab and share that
+tab: a tab carries its own sound on every system. dilla never sends your microphone or another audio input as a stream's
+sound (the share picker has no sound-source choice); sharing an app's sound outside a browser tab needs the desktop app
+(planned).
 
 If too many people already show a camera or a screen: "Too many people are sharing. Try again when someone stops."
 

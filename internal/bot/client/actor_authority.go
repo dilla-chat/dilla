@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/permbits"
 )
 
 // ActorAuthority is the minimal current community-wide authority returned for
@@ -17,7 +18,9 @@ type ActorAuthority struct {
 	RoleIDs       []id.ID
 }
 
-const knownCommunityPermissionBits = uint64(1<<25) - 1
+// knownCommunityPermissionBits is every bit the server may send (permbits.All, checked
+// against protocol/vectors/permissions.json).
+const knownCommunityPermissionBits = permbits.All
 
 // BotActorAuthority asks the authenticated managed bot session to resolve one
 // actor in its bound community. A 404 means the actor is not a current member.
@@ -35,7 +38,7 @@ func (s *Session) BotActorAuthority(ctx context.Context, community, actor id.ID)
 		return out, false, err
 	}
 	path := "communities/" + cid + "/bot/actors/" + uid + "/authority"
-	raw, status, err := s.c.do(ctx, s.token, http.MethodGet, path, nil, nil, MaxSmallBody, false)
+	raw, status, err := s.do(ctx, http.MethodGet, path, nil, nil, MaxSmallBody, false)
 	if err != nil {
 		var apiErr *APIError
 		if errors.As(err, &apiErr) && status == http.StatusNotFound {

@@ -688,3 +688,23 @@ func (h *dsHarness) setExpires(t *testing.T, g *dsMessageGroup, seq uint64, at t
 		t.Fatalf("UPDATE expires touched %d rows, want 1", n)
 	}
 }
+
+func TestASweepStillPrunesHandshakesWhenTheClosedGroupVoidFails(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, _ := h.mustRegister(t)
+	h.appendHandshake(t, reg.GroupID, 1, 6, 1, []byte("expired"))
+	h.clk.Advance(31 * 24 * time.Hour)
+	h.repo.failNext("ListClosedGroupLiveProposals")
+	report, err := h.ds.Sweep(ctx)
+	if err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if report.HandshakesPruned != 1 {
+		t.Fatalf("HandshakesPruned = %d, want 1", report.HandshakesPruned)
+	}
+	rows, err := h.repo.ListHandshakes(ctx, reg.GroupID, 0, 100)
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("handshakes after Sweep = %v, %v, want none", rows, err)
+	}
+}

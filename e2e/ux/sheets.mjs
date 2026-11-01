@@ -1,5 +1,5 @@
 // Contact sheets: one PNG per width and theme, a grid of that width's shots with each one's screen name under it.
-//   node e2e/ux/sheets.mjs [--only d1440-mesh,p390-light] [--cols 4]
+//   node e2e/ux/sheets.mjs [--only d1440-signal,p390-light] [--cols 4]
 // Reads target/ui-screens/web3.9/<d|p><width>-<theme>-<screen>.png, writes target/ui-screens/web3.9/sheets/<d|p><width>-<theme>.png.
 import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -14,7 +14,7 @@ const { chromium } = require('@playwright/test');
 
 const arg = (name) => { const i = process.argv.indexOf(`--${name}`); return i === -1 ? undefined : process.argv[i + 1]; };
 const only = arg('only')?.split(',');
-const NAME = /^([dp]\d+-(?:mesh|light|high-contrast))-(.+)\.png$/;
+const NAME = /^([dp]\d+-(?:signal|light|high-contrast))-(.+)\.png$/;
 
 const groups = new Map();
 for (const f of readdirSync(OUT).sort()) {

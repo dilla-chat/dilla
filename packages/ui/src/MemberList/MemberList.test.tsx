@@ -116,7 +116,7 @@ describe('MemberList', () => {
     expect(screen.queryByRole('heading', { level: 3 })).toBeNull();
   });
 
-  it.each(['mesh', 'light', 'high-contrast'])('has no serious axe violations in %s, listed, loading and empty', async theme => {
+  it.each(['signal', 'light', 'high-contrast'])('has no serious axe violations in %s, listed, loading and empty', async theme => {
     document.documentElement.dataset.theme = theme;
     for (const over of [{}, { loading: true }, { groups: [] }]) {
       const { container, unmount } = render(<div className="d-root"><MemberList {...props(over)} /></div>);
@@ -146,15 +146,17 @@ describe('MemberList sections and rows (R28, F1)', () => {
   it('marks each section with its kind, and dims the offline rows with the muted opacity token (CSS pin)', () => {
     const { container } = render(<MemberList {...sectioned()} />);
     expect([...container.querySelectorAll('.d-member-list__group')].map(g => g.getAttribute('data-kind'))).toEqual(['role', 'online', 'offline']);
-    expect(css).toMatch(/\.d-member-list__group\[data-kind="offline"\] \.d-member-list__text \{[^}]*opacity: var\(--opacity-muted\)/);
+    expect(css).toMatch(/\.d-member-list__group\[data-kind="offline"\] \.d-member-list__line1 \{[^}]*opacity: var\(--opacity-muted\)/);
   });
 
-  it('a row is at var(--row-h-2) with a 32px avatar and presence corner read as a word', () => {
+  // Task 9 (Signal §5.7): the prototype's 44px row and 28px avatar; the status line is the presence word when there is no other.
+  it('a row is 44px with a 28px avatar and presence corner read as a word, and a status line', () => {
     const { container } = render(<MemberList {...sectioned()} />);
-    expect(css).toMatch(/\.d-member-list__open \{[^}]*min-height: var\(--row-h-2\)/);
+    expect(css).toMatch(/\.d-member-list__open \{[^}]*height: 44px/);
     const row = screen.getByText('Bjorn').closest('li')!;
     const avatar = row.querySelector('.d-avatar')!;
-    expect(avatar).toHaveAttribute('data-size', 'row');
+    expect(avatar).toHaveAttribute('data-size', 'member');
+    expect(row.querySelector('.d-member-list__line2')).toHaveTextContent('online');
     expect(avatar.querySelector('.d-avatar__presence')).toHaveAttribute('data-presence', 'online');
     expect(within(row).getByRole('button')).toHaveAccessibleName('Bjorn, online');
     expect(row.querySelector('.d-member-list__line1')).toContainElement(screen.getByText('Bjorn'));
@@ -166,9 +168,12 @@ describe('MemberList sections and rows (R28, F1)', () => {
     expect(screen.getByText('Bjorn').closest('li')!.querySelector('.d-avatar__presence')).toBeNull();
   });
 
-  it('the label is the 48 bar heading and names the region', () => {
-    render(<MemberList {...sectioned()} />);
-    expect(screen.getByRole('heading', { level: 2, name: 'members' })).toHaveClass('d-member-list__bar');
+  it('the label is the 44px head\'s heading and names the region; a close × when asked', async () => {
+    const onClose = vi.fn();
+    render(<MemberList {...sectioned()} closeLabel="close members" onClose={onClose} />);
+    expect(screen.getByRole('heading', { level: 2, name: 'members' }).closest('.d-member-list__bar')).not.toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'close members' }));
+    expect(onClose).toHaveBeenCalledTimes(1);
     expect(screen.getByRole('region', { name: 'members' })).toBeInTheDocument();
     expect(css).toMatch(/\.d-member-list__bar \{[^}]*height: var\(--bar-h\)/);
   });
@@ -193,21 +198,21 @@ describe('MemberList role colour on the name (P1)', () => {
   const nameOf = (n: string) => screen.getByText(n);
 
   it('colours the name itself, draws no dot, and leaves uncoloured names on the token colour', () => {
-    document.documentElement.dataset.theme = 'mesh';
+    document.documentElement.dataset.theme = 'signal';
     const { container } = render(<MemberList {...withColors()} />);
     expect(nameOf('Astrid').style.color).toBe('rgb(231, 76, 60)');
     for (const n of ['Bjorn', 'Cleo', 'Dag']) expect(nameOf(n).style.color).toBe('');
     expect(container.querySelector('.d-role-dot')).toBeNull();
   });
 
-  it('falls back to the text token when the role colour fails 4.5:1 (a near-black colour on mesh)', () => {
-    document.documentElement.dataset.theme = 'mesh';
+  it('falls back to the text token when the role colour fails 4.5:1 (a near-black colour on signal)', () => {
+    document.documentElement.dataset.theme = 'signal';
     render(<MemberList {...withColors()} />);
     expect(nameOf('Eira').style.color).toBe('');
   });
 
-  it('judges per theme: a pale colour passes on mesh and falls back on the light theme', () => {
-    document.documentElement.dataset.theme = 'mesh';
+  it('judges per theme: a pale colour passes on signal and falls back on the light theme', () => {
+    document.documentElement.dataset.theme = 'signal';
     const { unmount } = render(<MemberList {...pale()} />);
     expect(nameOf('Pale').style.color).not.toBe('');
     unmount();
@@ -217,7 +222,7 @@ describe('MemberList role colour on the name (P1)', () => {
   });
 
   it('follows a theme switch while mounted', async () => {
-    document.documentElement.dataset.theme = 'mesh';
+    document.documentElement.dataset.theme = 'signal';
     render(<MemberList {...pale()} />);
     expect(nameOf('Pale').style.color).not.toBe('');
     document.documentElement.dataset.theme = 'light';
@@ -232,7 +237,7 @@ describe('MemberList role colour on the name (P1)', () => {
 
 describe('MemberList fix round 1', () => {
   it('I1: an offline row dims its text to 0.8, so a role colour that only just passes opaque falls back there (0xe74c3c: online yes, offline no)', () => {
-    document.documentElement.dataset.theme = 'mesh';
+    document.documentElement.dataset.theme = 'signal';
     const p = props({ groups: [
       { id: 'on', kind: 'online', title: 'online', members: [{ id: 'a', name: 'Astrid', color: 0xe74c3c }] },
       { id: 'off', kind: 'offline', title: 'offline', members: [{ id: 'b', name: 'Bjorn', color: 0xe74c3c }] },
@@ -242,8 +247,8 @@ describe('MemberList fix round 1', () => {
     expect(screen.getByText('Bjorn').style.color).toBe('');
   });
 
-  it('I1: an offline row keeps a colour that still passes after the dimming (0xf1c40f on mesh)', () => {
-    document.documentElement.dataset.theme = 'mesh';
+  it('I1: an offline row keeps a colour that still passes after the dimming (0xf1c40f on signal)', () => {
+    document.documentElement.dataset.theme = 'signal';
     const p = props({ groups: [{ id: 'off', kind: 'offline', title: 'offline', members: [{ id: 'b', name: 'Bjorn', color: 0xf1c40f }] }] });
     render(<MemberList {...p} />);
     expect(screen.getByText('Bjorn').style.color).not.toBe('');
@@ -317,5 +322,31 @@ describe('MemberList vertical alignment (P4)', () => {
       { id: 'o', kind: 'online', title: 'online', members: [{ id: 'u2', name: 'Bjorn', presence: 'online' }] }] })} />);
     expect(screen.getByRole('button', { name: /Bjorn/ })).toHaveAccessibleName('Bjorn, på nätet');
     expect(screen.getByRole('button', { name: /Bjorn/ })).not.toHaveAccessibleName(/Online/);
+  });
+});
+
+describe('MemberList task 9 (Signal §5.7)', () => {
+  it('a right-click and Shift+F10 open the person menu (onMenu) at the pointer or under the row, never the card', () => {
+    const onOpen = vi.fn(); const onMenu = vi.fn();
+    render(<MemberList {...props({ onOpen, onMenu })} />);
+    const btn = screen.getByRole('button', { name: /Bjorn/ });
+    fireEvent.contextMenu(btn, { clientX: 40, clientY: 50 });
+    expect(onMenu).toHaveBeenCalledWith(expect.any(String), { x: 40, y: 50 }, btn);
+    fireEvent.keyDown(btn, { key: 'F10', shiftKey: true });
+    expect(onMenu).toHaveBeenCalledTimes(2);
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+  it('a bots group draws the rounded-square avatar and the BOT tag; a role heading draws its colour bar', () => {
+    document.documentElement.dataset.theme = 'signal';
+    const { container } = render(<MemberList {...props({ groups: [
+      { id: 'r', kind: 'role', title: 'raid lead', color: 0xe9b6ec, members: [{ id: 'a', name: 'Ada', color: 0xe9b6ec, isOwner: true }] },
+      { id: 'bots', kind: 'bots', title: 'bots', members: [{ id: 'g', name: 'Glenn', isBot: true, status: 'in voice' }] },
+    ] })} />);
+    expect(container.querySelector('[data-kind="role"] .d-member-list__title-bar')).not.toBeNull();
+    expect(container.querySelector('[data-kind="bots"] .d-member-list__title-bar')).toBeNull();
+    const glenn = screen.getByText('Glenn').closest('li')!;
+    expect(glenn.querySelector('.d-avatar')).toHaveAttribute('data-shape', 'bot');
+    expect(glenn.querySelector('.d-member-list__bot')).toHaveTextContent('bot');
+    expect(glenn.querySelector('.d-member-list__line2')).toHaveTextContent('in voice');
   });
 });

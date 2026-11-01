@@ -9,24 +9,28 @@
 import type { CallJoinResult, CoreClient, IceServerTuple } from '@dilla/client-core';
 import { getBrowser } from 'livekit-client';
 import {
-  chooseVideoCodec, decodeCaps, DillaMicrophoneProcessor, noisePreference, setBrowserSuppression, joinCall, micOptions, publishDefaults, refreshIceServers,
-  screenAudioOptions, SpeakerPolicy, VoiceGate, type CallCaps, type CallSession, type JoinCallOptions, type NoisePreference, type ProcessorStatus,
+  chooseVideoCodec, decodeCaps, DillaInputStage, DillaMicrophoneProcessor, noisePreference, processingConstraints, setBrowserSuppression, joinCall, micOptions, publishDefaults, refreshIceServers,
+  screenAudioOptions, SpeakerPolicy, VoiceGate, type CaptureProcessing, type InputStageOptions, type SensitivityConfig, type CallCaps, type CallSession, type JoinCallOptions, type NoisePreference, type ProcessorStatus,
 } from '@dilla/media';
-import { reportProcessorStatus } from './processor-status.ts';
+import { reportProcessorStatus, reportStageStatus } from './processor-status.ts';
 import { acquireCamera, acquireMic, acquireScreen, type CaptureMedia, type DisplayMedia, type ScreenCapture, type ShareAudioKind } from './devices.ts';
 import { APPLICATION_SOURCE, acquireApplicationAudio, applicationAudioAvailable } from './app-audio.ts';
 import { desktopBridge } from '../desktop.ts';
 import { t } from '../strings/index.ts';
 import { createKeyRelay, toEpochKeys } from './keys.ts';
+import { DEFAULT_SHARE_OPTIONS, shareEncoding, shareVideoConstraints, type ShareOptions } from './share-options.ts';
+import { readTileStats, type TileStats } from './tile-stats.ts';
 import {
   analyserMeter, LEVEL_PUBLISH_MS, SPEAK_TICK_MS, SpeakingDetector, type LevelMeter,
 } from './speaking.ts';
 import {
   callStatsReport, connectionOf, EMPTY_REPORT, linkSample, LINK_EVERY_MS, LINK_STALL_MS, mediaTotals, STATS_EVERY_MS, type LinkSample, type LinkTotals, type MediaTotals,
 } from './stats.ts';
-import { gainOf, isVolume, type Volumes } from './volume.ts';
+import { gainOf, isPercent, isVolume, type Volumes } from './volume.ts';
 
 export { isVoiceSupported, localDecodeList } from '@dilla/media';
+export type { ShareOptions } from './share-options.ts';
+export type { TileStats } from './tile-stats.ts';
 export { bindPushToTalk } from './ptt.ts';
 export { streamVolumesFromSettings, volumesFromSettings } from './volume.ts';
 
@@ -44,6 +48,21 @@ export interface PageCallTile {
   /** #37: this device has a screen_share_audio publication (subscribed or not). Only for an 'ok' tile and never while
    *  paused, as `screen`; false otherwise. It is about the stream, not the viewer's deafen or volume. */
   screenAudio: boolean;
+  /** Task 8c fix round 1: the RTT this device says it measures to the SFU (its `dilla.rtt` attribute, 0..5000 ms), or null when
+   *  it publishes none or something else. Never this page's own link. */
+  rttMs?: number | null;
+}
+
+/** Task 8c fix round 1: the one participant attribute a page publishes about itself: its own RTT to the SFU in whole ms. */
+export const RTT_ATTRIBUTE = 'dilla.rtt';
+/** A published RTT changes only by at least this much (fewer attribute updates for the room). */
+export const RTT_STEP_MS = 5;
+/** The value another device published, if it is a whole number of ms in 0..5000; anything else is no value. */
+export function rttOf(attributes: Readonly<Record<string, string>> | undefined): number | null {
+  const v = attributes?.[RTT_ATTRIBUTE];
+  if (v === undefined || !/^(0|[1-9]\d{0,3})$/.test(v)) return null;
+  const n = Number(v);
+  return n <= 5000 ? n : null;
 }
 export interface PageCallState {
   phase: 'connecting' | 'connected' | 'reconnecting' | 'ended';
@@ -81,6 +100,9 @@ export interface PageCallState {
   /** MP5: the latest local link read (every 2 s while connected): the ping and what this device sends and receives. Absent
    *  before the first read, while not connected, and after leave. */
   link?: LinkSample | undefined;
+  /** Task 8c: the instance's share bitrate cap in bit/s (the calls response's caps), which the share's encoding and the
+   *  picker's estimate keep under; null before the join answered. */
+  shareCapBps: number | null;
   /**
    * An E_ code, or null. Once the phase is 'ended' because the room ended on its own (WB client I3): E_CALL_ENDED (the
    * room was closed: the call ended for everyone), E_REMOVED (the instance removed this device from the room) or
@@ -96,7 +118,17 @@ export interface PageCall {
   setMuted(on: boolean): void;
   setDeafened(on: boolean): void;
   setCamera(on: boolean): Promise<void>;
-  setSharing(on: boolean): Promise<void>;
+  /** Starts (with the picker's `options`, the defaults without) or stops this device's screen share. */
+  setSharing(on: boolean, options?: ShareOptions): Promise<void>;
+  /**
+   * Task 8c: the picker's Apply while sharing. A new resolution or frame rate is applied to the running capture
+   * (`applyConstraints`) and to the sender's encoding (`setParameters`: the same transformed sender, no new track); a new source
+   * or sound choice needs the browser's picker again, so the share restarts through the same publishTrack path (the dilla transform). Not sharing:
+   * the options are kept for the next start.
+   */
+  setShareOptions(options: ShareOptions): Promise<void>;
+  /** Task 8c: one read of the stage's per-tile stats (the own microphone's codec, every screen's frame size and rate). */
+  tileStats(): Promise<TileStats>;
   /** FX2: the audio inputs a running share can take its sound from (the call's own microphone left out), and whether the
    *  browser gave them labels. */
   shareSources(): Promise<{ sources: ShareSource[]; labeled: boolean }>;
@@ -115,6 +147,16 @@ export interface PageCall {
   setMode(mode: 'vad' | 'ptt'): void;
   /** Product walk M1: switches noise suppression during the call (the microphone's processor is set or stopped). */
   setNoise(noise: NoisePreference | 'on'): Promise<void>;
+  /** Signal task 10b: the input volume, 0..200 %, applied by the input stage's gain before the sender. */
+  setInputVolume(percent: number): void;
+  /** Signal task 10b: the output volume, 0..200 %, multiplied into every remote person's gain. */
+  setOutputVolume(percent: number): void;
+  /** Signal task 10b: the voice-activity gate's automatic or manual threshold (in force under voice activity only). */
+  setSensitivity(sensitivity: { auto: boolean; thresholdDb: number }): void;
+  /** Signal task 10b: push to talk keeps sending this long (ms) after the key is let go. */
+  setPttRelease(ms: number): void;
+  /** Signal task 10b: echo cancellation and automatic gain; the microphone is captured again with them, the call goes on. */
+  setProcessing(processing: CaptureProcessing): Promise<void>;
   /** web3.3: the "turn on audio" press: room.startAudio(), then canPlaybackAudio read again; a refusal never throws. */
   startAudio(): Promise<void>;
   /** web3.4 V1: moves the call's sound to output device `id` ('' is the system default) during the call. A no-op where
@@ -124,7 +166,21 @@ export interface PageCall {
 }
 
 /** What the session needs of an RNNoise processor; DillaRnnoiseProcessor by default. */
-export interface NoiseProcessor { setPttActive(active: boolean): void; setCaptureAllowed?(allowed: boolean): void; setMode?(mode: 'vad' | 'ptt'): void; flush?(): void; destroy?(): Promise<void> }
+export interface NoiseProcessor { setPttActive(active: boolean): void; setCaptureAllowed?(allowed: boolean): void; setMode?(mode: 'vad' | 'ptt'): void; flush?(): void; destroy?(): Promise<void>; setProcessing?(processing: CaptureProcessing): void }
+/** Signal task 10b: what the session needs of the input stage (DillaInputStage in the browser): the processor set on the
+ *  microphone, wrapping the noise processor (or none), with the input gain and the voice-activity gate. */
+export interface InputStage {
+  setGain(gain: number): void;
+  setGate(gate: SensitivityConfig): void;
+  setCaptureAllowed(allowed: boolean): void;
+  /** The raw capture the stage was last given. */
+  readonly input?: MediaStreamTrack;
+  /** Fix round 1 (M1): whether gain and gate run (`active`), or why not. */
+  readonly state?: 'pending' | 'active' | 'unsupported' | 'failed';
+  /** Its own audio context, which a browser holding audio back starts suspended (resumed by startAudio). */
+  readonly context?: AudioContext;
+  destroy?(): Promise<void>;
+}
 
 export interface PageCallDeps {
   applicationAudio?: () => Promise<MediaStreamTrack>;
@@ -137,6 +193,9 @@ export interface PageCallDeps {
   media: CaptureMedia & Partial<DisplayMedia>;
   /** Defaults to a DillaRnnoiseProcessor in the given mode. */
   createNoiseProcessor?: (mode: 'vad' | 'ptt') => NoiseProcessor;
+  /** Signal task 10b: the input stage around the noise processor (null: noise suppression off). Absent: no stage (no input
+   *  volume, no gate); browserDeps gives DillaInputStage. */
+  createInputStage?: (inner: NoiseProcessor | null, options: InputStageOptions) => InputStage;
   /** The key relay’s copy step (tests observe that every copy is zero-filled); a plain copy by default. */
   copyKey?: (buffer: ArrayBuffer) => Uint8Array;
   /** Where pagehide is heard; the page’s window by default. */
@@ -217,7 +276,20 @@ export interface PageCallOptions {
    *  join, before its first await), so the browser lets it run. From here on the session owns it and closes it on every
    *  way out. Absent: the session makes its own (PageCallDeps.audioContext), a fallback that may start suspended. */
   audioContext?: AudioContext | null;
+  /** Signal task 10b (Settings → Voice): input and output volume (0..200 %, 100 by default), the sensitivity (automatic by
+   *  default), push to talk's release delay (ms, 0 by default here; the setting's default is 200) and the capture's echo
+   *  cancellation and automatic gain (both on by default). */
+  inputVolume?: number;
+  outputVolume?: number;
+  sensitivity?: { auto: boolean; thresholdDb: number };
+  pttReleaseMs?: number;
+  processing?: CaptureProcessing;
 }
+
+/** Fix round 1 (L2): a manual threshold as the gate takes it, a whole −100..0 dB (−50 when not a number). */
+const dbThreshold = (db: number | undefined): number => (typeof db === 'number' && Number.isFinite(db) ? Math.max(-100, Math.min(0, Math.round(db))) : -50);
+/** A push-to-talk release delay, 0..1000 ms (0 when not a number). */
+const releaseMs = (ms: number | undefined): number => (typeof ms === 'number' && Number.isFinite(ms) ? Math.max(0, Math.min(1000, ms)) : 0);
 
 /** A refusal or failure of the session, by code only (copy maps codes, never error text). */
 export class PageCallError extends Error {
@@ -248,6 +320,7 @@ export function browserDeps(bridge: PageCallDeps['bridge']): PageCallDeps {
     setTimer: (fn, ms) => setTimeout(fn, ms),
     clearTimer: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
     concurrentCapture: concurrentCapture(getBrowser(navigator.userAgent), navigator.userAgent),
+    createInputStage: (inner, options) => new DillaInputStage(inner as ConstructorParameters<typeof DillaInputStage>[0], options),
     media: {
       getUserMedia: (c) => md.getUserMedia(c),
       enumerateDevices: () => md.enumerateDevices(),
@@ -279,6 +352,7 @@ const EV = {
   disconnected: 'disconnected',
   permissions: 'participantPermissionsChanged',
   audioPlayback: 'audioPlaybackChanged',
+  attributes: 'participantAttributesChanged',
 } as const;
 
 /** livekit DisconnectReason values the session reads (livekit protocol): PARTICIPANT_REMOVED, ROOM_DELETED, ROOM_CLOSED. */
@@ -329,6 +403,8 @@ interface RemoteView {
   setVolume(volume: number, source?: Source): void;
   getTrackPublication(source: Source): { track?: { mediaStream?: MediaStream } } | undefined;
   trackPublications?: Map<string, { track?: unknown; source?: unknown }>;
+  /** LiveKit participant attributes; only `dilla.rtt` is read here (rttOf), `dilla.vdec` by the codec choice. */
+  attributes?: Record<string, string>;
 }
 /** What the session needs of a subscribed remote track to play it (livekit’s RemoteAudioTrack). */
 interface RemoteAudio {
@@ -399,7 +475,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
   if (setSink !== null && opts.output !== '') void setSink(opts.output).catch(() => undefined);
   let mic: Awaited<ReturnType<typeof acquireMic>>;
   try {
-    mic = await abortable(acquireMic(deps.media, opts.input, false), opts.signal, (late) => { if ('track' in late) late.track.stop(); });
+    mic = await abortable(acquireMic(deps.media, opts.input, false, opts.processing), opts.signal, (late) => { if ('track' in late) late.track.stop(); });
   } catch (err) {
     closeCtx();
     throw err;
@@ -431,7 +507,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
   const startupHide = (reason: 'pagehide' | 'user' = 'pagehide'): void => {
     if (aborted) return;
     aborted = true;
-    reportProcessorStatus(statusOwner, null);
+    reportProcessorStatus(statusOwner, null); reportStageStatus(statusOwner, null);
     relay.close();
     unsubscribe();
     win?.removeEventListener('pagehide', pageHide);
@@ -456,7 +532,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
   const abandon = async (err: unknown, posted: boolean): Promise<PageCallError> => {
     if (aborted) return new PageCallError('E_ABORTED');
     aborted = true;
-    reportProcessorStatus(statusOwner, null);
+    reportProcessorStatus(statusOwner, null); reportStageStatus(statusOwner, null);
     relay.close();
     unsubscribe();
     win?.removeEventListener('pagehide', pageHide);
@@ -574,7 +650,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       phase: 'connecting', camera: false, sharing: false, paused: false,
       mic: 'ok', tiles: [], level: 0, error: null, mode: opts.mode, speaking: false, localCamera: null, localScreen: null,
       shareAudio: null, shareSource: null, noise: opts.noise, muted: opts.self === 'muted' || opts.self === 'deafened', deafened: opts.self === 'deafened',
-      audioBlocked: false, audio: { attached: 0, expected: 0 },
+      audioBlocked: false, audio: { attached: 0, expected: 0 }, shareCapBps: caps.maxShareBitrateBps,
     };
     const viewOf = deps.viewOf ?? ((track: MediaStreamTrack) => (typeof MediaStream === 'undefined' ? null : new MediaStream([track])));
     const listeners = new Set<{ fn: () => void }>();
@@ -587,6 +663,13 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     let ended = false;
     const volumes: Volumes = { ...opts.volumes };
     const streamVolumes: Volumes = { ...opts.streamVolumes };
+    // Signal task 10b: Settings → Voice's levels and switches, as the call applies them now.
+    // Fix round 1 (L2): every level is checked here, so nothing non-finite or out of range reaches the stage or a timer.
+    let inputVolume = opts.inputVolume !== undefined && isPercent(opts.inputVolume) ? opts.inputVolume : 100;
+    let outputVolume = opts.outputVolume !== undefined && isPercent(opts.outputVolume) ? opts.outputVolume : 100;
+    let sensitivity = { auto: opts.sensitivity?.auto !== false, thresholdDb: dbThreshold(opts.sensitivity?.thresholdDb) };
+    let pttReleaseMs = releaseMs(opts.pttReleaseMs);
+    let processing: CaptureProcessing = opts.processing ?? { echo: true, agc: true };
     // Fix round 3 (m1): a call started deafened (voice.self) was muted before it, as far as anyone knows: an undeafen keeps
     // the microphone muted (privacy-safe), never opens it after a reload.
     let mutedBeforeDeafen = opts.self === 'deafened';
@@ -654,11 +737,11 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         const speaking = !state.paused && (remoteLocal(p.identity) ?? p.isSpeaking === true);
         out.push({ deviceId: p.identity, userId: r?.userId ?? '', state: tileState, speaking,
           video: show ? streamOf(p, SOURCE.camera) : null, screen: show ? streamOf(p, SOURCE.screen) : null,
-          screenAudio: show && p.getTrackPublication(SOURCE.screenAudio) !== undefined });
+          screenAudio: show && p.getTrackPublication(SOURCE.screenAudio) !== undefined, rttMs: rttOf(p.attributes) });
       }
       for (const [deviceId, r] of roster) {
         if (r.leaf === selfLeaf || deviceId === local.identity || inRoom.has(deviceId)) continue;
-        out.push({ deviceId, userId: r.userId, state: 'connecting', speaking: false, video: null, screen: null, screenAudio: false });
+        out.push({ deviceId, userId: r.userId, state: 'connecting', speaking: false, video: null, screen: null, screenAudio: false, rttMs: null });
       }
       return out;
     };
@@ -683,7 +766,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
      *  and pause hold both at 0. */
     const gainFor = (identity: string, kind: 'voice' | 'stream' = 'voice'): number =>
       gainOf(roster.get(identity)?.userId ?? '', kind === 'voice' ? volumes : streamVolumes,
-        { deafened: state.deafened, paused: state.paused });
+        { deafened: state.deafened, paused: state.paused, output: outputVolume });
     /** The gains of every remote person; first, the held-back tracks whose gain rose above 0 are attached (fix round 1,
      *  I3), so each new gain node takes its gain at once. */
     const applyGains = (): void => {
@@ -792,6 +875,28 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     let micPub: LocalPub | null = null;
     let micTrack: MediaStreamTrack | null = null;
     let processor: NoiseProcessor | null = null;
+    /** Signal task 10b: the input stage set on the microphone (around `processor`, or alone), or null. */
+    let stage: InputStage | null = null;
+    /** The capture the session holds: the raw one, which the stage (when set) was given; LiveKit's mediaStreamTrack is the
+     *  processed output whenever a processor is set. */
+    const rawOf = (track: NonNullable<LocalPub['track']>): MediaStreamTrack | undefined => stage?.input ?? track.mediaStreamTrack;
+    /** The gate in force: voice activity only (push to talk is governed by its key). */
+    const gateConfig = (): SensitivityConfig => ({ enabled: mode !== 'ptt', auto: sensitivity.auto, thresholdDb: sensitivity.thresholdDb });
+    // Fix round 1 (L1): the stage starts closed, as the noise processor does; applyMic opens it.
+    const stageOptions = (): InputStageOptions => ({ gain: inputVolume / 100, gate: gateConfig(), allowed: false });
+    const reportStage = (): void => { if (!ended && !aborted) reportStageStatus(statusOwner, stage === null || stage.state === undefined || stage.state === 'pending' ? null : stage.state); };
+    const dropStage = async (wrap: InputStage | null, made: NoiseProcessor | null): Promise<void> => {
+      wrap?.setCaptureAllowed(false);
+      made?.setCaptureAllowed?.(false);
+      if (wrap?.destroy !== undefined) await wrap.destroy().catch(() => undefined);
+      else await made?.destroy?.().catch(() => undefined);
+    };
+    /** Fix round 2: while noise suppression is switched under voice activity with a stage maker, the capture stays closed
+     *  until the new stage holds it, so no ungated microphone goes out mid-switch (and a failed stage's fail-closed holds). */
+    let holding = false;
+    /** Echo cancellation and automatic gain changed while the microphone could not send and no stage holds it closed:
+     *  the new capture waits for the next open (as R2's restart). */
+    let processingWaiting = false;
     const reportStatus = (status: ProcessorStatus): void => { if (!ended && !aborted) reportProcessorStatus(statusOwner, status); };
     /** web3.8 MUTE (R2): a capture restart wanted while the microphone must not send waits here; the next open runs it.
      *  LiveKit puts the new capture on the sender before it disables it, so a restart while muted would send it briefly. */
@@ -842,20 +947,21 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     };
     const browserStatus = async (reason: ProcessorStatus['reason'] = null, parked = false): Promise<void> => {
       if (!micTrack) return;
-      let browserNoise = await setBrowserSuppression(micTrack, state.noise !== 'off');
+      let browserNoise = await setBrowserSuppression(micTrack, state.noise !== 'off', processing);
       const track = micPub?.track;
       const wanted = track?.restartTrack !== undefined && browserNoise !== 'unsupported' && browserNoise !== (state.noise === 'off' ? 'off' : 'on');
       restartWaiting = wanted && !sendNow() ? { reason } : null;
       if (track?.restartTrack && wanted && restartWaiting === null) {
         try {
-          const constraints: MediaTrackConstraints = { ...micTrack.getConstraints(), deviceId:{exact:micTrack.getSettings().deviceId || opts.input || 'default'}, noiseSuppression:state.noise !== 'off', echoCancellation:true, autoGainControl:true, channelCount:1, sampleRate:48000 };
+          const constraints: MediaTrackConstraints = { ...micTrack.getConstraints(), deviceId:{exact:micTrack.getSettings().deviceId || opts.input || 'default'}, noiseSuppression:state.noise !== 'off', ...processingConstraints(processing), channelCount:1, sampleRate:48000 };
           let swapped = true;
           // Fix round 1 (I1): only where a second capture of the microphone stays live beside the first (an allowlist,
           // concurrentCapture); everywhere else, and with no answer, the stop-first restartTrack of web3.8.
           if (parked && track.replaceTrack !== undefined && deps.concurrentCapture === true) swapped = await handOver(track, constraints);
           else {
             await restartCapture(track, constraints);
-            if (track.mediaStreamTrack) micTrack = track.mediaStreamTrack;
+            const raw = rawOf(track);
+            if (raw) micTrack = raw;
           }
           // A failed hand-over keeps the old capture and reports what it observed, as a failed restart does.
           if (swapped) {
@@ -863,7 +969,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
             applyMic();
             // web3.8 FX I3: the old capture is stopped, so the own meter moves to the new one (own speaking, AFK).
             restartOwnMeter();
-            browserNoise = await setBrowserSuppression(micTrack, state.noise !== 'off');
+            browserNoise = await setBrowserSuppression(micTrack, state.noise !== 'off', processing);
           }
         } catch { /* Report the observed constraint state if capture cannot be reopened. */ }
       }
@@ -875,27 +981,77 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       if (!track?.setProcessor) { await browserStatus('initialization-failed'); return; }
       if (processor !== null) return;
       processorMode = mode;
-      const made = (deps.createNoiseProcessor ?? ((m) => new DillaMicrophoneProcessor({ mode: m, preference: noisePreference(state.noise), allowed: false, onStatus: reportStatus })))(processorMode);
+      const made = (deps.createNoiseProcessor ?? ((m) => new DillaMicrophoneProcessor({ mode: m, preference: noisePreference(state.noise), allowed: false, onStatus: reportStatus, processing })))(processorMode);
+      const wrap = deps.createInputStage?.(made, stageOptions()) ?? null;
       try {
-        await track.setProcessor(made);
-        if (ended) { made.setCaptureAllowed?.(false); await made.destroy?.(); return; }
+        await track.setProcessor(wrap ?? made);
+        if (ended) { await dropStage(wrap, made); return; }
         processor = made;
+        stage = wrap;
+        reportStage();
         const status = (made as {status?:ProcessorStatus}).status;
         if (status?.effective === 'browser' && status.browserNoise !== 'on' && track.restartTrack && micTrack) {
-          await restartCapture(track, {...micTrack.getConstraints(),deviceId:{exact:micTrack.getSettings().deviceId || opts.input || 'default'},noiseSuppression:true,echoCancellation:true,autoGainControl:true,channelCount:1,sampleRate:48000});
+          await restartCapture(track, {...micTrack.getConstraints(),deviceId:{exact:micTrack.getSettings().deviceId || opts.input || 'default'},noiseSuppression:true,...processingConstraints(processing),channelCount:1,sampleRate:48000});
           // web3.8 MUTE: the restart captures a new track; the mute and push to talk govern that one from here on.
-          if (track.mediaStreamTrack) micTrack = track.mediaStreamTrack;
-          if (ended) { made.setCaptureAllowed?.(false); await made.destroy?.(); return; }
+          const raw = rawOf(track);
+          if (raw) micTrack = raw;
+          if (ended) { await dropStage(stage, made); return; }
           applyMic();
         }
         // Settings and held keys may change while LiveKit initializes the processor.
         if (made.setMode) { made.setMode(mode); processorMode = mode; }
         if (processorMode === 'ptt') made.setPttActive(mode !== 'ptt' || gate.update(0, deps.now()));
       } catch {
-        await made.destroy?.().catch(() => undefined);
+        await dropStage(wrap, made);
         processor = null;
+        stage = null;
         await browserStatus('initialization-failed');
+        await startStage();
       }
+    };
+    /** Signal task 10b: the input stage on its own (noise suppression off, or its processor failed), so the input volume and
+     *  the gate still apply. Without a stage maker, or when it cannot be set, the microphone goes on as before. */
+    const startStage = async (): Promise<void> => {
+      const track = micPub?.track;
+      if (deps.createInputStage === undefined || !track?.setProcessor || stage !== null || processor !== null || ended) return;
+      const wrap = deps.createInputStage(null, stageOptions());
+      try {
+        await track.setProcessor(wrap);
+        if (ended) { await dropStage(wrap, null); return; }
+        stage = wrap;
+        reportStage();
+        applyMic();
+      } catch { stage = null; await dropStage(wrap, null); }
+    };
+    /**
+     * Signal task 10b: the microphone captured again with the echo cancellation and automatic gain in force, through LiveKit's
+     * restartTrack (the same publication and sender: the call goes on; the processors are restarted on the new capture). With
+     * no stage to hold the new capture closed, a restart while the microphone must not send waits for the next open (R2).
+     */
+    const reacquire = async (): Promise<void> => {
+      const track = micPub?.track;
+      if (ended || !track?.restartTrack || micTrack === null) return;
+      if (!sendNow() && stage === null) { processingWaiting = true; return; }
+      const now = micTrack.getSettings?.() ?? {};
+      const constraints: MediaTrackConstraints = { ...micTrack.getConstraints(), deviceId: { exact: now.deviceId || opts.input || 'default' },
+        noiseSuppression: now.noiseSuppression ?? false, ...processingConstraints(processing), channelCount: 1, sampleRate: 48000 };
+      try {
+        await restartCapture(track, constraints);
+        const raw = rawOf(track);
+        if (raw) micTrack = raw;
+        if (ended) { micTrack?.stop(); return; }
+        applyMic();
+        restartOwnMeter();
+      } catch { /* the capture in force stays */ }
+    };
+    /** Push to talk's key, applied (the release delay's timer calls it with false). */
+    let releaseTimer: unknown = null;
+    const applyKey = (down: boolean): void => {
+      gate.setPtt(down);
+      if (processorMode === 'ptt') processor?.setPttActive(down);
+      keyOpen = down;
+      applyMic();
+      if (!down) { ownDetector.reset(); ownOn = false; ownRms = 0; refresh(); } // no hold after the release
     };
     /** Whether the microphone may send now: not muted, deafened, paused or ended, and push to talk's key down. */
     const sendNow = (): boolean => !ended && !state.muted && !state.deafened && !state.paused && (mode !== 'ptt' || gate.update(0, deps.now()));
@@ -920,7 +1076,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
           configurable: true,
           get: () => (read !== undefined ? Boolean(Reflect.apply(read, t, [])) : plain),
           set: (v: boolean) => {
-            const on = Boolean(v) && sendNow();
+            const on = Boolean(v) && sendNow() && !holding;
             if (write !== undefined) Reflect.apply(write, t, [on]); else plain = on;
           },
         });
@@ -932,9 +1088,12 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       // Close the track and processor together, including fallback and initialization transitions. The capture track is
       // written even before the publish returned (web3.8 MUTE: a press during the publish closes it at once).
       const send = sendNow();
-      if (micTrack) micTrack.enabled = send;
+      const open = send && !holding;
+      if (micTrack) micTrack.enabled = open;
       if (!track) return;
-      processor?.setCaptureAllowed?.(send);
+      processor?.setCaptureAllowed?.(open);
+      stage?.setCaptureAllowed(open);
+      if (send && processingWaiting) { processingWaiting = false; void reacquire().catch(() => undefined); }
       // R2: a capture restart that waited while the microphone could not send runs now that it can.
       if (send && restartWaiting !== null && processor === null) {
         const waited = restartWaiting;
@@ -988,7 +1147,12 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         await startNoise();
         restartOwnMeter();
         checkAborted();
-      } else { await browserStatus(); }
+      } else {
+        await browserStatus();
+        await startStage();
+        if (stage !== null) restartOwnMeter();
+        checkAborted();
+      }
     } else {
       state = { ...state, mic: mic.mic };
     }
@@ -999,7 +1163,11 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     /** The settle of a share waiting for the SFU's permission (WB client m3): a leave settles it with false. */
     let waitingShare: ((ok: boolean) => void) | null = null;
     let camera: { track: MediaStreamTrack } | null = null;
+    /** Task 8c: the share options in force, or kept for the next start (the picker's Apply while not sharing). */
+    let shareOpts: ShareOptions = DEFAULT_SHARE_OPTIONS;
     let screen: { video: MediaStreamTrack; audio: MediaStreamTrack | null; onEnded: () => void; onAudioEnded: () => void;
+      /** Task 8c: the video's publication, whose sender takes a new encoding on Apply; its options. */
+      pub: LocalPub | null; opts: ShareOptions;
       /** FX2: the audio input the person picked as the share's sound, while one is published. */
       device: { track: MediaStreamTrack; pub: LocalPub | null; onEnded: () => void } | null } | null = null;
     const permitted = (what: keyof typeof PERMISSION): boolean => {
@@ -1103,26 +1271,37 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       set({ camera: true, localCamera: viewOf(track) });
     });
 
-    const setSharing = (on: boolean): Promise<void> => inLane(async () => {
+    const setSharing = (on: boolean, options?: ShareOptions): Promise<void> => inLane(async () => {
       if (!on) { await stopScreen(); await shareOffIfIdle(); return; }
       usable();
       if (screen !== null) return;
+      await startScreen(options ?? shareOpts);
+    });
+    /** Captures and publishes a screen with `o` (in the lane, not sharing). The encoding goes with the publish, so the
+     *  screen's sender gets the dilla transform as every sender does (attachSender); no option takes another path. */
+    const startScreen = async (o: ShareOptions, captured?: ScreenCapture): Promise<void> => {
+      shareOpts = o;
       const getDisplayMedia = deps.media.getDisplayMedia?.bind(deps.media);
-      if (!getDisplayMedia) throw new PageCallError('E_UNAVAILABLE');
-      await ensureShare('screen');
+      if (!getDisplayMedia && captured === undefined) throw new PageCallError('E_UNAVAILABLE');
       let tracks: ScreenCapture;
-      try {
-        usable();
-        tracks = await acquireScreen({ getDisplayMedia });
-      } catch (err) {
-        await shareOffIfIdle();
-        throw pageCallError(err);
+      if (captured !== undefined) {
+        tracks = captured;
+      } else {
+        await ensureShare('screen');
+        try {
+          usable();
+          tracks = await acquireScreen({ getDisplayMedia: getDisplayMedia! }, o);
+        } catch (err) {
+          await shareOffIfIdle();
+          throw pageCallError(err);
+        }
       }
       // #37: the sound the share carries, as published: none when the browser gave no audio or the grant did not allow it.
       let shareAudio: ShareAudioKind = 'none';
+      let videoPub: LocalPub | null = null;
       try {
         usable();
-        await local.publishTrack(tracks.video, { source: SOURCE.screen });
+        videoPub = await local.publishTrack(tracks.video, { source: SOURCE.screen, screenShareEncoding: shareEncoding(o, caps.maxShareBitrateBps) });
         if (tracks.audio !== null && permitted('screenAudio')) {
           await local.publishTrack(tracks.audio, screenAudioOptions(caps));
           shareAudio = tracks.audioKind;
@@ -1156,8 +1335,55 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         void local.unpublishTrack(audioTrack).catch(() => undefined).then(() => { if (!ended) refresh(); });
       };
       audioTrack?.addEventListener('ended', onAudioEnded);
-      screen = { video: tracks.video, audio: tracks.audio, onEnded, onAudioEnded, device: null };
+      screen = { video: tracks.video, audio: tracks.audio, onEnded, onAudioEnded, device: null, pub: videoPub, opts: o };
       set({ sharing: true, localScreen: viewOf(tracks.video), shareAudio, shareSource: shareAudio === 'none' ? null : 'browser' });
+    };
+    const setShareOptions = (o: ShareOptions): Promise<void> => inLane(async () => {
+      const s = screen;
+      if (s === null) { shareOpts = o; return; }
+      usable();
+      // A new source or sound choice is a new capture: the browser's picker again (the press is its activation). The new capture
+      // is taken first, so a cancelled picker (or a refusal) leaves the running share as it was; then the old one is swapped
+      // out and the new one published through the same publishTrack path.
+      if (o.surface !== s.opts.surface || o.systemAudio !== s.opts.systemAudio) {
+        const getDisplayMedia = deps.media.getDisplayMedia?.bind(deps.media);
+        if (!getDisplayMedia) throw new PageCallError('E_UNAVAILABLE');
+        let next: ScreenCapture;
+        try {
+          next = await acquireScreen({ getDisplayMedia }, o);
+        } catch (err) {
+          throw pageCallError(err);
+        }
+        if (ended || state.paused || screen !== s) {
+          next.video.stop();
+          next.audio?.stop();
+          throw new PageCallError('E_UNAVAILABLE');
+        }
+        await stopScreen();
+        try {
+          await startScreen(o, next);
+        } catch (err) {
+          await shareOffIfIdle();
+          throw err;
+        }
+        return;
+      }
+      shareOpts = o;
+      s.opts = o;
+      // A browser that cannot reshape a running capture keeps the frame it has; the encoding below still caps the rate.
+      await s.video.applyConstraints?.(shareVideoConstraints(o, false)).catch(() => undefined);
+      const sender = (s.pub?.track as { sender?: RTCRtpSender } | undefined)?.sender;
+      if (sender === undefined) return;
+      const params = sender.getParameters();
+      const layers = params.encodings ?? [];
+      if (layers.length === 0) return;
+      // The top layer (the least scaled) takes the encoding; a simulcast layer under it keeps its bitrate and takes the rate cap.
+      const top = layers.reduce((a, b) => ((b.scaleResolutionDownBy ?? 1) < (a.scaleResolutionDownBy ?? 1) ? b : a));
+      const enc = shareEncoding(o, caps.maxShareBitrateBps);
+      for (const layer of layers) {
+        if (layer === top) { layer.maxBitrate = enc.maxBitrate; layer.maxFramerate = enc.maxFramerate; } else layer.maxFramerate = Math.min(layer.maxFramerate ?? enc.maxFramerate, enc.maxFramerate);
+      }
+      await sender.setParameters(params).catch(() => undefined);
     });
 
     // FX2: the share's sound from an audio input the person picked (a PipeWire/Pulse monitor, a virtual source).
@@ -1284,16 +1510,22 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       });
     };
     let totals: MediaTotals = { sent: 0, failed: 0 };
+    let statsBusy = false;
     const reportStats = async (): Promise<void> => {
+      if (statsBusy) return;
+      statsBusy = true;
+      const started = deps.now();
+      try {
       const publisher = (room.engine as unknown as { pcManager?: { publisher?: { getStats?: () => Promise<RTCStatsReport> | undefined } } } | undefined)?.pcManager?.publisher;
       const [rtc, media] = await Promise.all([
         Promise.resolve(publisher?.getStats?.()).catch(() => undefined),
         manager.stats().catch(() => null),
       ]);
-      if (ended || state.phase !== 'connected') return;
+      if (ended || state.phase !== 'connected' || deps.now() - started >= STATS_EVERY_MS) return;
       const next = callStatsReport(connectionOf(rtc), mediaTotals(media), totals);
       totals = next.totals;
       await deps.bridge.call({ m: 'callStats', report: next.report });
+      } finally { statsBusy = false; }
     };
     const statsTick = (): void => {
       if (ended) return;
@@ -1336,6 +1568,27 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         link = { ...link, upKbps: keep(link.upKbps, prev?.upKbps, 'up'), downKbps: keep(link.downKbps, prev?.downKbps, 'down') };
       } else { carried.up = false; carried.down = false; }
       if (!sameLink(link, state.link)) set({ link });
+      if (link !== undefined) publishRtt(link.rttMs);
+    };
+    // Task 8c: this device's RTT to the SFU, so the others' tiles can show it (the prototype's per-person ping). Read with the
+    // link (every LINK_EVERY_MS) and reported to the instance (callRtt → POST /v1/calls/{id}/rtt), which writes it as this
+    // device's `dilla.rtt` attribute: no call token may write its own attributes (fix round 2, security review). Sent only when
+    // it moved by RTT_STEP_MS or more, one report in flight at most; cleared (null) while paused or reconnecting. A refused
+    // report (the worker answers false: 429 or 404) is not counted as sent, so the next sample tries again, and a reconnect
+    // forgets what was sent, so a fast one that no tick saw still re-sends (Task 11). It says nothing the SFU does not already
+    // measure.
+    let rttSent: number | null = null;
+    let rttBusy = false;
+    const reportRtt = (ms: number | null): void => {
+      if (ended || rttBusy) return;
+      rttBusy = true;
+      void deps.bridge.call({ m: 'callRtt', ms }).then(stored => { if (stored !== false) rttSent = ms; }, () => undefined)
+        .finally(() => { rttBusy = false; });
+    };
+    const publishRtt = (rtt: number): void => {
+      const ms = Math.max(0, Math.min(5000, Math.round(rtt)));
+      if (rttSent !== null && Math.abs(ms - rttSent) < RTT_STEP_MS) return;
+      reportRtt(ms);
     };
     // Not connected, paused or held: no read, no stats; the first read after is a fresh baseline. A getStats that does not
     // settle within LINK_STALL_MS takes the stats away (the dock falls back to its no-sample text) and no second read starts meanwhile.
@@ -1344,6 +1597,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       if (state.phase !== 'connected' || state.paused) {
         linkTotals = null;
         if (state.link !== undefined) set({ link: undefined });
+        if (rttSent !== null && state.phase !== 'ended') reportRtt(null);
       } else if (!linkBusy) {
         linkBusy = true;
         linkStartedAt = deps.now();
@@ -1376,7 +1630,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     const onSpeakers = (): void => refresh();
     // WB client I3: a room that ends on its own says why (state.error) and tells the worker it was lost.
     onRoomReconnecting = () => { if (!ended) { linkTotals = null; set({ phase: 'reconnecting', link: undefined }); } };
-    onRoomReconnected = () => { if (!ended) set({ phase: 'connected' }); };
+    onRoomReconnected = () => { if (!ended) { rttSent = null; set({ phase: 'connected' }); } };
     onRoomEnd = (reason) => {
       if (ended) return;
       set({ error: endCodeOf(reason) });
@@ -1399,7 +1653,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     const roomListeners: Array<[string, AnyListener]> = [
       [EV.participantConnected, onPeople], [EV.participantDisconnected, onLeft], [EV.trackSubscribed, onSubscribed],
       [EV.trackUnsubscribed, onUnsubscribed], [EV.activeSpeakers, onSpeakers], [EV.audioPlayback, onPlayback],
-      [EV.trackPublished, onPublications], [EV.trackUnpublished, onPublications],
+      [EV.trackPublished, onPublications], [EV.trackUnpublished, onPublications], [EV.attributes, onPublications],
     ];
     for (const [e, f] of roomListeners) events.on(e, f);
     ctx?.addEventListener('statechange', onPlayback);
@@ -1420,7 +1674,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       processor?.setCaptureAllowed?.(false);
       processor?.flush?.();
       void processor?.destroy?.().catch(() => undefined);
-      reportProcessorStatus(statusOwner, null);
+      reportProcessorStatus(statusOwner, null); reportStageStatus(statusOwner, null);
       relay.close();
       unsubscribe();
       for (const h of [...timers]) cancel(h);
@@ -1563,6 +1817,9 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       },
       setCamera,
       setSharing,
+      setShareOptions,
+      tileStats: () => readTileStats({ ended: () => ended, micPub: () => micPub, screenPub: () => screen?.pub ?? null,
+        shareAudio: () => state.shareAudio !== null && state.shareAudio !== 'none', remotes, screenSource: SOURCE.screen }),
       shareSources,
       setShareSource,
       setVolume(userId, volume, source = 'voice') {
@@ -1600,15 +1857,19 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       },
       pushToTalk(down) {
         if (ended || mode !== 'ptt') return;
-        gate.setPtt(down);
-        if (processorMode === 'ptt') processor?.setPttActive(down);
-        keyOpen = down;
-        applyMic();
-        if (!down) { ownDetector.reset(); ownOn = false; ownRms = 0; refresh(); } // no hold after the release
+        if (releaseTimer !== null) { cancel(releaseTimer); releaseTimer = null; }
+        // Signal task 10b: the release delay keeps the key open a moment after it is let go, so word endings are sent.
+        if (!down && keyOpen && pttReleaseMs > 0) {
+          releaseTimer = later(() => { releaseTimer = null; if (!ended && mode === 'ptt') applyKey(false); }, pttReleaseMs);
+          return;
+        }
+        applyKey(down);
       },
       setMode(next) {
         if (ended || next === mode) return;
+        if (releaseTimer !== null) { cancel(releaseTimer); releaseTimer = null; }
         mode = next;
+        stage?.setGate(gateConfig());
         gate.setMode(next === 'ptt' ? 'ptt' : 'open');
         gate.setPtt(false);
         // A processor built for push to talk is held open under voice activity and closed again for push to talk.
@@ -1627,15 +1888,45 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         const track = micPub?.track;
         processor?.setCaptureAllowed?.(false);
         processor?.flush?.();
-        if (processor !== null) {
-          processor = null;
-          applyMic();
-          await Promise.resolve(track?.stopProcessor?.()).catch(() => undefined);
-        }
-        if (next !== 'off') await startNoise();
-        else { if (track?.mediaStreamTrack) micTrack = track.mediaStreamTrack; await browserStatus(); }
+        stage?.setCaptureAllowed(false);
+        holding = deps.createInputStage !== undefined && mode !== 'ptt';
+        try {
+          if (processor !== null || stage !== null) {
+            processor = null;
+            stage = null;
+            reportStage();
+            applyMic();
+            await Promise.resolve(track?.stopProcessor?.()).catch(() => undefined);
+          }
+          if (next !== 'off') await startNoise();
+          else { if (track?.mediaStreamTrack) micTrack = track.mediaStreamTrack; await browserStatus(); await startStage(); }
+        } finally { holding = false; }
         restartOwnMeter(); // the processor or a restarted capture swaps the published track
         applyMic();
+      }),
+      setInputVolume(percent) {
+        if (ended || !isPercent(percent)) return;
+        inputVolume = percent;
+        stage?.setGain(percent / 100);
+      },
+      setOutputVolume(percent) {
+        if (ended || !isPercent(percent)) return;
+        outputVolume = percent;
+        applyGains();
+      },
+      setSensitivity(next) {
+        if (ended) return;
+        sensitivity = { auto: next.auto, thresholdDb: dbThreshold(next.thresholdDb) };
+        stage?.setGate(gateConfig());
+      },
+      setPttRelease(ms) {
+        pttReleaseMs = releaseMs(ms);
+      },
+      setProcessing: (next) => inLane(async () => {
+        if (ended || (next.echo === processing.echo && next.agc === processing.agc)) return;
+        processing = { echo: next.echo, agc: next.agc };
+        processor?.setProcessing?.(processing);
+        await reacquire();
       }),
       // Fix round 1 (M2): both run synchronously inside the "turn on audio" press (the dock’s button, the user activation
       // the browser asks for); nothing is awaited before them. A refusal leaves the line on offer. (The context itself is
@@ -1644,6 +1935,8 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         if (ended) return Promise.resolve();
         const tries: unknown[] = [];
         try { if (ctx !== null) tries.push(ctx.resume()); } catch { /* still held back */ }
+        // Merge of Task 10b: the microphone's input stage runs in a context of its own; the same press lets it run.
+        try { const c = stage?.context; if (c !== undefined && c.state === 'suspended') tries.push(c.resume()); } catch { /* still held back */ }
         try { tries.push(room.startAudio()); } catch { /* still held back */ }
         return Promise.allSettled(tries).then(() => { if (!ended) set({ audioBlocked: playbackBlocked() }); });
       },

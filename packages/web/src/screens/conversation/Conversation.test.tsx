@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
-import { act, fireEvent, screen, within } from '@testing-library/react';
+import { act, waitFor, fireEvent, screen, within } from '@testing-library/react';
 import { en } from '../../strings/en.ts';
 import { formatDay, formatTime } from '../../strings/index.ts';
 import { REACTION_EMOJI } from '../../emoji.ts';
@@ -7,9 +7,10 @@ import { ME } from '../../test/fixtures.ts';
 import { PHONE_QUERY } from '../../layout.ts';
 import { expectNoAxeViolations } from '../../test/setup.ts';
 import {
-  A, GEN, MOD, O1, O2, P1, P2, PEER, ROLE, file, image, ownRow, peerRow, renderConversation, reply, rowOf,
+  A, GEN, MEMBERS, MOD, O1, O2, P1, P2, PEER, ROLE, file, image, ownRow, peerRow, renderConversation, reply, rowOf,
 } from '../../test/conversation.tsx';
 import { INITIAL_UI, conversationReducer } from './Conversation.tsx';
+import { queryToolbarButton, toolbarButton, toolbarLabels } from '../../test/toolbar.ts';
 
 const composer = () => screen.getByRole('textbox', { name: 'message #general' });
 const toolbarOf = (row: HTMLElement) => within(row).getByRole('toolbar', { name: 'actions for this message' });
@@ -78,13 +79,13 @@ describe('the roving log (keyboard map, ruling 21)', () => {
   });
   it('makes a row active when focus enters it by pointer', async () => {
     const { user } = renderConversation({ items: [peerRow(P1, '1', 'first'), peerRow(P2, '2', 'second')] });
-    await user.click(within(toolbarOf(rowOf(P1))).getByRole('button', { name: 'pin' }));
+    await user.click(toolbarButton(toolbarOf(rowOf(P1)), 'pin'));
     expect(rowOf(P1).tabIndex).toBe(0);
     expect(rowOf(P2).tabIndex).toBe(-1);
   });
   it('Escape in a row control returns to the row, and on the row to the composer', async () => {
     const { user } = renderConversation({ items: [ownRow(O1, '1', 'mine')] });
-    act(() => within(toolbarOf(rowOf(O1))).getByRole('button', { name: 'react' }).focus());
+    act(() => toolbarButton(toolbarOf(rowOf(O1)), 'react').focus());
     await user.keyboard('{Escape}');
     expect(rowOf(O1)).toHaveFocus();
     await user.keyboard('{Escape}');
@@ -105,6 +106,41 @@ describe('the roving log (keyboard map, ruling 21)', () => {
   });
 });
 
+// Fix round 2 (Jonas, the prototype's Keyboard): Ctrl+End jumps to the present from anywhere in the tab.
+describe('jump to present (Ctrl+End)', () => {
+  const scrollAway = (log: HTMLElement) => {
+    Object.defineProperty(log, 'scrollHeight', { configurable: true, value: 2000 });
+    Object.defineProperty(log, 'clientHeight', { configurable: true, value: 400 });
+    log.scrollTop = 100;
+    fireEvent.scroll(log);
+  };
+  const ctrlEnd = (target: Element) => fireEvent.keyDown(target, { key: 'End', ctrlKey: true });
+  it('jumps from outside the log once the reader scrolled away, to the newest row', () => {
+    renderConversation({ items: [peerRow(P1, '1', 'first'), ownRow(O1, '2', 'newest')] });
+    const log = screen.getByRole('log');
+    scrollAway(log);
+    expect(ctrlEnd(document.body)).toBe(false);
+    expect(log.scrollTop).toBe(2000);
+    expect(rowOf(O1)).toHaveFocus();
+  });
+  it('leaves the chord to a text field (the caret moves to the end there), and does nothing at the present', () => {
+    renderConversation({ items: [peerRow(P1, '1', 'first'), ownRow(O1, '2', 'newest')] });
+    const log = screen.getByRole('log');
+    expect(ctrlEnd(document.body), 'at the present the key keeps its default').toBe(true);
+    scrollAway(log);
+    expect(ctrlEnd(composer()), 'in the composer').toBe(true);
+    expect(log.scrollTop).toBe(100);
+    expect(fireEvent.keyDown(document.body, { key: 'End', ctrlKey: true, shiftKey: true }), 'Ctrl+Shift+End is not the chord').toBe(true);
+    // Fix round 3: not under a modal layer (an aria-modal overlay such as the search palette).
+    const modal = document.createElement('div');
+    modal.setAttribute('aria-modal', 'true');
+    document.body.append(modal);
+    expect(ctrlEnd(document.body), 'under a modal overlay').toBe(true);
+    expect(log.scrollTop).toBe(100);
+    modal.remove();
+  });
+});
+
 describe('the toolbar (L-UI-41)', () => {
   it('offers react, reply and pin on others’ rows, edit and delete on own rows, and nothing on rows that are not ok', () => {
     renderConversation({ items: [
@@ -113,7 +149,7 @@ describe('the toolbar (L-UI-41)', () => {
       ownRow(O2, null, 'sending', { state: 'pending' }),
       peerRow(P2, '4', '', { state: 'deleted' }),
     ] });
-    const labels = (row: HTMLElement) => within(toolbarOf(row)).getAllByRole('button').map(b => b.textContent);
+    const labels = (row: HTMLElement) => toolbarLabels(toolbarOf(row));
     expect(labels(rowOf(P1))).toEqual(['react', 'reply', 'reply in thread', 'pin']);
     expect(labels(rowOf(O1))).toEqual(['react', 'reply', 'reply in thread', 'edit', 'unpin', 'delete']);
     expect(within(rowOf(O2)).queryByRole('toolbar')).toBeNull();
@@ -125,16 +161,16 @@ describe('the toolbar (L-UI-41)', () => {
     const { fake, user } = renderConversation({ items: [peerRow(P1, '1', 'theirs'), ownRow(O1, '2', 'mine', { pinned: true })] });
     expect(rowOf(O1)).toHaveAttribute('data-pinned', 'true');
     expect(rowOf(O1)).toHaveTextContent('pinned');
-    await user.click(within(toolbarOf(rowOf(P1))).getByRole('button', { name: 'pin' }));
-    await user.click(within(toolbarOf(rowOf(O1))).getByRole('button', { name: 'unpin' }));
+    await user.click(toolbarButton(toolbarOf(rowOf(P1)), 'pin'));
+    await user.click(toolbarButton(toolbarOf(rowOf(O1)), 'unpin'));
     expect(fake.callsOf('pin')).toEqual([
       { m: 'pin', channelId: GEN, msgId: P1, on: true }, { m: 'pin', channelId: GEN, msgId: O1, on: false },
     ]);
   });
   it('offers edit and delete to the author user on another device even when own is false (F3)', () => {
     renderConversation({ items: [ownRow(O1, '1', 'other device', { own: false })] });
-    expect(within(toolbarOf(rowOf(O1))).getByRole('button', { name: 'edit' })).toBeInTheDocument();
-    expect(within(toolbarOf(rowOf(O1))).getByRole('button', { name: 'delete' })).toBeInTheDocument();
+    expect(toolbarButton(toolbarOf(rowOf(O1)), 'edit')).toBeInTheDocument();
+    expect(toolbarButton(toolbarOf(rowOf(O1)), 'delete')).toBeInTheDocument();
     expect(rowOf(O1)).not.toHaveAttribute('data-own');
   });
 });
@@ -145,7 +181,7 @@ describe('moderator message removal', () => {
     fake.handler = command => command.m === 'moderateRemoveMessage' ? Promise.resolve({ removal: 'unknown',
       proofRequestId: '11'.repeat(16), evidenceRequestId: '22'.repeat(16), evidenceUpload: 'unknown' })
       : command.m === 'resolveManualRemoval' ? Promise.resolve({ removal: 'accepted', evidenceUpload: 'accepted' }) : Promise.resolve(null);
-    expect(within(toolbarOf(rowOf(P1))).queryByRole('button', { name: 'remove for everyone' })).toBeNull();
+    expect(queryToolbarButton(toolbarOf(rowOf(P1)), 'remove for everyone')).toBeNull();
     const everyone = '01'.repeat(16);
     const access = { top: 0, owner: false, manageCommunity: false, manageChannels: false, kickMembers: false, banMembers: false,
       moderateMembers: false, createInvite: false, manageRoles: false, loaded: true, everyoneId: everyone, overwritesLoaded: true };
@@ -155,12 +191,12 @@ describe('moderator message removal', () => {
       { id: ROLE, name: 'Moderators', color: 0, position: 1, hoist: false, mentionable: false, allow: 1, deny: 0, members: 1 },
     ]);
     fake.set(`overwrites:${A}`, {});
-    expect(within(toolbarOf(rowOf(P1))).queryByRole('button', { name: 'remove for everyone' })).toBeNull();
+    expect(queryToolbarButton(toolbarOf(rowOf(P1)), 'remove for everyone')).toBeNull();
     fake.set(`roles:${A}`, [
       { id: everyone, name: '@everyone', color: 0, position: 0, hoist: false, mentionable: false, allow: 1, deny: 0, members: 3 },
       { id: ROLE, name: 'Moderators', color: 0, position: 1, hoist: false, mentionable: false, allow: 5, deny: 0, members: 1 },
     ]);
-    const action = await screen.findByRole('button', { name: 'remove for everyone' });
+    const action = await waitFor(() => toolbarButton(toolbarOf(rowOf(P1)), 'remove for everyone'));
     await user.click(action);
     const dialog = screen.getByRole('dialog', { name: 'Remove this message for everyone?' });
     expect(fake.callsOf('moderateRemoveMessage')).toEqual([]);
@@ -183,14 +219,14 @@ describe('moderator message removal', () => {
 describe('delete (Q19, ruling 24)', () => {
   it('deletes only after the dialog is confirmed, then hands focus to the row', async () => {
     const { fake, user } = renderConversation({ items: [ownRow(O1, '1', 'mine')] });
-    await user.click(within(toolbarOf(rowOf(O1))).getByRole('button', { name: 'delete' }));
+    await user.click(toolbarButton(toolbarOf(rowOf(O1)), 'delete'));
     const dialog = screen.getByRole('dialog', { name: 'Delete this message?' });
     expect(dialog).toHaveTextContent('It is removed for everyone in this conversation, with its reactions and files. Copies someone already saved stay with them. This cannot be undone.');
     expect(fake.callsOf('deleteMessage')).toEqual([]);
     await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(fake.callsOf('deleteMessage')).toEqual([]);
-    await user.click(within(toolbarOf(rowOf(O1))).getByRole('button', { name: 'delete' }));
+    await user.click(toolbarButton(toolbarOf(rowOf(O1)), 'delete'));
     await user.click(within(screen.getByRole('dialog', { name: 'Delete this message?' })).getByRole('button', { name: 'Delete' }));
     expect(fake.callsOf('deleteMessage')).toEqual([{ m: 'deleteMessage', channelId: GEN, msgId: O1, seq: '1' }]);
     expect(screen.queryByRole('dialog')).toBeNull();
@@ -201,7 +237,7 @@ describe('delete (Q19, ruling 24)', () => {
 describe('edit in place (L-UI-44)', () => {
   it('saves the text with its mentions encoded, cancels on Escape, and sends nothing for an unchanged or empty text', async () => {
     const { fake, user } = renderConversation({ items: [ownRow(O1, '1', `hi <@${PEER}>`)] });
-    const edit = () => user.click(within(toolbarOf(rowOf(O1))).getByRole('button', { name: 'edit' }));
+    const edit = () => user.click(toolbarButton(toolbarOf(rowOf(O1)), 'edit'));
     await edit();
     const editor = screen.getByRole('textbox', { name: 'edit your message' });
     expect(editor).toHaveFocus();
@@ -244,7 +280,7 @@ describe('reactions (Q18, ruling 28)', () => {
     expect(within(bar).getByRole('button', { name: '\u{1F984}, 1' })).toBeInTheDocument();
     await user.click(within(bar).getByRole('button', { name: 'thumbs up, 2' }));
     await user.click(within(bar).getByRole('button', { name: 'tears of joy, 1' }));
-    const react = within(toolbarOf(rowOf(P1))).getByRole('button', { name: 'react' });
+    const react = toolbarButton(toolbarOf(rowOf(P1)), 'react');
     await user.click(react);
     const grid = screen.getByRole('dialog', { name: 'pick a reaction' });
     expect(within(grid).getAllByRole('button').map(b => b.getAttribute('aria-label'))).toEqual(REACTION_EMOJI.map(e => en[e.key]));
@@ -423,7 +459,7 @@ describe('focus handoffs (F4)', () => {
   });
   it('closes the emoji grid when focus leaves it without moving focus', async () => {
     const { user } = renderConversation({ items: [peerRow(P1, '1', 'x')] });
-    await user.click(within(toolbarOf(rowOf(P1))).getByRole('button', { name: 'react' }));
+    await user.click(toolbarButton(toolbarOf(rowOf(P1)), 'react'));
     const grid = screen.getByRole('dialog', { name: 'pick a reaction' });
     act(() => composer().focus());
     fireEvent.blur(grid.querySelector('button') as HTMLElement, { relatedTarget: composer() });
@@ -529,7 +565,12 @@ describe('grouping, day dividers and the present bar (R29)', () => {
     expect(log.scrollTop).toBe(1500);
   });
   it('tags a web client and a bot always', () => {
-    renderConversation({ items: [ownRow(O1, '1', 'sent here'), peerRow(P1, '2', 'sent by a bot', { bot: true, ts: NOON + 3600 })] });
+    const glenn = '9f'.repeat(16);
+    renderConversation({
+      items: [ownRow(O1, '1', 'sent here'), peerRow(P1, '2', 'sent by a bot', { bot: true, senderUser: glenn, ts: NOON + 3600 })],
+      // Task S1: the BOT tag needs the server's member row of account kind 1, not only the credential's kind.
+      before: fake => fake.set(`members:${A}`, [...MEMBERS, { userId: glenn, username: 'glenn', display: 'Glenn', kind: 1, roleIds: [] }]),
+    });
     expect(rowOf(O1).querySelector('[data-reveal]')).toBeNull();
     expect(rowOf(O1).querySelector('.d-tag')).toHaveAttribute('data-kind', 'web');
     expect(rowOf(P1).querySelector('[data-reveal]')).toBeNull();

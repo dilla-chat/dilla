@@ -79,7 +79,7 @@ test('a reload mid-call is a leave bob sees, the rejoin is a fresh leaf, and lea
       await expect.poll(() => snapshotDevices(alice.page, call), { timeout: WAIT }).toEqual([]);
       // Nobody can commit the Remove of the only leaf; the leave ended the call, so the rejoin registers a fresh group
       // at once: the room's departure timeout (90 s in this suite) plays no part.
-      await stage(alice.page).getByRole('button', { name: copy('voice.join'), exact: true }).click();
+      await stage(alice.page).getByRole('button', { name: copy('callStage.preview.join'), exact: true }).click();
       await expect(stage(alice.page)).toHaveAttribute('data-call-phase', 'in', { timeout: 10_000 });
     });
   } finally {
@@ -114,7 +114,7 @@ test('a rejoin whose Remove nobody has committed yet waits, says so, and joins t
     // synced since, so nobody has committed it.
     await expect.poll(async () => (await peer.callRead(call)).participants.length, POLL).toBe(0);
     await openVoiceOnly(alice.page, peer.communityName, peer);
-    await stage(alice.page).getByRole('button', { name: copy('voice.join'), exact: true }).click();
+    await stage(alice.page).getByRole('button', { name: copy('callStage.preview.join'), exact: true }).click();
     await expect.poll(async () => {
       const c = await callSlice(alice.page);
       return c?.phase === 'joining' && c.rejoining;

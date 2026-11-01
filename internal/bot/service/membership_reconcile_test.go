@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -114,6 +115,8 @@ type membershipFakeSession struct {
 	ackErr                 error
 	channelsCalls          int
 	groupInfo              client.GroupInfo
+	groupInfoErr           error
+	groupInfoCalls         int
 	groupPageErr           error
 	groupPageCalls         int
 	removeOnSecond         bool
@@ -121,6 +124,7 @@ type membershipFakeSession struct {
 	interactionBinding     native.InteractionGroupBinding
 	interactionBotDevice   id.ID
 	interactionGroup       id.ID
+	interactionInfoCalls   int
 	interactionInfo        client.GroupInfo
 	interactionPages       map[sourcePageKey]client.Page
 	interactionPageErr     error
@@ -165,12 +169,14 @@ func (s *membershipFakeSession) AcknowledgeWelcome(_ context.Context, w uint64) 
 	return s.ackErr
 }
 func (s *membershipFakeSession) GroupInfo(context.Context, id.ID) (client.GroupInfo, error) {
+	s.groupInfoCalls++
 	if s.groupInfo.NextSequence != 0 {
-		return s.groupInfo, nil
+		return s.groupInfo, s.groupInfoErr
 	}
 	return client.GroupInfo{NextSequence: 1}, nil
 }
 func (s *membershipFakeSession) BotInteractionGroupInfo(context.Context, id.ID, id.ID) (client.GroupInfo, error) {
+	s.interactionInfoCalls++
 	if s.interactionInfo.NextSequence != 0 {
 		return s.interactionInfo, nil
 	}
@@ -474,6 +480,47 @@ func TestMembershipTreatsNonmemberCallGroupSourceAsPending(t *testing.T) {
 	}
 }
 
+func TestUnavailableCallSourceDoesNotBlockInstallationReconciliation(t *testing.T) {
+	for _, kind := range []uint64{0, 1} {
+		for _, source := range []string{"info", "page"} {
+			t.Run(fmt.Sprintf("kind=%d/%s", kind, source), func(t *testing.T) {
+				r, n, s, community, channel, group := membershipFixture(t)
+				s.channels = []client.Channel{{ID: channel, CommunityID: community, Kind: kind}}
+				if kind == 0 {
+					s.channels[0].TextGroupID = &group
+				}
+				info := native.GroupInfo{ID: group, Kind: kind, Community: &community, Target: channel, State: 2, NextSequence: 1}
+				n.groups, n.inspected = []native.GroupInfo{info}, info
+				s.groupInfo = client.GroupInfo{NextSequence: 2}
+				refusal := &client.APIError{Status: 403, Code: "E_FORBIDDEN"}
+				if source == "info" {
+					s.groupInfoErr = refusal
+				} else {
+					s.groupPageErr = refusal
+				}
+				for range 2 {
+					result, err := r.reconcileOnce(context.Background(), s)
+					if kind == 1 && err != nil {
+						t.Fatalf("unavailable call blocked installation reconciliation: %v", err)
+					}
+					if kind == 0 && !errors.Is(err, refusal) {
+						t.Fatalf("text refusal must remain terminal: %v", err)
+					}
+					if result.GroupsSynced != 0 {
+						t.Fatal("denied source was counted as synchronized")
+					}
+				}
+				if s.groupInfoCalls != 2 || source == "page" && s.groupPageCalls != 2 {
+					t.Fatal("denied source was not retried on the next pass")
+				}
+				if n.genericApplyCalls != 0 || n.genericAckCalls != 0 {
+					t.Fatal("denied call altered native source progress")
+				}
+			})
+		}
+	}
+}
+
 func TestMembershipSyncsActiveInteractionGroupsByExactNativeTarget(t *testing.T) {
 	r, n, s, community, _, _ := membershipFixture(t)
 	now := time.Unix(100, 0)
@@ -627,4 +674,190 @@ func TestMembershipReconcilerRejectsMismatchedBoundCommunityResponse(t *testing.
 	if n.applyCalls != 0 {
 		t.Fatal("mismatched community caused a mutation")
 	}
+}
+
+// A participant's message in one private interaction group is read by syncing that group alone:
+// the gateway fast path must not sweep every interaction group (or every text channel) per message.
+func TestMembershipSyncsOnlyTheNamedInteractionGroup(t *testing.T) {
+	r, n, s, community, _, _ := membershipFixture(t)
+	now := time.Unix(100, 0)
+	var err error
+	r.source, err = newSourceSync(n, sourceSyncOptions{now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	group, other := membershipID(21), membershipID(31)
+	binding := native.InteractionGroupBinding{Instance: n.binding.Instance, Installation: n.binding.Installation, Community: community,
+		BotUser: membershipID(23), ParticipantUser: membershipID(22), ParticipantDevice: membershipID(24), PolicyVersion: 3, E2EEVersion: 1}
+	otherBinding := binding
+	otherBinding.ParticipantUser, otherBinding.ParticipantDevice = membershipID(32), membershipID(34)
+	botDevice := membershipID(25)
+	n.interactionGroups = []native.InteractionGroupDescriptor{
+		{Group: group, Binding: binding, BotDevice: botDevice, Epoch: 1, State: 2},
+		{Group: other, Binding: otherBinding, BotDevice: botDevice, Epoch: 1, State: 2},
+	}
+	n.interactionInspected = native.InteractionGroupInspectResult{Binding: binding, BotDevice: botDevice, Epoch: 1, State: 2, NextSequence: 1}
+	s.interactionBinding, s.interactionBotDevice, s.interactionGroup = binding, botDevice, group
+	result, err := r.reconcileInteractionGroupOnce(context.Background(), s, group)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.GroupsSynced != 1 || s.interactionAdmissions != 1 {
+		t.Fatalf("named group sync result=%+v admissions=%d, want exactly the named group", result, s.interactionAdmissions)
+	}
+	if result, err = r.reconcileInteractionGroupOnce(context.Background(), s, membershipID(40)); err != nil || result.GroupsSynced != 0 {
+		t.Fatalf("unknown group sync=%+v, %v; want nothing synced", result, err)
+	}
+	// The full sweep would also sync the other group, which this fake session refuses.
+	if _, err := r.reconcileInteractionGroupsOnce(context.Background(), s); err == nil {
+		t.Fatal("the full sweep did not reach the other group; the test no longer proves the narrowing")
+	}
+}
+
+func TestInteractionIdlePollingBacksOffButGatewayBypasses(t *testing.T) {
+	r, n, s, community, _, _ := membershipFixture(t)
+	now := time.Unix(1800000000, 0)
+	r.source.options.now = func() time.Time { return now }
+	group, participant := membershipID(21), membershipID(22)
+	binding := native.InteractionGroupBinding{Instance: n.binding.Instance, Installation: n.binding.Installation, Community: community, BotUser: membershipID(23), ParticipantUser: participant, ParticipantDevice: membershipID(24), PolicyVersion: 3, E2EEVersion: 1}
+	botDevice := membershipID(25)
+	n.interactionGroups = []native.InteractionGroupDescriptor{{Group: group, Binding: binding, BotDevice: botDevice, Epoch: 1, State: 2}}
+	n.interactionInspected = native.InteractionGroupInspectResult{Binding: binding, BotDevice: botDevice, Epoch: 1, State: 2, NextSequence: 1}
+	s.interactionBinding, s.interactionBotDevice, s.interactionGroup = binding, botDevice, group
+	schedule := r.idlePolls
+	for range 10 {
+		if _, err := r.reconcileInteractionGroupsOnce(t.Context(), s); err != nil {
+			t.Fatal(err)
+		}
+		now = now.Add(100 * time.Millisecond)
+		r2, err := newMembershipReconciler(n, sourceSyncOptions{now: func() time.Time { return now }}, membershipOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		r2.UseInteractionPollSchedule(schedule)
+		r = r2
+	}
+	if s.interactionInfoCalls != 1 {
+		t.Fatalf("idle info polls=%d; want 1", s.interactionInfoCalls)
+	}
+	if _, err := r.reconcileInteractionGroupOnce(t.Context(), s, group); err != nil {
+		t.Fatal(err)
+	}
+	if s.interactionInfoCalls != 2 {
+		t.Fatal("gateway command was delayed by idle backoff")
+	}
+	now = now.Add(30 * time.Second)
+	if _, err := r.reconcileInteractionGroupsOnce(t.Context(), s); err != nil {
+		t.Fatal(err)
+	}
+	if s.interactionInfoCalls != 3 {
+		t.Fatal("background safety poll did not resume")
+	}
+}
+
+type slowInteractionInfoSession struct {
+	*membershipFakeSession
+	entered, release chan struct{}
+}
+
+func (s slowInteractionInfoSession) BotInteractionGroupInfo(ctx context.Context, _, _ id.ID) (client.GroupInfo, error) {
+	close(s.entered)
+	select {
+	case <-s.release:
+		return client.GroupInfo{}, context.Canceled
+	case <-ctx.Done():
+		return client.GroupInfo{}, ctx.Err()
+	}
+}
+
+func TestGatewayCommandNotBlockedBySlowBackgroundHTTP(t *testing.T) {
+	r, n, s, community, _, _ := membershipFixture(t)
+	group := membershipID(21)
+	binding := native.InteractionGroupBinding{Instance: n.binding.Instance, Installation: n.binding.Installation, Community: community, BotUser: membershipID(23), ParticipantUser: membershipID(22), ParticipantDevice: membershipID(24), PolicyVersion: 3, E2EEVersion: 1}
+	botDevice := membershipID(25)
+	n.interactionGroups = []native.InteractionGroupDescriptor{{Group: group, Binding: binding, BotDevice: botDevice, Epoch: 1, State: 2}}
+	n.interactionInspected = native.InteractionGroupInspectResult{Binding: binding, BotDevice: botDevice, Epoch: 1, State: 2, NextSequence: 1}
+	s.interactionBinding, s.interactionBotDevice, s.interactionGroup = binding, botDevice, group
+	// Separate reconciler/native/session handles, as used by the gateway and sweep.
+	n2, s2 := *n, *s
+	gateway, err := newMembershipReconciler(&n2, sourceSyncOptions{}, membershipOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gateway.UseInteractionPollSchedule(r.idlePolls)
+	slow := slowInteractionInfoSession{s, make(chan struct{}), make(chan struct{})}
+	done := make(chan struct{})
+	go func() { defer close(done); _, _ = r.reconcileInteractionGroupsOnce(t.Context(), slow) }()
+	<-slow.entered
+	command := make(chan error, 1)
+	go func() { _, err := gateway.reconcileInteractionGroupOnce(t.Context(), &s2, group); command <- err }()
+	select {
+	case err := <-command:
+		if err != nil {
+			t.Error(err)
+		}
+	case <-time.After(time.Second):
+		t.Error("gateway command blocked by background HTTP")
+	}
+	close(slow.release)
+	<-done
+
+}
+
+// Queued catch-up is scoped like a command hint, but retains the sweep's priority
+// and idle schedule even when text wakes enqueue the same private group repeatedly.
+func TestScopedBackgroundInteractionCatchupKeepsPriorityAndIdleBackoff(t *testing.T) {
+	r, n, base, community, _, _ := membershipFixture(t)
+	now := time.Unix(1800000000, 0)
+	r.source.options.now = func() time.Time { return now }
+	group := membershipID(21)
+	binding := native.InteractionGroupBinding{Instance: n.binding.Instance, Installation: n.binding.Installation, Community: community, BotUser: membershipID(23), ParticipantUser: membershipID(22), ParticipantDevice: membershipID(24), PolicyVersion: 3, E2EEVersion: 1}
+	botDevice := membershipID(25)
+	descriptor := native.InteractionGroupDescriptor{Group: group, Binding: binding, BotDevice: botDevice, Epoch: 1, State: 2}
+	n.interactionGroups = []native.InteractionGroupDescriptor{descriptor}
+	n.interactionInspected = native.InteractionGroupInspectResult{Binding: binding, BotDevice: botDevice, Epoch: 1, State: 2, NextSequence: 1}
+	base.interactionBinding, base.interactionBotDevice, base.interactionGroup = binding, botDevice, group
+	session := priorityInteractionSession{membershipFakeSession: base, t: t}
+	for range 5 {
+		result, err := r.reconcileInteractionGroupBackgroundOnce(t.Context(), session, group)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = result
+	}
+	if base.interactionInfoCalls != 1 {
+		t.Fatalf("background info polls=%d, want 1", base.interactionInfoCalls)
+	}
+	if delay := r.InteractionGroupDelay(descriptor); delay != time.Second {
+		t.Fatalf("idle delay=%v, want 1s", delay)
+	}
+	if _, err := r.reconcileInteractionGroupOnce(t.Context(), base, group); err != nil {
+		t.Fatal(err)
+	}
+	if base.interactionInfoCalls != 2 {
+		t.Fatal("interactive hint did not bypass idle schedule")
+	}
+	now = now.Add(3 * time.Second)
+	if _, err := r.reconcileInteractionGroupBackgroundOnce(t.Context(), session, group); err != nil {
+		t.Fatal(err)
+	}
+	if base.interactionInfoCalls != 3 {
+		t.Fatal("due background poll did not resume")
+	}
+	descriptor.Epoch++
+	if delay := r.InteractionGroupDelay(descriptor); delay != 0 {
+		t.Fatalf("changed descriptor delayed by %v", delay)
+	}
+}
+
+type priorityInteractionSession struct {
+	*membershipFakeSession
+	t *testing.T
+}
+
+func (s priorityInteractionSession) BotInteractionGroupInfo(ctx context.Context, installation, group id.ID) (client.GroupInfo, error) {
+	if got := client.RequestPriority(ctx); got != 0 {
+		s.t.Errorf("background catch-up priority=%d, want 0", got)
+	}
+	return s.membershipFakeSession.BotInteractionGroupInfo(ctx, installation, group)
 }

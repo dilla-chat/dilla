@@ -1,13 +1,41 @@
-.d-dialog { padding: 0; border: 1px solid var(--accent); border-radius: var(--r-lg); background: var(--surface); color: var(--fg); box-shadow: var(--shadow-2); max-width: min(560px, calc(100vw - 32px)); }
-.d-dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
+/* Task 9, the prototype's dialog (Signal brief Elevation): 520px (a confirmation 440px) at 12vh, --surface in the --line-strong edge,
+   12px corners, the 0 30px 80px shadow over the --scrim; d-modal 240ms (a confirmation 220ms), the scrim fades in 160ms. */
+.d-dialog {
+  box-sizing: border-box; width: min(520px, calc(100vw - 24px)); max-width: calc(100vw - 24px); max-height: calc(100dvh - 12vh - 20px); margin: 12vh auto auto; padding: 0;
+  color: var(--fg); background: var(--surface); border: 1px solid var(--line-strong); border-radius: var(--r-xxl); box-shadow: var(--shadow-3);
+}
+.d-dialog[open] { animation: d-modal var(--duration-dialog) var(--ease-out) both; }
+.d-dialog[data-kind="confirm"] { width: min(440px, calc(100vw - 24px)); }
+.d-dialog[data-kind="confirm"][open] { animation-duration: var(--duration-normal); }
+.d-dialog::backdrop { background: var(--scrim); animation: d-fade var(--duration-scrim) both; }
 /* The second exception to base.css's focus-ring rule (design ruling 23(h)): the dialog takes focus only from
    script when it opens, and a ring around the whole dialog reads as an error box. Its controls keep the ring. */
 .d-dialog[tabindex="-1"]:focus-visible { outline: none; }
-.d-dialog__panel { padding: 16px 18px; font-family: var(--font-mono); }
-.d-dialog__title { margin: 0 0 10px; font-size: var(--text-lg); font-weight: var(--weight-display); letter-spacing: 0.02em; }
-.d-dialog__body { font-size: var(--text-base); color: var(--fg-2); }
-.d-dialog__footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
-/* web3.8 (m6): on a phone the dialog sits in the visual viewport, which a soft keyboard shrinks (--d-vvh, --d-vvtop are set by the web app only then). */
+.d-dialog__panel { font-family: var(--font-mono); }
+/* A form dialog: the head bar (14px 16px, a --hairline under it, the 13.5px bold title), the 16px body, the footer bar (12px 16px over a --hairline). */
+.d-dialog__head { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--hairline); }
+.d-dialog__heading { display: grid; gap: 4px; flex: 1; min-width: 0; }
+.d-dialog__title { margin: 0; font-size: var(--text-base); font-weight: var(--weight-display); color: var(--fg); }
+.d-dialog__body { padding: 16px; font-size: var(--text-ui); color: var(--fg-2); }
+.d-dialog__body > :first-child { margin-top: 0; }
+.d-dialog__body > :last-child { margin-bottom: 0; }
+.d-dialog__footer { display: flex; justify-content: flex-end; align-items: center; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--hairline); }
+/* A confirmation: no bars; 18px in, the 15px title over the 12px --fg-2 body beside a 40px avatar (gap 14px), the buttons 16px 18px. */
+.d-dialog[data-kind="confirm"] .d-dialog__head { align-items: flex-start; gap: 14px; padding: 18px 18px 4px; border-bottom: 0; }
+.d-dialog[data-kind="confirm"] .d-dialog__title { font-size: var(--text-card); }
+.d-dialog[data-kind="confirm"] .d-dialog__body { padding: 12px 18px 0; }
+.d-dialog[data-kind="confirm"] .d-dialog__footer { padding: 16px 18px; border-top: 0; }
+/* The prototype's dialog buttons: 34px, 7px corners, 12px; Cancel --fg-chip on nothing, the action filled and bold. */
+.d-dialog__footer .d-btn { height: 34px; padding: 0 14px; font-size: var(--text-ui); border-radius: var(--r-seg); }
+.d-dialog__footer .d-btn[data-variant="ghost"] { color: var(--fg-chip); }
+.d-dialog__footer .d-btn[data-variant="ghost"]:hover { color: var(--fg-chip); background: var(--hover); }
+.d-dialog__footer .d-btn:is([data-variant="accent"], [data-variant="danger"]) { padding: 0 16px; font-weight: var(--weight-display); }
+.d-dialog__footer .d-btn[data-variant="danger"] { color: var(--danger-ink); background: var(--danger); border-color: var(--danger); }
+.d-dialog__footer .d-btn[data-variant="danger"]:hover { background: var(--danger-hover); border-color: var(--danger-hover); }
+.d-dialog__footer .d-btn[data-variant="danger"]:disabled { color: var(--fg-3); background: transparent; border-color: var(--hairline); }
+@media (prefers-reduced-motion: reduce) { .d-dialog[open], .d-dialog::backdrop { animation: none; } }
+/* web3.8 (m6): on a phone the dialog sits in the visual viewport, which a soft keyboard shrinks (--d-vvh, --d-vvtop are set by the web app only then).
+   The prototype's phone dialog: 20px from the top, 12px from each side. */
 @media (max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem) {
-  .d-dialog:modal { top: var(--d-vvtop, 0px); bottom: calc(100dvh - var(--d-vvtop, 0px) - var(--d-vvh, 100dvh)); max-height: calc(var(--d-vvh, 100dvh) - 2rem); }
+  .d-dialog:modal { top: var(--d-vvtop, 0px); bottom: calc(100dvh - var(--d-vvtop, 0px) - var(--d-vvh, 100dvh)); max-height: calc(var(--d-vvh, 100dvh) - 2rem); margin: 20px auto auto; }
 }

@@ -138,6 +138,27 @@ func (s *Server) UpdatePermission(ctx context.Context, room, identity string, pe
 	return nil
 }
 
+// UpdateAttributes merges attrs into identity's participant attributes in room through LiveKit's RoomService (admin rights;
+// LiveKit broadcasts the change, and an empty value deletes the key). dillad uses it for one key only, dilla.rtt (task 8c):
+// a device's own RTT, reported over dilla's authenticated API, because no call token may update its own attributes. An
+// identity the room does not hold is ErrNoParticipant.
+func (s *Server) UpdateAttributes(ctx context.Context, room, identity string, attrs map[string]string) error {
+	if room == "" || identity == "" || len(attrs) == 0 {
+		return errors.New("sfu: room, identity and attributes must all be set")
+	}
+	rs, ctx, err := s.roomServiceFor(ctx, &auth.VideoGrant{RoomAdmin: true, Room: room})
+	if err != nil {
+		return err
+	}
+	if _, err := rs.UpdateParticipant(ctx, &livekit.UpdateParticipantRequest{Room: room, Identity: identity, Attributes: attrs}); err != nil {
+		if isTwirpNotFound(err) {
+			return ErrNoParticipant
+		}
+		return fmt.Errorf("sfu: update the attributes of %q in %q: %w", identity, room, err)
+	}
+	return nil
+}
+
 // Participants is LiveKit's participant list of room (the local store's snapshot), empty for a room
 // it does not hold.
 func (s *Server) Participants(ctx context.Context, room string) ([]*livekit.ParticipantInfo, error) {

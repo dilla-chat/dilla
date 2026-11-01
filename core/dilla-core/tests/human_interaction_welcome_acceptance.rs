@@ -18,14 +18,18 @@ use dilla_core::{
         SskSigner, Tier, UmkSigner,
     },
     ids::{CommunityId, DeviceId, InstanceId, MsgId, UserId},
-    mls::{CIPHERSUITE, DILLA_BINDING_ID, DillaInteractionBinding},
+    mls::{CIPHERSUITE, ConnHandle, DILLA_BINDING_ID, DillaInteractionBinding},
 };
 use ed25519_dalek::{Signer, SigningKey};
 use openmls::{extensions::UnknownExtension, prelude::*};
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::OpenMlsRustCrypto;
 use sha2::{Digest, Sha256};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+    time::{SystemTime, UNIX_EPOCH},
+};
 use tls_codec::{Deserialize as _, Serialize as _};
 
 const BOT_USER: [u8; 16] = [0x91; 16];
@@ -98,9 +102,8 @@ fn bot_identity() -> BotIdentity {
     }
 }
 
-fn enrolled_human(instance_signer: &[u8; 32]) -> Core {
-    let connection = client_support::memory();
-    let probe = std::sync::Arc::clone(&connection);
+fn enrolled_human_with_connection(instance_signer: &[u8; 32], connection: ConnHandle) -> Core {
+    let probe = Arc::clone(&connection);
     let mut core = ClientCore::open(connection).expect("open human core");
     core.signup_begin(&INSTANCE)
         .expect("begin human enrollment");
@@ -122,6 +125,76 @@ fn enrolled_human(instance_signer: &[u8; 32]) -> Core {
         core,
         probe,
         user: [0xa1; 16],
+        device,
+    }
+}
+
+struct EncryptedTestStore(PathBuf);
+
+impl EncryptedTestStore {
+    fn new(label: &str) -> Self {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        Self(std::env::temp_dir().join(format!(
+            "dilla-receipt-{label}-{}-{unique}.db",
+            std::process::id()
+        )))
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for EncryptedTestStore {
+    fn drop(&mut self) {
+        for suffix in ["", "-journal", "-wal", "-shm"] {
+            let mut name = self.0.as_os_str().to_os_string();
+            name.push(suffix);
+            let _ = std::fs::remove_file(name);
+        }
+    }
+}
+
+fn open_encrypted_test_connection(path: &Path, key_hex: &str) -> ConnHandle {
+    let connection = rusqlite::Connection::open(path).expect("open encrypted SQLCipher file");
+    connection
+        .execute_batch(&format!(
+            "PRAGMA cipher = 'chacha20'; PRAGMA key = 'raw:{key_hex}';"
+        ))
+        .expect("configure SQLCipher chacha20 store key");
+    connection
+        .query_row("SELECT count(*) FROM sqlite_schema", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .expect("verify the encrypted store key by reading sqlite schema");
+    Arc::new(Mutex::new(connection))
+}
+
+fn reopen_encrypted_test_store(core: Core, path: &Path, key_hex: &str) -> Core {
+    let Core {
+        core,
+        probe,
+        user,
+        device,
+    } = core;
+    drop(core);
+    let connection = Arc::try_unwrap(probe)
+        .unwrap_or_else(|_| panic!("full encrypted-store close requires sole connection ownership"))
+        .into_inner()
+        .expect("unpoison database connection mutex");
+    connection
+        .close()
+        .unwrap_or_else(|(_, error)| panic!("close encrypted test database: {error}"));
+    let connection = open_encrypted_test_connection(path, key_hex);
+    let probe = Arc::clone(&connection);
+    let core = ClientCore::open(connection).expect("reopen native core from encrypted database");
+    Core {
+        core,
+        probe,
+        user,
         device,
     }
 }
@@ -340,9 +413,26 @@ fn seed_trust(
 
 #[test]
 fn human_accepts_server_proven_two_leaf_bot_welcome_and_rejects_group_mismatch() {
+    authenticated_response_roundtrip(60);
+}
+
+#[test]
+fn capability_response_survives_authenticated_journal_restart_and_ack() {
+    authenticated_response_roundtrip(0);
+}
+
+#[test]
+fn provider_status_response_survives_authenticated_journal_restart_and_ack() {
+    authenticated_response_roundtrip(24);
+}
+
+fn authenticated_response_roundtrip(operation: u64) {
     let server_key = SigningKey::from_bytes(&[0xa7; 32]);
     let server_public = server_key.verifying_key().to_bytes();
-    let mut human = enrolled_human(&server_public);
+    let encrypted_store = EncryptedTestStore::new(&format!("op-{operation}"));
+    let store_key = "c3".repeat(32);
+    let connection = open_encrypted_test_connection(encrypted_store.path(), &store_key);
+    let mut human = enrolled_human_with_connection(&server_public, connection);
     let package_body = human.core.key_packages(1, false).expect("human KeyPackage");
     let key_package = decode_strict(&package_body, |d| {
         d.array(2)?;
@@ -610,11 +700,14 @@ fn human_accepts_server_proven_two_leaf_bot_welcome_and_rejects_group_mismatch()
         .bytes(&request_id)
         .bytes(&COMMUNITY)
         .null()
-        .uint(60)
+        .uint(operation)
         .null()
-        .null()
-        .array(1)
         .null();
+    if operation == 60 {
+        bot_request.array(1).null();
+    } else {
+        bot_request.array(0);
+    }
     let bot_request = bot_request.into_vec();
     // Music commands carry the authenticated voice channel in the protocol tuple. Mutations
     // also carry the caller's expected revision and short expiry, while the actor stays implicit.
@@ -855,7 +948,7 @@ fn human_accepts_server_proven_two_leaf_bot_welcome_and_rejects_group_mismatch()
         kind: EnvelopeType::Message,
         thread_id: None,
         reply_to: None,
-        body: response,
+        body: response.clone(),
         attachments: Vec::new(),
         previews: Vec::new(),
         k_f: [0x06; 32],
@@ -868,6 +961,7 @@ fn human_accepts_server_proven_two_leaf_bot_welcome_and_rejects_group_mismatch()
         .expect("encrypt Bot response")
         .tls_serialize_detached()
         .expect("serialize Bot response");
+    drop(provider);
     let response_row = client_support::MsgRow {
         seq: 3,
         epoch: 1,
@@ -917,9 +1011,107 @@ fn human_accepts_server_proven_two_leaf_bot_welcome_and_rejects_group_mismatch()
     })
     .expect("response page shape");
     assert_eq!(response_count, 1);
+    let prearchive_outbox_id = [0x96u8; 16];
+    human
+        .probe
+        .lock()
+        .expect("connection")
+        .execute(
+            "INSERT INTO app_outbox(msg_id,group_id,envelope,created,state,epoch) VALUES(?1,?2,X'80',?3,1,1)",
+            rusqlite::params![prearchive_outbox_id.as_slice(), GROUP_ID.as_slice(), now as i64],
+        )
+        .expect("seed a retained outbound state in the pre-archive store");
+    let outbox_snapshot_before_upgrade = human
+        .probe
+        .lock()
+        .expect("connection")
+        .query_row(
+            "SELECT msg_id,group_id,envelope,created,state,error,epoch FROM app_outbox WHERE msg_id=?1",
+            [prearchive_outbox_id.as_slice()],
+            |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, i64>(6)?,
+                ))
+            },
+        )
+        .expect("capture pending outbound row before archive migration");
+    let (pending_body_before_upgrade, claims_before_upgrade, outbox_before_upgrade) = {
+        let connection = human.probe.lock().expect("connection");
+        connection
+            .query_row(
+                "SELECT (SELECT body FROM app_human_interaction_events WHERE delivery_id=1), (SELECT count(*) FROM app_human_interaction_response_claims WHERE group_id=?1 AND request_id=?2), (SELECT count(*) FROM app_outbox WHERE msg_id=?3)",
+                rusqlite::params![GROUP_ID.as_slice(), request_id.as_slice(), prearchive_outbox_id.as_slice()],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?)),
+            )
+            .expect("capture pending response, claim and outbound request before upgrade")
+    };
+    assert_eq!(pending_body_before_upgrade, response);
+    assert_eq!(claims_before_upgrade, 1);
+    assert_eq!(outbox_before_upgrade, 1);
+    human
+        .probe
+        .lock()
+        .expect("connection")
+        .execute_batch(
+            "CREATE TABLE test_receipt_restart_seed AS SELECT * FROM app_human_interaction_events WHERE delivery_id=1;",
+        )
+        .expect("save the authenticated event fixture in the encrypted store");
+    human
+        .probe
+        .lock()
+        .expect("connection")
+        .execute_batch("DROP TABLE app_human_interaction_receipts;")
+        .expect("fixture a real encrypted pre-archive store");
 
-    // The event is durable across a core restart and an exact source replay cannot duplicate it.
-    human = human.reopen();
+    // Opening a pre-archive encrypted store adds only the archive schema and preserves pending
+    // response, outbox and response-claim state.
+    human = reopen_encrypted_test_store(human, encrypted_store.path(), &store_key);
+    let (pending_body_after_upgrade, claims_after_upgrade, outbox_count_after_upgrade, archive_exists): (
+        String,
+        i64,
+        i64,
+        i64,
+    ) = human
+        .probe
+        .lock()
+        .expect("connection")
+        .query_row(
+            "SELECT (SELECT body FROM app_human_interaction_events WHERE delivery_id=1), (SELECT count(*) FROM app_human_interaction_response_claims WHERE group_id=?1 AND request_id=?2), (SELECT count(*) FROM app_outbox WHERE msg_id=?3), (SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='app_human_interaction_receipts')",
+            rusqlite::params![GROUP_ID.as_slice(), request_id.as_slice(), prearchive_outbox_id.as_slice()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("read migrated encrypted store");
+    assert_eq!(pending_body_after_upgrade, response);
+    assert_eq!(claims_after_upgrade, claims_before_upgrade);
+    assert_eq!(outbox_count_after_upgrade, outbox_before_upgrade);
+    assert_eq!(archive_exists, 1, "archive migration created the new table");
+    let outbox_row_after_upgrade = human
+        .probe
+        .lock()
+        .expect("connection")
+        .query_row(
+            "SELECT msg_id,group_id,envelope,created,state,error,epoch FROM app_outbox WHERE msg_id=?1",
+            [prearchive_outbox_id.as_slice()],
+            |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, i64>(6)?,
+                ))
+            },
+        )
+        .expect("read outbound row after pre-archive migration");
+    assert_eq!(outbox_row_after_upgrade, outbox_snapshot_before_upgrade);
     let after_restart = human
         .core
         .human_interaction_events_read(0, 10)
@@ -1044,14 +1236,104 @@ fn human_accepts_server_proven_two_leaf_bot_welcome_and_rejects_group_mismatch()
         1
     );
     human
+        .probe
+        .lock()
+        .expect("connection")
+        .execute(
+            "UPDATE app_trust_pins SET changed_umk=zeroblob(32) WHERE user_id=?1",
+            [BOT_USER.as_slice()],
+        )
+        .expect("revoke the Bot sender trust decision");
+    let after_trust_revocation = human
         .core
-        .human_interaction_events_ack(3)
-        .expect("ack response");
+        .human_interaction_events_read(0, 10)
+        .expect("recheck trust when rereading the durable response");
+    assert_eq!(
+        decode_strict(&after_trust_revocation, |d| {
+            d.array(3)?;
+            let count = d.array_len()?;
+            d.uint()?;
+            d.uint()?;
+            Ok(count)
+        })
+        .expect("revoked response page shape"),
+        0,
+        "trust revocation suppresses a previously readable response"
+    );
+    {
+        let probe = human.probe.lock().expect("connection");
+        probe.execute(
+            "INSERT INTO app_human_interaction_events(group_id,community_id,request_id,source_seq,epoch,recv_ts,sender_user,sender_device,sender_leaf,sender_credential,sender_sig_key,message_id,body) SELECT group_id,community_id,request_id,source_seq+1,epoch,recv_ts,sender_user,sender_device,sender_leaf,sender_credential,sender_sig_key,message_id,'pending' FROM app_human_interaction_events WHERE delivery_id=3",
+            [],
+        ).expect("seed a later unconsumed response row");
+        probe
+            .execute(
+                "UPDATE app_human_interaction_event_state SET high_water=4 WHERE singleton=1",
+                [],
+            )
+            .expect("seed journal high water");
+    }
+    let empty_selection = Encoder::new();
+    assert!(
+        human
+            .core
+            .human_interaction_events_ack_selected(&empty_selection.into_vec())
+            .is_err()
+    );
+    let duplicate_selection = {
+        let mut e = Encoder::new();
+        e.array(2).uint(3).uint(3);
+        e.into_vec()
+    };
+    assert!(
+        human
+            .core
+            .human_interaction_events_ack_selected(&duplicate_selection)
+            .is_err()
+    );
+    let first_selection = {
+        let mut e = Encoder::new();
+        e.array(1).uint(3);
+        e.into_vec()
+    };
     human
         .core
-        .human_interaction_events_ack(3)
-        .expect("repeated response ack is idempotent");
-    human = human.reopen();
+        .human_interaction_events_ack_selected(&first_selection)
+        .expect("selectively consume response");
+    human
+        .core
+        .human_interaction_events_ack_selected(&first_selection)
+        .expect("repeated selective consume is idempotent");
+    let (ack, selected_exists, later_body): (i64, i64, Option<String>) = human.probe.lock().expect("connection").query_row(
+        "SELECT (SELECT ack_delivery_id FROM app_human_interaction_event_state WHERE singleton=1),
+          (SELECT count(*) FROM app_human_interaction_events WHERE delivery_id=3),
+          (SELECT body FROM app_human_interaction_events WHERE delivery_id=4)",
+        [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    ).expect("read selective acknowledgement state");
+    assert_eq!(selected_exists, 0, "the named consumed response was pruned");
+    assert_eq!(
+        later_body.as_deref(),
+        Some("pending"),
+        "the later unselected response body remains durable"
+    );
+    assert_eq!(
+        ack, 3,
+        "the global prefix advances only through the consumed response"
+    );
+    let final_selection = {
+        let mut e = Encoder::new();
+        e.array(1).uint(4);
+        e.into_vec()
+    };
+    human
+        .core
+        .human_interaction_events_ack_selected(&final_selection)
+        .expect("consume remaining response");
+    human
+        .core
+        .human_interaction_events_ack(4)
+        .expect("compatibility cleanup for preceding unconsumed rows");
+    human = reopen_encrypted_test_store(human, encrypted_store.path(), &store_key);
     let receipts: i64 = human
         .probe
         .lock()
@@ -1153,6 +1435,356 @@ fn human_accepts_server_proven_two_leaf_bot_welcome_and_rejects_group_mismatch()
             .is_err(),
         "ordinary text groups cannot use the interaction request API"
     );
+    // Exercise the corrected transfer after the original receipt has been read, the worker/core
+    // has restarted, and older journal rows have been consumed. The stored event remains bound
+    // to the real source request and currently active interaction group.
+    {
+        let probe = human.probe.lock().expect("connection");
+        probe
+            .execute(
+                "UPDATE app_trust_pins SET changed_umk=NULL WHERE user_id=?1",
+                [BOT_USER.as_slice()],
+            )
+            .expect("restore current sender trust for receipt recovery test");
+        probe
+            .execute(
+                "UPDATE app_groups SET max_epoch=epoch WHERE group_id=?1",
+                [GROUP_ID.as_slice()],
+            )
+            .expect("restore active interaction group epoch");
+        probe.execute("INSERT INTO app_human_interaction_events(delivery_id,group_id,community_id,request_id,source_seq,epoch,recv_ts,sender_user,sender_device,sender_leaf,sender_credential,sender_sig_key,message_id,body,disposition) SELECT 5,group_id,community_id,request_id,source_seq,epoch,recv_ts,sender_user,sender_device,sender_leaf,sender_credential,sender_sig_key,message_id,body,0 FROM test_receipt_restart_seed", [])
+            .expect("restore valid event after older cursor checks");
+        probe
+            .execute(
+                "DELETE FROM app_human_interaction_receipts WHERE delivery_id=1",
+                [],
+            )
+            .expect("isolate the final receipt transfer from the earlier test ACK");
+        probe
+            .execute(
+                "UPDATE app_human_interaction_event_state SET high_water=5 WHERE singleton=1",
+                [],
+            )
+            .expect("advance event high water");
+    }
+    human = reopen_encrypted_test_store(human, encrypted_store.path(), &store_key);
+    let selected = {
+        let mut e = Encoder::new();
+        e.array(1).uint(5);
+        e.into_vec()
+    };
+    human.probe.lock().expect("connection").execute_batch(
+        "CREATE TRIGGER fail_receipt_transfer BEFORE INSERT ON app_human_interaction_receipts BEGIN SELECT RAISE(FAIL,'transfer interrupted'); END;",
+    ).expect("install transactional failure trigger");
+    assert!(
+        human
+            .core
+            .human_interaction_events_ack_selected(&selected)
+            .is_err(),
+        "failed archive writes cannot consume journal data"
+    );
+    let after_failure = human
+        .core
+        .human_interaction_events_read(4, 10)
+        .expect("pending row survived failed transfer");
+    assert_eq!(
+        decode_strict(&after_failure, |d| {
+            d.array(3)?;
+            let n = d.array_len()?;
+            for _ in 0..n {
+                d.skip()?;
+            }
+            d.uint()?;
+            d.uint()?;
+            Ok(n)
+        })
+        .unwrap(),
+        1
+    );
+    human = reopen_encrypted_test_store(human, encrypted_store.path(), &store_key);
+    let after_failure_restart = human
+        .core
+        .human_interaction_events_read(4, 10)
+        .expect("read the pending response after closing and reopening the encrypted store");
+    let pending_body_after_failure = decode_strict(&after_failure_restart, |d| {
+        d.array(3)?;
+        d.array(1)?;
+        d.array(13)?;
+        d.uint()?;
+        d.bytes_exact::<16>()?;
+        d.bytes_exact::<16>()?;
+        d.bytes_exact::<16>()?;
+        d.uint()?;
+        d.uint()?;
+        d.uint()?;
+        d.bytes_exact::<16>()?;
+        d.bytes_exact::<16>()?;
+        d.bytes_exact::<16>()?;
+        let body = d.text()?.to_owned();
+        d.uint()?;
+        d.opt_bytes_exact::<16>()?;
+        d.uint()?;
+        d.uint()?;
+        Ok(body)
+    })
+    .expect("pending exact event after failed archive transfer survives encrypted reopen");
+    assert_eq!(pending_body_after_failure, response);
+    human
+        .probe
+        .lock()
+        .expect("connection")
+        .execute_batch("DROP TRIGGER fail_receipt_transfer;")
+        .expect("remove transfer trigger");
+    human
+        .core
+        .human_interaction_events_ack_selected(&selected)
+        .expect("transfer response into native archive");
+    human
+        .core
+        .human_interaction_events_ack_selected(&selected)
+        .expect("duplicate transfer ACK remains idempotent");
+    human = reopen_encrypted_test_store(human, encrypted_store.path(), &store_key);
+    let mut request_ids = Encoder::new();
+    request_ids.array(1).bytes(&request_id);
+    let archived = human
+        .core
+        .human_interaction_receipts_read(
+            &COMMUNITY,
+            &INSTALLATION,
+            &BOT_USER,
+            &request_ids.into_vec(),
+        )
+        .expect("recover archived response from reopened native core");
+    let recovered = decode_strict(&archived, |d| {
+        let count = d.array_len()?;
+        let mut events = Vec::with_capacity(count);
+        for _ in 0..count {
+            d.array(13)?;
+            let delivery = d.uint()?;
+            let group = d.bytes_exact::<16>()?;
+            let community = d.bytes_exact::<16>()?;
+            let request = d.bytes_exact::<16>()?;
+            let source_seq = d.uint()?;
+            let epoch = d.uint()?;
+            let recv_ts = d.uint()?;
+            let sender = d.bytes_exact::<16>()?;
+            let sender_device = d.bytes_exact::<16>()?;
+            let message_id = d.bytes_exact::<16>()?;
+            let body = d.text()?.to_owned();
+            let operation = d.uint()?;
+            d.opt_bytes_exact::<16>()?;
+            events.push((
+                delivery,
+                group,
+                community,
+                request,
+                source_seq,
+                epoch,
+                recv_ts,
+                sender,
+                sender_device,
+                message_id,
+                body,
+                operation,
+            ));
+        }
+        Ok(events)
+    })
+    .expect("recover archived responses with their exact source tuples");
+    assert_eq!(recovered.iter().map(|row| row.0).collect::<Vec<_>>(), [5]);
+    for (
+        delivery,
+        group,
+        community,
+        archived_request,
+        source_seq,
+        epoch,
+        recv_ts,
+        sender,
+        sender_device,
+        message_id,
+        recovered_body,
+        archived_operation,
+    ) in &recovered
+    {
+        assert_eq!(*group, GROUP_ID);
+        assert_eq!(*community, COMMUNITY);
+        assert_eq!(*archived_request, request_id);
+        assert_eq!(*source_seq, 3);
+        assert_eq!(*epoch, 1);
+        assert_eq!(*recv_ts, now + 3);
+        assert_eq!(*sender, BOT_USER);
+        assert_eq!(*sender_device, BOT_DEVICE);
+        assert_eq!(*message_id, [0x4a; 16]);
+        assert_eq!(*archived_operation, operation);
+        assert_eq!(
+            recovered_body, &response,
+            "archive retains the exact authenticated response body"
+        );
+        assert!(
+            Response::decode_body(recovered_body.as_bytes()).expect("decode recovered response")
+                == Response {
+                    request_id: MsgId::from_bytes(request_id),
+                    community_id: CommunityId::from_bytes(COMMUNITY),
+                    status: 0,
+                    revision: None,
+                    data: vec![],
+                },
+            "the recovered status, revision, data and identity match the original response"
+        );
+        assert!([1, 5].contains(delivery));
+    }
+    let archive_count: i64 = human
+        .probe
+        .lock()
+        .expect("connection")
+        .query_row(
+            "SELECT count(*) FROM app_human_interaction_receipts WHERE request_id=?1 AND delivery_id=5",
+            [request_id.as_slice()],
+            |row| row.get(0),
+        )
+        .expect("count exact durable receipts after duplicate ACK");
+    assert_eq!(
+        archive_count, 1,
+        "duplicate ACK persisted exactly one receipt"
+    );
+    let source_match_count: i64 = human
+        .probe
+        .lock()
+        .expect("connection")
+        .query_row(
+            "SELECT count(*) FROM app_human_interaction_receipts r JOIN app_messages m ON m.group_id=r.group_id AND m.seq=r.source_seq WHERE r.request_id=?1 AND r.delivery_id=5 AND r.epoch=m.epoch AND r.sender_user=m.sender_user AND r.sender_device=m.sender_device AND r.sender_leaf=m.sender_leaf AND r.sender_sig_key=m.sender_sig_key AND r.message_id=m.msg_id AND r.body=m.body AND m.status=0 AND m.type=0",
+            [request_id.as_slice()],
+            |row| row.get(0),
+        )
+        .expect("compare every archived source field to authenticated stored message");
+    assert_eq!(
+        source_match_count, 1,
+        "archived provenance exactly matches original authenticated message"
+    );
+    let mut request_ids = Encoder::new();
+    request_ids.array(1).bytes(&request_id);
+    assert_eq!(
+        decode_strict(
+            &human
+                .core
+                .human_interaction_receipts_read(
+                    &COMMUNITY,
+                    &[0x99; 16],
+                    &BOT_USER,
+                    &request_ids.into_vec()
+                )
+                .unwrap(),
+            |d| d.array_len(),
+        )
+        .unwrap(),
+        0,
+        "a replaced installation cannot read the prior installation's receipt"
+    );
+    let mut request_ids = Encoder::new();
+    request_ids.array(1).bytes(&request_id);
+    assert_eq!(
+        decode_strict(
+            &human
+                .core
+                .human_interaction_receipts_read(
+                    &COMMUNITY,
+                    &INSTALLATION,
+                    &[0x98; 16],
+                    &request_ids.into_vec()
+                )
+                .unwrap(),
+            |d| d.array_len()
+        )
+        .unwrap(),
+        0,
+        "a different current Bot identity cannot read the prior identity's receipt"
+    );
+    human.probe.lock().expect("connection").execute(
+        "UPDATE app_human_interaction_receipts SET source_seq=source_seq+100 WHERE delivery_id=5", [],
+    ).expect("tamper archived source provenance");
+    let mut request_ids = Encoder::new();
+    request_ids.array(1).bytes(&request_id);
+    assert_eq!(
+        decode_strict(
+            &human
+                .core
+                .human_interaction_receipts_read(
+                    &COMMUNITY,
+                    &INSTALLATION,
+                    &BOT_USER,
+                    &request_ids.into_vec()
+                )
+                .unwrap(),
+            |d| d.array_len()
+        )
+        .unwrap(),
+        0,
+        "a source sequence mismatch fails closed"
+    );
+    let substituted_response = Response {
+        request_id: MsgId::from_bytes(request_id),
+        community_id: CommunityId::from_bytes(COMMUNITY),
+        status: 5,
+        revision: Some(9),
+        data: vec![0x80],
+    }
+    .encode_body()
+    .expect("encode canonical substituted response");
+    human.probe.lock().expect("connection").execute(
+        "UPDATE app_human_interaction_receipts SET source_seq=(SELECT source_seq FROM test_receipt_restart_seed), body=?1 WHERE delivery_id=5", [substituted_response],
+    ).expect("restore source and substitute canonical response body");
+    let mut request_ids = Encoder::new();
+    request_ids.array(1).bytes(&request_id);
+    assert_eq!(
+        decode_strict(
+            &human
+                .core
+                .human_interaction_receipts_read(
+                    &COMMUNITY,
+                    &INSTALLATION,
+                    &BOT_USER,
+                    &request_ids.into_vec()
+                )
+                .unwrap(),
+            |d| d.array_len()
+        )
+        .unwrap(),
+        0,
+        "a valid but substituted response body cannot be returned as authenticated evidence"
+    );
+    human.probe.lock().expect("connection").execute(
+        "UPDATE app_human_interaction_receipts SET body=(SELECT body FROM test_receipt_restart_seed) WHERE delivery_id=5", [],
+    ).expect("restore archived response before trust check");
+    human
+        .probe
+        .lock()
+        .expect("connection")
+        .execute(
+            "UPDATE app_trust_pins SET changed_umk=zeroblob(32) WHERE user_id=?1",
+            [BOT_USER.as_slice()],
+        )
+        .expect("revoke current Bot trust after receipt storage");
+    let mut request_ids = Encoder::new();
+    request_ids.array(1).bytes(&request_id);
+    assert_eq!(
+        decode_strict(
+            &human
+                .core
+                .human_interaction_receipts_read(
+                    &COMMUNITY,
+                    &INSTALLATION,
+                    &BOT_USER,
+                    &request_ids.into_vec()
+                )
+                .unwrap(),
+            |d| d.array_len(),
+        )
+        .unwrap(),
+        0,
+        "archived plaintext is not returned after current trust revocation"
+    );
+
     human
         .probe
         .lock()

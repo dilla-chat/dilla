@@ -8,9 +8,9 @@
 //
 // Bounds. MUTED_BOUND: a mute closes the microphone at the press and the detector is reset at once, so the own tile is
 // not speaking within 400 ms (pre-flight C-20; the 300 ms hold does not apply to a mute, only to silence in the signal).
-// ONSET_BOUND: the detector's own onset is at most about 75 ms after the sound reaches the analyser; the poll adds a
-// page round trip per probe and the unmute adds the microphone reopening, so 400 ms leaves several times the worst case
-// and stays well under the 1 s of the old SFU flag (400 ms interval + smoothing, so about 1 s). Bob's view of alice adds
+// ONSET_BOUND: the detector's own onset is at most about 75 ms after the sound reaches the analyser; unmute also reopens
+// the microphone, so 400 ms leaves several times the detector's worst case. The browser owns the assertion's retry loop,
+// keeping driver round trips out of that short budget, well under the old SFU flag's 1 s. Bob's view of alice adds
 // the network and the receive-side jitter buffer to that, so it gets REMOTE_BOUND, 600 ms: still clearly under 1 s.
 import { expect, test } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
@@ -48,7 +48,7 @@ test('alice speaking lights her tile and bob\'s tile for her within a beat, and 
     const seen = tile(bob.page, 'alice');
     const controls = alice.page.getByRole('toolbar', { name: copy('voice.controls.voice'), exact: true });
     // Since web3.8 the user panel owns mute; the stage toolbar keeps its own toggle (C-20).
-    const mute = controls.getByRole('button', { name: copy('voice.mute'), exact: true });
+    const mute = controls.locator('[data-control="mute"]');
 
     if (browserName === 'firefox') {
       // Firefox's fake microphone is not a tone on every build; where it is silent there is nothing to light.
@@ -63,7 +63,9 @@ test('alice speaking lights her tile and bob\'s tile for her within a beat, and 
 
     await test.step('a mute through the stage toolbar puts alice\'s own tile out within 400 ms', async () => {
       await mute.click();
-      await expect(mute).toHaveAttribute('aria-pressed', 'true');
+      await expect(mute).toHaveAttribute('data-on', 'true');
+      // Signal §5.6: the call bar's word carries the state (the prototype's Unmute), so the role and name say it too.
+      await expect(controls.getByRole('button', { name: copy('callStage.bar.unmute'), exact: true })).toBeVisible();
       await expect.poll(() => ownSpeaking(alice.page), { timeout: MUTED_BOUND, message: 'alice is muted: her own tile is not speaking' }).toBe(false);
       // Bob's tile follows once the last audio has played out (the 300 ms hold and the jitter buffer), within a state's wait.
       await expect(seen).toHaveAttribute('data-speaking', 'false', { timeout: WAIT });
@@ -72,8 +74,11 @@ test('alice speaking lights her tile and bob\'s tile for her within a beat, and 
     await test.step('an unmute lights them again within a beat, far under the old second', async () => {
       const t0 = Date.now();
       await mute.click();
-      await expect(mute).toHaveAttribute('aria-pressed', 'false');
-      await expect.poll(() => ownSpeaking(alice.page), { timeout: ONSET_BOUND, message: 'alice is speaking again on her own tile' }).toBe(true);
+      await expect(mute).not.toHaveAttribute('data-on');
+      // Retry in the browser: driver-side polling spends this short budget on round trips,
+      // and its last probe can observe true yet arrive after the driver's deadline.
+      await expect(stage(alice.page).locator('.d-call-tile[data-own]:not([data-source="screen"])').first(),
+        'alice is speaking again on her own tile').toHaveAttribute('data-speaking', 'true', { timeout: ONSET_BOUND });
       const own = Date.now() - t0;
       await expect(seen).toHaveAttribute('data-speaking', 'true', { timeout: REMOTE_BOUND });
       const remote = Date.now() - t0;

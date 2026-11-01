@@ -59,7 +59,7 @@ function setup(over: Partial<FactorSetupProps> = {}, opts: { handler?: Handler; 
   const announce = vi.fn();
   const onDone = vi.fn();
   const user = userEvent.setup();
-  const props: FactorSetupProps = { origin: 'signup', stepLabel: 'Step 5 of 6', instanceName: 'dilla.test', username: 'ada', announce, onDone, ...over };
+  const props: FactorSetupProps = { origin: 'signup', stepLabel: 'New account · step 5 of 6', instanceName: 'dilla.test', username: 'ada', announce, onDone, ...over };
   const view = render(<div className="d-root"><CoreProvider client={fake}><FactorSetup {...props} /></CoreProvider></div>);
   return { fake, announce, onDone, user, view };
 }
@@ -83,7 +83,7 @@ describe('choose', () => {
     setup();
     expect(h1()).toHaveTextContent(en['factor.choose.title']);
     expect(h1()).toHaveFocus();
-    expect(screen.getByText('Step 5 of 6')).toBeInTheDocument();
+    expect(screen.getByText('New account · step 5 of 6')).toBeInTheDocument();
     expect(screen.getByText(/Every account on dilla.test needs a second factor/)).toBeInTheDocument();
     expect(screen.getByRole('radio', { name: en['factor.choose.app'] })).toBeChecked();
     expect(screen.getByRole('radio', { name: en['factor.choose.passkey'] })).toBeEnabled();

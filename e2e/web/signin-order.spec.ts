@@ -41,7 +41,8 @@ function started(): StartedHost {
   return host;
 }
 const button = (scope: Page | Locator, key: string) => scope.getByRole('button', { name: copy(key), exact: true });
-const stepLine = (page: Page, n: number) => page.getByText(copy(SIGNIN.step, { n }), { exact: true });
+// Signal task 10: the step line counts the steps this ceremony shows (four with a code step).
+const stepLine = (page: Page, n: number) => page.getByText(copy(SIGNIN.step, { n, total: 4 }), { exact: true });
 
 /** Settings → Sign-in on the first browser: the section reads the account's factors again each time it opens. */
 async function backupCodesLeft(page: Page, count: number): Promise<void> {

@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
 import { DeviceRow, type DeviceRowProps } from './DeviceRow.tsx';
@@ -16,7 +16,9 @@ describe('DeviceRow', () => {
     const item = screen.getByRole('listitem');
     expect(item).toHaveClass('d-device-row');
     expect(item).toHaveAttribute('data-tier', 'web');
-    for (const text of ['0a1b2c3d', 'browser', 'not yet in the device list', 'last seen 20:40']) {
+    // Fix round 2: the name is always isolated (<bdi>); the rest are spans.
+    expect(within(item).getByText('0a1b2c3d').tagName).toBe('BDI');
+    for (const text of ['browser', 'not yet in the device list', 'last seen 20:40']) {
       expect(within(item).getByText(text).tagName).toBe('SPAN');
     }
     expect(item).not.toHaveAttribute('data-own');
@@ -94,5 +96,36 @@ describe('DeviceRow', () => {
       </div>,
     );
     await expectNoAxeViolations(container);
+  });
+});
+
+// Signal task 10 fix round 2 (Ruling X): a row's menu opens from Shift+F10 on the focused row, and from a right-click.
+describe('DeviceRow menu', () => {
+  it('opens from Shift+F10 and a right-click, picks an item and gives focus back to the row', async () => {
+    const onSelect = vi.fn();
+    render(<ul><DeviceRow name="b2d4e6f8" tier="web" menu={{ label: 'b2d4e6f8 menu', items: [{ id: 'rename', label: 'Rename' }], onSelect }} /></ul>);
+    const row = screen.getByRole('listitem');
+    expect(row).toHaveAttribute('tabindex', '0');
+    row.focus();
+    fireEvent.keyDown(row, { key: 'F10', shiftKey: true });
+    await userEvent.setup().click(screen.getByRole('menuitem', { name: 'Rename' }));
+    expect(onSelect).toHaveBeenCalledWith('rename');
+    expect(row).toHaveFocus();
+  });
+  it('opens from a right-click', () => {
+    render(<ul><DeviceRow name="b2d4e6f8" tier="web" menu={{ label: 'b2d4e6f8 menu', items: [{ id: 'rename', label: 'Rename' }], onSelect: vi.fn() }} /></ul>);
+    fireEvent.contextMenu(screen.getByRole('listitem'), { clientX: 5, clientY: 5 });
+    expect(screen.getByRole('menu', { name: 'b2d4e6f8 menu' })).toBeInTheDocument();
+  });
+  it('names Shift+F10 on the row, and a right-click on its own button opens no row menu', () => {
+    render(<ul><DeviceRow name="b2d4e6f8" tier="web" action={{ label: 'Remove', onAction: vi.fn(), danger: true }}
+      menu={{ label: 'b2d4e6f8 menu', items: [{ id: 'rename', label: 'Rename' }], onSelect: vi.fn() }} /></ul>);
+    expect(screen.getByRole('listitem')).toHaveAttribute('aria-keyshortcuts', 'Shift+F10');
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'Remove' }), { clientX: 5, clientY: 5 });
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
+  it('has no menu and no tab stop without one', () => {
+    render(<ul><DeviceRow name="b2d4e6f8" tier="web" /></ul>);
+    expect(screen.getByRole('listitem')).not.toHaveAttribute('tabindex');
   });
 });

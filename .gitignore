@@ -36,14 +36,16 @@ internal/web/dist/*
 !internal/web/dist/index.html
 !internal/web/dist/dilla-manifest.json
 packages/web/dist/
+packages/client-core/harness-dist/
+
+# go build output when run from the repository root (CI builds it in a runner)
+/dillad
+/dillabot
+
+# Desktop builds and native helpers
 packages/desktop/dist/
 packages/desktop/out/
 packages/desktop/test-results/
 packages/desktop/test-report/
 packages/desktop/validation-dist/
-packages/client-core/harness-dist/
-
-# go build output when run from the repository root (CI builds it in a runner)
-/dillad
-
 packages/desktop/native-bin/

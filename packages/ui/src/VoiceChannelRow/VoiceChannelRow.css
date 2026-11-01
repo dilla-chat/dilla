@@ -1,18 +1,26 @@
-/* The voice row is ChannelRow's grammar (R10-R13): --row-h tall, a 16px glyph column, the name, the trailing slot. Its people sit
-   below it at --row-h-sub, indented so each avatar starts at the name's x (8 + 16 + 8 = 32px, R11). */
+/* A voice row is ChannelRow's grammar (Signal, README §5.4): --row-h tall, radius 5px, padding 0 8px, gap 8px, a 14px glyph
+   (--fg-4; --ok while you are in it; the accent while the main pane shows it), the name, the occupant count at the right. */
 .d-voice-item { position: relative; display: flow-root; }
-.d-voice-row { position: relative; display: flex; align-items: center; gap: 0.5rem; width: 100%; height: var(--row-h); box-sizing: border-box; padding: 0 0.5rem; margin: var(--list-gap) 0; font: inherit; font-size: var(--text-base); color: var(--fg-2); background: transparent; border: 0; border-radius: var(--r-md); text-align: left; cursor: pointer; transition: background var(--duration-fast), color var(--duration-fast); }
-.d-voice-row:hover { background: var(--surface-2); color: var(--fg); }
-.d-voice-row[data-live="true"] { color: var(--fg); }
-.d-voice-row[aria-current="page"] { background: var(--surface-hi); color: var(--fg); box-shadow: inset 2px 0 0 var(--accent); }
-.d-voice-row__glyph { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 1rem /* 16px */; color: var(--fg-3); }
-.d-voice-row[data-live="true"] .d-voice-row__glyph { color: var(--fg-2); }
-/* In the call (like Discord): no accent, no phone; the name is full strength and bold. */
-.d-voice-row[data-joined="true"] .d-voice-row__name { color: var(--fg); font-weight: 600; }
-/* The name cuts first; the count after it never does. */
+.d-voice-row {
+  position: relative; display: flex; align-items: center; gap: 0.5rem; width: 100%; height: var(--row-h); box-sizing: border-box; padding: 0 0.5rem;
+  margin: var(--list-gap) 0; font: inherit; font-size: var(--text-input) /* 13px, the app's body size */; color: var(--fg-2); background: transparent;
+  border: 0; border-radius: var(--r-row); text-align: left; cursor: pointer; transition: background var(--duration-hover), color var(--duration-hover);
+}
+.d-voice-row__bar { position: absolute; left: 0; top: 6px; bottom: 6px; width: 2px; border-radius: 2px; background: var(--accent); transform: scaleY(0); transition: transform var(--duration-normal) var(--ease-out); pointer-events: none; }
+.d-voice-row[aria-current="page"] { background: var(--surface-hi); color: var(--fg); }
+.d-voice-row[aria-current="page"] .d-voice-row__bar { transform: scaleY(1); }
+.d-voice-row[data-joined="true"] { color: var(--fg); }
+.d-voice-row:is([aria-current="page"], [data-joined="true"]) .d-voice-row__name { font-weight: var(--weight-label); }
+.d-voice-row:hover { background: var(--hover); color: var(--fg); }
+.d-voice-row__glyph { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 0.875rem /* 14px */; color: var(--fg-4); }
+.d-voice-row[data-joined="true"] .d-voice-row__glyph { color: var(--ok); }
+.d-voice-row[aria-current="page"] .d-voice-row__glyph { color: var(--accent); }
+/* The name cuts first; the count never does. */
 .d-voice-row__title { display: flex; flex: 1; min-width: 0; }
 .d-voice-row__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.d-voice-row__count { flex: none; white-space: pre; color: var(--fg-2); font-variant-numeric: tabular-nums; }
+/* The occupant count: 10.5px --fg-3, tabular; --fg-2 on the selected fill (README §10.4). */
+.d-voice-row__count { flex: none; font-size: var(--text-meta); color: var(--fg-3); font-variant-numeric: tabular-nums; }
+.d-voice-row:is([aria-current="page"], :hover) .d-voice-row__count { color: var(--fg-2); }
 /* The join icon is drawn over the row's own slot, at its right edge, and shows while the row is hovered or focused. */
 .d-voice-row__join { position: absolute; top: var(--list-gap); right: 0.5rem; height: var(--row-h); display: flex; align-items: center; opacity: 0; transition: opacity var(--duration-fast); }
 .d-voice-item:hover .d-voice-row__join, .d-voice-item:focus-within .d-voice-row__join { opacity: 1; }
@@ -20,20 +28,29 @@
 [data-layout="phone"] .d-voice-row__join { opacity: 1; }
 /* The join icon's ring is inset (R14/UI-1): the slot is no wider than the button, so an outset ring would be cut. */
 .d-voice-row__join .d-icon-button:focus-visible { outline-offset: -2px; }
-@media (prefers-reduced-motion: reduce) { .d-voice-row__join { transition: none; } }
-/* One grid for all the people (R25): an avatar column, a name column, a state column and the slot are shared by every row
-   (each row is a subgrid), so the glyphs and words of one row line up with the next. */
-.d-voice-row__people { display: grid; grid-template-columns: 1.5rem minmax(2.5rem, max-content) minmax(0, max-content) 1fr minmax(var(--slot-w), max-content); column-gap: 0.5rem; margin: 0; padding: 0 0.5rem 0 2rem; list-style: none; font-size: var(--text-sm); }
-/* web3.8 (R29): the name and its glyphs share one line; the name truncates and nothing wraps. */
-.d-voice-row__person { display: grid; grid-template-columns: subgrid; grid-column: 1 / -1; align-items: center; min-width: 0; height: var(--row-h-sub); box-sizing: border-box; padding: 0; margin: var(--list-gap) 0; color: var(--fg-2); }
-.d-voice-row__states { display: flex; align-items: center; flex-wrap: nowrap; gap: 0.375rem; min-width: 0; overflow: hidden; white-space: nowrap; }
-.d-voice-row__person > .d-slot { grid-column: 5; width: auto; min-width: var(--slot-w); gap: 0.25rem; justify-content: flex-end; }
+/* The people (Signal §5.4): 26px sub-rows, 30px in from the list's padding edge (the name's x), 8px to the right edge. */
+.d-voice-row__people { margin: 0; padding: 0 0.5rem 0 30px; list-style: none; }
+.d-voice-row__person:focus-visible { outline: var(--focus-ring); outline-offset: -2px; border-radius: var(--r-row); }
+.d-voice-row__person { display: flex; align-items: center; gap: 8px; min-width: 0; height: var(--row-h-sub); box-sizing: border-box; padding: 0; font-size: var(--text-ui); color: var(--fg-strong); }
+/* Task 11 (rule 0, the prototype's phone sidebar): a phone keeps the 26px person rows. */
+[data-layout="phone"] .d-voice-row__person { height: 1.625rem; }
 .d-voice-row__avatar { display: inline-flex; flex: none; }
-/* Speaking is the accent ring on the square avatar, with no glyph beside it (Jonas, WEB-DOCK: speaking shows only as a ring); the word stays as `.d-sr-only`. */
-.d-voice-row__person[data-speaking="true"] .d-avatar { box-shadow: 0 0 0 2px var(--accent); }
-.d-voice-row__person-name { flex: 0 1 auto; min-width: 0; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Task 11: the trailing states' wrapper only carries the id the row's description names; it lays nothing out. */
+.d-voice-row__slot-states { display: contents; }
+/* Speaking is only a ring on the avatar (0 0 0 2px bg-2, 0 0 0 3.5px --live), over 150ms; the word stays as `.d-sr-only`. */
+.d-voice-row__avatar .d-avatar { box-shadow: 0 0 0 0 transparent; transition: box-shadow var(--duration-fast); }
+.d-voice-row__person[data-speaking="true"] .d-avatar { box-shadow: 0 0 0 2px var(--bg-2), 0 0 0 3.5px var(--ok); }
+.d-voice-row__person-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The tags and words after the name, then the camera and LIVE pushed to the right. Nothing wraps (R29). */
+.d-voice-row__states { display: flex; flex: 1; align-items: center; flex-wrap: nowrap; gap: 8px; min-width: 0; overflow: hidden; white-space: nowrap; }
+.d-voice-row__fill { flex: 1; }
+.d-voice-row__person > .d-slot { width: auto; min-width: 0; gap: 8px; justify-content: flex-end; }
+/* Fix round 2: an empty trailing slot takes no gap, so LIVE and the camera end at the row's padding edge, under the count. */
+.d-voice-row__person > .d-slot:empty { margin-left: -8px; /* cancels the row gap: the empty slot still marks the row's end */ }
 .d-voice-row__states > .d-tag { flex: none; }
 .d-voice-row__state { flex: none; display: inline-flex; align-items: center; gap: 0.25rem; white-space: nowrap; color: var(--fg-2); }
+.d-voice-row__state:is([data-state="muted"], [data-state="deafened"]) { color: var(--danger); }
 .d-voice-row__state[data-state="unverified"] { color: var(--warn); }
+/* "playback only": the prototype's quiet outline in --line-strong (Ruling L) is the Tag's own (Tag.css). */
 /* AW6: a person of the AFK channel's away roster has no voice connection: the name steps back to --fg-2 beside the word. */
 .d-voice-row__person[data-away="true"] .d-voice-row__person-name { color: var(--fg-2); }

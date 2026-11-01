@@ -49,7 +49,7 @@ describe('the gif button (E8)', () => {
   it('is absent when the server has no Giphy key', async () => {
     await open({ gifs: false });
     expect(screen.queryByRole('button', { name: 'add a gif' })).toBeNull();
-    expect(screen.getByRole('button', { name: 'attach files' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Attach files (25 MB each)' })).toBeInTheDocument();
   });
 
   it('asks the worker about this server, and about no other', async () => {

@@ -275,3 +275,7 @@ func TestBotInteractionAdmissionSignsBoundCurrentEligibility(t *testing.T) {
 		t.Fatalf("currently banned participant admission = %d %x, want 403", refused.Code, refused.Body.Bytes())
 	}
 }
+
+func (*admissionListVerifier) WithVerification(ctx context.Context, fn func(context.Context) error) error {
+	return fn(ctx)
+}

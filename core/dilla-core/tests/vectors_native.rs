@@ -25,11 +25,13 @@ fn each_suite_reports_the_expected_number_of_cases() {
     // 11 `receiver` scripts (24 + 68 + 5 + 30 + 16 + 33 = 176; CRYPTO-2 added 6 H.264 frames and
     // the scripts); 8 identity cases (5 identity fields,
     // the credential CBOR, and the two credential signatures checked separately - interfaces.md
-    // section 2.9); the reject corpus.
+    // section 2.9), plus 4 account-kind cases (a human and a Bot attestation, message and
+    // signature each, Task S1 part 2) and fix round 1's 2 re-encode checks and 3 shape rejects;
+    // the reject corpus.
     assert_eq!(run_envelope().cases.len(), 15);
     assert_eq!(run_franking().cases.len(), 4);
     assert_eq!(run_sframe().cases.len(), 176);
-    assert_eq!(run_identity().cases.len(), 8);
+    assert_eq!(run_identity().cases.len(), 17);
     // The gateway frame corpus: one case per opcode of protocol/02's catalogue plus the second
     // `mls.handshake` (instance-sent, `sender = null`), plus task-1's `typing_set` and
     // `voice_self` cases, web-3 task 1's three `call_ring` cases (op 53, states 1, 0 and 2), and

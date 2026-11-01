@@ -200,7 +200,7 @@ export function ThreadView(p: {
     if (next !== undefined) { e.preventDefault(); rowEls.current.get(next.key)?.focus(); }
   };
   const row = (item: TimelineItem, key: string, isActive: boolean) => (
-    <MessageItem key={key} item={item} channelId={p.channelId} book={book} now={now} bits={bits} active={isActive} flash={false} onOpenProfile={p.onOpenProfile}
+    <MessageItem key={key} item={item} channelId={p.channelId} book={book} now={now} bits={bits} client={client} communityId={communityId} threadId={p.rootMsgId} active={isActive} flash={false} onOpenProfile={p.onOpenProfile}
       editing={ui.editing?.msgId === item.msgId ? ui.editing.value : null}
       editMeasure={v => new TextEncoder().encode(encodeMentions(v, encodeWith, broadcast, roleMentionsFor(item.body))).length} rowRef={el => { if (el) rowEls.current.set(item.key, el); else rowEls.current.delete(item.key); }}
       onJumpPointerDown={e => e.preventDefault()} onEvent={onRow} onEditChange={value => dispatch({ type: 'editChange', value })}
@@ -214,6 +214,8 @@ export function ThreadView(p: {
       onEditCancel={() => { dispatch({ type: 'editDone' }); rowEls.current.get(item.key)?.focus(); }}
       onOpenImage={(i, el) => openImage(item, i, el)} onError={report} inThread />
   );
+  // Fix round 2: the rule counts the thread's replies (the root's summary), not only the replies loaded so far.
+  const replyCount = Math.max(current?.root?.thread?.count ?? 0, items.length);
   const rootNode = current === null ? null
     : current.root === null ? <p className="dw-thread-missing">{t('thread.rootMissing')}</p>
       : row(current.root, `root-${current.root.key}`, current.root.key === active);
@@ -225,7 +227,8 @@ export function ThreadView(p: {
       const key = el === null ? undefined : ordered.find(i => rowEls.current.get(i.key) === el)?.key;
       if (key !== undefined) setActiveKey(key);
     }} onKeyDown={rowKey}>
-      <ThreadPane title={t('thread.title')} closeLabel={t('thread.close')} onClose={p.onClose} phone={p.phone} root={rootNode}
+      <ThreadPane title={t('thread.title')} sub={`#${p.channelName}`}
+        repliesLabel={replyCount === 0 ? undefined : replyCount === 1 ? t('thread.summary.one') : t('thread.summary.other', { count: replyCount })} closeLabel={t('thread.close')} onClose={p.onClose} phone={p.phone} root={rootNode}
         composer={
           <ComposerArea channelId={p.channelId} label={t('thread.composer')} placeholder={t('thread.composer')} blocked={p.blocked ?? null}
             broadcast bits={bits} roles={roles} channelName={p.channelName} encodeWith={encodeWith} candidates={candidates} items={items}

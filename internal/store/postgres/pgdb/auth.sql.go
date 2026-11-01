@@ -12,6 +12,29 @@ import (
 	id "github.com/jonasthim/dilla/internal/id"
 )
 
+const changePasswordCredential = `-- name: ChangePasswordCredential :exec
+INSERT INTO password_credentials (user_id, phc, updated, changed_at) VALUES ($1, $2, $3, $4)
+ON CONFLICT (user_id) DO UPDATE SET phc = excluded.phc, updated = excluded.updated, changed_at = excluded.changed_at
+`
+
+type ChangePasswordCredentialParams struct {
+	UserID    id.ID
+	Phc       string
+	Updated   int64
+	ChangedAt sql.NullInt64
+}
+
+// Fix round 2 (security L1): a change writes the new hash and its change time in one statement.
+func (q *Queries) ChangePasswordCredential(ctx context.Context, arg ChangePasswordCredentialParams) error {
+	_, err := q.db.ExecContext(ctx, changePasswordCredential,
+		arg.UserID,
+		arg.Phc,
+		arg.Updated,
+		arg.ChangedAt,
+	)
+	return err
+}
+
 const clearLoginFailures = `-- name: ClearLoginFailures :exec
 DELETE FROM login_attempts WHERE user_id = $1 AND ok = 0
 `
@@ -202,6 +225,21 @@ func (q *Queries) GetOIDCIdentity(ctx context.Context, arg GetOIDCIdentityParams
 	var user_id id.ID
 	err := row.Scan(&user_id)
 	return user_id, err
+}
+
+const getPasswordChangedAt = `-- name: GetPasswordChangedAt :one
+SELECT changed_at FROM password_credentials WHERE user_id = $1
+`
+
+type GetPasswordChangedAtParams struct {
+	UserID id.ID
+}
+
+func (q *Queries) GetPasswordChangedAt(ctx context.Context, arg GetPasswordChangedAtParams) (sql.NullInt64, error) {
+	row := q.db.QueryRowContext(ctx, getPasswordChangedAt, arg.UserID)
+	var changed_at sql.NullInt64
+	err := row.Scan(&changed_at)
+	return changed_at, err
 }
 
 const getPasswordCredential = `-- name: GetPasswordCredential :one

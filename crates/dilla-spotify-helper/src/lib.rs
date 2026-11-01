@@ -415,6 +415,16 @@ mod tests {
     }
 
     #[test]
+    fn pcm_writer_matches_shared_go_consumer_fixture() {
+        let frame = PcmFrame::new(vec![0u8; PCM_BYTES_PER_FRAME]).unwrap();
+        let fixture = include_bytes!("../testdata/pcm-v1.frame");
+        let mut encoded = Vec::new();
+        write_pcm(&mut encoded, &frame).unwrap();
+        assert_eq!(encoded.as_slice(), fixture.as_slice());
+        assert_eq!(read_pcm(&mut Cursor::new(fixture)).unwrap(), frame);
+    }
+
+    #[test]
     fn cancellation_is_observable_and_child_guard_kills_on_drop() {
         let token = Cancellation::new();
         token.cancel();

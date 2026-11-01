@@ -67,25 +67,38 @@ describe('SettingsRow grammar (R17)', () => {
     expect(screen.getByRole('group', { name: 'a' })).toHaveAttribute('data-row');
   });
 
-  it('is a grid with a label column and a 16rem control column, a hairline under each row', () => {
+  // Task 10 (README §5.9): a wrapping row of at least 56px with 10px 16px padding, drawn as a hairline box of radius 10;
+  // consecutive rows overlap by 1px and square their joined corners, so a run of rows is one group.
+  it('is a wrapping 56px row in a 10px-radius hairline box, and consecutive rows form one group', () => {
     const rule = /\.d-settings-row \{([^}]*)\}/.exec(row)?.[1] ?? '';
-    expect(rule).toMatch(/display: grid;/);
-    expect(rule).toMatch(/grid-template-columns: minmax\(0, 1fr\) 16rem;/);
-    expect(rule).toMatch(/border-bottom: 1px solid var\(--hairline\);/);
+    expect(rule).toMatch(/display: flex; flex-wrap: wrap;/);
+    expect(rule).toMatch(/min-height: 3\.5rem/);
+    expect(rule).toMatch(/padding: 10px 16px;/);
+    expect(rule).toMatch(/border: 1px solid var\(--hairline\); border-radius: var\(--r-xl\);/);
+    // Fix round 2: no overlap; a group of n rows is 56n + 2 (the prototype's 56px rows in a 1px-edged box).
+    expect(row).not.toMatch(/margin-top: -1px/);
+    expect(row).toMatch(/\.d-settings-row:has\(\+ \.d-settings-row\), li:has\(\+ li\) > \.d-settings-row \{ min-height: calc\(3\.5rem \+ 1px\); border-bottom: 0;/);
+    expect(row).toMatch(/\.d-settings-row \+ \.d-settings-row:has\(\+ \.d-settings-row\), li \+ li:has\(\+ li\) > \.d-settings-row \{ min-height: 3\.5rem; \}/);
+  });
+
+  it('draws the 32px icon tile and the tag when given', () => {
+    render(<SettingsRow id="t" label="Noise suppression" icon="mic" tag="BETA"><span>x</span></SettingsRow>);
+    expect(document.querySelector('.d-settings-row__icon [data-icon="mic"]')).toHaveAttribute('width', '15');
+    expect(document.querySelector('.d-settings-row__icon')).toHaveAttribute('aria-hidden', 'true');
+    expect(screen.getByRole('group', { name: 'Noise suppression BETA' })).toBeInTheDocument();
   });
 
   it('keeps one hairline under every row, whatever its parent, and lets a long button label grow its height', () => {
     expect(row).not.toMatch(/\.d-settings-row:last-child/);
     const button = /\.d-settings-row__control \.d-btn \{([^}]*)\}/.exec(row)?.[1] ?? '';
     expect(button).toMatch(/height: auto;/);
-    expect(button).toMatch(/min-height: 1\.75rem;/);
+    expect(button).toMatch(/min-height: 2rem;/);
   });
 
-  it('stacks the label over a full-width control on a phone layout and when the frame is narrow', () => {
+  it('stacks the label over a full-width control only in the app-provided phone layout', () => {
     const phone = /\.d-settings-frame\[data-layout="phone"\] \.d-settings-row[^{]*\{([^}]*)\}/.exec(base)?.[1] ?? '';
     expect(phone).toMatch(/grid-template-columns: minmax\(0, 1fr\);/);
     expect(base).toMatch(/\[data-phone\] \.d-settings-row/);
-    const narrow = /@container d-settings \(max-width: 44\.99rem\) \{([\s\S]*?)\n\}/.exec(base)?.[1] ?? '';
-    expect(narrow).toMatch(/\.d-settings-row \{ grid-template-columns: minmax\(0, 1fr\);/);
+    expect(base).not.toContain('@container d-settings');
   });
 });

@@ -50,8 +50,8 @@ Polite, through the Settings announcer: `settings.password.changed` after a chan
 
 ## Copy
 
-`settings.password.change='change password'`
-`settings.password.add='set password'`
+`settings.password.change='Change'`
+`settings.password.add='Set password'`
 `settings.password.titleChange='Change your password'`
 `settings.password.titleSet='Set a password'`
 `settings.password.bodyChange='Signing in on a new browser will ask for the new password. Browsers that are already set up do not ask again.'`

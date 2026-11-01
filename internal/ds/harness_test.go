@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pressly/goose/v3"
+	"github.com/prometheus/client_golang/prometheus"
 	_ "modernc.org/sqlite"
 
 	"github.com/jonasthim/dilla/internal/auth"
@@ -23,9 +23,10 @@ import (
 	"github.com/jonasthim/dilla/internal/gateway"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
+	"github.com/jonasthim/dilla/internal/obs"
 	"github.com/jonasthim/dilla/internal/store"
 	"github.com/jonasthim/dilla/internal/store/sqlite"
-	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
+	"github.com/jonasthim/dilla/internal/store/sqlite/sqlitetest"
 )
 
 // dsHarness is a whole delivery service over a real SQLite file, a real wazero runtime and a real
@@ -37,13 +38,14 @@ import (
 // `Modify: internal/ds/harness_test.go` in its Files and shows the helper body beside the test
 // that first needs it.
 type dsHarness struct {
-	t    *testing.T
-	path string
-	ds   *ds.DS
-	gw   *gateway.Gateway
-	clk  *clock.Fake
-	wasm *mlswasi.Runtime
-	repo *failingRepo
+	t       *testing.T
+	path    string
+	ds      *ds.DS
+	gw      *gateway.Gateway
+	clk     *clock.Fake
+	wasm    *mlswasi.Runtime
+	repo    *failingRepo
+	metrics *obs.Metrics
 
 	channels *fakeChannels
 	// acl is invariant 4's eligibility source: ds.DenyUnlessMember, plus the users a test names
@@ -146,7 +148,10 @@ func newDSHarnessWithFrameBudget(t *testing.T, maxFrameBytes uint64) *dsHarness 
 	h.acl = &fakeACL{deny: ds.DenyUnlessMember{Store: repo}, eligible: map[id.ID]bool{}}
 	h.postPolicy = &recordingPostPolicy{}
 
+	registry := prometheus.NewRegistry()
+	h.metrics = obs.NewMetrics(registry, registry)
 	d, err := ds.New(ds.Options{
+		Metrics:       h.metrics,
 		Store:         repo,
 		BotCapability: botCapability,
 		Wasm:          wasm,
@@ -186,16 +191,10 @@ func (r gatewayScopeResolver) ChannelCommunity(ctx context.Context, channelID id
 
 func openMigratedSQLite(t *testing.T, path string) store.Repository {
 	t.Helper()
+	sqlitetest.MigratedFile(t, path)
 	write, err := sqlite.OpenWrite(path)
 	if err != nil {
 		t.Fatalf("sqlite.OpenWrite: %v", err)
-	}
-	p, err := goose.NewProvider(goose.DialectSQLite3, write, sqlitemigrations.FS)
-	if err != nil {
-		t.Fatalf("goose provider: %v", err)
-	}
-	if _, err := p.Up(context.Background()); err != nil {
-		t.Fatalf("goose up: %v", err)
 	}
 	read, err := sqlite.OpenRead(path)
 	if err != nil {
@@ -806,4 +805,11 @@ func testInstanceKeys(tb testing.TB) ds.InstanceKeys {
 		k.FrankingKey[i] = byte(0x80 + i)
 	}
 	return k
+}
+
+func (r *failingRepo) ListClosedGroupLiveProposals(ctx context.Context, limit int32) ([]store.ProposalRow, error) {
+	if r.take("ListClosedGroupLiveProposals") {
+		return nil, errInjected
+	}
+	return r.Repository.ListClosedGroupLiveProposals(ctx, limit)
 }

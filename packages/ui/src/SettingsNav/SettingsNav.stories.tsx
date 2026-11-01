@@ -5,13 +5,14 @@ import { SettingsNav } from './SettingsNav.tsx';
 const meta = {
   title: 'Settings/SettingsNav', component: SettingsNav,
   args: { label: 'settings sections', activeId: 'devices', onSelect: () => {},
-    items: [{ id: 'devices', label: 'devices' }, { id: 'notifications', label: 'notifications' }, { id: 'appearance', label: 'appearance' }] },
+    items: [{ id: 'devices', label: 'devices', group: 'Account' }, { id: 'notifications', label: 'notifications', group: 'Preferences' }, { id: 'appearance', label: 'appearance', group: 'Preferences' }] },
   decorators: [Story => <div style={{ width: '13.75rem', padding: '0.875rem 0.625rem', background: 'var(--bg-2)' }}><Story /></div>],
 } satisfies Meta<typeof SettingsNav>;
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const Devices: Story = {};
 export const Notifications: Story = { args: { activeId: 'notifications' } };
+export const GroupedIndex: Story = {};
 // 16px icons in the glyph column, the names aligned (the settings sections of web3.9).
 const WITH_ICONS = [
   { id: 'general', label: 'general', icon: 'settings' }, { id: 'privacy', label: 'privacy', icon: 'shield' }, { id: 'keyboard', label: 'keyboard', icon: 'keyboard' },

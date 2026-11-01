@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { concat, fromHex, hex } from './bytes.ts';
 import { encodeEnvelope, frankingCommitment, frankingTag, EnvelopeType, type Envelope, type Attachment, type Preview } from './envelope.ts';
 import { kid, deriveFrameKeys, counter, nonce, encodeSframeHeader, SUITE, encryptFrame, prefixLen, protect, rbspEscape, canonicalizeH264, SframeError, type Codec } from './sframe.ts';
-import { safetyNumber, sas, recoveryKeyBase32, deriveRecoveryKeys, credentialIdentity, sskMessage, dskMessage, sessionPreimage } from './identity.ts';
+import { safetyNumber, sas, recoveryKeyBase32, deriveRecoveryKeys, credentialIdentity, sskMessage, dskMessage, sessionPreimage, accountKindMessage, accountKindAttestation } from './identity.ts';
 import { keyFromSeed, sign } from './ed25519.ts';
 import { frameVectors } from './frames.ts';
 import { encode } from './cbor.ts';
@@ -382,9 +382,22 @@ export async function identityVectors() {
   const sessionDeviceId = fromHex('0102030405060708090a0b0c0d0e0f10');
   const sessionNonce = fill(32, 0xab);
 
+  // The instance-signed account-kind attestation (wire 4): the instance's external-sender key signs the account's kind
+  // over the instance id and the user id (Ruling AW: no key). A human and a Bot account of the credential above.
+  const instanceSeed = fill(32, 0x5a);
+  const instance = await keyFromSeed(instanceSeed);
+  const kindKeyId = fill(16, 0x5b);
+  const kindInstanceId = sessionInstanceId;
+  const attestations = [];
+  for (const k of [0, 1] as const) {
+    const message = accountKindMessage(kindInstanceId, userId, k);
+    const sig = await sign(instance.privateKey, message);
+    attestations.push({ kind: k, message: hex(message), signature: hex(sig), attestation: hex(accountKindAttestation(kindKeyId, k, sig)) });
+  }
+
   return {
     version: 1,
-    description: 'safety number (60 digits), SAS (30 digits), recovery key encodings and derived keys, credential identity CBOR with real Ed25519 signatures, and the 81-byte device-session signature preimage (03-identity.md, 02-delivery-service.md)',
+    description: 'safety number (60 digits), SAS (30 digits), recovery key encodings and derived keys, credential identity CBOR with real Ed25519 signatures, the 81-byte device-session signature preimage, and the instance-signed account-kind attestation (03-identity.md, 02-delivery-service.md)',
     safety_number: { umk_a: hex(umkA), umk_b: hex(umkB), digits: await safetyNumber(umkA, umkB) },
     sas: { epoch_authenticator: hex(fill(32, 0xc3)), digits: sas(fill(32, 0xc3)) },
     recovery_key: { rk: hex(rk), base32: recoveryKeyBase32(rk), k_header: hex(keys.header), k_backup: hex(keys.archive) },
@@ -409,6 +422,20 @@ export async function identityVectors() {
       nonce: hex(sessionNonce),
       purpose: 0,
       preimage: hex(sessionPreimage(sessionInstanceId, sessionDeviceId, sessionNonce, 0)),
+    },
+    account_kind: {
+      instance_priv: hex(instanceSeed),
+      instance_pub: hex(instance.publicKey),
+      key_id: hex(kindKeyId),
+      instance_id: hex(kindInstanceId),
+      user_id: hex(userId),
+      cases: attestations,
+      // Wire forms a decoder must refuse: version 2, kind 2, and a well-formed attestation with a trailing byte.
+      rejects: [
+        { name: 'version 2', attestation: hex(encode([2, kindKeyId, 0, fill(64, 0x01)])) },
+        { name: 'kind 2', attestation: hex(encode([1, kindKeyId, 2, fill(64, 0x01)])) },
+        { name: 'trailing byte', attestation: hex(new Uint8Array([...encode([1, kindKeyId, 0, fill(64, 0x01)]), 0])) },
+      ],
     },
   };
 }

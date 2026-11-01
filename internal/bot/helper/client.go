@@ -11,9 +11,11 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/protocol"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/prioritygate"
 )
 
 var (
@@ -62,7 +64,7 @@ type exchange interface {
 
 type Client struct {
 	mu        sync.Mutex
-	gate      chan struct{}
+	gate      *prioritygate.Gate
 	transport exchange
 	callTime  time.Duration
 	stopTime  time.Duration
@@ -87,7 +89,7 @@ func Start(options Options) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Client{gate: make(chan struct{}, 1), transport: t, callTime: options.CallTimeout, stopTime: options.ShutdownTimeout}, nil
+	return &Client{gate: prioritygate.New(1), transport: t, callTime: options.CallTimeout, stopTime: options.ShutdownTimeout}, nil
 }
 
 // Open binds the helper's encrypted store to the supplied instance,
@@ -101,10 +103,11 @@ func (c *Client) Open(ctx context.Context, instance, community, installation id.
 	}
 	callCtx, cancel := boundedContext(ctx, c.callTime)
 	defer cancel()
-	if err := c.acquire(callCtx); err != nil {
+	release, err := c.acquire(callCtx)
+	if err != nil {
 		return nil, err
 	}
-	defer c.release()
+	defer release()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
@@ -146,10 +149,11 @@ func (c *Client) GroupApply(ctx context.Context, payload []any) ([]any, error) {
 }
 
 func (c *Client) serial(ctx context.Context, fn func() ([]any, error)) ([]any, error) {
-	if err := c.acquire(ctx); err != nil {
+	release, err := c.acquire(ctx)
+	if err != nil {
 		return nil, err
 	}
-	defer c.release()
+	defer release()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
@@ -413,23 +417,22 @@ func intToUint64(value int) uint64 {
 	return uint64(value)
 }
 
-func (c *Client) acquire(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
+func (c *Client) acquire(ctx context.Context) (func(), error) {
+	if err := client.CooperativeCheckpoint(ctx); err != nil {
+		return nil, err
 	}
-	select {
-	case c.gate <- struct{}{}:
-		if err := ctx.Err(); err != nil {
-			<-c.gate
-			return err
+	release, err := c.gate.Acquire(ctx, client.RequestPriority(ctx))
+	if errors.Is(err, prioritygate.ErrClosed) {
+		err = ErrClosed
+	}
+	if err == nil {
+		if stopped := client.CooperativeCheckpoint(ctx); stopped != nil {
+			release()
+			return nil, stopped
 		}
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
 	}
+	return release, err
 }
-
-func (c *Client) release() { <-c.gate }
 
 func boundedContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
 	deadline := time.Now().Add(timeout)
@@ -444,11 +447,12 @@ func boundedContext(ctx context.Context, timeout time.Duration) (context.Context
 func (c *Client) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), c.stopTime)
 	defer cancel()
-	if err := c.acquire(ctx); err != nil {
+	select {
+	case <-c.gate.Close():
+	case <-ctx.Done():
 		c.abort()
 		return nil
 	}
-	defer c.release()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
@@ -467,6 +471,7 @@ func (c *Client) Close() error {
 }
 
 func (c *Client) abort() {
+	c.gate.Close()
 	_ = c.transport.stop(0)
 	c.mu.Lock()
 	c.closed = true
@@ -474,6 +479,7 @@ func (c *Client) abort() {
 }
 
 func (c *Client) abortCurrent() {
+	c.gate.Close()
 	c.closed = true
 	_ = c.transport.stop(c.stopTime)
 }

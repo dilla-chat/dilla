@@ -7,12 +7,14 @@ import { expectNoAxeViolations } from '../test/setup.ts';
 describe('ReplyChip', () => {
   it('shows who is replied to and the excerpt, and cancels from its named button', async () => {
     const onCancel = vi.fn();
-    const { container } = render(<ReplyChip label="replying to björn" excerpt="after nine, still on the boat" cancelLabel="cancel reply" onCancel={onCancel} />);
+    const { container } = render(<ReplyChip label="Replying to björn" name="björn" excerpt="after nine, still on the boat" cancelLabel="cancel reply" onCancel={onCancel} />);
     expect(container.firstElementChild).toHaveClass('d-reply-chip');
-    expect(screen.getByText('replying to björn')).toHaveClass('d-reply-chip__label');
-    expect(screen.getByText('after nine, still on the boat')).toHaveClass('d-reply-chip__excerpt');
+    // The prototype's "Replying to **Ada** · excerpt" (§5.5).
+    expect(container.querySelector('.d-reply-chip__label')).toHaveTextContent('Replying to björn');
+    expect(container.querySelector('.d-reply-chip__label b')).toHaveTextContent('björn');
+    expect(container.querySelector('.d-reply-chip__excerpt')).toHaveTextContent('· after nine, still on the boat');
     const cancel = screen.getByRole('button', { name: 'cancel reply' });
-    expect(cancel.textContent).toBe('×');
+    expect(cancel.querySelector('svg')).not.toBeNull();
     await userEvent.click(cancel);
     expect(onCancel).toHaveBeenCalledTimes(1);
   });

@@ -100,19 +100,19 @@ test('a wrong recovery key is refused in place, and the right one typed in lower
 
   // web3.8 (R6, R7): the login comes first, step 1; then the code, step 2; then the recovery key, step 3.
   await expectHeading(b, SIGNIN.loginTitle, { instance: instanceName });
-  await expect(b.getByText(copy(SIGNIN.step, { n: 1 }), { exact: true })).toBeVisible();
+  await expect(b.getByText(copy(SIGNIN.step, { n: 1, total: 4 }), { exact: true })).toBeVisible();
   await expectAccessible(b, 'sign-in: login');
   const forward = b.getByRole('button', { name: copy(SIGNIN.loginSubmit), exact: true });
   await b.getByLabel(copy(SIGNIN.username), { exact: true }).fill(account.username);
   await b.getByLabel(copy(SIGNIN.password), { exact: true }).fill(account.password);
   await forward.click();
   await expectHeading(b, 'signin.totp.title');
-  await expect(b.getByText(copy(SIGNIN.step, { n: 2 }), { exact: true })).toBeVisible();
+  await expect(b.getByText(copy(SIGNIN.step, { n: 2, total: 4 }), { exact: true })).toBeVisible();
   await b.getByLabel(copy('signin.totp.code'), { exact: true }).fill(await nextCode(account.control, account));
   await forward.click();
 
   await expectHeading(b, SIGNIN.keyTitle);
-  await expect(b.getByText(copy(SIGNIN.step, { n: 3 }), { exact: true })).toBeVisible();
+  await expect(b.getByText(copy(SIGNIN.step, { n: 3, total: 4 }), { exact: true })).toBeVisible();
   const field = keyField(b);
   const full = account.recoveryKey.join('');
   await field.fill(full.slice(0, 51));
@@ -144,35 +144,8 @@ test('a wrong recovery key is refused in place, and the right one typed in lower
   await expectShell(b);
 });
 
-test('forget this browser clears the second browser and leaves its device in the list', async ({ page, second, instanceName }) => {
-  const account = await signUp(page, instanceInvite(), instanceName);
-  const b = (await second.open()).page;
-  await signIn(b, account, instanceName);
-
-  const settingsB = await openSettings(b, 'devices');
-  await expect(deviceRows(b)).toHaveCount(2, { timeout: WAIT });
-  await settingsB.getByRole('button', { name: copy('devices.forget'), exact: true }).click();
-  const confirm = b.getByRole('dialog', { name: copy('devices.forgetTitle'), exact: true });
-  await expect(confirm).toBeVisible({ timeout: WAIT });
-  await expect(confirm).toContainText(copy('devices.forgetBody'));
-  await expectAccessible(b, 'settings: forget this browser');
-  await confirm.getByRole('button', { name: copy('devices.confirmForget'), exact: true }).click();
-  // The cleared phase reloads the page itself (L-TS-27, ruling 26): the connect step shows before any reload of ours.
-  await expectHeading(b, COPY.connectTitle, { instance: instanceName });
-
-  // Wiped, not hidden: a store left behind would boot the shell, a KEK without its store would say store-lost.
-  await b.reload();
-  await expectHeading(b, COPY.connectTitle, { instance: instanceName });
-  await expect(splash(b, COPY.storeLost)).toHaveCount(0);
-  await expect(railNav(b)).toHaveCount(0);
-
-  // A: the forgotten device stays a listed device of the account until someone removes it.
-  await openSettings(page, 'devices');
-  const rows = deviceRows(page);
-  await expect(rows).toHaveCount(2, { timeout: WAIT });
-  await expect(rows.filter({ hasText: copy('devices.revoked') })).toHaveCount(0);
-  await expect(rows.filter({ hasText: copy('devices.unlisted') })).toHaveCount(0, { timeout: WAIT });
-});
+// Signal task 10: Forget left Settings → Devices (the prototype's rows); it is tested where it lives, on the forced-factor
+// screen (required-factor.spec.ts, "the forced screen's Forget this browser…").
 
 test('sign out and remove takes this browser out of the account and out of the group', async ({ page, peer, second, instanceName }) => {
   const setup = await peer.setup();
@@ -191,7 +164,8 @@ test('sign out and remove takes this browser out of the account and out of the g
   expect(deviceC).toMatch(HEX32);
 
   const settingsC = await openSettings(c, 'devices');
-  await settingsC.getByRole('button', { name: copy('devices.signOut'), exact: true }).click();
+  // Signal task 10 fix round 1 (README §5.9): Sign out is on this browser's own device row.
+  await settingsC.getByRole('button', { name: copy('workspace.signOut'), exact: true }).click();
   const confirm = c.getByRole('dialog', { name: copy('devices.signOutTitle'), exact: true });
   await expect(confirm).toBeVisible({ timeout: WAIT });
   await expectAccessible(c, 'settings: sign out and remove');

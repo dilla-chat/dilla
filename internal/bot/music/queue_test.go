@@ -214,7 +214,8 @@ func TestPauseSeekVolumeAndClearValidateBeforeRevision(t *testing.T) {
 	state = apply(t, state, Operation{Kind: OpPause})
 	state = apply(t, state, Operation{Kind: OpSeek, PositionMS: 73_000})
 	state = apply(t, state, Operation{Kind: OpSetVolume, Volume: 37})
-	if !state.Paused || state.PositionMS != 73_000 || state.Volume != 37 {
+	// Fix round 2: no provider applies a seek, so the playhead stays where it is (0 after the resume).
+	if !state.Paused || state.PositionMS != 0 || state.Volume != 37 {
 		t.Fatalf("pause/seek/volume state = %#v", state)
 	}
 	beforeRevision := state.Revision
@@ -237,5 +238,64 @@ func TestRevisionedMutationsIncrementOnce(t *testing.T) {
 	state = apply(t, state, Operation{Kind: OpSetShuffle, Enabled: true, Seed: 1})
 	if state.Revision != 2 {
 		t.Fatalf("shuffle mutation revision = %d, want 2", state.Revision)
+	}
+}
+
+// Ruling AI: the playhead is stamped with the Bot's time so a client can run it on.
+func TestApplyStampsAndSettlesThePlayhead(t *testing.T) {
+	track := Track{ID: "a", Provider: ProviderYouTube, CanonicalID: "abcdefghijk", Title: "A", RequesterID: "member", DurationMS: 10_000}
+	state, err := Apply(InitialState(), 0, Operation{Kind: OpEnqueue, Tracks: []Track{track}, NowMS: 1_000})
+	if err != nil || state.PositionAtMS != 1_000 {
+		t.Fatalf("enqueue state=%+v err=%v", state, err)
+	}
+	state, err = Apply(state, state.Revision, Operation{Kind: OpResume, NowMS: 2_000})
+	if err != nil || state.Paused || state.PositionMS != 0 || state.PositionAtMS != 2_000 {
+		t.Fatalf("resume state=%+v err=%v", state, err)
+	}
+	if got := PlayheadMS(state, 5_500); got != 3_500 {
+		t.Fatalf("playhead at 5.5s = %d, want 3500", got)
+	}
+	state, err = Apply(state, state.Revision, Operation{Kind: OpPause, NowMS: 6_000})
+	if err != nil || state.PositionMS != 4_000 || state.PositionAtMS != 6_000 {
+		t.Fatalf("pause must settle the reached playhead: %+v err=%v", state, err)
+	}
+	if got := PlayheadMS(state, 60_000); got != 4_000 {
+		t.Fatalf("a paused playhead stays: %d", got)
+	}
+	state, err = Apply(state, state.Revision, Operation{Kind: OpResume, NowMS: 7_000})
+	if err != nil || state.PositionMS != 0 || state.PositionAtMS != 7_000 {
+		t.Fatalf("a resumed track restarts at 0 (providers have no offset) and restamps: %+v err=%v", state, err)
+	}
+	if got := PlayheadMS(state, 100_000); got != 10_000 {
+		t.Fatalf("the playhead clamps to the duration: %d", got)
+	}
+	state, err = Apply(state, state.Revision, Operation{Kind: OpSeek, PositionMS: 1_234, NowMS: 8_000})
+	if err != nil || state.PositionMS != 1_000 || state.PositionAtMS != 8_000 {
+		t.Fatalf("a seek settles but does not move the playhead (no provider seeks): %+v err=%v", state, err)
+	}
+	unstamped, err := Apply(state, state.Revision, Operation{Kind: OpSetVolume, Volume: 50})
+	if err != nil || unstamped.PositionMS != 1_000 || unstamped.PositionAtMS != 8_000 {
+		t.Fatalf("an operation without NowMS leaves the playhead fields: %+v err=%v", unstamped, err)
+	}
+	if _, err := Apply(state, state.Revision, Operation{Kind: OpSetVolume, Volume: 50, NowMS: -1}); err == nil {
+		t.Fatal("a negative NowMS is invalid")
+	}
+}
+
+// Fix round 2 (task review): pause at 80 s, resume: the snapshot says 0 (the provider restarts the track), then it advances.
+func TestResumeAfterPauseAt80sRestartsThePlayhead(t *testing.T) {
+	track := Track{ID: "a", Provider: ProviderYouTube, CanonicalID: "abcdefghijk", Title: "A", RequesterID: "member", DurationMS: 200_000}
+	state, _ := Apply(InitialState(), 0, Operation{Kind: OpEnqueue, Tracks: []Track{track}, NowMS: 1})
+	state, _ = Apply(state, state.Revision, Operation{Kind: OpResume, NowMS: 10_000})
+	state, err := Apply(state, state.Revision, Operation{Kind: OpPause, NowMS: 90_000})
+	if err != nil || state.PositionMS != 80_000 {
+		t.Fatalf("paused at %d, want 80000 (err %v)", state.PositionMS, err)
+	}
+	state, err = Apply(state, state.Revision, Operation{Kind: OpResume, NowMS: 100_000})
+	if err != nil || state.PositionMS != 0 || PlayheadMS(state, 100_000) != 0 {
+		t.Fatalf("resumed snapshot position %d, want 0 (err %v)", state.PositionMS, err)
+	}
+	if got := PlayheadMS(state, 105_000); got != 5_000 {
+		t.Fatalf("then it advances: %d, want 5000", got)
 	}
 }

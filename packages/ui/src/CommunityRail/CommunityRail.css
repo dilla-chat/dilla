@@ -1,28 +1,31 @@
-/* The rail is --rail-w (72px) wide; its tiles are --rail-tile square at integer positions (12px sides, 8px gaps). Its edge is an
-   inset hairline, not a border, so the box stays 72 (B3). */
+/* The rail (Signal, README §5.3; prototype `nav`): --rail-w (56px) wide on bg-2 with a hairline edge, tiles --rail-tile (38px)
+   centred, 6px apart, 10px from the top. The edge is an inset hairline, not a border, so the box stays --rail-w (B3). */
 .d-community-rail { height: 100%; background: var(--bg-2); box-shadow: inset -1px 0 var(--hairline); overflow-y: auto; }
-.d-community-rail__list { list-style: none; margin: 0; padding: 12px 0; display: flex; flex-direction: column; align-items: center; gap: 8px; }
-.d-community-rail__item { position: relative; width: var(--rail-tile); height: var(--rail-tile); box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; padding: 0; font: inherit; font-size: var(--text-sm); font-weight: var(--weight-display); border-radius: var(--r-md); cursor: pointer; transition: background var(--duration-fast), color var(--duration-fast), border-color var(--duration-fast); }
-.d-community-rail__item { color: var(--fg); background: var(--surface-2); border: 1px solid var(--edge); }
-.d-community-rail__item:hover { background: var(--surface-hi); }
-.d-community-rail__item[aria-current="page"] { color: var(--accent-ink); background: var(--accent); border-color: var(--accent); }
-/* The pill (R20) at the rail's left edge, beside the tile: 8px tall for unread, 20 on hover, 40 for the selected tile (B4). */
-.d-community-rail__pill { position: absolute; left: -12px; top: 50%; width: 4px; height: 0; background: var(--fg); transform: translateY(-50%); transition: height var(--duration-fast); pointer-events: none; }
-.d-community-rail__pill[data-pill="unread"] { height: 8px; }
-.d-community-rail__pill[data-pill="selected"] { height: 40px; }
-.d-community-rail__item:hover .d-community-rail__pill[data-pill="hover"], .d-community-rail__item:hover .d-community-rail__pill[data-pill="unread"] { height: 20px; }
-.d-community-rail__item:hover .d-community-rail__pill[data-pill="selected"] { height: 40px; }
-/* The hairline between the `@` tile and the servers. */
-.d-community-rail__rule { width: var(--rail-tile); height: 1px; margin: 0; background: var(--hairline-2); list-style: none; }
-/* The "+" tile (add a server): a dashed square in the same box as a server tile. */
-.d-community-rail__join { display: inline-flex; align-items: center; justify-content: center; padding: 0; min-width: 0; min-height: 0; font: inherit; color: var(--fg-2); background: transparent; border: 0; border-radius: var(--r-md); cursor: pointer; }
-.d-community-rail__glyph { width: var(--rail-tile); height: var(--rail-tile); box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; font-size: var(--text-lg); line-height: 1; border: 1px dashed var(--fg-3); border-radius: var(--r-md); transition: background var(--duration-fast), color var(--duration-fast), border-color var(--duration-fast); }
-.d-community-rail__join:hover .d-community-rail__glyph { color: var(--fg); border-color: var(--fg-2); background: var(--surface-2); }
-@media (prefers-reduced-motion: reduce) { .d-community-rail__item, .d-community-rail__glyph, .d-community-rail__pill { transition: none; } }
-.d-community-rail__badge { position: absolute; top: auto; right: -0.375rem; bottom: -0.375rem; line-height: 0; }
-.d-community-rail__badge .d-pill { box-shadow: 0 0 0 2px var(--bg-2); }
+.d-community-rail__list { list-style: none; margin: 0; padding: 10px 0; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.d-community-rail__list > li { display: flex; flex: none; }
+/* A tile: a circle on --hover at rest, 11px/700 initials in --fg-2; hover morphs it to a 10px square; selected is the accent
+   square with its ring (0 0 0 2px bg-2, 0 0 0 3.5px accent). The morph is 220ms on the Signal ease. */
+.d-community-rail__item {
+  position: relative; width: var(--rail-tile); height: var(--rail-tile); box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center;
+  padding: 0; font: inherit; font-size: var(--text-xs); font-weight: var(--weight-display); line-height: 1;
+  color: var(--fg-2); background: var(--hover); border: 0; border-radius: var(--r-pill); box-shadow: 0 0 0 0 transparent; cursor: pointer;
+  transition: border-radius var(--duration-normal) var(--ease-out), background var(--duration-normal) var(--ease-out), color var(--duration-normal) var(--ease-out), box-shadow var(--duration-normal) var(--ease-out);
+}
+.d-community-rail__item:hover { border-radius: var(--r-xl); }
+.d-community-rail__item[aria-current="page"] { color: var(--accent-ink); background: var(--accent); border-radius: var(--r-xl); box-shadow: 0 0 0 2px var(--bg-2), 0 0 0 3.5px var(--accent); }
+/* The `@` tile selected: the selected fill, the glyph in the accent. */
+.d-community-rail__home[aria-current="page"] { color: var(--accent); background: var(--surface-hi); }
+/* The 20 x 1 hairline under the `@` tile. */
+.d-community-rail__rule { width: 20px; height: 1px; margin: 2px 0; background: var(--hairline-2); list-style: none; }
+/* The "+" (add a server): a 38px dashed --control-edge-key circle (#3A404A), --fg-2 glyph; on hover the accent and a 90deg turn over 180ms. */
+.d-community-rail__join { display: inline-flex; align-items: center; justify-content: center; padding: 0; min-width: 0; min-height: 0; font: inherit; color: var(--fg-2); background: transparent; border: 0; border-radius: var(--r-pill); cursor: pointer; }
+.d-community-rail__glyph { width: var(--rail-tile); height: var(--rail-tile); box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; line-height: 1; border: 1px dashed var(--control-edge-key); border-radius: var(--r-pill); transition: color var(--duration-spin), border-color var(--duration-spin), transform var(--duration-spin); }
+.d-community-rail__join:hover .d-community-rail__glyph { color: var(--accent); border-color: var(--accent); transform: rotate(90deg); }
+/* The mention count: bottom right, 4px out, a 2.5px bg-2 ring (Pill), popping in. */
+.d-community-rail__badge { position: absolute; right: -4px; bottom: -4px; line-height: 0; animation: d-pop var(--duration-rail-badge) var(--ease-out) both; }
+.d-community-rail__badge .d-pill { box-shadow: 0 0 0 2.5px var(--bg-2); }
 .d-community-rail__settings-item { margin-top: 0.25rem; padding-top: 0.75rem; border-top: 1px solid var(--hairline); }
-.d-community-rail__settings { width: var(--rail-tile); height: var(--rail-tile); display: inline-flex; align-items: center; justify-content: center; color: var(--fg-2); background: transparent; border: 1px solid var(--edge); border-radius: var(--r-md); cursor: pointer; transition: background var(--duration-fast), color var(--duration-fast); }
-.d-community-rail__settings:hover { color: var(--fg); background: var(--surface-2); }
+.d-community-rail__settings { width: var(--rail-tile); height: var(--rail-tile); display: inline-flex; align-items: center; justify-content: center; color: var(--fg-2); background: transparent; border: 0; border-radius: var(--r-pill); cursor: pointer; transition: background var(--duration-normal) var(--ease-out), color var(--duration-normal) var(--ease-out), border-radius var(--duration-normal) var(--ease-out); }
+.d-community-rail__settings:hover { color: var(--fg); background: var(--hover); border-radius: var(--r-xl); }
 .d-community-rail__cog { width: 1rem; height: 1rem; }
-@media (prefers-reduced-motion: reduce) { .d-community-rail__settings { transition: none; } }
+/* On a phone the tiles stay the prototype's 38px (Jonas 2026-10-27, supersedes Ruling N). */

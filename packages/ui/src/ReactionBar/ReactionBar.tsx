@@ -1,5 +1,6 @@
 import { useRef, useState, type FocusEvent, type KeyboardEvent } from 'react';
 import { arrowIndex } from '../internal/arrow-select.ts';
+import { Icon } from '../Icon/Icon.tsx';
 import './ReactionBar.css';
 
 export interface ReactionBarProps {
@@ -20,7 +21,8 @@ function indexOfTarget(list: readonly HTMLButtonElement[], target: EventTarget):
 /**
  * A message's reactions: one pressed-state chip per emoji, named by `name` (`{name}, {count}`), then the add
  * button. One roving tab stop across the chips and the add button, as the toolbar; none when not `tabbable`. A
- * pressed chip carries `aria-pressed`, the accent frame and a bold count, never colour alone. Nothing renders
+ * pressed chip carries `aria-pressed` and the prototype's accent chip (README §6.5). The add button (a dashed 26 × 22
+ * smile) shows while the row is hovered or holds focus. Nothing renders
  * while there is no reaction (the toolbar's `react` opens the grid then).
  */
 export function ReactionBar({ label, tabbable, items, onToggle, onChipFocus, addLabel, onAdd }: ReactionBarProps) {
@@ -60,7 +62,7 @@ export function ReactionBar({ label, tabbable, items, onToggle, onChipFocus, add
       ))}
       <button type="button" className="d-reaction-bar__add" aria-label={addLabel} tabIndex={tab(items.length)}
         onClick={e => onAdd(e.currentTarget)}>
-        <span aria-hidden="true">+</span>
+        <Icon name="smile-plus" size={12} />
       </button>
     </div>
   );

@@ -46,6 +46,11 @@ const (
 	PermMoveMembers     Bits = 1 << 22
 	PermManageNicknames Bits = 1 << 23
 	PermModerateMembers Bits = 1 << 24
+	// PermControlMusic lets a member control the managed Bot's music in a voice
+	// channel (play, queue, skip, stop, volume). It is channel-scoped: the Bot
+	// resolves it per voice channel with that channel's overwrites (Task 10c; it
+	// replaces the per-installation DJ role approval, migration 00048).
+	PermControlMusic Bits = 1 << 25
 
 	// PermAll is every defined bit. A stored value is masked with it on read, so
 	// a bit written by a newer binary is ignored rather than silently granted.
@@ -54,7 +59,7 @@ const (
 		PermVideo | PermScreenShare | PermCreateInvite | PermKickMembers | PermBanMembers |
 		PermManageChannels | PermManageRoles | PermManageCommunity | PermViewAuditLog |
 		PermMentionEveryone | PermBypassSlowmode | PermAdministrator | PermMuteMembers |
-		PermMoveMembers | PermManageNicknames | PermModerateMembers
+		PermMoveMembers | PermManageNicknames | PermModerateMembers | PermControlMusic
 
 	// communityBits are the permissions a channel overwrite may not touch: they
 	// are about the community, not about one channel, so an overwrite that
@@ -283,7 +288,8 @@ func LoadSnapshot(ctx context.Context, repo store.Repository, communityID, userI
 
 const botElevatedBits = botRestrictedBits | PermManageMessages | PermKickMembers | PermBanMembers |
 	PermManageChannels | PermViewAuditLog | PermCreateInvite | PermMentionEveryone |
-	PermBypassSlowmode | PermMuteMembers | PermMoveMembers | PermManageNicknames | PermModerateMembers
+	PermBypassSlowmode | PermMuteMembers | PermMoveMembers | PermManageNicknames | PermModerateMembers |
+	PermControlMusic
 
 func clampBotAllow(allow, approved Bits) Bits {
 	return allow &^ botRestrictedBits &^ (botElevatedBits &^ approved)

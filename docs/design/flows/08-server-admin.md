@@ -19,7 +19,7 @@
 | ban: busy | the confirm says its busy label and is disabled | `mod.ban.busy` | none |
 | ban: done | the dialog closes; focus returns to the opener | `mod.ban.done` | `mod.ban.done` through the shell announcer |
 | ban: refused | the dialog stays open with the error | `mod.ban.error.forbidden`, `mod.ban.error.reasonLong`, `mod.ban.error.reasonControl`, `mod.ban.error.clock`, `mod.error.other` | the error (`role="alert"`) |
-| settings tabs by permission | tabs for overview (manage server), channels (manage channels), invites (create invite) and bans (ban members) show only with that permission; the danger tabs are always shown | `admin.open`, `admin.title`, `admin.nav`, `admin.nav.overview`, `admin.nav.channels`, `admin.nav.invites`, `admin.nav.bans`, `admin.nav.delete`, `admin.nav.leave`, `admin.nav.transfer`, `admin.cancel` | dialog title |
+| settings sections by permission | tabs for overview (manage server), channels (manage channels), invites (create invite) and bans (ban members) show only with that permission; the danger tabs are always shown | `admin.open`, `admin.title`, `admin.nav`, `admin.nav.overview`, `admin.nav.channels`, `admin.nav.invites`, `admin.nav.bans`, `admin.nav.delete`, `admin.nav.leave`, `admin.nav.transfer`, `admin.cancel` | dialog title |
 | overview: idle | the server name field with its hint | `admin.overview.title`, `admin.overview.name`, `admin.overview.hint`, `admin.overview.save` | none |
 | overview: busy | the save says its busy label | `admin.overview.saving` | none |
 | overview: saved | the saved note | `admin.overview.saved` | `admin.overview.saved` in the status region |
@@ -95,9 +95,15 @@ When the person is removed from a server (kicked, banned or its owner deleted it
 Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte.
 
 *Members:*
-- `members.toggle='members'`, `members.region='members of {server}'`, `members.group='{name} — {count}'`
+- `members.toggle='Members'`, `members.region='members of {server}'`, `members.group='{name} — {count}'`
 - `members.groupMembers='members'`, `members.groupOffline='Offline'`
-- `members.menu.message='message'`, `members.menu.compare='compare safety numbers'`
+- `members.menu.message='Message'`, `members.menu.compare='compare safety numbers'`
+- Signal (task 9), the row's person menu and the status line: `members.menu.profile='Profile'`, `members.menu.mention='Mention'`, `members.menu.copy='Copy username'`,
+  `members.menu.copied='@{name} copied'`, `members.menu.roles='Edit roles'`, `members.menu.kickName='Kick {name}'`,
+  `members.menu.banName='Ban {name}'`, `members.menu.label='actions for {name}'`, `members.inVoice='in voice'`,
+  `members.inChannel='in {channel}'`
+- Task 11 (Q7), the prototype's Overview card: `admin.overview.afk='Inactive timeout'`, `admin.overview.afkHint='Idle computers in voice move to AFK after'`, `admin.overview.afk.60='1m'`, `admin.overview.afk.300='5m'`, `admin.overview.afk.900='15m'`, `admin.overview.afk.1800='30m'`, `admin.overview.afk.3600='1h'`, `admin.overview.leave='Leave server'`, `admin.overview.leaveHint='You can rejoin with a new invite'`
+- Task 11 (Q5), the Bot's line from its player: `members.playingIn='playing in {room}'`, `members.idleIn='idle in {room}'`
 - `members.menu.kick='kick'`, `members.menu.ban='ban'`, `members.loading='Loading members…'`
 - `members.empty='No one else is in this server yet.'`, `members.close='close members'`
 
@@ -308,17 +314,15 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `admin.bot.enabledNotice='Bot installation enabled.'`
 - `admin.bot.disabledNotice='Bot installation disabled.'`
 - `admin.bot.music.title='Music services'`
-- `admin.bot.music.djRoles.help='Selected roles can control music playback. The server checks your current permissions and role hierarchy when you save. This setting does not mean playback is ready.'`
-- `admin.bot.music.djRoles.requiresBot='A ready bot installation is required to configure DJ roles.'`
-- `admin.bot.music.djRoles.label='DJ roles'`
-- `admin.bot.music.djRoles.noCandidates='There are no roles below your highest role to select.'`
-- `admin.bot.music.djRoles.readOnly='DJ roles are read-only because this account cannot manage both the bot and roles, or the bot installation is not ready.'`
-- `admin.bot.music.djRoles.save='Save DJ roles'`
-- `admin.bot.music.djRoles.saved='DJ roles saved.'`
 - `admin.bot.music.spotify='Spotify'`
+- `admin.bot.music.spotifyClientId='Spotify application client ID'`
+- `admin.bot.music.spotifyClientIdHelp='Create a Spotify application, register the callback URL below, then paste its public client ID here. No client secret is needed.'`
+- `admin.bot.music.spotifyCallback='Callback URL to register with Spotify'`
+- `admin.bot.music.spotifyClientIdInvalid='Enter the client ID from your Spotify application.'`
+- `admin.bot.music.spotifyConfigFailed='Could not load the Spotify application setting.'`
 - `admin.bot.music.spotifyLink='Link Spotify account'`
 - `admin.bot.music.spotifyLinking='Starting Spotify authorization…'`
-- `admin.bot.music.callbackDelivered='Authorization delivered; connection pending. Playback is not ready yet.'`
+- `admin.bot.music.callbackDelivered='Authorization delivered to the bot. Return to the server, join a voice channel, and use /play with a Spotify link. The bot will report the result in text chat.'`
 - `admin.bot.music.callbackDenied='Spotify authorization was declined. No account was linked.'`
 - `admin.bot.music.callbackExpired='This Spotify authorization attempt expired. Start again from server settings.'`
 - `admin.bot.music.callbackInvalid='This Spotify callback does not match an active authorization attempt.'`
@@ -330,9 +334,7 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `admin.bot.music.callbackCancelling='Cancelling authorization…'`
 - `admin.bot.music.callbackCancelled='Spotify authorization was cancelled.'`
 - `admin.bot.music.callbackCancelError='Could not cancel this Spotify authorization attempt.'`
-- `admin.bot.music.youtube='YouTube'`
-- `admin.bot.music.providerUnknown='Provider status unavailable'`
-- `admin.bot.music.youtubeHelp='The server does not currently report whether YouTube playback is configured or ready.'`
+- `admin.bot.music.commands='Music commands'`
 - `admin.bot.moderationLog.title='Moderation log'`
 - `admin.bot.moderationLog.load='Load manual evidence'`
 - `admin.bot.moderationLog.loadAutomatic='Load automatic cases'`
@@ -420,3 +422,22 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `mod.warn.error.reasonEmpty='Enter a reason for this warning.'`
 - `mod.warn.error.reasonLong='That reason is too long. A reason is up to 512 characters (fewer for some letters).'`
 - `mod.warn.error.reasonControl='A reason cannot hold control characters other than line breaks and tabs.'`
+
+
+## Unified fullscreen workspace
+
+Server settings now live at `/c/:communityId/settings/:section`, with a root index
+on phones and the first permitted section on desktop. The registry is the single
+source for navigation, search and allowed section selection. Members and personal
+self-assignable roles are available to ordinary members; actions retain their own
+permission and hierarchy checks. Audit-log permission is distinct from server
+management. Loading never exposes privileged content. Losing access clears the
+inaccessible draft and chooses an allowed section. The moderation journal remains
+separate from bot configuration responses.
+
+GIF configuration is its own section. Bot installation, Welcome messages, Join
+roles, Music, Automoderation and Moderation log each have their own section. See
+[fullscreen settings](18-fullscreen-settings.md) for the coverage inventory and
+partial-save, pending-operation and provider-status contracts.
+
+- `admin.bot.welcomeSettings.retry='Retry the same welcome settings request'`

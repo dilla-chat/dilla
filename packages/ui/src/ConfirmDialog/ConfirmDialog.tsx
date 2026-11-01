@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, type ReactNode } from 'react';
 import { Button } from '../Button/Button.tsx';
+import { Avatar } from '../Avatar/Avatar.tsx';
 import { Dialog } from '../Dialog/Dialog.tsx';
 import './ConfirmDialog.css';
 
@@ -19,6 +20,8 @@ export interface ConfirmDialogProps {
   attempt?: number;
   /** False keeps the confirm button disabled (a typed name that does not match yet). Defaults to true. */
   canConfirm?: boolean;
+  /** The person the action is about (kick, ban, time out, warn): their 40px avatar beside the title (the prototype's confirmation). */
+  person?: string;
   /** Extra fields under the body (a reason, the typed name). */
   children?: ReactNode;
   onConfirm(): void;
@@ -32,7 +35,7 @@ export interface ConfirmDialogProps {
  */
 export function ConfirmDialog({
   open, title, body, confirmLabel, busyLabel, cancelLabel, tone = 'danger', busy, error, attempt = 0, canConfirm = true,
-  children, onConfirm, onClose,
+  person, children, onConfirm, onClose,
 }: ConfirmDialogProps) {
   const bodyRef = useRef<HTMLDivElement>(null);
   // After Dialog's own open effect (a child's effects run first): a field or Cancel holds focus, not the dialog.
@@ -53,10 +56,11 @@ export function ConfirmDialog({
   }, [busy, open, error]);
   const bodyId = `${useId()}-body`;
   return (
-    <Dialog open={open} title={title} closeLabel={cancelLabel} onClose={onClose} describedBy={bodyId}
+    <Dialog open={open} kind="confirm" title={title} closeLabel={cancelLabel} onClose={onClose} describedBy={bodyId}
+      lead={person === undefined ? undefined : <span className="d-confirm-dialog__avatar" aria-hidden="true"><Avatar name={person} size="confirm" /></span>}
+      description={<p id={bodyId} className="d-confirm-dialog__body">{body}</p>}
       footer={<Button variant={tone} type="button" disabled={!canConfirm || busy} onClick={onConfirm}>{busy ? busyLabel : confirmLabel}</Button>}>
-      <div ref={bodyRef} className="d-confirm-dialog">
-        <p id={bodyId} className="d-confirm-dialog__body">{body}</p>
+      <div ref={bodyRef} className="d-confirm-dialog" hidden={children === undefined && error === null ? true : undefined}>
         {children}
         {error !== null ? <p key={attempt} className="d-confirm-dialog__error" role="alert">{error}</p> : null}
       </div>

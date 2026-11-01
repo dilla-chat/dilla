@@ -16,7 +16,7 @@ function setup() {
 describe('SignOutAction', () => {
   it('is the danger button that opens the recovery-key dialog', async () => {
     const { user, view } = setup();
-    const button = screen.getByRole('button', { name: 'sign out and remove this browser' });
+    const button = screen.getByRole('button', { name: 'Sign out and remove this browser' });
     expect(screen.queryByRole('dialog')).toBeNull();
     await user.click(button);
     expect(screen.getByRole('dialog', { name: 'Sign out and remove this browser?' })).toBeInTheDocument();
@@ -25,7 +25,7 @@ describe('SignOutAction', () => {
 
   it('returns focus to the button after the dialog is closed', async () => {
     const { user } = setup();
-    const button = screen.getByRole('button', { name: 'sign out and remove this browser' });
+    const button = screen.getByRole('button', { name: 'Sign out and remove this browser' });
     await user.click(button);
     const dialog = screen.getByRole('dialog', { name: 'Sign out and remove this browser?' });
     await user.click(within(dialog).getByRole('button', { name: 'Close' }));

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"math"
+	"slices"
 
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/store"
@@ -118,15 +119,25 @@ func checkBotInstallation(b store.BotInstallationRow) error {
 	if (b.UserID == nil) != (b.DeviceID == nil) {
 		return store.ErrConflict
 	}
+	if b.Capabilities&^store.BotKnownCapabilities != 0 {
+		return store.ErrConflict
+	}
 	return nil
 }
 
 func botInstallationRow(b pgdb.BotInstallations) store.BotInstallationRow {
-	return store.BotInstallationRow{ID: b.ID, CommunityID: b.CommunityID, RuntimeID: b.RuntimeID, UserID: b.UserID, DeviceID: b.DeviceID, RoleID: b.RoleID, State: uint8(b.State), Revision: uint64(b.Revision), Capabilities: uint8(b.Capabilities), ApprovedBy: b.ApprovedBy, ApprovedAt: b.ApprovedAt, CredentialVerifiedAt: ptrInt64(b.CredentialVerifiedAt), Created: b.Created, Updated: b.Updated, RemovedAt: ptrInt64(b.RemovedAt)}
+	var version *string
+	if b.RuntimeVersion.Valid {
+		v := b.RuntimeVersion.String
+		version = &v
+	}
+	return store.BotInstallationRow{ID: b.ID, CommunityID: b.CommunityID, RuntimeID: b.RuntimeID, UserID: b.UserID, DeviceID: b.DeviceID, RoleID: b.RoleID, State: uint8(b.State), Revision: uint64(b.Revision),
+		Capabilities: uint16(b.Capabilities) | uint16(b.FeatureCapabilities)<<8, ApprovedBy: b.ApprovedBy, ApprovedAt: b.ApprovedAt, CredentialVerifiedAt: ptrInt64(b.CredentialVerifiedAt), Created: b.Created, Updated: b.Updated, RemovedAt: ptrInt64(b.RemovedAt),
+		MusicVolume: uint8(b.MusicVolume), MusicIdleMinutes: uint8(b.MusicIdleMinutes), RestartRequested: uint64(b.RestartRequested), RestartHandled: uint64(b.RestartHandled), RuntimeVersion: version}
 }
 
 func botInstallationArgs(b store.BotInstallationRow) pgdb.CreateBotInstallationParams {
-	return pgdb.CreateBotInstallationParams{ID: b.ID, CommunityID: b.CommunityID, RuntimeID: b.RuntimeID, UserID: b.UserID, DeviceID: b.DeviceID, RoleID: b.RoleID, State: int64(b.State), Revision: int64(b.Revision), Capabilities: int64(b.Capabilities), ApprovedBy: b.ApprovedBy, ApprovedAt: b.ApprovedAt, CredentialVerifiedAt: nullInt64(b.CredentialVerifiedAt), Created: b.Created, Updated: b.Updated, RemovedAt: nullInt64(b.RemovedAt)}
+	return pgdb.CreateBotInstallationParams{ID: b.ID, CommunityID: b.CommunityID, RuntimeID: b.RuntimeID, UserID: b.UserID, DeviceID: b.DeviceID, RoleID: b.RoleID, State: int64(b.State), Revision: int64(b.Revision), Capabilities: int64(b.Capabilities & 0xff), ApprovedBy: b.ApprovedBy, ApprovedAt: b.ApprovedAt, CredentialVerifiedAt: nullInt64(b.CredentialVerifiedAt), Created: b.Created, Updated: b.Updated, RemovedAt: nullInt64(b.RemovedAt), FeatureCapabilities: int64(b.Capabilities >> 8)}
 }
 
 func (r *Repo) CreateBotInstallation(ctx context.Context, b store.BotInstallationRow) error {
@@ -216,7 +227,7 @@ func (r *Repo) UpdateBotInstallation(ctx context.Context, installationID id.ID, 
 	if old.CommunityID != next.CommunityID || old.Created != next.Created || (old.RemovedAt != nil && (next.RemovedAt == nil || *old.RemovedAt != *next.RemovedAt)) {
 		return store.ErrConflict
 	}
-	params := pgdb.UpdateBotInstallationParams{RuntimeID: next.RuntimeID, UserID: next.UserID, DeviceID: next.DeviceID, RoleID: next.RoleID, State: int64(next.State), Revision: int64(next.Revision), Capabilities: int64(next.Capabilities), ApprovedBy: next.ApprovedBy, ApprovedAt: next.ApprovedAt, CredentialVerifiedAt: nullInt64(next.CredentialVerifiedAt), Updated: next.Updated, RemovedAt: nullInt64(next.RemovedAt), ID: installationID, Revision_2: int64(expected)}
+	params := pgdb.UpdateBotInstallationParams{RuntimeID: next.RuntimeID, UserID: next.UserID, DeviceID: next.DeviceID, RoleID: next.RoleID, State: int64(next.State), Revision: int64(next.Revision), Capabilities: int64(next.Capabilities & 0xff), ApprovedBy: next.ApprovedBy, ApprovedAt: next.ApprovedAt, CredentialVerifiedAt: nullInt64(next.CredentialVerifiedAt), Updated: next.Updated, RemovedAt: nullInt64(next.RemovedAt), ID: installationID, Revision_2: int64(expected), FeatureCapabilities: int64(next.Capabilities >> 8)}
 	n, err := r.w.UpdateBotInstallation(ctx, params)
 	if err != nil {
 		return wrap(err)
@@ -341,6 +352,46 @@ func (r *Repo) FinalizeBotDeviceCredential(ctx context.Context, deviceID id.ID, 
 	n, err := r.w.FinalizeBotDeviceCredential(ctx, pgdb.FinalizeBotDeviceCredentialParams{
 		CredentialBlob: credential, VerifiedAt: nullInt64(&verifiedAt), ID: deviceID,
 	})
+	if err != nil {
+		return wrap(err)
+	}
+	if n != 1 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+func (r *Repo) SetBotMusicSettings(ctx context.Context, installationID id.ID, volume, idleMinutes uint8) error {
+	if !slices.Contains(store.BotMusicVolumes, volume) || !slices.Contains(store.BotMusicIdleMinutes, idleMinutes) {
+		return store.ErrConflict
+	}
+	n, err := r.w.SetBotMusicSettings(ctx, pgdb.SetBotMusicSettingsParams{MusicVolume: int64(volume), MusicIdleMinutes: int64(idleMinutes), ID: installationID})
+	if err != nil {
+		return wrap(err)
+	}
+	if n != 1 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+func (r *Repo) RequestBotRestart(ctx context.Context, installationID id.ID) (uint64, error) {
+	n, err := r.w.RequestBotRestart(ctx, pgdb.RequestBotRestartParams{ID: installationID})
+	if err != nil {
+		return 0, wrap(err)
+	}
+	return uint64(n), nil
+}
+
+func (r *Repo) SetBotRuntimeStatus(ctx context.Context, installationID, runtimeID id.ID, version *string, handled uint64) error {
+	if handled > math.MaxInt64 || version != nil && (len(*version) == 0 || len(*version) > 32) {
+		return store.ErrConflict
+	}
+	v := sql.NullString{}
+	if version != nil {
+		v = sql.NullString{String: *version, Valid: true}
+	}
+	n, err := r.w.SetBotRuntimeStatus(ctx, pgdb.SetBotRuntimeStatusParams{RuntimeVersion: v, Handled: int64(handled), ID: installationID, RuntimeID: &runtimeID})
 	if err != nil {
 		return wrap(err)
 	}

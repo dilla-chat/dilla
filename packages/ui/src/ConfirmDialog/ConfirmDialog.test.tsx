@@ -147,7 +147,7 @@ describe('ConfirmDialog', () => {
     expect(screen.getByRole('alert')).toBe(first);
   });
 
-  it.each(['mesh', 'light', 'high-contrast'])('has no serious axe violations in %s, danger and accent', async theme => {
+  it.each(['signal', 'light', 'high-contrast'])('has no serious axe violations in %s, danger and accent', async theme => {
     document.documentElement.dataset.theme = theme;
     for (const over of [{}, { tone: 'accent' as const, error: 'Try again.' }]) {
       const { container, unmount } = render(<div className="d-root"><ConfirmDialog {...props(over)} /></div>);

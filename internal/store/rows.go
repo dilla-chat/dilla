@@ -143,7 +143,20 @@ type InviteRow struct {
 	Created     int64
 	ExpiresAt   int64
 	RevokedAt   *int64
+	// UnlimitedUses (Task 10c, "∞") makes MaxUses irrelevant: such a row stores MaxUses 1000, so
+	// a reader that ignores the flag still stops at the old cap.
+	UnlimitedUses uint8
 }
+
+// InviteNeverExpires is the ExpiresAt of an invite that never expires ("never", Task 10c): the
+// largest signed 64-bit second, so every `expires_at > now` check keeps holding without a flag.
+const InviteNeverExpires int64 = 1<<63 - 1
+
+// NeverExpires reports whether the invite was made with no expiry.
+func (i InviteRow) NeverExpires() bool { return i.ExpiresAt == InviteNeverExpires }
+
+// Exhausted reports whether every use has been spent; an unlimited invite never is.
+func (i InviteRow) Exhausted() bool { return i.UnlimitedUses == 0 && i.UsedCount >= i.MaxUses }
 
 type ReportRow struct {
 	ID                 id.ID

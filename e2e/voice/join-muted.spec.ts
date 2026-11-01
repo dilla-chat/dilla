@@ -89,7 +89,7 @@ for (const noise of ['off', 'on'] as const) test(`mute pressed while the join is
     await watchAudio(alice);
     await holdMic(alice);
     await openVoiceOnly(alice.page, peer.communityName, peer);
-    await stage(alice.page).getByRole('button', { name: copy('voice.join'), exact: true }).click();
+    await stage(alice.page).getByRole('button', { name: copy('callStage.preview.join'), exact: true }).click();
     await expect.poll(() => micAsked(alice), { ...POLL, message: 'the start asked for the microphone' }).toBe(1);
     await panelMute(alice).click();
     await expect(panelMute(alice)).toHaveAttribute('aria-pressed', 'true', { timeout: WAIT });

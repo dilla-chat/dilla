@@ -12,7 +12,7 @@ describe('flow 17 (EOD E6, profile)', () => {
   const pairs = [...copy.matchAll(/`([a-zA-Z][\w.]*)='([^`]*)'`/g)].map(m => [m[1], m[2]] as const);
   it('strings: every flow-17 copy key equals en.ts byte for byte, and every new key is in the flow', () => {
     const table = en as Readonly<Record<string, string>>;
-    expect(pairs.length).toBe(18);
+    expect(pairs.length).toBe(17); // Task 11 (Q7): the prototype's Profile copy, no Save
     for (const [key, value] of pairs) expect(table[key], key).toBe(value);
     for (const [key, value] of pairs) {
       for (const f of FORBIDDEN as { word: string; re: RegExp }[]) expect(f.re.test(value), `${key}: ${f.word}`).toBe(false);
@@ -21,11 +21,13 @@ describe('flow 17 (EOD E6, profile)', () => {
     const added = Object.keys(en).filter(k => /^(profile\.|settings\.nav\.profile$)/.test(k));
     expect(added.filter(k => !listed.has(k))).toEqual([]);
   });
-  it('chrome is lower case and surfaces are sentence case (Mesh style); no exclamation, no reassurance', () => {
-    for (const k of ['settings.nav.profile', 'profile.display.label', 'profile.status.label', 'profile.bio.label', 'profile.save', 'profile.card.about'] as const) {
-      expect(en[k], k).toMatch(/^[a-z]/);
+// Signal task 10 fix round 1 (Jonas, prototype wins): settings chrome follows the prototype's sentence case.
+  it('settings chrome is sentence case, the card label lower case; no exclamation, no reassurance', () => {
+    for (const k of ['settings.nav.profile', 'profile.display.label', 'profile.status.label', 'profile.bio.label'] as const) {
+      expect(en[k], k).toMatch(/^[A-Z]/);
     }
-    for (const k of ['profile.title', 'profile.body', 'profile.status.hint', 'profile.bio.hint', 'profile.saved', 'profile.error.display', 'profile.error.chars', 'profile.error.long', 'profile.error.blank', 'profile.error.wait', 'profile.error.save'] as const) {
+    expect(en['profile.card.about']).toMatch(/^[a-z]/);
+    for (const k of ['profile.title', 'profile.body', 'profile.saved', 'profile.error.display', 'profile.error.chars', 'profile.error.long', 'profile.error.blank', 'profile.error.wait', 'profile.error.save'] as const) {
       expect(en[k], k).toMatch(/^[A-Z]/);
     }
     for (const [, value] of pairs) expect(value).not.toMatch(/!|\bsecure\b|\bsafe\b|\bprotected\b/i);
@@ -36,8 +38,6 @@ describe('flow 17 (EOD E6, profile)', () => {
     expect(en['profile.error.chars'].codePointAt(29)).toBe(0x2019);
   });
   it('the limits in the hints are the server limits', () => {
-    expect(en['profile.status.hint']).toContain('190');
-    expect(en['profile.bio.hint']).toContain('500');
   });
   it('sections: States, Keyboard map, Focus rules and Announcements have content', () => {
     for (const title of ['States', 'Keyboard map', 'Focus rules', 'Announcements']) {

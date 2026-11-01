@@ -50,14 +50,18 @@ export async function advanceClock(control: string, seconds: number): Promise<vo
 
 /**
  * The next code the server will accept. With the host clock at counter c the server takes c-1..c+1 and refuses a
- * counter at or below the last one used, so the pick is max(c-1, last+1). While that is past c+1 the host clock moves
+ * counter at or below the last one used, so the pick is max(c, last+1). While that is past c+1 the host clock moves
  * 30 s at a time. Records the counter in `account.lastCounter`.
+ *
+ * Never c-1: a host started with advanceClockWithWall ticks its clock with the wall clock, and c-1 falls out of the
+ * window the moment the clock reaches the next step, which can be between this read and the server's check (the
+ * 2026-10-30 CI failures: "That code did not match"). A pick of c or later stays good for at least one whole step.
  */
 export async function nextCode(control: string, account: { totpSecret: string | null; lastCounter: number }): Promise<string> {
   if (account.totpSecret === null) throw new Error('this account has no authenticator secret');
   for (;;) {
     const c = Math.floor((await hostNow(control)) / TOTP_STEP);
-    const n = Math.max(c - 1, account.lastCounter + 1);
+    const n = Math.max(c, account.lastCounter + 1);
     if (n <= c + 1) {
       account.lastCounter = n;
       return totp(account.totpSecret, n * TOTP_STEP);

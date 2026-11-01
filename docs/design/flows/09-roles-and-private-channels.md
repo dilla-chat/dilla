@@ -29,11 +29,11 @@ Roles, the permission editor, role assignment, channel permissions, private chan
 
 ## 1280×800
 
-The Roles tab is a section of server settings between channels and invites, in the settings dialog's left navigation. The roles list fills the content pane, one row per role with its colour dot, name, member count and actions at the row end. The role editor is a dialog; its name, colour, toggles and permission grid sit in one column and only the grid scrolls, under a pinned footer with save and cancel. The assign dialog opens from a member row's menu in the member list. The channel permissions section sits in channel settings below the name, with the private toggle at its top and the entries listed beneath.
+Roles is in the People group of the fullscreen server settings workspace. Navigation and content scroll independently, as specified in [Flow 18](18-fullscreen-settings.md). The roles list fills the content pane, one row per role with its colour dot, name, member count and actions at the row end. The role editor is a dialog; its name, colour, toggles and permission grid sit in one column and only the grid scrolls, under a pinned footer with save and cancel. The assign dialog opens from a member row's menu in the member list. The channel permissions section sits in channel settings below the name, with the private toggle at its top and the entries listed beneath.
 
 ## 360×740
 
-The settings navigation collapses to a select above the content. Role rows stack: name and count above, actions below, with every target at least 24 px and the primary ones 44 px. The role editor and assign dialog fill the viewport width; the permission grid is one column and scrolls inside the dialog while the footer stays pinned. The member menu is reached from the narrow member drawer, which is modal; the assign dialog renders through the dialog portal above it. The channel permissions section is a full-width column and each entry's allow, default and deny control wraps under its name. Nothing needs horizontal scroll at 200 % zoom.
+The grouped settings index opens Roles as a single section, with Back returning to the index and the app tab bar hidden throughout settings. Role rows stack: name and count above, actions below, with primary touch targets at least 44 px. The role editor and assign dialog fill the viewport width; the permission grid is one column and scrolls inside the dialog while the footer stays pinned. Member actions are available in the Members section and from the contextual member drawer; nested dialogs remain above their opener. The channel permissions section is a full-width column and each entry's allow, default and deny control wraps under its name. Nothing needs horizontal scroll at 200 % zoom.
 
 ## Keyboard map
 
@@ -61,7 +61,7 @@ The settings navigation collapses to a select above the content. Role rows stack
 
 ## Announcements
 
-All are polite, through the shell announcer. Dialog errors are `role=alert`.
+All are polite, through the announcer inside settings while the workspace is open, or the shell announcer for contextual actions outside settings. Dialog errors are `role=alert`.
 
 - `roles.moved`
 - `roles.editor.saved`
@@ -158,56 +158,56 @@ All are polite, through the shell announcer. Dialog errors are `role=alert`.
 - `perm.group.members='Members'`
 - `perm.group.text='Text'`
 - `perm.group.voice='Voice'`
-- `perm.allow='allow'`
-- `perm.inherit='default'`
-- `perm.deny='deny'`
-- `perm.view='view channels'`
-- `perm.view.hint='See the channel and take part in it. Without it a person is not in the channel at all.'`
-- `perm.send='send messages'`
-- `perm.send.hint='Post in text channels. The host refuses posts from people without it.'`
-- `perm.manageMessages='manage messages'`
+- `perm.allow='Allow'`
+- `perm.inherit='Default'`
+- `perm.deny='Deny'`
+- `perm.view='View channels'`
+- `perm.view.hint='See text and voice channels'`
+- `perm.send='Send messages'`
+- `perm.send.hint='Post in text channels'`
+- `perm.manageMessages='Manage messages'`
 - `perm.manageMessages.hint='Has no effect in this version.'`
-- `perm.pin='pin messages'`
-- `perm.pin.hint='Pin and unpin messages. Members’ apps show a pin only while the person who pinned it may pin in that channel.'`
-- `perm.attach='attach files'`
+- `perm.pin='Pin messages'`
+- `perm.pin.hint='Pin for everyone in a conversation'`
+- `perm.attach='Attach files'`
 - `perm.attach.hint='Send images and files.'`
-- `perm.react='add reactions'`
+- `perm.react='Add reactions'`
 - `perm.react.hint='Has no effect in channels the host cannot read in this version.'`
-- `perm.history='read message history'`
+- `perm.history='Read message history'`
 - `perm.history.hint='Open the files sent in a channel. Messages sent before someone joins a channel are never shown to them, whatever their roles.'`
-- `perm.connect='connect'`
-- `perm.connect.hint='Join calls in voice channels.'`
-- `perm.speak='speak'`
-- `perm.speak.hint='Be heard in calls.'`
-- `perm.video='video'`
+- `perm.connect='Connect'`
+- `perm.connect.hint='Join voice channels'`
+- `perm.speak='Speak'`
+- `perm.speak.hint='Be heard in voice'`
+- `perm.video='Video'`
 - `perm.video.hint='Turn on a camera in calls.'`
-- `perm.screen='share screen'`
+- `perm.screen='Share screen'`
 - `perm.screen.hint='Share a screen or a tab in calls.'`
-- `perm.invite='create invites'`
+- `perm.invite='Create invites'`
 - `perm.invite.hint='Make invite links to the server.'`
-- `perm.kick='kick members'`
+- `perm.kick='Kick members'`
 - `perm.kick.hint='Remove members whose highest role is below theirs. They can come back with an invite.'`
-- `perm.ban='ban members'`
+- `perm.ban='Ban members'`
 - `perm.ban.hint='Remove members whose highest role is below theirs, and keep them out.'`
-- `perm.manageChannels='manage channels'`
-- `perm.manageChannels.hint='Add, edit, move and delete channels and categories.'`
-- `perm.manageRoles='manage roles'`
+- `perm.manageChannels='Manage channels'`
+- `perm.manageChannels.hint='Create, edit and move channels'`
+- `perm.manageRoles='Manage roles'`
 - `perm.manageRoles.hint='Make, edit and give out roles below their own highest role, and set channel permissions.'`
-- `perm.manageServer='manage server'`
+- `perm.manageServer='Manage server'`
 - `perm.manageServer.hint='Rename the server.'`
-- `perm.auditLog='view audit log'`
+- `perm.auditLog='View audit log'`
 - `perm.auditLog.hint='Has no effect in this version.'`
-- `perm.everyone='mention @everyone and @here'`
-- `perm.everyone.hint='Notify everyone in a channel. Members’ apps ignore @everyone and @here from people without it.'`
-- `perm.slowmode='bypass slow mode'`
+- `perm.everyone='Mention @everyone and @here'`
+- `perm.everyone.hint='Notifies the whole server'`
+- `perm.slowmode='Bypass slow mode'`
 - `perm.slowmode.hint='Send without waiting in channels with slow mode.'`
-- `perm.admin='administrator'`
+- `perm.admin='Administrator'`
 - `perm.admin.hint='Every permission in every channel, whatever the channel’s settings say. Give it only to people you would trust with the whole server.'`
-- `perm.mute='mute members'`
+- `perm.mute='Mute members'`
 - `perm.mute.hint='Has no effect in this version.'`
-- `perm.move='move members'`
+- `perm.move='Move members'`
 - `perm.move.hint='Has no effect in this version.'`
-- `perm.nicknames='manage nicknames'`
+- `perm.nicknames='Manage nicknames'`
 - `perm.nicknames.hint='Has no effect in this version.'`
 - `perm.pinsNote='A pin shows while the person who pinned it may pin in this channel.'`
 - `chperm.title='Permissions'`
@@ -247,11 +247,15 @@ All are polite, through the shell announcer. Dialog errors are `role=alert`.
 - `mention.role.secondary='role'`
 - `serverNotify.title='Servers'`
 - `serverNotify.body='A server’s setting applies to its channels unless a channel has its own.'`
-- `serverNotify.mode.default='default'`
-- `serverNotify.mode.all='all messages'`
-- `serverNotify.mode.mentions='mentions'`
-- `serverNotify.mode.nothing='nothing'`
-- `serverNotify.mute='mute server'`
-- `serverNotify.suppressEveryone='ignore @everyone and @here'`
-- `perm.moderate='warn and time out members'`
+- `serverNotify.mode.default='Default'`
+- `serverNotify.mode.all='All messages'`
+- `serverNotify.mode.mentions='Mentions'`
+- `serverNotify.mode.nothing='Nothing'`
+- `serverNotify.mute='Mute server'`
+- `serverNotify.suppressEveryone='Ignore @everyone and @here'`
+- `perm.moderate='Warn and time out members'`
 - `perm.moderate.hint='Warn members or temporarily block their messages and reactions.'`
+- `perm.group.music='Music'`
+- `perm.group.moderation='Moderation'` (the role editor groups permissions as the prototype does: General, Moderation, Voice and Music, with Control music under Music; channel permissions keep General, Members, Text, Voice and Music)
+- `perm.music='Control music (DJ)'`
+- `perm.music.hint='Play, queue, skip, stop and set volume with Glenn in voice'`

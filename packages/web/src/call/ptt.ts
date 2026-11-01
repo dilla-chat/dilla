@@ -43,7 +43,10 @@ export function bindPushToTalk(o: PushToTalkOptions): () => void {
   const modified = (e: KeyboardEvent): boolean =>
     e.ctrlKey || e.altKey || e.metaKey || e.shiftKey || e.getModifierState('AltGraph');
   const editing = (e: KeyboardEvent): boolean => isEditable(e.target) || isEditable(doc.activeElement);
+  const inDialog = (): boolean => doc.querySelector('dialog[open][aria-modal="true"]') !== null;
+  const onFocus = (): void => { if (inDialog()) release(); };
   const onKeyDown = (e: KeyboardEvent): void => {
+    if (inDialog()) { release(); return; }
     if (e.code !== o.code || modified(e) || editing(e) || !doc.hasFocus()) return;
     e.preventDefault();
     if (e.repeat || down) return;
@@ -59,11 +62,13 @@ export function bindPushToTalk(o: PushToTalkOptions): () => void {
   doc.addEventListener('keydown', onKeyDown, true);
   doc.addEventListener('keyup', onKeyUp, true);
   doc.addEventListener('visibilitychange', onHidden);
+  doc.addEventListener('focusin', onFocus);
   win.addEventListener('blur', release);
   return () => {
     doc.removeEventListener('keydown', onKeyDown, true);
     doc.removeEventListener('keyup', onKeyUp, true);
     doc.removeEventListener('visibilitychange', onHidden);
+    doc.removeEventListener('focusin', onFocus);
     win.removeEventListener('blur', release);
     release();
   };

@@ -1,36 +1,59 @@
-.d-composer { box-sizing: border-box; min-height: var(--d-composer-band, auto); align-content: end; position: relative; display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.25rem; padding: 0 var(--row-pad-x) 0.25rem; background: var(--bg); flex-shrink: 0; }
-/* web3.9 (G1, G3): the label is visually hidden in both states (`.d-sr-only`; the textbox keeps its name), so focus changes no height; the box sits at the bottom of a band as tall as the user panel (`--d-composer-band`, set by the shell), so its top edge lines up with the panel's. */
+/* Signal §5.5 (task 7): the prototype's composer. Padding 0 16px 14px; the box is surface on the hairline-2 line, radius 8px,
+   the accent with a 3px accent-soft ring on focus; a sweep line, the input row (› prompt, textarea, "send ↵") and the
+   footer row (26×24 attach, emoji, GIF, </>, then the typing text and the "⇧↵ new line" hint). */
+.d-composer { box-sizing: border-box; min-height: var(--d-composer-band, auto); align-content: end; position: relative; display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; padding: 0 1rem 0.875rem /* 0 16px 14px */; background: var(--bg); flex-shrink: 0; }
+/* web3.9 (G1, G3): the label is visually hidden in both states (`.d-sr-only`; the textbox keeps its name), so focus changes no height. */
 /* The channel inside the (hidden) label is a value: it keeps its case and drops the label tracking. */
 .d-composer__target { text-transform: none; letter-spacing: normal; color: var(--fg-2); }
-.d-composer__box { display: flex; align-items: flex-end; gap: 0.5rem; padding: 0.375rem 0.375rem 0.375rem 0.75rem; background: var(--surface-2); border: 1px solid var(--edge); border-radius: var(--r-lg); transition: border-color var(--duration-fast); }
-.d-composer__box:focus-within { border-color: var(--accent); }
-.d-composer__input { flex: 1; min-width: 0; min-height: 1.75rem; max-height: 10rem; padding: 0.25rem 0; font: inherit; font-size: var(--text-base); line-height: var(--line-height); color: var(--fg); background: transparent; border: 0; resize: none; field-sizing: content; }
+.d-composer__box { overflow: hidden; background: var(--surface); border: 1px solid var(--hairline-2); border-radius: var(--r-lg); box-shadow: 0 0 0 0 transparent;
+  transition: border-color var(--duration-focus), box-shadow var(--duration-focus); }
+.d-composer__box:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.d-composer[data-replying="true"] .d-composer__box { border-radius: 0 0 var(--r-lg) var(--r-lg); }
+.d-composer__sweep { position: relative; height: 2px; overflow: hidden; opacity: 0; transition: opacity var(--duration-turn); }
+.d-composer__sweep > span { position: absolute; inset: 0; background: linear-gradient(90deg, transparent, var(--accent), transparent); }
+.d-composer[data-typing="true"] .d-composer__sweep { opacity: 1; }
+.d-composer[data-typing="true"] .d-composer__sweep > span { animation: d-sweep var(--duration-flash) linear infinite; }
+.d-composer__row { display: flex; align-items: center; gap: 0.5rem; padding: 0.375rem 0.375rem 0.25rem 0.75rem /* 6px 6px 4px 12px */; }
+.d-composer__prompt { color: var(--accent); font-weight: var(--weight-display); }
+.d-composer__input { flex: 1; min-width: 0; min-height: 1.875rem /* 30px */; max-height: 13.75rem; padding: 0.3125rem 0 /* 5px 0 */; box-sizing: border-box; font: inherit; font-size: var(--text-input); line-height: 1.25rem /* 20px */; color: var(--fg); background: transparent; border: 0; outline: none; resize: none; white-space: pre-wrap; overflow-y: auto; field-sizing: content; }
 /* Jonas, 2026-10-14: the textarea draws no visible ring; the box's accent border above shows focus (WCAG 2.4.7).
    The outline stays, transparent, so Windows forced colors paints it in a system colour and focus still shows.
    At (0,3,0) this beats the global `.d-root :focus-visible` (0,2,0) whatever the stylesheet order. */
 .d-composer .d-composer__input:focus-visible { outline: 2px solid transparent; }
-.d-composer__input::placeholder { color: var(--fg-3); }
+.d-composer__input::placeholder { color: var(--fg-faint); }
 /* Walk 37 #16: an empty field keeps its placeholder on one line, cut with an ellipsis, in a narrow pane (the thread's 240px aside). */
 .d-composer__input:placeholder-shown { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .d-composer[data-disabled="true"] .d-composer__input { color: var(--fg-3); cursor: not-allowed; }
-.d-composer__reason { margin: 0; font-size: var(--text-sm); color: var(--fg-2); }
-.d-composer__counter { margin: 0; font-size: var(--text-xs); color: var(--fg-3); text-align: right; }
+/* "send ↵": 28px, radius 5px, 11.5px/700; the accent with text (or files), selected-and-dim while empty (`data-empty`). */
+.d-composer__send { flex: none; height: 1.75rem /* 28px */; padding: 0 0.625rem; display: inline-flex; align-items: center; font: inherit; font-size: var(--text-btn); font-weight: var(--weight-display); color: var(--accent-ink); background: var(--accent); border: 0; border-radius: var(--r-row); cursor: pointer; white-space: pre; transition: background var(--duration-tab), color var(--duration-tab), transform var(--duration-tab); }
+.d-composer__send:active { transform: scale(0.95); }
+.d-composer[data-empty="true"] .d-composer__send, .d-composer__send:disabled { color: var(--fg-quiet); background: var(--surface-hi); }
+.d-composer__send:disabled { cursor: not-allowed; }
+.d-composer__foot { display: flex; align-items: center; gap: 2px; padding: 0 0.375rem 0.375rem; font-size: var(--text-meta); color: var(--fg-3); }
+.d-composer__tool { display: inline-flex; align-items: center; justify-content: center; width: 1.625rem /* 26px */; height: 1.5rem /* 24px */; padding: 0; font: inherit; color: inherit; background: transparent; border: 0; border-radius: var(--r-sm); cursor: pointer; }
+.d-composer__gif { width: auto; padding: 0 0.375rem; font-weight: var(--weight-label); }
+.d-composer__tool:hover { background: var(--surface-hi); color: var(--fg); }
+.d-composer__tool[aria-expanded="true"] { color: var(--accent); background: var(--accent-soft); }
+.d-composer__tool:disabled { color: var(--fg-4); background: transparent; cursor: default; }
+.d-composer__spacer { flex: 1; }
+.d-composer__typing { display: inline-flex; min-width: 0; }
+.d-composer__hint { margin-left: 0.625rem; white-space: nowrap; }
+[data-layout="phone"] .d-composer { padding: 0 0.625rem 0.625rem; }
+[data-layout="phone"] .d-composer__hint { display: none; }
+.d-composer__reason { margin: 0.25rem 0 0; font-size: var(--text-sm); color: var(--fg-2); }
+.d-composer__counter { margin: 0.25rem 0 0; font-size: var(--text-xs); color: var(--fg-3); text-align: right; }
 /* Over the budget: the danger tone and a glyph, so the state is never colour alone; the glyph has empty alt text. */
 .d-composer__counter[data-over="true"] { color: var(--danger); }
-.d-composer__counter[data-over="true"]::before { content: "" / ""; display: inline-block; width: 0.875em; height: 0.875em; margin-right: 0.25em; vertical-align: -0.125em; background: currentColor; mask: var(--d-mask-x) center / contain no-repeat; }@media (prefers-reduced-motion: reduce) { .d-composer__box { transition: none; } }
-/* web-2b (L-UI-53): the slot above the box (reply chip, tray, mention list) and the attach button inside it. */
-.d-composer__top { display: grid; gap: 0.25rem; }
-.d-composer__attach { flex-shrink: 0; display: inline-grid; place-items: center; width: 1.75rem; height: 1.75rem; margin-left: -0.375rem; padding: 0; font: inherit; font-size: var(--text-lg); line-height: 1; color: var(--fg-2); background: transparent; border: 0; border-radius: var(--r-md); cursor: pointer; transition: color var(--duration-fast), background var(--duration-fast); }
-.d-composer__attach:hover { color: var(--fg); background: var(--surface-hi); }
-.d-composer__attach:disabled { color: var(--fg-3); background: transparent; cursor: default; }
-@media (prefers-reduced-motion: reduce) { .d-composer__attach { transition: none; } }
-/* Jonas's 44px primary-target rule: on a phone the attach button is a 44 x 44 target. */
-[data-layout="phone"] .d-composer__attach { width: 2.75rem; height: 2.75rem; }
+.d-composer__counter[data-over="true"]::before { content: "" / ""; display: inline-block; width: 0.875em; height: 0.875em; margin-right: 0.25em; vertical-align: -0.125em; background: currentColor; mask: var(--d-mask-x) center / contain no-repeat; }
+/* The slot above the box: the attachment tray, the reply bar; the mention list floats over the feed like the prototype's popovers. */
+.d-composer__top { display: grid; min-width: 0; }
+.d-composer__top > .d-mention-list { position: absolute; z-index: 6; left: 1rem; bottom: calc(100% + 6px); width: min(21.25rem /* 340px */, calc(100% - 2rem)); }
 /* web3.7: the slow-mode countdown and the announcement channel's read-only line, above the box and after `top`. Text, never a block. */
-.d-composer__notice { margin: 0; font-size: var(--text-sm); color: var(--fg-2); overflow-wrap: anywhere; }
-/* E8: the gif button, a mono word next to the attach plus. Same target rules as attach. */
-.d-composer__gif { flex-shrink: 0; display: inline-grid; place-items: center; min-width: 1.75rem; height: 1.75rem; padding: 0 0.375rem; font: inherit; font-size: var(--text-xs); line-height: 1; color: var(--fg-2); background: transparent; border: 1px solid var(--edge); border-radius: var(--r-md); cursor: pointer; transition: color var(--duration-fast), background var(--duration-fast); }
-.d-composer__gif:hover, .d-composer__gif[aria-expanded="true"] { color: var(--fg); background: var(--surface-hi); }
-.d-composer__gif:disabled { color: var(--fg-3); background: transparent; cursor: default; }
-@media (prefers-reduced-motion: reduce) { .d-composer__gif { transition: none; } }
-[data-layout="phone"] .d-composer__gif { min-width: 2.75rem; height: 2.75rem; }
+.d-composer__notice { margin: 0 0 0.25rem; font-size: var(--text-sm); color: var(--fg-2); overflow-wrap: anywhere; }
+@media (prefers-reduced-motion: reduce) { .d-composer__box, .d-composer__sweep, .d-composer__send { transition: none; } .d-composer__sweep > span { animation: none; } }
+/* The composer's pickers float above it (the prototype's popovers): left 16px, 6px above the tray or the box. */
+.d-composer-pop { position: relative; height: 0; flex: none; z-index: 7; }
+.d-composer-pop > * { position: absolute; left: 1rem; bottom: 0.375rem; }
+[data-layout="phone"] .d-composer-pop > * { left: 0.625rem; width: calc(100% - 1.25rem); }
+/* A refusal above the box (a file over 25 MB, too many files, a file not ready): the danger tone, 11px. */
+.d-composer__alert { margin: 0 0 0.375rem; font-size: var(--text-xs); color: var(--danger); }

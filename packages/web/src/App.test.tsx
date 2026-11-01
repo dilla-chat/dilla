@@ -1,18 +1,20 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { StrictMode } from 'react';
-import { act, render, screen, within } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import type { DmSummary, Notice } from '@dilla/client-core';
+import type { DmSummary, Notice, SliceName } from '@dilla/client-core';
 import { CoreProvider } from './core/context.tsx';
 import { FakeClient, refusal } from './test/fake-client.ts';
 import { account } from './test/fixtures.ts';
 import { browser } from './browser.ts';
-import { readJoinError } from './router.ts';
+import { readJoinError, replaceHistoryState } from './router.ts';
 import { App, screenFor } from './App.tsx';
 import { requestHandover } from './handover.ts';
 import { spotifySession } from './screens/admin/spotify-link.ts';
 
 vi.mock('./handover.ts', () => ({ requestHandover: vi.fn(async () => {}) }));
+
+afterEach(() => { cleanup(); replaceHistoryState(null, '', '/'); });
 
 describe('screenFor', () => {
   it('routes every phase', () => {
@@ -44,15 +46,22 @@ describe('App', () => {
     spotifySession.setItem('dilla.spotifyAttempt', JSON.stringify({ communityId: '11'.repeat(16),
       attemptId: '22'.repeat(16), state, expires: `${Math.floor(Date.now() / 1000) + 600}`,
       instanceId: account().instance!.id, userId: account().user!.id, deviceId: account().deviceId }));
-    window.history.replaceState(null, '', `/settings/bot/music/spotify/callback?code=oauth-code&state=${state}`);
+    replaceHistoryState(null, '', `/settings/bot/music/spotify/callback?code=oauth-code&state=${state}`);
     render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
-    expect(await screen.findByText(/authorization delivered; connection pending/i)).toBeInTheDocument();
+    await waitFor(() => expect(window.location.pathname).toBe(`/c/${'11'.repeat(16)}/settings/music`));
+    expect(screen.queryByText('Linked')).not.toBeInTheDocument();
     expect(fake.callsOf('callbackBotSpotifyAttempt')).toHaveLength(1);
   });
 
   it('scrubs the callback code before sign-in, retains it in memory, and delivers after sign-in finishes', async () => {
     const fake = new FakeClient();
     const signedIn = account();
+    fake.set('communities', [{ id: '11'.repeat(16), name: 'Midgard', owner: 'ee'.repeat(16) }]);
+    const communityId = '11'.repeat(16);
+    fake.set(`channels:${communityId}` as SliceName, []);
+    fake.set(`permissions:${communityId}` as SliceName, { top: 0, owner: false, manageCommunity: true, manageChannels: false,
+      kickMembers: false, banMembers: false, createInvite: false, manageRoles: false, loaded: true, overwritesLoaded: true,
+      everyoneId: 'ab'.repeat(16) });
     fake.set('account', account({ phase: 'signin-login', signIn: { username: null, factor: null } }));
     fake.handler = command => {
       if (command.m === 'signInLogin') {
@@ -70,7 +79,7 @@ describe('App', () => {
     spotifySession.setItem('dilla.spotifyAttempt', JSON.stringify({ communityId: '11'.repeat(16),
       attemptId: '22'.repeat(16), state, expires: `${Math.floor(Date.now() / 1000) + 600}`,
       instanceId: signedIn.instance!.id, userId: signedIn.user!.id, deviceId: signedIn.deviceId }));
-    window.history.replaceState(null, '', `/settings/bot/music/spotify/callback?code=oauth-code&state=${state}`);
+    replaceHistoryState(null, '', `/settings/bot/music/spotify/callback?code=oauth-code&state=${state}`);
     const user = userEvent.setup();
     render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
     expect(window.location.search).toBe('');
@@ -82,8 +91,9 @@ describe('App', () => {
     await user.paste('7K2M-QX9D-H4TB-R8NW-C3VF-J6PZ-A1GE-Y5KS-M0QT-B7XH-W2DN-F9RC-P4ZA');
     await user.click(screen.getByRole('button', { name: 'Add this browser' }));
     await user.click(screen.getByRole('button', { name: 'Open dilla' }));
-    expect(await screen.findByText(/authorization delivered; connection pending/i)).toBeInTheDocument();
-    expect(window.location.pathname).toBe('/settings/bot/music/spotify/callback');
+    await waitFor(() => expect(window.location.pathname).toBe(`/c/${'11'.repeat(16)}/settings/music`));
+    expect(screen.queryByText('Linked')).not.toBeInTheDocument();
+    expect(window.location.pathname).toBe(`/c/${'11'.repeat(16)}/settings/music`);
     expect(fake.callsOf('callbackBotSpotifyAttempt')).toHaveLength(1);
   });
 
@@ -406,7 +416,7 @@ describe('App onboarding', () => {
         recoveryKey: ['7K2M', 'QX9D', 'H4TB', 'R8NW', 'C3VF', 'J6PZ', 'A1GE', 'Y5KS', 'M0QT', 'B7XH', 'W2DN', 'F9RC', 'P4ZA'] }));
       return Promise.resolve(c.m === 'signupSubmit' ? result : null);
     };
-    window.history.replaceState(null, '', '/welcome?invite=ABCD-EFGH');
+    replaceHistoryState(null, '', '/welcome?invite=ABCD-EFGH');
     const view = render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Join dilla.test');
     await user.click(screen.getByRole('button', { name: 'Continue' }));
@@ -441,7 +451,7 @@ describe('App onboarding', () => {
   it('carries the refused join in the history state, without its detail', async () => {
     const joinError = { code: 'E_INVITE_INVALID', detail: 'spent', status: 410, retryAfterMs: null };
     expect(await signUpWith({ communityId: null, joinError })).toBe('/welcome?invite=ABCD-EFGH');
-    expect(window.history.state).toEqual({ joinError: { code: 'E_INVITE_INVALID', detail: '', status: 410, retryAfterMs: null } });
+    expect(window.history.state).toMatchObject({ joinError: { code: 'E_INVITE_INVALID', detail: '', status: 410, retryAfterMs: null } });
     expect(readJoinError(window.history.state)).toEqual({ code: 'E_INVITE_INVALID', detail: '', status: 410, retryAfterMs: null });
   });
   it('leaves no join error in the history state after a join or without one', async () => {
@@ -484,7 +494,7 @@ describe('App sign-in', () => {
   const startAt = (fake: FakeClient) => {
     fake.set('account', account({ phase: 'needs-signup', user: null, instance: { ...account().instance!, passwordSignup: true } }));
     signInWorker(fake);
-    window.history.replaceState(null, '', '/');
+    replaceHistoryState(null, '', '/');
     return render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
   };
   it('enters the ceremony from onboarding and lands at / after done', async () => {
@@ -494,7 +504,7 @@ describe('App sign-in', () => {
     await user.click(screen.getByRole('button', { name: 'Use an existing account' }));
     // web3.8 (R6, R7): the login first, then the recovery key, which adds this browser.
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Sign in to dilla.test');
-    expect(screen.getByText('Step 1 of 4')).toBeInTheDocument();
+    expect(screen.getByText('Sign in · step 1 of 4')).toBeInTheDocument();
     await user.type(screen.getByRole('textbox', { name: 'Username' }), 'ada');
     await user.type(screen.getByLabelText('Password'), 'correct horse');
     await user.click(screen.getByRole('button', { name: 'Continue' }));
@@ -504,7 +514,7 @@ describe('App sign-in', () => {
     await user.paste('7K2M-QX9D-H4TB-R8NW-C3VF-J6PZ-A1GE-Y5KS-M0QT-B7XH-W2DN-F9RC-P4ZA');
     await user.click(screen.getByRole('button', { name: 'Add this browser' }));
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('You’re in');
-    window.history.replaceState(null, '', '/welcome');
+    replaceHistoryState(null, '', '/welcome');
     const depth = window.history.length;
     await user.click(screen.getByRole('button', { name: 'Open dilla' }));
     expect(screen.queryByRole('heading', { name: 'You’re in' })).toBeNull();
@@ -517,12 +527,12 @@ describe('App sign-in', () => {
     const fake = new FakeClient();
     startAt(fake);
     await user.click(screen.getByRole('button', { name: 'Use an existing account' }));
-    await user.click(screen.getByRole('button', { name: 'Create a new account instead' }));
+    await user.click(screen.getByRole('button', { name: 'Have an invite? Create an account' }));
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Join dilla.test');
     act(() => fake.set('account', account({ phase: 'ready' })));
-    expect(screen.getByText('Step 6 of 6')).toBeInTheDocument();
+    expect(screen.getByText('New account · step 6 of 6')).toBeInTheDocument();
     expect(screen.queryByText(/This browser is now a device of/)).toBeNull();
-    expect(screen.queryByText('Step 4 of 4')).toBeNull();
+    expect(screen.queryByText('Sign in · step 4 of 4')).toBeNull();
   });
   // web3.8 (C1): the held assertion lives only in the worker, so a reload at the key step before the registration boots
   // to needs-signup. The page starts over at onboarding step 1, and the entry leads to the login, not to the key.
@@ -543,7 +553,7 @@ describe('App sign-in', () => {
     expect(screen.queryByRole('alert')).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Use an existing account' }));
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Sign in to dilla.test');
-    expect(screen.getByText('Step 1 of 4')).toBeInTheDocument();
+    expect(screen.getByText('Sign in · step 1 of 4')).toBeInTheDocument();
     expect(screen.getByRole('textbox', { name: 'Username' })).toHaveValue('');
   });
 });
@@ -601,7 +611,7 @@ describe('App cleared', () => {
       fake.set('account', account({ phase: 'cleared', user: null, deviceId: null, signIn: null, error: RACE }));
       return Promise.reject(refusal({ code: 'E_LIST_RACE' }));
     };
-    window.history.replaceState(null, '', '/');
+    replaceHistoryState(null, '', '/');
     render(<CoreProvider client={fake}><App fatal={null} reload={reload} /></CoreProvider>);
     await user.click(screen.getByRole('textbox', { name: 'Recovery key' }));
     await user.paste('7K2M-QX9D-H4TB-R8NW-C3VF-J6PZ-A1GE-Y5KS-M0QT-B7XH-W2DN-F9RC-P4ZA');
@@ -623,15 +633,16 @@ describe('App settings and notifications', () => {
     fake.set('dms', [{ id: DM, kind: 3, members: [], name: 'bob', group: 'active' }] satisfies DmSummary[]);
     fake.set('settings', {});
   }
-  it('opens settings over the shell and returns focus to the user panel’s gear on Escape', async () => {
+  it('opens settings over the shell and returns focus to the top bar’s gear on Escape (Signal: the user panel has no gear)', async () => {
     const user = userEvent.setup();
     const fake = new FakeClient();
     ready(fake);
-    window.history.replaceState(null, '', `/c/${C}`);
+    replaceHistoryState(null, '', `/c/${C}`);
     render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
     const rail = screen.getByRole('navigation', { name: 'servers' });
     expect(within(rail).queryByRole('button', { name: 'settings' })).toBeNull();
-    const gear = () => screen.getByRole('button', { name: 'user settings' });
+    expect(screen.queryByRole('button', { name: 'user settings' })).toBeNull();
+    const gear = () => within(document.querySelector<HTMLElement>('.d-topbar')!).getByRole('button', { name: 'Open settings' });
     await user.click(gear());
     expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument();
     expect(screen.getByRole('navigation', { name: 'servers' })).toBe(rail);
@@ -654,7 +665,7 @@ describe('App settings and notifications', () => {
     const fake = new FakeClient();
     ready(fake);
     fake.set('notices', { nextId: 0, items: [] });
-    window.history.replaceState(null, '', `/c/${C}`);
+    replaceHistoryState(null, '', `/c/${C}`);
     render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
     const n: Notice = { id: 0, channelId: DM, communityId: null, kind: 'dm', senderUser: '28'.repeat(16), senderName: 'bob', body: 'yo', ts: 1_790_000_000, threadRoot: null };
     act(() => fake.set('notices', { nextId: 1, items: [n] }));
@@ -685,7 +696,7 @@ describe('App settings and notifications', () => {
     fake.set(`timeline:${DM}`, { channelId: DM, group: 'active', hasEarlier: false, items: [] });
     fake.set('notices', { nextId: 0, items: [] });
     // In the DM, so the channel is not on screen and the notice notifies.
-    window.history.replaceState(null, '', `/dm/${DM}`);
+    replaceHistoryState(null, '', `/dm/${DM}`);
     render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
     const n: Notice = { id: 0, channelId: GEN, communityId: C, kind: 'mention', senderUser: '28'.repeat(16), senderName: 'bob', body: 'look', ts: 1_790_000_000, threadRoot: ROOT };
     act(() => fake.set('notices', { nextId: 1, items: [n] }));
@@ -695,4 +706,34 @@ describe('App settings and notifications', () => {
     await vi.waitFor(() => expect(fake.callsOf('openThread')).toEqual([{ m: 'openThread', channelId: GEN, rootMsgId: ROOT }]));
     focus.mockRestore();
   });
+});
+
+it('checks for builds before login without interrupting the form', async () => {
+  const fake = new FakeClient();
+  fake.set('account', account({ phase: 'signin-login', signIn: { username: null, factor: null } }));
+  const reload = vi.fn();
+  let changed!: (entry: string) => void;
+  const watch = vi.fn((options: import('./update.ts').UpdateWatcher) => { changed = entry => options.changed(entry); return () => {}; });
+  render(<CoreProvider client={fake}><App fatal={null} update={{ currentEntry: '/assets/old.js', watch,
+    store: { load: () => Promise.resolve(null), save: async () => {}, remove: async () => {} }, reload }} /></CoreProvider>);
+  await waitFor(() => expect(watch).toHaveBeenCalled());
+  act(() => changed('/assets/new.js'));
+  expect(await screen.findByText('An update is ready. Finish or copy your current work before reloading.')).toBeInTheDocument();
+  expect(reload).not.toHaveBeenCalled();
+});
+
+it('sends coalesced input activity, with no activity on mount or foreground alone', async () => {
+  const fake = new FakeClient(); fake.set('account', account());
+  let now = Date.now(); const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+  const view = render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
+  await waitFor(() => expect(fake.callsOf('start')).toHaveLength(1));
+  document.dispatchEvent(new Event('visibilitychange'));
+  expect(fake.callsOf('presenceActivity')).toHaveLength(0);
+  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'a' }));
+  window.dispatchEvent(new Event('pointermove'));
+  expect(fake.callsOf('presenceActivity')).toHaveLength(1);
+  now += 5000;
+  window.dispatchEvent(new Event('pointerdown'));
+  expect(fake.callsOf('presenceActivity')).toHaveLength(2);
+  view.unmount(); clock.mockRestore();
 });

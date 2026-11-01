@@ -109,6 +109,15 @@ describe('voice and sound settings (L-TS-54)', () => {
       [SETTINGS.soundRing, ['on', 'off'], ['0', 'quiet']],
       // Product walk M5: the own mute and deafen kept across a reload.
       [SETTINGS.voiceSelf, ['muted', 'deafened'], ['', 'on', 'live', '1']],
+      // Signal task 10b: input and output volume (whole %, 0..200), automatic sensitivity, the threshold (whole dB, −100..0),
+      // the push-to-talk release delay (0..1000 ms in steps of 20), echo cancellation and automatic gain.
+      [SETTINGS.voiceInputVolume, ['0', '1', '57', '100', '199', '200'], ['', '-1', '201', '007', '50.5', '1e2', ' 100']],
+      [SETTINGS.voiceOutputVolume, ['0', '100', '200'], ['', '300', '01', 'loud']],
+      [SETTINGS.voiceSensitivityAuto, ['on', 'off'], ['', '1', 'true']],
+      [SETTINGS.voiceSensitivity, ['0', '-1', '-48', '-50', '-99', '-100'], ['', '1', '-0', '-101', '-050', '-48.5', '+0', '-1000']],
+      [SETTINGS.voicePttRelease, ['0', '20', '200', '980', '1000'], ['', '10', '210', '1020', '-20', '020', '200.0']],
+      [SETTINGS.voiceEcho, ['on', 'off'], ['', '0', 'yes']],
+      [SETTINGS.voiceAgc, ['on', 'off'], ['', '1', 'auto']],
     ];
     for (const [key, good, bad] of cases) {
       expect(isSettingKey(key), key).toBe(true);
@@ -117,17 +126,30 @@ describe('voice and sound settings (L-TS-54)', () => {
     }
   });
 
+  // Signal task 10 fix round 1: the Desktop notifications switch of Settings → Notifications.
+  it('admits notify.desktop as on or off', () => {
+    expect(SETTINGS.notifyDesktop).toBe('notify.desktop');
+    expect(isSettingValue('notify.desktop', 'off')).toBe(true);
+    expect(isSettingValue('notify.desktop', 'on')).toBe(true);
+    expect(isSettingValue('notify.desktop', '1')).toBe(false);
+  });
+
   it('names the keys and refuses near misses', () => {
     expect([SETTINGS.voiceInput, SETTINGS.voiceOutput, SETTINGS.voiceMode, SETTINGS.voicePttKey, SETTINGS.voiceNoise,
       SETTINGS.voiceVolume(ID), SETTINGS.soundVoice, SETTINGS.soundRing]).toEqual(['voice.input', 'voice.output', 'voice.mode',
       'voice.pttKey', 'voice.noise', `voice.volume.${ID}`, 'sound.voice', 'sound.ring']);
-    for (const bad of ['voice', 'voice.volume.', 'voice.streamVolume.', `voice.streamVolume.${ID.toUpperCase()}`, `voice.streamVolume.${ID}0`, `voice.volume.${ID.toUpperCase()}`, `voice.volume.${ID}0`, 'sound', 'sound.mention', 'voice.ptt']) {
+    for (const bad of ['voice', 'voice.volume.', 'voice.streamVolume.', `voice.streamVolume.${ID.toUpperCase()}`, `voice.streamVolume.${ID}0`, `voice.volume.${ID.toUpperCase()}`, `voice.volume.${ID}0`, 'sound', 'sound.mention', 'voice.ptt', 'voice.inputvolume', 'voice.sensitivity.auto', 'voice.echo.on']) {
       expect(isSettingKey(bad), bad).toBe(false);
     }
   });
 
   it('defaults to voice activity, noise suppression on, full volume and both sounds on', () => {
-    expect(VOICE_DEFAULTS).toEqual({ mode: 'vad', pttKey: null, noise: 'on', volume: '100', soundVoice: 'on', soundRing: 'on' });
+    expect(VOICE_DEFAULTS).toEqual({ mode: 'vad', pttKey: null, noise: 'on', volume: '100', soundVoice: 'on', soundRing: 'on',
+      inputVolume: '100', outputVolume: '100', sensitivityAuto: 'on', sensitivity: '-50', pttRelease: '200', echo: 'on', agc: 'on' });
+    // Every default is a value its key admits.
+    expect(isSettingValue(SETTINGS.voiceInputVolume, VOICE_DEFAULTS.inputVolume)).toBe(true);
+    expect(isSettingValue(SETTINGS.voiceSensitivity, VOICE_DEFAULTS.sensitivity)).toBe(true);
+    expect(isSettingValue(SETTINGS.voicePttRelease, VOICE_DEFAULTS.pttRelease)).toBe(true);
   });
 });
 

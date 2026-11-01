@@ -2,13 +2,14 @@
 // The client's answer is advisory: the instance decides every request again.
 import { PERM_ALL } from '../http/routes';
 
-/** The 25 permission bits of internal/api/perm.go (Perm*), as numbers (bit 24 fits in 32). */
+/** The 26 permission bits of internal/api/perm.go (Perm*), as numbers (bit 25 fits in 32). */
 export const PERM = {
   viewChannel: 1 << 0, sendMessages: 1 << 1, manageMessages: 1 << 2, pinMessages: 1 << 3, attachFiles: 1 << 4,
   addReactions: 1 << 5, readHistory: 1 << 6, connect: 1 << 7, speak: 1 << 8, video: 1 << 9, screenShare: 1 << 10,
   createInvite: 1 << 11, kickMembers: 1 << 12, banMembers: 1 << 13, manageChannels: 1 << 14, manageRoles: 1 << 15,
   manageCommunity: 1 << 16, viewAuditLog: 1 << 17, mentionEveryone: 1 << 18, bypassSlowmode: 1 << 19,
   administrator: 1 << 20, muteMembers: 1 << 21, moveMembers: 1 << 22, manageNicknames: 1 << 23, moderateMembers: 1 << 24,
+  controlMusic: 1 << 25,
 } as const;
 
 /** The bits a channel overwrite can neither grant nor remove (perm.go communityBits). */
@@ -23,14 +24,29 @@ export const PERM_BY_KEY = {
   manageChannels: PERM.manageChannels, manageRoles: PERM.manageRoles, manageServer: PERM.manageCommunity,
   auditLog: PERM.viewAuditLog, everyone: PERM.mentionEveryone, slowmode: PERM.bypassSlowmode, admin: PERM.administrator,
   mute: PERM.muteMembers, move: PERM.moveMembers, nicknames: PERM.manageNicknames, moderate: PERM.moderateMembers,
+  music: PERM.controlMusic,
 } as const;
 export type PermKey = keyof typeof PERM_BY_KEY;
 
-export const PERM_GROUPS: readonly { id: 'general' | 'members' | 'text' | 'voice'; keys: readonly PermKey[] }[] = [
+export const PERM_GROUPS: readonly { id: 'general' | 'members' | 'text' | 'voice' | 'music'; keys: readonly PermKey[] }[] = [
   { id: 'general', keys: ['view', 'manageChannels', 'manageRoles', 'manageServer', 'invite', 'auditLog', 'admin'] },
   { id: 'members', keys: ['kick', 'ban', 'nicknames', 'moderate'] },
   { id: 'text', keys: ['send', 'attach', 'react', 'history', 'pin', 'everyone', 'manageMessages', 'slowmode'] },
   { id: 'voice', keys: ['connect', 'speak', 'video', 'screen', 'mute', 'move'] },
+  // control_music (Task 10c): the prototype's own "Music" group under Voice.
+  { id: 'music', keys: ['music'] },
+];
+
+/**
+ * The role editor's groups are the prototype's four headings, General, Moderation, Voice and Music (Ruling AS), with
+ * every other dilla permission folded into the first three. Each group starts with the prototype's rows in its order,
+ * and Control music is under Music. Channel permissions keep PERM_GROUPS.
+ */
+export const ROLE_PERM_GROUPS: readonly { id: 'general' | 'moderation' | 'voice' | 'music'; keys: readonly PermKey[] }[] = [
+  { id: 'general', keys: ['view', 'send', 'pin', 'everyone', 'attach', 'react', 'history', 'invite'] },
+  { id: 'moderation', keys: ['manageChannels', 'kick', 'ban', 'manageMessages', 'moderate', 'nicknames', 'slowmode', 'manageRoles', 'manageServer', 'auditLog', 'admin'] },
+  { id: 'voice', keys: ['connect', 'speak', 'screen', 'video', 'mute', 'move'] },
+  { id: 'music', keys: ['music'] },
 ];
 
 export interface PermRole { id: string; position: number; allow: number; deny: number }

@@ -30,6 +30,14 @@ describe('UserPanel', () => {
     expect(screen.getByText('@ada')).toHaveAttribute('title', '@ada');
   });
 
+  it('Signal §5.4: with `line` the status shows under the name in place of @username; without onSettings there is no gear', () => {
+    render(<UserPanel {...panel({ name: 'Mira', username: 'mira', line: 'do not disturb', onSettings: undefined })} />);
+    expect(screen.getByText('do not disturb')).toHaveClass('d-user-panel__username');
+    expect(screen.queryByText('@mira')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'settings' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Mira, your status: Online' })).toBeInTheDocument();
+  });
+
   it('is a plain div with no role and no name; its toolbar carries the region name', () => {
     const { container } = render(<UserPanel {...panel()} />);
     const root = container.firstElementChild!;
@@ -159,13 +167,13 @@ describe('UserPanel', () => {
     expect(screen.getByRole('button', { name: 'mute' })).toHaveAccessibleDescription('Ctrl Shift M');
   });
 
-  it('is 52 high with a hairline top that meets the composer band (CSS pin, G3 is UI-4)', () => {
-    expect(panelCss).toMatch(/^\.d-user-panel \{[^}]*height: 3\.25rem/m);
+  it('is --panel-h (64) high with a hairline top that meets the composer band (CSS pin, G3 is UI-4)', () => {
+    expect(panelCss).toMatch(/^\.d-user-panel \{[^}]*height: var\(--panel-h\)/m);
     expect(panelCss).toMatch(/^\.d-user-panel \{[^}]*border-top: 1px solid var\(--hairline\)/m);
     expect(panelCss).not.toContain('d-user-panel__settings');
   });
 
-  it.each(['mesh', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {
+  it.each(['signal', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {
     document.documentElement.dataset.theme = theme;
     const { container } = render(<div className="d-root"><UserPanel {...(meta.args as UserPanelProps)} /></div>);
     expect((await axe(container, { rules: { 'color-contrast': { enabled: false } } })).violations).toEqual([]);

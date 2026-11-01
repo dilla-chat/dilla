@@ -86,7 +86,7 @@ export function KickFlow(props: ModFlowProps): React.JSX.Element {
   };
 
   return (
-    <ConfirmDialog open={props.open} title={t('mod.kick.title', vars)} body={t('mod.kick.body', vars)} confirmLabel={t('mod.kick.confirm')}
+    <ConfirmDialog open={props.open} person={vars.name === '' ? undefined : vars.name} title={t('mod.kick.title', vars)} body={t('mod.kick.body', vars)} confirmLabel={t('mod.kick.confirm')}
       busyLabel={t('mod.kick.busy')} cancelLabel={t('mod.cancel')} busy={g.busy} error={g.error} attempt={g.attempt}
       onConfirm={confirm} onClose={() => props.onClose()} />
   );
@@ -136,7 +136,7 @@ export function BanFlow(props: ModFlowProps): React.JSX.Element {
   };
 
   return (
-    <ConfirmDialog open={props.open} title={t('mod.ban.title', vars)} body={t('mod.ban.body', vars)} confirmLabel={t('mod.ban.confirm')}
+    <ConfirmDialog open={props.open} person={vars.name === '' ? undefined : vars.name} title={t('mod.ban.title', vars)} body={t('mod.ban.body', vars)} confirmLabel={t('mod.ban.confirm')}
       busyLabel={t('mod.ban.busy')} cancelLabel={t('mod.cancel')} busy={g.busy} error={g.error} attempt={g.attempt}
       onConfirm={confirm} onClose={() => props.onClose()}>
       <TextField id="mod-ban-reason" label={t('mod.ban.reason')} hint={t('mod.ban.reasonHint', { name })} value={reason}
@@ -183,7 +183,7 @@ export function TimeoutFlow(props: ModFlowProps): React.JSX.Element {
   };
 
   return (
-    <ConfirmDialog open={props.open} title={t('mod.timeout.title', vars)} body={t('mod.timeout.body', vars)} confirmLabel={t('mod.timeout.confirm')}
+    <ConfirmDialog open={props.open} person={vars.name === '' ? undefined : vars.name} title={t('mod.timeout.title', vars)} body={t('mod.timeout.body', vars)} confirmLabel={t('mod.timeout.confirm')}
       busyLabel={t('mod.timeout.busy')} cancelLabel={t('mod.cancel')} busy={g.busy} error={g.error} attempt={g.attempt}
       onConfirm={confirm} onClose={() => props.onClose()}>
       <Select label={t('mod.timeout.duration')} value={length} onChange={value => setLength(value as TimeoutLength)} disabled={g.busy}
@@ -224,7 +224,7 @@ export function WarnFlow(props: ModFlowProps): React.JSX.Element {
       }
     })();
   };
-  return <ConfirmDialog open={props.open} title={t('mod.warn.title', vars)} body={t('mod.warn.body', vars)} confirmLabel={t('mod.warn.confirm')}
+  return <ConfirmDialog open={props.open} person={vars.name === '' ? undefined : vars.name} title={t('mod.warn.title', vars)} body={t('mod.warn.body', vars)} confirmLabel={t('mod.warn.confirm')}
     busyLabel={t('mod.warn.busy')} cancelLabel={t('mod.cancel')} busy={g.busy} error={g.error} attempt={g.attempt}
     onConfirm={confirm} onClose={() => props.onClose()}>
     <TextField id="mod-warn-reason" label={t('mod.warn.reason')} value={reason} onChange={value => { setReason(value); g.setError(null); }} disabled={g.busy || request.current !== null} />

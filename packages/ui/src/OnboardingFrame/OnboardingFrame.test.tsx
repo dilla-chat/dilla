@@ -24,11 +24,19 @@ describe('OnboardingFrame', () => {
     const main = screen.getByRole('main');
     expect(main).not.toContainElement(screen.getByText('DILLA'));
     const order = Array.from(main.children).map(el => el.className);
-    expect(order).toEqual(['d-onboarding-frame__title', 'd-onboarding-frame__step d-label', 'd-onboarding-frame__body', 'd-onboarding-frame__footer']);
+    // Signal task 10 fix round 1: the step line sits in the card's head row (with the dots), drawn above the title by CSS order.
+    expect(order).toEqual(['d-onboarding-frame__title', 'd-onboarding-frame__head', 'd-onboarding-frame__body', 'd-onboarding-frame__footer']);
     expect(within(main).getByRole('heading', { level: 1, name: 'Join dilla.thim.dev' })).toBeInTheDocument();
     expect(within(main).getByText('Step 1 of 5')).toBeInTheDocument();
     expect(within(main).getByText(CONNECT)).toBeInTheDocument();
     expect(within(main).getByRole('button', { name: 'Continue' })).toBeInTheDocument();
+  });
+
+  it('draws the progress dots: done and current in the accent, the current one wide, and hides them from assistive technology', () => {
+    const { container } = render(<OnboardingFrame title="Sign in" stepLabel="Sign in · step 2 of 4" progress={{ n: 2, total: 4 }} footer={null}>x</OnboardingFrame>);
+    const dots = Array.from(container.querySelectorAll('.d-onboarding-frame__dot'));
+    expect(dots.map(d => d.getAttribute('data-state'))).toEqual(['done', 'current', null, null]);
+    expect(container.querySelector('.d-onboarding-frame__dots')).toHaveAttribute('aria-hidden', 'true');
   });
 
   it('moves focus to the heading on mount and whenever the title changes', () => {

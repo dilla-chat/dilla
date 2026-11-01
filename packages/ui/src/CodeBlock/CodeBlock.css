@@ -1,0 +1,22 @@
+/* README §6.4, the prototype's code card: 8px card on bg-2 with a hairline-2 frame, a 30px bg-3 header, a numbered body that scrolls sideways. */
+.d-code-block { max-width: 40rem /* 640px */; min-width: 0; border: 1px solid var(--hairline-2); border-radius: var(--r-lg); background: var(--bg-2); overflow: hidden; animation: d-up var(--duration-slow) var(--ease-out) both; }
+.d-code-block__head { display: flex; align-items: center; gap: 0.5rem; height: 1.875rem /* 30px */; padding: 0 0.375rem 0 0.75rem; border-bottom: 1px solid var(--hairline); background: var(--bg-3); }
+.d-code-block__lang { font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking-wide); text-transform: uppercase; color: var(--accent-2); }
+.d-code-block__count { font-size: var(--text-micro); color: var(--fg-faint); }
+.d-code-block__copy { margin-left: auto; height: 1.375rem /* 22px */; padding: 0 0.5rem; display: flex; align-items: center; gap: 0.3125rem /* 5px */; font: inherit; font-size: var(--text-meta); color: var(--fg-strong); background: transparent; border: 0; border-radius: var(--r-row); cursor: pointer; }
+.d-code-block__copy:hover { background: var(--surface-hi); color: var(--fg); }
+.d-code-block__body { margin: 0; max-height: 20rem /* 320px */; overflow: auto; padding: 0.5rem 0; font: inherit; font-size: var(--text-ui); line-height: 1.1875rem /* 19px */; }
+.d-code-block__body > code { display: block; font: inherit; counter-reset: d-code-line; }
+.d-code-block__line { display: flex; min-width: max-content; counter-increment: d-code-line; }
+.d-code-block__line:hover { background: var(--code-row-hover); }
+/* The line number is generated, so it is never part of the code's text (copy, a screen reader). */
+.d-code-block__line::before { content: counter(d-code-line) / ""; position: sticky; left: 0; width: 2.375rem /* 38px */; flex: none; padding-right: 0.75rem; box-sizing: border-box; text-align: right; color: var(--code-line-no); background: var(--bg-2); user-select: none; font-variant-numeric: tabular-nums; }
+.d-code-block__src { white-space: pre; padding-right: 1rem; color: var(--fg-body); }
+.d-code-block [data-tok="key"] { color: var(--accent-2); }
+.d-code-block [data-tok="str"] { color: var(--ok-text); }
+.d-code-block [data-tok="num"] { color: var(--warn); }
+.d-code-block [data-tok="com"] { color: var(--code-comment); font-style: italic; }
+.d-code-block [data-tok="bool"] { color: var(--code-bool); }
+.d-code-block [data-tok="kw"] { color: var(--code-keyword); }
+.d-code-block [data-tok="punct"] { color: var(--fg-2); }
+@media (prefers-reduced-motion: reduce) { .d-code-block { animation: none; } }

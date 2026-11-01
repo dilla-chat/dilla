@@ -12,6 +12,7 @@ import { formatTime } from '../../strings/index.ts';
 import { A, GEN, NOW, MEMBERS, O1, P1, P2, PEER, ownRow, peerRow } from '../../test/conversation.tsx';
 import { ThreadView } from './ThreadView.tsx';
 import type { ProfileOpener } from './MessageItem.tsx';
+import { toolbarButton, toolbarLabels } from '../../test/toolbar.ts';
 
 const ROOT = P1;
 
@@ -142,7 +143,7 @@ describe('ThreadView (web3.7)', () => {
   });
   const toolbar = (id: string) => within(document.querySelector(`.d-thread-pane .d-message-row[data-msg-id="${id}"]`) as HTMLElement)
     .getByRole('toolbar', { name: 'actions for this message' });
-  const labels = (id: string) => within(toolbar(id)).getAllByRole('button').map(b => b.textContent);
+  const labels = (id: string) => toolbarLabels(toolbar(id));
   it('offers react on every row, edit and delete on own replies, and no reply, pin or thread', () => {
     setup();
     expect(labels(P2)).toEqual([en['shell.message.react']]);
@@ -150,7 +151,7 @@ describe('ThreadView (web3.7)', () => {
   });
   it('edits an own reply', async () => {
     const { fake, user } = setup();
-    await user.click(within(toolbar(O1)).getByRole('button', { name: en['shell.message.edit'] }));
+    await user.click(toolbarButton(toolbar(O1), en['shell.message.edit']));
     const editor = screen.getByRole('textbox', { name: en['shell.edit.label'] });
     expect(editor).toHaveValue('my reply');
     await user.clear(editor);
@@ -161,7 +162,7 @@ describe('ThreadView (web3.7)', () => {
   });
   it('deletes an own reply after asking', async () => {
     const { fake, user } = setup();
-    await user.click(within(toolbar(O1)).getByRole('button', { name: en['shell.message.delete'] }));
+    await user.click(toolbarButton(toolbar(O1), en['shell.message.delete']));
     expect(fake.callsOf('deleteMessage')).toEqual([]);
     await user.click(screen.getByRole('button', { name: en['shell.delete.confirm'] }));
     expect(fake.callsOf('deleteMessage')).toEqual([{ m: 'deleteMessage', channelId: GEN, msgId: O1, seq: '3' }]);
@@ -185,7 +186,7 @@ describe('ThreadView (web3.7)', () => {
     fake.set(`permissions:${A}`, { top: 0, owner: false, manageCommunity: false, manageChannels: false, kickMembers: false,
       banMembers: false, createInvite: false, manageRoles: false, loaded: true, everyoneId: everyone, overwritesLoaded: true });
     fake.set(`overwrites:${A}`, {});
-    const action = await waitFor(() => within(toolbar(P2)).getByRole('button', { name: en['shell.message.moderateRemove'] }));
+    const action = await waitFor(() => toolbarButton(toolbar(P2), en['shell.message.moderateRemove']));
     await user.click(action);
     expect(fake.callsOf('moderateRemoveMessage')).toEqual([]);
     const dialog = screen.getByRole('dialog', { name: en['shell.moderation.removeTitle'] });

@@ -1301,10 +1301,17 @@ fn enrol_second_factor_on(
             None,
         )?;
         check_status(status, &out)?;
+        // Five elements, or six since Task 11 added password_changed: only owed is read here.
         let owed = decode_strict(&out, |d: &mut Decoder<'_>| {
-            d.array(5)?;
+            let len = d.array_len()?;
+            if !(5..=6).contains(&len) {
+                return Err(CborError::WrongArrayLen {
+                    expected: 6,
+                    actual: len,
+                });
+            }
             let owed = d.uint()?;
-            for _ in 0..4 {
+            for _ in 1..len {
                 d.skip()?;
             }
             Ok(owed)

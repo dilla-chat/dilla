@@ -33,8 +33,9 @@ describe('flow 15 (change password)', () => {
     const rows = body('States').split('\n').filter(l => l.startsWith('|') && !/^\|[-| ]+\|$/.test(l));
     expect(rows.length - 1).toBeGreaterThanOrEqual(14);
   });
-  it('chrome: the lower-case row actions are lower case', () => {
+// Signal task 10 fix round 1 (Jonas, prototype wins): settings chrome follows the prototype's sentence case.
+  it('chrome: the row actions are sentence case', () => {
     const table = en as Readonly<Record<string, string>>;
-    for (const key of ['settings.password.change', 'settings.password.add']) expect(table[key], key).toBe(table[key].toLowerCase());
+    for (const key of ['settings.password.change', 'settings.password.add']) expect(table[key], key).toMatch(/^[A-Z][^A-Z]*$/);
   });
 });

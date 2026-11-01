@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 
@@ -33,6 +34,10 @@ func ReadBody(w http.ResponseWriter, r *http.Request, limit int64) ([]byte, erro
 	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		var timeout net.Error
+		if errors.As(err, &timeout) && timeout.Timeout() {
+			return nil, WithStatus(http.StatusRequestTimeout, Errorf(CodeInvalidRequest, "request body timed out"))
+		}
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
 			return nil, Errorf(CodeTooLarge, "body over %d bytes", limit)

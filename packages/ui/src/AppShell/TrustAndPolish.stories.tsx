@@ -38,10 +38,8 @@ export const Changed: Story = { render: () => frame(<section data-doc-state="tru
 </section>) };
 
 export const SearchResults: Story = { render: () => frame(<FocusSearch>
-  <SearchPalette open query="lamp" scope="all" hits={[{ id: 'hit-1', snippet: 'a lamp beside the table', location: 'general' }]}
-    labels={{ search: t('search.placeholder'), empty: t('search.noResults'), close: t('dialog.close'), scope: {
-      channel: t('search.scope.channel'), community: t('search.scope.community'), all: t('search.scope.all'),
-    } }} onQuery={noop} onScope={noop} onPick={noop} onClose={noop} />
+  <SearchPalette open query="lamp" groups={[{ id: 'messages', label: t('search.group'), items: [{ id: 'hit-1', label: 'a lamp beside the table', sub: '#general', icon: 'message-square' }] }]}
+    labels={{ search: t('search.placeholder'), placeholder: t('search.placeholder'), empty: t('search.empty', { query: 'bridge' }), close: t('dialog.close') }} onQuery={noop} onPick={noop} onClose={noop} />
   <TypingIndicator names={['Ada']} labels={{ one: en['typing.one'], many: t('typing.many') }} />
 </FocusSearch>) };
 

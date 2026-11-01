@@ -2,6 +2,8 @@ import { useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, userEvent, within } from 'storybook/test';
 import { PermissionGrid, type PermissionGridGroup, type PermValue } from './PermissionGrid.tsx';
+// The shipped copy of @dilla/web, so the Everyone story draws what the role editor draws.
+import { t, type StringKey } from '../../../web/src/strings/index.ts';
 
 // Sample strings only; the real copy comes from the web package's perm.* keys.
 const GROUPS: readonly PermissionGridGroup[] = [
@@ -65,3 +67,29 @@ export const InFlexParent: Story = {
     await expect(grid.getBoundingClientRect().width).toBeGreaterThan(300);
   },
 };
+
+// Task 10, README §5.9: @everyone in the role editor (packages/web RoleEditorFlow): PERM_GROUPS (client-core admin/perm.ts) in
+// their order, every row a toggle; what @everyone holds by default is on. Control music (DJ) is wave C.
+const PERM_GROUPS: readonly { id: string; keys: readonly string[] }[] = [
+  { id: 'general', keys: ['view', 'manageChannels', 'manageRoles', 'manageServer', 'invite', 'auditLog', 'admin'] },
+  { id: 'members', keys: ['kick', 'ban', 'nicknames', 'moderate'] },
+  { id: 'text', keys: ['send', 'attach', 'react', 'history', 'pin', 'everyone', 'manageMessages', 'slowmode'] },
+  { id: 'voice', keys: ['connect', 'speak', 'video', 'screen', 'mute', 'move'] },
+  { id: 'music', keys: ['music'] },
+];
+const EVERYONE_GROUPS: readonly PermissionGridGroup[] = PERM_GROUPS.map(g => ({
+  id: g.id, title: t(`perm.group.${g.id}` as StringKey),
+  rows: g.keys.map(k => ({ id: k, label: t(`perm.${k}` as StringKey), hint: t(`perm.${k}.hint` as StringKey), disabled: false })),
+}));
+const EVERYONE: Record<string, PermValue> = { view: 'allow', invite: 'allow', send: 'allow', attach: 'allow', react: 'allow', history: 'allow', connect: 'allow', speak: 'allow', video: 'allow', screen: 'allow' };
+function EveryoneDemo() {
+  const [values, setValues] = useState<Record<string, PermValue>>(EVERYONE);
+  return (
+    <div style={{ width: 502, maxWidth: '100%' }}>
+      <PermissionGrid label={t('roles.editor.permissions')} groups={EVERYONE_GROUPS} mode="toggle" values={values}
+        labels={{ allow: t('perm.allow'), inherit: t('perm.inherit'), deny: t('perm.deny') }}
+        onChange={(id, v) => setValues(cur => ({ ...cur, [id]: v }))} />
+    </div>
+  );
+}
+export const Everyone: Story = { render: () => <EveryoneDemo /> };

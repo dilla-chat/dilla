@@ -18,6 +18,10 @@ import (
 
 // DeviceListVerifier verifies a candidate list in the guest before it is stored.
 type DeviceListVerifier interface {
+	// WithVerification reserves the native verifier before a transaction.
+	// A wrapper must forward this alongside Verify to preserve resource order.
+	WithVerification(context.Context, func(context.Context) error) error
+
 	Verify(ctx context.Context, blob, sskPub []byte, userID id.ID) ([]mlswasi.DeviceListEntry, error)
 }
 

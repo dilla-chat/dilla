@@ -89,7 +89,7 @@ export function RingFlow(p: RingFlowProps): React.JSX.Element | null {
     <div className="dw-ring" data-doc-state="call-ring">
       <FocusKeeper />
       <RingBanner rings={rings.map(r => ({
-        callId: r.callId, busy: r.busy,
+        callId: r.callId, busy: r.busy, name: r.callerName,
         text: r.busy && p.inCallWhere !== null ? t('call.ring.busy', { name: r.callerName, where: p.inCallWhere })
           : t('call.ring.incoming', { name: r.callerName }),
       }))} labels={{ region: t('call.ring.region'), answer: t('call.ring.answer'), decline: t('call.ring.decline') }}

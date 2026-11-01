@@ -12,3 +12,5 @@ export * from './audio/speakers';
 export * from './audio/gate';
 export * from './audio/rnnoise';
 export * from './audio/microphone';
+export * from './audio/sensitivity';
+export * from './audio/input-stage';

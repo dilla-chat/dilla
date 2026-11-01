@@ -203,3 +203,7 @@ func TestBotInteractionPreflightLoaderFailsClosedOnStaleOrChangedContext(t *test
 		t.Fatal("expired admission receipt accepted")
 	}
 }
+
+func (keyedAdmissionVerifier) WithVerification(ctx context.Context, fn func(context.Context) error) error {
+	return fn(ctx)
+}

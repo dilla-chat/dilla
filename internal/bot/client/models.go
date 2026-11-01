@@ -14,11 +14,23 @@ type Discovery struct {
 	ExternalSenderPub                         []byte
 }
 type Limits struct{ Values [11]uint64 }
+
+// LegacyServerCapabilities are the capability bits (8 Polls, 9 Reminders) a server that answers
+// the eight-field installation cannot switch off; the runtime list treats them as on.
+const LegacyServerCapabilities uint64 = 1<<8 | 1<<9
+
 type Installation struct {
 	ID, CommunityID         id.ID
 	State, Revision         uint64
 	BotUser, BotDevice      *id.ID
 	Capabilities, UpdatedAt uint64
+	// Task 10c, present only when the server answered the widened shape (Widened): the manager's
+	// restart request counter and the last one this installation's runtime finished, the version
+	// the runtime last reported, and the Music page's defaults.
+	Widened                          bool
+	RestartRequested, RestartHandled uint64
+	RuntimeVersion                   *string
+	MusicVolume, MusicIdleMinutes    uint64
 }
 
 // KeyPackagePublicationReceipt is the installation's historical acceptance result. It does not

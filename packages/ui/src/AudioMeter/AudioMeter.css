@@ -1,8 +1,8 @@
-/* Twelve bars that rise left to right: lit in the accent, unlit as a 2px baseline tick in the edge colour, so the
+/* Twelve bars that rise left to right: lit in --ok (Signal's live colour, as every live meter), unlit as a 2px baseline tick in the edge colour, so the
    level reads by height and fill without colour too. */
 .d-audio-meter { display: inline-flex; align-items: flex-end; gap: 2px; height: 0.875rem; }
 .d-audio-meter__bar { display: block; width: 0.25rem; border: 0; border-radius: 1px; background: transparent; box-shadow: inset 0 -2px 0 var(--edge); }
-.d-audio-meter__bar[data-on="true"] { background: var(--accent); box-shadow: none; }
+.d-audio-meter__bar[data-on="true"] { background: var(--ok); box-shadow: none; }
 @media (forced-colors: active) {
   .d-audio-meter__bar { box-shadow: inset 0 -2px 0 CanvasText; }
   .d-audio-meter__bar[data-on="true"] { background: Highlight; box-shadow: none; }

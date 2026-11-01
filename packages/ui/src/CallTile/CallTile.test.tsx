@@ -23,13 +23,26 @@ const labels: CallTileProps['labels'] = {
   volumeValue: '{n} %',
 };
 const css = readFileSync(`${process.cwd()}/src/CallTile/CallTile.css`, 'utf8');
-const rest = { own: false, volume: 100, media: null, labels, onVolume: () => {} };
+const rest = { own: false, volume: 100, media: null, labels };
 
 afterEach(() => { delete document.documentElement.dataset.theme; });
 
 describe('CallTile', () => {
+  it('task 8c: a stage tile shows its stat; a screen only while focused; a compact tile and an empty stat show none', () => {
+    const { container, rerender } = render(<CallTile view={view} {...rest} onFocusTile={() => {}} stat="opus 48k" />);
+    expect(container.querySelector('.d-call-tile__stat')).toHaveTextContent('opus 48k');
+    rerender(<CallTile view={view} {...rest} source="screen" onFocusTile={() => {}} stat="1440p · 30 fps" />);
+    expect(container.querySelector('.d-call-tile__stat')).toBeNull();
+    rerender(<CallTile view={view} {...rest} source="screen" focused onFocusTile={() => {}} stat="1440p · 30 fps" />);
+    expect(container.querySelector('.d-call-tile__stat')).toHaveTextContent('1440p · 30 fps');
+    rerender(<CallTile view={view} {...rest} stat="opus 48k" />);
+    expect(container.querySelector('.d-call-tile__stat')).toBeNull();
+    rerender(<CallTile view={view} {...rest} onFocusTile={() => {}} />);
+    expect(container.querySelector('.d-call-tile__stat')).toBeNull();
+  });
+
   it('CallTile never attaches media for an unverified stream', () => {
-    const { container } = render(<CallTile view={{ ...view, state: 'unverified' }} own={false} volume={100} media={new MediaStream()} labels={labels} onVolume={() => {}} />);
+    const { container } = render(<CallTile view={{ ...view, state: 'unverified' }} own={false} volume={100} media={new MediaStream()} labels={labels} />);
     expect(container.querySelector('video, audio')).toBeNull();
     expect(screen.getByText('unverified stream')).toBeInTheDocument();
   });
@@ -50,9 +63,10 @@ describe('CallTile', () => {
     expect(container.querySelector('.d-call-tile__avatar-ring')).toHaveAttribute('data-speaking', 'true');
     expect(container.querySelector('.d-state-dot')).toBeNull();
     expect(container.querySelector('[data-state="speaking"]')).toBeNull();
-    expect(container.querySelector('.d-call-tile__states .d-sr-only')).toHaveTextContent('speaking');
-    expect(css).toMatch(/\.d-call-tile\[data-speaking="true"\] \{[^}]*outline: 2px solid var\(--accent\)/);
-    expect(css).toMatch(/\.d-call-tile__avatar-ring\[data-speaking="true"\] \{[^}]*outline: 2px solid var\(--accent\)/);
+    expect(container.querySelector('.d-call-tile__more .d-sr-only')).toHaveTextContent('speaking');
+    // Signal §5.6 (the prototype's tile): a 2px --ok edge, and the avatar's 5px --ok ring past a 3px tile-coloured gap with scale(1.06).
+    expect(css).toMatch(/\.d-call-tile\[data-stage\]\[data-speaking="true"\] \{ box-shadow: inset 0 0 0 2px var\(--ok\); \}/);
+    expect(css).toMatch(/\.d-call-tile__avatar-ring\[data-speaking="true"\] \{ box-shadow: 0 0 0 3px var\(--stage-tile\), 0 0 0 5px var\(--ok\); transform: scale\(1\.06\); \}/);
   });
 
   it('not speaking: no ring, no speaking word', () => {
@@ -62,11 +76,28 @@ describe('CallTile', () => {
     expect(container.querySelector('.d-call-tile__states .d-sr-only')).toBeNull();
   });
 
-  it("D3: the stage tile's volume range is hidden until hover or focus-within (CSS pin), and stays in the tree for the keyboard", () => {
-    expect(css).toMatch(/\.d-call-tile\[data-stage\] \.d-call-tile__volume \{[^}]*opacity: 0;[^}]*pointer-events: none/);
-    expect(css).toMatch(/\.d-call-tile\[data-stage\]:hover \.d-call-tile__volume,\s*\.d-call-tile\[data-stage\]:focus-within \.d-call-tile__volume \{[^}]*opacity: 1;[^}]*pointer-events: auto/);
-    render(<CallTile view={view} {...rest} onFocusTile={() => {}} />);
-    expect(screen.getByRole('slider', { name: 'volume for ada' })).toBeInTheDocument();
+  it('fix round 1: a tile has no volume control of its own; a right-click, Shift+F10 or the ContextMenu key opens its person menu', async () => {
+    const onSelect = vi.fn();
+    const onChange = vi.fn();
+    const menu = { person: { name: 'ada', where: 'in harbour' }, label: 'actions for ada', onSelect,
+      volume: { label: 'User volume', value: 70, valueText: '70%', onChange },
+      items: [{ id: 'mute', label: 'Mute for me', icon: 'volume-x' as const, check: false }, { id: 'copy', label: 'Copy username', icon: 'copy' as const }] };
+    const { container } = render(<CallTile view={view} {...rest} onFocusTile={() => {}} menu={menu} />);
+    expect(screen.queryByRole('slider')).toBeNull();
+    expect(css).not.toMatch(/d-call-tile__volume|d-call-tile__stream/);
+    fireEvent.contextMenu(container.querySelector('li')!, { clientX: 10, clientY: 10 });
+    expect(screen.getByRole('menu', { name: 'actions for ada' })).toBeInTheDocument();
+    expect(screen.getByRole('slider', { name: 'User volume' })).toHaveValue('70');
+    fireEvent.change(screen.getByRole('slider', { name: 'User volume' }), { target: { value: '120' } });
+    expect(onChange).toHaveBeenCalledWith(120);
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Mute for me' }));
+    expect(onSelect).toHaveBeenCalledWith('mute');
+    expect(screen.getByRole('menu', { name: 'actions for ada' })).toBeInTheDocument(); // an on/off item keeps the menu open
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Copy username' }));
+    expect(onSelect).toHaveBeenCalledWith('copy');
+    expect(screen.queryByRole('menu')).toBeNull();
+    fireEvent.keyDown(container.querySelector('li')!, { key: 'F10', shiftKey: true });
+    expect(screen.getByRole('menu', { name: 'actions for ada' })).toBeInTheDocument();
   });
 
   it('a quiet chip shows the volume in the caption when it is not 100, and none at 100', () => {
@@ -78,7 +109,7 @@ describe('CallTile', () => {
     expect(container.querySelector('.d-call-tile__chip')).toBeNull();
     rerender(<CallTile view={view} {...rest} volume={150} />);
     expect(container.querySelector('.d-call-tile__chip')).toHaveTextContent('150 %');
-    expect(css).toMatch(/\.d-call-tile__chip \{[^}]*font-family: var\(--font-mono\);[^}]*background: var\(--surface-hi\)/);
+    expect(css).toMatch(/\.d-call-tile__chip \{[^}]*background: var\(--surface-hi\)/);
   });
 
   it('#37: a screen tile marked silent shows the glyph-only no-sound state; a screen with sound, a camera or an avatar does not', () => {
@@ -97,71 +128,8 @@ describe('CallTile', () => {
     expect(container.querySelector('[data-state="no-sound"]')).toBeNull();
   });
 
-  it('#37 T5: a remote screen with a stream has its own range and a mute toggle; a muted stream is pressed and not marked silent', () => {
-    const onVolume = vi.fn();
-    const onMute = vi.fn();
-    const stream = { volume: 70, labels: { volume: 'stream volume for ada', mute: 'mute stream' }, onVolume, onMute };
-    const { container, rerender } = render(<CallTile view={view} {...rest} source="screen" stream={stream} />);
-    const range = screen.getByRole('slider', { name: 'stream volume for ada' });
-    expect(range).toHaveValue('70');
-    expect(range).toHaveAttribute('aria-valuetext', '70 %');
-    fireEvent.change(range, { target: { value: '90' } });
-    expect(onVolume).toHaveBeenCalledWith(90);
-    const mute = screen.getByRole('button', { name: 'mute stream' });
-    expect(mute).toHaveAttribute('aria-pressed', 'false');
-    expect(mute.querySelector('[data-icon="volume-2"]')).not.toBeNull();
-    fireEvent.click(mute);
-    expect(onMute).toHaveBeenCalledTimes(1);
-    rerender(<CallTile view={view} {...rest} source="screen" stream={{ ...stream, volume: 0 }} />);
-    const pressed = screen.getByRole('button', { name: 'mute stream' });
-    expect(pressed).toHaveAttribute('aria-pressed', 'true');
-    expect(pressed.querySelector('[data-icon="volume-x"]')).not.toBeNull();
-    expect(container.querySelector('[data-state="no-sound"]')).toBeNull();
-    // Not on the own tile, and not on a camera tile.
-    rerender(<CallTile view={view} {...rest} own source="screen" stream={stream} />);
-    expect(screen.queryByRole('button', { name: 'mute stream' })).toBeNull();
-    rerender(<CallTile view={view} {...rest} source="camera" stream={stream} />);
-    expect(screen.queryByRole('button', { name: 'mute stream' })).toBeNull();
-    expect(screen.queryByRole('slider', { name: 'stream volume for ada' })).toBeNull();
-  });
-
-  it('#37 round 2: the phone has a volume button that opens a keyboard-operable popover with the range; Escape closes it and focus returns', () => {
-    const onVolume = vi.fn();
-    const stream = { volume: 70, labels: { volume: 'stream volume for ada', mute: 'mute stream' }, onVolume, onMute: () => {} };
-    render(<CallTile view={view} {...rest} source="screen" stream={stream} />);
-    const open = screen.getByRole('button', { name: 'stream volume for ada' });
-    expect(open).toHaveTextContent('70 %');
-    expect(open).toHaveAttribute('aria-expanded', 'false');
-    expect(screen.queryByRole('group', { name: 'stream volume for ada' })).toBeNull();
-    fireEvent.click(open);
-    expect(open).toHaveAttribute('aria-expanded', 'true');
-    const group = screen.getByRole('group', { name: 'stream volume for ada' });
-    const range = within(group).getByRole('slider');
-    expect(range).toHaveFocus();
-    fireEvent.change(range, { target: { value: '120' } });
-    expect(onVolume).toHaveBeenCalledWith(120);
-    fireEvent.keyDown(range, { key: 'Escape' });
-    expect(screen.queryByRole('group', { name: 'stream volume for ada' })).toBeNull();
-    expect(open).toHaveFocus();
-    expect(open).toHaveAttribute('aria-expanded', 'false');
-    // A press outside closes it too.
-    fireEvent.click(open);
-    fireEvent.pointerDown(document.body);
-    expect(screen.queryByRole('group', { name: 'stream volume for ada' })).toBeNull();
-    // CSS pins: only the mute and the volume button show on the phone, both 44 px; the desktop range is hidden there.
-    expect(css).toMatch(/\.d-call-tile\[data-stage\] \.d-call-tile__stream > \.d-call-tile__volume \{ display: none; \}/);
-    expect(css).toMatch(/\.d-call-tile__streamvol \{[^}]*height: 2\.75rem/);
-  });
-
-  it('#37 round 2: the phone caption starts at its start edge and wraps only when needed (no 8ch name box, no centring)', () => {
-    expect(css).toMatch(/\.d-call-tile\[data-stage\] \.d-call-tile__name \{ max-width: 100%; min-width: 0; text-align: start; \}/);
-    expect(css).toMatch(/flex-wrap: wrap; justify-content: flex-start; text-align: start;/);
-  });
-
-  it('#37 T5: the mute is a 40 px square on a desktop and 44 px on a phone, shown while pressed (CSS pins)', () => {
-    expect(css).toMatch(/\.d-call-tile__mute \{[^}]*width: 2\.5rem; height: 2\.5rem/);
-    expect(css).toMatch(/\.d-call-tile \.d-call-tile__mute \{ width: 2\.75rem; height: 2\.75rem; \}/);
-    expect(css).toMatch(/\.d-call-tile__mute\[aria-pressed="true"\] \{ opacity: 1; pointer-events: auto; \}/);
+  it('Signal §5.6: the caption is a 22px chip over the bottom left, 8px in, on the 0.8 scrim', () => {
+    expect(css).toMatch(/\.d-call-tile\[data-stage\] \.d-call-tile__caption \{[^}]*position: absolute; left: 0\.5rem; bottom: 0\.5rem;[^}]*height: 1\.375rem;[^}]*background: var\(--scrim-caption\)/);
   });
 
   it('the own tile and a screen tile have no chip', () => {
@@ -224,24 +192,9 @@ describe('CallTile', () => {
     expect(container.textContent).not.toMatch(/[⊘⊗]/);
   });
 
-  it('a native range sets the volume of another person, and the own tile has none', () => {
-    const onVolume = vi.fn();
-    const { rerender } = render(<CallTile view={view} {...rest} volume={120} onVolume={onVolume} />);
-    const range = screen.getByRole('slider', { name: 'volume for ada' });
-    expect(range).toHaveAttribute('type', 'range');
-    expect(range).toHaveAttribute('min', '0');
-    expect(range).toHaveAttribute('max', '200');
-    expect(range).toHaveAttribute('step', '10');
-    expect(range).toHaveValue('120');
-    fireEvent.change(range, { target: { value: '150' } });
-    expect(onVolume).toHaveBeenCalledWith(150);
-    rerender(<CallTile view={view} {...rest} own />);
-    expect(screen.queryByRole('slider')).toBeNull();
-  });
-
-  it('speaks the volume through the localised value label (M6)', () => {
-    render(<CallTile view={view} {...rest} volume={120} labels={{ ...labels, volumeValue: '{n} procent' }} />);
-    expect(screen.getByRole('slider', { name: 'volume for ada' })).toHaveAttribute('aria-valuetext', '120 procent');
+  it('writes the volume chip through the localised value label (M6)', () => {
+    const { container } = render(<CallTile view={view} {...rest} volume={120} labels={{ ...labels, volumeValue: '{n} procent' }} />);
+    expect(container.querySelector('.d-call-tile__chip')).toHaveTextContent('120 procent');
   });
 
   it('web3.8: a tile has no inset; a camera and a screen are two tiles (R27)', () => {
@@ -259,15 +212,8 @@ describe('CallTile', () => {
     expect(container.querySelector('video')).not.toHaveAttribute('data-mirror');
   });
 
-  it('product walk M6: the volume shows its value and marks 100 %', () => {
-    const { container } = render(<CallTile view={view} {...rest} volume={120} />);
-    expect(container.querySelector('.d-call-tile__volume-value')).toHaveTextContent('120 %');
-    const range = screen.getByRole('slider', { name: 'volume for ada' });
-    const list = container.querySelector(`datalist#${CSS.escape(range.getAttribute('list') ?? '')}`);
-    expect([...(list?.querySelectorAll('option') ?? [])].map(o => o.getAttribute('value'))).toEqual(['100']);
-  });
 
-  it.each(['mesh', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {
+  it.each(['signal', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {
     document.documentElement.dataset.theme = theme;
     const { container } = render(<div className="d-root"><ul><CallTile {...(meta.args as CallTileProps)} /></ul></div>);
     // jsdom has no layout or canvas, so contrast is left to the Storybook axe run in a real browser.

@@ -15,7 +15,22 @@ describe('negotiateSession', () => {
     expect(request.method).toBe('POST');
     expect(request.headers.get('authorization')).toBe('Bearer enrolled-token');
     expect(request.headers.get('content-type')).toBe('application/cbor');
-    expect(decode(request.body!)).toEqual([[3n, 2n], [1n], [1n]]);
+    // Task S1 part 2: wire 4 (the account-kind attestation) first, then 3 and 2.
+    expect(decode(request.body!)).toEqual([[5n, 4n, 3n, 2n], [1n], [1n]]);
+  });
+
+  it('accepts wire 5 realtime capability', async () => {
+    const transport = fakeTransport();
+    transport.replies.push(cborReply(200, [5, 1, 1]));
+    await expect(negotiateSession(new HttpClient(transport.deps))).resolves.toEqual({ wire: 5, e2ee: 1, media: 1, botAvailable: true });
+  });
+
+  it('accepts wire 4 with bot capability', async () => {
+    const transport = fakeTransport();
+    transport.replies.push(cborReply(200, [4, 1, 1]));
+    await expect(negotiateSession(new HttpClient(transport.deps))).resolves.toEqual({
+      wire: 4, e2ee: 1, media: 1, botAvailable: true,
+    });
   });
 
   it('reports wire 2 as available without bot capability', async () => {
@@ -34,7 +49,7 @@ describe('negotiateSession', () => {
     });
   });
 
-  it.each([[[]], [[3, 1]], [[3, 1, 1, 1]], [[0, 1, 1]], [['3', 1, 1]], [[4, 1, 1]], [[3, 2, 1]]])
+  it.each([[[]], [[3, 1]], [[3, 1, 1, 1]], [[0, 1, 1]], [['3', 1, 1]], [[6, 1, 1]], [[1, 1, 1]], [[3, 2, 1]]])
     ('rejects malformed or invalid accepted versions %j', async (reply) => {
     const transport = fakeTransport();
     transport.replies.push(cborReply(200, reply));

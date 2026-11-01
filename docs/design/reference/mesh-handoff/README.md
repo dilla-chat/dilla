@@ -182,9 +182,11 @@ Three modes based on the active view:
 - Live filtered message results: channel · author (colored) · time, body snippet with `<mark>` highlight on the query
 - Empty state pre-typing: tips for `from:`, `in:`, `has:` operators (mock — not actually parsed)
 
-### Settings modal
+### Settings prototype (superseded)
 
-- Centered overlay, 960×640, two-column layout (220px nav + 1fr pane)
+The prototype below is historical reference. Current settings use the fullscreen workspace in [Flow 18](../../flows/18-fullscreen-settings.md): a 15rem desktop sidebar with independently scrolling content, and a grouped phone index opening individual sections. The prototype's floating modal dimensions and tab organization are superseded.
+
+- Fullscreen layout and current navigation: follow Flow 18
 - Header: "User" or "Team" eyebrow + title
 - User tabs: Account / Notifications / Voice & video / Appearance / Privacy & encryption / Keyboard shortcuts
 - Team tabs: Team info / Invites / Roles & permissions / Federation / Audit log

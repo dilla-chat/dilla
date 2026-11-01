@@ -16,7 +16,7 @@ describe('flow 09 (v0.1.0-web3.5, roles and private channels)', () => {
     for (const [key, value] of pairs) {
       for (const f of FORBIDDEN as { word: string; re: RegExp }[]) expect(f.re.test(value), `${key}: ${f.word}`).toBe(false);
     }
-    expect(pairs.length).toBe(181);
+    expect(pairs.length).toBe(185); // Task 10c fix round 1: perm.group.moderation
     const listed = new Set(pairs.map(([key]) => key));
     const added = Object.keys(en).filter(k => /^(roles|perm|chperm|mention|serverNotify)\./.test(k));
     expect(added.filter(k => !listed.has(k))).toEqual([]);
@@ -52,8 +52,12 @@ describe('flow 09 (v0.1.0-web3.5, roles and private channels)', () => {
     'serverNotify.mode.nothing', 'serverNotify.mute', 'serverNotify.suppressEveryone',
   ];
   it('chrome: 63 lower-case keys are pinned', () => { expect(LOWER.length).toBe(63); });
-  it('chrome: the lower-case chrome keys are lower case', () => {
+// Signal task 10 fix round 1 (Jonas, prototype wins): settings chrome follows the prototype's sentence case.
+  it('chrome: the pinned chrome keys keep their case (lower case, or the settings sentence case of Signal task 10)', () => {
     const table = en as Readonly<Record<string, string>>;
-    for (const key of LOWER) expect(table[key], key).toBe(table[key].toLowerCase());
+    for (const key of LOWER) {
+      const value = table[key];
+      expect(value, key).toBe(/^(perm|serverNotify)\./.test(key) && !/^perm\.group\./.test(key) ? value.charAt(0).toUpperCase() + value.slice(1).toLowerCase() : value.toLowerCase());
+    }
   });
 });

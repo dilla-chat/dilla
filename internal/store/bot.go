@@ -28,22 +28,42 @@ const (
 // BotInstallationRow mirrors bot_installations. RemovedAt is a durable tombstone;
 // removed installations are never reactivated.
 type BotInstallationRow struct {
-	ID                   id.ID
-	CommunityID          id.ID
-	RuntimeID            *id.ID
-	UserID               *id.ID
-	DeviceID             *id.ID
-	RoleID               *id.ID
-	State                uint8
-	Revision             uint64
-	Capabilities         uint8
+	ID          id.ID
+	CommunityID id.ID
+	RuntimeID   *id.ID
+	UserID      *id.ID
+	DeviceID    *id.ID
+	RoleID      *id.ID
+	State       uint8
+	Revision    uint64
+	// Capabilities is the approved 10-bit mask: bits 0..7 are the original byte, bits 8 (polls)
+	// and 9 (reminders) live in feature_capabilities (Task 10c).
+	Capabilities         uint16
 	ApprovedBy           id.ID
 	ApprovedAt           int64
 	CredentialVerifiedAt *int64
 	Created              int64
 	Updated              int64
 	RemovedAt            *int64
+	// Task 10c. The Music page's defaults, the restart counter pair and the runtime's reported
+	// version. They are written only by SetBotMusicSettings, RequestBotRestart and
+	// SetBotRuntimeStatus; Create and UpdateBotInstallation leave them to the database.
+	MusicVolume      uint8
+	MusicIdleMinutes uint8
+	RestartRequested uint64
+	RestartHandled   uint64
+	RuntimeVersion   *string
 }
+
+// BotKnownCapabilities is every capability bit an installation may hold (Task 10c widened it
+// from eight to ten bits).
+const BotKnownCapabilities uint16 = 1<<10 - 1
+
+// Music page values (Task 10c): exactly the prototype's options.
+var (
+	BotMusicVolumes     = []uint8{25, 50, 75, 100}
+	BotMusicIdleMinutes = []uint8{5, 15, 30}
+)
 
 // BotGroupRegistrationReceipt is the immutable acceptance record for a managed-bot
 // group registration. BodySHA256 hashes the exact canonical request body with the
@@ -118,6 +138,14 @@ type BotInstallations interface {
 	// ListBotInstallationsForRuntime filters to visible pending or runtime-owned rows before limit.
 	ListBotInstallationsForRuntime(context.Context, id.ID, id.ID, int32) ([]BotInstallationRow, error)
 	UpdateBotInstallation(context.Context, id.ID, uint64, BotInstallationRow) error
+	// SetBotMusicSettings stores the Music page's defaults on a non-removed installation.
+	SetBotMusicSettings(ctx context.Context, installationID id.ID, volume, idleMinutes uint8) error
+	// RequestBotRestart asks the runtime to restart the installation and returns the request
+	// counter. A request while an earlier one is still unhandled coalesces into it.
+	RequestBotRestart(ctx context.Context, installationID id.ID) (uint64, error)
+	// SetBotRuntimeStatus records the owning runtime's version and the last restart request it
+	// finished (never above the requested counter, never backwards).
+	SetBotRuntimeStatus(ctx context.Context, installationID, runtimeID id.ID, version *string, handled uint64) error
 	LockBotInstallation(context.Context, id.ID) error
 	LockBotCommunity(context.Context, id.ID) error
 }

@@ -40,6 +40,7 @@ cat >"$STUBS/runuser" <<'STUB'
 echo "runuser $*" >>"$BOT_TEST_LOG"
 while [ "$#" -gt 0 ] && [ "$1" != -- ]; do shift; done
 shift
+case "$1" in */env) shift; export "$1"; shift ;; esac
 case "$1" in
 */dillabot) shift; exec "$FAKE_BOT" "$@" ;;
 *) exec "$@" ;;
@@ -52,6 +53,7 @@ if [ "$1" = start ] && [ -n "${BOT_TEST_FAIL_START_FIRST:-}" ]; then
 	n=$((n + 1)); echo "$n" >"$BOT_TEST_START_COUNT"
 	[ "$n" -gt 1 ] || exit 1
 fi
+if [ "$1" = show-environment ] && [ -n "${BOT_TEST_SERVICE_PATH:-}" ]; then echo "PATH=$BOT_TEST_SERVICE_PATH"; fi
 if [ "$1" = is-active ]; then [ "${BOT_TEST_ACTIVE:-1}" = 1 ]; fi
 STUB
 cat >"$STUBS/dillad" <<'STUB'
@@ -69,6 +71,10 @@ if [ -n "${BOT_TEST_DOCTOR_FAIL_AFTER_FIRST:-}" ]; then
 	n=0; [ ! -f "$BOT_TEST_DOCTOR_COUNT" ] || n="$(cat "$BOT_TEST_DOCTOR_COUNT")"
 	n=$((n + 1)); echo "$n" >"$BOT_TEST_DOCTOR_COUNT"
 	[ "$n" -lt 2 ] || exit 1
+fi
+if [ -n "${BOT_TEST_DOCTOR_PATH_LOG:-}" ]; then
+	echo "$PATH" >"$BOT_TEST_DOCTOR_PATH_LOG"
+	if command -v yt-dlp >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then echo 'youtube_dependencies OK'; else echo 'youtube_dependencies WARN: yt-dlp unavailable; node unavailable'; fi
 fi
 echo 'runtime_credential OK'
 echo 'native_helper OK'
@@ -148,6 +154,8 @@ reconcile_interval = "30s"
 CONFIG
 )" ] || fail "Bot config content differs from expected"
 cmp -s "$HERE/dillabot.service" "$ROOT/etc/systemd/system/dillabot.service" || fail "installed systemd unit differs from deploy/dillabot.service"
+grep -q '^DevicePolicy=closed$' "$ROOT/etc/systemd/system/dillabot.service" || fail "Bot unit does not restrict device access"
+if grep -Eq '^(PrivateDevices|RestrictSUIDSGID)=yes$' "$ROOT/etc/systemd/system/dillabot.service"; then fail "Bot unit blocks the nested YouTube sandbox"; fi
 grep -q '^dillad admin bot-runtime create --config=' "$LOG" || fail "runtime credential was not created via dillad admin"
 grep -q '^systemctl enable --now dillabot$' "$LOG" || fail "service was not enabled"
 if grep -q 'dbr_' "$LOG" "$TMP/err" "$TMP/out"; then fail "runtime credential leaked to output"; fi
@@ -209,6 +217,59 @@ grep -q 'upgraded Bot service did not remain active' "$TMP/err" || fail "start f
 [ "$(cat "$TMP/start-count")" = 2 ] || fail "old service was not started after rollback"
 pass "service start failure rolls back Bot files and state"
 
+# Pre-upgrade copies are pruned only after a successful upgrade: the 3 newest
+# stay (the new one included) and only the installer's own plain directories go.
+BP="$ROOT/var/backups/dillabot"
+rm -rf "$BP"
+mkdir -m 0700 "$BP"
+for n in 1 2 3 4 5; do mkdir -m 0700 "$BP/2020010${n}T000000Z-aaaaaaa$n"; done
+mkdir -m 0700 "$BP/notes-from-operator"
+mkdir -m 0700 "$TMP/link-target"
+ln -s "$TMP/link-target" "$BP/20200101T000000Z-linkaaaa"
+printf 'x\n' >"$BP/20200101T000000Z-fileaaaa"
+sleep 1
+if PATH="$STUBS:$PATH" DILLA_INSTALL_ROOT="$ROOT" BOT_TEST_LOG="$LOG" STUB_ACCOUNT_EXISTS=1 "$INSTALL" --upgrade --release-url="file://$REL2" >"$TMP/out" 2>"$TMP/err"; then :; else fail "pruning upgrade failed: $(cat "$TMP/err")"; fi
+for n in 1 2 3; do [ ! -e "$BP/2020010${n}T000000Z-aaaaaaa$n" ] || fail "old copy $n was not pruned"; done
+for n in 4 5; do [ -d "$BP/2020010${n}T000000Z-aaaaaaa$n" ] || fail "newest old copy $n was pruned"; done
+grep -q "removed old pre-upgrade copy $BP/20200101T000000Z-aaaaaaa1" "$TMP/err" || fail "pruned path was not logged"
+[ "$(find "$BP" -mindepth 1 -maxdepth 1 -type d -name '2???????T??????Z-????????' | wc -l)" -eq 3 ] || fail "upgrade did not leave exactly 3 copies"
+[ -d "$BP/notes-from-operator" ] || fail "non-matching directory was pruned"
+[ -L "$BP/20200101T000000Z-linkaaaa" ] && [ -d "$TMP/link-target" ] || fail "symlink or its target was pruned"
+[ -f "$BP/20200101T000000Z-fileaaaa" ] || fail "plain file was pruned"
+pass "upgrade keeps the 3 newest copies and leaves foreign entries alone"
+
+# A failed upgrade prunes nothing, however many copies exist.
+BEFORE_COUNT="$(find "$BP" -mindepth 1 -maxdepth 1 | wc -l)"
+rm -f "$TMP/doctor-count"
+if PATH="$STUBS:$PATH" DILLA_INSTALL_ROOT="$ROOT" BOT_TEST_LOG="$LOG" BOT_TEST_DOCTOR_COUNT="$TMP/doctor-count" BOT_TEST_DOCTOR_FAIL_AFTER_FIRST=1 STUB_ACCOUNT_EXISTS=1 "$INSTALL" --upgrade --keep-backups 1 --release-url="file://$REL3" >"$TMP/out" 2>"$TMP/err"; then fail "upgrade with failed doctor succeeded"; fi
+[ "$(find "$BP" -mindepth 1 -maxdepth 1 | wc -l)" -eq $((BEFORE_COUNT + 1)) ] || fail "failed upgrade pruned copies"
+if grep -q 'removed old pre-upgrade copy' "$TMP/err"; then fail "failed upgrade logged a prune"; fi
+pass "failed upgrade prunes nothing"
+
+# --keep-backups 1 keeps only the new copy.
+sleep 1
+if PATH="$STUBS:$PATH" DILLA_INSTALL_ROOT="$ROOT" BOT_TEST_LOG="$LOG" STUB_ACCOUNT_EXISTS=1 "$INSTALL" --upgrade --keep-backups 1 --release-url="file://$REL3" >"$TMP/out" 2>"$TMP/err"; then :; else fail "keep-backups 1 upgrade failed: $(cat "$TMP/err")"; fi
+[ "$(find "$BP" -mindepth 1 -maxdepth 1 -type d -name '2???????T??????Z-????????' | wc -l)" -eq 1 ] || fail "--keep-backups 1 did not keep only the new copy"
+[ "$(cat "$ROOT/usr/local/bin/dillabot")" = bot-binary-v3 ] || fail "keep-backups upgrade did not install v3"
+pass "--keep-backups 1 keeps only the new copy"
+
+# The copy this run made is never pruned, even when another copy's name sorts after it
+# (two copies in one UTC second order by their random suffix).
+mkdir -m 0700 "$BP/20991231T235959Z-zzzzzzzz"
+sleep 1
+if PATH="$STUBS:$PATH" DILLA_INSTALL_ROOT="$ROOT" BOT_TEST_LOG="$LOG" STUB_ACCOUNT_EXISTS=1 "$INSTALL" --upgrade --keep-backups 1 --release-url="file://$REL2" >"$TMP/out" 2>"$TMP/err"; then :; else fail "later-sorting copy upgrade failed: $(cat "$TMP/err")"; fi
+NEW_COPY="$(sed -n 's|.*cold pre-upgrade copy retained at \([^ ]*\) .*|\1|p' "$TMP/err")"
+[ -n "$NEW_COPY" ] && [ -d "$NEW_COPY" ] || fail "the new copy was pruned behind a later-sorting name"
+[ ! -e "$BP/20991231T235959Z-zzzzzzzz" ] || fail "the later-sorting old copy was kept over the new one"
+[ "$(find "$BP" -mindepth 1 -maxdepth 1 -type d -name '2???????T??????Z-????????' | wc -l)" -eq 1 ] || fail "--keep-backups 1 left more than the new copy"
+pass "the new copy survives a later-sorting name"
+
+: >"$LOG"
+reject_args "--keep-backups 0" --upgrade --keep-backups 0
+reject_args "a negative --keep-backups" --upgrade --keep-backups=-1
+reject_args "a nonnumeric --keep-backups" --upgrade --keep-backups many
+reject_args "an empty --keep-backups" --upgrade --keep-backups=
+
 # A second guided first-install run must preserve the existing secret/state and refuse.
 BEFORE="$(sha256sum "$ROOT/etc/dillabot/runtime.token")"
 # shellcheck disable=SC2086
@@ -216,6 +277,34 @@ if PATH="$STUBS:$PATH" DILLA_INSTALL_ROOT="$ROOT" BOT_TEST_LOG="$LOG" "$INSTALL"
 [ "$(sha256sum "$ROOT/etc/dillabot/runtime.token")" = "$BEFORE" ] || fail "refused rerun changed credential"
 grep -q 'files or state already exist' "$TMP/err" || fail "rerun refusal was not explained"
 pass "rerun refuses without replacing Bot credential"
+
+# The doctor's dependency check runs with the service's PATH, not the caller's:
+# `pct exec` has no /usr/local/bin, while systemd's default PATH does.
+SVCBIN="$TMP/service-bin"
+mkdir -p "$SVCBIN"
+printf '#!/bin/sh\n' >"$SVCBIN/yt-dlp"
+printf '#!/bin/sh\n' >"$SVCBIN/node"
+chmod +x "$SVCBIN/yt-dlp" "$SVCBIN/node"
+PROOT="$TMP/path-root"
+mkdir -p "$PROOT/etc/dilla" "$PROOT/usr/local/bin" "$PROOT/etc/ssl/certs"
+chmod 0750 "$PROOT/etc/dilla"
+printf 'server config\n' >"$PROOT/etc/dilla/dilla.toml"
+cp "$STUBS/dillad" "$PROOT/usr/local/bin/dillad"
+DOCTOR_PATH_LOG="$TMP/doctor-path"
+# shellcheck disable=SC2086
+if PATH="$STUBS:/usr/bin:/bin" DILLA_INSTALL_ROOT="$PROOT" BOT_TEST_LOG="$LOG" BOT_TEST_DOCTOR_PATH_LOG="$DOCTOR_PATH_LOG" BOT_TEST_SERVICE_PATH="$SVCBIN:/usr/bin" "$INSTALL" --base-url=https://chat.example.org --instance-id=01010101010101010101010101010101 --dillad-config="$PROOT/etc/dilla/dilla.toml" --release-url="file://$REL" >"$TMP/out" 2>"$TMP/err"; then :; else fail "install with a minimal caller PATH failed: $(cat "$TMP/err")"; fi
+[ "$(cat "$DOCTOR_PATH_LOG")" = "$SVCBIN:/usr/bin" ] || fail "doctor ran with PATH $(cat "$DOCTOR_PATH_LOG"), not the service PATH"
+grep -q "service PATH $SVCBIN:/usr/bin" "$TMP/err" || fail "installer did not name the PATH it used for the doctor"
+grep -q '^systemctl show-environment$' "$LOG" || fail "installer did not ask systemd for its default PATH"
+pass "the doctor's dependency check uses the service PATH, not the caller's"
+# A PATH set by the installed unit wins over systemd's default.
+printf '[Service]\nEnvironment="PATH=%s"\n' "$SVCBIN" >"$TMP/unit-with-path"
+eval "$(sed -n '/^service_path() {/,/^}/p' "$INSTALL")"
+UNIT="$TMP/unit-with-path"
+[ "$(PATH="$STUBS:/usr/bin:/bin" BOT_TEST_LOG="$LOG" BOT_TEST_SERVICE_PATH=/elsewhere service_path)" = "$SVCBIN" ] || fail "the unit's Environment=PATH is not read"
+UNIT="$TMP/no-such-unit"
+[ "$(PATH="$STUBS:/usr/bin:/bin" BOT_TEST_LOG="$LOG" service_path)" = /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin ] || fail "the documented systemd PATH is not the last fallback"
+pass "an Environment=PATH in the unit is honoured"
 
 # A tampered release artifact is rejected before account, state or service changes.
 BAD="$TMP/bad-release"

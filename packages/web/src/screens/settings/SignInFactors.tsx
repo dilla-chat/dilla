@@ -4,12 +4,21 @@
 // Making new backup codes runs the other way round: "are you sure" first, then the step-up, then the codes are made.
 // The token lives in this component's state until the one command that spends it; the codes live there until their dialog closes.
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Banner, Button, CodeList, ConfirmDialog, Dialog, SettingsRow } from '@dilla/ui';
+import { Banner, Button, CodeList, ConfirmDialog, Dialog, SettingsRow, type IconName } from '@dilla/ui';
 import { browser } from '../../browser.ts';
 import { useCore } from '../../core/context.tsx';
 import { errorOf, type UiError } from '../../core/errors.ts';
 import { useSlice } from '../../core/use-slice.ts';
 import { formatDay, t } from '../../strings/index.ts';
+
+/** Task 11 (Q7): "3 weeks ago" for a unix time, in the largest unit that fits (the prototype's "Changed 3 weeks ago"). */
+export function timeAgo(unix: number, now = Date.now()): string {
+  const s = Math.max(0, Math.round(now / 1000 - unix));
+  const rtf = new Intl.RelativeTimeFormat('en', { numeric: 'auto' });
+  const steps: [Intl.RelativeTimeFormatUnit, number][] = [['year', 31_536_000], ['month', 2_592_000], ['week', 604_800], ['day', 86_400], ['hour', 3600], ['minute', 60]];
+  for (const [unit, size] of steps) if (s >= size) return rtf.format(-Math.floor(s / size), unit);
+  return rtf.format(0, 'second');
+}
 import { useRun } from '../admin/shared.ts';
 import { FactorSetup, sharedRefusal } from '../factor/FactorSetup.tsx';
 import { PasswordDialog } from './PasswordDialog.tsx';
@@ -32,15 +41,17 @@ type Notice = 'expired' | 'again';
  * One factor as a settings row (I2): its name and detail on the left, its action in the 16rem control column. An unavailable action is
  * aria-disabled rather than disabled, so it stays reachable and its visible reason is its description.
  */
-function FactorLine({ id, title, heading, detail, action, actionLabel, actionAriaLabel, disabledReason }: {
-  id: string; title: string; heading?: boolean; detail?: string; action?: () => void; actionLabel?: string; actionAriaLabel?: string; disabledReason?: string;
+function FactorLine({ id, icon, title, heading, detail, action, actionLabel, actionAriaLabel, disabledReason, danger }: {
+  id: string; icon: IconName; title: string; heading?: boolean; detail?: string; action?: () => void; actionLabel?: string; actionAriaLabel?: string; disabledReason?: string;
+  /** A removal: the prototype's destructive settings button (README §5.9). */
+  danger?: boolean;
 }): React.JSX.Element {
   const blocked = action !== undefined && disabledReason !== undefined;
   return (
-    <SettingsRow id={id} label={title} hint={detail} headingLevel={heading ? 3 : undefined}>
+    <SettingsRow id={id} icon={icon} label={title} hint={detail} headingLevel={heading ? 3 : undefined}>
       {action && actionLabel ? (
         <>
-          <Button aria-label={actionAriaLabel} aria-disabled={blocked ? 'true' : undefined}
+          <Button variant={danger ? 'danger' : 'default'} aria-label={actionAriaLabel} aria-disabled={blocked ? 'true' : undefined}
             aria-describedby={blocked ? `${id}-reason` : undefined} onClick={blocked ? undefined : action}>{actionLabel}</Button>
           {blocked ? <p id={`${id}-reason`} className="dw-factor-reason">{disabledReason}</p> : null}
         </>
@@ -238,33 +249,34 @@ export function SignInFactors({ announce, live }: { announce: (text: string) => 
       {factors === undefined ? (loadError === null ? <p aria-busy="true">{t('factorSettings.loading')}</p> : null) : (
         <>
           <p>{t('factorSettings.body', { instance })}</p>
-          <FactorLine id="signin-password" heading title={t('factorSettings.password')}
-            detail={t(factors.hasPassword ? 'factorSettings.password.set' : 'factorSettings.password.none')}
+          <FactorLine id="signin-password" icon="lock" heading title={t('factorSettings.password')}
+            // Task 11 (Q7): "Changed 3 weeks ago" when the server knows; an unknown date shows no line.
+            detail={!factors.hasPassword ? t('factorSettings.password.none')
+              : factors.passwordChanged == null ? undefined : t('factorSettings.password.changed', { when: timeAgo(factors.passwordChanged) })}
             action={askPassword} actionLabel={t(factors.hasPassword ? 'settings.password.change' : 'settings.password.add')} />
           {factors.totp === null ? (
-            <FactorLine id="signin-totp" heading title={t('factorSettings.totp')} detail={t('factorSettings.totp.off')}
+            <FactorLine id="signin-totp" icon="smartphone" heading title={t('factorSettings.totp')} detail={t('factorSettings.totp.off')}
               action={() => { begin({ kind: 'totp' }); }} actionLabel={t('factorSettings.totp.add')} />
           ) : (
-            <FactorLine id="signin-totp" heading title={t('factorSettings.totp')} detail={t('factorSettings.totp.on', { date: formatDay(factors.totp.confirmedAt) })}
+            <FactorLine id="signin-totp" icon="smartphone" danger heading title={t('factorSettings.totp')} detail={t('factorSettings.totp.on', { date: formatDay(factors.totp.confirmedAt) })}
               action={() => { begin({ kind: 'remove', which: 'totp', credId: null, name: '' }); }}
               actionLabel={t('factorSettings.totp.remove')} actionAriaLabel={t('factorSettings.totp.removeLabel')} disabledReason={only} />
           )}
           {/* Walk I3: the passkeys sit together, one row each, with the add action in the passkeys row after them. */}
           {passkeys.map(k => (
-            <FactorLine key={k.id} id={`signin-passkey-${k.id}`} title={k.name}
-              detail={k.lastUsed === null ? t('factorSettings.passkeys.unused', { created: formatDay(k.created) })
-                : t('factorSettings.passkeys.used', { created: formatDay(k.created), used: formatDay(k.lastUsed) })}
+            // Task 11 (Q7): the prototype's passkey row: "Passkey" over its name.
+            <FactorLine key={k.id} id={`signin-passkey-${k.id}`} icon="fingerprint" danger title={t('factorSettings.passkey')}
+              detail={k.name}
               action={() => { begin({ kind: 'remove', which: 'passkey', credId: k.id, name: k.name }); }}
               actionLabel={t('factorSettings.passkeys.remove')} actionAriaLabel={t('factorSettings.passkeys.removeLabel', { name: k.name })}
               disabledReason={only} />
           ))}
-          <FactorLine id={PASSKEYS_ID} heading title={t('factorSettings.passkeys')} detail={passkeys.length === 0 ? t('factorSettings.passkeys.none') : undefined}
+          <FactorLine id={PASSKEYS_ID} icon="fingerprint" heading title={t('factorSettings.passkeys')} detail={passkeys.length === 0 ? t('factorSettings.passkeys.none') : undefined}
             action={addPasskey} actionLabel={t('factorSettings.passkeys.add')} />
-          <FactorLine id="signin-codes" heading title={t('factorSettings.codes')}
+          <FactorLine id="signin-codes" icon="key" heading title={t('factorSettings.codes')}
             detail={factors.backupCodesLeft === 0 ? t('factorSettings.codes.none') : factors.backupCodesLeft === 1
               ? t('factorSettings.codes.one') : t('factorSettings.codes.other', { count: factors.backupCodesLeft })}
             action={askCodes} actionLabel={t('factorSettings.codes.make')} />
-          <p>{t('factorSettings.lost', { instance })}</p>
         </>
       )}
 

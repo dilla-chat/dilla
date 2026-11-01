@@ -20,8 +20,8 @@ UPDATE bot_runtimes SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL;
 SELECT * FROM bot_runtimes WHERE id > ? ORDER BY id LIMIT sqlc.arg(max_rows);
 
 -- name: CreateBotInstallation :exec
-INSERT INTO bot_installations(id, community_id, runtime_id, user_id, device_id, role_id, state, revision, capabilities, approved_by, approved_at, credential_verified_at, created, updated, removed_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO bot_installations(id, community_id, runtime_id, user_id, device_id, role_id, state, revision, capabilities, approved_by, approved_at, credential_verified_at, created, updated, removed_at, feature_capabilities)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: GetBotInstallation :one
 SELECT * FROM bot_installations WHERE id = ?;
@@ -36,7 +36,7 @@ SELECT * FROM bot_installations WHERE id > ? AND removed_at IS NULL ORDER BY id 
 SELECT * FROM bot_installations WHERE device_id = ? AND id > ? ORDER BY id LIMIT sqlc.arg(max_rows);
 
 -- name: UpdateBotInstallation :execrows
-UPDATE bot_installations SET runtime_id = ?, user_id = ?, device_id = ?, role_id = ?, state = ?, revision = ?, capabilities = ?, approved_by = ?, approved_at = ?, credential_verified_at = ?, updated = ?, removed_at = ?
+UPDATE bot_installations SET runtime_id = ?, user_id = ?, device_id = ?, role_id = ?, state = ?, revision = ?, capabilities = ?, approved_by = ?, approved_at = ?, credential_verified_at = ?, updated = ?, removed_at = ?, feature_capabilities = ?
 WHERE id = ? AND revision = ? AND removed_at IS NULL;
 
 -- name: LockBotInstallation :one
@@ -95,3 +95,17 @@ SELECT * FROM bot_installations
 WHERE id > ? AND removed_at IS NULL
   AND (runtime_id = ? OR (state = 0 AND runtime_id IS NULL))
 ORDER BY id LIMIT sqlc.arg(max_rows);
+
+-- name: SetBotMusicSettings :execrows
+UPDATE bot_installations SET music_volume = ?, music_idle_minutes = ?
+WHERE id = ? AND removed_at IS NULL;
+
+-- name: RequestBotRestart :one
+UPDATE bot_installations SET restart_requested = CASE WHEN restart_requested > restart_handled THEN restart_requested ELSE restart_requested + 1 END
+WHERE id = ? AND removed_at IS NULL
+RETURNING restart_requested;
+
+-- name: SetBotRuntimeStatus :execrows
+UPDATE bot_installations SET runtime_version = sqlc.narg(runtime_version),
+  restart_handled = CASE WHEN sqlc.arg(handled) > restart_handled THEN MIN(sqlc.arg(handled), restart_requested) ELSE restart_handled END
+WHERE id = sqlc.arg(id) AND runtime_id = sqlc.arg(runtime_id) AND removed_at IS NULL;

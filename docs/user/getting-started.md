@@ -47,17 +47,17 @@ for 24 hours and can be used once. It is an invite to the instance, not to a ser
 
 The server rail is now: the **@** tile for your direct messages at the top, a line, your servers, and one dashed **+**
 tile ("add a server") under them. The **+** opens one window, "add a server", with two choices: **join a server**, for an
-invite someone sent you, and **new server**. Beside the server's name sits a gear, **server settings**, and the owner has a
+invite someone sent you, and **new server**. Beside the server's name sits the **⌄** server menu (settings, mute, notifications), and the owner has a
 **+** ("new channel") at the top of the channel list. Invite links are made in server settings, under **invites**
 ([Invite people](#invite-people)).
 
 ![The rail and the top of the sidebar: the @ tile, the tile MC for Midgard Crew and the dashed + tile, and beside them
-Midgard Crew with the + for a new channel and the gear for server settings](screenshots/create-rail.png)
+Midgard Crew with the + for a new channel and the ⌄ server menu](screenshots/create-rail.png)
 
 On a phone the same top of the list is on the **home** tab:
 
 ![The top of the home tab at 360 pixels wide: the @ tile, the server tile and the + tile, and Midgard Crew with the + for a
-new channel, the magnifier and the gear](screenshots/create-rail-phone.png)
+new channel and the ⌄ server menu](screenshots/create-rail-phone.png)
 
 At phone width the empty app and the dialog look like this:
 
@@ -79,10 +79,15 @@ If the server is not created, the name field says why:
 
 ## Invite people
 
-Anyone whose roles allow it can make an invite link to a server; by default that is every member. Press **server
-settings** under the server's name. It opens on the first section you may use, so a member who may only invite lands
-on **invites**. Choose "Expires after" and "Max uses" (7 days and 10 uses to start with) and press **Make link**. The
-dialog "Invite people to {server}" says "Making an invite link…", then shows the link and copies it for you:
+Anyone whose roles allow it can make an invite link to a server; by default that is every member. Open the **⌄** server menu beside the server's name and choose **Server settings**
+(or press the settings button in the top bar). It opens on the first section you may use, so a member who may only invite lands
+on **invites** ("Anyone with a link can join {server}."). Choose "Expires after" (1 hour, 1 day, 7 days or never) and
+"Uses" (1, 10 or ∞; 7 days and 10 to start with) and press **Make invite link**. **never** and **∞** are offered only
+to people who may manage the server: a link that never runs out is a standing way in. The link shows once, with
+**Copy** and "It can be used 10 times and expires in 7 days. The link is shown only once."; **Copy** puts it on your
+clipboard and files it under "Active links", where each link shows its uses and expiry and has **Revoke**.
+
+The **/invite** command, typed in the message field, makes a quick link (7 days, 10 uses) in a dialog:
 
 ![The dialog "Invite people to Midgard Crew" over server settings, under invites: the invite link in a field, the
 button copy link, "Expires after: 7 days. Max uses: 10 uses." and "Invite link copied."](screenshots/create-invite-desktop.png)
@@ -147,13 +152,12 @@ whose roles allow it; the owner can do everything here.
 
 ### Server settings
 
-Press the gear (**server settings**) beside the server's name. The dialog "Server settings" has a list of sections
-("server settings sections"). A section shows only to someone whose roles allow it: **overview** (manage the server),
-**channels** (manage channels), **invites** (create invites) and **bans** (ban members). The dialog opens on the
-first section you may see. The last section differs: a
-non-owner sees only **leave server**; the owner sees **delete server** and **hand over server**. Leaving a server
-lives here, not in the sidebar. Tab stops once on the list and once on the section; Escape closes the dialog and focus
-goes back to the gear.
+Open the **⌄** server menu beside the server's name and choose **Server settings**, or press the settings button
+in the top bar. Server settings is the full-screen settings workspace, the same one as your own settings, with the
+server's sections in its list. A section shows only to someone whose roles allow it: **overview** (manage the server),
+**channels** (manage channels), **invites** (create invites) and **bans** (ban members). It opens on the
+first section you may see. **Leave server** is in **Overview**, and the owner sees **delete server** and **hand over server**
+too. Leaving a server lives here, not in the sidebar. Escape closes the workspace and focus goes back to where you came from.
 
 **Overview** renames the server. Type under "Server name" ("Up to 255 characters (fewer for some letters). Everyone in the server, and the host,
 can read it.") and press **Save**: "Saving…", then "Saved." The field says why when it did not work: "Give the server
@@ -161,13 +165,15 @@ a name.", "That name is too long. A server name is up to 255 characters (fewer f
 cannot rename this server." or "Could not save ({code}). Try again." If "Someone else changed the server at the same
 time. Check the name and save again.
 
-Under the name, **Overview** holds the "inactive timeout": how long someone can sit idle in a voice channel on a computer
-before the server disconnects them and lists them as away in the server's AFK channel ("Members idle in voice this long
-are disconnected and listed as away in AFK. Phones are not disconnected."). Choose 1 minute, 5 minutes (the default), 15 minutes, 30 minutes or 1 hour, and press **Save**.
+Under the name, **Overview** holds the **Inactive timeout** ("Idle computers in voice move to AFK after"): how long someone
+can sit idle in a voice channel on a computer before the server disconnects them and lists them as away in the server's AFK
+channel; phones are not disconnected. Choose 1m, 5m (the default), 15m, 30m or 1h, and press **Save**. The same card ends with
+**Leave server** ("You can rejoin with a new invite"): **Leave** asks first; an owner is told to hand the server over or
+delete it instead.
 There is no AFK channel to pick: every server has one called "AFK" ([Voice, calls and media
 files](voice.md#afk-channels)).
 
-![Server settings → overview: the server name and the "inactive timeout" set to 5 minutes](screenshots/afk-settings-desktop.png)
+![Server settings → Overview with server name and inactive timeout](screenshots/fullscreen-settings-overview-desktop.png)
 
 The field says why when saving did not work: "Someone else changed the server at the same time. Check the name and save
 again." means you should look at the name that is there now and save again.
@@ -179,8 +185,8 @@ up**, **move down** and **delete**; the screen announces "{name} moved." after a
   messages.") and **Create**.
 - **edit** opens "Edit #{name}" (or "Edit {name}" for a voice channel, "Edit category {name}" for a category). You
   can change the "Channel name" ("Up to 100 characters (fewer for some letters)."), the "Topic" of a text channel ("Shown under the channel name.
-  Up to 1024 characters (fewer for some letters). The host can read it.") and its "Category". A category has only a name. The header of an open
-  text channel has the same **edit channel** for whoever may manage channels; it opens this dialog for that channel.
+  Up to 1024 characters (fewer for some letters). The host can read it.") and its "Category". A category has only a name. The channel's row menu in the channel list has the same
+  **edit channel** for whoever may manage channels; it opens this dialog for that channel.
 - The **AFK** channel is in the list too. It has **edit** (its name and category only, with "This is the server’s AFK
   channel. Nobody is connected here; people who are away are listed."), and no **delete** and no move up or down: it can be renamed and moved to another
   category, but it always stays last in its list.
@@ -188,11 +194,13 @@ up**, **move down** and **delete**; the screen announces "{name} moved." after a
   someone already saved stay with them. This cannot be undone." A voice channel is removed too and a call in it
   ends. Deleting a category keeps its channels, without a category. Focus starts on **Cancel**.
 
-**Invites** makes and lists invite links. Choose "Expires after" (30 minutes up to 30 days) and "Max uses" (1 use, or
-a number), then **Make link**. "An invite lasts at most 30 days and admits at most 1000 people." The new link shows
-as in [Invite people](#invite-people). The list under it has one row per live link: "by {name}, {used} of {max}
-uses, expires {date}", with **revoke**. "Invite link revoked." means people can no longer join with it. An empty list
-says "No live invite links." **Invites** is open to everyone whose roles allow them to invite, not only to the owner.
+**Invites** makes and lists invite links, as in [Invite people](#invite-people). Under "Active links" each live
+link shows its uses ("3 / 10 uses", or "3 / ∞ uses" with no limit) and its expiry ("expires {date}", or "expires
+never"), with **Revoke**. **Invites** is open to everyone whose roles allow them to invite, not only to the owner.
+
+A link that never expires or has no use limit keeps working after the person who made it loses the right to make
+one, or leaves the server: revoke it from "Active links" if it should stop. Such links are marked "∞" or "expires
+never" in the list.
 
 Invite links cannot be shown again. "The server keeps only a fingerprint of each link, so a link cannot be shown
 again. Make a new one to share." Copy a link when you make it; if it is lost, revoke it and make another.
@@ -249,7 +257,7 @@ kicking." (and the same for banning), or "{name} is no longer in {server}."
 
 ### Leave, hand over and delete
 
-Anyone but the owner can leave: open the gear beside the server's name, then **leave server** in the list of sections. It asks "Leave {server}?", "You leave every channel and call of
+Anyone but the owner can leave: open **Server settings** (from the **⌄** menu beside the server's name), then **Leave server** in **Overview**. It asks "Leave {server}?", "You leave every channel and call of
 {server}. To come back you need an invite." and says "You left {server}." The owner sees "You own {server}, so you
 cannot leave it. Hand it to another member or delete it."
 
@@ -282,35 +290,32 @@ edit roles, and **manage channels** to change a channel. The owner can do everyt
 
 ### Make and edit roles
 
-In **server settings**, **roles** sits between **channels** and **invites**. It shows only to someone whose roles
-include manage roles. The list is "Roles": "Roles group what people may do. A higher role outranks the ones below it,
-and you can change only roles below your own highest role. Everyone in the server, and the host, can see every role,
-its permissions and who holds it." Each row has the role's name and "{count} members" (no colour dot), with **edit**,
-**move up**, **move down** and **delete**. "@everyone" is last: "Everyone in the server holds this role. Its
-permissions are where every member starts." A role at or above your highest role says "above your highest role" and
-has no buttons. The screen announces "{name} moved." after a move.
+In **server settings**, **roles** sits between **channels** and **invites** ("Members get the permissions of every
+role they hold."). Everyone can see every role, its permissions and who holds it; changing them needs manage roles.
+On the left is the list of roles, each with its colour dot and member count: "@everyone" first, then the others from
+the highest down, and **New role** under them. On a phone the list sits above the editor. Picking a role opens it on
+the right:
 
-**new role** (or **edit** on a row) opens "New role in {server}" (or "Edit {name}"):
+- "Role name": up to 100 characters (fewer for some letters). It saves when you leave the field or press Enter.
+  "@everyone" cannot be renamed.
+- "Colour": six swatches (pink, blue, amber, green, orange, grey; a role with another colour keeps it as a seventh,
+  "current colour"). The colour shows on the names of people who hold the role in the member list, and on the role's
+  chip in their profile card. The arrow keys move between swatches. A swatch saves at once.
+- "Permissions": four groups (General, Moderation, Voice, Music), each permission a switch with a hint. A switch
+  saves at once. Music has **Control music (DJ)**: "Play, queue, skip, stop and set volume with Glenn in voice". A
+  permission you do not hold cannot be switched: "You do not hold this permission, so you cannot give or take it." A
+  role at or above your highest role cannot be changed at all.
 
-- "Role name": up to 100 characters (fewer for some letters). Everyone in the server, and the host, can read it.
-- "Colour": a row of swatches (no colour, red, orange, amber, green, teal, cyan, blue, indigo, purple, pink, brown,
-  grey). The colour shows on the names of people who hold the role in the member list, and on the role's chip in their profile card. The arrow keys
-  move between swatches.
-- **show separately in the member list** gives the role its own group in the member list, highest first.
-- **anyone can mention this role** marks the role mentionable. Anyone can mention a role marked mentionable; other
-  roles can be mentioned only by members allowed to mention @everyone. "People who may mention @everyone can mention
-  any role."
-- "Permissions": four groups (General, Members, Text, Voice), each permission with a hint. A permission you do not
-  hold is switched off: "You do not hold this permission, so you cannot give or take it."
+**New role** makes "new role" (grey, with view channels and send messages) and opens it. A change says "Saving…",
+then "{name} saved."; a refusal says why under the editor ("Give the role a name.", "You cannot change this role.
+It is at or above your highest role, or it carries a permission you do not hold.", "This server already has 250
+roles, the most it can hold." …).
 
-**Create** or **Save** says "Creating…" or "Saving…", then "{name} created." or "{name} saved." A refusal shows in the
-dialog: "Give the role a name.", "That name is too long. A role name is up to 100 characters (fewer for some letters).", "You cannot change this
-role. It is at or above your highest role, or it carries a permission you do not hold.", "Someone else moved this
-role at the same time. Check it and save again.", "This server already has 250 roles, the most it can hold." or
-"This role no longer exists."
-
-**delete** asks "Delete {name}?": "Everyone who holds it loses it, and with it any channel it opened for them. This
-cannot be undone." Focus starts on **Cancel**. **Delete** says "Deleting…", then "{name} deleted."
+The rest is in each role's menu (right-click, a long press, or Shift+F10 on the role): **Move up**, **Move down**,
+**Show separately in the member list** (its own group in the member list), **Anyone can mention this role** (anyone
+can mention a role marked mentionable; other roles can be mentioned only by members allowed to mention @everyone)
+and **Delete role**, which asks "Delete {name}?": "Everyone who holds it loses it, and with it any channel it opened
+for them. This cannot be undone." The screen announces "{name} moved." after a move.
 
 ### Permissions that do nothing yet
 
@@ -351,7 +356,7 @@ knows who is in it.
   permissions." A private channel can be opened to at most 98 roles at creation: "A private channel can be opened to
   at most 98 roles. Untick some and try again." You keep seeing a private channel you made until someone removes
   your entry, or you leave or are removed.
-- **Later.** In the channel's settings (**edit channel**), "Permissions" has the **private channel** toggle. Turning
+- **Later.** In the channel's settings (**edit channel** in its row menu), "Permissions" has the **private channel** toggle. Turning
   it on asks "Make #{name} private?": "People who are not given access leave the channel now. They keep the messages
   they already have." Turning it off asks "Open #{name} to everyone?": "Everyone in {server} joins the channel. They
   see only messages sent after they join." Both confirms start on **Cancel**. In server settings, under **channels**, a
@@ -429,8 +434,8 @@ upgrade, in an existing server:
 - @everyone and @here from members without **mention @everyone and @here** do not notify.
 
 To give everyone the old behaviour back, the owner opens
-**server settings**, **roles**, **edit** on the "@everyone" row, switches on **pin messages** and **mention @everyone
-and @here** under "Text" and chooses **Save**. To give them to some people only, make a role with them and give it
+**server settings**, **roles**, picks "@everyone" and switches on **pin messages** and **mention @everyone and @here**
+under "Text"; each switch saves at once. To give them to some people only, make a role with them and give it
 from the member list.
 
 ## Slow mode, announcement channels and threads
@@ -441,7 +446,7 @@ Slow mode makes each person wait between their messages in one text channel. It 
 not slow reactions, edits or deletes.
 
 To set it, open **server settings** → **channels** → **edit** on a text channel (or **edit channel** in the channel's
-header). Under the topic, **Slow mode** ("How long each person waits between messages. People who may bypass slow
+row menu). Under the topic, **Slow mode** ("How long each person waits between messages. People who may bypass slow
 mode do not wait.") offers off, 5 seconds, 10 seconds, 30 seconds, 1 minute, 5 minutes, 15 minutes, 1 hour and 6 hours.
 It is off to begin with. You need the right to manage channels. A channel with slow mode shows the badge "slow mode" in
 the channel list.
@@ -473,12 +478,14 @@ A thread keeps the replies to one message together, out of the channel's main co
   the chip under its first message: "1 reply" or "{count} replies". Only a message that is not itself a reply can
   start a thread.
 - On a wide screen the thread opens in the side column, where the member list was; closing it gives the member list
-  back. On a phone it is a full-screen sheet over the channel. Opening a thread puts the cursor in its message box
-  ("reply in thread") in the side column, and on **back** on the phone sheet and in the narrow overlay.
+  back. On a phone it is a full-screen sheet over the channel and the tabs, with the same head as the side column:
+  "Thread", the channel's name and the **close thread** ×. Opening a thread puts the cursor in its message box
+  ("reply in thread") in the side column, and on the × on the phone sheet and in the narrow overlay.
   A thread with no replies yet says "No replies yet." The first message is at the top; type your reply at the bottom.
 - In a thread you can react to a message, and edit or delete your own. Pin and reply stay in the channel.
-- **close thread**, **back** or Escape closes it, and the cursor returns to the message or chip you opened it from.
-- **threads** in the channel header (on a phone: in the **channel menu**) lists every thread in the channel. A channel
+- **close thread** (the ×), the phone's own back or Escape closes it, and the cursor returns to the message or chip you
+  opened it from.
+- **threads** in the channel header (an icon alone on a phone) lists every thread in the channel. A channel
   with none says "No threads in #{name} yet." If the list cannot be read it says "Threads could not be loaded." A
   thread whose first message is not available to you says "The message that started this thread cannot be shown here."
 - Replies in a thread do not appear in the channel, but they still count as unread and as mentions. Opening the channel
@@ -541,18 +548,18 @@ The factor guards signing in on a **new** browser, not message content.
 
 ### Settings → Sign-in
 
-![Settings → Sign-in: Password, Authenticator app, Passkeys, Backup codes, with add and remove buttons](screenshots/settings-signin.png)
+![Settings → Sign-in: Password, Authenticator app, Passkeys, Backup codes, with add and remove buttons](screenshots/fullscreen-settings-signin-desktop-signal.png)
 
-Open **settings** in the server rail, then **sign-in**. "What {instance} asks for when you sign in on a new browser.
-Browsers that are already set up, like this one, do not ask again." The rows are:
+Open **Settings** (the settings button in the top bar, or **You → Settings** on a phone), then **Sign-in**: "Password and second
+factors for new browsers." The rows are:
 
-- **Password**: whether the account has one, with **change password** (or **set password** when it has none). "Password changed." or "Password set." confirms it.
-- **Authenticator app**: **add authenticator app**, or **remove** when it is set up.
-- **Passkeys**: one row per passkey with its name, when it was added and when it was last used, each with its own
-  **remove**, then **add passkey**.
-- **Backup codes**: how many are left ("{count} backup codes left."), and **make new backup codes**. New codes make
-  the old ones stop working at once, so it asks "Make new backup codes?" first; the new list is shown once. When none
-  are left it says "No backup codes left. Make new ones so you are not locked out."
+- **Password**: "Changed 3 weeks ago" (from the first change after this release; a password set earlier shows no date),
+  with **Change** (or **Set password** when it has none). "Password changed." or "Password set." confirms it.
+- **Authenticator app**: "Added {date}" with **Remove**, or **Add authenticator app** when it is not set up.
+- **Passkey**: one row per passkey, its name under it, each with its own **Remove**; then **Passkeys** with **Add passkey**.
+- **Backup codes**: how many are left ("8 of 10 left"), and **New codes**. New codes make the old ones stop working at
+  once, so it asks "Make new backup codes?" first; the new list is shown once. When none are left it says "No backup
+  codes left. Make new ones so you are not locked out."
 
 Every change asks "Confirm it is you": type your password (or use a passkey, on an account without a password).
 Adding or removing a factor asks it first; making new backup codes asks it after you said yes. **remove** is disabled while it is your only second factor: "This is your only second factor. Add another
@@ -720,21 +727,19 @@ in #general and the message field](screenshots/shell-conversation.png)
 
 From left to right:
 
-- **The server rail.** It is 72 pixels wide. At the top is the **@** tile, "direct messages" ([Home and direct
+- **The server rail.** It is 56 pixels wide. At the top is the **@** tile, "direct messages" ([Home and direct
   messages](#home-and-direct-messages)); under a line come your servers, one tile each with its initials, and under
   them one dashed **+** tile, "add a server". The **+** opens "add a server" with two choices: **join a server**, where
   you paste a server invite ("A server invite, as a code or a link.") and press **Join**, and **new server**
   ([Start a server](#start-a-server)). A number on a server tile counts its unread channels, and on the **@** tile your
-  unread direct messages. The rail has no settings button: settings are behind the gear in [the user
-  panel](#the-user-panel).
-- **The channel list.** The server's name with a gear beside it, **server settings** (leave server is a section in
-  there; see [Run your server](#run-your-server) and [Invite people](#invite-people)), and under it the channels, in
+  unread direct messages. The rail has no settings button: settings are the button in the top bar, and **You → Settings** on a phone.
+- **The channel list.** The server's name with the **⌄** server menu beside it (**Server settings**, **Mute server** and the notification choices; leave server is in Settings → Overview; see [Run your server](#run-your-server) and [Invite people](#invite-people)), and under it the channels, in
   [categories](#servers-and-categories), with a **+** at the top for people who may manage channels ([Add a
   channel](#add-a-channel)). Text channels open here. Voice channels sit in the same list ([One channel
   list](#one-channel-list)), and one click joins one ([Voice, calls and media files](voice.md)). Channels the
   server can read ("Readable by this server") are listed, and selecting one shows "This channel does not open here
   yet". An unread channel has a badge, and mentions have their own count. Opening a channel marks it read.
-- **The conversation.** The channel's name at the top, with a row of icons at the right ([The header](#the-header)), the messages, and the message field
+- **The conversation.** The channel's name at the top, with **Threads** and **Members** buttons at the right ([The header](#the-header)), the messages, and the message field
   ("message #general") with **send**. Each message shows the author's display name, a small `web` tag whenever it
   was sent from a browser (always shown, so pointing at a message never moves it), and the time. Click the author's name or
   avatar to open their profile card ([Members](#members)). A message is at most 4000 bytes; in the last 400 the field shows
@@ -774,9 +779,10 @@ channel to a category with the **+** at its right ("new channel in {name}"); mak
 
 ### The header
 
-The top of a conversation has icons for **pins**, **threads**, **search**, **edit channel** (for people who manage
-channels) and **members**. Point at an icon, or Tab to it, to see its name and its shortcut. In a narrow window some of
-them fold into **more**.
+The top of a conversation has two buttons: **Threads** and **Members** with the number of members (named "Members, {n}").
+Point at one, or Tab to it, to see its name and its shortcut. There is no row of icons and no **more** menu: pins and
+**edit channel** are in the channel's row menu in the channel list, and search is the field in the top bar (Control+K).
+On a phone the header also has a search button.
 
 ![The members icon in the channel header with its name shown below it](screenshots/header-tooltip-desktop.png)
 
@@ -813,12 +819,12 @@ files](voice.md)). The server's "AFK" channel is in the list too, always the ver
 
 The bottom left of the app is yours, across the rail and the channel list:
 
-- your name and username;
+- your name and, under it, your status or custom status; while you are in a call it says where, for example "in harbour";
 - **mute** and **deafen**. Outside a call they decide how your next call starts: press **mute** and you join muted,
   press **deafen** and you join deafened. In a call they act on the live microphone and on what you hear
   ([Mute, deafen and push to talk](voice.md#mute-deafen-and-push-to-talk)). Control/⌘+Shift+M and Control/⌘+Shift+D
   press them, in a call or out of one;
-- **user settings**, behind the gear: Settings opens there, and closing it returns focus to the gear;
+- there is no settings button here: settings is the button in the top bar;
 - **your status**: a small dot on your avatar shows it. Click your name (or Tab to it and press Enter) to open the status menu and choose online, idle, do not disturb or invisible; there is no status select in the sidebar. It follows your account to your other devices. online
   becomes idle after ten minutes without activity on any of your connected devices (a status you chose yourself
   stays). do not disturb stops desktop notifications and the ring sound on every device; messages, badges and the
@@ -838,12 +844,14 @@ While you are in a call, [the call panel](voice.md#the-call-panel) sits above th
 | Escape | In the message list: back to the message field. In a dialog: closes it |
 | Tab, Shift+Tab | Moves between the regions: "skip to messages", the server rail, the server's actions (each its own stop), the channel list, the border between the channel list and the conversation, the user panel (with the call panel above it, in a call), the channel header, the messages, the message field |
 | Arrow keys | Move within the server rail (the @ tile, your servers, then add a server) and the channel list, which are one Tab stop each. On a border between panes they resize it ([Desktop layout](#desktop-layout)) |
-| Ctrl+End | In a conversation: jumps to the newest message |
+| Ctrl+End | Jumps the open conversation to its newest message, from anywhere in the tab except a text field (there it moves the cursor to the end of the text) |
 | Control+K (⌘+K on a Mac) | Opens search across everything this browser holds |
-| Control+/ | With a conversation open: opens search in this conversation (Control on a Mac too) |
+| Control+/ | Opens the same search (Control on a Mac too) |
 | Control/⌘+Shift+M, Control/⌘+Shift+D | Mute or unmute, deafen or undeafen: in a call, or before one to set how the next call starts ([Voice, calls and media files](voice.md#mute-deafen-and-push-to-talk)) |
 
 Settings uses Arrow Up, Arrow Down, Home and End to move between sections; Escape closes it.
+Settings → Keyboard lists the shortcuts as the design draws them: ⌘ stands for Control off a Mac (either works), and Esc
+("Close a window") closes the topmost dialog, sheet or Settings.
 
 Every step of the sign-up works with the keyboard alone: Tab to a field or button, Space ticks the
 recovery-key box, Enter submits a step.
@@ -865,25 +873,27 @@ at a time, with three tabs at the bottom. It works in the phone's browser; there
 
 ### The three tabs
 
-The tab bar ("sections") has **home**, **activity** and **you**. A number on a tab counts what is new there ("{name}, {count} new"
+The tab bar ("sections") has **Home**, **Activity** and **You**. A number on a tab counts what is new there ("{name}, {count} new"
 for a screen reader).
 
 - **home** holds the **@** tile and your servers in a column at the left, and beside it the channels of the one you
-  chose. The **search** (a magnifier) and the gear for **server settings** sit beside the server's name; there is no
-  menu. A member leaves a server from the gear, under **leave server**. The **+** for a new channel is at the top of the
+  chose. The **⌄** server menu beside the server's name has **Server settings**, **Mute server** and the notification choices, and
+  the line under the name shows how many are online and in voice. A member leaves a server in Settings → Overview, under **Leave server**; your own settings are under **You**. The **+** for a new channel is at the top of the
   channel list for people who may manage channels, and invite links are made in server settings, under invites. Tap a
   voice channel to see who is in it, then join.
 - The **@** tile on **home** shows your direct messages beside the rail. They are not a tab of their own.
 
 ![Home with the @ tile selected: the list of direct messages](screenshots/home-dms-phone.png)
 
-- **activity** lists the mentions and direct messages that came in, and "unread elsewhere" for channels with
-  something new. It lists what arrived since you opened dilla in this tab, and says so: "Since this tab opened."
-  Nothing new says "Nothing new. Mentions and direct messages show up here."
-- **you** holds this device's facts, the connection and the number of devices (what Settings → Diagnostics shows on
-  a wide screen), your status, **settings** and **sign out and remove this browser**.
+- **activity** is one list: a reminder that is due, then the mentions and direct messages that came in, then the other
+  channels with something new ("{count} new"). Each row says where it is (the server and channel, or "Direct message")
+  over who wrote what; tap it to go there. Nothing new says "Nothing new. Mentions and direct messages show up here."
+- **you** shows your name with "@{handle} · {status}", one box with the connection ("Connected to {host} · {ms} ms",
+  the round trip of the link) over this browser ("{browser} on {os} · device {id}"), and three rows: **Settings**,
+  **Status** (online, idle, do not disturb or invisible) and **Sign out**. The full facts of the link (node,
+  generation, devices) are in Settings → Diagnostics.
 
-![The activity tab: a direct message from Ada, the unread #loot under "unread elsewhere" and "Since this tab opened."](screenshots/phone-activity.png)
+![The activity tab: "Activity" over a direct message from Ada and #loot of Midgard Crew with "1 new"](screenshots/phone-activity.png)
 
 ### Opening a channel and going back
 
@@ -891,18 +901,18 @@ Choosing a channel or a direct message opens it over the whole screen, with the 
 you tap the message box (or any other field), the tabs step aside so that the message box sits right above the keyboard,
 and they come back when you leave the field. Tapping the tab you are already in takes you to that tab's list, and tapping
 another tab takes you to where you were in it. At the top, **back** (the arrow at the left) returns to the list you came from, and the phone's own back
-button or swipe does the same. The **channel menu** at the right holds the channel's other actions, such as pins and
-**threads**. Each tab remembers where you were in it. If you reload the page on a channel, back still takes you to its list.
+button or swipe does the same. At the right are **Threads**, **Members** and search; the channel's other actions, such as pins, are in
+its row menu in the channel list. Each tab remembers where you were in it. If you reload the page on a channel, back still takes you to its list.
 
-![A channel: back at the top left, the channel name, the channel menu, the messages and the message box](screenshots/phone-channel.png)
+![A channel: back at the top left, the channel name, Threads, Members and search, the messages and the message box](screenshots/phone-channel.png)
 
 On a phone, tap a message to show what you can do with it (**react**, **reply** and **reply in thread**); tap it again, or scroll, to hide them.
 
 ![A message tapped on a phone: react, reply and reply in thread above the message](screenshots/message-reveal-phone.png)
 
-Sheets (the member list, a thread, a pin list) open over the screen too, above the tabs, and the phone's back button
-closes the sheet first. Tapping a tab closes the sheet and opens that tab. Escape closes a sheet with a keyboard.
-Settings, and a server's settings, are pages above the tabs as well; **back** or a tab leaves them.
+Sheets (the member list, a thread, a pin list) cover the whole screen, the tabs included, with the list's own head and
+its × at the top right. The ×, the phone's back button or Escape closes the sheet, and the tabs are there again.
+User and server settings fill the window and hide the tabs. Choose a section from the grouped settings index; **Back to settings** returns to that index, and **Close settings** returns to the screen you came from. An ongoing voice session continues, with incoming-call controls and **Return to call** inside settings.
 
 ### The call bar
 
@@ -977,7 +987,7 @@ still shows the button.
 
 ![Step 1: "Sign in to dilla.test" with the username mira and a password](screenshots/signin-1-login.png)
 
-"Use the username and password of your account on {instance}." **Continue** checks them ("Checking…"). A
+"Use your dilla username and password." **Continue** checks them ("Checking…"). A
 wrong pair says "That username and password did not work." and empties the password field. **Create a new account
 instead** goes back to the sign-up.
 
@@ -1054,14 +1064,15 @@ nothing was used up, not even a backup code.
 
 ## 7. Devices
 
-Open **settings** in the server rail, then **devices**. "Every browser and app signed in to your account.
-Removing a device needs your recovery key." Each row is a device, named by the name you gave it or, without one, by the first eight characters of its
-id, with the tag "browser" or "app" and when it was last seen. The row marked "this browser" is the one you
-are using. "not yet in the device list" marks a device that signed in with your password but was never
-added; "removed" marks one that was removed. **refresh** reads the list again.
+Open **settings**, then **Devices**. "Every browser that holds your keys." Each row is a device, named by the name you
+gave it or, without one, by the first eight characters of its id. Under the name, this browser's row says "this browser
+· active now · {id}" and carries the tag "this browser"; another device's row says when it was last active and its id,
+for example "active 2 days ago · 8b20ce". The id stays on every row, because a name is held by the server and can be
+changed there. "not yet in the device list" marks a device that signed in with your password but was never added;
+"removed" marks one that was removed. **Rename** is in each row's menu (right-click, a long press, or Shift+F10).
 
-![Settings → Devices in Mira's first browser: this browser and a second browser, the buttons "sign out and
-remove this browser" and "forget this browser"](screenshots/settings-devices.png)
+![Settings → Devices: this browser with "this browser · active now" and Sign out, and a second browser with when it was
+last active and Remove](screenshots/fullscreen-settings-devices-desktop-signal.png)
 
 - **remove** on another device: "Remove this device?" "The device is signed out everywhere and leaves every
   conversation. Enter your recovery key to confirm." **Remove** does it. A wrong key says "This is not the
@@ -1071,15 +1082,12 @@ remove this browser" and "forget this browser"](screenshots/settings-devices.png
 - **rename**: every device that is not removed has one. "Name this device" starts this browser on a suggestion such as
   "Firefox on Linux" and another device on its current name. Under the field, "The server can change it, so check a
   device by its id before you remove it." and a quiet line "The server can read this, like your display name."
-  **Save** stores it (up to 64 characters), and saving an empty field clears the name. A named device shows its name
-  with the first eight characters of its id beside it, and the remove dialogs show both. Your other devices see the
-  new name after **refresh**.
-- **sign out and remove this browser**: "This browser is removed from your account and its data here is
-  cleared. You can sign in again later with your password and recovery key. Enter the key to confirm."
-  **Sign out** removes it and reloads to the first page.
-- **forget this browser**: "This clears dilla’s data from this browser and signs it out. The device stays in
-  your account’s device list until you remove it from another device." No key is needed. Remove the row from
-  another browser afterwards.
+  **Save** stores it (up to 64 characters), and saving an empty field clears the name. A named device shows its name,
+  with the first six characters of its id on the line under it, and the remove dialogs show the name and the first
+  eight. Your other devices see the new name the next time they open Devices.
+- **Sign out** on this browser's row: "Sign out and remove this browser?" "This browser is removed from your account
+  and its data here is cleared. You can sign in again later with your password and recovery key. Enter the key to
+  confirm." **Sign out** removes it and reloads to the first page.
 
 ![The dialog "Sign out and remove this browser?" with the recovery key field](screenshots/settings-devices-signout.png)
 
@@ -1099,8 +1107,7 @@ goes to this list. There is nothing to compare for your own account: the warning
 If you changed your account's identity key from another device, a device still on the old key must sign in again
 (section 6).
 
-Settings works at phone width and at high zoom: the sections stack above their content and the whole panel
-scrolls as one column.
+Settings uses a grouped index on phones and at narrow layouts. Selecting a section opens its page, with **Back to settings** above it. On desktop, the sidebar and content scroll independently. Save/Reset stays reachable above the software keyboard.
 
 ## 8. Badges, direct messages and notifications
 
@@ -1128,7 +1135,7 @@ are "direct messages and mentions", "every message" and "nothing". "Per channel"
 "all", "mentions" or "nothing", and "mute" a channel. A muted channel still shows its mention badge. "Servers" sets
 the same for a whole server ([Notifications for a server](#notifications-for-a-server)).
 
-![Notification permission before opt-in](screenshots/settings-notifications.png)
+![Notification permission before opt-in](screenshots/fullscreen-settings-notifications-desktop-signal.png)
 
 ## 9. Saying more
 
@@ -1206,7 +1213,7 @@ their browsers they use.
 ![The dialog "Pinned in #general" with Mira's packing list, "pinned by Ada", and the buttons go to message and
 unpin](screenshots/conversation-pins.png)
 
-**pin** pins a message for everyone in the conversation, and it shows "pinned". **pinned** in the channel header
+**pin** pins a message for everyone in the conversation, and it shows "pinned". **pinned** in the channel's row menu in the channel list
 opens "Pinned in #{channel}" ("Pinned with {name}" in a direct message): each pinned message with its author, its
 time, its first words and "pinned by {name}", with **go to message** and **unpin**. With nothing pinned it says
 "Nothing is pinned here yet." In a channel, who may pin follows the pinner's current right ([Pins, @everyone and @here](#pins-everyone-and-here)); the
@@ -1260,7 +1267,7 @@ with the message. When a message with files is deleted, its files are deleted fr
 
 ### GIFs
 
-When the server's managers have entered a Giphy key (server settings → overview, "GIFs (Giphy)"), a **gif** button
+When the server's managers have entered a Giphy key (server settings → GIFs, "GIFs (Giphy)"), a **gif** button
 (named "add a gif") sits next to **attach files** in that server's channels. It opens a small picker above the message
 field: type to search (or leave it empty for what is trending), use the arrow keys or Tab to move over the results, and
 press Enter, Space or click to pick one. **more** loads the next page. The footer says "Powered by GIPHY". Escape closes
@@ -1275,8 +1282,8 @@ field; press Enter to send it, with or without text, or **remove** it. Nothing i
 
 Known limits: there are no GIFs in direct messages, and a thread's reply box has no **gif** button.
 
-For a server manager: in server settings → overview, the "GIFs (Giphy)" row takes the server's Giphy API key (get one at
-developers.giphy.com). Type it, press **save**, and it shows as dots from then on: the key is never shown again, only
+For a server manager: in server settings → GIFs, the "GIFs (Giphy)" row takes the server's Giphy API key (get one at
+developers.giphy.com). Type it, press **save**, and the page confirms a key is set: the key is never shown again, only
 **replace** (type a new one) or **remove**. The **rating** select (pg-13 by default) limits what search returns.
 
 Two things to know about privacy. Your searches go to {instance}, which asks Giphy for you using the server's key, so
@@ -1300,24 +1307,26 @@ read it never contact giphy.com.
 
 ### Profile
 
-Settings → **profile** is the first section. It has three fields: **display name** (up to 64 characters, and never empty),
-**status message** (one line, up to 190 characters) and **bio** (up to 500 characters, with line breaks). **save** is
-disabled until something changes, and it sends only what you changed; emptying the status message or the bio and saving
-clears it, and spaces at either end are dropped. Text the server would refuse is named under its field as you type or paste:
-"That has characters dilla can’t show." (a tab, an invisible or direction-changing character, or a line break in the status
-message), "Too long.", or "Write something, or leave it empty." for only spaces; **save** stays disabled until it is fixed,
-and again after a save until you change something. "Profile saved" confirms it, and your name, status and bio change at once in the member list and on your
-profile card. If the save fails, "Could not save your profile. Try again." shows and what you typed stays.
+Settings → **Profile** is the first section: "How people see you across your servers." It has three fields: **Display
+name** (up to 64 characters, and never empty), **Status message** (one line, up to 190 characters) and **Bio** (up to 500
+characters, with line breaks), and beside them a preview of your profile card as you type. There is no Save button: a
+change is saved a moment after you stop typing (Enter in the name or the status saves at once), and only what you changed
+is sent; emptying the status message or the bio clears it, and spaces at either end are dropped. "Saving…" then "Profile
+saved" confirm it, and your name, status and bio change at once in the member list and on your profile card. Text the
+server would refuse is named under its field as you type or paste: "That has characters dilla can’t show." (a tab, an
+invisible or direction-changing character, or a line break in the status message), "Too long.", or "Write something, or
+leave it empty." for only spaces; nothing is saved until it is fixed, and leaving the section asks first. If the save fails,
+"Could not save your profile. Try again." shows, what you typed stays, and the next change (or Enter) tries again.
 
-The status message shows on your profile card after the presence word, and the bio shows under your name, with its line
-breaks. Both show to everyone who shares a server with you. They are stored readable by the server, like your display name,
-and are not end-to-end encrypted: do not put anything in them that the host should not read. A quiet line under each
-of the two fields says so: "The server can read this, like your display name." There is no picture yet.
+The status message shows on your profile card after your handle, and the bio shows under your name, with its line breaks.
+Both show to everyone who shares a server with you. "Name, status and bio are stored readable by the host, unlike
+messages.": they are not end-to-end encrypted, so do not put anything in them that the host should not read. There is no
+picture yet.
 Other people's changes show in your member list the next time it is read, which is when you reload or open the server.
 
 ### Contacts and safety numbers
 
-![Settings → Privacy with three contacts, each "First seen here — not verified"](screenshots/trust-privacy-desktop.png)
+![Settings → Privacy with three contacts, each "First seen here — not verified"](screenshots/fullscreen-settings-privacy-desktop-signal.png)
 
 Before this browser shows a message, it checks that the device which sent it is on its owner's signed device list.
 The first key it sees for a person is kept as that person's key. **Settings → privacy** lists the people you share
@@ -1353,7 +1362,7 @@ the new number." and approves nothing.
 A number needs a conversation you share: for someone you share none with, Privacy says "Open a conversation with
 this person to compare numbers." and shows no number.
 
-![Settings → Privacy at 360 pixels wide](screenshots/trust-privacy-phone.png)
+![Settings → Privacy at 390 pixels wide](screenshots/fullscreen-settings-privacy-phone.png)
 
 ### When a contact's identity changes
 
@@ -1382,36 +1391,38 @@ this conversation failed the identity check. Sending is paused here until it’s
 
 ![Search results for "bridge" across everything](screenshots/search-results-desktop.png)
 
-Search opens as a window over the app. It looks only through the messages this browser holds and has decrypted; nothing is
-sent to the instance. Each result shows the #channel (or the person, in a direct message), the author and the time, with
-the message under them.
+Search opens as a window over the app. It finds channels, people (your direct messages), settings, a few actions, and
+messages. Messages are looked up only in what this browser holds and has decrypted; nothing is sent to the instance. Each
+message result shows the #channel (or the person, in a direct message), the author and the time under the message.
 
-1. Press **Control+K** (⌘+K on a Mac) for "everything", or **Control+/** in a conversation for "this conversation".
-2. Type into "Search your messages". The scope buttons are "this conversation", "this community" and "everything".
+1. Press **Control+K** (⌘+K on a Mac) or **Control+/**; both open the same search.
+2. Type into "Search channels, people and messages". With nothing typed it lists your channels, people and actions; from
+   two characters it also searches messages, those of the open conversation first. Matching settings appear under
+   "Settings" and open their page.
 3. Arrow Down and Arrow Up move through the results while the cursor stays in the field; Enter or a click opens the
-   message and puts the focus on it. The window's footer reminds you: arrows to move, Enter to open, Escape to close. Escape
+   result (a message gets the focus). The window's footer reminds you: arrows to move, Enter to open. Escape
    closes search from anywhere in it, and gives the focus back to where it was. While search is open, the rest of the app cannot be reached with Tab.
 
-"Searching your messages" shows while it searches, "No results in this scope" when nothing matched, and "That
-message is no longer available" when the message was deleted or its conversation is gone. On a computer the **search** icon
-in the channel header opens it too, and on a phone the magnifier beside the server's name does.
+"Searching your messages" shows while it searches, "Nothing in this browser matches …" when nothing matched, and "That
+message is no longer available" when the message was deleted or its conversation is gone. On a computer the "Search or jump
+to…" field in the top bar opens it too, and on a phone the search button in a channel's header does.
 
 ![Search at 360 pixels wide](screenshots/search-results-phone.png)
 
 ### Appearance
 
-**Settings → appearance** sets the theme: "system", "mesh", "light" or "high contrast". The choice applies at once
-and this browser keeps it.
+**Settings → Appearance** sets the theme: "System", "Signal" (the dark default), "Light" or "High contrast". The
+choice applies at once and this browser keeps it.
 
 ### Keyboard
 
-**Settings → keyboard** ("Keyboard") lists the four shortcuts: "Control/⌘+K" opens search, "Control+/" searches this
-conversation, "Control/⌘+Shift+M" mutes or unmutes and "Control/⌘+Shift+D" deafens or undeafens in a call.
+**Settings → Keyboard** lists the shortcuts: "Control/⌘+K" (or "Control+/") opens search, "Control/⌘+Shift+M" mutes or
+unmutes and "Control/⌘+Shift+D" deafens or undeafens in a call.
 There are no single-key shortcuts.
 
 ### Diagnostics
 
-![Settings → Diagnostics](screenshots/settings-diagnostics-desktop.png)
+![Settings → Diagnostics](screenshots/fullscreen-settings-diagnostics-desktop-signal.png)
 
 **Settings → diagnostics** shows the connection (online, connecting or offline), the instance's generation, the
 instance's name and the number of your devices. A wide screen has no status bar, so these facts live here, and the line
@@ -1422,7 +1433,7 @@ them into a report.
 `E_MEDIA_MISROUTE` among them means a person's audio in a call was briefly lost in Firefox and was reconnected
 automatically: you heard them again about four seconds after they joined or came back.
 
-![Diagnostics at 360 pixels wide](screenshots/settings-diagnostics-phone.png)
+![Diagnostics at 390 pixels wide](screenshots/fullscreen-settings-diagnostics-phone.png)
 
 ### Typing
 
@@ -1536,3 +1547,43 @@ LiveKit on 7888 and 7890, and writes
 
 Chromium keeps sockets in its profile directories, so the script needs a short temporary directory: when
 `TMPDIR` is a long path, run it with `TMPDIR=/tmp`.
+
+
+## Fullscreen settings and drafts
+
+Open the settings button in the top bar on desktop, or **You → Open settings** on a phone.
+Search within settings by setting name or a related word such as microphone, password
+or Spotify. Search only lists sections you are allowed to use; it does not search
+member names, account data or configuration values.
+
+Theme, density, reduced motion, notifications, voice preferences and personal roles
+apply immediately. Configuration forms use **Save** and **Reset**. If you leave a
+changed form, choose **Keep editing** or **Discard changes**. Reset uses the latest
+confirmed values. If part of a server save fails, only the failed part remains to
+save. A pending bot request can continue after you leave; acceptance is not a
+confirmation that the bot has applied it.
+
+Server settings group server configuration, people, automation and moderation.
+Music contains who can DJ (the roles with **Control music (DJ)**, set in **Roles**),
+the bot's default volume and idle-leave time, Spotify application configuration and
+linking, and provider status. **Authorization received; waiting for the bot** means the authorization
+was delivered. **Linked** appears only when the bot reports valid stored credentials
+for this installation. It does not confirm Spotify Premium, current token acceptance
+or successful playback. Spotify and YouTube playback setup separately report
+**Configured**, **Missing requirements** or **Unknown**. Refresh reads the runtime;
+observations older than a minute are stale. An older or offline bot may leave status
+unavailable while configuration and linking remain usable.
+
+Playback uses music commands from the command picker. Join a voice channel first.
+See [Music](music.md) for setup and the Control music (DJ) permission.
+
+Participant volume and screen-share volume remain beside the participant/share.
+Channel collapse and conversation-search scope remain in their contextual controls.
+
+![Fullscreen Profile with grouped desktop navigation](screenshots/fullscreen-settings-profile-desktop-signal.png)
+
+On a phone, **Back to settings** returns to the index; **Close settings** on that
+index returns to your conversation. Settings covers the app tab bar while your
+ongoing call stays connected.
+
+![Profile on a phone](screenshots/fullscreen-settings-profile-phone-signal.png)

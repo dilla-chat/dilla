@@ -55,9 +55,10 @@ test('the ring, the call, a player and Settings → Voice pass axe in three them
 
     await test.step('Settings → Voice during the call', async () => {
       const settings = await openVoiceSettings(bob.page);
-      await expect(settings.getByRole('button', {name:copy('settings.voice.test'),exact:true})).toBeDisabled();
-      await expect(settings.getByRole('meter', {name:copy('settings.voice.level'),exact:true})).toHaveCount(0);
-      await expect(settings.getByText(copy('settings.voice.levelUnavailable'), {exact:true})).toBeVisible();
+      // Task 10b: the call holds the microphone, so Let's check waits and says why; the meter rests (Not testing).
+      await expect(settings.getByRole('button', {name:copy('signalSettings.voice.testStart'),exact:true})).toBeDisabled();
+      await expect(settings.getByText(copy('settings.voice.testCall'), {exact:true})).toBeVisible();
+      await expect(settings.getByText(copy('signalSettings.voice.notTesting'), {exact:true})).toBeVisible();
       await axeEverywhere(bob.page, 'Settings → Voice');
       await closeSettings(bob.page);
     });

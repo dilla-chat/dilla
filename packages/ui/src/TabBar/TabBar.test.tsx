@@ -39,12 +39,12 @@ describe('TabBar', () => {
       expect(onSelect).not.toHaveBeenCalled();
       expect(notPrevented).toBe(true);
     });
-  it('shows a count chip, 99+ above 99, and names the link with countLabel', () => {
+  it('shows a decorative dot for a count (Signal §5.10) and names the link with countLabel', () => {
     render(<TabBar label="main" items={items({ dms: { count: 120, countLabel: 'dms, 120 unread' }, activity: { count: 3, countLabel: 'activity, 3 unread' } })} onSelect={() => {}} />);
     const dms = screen.getByRole('link', { name: 'dms, 120 unread' });
-    expect(dms.querySelector('.d-tab-bar__chip')).toHaveTextContent('99+');
-    expect(dms.querySelector('.d-tab-bar__chip')).toHaveAttribute('aria-hidden', 'true');
-    expect(screen.getByRole('link', { name: 'activity, 3 unread' }).querySelector('.d-tab-bar__chip')).toHaveTextContent('3');
+    expect(dms.querySelector('.d-tab-bar__dot')).toHaveAttribute('aria-hidden', 'true');
+    expect(dms.querySelector('.d-tab-bar__dot')).toHaveTextContent('');
+    expect(screen.getByRole('link', { name: 'activity, 3 unread' }).querySelector('.d-tab-bar__dot')).not.toBeNull();
   });
   it('is a list for VoiceOver, and a count without a countLabel is still announced', () => {
     render(<TabBar label="main" items={items({ dms: { count: 3 }, activity: { count: 120 } })} onSelect={() => {}} />);
@@ -53,9 +53,9 @@ describe('TabBar', () => {
     expect(screen.getByRole('link', { name: 'dms, 3' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'activity, 99+' })).toBeInTheDocument();
   });
-  it('shows no chip and no aria-label without a count, or with 0', () => {
+  it('shows no dot and no aria-label without a count, or with 0', () => {
     render(<TabBar label="main" items={items({ dms: { count: 0, countLabel: 'dms, 0 unread' } })} onSelect={() => {}} />);
-    expect(document.querySelectorAll('.d-tab-bar__chip')).toHaveLength(0);
+    expect(document.querySelectorAll('.d-tab-bar__dot')).toHaveLength(0);
     expect(screen.getByRole('link', { name: 'dms' })).not.toHaveAttribute('aria-label');
   });
   it('has no axe violations', async () => {

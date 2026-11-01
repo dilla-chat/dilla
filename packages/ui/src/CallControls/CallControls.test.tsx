@@ -336,10 +336,47 @@ describe('CallControls', () => {
     expect(screen.getByRole('button', { name: 'share screen' })).toHaveFocus();
   });
 
-  it.each(['mesh', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {
+  it.each(['signal', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {
     document.documentElement.dataset.theme = theme;
     const { container } = render(<div className="d-root"><CallControls {...(meta.args as CallControlsProps)} /></div>);
     // jsdom has no layout or canvas, so contrast is left to the Storybook axe run in a real browser.
     expect((await axe(container, { rules: { 'color-contrast': { enabled: false } } })).violations).toEqual([]);
+  });
+
+  describe('Signal §5.6: the call bar (labels.bar)', () => {
+    const bar = { mute: 'Mute', unmute: 'Unmute', deafen: 'Deafen', undeafen: 'Undeafen', camera: 'Camera', share: 'Share', stopShare: 'Stop sharing', leave: 'Leave' };
+    const withBar = { ...base, labels: { ...labels, bar }, shortcuts: { mute: '⌘⇧M', deafen: '⌘⇧D' } };
+
+    it('each control is named by its word; mute and deafen show their keycaps; leave has its word', () => {
+      const { container } = render(<CallControls {...withBar} />);
+      for (const name of ['Mute', 'Deafen', 'Camera', 'Share', 'Leave']) expect(screen.getByRole('button', { name: new RegExp(`^${name}`) })).toBeInTheDocument();
+      expect([...container.querySelectorAll('.d-voice-toolbar__keycap')].map(k => k.textContent)).toEqual(['⌘⇧M', '⌘⇧D']);
+      expect(container.querySelector('.d-call-controls--bar')).not.toBeNull();
+    });
+
+    it('mute, deafen and share say their state by their word with no aria-pressed; camera keeps its word and aria-pressed', () => {
+      const { container, rerender } = render(<CallControls {...withBar} />);
+      const ctl = (id: string) => container.querySelector<HTMLButtonElement>(`[data-control="${id}"]`)!;
+      for (const id of ['mute', 'deafen', 'share']) expect(ctl(id)).not.toHaveAttribute('aria-pressed');
+      expect(ctl('camera')).toHaveAttribute('aria-pressed', 'false');
+      rerender(<CallControls {...withBar} muted deafened camera sharing />);
+      expect(ctl('mute')).toHaveTextContent('Unmute');
+      expect(ctl('deafen')).toHaveTextContent('Undeafen');
+      expect(ctl('share')).toHaveTextContent('Stop sharing');
+      expect(ctl('camera')).toHaveAttribute('aria-pressed', 'true');
+      for (const id of ['mute', 'deafen', 'camera', 'share']) expect(ctl(id)).toHaveAttribute('data-on', 'true');
+    });
+
+    it('deafened shows mute on too (mic-off, Unmute), as the prototype', () => {
+      const { container } = render(<CallControls {...withBar} deafened />);
+      const mute = container.querySelector('[data-control="mute"]')!;
+      expect(mute).toHaveTextContent('Unmute');
+      expect(mute.querySelector('svg')?.getAttribute('data-icon')).toBe('mic-off');
+    });
+
+    it('share keeps the monitor-up glyph while live (the prototype), and the label tooltip names the word', () => {
+      const { container } = render(<CallControls {...withBar} sharing />);
+      expect(container.querySelector('[data-control="share"] svg')?.getAttribute('data-icon')).toBe('monitor-up');
+    });
   });
 });

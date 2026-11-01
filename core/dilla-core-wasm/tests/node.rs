@@ -290,7 +290,7 @@ fn a_redacted_probe_message_never_carries_the_statement() {
 fn the_version_getters_agree_with_dilla_core_on_wasm() {
     assert_eq!(core_version(), dilla_core::CORE_VERSION);
     assert_eq!(abi_version(), BROWSER_ABI_VERSION);
-    assert_eq!(BROWSER_ABI_VERSION, 13);
+    assert_eq!(BROWSER_ABI_VERSION, 15);
 }
 
 /// L-WASM-34: `call_media_epoch` hands its CBOR to JavaScript as a copy made straight from the

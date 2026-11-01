@@ -9,7 +9,7 @@ const stage = readFileSync(fileURLToPath(new URL('./CallStage.css', import.meta.
 const tile = readFileSync(fileURLToPath(new URL('../CallTile/CallTile.css', import.meta.url)), 'utf8');
 const PHONE = '@media (max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem) {';
 
-/** The bodies of every phone @media block of `css`, joined. */
+/** The bodies of every phone @media block of `css`, joined (kept for later pins). */
 function phone(css: string): string {
   const out: string[] = [];
   let at = css.indexOf(PHONE);
@@ -34,47 +34,32 @@ function rule(css: string, selector: string): string {
   return all[all.length - 1][2];
 }
 
-describe('the phone stage (CSS pin)', () => {
-  it('up to two tiles: one column across the width; three or more: two columns', () => {
-    expect(rule(phone(stage), '.d-call-stage__tiles[data-tiles="stage"]')).toMatch(/grid-template-columns: minmax\(0, 1fr\)/);
-    expect(rule(phone(stage), '.d-call-stage .d-call-stage__tiles[data-tiles="stage"][data-many]')).toMatch(/grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
-    expect(rule(phone(stage), '.d-call-stage[data-focused-stage] .d-call-stage__tiles[data-tiles="stage"][data-many]')).toMatch(/repeat\(2, minmax\(0, 1fr\)\)/);
+describe('Signal §5.6, the prototype\'s stage (CSS pins; the real-browser geometry is in scripts/story-a11y.ts)', () => {
+  it('the grid is a wrapping, centred row of 16:9 tiles at the prototype\'s widths by count', () => {
+    expect(rule(stage, '.d-call-stage__tiles[data-tiles="stage"]')).toMatch(/flex-wrap: wrap; align-content: safe center; align-items: safe center; justify-content: safe center;/);
+    expect(rule(stage, '.d-call-stage__tile[data-stage]')).toMatch(/width: min\(31\.5%, 21\.25rem\); aspect-ratio: 16 \/ 9;/);
+    expect(rule(stage, '.d-call-stage__tiles[data-band="two"] > .d-call-stage__tile[data-stage]')).toMatch(/width: min\(46%, 35rem\)/);
+    expect(rule(stage, '.d-call-stage__tiles[data-band="four"] > .d-call-stage__tile[data-stage]')).toMatch(/width: min\(46%, 26\.25rem\)/);
   });
 
-  it('an odd last tile spans both columns instead of sitting alone at half width', () => {
-    expect(rule(phone(stage), '.d-call-stage .d-call-stage__tiles[data-many] .d-call-stage__tile[data-stage]:last-child:nth-child(odd)')).toMatch(/grid-column: 1 \/ -1/);
-    // With a focused tile first (it spans both), the rest start at 2: an even last child is the odd one out.
-    expect(rule(phone(stage), '.d-call-stage[data-focused-stage] .d-call-stage__tiles[data-many] .d-call-stage__tile[data-stage]:last-child:nth-child(even)')).toMatch(/grid-column: 1 \/ -1/);
+  it('focused: the tile is 16:9 at the row\'s height (never wider than the stage), the filmstrip 188px tiles (150px on a phone)', () => {
+    expect(rule(stage, '.d-call-stage__tile[data-focused="true"] > .d-call-tile[data-stage]')).toMatch(/width: min\(100%, 100cqh \* 16 \/ 9\); height: 100%;/);
+    expect(stage).toMatch(/--d-strip-w: 11\.75rem/);
+    expect(rule(stage, '[data-layout="phone"] .d-call-stage')).toMatch(/--d-strip-w: 9\.375rem/);
   });
 
-  it('a phone tile is as tall as its content, not a 16:9 box', () => {
-    expect(rule(phone(stage), '.d-call-stage__tile[data-stage]')).toMatch(/aspect-ratio: auto/);
-    expect(rule(phone(tile), '.d-call-tile[data-stage] .d-call-tile__avatar')).toMatch(/position: relative;[^}]*aspect-ratio: 16 \/ 9/);
+  it('the call bar is the 64px panel height with a hairline above on --bg-2; the phone shows it centred without the room', () => {
+    expect(rule(stage, '.d-call-stage__controls[data-bar]')).toMatch(/min-height: var\(--panel-h\);[^}]*border-top: 1px solid var\(--hairline\); background: var\(--bg-2\)/);
+    expect(rule(stage, '[data-layout="phone"] .d-call-stage__controls[data-bar]')).toMatch(/justify-content: center/);
+    expect(rule(stage, '[data-layout="phone"] .d-call-stage__where')).toMatch(/display: none/);
   });
 
-  it('the volume is in flow under the caption, never over the face', () => {
-    expect(rule(phone(tile), '.d-call-tile[data-stage]')).toMatch(/flex-direction: column/);
-    expect(rule(phone(tile), '.d-call-tile[data-stage] .d-call-tile__caption')).toMatch(/position: static/);
-    expect(rule(phone(tile), '.d-call-tile[data-stage] .d-call-tile__volume')).toMatch(/position: static/);
-  });
-});
-
-describe('D1, D4 and C4 (CSS pins)', () => {
-  it('a partial last row is centred by shifting its tiles half the empty columns, and only in the grid', () => {
-    expect(stage).toMatch(/translate: calc\(\(var\(--d-stage-cols, 1\) - var\(--d-orphan-n, 0\)\) \* \(var\(--d-tile-w, 0px\) \+ 0\.75rem\) \/ 2\) 0;/);
-    // The phone's own columns and the filmstrip are not the measured grid: no shift there.
-    expect(rule(phone(stage), '.d-call-stage__tile[data-orphan]')).toMatch(/translate: none/);
-    expect(rule(stage, '[data-layout="phone"] .d-call-stage__tile[data-orphan]')).toMatch(/translate: none/);
-  });
-
-  it('the stage header slot is the 48 bar with the hairline at its foot', () => {
+  it('the stage header slot is the top bar with the hairline at its foot', () => {
     expect(rule(stage, '.d-call-stage__bar')).toMatch(/height: var\(--bar-h\)/);
     expect(rule(stage, '.d-call-stage__bar')).toMatch(/border-bottom: 1px solid var\(--hairline\)/);
   });
 
-  it('on a phone layout the stage has an 18px gutter, centred avatars and a pinned toolbar', () => {
-    expect(rule(stage, '[data-layout="phone"] .d-call-stage')).toMatch(/padding-inline: 1\.125rem/);
-    expect(rule(stage, '[data-layout="phone"] .d-call-stage__controls')).toMatch(/position: sticky;[^}]*bottom: 0/);
-    expect(rule(tile, '[data-layout="phone"] .d-call-tile__avatar')).toMatch(/place-items: center/);
+  it('a tile is --stage-tile with a 1px --hairline edge and --r-xl corners', () => {
+    expect(rule(tile, '.d-call-tile[data-stage]')).toMatch(/background: var\(--stage-tile\); border-radius: var\(--r-xl\); box-shadow: inset 0 0 0 1px var\(--hairline\);/);
   });
 });

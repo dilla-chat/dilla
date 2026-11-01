@@ -6,6 +6,8 @@ import (
 	"fmt"
 
 	"github.com/tetratelabs/wazero/api"
+
+	"github.com/jonasthim/dilla/internal/prioritygate"
 )
 
 // ErrTrap is returned when the guest traps. The caller must discard the
@@ -27,21 +29,44 @@ type Instance struct {
 	free  api.Function
 
 	poisoned bool
+	release  func()
 }
 
 // Acquire takes one instance out of the pool, blocking until one is free or ctx
 // is done.
 func (r *Runtime) Acquire(ctx context.Context) (*Instance, error) {
-	r.mu.Lock()
-	closed := r.closed
-	r.mu.Unlock()
-	if closed {
-		return nil, ErrClosed
+	priority := 0
+	if r.priority != nil {
+		priority = r.priority(ctx)
+	}
+	release, err := r.gate.Acquire(ctx, priority)
+	if err != nil {
+		if errors.Is(err, prioritygate.ErrClosed) {
+			err = ErrClosed
+		} else if errors.Is(err, prioritygate.ErrDepleted) {
+			err = ErrDepleted
+		}
+		return nil, err
 	}
 	select {
 	case inst := <-r.pool:
+		inst.release = release
+		if err := ctx.Err(); err != nil {
+			inst.Release()
+			return nil, err
+		}
+		select {
+		case <-r.done:
+			inst.Release()
+			return nil, ErrClosed
+		default:
+		}
 		return inst, nil
+	case <-r.done:
+		release()
+		return nil, ErrClosed
 	case <-ctx.Done():
+		release()
 		return nil, ctx.Err()
 	}
 }
@@ -63,8 +88,13 @@ func (i *Instance) Release() {
 		return // already released
 	}
 	i.mod = nil
+	if i.release != nil {
+		defer i.release()
+	}
 
 	r := i.rt
+	r.execution.RLock()
+	defer r.execution.RUnlock()
 	r.mu.Lock()
 	closed := r.closed
 	r.mu.Unlock()
@@ -81,9 +111,10 @@ func (i *Instance) Release() {
 	_ = mod.Close(ctx)
 	replacement, err := r.newInstance(ctx)
 	if err != nil {
-		// The pool shrinks rather than deadlocking; New already proved the
-		// module instantiates, so this is a resource failure, not a bug in the
-		// guest.
+		// This admission still owns the failed resource. Retire its capacity
+		// before the deferred release can admit anyone else, so gate capacity
+		// always tracks the usable pool, including at zero.
+		r.gate.Retire()
 		return
 	}
 	r.pool <- replacement
@@ -109,6 +140,16 @@ func (i *Instance) invoke(ctx context.Context, name string, fn api.Function, par
 func (i *Instance) Call(ctx context.Context, export string, req []byte) ([]byte, error) {
 	if i.mod == nil {
 		return nil, ErrReleased
+	}
+	i.rt.execution.RLock()
+	defer i.rt.execution.RUnlock()
+	select {
+	case <-i.rt.done:
+		return nil, ErrClosed
+	default:
+	}
+	if i.poisoned {
+		return nil, ErrTrap
 	}
 	fn := i.mod.ExportedFunction(export)
 	if fn == nil {

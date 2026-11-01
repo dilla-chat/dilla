@@ -1,13 +1,38 @@
-.d-onboarding-frame { min-height: 100dvh; display: grid; grid-template-rows: var(--topbar-h) 1fr; background: var(--bg); color: var(--fg); }
-.d-onboarding-frame__bar { display: flex; align-items: center; background: var(--bg-2); border-bottom: 1px solid var(--hairline); }
-.d-onboarding-frame__card { width: 100%; max-width: 40rem; margin: 0 auto; padding: 3rem 1.5rem; display: grid; gap: 1.25rem; align-content: start; min-width: 0; }
-.d-onboarding-frame__title { margin: 0; font-size: var(--text-xl); font-weight: var(--weight-display); letter-spacing: 0.02em; color: var(--fg); }
+/* Task 10, the prototype's sign-in screens: the brand mark at the top left (22px, 24px) over --bg with the brand's glow
+   from above, and every step in one centred card: at most 400px, --bg-2, a hairline edge, radius 12, the card shadow,
+   28px of padding, entering with d-modal over 420ms. The step label is the card's uppercase micro line above the title
+   (20px/700), and the primary action is the prototype's 40px accent button (radius 8, 13px/700). */
+.d-onboarding-frame { position: relative; box-sizing: border-box; min-height: 100dvh; display: grid; place-items: center; padding: 20px; background: radial-gradient(900px 420px at 50% -10%, var(--brand-glow), transparent 70%), var(--bg); color: var(--fg); font-family: var(--font-mono); }
+.d-onboarding-frame__bar { position: absolute; top: 22px; left: 24px; display: flex; align-items: center; }
+.d-onboarding-frame__card { box-sizing: border-box; width: 100%; max-width: 25rem /* 400px */; margin: 0; padding: 28px; display: grid; gap: 20px; align-content: start; min-width: 0; background: var(--bg-2); border: 1px solid var(--hairline); border-radius: var(--r-xxl); box-shadow: var(--shadow-card); animation: d-modal var(--duration-card) var(--ease-out) both; }
+.d-onboarding-frame__title { margin: 0; font-size: var(--text-heading); font-weight: var(--weight-display); line-height: 1.5; letter-spacing: -0.01em; color: var(--fg); }
 /* The one exception to base.css's focus-ring rule, scoped to this title: the heading takes focus only
    by script (tabindex -1, never in the tab order) so a screen reader reads the new step. It is not an
    operable control, and a ring around it reads as an error box. Every operable control keeps the ring. */
 .d-onboarding-frame .d-onboarding-frame__title[tabindex="-1"]:focus-visible { outline: none; }
-.d-onboarding-frame__step { margin: -0.75rem 0 0; }
-.d-onboarding-frame__body { display: grid; gap: 1rem; font-size: var(--text-base); color: var(--fg-2); min-width: 0; }
+.d-onboarding-frame__head { order: -1; display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 2px; }
+/* The prototype's progress: 4px dots, the current one 18px wide; done and current in the accent, the rest --control-edge-field. */
+.d-onboarding-frame__dots { display: flex; gap: 4px; flex: none; }
+.d-onboarding-frame__dot { width: 6px; height: 4px; border-radius: 4px; background: var(--control-edge-field); transition: width var(--duration-slow) var(--ease-out), background var(--duration-slow); }
+.d-onboarding-frame__dot[data-state] { background: var(--accent); }
+.d-onboarding-frame__dot[data-state="current"] { width: 18px; }
+@media (prefers-reduced-motion: reduce) { .d-onboarding-frame__dot { transition: none; } }
+.d-onboarding-frame__step { margin: 0; font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking-wide); text-transform: uppercase; color: var(--fg-3); }
+.d-onboarding-frame__body { display: grid; gap: 14px; margin-top: -14px; font-size: var(--text-sm); color: var(--fg-2); min-width: 0; animation: d-up var(--duration-step) var(--ease-out) both; }
 .d-onboarding-frame__body p { margin: 0; }
-.d-onboarding-frame__footer { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 0.5rem; padding-top: 1rem; border-top: 1px solid var(--hairline); }
-@media print { .d-onboarding-frame__bar, .d-onboarding-frame__step, .d-onboarding-frame__footer { display: none; } .d-onboarding-frame { color-scheme: light; } .d-onboarding-frame, .d-onboarding-frame__card, .d-onboarding-frame__title, .d-onboarding-frame__body { color: CanvasText; background: Canvas; border-color: CanvasText; } }
+/* Fix round 2 (the prototype's auth card): 20px under the subtitle (the grid's 14 + 6), 14px from the last field to the
+   button (the card's 20 - 6), and the links 16px under the button (8 + 8, the link's 24px target reaching 3.5px into the
+   padding so the card keeps the prototype's height). */
+.d-onboarding-frame__body > p:first-child { margin-bottom: 6px; }
+.d-onboarding-frame__footer { margin-top: -6px; }
+/* The primary action spans the card; the others are the prototype's links under it, at the right. */
+.d-onboarding-frame__footer { display: flex; flex-direction: column-reverse; align-items: stretch; gap: 12px; }
+.d-onboarding-frame__footer > .d-btn:not([data-variant="accent"]) { align-self: flex-end; }
+/* The prototype's auth links are --fg-link text (11.5px); its fields are 38px of content in a 1px border. */
+.d-onboarding-frame__footer > .d-btn[data-variant="ghost"] { height: auto; min-height: 1.5rem; margin-bottom: -3.5px; padding: 0; font-size: var(--text-btn); color: var(--fg-link); }
+.d-onboarding-frame__footer > .d-btn[data-variant="ghost"]:hover { color: var(--accent-2); background: transparent; }
+.d-onboarding-frame .d-text-field__input { height: 2.5rem; }
+.d-onboarding-frame__footer .d-btn[data-variant="accent"]::after { content: "" / ""; flex: none; width: 15px; height: 15px; background: currentColor; mask: var(--d-mask-arrow-right) center / contain no-repeat; }
+/* min-height: the prototype's 40px on a phone too (rule 0), over Button.css's 44px phone tier. */
+.d-onboarding-frame__footer .d-btn[data-variant="accent"] { justify-content: center; height: 2.5rem /* 40px */; min-height: 2.5rem; border-radius: var(--r-lg); font-size: var(--text-input); font-weight: var(--weight-display); }
+@media print { .d-onboarding-frame__bar, .d-onboarding-frame__head, .d-onboarding-frame__footer { display: none; } .d-onboarding-frame { color-scheme: light; } .d-onboarding-frame, .d-onboarding-frame__card, .d-onboarding-frame__title, .d-onboarding-frame__body { color: CanvasText; background: Canvas; border-color: CanvasText; box-shadow: none; } }

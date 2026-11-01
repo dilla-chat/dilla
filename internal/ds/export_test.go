@@ -64,6 +64,25 @@ func CheckAddedMemberForTest(d *DS, ctx context.Context, groupID id.ID, a mlswas
 	})
 }
 
+// DecodeCredentialKindForTest is decodeCredentialKind (Task S1).
+var DecodeCredentialKindForTest = decodeCredentialKind
+
+// CheckCredentialKindForTest is checkCredentialKind against the delivery service's own store.
+func CheckCredentialKindForTest(d *DS, ctx context.Context, userID id.ID, identity []byte) error {
+	return checkCredentialKind(ctx, d.opts.Store, userID, identity)
+}
+
+// ErrCredentialKindForTest is checkCredentialKind's refusal.
+var ErrCredentialKindForTest = errCredentialKind
+
+// CheckExternalJoinerForTest is checkExternalJoiner verified in the group's own instance, over a
+// merged state the test supplies (no committed fixture holds an external commit).
+func CheckExternalJoinerForTest(d *DS, ctx context.Context, s Session, groupID id.ID, state mlswasi.GroupState, newLeaf uint32, joining bool) error {
+	return d.withGroup(ctx, groupID, func(g *mlswasi.PublicGroup) error {
+		return d.checkExternalJoiner(ctx, g, groupID, s, state, &newLeaf, joining)
+	})
+}
+
 // WithGroupForTest is withGroup WITHOUT the per-group lock every public read path takes first.
 // Tree and Register serialise one group's work through d.lock, so the state cache's own
 // concurrency — the reservation that keeps two first touches of one group from importing it
@@ -353,4 +372,9 @@ func (d *DS) GroupLockFree(groupID id.ID) bool {
 	}
 	mu.Unlock()
 	return true
+}
+
+// StoreInstanceProposalForTest reaches the durable proposal sink with incomplete metadata.
+func StoreInstanceProposalForTest(d *DS, ctx context.Context, groupID id.ID, row store.GroupRow, blob []byte, proposal store.ProposalRow) error {
+	return d.storeInstanceProposal(ctx, groupID, row, blob, proposal)
 }

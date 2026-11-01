@@ -33,7 +33,7 @@ function Footer({ back, next, disabled }: { back?: boolean; next: string; disabl
   );
 }
 function Step({ n, title, footer, children }: { n: number; title: string; footer: ReactNode; children: ReactNode }) {
-  return <OnboardingFrame title={title} stepLabel={t('onboarding.step', { n })} footer={footer}>{children}</OnboardingFrame>;
+  return <OnboardingFrame title={title} stepLabel={t('onboarding.step', { n, total: 6 })} progress={{ n, total: 6 }} footer={footer}>{children}</OnboardingFrame>;
 }
 function Connect({ open, error }: { open?: boolean; error?: string }) {
   return (

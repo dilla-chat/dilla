@@ -11,12 +11,14 @@ use sha2::{Digest, Sha256};
 
 type HmacSha256 = Hmac<Sha256>;
 
+mod account_kind;
 mod credential;
 mod device_list;
 mod pairing;
 mod recovery;
 mod safety;
 
+pub use account_kind::{AccountKindAttestation, DOMAIN_ACCOUNT_KIND, account_kind_message};
 pub use credential::{CredentialIdentity, SskSigner, UmkSigner};
 pub use device_list::{DeviceEntry, DeviceList, DeviceListUnsigned};
 pub use pairing::{PairingPayload, PairingQr, Pin, fingerprint};

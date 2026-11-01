@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"sync"
@@ -283,6 +284,10 @@ func NewHTTPServer(h http.Handler, c *config.Config) *http.Server {
 	if rht <= 0 {
 		rht = 10 * time.Second
 	}
+	budget := c.Server.ReadBodyTimeout.Value()
+	if budget <= 0 {
+		budget = 30 * time.Second
+	}
 	p := new(http.Protocols)
 	p.SetHTTP1(true)
 	if c.BehindProxy() {
@@ -291,9 +296,40 @@ func NewHTTPServer(h http.Handler, c *config.Config) *http.Server {
 		p.SetHTTP2(true)
 	}
 	return &http.Server{
-		Handler:           h,
+		Handler:           withBodyReadDeadline(h, budget),
 		ReadHeaderTimeout: rht,
 		IdleTimeout:       c.Server.IdleTimeout.Value(),
 		Protocols:         p,
 	}
+}
+
+// Ordinary requests have a body budget as well as a header budget. Installing
+// it outside the router covers authentication and peeks too; commit and blob
+// handlers can replace it with their larger route budget before reading.
+// GET upgrades have no body and retain the gateway's own connection deadlines.
+func withBodyReadDeadline(next http.Handler, budget time.Duration) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil && r.Body != http.NoBody {
+			controller := http.NewResponseController(w)
+			if err := controller.SetReadDeadline(time.Now().Add(budget)); err != nil {
+				slog.Error("request body deadline unavailable", "err", err)
+				w.Header().Set("Connection", "close")
+				WriteError(w, Errorf(CodeUnavailable, "request body deadline unavailable"))
+				return
+			}
+			body := r.Body
+			defer func() {
+				// net/http may drain an unread HTTP/1 body while flushing its
+				// buffered response. Close under the budget before clearing it,
+				// so early refusals cannot turn that drain into an unbounded read.
+				_ = body.Close()
+				_ = controller.SetReadDeadline(time.Time{})
+			}()
+		}
+		if next == nil {
+			http.DefaultServeMux.ServeHTTP(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }

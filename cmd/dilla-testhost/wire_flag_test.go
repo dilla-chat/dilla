@@ -24,13 +24,17 @@ func TestTheWireFlagReachesTheHostOptions(t *testing.T) {
 	if ho := o.hostOptions("/data", "/core.wasm", ""); !slices.Equal(ho.WireVersions, []uint64{2}) {
 		t.Fatalf("explicit legacy WireVersions = %v, want [2]", ho.WireVersions)
 	}
-	// Control: the flag left out is the current wire version, 3.
+	// Control: the flag left out keeps dillad's production list (nil here; wire [4,3,2] in the
+	// host), so people negotiate wire 4 and managed Bots wire 3 (Task S1 part 2).
 	o, err = parseFlags(nil)
 	if err != nil {
 		t.Fatalf("parseFlags: %v", err)
 	}
-	if ho := o.hostOptions("/data", "/core.wasm", ""); !slices.Equal(ho.WireVersions, []uint64{3}) {
-		t.Fatalf("WireVersions = %v, want [3]", ho.WireVersions)
+	if ho := o.hostOptions("/data", "/core.wasm", ""); ho.WireVersions != nil {
+		t.Fatalf("WireVersions = %v, want nil (dillad's default list)", ho.WireVersions)
+	}
+	if _, err := parseFlags([]string{"-wire", "0"}); err == nil {
+		t.Fatal("an explicit -wire 0 was accepted")
 	}
 }
 

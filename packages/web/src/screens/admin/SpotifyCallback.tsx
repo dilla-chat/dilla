@@ -4,7 +4,8 @@ import { useCore } from '../../core/context.tsx';
 import { useSlice } from '../../core/use-slice.ts';
 import { t } from '../../strings/index.ts';
 import { spotifySession } from './spotify-link.ts';
-import { useRoute } from '../../router.ts';
+import { noteSpotifyReturn } from '../../settings/spotify-return.ts';
+import { replaceHistoryState, useRoute } from '../../router.ts';
 
 const ATTEMPT_KEY = 'dilla.spotifyAttempt';
 type Attempt = { communityId: string; attemptId: string; state: string; expires: string;
@@ -48,13 +49,15 @@ export function SpotifyCallback({ search }: { search?: string }): React.JSX.Elem
     void client.call({ m: 'callbackBotSpotifyAttempt', communityId: attempt.communityId,
       attemptId: attempt.attemptId, state: attempt.state, code }).then(() => {
       removeAttempt(); codeRef.current = null; setView('delivered');
+      noteSpotifyReturn(attempt.communityId);
+      void navigate({ name: 'serverSettings', communityId: attempt.communityId, section: 'music', from: null }, true, { from: `/c/${attempt.communityId}` });
     }).catch(() => setView('failed')).finally(() => setBusy(false));
-  }, [client]);
+  }, [client, navigate]);
 
   useEffect(() => {
     // Scrub the authorization code as soon as this route mounts, even while sign-in is required.
     if (!scrubbed.current) {
-      window.history.replaceState(window.history.state, '', window.location.pathname);
+      replaceHistoryState(window.history.state, '', window.location.pathname);
       scrubbed.current = true;
     }
     if (started.current) return;
@@ -109,14 +112,14 @@ export function SpotifyCallback({ search }: { search?: string }): React.JSX.Elem
   };
 
   const message: Partial<Record<View, string>> = {
-    delivered: t('admin.bot.music.callbackDelivered'), denied: t('admin.bot.music.callbackDenied'),
+    delivered: t('workspace.providers.callback'), denied: t('admin.bot.music.callbackDenied'),
     expired: t('admin.bot.music.callbackExpired'), invalid: t('admin.bot.music.callbackInvalid'),
     failed: t('admin.bot.music.callbackFailed'), cancelled: t('admin.bot.music.callbackCancelled'),
     cancelFailed: t('admin.bot.music.callbackCancelError'),
   };
   const returnToServer = () => {
     const communityId = attemptRef.current?.communityId;
-    if (communityId !== undefined) navigate({ name: 'channel', communityId, channelId: null }, true);
+    if (communityId !== undefined) void navigate({ name: 'serverSettings', communityId, section: 'music', from: null }, true, { from: `/c/${communityId}` });
   };
   return <main className="dw-settings-frame" aria-labelledby="spotify-callback-title">
     <h1 id="spotify-callback-title">{t('admin.bot.music.spotify')}</h1>

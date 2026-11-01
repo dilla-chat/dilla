@@ -179,6 +179,68 @@ only a directory KeyPackage bound this way, invariant 6). Once in a group a leaf
 against its own device records; the client checks above, made against the signed device list, do
 not depend on it.
 
+### Account kind attestation
+
+A credential's `kind` is signed by its own user's SSK, so it is that user's claim. The instance
+states the account's kind (`users.kind`: `0` user, `1` bot) in an **account-kind attestation**,
+signed with its current external-sender key (§ Instance keys), the key every client pins:
+
+```
+message     = "dilla account kind v1" || CBOR([1, instance_id(bstr16), user_id(bstr16), kind(uint)])
+attestation = [
+  v,             ; uint, = 1
+  key_id,        ; bstr 16: the external-sender key's key_id
+  kind,          ; uint: 0 user, 1 bot
+  sig            ; bstr 64: Ed25519.sign(external_sender_priv, message)
+]
+```
+
+`instance_id` keeps an attestation from being replayed on another instance and `user_id` from
+another account. The attestation binds **no key** (Ruling AW): an account's kind never changes, so
+the statement holds for every key the account ever presents, including a UMK the user moved to
+without proving it to the instance. Key trust — pins, UMK change detection, the person's
+verification (§ Credential, § Safety number) — is separate and unchanged. There is no expiry;
+Ed25519 signatures are deterministic, so an account's attestation is the same bytes on every read
+and the instance signs it when served, for every account it holds (those created before wire 4
+included), with nothing stored. It travels as the fifth element of the
+`GET /v1/users/{user_id}/device-list` head on a wire-4 session (`09` § Accounts and devices).
+
+A client verifies an attestation **before it stores it**, under its pinned instance key, its own
+`instance_id` and the user id it was served for; it needs no pin for the user. One that does not
+verify, or is malformed, is stored nowhere and never replaces a stored one that verified, and it is
+treated exactly like a withheld one: the history read still proceeds, so a key change is still
+recorded and nothing that waits on that read (the removal feed) stalls. Only a verified attestation
+is stored (one per user) and only it sets the per-instance "attestation seen" flag. **In addition
+to** the rules of § Credential, the client judges every leaf of that user against it:
+
+- the stored attestation verifies and its `kind` equals the credential's `kind`: the leaf passes
+  (whatever key the leaf is under);
+- it verifies and `kind` differs: the leaf fails with `E_CREDENTIAL` (a member whose credential
+  claims to be a Bot, or the reverse);
+- no verifying attestation for that user: once the client has stored **any** attestation from its
+  instance, the leaf stays pending (`E_DEVICE_LIST_STALE`, fail closed — whether or not the person
+  verified the key); before that, the earlier rule applies (the credential's kind is not checked by
+  the core).
+
+A tombstoned account (`DELETE /v1/accounts/me`) is served no attestation (its wire-4 head is the
+four elements). A client that verified the account's attestation before the deletion keeps it, so
+the account's remaining leaves keep their verdict until the deletion's `Remove`s land; a client that
+never did leaves them pending.
+
+`key_id` names the external-sender key that signed, for diagnostics; nothing the signature covers
+binds it, so it must not be trusted to select or rotate keys.
+
+The flag is one-way: a client that has seen wire 4 from its instance never again accepts a leaf
+without an attestation, whatever version a later session negotiates, and a store holding it cannot
+be opened by an older client (app schema 13 is refused as newer). Until the first attestation is
+stored — a client that has only ever negotiated wire 2 or 3 with this instance — the core keeps the
+earlier rule; that downgrade window closes on the first wire-4 device-list read. The instance can
+withhold an attestation (the leaf stays pending, fail closed) but not forge one without its key; it
+can, with its key, attest any kind, so the attestation moves the check into every client's trust
+decision with signed evidence, not out of the instance's hands (`08-threat-model.md`). Clients that
+show a sender as a Bot still require the server's member row of account kind 1 as well
+(`02` § Roles, credential-kind rule).
+
 ## Device list
 
 The user's devices are published as a hash-chained, SSK-signed list. The DS stores and serves it;
@@ -328,6 +390,12 @@ left-padded to 78 digits`, displayed as 6 groups of 5.
 `credential_identity.cbor`, and when it verifies `credential_identity.fields.sig_umk_ssk` against
 `umk_pub` over `"dilla ssk v1" || ssk_pub`, and `sig_ssk_dev` against `ssk_pub` over
 `"dilla dsk v1" || device_id || dsk_pub || kind || tier || signer_tier`.
+
+`account_kind` holds the account-kind attestation of § Account kind attestation for a user and a
+bot (`cases`): an implementation conforms when it reproduces each case's `message` from
+`instance_id`, `user_id` and `kind`, and its `attestation` bytes from `key_id` and the
+deterministic Ed25519 signature under `instance_priv` (an Ed25519 seed, test material), and
+verifies `signature` against `instance_pub`.
 
 `credential_identity` also carries `umk_priv`, `ssk_priv`, `dsk_priv` and `dsk_pub`. Those are
 Ed25519 seeds chosen so the file is reproducible from a fixed input; they are test material and

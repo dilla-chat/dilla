@@ -92,12 +92,13 @@ describe('ThreadPane', () => {
     expect(p.onClose).not.toHaveBeenCalled();
   });
 
-  it('on a phone is a sheet with a PhoneHeader whose back is the close', async () => {
+  // Task 11 (Jonas, Q4): the phone sheet has the column's head (the prototype's), its × the close.
+  it('on a phone is a sheet with the column head whose × is the close', async () => {
     const p = props({ phone: true });
     const { container } = render(<ThreadPane {...p} />);
     expect(container.firstElementChild).toHaveAttribute('data-phone', 'true');
-    expect(container.querySelector('.d-phone-header')).not.toBeNull();
-    expect(screen.getByRole('heading', { level: 2, name: 'Thread' })).toHaveClass('d-phone-header__title');
+    expect(container.querySelector('.d-phone-header')).toBeNull();
+    expect(screen.getByRole('heading', { level: 2, name: 'Thread' })).toHaveClass('d-thread-pane__title');
     expect(screen.getAllByRole('button', { name: 'close thread' })).toHaveLength(1);
     await userEvent.setup().click(screen.getByRole('button', { name: 'close thread' }));
     expect(p.onClose).toHaveBeenCalledTimes(1);

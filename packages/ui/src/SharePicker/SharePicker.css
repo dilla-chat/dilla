@@ -1,0 +1,67 @@
+/* The share picker (Signal §5.6, the prototype's popover above Share; values read from its inline styles): 340px (on a phone
+   min(320px, 100vw − 24px)), 14px in and 14px between rows, --surface-2 in a --line-strong edge, 12px corners, the 0 24px 60px
+   shadow, d-modal over 200ms from its bottom right. */
+.d-share-picker {
+  display: grid; gap: 14px; width: 340px; max-width: calc(100vw - 24px); padding: 14px; box-sizing: border-box;
+  font-family: var(--font-mono); color: var(--fg); text-align: left; white-space: normal;
+  background: var(--surface-2); border: 1px solid var(--line-strong); border-radius: var(--r-xxl); box-shadow: var(--shadow-profile);
+  transform-origin: right bottom; animation: d-modal var(--duration-popover) var(--ease-out) both;
+}
+[data-layout="phone"] .d-share-picker { width: min(320px, calc(100vw - 24px)); }
+/* The head: the 13px bold title, and the 26px close (--fg-2; --surface-hi and --fg under the pointer). */
+.d-share-picker__head { display: flex; align-items: center; gap: 8px; }
+.d-share-picker__title { flex: 1; font-size: var(--text-input); font-weight: var(--weight-display); }
+.d-share-picker__close {
+  display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; padding: 0; font: inherit;
+  color: var(--fg-2); background: transparent; border: 0; border-radius: var(--r-md); cursor: pointer;
+}
+.d-share-picker__close:hover { color: var(--fg); background: var(--surface-hi); }
+.d-share-picker__close:focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
+/* A row: the 10px uppercase label (600, 0.12em, --fg-3) 6px over its choice. */
+.d-share-picker__field { display: grid; gap: 6px; }
+.d-share-picker__label {
+  font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking-wide); text-transform: uppercase; color: var(--fg-3);
+}
+/* The choice: the prototype's full-width segmented (2px in, --bg-2 in a --hairline-2 edge, 7px corners), each option 28px with
+   5px corners and 11.5px text, --fg-strong; the picked one --accent with --accent-ink; 160ms. */
+.d-share-picker .d-segmented { display: block; }
+.d-share-picker .d-segmented__group {
+  display: flex; flex-wrap: nowrap; padding: 2px; background: var(--bg-2); border: 1px solid var(--hairline-2); border-radius: var(--r-seg);
+}
+.d-share-picker .d-segmented__option {
+  flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; height: 28px; min-height: 0; padding: 0 8px;
+  font-size: var(--text-btn); color: var(--fg-strong); border-radius: var(--r-row); transition: background var(--duration-focus), color var(--duration-focus);
+}
+.d-share-picker .d-segmented__option:hover { color: var(--fg-strong); background: transparent; }
+.d-share-picker .d-segmented__option[aria-checked="true"] { color: var(--accent-ink); background: var(--accent); }
+.d-share-picker .d-segmented__option:focus-visible { outline: var(--focus-ring); outline-offset: -2px; }
+/* The source's preview: 96px, 8px corners, the 135° stripe over --bg-2 in a --hairline-2 edge; the icon and the 10px uppercase
+   line in --fg-4. */
+.d-share-picker__preview {
+  display: flex; align-items: center; justify-content: center; gap: 8px; height: 96px; box-sizing: content-box; /* the edge adds 2px, as the prototype draws it */
+  font-size: var(--text-micro); letter-spacing: var(--label-tracking); text-transform: uppercase; color: var(--fg-4);
+  background: repeating-linear-gradient(135deg, var(--stage-stripe) 0 8px, transparent 8px 16px), var(--bg-2);
+  border: 1px solid var(--hairline-2); border-radius: var(--r-lg);
+}
+/* The sound row: the 12px label over its 10.5px --fg-3 note, the 36 × 20 switch at the right. */
+.d-share-picker__audio { display: flex; align-items: center; gap: 10px; }
+.d-share-picker__audio-text { display: grid; flex: 1; line-height: 1.35; }
+.d-share-picker__audio-label { font-size: var(--text-ui); }
+.d-share-picker__note { font-size: var(--text-meta); color: var(--fg-3); }
+/* The prototype's switch here is flat: no knob shadow, the track's colour over 200ms, the knob over 240ms. */
+/* No 44px phone enlargement (the prototype's size, Jonas 2026-10-27); the 24px hit height stays. */
+.d-share-picker .d-toggle__switch { min-width: 0; min-height: 1.5rem; padding: 0; }
+.d-share-picker .d-toggle__track { transition: background var(--duration-turn), border-color var(--duration-turn); }
+.d-share-picker .d-toggle__knob { box-shadow: none; }
+/* The foot: a hairline 12px above; the estimate (10.5px tabular --fg-3, --warn when heavy) and Go live (34px, 14px in, 7px
+   corners, --accent with --accent-ink, 12px 700; 0.96 while pressed). */
+.d-share-picker__foot { display: flex; align-items: center; gap: 8px; padding-top: 12px; border-top: 1px solid var(--hairline); }
+.d-share-picker__estimate { flex: 1; font-size: var(--text-meta); font-variant-numeric: tabular-nums; color: var(--fg-3); }
+.d-share-picker__estimate[data-heavy="true"] { color: var(--warn); }
+.d-share-picker__go {
+  display: flex; align-items: center; gap: 6px; height: 34px; padding: 0 14px; font: inherit; font-size: var(--text-ui); font-weight: var(--weight-display);
+  color: var(--accent-ink); background: var(--accent); border: 0; border-radius: var(--r-seg); cursor: pointer; transition: transform var(--duration-press);
+}
+.d-share-picker__go:active { transform: scale(0.96); }
+.d-share-picker__go:focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { .d-share-picker { animation: none; } }

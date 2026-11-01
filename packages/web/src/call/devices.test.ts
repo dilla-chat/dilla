@@ -69,9 +69,19 @@ describe('camera and screen', () => {
     const getDisplayMedia = vi.fn(async () => stream(vtrack('browser'), atrack(true)));
     await acquireScreen({ getDisplayMedia });
     expect(getDisplayMedia).toHaveBeenCalledWith({
-      video: true,
+      video: { displaySurface: 'monitor', width: { max: 1920 }, height: { max: 1080 }, frameRate: { ideal: 30, max: 30 } },
       audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 2, restrictOwnAudio: true },
       systemAudio: 'include', windowAudio: 'system', selfBrowserSurface: 'exclude', surfaceSwitching: 'exclude',
+    });
+  });
+
+  it('task 8c: the picker\'s options are the request: the surface, the frame, the rate, and no sound when it is off', async () => {
+    const getDisplayMedia = vi.fn(async () => stream(vtrack('window')));
+    await acquireScreen({ getDisplayMedia }, { surface: 'window', resolution: 'source', fps: 60, systemAudio: false });
+    expect(getDisplayMedia).toHaveBeenCalledWith({
+      video: { displaySurface: 'window', frameRate: { ideal: 60, max: 60 } },
+      audio: false,
+      systemAudio: 'exclude', windowAudio: 'exclude', selfBrowserSurface: 'exclude', surfaceSwitching: 'exclude',
     });
   });
 

@@ -25,7 +25,7 @@ type Binding struct {
 	InstallationID id.ID
 	CommunityID    id.ID
 	State          uint8
-	Capabilities   uint8
+	Capabilities   uint16
 }
 
 func liveState(state uint8) bool {

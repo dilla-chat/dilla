@@ -25,9 +25,9 @@ type interactionRestoreSession interface {
 	BotInteractionHeal(context.Context, id.ID, id.ID, []byte, [][]any, []byte) (client.HealResult, error)
 }
 
-// healRestoredInteractionGroups runs before ordinary source sync. A restored
-// private group cannot pass the normal current-group read fence until its MLS
-// snapshot has been revalidated through the dedicated server heal route.
+// healRestoredInteractionGroups runs after ordinary membership, trust and readiness,
+// before private source sync. A restored private group cannot pass the current-group
+// read fence until its MLS snapshot is revalidated through the dedicated heal route.
 func healRestoredInteractionGroups(ctx context.Context, source interactionRestoreNative, session interactionRestoreSession) (int, error) {
 	if source == nil || session == nil {
 		return 0, errors.New("interaction restore dependencies are unavailable")

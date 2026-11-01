@@ -4,6 +4,7 @@ import { DillaHttpError } from '../http/errors';
 import type { Routes } from '../http/routes';
 import type { Session } from './session';
 import { adoptServedList, publishDeviceList } from './signup';
+import { chainRow } from '../state/trust';
 
 export interface EnrolFetched { root: Uint8Array; state: Uint8Array; listBody: Uint8Array }
 
@@ -87,7 +88,8 @@ export class Enrol {
     const state = await routes.getBackup(1);
     const list = await routes.getDeviceList(userId);
     if (list === null) throw new Error('E_NO_BACKUP');
-    return { root: root.object, state: state?.object ?? new Uint8Array(0), listBody: list.raw };
+    // The core decodes the four-element list body; a wire-4 head's attestation is no part of it.
+    return { root: root.object, state: state?.object ?? new Uint8Array(0), listBody: chainRow(list.raw) };
   }
 
   async complete(recoveryKey: string, fetched: EnrolFetched, username: string): Promise<void> {

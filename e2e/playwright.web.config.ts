@@ -15,7 +15,8 @@ export default defineConfig({
   // A project's own testIgnore replaces this one, so a project that ignores more repeats these names.
   testIgnore: /(^|\/)(support|core-worker|spike-joinall)\.spec\.ts$/,
   globalSetup: resolve(here, 'web', 'support', 'host.ts'),
-  metadata: { dillaHost },
+  // prebuildBotRuntime: the global setup builds dillabot and dilla-bot-core once, so no Bot test pays a cold build.
+  metadata: { dillaHost, prebuildBotRuntime: true },
   fullyParallel: false,
   workers: 1,
   retries: 0,
@@ -29,6 +30,8 @@ export default defineConfig({
     // channel-list.spec starts an SFU and grants the `microphone` permission to a fake-microphone context; both are
     // Chromium-only (Firefox rejects "Unknown permission: microphone"), so Firefox does not load it.
     { name: 'firefox-web', testIgnore: /(^|\/)(support|core-worker|spike-joinall|channel-list)\.spec\.ts$/, use: { ...devices['Desktop Firefox'] } },
-    { name: 'webkit-web', testMatch: /(^|\/)(signup|reload|phone|signin-order|private-window|layout|reload-mid-sync)\.spec\.ts$/, use: { ...devices['Desktop Safari'] } },
+    // Keep the WebKit set explicit: these specs use the shipping web client without enabling
+    // microphone-only Chromium fixtures, and slash commands are part of the cross-engine contract.
+    { name: 'webkit-web', testMatch: /(^|\/)(signup|reload|phone|signin-order|private-window|layout|search-settings|reload-mid-sync|slash-commands|realtime-transport)\.spec\.ts$/, use: { ...devices['Desktop Safari'] } },
   ],
 });

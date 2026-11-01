@@ -8,14 +8,15 @@ import { mkdirSync, rmSync } from 'node:fs';
 import { addServerVia,
   COPY, SIGNIN, TEST_TIMEOUT, WAIT, channelRow, homeTile, newChannelButton, completeFactorStep, composerBox, copy, expectAccessible, expectComposerReady,
   expectHeading, expectShell, nextButton, newAccount, railItem, railNav, readRecoveryKey, sendText, keyField, submitButton, test,
-  messageRow, signIn, type Account,
+  messageRow, signIn, type Account, membersToggle,
 } from './support/app';
 import { PROFILE_ROOT } from './support/persistent';
 import { nextCode } from './support/totp';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
 
-const HOST: HostConfig = { port: 8505, control: 8506, webRoot: 'packages/web/dist' };
+const PHONE_PORT = Number(process.env.DILLA_E2E_PHONE_PORT ?? 8557);
+const HOST: HostConfig = { port: PHONE_PORT, control: PHONE_PORT + 1, webRoot: 'packages/web/dist' };
 const SERVER = 'Midgard Crew';
 const PHONE = { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 3 } as const;
 /** A phone on its side (web3.8 R9): wide, but 390 px tall with a coarse pointer, so it still gets the phone layout. */
@@ -61,11 +62,12 @@ async function phoneContext(f: PhoneFixtures, dir: string, device: typeof PHONE 
 }
 const phoneDir = (project: string, workerIndex: number, n: number) => `${PROFILE_ROOT}/${project}-${workerIndex}-phone${String(n)}`;
 
-/** Every visible input, textarea and select is at least 16 px, so no browser zooms on focus. A checkbox, a radio and a button
- *  take no typing, so no browser zooms to them and their own 13.33 px default is left alone. */
+/** Every visible text input and textarea is at least 16 px, so no browser zooms on focus. A checkbox, a radio and a button
+ *  take no typing, so no browser zooms to them and their own 13.33 px default is left alone. Task 11 (Jonas, Q6): a select
+ *  keeps the prototype's size (iOS may zoom when it opens). */
 async function expectFieldSizes(page: Page, state: string, expected = 1): Promise<number> {
   const { checked, small } = await page.evaluate(() => {
-    const fields = [...document.querySelectorAll<HTMLElement>('input, textarea, select')]
+    const fields = [...document.querySelectorAll<HTMLElement>('input, textarea')]
     .filter((el) => !(el instanceof HTMLInputElement && ['checkbox', 'radio', 'button', 'submit', 'reset', 'hidden', 'file', 'range', 'color'].includes(el.type)))
     .filter((el) => el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden')
     .map((el) => ({ what: `${el.tagName.toLowerCase()}${el instanceof HTMLInputElement ? `[${el.type}]` : ''} ${el.id}`, px: parseFloat(getComputedStyle(el).fontSize) }));
@@ -125,6 +127,15 @@ async function expectTapTargets(controls: Locator, state: string): Promise<void>
     if (box.width < 44 || box.height < 44) small.push(`${(await control.getAttribute('aria-label')) ?? (await control.innerText()).trim()} ${box.width}x${box.height}`);
   }
   expect(small, `${state}: controls under 44x44 CSS px`).toEqual([]);
+}
+
+/** Jonas 2026-10-27 (pixel parity, supersedes Ruling N): a few phone controls are the prototype's size, not 44 (the rail's
+ *  38px tiles; the phone header's Threads and Members 28 high, search 36 x 28). Each is measured at that size exactly. */
+async function expectPrototypeSize(control: Locator, what: string, want: { w?: number; h: number }): Promise<void> {
+  const box = await control.boundingBox();
+  expect(box, `${what} has a box`).not.toBeNull();
+  if (want.w !== undefined) expect(Math.abs(box!.width - want.w), `${what} is ${String(want.w)} wide (got ${String(box!.width)})`).toBeLessThanOrEqual(0.5);
+  expect(Math.abs(box!.height - want.h), `${what} is ${String(want.h)} high (got ${String(box!.height)})`).toBeLessThanOrEqual(0.5);
 }
 
 test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs, the link, tap targets and focus', async ({ playwright, browserName, launchOptions, headless, channel, guard }, testInfo) => {
@@ -201,7 +212,8 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expectComposerReady(page, 'general');
       const composer = composerBox(page, 'general');
       expect(await composer.evaluate((el) => parseFloat(getComputedStyle(el).fontSize))).toBeGreaterThanOrEqual(16);
-      await expectTapTargets(page.getByRole('button', { name: copy('shell.composer.attach'), exact: true }), 'the attach button');
+      // Task 7 (rule 0, Jonas 2026-10-27): the composer's footer tools are the prototype's 26 x 24 on a phone too.
+      await expectPrototypeSize(page.getByRole('button', { name: copy('shell.composer.attach'), exact: true }), 'the attach button', { w: 26, h: 24 });
       await composer.tap();
       await expect(composer).toBeFocused();
       expect(await scale(page), 'visualViewport.scale after tapping into the composer').toBe(1);
@@ -237,27 +249,29 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expect(actions).toBeVisible();
       await row.locator('.d-message-row__body').tap();
       await expect(actions).toHaveCount(0);
-      // I2: a grouped row's gutter time fits the avatar column and its gap, unclipped, at 390 and at 360.
+      // Task 7 (Signal §5.10, the prototype's phone rows): the gutter is a bare 4px column that never shows a time, even on a
+      // revealed follow-up (the head keeps it for a screen reader; a first row shows it beside the name). Nothing clips.
       await sendText(page, 'general', 'tack');
       const grouped = messageRow(page, 'general', 'tack');
       await expect(grouped).toHaveAttribute('data-grouped', 'true');
       await grouped.locator('.d-message-row__body').tap();
       for (const width of [390, 360]) {
         await page.setViewportSize({ width, height: 844 });
-        const g = await grouped.locator('.d-message-row__gutter').evaluate(el => {
-          const box = el.getBoundingClientRect();
-          const main = el.parentElement!.querySelector('.d-message-row__main')!.getBoundingClientRect();
-          return { left: box.left, right: box.right, mainLeft: main.left, scrollWidth: el.scrollWidth, clientWidth: el.clientWidth, text: el.textContent };
-        });
-        expect(g.left, `the gutter time starts on screen at ${String(width)}: ${g.text}`).toBeGreaterThanOrEqual(0);
-        expect(g.right, `the gutter time ends before the text at ${String(width)}`).toBeLessThanOrEqual(g.mainLeft + 0.5);
-        expect(g.scrollWidth, `the gutter time is not clipped at ${String(width)}`).toBeLessThanOrEqual(g.clientWidth);
+        const g = await grouped.locator('.d-message-row__gutter').evaluate(el => ({ width: el.getBoundingClientRect().width, visibility: getComputedStyle(el).visibility }));
+        expect(g.visibility, `the phone gutter shows no time at ${String(width)}`).toBe('hidden');
+        expect(Math.round(g.width), `the phone gutter is the prototype's 4px at ${String(width)}`).toBe(4);
       }
       await page.setViewportSize({ width: 390, height: 844 });
       await grouped.locator('.d-message-row__body').tap();
       await expect(grouped.getByRole('toolbar')).toHaveCount(0);
       await expectAccessible(page, 'the channel view');
-      await expectTapTargets(page.locator('.d-phone-header').locator('a, button'), 'the channel view header');
+      // The back stays a 44 target; the actions are the prototype's (Threads 30 x 28, Members 28 high, search 36 x 28).
+      await expectTapTargets(page.locator('.d-phone-header__back'), 'the channel view header back');
+      const headerActions = page.locator('.d-phone-header__actions');
+      await expectPrototypeSize(headerActions.getByRole('button', { name: copy('layout.header.threads'), exact: true }), 'the header Threads', { w: 30, h: 28 });
+      await expectPrototypeSize(headerActions.locator('[data-members-toggle]'), 'the header Members', { h: 28 });
+      await expectPrototypeSize(headerActions.getByRole('button', { name: copy('search.open'), exact: true }), 'the header search', { w: 36, h: 28 });
+      await expect(page.locator('.d-phone-header').getByRole('button', { name: copy('nav.channel.menu'), exact: true })).toHaveCount(0);
     });
 
     // 3a. web3.7.2: the shell is fixed and follows the visual viewport's offset (--d-vvtop stands in for the iOS pan, which
@@ -282,17 +296,20 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
         const host = document.querySelector('.d-app-shell')!;
         const bar = document.createElement('div');
         bar.className = 'd-call-bar';
-        bar.innerHTML = '<button type="button" class="d-btn d-call-bar__mute" aria-pressed="true" data-size="md"></button><i></i>';
+        bar.innerHTML = '<button type="button" class="d-btn d-call-bar__mute" aria-pressed="true" data-size="md"></button><i></i><b></b>';
         host.append(bar);
-        bar.querySelector('i')!.style.setProperty('background', 'var(--surface-2)');
+        // Signal (task 8): the toggled-on danger tint, the --danger-soft fill and the --danger-border edge.
+        bar.querySelector('i')!.style.setProperty('background', 'var(--danger-soft)');
         bar.querySelector('i')!.style.setProperty('color', 'var(--danger)');
+        bar.querySelector('b')!.style.setProperty('color', 'var(--danger-border)');
         const button = getComputedStyle(bar.querySelector('button')!);
         const probe = getComputedStyle(bar.querySelector('i')!);
-        const out = { bg: button.backgroundColor, color: button.color, edge: button.borderTopColor, surface: probe.backgroundColor, danger: probe.color };
+        const edge = getComputedStyle(bar.querySelector('b')!);
+        const out = { bg: button.backgroundColor, color: button.color, edge: button.borderTopColor, surface: probe.backgroundColor, danger: probe.color, border: edge.color };
         bar.remove();
         return out;
       });
-      expect(muted, 'a muted mic: the danger glyph and edge on surface-2').toEqual({ bg: muted.surface, color: muted.danger, edge: muted.danger, surface: muted.surface, danger: muted.danger });
+      expect(muted, 'a muted mic: the danger glyph on the danger tint, never the accent fill').toEqual({ bg: muted.surface, color: muted.danger, edge: muted.border, surface: muted.surface, danger: muted.danger, border: muted.border });
     });
 
     // 3b. A thread is a sheet: opened from the toolbar, closed by the system back, then reopened by a real click on the chip.
@@ -306,8 +323,11 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await reply.fill('svar');
       await reply.press('Enter');
       await expect(page.getByRole('complementary', { name: copy('thread.title') }).getByText('svar')).toBeVisible({ timeout: WAIT });
-      const box = await reply.boundingBox();
-      expect(box!.y + box!.height, 'the thread composer sits at the bottom of the sheet').toBeGreaterThan(844 - 120);
+      // Task 7: the textarea sits in the Signal box's input row over its footer, so the composer (its form) is measured: it ends where
+      // the sheet does.
+      const box = await reply.locator('xpath=ancestor::form[1]').boundingBox();
+      const sheetBox = await page.getByRole('complementary', { name: copy('thread.title') }).boundingBox();
+      expect(box!.y + box!.height, 'the thread composer sits at the bottom of the sheet').toBeGreaterThanOrEqual(sheetBox!.y + sheetBox!.height - 16);
       await page.goBack();
       await expect(page.getByRole('complementary', { name: copy('thread.title') })).toBeHidden({ timeout: WAIT });
       await row.getByRole('button', { name: copy('thread.summary.one'), exact: true }).click();
@@ -343,21 +363,23 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
     await test.step('the list is accessible and its tap targets are 44 px', async () => {
       await expectAccessible(page, 'the servers list');
       await expectTapTargets(tabBar(page).getByRole('link'), 'the tab bar');
-      await expectTapTargets(homeTile(page), 'the @ tile');
-      // web3.8 (WS8): beside the server's name sit a search icon and the settings gear, no menu; "leave" is in server settings,
-      // "new channel" is the "+" in the list header, and the invite link lives under server settings → Invites.
-      const search = page.getByRole('button', { name: copy('search.open'), exact: true });
-      const gear = page.getByRole('button', { name: copy('admin.open'), exact: true });
+      await expectPrototypeSize(homeTile(page), 'the @ tile', { w: 38, h: 38 });
+      // Ruling AB (Jonas 2026-10-27): beside the server's name sits only the prototype's ⌄ (server settings, 26 x 26), plus the
+      // "+" while there are no categories; no search, no reminders. "leave" is in server settings.
+      const menu = page.getByRole('button', { name: copy('admin.open'), exact: true });
+      await expect(page.locator('.d-channel-list__head').getByRole('button', { name: copy('search.open'), exact: true })).toHaveCount(0);
+      await expect(page.getByRole('button', { name: 'Reminders', exact: true })).toHaveCount(0);
       await expect(page.getByRole('button', { name: copy('nav.server.menu'), exact: true })).toHaveCount(0);
       await expect(page.getByRole('menuitem')).toHaveCount(0);
-      await expectTapTargets(search, 'the search icon');
-      await expectTapTargets(gear, 'the settings gear');
-      await expectTapTargets(newChannelButton(page), 'the new channel "+"');
+      await expectPrototypeSize(menu, 'the server ⌄', { w: 26, h: 26 });
+      await expect(newChannelButton(page)).toBeVisible();
     });
 
-    // Walk 1: a phone has no Control+K, so search opens from the servers list header, full screen; a hit opens its channel.
-    await test.step('search from the servers list header opens full screen and a hit opens its message', async () => {
-      await page.getByRole('button', { name: copy('search.open'), exact: true }).tap();
+    // Walk 1: a phone has no Control+K, so search opens from a conversation's phone header (Ruling AB: the list head has none),
+    // full screen; a hit opens its channel.
+    await test.step('search from the channel header opens full screen and a hit opens its message', async () => {
+      await channelRow(page, 'general').tap();
+      await page.locator('.d-phone-header').getByRole('button', { name: copy('search.open'), exact: true }).tap();
       const palette = page.getByRole('dialog', { name: copy('search.placeholder'), exact: true });
       await expect(palette).toBeVisible({ timeout: WAIT });
       const box = await palette.boundingBox();
@@ -376,33 +398,31 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expect(tabBar(page)).toBeVisible({ timeout: WAIT });
     });
 
-    // E2: the direct messages list (the @ tile's Home) has search too (a touch device has no Control+K); Escape closes the palette.
-    await test.step('search from the direct messages list opens the palette and Escape closes it', async () => {
+    // Ruling AB: the direct messages list (the @ tile's Home) has no search in its head, only "message someone".
+    await test.step('the direct messages list head holds only "message someone"', async () => {
       await homeTile(page).tap();
-      await page.getByRole('button', { name: copy('search.open'), exact: true }).tap();
-      const palette = page.getByRole('dialog', { name: copy('search.placeholder'), exact: true });
-      await expect(palette).toBeVisible({ timeout: WAIT });
-      await page.keyboard.press('Escape');
-      await expect(palette).toBeHidden({ timeout: WAIT });
+      const head = page.locator('.d-channel-list__head');
+      await expect(head.getByRole('button', { name: copy('shell.dms.new'), exact: true })).toBeVisible({ timeout: WAIT });
+      await expect(head.getByRole('button', { name: copy('search.open'), exact: true })).toHaveCount(0);
       await railItem(page, SERVER).tap();
       await expect(channelRow(page, 'general')).toBeVisible({ timeout: WAIT });
     });
 
     // The channel menu's sheet: closed by the system back and by its own back, focus returns to the menu trigger.
-    await test.step('the members sheet returns focus to the channel menu', async () => {
+    await test.step('the members sheet returns focus to the Members button', async () => {
       await channelRow(page, 'general').tap();
       await expect(back(page)).toBeVisible({ timeout: WAIT });
-      const menu = page.getByRole('button', { name: copy('nav.channel.menu'), exact: true });
+      const menu = membersToggle(page);
       await menu.click();
-      await page.getByRole('menuitem', { name: copy('members.toggle'), exact: true }).click();
       const close = page.getByRole('button', { name: copy('members.close'), exact: true });
       await expect(close).toBeVisible({ timeout: WAIT });
-      await expectAbove(page.getByRole('complementary', { name: /members/ }), tabBar(page), 'the members sheet');
+      // Task 11 (Jonas, Q4): the members sheet covers the whole screen, the tab bar included (the prototype's).
+      const sheet = await page.getByRole('complementary', { name: /members/ }).boundingBox();
+      expect(sheet!.y + sheet!.height, 'the members sheet reaches the bottom of the screen').toBeGreaterThanOrEqual(844 - 1);
       await page.goBack();
       await expect(close).toBeHidden({ timeout: WAIT });
       await expect(menu).toBeFocused();
       await menu.click();
-      await page.getByRole('menuitem', { name: copy('members.toggle'), exact: true }).click();
       await expect(close).toBeVisible({ timeout: WAIT });
       await close.click();
       await expect(close).toBeHidden({ timeout: WAIT });
@@ -416,7 +436,7 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await homeTile(page).tap();
       await expect(homeTile(page)).toHaveAttribute('aria-current', 'page');
       await expect(tab(page, 'home.tab')).toHaveAttribute('aria-current', 'page');
-      await expect(listHeading(page, 'shell.dms.label')).toBeVisible();
+      await expect(listHeading(page, 'shell.dms.title')).toBeVisible();
       await expect(page.getByText(copy('shell.dms.empty'), { exact: true })).toBeVisible({ timeout: WAIT });
       await expectTapTargets(page.getByRole('button', { name: copy('shell.dms.new'), exact: true }), 'message someone');
       await expectAccessible(page, 'Home with @ selected');
@@ -428,48 +448,71 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expect(tab(page, 'nav.tab.activity')).toHaveAttribute('aria-current', 'page');
       await expect(listHeading(page, 'activity.title')).toBeFocused();
       await expect(page.getByRole('region', { name: copy('activity.emptyTitle'), exact: true })).toBeVisible();
-      expect((await page.locator('.d-app-shell__sidebar .d-phone-header').boundingBox())!.height, 'a 48 header on Activity').toBeGreaterThanOrEqual(48);
+      // Task 11 (Jonas, Q3): the prototype's Activity heading (18px over the 14px title), not a 48px bar.
+      const activityHead = page.locator('.d-app-shell__sidebar .dw-activity .d-phone-header');
+      await expect(activityHead).toBeVisible();
+      expect(await activityHead.evaluate(e => getComputedStyle(e).paddingTop), 'Activity: 18px above the title').toBe('18px');
+      expect(await activityHead.locator('.d-phone-header__title').evaluate(e => getComputedStyle(e).fontSize), 'Activity: a 14px title').toBe('14px');
       await expectAccessible(page, 'Activity');
 
       await tab(page, 'nav.tab.you').tap();
       await expect(tab(page, 'nav.tab.you')).toHaveAttribute('aria-current', 'page');
       await expect(page.getByRole('heading', { level: 2, name: copy('you.title'), exact: true })).toBeFocused();
-      await expect(page.getByRole('heading', { name: copy('you.status'), exact: true })).toBeVisible();
-      // H1/H6: a 48 header on the tab root, and the status is a 44 row, not a native select.
-      expect((await page.locator('.dw-you .d-phone-header').boundingBox())!.height).toBeGreaterThanOrEqual(48);
+      // Task 11 (Jonas, Q3): the prototype's You: the account, the connection box, and the rows Settings, Status and Sign out
+      // (48px each, no native select); Diagnostics keeps the node, link, generation and devices.
       await expect(page.locator('.dw-you select')).toHaveCount(0);
-      await expectTapTargets(page.getByRole('button', { name: new RegExp(copy('presence.label')) }), 'the status row');
-      for (const fact of ['shell.status.node', 'shell.status.link', 'shell.status.gen', 'shell.status.devices']) {
-        await expect(page.locator('.dw-you__facts dt').filter({ hasText: copy(fact) })).toBeVisible();
+      // The box's first line in full: "Connected to {host} · {ms} ms" (or without the ms before the first heartbeat's ack).
+      const pattern = (key: 'you.connected' | 'you.connectedNoPing') =>
+        copy(key, { host: 'HOSTX', ms: 999 }).replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace('HOSTX', '\\S+').replace('999', '\\d+');
+      await expect(page.locator('.dw-you__facts')).toContainText(new RegExp(`^(${pattern('you.connected')}|${pattern('you.connectedNoPing')})`), { timeout: WAIT });
+      for (const name of [copy('you.settings'), copy('workspace.signOut')]) {
+        expect((await page.getByRole('button', { name, exact: true }).boundingBox())!.height, `${name} is a 48px row`).toBeGreaterThanOrEqual(47);
       }
-      await expect(page.getByRole('button', { name: copy('devices.signOut'), exact: true })).toBeVisible();
+      await expectTapTargets(page.getByRole('button', { name: new RegExp(`^${copy('you.statusRow')}`) }), 'the status row');
       await expectAccessible(page, 'You');
     });
 
-    // Settings from You, and back to the section's row.
-    await test.step('back from Settings lands on the section row', async () => {
-      const row = page.locator('[data-settings-section="privacy"]');
+    // The You tab has one settings entry. The modal index selects a section, and Back returns to the index.
+    await test.step('phone settings follows index → section → index', async () => {
+      const row = page.locator('[data-settings-section="index"]');
+      await expect(row).toContainText(copy('you.settings'));
       await row.tap();
+      const settings = page.getByRole('dialog', { name: copy('settings.title'), exact: true });
+      await expect(settings).toBeVisible({ timeout: WAIT });
+      await expect(page).toHaveURL('/settings', { timeout: WAIT });
+      await expect(settings.getByRole('navigation', { name: copy('settings.nav.label'), exact: true })).toBeVisible();
+      const privacy = settings.getByRole('button', { name: copy('workspace.privacy'), exact: true });
+      await expect(privacy).toBeVisible({ timeout: WAIT });
+      await privacy.tap();
       await expect(page).toHaveURL(/\/settings\/privacy$/, { timeout: WAIT });
-      await expect(back(page)).toBeVisible();
-      await expect(tabBar(page)).toBeVisible();
-      await expectAbove(page.getByRole('dialog', { name: copy('settings.title'), exact: true }), tabBar(page), 'Settings');
-      await back(page).click();
-      await expect(tabBar(page)).toBeVisible({ timeout: WAIT });
+      // Task 10 (README §5.10): a phone section keeps the nav as chips above it and has no Back; the browser's back returns.
+      await expect(settings.getByRole('button', { name: copy('workspace.back'), exact: true })).toHaveCount(0);
+      await expect(settings.getByRole('button', { name: copy('workspace.privacy'), exact: true })).toHaveAttribute('aria-current', 'page');
+      await expect(tabBar(page)).toHaveCount(0);
+      await page.goBack();
+      await expect(page).toHaveURL('/settings', { timeout: WAIT });
+      await expect(settings.getByRole('navigation', { name: copy('settings.nav.label'), exact: true })).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(settings).toBeHidden({ timeout: WAIT });
       await expect(row).toBeFocused();
     });
 
-    // Server settings is a page under the tabs too, and Escape closes it.
-    await test.step('server settings keeps the tab bar and closes on Escape', async () => {
+    // Server settings is a fullscreen modal; section URLs are scoped under the community.
+    await test.step('server settings follows index → section and closes on Escape', async () => {
       await tab(page, 'home.tab').tap();
-      await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+      await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
       const dialog = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
       await expect(dialog).toBeVisible({ timeout: WAIT });
-      await expect(tabBar(page)).toBeVisible();
-      await expectAbove(dialog, tabBar(page), 'server settings');
+      await expect(page).toHaveURL(/\/c\/[0-9a-f]{32}\/settings$/, { timeout: WAIT });
+      await expect(tabBar(page)).toHaveCount(0);
+      await dialog.getByRole('button', { name: copy('workspace.overview'), exact: true }).tap();
+      await expect(page).toHaveURL(/\/c\/[0-9a-f]{32}\/settings\/overview$/, { timeout: WAIT });
+      await expect(dialog.getByRole('button', { name: copy('workspace.overview'), exact: true })).toHaveAttribute('aria-current', 'page');
+      await page.goBack();
+      await expect(page).toHaveURL(/\/c\/[0-9a-f]{32}\/settings$/, { timeout: WAIT });
       await page.keyboard.press('Escape');
       await expect(dialog).toBeHidden({ timeout: WAIT });
-      await expect(tabBar(page)).toBeVisible();
+      await expect(tabBar(page)).toBeVisible({ timeout: WAIT });
     });
 
     // A deep link to /dm is Home with the @ tile selected, on a fresh page.
@@ -478,7 +521,7 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expect(tabBar(page)).toBeVisible({ timeout: WAIT });
       await expect(tab(page, 'home.tab')).toHaveAttribute('aria-current', 'page');
       await expect(homeTile(page)).toHaveAttribute('aria-current', 'page', { timeout: WAIT });
-      await expect(listHeading(page, 'shell.dms.label')).toBeVisible();
+      await expect(listHeading(page, 'shell.dms.title')).toBeVisible();
       await expect(page).toHaveURL(/\/dm$/);
       await expectAccessible(page, '/dm deep link');
       await railItem(page, SERVER).tap();
@@ -496,23 +539,23 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       // WebKit can report an offline fetch after this step ends. Clear the known browser wording after closing the context.
     });
 
-    // web3.8: Settings is in the shell's page slot, so the link banner stays the hit target above it (it was covered when
-    // Settings rendered after the shell).
-    await test.step('the link banner is the hit target over phone Settings', async () => {
+    // A full-screen settings modal covers the phone tab bar and shell; the offline state remains announced to the user.
+    await test.step('offline state remains available while fullscreen Settings is open', async () => {
       await tab(page, 'nav.tab.you').tap();
-      await page.locator('[data-settings-section="privacy"]').tap();
+      await page.locator('[data-settings-section="index"]').tap();
+      const settings = page.getByRole('dialog', { name: copy('settings.title'), exact: true });
+      await settings.getByRole('button', { name: copy('workspace.privacy'), exact: true }).tap();
       await expect(page).toHaveURL(/\/settings\/privacy$/, { timeout: WAIT });
       await context.setOffline(true);
-      const text = page.getByText(copy('nav.link.offline'), { exact: true });
+      const text = settings.getByRole('status').filter({ hasText: copy('nav.link.offline') });
       await expect(text).toBeVisible({ timeout: WAIT });
-      const box = (await text.boundingBox())!;
-      const hit = await page.evaluate(({ x, y }) => {
-        const el = document.elementFromPoint(x, y);
-        return { inBanner: el?.closest('.d-link-banner') != null, inSettings: el?.closest('.d-settings-frame') != null };
-      }, { x: box.x + box.width / 2, y: box.y + box.height / 2 });
-      expect(hit, 'the banner, not Settings, is under the point').toEqual({ inBanner: true, inSettings: false });
+      await expect(settings).toHaveAttribute('aria-modal', 'true');
+      await expect(settings.getByRole('button', { name: copy('settings.close'), exact: true })).toBeVisible();
+      await expect(tabBar(page)).toHaveCount(0);
       await context.setOffline(false);
       await expect(text).toBeHidden({ timeout: WAIT });
+      await page.keyboard.press('Escape');
+      await expect(settings).toBeHidden({ timeout: WAIT });
       await tab(page, 'home.tab').tap();
       await expect(channelRow(page, 'general')).toBeVisible({ timeout: WAIT });
     });
@@ -619,7 +662,7 @@ test('a landscape phone (844 x 390) gets the phone layout', async ({ playwright,
     await test.step('three tabs, the @ tile, and a /dm deep link at 844 x 390', async () => {
       await expect(tabBar(page).getByRole('link')).toHaveCount(3);
       await expectTapTargets(tabBar(page).getByRole('link'), 'the tab bar at 844 x 390');
-      await expectTapTargets(homeTile(page), 'the @ tile at 844 x 390');
+      await expectPrototypeSize(homeTile(page), 'the @ tile at 844 x 390', { w: 38, h: 38 });
       await homeTile(page).tap();
       await expect(homeTile(page)).toHaveAttribute('aria-current', 'page');
       await expectAccessible(page, 'Home with @ selected at 844 x 390');
@@ -650,7 +693,8 @@ test('a landscape phone (844 x 390) gets the phone layout', async ({ playwright,
       await expect(page.getByRole('complementary', { name: copy('thread.title') })).toBeHidden({ timeout: WAIT });
       const chip = row.getByRole('button', { name: copy('thread.summary.one'), exact: true });
       await expect(chip).toBeVisible({ timeout: WAIT });
-      await expectTapTargets(chip, 'the thread chip of a message at 844 x 390');
+      // Task 7 (rule 0, Jonas 2026-10-27): the thread chip is the prototype's 24px high on a phone too.
+      await expectPrototypeSize(chip, 'the thread chip of a message at 844 x 390', { h: 24 });
     });
 
     // A call needs a live SFU, which this host does not run, so this step does not measure a real call's controls. It puts

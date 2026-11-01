@@ -88,7 +88,7 @@ describe('AdminController: access', () => {
     await toReady(w);
     await vi.waitFor(() => expect(w.last<CommunityAccess>(`permissions:${CID}`)).toBeDefined());
     expect(w.last<CommunityAccess>(`permissions:${CID}`)).toEqual({
-      top: 2 ** 31, owner: true, manageCommunity: true, manageChannels: true, kickMembers: true, banMembers: true, moderateMembers: true, createInvite: true,
+      top: 2 ** 31, owner: true, manageCommunity: true, viewAuditLog: true, manageChannels: true, kickMembers: true, banMembers: true, moderateMembers: true, createInvite: true,
       manageRoles: true, manageMessages: true, loaded: true, everyoneId: '', overwritesLoaded: true,
     });
     expect(w.last<RoleSummary[]>(`roles:${CID}`)).toEqual([
@@ -307,7 +307,7 @@ describe('AdminController: server and channel edits', () => {
     expect(w.last<unknown[]>(`invites:${CID}`)).toEqual([]);
     expect(w.last<unknown[]>(`roles:${CID}`)).toEqual([]);
     expect(w.last<CommunityAccess>(`permissions:${CID}`)).toEqual({
-      top: 0, owner: false, manageCommunity: false, manageChannels: false, kickMembers: false, banMembers: false, createInvite: false,
+      top: 0, owner: false, manageCommunity: false, viewAuditLog: false, manageChannels: false, kickMembers: false, banMembers: false, createInvite: false,
       moderateMembers: false, manageRoles: false, manageMessages: false, loaded: false, everyoneId: '', overwritesLoaded: false,
     });
   });
@@ -612,7 +612,7 @@ describe('AdminController: fix round 1', () => {
     });
     expect(await run(w, { m: 'transferOwnership', communityId: CID, userId: STRANGER_HEX })).toMatchObject({ ok: true, value: null });
     await vi.waitFor(() => expect(w.last<CommunityAccess>(`permissions:${CID}`)).toEqual({
-      top: 0, owner: false, manageCommunity: false, manageChannels: false, kickMembers: false, banMembers: false, createInvite: false,
+      top: 0, owner: false, manageCommunity: false, viewAuditLog: false, manageChannels: false, kickMembers: false, banMembers: false, createInvite: false,
       moderateMembers: false, manageRoles: false, manageMessages: false, loaded: true, everyoneId: '', overwritesLoaded: true,
     }));
   });

@@ -19,7 +19,7 @@ const MAX_DISPLAY_CASES = 100;
 const requestId = (): string => [...crypto.getRandomValues(new Uint8Array(16))]
   .map(byte => byte.toString(16).padStart(2, '0')).join('');
 
-export function ModerationLog({ communityId }: { communityId: string }): React.JSX.Element {
+export function ModerationLog({ communityId, showHeading = true }: { communityId: string; showHeading?: boolean }): React.JSX.Element {
   const client = useCore();
   const base = useId();
   const [forCommunity, setForCommunity] = useState(communityId);
@@ -76,7 +76,7 @@ export function ModerationLog({ communityId }: { communityId: string }): React.J
     let canceled = false;
     let timer: number | undefined;
     const poll = (): void => {
-      void Promise.resolve(client.call({ m: 'readHumanInteractionResponses', communityId })).then(value => {
+      void Promise.resolve(client.call({ m: 'readHumanInteractionResponses', communityId, requestIds: [request] })).then(value => {
         if (canceled || id !== generation.current) return;
         const page = value as ReadResult;
         if (!page.authorized) {
@@ -92,7 +92,12 @@ export function ModerationLog({ communityId }: { communityId: string }): React.J
           setListedCases(previous => {
             const seen = new Set(previous.map(row => row.key));
             const pageCases = page.responses.flatMap(response => response.cases);
-            return [...previous, ...pageCases.filter(row => !seen.has(row.key))].slice(0, MAX_DISPLAY_CASES);
+            const additions = pageCases.filter(row => {
+              if (seen.has(row.key)) return false;
+              seen.add(row.key);
+              return true;
+            });
+            return [...previous, ...additions].slice(0, MAX_DISPLAY_CASES);
           });
           if (page.through !== null) setAckThrough(page.through);
           const result = page.responses.find(response => response.requestId === request);
@@ -145,8 +150,8 @@ export function ModerationLog({ communityId }: { communityId: string }): React.J
     }
   };
 
-  return <section aria-labelledby={`${base}-title`}>
-    <h3 id={`${base}-title`}>{t('admin.bot.moderationLog.title')}</h3>
+  return <section aria-label={showHeading ? undefined : t('admin.bot.moderationLog.title')} aria-labelledby={showHeading ? `${base}-title` : undefined}>
+    {showHeading ? <h3 id={`${base}-title`}>{t('admin.bot.moderationLog.title')}</h3> : null}
     <Button aria-disabled={!current || phase === 'sending' || undefined} onClick={() => load('automatic', null)}>
       {phase === 'sending' && source === 'automatic' ? t('admin.bot.moderationLog.loading') : t('admin.bot.moderationLog.loadAutomatic')}
     </Button>

@@ -21,8 +21,9 @@ type overviewActorAuthority interface {
 // afresh for every request; owners, administrators, and delegated community
 // managers may inspect it.
 type OverviewInteractions struct {
-	Authority   overviewActorAuthority
-	CommunityID id.ID
+	Authority                   overviewActorAuthority
+	CommunityID                 id.ID
+	SupportsMusicProviderStatus bool
 }
 
 func (h OverviewInteractions) Handlers() map[protocol.Operation]InteractionHandlerSpec {
@@ -49,7 +50,13 @@ func (h OverviewInteractions) get(ctx context.Context, actor InteractionActor, r
 	if authority.Administrator {
 		admin = 1
 	}
-	data, err := cborx.Marshal([]any{uint64(1), actor.User, authority.EffectiveBits, owner, admin})
+	version := uint64(1)
+	dataFields := []any{version, actor.User, authority.EffectiveBits, owner, admin}
+	if h.SupportsMusicProviderStatus {
+		dataFields[0] = uint64(2)
+		dataFields = append(dataFields, []any{uint64(protocol.OpMusicProvidersStatus)})
+	}
+	data, err := cborx.Marshal(dataFields)
 	if err != nil {
 		return InteractionResult{}, err
 	}

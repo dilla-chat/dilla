@@ -28,9 +28,9 @@ const (
 )
 
 // withReadDeadline gives one route's body a read deadline of its own. The server-wide
-// ReadHeaderTimeout covers the header only, and the server has no ReadTimeout because the gateway
-// upgrade shares the listener; a transport that cannot set a deadline (a test recorder) is left
-// alone.
+// ordinary body deadline is installed before routing; this extends it for a larger commit.
+// The production boundary fails closed if deadlines are unsupported. Direct handler tests may
+// use a recorder without deadline support.
 func withReadDeadline(d time.Duration, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(d))

@@ -8,18 +8,18 @@ const role = (id: string, position: number): RoleSummary => ({ id, name: id, col
 
 describe('accessOf', () => {
   it('gives the owner everything, whatever the bits', () => {
-    expect(accessOf(0n, OWNER_TOP, true)).toEqual({ top: OWNER_TOP, owner: true, manageCommunity: true, manageChannels: true,
+    expect(accessOf(0n, OWNER_TOP, true)).toEqual({ top: OWNER_TOP, owner: true, manageCommunity: true, viewAuditLog: true, manageChannels: true,
       kickMembers: true, banMembers: true, moderateMembers: true, manageMessages: true, createInvite: true, manageRoles: true, loaded: true, everyoneId: '', overwritesLoaded: false });
   });
   it('gives an administrator everything', () => {
     const a = accessOf(BigInt(PERM.administrator), 3, false);
-    expect(a).toEqual({ top: 3, owner: false, manageCommunity: true, manageChannels: true, kickMembers: true, banMembers: true,
+    expect(a).toEqual({ top: 3, owner: false, manageCommunity: true, viewAuditLog: true, manageChannels: true, kickMembers: true, banMembers: true,
       moderateMembers: true, manageMessages: true, createInvite: true, manageRoles: true, loaded: true, everyoneId: '', overwritesLoaded: false });
   });
   it('gives the default member nothing', () => {
     // view, send, read history, connect: bits 0, 1, 6, 7
     const bits = (1n << 0n) | (1n << 1n) | (1n << 6n) | (1n << 7n);
-    expect(accessOf(bits, 0, false)).toEqual({ top: 0, owner: false, manageCommunity: false, manageChannels: false,
+    expect(accessOf(bits, 0, false)).toEqual({ top: 0, owner: false, manageCommunity: false, viewAuditLog: false, manageChannels: false,
       kickMembers: false, banMembers: false, moderateMembers: false, manageMessages: false, createInvite: false, manageRoles: false, loaded: true, everyoneId: '', overwritesLoaded: false });
   });
   it('reads each permission from its own bit', () => {
@@ -32,6 +32,8 @@ describe('accessOf', () => {
     expect(accessOf(BigInt(PERM.moderateMembers), 1, false)).toMatchObject({ moderateMembers: true });
     expect(accessOf(BigInt(PERM.manageMessages), 1, false)).toMatchObject({ manageMessages: true });
     expect(accessOf(BigInt(PERM.banMembers), 1, false)).toMatchObject({ moderateMembers: false });
+    expect(accessOf(BigInt(PERM.viewAuditLog), 1, false)).toMatchObject({ viewAuditLog: true, manageCommunity: false });
+    expect(accessOf(BigInt(PERM.manageCommunity), 1, false)).toMatchObject({ viewAuditLog: false });
   });
 });
 

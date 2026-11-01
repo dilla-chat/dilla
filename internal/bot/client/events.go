@@ -42,7 +42,7 @@ func (s *Session) StructuralEvents(ctx context.Context, community id.ID, after, 
 	}
 	q := url.Values{"after": {formatUint(after)}, "limit": {formatUint(limit)}}
 	path := "communities/" + community.String() + "/bot/events"
-	raw, _, err := s.c.do(ctx, s.token, http.MethodGet, path, q, nil, MaxStructuralEventBody, false)
+	raw, _, err := s.do(ctx, http.MethodGet, path, q, nil, MaxStructuralEventBody, false)
 	if err != nil {
 		var apiErr *APIError
 		if errors.As(err, &apiErr) && apiErr.Status == http.StatusGone && apiErr.Code == "E_PRUNED" && apiErr.EventFloor != 0 {
@@ -96,7 +96,7 @@ func (s *Session) AcknowledgeStructuralEvents(ctx context.Context, community id.
 		return ErrProtocol
 	}
 	path := "communities/" + community.String() + "/bot/events/ack"
-	_, _, err = s.c.do(ctx, s.token, http.MethodPut, path, nil, body, MaxSmallBody, true)
+	_, _, err = s.do(ctx, http.MethodPut, path, nil, body, MaxSmallBody, true)
 	return err
 }
 

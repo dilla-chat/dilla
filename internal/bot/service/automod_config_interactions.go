@@ -39,7 +39,7 @@ type AutoModerationGrantRedeemer interface {
 }
 
 type AutoModerationConfigRuntime interface {
-	PersistConfig(moderation.Config, func() error) error
+	PersistConfig(context.Context, moderation.Config, uint64, func() error) error
 }
 
 func autoModerationConfigRuntimeUnavailable(runtime AutoModerationConfigRuntime) bool {
@@ -174,7 +174,7 @@ func (h AutoModerationConfigInteractions) put(ctx context.Context, actor Interac
 		return InteractionResult{Status: interactionStatusForbidden}, nil
 	}
 	persist := func() error { return h.Store.SaveWithID(ctx, request.RequestID, cfg, *request.Revision) }
-	err = h.Runtime.PersistConfig(cfg, persist)
+	err = h.Runtime.PersistConfig(ctx, cfg, *request.Revision, persist)
 	if err != nil {
 		if errors.Is(err, moderation.ErrConfigConflict) {
 			_, latest, loadErr := h.Store.Load(ctx)

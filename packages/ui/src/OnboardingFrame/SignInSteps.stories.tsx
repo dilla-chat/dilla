@@ -8,11 +8,12 @@ import { Button } from '../Button/Button.tsx';
 // The shipped copy of @dilla/web, so the F16 screenshots show exactly what the app says.
 import { t } from '../../../web/src/strings/index.ts';
 
-const meta = { title: 'Screens/SignIn', parameters: { layout: 'fullscreen' } } satisfies Meta;
+const meta = { title: 'Screens/SignIn', parameters: { layout: 'fullscreen', edgeToEdge: true } } satisfies Meta;
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-const instance = 'dilla.test';
+// Task 11: the prototype's sample instance and the sign-in it starts with (fUser mira, a typed password).
+const instance = 'midgard.gg';
 const GROUPED = '7K2M-QX9D-H4TB-R8NW-C3VF-J6PZ-A1GE-Y5KS-M0QT-B7XH-W2DN-F9RC-P4ZA';
 const noop = () => {};
 const blocked = { 'aria-disabled': true } as const;
@@ -20,13 +21,13 @@ const blocked = { 'aria-disabled': true } as const;
 function Step({ n, title, footer, children }: { n: number; title: string; footer: ReactNode; children: ReactNode }) {
   return (
     <form noValidate onSubmit={e => e.preventDefault()}>
-      <OnboardingFrame title={title} stepLabel={t('signin.step', { n })} footer={footer}>{children}</OnboardingFrame>
+      <OnboardingFrame title={title} stepLabel={t('signin.step', { n, total: 4 })} progress={{ n, total: 4 }} footer={footer}>{children}</OnboardingFrame>
     </form>
   );
 }
 function Login({ refused }: { refused?: boolean }) {
-  const [username, setUsername] = useState(refused ? 'ada' : '');
-  const [password, setPassword] = useState(refused ? 'hunter22' : '');
+  const [username, setUsername] = useState(refused ? 'ada' : 'mira');
+  const [password, setPassword] = useState(refused ? 'hunter22' : 'two-ropes');
   return (
     <Step n={1} title={t('signin.login.title', { instance })}
       footer={<><Button variant="ghost" type="button">{t('signin.login.createInstead')}</Button><Button variant="accent" type="submit">{t('signin.login.submit')}</Button></>}>
@@ -68,7 +69,7 @@ export const RecoveryKey: Story = { render: () => <Key value={GROUPED.slice(0, 2
 export const RecoveryKeyWrong: Story = { render: () => <Key value={GROUPED.replace('7K2M', '7K2N')} error={t('signin.error.wrongKey')} /> };
 export const NoBackup: Story = {
   render: () => (
-    <OnboardingFrame title={t('signin.key.title')} stepLabel={t('signin.step', { n: 3 })} footer={<Button variant="ghost" type="button">{t('signin.cancel')}</Button>}>
+    <OnboardingFrame title={t('signin.key.title')} stepLabel={t('signin.step', { n: 3, total: 4 })} progress={{ n: 3, total: 4 }} footer={<Button variant="ghost" type="button">{t('signin.cancel')}</Button>}>
       <Banner tone="danger">{t('signin.error.noBackup', { instance })}</Banner>
     </OnboardingFrame>
   ),
@@ -76,7 +77,7 @@ export const NoBackup: Story = {
 export const Adding: Story = { render: () => <Key value={GROUPED} working /> };
 export const Done: Story = {
   render: () => (
-    <OnboardingFrame title={t('signin.done.title')} stepLabel={t('signin.step', { n: 4 })}
+    <OnboardingFrame title={t('signin.done.title')} stepLabel={t('signin.step', { n: 4, total: 4 })} progress={{ n: 4, total: 4 }}
       footer={<Button variant="accent" type="button">{t('signin.done.next')}</Button>}>
       <p>{t('signin.done.body', { username: 'ada', instance })}</p>
     </OnboardingFrame>

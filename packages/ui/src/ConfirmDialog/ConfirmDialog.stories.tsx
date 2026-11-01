@@ -22,3 +22,5 @@ export const TypedName: Story = {
     children: <TextField id="confirm-name" label="Type the server name" value="" onChange={() => {}} autoComplete="off" />,
   },
 };
+/** Task 9: the prototype's kick confirmation: the 40px avatar beside the 15px title and the body, Cancel and the filled danger action. */
+export const Kick: Story = { args: { person: 'Björn', title: 'Kick Björn from Midgard Crew?', body: 'Björn leaves now and can come back only with a new invite.', confirmLabel: 'Kick', busyLabel: 'Kicking…', cancelLabel: 'Cancel' } };

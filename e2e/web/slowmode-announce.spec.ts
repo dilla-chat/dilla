@@ -9,7 +9,7 @@
 import { expect, type Locator, type Page } from '@playwright/test';
 import { addServerVia,
   CLASS, TEST_TIMEOUT, WAIT, makeInviteLink, newChannelButton, completeSignUp, copy, escapeRegExp, expectAccessible, expectComposerReady, newAccount, openChannel,
-  railItem, railNav, channelRow, composerBox, messageRow, logRegion, reactionChip, rowAction, sendText, signUp, test,
+  railItem, railNav, channelRow, composerBox, messageRow, logRegion, reactionChip, rowAction, sendText, signUp, test, channelRowMenuItem,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { launchSecond, secondProfileDir } from './support/second-harness';
@@ -107,7 +107,7 @@ test('slow mode and an announcement channel from an empty instance: the wait, th
     await openChannel(page2, SERVER, 'general');
 
     // 2. Ada opens #general's settings and sets slow mode to 10 seconds.
-    await button(page, 'admin.channel.open').click();
+    await channelRowMenuItem(page, 'general', 'admin.channel.open');
     const edit = dialogOf(page, 'admin.channel.titleText', { name: 'general' });
     const select = edit.getByRole('combobox', { name: copy('slow.label'), exact: true });
     await expect(select).toBeVisible({ timeout: WAIT });

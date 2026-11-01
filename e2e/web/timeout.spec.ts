@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import { expect, type Locator, type Page } from '@playwright/test';
 import {
   addServerVia, TEST_TIMEOUT, WAIT, completeSignUp, composerBox, copy, dmComposer, dmLog, makeInviteLink,
-  messageRow, newAccount, newChannelButton, openChannel, railItem, rowAction, rowToolbar, signUp, tag, test,
+  messageRow, newAccount, newChannelButton, openChannel, railItem, rowAction, rowToolbar, signUp, tag, test, expectRowMenuAction,
+ makeRole,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { launchSecond, secondProfileDir } from './support/second-harness';
@@ -110,18 +111,12 @@ test('manual text timeout blocks community writes and recovers while read, voice
     await expect(memberRow(member, OWNER)).toBeVisible({ timeout: WAIT });
 
     // Give Bea pin rights through the real roles panel so a later pin refusal is attributable to the timeout.
-    await button(page, 'admin.open').click();
+    await button(page, 'admin.open').click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
     let settings = dialog(page, 'admin.title');
     await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
       .getByRole('button', { name: copy('roles.tab'), exact: true }).click();
-    const addRole = button(settings, 'roles.new');
-    await addRole.click();
-    let editor = dialog(page, 'roles.editor.titleNew', { server: SERVER });
-    await editor.getByRole('textbox', { name: copy('roles.editor.name'), exact: true }).fill(ROLE);
-    await setSwitch(editor.getByRole('switch', { name: copy('perm.pin'), exact: true }));
-    await setSwitch(editor.getByRole('switch', { name: copy('perm.react'), exact: true }));
-    await button(editor, 'roles.editor.create').click();
-    await expect(editor).toBeHidden({ timeout: WAIT });
+    // Signal task 10c: the inline role editor; each switch saves at once.
+    await makeRole(page, settings, ROLE, { perms: ['pin', 'react'] });
     await page.keyboard.press('Escape');
     await expect(settings).toBeHidden();
     await memberTrigger(page, MEMBER).click();
@@ -152,10 +147,10 @@ test('manual text timeout blocks community writes and recovers while read, voice
     const ownerRow = messageRow(member, 'general', ownerText);
     await expect(ownerRow).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
 
-    // The owner applies a ten minute timeout through Bea's member card.
-    await memberTrigger(page, MEMBER).click();
-    await page.getByRole('dialog', { name: MEMBER, exact: true })
-      .getByRole('button', { name: copy('mod.timeout.menu'), exact: true }).click();
+    // The owner applies a ten minute timeout through Bea's row's person menu (a right-click; Signal task 9).
+    await memberTrigger(page, MEMBER).click({ button: 'right' });
+    await page.getByRole('menu', { name: copy('members.menu.label', { name: MEMBER }), exact: true })
+      .getByRole('menuitem', { name: copy('mod.timeout.menu'), exact: true }).click();
     let timeout = dialog(page, 'mod.timeout.title', { name: MEMBER });
     await timeout.getByLabel(copy('mod.timeout.duration'), { exact: true }).selectOption('tenMinutes');
     await timeout.getByRole('button', { name: copy('mod.timeout.confirm'), exact: true }).click();
@@ -180,7 +175,7 @@ test('manual text timeout blocks community writes and recovers while read, voice
     await expect(editRow).toContainText(ownForEdit);
     await discardRefusedWrite(editRow);
 
-    await expect(rowToolbar(editRow).getByRole('button', { name: copy('shell.message.pin'), exact: true })).toBeVisible();
+    await expectRowMenuAction(editRow, 'pin', true);
     await rowAction(editRow, 'pin');
     await expectWriteRefused(editRow);
     await expect(editRow).not.toHaveAttribute('data-pinned', 'true');
@@ -204,9 +199,9 @@ test('manual text timeout blocks community writes and recovers while read, voice
     await expect(dmLog(member).getByText(dmText, { exact: true })).toBeVisible({ timeout: WAIT });
 
     // Clearing the timeout through the same moderator flow restores community posting immediately.
-    await memberTrigger(page, MEMBER).click();
-    await page.getByRole('dialog', { name: MEMBER, exact: true })
-      .getByRole('button', { name: copy('mod.timeout.menu'), exact: true }).click();
+    await memberTrigger(page, MEMBER).click({ button: 'right' });
+    await page.getByRole('menu', { name: copy('members.menu.label', { name: MEMBER }), exact: true })
+      .getByRole('menuitem', { name: copy('mod.timeout.menu'), exact: true }).click();
     timeout = dialog(page, 'mod.timeout.title', { name: MEMBER });
     await timeout.getByLabel(copy('mod.timeout.duration'), { exact: true }).selectOption('clear');
     await timeout.getByRole('button', { name: copy('mod.timeout.confirm'), exact: true }).click();

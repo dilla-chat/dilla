@@ -992,9 +992,39 @@ impl CoreHandle {
         self.with_core(|c| c.human_interaction_events_read(after, limit))
             .map(Vec::into_boxed_slice)
     }
+    /// Reads only archived consumed responses matching the exact current community, installation,
+    /// and request-id set. CBOR result is `[events]`, using the event tuple from journal reads.
+    pub fn human_interaction_receipts_read(
+        &self,
+        community_id: &[u8],
+        installation_id: &[u8],
+        bot_user_id: &[u8],
+        request_ids: &[u8],
+    ) -> Result<Box<[u8]>, JsError> {
+        let community_id = js_fixed_arg::<16>("community_id", community_id)?;
+        let installation_id = js_fixed_arg::<16>("installation_id", installation_id)?;
+        let bot_user_id = js_fixed_arg::<16>("bot_user_id", bot_user_id)?;
+        self.with_core(|c| {
+            c.human_interaction_receipts_read(
+                &community_id,
+                &installation_id,
+                &bot_user_id,
+                request_ids,
+            )
+        })
+        .map(Vec::into_boxed_slice)
+    }
     /// Durably acknowledges and clears human interaction response bodies through a delivery id.
     pub fn human_interaction_events_ack(&self, through: u64) -> Result<(), JsError> {
         self.with_core(|c| c.human_interaction_events_ack(through))
+    }
+    /// Consumes only the human interaction response delivery ids explicitly selected by the
+    /// authenticated worker, encoded as deterministic CBOR `uint[]`.
+    pub fn human_interaction_events_ack_selected(
+        &self,
+        delivery_ids: &[u8],
+    ) -> Result<(), JsError> {
+        self.with_core(|c| c.human_interaction_events_ack_selected(delivery_ids))
     }
     /// Calls ClientCore::send_encrypt; CBOR [group_id, message_body].
     pub fn send_encrypt(&self, msg_id: &[u8]) -> Result<Box<[u8]>, JsError> {
@@ -1194,6 +1224,12 @@ impl CoreHandle {
             )
         })
         .map(Vec::into_boxed_slice)
+    }
+    /// Store the instance's account-kind attestation for one user (the fifth element of a wire-4
+    /// device-list head), before that user's history is ingested (Task S1 part 2).
+    pub fn account_kind_ingest(&self, user_id: &[u8], attestation: &[u8]) -> Result<(), JsError> {
+        let user_id = js_fixed_arg::<16>("user_id", user_id)?;
+        self.with_core(|c| c.account_kind_ingest(&user_id, attestation))
     }
     /// Re-evaluate bounded MLS-authenticated pending rows after list ingestion.
     pub fn revalidate_pending(

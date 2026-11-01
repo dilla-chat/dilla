@@ -48,4 +48,25 @@ describe('AttachmentTray', () => {
     const { container } = render(<div className="d-root"><AttachmentTray label="files to send" items={items()} /></div>);
     await expectNoAxeViolations(container);
   });
+
+  // Task 7 fix round 1 (Jonas): the progress line fills in steps by phase; a preview card draws a still or the GIF tile.
+  it('fills its progress line by phase: 25, 50, 75 %, the whole line when ready or failed', () => {
+    const { container } = render(<AttachmentTray label="files to send" items={items()} />);
+    expect(Array.from(container.querySelectorAll<HTMLElement>('.d-attachment-tray__bar > span')).map(b => b.style.width)).toEqual(['25%', '50%', '75%', '100%', '100%']);
+  });
+  it('draws a still from a blob: URL only, a GIF as its name on the tile, and gives remove the tooltip', () => {
+    const base = items()[3]!;
+    const { container } = render(<AttachmentTray label="files to send" removeTip="Remove" items={[
+      { ...base, id: 'a', name: 'map.png', preview: { url: 'blob:http://127.0.0.1/1234-abcd' } },
+      { ...base, id: 'b', name: 'evil.png', preview: { url: 'https://x.example/a.png") , url("y' } },
+      { ...base, id: 'c', name: 'victory.gif', preview: { gif: true } },
+    ]} />);
+    const cards = Array.from(container.querySelectorAll<HTMLElement>('.d-attachment-tray__item'));
+    expect(cards.map(c => c.dataset.kind)).toEqual(['image', 'file', 'gif']);
+    expect(cards[0]!.querySelector<HTMLElement>('.d-attachment-tray__preview')!.style.backgroundImage).toContain('blob:http://127.0.0.1/1234-abcd');
+    expect(cards[1]!.querySelector('.d-attachment-tray__preview')).toBeNull();
+    expect(cards[2]!.querySelector('.d-attachment-tray__gif-name')).toHaveTextContent('victory.gif');
+    expect(screen.getAllByRole('button')[0]).toHaveAttribute('title', 'Remove');
+    expect(screen.getAllByRole('button')[0]).toHaveAccessibleName('remove file3.png');
+  });
 });

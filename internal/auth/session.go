@@ -872,7 +872,15 @@ func (s *Sessions) Resolve(ctx context.Context, bearer string) (Session, error) 
 	if bearer == "" {
 		return Session{}, server.Errorf(server.CodeUnauthenticated, "")
 	}
-	sum := TokenHash(bearer)
+	return s.ResolveHash(ctx, TokenHash(bearer))
+}
+
+// ResolveHash applies the same current-session authority checks to a gateway's stored opaque
+// hash. It is an internal transport adapter, never an HTTP credential or a client-supplied value.
+func (s *Sessions) ResolveHash(ctx context.Context, sum []byte) (Session, error) {
+	if len(sum) != 32 {
+		return Session{}, server.Errorf(server.CodeUnauthenticated, "")
+	}
 	now := s.clk.Now()
 	row, err := s.repo.GetSessionByHash(ctx, sum, now.Unix())
 	if err != nil {
@@ -997,7 +1005,7 @@ func (s *Sessions) currentBotBinding(ctx context.Context, session store.SessionR
 // RecordCapabilities persists a negotiated selection against the exact bearer session hash.
 // The caller must first resolve the bearer; a deleted/revoked row then makes this write fail.
 func (s *Sessions) RecordCapabilities(ctx context.Context, tokenHash []byte, wire, e2ee, media uint64) error {
-	if len(tokenHash) != 32 || (wire != 2 && wire != 3) || e2ee != 1 || media != 1 {
+	if len(tokenHash) != 32 || wire < 2 || wire > 5 || e2ee != 1 || media != 1 {
 		return errors.New("auth: invalid negotiated capabilities")
 	}
 	return s.repo.SetSessionVersions(ctx, tokenHash, wire, e2ee, media)
@@ -1294,6 +1302,15 @@ func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot Bot
 		}
 		actorID, ok := pathID(r, "actor")
 		return ok && !actorID.IsZero(), nil
+	case "GET /v1/communities/{community}/bot/actors/{actor}/channels/{channel}/authority":
+		if !ready || !communityPath("community") {
+			return false, nil
+		}
+		actorID, ok := pathID(r, "actor")
+		if !ok || actorID.IsZero() {
+			return false, nil
+		}
+		return channelPath("channel")
 	case "POST /v1/communities/{community}/bot/join-role-grants":
 		return ready && communityPath("community"), nil
 	case "GET /v1/communities/{community}/bot/members/{member}/episode":
@@ -1317,8 +1334,6 @@ func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot Bot
 		return joining && pathIDEquals(r, "installation", bot.InstallationID), nil
 	case "GET /v1/bot-runtime/installations/{installation}/interaction-admissions/{request}/group-absence":
 		return ready && pathIDEquals(r, "installation", bot.InstallationID), nil
-	case "GET /v1/bot-runtime/installations/{installation}/music/dj-roles":
-		return ready && bot.Capabilities&botaccess.MusicCapability != 0 && pathIDEquals(r, "installation", bot.InstallationID), nil
 	case "PUT /v1/users/{user_id}/device-list":
 		return joining && pathIDEquals(r, "user_id", session.UserID), nil
 	case "GET /v1/users/{user_id}/device-list":
@@ -1419,7 +1434,7 @@ func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot Bot
 		}
 		return communityPathForBot(ctx, s.repo, bot)
 	case "DELETE /v1/calls/{call_id}", "POST /v1/calls/{call_id}/share",
-		"DELETE /v1/calls/{call_id}/share", "POST /v1/calls/{call_id}/decline":
+		"DELETE /v1/calls/{call_id}/share", "POST /v1/calls/{call_id}/decline", "POST /v1/calls/{call_id}/rtt":
 		if !ready {
 			return false, nil
 		}

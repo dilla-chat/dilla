@@ -14,13 +14,21 @@ describe('MentionList', () => {
     render(<MentionList id="mentions" label="people to mention" options={OPTIONS} activeId="mention-mike" onPick={() => {}} />);
     const list = screen.getByRole('listbox', { name: 'people to mention' });
     expect(list).toHaveAttribute('id', 'mentions');
-    expect(list).toHaveClass('d-mention-list');
+    expect(list.closest('.d-mention-list')).not.toBeNull();
     const options = screen.getAllByRole('option');
     expect(options.map((o) => o.id)).toEqual(['mention-mira', 'mention-mike', 'mention-everyone']);
     expect(options.map((o) => o.getAttribute('aria-selected'))).toEqual(['false', 'true', 'false']);
     expect(options[1]?.querySelector('.d-mention-list__primary')?.textContent).toBe('Mike Dahl');
     expect(options[1]?.querySelector('.d-mention-list__secondary')?.textContent).toBe('@mike');
     expect(options.every((o) => !o.hasAttribute('tabindex'))).toBe(true);
+  });
+
+  it('shows its title over the list and draws a person with an avatar, a role or @everyone with an @ tile', () => {
+    const { container } = render(<MentionList id="mentions" label="people to mention" title="Members" options={[{ ...OPTIONS[0]!, person: true }, OPTIONS[2]!]} activeId={null} onPick={() => {}} />);
+    expect(container.querySelector('.d-mention-list__title')).toHaveTextContent('Members');
+    const [mira, everyone] = screen.getAllByRole('option');
+    expect(mira?.querySelector('.d-avatar')).not.toBeNull();
+    expect(everyone?.querySelector('.d-mention-list__icon svg')).not.toBeNull();
   });
 
   it('picks on pointer down without taking focus', () => {

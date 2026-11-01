@@ -29,7 +29,7 @@ test('builds the iframe URL with the theme global and the story view mode', () =
 });
 
 test('shoots three themes at 1280 by 800', () => {
-  assert.deepEqual(THEMES, ['mesh', 'light', 'high-contrast']);
+  assert.deepEqual(THEMES, ['signal', 'light', 'high-contrast']);
   assert.deepEqual(VIEWPORT, { width: 1280, height: 800 });
 });
 

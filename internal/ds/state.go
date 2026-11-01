@@ -422,6 +422,27 @@ func decodeCredentialIdentity(b []byte) (deviceID, userID id.ID, err error) {
 	return deviceID, userID, nil
 }
 
+// decodeCredentialKind reads `kind` (index 4 of the same ten-element array): 0 is a human account,
+// 1 a Bot. Anything else — a wrong shape, a non-integer, a value no account kind has — is an
+// error, so every caller fails closed on a credential it cannot read (Task S1).
+func decodeCredentialKind(b []byte) (uint8, error) {
+	var elems []cbor.RawMessage
+	if err := cborx.Unmarshal(b, &elems); err != nil {
+		return 0, err
+	}
+	if len(elems) != 10 {
+		return 0, fmt.Errorf("credential identity has %d elements, want 10", len(elems))
+	}
+	var kind uint64
+	if err := cborx.Unmarshal(elems[4], &kind); err != nil {
+		return 0, fmt.Errorf("credential identity kind: %w", err)
+	}
+	if kind > 1 {
+		return 0, fmt.Errorf("credential identity kind %d is no account kind", kind)
+	}
+	return uint8(kind), nil
+}
+
 // Binding is `dilla_binding`, group context extension 0xF001. The layout is
 // `core/dilla-core/src/mls/binding.rs:70-82` and `protocol/01-groups.md`: a deterministic-CBOR
 // EIGHT-element fixed-position array. `protocol/00` states that every dilla structure is a CBOR

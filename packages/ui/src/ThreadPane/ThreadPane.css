@@ -1,12 +1,57 @@
 /* A thread: a column in the shell's aside, or (data-phone) a full-screen sheet. min-width 0 so it fits the aside's width. */
-.d-thread-pane { display: flex; flex-direction: column; height: 100%; min-height: 0; min-width: 0; background: var(--surface); }
-.d-thread-pane__head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; min-width: 0; padding: 0.75rem 0.75rem 0.5rem var(--row-pad-x); border-bottom: 1px solid var(--hairline); flex-shrink: 0; }
-.d-thread-pane__title { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking); text-transform: uppercase; color: var(--fg-3); }
+.d-thread-pane { display: flex; flex-direction: column; height: 100%; min-height: 0; min-width: 0; background: var(--bg-2); }
+/* Task 9, the prototype's aside head: --bar-h (44px), 0 8px 0 16px, gap 8px, a --hairline under it. */
+.d-thread-pane__head { box-sizing: border-box; display: flex; align-items: center; gap: 8px; height: var(--bar-h); min-width: 0; padding: 0 8px 0 16px; border-bottom: 1px solid var(--hairline); flex-shrink: 0; color: var(--fg); }
+.d-thread-pane__glyph { display: inline-flex; flex: none; }
+.d-thread-pane__title { flex: 1; margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-ui); font-weight: var(--weight-display); color: var(--fg); }
+.d-thread-pane__sub { flex: none; font-size: var(--text-meta); color: var(--fg-3); }
+.d-thread-pane__close { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 32px; height: 32px; padding: 0; color: var(--fg-2); background: transparent; border: 0; border-radius: var(--r-md); cursor: pointer; }
+.d-thread-pane__close:hover { color: var(--fg); background: var(--hover); }
 .d-thread-pane__scroll { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; }
-/* The root stays in view above its replies, and scrolls by itself when it is long. */
-.d-thread-pane__root { flex: 0 1 auto; max-height: 40%; min-width: 0; overflow-y: auto; border-bottom: 1px solid var(--hairline); }
+/* The root stays in view above its replies, and scrolls by itself when it is long. Ruling AL: no hairline under it; the replies rule
+   follows ("3 REPLIES", 10px --fg-3 uppercase at 0.12em, gap 8px, a --hairline to the end). */
+.d-thread-pane__root { flex: 0 1 auto; max-height: 40%; min-width: 0; overflow-y: auto; padding: 14px 14px 0; }
+.d-thread-pane__root:empty { display: none; }
+.d-thread-pane__rule { display: flex; flex: none; align-items: center; gap: 8px; margin: 12px 14px 0; font-size: var(--text-micro); letter-spacing: var(--label-tracking-wide); text-transform: uppercase; color: var(--fg-3); }
+.d-thread-pane__rule::after { content: ""; flex: 1; height: 1px; background: var(--hairline); }
 .d-thread-pane__replies { flex: 1; min-height: 0; min-width: 0; }
 .d-thread-pane__composer { flex-shrink: 0; min-width: 0; }
+
+/* Ruling AL, the prototype's thread messages: no time gutter; a 26px avatar (9.5px initials) and 10px apart the name (12px 700) with its
+   time (10px --fg-faint) over the 12.5px --fg-body text; 12px between messages, 14px in from the pane's edges. The thread chip of the
+   root is not drawn here (the thread is open). */
+.d-thread-pane .d-message-log { padding: 12px 14px 6px; background: transparent; }
+/* The prototype reads a thread from the top: the replies start under the rule, not at the bottom of the pane. */
+.d-thread-pane .d-message-log__rows { margin-top: 0; }
+.d-thread-pane .d-message-row { grid-template-columns: 1.625rem /* 26px */ minmax(0, 1fr); column-gap: 10px; padding: 0; }
+.d-thread-pane .d-message-row + .d-message-row:not([data-grouped="true"]) { margin-top: 12px; }
+.d-thread-pane .d-message-row[data-grouped="true"] { padding: 2px 0 0; }
+.d-thread-pane .d-message-row__gutter { display: none; }
+.d-thread-pane .d-message-row__avatar, .d-thread-pane .d-message-row__avatar .d-avatar { width: 1.625rem; height: 1.625rem; font-size: var(--text-chip); }
+.d-thread-pane .d-message-row[data-grouped="true"] .d-message-row__avatar { height: auto; }
+/* Fix round 2: the prototype's thread draws every author in --fg, without the role colour (a bot keeps its tone). */
+.d-thread-pane .d-message-row__author { font-size: var(--text-ui); --d-name-colour: var(--fg); }
+.d-thread-pane .d-message-row:not([data-grouped="true"]) .d-message-row__time.d-sr-only { position: static; width: auto; height: auto; margin: 0; overflow: visible; clip-path: none; white-space: nowrap; }
+.d-thread-pane .d-message-row__time { font-size: var(--text-micro); color: var(--fg-faint); }
+.d-thread-pane .d-message-row__body { font-size: var(--text-sm); line-height: 1.5; }
+.d-thread-pane .d-message-row__thread { display: none; }
+/* The prototype's thread draws no client tag beside an author (fix round 2); a bot keeps its BOT tag. */
+.d-thread-pane .d-message-row .d-tag[data-kind="web"] { display: none; }
+/* The reply input (Ruling AL): 8px 12px 12px around a --bg-3 box in the --hairline-2 line, 8px corners, the accent › and a 30px line; no
+   send button on a desktop (Enter sends, as the prototype); a phone keeps it (a soft keyboard's Enter is a new line). */
+.d-thread-pane__composer .d-composer { padding: 8px 12px 12px; background: transparent; }
+.d-thread-pane__composer .d-composer__box { position: relative; background: var(--bg-3); border-color: var(--hairline-2); border-radius: var(--r-lg); }
+/* The prototype's reply box is 40px (4px + the 30px line + 4px, in its 1px line): the typing sweep lies over its top edge instead of
+   adding a row, and a foot with nothing but its spacer takes no room (fix round 2). */
+.d-thread-pane__composer .d-composer__sweep { position: absolute; inset: 0 0 auto 0; }
+.d-thread-pane__composer .d-composer__foot:not(:has(> :not(.d-composer__spacer))) { display: none; }
+/* Task 11 (the prototype's thread reply box is the line alone): no attach, emoji, code or hint row in a thread; files still drop and
+   paste into it, and ":" still suggests emoji (rule 0: functions the prototype doesn't draw take invisible routes). */
+.d-thread-pane__composer .d-composer__foot { display: none; }
+.d-thread-pane__composer .d-composer__box:focus-within { border-color: var(--accent); box-shadow: none; }
+.d-thread-pane__composer .d-composer__row { padding: 4px 4px 4px 10px; }
+.d-thread-pane__composer .d-composer__input { min-height: 30px; font-size: var(--text-input); }
+.d-thread-pane:not([data-phone]) .d-composer__send { display: none; }
 
 /* The sheet: the composer clears the home indicator, and every control on it is a finger's size (44 px). */
 .d-thread-pane[data-phone] .d-thread-pane__composer { padding-bottom: env(safe-area-inset-bottom); }

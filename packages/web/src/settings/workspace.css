@@ -1,0 +1,62 @@
+/* Task 10: the side column's extras (search, identity, sign out; the prototype draws none of them, task 10 report) take
+   the prototype's field and nav-item looks: a 36px field on --surface-2 in --control-edge-field, radius 7, and 34px rows. */
+.dw-settings-search { display: grid; gap: 6px; padding: 0 0 10px; }
+.dw-settings-search label { font-size: var(--text-xs); color: var(--fg-2); }
+.dw-settings-search input { box-sizing: border-box; width: 100%; min-width: 0; height: 2.25rem; padding: 0 12px; color: var(--fg); background: var(--surface-2); border: 1px solid var(--control-edge-field); border-radius: var(--r-seg); font: inherit; font-size: var(--text-input); }
+.dw-settings-search input:focus-visible { border-color: var(--accent); }
+.dw-settings-results ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 2px; }
+.dw-settings-results button { display: grid; gap: 2px; width: 100%; min-height: 2.125rem; padding: 6px 10px; text-align: start; border: 0; border-radius: var(--r-md); background: transparent; color: var(--fg); font: inherit; font-size: var(--text-sm); cursor: pointer; }
+.dw-settings-results button:hover { background: var(--hover); }
+.dw-settings-results small { color: var(--fg-3); font-size: var(--text-xs); }
+.dw-settings-results p { padding: 6px 10px; margin: 0; color: var(--fg-3); font-size: var(--text-xs); }
+.dw-settings-identity { padding: 0 10px 10px; overflow-wrap: anywhere; font-size: var(--text-sm); }
+.dw-settings-identity strong, .dw-settings-identity span { display: block; }
+.dw-settings-identity strong { font-weight: var(--weight-label); }
+.dw-settings-identity span { color: var(--fg-3); font-size: var(--text-xs); }
+.dw-settings-signout { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--hairline); }
+.dw-settings-signout .d-btn { width: 100%; justify-content: flex-start; height: 2.125rem; padding: 0 10px; border-color: transparent; font-size: var(--text-sm); }
+.dw-settings-activity { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; }
+/* README §5.9: a list of rows is one group; the frame's rows share their hairlines, so the lists drop their own gaps. */
+.d-settings-frame :is(.dw-notify-list, .dw-device-list) { list-style: none; margin-inline: 0; padding: 0; display: flex; flex-direction: column; gap: 0; }
+.d-settings-frame .dw-notify-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
+.d-settings-frame .dw-notify-list > li + li { border-top: 0; padding-top: 0; }
+/* README §5.10: a phone section shows only the nav's chips. */
+.d-settings-frame[data-layout="phone"][data-phone-page="section"] :is(.dw-settings-search, .dw-settings-results, .dw-settings-signout) { display: none; }
+
+.dw-bot-settings code { overflow-wrap: anywhere; white-space: normal; }
+.dw-bot-settings .d-settings-row__control { min-width: 0; }
+.dw-settings-section > .d-btn { align-self: flex-start; }
+.dw-settings-section > section { min-width: 0; }
+.dw-bot-overview { display: grid; gap: 1.5rem; padding-block: 0.75rem 1.5rem; border-bottom: 1px solid var(--hairline); }
+.dw-bot-identity { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; }
+.dw-bot-identity > div { flex: 1; min-width: 0; }
+.dw-bot-identity strong { display: block; font-size: var(--text-lg); font-weight: var(--weight-label); overflow-wrap: anywhere; }
+.dw-bot-name { display: grid; justify-items: start; gap: 0.75rem; width: min(100%, 32rem); }
+.dw-bot-name .d-text-field { width: 100%; }
+.dw-bot-capabilities-summary { max-width: 65ch; font-size: var(--text-sm); line-height: 1.6; }
+.dw-bot-lifecycle { margin-top: 1rem; padding-top: 1.5rem; border-top: 1px solid var(--hairline); }
+.dw-bot-capabilities { min-width: 0; margin: 0; padding: 1rem; border: 1px solid var(--hairline-2); }
+.dw-bot-capabilities > div { display: grid; gap: 0.375rem; padding-block: 0.75rem; }
+.dw-bot-capabilities label { display: flex; align-items: baseline; gap: 0.625rem; }
+.dw-bot-capabilities input { flex: none; accent-color: var(--accent); }
+.dw-bot-capabilities span, .dw-bot-capabilities > p { max-width: 65ch; font-size: var(--text-sm); color: var(--fg-2); }
+.dw-gifs-settings { display: grid; gap: 1.5rem; width: 100%; }
+.dw-gifs-settings > a { justify-self: start; }
+.dw-gifs-settings__set { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; }
+.dw-gifs-settings__set > span { margin-right: 0.5rem; }
+.dw-gifs-settings__form { display: flex; flex-wrap: wrap; align-items: end; gap: 0.75rem; max-width: 40rem; }
+.dw-gifs-settings__form .d-text-field { flex: 1 1 20rem; min-width: 0; }
+.dw-gifs-settings > .d-select { width: min(100%, 20rem); }
+
+/* These existing native controls share the same treatment as TextField/Select. */
+.dw-bot-settings .d-settings-row__control > :is(select, textarea) { box-sizing: border-box; width: min(100%, 32rem); min-height: 2.25rem; padding: 0.5rem 0.625rem; font: inherit; color: var(--fg); background: var(--surface-2); border: 1px solid var(--control-edge-field); border-radius: var(--r-md); }
+.dw-bot-settings .d-settings-row__control > textarea { min-height: 8rem; resize: vertical; }
+.dw-bot-settings .d-settings-row__control > fieldset { width: 100%; min-width: 0; margin: 0; padding: 1rem; border: 1px solid var(--hairline-2); }
+.dw-bot-settings .d-settings-row__control > fieldset label { display: flex; align-items: baseline; gap: 0.625rem; padding-block: 0.375rem; overflow-wrap: anywhere; }
+.d-settings-frame[data-layout="phone"] .dw-bot-identity { gap: 0.75rem; }
+.d-settings-frame[data-layout="phone"] .dw-bot-identity > div { flex-basis: calc(100% - 5rem); }
+.d-settings-frame[data-layout="phone"] .dw-bot-identity > .d-btn { margin-top: 0.25rem; }
+.d-settings-frame[data-layout="phone"] .dw-bot-settings .d-settings-row__control > select { min-height: 2.75rem; }
+.d-settings-frame[data-layout="phone"] .dw-gifs-settings__set > span { flex-basis: 100%; }
+.d-settings-frame[data-layout="phone"] .dw-appearance-theme .d-segmented { display: block; }
+.d-settings-frame[data-layout="phone"] .dw-appearance-theme .d-segmented__group { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }

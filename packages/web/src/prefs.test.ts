@@ -8,7 +8,7 @@ describe('the theme preference', () => {
   it('reads system when nothing is stored, and round-trips every preference', async () => {
     const idb = new FakeIdb();
     expect(await readTheme(idb.factory)).toBe('system');
-    for (const theme of ['mesh', 'light', 'high-contrast', 'system'] as const) {
+    for (const theme of ['signal', 'light', 'high-contrast', 'system'] as const) {
       await writeTheme(theme, idb.factory);
       expect(await readTheme(idb.factory)).toBe(theme);
     }
@@ -29,9 +29,16 @@ describe('the theme preference', () => {
     ['null', null],
   ])('reads system for %s', async (_, record) => {
     const idb = new FakeIdb();
-    await writeTheme('mesh', idb.factory);
+    await writeTheme('signal', idb.factory);
     idb.stores.get(PREFS_STORE)?.set('theme', record);
     expect(await readTheme(idb.factory)).toBe('system');
+  });
+  it('reads a stored legacy mesh preference as signal, and mesh is no longer a preference', async () => {
+    const idb = new FakeIdb();
+    await writeTheme('light', idb.factory);
+    idb.stores.get(PREFS_STORE)?.set('theme', { v: 1, theme: 'mesh' });
+    expect(await readTheme(idb.factory)).toBe('signal');
+    expect(isThemePref('mesh')).toBe(false);
   });
   it('reads system without IndexedDB and when the open fails', async () => {
     expect(await readTheme(undefined)).toBe('system');
@@ -54,7 +61,7 @@ describe('the theme preference', () => {
     await expect(read).resolves.toBe('system');
   });
   it('knows the four preferences', () => {
-    expect(['system', 'mesh', 'light', 'high-contrast'].every(isThemePref)).toBe(true);
+    expect(['system', 'signal', 'light', 'high-contrast'].every(isThemePref)).toBe(true);
     expect(isThemePref('dark')).toBe(false);
     expect(isThemePref(undefined)).toBe(false);
   });

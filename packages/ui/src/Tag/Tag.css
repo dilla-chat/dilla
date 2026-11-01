@@ -1,4 +1,7 @@
-.d-tag { display: inline-block; font-size: 0.5625rem /* 9px */; font-weight: var(--weight-label); letter-spacing: var(--label-tracking); text-transform: uppercase; line-height: 0.875rem /* 14px */; padding: 0 4px; border: 1px solid var(--edge); border-radius: var(--r-md); color: var(--fg-3); vertical-align: 1px; }
+.d-tag { display: inline-block; font-size: 0.5625rem /* 9px */; font-weight: var(--weight-label); letter-spacing: var(--label-tracking-wide); text-transform: uppercase; line-height: 0.875rem /* 14px */; padding: 0 4px; border: 1px solid var(--hairline-2); border-radius: var(--r-tag); color: var(--fg-3); vertical-align: 1px; }
 .d-tag[data-kind="admin"] { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
-.d-tag[data-kind="canHear"] { color: var(--warn); border-color: var(--warn); }
 .d-tag--glyph { border: 0; padding: 0; line-height: 1; color: var(--fg-3); text-transform: none; letter-spacing: 0; }
+/* Signal: BOT is a soft accent chip (prototype member list), LIVE a solid danger chip, "playback only" a quiet outline in sentence case. */
+.d-tag[data-kind="bot"] { padding: 0 4px; border: 0; border-radius: var(--r-tag); background: var(--accent-chip); color: var(--accent-2); font-weight: 700; letter-spacing: var(--label-tracking); line-height: 0.9375rem /* 15px */; }
+.d-tag[data-kind="live"] { padding: 0 4px; border: 0; border-radius: var(--r-tag); background: var(--danger); color: var(--danger-ink); font-size: var(--text-tag); font-weight: 700; letter-spacing: var(--label-tracking); line-height: 0.8125rem /* 13px */; }
+.d-tag[data-kind="playbackOnly"] { border-color: var(--line-strong); color: var(--fg-2); text-transform: none; letter-spacing: var(--tracking-soft); font-size: var(--text-tag); font-weight: 400; line-height: 0.8125rem /* 13px */; }

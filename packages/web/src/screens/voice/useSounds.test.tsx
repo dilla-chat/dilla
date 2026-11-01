@@ -18,7 +18,7 @@ const room = (...participants: VoiceParticipant[]) => ({ [GENV]: { callId: GENV,
 
 async function inCall(o: VoiceHarnessOptions = {}) {
   const app = renderVoiceShell({ voice: room(ME_IN, BOB_IN), ...o });
-  await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+  await app.user.click(await main().findByRole('button', { name: 'Join voice' }));
   await waitFor(() => expect(app.sessions).toHaveLength(1));
   app.client.publish('call', callState({ phase: 'in', channelId: GENV, callId: GENV }));
   await main().findByRole('toolbar', { name: 'voice channel controls' });
@@ -56,27 +56,27 @@ describe('join and leave sounds (flow 06 § Sounds, R2, R4)', () => {
 
   it('no sound for the own join or leave, nor for a pause (R2, RV-3)', async () => {
     const app = renderVoiceShell({ voice: room(BOB_IN) });
-    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    await app.user.click(await main().findByRole('button', { name: 'Join voice' }));
     await waitFor(() => expect(app.sessions).toHaveLength(1));
     app.client.publish('voice', room(BOB_IN, ME_IN));
     app.client.publish('call', callState({ phase: 'in', channelId: GENV, callId: GENV }));
     app.client.publish('call', callState({ phase: 'paused', channelId: GENV, callId: GENV, changedUser: BOB }));
     app.client.publish('call', callState({ phase: 'in', channelId: GENV, callId: GENV }));
-    await app.user.click(main().getByRole('button', { name: 'leave' }));
+    await app.user.click(main().getByRole('button', { name: 'Leave' }));
     app.client.publish('voice', room(BOB_IN));
     expect(app.sounds.played).toEqual([]);
   });
 
   it('plays nothing for voice it is not in', async () => {
     const app = renderVoiceShell({ voice: room(BOB_IN) });
-    await main().findByRole('button', { name: 'join voice' });
+    await main().findByRole('button', { name: 'Join voice' });
     app.client.publish('voice', room(BOB_IN, CAROL_IN));
     expect(app.sounds.played).toEqual([]);
   });
 
   it('m1: the first snapshot of the room after joining is the baseline, not a join', async () => {
     const app = renderVoiceShell({ voice: {} });
-    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    await app.user.click(await main().findByRole('button', { name: 'Join voice' }));
     await waitFor(() => expect(app.sessions).toHaveLength(1));
     await main().findByRole('toolbar', { name: 'voice channel controls' });
     app.client.publish('voice', room(BOB_IN, ME_IN));

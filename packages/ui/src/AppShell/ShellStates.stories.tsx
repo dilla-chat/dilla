@@ -12,7 +12,7 @@ import { Banner } from '../Banner/Banner.tsx';
 import { Dialog } from '../Dialog/Dialog.tsx';
 import { TextField } from '../TextField/TextField.tsx';
 import { Button } from '../Button/Button.tsx';
-import { StatusBar, StatusChunk } from '../StatusBar/StatusBar.tsx';
+import { TopBar } from '../TopBar/TopBar.tsx';
 // The shipped copy of @dilla/web, so the F16 screenshots show exactly what the app says.
 import { t, formatTime } from '../../../web/src/strings/index.ts';
 
@@ -58,10 +58,8 @@ function Screen(p: { resize?: Pick<AppShellProps, 'paneWidths' | 'onPaneResize' 
   const active = p.active === undefined ? 'general' : p.active;
   const tab = p.tab ?? 'channels';
   const channel = p.dm ? { id: 'bob', name: 'bob', kind: 'text' as const, readable: false } : CHANNELS.find(c => c.id === active) ?? null;
-  const status = p.status ?? 'online';
-  const tone = status === 'online' ? 'ok' : status === 'connecting' ? 'warn' : 'danger';
-  // 800px less the preview decorator's 16px padding on each side, as the Shell/AppShell stories do, so
-  // the status bar is in the 1280×800 screenshots.
+  // 800px less the preview decorator's 16px padding on each side, as the Shell/AppShell stories do. The link state is the
+  // banner's to say (`status` is kept for the stories that name it); the Signal top bar has no link chunk.
   return (
     <div style={{ ['--d-shell-h' as string]: '768px' }}>
       <AppShell
@@ -83,14 +81,8 @@ function Screen(p: { resize?: Pick<AppShellProps, 'paneWidths' | 'onPaneResize' 
           placeholder={t(p.dm ? 'shell.dm.composer' : 'shell.composer.placeholder', p.dm ? { name: 'bob' } : { channel: channel.name })}
           maxLength={4000} value="" onChange={noop} disabled={Boolean(p.reason)} disabledReason={p.reason ?? undefined} onSend={noop} sendLabel={t('shell.composer.send')}
           counterLabel={n => (n < 0 ? t('shell.composer.over', { n: -n }) : t('shell.composer.remaining', { n }))} /> : null}
-        statusBar={
-          <StatusBar position="bottom" label={t('shell.status.label')}>
-            <StatusChunk label={t('shell.status.node')}>dilla.test</StatusChunk>
-            <StatusChunk label={t('shell.status.link')} tone={tone}>{t(`shell.status.${status}`)}</StatusChunk>
-            <StatusChunk label={t('shell.status.gen')}>7</StatusChunk>
-            <StatusChunk label={t('shell.status.devices')}>2</StatusChunk>
-          </StatusBar>
-        }
+        topBar={<TopBar searchLabel={t('topbar.search')} searchShortcut="⌘K" onSearch={noop} remindersDue={0} onReminders={noop} onSettings={noop}
+        labels={{ reminders: t('reminder.inbox'), settings: t('workspace.open'), voice: t('nav.call.open', { where: 'harbour' }) }} />}
         banner={p.banner}
         {...p.resize}
       >

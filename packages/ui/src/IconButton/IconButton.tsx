@@ -18,7 +18,7 @@ export type IconButtonProps = Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'chi
   tooltip?: boolean;
 };
 
-const GLYPH: Record<NonNullable<IconButtonProps['size']>, number> = { 28: 16, 32: 18, 40: 20, 44: 20 };
+const GLYPH: Record<NonNullable<IconButtonProps['size']>, number> = { 28: 15, 32: 18, 40: 20, 44: 20 };
 
 export function IconButton({ icon, label, size = 32, pressed, keys, tooltip = true, type = 'button', className, ...rest }: IconButtonProps) {
   const button = (

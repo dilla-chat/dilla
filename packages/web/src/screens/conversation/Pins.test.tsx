@@ -5,19 +5,18 @@ import { ME } from '../../test/fixtures.ts';
 import { expectNoAxeViolations } from '../../test/setup.ts';
 import { DM, GEN, NOW, P1, P2, PEER, peerRow, renderConversation, rowOf } from '../../test/conversation.tsx';
 import { messageTime } from '../shell-model.ts';
+import { rowMenuItem } from '../../test/row-menu.ts';
+import type { UserEvent } from '@testing-library/user-event';
 
 const PINNED_TS = 1700000000;
 const pin = (over: Partial<PinnedItem> = {}): PinnedItem => ({ msgId: P1, seq: '1', senderUser: PEER, excerpt: 'pin me', pinnedBy: ME.id, pinnedSeq: '9', ts: PINNED_TS, threadRoot: null, ...over });
-const pinsButton = () => {
-  const header = document.querySelector<HTMLElement>('.d-channel-header');
-  if (header === null) throw new Error('no header');
-  return within(header).getByRole('button', { name: 'pinned' });
-};
+/** Ruling X (Jonas 2026-10-27): pins live in the channel row's context menu. */
+const openPins = (user: UserEvent) => rowMenuItem(user, 'general', 'pinned');
 
 describe('pins (Q20, ruling 23)', () => {
   it('opens from the header, loads the pins, names who pinned, unpins and closes', async () => {
     const { fake, user, view } = renderConversation({ items: [peerRow(P1, '1', 'pin me', { pinned: true })] });
-    await user.click(pinsButton());
+    await openPins(user);
     expect(fake.callsOf('loadPins')).toEqual([{ m: 'loadPins', channelId: GEN }]);
     const dialog = screen.getByRole('dialog', { name: 'Pinned in #general' });
     expect(dialog).toHaveTextContent('Nothing is pinned here yet.');
@@ -34,7 +33,7 @@ describe('pins (Q20, ruling 23)', () => {
   });
   it('jumps to a loaded pinned message and says when one is further back', async () => {
     const { fake, user } = renderConversation({ items: [peerRow(P1, '1', 'pin me', { pinned: true })] });
-    await user.click(pinsButton());
+    await openPins(user);
     act(() => fake.set(`pins:${GEN}`, [pin(), pin({ msgId: P2, seq: '0', excerpt: 'older' })]));
     const dialog = screen.getByRole('dialog', { name: 'Pinned in #general' });
     // The time of a pin whose target is not loaded comes from PinnedItem.ts (ruling 36). messageTime takes
@@ -47,13 +46,14 @@ describe('pins (Q20, ruling 23)', () => {
     expect(rowOf(P1)).toHaveFocus();
     expect(rowOf(P1)).toHaveAttribute('data-flash', 'true');
     expect(fake.callsOf('closePins')).toEqual([{ m: 'closePins', channelId: GEN }]);
-    await user.click(pinsButton());
+    await openPins(user);
     await user.click(within(screen.getByRole('dialog', { name: 'Pinned in #general' })).getAllByRole('button', { name: 'go to message' })[1]);
     expect(screen.getByText('The original message is further back. Load earlier messages to reach it.')).toBeInTheDocument();
   });
   it('titles a DM’s pins by the DM’s name', async () => {
     const { fake, user } = renderConversation({ dm: true });
-    await user.click(pinsButton());
+    // Ruling Z: a DM's pins are in its row's context menu, as a channel's are.
+    await rowMenuItem(user, 'bob', 'pinned', 'dms');
     expect(screen.getByRole('dialog', { name: 'Pinned with bob' })).toBeInTheDocument();
     expect(fake.callsOf('loadPins')).toEqual([{ m: 'loadPins', channelId: DM }]);
   });
@@ -62,7 +62,7 @@ describe('pins (Q20, ruling 23)', () => {
 describe('pin focus handoff (F4)', () => {
   it('keeps the dialog open and moves unpin to the next item, else Close', async () => {
     const { fake, user } = renderConversation();
-    await user.click(pinsButton());
+    await openPins(user);
     const p3 = '0d'.repeat(16);
     act(() => fake.set(`pins:${GEN}`, [pin(), pin({ msgId: P2, seq: '2' }), pin({ msgId: p3, seq: '3' })]));
     const dialog = screen.getByRole('dialog', { name: 'Pinned in #general' });

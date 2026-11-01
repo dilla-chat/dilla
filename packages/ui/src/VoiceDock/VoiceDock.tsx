@@ -1,4 +1,4 @@
-import { useId } from 'react';
+import { useId, type ReactNode } from 'react';
 import { VOICE_ICONS, voiceWhy, type VoiceWhyLabels } from '../CallControls/CallControls.tsx';
 import './VoiceDock.css';
 import { Icon } from '../Icon/Icon.tsx';
@@ -41,7 +41,7 @@ export interface VoiceDockProps {
     /** `layout.dock.where`, filled by the caller ('{channel} · {server}'): line 1's tooltip and accessible name. Without it, `where`. */
     where?: string;
     reconnecting: string;
-    /** `voice.dock.ping` ('{ms} ms'), `voice.dock.pingSub` ('<1 ms', a ping that rounds to 0: a real LAN reading, not a missing one), `voice.dock.pingNone` ('— ms') and `voice.dock.rate` ('↑{up} ↓{down} kb/s'): line 2 while connected. */
+    /** `voice.dock.ping` ('{ms} ms'), `voice.dock.pingSub` ('<1 ms', a ping that rounds to 0: a real LAN reading, not a missing one), `voice.dock.pingNone` ('— ms') and `voice.dock.rate` ('↑ {up} ↓ {down} kb/s'): line 2 while connected. */
     ping: string; pingSub: string; pingNone: string; rate: string;
     /** `voice.dock.stats`: the stats' accessible text, with `{ms}`, `{quality}`, `{up}` and `{down}`; never announced. */
     stats: string;
@@ -59,6 +59,8 @@ export interface VoiceDockProps {
     /** The reasons an inert camera or share gives (`voice.why.*`), read as its description; none without it. */
     why?: VoiceWhyLabels;
   };
+  /** Task 8b (README §5.4, §6.6): the compact now-playing row under the dock's row while the bot plays in this call (NowPlaying `compact`). */
+  music?: ReactNode;
   /** False renders the two status lines and the status region, and no controls (the phone's call bar holds the controls). Default true. */
   controls?: boolean;
   /** Ignored since web3.9 (R26). */
@@ -74,22 +76,26 @@ export interface VoiceDockProps {
   onLeave(): void;
 }
 
+/** Connected: the three --live bars (README §5.4, `d-bar` 600ms, staggered 200ms); still under reduced motion. */
+const BARS = <span className="d-voice-dock__bars"><span /><span /><span /></span>;
 const PHASE_GLYPH = {
-  connecting: <StateDot tone="pending" />, connected: <StateDot tone="ok" />,
+  connecting: <StateDot tone="pending" />, connected: BARS,
   reconnecting: <StateDot tone="pending" />, paused: <Icon name="pause" size={14} />,
 } as const;
 
 /**
- * The voice dock above the user panel while this device is in voice, as Discord's (R26, MP5): line 1 the state dot and the
- * channel name (a button with `onStatus`; the server is its tooltip and accessible name), line 2 the link stats ("24 ms ·
- * ↑48 ↓96 kb/s", "— ms" before the first sample, the phase words while not connected), then camera, share and leave as 32px icon
- * buttons in one row (one roving Tab stop, `role="toolbar"`). No meter, no card: a hairline top and the panel's 12px inset. Mute and deafen live in the user
- * panel. A camera or share that cannot act is aria-disabled and says why as its description. Its one `role="status"`
- * region announces join, leave, mute, deafen and the end of a pause (flow 06).
+ * The voice dock above the user panel while this device is in voice (Signal, README §5.4): a card in the --live tints
+ * (margin 0 8px 8px, padding 10px, radius 8px) holding one row: the three --live bars while connected (the phase marker
+ * otherwise), the room name (12px/600 --ok-text; a button with `onStatus` that opens Diagnostics, the server is its tooltip
+ * and accessible name) over the link stats ("24 ms · ↑ 38 ↓ 71 kb/s", 10.5px tabular --fg-2; the phase words while not
+ * connected), then camera and share (when given) and leave as 28px icon buttons in one roving Tab stop
+ * (`role="toolbar"`). Leave is the --danger glyph and fills --danger on hover. Mute and deafen live in the user panel.
+ * A camera or share that cannot act is aria-disabled and says why as its description. Its one `role="status"` region
+ * announces join, leave, mute, deafen and the end of a pause (flow 06).
  */
 export function VoiceDock({
   phase, where, stats, camera = false, sharing = false, canCamera = true, canShare = true, busy = false, paused,
-  announcement, labels, controls: showControls = true, onStatus, onCamera, onShare, onLeave,
+  announcement, labels, controls: showControls = true, music, onStatus, onCamera, onShare, onLeave,
 }: VoiceDockProps) {
   const why = voiceWhy(labels.why, { busy, paused: paused ?? (phase === 'paused' || !canCamera), canCamera, canShare });
   const ids = useId();
@@ -97,7 +103,6 @@ export function VoiceDock({
   const full = labels.where ?? where;
   const line1 = (
     <>
-      <span className="d-voice-dock__glyph" aria-hidden="true">{PHASE_GLYPH[phase]}</span>
       <span className="d-voice-dock__text" aria-hidden="true">{where}</span>
       <span className="d-sr-only">{full}</span>
     </>
@@ -119,6 +124,8 @@ export function VoiceDock({
   const shareInert = busy || !canShare;
   return (
     <div className="d-voice-dock" data-phase={phase}>
+      <div className="d-voice-dock__row">
+      <span className="d-voice-dock__glyph" aria-hidden="true">{PHASE_GLYPH[phase]}</span>
       <div className="d-voice-dock__status">
         {onStatus !== undefined
           ? <button type="button" className="d-voice-dock__line1" title={full} onClick={onStatus}>{line1}</button>
@@ -129,7 +136,7 @@ export function VoiceDock({
         <div ref={bar.ref} role="toolbar" aria-label={labels.region} className="d-voice-dock__controls" onKeyDown={bar.onKeyDown} onFocus={bar.onFocus}>
           {onCamera !== undefined && labels.camera !== undefined ? (
             <>
-              <IconButton icon={camera ? VOICE_ICONS.camera.iconOn : VOICE_ICONS.camera.icon} label={labels.camera} pressed={camera}
+              <IconButton icon={camera ? VOICE_ICONS.camera.iconOn : VOICE_ICONS.camera.icon} size={28} label={labels.camera} pressed={camera}
                 aria-disabled={cameraInert ? true : undefined} aria-describedby={cameraInert && why.camera ? `${ids}-camera` : undefined}
                 onClick={cameraInert ? undefined : onCamera} />
               {cameraInert && why.camera ? <span id={`${ids}-camera`} className="d-sr-only">{why.camera}</span> : null}
@@ -137,15 +144,17 @@ export function VoiceDock({
           ) : null}
           {onShare !== undefined && labels.share !== undefined ? (
             <>
-              <IconButton icon={sharing ? VOICE_ICONS.share.iconOn : VOICE_ICONS.share.icon} label={labels.share} pressed={sharing}
+              <IconButton icon={sharing ? VOICE_ICONS.share.iconOn : VOICE_ICONS.share.icon} size={28} label={labels.share} pressed={sharing}
                 aria-disabled={shareInert ? true : undefined} aria-describedby={shareInert && why.share ? `${ids}-share` : undefined}
                 onClick={shareInert ? undefined : onShare} />
               {shareInert && why.share ? <span id={`${ids}-share`} className="d-sr-only">{why.share}</span> : null}
             </>
           ) : null}
-          <IconButton icon={VOICE_ICONS.leave.icon} label={labels.leave} className="d-voice-dock__leave" onClick={onLeave} />
+          <IconButton icon={VOICE_ICONS.leave.icon} size={28} label={labels.leave} className="d-voice-dock__leave" onClick={onLeave} />
         </div>
       ) : null}
+      </div>
+      {music ?? null}
       <p className="d-sr-only" role="status">{announcement}</p>
     </div>
   );

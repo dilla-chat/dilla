@@ -159,6 +159,22 @@ pub enum RequestArgs {
         grant_token: String,
         document: Vec<u8>,
     },
+    UtilityPayload(Vec<u8>),
+    UtilityId(MsgId),
+    PollList {
+        channel: ChannelId,
+        thread: Option<MsgId>,
+        cursor: Option<Vec<u8>>,
+    },
+    PollVote {
+        poll: MsgId,
+        selected: Vec<u8>,
+    },
+    PollVoters {
+        poll: MsgId,
+        option: u64,
+        cursor: Option<Vec<u8>>,
+    },
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -264,7 +280,7 @@ impl Request {
         if let Some(ch) = self.channel_id {
             check_id16(ch.as_bytes())?;
         }
-        let expects_channel = matches!(self.operation, 10..=23);
+        let expects_channel = matches!(self.operation, 10..=23 | 25);
         if expects_channel != self.channel_id.is_some() {
             return Err(CodecError::Value);
         }
@@ -275,10 +291,10 @@ impl Request {
         if self.revision.is_some() != self.expires.is_some() {
             return Err(CodecError::Value);
         }
-        if !matches!(self.operation, 0|1|2|10..=23|30|31|40|50..=52|60..=64) {
+        if !matches!(self.operation, 0|1|2|3|10..=25|30|31|40|50..=52|60..=64|70..=75|80..=84) {
             return Err(CodecError::Operation);
         }
-        if self.operation == 31 && self.revision != Some(0) {
+        if matches!(self.operation, 25 | 31 | 70 | 80) && self.revision != Some(0) {
             return Err(CodecError::Value);
         }
         if !args_match(self.operation, &self.args) {
@@ -333,6 +349,36 @@ impl Request {
                 check_id16(channel.as_bytes())?;
                 check_role_panel_mappings(mappings)?;
             }
+            RequestArgs::UtilityPayload(payload) => {
+                validate_utility_payload(self.operation, payload)?
+            }
+            RequestArgs::UtilityId(id) => check_id16(id.as_bytes())?,
+            RequestArgs::PollList {
+                channel,
+                thread,
+                cursor,
+            } => {
+                check_id16(channel.as_bytes())?;
+                if let Some(thread) = thread {
+                    check_id16(thread.as_bytes())?;
+                }
+                check_cursor(cursor)?;
+            }
+            RequestArgs::PollVote { poll, selected } => {
+                check_id16(poll.as_bytes())?;
+                validate_poll_selection(selected)?;
+            }
+            RequestArgs::PollVoters {
+                poll,
+                option,
+                cursor,
+            } => {
+                check_id16(poll.as_bytes())?;
+                if *option > 9 {
+                    return Err(CodecError::Value);
+                }
+                check_cursor(cursor)?;
+            }
             _ => {}
         }
         Ok(())
@@ -380,12 +426,188 @@ fn check_role_panel_mappings(bytes: &[u8]) -> Result<(), CodecError> {
     .map_err(Into::into)
 }
 
+fn check_cursor(cursor: &Option<Vec<u8>>) -> Result<(), CodecError> {
+    if cursor
+        .as_ref()
+        .is_some_and(|v| !(1..=256).contains(&v.len()))
+    {
+        return Err(CodecError::Value);
+    }
+    Ok(())
+}
+fn read_opt_cursor(d: &mut Decoder<'_>) -> Result<Option<Vec<u8>>, CborError> {
+    if d.try_null()? {
+        return Ok(None);
+    }
+    let v = d.bytes()?.to_vec();
+    if !(1..=256).contains(&v.len()) {
+        return Err(CborError::WrongByteLen {
+            expected: 256,
+            actual: v.len(),
+        });
+    }
+    Ok(Some(v))
+}
+fn validate_poll_selection(bytes: &[u8]) -> Result<(), CodecError> {
+    if bytes.is_empty() || bytes.len() > 2200 {
+        return Err(CodecError::Limit);
+    }
+    decode_strict(bytes, |d| {
+        let n = d.array_len()?;
+        if n > 10 {
+            return Err(CborError::WrongArrayLen {
+                expected: 10,
+                actual: n,
+            });
+        }
+        let mut seen = BTreeSet::new();
+        for _ in 0..n {
+            let v = d.uint()?;
+            if v > 9 || !seen.insert(v) {
+                return Err(CborError::TypeMismatch {
+                    expected: "unique option indices",
+                    offset: d.position(),
+                });
+            }
+        }
+        Ok(())
+    })
+    .map_err(Into::into)
+}
+fn validate_utility_payload(op: u64, bytes: &[u8]) -> Result<(), CodecError> {
+    let poll = op == 70;
+    let max = if poll { 1800 } else { 2200 };
+    if bytes.is_empty() || bytes.len() > max {
+        return Err(CodecError::Limit);
+    }
+    decode_strict(bytes, |d| {
+        d.array(7)?;
+        if d.uint()? != 1 {
+            return Err(CborError::TypeMismatch {
+                expected: "payload version",
+                offset: d.position(),
+            });
+        }
+        if poll {
+            let id = d.bytes_exact::<16>()?;
+            if id.iter().all(|b| *b == 0) {
+                return Err(CborError::TypeMismatch {
+                    expected: "poll id",
+                    offset: d.position(),
+                });
+            }
+            if let Some(thread) = d.opt_bytes_exact::<16>()?
+                && thread.iter().all(|b| *b == 0)
+            {
+                return Err(CborError::TypeMismatch {
+                    expected: "thread id",
+                    offset: d.position(),
+                });
+            }
+            let q = d.text()?;
+            if q.trim().is_empty() || q.chars().count() > 300 {
+                return Err(CborError::TypeMismatch {
+                    expected: "poll question",
+                    offset: d.position(),
+                });
+            }
+            let n = d.array_len()?;
+            if !(2..=10).contains(&n) {
+                return Err(CborError::WrongArrayLen {
+                    expected: 10,
+                    actual: n,
+                });
+            }
+            let mut seen = BTreeSet::new();
+            for _ in 0..n {
+                let v = d.text()?;
+                if v.trim().is_empty() || v.chars().count() > 100 || !seen.insert(v.to_owned()) {
+                    return Err(CborError::TypeMismatch {
+                        expected: "unique poll answers",
+                        offset: d.position(),
+                    });
+                }
+            }
+            if d.uint()? > 1 {
+                return Err(CborError::TypeMismatch {
+                    expected: "poll multi flag",
+                    offset: d.position(),
+                });
+            }
+            if !matches!(d.uint()?, 3600 | 14400 | 28800 | 86400 | 259200 | 604800) {
+                return Err(CborError::TypeMismatch {
+                    expected: "poll duration preset",
+                    offset: d.position(),
+                });
+            }
+        } else {
+            let kind = d.uint()?;
+            if kind > 1 {
+                return Err(CborError::TypeMismatch {
+                    expected: "reminder kind",
+                    offset: d.position(),
+                });
+            }
+            let when = d.uint()?;
+            if (kind == 0 && !(60..=31536000).contains(&when))
+                || (kind == 1 && !(1..=253402300799).contains(&when))
+            {
+                return Err(CborError::TypeMismatch {
+                    expected: "reminder time",
+                    offset: d.position(),
+                });
+            }
+            let text = d.text()?;
+            if text.is_empty() || text.len() > 1500 {
+                return Err(CborError::TypeMismatch {
+                    expected: "reminder text",
+                    offset: d.position(),
+                });
+            }
+            let zone = d.text()?;
+            if zone.is_empty() || zone.len() > 100 {
+                return Err(CborError::TypeMismatch {
+                    expected: "timezone",
+                    offset: d.position(),
+                });
+            }
+            let channel = d.opt_bytes_exact::<16>()?;
+            let thread = d.opt_bytes_exact::<16>()?;
+            if thread.is_some() && channel.is_none() {
+                return Err(CborError::TypeMismatch {
+                    expected: "reminder source",
+                    offset: d.position(),
+                });
+            }
+            if channel.is_some_and(|x| x.iter().all(|b| *b == 0))
+                || thread.is_some_and(|x| x.iter().all(|b| *b == 0))
+            {
+                return Err(CborError::TypeMismatch {
+                    expected: "source id",
+                    offset: d.position(),
+                });
+            }
+        }
+        Ok(())
+    })
+    .map_err(Into::into)
+}
+
 fn is_mutation(op: u64) -> bool {
-    matches!(op, 2 | 12..=23 | 31 | 51 | 52 | 61 | 63)
+    matches!(
+        op,
+        2 | 12..=23 | 25 | 31 | 51 | 52 | 61 | 63 | 70 | 73 | 74 | 80 | 82 | 83
+    )
 }
 fn args_match(op: u64, a: &RequestArgs) -> bool {
     match op {
-        0 | 10 | 13..=16 | 19 | 23 => matches!(a, RequestArgs::None),
+        0 | 3 | 10 | 13 | 14 | 16 | 19 | 23 | 24 => matches!(a, RequestArgs::None),
+        15 => {
+            matches!(a, RequestArgs::None)
+                || matches!(a, RequestArgs::Text(s) if s.is_empty()
+                || s.len() == 32 && s.bytes().any(|b| b != b'0')
+                    && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+        }
         1 => matches!(a, RequestArgs::Section { section: 0..=5 }),
         2 => matches!(a, RequestArgs::SettingsPut { section: 0..=5, .. }),
         11 => matches!(a,RequestArgs::Text(s) if text_valid(s,1,200,true)),
@@ -393,7 +615,8 @@ fn args_match(op: u64, a: &RequestArgs) -> bool {
         17 => matches!(a, RequestArgs::Number(_)),
         18 => matches!(a, RequestArgs::Number(0..=100)),
         20 => matches!(a, RequestArgs::Number(0..=2)),
-        21 => matches!(a, RequestArgs::Id(_)),
+        // 25: the music announcement names its text channel (Jonas 2026-10-28).
+        21 | 25 => matches!(a, RequestArgs::Id(_)),
         22 => matches!(a, RequestArgs::Move { .. }),
         30 => matches!(a,RequestArgs::Text(s) if text_valid(s,1,2000,false)),
         31 => matches!(a, RequestArgs::RolePanel { .. }),
@@ -409,6 +632,14 @@ fn args_match(op: u64, a: &RequestArgs) -> bool {
         62 => matches!(a, RequestArgs::None),
         63 => {
             matches!(a,RequestArgs::AutoModerationPut{grant_token,document} if text_valid(grant_token,1,512,true) && !document.is_empty() && document.len()<=2400)
+        }
+        70 | 80 => matches!(a, RequestArgs::UtilityPayload(_)),
+        71 | 74 | 82 | 83 => matches!(a, RequestArgs::UtilityId(_)),
+        72 => matches!(a, RequestArgs::PollList { .. }),
+        73 => matches!(a, RequestArgs::PollVote { .. }),
+        75 => matches!(a, RequestArgs::PollVoters { .. }),
+        81 | 84 => {
+            matches!(a, RequestArgs::Cursor(cursor) if cursor.as_ref().is_none_or(|v| (1..=256).contains(&v.len())))
         }
         _ => false,
     }
@@ -483,6 +714,35 @@ fn encode_args(e: &mut Encoder, a: &RequestArgs) {
         RequestArgs::RolePanel { channel, mappings } => {
             e.array(2).bytes(channel.as_bytes()).bytes(mappings);
         }
+        RequestArgs::UtilityPayload(payload) => {
+            e.array(1).bytes(payload);
+        }
+        RequestArgs::UtilityId(id) => {
+            e.array(1).bytes(id.as_bytes());
+        }
+        RequestArgs::PollList {
+            channel,
+            thread,
+            cursor,
+        } => {
+            e.array(3)
+                .bytes(channel.as_bytes())
+                .opt_bytes(thread.as_ref().map(MsgId::as_bytes).map(|x| x.as_slice()));
+            e.opt_bytes(cursor.as_deref());
+        }
+        RequestArgs::PollVote { poll, selected } => {
+            e.array(2).bytes(poll.as_bytes()).bytes(selected);
+        }
+        RequestArgs::PollVoters {
+            poll,
+            option,
+            cursor,
+        } => {
+            e.array(3)
+                .bytes(poll.as_bytes())
+                .uint(*option)
+                .opt_bytes(cursor.as_deref());
+        }
     }
 }
 fn decode_args(d: &mut Decoder<'_>, op: u64) -> Result<RequestArgs, CborError> {
@@ -491,10 +751,20 @@ fn decode_args(d: &mut Decoder<'_>, op: u64) -> Result<RequestArgs, CborError> {
         offset: d.position(),
     };
     Ok(match op {
-        0 | 10 | 13..=16 | 19 | 23 => {
+        0 | 3 | 10 | 13 | 14 | 16 | 19 | 23 | 24 => {
             d.array(0)?;
             RequestArgs::None
         }
+        15 => match d.array_len()? {
+            0 => RequestArgs::None,
+            1 => RequestArgs::Text(bounded_text(d, 0, 32, false)?),
+            _ => {
+                return Err(CborError::TypeMismatch {
+                    expected: "skip args",
+                    offset: d.position(),
+                });
+            }
+        },
         1 => {
             d.array(1)?;
             RequestArgs::Section { section: d.uint()? }
@@ -546,7 +816,7 @@ fn decode_args(d: &mut Decoder<'_>, op: u64) -> Result<RequestArgs, CborError> {
             }
             RequestArgs::Cursor(cursor)
         }
-        21 => {
+        21 | 25 => {
             d.array(1)?;
             RequestArgs::Id(read_msg(d)?)
         }
@@ -589,6 +859,49 @@ fn decode_args(d: &mut Decoder<'_>, op: u64) -> Result<RequestArgs, CborError> {
                 grant_token: bounded_text(d, 1, 512, true)?,
                 document: bounded_bytes(d, 1, 2400, true)?,
             }
+        }
+        70 | 80 => {
+            d.array(1)?;
+            RequestArgs::UtilityPayload(bounded_bytes(
+                d,
+                1,
+                if op == 70 { 1800 } else { 2200 },
+                false,
+            )?)
+        }
+        71 | 74 | 82 | 83 => {
+            d.array(1)?;
+            RequestArgs::UtilityId(read_msg(d)?)
+        }
+        72 => {
+            d.array(3)?;
+            let channel = read_channel(d)?;
+            let thread = d.opt_bytes_exact::<16>()?.map(MsgId::from_bytes);
+            let cursor = read_opt_cursor(d)?;
+            RequestArgs::PollList {
+                channel,
+                thread,
+                cursor,
+            }
+        }
+        73 => {
+            d.array(2)?;
+            RequestArgs::PollVote {
+                poll: read_msg(d)?,
+                selected: bounded_bytes(d, 1, 2200, false)?,
+            }
+        }
+        75 => {
+            d.array(3)?;
+            RequestArgs::PollVoters {
+                poll: read_msg(d)?,
+                option: d.uint()?,
+                cursor: read_opt_cursor(d)?,
+            }
+        }
+        81 | 84 => {
+            d.array(1)?;
+            RequestArgs::Cursor(read_opt_cursor(d)?)
         }
         _ => return Err(typeerr()),
     })
@@ -1507,6 +1820,55 @@ mod tests {
             payload: vec![0x80],
         };
         assert!(unknown.encode().is_err());
+    }
+
+    #[test]
+    fn music_announce_names_a_text_channel_on_the_voice_channel_at_revision_zero() {
+        fn request(revision: u64) -> Vec<u8> {
+            let mut e = Encoder::new();
+            e.array(8)
+                .uint(1)
+                .bytes(&[1; 16])
+                .bytes(&[2; 16])
+                .bytes(&[3; 16])
+                .uint(25)
+                .uint(revision)
+                .uint(130)
+                .array(1)
+                .bytes(&[4; 16]);
+            e.into_vec()
+        }
+        let decoded = Request::decode_cbor(&request(0)).unwrap();
+        assert_eq!(decoded.operation, 25);
+        assert!(matches!(decoded.args, RequestArgs::Id(id) if id.as_bytes() == &[4; 16]));
+        assert_eq!(decoded.encode_cbor().unwrap(), request(0));
+        assert!(Request::decode_cbor(&request(1)).is_err());
+    }
+
+    #[test]
+    fn music_skip_accepts_optional_expected_current_item() {
+        let request = |args: RequestArgs| Request {
+            request_id: MsgId::from_bytes([1; 16]),
+            community_id: CommunityId::from_bytes([2; 16]),
+            channel_id: Some(ChannelId::from_bytes([3; 16])),
+            operation: 15,
+            revision: Some(0),
+            expires: Some(130),
+            args,
+        };
+        for args in [
+            RequestArgs::None,
+            RequestArgs::Text("ab".repeat(16)),
+            RequestArgs::Text(String::new()),
+        ] {
+            let original = request(args);
+            let encoded = original.encode_cbor().expect("valid skip guard");
+            let decoded = Request::decode_cbor(&encoded).expect("decode skip guard");
+            assert!(decoded == original);
+        }
+        for value in ["bad-id".to_owned(), "AB".repeat(16), "00".repeat(16)] {
+            assert!(request(RequestArgs::Text(value)).encode_cbor().is_err());
+        }
     }
 
     #[test]

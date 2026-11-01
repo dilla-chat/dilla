@@ -96,6 +96,10 @@ Stated plainly in the product's documentation and onboarding:
   and so block sending there (fail closed: no member encrypts to a leaf it could not validate).
   A validated Remove of that leaf releases that group only; the committer stays usable elsewhere
   and the audit names it.
+- In a call, each participant's round-trip time to the SFU (`dilla.rtt`, `09` § Voice, reported
+  through the instance) is visible to every other participant of that call and to the instance,
+  which measures it anyway. A participant can report a false value; it is display only and nothing
+  else reads it.
 - Media authenticity is group-level: any member can derive any sender's frame keys
   (`05-media-frames.md`); a colluding operator and member can inject media attributed to another
   participant. A member a Commit removed still holds the superseded epoch's key while receivers
@@ -139,6 +143,14 @@ Stated plainly in the product's documentation and onboarding:
 - History before a member joined is not shared with them at this version.
 - A user who loses every device and the recovery key loses their history.
 - A `browser`-tier session trusts the code the instance serves.
+- Whether an account is a Bot is the instance's statement. From wire 4 clients judge every leaf's
+  credential kind against the instance-signed account-kind attestation (`03` § Account kind
+  attestation), so a member cannot make its messages appear as a Bot's; the instance, which holds
+  the signing key and defines account kinds, can still attest any kind, and before a client first
+  stores an attestation from its instance (only ever wire 2 or 3) its core does not check kind.
+  The attestation states the account's kind, not a key's (it binds the instance and the account
+  only), so it holds for every key the account presents; trust in each key stays with the pins and
+  the person's verification.
 
 ## Out of scope
 

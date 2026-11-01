@@ -6,6 +6,7 @@ package sqlitedb
 
 import (
 	"context"
+	"database/sql"
 
 	id "github.com/jonasthim/dilla/internal/id"
 )
@@ -19,6 +20,8 @@ type Querier interface {
 	BackupRefersToBlob(ctx context.Context, arg BackupRefersToBlobParams) (int64, error)
 	BumpGeneration(ctx context.Context) (int64, error)
 	BumpGroupSeq(ctx context.Context, arg BumpGroupSeqParams) (int64, error)
+	// Fix round 2 (security L1): a change writes the new hash and its change time in one statement.
+	ChangePasswordCredential(ctx context.Context, arg ChangePasswordCredentialParams) error
 	ClearAFKAway(ctx context.Context, arg ClearAFKAwayParams) (int64, error)
 	ClearAFKAwayUser(ctx context.Context, arg ClearAFKAwayUserParams) ([]id.ID, error)
 	ClearBlobUnreferenced(ctx context.Context, arg ClearBlobUnreferencedParams) error
@@ -42,6 +45,9 @@ type Querier interface {
 	CountKeyPackages(ctx context.Context, arg CountKeyPackagesParams) (int64, error)
 	// dilla-web-2a (L-SQL-21, Q04): the per-user device cap counts unrevoked devices only.
 	CountLiveDevicesByUser(ctx context.Context, arg CountLiveDevicesByUserParams) (int64, error)
+	// The gauge counts current-epoch instance proposals in open groups and all epochs in closed
+	// groups, whose rows the closed-group void clears. Old open-group rows cannot be committed.
+	CountLiveInstanceProposals(ctx context.Context) ([]CountLiveInstanceProposalsRow, error)
 	CountLoginFailures(ctx context.Context, arg CountLoginFailuresParams) (int64, error)
 	CountPendingJoins(ctx context.Context, arg CountPendingJoinsParams) (int64, error)
 	CountRecoveryCodes(ctx context.Context, arg CountRecoveryCodesParams) (int64, error)
@@ -148,6 +154,7 @@ type Querier interface {
 	GetLastResortKeyPackage(ctx context.Context, arg GetLastResortKeyPackageParams) (KeyPackages, error)
 	GetMember(ctx context.Context, arg GetMemberParams) (Members, error)
 	GetOIDCIdentity(ctx context.Context, arg GetOIDCIdentityParams) (id.ID, error)
+	GetPasswordChangedAt(ctx context.Context, arg GetPasswordChangedAtParams) (sql.NullInt64, error)
 	GetPasswordCredential(ctx context.Context, arg GetPasswordCredentialParams) (string, error)
 	GetProposal(ctx context.Context, arg GetProposalParams) (MlsPendingProposals, error)
 	GetReadState(ctx context.Context, arg GetReadStateParams) (int64, error)
@@ -210,6 +217,9 @@ type Querier interface {
 	// P2-D11: GET /v1/dms. The live DMs and group DMs (kinds 3 and 4) the user is a
 	// participant of, newest first, ties broken by id.
 	ListChannelsForUser(ctx context.Context, arg ListChannelsForUserParams) ([]Channels, error)
+	// The non-void proposals, any epoch, of the CLOSED groups: no commit can land in a closed group and
+	// no group is ever reopened, so the sweep voids them (every other proposal walk reads open groups).
+	ListClosedGroupLiveProposals(ctx context.Context, arg ListClosedGroupLiveProposalsParams) ([]MlsPendingProposals, error)
 	// dilla-web-2a (L-SQL-21): a blob a backups row names is never collectable; backups have no blob_refs row.
 	// The CAST keeps the parameter an int64: without it sqlc infers *int64 from the nullable
 	// unref_since, and a nil cutoff would compare against NULL and collect nothing (gap-47 section 19.4).
@@ -418,11 +428,14 @@ type Querier interface {
 	RaisePrunedBelow(ctx context.Context, arg RaisePrunedBelowParams) error
 	RecordLoginAttempt(ctx context.Context, arg RecordLoginAttemptParams) error
 	RedeemInvite(ctx context.Context, arg RedeemInviteParams) (Invites, error)
+	RequestBotRestart(ctx context.Context, arg RequestBotRestartParams) (int64, error)
 	RevokeBotRuntime(ctx context.Context, arg RevokeBotRuntimeParams) (int64, error)
 	RevokeDevice(ctx context.Context, arg RevokeDeviceParams) error
 	RevokeInvite(ctx context.Context, arg RevokeInviteParams) error
 	RotateBotRuntime(ctx context.Context, arg RotateBotRuntimeParams) (int64, error)
 	SetAFKAway(ctx context.Context, arg SetAFKAwayParams) (int64, error)
+	SetBotMusicSettings(ctx context.Context, arg SetBotMusicSettingsParams) (int64, error)
+	SetBotRuntimeStatus(ctx context.Context, arg SetBotRuntimeStatusParams) (int64, error)
 	SetCommunityAFK(ctx context.Context, arg SetCommunityAFKParams) error
 	// POST /v1/communities/{id}/owner (dilla-web-3-4 S5): the hand-over, under LockCommunity.
 	SetCommunityOwner(ctx context.Context, arg SetCommunityOwnerParams) error

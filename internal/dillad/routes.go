@@ -104,7 +104,8 @@ func mountPlanTwo(mux *server.Mux, p planTwo) (*api.Calls, *api.Roles) {
 	if p.o.Relay != nil {
 		calls.WithRelay(p.o.Relay)
 	}
-	stats := api.NewCallStats(repo, calls, p.o.Metrics, clk)
+	stats := api.NewCallStats(repo, calls, p.o.Metrics, clk).WithSessionResolver(p.sessions.ResolveHash)
+	p.gw.WithCallStats(stats.AcceptCallStats)
 
 	// The join is metered on the ("invite", client address) bucket GET /i/{code} is on, so a join
 	// is not a way round the limit on guessing codes (task 5).

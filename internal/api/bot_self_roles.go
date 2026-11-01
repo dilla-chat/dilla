@@ -61,8 +61,6 @@ func (h *Roles) RegisterSelfRoles(mux *server.Mux) {
 	mux.HandleFunc("POST /v1/communities/{id}/role-panels/{channel_id}/{message_seq}/reaction", h.rolePanelReaction)
 	mux.HandleFunc("PUT /v1/communities/{id}/bot-join-role", h.configureBotJoinRole)
 	mux.HandleFunc("GET /v1/communities/{id}/bot-join-role", h.getBotJoinRole)
-	mux.HandleFunc("GET /v1/communities/{id}/music/dj-roles", h.getDJRolePolicy)
-	mux.HandleFunc("PUT /v1/communities/{id}/music/dj-roles", h.putDJRolePolicy)
 }
 
 // rolePanelReaction records the authenticated member's explicit selection for
@@ -219,138 +217,6 @@ func (h *Roles) rolePanelReaction(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-type djRolePolicyRequest struct {
-	_              struct{} `cbor:",toarray"`
-	RequestID      id.ID
-	InstallationID id.ID
-	Roles          []id.ID
-}
-
-func (h *Roles) getDJRolePolicy(w http.ResponseWriter, r *http.Request) {
-	cid, actor, err := h.selfRoleCommunity(r, h.repo)
-	if err != nil {
-		h.fail(w, r, "get DJ role policy", err)
-		return
-	}
-	snap, err := LoadSnapshot(r.Context(), h.repo, cid, actor.UserID, nil)
-	if err != nil {
-		h.fail(w, r, "get DJ role policy", notFound(err))
-		return
-	}
-	bits := snap.Resolve(actor.UserID)
-	if !bits.Has(PermManageCommunity) || !bits.Has(PermManageRoles) {
-		h.fail(w, r, "get DJ role policy", server.Errorf(server.CodeForbidden, "manage_community and manage_roles required"))
-		return
-	}
-	installation, err := h.readyDJInstallation(r.Context(), h.repo, cid)
-	if err != nil {
-		h.fail(w, r, "get DJ role policy", err)
-		return
-	}
-	rows, err := h.repo.ListDJRolePolicy(r.Context(), installation.ID)
-	if err != nil {
-		h.fail(w, r, "get DJ role policy", err)
-		return
-	}
-	roles := make([]id.ID, len(rows))
-	for i, row := range rows {
-		roles[i] = row.RoleID
-	}
-	_ = server.WriteCBOR(w, http.StatusOK, []any{roles, installation.ID})
-}
-
-func (h *Roles) putDJRolePolicy(w http.ResponseWriter, r *http.Request) {
-	var req djRolePolicyRequest
-	if err := server.DecodeBody(w, r, maxCBORBody, &req); err != nil {
-		refuseCBOR(w, r, err)
-		return
-	}
-	cid, actor, err := h.selfRoleCommunity(r, h.repo)
-	if err != nil {
-		h.fail(w, r, "configure DJ role policy", err)
-		return
-	}
-	if req.RequestID.IsZero() || req.InstallationID.IsZero() || len(req.Roles) > 250 {
-		h.fail(w, r, "configure DJ role policy", server.Errorf(server.CodeInvalidRequest, "request id and at most 250 role IDs required"))
-		return
-	}
-	seen := make(map[id.ID]bool, len(req.Roles))
-	for _, role := range req.Roles {
-		if role.IsZero() || seen[role] {
-			h.fail(w, r, "configure DJ role policy", server.Errorf(server.CodeInvalidRequest, "role IDs must be unique and nonzero"))
-			return
-		}
-		seen[role] = true
-	}
-	err = h.repo.Tx(r.Context(), func(tx store.Repository) error {
-		if err := tx.LockCommunity(r.Context(), cid); err != nil {
-			return notFound(err)
-		}
-		if _, _, err := h.selfRoleCommunity(r, tx); err != nil {
-			return err
-		}
-		snap, err := LoadSnapshot(r.Context(), tx, cid, actor.UserID, nil)
-		if err != nil {
-			return notFound(err)
-		}
-		bits := snap.Resolve(actor.UserID)
-		if !bits.Has(PermManageCommunity) || !bits.Has(PermManageRoles) {
-			return server.Errorf(server.CodeForbidden, "manage_community and manage_roles required")
-		}
-		installation, err := h.readyDJInstallation(r.Context(), tx, cid)
-		if err != nil {
-			return err
-		}
-		if installation.ID != req.InstallationID {
-			return server.WithStatus(http.StatusConflict, server.Errorf(server.CodeInvalidRequest, "bot installation changed"))
-		}
-		var highest uint64
-		for _, role := range snap.Roles {
-			if (snap.Held[role.ID] || role.ID == snap.Everyone) && role.Position > highest {
-				highest = role.Position
-			}
-		}
-		for _, roleID := range req.Roles {
-			role, err := tx.GetRole(r.Context(), roleID)
-			if err != nil || role.CommunityID != cid || role.Position == 0 {
-				return server.Errorf(server.CodeInvalidRequest, "DJ role is unavailable")
-			}
-			if actor.UserID != snap.Owner && role.Position >= highest {
-				return server.Errorf(server.CodeForbidden, "DJ role must be below your highest role")
-			}
-		}
-		return tx.SetDJRolePolicy(r.Context(), installation.ID, actor.UserID, req.Roles, h.clk.Now().Unix())
-	})
-	if err != nil {
-		h.fail(w, r, "configure DJ role policy", err)
-		return
-	}
-	_ = server.WriteCBOR(w, http.StatusOK, []any{req.RequestID, uint64(len(req.Roles))})
-}
-
-func (h *Roles) readyDJInstallation(ctx context.Context, repo store.Repository, community id.ID) (store.BotInstallationRow, error) {
-	installation, err := repo.GetActiveBotInstallationByCommunity(ctx, community)
-	if errors.Is(err, store.ErrNotFound) || (err == nil && (installation.State != store.BotInstallationReady || installation.UserID == nil || installation.DeviceID == nil)) {
-		return store.BotInstallationRow{}, server.Errorf(server.CodeNotFound, "ready community bot not found")
-	}
-	if err != nil {
-		return store.BotInstallationRow{}, err
-	}
-	bot, err := repo.GetUser(ctx, *installation.UserID)
-	if err != nil {
-		return store.BotInstallationRow{}, err
-	}
-	if bot.Kind != 1 {
-		return store.BotInstallationRow{}, server.Errorf(server.CodeNotFound, "ready community bot not found")
-	}
-	if _, err := repo.GetMember(ctx, community, bot.ID); errors.Is(err, store.ErrNotFound) {
-		return store.BotInstallationRow{}, server.Errorf(server.CodeNotFound, "ready community bot not found")
-	} else if err != nil {
-		return store.BotInstallationRow{}, err
-	}
-	return installation, nil
-}
-
 func (h *Roles) registerRolePanel(w http.ResponseWriter, r *http.Request) {
 	var req rolePanelRegistrationRequest
 	if err := server.DecodeBody(w, r, maxCBORBody, &req); err != nil {
@@ -403,7 +269,7 @@ func (h *Roles) registerRolePanel(w http.ResponseWriter, r *http.Request) {
 		if err != nil || installation.State != store.BotInstallationReady || installation.UserID == nil || installation.DeviceID == nil {
 			return server.Errorf(server.CodeForbidden, "ready community bot required")
 		}
-		if installation.Capabilities&uint8(botCapRoles) == 0 {
+		if installation.Capabilities&uint16(botCapRoles) == 0 {
 			return server.Errorf(server.CodeForbidden, "roles capability required")
 		}
 		botUser, err := tx.GetUser(r.Context(), *installation.UserID)

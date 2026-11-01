@@ -42,16 +42,19 @@ test('the sidebar splitter drags and takes keys, the width survives a reload, an
   await expect(page).toHaveURL(/\/c\/[0-9a-f]{32}\/[0-9a-f]{32}$/, { timeout: WAIT });
   await expectComposerReady(page, 'general');
 
-  // 0. web3.9 (controller addition, UI-4): at 1440x900 the user panel is 52 px high (measured) and the composer's resting top
+  // 0. web3.9 (controller addition, UI-4): at 1440x900 the user panel is 64 px high (--panel-h, README §5.4) and the composer's resting top
   // meets the panel's top, within 1 px (--d-composer-band, set on the shell).
   await page.setViewportSize({ width: 1440, height: 900 });
   const tops = async () => page.evaluate(() => {
     const panel = document.querySelector('.d-user-panel')?.getBoundingClientRect();
     const composer = document.querySelector('.d-composer')?.getBoundingClientRect();
-    return { panelTop: panel?.top ?? NaN, panelHeight: panel?.height ?? NaN, composerTop: composer?.top ?? NaN };
+    return { panelTop: panel?.top ?? NaN, panelBottom: panel?.bottom ?? NaN, panelHeight: panel?.height ?? NaN, composerTop: composer?.top ?? NaN, composerBottom: composer?.bottom ?? NaN };
   });
-  await expect.poll(async () => { const m = await tops(); return Math.abs(m.composerTop - m.panelTop); }, { message: 'composer and user panel tops at 1440x900' }).toBeLessThanOrEqual(1);
-  expect((await tops()).panelHeight, 'the user panel is 52 px high').toBeCloseTo(52, 0);
+  // Task 7 (Signal §5.5): the prototype's two-row composer is taller than the 64 px panel, so the two share their bottom edge, not
+  // their top: the composer's top stands at or above the panel's.
+  await expect.poll(async () => { const m = await tops(); return Math.abs(m.composerBottom - m.panelBottom); }, { message: 'composer and user panel bottoms at 1440x900' }).toBeLessThanOrEqual(1);
+  expect((await tops()).composerTop, 'the composer reaches at least the panel top').toBeLessThanOrEqual((await tops()).panelTop + 1);
+  expect((await tops()).panelHeight, 'the user panel is 64 px high').toBeCloseTo(64, 0);
   await page.setViewportSize({ width: 1280, height: 800 });
 
   const splitter = sidebarSplitter(page);
@@ -78,21 +81,21 @@ test('the sidebar splitter drags and takes keys, the width survives a reload, an
   await expect.poll(() => sidebarWidth(page), { message: 'the sidebar after a reload' }).toBeGreaterThanOrEqual(dragged - 1);
   expect(await sidebarWidth(page)).toBeLessThanOrEqual(dragged + 1);
 
-  // 3. The keyboard: Enter resets to 240, ArrowRight moves by 1rem (16 px), Home goes to the minimum, End to the maximum.
+  // 3. The keyboard: Enter resets to 244 (--sidebar-w), ArrowRight moves by 1rem (16 px), Home goes to the minimum, End to the maximum.
   const keys = sidebarSplitter(page);
   await keys.focus();
   await page.keyboard.press('Enter');
-  await expect.poll(() => sidebarWidth(page), { message: 'Enter resets to the default' }).toBeCloseTo(240, 0);
+  await expect.poll(() => sidebarWidth(page), { message: 'Enter resets to the default' }).toBeCloseTo(244, 0);
   await page.keyboard.press('ArrowRight');
   await page.keyboard.press('ArrowRight');
-  await expect.poll(() => sidebarWidth(page), { message: 'two ArrowRights' }).toBeCloseTo(272, 0);
+  await expect.poll(() => sidebarWidth(page), { message: 'two ArrowRights' }).toBeCloseTo(276, 0);
   await page.keyboard.press('Home');
   await expect.poll(() => sidebarWidth(page), { message: 'Home' }).toBeCloseTo(192, 0);
   await page.keyboard.press('End');
   const max = await keys.getAttribute('aria-valuemax');
   await expect(keys).toHaveAttribute('aria-valuenow', max ?? '');
   await page.keyboard.press('Enter');
-  await expect.poll(() => sidebarWidth(page), { message: 'Enter again' }).toBeCloseTo(240, 0);
+  await expect.poll(() => sidebarWidth(page), { message: 'Enter again' }).toBeCloseTo(244, 0);
 
   // 4. With the members aside open at 1280 px the aside has a splitter; at 900 px it is an overlay and has none.
   await expect(asideSplitter(page)).toBeVisible();
@@ -102,7 +105,7 @@ test('the sidebar splitter drags and takes keys, the width survives a reload, an
 
   // 4b. FX-misc round 2 (I2): at a normal desktop width the header stays one row (the wrap is for a main under 28rem only).
   await expect(sidebarSplitter(page)).toBeVisible();
-  expect(await page.locator('.d-channel-header').evaluate(el => el.getBoundingClientRect().height), 'the header at 900 px').toBeLessThanOrEqual(52);
+  expect(await page.locator('.d-channel-header').evaluate(el => el.getBoundingClientRect().height), 'the header at 900 px').toBeLessThanOrEqual(44.5) /* one --bar-h */;
 
   // 5. FX-misc m6, as web3.9 UI-3 designed it: with the sidebar at its widest on an 800 px window main is 24rem (384 px). The header
   // stays one 48 px bar (it no longer wraps); below 36rem of header width the foldable actions give way to the "more" menu, and every
@@ -113,7 +116,7 @@ test('the sidebar splitter drags and takes keys, the width survives a reload, an
   const mainBox = async () => page.getByRole('main').evaluate(el => { const r = el.getBoundingClientRect(); return { left: r.left, right: r.right, width: r.width }; });
   await expect.poll(async () => Math.round((await mainBox()).width), { message: 'main at the 24rem floor' }).toBe(384);
   const header = page.locator('.d-channel-header');
-  expect(await header.evaluate(el => el.getBoundingClientRect().height), 'the header stays one bar at 24rem').toBeLessThanOrEqual(52);
+  expect(await header.evaluate(el => el.getBoundingClientRect().height), 'the header stays one bar at 24rem').toBeLessThanOrEqual(44.5) /* one --bar-h */;
   // A folded action is display:none (no box); what is left, the "more" menu among it, is measured.
   const shown = await header.locator('.d-channel-header__actions button').evaluateAll(els => els.map(el => { const r = el.getBoundingClientRect(); return { name: el.getAttribute('aria-label') ?? el.textContent ?? '', left: r.left, right: r.right, width: r.width }; }));
   const cells = shown.filter(c => c.width > 0);
@@ -134,12 +137,12 @@ test('the sidebar splitter drags and takes keys, the width survives a reload, an
   // 6. FX-misc (DOCS concern 2): after the window goes phone -> desktop in one session the sidebar is at its own width, not
   // stuck at the 192 px minimum, and a drag of its splitter widens it as before the flip.
   await page.setViewportSize({ width: 1280, height: 800 });
-  await expect.poll(() => sidebarWidth(page), { message: 'the default width before the flip' }).toBeCloseTo(240, 0);
+  await expect.poll(() => sidebarWidth(page), { message: 'the default width before the flip' }).toBeCloseTo(244, 0);
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(sidebarSplitter(page)).toHaveCount(0);
   await page.setViewportSize({ width: 1280, height: 800 });
   await expect(sidebarSplitter(page)).toBeVisible({ timeout: WAIT });
-  await expect.poll(() => sidebarWidth(page), { message: 'the sidebar after phone -> desktop' }).toBeCloseTo(240, 0);
+  await expect.poll(() => sidebarWidth(page), { message: 'the sidebar after phone -> desktop' }).toBeCloseTo(244, 0);
   const flipped = await sidebarWidth(page);
   const flipBox = await sidebarSplitter(page).boundingBox();
   if (flipBox === null) throw new Error('the sidebar splitter has no box after the flip');

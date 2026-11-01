@@ -23,7 +23,7 @@ func (s *Session) KeyPackageInventory(ctx context.Context, installation id.ID) (
 	if err != nil {
 		return out, err
 	}
-	raw, _, _, err := s.c.doObserved(ctx, s.token, http.MethodGet, "bot-runtime/installations/"+i+"/keypackages", nil, nil, MaxSmallBody, false)
+	raw, _, _, err := s.doObserved(ctx, http.MethodGet, "bot-runtime/installations/"+i+"/keypackages", nil, nil, MaxSmallBody, false)
 	if err != nil {
 		return out, err
 	}

@@ -36,6 +36,12 @@ try {
             set(value) {
               preview = value;
               value.channel.on('storyFinished', result => { window.__dillaStoryResult = result; });
+              // A throwing play function (or render) still ends in storyFinished with status 'success' in this Storybook: its
+              // assertions only count if the exception is caught here (task 8c fix round 1).
+              const threw = event => error => { (window.__dillaStoryErrors ??= []).push(`${event}: ${String(error?.message ?? error?.description ?? error)}`); };
+              value.channel.on('playFunctionThrewException', threw('play'));
+              value.channel.on('storyThrewException', threw('render'));
+              value.channel.on('storyErrored', threw('error'));
             },
           });
         });
@@ -46,6 +52,8 @@ try {
         await page.waitForFunction(id => window.__dillaStoryResult?.storyId === id, story.id, { timeout: 60_000 });
         const result = await page.evaluate(() => window.__dillaStoryResult);
         if (result.status !== 'success') throw new Error(`Storybook reported ${result.status} for ${story.id}`);
+        const errors = await page.evaluate(() => window.__dillaStoryErrors ?? []);
+        if (errors.length > 0) throw new Error(`${story.id} threw: ${errors.join(' | ')}`);
         await page.waitForSelector('#storybook-root > *', { state: 'attached', timeout: 60_000 });
         await page.evaluate(() => document.fonts.ready);
         // Axe should inspect the settled colours; the flash story starts with a
@@ -57,6 +65,22 @@ try {
           new Promise(resolve => setTimeout(resolve, 2_000)),
         ]));
         await checkStory(page, story);
+        // Task 10b fix round 1: a press on the sensitivity meter sets the value under the pointer (the slider's thumb is 2px,
+        // so the native value and the drawn line agree at every point, ends included).
+        if (story.id === 'settings-sensitivitymeter--manual-drag') {
+          const input = page.locator('.d-sens__input');
+          const box = await input.boundingBox();
+          for (const want of [-80, -20, -2]) {
+            await page.mouse.click(box.x + box.width * (want + 100) / 100, box.y + box.height / 2);
+            const got = Number(await input.inputValue());
+            if (Math.abs(got - want) > 1) throw new Error(`SensitivityMeter: a press at ${want} dB set ${got}`);
+            await page.waitForTimeout(400); // the line moves over --duration-normal (220ms)
+            const line = await page.locator('.d-sens__line').boundingBox();
+            const centre = line.x + line.width / 2;
+            const expected = box.x + box.width * (got + 100) / 100;
+            if (Math.abs(centre - expected) > 1.5) throw new Error(`SensitivityMeter: the line is at ${centre}, the value at ${expected}`);
+          }
+        }
         process.stdout.write(`PASS ${story.id}\n`);
       } catch (error) {
         failures += 1;

@@ -7,7 +7,8 @@
 import { expect, type Locator, type Page } from '@playwright/test';
 import { addServerVia,
   CLASS, TEST_TIMEOUT, WAIT, makeInviteLink, newChannelButton, completeSignUp, copy, expectAccessible, expectComposerReady, newAccount, openChannel, railItem, railNav,
-  channelRow, messageRow, sendText, signUp, tag, test, openSettings as openAppSettings, closeSettings as closeAppSettings, composerBox,
+  channelRow, messageRow, sendText, signUp, tag, test, openSettings as openAppSettings, closeSettings as closeAppSettings, composerBox, channelRowMenuItem,
+ makeRole as makeRoleInline,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { launchSecond, secondProfileDir } from './support/second-harness';
@@ -57,7 +58,7 @@ const switchOf = (scope: Locator, key: string) => scope.getByRole('switch', { na
 
 /** Opens "server settings" in the sidebar and returns the dialog, with the permissions read. */
 async function openSettings(page: Page): Promise<Locator> {
-  await button(page, 'admin.open').click();
+  await button(page, 'admin.open').click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
   const dialog = dialogOf(page, 'admin.title');
   await expect(dialog).toBeVisible({ timeout: WAIT });
   await expect(dialog.getByRole('navigation', { name: copy('admin.nav'), exact: true })).toBeVisible({ timeout: WAIT });
@@ -75,15 +76,6 @@ async function closeSettings(page: Page): Promise<void> {
 async function memberAction(page: Page, name: string, item: string): Promise<void> {
   await memberTrigger(page, name).click();
   await page.getByRole('dialog', { name }).getByRole('button', { name: copy(item), exact: true }).click();
-}
-/** The roles list row of a role: a listitem named by the role's name. */
-const roleRow = (settings: Locator, name: string) => settings.getByRole('list', { name: copy('roles.title'), exact: true }).getByRole('listitem').filter({ hasText: name });
-/** Opens the editor of the existing role `name` from the roles tab. */
-async function editRole(page: Page, settings: Locator, name: string): Promise<Locator> {
-  await roleRow(settings, name).getByRole('button', { name: copy('roles.editLabel', { name }), exact: true }).click();
-  const editor = dialogOf(page, 'roles.editor.titleEdit', { name });
-  await expect(editor).toBeVisible({ timeout: WAIT });
-  return editor;
 }
 async function setSwitch(toggle: Locator, on: boolean): Promise<void> {
   if ((await toggle.getAttribute('aria-checked')) !== String(on)) await toggle.click();
@@ -107,21 +99,15 @@ async function assign(page: Page, name: string, role: string, on: boolean): Prom
 async function makeRole(page: Page, name: string, rights: string[]): Promise<void> {
   const settings = await openSettings(page);
   await navItem(settings, 'roles.tab').click();
-  const newRole = button(settings, 'roles.new');
-  await newRole.click();
-  const editor = dialogOf(page, 'roles.editor.titleNew', { server: SERVER });
-  await expect(editor).toBeVisible({ timeout: WAIT });
-  await editor.getByRole('textbox', { name: copy('roles.editor.name'), exact: true }).fill(name);
-  for (const right of rights) await setSwitch(switchOf(editor, right), true);
-  await button(editor, 'roles.editor.create').click();
-  await expect(editor).toBeHidden({ timeout: WAIT });
-  await expect(roleRow(settings, name)).toBeVisible({ timeout: WAIT });
+  // Signal task 10c: the inline role editor (every change saves at once).
+  await makeRoleInline(page, settings, name, { perms: rights.map(right => right.replace(/^perm\./, '')) });
   await closeSettings(page);
 }
 /** The channel header's "edit channel" opens channel settings; the private switch lives in its permissions section. */
 async function openChannelSettings(page: Page, name: string): Promise<{ dialog: Locator; priv: Locator; opener: Locator }> {
-  const opener = page.locator(CLASS.channelHeader).getByRole('button', { name: copy('admin.channel.open'), exact: true });
-  await opener.click();
+  // Ruling X: "edit channel" is in the channel row's context menu; focus returns to the row.
+  const opener = channelRow(page, name);
+  await channelRowMenuItem(page, name, 'admin.channel.open');
   const dialog = dialogOf(page, 'admin.channel.titleText', { name });
   await expect(dialog).toBeVisible({ timeout: WAIT });
   const priv = switchOf(dialog, 'chperm.private');
@@ -271,13 +257,14 @@ test('private channels run from an empty instance: create, gain, lose, make priv
     // Ada still sees #general public: nothing was changed.
     await expect(channelRow(page, 'general')).toBeVisible();
 
-    // 6. Björn mutes "Midgard Crew" in Settings, Notifications: his #general row reads as muted.
-    const prefs = await openAppSettings(page2, 'notifications');
-    const mute = prefs.getByRole('switch', { name: copy('serverNotify.mute'), exact: true });
-    await expect(mute).toHaveAttribute('aria-checked', 'false', { timeout: WAIT });
-    await mute.click();
-    await expect(mute).toHaveAttribute('aria-checked', 'true', { timeout: WAIT });
-    await closeAppSettings(page2);
+    // 6. Björn mutes "Midgard Crew" from the server's ⌄ menu (Signal task 10 fix round 2; Settings → Notifications keeps the
+    // prototype's rows): his #general row reads as muted.
+    await button(page2, 'admin.open').click();
+    const muteServer = page2.getByRole('menuitemcheckbox', { name: copy('signalSettings.menu.muteServer'), exact: true });
+    await expect(muteServer).toHaveAttribute('aria-checked', 'false', { timeout: WAIT });
+    await muteServer.click();
+    await expect(muteServer).toHaveAttribute('aria-checked', 'true', { timeout: WAIT });
+    await page2.keyboard.press('Escape');
     await expect(channelRow(page2, 'general')).toHaveAccessibleName(copy('shell.channels.rowLabelMuted', { name: 'general', mentions: 0 }), { timeout: WAIT });
     await guard.collectWorkers();
   } finally {

@@ -9,6 +9,10 @@ import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// livekit and rnnoise in any case (a class such as LiveKitRoom). Task 11 (merge 9+10 minor): the one exemption is the exact
+// shipped copy that names the product, the voice settings' noise hint (strings/signalSettings.ts), which is taken out of the
+// body before the scan; any other "RNNoise" (a renamed export, a log line) still fails.
+export const ALLOWED_COPY = ['Falls back to RNNoise.'];
 const FORBIDDEN_IN_ENTRY = ['livekit', 'rnnoise'];
 const CORE_WASM = /^dilla_core_wasm_bg-[\w-]+\.wasm$/;
 const RNNOISE_WASM = /^rnnoise-[\w-]+\.wasm$/;
@@ -50,8 +54,11 @@ export function checkEntryChunk(dir) {
       problems.push(`index.html: entry ${path} is not in dist`);
       continue;
     }
-    const body = readFileSync(join(dir, path), 'utf8').toLowerCase();
-    for (const word of FORBIDDEN_IN_ENTRY) if (body.includes(word)) problems.push(`${path}: the entry chunk contains ${word}`);
+    const body = ALLOWED_COPY.reduce((text, copy) => text.split(copy).join(''), readFileSync(join(dir, path), 'utf8'));
+    const lower = body.toLowerCase();
+    for (const word of FORBIDDEN_IN_ENTRY) {
+      if (lower.includes(word)) problems.push(`${path}: the entry chunk contains ${word}`);
+    }
   }
 
   const assets = existsSync(join(dir, 'assets')) ? readdirSync(join(dir, 'assets')) : [];

@@ -11,6 +11,7 @@ import { expectNoAxeViolations } from '../test/setup.ts';
 import { Shell } from './Shell.tsx';
 import { PHONE_QUERY } from '../layout.ts';
 import { t } from '../strings/index.ts';
+import { replaceHistoryState } from '../router.ts';
 
 const A = 'a1'.repeat(16);
 const NEW = '5b'.repeat(16);
@@ -45,7 +46,7 @@ function worker(fake: FakeClient) {
 }
 
 function setup(path: string, opts: { communities?: CommunitySummary[]; members?: MemberSummary[] } = {}) {
-  window.history.replaceState(null, '', path);
+  replaceHistoryState(null, '', path);
   const fake = new FakeClient();
   fake.handler = worker(fake);
   fake.set('account', account());
@@ -267,13 +268,18 @@ describe('a server’s actions (flow 07)', () => {
     const { fake, user } = setup(`/c/${A}/${GEN}`, { communities: [{ id: A, name: 'Midgard', owner: OTHER_OWNER }] });
     act(() => fake.set(`permissions:${A}`, { top: 0, owner: false, manageCommunity: false, manageChannels: false, kickMembers: false, banMembers: false,
       createInvite: true, manageRoles: false, loaded: true, overwritesLoaded: true, everyoneId: 'ef'.repeat(16) }));
-    await user.click(screen.getByRole('button', { name: 'server settings' }));
-    await user.click(await screen.findByRole('button', { name: 'make link' }));
-    const dialog = screen.getByRole('dialog', { name: 'Invite people to Midgard' });
-    await waitFor(() => expect(within(dialog).getByRole('status')).toHaveTextContent('Invite link copied.'));
-    expect(within(dialog).getByRole('textbox', { name: 'Invite link' })).toHaveValue('https://dilla.test/i/7KQ2');
+    await user.click(screen.getByRole('button', { name: 'server settings' })); await user.click(await screen.findByRole('menuitem', { name: 'Server settings' })); // Signal task 10 fix round 2: the ⌄ is a menu
+    const settings = await screen.findByRole('dialog', { name: 'Server settings' });
+    expect(within(settings).getByRole('button', { name: 'Members', current: 'page' })).toBeInTheDocument();
+    await user.click(within(settings).getByRole('button', { name: 'Invites' }));
+    // Signal task 10c: the link shows once in the Invites card with Copy (the prototype), no dialog.
+    await user.click(await within(settings).findByRole('button', { name: 'Make invite link' }));
+    const link = await within(settings).findByRole('textbox', { name: 'Invite link' });
+    expect(link).toHaveValue('https://dilla.test/i/7KQ2');
     expect(fake.callsOf('createInvite')).toEqual([{ m: 'createInvite', communityId: A, maxUses: 10, ttlSeconds: 604_800 }]);
+    await user.click(within(settings).getByRole('button', { name: 'Copy' }));
     await expect(navigator.clipboard.readText()).resolves.toBe('https://dilla.test/i/7KQ2');
+    await waitFor(() => expect(within(settings).queryByRole('textbox', { name: 'Invite link' })).not.toBeInTheDocument());
   });
 
   it('a server with only you: the picker says to invite people first', async () => {

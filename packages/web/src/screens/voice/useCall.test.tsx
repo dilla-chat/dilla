@@ -735,19 +735,6 @@ describe('#37: a share without sound, and the stream mute', () => {
     } finally { spy.mockRestore(); }
   });
 
-  it('FX2: a silent share lists the sound sources; a failed pick says so, and the next good pick clears it', async () => {
-    const h = harness();
-    await h.joined(GENV);
-    h.sessions[0].sharePool = { labeled: true, sources: [{ id: 'd1', label: 'Monitor of x', monitor: true }] };
-    act(() => h.sessions[0].update({ sharing: true, shareAudio: 'none' }));
-    await waitFor(() => expect(h.v.sharePool?.sources.map(d => d.id)).toEqual(['d1']));
-    h.sessions[0].setShareSource.mockRejectedValueOnce(new Error('E_UNAVAILABLE'));
-    act(() => h.v.setShareSource('d1'));
-    await waitFor(() => expect(h.v.notice).toEqual({ channelId: GENV, key: 'voice.shareAudio.pickFailed' }));
-    act(() => h.v.setShareSource('d1'));
-    await waitFor(() => expect(h.v.notice?.key).not.toBe('voice.shareAudio.pickFailed'));
-  });
-
   it('a share with sound raises no notice', async () => {
     const h = harness();
     await h.joined(GENV);
@@ -755,12 +742,12 @@ describe('#37: a share without sound, and the stream mute', () => {
     expect(h.v.notice).toBeNull();
   });
 
-  it('the stream mute writes the stream volume key at 0 and the last volume back; the voice key is never written', async () => {
+  it('the stream volume writes the stream volume key; the voice key is never written', async () => {
     const h = harness();
     await h.joined(GENV);
-    act(() => h.v.toggleStreamMute(BOB_USER, 70));
+    act(() => h.v.setStreamVolume(BOB_USER, 0));
     expect(h.sessions[0].setVolume).toHaveBeenCalledWith(BOB_USER, 0, 'stream');
-    act(() => h.v.toggleStreamMute(BOB_USER, 0));
+    act(() => h.v.setStreamVolume(BOB_USER, 70));
     expect(h.sessions[0].setVolume).toHaveBeenLastCalledWith(BOB_USER, 70, 'stream');
     const writes = h.client.callsOf('setSetting').map((c) => [c.key, c.value]);
     expect(writes).toEqual([[`voice.streamVolume.${BOB_USER}`, '0'], [`voice.streamVolume.${BOB_USER}`, '70']]);

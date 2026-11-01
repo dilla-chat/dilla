@@ -73,7 +73,7 @@ describe('step 5: the second factor', () => {
     await toFactor(user);
     expect(h1()).toHaveTextContent('Add a second factor');
     expect(document.activeElement).toBe(h1());
-    expect(screen.getByText('Step 5 of 6')).toBeInTheDocument();
+    expect(screen.getByText('New account · step 5 of 6')).toBeInTheDocument();
     // An allow-list: the choice's Continue and the exit that clears this browser, nothing else.
     expect(screen.getAllByRole('button').map(b => b.textContent)).toEqual([en['factor.choose.next'], en['devices.forget']]);
     expect(onFinish).not.toHaveBeenCalled();
@@ -87,7 +87,7 @@ describe('step 5: the second factor', () => {
     await user.click(button('Continue'));
     expect(fake.callsOf('factorSetupDone')).toEqual([{ m: 'factorSetupDone', invite: 'ABCD-EFGH' }]);
     await waitFor(() => { expect(h1()).toHaveTextContent('You’re in'); });
-    expect(screen.getByText('Step 6 of 6')).toBeInTheDocument();
+    expect(screen.getByText('New account · step 6 of 6')).toBeInTheDocument();
     expect(screen.getByText('You are ada on dilla.test.')).toBeInTheDocument();
     await user.click(button('Open dilla'));
     expect(onFinish).toHaveBeenCalledWith({ communityId: null, joinError: null, invite: 'ABCD-EFGH' });
@@ -130,7 +130,7 @@ describe('step 5: the second factor', () => {
     await throughApp(user);
     await user.click(button('Continue'));
     await waitFor(() => { expect(h1()).toHaveTextContent(en['factor.choose.title']); });
-    expect(screen.getByText('Step 5 of 6')).toBeInTheDocument();
+    expect(screen.getByText('New account · step 5 of 6')).toBeInTheDocument();
     expect(screen.queryByRole('alert')).toBeNull();
     expect(fake.callsOf('factorSetupDone')).toHaveLength(1);
   });
@@ -138,7 +138,7 @@ describe('step 5: the second factor', () => {
   it('resumes at the factor step when the page was reloaded there', () => {
     setup(base, { ...factorPhase });
     expect(h1()).toHaveTextContent('Add a second factor');
-    expect(screen.getByText('Step 5 of 6')).toBeInTheDocument();
+    expect(screen.getByText('New account · step 5 of 6')).toBeInTheDocument();
   });
 
   it('has one live region, and a copy is spoken once', async () => {

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"math"
 	"net/http"
@@ -18,10 +19,10 @@ import (
 func (h *Groups) registerBotInteractionGroupReads(mux *server.Mux, sessions *auth.Sessions) {
 	bot := BotSessionRoute(sessions, h.Limiter)
 	base := "/v1/bot-runtime/installations/{installation}/interaction-groups/{group}"
-	mux.Handle("GET "+base+"/info", bot("GET "+base+"/info", dsMeter(h.Limiter, dsClassRead, h.botInteractionGroupInfo)))
-	mux.Handle("GET "+base+"/handshakes", bot("GET "+base+"/handshakes", dsMeter(h.Limiter, dsClassRead, h.botInteractionGroupHandshakes)))
-	mux.Handle("GET "+base+"/messages", bot("GET "+base+"/messages", dsMeter(h.Limiter, dsClassRead, h.botInteractionGroupMessages)))
-	mux.Handle("POST "+base+"/cursor", bot("POST "+base+"/cursor", dsMeter(h.Limiter, dsClassWrite, h.botInteractionGroupCursor)))
+	mux.Handle("GET "+base+"/info", bot("GET "+base+"/info", http.HandlerFunc(h.botInteractionGroupInfo)))
+	mux.Handle("GET "+base+"/handshakes", bot("GET "+base+"/handshakes", http.HandlerFunc(h.botInteractionGroupHandshakes)))
+	mux.Handle("GET "+base+"/messages", bot("GET "+base+"/messages", http.HandlerFunc(h.botInteractionGroupMessages)))
+	mux.Handle("POST "+base+"/cursor", bot("POST "+base+"/cursor", http.HandlerFunc(h.botInteractionGroupCursor)))
 }
 
 func (h *Groups) botInteractionGroupRead(w http.ResponseWriter, r *http.Request, fn func(ds.CurrentBotInteractionGroupContext, store.Repository, auth.Session, id.ID) error) bool {
@@ -54,12 +55,14 @@ func (h *Groups) botInteractionGroupRead(w http.ResponseWriter, r *http.Request,
 			current.Registration.UserID != session.UserID || current.Registration.DeviceID != session.DeviceID {
 			return errors.New("interaction group does not match the current Bot session")
 		}
-		now := h.Deps.Clock.Now().Unix()
-		if _, err := h.Deps.verifyCurrentInteractionLiveState(r.Context(), current, now, installationID, session.Bot.CommunityID,
-			session.UserID, session.DeviceID, current.Binding.ParticipantUserID, current.Binding.ParticipantDeviceID, true, tx); err != nil {
-			return err
-		}
-		return fn(current, tx, session, groupID)
+		return current.WithDeviceListVerification(r.Context(), func(ctx context.Context) error {
+			now := h.Deps.Clock.Now().Unix()
+			if _, err := h.Deps.verifyCurrentInteractionLiveState(ctx, current, now, installationID, session.Bot.CommunityID,
+				session.UserID, session.DeviceID, current.Binding.ParticipantUserID, current.Binding.ParticipantDeviceID, true, tx); err != nil {
+				return err
+			}
+			return fn(current, tx, session, groupID)
+		})
 	})
 	if err != nil {
 		var apiErr *server.Error

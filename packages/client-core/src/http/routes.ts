@@ -25,6 +25,8 @@ export interface AccountCreated { userId: Uint8Array; deviceId: Uint8Array; toke
 export interface Challenge { nonce: Uint8Array; expires: bigint; }
 export interface EstablishedSession { token: string; scope: 0 | 1 | 2; userId: Uint8Array; deviceId: Uint8Array;
   expires: bigint; idleExpires: bigint; generation: bigint; }
+/** A served device-list head; `raw` is the response body (on wire 4 it carries the account-kind attestation as a fifth
+ *  element: state/trust.ts `chainRow` is the four-element list body the core decodes). */
 export interface DeviceListRecord { version: bigint; blob: Uint8Array; raw: Uint8Array; }
 /** What a login assertion still owes (protocol/09 § Second factors): 0 nothing, 1 a TOTP code or a backup code, 2 a passkey
  *  login or a backup code (the account has passkeys and no app). */
@@ -60,6 +62,7 @@ export interface ModerationRemoval { revision: bigint; proof: Uint8Array; signat
 export interface ModerationRemovalPage { rows: ModerationRemoval[]; nextRevision: bigint; }
 /** Opaque current-interaction-context proof; only the core can verify or interpret its signed payload. */
 export interface InteractionAdmissionContextProof { payload: Uint8Array; signature: Uint8Array; }
+export interface BotCommandStatusRow { installationId: Uint8Array; botUserId: Uint8Array | null; state: number; revision: bigint; }
 export interface WelcomesPage { raw: Uint8Array; count: number; lastId: bigint | null; }
 export interface MessageUploaded { raw: Uint8Array; seq: bigint; }
 export interface AccountMe { userId: Uint8Array; username: string; display: string; kind: number; flags: bigint; presenceChoice?: number;
@@ -108,10 +111,18 @@ export const TOPIC_MAX_BYTES = 1024;
 export const BAN_REASON_MAX_BYTES = 512;
 /** GET /v1/communities/{id}/permissions: the caller's resolved community-wide bits and rank (0..OWNER_TOP). */
 export interface PermissionsRow { bits: bigint; top: number }
+/** The installation (protocol/10). A widened read (the manager's GET and the music-settings answer, Task 10c) adds the
+ *  restart counters, the runtime's reported version and the Music page's defaults; the mutation answers carry only the
+ *  eight base fields, so those are absent there. */
 export interface BotInstallationRow { id: Uint8Array; communityId: Uint8Array; state: 0 | 1 | 2 | 3 | 4 | 5;
-  revision: bigint; userId: Uint8Array | null; deviceId: Uint8Array | null; capabilities: number; updatedAt: bigint }
+  revision: bigint; userId: Uint8Array | null; deviceId: Uint8Array | null; capabilities: number; updatedAt: bigint;
+  extra?: { restartRequested: bigint; restartHandled: bigint; version: string | null; musicVolume: number; musicIdleMinutes: number } }
 export interface BotJoinRoleRow { roleId: Uint8Array | null; installationId: Uint8Array }
-export interface BotDjRolesRow { roleIds: Uint8Array[]; installationId: Uint8Array }
+/** Capability bits (protocol/10): 0..7 the original byte, 8 polls and 9 reminders (Task 10c). */
+export const BOT_CAPABILITIES_MAX = 0x3ff;
+/** The Music page's options (Task 10c); the instance and the Bot accept nothing else. */
+export const BOT_MUSIC_VOLUMES = [25, 50, 75, 100] as const;
+export const BOT_MUSIC_IDLE_MINUTES = [5, 15, 30] as const;
 export interface BotSpotifyAttempt { attemptId: Uint8Array; authorizeUrl: string; expires: bigint }
 export interface SelfRoleRow { id: Uint8Array; name: string; position: number; selfSelected: boolean }
 export interface RolePanelOptionInput { emoji: string; roleId: Uint8Array }
@@ -125,11 +136,11 @@ export interface ChannelPatch { name?: string; topic?: string; parent?: Uint8Arr
 
 // ---- wave 2a: roles and private channels (flow 09) ----
 /** The instance's own bounds (internal/api roles.go, channels.go): overwrites per community, a role name, a role colour,
- *  the 25 permission bits, and overwrites in one channel create. */
+ *  the 26 permission bits, and overwrites in one channel create. */
 export const OVERWRITES_MAX = 10_000;
 export const ROLE_NAME_MAX_BYTES = 100;
 export const ROLE_COLOR_MAX = 0xffffff;
-export const PERM_ALL = 0x1ffffff;
+export const PERM_ALL = 0x3ffffff;
 export const OVERWRITES_PER_CREATE_MAX = 100;
 export interface OverwriteRow { channelId: Uint8Array; kind: 0 | 1; targetId: Uint8Array; allow: number; deny: number }
 export interface NewOverwrite { kind: 0 | 1; targetId: Uint8Array; allow: number; deny: number }
@@ -142,7 +153,9 @@ export const BACKUP_CODES_MAX = 16;
 export const PASSKEYS_MAX = 1024;
 export const PASSKEY_NAME_MAX_BYTES = 64;
 export interface PasskeyRow { credId: Uint8Array; name: string; created: number; lastUsed: number | null }
-export interface Factors { owed: boolean; totp: number | null; passkeys: PasskeyRow[]; backupCodesLeft: number; hasPassword: boolean }
+export interface Factors { owed: boolean; totp: number | null; passkeys: PasskeyRow[]; backupCodesLeft: number; hasPassword: boolean;
+  /** Task 11 (Q7): when the password was last changed (unix seconds); null when unknown, absent from an older server. */
+  passwordChanged?: number | null }
 export interface TotpEnrol { secret: string; uri: string }
 export interface Ceremony { ceremonyId: Uint8Array; options: string }
 export interface PasskeyRegistered { credId: Uint8Array; backupCodes: string[] }
@@ -338,12 +351,22 @@ function banRow(value: CborValue): BanRow {
 }
 function botInstallationRow(value: CborValue, communityId: Uint8Array): BotInstallationRow {
   const a = arr(value);
-  if (a.length !== 8) throw new CborError('E_CBOR_SHAPE', 'expected eight bot installation fields');
+  if (a.length !== 8 && a.length !== 13) throw new CborError('E_CBOR_SHAPE', 'expected eight or thirteen bot installation fields');
   const row: BotInstallationRow = { id: bin(a[0], 16), communityId: bin(a[1], 16), state: oneOf(a[2], [0, 1, 2, 3, 4, 5] as const),
     revision: u64(a[3]), userId: opt(a[4], v => bin(v, 16)), deviceId: opt(a[5], v => bin(v, 16)),
     capabilities: u53(a[6]), updatedAt: u64(a[7]) };
-  if (toHex(row.communityId) !== toHex(communityId) || row.revision === 0n || row.capabilities > 255) {
+  if (toHex(row.communityId) !== toHex(communityId) || row.revision === 0n || row.capabilities > BOT_CAPABILITIES_MAX) {
     throw new CborError('E_CBOR_RANGE', 'bot installation scope, revision or capabilities invalid');
+  }
+  if (a.length === 13) {
+    const version = opt(a[10], str);
+    const extra = { restartRequested: u64(a[8]), restartHandled: u64(a[9]), version, musicVolume: u53(a[11]), musicIdleMinutes: u53(a[12]) };
+    if (extra.restartHandled > extra.restartRequested || (version !== null && (version.length < 1 || version.length > 32))
+      || !(BOT_MUSIC_VOLUMES as readonly number[]).includes(extra.musicVolume)
+      || !(BOT_MUSIC_IDLE_MINUTES as readonly number[]).includes(extra.musicIdleMinutes)) {
+      throw new CborError('E_CBOR_RANGE', 'bot installation restart, version or music settings invalid');
+    }
+    row.extra = extra;
   }
   return row;
 }
@@ -536,9 +559,11 @@ export class Routes {
     return { id: bin(a[0], 16), mode: u53(a[1]), visibility: u53(a[2]) };
   }
   /** POST /v1/communities/{id}/invites: [max_uses, ttl_seconds, grants_admin 0]; the answer's url is the instance's own
-   *  invite link (`<base>/i/<code>`), which the join dialog and the invite landing page both accept. */
+   *  invite link (`<base>/i/<code>`), which the join dialog and the invite landing page both accept. max_uses 0 is any
+   *  number of uses and ttl_seconds 0 never expires (Task 10c; the instance asks manage_community for either); the
+   *  answer's expires is then 0. */
   async createInvite(communityId: Uint8Array, invite: { maxUses: number; ttlSeconds: number }): Promise<InviteCreated> {
-    const body = encode([between('maxUses', invite.maxUses, 1, INVITE_USES_MAX), between('ttlSeconds', invite.ttlSeconds, 1, INVITE_TTL_MAX_S), 0]);
+    const body = encode([between('maxUses', invite.maxUses, 0, INVITE_USES_MAX), between('ttlSeconds', invite.ttlSeconds, 0, INVITE_TTL_MAX_S), 0]);
     const raw = await this.body('POST', `/v1/communities/${id('communityId', communityId)}/invites`, 'write', false, { body });
     const a = atLeast(decode(raw), 4);
     const code = str(a[1]);
@@ -587,6 +612,19 @@ export class Routes {
     const row = decode(await this.body('GET', path, 'read', true));
     return row === null ? null : botInstallationRow(row, communityId);
   }
+  /** Member-safe status for deciding whether to show the shared Bot command transport. */
+  async getBotCommandStatus(communityId: Uint8Array): Promise<BotCommandStatusRow | null> {
+    const path = `/v1/communities/${id('communityId', communityId)}/bot/command-status`;
+    const value = decode(await this.body('GET', path, 'read', true));
+    if (value === null) return null;
+    const a = arr(value, 5);
+    if (a[0] !== 1n) throw new CborError('E_CBOR_SHAPE', 'unsupported Bot command status version');
+    const installationId = bin(a[1], 16);
+    const botUserId = opt(a[2], value => bin(value, 16));
+    const state = u53(a[3]);
+    if (state < 1 || state > 4) throw new CborError('E_CBOR_RANGE', 'invalid Bot installation state');
+    return { installationId, botUserId, state, revision: u64(a[4]) };
+  }
   async patchBotProfile(communityId: Uint8Array, display: string): Promise<string> {
     const normalized = checkedProfile('display', display, DISPLAY_MAX_CHARS);
     if (!normalized) throw new RangeError('E_ROUTE_INPUT: bot display name is required');
@@ -615,22 +653,23 @@ export class Routes {
     }
     return bin(ack[1], 16);
   }
-  /** DJ role policy belongs to the currently ready bot installation; the installation ID fences stale settings forms. */
-  async getBotDjRoles(communityId: Uint8Array): Promise<BotDjRolesRow | null> {
-    try {
-      const a = arr(decode(await this.body('GET', `/v1/communities/${id('communityId', communityId)}/music/dj-roles`, 'read', true)));
-      if (a.length !== 2) throw new CborError('E_CBOR_SHAPE', 'expected DJ role ids and installation id');
-      const roles = bounded(a[0], 250, 'DJ roles').map(value => bin(value, 16));
-      if (new Set(roles.map(toHex)).size !== roles.length) throw new CborError('E_CBOR_SHAPE', 'duplicate DJ role id');
-      return { roleIds: roles, installationId: bin(a[1], 16) };
-    } catch (e) { if (e instanceof DillaHttpError && e.status === 404) return null; throw e; }
+  /** POST /v1/communities/{id}/bot/restart (Task 10c): asks the runtime to restart this installation; a request while
+   *  one is pending joins it. Answers [restart_requested, restart_handled]. */
+  async restartBot(communityId: Uint8Array, installationId: Uint8Array): Promise<{ requested: bigint; handled: bigint }> {
+    const a = arr(decode(await this.body('POST', `/v1/communities/${id('communityId', communityId)}/bot/restart`, 'write', true,
+      { body: encode([inputId('installationId', installationId)]), retry429: false })));
+    if (a.length !== 2) throw new CborError('E_CBOR_SHAPE', 'expected restart counters');
+    const requested = u64(a[0]), handled = u64(a[1]);
+    if (handled > requested) throw new CborError('E_CBOR_RANGE', 'restart counters invalid');
+    return { requested, handled };
   }
-  async configureBotDjRoles(communityId: Uint8Array, requestId: Uint8Array, installationId: Uint8Array, roleIds: Uint8Array[]): Promise<number> {
-    if (roleIds.length > 250 || new Set(roleIds.map(toHex)).size !== roleIds.length) throw new RangeError('E_ROUTE_INPUT: invalid DJ role ids');
-    const a = arr(decode(await this.body('PUT', `/v1/communities/${id('communityId', communityId)}/music/dj-roles`, 'write', true,
-      { body: encode([inputId('requestId', requestId), inputId('installationId', installationId), roleIds.map(role => inputId('roleId', role))]), retry429: false })));
-    if (a.length !== 2 || !bin(a[0], 16).every((v, i) => v === requestId[i])) throw new CborError('E_CBOR_SHAPE', 'invalid DJ role acknowledgement');
-    return u53(a[1]);
+  /** PUT /v1/communities/{id}/bot/music-settings (Task 10c): the Music page's default volume and idle-leave minutes. */
+  async setBotMusicSettings(communityId: Uint8Array, installationId: Uint8Array, volume: number, idleMinutes: number): Promise<BotInstallationRow> {
+    if (!(BOT_MUSIC_VOLUMES as readonly number[]).includes(volume) || !(BOT_MUSIC_IDLE_MINUTES as readonly number[]).includes(idleMinutes)) {
+      throw new RangeError('E_ROUTE_INPUT: volume must be 25, 50, 75 or 100 and idle minutes 5, 15 or 30');
+    }
+    return botInstallationRow(decode(await this.body('PUT', `/v1/communities/${id('communityId', communityId)}/bot/music-settings`, 'write', true,
+      { body: encode([inputId('installationId', installationId), volume, idleMinutes]), retry429: false })), communityId);
   }
   /** GET /v1/communities/{id}/self-roles: manager-approved roles and this member's self grants. */
   async listSelfRoles(communityId: Uint8Array): Promise<SelfRoleRow[]> {
@@ -696,10 +735,12 @@ export class Routes {
   async configureBotInstallation(communityId: Uint8Array, requestId: Uint8Array, expectedRevision: bigint | null,
     capabilities: number, stepUp: string): Promise<BotInstallationRow> {
     if (expectedRevision !== null && expectedRevision < 1n) throw new RangeError('E_ROUTE_INPUT: revision must be positive');
-    if (!Number.isSafeInteger(capabilities) || capabilities < 0 || capabilities > 255) throw new RangeError('E_ROUTE_INPUT: invalid capabilities');
+    if (!Number.isSafeInteger(capabilities) || capabilities < 0 || capabilities > BOT_CAPABILITIES_MAX) throw new RangeError('E_ROUTE_INPUT: invalid capabilities');
     if (typeof stepUp !== 'string' || stepUp.length === 0) throw new RangeError('E_ROUTE_INPUT: step-up token is required');
     const body = encode([inputId('requestId', requestId), expectedRevision, capabilities, stepUp]);
-    return botInstallationRow(decode(await this.body('PUT', `/v1/communities/${id('communityId', communityId)}/bot`,
+    // v=2 (Task 10c fix round 1): this client sends the widened mask, Polls and Reminders included; without it
+    // the server keeps those two bits as they are.
+    return botInstallationRow(decode(await this.body('PUT', `/v1/communities/${id('communityId', communityId)}/bot?v=2`,
       'write', true, { body, retry429: false })), communityId);
   }
   /** Arms a one-use automatic moderation grant. Config plaintext is represented only by its digest here. */
@@ -719,10 +760,17 @@ export class Routes {
     return botInstallationRow(decode(await this.body('POST', `/v1/communities/${id('communityId', communityId)}/bot/disable`,
       'write', true, { body, retry429: false })), communityId);
   }
-  async beginBotSpotifyAttempt(communityId: Uint8Array, stepUp: string): Promise<BotSpotifyAttempt> {
+  async getBotSpotifyConfig(communityId: Uint8Array): Promise<{ clientId: string; redirectUrl: string }> {
+    const raw = await this.body('GET', `/v1/communities/${id('communityId', communityId)}/bot/spotify/config`, 'read', true);
+    const a = arr(decode(raw));
+    if (a.length !== 2) throw new CborError('E_CBOR_SHAPE', 'invalid Spotify application setting');
+    return { clientId: str(a[0]), redirectUrl: str(a[1]) };
+  }
+  async beginBotSpotifyAttempt(communityId: Uint8Array, stepUp: string, clientId: string): Promise<BotSpotifyAttempt> {
     if (typeof stepUp !== 'string' || stepUp.length < 1 || stepUp.length > 4096) throw new RangeError('E_ROUTE_INPUT: invalid step-up token');
+    if (!/^[A-Za-z0-9]{1,256}$/u.test(clientId)) throw new RangeError('E_ROUTE_INPUT: invalid Spotify client ID');
     const path = `/v1/communities/${id('communityId', communityId)}/bot/spotify/attempts`;
-    const body = encode([stepUp]);
+    const body = encode([stepUp, clientId]);
     const response = await this.http.request({ method: 'POST', path, bucket: 'write', idempotent: false,
       body, retry429: false, ok: [200], maxBodyBytes: 4096 });
     return botSpotifyAttempt(decode(response.body));
@@ -1220,6 +1268,11 @@ export class Routes {
   async postCallStats(callId: Uint8Array, report: CallStats): Promise<void> {
     await this.body('POST', callPath(callId, '/stats'), 'write', false, { body: encode(report), ok: [204], retry429: false });
   }
+  /** Signal task 8c: `POST /v1/calls/{call_id}/rtt` `[ms]` (0..5000) or `[]` (clear): this device's RTT to the SFU, which
+   *  the instance writes as its dilla.rtt participant attribute. A 429 is not waited out: the next sample replaces it. */
+  async postCallRtt(callId: Uint8Array, ms: number | null): Promise<void> {
+    await this.body('POST', callPath(callId, '/rtt'), 'write', false, { body: encode(ms === null ? [] : [ms]), ok: [204], retry429: false });
+  }
   /** L-HTTP-103: a core-built [epoch, proposal] body, unchanged. */
   async postProposal(groupId: Uint8Array, body: Uint8Array, signal?: AbortSignal): Promise<{ seq: bigint }> {
     const a = atLeast(decode(await this.body('POST', `/v1/groups/${id('groupId', groupId)}/proposal`, 'commit', false, { body, signal })), 1);
@@ -1238,11 +1291,12 @@ export class Routes {
       { body: encode([assertion, code]), auth: false, retry429: false })), 1);
     return { assertion: str(a[0]) };
   }
-  /** GET /v1/auth/factors: [owed, totp confirmed_at | null, [[cred_id, name, created, last_used | null]], backup_codes_left, password]. */
+  /** GET /v1/auth/factors: [owed, totp confirmed_at | null, [[cred_id, name, created, last_used | null]], backup_codes_left, password,
+   *  password_changed | null]; the sixth element is Task 11's and an older server leaves it out. */
   async getFactors(): Promise<Factors> {
     const a = atLeast(decode(await this.body('GET', '/v1/auth/factors', 'read', true)), 5);
     return { owed: flag(a[0]), totp: opt(a[1], u53), passkeys: bounded(a[2], PASSKEYS_MAX, 'passkeys').map(passkeyRow),
-      backupCodesLeft: u53(a[3]), hasPassword: flag(a[4]) };
+      backupCodesLeft: u53(a[3]), hasPassword: flag(a[4]), passwordChanged: a.length > 5 ? opt(a[5], u53) : null };
   }
   /** POST /v1/auth/totp/enroll: [stepup | null] → [secret, otpauth_url]. The secret is returned, never kept. */
   async totpEnroll(stepup: string | null): Promise<TotpEnrol> {

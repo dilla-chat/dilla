@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { encode } from '../cbor';
+import { decode, encode } from '../cbor';
 import type { CoreClient } from '../bridge';
-import { createVoiceMusicAdapter, voiceMusicAdapter } from './music.ts';
+import { createVoiceMusicAdapter, musicPlayheadMs, VoiceMusicAcceptedUnconfirmedError, voiceMusicAdapter, type VoiceMusicState } from './music.ts';
 
 const COMMUNITY = 'ab'.repeat(16);
 const CHANNEL = 'cd'.repeat(16);
@@ -24,11 +24,18 @@ function fixture() {
   const client = {
     call: vi.fn((command: Record<string, unknown>) => {
       commands.push(command);
-      if (command.m === 'humanInteractionRequest') return Promise.resolve({ upload: 'accepted' });
-      if (command.m === 'readBotInteractionResponses') return Promise.resolve({ responses: events.splice(0), through: null, blocked: false });
+      if (command.m === 'getBotCommandStatus') return Promise.resolve({ installationId: 'ab'.repeat(16), botUserId: null, state: 3, revision: '7' });
+      if (command.m === 'humanInteractionRequest') return Promise.resolve({ requestId: command.requestId, upload: 'accepted' });
+      if (command.m === 'readBotInteractionResponses') {
+        const operations = command.operations as number[]; const requestIds = command.requestIds as string[];
+        const matching = events.filter(row => operations.includes(row.operation) && requestIds.includes(row.requestId));
+        for (let i = events.length - 1; i >= 0; i--) if (matching.includes(events[i])) events.splice(i, 1);
+        return Promise.resolve({ responses: matching, through: null, blocked: false });
+      }
       return Promise.resolve(null);
     }),
-    get: () => undefined,
+    get: (key: string) => key === 'account' ? { phase: 'ready', user: { id: 'cd'.repeat(16) }, deviceId: 'ef'.repeat(16), instance: { id: '12'.repeat(16) } }
+      : key === 'communities' ? [{ id: COMMUNITY }] : key === `permissions:${COMMUNITY}` ? { viewChannel: true } : undefined,
     subscribe: () => () => undefined,
     onCallKeys: () => () => undefined,
     dispose: () => undefined,
@@ -50,6 +57,7 @@ describe('authenticated voice music adapter', () => {
       const f = fixture();
       f.client.call = vi.fn((command: Record<string, unknown>) => {
         f.commands.push(command);
+        if (command.m === 'getBotCommandStatus') return Promise.resolve({ installationId: 'ab'.repeat(16), botUserId: null, state: 3, revision: '7' });
         if (command.m === 'humanInteractionRequest') return Promise.reject(new Error('private group not ready'));
         return Promise.resolve({ responses: [], through: null, blocked: false });
       });
@@ -77,6 +85,81 @@ describe('authenticated voice music adapter', () => {
       queue: [], positionMs: 0, volume: 75, paused: false, shuffle: false, repeat: 'off',
       permissions: { control: true, manageQueue: true } });
     unsubscribe();
+  });
+
+  it('exposes the provider and the requester the Bot recorded for a queued track', async () => {
+    const f = fixture();
+    const unsubscribe = f.adapter.subscribe(CHANNEL, () => undefined);
+    await vi.waitFor(() => expect(f.getRequest(10)).toBeDefined());
+    const ada = '0a'.repeat(16);
+    f.answer(f.getRequest(10), 0, '1', encode([1n, 1n, ['ef'.repeat(16), 'youtube', 'abcdefghijk', 'Track', 'Artist', '', 120_000n, ada],
+      [['12'.repeat(16), 'youtube', 'bcdefghijkl', 'Next', 'Other', '', 60_000n, 'search']], 30_000n, 0n, 75n, 0n, 0n, 1n]));
+    await vi.waitFor(() => expect(f.adapter.state(CHANNEL).status).toBe('available'));
+    const state = f.adapter.state(CHANNEL);
+    if (state.status !== 'available') throw new Error('unavailable');
+    expect(state.track).toMatchObject({ provider: 'youtube', requesterId: ada, durationMs: 120_000 });
+    expect(state.queue[0]?.track.requesterId).toBeUndefined();
+    expect(state.positionMs).toBe(30_000);
+    unsubscribe();
+  });
+
+  it('Ruling AI: runs the playhead on from the Bot stamp and its own receipt time, never from its clock against the Bot\'s', async () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    try {
+      const f = fixture();
+      const unsubscribe = f.adapter.subscribe(CHANNEL, () => undefined);
+      await vi.waitFor(() => expect(f.getRequest(10)).toBeDefined());
+      // The Bot's clock runs 5 minutes ahead of this device; the track has played 2 s since its 30 s stamp.
+      f.answer(f.getRequest(10), 0, '1', encode([1n, 1n, ['ef'.repeat(16), 'youtube', 'abcdefghijk', 'Track', 'Artist', '', 120_000n, ''], [],
+        30_000n, 0n, 75n, 0n, 0n, 1n, 1_298_000n, 1_300_000n]));
+      await vi.waitFor(() => expect(f.adapter.state(CHANNEL).status).toBe('available'));
+      const state = f.adapter.state(CHANNEL) as Extract<VoiceMusicState, { status: 'available' }>;
+      expect(state.clock?.elapsedMs).toBe(2_000);
+      const arrived = state.clock!.receivedAtMs;
+      expect(musicPlayheadMs(state, arrived)).toBe(32_000);
+      expect(musicPlayheadMs(state, arrived + 5_000)).toBe(37_000);
+      expect(musicPlayheadMs(state, arrived + 500_000)).toBe(120_000);
+      expect(musicPlayheadMs({ ...state, paused: true }, arrived + 5_000)).toBe(30_000);
+      unsubscribe();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('fix round 2: decodes 11 and 14 slot snapshots and longer track rows, ignoring what it does not know', async () => {
+    const f = fixture();
+    const unsubscribe = f.adapter.subscribe(CHANNEL, () => undefined);
+    await vi.waitFor(() => expect(f.getRequest(10)).toBeDefined());
+    const track = ['ef'.repeat(16), 'youtube', 'abcdefghijk', 'Track', 'Artist', '', 120_000n, '', 'future'];
+    f.answer(f.getRequest(10), 0, '1', encode([1n, 1n, track, [], 1_000n, 0n, 75n, 0n, 0n, 1n, 500n]));
+    await vi.waitFor(() => expect(f.adapter.state(CHANNEL).status).toBe('available'));
+    const eleven = f.adapter.state(CHANNEL) as Extract<VoiceMusicState, { status: 'available' }>;
+    expect(eleven.track?.title).toBe('Track');
+    expect(eleven.clock).toBeUndefined();
+    unsubscribe();
+    const g = fixture();
+    const off = g.adapter.subscribe(CHANNEL, () => undefined);
+    await vi.waitFor(() => expect(g.getRequest(10)).toBeDefined());
+    g.answer(g.getRequest(10), 0, '1', encode([1n, 1n, track, [], 1_000n, 0n, 75n, 0n, 0n, 1n, 9_000n, 10_000n, 0n, 'later']));
+    await vi.waitFor(() => expect(g.adapter.state(CHANNEL).status).toBe('available'));
+    expect((g.adapter.state(CHANNEL) as Extract<VoiceMusicState, { status: 'available' }>).clock?.elapsedMs).toBe(1_000);
+    off();
+  });
+
+  it('an older Bot without the stamp keeps the static position', () => {
+    const state: Extract<VoiceMusicState, { status: 'available' }> = { status: 'available', track: { id: 'a', title: 'T', artist: 'A', durationMs: 60_000 },
+      queue: [], positionMs: 12_000, volume: 50, paused: false, shuffle: false, repeat: 'off', permissions: { control: true, manageQueue: true } };
+    expect(musicPlayheadMs(state, Date.now() + 9_000)).toBe(12_000);
+  });
+
+  it('announces through operation 25 on the voice channel, naming the text channel at revision 0', async () => {
+    const f = fixture();
+    const TEXT = '9a'.repeat(16);
+    const done = f.adapter.announce(CHANNEL, TEXT);
+    await vi.waitFor(() => expect(f.getRequest(25)).toBeDefined());
+    const request = f.getRequest(25);
+    expect(request).toMatchObject({ channelId: CHANNEL, args: [TEXT], revision: '0' });
+    f.answer(request, 0, null, encode([]));
+    await expect(done).resolves.toBeUndefined();
+    await expect(f.adapter.announce(CHANNEL, 'nope')).rejects.toThrow(/announcement channel/);
   });
 
   it('searches YouTube through authenticated operation 11 and returns stable result IDs', async () => {
@@ -113,6 +196,34 @@ describe('authenticated voice music adapter', () => {
     unsubscribe();
   });
 
+  it('uses the command attempt ID for one enqueue mutation and clears the queue with operation 23', async () => {
+    const f = fixture();
+    const unsubscribe = f.adapter.subscribe(CHANNEL, () => undefined);
+    await vi.waitFor(() => expect(f.getRequest(10)).toBeDefined());
+    f.answer(f.getRequest(10), 0, '1', snapshot(1n, false));
+    await vi.waitFor(() => expect(f.adapter.state(CHANNEL).status).toBe('available'));
+
+    const attemptId = '12'.repeat(16);
+    const enqueue = f.adapter.enqueue(CHANNEL, 'https://www.youtube.com/watch?v=abcdefghijk', { requestId: attemptId });
+    await vi.waitFor(() => expect(f.getRequest(12)).toBeDefined());
+    expect(f.getRequest(12).requestId).toBe(attemptId);
+    f.answer(f.getRequest(12), 0, '2', encode([]));
+    await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 10)).toHaveLength(2));
+    let reads = f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 10);
+    f.answer(reads[1], 0, '2', snapshot(2n, false));
+    await enqueue;
+
+    const clear = f.adapter.clearQueue(CHANNEL, { requestId: '34'.repeat(16) });
+    await vi.waitFor(() => expect(f.getRequest(23)).toBeDefined());
+    expect(f.getRequest(23)).toMatchObject({ requestId: '34'.repeat(16), args: [], revision: '2' });
+    f.answer(f.getRequest(23), 0, '3', encode([]));
+    await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 10)).toHaveLength(3));
+    reads = f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 10);
+    f.answer(reads[2], 0, '3', snapshot(3n, false));
+    await clear;
+    unsubscribe();
+  });
+
   it('passes Spotify links and URIs unchanged through operation 12', async () => {
     for (const input of [
       'https://open.spotify.com/track/1234567890123456789012',
@@ -140,7 +251,48 @@ describe('authenticated voice music adapter', () => {
     }
   });
 
-  it('explains that Spotify is unavailable when the linked account or provider cannot resolve a link', async () => {
+  it('rejects status 5 without a revision as definite unavailable', async () => {
+    const f = fixture();
+    const unsubscribe = f.adapter.subscribe(CHANNEL, () => undefined);
+    await vi.waitFor(() => expect(f.getRequest(10)).toBeDefined());
+    f.answer(f.getRequest(10), 0, '1', snapshot(1n, false));
+    await vi.waitFor(() => expect(f.adapter.state(CHANNEL).status).toBe('available'));
+    const enqueue = f.adapter.enqueue(CHANNEL, 'https://youtu.be/abcdefghijk', { requestId: '12'.repeat(16) });
+    await vi.waitFor(() => expect(f.getRequest(12)).toBeDefined());
+    const rejected = expect(enqueue).rejects.toMatchObject({ code: 'unavailable' });
+    f.answer(f.getRequest(12), 5, null, encode([]));
+    await rejected;
+    unsubscribe();
+  });
+
+
+  it('uses neutral unavailable copy for pause without a current call', async () => {
+    const f = fixture();
+    const unsubscribe = f.adapter.subscribe(CHANNEL, () => undefined);
+    await vi.waitFor(() => expect(f.getRequest(10)).toBeDefined());
+    f.answer(f.getRequest(10), 0, '1', snapshot(1n, false));
+    await vi.waitFor(() => expect(f.adapter.state(CHANNEL).status).toBe('available'));
+    const pause = f.adapter.pause(CHANNEL, true);
+    await vi.waitFor(() => expect(f.getRequest(13)).toBeDefined());
+    const rejected = expect(pause).rejects.toMatchObject({ code: 'operation-unavailable', message: "The Bot could not do that right now. Try again." });
+    f.answer(f.getRequest(13), 5, null, encode([]));
+    await rejected;
+    unsubscribe();
+  });
+
+  it.each([null, '2'])('classifies durable status 5 with revision %s when restoring an attempt', async revision => {
+    const f = fixture();
+    const original = f.client.call.bind(f.client);
+    f.client.call = vi.fn((command: Record<string, unknown>) => {
+      if (command.m === 'readBotInteractionResponses') return Promise.resolve({ responses: [{ requestId: '56'.repeat(16), operation: 12, status: 5, revision, data: encode([]) }], through: null });
+      return original(command as never);
+    });
+    const enqueue = f.adapter.enqueue(CHANNEL, 'https://youtu.be/abcdefghijk', { requestId: '56'.repeat(16) });
+    await expect(enqueue).rejects.toMatchObject(revision === null ? { code: 'unavailable' } : { requestId: '56'.repeat(16) });
+    expect(f.commands.filter(command => command.operation === 12)).toHaveLength(0);
+  });
+
+  it('keeps status 5 with a revision uncertain because the mutation may have persisted', async () => {
     const f = fixture();
     const unsubscribe = f.adapter.subscribe(CHANNEL, () => undefined);
     await vi.waitFor(() => expect(f.getRequest(10)).toBeDefined());
@@ -150,7 +302,7 @@ describe('authenticated voice music adapter', () => {
     const enqueue = f.adapter.enqueue(CHANNEL, 'spotify:track:1234567890123456789012');
     await vi.waitFor(() => expect(f.getRequest(12)).toBeDefined());
     f.answer(f.getRequest(12), 5, '1', encode([]));
-    await expect(enqueue).rejects.toThrow(/Spotify.*available|link.*Spotify/i);
+    await expect(enqueue).rejects.toBeInstanceOf(VoiceMusicAcceptedUnconfirmedError);
     unsubscribe();
   });
 
@@ -178,7 +330,7 @@ describe('authenticated voice music adapter', () => {
     let settled = false;
     const command = Promise.resolve(f.adapter.pause(CHANNEL, true)).then(() => { settled = true; });
     await vi.waitFor(() => expect(f.getRequest(13)).toBeDefined());
-    expect(f.getRequest(13)?.revision).toBe('1');
+    expect(f.getRequest(13)?.revision).toBe('0');
     await new Promise(resolve => setTimeout(resolve, 20));
     expect(settled).toBe(false);
 
@@ -223,9 +375,9 @@ describe('authenticated voice music adapter', () => {
     f.answer(f.getRequest(10), 0, '1', snapshot(1n, false));
     await vi.waitFor(() => expect(f.adapter.state(CHANNEL).status).toBe('available'));
 
-    const conflict = Promise.resolve(f.adapter.pause(CHANNEL, true));
-    await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 13)).toHaveLength(1));
-    const firstMutation = f.commands.find(call => call.m === 'humanInteractionRequest' && call.operation === 13)!;
+    const conflict = Promise.resolve(f.adapter.setVolume(CHANNEL, 75));
+    await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 18)).toHaveLength(1));
+    const firstMutation = f.commands.find(call => call.m === 'humanInteractionRequest' && call.operation === 18)!;
     expect(firstMutation.revision).toBe('1');
     f.answer(firstMutation, 4, '2', encode([]));
     await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 10)).toHaveLength(2));
@@ -234,9 +386,9 @@ describe('authenticated voice music adapter', () => {
     await expect(conflict).rejects.toThrow(/state changed/);
     expect(f.adapter.state(CHANNEL)).toMatchObject({ status: 'available', paused: false });
 
-    const retry = Promise.resolve(f.adapter.pause(CHANNEL, true));
-    await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 13)).toHaveLength(2));
-    const secondMutation = f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 13)[1];
+    const retry = Promise.resolve(f.adapter.setVolume(CHANNEL, 75));
+    await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 18)).toHaveLength(2));
+    const secondMutation = f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 18)[1];
     expect(secondMutation.revision).toBe('2');
     f.answer(secondMutation, 0, '3', encode([]));
     await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 10)).toHaveLength(3));
@@ -246,4 +398,128 @@ describe('authenticated voice music adapter', () => {
     expect(f.adapter.state(CHANNEL)).toMatchObject({ status: 'available', paused: true });
     unsubscribe();
   });
+});
+
+it.each([[13, true], [15, false]] as const)('sends immediate control %s without a state read and accepts its authenticated snapshot', async (operation, paused) => {
+  const f = fixture();
+  const command = operation === 13 ? f.adapter.pause(CHANNEL, true) : f.adapter.skip(CHANNEL);
+  await vi.waitFor(() => expect(f.getRequest(operation)).toBeDefined());
+  expect(f.commands.filter(row => row.m === 'humanInteractionRequest').map(row => row.operation)).toEqual([operation]);
+  expect(f.getRequest(operation).revision).toBe('0');
+  f.answer(f.getRequest(operation), 0, '3', snapshot(3n, paused));
+  await command;
+  expect(f.adapter.state(CHANNEL)).toMatchObject({ status: 'available', paused });
+  expect(f.commands.filter(row => row.m === 'humanInteractionRequest').map(row => row.operation)).toEqual([operation]);
+});
+
+it('keeps a newer control snapshot when an older control response arrives late', async () => {
+  const f = fixture();
+  const skip = f.adapter.skip(CHANNEL);
+  const pause = f.adapter.pause(CHANNEL, true);
+  await vi.waitFor(() => { expect(f.getRequest(15)).toBeDefined(); expect(f.getRequest(13)).toBeDefined(); });
+  f.answer(f.getRequest(13), 0, '3', snapshot(3n, true));
+  await pause;
+  f.answer(f.getRequest(15), 0, '2', snapshot(2n, false));
+  await skip;
+  expect(f.adapter.state(CHANNEL)).toMatchObject({ status: 'available', paused: true });
+});
+
+it('keeps a newer control snapshot when an older state read arrives late', async () => {
+  const f = fixture();
+  const refresh = f.adapter.refresh(CHANNEL);
+  await vi.waitFor(() => expect(f.getRequest(10)).toBeDefined());
+  const pause = f.adapter.pause(CHANNEL, true);
+  await vi.waitFor(() => expect(f.getRequest(13)).toBeDefined());
+  f.answer(f.getRequest(13), 0, '3', snapshot(3n, true));
+  await pause;
+  f.answer(f.getRequest(10), 0, '1', snapshot(1n, false));
+  await refresh;
+  expect(f.adapter.state(CHANNEL)).toMatchObject({ status: 'available', paused: true });
+});
+
+it('exposes the total when only a queue prefix fits the authenticated snapshot', async () => {
+  const f = fixture();
+  const refresh = f.adapter.refresh(CHANNEL);
+  await vi.waitFor(() => expect(f.getRequest(10)).toBeDefined());
+  const row = decode(snapshot(1n, true));
+  if (!Array.isArray(row)) throw new Error('invalid fixture');
+  f.answer(f.getRequest(10), 0, '1', encode([...row, 0n, 0n, 25n]));
+  await refresh;
+  expect(f.adapter.state(CHANNEL)).toMatchObject({ status: 'available', queue: [], queueTotal: 25 });
+});
+
+
+it('binds two skips to the same visible item without fetching another state', async () => {
+  const f = fixture();
+  const refresh = f.adapter.refresh(CHANNEL);
+  await vi.waitFor(() => expect(f.getRequest(10)).toBeDefined());
+  f.answer(f.getRequest(10), 0, '1', snapshot(1n, false));
+  await refresh;
+  const first = f.adapter.skip(CHANNEL);
+  const second = f.adapter.skip(CHANNEL);
+  await vi.waitFor(() => expect(f.commands.filter(row => row.m === 'humanInteractionRequest' && row.operation === 15)).toHaveLength(2));
+  const skips = f.commands.filter(row => row.m === 'humanInteractionRequest' && row.operation === 15);
+  expect(skips.map(row => row.args)).toEqual([['ef'.repeat(16)], ['ef'.repeat(16)]]);
+  for (const row of skips) f.answer(row, 0, '2', snapshot(2n, false));
+  await Promise.all([first, second]);
+  expect(f.commands.filter(row => row.m === 'humanInteractionRequest' && row.operation === 10)).toHaveLength(1);
+});
+
+it('guards a skip of an empty visible state instead of advancing a newly started track', async () => {
+  const f = fixture();
+  const refresh = f.adapter.refresh(CHANNEL);
+  await vi.waitFor(() => expect(f.getRequest(10)).toBeDefined());
+  const value = decode(snapshot(1n, true)) as unknown[]; value[2] = null;
+  f.answer(f.getRequest(10), 0, '1', encode(value as never)); await refresh;
+  const skip = f.adapter.skip(CHANNEL);
+  await vi.waitFor(() => expect(f.getRequest(15)).toBeDefined());
+  expect(f.getRequest(15).args).toEqual(['']);
+  f.answer(f.getRequest(15), 0, '1', encode(value as never)); await skip;
+});
+
+it.each([13, 15])('reconciles the saved receipt for immediate operation %s when a reload resend conflicts with its original body', async operation => {
+  const f = fixture(); const requestId = '89'.repeat(16);
+  f.answer({ requestId, operation }, 0, '3', snapshot(3n, operation === 13));
+  const call = f.client.call.bind(f.client);
+  const retryCall = vi.fn((command: Parameters<CoreClient['call']>[0]) => command.m === 'humanInteractionRequest'
+    ? Promise.reject(new Error('interaction request id conflicts with a prior request')) : call(command));
+  f.client.call = retryCall;
+  await (operation === 13 ? f.adapter.pause(CHANNEL, true, { requestId }) : f.adapter.skip(CHANNEL, { requestId }));
+  expect(retryCall.mock.calls.filter(([row]) => row.m === 'humanInteractionRequest')).toHaveLength(1);
+  expect(f.commands.filter(row => row.m === 'humanInteractionRequest')).toEqual([]);
+  expect(f.adapter.state(CHANNEL)).toMatchObject({ status: 'available', paused: operation === 13 });
+});
+
+it.each(['missing', 'failed'] as const)('keeps an immediate retry uncertain when its prior receipt is %s', async outcome => {
+  const f = fixture(); const requestId = '90'.repeat(16); const call = f.client.call.bind(f.client);
+  f.client.call = vi.fn((command: Parameters<CoreClient['call']>[0]) => {
+    if (command.m === 'humanInteractionRequest') return Promise.reject(new Error('interaction request id conflicts with a prior request'));
+    if (command.m === 'readBotInteractionResponses' && outcome === 'failed') return Promise.reject(new Error('receipt read failed'));
+    return call(command);
+  });
+  await expect(f.adapter.skip(CHANNEL, { requestId })).rejects.toMatchObject({ requestId });
+  expect(f.commands.some(row => row.m === 'humanInteractionRequest' && row.operation === 10)).toBe(false);
+});
+
+it.each(['upload-unresolved', 'response-read-failed'] as const)('keeps the first immediate %s uncertain until the person reconciles the same attempt', async failure => {
+  const f = fixture(); const requestId = '91'.repeat(16); const call = f.client.call.bind(f.client);
+  let uploads = 0; let reads = 0;
+  f.client.call = vi.fn((command: Parameters<CoreClient['call']>[0]) => {
+    if (command.m === 'humanInteractionRequest') {
+      uploads++;
+      f.answer(command, 0, '3', snapshot(3n, true));
+      if (failure === 'upload-unresolved') return Promise.resolve({ requestId, upload: 'unknown' });
+    }
+    if (command.m === 'readBotInteractionResponses') {
+      reads++;
+      if (failure === 'response-read-failed' && reads === 1) return Promise.reject(new Error('response read failed'));
+    }
+    return call(command);
+  });
+  await expect(f.adapter.pause(CHANNEL, true, { requestId })).rejects.toMatchObject({ requestId });
+  expect(reads).toBe(failure === 'response-read-failed' ? 1 : 0);
+  await expect(f.adapter.pause(CHANNEL, true, { requestId })).resolves.toBeUndefined();
+  expect(uploads).toBe(1);
+  expect(f.adapter.state(CHANNEL)).toMatchObject({ status: 'available', paused: true });
+  expect(f.commands.some(row => row.m === 'humanInteractionRequest' && row.operation === 10)).toBe(false);
 });

@@ -72,15 +72,15 @@ export function DangerSection({ communityId, serverName, announce, owner, onGone
         <>
           <p>{t('admin.leave.owner', { server: serverName })}</p>
           {members !== undefined && others.length === 0 ? <p>{t('admin.transfer.none')}</p> : null}
-          {others.length > 0 ? <SettingsRow id={`${base}-transfer-row`} label={t('admin.nav.transfer')}>
+          {others.length > 0 ? <SettingsRow id={`${base}-transfer-row`} icon="crown" label={t('admin.nav.transfer')}>
             <Button onClick={() => choose('transfer')}>{t('admin.nav.transfer')}</Button>
           </SettingsRow> : null}
-          <SettingsRow id={`${base}-delete-row`} label={t('admin.nav.delete')}>
+          <SettingsRow id={`${base}-delete-row`} icon="trash-2" label={t('admin.nav.delete')}>
             <Button variant="danger" onClick={() => choose('delete')}>{t('admin.nav.delete')}</Button>
           </SettingsRow>
         </>
       ) : (
-        <SettingsRow id={`${base}-leave-row`} label={t('admin.nav.leave')}>
+        <SettingsRow id={`${base}-leave-row`} icon="log-out" label={t('admin.nav.leave')}>
           <Button variant="danger" onClick={() => choose('leave')}>{t('admin.leave.open')}</Button>
         </SettingsRow>
       )}

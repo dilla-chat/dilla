@@ -14,7 +14,7 @@ import { expect, mediaWorkers, test } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
 import {
   POLL, VoicePeer, WAIT, callSlice, changedSeen, connected, copy, dock, framesPass, heard, heardCount, introduce, joinVoice, noiseOff,
-  onboard, openVoiceOnly, peerName, self, sentCount, stage, tile,
+  onboard, openVoiceOnly, peerName, self, sentCount, stage, stripButton, tile,
 } from './support/voice';
 import { dmComposer, dmsNav, homeTile, openSettings } from '../web/support/app';
 
@@ -73,7 +73,7 @@ test('(a) a changed contact in the call group refuses the join before any call w
     await peer.callJoin(call);
     await openVoiceOnly(alice.page, peer.communityName, peer);
     const aliceWrites = callWrites(alice.context);
-    await stage(alice.page).getByRole('button', { name: copy('voice.join'), exact: true }).click();
+    await stage(alice.page).getByRole('button', { name: copy('callStage.preview.join'), exact: true }).click();
     await expect(stage(alice.page)).toHaveAttribute('data-call-phase', 'blocked', { timeout: WAIT });
     expect((await callSlice(alice.page))?.error?.code).toBe('E_UMK_CHANGED');
     // Nothing of the join left the browser: no registration, no external commit, no call start.
@@ -84,7 +84,7 @@ test('(a) a changed contact in the call group refuses the join before any call w
     await expect(notice(alice.page, copy('voice.blockedChanged', { name }))).toBeVisible({ timeout: WAIT });
     await expect(dock(alice.page)).toHaveCount(0);
     // The join stays held while the contact is changed (flow 06: no join button until the cause is gone).
-    const join = stage(alice.page).getByRole('button', { name: copy('voice.join'), exact: true });
+    const join = stage(alice.page).getByRole('button', { name: copy('callStage.preview.join'), exact: true });
     await expect(join).toHaveCount(0);
     expect((await callSlice(alice.page))?.error?.code).toBe('E_UMK_CHANGED');
 
@@ -146,7 +146,7 @@ test('(b) a device that fails the signed-list check joins mid-call: alice leaves
     await expect(dock(alice.page)).toHaveCount(0, { timeout: WAIT });
     await expect(stage(alice.page)).toHaveAttribute('data-call-phase', 'blocked');
     // Product walk M10: the block came from the call group only, so the join is offered again, and the notice says so.
-    await expect(stage(alice.page).getByRole('button', { name: copy('voice.join'), exact: true })).toBeVisible();
+    await expect(stage(alice.page).getByRole('button', { name: copy('callStage.preview.join'), exact: true })).toBeVisible();
     await peer.waitForCallMembers(call, (d) => !d.includes(a.device), 'drops alice');
     await expect.poll(async () => (await peer.callRead(call)).participants.map((p) => p.device), POLL).not.toContain(a.device);
   } finally {
@@ -249,8 +249,8 @@ test('DM: a blocked DM call leaves the DM composer enabled', async ({ peerBrowse
     await expect(dmComposer(alice.page)).toBeEnabled({ timeout: WAIT });
 
     await peer.callJoin(dm.channel_id);
-    // The peer holds the call group but is in no room: no live call, so the header offers `call`.
-    await alice.page.locator('.d-channel-header').getByRole('button', { name: copy('call.start'), exact: true }).click();
+    // The peer holds the call group but is in no room: no live call, so the DM row menu offers `call` (Ruling Z).
+    await stripButton(alice.page, 'call.start').click();
     await connected(alice.page);
     await peer.waitForCallMembers(dm.channel_id, (d) => d.includes(a.device), 'lists alice');
     await peer.forgeDevice();

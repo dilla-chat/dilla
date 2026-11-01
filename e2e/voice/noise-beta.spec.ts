@@ -15,22 +15,24 @@ test('beta requires opt-in, enhances preview and encrypted calls, and can be lef
     let dialog=await openVoiceSettings(alice.page);
     await expect(dialog.getByRole('radio',{name:copy('settings.voice.lightweight'),exact:true})).toHaveAttribute('aria-checked','true');
     await expect(dialog.getByText(copy('settings.voice.noiseBeta'),{exact:true})).toBeVisible();
-    await dialog.getByRole('button',{name:copy('settings.voice.test'),exact:true}).click();
+    await dialog.getByRole('button',{name:copy('signalSettings.voice.testStart'),exact:true}).click();
     // Lightweight can legitimately use browser fallback if capture constraints are refused.
     // Neither effective mode may fetch enhancement assets before the user's opt-in.
     await expect(dialog.getByText(copy('settings.voice.processor',{processor:'RNNoise'}),{exact:false})
       .or(dialog.getByText(copy('settings.voice.processor',{processor:copy('settings.voice.processor.browser')}),{exact:false}))).toBeVisible({timeout:WAIT});
     const browserStatus=dialog.getByText(copy('settings.voice.processor',{processor:copy('settings.voice.processor.browser')}),{exact:false});
     if(await browserStatus.isVisible())await expect(browserStatus).toContainText(copy('settings.voice.fallback.browser-refused'));
-    await dialog.getByRole('button',{name:copy('settings.voice.testClose'),exact:true}).click();
+    await dialog.getByRole('button',{name:copy('signalSettings.voice.testStop'),exact:true}).click();
     expect(assets).toEqual([]);
     await alice.page.screenshot({path:test.info().outputPath('noise-beta-settings.png')});
-    await dialog.getByRole('radio',{name:copy('settings.voice.automaticBeta'),exact:true}).click();
-    await dialog.getByRole('button',{name:copy('settings.voice.test'),exact:true}).click();
+    await dialog.getByRole('radio',{name:copy('settings.voice.automatic'),exact:true}).click();
+    // Signal task 10 fix round 1 (README §5.9): the beta is the row's BETA tag, no longer the option's name.
+    await expect(dialog.getByText(copy('signalSettings.voice.noiseTag'),{exact:true})).toBeVisible();
+    await dialog.getByRole('button',{name:copy('signalSettings.voice.testStart'),exact:true}).click();
     await expect(dialog.getByText(copy('settings.voice.processor',{processor:'DeepFilterNet3'}),{exact:false})).toBeVisible({timeout:WAIT});
     await expect(dialog.getByText(copy('settings.voice.fallback.beta'),{exact:false})).toBeVisible();
     expect(assets.length).toBeGreaterThan(0);
-    await dialog.getByRole('button',{name:copy('settings.voice.testClose'),exact:true}).click();await closeSettings(alice.page);
+    await dialog.getByRole('button',{name:copy('signalSettings.voice.testStop'),exact:true}).click();await closeSettings(alice.page);
     await noiseOff(bob.page);await pushToTalk(alice.page,'Insert');
     await joinVoice(alice.page,peer.communityName,peer.voiceName);await joinVoice(bob.page,peer.communityName,peer.voiceName);
     dialog=await openVoiceSettings(alice.page);

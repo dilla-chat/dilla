@@ -144,7 +144,7 @@ export function SelfRolesSection({ communityId, announce }: SectionProps): React
     let canceled = false; let timer: number | undefined;
     const poll = async (): Promise<void> => {
       try {
-        const page = await client.call({ m: 'readBotInteractionResponses', communityId, operations: [31] }) as {
+        const page = await client.call({ m: 'readBotInteractionResponses', communityId, operations: [31], requestIds: [pendingPanel.requestId] }) as {
           through: string | null; responses: PanelResponse[] };
         if (canceled) return;
         const row = page.responses.find(item => item.requestId === pendingPanel.requestId && item.communityId === communityId
@@ -158,7 +158,8 @@ export function SelfRolesSection({ communityId, announce }: SectionProps): React
           const roleOptions = pendingPanel.roleIds.map(roleId => ({ emoji: emojis[roleId].trim(), roleId }));
           await client.call({ m: 'registerRolePanel', communityId, requestId: pendingPanel.requestId, channelId: pendingPanel.channelId,
             messageSeq: accepted[1].toString(), options: roleOptions });
-          if (page.through !== null && page.responses.length === 1 && row.deliveryId === page.through) {
+          if (page.through !== null && page.responses.every(item => item.requestId === pendingPanel.requestId
+            && item.communityId === communityId && item.operation === 31 && item.channelId === null)) {
             await client.call({ m: 'ackBotInteractionResponses', communityId, through: page.through });
           }
           if (!canceled) { setPendingPanel(null); setPanelNotice(t('admin.bot.rolePanel.published')); announce(t('admin.bot.rolePanel.published')); }

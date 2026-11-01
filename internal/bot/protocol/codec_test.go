@@ -779,6 +779,7 @@ func TestEveryRequestOperationShape(t *testing.T) {
 		{"music_remove", OpMusicRemove, []any{fixtureID(7)}, true, true},
 		{"music_move", OpMusicMove, []any{fixtureID(7), nil}, true, true},
 		{"music_clear", OpMusicClear, nil, true, true},
+		{"music_providers_status", OpMusicProvidersStatus, nil, false, false},
 		{"welcome_preview", OpWelcomePreview, []any{"hello"}, false, false},
 		{"role_panel_publish", OpRolePanelPublish, []any{fixtureID(10), mustCBOR(t, []any{[]any{"🎮", fixtureID(11), "Gamers"}})}, true, false},
 		{"roles_list", OpRolesList, []any{uint64(0)}, false, false},
@@ -965,5 +966,27 @@ func TestHelperPayloadExactMaximum(t *testing.T) {
 	}
 	if _, err := DecodeHelperResponseCBOR(outer); !errors.Is(err, ErrLimit) {
 		t.Fatalf("decoded payload one over cap error = %v, want ErrLimit", err)
+	}
+}
+
+func TestMusicSkipOptionalCurrentItemGuard(t *testing.T) {
+	for _, args := range [][]any{nil, {fixtureID(9).String()}, {""}} {
+		request := Request{RequestID: fixtureID(1), CommunityID: fixtureID(2), ChannelID: ptrID(fixtureID(3)),
+			Operation: OpMusicSkip, Revision: u64(0), Expires: u64(120), Args: args}
+		body, err := EncodeRequest(request)
+		if err != nil {
+			t.Fatalf("encode args=%v: %v", args, err)
+		}
+		decoded, err := DecodeRequest(body)
+		if err != nil || len(decoded.Args) != len(args) || len(args) == 1 && decoded.Args[0] != args[0] {
+			t.Fatalf("roundtrip args=%v got=%v err=%v", args, decoded.Args, err)
+		}
+	}
+	for _, args := range [][]any{{uint64(1)}, {nil}, {"bad-id"}, {fixtureID(9).String(), fixtureID(10).String()}} {
+		_, err := EncodeRequest(Request{RequestID: fixtureID(1), CommunityID: fixtureID(2), ChannelID: ptrID(fixtureID(3)),
+			Operation: OpMusicSkip, Revision: u64(0), Expires: u64(120), Args: args})
+		if err == nil {
+			t.Errorf("accepted malformed skip args=%v", args)
+		}
 	}
 }

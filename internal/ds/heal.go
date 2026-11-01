@@ -377,7 +377,7 @@ func (d *DS) HealWithGuard(ctx context.Context, s Session, groupID id.ID, h Heal
 			return errCommitInvalid("heal_state", "the group changed while this heal was being prepared")
 		}
 		if guard != nil {
-			if err := guard(ctx, tx, lockedRow); err != nil {
+			if err := withBorrowedDeviceListVerifier(ctx, d.opts.Wasm, inst, func(scoped context.Context) error { return guard(scoped, tx, lockedRow) }); err != nil {
 				return err
 			}
 		}
@@ -508,8 +508,8 @@ func (d *DS) carryHealedProposals(ctx context.Context, groupID id.ID, fromEpoch 
 	refs := make([][]byte, 0, len(left))
 	for _, r := range left {
 		refs = append(refs, r.Ref)
-		if r.VoidAt == nil && d.opts.Metrics != nil {
-			d.opts.Metrics.DSProposals.WithLabelValues(proposalLabel(r.Kind)).Dec()
+		if r.VoidAt == nil && r.Origin == 0 { // the gauge counts live instance proposals only
+			d.gaugeDec(r.Kind)
 		}
 	}
 	if len(refs) > 0 {
@@ -800,6 +800,10 @@ func (d *DS) checkHealedExternalCommit(ctx context.Context, g DeviceListVerifier
 		if !leafKeyIsRegistered(device, keys[joiner]) {
 			return id.ID{}, errCommitInvalid("external_joiner", "the joiner's leaf key is not its device key")
 		}
+		if err := credentialKindVerdict(checkCredentialKind(ctx, d.opts.Store, device.UserID, now[joiner]),
+			func(detail string) error { return errCommitInvalid("external_joiner", detail) }); err != nil {
+			return id.ID{}, err
+		}
 		return joiner, nil
 	}
 
@@ -870,6 +874,10 @@ func (d *DS) checkReseededLeaves(ctx context.Context, v DeviceListVerifier, grou
 		if !leafKeyIsRegistered(device, m.SignatureKey) {
 			return errCommitInvalid("add_key_package",
 				"a reseeded leaf's signature key is not the device's registered key")
+		}
+		if err := credentialKindVerdict(checkCredentialKind(ctx, d.opts.Store, userID, m.CredentialIdentity),
+			func(detail string) error { return errCommitInvalid("add_key_package", "a reseeded leaf: "+detail) }); err != nil {
+			return err
 		}
 		if _, seen := byUser[userID]; !seen {
 			users = append(users, userID)

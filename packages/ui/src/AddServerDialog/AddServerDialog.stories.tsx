@@ -16,12 +16,15 @@ const play = async ({ canvasElement }: { canvasElement: HTMLElement }) => {
   for (let i = 0; i < 30 && document.activeElement?.closest('.d-add-server') == null; i += 1) await new Promise(r => setTimeout(r, 16));
   const first = canvasElement.querySelector<HTMLElement>('.d-add-server__choice');
   if (first === null || document.activeElement !== first) throw new Error('AddServerDialog: focus is not on the first choice');
+  // The dialog enters with d-modal (a 0.985 scale): measure where it comes to rest. (The prototype has no add-server dialog —
+  // its "+" only toasts — so the choice keeps its own 44px.)
+  await Promise.all(document.getAnimations().filter(a => a.effect?.getTiming().iterations !== Infinity).map(a => a.finished.catch(() => undefined)));
   for (const c of Array.from(canvasElement.querySelectorAll<HTMLElement>('.d-add-server__choice'))) {
-    if (c.getBoundingClientRect().height < 44) throw new Error('AddServerDialog: a choice is under 44px');
+    if (c.getBoundingClientRect().height < 44) throw new Error(`AddServerDialog: a choice is ${String(c.getBoundingClientRect().height)}px, under 44`);
   }
 };
-export const Open: Story = { globals: { theme: 'mesh' }, play };
+export const Open: Story = { globals: { theme: 'signal' }, play };
 export const OpenLight: Story = { globals: { theme: 'light' }, play };
 export const OpenHighContrast: Story = { globals: { theme: 'high-contrast' }, play };
-export const OnPhone: Story = { globals: { theme: 'mesh' }, play,
+export const OnPhone: Story = { globals: { theme: 'signal' }, play,
   decorators: [Story => <PhoneLayoutProvider value><div data-layout="phone" data-phone style={{ width: '100%' }}><Story /></div></PhoneLayoutProvider>] };

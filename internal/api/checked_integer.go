@@ -18,11 +18,11 @@ func checkedInt64(value uint64) (int64, bool) {
 	return int64(value), true
 }
 
-func checkedUint8(value uint64) (uint8, bool) {
-	if value > math.MaxUint8 {
+func checkedUint16(value uint64) (uint16, bool) {
+	if value > math.MaxUint16 {
 		return 0, false
 	}
-	return uint8(value), true
+	return uint16(value), true
 }
 
 func checkedInt32(value uint64) (int32, bool) {

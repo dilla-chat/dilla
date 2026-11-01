@@ -1,11 +1,24 @@
-.d-message-log { height: 100%; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; padding: var(--group-gap) 0; background: var(--bg); }
+/* §5.5 (task 7): the feed. 12px above, 6px below; a channel switch fades the new log in with a 6px rise. */
+.d-message-log { height: 100%; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; padding: 0.75rem 0 0.375rem; background: var(--bg);
+  animation: d-log-fade var(--duration-switch) both, d-log-rise var(--duration-switch-rise) var(--ease-out); }
+@keyframes d-log-fade { from { opacity: 0; } }
+@keyframes d-log-rise { from { transform: translateY(6px); } }
 .d-message-log__earlier { align-self: center; margin-bottom: var(--group-gap); flex-shrink: 0; }
 .d-message-log__empty { margin: auto 0 0; padding: 2rem var(--row-pad-x); font-size: var(--text-sm); color: var(--fg-3); text-align: center; }
 .d-message-log__rows { margin-top: auto; display: flex; flex-direction: column; }
-/* web3.9 (R29): a day divider is a mono hairline row with the day; the older-messages bar sticks to the log's end. */
-.d-date-divider { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem var(--row-pad-x); font-size: var(--text-xs); color: var(--fg-3); }
-.d-date-divider::before, .d-date-divider::after { content: ""; flex: 1; height: 0; border-top: 1px solid var(--hairline-2); }
+/* The start of the conversation: the 40px glyph tile, "Welcome to #general" 18px/700, "This is the start of #general." 12px. */
+.d-message-log__welcome { margin-top: auto; padding: 1rem 1.25rem 1.125rem /* 16px 20px 18px */; }
+.d-message-log__welcome + .d-message-log__rows, .d-message-log__welcome ~ .d-message-log__rows { margin-top: 0; }
+.d-message-log__welcome + .d-message-log__empty { margin: 0; padding: 0 1.25rem 0.5rem; text-align: left; }
+.d-message-log__welcome-tile { width: 2.5rem; height: 2.5rem; box-sizing: content-box; /* the prototype's 40px plus its border */ border-radius: var(--r-lg); background: var(--surface-tile); border: 1px solid var(--hairline-2); color: var(--accent); display: flex; align-items: center; justify-content: center; }
+.d-message-log__welcome-title { margin: 0.625rem 0 0; font-size: var(--text-welcome); font-weight: var(--weight-display); color: var(--fg); }
+.d-message-log__welcome-body { margin: 0; font-size: var(--text-ui); color: var(--fg-2); }
+/* A day divider: "TODAY" 10px/600, tracking 0.12em, uppercase, fg-3 (the prototype's #767D89), then a hairline. */
+.d-date-divider { display: flex; align-items: center; gap: 0.625rem; padding: 0.25rem 1.25rem; font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking-wide); text-transform: uppercase; color: var(--fg-3); }
+.d-date-divider::after { content: ""; flex: 1; height: 1px; background: var(--hairline); }
 .d-date-divider__label { white-space: nowrap; }
+[data-layout="phone"] .d-date-divider, [data-layout="phone"] .d-message-log__welcome { padding-inline: 0.875rem; }
 .d-message-log-frame { position: relative; height: 100%; min-height: 0; display: flex; flex-direction: column; }
 .d-message-log-frame > .d-message-log { flex: 1 1 auto; height: auto; }
 .d-message-log__present { position: absolute; inset-inline: 0; bottom: 0; flex-shrink: 0; display: flex; align-items: center; justify-content: center; gap: 0.5rem; padding: 0.25rem var(--row-pad-x); font-size: var(--text-sm); color: var(--fg-2); background: var(--surface); border-top: 1px solid var(--edge); }
+@media (prefers-reduced-motion: reduce) { .d-message-log { animation: none; } }

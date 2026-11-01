@@ -20,12 +20,12 @@ const phoneBlock = (css: string): string => {
 };
 
 // web3.9 AUDIT-2 FA1 (H4, N3): a primary control is 44 high on a phone page, in the shell or not.
+// Task 10 (Jonas, 2026-10-27, pixel parity): Settings rows and the Voice page keep the prototype's sizes on a phone, so
+// SettingsRow.css and VoiceSettings.css no longer carry this tier.
 describe('the phone target tier of the primary controls (CSS pin)', () => {
   it.each([
     ['Button.css', '../Button/Button.css', /\.d-btn[^{]*\{[^}]*min-height: 2\.75rem/],
-    ['SettingsRow.css (a small button in a row control)', '../SettingsRow/SettingsRow.css', /\.d-settings-row__control \.d-btn\[data-size="sm"\][^{]*\{[^}]*min-height: 2\.75rem/],
     ['Toggle.css (the switch)', '../Toggle/Toggle.css', /\.d-toggle__switch[^{]*\{[^}]*min-height: 2\.75rem/],
-    ['VoiceSettings.css (the device selects)', '../VoiceSettings/VoiceSettings.css', /\.d-voice-settings__select[^{]*\{[^}]*min-height: 2\.75rem/],
   ])('%s has a 2.75rem minimum under the phone media query', (_name, file, want) => {
     expect(phoneBlock(read(file))).toMatch(want);
   });

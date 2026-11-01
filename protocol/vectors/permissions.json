@@ -26,7 +26,8 @@
     "mute_members": 2097152,
     "move_members": 4194304,
     "manage_nicknames": 8388608,
-    "moderate_members": 16777216
+    "moderate_members": 16777216,
+    "control_music": 33554432
   },
   "cases": [
     {
@@ -51,8 +52,8 @@
         }
       ],
       "user": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
-      "community": 33554431,
-      "channel": 33554431
+      "community": 67108863,
+      "channel": 67108863
     },
     {
       "name": "everyone_only",
@@ -201,8 +202,8 @@
         }
       ],
       "user": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
-      "community": 33554431,
-      "channel": 33554431
+      "community": 67108863,
+      "channel": 67108863
     },
     {
       "name": "no_view_is_nothing",
@@ -721,14 +722,14 @@
       "channel": 1
     },
     {
-      "name": "unknown_bit_25_ignored",
+      "name": "unknown_bit_26_ignored",
       "owner": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
       "everyone": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
       "roles": [
         {
           "id": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
           "position": 0,
-          "allow": 33554433,
+          "allow": 67108865,
           "deny": 0
         }
       ],
@@ -737,6 +738,90 @@
       "user": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
       "community": 1,
       "channel": 1
+    },
+    {
+      "name": "control_music_role_grant",
+      "owner": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "everyone": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+      "roles": [
+        {
+          "id": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+          "position": 0,
+          "allow": 385,
+          "deny": 0
+        },
+        {
+          "id": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+          "position": 1,
+          "allow": 33554432,
+          "deny": 0
+        }
+      ],
+      "held": [
+        "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1"
+      ],
+      "overwrites": [],
+      "user": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "community": 33554817,
+      "channel": 33554817
+    },
+    {
+      "name": "control_music_role_overwrite_denies",
+      "owner": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "everyone": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+      "roles": [
+        {
+          "id": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+          "position": 0,
+          "allow": 385,
+          "deny": 0
+        },
+        {
+          "id": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+          "position": 1,
+          "allow": 33554432,
+          "deny": 0
+        }
+      ],
+      "held": [
+        "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1"
+      ],
+      "overwrites": [
+        {
+          "kind": 0,
+          "target": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+          "allow": 0,
+          "deny": 33554432
+        }
+      ],
+      "user": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "community": 33554817,
+      "channel": 385
+    },
+    {
+      "name": "control_music_user_overwrite_grants",
+      "owner": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "everyone": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+      "roles": [
+        {
+          "id": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+          "position": 0,
+          "allow": 385,
+          "deny": 0
+        }
+      ],
+      "held": [],
+      "overwrites": [
+        {
+          "kind": 1,
+          "target": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+          "allow": 33554432,
+          "deny": 0
+        }
+      ],
+      "user": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "community": 385,
+      "channel": 33554817
     }
   ]
 }

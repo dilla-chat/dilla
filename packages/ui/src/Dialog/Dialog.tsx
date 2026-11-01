@@ -14,18 +14,27 @@ export type DialogProps = { open: boolean; title: string; onClose: () => void; c
    * Where focus goes on close when the opener is gone and no element carries its `data-focus-key` any more (a deleted
    * row). Resolved at close time.
    */
-  returnFocus?: () => HTMLElement | null | undefined };
+  returnFocus?: () => HTMLElement | null | undefined;
+  /**
+   * Task 9, the prototype's two dialog layouts: `form` (the default; a head bar over a hairline, the body, a footer bar) or `confirm`
+   * (no bars: `lead` (a 40px avatar) beside the 15px title and `description`, the fields, then the buttons).
+   */
+  kind?: 'form' | 'confirm';
+  /** Drawn left of the title (a confirmation's avatar). */
+  lead?: ReactNode;
+  /** Drawn under the title, in the head (a confirmation's body). */
+  description?: ReactNode };
 
 /**
  * Where focus goes back to when a dialog closes, resolved at close time: the opener while it is still in the document;
  * else the element that now carries the opener's `data-focus-key` (a row re-mounted elsewhere while the dialog was
  * open); else `fallback`. Null when none of them exists: the caller then leaves focus alone.
  */
-export function focusReturnTarget(opener: HTMLElement | null, fallback?: () => HTMLElement | null | undefined): HTMLElement | null {
+export function focusReturnTarget(opener: HTMLElement | null, fallback?: () => HTMLElement | null | undefined, scope?: ParentNode | null): HTMLElement | null {
   if (opener !== null && opener.isConnected) return opener;
   const key = opener?.dataset.focusKey;
   if (key !== undefined) {
-    const same = Array.from(document.querySelectorAll<HTMLElement>('[data-focus-key]')).find(e => e.dataset.focusKey === key);
+    const same = Array.from((scope ?? document).querySelectorAll<HTMLElement>('[data-focus-key]')).find(e => e.dataset.focusKey === key);
     if (same !== undefined) return same;
   }
   return fallback?.() ?? null;
@@ -48,7 +57,7 @@ function marked(root: HTMLElement): HTMLElement | null {
   return Array.from(root.querySelectorAll<HTMLElement>(AUTOFOCUS)).find(e => !hiddenIn(e, root)) ?? null;
 }
 
-export function Dialog({ open, title, onClose, children, footer, closeLabel, describedBy, initialFocus = 'dialog', returnFocus }: DialogProps) {
+export function Dialog({ open, title, onClose, children, footer, closeLabel, describedBy, initialFocus = 'dialog', returnFocus, kind = 'form', lead, description }: DialogProps) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   // What had focus when the dialog opened, and the latest fallback (read at close time, so never stale).
@@ -108,17 +117,23 @@ export function Dialog({ open, title, onClose, children, footer, closeLabel, des
     return () => { if (el?.open) giveBack(el); };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   return (
-    <dialog ref={ref} className="d-dialog" aria-labelledby={titleId} aria-describedby={open ? describedBy : undefined} aria-modal="true" tabIndex={-1}
+    <dialog ref={ref} className="d-dialog" data-kind={kind} aria-labelledby={titleId} aria-describedby={open ? describedBy : undefined} aria-modal="true" tabIndex={-1}
       onCancel={e => { e.preventDefault(); onClose(); }}
       onKeyDown={e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); onClose(); } }}
       onClick={e => { if (e.target === ref.current) onClose(); }}>
       {/* Contents exist only while open: a closed dialog leaks no hidden text. */}
       {open ? (
         <div className="d-dialog__panel" onClick={e => e.stopPropagation()}>
-          <h2 id={titleId} className="d-dialog__title">{title}</h2>
-          <div className="d-dialog__body">{children}</div>
+          <div className="d-dialog__head">
+            {lead}
+            <div className="d-dialog__heading">
+              <h2 id={titleId} className="d-dialog__title">{title}</h2>
+              {description}
+            </div>
+          </div>
+          {children === undefined || children === null || children === false ? null : <div className="d-dialog__body">{children}</div>}
           <div className="d-dialog__footer">
-            <Button variant="ghost" keyHint="esc" onClick={onClose}>{closeLabel ?? 'Close'}</Button>
+            <Button variant="ghost" onClick={onClose}>{closeLabel ?? 'Close'}</Button>
             {footer}
           </div>
         </div>

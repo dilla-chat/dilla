@@ -23,6 +23,7 @@ type automaticModerationEventHandler interface {
 type groupEventRouter struct {
 	inspector             interactionEventInspection
 	interactions          service.GroupEventHandler
+	replyRecovery         service.GroupEventHandler
 	automoderation        automaticModerationEventHandler
 	replayThrough         uint64
 	replayReceivedThrough uint64
@@ -30,8 +31,12 @@ type groupEventRouter struct {
 
 var moderationMentionPattern = regexp.MustCompile(`<@([0-9a-f]{32})>`)
 
-func newGroupEventRouter(inspector interactionEventInspection, interactions service.GroupEventHandler, automoderation automaticModerationEventHandler, replayThrough, replayReceivedThrough uint64) service.GroupEventHandler {
-	return groupEventRouter{inspector: inspector, interactions: interactions, automoderation: automoderation, replayThrough: replayThrough, replayReceivedThrough: replayReceivedThrough}
+func newGroupEventRouter(inspector interactionEventInspection, interactions service.GroupEventHandler, automoderation automaticModerationEventHandler, replayThrough, replayReceivedThrough uint64, replyRecovery ...service.GroupEventHandler) service.GroupEventHandler {
+	var recovery service.GroupEventHandler
+	if len(replyRecovery) > 0 {
+		recovery = replyRecovery[0]
+	}
+	return groupEventRouter{inspector: inspector, interactions: interactions, replyRecovery: recovery, automoderation: automoderation, replayThrough: replayThrough, replayReceivedThrough: replayReceivedThrough}
 }
 
 func (h groupEventRouter) HandleGroupEvent(ctx context.Context, event native.GroupEvent) error {
@@ -54,7 +59,7 @@ func (h groupEventRouter) HandleGroupEvent(ctx context.Context, event native.Gro
 			return nil
 		}
 		if h.automoderation == nil {
-			return nil
+			return h.recoverReply(ctx, event, nil)
 		}
 		mentions := moderationMentionIDs(event.Body)
 		now := time.Now().UnixMilli()
@@ -80,9 +85,10 @@ func (h groupEventRouter) HandleGroupEvent(ctx context.Context, event native.Gro
 				}
 			}
 			slog.Warn("automatic moderation event handling failed", "stage", stageErr.Stage,
-				"error_code", stageErr.Code, "http_status", stageErr.Status, "source_age_seconds", sourceAgeSeconds)
+				"error_code", stageErr.Code, "http_status", stageErr.Status, "source_age_seconds", sourceAgeSeconds, "deferral_count", stageErr.Deferrals)
 		}
-		return err
+		// Moderation decisions affect moderation only; text is never a command.
+		return h.recoverReply(ctx, event, err)
 	case 3: // Managed kind-3 interaction behavior retains its existing durable sender path.
 		if h.interactions == nil {
 			return errors.New("missing native interaction event handler")
@@ -113,4 +119,11 @@ func moderationMentionIDs(body *string) []string {
 		}
 	}
 	return mentions
+}
+
+func (h groupEventRouter) recoverReply(ctx context.Context, event native.GroupEvent, prior error) error {
+	if h.replyRecovery == nil {
+		return prior
+	}
+	return errors.Join(prior, h.replyRecovery.HandleGroupEvent(ctx, event))
 }

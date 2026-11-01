@@ -20,7 +20,7 @@ it('copies only stable codes and counts listed devices', async () => {
   const view = render(withCore(fake, <Diagnostics data={data} instanceName="dilla.test" writeText={writeText} />));
   expect(fake.callsOf('refreshDevices')).toEqual([{ m: 'refreshDevices' }]);
   // W-05: the field label is "devices" and the count its value; the instance is its name, not the hex id.
-  expect(Array.from(view.container.querySelectorAll('.d-settings-row__label'), l => l.textContent).slice(0, 4)).toEqual(['connection', 'generation', 'instance', 'devices']);
+  expect(Array.from(view.container.querySelectorAll('.d-settings-row__label'), l => l.textContent).slice(0, 4)).toEqual(['Connection', 'Generation', 'Instance', 'Devices']);
   expect(Array.from(view.container.querySelectorAll('[data-fact]'), d => d.textContent)).toEqual(['online', '8', 'dilla.test', '2']);
   // I1: four fact rows and the copy row.
   expect(view.container.querySelectorAll('.d-settings-row')).toHaveLength(5);

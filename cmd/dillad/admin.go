@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -737,11 +738,26 @@ func inviteStatus(i store.InviteRow, now int64) string {
 		return "revoked"
 	case i.ExpiresAt <= now:
 		return "expired"
-	case i.UsedCount >= i.MaxUses:
+	case i.Exhausted():
 		return "exhausted"
 	default:
 		return "active"
 	}
+}
+
+// inviteMaxUses and inviteExpiry print an invite made with "∞" uses or "never" (Task 10c).
+func inviteMaxUses(i store.InviteRow) string {
+	if i.UnlimitedUses == 1 {
+		return "unlimited"
+	}
+	return strconv.FormatUint(i.MaxUses, 10)
+}
+
+func inviteExpiry(i store.InviteRow) string {
+	if i.NeverExpires() {
+		return "never"
+	}
+	return stamp(i.ExpiresAt)
 }
 
 // inviteRef is the 8-hex reference an invite is named by in logs and audit rows: the first four
@@ -805,8 +821,8 @@ func adminInvite(verb string, args []string, stdout, stderr io.Writer) error {
 					tw := newTable(e.out)
 					fmt.Fprintln(tw, "id\treference\tcommunity\tgrants_admin\tmax_uses\tused\tcreated\texpires\tstatus")
 					for _, i := range rows {
-						fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%d\t%d\t%s\t%s\t%s\n", i.ID, inviteRef(i.CodeHash), idPtr(i.CommunityID),
-							i.GrantsAdmin, i.MaxUses, i.UsedCount, stamp(i.Created), stamp(i.ExpiresAt), inviteStatus(i, now))
+						fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%d\t%s\t%s\t%s\n", i.ID, inviteRef(i.CodeHash), idPtr(i.CommunityID),
+							i.GrantsAdmin, inviteMaxUses(i), i.UsedCount, stamp(i.Created), inviteExpiry(i), inviteStatus(i, now))
 					}
 					return tw.Flush()
 				},

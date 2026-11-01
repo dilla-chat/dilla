@@ -302,3 +302,24 @@ func TestOnlineInOrdersBotDevicesFirstThenByLeafIndex(t *testing.T) {
 		t.Errorf("humans are not ordered by leaf index: %v", got)
 	}
 }
+
+func TestManagedBotPresenceDoesNotElectUnsupportedCommitter(t *testing.T) {
+	h := newHarness(t)
+	group, bot, human := id.New(), id.New(), id.New()
+	botConn := h.connect(t, bot)
+	botConn.mu.Lock()
+	botConn.isBot = true
+	botConn.mu.Unlock()
+	h.gw.SetGroupMembers(group, []id.ID{bot})
+	if !h.gw.Online(bot) {
+		t.Fatal("managed bot lost online presence")
+	}
+	if got := h.gw.OnlineIn(group); len(got) != 0 {
+		t.Fatal("managed bot elected despite no commit handler")
+	}
+	h.connect(t, human)
+	h.gw.SetGroupMembers(group, []id.ID{bot, human})
+	if got := h.gw.OnlineIn(group); len(got) != 1 || got[0].DeviceID != human {
+		t.Fatal("human committer not retained")
+	}
+}

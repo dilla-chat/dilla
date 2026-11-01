@@ -1,9 +1,9 @@
 /* eslint-disable @typescript-eslint/require-await -- the doubles answer as the async functions they stand for do */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CallJoinResult, CallKeys, Command } from '@dilla/client-core';
-import { screenAudioOptions, type EpochKeys, type JoinCallOptions } from '@dilla/media';
+import { screenAudioOptions, type EpochKeys, type InputStageOptions, type JoinCallOptions, type SensitivityConfig } from '@dilla/media';
 import { getBrowser } from 'livekit-client';
-import { concurrentCapture, startPageCall, type PageCall, type PageCallDeps, type PageCallOptions } from './session.ts';
+import { concurrentCapture, rttOf, startPageCall, type PageCall, type PageCallDeps, type PageCallOptions } from './session.ts';
 
 const CH = 'c1'.repeat(16);
 const callId = 'a1'.repeat(16);
@@ -113,6 +113,8 @@ function fakes(o: Options = {}) {
   const joinEpoch = o.joinEpoch ?? 1n;
   const order: string[] = [];
   const calls: Command[] = [];
+  // Task 11: what the worker answers to callRtt, in order (true once the queue is empty).
+  const rttAnswers: boolean[] = [];
   const listeners = new Set<(id: string, k: CallKeys) => void>();
   const pushKeys = (id: string, k: CallKeys) => { for (const l of [...listeners]) l(id, k); };
 
@@ -219,6 +221,8 @@ function fakes(o: Options = {}) {
         case 'callStats':
           if (o.statsError) throw o.statsError;
           return null;
+        case 'callRtt':
+          return rttAnswers.length > 0 ? rttAnswers.shift() : true;
         default:
           return null;
       }
@@ -282,7 +286,7 @@ function fakes(o: Options = {}) {
     room.emit('trackUnsubscribed', track, pub, p);
   };
   return {
-    deps, order, calls, pushKeys, manager, room, localTracks, advance, verified, addRemote, share, timers, gum,
+    deps, order, calls, rttAnswers, pushKeys, manager, room, localTracks, advance, verified, addRemote, share, timers, gum,
     audioHost, subscribeTrack, unsubscribeTrack, contexts, audio, media,
     get joinOptions() { return joinOptions; },
     setRefresh: (a: typeof refreshAnswer) => { refreshAnswer = a; },
@@ -416,6 +420,21 @@ describe('the page call session (L-WEB-50)', () => {
     await start(f, { noise: 'on', mode: 'ptt' });
     expect(made).toEqual(['ptt']);
     expect(f.localTracks[0].setProcessor).toHaveBeenCalledTimes(1);
+  });
+
+  it('task 8c: a tile carries the RTT its device publishes (dilla.rtt), updated on an attribute change; nothing else counts', async () => {
+    const f = fakes();
+    const call = await start(f);
+    const bob = f.addRemote(BOB_DEV);
+    const carol = f.addRemote(CAROL_DEV);
+    Object.assign(carol, { attributes: { rtt: '12', 'dilla.vdec': 'vp8' } });
+    await f.advance(1_000);
+    const tile = (d: string) => call.state.tiles.find((t) => t.deviceId === d)!;
+    expect(tile(BOB_DEV).rttMs).toBeNull();
+    expect(tile(CAROL_DEV).rttMs).toBeNull();
+    Object.assign(bob, { attributes: { 'dilla.rtt': '31' } });
+    f.room.emit('participantAttributesChanged', {}, bob);
+    expect(tile(BOB_DEV).rttMs).toBe(31);
   });
 
   it('a tile is "unverified" for a room participant in no roster and "ok" once verifiedIdentities has it', async () => {
@@ -687,6 +706,24 @@ describe('the page call session (L-WEB-50)', () => {
     expect(f.calls.filter((c) => c.m === 'callRefresh')).toHaveLength(2);
   });
 
+  it('keeps one coarse report in flight when the worker is slow, and drops missed ticks', async () => {
+    const f = fakes();
+    const original = f.deps.bridge.call.bind(f.deps.bridge);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let started = 0;
+    f.deps.bridge.call = command => {
+      if (command.m === 'callStats') { started++; return gate.then(() => original(command)); }
+      return original(command);
+    };
+    await start(f);
+    await f.advance(90_000);
+    expect(started).toBe(1);
+    release(); await flush();
+    await f.advance(10_000);
+    expect(started).toBe(2);
+  });
+
   it('sends one callStats report per 10 s while connected', async () => {
     const f = fakes({ statsError: Object.assign(new Error('E_RATE_LIMITED'), { code: 'E_RATE_LIMITED', status: 429 }) });
     const call = await start(f);
@@ -745,6 +782,53 @@ describe('the page call session (L-WEB-50)', () => {
     expect(call.state.link).toMatchObject({ rttMs: 24, upKbps: 0, downKbps: 0 });
     await call.leave('user');
     expect(call.state.link).toBeUndefined();
+  });
+
+  // Task 8c fix round 2: this device's own RTT goes to the instance (callRtt), only when it moved by RTT_STEP_MS or more, and
+  // is cleared while the call reconnects; no LiveKit attribute is written by the page.
+  it('task 8c: the own RTT is reported through the worker, rounded, on a change of 5 ms or more, and cleared on reconnecting', async () => {
+    const { f, s } = linkFakes();
+    const rtts = () => f.calls.filter((c) => c.m === 'callRtt').map((c) => (c as { ms: number | null }).ms);
+    await start(f);
+    await f.advance(2_000); // the baseline: no sample, nothing reported
+    expect(rtts()).toEqual([]);
+    await f.advance(2_000);
+    expect(rtts()).toEqual([24]);
+    s.rtt = 0.0274;
+    await f.advance(2_000);
+    expect(rtts()).toEqual([24]); // 27 is within 5 ms of 24
+    s.rtt = 0.0312;
+    await f.advance(2_000);
+    expect(rtts()).toEqual([24, 31]);
+    s.rtt = 9;
+    await f.advance(2_000);
+    expect(rtts()).toEqual([24, 31, 5000]); // clamped to the range the instance accepts
+    f.room.emit('reconnecting');
+    await f.advance(2_000);
+    expect(rtts()).toEqual([24, 31, 5000, null]);
+    await f.advance(2_000);
+    expect(rtts()).toEqual([24, 31, 5000, null]); // one clear
+  });
+
+  // Task 11 (8c minor): a report the instance refused (false: 429 or 404) is not counted as sent, and a reconnect that no
+  // tick saw still re-sends the RTT.
+  it('task 11: a refused RTT report is sent again on the next sample, and a fast reconnect re-sends it', async () => {
+    const { f, s } = linkFakes();
+    const rtts = () => f.calls.filter((c) => c.m === 'callRtt').map((c) => (c as { ms: number | null }).ms);
+    await start(f);
+    await f.advance(2_000);
+    f.rttAnswers.push(false);
+    await f.advance(2_000);
+    expect(rtts()).toEqual([24]);
+    await f.advance(2_000);
+    expect(rtts()).toEqual([24, 24]); // refused, so the same value goes again
+    await f.advance(2_000);
+    expect(rtts()).toEqual([24, 24]); // stored: nothing new within 5 ms
+    f.room.emit('reconnecting');
+    f.room.emit('reconnected');
+    s.rtt = 0.026;
+    await f.advance(4_000); // the first read after a reconnect is a fresh baseline
+    expect(rtts()).toEqual([24, 24, 26]); // the reconnect forgot what was sent
   });
 
   it('MP5: a failed getStats keeps the previous totals, so the next good read is no spike', async () => {
@@ -3764,4 +3848,388 @@ describe('#37: a call knows whether a share carries sound, on both sides', () =>
     });
   });
 
+});
+
+// ---------------------------------------------------------------------------------------------
+// Signal task 8c: the share picker's options reach the capture and the screen track's encoding, through the dilla transform's publish path.
+// ---------------------------------------------------------------------------------------------
+
+describe('task 8c fix round 1: another device\'s published RTT', () => {
+  it.each([
+    ['24', 24], ['0', 0], ['5000', 5000], ['5001', null], ['024', null], ['-1', null], ['2.5', null], ['', null], ['24 ms', null], ['99999', null],
+  ] as const)('dilla.rtt %j reads as %j', (v, want) => {
+    expect(rttOf({ 'dilla.rtt': v })).toBe(want);
+  });
+  it('no attribute, or only others, is no value', () => {
+    expect(rttOf(undefined)).toBeNull();
+    expect(rttOf({ 'dilla.vdec': 'vp8,vp9', rtt: '20' })).toBeNull();
+  });
+});
+
+describe('task 8c: screen-share options', () => {
+  const open: PageCall[] = [];
+  afterEach(async () => { for (const c of open.splice(0)) await c.leave('user').catch(() => undefined); });
+  const start = async (f: ReturnType<typeof fakes>) => {
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, opts);
+    open.push(call);
+    return call;
+  };
+  /** A screen track that records applyConstraints, and a publication whose sender records setParameters. */
+  const screenSetup = (f: ReturnType<typeof fakes>) => {
+    const applyConstraints = vi.fn<(c: MediaTrackConstraints) => Promise<void>>(async () => undefined);
+    const track = Object.assign(videoTrack(), { applyConstraints });
+    f.deps.media.getDisplayMedia = vi.fn(async () => streamOf(track));
+    const params = { encodings: [{ rid: 'q', scaleResolutionDownBy: 2, maxBitrate: 500_000, maxFramerate: 30 }, { rid: 'f', maxBitrate: 2_500_000, maxFramerate: 30 }] };
+    const sender = { getParameters: vi.fn(() => structuredClone(params)), setParameters: vi.fn(async () => undefined) };
+    const publish = f.room.localParticipant.publishTrack.getMockImplementation()!;
+    f.room.localParticipant.publishTrack.mockImplementation(async (t: MediaStreamTrack, o: { source: string }) => {
+      const pub = await publish(t, o);
+      if (o.source === 'screen_share') Object.assign(pub.track, { sender });
+      return pub;
+    });
+    return { track, sender, applyConstraints };
+  };
+  const surfaceOf = (f: ReturnType<typeof fakes>, call: number) =>
+    ((vi.mocked(f.deps.media.getDisplayMedia!).mock.calls[call]?.[0] as { video?: { displaySurface?: string } } | undefined)?.video?.displaySurface);
+  const OPTS = { surface: 'window', resolution: '720p', fps: 15, systemAudio: false } as const;
+
+  it('a share starts with the picker’s capture options and its encoding, capped by the instance', async () => {
+    const f = fakes();
+    screenSetup(f);
+    const call = await start(f);
+    expect(call.state.shareCapBps).toBe(2_500_000);
+    await call.setSharing(true, OPTS);
+    expect(f.deps.media.getDisplayMedia).toHaveBeenCalledWith(expect.objectContaining({
+      video: { displaySurface: 'window', width: { max: 1280 }, height: { max: 720 }, frameRate: { ideal: 15, max: 15 } }, audio: false,
+    }));
+    const screenPublish = f.room.localParticipant.publishTrack.mock.calls.find(([, o]) => o.source === 'screen_share');
+    // 720p at 15 fps is 1.5 Mb/s, under the 2.5 Mb/s cap.
+    expect(screenPublish?.[1]).toEqual({ source: 'screen_share', screenShareEncoding: { maxBitrate: 1_500_000, maxFramerate: 15 } });
+  });
+
+  it('without options a share uses the defaults (1080p at 30 fps → 4.5 Mb/s, capped to the instance’s 2.5)', async () => {
+    const f = fakes();
+    screenSetup(f);
+    const call = await start(f);
+    await call.setSharing(true);
+    const screenPublish = f.room.localParticipant.publishTrack.mock.calls.find(([, o]) => o.source === 'screen_share');
+    expect(screenPublish?.[1]).toEqual({ source: 'screen_share', screenShareEncoding: { maxBitrate: 2_500_000, maxFramerate: 30 } });
+  });
+
+  it('Apply with a new resolution or rate reshapes the running capture and the same sender: no new track, no new publish', async () => {
+    const f = fakes();
+    const { sender, applyConstraints } = screenSetup(f);
+    const call = await start(f);
+    await call.setSharing(true, OPTS);
+    const publishes = f.room.localParticipant.publishTrack.mock.calls.length;
+    await call.setShareOptions({ ...OPTS, resolution: '1080p', fps: 60 });
+    expect(applyConstraints).toHaveBeenCalledWith({ width: { max: 1920 }, height: { max: 1080 }, frameRate: { ideal: 60, max: 60 } });
+    expect(sender.setParameters).toHaveBeenCalledWith({ encodings: [
+      { rid: 'q', scaleResolutionDownBy: 2, maxBitrate: 500_000, maxFramerate: 30 },
+      { rid: 'f', maxBitrate: 2_500_000, maxFramerate: 60 },
+    ] });
+    expect(f.room.localParticipant.publishTrack).toHaveBeenCalledTimes(publishes);
+    expect(f.deps.media.getDisplayMedia).toHaveBeenCalledTimes(1);
+    expect(call.state.sharing).toBe(true);
+  });
+
+  it('Apply with a new source or sound choice asks the browser again and publishes the new capture through publishTrack', async () => {
+    const f = fakes();
+    const { track } = screenSetup(f);
+    const call = await start(f);
+    await call.setSharing(true, OPTS);
+    await call.setShareOptions({ ...OPTS, surface: 'browser', systemAudio: true });
+    expect(f.deps.media.getDisplayMedia).toHaveBeenCalledTimes(2);
+    expect(surfaceOf(f, 1)).toBe('browser');
+    expect(f.room.localParticipant.unpublishTrack).toHaveBeenCalledWith(track);
+    expect(f.room.localParticipant.publishTrack.mock.calls.filter(([, o]) => o.source === 'screen_share')).toHaveLength(2);
+    expect(call.state.sharing).toBe(true);
+  });
+
+  it('Apply with a new source whose browser picker is cancelled leaves the running share as it was', async () => {
+    const f = fakes();
+    const { track } = screenSetup(f);
+    const call = await start(f);
+    await call.setSharing(true, OPTS);
+    const first = f.deps.media.getDisplayMedia;
+    f.deps.media.getDisplayMedia = vi.fn(async () => { throw Object.assign(new Error('cancelled'), { name: 'NotAllowedError' }); });
+    await expect(call.setShareOptions({ ...OPTS, surface: 'browser' })).rejects.toBeDefined();
+    expect(f.room.localParticipant.unpublishTrack).not.toHaveBeenCalledWith(track);
+    expect(call.state.sharing).toBe(true);
+    void first;
+  });
+
+  it('Apply while not sharing keeps the options for the next start', async () => {
+    const f = fakes();
+    screenSetup(f);
+    const call = await start(f);
+    await call.setShareOptions(OPTS);
+    expect(f.deps.media.getDisplayMedia).not.toHaveBeenCalled();
+    await call.setSharing(true);
+    expect(surfaceOf(f, 0)).toBe('window');
+  });
+
+  it('tileStats reads the own microphone and screen from their senders', async () => {
+    const f = fakes();
+    screenSetup(f);
+    const call = await start(f);
+    await call.setSharing(true, OPTS);
+    const results = f.room.localParticipant.publishTrack.mock.results.map((r) => r.value as Promise<{ source: string; track: Record<string, unknown> }>);
+    const pubs = await Promise.all(results);
+    const mic = pubs.find((p) => p.source === 'microphone');
+    const screen = pubs.find((p) => p.source === 'screen_share');
+    const report = (e: Array<Record<string, unknown>>) => new Map(e.map((x) => [x.id, x]));
+    Object.assign(mic!.track, { getRTCStatsReport: async () => report([{ id: 'c', type: 'codec', mimeType: 'audio/opus', clockRate: 48000 }, { id: 'o', type: 'outbound-rtp', kind: 'audio', codecId: 'c' }]) });
+    Object.assign(screen!.track, { getRTCStatsReport: async () => report([{ id: 'v', type: 'outbound-rtp', kind: 'video', frameHeight: 720, framesPerSecond: 15 }]) });
+    expect(await call.tileStats()).toEqual({ ownAudio: { codec: 'opus', clockRate: 48000 }, ownScreen: { height: 720, fps: 15, audio: false }, screens: {} });
+  });
+});
+
+describe('task 10b: input stage, gate, volumes, push-to-talk release and echo/AGC', () => {
+  const open: PageCall[] = [];
+  afterEach(async () => { for (const c of open.splice(0)) await c.leave('user').catch(() => undefined); });
+  const start = async (f: ReturnType<typeof fakes>, o: Partial<PageCallOptions> = {}) => {
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, ...o });
+    open.push(call);
+    return call;
+  };
+  type FakeStage = { inner: unknown; options: InputStageOptions; gains: number[]; gates: SensitivityConfig[]; allowed: boolean[];
+    setGain(g: number): void; setGate(c: SensitivityConfig): void; setCaptureAllowed(a: boolean): void; input?: MediaStreamTrack };
+  const withStage = (f: ReturnType<typeof fakes>) => {
+    const made: FakeStage[] = [];
+    f.deps.createInputStage = (inner, options) => {
+      const s: FakeStage = { inner, options, gains: [], gates: [], allowed: [],
+        setGain(g) { s.gains.push(g); }, setGate(c) { s.gates.push(c); }, setCaptureAllowed(a) { s.allowed.push(a); } };
+      made.push(s);
+      return s;
+    };
+    return made;
+  };
+
+  it('sets the stage around the noise processor, with the input volume, the automatic gate and capture closed until allowed', async () => {
+    const f = fakes();
+    const stages = withStage(f);
+    const noise = { setPttActive: vi.fn() };
+    f.deps.createNoiseProcessor = () => noise;
+    const call = await start(f, { noise: 'on', inputVolume: 150, sensitivity: { auto: true, thresholdDb: -50 } });
+    expect(stages).toHaveLength(1);
+    expect(stages[0].inner).toBe(noise);
+    expect(f.localTracks[0].setProcessor).toHaveBeenCalledWith(stages[0]);
+    expect(stages[0].options).toMatchObject({ gain: 1.5, gate: { enabled: true, auto: true, thresholdDb: -50 } });
+    expect(stages[0].allowed.at(-1)).toBe(true);
+    call.setMuted(true);
+    expect(stages[0].allowed.at(-1)).toBe(false);
+  });
+
+  it('noise off still gets the stage alone, so the volume and the gate apply', async () => {
+    const f = fakes();
+    const stages = withStage(f);
+    await start(f, { noise: 'off' });
+    expect(stages).toHaveLength(1);
+    expect(stages[0].inner).toBeNull();
+    expect(f.localTracks[0].setProcessor).toHaveBeenCalledWith(stages[0]);
+  });
+
+  it('input volume, sensitivity and the input mode reach the stage during the call; push to talk turns the gate off', async () => {
+    const f = fakes();
+    const stages = withStage(f);
+    f.deps.createNoiseProcessor = () => ({ setPttActive: vi.fn() });
+    const call = await start(f);
+    call.setInputVolume(80);
+    expect(stages[0].gains).toEqual([0.8]);
+    call.setInputVolume(250);
+    call.setInputVolume(12.5);
+    expect(stages[0].gains).toEqual([0.8]);
+    call.setSensitivity({ auto: false, thresholdDb: -35 });
+    expect(stages[0].gates.at(-1)).toEqual({ enabled: true, auto: false, thresholdDb: -35 });
+    call.setSensitivity({ auto: false, thresholdDb: -400 });
+    expect(stages[0].gates.at(-1)).toEqual({ enabled: true, auto: false, thresholdDb: -100 });
+    call.setMode('ptt');
+    expect(stages[0].gates.at(-1)).toMatchObject({ enabled: false });
+    call.setMode('vad');
+    expect(stages[0].gates.at(-1)).toMatchObject({ enabled: true });
+  });
+
+  it('the output volume multiplies every remote voice volume', async () => {
+    const f = fakes();
+    const call = await start(f, { outputVolume: 50, volumes: { [BOB]: 150 } });
+    const bob = f.addRemote(BOB_DEV);
+    f.subscribeTrack(bob, 'microphone');
+    expect(bob.gains.microphone).toBe(0.75);
+    call.setOutputVolume(200);
+    expect(bob.gains.microphone).toBe(3);
+    call.setOutputVolume(201);
+    expect(bob.gains.microphone).toBe(3);
+  });
+
+  it('push to talk keeps sending for the release delay after the key is let go; a new press inside it keeps it open', async () => {
+    const f = fakes();
+    const call = await start(f, { mode: 'ptt', pttReleaseMs: 200 });
+    const mic = f.localTracks[0];
+    call.pushToTalk(true);
+    expect(mic.muted).toBe(false);
+    call.pushToTalk(false);
+    await f.advance(150);
+    expect(mic.muted).toBe(false);
+    call.pushToTalk(true);
+    call.pushToTalk(false);
+    await f.advance(199);
+    expect(mic.muted).toBe(false);
+    await f.advance(2);
+    expect(mic.muted).toBe(true);
+    call.setPttRelease(0);
+    call.pushToTalk(true);
+    call.pushToTalk(false);
+    expect(mic.muted).toBe(true);
+  });
+
+  it('a mute during the release delay closes the microphone at once', async () => {
+    const f = fakes();
+    const call = await start(f, { mode: 'ptt', pttReleaseMs: 1000 });
+    const mic = f.localTracks[0];
+    call.pushToTalk(true);
+    call.pushToTalk(false);
+    call.setMuted(true);
+    expect(mic.muted).toBe(true);
+  });
+
+  it('the microphone is captured with the echo cancellation and automatic gain asked for', async () => {
+    const f = fakes();
+    await start(f, { processing: { echo: false, agc: true } });
+    expect((f.gum.mock.calls[0] as unknown[])[0]).toMatchObject({ audio: { echoCancellation: false, autoGainControl: true } });
+  });
+
+  it('echo/AGC changes capture the microphone again without leaving; while muted with no stage the capture waits', async () => {
+    const f = fakes();
+    const call = await start(f, { noise: 'off' });
+    const mic = f.localTracks[0] as unknown as { restartTrack: ReturnType<typeof vi.fn>; mediaStreamTrack: MediaStreamTrack };
+    const raw = f.room.localParticipant.publishTrack.mock.calls[0][0];
+    raw.getSettings = () => ({ deviceId: 'chosen', noiseSuppression: false }); raw.getConstraints = () => ({}); mic.mediaStreamTrack = raw;
+    const fresh = { enabled: true, stop: vi.fn(), getSettings: () => ({}), getConstraints: () => ({}) } as unknown as MediaStreamTrack;
+    mic.restartTrack = vi.fn(async () => { mic.mediaStreamTrack = fresh; });
+    call.setMuted(true);
+    await call.setProcessing({ echo: false, agc: false });
+    expect(mic.restartTrack).not.toHaveBeenCalled();
+    call.setMuted(false);
+    await flush();
+    expect(mic.restartTrack).toHaveBeenCalledWith(expect.objectContaining({ deviceId: { exact: 'chosen' }, echoCancellation: false, autoGainControl: false, noiseSuppression: false }));
+    expect(call.state.phase).toBe('connected');
+    await call.setProcessing({ echo: false, agc: false });
+    expect(mic.restartTrack).toHaveBeenCalledTimes(1);
+  });
+
+  it('with a stage the new capture is taken at once even while muted (the stage holds it closed)', async () => {
+    const f = fakes();
+    const stages = withStage(f);
+    const call = await start(f, { noise: 'off' });
+    const mic = f.localTracks[0] as unknown as { restartTrack: ReturnType<typeof vi.fn>; mediaStreamTrack: MediaStreamTrack };
+    const raw = f.room.localParticipant.publishTrack.mock.calls[0][0];
+    raw.getSettings = () => ({ deviceId: 'chosen' }); raw.getConstraints = () => ({}); mic.mediaStreamTrack = raw;
+    stages[0].input = raw;
+    mic.restartTrack = vi.fn(async () => undefined);
+    call.setMuted(true);
+    await call.setProcessing({ echo: true, agc: false });
+    expect(mic.restartTrack).toHaveBeenCalledWith(expect.objectContaining({ echoCancellation: true, autoGainControl: false }));
+    expect(stages[0].allowed.at(-1)).toBe(false);
+  });
+});
+
+describe('task 10b fix round 1: the stage starts closed, bad levels never reach it, failures release it, its state is reported', () => {
+  const open: PageCall[] = [];
+  afterEach(async () => { for (const c of open.splice(0)) await c.leave('user').catch(() => undefined); });
+  type Fake = { options: InputStageOptions; allowed: boolean[]; gains: number[]; destroyed: number; state: 'active' | 'failed';
+    setGain(g: number): void; setGate(): void; setCaptureAllowed(a: boolean): void; destroy(): Promise<void> };
+  const stageMaker = (f: ReturnType<typeof fakes>, state: Fake['state'] = 'active') => {
+    const made: Fake[] = [];
+    f.deps.createInputStage = (_inner, options) => {
+      const s: Fake = { options, allowed: [], gains: [], destroyed: 0, state,
+        setGain(g) { s.gains.push(g); }, setGate() {}, setCaptureAllowed(a) { s.allowed.push(a); }, destroy() { s.destroyed += 1; return Promise.resolve(); } };
+      made.push(s);
+      return s;
+    };
+    return made;
+  };
+  const start = async (f: ReturnType<typeof fakes>, o: Partial<PageCallOptions> = {}) => {
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, ...o });
+    open.push(call);
+    return call;
+  };
+
+  it('L1: the stage is made closed; applyMic opens it', async () => {
+    const f = fakes();
+    const made = stageMaker(f);
+    await start(f, { noise: 'off' });
+    expect(made[0].options.allowed).toBe(false);
+    expect(made[0].allowed.at(-1)).toBe(true);
+  });
+
+  it('L2: non-finite or out-of-range levels read as the defaults', async () => {
+    const f = fakes();
+    const made = stageMaker(f);
+    const call = await start(f, { noise: 'off', inputVolume: Number.NaN, sensitivity: { auto: false, thresholdDb: Number.POSITIVE_INFINITY }, pttReleaseMs: Number.NaN });
+    expect(made[0].options.gain).toBe(1);
+    expect(made[0].options.gate).toEqual({ enabled: true, auto: false, thresholdDb: -50 });
+    call.setInputVolume(Number.NaN);
+    call.setSensitivity({ auto: false, thresholdDb: Number.NaN });
+    expect(made[0].gains).toEqual([]);
+  });
+
+  it('a stage whose setProcessor fails is destroyed (with the noise processor inside it)', async () => {
+    const f = fakes();
+    const made = stageMaker(f);
+    f.deps.createNoiseProcessor = () => ({ setPttActive: vi.fn() });
+    f.localTracks.length = 0;
+    const real = f.room.localParticipant.publishTrack;
+    f.room.localParticipant.publishTrack = vi.fn(async (track: unknown, o: unknown) => {
+      const pub = await (real as (t: unknown, o: unknown) => Promise<{ track: { setProcessor: unknown } }>)(track, o);
+      pub.track.setProcessor = vi.fn(async () => { throw new Error('E_AUDIO'); });
+      return pub;
+    }) as typeof real;
+    await start(f, { noise: 'on' });
+    expect(made.length).toBeGreaterThan(0);
+    expect(made.every(s => s.destroyed === 1)).toBe(true);
+  });
+
+  it('M1: the stage state reaches Settings (active, failed), and clears when the call ends', async () => {
+    const { getStageStatus } = await import('./processor-status.ts');
+    const f = fakes();
+    stageMaker(f, 'failed');
+    const call = await start(f, { noise: 'off' });
+    expect(getStageStatus()).toBe('failed');
+    await call.leave('user');
+    expect(getStageStatus()).toBeNull();
+  });
+});
+
+describe('task 10b fix round 2: a noise switch never sends the ungated microphone', () => {
+  const open: PageCall[] = [];
+  afterEach(async () => { for (const c of open.splice(0)) await c.leave('user').catch(() => undefined); });
+
+  it('keeps the capture closed while the new stage is set, and reports no stale stage state', async () => {
+    const { getStageStatus } = await import('./processor-status.ts');
+    const f = fakes();
+    const states: Array<string | null> = [];
+    f.deps.createInputStage = () => ({ state: 'active', setGain() {}, setGate() {}, setCaptureAllowed() {}, destroy: () => Promise.resolve() });
+    f.deps.createNoiseProcessor = () => ({ setPttActive: vi.fn() });
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'on' });
+    open.push(call);
+    const mic = f.localTracks[0] as FakeTrack & { stopProcessor?: () => Promise<void> };
+    mic.stopProcessor = vi.fn(async () => { states.push(getStageStatus()); });
+    const raw = f.room.localParticipant.publishTrack.mock.calls[0][0] as { enabled: boolean };
+    (mic as unknown as { mediaStreamTrack: unknown }).mediaStreamTrack = raw;
+    expect(raw.enabled).toBe(true);
+    let finish!: () => void;
+    let during: boolean | null = null;
+    mic.setProcessor = vi.fn(() => new Promise<void>((resolve) => { during = raw.enabled; finish = resolve; }));
+    const switching = call.setNoise('off');
+    await flush();
+    expect(during).toBe(false);
+    raw.enabled = true; // LiveKit enabling the track meanwhile is refused while the switch holds it
+    expect(raw.enabled).toBe(false);
+    finish();
+    await switching;
+    expect(states).toEqual([null]);
+    expect(raw.enabled).toBe(true);
+    expect(getStageStatus()).toBe('active');
+  });
 });

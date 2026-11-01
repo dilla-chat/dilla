@@ -3,27 +3,40 @@ package session
 import (
 	"context"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/jonasthim/dilla/internal/bot/music/encode"
 	musicruntime "github.com/jonasthim/dilla/internal/bot/music/runtime"
+	"github.com/jonasthim/dilla/internal/bot/music/spotify"
 )
 
-func TestRuntimeEncoderUsesSpotifyPCMFormat(t *testing.T) {
-	var got musicruntime.PCMFormat
-	wantEncoder := &encoderStub{done: make(chan struct{})}
-	e := RuntimeEncoder{Config: EncoderConfig{Capacity: 7, Options: encode.Options{FFmpegPath: "ffmpeg-test"}, start: func(_ context.Context, _ io.ReadCloser, format musicruntime.PCMFormat, capacity int, options encode.Options) (Encoder, error) {
-		got = format
-		if capacity != 7 || options.FFmpegPath != "ffmpeg-test" {
-			t.Fatalf("config not forwarded: capacity=%d options=%+v", capacity, options)
-		}
-		return wantEncoder, nil
-	}}}
-	if _, err := e.Start(context.Background(), io.NopCloser(nilReader{})); err != nil {
-		t.Fatal(err)
-	}
-	if got != (musicruntime.PCMFormat{SampleRate: 44100, Channels: 2}) {
-		t.Fatalf("PCM format=%+v", got)
+func TestRuntimeEncoderUsesProviderPCMFormat(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		pcm  io.ReadCloser
+		rate int
+	}{
+		{"youtube", io.NopCloser(nilReader{}), 44100},
+		{"spotify", &spotify.Playback{}, 48000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got musicruntime.PCMFormat
+			wantEncoder := &encoderStub{done: make(chan struct{})}
+			e := RuntimeEncoder{Config: EncoderConfig{Capacity: 7, Options: encode.Options{FFmpegPath: "ffmpeg-test"}, start: func(_ context.Context, _ io.ReadCloser, format musicruntime.PCMFormat, capacity int, options encode.Options) (Encoder, error) {
+				got = format
+				if capacity != 7 || options.FFmpegPath != "ffmpeg-test" {
+					t.Fatalf("config not forwarded: capacity=%d options=%+v", capacity, options)
+				}
+				return wantEncoder, nil
+			}}}
+			if _, err := e.Start(context.Background(), tc.pcm); err != nil {
+				t.Fatal(err)
+			}
+			if got != (musicruntime.PCMFormat{SampleRate: tc.rate, Channels: 2}) {
+				t.Fatalf("PCM format=%+v", got)
+			}
+		})
 	}
 }
 
@@ -39,7 +52,7 @@ type youtubePCMStub struct {
 func (s *youtubePCMStub) Start(_ context.Context, input string) (io.ReadCloser, error) {
 	s.input = input
 	s.calls++
-	return io.NopCloser(nilReader{}), nil
+	return io.NopCloser(strings.NewReader("\x00\x01\x02\x03")), nil
 }
 
 func TestYouTubePCMAdaptsCanonicalQueueIDToSandboxURL(t *testing.T) {

@@ -738,8 +738,68 @@ func leafKeyIsRegistered(device store.DeviceRow, leafKey []byte) bool {
 	return len(leafKey) != 0 && bytes.Equal(leafKey, device.DSKPub)
 }
 
+// errCredentialKind is checkCredentialKind's refusal: the credential's `kind` is not the kind of
+// the account it names, or cannot be read, or names no account this instance holds.
+var errCredentialKind = errors.New("the credential's kind is not its account's kind")
+
+// checkCredentialKind binds a leaf credential's self-signed `kind` to the account it names (Task
+// S1). A credential is signed by its own user's SSK, so without this a member could present a
+// Bot-kind leaf and every client that reads a sender's kind from its credential would render that
+// member as a Bot. It is applied wherever a new leaf reaches the delivery service — a published
+// KeyPackage, an Add a commit applies, the leaf an external commit creates, the one leaf a group is
+// registered with, a reseeded tree, a replayed resync, and a directory KeyPackage before it is
+// spent. A human account (users.kind 0) must present a human-kind credential. A Bot account
+// (users.kind 1) is bound more tightly by checkManagedBotCredential: its leaf must be the exact
+// credential its installation verified, which enrolment verified as Bot-kind
+// (internal/bot/identity), so that clause, unchanged, governs it here. Any other users.kind
+// refuses. It fails closed: an unreadable kind or an unknown account is errCredentialKind; any
+// other store failure is returned as is (the caller answers it as an error, never as a pass).
+func checkCredentialKind(ctx context.Context, repo store.Repository, userID id.ID, identity []byte) error {
+	kind, err := decodeCredentialKind(identity)
+	if err != nil {
+		return fmt.Errorf("%w: %w", errCredentialKind, err)
+	}
+	user, err := repo.GetUser(ctx, userID)
+	if errors.Is(err, store.ErrNotFound) {
+		return fmt.Errorf("%w: the account is unknown to this instance", errCredentialKind)
+	}
+	if err != nil {
+		return err
+	}
+	return accountKindVerdict(user.Kind, kind)
+}
+
+// accountKindVerdict is checkCredentialKind's comparison: a human account presents only a
+// human-kind credential; a Bot account is left to checkManagedBotCredential; no other account kind
+// presents any credential.
+func accountKindVerdict(accountKind, credentialKind uint8) error {
+	switch accountKind {
+	case 0:
+		if credentialKind != 0 {
+			return fmt.Errorf("%w: a human account presented a Bot-kind credential", errCredentialKind)
+		}
+		return nil
+	case 1:
+		return nil
+	default:
+		return fmt.Errorf("%w: account kind %d", errCredentialKind, accountKind)
+	}
+}
+
+// credentialKindVerdict maps checkCredentialKind's answer to the caller's refusal: a kind refusal
+// becomes refuse(detail), a store error is passed through.
+func credentialKindVerdict(err error, refuse func(string) error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, errCredentialKind) {
+		return refuse(err.Error())
+	}
+	return err
+}
+
 // checkManagedBotCredential binds a managed account's MLS identity to the final credential the
-// installation verified. Human accounts retain the historical credential path unchanged.
+// installation verified. A human account's credential is bound by checkCredentialKind alone.
 // requireCurrent is true at admission points; member-cache rewrites use false so disabling a Bot
 // does not block unrelated commits that preserve its already admitted leaf.
 func checkManagedBotCredential(ctx context.Context, repo store.Repository, userID id.ID, device store.DeviceRow, identity []byte, requireCurrent bool) (bool, error) {
@@ -820,6 +880,10 @@ func (d *DS) checkAddedMember(ctx context.Context, v DeviceListVerifier, groupID
 		return errCommitInvalid("add_key_package",
 			"the added leaf's signature key is not the device's registered key")
 	}
+	if err := credentialKindVerdict(checkCredentialKind(ctx, d.opts.Store, userID, a.CredentialIdentity),
+		func(detail string) error { return errCommitInvalid("add_key_package", detail) }); err != nil {
+		return err
+	}
 	if _, err := checkManagedBotCredential(ctx, d.opts.Store, userID, device, a.CredentialIdentity, true); err != nil {
 		return errCommitInvalid("add_key_package", "the Bot credential is not the current verified installation credential")
 	}
@@ -891,6 +955,10 @@ func (d *DS) checkExternalJoiner(ctx context.Context, v DeviceListVerifier, grou
 	}
 	if !leafKeyIsRegistered(device, leaf.SignatureKey) {
 		return errCommitInvalid("external_joiner", "the joiner's leaf key is not its device key")
+	}
+	if err := credentialKindVerdict(checkCredentialKind(ctx, d.opts.Store, userID, leaf.CredentialIdentity),
+		func(detail string) error { return errCommitInvalid("external_joiner", detail) }); err != nil {
+		return err
 	}
 	if _, err := checkManagedBotCredential(ctx, d.opts.Store, userID, device, leaf.CredentialIdentity, true); err != nil {
 		return errCommitInvalid("external_joiner", "the Bot credential is not the current verified installation credential")

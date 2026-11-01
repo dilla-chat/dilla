@@ -31,7 +31,9 @@ export const NO_FACTORS: FactorsState = { owed: false, totp: null, passkeys: [],
 export function factorsState(f: Factors): FactorsState {
   return { owed: f.owed, totp: f.totp === null ? null : { confirmedAt: f.totp },
     passkeys: f.passkeys.map((k) => ({ id: toHex(k.credId), name: k.name, created: k.created, lastUsed: k.lastUsed })),
-    backupCodesLeft: f.backupCodesLeft, hasPassword: f.hasPassword };
+    backupCodesLeft: f.backupCodesLeft, hasPassword: f.hasPassword,
+    // Task 11 (Q7): present only when the server knows it.
+    ...(f.passwordChanged !== undefined && f.passwordChanged !== null ? { passwordChanged: f.passwordChanged } : {}) };
 }
 
 const ID = /^[0-9a-f]{32}$/;

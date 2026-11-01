@@ -4,7 +4,7 @@
 //
 // Attacker statement (lesson e): the notifier refuses nothing. What it shows is the body of a message the core
 // already decrypted and the timeline would render, on this device only, and only with the person's own permission.
-import { effectiveNotifyMode, isMuted, mentionsDirectly, suppressesEveryone } from '@dilla/client-core';
+import { effectiveNotifyMode, isMuted, mentionsDirectly, SETTINGS, suppressesEveryone } from '@dilla/client-core';
 import type { CoreClient, Notice, Ring } from '@dilla/client-core';
 import type { PermissionState } from './notify-permission.ts';
 import { t } from './strings/index.ts';
@@ -22,6 +22,8 @@ export interface NotifyContext { permission: PermissionState; settings: Readonly
 export function shouldNotify(notice: Notice, kind: 0 | 3 | 4, ctx: NotifyContext): boolean {
   if (ctx.presenceChoice === undefined || ctx.presenceChoice === 'dnd') return false;
   if (ctx.permission !== 'granted') return false;
+  // Settings → Notifications' Desktop notifications switch (Signal task 10): 'off' silences them on this device.
+  if (ctx.settings[SETTINGS.notifyDesktop] === 'off') return false;
   const server = notice.communityId ?? undefined;
   if (isMuted(ctx.settings, notice.channelId, server)) return false;
   // The person is looking at it: the timeline shows it, so nothing pops up over it.

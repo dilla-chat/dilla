@@ -1,22 +1,36 @@
-/* The main pane's bar (R12, B1): --bar-h high, its hairline at y=48. The header is its own inline-size container, so the
-   fold below follows the room the header really has (the aside open takes it from main), not the viewport. */
-.d-channel-header { container: d-channel-header / inline-size; display: flex; align-items: center; gap: 0.75rem; height: var(--bar-h); padding: 0 var(--row-pad-x); background: var(--bg); border-bottom: 1px solid var(--hairline); min-width: 0; flex-shrink: 0; }
+/* The main pane's header (Signal, README §5.5; the prototype's header): --bar-h (44px) high, padding 0 10px 0 20px,
+   gap 10px, a hairline below. The header is its own inline-size container, so the fold below follows the room the header
+   really has (the aside open takes it from main), not the viewport. */
+.d-channel-header { container: d-channel-header / inline-size; display: flex; align-items: center; gap: 10px; box-sizing: border-box; height: var(--bar-h); padding: 0 10px 0 20px; background: var(--bg); border-bottom: 1px solid var(--hairline); min-width: 0; flex-shrink: 0; }
 /* The channel name is never case-transformed (pre-flight ruling (c)): names of servers, channels and people keep their case. */
-/* The title keeps 8rem (C1) and the name inside it is cut with an ellipsis, never widening the page; the brackets and the
-   caller's actions stay whole. The topic is what gives way first. */
-.d-channel-header__title { display: flex; align-items: center; min-width: 8rem; flex: 0 1 auto; font-size: var(--text-md); font-weight: var(--weight-display); letter-spacing: var(--label-tracking); color: var(--fg); white-space: nowrap; }
-.d-channel-header__name { flex: 0 1 auto; min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; font: inherit; letter-spacing: inherit; }
-.d-channel-header__bracket { flex-shrink: 0; white-space: pre; color: var(--fg-3); font-weight: var(--weight-body); }
-/* C3: the megaphone is a flex item of its own beside the name. */
-.d-channel-header__glyph { display: inline-flex; flex: none; align-items: center; margin-right: 0.25rem; color: var(--fg-3); }
+/* The title: the 14px --fg-3 glyph, 6px, then the name in 13.5px/700. It keeps 8rem (C1) and the name inside it is cut with
+   an ellipsis, never widening the page; the caller's actions stay whole. The topic is what gives way first. */
+/* min-width: the name keeps up to 8rem (C1) but a shorter name is not padded out to it, so the topic follows the name at
+   10px as in the prototype (calc-size; an engine without it falls back to min(8rem, 100%)). */
+.d-channel-header__title { display: flex; align-items: center; gap: 6px; min-width: min(8rem, 100%); min-width: calc-size(max-content, min(size, 8rem)); flex: 0 1 auto; font-size: var(--text-base); font-weight: var(--weight-display); color: var(--fg); white-space: nowrap; }
+.d-channel-header__name { flex: 0 1 auto; min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; font: inherit; }
+/* C3: the glyph is a flex item of its own beside the name. */
+.d-channel-header__glyph { display: inline-flex; flex: none; align-items: center; color: var(--fg-3); }
 .d-channel-header__readable { display: inline-flex; flex: none; color: var(--fg-3); }
-.d-channel-header__topic { flex: 1 1 0; margin: 0; min-width: 0; padding-left: 0.75rem; border-left: 1px solid var(--hairline-2); font-size: var(--text-sm); color: var(--fg-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-/* R27: the caller's icon buttons, pushed to the end; they never shrink. */
-.d-channel-header__actions { margin-left: auto; display: flex; align-items: center; gap: 0.25rem; flex-shrink: 0; }
-/* The "⋯" menu is shown only while the header is narrow; its trigger is a 32px icon button like the rest. */
+/* The topic: 12px --fg-2, cut with an ellipsis. */
+.d-channel-header__topic { flex: 1 1 0; margin: 0; min-width: 0; font-size: var(--text-ui); color: var(--fg-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* R27: the caller's buttons, pushed to the end, 2px apart; they never shrink. */
+.d-channel-header__actions { margin-left: auto; display: flex; align-items: center; gap: 2px; flex-shrink: 0; color: var(--fg-2); }
+/* Signal §5.5: every header button is 28px tall, radius 6px, --fg-2 (--fg on hover, 150ms); an icon with a label (Threads,
+   the member count) has padding 0 8px, gap 6px and 11px text. While its aside is open (pressed) it is --accent on
+   --accent-soft, which, with aria-pressed, replaces the old 2px bar. */
+.d-channel-header__actions .d-icon-button { width: 1.75rem /* 28px */; height: 1.75rem; border-radius: var(--r-md); color: var(--fg-2); }
+.d-channel-header__actions .d-icon-button svg { width: 14px; height: 14px; }
+.d-channel-header__actions .d-btn { height: 1.75rem; gap: 6px; padding: 0 8px; border: 0; font-size: var(--text-xs); color: var(--fg-2); background: transparent; border-color: transparent; border-radius: var(--r-md); box-shadow: none; transition: color var(--duration-fast), background var(--duration-fast); }
+.d-channel-header__actions .d-btn__label { display: inline-flex; align-items: center; gap: 6px; }
+.d-channel-header__actions :is(.d-icon-button, .d-btn):hover { color: var(--fg); background: transparent; }
+.d-channel-header__actions :is(.d-icon-button, .d-btn)[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); border-color: transparent; box-shadow: none; }
+/* The "⋯" menu is shown only while the header is narrow; its trigger is a 28px icon button like the rest. */
 .d-channel-header .d-channel-header__more { display: none; }
-.d-channel-header__more .d-channel-header__more-trigger { width: 2rem; height: 2rem; padding: 0; border: 0; border-radius: 0; color: var(--fg-2); }
-.d-channel-header__more .d-channel-header__more-trigger:hover, .d-channel-header__more .d-channel-header__more-trigger[aria-expanded="true"] { color: var(--fg); background: var(--surface-hi); border-color: transparent; }
+/* Ruling U: a header whose menu holds the actions the prototype has no button for shows it at every width. */
+.d-channel-header[data-overflow="always"] .d-channel-header__more { display: inline-flex; }
+.d-channel-header__more .d-channel-header__more-trigger { width: 1.75rem; height: 1.75rem; padding: 0; border: 0; border-radius: var(--r-md); color: var(--fg-2); }
+.d-channel-header__more .d-channel-header__more-trigger:hover, .d-channel-header__more .d-channel-header__more-trigger[aria-expanded="true"] { color: var(--fg); background: var(--hover); border-color: transparent; }
 /* Below 36rem of header width the foldable actions hide (their tooltip anchor with them) when there is a menu to take them, the topic goes, and the menu shows. */
 @container d-channel-header (max-width: 36rem) {
   .d-channel-header[data-overflow] .d-channel-header__actions [data-foldable], .d-channel-header[data-overflow] .d-channel-header__actions .d-tooltip-anchor:has(> [data-foldable]) { display: none; }

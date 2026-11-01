@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import * as bot from './protocol.ts';
+import { decodeMusicProviderStatus, encodeMusicProviderStatus } from './provider-status.ts';
 import { decode, encode } from '../cbor/index.ts';
 
 const id = (n: number) => new Uint8Array(16).fill(n);
@@ -14,6 +15,13 @@ describe('bot application codecs', () => {
     expect(decoded.operation).toBe(0);
     expect(bot.validateBotContext(decoded, { community: id(2), now: 100n })).toBeUndefined();
     expect(() => bot.validateBotContext(decoded, { community: id(3), now: 100n })).toThrow(bot.BotError);
+  });
+
+  it('encodes provider status as a channel-free read with no arguments', () => {
+    const status = request(24);
+    expect(bot.decodeBotRequest(bot.encodeBotRequest(status))).toMatchObject({ operation: 24, channelId: null, revision: null, expires: null, args: [] });
+    expect(() => bot.encodeBotRequest({ ...status, channelId: id(3) })).toThrow(bot.BotError);
+    expect(() => bot.encodeBotRequest({ ...status, args: [1n] })).toThrow(bot.BotError);
   });
 
   it('preserves uint64 values exactly and rejects wrong operation arguments', () => {
@@ -149,4 +157,26 @@ describe('bot application codecs', () => {
     expect(() => bot.encodeBotGroupRegistrationReceipt({ ...receipt, registrationSHA256: new Uint8Array(32), acceptedGeneration: 1n << 63n })).toThrow(bot.BotError);
     expect(() => bot.encodeBotGroupRegistrationReceipt({ ...receipt, registrationSHA256: new Uint8Array(32), nextSequence: 0n })).toThrow(bot.BotError);
   });
+});
+
+describe('music provider status', () => {
+  it('roundtrips a bounded versioned snapshot and rejects unknown enums', () => {
+    const snapshot = { version: 1 as const, installationId: id(9), observedAt: 1_800_000_000n,
+      spotifyAccount: 'linked' as const, spotifyAccountReason: 'none' as const,
+      spotifyPlayback: 'configured' as const, spotifyPlaybackReason: 'none' as const,
+      youtubePlayback: 'missing_requirements' as const, youtubePlaybackReason: 'dependencies_missing' as const };
+    expect(decodeMusicProviderStatus(encodeMusicProviderStatus(snapshot))).toEqual(snapshot);
+    expect(() => decodeMusicProviderStatus(encode([1n, id(9), 1n, 99n, 0n, 1n, 0n, 2n, 1n]))).toThrow();
+  });
+});
+
+
+it('roundtrips optional expected-current skip arguments and rejects malformed guards', () => {
+  for (const args of [[], ['ab'.repeat(16)], ['']]) {
+    const input = { ...request(15, args), channelId: id(3), revision: 0n, expires: 110n };
+    expect(bot.decodeBotRequest(bot.encodeBotRequest(input)).args).toEqual(args);
+  }
+  for (const args of [[null], [1n], ['bad-id'], ['ab'.repeat(16), 'cd'.repeat(16)]]) {
+    expect(() => bot.encodeBotRequest({ ...request(15, args), channelId: id(3), revision: 0n, expires: 110n })).toThrow(bot.BotError);
+  }
 });

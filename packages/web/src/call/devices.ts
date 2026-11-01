@@ -1,6 +1,7 @@
 // Capture for a call (flow 06 § States): the microphone, with listen-only outcomes instead of errors, the camera and
 // the screen with whatever sound the browser gives (#37). Nothing here publishes; the session does.
 import { MIC_CAPTURE, SCREEN_AUDIO_CAPTURE, SCREEN_DISPLAY_HINTS } from '@dilla/media';
+import { DEFAULT_SHARE_OPTIONS, shareVideoConstraints, type ShareOptions } from './share-options.ts';
 
 export interface CaptureMedia {
   getUserMedia(constraints: MediaStreamConstraints): Promise<MediaStream>;
@@ -14,9 +15,10 @@ export type MicResult = { track: MediaStreamTrack } | { mic: 'denied' | 'missing
 
 const stopAll = (s: MediaStream): void => { for (const t of s.getTracks()) t.stop(); };
 
-function micConstraints(input: string, noise = true): MediaStreamConstraints {
-  const capture = { echoCancellation: MIC_CAPTURE.echoCancellation, noiseSuppression: noise,
-    autoGainControl: MIC_CAPTURE.autoGainControl } as MediaTrackConstraints;
+/** Signal task 10b: `processing` is Settings → Voice's echo cancellation and automatic gain (both on by default). */
+function micConstraints(input: string, noise = true, processing?: { echo: boolean; agc: boolean }): MediaStreamConstraints {
+  const capture = { echoCancellation: processing?.echo ?? MIC_CAPTURE.echoCancellation, noiseSuppression: noise,
+    autoGainControl: processing?.agc ?? MIC_CAPTURE.autoGainControl } as MediaTrackConstraints;
   return { audio: input === '' ? capture : { deviceId: { exact: input }, ...capture } };
 }
 
@@ -24,7 +26,7 @@ function micConstraints(input: string, noise = true): MediaStreamConstraints {
  * The microphone: 'denied' when the person or the browser refused it, 'missing' when there is none (none listed, not
  * found, or unreadable). A chosen input that is gone falls back to the system default once.
  */
-export async function acquireMic(media: CaptureMedia, input: string, noise = true): Promise<MicResult> {
+export async function acquireMic(media: CaptureMedia, input: string, noise = true, processing?: { echo: boolean; agc: boolean }): Promise<MicResult> {
   let devices: MediaDeviceInfo[] = [];
   try {
     devices = await media.enumerateDevices();
@@ -34,7 +36,7 @@ export async function acquireMic(media: CaptureMedia, input: string, noise = tru
   if (!devices.some((d) => d.kind === 'audioinput')) return { mic: 'missing' };
   const attempt = async (id: string): Promise<MicResult | 'retry'> => {
     try {
-      const stream = await media.getUserMedia(micConstraints(id, noise));
+      const stream = await media.getUserMedia(micConstraints(id, noise, processing));
       const track = stream.getAudioTracks()[0];
       if (track === undefined) {
         stopAll(stream);
@@ -78,9 +80,14 @@ export interface ScreenCapture { video: MediaStreamTrack; audio: MediaStreamTrac
  * - On Linux only a tab's sound; Firefox and Safari give none (https://bugzilla.mozilla.org/show_bug.cgi?id=1541425).
  * The call's own playback is asked to be left out (`restrictOwnAudio`, Chrome 141+) and never checked (D5). The audio
  * hints are stated, not left to defaults. Whatever audio comes back is returned, and the session publishes it.
+ *
+ * Signal task 8c: the picker's options shape the request: the surface the browser's picker opens on, the largest frame and
+ * the frame rate (`shareVideoConstraints`), and sound only with `systemAudio` (off: `audio: false`, and the system and window
+ * sound hints say exclude, so the browser offers none).
  */
-export async function acquireScreen(media: DisplayMedia): Promise<ScreenCapture> {
-  const stream = await media.getDisplayMedia({ video: true, audio: { ...SCREEN_AUDIO_CAPTURE }, ...SCREEN_DISPLAY_HINTS });
+export async function acquireScreen(media: DisplayMedia, o: ShareOptions = DEFAULT_SHARE_OPTIONS): Promise<ScreenCapture> {
+  const hints = o.systemAudio ? SCREEN_DISPLAY_HINTS : { ...SCREEN_DISPLAY_HINTS, systemAudio: 'exclude' as const, windowAudio: 'exclude' as const };
+  const stream = await media.getDisplayMedia({ video: shareVideoConstraints(o), audio: o.systemAudio ? { ...SCREEN_AUDIO_CAPTURE } : false, ...hints });
   const video = stream.getVideoTracks()[0];
   if (video === undefined) {
     stopAll(stream);

@@ -18,7 +18,6 @@ import (
 
 	"github.com/fxamacker/cbor/v2"
 	"github.com/livekit/protocol/livekit"
-	"github.com/pressly/goose/v3"
 
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/auth"
@@ -30,7 +29,7 @@ import (
 	"github.com/jonasthim/dilla/internal/sfu"
 	"github.com/jonasthim/dilla/internal/store"
 	"github.com/jonasthim/dilla/internal/store/sqlite"
-	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
+	"github.com/jonasthim/dilla/internal/store/sqlite/sqlitetest"
 )
 
 // env is the shared internal/api harness Plan 2's handler tests build on: a
@@ -58,16 +57,10 @@ type env struct {
 func newEnv(t *testing.T) *env {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "dilla.db")
+	sqlitetest.MigratedFile(t, path)
 	write, err := sqlite.OpenWrite(path)
 	if err != nil {
 		t.Fatalf("OpenWrite: %v", err)
-	}
-	p, err := goose.NewProvider(goose.DialectSQLite3, write, sqlitemigrations.FS)
-	if err != nil {
-		t.Fatalf("goose provider: %v", err)
-	}
-	if _, err := p.Up(context.Background()); err != nil {
-		t.Fatalf("migrate: %v", err)
 	}
 	read, err := sqlite.OpenRead(path)
 	if err != nil {
@@ -390,6 +383,7 @@ type stubSFU struct {
 	created    []string // rooms CreateRoom was asked to open
 	createFail error
 	updates    []permUpdate
+	attrs      []attrUpdate // UpdateAttributes calls (task 8c)
 	updateFail error
 	absent     map[string]bool  // identities UpdatePermission answers sfu.ErrNoParticipant for
 	onUpdate   func(permUpdate) // runs after the update is recorded, outside the lock
@@ -629,6 +623,29 @@ func (s *stubSFU) minted() [][2]string {
 		out = append(out, [2]string{m.Room, m.Identity})
 	}
 	return out
+}
+
+// attrUpdate is one UpdateAttributes call (task 8c's dilla.rtt).
+type attrUpdate struct {
+	Room, Identity string
+	Attrs          map[string]string
+}
+
+// UpdateAttributes records the call; an identity in absent answers sfu.ErrNoParticipant.
+func (s *stubSFU) UpdateAttributes(_ context.Context, room, identity string, attrs map[string]string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.absent[identity] {
+		return sfu.ErrNoParticipant
+	}
+	s.attrs = append(s.attrs, attrUpdate{Room: room, Identity: identity, Attrs: attrs})
+	return nil
+}
+
+func (s *stubSFU) attrUpdates() []attrUpdate {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]attrUpdate(nil), s.attrs...)
 }
 
 func (s *stubSFU) lastMint() mint {

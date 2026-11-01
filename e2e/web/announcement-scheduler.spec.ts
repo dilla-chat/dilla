@@ -2,13 +2,18 @@ import { randomBytes } from 'node:crypto';
 import { expect } from '@playwright/test';
 import { arr, decode, encode } from '../../packages/client-core/src/cbor/index';
 import { test as appTest, addServerVia, completeSignUp, copy, makeInviteLink, newAccount, signUp, type Account } from './support/app';
-import { startTestHost, type HostConfig, type StartedHost } from './support/host';
+import { prepareBotRuntimeBinaries, startTestHost, type HostConfig, type StartedHost } from './support/host';
 
 const HOST: HostConfig = { port: 8521, control: 8522, webRoot: 'packages/web/dist', botRuntime: true, advanceClockWithWall: true };
 const SERVER = 'Announcement Scheduler Acceptance';
 const MESSAGE = `scheduled browser notice ${randomBytes(5).toString('hex')}`;
 
 appTest.use({ baseURL: `http://127.0.0.1:${String(HOST.port)}` });
+
+appTest.beforeAll(async () => {
+  appTest.setTimeout(360_000);
+  await prepareBotRuntimeBinaries();
+});
 
 /** Capture actual core-worker replies from the shipping UI and provide a test call over that same authenticated worker. */
 function installCoreWorkerBridge(): void {
@@ -175,16 +180,16 @@ appTest('creates and sends a one-off announcement through the browser client, th
     await expect(textChannel).toBeVisible();
     await textChannel.click();
 
-    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
     const settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
     await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
       .getByRole('button', { name: copy('admin.nav.bot'), exact: true }).click();
-    await settings.getByRole('checkbox', { name: copy('admin.bot.capability.announcements'), exact: true }).check();
-    await settings.getByRole('button', { name: copy('admin.bot.enable'), exact: true }).click();
+    await settings.getByRole('switch', { name: copy('serverSettings.bot.cap.announcements'), exact: true }).click();
+    await settings.getByRole('button', { name: copy('serverSettings.bot.enable'), exact: true }).click();
     const stepUp = page.getByRole('dialog', { name: copy('factorSettings.stepUp.title'), exact: true });
     await stepUp.getByLabel(copy('factorSettings.stepUp.password'), { exact: true }).fill(account.password);
     await stepUp.getByRole('button', { name: copy('factorSettings.stepUp.confirm'), exact: true }).click();
-    await expect(settings.getByRole('status')).toHaveText(copy('admin.bot.status.ready'), { timeout: 90_000 });
+    await expect(settings.locator('.dw-bot-settings').getByRole('status').filter({ hasText: copy('admin.bot.status.ready') })).toHaveText(copy('admin.bot.status.ready'), { timeout: 90_000 });
     await page.keyboard.press('Escape');
 
     const welcomeSettingsId = await botInteraction(page, communityId, 1, [5], null);
@@ -255,16 +260,16 @@ appTest('paired restore refuses a stale managed Bot announcement until a member 
     const channelId = channel.channelId;
     await page.getByRole('button', { name: 'general', exact: true }).click();
 
-    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
     const settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
     await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
       .getByRole('button', { name: copy('admin.nav.bot'), exact: true }).click();
-    await settings.getByRole('checkbox', { name: copy('admin.bot.capability.announcements'), exact: true }).check();
-    await settings.getByRole('button', { name: copy('admin.bot.enable'), exact: true }).click();
+    await settings.getByRole('switch', { name: copy('serverSettings.bot.cap.announcements'), exact: true }).click();
+    await settings.getByRole('button', { name: copy('serverSettings.bot.enable'), exact: true }).click();
     const stepUp = page.getByRole('dialog', { name: copy('factorSettings.stepUp.title'), exact: true });
     await stepUp.getByLabel(copy('factorSettings.stepUp.password'), { exact: true }).fill(account.password);
     await stepUp.getByRole('button', { name: copy('factorSettings.stepUp.confirm'), exact: true }).click();
-    await expect(settings.getByRole('status')).toHaveText(copy('admin.bot.status.ready'), { timeout: 90_000 });
+    await expect(settings.locator('.dw-bot-settings').getByRole('status').filter({ hasText: copy('admin.bot.status.ready') })).toHaveText(copy('admin.bot.status.ready'), { timeout: 90_000 });
     await page.keyboard.press('Escape');
 
     const welcomeSettingsId = await botInteraction(page, communityId, 1, [5], null);

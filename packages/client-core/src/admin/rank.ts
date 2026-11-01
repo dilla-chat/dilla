@@ -8,7 +8,7 @@ import type { CommunityAccess, RoleSummary } from '../state/types';
 export function accessOf(bits: bigint, top: number, owner: boolean): CommunityAccess {
   const all = owner || (bits & BigInt(PERM.administrator)) !== 0n;
   const has = (bit: number): boolean => all || (bits & BigInt(bit)) !== 0n;
-  return { top, owner, manageCommunity: has(PERM.manageCommunity), manageChannels: has(PERM.manageChannels),
+  return { top, owner, manageCommunity: has(PERM.manageCommunity), viewAuditLog: has(PERM.viewAuditLog), manageChannels: has(PERM.manageChannels),
     kickMembers: has(PERM.kickMembers), banMembers: has(PERM.banMembers), moderateMembers: has(PERM.moderateMembers), manageMessages: has(PERM.manageMessages), createInvite: has(PERM.createInvite),
     manageRoles: has(PERM.manageRoles), loaded: true, everyoneId: '', overwritesLoaded: false };
 }

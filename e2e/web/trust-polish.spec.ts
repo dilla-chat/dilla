@@ -49,7 +49,7 @@ test('Copy alone does not approve; explicit exact-key comparison admits new traf
   await peer.send('pending rotation');
   await expect(page.getByRole('alert')).toContainText(copy('privacy.changed'), { timeout: WAIT });
   await expect(composerBox(page, peer.channelName)).toHaveAttribute('aria-disabled', 'true');
-  await openSettings(page, 'privacy');
+  const settings = await openSettings(page, 'privacy');
   await page.getByRole('button', { name: copy('privacy.compare', { name: shownName(setup) }) }).click();
   const dialog = page.getByRole('dialog', { name: copy('privacy.title') });
   await expect(dialog).toContainText(copy('privacy.instructions'));
@@ -68,7 +68,8 @@ test('Copy alone does not approve; explicit exact-key comparison admits new traf
   await approve.click();
   await expect(dialog).toHaveCount(0);
   // W-11 / P7: focus lands on the Privacy heading after an approval.
-  await expect(page.getByRole('heading', { name: copy('privacy.section'), level: 2 })).toBeFocused();
+  await expect(settings.locator('[data-doc-state="trust-privacy"]')
+    .getByRole('heading', { name: copy('privacy.section'), exact: true, level: 2 })).toBeFocused();
   await page.getByRole('button', { name: copy('settings.close') }).click();
   // P2: what the contact sent under the new key before the comparison was held, and is readable once it is verified.
   await expect(page.getByText('pending rotation')).toBeVisible({ timeout: WAIT });

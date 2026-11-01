@@ -31,11 +31,15 @@ func TestBotSpotifyAuthorizationFailsClosedWithoutRegisteredOAuthConfig(t *testi
 		t.Fatalf("negotiate member: %d", rec.Code)
 	}
 	base := "/v1/communities/" + cid.String() + "/bot/spotify/attempts"
-	body := mustCBOR(t, []any{"unused-step-up"})
+	config := "/v1/communities/" + cid.String() + "/bot/spotify/config"
+	if rec := doBotCBOR(h, http.MethodGet, config, nil, "Bearer "+memberToken); rec.Code != http.StatusForbidden {
+		t.Fatalf("member config=%d, want 403", rec.Code)
+	}
+	body := mustCBOR(t, []any{"unused-step-up", "publicclient"})
 	for _, tc := range []struct {
 		token string
 		want  int
-	}{{"", http.StatusUnauthorized}, {memberToken, http.StatusForbidden}, {ownerToken, http.StatusServiceUnavailable}} {
+	}{{"", http.StatusUnauthorized}, {memberToken, http.StatusForbidden}, {ownerToken, http.StatusForbidden}} {
 		rec := doBotCBOR(h, http.MethodPost, base, body, "Bearer "+tc.token)
 		if rec.Code != tc.want {
 			t.Fatalf("authorize with token=%q: %d (%x), want %d", tc.token, rec.Code, rec.Body.Bytes(), tc.want)
@@ -59,8 +63,8 @@ func TestBotSpotifyPKCECallbackIsSessionBoundAndRuntimeClaimIsRetryable(t *testi
 		manager = botruntime.New(d.Repo, d.Clock.Now)
 		d.BotRuntime = manager
 		d.StepUps = api.NewStepUps(d.Clock, api.StepUpTTL)
-		d.BotSpotifyClientID = "public-client"
-		d.BotSpotifyRedirectURL = "https://dilla.example/settings/bot/music/spotify/callback"
+		d.BotSpotifyClientID = ""
+		d.BotSpotifyRedirectURL = ""
 	})
 	owner, _, ownerToken := seedAPISession(t, deps)
 	other, _, otherToken := seedAPISession(t, deps)
@@ -91,13 +95,22 @@ func TestBotSpotifyPKCECallbackIsSessionBoundAndRuntimeClaimIsRetryable(t *testi
 	if err := deps.Repo.CreateBotInstallation(ctx, store.BotInstallationRow{ID: id.New(), CommunityID: cid, RuntimeID: &runtimeID, State: store.BotInstallationReady, Revision: 1, ApprovedBy: owner.ID, ApprovedAt: now, Created: now, Updated: now}); err != nil {
 		t.Fatal(err)
 	}
+	configPath := "/v1/communities/" + cid.String() + "/bot/spotify/config"
+	configBefore := doBotCBOR(h, http.MethodGet, configPath, nil, "Bearer "+ownerToken)
+	if configBefore.Code != http.StatusOK {
+		t.Fatalf("config before begin=%d (%x)", configBefore.Code, configBefore.Body.Bytes())
+	}
+	var before []any
+	if err := cborx.Unmarshal(configBefore.Body.Bytes(), &before); err != nil || len(before) != 2 || before[0] != "" || before[1] != "https://dilla.test/settings/bot/music/spotify/callback" {
+		t.Fatalf("unexpected initial config: %v %x", err, configBefore.Body.Bytes())
+	}
 	sess, err := deps.Sessions.Resolve(ctx, ownerToken)
 	if err != nil {
 		t.Fatal(err)
 	}
 	step, _ := deps.StepUps.Issue(owner.ID, sess.TokenHash)
 	base := "/v1/communities/" + cid.String() + "/bot/spotify/attempts"
-	start := doBotCBOR(h, http.MethodPost, base, mustCBOR(t, []any{step}), "Bearer "+ownerToken)
+	start := doBotCBOR(h, http.MethodPost, base, mustCBOR(t, []any{step, "publicclient"}), "Bearer "+ownerToken)
 	if start.Code != http.StatusOK {
 		t.Fatalf("begin = %d (%x)", start.Code, start.Body.Bytes())
 	}
@@ -111,8 +124,22 @@ func TestBotSpotifyPKCECallbackIsSessionBoundAndRuntimeClaimIsRetryable(t *testi
 		t.Fatal(err)
 	}
 	q := authorize.Query()
-	if authorize.Host != "accounts.spotify.com" || q.Get("redirect_uri") != "https://dilla.example/settings/bot/music/spotify/callback" || q.Get("code_challenge_method") != "S256" {
+	if authorize.Host != "accounts.spotify.com" || q.Get("client_id") != "publicclient" || q.Get("redirect_uri") != "https://dilla.test/settings/bot/music/spotify/callback" || q.Get("code_challenge_method") != "S256" {
 		t.Fatalf("unexpected authorization URL: %s", authorize)
+	}
+	configAfter := doBotCBOR(h, http.MethodGet, configPath, nil, "Bearer "+ownerToken)
+	var after []any
+	if configAfter.Code != http.StatusOK || cborx.Unmarshal(configAfter.Body.Bytes(), &after) != nil || len(after) != 2 || after[0] != "publicclient" {
+		t.Fatalf("setting not saved: %d %x", configAfter.Code, configAfter.Body.Bytes())
+	}
+	inst, err := deps.Repo.GetActiveBotInstallationByCommunity(ctx, cid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeConfig := doBotCBOR(h, http.MethodGet, "/v1/bot-runtime/installations/"+inst.ID.String()+"/spotify/config", nil, "Bearer "+runtimeToken)
+	var botConfig []any
+	if runtimeConfig.Code != http.StatusOK || cborx.Unmarshal(runtimeConfig.Body.Bytes(), &botConfig) != nil || len(botConfig) != 2 || botConfig[0] != "publicclient" || botConfig[1] != before[1] {
+		t.Fatalf("runtime did not receive setting: %d %x", runtimeConfig.Code, runtimeConfig.Body.Bytes())
 	}
 	wrong := doBotCBOR(h, http.MethodPost, base+"/"+attempt.String()+"/callback", mustCBOR(t, []any{q.Get("state"), "authorization-code"}), "Bearer "+otherToken)
 	if wrong.Code != http.StatusNotFound {
@@ -130,14 +157,14 @@ func TestBotSpotifyPKCECallbackIsSessionBoundAndRuntimeClaimIsRetryable(t *testi
 	if err := cborx.Unmarshal(callback.Body.Bytes(), &accepted); err != nil || len(accepted) != 1 || accepted[0] != uint64(1) {
 		t.Fatalf("callback claimed connection: %v %x", err, callback.Body.Bytes())
 	}
-	inst, err := deps.Repo.GetActiveBotInstallationByCommunity(ctx, cid)
-	if err != nil {
-		t.Fatal(err)
-	}
 	claimPath := "/v1/bot-runtime/installations/" + inst.ID.String() + "/spotify/claim"
 	var wrongRuntimeToken string
 	if _, err := manager.Create(ctx, func(_ id.ID, token string) error { wrongRuntimeToken = token; return nil }); err != nil {
 		t.Fatal(err)
+	}
+	wrongRuntimeConfig := doBotCBOR(h, http.MethodGet, "/v1/bot-runtime/installations/"+inst.ID.String()+"/spotify/config", nil, "Bearer "+wrongRuntimeToken)
+	if wrongRuntimeConfig.Code != http.StatusForbidden {
+		t.Fatalf("unassigned runtime config=%d, want 403", wrongRuntimeConfig.Code)
 	}
 	wrongRuntime := doBotCBOR(h, http.MethodPost, claimPath, nil, "Bearer "+wrongRuntimeToken)
 	if wrongRuntime.Code != http.StatusForbidden {

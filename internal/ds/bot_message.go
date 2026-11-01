@@ -74,6 +74,12 @@ func (d *DS) AcceptBotMessage(ctx context.Context, r BotMessageRequest) (BotMess
 	unlock := d.lock(r.GroupID)
 	defer unlock()
 
+	// Native work and SQL use the same pool-before-transaction order as uploads.
+	wasm, err := d.opts.Wasm.Acquire(ctx)
+	if err != nil {
+		return BotMessageResult{}, err
+	}
+	defer wasm.Release()
 	var result BotMessageResult
 	var upload UploadResult
 	var acceptedDevice id.ID
@@ -203,11 +209,6 @@ func (d *DS) AcceptBotMessage(ctx context.Context, r BotMessageRequest) (BotMess
 		} else if group.Kind == groupKindText && group.CommunityID != nil {
 			return errors.New("managed Bot message acceptance requires transaction-scoped post policy")
 		}
-		wasm, err := d.opts.Wasm.Acquire(ctx)
-		if err != nil {
-			return err
-		}
-		defer wasm.Release()
 		meta, err := wasm.PrivateMessageAAD(ctx, r.Ciphertext)
 		if err != nil {
 			return errCommitmentInvalid(0)

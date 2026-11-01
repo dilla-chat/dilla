@@ -19,7 +19,7 @@ describe('flow 08 (v0.1.0-web3.4, server admin and moderation)', () => {
     const listed = new Set(pairs.map(([key]) => key));
     const added = Object.keys(en).filter(k => /^(admin|members|mod|removed)\./.test(k));
     expect(added.filter(k => !listed.has(k))).toEqual([]);
-    expect(pairs.length).toBe(392);
+    expect(pairs.length).toBe(410); // Task 10c fix round 1 removed admin.bot.music.chatHelp; Task 11 (Q5) adds members.playingIn and idleIn
   });
   it('sections: States, Keyboard map, Focus rules and Announcements have content, and States has 13 or more rows', () => {
     const body = (title: string) => {

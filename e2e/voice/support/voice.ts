@@ -213,11 +213,11 @@ export async function axeEverywhere(page: Page, state: string): Promise<void> {
   const viewport = page.viewportSize();
   const theme = await page.evaluate(() => document.documentElement.dataset.theme ?? null);
   try {
-    for (const name of ['mesh', 'light', 'high-contrast'] as const) {
+    for (const name of ['signal', 'light', 'high-contrast'] as const) {
       await page.evaluate((n) => { document.documentElement.dataset.theme = n; }, name);
       await expectAccessible(page, `${state} in the ${name} theme`);
     }
-    await page.evaluate((n) => { document.documentElement.dataset.theme = n; }, 'mesh');
+    await page.evaluate((n) => { document.documentElement.dataset.theme = n; }, 'signal');
     await page.setViewportSize({ width: 360, height: 740 });
     await expectAccessible(page, `${state} at 360×740`);
   } finally {
@@ -238,9 +238,17 @@ export async function openDm(page: Page, dmId: string, name: string): Promise<vo
   await expect(page).toHaveURL(new RegExp(`/dm/${dmId}$`), { timeout: WAIT });
   await expect(dmComposer(page)).toBeEnabled({ timeout: WAIT });
 }
-/** The DM header's `call` (no live call) or `join call` icon button (web3.9 N1). */
-export function stripButton(page: Page, key: 'call.start' | 'call.join'): Locator {
-  return page.locator('.d-channel-header, .d-phone-header').getByRole('button', { name: copy(key), exact: true });
+/**
+ * Ruling Z (Jonas 2026-10-27): the open DM's `call` / `join call` is its row's context-menu item (and Control/⌘+Shift+Enter), not a
+ * header button. `click()` right-clicks the open DM's row and picks it.
+ */
+export function stripButton(page: Page, key: 'call.start' | 'call.join'): { click(): Promise<void> } {
+  return {
+    async click() {
+      await dmsNav(page).locator('.d-chrow[aria-current="page"]').click({ button: 'right' });
+      await page.getByRole('menuitem', { name: copy(key), exact: true }).click();
+    },
+  };
 }
 /** The incoming rings on screen (L-UI-70), each with `data-ring` `incoming` or `busy`. */
 export function rings(page: Page): Locator { return page.locator('.d-ring-banner__ring'); }
@@ -290,6 +298,9 @@ export async function pushToTalk(page: Page, code: string): Promise<void> {
   await ptt.click();
   await expect(ptt).toHaveAttribute('aria-checked', 'true', { timeout: WAIT });
   await dialog.getByRole('button', { name: copy('settings.voice.pttSet'), exact: true }).click();
+  // Ruling AX (Signal task 10b fix round 1): while listening the key box says "Press a key…" and the button is Cancel.
+  await expect(dialog.locator('.d-voice-settings__kbd')).toHaveText(copy('signalSettings.voice.pttListening'), { timeout: WAIT });
+  await expect(dialog.getByRole('button', { name: copy('signalSettings.voice.pttCancel'), exact: true })).toBeFocused();
   await page.keyboard.press(code);
   await expect(dialog.locator('.d-voice-settings__kbd')).toHaveText(code, { timeout: WAIT });
   await closeSettings(page);
@@ -365,6 +376,19 @@ export function screenTile(page: Page, name: string): Locator {
   return stage(page).locator('.d-call-tile[data-source="screen"]:not([data-own])').filter({
     has: page.locator('.d-call-tile__name', { hasText: new RegExp(`^${escapeRegExp(copy('stage.screen', { name }))}$`) }),
   });
+}
+/**
+ * Task 8c: starts this page's screen share from a channel's call bar: Share opens the share picker, `pick` names the choices
+ * to click there by their words (e.g. 'Tab', '720p', '15'), and Go live starts it (the click is getDisplayMedia's activation).
+ */
+export async function startShare(page: Page, pick: readonly string[] = []): Promise<void> {
+  const controls = page.getByRole('toolbar', { name: copy('voice.controls.voice'), exact: true });
+  await controls.locator('[data-control="share"]').click();
+  const picker = page.getByRole('dialog', { name: copy('callStage.share.title'), exact: true });
+  await expect(picker).toBeVisible();
+  for (const word of pick) await picker.getByRole('radio', { name: word, exact: true }).click();
+  await picker.getByRole('button', { name: copy('callStage.share.go'), exact: true }).click();
+  await expect(picker).toHaveCount(0);
 }
 /** `tileState`: the `data-voice-state` of that tile ('connecting', 'not-heard', 'ok' or 'unverified'). */
 export async function tileState(page: Page, name: string): Promise<string | null> {

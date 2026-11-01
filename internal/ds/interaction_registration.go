@@ -47,6 +47,7 @@ type CurrentBotInteractionGroupContext struct {
 	LeafCount    uint64
 	TreeHash     []byte
 	Roster       []InteractionGroupLeaf
+	verification *deviceListScope
 }
 
 // CurrentBotInteractionGroupContext loads the accepted kind-3 registration and imports
@@ -99,7 +100,14 @@ func (d *DS) withCurrentBotInteractionGroupRead(ctx context.Context, groupID id.
 	}
 	unlock := d.lock(groupID)
 	defer unlock()
-	err := d.opts.Store.Tx(ctx, func(tx store.Repository) error {
+	// Reserve the guest before SQL, matching uploads and other native writers.
+	// Keep it through the callback, whose signed-list checks borrow this lease.
+	instance, err := d.opts.Wasm.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer instance.Release()
+	err = d.opts.Store.Tx(ctx, func(tx store.Repository) error {
 		// Match the repository lock order used by message uploads and permission mutations:
 		// community first, then group. This initial read only chooses the community fence; the
 		// group row is reloaded after both locks and must still have the same scope.
@@ -148,16 +156,6 @@ func (d *DS) withCurrentBotInteractionGroupRead(ctx context.Context, groupID id.
 		if len(row.PublicGroupState) == 0 {
 			return errors.New("ds: current kind-3 group has no persisted public state")
 		}
-		instance, err := d.opts.Wasm.Acquire(ctx)
-		if err != nil {
-			return err
-		}
-		instanceHeld := true
-		defer func() {
-			if instanceHeld {
-				instance.Release()
-			}
-		}()
 		group, err := instance.PublicGroupImport(ctx, row.PublicGroupState, groupID[:])
 		if err != nil {
 			return errors.New("ds: current kind-3 public state cannot be imported")
@@ -224,9 +222,10 @@ func (d *DS) withCurrentBotInteractionGroupRead(ctx context.Context, groupID id.
 			return err
 		}
 		groupOpen = false
-		instance.Release()
-		instanceHeld = false
-		return fn(out, tx)
+		return withBorrowedDeviceListVerifier(ctx, d.opts.Wasm, instance, func(scoped context.Context) error {
+			out.verification, _ = scoped.Value(deviceListScopeKey{}).(*deviceListScope)
+			return fn(out, tx)
+		})
 	})
 	return err
 }

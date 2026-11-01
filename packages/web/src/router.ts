@@ -1,17 +1,11 @@
-import { useMemo, useSyncExternalStore } from 'react';
+import { useSyncExternalStore } from 'react';
 import { errorOf, type UiError } from './core/errors.ts';
 import type { PhoneTab } from './layout.ts';
+import type { ServerSettingsSection, SettingsSection } from './settings/registry.ts';
+import { SETTINGS_REGISTRY } from './settings/registry.ts';
 
-export type SettingsSection =
-  | 'profile'
-  | 'devices'
-  | 'signin'
-  | 'notifications'
-  | 'appearance'
-  | 'voice'
-  | 'privacy'
-  | 'keyboard'
-  | 'diagnostics';
+export type { ServerSettingsSection, SettingsSection } from './settings/registry.ts';
+
 export type SignInNotice = 'race' | 'evicted';
 export type Route = { name: 'root' } | { name: 'welcome'; invite: string | null; signin: SignInNotice | null }
   | { name: 'channel'; communityId: string; channelId: string | null }
@@ -19,9 +13,10 @@ export type Route = { name: 'root' } | { name: 'welcome'; invite: string | null;
   /** Home with the `@` tile selected and no DM open (`/dm`). */
   | { name: 'dms' } | { name: 'activity' } | { name: 'you' }
   | { name: 'spotifyCallback'; search: string }
-  | { name: 'settings'; section: SettingsSection; from: string | null;
+  | { name: 'settings'; section: SettingsSection | null; from: string | null;
     /** Privacy only: the contact whose comparison opens at once (the voice pause banner's action, flow 06). */
-    compare?: string };
+    compare?: string }
+  | { name: 'serverSettings'; communityId: string; section: ServerSettingsSection | null; from: string | null };
 
 /** The history-state key that carries a settings route's `from`: the path Settings was opened over. */
 export const SETTINGS_FROM = 'settingsFrom';
@@ -32,10 +27,31 @@ export const SETTINGS_COMPARE = 'compareUser';
 export const PHONE_BACK = 'phoneBack';
 /** The path of the screen a pushed phone view was pushed from, kept beside `phoneBack` in the history state. */
 const PHONE_FROM = 'phoneFrom';
+const HISTORY_INDEX = 'dillaHistoryIndex';
 
 const DM = /^\/dm\/([0-9a-f]{32})$/;
-const SETTINGS_SECTION = /^\/settings\/(profile|devices|signin|notifications|appearance|voice|privacy|keyboard|diagnostics)$/;
+const SETTINGS_SECTION = /^\/settings\/([^/]+)$/;
+const SERVER_SETTINGS_SECTION = /^\/c\/([0-9a-f]{32})\/settings(?:\/([^/]+))?$/;
 const HEX32 = /^[0-9a-f]{32}$/;
+
+let nextHistoryIndex = 1;
+let currentHistoryIndex = 0;
+function stateWithIndex(state: unknown, index: number): Record<string, unknown> {
+  return { ...(typeof state === 'object' && state !== null ? state as Record<string, unknown> : {}), [HISTORY_INDEX]: index };
+}
+function entryIndex(state: unknown): number | null {
+  if (typeof state !== 'object' || state === null) return null;
+  const index = (state as Record<string, unknown>)[HISTORY_INDEX];
+  return Number.isSafeInteger(index) && (index as number) >= 0 ? index as number : null;
+}
+function ensureInitialIndex(): void {
+  const existing = entryIndex(history.state);
+  if (existing !== null) { currentHistoryIndex = existing; nextHistoryIndex = Math.max(nextHistoryIndex, existing + 1); return; }
+  currentHistoryIndex = 0;
+  nextHistoryIndex = 1;
+  history.replaceState(stateWithIndex(history.state, currentHistoryIndex), '', location.href);
+}
+if (typeof window !== 'undefined') ensureInitialIndex();
 
 /**
  * The `from` a history state names: a same-origin path (one leading slash, never two) that is not itself a
@@ -45,7 +61,7 @@ function fromState(state: unknown): string | null {
   if (typeof state !== 'object' || state === null) return null;
   const from = (state as Record<string, unknown>)[SETTINGS_FROM];
   if (typeof from !== 'string') return null;
-  if (!from.startsWith('/') || from.startsWith('//') || from.startsWith('/settings')) return null;
+  if (!from.startsWith('/') || from.startsWith('//') || from.startsWith('/settings') || /^\/c\/[0-9a-f]{32}\/settings(?:\/|$)/.test(from)) return null;
   return from;
 }
 
@@ -64,6 +80,12 @@ export function parseRoute(pathname: string, search: string, state: unknown = nu
     const signin = params.get('signin');
     return { name: 'welcome', invite: params.get('invite') || null, signin: signin === 'race' || signin === 'evicted' ? signin : null };
   }
+  const server = SERVER_SETTINGS_SECTION.exec(pathname);
+  if (server) {
+    const allowed = SETTINGS_REGISTRY.filter(entry => entry.scope === 'server').map(entry => entry.id);
+    const raw = server[2];
+    return { name: 'serverSettings', communityId: server[1], section: raw && allowed.some(id => id === raw) ? raw as ServerSettingsSection : null, from: fromState(state) };
+  }
   const match = /^\/c\/([0-9a-f]{32})(?:\/([0-9a-f]{32}))?$/.exec(pathname);
   if (match) return { name: 'channel', communityId: match[1], channelId: match[2] ?? null };
   const dm = DM.exec(pathname);
@@ -71,10 +93,12 @@ export function parseRoute(pathname: string, search: string, state: unknown = nu
   if (pathname === '/dm') return { name: 'dms' };
   if (pathname === '/activity') return { name: 'activity' };
   if (pathname === '/you') return { name: 'you' };
-  if (pathname === '/settings') return { name: 'settings', section: 'devices', from: fromState(state) };
+  if (pathname === '/settings') return { name: 'settings', section: null, from: fromState(state) };
   const section = SETTINGS_SECTION.exec(pathname);
   if (section) {
     const name = section[1] as SettingsSection;
+    const allowed = SETTINGS_REGISTRY.filter(entry => entry.scope === 'user').map(entry => entry.id);
+    if (!allowed.some(id => id === name)) return { name: 'settings', section: null, from: fromState(state) };
     return { name: 'settings', section: name, from: fromState(state), ...(name === 'privacy' ? compareState(state) : {}) };
   }
   return { name: 'root' };
@@ -95,7 +119,8 @@ export function routePath(route: Route): string {
     case 'activity': return '/activity';
     case 'you': return '/you';
     case 'spotifyCallback': return `/settings/bot/music/spotify/callback${route.search}`;
-    case 'settings': return `/settings/${route.section}`;
+    case 'settings': return route.section === null ? '/settings' : `/settings/${route.section}`;
+    case 'serverSettings': return `/c/${route.communityId}/settings${route.section === null ? '' : `/${route.section}`}`;
   }
 }
 
@@ -110,35 +135,189 @@ export function routeOf(path: string): Route {
  * names none); any other route as it is. `fromState` never yields a settings path, so the result is never one.
  */
 export function baseRoute(route: Route): Route {
-  if (route.name !== 'settings') return route;
+  if (route.name !== 'settings' && route.name !== 'serverSettings') return route;
   return route.from === null ? { name: 'root' } : routeOf(route.from);
 }
 
 const listeners = new Set<() => void>();
+const committedTraversalListeners = new Set<() => void>();
 function subscribe(listener: () => void): () => void {
   listeners.add(listener);
-  window.addEventListener('popstate', listener);
-  return () => { listeners.delete(listener); window.removeEventListener('popstate', listener); };
+  return () => { listeners.delete(listener); };
 }
-const snapshot = () => location.pathname + location.search;
+let routeRevision = 0;
+const snapshot = () => `${location.pathname}${location.search}#${routeRevision}`;
+function notifyRoute(): void { routeRevision++; for (const listener of listeners) listener(); }
+function notifyCommittedTraversal(): void { for (const listener of committedTraversalListeners) listener(); }
+
+/** Subscribe to browser traversals after the guard accepts and the browser lands on the destination entry. */
+export function subscribeCommittedTraversal(listener: () => void): () => void {
+  committedTraversalListeners.add(listener);
+  return () => { committedTraversalListeners.delete(listener); };
+}
+
+/** App history writes that do not change the URL (for example phone sheets) must keep the entry index. */
+export function replaceHistoryState(state: unknown, title = '', url?: string | URL): void {
+  if (url === undefined) history.replaceState(stateWithIndex(state, currentHistoryIndex), title);
+  else history.replaceState(stateWithIndex(state, currentHistoryIndex), title, url);
+  notifyRoute();
+}
+/** Push an indexed app history entry, including same-URL presentation state. */
+export function pushHistoryState(state: unknown, title = '', url?: string | URL): void {
+  currentHistoryIndex = nextHistoryIndex;
+  nextHistoryIndex = currentHistoryIndex + 1;
+  if (url === undefined) history.pushState(stateWithIndex(state, currentHistoryIndex), title);
+  else history.pushState(stateWithIndex(state, currentHistoryIndex), title, url);
+  notifyRoute();
+}
+
+type PendingTraversal = { delta: number; origin: number; phase: 'restore' | 'confirm' | 'replay' };
+let navigationGuard: (() => Promise<boolean>) | null = null;
+let pendingTraversal: PendingTraversal | null = null;
+let guardRequest: Promise<boolean> | null = null;
+let cancelGuardRequest: (() => void) | null = null;
+let navigationRequestPending = false;
+let approvedActionDepth = 0;
+let internalPopExpected: number | null = null;
+
+function cancelActiveGuardRequest(): void {
+  cancelGuardRequest?.();
+  navigationRequestPending = false;
+  if (pendingTraversal?.phase === 'confirm') {
+    pendingTraversal = null;
+    internalPopExpected = null;
+  }
+}
+
+function runGuard(): Promise<boolean> {
+  if (!navigationGuard) return Promise.resolve(true);
+  if (guardRequest) return guardRequest;
+  let resolveTask!: (allowed: boolean) => void;
+  const task = new Promise<boolean>(resolve => { resolveTask = resolve; });
+  guardRequest = task;
+  const settle = (allowed: boolean) => {
+    if (guardRequest === task) {
+      guardRequest = null;
+      cancelGuardRequest = null;
+    }
+    resolveTask(allowed);
+  };
+  cancelGuardRequest = () => settle(false);
+  void Promise.resolve().then(() => navigationGuard?.() ?? true).then(settle, () => settle(false));
+  return task;
+}
+
+/** Install the app-wide navigation guard. The returned disposer clears only this registration. */
+export function setNavigationGuard(guard: (() => Promise<boolean>) | null): () => void {
+  if (navigationGuard !== guard) cancelActiveGuardRequest();
+  navigationGuard = guard;
+  return () => {
+    if (navigationGuard !== guard) return;
+    navigationGuard = null;
+    cancelActiveGuardRequest();
+  };
+}
+
+/** Ask permission before running a non-router departure action. Returns false if the user keeps editing. */
+export function requestNavigation(action: () => void): Promise<boolean> {
+  if (approvedActionDepth > 0) {
+    action();
+    return Promise.resolve(true);
+  }
+  if (pendingTraversal || navigationRequestPending) return Promise.resolve(false);
+  if (!navigationGuard) {
+    action();
+    return Promise.resolve(true);
+  }
+  navigationRequestPending = true;
+  return runGuard().then(allowed => {
+    if (allowed) {
+      approvedActionDepth++;
+      try { action(); } finally { approvedActionDepth--; }
+    }
+    return allowed;
+  }).finally(() => { navigationRequestPending = false; });
+}
+
+function onPopState(event: PopStateEvent): void {
+  const target = entryIndex(event.state);
+  if (internalPopExpected !== null && target === internalPopExpected) {
+    internalPopExpected = null;
+    currentHistoryIndex = target;
+    const pending = pendingTraversal;
+    if (!pending) { nextHistoryIndex = target + 1; notifyRoute(); return; }
+    if (pending.phase === 'restore') {
+      pending.phase = 'confirm';
+      void runGuard().then(allowed => {
+        if (pendingTraversal !== pending) return;
+        if (allowed) {
+          pending.phase = 'replay';
+          internalPopExpected = pending.origin + pending.delta;
+          history.go(pending.delta);
+        } else {
+          pendingTraversal = null;
+          nextHistoryIndex = pending.origin + 1;
+          notifyRoute();
+        }
+      });
+      return;
+    }
+    if (pending.phase === 'replay') {
+      pendingTraversal = null;
+      nextHistoryIndex = target + 1;
+      notifyRoute();
+      notifyCommittedTraversal();
+      return;
+    }
+  }
+  if (navigationRequestPending && target !== null && target !== currentHistoryIndex) {
+    // A browser traversal while an imperative navigation is asking for confirmation cannot replace that request.
+    internalPopExpected = currentHistoryIndex;
+    history.go(currentHistoryIndex - target);
+    return;
+  }
+  if (pendingTraversal) {
+    // A second browser traversal during confirmation is rolled back to the still-visible entry.
+    const origin = pendingTraversal.origin;
+    const current = target ?? currentHistoryIndex;
+    if (current !== origin) { internalPopExpected = origin; history.go(origin - current); }
+    return;
+  }
+  // Legacy/raw pop fixtures and non-app entries can be unindexed. We cannot safely compute a reversible step for them,
+  // so update the observed route without arming a traversal that could wait forever for a nonexistent restore event.
+  if (target === null) { notifyRoute(); return; }
+  const delta = target - currentHistoryIndex;
+  if (delta === 0) { notifyRoute(); return; }
+  if (!navigationGuard) { currentHistoryIndex = target; nextHistoryIndex = target + 1; notifyRoute(); notifyCommittedTraversal(); return; }
+  const pending: PendingTraversal = { delta, origin: currentHistoryIndex, phase: 'restore' };
+  pendingTraversal = pending;
+  // popstate cannot be cancelled: reverse to the current indexed entry before opening async confirmation.
+  internalPopExpected = pending.origin;
+  history.go(-delta);
+}
+if (typeof window !== 'undefined') window.addEventListener('popstate', onPopState);
 /**
  * A settings route records where Settings was opened from in the history state: the current path when the
  * current route is not a settings route, else the current route's own `from` (a section switch keeps it). The
  * `from` of the route given is ignored. Every other route writes no state.
  */
-function navigate(route: Route, replace = false, opts?: { phoneBack?: boolean; from?: string | null }): void {
+function writeRoute(route: Route, replace = false, opts?: { phoneBack?: boolean; from?: string | null }): void {
   const path = routePath(route);
-  if (!replace && path === snapshot()) return;
+  if (!replace && path === location.pathname + location.search) return;
   let state: { [SETTINGS_FROM]?: string | null; [SETTINGS_COMPARE]?: string; [PHONE_BACK]?: true; [PHONE_FROM]?: string } | null = null;
-  if (route.name === 'settings') {
+  if (route.name === 'settings' || route.name === 'serverSettings') {
     const current = parseRoute(location.pathname, location.search, history.state);
-    state = { [SETTINGS_FROM]: opts?.from !== undefined ? opts.from : current.name === 'settings' ? current.from : snapshot() };
-    if (route.section === 'privacy' && route.compare !== undefined && HEX32.test(route.compare)) state[SETTINGS_COMPARE] = route.compare;
+    state = { [SETTINGS_FROM]: opts?.from !== undefined ? opts.from : current.name === 'settings' || current.name === 'serverSettings' ? current.from : location.pathname + location.search };
+    if (route.name === 'settings' && route.section === 'privacy' && route.compare !== undefined && HEX32.test(route.compare)) state[SETTINGS_COMPARE] = route.compare;
   }
-  if (opts?.phoneBack === true) state = { ...state, [PHONE_BACK]: true, [PHONE_FROM]: snapshot() };
-  if (replace) history.replaceState(state, '', path);
-  else history.pushState(state, '', path);
-  for (const listener of listeners) listener();
+  if (opts?.phoneBack === true) state = { ...state, [PHONE_BACK]: true, [PHONE_FROM]: location.pathname + location.search };
+  if (replace) replaceHistoryState(state, '', path);
+  else pushHistoryState(state, '', path);
+}
+
+function navigate(route: Route, replace = false, opts?: { phoneBack?: boolean; from?: string | null }): Promise<boolean> {
+  if (!replace && routePath(route) === location.pathname + location.search && route.name !== 'settings' && route.name !== 'serverSettings') return Promise.resolve(true);
+  return requestNavigation(() => writeRoute(route, replace, opts));
 }
 
 /**
@@ -146,22 +325,25 @@ function navigate(route: Route, replace = false, opts?: { phoneBack?: boolean; f
  * link, a reload into the view) the tab's list route, replacing the entry, so back never leaves the app.
  *
  * With `expect` (N5), the entry back lands on may not be the one the caller means: after the system forward button the
- * entry below is a forward one. A one-shot popstate listener checks where back landed and, when that is not `expect`,
- * replaces with `expect`. It returns a function that removes that listener (a caller that unmounts before the pop calls it).
+ * entry below is a forward one. A one-shot committed-traversal listener checks where back landed and, when that is not
+ * `expect`, replaces with `expect`. It returns a function that removes that listener (a caller that unmounts before the
+ * traversal commits calls it).
  */
-export function goBack(fallback: Route, go: (route: Route, replace?: boolean) => void, expect?: Route): () => void {
+export function goBack(fallback: Route, go: (route: Route, replace?: boolean) => void | Promise<boolean>, expect?: Route): () => void {
   const state: unknown = history.state;
   if (typeof state === 'object' && state !== null && (state as Record<string, unknown>)[PHONE_BACK] === true) {
     let off = () => undefined as void;
     if (expect !== undefined) {
-      const onPop = () => { if (snapshot() !== routePath(expect)) go(expect, true); };
-      window.addEventListener('popstate', onPop, { once: true });
-      off = () => window.removeEventListener('popstate', onPop);
+      const onCommittedTraversal = () => {
+        off();
+        if (location.pathname + location.search !== routePath(expect)) void go(expect, true);
+      };
+      off = subscribeCommittedTraversal(onCommittedTraversal);
     }
     history.back();
     return off;
   }
-  go(fallback, true);
+  void go(fallback, true);
   return () => undefined;
 }
 
@@ -177,7 +359,7 @@ export function tabOf(route: Route): PhoneTab {
   switch (route.name) {
     case 'dm': case 'dms': case 'channel': case 'root': case 'welcome': return 'home';
     case 'activity': return 'activity';
-    case 'you': case 'settings': return 'you';
+    case 'you': case 'settings': case 'serverSettings': return 'you';
     case 'spotifyCallback': return 'you';
   }
 }
@@ -199,11 +381,8 @@ export function readJoinError(state: unknown): UiError | null {
   return errorOf(joinError);
 }
 
-export function useRoute(): [Route, (r: Route, replace?: boolean, opts?: { phoneBack?: boolean; from?: string | null }) => void] {
-  const path = useSyncExternalStore(subscribe, snapshot);
-  const route = useMemo(() => {
-    const mark = path.indexOf('?');
-    return parseRoute(mark < 0 ? path : path.slice(0, mark), mark < 0 ? '' : path.slice(mark), window.history.state);
-  }, [path]);
+export function useRoute(): [Route, (r: Route, replace?: boolean, opts?: { phoneBack?: boolean; from?: string | null }) => Promise<boolean>] {
+  useSyncExternalStore(subscribe, snapshot);
+  const route = parseRoute(location.pathname, location.search, window.history.state);
   return [route, navigate];
 }

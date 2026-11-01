@@ -75,7 +75,7 @@ describe('RingBanner', () => {
     expect(field).toHaveValue('hello there');
   });
 
-  it.each(['mesh', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {
+  it.each(['signal', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {
     document.documentElement.dataset.theme = theme;
     const { container } = render(<div className="d-root"><RingBanner {...(meta.args as RingBannerProps)} /></div>);
     // jsdom has no layout or canvas, so contrast is left to the Storybook axe run in a real browser.

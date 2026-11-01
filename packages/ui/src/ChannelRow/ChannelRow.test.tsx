@@ -114,14 +114,50 @@ describe('ChannelRow', () => {
     expect(Boolean(name.compareDocumentPosition(lock) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
     expect(container.textContent).not.toContain('🔒');
   });
-  it('is a data-row, with the 16px glyph column holding # or an icon and a voice row using volume-2', () => {
-    const { container } = render(<><ChannelRow name="a" kind="text" onSelect={() => {}} /><ChannelRow name="b" kind="voice" onSelect={() => {}} /></>);
+  it('is a data-row, with the glyph column holding a 14px icon: hash, volume-2, moon (Signal §5.4)', () => {
+    const { container } = render(<><ChannelRow name="a" kind="text" onSelect={() => {}} /><ChannelRow name="b" kind="voice" onSelect={() => {}} /><ChannelRow name="AFK" kind="afk" onSelect={() => {}} /></>);
     for (const row of container.querySelectorAll('.d-chrow')) expect(row).toHaveAttribute('data-row');
-    expect(container.querySelector('.d-chrow[data-kind="text"] .d-chrow__glyph')?.textContent).toBe('#');
+    expect(container.querySelector('.d-chrow[data-kind="text"] .d-chrow__glyph svg')).toHaveAttribute('data-icon', 'hash');
+    expect(container.querySelector('.d-chrow[data-kind="text"] .d-chrow__glyph svg')).toHaveAttribute('width', '14');
+    expect(container.querySelector('.d-chrow[data-kind="afk"] .d-chrow__glyph svg')).toHaveAttribute('data-icon', 'moon');
     expect(container.querySelector('.d-chrow[data-kind="voice"] .d-chrow__glyph svg')).toHaveAttribute('data-icon', 'volume-2');
+  });
+  it('draws the unread tag as "{n} new" and the mention tag as "@{n}", the hidden count still naming the row', () => {
+    render(<><ChannelRow name="loot" kind="text" unread={1} newLabel={n => `${n} new`} onSelect={() => {}} /><ChannelRow name="raids" kind="text" mentions={2} onSelect={() => {}} /></>);
+    const loot = screen.getByRole('button', { name: 'loot 1 unread' });
+    expect(loot.querySelector('.d-pill [aria-hidden="true"]')?.textContent).toBe('1 new');
+    const raids = screen.getByRole('button', { name: 'raids 2 mentions' });
+    expect(raids.querySelector('.d-pill [aria-hidden="true"]')?.textContent).toBe('@2');
+  });
+  it('carries the active bar as a decorative element (it grows with scaleY in CSS)', () => {
+    const { container } = render(<ChannelRow name="general" kind="text" active onSelect={() => {}} />);
+    expect(container.querySelector('.d-chrow__bar')).toHaveAttribute('aria-hidden', 'true');
   });
   it('has no serious axe violations', async () => {
     const { container } = render(<div className="d-root"><ChannelRow name="loot" kind="text" active unread={4} onSelect={() => {}} /></div>);
     await expectNoAxeViolations(container);
+  });
+});
+
+// Task 11 (Jonas, Q2): a DM drawn as a person.
+describe('ChannelRow person (a DM row)', () => {
+  it('shows the avatar, the name over its sub, keeps the name as the row name and the sub as its description, and a dot for unread', async () => {
+    const { container } = render(<div className="d-root"><ChannelRow name="Björn" kind="dm" unread={1} onSelect={vi.fn()}
+      person={{ presence: 'online', sub: 'bridge troll survivor' }} /></div>);
+    const row = screen.getByRole('button', { name: /^Björn/ });
+    expect(row).toHaveAttribute('data-person', 'true');
+    expect(row).toHaveAccessibleName('Björn 1 unread');
+    expect(row).toHaveAttribute('aria-description', 'bridge troll survivor');
+    expect(container.querySelector('.d-avatar')).not.toBeNull();
+    expect(container.querySelector('.d-avatar__presence')).not.toBeNull();
+    expect(container.querySelector('.d-chrow__unread-dot')).not.toBeNull();
+    expect(container.querySelector('.d-pill')).toBeNull();
+    await expectNoAxeViolations(container);
+  });
+  it('draws a group DM with the neutral avatar and no presence dot', () => {
+    const { container } = render(<ChannelRow name="raid crew" kind="dm" onSelect={vi.fn()} person={{ group: true, sub: 'Ada, Björn, you', initials: 'RC' }} />);
+    expect(container.querySelector('.d-chrow')).toHaveAttribute('data-group', 'true');
+    expect(container.querySelector('.d-avatar__presence')).toBeNull();
+    expect(container.querySelector('.d-avatar__initials')).toHaveTextContent('RC');
   });
 });

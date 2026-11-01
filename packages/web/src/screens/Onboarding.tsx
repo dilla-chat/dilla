@@ -180,7 +180,7 @@ export function Onboarding(props: { onFinish(result: SignupResult): void }): Rea
 
   // The first navigation away from the connect step writes the route without the race query.
   const dropRace = () => {
-    if (route.name === 'welcome' && route.signin !== null) navigate({ name: 'welcome', invite: route.invite, signin: null }, true);
+    if (route.name === 'welcome' && route.signin !== null) void navigate({ name: 'welcome', invite: route.invite, signin: null }, true);
   };
   const connectNext = () => {
     setBanner(null);
@@ -287,7 +287,10 @@ export function Onboarding(props: { onFinish(result: SignupResult): void }): Rea
     }
   };
 
-  const stepLabel = (n: number) => t('onboarding.step', { n });
+  // Signal task 10 fix round 1: the prototype's flow label and dots; a new account has six steps.
+  const TOTAL = 6;
+  const stepLabel = (n: number) => t('onboarding.step', { n, total: TOTAL });
+  const progress = (n: number) => ({ n, total: TOTAL });
   const errorText = (field: Field) => {
     const key = errors[field];
     return key === undefined ? undefined : t(key);
@@ -308,7 +311,7 @@ export function Onboarding(props: { onFinish(result: SignupResult): void }): Rea
   );
   const form = (title: string, n: number, foot: ReactNode, children: ReactNode) => (
     <form noValidate onSubmit={onSubmit}>
-      <OnboardingFrame title={title} stepLabel={stepLabel(n)} footer={foot}>
+      <OnboardingFrame title={title} stepLabel={stepLabel(n)} progress={progress(n)} footer={foot}>
         {bannerEl}
         {children}
       </OnboardingFrame>
@@ -320,7 +323,7 @@ export function Onboarding(props: { onFinish(result: SignupResult): void }): Rea
     content = (
       <>
         {factorState.problem === null ? null : <Banner tone="danger">{t(factorState.problem.key, factorState.problem.vars)}</Banner>}
-        <FactorSetup origin="signup" stepLabel={stepLabel(5)} instanceName={name}
+        <FactorSetup origin="signup" stepLabel={stepLabel(5)} progress={progress(5)} instanceName={name}
           username={account.user?.username ?? username.trim().toLowerCase()} announce={announce} onDone={finishFactor} />
         <ForgetBrowser />
         <p className="d-sr-only" role="status" aria-live="polite" data-testid="onboarding-announcer">{announcement}</p>
@@ -328,7 +331,7 @@ export function Onboarding(props: { onFinish(result: SignupResult): void }): Rea
     );
   } else if (shown === 'done' && finished !== null) {
     content = (
-      <OnboardingFrame title={t('onboarding.done.title')} stepLabel={stepLabel(6)}
+      <OnboardingFrame title={t('onboarding.done.title')} stepLabel={stepLabel(6)} progress={progress(6)}
         footer={<Button variant="accent" type="button" onClick={() => props.onFinish(finished)}>{t('onboarding.done.next')}</Button>}>
         <p>{t('onboarding.done.body', { username: account.user?.username ?? username.trim().toLowerCase(), instance: name })}</p>
       </OnboardingFrame>

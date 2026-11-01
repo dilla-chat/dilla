@@ -125,7 +125,7 @@ test('passkeys: sign up with one, sign in with a copy of it, add the app, remove
     await button(page2, 'factorSignin.usePasskey').click();
     // web3.8 (R7): the passkey was used on the login step, so the key is step 2.
     await expectHeading(page2, SIGNIN.keyTitle);
-    await expect(page2.getByText(copy(SIGNIN.step, { n: 2 }), { exact: true })).toBeVisible();
+    await expect(page2.getByText(copy(SIGNIN.step, { n: 2, total: 3 }), { exact: true })).toBeVisible();
     await keyField(page2).fill(keyText(bjorn));
     await keySubmit(page2).click();
     await expectHeading(page2, SIGNIN.doneTitle);
@@ -158,7 +158,8 @@ test('passkeys: sign up with one, sign in with a copy of it, add the app, remove
   // Walk I3 (WEB-SET): each passkey is a settings row of its own, and the passkeys row, headed "Passkeys", follows them with the add button.
   const passkeys = settings.getByRole('group', { name: copy('factorSettings.passkeys'), exact: true });
   await expect(passkeys.getByRole('heading', { name: copy('factorSettings.passkeys'), exact: true })).toBeVisible();
-  await expect(settings.getByRole('group', { name: PASSKEY, exact: true }).getByText(PASSKEY, { exact: true })).toBeVisible();
+  // Task 11 (Q7): each passkey row is "Passkey" over its name.
+  await expect(settings.getByRole('group', { name: copy('factorSettings.passkey'), exact: true }).getByText(PASSKEY, { exact: true })).toBeVisible();
   await expect(button(passkeys, 'factorSettings.passkeys.add')).toBeVisible();
   await settings.getByRole('button', { name: copy('factorSettings.passkeys.removeLabel', { name: PASSKEY }), exact: true }).click();
   await stepUp(page, bjorn.password);

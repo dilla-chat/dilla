@@ -48,6 +48,8 @@ import (
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 	"github.com/tetratelabs/wazero/sys"
+
+	"github.com/jonasthim/dilla/internal/prioritygate"
 )
 
 // ABIVersion is the version every request carries as its first element and every module must
@@ -110,8 +112,12 @@ var RequiredExports = []string{
 // It deliberately does not include _start: a cdylib has no main.
 var startFunctions = []string{"_initialize"}
 
-// ErrClosed is returned by Acquire after Close.
+// ErrClosed is returned by Acquire or a retained instance's Call after Close.
 var ErrClosed = errors.New("mlswasi: runtime is closed")
+
+// ErrDepleted is returned by Acquire when replacing poisoned instances has
+// failed and no usable instances remain. The runtime must be recreated.
+var ErrDepleted = errors.New("mlswasi: runtime has no usable instances")
 
 // Options configures a Runtime.
 type Options struct {
@@ -135,9 +141,12 @@ type Options struct {
 	// (task 19). It runs on the caller's goroutine, so an implementation must be cheap and safe
 	// for concurrent use.
 	OnCall func(export string)
+	// Priority selects admission order when all instances are busy. Higher values
+	// run first; nil preserves FIFO order. Running guest calls are never preempted.
+	Priority func(context.Context) int
 }
 
-// Runtime owns one wazero runtime, one compiled module and a fixed pool of
+// Runtime owns one wazero runtime, one compiled module and a bounded pool of
 // instances.
 type Runtime struct {
 	rt       wazero.Runtime
@@ -146,6 +155,12 @@ type Runtime struct {
 	poolSize int
 	now      func() time.Time
 	onCall   func(export string)
+	priority func(context.Context) int
+	gate     *prioritygate.Gate
+	done     chan struct{}
+	// execution covers guest calls and module replacement, not retained handles.
+	// Shutdown waits for those operations before destroying WASI host state.
+	execution sync.RWMutex
 
 	mu     sync.Mutex
 	closed bool
@@ -194,7 +209,8 @@ func New(ctx context.Context, wasmBinary []byte, opts Options) (*Runtime, error)
 	if size <= 0 {
 		size = runtime.GOMAXPROCS(0)
 	}
-	r := &Runtime{rt: rt, compiled: compiled, pool: make(chan *Instance, size), poolSize: size, now: opts.Now, onCall: opts.OnCall}
+	r := &Runtime{rt: rt, compiled: compiled, pool: make(chan *Instance, size), poolSize: size, now: opts.Now, onCall: opts.OnCall,
+		priority: opts.Priority, gate: prioritygate.New(size), done: make(chan struct{})}
 	for range size {
 		inst, err := r.newInstance(ctx)
 		if err != nil {
@@ -238,7 +254,9 @@ func (r *Runtime) newInstance(ctx context.Context) (*Instance, error) {
 	}, nil
 }
 
-// Close releases every instance and the runtime. Release every Instance first.
+// Close rejects queued acquisitions, waits for active calls, and closes every
+// module, including instances retained by DS group caches. Retained handles must
+// still be Released by their owners, but cannot delay runtime shutdown.
 func (r *Runtime) Close(ctx context.Context) error {
 	r.mu.Lock()
 	if r.closed {
@@ -246,7 +264,11 @@ func (r *Runtime) Close(ctx context.Context) error {
 		return nil
 	}
 	r.closed = true
+	close(r.done)
 	r.mu.Unlock()
+	r.gate.Close()
+	r.execution.Lock()
+	defer r.execution.Unlock()
 
 	for range r.poolSize {
 		select {

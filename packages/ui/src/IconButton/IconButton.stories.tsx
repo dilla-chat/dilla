@@ -9,6 +9,7 @@ export const Default: Story = {};
 export const WithChord: Story = { args: { icon: 'search', label: 'search', keys: ['Ctrl', 'K'] } };
 export const Pressed: Story = { args: { icon: 'headphones', label: 'deafen', pressed: true, keys: ['Ctrl', 'Shift', 'D'] } };
 export const Unpressed: Story = { args: { icon: 'headphones', label: 'deafen', pressed: false } };
+export const Compact: Story = { args: { size: 28 } };
 export const Disabled: Story = { args: { disabled: true } };
 // The four sizes side by side. On a desktop the box is the size; on a phone layout every one is 44 x 44 (base.css).
 export const Sizes: Story = {

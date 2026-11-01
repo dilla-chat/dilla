@@ -1,18 +1,84 @@
-.d-voice-settings { display: grid; gap: 0.25rem; min-width: 0; }
+/* README §5.9 (task 10), the prototype's Voice page: bordered groups (hairline, radius 10, 16px padding, 14px inside,
+   16px apart) under 10px uppercase headings; labels 11px --fg-2; the device selects 36px fields in --control-edge-field
+   (content-box, as the prototype draws them); the push-to-talk key a 36px box with its Change button beside it. */
+.d-voice-settings { display: grid; gap: 16px; min-width: 0; font-family: var(--font-mono); }
+.d-voice-settings__group { display: grid; gap: 14px; min-width: 0; margin: 0; padding: 16px; border: 1px solid var(--hairline); border-radius: var(--r-xl); }
+.d-voice-settings__heading { margin: 0; font-size: var(--text-micro); font-weight: var(--weight-label); line-height: 1.5; letter-spacing: var(--label-tracking-wide); text-transform: uppercase; color: var(--fg-3); }
+.d-voice-settings__grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; }
+.d-voice-settings__field { display: grid; gap: 8px; align-content: start; min-width: 0; }
+.d-voice-settings__label { font-size: var(--text-xs); line-height: 1.5; color: var(--fg-2); }
+.d-voice-settings__note { margin: 0; font-size: var(--text-meta); line-height: 1.5; color: var(--fg-3); }
 .d-voice-settings__select {
-  min-height: 2rem; max-width: 100%; padding: 0 0.5rem; font: inherit; font-size: var(--text-sm); color: var(--fg);
-  background: var(--surface-2); border: 1px solid var(--edge); border-radius: var(--r-md);
+  box-sizing: border-box; height: 2.375rem /* the prototype's 36px of content in a 1px border */; min-width: 0; max-width: 100%; padding: 0 10px; font: inherit; font-size: var(--text-sm); color: var(--fg);
+  background: var(--surface-2); border: 1px solid var(--control-edge-field); border-radius: var(--r-seg);
 }
-.d-voice-settings__select:hover { border-color: var(--fg-3); }
-.d-voice-settings__key { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
-.d-voice-settings__kbd { min-width: 1.75rem; padding: 0.125rem 0.5rem; font: inherit; font-size: var(--text-sm); text-align: center; color: var(--fg); border: 1px solid var(--edge); border-radius: var(--r-md); }
-.d-voice-settings__kbd[data-empty="true"] { color: var(--fg-2); border-style: dashed; }
-.d-voice-settings .d-voice-settings__capture { height: auto; min-height: 2rem; }
+.d-voice-settings__select:focus-visible { border-color: var(--accent); }
+/* Task 10b: the volume row under each device (the prototype's: "Volume" 10.5px --fg-3 in 54px, the range, the value 11px in
+   40px, tabular), and push to talk's release delay (the value in 56px). */
+.d-voice-settings__volume { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.d-voice-settings__volume-label { flex: none; width: 54px; font-size: var(--text-meta); line-height: 1.5; color: var(--fg-3); }
+.d-voice-settings__volume-value { flex: none; width: 40px; font-size: var(--text-xs); line-height: 1.5; text-align: right; font-variant-numeric: tabular-nums; color: var(--fg); }
+.d-voice-settings__release-value { width: 56px; }
+/* The prototype draws the release delay row 24px high (the device volume rows 20px). */
+.d-voice-settings__ptt .d-voice-settings__volume { min-height: 24px; }
+/* The prototype's d-range: a 20px box, a 4px track filled with --accent up to --d-fill, a 14px --knob thumb with a 3px halo. */
+.d-voice-settings__range { flex: 1; min-width: 0; height: 20px; margin: 0 2px /* the browser default the prototype keeps, sideways */; background: transparent; cursor: pointer; -webkit-appearance: none; appearance: none; }
+.d-voice-settings__range::-webkit-slider-runnable-track { height: 4px; border-radius: 4px; background: linear-gradient(90deg, var(--accent) var(--d-fill, 50%), var(--hover-hi) var(--d-fill, 50%)); }
+.d-voice-settings__range::-moz-range-track { height: 4px; border-radius: 4px; background: var(--hover-hi); }
+.d-voice-settings__range::-moz-range-progress { height: 4px; border-radius: 4px; background: var(--accent); }
+.d-voice-settings__range::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 14px; height: 14px; margin-top: -5px; border-radius: var(--r-pill); background: var(--knob); box-shadow: 0 0 0 3px var(--accent-halo); transition: transform var(--duration-fast); }
+.d-voice-settings__range::-moz-range-thumb { width: 14px; height: 14px; border: 0; border-radius: var(--r-pill); background: var(--knob); box-shadow: 0 0 0 3px var(--accent-halo); }
+.d-voice-settings__range:hover::-webkit-slider-thumb { transform: scale(1.15); }
+.d-voice-settings__range:focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
+/* The Mic test head: the heading, then Let's check on the right (32px, radius 7, 12/700; --accent, or the danger outline while it runs). */
+.d-voice-settings__test-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.d-voice-settings__spacer { flex: 1; }
+.d-voice-settings__check {
+  box-sizing: content-box; height: 32px /* plus the 1px border, as the prototype draws it */; padding: 0 14px; display: flex; align-items: center; gap: 8px; font: inherit; font-size: var(--text-ui);
+  font-weight: var(--weight-display); color: var(--accent-ink); background: var(--accent); border: 1px solid var(--accent); border-radius: var(--r-seg);
+  cursor: pointer; transition: background var(--duration-tab), color var(--duration-tab), border-color var(--duration-tab), transform var(--duration-tab);
+}
+.d-voice-settings__check:active { transform: scale(0.96); }
+.d-voice-settings__check[data-testing="true"] { color: var(--danger); background: transparent; border-color: var(--danger-border); }
+.d-voice-settings__check:disabled { cursor: not-allowed; opacity: var(--opacity-muted); }
+.d-voice-settings__check:focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
+.d-voice-settings .d-voice-settings__desc { margin: -4px 0 0; font-size: var(--text-btn); line-height: 1.5; color: var(--fg-2); text-wrap: pretty; }
+/* Under the meter: the status pill (26px, 11px; idle --fg-3 in a --control-edge-field outline, heard --ok on its tint, too
+   quiet --warn on its tint) and the level and threshold readouts (11px --fg-2, tabular). */
+.d-voice-settings__readout { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.d-voice-settings__pill {
+  box-sizing: content-box; height: 26px /* plus the 1px border */; padding: 0 10px; display: flex; align-items: center; gap: 7px; font-size: var(--text-xs); color: var(--fg-3);
+  background: transparent; border: 1px solid var(--control-edge-field); border-radius: var(--r-pill);
+  transition: background var(--duration-tab), color var(--duration-tab), border-color var(--duration-tab);
+}
+.d-voice-settings__pill[data-state="heard"] { color: var(--ok); background: var(--ok-tint); border-color: var(--ok-line); }
+.d-voice-settings__pill[data-state="quiet"] { color: var(--warn); background: var(--warn-faint); border-color: var(--warn-line); }
+.d-voice-settings__pill-dot { width: 6px; height: 6px; border-radius: var(--r-pill); background: currentColor; }
+.d-voice-settings__stat { font-size: var(--text-xs); line-height: 1.5; color: var(--fg-2); font-variant-numeric: tabular-nums; }
+/* A switch row (automatic sensitivity, echo cancellation, automatic gain): a hairline above, 12px under it, 14px gap. */
+.d-voice-settings__switch-row { display: flex; align-items: center; gap: 14px; padding-top: 12px; border-top: 1px solid var(--hairline); }
+.d-voice-settings__switch-row .d-voice-settings__text { flex: 1; }
+.d-voice-settings__switch-row .d-toggle__switch { min-width: 0; min-height: 1.5rem; padding: 0; }
+.d-voice-settings__mode { justify-self: start; }
+.d-voice-settings__mode .d-segmented__option { min-height: 1.75rem /* 28px */; padding: 0 12px; }
+.d-voice-settings__key { display: flex; gap: 8px; }
+/* The push-to-talk key: --control-edge-field, the accent with a 3px ring while it listens for a key. */
+.d-voice-settings__kbd { flex: 1; box-sizing: border-box; height: 2.375rem /* 36px of content in a 1px border */; display: flex; align-items: center; justify-content: center; font: inherit; font-size: var(--text-input); font-weight: var(--weight-display); color: var(--fg); background: var(--surface-2); border: 1px solid var(--control-edge-field); border-radius: var(--r-seg); transition: border-color var(--duration-focus), box-shadow var(--duration-focus); }
+.d-voice-settings__kbd[data-listening="true"] { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); }
+.d-voice-settings__kbd[data-empty="true"] { font-weight: var(--weight-body); color: var(--fg-2); }
+.d-voice-settings .d-voice-settings__capture { box-sizing: content-box; height: 36px; padding: 0 12px; border-radius: var(--r-seg); }
+.d-voice-settings .d-voice-settings__capture:hover { background: transparent; border-color: var(--accent); }
 /* The capture prompt is a status region that is always present; empty, it takes no room. */
-.d-voice-settings__prompt { margin: 0; font-size: var(--text-sm); color: var(--fg); }
+.d-voice-settings__prompt { margin: 0; font-size: var(--text-xs); color: var(--fg); }
+.d-voice-settings__prompt:empty { position: absolute; }
 .d-voice-settings__prompt:not(:empty) { padding: 0.375rem 0.75rem; border-left: 3px solid var(--accent); }
-/* web3.9 AUDIT-2 (N3): the device selects and the capture button are 44 high on a phone. */
-@media (max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem) {
-  .d-voice-settings__select { min-height: 2.75rem; }
-  .d-voice-settings .d-voice-settings__capture { min-height: 2.75rem; }
-}
+/* A processing row: the label (12.5/600, its BETA tag) over the description (11px), the segmented control beside it. */
+.d-voice-settings__row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
+.d-voice-settings__text { display: grid; flex: 1 1 220px; min-width: 0; line-height: 1.4; }
+.d-voice-settings__row-label { display: flex; align-items: center; gap: 8px; font-size: var(--text-sm); font-weight: var(--weight-label); }
+.d-voice-settings__row-hint { font-size: var(--text-xs); color: var(--fg-2); }
+.d-voice-settings__tag { padding: 0 5px; font-size: var(--text-chip); font-weight: var(--weight-label); letter-spacing: 0.06em; color: var(--accent-2); background: var(--accent-tag); border-radius: var(--r-tag); }
+@media (prefers-reduced-motion: reduce) { .d-voice-settings__kbd, .d-voice-settings__check, .d-voice-settings__pill { transition: none; } }
+/* README §5.10: one column on a phone. */
+.d-settings-frame[data-layout="phone"] .d-voice-settings__grid { grid-template-columns: minmax(0, 1fr); }
+

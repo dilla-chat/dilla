@@ -1,11 +1,12 @@
 import { useId, useLayoutEffect, useRef } from 'react';
 import { Button } from '../Button/Button.tsx';
 import './RingBanner.css';
+import { Avatar } from '../Avatar/Avatar.tsx';
 import { StateDot } from '../StateDot/StateDot.tsx';
 
 export interface RingBannerProps {
   /** `text` is the filled `call.ring.incoming` or, while this device is in voice, `call.ring.busy`. */
-  rings: readonly { callId: string; text: string; busy: boolean }[];
+  rings: readonly { callId: string; text: string; busy: boolean; /** The caller, for the ringing avatar (a dot without it). */ name?: string }[];
   labels: { region: string; answer: string; decline: string };
   onAnswer(callId: string): void;
   onDecline(callId: string): void;
@@ -26,7 +27,9 @@ function Ring({ ring, labels, onAnswer, onDecline }: { ring: RingBannerProps['ri
   }, []);
   return (
     <li ref={ref} className="d-ring-banner__ring" data-ring={ring.busy ? 'busy' : 'incoming'}>
-      <span className="d-ring-banner__glyph" aria-hidden="true"><StateDot tone={ring.busy ? 'off' : 'ok'} size="md" /></span>
+      <span className="d-ring-banner__glyph" aria-hidden="true">
+        {ring.name !== undefined ? <Avatar name={ring.name} size="row" /> : <StateDot tone={ring.busy ? 'off' : 'ok'} size="md" />}
+      </span>
       <p id={textId} role="alert" className="d-ring-banner__text">{ring.text}</p>
       <span className="d-ring-banner__actions">
         <Button variant="accent" className="d-ring-banner__answer" aria-describedby={textId} onClick={() => onAnswer(ring.callId)}>{labels.answer}</Button>
@@ -37,6 +40,9 @@ function Ring({ ring, labels, onAnswer, onDecline }: { ring: RingBannerProps['ri
 }
 
 /**
+ * Signal (README §13, the DM call not drawn in the prototype): each ring on --surface-2 with the --ok edge, the caller's 32px
+ * avatar ringing (the d-ring wave, 1 → 1.5 and out) beside the text, then Answer (--ok) and Decline.
+ *
  * Incoming calls, at the top of the main landmark while a ring lasts (L-UI-70): a section named `call.ring.region`
  * with one `role="alert"` per ring. A ring's alert node is keyed by its call id and inserted once, so it is
  * announced once. It never takes focus; its answer and decline buttons are described by the ring's text, so two

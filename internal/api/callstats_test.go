@@ -1,14 +1,20 @@
 package api_test
 
 import (
+	"context"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/gateway"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/server"
 )
 
 type fakeCallMetrics struct {
@@ -263,5 +269,188 @@ func TestTheSummaryPercentilesAreOverTheDevices(t *testing.T) {
 	}
 	if s := stats.Summary(t.Context(), 15*time.Minute); s.Reports != 3 || s.P50RTTms != 50 || s.P95RTTms != 200 || s.RelayReports != 0 {
 		t.Fatalf("summary = %+v, want 3 reports, p50 50, p95 200, none relayed", s)
+	}
+}
+
+func TestStatsAcceptanceSharesAllowanceAcrossHTTPAndGateway(t *testing.T) {
+	e, tok, path, _, stats, m := statsEnv(t)
+	callID, err := id.Parse(strings.Split(path, "/")[3])
+	if err != nil {
+		t.Fatal(err)
+	}
+	sample := gateway.CallStatsReport{RTTms: 42, FramesEncrypted: 10}
+	session := e.sess[tok]
+	if err := stats.AcceptCallStats(t.Context(), session, callID, sample); err != nil {
+		t.Fatal(err)
+	}
+	status, _ := e.Do(http.MethodPost, path, tok, report(0, nil, 42, 0, 0, 10))
+	if status != http.StatusTooManyRequests {
+		t.Fatalf("HTTP bypassed WSS budget: %d", status)
+	}
+	e.Clk.Advance(5 * time.Second)
+	if status, _ = e.Do(http.MethodPost, path, tok, report(0, nil, 42, 0, 0, 10)); status != 204 {
+		t.Fatalf("HTTP=%d", status)
+	}
+	if err := stats.AcceptCallStats(t.Context(), session, callID, sample); err == nil {
+		t.Fatal("WSS bypassed HTTP budget")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.reports != 2 {
+		t.Fatalf("reports=%d", m.reports)
+	}
+}
+
+func TestStatsAcceptanceAtomicallyAdmitsOneAcrossTransports(t *testing.T) {
+	e, tok, path, _, stats, m := statsEnv(t)
+	callID, _ := id.Parse(strings.Split(path, "/")[3])
+	sample := gateway.CallStatsReport{RTTms: 42}
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < 12; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			if i%2 == 0 {
+				_ = stats.AcceptCallStats(t.Context(), e.sess[tok], callID, sample)
+			} else {
+				e.Do(http.MethodPost, path, tok, report(0, nil, 42, 0, 0, 0))
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.reports != 1 {
+		t.Fatalf("reports=%d", m.reports)
+	}
+}
+
+func TestStatsAcceptanceTransportAuthorityParity(t *testing.T) {
+	for _, kind := range []string{"ended", "unknown-call", "absent-leaf", "missing-connect", "hidden", "revoked-device", "factor-owed", "malformed"} {
+		t.Run(kind, func(t *testing.T) {
+			e, tok, path, group, stats, m := statsEnv(t)
+			callID, _ := id.Parse(strings.Split(path, "/")[3])
+			sample := gateway.CallStatsReport{RTTms: 42}
+			switch kind {
+			case "ended":
+				if err := e.Repo.EndVoiceSession(t.Context(), callID, e.Clk.Now().Unix()); err != nil {
+					t.Fatal(err)
+				}
+			case "unknown-call":
+				callID = id.New()
+				path = "/v1/calls/" + callID.String() + "/stats"
+			case "absent-leaf":
+				s := e.sess[tok]
+				s.DeviceID = seedDevices(t, e, s.UserID, 1)[0]
+				e.sess[tok] = s
+			case "missing-connect":
+				row, err := e.Repo.GetVoiceSession(t.Context(), callID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				uid, _, memberTok := joinedMember(t, e, row.ChannelID, group, "member")
+				denyInChannel(t, e, row.ChannelID, uid, api.PermConnect)
+				tok = memberTok
+			case "hidden":
+				_, tok = e.NewUser("outside")
+			case "revoked-device":
+				if err := e.Repo.RevokeDevice(t.Context(), deviceOf(t, e, tok), e.Clk.Now().Unix()); err != nil {
+					t.Fatal(err)
+				}
+			case "factor-owed":
+				s := e.sess[tok]
+				s.FactorOwed = true
+				e.sess[tok] = s
+			case "malformed":
+				sample.RTTms = 60001
+			}
+			err := stats.AcceptCallStats(t.Context(), e.sess[tok], callID, sample)
+			if err == nil {
+				t.Fatal("gateway adapter accepted ineligible sample")
+			}
+			rec := httptest.NewRecorder()
+			server.WriteError(rec, err)
+			status, body := e.Do(http.MethodPost, path, tok, report(0, nil, uint64(sample.RTTms), 0, 0, 0))
+			if status != rec.Code || e.ErrCode(body) != e.ErrCode(rec.Body.Bytes()) {
+				t.Fatalf("HTTP %d %s vs WSS %d %s", status, e.ErrCode(body), rec.Code, e.ErrCode(rec.Body.Bytes()))
+			}
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			if m.reports != 0 {
+				t.Fatal("refused sample counted")
+			}
+		})
+	}
+}
+
+func TestStatsReservationPrecedesAuthorityReadsAndRefusalReleasesIt(t *testing.T) {
+	e, tok, path, _, stats, _ := statsEnv(t)
+	callID, _ := id.Parse(strings.Split(path, "/")[3])
+	session := e.sess[tok]
+	entered, release := make(chan struct{}), make(chan struct{})
+	var reads atomic.Int32
+	stats.WithSessionResolver(func(context.Context, []byte) (auth.Session, error) {
+		if reads.Add(1) == 1 {
+			close(entered)
+			<-release
+			return auth.Session{}, server.Errorf(server.CodeUnauthenticated, "")
+		}
+		return session, nil
+	})
+	done := make(chan error, 1)
+	go func() { done <- stats.AcceptCallStats(t.Context(), session, callID, gateway.CallStatsReport{}) }()
+	<-entered
+	if status, _ := e.Do(http.MethodPost, path, tok, report(0, nil, 0, 0, 0, 0)); status != 429 {
+		t.Fatalf("parallel HTTP=%d", status)
+	}
+	if reads.Load() != 1 {
+		t.Fatal("parallel sample performed authority work")
+	}
+	close(release)
+	if err := <-done; err == nil {
+		t.Fatal("lost authority accepted")
+	}
+	if err := stats.AcceptCallStats(t.Context(), session, callID, gateway.CallStatsReport{}); err != nil {
+		t.Fatalf("failed reservation was not released: %v", err)
+	}
+}
+
+func TestStatsRechecksAuthorityAndCallEndBeforeRecording(t *testing.T) {
+	for _, change := range []string{"revoked", "owed", "call-end"} {
+		t.Run(change, func(t *testing.T) {
+			e, tok, path, _, stats, m := statsEnv(t)
+			callID, _ := id.Parse(strings.Split(path, "/")[3])
+			session := e.sess[tok]
+			reads := 0
+			stats.WithSessionResolver(func(context.Context, []byte) (auth.Session, error) {
+				reads++
+				if reads == 2 {
+					switch change {
+					case "revoked":
+						return auth.Session{}, server.Errorf(server.CodeUnauthenticated, "")
+					case "owed":
+						s := session
+						s.FactorOwed = true
+						return s, nil
+					case "call-end":
+						if err := e.Repo.EndVoiceSession(t.Context(), callID, e.Clk.Now().Unix()); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				return session, nil
+			})
+			if err := stats.AcceptCallStats(t.Context(), session, callID, gateway.CallStatsReport{}); err == nil {
+				t.Fatal("changed authority/call was recorded")
+			}
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			if m.reports != 0 {
+				t.Fatal("stale sample counted")
+			}
+		})
 	}
 }

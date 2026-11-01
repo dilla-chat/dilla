@@ -57,6 +57,15 @@ var webhookEvents = []string{
 	"participant_connection_aborted", "track_published", "track_unpublished",
 }
 
+// AttributeLimitBytes is LiveKit's limit.max_attributes_size: the summed key and value bytes of one attribute update or of a
+// token's attributes. Defence in depth only: no call token may update its own attributes (sfu.PublishGrant), so the updates
+// are dillad's (dilla.rtt, UpdateAttributes) and the join's (dilla.vdec). LiveKit checks each update, not the merged map.
+const AttributeLimitBytes = 64
+
+// NameLimitBytes is LiveKit's limit.max_participant_name_length, defence in depth like AttributeLimitBytes: a call token's
+// name is its identity, a device id in hex (32 characters).
+const NameLimitBytes = 32
+
 // Config is the in-process SFU configuration.
 type Config struct {
 	Port                    int    // 7880
@@ -196,15 +205,18 @@ func (c Config) YAML() (string, error) {
 		b.WriteString("    - mime: video/AV1\n")
 	}
 	b.WriteString("    - mime: video/rtx\n")
-	if c.LimitNumTracks > 0 || c.LimitBytesPerSec > 0 {
-		b.WriteString("limit:\n")
-		if c.LimitNumTracks > 0 {
-			fmt.Fprintf(&b, "  num_tracks: %d\n", c.LimitNumTracks)
-		}
-		if c.LimitBytesPerSec > 0 {
-			fmt.Fprintf(&b, "  bytes_per_sec: %s\n", strconv.FormatFloat(float64(c.LimitBytesPerSec), 'f', -1, 32))
-		}
+	// Task 8c: defence in depth. No call token may update its own name, metadata or attributes (sfu.PublishGrant); these caps
+	// bound what an update from anyone else could carry: a name no longer than an identity, no metadata, and at most
+	// AttributeLimitBytes per update or token (dilla.vdec at join is 22 bytes at most, dillad's dilla.rtt 13). They bound one
+	// update, not the merged map: the grant is what keeps a participant from growing it.
+	b.WriteString("limit:\n")
+	if c.LimitNumTracks > 0 {
+		fmt.Fprintf(&b, "  num_tracks: %d\n", c.LimitNumTracks)
 	}
+	if c.LimitBytesPerSec > 0 {
+		fmt.Fprintf(&b, "  bytes_per_sec: %s\n", strconv.FormatFloat(float64(c.LimitBytesPerSec), 'f', -1, 32))
+	}
+	fmt.Fprintf(&b, "  max_participant_name_length: %d\n  max_metadata_size: 1\n  max_attributes_size: %d\n", NameLimitBytes, AttributeLimitBytes)
 	if c.WebhookURL != "" {
 		if !strings.HasPrefix(c.WebhookURL, "http://") || strings.ContainsAny(c.WebhookURL, " \t\r\n\"'#") {
 			return "", fmt.Errorf("sfu: webhook url %q is not a plain http:// URL", c.WebhookURL)

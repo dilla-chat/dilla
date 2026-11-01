@@ -1,8 +1,35 @@
 .d-action-menu { position: relative; display: inline-block; }
 .d-action-menu__trigger { display: inline-flex; align-items: center; justify-content: center; min-width: 1.5rem; min-height: 1.5rem; padding: 0 0.375rem; font: inherit; font-size: var(--text-base); color: var(--fg-2); background: transparent; border: 1px solid transparent; border-radius: var(--r-md); cursor: pointer; }
-.d-action-menu__trigger:hover, .d-action-menu__trigger[aria-expanded="true"] { color: var(--fg); background: var(--surface-2); border-color: var(--edge); }
-.d-action-menu__popup { position: absolute; top: 100%; right: 0; z-index: 30; display: grid; min-width: 10rem; padding: 0.25rem; font-family: var(--font-mono); background: var(--surface); border: 1px solid var(--edge); border-radius: var(--r-md); box-shadow: var(--shadow-2); }
-.d-action-menu__item { display: block; min-height: 1.75rem; padding: 0 0.625rem; font: inherit; font-size: var(--text-sm); text-align: left; color: var(--fg); background: transparent; border: 0; border-radius: var(--r-md); cursor: pointer; }
-.d-action-menu__item:hover, .d-action-menu__item:focus-visible { background: var(--surface-2); }
-.d-action-menu__item[data-danger="true"] { color: var(--danger); }
+.d-action-menu__trigger:hover, .d-action-menu__trigger[aria-expanded="true"] { color: var(--fg); background: var(--hover); }
+/* Task 9: every menu is the prototype's context menu (Signal §5.4): 4px in, --surface-2 in the --line-strong edge, 9px corners,
+   the 0 18px 48px shadow, d-modal 160ms. A caller sets its width (the person menu's 236px, the status menu's 220px). */
+.d-action-menu__popup {
+  position: absolute; top: 100%; right: 0; z-index: 30; display: grid; min-width: 11rem; max-width: min(300px, calc(100vw - 16px)); max-height: calc(100dvh - 16px); overflow-y: auto; box-sizing: border-box;
+  padding: 4px; font-family: var(--font-mono); background: var(--surface-2); border: 1px solid var(--line-strong); border-radius: var(--r-menu);
+  box-shadow: var(--shadow-menu); animation: d-modal var(--duration-focus) var(--ease-out) both;
+}
 .d-action-menu__popup[data-placement="top"] { top: auto; bottom: 100%; }
+.d-action-menu__items { display: grid; }
+/* An item: 32px, 8px in, 5px corners, 12px --fg; the glyph at 0.85; --surface-hi under the pointer or focus, the danger tint on a danger item. */
+.d-action-menu__item {
+  display: flex; align-items: center; gap: 10px; height: 32px; padding: 0 8px; font: inherit; font-size: var(--text-ui); text-align: left; white-space: nowrap;
+  color: var(--fg); background: transparent; border: 0; border-radius: var(--r-row); cursor: pointer; transition: background var(--duration-press);
+}
+.d-action-menu__item:hover, .d-action-menu__item:focus-visible { background: var(--surface-hi); }
+.d-action-menu__item:focus-visible { outline: var(--focus-ring); outline-offset: -2px; }
+.d-action-menu__item[data-danger="true"] { color: var(--danger); }
+.d-action-menu__item[data-danger="true"]:hover, .d-action-menu__item[data-danger="true"]:focus-visible { background: var(--danger-soft); }
+/* The prototype's separator: 1px --hairline, 4px 6px. */
+.d-action-menu__sep { height: 1px; margin: 4px 6px; background: var(--hairline); }
+.d-action-menu__icon { display: inline-flex; opacity: 0.85; }
+.d-action-menu__label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; text-align: left; }
+/* A single-choice item's tick (the status menu's chosen status): 13px --accent at the end. */
+.d-action-menu__tick { display: inline-flex; margin-left: auto; color: var(--accent); }
+.d-action-menu__check {
+  display: flex; align-items: center; justify-content: center; width: 14px; height: 14px; box-sizing: border-box; border-radius: var(--r-tag);
+  border: 1px solid var(--control-edge-key); background: transparent; color: var(--accent-ink);
+}
+.d-action-menu__check[data-on] { border-color: var(--accent); background: var(--accent); }
+@media (prefers-reduced-motion: reduce) { .d-action-menu__popup { animation: none; } }
+/* Signal task 10: a labelled group of items (a notify mode's radios) keeps the popup's one column. */
+.d-action-menu__group { display: grid; }

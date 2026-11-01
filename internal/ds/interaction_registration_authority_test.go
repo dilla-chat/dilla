@@ -248,3 +248,7 @@ func newAuthorityRepository(t *testing.T) store.Repository {
 	t.Cleanup(func() { _ = repo.Close() })
 	return repo
 }
+
+func (authorityDeviceLists) WithVerification(ctx context.Context, fn func(context.Context) error) error {
+	return fn(ctx)
+}

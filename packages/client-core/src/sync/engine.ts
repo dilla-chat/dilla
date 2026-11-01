@@ -11,7 +11,7 @@ import { SerialQueues } from './group-queue';
 import { JoinAll } from './joinall';
 import type { SyncInternals } from './internals';
 import { discardSend, drainOne, retrySend, sendMessage, sendRequest } from './send';
-import { readDeviceListHistory, signedHeadList } from '../state/trust';
+import { ingestAccountKind, readDeviceListHistory, signedHeadList } from '../state/trust';
 import { recoverModerationRemovals } from './removals';
 
 export type SyncRoutes = Pick<Routes, 'listChannels' | 'postGroup' | 'getGroupInfo' | 'getGroupTree' | 'getHandshakes' | 'getMessages'
@@ -25,6 +25,8 @@ export interface SyncDeps {
   now(): number; random(): number; setTimeout(fn: () => void, ms: number): number; clearTimeout(id: number): void;
   onGroupChanged(groupId: Id, result: ApplyResult): void; onOutboxChanged(groupId: Id): void;
   onTrustChanged(): void;
+  /** A refusal of the account-kind ingest worth a diagnostics entry (the controller records it). */
+  onError?: (code: string) => void;
   trackJob?(job: Promise<unknown>): void;
   /** 'member' (WB fix wave): a group reported not-member was read to the end again (the DS serves group reads to
    *  current leaves only), so the device holds its leaf after all. A frame applied to the group proves no such thing. */
@@ -74,6 +76,7 @@ export class SyncEngine implements SyncInternals {
   readonly reframedOnce = new Set<string>();
   readonly trustRetried = new Map<string, 'pending' | 'done'>();
   readonly resyncTried = new Set<string>();
+  readonly recoveryGeneration = new Map<string, bigint>();
   readonly quiet = new Set<string>();
   readonly unexpectedReported = new Set<string>();
   /** Groups whose last membership report was not-member (WB fix wave): a confirmed catch-up withdraws it. */
@@ -337,7 +340,7 @@ export class SyncEngine implements SyncInternals {
   }
   async applyHook(g: Id, r: ApplyResult, source: 'frame' | 'catch-up' | 'commit'): Promise<void> {
     const group = this.row(g);
-    if (group?.kind === 0 && group.communityId !== null) await recoverModerationRemovals(this.deps.core, this.deps.routes, g);
+    if (group?.kind === 0 && group.communityId !== null) await recoverModerationRemovals(this.deps.core, this.deps.routes, g, this.deps.onError);
     this.deps.onGroupChanged(g, r);
     const hex = toHex(g);
     if (r.ownAdopted) {
@@ -380,6 +383,7 @@ export class SyncEngine implements SyncInternals {
         const { head, history } = await readDeviceListHistory(this.deps.routes, candidate.userId, candidate.cachedVersion);
         if (this.isStopped) return false;
         try {
+          ingestAccountKind(this.deps.core, candidate.userId, head, this.deps.onError);
           this.deps.core.deviceListIngestAdd(g, proposals, candidate.index, candidate.userId, history, signedHeadList(head), BigInt(Math.floor(this.deps.now() / 1000)));
         } catch (e) {
           // Controller ruling 3: a candidate whose leaf fails is left out of this commit by the core (commit_build), never
@@ -497,9 +501,14 @@ export class SyncEngine implements SyncInternals {
     return this.queues.run(`c:${toHex(ch.channelId)}`, async () => {
       const opened = await openChannelFlow(this, ch);
       const group = this.row(opened.groupId);
-      if (opened.state === 2 && group?.kind === 0 && group.communityId !== null) {
+      if (opened.state === 2 && group?.kind === 0 && group.communityId !== null && !this.isStopped) {
+        let observedGeneration = 0n;
         try {
-          await this.queues.run(key(opened.groupId), () => recoverModerationRemovals(this.deps.core, this.deps.routes, opened.groupId));
+          await this.queues.run(key(opened.groupId), () => {
+            if (this.isStopped) throw new SyncError('E_SYNC_STOPPED');
+            observedGeneration = this.recoveryGeneration.get(toHex(opened.groupId)) ?? 0n;
+            return recoverModerationRemovals(this.deps.core, this.deps.routes, opened.groupId, this.deps.onError);
+          });
         } catch (e) {
           // A device can rejoin the community before its background catch-up has noticed the
           // Remove. The group row is still state 2, but the member-only removal feed refuses it
@@ -507,12 +516,20 @@ export class SyncEngine implements SyncInternals {
           // then read the feed again before allowing the caller to publish the timeline.
           if (!this.membershipLost(opened.groupId, e)) throw e;
           const resynced = await this.queues.run(key(opened.groupId), async () => {
+            if (this.isStopped) throw new SyncError('E_SYNC_STOPPED');
+            // A proposal/catch-up already on this lane may have replaced our
+            // leaf after the failed read. Its 404 then describes an old local
+            // generation; retry the read without another cursor-moving join.
+            if ((this.recoveryGeneration.get(toHex(opened.groupId)) ?? 0n) !== observedGeneration) return true;
             const joined = await resyncGroup(this, opened.groupId, true);
             if (joined) this.healBlocked.delete(toHex(opened.groupId));
             return joined;
           });
           if (!resynced) throw e;
-          await this.queues.run(key(opened.groupId), () => recoverModerationRemovals(this.deps.core, this.deps.routes, opened.groupId));
+          await this.queues.run(key(opened.groupId), () => {
+            if (this.isStopped) throw new SyncError('E_SYNC_STOPPED');
+            return recoverModerationRemovals(this.deps.core, this.deps.routes, opened.groupId, this.deps.onError);
+          });
         }
       }
       return opened;

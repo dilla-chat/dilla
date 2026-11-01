@@ -251,6 +251,94 @@ func TestInteractionRegistrationManualRecoveryRequiresExactAuthoritativeReceipt(
 	}
 }
 
+func TestInteractionRegistrationReadmitsManualIntentWithSameGroupAndOperation(t *testing.T) {
+	f := newInteractionRegistrationFixture(t)
+	f.s.dropRegistrationResponse = true
+	if _, err := f.coordinator.Register(context.Background(), f.request); !errors.Is(err, ErrInteractionRegistrationOutcomeUnknown) {
+		t.Fatalf("lost registration response = %v, want unknown outcome", err)
+	}
+	oldOperation, oldRequest := f.s.lastOperation, f.s.requestIDs[0]
+	f.s.currentTime = 131
+	if _, err := f.coordinator.Register(context.Background(), f.request); !errors.Is(err, ErrInteractionRegistrationManualRecovery) {
+		t.Fatalf("expired admission = %v, want manual recovery", err)
+	}
+	f.s.dropRegistrationResponse = false
+	got, err := f.coordinator.ReadmitInteractionRegistration(context.Background(), f.request.Group)
+	if err != nil {
+		t.Fatalf("ReadmitInteractionRegistration: %v", err)
+	}
+	if got.Receipt.OperationID != oldOperation || got.Receipt.GroupID != f.request.Group || got.Usable ||
+		f.n.createCalls != 1 || f.n.registered != 1 || f.s.registerCalls != 2 || f.s.lastOperation != oldOperation {
+		t.Fatalf("readmission changed the staged MLS operation: result=%+v creates=%d registered=%d posts=%d last_op=%s",
+			got, f.n.createCalls, f.n.registered, f.s.registerCalls, f.s.lastOperation)
+	}
+	if len(f.s.requestIDs) != 6 || f.s.requestIDs[3] == oldRequest || f.s.requestIDs[3] != f.s.requestIDs[4] || f.s.requestIDs[4] != f.s.requestIDs[5] {
+		t.Fatalf("readmission did not use one fresh authorization: requests=%v", f.s.requestIDs)
+	}
+	value, err := f.n.StateGet(context.Background(), interactionRegistrationStateArea, interactionRegistrationKey(f.request.Group))
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent, err := decodeInteractionRegistrationIntent(value.Value)
+	if err != nil || intent.Phase != 2 || intent.ManualRecovery || intent.Operation != oldOperation {
+		t.Fatalf("durable intent was not resolved: intent=%+v err=%v", intent, err)
+	}
+}
+
+func TestInteractionRegistrationReadmissionRefusesChangedOrMissingAuthority(t *testing.T) {
+	for _, variant := range []string{"generation", "policy", "identity", "native group", "native state", "admission"} {
+		t.Run(variant, func(t *testing.T) {
+			f := newInteractionRegistrationFixture(t)
+			f.s.dropRegistrationResponse = true
+			if _, err := f.coordinator.Register(context.Background(), f.request); !errors.Is(err, ErrInteractionRegistrationOutcomeUnknown) {
+				t.Fatalf("initial outcome = %v", err)
+			}
+			f.s.currentTime = 131
+			if _, err := f.coordinator.Register(context.Background(), f.request); !errors.Is(err, ErrInteractionRegistrationManualRecovery) {
+				t.Fatalf("manual recovery = %v", err)
+			}
+			switch variant {
+			case "generation":
+				f.d.value.Generation++
+			case "policy":
+				f.d.value.PolicyVersion++
+			case "identity":
+				f.n.identity.Device = new(id.ID)
+			case "native group":
+				f.n.createCalls = 0
+			case "native state":
+				f.n.inspectState = 2
+			case "admission":
+				f.s.admissionErr = errors.New("not eligible")
+			}
+			if _, err := f.coordinator.ReadmitInteractionRegistration(context.Background(), f.request.Group); err == nil {
+				t.Fatal("readmission accepted changed or missing authority")
+			}
+			if f.s.registerCalls != 1 || f.n.registered != 0 {
+				t.Fatalf("refused readmission mutated registration: posts=%d native=%d", f.s.registerCalls, f.n.registered)
+			}
+		})
+	}
+}
+
+func TestInteractionRegistrationReadmissionAcceptsLateOriginalReceipt(t *testing.T) {
+	f := newInteractionRegistrationFixture(t)
+	f.s.dropRegistrationResponse = true
+	if _, err := f.coordinator.Register(context.Background(), f.request); !errors.Is(err, ErrInteractionRegistrationOutcomeUnknown) {
+		t.Fatalf("initial outcome = %v", err)
+	}
+	f.s.currentTime = 131
+	if _, err := f.coordinator.Register(context.Background(), f.request); !errors.Is(err, ErrInteractionRegistrationManualRecovery) {
+		t.Fatalf("manual recovery = %v", err)
+	}
+	f.s.dropRegistrationResponse = false
+	f.s.originalCommitsDuringReadmission = true
+	result, err := f.coordinator.ReadmitInteractionRegistration(context.Background(), f.request.Group)
+	if err != nil || result.Receipt.OperationID != f.s.lastOperation || f.s.registerCalls != 2 || f.n.registered != 1 {
+		t.Fatalf("late original receipt was not resolved: result=%+v err=%v posts=%d native=%d", result, err, f.s.registerCalls, f.n.registered)
+	}
+}
+
 func TestInteractionRegistrationManualRecoveryRemainsRetryableAfterNativeFailure(t *testing.T) {
 	f := newInteractionRegistrationFixture(t)
 	intent := pendingInteractionRecoveryIntent(f, []byte{7, 8, 9})
@@ -689,18 +777,19 @@ func makeSignedSnapshotFixtureFor(request id.ID, expected []any, now uint64) ([]
 }
 
 type interactionRegistrationNativeFake struct {
-	binding                 native.Binding
-	identity                native.Identity
-	values                  map[string]native.StateValue
-	createCalls, registered uint64
-	discarded               []id.ID
-	createErr               error
-	groupRegisteredErr      error
-	failTransactionCall     uint64
-	transactionCalls        uint64
-	createdExpected         native.InteractionGroupExpected
-	createdKeyPackage       []byte
-	createOperations        []id.ID
+	binding                               native.Binding
+	identity                              native.Identity
+	values                                map[string]native.StateValue
+	createCalls, inspectCalls, registered uint64
+	discarded                             []id.ID
+	createErr                             error
+	groupRegisteredErr                    error
+	failTransactionCall                   uint64
+	transactionCalls                      uint64
+	createdExpected                       native.InteractionGroupExpected
+	createdKeyPackage                     []byte
+	createOperations                      []id.ID
+	inspectState                          uint64
 }
 
 func (n *interactionRegistrationNativeFake) Binding() native.Binding { return n.binding }
@@ -719,6 +808,16 @@ func (n *interactionRegistrationNativeFake) CreateInteractionGroup(_ context.Con
 		return native.InteractionGroupCreateResult{}, n.createErr
 	}
 	return native.InteractionGroupCreateResult{Group: e.Group, Binding: native.InteractionGroupBinding{Instance: e.Instance, BotUser: e.BotUser, Installation: e.Installation, Community: e.Community, ParticipantUser: e.ParticipantUser, ParticipantDevice: e.ParticipantDevice, PolicyVersion: e.PolicyVersion, E2EEVersion: 1, MediaVersion: 0}, BindingBody: []byte{1}, GroupInfo: []byte{2}, RatchetTree: []byte{3}, Welcome: []byte{4}, Epoch: 1, MemberCount: 2}, nil
+}
+func (n *interactionRegistrationNativeFake) InspectInteractionGroup(_ context.Context, e native.InteractionGroupExpected, _ []byte) (native.InteractionGroupInspectResult, error) {
+	n.inspectCalls++
+	if n.createCalls == 0 || e.Group != n.createdExpected.Group {
+		return native.InteractionGroupInspectResult{}, errors.New("staged interaction group missing")
+	}
+	return native.InteractionGroupInspectResult{Binding: native.InteractionGroupBinding{Instance: e.Instance, BotUser: e.BotUser,
+		Installation: e.Installation, Community: e.Community, ParticipantUser: e.ParticipantUser,
+		ParticipantDevice: e.ParticipantDevice, PolicyVersion: e.PolicyVersion, E2EEVersion: 1},
+		BotDevice: e.BotDevice, Epoch: 1, State: n.inspectState, NextSequence: 1}, nil
 }
 func (n *interactionRegistrationNativeFake) DiscardGroup(_ context.Context, operation, _ id.ID) error {
 	n.discarded = append(n.discarded, operation)
@@ -787,29 +886,32 @@ func (d *interactionRegistrationDiscoveryFake) Discover(context.Context) (client
 }
 
 type interactionRegistrationSessionFake struct {
-	admission                   []byte
-	registerCalls, receiptCalls uint64
-	storeThenLoseResponse       bool
-	dropRegistrationResponse    bool
-	lateCommitAfterAbsence      bool
-	lastOperation               id.ID
-	lateReceipt                 *client.BotGroupRegistrationReceipt
-	hideReceiptCalls            uint64
-	receipt                     *client.BotGroupRegistrationReceipt
-	ignoreReceiptOperation      bool
-	requestIDs                  []id.ID
-	expected                    []any
-	currentEpisode              id.ID
-	candidates                  []id.ID
-	registeredGroups            []id.ID
-	admissionErr                error
-	currentTime                 uint64
-	minimumRevision             uint64
-	admissions                  map[id.ID]uint64
-	keyPackage                  []byte
-	keyPackageErr               error
-	keyPackageCalls             uint64
-	keyPackageFailures          uint64
+	admission                        []byte
+	registerCalls, receiptCalls      uint64
+	storeThenLoseResponse            bool
+	dropRegistrationResponse         bool
+	lateCommitAfterAbsence           bool
+	originalCommitsDuringReadmission bool
+	firstSubmission                  *client.BotGroupRegistrationReceipt
+	lastOperation                    id.ID
+	lateReceipt                      *client.BotGroupRegistrationReceipt
+	hideReceiptCalls                 uint64
+	receipt                          *client.BotGroupRegistrationReceipt
+	ignoreReceiptOperation           bool
+	requestIDs                       []id.ID
+	expected                         []any
+	currentEpisode                   id.ID
+	candidates                       []id.ID
+	registeredGroups                 []id.ID
+	admissionErr                     error
+	registerErr                      error
+	currentTime                      uint64
+	minimumRevision                  uint64
+	admissions                       map[id.ID]uint64
+	keyPackage                       []byte
+	keyPackageErr                    error
+	keyPackageCalls                  uint64
+	keyPackageFailures               uint64
 }
 
 func (s *interactionRegistrationSessionFake) KeyPackage(context.Context, id.ID) ([]byte, error) {
@@ -878,6 +980,9 @@ func (s *interactionRegistrationSessionFake) BotInteractionContextSnapshot(_ con
 func (s *interactionRegistrationSessionFake) RegisterBotGroupWithAdmissionRequest(_ context.Context, _ id.ID, op id.ID, generation uint64, body []byte, admissionRequest id.ID) (client.BotGroupRegistrationReceipt, error) {
 	s.requestIDs = append(s.requestIDs, admissionRequest)
 	s.registerCalls++
+	if s.registerErr != nil {
+		return client.BotGroupRegistrationReceipt{}, s.registerErr
+	}
 	var a []any
 	if err := cborx.Unmarshal(body, &a); err != nil || len(a) != 5 {
 		return client.BotGroupRegistrationReceipt{}, errors.New("bad interaction body")
@@ -889,6 +994,13 @@ func (s *interactionRegistrationSessionFake) RegisterBotGroupWithAdmissionReques
 	s.registeredGroups = append(s.registeredGroups, group)
 	s.lastOperation = op
 	r := client.BotGroupRegistrationReceipt{OperationID: op, GroupID: group, RegistrationSHA256: interactionRegistrationHash(body), AcceptedGeneration: generation, InitialEpoch: 1, NextSequence: 1}
+	if s.registerCalls == 1 {
+		s.firstSubmission = &r
+	}
+	if s.registerCalls == 2 && s.originalCommitsDuringReadmission {
+		s.receipt = s.firstSubmission
+		return client.BotGroupRegistrationReceipt{}, errors.New("original submission committed before readmission")
+	}
 	if s.dropRegistrationResponse {
 		if s.lateCommitAfterAbsence {
 			s.lateReceipt = &r
@@ -932,3 +1044,31 @@ func (s *interactionRegistrationSessionFake) GroupInfo(context.Context, id.ID) (
 }
 
 var _ = native.StateValue{}
+
+func TestInteractionRegistrationRateLimitsRemainRetryable(t *testing.T) {
+	for _, stage := range []string{"admission", "keypackage", "registration"} {
+		t.Run(stage, func(t *testing.T) {
+			f := newInteractionRegistrationFixture(t)
+			refusal := &client.APIError{Status: 429, Code: "E_RATE_LIMITED", Outcome: client.OutcomeDefinitive}
+			switch stage {
+			case "admission":
+				f.s.admissionErr = refusal
+			case "keypackage":
+				f.request.ParticipantKeyPackage = nil
+				f.s.keyPackage = []byte{7, 8, 9}
+				f.s.keyPackageErr = refusal
+			case "registration":
+				f.s.registerErr = refusal
+			}
+			if _, err := f.coordinator.Register(t.Context(), f.request); client.RateLimitError(err) == nil {
+				t.Fatalf("lost rate-limit classification: %v", err)
+			}
+			f.s.admissionErr = nil
+			f.s.keyPackageErr = nil
+			f.s.registerErr = nil
+			if got, err := f.coordinator.Register(t.Context(), f.request); err != nil || got.Receipt.GroupID != f.request.Group || len(got.PendingWelcome) == 0 {
+				t.Fatalf("next tick: result=%+v error=%v", got, err)
+			}
+		})
+	}
+}

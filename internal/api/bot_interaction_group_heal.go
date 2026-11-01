@@ -125,18 +125,20 @@ func (h *Groups) botInteractionGroupHealAuthorized(w http.ResponseWriter, r *htt
 			latest.Registration.UserID != session.UserID || latest.Registration.DeviceID != session.DeviceID {
 			return errors.New("interaction group does not match the current Bot session")
 		}
-		_, err := h.Deps.verifyCurrentInteractionLiveState(r.Context(), latest, h.Deps.Clock.Now().Unix(), installationID,
-			session.Bot.CommunityID, session.UserID, session.DeviceID, latest.Binding.ParticipantUserID,
-			latest.Binding.ParticipantDeviceID, true, tx)
-		if err != nil {
-			return err
-		}
-		checkedRow, err = tx.GetGroup(r.Context(), groupID)
-		if err != nil {
-			return err
-		}
-		current = latest
-		return nil
+		return latest.WithDeviceListVerification(r.Context(), func(ctx context.Context) error {
+			_, err := h.Deps.verifyCurrentInteractionLiveState(ctx, latest, h.Deps.Clock.Now().Unix(), installationID,
+				session.Bot.CommunityID, session.UserID, session.DeviceID, latest.Binding.ParticipantUserID,
+				latest.Binding.ParticipantDeviceID, true, tx)
+			if err != nil {
+				return err
+			}
+			checkedRow, err = tx.GetGroup(r.Context(), groupID)
+			if err != nil {
+				return err
+			}
+			current = latest
+			return nil
+		})
 	})
 	if err == nil {
 		if err := fn(session, groupID, current, checkedRow); err != nil {

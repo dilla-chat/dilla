@@ -20,6 +20,8 @@ export interface FactorSetupResult { kind: 'totp' | 'passkey'; /** The passkey's
 export interface FactorSetupProps {
   origin: 'signup' | 'signin' | 'required' | 'settings';
   stepLabel: string;
+  /** The flow's progress dots (Signal task 10 fix round 1); none in Settings. */
+  progress?: { n: number; total: number };
   instanceName: string;
   username: string;
   announce: (text: string) => void;
@@ -65,7 +67,7 @@ export function sharedRefusal(e: UiError): Pick<Problem, 'key' | 'vars'> | null 
 }
 
 export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
-  const { origin, stepLabel, instanceName, username, announce, onDone, embedded } = props;
+  const { origin, stepLabel, progress, instanceName, username, announce, onDone, embedded } = props;
   const client = useCore();
   const account = useSlice('account');
   const factors = useSlice('factors');
@@ -345,7 +347,7 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
   const blocked = busy ? { 'aria-disabled': true as const } : {};
   const frame = (title: string, foot: ReactNode, children: ReactNode) => embedded === undefined ? (
     <form noValidate onSubmit={onSubmit}>
-      <OnboardingFrame title={title} stepLabel={stepLabel} footer={foot}>
+      <OnboardingFrame title={title} stepLabel={stepLabel} progress={progress} footer={foot}>
         {banner}
         {children}
       </OnboardingFrame>

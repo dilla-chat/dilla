@@ -6,7 +6,7 @@ const NAMES = Object.keys(themes) as ThemeName[];
 
 function currentTheme(): ThemeName {
   const t = typeof document === 'undefined' ? undefined : document.documentElement.dataset.theme;
-  return NAMES.find(n => n === t) ?? 'mesh';
+  return NAMES.find(n => n === t) ?? 'signal';
 }
 function subscribe(notify: () => void): () => void {
   if (typeof MutationObserver === 'undefined') return () => {};
@@ -14,9 +14,9 @@ function subscribe(notify: () => void): () => void {
   observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
   return () => observer.disconnect();
 }
-/** The active theme (`data-theme` on the document element; mesh when unset), re-read when it changes. */
+/** The active theme (`data-theme` on the document element; signal when unset), re-read when it changes. */
 export function useThemeName(): ThemeName {
-  return useSyncExternalStore(subscribe, currentTheme, () => 'mesh');
+  return useSyncExternalStore(subscribe, currentTheme, () => 'signal');
 }
 
 /**

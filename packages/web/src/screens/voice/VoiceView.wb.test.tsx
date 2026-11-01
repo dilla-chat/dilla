@@ -1,5 +1,6 @@
 // The whole-branch fix wave of web-3 (wb-security.md, wb-client.md, wb-web-a11y.md): the shell's side.
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { startDmCall } from '../../test/row-menu.ts';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { t } from '../../strings/index.ts';
 import { A, BOB, callState, DM, GENV, ring, renderVoiceShell, TEXT, type VoiceHarnessOptions } from '../../test/fake-client.ts';
@@ -12,7 +13,7 @@ const STALE = { ...UMK, code: 'E_DEVICE_LIST_STALE' };
 
 async function inVoice(o: VoiceHarnessOptions = {}) {
   const app = renderVoiceShell(o);
-  await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+  await app.user.click(await main().findByRole('button', { name: 'Join voice' }));
   await waitFor(() => expect(app.sessions).toHaveLength(1));
   app.client.publish('call', callState({ phase: 'in', channelId: GENV, callId: GENV }));
   await main().findByRole('toolbar', { name: 'voice channel controls' });
@@ -63,7 +64,7 @@ describe('a join can be cancelled (wb-client I1)', () => {
   it('leave during the start cancels it: the worker is told, the shell returns to idle, and no notice says it failed', async () => {
     const app = renderVoiceShell();
     app.holdStart();
-    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    await app.user.click(await main().findByRole('button', { name: 'Join voice' }));
     await waitFor(() => expect(app.log).toContain(`callJoin:${GENV}`));
     await waitFor(() => expect(dockEl()).not.toBeNull());
     // The stage has the controls while it is on screen; the dock has them off it (web3.7).
@@ -74,7 +75,7 @@ describe('a join can be cancelled (wb-client I1)', () => {
     await waitFor(() => expect(dockEl()).toBeNull());
     window.history.pushState(null, '', `/c/${A}/${GENV}`);
     window.dispatchEvent(new PopStateEvent('popstate'));
-    expect(await main().findByRole('button', { name: 'join voice' })).toBeInTheDocument();
+    expect(await main().findByRole('button', { name: 'Join voice' })).toBeInTheDocument();
     expect(screen.queryByText(t('voice.failed'))).toBeNull();
     expect(app.sessions).toHaveLength(0);
   });
@@ -82,7 +83,7 @@ describe('a join can be cancelled (wb-client I1)', () => {
   it('answering a ring while a join is in flight cancels that join and starts the DM call', async () => {
     const app = renderVoiceShell();
     app.holdStart();
-    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    await app.user.click(await main().findByRole('button', { name: 'Join voice' }));
     await waitFor(() => expect(app.log).toContain(`callJoin:${GENV}`));
     app.client.publish('rings', [ring()]);
     await app.user.click(await main().findByRole('button', { name: 'answer' }));
@@ -114,8 +115,8 @@ describe('leave and join at once (wb-client m1)', () => {
     const app = await inVoice();
     let release: () => void = () => undefined;
     app.session.leaveGate = new Promise<void>(resolve => { release = resolve; });
-    await app.user.click(main().getByRole('button', { name: 'leave' }));
-    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    await app.user.click(main().getByRole('button', { name: 'Leave' }));
+    await app.user.click(await main().findByRole('button', { name: 'Join voice' }));
     expect(app.client.callsOf('callJoin')).toHaveLength(1);
     release();
     await waitFor(() => expect(app.client.callsOf('callJoin')).toHaveLength(2));
@@ -127,14 +128,14 @@ describe('focus and announcements across the swaps (wb-web-a11y I1-I4)', () => {
   it('I1: the join moves focus to the first stage control at once, before the session attaches', async () => {
     const app = renderVoiceShell();
     app.holdStart();
-    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    await app.user.click(await main().findByRole('button', { name: 'Join voice' }));
     await waitFor(() => expect(main().getByRole('toolbar', { name: 'voice channel controls' }).querySelector('button')).toHaveFocus());
     expect(app.sessions).toHaveLength(0);
   });
 
   it('I1: a removal while focus is on a stage control moves focus to the notice, never the page', async () => {
     const app = await inVoice();
-    main().getByRole('button', { name: 'deafen' }).focus();
+    main().getByRole('button', { name: 'Deafen' }).focus();
     app.client.publish('call', callState({ phase: 'removed', channelId: GENV, callId: GENV }));
     await waitFor(() => expect(document.activeElement).toHaveTextContent(t('voice.removed')), { timeout: 3_500 });
     expect(document.activeElement).not.toBe(document.body);
@@ -143,18 +144,19 @@ describe('focus and announcements across the swaps (wb-web-a11y I1-I4)', () => {
   it('I1: a failed join while focus is on a stage control moves focus to the notice', async () => {
     const app = renderVoiceShell();
     app.module.startPageCall = failingStart('E_CALL_FULL') as unknown as typeof app.module.startPageCall;
-    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    await app.user.click(await main().findByRole('button', { name: 'Join voice' }));
     await waitFor(() => expect(document.activeElement).toHaveTextContent(t('voice.full')));
   });
 
   it('I2: the DM strip region exists before its notice, so a refusal is announced', async () => {
     const app = renderVoiceShell({ path: `/dm/${DM}` });
-    const start = await main().findByRole('button', { name: 'call' });
+    await screen.findByRole('navigation', { name: t('shell.dms.label') });
     const region = document.querySelector('.dw-call-strip [role="status"]');
     expect(region).not.toBeNull();
     expect(region).toHaveTextContent('');
     app.module.startPageCall = failingStart('E_CALL_FULL') as unknown as typeof app.module.startPageCall;
-    await app.user.click(start);
+    // Ruling Z: the DM call is in the DM row's context menu.
+    await startDmCall(app.user, 'bob');
     await waitFor(() => expect(region).toHaveTextContent(t('voice.full')));
     expect(region?.isConnected).toBe(true);
   });
@@ -162,21 +164,22 @@ describe('focus and announcements across the swaps (wb-web-a11y I1-I4)', () => {
   it('I3: joining the same channel twice says "You joined general." again; leaving twice says "You left general." again', async () => {
     const app = await inVoice();
     await waitFor(() => expect(dockStatus()).toHaveTextContent('You joined general.'));
-    await app.user.click(main().getByRole('button', { name: 'leave' }));
+    await app.user.click(main().getByRole('button', { name: 'Leave' }));
     await waitFor(() => expect(lasting()).toHaveTextContent('You left general.'));
-    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    await app.user.click(await main().findByRole('button', { name: 'Join voice' }));
     await waitFor(() => expect(app.sessions).toHaveLength(2));
     // The second join's regions start empty and then say it: a real change for a screen reader.
     expect(lasting()).toHaveTextContent('');
     await waitFor(() => expect(dockStatus()).toHaveTextContent('You joined general.'));
-    await app.user.click(main().getByRole('button', { name: 'leave' }));
+    await app.user.click(main().getByRole('button', { name: 'Leave' }));
     await waitFor(() => expect(lasting()).toHaveTextContent('You left general.'));
   });
 
-  it('I4: the stage and user panel toggles keep their labels; aria-pressed says muted', async () => {
+  it('I4: the user panel toggle keeps its label with aria-pressed; the stage’s call bar says it by its word (Signal §5.6)', async () => {
     const app = await inVoice();
     await app.user.keyboard('{Control>}{Shift>}M{/Shift}{/Control}');
-    expect(main().getByRole('button', { name: 'mute' })).toHaveAttribute('aria-pressed', 'true');
+    // The call bar's word carries the state (the prototype's Mute / Unmute), so it has no aria-pressed (WCAG 2.5.3, 4.1.2).
+    expect(main().getByRole('button', { name: 'Unmute' })).not.toHaveAttribute('aria-pressed');
     await toLobby();
     expect(within(screen.getByRole('toolbar', { name: 'your account' })).getByRole('button', { name: 'mute' })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.queryByRole('button', { name: 'unmute' })).toBeNull();
@@ -214,11 +217,11 @@ describe('keyboard, rings and the voice section (wb-web-a11y m1, m3, m4, m5)', (
     expect(join.closest('.d-slot')).not.toBeNull();
   });
 
-  it('m5: leaving from the dock on another DM focuses the @ tile, not that DM call button', async () => {
+  it('m5: leaving from the dock on another DM focuses the @ tile, not that DM\'s row', async () => {
     const app = await inVoice();
     window.history.pushState(null, '', `/dm/${DM}`);
     window.dispatchEvent(new PopStateEvent('popstate'));
-    await main().findByRole('button', { name: 'call' });
+    await screen.findByRole('navigation', { name: t('shell.dms.label') });
     await app.user.click(within(screen.getByRole('toolbar', { name: 'voice controls' })).getByRole('button', { name: 'leave' }));
     await waitFor(() => expect(document.activeElement).toHaveAccessibleName('direct messages'));
   });

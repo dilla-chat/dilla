@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -179,7 +179,7 @@ describe('ActionMenu', () => {
     expect(menuItems()[0]).toHaveFocus();
   });
 
-  it.each(['mesh', 'light', 'high-contrast'])('has no serious axe violations in %s, closed and open', async theme => {
+  it.each(['signal', 'light', 'high-contrast'])('has no serious axe violations in %s, closed and open', async theme => {
     document.documentElement.dataset.theme = theme;
     for (const startOpen of [false, true]) {
       const { container, unmount } = render(<div className="d-root"><Harness startOpen={startOpen} /></div>);
@@ -193,5 +193,66 @@ describe('ActionMenu focus key', () => {
   it('puts focusKey on the trigger as data-focus-key, so a dialog can find a re-mounted trigger', () => {
     render(<ActionMenu label="actions for Astrid" items={items} open={false} onOpenChange={() => {}} onSelect={() => {}} focusKey="member:u1" />);
     expect(trigger()).toHaveAttribute('data-focus-key', 'member:u1');
+  });
+});
+
+describe('ActionMenu without a trigger (a context menu, Ruling X)', () => {
+  function Bare({ onSelect = () => {} }: { onSelect?: (id: string) => void }) {
+    const [open, setOpen] = useState(true);
+    return (
+      <div>
+        <button type="button" id="row">general</button>
+        <ActionMenu label="general menu" items={items} open={open} onOpenChange={setOpen} onSelect={onSelect} at={{ x: 10, y: 10 }}
+          trigger="none" returnFocus={() => document.getElementById('row')} />
+      </div>
+    );
+  }
+  it('renders no trigger button, only the menu, and focuses its first item', () => {
+    render(<Bare />);
+    expect(screen.queryByRole('button', { name: 'general menu' })).toBeNull();
+    expect(screen.getByRole('menu', { name: 'general menu' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'kick' })).toHaveFocus();
+  });
+  it('Escape closes it and gives focus back to the row', async () => {
+    const user = userEvent.setup();
+    render(<Bare />);
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(screen.getByRole('button', { name: 'general' })).toHaveFocus();
+  });
+  it('a choice closes it, focuses the row and reports the id', async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    render(<Bare onSelect={onSelect} />);
+    await user.click(screen.getByRole('menuitem', { name: 'ban' }));
+    expect(onSelect).toHaveBeenCalledWith('ban');
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(screen.getByRole('button', { name: 'general' })).toHaveFocus();
+  });
+});
+
+// Signal task 10 fix round 3 (WAI-ARIA APG): radio items that share a `group` sit in one labelled role="group".
+describe('ActionMenu groups', () => {
+  it('wraps consecutive items of one group in a labelled group and keeps aria-checked on the current one', () => {
+    render(<ActionMenu label="general menu" open onOpenChange={() => {}} onSelect={() => {}}
+      items={[{ id: 'pins', label: 'Pinned' }, { id: 'all', label: 'All', checked: false, group: 'Notifications' }, { id: 'none', label: 'Nothing', checked: true, group: 'Notifications' }]} />);
+    const group = screen.getByRole('group', { name: 'Notifications' });
+    expect(within(group).getAllByRole('menuitemradio')).toHaveLength(2);
+    expect(within(group).getByRole('menuitemradio', { name: 'Nothing' })).toHaveAttribute('aria-checked', 'true');
+    expect(within(group).queryByRole('menuitem', { name: 'Pinned' })).toBeNull();
+  });
+
+  // Merge of lanes 9 and 10: the group keeps task 9's tick on the current radio, its separator and the label's title.
+  it('draws the tick on the checked radio inside a group, a separator before a sep item, and titles each label', () => {
+    render(<ActionMenu label="general menu" open onOpenChange={() => {}} onSelect={() => {}}
+      items={[{ id: 'mute', label: 'Mute', check: false }, { id: 'all', label: 'Notify me about every message in this conversation', checked: false, group: 'Notifications', sep: true },
+        { id: 'none', label: 'Nothing', checked: true, group: 'Notifications' }]} />);
+    const group = screen.getByRole('group', { name: 'Notifications' });
+    const nothing = within(group).getByRole('menuitemradio', { name: 'Nothing' });
+    expect(nothing.querySelector('.d-action-menu__tick')).not.toBeNull();
+    expect(within(group).getByRole('menuitemradio', { name: /every message/ }).querySelector('.d-action-menu__tick')).toBeNull();
+    expect(within(group).getByRole('separator')).toBeInTheDocument();
+    expect(within(group).getByRole('menuitemradio', { name: /every message/ }).querySelector('.d-action-menu__label'))
+      .toHaveAttribute('title', 'Notify me about every message in this conversation');
   });
 });

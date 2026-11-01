@@ -1,7 +1,7 @@
 // The page's own preferences (L-TS-26): one IndexedDB database, one store, one record — the theme. It is read
 // before the first paint and never holds a key, a token or an id; the worker's store is not touched.
 
-export type ThemePref = 'system' | 'mesh' | 'light' | 'high-contrast';
+export type ThemePref = 'system' | 'signal' | 'light' | 'high-contrast';
 
 export const PREFS_DB = 'dilla-ui';
 export const PREFS_DB_VERSION = 1;
@@ -10,7 +10,7 @@ export const PREFS_STORE = 'prefs';
 export const PREFS_TIMEOUT_MS = 500;
 
 const THEME_KEY = 'theme';
-const THEME_PREFS: readonly string[] = ['system', 'mesh', 'light', 'high-contrast'];
+const THEME_PREFS: readonly string[] = ['system', 'signal', 'light', 'high-contrast'];
 
 export function isThemePref(value: unknown): value is ThemePref {
   return typeof value === 'string' && THEME_PREFS.includes(value);
@@ -49,7 +49,10 @@ async function readRecord(idb: IDBFactory): Promise<unknown> {
 function themeOf(record: unknown): ThemePref {
   if (typeof record !== 'object' || record === null) return 'system';
   const { v, theme } = record as Record<string, unknown>;
-  return v === 1 && isThemePref(theme) ? theme : 'system';
+  if (v !== 1) return 'system';
+  // Mesh was removed; a preference stored before that reads as Signal (no DB version bump: the next write stores it).
+  const current = theme === 'mesh' ? 'signal' : theme;
+  return isThemePref(current) ? current : 'system';
 }
 
 /** The stored theme preference, or 'system' on any failure, a malformed record or no answer within the timeout. */

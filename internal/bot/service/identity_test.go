@@ -151,6 +151,7 @@ type fakeLifecycleRuntime struct {
 	claimRequest, enrollRequest id.ID
 	claimCalls, enrollCalls     int
 	loseEnrollOnce              bool
+	enrollErrOnce               error
 	enrollClaim                 id.ID
 	claimSequence               []client.Claim
 	enrollObservations          []client.ResponseObservation
@@ -186,6 +187,11 @@ func (r *fakeLifecycleRuntime) EnrollObserved(_ context.Context, installation, r
 		r.enrollRequest = request
 	} else if r.enrollRequest != request {
 		return client.Enrollment{}, client.ResponseObservation{}, ErrRecovery
+	}
+	if r.enrollErrOnce != nil {
+		err := r.enrollErrOnce
+		r.enrollErrOnce = nil
+		return client.Enrollment{}, client.ResponseObservation{}, err
 	}
 	if r.loseEnrollOnce {
 		r.loseEnrollOnce = false
@@ -247,7 +253,7 @@ func (h *fakeIdentityHTTP) Challenge(context.Context, id.ID) (client.SessionChal
 func (h *fakeIdentityHTTP) EstablishSession(_ context.Context, device id.ID, nonce []byte, purpose uint64, _ []byte, _ any, _ []byte) (client.DeviceSession, error) {
 	return client.DeviceSession{Token: "secret-bearer", Scope: 0, UserID: h.user, DeviceID: device, Expires: 1_800_001_000, IdleExpires: 1_800_001_000, Generation: 1}, nil
 }
-func (h *fakeIdentityHTTP) NewSession(string) (lifecycleSession, error) { return h.session, nil }
+func (h *fakeIdentityHTTP) NewSession(string, id.ID) (lifecycleSession, error) { return h.session, nil }
 
 type fakeIdentitySession struct {
 	installation        client.Installation
@@ -896,5 +902,39 @@ func TestEnsureReturnsJoiningWithPendingFallbackAtOrdinaryPackageCap(t *testing.
 	result, err := l.Ensure(ctx)
 	if err != nil || result.Phase != 2 || !result.PackageRefillPending || result.Packages.OrdinaryActive != 32 || n.intents != 0 {
 		t.Fatalf("full ordinary inventory withheld usable joining result: phase=%d pending=%v active=%d intents=%d err=%v", result.Phase, result.PackageRefillPending, result.Packages.OrdinaryActive, n.intents, err)
+	}
+}
+
+func TestEnrollmentYieldClearsAttemptAndRefreshesClaim(t *testing.T) {
+	instance, community, installation := sid(1), sid(2), sid(3)
+	user, device := sid(45), sid(44)
+	n := newFakeNative(instance, community, installation)
+	r := &fakeLifecycleRuntime{installation: client.Installation{ID: installation, CommunityID: community, State: 0, Revision: 1}, user: user, device: device, enrollErrOnce: client.ErrCooperativeStop}
+	list, _ := cborx.Marshal([]any{uint64(1), []byte("list"), make([]byte, 64), make([]byte, 32)})
+	s := &fakeIdentitySession{installation: client.Installation{ID: installation, CommunityID: community, State: 2, Revision: 2, BotUser: &user, BotDevice: &device}, list: list}
+	h := &fakeIdentityHTTP{instance: instance, user: user, device: device, session: s}
+	lifecycle := newIdentityLifecycle(instance, community, installation, n, r, h, LifecycleOptions{Now: func() time.Time { return time.Unix(1_800_000_000, 0) }, DesiredPackages: 8, RenewMargin: time.Minute})
+	if _, err := lifecycle.Ensure(t.Context()); !errors.Is(err, client.ErrCooperativeStop) {
+		t.Fatal(err)
+	}
+	state, err := decodeIdentityState(n.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.EnrollAttempted {
+		t.Fatal("yield left enrollment marked as attempted")
+	}
+	oldRequest := state.EnrollRequest
+	beforeClaims := r.claimCalls
+	r.claimSequence = []client.Claim{{InstallationID: installation, ClaimID: sid(78), Expires: 1_800_000_900}}
+	if _, err := lifecycle.Ensure(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	state, err = decodeIdentityState(n.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.claimCalls <= beforeClaims || r.enrollClaim != sid(78) || state.EnrollRequest != oldRequest {
+		t.Fatalf("retry did not refresh claim and retain request: claims=%d claim=%s", r.claimCalls, r.enrollClaim)
 	}
 }

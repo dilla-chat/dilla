@@ -625,7 +625,7 @@ func (c *Communities) admitByInvite(ctx context.Context, repo store.Repository, 
 		now := c.clk.Now().Unix()
 		switch err := repo.TakeInviteSignup(ctx, userID, inv.ID); {
 		case err == nil:
-			if inv.RevokedAt != nil || inv.ExpiresAt <= now {
+			if inv.RevokedAt != nil || inv.ExpiresAt <= now { // a never-expiring invite stores the largest second
 				return errInviteInvalid("the invite is expired, exhausted or revoked")
 			}
 			return nil

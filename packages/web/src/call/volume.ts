@@ -14,10 +14,17 @@ export function isVolume(v: number): boolean {
 
 /** `volumes` is the map of the source: the voice volumes for a microphone, the stream volumes for a screen's sound (T5: one
  *  gain path for both, the caller picks the map). */
-export function gainOf(userId: string, volumes: Volumes, s: { deafened: boolean; paused: boolean }): number {
+/** Signal task 10b: the input and output volume of Settings → Voice: a whole percent 0..200. */
+export function isPercent(v: number): boolean {
+  return Number.isInteger(v) && v >= 0 && v <= 200;
+}
+
+/** Signal task 10b: `output` is Settings → Voice's output volume (0..200 %, 100 by default), multiplied in. */
+export function gainOf(userId: string, volumes: Volumes, s: { deafened: boolean; paused: boolean; output?: number }): number {
   if (s.deafened || s.paused) return 0;
   const v = volumes[userId];
-  return (v !== undefined && isVolume(v) ? v : 100) / 100;
+  const output = s.output !== undefined && isPercent(s.output) ? s.output : 100;
+  return ((v !== undefined && isVolume(v) ? v : 100) / 100) * (output / 100);
 }
 
 /** The volumes the settings slice holds, keyed by user id; malformed entries are skipped. */

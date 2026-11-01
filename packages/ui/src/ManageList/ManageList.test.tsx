@@ -61,7 +61,7 @@ describe('ManageList', () => {
     expect(p.onAction).not.toHaveBeenCalled();
   });
 
-  it.each(['mesh', 'light', 'high-contrast'])('has no serious axe violations in %s, listed, busy and empty', async theme => {
+  it.each(['signal', 'light', 'high-contrast'])('has no serious axe violations in %s, listed, busy and empty', async theme => {
     document.documentElement.dataset.theme = theme;
     for (const over of [{}, { busyId: 'i1' }, { rows: [] }]) {
       const { container, unmount } = render(<div className="d-root"><ManageList {...props(over)} /></div>);
@@ -125,7 +125,7 @@ describe('ManageList', () => {
       expect(button.closest('.d-manage-list__trail')).not.toBeNull();
     });
 
-    it.each(['mesh', 'light', 'high-contrast'])('has no serious axe violations in %s', async theme => {
+    it.each(['signal', 'light', 'high-contrast'])('has no serious axe violations in %s', async theme => {
       document.documentElement.dataset.theme = theme;
       const { container } = render(<div className="d-root"><ManageList {...channels()} /></div>);
       await expectNoAxeViolations(container);

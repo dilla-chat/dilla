@@ -2,7 +2,6 @@ package client
 
 import (
 	"context"
-	"net/http"
 
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
@@ -28,9 +27,9 @@ func (s *Session) BotInteractionContextSnapshot(ctx context.Context, installatio
 	if err != nil {
 		return nil, err
 	}
-	raw, _, err := s.c.do(ctx, s.token, http.MethodPost,
+	raw, err := s.interactionProofRequest(ctx,
 		"bot-runtime/installations/"+inst+"/interaction-admissions/context",
-		nil, request, MaxInteractionContextResponse, false)
+		request, MaxInteractionContextResponse, false)
 	if err != nil {
 		return nil, err
 	}

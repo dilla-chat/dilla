@@ -129,6 +129,12 @@ type BotInstallations struct {
 	Created              int64
 	Updated              int64
 	RemovedAt            sql.NullInt64
+	FeatureCapabilities  int64
+	MusicVolume          int64
+	MusicIdleMinutes     int64
+	RestartRequested     int64
+	RestartHandled       int64
+	RuntimeVersion       sql.NullString
 }
 
 type BotInteractionEligibilityRevisions struct {
@@ -340,13 +346,6 @@ type Devices struct {
 	Label            sql.NullString
 }
 
-type DjRolePolicy struct {
-	InstallationID id.ID
-	RoleID         id.ID
-	ApprovedBy     []byte
-	ApprovedAt     int64
-}
-
 type ForkReports struct {
 	GroupID        id.ID
 	Seq            int64
@@ -379,16 +378,17 @@ type InviteSignups struct {
 }
 
 type Invites struct {
-	ID          id.ID
-	CodeHash    []byte
-	CommunityID *id.ID
-	CreatedBy   *id.ID
-	GrantsAdmin int64
-	MaxUses     int64
-	UsedCount   int64
-	Created     int64
-	ExpiresAt   int64
-	RevokedAt   sql.NullInt64
+	ID            id.ID
+	CodeHash      []byte
+	CommunityID   *id.ID
+	CreatedBy     *id.ID
+	GrantsAdmin   int64
+	MaxUses       int64
+	UsedCount     int64
+	Created       int64
+	ExpiresAt     int64
+	RevokedAt     sql.NullInt64
+	UnlimitedUses int64
 }
 
 type KeyPackages struct {
@@ -571,9 +571,10 @@ type OidcIdentities struct {
 }
 
 type PasswordCredentials struct {
-	UserID  id.ID
-	Phc     string
-	Updated int64
+	UserID    id.ID
+	Phc       string
+	Updated   int64
+	ChangedAt sql.NullInt64
 }
 
 type PendingJoins struct {
@@ -685,9 +686,9 @@ type Sessions struct {
 	Created      int64
 	Expires      int64
 	IdleExpires  int64
-	WireVersion  int64
 	E2eeVersion  int64
 	MediaVersion int64
+	WireVersion  int64
 }
 
 type SlowmodeMarks struct {

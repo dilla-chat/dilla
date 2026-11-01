@@ -138,7 +138,7 @@ test('every state of the slice passes axe with target-size, in all three themes,
 
   // The three themes, set where the app sets them (on <html>, L-UI DOM contract); --bg proves each one took effect.
   const backgrounds = new Set<string>();
-  for (const theme of ['mesh', 'light', 'high-contrast'] as const) {
+  for (const theme of ['signal', 'light', 'high-contrast'] as const) {
     await page.evaluate((name) => { document.documentElement.dataset.theme = name; }, theme);
     backgrounds.add(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--bg').trim()));
     await expectAccessible(page, `conversation in the ${theme} theme`);

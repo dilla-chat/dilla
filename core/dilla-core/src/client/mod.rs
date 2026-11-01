@@ -2,6 +2,7 @@
 //! Every structured value crossing the boundary is one deterministic CBOR item. Every state
 //! change runs inside exactly one `DillaStorage::unit`.
 
+mod account_kind;
 mod bot_events;
 mod bot_identity;
 pub use bot_identity::BotInteractionGroupDescriptor;

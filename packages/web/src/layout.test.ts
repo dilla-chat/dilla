@@ -1,8 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { act, renderHook } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { pushHistoryState, replaceHistoryState } from './router.ts';
 import { PHONE_QUERY, readPaneWidths, rememberedTab, rememberTab, writePaneWidths, usePhoneLayout, usePhoneSheet, useVisualViewportHeight } from './layout.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -59,6 +60,7 @@ describe('R9 (web half): app.css reads the same phone query and has the containe
 
 describe('the phone shell follows the visual viewport (web3.7.2)', () => {
   const base = readFileSync(join(here, '..', '..', 'ui', 'src', 'styles', 'base.css'), 'utf8');
+  const settings = readFileSync(join(here, '..', '..', 'ui', 'src', 'SettingsFrame', 'SettingsFrame.css'), 'utf8');
   const app = readFileSync(join(here, 'app.css'), 'utf8');
   const rule = (css: string, selector: string) => css.split('\n').find(l => l.trimStart().startsWith(selector)) ?? '';
 
@@ -67,9 +69,10 @@ describe('the phone shell follows the visual viewport (web3.7.2)', () => {
     expect(shell).toContain('position: fixed');
     expect(shell).toContain('top: var(--d-vvtop, 0px)');
   });
-  it('moves the ring and the modeless Settings frame with it', () => {
+  it('moves the ring and the fullscreen modal Settings frame with it', () => {
     expect(rule(base, '.d-app-shell .d-app-shell__ring')).toContain('var(--d-vvtop, 0px)');
-    expect(rule(base, '.d-settings-frame.d-settings-frame[data-modeless]')).toContain('var(--d-vvtop, 0px)');
+    expect(rule(settings, '.d-settings-frame.d-settings-frame[data-layout="phone"]')).toContain('var(--d-vvtop, 0px)');
+    expect(base).not.toContain('.d-settings-frame.d-settings-frame[data-modeless]');
   });
   it('moves the search palette and the other-tab overlay with it', () => {
     expect(rule(app, '.dw-search {')).toContain('var(--d-vvtop, 0px)');
@@ -283,28 +286,28 @@ describe('pane widths (R18)', () => {
 });
 
 describe('usePhoneSheet', () => {
-  afterEach(() => { window.history.replaceState(null, '', '/'); });
+  afterEach(() => { replaceHistoryState(null, '', '/'); });
 
-  it('pushes a sheet entry on open, closes on the system back, and pops its own entry on close()', () => {
-    window.history.replaceState({ phoneBack: true }, '', '/c/x');
+  it('pushes a sheet entry on open, closes on the system back, and pops its own entry on close()', async () => {
+    replaceHistoryState({ phoneBack: true }, '', '/c/x');
     const onClose = vi.fn();
     const { result, rerender } = renderHook(({ open }) => usePhoneSheet('members', open, onClose), { initialProps: { open: false } });
     const before = window.history.length;
     rerender({ open: true });
-    expect(window.history.state).toEqual({ phoneBack: true, phoneSheet: 'members' });
+    const state = window.history.state as Record<string, unknown>;
+    expect(state).toMatchObject({ phoneBack: true, phoneSheet: 'members' });
+    expect(typeof state.dillaHistoryIndex).toBe('number');
     expect(window.history.length).toBe(before + 1);
-    const back = vi.spyOn(window.history, 'back').mockImplementation(() => {
-      window.history.replaceState({ phoneBack: true }, '', '/c/x');
-      window.dispatchEvent(new PopStateEvent('popstate'));
-    });
+    const originalBack = window.history.back.bind(window.history);
+    const back = vi.spyOn(window.history, 'back').mockImplementation(() => originalBack());
     act(() => { result.current.close(); });
     expect(back).toHaveBeenCalledTimes(1);
-    expect(onClose).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
     back.mockRestore();
   });
 
   it('close() twice before the pop arrives calls history.back() once', () => {
-    window.history.replaceState({ phoneBack: true }, '', '/c/x');
+    replaceHistoryState({ phoneBack: true }, '', '/c/x');
     const { result, rerender } = renderHook(({ open }) => usePhoneSheet('members', open, vi.fn()), { initialProps: { open: false } });
     rerender({ open: true });
     const back = vi.spyOn(window.history, 'back').mockImplementation(() => undefined);
@@ -313,22 +316,27 @@ describe('usePhoneSheet', () => {
     back.mockRestore();
   });
 
-  it('strips a stale sheet entry (a reload, a forward) so closing never pops the view', () => {
-    window.history.replaceState({ phoneBack: true, phoneSheet: 'members' }, '', '/c/x');
+  it('strips a stale sheet entry (a reload, a forward) so closing never pops the view', async () => {
+    replaceHistoryState({ phoneBack: true, phoneSheet: 'members' }, '', '/c/x');
     const onClose = vi.fn();
     const { result, rerender } = renderHook(({ open }) => usePhoneSheet('members', open, onClose), { initialProps: { open: false } });
-    expect(window.history.state).toEqual({ phoneBack: true });
+    expect(window.history.state).toMatchObject({ phoneBack: true });
+    expect(typeof (window.history.state as Record<string, unknown>).dillaHistoryIndex).toBe('number');
     const back = vi.spyOn(window.history, 'back').mockImplementation(() => undefined);
     rerender({ open: true });
-    expect(window.history.state).toEqual({ phoneBack: true, phoneSheet: 'members' });
+    expect(window.history.state).toMatchObject({ phoneBack: true, phoneSheet: 'members' });
+    expect(typeof (window.history.state as Record<string, unknown>).dillaHistoryIndex).toBe('number');
     act(() => { result.current.close(); });
     expect(back).toHaveBeenCalledTimes(1);
     back.mockRestore();
     // A forward onto a sheet entry while closed is stripped too, and its close is not a back.
     rerender({ open: false });
-    window.history.replaceState({ phoneSheet: 'members' }, '', '/c/x');
-    act(() => { window.dispatchEvent(new PopStateEvent('popstate')); });
-    expect(window.history.state).toBeNull();
+    replaceHistoryState(null, '', '/c/x');
+    pushHistoryState({ phoneSheet: 'members' }, '', '/c/x');
+    act(() => { window.history.back(); });
+    await waitFor(() => expect(window.history.state).not.toHaveProperty('phoneSheet'));
+    act(() => { window.history.forward(); });
+    await waitFor(() => expect(window.history.state).not.toHaveProperty('phoneSheet'));
     const again = vi.spyOn(window.history, 'back').mockImplementation(() => undefined);
     act(() => { result.current.close(); });
     expect(again).not.toHaveBeenCalled();
@@ -337,12 +345,12 @@ describe('usePhoneSheet', () => {
   });
 
   it('close() does not pop an entry this instance did not push', () => {
-    window.history.replaceState({ phoneSheet: 'members' }, '', '/c/x');
+    replaceHistoryState({ phoneSheet: 'members' }, '', '/c/x');
     const onClose = vi.fn();
     // Closed, so the stale key is stripped; an open sheet whose own entry was lost (a replace) is the other case.
     const { result, rerender } = renderHook(({ open }) => usePhoneSheet('members', open, onClose), { initialProps: { open: true } });
     rerender({ open: false });
-    window.history.replaceState({ phoneSheet: 'members' }, '', '/c/x');
+    replaceHistoryState({ phoneSheet: 'members' }, '', '/c/x');
     const back = vi.spyOn(window.history, 'back').mockImplementation(() => undefined);
     act(() => { result.current.close(); });
     expect(back).not.toHaveBeenCalled();
@@ -351,7 +359,7 @@ describe('usePhoneSheet', () => {
   });
 
   it('calls onClose at once when the sheet has no entry', () => {
-    window.history.replaceState(null, '', '/c/x');
+    replaceHistoryState(null, '', '/c/x');
     const onClose = vi.fn();
     const { result } = renderHook(() => usePhoneSheet('thread', false, onClose));
     act(() => { result.current.close(); });

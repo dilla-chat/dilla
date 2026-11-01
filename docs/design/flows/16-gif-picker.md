@@ -1,6 +1,6 @@
 # Flow 16: the GIF picker and the server's Giphy setting (E8)
 
-GIFs are a per-server setting. A person who manages a server enters that server's Giphy key in its settings; the key is write-only and shown as dots afterwards. A server without a key has no GIF button. Search and the preview and full downloads go through the instance, so Giphy sees the instance and never a person. The picked GIF is attached like any file: it is encrypted like any file, and a reader's browser never contacts giphy.com. There are no GIFs in direct messages.
+GIFs are a per-server setting. A person who manages a server enters that server's Giphy key in its settings; the key is write-only and a visible configured status replaces the field afterwards. A server without a key has no GIF button. Search and the preview and full downloads go through the instance, so Giphy sees the instance and never a person. The picked GIF is attached like any file: it is encrypted like any file, and a reader's browser never contacts giphy.com. There are no GIFs in direct messages.
 
 ## States
 
@@ -24,10 +24,10 @@ GIFs are a per-server setting. A person who manages a server enters that server'
 | a reader | sees an ordinary image attachment; nothing marks it as a GIF from a service; it plays in the conversation for five minutes after it is first seen, as any GIF does (flow 04) |
 | the picker footer | `gif.powered` |
 | a phone | the picker is the width of the screen above the composer; results and buttons are 44px targets |
-| server settings → overview, the GIFs row | titled `gif.settings.title` with `gif.settings.hint` and a link `gif.settings.getKey` to Giphy's developer page, below the name and the inactive timeout |
+| server settings → GIFs | titled `gif.settings.title` with `gif.settings.hint` and a link `gif.settings.getKey` to Giphy's developer page; fields and actions sit below the introduction |
 | the row, no key set | a password field `gif.settings.key` (never auto-filled) and `gif.settings.save`; a key that is not 8 to 64 letters and digits is refused in the field with `gif.settings.invalid` |
-| the row, a key set | the dots `gif.settings.masked` (named `gif.settings.maskedLabel`) with `gif.settings.replace` and `gif.settings.remove`; the key is never shown again |
-| replacing | the field and `gif.settings.save` with `gif.settings.cancel` take the dots' place; the field is empty |
+| the row, a key set | visible status `gif.settings.maskedLabel` with `gif.settings.replace` and `gif.settings.remove`; the key is never shown again |
+| replacing | the field and `gif.settings.save` with `gif.settings.cancel` take the status' place; the field is empty |
 | saved or removed | `gif.settings.saved` or `gif.settings.removed` in the status line; the field is emptied |
 | the rating | a select `gif.settings.rating` with `gif.rating.g`, `gif.rating.pg`, `gif.rating.pg-13` (the default) and `gif.rating.r`; changing it saves at once and says `gif.settings.ratingSaved`; it filters search only |
 | a person without Manage Server | does not see the row (the settings section is for managers); a refusal from the instance says `gif.settings.forbidden` |
@@ -41,7 +41,7 @@ GIFs are a per-server setting. A person who manages a server enters that server'
 - The grid is one tab stop that follows focus: ArrowLeft and ArrowRight move in reading order, ArrowUp and ArrowDown to the tile above or below in the same column, without wrapping; Home and End go to the ends; ArrowUp from a tile with none above goes back to the search box
 - A result: Enter, Space or a click picks it
 - Escape closes the picker and returns focus to the `gif` button; it goes no further
-- The settings row: Tab reaches the field or the dots' buttons in order; Enter in the field saves; Escape in the replace field cancels
+- The settings row: Tab reaches the field or the configured key's buttons in order; Enter in the field saves; Escape in the replace field cancels
 
 ## Focus rules
 

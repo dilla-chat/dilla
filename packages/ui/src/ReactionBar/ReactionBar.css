@@ -1,13 +1,19 @@
+/* §6.5 (task 7): the prototype's reaction chips. 22px, radius 5px, gap 6px; yours are the accent chip with the accent frame. */
 .d-reaction-bar { display: flex; flex-wrap: wrap; gap: 0.25rem; margin-top: 0.25rem; }
-.d-reaction-bar__chip, .d-reaction-bar__add {
-  display: inline-flex; align-items: center; justify-content: center; gap: 0.25rem;
-  min-height: 1.5rem; min-width: 1.5rem; padding: 0 0.375rem;
-  font: inherit; font-size: var(--text-sm); line-height: 1; color: var(--fg-2);
-  background: var(--surface-2); border: 1px solid var(--edge); border-radius: var(--r-pill);
-  cursor: pointer; transition: background var(--duration-fast), border-color var(--duration-fast);
+.d-reaction-bar__chip {
+  position: relative; display: inline-flex; align-items: center; gap: 0.375rem; height: 1.375rem /* 22px */; padding: 0 0.4375rem /* 7px */;
+  font: inherit; font-size: var(--text-btn); line-height: 1; color: var(--fg); background: var(--surface-2); border: 1px solid var(--hairline-2); border-radius: var(--r-row);
+  cursor: pointer; transition: background var(--duration-tab), border-color var(--duration-tab), transform var(--duration-tab); animation: d-pop var(--duration-slow) both;
 }
-.d-reaction-bar__chip:hover, .d-reaction-bar__add:hover { background: var(--surface-hi); color: var(--fg); }
-/* Mine: the accent frame and a bold count, so the state is never colour alone (and aria-pressed says it). */
-.d-reaction-bar__chip[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--fg); }
-.d-reaction-bar__chip[aria-pressed="true"] .d-reaction-bar__count { font-weight: var(--weight-display); }
-@media (prefers-reduced-motion: reduce) { .d-reaction-bar__chip, .d-reaction-bar__add { transition: none; } }
+.d-reaction-bar__chip:active { transform: scale(0.92); }
+.d-reaction-bar__count { font-size: var(--text-meta); font-weight: var(--weight-label); color: var(--fg-2); font-variant-numeric: tabular-nums; }
+.d-reaction-bar__chip[aria-pressed="true"] { background: var(--accent-chip); border-color: var(--accent); }
+.d-reaction-bar__chip[aria-pressed="true"] .d-reaction-bar__count { color: var(--accent-2); }
+.d-reaction-bar__add { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 1.625rem /* 26px */; height: 1.375rem; padding: 0;
+  font: inherit; color: var(--fg-3); background: transparent; border: 1px dashed var(--line-strong); border-radius: var(--r-row); cursor: pointer; opacity: 0; transition: opacity var(--duration-hover); }
+.d-reaction-bar__add:hover { color: var(--fg); border-color: var(--accent); }
+.d-message-row:hover .d-reaction-bar__add, .d-message-row[data-hover="true"] .d-reaction-bar__add, .d-reaction-bar:focus-within .d-reaction-bar__add,
+.d-message-row[data-revealed="true"] .d-reaction-bar__add, .d-reaction-bar:not(.d-message-row .d-reaction-bar) .d-reaction-bar__add { opacity: 1; }
+/* Review Focus 4: the chips draw 22px and take a 24px hit area (1px above and below). */
+.d-reaction-bar__chip::before, .d-reaction-bar__add::before { content: ""; position: absolute; inset: -2px -1px; }
+@media (prefers-reduced-motion: reduce) { .d-reaction-bar__chip, .d-reaction-bar__add { transition: none; animation: none; } }

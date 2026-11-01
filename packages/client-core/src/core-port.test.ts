@@ -135,7 +135,8 @@ it('decodes authenticated human interaction events and passes a durable cursor',
   const event = [5, G, COMM, MSG, 8, 3, 99, USER, DEV, MSG2, 'dilla.bot/1:response', 13, CHAN];
   const page = encode([[event], 5, 7]);
   const s = stub({ human_interaction_events_read: (...args) => { expect(args).toEqual([2n, 10n]); return page; },
-    human_interaction_events_ack: (...args) => { expect(args).toEqual([5n]); } });
+    human_interaction_events_ack: (...args) => { expect(args).toEqual([5n]); },
+    human_interaction_events_ack_selected: (...args) => { expect(args).toEqual([encode([5n, 9n])]); } });
   expect(s.port.humanInteractionEventsRead(2n, 10)).toEqual({
     events: [{ deliveryId: 5n, groupId: G, communityId: COMM, requestId: MSG, sourceSeq: 8n, epoch: 3n,
       receivedAt: 99n, senderUser: USER, senderDevice: DEV, messageId: MSG2, body: 'dilla.bot/1:response',
@@ -143,7 +144,22 @@ it('decodes authenticated human interaction events and passes a durable cursor',
     next: 5n, highWater: 7n,
   });
   s.port.humanInteractionEventsAck(5n);
-  expect(s.calls.map((call) => call.method)).toEqual(['human_interaction_events_read', 'human_interaction_events_ack']);
+  s.port.humanInteractionEventsAckSelected([5n, 9n]);
+  expect(s.calls.map((call) => call.method)).toEqual(['human_interaction_events_read', 'human_interaction_events_ack', 'human_interaction_events_ack_selected']);
+});
+
+it('decodes exact archived human interaction receipts without a cursor', () => {
+  const event = [5, G, COMM, MSG, 8, 3, 99, USER, DEV, MSG2, 'dilla.bot/1:response', 84, null];
+  const requests = [MSG];
+  const s = stub({ human_interaction_receipts_read: (...args) => {
+    expect(args).toEqual([COMM, CHAN, USER, encode(requests)]);
+    return encode([event]);
+  } });
+  expect(s.port.humanInteractionReceiptsRead(COMM, CHAN, USER, requests)).toEqual([{
+    deliveryId: 5n, groupId: G, communityId: COMM, requestId: MSG, sourceSeq: 8n, epoch: 3n,
+    receivedAt: 99n, senderUser: USER, senderDevice: DEV, messageId: MSG2,
+    body: 'dilla.bot/1:response', operation: 84, channelId: null,
+  }]);
 });
 
 it('fails closed when the generated WASM handle predates moderator-removal signing', () => {

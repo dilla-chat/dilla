@@ -29,7 +29,7 @@ describe('UnsupportedVoice', () => {
     expect(screen.queryByText(labels.body)).toBeNull();
   });
 
-  it.each(['mesh', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {
+  it.each(['signal', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {
     document.documentElement.dataset.theme = theme;
     const { container } = render(<div className="d-root"><UnsupportedVoice {...(meta.args as UnsupportedVoiceProps)} /></div>);
     // jsdom has no layout or canvas, so contrast is left to the Storybook axe run in a real browser.

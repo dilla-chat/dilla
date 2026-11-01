@@ -2,7 +2,7 @@
 import { phoneNow } from '../../layout.ts';
 import { Fragment, useEffect, useLayoutEffect, useReducer, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
 import { encodeMentions, PERM, type MentionMember, type RoleSummary, type TimelineItem, type TimelineState } from '@dilla/client-core';
-import { Banner, Button, DateDivider, Dialog, DropOverlay, EmojiGrid, MessageLog } from '@dilla/ui';
+import { Banner, Button, DateDivider, Dialog, DropOverlay, EmojiGrid, MessageLog, type IconName } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
 import { useRoute } from '../../router.ts';
 import { REACTION_EMOJI } from '../../emoji.ts';
@@ -73,7 +73,9 @@ export interface ConversationProps { channelId: string; logKey: string; label: s
   /** Opens a message's thread (web3.7); without it a row offers no thread item and no chip. */
   onOpenThread?: (msgId: string) => void;
   /** Opens a profile card for a mentioned user or a message's author (MP7); without it neither is a button. */
-  onOpenProfile?: ProfileOpener }
+  onOpenProfile?: ProfileOpener;
+  /** The start of the conversation (README §5.5), shown over the first message once the whole history is here. */
+  welcome?: { icon: IconName; title: string; body: string } }
 
 export function Conversation(props: ConversationProps): React.JSX.Element {
   const client = useCore();
@@ -266,6 +268,26 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
     const newest = items.at(-1);
     if (newest !== undefined) rowEls.current.get(newest.key)?.focus({ preventScroll: true });
   };
+  // Fix round 2 (Jonas, the prototype's "Jump to present"): Ctrl+End jumps the open conversation to its newest message from
+  // anywhere in the tab, not only from inside the log. A text field keeps the chord (it moves the caret to the end), a modal
+  // layer keeps it, and at the present it does nothing (the key keeps its default).
+  const jumpKey = useRef(jumpToPresent);
+  jumpKey.current = jumpToPresent;
+  const awayNow = useRef(false);
+  awayNow.current = awayFrom === p.logKey;
+  useEffect(() => {
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key !== 'End' || !e.ctrlKey || e.altKey || e.metaKey || e.shiftKey || e.isComposing || e.defaultPrevented) return;
+      const target = e.target;
+      if (target instanceof HTMLElement && (target.isContentEditable || target.closest('input, textarea, select') !== null)) return;
+      // Fix round 3: not under any modal layer: a <dialog>, an aria-modal overlay (search, pickers) or a sheet's backdrop.
+      if (document.querySelector('dialog[open], [aria-modal="true"]:not(dialog), .d-app-shell__backdrop') !== null || !awayNow.current) return;
+      e.preventDefault();
+      jumpKey.current();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
   const onLogScroll = (e: React.UIEvent<HTMLElement>) => {
     const log = e.target as HTMLElement;
     if (!(log instanceof HTMLElement) || log.getAttribute('role') !== 'log') return;
@@ -335,11 +357,13 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
       : t(madeHere(client, p.channelId) ? 'shell.log.emptyMade' : 'shell.log.empty')}
       earlier={p.timeline?.hasEarlier ? { label: t('shell.log.earlier'), onLoad: () => p.onLoadEarlier() } : undefined}
       busy={p.timeline === undefined || p.loadingEarlier} onKeyDown={rowKey}
-      present={{ atPresent: awayFrom !== p.logKey, olderLabel: t('layout.log.older'), jumpLabel: t('layout.log.jump'), onJumpToPresent: jumpToPresent }}>
+      present={{ atPresent: awayFrom !== p.logKey, olderLabel: t('layout.log.older'), jumpLabel: t('layout.log.jump'), onJumpToPresent: jumpToPresent }}
+      {...(p.welcome !== undefined && p.timeline !== undefined && !p.timeline.hasEarlier ? { welcome: p.welcome } : {})}>
       {items.map((item, index) => <Fragment key={item.key}>
         {startsDay(items[index - 1], item) ? <DateDivider label={dayLabel(item.ts, now)} /> : null}
-        <MessageItem item={item} channelId={p.channelId} book={p.book} now={now} bits={bits}
+        <MessageItem item={item} channelId={p.channelId} book={p.book} now={now} bits={bits} client={client} communityId={communityId} threadId={null}
         grouped={groupedWithAbove(items[index - 1], item)} revealed={item.key === revealedKey} onReveal={on => reveal(item.key, on)}
+        replying={item.msgId !== null && p.ui.reply?.msgId === item.msgId}
         active={item.key === active} flash={item.key === flashKey} editing={p.ui.editing?.msgId === item.msgId ? p.ui.editing.value : null}
         editMeasure={v => new TextEncoder().encode(encodeMentions(v, p.encodeWith, p.broadcast, roleMentionsFor(item.body))).length}
         rowRef={el => { if (el) rowEls.current.set(item.key, el); else rowEls.current.delete(item.key); }}

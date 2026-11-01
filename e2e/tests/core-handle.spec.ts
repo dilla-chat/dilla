@@ -73,7 +73,7 @@ test.beforeEach(() => {
 
 test('the facade keeps one identity, group and outbox across pause, resume and a reload', async ({ page }) => {
   await openCorePage(page, instance('core-life'));
-  expect(await ok(page, 'open')).toMatchObject({ abi: 13, phase: 0 });
+  expect(await ok(page, 'open')).toMatchObject({ abi: 15, phase: 0 });
 
   const signup = await ok(page, 'signup');
   expect(signup.recoveryKey).toMatch(/^[0-9A-HJKMNP-TV-Z]{52}$/); // 52 Crockford base32, ungrouped
@@ -116,7 +116,7 @@ test('the facade keeps one identity, group and outbox across pause, resume and a
 
   await page.reload();
   await waitForCore(page);
-  expect(await ok(page, 'open')).toMatchObject({ abi: 13, phase: 2 });
+  expect(await ok(page, 'open')).toMatchObject({ abi: 15, phase: 2 });
   // Byte-identical after a new worker reopened the store: the app tables, the MLS state and, through
   // the deterministic Ed25519 session signature, the DSK in OpenMLS's signature-key table (C6).
   expect(await ok(page, 'snapshot')).toEqual(before);
@@ -126,7 +126,7 @@ test('the facade keeps one identity, group and outbox across pause, resume and a
 
 test('the facade reports the core error codes and names a wrong-length argument', async ({ page }) => {
   await openCorePage(page, instance('core-errors'));
-  expect(await ok(page, 'open')).toMatchObject({ abi: 13, phase: 0 });
+  expect(await ok(page, 'open')).toMatchObject({ abi: 15, phase: 0 });
   expect(await ok(page, 'errors')).toEqual({
     keyPackagesBeforeIdentity: 'E_CORE_NO_IDENTITY',
     sessionBeforeIdentity: 'E_CORE_NO_IDENTITY',

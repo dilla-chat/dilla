@@ -55,11 +55,11 @@ describe('QrCode', () => {
   });
 
   it('pins the light theme on itself, so it stays dark on light inside a dark-theme root', () => {
-    const { container } = render(<div className="d-root" data-theme="mesh"><QrCode value="HELLO" label={LABEL} /></div>);
+    const { container } = render(<div className="d-root" data-theme="signal"><QrCode value="HELLO" label={LABEL} /></div>);
     const svg = screen.getByRole('img', { name: LABEL });
     expect(svg).toHaveAttribute('data-theme', 'light');
     expect(svg.closest('[data-theme]')).toBe(svg);
-    expect(container.firstElementChild).toHaveAttribute('data-theme', 'mesh');
+    expect(container.firstElementChild).toHaveAttribute('data-theme', 'signal');
     expect(svg.querySelector('.d-qr__light')).not.toBeNull();
     expect(svg.querySelector('.d-qr__dark')).not.toBeNull();
   });

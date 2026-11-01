@@ -12,7 +12,7 @@ import { arr, decode } from '../../../packages/client-core/src/cbor/index';
  *  so a second host on the same ports serves the same accounts (the caller removes it with `removeHostData`).
  *  L-E2E-31: `sfu` starts the host's in-process LiveKit (`-sfu -sfu-port -sfu-udp-port`); the voice suite sets it.
  *  `departureTimeout` (seconds, `-sfu-departure-timeout`) lengthens the rooms' departure timeout (task-10 fix review N3). */
-export interface HostConfig { port: number; control: number; webRoot: string | null; webauthnOrigin?: string; wire?: number; keepData?: boolean; botRuntime?: boolean; advanceClockWithWall?: boolean; sfu?: { port: number; udpPort: number; departureTimeout?: number } }
+export interface HostConfig { port: number; control: number; webRoot: string | null; webauthnOrigin?: string; wire?: number; keepData?: boolean; botRuntime?: boolean; botReconcileInterval?: string; advanceClockWithWall?: boolean; sfu?: { port: number; udpPort: number; departureTimeout?: number } }
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 export const TESTHOST_BIN = join(REPO_ROOT, 'target', 'dilla-testhost');
 export const DILLABOT_BIN = join(REPO_ROOT, 'target', 'dillabot');
@@ -132,7 +132,10 @@ export async function startTestHost(c: HostConfig): Promise<StartedHost> {
   if (c.keepData !== true) rmSync(dataDir, { recursive: true, force: true });
   mkdirSync(HOST_DATA_ROOT, { recursive: true });
   mkdirSync(join(REPO_ROOT, 'e2e', 'test-results'), { recursive: true });
-  const log = createWriteStream(join(REPO_ROOT, 'e2e', 'test-results', `testhost-${c.port}.log`));
+  // Appended, not truncated: tests in one file share a port, so a truncating open let the next test erase the log of the
+  // one that failed (PR #121, bot-runtime.spec.ts device 2). Each start writes a header to tell the runs apart.
+  const log = createWriteStream(join(REPO_ROOT, 'e2e', 'test-results', `testhost-${c.port}.log`), { flags: 'a' });
+  log.write(`=== testhost start ${new Date().toISOString()} ===\n`);
   const host = spawn(TESTHOST_BIN, hostArgs(c, dataDir), { stdio: ['ignore', 'pipe', 'pipe'] });
   let bot: ChildProcess | null = null;
   let clockTicker: NodeJS.Timeout | null = null;
@@ -174,7 +177,7 @@ export async function startTestHost(c: HostConfig): Promise<StartedHost> {
         }).catch(() => undefined).finally(() => { clockTickInFlight = false; });
       }, 1_000);
     }
-    if (c.botRuntime === true) bot = await startBotRuntime(url, dataDir, c.port, c.advanceClockWithWall === true ? `http://127.0.0.1:${c.control}/debug/clock` : undefined);
+    if (c.botRuntime === true) bot = await startBotRuntime(url, dataDir, c.port, c.advanceClockWithWall === true ? `http://127.0.0.1:${c.control}/debug/clock` : undefined, c.botReconcileInterval);
     const stopBot = async (): Promise<void> => {
       if (bot === null || c.botRuntime !== true) throw new Error('test host has no Bot runtime to stop');
       await stop(bot);
@@ -184,7 +187,7 @@ export async function startTestHost(c: HostConfig): Promise<StartedHost> {
       if (bot !== null || c.botRuntime !== true) throw new Error('test host Bot runtime is already running or unavailable');
       rmSync(join(dataDir, 'bot.toml'), { force: true });
       bot = await startBotRuntime(url, dataDir, c.port,
-        c.advanceClockWithWall === true ? `http://127.0.0.1:${c.control}/debug/clock` : undefined);
+        c.advanceClockWithWall === true ? `http://127.0.0.1:${c.control}/debug/clock` : undefined, c.botReconcileInterval);
     };
     const stopBotRuntime = async (): Promise<void> => {
       if (c.botRuntime !== true) throw new Error('test host has no Bot runtime');
@@ -256,7 +259,14 @@ async function postControl(port: number, path: string, body: unknown): Promise<v
   if (response.status !== 204) throw new Error(`${path} returned HTTP ${response.status}: ${await response.text()}`);
 }
 
-async function startBotRuntime(baseURL: string, dataDir: string, port: number, clockURL?: string): Promise<ChildProcess> {
+// Suites with time-dependent behavior can warm these builds in a setup hook,
+// giving cold compilation its own budget instead of consuming delivery time.
+export async function prepareBotRuntimeBinaries(): Promise<void> {
+  await runInherited(process.env.GO ?? 'go', ['-C', REPO_ROOT, 'build', '-o', DILLABOT_BIN, './cmd/dillabot']);
+  await runInherited(process.env.CARGO ?? 'cargo', ['build', '-p', 'dilla-bot-core', '--release', '--locked']);
+}
+
+async function startBotRuntime(baseURL: string, dataDir: string, port: number, clockURL?: string, reconcileInterval = '1s'): Promise<ChildProcess> {
   const runtimeToken = join(dataDir, 'bot-runtime.token');
   const stateDir = join(dataDir, 'bot-state');
   const configPath = join(dataDir, 'bot.toml');
@@ -267,8 +277,7 @@ async function startBotRuntime(baseURL: string, dataDir: string, port: number, c
   if (!(instanceIdBytes instanceof Uint8Array) || instanceIdBytes.length !== 16) throw new Error('bot test discovery returned an invalid instance ID');
   const instanceId = Buffer.from(instanceIdBytes).toString('hex');
 
-  await runInherited(process.env.GO ?? 'go', ['-C', REPO_ROOT, 'build', '-o', DILLABOT_BIN, './cmd/dillabot']);
-  await runInherited(process.env.CARGO ?? 'cargo', ['build', '-p', 'dilla-bot-core', '--release', '--locked']);
+  await prepareBotRuntimeBinaries();
   if (clockURL !== undefined) await alignWallClock(clockURL, 'after Bot/helper build and before Bot installation');
   let helperInfo;
   try { helperInfo = statSync(BOT_HELPER_BIN); } catch {
@@ -287,13 +296,29 @@ async function startBotRuntime(baseURL: string, dataDir: string, port: number, c
     `helper_executable = ${quote(BOT_HELPER_BIN)}`,
     `wasi_module = ${quote(WASI_CORE)}`,
     `state_dir = ${quote(stateDir)}`,
-    'reconcile_interval = "1s"',
+    `reconcile_interval = ${quote(reconcileInterval)}`,
     'allow_loopback_http = true',
+    // The test server does not meter; production pacing is covered by the Go tests.
+    '[rate_limits]',
+    'write_per_second = 1000000',
+    'write_burst = 1000000',
+    'read_per_second = 1000000',
+    'read_burst = 1000000',
+    'message_per_second = 1000000',
+    'message_burst = 1000000',
+    'commit_per_second = 1000000',
+    'commit_burst = 1000000',
+    'proposal_per_second = 1000000',
+    'proposal_burst = 1000000',
+    'keypackage_per_second = 1000000',
+    'keypackage_burst = 1000000',
     '',
   ].join('\n');
   writeFileSync(configPath, config, { mode: 0o600, flag: 'wx' });
   chmodSync(runtimeToken, 0o600);
-  const log = createWriteStream(runtimeLogPath);
+  // Appended like the host's log: a test that restarts the Bot, and the next test on this port, keep the earlier runs.
+  const log = createWriteStream(runtimeLogPath, { flags: 'a' });
+  log.write(`=== dillabot start ${new Date().toISOString()} ===\n`);
   const child = spawn(DILLABOT_BIN, ['-config', configPath], {
     stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, DILLA_BOT_PRIVATE_DIAGNOSTICS: '1' },
   });
@@ -381,6 +406,10 @@ export default async function globalSetup(config: FullConfig): Promise<() => Pro
     throw new Error(`${join(REPO_ROOT, c.webRoot)} has no index.html: build it first (npm run build:harness -w @dilla/client-core, or npm run build -w @dilla/web)`);
   }
   execFileSync(process.env.GO ?? 'go', ['-C', REPO_ROOT, 'build', '-o', TESTHOST_BIN, './cmd/dilla-testhost'], { stdio: 'inherit' });
+  // The Bot binaries are built here, before any test, not by the first Bot test: a cold release build of dilla-bot-core
+  // took 2m52s on a CI runner, inside that test's 180 s timeout (PR #121, moderation-evidence.spec.ts in a web shard).
+  // Each later startBotRuntime rebuild is a no-op.
+  if (config.metadata.prebuildBotRuntime === true) await prepareBotRuntimeBinaries();
   const host = await startTestHost(c);
   process.env.DILLA_TESTKIT_INVITE = host.invite;
   process.env.DILLA_TESTKIT_CONTROL = host.control;

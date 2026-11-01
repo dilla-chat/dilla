@@ -101,6 +101,8 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
   const [backupHeld, setBackupHeld] = useState(false);
   // R7: a factor step (code, passkey or backup code) was shown in this ceremony, so the key is step 3, not 2.
   const [factorShown, setFactorShown] = useState(false);
+  // Signal task 10 fix round 3: this ceremony reached a factor set-up (login, key, set-up, done: four dots).
+  const [setupSeen, setSetupSeen] = useState(false);
   const [errors, setErrors] = useState<Partial<Record<Field, StringKey>>>({});
   const [banner, setBanner] = useState<BannerState | null>(null);
   // The no-backup view's banner after a refusal of this mount; null otherwise.
@@ -163,7 +165,8 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
   // R7: the factor step counts from when it shows until the ceremony returns to the login.
   useEffect(() => {
     if (phase === 'signin-totp' || phase === 'signin-passkey') setFactorShown(true);
-    else if (phase === 'signin-login' || phase === 'needs-signup') { setFactorShown(false); setUsedBackup(false); }
+    else if (phase === 'signin-login' || phase === 'needs-signup') { setFactorShown(false); setSetupSeen(false); setUsedBackup(false); }
+    if (phase === 'factor-setup') setSetupSeen(true);
   }, [phase]);
   // The typed key belongs to one person's attempt: back at the login, whoever signs in next starts with an empty field.
   // A refusal at the key step itself (a wrong key) keeps the text for the same person's retry.
@@ -324,9 +327,13 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
     client.call({ m: 'signInCancel' }).catch((e: unknown) => { apply(errorOf(e), 'login'); });
   };
 
-  const stepLabel = (n: number) => t('signin.step', { n });
-  // R7: login 1, the second factor 2, the key 3 (or 2 when no factor step was shown), done 4.
+  // R7: login 1, the second factor 2, the key 3 (or 2 when no factor step was shown), done last. Signal task 10 fix round 3:
+  // the prototype's "Sign in · step 1 of 4" and its dots count only the steps this ceremony shows, so no dot is skipped: 4 with
+  // a factor step or a factor set-up (login, key, set-up, done), 3 without one. The login step cannot know yet and says 4.
   const keyStep = factorShown ? 3 : 2;
+  const total = shown === 'login' || factorShown || setupSeen || shown === 'factor' ? 4 : 3;
+  const stepLabel = (n: number) => t('signin.step', { n, total });
+  const progress = (n: number) => ({ n, total });
   const errorText = (field: Field) => {
     const k = errors[field];
     return k === undefined ? undefined : t(k);
@@ -340,7 +347,7 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
   const bannerEl = banner === null ? null : <Banner tone={banner.tone}>{t(banner.key, banner.vars)}</Banner>;
   const form = (title: string, n: number, foot: ReactNode, children: ReactNode) => (
     <form noValidate onSubmit={onSubmit}>
-      <OnboardingFrame title={title} stepLabel={stepLabel(n)} footer={foot}>
+      <OnboardingFrame title={title} stepLabel={stepLabel(n)} progress={progress(n)} footer={foot}>
         {bannerEl}
         {children}
       </OnboardingFrame>
@@ -352,7 +359,7 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
     const who = account.user?.username ?? account.signIn?.username ?? username.trim().toLowerCase();
     const left = usedBackup && factors !== undefined ? factors.backupCodesLeft : null;
     content = (
-      <OnboardingFrame title={t('signin.done.title')} stepLabel={stepLabel(4)}
+      <OnboardingFrame title={t('signin.done.title')} stepLabel={stepLabel(total)} progress={progress(total)}
         footer={<Button variant="accent" type="button" onClick={() => props.onFinish()}>{t('signin.done.next')}</Button>}>
         <p>{t('signin.done.body', { username: who, instance: name })}</p>
         {left === null ? null : <p>{t(left === 1 ? 'factorSignin.left.one' : 'factorSignin.left.other', { count: left })}</p>}
@@ -363,7 +370,7 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
     content = (
       <>
         {factorDone.problem === null ? null : <Banner tone="danger">{t(factorDone.problem.key, factorDone.problem.vars)}</Banner>}
-        <FactorSetup origin="signin" stepLabel={stepLabel(3)} instanceName={name}
+        <FactorSetup origin="signin" stepLabel={stepLabel(3)} progress={progress(3)} instanceName={name}
           username={account.user?.username ?? account.signIn?.username ?? username.trim().toLowerCase()}
           announce={announce} onDone={finishFactor} />
         <ForgetBrowser />
@@ -396,7 +403,7 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
     </>);
   } else if (shown === 'noBackup' && noBackupKey !== null) {
     content = (
-      <OnboardingFrame title={t('signin.key.title')} stepLabel={stepLabel(keyStep)} footer={cancelButton('signin.cancel')}>
+      <OnboardingFrame title={t('signin.key.title')} stepLabel={stepLabel(keyStep)} progress={progress(keyStep)} footer={cancelButton('signin.cancel')}>
         <Banner tone="danger">{t(noBackupKey, { instance: name })}</Banner>
       </OnboardingFrame>
     );

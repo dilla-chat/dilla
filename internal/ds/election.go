@@ -8,6 +8,7 @@ import (
 
 	"github.com/jonasthim/dilla/internal/gateway"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/store"
 )
 
 // election is one group's in-flight committer round. It lives in memory: an election that was
@@ -29,6 +30,9 @@ type election struct {
 	// acknowledgement (protocol/02 invariant 7 as amended).
 	lost  map[id.ID]int
 	tried map[id.ID]struct{}
+	// keptBackoff survives lost-count resets until the epoch advances or a commit clears the election.
+	keptBackoff map[id.ID]time.Duration
+	retryAt     time.Time
 }
 
 type elections struct {
@@ -55,23 +59,10 @@ func (d *DS) RequestCommit(ctx context.Context, groupID id.ID) error {
 		return err
 	}
 	refs := make([][]byte, 0, len(rows))
-	// The devices (and, for a Remove that recorded none, the leaves) an outstanding instance Remove
-	// is taking out. Such a device can never commit its own removal — OpenMLS refuses a commit that
-	// removes the committer — so electing it only wastes a round, and charges it a lost one if it
-	// acks (DS-5 of the server-half review).
-	leavingDevice := map[id.ID]bool{}
-	leavingLeaf := map[uint32]bool{}
 	for _, r := range rows {
 		refs = append(refs, r.Ref)
-		if r.TargetLeaf == nil || !isInstanceRemoveOf(r, *r.TargetLeaf) {
-			continue
-		}
-		if r.TargetDevice != nil {
-			leavingDevice[*r.TargetDevice] = true
-		} else {
-			leavingLeaf[*r.TargetLeaf] = true
-		}
 	}
+	leavingDevice, leavingLeaf := leaving(rows)
 	if len(refs) == 0 {
 		d.clearElection(groupID)
 		return nil
@@ -99,6 +90,9 @@ func (d *DS) RequestCommit(ctx context.Context, groupID id.ID) error {
 	// RunWatchdogOnce, which reads exactly those fields under the mutex from its own goroutine —
 	// a map write against a map read, which `go test -race ./internal/ds/` reports.
 	chosen, round := d.beginRound(groupID, candidates, d.opts.Clock.Now(), row.Epoch)
+	if chosen == (id.ID{}) {
+		return nil
+	}
 
 	payload, err := gateway.CommitNeededPayload(
 		row.Epoch, refs, uint64(d.opts.Policy.CommitDeadline/time.Millisecond), round) //nolint:gosec // G115: a non-negative duration in milliseconds
@@ -113,6 +107,26 @@ func (d *DS) RequestCommit(ctx context.Context, groupID id.ID) error {
 		d.opts.Metrics.ElectionRounds.WithLabelValues("sent").Inc()
 	}
 	return nil
+}
+
+// leaving is the devices (and, for a Remove that recorded none, the leaves) an outstanding
+// instance Remove among rows is taking out. Such a device can never commit its own removal —
+// OpenMLS refuses a commit that removes the committer — so electing it only wastes a round, and
+// charges it a lost one if it acks (DS-5 of the server-half review); and it is no member the
+// watchdog can hand the group to (isLastCommitter).
+func leaving(rows []store.ProposalRow) (devices map[id.ID]bool, leaves map[uint32]bool) {
+	devices, leaves = map[id.ID]bool{}, map[uint32]bool{}
+	for _, r := range rows {
+		if r.TargetLeaf == nil || !isInstanceRemoveOf(r, *r.TargetLeaf) {
+			continue
+		}
+		if r.TargetDevice != nil {
+			devices[*r.TargetDevice] = true
+		} else {
+			leaves[*r.TargetLeaf] = true
+		}
+	}
+	return devices, leaves
 }
 
 // CurrentRound reports the live round of a group's election, or 0 when none is armed. The
@@ -135,7 +149,7 @@ func (d *DS) AckCommitNeeded(_ context.Context, groupID, deviceID id.ID, round u
 	d.elections.mu.Lock()
 	defer d.elections.mu.Unlock()
 	e, ok := d.elections.m[groupID]
-	if !ok || e.round != round || e.candidate != deviceID {
+	if !ok || e.round != round || e.candidate != deviceID || !e.retryAt.IsZero() {
 		return nil // a stale ack is ignored, never an error
 	}
 	e.acked = true
@@ -148,10 +162,14 @@ func (d *DS) beginRound(groupID id.ID, candidates []gateway.OnlineDevice, now ti
 	d.elections.mu.Lock()
 	defer d.elections.mu.Unlock()
 	e, ok := d.elections.m[groupID]
-	if !ok {
-		e = &election{lost: map[id.ID]int{}, tried: map[id.ID]struct{}{}}
+	if !ok || e.epoch != epoch {
+		e = &election{lost: map[id.ID]int{}, tried: map[id.ID]struct{}{}, keptBackoff: map[id.ID]time.Duration{}}
 		d.elections.m[groupID] = e
 	}
+	if now.Before(e.retryAt) {
+		return id.ID{}, e.round
+	}
+	e.retryAt = time.Time{}
 	e.round++
 	for _, c := range candidates {
 		if _, tried := e.tried[c.DeviceID]; tried {

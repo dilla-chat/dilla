@@ -48,6 +48,16 @@ describe('shouldNotify (L-TS-25)', () => {
   });
 });
 
+// Signal task 10 fix round 1: Settings → Notifications' Desktop notifications switch.
+describe('shouldNotify and the desktop switch', () => {
+  it('shows nothing on this device while notify.desktop is off', () => {
+    const n = notice({ kind: 'mention' });
+    expect(shouldNotify(n, 0, ctx({ visible: false }))).toBe(true);
+    expect(shouldNotify(n, 0, ctx({ visible: false, settings: { 'notify.desktop': 'off' } }))).toBe(false);
+    expect(shouldNotify(n, 0, ctx({ visible: false, settings: { 'notify.desktop': 'on' } }))).toBe(true);
+  });
+});
+
 describe('shouldNotify per server (web3.5 WA5)', () => {
   const server = (v: string) => ({ [`notify.community.${A}`]: v });
   it('a server set to nothing silences a channel with no override; a channel override still wins', () => {

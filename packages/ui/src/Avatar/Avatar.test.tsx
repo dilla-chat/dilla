@@ -2,7 +2,7 @@ import { render, screen } from '@testing-library/react';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
-import { Avatar, AVATAR_HUES } from './Avatar.tsx';
+import { Avatar, AVATAR_PALETTE, avatarColour } from './Avatar.tsx';
 import { expectNoAxeViolations } from '../test/setup.ts';
 import { contrastRatio } from '@dilla/design-tokens';
 
@@ -58,15 +58,12 @@ describe('Avatar', () => {
     const { container } = render(<div className="d-root"><Avatar name="erik" presence="dnd" size="lg" /></div>);
     await expectNoAxeViolations(container);
   });
-  it('maintains ≥4.5:1 contrast with white across all avatar hues', () => {
-    // The avatar background uses HSL(H 45% 42%) with white text (#fff).
-    // Every hue in the component's own palette must clear 4.5:1 — the
-    // constant is imported, not copied, so adding a hue to the palette
-    // without checking it fails here.
+  it('maintains ≥4.5:1 contrast with white across all avatar colours', () => {
+    // Task 11: the prototype's palette (hue, saturation, lightness per entry) with white initials; imported, not copied.
     const MIN_CONTRAST = 4.5;
 
-    AVATAR_HUES.forEach(hue => {
-      const [r, g, b] = hslToRgb(hue, 45, 42);
+    AVATAR_PALETTE.forEach(({ h: hue, s, l }) => {
+      const [r, g, b] = hslToRgb(hue, s, l);
       const bgHex = rgbToHex(r, g, b);
       const ratio = contrastRatio('#FFFFFF', bgHex);
       expect(ratio, `Hue ${hue}° has contrast ${ratio.toFixed(2)}:1 with white`).toBeGreaterThanOrEqual(MIN_CONTRAST);
@@ -74,6 +71,22 @@ describe('Avatar', () => {
   });
 });
 const read = (name: string) => readFileSync(fileURLToPath(new URL(name, import.meta.url)), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+
+describe('Task 11: the prototype sample people get the prototype colours', () => {
+  it('maps Ada, Björn, Mira, Sven, Liv, Kari and Ole to the prototype C table', () => {
+    const want = { Ada: [298, 45, 42], Björn: [211, 45, 42], Mira: [234, 45, 42], Sven: [28, 50, 40], Liv: [160, 40, 34], Kari: [12, 55, 42], Ole: [48, 45, 34] };
+    for (const [name, [h, s, l]] of Object.entries(want)) expect(avatarColour(name), name).toEqual({ h, s, l });
+  });
+});
+
+describe('Avatar shape', () => {
+  it('is a circle by default and marks a bot with data-shape="bot"', () => {
+    const { rerender } = render(<Avatar name="Skald" />);
+    expect(screen.getByRole('img', { name: 'Skald' })).toHaveAttribute('data-shape', 'circle');
+    rerender(<Avatar name="Skald" shape="bot" />);
+    expect(screen.getByRole('img', { name: 'Skald' })).toHaveAttribute('data-shape', 'bot');
+  });
+});
 
 describe('Avatar sizes xs and row (UI-1)', () => {
   it('xs is 24px and row is 32px, by data-size', () => {

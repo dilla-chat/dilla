@@ -48,7 +48,9 @@ describe('MessageRow', () => {
     expect(row).toHaveAttribute('data-state', 'ok');
     expect(row).not.toHaveAttribute('data-own');
     expect(screen.getByText('ada')).toHaveClass('d-message-row__author');
-    expect(screen.getByText('21:02')).toHaveClass('d-message-row__time');
+    // Task 7: the time stands in the gutter (seen) and in the head (heard).
+    expect(container.querySelector('.d-message-row__gutter')).toHaveTextContent('21:02');
+    expect(container.querySelector('.d-message-row__head .d-message-row__time')).toHaveClass('d-sr-only');
     expect(screen.getByText(BODY)).toHaveClass('d-message-row__body');
     expect(screen.queryByRole('img', { name: 'ada' })).toBeNull();
     expect(container.querySelector('.d-message-row__state')).toBeNull();
@@ -177,6 +179,7 @@ describe('MessageRow', () => {
     ]);
     const main = container.querySelector('.d-message-row__main')!;
     expect([...main.children].map((c) => c.className.split(' ')[0])).toEqual([
+      // Task 7: CSS draws the reply line above the head, as in the prototype (§6.5); the DOM keeps the keyboard map.
       'd-message-row__head', 'd-message-row__toolbar', 'd-message-row__reply', 'd-message-row__body',
       'd-message-row__attachments', 'd-message-row__reactions', 'd-message-row__pending',
     ]);
@@ -304,7 +307,7 @@ describe('MessageRow mention colour dot', () => {
       const gutter = container.querySelector('.d-message-row__gutter') as HTMLElement;
       expect(gutter).toHaveTextContent('21:02');
       expect(gutter).toHaveAttribute('aria-hidden', 'true');
-      expect(container.querySelector('.d-message-row__avatar')).toBeNull();
+      expect(container.querySelector('.d-message-row__avatar .d-avatar')).toBeNull();
       expect(container.querySelector('article')).toHaveAttribute('data-grouped', 'true');
     });
     it('shows the full 12-hour time in the gutter, and the same text for the screen reader', () => {
@@ -324,10 +327,11 @@ describe('MessageRow mention colour dot', () => {
       render(<MessageRow author="ada" time="21:02" body={BODY} state="ok" grouped />);
       expect(screen.getByRole('article', { name: /ada.*21:02/ })).toBeInTheDocument();
     });
-    it('shows the author, time and avatar when not grouped, and no gutter', () => {
+    it('shows the author and avatar when not grouped, and the time in the gutter (README §5.5)', () => {
       const { container } = render(<MessageRow author="ada" time="21:02" body={BODY} state="ok" />);
       expect(container.querySelector('.d-message-row__author')).not.toHaveClass('d-sr-only');
-      expect(container.querySelector('.d-message-row__gutter')).toBeNull();
+      expect(container.querySelector('.d-message-row__avatar .d-avatar')).not.toBeNull();
+      expect(container.querySelector('.d-message-row__gutter')).toHaveTextContent('21:02');
     });
   });
 
@@ -344,7 +348,7 @@ describe('MessageRow mention colour dot', () => {
   });
 
   describe('tap to reveal on a phone (R30)', () => {
-    const toolbar = <MessageToolbar label="actions" tabbable={false} items={[{ id: 'reply', label: 'reply', onAction: () => {} }]} />;
+    const toolbar = <MessageToolbar moreLabel="more actions" label="actions" tabbable={false} items={[{ id: 'reply', label: 'reply', onAction: () => {} }]} />;
     const row = (over: Partial<React.ComponentProps<typeof MessageRow>> = {}) => (
       <PhoneLayoutProvider value><MessageRow author="ada" time="21:02" body={BODY} state="ok" toolbar={toolbar} onReveal={over.onReveal ?? (() => {})} revealed={over.revealed} /></PhoneLayoutProvider>
     );

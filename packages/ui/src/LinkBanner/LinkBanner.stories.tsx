@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { LinkBanner } from './LinkBanner.tsx';
 
-// Switch the theme in the toolbar (mesh, light, high-contrast). A real 390px phone width.
+// Switch the theme in the toolbar (signal, light, high-contrast). A real 390px phone width.
 const meta = { title: 'Shell/LinkBanner', component: LinkBanner, parameters: { layout: 'fullscreen' } } satisfies Meta<typeof LinkBanner>;
 export default meta;
 type Story = StoryObj<typeof meta>;

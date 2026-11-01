@@ -22,7 +22,10 @@ export function expectGlyphLine(root: HTMLElement, story: string): void {
     const box = row.getBoundingClientRect();
     // A caption is one line high. A sidebar person row is --row-h-sub high (R25): its glyphs sit on the name's centre line.
     const sidebar = row.classList.contains('d-voice-row__person');
-    if (!sidebar && box.height > line.height + 2) throw new Error(`${story}: the row is ${String(box.height)} high, over one line (${String(line.height)})`);
+    // One line high, or the caption's floor around a shorter line: a stage caption is the prototype's 22px chip (1.375rem), the
+    // compact one 20px (1.25rem).
+    const floor = row.closest('.d-call-tile[data-stage]') !== null ? 22 : 20;
+    if (!sidebar && box.height > Math.max(line.height, floor) + 0.5) throw new Error(`${story}: the row is ${String(box.height)} high, over one line (${String(line.height)})`);
     for (const glyph of Array.from(row.querySelectorAll<HTMLElement>(':scope > svg.d-icon, :scope > .d-state-dot, .d-voice-row__state svg.d-icon, .d-voice-row__state .d-state-dot, .d-call-tile__state svg.d-icon, .d-call-tile__state .d-state-dot'))) {
       const r = glyph.getBoundingClientRect();
       const off = sidebar ? Math.abs((r.top + r.bottom) / 2 - (line.top + line.bottom) / 2) > 2 : r.top < line.top - 2 || r.bottom > line.bottom + 2;
@@ -33,17 +36,17 @@ export function expectGlyphLine(root: HTMLElement, story: string): void {
   }
 }
 
-/** Every person row shares one avatar column, one name column and one state column (R25): each of the three starts at one x. */
+/**
+ * Every person row shares one avatar column and one name column (R25): each starts at one x. Signal §5.4 sets the state
+ * glyphs after the name and at the right edge (the prototype's flex row), so they no longer share a column.
+ */
 export function expectPeopleColumns(root: HTMLElement, story: string): void {
   const people = Array.from(root.querySelectorAll<HTMLElement>('.d-voice-row__person'));
   if (people.length < 2) throw new Error(`${story}: too few people to compare`);
-  for (const sel of ['.d-voice-row__avatar', '.d-voice-row__person-name', '.d-voice-row__states']) {
+  for (const sel of ['.d-voice-row__avatar', '.d-voice-row__person-name']) {
     const lefts = people.map(p => p.querySelector<HTMLElement>(sel)?.getBoundingClientRect().left ?? Number.NaN);
     if (lefts.some(Number.isNaN) || Math.max(...lefts) - Math.min(...lefts) > 0.5) throw new Error(`${story}: ${sel} starts at ${lefts.join(', ')}`);
   }
-  // The first glyph or word of each state column starts at that column's x, whatever the state is.
-  const firsts = people.flatMap(p => { const f = p.querySelector<HTMLElement>('.d-voice-row__states > :first-child'); return f === null ? [] : [f.getBoundingClientRect().left]; });
-  if (firsts.length > 1 && Math.max(...firsts) - Math.min(...firsts) > 0.5) throw new Error(`${story}: the first state starts at ${firsts.join(', ')}`);
 }
 
 const rgb = (s: string): [number, number, number] => { const m = /rgba?\(([\d.]+)[, ]+([\d.]+)[, ]+([\d.]+)/.exec(s); if (m === null) throw new Error(`cannot read colour ${s}`); return [Number(m[1]), Number(m[2]), Number(m[3])]; };
@@ -77,7 +80,7 @@ const meta = {
   args: {
     name: 'harbour', current: false, joined: false, participants: [person('ada', { speaking: true }), person('bo', { muted: true })],
     labels: {
-      open: 'voice {name}', count: '{n} in voice', canHear: 'can hear', join: 'join voice', joined: 'connected',
+      open: 'voice {name}', count: '{n} in voice', playbackOnly: 'playback only', join: 'join voice', joined: 'connected',
       state: {
         speaking: 'speaking', muted: 'muted', deafened: 'deafened', notHeard: 'not heard yet', unverified: 'unverified stream',
         connecting: 'connecting', video: 'camera on', screen: 'sharing screen', web: 'web', bot: 'bot', noSound: 'no sound',
@@ -85,8 +88,8 @@ const meta = {
     },
     onOpen: () => {}, onJoin: () => {},
   },
-  // The sidebar's width, in the list item that positions the join icon.
-  decorators: [Story => <div className="d-voice-item" style={{ width: 240 }}><Story /></div>],
+  // The sidebar's scroller (244px less its 8px sides) on bg-2, in the list item that positions the join icon.
+  decorators: [Story => <div style={{ width: 244, boxSizing: 'border-box', padding: '4px 8px', background: 'var(--bg-2)' }}><div className="d-voice-item"><Story /></div></div>],
 } satisfies Meta<typeof VoiceChannelRow>;
 export default meta;
 type Story = StoryObj<typeof meta>;
@@ -98,7 +101,7 @@ export const Empty: Story = { args: { participants: [] } };
 /** This device is in it, and the main pane shows it. */
 /** The join icon shows on focus or hover (here: focused); a joined row has neither the join icon nor a connected glyph. */
 export const JoinFocused: Story = {
-  globals: { theme: 'mesh' },
+  globals: { theme: 'signal' },
   play: async ({ canvasElement }) => { await expectJoinRing(canvasElement, 'JoinFocused'); },
 };
 export const JoinFocusedLight: Story = { ...JoinFocused, globals: { theme: 'light' } };
@@ -130,8 +133,8 @@ export const EveryState: Story = {
       person('dee', { state: 'connecting' }), person('eli', { state: 'not-heard' }), person('fay', { state: 'unverified' })],
   },
 };
-/** A bot in voice: the bot tag and `can hear`, visible before anyone joins (brief, trust facts). */
-export const BotCanHear: Story = { args: { participants: [person('ada', { speaking: true }), person('relay', { bot: true, web: false })] } };
+/** A bot in voice: the bot tag and `playback only`, visible before anyone joins (brief, trust facts). */
+export const BotPlaybackOnly: Story = { args: { participants: [person('ada', { speaking: true }), person('relay', { bot: true, web: false })] } };
 /** A voice channel readable by this server keeps its readable glyph. */
 export const Readable: Story = { args: { readable: true } };
 /** A long name truncates before its glyphs: they stay on its line, and nothing wraps (R29). */
@@ -150,3 +153,26 @@ export const AwayRoster: Story = {
 };
 export const EveryStateLight: Story = { ...EveryState, globals: { theme: 'light' } };
 export const EveryStateHighContrast: Story = { ...EveryState, globals: { theme: 'high-contrast' } };
+
+// Signal §8: one story per state, with the prototype's people (harbour, Midgard Crew).
+const HARBOUR = [person('Ada'), person('Björn'), person('Kari'), person('Ole')];
+/** People in the room, nobody speaking: the count at the right, an 18px avatar per person. */
+export const WithPeople: Story = { args: { name: 'harbour', onJoin: undefined, participants: HARBOUR } };
+/** Speaking is only the --live ring on the avatar (no meter in the list). */
+export const Speaking: Story = {
+  args: { name: 'harbour', onJoin: undefined, participants: [person('Ada', { speaking: true }), ...HARBOUR.slice(1)] },
+  play: ({ canvasElement }) => {
+    expectGlyphLine(canvasElement, 'Speaking');
+    if (canvasElement.querySelector('[role="meter"], .d-audio-meter') !== null) throw new Error('Speaking: a meter in the list');
+  },
+};
+/** Muted and deafened: the --danger glyphs at the right. */
+export const MutedDeafened: Story = { args: { name: 'harbour', onJoin: undefined, participants: [person('Ada', { muted: true }), person('Björn', { muted: true, deafened: true }), person('Kari')] } };
+/** A camera (--fg-2 glyph) and a shared screen (the LIVE tag). */
+export const CameraAndLive: Story = { args: { name: 'harbour', onJoin: undefined, participants: [person('Ada', { screen: true }), person('Björn', { video: true }), person('Kari', { video: true, screen: true }), person('Ole')] } };
+/** Glenn: the rounded-square avatar, the BOT tag and "playback only". */
+export const WithGlenn: Story = { args: { name: 'harbour', onJoin: undefined, participants: [person('Ada'), person('Glenn', { bot: true, web: false })] } };
+/** The prototype's harbour at its first paint (not joined): Ada speaking and sharing, Björn's camera, Kari both, Ole, Glenn. */
+export const Harbour: Story = {
+  args: { name: 'harbour', onJoin: undefined, participants: [person('Ada', { speaking: true, screen: true }), person('Björn', { video: true }), person('Kari', { video: true, screen: true }), person('Ole'), person('Glenn', { bot: true, web: false })] },
+};

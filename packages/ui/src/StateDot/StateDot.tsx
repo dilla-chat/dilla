@@ -9,7 +9,8 @@ export interface StateDotProps {
 
 /**
  * A small state marker drawn in CSS (no font glyph). Filled for ok, warn and danger; a ring for off; a dashed ring
- * for pending; a half-filled ring for idle; a filled disc with a bar for dnd. It never carries meaning alone: every
+ * for pending. Idle and dnd are solid discs in signal (the prototype, Jonas 2026-10-27); light, high-contrast and
+ * forced colours keep a half-filled ring for idle and a bar on dnd. It never carries meaning alone: every
  * caller keeps its text or a `d-sr-only` word beside it, so it is `aria-hidden`.
  */
 export function StateDot({ tone, size }: StateDotProps) {

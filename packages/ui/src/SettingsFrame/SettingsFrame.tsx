@@ -1,5 +1,5 @@
-import { useEffect, useId, useLayoutEffect, useRef, type ReactNode } from 'react';
-import { Button } from '../Button/Button.tsx';
+import { useEffect, useId, useLayoutEffect, useRef, type ReactNode, type Ref } from 'react';
+import { Icon } from '../Icon/Icon.tsx';
 import { usePhoneLayout } from '../internal/phoneLayout.ts';
 import './SettingsFrame.css';
 
@@ -10,81 +10,166 @@ export interface SettingsFrameProps {
   onClose(): void;
   nav: ReactNode;
   children: ReactNode;
-  /** Default: modal, except inside a phone shell, where it is a non-modal page above the tab bar. A screen outside the shell passes `!phone`. */
+  /** @deprecated Settings workspaces are always modal. */
   modal?: boolean;
-  /** The one sticky save footer of the section (R17, I5): a SettingsFooter. Rendered under the scrolling body, in the pane. */
+  /** The one sticky save footer of the section. */
   footer?: ReactNode;
+  identity?: ReactNode;
+  search?: ReactNode;
+  /**
+   * Defaults to `section` for existing phone callers. A phone section shows the nav as a row of chips above the content
+   * (README §5.10); the index shows the nav as a list and no content.
+   */
+  phonePage?: 'index' | 'section';
+  /** @deprecated The phone section names itself through the nav's current chip (README §5.10); nothing is drawn. */
+  sectionTitle?: string;
+  /** @deprecated The phone section has no back button: the close button leaves (README §5.10). */
+  backLabel?: string;
+  /** @deprecated See `backLabel`. */
+  backText?: string;
+  /** @deprecated See `backLabel`. */
+  onBack?: () => void;
+  contentRef?: Ref<HTMLDivElement>;
+  /** Gives list sections a wider content measure than normal forms. */
+  wide?: boolean;
+  /** Persistent call controls displayed inside the modal workspace. */
+  activity?: ReactNode;
+  /** Keeps idle connection announcements mounted without reserving visible header space. */
+  activityVisible?: boolean;
+  /** Nested dialogs remain available when the phone index hides section content. */
+  overlays?: ReactNode;
+}
+
+function visibleFocusFallback(): HTMLElement | null {
+  const candidates = document.querySelectorAll<HTMLElement>('[data-settings-focus-fallback], main, [role="main"]');
+  for (const element of candidates) {
+    let visible = element.isConnected;
+    for (let node: HTMLElement | null = element; visible && node !== null; node = node.parentElement) {
+      const style = getComputedStyle(node);
+      visible = !node.hidden && style.display !== 'none' && style.visibility !== 'hidden';
+    }
+    if (visible) return element;
+  }
+  return null;
 }
 
 /**
- * The Settings modal of the Mesh brief: 960×640 with a 220px navigation column, on a native
- * <dialog> so the browser traps focus while it is open and returns it to whatever opened it when it
- * closes. Its <h1> takes focus on every open. Escape, the native cancel and a click on the backdrop
- * call `onClose`; an Escape or a cancel that belongs to a dialog nested inside the frame (remove,
- * sign out, forget) is left to that dialog and never closes the frame (pre-flight ruling 1.2).
- * The title and the section bar share one 48px height, so their hairlines are one line (I8); on a phone the title is not repeated
- * (H5: it stays as the dialog's name and focus target, visually hidden). `footer` is the section's one sticky save bar.
- * On a phone (web3.7.1) it opens with `show()`: the tab bar beside it stays live, and Escape closes it through the key handler alone.
+ * The one settings workspace (Signal task 10 fix round 1): the user's and a server's settings are two frames, and moving
+ * between them swaps one for the other in a single commit. The leaving frame hands its opener to the arriving one, which
+ * then neither replays the entrance nor loses where focus returns on close.
  */
-export function SettingsFrame({ open, title, closeLabel, onClose, nav, children, modal, footer }: SettingsFrameProps) {
+let handoff: { opener: HTMLElement | null; at: number } | null = null;
+const HANDOFF_MS = 100;
+
+/** A native modal workspace for settings; browser modal behavior keeps the mounted app inert. */
+export function SettingsFrame({
+  open, title, closeLabel, onClose, nav, children, footer, identity, search,
+  phonePage = 'section', contentRef, wide, activity, activityVisible = true, overlays,
+}: SettingsFrameProps) {
   const phone = usePhoneLayout();
-  const modeless = !(modal ?? !phone);
   const ref = useRef<HTMLDialogElement>(null);
   const titleRef = useRef<HTMLHeadingElement>(null);
+  const opener = useRef<HTMLElement | null>(null);
+  const previousPhonePage = useRef(phonePage);
   const titleId = useId();
-  // The <dialog> stays mounted and is opened and closed here: only close() makes the browser
-  // return focus to the opener; unmounting it instead leaves focus on the document body.
-  useEffect(() => {
-    const el = ref.current; if (!el) return;
-    if (open && !el.open) { if (modeless) el.show(); else el.showModal(); titleRef.current?.focus(); }
-  }, [open]);
-  // The close runs in the commit that empties the frame (as Dialog's does), so no key event meets an open, empty frame.
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (el && !open && el.open) el.close();
-  }, [open]);
-  // A frame torn down while open still hands focus back.
-  useEffect(() => {
-    const el = ref.current;
-    return () => { if (el?.open) el.close(); };
-  }, []);
-  // A non-modal frame gets no `cancel` and no key events while focus sits elsewhere (the tab bar, the body): Escape anywhere closes it.
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    if (open && !el.open) {
+      const active = document.activeElement;
+      const taken = handoff !== null && performance.now() - handoff.at < HANDOFF_MS ? handoff : null;
+      handoff = null;
+      opener.current = taken !== null ? taken.opener
+        : active instanceof HTMLElement && active !== document.body && !el.contains(active) ? active : null;
+      if (taken !== null) el.dataset.handoff = 'true';
+      else delete el.dataset.handoff;
+      el.showModal();
+      titleRef.current?.focus();
+      // The nav scrolled its current item into view before the dialog was shown; a phone's chip row needs it now (README §5.10).
+      el.querySelector<HTMLElement>('.d-settings-nav__item[aria-current="page"]')?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    } else if (!open && el.open) {
+      el.close();
+      const target = opener.current?.isConnected ? opener.current : visibleFocusFallback();
+      opener.current = null;
+      if (target) {
+        if (!target.hasAttribute('tabindex') && !(target instanceof HTMLButtonElement || target instanceof HTMLInputElement || target instanceof HTMLAnchorElement)) target.tabIndex = -1;
+        target.focus();
+      }
+    }
+  }, [open]);
+
+  useLayoutEffect(() => {
+    const previous = previousPhonePage.current;
+    previousPhonePage.current = phonePage;
+    if (!open || !phone || previous === phonePage) return;
+    const target = ref.current?.querySelector<HTMLButtonElement>('.d-settings-nav__item[aria-current="page"]');
+    target?.focus();
+  }, [open, phone, phonePage]);
+
+  // Runs in the commit that unmounts this frame, before an arriving frame's open effect.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    return () => { if (el?.open) handoff = { opener: opener.current, at: performance.now() }; };
+  }, []);
+
   useEffect(() => {
-    if (!open || !modeless) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape' || e.defaultPrevented || e.isComposing) return;
-      // An event aimed at the document itself belongs to whatever has focus.
-      const from = e.target instanceof Element ? e.target : document.activeElement;
-      const inDialog = from instanceof Element ? from.closest('dialog') : null;
-      if (inDialog !== null && inDialog !== ref.current) return;
-      e.preventDefault();
-      onCloseRef.current();
+    const el = ref.current;
+    return () => {
+      if (el?.open) {
+        el.close();
+        // Another settings frame took over (the workspace's other scope): focus stays with it.
+        if (document.querySelector('dialog.d-settings-frame[open]') !== null) return;
+        const target = opener.current?.isConnected ? opener.current : visibleFocusFallback();
+        if (target) {
+          if (!target.hasAttribute('tabindex') && !(target instanceof HTMLButtonElement || target instanceof HTMLInputElement || target instanceof HTMLAnchorElement)) target.tabIndex = -1;
+          target.focus();
+        }
+      }
     };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [open, modeless]);
-  // True when the event started in this frame and not inside a dialog nested in it.
+  }, []);
+
   const ownEvent = (target: EventTarget) => target instanceof Element && target.closest('dialog') === ref.current;
+  const phoneIndex = phone && phonePage === 'index';
   return (
-    <dialog ref={ref} className="d-settings-frame" aria-labelledby={titleId} aria-modal={modeless ? undefined : 'true'} data-modeless={modeless || undefined} data-layout={phone ? 'phone' : undefined}
-      onCancel={e => { if (!ownEvent(e.target)) return; e.preventDefault(); onClose(); }}
-      onKeyDown={e => { if (e.key === 'Escape' && !e.defaultPrevented && !e.nativeEvent.isComposing && ownEvent(e.target)) { e.preventDefault(); onClose(); } }}
-      onClick={e => { if (e.target === ref.current) onClose(); }}>
-      {/* Contents exist only while open: a closed frame leaks no hidden text. */}
+    <dialog ref={ref} className="d-settings-frame" aria-labelledby={titleId} aria-modal="true" data-layout={phone ? 'phone' : undefined} data-phone-page={phone ? phonePage : undefined}
+      onCancel={e => { if (!ownEvent(e.target)) return; e.preventDefault(); onCloseRef.current(); }}
+      onKeyDown={e => {
+        if (e.key === 'Escape' && !e.defaultPrevented && !e.nativeEvent.isComposing && ownEvent(e.target)) {
+          e.preventDefault(); onCloseRef.current();
+        }
+      }}>
       {open ? (
-        <div className="d-settings-frame__panel" onClick={e => e.stopPropagation()}>
-          <div className="d-settings-frame__side">
-            <h1 ref={titleRef} id={titleId} tabIndex={-1} className="d-settings-frame__title">{title}</h1>
-            {nav}
+        <>
+          <div className="d-settings-frame__panel">
+            <div className="d-settings-frame__side">
+              <h1 ref={titleRef} id={titleId} tabIndex={-1} className="d-settings-frame__title">{title}</h1>
+            {/* README §5.9: a 34px circle at the viewport's top right that turns 90° on hover, ESC under it (not on a phone).
+                Positioned against the dialog, it follows the title in the focus order. */}
+            <button type="button" className="d-settings-frame__close" aria-label={closeLabel} aria-keyshortcuts="Escape" onClick={() => onCloseRef.current()}>
+              <span className="d-settings-frame__close-ring"><Icon name="x" size={16} /></span>
+              <span className="d-settings-frame__close-key" aria-hidden="true">ESC</span>
+            </button>
+              {identity ? <div className="d-settings-frame__identity">{identity}</div> : null}
+              {search ? <div className="d-settings-frame__search">{search}</div> : null}
+              <div className="d-settings-frame__nav">{nav}</div>
+            </div>
+            <div className="d-settings-frame__pane">
+              {activity ? (
+                <div className="d-settings-frame__bar" data-visible={activityVisible}>
+                  <div className="d-settings-frame__activity" data-visible={activityVisible}>{activity}</div>
+                </div>
+              ) : null}
+              <div ref={contentRef} className={`d-settings-frame__body${wide ? ' d-settings-frame__body--wide' : ''}`} hidden={phoneIndex}>
+                {children}
+              </div>
+              {!phoneIndex && footer ? <div className="d-settings-frame__footer">{footer}</div> : null}
+            </div>
+            {overlays}
           </div>
-          <div className="d-settings-frame__pane">
-            <div className="d-settings-frame__bar"><Button variant="ghost" keyHint="esc" onClick={onClose}>{closeLabel}</Button></div>
-            <div className="d-settings-frame__body">{children}</div>
-            {footer ? <div className="d-settings-frame__footer">{footer}</div> : null}
-          </div>
-        </div>
+        </>
       ) : null}
     </dialog>
   );

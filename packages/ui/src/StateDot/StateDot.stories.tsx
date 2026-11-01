@@ -3,7 +3,7 @@ import { StateDot, type StateDotTone } from './StateDot.tsx';
 
 const TONES: StateDotTone[] = ['ok', 'off', 'pending', 'idle', 'dnd', 'warn', 'danger'];
 
-// Switch the theme in the toolbar (mesh, light, high-contrast); every dot sits beside its word.
+// Switch the theme in the toolbar (signal, light, high-contrast); every dot sits beside its word.
 const meta = { title: 'Primitives/StateDot', component: StateDot, args: { tone: 'ok' } } satisfies Meta<typeof StateDot>;
 export default meta;
 type Story = StoryObj<typeof meta>;

@@ -8,19 +8,31 @@ const id = (n: number) => new Uint8Array(16).fill(n);
 const comm = id(0x22), group = id(0x33), now = '100';
 const context = { community: hex(comm), now };
 const app = (op:number,args:unknown[],channel:boolean,mutation:boolean,name:string) => {
-  const val=[1,id(1+op%200),comm,channel?id(0x44):null,op,mutation?(op===31?0n:120n):null,mutation?120n:null,args];
+  const val=[1,id(1+op%200),comm,channel?id(0x44):null,op,mutation?([31,70,80].includes(op)?0n:120n):null,mutation?120n:null,args];
   const raw=encode(val as never); let bin=''; for(const b of raw)bin+=String.fromCharCode(b);
   const body='dilla.bot/1:'+btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/u,'');
   return {name,kind:'request',hex:hex(raw),body,context};
 };
 const cbor = (v:unknown) => hex(encode(v as never));
 export async function botVectors() {
+ const pollPayload=encode([1n,id(0x91),null,'Lunch?', ['Pizza','Salad'],0n,86400n]);
+ const reminderPayload=encode([1n,0n,3600n,'Take a break','Europe/Stockholm',null,null]);
+ const feffQuestionPoll=encode([1n,id(0x44),null,'\uFEFF',['One','Two'],0n,3600n]);
+ const feffAnswerPoll=encode([1n,id(0x44),null,'Question?',['\uFEFF','Two'],0n,3600n]);
  const inputs: Array<[number,unknown[],boolean,boolean,string]> = [
+  [3,[],false,false,'capabilities'],
+  [70,[feffQuestionPoll],false,true,'poll question accepts FEFF, not Unicode White_Space'],
+  [70,[feffAnswerPoll],false,true,'poll answer accepts FEFF, not Unicode White_Space'],
+  [70,[pollPayload],false,true,'poll.create'],[71,[id(0x91)],false,false,'poll.get'],
+  [72,[id(0x44),null,null],false,false,'poll.list'],[73,[id(0x91),encode([0n,1n])],false,true,'poll.vote'],
+  [74,[id(0x91)],false,true,'poll.close'],[75,[id(0x91),1n,null],false,false,'poll.voters'],
+  [80,[reminderPayload],false,true,'reminder.create'],[81,[null],false,false,'reminder.list'],
+  [82,[id(0x92)],false,true,'reminder.cancel'],[83,[id(0x92)],false,true,'reminder.dismiss'],[84,[null],false,false,'reminder.due'],
   [0,[],false,false,'overview.get'],[1,[2n],false,false,'settings.get'],[2,[2n,encode([1n,'x'])],false,true,'settings.put'],
   [10,[],true,false,'music.state'],[11,['search'],true,false,'music.search'],[12,['enqueue'],true,true,'music.enqueue'],
   [13,[],true,true,'music.pause'],[14,[],true,true,'music.resume'],[15,[],true,true,'music.skip'],[16,[],true,true,'music.stop'],
   [17,[18446744073709551615n],true,true,'music.seek uint64'],[18,[80n],true,true,'music.volume'],[19,[],true,true,'music.shuffle'],
-  [20,[2n],true,true,'music.repeat'],[21,[id(0x55)],true,true,'music.remove'],[22,[id(0x55),null],true,true,'music.move'],[23,[],true,true,'music.clear'],
+  [20,[2n],true,true,'music.repeat'],[21,[id(0x55)],true,true,'music.remove'],[22,[id(0x55),null],true,true,'music.move'],[23,[],true,true,'music.clear'],[24,[],false,false,'music.providers.status'],
   [30,['hello'],false,false,'welcome.preview'],[31,[id(0x44),encode([['👍',id(0x55),'Readers']])],false,true,'roles.panel.publish'],[40,[0n],false,false,'roles.list'],[50,[0n],false,false,'announcements.list'],
   [51,[null,encode([1n])],false,true,'announcements.put'],[52,[id(0x66),1n],false,true,'announcements.delete'],
   [60,[null],false,false,'moderation.cases'],[64,[null],false,false,'moderation.evidence.list'],[61,[id(0x77),'reason','excerpt'],false,true,'moderation.evidence'],
@@ -70,6 +82,25 @@ export async function botVectors() {
  rej('wrong argument type','request',[1n,id(1),comm,null,1n,null,null,['bad']]);
  rej('wrong argument count','request',[1n,id(1),comm,null,0n,null,null,[1n]]);
  rej('automod config get has arguments','request',[1n,id(1),comm,null,62n,null,null,[0n]]);
+ const badPoll=encode([1n,id(0x91),null,'Question?',['Same','Same'],0n,86400n]);
+ rej('poll duplicate answers','request',[1n,id(70),comm,null,70n,0n,120n,[badPoll]]);
+ const nelQuestionPoll=encode([1n,id(0x44),null,'\u0085',['One','Two'],0n,3600n]);
+ rej('poll question rejects Unicode White_Space NEL','request',[1n,id(70),comm,null,70n,0n,120n,[nelQuestionPoll]]);
+ const nelAnswerPoll=encode([1n,id(0x44),null,'Question?',['\u0085','Two'],0n,3600n]);
+ rej('poll answer rejects Unicode White_Space NEL','request',[1n,id(70),comm,null,70n,0n,120n,[nelAnswerPoll]]);
+ const badDuration=encode([1n,id(0x91),null,'Question?',['One','Two'],0n,1800n]);
+ rej('poll unsupported duration','request',[1n,id(70),comm,null,70n,0n,120n,[badDuration]]);
+ rej('poll create nonzero revision','request',[1n,id(70),comm,null,70n,1n,120n,[pollPayload]]);
+ rej('poll read has mutation context','request',[1n,id(71),comm,null,71n,1n,120n,[id(0x91)]]);
+ rej('poll list has outer channel','request',[1n,id(72),comm,id(0x44),72n,null,null,[id(0x44),null,null]]);
+ rej('poll reused selections','request',[1n,id(73),comm,null,73n,1n,120n,[id(0x91),encode([0n,0n])]]);
+ rej('poll out of range selection','request',[1n,id(73),comm,null,73n,1n,120n,[id(0x91),encode([10n])]]);
+ const oversizedPoll=encode([1n,id(0x91),null,'😀'.repeat(300),Array.from({length:10},(_,i)=>String(i)+'😀'.repeat(99)),0n,86400n]);
+ rej('poll payload exceeds text aggregate','request',[1n,id(70),comm,null,70n,0n,120n,[oversizedPoll]]);
+ const threadOnly=encode([1n,0n,3600n,'Take a break','UTC',null,id(0x93)]);
+ rej('reminder thread without source channel','request',[1n,id(80),comm,null,80n,0n,120n,[threadOnly]]);
+ const badWhen=encode([1n,1n,253402300800n,'Take a break','UTC',null,null]);
+ rej('reminder timestamp outside numeric range','request',[1n,id(80),comm,null,80n,0n,120n,[badWhen]]);
  const automodDoc=encode([1n,0n,'log','log','log',600000n,[]]);
  rej('automod config put empty grant','request',[1n,id(64),comm,null,63n,1n,120n,['',automodDoc]]);
  rej('automod config put oversized grant','request',[1n,id(64),comm,null,63n,1n,120n,['g'.repeat(513),automodDoc]]);

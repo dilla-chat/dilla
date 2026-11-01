@@ -12,10 +12,10 @@ import (
 	"time"
 )
 
-func TestPCMFrameMatchesLibrespot44100Stereo20Milliseconds(t *testing.T) {
-	const want = 44100 * 2 * 2 / 50
+func TestPCMFrameMatchesHelper48000Stereo20Milliseconds(t *testing.T) {
+	const want = 48000 * 2 * 2 / 50
 	if PCMBytesPerFrame != want {
-		t.Fatalf("PCM frame bytes = %d, want %d for 44.1 kHz stereo 20 ms", PCMBytesPerFrame, want)
+		t.Fatalf("PCM frame bytes = %d, want %d for 48 kHz stereo 20 ms", PCMBytesPerFrame, want)
 	}
 }
 
@@ -64,6 +64,9 @@ func TestStartFailsOnSanitizedHelperError(t *testing.T) {
 	_, err = a.Start(t.Context(), "spotify:track:0123456789012345678901")
 	if err == nil || strings.Contains(err.Error(), "private-token") {
 		t.Fatalf("Start error = %v", err)
+	}
+	if !errors.Is(err, ErrPlaybackFailed) || !strings.Contains(err.Error(), "authorization/provider_unavailable") {
+		t.Fatalf("missing safe helper failure classification: %v", err)
 	}
 }
 
@@ -248,10 +251,11 @@ func fakeProtocolHelper(t *testing.T, withPCM bool, exitAfterPCM ...bool) (strin
 	if err := os.WriteFile(filepath.Join(dir, "status"), status, 0600); err != nil {
 		t.Fatal(err)
 	}
-	pcm := make([]byte, 9+PCMBytesPerFrame)
-	copy(pcm, "DPCM")
-	pcm[4] = 1
-	binary.BigEndian.PutUint32(pcm[5:9], PCMBytesPerFrame)
+	// The Rust helper verifies this same fixture against its real writer.
+	pcm, err := os.ReadFile("../../../../crates/dilla-spotify-helper/testdata/pcm-v1.frame")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(dir, "pcm"), pcm, 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -281,4 +285,45 @@ cat "` + filepath.Join(dir, "status") + `" >&2
 func mustFakeProtocolHelper(t *testing.T, withPCM bool) string {
 	path, _ := fakeProtocolHelper(t, withPCM)
 	return path
+}
+
+func TestHelperPlaybackFailureClassifiesOnlyTrackSpecificStatus(t *testing.T) {
+	for _, tc := range []struct {
+		phase, code string
+		permanent   bool
+	}{
+		{"playback", "provider_unavailable", true},
+		{"authorization", "provider_connect", false},
+		{"authorization", "provider_connect_timeout", false},
+		{"startup", "build_configuration", false},
+		{"playback", "playback_timeout", false},
+		{"playback", "invalid_request", false},
+		{"authorization", "provider_unavailable", false},
+		{"playback", "credential_unavailable", false},
+		{"playback", "internal", false},
+		{"playback", "cancelled", false},
+	} {
+		t.Run(tc.phase+"/"+tc.code, func(t *testing.T) {
+			helper := mustFakeProtocolHelper(t, false)
+			status := frameStatus(`{"ok":false,"phase":"` + tc.phase + `","code":"` + tc.code + `"}`)
+			if err := os.WriteFile(filepath.Join(filepath.Dir(helper), "status"), status, 0600); err != nil {
+				t.Fatal(err)
+			}
+			adapter, err := New(Config{HelperPath: helper, StateDir: t.TempDir(), Credential: credential(t)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, failure := adapter.Start(t.Context(), "spotify:track:0123456789012345678901")
+			capability, ok := failure.(interface{ PermanentPlaybackFailure() bool })
+			if (ok && capability.PermanentPlaybackFailure()) != tc.permanent {
+				t.Fatalf("permanent=%v want %v: %v", ok && capability.PermanentPlaybackFailure(), tc.permanent, failure)
+			}
+			if !errors.Is(failure, ErrPlaybackFailed) {
+				t.Fatalf("lost playback sentinel: %v", failure)
+			}
+			if got := FailureClass(failure); got != tc.code {
+				t.Fatalf("helper status class=%q want=%q: %v", got, tc.code, failure)
+			}
+		})
+	}
 }

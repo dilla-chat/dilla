@@ -24,6 +24,10 @@ func TestCurrentBotInteractionContextRequiresAcceptedReceiptAndExactLiveRoster(t
 	if err != nil {
 		t.Fatalf("load current context: %v", err)
 	}
+	borrowedAfterReturn := false
+	if err := got.WithDeviceListVerification(ctx, func(context.Context) error { borrowedAfterReturn = true; return nil }); err == nil || borrowedAfterReturn {
+		t.Fatalf("returned proof extended native callback lifetime: called=%v err=%v", borrowedAfterReturn, err)
+	}
 	if got.Registration.GroupID != fixture.request.Registration.GroupID {
 		t.Fatalf("registration receipt for group %s = %s", fixture.request.Registration.GroupID, got.Registration.GroupID)
 	}
@@ -124,7 +128,7 @@ func TestCurrentBotInteractionGroupReadFailsClosedAndFencesTransactionReads(t *t
 		t.Fatalf("register kind-3 group: %v", err)
 	}
 	// Registration uses multiple guest operations; after it completes, exercise the read
-	// primitive with an isolated one-instance WASI pool to prove its callback does not inherit it.
+	// primitive with an isolated one-instance WASI pool to prove its callback can safely borrow it.
 	wasm, err := mlswasi.New(ctx, loadWasmForDS(t), mlswasi.Options{PoolSize: 1, CacheDir: sharedWasmCacheDir(t), Now: fixture.h.clk.Now})
 	if err != nil {
 		t.Fatalf("create one-instance WASI runtime: %v", err)
@@ -164,15 +168,23 @@ func TestCurrentBotInteractionGroupReadFailsClosedAndFencesTransactionReads(t *t
 			if row.ClosedAt != nil || row.Epoch != current.Epoch {
 				return fmt.Errorf("transaction group row differs from validated context")
 			}
-			// The callback needs WASI for its signed-list checks. It must be able to acquire
-			// the sole available pool slot after current-state validation releases it.
-			callbackCtx, cancel := context.WithTimeout(ctx, time.Second)
-			defer cancel()
-			instance, err := fixture.h.wasm.Acquire(callbackCtx)
-			if err != nil {
-				return fmt.Errorf("callback could not acquire WASI after validation: %w", err)
+			// Signed-list checks borrow the guest reserved before this transaction;
+			// reacquiring the single slot here would deadlock behind our own lease.
+			if err := current.WithDeviceListVerification(ctx, func(scoped context.Context) error {
+				user, err := tx.GetUser(scoped, current.Binding.ParticipantUserID)
+				if err != nil {
+					return err
+				}
+				list, err := tx.GetDeviceList(scoped, user.ID)
+				if err != nil {
+					return err
+				}
+				_, err = ds.NewDeviceLists(fixture.h.repo, wasm).Verify(scoped, list.Blob, user.SSKPub, user.ID)
+				return err
+			}); err != nil {
+				return err
 			}
-			instance.Release()
+
 			close(entered)
 			<-release
 			return nil

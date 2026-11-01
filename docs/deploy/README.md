@@ -10,6 +10,31 @@ writes, and the Proxmox LXC helper. There is no container image.
 
 ### Open tabs during an upgrade
 
+Music player (task 8b): upgrade `dillad` with its web client first and reload open tabs, then `dillabot`. An older
+web client cannot read the newer Bot's music snapshot; an older Bot simply does not post the "started music" message.
+
+Server settings (task 10c): upgrade `dillad` and `dillabot` together and reload open tabs. Until then:
+
+- A tab opened before the upgrade still shows the old DJ roles card on the Music page. The upgrade removes that setting:
+  every DJ role becomes a role with the **Control music (DJ)** permission, so that card can no longer be saved. Reload
+  the tab.
+- A tab opened before the upgrade can still save the Bot's capabilities. Its request does not mention Polls and
+  Reminders, so the server keeps them as they are.
+- A tab opened before the upgrade drops **Control music** (bit 25) from any role or channel permissions it saves, because its permission mask is the old one. Reload before editing roles or channel permissions.
+- An older `dillabot` reports no version, so Glenn's card shows none. A Restart stays "not picked up yet" until the newer
+  `dillabot` runs. The Music page's default volume and idle-leave time take effect only with the newer `dillabot`, and
+  the older one cannot read the new permission bit, so it refuses commands from owners, administrators and DJs.
+  Upgrade both together.
+
+Wire 5 adds ephemeral build, presence and coarse-call telemetry frames on the existing gateway. See
+[transport inventory and rollback](../realtime-transport.md) for transport behavior, authorization and native-state
+requirements. API and Bot artifacts must come from the same complete combined release.
+
+Account kind (task S1, wire 4): a tab opened before the upgrade keeps talking wire 3 and works as before; after a reload it
+negotiates wire 4 and starts checking each person's signed account kind. `dillabot` stays on wire 3 next to wire-4
+people, so the order above still holds. Once browsers run wire 4, do not roll `dillad` back below it (see
+[Client data version per release](#client-data-version-per-release)).
+
 For upgrades already running the media sidecar, the normal path is:
 
 ```mermaid
@@ -26,12 +51,13 @@ sequenceDiagram
     Note over Media: Existing rooms survive the API restart
     Rollout->>Media: Restart after API checks
     Note over Media: A media restart closes its rooms
-    loop On load, on visibility or network return, and while active
+    API-->>Tab: Verified build entry on gateway ready/resume
+    loop On load, visibility/network return, reconnect or a new build hint
         Tab->>API: GET /app-version.json (no-store)
         API-->>Tab: Current JavaScript entry path
     end
     alt Entry differs from the tab's loaded entry
-        Note over Tab: Wait for an open modal form to close
+        Note over Tab: Wait for modal forms and live/recovering calls to finish
         Tab->>Store: Save encrypted view, drafts, files, and call choice
         Tab->>API: Reload the page
         API-->>Tab: Serve the new web build
@@ -49,14 +75,14 @@ sequenceDiagram
     end
 ```
 
-Once a browser has loaded a release with the update watcher, it checks `/app-version.json` when
-the page opens or becomes visible, every 30 seconds while visible, and every 3 seconds during a
-voice call even if the tab is hidden. A changed entry triggers a per-tab encrypted checkpoint of
-the current view, drafts, selected attachments and call choice, followed by a reload and restore.
-An open modal form delays the reload until it closes. A browser without working checkpoint storage
-offers a manual reload instead. Screen sharing needs another click after rejoining because the
-browser requires a user gesture. A tab loaded before this watcher exists cannot update itself;
-tell those members to reload once after the first deployment.
+The current browser verifies `/app-version.json` on startup, foreground, network return and
+gateway reconnect, and when wire 5 supplies a new build entry. It never polls versions periodically.
+An unresolved new hint retries with bounded backoff; verification stops those retries. A changed
+entry waits for open modal forms and live/recovering calls, then checkpoints the view, drafts and
+selected attachments before reloading and restoring them. Pre-login pages and browsers without
+working checkpoint storage offer a manual reload. Screen sharing needs another click after
+rejoining because the browser requires a user gesture. An older tab retains its older updater
+until it reloads; reload it once to receive the current WSS-only activity and coarse-stats producers.
 
 The media sidecar keeps the SFU room alive during an API restart, but the API's signalling and TURN
 connections reset. The browser attempts to rejoin voice after a lost connection. Restarting the
@@ -245,7 +271,18 @@ What it fixes, and the keys that change it:
   are LiveKit's node-wide join gates, unset by default. They refuse new joins once reached, so size
   them generously: one 25-person voice call is about 600 forwarded tracks.
 - **Publish caps.** `livekit.max_audio_bitrate_kbps` (64) and `livekit.max_share_bitrate_kbps`
-  (2500) are handed to clients with every call token.
+  (8000) are handed to clients with every call token. A screen share encodes at the bitrate its
+  picker's choice asks for (720p 2.5, 1080p 4.5, 1440p 8, source 12 Mb/s at 30 fps; ×0.6 at 15,
+  ×1.6 at 60), never above the share cap, and the picker's "≈ … Mb/s up" shows that capped value.
+  The estimate is the top layer's bitrate; a simulcast share also sends a small lower layer on top
+  of it. Lower the cap on a host with little upload to spare (each sharer's stream is forwarded to
+  every viewer); the range is 100..20000. The cap is advisory: the server cannot enforce a bitrate,
+  so a hostile client can send more. `livekit.limit_bytes_per_sec` is the SFU's own hard limit.
+- **Participant attributes.** No call token may update its own LiveKit name, metadata or attributes.
+  A person's (or the bot's) round-trip time to the SFU reaches the others' tiles as their ping
+  through dillad (`POST /v1/calls/{call_id}/rtt`), which writes it as the participant's `dilla.rtt`
+  attribute at most every 1.5 s per device. The generated LiveKit config also caps a name at 32
+  bytes, metadata at 1 byte and one attribute update at 64 bytes (`limit.*`), as defence in depth.
 - **Which addresses LiveKit offers, and `ips_excludes`.** LiveKit opens its media socket
   (`udp_port`) on each address of the host's up interfaces (loopback only when `node_ip` is
   loopback, and never `::1`), skipping those inside `livekit.ips_excludes`, and builds its host
@@ -566,6 +603,19 @@ and run `install.sh` inside it directly.
 
 ### Dilla Bot installation
 
+The Bot's `[rate_limits]` in `/etc/dillabot/bot.toml` also bounds its limiter
+caches: `device_cache_limit` defaults to 1,024, `target_cache_limit` to 2,048
+KeyPackage targets per device, and `global_target_cache_limit` to 16,384 targets
+per client. Zero or absent selects the default; negative or excessively large
+capacities fail configuration validation. A cache entry can be evicted only
+after five minutes idle, with its allowance fully replenished and no request
+waiting on it. Session renewal shares the device budget, including allowance
+spent before an anonymous token was bound to the device. Full caches defer
+before sending an HTTP request (`E_UNAVAILABLE`, retry after 1 second).
+Aggregate cache counts, evictions and capacity-deferral counters contain no
+tokens or identities; the Bot logs deferral milestones without flooding logs.
+
+
 The release includes `install-bot.sh` alongside `install.sh`. Run the Bot installer as root on the
 Linux host after `dillad` is installed and its instance is initialized. The installer downloads and
 checksum-verifies the architecture-matched `dillabot`, native `dilla-bot-core`, and
@@ -607,6 +657,13 @@ restarts the service if it was active before. If installation, doctor or restart
 the previous assets and state. The retained copy contains `database.key` and must be protected as a
 secret. The upgrade path has not yet been exercised against a prior released Bot database schema.
 
+Each upgrade run writes one such copy, as a new directory `/var/backups/dillabot/<UTC timestamp>-<suffix>`, root-only,
+holding the whole state directory (with the database key) plus the three Bot binaries and the unit. After a successful
+upgrade the installer keeps the 3 newest copies, the new one included, and removes the older ones; it logs each path
+it removes and never prunes after a failed or rolled-back upgrade. `--keep-backups N` (N of at least 1) keeps N
+instead. Only directories named like the installer's own copies are touched. This pruning starts with the release after
+`v0.1.0-signal1`: on `v0.1.0-signal1` and earlier, remove old copies by hand, keeping the newest.
+
 For a cold operator backup of the complete Bot files, including its config and runtime credential:
 
 ```sh
@@ -635,6 +692,16 @@ sudo systemctl start dillabot
 This is an operator procedure, not a coordinated Bot/dillad backup and restore acceptance run.
 `dillad backup` does not include Bot config, credential or state, so a server restore alone is not a
 complete Bot restore. Keep the Bot archive protected: it includes the credential and database key.
+
+`dillabot doctor` reads `/etc/dillabot/bot.toml` by default, the file the installer writes and the
+unit passes to the service; it prints which config path it read. It reports a missing file
+(`no such file at PATH`), an invalid config and an unusable runtime credential as three different
+failures, and never prints the credential. Its YouTube tool check prints the `PATH` it searched.
+The installer runs the doctor with the service's `PATH` (an `Environment=PATH=` in the unit, else
+systemd's default from `systemctl show-environment`, else `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin`),
+so `pct exec`, whose `PATH` lacks `/usr/local/bin`, does not report installed tools as unavailable.
+Run by hand, `dillabot doctor` uses your shell's `PATH`; under `pct exec` run it as
+`PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin dillabot doctor`.
 
 `dillabot doctor --config=/etc/dillabot/bot.toml` checks the local owner-only runtime credential,
 native identity helper, compiled WASI identity module, optional Spotify PCM helper and private
@@ -672,12 +739,15 @@ sudo -u dillabot dillabot doctor --config=/etc/dillabot/bot.toml --youtube
 That lock pins `yt-dlp` 2026.10.21 and its matching `yt-dlp-ejs` 0.8.0 with wheel hashes.
 `--youtube` checks that exact yt-dlp version, Node 22 or newer, Python 3.10 or newer, `bwrap`,
 `ffmpeg`, and FFmpeg's `libopus` encoder are locally available. The recorded host smoke used Node
-24.15.0, Python 3.14.8, bubblewrap 0.13.1 and FFmpeg 9.0.2. This doctor check does not inspect the
-installed EJS package, test unprivileged namespace support, contact YouTube, or qualify playback;
+24.15.0, Python 3.14.8, bubblewrap 0.13.1 and FFmpeg 9.0.2. `--youtube` also runs
+`yt-dlp --version` through the real isolated metadata runner to test sandbox startup without
+contacting YouTube. `youtube_sandbox` reports OK or FAIL with a failure class and stderr
+collapsed to one printable line and truncated to 512 bytes. It does not inspect the
+installed EJS package or qualify playback;
 the pinned pair must be installed together from the requirements file. YouTube remains optional,
 so a missing dependency appears as a `WARN` in the normal doctor and does not block service
 installation. `--youtube` makes these checks required and returns a failure if a dependency is
-missing or outside the checked minimum/version.
+missing, outside the checked minimum/version, or unable to start inside the sandbox.
 
 The earlier 2026.8.19 pin resolved a video and captured a bounded PCM sample on 2026-10-22, but a
 later integrated Bot run found yt-dlp 2025.09.26 failed and a direct test with 2026.10.21 succeeded.
@@ -686,10 +756,10 @@ The direct test does not establish cross-server or full provider qualification; 
 reported as unavailable until its intended-host acceptance is complete.
 
 The server `install.sh` also places the architecture-matched Spotify PCM helper at
-`/usr/local/libexec/dilla-spotify-helper`. Spotify OAuth settings (`spotify_client_id` and
-`spotify_redirect_url`) may be configured in `/etc/dillabot/bot.toml` without that helper; this keeps
-authorization available while Spotify PCM playback remains unavailable. To enable PCM playback,
-configure the same OAuth pair and the absolute
+`/usr/local/libexec/dilla-spotify-helper`. Enter the public Spotify application client ID in
+community Bot settings and register the callback URL shown there in the Spotify application
+dashboard. Linking works without the PCM helper; playback remains unavailable until it is
+installed and configured. To enable PCM playback, configure the absolute
 `spotify_helper_executable = "/usr/local/libexec/dilla-spotify-helper"` path. Spotify authorization
 remains in Dilla server settings. The helper uses librespot's native TLS backend and needs the
 OpenSSL 3 runtime libraries (`libssl.so.3` and `libcrypto.so.3`). On Debian 13, install
@@ -711,14 +781,19 @@ the offline recovery command because the helper holds an exclusive state lock:
 sudo systemctl stop dillabot
 sudo -u dillabot dillabot interaction-recovery --config=/etc/dillabot/bot.toml
 sudo -u dillabot dillabot interaction-recovery --config=/etc/dillabot/bot.toml --installation INSTALLATION_ID --recover GROUP_ID
+# If the exact receipt is absent, retry the same staged group with fresh admission:
+sudo -u dillabot dillabot interaction-recovery --config=/etc/dillabot/bot.toml --installation INSTALLATION_ID --readmit GROUP_ID
 sudo systemctl start dillabot
 ```
 
 The first command lists only identifiers, a registration hash, and server status. The recovery
-action succeeds only when the server returns a receipt matching the stored operation, group,
-registration body hash, and generation. An absent or mismatched receipt leaves the pending state
-unchanged; do not discard it or reissue the registration by hand. This is an operator repair path,
-not a completed installation or backup workflow.
+`--recover` succeeds only when the server returns a receipt matching the stored operation, group,
+registration body hash, and generation. If the receipt is absent, `--readmit` obtains a fresh
+admission and signed context, verifies the staged local MLS group, and submits the original
+operation ID, group ID, and registration body. A changed identity, policy, generation, roster, or
+missing KeyPackage refuses the retry. Keep the bot stopped during both commands and restart it
+even if a retry fails. Do not discard the staged group or reissue a registration by hand. This is
+an operator repair path, not a completed installation or backup workflow.
 
 ## 4. Backup and restore
 
@@ -936,6 +1011,7 @@ this browser" with both numbers: "That data needs data version {found}; this ver
 | web3.11 (`v0.1.0-web3.11`) | 5 | **21** | Migration `00021_afk_away` (the away roster). Rolling back to web3.10.1 needs `migrate down --to=20` with the web3.11 binary first; see the [web3.11 release notes](releases/v0.1.0-web3.11.md). |
 | web3.12 (`v0.1.0-web3.12`) | 5 | **23** | Migrations `00022_profile` (`users.status_msg`, `users.bio`) and `00023_device_labels` (`devices.label`). Rolling back to web3.11 needs `migrate down --to=21` with the web3.12 binary first, and loses every status message, bio and device name; see the [web3.12 release notes](releases/v0.1.0-web3.12.md). |
 | bot1 (`v0.1.0-bot1`) | **12** | **47** | Dilla Bot and its server/browser support. A rollback to web3.12.4 needs a server down migration to 23 with the new binary first; the older browser cannot read a schema-12 store. See the [bot1 release notes](releases/v0.1.0-bot1.md). |
+| Signal wave A (wire 4) | **13** | **52** | Server settings (task 10c): `00048_control_music` turns every DJ role into a role with the **Control music** permission and drops the DJ roles table (its down migration recreates the table empty, so a rollback loses the DJ list; the permission bits stay on the roles), `00049_unlimited_invites` and `00050_bot_installation_settings` (Polls and Reminders on for every existing Bot, default music volume and idle time, restart and version). The instance-signed account kind (task S1, protocol/03 § Account kind attestation): `00051_session_wire4` lets a session record wire 4. `00052_password_changed` (Task 11) adds `password_credentials.changed_at`, set by a password change, so Settings → Sign-in can say "Changed {when}"; existing passwords read as unknown (its down migration drops the column). **Do not roll `dillad` back below a wire-4 build**: a browser that has stored an attestation leaves every person without one pending, so after a rollback it stops showing other people's messages. One-way for the browser too: an older bundle refuses the schema-13 store ("too old" screen); redeploy the wire-4 build, or clear site data and sign in again with the recovery key. |
 
 **The browser side, web-3.4 to web-3.6.** The store schema is the same in all three (4: no change
 from web-3.5 to web-3.6), so a browser keeps working across a server rollback between these releases, and a person is

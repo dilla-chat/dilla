@@ -6,12 +6,14 @@ import { CoreProvider } from '../core/context.tsx';
 import { FakeClient, refusal } from '../test/fake-client.ts';
 import { account, ME, timelineItem } from '../test/fixtures.ts';
 import { expectNoAxeViolations } from '../test/setup.ts';
+import { openRowMenu } from '../test/row-menu.ts';
 import { formatTime } from '../strings/index.ts';
 import { en } from '../strings/en.ts';
-import { joinErrorState } from '../router.ts';
+import { joinErrorState, replaceHistoryState } from '../router.ts';
 import { browser } from '../browser.ts';
 import { Shell } from './Shell.tsx';
 import type { ShellUpdateDeps } from './Shell.tsx';
+import { toolbarButton } from '../test/toolbar.ts';
 
 const A = 'a1'.repeat(16);
 const B = 'b2'.repeat(16);
@@ -50,7 +52,7 @@ function timeline(over: Partial<TimelineState> = {}): TimelineState {
 // `state` is the history entry's state (task 23 carries a refused join in it, pre-flight ruling (g)).
 function setup(path: string, opts: { channels?: boolean; communities?: { id: string; name: string; owner: string }[]; state?: unknown; before?(fake: FakeClient): void;
   update?: ShellUpdateDeps } = {}) {
-  window.history.replaceState(opts.state ?? null, '', path);
+  replaceHistoryState(opts.state ?? null, '', path);
   const fake = new FakeClient();
   fake.set('account', account());
   fake.set('connection', { status: 'online', generation: '7' });
@@ -89,6 +91,21 @@ it('checkpoints an unsent draft before refreshing to a new UI build', async () =
   await waitFor(() => expect(reload).toHaveBeenCalledOnce());
   expect(fake.callsOf('checkpointFiles')).toContainEqual({ m: 'checkpointFiles', channelId: GEN });
   expect(save.mock.calls[0]?.[1]).toMatchObject({ conversationId: GEN, draft: { channelId: GEN, text: 'keep me' } });
+});
+
+it('keeps the reminder inbox entry mounted from DM and root routes without a selected community', async () => {
+  const { user, view } = setup('/', { communities: [] });
+  expect(await screen.findByRole('button', { name: 'Reminders' })).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Reminders' }));
+  expect(await screen.findByRole('dialog', { name: 'Reminders' })).toBeInTheDocument();
+  view.unmount();
+  replaceHistoryState(null, '', `/dm/${'ab'.repeat(16)}`);
+  const fake = new FakeClient();
+  fake.set('account', account()); fake.set('connection', { status: 'online', generation: '7' }); fake.set('communities', []);
+  fake.set('dms', []);
+  const dmView = render(<div className="d-root"><CoreProvider client={fake}><Shell /></CoreProvider></div>);
+  expect(await screen.findByRole('button', { name: 'Reminders' })).toBeInTheDocument();
+  dmView.unmount();
 });
 
 it('shows my text timeout expiry and blocks the channel composer', async () => {
@@ -280,31 +297,35 @@ it('restores the reply target and member pane after the channel list arrives', a
   await waitFor(() => expect(remove).toHaveBeenCalledOnce());
   act(() => fake.set(`channels:${A}`, CHANNELS));
   await waitFor(() => expect(composer()).toHaveValue('later'));
-  await waitFor(() => expect(screen.getByText(/replying to Bob/i)).toBeInTheDocument());
+  await waitFor(() => expect(document.querySelector('.d-reply-chip__label')).toHaveTextContent(/replying to Bob/i));
 });
 it('reopens the search dialog with its query after an update', async () => {
   const update: ShellUpdateDeps = { currentEntry: '/assets/new.js', watch: () => () => undefined,
     store: { save: () => Promise.resolve(), load: () => Promise.resolve({ state: { search: { open: true, query: 'lantern', scope: 'all' } }, files: [] }),
       remove: () => Promise.resolve() }, reload: () => undefined };
   setup(`/c/${A}/${GEN}`, { update, before: client => client.set(`timeline:${GEN}`, timeline()) });
-  await waitFor(() => expect(screen.getByRole('combobox', { name: 'Search your messages' })).toHaveValue('lantern'));
+  await waitFor(() => expect(screen.getByRole('combobox', { name: 'Search channels, people and messages' })).toHaveValue('lantern'));
 });
 it('opens scoped search with a modifier and sends the typed query', async () => {
   const { fake, user } = setup(`/c/${A}/${GEN}`);
   await user.keyboard('{Control>}/{/Control}');
-  const input = screen.getByRole('combobox', { name: 'Search your messages' });
+  const input = screen.getByRole('combobox', { name: 'Search channels, people and messages' });
   await user.type(input, 'lamp');
-  await waitFor(() => expect(fake.callsOf('search')).toContainEqual({ m: 'search', scope: 'channel', id: GEN, query: 'lamp', cursor: null }));
+  // Task 9 fix round 1: the scope is implicit (everywhere, the open conversation's hits first).
+  await waitFor(() => expect(fake.callsOf('search')).toContainEqual({ m: 'search', scope: 'all', id: null, query: 'lamp', cursor: null }));
   expect(input).toHaveFocus();
 });
 
-it('opens search from a visible control in the channel header (walk 1)', async () => {
+// Ruling X (Jonas 2026-10-27): the desktop channel header has no search; the top bar's search is the one, as Control+K is.
+it('has no search in the desktop channel header; the top bar opens it', async () => {
   const { fake, user } = setup(`/c/${A}/${GEN}`);
   const header = (await screen.findByRole('heading', { level: 2, name: 'general' })).closest('header')!;
-  await user.click(within(header).getByRole('button', { name: 'search' }));
-  const input = screen.getByRole('combobox', { name: 'Search your messages' });
+  expect(within(header).queryByRole('button', { name: 'search' })).toBeNull();
+  expect(within(header).queryByRole('button', { name: 'more' })).toBeNull();
+  await user.click(screen.getByRole('button', { name: en['topbar.search'] }));
+  const input = screen.getByRole('combobox', { name: 'Search channels, people and messages' });
   await user.type(input, 'lamp');
-  await waitFor(() => expect(fake.callsOf('search')).toContainEqual({ m: 'search', scope: 'channel', id: GEN, query: 'lamp', cursor: null }));
+  await waitFor(() => expect(fake.callsOf('search').some(c => c.query === 'lamp')).toBe(true));
 });
 // Walk 7: the browser's own offline event shows the link banner at once; the gateway status stays online.
 it('shows the link banner when the browser goes offline, and empties it when it returns', async () => {
@@ -323,11 +344,29 @@ it('shows the link banner when the browser goes offline, and empties it when it 
     expect(line()).toBeEmptyDOMElement();
   } finally { online.mockRestore(); }
 });
-it('persists a chosen search scope through the worker setting', async () => {
-  const { fake, user } = setup(`/c/${A}/${GEN}`);
+// Task 9 fix round 1 (Jonas): the palette is the prototype's: channels, people and actions with nothing typed, no scope control.
+it('lists channels, people and actions with nothing typed, draws no scope control, and opens a channel result', async () => {
+  const { user } = setup(`/c/${A}/${GEN}`);
   await user.keyboard('{Control>}k{/Control}');
-  await user.click(screen.getByRole('button', { name: 'this community' }));
-  expect(fake.callsOf('setSetting')).toContainEqual({ m: 'setSetting', key: 'searchScope', value: 'community' });
+  const search = screen.getByRole('search');
+  expect(within(search).queryByRole('button', { name: 'this community' })).toBeNull();
+  expect(within(search).getByRole('group', { name: 'Channels' })).toBeInTheDocument();
+  expect(within(search).getByRole('group', { name: 'Actions' })).toBeInTheDocument();
+  expect(within(search).getByRole('option', { name: /Open settings/ })).toBeInTheDocument();
+});
+
+// Merge of lanes 9 and 10: settings search moved to ⌘K as the palette's Settings group, only for a query; a pick opens its section.
+it('lists matching settings under Settings for a query, none with nothing typed, and opens the section', async () => {
+  const { user } = setup(`/c/${A}/${GEN}`);
+  await user.keyboard('{Control>}k{/Control}');
+  const search = screen.getByRole('search');
+  expect(within(search).queryByRole('group', { name: 'Settings' })).toBeNull();
+  await user.type(screen.getByRole('combobox', { name: 'Search channels, people and messages' }), 'voice');
+  const group = within(search).getByRole('group', { name: 'Settings' });
+  expect(within(group).getAllByRole('option').length).toBeLessThanOrEqual(8);
+  await user.click(within(group).getAllByRole('option', { name: /Voice/ })[0]);
+  await waitFor(() => expect(window.location.pathname).toBe('/settings/voice'));
+  expect(screen.queryByRole('search')).toBeNull();
 });
 
 it('takes a picked community search hit to its channel and focuses the row', async () => {
@@ -335,7 +374,7 @@ it('takes a picked community search hit to its channel and focuses the row', asy
     client.set(`timeline:${RAND}`, timeline({ channelId: RAND, items: [item({ key: 'found', seq: '5', body: 'lamp' })] }));
   } });
   await user.keyboard('{Control>}k{/Control}');
-  await user.type(screen.getByRole('combobox', { name: 'Search your messages' }), 'lamp');
+  await user.type(screen.getByRole('combobox', { name: 'Search channels, people and messages' }), 'lamp');
   act(() => fake.set('search', { requestId: 4, hits: [{ channelId: RAND, communityId: A, seq: '5', snippet: 'lamp', rank: '0', threadRoot: null }], cursor: null }));
   await user.click(screen.getByRole('option', { name: /lamp/ }));
   await waitFor(() => expect(window.location.pathname).toBe(`/c/${A}/${RAND}`));
@@ -348,7 +387,7 @@ it('focuses the destination row when the previous channel has the same sequence'
     client.set(`timeline:${RAND}`, timeline({ channelId: RAND, items: [item({ key: 'target-five', seq: '5', body: 'lamp' })] }));
   } });
   await user.keyboard('{Control>}k{/Control}');
-  await user.type(screen.getByRole('combobox', { name: 'Search your messages' }), 'lamp');
+  await user.type(screen.getByRole('combobox', { name: 'Search channels, people and messages' }), 'lamp');
   act(() => fake.set('search', { requestId: 4, hits: [{ channelId: RAND, communityId: A, seq: '5', snippet: 'lamp', rank: '0', threadRoot: null }], cursor: null }));
   await user.click(screen.getByRole('option', { name: /lamp/ }));
   await waitFor(() => expect(window.location.pathname).toBe(`/c/${A}/${RAND}`));
@@ -366,7 +405,7 @@ it('accepts the worker request id after invalidation and loads earlier pages for
     return Promise.resolve(null);
   };
   await user.keyboard('{Control>}k{/Control}');
-  await user.type(screen.getByRole('combobox', { name: 'Search your messages' }), 'lamp');
+  await user.type(screen.getByRole('combobox', { name: 'Search channels, people and messages' }), 'lamp');
   act(() => fake.set('search', { requestId: 9, hits: [{ channelId: RAND, communityId: A, seq: '5', snippet: 'lamp', rank: '0', threadRoot: null }], cursor: null }));
   await user.click(screen.getByRole('option', { name: /lamp/ }));
   await waitFor(() => expect(fake.callsOf('loadEarlier')).toContainEqual({ m: 'loadEarlier', channelId: RAND }));
@@ -376,11 +415,11 @@ it('accepts the worker request id after invalidation and loads earlier pages for
 it('reports a search hit unavailable if its channel never loads a timeline', async () => {
   const { fake, user } = setup(`/c/${A}/${GEN}`);
   await user.keyboard('{Control>}k{/Control}');
-  await user.type(screen.getByRole('combobox', { name: 'Search your messages' }), 'gone');
+  await user.type(screen.getByRole('combobox', { name: 'Search channels, people and messages' }), 'gone');
   act(() => fake.set('search', { requestId: 5, hits: [{ channelId: RAND, communityId: A, seq: '5', snippet: 'gone', rank: '0', threadRoot: null }], cursor: null }));
   await user.click(screen.getByRole('option', { name: /gone/ }));
   await waitFor(() => expect(screen.getByText('That message is no longer available')).toBeInTheDocument(), { timeout: 2500 });
-  expect(screen.getByRole('combobox', { name: 'Search your messages' })).toHaveFocus();
+  expect(screen.getByRole('combobox', { name: 'Search channels, people and messages' })).toHaveFocus();
 });
 
 it('takes a keyboard-picked DM hit to its DM route and focuses the row', async () => {
@@ -389,7 +428,7 @@ it('takes a keyboard-picked DM hit to its DM route and focuses the row', async (
     client.set(`timeline:${DM}`, timeline({ channelId: DM, items: [item({ key: 'dm-found', seq: '8', body: 'lamp' })] }));
   } });
   await user.keyboard('{Control>}k{/Control}');
-  const input = screen.getByRole('combobox', { name: 'Search your messages' });
+  const input = screen.getByRole('combobox', { name: 'Search channels, people and messages' });
   await user.type(input, 'lamp');
   act(() => fake.set('search', { requestId: 4, hits: [{ channelId: DM, communityId: null, seq: '8', snippet: 'lamp', rank: '0', threadRoot: null }], cursor: null }));
   await user.keyboard('{Enter}');
@@ -403,13 +442,26 @@ it('sends typing off when leaving the visible channel', async () => {
   await user.click(screen.getByRole('button', { name: 'random' }));
   await waitFor(() => expect(fake.callsOf('typing')).toContainEqual({ m: 'typing', channelId: GEN, on: false }));
 });
+it('keeps ordinary drafts separate while switching between channels', async () => {
+  const { user } = setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set(`timeline:${GEN}`, timeline());
+    client.set(`timeline:${RAND}`, timeline({ channelId: RAND }));
+  } });
+  await user.type(composer(), 'general draft');
+  await user.click(screen.getByRole('button', { name: 'random' }));
+  await user.type(composer('random'), 'random draft');
+  await user.click(screen.getByRole('button', { name: 'general' }));
+  expect(composer()).toHaveValue('general draft');
+  await user.click(screen.getByRole('button', { name: 'random' }));
+  expect(composer('random')).toHaveValue('random draft');
+});
 it('returns focus to where search was opened when Escape closes it', async () => {
   const { user } = setup(`/c/${A}/${GEN}`, { before: client => client.set(`timeline:${GEN}`, timeline()) });
   await user.click(composer());
   await user.keyboard('{Control>}k{/Control}');
-  expect(screen.getByRole('combobox', { name: 'Search your messages' })).toHaveFocus();
+  expect(screen.getByRole('combobox', { name: 'Search channels, people and messages' })).toHaveFocus();
   await user.keyboard('{Escape}');
-  expect(screen.queryByRole('combobox', { name: 'Search your messages' })).toBeNull();
+  expect(screen.queryByRole('combobox', { name: 'Search channels, people and messages' })).toBeNull();
   expect(composer()).toHaveFocus();
 });
 
@@ -418,12 +470,12 @@ it('opens search as a modal dialog, once, and never under another open dialog', 
   const { user } = setup(`/c/${A}/${GEN}`, { before: client => client.set(`timeline:${GEN}`, timeline()) });
   await user.click(composer());
   await user.keyboard('{Control>}k{/Control}');
-  const dialog = screen.getByRole('dialog', { name: 'Search your messages' });
+  const dialog = screen.getByRole('dialog', { name: 'Search channels, people and messages' });
   expect(dialog.tagName).toBe('DIALOG');
   expect(dialog).toHaveAttribute('open');
-  const input = screen.getByRole('combobox', { name: 'Search your messages' });
+  const input = screen.getByRole('combobox', { name: 'Search channels, people and messages' });
   await user.keyboard('{Control>}k{/Control}');
-  expect(screen.getAllByRole('dialog', { name: 'Search your messages' })).toHaveLength(1);
+  expect(screen.getAllByRole('dialog', { name: 'Search channels, people and messages' })).toHaveLength(1);
   await user.keyboard('{Escape}');
   expect(input).not.toBeInTheDocument();
   expect(composer()).toHaveFocus();
@@ -432,30 +484,29 @@ it('opens search as a modal dialog, once, and never under another open dialog', 
   document.body.append(other);
   try {
     await user.keyboard('{Control>}k{/Control}');
-    expect(screen.queryByRole('combobox', { name: 'Search your messages' })).toBeNull();
+    expect(screen.queryByRole('combobox', { name: 'Search channels, people and messages' })).toBeNull();
   } finally { other.remove(); }
 });
 
 it('opens no search under the Settings dialog', async () => {
   const { user } = setup('/settings/devices');
   await user.keyboard('{Control>}k{/Control}');
-  expect(screen.queryByRole('combobox', { name: 'Search your messages' })).toBeNull();
+  expect(screen.queryByRole('combobox', { name: 'Search channels, people and messages' })).toBeNull();
 });
 
-it('says searching while the worker answers, then the scope’s empty text', async () => {
+// Task 9 fix round 1: the message search starts at two characters and runs everywhere (no visible scope).
+it('says searching while the worker answers, then the empty text', async () => {
   let answer!: (value: null) => void;
   const { fake, user } = setup(`/c/${A}/${GEN}`, { before: client => client.set(`timeline:${GEN}`, timeline()) });
   fake.handler = command => command.m === 'search' && command.scope === 'all'
     ? new Promise(resolve => { answer = resolve; }) : Promise.resolve(null);
   await user.keyboard('{Control>}k{/Control}');
-  await user.type(screen.getByRole('combobox', { name: 'Search your messages' }), 'z');
+  await user.type(screen.getByRole('combobox', { name: 'Search channels, people and messages' }), 'zq');
   act(() => fake.set('search', { requestId: 3, hits: [], cursor: null }));
   expect(screen.getByRole('search')).toHaveTextContent('Searching your messages');
   await act(async () => { answer(null); await Promise.resolve(); });
-  expect(screen.getByRole('search')).toHaveTextContent('No messages found');
-  await user.click(screen.getByRole('button', { name: 'this conversation' }));
-  act(() => fake.set('search', { requestId: 4, hits: [], cursor: null }));
-  await waitFor(() => expect(screen.getByRole('search')).toHaveTextContent('No results in this scope'));
+  expect(screen.getByRole('search')).toHaveTextContent('Nothing in this browser matches “zq”.');
+  expect(screen.queryByRole('button', { name: 'this conversation' })).toBeNull();
 });
 
 // The docs shoot's shell-not-member image showed "(E_NOT_READY)" in the error banner: a typing signal the worker refuses
@@ -487,12 +538,12 @@ it('renews typing while the draft keeps changing, within the server’s hold', a
 it('names typing people once each, in one polite status above the composer', () => {
   const { fake } = setup(`/c/${A}/${GEN}`, { before: client => client.set(`timeline:${GEN}`, timeline()) });
   act(() => fake.set(`typing:${GEN}`, [{ userId: PEER, name: 'bob', expiresAt: NOW + 10 }, { userId: PEER, name: 'bob', expiresAt: NOW + 9 }]));
-  const status = screen.getByText('bob is typing');
+  const status = screen.getByText('bob is typing…');
   expect(status).toHaveAttribute('role', 'status');
   expect(document.querySelector('.d-app-shell__main')).toContainElement(status);
   act(() => fake.set(`typing:${GEN}`, [{ userId: PEER, name: 'bob', expiresAt: NOW + 10 }, { userId: BOT, name: 'Helper', expiresAt: NOW + 10 }]));
   expect(screen.getAllByText(/typing/)).toHaveLength(1);
-  expect(screen.getByText('Several people are typing')).toHaveAttribute('role', 'status');
+  expect(screen.getByText('Several people are typing…')).toHaveAttribute('role', 'status');
 });
 
 it('says only in the unblocked conversation that a validated Remove restored sending', async () => {
@@ -544,7 +595,7 @@ it('blocks the composer from the core\'s send block, and says why', async () => 
   const reason = document.querySelector('.d-composer__reason');
   expect(reason).toHaveTextContent(changed);
   expect(composer('general').getAttribute('aria-describedby')?.split(' ')).toContain(reason?.id);
-  expect(screen.getByRole('button', { name: 'attach files' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: en['shell.composer.attach'] })).toBeDisabled();
   await user.type(composer('general'), 'held back{Enter}');
   expect(fake.callsOf('send')).toEqual([]);
   for (const code of ['E_DEVICE_UNLISTED', 'E_TIER_MISMATCH', 'E_CREDENTIAL'] as const) {
@@ -556,7 +607,7 @@ it('blocks the composer from the core\'s send block, and says why', async () => 
   // The core lifted the block (verified, or a validated Remove here): sending resumes.
   act(() => fake.set('sendBlocks', {}));
   expect(composer('general')).not.toHaveAttribute('aria-disabled');
-  expect(screen.getByRole('button', { name: 'attach files' })).toBeEnabled();
+  expect(screen.getByRole('button', { name: en['shell.composer.attach'] })).toBeEnabled();
 });
 
 it('blocks only the conversation the core names', () => {
@@ -618,7 +669,7 @@ it('shows a trust refusal of a pin as the conversation\'s blocked copy, not a ra
   fake.handler = c => c.m === 'pin' ? Promise.reject(refusal({ code: 'E_UMK_CHANGED' })) : Promise.resolve(null);
   const row = () => screen.getByText('pin me').closest<HTMLElement>('.d-message-row')!;
   const shown = screen.getAllByText(changed).length;
-  await user.click(within(row()).getByRole('button', { name: 'pin' }));
+  await user.click(toolbarButton(within(row()).getByRole('toolbar', { name: en['shell.message.toolbar'] }), 'pin'));
   await waitFor(() => expect(fake.callsOf('pin')).toHaveLength(1));
   // The alert and the composer already say it; the refusal adds its own dismissable banner with the same text.
   await waitFor(() => expect(screen.getAllByText(changed).length).toBe(shown + 1));
@@ -627,7 +678,7 @@ it('shows a trust refusal of a pin as the conversation\'s blocked copy, not a ra
   // Any other trust code reads as the failed-device copy.
   fake.handler = c => c.m === 'pin' ? Promise.reject(refusal({ code: 'E_DEVICE_UNLISTED' })) : Promise.resolve(null);
   act(() => fake.set('sendBlocks', { [GEN]: { code: 'E_DEVICE_UNLISTED', own: false } }));
-  await user.click(within(row()).getByRole('button', { name: 'pin' }));
+  await user.click(toolbarButton(within(row()).getByRole('toolbar', { name: en['shell.message.toolbar'] }), 'pin'));
   await waitFor(() => expect(fake.callsOf('pin')).toHaveLength(2));
   await waitFor(() => expect(screen.getAllByText(failed).length).toBeGreaterThan(1));
   expect(document.body).not.toHaveTextContent('E_DEVICE_UNLISTED');
@@ -682,8 +733,10 @@ it('leaves the changed alert to Privacy while Settings covers the conversation',
     client.set('trust', [{ userId: PEER, name: 'bob', shared: true, umk: 'bb'.repeat(32), firstSeen: 1, verified: false,
       changedUmk: 'cc'.repeat(32) }]);
   } });
-  expect(screen.queryByRole('alert')).toBeNull();
-  expect(screen.queryByRole('button', { name: 'Compare with bob' })).toBeNull();
+  const settings = screen.getByRole('dialog', { name: /settings/i });
+  expect(within(settings).getByRole('alert')).toHaveTextContent('This contact’s identity changed.');
+  expect(within(settings).getByRole('button', { name: 'Compare with bob' })).toBeInTheDocument();
+  expect(document.querySelector('.dw-trust-alerts')).toBeNull();
 });
 
 it('stands no changed alert where a validated Remove restored sending', () => {
@@ -762,8 +815,8 @@ describe('selection', () => {
   });
   it('shows a voice channel as its voice view, with no timeline and no composer (web-3)', () => {
     const { fake } = setup(`/c/${A}/${VOICE}`);
-    expect(within(screen.getByRole('main')).getByRole('button', { name: 'join voice' })).toBeInTheDocument();
-    expect(within(screen.getByRole('main')).getByText('Nobody is in voice yet.')).toBeInTheDocument();
+    expect(within(screen.getByRole('main')).getByRole('button', { name: 'Join voice' })).toBeInTheDocument();
+    expect(within(screen.getByRole('main')).getByText('Nobody is here yet')).toBeInTheDocument();
     expect(screen.queryByRole('log')).toBeNull();
     expect(screen.queryByRole('textbox')).toBeNull();
     expect(fake.callsOf('openChannel')).toEqual([]);
@@ -798,7 +851,7 @@ describe('selection', () => {
 
 // A shell whose calls are answered by `handler` from the first render on, on /c/A with no channels yet.
 function setupWith(handler: FakeClient['handler']) {
-  window.history.replaceState(null, '', `/c/${A}`);
+  replaceHistoryState(null, '', `/c/${A}`);
   const fake = new FakeClient();
   fake.handler = handler;
   fake.set('account', account());
@@ -855,8 +908,8 @@ describe('timeline', () => {
     // the failed row is grouped under the pending one and carries none. (Caused by MP4, not by MP1's member-list change.)
     expect(within(log).getAllByText('web')).toHaveLength(2);
     expect(within(log).getAllByText('bot')).toHaveLength(1);
-    // Each row names its time once, and the gutter of the row folded into its author's run shows the same full time (R29): 8 rows and 1 gutter.
-    expect(within(log).getAllByText(formatTime(NOW))).toHaveLength(9);
+    // Each row names its time once in its head (heard) and once in its gutter (seen; Task 7, Signal §5.5): 8 rows, 16 times.
+    expect(within(log).getAllByText(formatTime(NOW))).toHaveLength(16);
     expect(within(log).getByText('This message could not be read on this device.')).toBeInTheDocument();
     expect(within(log).queryByText('E_SENDER_MISMATCH')).toBeNull();
     expect(screen.queryByText(/SECRET-PLAINTEXT/)).toBeNull();
@@ -1263,7 +1316,7 @@ describe('servers and the join dialog', () => {
     expect(screen.getByRole('textbox', { name: 'Invite' })).toHaveValue('ABCD');
     expect(screen.getByRole('textbox', { name: 'Invite' })).toHaveAccessibleDescription(expect.stringContaining('This invite is expired, used up or unknown.'));
     expect(path()).toBe('/');
-    expect(window.history.state).toBeNull();
+    expect(window.history.state).not.toHaveProperty('joinError');
   });
 });
 
@@ -1412,11 +1465,20 @@ describe('keyboard', () => {
     expect(composer()).toHaveFocus();
     expect(composer()).toHaveAttribute('aria-disabled', 'true');
   });
-  it('tabs through skip link, rail, channels, status, the pins button, the active row and the composer in that order', async () => {
+  it('tabs through skip link, top bar, rail, channels, status, the header actions, the active row and the composer in that order', async () => {
     const { fake, user } = setup(`/c/${A}/${GEN}`);
     act(() => fake.set(`timeline:${GEN}`, timeline({ items: [item({ key: 's1', body: 'x' })] })));
     await user.tab();
     expect(document.activeElement).toBe(screen.getByRole('link', { name: 'skip to messages' }));
+    // Signal (README §5.2): the top bar's search, bell and gear come first, above the rail.
+    const bar = document.querySelector<HTMLElement>('.d-topbar');
+    if (bar === null) throw new Error('no top bar');
+    await user.tab();
+    expect(document.activeElement).toBe(within(bar).getByRole('button', { name: en['topbar.search'] }));
+    await user.tab();
+    expect(document.activeElement).toBe(within(bar).getByRole('button', { name: 'Reminders' }));
+    await user.tab();
+    expect(document.activeElement).toBe(within(bar).getByRole('button', { name: en['workspace.open'] }));
     await user.tab();
     expect(screen.getByRole('navigation', { name: 'servers' })).toContainElement(document.activeElement as HTMLElement);
     // Web3.8 (WS8): one gear beside the server's name; leave and delete live in server settings. There are no sidebar tabs.
@@ -1429,37 +1491,31 @@ describe('keyboard', () => {
     await user.tab();
     // web3.8: the sidebar splitter is its own stop between the channel list and the header.
     expect(document.activeElement).toBe(screen.getByRole('separator', { name: en['pane.resize.sidebar'] }));
-    // web3.8 (item 13): the user panel follows the splitter: the name block (the status menu), its toolbar (one stop: mute, deafen), then the gear.
+    // web3.8 (item 13): the user panel follows the splitter: the name block (the status menu), then its toolbar (one stop:
+    // mute, deafen). Signal §5.4: no gear (the top bar holds it).
     await user.tab();
     expect(document.activeElement).toBe(screen.getByRole('button', { name: /your status: online$/ }));
     await user.tab();
     expect(document.activeElement).toBe(within(screen.getByRole('toolbar', { name: 'your account' })).getByRole('button', { name: 'mute' }));
     await user.tab();
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'user settings' }));
-    await user.tab();
     const header = document.querySelector<HTMLElement>('.d-channel-header');
     if (header === null) throw new Error('no header');
-    expect(document.activeElement).toBe(within(header).getByRole('button', { name: 'pinned' }));
+    // Signal §5.5 (Ruling X): Threads, Members and nothing else (pins and edit channel are in the row's context menu).
+    expect(document.activeElement).toBe(within(header).getByRole('button', { name: en['layout.header.threads'] }));
     await user.tab();
-    // web3.7: the thread list sits after pins and before the members toggle.
-    expect(document.activeElement).toBe(within(header).getByRole('button', { name: 'threads' }));
-    await user.tab();
-    // walk 1: the search control follows the thread list.
-    expect(document.activeElement).toBe(within(header).getByRole('button', { name: 'search' }));
-    await user.tab();
-    expect(document.activeElement).toBe(within(header).getByRole('button', { name: /members/ }));
-    await user.tab();
-    // The fold menu is a stop only below 36rem of header width (CSS hides it above); jsdom has no layout.
-    expect(document.activeElement).toBe(within(header).getByRole('button', { name: 'more' }));
+    expect(document.activeElement).toBe(within(header).getByRole('button', { name: /^Members/ }));
     await user.tab();
     expect(document.activeElement).toBe(screen.getByRole('article'));
     await user.tab();
     // MP7: the author name is the row's first inner stop.
     expect(document.activeElement).toBe(screen.getByRole('article').querySelector('.d-message-row__author-open'));
-    await user.tab();
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'attach files' }));
+    // Task 7 (Signal §5.5): the input row (textarea, send), then the footer's tools (attach, emoji, </>).
     await user.tab();
     expect(composer()).toHaveFocus();
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: en['shell.composer.send'] }));
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: en['shell.composer.attach'] }));
   });
   // Requirement 11: closing the join dialog puts focus in the composer.
   it('moves focus to the composer when the join dialog closes', async () => {
@@ -1508,9 +1564,11 @@ describe('sidebar actions and pane widths (web3.8)', () => {
     const { fake, user } = setup(`/c/${A}/${GEN}`);
     act(() => fake.set(`permissions:${A}`, { top: 0, owner: false, manageCommunity: false, manageChannels: false, kickMembers: false,
       banMembers: false, createInvite: true, manageRoles: false, loaded: true, overwritesLoaded: true, everyoneId: 'ef'.repeat(16) }));
-    await user.click(screen.getByRole('button', { name: 'server settings' }));
+    await user.click(screen.getByRole('button', { name: 'server settings' })); await user.click(await screen.findByRole('menuitem', { name: 'Server settings' })); // Signal task 10 fix round 2: the ⌄ is a menu
     const dialog = await screen.findByRole('dialog', { name: /settings/i });
-    expect(within(dialog).getByRole('button', { name: 'invites', current: 'page' })).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Members', current: 'page' })).toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: 'Invites' }));
+    expect(within(dialog).getByRole('button', { name: 'Invites', current: 'page' })).toBeInTheDocument();
   });
 
   it('ArrowRight on the sidebar separator writes dilla.paneWidths, and a remount reads it back', async () => {
@@ -1561,7 +1619,7 @@ describe('direct messages', () => {
     expect(within(rail).getByRole('button', { name: 'Midgard' })).not.toHaveAttribute('aria-current');
     const list = screen.getByRole('navigation', { name: 'direct messages' });
     // FB1: the Home sidebar is titled for the DMs, not for the server that was selected before.
-    expect(within(list).getByRole('heading', { level: 1, name: 'direct messages' })).toBeInTheDocument();
+    expect(within(list).getByRole('heading', { level: 1, name: 'Direct messages' })).toBeInTheDocument();
     expect(within(list).queryByRole('heading', { name: 'Midgard' })).toBeNull();
     expect(within(list).getByRole('button', { name: 'message someone' })).toBeInTheDocument();
     expect(within(list).getByRole('button', { name: 'bob' })).toHaveAttribute('data-kind', 'dm');
@@ -1579,7 +1637,7 @@ describe('direct messages', () => {
   it('with no server, the sidebar opens on the DMs and says there is no server in the @ tile’s empty list', async () => {
     const { user, view } = setup('/', { communities: [], before: withDms });
     const sidebar = screen.getByRole('navigation', { name: 'direct messages' });
-    expect(within(sidebar).getByRole('heading', { level: 1, name: 'direct messages' })).toBeInTheDocument();
+    expect(within(sidebar).getByRole('heading', { level: 1, name: 'Direct messages' })).toBeInTheDocument();
     expect(homeTile()).toHaveAttribute('aria-current', 'page');
     expect(within(sidebar).getByRole('button', { name: 'bob' })).toBeInTheDocument();
     await expectNoAxeViolations(view.container);
@@ -1616,7 +1674,8 @@ describe('direct messages', () => {
     expect(fake.callsOf('openChannel')).toEqual([{ m: 'openChannel', channelId: DM }]);
     expect(homeTile()).toHaveAttribute('aria-current', 'page');
     expect(screen.getByRole('heading', { level: 2, name: 'bob' })).toHaveTextContent('bob');
-    expect(document.querySelector('.d-channel-header__title')).toHaveTextContent('[ @ bob ]');
+    expect(document.querySelector('.d-channel-header__title')).toHaveTextContent(/^bob$/);
+    expect(document.querySelector('.d-channel-header__title [data-icon="at-sign"]')).not.toBeNull();
     act(() => fake.set(`timeline:${DM}`, timeline({ channelId: DM, items: [item({ key: 's1', body: 'hey' })] })));
     expect(screen.getByRole('log', { name: 'messages with bob' })).toHaveTextContent('hey');
     await expectNoAxeViolations(view.container);
@@ -1648,7 +1707,7 @@ describe('direct messages', () => {
       expect(within(card).getByText('bob')).toBeInTheDocument();
       expect(within(card).queryByText('owner')).toBeNull();
       expect(within(card).queryByRole('list')).toBeNull();
-      expect(within(card).getAllByRole('button').filter(b => b.classList.contains('d-profile-card__action')).map(b => b.textContent)).toEqual(['message', 'compare safety numbers']);
+      expect(within(card).getAllByRole('button').filter(b => b.matches('.d-profile-card__action, .d-profile-card__icon-action')).map(b => b.getAttribute('aria-label') ?? b.textContent)).toEqual(['Message', 'compare safety numbers']);
     });
     it('opens from a mention pill', async () => {
       await open(`hello <@${PEER}>`, 'pill');
@@ -1860,11 +1919,12 @@ describe('devices and settings', () => {
     expect(fake.callsOf('refreshDevices')).toEqual([]);
     expect(screen.queryByRole('region', { name: 'connection' })).toBeNull();
   });
-  it('opens settings from the user panel’s gear, remembering the channel', async () => {
+  it('opens settings from the top bar’s gear, remembering the channel', async () => {
     const { user } = setup(`/c/${A}/${GEN}`);
-    await user.click(screen.getByRole('button', { name: 'user settings' }));
-    expect(path()).toBe('/settings/devices');
-    expect(window.history.state).toEqual({ settingsFrom: `/c/${A}/${GEN}` });
+    await user.click(screen.getByRole('button', { name: en['workspace.open'] }));
+    expect(path()).toBe('/settings');
+    expect(window.history.state).toMatchObject({ settingsFrom: `/c/${A}/${GEN}` });
+    expect(typeof (window.history.state as Record<string, unknown>).dillaHistoryIndex).toBe('number');
   });
   it('keeps the shell where it was while settings is open over it', () => {
     const { fake } = setup('/settings/notifications', { state: { settingsFrom: `/c/${A}/${RAND}` } });
@@ -1881,34 +1941,189 @@ describe('devices and settings', () => {
 describe('the channel header actions (web3.9)', () => {
   const OWNED = [{ id: A, name: 'Midgard', owner: ME.id }];
   const header = () => document.querySelector('.d-channel-header') as HTMLElement;
-  const more = () => within(header()).getByRole('button', { name: en['layout.header.more'] });
 
-  it('are icon buttons named by their existing labels; pins, threads, search and edit fold, members stays', () => {
+  it('Signal §5.5 (Ruling X): Threads (icon and label) and Members (icon, the count, named "Members, {n}"), nothing else', () => {
     setup(`/c/${A}/${GEN}`, { communities: OWNED });
     const bar = within(header());
-    const names = [en['shell.pins.open'], en['thread.list'], en['search.open'], en['admin.channel.open'], en['members.toggle']];
-    const icons = ['pin', 'messages-square', 'search', 'settings', 'users'];
-    names.forEach((name, i) => {
-      const b = bar.getByRole('button', { name });
-      expect(b.querySelector(`svg[data-icon="${icons[i]}"]`)).not.toBeNull();
-      expect(b.hasAttribute('data-foldable')).toBe(i < 4);
-    });
-    expect(more()).toBeInTheDocument();
+    const threads = bar.getByRole('button', { name: en['layout.header.threads'] });
+    expect(threads).toHaveTextContent(en['layout.header.threads']);
+    expect(threads.querySelector('svg[data-icon="messages-square"]')).not.toBeNull();
+    const members = bar.getByRole('button', { name: /^Members, \d+$/ });
+    expect(members.querySelector('svg[data-icon="users"]')).not.toBeNull();
+    expect(members.textContent).toMatch(/^\d+$/);
+    expect(header().querySelector('[data-foldable]')).toBeNull();
+    for (const name of [en['shell.pins.open'], en['search.open'], en['admin.channel.open']]) expect(bar.queryByRole('button', { name })).toBeNull();
+    expect(header()).not.toHaveAttribute('data-overflow');
+    expect(bar.queryByRole('button', { name: en['layout.header.more'] })).toBeNull();
+    expect(bar.getAllByRole('button')).toHaveLength(2);
   });
 
-  it('the "more" menu holds the folding actions in order, and an item does what its button does', async () => {
+  it('the channel row\'s context menu holds pins and edit channel (Ruling X), and pins opens them', async () => {
     const { fake, user } = setup(`/c/${A}/${GEN}`, { communities: OWNED });
-    await user.click(more());
-    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual([en['shell.pins.open'], en['thread.list'], en['search.open'], en['admin.channel.open']]);
-    await user.click(screen.getByRole('menuitem', { name: en['shell.pins.open'] }));
+    const menu = await openRowMenu(user, 'general');
+    // Signal task 10 fix round 1: Mute moved from Settings → Notifications into the row's menu.
+    expect(within(menu).getAllByRole('menuitem').map(i => i.textContent)).toEqual([en['shell.pins.open'], en['admin.channel.open']]);
+    expect(within(menu).getByRole('menuitemcheckbox', { name: en['notify.mute'] })).toBeInTheDocument();
+    expect(within(menu).getAllByRole('menuitemradio').map(i => i.textContent)).toEqual([en['signalSettings.menu.notifyDefault'], en['signalSettings.menu.notifyAll'], en['signalSettings.menu.notifyMentions'], en['signalSettings.menu.notifyNothing']]);
+    await user.click(within(menu).getByRole('menuitem', { name: en['shell.pins.open'] }));
     await waitFor(() => expect(fake.callsOf('loadPins')).toHaveLength(1));
   });
+  // Signal task 10 fix round 1: muting a channel lives in its row's menu (Settings → Notifications keeps the prototype's rows).
+  it('the row menu mutes a channel with mute.channel.<hex>', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`, { communities: OWNED });
+    const menu = await openRowMenu(user, 'general');
+    await user.click(within(menu).getByRole('menuitemcheckbox', { name: en['notify.mute'] }));
+    await waitFor(() => expect(fake.callsOf('setSetting').at(-1)).toMatchObject({ key: `mute.channel.${GEN}`, value: '1' }));
+  });
+  // Signal task 10 fix round 2 (Jonas): the channel's own notify mode is in its row menu; default deletes it.
+  it('the row menu sets the channel\u2019s notify mode with notify.channel.<hex>', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`, { communities: OWNED });
+    await user.click(within(await openRowMenu(user, 'general')).getByRole('menuitemradio', { name: en['signalSettings.menu.notifyNothing'] }));
+    await waitFor(() => expect(fake.callsOf('setSetting').at(-1)).toMatchObject({ key: `notify.channel.${GEN}`, value: 'nothing' }));
+    await user.click(within(await openRowMenu(user, 'general')).getByRole('menuitemradio', { name: en['signalSettings.menu.notifyDefault'] }));
+    await waitFor(() => expect(fake.callsOf('setSetting').at(-1)).toMatchObject({ key: `notify.channel.${GEN}`, value: null }));
+  });
+  // Signal task 10 fix round 2 (Jonas): the server's ⌄ menu holds its settings, Mute server and the server's notify mode.
+  it('the server ⌄ menu mutes the server and sets its notify mode', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`, { communities: OWNED });
+    await user.click(await screen.findByRole('button', { name: en['admin.open'] }));
+    // The current mode is the checked radio of the labelled group (no server value yet: default).
+    const modes = await screen.findByRole('group', { name: en['notify.title'] });
+    expect(within(modes).getByRole('menuitemradio', { name: en['signalSettings.menu.notifyDefault'] })).toHaveAttribute('aria-checked', 'true');
+    expect(within(modes).getByRole('menuitemradio', { name: en['signalSettings.menu.notifyAll'] })).toHaveAttribute('aria-checked', 'false');
+    await user.click(await screen.findByRole('menuitemcheckbox', { name: en['signalSettings.menu.muteServer'] }));
+    await waitFor(() => expect(fake.callsOf('setSetting').at(-1)).toMatchObject({ key: `mute.community.${A}`, value: '1' }));
+    await user.click(await screen.findByRole('menuitemradio', { name: en['signalSettings.menu.notifyAll'] }));
+    await waitFor(() => expect(fake.callsOf('setSetting').at(-1)).toMatchObject({ key: `notify.community.${A}`, value: 'all' }));
+  });
+  it('the DM list head\u2019s menu sets the device-wide default that governs direct messages', async () => {
+    const { fake, user } = setup('/dm', { communities: OWNED });
+    await user.click(await screen.findByRole('button', { name: en['signalSettings.menu.dms'] }));
+    const everything = await screen.findByRole('menuitemradio', { name: en['signalSettings.menu.everything'] });
+    expect(screen.getByRole('menuitemradio', { name: en['signalSettings.menu.dmsMentions'] })).toHaveAttribute('aria-checked', 'true');
+    await user.click(everything);
+    await waitFor(() => expect(fake.callsOf('setSetting').at(-1)).toMatchObject({ key: 'notify.default', value: 'everything' }));
+  });
+  it('pins from the row of another channel open that channel, then its pins', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`, { communities: OWNED });
+    const menu = await openRowMenu(user, 'random');
+    await user.click(within(menu).getByRole('menuitem', { name: en['shell.pins.open'] }));
+    await waitFor(() => expect(path()).toBe(`/c/${A}/${RAND}`));
+    expect(await screen.findByRole('dialog', { name: /random/ })).toBeInTheDocument();
+    expect(fake.callsOf('loadPins').length).toBeGreaterThan(0);
+  });
 
-  it('a member without manage channels has no edit action, in the bar or the menu', async () => {
+  it('a member without manage channels has no edit action, in the bar or the row menu', async () => {
     const { user } = setup(`/c/${A}/${GEN}`);
-    await user.click(more());
-    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual([en['shell.pins.open'], en['thread.list'], en['search.open']]);
+    const menu = await openRowMenu(user, 'general');
+    expect(within(menu).getAllByRole('menuitem').map(i => i.textContent)).toEqual([en['shell.pins.open']]);
     await user.keyboard('{Escape}');
     expect(within(header()).queryByRole('button', { name: en['admin.channel.open'] })).toBeNull();
   });
+});
+
+
+it('selects a builtin member through the shipping Shell provider and executes dm', async () => {
+  const { fake, user } = setup(`/c/${A}/${GEN}`, { before: core => {
+    core.set(`timeline:${GEN}`, timeline());
+    core.handler = command => command.m === 'openDm' ? Promise.resolve({ channelId: 'ac'.repeat(16) }) : Promise.resolve(null);
+  } });
+  fireEvent.change(composer(), { target: { value: '/dm' } });
+  const member = await screen.findByRole('combobox', { name: 'user' });
+  await user.type(member, 'bob');
+  await user.click(await screen.findByRole('option', { name: 'bob' }));
+  await user.click(screen.getByRole('button', { name: /run command/i }));
+  await waitFor(() => expect(fake.callsOf('openDm')).toEqual([{ m: 'openDm', userId: PEER }]));
+});
+
+// Signal (README §5.2): on a desktop the reminders entry is the top bar's bell on every route, and the only one.
+for (const [label, route] of [
+  ['channel', `/c/${A}/${GEN}`],
+  ['DM', `/dm/${DM}`],
+  ['desktop voice', `/c/${A}/${VOICE}`],
+  ['channel list', `/c/${A}`],
+  ['DM list', '/dm'],
+] as const) {
+  it(`keeps the reminder inbox in the top bar on the ${label} route`, async () => {
+    const { user } = setup(route, { before: fake => { withDms(fake); if (label === 'channel list') fake.set(`channels:${A}`, []); } });
+    const trigger = await screen.findByRole('button', { name: 'Reminders' });
+    expect(screen.getAllByRole('button', { name: 'Reminders' })).toHaveLength(1);
+    expect(trigger.closest('.d-topbar')).not.toBeNull();
+    expect(trigger.parentElement).not.toBe(document.querySelector('.d-app-shell__main'));
+    // README §6.7: the bell opens the non-modal reminders popover under it (Due / Upcoming); Escape gives focus back to the bell.
+    await user.click(trigger);
+    const popover = screen.getByRole('dialog', { name: 'Reminders' });
+    expect(popover).toHaveAttribute('aria-modal', 'false');
+    expect(trigger.closest('.d-topbar__bell')).toContainElement(popover);
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    expect(within(popover).getByRole('tab', { name: /^Upcoming/ })).toHaveFocus();
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog', { name: 'Reminders' })).toBeNull();
+    expect(trigger).toHaveFocus();
+    // A second press on the bell toggles it shut.
+    await user.click(trigger);
+    await user.click(trigger);
+    expect(screen.queryByRole('dialog', { name: 'Reminders' })).toBeNull();
+  });
+}
+
+describe('the top bar', () => {
+  it('search opens the palette, as Control+K does', async () => {
+    const { user } = setup(`/c/${A}/${GEN}`);
+    await user.click(screen.getByRole('button', { name: en['topbar.search'] }));
+    expect(await screen.findByRole('combobox', { name: 'Search channels, people and messages' })).toBeInTheDocument();
+  });
+  it('the gear opens Settings', async () => {
+    const { user } = setup(`/c/${A}/${GEN}`);
+    await user.click(within(document.querySelector<HTMLElement>('.d-topbar')!).getByRole('button', { name: en['workspace.open'] }));
+    await waitFor(() => expect(path()).toBe('/settings'));
+  });
+  it('shows the Ctrl K chord off Apple platforms', () => {
+    setup(`/c/${A}/${GEN}`);
+    expect(screen.getByRole('button', { name: en['topbar.search'] })).toHaveTextContent(/Ctrl K$/);
+  });
+  it('has no voice chip outside a call', () => {
+    setup(`/c/${A}/${GEN}`);
+    expect(document.querySelector('.d-topbar__voice')).toBeNull();
+  });
+});
+
+// Task 9 fix round 2: the member menu's Mention appends "@username " (a space before it when the draft does not end in one), puts
+// the caret at the end and focuses the composer; the narrow desktop's drawer over the conversation (jsdom's layout) closes first,
+// and the focus waits until the composer is no longer inert.
+async function mentionBob() {
+  const r = setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set(`timeline:${GEN}`, timeline());
+    client.set(`presence:${A}`, { [ME.id]: 'online', [PEER]: 'online', [BOT]: 'online' });
+  } });
+  await r.user.type(composer(), 'hi');
+  await r.user.click(screen.getByRole('button', { name: /^Members/ }));
+  const aside = screen.getByRole('complementary', { name: 'members of Midgard' });
+  fireEvent.contextMenu(within(aside).getByRole('button', { name: /\bbob\b/ }), { clientX: 10, clientY: 10 });
+  await r.user.click(within(screen.getByRole('menu', { name: 'actions for bob' })).getByRole('menuitem', { name: 'Mention' }));
+  return r;
+}
+it('Mention from the member menu closes the drawer, appends with a separator and focuses the composer, caret at the end', async () => {
+  await mentionBob();
+  await waitFor(() => expect(composer()).toHaveFocus());
+  const box = composer() as HTMLTextAreaElement;
+  expect(box.value).toBe('hi @bob ');
+  expect(box.selectionStart).toBe(box.value.length);
+  expect(screen.queryByRole('complementary', { name: 'members of Midgard' })).toBeNull();
+  expect(box.closest('[inert]')).toBeNull();
+});
+it('Mention is not offered while the composer cannot send (a text timeout)', async () => {
+  const expires = NOW + 600;
+  const { user } = setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set(`timeline:${GEN}`, timeline());
+    client.set(`presence:${A}`, { [ME.id]: 'online', [PEER]: 'online', [BOT]: 'online' });
+    client.handler = command => command.m === 'getMemberTimeout' ? Promise.resolve(String(expires)) : Promise.resolve(null);
+  } });
+  await screen.findByText(`You cannot post messages in this community until ${formatTime(expires)}.`);
+  await user.click(screen.getByRole('button', { name: /^Members/ }));
+  const aside = screen.getByRole('complementary', { name: 'members of Midgard' });
+  fireEvent.contextMenu(within(aside).getByRole('button', { name: /\bbob\b/ }), { clientX: 10, clientY: 10 });
+  const menu = screen.getByRole('menu', { name: 'actions for bob' });
+  expect(within(menu).getByRole('menuitem', { name: 'Message' })).toBeInTheDocument();
+  expect(within(menu).queryByRole('menuitem', { name: 'Mention' })).toBeNull();
 });

@@ -34,6 +34,7 @@ import {
 import {
   ABORTED_FONT_LINE, ABORTED_JUGGLER_LINE, BY_DESIGN_RESOURCE_LINE, FIREFOX_FAVICON_LINE, TEST_TIMEOUT, WAIT, addServerVia, channelRow, channelsNav, completeSignUp, copy,
   expectAccessible, expectComposerReady, makeInviteLink, newAccount, openChannel, railItem, sendText, signIn, signUp, test, type Account,
+ selectRole, setRolePermission,
 } from './support/app';
 import { removeHostData, startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { PROFILE_ROOT } from './support/persistent';
@@ -208,7 +209,7 @@ const panelMute = (p: Person) => p.page.locator('.d-user-panel').getByRole('butt
 
 /** Opens server settings and its `section` tab; returns the dialog. */
 async function serverSettings(page: Page, section: 'admin.nav.overview' | 'admin.nav.channels' | 'roles.tab'): Promise<Locator> {
-  await button(page, 'admin.open').click();
+  await button(page, 'admin.open').click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
   const dialog = dialogOf(page, 'admin.title');
   await expect(dialog.getByRole('navigation', { name: copy('admin.nav'), exact: true })).toBeVisible({ timeout: WAIT });
   const tab = navItem(dialog, section);
@@ -230,10 +231,11 @@ async function listOrder(page: Page): Promise<string[]> {
   }));
 }
 /** The AFK row is the last of the list's rows that stand in no category (R42: the built-in position is below every channel a
- *  client makes), a voice row with the speaker glyph. It is always the list's very last row, below every category (MP6). */
+ *  client makes), a voice row with the moon glyph (Signal README §5.4). It is always the list's very last row, below every category (MP6). */
 async function expectAfkLast(page: Page, name: string): Promise<void> {
   await expect(voiceRow(page, name)).toBeVisible({ timeout: WAIT });
-  await expect(voiceRow(page, name).locator('[data-icon="volume-2"]')).toHaveCount(1);
+  await expect(voiceRow(page, name).locator('[data-icon="moon"]')).toHaveCount(1);
+  await expect(voiceRow(page, name).locator('[data-icon="volume-2"]')).toHaveCount(0);
   await expect.poll(async () => {
     return (await listOrder(page)).at(-1);
   }, { timeout: WAIT, message: `${name} is the very last row of the list (MP6)` }).toBe(copy('voice.open', { name }));
@@ -452,18 +454,18 @@ test('4. one timeout row: an idle desktop in general is cut by itself, told it w
   const a = person(ada, OWNER);
   const b = person(bjorn, FRIEND);
   const settings = await serverSettings(a.page, 'admin.nav.overview');
-  const timeout = settings.getByRole('combobox', { name: copy('afk.timeout.label'), exact: true });
-  await expect(timeout).toBeEnabled({ timeout: WAIT });
-  await expect(settings.locator('.d-settings-row').filter({ has: a.page.getByRole('combobox', { name: copy('afk.timeout.label'), exact: true }) }))
-    .toHaveCount(1);
-  await expect(timeout.locator('option')).toHaveText(['afk.timeout.60', 'afk.timeout.300', 'afk.timeout.900', 'afk.timeout.1800', 'afk.timeout.3600'].map((k) => copy(k)));
-  await expect(timeout).toHaveValue('300');
-  await expect(timeout.locator('option', { hasText: copy('admin.afk.disabled') })).toHaveCount(0);
-  await timeout.selectOption('60');
+  // Task 11 (Jonas, Q7): the prototype's segmented 1m / 5m / 15m / 30m / 1h.
+  const timeout = settings.getByRole('radiogroup', { name: copy('admin.overview.afk'), exact: true });
+  await expect(timeout.getByRole('radio').first()).not.toHaveAttribute('aria-disabled', 'true', { timeout: WAIT });
+  await expect(settings.locator('.d-settings-row').filter({ has: a.page.getByRole('radiogroup', { name: copy('admin.overview.afk'), exact: true }) })).toHaveCount(1);
+  await expect(timeout.getByRole('radio')).toHaveText(['admin.overview.afk.60', 'admin.overview.afk.300', 'admin.overview.afk.900', 'admin.overview.afk.1800', 'admin.overview.afk.3600'].map((k) => copy(k)));
+  await expect(timeout.getByRole('radio', { name: copy('admin.overview.afk.300'), exact: true })).toHaveAttribute('aria-checked', 'true');
+  await timeout.getByRole('radio', { name: copy('admin.overview.afk.60'), exact: true }).click();
   const saves = dialogOf(a.page, 'admin.title').getByRole('button', { name: copy('admin.overview.save'), exact: true });
   await expect(saves).toHaveCount(1);
   await saves.click();
-  await expect(dialogOf(a.page, 'admin.title').getByText(copy('admin.overview.saved'), { exact: true })).toBeVisible({ timeout: WAIT });
+  await expect(dialogOf(a.page, 'admin.title').locator('.d-settings-frame__footer').getByRole('button', { name: copy('admin.overview.save'), exact: true }))
+    .toHaveCount(0, { timeout: WAIT });
   await expectAccessible(a.page, 'server settings with the inactive timeout');
   await closeServerSettings(a.page);
   await expect.poll(async () => (await afkSnapshot(a)).timeout, { timeout: WAIT }).toBe(60);
@@ -537,7 +539,7 @@ test('5. Björn goes back to general with his own mute state and leaves the rost
   await micLive(b);
   await expect(panelMute(b)).toHaveAttribute('aria-pressed', 'false');
   await expect(stage(b.page).locator('.d-call-tile[data-own] .d-call-tile__state[data-state="muted"]')).toHaveCount(0, { timeout: WAIT });
-  const mute = stage(b.page).getByRole('button', { name: copy('voice.mute'), exact: true });
+  const mute = stage(b.page).locator('[data-control="mute"]');
   await expect(mute).not.toHaveAttribute('aria-disabled', 'true');
   // R-AW4: his admission cleared his away row everywhere.
   for (const p of [a, b]) await expect(awayPeople(p.page, RENAMED)).toHaveCount(0, { timeout: WAIT });
@@ -554,7 +556,7 @@ test('5. Björn goes back to general with his own mute state and leaves the rost
   await expect(stage(a.page).locator('.dw-afk-roster .d-voice-row__person').filter({ hasText: OWNER })).toHaveCount(1, { timeout: WAIT });
   await expect(stage(a.page).getByText(copy('afk.youAway'), { exact: true })).toBeVisible();
   await expect(button(stage(a.page), 'afk.go')).toHaveCount(0);
-  await expect(button(stage(a.page), 'voice.join')).toHaveCount(0);
+  await expect(button(stage(a.page), 'callStage.preview.join')).toHaveCount(0);
   await expectAccessible(a.page, 'the AFK channel with its away roster');
   // A second click while away does nothing (no second PUT, no call).
   const puts = a.awayPuts;
@@ -584,7 +586,7 @@ test('6. a phone in general is never cut, its desktop twin cut beside it is not 
       && body !== null && body.length === 19 && body[0] === 0x82 && body[18] === 0x01;
   } });
   // On a phone a voice row opens the stage (no one-click join, R24): join from the stage.
-  await button(stage(ph.page), 'voice.join').click();
+  await button(stage(ph.page), 'callStage.preview.join').click();
   expect((await (await exempt).response())?.status(), 'the exempt report').toBe(204);
   // A phone has no dock (flow 12): the stage's phase says it is in.
   await expect(phaseOf(ph.page)).toHaveAttribute('data-call-phase', 'in', { timeout: WAIT });
@@ -716,7 +718,8 @@ test('9. a web3.8 pick: after the upgrade the server has a new AFK, and lounge a
   await voiceRow(b.page, 'lounge').click();
   await connected(b.page);
   await sendsAudio(b);
-  await button(dock(b.page), 'voice.leave').click();
+  // Signal §5.6: on the joined channel's stage the dock draws nothing; leave from the call bar.
+  await stage(b.page).locator('[data-control="leave"]').click();
   await expect(dock(b.page).locator('.d-voice-dock')).toHaveCount(0, { timeout: WAIT });
 
   // The old Idle is a plain voice channel too: it has its delete and its permissions; only the new AFK has neither.
@@ -755,7 +758,7 @@ test('10. accessible: the channel list, the AFK row with its away roster and ser
   // The AFK page opened by its path (no click on the row): nobody is away yet, and go AFK stands in place of join voice.
   await a.page.goto(`/c/${communityId}/${afkId}`);
   await expect(stage(a.page).getByText(copy('afk.empty'), { exact: true })).toBeVisible({ timeout: WAIT });
-  await expect(button(stage(a.page), 'voice.join')).toHaveCount(0);
+  await expect(button(stage(a.page), 'callStage.preview.join')).toHaveCount(0);
   await expectAccessible(a.page, 'the AFK page with nobody away');
   const posts = a.afkPosts;
   await button(stage(a.page), 'afk.go').click();
@@ -767,7 +770,7 @@ test('10. accessible: the channel list, the AFK row with its away roster and ser
   await expectAccessible(a.page, 'the AFK channel with Ada away');
   await expectAccessible(b.page, 'the channel list with Ada away under AFK');
   await serverSettings(a.page, 'admin.nav.overview');
-  await expect(a.page.getByRole('combobox', { name: copy('afk.timeout.label'), exact: true })).toBeEnabled({ timeout: WAIT });
+  await expect(a.page.getByRole('radiogroup', { name: copy('admin.overview.afk'), exact: true }).getByRole('radio').first()).not.toHaveAttribute('aria-disabled', 'true', { timeout: WAIT });
   await expectAccessible(a.page, 'server settings, overview');
   await closeServerSettings(a.page);
 });
@@ -793,13 +796,9 @@ async function restart(people: Person[]): Promise<void> {
 /** Server settings → roles → edit @everyone → the right `perm` (a `perm.*` key) on or off → save. */
 async function setEveryone(a: Person, perm: string, on: boolean): Promise<void> {
   const settings = await serverSettings(a.page, 'roles.tab');
-  await settings.getByRole('button', { name: copy('roles.editLabel', { name: '@everyone' }), exact: true }).click();
-  const editor = dialogOf(a.page, 'roles.editor.titleEdit', { name: '@everyone' });
-  const view = editor.getByRole('switch', { name: copy(perm), exact: true });
-  await expect(view).toBeVisible({ timeout: WAIT });
-  if ((await view.getAttribute('aria-checked')) !== String(on)) await view.click();
-  await expect(view).toHaveAttribute('aria-checked', String(on));
-  await button(editor, 'roles.editor.save').click();
-  await expect(editor).toBeHidden({ timeout: WAIT });
+  // Signal task 10c: the inline role editor; a switch saves at once.
+  await selectRole(settings, copy('roles.everyone'));
+  await setRolePermission(settings, perm.replace(/^perm\./, ''), on);
+  await expect(settings.locator('.d-role-editor__status')).toHaveText(copy('roles.editor.saved', { name: copy('roles.everyone') }), { timeout: WAIT });
   await closeServerSettings(a.page);
 }

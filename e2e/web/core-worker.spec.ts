@@ -301,7 +301,7 @@ test('a second browser joins the account by password and recovery key, badges an
       expect(await slice<Record<string, string>>(b, 'settings')).toEqual({ 'notify.default': 'everything', [mute]: '1' });
       await ok(b, { m: 'setSetting', key: 'notify.default', value: null });
       expect(await slice<Record<string, string>>(b, 'settings')).toEqual({ [mute]: '1' });
-      expect(await call(b, { m: 'setSetting', key: 'theme', value: 'mesh' })).toMatchObject({ ok: false, code: 'E_SETTING_KEY' });
+      expect(await call(b, { m: 'setSetting', key: 'theme', value: 'signal' })).toMatchObject({ ok: false, code: 'E_SETTING_KEY' });
     });
 
     await test.step('A lists both devices; B forgets itself into cleared, reloads to needs-signup on a fresh worker, and stays listed', async () => {

@@ -71,7 +71,8 @@ func (s WelcomeSender) SendWelcome(ctx context.Context, req welcome.SendRequest)
 	if err != nil {
 		return protocol.SendReceipt{}, err
 	}
-	body, err := cborx.Marshal([]any{uint64(0), nil, req.Text, []any{}, nil})
+	// Security review (task 8b): text a member authors never carries the music player marker.
+	body, err := cborx.Marshal([]any{uint64(0), nil, NeutralizeBotMarkers(req.Text), []any{}, nil})
 	if err != nil {
 		return protocol.SendReceipt{}, err
 	}

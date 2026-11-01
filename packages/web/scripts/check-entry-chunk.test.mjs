@@ -1,11 +1,11 @@
 // @vitest-environment node
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { checkEntryChunk } from './check-entry-chunk.mjs';
+import { ALLOWED_COPY, checkEntryChunk } from './check-entry-chunk.mjs';
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'check-entry-chunk.mjs');
 const WASM = new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
@@ -50,6 +50,27 @@ describe('checkEntryChunk (L-WEB-51, decision 5)', () => {
     cleanDist();
     put('assets/index-AbC123.js', 'const u="/assets/rnnoise-Qrs678.wasm";\n');
     expect(checkEntryChunk(dir)).toEqual(['assets/index-AbC123.js: the entry chunk contains rnnoise']);
+  });
+  it('passes an entry whose copy names the product RNNoise (the voice settings hint), but not its lower-case code', () => {
+    cleanDist();
+    put('assets/index-AbC123.js', 'const s={"hint":"Picks the best processor this device can run. Falls back to RNNoise."};\n');
+    expect(checkEntryChunk(dir)).toEqual([]);
+    put('assets/index-AbC123.js', 'const s={"hint":"Falls back to RNNoise."};m._rnnoise_create(0);\n');
+    expect(checkEntryChunk(dir)).toEqual(['assets/index-AbC123.js: the entry chunk contains rnnoise']);
+  });
+
+  // Task 11 (merge 9+10 minor): only the exact shipped copy is exempt; any other RNNoise, in any case, fails.
+  it('fails an entry that names RNNoise anywhere but the exact shipped noise hint', () => {
+    cleanDist();
+    put('assets/index-AbC123.js', 'export class RNNoiseProcessor {}\n');
+    expect(checkEntryChunk(dir)).toEqual(['assets/index-AbC123.js: the entry chunk contains rnnoise']);
+    put('assets/index-AbC123.js', 'const s={"hint":"Uses RNNoise."};\n');
+    expect(checkEntryChunk(dir)).toEqual(['assets/index-AbC123.js: the entry chunk contains rnnoise']);
+  });
+
+  it('exempts copy that is verbatim in the shipped strings', () => {
+    const strings = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../src/strings/signalSettings.ts'), 'utf8');
+    for (const copy of ALLOWED_COPY) expect(strings).toContain(copy);
   });
   it('fails a chunk the entry preloads that contains livekit, matching any case', () => {
     cleanDist();

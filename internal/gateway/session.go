@@ -364,7 +364,7 @@ func (g *Gateway) serve(ctx context.Context, s sink, token string) {
 
 // advertised is the instance's version sets, defaulting to {1} for all three. The {1} wire default
 // serves this package's unit tests only: the real list comes from dillad.New, the one composition
-// root, which passes dillad.Options.WireVersions ({dillad.WireVersion}, 2, since web3.8 S1). A
+// root, which passes dillad.Options.WireVersions ({4, 3, 2} since wire 4: people 4, managed Bots 3). A
 // root that left it nil would offer wire 1 while the delivery service refuses its uploads.
 func (g *Gateway) advertised() (wire, e2ee, media []uint64) {
 	pick := func(v []uint64) []uint64 {
@@ -546,6 +546,7 @@ func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*co
 		return nil, false
 	}
 	c.send(Frame{Op: OpResumed, Payload: p, Replay: true})
+	g.sendAppBuild(c)
 	for _, frame := range out.frames {
 		w.enqueueRaw(frame)
 	}
@@ -747,6 +748,10 @@ func (g *Gateway) readLoop(ctx context.Context, c *conn, s sink) {
 // unsubscribe adjust this connection's group set.
 func (g *Gateway) handle(ctx context.Context, c *conn, in Inbound) {
 	switch in.Op {
+	case OpCallStats:
+		g.handleCallStats(c, in)
+	case OpPresenceActivity:
+		g.handlePresenceActivity(ctx, c, in)
 	case OpTypingSet:
 		g.handleTypingSet(ctx, c, in)
 	case OpVoiceSelf:

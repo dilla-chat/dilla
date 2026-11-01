@@ -160,6 +160,13 @@ pub(crate) fn transaction(store: &mut Store, payload: &[u8]) -> Result<Vec<u8>, 
     })
     .map_err(|_| StateError::Invalid)?;
     let digest = Sha256::digest(&changes_bytes[..]);
+    // Only the new fixed checkpoint namespace opts into bounded receipts.
+    // Ordinary settings/command transactions keep their existing replay
+    // contract. Old checkpoint retries remain CAS-safe after receipt eviction:
+    // the coordinator reconciles rows and the durable processed frontier.
+    let checkpoint = changes
+        .iter()
+        .all(|(area, key, _, _)| *area == 8 && key.starts_with(b"dilla.bot.automod-state.v1/"));
     let mut conn = store.conn.lock().map_err(|_| StateError::Internal)?;
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -207,6 +214,19 @@ pub(crate) fn transaction(store: &mut Store, payload: &[u8]) -> Result<Vec<u8>, 
         params![id.as_slice(), digest.as_slice(), result],
     )
     .map_err(|_| StateError::Internal)?;
+    if checkpoint {
+        // Additive, optional index: old stores need no version migration and
+        // helpers that never checkpoint create no additional table.
+        tx.execute_batch("CREATE TABLE IF NOT EXISTS bot_checkpoint_receipts (seq INTEGER PRIMARY KEY AUTOINCREMENT, id BLOB UNIQUE NOT NULL);")
+            .map_err(|_| StateError::Internal)?;
+        tx.execute(
+            "INSERT INTO bot_checkpoint_receipts(id) VALUES(?1)",
+            [id.as_slice()],
+        )
+        .map_err(|_| StateError::Internal)?;
+        tx.execute_batch("DELETE FROM bot_state_receipts WHERE id IN (SELECT id FROM bot_checkpoint_receipts ORDER BY seq DESC LIMIT -1 OFFSET 64); DELETE FROM bot_checkpoint_receipts WHERE seq IN (SELECT seq FROM bot_checkpoint_receipts ORDER BY seq DESC LIMIT -1 OFFSET 64);")
+            .map_err(|_| StateError::Internal)?;
+    }
     tx.commit().map_err(|_| StateError::Internal)?;
     Ok(result)
 }
@@ -291,6 +311,38 @@ mod tests {
             Ok((d.uint()?, d.opt_bytes()?.map(ToOwned::to_owned)))
         })
         .unwrap()
+    }
+
+    #[test]
+    fn automod_checkpoint_receipts_are_bounded_without_pruning_commands() {
+        let path = temp_dir();
+        let mut s = store(&path, [0x36; 32]);
+        let regular = build_transaction([9; 16], &[change(b"settings", 0, Some(&[0x80]))]);
+        let original = transaction(&mut s, &regular).unwrap();
+        let mut last = Vec::new();
+        for i in 0..256u64 {
+            let mut id = [0; 16];
+            id[..8].copy_from_slice(&(i + 1000).to_be_bytes());
+            let mut c = Encoder::new();
+            c.array(4)
+                .uint(8)
+                .bytes(b"dilla.bot.automod-state.v1/meta")
+                .uint(i)
+                .opt_bytes(Some(&[0x80]));
+            last = build_transaction(id, &[c.into_vec()]);
+            transaction(&mut s, &last).unwrap();
+        }
+        let count: i64 = s
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT count(*) FROM bot_state_receipts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 65, "checkpoint hot path retained unlimited receipts");
+        assert_eq!(transaction(&mut s, &regular).unwrap(), original);
+        assert!(transaction(&mut s, &last).is_ok());
+        drop(s);
+        let _ = fs::remove_dir_all(path);
     }
 
     #[test]

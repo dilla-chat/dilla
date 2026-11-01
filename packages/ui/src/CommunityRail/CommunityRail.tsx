@@ -31,17 +31,11 @@ function initials(name: string): string {
 }
 
 /**
- * The pill at the tile's left edge (R20): 8px tall for unread, 20 on hover, 40 for the selected tile. It is decoration;
- * the tile's name and `aria-current` carry the state.
- */
-function pillState(selected: boolean, unread: number, mentions: number): 'selected' | 'unread' | 'hover' {
-  return selected ? 'selected' : unread > 0 || mentions > 0 ? 'unread' : 'hover';
-}
-
-/**
- * The server rail, 72px wide: the `@` tile first when given, a hairline, one square tile per server (named by the full
- * name, the initials are decoration), one dashed "+" tile that asks to add a server and, when given, the settings button last. A tile with unread messages or mentions carries a pill at its
- * corner and is named by `itemLabel` when one is given. One tab stop with roving focus over every tile, the settings
+ * The server rail (Signal, README §5.3), --rail-w wide: the `@` tile first when given, a 20px hairline, one round tile per
+ * server (named by the full name, the initials are decoration) that morphs to a 10px square when selected or hovered, one
+ * dashed "+" circle that asks to add a server and, when given, the settings button last. A tile with mentions carries a
+ * count at its bottom right; unread alone is read by a screen reader only (the prototype draws no unread mark on the rail).
+ * A tile with unread messages or mentions is named by `itemLabel` when one is given. One tab stop with roving focus over every tile, the settings
  * button included (Global Constraints keyboard map).
  */
 export function CommunityRail({
@@ -53,7 +47,7 @@ export function CommunityRail({
   const roving = useRovingFocus(activeIndex);
   // On a phone the You tab is the way to settings: the rail has no settings tile there.
   const phone = usePhoneLayout();
-  // Unread is the left-edge tick alone (its count is read by a screen reader), a mention a count at the tile's bottom right.
+  // Unread is read by a screen reader only; a mention is a count at the tile's bottom right.
   const badge = (unread: number, mentions: number) => mentions > 0
     ? <span className="d-community-rail__badge"><Pill kind="mention" count={mentions} /></span>
     : unread > 0 ? <span className="d-sr-only"><Pill kind="unread" count={unread} /></span> : null;
@@ -66,8 +60,7 @@ export function CommunityRail({
               <button type="button" className="d-community-rail__item d-community-rail__home" aria-current={home.selected ? 'page' : undefined}
                 data-unread={String(home.unread)} data-mentions={String(home.mentions)}
                 aria-label={home.unread > 0 || home.mentions > 0 ? home.itemLabel : home.label} onClick={home.onSelect}>
-                <span className="d-community-rail__pill" data-pill={pillState(home.selected, home.unread, home.mentions)} aria-hidden="true" />
-                <Icon name="at-sign" size={22} />
+                <Icon name="at-sign" size={17} />
                 {badge(home.unread, home.mentions)}
               </button>
             </li>
@@ -83,7 +76,6 @@ export function CommunityRail({
             <li key={item.id}>
               <button type="button" className="d-community-rail__item" aria-current={selected ? 'page' : undefined}
                 data-unread={String(unread)} data-mentions={String(mentions)} aria-label={ariaLabel} onClick={() => onSelect(item.id)}>
-                <span className="d-community-rail__pill" data-pill={pillState(selected, unread, mentions)} aria-hidden="true" />
                 <span className="d-community-rail__initials" aria-hidden="true">{initials(item.name)}</span>
                 <span className="d-sr-only">{item.name}</span>
                 {badge(unread, mentions)}
@@ -93,7 +85,7 @@ export function CommunityRail({
         })}
         <li>
           <button type="button" className="d-community-rail__join" aria-label={addLabel} aria-haspopup="dialog" onClick={onAdd}>
-            <span className="d-community-rail__glyph" aria-hidden="true"><Icon name="plus" size={20} /></span>
+            <span className="d-community-rail__glyph" aria-hidden="true"><Icon name="plus" size={15} /></span>
           </button>
         </li>
         {!phone && settingsLabel !== undefined && onSettings !== undefined ? (

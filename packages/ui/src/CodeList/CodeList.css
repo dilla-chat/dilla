@@ -2,7 +2,7 @@
 .d-code-list__label { margin: 0; }
 /* At most two columns, and two only when each is wide enough for one whole code on one line; otherwise one column. A cell
    fits a code of 31 characters (26 and five hyphens) at 0.64em each, plus its number and gap: 20em + 2.25rem (walk M2). */
-.d-code-list__grid { list-style: none; margin: 0; padding: 1rem; display: grid; font-size: var(--text-base); grid-template-columns: repeat(auto-fit, minmax(min(100%, max(calc(20em + 2.25rem), calc((100% - 1.5rem) / 2))), 1fr)); gap: 0.75rem 1.5rem; background: var(--surface-2); border: 1px solid var(--edge); border-radius: var(--r-md); counter-reset: d-cl; user-select: text; }
+.d-code-list__grid { list-style: none; margin: 0; padding: 1rem; display: grid; font-size: var(--text-base); grid-template-columns: repeat(auto-fit, minmax(min(100%, max(calc(20em + 2.25rem), calc((100% - 1.5rem) / 2))), 1fr)); gap: 0.75rem 1.5rem; background: var(--surface-2); border: 1px solid var(--control-edge-field); border-radius: var(--r-lg); counter-reset: d-cl; user-select: text; }
 .d-code-list__code { counter-increment: d-cl; display: flex; align-items: baseline; gap: 0.75rem; min-width: 0; font-family: var(--font-mono); font-size: var(--text-base); font-weight: var(--weight-label); letter-spacing: 0.04em; color: var(--fg); }
 .d-code-list__code::before { content: counter(d-cl, decimal-leading-zero) / ""; flex: none; font-size: var(--text-micro); font-weight: var(--weight-body); letter-spacing: 0; color: var(--fg-3); }
 .d-code-list__text { min-width: 0; white-space: normal; }

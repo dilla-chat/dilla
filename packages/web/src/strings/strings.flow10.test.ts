@@ -12,7 +12,7 @@ describe('flow 10 (v0.1.0-web3.6, second factor)', () => {
   const pairs = [...copy.matchAll(/`([a-zA-Z][\w.]*)='([^`]*)'`/g)].map(m => [m[1], m[2]] as const);
   it('strings: every flow-10 copy key equals en.ts byte for byte, and every new key is in the flow', () => {
     const table = en as Readonly<Record<string, string>>;
-    expect(pairs.length).toBe(137);
+    expect(pairs.length).toBe(135); // Task 11 (Q7): the prototype's Sign-in copy
     for (const [key, value] of pairs) expect(table[key], key).toBe(value);
     for (const [key, value] of pairs) {
       for (const f of FORBIDDEN as { word: string; re: RegExp }[]) expect(f.re.test(value), `${key}: ${f.word}`).toBe(false);
@@ -45,9 +45,10 @@ describe('flow 10 (v0.1.0-web3.6, second factor)', () => {
     'factorSettings.passkeys.removeLabel',
     'factorSettings.codes.make',
   ];
-  it('chrome: the lower-case chrome keys are lower case', () => {
+// Signal task 10 fix round 1 (Jonas, prototype wins): settings chrome follows the prototype's sentence case.
+  it('chrome: the settings chrome keys are sentence case, the others lower case', () => {
     const table = en as Readonly<Record<string, string>>;
     expect(LOWER.length).toBe(10);
-    for (const key of LOWER) expect(table[key], key).toBe(table[key].toLowerCase());
+    for (const key of LOWER) expect(table[key], key).toMatch(key.startsWith('factorSettings.') ? /^[A-Z]/ : /^[a-z]/);
   });
 });

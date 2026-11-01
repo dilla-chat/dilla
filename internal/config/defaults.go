@@ -18,7 +18,7 @@ func Default() *Config {
 	c.Instance = Instance{DataDir: "/var/lib/dilla", Discovery: "public"}
 	c.Server = Server{
 		Listen: ":443", PlainListen: "127.0.0.1:8080",
-		ReadHeaderTimeout: "10s", IdleTimeout: "120s", ShutdownGrace: "30s",
+		ReadHeaderTimeout: "10s", ReadBodyTimeout: "30s", IdleTimeout: "120s", ShutdownGrace: "30s",
 	}
 	c.HTTP = HTTP{TrustedOrigins: []string{"dilla://app"}}
 	c.Gateway = Gateway{
@@ -32,7 +32,7 @@ func Default() *Config {
 		Enabled: true, Mode: "in_process", BindAddress: "127.0.0.1", Port: 7880,
 		UDPPort: 7882, TCPPort: 0, AdvertiseInternalIP: true, APIKey: "dilla",
 		MaxVoiceParticipants: 25, MaxPublishers: defaultMaxPublishers,
-		WebhookListen: DefaultWebhookListen, MaxShareBitrateKbps: 2500, MaxAudioBitrateKbps: 64,
+		WebhookListen: DefaultWebhookListen, MaxShareBitrateKbps: 8000, MaxAudioBitrateKbps: 64,
 	}
 	c.DB = DB{
 		Driver: "sqlite", Path: "/var/lib/dilla/dilla.db", ConnMaxLifetime: "0s",

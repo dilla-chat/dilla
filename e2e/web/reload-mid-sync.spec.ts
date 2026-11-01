@@ -33,14 +33,46 @@ async function sendIn(page: Page, channel: string, text: string): Promise<string
   await channelRow(page, channel).click();
   const box = composerBox(page, channel);
   await box.fill(text, { timeout: WAIT });
-  // A newly enrolled device can briefly pause sending while its signed list is checked.
-  // Clicking Send waits for the composer to become writable again; Enter on a read-only
-  // textbox silently leaves the draft unsent.
-  const [upload] = await Promise.all([
-    page.waitForRequest((r: Request) => r.method() === 'POST' && UPLOAD.test(r.url()), { timeout: WAIT }),
-    page.locator('.d-app-shell__main .d-composer').getByRole('button', { name: copy('shell.composer.send'), exact: true })
-      .click({ timeout: WAIT }),
-  ]);
+  // A trust refresh may disable the native button between actionability and mouse-up.
+  // Observe native submit before the click: only an unsubmitted, untouched draft can be
+  // clicked again. Once any submit happened, its real upload must succeed without retry.
+  const uploads: Request[] = [];
+  const onRequest = (r: Request): void => { if (r.method() === 'POST' && UPLOAD.test(r.url())) uploads.push(r); };
+  page.on('request', onRequest);
+  await page.evaluate(() => {
+    const state = { submits: 0, dispose: () => {} };
+    const observe = (event: Event): void => {
+      if (event.target instanceof HTMLFormElement && event.target.matches('.d-composer')) state.submits++;
+    };
+    document.addEventListener('submit', observe, true);
+    state.dispose = () => document.removeEventListener('submit', observe, true);
+    (window as unknown as { __midSyncSubmit: typeof state }).__midSyncSubmit = state;
+  });
+  const deadline = Date.now() + WAIT;
+  const remaining = (): number => Math.max(1, deadline - Date.now());
+  const attempts: { submits: number; uploads: number }[] = [];
+  let upload: Request;
+  try {
+    const send = page.locator('.d-app-shell__main .d-composer').getByRole('button', { name: copy('shell.composer.send'), exact: true });
+    for (;;) {
+      await expect(box).toBeEditable({ timeout: remaining() });
+      await expect(send).toBeEnabled({ timeout: remaining() });
+      await send.click({ timeout: remaining() });
+      const submits = await page.evaluate(() => (window as unknown as { __midSyncSubmit: { submits: number } }).__midSyncSubmit.submits);
+      attempts.push({ submits, uploads: uploads.length });
+      if (submits > 0 || uploads.length > 0) break;
+      await expect(box).toHaveValue(text, { timeout: remaining() });
+      if (Date.now() >= deadline || attempts.length >= 3) throw new Error('Send did not dispatch a native submit within the bounded attempts');
+    }
+    await expect.poll(() => uploads.length, { timeout: remaining(), message: 'the submitted message produces its real upload' }).toBeGreaterThan(0);
+    upload = uploads[0]!;
+  } finally {
+    await page.evaluate(() => (window as unknown as { __midSyncSubmit: { dispose(): void } }).__midSyncSubmit.dispose());
+    page.off('request', onRequest);
+    await test.info().attach(`mid-sync-send-${channel}-${text.split(' ').at(-1)}.json`, {
+      body: Buffer.from(JSON.stringify({ attempts, uploads: uploads.length })), contentType: 'application/json',
+    });
+  }
   await expect(messageRow(page, channel, text)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
   return UPLOAD.exec(upload.url())![1]!;
 }

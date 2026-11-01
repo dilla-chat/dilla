@@ -191,6 +191,8 @@ type Calls struct {
 	log      *slog.Logger
 	leases   *shareLeases
 	counters CallCounters
+	// rtts limits POST /v1/calls/{call_id}/rtt per device (callrtt.go; task 8c).
+	rtts rttLimiter
 
 	// sweepMu keeps room sweeps from overlapping and guards sweepCursor, the last room a sweep pass
 	// visited, where the next one goes on. sweepEvery is the retry loop's sweep cadence.
@@ -226,10 +228,11 @@ type Calls struct {
 
 	// memMu guards the call-group membership state (callmembers.go): the memberships devices were
 	// admitted to rooms with, the absences the sweep tracks, the Removes it decided and when it last
-	// proposed each.
+	// proposed each, and the first consecutive bot-only observation.
 	memMu        sync.Mutex
 	admissions   map[admitKey][]admission
 	absentSince  map[memberKey]time.Time
+	botOnlySince map[id.ID]time.Time
 	leafProposed map[memberKey]time.Time
 	leafRemovals []leafRemoval
 
@@ -402,6 +405,7 @@ func (h *Calls) Register(mux *server.Mux) {
 	mux.HandleFunc("DELETE /v1/calls/{call_id}", h.end)
 	mux.HandleFunc("POST /v1/calls/{call_id}/share", h.share)
 	mux.HandleFunc("DELETE /v1/calls/{call_id}/share", h.unshare)
+	mux.HandleFunc("POST /v1/calls/{call_id}/rtt", h.rtt)
 	mux.HandleFunc("POST /v1/calls/{call_id}/decline", h.decline)
 	h.registerReads(mux)
 }
@@ -620,7 +624,12 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 	if vdec != "" {
 		attrs = map[string]string{vdecAttribute: vdec}
 	}
-	token, err := h.sfu.Token(row.LivekitRoom, s.DeviceID.String(), h.admitGrant(r.Context(), bits, row, s.DeviceID), attrs)
+	perm, err := h.admitGrant(r.Context(), bits, row, s.DeviceID)
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	token, err := h.sfu.Token(row.LivekitRoom, s.DeviceID.String(), perm, attrs)
 	if err != nil {
 		h.log.ErrorContext(r.Context(), "minting a LiveKit token failed", "err", err)
 		server.WriteError(w, server.Errorf(server.CodeInternal, "the SFU could not mint a token"))
@@ -758,7 +767,7 @@ func (h *Calls) end(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// The conditional form closes the group first, under its lock and only while the caller is its
-	// only current leaf; endCall then finds it closed and finishes the end. A joiner whose commit
+	// only current non-bot leaf; endCall then finds it closed and finishes the end. A joiner whose commit
 	// comes after the close is refused for the closed group and registers a fresh one.
 	if ifAlone && !closed {
 		if err := h.closeIfAlone(r.Context(), group, s.DeviceID); err != nil {
@@ -789,7 +798,7 @@ func ifAloneParam(r *http.Request) (bool, error) {
 	return true, nil
 }
 
-// closeIfAlone closes the call's group while dev is its only current leaf: through the delivery
+// closeIfAlone closes the call's group while dev is its only current non-bot leaf: through the delivery
 // service, under the group lock, when the call events handed one over; on the store otherwise (no
 // commit lands there without a delivery service).
 func (h *Calls) closeIfAlone(ctx context.Context, group store.GroupRow, dev id.ID) error {
@@ -800,7 +809,11 @@ func (h *Calls) closeIfAlone(ctx context.Context, group store.GroupRow, dev id.I
 	} else {
 		var members []store.MemberRow
 		if members, err = h.repo.ListMembers(ctx, group.GroupID); err == nil {
-			if !ds.SoleLeaf(members, group.Epoch, dev) {
+			var sole bool
+			if sole, err = ds.SoleLeaf(ctx, h.repo, members, group.Epoch, dev); err != nil {
+				return err
+			}
+			if !sole {
 				err = ds.ErrNotAlone
 			} else {
 				err = h.repo.CloseGroup(ctx, group.GroupID, h.clk.Now().Unix())
@@ -1029,6 +1042,8 @@ func (h *Calls) iceServers(dev id.ID, begun time.Time) (servers []iceServer, min
 	if h.relay != nil {
 		var wait time.Duration
 		if issued, wait = h.relay.Mint(dev, begun); wait > 0 {
+			// This 429 can follow CreateRoom and admission writes; call start is
+			// retry-safe, so replaying the same start remains safe.
 			e := server.RateLimitedAfter(wait)
 			e.Detail = "your device was cut from the relay a moment ago; retry"
 			return nil, false, e
@@ -1178,22 +1193,22 @@ func (h *Calls) caps() callCaps {
 // only while it holds a sharing slot of the call (ruling F1), and nothing while it is penalised in
 // the call's room for publishing media that is not dilla-sframe/1 (ruling F11) or the call is the
 // built-in AFK channel's (R3, R34).
-func (h *Calls) grantFor(ctx context.Context, bits Bits, row store.VoiceSessionRow, dev id.ID) *livekit.ParticipantPermission {
+func (h *Calls) grantFor(ctx context.Context, bits Bits, row store.VoiceSessionRow, dev id.ID) (*livekit.ParticipantPermission, error) {
 	if h.leases.penalised(row.CallID, row.LivekitRoom, dev) || h.inAFK(ctx, row) {
-		return sfu.PublishGrant(false, false, false)
+		return restrictBotCallGrant(ctx, h.repo, dev, sfu.PublishGrant(false, false, false))
 	}
 	leased := h.leases.held(row.CallID, row.LivekitRoom, dev)
-	return sfu.PublishGrant(bits.Has(PermSpeak), bits.Has(PermVideo) && leased, bits.Has(PermScreenShare) && leased)
+	return restrictBotCallGrant(ctx, h.repo, dev, sfu.PublishGrant(bits.Has(PermSpeak), bits.Has(PermVideo) && leased, bits.Has(PermScreenShare) && leased))
 }
 
 // admitGrant is what dev's token for row's room is minted with and what the /rtc gate admits: the
 // base grant, or listen-only while dev is penalised in that room (ruling F11) and in every call of
 // the built-in AFK channel (R3, R34).
-func (h *Calls) admitGrant(ctx context.Context, bits Bits, row store.VoiceSessionRow, dev id.ID) *livekit.ParticipantPermission {
+func (h *Calls) admitGrant(ctx context.Context, bits Bits, row store.VoiceSessionRow, dev id.ID) (*livekit.ParticipantPermission, error) {
 	if h.leases.penalised(row.CallID, row.LivekitRoom, dev) || h.inAFK(ctx, row) {
-		return sfu.PublishGrant(false, false, false)
+		return restrictBotCallGrant(ctx, h.repo, dev, sfu.PublishGrant(false, false, false))
 	}
-	return baseGrant(bits)
+	return restrictBotCallGrant(ctx, h.repo, dev, baseGrant(bits))
 }
 
 // callFull is the advisory E_CALL_FULL count (DEV-01, gap G27): the room's participants other than
@@ -1317,7 +1332,7 @@ func (h *Calls) AdmitRoom(ctx context.Context, room string, device id.ID) (*live
 	if h.isAFKChannel(ctx, ch) {
 		return nil, errAFKCall()
 	}
-	return h.admitGrant(ctx, bits, row, device), nil
+	return h.admitGrant(ctx, bits, row, device)
 }
 
 // Admitted records that the /rtc proxy let device's join of room through: the gate (AdmitRoom)
@@ -1399,8 +1414,9 @@ func (h *Calls) refuseBarred(ctx context.Context, repo store.Repository, device 
 	return nil
 }
 
-// baseGrant is what every call token is minted with and the /rtc gate admits: the microphone when
-// the device holds speak, subscribe always, never a camera or screen source. Promotion exists only
+// baseGrant is the human baseline for call tokens and /rtc admission: the microphone when
+// the device holds speak, subscribe always, never a camera or screen source. Bots are further
+// restricted by restrictBotCallGrant at every grant seam. Promotion exists only
 // as the push a share makes (DEV-02, ruling F1), so a token can never be replayed for video.
 func baseGrant(bits Bits) *livekit.ParticipantPermission {
 	return sfu.PublishGrant(bits.Has(PermSpeak), false, false)

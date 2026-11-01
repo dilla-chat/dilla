@@ -138,6 +138,18 @@ func TestSandboxCommandPointsTLSAtMountedResolvedCABundle(t *testing.T) {
 	if !envFound {
 		t.Fatal("sandbox command does not set SSL_CERT_FILE")
 	}
+	if info, err := os.Stat("/etc/alternatives"); err == nil && info.IsDir() {
+		mounted := false
+		for i := 0; i+2 < len(args); i++ {
+			if args[i] == "--ro-bind" && args[i+1] == "/etc/alternatives" && args[i+2] == "/etc/alternatives" {
+				mounted = true
+				break
+			}
+		}
+		if !mounted {
+			t.Fatal("sandbox command does not mount FFmpeg's alternative library symlinks")
+		}
+	}
 }
 
 func TestPCMChildCannotReachPublicNetworkDirectly(t *testing.T) {

@@ -17,7 +17,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pressly/goose/v3"
 	_ "modernc.org/sqlite"
 
 	"github.com/jonasthim/dilla/internal/api"
@@ -32,7 +31,7 @@ import (
 	"github.com/jonasthim/dilla/internal/server"
 	"github.com/jonasthim/dilla/internal/store"
 	"github.com/jonasthim/dilla/internal/store/sqlite"
-	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
+	"github.com/jonasthim/dilla/internal/store/sqlite/sqlitetest"
 )
 
 var (
@@ -149,16 +148,10 @@ func newTestAPIWithConfig(t *testing.T, tune func(*config.Config)) (http.Handler
 func newTestAPIFull(t *testing.T, tune func(*config.Config), wire func(*api.Deps)) (http.Handler, api.Deps) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "api.db")
+	sqlitetest.MigratedFile(t, path)
 	write, err := sqlite.OpenWrite(path)
 	if err != nil {
 		t.Fatalf("OpenWrite: %v", err)
-	}
-	p, err := goose.NewProvider(goose.DialectSQLite3, write, sqlitemigrations.FS)
-	if err != nil {
-		t.Fatalf("provider: %v", err)
-	}
-	if _, err := p.Up(context.Background()); err != nil {
-		t.Fatalf("up: %v", err)
 	}
 	read, err := sqlite.OpenRead(path)
 	if err != nil {
@@ -286,9 +279,10 @@ func seedAPIDevice(t *testing.T, d api.Deps) (store.UserRow, store.DeviceRow, ed
 	t.Helper()
 	ctx := context.Background()
 	now := d.Clock.Now().Unix()
+	umkPub, sskPub, sigUMKSSK := testAccountKeys()
 	u := store.UserRow{
 		ID: id.New(), Username: "user" + id.New().String()[:8], Display: "User",
-		UMKPub: make([]byte, 32), SSKPub: make([]byte, 32), SigUMKSSK: make([]byte, 64),
+		UMKPub: umkPub, SSKPub: sskPub, SigUMKSSK: sigUMKSSK,
 		Created: now,
 	}
 	if err := d.Repo.CreateUser(ctx, u); err != nil {

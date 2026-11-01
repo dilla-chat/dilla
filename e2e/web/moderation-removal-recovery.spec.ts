@@ -1,7 +1,8 @@
 // Signed moderator removals through the shipped browser client. The host starts empty and every
 // account, role, invite, message and removal is made through the UI; no database fixture is used.
 import { expect, type BrowserContext, type Locator, type Page } from '@playwright/test';
-import { addServerVia, completeSignUp, copy, makeInviteLink, messageRow, newAccount, openChannel, railItem, sendText, signUp, test } from './support/app';
+import { addServerVia, completeSignUp, copy, makeInviteLink, messageRow, newAccount, openChannel, railItem, sendText, signUp, test, expectRowMenuAction, rowAction,  makeRole, roleButton,
+} from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
 
@@ -78,18 +79,12 @@ test('signed moderator removal reaches a live client and recovers as a tombstone
     const unauthorized = await openMember(unauthorizedInvite, UNAUTHORIZED);
 
     // Make a real community role with manage-messages authority and assign it through the role UI.
-    await button(page, 'admin.open').click();
+    await button(page, 'admin.open').click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
     let settings = dialog(page, 'admin.title');
     await settingsNav(settings).getByRole('button', { name: copy('roles.tab'), exact: true }).click();
-    await button(settings, 'roles.new').click();
-    const editor = dialog(page, 'roles.editor.titleNew', { server: SERVER });
-    await editor.getByRole('textbox', { name: copy('roles.editor.name'), exact: true }).fill(ROLE);
-    const manageMessages = editor.getByRole('switch', { name: copy('perm.manageMessages'), exact: true });
-    await manageMessages.click();
-    await expect(manageMessages).toHaveAttribute('aria-checked', 'true');
-    await button(editor, 'roles.editor.create').click();
-    await expect(editor).toBeHidden();
-    await expect(roleRow(settings, ROLE)).toContainText(copy('roles.row.other', { count: 0 }));
+    // Signal task 10c: the inline role editor; the switch saves at once.
+    await makeRole(page, settings, ROLE, { perms: ['manageMessages'] });
+    await expect(roleButton(settings, ROLE)).toHaveAccessibleName(copy('serverSettings.roles.row.other', { name: ROLE, count: 0 }));
     await page.keyboard.press('Escape');
     await expect(settings).toBeHidden();
 
@@ -110,10 +105,8 @@ test('signed moderator removal reaches a live client and recovers as a tombstone
     await expect(messageRow(page, 'general', BODY)).toBeVisible();
     const unauthorizedRow = messageRow(unauthorized.page, 'general', BODY);
     await expect(unauthorizedRow).toBeVisible();
-    const removeLabel = copy('shell.message.moderateRemove');
     await unauthorizedRow.focus();
-    await expect(unauthorizedRow.getByRole('toolbar', { name: copy('shell.message.toolbar'), exact: true })
-      .getByRole('button', { name: removeLabel, exact: true })).toHaveCount(0);
+    await expectRowMenuAction(unauthorizedRow, 'moderateRemove', false);
 
     // Leave Cato's device offline while Bea signs a removal proof and submits it to the real API.
     const msgId = await authorRow.getAttribute('data-msg-id');
@@ -125,10 +118,8 @@ test('signed moderator removal reaches a live client and recovers as a tombstone
     const modRow = messageRow(mod.page, 'general', BODY);
     await expect(modRow).toBeVisible();
     await modRow.focus();
-    const action = modRow.getByRole('toolbar', { name: copy('shell.message.toolbar'), exact: true })
-      .getByRole('button', { name: removeLabel, exact: true });
-    await expect(action).toBeVisible();
-    await action.click();
+    await expectRowMenuAction(modRow, 'moderateRemove', true);
+    await rowAction(modRow, 'moderateRemove');
     const confirm = dialog(mod.page, 'shell.moderation.removeTitle');
     await confirm.getByRole('textbox', { name: copy('shell.moderation.reason'), exact: true }).fill('reviewed by moderator');
     const removalResult: { value: number | null } = { value: null };

@@ -6,7 +6,7 @@ import { expectVoiceTargets } from '../CallControls/CallControls.stories.tsx';
 const meta = {
   title: 'Voice/RingBanner', component: RingBanner,
   args: {
-    rings: [{ callId: 'c1', text: 'ada is calling', busy: false }],
+    rings: [{ callId: 'c1', text: 'ada is calling', busy: false, name: 'ada' }],
     labels: { region: 'incoming calls', answer: 'answer', decline: 'decline' },
     onAnswer: () => {}, onDecline: () => {},
   },
@@ -19,8 +19,8 @@ type Story = StoryObj<typeof meta>;
 /** Normal, and quiet (a muted DM, R1): the same banner; only the page's sound and notification differ. */
 export const Incoming: Story = {};
 /** Busy: this device is in voice; answering leaves it. No sound, no notification. */
-export const Busy: Story = { args: { rings: [{ callId: 'c1', text: 'ada is calling. Answering leaves harbour.', busy: true }] } };
+export const Busy: Story = { args: { rings: [{ callId: 'c1', text: 'ada is calling. Answering leaves harbour.', busy: true, name: 'ada' }] } };
 /** Two rings at once (a group DM rings each other participant independently, R6). */
 export const TwoRings: Story = {
-  args: { rings: [{ callId: 'c1', text: 'ada is calling', busy: false }, { callId: 'c2', text: 'bo is calling', busy: false }] },
+  args: { rings: [{ callId: 'c1', text: 'ada is calling', busy: false, name: 'ada' }, { callId: 'c2', text: 'bo is calling', busy: false, name: 'bo' }] },
 };

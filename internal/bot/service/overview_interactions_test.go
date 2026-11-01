@@ -45,6 +45,25 @@ func TestOverviewInteractionReturnsOnlyCurrentAuthorizedActorAuthority(t *testin
 	}
 }
 
+func TestOverviewInteractionAdvertisesProviderStatusOnlyWhenEnabled(t *testing.T) {
+	community, actorID := interactionID(2), interactionID(6)
+	authority := &overviewAuthorityFake{result: client.ActorAuthority{Owner: true}, present: true}
+	handler := OverviewInteractions{Authority: authority, CommunityID: community,
+		SupportsMusicProviderStatus: true}.Handlers()[protocol.OpOverviewGet].Handle
+	result, err := handler(context.Background(), InteractionActor{User: actorID, Kind: 0}, protocol.Request{CommunityID: community})
+	if err != nil || result.Status != 0 {
+		t.Fatalf("overview = %+v, %v; want success", result, err)
+	}
+	var data []any
+	if err := cborx.Unmarshal(result.Data, &data); err != nil || len(data) != 6 || len(result.Data) > overviewInteractionDataLimit {
+		t.Fatalf("overview payload = %x, decoded=%v, err=%v", result.Data, data, err)
+	}
+	ops, ok := data[5].([]any)
+	if data[0] != uint64(2) || !ok || len(ops) != 1 || ops[0] != uint64(protocol.OpMusicProvidersStatus) {
+		t.Fatalf("overview capability payload = %#v; want version 2 with operation 24", data)
+	}
+}
+
 func TestOverviewInteractionHonorsDelegatedManagerRevocation(t *testing.T) {
 	community, actorID := interactionID(2), interactionID(6)
 	authority := &overviewAuthorityFake{result: client.ActorAuthority{EffectiveBits: manageCommunityBit}, present: true}

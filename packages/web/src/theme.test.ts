@@ -5,7 +5,7 @@ const matching = (on: string[]) => (q: string) => ({ matches: on.includes(q) });
 
 describe('preferredTheme', () => {
   it('follows the OS, and contrast wins over the colour scheme', () => {
-    expect(preferredTheme(matching([]))).toBe('mesh');
+    expect(preferredTheme(matching([]))).toBe('signal');
     expect(preferredTheme(matching([THEME_QUERIES.light]))).toBe('light');
     expect(preferredTheme(matching([THEME_QUERIES.contrast]))).toBe('high-contrast');
     expect(preferredTheme(matching([THEME_QUERIES.light, THEME_QUERIES.contrast]))).toBe('high-contrast');
@@ -38,7 +38,7 @@ describe('followSystemTheme', () => {
     }) as unknown as MediaQueryList;
     const doc = document.implementation.createHTMLDocument('t');
     const stop = followSystemTheme({ matchMedia: mql, document: doc });
-    expect(doc.documentElement.dataset.theme).toBe('mesh');
+    expect(doc.documentElement.dataset.theme).toBe('signal');
     on.add(THEME_QUERIES.light);
     handlers.get(THEME_QUERIES.light)?.forEach(h => h());
     expect(doc.documentElement.dataset.theme).toBe('light');
@@ -65,7 +65,7 @@ describe('applyPreference', () => {
   it('follows the system for system, and a chosen theme stops the following', () => {
     const s = system();
     applyPreference(s.win, 'system');
-    expect(s.doc.documentElement.dataset.theme).toBe('mesh');
+    expect(s.doc.documentElement.dataset.theme).toBe('signal');
     expect(s.listening()).toBe(2);
     applyPreference(s.win, 'light');
     expect(s.doc.documentElement.dataset.theme).toBe('light');
@@ -78,8 +78,8 @@ describe('applyPreference', () => {
     expect(s.listening()).toBe(2);
     applyPreference(s.win, 'system');
     expect(s.listening()).toBe(2);
-    applyPreference(s.win, 'mesh');
-    expect(s.doc.documentElement.dataset.theme).toBe('mesh');
+    applyPreference(s.win, 'signal');
+    expect(s.doc.documentElement.dataset.theme).toBe('signal');
     expect(s.doc.documentElement.dataset.density).toBe('regular');
     expect(s.listening()).toBe(0);
   });

@@ -6,11 +6,12 @@ import (
 
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/permbits"
 	"github.com/jonasthim/dilla/internal/store"
 )
 
 const (
-	musicBotCapability     uint8  = 1 << 0 // bot_installations capability bit 0
+	musicBotCapability     uint16 = 1 << 0 // bot_installations capability bit 0
 	musicPermissionConnect uint64 = 1 << 7
 	musicPermissionSpeak   uint64 = 1 << 8
 )
@@ -19,14 +20,20 @@ type musicAuthoritySession interface {
 	BotActorAuthority(context.Context, id.ID, id.ID) (client.ActorAuthority, bool, error)
 	ChannelCall(context.Context, id.ID) (client.ChannelCallState, error)
 	ChannelPermissions(context.Context, id.ID) (uint64, error)
+	BotActorChannelAuthority(context.Context, id.ID, id.ID, id.ID) (uint64, bool, error)
 }
+
+// musicPermissionView is api.PermViewChannel: who may read a voice channel's player (security review M2).
+const musicPermissionView = permbits.ViewChannel
+
+// musicPermissionControl is api.PermControlMusic: who may change playback in a voice channel.
+const musicPermissionControl = permbits.ControlMusic
 
 type musicAuthorityStore interface {
 	GetActiveBotInstallationByCommunity(context.Context, id.ID) (store.BotInstallationRow, error)
-	ListDJRolePolicy(context.Context, id.ID) ([]store.DJRolePolicyRow, error)
 }
 
-// CommunityMusicInteractionAuthority resolves permissions, role grants, installation state,
+// CommunityMusicInteractionAuthority resolves permissions, installation state,
 // and the live call roster afresh for each authorization check.
 type CommunityMusicInteractionAuthority struct {
 	Session        musicAuthoritySession
@@ -53,7 +60,7 @@ func (a *CommunityMusicInteractionAuthority) CurrentCall(ctx context.Context, ch
 	if state.CallID == nil || state.GroupID == nil {
 		return MusicCallBinding{ChannelID: channel}, nil
 	}
-	return MusicCallBinding{CallID: *state.CallID, ChannelID: channel, Active: true}, nil
+	return MusicCallBinding{CallID: *state.CallID, GroupID: *state.GroupID, ChannelID: channel, Active: true}, nil
 }
 
 //nolint:nilerr // Invalid client input intentionally maps to an unavailable protocol result.
@@ -73,11 +80,25 @@ func (a *CommunityMusicInteractionAuthority) CanUse(ctx context.Context, actor I
 	if err != nil || !present {
 		return false, err
 	}
+	// Security review M2: the player (title, requester, queue) is only for members who can see this voice channel,
+	// resolved per channel with its overrides.
+	view, visible, err := a.Session.BotActorChannelAuthority(ctx, a.CommunityID, actor.User, call.ChannelID)
+	if err != nil || !visible || view&musicPermissionView == 0 {
+		return false, err
+	}
 	// Managers can issue an emergency stop while away from the call. All other
 	// state changes are separately gated by CanDJ and call membership.
 	return true, nil
 }
 
+// CanDJ reports whether actor may change playback in call: the actor must be a
+// current member who is in this exact call, and hold view_channel and
+// control_music in the call's voice channel as the server resolves it now,
+// with that channel's overwrites (Task 10c; this replaced the per-installation
+// DJ role approval). Owners and administrators resolve to every bit, so they
+// always can, but still only from inside the call and only while the Bot
+// itself may connect and speak there.
+//
 //nolint:nilerr // Invalid client input intentionally maps to an unavailable protocol result.
 func (a *CommunityMusicInteractionAuthority) CanDJ(ctx context.Context, actor InteractionActor, call MusicCallBinding) (bool, error) {
 	if err := a.validCall(call); err != nil || actor.User.IsZero() {
@@ -87,28 +108,19 @@ func (a *CommunityMusicInteractionAuthority) CanDJ(ctx context.Context, actor In
 	if err != nil || installation.ID.IsZero() {
 		return false, err
 	}
-	resolved, present, err := a.Session.BotActorAuthority(ctx, a.CommunityID, actor.User)
+	_, present, err := a.Session.BotActorAuthority(ctx, a.CommunityID, actor.User)
 	if err != nil || !present {
 		return false, err
-	}
-	roles, err := a.Store.ListDJRolePolicy(ctx, installation.ID)
-	if err != nil {
-		return false, err
-	}
-	roleSet := make(map[id.ID]struct{}, len(resolved.RoleIDs))
-	for _, role := range resolved.RoleIDs {
-		roleSet[role] = struct{}{}
 	}
 	member, err := a.actorInCall(ctx, actor.User, call)
 	if err != nil || !member {
 		return false, err
 	}
-	for _, approved := range roles {
-		if _, held := roleSet[approved.RoleID]; held {
-			return a.botCanSpeak(ctx, call.ChannelID)
-		}
+	bits, visible, err := a.Session.BotActorChannelAuthority(ctx, a.CommunityID, actor.User, call.ChannelID)
+	if err != nil || !visible || bits&(musicPermissionView|musicPermissionControl) != musicPermissionView|musicPermissionControl {
+		return false, err
 	}
-	return false, nil
+	return a.botCanSpeak(ctx, call.ChannelID)
 }
 
 //nolint:nilerr // Invalid client input intentionally maps to an unavailable protocol result.

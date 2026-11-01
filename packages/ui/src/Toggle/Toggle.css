@@ -1,10 +1,10 @@
 .d-toggle { display: inline-flex; align-items: center; gap: 0.5rem; min-width: 0; }
 .d-toggle__label { font-size: var(--text-sm); color: var(--fg-2); }
 .d-toggle__switch { display: inline-flex; align-items: center; justify-content: center; min-width: 2.75rem; min-height: 1.5rem; padding: 0 0.25rem; background: transparent; border: 0; border-radius: var(--r-md); cursor: pointer; }
-.d-toggle__track { position: relative; display: block; width: 2.25rem; height: 1.25rem; background: var(--bg); border: 1px solid var(--edge); border-radius: var(--r-pill); transition: background var(--duration-fast), border-color var(--duration-fast); }
-.d-toggle__knob { position: absolute; top: 0.1875rem; left: 0.1875rem; width: 0.75rem; height: 0.75rem; background: var(--fg-2); border-radius: var(--r-pill); transition: transform var(--duration-fast), background var(--duration-fast); }
+.d-toggle__track { position: relative; display: block; width: 2.25rem; height: 1.25rem; box-sizing: border-box; background: var(--track-off); border: 1px solid var(--control-edge); border-radius: var(--r-pill); transition: background var(--duration-track), border-color var(--duration-track); }
+.d-toggle__knob { position: absolute; top: 1px; left: 1px; width: 1rem; height: 1rem; background: var(--knob); border-radius: var(--r-pill); box-shadow: var(--shadow-knob); transition: transform var(--duration-toggle) var(--ease-out), background var(--duration-fast); }
 .d-toggle__switch[aria-checked="true"] .d-toggle__track { background: var(--accent); border-color: var(--accent); }
-.d-toggle__switch[aria-checked="true"] .d-toggle__knob { transform: translateX(1rem); background: var(--accent-ink); }
+.d-toggle__switch[aria-checked="true"] .d-toggle__knob { transform: translateX(1rem); background: var(--knob); }
 .d-toggle__switch[aria-disabled="true"] { cursor: not-allowed; opacity: var(--opacity-muted); }
 .d-toggle__hint { font-size: var(--text-sm); color: var(--fg-3); }
 @media (prefers-reduced-motion: reduce) { .d-toggle__track, .d-toggle__knob { transition: none; } }

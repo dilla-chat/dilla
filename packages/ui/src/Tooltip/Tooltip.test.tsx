@@ -133,13 +133,14 @@ describe('Tooltip (R15)', () => {
     expect(screen.getByRole('tooltip')).toHaveAttribute('data-placement', 'right');
   });
 
-  it('is mono 11px on --surface-hi with a 1px hairline and radius 0, and stays in the viewport (fixed)', () => {
+  // Task 9: the prototype's floating-layer look (the message toolbar's): --surface-2 in the --line-strong edge, 6px corners.
+  it('is mono 11px on --surface-2 with the --line-strong edge and 6px corners, and stays in the viewport (fixed)', () => {
     const rule = cssText().replace(/\/\*[\s\S]*?\*\//g, '').match(/\.d-tooltip\s*\{[^}]*\}/)?.[0] ?? '';
     expect(rule).toContain('font-family: var(--font-mono)');
     expect(rule).toContain('font-size: 0.6875rem');
-    expect(rule).toContain('background: var(--surface-hi)');
-    expect(rule).toContain('border: 1px solid var(--hairline)');
-    expect(rule).toContain('border-radius: 0');
+    expect(rule).toContain('background: var(--surface-2)');
+    expect(rule).toContain('border: 1px solid var(--line-strong)');
+    expect(rule).toContain('border-radius: var(--r-md)');
     expect(rule).toContain('position: fixed');
   });
 

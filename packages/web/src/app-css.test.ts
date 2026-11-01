@@ -24,10 +24,10 @@ describe('the phone layout of voice (360 px)', () => {
     expect(css).not.toMatch(/\.dw-voice-stage \.d-call-tile \{/);
   });
 
-  it('H7: on a phone the voice preview\'s join is 44 tall; the stage keeps its 18px gutter', () => {
-    expect(css).toMatch(/\[data-layout="phone"\] \.dw-voice-stage \.dw-voice-join \{[^}]*min-height:\s*2\.75rem/);
+  it('Signal §5.6 (rule 0, the prototype’s sizes): the voice preview\'s join is the prototype\'s 40px on a phone too; the stage keeps its 14px gutter', () => {
     const stage = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../../ui/src/CallStage/CallStage.css'), 'utf8');
-    expect(stage).toMatch(/\[data-layout="phone"\] \.d-call-stage \{[^}]*--d-stage-px:\s*1\.125rem/);
+    expect(stage).toMatch(/\.d-call-stage__join \{[^}]*height: 2\.5rem;/);
+    expect(stage).toMatch(/\.d-call-stage \{[^}]*--d-stage-pad: 0\.875rem;/);
   });
 
   it('H1/H2: no footer rule is left for the phone\'s DM list, and no bare tab heading', () => {
@@ -36,7 +36,7 @@ describe('the phone layout of voice (360 px)', () => {
   });
 
   it('I5: no stage toolbar floats over the tiles: the controls are in normal flow', () => {
-    expect(rule(phone, '.dw-voice-stage .d-call-stage__controls')).toMatch(/position:\s*static/);
+    expect(rule(phone, '.dw-voice-stage .d-call-stage__controls:not([data-bar])')).toMatch(/position:\s*static/);
     expect(rule(phone, '.dw-dm-call .d-call-stage__controls')).toMatch(/position:\s*static/);
     expect(phone).not.toMatch(/d-call-stage__controls\s*\{[^}]*position:\s*(sticky|fixed|absolute)/);
   });
@@ -50,7 +50,7 @@ describe('the desktop stage toolbar is pinned (web3.8, VOICE-W)', () => {
     expect(rule(css, `${stage}`)).toMatch(/overflow:\s*hidden/);
     expect(rule(css, `${stage} .d-call-stage__tiles[data-tiles="stage"]`)).toMatch(/flex:\s*1 1 auto;\s*min-height:\s*0/);
     expect(rule(css, '.dw-voice-stage')).toMatch(/height:\s*100%/);
-    expect(rule(css, `${stage} .d-call-stage__controls`)).toMatch(/position:\s*sticky;\s*bottom:\s*0;\s*margin-top:\s*auto;\s*padding-block:\s*0\.5rem;\s*background:\s*var\(--bg\)/);
+    expect(rule(css, `${stage} .d-call-stage__controls:not([data-bar])`)).toMatch(/position:\s*sticky;\s*bottom:\s*0;\s*margin-top:\s*auto;\s*padding-block:\s*0\.5rem;\s*background:\s*var\(--bg\)/);
   });
 });
 

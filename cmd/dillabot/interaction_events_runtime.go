@@ -7,6 +7,7 @@ import (
 	"errors"
 	"sync"
 
+	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/helper"
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/bot/service"
@@ -53,6 +54,7 @@ func (h interactionEventHandler) HandleGroupEvent(ctx context.Context, event nat
 	if ctx == nil || h.native == nil || h.dispatcher == nil || h.sender == nil || event.DeliveryID == 0 || event.Group.IsZero() {
 		return errors.New("missing or invalid native interaction event dependency")
 	}
+	ctx = client.WithInteractive(ctx)
 	group, err := inspectInteractionEventGroup(ctx, h.native, event)
 	if err != nil {
 		return err
@@ -68,6 +70,11 @@ func (h interactionEventHandler) HandleGroupEvent(ctx context.Context, event nat
 	resumed, err := h.sender.ResumeInteractionResponse(ctx, event, func(preflightCtx context.Context) error {
 		return h.dispatcher.ReauthorizeReadReplay(preflightCtx, event)
 	})
+	if errors.Is(err, service.ErrInteractionReadReplayNotAuthorized) && ctx.Err() == nil {
+		// The saved read response may no longer be shown and the event can never be answered
+		// otherwise: acknowledge it as undeliverable instead of blocking every later event.
+		return undeliverableGroupEventError{err}
+	}
 	if err != nil {
 		return err
 	}
@@ -123,7 +130,16 @@ func inspectInteractionEventGroup(ctx context.Context, inspector interactionEven
 		found = &descriptors[i]
 	}
 	if found == nil {
-		return native.GroupInfo{}, err
+		// Helper status 2 is forbidden, not not-found: the group row exists, but it is outside
+		// interaction scope (another community, or a kind-3 row the descriptors no longer list
+		// because the group is gone). Nothing can answer the event, and leaving it pending would
+		// block every later event. A missing row is status 7 and returned above: it stays pending.
+		return native.GroupInfo{}, undeliverableGroupEventError{err}
+	}
+	if found.State == 4 {
+		// Defence in depth: the descriptor list does not report gone groups today, but if it
+		// ever does, a gone group can never answer either.
+		return native.GroupInfo{}, undeliverableGroupEventError{errors.New("native interaction event group is gone")}
 	}
 	b := found.Binding
 	if found.State != 2 || found.Group.IsZero() || b.Instance.IsZero() || b.Installation.IsZero() || b.Community != event.Community ||
@@ -136,6 +152,16 @@ func inspectInteractionEventGroup(ctx context.Context, inspector interactionEven
 	return native.GroupInfo{ID: found.Group, Kind: 3, Community: &community, Target: b.ParticipantUser, State: found.State, Epoch: found.Epoch}, nil
 }
 
+// undeliverableGroupEventError marks an event that can never be handled; the poller acknowledges
+// it (service.UndeliverableGroupEvent) instead of retrying it at the head of the shared queue.
+type undeliverableGroupEventError struct{ err error }
+
+func (e undeliverableGroupEventError) Error() string {
+	return "undeliverable bot group event: " + e.err.Error()
+}
+func (e undeliverableGroupEventError) Unwrap() error     { return e.err }
+func (undeliverableGroupEventError) Undeliverable() bool { return true }
+
 type interactionEventRuntime struct {
 	mu      sync.Mutex
 	poller  interactionEventPoller
@@ -147,22 +173,43 @@ func newInteractionEventRuntime(poller interactionEventPoller, handler service.G
 }
 
 func (r *interactionEventRuntime) Drain(ctx context.Context) (service.GroupEventPollResult, error) {
+	return r.DrainHolding(ctx, nil)
+}
+
+// DrainHolding is Drain with unrefreshed senders held instead of dispatched.
+func (r *interactionEventRuntime) DrainHolding(ctx context.Context, unrefreshed map[id.ID]bool) (service.GroupEventPollResult, error) {
+	return r.DrainTrustHolding(ctx, service.TrustRefresh{Unrefreshed: unrefreshed})
+}
+
+// DrainTrustHolding keeps stale-history holds distinct from refresh contention.
+func (r *interactionEventRuntime) DrainTrustHolding(ctx context.Context, refresh service.TrustRefresh) (service.GroupEventPollResult, error) {
 	var total service.GroupEventPollResult
 	if r == nil || ctx == nil || r.poller == nil || r.handler == nil {
 		return total, errors.New("missing interaction event runtime dependency")
 	}
+	handler := service.HoldBusySenders(service.HoldUnrefreshedSenders(r.handler, refresh.Unrefreshed), refresh.Busy)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for pass := 0; pass < maxInteractionEventPollPasses; pass++ {
 		if err := ctx.Err(); err != nil {
 			return total, err
 		}
-		result, err := r.poller.PollOnce(ctx, r.handler)
+		result, err := r.poller.PollOnce(ctx, handler)
 		total.Handled += result.Handled
+		total.Skipped = append(total.Skipped, result.Skipped...)
 		if result.AcknowledgedThrough > total.AcknowledgedThrough {
 			total.AcknowledgedThrough = result.AcknowledgedThrough
 		}
 		total.More = result.More
+		refusal := result.RateLimited
+		if refusal == nil {
+			refusal = client.RateLimitError(err)
+		}
+		if refusal != nil {
+			total.More = true
+			total.RateLimited = refusal
+			return total, nil
+		}
 		if err != nil {
 			return total, err
 		}

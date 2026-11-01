@@ -2,9 +2,11 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -21,8 +23,9 @@ const spotifyAttemptTTL = 10 * time.Minute
 const maxSpotifyAttempts = 1024
 
 type botSpotifyBeginRequest struct {
-	_      struct{} `cbor:",toarray"`
-	StepUp string
+	_        struct{} `cbor:",toarray"`
+	StepUp   string
+	ClientID string
 }
 type botSpotifyCallbackRequest struct {
 	_     struct{} `cbor:",toarray"`
@@ -65,16 +68,101 @@ func (b *botSpotifyBroker) prune(now int64) {
 
 func registerBotSpotifyAttempt(m *server.Mux, d Deps) {
 	guard := BotSessionRoute(d.Sessions, d.Limiter)
+	m.Handle("GET /v1/communities/{community}/bot/spotify/config", guard("GET /v1/communities/{community}/bot/spotify/config", http.HandlerFunc(d.GetBotSpotifyConfig)))
 	base := "/v1/communities/{community}/bot/spotify/attempts"
 	m.Handle("POST "+base, guard("POST "+base, http.HandlerFunc(d.BotSpotifyAttemptBegin)))
 	m.Handle("POST "+base+"/{attempt}/callback", guard("POST "+base+"/{attempt}/callback", http.HandlerFunc(d.BotSpotifyAttemptCallback)))
 	m.Handle("DELETE "+base+"/{attempt}", guard("DELETE "+base+"/{attempt}", http.HandlerFunc(d.BotSpotifyAttemptCancel)))
 	m.HandleFunc("POST /v1/bot-runtime/installations/{installation}/spotify/claim", d.ClaimBotSpotifyCode)
+	m.HandleFunc("GET /v1/bot-runtime/installations/{installation}/spotify/config", d.GetRuntimeBotSpotifyConfig)
 }
 
-func (d Deps) spotifyConfigured() bool {
-	u, err := url.Parse(d.BotSpotifyRedirectURL)
-	return d.botSpotify != nil && d.BotSpotifyClientID != "" && err == nil && u.Scheme == "https" && u.Host != "" && u.User == nil && u.Fragment == ""
+func spotifyClientIDValid(v string) bool {
+	if len(v) < 1 || len(v) > 256 {
+		return false
+	}
+	for _, c := range v {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+func spotifySettingKey(community id.ID) string { return "community_bot_spotify:" + community.String() }
+
+func spotifyRedirectValid(redirect string) bool {
+	u, err := url.Parse(redirect)
+	return err == nil && u.Scheme == "https" && u.Host != "" && u.User == nil && u.Fragment == ""
+}
+
+func (d Deps) spotifyConfiguration(ctx context.Context, community id.ID) (string, string, error) {
+	redirect := "https://" + d.Domain + "/settings/bot/music/spotify/callback"
+	raw, err := d.Repo.GetSetting(ctx, spotifySettingKey(community))
+	clientID := string(raw)
+	if errors.Is(err, store.ErrNotFound) {
+		clientID = d.BotSpotifyClientID
+		if d.BotSpotifyRedirectURL != "" { // Existing static OAuth configuration keeps its registered callback.
+			redirect = d.BotSpotifyRedirectURL
+		}
+	} else if err != nil || !spotifyClientIDValid(clientID) {
+		return "", "", errors.New("spotify application setting unavailable")
+	}
+	if !spotifyRedirectValid(redirect) {
+		return "", "", errors.New("invalid Spotify callback URL")
+	}
+	return clientID, redirect, nil
+}
+
+func (d Deps) GetBotSpotifyConfig(w http.ResponseWriter, r *http.Request) {
+	s, ok := session(r)
+	if !ok {
+		server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
+		return
+	}
+	cid, err := server.PathID(r, "community")
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	if _, _, err = humanForBot(r, d.Repo, cid, s); err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	clientID, _, err := d.spotifyConfiguration(r.Context(), cid)
+	if err != nil {
+		server.WriteError(w, d.storeError(r, err))
+		return
+	}
+	redirect := "https://" + d.Domain + "/settings/bot/music/spotify/callback"
+	if !spotifyRedirectValid(redirect) {
+		server.WriteError(w, server.Errorf(server.CodeUnavailable, "Spotify callback URL is unavailable"))
+		return
+	}
+	d.write(w, r, http.StatusOK, []any{clientID, redirect})
+}
+
+func (d Deps) GetRuntimeBotSpotifyConfig(w http.ResponseWriter, r *http.Request) {
+	runtimeID, ok := d.authenticateBotRuntime(w, r, false)
+	if !ok {
+		return
+	}
+	iid, err := server.PathID(r, "installation")
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	row, err := d.Repo.GetBotInstallation(r.Context(), iid)
+	if err != nil || row.RuntimeID == nil || *row.RuntimeID != runtimeID || row.RemovedAt != nil {
+		server.WriteError(w, server.Errorf(server.CodeForbidden, "runtime does not own installation"))
+		return
+	}
+	clientID, redirect, err := d.spotifyConfiguration(r.Context(), row.CommunityID)
+	if err != nil {
+		server.WriteError(w, d.storeError(r, err))
+		return
+	}
+	d.write(w, r, http.StatusOK, []any{clientID, redirect})
 }
 func (d Deps) BotSpotifyAttemptBegin(w http.ResponseWriter, r *http.Request) {
 	s, ok := session(r)
@@ -101,10 +189,6 @@ func (d Deps) BotSpotifyAttemptBegin(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	if !d.spotifyConfigured() {
-		server.WriteError(w, server.WithStatus(http.StatusServiceUnavailable, server.Errorf(server.CodeInternal, "Spotify OAuth is not configured")))
-		return
-	}
 	if err = d.spendBotStepUp(req.StepUp, s); err != nil {
 		server.WriteError(w, err)
 		return
@@ -116,6 +200,23 @@ func (d Deps) BotSpotifyAttemptBegin(w http.ResponseWriter, r *http.Request) {
 	}
 	if inst.RuntimeID == nil {
 		server.WriteError(w, server.Errorf(server.CodeUnavailable, "Bot runtime is not assigned"))
+		return
+	}
+	if d.botSpotify == nil {
+		server.WriteError(w, server.Errorf(server.CodeUnavailable, "Spotify OAuth is unavailable"))
+		return
+	}
+	if !spotifyClientIDValid(req.ClientID) {
+		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "enter a valid Spotify application client ID"))
+		return
+	}
+	redirect := "https://" + d.Domain + "/settings/bot/music/spotify/callback"
+	if !spotifyRedirectValid(redirect) {
+		server.WriteError(w, server.Errorf(server.CodeUnavailable, "Spotify callback URL is unavailable"))
+		return
+	}
+	if err := d.Repo.PutSetting(r.Context(), spotifySettingKey(cid), []byte(req.ClientID), d.Clock.Now().Unix()); err != nil {
+		server.WriteError(w, d.storeError(r, err))
 		return
 	}
 	state, e1 := randomOAuthValue(32)
@@ -134,8 +235,8 @@ func (d Deps) BotSpotifyAttemptBegin(w http.ResponseWriter, r *http.Request) {
 	u, _ := url.Parse("https://accounts.spotify.com/authorize")
 	q := u.Query()
 	q.Set("response_type", "code")
-	q.Set("client_id", d.BotSpotifyClientID)
-	q.Set("redirect_uri", d.BotSpotifyRedirectURL)
+	q.Set("client_id", req.ClientID)
+	q.Set("redirect_uri", redirect)
 	q.Set("scope", "streaming user-read-email user-read-private")
 	q.Set("state", state)
 	q.Set("code_challenge_method", "S256")

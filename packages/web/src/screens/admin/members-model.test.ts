@@ -19,16 +19,16 @@ describe('memberGroups', () => {
     const presence = { [OWNER]: 'offline', [ME]: 'online', [BOB]: 'dnd', [CAL]: 'idle', [BOT]: 'offline' } as const;
     const groups = memberGroups(MEMBERS, ROLES, OWNER, ME, presence);
     expect(groups.map(g => [g.id, g.members.map(r => r.userId)])).toEqual([
-      [MOD.id, [BOB]], [CREW.id, [ME]], ['members', [CAL]], ['offline', [OWNER, BOT]],
+      [MOD.id, [BOB]], [CREW.id, [ME]], ['members', [CAL]], ['bots', [BOT]], ['offline', [OWNER]],
     ]);
   });
   it('groups by the highest hoisted role, highest first, and the rest last; an unhoisted role does not group', () => {
     const groups = memberGroups(MEMBERS, ROLES, OWNER, ME);
-    expect(groups.map(g => [g.id, g.members.map(r => r.userId)])).toEqual([[MOD.id, [BOB]], [CREW.id, [ME]], ['members', [CAL, OWNER, BOT]]]);
+    expect(groups.map(g => [g.id, g.members.map(r => r.userId)])).toEqual([[MOD.id, [BOB]], [CREW.id, [ME]], ['members', [CAL, OWNER]], ['bots', [BOT]]]);
   });
   it('sorts names with localeCompare', () => {
-    const rest = memberGroups(MEMBERS, ROLES, OWNER, ME).at(-1)!;
-    expect(rest.members.map(r => r.name)).toEqual(['Åsa', 'olof', 'robo']);
+    const rest = memberGroups(MEMBERS, ROLES, OWNER, ME).find(g => g.id === 'members')!;
+    expect(rest.members.map(r => r.name)).toEqual(['Åsa', 'olof']);
   });
   it('tags the owner, you and bots', () => {
     const tags = Object.fromEntries(memberGroups(MEMBERS, ROLES, OWNER, ME).flatMap(g => g.members).map(r => [r.userId, r.tags]));

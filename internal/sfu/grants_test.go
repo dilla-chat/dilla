@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -602,4 +603,68 @@ func TestRoomsListsTheRoomsTheSFUHolds(t *testing.T) {
 	if got, err := srv.Rooms(t.Context()); err != nil || !slices.Equal(got, []string{"room-b"}) {
 		t.Fatalf("Rooms after a delete = %v, %v; want room-b", got, err)
 	}
+}
+
+// Task 8c fix round 2 (security review): a call token cannot touch its own attributes, name or metadata — many small updates
+// with new keys never reach another participant — and dillad's admin UpdateAttributes (the RTT route) is how dilla.rtt gets
+// there.
+func TestCallTokensCannotSetAttributesAndTheServerCan(t *testing.T) {
+	srv := bootGrantSFU(t, 7990, nil)
+	const room = "rtt-room"
+	if err := srv.CreateRoom(t.Context(), room); err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	mint := func(who string) string {
+		tok, err := srv.Token(room, who, PublishGrant(false, false, false), nil)
+		if err != nil {
+			t.Fatalf("Token: %v", err)
+		}
+		return tok
+	}
+	bob, err := lksdk.ConnectToRoomWithToken(srv.URL(), mint("bob"), &lksdk.RoomCallback{})
+	if err != nil {
+		t.Fatalf("bob join: %v", err)
+	}
+	defer bob.Disconnect()
+	alice, err := lksdk.ConnectToRoomWithToken(srv.URL(), mint("alice"), &lksdk.RoomCallback{})
+	if err != nil {
+		t.Fatalf("alice join: %v", err)
+	}
+	defer alice.Disconnect()
+	seen := func() *lksdk.RemoteParticipant { return bob.GetParticipantByIdentity("alice") }
+	waitFor := func(what string, ok func(p *lksdk.RemoteParticipant) bool) {
+		t.Helper()
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			if p := seen(); p != nil && ok(p) {
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		t.Fatalf("bob never saw %s", what)
+	}
+	waitFor("alice", func(*lksdk.RemoteParticipant) bool { return true })
+	// A listen-only token (the narrowest one) tries the flood: many small updates, each a new key, and a rename.
+	for i := range 50 {
+		alice.LocalParticipant.SetAttributes(map[string]string{fmt.Sprintf("k%d", i): "x"})
+	}
+	alice.LocalParticipant.SetName("mallory")
+	alice.LocalParticipant.SetMetadata("x")
+	// The server's write lands; the client's never did (it was sent first, on the same signal connection).
+	if err := srv.UpdateAttributes(t.Context(), room, "alice", map[string]string{"dilla.rtt": "24"}); err != nil {
+		t.Fatalf("UpdateAttributes: %v", err)
+	}
+	waitFor("dilla.rtt from the server", func(p *lksdk.RemoteParticipant) bool { return p.Attributes()["dilla.rtt"] == "24" })
+	time.Sleep(time.Second) // anything the client's updates would have broadcast has arrived by now
+	p := seen()
+	if len(p.Attributes()) != 1 || p.Name() != "alice" || p.Metadata() != "" {
+		t.Errorf("alice: attributes %v name %q metadata %q; want only dilla.rtt, alice, none", p.Attributes(), p.Name(), p.Metadata())
+	}
+	if err := srv.UpdateAttributes(t.Context(), room, "nobody", map[string]string{"dilla.rtt": "1"}); !errors.Is(err, ErrNoParticipant) {
+		t.Errorf("UpdateAttributes for an identity the room lacks = %v, want ErrNoParticipant", err)
+	}
+	if err := srv.UpdateAttributes(t.Context(), room, "alice", map[string]string{"dilla.rtt": ""}); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	waitFor("the clear", func(p *lksdk.RemoteParticipant) bool { _, ok := p.Attributes()["dilla.rtt"]; return !ok })
 }

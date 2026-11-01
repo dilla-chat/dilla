@@ -28,18 +28,25 @@ export interface AttachmentCardProps {
   player?: Pick<MediaPlayerProps, 'src' | 'state' | 'labels' | 'onPlay' | 'onError'>;
 }
 
-/** The longest side of an image card, in CSS px. */
-const CARD_MAX_PX = 320;
+/** The prototype's file meta (§6.8): "48 KB · PNG", the extension upper-cased; a name without one shows the size alone. */
+function fileMeta(name: string, size: string): string {
+  const dot = name.lastIndexOf('.');
+  return dot > 0 && dot < name.length - 1 ? `${size} · ${name.slice(dot + 1).toUpperCase()}` : size;
+}
+
+/** The longest side of an image card, in CSS px: the prototype's 280px image (§6.8), 240px for a GIF. */
+const CARD_MAX_PX = 280;
+const GIF_MAX_PX = 240;
 
 /**
- * The card's box: its width in rem (the image scaled so its longer side is at most 320 px, never up) and its
- * aspect ratio, as custom properties the CSS reads. Unknown or non-positive sizes give a 20rem box of 4 / 3.
+ * The card's box: its width in rem (the image scaled so its longer side is at most 280 px, 240 for a GIF, never up) and its
+ * aspect ratio, as custom properties the CSS reads. Unknown or non-positive sizes give a box of 4 / 3 at the most.
  */
-function cardBox(w: number | null, h: number | null): CSSProperties {
+function cardBox(w: number | null, h: number | null, max = CARD_MAX_PX): CSSProperties {
   if (w === null || h === null || !(w > 0) || !(h > 0)) {
-    return { '--d-card-w': '20rem', '--d-card-ratio': '4 / 3' } as CSSProperties;
+    return { '--d-card-w': `${String(max / 16)}rem`, '--d-card-ratio': '4 / 3' } as CSSProperties;
   }
-  const px = w * Math.min(1, CARD_MAX_PX / Math.max(w, h));
+  const px = w * Math.min(1, max / Math.max(w, h));
   const rem = Math.round(px * 1000 / 16) / 1000;
   return { '--d-card-w': `${String(rem)}rem`, '--d-card-ratio': `${String(w)} / ${String(h)}` } as CSSProperties;
 }
@@ -74,7 +81,7 @@ export function AttachmentCard({
   } else if (kind === 'image') {
     content = (
       <button type="button" className="d-attachment-card__open" aria-label={openLabel} tabIndex={tabIndex}
-        aria-busy={state === 'loading' || undefined} style={cardBox(w, h)} onClick={() => onOpen?.()}>
+        aria-busy={state === 'loading' || undefined} style={cardBox(w, h, badge !== undefined ? GIF_MAX_PX : CARD_MAX_PX)} onClick={() => onOpen?.()}>
         {thumbUrl !== null ? <img className="d-attachment-card__thumb" alt={name} src={thumbUrl} data-thumb="ready" /> : box}
         {badge !== undefined ? <span className="d-attachment-card__badge" aria-hidden="true">{badge}</span> : null}
       </button>
@@ -97,18 +104,20 @@ export function AttachmentCard({
   } else {
     content = (
       <div className="d-attachment-card__file">
-        <span className="d-attachment-card__glyph" aria-hidden="true"><Icon name="file" size={20} /></span>
-        <span className="d-attachment-card__name">{name}</span>
-        <span className="d-attachment-card__size">{size}</span>
+        <span className="d-attachment-card__glyph" aria-hidden="true"><Icon name="file" size={15} /></span>
+        <span className="d-attachment-card__text">
+          <span className="d-attachment-card__name">{name}</span>
+          <span className="d-attachment-card__size">{fileMeta(name, size)}</span>
+        </span>
         {!tooLarge && onSave ? (
-          <Button variant="default" size="md" className="d-attachment-card__save" aria-label={saveLabel} tabIndex={tabIndex}
-            onClick={() => onSave()}>{saveText ?? saveLabel}</Button>
+          <button type="button" className="d-attachment-card__download" aria-label={saveLabel} title={saveText ?? saveLabel} tabIndex={tabIndex}
+            onClick={() => onSave()}><Icon name="download" size={14} /></button>
         ) : null}
       </div>
     );
   }
   return (
-    <div className="d-attachment-card" data-kind={kind} data-state={state}>
+    <div className="d-attachment-card" data-kind={kind} data-state={state} data-gif={badge !== undefined ? 'true' : undefined}>
       {content}
       {stateText !== undefined ? <p className="d-attachment-card__state">{stateText}</p> : null}
     </div>

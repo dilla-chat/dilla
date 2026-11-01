@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"errors"
@@ -164,7 +165,8 @@ func (d Deps) issueBotInteractionAdmission(w http.ResponseWriter, r *http.Reques
 	}
 	var payload []byte
 	var signature []byte
-	err = d.Repo.Tx(r.Context(), func(tx store.Repository) error {
+	err = d.withDeviceListTransaction(r.Context(), func(ctx context.Context, tx store.Repository) error {
+		r := r.WithContext(ctx)
 		// Use the community-before-installation lock order shared by lifecycle
 		// mutations so PostgreSQL transactions do not deadlock on admission.
 		if err := tx.LockCommunity(r.Context(), initial.CommunityID); err != nil {

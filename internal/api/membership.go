@@ -31,7 +31,7 @@ type DS interface {
 	ProposeRemoveDevice(ctx context.Context, groupID, deviceID, actionID id.ID) error
 	ProposeAddBatch(ctx context.Context, groupID id.ID, devices []id.ID) error
 	Close(ctx context.Context, groupID id.ID) error
-	// CloseIfAlone is Close while deviceID holds the group's only current leaf, decided under the
+	// CloseIfAlone is Close while deviceID holds the group's only current non-bot leaf, decided under the
 	// group lock; ds.ErrNotAlone otherwise (the conditional end of a call, protocol/09 § Voice).
 	CloseIfAlone(ctx context.Context, groupID, deviceID id.ID) error
 	// VoidIneligibleAdds voids the group's outstanding instance Adds whose device or user is no

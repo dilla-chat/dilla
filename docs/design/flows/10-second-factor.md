@@ -23,15 +23,15 @@ Every human account on an instance has a second factor, and the server enforces 
 | 15. Sign-in needs a code after a passkey | The passkey did not check the person, so step 3 turns into the code form with a note above it. | `factorSignin.passkey.needsCode` |
 | 16. Backup-code sign-in, a failure, codes left | A link on the code form leads to a backup-code field. A refused code is a banner. After signing in with a backup code the shell says how many remain. The lost-phone line sits under the form. | `factorSignin.useBackup`, `factorSignin.lost`, `factorSignin.backup.title`, `factorSignin.backup.body`, `factorSignin.backup.label`, `factorSignin.backup.failed`, `factorSignin.backup.format`, `factorSignin.left.one`, `factorSignin.left.other` |
 | 17. Settings loading and error | Settings → Sign-in while the factors load, then on a failed load a message and a Try again button. | `factorSettings.loading`, `factorSettings.error.load`, `factorSettings.retry` |
-| 18. Settings with the app only | `SettingsFrame` section with grouped `FactorRow`s: password, authenticator app, passkeys (none), backup codes. Remove is disabled while it is the only factor, with the reason beside it. The lost-phone paragraph closes the section. | `factorSettings.nav`, `factorSettings.title`, `factorSettings.body`, `factorSettings.password`, `factorSettings.password.set`, `factorSettings.password.none`, `factorSettings.totp`, `factorSettings.totp.on`, `factorSettings.totp.off`, `factorSettings.totp.add`, `factorSettings.totp.remove`, `factorSettings.totp.removeLabel`, `factorSettings.only`, `factorSettings.lost`, `factorSettings.codes`, `factorSettings.codes.one`, `factorSettings.codes.other`, `factorSettings.codes.none`, `factorSettings.codes.make` |
-| 19. Settings with the app and passkeys | The passkeys are one group under a `factorSettings.passkeys` heading: one row per passkey with its name and when it was added and last used, each with its own remove button, then add passkey after the rows. The group sits between the app and the backup codes. | `factorSettings.passkeys`, `factorSettings.passkeys.none`, `factorSettings.passkeys.used`, `factorSettings.passkeys.unused`, `factorSettings.passkeys.add`, `factorSettings.passkeys.remove`, `factorSettings.passkeys.removeLabel` |
+| 18. Settings with the app only | `SettingsFrame` section with grouped `FactorRow`s: password, authenticator app, passkeys (none), backup codes. Remove is disabled while it is the only factor, with the reason beside it. (Task 11: no closing paragraph; the prototype's copy.) | `factorSettings.nav`, `factorSettings.title`, `factorSettings.body`, `factorSettings.password`, `factorSettings.password.changed`, `factorSettings.password.none`, `factorSettings.totp`, `factorSettings.totp.on`, `factorSettings.totp.off`, `factorSettings.totp.add`, `factorSettings.totp.remove`, `factorSettings.totp.removeLabel`, `factorSettings.only`, `factorSettings.codes`, `factorSettings.codes.one`, `factorSettings.codes.other`, `factorSettings.codes.none`, `factorSettings.codes.make` |
+| 19. Settings with the app and passkeys | The passkeys are one group under a `factorSettings.passkeys` heading: one row per passkey, "Passkey" over its name (Task 11), each with its own remove button, then add passkey after the rows. The group sits between the app and the backup codes. | `factorSettings.passkeys`, `factorSettings.passkeys.none`, `factorSettings.passkey`, `factorSettings.passkeys.add`, `factorSettings.passkeys.remove`, `factorSettings.passkeys.removeLabel` |
 | 20. Step-up | A dialog before any change. A password field, or Use passkey when the account has no password, or a code field (an authenticator code or a backup code) when it has neither a password nor a passkey. Failed: the password did not work, and focus goes back to the emptied field. Expired: the step-up token ran out. Too many: the attempts are throttled. | `factorSettings.stepUp.title`, `factorSettings.stepUp.body`, `factorSettings.stepUp.password`, `factorSettings.stepUp.passkeyBody`, `factorSettings.stepUp.usePasskey`, `factorSettings.stepUp.confirm`, `factorSettings.stepUp.working`, `factorSettings.stepUp.failed`, `factorSettings.stepUp.codeBody`, `factorSettings.stepUp.code`, `factorSettings.stepUp.codeFailed`, `factorSettings.stepUp.expired`, `factor.error.tooMany` |
 | 21. Remove and make-codes confirms and results | A confirm dialog per action, opening on Cancel. A removal steps up first; making new codes confirms first, then steps up, then makes them with no second press. A removal says what it costs. Results are polite announcements. A refusal because it is the only factor, or because the factors changed on another device, is shown in the dialog. | `factorSettings.removeTitle.totp`, `factorSettings.removeTitle.passkey`, `factorSettings.removeBody`, `factorSettings.removeConfirm`, `factorSettings.removeBusy`, `factorSettings.cancel`, `factorSettings.removed.totp`, `factorSettings.removed.passkey`, `factorSettings.codesMade`, `factorSettings.codes.makeTitle`, `factorSettings.codes.makeBody`, `factorSettings.codes.makeConfirm`, `factorSettings.error.only`, `factorSettings.error.changed`, `factorSettings.error.other` |
 | 22. Assigning a moderator role to an account without a factor | A cross-reference row. `E_TARGET_NO_FACTOR` shows the role dialog's refusal; the key lives in flow 09. | `roles.assign.error.twoFactor` |
 
 ## 1280×800
 
-The factor steps sit in `OnboardingFrame`, centred in the column the other onboarding steps use. The QR code is 192 px, beside the setup key and its Copy button. The backup codes are in two columns. Settings → Sign-in is a `SettingsFrame` section with grouped `FactorRow`s: password, authenticator app, passkeys, backup codes. Each group has its add button after its rows. Dialogs are centred.
+The factor steps sit in `OnboardingFrame`, centred in the column the other onboarding steps use. The QR code is 192 px, beside the setup key and its Copy button. The backup codes are in at most two columns, two only when each column holds one whole code on one line (otherwise one). Settings → Sign-in is a section of `SettingsRow`s in one card: password, authenticator app, each passkey, the passkeys' add row, backup codes; each row's action is its button at the right. Dialogs are centred.
 
 ## 360×740
 
@@ -139,33 +139,32 @@ Polite, through the screen's `useAnnouncer` (it queues, so two in a row are both
 - `factorSignin.lost='Lost your phone? Use a backup code, or ask the operator of {instance} to reset your second factor.'`
 - `factorSignin.left.one='You have 1 backup code left. Make new ones in Settings, under sign-in.'`
 - `factorSignin.left.other='You have {count} backup codes left. Make new ones in Settings, under sign-in.'`
-- `factorSettings.nav='sign-in'`
+- `factorSettings.nav='Sign-in'`
 - `factorSettings.title='Sign-in'`
-- `factorSettings.body='What {instance} asks for when you sign in on a new browser. Browsers that are already set up, like this one, do not ask again.'`
+- `factorSettings.body='Password and second factors for new browsers.'`
 - `factorSettings.loading='Loading…'`
 - `factorSettings.error.load='Could not load your sign-in settings ({code}).'`
 - `factorSettings.retry='Try again'`
 - `factorSettings.password='Password'`
-- `factorSettings.password.set='This account has a password.'`
+- `factorSettings.password.changed='Changed {when}'` (Task 11: hidden while the date is unknown)
 - `factorSettings.password.none='This account has no password.'`
 - `factorSettings.totp='Authenticator app'`
-- `factorSettings.totp.on='Added {date}.'`
+- `factorSettings.totp.on='Added {date}'`
 - `factorSettings.totp.off='Not set up.'`
-- `factorSettings.totp.add='add authenticator app'`
-- `factorSettings.totp.remove='remove'`
-- `factorSettings.totp.removeLabel='remove the authenticator app'`
+- `factorSettings.totp.add='Add authenticator app'`
+- `factorSettings.totp.remove='Remove'`
+- `factorSettings.totp.removeLabel='Remove the authenticator app'`
 - `factorSettings.passkeys='Passkeys'`
 - `factorSettings.passkeys.none='No passkeys yet.'`
-- `factorSettings.passkeys.used='Added {created}, last used {used}.'`
-- `factorSettings.passkeys.unused='Added {created}, not used yet.'`
-- `factorSettings.passkeys.add='add passkey'`
-- `factorSettings.passkeys.remove='remove'`
-- `factorSettings.passkeys.removeLabel='remove {name}'`
+- `factorSettings.passkey='Passkey'` (Task 11: each passkey row is "Passkey" over its name)
+- `factorSettings.passkeys.add='Add passkey'`
+- `factorSettings.passkeys.remove='Remove'`
+- `factorSettings.passkeys.removeLabel='Remove {name}'`
 - `factorSettings.codes='Backup codes'`
-- `factorSettings.codes.one='1 backup code left.'`
-- `factorSettings.codes.other='{count} backup codes left.'`
+- `factorSettings.codes.one='1 of 10 left'`
+- `factorSettings.codes.other='{count} of 10 left'`
 - `factorSettings.codes.none='No backup codes left. Make new ones so you are not locked out.'`
-- `factorSettings.codes.make='make new backup codes'`
+- `factorSettings.codes.make='New codes'`
 - `factorSettings.codes.makeTitle='Make new backup codes?'`
 - `factorSettings.codes.makeBody='Your old backup codes stop working at once.'`
 - `factorSettings.codes.makeConfirm='Make new codes'`
@@ -188,7 +187,6 @@ Polite, through the screen's `useAnnouncer` (it queues, so two in a row are both
 - `factorSettings.stepUp.working='Checking…'`
 - `factorSettings.stepUp.failed='That password did not work.'`
 - `factorSettings.stepUp.expired='That took too long. Confirm it is you again.'`
-- `factorSettings.lost='Lost your phone or a passkey? Add a new second factor here, then remove the old one. Without a browser that is set up, use a backup code to sign in, or ask the operator of {instance} to reset your second factor.'`
 - `factorSettings.error.only='You cannot remove your only second factor.'`
 - `factorSettings.error.changed='Your sign-in settings changed on another device. Check them and try again.'`
 - `factorSettings.error.other='That did not work ({code}). Try again.'`

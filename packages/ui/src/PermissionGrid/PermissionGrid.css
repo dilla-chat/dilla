@@ -1,31 +1,33 @@
-.d-permission-grid { container-type: inline-size; display: grid; gap: 1.25rem; min-width: 0; font-family: var(--font-mono); }
+/* README §5.9 (task 10), the prototype's Roles editor: one 10px-radius group; each permission group opens with a 10px
+   uppercase heading on --bg-2 (10px 14px 6px), and each permission is a 46px row (6px 14px) under a hairline: the name
+   12.5px, its description 10.5px --fg-3, the toggle on the right. */
+.d-permission-grid { container-type: inline-size; display: grid; gap: 0; min-width: 0; overflow: hidden; font-family: var(--font-mono); border: 1px solid var(--hairline); border-radius: var(--r-xl); }
 .d-permission-grid__group { display: grid; gap: 0; min-width: 0; }
-.d-permission-grid__title { margin: 0 0 0.375rem; font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking); text-transform: uppercase; color: var(--fg-3); }
-.d-permission-grid__row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; min-width: 0; padding: 0.5rem 0; border-top: 1px solid var(--hairline); }
-.d-permission-grid__text { display: grid; gap: 0.125rem; min-width: 0; flex: 1; }
-.d-permission-grid__name { font-size: var(--text-base); color: var(--fg); }
-.d-permission-grid__hint { font-size: var(--text-sm); color: var(--fg-3); }
+.d-permission-grid__title { margin: 0; padding: 10px 14px 6px; font-size: var(--text-micro); font-weight: var(--weight-label); line-height: 1.5; letter-spacing: var(--label-tracking-wide); text-transform: uppercase; color: var(--fg-3); background: var(--bg-2); }
+.d-permission-grid__group + .d-permission-grid__group .d-permission-grid__title { border-top: 1px solid var(--hairline); }
+.d-permission-grid__row { box-sizing: border-box; display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; min-height: 2.875rem /* 46px */; padding: 6px 14px; border-top: 1px solid var(--hairline); }
+.d-permission-grid__text { display: grid; min-width: 0; flex: 1; line-height: 1.35; }
+.d-permission-grid__name { font-size: var(--text-sm); color: var(--fg); }
+.d-permission-grid__hint { font-size: var(--text-meta); color: var(--fg-3); }
 .d-permission-grid__reason { color: var(--fg-2); }
 .d-permission-grid__row[data-disabled="true"] .d-permission-grid__name { color: var(--fg-2); }
-.d-permission-grid__tri { display: inline-flex; flex: none; gap: 2px; padding: 2px; background: var(--bg); border: 1px solid var(--edge); border-radius: var(--r-md); }
-.d-permission-grid__radio { min-width: 1.5rem; min-height: 1.5rem; padding: 0.25rem 0.625rem; font: inherit; font-size: var(--text-sm); color: var(--fg-2); background: transparent; border: 0; border-radius: var(--r-sm); cursor: pointer; transition: background var(--duration-fast), color var(--duration-fast); }
-.d-permission-grid__radio:hover { color: var(--fg); background: var(--surface-hi); }
-/* The state is also text (the radio's own label) and a bar: never colour alone. */
-.d-permission-grid__radio[aria-checked="true"] { color: var(--accent); background: var(--accent-soft); font-weight: 700; box-shadow: inset 0 -2px 0 var(--accent); }
-.d-permission-grid__radio[data-value="deny"][aria-checked="true"] { color: var(--danger); background: var(--surface-hi); box-shadow: inset 0 -2px 0 var(--danger); }
+/* A channel override (allow / inherit / deny; the prototype has none): the segmented control's look. */
+.d-permission-grid__tri { display: inline-flex; flex: none; gap: 0; padding: 2px; background: var(--surface-2); border: 1px solid var(--control-edge-field); border-radius: var(--r-seg); }
+.d-permission-grid__radio { min-width: 1.5rem; min-height: 1.625rem; padding: 0 10px; font: inherit; font-size: var(--text-btn); color: var(--fg-strong); background: transparent; border: 0; border-radius: calc(var(--r-seg) - 2px); cursor: pointer; transition: background var(--duration-fast), color var(--duration-fast); }
+.d-permission-grid__radio:hover { color: var(--fg); background: var(--hover); }
+.d-permission-grid__radio[aria-checked="true"] { color: var(--accent-ink); background: var(--accent); }
+.d-permission-grid__radio[data-value="deny"][aria-checked="true"] { color: var(--danger-ink); background: var(--danger); }
 .d-permission-grid__radio[aria-disabled="true"] { cursor: not-allowed; opacity: var(--opacity-muted); }
-/* A toggle row: label and switch on one line, the hint under the label. */
+/* A toggle row: name and switch on one line, the description under the name. */
 .d-permission-grid__row--toggle { flex-wrap: wrap; }
-.d-permission-grid__row--toggle > .d-permission-grid__reason { flex-basis: 100%; }
-.d-permission-grid__row--toggle .d-toggle { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "name sw" "hint sw"; align-items: center; column-gap: 1rem; row-gap: 0.125rem; width: 100%; }
-.d-permission-grid__row--toggle .d-toggle__label { grid-area: name; font-size: var(--text-base); color: var(--fg); }
-.d-permission-grid__row--toggle .d-toggle__switch { grid-area: sw; }
-.d-permission-grid__row--toggle .d-toggle__hint { grid-area: hint; }
-/* Narrow (the grid's own width, so it also holds inside a narrow frame): label and hint above, the control below. */
+.d-permission-grid__row--toggle > .d-permission-grid__reason { flex-basis: 100%; font-size: var(--text-meta); }
+.d-permission-grid__row--toggle .d-toggle { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "name sw" "hint sw"; align-items: center; column-gap: 12px; row-gap: 0; width: 100%; line-height: 1.35; }
+.d-permission-grid__row--toggle .d-toggle__label { grid-area: name; font-size: var(--text-sm); color: var(--fg); }
+.d-permission-grid__row--toggle .d-toggle__switch { grid-area: sw; min-width: 2.25rem; min-height: 1.5rem; padding: 0; }
+.d-permission-grid__row--toggle .d-toggle__hint { grid-area: hint; font-size: var(--text-meta); color: var(--fg-3); }
+/* Narrow (the grid's own width, so it also holds inside a narrow frame): a tri-state control goes under its name. */
 @container (max-width: 30rem) {
-  .d-permission-grid__row { flex-direction: column; align-items: stretch; gap: 0.375rem; }
+  .d-permission-grid__row:not(.d-permission-grid__row--toggle) { flex-direction: column; align-items: stretch; gap: 0.375rem; padding-block: 10px; }
   .d-permission-grid__tri { align-self: flex-start; }
-  .d-permission-grid__row--toggle .d-toggle { grid-template-columns: minmax(0, 1fr); grid-template-areas: "name" "hint" "sw"; }
-  .d-permission-grid__row--toggle .d-toggle__switch { justify-self: start; }
 }
 @media (prefers-reduced-motion: reduce) { .d-permission-grid__radio { transition: none; } }

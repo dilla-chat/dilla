@@ -1,3 +1,4 @@
+import { pushHistoryState, replaceHistoryState, subscribeCommittedTraversal } from './router.ts';
 import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react';
 
 /**
@@ -141,25 +142,24 @@ export function usePhoneSheet(name: 'members' | 'thread', open: boolean, onClose
       if (sheetOf(window.history.state) !== name) return;
       const rest = { ...(window.history.state as Record<string, unknown>) };
       delete rest[SHEET];
-      window.history.replaceState(Object.keys(rest).length === 0 ? null : rest, '', location.href);
+      replaceHistoryState(Object.keys(rest).length === 0 ? null : rest, '', location.href);
     };
     if (!open) {
       pushed.current = false;
       strip();
-      window.addEventListener('popstate', strip);
-      return () => window.removeEventListener('popstate', strip);
+      return subscribeCommittedTraversal(strip);
     }
     strip();
     const current = typeof window.history.state === 'object' && window.history.state !== null ? window.history.state as Record<string, unknown> : {};
-    window.history.pushState({ ...current, [SHEET]: name }, '', location.href);
+    pushHistoryState({ ...current, [SHEET]: name }, '', location.href);
     pushed.current = true;
     const onPop = () => {
       if (sheetOf(window.history.state) === name) return;
       pushed.current = false;
       onCloseRef.current();
     };
-    window.addEventListener('popstate', onPop);
-    return () => window.removeEventListener('popstate', onPop);
+    const unsubscribe = subscribeCommittedTraversal(onPop);
+    return () => unsubscribe();
   }, [open, name]);
   const close = useCallback(() => {
     if (pushed.current && sheetOf(window.history.state) === name) { pushed.current = false; window.history.back(); return true; }

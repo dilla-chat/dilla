@@ -1,9 +1,11 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
@@ -245,6 +247,62 @@ func TestSendWithPreflightChecksOnlyUnacceptedAttempts(t *testing.T) {
 	}
 }
 
+type reviewRevokeDuringPrepare struct {
+	*sendNativeFake
+	allowed *bool
+}
+
+func (n reviewRevokeDuringPrepare) PrepareSend(ctx context.Context, operation, attempt, group id.ID, body []byte, now, generation uint64) (native.PreparedSend, error) {
+	*n.allowed = false
+	return n.sendNativeFake.PrepareSend(ctx, operation, attempt, group, body, now, generation)
+}
+
+func TestSendRechecksAuthorizationAtUploadBoundary(t *testing.T) {
+	c, n, s, in := sendFixture()
+	allowed := true
+	c.native = reviewRevokeDuringPrepare{sendNativeFake: n, allowed: &allowed}
+	blocked := errors.New("creator revoked during native preparation")
+	preflight := func(context.Context) error {
+		if !allowed {
+			return blocked
+		}
+		return nil
+	}
+	_, err := c.sendWithPreflight(context.Background(), s, in, preflight)
+	if !errors.Is(err, blocked) || s.posts != 0 || n.prepareCalls != 1 {
+		t.Fatalf("post-prepare revoke result err=%v posts=%d prepares=%d", err, s.posts, n.prepareCalls)
+	}
+}
+
+func TestSendReauthorizesPreparedAttemptOnResume(t *testing.T) {
+	c, n, s, in := sendFixture()
+	prepared := false
+	blocked := errors.New("creator revoked before prepared retry upload")
+	preflight := func(context.Context) error {
+		if prepared && s.posts > 0 {
+			return blocked
+		}
+		return nil
+	}
+	s.postErr = errors.New("temporary upload failure")
+	s.resolveErr = errors.New("receipt lookup unavailable")
+	if _, err := c.sendWithPreflight(context.Background(), s, in, func(ctx context.Context) error {
+		err := preflight(ctx)
+		return err
+	}); err == nil {
+		t.Fatal("first uncertain attempt unexpectedly succeeded")
+	}
+	prepared = true
+	// Model current authorization being revoked after the uncertain upload; a second
+	// invocation must stop before posting the already-prepared immutable ciphertext.
+	if _, err := c.sendWithPreflight(context.Background(), s, in, preflight); !errors.Is(err, blocked) {
+		t.Fatalf("prepared retry authorization error=%v", err)
+	}
+	if s.posts != 1 || n.prepareCalls != 1 {
+		t.Fatalf("prepared retry was reuploaded or reencrypted: posts=%d prepares=%d", s.posts, n.prepareCalls)
+	}
+}
+
 func TestSendAllowsSuccessorOnlyAfterClosedAttemptAndNewEpoch(t *testing.T) {
 	c, n, s, in := sendFixture()
 	prev := sendID(10)
@@ -333,5 +391,150 @@ func TestSendRejectsForeignInstanceBeforeUsingSession(t *testing.T) {
 	}
 	if s.posts != 0 || s.lookups != 0 {
 		t.Fatalf("foreign instance network use: post=%d lookup=%d", s.posts, s.lookups)
+	}
+}
+
+func TestSendRateLimitLeavesPreparedAttemptPending(t *testing.T) {
+	coordinator, n, session, input := sendFixture()
+	refusal := &client.APIError{Status: 429, Code: "E_RATE_LIMITED", Outcome: client.OutcomeDefinitive}
+	session.postErr = refusal
+	if _, err := coordinator.send(t.Context(), session, input); !errors.Is(err, refusal) {
+		t.Fatalf("send error=%v", err)
+	}
+	if session.lookups != 1 || session.resolves != 0 || n.confirmCalls != 0 {
+		t.Fatalf("refused upload was resolved/closed: lookups=%d resolves=%d confirmations=%d", session.lookups, session.resolves, n.confirmCalls)
+	}
+	accepted := sendReceipt(input.OperationID, input.AttemptID, input.GroupID, 12, 9, protocol.ReceiptAccepted)
+	session.postReceipt = &accepted
+	session.postErr = errors.New("lost upload response")
+	receipt, err := coordinator.send(t.Context(), session, input)
+	if err != nil || receipt.Outcome != protocol.ReceiptAccepted || session.resolves != 0 {
+		t.Fatalf("next send receipt=%+v error=%v resolves=%d", receipt, err, session.resolves)
+	}
+}
+
+type sendPreparedResolver interface {
+	ResolvePrepared(context.Context, SendSession, SendInput) (protocol.SendReceipt, error)
+}
+type immutableResolutionNative struct {
+	*sendNativeFake
+	expected SendInput
+	inputs   []SendInput
+}
+
+func (n *immutableResolutionNative) PrepareSend(ctx context.Context, operation, attempt, group id.ID, body []byte, now, generation uint64) (native.PreparedSend, error) {
+	in := SendInput{OperationID: operation, AttemptID: attempt, GroupID: group, RequestBody: append([]byte(nil), body...), OriginalNow: now, ExpectedGeneration: generation}
+	n.inputs = append(n.inputs, in)
+	if operation != n.expected.OperationID || attempt != n.expected.AttemptID || group != n.expected.GroupID || !bytes.Equal(body, n.expected.RequestBody) || now != n.expected.OriginalNow || generation != n.expected.ExpectedGeneration {
+		return native.PreparedSend{}, errors.New("resolution changed immutable input")
+	}
+	return n.sendNativeFake.PrepareSend(ctx, operation, attempt, group, body, now, generation)
+}
+func TestResolvePreparedClosesSameAttemptWithoutUploading(t *testing.T) {
+	coordinator, helper, session, in := sendFixture()
+	resolver, ok := any(coordinator).(sendPreparedResolver)
+	if !ok {
+		t.Fatal("coordinator has no resolve-only path for revoked prepared attempts")
+	}
+	helper.group.State = 4
+	replay := &immutableResolutionNative{sendNativeFake: helper, expected: in}
+	coordinator.native = replay
+	closed := sendReceipt(in.OperationID, in.AttemptID, in.GroupID, in.ExpectedGeneration, helper.prepared.Epoch, protocol.ReceiptClosedNotAccepted)
+	session.resolveReceipt = &closed
+	session.resolveErr = context.DeadlineExceeded
+	if _, err := resolver.ResolvePrepared(context.Background(), session, in); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("lost resolution response=%v", err)
+	}
+	session.resolveErr = nil
+	got, err := resolver.ResolvePrepared(context.Background(), session, in)
+	if err != nil || got.Outcome != protocol.ReceiptClosedNotAccepted || session.posts != 0 || session.resolves != 2 || helper.confirmCalls != 1 || len(replay.inputs) != 2 {
+		t.Fatalf("resolve result=%+v err=%v uploads=%d resolutions=%d confirmations=%d prepares=%d", got, err, session.posts, session.resolves, helper.confirmCalls, len(replay.inputs))
+	}
+	if !reflect.DeepEqual(session.resolutions[0], session.resolutions[1]) {
+		t.Fatal("retry replaced original ciphertext resolution")
+	}
+}
+func TestResolvePreparedRecoversLostAcceptedReceiptBeforeClosing(t *testing.T) {
+	coordinator, helper, session, in := sendFixture()
+	resolver, ok := any(coordinator).(sendPreparedResolver)
+	if !ok {
+		t.Fatal("coordinator has no resolve-only receipt recovery")
+	}
+	accepted := sendReceipt(in.OperationID, in.AttemptID, in.GroupID, in.ExpectedGeneration, helper.prepared.Epoch, protocol.ReceiptAccepted)
+	session.receipts[in.AttemptID] = accepted
+	got, err := resolver.ResolvePrepared(context.Background(), session, in)
+	if err != nil || got.Outcome != protocol.ReceiptAccepted || helper.prepareCalls != 0 || session.resolves != 0 || session.posts != 0 || helper.confirmCalls != 1 {
+		t.Fatalf("accepted recovery result=%+v error=%v prepares=%d resolutions=%d uploads=%d confirmations=%d", got, err, helper.prepareCalls, session.resolves, session.posts, helper.confirmCalls)
+	}
+}
+
+type unavailablePreparedNative struct {
+	*sendNativeFake
+	failure error
+	blocked map[id.ID]bool
+	failed  chan id.ID
+}
+
+func (n unavailablePreparedNative) PrepareSend(ctx context.Context, operation, attempt, group id.ID, body []byte, now, generation uint64) (native.PreparedSend, error) {
+	if n.blocked == nil || n.blocked[operation] {
+		n.prepareCalls++
+		if n.failed != nil {
+			n.failed <- operation
+		}
+		return native.PreparedSend{}, n.failure
+	}
+	return n.sendNativeFake.PrepareSend(ctx, operation, attempt, group, body, now, generation)
+}
+func TestResolvePreparedDistinguishesMissingCiphertextFromRetryableFailure(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		failure  error
+		terminal bool
+	}{
+		{"conflict", &helper.StatusError{Status: 4}, true},
+		{"not found", &helper.StatusError{Status: 7}, true},
+		{"unknown", &helper.StatusError{Status: 5}, false},
+		{"deadline", context.DeadlineExceeded, false},
+		{"transport", errors.New("private native transport details"), false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			coordinator, native, session, in := sendFixture()
+			coordinator.native = unavailablePreparedNative{sendNativeFake: native, failure: test.failure}
+			_, err := coordinator.ResolvePrepared(context.Background(), session, in)
+			var classified interface{ FailureClass() string }
+			terminal := errors.As(err, &classified) && classified.FailureClass() == "send_not_prepared"
+			if terminal != test.terminal || !errors.Is(err, test.failure) || session.posts != 0 || session.resolves != 0 || native.confirmCalls != 0 {
+				t.Fatalf("missing-ciphertext classification: terminal=%v error=%v posts=%d resolves=%d confirms=%d", terminal, err, session.posts, session.resolves, native.confirmCalls)
+			}
+			if test.terminal && err.Error() != "bot send has no recoverable prepared ciphertext" {
+				t.Fatalf("unbounded terminal error: %q", err)
+			}
+		})
+	}
+}
+
+func TestResolvePreparedDefinitiveRefusalIsTerminal(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		status   int
+		code     string
+		outcome  client.Outcome
+		terminal bool
+	}{
+		{"closed group", 404, "E_NOT_FOUND", client.OutcomeDefinitive, true},
+		{"forbidden", 403, "E_FORBIDDEN", client.OutcomeDefinitive, true},
+		{"leaf revoked", 403, "E_LEAF_NOT_CURRENT", client.OutcomeDefinitive, true},
+		{"timeout", 504, "unavailable", client.OutcomeDefinitive, false},
+		{"unknown outcome", 403, "E_FORBIDDEN", client.OutcomeUnknown, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			coordinator, native, session, in := sendFixture()
+			cause := &client.APIError{Status: tc.status, Code: tc.code, Outcome: tc.outcome}
+			session.resolveErr = cause
+			_, err := coordinator.ResolvePrepared(t.Context(), session, in)
+			if errors.Is(err, ErrSendTerminal) != tc.terminal || !errors.Is(err, cause) || session.posts != 0 || session.resolves != 1 || native.confirmCalls != 0 {
+				t.Fatalf("terminal=%v want=%v error=%v posts=%d resolves=%d confirms=%d", errors.Is(err, ErrSendTerminal), tc.terminal, err, session.posts, session.resolves, native.confirmCalls)
+			}
+		})
 	}
 }

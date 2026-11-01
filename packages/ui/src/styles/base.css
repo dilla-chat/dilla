@@ -2,12 +2,13 @@
 @import '@fontsource-variable/jetbrains-mono';
 @import '@fontsource/dm-serif-display/400-italic.css';
 
-/* Lucide x, chevron-right and chevron-down (the paths of Icon/icons.ts, 24 × 24, stroke 2, round) as masks (same-origin files: the page's CSP allows no data: image) for CSS
+/* Lucide x, chevron-right, chevron-down and arrow-right (the paths of Icon/icons.ts, 24 × 24, stroke 2, round) as masks (same-origin files: the page's CSP allows no data: image) for CSS
    ::before markers, so no font glyph is needed. The mask is the shape; the marker paints currentColor through it. */
 :root {
   --d-mask-x: url("./masks/x.svg");
   --d-mask-chevron-right: url("./masks/chevron-right.svg");
   --d-mask-chevron-down: url("./masks/chevron-down.svg");
+  --d-mask-arrow-right: url("./masks/arrow-right.svg");
 }
 :where(.d-root, .d-root *) { box-sizing: border-box; }
 .d-root {
@@ -49,6 +50,8 @@
      the grid moves down by its height, so the ring never covers the stage controls. */
   .d-app-shell .d-app-shell__ring { position: fixed; top: var(--d-vvtop, 0px); left: 0; right: 0; z-index: 30; padding-top: env(safe-area-inset-top); padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right); }
   .d-app-shell:has(.d-app-shell__ring) .d-app-shell__grid { padding-top: var(--d-ring-h, 0px); box-sizing: border-box; }
+  /* Signal (README §5.10): no top bar under 770px of shell width; the tab bar and the headers carry search and settings. */
+  .d-app-shell .d-app-shell__topbar { display: none; }
 }
 /* web3.8 (R9): the same rules for a landscape phone, whose shell is 844px wide while data-layout="phone" is set. A container
    query cannot see the viewport, so each rule has this twin with identical declarations (phone-query.test.ts pins the pair). */
@@ -56,6 +59,7 @@
 .d-app-shell[data-layout="phone"] .d-channel-header__actions { flex-wrap: wrap; flex-shrink: 1; min-width: 0; }
 .d-app-shell[data-layout="phone"] .d-app-shell__ring { position: fixed; top: var(--d-vvtop, 0px); left: 0; right: 0; z-index: 30; padding-top: env(safe-area-inset-top); padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right); }
 .d-app-shell[data-layout="phone"]:has(.d-app-shell__ring) .d-app-shell__grid { padding-top: var(--d-ring-h, 0px); box-sizing: border-box; }
+.d-app-shell[data-layout="phone"] .d-app-shell__topbar { display: none; }
 /* web3.8: the banner sits above a covering page (Settings, z-index 20), and the page starts below it (--d-banner-h). */
 .d-app-shell[data-layout="phone"] .d-app-shell__banner { position: relative; z-index: 21; }
 /* web3.7: the phone shell (flow 12) shows one pane at a time. --d-shell-h is the story's and the host's fixed height;
@@ -71,8 +75,9 @@
 /* Landscape with viewport-fit=cover: the rail, the list and the pane stay clear of the notch on the sides. */
 .d-app-shell[data-layout="phone"] .d-app-shell__grid { padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right); box-sizing: border-box; }
 .d-app-shell[data-layout="phone"] .d-app-shell__aside { width: 100%; border-left: 0; padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right); }
-/* web3.7.1: the tab bar stays on every pane, so a sheet ends above it (--d-tabbar-h is 0px while it is hidden, as when typing). */
-.d-app-shell[data-layout="phone"] .d-app-shell__aside, .d-app-shell[data-layout="phone"] .d-app-shell__backdrop { bottom: var(--d-tabbar-h, 0px); }
+/* Task 11 (Jonas, Q4; the prototype's phone thread and members): a sheet covers the whole screen, the tab bar included; its own
+   head's × closes it. */
+.d-app-shell[data-layout="phone"] .d-app-shell__aside, .d-app-shell[data-layout="phone"] .d-app-shell__backdrop { bottom: 0; }
 .d-app-shell[data-layout="phone"] .d-app-shell__tabbar[hidden], .d-app-shell[data-layout="phone"][data-typing="true"] .d-app-shell__tabbar { display: none; }
 /* The call bar is the bottom row on the view pane: it clears the home indicator when no tab bar follows it, and then the
    composer above it needs no inset of its own. */
@@ -82,16 +87,20 @@
 .d-app-shell[data-layout="phone"]:has(.d-app-shell__ring) .d-app-shell__aside .d-phone-header { padding-top: 0; }
 /* web3.9 (R10, R13): a finger needs taller rows and a wider trailing column; the rows stay flush (no gap). `[data-phone]` is the
    thread sheet's and the other phone-only surfaces' hook, which sit outside the shell element. */
-.d-app-shell[data-layout="phone"], [data-phone] { --row-h: 2.75rem; --row-h-sub: 2.25rem; --row-h-2: 3.25rem; --slot-w: 44px; --list-gap: 0rem; }
-/* web3.9 (H4, R9): the primary tier is 44 x 44 on a phone layout, whatever size the control is drawn at on a desktop. */
-.d-app-shell[data-layout="phone"] :is(.d-btn, .d-segmented__option, .d-icon-button) { min-height: 2.75rem; min-width: 2.75rem; }
+/* Fix round 2 (rule 0): the prototype's phone rows keep their 1px margins, so they step 46. */
+.d-app-shell[data-layout="phone"], [data-phone] { --row-h: 2.75rem; --row-h-sub: 2.25rem; --row-h-2: 3.25rem; --slot-w: 44px; --list-gap: 0.0625rem; }
+/* web3.9 (H4, R9): the primary tier is 44 x 44 on a phone layout, whatever size the control is drawn at on a desktop. The phone
+   header's actions are drawn at the prototype's sizes instead (Jonas 2026-10-27; PhoneHeader.css). */
+.d-app-shell[data-layout="phone"] :is(.d-btn, .d-segmented__option, .d-icon-button):not(.d-phone-header__actions *, .d-channel-list__head-btn, .d-user-panel *) { min-height: 2.75rem; min-width: 2.75rem; }
 /* The list heading of a phone tab (activity, you): mono, not the display serif, which is the server name's alone. */
 .d-phone-heading { margin: 0; padding: 0.75rem var(--row-pad-x) 0.5rem; font-family: var(--font-mono); font-style: normal; font-weight: var(--weight-display); font-size: var(--text-md); letter-spacing: var(--label-tracking); color: var(--fg); }
 /* A ring above the pane's header already cleared the notch (it pads by the safe area and the grid moves down by it). */
 .d-app-shell[data-layout="phone"]:has(.d-app-shell__ring) .d-app-shell__main .d-phone-header { padding-top: 0; }
-/* The server menu and its items: 44px on a phone. */
-.d-app-shell[data-layout="phone"] .d-action-menu__trigger { min-width: 2.75rem; min-height: 2.75rem; color: var(--fg-2); }
-.d-app-shell[data-layout="phone"] .d-action-menu__item { min-height: 2.75rem; }
+/* The server menu and its items: 44px on a phone. The channel list head's ⌄ (an ActionMenu trigger since task 10) keeps the
+   prototype's 26px square there, as the .d-btn rule above already exempts it. */
+.d-app-shell[data-layout="phone"] .d-action-menu__trigger:not(.d-user-panel *, .d-channel-list__head-btn) { min-width: 2.75rem; min-height: 2.75rem; color: var(--fg-2); }
+/* Ruling AE: the phone's user panel is the prototype's, at its desktop sizes (30px avatar, 30px mute and deafen, 64 high). */
+/* Task 9 fix round 2: a menu item keeps the prototype's 32px on a phone too (rule 0: phone sizes follow the prototype). */
 .d-app-shell[data-layout="phone"] .d-composer { padding-bottom: max(0.5rem, env(safe-area-inset-bottom)); }
 .d-app-shell[data-layout="phone"]:has(.d-app-shell__callbar) .d-composer { padding-bottom: 0.5rem; }
 /* The tab bar pads the home indicator once: the composers above it (the thread pane's too) add none, until the bar steps aside while typing. */
@@ -103,45 +112,63 @@
 .d-app-shell[data-layout="phone"][data-pane="list"]:not(:has(.d-link-banner:not(:empty), .d-app-shell__ring)) .d-app-shell__grid { padding-top: env(safe-area-inset-top); box-sizing: border-box; }
 .d-app-shell[data-layout="phone"]:has(.d-link-banner:not(:empty)) .d-phone-header { padding-top: 0; }
 .d-app-shell[data-layout="phone"]:has(.d-app-shell__ring) .d-link-banner { padding-top: 0.375rem; }
-/* No zoom on a phone (Jonas, 2026-10-16): a tap never zooms, and no field is under 16px, which is what makes iOS zoom on focus. */
+/* No zoom on a phone (Jonas, 2026-10-16): a tap never zooms, and no text field is under 16px, which is what makes iOS zoom on
+   focus. Task 11 (Jonas, Q6): a select keeps the prototype's size; iOS may zoom when one opens, which Jonas accepts. */
 .d-root { touch-action: manipulation; }
 @media (max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem) {
-  .d-root :is(input:not([type="checkbox"], [type="radio"], [type="range"], [type="button"], [type="submit"], [type="reset"]), textarea, select, [contenteditable="true"]) { font-size: 1rem; }
+  .d-root :is(input:not([type="checkbox"], [type="radio"], [type="range"], [type="button"], [type="submit"], [type="reset"]), textarea, [contenteditable="true"]) { font-size: 1rem; }
 }
 /* web3.4: from 64rem of shell width an open aside (the member list) is a fourth grid column; below that it stays the
    overlay drawer AppShell.css declares. A shell without an aside never gets the --aside class, so its grid is unchanged. */
 @container d-shell (min-width: 64rem) {
-  .d-app-shell .d-app-shell__grid--aside { grid-template-columns: var(--rail-w) var(--d-sidebar-w, var(--sidebar-w)) minmax(0, 1fr) var(--d-aside-w, var(--sidebar-w)); grid-template-areas: "banner banner banner banner" "rail sidebar main aside" "panel panel main aside"; }
-  .d-app-shell .d-app-shell__grid--aside:has(> .d-app-shell__status) { grid-template-areas: "banner banner banner banner" "rail sidebar main aside" "panel panel main aside" "status status status status"; }
-  .d-app-shell .d-app-shell__aside { position: relative; grid-area: aside; width: auto; min-height: 0; min-width: 0; z-index: auto; box-shadow: none; }
+  /* Signal (README §5.1): the aside's column is `auto`; the aside sets its own width, 232 (members) or 340 (thread) unless
+     dragged, and animates it from and to 0 over --duration-aside. Its body keeps the open width, so text never reflows. */
+  .d-app-shell .d-app-shell__grid--aside { grid-template-columns: var(--rail-w) var(--d-sidebar-w, var(--sidebar-w)) minmax(0, 1fr) auto; grid-template-areas: "topbar topbar topbar topbar" "banner banner banner banner" "rail sidebar main aside" "rail panel main aside"; }
+  .d-app-shell .d-app-shell__aside {
+    --d-aside-open: var(--d-aside-w, var(--members-w));
+    position: relative; grid-area: aside; box-sizing: border-box; display: flex; flex-direction: column; width: var(--d-aside-open); min-height: 0; min-width: 0;
+    z-index: auto; box-shadow: none; overflow: hidden;
+    transition: width var(--duration-aside) var(--ease-out), border-left-width var(--duration-aside) var(--ease-out), visibility 0s;
+  }
+  .d-app-shell .d-app-shell__grid--aside[data-aside="thread"] > .d-app-shell__aside { --d-aside-open: var(--d-aside-w, var(--thread-w)); }
+  /* The body follows the aside's width and clips its scroller by overflow (Task 6 fix round 3: a clip-path here also clipped the
+     fixed-position profile card that opens from a member row, and main took its clicks). The scroller keeps the open width. */
+  .d-app-shell .d-app-shell__aside[data-open] > .d-app-shell__aside-body { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
+  .d-app-shell .d-app-shell__aside-body > .d-app-shell__aside-scroll { flex: 1; flex-shrink: 0; width: calc(var(--d-aside-open) - 1px); min-height: 0; overflow-y: auto; }
+  /* With a splitter the aside lets it hang 12px over its left edge; the body still clips on the right while it animates. */
+  .d-app-shell .d-app-shell__aside[data-resizable] { overflow: visible; }
+  /* Closed: 0 wide, and hidden once the width has gone (inert from the start), so it is neither read nor focusable. */
+  .d-app-shell .d-app-shell__aside[data-open="false"] {
+    width: 0; border-left-width: 0; visibility: hidden;
+    transition: width var(--duration-aside) var(--ease-out), border-left-width var(--duration-aside) var(--ease-out), visibility 0s linear var(--duration-aside);
+  }
+  @starting-style { .d-app-shell .d-app-shell__aside[data-open="true"] { width: 0; border-left-width: 0; } }
+  /* A drag follows the pointer, not the animation. */
+  .d-app-shell[data-resizing] .d-app-shell__aside { transition: none; }
 }
 /* A drawer focused only by script (no control inside) draws no ring around the whole pane; its controls keep theirs. */
 .d-root .d-app-shell__aside[tabindex="-1"]:focus-visible { outline: none; }
-/* The settings frame (L-UI-24). Under 45rem of viewport it fills the viewport; under 45rem of its own
-   width the navigation stacks above the section. The second is a container query on the frame, so a
-   story can show it at any viewport through --d-settings-w and --d-settings-h. The frame's container
-   declaration lives here with the two rules that read it. */
-.d-settings-frame { container: d-settings / inline-size; }
-@media (max-width: 44.99rem) {
-  .d-settings-frame.d-settings-frame { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }
-}
-/* web3.7.1: on a phone the frame is a non-modal page that ends above the tab bar (--d-tabbar-h, set on <html> by the shell), below the ring. */
-@media (max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem) {
-  .d-settings-frame.d-settings-frame[data-modeless] { position: fixed; inset: calc(var(--d-vvtop, 0px) + var(--d-ring-h, 0px) + var(--d-banner-h, 0px)) 0 auto 0; width: 100%; height: calc(var(--d-vvh, 100dvh) - var(--d-tabbar-h, 0px) - var(--d-ring-h, 0px) - var(--d-banner-h, 0px)); max-width: none; max-height: none; margin: 0; border: 0; border-radius: 0; box-shadow: none; z-index: 20; }
-}
-@container d-settings (max-width: 44.99rem) {
-  /* A11Y-DESIGN-01: stacked, the whole panel scrolls as one column (at 320 × 256, 400 % zoom, a fixed navigation left
-     the section a two-line strip); the navigation and the section grow with their content. */
-  .d-settings-frame .d-settings-frame__panel { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto; overflow-y: auto; }
-  .d-settings-frame .d-settings-frame__side { border-right: 0; border-bottom: 1px solid var(--hairline-2); overflow: visible; min-height: auto; }
-  .d-settings-frame .d-settings-frame__pane { min-height: auto; }
-  .d-settings-frame .d-settings-frame__body { overflow: visible; }
-  /* R17: a narrow frame stacks the label over a full-width control, as a phone does. */
-  .d-settings-frame .d-settings-row { grid-template-columns: minmax(0, 1fr); }
-}
 /* web3.9 (R17, H5, I6): the settings frame and its rows on a phone layout. The frame is a dialog, so it carries its own data-layout. */
 .d-settings-frame[data-layout="phone"] { --row-h: 2.75rem; --row-h-sub: 2.25rem; --row-h-2: 3.25rem; --slot-w: 44px; --list-gap: 0rem; }
-.d-settings-frame[data-layout="phone"] :is(.d-btn, .d-segmented__option, .d-icon-button) { min-height: 2.75rem; min-width: 2.75rem; }
+/* Signal task 10 (Jonas, pixel parity): buttons and segmented controls in settings keep the prototype's sizes on a phone; the
+   icon buttons of the app's own lists (members, channels; the prototype has none) keep the 44px tier. */
+.d-settings-frame[data-layout="phone"] :is(.d-icon-button) { min-height: 2.75rem; min-width: 2.75rem; }
 .d-settings-frame[data-layout="phone"] .d-settings-row, [data-phone] .d-settings-row { grid-template-columns: minmax(0, 1fr); }
 /* H5: the frame's title is not repeated on a phone (the page below it carries the section's own heading); it stays the dialog's name and focus target. */
 .d-settings-frame[data-layout="phone"] .d-settings-frame__title { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+
+/* Signal motion keyframes (design README §10.3, prefix d- for the prototype's s). Components pick their duration from the
+   --duration-* tokens and the curve from --ease-out; reduced motion zeroes those tokens (generated [data-motion="reduced"]
+   and the prefers-reduced-motion block in the design-tokens CSS), so nothing here repeats it. Sweep and spin are linear. */
+@keyframes d-up { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes d-in { from { opacity: 0; transform: translateX(-6px); } to { opacity: 1; transform: none; } }
+@keyframes d-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes d-modal { from { opacity: 0; transform: translateY(-8px) scale(0.985); } to { opacity: 1; transform: none; } }
+@keyframes d-sheet-up { from { opacity: 0; transform: translateY(40px); } to { opacity: 1; transform: none; } }
+@keyframes d-pop { 0% { transform: scale(0.3); } 60% { transform: scale(1.2); } 100% { transform: scale(1); } }
+@keyframes d-toast { from { opacity: 0; transform: translateY(10px) scale(0.96); } to { opacity: 1; transform: none; } }
+@keyframes d-bar { 0%, 100% { transform: scaleY(0.2); } 50% { transform: scaleY(1); } }
+@keyframes d-sweep { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+@keyframes d-caret { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+@keyframes d-ring { from { opacity: 0.6; transform: scale(1); } to { opacity: 0; transform: scale(1.5); } }
+@keyframes d-spin { to { transform: rotate(360deg); } }

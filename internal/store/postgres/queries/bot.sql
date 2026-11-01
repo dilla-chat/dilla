@@ -20,8 +20,8 @@ UPDATE bot_runtimes SET revoked_at = $1 WHERE id = $2 AND revoked_at IS NULL;
 SELECT * FROM bot_runtimes WHERE id > $1 ORDER BY id LIMIT sqlc.arg(max_rows)::bigint;
 
 -- name: CreateBotInstallation :exec
-INSERT INTO bot_installations(id, community_id, runtime_id, user_id, device_id, role_id, state, revision, capabilities, approved_by, approved_at, credential_verified_at, created, updated, removed_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15);
+INSERT INTO bot_installations(id, community_id, runtime_id, user_id, device_id, role_id, state, revision, capabilities, approved_by, approved_at, credential_verified_at, created, updated, removed_at, feature_capabilities)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16);
 
 -- name: GetBotInstallation :one
 SELECT * FROM bot_installations WHERE id = $1;
@@ -36,8 +36,8 @@ SELECT * FROM bot_installations WHERE id > $1 AND removed_at IS NULL ORDER BY id
 SELECT * FROM bot_installations WHERE device_id = $1 AND id > $2 ORDER BY id LIMIT sqlc.arg(max_rows)::bigint;
 
 -- name: UpdateBotInstallation :execrows
-UPDATE bot_installations SET runtime_id = $1, user_id = $2, device_id = $3, role_id = $4, state = $5, revision = $6, capabilities = $7, approved_by = $8, approved_at = $9, credential_verified_at = $10, updated = $11, removed_at = $12
-WHERE id = $13 AND revision = $14 AND removed_at IS NULL;
+UPDATE bot_installations SET runtime_id = $1, user_id = $2, device_id = $3, role_id = $4, state = $5, revision = $6, capabilities = $7, approved_by = $8, approved_at = $9, credential_verified_at = $10, updated = $11, removed_at = $12, feature_capabilities = $13
+WHERE id = $14 AND revision = $15 AND removed_at IS NULL;
 
 -- name: LockBotInstallation :one
 SELECT id FROM bot_installations WHERE id = $1 FOR UPDATE;
@@ -94,3 +94,17 @@ SELECT * FROM bot_installations
 WHERE id > $1 AND removed_at IS NULL
   AND (runtime_id = $2 OR (state = 0 AND runtime_id IS NULL))
 ORDER BY id LIMIT sqlc.arg(max_rows)::bigint;
+
+-- name: SetBotMusicSettings :execrows
+UPDATE bot_installations SET music_volume = $1, music_idle_minutes = $2
+WHERE id = $3 AND removed_at IS NULL;
+
+-- name: RequestBotRestart :one
+UPDATE bot_installations SET restart_requested = CASE WHEN restart_requested > restart_handled THEN restart_requested ELSE restart_requested + 1 END
+WHERE id = $1 AND removed_at IS NULL
+RETURNING restart_requested;
+
+-- name: SetBotRuntimeStatus :execrows
+UPDATE bot_installations SET runtime_version = sqlc.narg(runtime_version)::text,
+  restart_handled = CASE WHEN sqlc.arg(handled)::bigint > restart_handled THEN LEAST(sqlc.arg(handled)::bigint, restart_requested) ELSE restart_handled END
+WHERE id = sqlc.arg(id) AND runtime_id = sqlc.arg(runtime_id) AND removed_at IS NULL;

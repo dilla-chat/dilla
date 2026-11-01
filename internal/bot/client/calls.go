@@ -70,7 +70,7 @@ func (s *Session) StartCall(ctx context.Context, channel id.ID) (Call, error) {
 	if err != nil {
 		return out, err
 	}
-	raw, _, err := s.c.do(ctx, s.token, http.MethodPost, "channels/"+channelPath+"/calls", nil, body, MaxSmallBody, true)
+	raw, _, err := s.do(ctx, http.MethodPost, "channels/"+channelPath+"/calls", nil, body, MaxSmallBody, true)
 	if err != nil {
 		return out, err
 	}
@@ -193,7 +193,7 @@ func (s *Session) ChannelCall(ctx context.Context, channel id.ID) (ChannelCallSt
 	if err != nil {
 		return out, err
 	}
-	raw, _, err := s.c.do(ctx, s.token, http.MethodGet, "channels/"+p+"/call", nil, nil, MaxSmallBody, false)
+	raw, _, err := s.do(ctx, http.MethodGet, "channels/"+p+"/call", nil, nil, MaxSmallBody, false)
 	if err != nil {
 		return out, err
 	}
@@ -241,6 +241,28 @@ func (s *Session) ChannelCall(ctx context.Context, channel id.ID) (ChannelCallSt
 	return out, nil
 }
 
+// MaxCallRTTMS is the largest RTT POST /v1/calls/{call_id}/rtt accepts, in milliseconds.
+const MaxCallRTTMS = 5000
+
+// ReportCallRTT reports this device's round-trip time to the SFU (whole milliseconds, at most MaxCallRTTMS) for the call's
+// stage: the instance writes it as this device's dilla.rtt participant attribute (Signal task 8c, the bot's "63 ms"). The
+// instance refuses more than one report per device every 1.5 s (429) and a device that is not in the call (404).
+func (s *Session) ReportCallRTT(ctx context.Context, callID id.ID, ms uint32) error {
+	if ms > MaxCallRTTMS {
+		return ErrInvalidConfig
+	}
+	p, err := pathID(callID)
+	if err != nil {
+		return err
+	}
+	body, err := encode([]any{ms})
+	if err != nil {
+		return err
+	}
+	_, _, err = s.do(ctx, http.MethodPost, "calls/"+p+"/rtt", nil, body, MaxSmallBody, true)
+	return err
+}
+
 // EndCall leaves a call, optionally ending it only if this device is alone.
 func (s *Session) EndCall(ctx context.Context, callID id.ID, ifAlone bool) error {
 	p, err := pathID(callID)
@@ -251,6 +273,6 @@ func (s *Session) EndCall(ctx context.Context, callID id.ID, ifAlone bool) error
 	if ifAlone {
 		q = url.Values{"if_alone": []string{"1"}}
 	}
-	_, _, err = s.c.do(ctx, s.token, http.MethodDelete, "calls/"+p, q, nil, MaxSmallBody, true)
+	_, _, err = s.do(ctx, http.MethodDelete, "calls/"+p, q, nil, MaxSmallBody, true)
 	return err
 }

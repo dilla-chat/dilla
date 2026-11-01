@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "safety number (60 digits), SAS (30 digits), recovery key encodings and derived keys, credential identity CBOR with real Ed25519 signatures, and the 81-byte device-session signature preimage (03-identity.md, 02-delivery-service.md)",
+  "description": "safety number (60 digits), SAS (30 digits), recovery key encodings and derived keys, credential identity CBOR with real Ed25519 signatures, the 81-byte device-session signature preimage, and the instance-signed account-kind attestation (03-identity.md, 02-delivery-service.md)",
   "safety_number": {
     "umk_a": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
     "umk_b": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
@@ -40,5 +40,40 @@
     "nonce": "abababababababababababababababababababababababababababababababab",
     "purpose": 0,
     "preimage": "64696c6c612073657373696f6e20763100112233445566778899aabbccddeeff0102030405060708090a0b0c0d0e0f10abababababababababababababababababababababababababababababababab00"
+  },
+  "account_kind": {
+    "instance_priv": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+    "instance_pub": "0d7550754e0800a5d237eef5826035766b9b3e5a15868a940ab289958788e3b0",
+    "key_id": "5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b",
+    "instance_id": "00112233445566778899aabbccddeeff",
+    "user_id": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "cases": [
+      {
+        "kind": 0,
+        "message": "64696c6c61206163636f756e74206b696e6420763184015000112233445566778899aabbccddeeff50d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d400",
+        "signature": "f7af68be70a804a69e663434632ea59d1257e630e940e9ac5691b332c1ce425790a2a39ec7fd1a1368fb307a732e5b53665cd8eea5a4e35f55107c618d9a2a01",
+        "attestation": "8401505b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b005840f7af68be70a804a69e663434632ea59d1257e630e940e9ac5691b332c1ce425790a2a39ec7fd1a1368fb307a732e5b53665cd8eea5a4e35f55107c618d9a2a01"
+      },
+      {
+        "kind": 1,
+        "message": "64696c6c61206163636f756e74206b696e6420763184015000112233445566778899aabbccddeeff50d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d401",
+        "signature": "dec865bac714120388d2f0655f269db0984c235531a86950e3193a22a7b5bd8e44aebb81a94a65ceb84e570d914ec846f115f30b3ee64035b734f3a1ad572f0b",
+        "attestation": "8401505b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b015840dec865bac714120388d2f0655f269db0984c235531a86950e3193a22a7b5bd8e44aebb81a94a65ceb84e570d914ec846f115f30b3ee64035b734f3a1ad572f0b"
+      }
+    ],
+    "rejects": [
+      {
+        "name": "version 2",
+        "attestation": "8402505b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b00584001010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101"
+      },
+      {
+        "name": "kind 2",
+        "attestation": "8401505b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b02584001010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101"
+      },
+      {
+        "name": "trailing byte",
+        "attestation": "8401505b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b0058400101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010100"
+      }
+    ]
   }
 }

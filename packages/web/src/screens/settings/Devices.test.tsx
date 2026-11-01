@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { act, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent, { type UserEvent } from '@testing-library/user-event';
 import type { Command, DeviceSummary } from '@dilla/client-core';
 import { CoreProvider } from '../../core/context.tsx';
@@ -37,6 +37,11 @@ function setup(handler: (c: Command) => Promise<unknown> = () => Promise.resolve
   return { fake, user, view };
 }
 const rows = () => within(screen.getByRole('list')).getAllByRole('listitem');
+// Signal task 10 fix round 2 (Jonas): Rename is in the device row's context menu (right-click, long press, Shift+F10).
+async function renameFrom(user: UserEvent, row: HTMLElement): Promise<void> {
+  fireEvent.contextMenu(row, { clientX: 10, clientY: 10 });
+  await user.click(await screen.findByRole('menuitem', { name: 'Rename' }));
+}
 const rowOf = (id: string) => {
   const row = rows().find(r => within(r).queryByText(id.slice(0, 8)) !== null);
   if (row === undefined) throw new Error(`no row for ${id}`);
@@ -52,39 +57,32 @@ describe('the device list', () => {
     const { fake, view } = setup();
     expect(fake.callsOf('refreshDevices')).toEqual([{ m: 'refreshDevices' }]);
     expect(screen.getByRole('heading', { level: 2, name: 'Devices' })).toBeInTheDocument();
-    expect(screen.getByText('Every browser and app signed in to your account. Removing a device needs your recovery key.')).toBeInTheDocument();
-    expect(screen.getByText('3 devices')).toBeInTheDocument();
+    expect(screen.getByText('Every browser that holds your keys.')).toBeInTheDocument();
     expect(rows().map(r => within(r).getByText(/^[0-9a-f]{8}$/).textContent)).toEqual([OWN, PHONE, FORGOTTEN, OLD].map(id => id.slice(0, 8)));
     const own = rowOf(OWN);
-    expect(within(own).getByText('this browser')).toBeInTheDocument();
-    expect(within(own).getByText('browser')).toBeInTheDocument();
-    // This browser cannot be removed here, but it can be named.
-    expect(within(own).getAllByRole('button').map(b => b.textContent)).toEqual(['rename']);
-    expect(within(rowOf(PHONE)).getByText('app')).toBeInTheDocument();
-    expect(within(rowOf(PHONE)).getByRole('button', { name: 'remove' })).toBeInTheDocument();
+    expect(within(own).getByText('This browser')).toBeInTheDocument();
+    // Signal task 10 fix round 1 (README §5.9): no tier tags; this browser's row signs out, and every live device can be named.
+    expect(within(own).queryByText('Browser')).toBeNull();
+    expect(within(own).getAllByRole('button').map(b => b.textContent)).toEqual(['Sign out']);
+    expect(within(rowOf(PHONE)).getByRole('button', { name: 'Remove' })).toBeInTheDocument();
     expect(within(rowOf(FORGOTTEN)).getByText('not yet in the device list')).toBeInTheDocument();
-    expect(within(rowOf(FORGOTTEN)).getByRole('button', { name: 'remove' })).toBeInTheDocument();
+    expect(within(rowOf(FORGOTTEN)).getByRole('button', { name: 'Remove' })).toBeInTheDocument();
     expect(within(rowOf(OLD)).getByText('removed')).toBeInTheDocument();
     expect(within(rowOf(OLD)).queryByRole('button')).toBeNull();
-    expect(within(rowOf(PHONE)).getByText(/^last seen /)).toBeInTheDocument();
+    // Fix round 2 (the prototype's sub line): "this browser · active now · {id}" here, "active {when} · {id}" elsewhere.
+    expect(within(own).getByText(`this browser · active now · ${OWN.slice(0, 6)}`)).toBeInTheDocument();
+    expect(within(rowOf(PHONE)).getByText(`active 1 minute ago · ${PHONE.slice(0, 6)}`)).toBeInTheDocument();
     await expectNoAxeViolations(view.container);
   });
   it('orders by own, then last seen, then removed', () => {
     const tie = dev('aa'.repeat(16), { lastSeen: NOW - 60 });
     expect(orderDevices([...DEVICES, tie]).map(d => d.id)).toEqual([OWN, tie.id, PHONE, FORGOTTEN, OLD]);
   });
-  it('shows an unknown count until the list arrives, and refreshes on request', async () => {
-    const { fake, user } = setup(undefined, undefined);
-    expect(screen.getByText('– devices')).toBeInTheDocument();
-    act(() => fake.set('devices', DEVICES));
-    expect(screen.getByText('3 devices')).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'refresh' }));
-    expect(fake.callsOf('refreshDevices')).toHaveLength(2);
-  });
-  // Flow 03 (task 15's copy freeze): the count line has a singular form, so one device never reads "1 devices".
-  it('counts one device in words', () => {
-    setup(undefined, [dev(OWN, { own: true }), dev(OLD, { revokedAt: NOW - 60 })]);
-    expect(screen.getByText('one device')).toBeInTheDocument();
+  // Signal task 10 fix round 3: Sign out stays reachable while the list is missing.
+  it('draws this browser\u2019s row with Sign out from the local identity while the list has not arrived', () => {
+    setup(undefined, undefined);
+    expect(screen.getByRole('button', { name: 'Sign out' })).toBeInTheDocument();
+    expect(screen.getByText('This browser')).toBeInTheDocument();
   });
   it('says when the list did not load', async () => {
     setup(c => (c.m === 'refreshDevices' ? Promise.reject(refusal({ code: 'E_NETWORK' })) : Promise.resolve(null)));
@@ -95,7 +93,7 @@ describe('the device list', () => {
 describe('removing a device', () => {
   it('needs the whole key, then sends it with the device', async () => {
     const { fake, user, view } = setup();
-    await user.click(within(rowOf(PHONE)).getByRole('button', { name: 'remove' }));
+    await user.click(within(rowOf(PHONE)).getByRole('button', { name: 'Remove' }));
     const dialog = screen.getByRole('dialog', { name: 'Remove this device?' });
     expect(within(dialog).getByText('The device is signed out everywhere and leaves every conversation. Enter your recovery key to confirm.')).toBeInTheDocument();
     const confirm = within(dialog).getByRole('button', { name: 'Remove' });
@@ -111,14 +109,14 @@ describe('removing a device', () => {
     await user.click(confirm);
     expect(fake.callsOf('revokeDevice')).toEqual([{ m: 'revokeDevice', deviceId: PHONE, recoveryKey: GROUPED }]);
     expect(screen.queryByRole('dialog', { name: 'Remove this device?' })).toBeNull();
-    await user.click(within(rowOf(PHONE)).getByRole('button', { name: 'remove' }));
+    await user.click(within(rowOf(PHONE)).getByRole('button', { name: 'Remove' }));
     expect(screen.getByRole('textbox', { name: 'Recovery key' })).toHaveValue('');
   });
   it('a wrong key keeps the text and puts focus on the field', async () => {
     const { user } = setup(c => (c.m === 'revokeDevice' ? Promise.reject(refusal({ code: 'E_RECOVERY_KEY' })) : Promise.resolve(null)));
-    await user.click(within(rowOf(PHONE)).getByRole('button', { name: 'remove' }));
+    await user.click(within(rowOf(PHONE)).getByRole('button', { name: 'Remove' }));
     await typeKey(user);
-    await user.click(screen.getByRole('button', { name: 'Remove' }));
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Remove' }));
     const field = screen.getByRole('textbox', { name: 'Recovery key' });
     expect(field).toHaveValue(GROUPED);
     expect(field).toHaveAccessibleDescription(expect.stringContaining('This is not the recovery key of this account.'));
@@ -128,17 +126,17 @@ describe('removing a device', () => {
   it('another refusal is shown in the dialog by its code', async () => {
     const { user } = setup(c => (c.m === 'revokeDevice'
       ? Promise.reject(refusal({ code: 'E_DEVICE_LIST_STALE', detail: 'E_RECOVERY_KEY', status: 409 })) : Promise.resolve(null)));
-    await user.click(within(rowOf(PHONE)).getByRole('button', { name: 'remove' }));
+    await user.click(within(rowOf(PHONE)).getByRole('button', { name: 'Remove' }));
     await typeKey(user);
-    await user.click(screen.getByRole('button', { name: 'Remove' }));
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Remove' }));
     expect(within(screen.getByRole('dialog', { name: 'Remove this device?' })).getByRole('alert')).toHaveTextContent('That did not work (E_DEVICE_LIST_STALE). Try again.');
     expect(screen.queryByText(/not the recovery key/)).toBeNull();
   });
   it('sends one removal while in flight and cannot be closed meanwhile', async () => {
     const { fake, user } = setup(c => (c.m === 'revokeDevice' ? new Promise(() => {}) : Promise.resolve(null)));
-    await user.click(within(rowOf(PHONE)).getByRole('button', { name: 'remove' }));
+    await user.click(within(rowOf(PHONE)).getByRole('button', { name: 'Remove' }));
     await typeKey(user);
-    await user.click(screen.getByRole('button', { name: 'Remove' }));
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Remove' }));
     expect(screen.getByRole('button', { name: 'Working…' })).toHaveAttribute('aria-disabled', 'true');
     await user.click(screen.getByRole('button', { name: 'Working…' }));
     await user.keyboard('{Escape}');
@@ -147,16 +145,16 @@ describe('removing a device', () => {
   });
   it('drops the key when the dialog is closed', async () => {
     const { user } = setup();
-    await user.click(within(rowOf(PHONE)).getByRole('button', { name: 'remove' }));
+    await user.click(within(rowOf(PHONE)).getByRole('button', { name: 'Remove' }));
     await typeKey(user);
     await user.click(screen.getByRole('button', { name: 'Close' }));
     expect(screen.queryByRole('dialog')).toBeNull();
-    await user.click(within(rowOf(PHONE)).getByRole('button', { name: 'remove' }));
+    await user.click(within(rowOf(PHONE)).getByRole('button', { name: 'Remove' }));
     expect(screen.getByRole('textbox', { name: 'Recovery key' })).toHaveValue('');
   });
   it('removes a device that is not in the list without the key', async () => {
     const { fake, user, view } = setup();
-    await user.click(within(rowOf(FORGOTTEN)).getByRole('button', { name: 'remove' }));
+    await user.click(within(rowOf(FORGOTTEN)).getByRole('button', { name: 'Remove' }));
     const dialog = screen.getByRole('dialog', { name: 'Remove this device?' });
     expect(within(dialog).getByText('This device signed in with your password but is not in the device list, so it cannot read anything. Removing it needs no recovery key.')).toBeInTheDocument();
     expect(within(dialog).queryByText(/Enter your recovery key/)).toBeNull();
@@ -169,8 +167,8 @@ describe('removing a device', () => {
   it('shows a refused removal of an unlisted device in its dialog, sent once while in flight', async () => {
     let release: (e: unknown) => void = () => {};
     const { fake, user } = setup(c => (c.m === 'revokeDevice' ? new Promise((_, reject) => { release = reject; }) : Promise.resolve(null)));
-    await user.click(within(rowOf(FORGOTTEN)).getByRole('button', { name: 'remove' }));
-    await user.click(screen.getByRole('button', { name: 'Remove' }));
+    await user.click(within(rowOf(FORGOTTEN)).getByRole('button', { name: 'Remove' }));
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Remove' }));
     expect(screen.getByRole('button', { name: 'Working…' })).toHaveAttribute('aria-disabled', 'true');
     await user.click(screen.getByRole('button', { name: 'Working…' }));
     expect(fake.callsOf('revokeDevice')).toHaveLength(1);
@@ -184,9 +182,9 @@ describe('removing a device', () => {
     ['an unlisted device, without it', FORGOTTEN, false],
   ] as const)('moves focus to the section heading after removing %s', async (_, id, withKey) => {
     const { user } = setup();
-    await user.click(within(rowOf(id)).getByRole('button', { name: 'remove' }));
+    await user.click(within(rowOf(id)).getByRole('button', { name: 'Remove' }));
     if (withKey) await typeKey(user);
-    await user.click(screen.getByRole('button', { name: 'Remove' }));
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Remove' }));
     expect(screen.queryByRole('dialog')).toBeNull();
     const heading = screen.getByRole('heading', { level: 2, name: 'Devices' });
     expect(document.activeElement).toBe(heading);
@@ -208,40 +206,43 @@ describe('naming a device', () => {
 
   it('shows the name where there is one and the first eight characters where there is not, and offers rename on live devices only', () => {
     setup(undefined, list());
-    expect(within(rowNamed('work laptop')).getByText(NAMED.slice(0, 8))).toBeInTheDocument();
-    expect(within(rowNamed(PHONE.slice(0, 8))).getByRole('button', { name: 'rename' })).toBeInTheDocument();
-    expect(within(rowNamed(OWN.slice(0, 8))).getByRole('button', { name: 'rename' })).toBeInTheDocument();
-    expect(within(rowNamed(OLD.slice(0, 8))).queryByRole('button', { name: 'rename' })).toBeNull();
+    expect(within(rowNamed('work laptop')).getByText(new RegExp(` · ${NAMED.slice(0, 6)}$`))).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Rename' })).toBeNull();
+    fireEvent.contextMenu(rowNamed(PHONE.slice(0, 8)), { clientX: 10, clientY: 10 });
+    expect(screen.getByRole('menuitem', { name: 'Rename' })).toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole('menuitem', { name: 'Rename' }), { key: 'Escape' });
+    fireEvent.contextMenu(rowNamed(OLD.slice(0, 8)), { clientX: 10, clientY: 10 });
+    expect(screen.queryByRole('menuitem', { name: 'Rename' })).toBeNull();
   });
-  it('keeps the id beside a name, in an isolated span, so a swapped name does not hide which device it is', () => {
+  it('keeps the id under a name, the name isolated, so a swapped name does not hide which device it is', () => {
     setup(undefined, list());
     const row = rowNamed('work laptop');
     expect(within(row).getByText('work laptop').tagName).toBe('BDI');
-    expect(within(row).getByText(NAMED.slice(0, 8))).toBeInTheDocument();
+    expect(within(row).getByText(new RegExp(` · ${NAMED.slice(0, 6)}$`))).toBeInTheDocument();
     // An unnamed device shows its id once.
     expect(within(rowNamed(PHONE.slice(0, 8))).getAllByText(PHONE.slice(0, 8))).toHaveLength(1);
   });
   it('names the device by its label and its id in both remove dialogs', async () => {
     const named = [dev(OWN, { own: true }), dev(NAMED, { label: 'work laptop' }), dev(FORGOTTEN, { label: 'old tablet', listed: false })];
     const { user } = setup(undefined, named);
-    await user.click(within(rowNamed('work laptop')).getByRole('button', { name: 'remove' }));
+    await user.click(within(rowNamed('work laptop')).getByRole('button', { name: 'Remove' }));
     let dialog = screen.getByRole('dialog', { name: 'Remove this device?' });
     expect(within(dialog).getByText('work laptop').tagName).toBe('BDI');
     expect(within(dialog).getByText(NAMED.slice(0, 8))).toBeInTheDocument();
     await user.click(within(dialog).getByRole('button', { name: 'Close' }));
-    await user.click(within(rowNamed('old tablet')).getByRole('button', { name: 'remove' }));
+    await user.click(within(rowNamed('old tablet')).getByRole('button', { name: 'Remove' }));
     dialog = screen.getByRole('dialog', { name: 'Remove this device?' });
     expect(within(dialog).getByText('old tablet')).toBeInTheDocument();
     expect(within(dialog).getByText(FORGOTTEN.slice(0, 8))).toBeInTheDocument();
   });
   it('names an unnamed device by its id in the remove dialog', async () => {
     const { user } = setup();
-    await user.click(within(rowOf(PHONE)).getByRole('button', { name: 'remove' }));
+    await user.click(within(rowOf(PHONE)).getByRole('button', { name: 'Remove' }));
     expect(within(screen.getByRole('dialog', { name: 'Remove this device?' })).getByText(PHONE.slice(0, 8))).toBeInTheDocument();
   });
   it('opens on the current name, saves it trimmed with the device, and closes', async () => {
     const { fake, user, view } = setup(undefined, list());
-    await user.click(within(rowNamed('work laptop')).getByRole('button', { name: 'rename' }));
+    await renameFrom(user, rowNamed('work laptop'));
     const dialog = screen.getByRole('dialog', { name: 'Name this device' });
     expect(within(dialog).getByText('The server can change it, so check a device by its id before you remove it.')).toBeInTheDocument();
     // web3.12.1: a quiet line under the field says the server can read the name, and it is part of the field's description.
@@ -261,7 +262,7 @@ describe('naming a device', () => {
   });
   it('clears the name when the field is emptied', async () => {
     const { fake, user } = setup(undefined, list());
-    await user.click(within(rowNamed('work laptop')).getByRole('button', { name: 'rename' }));
+    await renameFrom(user, rowNamed('work laptop'));
     await user.clear(field());
     await user.keyboard('{Enter}');
     expect(fake.callsOf('renameDevice')).toEqual([{ m: 'renameDevice', deviceId: NAMED, label: null }]);
@@ -271,16 +272,16 @@ describe('naming a device', () => {
     const spy = vi.spyOn(window.navigator, 'userAgent', 'get').mockReturnValue(ua);
     try {
       const { user } = setup(undefined, list());
-      await user.click(within(rowNamed(OWN.slice(0, 8))).getByRole('button', { name: 'rename' }));
+      await renameFrom(user, rowNamed(OWN.slice(0, 8)));
       expect(field()).toHaveValue('Firefox on Linux');
       await user.click(screen.getByRole('button', { name: 'Close' }));
-      await user.click(within(rowNamed(PHONE.slice(0, 8))).getByRole('button', { name: 'rename' }));
+      await renameFrom(user, rowNamed(PHONE.slice(0, 8)));
       expect(field()).toHaveValue('');
     } finally { spy.mockRestore(); }
   });
   it('shows a refusal by its code and keeps the dialog and the text', async () => {
     const { user } = setup(c => (c.m === 'renameDevice' ? Promise.reject(refusal({ code: 'E_NOT_FOUND' })) : Promise.resolve(null)), list());
-    await user.click(within(rowNamed(PHONE.slice(0, 8))).getByRole('button', { name: 'rename' }));
+    await renameFrom(user, rowNamed(PHONE.slice(0, 8)));
     await user.type(field(), 'tablet');
     await user.click(screen.getByRole('button', { name: 'Save' }));
     const dialog = screen.getByRole('dialog', { name: 'Name this device' });
@@ -289,7 +290,7 @@ describe('naming a device', () => {
   });
   it('sends one rename while in flight and cannot be closed meanwhile', async () => {
     const { fake, user } = setup(c => (c.m === 'renameDevice' ? new Promise(() => {}) : Promise.resolve(null)), list());
-    await user.click(within(rowNamed(PHONE.slice(0, 8))).getByRole('button', { name: 'rename' }));
+    await renameFrom(user, rowNamed(PHONE.slice(0, 8)));
     await user.type(field(), 'tablet');
     await user.click(screen.getByRole('button', { name: 'Save' }));
     expect(screen.getByRole('button', { name: 'Working…' })).toHaveAttribute('aria-disabled', 'true');
@@ -327,7 +328,7 @@ describe('the own account’s identity', () => {
 describe('this browser', () => {
   it('signs out and removes itself with the key, and leaves the reload to the App', async () => {
     const { fake, user, view } = setup();
-    await user.click(screen.getByRole('button', { name: 'sign out and remove this browser' }));
+    await user.click(within(rowOf(OWN)).getByRole('button', { name: 'Sign out' }));
     const dialog = screen.getByRole('dialog', { name: 'Sign out and remove this browser?' });
     expect(within(dialog).getByText('This browser is removed from your account and its data here is cleared. You can sign in again later with your password and recovery key. Enter the key to confirm.')).toBeInTheDocument();
     await expectNoAxeViolations(view.container);
@@ -338,36 +339,15 @@ describe('this browser', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(window.location.pathname).toBe('/settings/devices');
   });
-  it('forgets this browser without the key, saying the device stays listed', async () => {
-    const { fake, user, view } = setup();
-    await user.click(screen.getByRole('button', { name: 'forget this browser' }));
-    const dialog = screen.getByRole('dialog', { name: 'Forget this browser?' });
-    expect(within(dialog).getByText('This clears dilla’s data from this browser and signs it out. The device stays in your account’s device list until you remove it from another device.')).toBeInTheDocument();
-    expect(within(dialog).queryByRole('textbox')).toBeNull();
-    await expectNoAxeViolations(view.container);
-    await user.click(within(dialog).getByRole('button', { name: 'Forget' }));
-    expect(fake.callsOf('forgetBrowser')).toEqual([{ m: 'forgetBrowser' }]);
-    expect(screen.queryByRole('dialog')).toBeNull();
-    expect(window.location.pathname).toBe('/settings/devices');
-  });
-  it('shows a refused forget in its dialog', async () => {
-    const { user } = setup(c => (c.m === 'forgetBrowser' ? Promise.reject(refusal({ code: 'E_STATE' })) : Promise.resolve(null)));
-    await user.click(screen.getByRole('button', { name: 'forget this browser' }));
-    await user.click(screen.getByRole('button', { name: 'Forget' }));
-    expect(within(screen.getByRole('dialog', { name: 'Forget this browser?' })).getByRole('alert')).toHaveTextContent('That did not work (E_STATE). Try again.');
-    expect(window.location.pathname).toBe('/settings/devices');
-  });
 });
 
-// I1, I2: the count with its refresh, and the two actions on this browser, are SettingsRows (label left, control right).
+// Signal task 10 fix round 1 (Jonas): exactly the prototype's rows; no count, refresh, sign-out or forget rows.
 describe('the settings grammar', () => {
-  it('puts the count and refresh, sign out and forget in three settings rows', () => {
+  it('draws only the device rows, each with its icon tile', () => {
     const { view } = setup();
-    const rows = Array.from(view.container.querySelectorAll<HTMLElement>('.d-settings-row'));
-    expect(rows).toHaveLength(3);
-    expect(within(rows[0]).getByText('3 devices')).toBeInTheDocument();
-    expect(within(rows[0]).getByRole('button', { name: 'refresh' })).toBeInTheDocument();
-    expect(within(rows[1]).getByRole('button', { name: 'sign out and remove this browser' })).toBeInTheDocument();
-    expect(within(rows[2]).getByRole('button', { name: 'forget this browser' })).toBeInTheDocument();
+    expect(view.container.querySelectorAll('.d-settings-row')).toHaveLength(0);
+    expect(view.container.querySelectorAll('.d-device-row__icon')).toHaveLength(4);
+    expect(screen.queryByRole('button', { name: 'Forget this browser' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Refresh' })).toBeNull();
   });
 });

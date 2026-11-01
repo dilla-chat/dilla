@@ -1,7 +1,8 @@
 .d-drop-overlay { position: absolute; inset: 0; z-index: 2; display: grid; place-items: center; background: color-mix(in srgb, var(--bg) 80%, transparent); opacity: 1; transition: opacity var(--duration-fast); pointer-events: none; }
 @starting-style { .d-drop-overlay { opacity: 0; } }
-.d-drop-overlay::before { content: ""; position: absolute; inset: 0.5rem; border: 2px dashed var(--accent); border-radius: var(--r-lg); }
-.d-drop-overlay__panel { position: relative; display: grid; gap: 0.25rem; padding: 1rem 1.5rem; text-align: center; background: var(--surface); border: 1px solid var(--edge); border-radius: var(--r-lg); box-shadow: var(--shadow-2); }
-.d-drop-overlay__title { margin: 0; font-size: var(--text-lg); font-weight: var(--weight-display); color: var(--fg); }
+/* Signal (task 7; the prototype draws none): the popover family's frame and panel; a dashed accent frame, radius 10px. */
+.d-drop-overlay::before { content: ""; position: absolute; inset: 0.5rem; border: 2px dashed var(--accent); border-radius: var(--r-xl); }
+.d-drop-overlay__panel { position: relative; display: grid; gap: 0.25rem; padding: 1rem 1.5rem; text-align: center; background: var(--surface-2); border: 1px solid var(--line-strong); border-radius: var(--r-xl); box-shadow: var(--shadow-2); animation: d-modal var(--duration-spin) var(--ease-out) both; }
+.d-drop-overlay__title { margin: 0; font-size: var(--text-md); font-weight: var(--weight-display); color: var(--fg); }
 .d-drop-overlay__body { margin: 0; font-size: var(--text-sm); color: var(--fg-2); }
-@media (prefers-reduced-motion: reduce) { .d-drop-overlay { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .d-drop-overlay { transition: none; } .d-drop-overlay__panel { animation: none; } }

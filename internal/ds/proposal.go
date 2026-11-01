@@ -125,9 +125,17 @@ func (d *DS) takeBoundKeyPackage(ctx context.Context, inst *mlswasi.Instance, de
 		}
 		if bytes.Equal(info.DeviceID, deviceID[:]) && bytes.Equal(info.UserID, device.UserID[:]) &&
 			leafKeyIsRegistered(device, info.SignatureKey) {
-			return kp, nil
+			// A package stored before the kind binding existed (Task S1) is dropped like an
+			// unbound one: checkAddedMember would refuse the Add that carried it.
+			kindErr := checkCredentialKind(ctx, d.opts.Store, device.UserID, info.Credential)
+			if kindErr == nil {
+				return kp, nil
+			}
+			if !errors.Is(kindErr, errCredentialKind) {
+				return store.KeyPackageRow{}, kindErr
+			}
 		}
-		d.log().Warn("dropping a directory KeyPackage not bound to its device's registered key",
+		d.log().Warn("dropping a directory KeyPackage not bound to its device's registered key or account kind",
 			"device", deviceID.String()[:8], "last_resort", kp.LastResort == 1)
 		if err := d.opts.Store.DeleteKeyPackage(ctx, deviceID, kp.KPRef); err != nil {
 			return store.KeyPackageRow{}, err
@@ -745,6 +753,9 @@ func (d *DS) storeInstanceProposal(ctx context.Context, groupID id.ID, row store
 	if err != nil {
 		return err
 	}
+	if p.Kind == uint8(mlswasi.ProposalRemove) && p.TargetLeaf != nil {
+		d.log().InfoContext(ctx, "proposed a Remove", "group_id", groupID.String(), "device_id", p.TargetDevice, "leaf", *p.TargetLeaf)
+	}
 	if d.opts.Gateway != nil {
 		payload, perr := gateway.HandshakePayload(seq, row.Epoch, handshakeProposal, nil, blob)
 		if perr == nil {
@@ -753,13 +764,10 @@ func (d *DS) storeInstanceProposal(ctx context.Context, groupID id.ID, row store
 			})
 		}
 	}
-	if d.opts.Metrics != nil {
-		// plan-1a task 7 declares `DSProposals *prometheus.GaugeVec` for
-		// `dilla_ds_proposals_outstanding{kind}`. There is no `ProposalsOutstanding`, and because
-		// it is a GAUGE every path that commits, voids or deletes a proposal decrements it —
-		// otherwise the "outstanding" gauge only ever rises.
-		d.opts.Metrics.DSProposals.WithLabelValues(proposalLabel(p.Kind)).Inc()
-	}
+	// plan-1a task 7 declares `DSProposals *prometheus.GaugeVec` for
+	// `dilla_ds_proposals_outstanding{kind}`. It is a GAUGE: every path that voids or deletes a live
+	// instance proposal decrements it, and Sweep re-seeds it from SQL (proposal_gauge.go).
+	d.gaugeInc(p.Kind)
 	// A fresh instance proposal is what invariant 7's election exists to get committed, so the
 	// election is held here, the moment the proposal is durable — UNLESS a batch window is open.
 	// This function is the sink of every issuing path, single and batched alike (ProposeAdd,
@@ -785,13 +793,13 @@ func (d *DS) storeInstanceProposal(ctx context.Context, groupID id.ID, row store
 
 // Void marks one proposal void. A commit MAY omit a void proposal.
 func (d *DS) Void(ctx context.Context, groupID id.ID, ref []byte) error {
+	// Read before the void: only a row that was a live instance proposal was counted.
+	kind, counted := d.liveInstanceKind(ctx, groupID, ref)
 	if err := d.opts.Store.VoidProposal(ctx, groupID, ref, d.now()); err != nil {
 		return err
 	}
-	if d.opts.Metrics != nil {
-		if kind, ok := d.kindOfProposal(ctx, groupID, ref); ok {
-			d.opts.Metrics.DSProposals.WithLabelValues(proposalLabel(kind)).Dec()
-		}
+	if counted {
+		d.gaugeDec(kind)
 	}
 	return nil
 }
@@ -845,9 +853,7 @@ func (d *DS) voidIneligibleAddsLocked(ctx context.Context, groupID id.ID) (int, 
 		if err := d.opts.Store.VoidProposal(ctx, groupID, r.Ref, d.now()); err != nil {
 			return voided, err
 		}
-		if d.opts.Metrics != nil {
-			d.opts.Metrics.DSProposals.WithLabelValues(proposalLabel(r.Kind)).Dec()
-		}
+		d.gaugeDec(r.Kind) // origin 0 and non-void: the loop's guard above
 		d.log().Info("an outstanding Add was voided: its device or user is no longer eligible",
 			"group", groupID.String()[:8], "device", r.TargetDevice.String()[:8])
 		voided++
@@ -883,24 +889,24 @@ func (d *DS) addStillEligible(ctx context.Context, groupID, deviceID id.ID) (boo
 	return d.opts.ACL.Eligible(ctx, groupID, dev.UserID)
 }
 
-// kindOfProposal reads one row's kind, for the gauge that has to go back down again.
+// liveInstanceKind reads one row's kind when it is a live instance proposal (origin 0, non-void),
+// the only rows the gauge counts; Void reads it before voiding, so a second void of one row, or a
+// void of a member proposal, never decrements.
 //
-// It looks at the GROUP'S CURRENT EPOCH, which is where every live proposal is: a re-issue moves a
-// proposal to the new epoch and a commit deletes what it applied. A row at an older epoch is not
-// found, and the gauge is then simply not decremented — a missing tick on a diagnostic is the
-// right failure for a lookup that cannot be made exact without a `GetProposal` on the repository.
-func (d *DS) kindOfProposal(ctx context.Context, groupID id.ID, ref []byte) (uint8, bool) {
+// It reads the group's current epoch, the only epoch whose proposals can be committed. Old
+// open-group rows are excluded from the seed too; closed-group voids count their own rows.
+func (d *DS) liveInstanceKind(ctx context.Context, groupID id.ID, ref []byte) (uint8, bool) {
 	row, err := d.opts.Store.GetGroup(ctx, groupID)
 	if err != nil {
 		return 0, false
 	}
-	rows, err := d.opts.Store.ListProposals(ctx, groupID, row.Epoch, true)
+	rows, err := d.opts.Store.ListProposals(ctx, groupID, row.Epoch, false)
 	if err != nil {
 		return 0, false
 	}
 	for _, r := range rows {
 		if bytes.Equal(r.Ref, ref) {
-			return r.Kind, true
+			return r.Kind, r.Origin == 0
 		}
 	}
 	return 0, false
@@ -1235,10 +1241,40 @@ func (d *DS) voidExpired(ctx context.Context, groupID id.ID, epoch uint64) (int,
 		if err := d.opts.Store.VoidProposal(ctx, groupID, r.Ref, now); err != nil {
 			return n, err
 		}
-		if d.opts.Metrics != nil {
-			d.opts.Metrics.DSProposals.WithLabelValues(proposalLabel(r.Kind)).Dec()
+		if r.Origin == 0 { // the gauge counts instance proposals only
+			d.gaugeDec(r.Kind)
 		}
 		n++
 	}
 	return n, nil
+}
+
+// voidClosedGroupProposals voids every live proposal, of any epoch, of a closed group. No commit
+// lands in a closed group and none is reopened, so such a proposal is owed to nobody — but the TTL
+// sweeps (sweepProposals, sweepCallGroup) read open groups only, so without this pass it stays
+// non-void forever and keeps dilla_ds_proposals raised. The common case is a call group: the last
+// device's leave issues the instance Remove of its leaf, and the call's end closes the group in
+// the same second. A void, not a delete, as everywhere else the TTL ends a proposal. Each void
+// leaves the result set, so the loop re-reads from the start until a short page; the first sweep
+// after an upgrade voids the backlog the same way.
+func (d *DS) voidClosedGroupProposals(ctx context.Context) (int, error) {
+	n := 0
+	for {
+		rows, err := d.opts.Store.ListClosedGroupLiveProposals(ctx, sweepPage)
+		if err != nil {
+			return n, err
+		}
+		for _, r := range rows {
+			if err := d.opts.Store.VoidProposal(ctx, r.GroupID, r.Ref, d.now()); err != nil {
+				return n, err
+			}
+			if r.Origin == 0 { // the gauge counts instance proposals only
+				d.gaugeDec(r.Kind)
+			}
+			n++
+		}
+		if len(rows) < sweepPage {
+			return n, nil
+		}
+	}
 }

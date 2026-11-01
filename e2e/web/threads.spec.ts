@@ -5,7 +5,7 @@ import { expect, type Locator, type Page } from '@playwright/test';
 import { addServerVia,
   CLASS, COPY, HEX32, TEST_TIMEOUT, WAIT, channelRow, composerBox, copy, deleteDialog, editorBox, expectAccessible,
   logRegion, openChannel, pinsDialog, railItem, railNav, rowById, rowToolbar, sendText, signUp, tag, test, isPeerMessage,
-  type PeerMessage, type PeerReceived, type PeerSetup,
+  type PeerMessage, type PeerReceived, type PeerSetup, channelRowMenuItem, expectRowMenuAction, rowAction
 } from './support/app';
 import { WebDriver } from './support/driver';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
@@ -125,9 +125,12 @@ test('a reply in a thread shows its count on both sides, the pane sits in the as
       await expect(threadPane(page).getByRole('heading', { name: copy('thread.title'), exact: true })).toBeVisible();
       await expect(paneRow(page, plan)).toHaveCount(1);
       // The aside is a column beside the channel, not on top of it.
-      const log = await logRegion(page, GENERAL).boundingBox();
-      const aside = await threadPane(page).boundingBox();
-      expect(aside!.x, 'the thread pane starts where the channel ends').toBeGreaterThanOrEqual(log!.x + log!.width - 1);
+      // Measured together and polled: Firefox can report the log before the grid has narrowed it for the new column.
+      await expect.poll(async () => {
+        const log = await logRegion(page, GENERAL).boundingBox();
+        const aside = await threadPane(page).boundingBox();
+        return aside!.x - (log!.x + log!.width);
+      }, { message: 'the thread pane starts where the channel ends', timeout: WAIT }).toBeGreaterThanOrEqual(-1);
       await expect(threadComposer(page)).toBeFocused();
       await expectAccessible(page, 'thread pane in the aside');
 
@@ -140,8 +143,8 @@ test('a reply in a thread shows its count on both sides, the pane sits in the as
       // Bjorn's reply is not Ada's: her toolbar offers no edit or delete on it.
       await paneRow(page, ok).focus();
       await expect(rowToolbar(paneRow(page, ok))).toBeVisible();
-      await expect(rowToolbar(paneRow(page, ok)).getByRole('button', { name: copy('shell.message.edit'), exact: true })).toHaveCount(0);
-      await expect(rowToolbar(paneRow(page, ok)).getByRole('button', { name: copy('shell.message.delete'), exact: true })).toHaveCount(0);
+      await expectRowMenuAction(paneRow(page, ok), 'edit', false);
+      await expectRowMenuAction(paneRow(page, ok), 'delete', false);
 
       // MP7 (N1): a thread row's author name opens the profile card; it is live (not inert) and takes focus, and Escape returns focus to the name.
       const author = paneRow(page, ok).locator('.d-message-row__author-open');
@@ -245,7 +248,7 @@ test('Ada edits and deletes her own reply in the thread', async ({ page }) => {
     const sent = await peer.waitFor(first, general);
 
     await mine.focus();
-    await rowToolbar(mine).getByRole('button', { name: copy('shell.message.edit'), exact: true }).click();
+    await rowAction(mine, 'edit');
     await expect(editorBox(page)).toBeFocused();
     await expect(editorBox(page)).toHaveValue(first);
     const edited = `edited ${tag()}`;
@@ -258,7 +261,7 @@ test('Ada edits and deletes her own reply in the thread', async ({ page }) => {
 
     const byId = threadPane(page).locator(`${CLASS.messageRow}[data-msg-id="${sent.msg_id}"]`);
     await byId.focus();
-    await rowToolbar(byId).getByRole('button', { name: copy('shell.message.delete'), exact: true }).click();
+    await rowAction(byId, 'delete');
     await expect(deleteDialog(page)).toBeVisible();
     await deleteDialog(page).getByRole('button', { name: copy('shell.delete.confirm'), exact: true }).click();
     await expect(byId).toHaveAttribute('data-state', 'deleted', { timeout: WAIT });
@@ -313,7 +316,7 @@ test('a thread opens from the pin of a reply', async ({ page }) => {
     await expect(chip(rowById(page, GENERAL, decoy.msg_id), 'thread.summary.one')).toBeVisible({ timeout: WAIT });
     // A pin of the reply: the pins dialog's jump opens the thread too.
     await peer.send('', general, { type: 5, replyTo: reply.msg_id });
-    await page.locator(CLASS.channelHeader).getByRole('button', { name: copy('shell.pins.open'), exact: true }).click();
+    await channelRowMenuItem(page, GENERAL, 'shell.pins.open');
     const pins = pinsDialog(page, GENERAL);
     await expect(pins).toBeVisible({ timeout: WAIT });
     await expect(pins).toContainText(needle, { timeout: WAIT });
@@ -347,15 +350,20 @@ test('on a phone the thread is a full-screen sheet, the system back closes it an
     const box = await sheet.boundingBox();
     expect(box!.x, 'the sheet starts at the left edge').toBeLessThanOrEqual(1);
     expect(box!.width, 'the sheet fills the width').toBeGreaterThanOrEqual(388);
-    // web3.7.1: the tab bar stays under the sheet, so the sheet ends where the bar starts.
-    const bar = await page.getByRole('navigation', { name: copy('nav.tabs.label'), exact: true }).boundingBox();
-    expect(bar, 'the tab bar stays under the sheet').not.toBeNull();
-    expect(Math.abs(box!.y + box!.height - bar!.y), 'the sheet ends at the top of the tab bar').toBeLessThanOrEqual(1);
-    expect(bar!.y + bar!.height, 'the tab bar reaches the bottom').toBeGreaterThanOrEqual(840);
+    // Task 11 (Jonas, Q4): the sheet covers the whole screen, the tab bar included (the prototype's phone thread).
+    expect(box!.y + box!.height, 'the sheet reaches the bottom of the screen').toBeGreaterThanOrEqual(840);
+    // Fix round 2: the tab bar under it is covered (the sheet is what a tap there hits) and inert (out of the tab order).
+    const bar = page.locator('.d-app-shell__tabbar');
+    const barBox = (await bar.boundingBox())!;
+    expect(await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.closest('.d-app-shell__aside') !== null,
+      [barBox.x + barBox.width / 2, barBox.y + barBox.height / 2]), 'the sheet covers the tab bar').toBe(true);
+    await expect(bar, 'the covered tab bar is inert').toHaveAttribute('inert', '');
     // The sheet is an AppShell overlay: it takes focus to its first control, the back button (flow 11 says the composer; see the report).
     await expect(sheet.getByRole('button', { name: copy('thread.close'), exact: true })).toBeFocused();
-    const composer = await threadComposer(page).boundingBox();
-    expect(composer!.y + composer!.height, 'the thread composer sits at the bottom of the sheet').toBeGreaterThan(844 - 120);
+    // Task 7: the textarea sits in the box's input row over the footer, so the composer (its form) is measured.
+    const composer = await threadComposer(page).locator('xpath=ancestor::form[1]').boundingBox();
+    // Task 7: the Signal composer keeps the prototype's 10px bottom padding on a phone, so its box ends within 16px of the sheet's end.
+    expect(composer!.y + composer!.height, 'the thread composer sits at the bottom of the sheet').toBeGreaterThanOrEqual(box!.y + box!.height - 16);
     const ok = `ok ${tag()}`;
     await peer.send(ok, general, { threadId: root.msg_id });
     await expect(sheet.getByText(ok)).toBeVisible({ timeout: WAIT });

@@ -29,9 +29,9 @@ describe('ProfileCard content', () => {
     render(<ProfileCard {...props()} />);
     const card = screen.getByRole('dialog', { name: 'Astrid' });
     expect(within(card).getByRole('heading', { name: 'Astrid' })).toBeInTheDocument();
-    expect(within(card).getByText('@astrid')).toBeInTheDocument();
-    expect(within(card).getByText('online')).toBeInTheDocument();
-    expect(card.querySelector('.d-avatar')).toHaveAttribute('data-size', 'lg');
+    // Task 9 (Signal §5.7): the prototype's "@handle · status" line under the name, and the 56px avatar.
+    expect(card.querySelector('.d-profile-card__status')).toHaveTextContent('@astrid · online');
+    expect(card.querySelector('.d-avatar')).toHaveAttribute('data-size', 'card');
   });
 
   it('shows a custom status after the presence word when there is one', () => {
@@ -89,32 +89,47 @@ describe('ProfileCard content', () => {
     expect(screen.getByRole('group', { name: 'about' })).toHaveTextContent('hello');
   });
 
-  it('shows owner and you when they apply, and neither when they do not', () => {
+  // Task 9: the prototype draws the owner's crown after the name and no "you" mark.
+  it('shows the owner crown (named) when it applies, and no "you" mark', () => {
     const { rerender } = render(<ProfileCard {...props()} />);
     const card = screen.getByRole('dialog');
-    expect(within(card).getByText('owner')).toBeInTheDocument();
+    expect(within(card).getByRole('img', { name: 'owner' })).toBeInTheDocument();
     expect(card.querySelector('[data-icon="crown"]')).not.toBeNull();
-    expect(within(card).getByText('you')).toBeInTheDocument();
+    expect(within(card).queryByText('you')).toBeNull();
     rerender(<ProfileCard {...props({ isOwner: false, isYou: false })} />);
-    expect(screen.queryByText('owner')).toBeNull();
-    expect(screen.queryByText('you')).toBeNull();
+    expect(screen.queryByRole('img', { name: 'owner' })).toBeNull();
     expect(screen.getByRole('dialog').querySelector('[data-icon="crown"]')).toBeNull();
   });
 
-  it('takes the owner, you and roles words from its props', () => {
-    render(<ProfileCard {...props({ ownerLabel: 'ägare', youLabel: 'du', rolesLabel: 'roller' })} />);
-    expect(screen.getByText('ägare')).toBeInTheDocument();
-    expect(screen.getByText('du')).toBeInTheDocument();
+  it('takes the owner and roles words from its props', () => {
+    render(<ProfileCard {...props({ ownerLabel: 'ägare', rolesLabel: 'roller' })} />);
+    expect(screen.getByRole('img', { name: 'ägare' })).toBeInTheDocument();
     expect(screen.getByRole('list', { name: 'roller' })).toBeInTheDocument();
   });
 
-  it('lists the roles as chips in order, a coloured one with its swatch', () => {
+  it('lists the roles as chips in order, each with its 6px dot in the role colour (--fg-2 without one)', () => {
     render(<ProfileCard {...props()} />);
     const chips = within(screen.getByRole('list', { name: 'roles' })).getAllByRole('listitem');
     expect(chips.map(c => c.textContent)).toEqual(['moderators', 'members']);
-    const dot = chips[0]!.querySelector<HTMLElement>('.d-role-dot')!;
-    expect(dot.style.getPropertyValue('--d-swatch')).toBe('#e74c3c');
-    expect(chips[1]!.querySelector('.d-role-dot')).toBeNull();
+    expect(chips[0]!.querySelector<HTMLElement>('.d-profile-card__role-dot')!.style.background).toBe('rgb(231, 76, 60)');
+    expect(chips[1]!.querySelector<HTMLElement>('.d-profile-card__role-dot')!.style.background).toBe('');
+  });
+
+  it('draws a primary action as the labelled accent button with its glyph, the others as named glyph buttons; a bot is square', async () => {
+    const user = userEvent.setup();
+    const p = props({ isBot: true, actions: [
+      { id: 'message', label: 'Message', icon: 'message-square', primary: true },
+      { id: 'compare', label: 'compare safety numbers', icon: 'shield' },
+      { id: 'roles', label: 'edit roles', icon: 'square-pen' },
+    ] });
+    render(<ProfileCard {...p} />);
+    const card = screen.getByRole('dialog');
+    expect(card.querySelector('.d-profile-card__action')).toHaveTextContent('Message');
+    expect(card.querySelectorAll('.d-profile-card__icon-action')).toHaveLength(2);
+    await user.click(screen.getByRole('button', { name: 'edit roles' }));
+    expect(p.onAction).toHaveBeenCalledExactlyOnceWith('roles');
+    expect(card.querySelector('.d-avatar')).toHaveAttribute('data-shape', 'bot');
+    expect(card.style.getPropertyValue('--avatar-hue')).not.toBe('');
   });
 
   it('draws no roles list without roles and no action group without actions', () => {
@@ -138,12 +153,12 @@ describe('ProfileCard content', () => {
 });
 
 describe('ProfileCard behaviour', () => {
-  it('moves focus in on open: the first action, else the close button', () => {
+  it('moves focus in on open: the first action, else the card itself (task 9: the close shows only once Tab reaches it)', () => {
     const { unmount } = render(<ProfileCard {...props()} />);
     expect(screen.getByRole('button', { name: 'message' })).toHaveFocus();
     unmount();
     render(<ProfileCard {...props({ actions: [] })} />);
-    expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus();
+    expect(screen.getByRole('dialog')).toHaveFocus();
   });
 
   it('Escape closes it, and the close button too', async () => {
@@ -192,7 +207,7 @@ describe('ProfileCard behaviour', () => {
   it('a popover closes on a pointerdown outside, but not inside', () => {
     const p = props();
     render(<ProfileCard {...p} />);
-    fireEvent.pointerDown(screen.getByText('@astrid'));
+    fireEvent.pointerDown(screen.getByRole('dialog').querySelector('.d-profile-card__status')!);
     expect(p.onClose).not.toHaveBeenCalled();
     fireEvent.pointerDown(document.body);
     expect(p.onClose).toHaveBeenCalledOnce();
@@ -295,21 +310,21 @@ describe('ProfileCard placement', () => {
   it('a click on the sheet\'s scrim closes it; a click inside does not, and a sheet ignores pointerdown outside', () => {
     const p = props({ layout: 'sheet' });
     const { container } = render(<ProfileCard {...p} />);
-    fireEvent.click(screen.getByText('@astrid'));
+    fireEvent.click(screen.getByRole('dialog').querySelector('.d-profile-card__status')!);
     expect(p.onClose).not.toHaveBeenCalled();
     fireEvent.click(container.querySelector('.d-profile-card__scrim')!);
     expect(p.onClose).toHaveBeenCalledOnce();
   });
 
-  it('CSS pins: the sheet sits at the bottom with 44px targets, the popover has a width and a shadow', () => {
-    expect(css).toMatch(/\.d-profile-card\[data-layout="sheet"\] \{[^}]*bottom: 0/);
-    expect(css).toMatch(/\.d-profile-card\[data-layout="sheet"\] \.d-profile-card__action \{[^}]*min-height: 2\.75rem/);
-    expect(css).toMatch(/\.d-profile-card \{[^}]*box-shadow: var\(--shadow-2\)/);
+  // Task 9 (Signal §5.7): the sheet's 16px top corners and d-sheet-up; the popover 300px with the card shadow and d-modal 260ms.
+  it('CSS pins: the sheet sits at the bottom with 16px top corners and slides up, the popover is 300px with the card shadow', () => {
+    expect(css).toMatch(/\.d-profile-card\[data-layout="sheet"\] \{[^}]*bottom: 0[^}]*border-radius: var\(--r-sheet\) var\(--r-sheet\) 0 0[^}]*animation-name: d-sheet-up/);
+    expect(css).toMatch(/\.d-profile-card \{[^}]*width: 300px[^}]*box-shadow: var\(--shadow-profile\)[^}]*animation: d-modal var\(--duration-profile\)/);
   });
 });
 
 describe('ProfileCard accessibility', () => {
-  it.each(['mesh', 'light', 'high-contrast'])('has no serious axe violations in %s, as popover and as sheet', async theme => {
+  it.each(['signal', 'light', 'high-contrast'])('has no serious axe violations in %s, as popover and as sheet', async theme => {
     document.documentElement.dataset.theme = theme;
     for (const layout of ['popover', 'sheet'] as const) {
       const { container, unmount } = render(<div className="d-root"><ProfileCard {...props({ layout, status: 'in a meeting', bio: 'line one\nline two' })} /></div>);
@@ -322,7 +337,7 @@ describe('ProfileCard accessibility', () => {
 describe('ProfileCard presence words (M2)', () => {
   it('reads the presence word from presenceLabels', () => {
     render(<ProfileCard {...props({ presence: 'dnd', presenceLabels: { dnd: 'do not disturb' } })} />);
-    expect(screen.getByText('do not disturb')).toBeInTheDocument();
+    expect(screen.getByRole('dialog').querySelector('.d-profile-card__status')).toHaveTextContent('@astrid · do not disturb');
     expect(screen.queryByText('Do Not Disturb')).toBeNull();
   });
 });

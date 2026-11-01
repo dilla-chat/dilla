@@ -69,6 +69,11 @@ type Deps struct {
 	// proof under the dedicated current-interaction domain.
 	SignBotCurrentInteractionContext func(payload []byte) ([]byte, error)
 
+	// SignAccountKind signs an account-kind attestation message (accountkind.go) with the
+	// instance's current external-sender key, the key Instance.ExternalSenderKeyID names. The
+	// composition root owns the secret.
+	SignAccountKind func(message []byte) ([]byte, error)
+
 	// WireVersions is element 0 of GET /v1/instance: the wire versions the gateway's hello offers
 	// and is passed from the same composition options as the gateway.
 	WireVersions  []uint64

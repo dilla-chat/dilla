@@ -35,7 +35,7 @@ export async function connect(who, { out = OUT_ROOT } = {}) {
     await page.waitForTimeout(250);
   }
   async function shoot(name, opts = {}) { const f = path.join(out, `${name}.png`); await page.screenshot({ path: f, ...opts }); console.log('shot', name); return f; }
-  /** mesh | light | high-contrast: emulate the system preference the app follows. */
+  /** signal | light | high-contrast: emulate the system preference the app follows. */
   async function theme(name) {
     await page.emulateMedia({ colorScheme: name === 'light' ? 'light' : 'dark', contrast: name === 'high-contrast' ? 'more' : 'no-preference' });
     await page.evaluate((th) => { document.documentElement.dataset.theme = th; }, name);

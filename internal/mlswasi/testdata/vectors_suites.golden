@@ -65,6 +65,15 @@ franking	case 0	tag
 franking	case 1	tag
 franking	case 2	tag
 franking	envelope_cbor	commitment
+identity	account_kind	attestation
+identity	account_kind	attestation
+identity	account_kind	message
+identity	account_kind	message
+identity	account_kind	reencode
+identity	account_kind	reencode
+identity	account_kind	reject
+identity	account_kind	reject
+identity	account_kind	reject
 identity	credential_identity	cbor
 identity	credential_identity	sig_ssk_dev
 identity	credential_identity	sig_umk_ssk

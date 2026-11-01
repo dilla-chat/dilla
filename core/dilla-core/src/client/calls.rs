@@ -356,7 +356,10 @@ impl ClientCore {
         self.own()?;
         let row = self.call_row(id)?;
         if row.state == STATE_GONE {
-            return Ok(());
+            return self.write(|_, u| {
+                u.with_conn(|c| super::bot_intents::discard_pending_for_forgotten_group(c, id))?;
+                Ok(())
+            });
         }
         let mut group = self.take_group_unchecked(id)?;
         self.write(|ctx, u| {
@@ -364,6 +367,7 @@ impl ClientCore {
                 g.delete(ctx.provider)?;
             }
             u.with_conn(|c| {
+                super::bot_intents::discard_pending_for_forgotten_group(c, id)?;
                 c.execute(
                     "DELETE FROM app_proposals WHERE group_id=?1",
                     [id.as_slice()],

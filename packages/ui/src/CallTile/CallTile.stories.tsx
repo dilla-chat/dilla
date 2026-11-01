@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { CallTile, type CallTileProps } from './CallTile.tsx';
+import { tileMenu } from '../CallStage/stage.fixture.tsx';
 import { expectVoiceTargets } from '../CallControls/CallControls.stories.tsx';
 import { expectGlyphLine } from '../VoiceChannelRow/VoiceChannelRow.stories.tsx';
 
@@ -45,7 +46,7 @@ function WithCamera(props: CallTileProps) {
 
 const meta = {
   title: 'Voice/CallTile', component: CallTile,
-  args: { view: VIEW, own: false, volume: 100, media: null, labels: LABELS, onVolume: () => {} },
+  args: { view: VIEW, own: false, volume: 100, media: null, labels: LABELS },
   decorators: [(Story, ctx) => <ul style={{ width: (ctx.parameters.tileWidth as string | undefined) ?? '280px', boxSizing: 'border-box', margin: 0, padding: 0, listStyle: 'none',
     ...(ctx.parameters.tileHeight !== undefined ? { height: ctx.parameters.tileHeight as string, display: 'grid' } : {}) }}><Story /></ul>],
   // The volume range is a voice control: 40 px high, 44 px on a phone (flow 06).
@@ -56,14 +57,17 @@ type Story = StoryObj<typeof meta>;
 
 export const Connected: Story = {};
 export const Speaking: Story = { args: { view: { ...VIEW, speaking: true } } };
-/** R25: on the stage the ring is on the tile's edge and on the avatar (2px accent), and there is no dot. */
+/** R25, Signal (task 8, the prototype's tile): speaking is the tile's inset 2px --ok edge and the avatar's 5px --ok ring, and there is no dot. */
 export const SpeakingOnStage: Story = {
   args: { view: { ...VIEW, speaking: true }, onFocusTile: () => {} },
   play: ({ canvasElement }) => {
     const ring = canvasElement.querySelector<HTMLElement>('.d-call-tile__avatar-ring[data-speaking="true"]');
     const tile = canvasElement.querySelector<HTMLElement>('.d-call-tile[data-speaking="true"]');
     if (ring === null || tile === null) throw new Error('SpeakingOnStage: no ring');
-    if (getComputedStyle(ring).outlineWidth !== '2px' || getComputedStyle(tile).outlineWidth !== '2px') throw new Error('SpeakingOnStage: the ring is not 2px');
+    const edge = getComputedStyle(tile).boxShadow;
+    if (!edge.includes('inset') || !edge.includes('2px') || !getComputedStyle(ring).boxShadow.includes('5px')) {
+      throw new Error(`SpeakingOnStage: the tile edge is ${edge} and the ring ${getComputedStyle(ring).boxShadow}; want an inset 2px edge and a 5px ring`);
+    }
     if (canvasElement.querySelector('.d-state-dot') !== null) throw new Error('SpeakingOnStage: a dot is drawn');
   },
 };
@@ -91,47 +95,18 @@ export const ScreenWithoutSound: Story = {
     if (canvasElement.querySelector('[data-state="no-sound"]') === null) throw new Error('ScreenWithoutSound: no mark');
   },
 };
-const STREAM = { volume: 100, labels: { volume: 'stream volume for ada', mute: 'mute stream' }, onVolume: () => {}, onMute: () => {} };
-/** #37 T5: a remote screen with sound: its own volume range and the mute toggle (shown on hover or focus on the stage). */
+/** #37: a remote screen with sound: no control on the tile; its own stream volume and mute are in its person menu (fix round 1). */
 export const ScreenWithSound: Story = {
-  args: { view: { ...VIEW, screen: true }, source: 'screen', title: 'ada’s screen', stream: STREAM, onFocusTile: () => {} },
+  args: { view: { ...VIEW, screen: true }, source: 'screen', title: 'ada’s screen', onFocusTile: () => {}, menu: tileMenu('ada', { screen: true }) },
   parameters: { tileHeight: '158px' },
   render: args => <WithCamera {...args} />,
-  play: ({ canvasElement }) => { expectVoiceTargets(canvasElement, 'ScreenWithSound'); },
-};
-/** A muted stream: the mute stays shown, pressed, and the tile is not marked silent. */
-export const StreamMuted: Story = {
-  args: { view: { ...VIEW, screen: true }, source: 'screen', title: 'ada’s screen', stream: { ...STREAM, volume: 0 }, onFocusTile: () => {} },
-  parameters: { tileHeight: '158px' },
-  render: args => <WithCamera {...args} />,
-  play: ({ canvasElement }) => {
-    expectVoiceTargets(canvasElement, 'StreamMuted');
-    if (canvasElement.querySelector('[data-state="no-sound"]') !== null) throw new Error('StreamMuted: a muted stream is marked silent');
-  },
-};
-/** Phone: the volume button opens the stream range in a popover anchored to the tile (on a desktop width the range shows on hover). */
-export const StreamPopoverOpen: Story = {
-  args: { view: { ...VIEW, screen: true }, source: 'screen', title: 'ada’s screen', stream: { ...STREAM, volume: 70 }, onFocusTile: () => {} },
-  parameters: { tileHeight: '158px' },
-  render: args => <WithCamera {...args} />,
-  play: ({ canvasElement }) => {
-    const button = canvasElement.querySelector<HTMLButtonElement>('.d-call-tile__streamvol');
-    if (button === null) throw new Error('StreamPopoverOpen: no volume button');
-    button.click();
-  },
 };
 export const SharingScreen: Story = { args: { view: { ...VIEW, screen: true } }, render: args => <WithCamera {...args} /> };
 export const Bot: Story = { args: { view: { ...VIEW, name: 'relay', web: false, bot: true }, labels: { ...LABELS, volume: 'volume for relay' } } };
 /** Product walk I3: the own tile's self-view, the camera mirrored. */
 export const OwnSelfView: Story = { args: { view: { ...VIEW, name: 'you', deviceId: 'd0', userId: 'u0', video: true }, own: true, mirror: true }, render: args => <WithCamera {...args} /> };
-/** Product walk M6: the volume above 100 %, its value beside the range. */
-export const LouderVolume: Story = { args: { volume: 150 } };
-
-// Walk 37 #18: the volume row fits a 360 px phone, with a three-digit value and a long name.
-export const Phone360: Story = {
-  args: { volume: 100, labels: { ...LABELS, volume: 'volume for ada-lovelace' } },
-  parameters: { tileWidth: 'calc(100vw - 32px)' },
-};
+/** Product walk M6: a volume above 100 %: the quiet chip in the caption says it. */
+export const LouderVolume: Story = { args: { volume: 150, onFocusTile: () => {} } };
 
 /** Every glyph and a long name in the 280 px tile: the name truncates, the glyphs stay on its line (R29). */
 export const EveryGlyph: Story = {

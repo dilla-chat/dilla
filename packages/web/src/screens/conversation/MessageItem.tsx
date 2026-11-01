@@ -7,6 +7,9 @@ import { formatTime, t, type StringKey } from '../../strings/index.ts';
 import { authorName, knownName, markdownParts, messageTime, plainBody, type NameBook } from '../shell-model.ts';
 import { AttachmentList } from './Attachments.tsx';
 import { focusLog } from './Conversation.tsx';
+import type { CoreClient } from '@dilla/client-core';
+import { PollCard, finalPollMarker } from '../commands/PollCard.tsx';
+import { isCommunityBot, MusicMessageCard, musicMarker, useMusicRoomName } from '../voice/music.tsx';
 
 const STATE_LABEL: Record<TimelineItemState, StringKey | null> = {
   ok: null, pending: 'shell.message.pending', failed: 'shell.message.failed',
@@ -48,7 +51,32 @@ export interface MessageItemProps { item: TimelineItem; channelId: string; book:
   grouped?: boolean;
   /** Phone only (R30): whether this row's toolbar is shown, and the row's ask to show or hide it. Absent: the toolbar is always shown. */
   revealed?: boolean;
-  onReveal?: (on: boolean) => void }
+  onReveal?: (on: boolean) => void;
+  client?: CoreClient; communityId?: string | null; threadId?: string | null;
+  /** The message the composer is replying to: tinted with the accent bar (README §5.5). */
+  replying?: boolean }
+
+/** The members by user id, built once per members list (every row of a log shares it). */
+const memberMaps = new WeakMap<NameBook['members'], ReadonlyMap<string, NameBook['members'][number]>>();
+function memberMap(members: NameBook['members']): ReadonlyMap<string, NameBook['members'][number]> {
+  let map = memberMaps.get(members);
+  if (map === undefined) { map = new Map(members.map(m => [m.userId, m])); memberMaps.set(members, map); }
+  return map;
+}
+
+/** The author's name colour (README §5.5): the first of their roles that has a colour, 0 for none. */
+export function nameColorOf(userId: string | null, book: NameBook): number {
+  if (userId === null || book.roleInfo === undefined) return 0;
+  const member = memberMap(book.members).get(userId);
+  for (const id of member?.roleIds ?? []) {
+    const color = book.roleInfo.get(id)?.color ?? 0;
+    if (color !== 0) return color;
+  }
+  return 0;
+}
+
+/** Read at render, so a language switch is seen. */
+const codeLabels = () => ({ copy: t('shell.code.copy'), copied: t('shell.code.copied'), lines: (n: number) => t(n === 1 ? 'shell.code.line' : 'shell.code.lines', { n }) });
 
 export function MessageItem(p: MessageItemProps): React.JSX.Element {
   const { item } = p;
@@ -65,6 +93,10 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
   const emit = (event: RowEvent) => p.onEvent(item, event);
   const ownAuthor = item.senderUser !== null && item.senderUser === p.book.self?.id;
   const author = authorName(item, p.book.members, p.book.self);
+  // Task S1: a sender is a Bot only when the server's member row says so (account kind 1). The
+  // credential's kind (item.bot) is signed by the sender's own SSK, so on its own it is a claim any
+  // modified client can make; it is required too, never trusted alone.
+  const bot = item.bot && isCommunityBot(p.book.members, item.senderUser);
   const label = STATE_LABEL[item.state];
   const cannotReadDetail = item.state !== 'cannot-read' ? undefined
     : item.reason === 'E_UMK_CHANGED' ? t('privacy.changed')
@@ -87,8 +119,8 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
   const canSend = p.bits == null || (p.bits & PERM.sendMessages) !== 0;
   const openThread = item.state === 'ok' && item.msgId !== null && item.seq !== null ? p.onOpenThread : undefined;
   const toolbar = item.state === 'ok' && item.msgId !== null && item.seq !== null ? <MessageToolbar
-    label={t('shell.message.toolbar')} tabbable={p.active} items={[
-      { id: 'react', label: t('shell.message.react'), onAction: e => emit({ kind: 'react', anchor: e.currentTarget as HTMLElement }) },
+    label={t('shell.message.toolbar')} moreLabel={t('shell.message.more')} tabbable={p.active} items={[
+      { id: 'react', label: t('shell.message.react'), onAction: anchor => emit({ kind: 'react', anchor }) },
       ...(p.inThread === true || !canSend ? [] : [{ id: 'reply' as const, label: t('shell.message.reply'), onAction: () => emit({ kind: 'reply' }) }]),
       ...(openThread !== undefined && canSend ? [{ id: 'thread' as const, label: t('thread.open'), onAction: () => openThread(item.msgId!) }] : []),
       ...(ownAuthor ? [{ id: 'edit' as const, label: t('shell.message.edit'), onAction: () => emit({ kind: 'edit' as const }) }] : []),
@@ -113,14 +145,28 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
   };
   // In the gutter the time stands alone: the day divider above the run names the day.
   const time = messageTime(item.ts, p.now);
+  const marker = bot ? finalPollMarker(item.body) : null;
+  // Fix round 1 (Jonas 2026-10-28): Glenn's "started music" message: the prototype's line and the live player card.
+  // Security review M1: only an unedited message from this community's managed Bot account.
+  const music = bot && marker === null && !item.edited ? musicMarker(item.body) : null;
+  const musicRoom = useMusicRoomName(p.communityId ?? null, music === null || p.client === undefined ? null : music.voiceChannelId);
+  const displayBody = !shown ? '' : music !== null
+    ? t('music.started', { name: authorName({ senderUser: music.requesterId, senderDevice: null }, p.book.members, p.book.self), room: musicRoom })
+    : markdownParts(marker === null ? item.body : item.body.replace(/\n?\[dilla-poll:v1:[0-9a-f]{32}\]$/u, ''), p.book, item.mention);
+  const card = music !== null && p.client !== undefined && shown
+    ? <MusicMessageCard client={p.client} communityId={p.communityId ?? null} voiceChannelId={music.voiceChannelId} item={music.item} bot={author} />
+    : marker !== null && p.client !== undefined ? <PollCard client={p.client} communityId={p.communityId ?? null} channelId={p.channelId} threadId={p.threadId ?? null}
+    body={item.body} authorId={item.senderUser} bot={bot} edited={item.edited} deleted={item.state !== 'ok'} selfId={p.book.self?.id ?? null} bits={p.bits ?? null}
+    onOpenThread={p.onOpenThread} /> : undefined;
   const gutterTime = formatTime(item.ts);
   const openProfile = p.onOpenProfile;
   return <MessageRow rowRef={el => { rowEl.current = el; p.rowRef(el); }} author={author} time={time} gutterTime={gutterTime}
     authorId={item.senderUser ?? undefined}
     onOpenProfile={openProfile === undefined ? undefined : (userId, anchor, from) =>
-      openProfile(userId, anchor, from, knownName(from === 'author' ? author : (anchor.textContent ?? '').replace(/^@/, ''), userId))} body={shown ? markdownParts(item.body, p.book, item.mention) : ''}
-    grouped={p.grouped} revealed={p.revealed} onReveal={p.onReveal}
-    own={item.own} tag={item.bot ? 'bot' : item.web ? 'web' : undefined} state={item.state}
+      openProfile(userId, anchor, from, knownName(from === 'author' ? author : (anchor.textContent ?? '').replace(/^@/, ''), userId))} body={displayBody} card={card}
+    grouped={p.grouped} revealed={p.revealed} onReveal={p.onReveal} replying={p.replying === true}
+    nameColor={bot ? 0 : nameColorOf(item.senderUser, p.book)} codeLabels={codeLabels()}
+    own={item.own} tag={bot ? 'bot' : item.web ? 'web' : undefined} state={item.state}
     stateLabel={label === null ? undefined : t(label)} detail={gone ? undefined : item.state === 'failed' ? item.reason : cannotReadDetail}
     actions={!gone && item.state === 'failed' && item.msgId !== null ? [
       { label: t('shell.message.retry'), onAction: () => { handOnFromRow(0); emit({ kind: 'retry', msgId: item.msgId! }); } },
@@ -130,7 +176,7 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
     pinnedLabel={item.pinned ? t('shell.message.pinned') : undefined} seq={item.seq} msgId={item.msgId}
     reply={replyProps} toolbar={toolbar} pendingAction={pendingAction}
     thread={openThread !== undefined && item.thread !== null ? { label: item.thread.count === 1 ? t('thread.summary.one') : t('thread.summary.other', { count: item.thread.count }),
-      onOpen: () => openThread(item.msgId!) } : undefined}
+      last: t('thread.summary.last', { time: formatTime(item.thread.lastTs) }), onOpen: () => openThread(item.msgId!) } : undefined}
     editor={p.editing !== null ? <MessageEditor label={t('shell.edit.label')} value={p.editing} onChange={v => p.onEditChange(v)}
       onSave={v => p.onEditSave(v)} onCancel={() => p.onEditCancel()} hint={t('shell.edit.hint')} saveLabel={t('shell.edit.save')}
       cancelLabel={t('shell.edit.cancel')} maxLength={4000} measure={v => p.editMeasure(v)}

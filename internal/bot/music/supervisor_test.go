@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -88,9 +89,11 @@ func (p *supervisorPlayback) Close() error {
 }
 
 type supervisorStarter struct {
-	starts  []music.Track
-	current *supervisorPlayback
-	fail    bool
+	explicitStarts int
+	closed         atomic.Int32
+	starts         []music.Track
+	current        *supervisorPlayback
+	fail           bool
 }
 
 type fakeTimer struct {
@@ -116,6 +119,43 @@ func (s *supervisorStarter) Start(ctx context.Context, t music.Track) (music.Pla
 	s.current = &supervisorPlayback{done: make(chan struct{})}
 	return s.current, nil
 }
+func (s *supervisorStarter) StartExplicit(ctx context.Context, track music.Track) (music.Playback, error) {
+	s.explicitStarts++
+	return s.Start(ctx, track)
+}
+func (s *supervisorStarter) Close() error { s.closed.Add(1); return nil }
+
+func TestSupervisorCancellationClosesRetainedConnectionOnce(t *testing.T) {
+	n := &supervisorNative{rows: map[string]native.StateValue{}, binding: native.Binding{Instance: tid(1), Community: tid(2), Installation: tid(3)}}
+	store, err := persistence.New(n, tid(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	starter := &supervisorStarter{}
+	supervisor, err := music.NewSupervisor(ctx, tid(4), supervisorStore{store}, starter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer supervisor.Close()
+	cancel()
+	deadline := time.After(time.Second)
+	for starter.closed.Load() == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("cancellation did not close retained connection")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	if err := supervisor.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if starter.closed.Load() != 1 {
+		t.Fatal("retained connection closed more than once")
+	}
+}
+
 func tid(v byte) (x id.ID) { x[15] = v; return }
 
 func TestSupervisorPersistsQueueBeforePlaybackAndNeverAutoplaysRestore(t *testing.T) {
@@ -238,6 +278,9 @@ func TestSupervisorAppliesCommittedRevisionWithoutSecondMutationWrite(t *testing
 	}
 	if _, err := s.ApplyPersistedSnapshot(context.Background(), saved.State, saved.Revision, true); err != nil {
 		t.Fatal(err)
+	}
+	if starter.explicitStarts != 2 {
+		t.Fatalf("committed resume and Skip must authorize their own fresh admission: %d", starter.explicitStarts)
 	}
 	if len(starter.starts) != 2 || starter.starts[1].ID != nextTrack.ID || starter.current == nil {
 		t.Fatalf("committed active Skip starts=%v, want playback of %s", starter.starts, nextTrack.ID)
@@ -440,7 +483,7 @@ func TestSupervisorFailedStartLeavesStatePausedWhenPauseSaveFails(t *testing.T) 
 	if err == nil {
 		t.Fatal("expected provider start failure")
 	}
-	if !state.Paused || state.Current == nil || state.Current.ID != track.ID || state.PositionMS != 1234 || wrapped.saves != wrapped.failOnSave {
+	if !state.Paused || state.Current == nil || state.Current.ID != track.ID || !nearPlayhead(state.PositionMS, 0) || wrapped.saves != wrapped.failOnSave {
 		t.Fatalf("failed start left unsafe state: %+v", state)
 	}
 }
@@ -469,7 +512,8 @@ func TestSupervisorPauseAndEmptyRoomClosePlayback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.closed != 1 || !state.Paused || state.PositionMS != 1234 {
+	// Fix round 2: the seek is not applied to the audio, so the paused playhead is what played since the start.
+	if p.closed != 1 || !state.Paused || !nearPlayhead(state.PositionMS, 0) {
 		t.Fatalf("pause failed: closed=%d state=%+v", p.closed, state)
 	}
 	_, err = s.Apply(context.Background(), state.Revision, music.Operation{Kind: music.OpResume})
@@ -480,7 +524,7 @@ func TestSupervisorPauseAndEmptyRoomClosePlayback(t *testing.T) {
 	if err := s.EmptyRoom(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if p.closed != 1 || s.State().Current == nil || s.State().Current.ID != "a" || !s.State().Paused || s.State().PositionMS != 1234 || len(s.State().Queue) != 1 || s.State().Queue[0].ID != "b" {
+	if p.closed != 1 || s.State().Current == nil || s.State().Current.ID != "a" || !s.State().Paused || !nearPlayhead(s.State().PositionMS, 0) || len(s.State().Queue) != 1 || s.State().Queue[0].ID != "b" {
 		t.Fatal("empty room did not pause while preserving current track and queue")
 	}
 	if left || scheduled == nil {
@@ -526,6 +570,9 @@ func TestSupervisorAdvancesAfterTrackEOF(t *testing.T) {
 			t.Fatal(waitCtx.Err())
 		case <-time.After(time.Millisecond):
 		}
+	}
+	if starter.explicitStarts != 1 {
+		t.Fatalf("EOF must not authorize a room reconnect: explicit starts=%d", starter.explicitStarts)
 	}
 	if len(starter.starts) != 2 || s.State().Current == nil || s.State().Current.ID != "b" {
 		t.Fatalf("did not advance: starts=%v state=%+v", starter.starts, s.State())
@@ -576,4 +623,262 @@ func TestSupervisorEOFFailuresLeaveQueuePaused(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSupervisorResumeWhilePlayingKeepsCurrentPublication(t *testing.T) {
+	n := &supervisorNative{rows: map[string]native.StateValue{}, binding: native.Binding{Instance: tid(1), Community: tid(2), Installation: tid(3)}}
+	store, err := persistence.New(n, tid(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	starter := &supervisorStarter{}
+	s, err := music.NewSupervisor(context.Background(), tid(4), supervisorStore{store}, starter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	track := music.Track{ID: "a", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "A", RequesterID: "member"}
+	if _, err := s.Apply(context.Background(), 0, music.Operation{Kind: music.OpEnqueue, Tracks: []music.Track{track}}); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if _, err := s.Apply(context.Background(), s.State().Revision, music.Operation{Kind: music.OpResume}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(starter.starts) != 1 || s.State().Paused {
+		t.Fatalf("repeated Resume replaced a live track: starts=%d state=%+v", len(starter.starts), s.State())
+	}
+}
+
+// nearPlayhead allows the few milliseconds a playing track advances between a test's resume and its pause (Ruling AI:
+// a pause settles the playhead the track reached).
+func nearPlayhead(got, want int64) bool { return got >= want && got < want+1000 }
+
+func TestSupervisorAdoptsStoredSnapshotOnHandoffRevisionMismatchWithoutPlayback(t *testing.T) {
+	n := &supervisorNative{rows: map[string]native.StateValue{}, binding: native.Binding{Instance: tid(1), Community: tid(2), Installation: tid(3)}}
+	store, err := persistence.New(n, tid(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel := tid(4)
+	starter := &supervisorStarter{}
+	s, err := music.NewSupervisor(t.Context(), channel, supervisorStore{store}, starter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	queued, err := music.Apply(music.InitialState(), 0, music.Operation{Kind: music.OpEnqueue, Tracks: []music.Track{{ID: "a", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "A", RequesterID: "member"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.Save(t.Context(), channel, 0, queued)
+	if err != nil {
+		t.Fatal(err)
+	}
+	playing, err := music.Apply(first.State, first.Revision, music.Operation{Kind: music.OpResume})
+	if err != nil {
+		t.Fatal(err)
+	}
+	latest, err := store.Save(t.Context(), channel, first.Revision, playing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision, err := s.ApplyPersistedSnapshot(t.Context(), first.State, first.Revision, true)
+	if err != nil || revision != latest.Revision || s.State().Revision != latest.Revision || !s.State().Paused || len(starter.starts) != 0 {
+		t.Fatalf("adoption revision=%d state=%+v starts=%d err=%v", revision, s.State(), len(starter.starts), err)
+	}
+}
+
+type handoffLoadFailureStore struct {
+	supervisorStore
+	fail bool
+}
+
+func (s *handoffLoadFailureStore) Load(ctx context.Context, channel id.ID) (music.State, uint64, error) {
+	if s.fail {
+		return music.State{}, 0, errors.New("handoff read failed")
+	}
+	return s.supervisorStore.Load(ctx, channel)
+}
+
+func TestSupervisorEnqueueAdoptionPreservesCurrentPlayback(t *testing.T) {
+	for _, handoff := range []string{"pending handoff", "failed handoff", "stale handoff"} {
+		t.Run(handoff, func(t *testing.T) {
+			n := &supervisorNative{rows: map[string]native.StateValue{}, binding: native.Binding{Instance: tid(1), Community: tid(2), Installation: tid(3)}}
+			store, err := persistence.New(n, tid(2))
+			if err != nil {
+				t.Fatal(err)
+			}
+			wrapped := &handoffLoadFailureStore{supervisorStore: supervisorStore{store}}
+			starter := &supervisorStarter{}
+			s, err := music.NewSupervisor(t.Context(), tid(4), wrapped, starter)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			track := music.Track{ID: "a", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", RequesterID: "member"}
+			state, err := s.Apply(t.Context(), 0, music.Operation{Kind: music.OpEnqueue, Tracks: []music.Track{track}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			state, err = s.Apply(t.Context(), state.Revision, music.Operation{Kind: music.OpResume})
+			if err != nil {
+				t.Fatal(err)
+			}
+			playing := starter.current
+			track.ID = "b"
+			committed, err := music.Apply(state, state.Revision, music.Operation{Kind: music.OpEnqueue, Tracks: []music.Track{track}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Save(t.Context(), tid(4), state.Revision, committed); err != nil {
+				t.Fatal(err)
+			}
+			if handoff == "failed handoff" {
+				wrapped.fail = true
+				_, err := s.SchedulePersistedSnapshot(t.Context(), committed, committed.Revision, false)
+				wrapped.fail = false
+				if err == nil {
+					t.Fatal("handoff did not fail")
+				}
+			}
+			if handoff == "stale handoff" {
+				// A delayed older handoff reaches the same adoption path as a state read.
+				if _, err := s.ApplyPersistedSnapshot(t.Context(), state, state.Revision, false); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, revision, err := s.RefreshState(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Paused || got.Current == nil || got.Current.ID != "a" || len(got.Queue) != 1 || got.Queue[0].ID != "b" || revision != committed.Revision {
+				t.Fatalf("enqueue adoption lost live state: state=%+v revision=%d", got, revision)
+			}
+			select {
+			case <-playing.done:
+				t.Fatal("enqueue adoption closed current playback")
+			default:
+			}
+			if _, err := s.SchedulePersistedSnapshot(t.Context(), committed, committed.Revision, false); err != nil {
+				t.Fatal(err)
+			}
+			if len(starter.starts) != 1 || s.State().Paused {
+				t.Fatalf("late handoff changed playback: starts=%d state=%+v", len(starter.starts), s.State())
+			}
+		})
+	}
+}
+
+func TestSupervisorImmediateSkipGuardsCurrentItem(t *testing.T) {
+	n := &supervisorNative{rows: map[string]native.StateValue{}, binding: native.Binding{Instance: tid(1), Community: tid(2), Installation: tid(3)}}
+	store, err := persistence.New(n, tid(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	starter := &supervisorStarter{}
+	s, state := reviewSupervisorWithStore(t, store, starter)
+	item := "a"
+	op := music.Operation{Kind: music.OpSkip, ExpectedCurrentItemID: &item}
+	// Leave playback paused, so advancing the queue needs no asynchronous start.
+	type result struct {
+		state music.State
+		err   error
+	}
+	results := make(chan result, 2)
+	for range 2 {
+		go func() {
+			got, err := s.ApplyImmediate(t.Context(), op)
+			results <- result{got, err}
+		}()
+	}
+	var first music.State
+	for range 2 {
+		got := <-results
+		if got.err != nil || got.state.Revision != state.Revision+1 || got.state.Current == nil || got.state.Current.ID != "b" {
+			t.Fatalf("racing guarded skip advanced twice: state=%+v err=%v", got.state, got.err)
+		}
+		first = got.state
+	}
+	stored, err := store.Load(t.Context(), tid(4))
+	if err != nil || stored.Revision != first.Revision {
+		t.Fatalf("duplicate skip wrote durable state: revision=%d err=%v", stored.Revision, err)
+	}
+	item = ""
+	if got, err := s.ApplyImmediate(t.Context(), op); err != nil || got.Revision != first.Revision {
+		t.Fatalf("empty expected current skipped a track: state=%+v err=%v", got, err)
+	}
+	// Older clients omit the guard and retain unconditional skip behavior.
+	legacy, err := s.ApplyImmediate(t.Context(), music.Operation{Kind: music.OpSkip})
+	if err != nil || legacy.Current == nil || legacy.Current.ID != "c" || legacy.Revision != state.Revision+2 {
+		t.Fatalf("legacy skip state=%+v err=%v", legacy, err)
+	}
+}
+
+func TestSupervisorReadAdoptionRetainsPauseOrClosesChangedCurrent(t *testing.T) {
+	for _, changed := range []bool{false, true} {
+		t.Run(map[bool]string{false: "paused metadata", true: "changed playing current"}[changed], func(t *testing.T) {
+			n := &supervisorNative{rows: map[string]native.StateValue{}, binding: native.Binding{Instance: tid(1), Community: tid(2), Installation: tid(3)}}
+			store, err := persistence.New(n, tid(2))
+			if err != nil {
+				t.Fatal(err)
+			}
+			starter := &supervisorStarter{}
+			s, state := reviewSupervisorWithStore(t, store, starter)
+			op := music.Operation{Kind: music.OpSetVolume, Volume: 50}
+			wantCurrent := "a"
+			if changed {
+				state, err = s.Apply(t.Context(), state.Revision, music.Operation{Kind: music.OpResume})
+				if err != nil {
+					t.Fatal(err)
+				}
+				op.Kind = music.OpSkip
+				wantCurrent = "b"
+			}
+			old := starter.current
+			committed, err := music.Apply(state, state.Revision, op)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Save(t.Context(), tid(4), state.Revision, committed); err != nil {
+				t.Fatal(err)
+			}
+			got, revision, err := s.RefreshState(t.Context())
+			if err != nil || !got.Paused || got.Current == nil || got.Current.ID != wantCurrent || revision != committed.Revision {
+				t.Fatalf("read adoption state=%+v revision=%d err=%v", got, revision, err)
+			}
+			select {
+			case <-old.done:
+			default:
+				t.Fatal("changed current retained old playback")
+			}
+		})
+	}
+}
+
+func reviewSupervisorWithStore(t *testing.T, store *persistence.Store, starter music.TrackStarter) (*music.Supervisor, music.State) {
+	t.Helper()
+	s, err := music.NewSupervisor(t.Context(), tid(4), supervisorStore{store}, starter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	tracks := make([]music.Track, 3)
+	for i, item := range []string{"a", "b", "c"} {
+		tracks[i] = music.Track{ID: item, Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", RequesterID: "member"}
+	}
+	state, err := s.Apply(t.Context(), 0, music.Operation{Kind: music.OpEnqueue, Tracks: tracks})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err = s.Apply(t.Context(), state.Revision, music.Operation{Kind: music.OpResume})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err = s.Apply(t.Context(), state.Revision, music.Operation{Kind: music.OpPause})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s, state
 }

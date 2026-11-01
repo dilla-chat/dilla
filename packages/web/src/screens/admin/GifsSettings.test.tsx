@@ -10,7 +10,7 @@ import { GifsSettings } from './GifsSettings.tsx';
 
 const SERVER = 'a1'.repeat(16);
 const KEY = 'abcdEFGH12345678';
-const MASK = en['gif.settings.masked'];
+const CONFIGURED = en['gif.settings.maskedLabel'];
 
 function setup(initial: { on?: boolean; rating?: string } = {}, over: (c: Command, state: { on: boolean; rating: string }) => Promise<unknown> | undefined = () => undefined) {
   const state = { on: initial.on ?? false, rating: initial.rating ?? 'pg-13' };
@@ -51,12 +51,12 @@ describe('the GIFs row of server settings (E8)', () => {
     expect(screen.getByText(en['gif.settings.hint'])).toBeInTheDocument();
   });
 
-  it('saves a typed key, clears the field, and shows dots with replace and remove: the key is never shown again', async () => {
+  it('saves a typed key, clears the field, and shows its configured state with replace and remove: the key is never shown again', async () => {
     const { fake, user, announce } = setup();
     await user.type(await screen.findByLabelText(en['gif.settings.key']), KEY);
     await user.click(screen.getByRole('button', { name: en['gif.settings.save'] }));
     await waitFor(() => expect(fake.callsOf('gifSetKey')).toEqual([{ m: 'gifSetKey', communityId: SERVER, key: KEY }]));
-    expect(await screen.findByText(MASK)).toBeInTheDocument();
+    expect(await screen.findByText(CONFIGURED)).toBeVisible();
     expect(screen.getByRole('button', { name: en['gif.settings.replace'] })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: en['gif.settings.remove'] })).toBeInTheDocument();
     expect(screen.queryByLabelText(en['gif.settings.key'])).toBeNull();
@@ -68,21 +68,21 @@ describe('the GIFs row of server settings (E8)', () => {
     expect(screen.getByRole('button', { name: en['gif.settings.replace'] })).toHaveFocus();
   });
 
-  it('opens on the dots when a key is already set, and the key never comes back from the instance', async () => {
+  it('opens on the configured state when a key is already set, and the key never comes back from the instance', async () => {
     const { fake } = setup({ on: true });
-    expect(await screen.findByText(MASK)).toBeInTheDocument();
+    expect(await screen.findByText(CONFIGURED)).toBeVisible();
     expect(screen.getByText(en['gif.settings.maskedLabel'])).toBeInTheDocument();
     expect(screen.queryByLabelText(en['gif.settings.key'])).toBeNull();
     expect(fake.callsOf('gifSetKey')).toEqual([]);
   });
 
-  it('replaces a key with an empty field, and cancel puts the dots back without a call', async () => {
+  it('replaces a key with an empty field, and cancel restores its configured state without a call', async () => {
     const { fake, user } = setup({ on: true });
     await user.click(await screen.findByRole('button', { name: en['gif.settings.replace'] }));
     expect(field()).toHaveValue('');
     expect(field()).toHaveFocus();
     await user.click(screen.getByRole('button', { name: en['gif.settings.cancel'] }));
-    expect(await screen.findByText(MASK)).toBeInTheDocument();
+    expect(await screen.findByText(CONFIGURED)).toBeVisible();
     expect(fake.callsOf('gifSetKey')).toEqual([]);
     await user.click(screen.getByRole('button', { name: en['gif.settings.replace'] }));
     await user.type(field(), 'newKEY123456');
@@ -94,7 +94,7 @@ describe('the GIFs row of server settings (E8)', () => {
     const { user } = setup({ on: true });
     await user.click(await screen.findByRole('button', { name: en['gif.settings.replace'] }));
     await user.keyboard('{Escape}');
-    expect(await screen.findByText(MASK)).toBeInTheDocument();
+    expect(await screen.findByText(CONFIGURED)).toBeVisible();
   });
 
   it('removes the key and goes back to the field with focus on it', async () => {
@@ -160,7 +160,7 @@ describe('the GIFs row of server settings (E8)', () => {
     await expectNoAxeViolations(a.view.container);
     a.view.unmount();
     const b = setup({ on: true });
-    await screen.findByText(MASK);
+    await screen.findByText(CONFIGURED);
     await expectNoAxeViolations(b.view.container);
   });
 });

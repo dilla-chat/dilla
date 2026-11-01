@@ -35,7 +35,7 @@ type automodGrantRedeemerFake struct {
 
 type automodConfigRuntimeFake struct{ persists int }
 
-func (r *automodConfigRuntimeFake) PersistConfig(_ moderation.Config, persist func() error) error {
+func (r *automodConfigRuntimeFake) PersistConfig(_ context.Context, _ moderation.Config, _ uint64, persist func() error) error {
 	r.persists++
 	return persist()
 }

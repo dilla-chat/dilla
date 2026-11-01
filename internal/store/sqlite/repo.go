@@ -720,6 +720,26 @@ func (r *Repo) PutPasswordCredential(ctx context.Context, userID id.ID, phc stri
 	}))
 }
 
+func (r *Repo) ChangePasswordCredential(ctx context.Context, userID id.ID, phc string, at int64) error {
+	return wrap(r.w.ChangePasswordCredential(ctx, sqlitedb.ChangePasswordCredentialParams{
+		UserID:    userID,
+		Phc:       phc,
+		Updated:   at,
+		ChangedAt: sql.NullInt64{Int64: at, Valid: true},
+	}))
+}
+
+func (r *Repo) GetPasswordChangedAt(ctx context.Context, userID id.ID) (*int64, error) {
+	at, err := r.r.GetPasswordChangedAt(ctx, sqlitedb.GetPasswordChangedAtParams{UserID: userID})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	if !at.Valid {
+		return nil, nil
+	}
+	return &at.Int64, nil
+}
+
 func (r *Repo) GetPasswordCredential(ctx context.Context, userID id.ID) (string, error) {
 	phc, err := r.r.GetPasswordCredential(ctx, sqlitedb.GetPasswordCredentialParams{UserID: userID})
 	return phc, wrap(err)
@@ -1049,16 +1069,17 @@ func (r *Repo) ClearLoginFailures(ctx context.Context, userID id.ID) error {
 
 func (r *Repo) CreateInvite(ctx context.Context, i store.InviteRow) error {
 	return wrap(r.w.CreateInvite(ctx, sqlitedb.CreateInviteParams{
-		ID:          i.ID,
-		CodeHash:    i.CodeHash,
-		CommunityID: i.CommunityID,
-		CreatedBy:   i.CreatedBy,
-		GrantsAdmin: int64(i.GrantsAdmin),
-		MaxUses:     int64(i.MaxUses),
-		UsedCount:   int64(i.UsedCount),
-		Created:     i.Created,
-		ExpiresAt:   i.ExpiresAt,
-		RevokedAt:   nullInt64(i.RevokedAt),
+		ID:            i.ID,
+		CodeHash:      i.CodeHash,
+		CommunityID:   i.CommunityID,
+		CreatedBy:     i.CreatedBy,
+		GrantsAdmin:   int64(i.GrantsAdmin),
+		MaxUses:       int64(i.MaxUses),
+		UsedCount:     int64(i.UsedCount),
+		Created:       i.Created,
+		ExpiresAt:     i.ExpiresAt,
+		RevokedAt:     nullInt64(i.RevokedAt),
+		UnlimitedUses: int64(i.UnlimitedUses),
 	}))
 }
 
@@ -1135,6 +1156,7 @@ func inviteRow(row sqlitedb.Invites) store.InviteRow {
 		ID: row.ID, CodeHash: row.CodeHash, CommunityID: row.CommunityID, CreatedBy: row.CreatedBy,
 		GrantsAdmin: uint8(row.GrantsAdmin), MaxUses: uint64(row.MaxUses), UsedCount: uint64(row.UsedCount),
 		Created: row.Created, ExpiresAt: row.ExpiresAt, RevokedAt: ptrInt64(row.RevokedAt),
+		UnlimitedUses: uint8(row.UnlimitedUses),
 	}
 }
 
@@ -1596,6 +1618,34 @@ func (r *Repo) ListProposals(ctx context.Context, groupID id.ID, epoch uint64, i
 			return nil, err
 		}
 		out = append(out, p)
+	}
+	return out, nil
+}
+
+func (r *Repo) ListClosedGroupLiveProposals(ctx context.Context, limit int32) ([]store.ProposalRow, error) {
+	rows, err := r.r.ListClosedGroupLiveProposals(ctx, sqlitedb.ListClosedGroupLiveProposalsParams{MaxRows: int64(limit)})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.ProposalRow, 0, len(rows))
+	for _, m := range rows {
+		p, err := mlsProposalRow(m)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+func (r *Repo) CountLiveInstanceProposals(ctx context.Context) (map[uint8]int64, error) {
+	rows, err := r.r.CountLiveInstanceProposals(ctx)
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make(map[uint8]int64, len(rows))
+	for _, row := range rows {
+		out[uint8(row.Kind)] = row.N // kind is CHECKed to 0..3 by the schema
 	}
 	return out, nil
 }

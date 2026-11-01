@@ -1,4 +1,7 @@
-.d-confirm-dialog { display: grid; gap: 0.875rem; min-width: min(26rem, calc(100vw - 4.25rem)); }
-.d-confirm-dialog__body { margin: 0; }
-.d-confirm-dialog__error { margin: 0; font-size: var(--text-sm); color: var(--danger); }
+/* Task 9: the prototype's confirmation; the body is the head's 12px --fg-2 line (text-wrap: pretty), the fields and a refusal follow. */
+.d-confirm-dialog { display: grid; gap: 0.875rem; }
+.d-confirm-dialog[hidden] { display: none; }
+.d-confirm-dialog__avatar { display: inline-flex; flex: none; }
+.d-confirm-dialog__body { margin: 0; font-size: var(--text-ui); color: var(--fg-2); text-wrap: pretty; }
+.d-confirm-dialog__error { margin: 0; font-size: var(--text-btn); color: var(--danger); }
 .d-confirm-dialog__error::before { content: "" / ""; display: inline-block; width: 0.875em; height: 0.875em; margin-right: 0.25em; vertical-align: -0.125em; background: currentColor; mask: var(--d-mask-x) center / contain no-repeat; }

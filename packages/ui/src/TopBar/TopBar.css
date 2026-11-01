@@ -1,0 +1,52 @@
+/* The Signal top bar (README §5.2), values from the prototype's inline styles. Its 44px include the hairline under it. */
+.d-topbar { box-sizing: border-box; display: flex; align-items: center; gap: 12px; height: var(--topbar-h); min-width: 0; padding: 0 12px 0 14px; background: var(--bg-2); border-bottom: 1px solid var(--hairline); color: var(--fg); }
+/* The brand and the right group share the room left of and right of the search, so the search sits in the middle. */
+.d-topbar__brand, .d-topbar__end { display: flex; align-items: center; flex: 1 1 0; min-width: 0; }
+.d-topbar__end { justify-content: flex-end; gap: 8px; }
+.d-topbar__center { display: flex; justify-content: center; flex: 0 1 26.25rem /* 420px */; min-width: 0; }
+
+/* The wordmark: also the sign-in page's (size page). */
+.d-brand { display: inline-flex; align-items: center; gap: 8px; color: var(--fg); white-space: nowrap; }
+.d-brand__tile { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 1.25rem /* 20px */; height: 1.25rem; border-radius: var(--r-sm); background: var(--brand); color: var(--brand-ink); font-size: var(--text-ui); font-weight: var(--weight-display); line-height: 1; }
+.d-brand[data-size="bar"] .d-brand__tile { width: 1.125rem /* 18px */; height: 1.125rem; font-size: var(--text-xs); }
+.d-brand__name { font-size: var(--text-xs); font-weight: var(--weight-display); letter-spacing: var(--label-tracking-wide); }
+.d-brand__caret { flex: none; width: 6px; height: 0.75rem /* 12px */; background: var(--brand); animation: d-caret var(--duration-caret) infinite; }
+
+/* The search trigger: a 28px field-shaped button. */
+.d-topbar__search {
+  box-sizing: border-box; display: flex; align-items: center; gap: 8px; width: 100%; max-width: 22.5rem /* 360px */; height: 1.75rem /* 28px */;
+  padding: 0 8px 0 10px; font: inherit; font-size: var(--text-ui); color: var(--fg-3); text-align: left; background: var(--surface-2);
+  border: 1px solid var(--hairline-2); border-radius: var(--r-md); cursor: pointer; transition: border-color var(--duration-fast), color var(--duration-fast);
+}
+.d-topbar__search:hover { border-color: var(--accent); color: var(--fg-strong); }
+.d-topbar__search-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The keycap's border is the prototype's #2A303A (--control-edge; Jonas 2026-10-27). */
+.d-topbar__kbd { flex: none; padding: 0 5px; font: inherit; font-size: var(--text-micro); line-height: 1rem /* 16px */; color: var(--fg-2); border: 1px solid var(--control-edge); border-radius: var(--r-sm); }
+
+/* The voice chip: only while in a call; it enters with d-up. */
+.d-topbar__voice {
+  box-sizing: border-box; display: flex; align-items: center; gap: 8px; flex: none; height: 1.75rem /* 28px */; padding: 0 10px; font: inherit;
+  font-size: var(--text-btn); color: var(--ok-text); white-space: nowrap; background: var(--ok-tint); border: 1px solid var(--ok-border); border-radius: var(--r-md);
+  cursor: pointer; animation: d-up var(--duration-slow) var(--ease-out) both;
+}
+.d-topbar__bars { display: flex; align-items: flex-end; gap: 2px; height: 0.75rem /* 12px */; }
+/* sBar 600ms, each bar a third of it later (200ms, 400ms). */
+.d-topbar__bars i { display: block; width: 2px; height: 0.75rem; background: var(--ok); transform-origin: bottom; animation: d-bar var(--duration-bar) infinite; }
+.d-topbar__bars i:nth-child(2) { animation-delay: calc(var(--duration-bar) / 3); }
+.d-topbar__bars i:nth-child(3) { animation-delay: calc(var(--duration-bar) * 2 / 3); }
+
+/* The bell's due count: 14px, --mention fill (the prototype's #FFD16A) with --mention-ink, pops in. */
+.d-topbar__bell { position: relative; display: inline-flex; flex: none; }
+/* While its popover is open the bell is the accent on --accent-soft (the prototype's remFg / remBg). */
+.d-topbar .d-topbar__bell .d-icon-button[data-open="true"] { color: var(--accent); background: var(--accent-soft); }
+.d-topbar__badge {
+  box-sizing: border-box; position: absolute; top: 2px; right: 2px; display: flex; align-items: center; justify-content: center; min-width: 0.875rem /* 14px */;
+  height: 0.875rem; padding: 0 3px; font-size: var(--text-badge); font-weight: var(--weight-display); line-height: 1; color: var(--mention-ink); background: var(--mention);
+  border-radius: var(--r-pill); box-shadow: 0 0 0 2px var(--bg-2); pointer-events: none; animation: d-pop var(--duration-pop) both;
+}
+
+/* The gear turns 45° on hover, over 200ms. The prototype's bell and gear have no press state: a press keeps the hover's turn
+   (these selectors outrank IconButton's :active scale). */
+.d-topbar .d-topbar__gear { transition: background var(--duration-turn), color var(--duration-turn), transform var(--duration-turn); }
+.d-topbar .d-topbar__gear:hover, .d-topbar .d-topbar__gear:hover:active:not(:disabled) { transform: rotate(45deg); }
+.d-topbar .d-topbar__bell .d-icon-button:active:not(:disabled) { transform: none; }

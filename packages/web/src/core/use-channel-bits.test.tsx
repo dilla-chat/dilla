@@ -60,6 +60,6 @@ describe('useChannelBits', () => {
     expect(bits(outsider)).toBeNull();
     const owner = filled();
     owner.set('communities', [{ id: SERVER, name: 'Midgard', owner: ME.id }]);
-    expect(bits(owner)).toBe(0x1ffffff);
+    expect(bits(owner)).toBe(0x3ffffff);
   });
 });

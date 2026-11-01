@@ -55,14 +55,17 @@ const (
 // State is scoped to one voice channel. Current is nil when nothing is playing.
 // Paused starts true so restoring this value can never start audio by itself.
 type State struct {
-	Revision   uint64     `json:"revision"`
-	Current    *Track     `json:"current,omitempty"`
-	Queue      []Track    `json:"queue"`
-	PositionMS int64      `json:"position_ms"`
-	Paused     bool       `json:"paused"`
-	Volume     uint8      `json:"volume"`
-	Shuffle    bool       `json:"shuffle"`
-	Repeat     RepeatMode `json:"repeat"`
+	Revision   uint64  `json:"revision"`
+	Current    *Track  `json:"current,omitempty"`
+	Queue      []Track `json:"queue"`
+	PositionMS int64   `json:"position_ms"`
+	// PositionAtMS is the Bot's Unix time in milliseconds at which PositionMS was the playhead (Ruling AI). While a
+	// track plays, the playhead is PositionMS + (now - PositionAtMS); 0 means unknown (a state from an older runtime).
+	PositionAtMS int64      `json:"position_at_ms,omitempty"`
+	Paused       bool       `json:"paused"`
+	Volume       uint8      `json:"volume"`
+	Shuffle      bool       `json:"shuffle"`
+	Repeat       RepeatMode `json:"repeat"`
 }
 
 func InitialState() State {
@@ -100,6 +103,12 @@ type Operation struct {
 	Enabled    bool
 	Seed       uint64
 	Repeat     RepeatMode
+	// ExpectedCurrentItemID makes an immediate skip conditional on the item the
+	// caller saw. Nil preserves legacy unconditional skips; empty means no item.
+	ExpectedCurrentItemID *string
+	// NowMS is the Bot's Unix time in milliseconds when the operation applies. With it, Apply first settles the
+	// playhead a playing track has reached, then stamps PositionAtMS; 0 leaves the playhead fields as they are.
+	NowMS int64
 }
 
 // Apply applies one revision-checked mutation. It never mutates state or the
@@ -112,6 +121,12 @@ func Apply(state State, expectedRevision uint64, op Operation) (State, error) {
 		return state, ErrInvalidOperation
 	}
 	next := cloneState(state)
+	if op.NowMS < 0 {
+		return state, ErrInvalidOperation
+	}
+	if op.NowMS > 0 {
+		settlePosition(&next, op.NowMS)
+	}
 	var err error
 	switch op.Kind {
 	case OpEnqueue, OpImportPlaylist:
@@ -129,6 +144,10 @@ func Apply(state State, expectedRevision uint64, op Operation) (State, error) {
 			startNext(&next)
 		}
 		if next.Current != nil {
+			// Fix round 2 (Ruling AI, the truth): a provider starts a track from its beginning; it has no offset.
+			if next.Paused {
+				next.PositionMS = 0
+			}
 			next.Paused = false
 		}
 	case OpStop:
@@ -143,9 +162,9 @@ func Apply(state State, expectedRevision uint64, op Operation) (State, error) {
 	case OpSeek:
 		if next.Current == nil || op.PositionMS < 0 || (next.Current.DurationMS > 0 && op.PositionMS > next.Current.DurationMS) {
 			err = ErrInvalidOperation
-		} else {
-			next.PositionMS = op.PositionMS
 		}
+		// Fix round 2: no provider applies a seek to the audio yet, so the playhead does not move; the request is
+		// validated and acknowledged (a provider that seeks will move PositionMS here).
 	case OpSetVolume:
 		if op.Volume > 100 {
 			err = ErrInvalidOperation
@@ -171,8 +190,32 @@ func Apply(state State, expectedRevision uint64, op Operation) (State, error) {
 	if err != nil {
 		return state, err
 	}
+	if op.NowMS > 0 {
+		next.PositionAtMS = op.NowMS
+	}
 	next.Revision++
 	return next, nil
+}
+
+// settlePosition folds the time a playing track has played since PositionAtMS into PositionMS (clamped to its
+// duration), so a pause, seek or skip starts from the playhead it actually reached.
+func settlePosition(state *State, nowMS int64) {
+	if state.Current == nil || state.Paused || state.PositionAtMS <= 0 || nowMS <= state.PositionAtMS {
+		return
+	}
+	position := state.PositionMS + (nowMS - state.PositionAtMS)
+	if state.Current.DurationMS > 0 && position > state.Current.DurationMS {
+		position = state.Current.DurationMS
+	}
+	state.PositionMS = position
+	state.PositionAtMS = nowMS
+}
+
+// PlayheadMS is the position a client should show at nowMS: the stamped position plus the time played since, clamped.
+func PlayheadMS(state State, nowMS int64) int64 {
+	settled := cloneState(state)
+	settlePosition(&settled, nowMS)
+	return settled.PositionMS
 }
 
 func appendTracks(state *State, tracks []Track, seed uint64) error {
@@ -362,7 +405,7 @@ func validState(state State) bool {
 	if state.Current != nil {
 		trackCount++
 	}
-	if state.Volume > 100 || state.Repeat > RepeatQueue || state.PositionMS < 0 || trackCount > QueueLimit {
+	if state.Volume > 100 || state.Repeat > RepeatQueue || state.PositionMS < 0 || state.PositionAtMS < 0 || trackCount > QueueLimit {
 		return false
 	}
 	seen := make(map[string]struct{}, len(state.Queue)+1)

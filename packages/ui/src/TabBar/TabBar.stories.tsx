@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { TabBar, type TabBarItem } from './TabBar.tsx';
 
-// Switch the theme in the toolbar (mesh, light, high-contrast). A real 390px phone width.
+// Switch the theme in the toolbar (signal, light, high-contrast). A real 390px phone width.
 const meta = { title: 'Shell/TabBar', component: TabBar, parameters: { layout: 'fullscreen' } } satisfies Meta<typeof TabBar>;
 export default meta;
 type Story = StoryObj<typeof meta>;
@@ -19,5 +19,16 @@ export const Counts: Story = {
 };
 export const CurrentYou: Story = {
   args: { label: 'main', items: items('you'), onSelect: () => {} },
+  render: args => <div style={{ maxWidth: 390 }}><TabBar {...args} /></div>,
+};
+
+/** Signal §5.10 (the prototype's phone tabs): Home, Activity (a count) and You, Home current. */
+const SIGNAL_ITEMS = (current: string): TabBarItem[] => [
+  { id: 'home', label: 'Home', href: '#home', icon: 'house', current: current === 'home' },
+  { id: 'activity', label: 'Activity', href: '#activity', icon: 'bell', current: current === 'activity', count: 2, countLabel: 'Activity, 2 unread' },
+  { id: 'you', label: 'You', href: '#you', icon: 'user', current: current === 'you' },
+];
+export const Signal: Story = {
+  args: { label: 'main', items: SIGNAL_ITEMS('home'), onSelect: () => {} }, globals: { theme: 'signal' },
   render: args => <div style={{ maxWidth: 390 }}><TabBar {...args} /></div>,
 };

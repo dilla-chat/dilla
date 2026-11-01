@@ -572,6 +572,10 @@ room:
     - mime: video/VP8
     - mime: video/H264
     - mime: video/rtx
+limit:
+  max_participant_name_length: 32
+  max_metadata_size: 1
+  max_attributes_size: 64
 turn:
   enabled: false
 `
@@ -597,7 +601,7 @@ func TestEveryConditionalKeyReachesLiveKit(t *testing.T) {
 		"room:\n  auto_create: false\n  max_participants: 25\n",
 		"    - mime: video/VP9\n      fmtp_line: \"profile-id=0\"\n    - mime: video/rtx\n",
 		"  ips:\n    excludes:\n      - \"172.17.0.0/16\"\n      - \"fd00::/8\"\n",
-		"limit:\n  num_tracks: 4000\n  bytes_per_sec: 125000000\n",
+		"limit:\n  num_tracks: 4000\n  bytes_per_sec: 125000000\n  max_participant_name_length: 32\n  max_metadata_size: 1\n  max_attributes_size: 64\n",
 		"webhook:\n  api_key: dilla\n  urls:\n    - \"http://127.0.0.1:7883/livekit/webhook\"\n  filter_params:\n    include_events:\n" +
 			"      - room_started\n      - room_finished\n      - participant_joined\n      - participant_left\n" +
 			"      - participant_connection_aborted\n      - track_published\n      - track_unpublished\n",

@@ -1,5 +1,6 @@
 import { Children, useLayoutEffect, useRef, type KeyboardEvent, type ReactNode } from 'react';
 import { Button } from '../Button/Button.tsx';
+import { Icon, type IconName } from '../Icon/Icon.tsx';
 import './MessageLog.css';
 
 export interface MessageLogProps {
@@ -11,9 +12,18 @@ export interface MessageLogProps {
   onKeyDown?(e: KeyboardEvent): void;
   /** Set when the log can be away from the newest messages: `atPresent === false` shows the bar, and Ctrl+End jumps. */
   present?: { atPresent: boolean; olderLabel: string; jumpLabel: string; onJumpToPresent(): void };
+  /**
+   * The start of the conversation (README §5.5): a 40px tile with the channel's glyph, "Welcome to #general" and "This is
+   * the start of #general.", above the first row. Pass it once the history is complete (no `earlier`); `emptyLabel` follows it
+   * while there is no row.
+   */
+  welcome?: { icon: IconName; title: string; body: string };
 }
 
-/** A day divider: a mono hairline row with the day. Pass it as a child of the log. */
+/** The entrance stagger counts the last this many rows of the first paint (top to bottom); rows above them are off screen. */
+export const STAGGER_ROWS = 20;
+
+/** A day divider (README §5.5): "TODAY" in 10px/600 uppercase, then a hairline to the edge. Pass it as a child of the log. */
 export function DateDivider({ label }: { label: string }) {
   return (
     <div className="d-date-divider" role="separator" aria-label={label}>
@@ -35,28 +45,51 @@ export const PIN_SLACK_PX = 24;
  * log's one tab stop and the log itself leaves the tab order (tabIndex -1, still focusable by script); with no
  * such row the log stays a reachable scroll region. Keys reach the caller through `onKeyDown`.
  */
-export function MessageLog({ label, children, earlier, emptyLabel, busy, onKeyDown, present }: MessageLogProps) {
+export function MessageLog({ label, children, earlier, emptyLabel, busy, onKeyDown, present, welcome }: MessageLogProps) {
   // Scrolling must not re-render: all of the pinning state lives in refs.
   const logRef = useRef<HTMLDivElement>(null);
   const rowsRef = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
   const prevHeight = useRef(0);
   const prevFirst = useRef<Element | null>(null);
+  // The position the log last pinned itself to. A scroll event that still reports it is the log's own move, not the
+  // reader's: when a row grew between the pin and that (asynchronous) event, the event sees the log short of the end,
+  // and taking that as the reader scrolling up left the log stuck there (2026-10-30 CI, an image card that grew when
+  // its thumbnail decoded).
+  const pinnedTop = useRef<number | null>(null);
+  const pin = (el: HTMLElement) => {
+    el.scrollTop = el.scrollHeight;
+    pinnedTop.current = el.scrollTop;
+  };
 
   const onScroll = () => {
     const el = logRef.current;
     if (!el) return;
-    pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight <= PIN_SLACK_PX;
+    const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight <= PIN_SLACK_PX;
+    if (el.scrollTop === pinnedTop.current) {
+      pinned.current = pinned.current || atEnd;
+    } else {
+      pinnedTop.current = null;
+      pinned.current = atEnd;
+    }
   };
 
-  // A resize of the log (the shell shrinking under a soft keyboard) keeps the end in view for a reader who is at the end.
+  // The first paint's rows rise in one after another, 40ms apart (README §5.5); rows that arrive later have no delay.
+  useLayoutEffect(() => {
+    const rows = Array.from(rowsRef.current?.querySelectorAll<HTMLElement>(':scope > .d-message-row') ?? []).slice(-STAGGER_ROWS);
+    rows.forEach((row, i) => row.style.setProperty('--d-enter-i', String(i)));
+  }, []);
+
+  // A resize of the log (the shell shrinking under a soft keyboard), or of its rows without a render of the log (an
+  // image that grows when it decodes, a card's own state), keeps the end in view for a reader who is at the end.
   useLayoutEffect(() => {
     const el = logRef.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
     const observer = new ResizeObserver(() => {
-      if (pinned.current) el.scrollTop = el.scrollHeight;
+      if (pinned.current) pin(el);
     });
     observer.observe(el);
+    if (rowsRef.current) observer.observe(rowsRef.current);
     return () => observer.disconnect();
   }, []);
 
@@ -66,7 +99,10 @@ export function MessageLog({ label, children, earlier, emptyLabel, busy, onKeyDo
     if (!el) return;
     const first = rowsRef.current?.firstElementChild ?? null;
     if (pinned.current) {
-      el.scrollTop = el.scrollHeight;
+      // Only when the content changed height: a render that adds nothing (a row taking focus on a press) must not move
+      // the log under the pointer, or the release lands beside the button it pressed and no click is sent (2026-10-30 CI,
+      // Firefox: "save data.bin" pressed 20 px short of the end, the log jumped 20 px, no download).
+      if (el.scrollHeight !== prevHeight.current) pin(el);
     } else if (prevFirst.current !== null && first !== prevFirst.current) {
       // Earlier rows were put in front: move by the added height so the rows in view stay put.
       el.scrollTop = el.scrollTop + (el.scrollHeight - prevHeight.current);
@@ -91,6 +127,13 @@ export function MessageLog({ label, children, earlier, emptyLabel, busy, onKeyDo
     <div ref={logRef} className="d-message-log" role="log" aria-live="polite" aria-relevant="additions" aria-label={label}
       aria-busy={busy ? true : undefined} tabIndex={0} onScroll={onScroll} onKeyDown={onLogKeyDown}>
       {earlier ? <Button className="d-message-log__earlier" variant="ghost" onClick={earlier.onLoad}>{earlier.label}</Button> : null}
+      {welcome !== undefined ? (
+        <div className="d-message-log__welcome">
+          <span className="d-message-log__welcome-tile" aria-hidden="true"><Icon name={welcome.icon} size={20} /></span>
+          <p className="d-message-log__welcome-title">{welcome.title}</p>
+          <p className="d-message-log__welcome-body">{welcome.body}</p>
+        </div>
+      ) : null}
       {Children.count(children) === 0 ? <p className="d-message-log__empty">{emptyLabel}</p> : null}
       <div ref={rowsRef} className="d-message-log__rows">{children}</div>
     </div>

@@ -1,29 +1,32 @@
 import type { ReactNode } from 'react';
+import { DOCK_STATS_CONTRAST } from './dockStatsContrast.ts';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { VoiceDock } from './VoiceDock.tsx';
+import { harbourCompact } from '../NowPlaying/np.fixture.tsx';
 import { UserPanel } from '../UserPanel/UserPanel.tsx';
 import { nextFrame } from '../CallControls/CallControls.stories.tsx';
 
 /**
- * R26, E1, E2: the dock is Discord's. No meter, no card (a hairline top and the panel's 12px inset), line 1 the status,
- * line 2 where, then camera, share and leave as 32px icon buttons in one row.
+ * Signal §5.4: the dock is a card in the --live tints (radius 8px, padding 10px, margin 0 8px 8px), with the three bars
+ * while connected and no level meter, the name over the stats, then camera, share and leave as 28px icon buttons in one row.
  */
 function expectDock(root: HTMLElement, story: string): void {
   const dock = root.querySelector<HTMLElement>('.d-voice-dock');
   if (dock === null) throw new Error(`${story}: no dock`);
   const style = getComputedStyle(dock);
-  if (style.borderTopWidth !== '1px' || parseFloat(style.borderTopLeftRadius) !== 0 || style.backgroundColor !== 'rgba(0, 0, 0, 0)') {
-    throw new Error(`${story}: the dock is a card (top border ${style.borderTopWidth}, radius ${style.borderTopLeftRadius}, fill ${style.backgroundColor})`);
+  if (style.borderTopWidth !== '1px' || parseFloat(style.borderTopLeftRadius) !== 8 || style.backgroundColor === 'rgba(0, 0, 0, 0)') {
+    throw new Error(`${story}: the dock is not the card (border ${style.borderTopWidth}, radius ${style.borderTopLeftRadius}, fill ${style.backgroundColor})`);
   }
-  if (parseFloat(style.paddingLeft) !== 12 || parseFloat(style.paddingRight) !== 12) throw new Error(`${story}: the dock's inset is ${style.paddingLeft}, not 12px`);
-  if (dock.querySelector('[role="meter"], .d-audio-meter, .d-voice-dock__meter') !== null) throw new Error(`${story}: the dock draws a meter`);
+  if (parseFloat(style.paddingLeft) !== 10 || parseFloat(style.marginLeft) !== 8 || parseFloat(style.marginBottom) !== 8) throw new Error(`${story}: the dock's padding is ${style.paddingLeft} and margin ${style.marginLeft} ${style.marginBottom}`);
+  if (dock.querySelector('[role="meter"], .d-audio-meter, .d-voice-dock__meter') !== null) throw new Error(`${story}: the dock draws a level meter`);
   const buttons = Array.from(dock.querySelectorAll<HTMLElement>('.d-voice-dock__controls .d-icon-button'));
   if (buttons.length === 0) return;
   const tops = new Set(buttons.map(b => Math.round(b.getBoundingClientRect().top)));
   if (tops.size > 1) throw new Error(`${story}: the dock controls wrap (tops ${[...tops].join(', ')})`);
+  const phone = dock.closest('[data-layout="phone"]') !== null;
   for (const b of buttons) {
     const r = b.getBoundingClientRect();
-    if (Math.abs(r.width - 32) > 0.5 || Math.abs(r.height - 32) > 0.5) throw new Error(`${story}: "${b.getAttribute('aria-label') ?? ''}" is ${String(r.width)} × ${String(r.height)}, not 32 × 32`);
+    if (!phone && (Math.abs(r.width - 28) > 0.5 || Math.abs(r.height - 28) > 0.5)) throw new Error(`${story}: "${b.getAttribute('aria-label') ?? ''}" is ${String(r.width)} × ${String(r.height)}, not 28 × 28`);
   }
   const controls = dock.querySelector<HTMLElement>('.d-voice-dock__controls')!;
   if (controls.scrollWidth > controls.clientWidth + 1) throw new Error(`${story}: the dock controls scroll sideways`);
@@ -32,13 +35,13 @@ function expectDock(root: HTMLElement, story: string): void {
 
 // Every string is L-COPY-05's / layout's, quoted.
 const meta = {
-  title: 'Voice/VoiceDock', component: VoiceDock,
+  title: 'Voice/VoiceDock', component: VoiceDock, parameters: DOCK_STATS_CONTRAST,
   args: {
     phase: 'connected', where: 'harbour', muted: false, deafened: false, announcement: '',
     labels: {
       region: 'voice controls', connecting: 'connecting', where: 'harbour · Midgard Crew', reconnecting: 'reconnecting',
       paused: 'paused', mute: 'mute', deafen: 'deafen', leave: 'leave', camera: 'camera', share: 'share screen',
-      ping: '{ms} ms', pingSub: '<1 ms', pingNone: '— ms', rate: '↑{up} ↓{down} kb/s',
+      ping: '{ms} ms', pingSub: '<1 ms', pingNone: '— ms', rate: '↑ {up} ↓ {down} kb/s',
       stats: 'Ping {ms} milliseconds, {quality}. Sending {up}, receiving {down} kilobits per second.',
       quality: { good: 'good', poor: 'poor', bad: 'bad' },
       why: { paused: 'paused', joining: 'connecting', noShare: 'not available in this browser' },
@@ -65,7 +68,8 @@ function expectStats(root: HTMLElement, story: string, quality: string, colour: 
   const line2 = root.querySelector<HTMLElement>('.d-voice-dock__where')!;
   if (line2.getBoundingClientRect().height > parseFloat(getComputedStyle(line2).lineHeight) * 1.5) throw new Error(`${story}: line 2 wraps`);
   const probe = document.createElement('span');
-  probe.style.color = colour === null ? 'var(--fg-2)' : `var(${colour})`;
+  // Jonas 2026-10-27 (superseding Ruling V): the stats at rest are the prototype's --fg-3.
+  probe.style.color = colour === null ? 'var(--fg-3)' : `var(${colour})`;
   root.append(probe);
   const want = getComputedStyle(probe).color;
   probe.remove();
@@ -138,13 +142,14 @@ export const StatusIsText: Story = {
     if (canvasElement.querySelector('button.d-voice-dock__line1') !== null) throw new Error('VoiceDock: line 1 is a button without onStatus');
   },
 };
-/** With a handler, the channel name is a button (it opens Diagnostics); it is at least 24px high (WCAG 2.5.8). */
+/** With a handler, the channel name is a button (it opens Diagnostics), its line's height (the prototype's 12px line; axe's
+ *  target-size rule checks its spacing, WCAG 2.5.8). */
 export const StatusIsButton: Story = {
   play: ({ canvasElement }) => {
     expectDock(canvasElement, 'VoiceDock');
     const b = canvasElement.querySelector<HTMLElement>('button.d-voice-dock__line1');
     if (b === null) throw new Error('VoiceDock: line 1 is not a button');
-    if (b.getBoundingClientRect().height < 24) throw new Error('VoiceDock: the status button is under 24px high');
+    if (b.getBoundingClientRect().height < 15) throw new Error('VoiceDock: the status button is under its 15.6px line');
   },
 };
 /** Before the web app wires camera and share, the dock keeps leave. */
@@ -174,25 +179,23 @@ const userPanel = (
     onMute={() => {}} onDeafen={() => {}} onSettings={() => {}}
     status={{ current: 'online', label: 'your status: Online', items: [{ id: 'online', label: 'Online' }, { id: 'invisible', label: 'Invisible' }], onChoose: () => {} }} />
 );
-/** In a call: the dock above the 52px user panel, both with the same 32px icon buttons, the panel's top flush under the dock. */
+/** In a call: the dock card above the 64px user panel, 8px between the card and the panel's hairline. */
 export const InCall: Story = {
   render: args => <><VoiceDock {...args} />{userPanel}</>,
-  play: ({ canvasElement }) => {
+  play: async ({ canvasElement }) => {
+    // The dock rises in (d-up): measure where it comes to rest.
+    await Promise.all(document.getAnimations().filter(a => a.effect?.getTiming().iterations !== Infinity).map(a => a.finished.catch(() => undefined)));
     expectDock(canvasElement, 'VoiceDock');
     const dock = canvasElement.querySelector<HTMLElement>('.d-voice-dock')!.getBoundingClientRect();
     const panel = canvasElement.querySelector<HTMLElement>('.d-user-panel')!.getBoundingClientRect();
-    if (Math.abs(panel.top - dock.bottom) > 1) throw new Error(`VoiceDock: the panel starts at ${String(panel.top)}, the dock ends at ${String(dock.bottom)}`);
-    if (Math.abs(panel.height - 52) > 0.5) throw new Error(`VoiceDock: the panel is ${String(panel.height)} high, not 52`);
-    for (const b of Array.from(canvasElement.querySelectorAll<HTMLElement>('.d-icon-button'))) {
-      const r = b.getBoundingClientRect();
-      if (Math.abs(r.width - 32) > 0.5 || Math.abs(r.height - 32) > 0.5) throw new Error(`VoiceDock: "${b.getAttribute('aria-label') ?? ''}" is ${String(r.width)} × ${String(r.height)}`);
-    }
+    if (Math.abs(panel.top - dock.bottom - 8) > 1) throw new Error(`VoiceDock: the panel starts at ${String(panel.top)}, the dock ends at ${String(dock.bottom)}`);
+    if (Math.abs(panel.height - 64) > 0.5) throw new Error(`VoiceDock: the panel is ${String(panel.height)} high, not 64`);
   },
 };
 
-/** The app's desktop sidebar: 240 px, and the dock wrapper's 1 px right edge (app.css `.dw-voice-dock`). */
+/** The app's desktop sidebar: 244 px, and the dock wrapper's 1 px right edge (app.css `.dw-voice-dock`). */
 function DesktopSidebar({ children }: { children: ReactNode }) {
-  return <div style={{ width: 240 }}><div style={{ background: 'var(--bg-2)', borderRight: '1px solid var(--hairline)' }}>{children}</div></div>;
+  return <div style={{ width: 244 }}><div style={{ background: 'var(--bg-2)', borderRight: '1px solid var(--hairline)' }}>{children}</div></div>;
 }
 
 /** The phone drawer at 360 px: 300 px wide, the dock wrapper's edges. */
@@ -209,3 +212,8 @@ const phone = { parameters: { sidebar: 'phone' } } as const;
 export const PhoneConnected: Story = { ...phone };
 export const PhoneCameraAndSharing: Story = { ...phone, args: { camera: true, sharing: true } };
 export const PhonePaused: Story = { ...phone, args: { phase: 'paused', canCamera: false, canShare: false } };
+
+/** Signal parity (§5.4): the prototype's dock, leave only, harbour at 24 ms. */
+export const Signal: Story = { args: { onCamera: undefined, onShare: undefined, onStatus: undefined, stats: { rttMs: 24, upKbps: 38, downKbps: 71, quality: 'good' } }, globals: { theme: 'signal' } };
+/** Task 8b (§5.4, §6.6): the prototype's dock while Glenn plays in harbour: the compact now-playing row under the dock's row. */
+export const SignalMusic: Story = { args: { ...Signal.args, music: harbourCompact }, globals: { theme: 'signal' } };

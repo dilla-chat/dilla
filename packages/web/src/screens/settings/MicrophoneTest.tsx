@@ -1,39 +1,85 @@
-import { useEffect, useRef, useState } from 'react';
-import type { NoisePreference, ProcessorStatus } from '@dilla/media';
-import type { LocalMicrophoneTest } from '../../call/microphone-test.ts';
-import { t } from '../../strings/index.ts';
-export function MicrophoneTest({input,noise,disabled,onOpen}:{input:string;noise:NoisePreference;disabled:boolean;onOpen:(open:boolean)=>void}):React.JSX.Element {
-  const test = useRef<LocalMicrophoneTest|null>(null);
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { ProcessorStatus } from '@dilla/media';
+import type { LocalMicrophoneTest, LoopbackSettings } from '../../call/microphone-test.ts';
+
+/** The prototype's resting automatic line before anything was measured (README §5.9; SENSITIVITY.autoStartDb). */
+export const AUTO_START_DB = -48;
+const SILENT_DB = -100;
+
+export interface MicTest {
+  testing: boolean;
+  failed: boolean;
+  /** The level after the input volume, −100..0 dB (−100 while not testing). */
+  levelDb: number;
+  /** Fix round 1: the stage's gate is open (with its hold), which the pill shows. */
+  open: boolean;
+  /** The automatic threshold the test measured last (the call computes its own the same way), or the resting −48 dB. */
+  autoDb: number;
+  status: ProcessorStatus | null;
+  /** Let's check / Stop testing; runs inside the press so the browser lets the audio play. */
+  toggle(): void;
+}
+
+/**
+ * Signal task 10b: Let's check (README §5.9). Starts the ten-second loopback on press, applies volume and sensitivity
+ * changes at once while it runs, and ends it when the input, output or processing changes, when a call takes the
+ * microphone (`disabled`), on pagehide and when the section goes. The module (livekit-client, the processors) loads on
+ * the first press only.
+ */
+export function useMicTest(settings: LoopbackSettings, disabled: boolean): MicTest {
+  const test = useRef<LocalMicrophoneTest | null>(null);
   const generation = useRef(0);
-  const [phase,setPhase] = useState<'closed'|'starting'|'recording'|'ready'|'failed'>('closed');
-  const [url,setUrl] = useState<string|null>(null);
-  const [status,setStatus] = useState<ProcessorStatus|null>(null);
+  const [testing, setTesting] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const [levelDb, setLevelDb] = useState(SILENT_DB);
+  const [open, setOpen] = useState(false);
+  const [autoDb, setAutoDb] = useState(AUTO_START_DB);
+  const [status, setStatus] = useState<ProcessorStatus | null>(null);
+  const latest = useRef(settings);
+  latest.current = settings;
+
+  const close = useCallback(() => {
+    generation.current++;
+    void test.current?.close();
+    test.current = null;
+    setTesting(false);
+    setLevelDb(SILENT_DB);
+    setOpen(false);
+    setStatus(null);
+  }, []);
+
+  const { input, output, noise } = settings;
+  const { echo, agc } = settings.processing;
   useEffect(() => {
-    const close = () => { generation.current++; void test.current?.close(); test.current=null; setUrl(null); setStatus(null); setPhase('closed'); onOpen(false); };
-    close(); window.addEventListener('pagehide',close);
-    return () => { close(); window.removeEventListener('pagehide',close); };
-  },[input,noise,disabled,onOpen]);
-  const close = () => { generation.current++; void test.current?.close(); test.current=null;setUrl(null);setStatus(null);setPhase('closed');onOpen(false); };
+    close();
+    window.addEventListener('pagehide', close);
+    return () => { close(); window.removeEventListener('pagehide', close); };
+  }, [input, output, noise, echo, agc, disabled, close]);
+
+  const { inputVolume, outputVolume } = settings;
+  const { auto, thresholdDb } = settings.sensitivity;
+  const { mode } = settings;
+  useEffect(() => { test.current?.update({ inputVolume, outputVolume, sensitivity: { auto, thresholdDb }, mode }); }, [inputVolume, outputVolume, auto, thresholdDb, mode]);
+
   const start = async () => {
-    if(disabled)return;
-    const id=++generation.current;setPhase('starting');onOpen(true);
+    if (disabled) return;
+    const id = ++generation.current;
+    const mine = () => id === generation.current;
+    setFailed(false);
+    setTesting(true);
     try {
-      const {LocalMicrophoneTest} = await import('../../call/microphone-test.ts');
-      if(id!==generation.current)return;
-      const capture=test.current=new LocalMicrophoneTest(value=>{if(id===generation.current){setUrl(value);setPhase('ready');}},s=>{if(id===generation.current)setStatus(s);},()=>{if(id===generation.current){setPhase('failed');onOpen(false);}});
-      await capture.start(input,noise);
-      if(id===generation.current)setPhase(p=>p==='starting'?'recording':p);
-    }catch{if(id===generation.current){setPhase('failed');onOpen(false);}}
+      const { LocalMicrophoneTest } = await import('../../call/microphone-test.ts');
+      if (!mine()) return;
+      const t = test.current = new LocalMicrophoneTest({
+        level: l => { if (!mine()) return; setLevelDb(l.db); setOpen(l.open); if (latest.current.sensitivity.auto) setAutoDb(l.thresholdDb); },
+        status: s => { if (mine()) setStatus(s); },
+        ended: () => { if (mine()) { test.current = null; setTesting(false); setLevelDb(SILENT_DB); setOpen(false); setStatus(null); } },
+      });
+      await t.start(latest.current);
+    } catch {
+      if (mine()) { test.current = null; setTesting(false); setFailed(true); setLevelDb(SILENT_DB); }
+    }
   };
-  return <div>
-    <p>{t(disabled?'settings.voice.testCall':'settings.voice.testHelp')}</p>
-    {phase==='closed'||phase==='failed'?<button type="button" className="d-btn" disabled={disabled} onClick={()=>{void start();}}>{t('settings.voice.test')}</button>:null}
-    {phase==='recording'?<button type="button" className="d-btn" onClick={()=>test.current?.stop()}>{t('settings.voice.testStop')}</button>:null}
-    {phase!=='closed'?<button type="button" className="d-btn" onClick={close}>{t('settings.voice.testClose')}</button>:null}
-    <p role="status">{phase==='starting'?t('settings.voice.testStarting'):phase==='recording'?t('settings.voice.testRecording'):phase==='failed'?t('settings.voice.testFailed'):null}</p>
-    {status?<p>{t('settings.voice.processor',{processor:(status.effective === 'off' || (status.effective === 'browser' && status.browserNoise === 'off')) ? t('settings.voice.processor.off') : status.effective === 'browser' ? t('settings.voice.processor.browser') : status.effective === 'failed' ? t('settings.voice.processor.failed') : status.effective === 'initializing' ? t('settings.voice.processor.initializing') : status.engineName ?? t('settings.voice.lightweight')})}{' '}{status.reason?t(`settings.voice.fallback.${status.reason}`):null}{' '}{status.browserNoise==='on'&&noise==='off'?t('settings.voice.browserStillOn'):null}</p>:null}
-    {/* A private microphone preview has no separately available captions. */}
-    {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-    {url?<audio controls src={url} aria-label={t('settings.voice.testPlayback')} />:null}
-  </div>;
+  const toggle = () => { if (testing) close(); else void start(); };
+  return { testing, failed, levelDb, open, autoDb, status, toggle };
 }

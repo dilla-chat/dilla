@@ -23,13 +23,16 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-PrivateDevices=yes
+# Bubblewrap mounts /proc and /dev inside its own user namespace; PrivateDevices
+# blocks that nested mount in the supported Debian LXC deployment.
+DevicePolicy=closed
 ProtectProc=invisible
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
-RestrictSUIDSGID=yes
+# RestrictSUIDSGID blocks bubblewrap's bind mounts in this LXC. The service
+# remains unprivileged, with NoNewPrivileges=yes and a private state directory.
 LockPersonality=yes
 # The bot's WASI MLS engine uses wazero's compiler backend, which needs
 # executable generated memory. MemoryDenyWriteExecute would break startup.

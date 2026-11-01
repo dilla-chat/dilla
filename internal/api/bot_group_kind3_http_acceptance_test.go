@@ -457,6 +457,22 @@ func TestBotInteractionHTTPGroupRegistrationAcceptanceReplayAndRefusals(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Re-enable retains this installation and its accepted private groups, but
+	// transitions back through Joining. Private restore/read APIs remain Ready-only;
+	// runtime membership/readiness must finish before it attempts either surface.
+	joiningCursor, joiningCursorErr := h.deps.Repo.GetCursor(ctx, idFromHex(t, meta.BotDeviceID), groupID)
+	joiningBase := "/v1/bot-runtime/installations/" + readyInstallationID.String() + "/interaction-groups/" + groupID.String()
+	for _, suffix := range []string{"/heal", "/info", "/messages?from=1&limit=1", "/handshakes?from=1&limit=1"} {
+		if got := h.do(t, http.MethodGet, joiningBase+suffix, token, nil); got.Code != http.StatusForbidden {
+			t.Fatalf("Joining installation private read %s: %d, want 403: %x", suffix, got.Code, got.Body.Bytes())
+		}
+	}
+	if got := h.do(t, http.MethodPost, joiningBase+"/cursor", token, mustCBOR(t, []any{uint64(0), uint64(0)})).Code; got != http.StatusForbidden {
+		t.Fatalf("Joining installation private acknowledgement: %d, want 403", got)
+	}
+	if cursor, err := h.deps.Repo.GetCursor(ctx, idFromHex(t, meta.BotDeviceID), groupID); !errors.Is(err, joiningCursorErr) || cursor != joiningCursor {
+		t.Fatalf("denied Joining source changed cursor: %+v %v; before %+v %v", cursor, err, joiningCursor, joiningCursorErr)
+	}
 	installRevision := installRow.Revision
 	installRow.State = store.BotInstallationReady
 	installRow.Revision++
@@ -533,6 +549,9 @@ func TestBotInteractionHTTPGroupRegistrationAcceptanceReplayAndRefusals(t *testi
 	}
 	if got := h.do(t, http.MethodGet, botGroupInfoPath, token, nil).Code; got < 400 {
 		t.Fatalf("interaction group remained readable after participant removal: %d", got)
+	}
+	if got := h.do(t, http.MethodGet, botGroupBase+"/heal", token, nil).Code; got != http.StatusForbidden {
+		t.Fatalf("current private group heal accepted removed participant: %d, want 403", got)
 	}
 	if err := h.deps.Repo.PutMember(ctx, store.MemberOfCommunityRow{CommunityID: idFromHex(t, meta.CommunityID), UserID: idFromHex(t, meta.ParticipantUserID), Joined: now}); err != nil {
 		t.Fatal(err)

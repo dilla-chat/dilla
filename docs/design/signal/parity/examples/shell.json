@@ -1,0 +1,14 @@
+[
+  {
+    "name": "shell-desktop",
+    "viewport": { "width": 1280, "height": 800 },
+    "prototype": { "props": { "startAt": "app" } },
+    "story": { "id": "shell-appshell--shell" }
+  },
+  {
+    "name": "shell-phone",
+    "viewport": { "width": 390, "height": 844 },
+    "prototype": { "props": { "startAt": "app", "device": "phone" } },
+    "story": { "id": "shell-phone--servers-list" }
+  }
+]

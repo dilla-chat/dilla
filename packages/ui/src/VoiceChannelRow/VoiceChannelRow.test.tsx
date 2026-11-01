@@ -12,7 +12,7 @@ const person = (name: string, more: Partial<VoiceParticipantView> = {}): VoicePa
   video: false, screen: false, web: true, bot: false, ...more,
 });
 const labels: VoiceChannelRowProps['labels'] = {
-  open: 'voice {name}', count: '{n} in voice', canHear: 'can hear', join: 'join voice', joined: 'connected',
+  open: 'voice {name}', count: '{n} in voice', playbackOnly: 'playback only', join: 'join voice', joined: 'connected',
   state: {
     speaking: 'speaking', muted: 'muted', deafened: 'deafened', notHeard: 'not heard yet', unverified: 'unverified stream',
     connecting: 'connecting', video: 'camera on', screen: 'sharing screen', web: 'web', bot: 'bot', noSound: 'no sound',
@@ -47,12 +47,30 @@ describe('VoiceChannelRow', () => {
     expect(onOpen).toHaveBeenCalledTimes(1);
   });
 
-  it('reads the count after the name as harbour · 3, and no count when nobody is in it', () => {
+  it('shows the occupant count at the right of the row (Signal §5.4), and no count when nobody is in it', () => {
     const { container, rerender } = render(<VoiceChannelRow {...base} participants={[person('a'), person('b'), person('c')]} />);
-    expect(container.querySelector('.d-voice-row__title')?.textContent).toBe('harbour · 3');
-    expect(container.querySelector('.d-voice-row__name')?.textContent).toBe('harbour');
-    rerender(<VoiceChannelRow {...base} participants={[]} />);
     expect(container.querySelector('.d-voice-row__title')?.textContent).toBe('harbour');
+    expect(container.querySelector('.d-voice-row__count')?.textContent).toBe('3');
+    expect(container.querySelector('.d-voice-row__count')).toHaveAttribute('aria-hidden', 'true');
+    rerender(<VoiceChannelRow {...base} participants={[]} />);
+    expect(container.querySelector('.d-voice-row__count')).toBeNull();
+  });
+  it('draws the moon for the AFK channel', () => {
+    const { container } = render(<VoiceChannelRow {...base} name="AFK" afk participants={[]} />);
+    expect(container.querySelector('.d-voice-row__glyph svg')).toHaveAttribute('data-icon', 'moon');
+  });
+  it('speaking is a ring only: no AudioMeter, meter or level element inside the row', () => {
+    const { container } = render(<VoiceChannelRow {...base} joined current participants={[person('ada', { speaking: true }), person('bo')]} />);
+    expect(container.querySelector('[role="meter"], .d-audio-meter, .d-meter, meter')).toBeNull();
+    expect(container.querySelector('.d-voice-row__person[data-speaking="true"] .d-avatar')).not.toBeNull();
+  });
+  it('Glenn (a bot) has the rounded-square avatar and "playback only"; the bot word is for a screen reader only (fix round 1)', () => {
+    const { container } = render(<VoiceChannelRow {...base} participants={[person('Glenn', { bot: true, web: false })]} />);
+    const row = container.querySelector('.d-voice-row__person') as HTMLElement;
+    expect(row.querySelector('.d-avatar')).toHaveAttribute('data-shape', 'bot');
+    expect(row.querySelector('.d-tag[data-kind="bot"]')).toBeNull();
+    expect(row.querySelector('.d-sr-only')).toHaveTextContent('bot');
+    expect(row.querySelector('.d-tag[data-kind="playbackOnly"]')).toHaveTextContent('playback only');
   });
 
   it('the trailing slot holds the join icon button; when joined (in the call) the row has no phone glyph and no join icon', async () => {
@@ -65,24 +83,25 @@ describe('VoiceChannelRow', () => {
     expect(onJoin).toHaveBeenCalledTimes(1);
     rerender(<VoiceChannelRow {...base} joined onJoin={onJoin} />);
     expect(screen.queryByRole('button', { name: 'join voice' })).toBeNull();
-    const slot = container.querySelector('.d-voice-row > .d-slot') as HTMLElement;
-    expect(slot.children).toHaveLength(0);
+    // Signal: with no join icon the row keeps no empty slot, so the count ends at the row's padding edge.
+    expect(container.querySelector('.d-voice-row > .d-slot')).toBeNull();
     expect(container.querySelector('.d-voice-row__connected')).toBeNull();
     expect(container.querySelector('.d-voice-row')).toHaveAttribute('data-joined', 'true');
     rerender(<VoiceChannelRow {...base} />);
     expect(screen.queryByRole('button', { name: 'join voice' })).toBeNull();
   });
 
-  it('a participant row is data-row at its own height with a 24px avatar, the speaking mark, and the mute glyph in the slot', () => {
+  it('a participant row is data-row at its own height with an 18px avatar, the speaking mark, and the mute glyph in the slot', () => {
     const { container } = render(<VoiceChannelRow {...base} participants={[person('ada', { speaking: true }), person('bo', { muted: true, deafened: true })]} />);
     const [ada, bo] = [...container.querySelectorAll<HTMLElement>('.d-voice-row__person')];
     expect(ada).toHaveAttribute('data-row');
     expect(ada).toHaveAttribute('data-speaking', 'true');
     expect(bo).not.toHaveAttribute('data-speaking');
-    expect(ada.querySelector('.d-avatar')).toHaveAttribute('data-size', 'xs');
+    expect(ada.querySelector('.d-avatar')).toHaveAttribute('data-size', 'voice');
     const slot = bo.querySelector('.d-slot') as HTMLElement;
-    expect([...slot.querySelectorAll('.d-voice-row__state')].map(s => s.getAttribute('data-state'))).toEqual(['muted', 'deafened']);
-    expect(slot.querySelector('svg')).toHaveAttribute('data-icon', 'mic-off');
+    // Signal §5.4: deafened draws headphone-off alone (it already silences the mic).
+    expect([...slot.querySelectorAll('.d-voice-row__state')].map(s => s.getAttribute('data-state'))).toEqual(['deafened']);
+    expect(slot.querySelector('svg')).toHaveAttribute('data-icon', 'headphone-off');
     expect(ada.querySelector('.d-slot')?.children).toHaveLength(0);
   });
 
@@ -90,7 +109,7 @@ describe('VoiceChannelRow', () => {
     const { container } = render(<VoiceChannelRow {...base} labels={{ ...labels, away: 'away' }}
       participants={[person('ada', { away: true, web: false }), person('bo', { away: true, web: false })]} />);
     expect(screen.getByRole('button', { name: 'voice harbour' })).toHaveAccessibleDescription('2 in voice');
-    expect(container.querySelector('.d-voice-row__title')?.textContent).toBe('harbour · 2');
+    expect(container.querySelector('.d-voice-row__count')?.textContent).toBe('2');
     const people = within(screen.getByRole('list')).getAllByRole('listitem');
     expect(people.map(spoken)).toEqual(['ada away', 'bo away']);
     for (const p of people) {
@@ -167,24 +186,26 @@ describe('VoiceChannelRow', () => {
     expect(screen.getByRole('img', { name: 'Readable by this server' })).toBeInTheDocument();
   });
 
-  it('shows a bot in voice with the bot tag and can hear before anyone joins (I5)', () => {
+  it('shows a bot in voice with the bot tag and playback only before anyone joins (I5)', () => {
     render(<VoiceChannelRow {...base} participants={[person('relay', { bot: true, web: false })]} />);
     const row = screen.getByRole('listitem');
-    expect(spoken(row)).toBe('relay bot can hear');
+    expect(spoken(row)).toBe('relay bot playback only');
   });
 
-  // web3.8 (R29): muted, deafened, camera and screen are 14px icons, speaking the ring alone (its word sr-only); each is a named image with no text.
+  // web3.8 (R29), Signal §5.4: muted, deafened and camera are 12px icons, a shared screen the LIVE tag, speaking the ring alone (its word sr-only); each is a named image with no text.
   it('a glyph-only state is a role=img named and titled by its voice.state word, with no text node', () => {
     render(<VoiceChannelRow {...base} participants={[person('bo', { muted: true, deafened: true, video: true, screen: true, speaking: true })]} />);
     const row = screen.getByRole('listitem');
     const states = [...row.querySelectorAll<HTMLElement>('.d-voice-row__state')];
     // The mute and deafen glyphs are in the trailing slot, after the others.
-    expect(states.map(s => s.dataset.state)).toEqual(['video', 'screen', 'muted', 'deafened']);
-    expect(states.map(s => s.getAttribute('aria-label'))).toEqual(['camera on', 'sharing screen', 'muted', 'deafened']);
-    expect(states.map(s => s.getAttribute('title'))).toEqual(['camera on', 'sharing screen', 'muted', 'deafened']);
-    for (const s of states) { expect(s).toHaveAttribute('role', 'img'); expect(s.textContent).toBe(''); }
-    expect(states.map(s => s.querySelector('svg')?.getAttribute('data-icon'))).toEqual(['video', 'monitor-up', 'mic-off', 'headphone-off']);
-    expect(states.map(s => s.querySelector('svg')?.getAttribute('width'))).toEqual(['14', '14', '14', '14']);
+    expect(states.map(s => s.dataset.state)).toEqual(['video', 'screen', 'deafened']);
+    expect(states.map(s => s.getAttribute('aria-label'))).toEqual(['camera on', 'sharing screen', 'deafened']);
+    expect(states.map(s => s.getAttribute('title'))).toEqual(['camera on', 'sharing screen', 'deafened']);
+    for (const s of states) expect(s).toHaveAttribute('role', 'img');
+    for (const s of states.filter(x => x.dataset.state !== 'screen')) expect(s.textContent).toBe('');
+    expect(states[1].querySelector('.d-tag[data-kind="live"]')).not.toBeNull();
+    expect(states.map(s => s.querySelector('svg')?.getAttribute('data-icon') ?? null)).toEqual(['video', null, 'headphone-off']);
+    expect(states.map(s => s.querySelector('svg')?.getAttribute('width') ?? null)).toEqual(['12', null, '12']);
     expect(row.querySelector('.d-state-dot')).toBeNull(); // WEB-DOCK: speaking is the ring, never a dot
     expect(spoken(row)).toBe('bo speaking');
   });
@@ -221,7 +242,7 @@ describe('VoiceChannelRow', () => {
     expect(container.querySelector('.d-voice-row')?.textContent).toBe('harbour');
   });
 
-  it.each(['mesh', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {
+  it.each(['signal', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {
     document.documentElement.dataset.theme = theme;
     const { container } = render(<div className="d-root"><VoiceChannelRow {...(meta.args as VoiceChannelRowProps)} /></div>);
     // jsdom has no layout or canvas, so contrast is left to the Storybook axe run in a real browser.

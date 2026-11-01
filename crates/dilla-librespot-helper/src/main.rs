@@ -192,33 +192,70 @@ impl Audio {
     }
 }
 
-async fn run() -> Result<(), &'static str> {
+// Only PlayerEvent::Unavailable is track-specific. Connection, credentials,
+// build and timeout faults must leave the user's queued item available to retry.
+#[derive(Clone, Copy)]
+enum Failure {
+    InvalidRequest,
+    CredentialUnavailable,
+    ProviderConnect,
+    ProviderConnectTimeout,
+    BuildConfiguration,
+    TrackUnavailable,
+    PlaybackTimeout,
+    Cancelled,
+}
+impl Failure {
+    fn status(self) -> Status {
+        let (phase, code) = match self {
+            Self::InvalidRequest => ("control", "invalid_request"),
+            Self::CredentialUnavailable => ("authorization", "credential_unavailable"),
+            Self::ProviderConnect => ("authorization", "provider_connect"),
+            Self::ProviderConnectTimeout => ("authorization", "provider_connect_timeout"),
+            Self::BuildConfiguration => ("startup", "build_configuration"),
+            Self::TrackUnavailable => ("playback", "provider_unavailable"),
+            Self::PlaybackTimeout => ("playback", "playback_timeout"),
+            Self::Cancelled => ("shutdown", "cancelled"),
+        };
+        Status {
+            ok: false,
+            phase,
+            code: Some(code),
+        }
+    }
+}
+
+async fn run() -> Result<(), Failure> {
     use std::{env, io::IsTerminal};
     if librespot::playback::SAMPLE_RATE != 44_100 || librespot::playback::NUM_CHANNELS != 2 {
-        return Err("provider_unavailable");
+        return Err(Failure::BuildConfiguration);
     }
     if env::args().len() != 2 || std::io::stdout().is_terminal() {
-        return Err("invalid_request");
+        return Err(Failure::InvalidRequest);
     }
-    let arg = env::args().nth(1).ok_or("invalid_request")?;
+    let arg = env::args().nth(1).ok_or(Failure::InvalidRequest)?;
     let id = arg
         .strip_prefix("spotify:track:")
-        .ok_or("invalid_request")?;
+        .ok_or(Failure::InvalidRequest)?;
     if id.len() != 22 || !id.bytes().all(|c| c.is_ascii_alphanumeric()) {
-        return Err("invalid_request");
+        return Err(Failure::InvalidRequest);
     }
-    let creds = credential().map_err(|_| "credential_unavailable")?;
+    let creds = credential().map_err(|_| Failure::CredentialUnavailable)?;
     status(true, "startup", None);
     let session = Session::new(SessionConfig::default(), None);
     match tokio::time::timeout(Duration::from_secs(35), session.connect(creds, false)).await {
         Ok(Ok(())) => {}
-        _ => {
+        Ok(Err(_)) => {
             session.shutdown();
-            return Err("provider_unavailable");
+            return Err(Failure::ProviderConnect);
+        }
+        Err(_) => {
+            session.shutdown();
+            return Err(Failure::ProviderConnectTimeout);
         }
     }
     status(true, "authorization", None);
-    let uri = SpotifyUri::from_uri(&arg).map_err(|_| "invalid_request")?;
+    let uri = SpotifyUri::from_uri(&arg).map_err(|_| Failure::InvalidRequest)?;
     let cancelled = Arc::new(AtomicBool::new(false));
     let sink_cancel = cancelled.clone();
     let player = Player::new(
@@ -239,11 +276,11 @@ async fn run() -> Result<(), &'static str> {
     let end = tokio::time::Instant::now() + MAX_TRACK_WALL_TIME;
     let outcome = loop {
         tokio::select! {
-            _=tokio::time::sleep_until(end)=>break Err("provider_unavailable"),
-            ev=events.recv()=>match ev { Some(PlayerEvent::EndOfTrack{..})=>break Ok(()), Some(PlayerEvent::Unavailable{..})=>break Err("provider_unavailable"), _=>{} },
+            _=tokio::time::sleep_until(end)=>break Err(Failure::PlaybackTimeout),
+            ev=events.recv()=>match ev { Some(PlayerEvent::EndOfTrack{..})=>break Ok(()), Some(PlayerEvent::Unavailable{..})=>break Err(Failure::TrackUnavailable), _=>{} },
             _=tokio::time::sleep(Duration::from_millis(10))=>match input.try_recv() {
-                Ok(Ok(c))=>match (c.op.as_str(),c.position_ms) { ("pause",None)=>player.pause(),("resume",None)=>player.play(),("seek",Some(ms))=>player.seek(ms),("stop",None)=>{status(true,"control",None);break Ok(())}, _=>break Err("invalid_request") },
-                Ok(Err(()))|Err(std::sync::mpsc::TryRecvError::Disconnected)=>{cancelled.store(true,Ordering::Release);break Err("cancelled")}, _=>{}
+                Ok(Ok(c))=>match (c.op.as_str(),c.position_ms) { ("pause",None)=>player.pause(),("resume",None)=>player.play(),("seek",Some(ms))=>player.seek(ms),("stop",None)=>{status(true,"control",None);break Ok(())}, _=>break Err(Failure::InvalidRequest) },
+                Ok(Err(()))|Err(std::sync::mpsc::TryRecvError::Disconnected)=>{cancelled.store(true,Ordering::Release);break Err(Failure::Cancelled)}, _=>{}
             }
         }
     };
@@ -255,15 +292,12 @@ async fn run() -> Result<(), &'static str> {
 }
 #[tokio::main]
 async fn main() {
-    if let Err(code) = run().await {
-        let phase = match code {
-            "invalid_request" => "control",
-            "credential_unavailable" => "authorization",
-            "provider_unavailable" => "playback",
-            "cancelled" => "shutdown",
-            _ => "shutdown",
-        };
-        fail(phase, code);
+    if let Err(failure) = run().await {
+        let result = failure.status();
+        fail(
+            result.phase,
+            result.code.expect("failure has a bounded code"),
+        );
         std::process::exit(1);
     } else {
         status(true, "shutdown", None);
@@ -329,6 +363,44 @@ mod tests {
             br#"{"access_token":"bad\nvalue"}"#,
         ] {
             assert!(parse_credential(bad).is_err());
+        }
+    }
+}
+
+#[cfg(test)]
+mod failure_tests {
+    use super::*;
+
+    #[test]
+    fn only_track_unavailable_uses_permanent_playback_code() {
+        for (failure, phase, code) in [
+            (
+                Failure::ProviderConnect,
+                "authorization",
+                "provider_connect",
+            ),
+            (
+                Failure::ProviderConnectTimeout,
+                "authorization",
+                "provider_connect_timeout",
+            ),
+            (
+                Failure::BuildConfiguration,
+                "startup",
+                "build_configuration",
+            ),
+            (Failure::PlaybackTimeout, "playback", "playback_timeout"),
+            (
+                Failure::TrackUnavailable,
+                "playback",
+                "provider_unavailable",
+            ),
+        ] {
+            let frame = encode_status(failure.status()).unwrap();
+            let decoded: serde_json::Value = serde_json::from_slice(&frame[4..]).unwrap();
+            assert_eq!(decoded["ok"], false);
+            assert_eq!(decoded["phase"], phase);
+            assert_eq!(decoded["code"], code);
         }
     }
 }

@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
+import { DOCK_STATS_CONTRAST } from '../VoiceDock/dockStatsContrast.ts';
 import type { ReactNode } from 'react';
 import { AppShell } from './AppShell.tsx';
 import { CommunityRail } from '../CommunityRail/CommunityRail.tsx';
@@ -9,7 +10,7 @@ import { MessageRow } from '../MessageRow/MessageRow.tsx';
 import { Composer } from '../Composer/Composer.tsx';
 import { Button } from '../Button/Button.tsx';
 import { IconButton } from '../IconButton/IconButton.tsx';
-import { StatusBar, StatusChunk } from '../StatusBar/StatusBar.tsx';
+import { TopBar } from '../TopBar/TopBar.tsx';
 import { VoiceDock } from '../VoiceDock/VoiceDock.tsx';
 import { CallStage, type CallStageNotice } from '../CallStage/CallStage.tsx';
 import { CallControls } from '../CallControls/CallControls.tsx';
@@ -19,9 +20,8 @@ import { AttachmentCard } from '../AttachmentCard/AttachmentCard.tsx';
 // The shipped copy and the shell's own layout of @dilla/web, so the screenshots show what the app says and draws
 // (web-3 task 9: the voice view, the dock, the sidebar's voice sections, the DM call strip, the ring and the players).
 import { en, formatTime, t } from '../../../web/src/strings/index.ts';
-import '../../../web/src/app.css';
 
-const meta = { title: 'Screens/Voice', parameters: { layout: 'fullscreen' } } satisfies Meta;
+const meta = { title: 'Screens/Voice', parameters: { layout: 'fullscreen', webStyles: true, ...DOCK_STATS_CONTRAST } } satisfies Meta;
 export default meta;
 type Story = StoryObj<typeof meta>;
 
@@ -32,7 +32,7 @@ const STATE = {
   unverified: t('voice.state.unverified'), connecting: t('voice.state.connecting'), video: t('voice.state.video'), screen: t('voice.state.screen'),
   web: t('voice.tag.web'), bot: t('voice.tag.bot'), noSound: t('voice.state.noSound'),
 };
-const ROW_LABELS = { open: en['voice.open'], count: en['voice.count'], canHear: t('voice.bot.canHear'), state: STATE };
+const ROW_LABELS = { open: en['voice.open'], count: en['voice.count'], playbackOnly: t('voice.bot.playbackOnly'), state: STATE };
 const person = (name: string, over: Partial<VoiceParticipantView> = {}): VoiceParticipantView => ({
   deviceId: name, userId: name, name, state: 'ok', speaking: false, muted: false, deafened: false, video: false, screen: false, web: true,
   bot: false, ...over,
@@ -41,7 +41,7 @@ const ADA = person('ada', { speaking: true });
 const BO = person('bo', { muted: true });
 const HELPER = person('helper', { bot: true, web: false });
 const tile = (view: VoiceParticipantView, own = false): CallTileProps => ({
-  view, own, volume: 100, media: null, onVolume: noop,
+  view, own, volume: 100, media: null,
   labels: { state: STATE, volume: t('voice.volume', { name: view.name }), volumeValue: en['voice.volumeValue'] },
 });
 const STAGE_LABELS = { code: t('voice.code'), codeHelp: t('voice.codeHelp'), empty: t('voice.empty'), tiles: t('voice.tiles') };
@@ -52,7 +52,10 @@ function controls(p: { paused?: boolean; busy?: boolean; dm?: boolean } = {}) {
     <CallControls muted={false} deafened={false} camera={false} sharing={false} canCamera={p.paused !== true} canShare={p.paused !== true}
       busy={p.busy === true}
       labels={{ region: t(p.dm === true ? 'voice.controls.region' : 'voice.controls.voice'), mute: t('voice.mute'), deafen: t('voice.deafen'),
-        camera: t('voice.cameraOn'), share: t('voice.shareOn'), leave: t('voice.leave') }}
+        camera: t('voice.cameraOn'), share: t('voice.shareOn'), leave: t('voice.leave'),
+        ...(p.dm === true ? {} : { bar: { mute: t('callStage.bar.mute'), unmute: t('callStage.bar.unmute'), deafen: t('callStage.bar.deafen'),
+          undeafen: t('callStage.bar.undeafen'), camera: t('callStage.bar.camera'), share: t('callStage.bar.share'), stopShare: t('callStage.bar.stopShare'),
+          leave: t('callStage.bar.leave') } }) }}
       onMute={noop} onDeafen={noop} onCamera={noop} onShare={noop} onLeave={noop} />
   );
 }
@@ -73,7 +76,7 @@ function dock(phase: 'connected' | 'paused' | 'reconnecting' | 'connecting', ann
 
 const ring = (busy: boolean) => (
   <div className="dw-ring" data-doc-state="call-ring">
-    <RingBanner rings={[{ callId: 'r1', busy, text: busy ? t('call.ring.busy', { name: 'eve', where: 'harbour' }) : t('call.ring.incoming', { name: 'eve' }) }]}
+    <RingBanner rings={[{ callId: 'r1', busy, name: 'eve', text: busy ? t('call.ring.busy', { name: 'eve', where: 'harbour' }) : t('call.ring.incoming', { name: 'eve' }) }]}
       labels={{ region: t('call.ring.region'), answer: t('call.ring.answer'), decline: t('call.ring.decline') }} onAnswer={noop} onDecline={noop} />
   </div>
 );
@@ -101,12 +104,8 @@ function Screen(p: { main: ReactNode; header?: ReactNode; joined?: boolean; paus
         </div>}
         header={p.header ?? null}
         composer={p.composer ?? null}
-        statusBar={<StatusBar position="bottom" label={t('shell.status.label')}>
-          <StatusChunk label={t('shell.status.node')}>dilla.test</StatusChunk>
-          <StatusChunk label={t('shell.status.link')} tone="ok">{t('shell.status.online')}</StatusChunk>
-          <StatusChunk label={t('shell.status.gen')}>7</StatusChunk>
-          <StatusChunk label={t('shell.status.devices')}>2</StatusChunk>
-        </StatusBar>}>
+        topBar={<TopBar searchLabel={t('topbar.search')} searchShortcut="⌘K" onSearch={noop} voice={p.joined === true ? { room: 'harbour', pingMs: 24, onOpen: noop } : undefined} remindersDue={0} onReminders={noop} onSettings={noop}
+        labels={{ reminders: t('reminder.inbox'), settings: t('workspace.open'), voice: t('nav.call.open', { where: 'harbour' }) }} />}>
         {p.main}
       </AppShell>
     </div>
@@ -121,8 +120,13 @@ const stage = (p: { notice?: CallStageNotice | null; code?: string | null; outgo
       tiles={p.empty === true ? p.joined === false ? [] : [tile(person('you'), true)]
         : p.joined === false ? [tile(ADA), tile(BO), tile(HELPER)] : [tile(person('you'), true), tile(ADA), tile(BO), tile(HELPER)]}
       code={p.code ?? null} notice={p.notice ?? null} outgoing={p.outgoing !== undefined ? { text: p.outgoing } : null}
+      // Task 8: a channel not joined is the preview (VoiceView), a joined channel ends in the call bar; the AFK page and a DM keep theirs.
+      {...(p.joined === false && p.afk !== true && p.dm !== true ? { preview: { name: 'harbour', join: p.notice?.kind === 'blocked' ? null : { label: t('callStage.preview.join'), onJoin: noop },
+        text: p.empty === true ? t('callStage.preview.nobody') : t('callStage.preview.many', { names: ['ada', 'bo', 'helper'].join(t('callStage.preview.and')) }),
+        people: p.empty === true ? [] : [ADA, BO, HELPER].map(v => ({ id: v.deviceId, name: v.name, speaking: v.speaking })) } } : {})}
+      {...(p.joined !== false && p.dm !== true ? { bar: { name: 'harbour', stats: '24 ms · ↑ 38 ↓ 71 kb/s' } } : {})}
       controls={p.afk === true ? <div className="dw-afk-page"><Button variant="accent" className="dw-voice-join">{t('afk.go')}</Button></div>
-        : p.joined === false ? <Button variant="accent" className="dw-voice-join">{t('voice.join')}</Button> : controls({ paused: p.paused, dm: p.dm })}
+        : p.joined === false ? null : controls({ paused: p.paused, dm: p.dm })}
       labels={p.afk === true ? { ...STAGE_LABELS, empty: t('afk.empty') } : STAGE_LABELS} />
   </div>
 );
@@ -208,17 +212,29 @@ export const InfoPhone: Story = {
 const nextFrame = () => new Promise<void>(r => { requestAnimationFrame(() => { r(); }); });
 const centreOf = (r: DOMRect) => ({ x: r.left + r.width / 2, y: r.top + r.height / 2 });
 /**
- * An empty voice channel is one group, the text above the join button, centred in the main area (Discord's layout): the
- * group's centre is the main area's centre within 2 px, the text sits above the button, and the button is a 44 px target
- * on a phone.
+ * An empty voice channel is one group, the text above the join button, centred (the prototype's layout): the group's centre is
+ * the centre of the stage's content box within 2 px — the preview's own content box for a channel not joined (Task 8: the room,
+ * "Nobody is here yet", Join voice), the stage's content box under its voice header for the AFK page — the text sits above
+ * the button, and the phone's button is the prototype's 40 px.
  */
+function contentBox(el: HTMLElement, top?: number): DOMRect {
+  const r = el.getBoundingClientRect();
+  const cs = getComputedStyle(el);
+  const t = Math.max(r.top + parseFloat(cs.paddingTop) + parseFloat(cs.borderTopWidth), top ?? -Infinity);
+  const l = r.left + parseFloat(cs.paddingLeft) + parseFloat(cs.borderLeftWidth);
+  const b = r.bottom - parseFloat(cs.paddingBottom) - parseFloat(cs.borderBottomWidth);
+  const rr = r.right - parseFloat(cs.paddingRight) - parseFloat(cs.borderRightWidth);
+  return new DOMRect(l, t, rr - l, b - t);
+}
 async function expectEmptyCentred(root: HTMLElement, story: string, phone: boolean) {
   await nextFrame(); await nextFrame();
-  const main = root.querySelector<HTMLElement>('.d-app-shell__content');
-  const text = root.querySelector<HTMLElement>('.d-call-stage__empty');
-  const join = root.querySelector<HTMLElement>('.d-call-stage__controls .d-btn');
-  if (!main || !text || !join) throw new Error(`${story}: the main area, the empty text or the join button is missing`);
-  const m = centreOf(main.getBoundingClientRect());
+  const stageEl = root.querySelector<HTMLElement>('.d-call-stage');
+  const text = root.querySelector<HTMLElement>('.d-call-stage__preview-text, .d-call-stage__empty');
+  const join = root.querySelector<HTMLElement>('.d-call-stage__join, .d-call-stage__controls .d-btn');
+  if (!stageEl || !text || !join) throw new Error(`${story}: the stage, the empty text or the join button is missing`);
+  const preview = text.closest<HTMLElement>('.d-call-stage__preview');
+  const under = root.querySelector<HTMLElement>('.d-call-stage__bar')?.getBoundingClientRect().bottom;
+  const m = centreOf(preview !== null ? contentBox(preview) : contentBox(stageEl, under));
   const tr = text.getBoundingClientRect(); const jr = join.getBoundingClientRect();
   // An outgoing line, when a stage has one, leads the group, above the message.
   const lead = root.querySelector<HTMLElement>('.d-call-stage__outgoing')?.getBoundingClientRect();
@@ -230,7 +246,8 @@ async function expectEmptyCentred(root: HTMLElement, story: string, phone: boole
   if (tr.bottom > jr.top) throw new Error(`${story}: the text is not above the button`);
   const label = document.createRange(); label.selectNodeContents(join);
   if (Math.abs(centreOf(label.getBoundingClientRect()).x - m.x) > 2) throw new Error(`${story}: the join label is not centred (main ${String(m.x)}, label ${String(centreOf(label.getBoundingClientRect()).x)})`);
-  if (phone && jr.height < 44) throw new Error(`${story}: the join button is ${String(jr.height)} px tall, under 44`);
+  // Rule 0 (Jonas 2026-10-27): the phone keeps the prototype's 40px Join voice (no 44px enlargement).
+  if (phone && jr.height < 40) throw new Error(`${story}: the join button is ${String(jr.height)} px tall, under 40`);
 }
 /** Nobody is in the voice channel and this device has not joined: the text and the join button, centred. */
 export const EmptyNotJoined: Story = {

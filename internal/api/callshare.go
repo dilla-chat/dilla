@@ -10,6 +10,7 @@ import (
 	"github.com/fxamacker/cbor/v2"
 
 	"github.com/jonasthim/dilla/internal/auth"
+	botaccess "github.com/jonasthim/dilla/internal/bot/access"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/server"
 	"github.com/jonasthim/dilla/internal/sfu"
@@ -388,19 +389,24 @@ func (h *Calls) callOf(r *http.Request) (auth.Session, store.VoiceSessionRow, st
 	if err != nil {
 		return s, store.VoiceSessionRow{}, store.ChannelRow{}, 0, err
 	}
-	row, err := h.repo.GetVoiceSession(r.Context(), callID)
+	return h.callForSession(r.Context(), s, callID)
+}
+
+// callForSession is the common authority path for HTTP and connection-derived telemetry.
+func (h *Calls) callForSession(ctx context.Context, s auth.Session, callID id.ID) (auth.Session, store.VoiceSessionRow, store.ChannelRow, Bits, error) {
+	row, err := h.repo.GetVoiceSession(ctx, callID)
 	if err != nil {
 		return s, store.VoiceSessionRow{}, store.ChannelRow{}, 0, notFound(err)
 	}
-	ch, err := h.repo.GetChannel(r.Context(), row.ChannelID)
+	ch, err := h.repo.GetChannel(ctx, row.ChannelID)
 	if err != nil {
 		return s, store.VoiceSessionRow{}, store.ChannelRow{}, 0, notFound(err)
 	}
-	bits, err := h.res.Resolve(r.Context(), s.UserID, ch)
+	bits, err := h.res.Resolve(ctx, s.UserID, ch)
 	if err != nil {
 		return s, store.VoiceSessionRow{}, store.ChannelRow{}, 0, err
 	}
-	if err := h.botCanUseSession(r.Context(), s, ch); err != nil {
+	if err := h.botCanUseSession(ctx, s, ch); err != nil {
 		return s, store.VoiceSessionRow{}, store.ChannelRow{}, 0, err
 	}
 	if !bits.Has(PermViewChannel) {
@@ -535,6 +541,15 @@ func (h *Calls) share(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(server.CodeForbidden, "your device published media that is not dilla-sframe/1 in this call"))
 		return
 	}
+	bot, err := botaccess.IsBotUser(ctx, h.repo, s.UserID)
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	if bot {
+		server.WriteError(w, server.Errorf(server.CodeForbidden, "managed bots cannot share camera or screen"))
+		return
+	}
 	limit := h.maxPublishers()
 	taken, already := h.leases.take(cur.CallID, cur.LivekitRoom, s.DeviceID, limit, h.clk.Now().Unix())
 	if !taken {
@@ -544,8 +559,16 @@ func (h *Calls) share(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(server.CodeCallSharersFull, "%d devices of this call are already sharing", limit))
 		return
 	}
+	perm, err := h.grantFor(ctx, bits, cur, s.DeviceID)
+	if err != nil {
+		if !already {
+			h.leases.release(cur.CallID, s.DeviceID)
+		}
+		server.WriteError(w, err)
+		return
+	}
 	pctx, cancel := sfuCtx(ctx)
-	err = h.sfu.UpdatePermission(pctx, cur.LivekitRoom, s.DeviceID.String(), h.grantFor(ctx, bits, cur, s.DeviceID))
+	err = h.sfu.UpdatePermission(pctx, cur.LivekitRoom, s.DeviceID.String(), perm)
 	cancel()
 	if err != nil {
 		if errors.Is(err, sfu.ErrNoParticipant) {

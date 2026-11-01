@@ -14,7 +14,7 @@ import type { Locator, Page } from '@playwright/test';
 import { expect, test } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
 import {
-  VoicePeer, WAIT, connected, copy, dmPair, heard, joinVoice, onboard, rings, screenTile, self, stage, stripButton, tile,
+  VoicePeer, WAIT, connected, copy, dmPair, heard, joinVoice, onboard, rings, screenTile, self, stage, startShare, stripButton, tile,
 } from './support/voice';
 import { expectAccessible } from '../web/support/app';
 import { REPO_ROOT } from '../web/support/host';
@@ -69,12 +69,30 @@ test('the stage shows a tile per camera and screen, focuses a shared screen, and
     const camera = tile(bob.page, 'alice');
 
     await test.step('1. alice shares her camera and her screen', async () => {
-      const cameraOn = controls.getByRole('button', { name: copy('voice.cameraOn'), exact: true });
+      const cameraOn = controls.locator('[data-control="camera"]');
       await cameraOn.click();
-      await expect(cameraOn).toHaveAttribute('aria-pressed', 'true', { timeout: WAIT });
-      const share = controls.getByRole('button', { name: copy('voice.shareOn'), exact: true });
-      await share.click();
-      await expect(share).toHaveAttribute('aria-pressed', 'true', { timeout: WAIT });
+      await expect(cameraOn).toHaveAttribute('data-on', 'true', { timeout: WAIT });
+      // Camera keeps its word, so its state is aria-pressed (Signal §5.6).
+      await expect(controls.getByRole('button', { name: copy('callStage.bar.camera'), exact: true })).toHaveAttribute('aria-pressed', 'true');
+      const share = controls.locator('[data-control="share"]');
+      // Task 8c: the share picker's options: 720p at 15 fps. Before that, the default 1080p at 30 fps estimates 4.5 Mb/s (the
+      // instance's default cap is 8000 kb/s, fix round 1).
+      await controls.locator('[data-control="share"]').click();
+      await expect(alice.page.getByText(copy('callStage.share.estimate', { mbps: '4.5' }), { exact: true })).toBeVisible();
+      await alice.page.keyboard.press('Escape');
+      await startShare(alice.page, ['720p', '15']);
+      await expect(share).toHaveAttribute('data-on', 'true', { timeout: WAIT });
+      // The capture took the options: no frame over 720 lines, at most 15 frames a second.
+      await expect.poll(() => alice.page.evaluate(() => {
+        const v = document.querySelector<HTMLVideoElement>('.d-call-tile[data-own][data-source="screen"] video');
+        return (v?.srcObject as MediaStream | null)?.getVideoTracks()[0]?.getSettings().height ?? 0;
+      }), { timeout: WAIT }).toBeGreaterThan(0);
+      const settings = await alice.page.evaluate(() => {
+        const v = document.querySelector<HTMLVideoElement>('.d-call-tile[data-own][data-source="screen"] video');
+        return (v?.srcObject as MediaStream | null)?.getVideoTracks()[0]?.getSettings() ?? null;
+      });
+      expect(settings?.height ?? 9999, 'the captured screen’s height').toBeLessThanOrEqual(720);
+      expect(settings?.frameRate ?? 999, 'the captured screen’s frame rate').toBeLessThanOrEqual(15);
     });
 
     await test.step('2. bob sees two tiles for alice; the screen is focused and takes most of the stage', async () => {
@@ -85,9 +103,25 @@ test('the stage shows a tile per camera and screen, focuses a shared screen, and
       await expect(focusButton(shared)).toHaveAttribute('aria-pressed', 'true');
       await expect(focusButton(camera)).toHaveAttribute('aria-pressed', 'false');
       const stageWidth = await widthOf(bob.page.locator('.d-call-stage'));
-      expect(await widthOf(itemOf(shared)), 'the focused screen tile’s width against the stage').toBeGreaterThanOrEqual(stageWidth * 0.7);
+      // The tile's width eases over 260ms (Signal §5.6), so it is read once it has settled.
+      await expect.poll(() => widthOf(itemOf(shared)), { timeout: WAIT, message: 'the focused screen tile’s width against the stage' })
+        .toBeGreaterThanOrEqual(stageWidth * 0.7);
       await expect.poll(() => videoWidthOf(shared), { timeout: WAIT }).toBeGreaterThan(0);
       await expect.poll(() => videoWidthOf(camera), { timeout: WAIT }).toBeGreaterThan(0);
+      // Task 8c: the focused share's stats as bob receives it ("720p · 15 fps" at most), and alice's own tile's sent codec.
+      const stat = itemOf(shared).locator('.d-call-tile__stat');
+      await expect(stat).toHaveText(/^\d+p · \d+ fps$/, { timeout: WAIT });
+      // inbound-rtp framesPerSecond counts the frames decoded in the last second, so the jitter buffer's catch-up after a
+      // stall on a loaded runner reads above the sender's 15 (PR #121 CI read 19 once). The capture's own rate is pinned in
+      // step 1; here the received rate must settle at the cap, which an uncapped share would never do.
+      const statNumbers = async () => ((await stat.textContent()) ?? '').match(/\d+/g)!.map(Number);
+      await expect.poll(async () => (await statNumbers())[0], { timeout: WAIT, message: 'the received screen’s height' }).toBeLessThanOrEqual(720);
+      await expect.poll(async () => (await statNumbers())[1], { timeout: WAIT, message: 'the received screen’s frame rate' }).toBeLessThanOrEqual(16);
+      await expect(alice.page.locator('.d-call-tile[data-own]:not([data-source="screen"])').locator('xpath=ancestor::li[1]').locator('.d-call-tile__stat'))
+        .toHaveText('opus 48k', { timeout: WAIT });
+      // Fix round 1: alice's ping on bob's view of her person tile is the RTT her own page publishes (dilla.rtt, through the
+      // SFU with the token's own-metadata right), not bob's link.
+      await expect(itemOf(camera).locator('.d-call-tile__stat')).toHaveText(/^\d{1,4} ms$/, { timeout: WAIT });
       await bob.page.screenshot({ path: join(SHOTS, 'stage-focused.png') });
       await expectAccessible(bob.page, 'the focused stage');
     });
@@ -103,7 +137,10 @@ test('the stage shows a tile per camera and screen, focuses a shared screen, and
       const after = await video!.evaluate((v: HTMLVideoElement) => ({ connected: v.isConnected, width: v.videoWidth }));
       expect(after.connected, 'the captured screen video is still in the document').toBe(true);
       expect(after.width, 'and still has a picture').toBeGreaterThan(0);
-      expect(await videoWidthOf(shared)).toBe(before);
+      // Not the same intrinsic width: adaptive stream and simulcast move between layers as the bandwidth estimate ramps
+      // (PR #128 CI read 640, then 1280, across this swap). The tile must still show the same element with a picture.
+      expect(await shared.locator('video').first().evaluate((v, el) => v === el, video)).toBe(true);
+      expect(await videoWidthOf(shared)).toBeGreaterThan(0);
     });
 
     await test.step('4. Escape returns to the grid; every tile is the same width', async () => {
@@ -113,8 +150,11 @@ test('the stage shows a tile per camera and screen, focuses a shared screen, and
       const items = tiles(bob.page);
       await expect(items).toHaveCount(3); // alice’s camera and screen, and bob’s own (pre-flight C-25)
       await expect(bob.page.locator('.d-call-stage')).not.toHaveAttribute('data-focused-stage', 'true');
-      const widths = await Promise.all([0, 1, 2].map((i) => widthOf(items.nth(i))));
-      for (const w of widths) expect(Math.abs(w - widths[0]), `tile widths ${widths.join(', ')}`).toBeLessThanOrEqual(1);
+      // Signal §5.6: a tile's width eases over 260ms (the prototype's width transition), so the grid is read once it has settled.
+      await expect.poll(async () => {
+        const widths = await Promise.all([0, 1, 2].map((i) => widthOf(items.nth(i))));
+        return Math.max(...widths) - Math.min(...widths);
+      }, { timeout: WAIT, message: 'every tile is the same width' }).toBeLessThanOrEqual(1);
       await expectAccessible(bob.page, 'the grid of three');
     });
 
@@ -128,8 +168,8 @@ test('the stage shows a tile per camera and screen, focuses a shared screen, and
     });
 
     await test.step('alice stops her camera and screen; the focus and the tiles go', async () => {
-      await controls.getByRole('button', { name: copy('voice.shareOn'), exact: true }).click();
-      await controls.getByRole('button', { name: copy('voice.cameraOn'), exact: true }).click();
+      await controls.locator('[data-control="share"]').click();
+      await controls.locator('[data-control="camera"]').click();
       await expect(shared).toHaveCount(0, { timeout: WAIT });
       await expect(camera).toHaveAttribute('data-source', 'avatar', { timeout: WAIT });
       await expect(tiles(bob.page)).toHaveCount(2);

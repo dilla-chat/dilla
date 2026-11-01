@@ -60,7 +60,9 @@ interface ExpectedCoreHandle {
   human_interaction_welcome_apply(welcomes_body: Uint8Array, current_context_proof: Uint8Array, now: bigint): Uint8Array;
   human_interaction_send_prepare(request_id: Uint8Array, community_id: Uint8Array, group_id: Uint8Array, request_body: Uint8Array, now: bigint): Uint8Array;
   human_interaction_events_read(after: bigint, limit: bigint): Uint8Array;
+  human_interaction_receipts_read(community_id: Uint8Array, installation_id: Uint8Array, bot_user_id: Uint8Array, request_ids: Uint8Array): Uint8Array;
   human_interaction_events_ack(through: bigint): void;
+  human_interaction_events_ack_selected(delivery_ids: Uint8Array): void;
   group_apply(group_id: Uint8Array, handshakes: Uint8Array, messages: Uint8Array, through: bigint): Uint8Array;
   commit_build(group_id: Uint8Array, proposals_body: Uint8Array): Uint8Array;
   commit_confirm(group_id: Uint8Array): Uint8Array;
@@ -91,6 +93,7 @@ interface ExpectedCoreHandle {
   proposed_adds(group_id: Uint8Array, proposals_body: Uint8Array): Uint8Array;
   device_list_ingest_add(group_id: Uint8Array, proposals_body: Uint8Array, index: bigint, requested_user: Uint8Array, history_body: Uint8Array, head_list: Uint8Array, now: bigint): Uint8Array;
   device_list_ingest(group_id: Uint8Array, leaf_index: number, requested_user: Uint8Array, history_body: Uint8Array, head_list: Uint8Array, now: bigint): Uint8Array;
+  account_kind_ingest(user_id: Uint8Array, attestation: Uint8Array): void;
   revalidate_pending(group_id: Uint8Array, leaf_index: number, limit: number): number;
   trust_state(): Uint8Array;
   trust_generation(): bigint;
@@ -186,7 +189,9 @@ expectTrue<Equals<H['welcomes_apply'], E['welcomes_apply']>>();
 expectTrue<Equals<H['human_interaction_welcome_apply'], E['human_interaction_welcome_apply']>>();
 expectTrue<Equals<H['human_interaction_send_prepare'], E['human_interaction_send_prepare']>>();
 expectTrue<Equals<H['human_interaction_events_read'], E['human_interaction_events_read']>>();
+expectTrue<Equals<H['human_interaction_receipts_read'], E['human_interaction_receipts_read']>>();
 expectTrue<Equals<H['human_interaction_events_ack'], E['human_interaction_events_ack']>>();
+expectTrue<Equals<H['human_interaction_events_ack_selected'], E['human_interaction_events_ack_selected']>>();
 expectTrue<Equals<H['group_apply'], E['group_apply']>>();
 expectTrue<Equals<H['commit_build'], E['commit_build']>>();
 expectTrue<Equals<H['commit_confirm'], E['commit_confirm']>>();

@@ -1,7 +1,7 @@
 /* web3.8 (U2): a 24px hit area centred on the 1px line the neighbouring pane draws (its border), which stays the only drawn line. */
 .d-splitter { position: absolute; top: 0; bottom: 0; width: 24px; z-index: 5; touch-action: none; cursor: col-resize; }
-/* MP8: the sidebar's splitter is a grid child of its own across the sidebar and panel rows, so it runs to the bottom of the shell (above the status bar). */
-.d-splitter--sidebar { position: relative; top: auto; bottom: auto; grid-column: 2; grid-row: 2 / 4; justify-self: end; margin-right: -12px; }
+/* MP8: the sidebar's splitter is a grid child of its own across the sidebar and panel rows (rows 3 and 4, under the top bar and the banner), so it runs to the bottom of the shell. */
+.d-splitter--sidebar { position: relative; top: auto; bottom: auto; grid-column: 2; grid-row: 3 / 5; justify-self: end; margin-right: -12px; }
 /* MP8: at rest the sidebar's splitter draws the one hairline itself (over what the sidebar and the panel paint), on the pixel the sidebar's border-right already uses, so the two coincide; hovered, focused or dragged it is accented in place. */
 .d-splitter--sidebar::before { content: ''; position: absolute; top: 0; bottom: 0; left: 11px; width: 0; border-left: 1px solid var(--hairline); pointer-events: none; }
 .d-splitter--sidebar:hover::before, .d-splitter--sidebar:focus-visible::before, .d-app-shell[data-resizing] .d-splitter--sidebar::before { border-left-color: var(--accent); }

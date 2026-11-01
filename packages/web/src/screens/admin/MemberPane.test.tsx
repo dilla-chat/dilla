@@ -33,19 +33,58 @@ function setup(acc: CommunityAccess | undefined = access()) {
 /** A member's row button: its name starts with the presence word, then the display name (and the owner word). */
 const row = (who: string) => screen.getByRole('button', { name: new RegExp(`\\b${who}\\b`) });
 const card = () => screen.getByRole('dialog');
-const cardActions = () => within(card()).queryAllByRole('button').filter(b => b.classList.contains('d-profile-card__action')).map(b => b.textContent);
+/** Task 9: the card's row (Message, then the glyph buttons by name). */
+const cardActions = () => within(card()).queryAllByRole('button').filter(b => b.matches('.d-profile-card__action, .d-profile-card__icon-action'))
+  .map(b => b.getAttribute('aria-label') ?? b.textContent);
+/** Task 9: the moderation items of a row's person menu (right-click), which is closed again. */
+function modActions(who: string): string[] {
+  fireEvent.contextMenu(row(who), { clientX: 10, clientY: 10 });
+  const menu = screen.getByRole('menu');
+  const out = within(menu).getAllByRole('menuitem').filter(b => b.dataset.danger === 'true').map(b => b.textContent ?? '');
+  fireEvent.keyDown(menu, { key: 'Escape' });
+  return out;
+}
+/** Moderation is in the row's person menu (task 9, the prototype); message, compare and roles are on the card. */
 async function pick(user: ReturnType<typeof userEvent.setup>, who: string, item: string) {
+  const menu: Record<string, string> = { kick: `Kick ${who}`, ban: `Ban ${who}`, 'Text timeout': 'Text timeout', 'Warn member': 'Warn member' };
+  const inMenu = menu[item];
+  if (inMenu !== undefined) {
+    fireEvent.contextMenu(row(who), { clientX: 10, clientY: 10 });
+    await user.click(within(screen.getByRole('menu')).getByRole('menuitem', { name: inMenu }));
+    return;
+  }
   await user.click(row(who));
   await user.click(within(card()).getByRole('button', { name: item }));
 }
 
 describe('MemberPane', () => {
+  it('restores a settings member row inside its own scope when the covered shell has a duplicate row', () => {
+    const fake = new FakeClient();
+    fake.set('communities', [{ id: CID, name: 'Midgard', owner: OWNER }]);
+    fake.set(`members:${CID}`, [m(OWNER, 'olof'), m(ME, 'ada'), m(BOB, 'bob'), m(CAL, 'carol')]);
+    fake.set(`presence:${CID}`, { [OWNER]: 'online', [ME]: 'online', [BOB]: 'online', [CAL]: 'online' });
+    fake.set(`roles:${CID}`, []);
+    const background = document.createElement('button');
+    background.dataset.focusKey = `member:${BOB}`;
+    background.textContent = 'covered bob';
+    const host = document.createElement('div');
+    document.body.append(background, host);
+    const view = render(<div className="d-root"><CoreProvider client={fake}><MemberPane communityId={CID} selfId={ME}
+      onMessage={vi.fn()} onCompare={vi.fn()} announce={vi.fn()} focusScope="settings" /></CoreProvider></div>, { container: host });
+    const scoped = host.querySelector<HTMLElement>('.d-root > div')!;
+    const before = within(scoped).getByRole('button', { name: /\bbob\b/ });
+    act(() => before.focus());
+    act(() => fake.set(`presence:${CID}`, { [OWNER]: 'online', [ME]: 'online', [BOB]: 'offline', [CAL]: 'online' }));
+    expect(within(scoped).getByRole('button', { name: /\bbob\b/ })).toHaveFocus();
+    expect(background).not.toHaveFocus();
+    view.unmount(); background.remove(); host.remove();
+  });
   // S3: the members aside has its own 48 bar (MemberList's `label`), so its hairline sits on the header's line.
   it('draws the members bar, a heading named for the list', () => {
     setup();
-    const bar = screen.getByRole('heading', { level: 2, name: 'members' });
-    expect(bar).toHaveClass('d-member-list__bar');
-    expect(screen.getByRole('region', { name: 'members' })).toContainElement(bar);
+    const bar = screen.getByRole('heading', { level: 2, name: 'Members' });
+    expect(bar.closest('.d-member-list__bar')).not.toBeNull();
+    expect(screen.getByRole('region', { name: 'Members' })).toContainElement(bar);
   });
   it('waits for presence, then places offline members at the bottom with a spoken label', () => {
     const { fake } = setup();
@@ -83,9 +122,9 @@ describe('MemberPane', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
     await user.click(row('carol'));
     expect(card()).toHaveAccessibleName('carol');
-    expect(within(card()).getByText('@carol')).toBeInTheDocument();
+    expect(card().querySelector('.d-profile-card__status')).toHaveTextContent('@carol');
     expect(within(card()).getByRole('list', { name: 'roles' })).toHaveTextContent('mods');
-    expect(cardActions()).toEqual(['message', 'compare safety numbers']);
+    expect(cardActions()).toEqual(['Message', 'compare safety numbers']);
     expect(row('carol')).toHaveAttribute('aria-expanded', 'true');
   });
   it('lists several roles highest first with their colour swatches', async () => {
@@ -100,17 +139,15 @@ describe('MemberPane', () => {
     expect(items.map(i => i.textContent)).toEqual(['reds', 'mods']);
     expect(items[0]?.querySelector('[style*="background"], .d-role-dot')).not.toBeNull();
   });
-  it('shows "you" and "owner" on the right cards only', async () => {
+  // Task 9: the prototype's card names the owner with the crown after the name and draws no "you" mark.
+  it('shows the owner crown on the owner card only', async () => {
     const { user } = setup();
     await user.click(row('ada'));
-    expect(within(card()).getByText('you')).toBeInTheDocument();
-    expect(within(card()).queryByText('owner')).toBeNull();
+    expect(within(card()).queryByRole('img', { name: 'owner' })).toBeNull();
     await user.click(row('olof'));
-    expect(within(card()).getByText('owner')).toBeInTheDocument();
-    expect(within(card()).queryByText('you')).toBeNull();
+    expect(within(card()).getByRole('img', { name: 'owner' })).toBeInTheDocument();
     await user.click(row('bob'));
-    expect(within(card()).queryByText('you')).toBeNull();
-    expect(within(card()).queryByText('owner')).toBeNull();
+    expect(within(card()).queryByRole('img', { name: 'owner' })).toBeNull();
   });
   it('the viewer\'s own card has no message, compare, kick or ban', async () => {
     const { user } = setup(access({ manageRoles: true }));
@@ -120,23 +157,25 @@ describe('MemberPane', () => {
   it('offers kick and ban on bob, and none on the owner or an equal rank', async () => {
     const { user } = setup();
     await user.click(row('bob'));
-    expect(cardActions()).toEqual(['message', 'compare safety numbers', 'kick', 'ban']);
+    expect(cardActions()).toEqual(['Message', 'compare safety numbers']);
     await user.keyboard('{Escape}');
+    expect(modActions('bob')).toEqual(['Kick bob', 'Ban bob']);
     await user.click(row('olof'));
-    expect(cardActions()).toEqual(['message', 'compare safety numbers']);
+    expect(cardActions()).toEqual(['Message', 'compare safety numbers']);
     await user.keyboard('{Escape}');
-    await user.click(row('carol'));
-    expect(within(card()).queryByRole('button', { name: 'kick' })).toBeNull();
+    expect(modActions('olof')).toEqual([]);
+    expect(modActions('carol')).toEqual([]);
   });
-  it('a member without the kick permission sees no kick, and without ban no ban', async () => {
-    const { user } = setup(access({ kickMembers: false }));
-    await user.click(row('bob'));
-    expect(cardActions()).toEqual(['message', 'compare safety numbers', 'ban']);
+  it('a member without the kick permission sees no kick, and without ban no ban', () => {
+    setup(access({ kickMembers: false }));
+    expect(modActions('bob')).toEqual(['Ban bob']);
   });
   it('shows no kick or ban until permissions have loaded', async () => {
     const { user } = setup(access({ loaded: false }));
     await user.click(row('bob'));
-    expect(cardActions()).toEqual(['message', 'compare safety numbers']);
+    expect(cardActions()).toEqual(['Message', 'compare safety numbers']);
+    await user.keyboard('{Escape}');
+    expect(modActions('bob')).toEqual([]);
   });
   it('clicking the open member again closes the card, another row switches it, Escape closes and returns focus', async () => {
     const { user } = setup();
@@ -150,14 +189,16 @@ describe('MemberPane', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(row('carol')).toHaveFocus();
   });
-  it('a contextmenu or Enter on the open member\'s row keeps the card open (only a primary click toggles)', async () => {
+  // Task 9: a right-click opens the prototype's person menu in place of the card; Enter on the open row keeps the card.
+  it('Enter on the open member\'s row keeps the card open (only a primary click toggles); a right-click swaps it for the person menu', async () => {
     const { user } = setup();
     await user.click(row('bob'));
-    fireEvent.contextMenu(row('bob').closest('li')!, { button: 2, detail: 1 });
-    expect(card()).toHaveAccessibleName('bob');
     act(() => row('bob').focus());
     await user.keyboard('{Enter}');
     expect(card()).toHaveAccessibleName('bob');
+    fireEvent.contextMenu(row('bob'), { clientX: 10, clientY: 10 });
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByRole('menu', { name: 'actions for bob' })).toBeInTheDocument();
   });
   it('I1: a card follows its member\'s row when a presence change re-mounts it, and a click on the new row closes it', async () => {
     const { user, fake } = setup();
@@ -179,7 +220,7 @@ describe('MemberPane', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(row('bob')).toHaveAttribute('aria-expanded', 'false');
   });
-  it('Enter on a focused row and the context key open the card', async () => {
+  it('Enter on a focused row opens the card; Shift+F10 opens the person menu, whose Profile opens the card', async () => {
     const { user } = setup();
     act(() => row('bob').focus());
     await user.keyboard('{Enter}');
@@ -187,6 +228,9 @@ describe('MemberPane', () => {
     await user.keyboard('{Escape}');
     act(() => row('carol').focus());
     await user.keyboard('{Shift>}{F10}{/Shift}');
+    const menu = screen.getByRole('menu', { name: 'actions for carol' });
+    expect(within(menu).getAllByRole('menuitem').map(b => b.textContent)).toEqual(['Profile', 'Message', 'Copy username']);
+    await user.click(within(menu).getByRole('menuitem', { name: 'Profile' }));
     expect(card()).toHaveAccessibleName('carol');
   });
   it('has no axe violations with the card open', async () => {
@@ -196,7 +240,7 @@ describe('MemberPane', () => {
   });
   it('hands message and compare to the shell', async () => {
     const { user, onMessage, onCompare } = setup();
-    await pick(user, 'bob', 'message');
+    await pick(user, 'bob', 'Message');
     await pick(user, 'bob', 'compare safety numbers');
     expect(onMessage).toHaveBeenCalledWith(BOB);
     expect(onCompare).toHaveBeenCalledWith(BOB);
@@ -207,7 +251,7 @@ describe('role assignment', () => {
   it('offers roles only with manageRoles, opens the dialog and closes it with done', async () => {
     const { user } = setup(access({ manageRoles: true }));
     await user.click(row('bob'));
-    expect(cardActions()).toEqual(['message', 'compare safety numbers', 'edit roles', 'kick', 'ban']);
+    expect(cardActions()).toEqual(['Message', 'compare safety numbers', 'edit roles']);
     await user.click(within(card()).getByRole('button', { name: 'edit roles' }));
     const dialog = screen.getByRole('dialog', { name: 'Roles of bob' });
     expect(within(dialog).getByRole('checkbox', { name: 'mods' })).toBeInTheDocument();
@@ -417,5 +461,36 @@ describe('role assignment focus', () => {
     await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Done' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(row('bob')).toHaveFocus();
+  });
+});
+
+describe('task 9 fix round 1', () => {
+  it('the person menu offers Mention only with a composer to write in, and hands the username over', async () => {
+    const fake = new FakeClient();
+    fake.set('communities', [{ id: CID, name: 'Midgard', owner: OWNER }]);
+    fake.set(`members:${CID}`, [m(OWNER, 'olof'), m(ME, 'ada', [MOD.id]), m(BOB, 'bob'), m(CAL, 'carol', [MOD.id])]);
+    fake.set(`presence:${CID}`, { [OWNER]: 'online', [ME]: 'online', [BOB]: 'online', [CAL]: 'online' });
+    fake.set(`roles:${CID}`, [MOD]);
+    fake.set(`permissions:${CID}`, access());
+    const onMention = vi.fn();
+    const pane = (mention?: (u: string) => void) => <div className="d-root"><CoreProvider client={fake}>
+      <MemberPane communityId={CID} selfId={ME} onMessage={vi.fn()} onCompare={vi.fn()} announce={vi.fn()} onMention={mention} /></CoreProvider></div>;
+    const view = render(pane());
+    const user = userEvent.setup();
+    expect(modActions('bob')).toEqual(['Kick bob', 'Ban bob']);
+    fireEvent.contextMenu(row('bob'), { clientX: 10, clientY: 10 });
+    expect(within(screen.getByRole('menu')).queryByRole('menuitem', { name: 'Mention' })).toBeNull();
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
+    view.rerender(pane(onMention));
+    fireEvent.contextMenu(row('bob'), { clientX: 10, clientY: 10 });
+    await user.click(within(screen.getByRole('menu')).getByRole('menuitem', { name: 'Mention' }));
+    expect(onMention).toHaveBeenCalledExactlyOnceWith('bob');
+    fireEvent.contextMenu(row('ada'), { clientX: 10, clientY: 10 });
+    expect(within(screen.getByRole('menu')).queryByRole('menuitem', { name: 'Mention' })).toBeNull();
+  });
+  it('the card carries the WEB tag for a person', async () => {
+    const { user } = setup();
+    await user.click(row('bob'));
+    expect(card().querySelector('.d-profile-card__client')).toHaveTextContent('WEB');
   });
 });

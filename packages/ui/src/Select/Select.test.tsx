@@ -55,7 +55,7 @@ describe('Select', () => {
     expect(screen.getByRole('combobox', { name: 'Category' })).toBeDisabled();
   });
 
-  it.each(['mesh', 'light', 'high-contrast'])('has no serious axe violations in %s', async theme => {
+  it.each(['signal', 'light', 'high-contrast'])('has no serious axe violations in %s', async theme => {
     document.documentElement.dataset.theme = theme;
     const { container } = render(<div className="d-root"><Select {...props({ hint: 'Pick one.' })} /></div>);
     await expectNoAxeViolations(container);

@@ -1,39 +1,60 @@
 .d-channel-list { height: 100%; min-height: 0; display: flex; flex-direction: column; background: var(--bg-2); border-right: 1px solid var(--hairline); }
-/* The header row is --bar-h (48) tall with the title, then the header action. */
-.d-channel-list__title { display: flex; align-items: center; flex: none; box-sizing: border-box; height: var(--bar-h); margin: 0; padding: 0 var(--row-pad-x); font-family: var(--font-serif-italic); font-style: italic; font-weight: var(--weight-body); font-size: var(--text-lg); color: var(--fg); border-bottom: 1px solid var(--hairline); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-/* A heading that is not the server name is mono, not the display serif (Mesh brief; walk 37 #9). */
+/* The header (Signal §5.4, the prototype's sidebar head): 14px 12px 8px 14px padding, the server name in DM Serif Display
+   italic 19px with an ellipsis, then the header action (a 26px chevron in the prototype). */
+.d-channel-list__title { display: flex; align-items: center; flex: none; box-sizing: border-box; margin: 0; padding: 14px 12px 8px 14px; font-family: var(--font-serif-italic); font-style: italic; font-weight: 400; font-size: var(--text-title); line-height: 1.5; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* A heading that is not the server name is mono, not the display serif (walk 37 #9). */
 .d-channel-list__title[data-kind="plain"] { font-family: var(--font-mono); font-style: normal; font-weight: var(--weight-display); font-size: var(--text-md); letter-spacing: var(--label-tracking); }
-/* A control at the right of the name (the phone's server menu): the row carries the hairline, not the heading. */
-.d-channel-list__head { display: flex; align-items: center; flex: none; box-sizing: border-box; height: var(--bar-h); padding-right: 0.25rem; border-bottom: 1px solid var(--hairline); }
-.d-channel-list__head .d-channel-list__title { flex: 1; min-width: 0; height: auto; border-bottom: 0; }
-/* The head's icon buttons: 32px on desktop, 44px on a phone. */
-.d-channel-list__head-btn { flex: none; min-width: 2rem; min-height: 2rem; padding: 0; justify-content: center; }
-[data-layout="phone"] .d-channel-list__head-btn { min-width: 2.75rem; min-height: 2.75rem; }
+/* A control at the right of the name: the row carries the padding, gap 8px. */
+.d-channel-list__head { display: flex; align-items: center; gap: 8px; flex: none; box-sizing: border-box; padding: 14px 12px 8px 14px; }
+.d-channel-list__head .d-channel-list__title { flex: 1; min-width: 0; padding: 0; }
+/* The head's icon buttons: 26px on desktop (the prototype's chevron), 44px on a phone. */
+.d-channel-list__head-btn { flex: none; height: 1.625rem; min-width: 1.625rem; min-height: 1.625rem; padding: 0; justify-content: center; }
+/* Signal task 10 fix round 3: the ⌄ is the server's (and the DM list's) menu trigger, drawn as the prototype's 26px square:
+   radius 6, --fg-2, on hover or while its menu is open --hover behind --fg; no edge. */
+.d-channel-list__head-btn.d-action-menu__trigger { box-sizing: border-box; width: 1.625rem; color: var(--fg-2); border: 0; border-radius: var(--r-md); transition: background var(--duration-fast), color var(--duration-fast); }
+.d-channel-list__head-btn.d-action-menu__trigger:hover, .d-channel-list__head-btn.d-action-menu__trigger[aria-expanded="true"] { color: var(--fg); background: var(--hover); }
+@media (prefers-reduced-motion: reduce) { .d-channel-list__head-btn.d-action-menu__trigger { transition: none; } }
+/* Ruling AB: the ⌄ stays the prototype's 26px on a phone too (Jonas 2026-10-27). */
+/* The stat line: 10.5px --fg-3, padding 0 14px 10px, 10px gaps; the first item after a 6px --ok dot. */
+.d-channel-list__stats { display: flex; flex: none; gap: 10px; margin: 0; padding: 0 14px 10px; font-size: var(--text-meta); color: var(--fg-3); white-space: nowrap; overflow: hidden; }
+.d-channel-list__stat { display: inline-flex; align-items: center; gap: 10px; }
+.d-channel-list__live { width: 6px; height: 6px; border-radius: var(--r-pill); background: var(--ok); margin-right: -5px; /* 5px before the online count */ }
 /* The server's actions sit under its name, above the tabs; the hairline moves below them. */
-.d-channel-list__title:has(+ .d-channel-list__actions) { height: auto; border-bottom: 0; padding: 0.875rem var(--row-pad-x) 0.375rem; }
+.d-channel-list__title:has(+ .d-channel-list__actions) { padding-bottom: 6px; }
 /* Flow 07: both actions on one row in the 240 px sidebar, so their buttons are compact (28 px tall, 6 px sides); they
    wrap only when a larger text size leaves no room. */
 .d-channel-list__actions { display: flex; flex-wrap: wrap; gap: 0.25rem; padding: 0 var(--row-pad-x) 0.625rem; border-bottom: 1px solid var(--hairline); }
 .d-channel-list__actions .d-btn { padding: 0 6px; }
-.d-channel-list__list { list-style: none; margin: 0; padding: 0.5rem; flex: 1; min-height: 0; overflow-y: auto; }
+/* The scroller: 4px 8px padding under a hairline. */
+.d-channel-list__list { list-style: none; margin: 0; padding: 4px 8px; flex: 1; min-height: 0; overflow-y: auto; border-top: 1px solid var(--hairline); }
 .d-channel-list__empty { margin: 0; padding: 1rem var(--row-pad-x); font-size: var(--text-sm); color: var(--fg-3); }
 .d-channel-list__panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .d-channel-list__footer { flex-shrink: 0; padding: 0.5rem var(--row-pad-x) 0.75rem; border-top: 1px solid var(--hairline); }
-/* A category header (R12): a button row, --row-h tall, a micro uppercase label, the chevron in the 16px glyph column (turned
-   -90deg when collapsed), the trailing "+" in the slot. The label starts at the same x as every row's name. */
+/* A category row (Signal §5.4): 26px tall, 10px above, padding 0 8px, gap 6px; the 11px chevron (turned -90deg when collapsed,
+   200ms), the name in 10px/600 uppercase at 0.12em in --fg-3, then a hairline to the end. --fg on hover (140ms). */
 .d-channel-list__cat { position: relative; display: flow-root; }
-.d-channel-list__cat-head { display: flex; align-items: center; gap: 0.5rem; width: 100%; height: var(--row-h); box-sizing: border-box; padding: 0 0.5rem; margin: var(--list-gap) 0; font: inherit; color: var(--fg-2); background: transparent; border: 0; border-radius: var(--r-md); text-align: left; cursor: pointer; transition: background var(--duration-fast), color var(--duration-fast); }
-.d-channel-list__cat-head:hover { background: var(--surface-2); color: var(--fg); }
-.d-channel-list__cat-chevron { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 1rem /* 16px */; transition: transform var(--duration-fast); }
+.d-channel-list__cat-head { display: flex; align-items: center; gap: 6px; width: 100%; height: var(--row-h-sub); box-sizing: border-box; padding: 0 0.5rem; margin: 10px 0 0; font: inherit; font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking-wide); text-transform: uppercase; color: var(--fg-3); background: transparent; border: 0; border-radius: var(--r-row); text-align: left; cursor: pointer; transition: color var(--duration-hover); }
+.d-channel-list__cat-head:hover { color: var(--fg); }
+.d-channel-list__cat-chevron { display: inline-flex; flex: none; align-items: center; justify-content: center; transition: transform var(--duration-turn) var(--ease-out); }
 .d-channel-list__cat-head[data-collapsed="true"] .d-channel-list__cat-chevron { transform: rotate(-90deg); }
-.d-channel-list__cat-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking); text-transform: uppercase; }
+.d-channel-list__cat-label { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.d-channel-list__cat-rule { flex: 1; min-width: 0.5rem; height: 1px; background: var(--hairline); }
 /* The "+" is drawn over the header's own slot (a button cannot sit inside the header's button), shown while the header is
    hovered or focused and always on a device without hover. */
-.d-channel-list__cat-add { position: absolute; top: var(--list-gap); right: 0.5rem; height: var(--row-h); display: flex; align-items: center; }
+.d-channel-list__cat-add { position: absolute; top: 10px; right: 0.5rem; height: var(--row-h-sub); display: flex; align-items: center; }
 .d-channel-list__cat-add { opacity: 0; transition: opacity var(--duration-fast); }
 .d-channel-list__cat-add .d-icon-button:focus-visible { outline-offset: -2px; }
 .d-channel-list__cat:hover .d-channel-list__cat-add, .d-channel-list__cat:focus-within .d-channel-list__cat-add { opacity: 1; }
 @media (hover: none) { .d-channel-list__cat-add { opacity: 1; } }
 [data-layout="phone"] .d-channel-list__cat-add { opacity: 1; }
-@media (prefers-reduced-motion: reduce) { .d-channel-list__cat-add, .d-channel-list__cat-chevron { transition: none; } }
+/* Fix round 2 (rule 0): a phone keeps the prototype's 26px category head, 10px below the row before it (the phone's
+   --row-h-sub is 36 for the voice people). */
+[data-layout="phone"] .d-channel-list__cat-head, [data-layout="phone"] .d-channel-list__cat-add { height: 1.625rem; }
 
+
+/* Task 11 (Jonas, Q2): the DM list's section label, the prototype's "DIRECT MESSAGES": 26px, 10px into the list, 10px/600
+   uppercase --fg-3 with the category rule; not a control. Fix round 2: it sits inside the list's inset (the rows' 8px + 8px),
+   under the hairline that closes the stats line, so the list below it draws no second hairline. */
+.d-channel-list__section { display: flex; align-items: center; gap: 6px; box-sizing: content-box; height: 1.625rem; margin: 0; padding: 14px 1rem 0; border-top: 1px solid var(--hairline); font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking-wide); text-transform: uppercase; color: var(--fg-3); }
+.d-channel-list__section + .d-channel-list__list { border-top: 0; padding-top: 0; } /* the list's own 4px is above the label */
+.d-channel-list__list > li:has(> .d-chrow[data-person="true"]) { display: flow-root; } /* fix round 2: the rows 1px apart do not collapse (the prototype's flex column steps 44, 54 on a phone) */

@@ -1,16 +1,27 @@
-/* R26, E1, E2: no card. A hairline top and the panel's 12px inset; the dock sits on the sidebar's own ground. Line 1 is the
-   status (a button when it opens Diagnostics), line 2 where, then camera, share and leave in one row of 32px icon buttons. */
-.d-voice-dock { display: grid; gap: 0.5rem; padding: 0.75rem; border-top: 1px solid var(--hairline); min-width: 0; }
-.d-voice-dock__status { display: grid; gap: 0.125rem; min-width: 0; }
-.d-voice-dock__line1 { display: flex; align-items: center; gap: 0.5rem; min-width: 0; min-height: 1.5rem; margin: 0; padding: 0; font: inherit; font-size: var(--text-sm); color: var(--fg); text-align: left; background: transparent; border: 0; border-radius: 0; }
+/* The voice dock (Signal, README §5.4; the prototype's dock): a card in the --live tints, margin 0 8px 8px, padding 10px,
+   radius 8px, rising in with d-up over 340ms. One row, gap 8px: the bars, the name over the stats, the controls. */
+.d-voice-dock { display: grid; gap: 8px; margin: 0 8px 8px; padding: 10px; min-width: 0; background: var(--ok-soft); border: 1px solid var(--ok-soft-border); border-radius: var(--r-lg); animation: d-up var(--duration-dock) var(--ease-out) both; }
+.d-voice-dock__row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.d-voice-dock__glyph { display: inline-flex; flex: none; }
+/* Three 2 x 12px --live bars, 2px apart, bouncing from the bottom (d-bar 600ms, 200ms apart). */
+.d-voice-dock__bars { display: flex; align-items: flex-end; gap: 2px; height: 12px; }
+.d-voice-dock__bars > span { width: 2px; height: 12px; background: var(--ok); transform-origin: bottom; animation: d-bar var(--duration-bar) infinite; }
+.d-voice-dock__bars > span:nth-child(2) { animation-delay: calc(var(--duration-bar) / 3); }
+.d-voice-dock__bars > span:nth-child(3) { animation-delay: calc(var(--duration-bar) * 2 / 3); }
+.d-voice-dock__status { display: grid; flex: 1; min-width: 0; line-height: 1.3; }
+/* The name: 12px/600 --ok-text. */
+.d-voice-dock__line1 { display: flex; align-items: center; min-width: 0; margin: 0; padding: 0; font: inherit; font-size: var(--text-ui); font-weight: var(--weight-label); line-height: 1.3; color: var(--ok-text); text-align: left; background: transparent; border: 0; border-radius: 0; }
 button.d-voice-dock__line1 { cursor: pointer; }
 button.d-voice-dock__line1:hover .d-voice-dock__text { text-decoration: underline; text-underline-offset: 0.2em; }
-.d-voice-dock__glyph { display: inline-flex; flex: none; }
 .d-voice-dock__text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.d-voice-dock__where { margin: 0; padding-left: 1.375rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-xs); color: var(--fg-2); }
+/* The stats (or the phase words): 10.5px --fg-3, the prototype's #767D89 (Jonas 2026-10-27, supersedes Ruling V). On the signal
+   --live tint that is 4.38:1, below AA by his choice; story-a11y.ts scopes the axe exception to this element. */
+.d-voice-dock__where { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-meta); color: var(--fg-3); }
 .d-voice-dock[data-phase="paused"] .d-voice-dock__glyph { color: var(--warn); }
-.d-voice-dock__controls { display: flex; align-items: center; gap: 0.25rem; min-width: 0; justify-content: flex-end; }
-.d-voice-dock__leave:hover { color: var(--danger); }
+.d-voice-dock__controls { display: flex; flex: none; align-items: center; gap: 2px; }
+/* Leave: the --danger glyph; on hover the --danger fill with its dark ink (150ms). */
+.d-voice-dock .d-voice-dock__leave { color: var(--danger); }
+.d-voice-dock .d-voice-dock__leave:hover { color: var(--danger-ink); background: var(--danger); }
 /* MP5: line 2 is the link stats. Tabular numerals keep it from jittering every 2 s; poor and bad also colour it (the
    accessible text names the quality, so colour is never the only signal). It does not wrap. */
 .d-voice-dock__stats { font-variant-numeric: tabular-nums; white-space: nowrap; }

@@ -20,7 +20,7 @@ const dillaHost: HostConfig = {
 export default defineConfig({
   testDir: resolve(here, 'music'),
   globalSetup: resolve(here, 'web', 'support', 'host.ts'),
-  metadata: { dillaHost },
+  metadata: { dillaHost, prebuildBotRuntime: true }, // see playwright.web.config.ts
   fullyParallel: false,
   workers: 1,
   retries: 0,

@@ -8,93 +8,83 @@ function items(spy = vi.fn()): MessageToolbarProps['items'] {
   return [
     { id: 'react', label: 'react', onAction: () => spy('react') },
     { id: 'reply', label: 'reply', onAction: () => spy('reply') },
+    { id: 'thread', label: 'reply in thread', onAction: () => spy('thread') },
     { id: 'edit', label: 'edit', onAction: () => spy('edit') },
     { id: 'pin', label: 'pin', onAction: () => spy('pin') },
     { id: 'delete', label: 'delete', danger: true, onAction: () => spy('delete') },
   ];
 }
-const buttons = () => screen.getAllByRole('button');
+const bar = (p: Partial<MessageToolbarProps> = {}) => <MessageToolbar moreLabel="more actions" label="actions for this message" tabbable items={items()} {...p} />;
+const stops = () => Array.from(document.querySelectorAll<HTMLButtonElement>('.d-message-toolbar__btn'));
 
 describe('MessageToolbar', () => {
-  it('has a thread item as a toolbar button in arrow-key order', () => {
-    const spy = vi.fn();
-    const withThread: MessageToolbarProps['items'] = [
-      { id: 'react', label: 'react', onAction: () => spy('react') },
-      { id: 'reply', label: 'reply', onAction: () => spy('reply') },
-      { id: 'thread', label: 'reply in thread', onAction: () => spy('thread') },
-      { id: 'pin', label: 'pin', onAction: () => spy('pin') },
-    ];
-    render(<MessageToolbar label="actions for this message" tabbable items={withThread} />);
-    const b = buttons();
-    expect(b.map(x => x.getAttribute('data-action'))).toEqual(['react', 'reply', 'thread', 'pin']);
-    b[1].focus();
-    fireEvent.keyDown(b[1], { key: 'ArrowRight' });
-    expect(b[2]).toHaveFocus();
-    expect(b[2]).toHaveAccessibleName('reply in thread');
-    fireEvent.click(b[2]);
-    expect(spy).toHaveBeenCalledWith('thread');
+  it('is the prototype\'s icon toolbar: react, reply, thread, then "more" holding edit, pin and delete', async () => {
+    const user = userEvent.setup();
+    render(bar());
+    const toolbar = screen.getByRole('toolbar', { name: 'actions for this message' });
+    expect(toolbar).toHaveAttribute('aria-orientation', 'horizontal');
+    expect(stops().map(b => b.getAttribute('aria-label'))).toEqual(['react', 'reply', 'reply in thread', 'more actions']);
+    expect(stops().slice(0, 3).every(b => b.querySelector('svg') !== null && b.textContent === '')).toBe(true);
+    await user.click(screen.getByRole('button', { name: 'more actions' }));
+    expect(screen.getAllByRole('menuitem').map(m => m.textContent)).toEqual(['edit', 'pin', 'delete']);
+    expect(screen.getByRole('menuitem', { name: 'delete' })).toHaveAttribute('data-danger', 'true');
   });
 
-  it('is a toolbar named by its label, of buttons with visible labels in order', () => {
-    const { container } = render(<MessageToolbar label="actions for this message" tabbable items={items()} />);
-    const bar = screen.getByRole('toolbar', { name: 'actions for this message' });
-    expect(bar).toHaveClass('d-message-toolbar');
-    expect(bar).toHaveAttribute('aria-orientation', 'horizontal');
-    expect(buttons().map((b) => b.textContent)).toEqual(['react', 'reply', 'edit', 'pin', 'delete']);
-    expect(buttons().map((b) => b.getAttribute('data-action'))).toEqual(['react', 'reply', 'edit', 'pin', 'delete']);
-    expect(buttons()[4]).toHaveAttribute('data-variant', 'danger');
-    expect(buttons()[0]).toHaveAttribute('data-variant', 'ghost');
-    expect(container.querySelectorAll('[data-size="sm"]')).toHaveLength(0);
+  it('has no "more" button when every item has its own icon', () => {
+    render(bar({ items: items().slice(0, 2) }));
+    expect(screen.queryByRole('button', { name: 'more actions' })).toBeNull();
+    expect(stops()).toHaveLength(2);
   });
 
   it('is one tab stop when tabbable and none when not', () => {
-    const { rerender } = render(<MessageToolbar label="actions for this message" tabbable items={items()} />);
-    expect(buttons().map((b) => b.tabIndex)).toEqual([0, -1, -1, -1, -1]);
-    rerender(<MessageToolbar label="actions for this message" tabbable={false} items={items()} />);
-    expect(buttons().map((b) => b.tabIndex)).toEqual([-1, -1, -1, -1, -1]);
+    const { rerender } = render(bar());
+    expect(stops().map(b => b.tabIndex)).toEqual([0, -1, -1, -1]);
+    rerender(bar({ tabbable: false }));
+    expect(stops().map(b => b.tabIndex)).toEqual([-1, -1, -1, -1]);
   });
 
   it('moves focus with the arrows, wrapping, and with Home and End; the stop follows focus', () => {
-    render(<MessageToolbar label="actions for this message" tabbable items={items()} />);
-    const b = buttons();
+    render(bar());
+    const b = stops();
     b[0]!.focus();
     fireEvent.keyDown(b[0]!, { key: 'ArrowRight' });
     expect(b[1]).toHaveFocus();
     fireEvent.keyDown(b[1]!, { key: 'End' });
-    expect(b[4]).toHaveFocus();
-    fireEvent.keyDown(b[4]!, { key: 'ArrowRight' });
+    expect(b[3]).toHaveFocus();
+    fireEvent.keyDown(b[3]!, { key: 'ArrowRight' });
     expect(b[0]).toHaveFocus();
     fireEvent.keyDown(b[0]!, { key: 'ArrowLeft' });
-    expect(b[4]).toHaveFocus();
-    fireEvent.keyDown(b[4]!, { key: 'Home' });
-    expect(b[0]).toHaveFocus();
-    fireEvent.keyDown(b[0]!, { key: 'ArrowRight', shiftKey: true });
+    expect(b[3]).toHaveFocus();
+    fireEvent.keyDown(b[3]!, { key: 'Home' });
     expect(b[0]).toHaveFocus();
     fireEvent.keyDown(b[0]!, { key: 'ArrowRight' });
-    expect(buttons().map((x) => x.tabIndex)).toEqual([-1, 0, -1, -1, -1]);
+    expect(stops().map(x => x.tabIndex)).toEqual([-1, 0, -1, -1]);
   });
 
-  it('calls each action once on click, Enter and Space', async () => {
+  it('calls each action once: a button with itself as the anchor, a menu item with the toolbar', async () => {
     const user = userEvent.setup();
     const spy = vi.fn();
-    render(<MessageToolbar label="actions for this message" tabbable items={items(spy)} />);
+    const anchors: HTMLElement[] = [];
+    render(bar({ items: items(spy).map(i => ({ ...i, onAction: (a: HTMLElement) => { anchors.push(a); i.onAction(a); } })) }));
     await user.click(screen.getByRole('button', { name: 'reply' }));
-    screen.getByRole('button', { name: 'pin' }).focus();
+    expect(anchors[0]).toBe(screen.getByRole('button', { name: 'reply' }));
+    await user.click(screen.getByRole('button', { name: 'more actions' }));
+    await user.click(screen.getByRole('menuitem', { name: 'pin' }));
+    expect(anchors[1]).toBe(screen.getByRole('toolbar'));
+    screen.getByRole('button', { name: 'react' }).focus();
     await user.keyboard('{Enter}');
-    screen.getByRole('button', { name: 'delete' }).focus();
-    await user.keyboard(' ');
-    expect(spy.mock.calls.map((c) => c[0])).toEqual(['reply', 'pin', 'delete']);
+    expect(spy.mock.calls.map(c => c[0])).toEqual(['reply', 'pin', 'react']);
   });
 
   it('lets Escape bubble to the row', () => {
     const onKeyDown = vi.fn();
-    render(<div onKeyDown={(e) => onKeyDown(e.key)}><MessageToolbar label="actions for this message" tabbable items={items()} /></div>);
-    fireEvent.keyDown(buttons()[2]!, { key: 'Escape' });
+    render(<div onKeyDown={e => onKeyDown(e.key)}>{bar()}</div>);
+    fireEvent.keyDown(stops()[2]!, { key: 'Escape' });
     expect(onKeyDown).toHaveBeenCalledWith('Escape');
   });
 
   it('has no serious axe violations', async () => {
-    const { container } = render(<div className="d-root"><MessageToolbar label="actions for this message" tabbable items={items()} /></div>);
+    const { container } = render(<div className="d-root">{bar()}</div>);
     await expectNoAxeViolations(container);
   });
 });

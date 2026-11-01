@@ -72,8 +72,8 @@ func (d Deps) RedeemInvite(w http.ResponseWriter, r *http.Request) {
 // reference and no form, and one same-origin link into the web client: it is one
 // card a human reads before following that link or pasting the code into a
 // client, and anything more is a phishing surface an instance hands out to
-// strangers by construction. The colours are the Mesh tokens as literals
-// (packages/design-tokens/dist/tokens.css, pinned by TestLandingTokensMatchMesh).
+// strangers by construction. The colours are the Signal tokens as literals, dark
+// and light (packages/design-tokens/dist/tokens.css, pinned by TestLandingTokensMatchSignal).
 // The font is the web client's JetBrains Mono when dillad serves one (Deps.LandingFont,
 // R43; font-src 'self' is the only thing the CSP widens), else the system monospace.
 var landingPage = template.Must(template.New("invite").Parse(`<!doctype html>
@@ -86,8 +86,8 @@ var landingPage = template.Must(template.New("invite").Parse(`<!doctype html>
 <meta property="og:type" content="website">
 <style>
 {{if .Font}}@font-face{font-family:"JetBrains Mono";font-style:normal;font-weight:100 800;font-display:swap;src:url("{{.Font}}") format("woff2")}
-{{end}}:root{color-scheme:dark;--bg:#070809;--bg-2:#0C0D0F;--surface:#0C0D0F;--fg:#E8ECE8;--fg-2:#A0A6A0;--accent:#7CFF8E;--accent-ink:#06150A;--hairline:#1F2226}
-@media (prefers-color-scheme: light){:root{color-scheme:light;--bg:#F5F6F5;--bg-2:#ECEEEC;--surface:#FFFFFF;--fg:#14171A;--fg-2:#3F453F;--accent:#1B7334;--accent-ink:#FFFFFF;--hairline:#CBD0CB}}
+{{end}}:root{color-scheme:dark;--bg:#08090B;--bg-2:#0B0D10;--surface:#0D1014;--fg:#E4E8EE;--fg-2:#8C939E;--accent:#5AA8E6;--accent-ink:#03121E;--hairline:#1A1D23}
+@media (prefers-color-scheme: light){:root{color-scheme:light;--bg:#F5F6F5;--bg-2:#ECEEEC;--surface:#FFFFFF;--fg:#14171A;--fg-2:#3F453F;--accent:#005799;--accent-ink:#FFFFFF;--hairline:#CBD0CB}}
 *{box-sizing:border-box}
 body{margin:0;min-height:100vh;background:var(--bg);color:var(--fg);font-family:{{if .Font}}"JetBrains Mono",{{end}}ui-monospace,"SFMono-Regular",Menlo,Consolas,"Liberation Mono",monospace;font-size:13.5px;line-height:1.5}
 .bar{display:flex;align-items:center;gap:7px;height:2rem;padding:0 12px;background:var(--bg-2);border-bottom:1px solid var(--hairline);font-weight:700;letter-spacing:.14em}
@@ -111,7 +111,7 @@ h1{margin:0;font-size:1.375rem;line-height:1.3;font-weight:700;letter-spacing:.0
 <p class="on">on {{.Instance}}</p>{{else}}<h1>You have been invited to {{.Instance}}</h1>{{end}}
 <p class="label">Invite code</p>
 <code class="code">{{.Code}}</code>
-<p class="meta"><time datetime="{{.ExpiresAt}}">{{.Expires}}</time> · {{.Uses}}</p>
+<p class="meta">{{if .ExpiresAt}}<time datetime="{{.ExpiresAt}}">{{.Expires}}</time>{{else}}{{.Expires}}{{end}} · {{.Uses}}</p>
 <a class="open" href="/welcome?invite={{.Code}}">Open dilla in this browser</a>
 <p class="note">Or paste the code into a dilla client for {{.Instance}}. This page never asks for a password.</p>
 </main>
@@ -124,7 +124,7 @@ type landingData struct {
 	Code        string
 	Title       string
 	Description string
-	ExpiresAt   string // the ISO instant, for <time datetime>
+	ExpiresAt   string // the ISO instant, for <time datetime>; empty for an invite that never expires
 	Expires     string // "Expires in 23 hours" or "Expires on 2 January 2006 (UTC)"
 	Uses        string // "1 use left" or "2 uses left"
 	Font        string // the same-origin JetBrains Mono woff2, or "" for the system stack (R43)
@@ -202,7 +202,7 @@ func (d Deps) InviteLanding(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	now := d.Clock.Now().Unix()
-	if !found || invite.RevokedAt != nil || invite.ExpiresAt <= now || invite.UsedCount >= invite.MaxUses {
+	if !found || invite.RevokedAt != nil || invite.ExpiresAt <= now || invite.Exhausted() {
 		d.landingRefusal(w, r, server.Errorf(server.CodeInviteInvalid,
 			"the invite is spent, expired, revoked or unknown"))
 		return
@@ -231,7 +231,8 @@ func (d Deps) InviteLanding(w http.ResponseWriter, r *http.Request) {
 		// [instance, community_id|null, expires, community_name|null]. The name
 		// is element 3, appended, so a client that reads the first three keeps
 		// reading them.
-		d.write(w, r, http.StatusOK, []any{d.Domain, communityID, uint64(invite.ExpiresAt), communityName}) //nolint:gosec // G115: a unix second this server wrote, never negative
+		// expires is 0 for an invite that never expires (Task 10c).
+		d.write(w, r, http.StatusOK, []any{d.Domain, communityID, inviteWireExpiry(invite), communityName})
 		return
 	}
 	d.generation(w)
@@ -244,15 +245,22 @@ func (d Deps) InviteLanding(w http.ResponseWriter, r *http.Request) {
 		title = "Invitation to " + community + " on " + d.Domain
 		description = "Join " + community + " on " + d.Domain + ", a dilla server. Open the link to accept."
 	}
-	uses := landingCount(int(invite.MaxUses-invite.UsedCount), "use", "uses") + " left" //nolint:gosec // G115: a use count this server wrote, small and non-negative
+	uses := "No use limit"
+	if invite.UnlimitedUses == 0 {
+		uses = landingCount(int(invite.MaxUses-invite.UsedCount), "use", "uses") + " left" //nolint:gosec // G115: a use count this server wrote, small and non-negative
+	}
+	expiresAt, expires := "", "Never expires"
+	if !invite.NeverExpires() {
+		expiresAt, expires = time.Unix(invite.ExpiresAt, 0).UTC().Format(time.RFC3339), landingExpiry(invite.ExpiresAt, now)
+	}
 	if err := landingPage.Execute(w, landingData{
 		Instance:    d.Domain,
 		Community:   community,
 		Code:        r.PathValue("code"),
 		Title:       title,
 		Description: description,
-		ExpiresAt:   time.Unix(invite.ExpiresAt, 0).UTC().Format(time.RFC3339),
-		Expires:     landingExpiry(invite.ExpiresAt, now),
+		ExpiresAt:   expiresAt,
+		Expires:     expires,
 		Uses:        uses,
 		Font:        d.LandingFont,
 	}); err != nil {
@@ -363,20 +371,38 @@ func (h *Invites) create(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	if req.MaxUses < 1 || req.MaxUses > maxInviteUses {
+	// max_uses 0 is "any number of uses" and ttl_seconds 0 is "never expires" (Task 10c); every
+	// other value keeps the finite bounds.
+	unlimited, never := req.MaxUses == 0, req.TTLSeconds == 0
+	if !unlimited && req.MaxUses > maxInviteUses {
 		server.WriteError(w, server.Errorf(server.CodeInvalidRequest,
-			"max_uses must be 1..%d", maxInviteUses))
+			"max_uses must be 0 (unlimited) or 1..%d", maxInviteUses))
 		return
 	}
-	if req.TTLSeconds < 1 || req.TTLSeconds > maxInviteTTL {
+	if !never && req.TTLSeconds > maxInviteTTL {
 		server.WriteError(w, server.Errorf(server.CodeInvalidRequest,
-			"ttl_seconds must be 1..%d", maxInviteTTL))
+			"ttl_seconds must be 0 (never) or 1..%d", maxInviteTTL))
 		return
 	}
 	grants, err := flagByte("grants_admin", req.GrantsAdmin)
 	if err != nil {
 		server.WriteError(w, err)
 		return
+	}
+	if unlimited || never {
+		// An open-ended link is a standing way in that only a manager can take back, so making
+		// one needs manage_community on top of create_invite (owners and administrators hold
+		// it). An instance-admin grant is never open-ended: it stays finite and short.
+		if grants == 1 {
+			server.WriteError(w, server.Errorf(server.CodeInvalidRequest,
+				"a grants_admin invite needs a finite expiry and use count"))
+			return
+		}
+		if !m.snap.Resolve(m.session.UserID).Has(PermManageCommunity) {
+			server.WriteError(w, server.Errorf(server.CodeForbidden,
+				"never-expiring or unlimited invites need manage_community"))
+			return
+		}
 	}
 	// grants_admin is an instance-level power: whoever redeems the invite at
 	// registration becomes an instance admin. Only an instance admin may hand it
@@ -402,7 +428,13 @@ func (h *Invites) create(w http.ResponseWriter, r *http.Request) {
 	row := store.InviteRow{
 		ID: id.New(), CodeHash: hash, CommunityID: &m.community, CreatedBy: &m.session.UserID,
 		GrantsAdmin: grants, MaxUses: req.MaxUses, UsedCount: 0,
-		Created: now, ExpiresAt: now + int64(req.TTLSeconds),
+		Created: now, ExpiresAt: now + int64(req.TTLSeconds), //nolint:gosec // G115: bounded by maxInviteTTL above
+	}
+	if unlimited {
+		row.MaxUses, row.UnlimitedUses = maxInviteUses, 1
+	}
+	if never {
+		row.ExpiresAt = store.InviteNeverExpires
 	}
 	if err := h.repo.Tx(r.Context(), func(tx store.Repository) error {
 		if err := tx.CreateInvite(r.Context(), row); err != nil {
@@ -419,7 +451,7 @@ func (h *Invites) create(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := server.EncodeBody(w, http.StatusCreated, createInviteResp{
 		InviteID: row.ID, Code: plain, URL: h.baseURL + "/i/" + plain,
-		Expires: uint64(row.ExpiresAt), //nolint:gosec // G115: now plus a bounded ttl, positive
+		Expires: inviteWireExpiry(row),
 	}); err != nil {
 		h.log.Error("encode invite", "err", err)
 	}
@@ -445,15 +477,31 @@ func (h *Invites) list(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, inviteResp{
 			InviteID: i.ID, CommunityID: i.CommunityID, CreatedBy: i.CreatedBy,
-			GrantsAdmin: uint64(i.GrantsAdmin), MaxUses: i.MaxUses, UsedCount: i.UsedCount,
-			Created:   uint64(i.Created),   //nolint:gosec // G115: a unix second this server wrote
-			ExpiresAt: uint64(i.ExpiresAt), //nolint:gosec // G115: a unix second this server wrote
+			GrantsAdmin: uint64(i.GrantsAdmin), MaxUses: inviteWireUses(i), UsedCount: i.UsedCount,
+			Created:   uint64(i.Created), //nolint:gosec // G115: a unix second this server wrote
+			ExpiresAt: inviteWireExpiry(i),
 			RevokedAt: revoked,
 		})
 	}
 	if err := server.EncodeBody(w, http.StatusOK, out); err != nil {
 		h.log.Error("encode invites", "err", err)
 	}
+}
+
+// inviteWireExpiry is an invite's expiry on the wire: 0 for one that never expires.
+func inviteWireExpiry(i store.InviteRow) uint64 {
+	if i.NeverExpires() {
+		return 0
+	}
+	return uint64(i.ExpiresAt) //nolint:gosec // G115: a unix second this server wrote, positive
+}
+
+// inviteWireUses is an invite's max_uses on the wire: 0 for any number of uses.
+func inviteWireUses(i store.InviteRow) uint64 {
+	if i.UnlimitedUses == 1 {
+		return 0
+	}
+	return i.MaxUses
 }
 
 // revoke kills an invite: the caller must be a member of the invite's community

@@ -9,15 +9,24 @@ import { expectNoAxeViolations } from '../test/setup.ts';
 const css = readFileSync(`${process.cwd()}/src/ChannelHeader/ChannelHeader.css`, 'utf8');
 
 describe('ChannelHeader', () => {
-  it('is one 48 bar row: it never wraps, the name keeps 8rem, the actions never shrink (CSS pins, B1, C1)', () => {
+  it('is one 44 bar row (Signal §5.5): it never wraps, the name keeps 8rem, the actions never shrink (CSS pins, B1, C1)', () => {
     expect(css).not.toMatch(/^\.d-channel-header \{[^}]*flex-wrap/m);
     expect(css).toMatch(/\.d-channel-header \{[^}]*[^-]height: var\(--bar-h\)/m);
     expect(css).not.toContain('--channel-header-h');
     expect(css).not.toContain('data-main-narrow');
-    expect(css).toMatch(/^\.d-channel-header__title \{[^}]*min-width: 8rem/m);
+    expect(css).toMatch(/^\.d-channel-header__title \{[^}]*min-width: min\(8rem, 100%\); min-width: calc-size\(max-content, min\(size, 8rem\)\)/m);
     expect(css).toMatch(/^\.d-channel-header__name \{[^}]*text-overflow: ellipsis/m);
     expect(css).toMatch(/^\.d-channel-header__actions \{[^}]*flex-shrink: 0/m);
+    expect(css).toMatch(/^\.d-channel-header \{[^}]*padding: 0 10px 0 20px;[^}]*/m);
+    expect(css).toMatch(/^\.d-channel-header__topic \{[^}]*font-size: var\(--text-ui\);[^}]*color: var\(--fg-2\);/m);
+    expect(css).toMatch(/\[aria-pressed="true"\] \{ color: var\(--accent\); background: var\(--accent-soft\);/);
     expect(css).toMatch(/^\.d-channel-header \{[^}]*container: d-channel-header \/ inline-size/m);
+  });
+
+  it('Ruling U: with overflow.always the "more" menu shows at every width (data-overflow="always", CSS pin)', () => {
+    const { container } = render(<ChannelHeader name="general" overflow={{ label: 'more', items: [{ id: 'pins', label: 'pinned messages' }], onSelect: () => {}, always: true }} />);
+    expect(container.querySelector('.d-channel-header')).toHaveAttribute('data-overflow', 'always');
+    expect(css).toMatch(/\.d-channel-header\[data-overflow="always"\] \.d-channel-header__more \{ display: inline-flex; \}/);
   });
 
   it('folds the foldable actions into the "more" menu below 36rem of header width (CSS pin, R27)', () => {
@@ -91,18 +100,16 @@ describe('ChannelHeader', () => {
     expect(container.querySelectorAll('a, button, input, textarea, select, [tabindex]')).toHaveLength(0);
   });
 
-  it('heads a direct message with @ in place of #, named by the name alone', () => {
+  it('heads a channel with the hash glyph and a direct message with the at-sign, named by the name alone (no brackets)', () => {
     const { container, rerender } = render(<ChannelHeader name="ada" kind="dm" />);
     expect(screen.getByRole('heading', { level: 2, name: 'ada' })).toBeInTheDocument();
-    const brackets = () => [...container.querySelectorAll('.d-channel-header__bracket')];
-    expect(brackets().map(b => b.textContent)).toEqual(['[ @ ', ' ]']);
-    expect(brackets().map(b => b.getAttribute('aria-hidden'))).toEqual(['true', 'true']);
-    expect(container.querySelector('.d-channel-header__title')?.textContent).toBe('[ @ ada ]');
-    expect(container.textContent).not.toContain('#');
-    rerender(<ChannelHeader name="general" />);
-    expect(brackets().map(b => b.textContent)).toEqual(['[ # ', ' ]']);
+    expect(container.querySelector('.d-channel-header__glyph [data-icon="at-sign"]')).not.toBeNull();
+    expect(container.querySelector('.d-channel-header__glyph')).toHaveAttribute('aria-hidden', 'true');
+    expect(container.querySelector('.d-channel-header__title')?.textContent).toBe('ada');
+    expect(container.querySelector('.d-channel-header__bracket')).toBeNull();
     rerender(<ChannelHeader name="general" kind="channel" />);
-    expect(container.querySelector('.d-channel-header__title')?.textContent).toBe('[ # general ]');
+    expect(container.querySelector('.d-channel-header__glyph [data-icon="hash"]')).not.toBeNull();
+    expect(container.querySelector('.d-channel-header__title')?.textContent).toBe('general');
   });
 
   it('heads an announcement channel with the megaphone in place of #, named by the name alone', () => {
@@ -114,7 +121,7 @@ describe('ChannelHeader', () => {
     expect(glyph.parentElement).toBe(name.parentElement);
     expect(name).not.toContainElement(glyph as HTMLElement);
     expect(container.textContent).not.toContain('#');
-    expect(container.querySelector('.d-channel-header__title')?.textContent).toBe('[ news ]');
+    expect(container.querySelector('.d-channel-header__title')?.textContent).toBe('news');
   });
 
   it('heads a voice channel with the volume glyph in place of #, named by the name alone', () => {
@@ -122,7 +129,7 @@ describe('ChannelHeader', () => {
     expect(screen.getByRole('heading', { level: 2, name: 'harbour' })).toBeInTheDocument();
     expect(container.querySelector('[data-icon="volume-2"]')?.closest('.d-channel-header__glyph')).not.toBeNull();
     expect(container.textContent).not.toContain('#');
-    expect(container.querySelector('.d-channel-header__title')?.textContent).toBe('[ harbour ]');
+    expect(container.querySelector('.d-channel-header__title')?.textContent).toBe('harbour');
   });
 
   it('has no serious axe violations', async () => {
@@ -138,27 +145,30 @@ describe('ChannelHeader', () => {
   });
 
   describe('phone', () => {
-    it('renders a PhoneHeader with the back button, the bracketed channel heading and the menu', async () => {
+    it('renders a PhoneHeader with the back button, the glyph and channel heading and the menu', async () => {
       const onBack = vi.fn();
       const { container } = render(<ChannelHeader name="general" phone={{ backLabel: 'back to channels', onBack, menu: <button type="button">more</button> }} />);
       expect(container.querySelector('.d-phone-header')).not.toBeNull();
       expect(container.querySelector('.d-channel-header')).toBeNull();
       expect(container.querySelector('.d-channel-header__actions')).toBeNull();
       const heading = screen.getByRole('heading', { level: 2, name: 'general' });
-      expect(heading.textContent).toBe('[ # general ]');
+      expect(heading.textContent).toBe('general');
+      expect(heading.querySelector('[data-icon="hash"]')).not.toBeNull();
       expect(screen.getByRole('button', { name: 'more' })).toBeInTheDocument();
       await userEvent.setup().click(screen.getByRole('button', { name: 'back to channels' }));
       expect(onBack).toHaveBeenCalledTimes(1);
     });
     it('uses the megaphone for an announcement channel', () => {
       const { container } = render(<ChannelHeader kind="announcement" name="news" phone={{ backLabel: 'back', onBack: () => {} }} />);
-      expect(screen.getByRole('heading', { level: 2, name: 'news' }).textContent).toBe('[ news ]');
+      expect(screen.getByRole('heading', { level: 2, name: 'news' }).textContent).toBe('news');
       expect(container.querySelector('[data-icon="megaphone"]')).not.toBeNull();
       expect(container.textContent).not.toContain('#');
     });
-    it('uses the @ bracket for a direct message', () => {
+    it('uses the at-sign for a direct message', () => {
       render(<ChannelHeader kind="dm" name="ada" phone={{ backLabel: 'back', onBack: () => {} }} />);
-      expect(screen.getByRole('heading', { level: 2, name: 'ada' }).textContent).toBe('[ @ ada ]');
+      const h = screen.getByRole('heading', { level: 2, name: 'ada' });
+      expect(h.textContent).toBe('ada');
+      expect(h.querySelector('[data-icon="at-sign"]')).not.toBeNull();
     });
     it('keeps the readable cue next to the title on a phone', () => {
       const { container } = render(<ChannelHeader name="lfg" readable readableLabel="readable by dilla.thim.dev" phone={{ backLabel: 'back', onBack: () => {} }} />);

@@ -144,3 +144,44 @@ it('calls a contact unlisted while a leaf of theirs is refused as revoked', asyn
   expect(released(w)).toEqual([]);
   expect(w.last<TrustSummary[]>('trust')?.find((t) => t.userId === toHex(STRANGER))).toMatchObject({ unlisted: true });
 });
+
+// Task S1 fix round 1 (I1): a wire-4 head's attestation reaches the core before each history ingest, every pass; an
+// unchanged attestation leaves the core's trust generation alone (the core's test
+// account_kind_ingest_verifies_before_it_stores_and_sets_seen_only_then pins that), so a reconnect pass
+// with nothing new refreshes no timeline.
+it('runs the history ingest after an attestation the core refuses (fix round 2: a refusal is a withheld attestation)', async () => {
+  const w = world();
+  await toReady(w);
+  const attestation = encode([1, new Uint8Array(16).fill(3), 0, new Uint8Array(64).fill(4)]);
+  w.routes.getDeviceList.mockImplementation(() => Promise.resolve({ version: 2n, blob: new Uint8Array([2]),
+    raw: encode([...row(2), attestation]) }));
+  w.routes.getDeviceListHistory.mockImplementation(() => Promise.resolve({ raw: encode([row(1), row(2)]), count: 2, lastVersion: 2n }));
+  core(w);
+  w.core.accountKindIngest.mockImplementation(() => { throw new CoreError('E_CORE_INPUT', 'malformed'); });
+  pending(w, [0]);
+  await pass(w, 1311);
+  expect(w.core.accountKindIngest).toHaveBeenCalledTimes(1);
+  expect(w.core.deviceListIngest).toHaveBeenCalledTimes(1);
+  expect(released(w)).toEqual([0]);
+});
+
+it('hands the attestation to the core before the history ingest', async () => {
+  const w = world();
+  await toReady(w);
+  const attestation = encode([1, new Uint8Array(16).fill(3), 0, new Uint8Array(64).fill(4)]);
+  w.routes.getDeviceList.mockImplementation(() => Promise.resolve({ version: 2n, blob: new Uint8Array([2]),
+    raw: encode([...row(2), attestation]) }));
+  w.routes.getDeviceListHistory.mockImplementation(() => Promise.resolve({ raw: encode([row(1), row(2)]), count: 2, lastVersion: 2n }));
+  core(w);
+  pending(w, [0]);
+  for (const id of [1301]) {
+    const before = w.core.accountKindIngest.mock.calls.length;
+    await pass(w, id);
+    expect(w.core.accountKindIngest.mock.calls.length).toBe(before + 1);
+    const [user, given] = w.core.accountKindIngest.mock.calls.at(-1) as [Uint8Array, Uint8Array];
+    expect(toHex(user)).toBe(toHex(STRANGER));
+    expect(given).toEqual(attestation);
+    const ingestOrder = w.core.deviceListIngest.mock.invocationCallOrder.at(-1) ?? 0;
+    expect(w.core.accountKindIngest.mock.invocationCallOrder.at(-1)).toBeLessThan(ingestOrder);
+  }
+});

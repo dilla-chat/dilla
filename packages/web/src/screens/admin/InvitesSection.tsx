@@ -1,35 +1,49 @@
+// Flow 08 / Signal task 10c: Server settings → Invites as the prototype draws it (README §5.9) — expiry and use limits as
+// segmented controls, the link shown once with Copy, then the live links with Revoke.
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
-import { Button, InviteLink, ManageList, SettingsRow } from '@dilla/ui';
+import { Button, InvitePanel, type InvitePanelRow } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
 import { errorOf } from '../../core/errors.ts';
 import { useSlice } from '../../core/use-slice.ts';
 import { t, type StringKey } from '../../strings/index.ts';
-import { messageTime } from '../shell-model.ts';
 import { forbidden, shownName, type SectionProps } from './shared.ts';
 
-/** "Expires after" and "Max uses" (flow 08): the instance accepts at most 30 days and 1000 uses. */
-export const TTL_OPTIONS: readonly { seconds: number; key: StringKey }[] = [
-  { seconds: 1800, key: 'admin.invites.ttl.halfHour' }, { seconds: 3600, key: 'admin.invites.ttl.hour' },
-  { seconds: 21_600, key: 'admin.invites.ttl.sixHours' }, { seconds: 43_200, key: 'admin.invites.ttl.halfDay' },
-  { seconds: 86_400, key: 'admin.invites.ttl.day' }, { seconds: 604_800, key: 'admin.invites.ttl.week' },
-  { seconds: 2_592_000, key: 'admin.invites.ttl.month' },
+/**
+ * "Expires after" and "Uses" (prototype). 0 is "never" and "∞": the instance asks Manage server for either (Task 10c), so
+ * they are offered only to someone who holds it; everyone else sees and makes only the finite links.
+ */
+export const TTL_OPTIONS: readonly { seconds: number; key: StringKey; nameKey: StringKey }[] = [
+  { seconds: 3600, key: 'serverSettings.invites.ttl.hour', nameKey: 'serverSettings.invites.ttl.hour' },
+  { seconds: 86_400, key: 'serverSettings.invites.ttl.day', nameKey: 'serverSettings.invites.ttl.day' },
+  { seconds: 604_800, key: 'serverSettings.invites.ttl.week', nameKey: 'serverSettings.invites.ttl.week' },
+  { seconds: 0, key: 'serverSettings.invites.ttl.never', nameKey: 'serverSettings.invites.ttl.never' },
 ];
-export const USES_OPTIONS: readonly number[] = [1, 5, 10, 25, 50, 100, 1000];
+export const USES_OPTIONS: readonly number[] = [1, 10, 0];
 export const DEFAULT_TTL_S = 604_800;
 export const DEFAULT_USES = 10;
-const usesLabel = (n: number): string => (n === 1 ? t('admin.invites.uses.one') : t('admin.invites.uses.n', { n }));
+const usesLabel = (n: number): string => (n === 0 ? t('serverSettings.invites.uses.unlimited') : String(n));
 
-interface Made { state: 'creating' | 'ready' | 'failed'; url: string; status: string; error: string | null; attempt: number; limits: string }
+interface Made { url: string; note: string }
 
 /** Copies `text`; true when the browser let it. */
 async function copied(text: string): Promise<boolean> {
   try { await navigator.clipboard.writeText(text); return true; } catch { return false; }
 }
 
+/** "in 5 days", "in 3 hours", "in 12 minutes": the prototype's expiry, from now. */
+function inTime(expires: number, nowMs: number): string {
+  const left = Math.max(0, expires - Math.floor(nowMs / 1000));
+  const days = Math.floor(left / 86_400);
+  if (days >= 1) return t(days === 1 ? 'serverSettings.invites.in.day' : 'serverSettings.invites.in.days', { n: days });
+  const hours = Math.floor(left / 3600);
+  if (hours >= 1) return t(hours === 1 ? 'serverSettings.invites.in.hour' : 'serverSettings.invites.in.hours', { n: hours });
+  return t('serverSettings.invites.in.minutes', { n: Math.max(1, Math.floor(left / 60)) });
+}
+
 /**
- * Invites tab: make a link with an expiry and a use limit (shown by the existing InviteLink, once: the instance keeps only a
- * fingerprint, so a link cannot be shown again) and the live links with a revoke each. The list is read when the tab opens
- * and again after a make or a revoke.
+ * Invites tab: make a link with an expiry and a use limit (shown once: the instance keeps only a fingerprint, so a link
+ * cannot be shown again; Copy copies it and files it under the live links) and the live links with a revoke each. The
+ * list is read when the tab opens and again after a make or a revoke.
  */
 export function InvitesSection({ communityId, serverName, announce }: SectionProps): React.JSX.Element {
   const client = useCore();
@@ -38,65 +52,67 @@ export function InvitesSection({ communityId, serverName, announce }: SectionPro
   const members = useSlice(`members:${communityId}`);
   const access = useSlice(`permissions:${communityId}`);
   const selfId = useSlice('account')?.user?.id ?? null;
-  const [ttl, setTtl] = useState(String(DEFAULT_TTL_S));
-  const [uses, setUses] = useState(String(DEFAULT_USES));
+  const manager = access?.manageCommunity === true;
+  const [ttl, setTtl] = useState(DEFAULT_TTL_S);
+  const [uses, setUses] = useState(DEFAULT_USES);
   const [made, setMade] = useState<Made | null>(null);
+  const [making, setMaking] = useState(false);
+  const [message, setMessage] = useState<{ text: string; alert: boolean; n: number } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [revokeError, setRevokeError] = useState<{ message: string; n: number } | null>(null);
   const revoking = useRef(false);
-  const making = useRef(0);
-  const inflight = useRef(false);
   const headingRef = useRef<HTMLHeadingElement>(null);
+  const say = (text: string, alert: boolean) => setMessage(m => ({ text, alert, n: (m?.n ?? 0) + 1 }));
 
   const load = useCallback(() => {
     setLoadError(null);
     client.call({ m: 'loadInvites', communityId }).catch((e: unknown) => setLoadError(t('admin.invites.error.load', { code: errorOf(e).code })));
   }, [client, communityId]);
   useEffect(load, [load]);
+  // A choice someone without Manage server cannot make falls back to the default.
+  useEffect(() => { if (!manager) { setTtl(v => (v === 0 ? DEFAULT_TTL_S : v)); setUses(v => (v === 0 ? DEFAULT_USES : v)); } }, [manager]);
 
   const make = () => {
-    if (inflight.current) return;
-    inflight.current = true;
-    const ttlSeconds = Number(ttl);
-    const maxUses = Number(uses);
-    const ttlLabel = t(TTL_OPTIONS.find(o => o.seconds === ttlSeconds)?.key ?? 'admin.invites.ttl.week');
-    const limits = `${t('admin.invites.expires')}: ${ttlLabel}. ${t('admin.invites.uses')}: ${usesLabel(maxUses)}. ${t('admin.invites.codeHidden')}`;
-    const mine = ++making.current;
-    setMade(m => ({ state: 'creating', url: '', status: '', error: null, attempt: m?.attempt ?? 0, limits }));
-    void (async () => {
-      try {
-        const value = await client.call({ m: 'createInvite', communityId, maxUses, ttlSeconds })
-          .finally(() => { if (making.current === mine) inflight.current = false; });
-        const url = typeof value === 'object' && value !== null ? (value as Record<string, unknown>).url : undefined;
-        if (typeof url !== 'string' || url === '') throw Object.assign(new Error('E_BAD_RESULT'), { code: 'E_BAD_RESULT' });
-        if (making.current !== mine) return;
-        setMade(m => ({ state: 'ready', url, status: '', error: null, attempt: m?.attempt ?? 0, limits }));
-        load();
-        const ok = await copied(url);
-        if (making.current === mine) setMade(m => (m === null ? m : { ...m, status: t(ok ? 'invite.copied' : 'invite.blocked') }));
-      } catch (e) {
-        if (making.current !== mine) return;
-        const err = errorOf(e);
-        setMade(m => ({ state: 'failed', url: '', status: '', limits,
-          error: forbidden(err) ? t('invite.error.forbidden') : t('invite.error.other', { code: err.code }), attempt: (m?.attempt ?? 0) + 1 }));
-      }
-    })();
+    if (making) return;
+    setMaking(true);
+    setMessage(null);
+    const ttlSeconds = ttl, maxUses = uses;
+    const ttlName = t(TTL_OPTIONS.find(o => o.seconds === ttlSeconds)?.nameKey ?? 'serverSettings.invites.ttl.week');
+    const note = t('serverSettings.invites.note', {
+      uses: maxUses === 0 ? t('serverSettings.invites.note.any') : maxUses === 1 ? t('serverSettings.invites.note.once') : t('serverSettings.invites.note.times', { n: maxUses }),
+      expires: ttlSeconds === 0 ? t('serverSettings.invites.note.never') : t('serverSettings.invites.note.in', { ttl: ttlName }),
+    });
+    client.call({ m: 'createInvite', communityId, maxUses, ttlSeconds }).then(value => {
+      const url = typeof value === 'object' && value !== null ? (value as Record<string, unknown>).url : undefined;
+      if (typeof url !== 'string' || url === '') throw Object.assign(new Error('E_BAD_RESULT'), { code: 'E_BAD_RESULT' });
+      setMade({ url, note });
+      load();
+    }).catch((e: unknown) => {
+      const err = errorOf(e);
+      say(forbidden(err) ? t('invite.error.forbidden') : t('invite.error.other', { code: err.code }), true);
+    }).finally(() => setMaking(false));
   };
-  const closeMade = () => { making.current += 1; inflight.current = false; setMade(null); };
+  const copy = () => {
+    if (made === null) return;
+    void copied(made.url).then(ok => {
+      if (!ok) { say(t('invite.blocked'), false); return; }
+      announce(t('serverSettings.invites.copied'));
+      setMade(null);
+    });
+  };
 
   const revoke = (id: string) => {
     const row = invites?.find(i => i.id === id);
     if (row === undefined || revoking.current) return;
     revoking.current = true;
     setBusyId(id);
-    setRevokeError(null);
+    setMessage(null);
     client.call({ m: 'revokeInvite', communityId, inviteId: id }).then(() => {
       announce(t('admin.invites.revoked'));
       headingRef.current?.focus();
     }).catch((e: unknown) => {
       const err = errorOf(e);
-      setRevokeError(r => ({ message: forbidden(err) ? t('admin.invites.error.forbidden') : t('admin.invites.error.other', { code: err.code }), n: (r?.n ?? 0) + 1 }));
+      say(forbidden(err) ? t('admin.invites.error.forbidden') : t('admin.invites.error.other', { code: err.code }), true);
     }).finally(() => { revoking.current = false; setBusyId(null); });
   };
 
@@ -107,52 +123,38 @@ export function InvitesSection({ communityId, serverName, announce }: SectionPro
     return m === undefined ? t('admin.member.former') : shownName(m);
   };
   const now = Date.now();
+  const host = (() => { try { return new URL(made?.url ?? window.location.href).host; } catch { return window.location.host; } })();
   // Until the members are read a maker cannot be named, so no row is listed rather than naming one wrongly.
-  const rows = (members === undefined ? [] : invites ?? []).map(i => {
+  const rows: InvitePanelRow[] = (members === undefined ? [] : invites ?? []).map(i => {
     const name = nameOf(i.createdBy, members ?? []);
-    const date = messageTime(i.expires, now);
+    const date = i.expires === 0 ? t('serverSettings.invites.ttl.never') : inTime(i.expires, now);
     // Final fix M1: revoke is offered on a link this account made, or to someone who manages the server (the instance's rule).
-    const mayRevoke = (selfId !== null && i.createdBy === selfId) || access?.manageCommunity === true;
-    return { id: i.id, title: t('admin.invites.row', { name, used: i.uses, max: i.maxUses, date }), detail: [] as string[],
-      action: mayRevoke ? { label: t('admin.invites.revoke'), ariaLabel: t('admin.invites.revokeLabel', { name, date }) } : null };
+    const mayRevoke = (selfId !== null && i.createdBy === selfId) || manager;
+    return { id: i.id, code: t('serverSettings.invites.code', { host }),
+      uses: t('serverSettings.invites.uses.row', { used: i.uses, max: i.maxUses === 0 ? t('serverSettings.invites.uses.unlimited') : i.maxUses }),
+      expires: i.expires === 0 ? t('serverSettings.invites.expires.never') : t('serverSettings.invites.expires.row', { date }),
+      ...(mayRevoke ? { revokeLabel: t('serverSettings.invites.revokeLabel', { name, date }) } : {}) };
   });
+  const ttlOptions = TTL_OPTIONS.filter(o => o.seconds !== 0 || manager).map(o => ({ value: String(o.seconds), label: t(o.key) }));
+  const useOptions = USES_OPTIONS.filter(n => n !== 0 || manager).map(n => ({ value: String(n), label: usesLabel(n) }));
 
   return (
-    <section className="dw-settings-section" aria-labelledby={`${base}-title`}>
+    <section className="dw-settings-section" data-measure="full" aria-labelledby={`${base}-title`}>
       <h2 id={`${base}-title`} ref={headingRef} tabIndex={-1}>{t('admin.invites.title')}</h2>
-      <h3>{t('admin.invites.new')}</h3>
-      <form className="dw-admin-form" onSubmit={e => { e.preventDefault(); make(); }}>
-        <SettingsRow id={`${base}-expires`} label={t('admin.invites.expires')}>
-          <select className="d-select__input" aria-label={t('admin.invites.expires')} value={ttl} onChange={e => setTtl(e.currentTarget.value)}>
-            {TTL_OPTIONS.map(o => <option key={o.seconds} value={String(o.seconds)}>{t(o.key)}</option>)}
-          </select>
-        </SettingsRow>
-        <SettingsRow id={`${base}-uses`} label={t('admin.invites.uses')} hint={t('admin.invites.limitsNote')}>
-          <select className="d-select__input" aria-label={t('admin.invites.uses')} value={uses} onChange={e => setUses(e.currentTarget.value)}>
-            {USES_OPTIONS.map(n => <option key={n} value={String(n)}>{usesLabel(n)}</option>)}
-          </select>
-        </SettingsRow>
-        <div className="dw-settings-actions">
-          <Button type="submit" variant="accent" aria-disabled={made?.state === 'creating' || undefined}>{t('admin.invites.create')}</Button>
-        </div>
-      </form>
-      <p>{t('admin.invites.codeHidden')}</p>
+      <p>{t('serverSettings.invites.body', { server: serverName })}</p>
       {loadError !== null ? (
         <div role="alert" className="dw-admin-error">
           <p>{loadError}</p>
           <Button onClick={load}>{t('invite.retry')}</Button>
         </div>
       ) : null}
-      {revokeError !== null ? <p key={revokeError.n} role="alert" className="dw-admin-error">{revokeError.message}</p> : null}
-      {invites !== undefined && members !== undefined ? (
-        <ManageList label={t('admin.invites.title')} rows={rows} emptyLabel={t('admin.invites.empty')} busyId={busyId} onAction={revoke} />
-      ) : null}
-      <InviteLink open={made !== null} state={made?.state ?? 'creating'} url={made?.url ?? ''} status={made?.status ?? ''}
-        limits={made?.limits ?? ''} error={made?.error ?? null} attempt={made?.attempt ?? 0}
-        labels={{ title: t('invite.title', { server: serverName }), creating: t('admin.invites.creating'), link: t('invite.link'),
-          copy: t('invite.copy'), close: t('admin.cancel'), retry: t('invite.retry') }}
-        onCopy={() => { const url = made?.url ?? ''; void copied(url).then(ok => setMade(m => (m === null ? m : { ...m, status: t(ok ? 'invite.copied' : 'invite.blocked') }))); }}
-        onRetry={make} onClose={closeMade} />
+      <InvitePanel
+        expiry={{ label: t('serverSettings.invites.expires'), options: ttlOptions, value: String(ttl), onChange: v => setTtl(Number(v)) }}
+        uses={{ label: t('serverSettings.invites.uses'), options: useOptions, value: String(uses), onChange: v => setUses(Number(v)) }}
+        made={made} making={making} onMake={make} onCopy={copy} message={message}
+        activeTitle={t('serverSettings.invites.active', { count: rows.length })} rows={rows} busyId={busyId} onRevoke={revoke}
+        labels={{ make: t('serverSettings.invites.make'), making: t('serverSettings.invites.making'), copy: t('serverSettings.invites.copy'),
+          link: t('serverSettings.invites.link'), revoke: t('serverSettings.invites.revoke'), list: t('admin.invites.title') }} />
     </section>
   );
 }

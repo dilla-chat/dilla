@@ -417,7 +417,7 @@ are no single-key shortcuts.
 
 | key | text | where |
 |---|---|---|
-| `onboarding.step` | `Step {n} of 6` | step line, steps 1–6 |
+| `onboarding.step` | `New account · step {n} of {total}` | step line, steps 1–6 ({total} is 6; Signal task 10 adds the dots) |
 | `onboarding.back` | `Back` | button, first in the footer of steps 2–4 |
 | `onboarding.next` | `Continue` | button, forward on steps 1–3 |
 | `onboarding.connect.title` | `Join {instance}` | step heading, step 1 |

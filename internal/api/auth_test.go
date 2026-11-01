@@ -404,6 +404,25 @@ func TestPasswordChangeNeedsTheOldPasswordAndReplacesTheCredential(t *testing.T)
 	}
 }
 
+// Task 11 (Jonas, Q7): the factors read says when the password was last changed: unknown (null) for a password set before the
+// change was recorded, and the change's time once it is changed.
+func TestFactorsSayWhenThePasswordWasChanged(t *testing.T) {
+	h, deps := newTestAPI(t)
+	u, _, token := seedAPISession(t, deps)
+	pw := seedPassword(t, deps, u, "correct horse battery staple")
+	if got := getFactors(t, h, token)[5]; got != nil {
+		t.Fatalf("password_changed = %#v before any change, want null", got)
+	}
+	body, _ := cborx.Marshal([]any{pw, "a brand new password"})
+	if res := postCBORAuth(h, "/v1/auth/password", body, token); res.Code != http.StatusNoContent {
+		t.Fatalf("password change status = %d, want 204", res.Code)
+	}
+	want := uint64(deps.Clock.Now().Unix())
+	if got, ok := getFactors(t, h, token)[5].(uint64); !ok || got != want {
+		t.Fatalf("password_changed = %#v after the change, want %d", getFactors(t, h, token)[5], want)
+	}
+}
+
 // protocol/09-http-api.md marks POST /v1/auth/password "E (step-up)". With a
 // credential on the account the old password IS the step-up; on an account
 // registered through a passkey or OIDC there is no credential to re-present, so
@@ -609,8 +628,8 @@ func getFactors(t *testing.T, h http.Handler, token string) []any {
 	if err := cborx.Unmarshal(res.Body.Bytes(), &out); err != nil {
 		t.Fatalf("decode factors: %v", err)
 	}
-	if len(out) != 5 {
-		t.Fatalf("factors returned %d elements, want 5", len(out))
+	if len(out) != 6 {
+		t.Fatalf("factors returned %d elements, want 6", len(out))
 	}
 	return out
 }

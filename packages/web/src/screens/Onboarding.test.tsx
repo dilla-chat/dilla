@@ -53,7 +53,7 @@ describe('connect', () => {
     const { view } = setup({}, '/welcome?invite=ABCD-EFGH');
     expect(h1()).toHaveTextContent('Join dilla.test');
     expect(document.activeElement).toBe(h1());
-    expect(screen.getByText('Step 1 of 6')).toBeInTheDocument();
+    expect(screen.getByText('New account · step 1 of 6')).toBeInTheDocument();
     expect(screen.getByText('You need an invite from someone on dilla.test. Paste it below.')).toBeInTheDocument();
     expect(field('Invite')).toHaveValue('ABCD-EFGH');
     expect(field('Invite')).toHaveAccessibleDescription(expect.stringContaining('A code or a link, as you received it.'));
@@ -96,7 +96,7 @@ describe('identity', () => {
   it('checks every field before making keys', async () => {
     const { user, fake } = setup();
     await toIdentity(user);
-    expect(screen.getByText('Step 2 of 6')).toBeInTheDocument();
+    expect(screen.getByText('New account · step 2 of 6')).toBeInTheDocument();
     await user.type(field('Username'), '.ada');
     await user.type(field('Display name (optional)'), 'x'.repeat(65));
     await user.click(button('Continue'));
@@ -195,7 +195,7 @@ describe('recovery key', () => {
     const print = vi.spyOn(browser, 'print').mockImplementation(() => {});
     const { user, view } = setup();
     await toKeys(user);
-    expect(screen.getByText('Step 3 of 6')).toBeInTheDocument();
+    expect(screen.getByText('New account · step 3 of 6')).toBeInTheDocument();
     expect(document.activeElement).toBe(h1());
     for (const group of KEY) expect(screen.getByText(group)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /copy/i })).toBeNull();
@@ -253,7 +253,7 @@ describe('creating the account', () => {
     const { user, fake, view } = setup();
     await toBrowser(user);
     expect(h1()).toHaveTextContent('What this browser keeps');
-    expect(screen.getByText('Step 4 of 6')).toBeInTheDocument();
+    expect(screen.getByText('New account · step 4 of 6')).toBeInTheDocument();
     const paragraphs = [
       'This browser now holds the key of this device, in its storage for dilla.test. The key never leaves this browser.',
       'Clearing this site’s data removes the key and the messages kept here, and this browser stops being your device.',
@@ -310,7 +310,7 @@ describe('creating the account', () => {
     act(() => fake.set('account', account({ phase: 'ready' })));
     expect(h1()).toHaveTextContent('You’re in');
     expect(document.activeElement).toBe(h1());
-    expect(screen.getByText('Step 6 of 6')).toBeInTheDocument();
+    expect(screen.getByText('New account · step 6 of 6')).toBeInTheDocument();
     expect(screen.getByText('You are ada on dilla.test.')).toBeInTheDocument();
     await user.click(button('Open dilla'));
     expect(onFinish).toHaveBeenCalledTimes(1);

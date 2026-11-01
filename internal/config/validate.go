@@ -83,6 +83,7 @@ func Load(path string) (*Config, error) {
 func (c *Config) durations() map[string]Duration {
 	return map[string]Duration{
 		"server.read_header_timeout":      c.Server.ReadHeaderTimeout,
+		"server.read_body_timeout":        c.Server.ReadBodyTimeout,
 		"server.idle_timeout":             c.Server.IdleTimeout,
 		"server.shutdown_grace":           c.Server.ShutdownGrace,
 		"gateway.heartbeat_interval":      c.Gateway.HeartbeatInterval,
@@ -143,6 +144,9 @@ func (c *Config) Validate() error {
 		if err := d.check(key); err != nil {
 			add("%v", err)
 		}
+	}
+	if c.Server.ReadBodyTimeout.Value() < 0 {
+		add("server.read_body_timeout must not be negative")
 	}
 
 	if c.Instance.Domain == "" {

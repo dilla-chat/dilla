@@ -6,5 +6,6 @@ type Story = StoryObj<typeof meta>;
 export const Bot: Story = { args: { kind: 'bot' } };
 export const Web: Story = { args: { kind: 'web' } };
 export const Admin: Story = { args: { kind: 'admin' } };
-export const CanHear: Story = { args: { kind: 'canHear' } };
+export const Live: Story = { args: { kind: 'live' } };
+export const PlaybackOnly: Story = { args: { kind: 'playbackOnly' } };
 export const ReadableGlyph: Story = { args: { kind: 'readable' } };

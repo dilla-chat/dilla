@@ -42,7 +42,7 @@ func (s *Session) CommunityMembersPage(ctx context.Context, community, after id.
 	if !after.IsZero() {
 		q.Set("after", after.String())
 	}
-	raw, _, err := s.c.do(ctx, s.token, http.MethodGet, "communities/"+cid+"/members", q, nil, MaxDSBody, false)
+	raw, _, err := s.do(ctx, http.MethodGet, "communities/"+cid+"/members", q, nil, MaxDSBody, false)
 	if err != nil {
 		return CommunityMemberPage{}, err
 	}
@@ -133,7 +133,7 @@ func (s *Session) Community(ctx context.Context, community id.ID) (Community, er
 	if err != nil {
 		return out, err
 	}
-	raw, _, err := s.c.do(ctx, s.token, http.MethodGet, "communities/"+cid, nil, nil, MaxSmallBody, false)
+	raw, _, err := s.do(ctx, http.MethodGet, "communities/"+cid, nil, nil, MaxSmallBody, false)
 	if err != nil {
 		return out, err
 	}

@@ -77,11 +77,13 @@ before it ("every route below is `E`").
 | `PATCH /v1/devices/{device_id}` | E | `[label\|null]` | `204` names the device (null clears the name); the label is under the shared text rule below (NFC, trimmed, 1 to 64 characters, one line, no control, bidirectional or other invisible character), and the label is not part of the signed device list, so the server can see and change it; else `400 E_INVALID_REQUEST`; the device may be the caller's own or another live device of the same user; `404 E_NOT_FOUND` for another user's, an unknown or a removed (revoked) device; `403 E_FACTOR_REQUIRED` while the session owes a second factor; spends the device session's write bucket |
 | `DELETE /v1/devices/{device_id}` | E | — | `204` for an unlisted row — revokes, deletes sessions, closes sockets; `409 E_INVALID_REQUEST` for a listed device (its `device_id` and `dsk_pub` in one unrevoked entry of the newest list), which is revoked by a signed device list, and for an unlisted row created less than 10 minutes ago unless the caller's session is that device's own; `404 E_NOT_FOUND` for another user's device |
 | `PUT /v1/users/{user_id}/device-list` | E or P (own list only for P) | `[version(uint), blob(bstr), ssk_signature(bstr64), prev_hash(bstr32)]` | `204`; `400 E_INVALID_REQUEST` when `blob`'s outer elements disagree with the body or the list does not verify; `409 E_INVALID_REQUEST` when `version` is not the newest plus one or `prev_hash` does not chain |
-| `GET /v1/users/{user_id}/device-list` | E or P (own list only for P) | — | `[version, blob, ssk_signature, prev_hash]` |
+| `GET /v1/users/{user_id}/device-list` | E or P (own list only for P) | — | `[version, blob, ssk_signature, prev_hash]`; on a wire-4 session `[version, blob, ssk_signature, prev_hash, attestation]`, the account-kind attestation of `03` § Account kind attestation (a `500 E_INTERNAL` when the instance cannot sign it, never a head without it) |
 | `GET /v1/users/{user_id}/device-list?after=N` | E or P (own list only for P) | — | `[[version, blob, ssk_signature, prev_hash]]` of the stored versions greater than `N`, ascending, at most 64; `[]` when none; a malformed `N` is `400` |
 
 For trust validation, the unpaged `GET /v1/users/{user_id}/device-list` supplies a signed
-candidate head. History pages after `N` contain at most 64 ascending versions; a page has no
+candidate head. Its first four elements are the history row the pages carry (the chain compares
+those); a wire-4 head's fifth element, the account-kind attestation, is no part of the chain and is
+handed to the core before the user's history is ingested. History pages after `N` contain at most 64 ascending versions; a page has no
 authoritative head or `lastVersion`. If the candidate is the exact cached signed head, compare
 its bytes and hash and skip paging; a lower version is rollback. Otherwise fetch from version 1
 on first sight, or after the cached signed version, checking every signature, user, consecutive
@@ -98,8 +100,13 @@ exception: `nonce` comes from `POST /v1/devices/{device_id}/sessions/challenge` 
 `device_id`, and `sig` is the establish signature over it (`02` § Device sessions item 2's
 preimage, purpose `0`) by the private half of the `dsk_pub` being registered.
 
-The `credential` of the `device` sub-array is opaque to the instance: it is stored as sent (1 to
-8192 bytes) and never parsed or read back. Because the instance mints `user_id` in this response,
+The `credential` of the `device` sub-array is stored as sent (1 to 8192 bytes) after the instance
+has verified it (both signatures over this `dsk_pub`, canonical CBOR) and bound it to the request:
+it names this `device_id`, `tier` and `signer_tier`, the human kind, and the request's `umk_pub`,
+`ssk_pub` and `sig_umk_ssk`; anything else is `400 E_INVALID_REQUEST`. `POST /v1/devices` binds its
+credential the same way to the session's account: the account's own kind (`users.kind`), its
+`umk_pub`, `ssk_pub` and `sig_umk_ssk`, this device, and a `user_id` that is the session's or the
+zero placeholder (`02` § Roles, credential-kind rule). Because the instance mints `user_id` in this response,
 a registering client cannot know it when it builds the credential: it sends the credential with
 16 zero bytes as `user_id`, and after the response rebuilds its MLS credential with the minted
 `user_id` without signing anything again (`sig_ssk_dev` does not cover `user_id` and
@@ -203,12 +210,16 @@ a second factor.
 
 | Method and path | Auth | Request | Response |
 |---|---|---|---|
+| `GET /v1/communities/{community}/bot/command-status` | E (human, current community member, wire v3) | — | `null` when no active installation; otherwise `[1,installation_id,bot_user_id|null,state,revision]`; no-store; omits configuration, capabilities and credentials |
 | `GET /v1/communities/{community}/bot` | E (human, manage_community) | — | installation or 404 |
 | `PATCH /v1/communities/{community}/bot/profile` | E (human, manage_community, wire v3) | `[display_name]` | `[normalized_display_name]`; changes only the installed bot account's display name and not its handle |
-| `PUT /v1/communities/{community}/bot` | E (human, manage_community and capability approval) | `[request_id,expected_revision\|null,capabilities,step_up]` | installation; 201 new, 200 existing |
+| `PUT /v1/communities/{community}/bot` | E (human, manage_community and capability approval) | `[request_id,expected_revision\|null,capabilities,step_up]` | installation; 201 new, 200 existing. Without `v=2` only bits 0–7 may be sent and Polls/Reminders (bits 8, 9) keep their value, both on for a new installation (10-community-bot.md) |
 | `POST /v1/communities/{community}/bot/disable` | E (human, manage_community) | `[request_id,expected_revision]` | installation |
 | `DELETE /v1/communities/{community}/bot` | E (human, manage_community) | `[request_id,expected_revision]` | 204 |
-| `GET /v1/bot-runtime/installations` | R | — | `[installations]`; at most 100, after cursor is an installation id |
+| `POST /v1/communities/{community}/bot/restart` | E (human, manage_community, wire v3) | `[installation_id]` | `[restart_requested,restart_handled]`; coalesces while a request is pending; audited (protocol/10 § Restart) |
+| `PUT /v1/communities/{community}/bot/music-settings` | E (human, manage_community, wire v3) | `[installation_id,volume,idle_minutes]` | widened installation; volume 25/50/75/100, idle 5/15/30 minutes |
+| `GET /v1/bot-runtime/installations` | R | — | `[installations]`; at most 100, after cursor is an installation id; `v=2` returns the widened installation (protocol/10) |
+| `PUT /v1/bot-runtime/installations/{installation}/status` | R (owning runtime) | `[version\|null,restart_handled]` | 204 |
 | `POST /v1/bot-runtime/installations/{installation}/claim` | R | `[request_id]` | `[installation,claim_id,claim_expires]` |
 | `POST /v1/bot-runtime/installations/{installation}/enroll` | R | `[request_id,claim_id,umk_pub,ssk_pub,sig_umk_ssk,device]` | `[bot_user,bot_device,username]`; no bearer token |
 | `PUT /v1/bot-runtime/installations/{installation}/credential` | B (enrolling; completed retries in joining/ready) | `[request_id,expected_revision,credential]` | installation |
@@ -318,6 +329,9 @@ CBOR API request, not a public redirect endpoint.
 | Method and path | Auth | Request | Response |
 |---|---|---|---|
 | `GET /v1/communities/{community}/bot/actors/{actor}/authority` | B (ready) | — | `[effective_permission_bits, is_owner(uint), is_administrator(uint)]`; 404 if the community, installation or actor is absent |
+| `GET /v1/communities/{community}/bot/actors/{actor}/channels/{channel}/authority` | B (ready, channel visible to bot) | — | `[community_id,actor_id,channel_id,effective_permission_bits]` for the current human member; 403/404 if installation, membership or visibility checks fail; no-store |
+| `GET /v1/communities/{community}/bot/spotify/config` | E (manage_community) | — | `[client_id, callback_url]` |
+| `GET /v1/bot-runtime/installations/{installation}/spotify/config` | R (owning runtime) | — | `[client_id, callback_url]` |
 | `POST /v1/communities/{community}/bot/spotify/attempts` | E (community bot manager, step-up) | `[step_up_proof]` | `[attempt_id, authorization_url, expires_unix]` |
 | `POST /v1/communities/{community}/bot/spotify/attempts/{attempt}/callback` | E (manage_community, initiating session) | `[state, authorization_code]` | `202 [1]`; exact callback retries also return 202 |
 | `DELETE /v1/communities/{community}/bot/spotify/attempts/{attempt}` | E (manage_community, initiating session) | `[]` | `204` |
@@ -332,9 +346,6 @@ CBOR API request, not a public redirect endpoint.
 | `PUT /v1/communities/{id}/role-panels` | E (manage_roles) | `[request_id, channel_id, message_seq, options]`; each option is `[emoji, role_id]` | `[request_id, option_count]` |
 | `PUT /v1/communities/{id}/bot-join-role` | E (manage_roles) | `[request_id, role_id, expected_installation_id]`; zero `role_id` clears the approval | `[request_id, installation_id]`; configuration only, no immediate role grant; 409 if the active installation changed |
 | `GET /v1/communities/{id}/bot-join-role` | E (manage_roles) | Empty | `[role_id/null, installation_id]` for a ready installation; 404 when none is ready |
-| `GET /v1/communities/{id}/music/dj-roles` | E (manage_community + manage_roles) | Empty | `[role_ids, installation_id]` for the active ready installation |
-| `PUT /v1/communities/{id}/music/dj-roles` | E (manage_community + manage_roles) | `[request_id, expected_installation_id, role_ids]` | `[request_id, accepted_count]`; role IDs must be in the community and below the actor's highest role (owner exempt); 409 if the active installation changed |
-| `GET /v1/bot-runtime/installations/{installation}/music/dj-roles` | B (ready, Music capability, owning installation) | — | `[community_id, installation_id, capabilities, [role_ids...]]`; current policy, `Cache-Control: no-store` |
 | `GET /v1/communities/{community}/bot/members/{member}/episode` | B (ready, wire v3, current installed bot/member) | Empty | `[member_id, episode_id]` for the current membership episode; 404 when the member is absent |
 | `POST /v1/communities/{community}/bot/join-role-grants` | E (ready Bot session, wire v3, roles capability) | `[request_id, member_id, episode_id]` | `[request_id, installation_id, community_id, member_id, episode_id, role_id]` immutable grant receipt; 204 when the episode is current but no join role is configured; 404 for a stale episode; repeated identical requests return the same receipt |
 | `PUT /v1/communities/{id}/role-panels` | E (current manage_roles session; ready Roles-capable Bot) | `[request_id, channel_id, accepted_message_seq, [[emoji, role_id]...]]` | `[request_id, accepted_option_count]`; requires an accepted Bot send receipt for the channel and every role must remain approved and eligible; readable rows, when present, must match the receipt |
@@ -365,11 +376,13 @@ group. The Bot attaches the case only when the authoritative receipt matches the
 request, actor, device, community, and target. The encrypted case expires after
 90 days; plaintext reason is never stored by the server.
 
-DJ role policy is retained when an installation is soft-disabled, but both
-routes return 404 while it is disabled or not ready. Explicitly re-enabling and
-bringing the same installation back to ready makes its saved approvals
-available again. Permanent removal uses a tombstone; a later installation has
-a new ID and starts without the prior policy.
+Who may control the Bot's music is the role permission `control_music` (bit 25,
+§ Permissions), not a per-installation list: the former DJ role routes
+(`GET`/`PUT /v1/communities/{id}/music/dj-roles` and the Bot's
+`GET /v1/bot-runtime/installations/{installation}/music/dj-roles`) are gone.
+Migration 00048 gave `control_music` to every role the community's current,
+non-removed installation had approved, then dropped the approval table; roles
+approved only by a removed installation were not mapped.
 
 The Spotify begin route replaces any pending attempt for that installation.
 Attempts expire after ten minutes and bind the initiating enrolled session;
@@ -396,9 +409,19 @@ Errors: `410 E_INVITE_INVALID` when the invite is expired, exhausted or revoked.
 - A **community invite** is an invite whose `community_id` is set. Minting and listing need
   `create_invite` community-wide (§ Permissions) and membership of the community (`404 E_NOT_FOUND`
   otherwise, as for every community route); `403 E_FORBIDDEN` without the permission.
-  `max_uses` is 1–1000 and `ttl_seconds` 1–2 592 000 (thirty days); `grants_admin` is 0 or 1, and 1
-  is refused (`403 E_FORBIDDEN`) to anyone who is not an instance admin, because whoever registers
-  with the invite becomes one. Anything else out of range is `400 E_INVALID_REQUEST`.
+  `max_uses` is 1–1000, or 0 for any number of uses ("∞"); `ttl_seconds` is 1–2 592 000 (thirty
+  days), or 0 for an invite that never expires. An open-ended invite (either 0) also needs
+  `manage_community` (owners and administrators hold it): it is a standing way in that only a
+  manager can take back, so a member who holds only `create_invite` gets `403 E_FORBIDDEN` and may
+  still make the finite ones. `grants_admin` is 0 or 1, and 1 is refused (`403 E_FORBIDDEN`) to
+  anyone who is not an instance admin, because whoever registers with the invite becomes one; a
+  `grants_admin` invite is always finite (`400 E_INVALID_REQUEST` with a 0). Anything else out of
+  range is `400 E_INVALID_REQUEST`. On the wire 0 keeps its meaning everywhere an invite is read:
+  the mint's `expires`, the list's `max_uses` and `expires_at`, and the landing CBOR's `expires`
+  say 0 for "never" and "∞". The instance stores an open-ended invite with `max_uses = 1000` and
+  an `unlimited_uses` flag, and "never" as the largest signed 64-bit second, so a reader that
+  ignores the flag still stops at the old bounds. The HTML landing page reads "Never expires" and
+  "No use limit". Revoking stays as it is: the creator or a `manage_community` holder.
 - `code` is the invite's only plaintext, returned once, by the mint. The instance stores its
   SHA-256 and the audit row (`invite.create`) names it by the first four bytes of that hash in
   hex. `url` is the instance's base URL followed by `/i/` and the code.
@@ -461,7 +484,7 @@ full contract.
 | `POST /v1/auth/passkey/register/begin` | E, F | `[stepup(tstr\|null)]` | `[ceremony_id(bstr16), options(tstr)]`; the user's credentials are excluded; `409 E_INVALID_REQUEST` when the account already holds 1024 passkeys (checked before the step-up token is spent) |
 | `POST /v1/auth/passkey/register/finish` | E, F | `[ceremony_id, response(tstr), name(tstr)]` | `[cred_id(bstr), backup_codes([tstr])]`; `name` is 1–64 bytes of UTF-8 without control characters (`400` otherwise, the ceremony kept); an unknown, spent or expired ceremony, another account's, or a response that does not verify is `400 E_INVALID_REQUEST` (another account's ceremony is not spent); clears `factor_owed`; `403 E_STEP_UP` as for confirm; `409 E_INVALID_REQUEST` at 1024 passkeys |
 | `POST /v1/auth/passkey/login/finish` | — | `[ceremony_id, response]` | `[assertion(tstr), needs(uint 0\|1)]`: 0 when the authenticator verified the user, else 1; `401 E_PASSKEY_UNKNOWN` for a passkey this instance does not hold; `429 E_RATE_LIMITED`, and no assertion, when it would owe 1 while the account is locked out |
-| `GET /v1/auth/factors` | E, F | — | `[owed(uint), totp(uint\|null), passkeys([[cred_id(bstr), name(tstr), created(uint), last_used(uint\|null)]]), backup_codes_left(uint), password(uint)]`; an account marked as owing that holds a factor is cleared first and answers `owed` 0 (§ Second factors) |
+| `GET /v1/auth/factors` | E, F | — | `[owed(uint), totp(uint\|null), passkeys([[cred_id(bstr), name(tstr), created(uint), last_used(uint\|null)]]), backup_codes_left(uint), password(uint), password_changed(uint\|null)]`: `password_changed` is when the password was last changed (`POST /v1/auth/password`), null when unknown (set before migration 00052) or there is none; an account marked as owing that holds a factor is cleared first and answers `owed` 0 (§ Second factors) |
 | `POST /v1/auth/stepup` | E | `[method(uint 0 password\|1 totp\|2 backup code), secret(tstr)]` | `201 [stepup(tstr), expires(uint)]`; a wrong secret is `403 E_STEP_UP`; `429 E_RATE_LIMITED` with `retry_after_ms` from the failure that crosses the step-up ledger's free attempts on, or while the client address's login failure budget is spent; `400 E_INVALID_REQUEST` for another method |
 | `POST /v1/auth/stepup/passkey/begin` | E | `[]` | `[ceremony_id, options]` (this user's credentials only; UV required); `400 E_INVALID_REQUEST` for an account that holds no passkey |
 | `POST /v1/auth/stepup/passkey/finish` | E | `[ceremony_id, response]` | `201 [stepup, expires]`; `403 E_STEP_UP` for a login's ceremony, another account's, or an assertion that does not verify; `429` as for `/stepup` |
@@ -1114,9 +1137,10 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
 | `POST /v1/channels/{id}/calls` | `[]` or `[vdec(tstr)]` | `201 [call_id(bstr16), group_id(bstr16), livekit_url(tstr), token(tstr), ice_servers([[urls([tstr]), username(tstr), credential(tstr)]]), caps([max_audio_bitrate_bps(uint), max_share_bitrate_bps(uint), vp9(uint)])]` when the call is opened, `200` with the same body when it is already live; a `201` that opens a DM or group-DM call carries a seventh element, `rung([user_id(bstr16)])`, the users this start rang (see **Ringing**); `409 E_CALL_FULL`; `429 E_RATE_LIMITED` with `retry_after_ms` (a few milliseconds, transient) when the device was cut from the relay in the same millisecond or while the request was served; after the relay credential is minted, the refusal its gate would have given (`403 E_FORBIDDEN` barred, `403 E_LEAF_NOT_CURRENT`, `404 E_NOT_FOUND` without `view_channel`, `403 E_FORBIDDEN` without `connect`) when that changed while the request was served; `503 E_UNAVAILABLE` with `retry_after_ms` when the call ended as the request opened it (see **Ending**) | `connect`, and a current leaf of the call group |
 | `POST /v1/calls/{call_id}/share` | `[]` | `204` once the device holds a sharing slot and the SFU holds its new permission; `409 E_CALL_SHARERS_FULL`; `404 E_NOT_FOUND` when the call has ended or the device is not in its room; `403 E_FORBIDDEN` while the device's removal or demotion in the call is pending or the device is barred | `connect`, `video` or `screen_share`, and a current leaf of the call's group |
 | `DELETE /v1/calls/{call_id}/share` | — | `204`, also when the device held no slot or the call has ended | `view_channel` |
+| `POST /v1/calls/{call_id}/rtt` | `[ms(uint)]` or `[]` | `204` once the SFU carries `ms` (0..5000, the device's round-trip time to the SFU in whole milliseconds) as the device's participant attribute `dilla.rtt`, or, with `[]`, no longer carries one (the client is paused or reconnecting; a clear is never rate limited and is a no-op when nothing is set); only the caller's own identity and only that key are written, through the SFU's admin API; `400 E_INVALID_REQUEST` for any other body; `429 E_RATE_LIMITED` with `retry_after_ms` for a second value within 1.5 s; `404 E_NOT_FOUND` when the call has ended or the device is not in its room | `view_channel`, and a current leaf of the call's group |
 | `POST /v1/calls/{call_id}/stats` | `[candidate_type(uint), relay_protocol(uint\|null), rtt_ms(uint), fraction_lost_permille(uint), decrypt_failures(uint), frames_encrypted(uint)]` | `204`; `429 E_RATE_LIMITED` above one report per device per 5 s; `404 E_NOT_FOUND` once the call has ended; `403 E_FORBIDDEN` for a barred device; `400 E_INVALID_REQUEST` for `decrypt_failures` or `frames_encrypted` above 1048576 | `view_channel` and `connect`, and a current leaf of the call's group |
 | `DELETE /v1/calls/{call_id}` | — | `204`, also when the call has already ended or its call group is closed; `403 E_FORBIDDEN` for a barred device and for a device that is listen-only in the call's room for media that is not dilla's | `view_channel` and `connect`, and a current leaf of the call's group while that group is open |
-| `DELETE /v1/calls/{call_id}?if_alone=1` | — | as `DELETE /v1/calls/{call_id}`, but a live call ends only while the caller's device is the call group's only current leaf (no other member that is not removed), checked under the group lock that every commit takes; `409 E_CALL_NOT_ALONE` otherwise, and nothing ends; `400 E_INVALID_REQUEST` for any other value of `if_alone` | as `DELETE /v1/calls/{call_id}` |
+| `DELETE /v1/calls/{call_id}?if_alone=1` | — | as `DELETE /v1/calls/{call_id}`, but a live call ends only while the caller's device holds a current leaf and no other non-bot member remains (managed-bot leaves are ignored), checked under the group lock that every commit takes; `409 E_CALL_NOT_ALONE` otherwise, and nothing ends; `400 E_INVALID_REQUEST` for any other value of `if_alone` | as `DELETE /v1/calls/{call_id}` |
 | `GET /v1/channels/{id}/call` | — | `200 [group_id(bstr16\|null), call_id(bstr16\|null), participants([[user_id(bstr16), device_id(bstr16), flags(uint)]])]`; `400 E_INVALID_REQUEST` for a text channel or a category | `view_channel`, or a participant of the DM or group DM |
 | `GET /v1/communities/{id}/calls` | — | `200 [[channel_id(bstr16), call_id(bstr16), participants]]`, the live calls of the voice channels the caller may view, sorted by `channel_id`, unpaginated; `404 E_NOT_FOUND` for a non-member | membership |
 | `POST /v1/calls/{call_id}/decline` | `[expires_ts(uint)]` | `204`, also when the user was no longer ringing or `expires_ts` names no ring; `400 E_INVALID_REQUEST` for a call of a community voice channel or a malformed body; `404 E_NOT_FOUND` for an unknown or ended call | a participant of the call's DM or group DM |
@@ -1260,14 +1284,23 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
 - **The token.** `token` is a LiveKit room-join JWT for the call's room whose identity is the device
   id. It carries the **base grant** only: subscribe, never data, and publish for the microphone when
   the device holds `speak` — never the camera or the screen, even for a device that holds a sharing
-  slot. A device without `speak` is listen-only. The camera and screen sources (`video` the camera,
+  slot. A human device without `speak` is listen-only. Managed Bot devices never receive the
+  subscribe grant and cannot receive other participants' media; their current permission updates
+  remain limited to microphone publication, and lookup failures never restore subscription.
+  The camera and screen sources (`video` the camera,
   `screen_share` the screen and its audio) reach a session only as the permission the instance pushes
   after `POST …/share` (below), so a token can never be replayed for video after the device stopped
   sharing; a client that reconnects with a fresh token while it shares POSTs `…/share` again, which
   is idempotent for a slot it holds. When the request carries `vdec` — the device's video decoders,
   comma-separated from `vp8`, `h264` and `vp9`, each at most once (any other spelling is
   `400 E_INVALID_REQUEST`) — the token carries it as the participant attribute `dilla.vdec`, which
-  the other devices read to choose a codec every subscriber can decode. The token is valid for one
+  the other devices read to choose a codec every subscriber can decode. No call token carries LiveKit's
+  own-metadata right (`canUpdateOwnMetadata`), human or bot, and the `/rtc` gate refuses one that
+  does: LiveKit bounds the size of one attribute update but neither the merged map nor the rate, so
+  any participant with the right could flood the room. A device's round-trip time to the SFU
+  reaches the others through `POST …/rtt` (below), which the instance writes as that device's
+  participant attribute `dilla.rtt`.
+  The token is valid for one
   hour, but its lifetime bounds neither a session nor a rejoin: the SFU re-issues a connected
   participant's token every five minutes from its current grants, valid for at least ten more
   minutes, so a client that stays connected always holds a token it could rejoin with. What bounds
@@ -1489,7 +1522,16 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   away (which unpublishes its tracks), its sharing slot is freed, a start mints it a listen-only
   token, the signalling proxy admits it listen-only, and a share answers `403 E_FORBIDDEN`. A second
   such track disconnects it from the room.
-- **Ending.** `DELETE` ends the call for everyone and is kept to its participants. A call also ends
+- **Ending.** `DELETE` ends the call for everyone and is kept to its participants. Managed bots do
+  not keep a call alive after its last non-bot member leaves: when two consecutive reconciliations
+  of the whole room, at least one room-sweep interval apart, find a managed-bot leaf but no non-bot
+  leaf present in the room or admitted within the 30-second join window, the instance ends
+  the call with reason `bots_only` and deletes the room instead of proposing Removes that only the
+  bots could commit. Any whole-room grant sync can make these observations, including a room sweep,
+  room resync or channel-wide permission change. A human present or inside the join window, or an
+  uncertain account, group or participant listing, resets the observations. A member whose account
+  kind cannot be read is logged and skipped for absent-leaf tracking; other absent leaves still
+  progress, while the call stays live. Managed bots are not eligible committers. A call also ends
   when the SFU closes its room — 20 seconds after the last participant leaves, or 300 seconds after
   it was opened when nobody joined; a report of the close of a room the SFU has since re-opened
   under the same name, for a start that came after it, ends nothing, and neither does one the
@@ -1512,8 +1554,9 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   session names and that was created at least 600 seconds ago: at most 1 024 groups per pass,
   oldest first, the rest at the next pass. A live call's group is never closed this way; ending a
   live call stays `DELETE /v1/calls/{call_id}` by a current leaf. A client that leaves a call it
-  believes it is alone in ends it with `?if_alone=1`, so a device whose external commit has just
-  landed keeps the call (`409 E_CALL_NOT_ALONE`); the unconditional form is unchanged. A closed group answers as above
+  believes it is alone in ends it with `?if_alone=1`; managed-bot leaves are ignored, while another
+  non-bot device whose external commit has just landed keeps the call (`409 E_CALL_NOT_ALONE`);
+  the unconditional form is unchanged. A closed group answers as above
   (`403 E_LEAF_NOT_CURRENT` at a start), `GET /v1/channels/{id}/call` no longer names it, and the
   next joiner registers a fresh call group. A start that read the group open and writes its call
   after the close is ended at once and answers `503 E_UNAVAILABLE` with `retry_after_ms`; a start whose
@@ -1726,6 +1769,14 @@ are stored in a signed 64-bit integer on Postgres. A stored bit outside this tab
 | 22 | `move_members` | channel |
 | 23 | `manage_nicknames` | community |
 | 24 | `moderate_members` | community |
+| 25 | `control_music` | channel |
+
+`control_music` lets a member control the managed Bot's music in a voice channel: play,
+queue, skip, stop, seek and volume. The Bot resolves it for the call's voice channel with
+that channel's overwrites (the actor must also hold `view_channel` there and be in the
+call), so an overwrite can grant or deny DJ in one channel. Owners and administrators hold
+it as they hold every bit. A Bot account never holds it. New communities do not give it to
+`@everyone`.
 
 `moderate_members` allows warning a member and applying or removing a text timeout. It is a
 community permission, so channel overwrites cannot grant or remove it. In a community that
@@ -1926,3 +1977,20 @@ can be built on; it is not itself served.
 | 1 | bot operator |
 
 Every other bit is reserved, MUST be written as 0 and MUST be ignored on read.
+
+
+### Wire-5 ephemeral transport compatibility
+
+Human clients offer wires `[5,4,3,2]` to session negotiation and the gateway. Managed Bots continue
+to negotiate exactly 3. Wire 5 retains the wire-4 HTTP response baseline, including account-kind
+attestation, and adds the ephemeral ops of `02`. `/app-version.json` remains the authoritative
+manifest check following a build notice or startup/foreground/online/reconnect; no endpoint is removed. The current web app has no periodic version polling or HTTP telemetry fallback.
+
+The HTTP presence activity API remains available to existing clients; the current web app sends presence input only through WSS and drops it when unavailable. Its gateway device
+allowance is the same one charged by op 57, so switching transports cannot refresh activity more
+than once per five seconds. Activity inbox reads and voice AFK policy updates are separate routes.
+
+Call statistics on op 58 and `POST /v1/calls/{call_id}/stats` use the same typed acceptance service
+and atomic per-device five-second reservation. Rejected/cancelled reports release the reservation;
+accepted reports update only the existing coarse in-memory counters. HTTP stays available on older
+instances or unavailable gateways. No HTTP retry follows an ambiguously delivered WSS sample.

@@ -110,7 +110,7 @@ describe('the code step (flow 10 state 16)', () => {
     const { user, view } = setup('signin-login', worker());
     await login(user);
     expect(h1()).toHaveTextContent('Your second factor');
-    expect(screen.getByText('Step 2 of 4')).toBeInTheDocument();
+    expect(screen.getByText('Sign in · step 2 of 4')).toBeInTheDocument();
     expect(button(en['factorSignin.useBackup'])).toHaveAttribute('type', 'button');
     expect(screen.getByText('Lost your phone? Use a backup code, or ask the operator of dilla.test to reset your second factor.')).toBeInTheDocument();
     expect(screen.queryByText(/did not check that it is you/)).toBeNull();
@@ -124,12 +124,12 @@ describe('the code step (flow 10 state 16)', () => {
     get.mockResolvedValue(assertion());
     await user.click(button(en['factorSignin.usePasskey']));
     await waitFor(() => { expect(h1()).toHaveTextContent('Your second factor'); });
-    expect(screen.getByText('Step 2 of 4')).toBeInTheDocument();
+    expect(screen.getByText('Sign in · step 2 of 4')).toBeInTheDocument();
     expect(screen.getByText('This passkey did not check that it is you, so dilla.test also asks for your code.')).toBeInTheDocument();
     // The code goes alone; the key follows as step 3.
     await user.type(field('Code'), '123456{Enter}');
     expect(fake.callsOf('signInTotp')).toEqual([{ m: 'signInTotp', code: '123456' }]);
-    expect(screen.getByText('Step 3 of 4')).toBeInTheDocument();
+    expect(screen.getByText('Sign in · step 3 of 4')).toBeInTheDocument();
     await addWithKey(user);
     expect(fake.callsOf('signInKey')).toEqual([{ m: 'signInKey', recoveryKey: GROUPED }]);
     expect(h1()).toHaveTextContent('You’re in');
@@ -141,7 +141,7 @@ describe('the code step (flow 10 state 16)', () => {
     fake.set('factors', { owed: false, totp: { confirmedAt: 1 }, passkeys: [], backupCodesLeft: 9, hasPassword: true });
     await user.click(button(en['factorSignin.useBackup']));
     expect(h1()).toHaveTextContent('Use a backup code');
-    expect(screen.getByText('Step 2 of 4')).toBeInTheDocument();
+    expect(screen.getByText('Sign in · step 2 of 4')).toBeInTheDocument();
     expect(document.activeElement).toBe(field('Backup code'));
     expect(screen.queryByRole('textbox', { name: 'Code' })).toBeNull();
     await expectNoAxeViolations(view.container);
@@ -151,7 +151,7 @@ describe('the code step (flow 10 state 16)', () => {
     await user.clear(field('Backup code'));
     await user.type(field('Backup code'), 'abcde fghij-klmno pqrst uvwxy z{Enter}');
     expect(fake.callsOf('signInBackupCode')).toEqual([]);
-    expect(screen.getByText('Step 3 of 4')).toBeInTheDocument();
+    expect(screen.getByText('Sign in · step 3 of 4')).toBeInTheDocument();
     await addWithKey(user);
     expect(fake.callsOf('signInBackupCode')).toEqual([{ m: 'signInBackupCode', code: BACKUP, recoveryKey: GROUPED }]);
     expect(h1()).toHaveTextContent('You’re in');
@@ -295,13 +295,13 @@ describe('the code step (flow 10 state 16)', () => {
     };
     const { user } = setup('signin-login', script);
     await login(user);
-    expect(screen.getByText('Step 2 of 4')).toBeInTheDocument();
+    expect(screen.getByText('Sign in · step 2 of 4')).toBeInTheDocument();
     await user.type(field('Code'), '000000{Enter}');
     expect(h1()).toHaveTextContent('Sign in to dilla.test');
     get.mockResolvedValue(assertion());
     await user.click(button(en['factorSignin.usePasskey']));
     await waitFor(() => { expect(h1()).toHaveTextContent('Your recovery key'); });
-    expect(screen.getByText('Step 2 of 4')).toBeInTheDocument();
+    expect(screen.getByText('Sign in · step 2 of 3')).toBeInTheDocument();
   });
 
   it('Back leaves the backup-code form for the code form', async () => {
@@ -332,7 +332,7 @@ describe('the passkey (flow 10 states 14 and 15)', () => {
     await user.click(button(en['factorSignin.usePasskey']));
     await waitFor(() => { expect(h1()).toHaveTextContent('Your recovery key'); });
     // The passkey was used on the login step, so no factor step was shown (R7).
-    expect(screen.getByText('Step 2 of 4')).toBeInTheDocument();
+    expect(screen.getByText('Sign in · step 2 of 3')).toBeInTheDocument();
     expect(fake.callsOf('signInPasskeyBegin')).toEqual([{ m: 'signInPasskeyBegin' }]);
     expect(get.mock.calls[0]?.[0].publicKey.userVerification).toBe('required');
     const sent = fake.callsOf('signInPasskey');
@@ -350,7 +350,7 @@ describe('the passkey (flow 10 states 14 and 15)', () => {
     const { fake, user, view } = setup('signin-login', worker({ needs: 2 }));
     await login(user);
     expect(h1()).toHaveTextContent('Use your passkey');
-    expect(screen.getByText('Step 2 of 4')).toBeInTheDocument();
+    expect(screen.getByText('Sign in · step 2 of 4')).toBeInTheDocument();
     expect(screen.getByText(en['factorSignin.passkey.body'])).toBeInTheDocument();
     expect(screen.queryByRole('textbox', { name: 'Code' })).toBeNull();
     expect(screen.queryByText(/authenticator app/i)).toBeNull();
@@ -359,7 +359,7 @@ describe('the passkey (flow 10 states 14 and 15)', () => {
     get.mockResolvedValue(assertion());
     await user.click(button('Use passkey'));
     await waitFor(() => { expect(h1()).toHaveTextContent('Your recovery key'); });
-    expect(screen.getByText('Step 3 of 4')).toBeInTheDocument();
+    expect(screen.getByText('Sign in · step 3 of 4')).toBeInTheDocument();
     expect(fake.callsOf('signInPasskey')).toHaveLength(1);
     expect(fake.callsOf('signInPasskey')[0]).not.toHaveProperty('recoveryKey');
   });
@@ -426,7 +426,7 @@ describe('set-up on a new browser (flow 10 state 1, origin signin)', () => {
     const { fake, user } = setup('factor-setup', script, { factorSetup: { origin: 'signin' }, user: ME });
     fake.set('factors', NO_FACTORS);
     expect(h1()).toHaveTextContent('Add a second factor');
-    expect(screen.getByText('Step 3 of 4')).toBeInTheDocument();
+    expect(screen.getByText('Sign in · step 3 of 4')).toBeInTheDocument();
     // An allow-list: the choice's Continue and the exit that clears this browser, nothing else.
     expect(screen.getAllByRole('button').map(b => b.textContent)).toEqual([en['factor.choose.next'], en['devices.forget']]);
     await user.click(button('Continue'));
@@ -436,7 +436,7 @@ describe('set-up on a new browser (flow 10 state 1, origin signin)', () => {
     await user.click(button('Continue'));
     expect(fake.callsOf('factorSetupDone')).toEqual([{ m: 'factorSetupDone', invite: null }]);
     await waitFor(() => { expect(h1()).toHaveTextContent('You’re in'); });
-    expect(screen.getByText('Step 4 of 4')).toBeInTheDocument();
+    expect(screen.getByText('Sign in · step 4 of 4')).toBeInTheDocument();
   });
 
   it('goes back to the choice, with no error line, when the factor is still owed', async () => {

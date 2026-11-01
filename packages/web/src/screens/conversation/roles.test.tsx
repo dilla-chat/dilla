@@ -12,6 +12,7 @@ import { GEN, MEMBERS, O1, OTHER_ROLE, PEER, P1, ROLE, ownRow, peerRow, timeline
 import { mentionCandidates, mentionMembers, nameBook } from '../shell-model.ts';
 import { ComposerArea, type OutgoingMessage } from './ComposerArea.tsx';
 import { Conversation, INITIAL_UI, type ConversationUi } from './Conversation.tsx';
+import { toolbarLabels } from '../../test/toolbar.ts';
 
 const GAME = '71'.repeat(16);
 const MODS = '72'.repeat(16);
@@ -146,7 +147,7 @@ function log(over: { bits?: number | null; items?: ReturnType<typeof peerRow>[];
   return { fake, view };
 }
 const row = (id: string) => document.querySelector<HTMLElement>(`.d-message-row[data-msg-id="${id}"]`) as HTMLElement;
-const actions = (id: string) => within(within(row(id)).getByRole('toolbar', { name: 'actions for this message' })).getAllByRole('button').map(b => b.textContent);
+const actions = (id: string) => toolbarLabels(within(row(id)).getByRole('toolbar', { name: 'actions for this message' }));
 
 describe('files dropped on the conversation', () => {
   const drop = () => {

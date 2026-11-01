@@ -13,8 +13,8 @@ import (
 )
 
 const createBotInstallation = `-- name: CreateBotInstallation :exec
-INSERT INTO bot_installations(id, community_id, runtime_id, user_id, device_id, role_id, state, revision, capabilities, approved_by, approved_at, credential_verified_at, created, updated, removed_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO bot_installations(id, community_id, runtime_id, user_id, device_id, role_id, state, revision, capabilities, approved_by, approved_at, credential_verified_at, created, updated, removed_at, feature_capabilities)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type CreateBotInstallationParams struct {
@@ -33,6 +33,7 @@ type CreateBotInstallationParams struct {
 	Created              int64
 	Updated              int64
 	RemovedAt            sql.NullInt64
+	FeatureCapabilities  int64
 }
 
 func (q *Queries) CreateBotInstallation(ctx context.Context, arg CreateBotInstallationParams) error {
@@ -52,6 +53,7 @@ func (q *Queries) CreateBotInstallation(ctx context.Context, arg CreateBotInstal
 		arg.Created,
 		arg.Updated,
 		arg.RemovedAt,
+		arg.FeatureCapabilities,
 	)
 	return err
 }
@@ -220,7 +222,7 @@ func (q *Queries) FinalizeBotDeviceCredential(ctx context.Context, arg FinalizeB
 }
 
 const getActiveBotInstallationByCommunity = `-- name: GetActiveBotInstallationByCommunity :one
-SELECT id, community_id, runtime_id, user_id, device_id, role_id, state, revision, capabilities, approved_by, approved_at, credential_verified_at, created, updated, removed_at FROM bot_installations WHERE community_id = ? AND removed_at IS NULL
+SELECT id, community_id, runtime_id, user_id, device_id, role_id, state, revision, capabilities, approved_by, approved_at, credential_verified_at, created, updated, removed_at, feature_capabilities, music_volume, music_idle_minutes, restart_requested, restart_handled, runtime_version FROM bot_installations WHERE community_id = ? AND removed_at IS NULL
 `
 
 type GetActiveBotInstallationByCommunityParams struct {
@@ -246,6 +248,12 @@ func (q *Queries) GetActiveBotInstallationByCommunity(ctx context.Context, arg G
 		&i.Created,
 		&i.Updated,
 		&i.RemovedAt,
+		&i.FeatureCapabilities,
+		&i.MusicVolume,
+		&i.MusicIdleMinutes,
+		&i.RestartRequested,
+		&i.RestartHandled,
+		&i.RuntimeVersion,
 	)
 	return i, err
 }
@@ -272,7 +280,7 @@ func (q *Queries) GetBotClaim(ctx context.Context, arg GetBotClaimParams) (BotCl
 }
 
 const getBotInstallation = `-- name: GetBotInstallation :one
-SELECT id, community_id, runtime_id, user_id, device_id, role_id, state, revision, capabilities, approved_by, approved_at, credential_verified_at, created, updated, removed_at FROM bot_installations WHERE id = ?
+SELECT id, community_id, runtime_id, user_id, device_id, role_id, state, revision, capabilities, approved_by, approved_at, credential_verified_at, created, updated, removed_at, feature_capabilities, music_volume, music_idle_minutes, restart_requested, restart_handled, runtime_version FROM bot_installations WHERE id = ?
 `
 
 type GetBotInstallationParams struct {
@@ -298,6 +306,12 @@ func (q *Queries) GetBotInstallation(ctx context.Context, arg GetBotInstallation
 		&i.Created,
 		&i.Updated,
 		&i.RemovedAt,
+		&i.FeatureCapabilities,
+		&i.MusicVolume,
+		&i.MusicIdleMinutes,
+		&i.RestartRequested,
+		&i.RestartHandled,
+		&i.RuntimeVersion,
 	)
 	return i, err
 }
@@ -393,7 +407,7 @@ func (q *Queries) GetBotSessionBinding(ctx context.Context, arg GetBotSessionBin
 }
 
 const listBotInstallationsAfter = `-- name: ListBotInstallationsAfter :many
-SELECT id, community_id, runtime_id, user_id, device_id, role_id, state, revision, capabilities, approved_by, approved_at, credential_verified_at, created, updated, removed_at FROM bot_installations WHERE id > ? AND removed_at IS NULL ORDER BY id LIMIT ?2
+SELECT id, community_id, runtime_id, user_id, device_id, role_id, state, revision, capabilities, approved_by, approved_at, credential_verified_at, created, updated, removed_at, feature_capabilities, music_volume, music_idle_minutes, restart_requested, restart_handled, runtime_version FROM bot_installations WHERE id > ? AND removed_at IS NULL ORDER BY id LIMIT ?2
 `
 
 type ListBotInstallationsAfterParams struct {
@@ -426,6 +440,12 @@ func (q *Queries) ListBotInstallationsAfter(ctx context.Context, arg ListBotInst
 			&i.Created,
 			&i.Updated,
 			&i.RemovedAt,
+			&i.FeatureCapabilities,
+			&i.MusicVolume,
+			&i.MusicIdleMinutes,
+			&i.RestartRequested,
+			&i.RestartHandled,
+			&i.RuntimeVersion,
 		); err != nil {
 			return nil, err
 		}
@@ -441,7 +461,7 @@ func (q *Queries) ListBotInstallationsAfter(ctx context.Context, arg ListBotInst
 }
 
 const listBotInstallationsByDevice = `-- name: ListBotInstallationsByDevice :many
-SELECT id, community_id, runtime_id, user_id, device_id, role_id, state, revision, capabilities, approved_by, approved_at, credential_verified_at, created, updated, removed_at FROM bot_installations WHERE device_id = ? AND id > ? ORDER BY id LIMIT ?3
+SELECT id, community_id, runtime_id, user_id, device_id, role_id, state, revision, capabilities, approved_by, approved_at, credential_verified_at, created, updated, removed_at, feature_capabilities, music_volume, music_idle_minutes, restart_requested, restart_handled, runtime_version FROM bot_installations WHERE device_id = ? AND id > ? ORDER BY id LIMIT ?3
 `
 
 type ListBotInstallationsByDeviceParams struct {
@@ -475,6 +495,12 @@ func (q *Queries) ListBotInstallationsByDevice(ctx context.Context, arg ListBotI
 			&i.Created,
 			&i.Updated,
 			&i.RemovedAt,
+			&i.FeatureCapabilities,
+			&i.MusicVolume,
+			&i.MusicIdleMinutes,
+			&i.RestartRequested,
+			&i.RestartHandled,
+			&i.RuntimeVersion,
 		); err != nil {
 			return nil, err
 		}
@@ -490,7 +516,7 @@ func (q *Queries) ListBotInstallationsByDevice(ctx context.Context, arg ListBotI
 }
 
 const listBotInstallationsForRuntime = `-- name: ListBotInstallationsForRuntime :many
-SELECT id, community_id, runtime_id, user_id, device_id, role_id, state, revision, capabilities, approved_by, approved_at, credential_verified_at, created, updated, removed_at FROM bot_installations
+SELECT id, community_id, runtime_id, user_id, device_id, role_id, state, revision, capabilities, approved_by, approved_at, credential_verified_at, created, updated, removed_at, feature_capabilities, music_volume, music_idle_minutes, restart_requested, restart_handled, runtime_version FROM bot_installations
 WHERE id > ? AND removed_at IS NULL
   AND (runtime_id = ? OR (state = 0 AND runtime_id IS NULL))
 ORDER BY id LIMIT ?3
@@ -527,6 +553,12 @@ func (q *Queries) ListBotInstallationsForRuntime(ctx context.Context, arg ListBo
 			&i.Created,
 			&i.Updated,
 			&i.RemovedAt,
+			&i.FeatureCapabilities,
+			&i.MusicVolume,
+			&i.MusicIdleMinutes,
+			&i.RestartRequested,
+			&i.RestartHandled,
+			&i.RuntimeVersion,
 		); err != nil {
 			return nil, err
 		}
@@ -664,6 +696,23 @@ func (q *Queries) PutBotClaim(ctx context.Context, arg PutBotClaimParams) error 
 	return err
 }
 
+const requestBotRestart = `-- name: RequestBotRestart :one
+UPDATE bot_installations SET restart_requested = CASE WHEN restart_requested > restart_handled THEN restart_requested ELSE restart_requested + 1 END
+WHERE id = ? AND removed_at IS NULL
+RETURNING restart_requested
+`
+
+type RequestBotRestartParams struct {
+	ID id.ID
+}
+
+func (q *Queries) RequestBotRestart(ctx context.Context, arg RequestBotRestartParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, requestBotRestart, arg.ID)
+	var restart_requested int64
+	err := row.Scan(&restart_requested)
+	return restart_requested, err
+}
+
 const revokeBotRuntime = `-- name: RevokeBotRuntime :execrows
 UPDATE bot_runtimes SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL
 `
@@ -705,8 +754,53 @@ func (q *Queries) RotateBotRuntime(ctx context.Context, arg RotateBotRuntimePara
 	return result.RowsAffected()
 }
 
+const setBotMusicSettings = `-- name: SetBotMusicSettings :execrows
+UPDATE bot_installations SET music_volume = ?, music_idle_minutes = ?
+WHERE id = ? AND removed_at IS NULL
+`
+
+type SetBotMusicSettingsParams struct {
+	MusicVolume      int64
+	MusicIdleMinutes int64
+	ID               id.ID
+}
+
+func (q *Queries) SetBotMusicSettings(ctx context.Context, arg SetBotMusicSettingsParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setBotMusicSettings, arg.MusicVolume, arg.MusicIdleMinutes, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const setBotRuntimeStatus = `-- name: SetBotRuntimeStatus :execrows
+UPDATE bot_installations SET runtime_version = ?1,
+  restart_handled = CASE WHEN ?2 > restart_handled THEN MIN(?2, restart_requested) ELSE restart_handled END
+WHERE id = ?3 AND runtime_id = ?4 AND removed_at IS NULL
+`
+
+type SetBotRuntimeStatusParams struct {
+	RuntimeVersion sql.NullString
+	Handled        int64
+	ID             id.ID
+	RuntimeID      *id.ID
+}
+
+func (q *Queries) SetBotRuntimeStatus(ctx context.Context, arg SetBotRuntimeStatusParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setBotRuntimeStatus,
+		arg.RuntimeVersion,
+		arg.Handled,
+		arg.ID,
+		arg.RuntimeID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const updateBotInstallation = `-- name: UpdateBotInstallation :execrows
-UPDATE bot_installations SET runtime_id = ?, user_id = ?, device_id = ?, role_id = ?, state = ?, revision = ?, capabilities = ?, approved_by = ?, approved_at = ?, credential_verified_at = ?, updated = ?, removed_at = ?
+UPDATE bot_installations SET runtime_id = ?, user_id = ?, device_id = ?, role_id = ?, state = ?, revision = ?, capabilities = ?, approved_by = ?, approved_at = ?, credential_verified_at = ?, updated = ?, removed_at = ?, feature_capabilities = ?
 WHERE id = ? AND revision = ? AND removed_at IS NULL
 `
 
@@ -723,6 +817,7 @@ type UpdateBotInstallationParams struct {
 	CredentialVerifiedAt sql.NullInt64
 	Updated              int64
 	RemovedAt            sql.NullInt64
+	FeatureCapabilities  int64
 	ID                   id.ID
 	Revision_2           int64
 }
@@ -741,6 +836,7 @@ func (q *Queries) UpdateBotInstallation(ctx context.Context, arg UpdateBotInstal
 		arg.CredentialVerifiedAt,
 		arg.Updated,
 		arg.RemovedAt,
+		arg.FeatureCapabilities,
 		arg.ID,
 		arg.Revision_2,
 	)

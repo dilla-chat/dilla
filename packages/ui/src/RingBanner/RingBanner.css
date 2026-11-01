@@ -1,15 +1,21 @@
-.d-ring-banner { background: var(--surface-2); border: 1px solid var(--accent); border-left-width: 3px; border-radius: var(--r-md); }
+/* Signal (README §13): the ring on --surface-2 with the --ok edge, 10px corners; the caller's avatar rings with the d-ring wave
+   (1 → 1.5, 0.6 → 0) while the call is incoming; Answer on --ok, Decline as the plain button. */
+.d-ring-banner { background: var(--surface-2); border: 1px solid var(--ok-border); border-radius: var(--r-xl); }
 .d-ring-banner__list { margin: 0; padding: 0; list-style: none; }
-.d-ring-banner__ring { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; padding: 0.5rem 0.75rem; }
-.d-ring-banner__ring + .d-ring-banner__ring { border-top: 1px solid var(--hairline-2); }
-.d-ring-banner__text { flex: 1 1 14rem; margin: 0; min-width: 0; font-size: var(--text-base); color: var(--fg); }
-.d-ring-banner__actions { display: flex; gap: 0.5rem; }
-.d-ring-banner__actions .d-btn { height: auto; min-height: 2.5rem; min-width: 2.5rem; padding: 0 1rem; justify-content: center; }
-@media (prefers-reduced-motion: no-preference) {
-  .d-ring-banner__ring[data-ring="incoming"] .d-ring-banner__glyph { animation: d-ring-pulse var(--duration-pulse) ease-in-out infinite; }
+.d-ring-banner__ring { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; padding: 0.625rem 0.75rem; }
+.d-ring-banner__ring + .d-ring-banner__ring { border-top: 1px solid var(--hairline); }
+.d-ring-banner__glyph { position: relative; display: inline-flex; flex: none; border-radius: var(--r-avatar); }
+.d-ring-banner__ring[data-ring="incoming"] .d-ring-banner__glyph::after {
+  content: ""; position: absolute; inset: 0; border-radius: inherit; box-shadow: 0 0 0 2px var(--ok); pointer-events: none;
+  animation: d-ring var(--duration-pulse) var(--ease-out) infinite;
 }
-@keyframes d-ring-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
-@media (max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem) {
-  .d-ring-banner__actions { flex: 1 1 100%; justify-content: space-between; }
-  .d-ring-banner__actions .d-btn { min-height: 2.75rem; min-width: 2.75rem; flex: 1 1 0; }
+.d-ring-banner__text { flex: 1 1 14rem; margin: 0; min-width: 0; font-size: var(--text-ui); font-weight: var(--weight-label); color: var(--fg); }
+.d-ring-banner__actions { display: flex; gap: 0.375rem; }
+.d-ring-banner__actions .d-btn { height: 2rem; min-width: 2.75rem; padding: 0 0.875rem; justify-content: center; }
+.d-ring-banner__actions .d-ring-banner__answer { color: var(--ok-ink); background: var(--ok); border-color: var(--ok); font-weight: var(--weight-display); }
+.d-ring-banner__actions .d-ring-banner__answer:hover { background: var(--ok); filter: brightness(1.08); }
+@media (prefers-reduced-motion: reduce) {
+  .d-ring-banner__ring[data-ring="incoming"] .d-ring-banner__glyph::after { animation: none; }
 }
+[data-layout="phone"] .d-ring-banner__actions { flex: 1 1 100%; }
+[data-layout="phone"] .d-ring-banner__actions .d-btn { flex: 1 1 0; }

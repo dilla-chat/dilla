@@ -46,6 +46,31 @@ func TestRuntimeClaimSpotifyCodeStrictlyDecodesBrokerReceipt(t *testing.T) {
 	}
 }
 
+func TestRuntimeSpotifyConfigurationReadsCommunitySetting(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/bot-runtime/installations/"+testID(7).String()+"/spotify/config" || r.Header.Get("Authorization") != "Bearer runtime" {
+			t.Errorf("request = %s %s auth=%q", r.Method, r.URL.Path, r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "application/cbor")
+		b, _ := cborx.Marshal([]any{"publicclient", "https://dilla.test/settings/bot/music/spotify/callback"})
+		_, _ = w.Write(b)
+	}))
+	defer srv.Close()
+	c, err := New(Config{BaseURL: srv.URL, HTTPClient: srv.Client(), InstanceID: testID(1), AllowLoopbackHTTP: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.discovered.Store(true)
+	r, err := c.Runtime("runtime")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := r.SpotifyConfiguration(context.Background(), testID(7))
+	if err != nil || got.ClientID != "publicclient" || got.RedirectURL != "https://dilla.test/settings/bot/music/spotify/callback" {
+		t.Fatalf("config = %+v, %v", got, err)
+	}
+}
+
 func TestRuntimeClaimSpotifyCodeRejectsMalformedReceipt(t *testing.T) {
 	for _, payload := range [][]any{{id.New(), "code", "verifier", "extra"}, {id.New(), "", "verifier"}, {id.ID{}, "code", "verifier"}, {id.New(), "code", ""}, {id.New(), "code", strings.Repeat("v", 42)}, {id.New(), "code", strings.Repeat("v", 42) + " "}} {
 		t.Run("malformed", func(t *testing.T) {

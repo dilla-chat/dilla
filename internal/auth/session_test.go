@@ -568,6 +568,7 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 		{name: "ready bot can enter dedicated interaction heal status route", pattern: "GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/heal", method: http.MethodGet, allow: true},
 		{name: "ready bot can enter dedicated interaction heal route", pattern: "POST /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/heal", method: http.MethodPost, allow: true},
 		{name: "ready bot can enter dedicated interaction cursor route", pattern: "POST /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/cursor", method: http.MethodPost, allow: true},
+		{name: "ready bot cannot enter human command status route", pattern: "GET /v1/communities/{community}/bot/command-status", method: http.MethodGet},
 		{name: "ready bot cannot use a foreign installation path", pattern: "GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/info", method: http.MethodGet, installation: id.New().String()},
 		{name: "ready bot cannot use a foreign community group", pattern: "GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/info", method: http.MethodGet, group: foreignGroup.String()},
 		{name: "ready bot cannot use generic group messages route", pattern: "GET /v1/groups/{id}/messages", method: http.MethodGet},
@@ -600,6 +601,62 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 			}
 		})
 	}
+	channelAuthorityPattern := "GET /v1/communities/{community}/bot/actors/{actor}/channels/{channel}/authority"
+	for _, tc := range []struct {
+		name, communityID, actorID, channelID string
+		wantNext                              bool
+	}{
+		{name: "ready bot can resolve a live channel in its community", communityID: community.ID.String(), actorID: owner.String(), channelID: voiceChannel.ID.String(), wantNext: true},
+		{name: "wrong community is denied", communityID: id.New().String(), actorID: owner.String(), channelID: voiceChannel.ID.String()},
+		{name: "foreign channel is denied", communityID: community.ID.String(), actorID: owner.String(), channelID: foreignChannel.ID.String()},
+		{name: "malformed actor is denied", communityID: community.ID.String(), actorID: id.ID{}.String(), channelID: voiceChannel.ID.String()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			called := false
+			h := s.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }), auth.ScopeEnrolled)
+			r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+			r.Header.Set("Authorization", "Bearer "+tok.Token)
+			r.Pattern = channelAuthorityPattern
+			r.SetPathValue("community", tc.communityID)
+			r.SetPathValue("actor", tc.actorID)
+			r.SetPathValue("channel", tc.channelID)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if called != tc.wantNext {
+				t.Fatalf("next called=%v, want %v; response=%d %s", called, tc.wantNext, w.Code, w.Body.String())
+			}
+		})
+	}
+	readyInstallation, err := repo.GetBotInstallation(ctx, installation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabledInstallation := readyInstallation
+	disabledInstallation.State = store.BotInstallationDisabled
+	disabledInstallation.Revision++
+	disabledInstallation.Updated = clk.Now().Unix()
+	if err := repo.UpdateBotInstallation(ctx, installation.ID, readyInstallation.Revision, disabledInstallation); err != nil {
+		t.Fatal(err)
+	}
+	calledDisabled := false
+	disabledGuard := s.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calledDisabled = true }), auth.ScopeEnrolled)
+	disabledReq := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+	disabledReq.Header.Set("Authorization", "Bearer "+tok.Token)
+	disabledReq.Pattern = channelAuthorityPattern
+	disabledReq.SetPathValue("community", community.ID.String())
+	disabledReq.SetPathValue("actor", owner.String())
+	disabledReq.SetPathValue("channel", voiceChannel.ID.String())
+	disabledResp := httptest.NewRecorder()
+	disabledGuard.ServeHTTP(disabledResp, disabledReq)
+	if calledDisabled {
+		t.Fatal("disabled installation reached channel authority handler")
+	}
+	disabledInstallation.State = store.BotInstallationReady
+	disabledInstallation.Revision++
+	disabledInstallation.Updated = clk.Now().Unix()
+	if err := repo.UpdateBotInstallation(ctx, installation.ID, disabledInstallation.Revision-1, disabledInstallation); err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
 		name, pattern, method, pathName, pathValue string
 	}{
@@ -616,6 +673,7 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 		{name: "ready bot can end own community call", pattern: "DELETE /v1/calls/{call_id}", method: http.MethodDelete, pathName: "call_id", pathValue: callID.String()},
 		{name: "ready bot can share own community call", pattern: "POST /v1/calls/{call_id}/share", method: http.MethodPost, pathName: "call_id", pathValue: callID.String()},
 		{name: "ready bot can decline own community call", pattern: "POST /v1/calls/{call_id}/decline", method: http.MethodPost, pathName: "call_id", pathValue: callID.String()},
+		{name: "ready bot can report its rtt in own community call", pattern: "POST /v1/calls/{call_id}/rtt", method: http.MethodPost, pathName: "call_id", pathValue: callID.String()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			called := false

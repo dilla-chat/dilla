@@ -48,12 +48,24 @@ type SweepReport struct {
 // by the same run.
 func (d *DS) Sweep(ctx context.Context) (SweepReport, error) {
 	var report SweepReport
+	// Whatever this tick did, or failed to do, the outstanding-proposals gauge ends it equal to SQL:
+	// that corrects the paths that end a proposal without decrementing (proposal_gauge.go).
+	defer func() {
+		if err := d.seedProposalGauge(ctx); err != nil {
+			d.log().Error("re-seeding the outstanding-proposals gauge failed", "err", err)
+		}
+	}()
 
 	voided, err := d.sweepProposals(ctx)
 	if err != nil {
 		return report, err
 	}
-	report.ProposalsVoided = voided
+	// A closed group's proposals are past every walk above, which reads open groups only.
+	closedVoided, err := d.voidClosedGroupProposals(ctx)
+	if err != nil {
+		d.log().Error("voiding closed-group proposals failed", "err", err)
+	}
+	report.ProposalsVoided = voided + closedVoided
 
 	// After the void, which frees the room a voided Add held: a join storm no commit re-drives —
 	// its Adds voided by invariant 6's TTL, or its tail carried across a restart — takes its next

@@ -131,6 +131,9 @@ func (d *DS) PublishKeyPackages(ctx context.Context, s Session, packages [][]byt
 	// Preserve the human publication route's cheap full-directory refusal before WASI work. This
 	// preflight follows the same generation → user → device lock order as final admission; capacity
 	// is checked again in the write transaction because concurrent publishers may race after it.
+	// accountKind is users.kind, read in the preflight below; every package's credential must
+	// carry it (checkCredentialKind's rule, Task S1).
+	var accountKind uint8
 	if err := d.opts.Store.Tx(ctx, func(tx store.Repository) error {
 		if err := tx.LockInstanceGeneration(ctx); err != nil {
 			return err
@@ -155,6 +158,7 @@ func (d *DS) PublishKeyPackages(ctx context.Context, s Session, packages [][]byt
 		if user.DisabledAt != nil || user.DeletedAt != nil || user.Flags != 0 {
 			return errForbidden("the publishing account is disabled or deleted")
 		}
+		accountKind = user.Kind
 		currentDevice, err := tx.GetDevice(ctx, s.DeviceID)
 		if err != nil || currentDevice.UserID != s.UserID || currentDevice.RevokedAt != nil || currentDevice.QuarantinedAt != nil || string(currentDevice.DSKPub) != string(device.DSKPub) {
 			return errForbidden("the publishing device authority changed")
@@ -197,6 +201,17 @@ func (d *DS) PublishKeyPackages(ctx context.Context, s Session, packages [][]byt
 		if !leafKeyIsRegistered(device, info.SignatureKey) {
 			return errCommitInvalid("key_package",
 				"the package's leaf signature key is not the device's registered key")
+		}
+		// The credential's self-signed kind must fit the publishing account (Task S1,
+		// checkCredentialKind's rule): a human account may not publish a Bot-kind leaf. An
+		// unreadable kind is a refusal.
+		kind, err := decodeCredentialKind(info.Credential)
+		if err == nil {
+			err = accountKindVerdict(accountKind, kind)
+		}
+		if err != nil {
+			return errCommitInvalid("key_package",
+				"the package's credential kind is not the publishing account's kind")
 		}
 		if info.LastResort != last {
 			return errCommitInvalid("key_package",

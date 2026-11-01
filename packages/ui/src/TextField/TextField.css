@@ -1,9 +1,10 @@
 .d-text-field { display: grid; gap: 0.375rem; min-width: 0; }
-.d-text-field__label { font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking); text-transform: uppercase; color: var(--fg-3); }
-.d-text-field__input { width: 100%; height: 2.25rem; padding: 0 0.625rem; font: inherit; font-size: var(--text-base); color: var(--fg); background: var(--surface-2); border: 1px solid var(--edge); border-radius: var(--r-md); transition: border-color var(--duration-fast); }
-textarea.d-text-field__input { height: auto; min-height: 2.25rem; padding: 0.5rem 0.625rem; line-height: 1.4; resize: vertical; }
+.d-text-field__label { font-size: var(--text-xs); color: var(--fg-2); }
+.d-text-field__input { width: 100%; height: 2.25rem /* the prototype's 34px content + its 1px border, 36 */; padding: 0 0.75rem; font: inherit; font-size: var(--text-input); color: var(--fg); background: var(--surface-2); border: 1px solid var(--control-edge-field); border-radius: var(--r-seg); transition: border-color var(--duration-fast); }
+textarea.d-text-field__input { height: auto; min-height: 2.125rem; padding: 0.5rem 0.75rem; line-height: 1.4; resize: vertical; }
 .d-text-field__input:hover { border-color: var(--fg-3); }
 .d-text-field__input[aria-invalid="true"] { border-color: var(--danger); }
+.d-text-field__input:focus-visible { border-color: var(--accent); }
 .d-text-field__input:disabled { opacity: var(--opacity-muted); cursor: not-allowed; }
 .d-text-field__hint { margin: 0; font-size: var(--text-sm); color: var(--fg-3); }
 .d-text-field__error { margin: 0; font-size: var(--text-sm); color: var(--danger); }

@@ -1,14 +1,16 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
 import type { ActionMenuItem } from '../ActionMenu/ActionMenu.tsx';
-import { Avatar, type Presence } from '../Avatar/Avatar.tsx';
+import { Avatar, avatarStyle, type Presence } from '../Avatar/Avatar.tsx';
 import { focusReturnTarget } from '../Dialog/Dialog.tsx';
 import { Icon } from '../Icon/Icon.tsx';
-import { RoleDot } from '../internal/RoleDot.tsx';
+import { hex } from '../internal/hex.ts';
 import { usePhoneLayout } from '../internal/phoneLayout.ts';
 import { PRESENCE_WORD } from '../internal/presenceWord.ts';
 import './ProfileCard.css';
 
-export interface ProfileCardRole { name: string; /** 0xRRGGBB; null, 0 or left out: no swatch. */ color?: number | null }
+export interface ProfileCardRole { name: string; /** 0xRRGGBB; null, 0 or left out: the --fg-2 dot (the prototype's @everyone). */ color?: number | null }
+/** An action: `primary` is the accent button with its label (Message); the others are 34px glyph buttons named by `label` (task 9). */
+export type ProfileCardAction = ActionMenuItem & { primary?: boolean };
 
 export interface ProfileCardProps {
   /** The display name, which also names the dialog. */
@@ -21,9 +23,13 @@ export interface ProfileCardProps {
   bio?: string;
   isOwner?: boolean;
   isYou?: boolean;
+  /** A bot: the rounded-square avatar. */
+  isBot?: boolean;
+  /** The client tag after the name (the prototype's WEB), when the caller knows it. */
+  client?: string;
   roles: readonly ProfileCardRole[];
-  /** Message, compare safety numbers, and kick and ban when the viewer may: the caller decides which. */
-  actions: readonly ActionMenuItem[];
+  /** Message (primary), compare safety numbers and edit roles, as the prototype's card row: the caller decides which. */
+  actions: readonly ProfileCardAction[];
   onAction(actionId: string): void;
   onClose(): void;
   /** The row the card was opened from: the popover sits beside it and focus returns to it on close. */
@@ -42,9 +48,13 @@ export interface ProfileCardProps {
   presenceLabels?: Partial<Record<Presence, string>>;
   /** Where focus goes on close when the anchor is gone (and no row carries its focus key). */
   fallbackFocus?: () => HTMLElement | null;
+  /** Restricts trigger lookup to a workspace when another covered surface has matching focus keys. */
+  focusScope?: ParentNode | null;
 }
 
 const GAP = 8;
+/** A bot's band takes the hue of its --brand square (#005799), as the prototype's Glenn (205). */
+const BOT_HUE = 206;
 const FOCUSABLE = 'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
 
 /**
@@ -55,8 +65,8 @@ const FOCUSABLE = 'button:not(:disabled), [href], input:not(:disabled), select:n
  * room, else right); on a phone it is a modal sheet from the bottom over a scrim.
  */
 export function ProfileCard({
-  name, username, presence, status, bio, isOwner = false, isYou = false, roles, actions, onAction, onClose, anchor, layout, placement = 'side',
-  bioLabel = 'about', ownerLabel = 'owner', youLabel = 'you', rolesLabel = 'roles', closeLabel = 'Close', presenceLabels, fallbackFocus,
+  name, username, presence, status, bio, isOwner = false, isBot = false, client, roles, actions, onAction, onClose, anchor, layout, placement = 'side',
+  bioLabel = 'about', ownerLabel = 'owner', rolesLabel = 'roles', closeLabel = 'Close', presenceLabels, fallbackFocus, focusScope,
 }: ProfileCardProps) {
   const phone = usePhoneLayout();
   const mode = layout ?? (phone ? 'sheet' : 'popover');
@@ -68,7 +78,9 @@ export function ProfileCard({
   const [at, setAt] = useState<{ x: number; y: number } | null>(null);
   const onCloseRef = useRef(onClose);
   const fallbackRef = useRef(fallbackFocus);
+  const focusScopeRef = useRef(focusScope);
   fallbackRef.current = fallbackFocus;
+  focusScopeRef.current = focusScope;
   onCloseRef.current = onClose;
 
   // The bio box is a tab stop only while it overflows (WCAG 2.1.1: a keyboard reaches what scrolls, and nothing else gets a stop).
@@ -86,12 +98,13 @@ export function ProfileCard({
   // Focus moves in on open and back to the row on close (resolved then: the row may have been re-mounted meanwhile).
   useEffect(() => {
     const el = ref.current;
-    (el?.querySelector<HTMLElement>('.d-profile-card__action') ?? el?.querySelector<HTMLElement>('.d-profile-card__close'))?.focus();
+    // The first action, else the card itself (the keyboard's close shows only when Tab reaches it, as the prototype draws none).
+    (el?.querySelector<HTMLElement>('.d-profile-card__action, .d-profile-card__icon-action') ?? el)?.focus();
     return () => {
       const active = document.activeElement;
       const inside = active === null || active === document.body || el?.contains(active) === true;
       if (!inside) return;
-      focusReturnTarget(opener.current, () => fallbackRef.current?.())?.focus();
+      focusReturnTarget(opener.current, () => fallbackRef.current?.(), focusScopeRef.current)?.focus();
     };
   }, []);
 
@@ -155,40 +168,50 @@ export function ProfileCard({
     else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
   };
 
-  const style: CSSProperties | undefined = mode === 'popover' ? { position: 'fixed', left: `${at?.x ?? 0}px`, top: `${at?.y ?? 0}px` } : undefined;
+  const style = { ...(mode === 'popover' ? { position: 'fixed', left: `${at?.x ?? 0}px`, top: `${at?.y ?? 0}px` } : {}), ...(isBot ? { '--avatar-hue': String(BOT_HUE) } : avatarStyle(name)) } as CSSProperties;
+  const word = presence === undefined ? null : presenceLabels?.[presence] ?? PRESENCE_WORD[presence];
+  // The prototype's line: "@handle · status", the status being the custom one, else the presence word.
+  const line = [username === '' ? null : `@${username}`, status ? null : word].filter(v => v !== null).join(' · ');
+  const primary = actions.find(a => a.primary === true);
+  const rest = actions.filter(a => a !== primary);
   const card = (
     <div ref={ref} className="d-profile-card" role="dialog" aria-modal={mode === 'sheet' ? true : undefined} aria-labelledby={titleId} data-layout={mode} style={style}
       tabIndex={-1} onKeyDown={onKeyDown} onClick={e => e.stopPropagation()}>
-      <div className="d-profile-card__head">
-        <Avatar name={name} size="lg" />
-        <div className="d-profile-card__who">
+      {/* Task 9, the prototype's card: a 56px band in the person's hue (135°), the 56px avatar over it in a 4px ring. */}
+      <div className="d-profile-card__band" aria-hidden="true" />
+      <div className="d-profile-card__body">
+        <span className="d-profile-card__avatar" aria-hidden="true"><Avatar name={name} size="card" shape={isBot ? 'bot' : 'circle'} /></span>
+        <div className="d-profile-card__title">
           <h2 id={titleId} className="d-profile-card__name">{name}</h2>
-          {username === '' ? null : <p className="d-profile-card__username">@{username}</p>}
-          {presence !== undefined || status ? (
-            <p className="d-profile-card__status" data-presence={presence}>{presence === undefined ? null : <span>{presenceLabels?.[presence] ?? PRESENCE_WORD[presence]}</span>}{presence !== undefined && status ? ' · ' : null}{status ? <bdi dir="auto">{status}</bdi> : null}</p>
-          ) : null}
+          {isOwner ? <span className="d-profile-card__crown" role="img" aria-label={ownerLabel}><Icon name="crown" size={13} /></span> : null}
+          {client === undefined ? null : <span className="d-profile-card__client">{client}</span>}
         </div>
-        <button type="button" className="d-profile-card__close" aria-label={closeLabel} onClick={onClose}><Icon name="x" size={18} /></button>
+        {line !== '' || status ? (
+          <p className="d-profile-card__status" data-presence={presence}>{line}{line !== '' && status ? ' · ' : null}{status ? <bdi dir="auto">{status}</bdi> : null}{status && word !== null ? <span className="d-sr-only">{`, ${word}`}</span> : null}</p>
+        ) : null}
+        {bio ? <div ref={aboutRef} className="d-profile-card__about" role="group" aria-label={bioLabel} tabIndex={scrolls ? 0 : undefined}><p className="d-profile-card__bio" dir="auto">{bio}</p></div> : null}
+        {roles.length > 0 ? (
+          <ul className="d-profile-card__roles" role="list" aria-label={rolesLabel}>
+            {roles.map(r => <li key={r.name} className="d-profile-card__role"><span className="d-profile-card__role-dot" aria-hidden="true" style={r.color ? { background: hex(r.color) } : undefined} />{r.name}</li>)}
+          </ul>
+        ) : null}
+        {actions.length > 0 ? (
+          <div className="d-profile-card__actions" role="group" aria-label={name} data-primary={primary === undefined ? undefined : 'true'}>
+            {primary === undefined ? null : (
+              <button type="button" className="d-profile-card__action" onClick={() => onAction(primary.id)}>
+                {primary.icon === undefined ? null : <Icon name={primary.icon} size={14} />}{primary.label}
+              </button>
+            )}
+            {rest.map(a => (
+              <button key={a.id} type="button" className="d-profile-card__icon-action" aria-label={a.label} title={a.label} data-danger={a.danger ? 'true' : undefined} onClick={() => onAction(a.id)}>
+                {a.icon === undefined ? a.label : <Icon name={a.icon} size={15} />}
+              </button>
+            ))}
+          </div>
+        ) : null}
       </div>
-      {bio ? <div ref={aboutRef} className="d-profile-card__about" role="group" aria-label={bioLabel} tabIndex={scrolls ? 0 : undefined}><p className="d-profile-card__bio" dir="auto">{bio}</p></div> : null}
-      {isOwner || isYou ? (
-        <p className="d-profile-card__marks">
-          {isOwner ? <span className="d-profile-card__mark"><Icon name="crown" size={14} />{ownerLabel}</span> : null}
-          {isYou ? <span className="d-profile-card__mark">{youLabel}</span> : null}
-        </p>
-      ) : null}
-      {roles.length > 0 ? (
-        <ul className="d-profile-card__roles" role="list" aria-label={rolesLabel}>
-          {roles.map(r => <li key={r.name} className="d-profile-card__role">{r.color ? <RoleDot color={r.color} /> : null}{r.name}</li>)}
-        </ul>
-      ) : null}
-      {actions.length > 0 ? (
-        <div className="d-profile-card__actions" role="group" aria-label={name}>
-          {actions.map(a => (
-            <button key={a.id} type="button" className="d-profile-card__action" data-danger={a.danger ? 'true' : undefined} onClick={() => onAction(a.id)}>{a.label}</button>
-          ))}
-        </div>
-      ) : null}
+      {/* The prototype draws no close control: Escape, the scrim and a click outside close it. This one is for a keyboard and a screen reader, shown only while focused. */}
+      <button type="button" className="d-profile-card__close" aria-label={closeLabel} onClick={onClose}><Icon name="x" size={15} /></button>
     </div>
   );
   return mode === 'sheet' ? <div className="d-profile-card__scrim" onClick={onClose}>{card}</div> : card;

@@ -35,4 +35,10 @@ describe('PhoneHeader', () => {
     const { container } = render(<div className="d-root"><PhoneHeader title="general" backLabel="back" onBack={() => {}} /></div>);
     await expectNoAxeViolations(container);
   });
+  it('shows the topic after the title when given (Signal §5.10), and none without one', () => {
+    const { container, rerender } = render(<PhoneHeader title="general" topic="raids, plans and the bridge troll" />);
+    expect(container.querySelector('.d-phone-header__topic')).toHaveTextContent('raids, plans and the bridge troll');
+    rerender(<PhoneHeader title="general" />);
+    expect(container.querySelector('.d-phone-header__topic')).toBeNull();
+  });
 });

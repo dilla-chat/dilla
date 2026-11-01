@@ -262,7 +262,7 @@ fn interaction_inspect(
 
     let admission = core
         .bot_inspect_stored_interaction_group(&group, &snapshot, &expected)
-        .map_err(map_client)?;
+        .map_err(map_interaction_read)?;
     let row = core.group_row(&group).map_err(map_client)?;
     let (state, epoch, next_sequence, pending_commit) = decode_strict(&row, |d| {
         d.array(9)?;
@@ -392,7 +392,7 @@ fn interaction_apply(
             &messages,
             through,
         )
-        .map_err(map_client)?;
+        .map_err(map_interaction_read)?;
     Ok(Zeroizing::new(body(result)))
 }
 
@@ -414,7 +414,7 @@ fn interaction_cursor(
     }
     Ok(Zeroizing::new(body(
         core.bot_interaction_group_cursor(&group, &snapshot, &expected)
-            .map_err(map_client)?,
+            .map_err(map_interaction_read)?,
     )))
 }
 
@@ -854,12 +854,39 @@ fn private_core_error_class(code: &str) -> &'static str {
     }
 }
 
+fn map_interaction_read(error: ClientError) -> DispatchError {
+    if std::env::var_os("DILLA_BOT_PRIVATE_DIAGNOSTICS").as_deref()
+        == Some(std::ffi::OsStr::new("1"))
+    {
+        eprintln!(
+            "dilla_bot_helper interaction_read_refusal={}",
+            interaction_create_refusal_class(&error)
+        );
+    }
+    map_client(error)
+}
+
 fn interaction_create_refusal_class(error: &ClientError) -> &'static str {
+    if error.code == "E_CORE_STATE" {
+        return match error.detail.as_str() {
+            "native Bot binding mismatch" => "binding_mismatch",
+            "interaction user-key pin is unavailable" => "user_pin_unavailable",
+            "interaction device-list pin is unavailable" => "device_pin_unavailable",
+            "group already exists" => "group_exists",
+            "participant device already has an interaction group" => "participant_exists",
+            "bot upload intent conflicts with an existing operation" => "intent_conflict",
+            "interaction group could not be loaded" => "group_load",
+            "interaction group is unavailable" => "group_unavailable",
+            _ => "core_state",
+        };
+    }
     if error.code != "E_CORE_INPUT" {
         return private_core_error_class(error.code);
     }
     match error.detail.as_str() {
         "interaction context snapshot rejected" => "snapshot_verification",
+        "interaction device-list trust state changed" => "device_trust_changed",
+        "interaction snapshot is stale or from the future" => "snapshot_clock",
         "interaction user-key pin is unavailable" => "snapshot_pin_unavailable",
         "interaction create rejected: key_package_decode" => "key_package_decode",
         "interaction create rejected: key_package_kind" => "key_package_kind",
@@ -1047,7 +1074,7 @@ pub(crate) fn cursor_ack(
             return Err(DispatchError::Invalid);
         }
         core.bot_ack_interaction_group_cursor(&group, &snapshot, &expected, seq, epoch)
-            .map_err(map_client)?;
+            .map_err(map_interaction_read)?;
     } else {
         group_scope(core, bind, &group)?;
         core.cursor_acked(&group, seq, epoch).map_err(map_client)?;
@@ -1093,6 +1120,22 @@ mod tests {
             }),
             "core_input"
         );
+        for (detail, expected) in [
+            (
+                "participant device already has an interaction group",
+                "participant_exists",
+            ),
+            ("interaction group could not be loaded", "group_load"),
+            ("private identity material", "core_state"),
+        ] {
+            assert_eq!(
+                interaction_create_refusal_class(&ClientError {
+                    code: "E_CORE_STATE",
+                    detail: detail.into(),
+                }),
+                expected
+            );
+        }
     }
 
     fn bot() -> ClientCore {

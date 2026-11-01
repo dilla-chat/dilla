@@ -20,7 +20,7 @@ import { Composer } from '../Composer/Composer.tsx';
 import { Dialog } from '../Dialog/Dialog.tsx';
 import { Banner } from '../Banner/Banner.tsx';
 import { Button } from '../Button/Button.tsx';
-import { StatusBar, StatusChunk } from '../StatusBar/StatusBar.tsx';
+import { TopBar } from '../TopBar/TopBar.tsx';
 import { t } from '../../../web/src/strings/index.ts';
 import { reactionName } from '../../../web/src/emoji.ts';
 
@@ -51,17 +51,14 @@ function Screen({ main, composer, after }: { main: ReactNode; composer?: ReactNo
       composer={composer ?? <Composer label={t('shell.composer.label', { channel: 'general' })}
         placeholder={t('shell.composer.placeholder', { channel: 'general' })} maxLength={4000} value="" onChange={noop}
         onSend={noop} sendLabel={t('shell.composer.send')} counterLabel={counter} attachLabel={t('shell.composer.attach')} onAttach={noop} />}
-      statusBar={<StatusBar position="bottom" label={t('shell.status.label')}>
-        <StatusChunk label={t('shell.status.node')}>dilla.test</StatusChunk>
-        <StatusChunk label={t('shell.status.link')} tone="ok">{t('shell.status.online')}</StatusChunk>
-        <StatusChunk label={t('shell.status.gen')}>7</StatusChunk>
-      </StatusBar>}>
+      topBar={<TopBar searchLabel={t('topbar.search')} searchShortcut="⌘K" onSearch={noop} remindersDue={0} onReminders={noop} onSettings={noop}
+        labels={{ reminders: t('reminder.inbox'), settings: t('workspace.open'), voice: t('nav.call.open', { where: 'harbour' }) }} />}>
       {main}
     </AppShell>{after}
   </div>;
 }
 
-const toolbar = <MessageToolbar label={t('shell.message.toolbar')} tabbable items={[
+const toolbar = <MessageToolbar moreLabel="more actions" label={t('shell.message.toolbar')} tabbable items={[
   { id: 'react', label: t('shell.message.react'), onAction: noop },
   { id: 'reply', label: t('shell.message.reply'), onAction: noop },
   { id: 'edit', label: t('shell.message.edit'), onAction: noop },

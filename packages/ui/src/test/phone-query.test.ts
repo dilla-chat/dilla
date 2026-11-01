@@ -45,15 +45,14 @@ function rules(css: string): Array<{ selector: string; body: string }> {
 describe('R9: the phone media query', () => {
   it('every @media rule with 47.99rem in packages/ui reads the full phone query', () => {
     const found = files.flatMap(f => preludes(f.css, 'media').map(p => ({ file: f.file, prelude: p })));
-    expect(found.length).toBe(14); // web3.9 FA1 added Button, SettingsRow, Toggle, VoiceSettings
+    expect(found.length).toBe(8); // Task 10: SettingsRow and VoiceSettings left the tier (prototype sizes on a phone). SettingsFrame, and since Signal task 8 CallStage, CallTile and RingBanner, get phone geometry from the shell's data-layout.
     for (const { file, prelude } of found) expect(`${file}: ${prelude}`).toBe(`${file}: ${PHONE_MEDIA}`);
   });
 
   it('the eight rules R9 names are all there', () => {
-    const named = ['AttachmentCard/AttachmentCard.css', 'CallTile/CallTile.css', 'CallStage/CallStage.css', 'MediaPlayer/MediaPlayer.css',
-      'RingBanner/RingBanner.css', 'CallControls/CallControls.css', 'styles/base.css'];
+    const named = ['AttachmentCard/AttachmentCard.css', 'MediaPlayer/MediaPlayer.css', 'CallControls/CallControls.css', 'styles/base.css'];
     for (const n of named) expect(files.find(f => f.file === n)?.css.includes(PHONE_MEDIA), n).toBe(true);
-    expect(files.find(f => f.file === 'styles/base.css')?.css.split(PHONE_MEDIA).length).toBe(3);
+    expect(files.find(f => f.file === 'styles/base.css')?.css.split(PHONE_MEDIA).length).toBe(2);
   });
 });
 
@@ -66,8 +65,9 @@ describe('R9: the @container twins', () => {
     return out;
   });
 
-  it('finds the three @container d-shell blocks (base.css and MessageRow.css twice)', () => {
-    expect(containers.map(c => c.file).sort()).toEqual(['MessageRow/MessageRow.css', 'MessageRow/MessageRow.css', 'styles/base.css']);
+  // Task 7: MessageRow.css lost its two blocks (the toolbar floats and the thread chip is 24px at every width, as in the prototype).
+  it('finds the one @container d-shell block (base.css)', () => {
+    expect(containers.map(c => c.file).sort()).toEqual(['styles/base.css']);
     expect(containers.every(c => c.body.length > 0)).toBe(true);
   });
 

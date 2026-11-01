@@ -29,7 +29,7 @@ class FakeNotification {
 
 afterEach(() => { vi.unstubAllGlobals(); });
 
-function setup(opts: { settings?: Record<string, string>; permission?: NotificationPermission | null } = {}) {
+function setup(opts: { settings?: Record<string, string>; permission?: NotificationPermission | null; server?: string | null } = {}) {
   if (opts.permission !== null) {
     FakeNotification.permission = opts.permission ?? 'default';
     FakeNotification.asked = 0;
@@ -42,162 +42,83 @@ function setup(opts: { settings?: Record<string, string>; permission?: Notificat
   fake.set('dms', DMS);
   fake.set('settings', opts.settings ?? {});
   const user = userEvent.setup();
-  const view = render(<div className="d-root"><CoreProvider client={fake}><Notifications /></CoreProvider></div>);
+  const view = render(<div className="d-root"><CoreProvider client={fake}><Notifications communityId={opts.server === undefined ? A : opts.server} /></CoreProvider></div>);
   return { fake, user, view };
 }
 const group = (name: string) => screen.getByRole('group', { name });
 
-describe('the permission', () => {
-  it('is asked only from the click, never on render', async () => {
-    const { user, view } = setup();
-    expect(FakeNotification.asked).toBe(0);
+const writes = (fake: FakeClient) => fake.callsOf('setSetting').map(c => [c.key, c.value]);
+
+// Signal task 10 fix round 1 (Jonas): exactly the prototype's four rows (README §5.9).
+describe('the prototype rows', () => {
+  it('draws the server mode, @everyone, desktop notifications and the sounds as settings rows, and passes axe', async () => {
+    const { view } = setup({ permission: 'granted' });
     expect(screen.getByRole('heading', { level: 2, name: 'Notifications' })).toBeInTheDocument();
-    expect(screen.getByText('Desktop notifications show while a dilla tab is open. Nothing is shown when every tab is closed.')).toBeInTheDocument();
+    expect(screen.getByText('What reaches you, and how.')).toBeInTheDocument();
+    expect(Array.from(view.container.querySelectorAll('.d-settings-row__label'), l => l.textContent))
+      .toEqual(['Midgard', '@everyone and @here', 'Desktop notifications', 'Join, leave and ring sounds']);
+    expect(view.container.querySelectorAll('.d-settings-row__icon')).toHaveLength(4);
     await expectNoAxeViolations(view.container);
-    await user.click(within(group('desktop notifications')).getByRole('button', { name: 'turn on' }));
-    expect(FakeNotification.asked).toBe(1);
-    expect(await within(group('desktop notifications')).findByText('on')).toBeInTheDocument();
-    expect(within(group('desktop notifications')).queryByRole('button')).toBeNull();
   });
-  it.each([
-    ['granted', 'on'],
-    ['denied', 'Blocked in the browser. Allow notifications for this site in the browser’s settings.'],
-  ] as const)('shows %s as it is', (permission, text) => {
-    setup({ permission });
-    expect(within(group('desktop notifications')).getByText(text)).toBeInTheDocument();
-    expect(within(group('desktop notifications')).queryByRole('button')).toBeNull();
-    expect(FakeNotification.asked).toBe(0);
-  });
-  it('says when the browser has no notifications', () => {
-    setup({ permission: null });
-    expect(within(group('desktop notifications')).getByText('This browser cannot show notifications.')).toBeInTheDocument();
+  it('drops the server rows with no server selected', () => {
+    const { view } = setup({ server: null });
+    expect(Array.from(view.container.querySelectorAll('.d-settings-row__label'), l => l.textContent)).toEqual(['Desktop notifications', 'Join, leave and ring sounds']);
   });
 });
 
-describe('the default and per channel', () => {
-  it('writes the default', async () => {
+describe('the server rows', () => {
+  it('shows the device default until the server has a mode, then writes notify.community.<hex>', async () => {
+    const { fake, user } = setup({ settings: { 'notify.default': 'everything' } });
+    const mode = screen.getByRole('radiogroup', { name: 'Notify me for Midgard' });
+    expect(within(mode).getByRole('radio', { name: 'All' })).toHaveAttribute('aria-checked', 'true');
+    await user.click(within(mode).getByRole('radio', { name: 'Nothing' }));
+    expect(writes(fake)).toEqual([[`notify.community.${A}`, 'nothing']]);
+  });
+  it('turns @everyone and @here off with everyone.community.<hex> = 1, and on by deleting it', async () => {
+    const { fake, user } = setup({ settings: { [`everyone.community.${A}`]: '1' } });
+    const sw = within(group('@everyone and @here')).getByRole('switch');
+    expect(sw).toHaveAttribute('aria-checked', 'false');
+    await user.click(sw);
+    expect(writes(fake)).toEqual([[`everyone.community.${A}`, null]]);
+  });
+});
+
+describe('desktop notifications', () => {
+  it('asks for the permission only from the switch, never on render', async () => {
     const { fake, user } = setup();
-    const choice = screen.getByRole('radiogroup', { name: 'notify me about' });
-    expect(within(choice).getByRole('radio', { name: 'direct messages and mentions' })).toHaveAttribute('aria-checked', 'true');
-    await user.click(within(choice).getByRole('radio', { name: 'every message' }));
-    expect(fake.callsOf('setSetting')).toEqual([{ m: 'setSetting', key: 'notify.default', value: 'everything' }]);
+    expect(FakeNotification.asked).toBe(0);
+    const sw = within(group('Desktop notifications')).getByRole('switch');
+    expect(sw).toHaveAttribute('aria-checked', 'false');
+    await user.click(sw);
+    expect(FakeNotification.asked).toBe(1);
+    expect(writes(fake)).toEqual([['notify.desktop', null]]);
   });
-  it('lists every text channel by server and every direct message, in order', async () => {
-    const { view } = setup();
-    expect(screen.getByRole('heading', { level: 3, name: 'Per channel' })).toBeInTheDocument();
-    expect(screen.getByText('Every channel and direct message. Rows left on default follow the choice above.')).toBeInTheDocument();
-    const order = ['notify me about', '#general · Midgard', '#random · Midgard', 'bob'].map(name => screen.getByRole('radiogroup', { name }));
-    for (let i = 1; i < order.length; i++) {
-      expect(order[i - 1].compareDocumentPosition(order[i]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    }
-    expect(screen.getAllByRole('radiogroup')).toHaveLength(5);
-    expect(screen.queryByRole('group', { name: '#lounge · Midgard' })).toBeNull();
-    await expectNoAxeViolations(view.container);
+  it('turns off on this device with notify.desktop = off', async () => {
+    const { fake, user } = setup({ permission: 'granted' });
+    const sw = within(group('Desktop notifications')).getByRole('switch');
+    expect(sw).toHaveAttribute('aria-checked', 'true');
+    await user.click(sw);
+    expect(writes(fake)).toEqual([['notify.desktop', 'off']]);
   });
-  it('writes a channel mode, and default deletes it', async () => {
-    const { fake, user } = setup({ settings: { [`notify.channel.${GEN}`]: 'all' } });
-    const modes = within(group('#general · Midgard')).getByRole('radiogroup', { name: '#general · Midgard' });
-    expect(within(modes).getByRole('radio', { name: 'all' })).toHaveAttribute('aria-checked', 'true');
-    await user.click(within(modes).getByRole('radio', { name: 'mentions' }));
-    await user.click(within(modes).getByRole('radio', { name: 'default' }));
-    await user.click(within(group('bob')).getByRole('radio', { name: 'nothing' }));
-    expect(fake.callsOf('setSetting')).toEqual([
-      { m: 'setSetting', key: `notify.channel.${GEN}`, value: 'mentions' },
-      { m: 'setSetting', key: `notify.channel.${GEN}`, value: null },
-      { m: 'setSetting', key: `notify.channel.${DM}`, value: 'nothing' },
-    ]);
+  it('says why when the browser blocks them or has none', () => {
+    setup({ permission: 'denied' });
+    expect(within(group('Desktop notifications')).getByText('Blocked in the browser. Allow notifications for this site in the browser’s settings.')).toBeInTheDocument();
+    expect(within(group('Desktop notifications')).getByRole('switch')).toHaveAttribute('aria-disabled', 'true');
   });
-  it('mutes and unmutes a channel', async () => {
-    const { fake, user } = setup({ settings: { [`mute.channel.${RAND}`]: '1' } });
-    const rand = within(group('#random · Midgard')).getByRole('switch', { name: 'mute' });
-    expect(rand).toHaveAttribute('aria-checked', 'true');
-    expect(rand).toHaveAttribute('aria-labelledby');
-    expect(within(group('#random · Midgard')).getByText('mute')).toBeVisible();
-    await user.click(rand);
-    await user.click(within(group('#general · Midgard')).getByRole('switch', { name: 'mute' }));
-    expect(fake.callsOf('setSetting')).toEqual([
-      { m: 'setSetting', key: `mute.channel.${RAND}`, value: null },
-      { m: 'setSetting', key: `mute.channel.${GEN}`, value: '1' },
-    ]);
+});
+
+describe('the sounds', () => {
+  it('one switch writes both the join and leave sounds and the ring', async () => {
+    const { fake, user } = setup({ settings: { 'sound.ring': 'off' } });
+    const sw = within(group('Join, leave and ring sounds')).getByRole('switch');
+    expect(sw).toHaveAttribute('aria-checked', 'false');
+    await user.click(sw);
+    expect(writes(fake)).toEqual([['sound.voice', 'on'], ['sound.ring', 'on']]);
   });
   it('shows a refused write by its code', async () => {
     const { fake, user } = setup();
-    fake.handler = () => Promise.reject(refusal({ code: 'E_SETTING_KEY' }));
-    await user.click(within(group('bob')).getByRole('switch', { name: 'mute' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('That did not work (E_SETTING_KEY). Try again.');
-  });
-});
-
-describe('per server (web3.5 WA5)', () => {
-  const NAME = 'Midgard';
-  it('lists the server before the channels, with a mode, a mute and an @everyone switch, and passes axe', async () => {
-    const { view } = setup();
-    expect(screen.getByRole('heading', { level: 3, name: 'Servers' })).toBeInTheDocument();
-    expect(screen.getByText('A server’s setting applies to its channels unless a channel has its own.')).toBeInTheDocument();
-    const server = group(NAME);
-    expect(within(within(server).getByRole('radiogroup', { name: NAME })).getAllByRole('radio').map(r => r.textContent))
-      .toEqual(['default', 'all messages', 'mentions', 'nothing']);
-    expect(within(server).getByRole('switch', { name: 'mute server' })).toBeInTheDocument();
-    expect(within(server).getByRole('switch', { name: 'ignore @everyone and @here' })).toBeInTheDocument();
-    const channels = screen.getByRole('heading', { level: 3, name: 'Per channel' });
-    expect(screen.getByRole('heading', { level: 3, name: 'Servers' }).compareDocumentPosition(channels) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    await expectNoAxeViolations(view.container);
-  });
-  it('writes a mode under notify.community.<hex>, and default deletes the key', async () => {
-    const { fake, user } = setup({ settings: { [`notify.community.${A}`]: 'nothing' } });
-    const modes = within(group(NAME)).getByRole('radiogroup', { name: NAME });
-    expect(within(modes).getByRole('radio', { name: 'nothing' })).toHaveAttribute('aria-checked', 'true');
-    await user.click(within(modes).getByRole('radio', { name: 'mentions' }));
-    await user.click(within(modes).getByRole('radio', { name: 'default' }));
-    expect(fake.callsOf('setSetting')).toEqual([
-      { m: 'setSetting', key: `notify.community.${A}`, value: 'mentions' },
-      { m: 'setSetting', key: `notify.community.${A}`, value: null },
-    ]);
-  });
-  it('mutes the server and ignores @everyone, each deleting its key when switched off', async () => {
-    const { fake, user } = setup({ settings: { [`mute.community.${A}`]: '1' } });
-    const server = within(group(NAME));
-    const mute = server.getByRole('switch', { name: 'mute server' });
-    expect(mute).toHaveAttribute('aria-checked', 'true');
-    await user.click(mute);
-    await user.click(server.getByRole('switch', { name: 'ignore @everyone and @here' }));
-    expect(fake.callsOf('setSetting')).toEqual([
-      { m: 'setSetting', key: `mute.community.${A}`, value: null },
-      { m: 'setSetting', key: `everyone.community.${A}`, value: '1' },
-    ]);
-  });
-});
-
-describe('sounds (flow 06, R4)', () => {
-  it('Settings → Voice and → Notifications store their keys through setSetting (the Notifications half)', async () => {
-    const { fake, user } = setup();
-    const voice = screen.getByRole('switch', { name: 'join and leave sounds' });
-    const ring = screen.getByRole('switch', { name: 'ring for calls' });
-    // Both on by default.
-    expect(voice).toHaveAttribute('aria-checked', 'true');
-    expect(ring).toHaveAttribute('aria-checked', 'true');
-    await user.click(voice);
-    expect(fake.callsOf('setSetting').at(-1)).toEqual({ m: 'setSetting', key: 'sound.voice', value: 'off' });
-    await user.click(ring);
-    expect(fake.callsOf('setSetting').at(-1)).toEqual({ m: 'setSetting', key: 'sound.ring', value: 'off' });
-    expect(screen.getByRole('heading', { name: 'sounds' })).toBeInTheDocument();
-  });
-  it('shows a stored off and turns it back on', async () => {
-    const { fake, user } = setup({ settings: { 'sound.ring': 'off' } });
-    const ring = screen.getByRole('switch', { name: 'ring for calls' });
-    expect(ring).toHaveAttribute('aria-checked', 'false');
-    await user.click(ring);
-    expect(fake.callsOf('setSetting').at(-1)).toEqual({ m: 'setSetting', key: 'sound.ring', value: 'on' });
-  });
-});
-
-// I1: guard, green at start (the section adopted SettingsRow in web3.8): every list item is one settings row.
-describe('the settings grammar', () => {
-  it('draws the permission, default, sounds and each server, channel and DM as settings rows', () => {
-    const { view } = setup();
-    const items = Array.from(view.container.querySelectorAll('.dw-notify-list > li'));
-    expect(items.length).toBeGreaterThan(2);
-    for (const item of items) expect(item.querySelectorAll('.d-settings-row')).toHaveLength(1);
-    expect(view.container.querySelectorAll('.d-settings-row')).toHaveLength(4 + items.length);
+    fake.handler = () => Promise.reject(refusal({ code: 'E_STORE' }));
+    await user.click(within(group('Join, leave and ring sounds')).getByRole('switch'));
+    expect(await screen.findByText('That did not work (E_STORE). Try again.')).toBeInTheDocument();
   });
 });

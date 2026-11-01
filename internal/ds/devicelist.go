@@ -22,6 +22,10 @@ import (
 // It is declared here, with its Plan-1 implementation, because ds.Options names the seam (the same
 // reason as ACL and Channels).
 type DeviceLists interface {
+	// WithVerification reserves a guest before a transaction and lends it to
+	// Verify for the callback lifetime. Wrappers must forward this method too.
+	WithVerification(context.Context, func(context.Context) error) error
+
 	// Entries verifies the user's newest stored list against the user's ssk_pub and returns the
 	// (device_id, dsk_pub) pair of every entry that is not revoked. A device is listed only when
 	// both its id and its key match one entry (auth.Listed; security review F2). A missing list, or
@@ -73,6 +77,9 @@ type coreDeviceLists struct {
 }
 
 func (c *coreDeviceLists) Verify(ctx context.Context, blob, sskPub []byte, userID id.ID) ([]mlswasi.DeviceListEntry, error) {
+	if scope, ok := ctx.Value(deviceListScopeKey{}).(*deviceListScope); ok {
+		return scope.verify(ctx, c.wasm, blob, sskPub, userID)
+	}
 	if c.wasm == nil {
 		return nil, ErrDeviceListUnavailable
 	}

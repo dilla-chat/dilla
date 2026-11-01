@@ -1,10 +1,13 @@
 package store_test
 
 import (
+	"bytes"
+	"context"
 	"reflect"
 	"slices"
 	"testing"
 
+	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/store"
 )
 
@@ -58,8 +61,8 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		{"Auth", reflect.TypeOf((*store.Auth)(nil)).Elem(), []string{
 			"ClearLoginFailures", "ConsumeRecoveryCode", "ConsumeTOTPCounter",
 			"CountLoginFailures", "CountRecoveryCodes", "GetOIDCIdentity",
-			"GetPasswordCredential", "GetTOTP", "GetWebauthnCredential",
-			"GetWebauthnUserByHandle", "GetWebauthnUserHandle", "ListWebauthnCredentials",
+			"GetPasswordChangedAt", "GetPasswordCredential", "GetTOTP", "GetWebauthnCredential",
+			"GetWebauthnUserByHandle", "GetWebauthnUserHandle", "ListWebauthnCredentials", "ChangePasswordCredential",
 			"PruneCeremonies", "PutCeremony", "PutOIDCIdentity", "PutPasswordCredential",
 			"PutRecoveryCodes", "PutTOTP", "PutWebauthnCredential", "PutWebauthnUser",
 			"RecordLoginAttempt", "TakeCeremony", "UpdateWebauthnCredential",
@@ -95,6 +98,11 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			"ListGroupsForRetention",
 			// ListIdleCallGroups is web-3's idle call-group close (L-HTTP-105, RV-2).
 			"ListIdleCallGroups",
+			// ListClosedGroupLiveProposals is the sweep's void of a closed group's proposals,
+			// which every open-group walk misses (fix/ds-maintenance-sweeper).
+			"ListClosedGroupLiveProposals",
+			// CountLiveInstanceProposals seeds dilla_ds_proposals_outstanding at start.
+			"CountLiveInstanceProposals",
 			"ListHandshakes", "ListMembers", "ListOpenGroups", "ListProposals", "ListWelcomes", "LockGroup",
 			"NextSeq", "OldestHandshakeSeq", "PruneHandshakes", "PruneWelcomes",
 			"PurgeKeyPackages", "PutEpochTree", "PutForkReport", "PutGroupState",
@@ -140,7 +148,7 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			// §4.1 plus four, all reached through the embedded Communities: GetMember,
 			// UpdateCommunityMeta and SoftDeleteCommunity are Plan 2's P2-D7, GetRole
 			// is P2-D9 (task 3's, written in task 1 for the role-grant route).
-			"GetMember", "GetRole", "ListDJRolePolicy", "SetDJRolePolicy", "ListSelfRoleGrantUsers", "ListSelfRolePolicy", "SetSelfRolePolicy", "SoftDeleteCommunity", "UpdateCommunityMeta",
+			"GetMember", "GetRole", "ListSelfRoleGrantUsers", "ListSelfRolePolicy", "SetSelfRolePolicy", "SoftDeleteCommunity", "UpdateCommunityMeta",
 			// §4.1 plus two more, reached through the embedded Channels: P2-D8's
 			// one-statement community tombstone and per-channel sequencer.
 			"DeleteChannelsOfCommunity", "NextChannelSeq",
@@ -220,7 +228,7 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			"AddMemberRoleGrant", "CreateCommunity", "DeleteMember", "DeleteMemberRole", "DeleteRole", "GetCommunity", "GetCommunityAFK",
 			"GetMember", "GetRole", "HasMemberRoleGrant", "ListCommunities", "ListCommunitiesForUser", "ListMemberRoles",
 			"ListMembersOfCommunity",
-			"ListRoles", "ListDJRolePolicy", "SetDJRolePolicy", "ListSelfRoleGrantUsers", "ListSelfRolePolicy", "LockCommunity", "PutMember", "PutMemberRole", "PutRole", "RemoveMemberRoleGrant", "RevokeMemberRole", "SetCommunityAFK", "SetCommunityOwner", "SetSelfRolePolicy",
+			"ListRoles", "ListSelfRoleGrantUsers", "ListSelfRolePolicy", "LockCommunity", "PutMember", "PutMemberRole", "PutRole", "RemoveMemberRoleGrant", "RevokeMemberRole", "SetCommunityAFK", "SetCommunityOwner", "SetSelfRolePolicy",
 			"SoftDeleteCommunity", "UpdateCommunityMeta", "UpdateCommunityPolicy",
 		}},
 		{"ReadableSearch", reflect.TypeOf((*store.ReadableSearch)(nil)).Elem(), []string{
@@ -434,5 +442,74 @@ func TestDeferredRowTypesAreDeclared(t *testing.T) {
 	}
 	if _, ok := full.FieldByName("Blob"); !ok {
 		t.Error("WelcomeFull carries no Blob")
+	}
+}
+
+func TestLiveProposalMaintenanceQueries(t *testing.T) {
+	for engine, repo := range engines(t) {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			open, closed := seedGroup(ctx, t, repo, 1), seedGroup(ctx, t, repo, 1)
+			for _, g := range []store.GroupRow{open, closed} {
+				if err := repo.PutGroupState(ctx, g.GroupID, 2, []byte{0x80}, []byte{0x80}, make([]byte, 32)); err != nil {
+					t.Fatalf("PutGroupState: %v", err)
+				}
+			}
+			if err := repo.CloseGroup(ctx, closed.GroupID, 10); err != nil {
+				t.Fatalf("CloseGroup: %v", err)
+			}
+			put := func(group id.ID, epoch uint64, origin, kind uint8, void bool) store.ProposalRow {
+				t.Helper()
+				ref := id.New()
+				p := store.ProposalRow{GroupID: group, Ref: ref[:], Epoch: epoch, Origin: origin, Kind: kind,
+					ActionID: id.New(), IssuedAt: 1, TTL: 30}
+				if err := repo.PutProposal(ctx, p); err != nil {
+					t.Fatalf("PutProposal: %v", err)
+				}
+				if void {
+					if err := repo.VoidProposal(ctx, group, ref[:], 5); err != nil {
+						t.Fatalf("VoidProposal: %v", err)
+					}
+				}
+				return p
+			}
+			want := []store.ProposalRow{
+				put(closed.GroupID, 2, 0, 3, false),
+				put(closed.GroupID, 1, 0, 1, false),
+				put(closed.GroupID, 1, 1, 3, false),
+			}
+			put(closed.GroupID, 1, 0, 2, true)
+			put(open.GroupID, 2, 0, 3, false)
+			put(open.GroupID, 1, 0, 2, false)
+			put(open.GroupID, 2, 1, 1, false)
+			put(open.GroupID, 2, 0, 2, true)
+			slices.SortFunc(want, func(a, b store.ProposalRow) int { return bytes.Compare(a.Ref, b.Ref) })
+			for _, limit := range []int32{2, 10} {
+				rows, err := repo.ListClosedGroupLiveProposals(ctx, limit)
+				if err != nil {
+					t.Fatalf("ListClosedGroupLiveProposals: %v", err)
+				}
+				expected := want[:min(int(limit), len(want))]
+				if !reflect.DeepEqual(rows, expected) {
+					t.Fatalf("closed live proposals (limit %d) = %+v, want %+v", limit, rows, expected)
+				}
+			}
+			counts, err := repo.CountLiveInstanceProposals(ctx)
+			if err != nil {
+				t.Fatalf("CountLiveInstanceProposals: %v", err)
+			}
+			if want := map[uint8]int64{1: 1, 3: 2}; !reflect.DeepEqual(counts, want) {
+				t.Fatalf("live instance counts = %v, want %v", counts, want)
+			}
+			for _, p := range want {
+				if err := repo.VoidProposal(ctx, p.GroupID, p.Ref, 20); err != nil {
+					t.Fatalf("VoidProposal: %v", err)
+				}
+			}
+			rows, err := repo.ListClosedGroupLiveProposals(ctx, 10)
+			if err != nil || len(rows) != 0 {
+				t.Fatalf("closed live proposals after void = %v, %v, want none", rows, err)
+			}
+		})
 	}
 }

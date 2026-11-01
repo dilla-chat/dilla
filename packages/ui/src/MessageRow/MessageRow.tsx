@@ -5,6 +5,7 @@ import { Button } from '../Button/Button.tsx';
 import { Icon } from '../Icon/Icon.tsx';
 import { usePhoneLayout } from '../internal/phoneLayout.ts';
 import { RoleDot } from '../internal/RoleDot.tsx';
+import { CodeBlock, type CodeBlockLabels } from '../CodeBlock/CodeBlock.tsx';
 import './MessageRow.css';
 
 /**
@@ -45,9 +46,11 @@ export interface MessageRowProps {
     onJumpPointerDown?(e: PointerEvent<HTMLButtonElement>): void;
   };
   attachments?: ReactNode;
+  /** A verified interactive payload such as a poll, rendered inside the message's main column. */
+  card?: ReactNode;
   reactions?: ReactNode;
   /** A public thread's summary under the body: a chip button named by `label` ("2 replies") that opens it. */
-  thread?: { label: string; onOpen(): void };
+  thread?: { label: string; onOpen(): void; /** "last 20:33" after the count (README §5.5), seen only: the name stays the count. */ last?: string };
   toolbar?: ReactNode;
   editor?: ReactNode;
   pendingAction?: { label: string; tone: 'pending' | 'failed'; actions?: readonly { label: string; onAction(): void }[] };
@@ -63,6 +66,14 @@ export interface MessageRowProps {
   revealed?: boolean;
   /** Phone only: a tap on the row body or Enter on the row asks to reveal (true); Escape or a second tap asks to hide (false). */
   onReveal?(on: boolean): void;
+  /** The author's name colour (their top role's, 0xRRGGBB); none or 0: the text colour. A bot's name is the accent's second tone. */
+  nameColor?: number | null;
+  /** The labels of a fenced code block's header (README §6.4); without them a block shows its language only. */
+  codeLabels?: CodeBlockLabels;
+  /** The message the composer is replying to: tinted, with the accent bar (README §5.5). */
+  replying?: boolean;
+  /** Stories only: draw the hover state (the fill, the bar, the toolbar and the gutter time) without a pointer. */
+  forceHover?: boolean;
 }
 
 /** A click that starts on one of these is that control's own, not a tap on the row body. */
@@ -99,10 +110,36 @@ function bodyChildren(body: string | readonly BodyPart[], tabIndex: number, onOp
   });
 }
 
+/**
+ * The body: one pre-wrapped run of text, or, when it holds a fenced block, its text runs as paragraphs with each block as a
+ * card between them (the prototype's 6px grid).
+ */
+function Body({ body, tabIndex, onOpenProfile, codeLabels }: { body: string | readonly BodyPart[]; tabIndex: number;
+  onOpenProfile: MessageRowProps['onOpenProfile']; codeLabels: CodeBlockLabels | undefined }) {
+  if (typeof body === 'string' || !body.some(p => p.kind === 'codeblock')) {
+    return <div className="d-message-row__body">{bodyChildren(body, tabIndex, onOpenProfile)}</div>;
+  }
+  const blocks: ReactNode[] = [];
+  let run: BodyPart[] = [];
+  const flush = () => {
+    if (run.length > 0) blocks.push(<p key={blocks.length} className="d-message-row__text">{bodyChildren(run, tabIndex, onOpenProfile)}</p>);
+    run = [];
+  };
+  for (const part of body) {
+    if (part.kind === 'codeblock') {
+      flush();
+      blocks.push(<CodeBlock key={blocks.length} lang={part.lang} code={part.text} labels={codeLabels} tabIndex={tabIndex} />);
+    } else run.push(part);
+  }
+  flush();
+  return <div className="d-message-row__body" data-code="true">{blocks}</div>;
+}
+
 function ReplyLine({ reply, tabIndex }: { reply: NonNullable<MessageRowProps['reply']>; tabIndex: number }) {
   const labelId = useId();
   const jumpId = useId();
-  const glyph = <span aria-hidden="true">↳</span>;
+  // The prototype's 2px connector curve from the avatar column and the 14px mini avatar.
+  const glyph = <><span className="d-message-row__reply-curve" aria-hidden="true" />{reply.author !== '' ? <span className="d-message-row__reply-avatar" aria-hidden="true"><Avatar name={reply.author} size="mini" /></span> : null}</>;
   const author = <span className="d-message-row__reply-author">{reply.author}</span>;
   const excerpt = <span className="d-message-row__reply-excerpt">{reply.excerpt}</span>;
   const stateText = <span className="d-message-row__reply-state">{reply.stateText}</span>;
@@ -139,8 +176,9 @@ function ReplyLine({ reply, tabIndex }: { reply: NonNullable<MessageRowProps['re
  * and Escape on the row itself, goes to `onKeyDown`.
  */
 export function MessageRow({
-  author, authorId, onOpenProfile, time, gutterTime, body, own, tag, state, stateLabel, detail, actions, active, editedLabel, pinnedLabel, reply, attachments,
+  author, authorId, onOpenProfile, time, gutterTime, body, own, tag, state, stateLabel, detail, actions, active, editedLabel, pinnedLabel, reply, attachments, card,
   reactions, thread, toolbar, editor, pendingAction, flash, mention, onKeyDown, rowRef, seq, msgId, grouped, revealed, onReveal,
+  nameColor, codeLabels, replying, forceHover,
 }: MessageRowProps) {
   const headId = useId();
   const tabIndex = active === true ? 0 : -1;
@@ -184,39 +222,51 @@ export function MessageRow({
   };
   const showToolbar = toolbar !== undefined && (!reveals || revealed === true);
 
+  // The colour rides on a custom property set on the head, so a context that draws names in --fg (the thread, as the prototype's) can drop it.
+  const nameStyle = nameColor ? { '--d-name-colour': '#' + nameColor.toString(16).padStart(6, '0') } as React.CSSProperties : undefined;
+  const gutter = gutterTime ?? time;
+
   return (
     <article ref={rowRef} className="d-message-row" tabIndex={tabIndex} aria-labelledby={headId} onKeyDown={onRowKeyDown} onClick={reveals ? onRowClick : undefined}
       onFocus={() => setInside(true)} onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) setInside(false); }}
       data-state={state} data-own={flag(own)} data-active={flag(active)}
       data-seq={seq ?? undefined} data-msg-id={msgId ?? undefined}
       data-edited={editedLabel !== undefined ? 'true' : undefined} data-pinned={pinnedLabel !== undefined ? 'true' : undefined}
-      data-grouped={flag(grouped)} data-revealed={phone ? flag(revealed) : undefined} data-mention={flag(mention)} data-flash={flag(flash)}>
+      data-grouped={flag(grouped)} data-revealed={phone ? flag(revealed) : undefined} data-mention={flag(mention)} data-flash={flag(flash)}
+      data-reply={flag(reply !== undefined)} data-replying={flag(replying)} data-hover={flag(forceHover)}>
+      {/* The time gutter (README §5.5): always on a group's first row, on hover or focus for a follow-up. The head says it for a screen reader. */}
+      <span className="d-message-row__gutter" aria-hidden="true" title={gutterTime === undefined ? undefined : time} data-long={gutter.length > 5 ? 'true' : undefined}>{gutter}</span>
       {grouped === true
-        ? <span className="d-message-row__gutter" aria-hidden="true" title={gutterTime === undefined ? undefined : time}>{gutterTime ?? time}</span>
+        ? <span className="d-message-row__avatar" aria-hidden="true" />
         : <span className="d-message-row__avatar" aria-hidden="true" data-profile={opens ? 'true' : undefined}
-          onClick={opens ? e => onOpenProfile(authorId, authorEl.current ?? e.currentTarget, 'author') : undefined}><Avatar name={author} /></span>}
+          onClick={opens ? e => onOpenProfile(authorId, authorEl.current ?? e.currentTarget, 'author') : undefined}><Avatar name={author} size="msg" shape={tag === 'bot' ? 'bot' : 'circle'} /></span>}
       <div className="d-message-row__main">
-        <p className="d-message-row__head" id={headId}>
-          <span className={grouped === true ? 'd-message-row__author d-sr-only' : 'd-message-row__author'}>
+        <p className="d-message-row__head" id={headId} style={nameStyle}>
+          <span className={grouped === true ? 'd-message-row__author d-sr-only' : 'd-message-row__author'} data-bot={flag(tag === 'bot')}>
             {opens && grouped !== true
               ? <button ref={authorEl} type="button" className="d-message-row__author-open" tabIndex={profileTab} onClick={e => onOpenProfile(authorId, e.currentTarget, 'author')}>{author}</button>
               : author}
           </span>
           {tag && grouped !== true ? <Tag kind={tag} /> : null}
-          <span className={grouped === true ? 'd-message-row__time d-sr-only' : 'd-message-row__time'}>{time}</span>
+          {/* Desktop: the time stands in the gutter, so the head's copy is for a screen reader; a phone shows it beside the name. */}
+          <span className={phone && grouped !== true ? 'd-message-row__time' : 'd-message-row__time d-sr-only'}>{time}</span>
           {editedLabel !== undefined ? <span className="d-message-row__edited">{editedLabel}</span> : null}
           {pinnedLabel !== undefined ? <span className="d-message-row__pinned">{pinnedLabel}</span> : null}
           {headState ? <span className="d-message-row__state">{stateLabel}</span> : null}
         </p>
+        {/* The keyboard map: the head (author), the toolbar (it floats over the row's top edge), the reply line, which CSS
+            draws above the head as the prototype does (§6.5). */}
         {showToolbar ? <div className="d-message-row__toolbar">{toolbar}</div> : null}
         {reply !== undefined ? <ReplyLine reply={reply} tabIndex={tabIndex} /> : null}
-        {editor !== undefined ? editor : showBody ? <div className="d-message-row__body">{bodyChildren(body, profileTab, onOpenProfile)}</div> : null}
+        {editor !== undefined ? editor : showBody ? <Body body={body} tabIndex={profileTab} onOpenProfile={onOpenProfile} codeLabels={codeLabels} /> : null}
+        {card !== undefined ? <div className="d-message-row__attachments d-message-row__card">{card}</div> : null}
         {attachments !== undefined ? <div className="d-message-row__attachments">{attachments}</div> : null}
         {reactions !== undefined ? <div className="d-message-row__reactions">{reactions}</div> : null}
         {thread !== undefined ? (
           <button type="button" className="d-message-row__thread" tabIndex={tabIndex}
             onPointerDown={e => e.preventDefault()} onClick={() => thread.onOpen()}>
-            <Icon name="messages-square" size={14} />{thread.label}
+            <Icon name="messages-square" size={12} />{thread.label}
+            {thread.last !== undefined ? <span className="d-message-row__thread-last" aria-hidden="true">· {thread.last}</span> : null}
           </button>
         ) : null}
         {pendingAction !== undefined ? (

@@ -2,6 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { within } from '@testing-library/react';
 import { P1, PEER, ownRow, peerRow, renderConversation, rowOf } from '../../test/conversation.tsx';
+import { toolbarButton } from '../../test/toolbar.ts';
 
 const bodyOf = (id: string) => rowOf(id).querySelector<HTMLElement>('.d-message-row__body')!;
 
@@ -48,7 +49,7 @@ describe('markdown in a message body (E5)', () => {
   it('renders the raw text of a message in the editor, markers and all', async () => {
     const { user } = renderConversation({ items: [ownRow('1'.repeat(32), '1', '**bold** https://example.com')] });
     await user.hover(rowOf('1'.repeat(32)));
-    await user.click(within(rowOf('1'.repeat(32))).getByRole('button', { name: 'edit' }));
+    await user.click(toolbarButton(within(rowOf('1'.repeat(32))).getByRole('toolbar'), 'edit'));
     expect(within(rowOf('1'.repeat(32))).getByRole('textbox')).toHaveValue('**bold** https://example.com');
   });
 });

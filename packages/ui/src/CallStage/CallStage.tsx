@@ -1,5 +1,6 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { useEffect, useId, useRef, type KeyboardEvent, type ReactNode } from 'react';
 import { CallTile, type CallTileProps } from '../CallTile/CallTile.tsx';
+import { Avatar } from '../Avatar/Avatar.tsx';
 import '../Button/Button.css';
 import './CallStage.css';
 import { Icon } from '../Icon/Icon.tsx';
@@ -17,30 +18,52 @@ export interface CallStageNotice {
   focusOnce: boolean;
 }
 
+/** The not-joined preview (Signal §5.6): who is inside (with a ring on whoever speaks), the room and Join voice. */
+export interface CallStagePreview {
+  people: readonly { id: string; name: string; speaking: boolean; bot?: boolean }[];
+  /** The room's name, 16px 700. */
+  name: string;
+  /** "Ada and Björn are here", or that nobody is. */
+  text: string;
+  /** The green Join voice; null while a block holds joining back. */
+  join: { label: string; onJoin(): void } | null;
+}
+
 export interface CallStageProps {
   /** The stage's heading, e.g. 'voice harbour' or the DM's name. */
   title: string;
-  /** The tiles, in one stable order, keyed by `id` (R27). `focused` and `onFocusTile` are injected here, never passed. */
-  tiles: readonly Omit<CallTileProps, 'focused' | 'onFocusTile' | 'orphan'>[];
+  /** The tiles, in one stable order, keyed by `id` (R27). `focused`, `onFocusTile` and `onGrid` are injected here, never passed. */
+  tiles: readonly Omit<CallTileProps, 'focused' | 'onFocusTile' | 'onGrid' | 'gridLabel'>[];
   /** The focused tile's id, or null for the grid. An id that names no current tile renders the grid. Additive: without
-   *  `onFocus` the tiles have no focus button (pre-flight C-2). */
+   *  `onFocus` the tiles have no focus button (the DM call box's compact cards). */
   focusedId?: string | null;
-  /** Focus a tile (`id`) or clear the focus (`null`): a click on a tile's focus button, Escape, or a pause notice. */
+  /** Focus a tile (`id`) or clear the focus (`null`): a click on a tile, the Grid button, Escape, or a pause notice. */
   onFocus?(id: string | null): void;
   /**
-   * The stage's 48 bar (C4): where the voice `ChannelHeader` goes. When given, it comes first, full width, and the stage's own
+   * The stage's 44 bar (C4): where the voice `ChannelHeader` goes. When given, it comes first, full width, and the stage's own
    * title is only the section's visually hidden name.
    */
   header?: ReactNode;
-  /** The call code, 30 digits (spaces are ignored), or null when there is none yet. */
+  /** Task 8b's slot: the now-playing bar at the top of the stage, above the tiles. */
+  nowPlaying?: ReactNode;
+  /** The call code, 30 digits (spaces are ignored), or null when there is none yet. A DM call box shows it in its head; a
+   *  channel's stage (with `bar`) does not: fix round 1 (Jonas) moved it to the voice row's context menu. */
   code: string | null;
   /** A notice on the stage: the RV-3 pause banner (with its `voice.pausedAction`), a block notice or a transient one. */
   notice: CallStageNotice | null;
-  /** The call controls (a `CallControls`). */
+  /** The call controls (a `CallControls`). With `bar` they sit at the right of the 64px call bar. */
   controls: ReactNode;
+  /**
+   * The call bar's left side (Signal §5.6): the room with its --ok dot, and the stats line under it ("24 ms · ↑ 38 ↓ 71 kb/s ·
+   * hearing 2 of 2"). Given, the controls region is the 64px call bar; absent (a DM call box, the AFK page), it is plain.
+   */
+  bar?: { name: string; stats: ReactNode };
+  /** Not in the call: the preview stands where the tiles and the call bar would. */
+  preview?: CallStagePreview;
   /** The DM call strip while this device's call rings others ('ringing {names}', '{name} declined.', 'No answer.'). */
   outgoing: { text: string } | null;
-  labels: { code: string; codeHelp: string; empty: string; tiles: string };
+  /** `grid` is the focused tile's Grid button (the prototype's "Grid"). */
+  labels: { code: string; codeHelp: string; empty: string; tiles: string; grid?: string };
 }
 
 const NOTICE_GLYPH = { paused: <Icon name="pause" size={14} />, blocked: '!', info: '›' } as const;
@@ -51,60 +74,30 @@ function groupCode(code: string): string {
   return /^\d{30}$/.test(digits) ? (digits.match(/\d{5}/g) ?? []).join(' ') : code;
 }
 
-const TILE_GAP_PX = 12; // 0.75rem at the root size the stage is laid out for; the CSS gap is the same 0.75rem.
-
-/** D2: below this width of the stage's own tile area (not the viewport: the rail, sidebar and aside come off it, so this covers viewports up to about 1410), two columns win a near tie. */
-const NARROW_STAGE_PX = 1100;
-/** D2: a column count within this share of the widest tile counts as a tie. */
-const NEAR_TIE = 0.95;
-
-/**
- * The column count c in 1..n that makes the 16:9 tiles of an n-tile grid widest in a `w` x `h` area with `gap` between
- * them: the tile width is `min((w - gap(c-1))/c, ((h - gap(r-1))/r) * 16/9)` with `r = ceil(n/c)`. A tie goes to
- * the fewer columns, except in a tile area under 1100 px wide (D2, viewports up to about 1410): there the next column count wins when
- * its tile is within 5 % of the widest, because a side-by-side pair that fills the width beats a stack that leaves dead
- * bands at both sides.
- */
-export function stageColumns(n: number, w: number, h: number, gap: number): number {
-  let best = 1;
-  let bestWidth = -Infinity;
-  for (let c = 1; c <= n; c++) {
-    const width = tileWidth(c, n, w, h, gap);
-    if (width > bestWidth + 1e-9) { best = c; bestWidth = width; }
-  }
-  if (w < NARROW_STAGE_PX) {
-    for (let c = 1; c <= n; c++) {
-      if (c > best && tileWidth(c, n, w, h, gap) >= bestWidth * NEAR_TIE) return c;
-    }
-  }
-  return best;
-}
-
-/** The width of a 16:9 tile when `n` tiles sit in `c` columns of a `w` x `h` area. */
-function tileWidth(c: number, n: number, w: number, h: number, gap: number): number {
-  const r = Math.ceil(n / c);
-  return Math.min((w - gap * (c - 1)) / c, ((h - gap * (r - 1)) / r) * (16 / 9));
+/** The prototype's tile width by count: ≤2 min(46%, 560px), ≤4 min(46%, 420px), more min(31.5%, 340px). */
+function band(n: number): 'two' | 'four' | 'many' {
+  return n <= 2 ? 'two' : n <= 4 ? 'four' : 'many';
 }
 
 /**
- * The call stage: the heading, the outgoing ring, the call code behind a closed disclosure (Escape closes it and
- * returns focus to it), a notice region, the tiles as a list named `voice.tiles` (or `voice.empty`), and the
- * controls. The notice region is a `role="status"` that is always present, so its text is announced; a notice
- * with `focusOnce` takes focus once per text. While a pause or block notice shows, no tile renders media, no screen
- * tile renders and the focus is cleared; while any notice shows, the stage does not also say that nobody is in voice.
+ * The call stage: the bar (the voice header), the heading, the outgoing ring, a notice region, then the stage body (the
+ * now-playing slot, the tiles as a list named `voice.tiles`, or `voice.empty`, or the not-joined preview), then the controls:
+ * with `bar` the 64px call bar (the room, the stats and the controls). The notice region is a
+ * `role="status"` that is always present, so its text is announced; a notice with `focusOnce` takes focus once per text.
+ * While a pause or block notice shows, no tile renders media, no screen tile renders and the focus is cleared; while any
+ * notice shows, the stage does not also say that nobody is in voice.
  *
- * The tiles are one keyed list that never changes order or parent: focus only sets `data-focused-stage` on the stage
- * and `data-focused` on the tile, and CSS grid does the rest (R27). In the grid a ResizeObserver writes
- * `--d-stage-cols` and `--d-tile-w` from `stageColumns`. Escape unfocuses a tile, unless full screen is on.
+ * The tiles are one keyed list that never changes order or parent: focus only sets `data-focused-stage` on the stage and
+ * `data-focused` on the tile, and CSS does the rest (R27): a wrapping row of 16:9 tiles in the grid, the focused tile over
+ * a filmstrip when focused. Escape unfocuses a tile, unless full screen is on.
  */
-export function CallStage({ title, tiles: allTiles, focusedId = null, onFocus, header, code, notice, controls, outgoing, labels }: CallStageProps) {
+export function CallStage({ title, tiles: allTiles, focusedId = null, onFocus, header, nowPlaying, code, notice, controls, bar, preview,
+  outgoing, labels }: CallStageProps) {
   const titleId = useId();
-  const tilesRef = useRef<HTMLUListElement>(null);
   const detailsRef = useRef<HTMLDetailsElement>(null);
   const noticeRef = useRef<HTMLDivElement>(null);
   const actionRef = useRef<HTMLButtonElement>(null);
   const focusedFor = useRef<string | null>(null);
-  const [cols, setCols] = useState(0);
   const noticeText = notice?.text ?? null;
   const focusOnce = notice?.focusOnce ?? false;
 
@@ -131,34 +124,10 @@ export function CallStage({ title, tiles: allTiles, focusedId = null, onFocus, h
   const focusedHere = !hideMedia && focusedId !== null && tiles.some(t => idOf(t) === focusedId);
   // A lone focused tile keeps the grid: a filmstrip row of nothing would only shrink it.
   const focusedLayout = focusedHere && tiles.length > 1;
-  const tileCount = tiles.length;
-  // D1: how many tiles sit in a partial last row of the grid (0: the rows are full, or there is no grid row to centre).
-  const orphans = stageMode && !focusedLayout && cols > 1 ? tileCount % cols : 0;
 
   useEffect(() => {
     if (hideMedia && focusedId !== null) onFocus?.(null);
   }, [hideMedia, focusedId, onFocus]);
-
-  // A layout effect: its column count and the orphan row it implies (D1) are committed before the first paint, so the
-  // grid never paints with the columns set and the last row not yet centred (a passive effect's re-render can land frames later).
-  useLayoutEffect(() => {
-    const el = tilesRef.current;
-    if (!stageMode || !el || typeof ResizeObserver === 'undefined') return;
-    const measure = () => {
-      const { clientWidth: w, clientHeight: h } = el;
-      if (w <= 0 || h <= 0 || tileCount === 0) return;
-      const gap = TILE_GAP_PX * (parseFloat(getComputedStyle(document.documentElement).fontSize) / 16 || 1);
-      const cols = stageColumns(tileCount, w, h, gap);
-      const width = tileWidth(cols, tileCount, w, h, gap);
-      el.style.setProperty('--d-stage-cols', String(cols));
-      setCols(cols);
-      el.style.setProperty('--d-tile-w', `${String(Math.max(0, Math.floor(width)))}px`);
-    };
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(el);
-    return () => { observer.disconnect(); };
-  }, [stageMode, tileCount]);
 
   const onStageKey = (e: KeyboardEvent<HTMLElement>) => {
     if (e.key !== 'Escape' || !focusedHere || document.fullscreenElement) return;
@@ -167,24 +136,71 @@ export function CallStage({ title, tiles: allTiles, focusedId = null, onFocus, h
     onFocus?.(null);
   };
 
+  const hasHeader = header !== undefined && header !== null;
+  const codeBox = code !== null ? (
+    <details ref={detailsRef} className="d-call-stage__code" onKeyDown={onCodeKey}>
+      <summary className="d-call-stage__summary">{labels.code}</summary>
+      <div className="d-call-stage__code-body">
+        <p className="d-call-stage__digits">{groupCode(code)}</p>
+        <p className="d-call-stage__help">{labels.codeHelp}</p>
+      </div>
+    </details>
+  ) : null;
+  let body: ReactNode;
+  if (preview !== undefined) {
+    body = (
+      <div className="d-call-stage__preview">
+        {preview.people.length > 0 ? (
+          <span className="d-call-stage__faces" aria-hidden="true">
+            {preview.people.map(p => (
+              <span key={p.id} className="d-call-stage__face" data-speaking={p.speaking ? 'true' : 'false'}>
+                <Avatar name={p.name} size="lg" {...(p.bot === true ? { shape: 'bot' as const } : {})} />
+              </span>
+            ))}
+          </span>
+        ) : null}
+        <span className="d-call-stage__preview-text">
+          <span className="d-call-stage__preview-name">{preview.name}</span>
+          <span className="d-call-stage__preview-who">{preview.text}</span>
+        </span>
+        {preview.join !== null ? (
+          <button type="button" className="d-call-stage__join" onClick={preview.join.onJoin}>
+            <Icon name="phone" size={15} />{preview.join.label}
+          </button>
+        ) : null}
+      </div>
+    );
+  } else if (tiles.length === 0) {
+    body = notice === null ? <p className="d-call-stage__empty">{labels.empty}</p> : null;
+  } else {
+    body = (
+      <ul role="list" aria-label={labels.tiles} className="d-call-stage__tiles" data-tiles={stageMode ? 'stage' : undefined}
+        data-band={band(tiles.length)}
+        style={focusedLayout ? { '--d-strip-n': Math.max(1, tiles.length - 1) } as React.CSSProperties : undefined}>
+        {tiles.map(t => {
+          const id = idOf(t);
+          const focused = focusedHere && id === focusedId;
+          return (
+            <CallTile key={id} {...t} media={hideMedia ? null : t.media} focused={focused}
+              onFocusTile={onFocus ? () => { onFocus(focused ? null : id); } : undefined}
+              {...(focused && onFocus && labels.grid !== undefined ? { onGrid: () => { onFocus(null); }, gridLabel: labels.grid } : {})} />
+          );
+        })}
+      </ul>
+    );
+  }
   return (
     <section className="d-call-stage" aria-labelledby={titleId} data-media-hidden={hideMedia ? 'true' : undefined}
-      data-focused-stage={focusedLayout ? 'true' : undefined} onKeyDown={onStageKey}>
-      {header !== undefined && header !== null ? <div className="d-call-stage__bar">{header}</div> : null}
-      <header className="d-call-stage__head" data-bare={header !== undefined && header !== null ? 'true' : undefined}>
-        {header !== undefined && header !== null
+      data-focused-stage={focusedLayout ? 'true' : undefined} data-preview={preview !== undefined ? 'true' : undefined}
+      data-bar={bar !== undefined && preview === undefined ? 'true' : undefined} onKeyDown={onStageKey}>
+      {hasHeader ? <div className="d-call-stage__bar">{header}</div> : null}
+      <header className="d-call-stage__head" data-bare={hasHeader || bar !== undefined || preview !== undefined ? 'true' : undefined}
+        data-empty={outgoing === null && (code === null || bar !== undefined) ? 'true' : undefined}>
+        {hasHeader || bar !== undefined || preview !== undefined
           ? <span id={titleId} className="d-sr-only">{title}</span>
           : <h2 id={titleId} className="d-call-stage__title">{title}</h2>}
         {outgoing !== null ? <p className="d-call-stage__outgoing">{outgoing.text}</p> : null}
-        {code !== null ? (
-          <details ref={detailsRef} className="d-call-stage__code" onKeyDown={onCodeKey}>
-            <summary className="d-call-stage__summary">{labels.code}</summary>
-            <div className="d-call-stage__code-body">
-              <p className="d-call-stage__digits">{groupCode(code)}</p>
-              <p className="d-call-stage__help">{labels.codeHelp}</p>
-            </div>
-          </details>
-        ) : null}
+        {bar === undefined ? codeBox : null}
       </header>
       <div ref={noticeRef} role="status" className="d-call-stage__notice" data-empty={notice === null ? 'true' : undefined} data-kind={notice?.kind}
         tabIndex={notice !== null && notice.action === null ? -1 : undefined}>
@@ -199,26 +215,19 @@ export function CallStage({ title, tiles: allTiles, focusedId = null, onFocus, h
           </>
         ) : null}
       </div>
-      {tiles.length === 0 ? (
-        notice === null ? <p className="d-call-stage__empty">{labels.empty}</p> : null
-      ) : (
-        <ul ref={tilesRef} role="list" aria-label={labels.tiles} className="d-call-stage__tiles" data-tiles={stageMode ? 'stage' : undefined}
-          data-many={tiles.length > 2 ? 'true' : undefined}
-          style={focusedLayout ? { '--d-strip-n': Math.max(1, tiles.length - 1) } as React.CSSProperties
-            : orphans > 0 ? { '--d-orphan-n': orphans } as React.CSSProperties : undefined}>
-          {tiles.map((t, i) => {
-            const id = idOf(t);
-            const focused = focusedHere && id === focusedId;
-            // D1: the last tile of a partial row. Only the grid has rows; the filmstrip and a lone column have none.
-            const orphan = orphans > 0 && i >= tiles.length - orphans;
-            return (
-              <CallTile key={id} {...t} media={hideMedia ? null : t.media}
-                focused={focused} orphan={orphan} onFocusTile={onFocus ? () => { onFocus(focused ? null : id); } : undefined} />
-            );
-          })}
-        </ul>
-      )}
-      <div className="d-call-stage__controls">{controls}</div>
+      <div className="d-call-stage__body">
+        {nowPlaying ?? null}
+        {body}
+      </div>
+      {preview !== undefined ? null : bar !== undefined ? (
+        <div className="d-call-stage__controls" data-bar="true">
+          <div className="d-call-stage__where">
+            <span className="d-call-stage__room"><span className="d-call-stage__dot" aria-hidden="true" />{bar.name}</span>
+            <span className="d-call-stage__stats">{bar.stats}</span>
+          </div>
+          {controls}
+        </div>
+      ) : <div className="d-call-stage__controls">{controls}</div>}
     </section>
   );
 }

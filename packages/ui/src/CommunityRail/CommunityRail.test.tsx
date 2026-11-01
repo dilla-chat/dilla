@@ -201,11 +201,10 @@ describe('CommunityRail', () => {
   });
 });
 
-// web3.9 (UI-2): the 72px rail with the `@` tile, a hairline, and one "+" tile.
+// web3.9 (UI-2), Signal: the rail with the `@` tile, a hairline, and one "+" tile.
 describe('CommunityRail, the @ tile and the add tile', () => {
   const home = (over: Partial<NonNullable<CommunityRailProps['home']>> = {}): NonNullable<CommunityRailProps['home']> =>
     ({ label: 'home', selected: false, unread: 0, mentions: 0, itemLabel: 'home, 2 unread', onSelect: vi.fn(), ...over });
-  const pillOf = (name: string) => btn(name).querySelector('.d-community-rail__pill');
 
   it('puts the @ tile first, then a hairline, then the servers; it is named home and takes its filled name while unread', () => {
     const { rerender } = render(wrapped(props({ home: home() })));
@@ -241,13 +240,9 @@ describe('CommunityRail, the @ tile and the add tile', () => {
     await user.tab();
     expect(btn('Night Owls')).toHaveFocus();
   });
-  it('draws the pill at the left edge: selected, unread, or hover', () => {
-    render(wrapped(props({ items: BADGED, activeId: 'a1', home: home() })));
-    expect(pillOf('Midgard Crew')).toHaveAttribute('data-pill', 'selected');
-    expect(pillOf('Night Owls 4 unread')).toHaveAttribute('data-pill', 'unread');
-    expect(pillOf('raid planning 2 mentions')).toHaveAttribute('data-pill', 'unread');
-    expect(pillOf('home')).toHaveAttribute('data-pill', 'hover');
-    expect(pillOf('home')).toHaveAttribute('aria-hidden', 'true');
+  it('draws no left-edge pill (Signal §5.3: selected is the tile itself, unread is for a screen reader)', () => {
+    const { container } = render(wrapped(props({ items: BADGED, activeId: 'a1', home: home() })));
+    expect(container.querySelector('.d-community-rail__pill')).toBeNull();
   });
   it('merges join and create into one "+" tile that only asks to add (the dialog is the caller\'s)', async () => {
     const user = userEvent.setup();
@@ -273,7 +268,7 @@ describe('CommunityRail, the @ tile and the add tile', () => {
     await user.keyboard('{Enter}');
     expect(onAdd).toHaveBeenCalledTimes(1);
   });
-  it('in the new design unread is the pill alone with no visible number, and a mention is a count badge at the bottom right', () => {
+  it('unread shows no visible number, and a mention is a count badge at the bottom right', () => {
     const { container } = render(wrapped(props({ items: BADGED, home: home({ unread: 3 }), addLabel: 'add a server', onAdd: () => {} })));
     const owls = btn('Night Owls 4 unread');
     expect(owls.querySelector('.d-community-rail__badge')).toBeNull();

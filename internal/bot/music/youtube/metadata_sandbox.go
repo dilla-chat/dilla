@@ -67,20 +67,22 @@ func (r IsolatedMetadataRunner) Run(ctx context.Context, executable string, args
 	defer func() { _ = process.Close() }()
 	output, err := io.ReadAll(io.LimitReader(process.stdout, int64(outputLimit)+1))
 	if err != nil {
-		return nil, ErrExtractFailed
+		_ = process.Close()
+		return nil, process.failure(ErrExtractFailed)
 	}
 	if len(output) > outputLimit {
-		return nil, ErrMetadataTooLarge
+		_ = process.Close()
+		return nil, process.failure(ErrMetadataTooLarge)
 	}
 	<-process.done
 	if process.ctxErr != nil {
-		return nil, process.ctxErr
+		return nil, process.failure(process.ctxErr)
 	}
 	if process.exitCode == 75 {
-		return nil, ErrMetadataTooLarge
+		return nil, process.failure(ErrMetadataTooLarge)
 	}
 	if process.err != nil {
-		return nil, ErrExtractFailed
+		return nil, process.failure(ErrExtractFailed)
 	}
 	return output, nil
 }

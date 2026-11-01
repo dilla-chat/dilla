@@ -347,9 +347,9 @@ the mention list): they are not keys of `en.ts` and have no row in this table.
 | `shell.edit.hint` | `escape to cancel · enter to save` | under the editor |
 | `shell.edit.save` | `save` | editor button |
 | `shell.edit.cancel` | `cancel` | editor button |
-| `shell.composer.replying` | `replying to {name}` | the reply chip |
+| `shell.composer.replying` | `Replying to {name}` | the reply bar (Signal §5.5, the prototype's case) |
 | `shell.composer.replyCancel` | `cancel reply` | the reply chip's `×` |
-| `shell.composer.attach` | `attach files` | the composer's `+` |
+| `shell.composer.attach` | `Attach files (25 MB each)` | the composer's paperclip (Signal §5.5, the prototype's tooltip) |
 | `shell.composer.mentions` | `people to mention` | the mention list's name |
 | `shell.composer.mentionEveryone` | `everyone in this channel` | the `everyone` option's secondary text |
 | `shell.pins.open` | `pinned` | header button |
@@ -369,6 +369,7 @@ the mention list): they are not keys of `en.ts` and have no row in this table.
 | `shell.tray.failed` | `failed ({code})` | tray phase |
 | `shell.tray.failedHint` | `Remove it and attach it again.` | beside a failed tray entry |
 | `shell.tray.remove` | `remove {name}` | a tray entry's `×` |
+| `shell.tray.removeTip` | `Remove` | the `×`'s tooltip (Signal §6.8) |
 | `shell.tray.tooLarge` | `{name} is over 25 MB and cannot be sent from a browser.` | alert above the tray in the composer |
 | `shell.tray.tooMany` | `A message carries at most 4 files.` | alert above the tray in the composer |
 | `shell.tray.notReady` | `Wait until every file is ready, or remove it.` | alert above the tray in the composer |

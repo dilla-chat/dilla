@@ -1,6 +1,10 @@
-.d-factor-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 0.5rem 1rem; padding: 0.625rem 0; border-bottom: 1px solid var(--hairline); }
-.d-factor-row__main { display: grid; gap: 0.125rem; min-width: 0; }
-.d-factor-row__title { font-size: var(--text-base); color: var(--fg); }
-.d-factor-row__detail { font-size: var(--text-sm); color: var(--fg-3); }
-.d-factor-row__reason { font-size: var(--text-sm); color: var(--fg-2); }
+/* README §5.9 (task 10): a factor is a setting row (56px, 10px 16px), its title 12.5/600 over the detail (11px --fg-2) and
+   the action on the right; the rows of one list draw one 10px-radius group with hairlines between. */
+.d-factor-row { box-sizing: border-box; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; min-height: 3.5rem; min-width: 0; padding: 10px 16px; border: 1px solid var(--hairline); border-radius: var(--r-xl); }
+.d-factor-row + .d-factor-row { margin-top: -1px; border-top-left-radius: 0; border-top-right-radius: 0; }
+.d-factor-row:has(+ .d-factor-row) { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.d-factor-row__main { display: grid; flex: 1 1 220px; min-width: 0; line-height: 1.4; }
+.d-factor-row__title { font-size: var(--text-sm); font-weight: var(--weight-label); color: var(--fg); }
+.d-factor-row__detail { font-size: var(--text-xs); color: var(--fg-2); }
+.d-factor-row__reason { font-size: var(--text-xs); color: var(--fg-strong); }
 .d-factor-row .d-btn[aria-disabled="true"] { opacity: 0.6; cursor: not-allowed; }

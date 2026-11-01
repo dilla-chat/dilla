@@ -120,26 +120,16 @@ test('from an empty instance: start a server, invite a friend through a link, re
   // with an enabled "copy link". So the dialog must end in one of three states: copied, blocked, or (after the second in
   // which a copy by itself would have spoken) the link with an enabled "copy link" and nothing said.
   // web3.8 (item 11): the link is made under server settings → Invites.
-  const inviteDialog = await openInviteDialog(page, SERVER);
-  const linkField = inviteDialog.getByRole('textbox', { name: copy('invite.link'), exact: true });
-  const copyLink = button(inviteDialog, 'invite.copy');
-  const inviteStatus = inviteDialog.getByRole('status');
+  // Signal task 10c: the link shows once in the Invites card, with Copy; no dialog opens and nothing is copied by itself.
+  const inviteCard = await openInviteDialog(page, SERVER);
+  const linkField = inviteCard.getByRole('textbox', { name: copy('serverSettings.invites.link'), exact: true });
   const LINK = /^https?:\/\/[^/\s]+\/i\/[^/\s]+$/;
   await expect(linkField).toBeVisible({ timeout: WAIT });
-  const shownAt = Date.now();
-  await expect.poll(async () => {
-    const said = (await inviteStatus.textContent())?.trim() ?? '';
-    if (said === copy('invite.copied')) return 'copied';
-    if (said === copy('invite.blocked')) return 'blocked';
-    if (said === '' && Date.now() - shownAt > 1_500 && LINK.test(await linkField.inputValue()) && await copyLink.isEnabled()) return 'by hand';
-    return `not yet ("${said}")`;
-  }, { timeout: WAIT, message: 'the invite dialog says copied or blocked, or offers the link and an enabled copy link' })
-    .toMatch(/^(copied|blocked|by hand)$/);
+  await expect.poll(() => linkField.inputValue(), { timeout: WAIT }).toMatch(LINK);
+  await expect(button(inviteCard, 'serverSettings.invites.copy')).toBeEnabled();
   const link = await linkField.inputValue();
   expect(link).toMatch(LINK);
   await expectAccessible(page, 'the invite link');
-  await page.keyboard.press('Escape');
-  await expect(inviteDialog).toBeHidden();
   await page.keyboard.press('Escape');
   await expect(page.getByRole('dialog', { name: copy('admin.title'), exact: true })).toBeHidden();
 
@@ -247,7 +237,8 @@ test('from an empty instance: start a server, invite a friend through a link, re
       return { left: r.left, right: r.right, width: r.width, clipped: b.scrollWidth > b.clientWidth + 1,
         sidebar: sidebar === undefined ? null : { left: sidebar.left, right: sidebar.right, width: sidebar.width } };
     });
-    expect(gearFit.sidebar?.width ?? Infinity, `the sidebar is 240 px (${JSON.stringify(gearFit.sidebar)})`).toBeLessThanOrEqual(240);
+    // Signal §5.1: the sidebar's default width is the prototype's 244 (--sidebar-w).
+    expect(gearFit.sidebar?.width ?? Infinity, `the sidebar is 244 px (${JSON.stringify(gearFit.sidebar)})`).toBeCloseTo(244, 0);
     expect(gearFit.left).toBeGreaterThanOrEqual((gearFit.sidebar?.left ?? 0) - 0.5);
     expect(gearFit.right).toBeLessThanOrEqual((gearFit.sidebar?.right ?? 0) + 0.5);
     expect(gearFit.width).toBeGreaterThanOrEqual(24);
@@ -278,7 +269,8 @@ test('from an empty instance: start a server, invite a friend through a link, re
       const log = page.getByRole('log', { name: copy('shell.log.label', { channel: slug }), exact: true });
       await expect(log).toContainText(copy('shell.log.emptyMade'));
       await expect(log).not.toContainText(copy('shell.log.empty'));
-      await expect(button(page, 'shell.pins.open')).toBeInViewport({ ratio: 1 });
+      // Ruling X: the header's Members button (the last header control; pins moved to the row's context menu) stands in the viewport.
+      await expect(page.locator('.d-channel-header [data-members-toggle]')).toBeInViewport({ ratio: 1 });
       const size = page.viewportSize();
       await page.setViewportSize({ width: 360, height: 740 });
       try {

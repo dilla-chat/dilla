@@ -178,8 +178,11 @@ func (r *registry) onlineIn(g id.ID, now time.Time, idle time.Duration, minWire 
 		for _, c := range r.byDevice[device] {
 			c.mu.Lock()
 			wire := c.wire
+			managedBot := c.isBot
 			c.mu.Unlock()
-			if (minWire >= 3 && wire < 3) || !c.online(now, idle) {
+			// Managed runtime sessions consume membership changes but do not yet
+			// implement the elected commit workflow. Presence alone cannot elect them.
+			if managedBot || (minWire >= 3 && wire < 3) || !c.online(now, idle) {
 				continue
 			}
 			_, isBot := r.bots[device]

@@ -6,7 +6,7 @@ export const THEME_QUERIES = { light: '(prefers-color-scheme: light)', contrast:
 export function preferredTheme(matchMedia: (query: string) => { matches: boolean }): ThemeName {
   if (matchMedia(THEME_QUERIES.contrast).matches) return 'high-contrast';
   if (matchMedia(THEME_QUERIES.light).matches) return 'light';
-  return 'mesh';
+  return 'signal';
 }
 
 export function applyTheme(root: HTMLElement, theme: ThemeName): void {

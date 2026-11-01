@@ -1,95 +1,117 @@
-.d-message-row { display: grid; grid-template-columns: var(--avatar-size) minmax(0, 1fr); column-gap: 0.75rem; padding: var(--row-pad-y) var(--row-pad-x); margin: var(--row-gap) 0; }
-.d-message-row:hover { background: var(--surface-2); }
-.d-message-row__main { min-width: 0; display: grid; gap: 0.125rem; }
-.d-message-row__head { margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; font-size: var(--text-sm); }
-.d-message-row__author { font-weight: var(--weight-display); color: var(--fg); }
-.d-message-row__time, .d-message-row__state { font-size: var(--text-xs); color: var(--fg-3); }
+/* Signal §5.5 (task 7): the prototype's message row. A 44px time gutter, the 30px avatar and the content in a 10px-gapped
+   grid; 7px 16px 3px 0 for a group's first row, 1px 16px for a follow-up. Values are the prototype's inline styles. */
+.d-message-row { position: relative; display: grid; grid-template-columns: 2.75rem /* 44px */ 1.875rem /* 30px */ minmax(0, 1fr); column-gap: 0.625rem /* 10px */;
+  padding: 0.4375rem 1rem 0.1875rem 0 /* 7px 16px 3px 0 */; background: transparent; box-shadow: inset 0 0 0 transparent;
+  transition: background var(--duration-press), box-shadow var(--duration-press);
+  /* backwards, not both: a filled transform would keep the row a stacking context after it lands, and a later row would
+     paint over this row's open ⋯ menu (fix round 1, item 9). */
+  animation: d-up var(--duration-enter) var(--ease-out) backwards; animation-delay: calc(var(--d-enter-i, 0) * var(--duration-stagger)); }
+.d-message-row[data-grouped="true"] { padding: 0.0625rem 1rem 0.0625rem 0 /* 1px 16px */; }
+.d-message-row:hover, .d-message-row[data-hover="true"] { background: var(--bg-3); box-shadow: inset 2px 0 0 var(--accent); }
+.d-message-row[data-mention="true"] { background: var(--warn-soft); box-shadow: inset 2px 0 0 var(--mention); }
+.d-message-row[data-replying="true"] { background: var(--accent-faint); box-shadow: inset 2px 0 0 var(--accent); }
+/* The ring sits inside the row, so the log's edge never clips it. */
+.d-message-row:focus-visible { outline-offset: -2px; }
+
+/* The gutter: 10.5px tabular, right-aligned. Shown on a group's first row; on a follow-up only on hover or focus. */
+.d-message-row__gutter { font-size: var(--text-meta); line-height: 1.5; color: transparent; text-align: right; padding-top: 1.125rem /* 18px */; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; transition: color var(--duration-press); }
+.d-message-row:not([data-grouped="true"]) .d-message-row__gutter,
+.d-message-row:hover .d-message-row__gutter, .d-message-row[data-hover="true"] .d-message-row__gutter,
+.d-message-row:focus-within .d-message-row__gutter, .d-message-row[data-revealed="true"] .d-message-row__gutter { color: var(--fg-quiet); }
+/* A 12-hour time ("10:06 PM", 8 characters) is wider than the prototype's 44px column at 10.5px: it steps down to 9px, which fits. */
+.d-message-row__gutter[data-long="true"] { font-size: var(--text-badge); }
+.d-message-row[data-grouped="true"] .d-message-row__gutter { padding-top: 0.0625rem /* 1px */; }
+.d-message-row[data-reply="true"] .d-message-row__gutter { padding-top: 2.375rem /* 38px */; }
+.d-message-row__avatar { display: block; width: 1.875rem; height: 1.875rem; }
+.d-message-row[data-reply="true"] .d-message-row__avatar { margin-top: 1.25rem /* 20px */; }
+/* A follow-up's avatar column is empty (the prototype's bare span): it takes no height. */
+.d-message-row[data-grouped="true"] .d-message-row__avatar { height: auto; }
+/* A follow-up's head holds only what a screen reader needs: it takes no line unless it shows an edited, pinned or state mark. */
+.d-message-row[data-grouped="true"] .d-message-row__head:not(:has(> :not(.d-sr-only))) { position: absolute; }
+.d-message-row__avatar[data-profile="true"] { position: relative; cursor: pointer; }
+
+.d-message-row__main { min-width: 0; display: grid; gap: 0.0625rem /* 1px */; }
+.d-message-row__head { margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; }
+.d-message-row__author { font-weight: var(--weight-display); font-size: var(--text-sm); color: var(--d-name-colour, var(--fg)); }
+.d-message-row__author[data-bot="true"] { color: var(--accent-2); }
+.d-message-row__time { font-size: var(--text-meta); color: var(--fg-faint); }
+.d-message-row__state { font-size: var(--text-meta); color: var(--fg-3); }
+.d-message-row__edited, .d-message-row__pinned { font-size: var(--text-meta); color: var(--fg-3); }
+/* On a mention row's warm tint fg-3 drops under 4.5:1 (4.48): its meta takes fg-2 (the prototype draws no such meta). */
+.d-message-row[data-mention="true"] :is(.d-message-row__edited, .d-message-row__pinned, .d-message-row__pending:not([data-tone="failed"])) { color: var(--fg-2); }
 .d-message-row[data-state="failed"] .d-message-row__state { color: var(--danger); }
 .d-message-row[data-state="failed"] .d-message-row__state::before { content: "" / ""; display: inline-block; width: 0.875em; height: 0.875em; margin-right: 0.25em; vertical-align: -0.125em; background: currentColor; mask: var(--d-mask-x) center / contain no-repeat; }
-.d-message-row__body { margin: 0; font-size: var(--text-base); color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere; }
+.d-message-row__body { margin: 0; font-size: var(--text-input); line-height: 1.55; color: var(--fg-body); white-space: pre-wrap; overflow-wrap: anywhere; }
+.d-message-row__body[data-code="true"] { display: grid; gap: 0.375rem /* 6px */; min-width: 0; white-space: normal; }
+.d-message-row__text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .d-message-row[data-state="pending"] .d-message-row__body { color: var(--fg-2); }
 .d-message-row__note { margin: 0; font-size: var(--text-sm); font-style: italic; color: var(--fg-3); }
 .d-message-row__detail { justify-self: start; font: inherit; font-size: var(--text-xs); color: var(--fg-3); padding: 0 0.25rem; border: 1px solid var(--hairline-2); border-radius: var(--r-md); }
 .d-message-row__actions { display: flex; gap: 0.5rem; margin-top: 0.25rem; }
 
-/* web-2b (L-UI-40): the row is an <article>, the log's roving stop, with its toolbar, reply line, cards, reactions and pending action. */
-.d-message-row { position: relative; }
-/* The ring sits inside the row, so the log's edge never clips it. */
-.d-message-row:focus-visible { outline-offset: -2px; }
-.d-message-row__edited, .d-message-row__pinned { font-size: var(--text-xs); color: var(--fg-3); }
-/* The toolbar floats top-right while the row is hovered or holds focus, and on the active row while focus is inside the
-   log: never while the person types in the composer, so it never covers the row above (ruling 39). */
-.d-message-row__toolbar { position: absolute; top: -0.875rem; inset-inline-end: var(--row-pad-x); display: none; background: var(--surface); border: 1px solid var(--edge); border-radius: var(--r-md); box-shadow: var(--shadow-2); }
-.d-message-row:hover .d-message-row__toolbar,
-.d-message-row:focus-within .d-message-row__toolbar,
-.d-message-log:focus-within .d-message-row[data-active="true"] .d-message-row__toolbar { display: block; }
-/* In the narrow shell the toolbar sits in flow under the head (flow 04, 360 × 740). */
-@container d-shell (max-width: 47.99rem) {
-  .d-message-row .d-message-row__toolbar { position: static; justify-self: start; max-width: 100%; min-width: 0; margin-block-start: 0.25rem; box-shadow: none; }
-  .d-message-row .d-message-toolbar { flex-wrap: wrap; }
-}
-/* web3.8 (R9): the same for a landscape phone, whose shell is wide; phone-query.test.ts pins the twins. */
-[data-layout="phone"] .d-message-row .d-message-row__toolbar { position: static; justify-self: start; max-width: 100%; min-width: 0; margin-block-start: 0.25rem; box-shadow: none; }
-[data-layout="phone"] .d-message-row .d-message-toolbar { flex-wrap: wrap; }
-.d-message-row__reply { display: flex; align-items: center; gap: 0.375rem; min-width: 0; font-size: var(--text-sm); color: var(--fg-2); }
-.d-message-row__reply-jump { display: inline-flex; align-items: center; gap: 0.375rem; min-width: 0; max-width: 100%; min-height: 1.5rem; padding: 0 0.25rem; margin: 0 -0.25rem; font: inherit; color: inherit; text-align: start; background: transparent; border: 0; border-radius: var(--r-sm); cursor: pointer; }
-.d-message-row__reply-jump:hover { color: var(--fg); background: var(--surface-hi); }
-.d-message-row__reply-author { font-weight: var(--weight-display); white-space: nowrap; }
+/* The toolbar floats at top −12px, right 16px (react, reply, thread, more); it fades in and rises 3px while the row is hovered
+   or holds focus, and on the active row while focus is in the log: never while the person types in the composer (ruling 39). */
+/* Hidden, it is also out of the tab order (visibility), as the display:none it replaces was; it hides after its fade. */
+.d-message-row__toolbar { position: absolute; top: -0.75rem; right: 1rem; z-index: 2; opacity: 0; transform: translateY(3px); pointer-events: none; visibility: hidden;
+  transition: opacity var(--duration-press), transform var(--duration-rise) var(--ease-out), visibility 0s linear var(--duration-press); }
+.d-message-row:hover .d-message-row__toolbar, .d-message-row[data-hover="true"] .d-message-row__toolbar,
+.d-message-row:focus-within .d-message-row__toolbar, .d-message-log:focus-within .d-message-row[data-active="true"] .d-message-row__toolbar,
+.d-message-row[data-revealed="true"] .d-message-row__toolbar { opacity: 1; transform: none; pointer-events: auto; visibility: visible; transition-delay: 0s; }
+
+/* A sent reply (§6.5): the 2px connector curve from the avatar column, the mini avatar, the author in bold and one line. */
+.d-message-row__reply { order: -1; position: relative; display: flex; align-items: center; gap: 0.375rem; min-width: 0; margin: 0 0 0.125rem; font-size: var(--text-btn); color: var(--fg-2); transition: color var(--duration-press); }
+.d-message-row__reply-curve { position: absolute; left: -1.625rem /* -26px */; top: 0.5625rem /* 9px */; width: 1.25rem /* 20px */; height: 0.6875rem /* 11px */; border-left: 2px solid var(--line-strong); border-top: 2px solid var(--line-strong); border-top-left-radius: 6px; box-sizing: border-box; }
+.d-message-row__reply-avatar { display: inline-flex; flex: none; }
+.d-message-row__reply-jump { display: inline-flex; align-items: center; gap: 0.375rem; min-width: 0; max-width: 100%; padding: 0; font: inherit; color: inherit; text-align: start; background: transparent; border: 0; cursor: pointer; }
+.d-message-row__reply:hover, .d-message-row__reply-jump:hover { color: var(--fg); }
+.d-message-row__reply-author { font-weight: var(--weight-display); color: var(--fg-strong); white-space: nowrap; }
 .d-message-row__reply-excerpt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .d-message-row__reply-state { font-style: italic; color: var(--fg-3); }
-.d-message-row__attachments { display: flex; flex-wrap: wrap; gap: 0.5rem; }
-/* A file or media card takes what the row has and drops under the images when less than 18rem is left (or the row is
-   narrower). The wrap follows the row's own width at any viewport, so the name, size and save button always fit. */
-.d-message-row__attachments > .d-attachment-card:not([data-kind="image"]) { flex: 1 1 18rem; min-width: min(18rem, 100%); max-width: 100%; }
-.d-message-row__attachments > .d-attachment-card:not([data-kind="image"]) :is(.d-attachment-card__file, .d-attachment-card__media) { max-width: 100%; }
+
+.d-message-row__attachments { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.25rem; }
+/* Fix round 3: a card (Glenn's now-playing) is a block, not a flex item, so it takes its 440px (the prototype's max-width)
+   instead of shrinking to its content. */
+.d-message-row__attachments.d-message-row__card { display: block; margin-top: 6px; }
 .d-message-row__pending { margin: 0; font-size: var(--text-xs); color: var(--fg-3); display: flex; gap: 0.5rem; align-items: center; }
 /* A failed action: the danger tone and a glyph, so the state is never colour alone; the glyph has empty alt text. */
 .d-message-row__pending[data-tone="failed"] { color: var(--danger); }
 .d-message-row__pending[data-tone="failed"] .d-message-row__pending-label::before { content: "" / ""; display: inline-block; width: 0.875em; height: 0.875em; margin-right: 0.25em; vertical-align: -0.125em; background: currentColor; mask: var(--d-mask-x) center / contain no-repeat; }
-/* Mention pills: mine in the mention colour, a broadcast outlined (bold when it reaches me), anyone else quiet. */
-.d-mention { padding: 0 0.25rem; border-radius: var(--r-sm); background: var(--surface-hi); color: var(--fg); }
+
+/* Mention pills: mine is the prototype's chip (3px, the mention fill and ink, 600); a broadcast is outlined; anyone else quiet. */
+.d-mention { padding: 0 0.25rem; border-radius: var(--r-tag); background: var(--surface-hi); color: var(--fg); }
 /* MP7: a user pill is a button that opens the profile card. It keeps the pill look; the cursor and an underline on hover and focus-visible show it acts. */
 button.d-mention { font: inherit; border: 0; cursor: pointer; }
 button.d-mention:hover, button.d-mention:focus-visible { text-decoration: underline; }
-.d-message-row__author-open { position: relative; min-width: 1.5rem; min-height: 1.5rem; padding: 0; font: inherit; font-weight: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+.d-mention[data-me="true"]:not([data-broadcast]) { background: var(--mention); color: var(--mention-ink); font-weight: var(--weight-label); }
+.d-mention[data-broadcast="true"] { background: transparent; box-shadow: inset 0 0 0 1px var(--mention); }
+.d-mention[data-broadcast="true"][data-me="true"] { font-weight: var(--weight-display); }
+.d-message-row__author-open { position: relative; padding: 0; font: inherit; font-weight: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
 .d-message-row__author-open:hover, .d-message-row__author-open:focus-visible { text-decoration: underline; }
 /* A phone's target is 44 high without taking line room: the pill and the author name reach out by a pseudo-element. */
 [data-layout="phone"] .d-message-row__author-open::after { content: ""; position: absolute; inset: -0.75rem -0.25rem; }
 [data-layout="phone"] button.d-mention::after { content: ""; position: absolute; inset: -0.75rem -0.25rem; }
 [data-layout="phone"] button.d-mention { position: relative; }
-.d-message-row__avatar[data-profile="true"] { position: relative; cursor: pointer; }
 [data-layout="phone"] .d-message-row__avatar[data-profile="true"]::after { content: ""; position: absolute; left: 50%; top: 50%; width: 2.75rem; height: 2.75rem; transform: translate(-50%, -50%); }
-.d-mention[data-me="true"]:not([data-broadcast]) { background: var(--mention); color: var(--mention-ink); }
-.d-mention[data-broadcast="true"] { background: transparent; box-shadow: inset 0 0 0 1px var(--mention); }
-.d-mention[data-broadcast="true"][data-me="true"] { font-weight: var(--weight-display); }
-.d-message-row[data-mention="true"] { box-shadow: inset 2px 0 0 var(--mention); }
+
+/* The jump target flashes the accent tint for 1.4s (§6.5, the prototype's sFlash). */
 .d-message-row[data-flash="true"] { animation: d-row-flash var(--duration-flash) ease-out; }
-@keyframes d-row-flash { from { background: var(--accent-soft); } to { background: transparent; } }
+@keyframes d-row-flash { 0%, 30% { background: var(--accent-flash); } 100% { background: transparent; } }
 @media (prefers-reduced-motion: reduce) {
   .d-message-row[data-flash="true"] { animation: none; outline: 2px solid var(--accent); outline-offset: -2px; }
 }
-/* web3.7: the thread chip under the body: an icon and the reply count, one quiet line that opens the thread. 44px on a phone. */
-.d-message-row__thread { display: inline-flex; align-items: center; gap: 0.375rem; justify-self: start; max-width: 100%; min-width: 0; min-height: 1.5rem; margin-top: 0.125rem; padding: 0 0.5rem; font: inherit; font-size: var(--text-sm); color: var(--accent); background: transparent; border: 1px solid var(--hairline-2); border-radius: var(--r-md); cursor: pointer; transition: background var(--duration-fast), border-color var(--duration-fast); }
-.d-message-row__thread:hover { background: var(--surface-hi); border-color: var(--accent); }
-@container d-shell (max-width: 47.99rem) { .d-message-row__thread { min-height: 2.75rem; } }
-[data-layout="phone"] .d-message-row__thread { min-height: 2.75rem; }
-@media (prefers-reduced-motion: reduce) { .d-message-row__thread { transition: none; } }
+/* The thread chip under the body (§5.5): 24px, radius 5px, a hairline frame, the accent text; the accent frame on hover. */
+.d-message-row__thread { display: inline-flex; align-items: center; gap: 0.375rem; justify-self: start; max-width: 100%; min-width: 0; height: 1.5rem; margin-top: 0.25rem; padding: 0 0.5rem; font: inherit; font-size: var(--text-xs); color: var(--accent); background: transparent; border: 1px solid var(--hairline-2); border-radius: var(--r-row); cursor: pointer; transition: background var(--duration-fast), border-color var(--duration-fast); }
+.d-message-row__thread:hover { background: var(--accent-hover); border-color: var(--accent); }
+.d-message-row__thread-last { color: var(--fg-3); white-space: nowrap; }
 
-/* web3.9 (R29, G2): a grouped row shows its time in the avatar column on hover or focus; the head's author and time stay for a screen reader. */
-/* The full time ("10:06 PM", "23:59") at 10px with tabular figures, right-aligned in a gutter that reaches from the row's left edge to the content column: the row padding, the avatar column and its gap, so a 12-hour time never overflows at any density. Its line box is the body's, 2px down like the main column, so the time sits on the first line of content, with 6px of clearance before the text. */
-.d-message-row__gutter { align-self: start; justify-self: start; box-sizing: border-box; width: calc(var(--row-pad-x) + var(--avatar-size) + 0.75rem); margin-left: calc(-1 * var(--row-pad-x)); margin-right: -0.75rem; padding: 0.125rem 0.375rem 0 0; text-align: right; font-size: var(--text-micro); font-variant-numeric: tabular-nums; line-height: calc(var(--text-base) * var(--line-height)); color: var(--fg-3); white-space: nowrap; overflow: hidden; text-overflow: clip; opacity: 0; }
-.d-message-row:hover .d-message-row__gutter, .d-message-row:focus-within .d-message-row__gutter, .d-message-row[data-revealed="true"] .d-message-row__gutter { opacity: 1; }
-.d-message-row[data-grouped="true"] { margin-top: 0; }
-/* R30: on a phone the toolbar is rendered only once the row is revealed, then sits in flow under the head (above). */
-[data-layout="phone"] .d-message-row[data-revealed="true"] .d-message-row__toolbar { display: block; }
+/* A phone (the prototype's 4px gutter): the time sits beside the name instead. */
+[data-layout="phone"] .d-message-row { grid-template-columns: 0.25rem 1.875rem minmax(0, 1fr); }
+[data-layout="phone"] .d-message-row .d-message-row__gutter { visibility: hidden; }
 
 /* E5 markdown. Links stay the text colour and are underlined, so they never rely on colour alone. */
 .d-message-row__body .d-link { unicode-bidi: isolate; direction: ltr; color: inherit; text-decoration: underline; text-underline-offset: 0.15em; }
 .d-message-row__body .d-link:hover { text-decoration-thickness: 2px; }
 /* A code span is outlined, with no fill and square corners: a mention pill is filled and rounded, and code must never pass for one. */
 .d-message-row__code { font-family: var(--font-mono); font-size: 0.9em; background: transparent; border: 1px solid var(--hairline-2); border-radius: 0; padding: 0 0.25rem; }
-.d-message-row__codeblock { font-family: var(--font-mono); font-size: 0.9em; background: var(--surface-hi); border-radius: var(--r-sm); }
-.d-message-row__codeblock[data-lang]::before { content: attr(data-lang); display: block; color: var(--fg-2); font-size: 0.85em; }
-.d-message-row__codeblock { margin: 0.25rem 0; padding: 0.5rem 0.75rem; overflow-x: auto; white-space: pre; }
-.d-message-row__codeblock code { font: inherit; }
 .d-message-row__quote { margin: 0.125rem 0; padding: 0 0 0 0.75rem; border-left: 2px solid var(--fg-2); color: var(--fg-2); }
+@media (prefers-reduced-motion: reduce) { .d-message-row, .d-message-row__thread, .d-message-row__toolbar { transition: none; } }

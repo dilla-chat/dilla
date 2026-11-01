@@ -1,19 +1,21 @@
 .d-btn {
   display: inline-flex; align-items: center; gap: 8px;
-  height: 1.75rem /* 28px */; padding: 0 10px;
-  font: inherit; font-size: var(--text-sm); font-weight: var(--weight-label);
-  color: var(--fg); background: var(--surface-2);
-  border: 1px solid var(--edge); border-radius: var(--r-md);
-  cursor: pointer; transition: background var(--duration-fast), border-color var(--duration-fast), color var(--duration-fast);
+  /* The prototype draws 30px of content inside a 1px border: 32 in all (content-box), so 2rem here (border-box). */
+  height: 2rem /* 32px */; padding: 0 12px;
+  font: inherit; font-size: var(--text-btn); font-weight: var(--weight-btn);
+  color: var(--fg); background: transparent;
+  border: 1px solid var(--control-edge); border-radius: var(--r-md);
+  cursor: pointer; transition: background var(--duration-fast), border-color var(--duration-fast), color var(--duration-fast), transform var(--duration-press) var(--ease-out);
 }
+.d-btn:active:not(:disabled):not([aria-disabled="true"]) { transform: scale(0.94); }
 .d-btn[data-size="sm"] { height: 1.375rem /* 22px */; padding: 0 7px; font-size: var(--text-xs); }
-.d-btn:hover { background: var(--surface-hi); border-color: var(--fg-3); }
+.d-btn:hover { background: var(--hover); }
 .d-btn[data-variant="accent"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .d-btn[data-variant="accent"]:hover { background: var(--accent-2); }
-.d-btn[data-variant="danger"] { color: var(--danger); border-color: var(--danger); background: transparent; }
-.d-btn[data-variant="danger"]:hover { background: color-mix(in srgb, var(--danger) 15%, transparent); }
+.d-btn[data-variant="danger"] { color: var(--danger); border-color: var(--danger-border); background: transparent; }
+.d-btn[data-variant="danger"]:hover { background: var(--danger-soft); }
 .d-btn[data-variant="ghost"] { background: transparent; border-color: transparent; color: var(--fg-2); }
-.d-btn[data-variant="ghost"]:hover { color: var(--fg); background: var(--surface-2); }
+.d-btn[data-variant="ghost"]:hover { color: var(--fg); background: var(--hover); }
 /* Pressed/toggle state: colour changes, and so does an inset underline bar
    — plus the `[x]`/`[ ]` mark and (when callers pass `pressedLabel`) the
    label text — so the state is never colour-only. */
@@ -25,9 +27,10 @@
 /* web3.9 (I5): a disabled accent button is an outline, not a filled green block that reads as the primary action. */
 .d-btn[data-variant="accent"]:disabled { background: transparent; color: var(--fg-3); box-shadow: inset 0 0 0 1px var(--hairline); }
 .d-btn__pressed-mark { font: inherit; letter-spacing: -1px; opacity: 0.9; }
-.d-btn__kbd { font: inherit; font-size: var(--text-micro); padding: 0 4px; border: 1px solid currentColor; border-radius: var(--r-md); opacity: 0.8; }
+.d-btn__kbd { font: inherit; font-size: var(--text-micro); padding: 0 4px; border: 1px solid currentColor; border-bottom-width: 2px; border-radius: var(--r-sm); }
 /* A touch screen has no Escape or shortcut keys: a hint would be noise. */
 @media (pointer: coarse) { .d-btn__kbd { display: none; } }
+@media (prefers-reduced-motion: reduce) { .d-btn:active:not(:disabled):not([aria-disabled="true"]) { transform: none; } }
 /* web3.9 AUDIT-2 (H4, N3): a primary control is 44 high on a phone page. This is the page media query (web/src/layout.ts PHONE_QUERY), so it also reaches onboarding and sign-in, which stand outside the shell and its [data-layout="phone"] rules. */
 @media (max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem) {
   .d-btn { min-height: 2.75rem; }
