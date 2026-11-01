@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, rm, link, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, link, symlink, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -8,7 +8,7 @@ import { createWindowsProgramManifest, verifyWindowsProgramManifest, verifyWindo
 const context = { version: '1.0.1', channel: 'stable' as const, arch: 'x64' as const };
 const hash = (raw: Uint8Array) => createHash('sha512').update(raw).digest('base64');
 async function tree(run: (root: string) => Promise<void>) {
- const root = await mkdtemp(join(tmpdir(), 'dilla-windows-manifest-'));
+ const root = await realpath(await mkdtemp(join(tmpdir(), 'dilla-windows-manifest-')));
  try { await mkdir(join(root, 'resources')); await writeFile(join(root, 'dilla-desktop.exe'), 'final fused edited executable'); await writeFile(join(root, 'resources/app.asar'), Buffer.from([0, 1, 2, 255])); await run(root); }
  finally { await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
 }
@@ -48,4 +48,12 @@ test('manifest JSON rejects duplicate keys, invalid UTF8 and directory aliases b
  for (const bytes of [Buffer.from(original.replace('"format":1', '"format":1,"format":1')), Buffer.from([255, 254]), Buffer.from(original.replace('"resources/app.asar"', '"Resources/app.asar"').replace(']}', ',{"path":"resources/other","size":1,"sha512":"' + hash(Buffer.from('x')) + '"}]}'))]) {
   assert.throws(() => verifyWindowsProgramManifest(bytes, hash(bytes), context));
  }
+}));
+
+test('a noncanonical program-root alias remains rejected after fixture setup canonicalization', async () => tree(async root => {
+ const raw = await createWindowsProgramManifest(root, context), manifest = verifyWindowsProgramManifest(raw, hash(raw), context);
+ const alias = join(root, 'root-alias');
+ await symlink(root, alias, process.platform === 'win32' ? 'junction' : 'dir');
+ await assert.rejects(createWindowsProgramManifest(alias, context), /program tree root/);
+ await assert.rejects(verifyWindowsProgramTree(alias, manifest), /program tree root/);
 }));

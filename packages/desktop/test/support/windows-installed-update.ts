@@ -1,6 +1,6 @@
 // Portable signed-file fixture. The read-only launcher stand-in below provides
 // compiled public description data; it is NOT Windows kernel/NSIS acceptance.
-import{mkdtemp,mkdir,writeFile,rm,rename}from'node:fs/promises';
+import{mkdtemp,mkdir,writeFile,rm,rename,realpath}from'node:fs/promises';
 import{join}from'node:path';import{tmpdir}from'node:os';import{createHash,generateKeyPairSync,sign}from'node:crypto';
 import{createWindowsProgramManifest,windowsProgramID}from'../../src/windows-manifest.ts';
 import{prepareInstalledUpdate,type InstalledUpdatePlan,type UpdateTrust}from'../../src/update-plan.ts';
@@ -8,7 +8,7 @@ import{activateInstalledUpdate}from'../../src/update-state.ts';import{writeUpdat
 import type{WindowsSlot}from'../../src/windows-slots.ts';
 const hash=(value:Uint8Array)=>createHash('sha512').update(value).digest('base64');
 export async function windowsInstalledFixture(run:(fixture:{plan:InstalledUpdatePlan;trust:UpdateTrust;root:string;nextSlot:WindowsSlot;nextProgram:string;nextManifest:string;publish():Promise<void>})=>Promise<void>){
- const root=await mkdtemp(join(tmpdir(),'dilla-windows-files-'));
+ const root=await realpath(await mkdtemp(join(tmpdir(),'dilla-windows-files-')));
  try{
   const stable=join(root,'Programs/Dilla'),profile=join(root,'profile/Dilla'),old=join(root,'old'),next=join(root,'next');
   for(const directory of[stable,profile,old,next,join(stable,'versions'),join(stable,'manifests'),join(profile,'updates')])await mkdir(directory,{recursive:true,mode:0o700});

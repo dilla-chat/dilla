@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile, mkdtemp, rm } from 'node:fs/promises';
+import { readFile, mkdtemp, rm, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
@@ -63,7 +63,7 @@ test('installer contract catches staging launcher writes, old-version uninstall 
 });
 test('Windows hooks finalize after signing, assert before archive, and leave other platforms alone', async () => {
  const { createWindowsBuilderHooks } = require('../scripts/windows-builder-hooks.cjs');
- const root = await mkdtemp(join(tmpdir(), 'dilla-installer-hooks-'));
+ const root = await realpath(await mkdtemp(join(tmpdir(), 'dilla-installer-hooks-')));
  try {
   let changed = false;
   const calls: string[] = [], manifest = join(root, 'a'.repeat(128) + '.json');

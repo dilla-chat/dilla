@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
-import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parseWindowsSlot, selectWindowsSlot, verifyWindowsSlot, publishWindowsSlot, WindowsCommitUncertain } from '../src/windows-slots.ts';
@@ -17,7 +17,7 @@ test('slots require an authenticated committed predecessor, reject conflicts and
  for(const changed of [{...initial,generation:1},{...initial,command:'outside'},{...next,nonce:'../escape'},{...next,generation:2**53},{...initial,manifestSha512:'A'.repeat(85)+'B=='}]) assert.throws(()=>parseWindowsSlot(raw(changed)));
 });
 test('release slot authentication binds original accepted signature, exact installer and same completed registered journal', async () => {
- const root=await mkdtemp(join(tmpdir(),'dilla-slots-')),keys=generateKeyPairSync('ed25519'),nonce='a'.repeat(64),directory=join(root,'startup-'+nonce),now=Date.now();
+ const root=await realpath(await mkdtemp(join(tmpdir(),'dilla-slots-'))),keys=generateKeyPairSync('ed25519'),nonce='a'.repeat(64),directory=join(root,'startup-'+nonce),now=Date.now();
  try {
   await mkdir(directory);const installer=Buffer.from('signed exact NSIS'),manifest=digest('next manifest');
   const release={format:1,version:'1.0.1',channel:'stable',publishedAt:new Date(now-1000).toISOString(),expiresAt:new Date(now+10000).toISOString(),artifacts:[{platform:'win32',arch:'x64',url:'https://github.com/jonasthim/dilla/releases/download/desktop-v1.0.1/dilla-1.0.1-win-x64.exe',size:installer.length,sha512:digest(installer),programManifest:{url:'https://github.com/jonasthim/dilla/releases/download/desktop-v1.0.1/dilla-1.0.1-win-x64.manifest.json',size:30,sha512:manifest}}]};
@@ -32,7 +32,7 @@ test('release slot authentication binds original accepted signature, exact insta
  }finally{await rm(root,{recursive:true,force:true});}
 });
 test('slot publication flushes bytes before its one-way rename; visible uncertain commit never permits rollback', async () => {
- const root=await mkdtemp(join(tmpdir(),'dilla-slot-commit-')),next=parseWindowsSlot(raw({...initial,kind:'release',generation:1,nonce:'a'.repeat(64),acceptedAt:Date.now(),version:'1.0.1'}));
+ const root=await realpath(await mkdtemp(join(tmpdir(),'dilla-slot-commit-'))),next=parseWindowsSlot(raw({...initial,kind:'release',generation:1,nonce:'a'.repeat(64),acceptedAt:Date.now(),version:'1.0.1'}));
  try {
   let renamed=false;
   await assert.rejects(publishWindowsSlot(root,next,{beforeRename:async()=>{throw Object.assign(new Error('full disk'),{code:'ENOSPC'});},afterRename:async()=>{renamed=true;}}),/full disk/);assert.equal(renamed,false);
@@ -45,7 +45,7 @@ test('slot publication flushes bytes before its one-way rename; visible uncertai
 
 test('real slot open/write/flush/close faults before rename leave the committed predecessor unchanged',async()=>{
  const{spawnSync}=await import('node:child_process'),{resolve}=await import('node:path');
- const root=await mkdtemp(join(tmpdir(),'dilla-slot-io-'));
+ const root=await realpath(await mkdtemp(join(tmpdir(),'dilla-slot-io-')));
  try{
   await writeFile(join(root,'windows-active-0.json'),raw(initial));
   for(const fault of ['open','writeFile','sync','close','rename-after']){

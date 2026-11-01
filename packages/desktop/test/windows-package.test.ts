@@ -1,13 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash, generateKeyPairSync } from 'node:crypto';
 // @ts-expect-error build tooling is JavaScript
 import { finalizeWindowsProgram, assertWindowsProgramUnchanged } from '../scripts/windows-package.mjs';
 test('post-sign packaging hashes final Electron bytes before compiling an independent stable launcher and guards against later mutation', async () => {
- const root = await mkdtemp(join(tmpdir(), 'dilla-windows-package-')), app = join(root, 'win-unpacked');
+ const root = await realpath(await mkdtemp(join(tmpdir(), 'dilla-windows-package-'))), app = join(root, 'win-unpacked');
  try {
   await mkdir(join(app, 'resources'), { recursive: true });
   await writeFile(join(app, 'dilla-desktop.exe'), 'final PE metadata + fuses + signing'); await writeFile(join(app, 'resources/app.asar'), 'raw embedded ASAR integrity bytes');
@@ -30,7 +30,7 @@ test('post-sign packaging hashes final Electron bytes before compiling an indepe
 });
 
 test('packaging rejects private signing material before writing it into the native bootstrap', async () => {
- const root = await mkdtemp(join(tmpdir(), 'dilla-private-bootstrap-'));
+ const root = await realpath(await mkdtemp(join(tmpdir(), 'dilla-private-bootstrap-')));
  try {
   const key = generateKeyPairSync('ed25519').privateKey.export({ type:'pkcs8',format:'pem' }).toString();
   await assert.rejects(finalizeWindowsProgram({ appOutDir: root, outDir: root, version:'1.0.0', arch:'x64', productName:'Dilla', appId:'dev.dilla.desktop', publicKeys:[key],compileLauncher:()=>assert.fail('private key reached compiler') }), /identity|trust|public/i);

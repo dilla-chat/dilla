@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, writeFile, readFile, copyFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, copyFile, realpath, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 // @ts-expect-error build tooling is JavaScript
@@ -22,7 +22,9 @@ test('every target binds exactly its native installable bytes, including the Win
 });
 
 test('the CI emitter reads real clean Git HEAD/tree and GITHUB_SHA, never caller-supplied approval facts', async () => {
- const root = await mkdtemp(join(tmpdir(), 'dilla-build-source-'));
+ // macOS aliases /var to /private/var; Node canonicalizes import.meta.url.
+ // Give the copied CLI the same canonical path as its loaded module.
+ const root = await realpath(await mkdtemp(join(tmpdir(), 'dilla-build-source-')));
  try {
   const scripts = join(root, 'packages/desktop/scripts'), out = join(root, 'out'); await mkdir(scripts, { recursive: true }); await mkdir(out);
   await copyFile(resolve(import.meta.dirname, '../scripts/build-provenance.mjs'), join(scripts, 'build-provenance.mjs'));
@@ -42,7 +44,10 @@ test('the CI emitter reads real clean Git HEAD/tree and GITHUB_SHA, never caller
   assert.throws(() => verifyBuildProvenance(report, target, { commit, tree, ciRun: 42, version: '1.2.3' }, artifacts.map(asset => ({ ...asset, sha512: sha(Buffer.from('tampered')) }))), /artifact/i);
   await rm(result.file);
   const cli = spawnSync(process.execPath, [join(scripts, 'build-provenance.mjs'), out, target], { cwd: root, encoding: 'utf8', env: { ...process.env, ...environment } });
-  assert.equal(cli.status, 0, cli.stderr); await rm(result.file);
+  assert.equal(cli.status, 0, cli.stderr);
+  assert.equal(cli.stdout.trim(), 'Recorded native build provenance: ' + buildProvenanceName(target));
+  assert.deepEqual(JSON.parse(await readFile(result.file, 'utf8')), report, 'the actual CLI must produce the verified native report');
+  await rm(result.file);
   await assert.rejects(emitBuildProvenance(out, target, { repositoryRoot: root, environment: { ...environment, GITHUB_SHA: 'f'.repeat(40) } }), /GITHUB_SHA/);
   await assert.rejects(emitBuildProvenance(out, target, { repositoryRoot: root, environment: { ...environment, GITHUB_REPOSITORY: 'untrusted/repo' } }), /repository/);
   await writeFile(join(root, 'untracked-change'), 'changed after build');

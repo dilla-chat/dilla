@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { createHash,generateKeyPairSync,sign,randomBytes } from 'node:crypto';
 import { spawn,execFileSync } from 'node:child_process';
-import { mkdtemp,mkdir,readFile,writeFile,rm,cp,open,readdir,lstat } from 'node:fs/promises';
+import { mkdtemp,mkdir,readFile,writeFile,rm,cp,open,readdir,lstat, realpath } from 'node:fs/promises';
 import { join,resolve,dirname,win32 } from 'node:path';
 import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -23,8 +23,8 @@ async function stop(pid,tree=true){if(!pid||!alive(pid))return;if(tree)execFileS
 // refusing every preexisting mapping; shipping trust, fuses and signing remain intact.
 test('Windows stable shell entry survives inactive NSIS interruption, exact health, slot commit faults and explicit retry',{skip:process.platform!=='win32',timeout:1200000},async()=>{
  requireWindowsEntryCI();
- const root=await mkdtemp(join(tmpdir(),'dilla-windows-installed-')),id=randomBytes(6).toString('hex'),product='DillaUpdateAcceptance'+id,appId='dev.dilla.desktop.update-acceptance.'+id,scheme='dilla';
- const profile=join(process.env.APPDATA,product),programRoot=join(process.env.LOCALAPPDATA,'Programs',product),launcher=join(programRoot,'Dilla.exe'),reports=join(root,'reports'),keys=generateKeyPairSync('ed25519'),key=keys.publicKey.export({type:'spki',format:'pem'}).toString(),log=await open(join(root,'process.log'),'a');
+ const root=await realpath(await mkdtemp(join(tmpdir(),'dilla-windows-installed-'))),id=randomBytes(6).toString('hex'),product='DillaUpdateAcceptance'+id,appId='dev.dilla.desktop.update-acceptance.'+id,scheme='dilla';
+ const profile=join(await realpath(process.env.APPDATA),product),programRoot=join(await realpath(process.env.LOCALAPPDATA),'Programs',product),launcher=join(programRoot,'Dilla.exe'),reports=join(root,'reports'),keys=generateKeyPairSync('ed25519'),key=keys.publicKey.export({type:'spki',format:'pem'}).toString(),log=await open(join(root,'process.log'),'a');
  const sourceNames=['main','updater','update-runtime','update-watchdog','update-journal','update-installer','windows-installation','windows-slots'];
  const source=Object.fromEntries(await Promise.all(sourceNames.map(async name=>[name,await readFile(join(desktop,'src',name+'.ts'),'utf8')]))),productionKeysHash=hash(await readFile(join(desktop,'src/update-keys.ts')));
  let server,descriptor,signature,artifactBytes,manifestBytes,fault='none',currentPid,primaryError,protocolLease=false,installedFixture=false,profileCreated=false;const outcomes={},owned=new Set();
