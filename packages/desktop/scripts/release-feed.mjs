@@ -1,21 +1,11 @@
+import { verifyDesktopBundle } from './verify-release.mjs';
 import { createHash, createPrivateKey, createPublicKey, sign, verify } from 'node:crypto';
 import { readFile, writeFile, mkdir, lstat } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export function sparkleVersion(version) {
- if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-beta\.(0|[1-9]\d*))?$/.test(version)) throw new Error('Invalid desktop version');
- return version.replace('-beta.', 'b');
-}
-export function signedAppcast(xml, key) {
- const content = Buffer.from(xml, 'utf8');
- // Sparkle 2.9+ SPUExtractSignedFeed / common_cli/Signing.swift format.
- return Buffer.concat([content, Buffer.from(`<!-- sparkle-signatures:\nedSignature: ${sign(null, content, key).toString('base64')}\nlength: ${content.length}\n-->\n`)]);
-}
-export function appcast(release, artifact, signature) {
- const safe = value => String(value).replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
- return `<?xml version="1.0" encoding="utf-8"?>\n<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><title>Dilla desktop ${safe(release.channel)}</title><item><title>Dilla ${safe(release.version)}</title><sparkle:version>${sparkleVersion(release.version)}</sparkle:version><sparkle:shortVersionString>${safe(release.version)}</sparkle:shortVersionString><sparkle:minimumSystemVersion>13.0.0</sparkle:minimumSystemVersion><pubDate>${new Date(release.publishedAt).toUTCString()}</pubDate><enclosure url="${safe(artifact.url)}" sparkle:edSignature="${safe(signature)}" length="${artifact.size}" type="application/octet-stream" /></item></channel></rss>\n`;
-}
+import { appcast, signedAppcast, sparkleVersion } from './feed-format.mjs';
+export { appcast, signedAppcast, sparkleVersion } from './feed-format.mjs';
 
 /** Offline signing. Publishing consumes only this output directory, never keys. */
 export async function signDesktopRelease({ version, artifactsDirectory, keysDirectory, outputDirectory, now = new Date() }) {
@@ -30,25 +20,42 @@ export async function signDesktopRelease({ version, artifactsDirectory, keysDire
  const sparkleKey = createPrivateKey({ key: { kty: 'OKP', crv: 'Ed25519', d: seed.toString('base64url'), x: Buffer.from(trust.sparklePublicKey, 'base64').toString('base64url') }, format: 'jwk' });
  seed.fill(0);
  if (createPublicKey(sparkleKey).export({ type: 'spki', format: 'der' }).subarray(-32).toString('base64') !== trust.sparklePublicKey) throw new Error('Sparkle signer does not match installed trust');
- const release = { format: 1, version, channel, publishedAt: now.toISOString(), expiresAt: new Date(now.getTime() + 90 * 86400000).toISOString(), artifacts: [] };
- const archives = new Map();
+ const source = JSON.parse(await readFile(join(artifactsDirectory, 'acceptance.json'), 'utf8'));
+ const run = JSON.parse(await readFile(join(artifactsDirectory, 'ci-run.json'), 'utf8'));
+ const jobs = JSON.parse(await readFile(join(artifactsDirectory, 'ci-jobs.json'), 'utf8'));
+ const release = { format: 1, version, channel, publishedAt: now.toISOString(), expiresAt: new Date(now.getTime() + 90 * 86400000).toISOString(), source, assets: [], artifacts: [] };
  for (const [platform, arch, os, ext] of [['linux', 'x64', 'linux', 'AppImage'], ['win32', 'x64', 'win', 'exe'], ['darwin', 'x64', 'mac', 'zip'], ['darwin', 'arm64', 'mac', 'zip']]) {
   const name = `dilla-${version}-${os}-${arch}.${ext}`, file = join(artifactsDirectory, name);
   if (!(await lstat(file)).isFile()) throw new Error('Installer must be a regular file: ' + name);
   const bytes = await readFile(file);
   if (!bytes.length) throw new Error('Empty installer: ' + name);
   const artifact = { platform, arch, url: `https://github.com/jonasthim/dilla/releases/download/desktop-v${version}/${name}`, size: bytes.length, sha512: createHash('sha512').update(bytes).digest('base64') };
-  if (platform === 'darwin') { artifact.sparkleSignature = sign(null, bytes, sparkleKey).toString('base64'); archives.set(arch, artifact.sparkleSignature); }
+  if (platform === 'darwin') {
+   artifact.sparkleSignature = sign(null, bytes, sparkleKey).toString('base64');
+   if (!verify(null, bytes, createPublicKey(sparkleKey), Buffer.from(artifact.sparkleSignature, 'base64'))) throw new Error('Sparkle archive signature self-check failed');
+  }
   release.artifacts.push(artifact);
+  release.assets.push({ name, size: bytes.length, sha512: artifact.sha512 });
+ }
+ for (const arch of ['x64', 'arm64']) {
+  const name = `dilla-${version}-mac-${arch}.dmg`, file = join(artifactsDirectory, name);
+  if (!(await lstat(file)).isFile()) throw new Error('Installer must be a regular file: ' + name);
+  const bytes = await readFile(file);
+  release.assets.push({ name, size: bytes.length, sha512: createHash('sha512').update(bytes).digest('base64') });
  }
  await mkdir(outputDirectory, { recursive: true, mode: 0o700 });
  const bytes = Buffer.from(JSON.stringify(release, null, 2) + '\n');
  const signature = sign(null, bytes, metadataKey);
  if (!verify(null, bytes, metadataPublic, signature)) throw new Error('Metadata signature self-check failed');
+ const feeds = Object.fromEntries(release.artifacts.filter(a => a.platform === 'darwin').map(artifact => [artifact.arch, signedAppcast(appcast(release, artifact, artifact.sparkleSignature), sparkleKey)]));
+ await verifyDesktopBundle({ metadata: bytes, signature: signature.toString('base64'), trust, directory: artifactsDirectory, run, jobs, version, feeds, now: now.getTime() });
  await writeFile(join(outputDirectory, `desktop-${channel}.json`), bytes, { flag: 'wx' });
  await writeFile(join(outputDirectory, `desktop-${channel}.json.sig`), signature.toString('base64') + '\n', { flag: 'wx' });
+ for (const name of ['release-notes.md', 'security-review.md', ...['linux-x64', 'win-x64', 'mac-x64', 'mac-arm64'].map(target => `performance-${target}.json`)]) {
+  await writeFile(join(outputDirectory, name), await readFile(join(artifactsDirectory, name)), { flag: 'wx' });
+ }
  for (const artifact of release.artifacts.filter(a => a.platform === 'darwin')) {
-  const feed = signedAppcast(appcast(release, artifact, archives.get(artifact.arch)), sparkleKey);
+  const feed = feeds[artifact.arch];
   await writeFile(join(outputDirectory, `appcast-${artifact.arch}.xml`), feed, { flag: 'wx' });
  }
  return release;

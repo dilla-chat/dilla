@@ -1,4 +1,4 @@
-import { generateKeyPairSync, createPublicKey, createPrivateKey, createHash } from 'node:crypto';
+import { generateKeyPairSync, createPublicKey, createPrivateKey, createHash, sign, verify } from 'node:crypto';
 import { mkdir, writeFile, readFile, rename } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -28,7 +28,8 @@ export async function normalizeSparkleKey(directory) {
  if (secret.length === 32) return;
  if (secret.length !== 64 || secret.subarray(32).toString('base64') !== trust.sparklePublicKey) throw new Error('Unrecognized Sparkle key encoding');
  const key = createPrivateKey({ key: { kty: 'OKP', crv: 'Ed25519', d: secret.subarray(0, 32).toString('base64url'), x: secret.subarray(32).toString('base64url') }, format: 'jwk' });
- if (createPublicKey(key).export({ type: 'spki', format: 'der' }).subarray(-32).toString('base64') !== trust.sparklePublicKey) throw new Error('Sparkle public key mismatch');
+ const check = Buffer.from('Dilla Sparkle key encoding check');
+ if (createPublicKey(key).export({ type: 'spki', format: 'der' }).subarray(-32).toString('base64') !== trust.sparklePublicKey || !verify(null, check, key, sign(null, check, key))) throw new Error('Sparkle public key mismatch');
  await writeFile(file + '.normalized', secret.subarray(0, 32).toString('base64') + '\n', { mode: 0o600, flag: 'wx' });
  await rename(file + '.normalized', file); secret.fill(0);
 }
