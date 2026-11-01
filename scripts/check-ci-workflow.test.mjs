@@ -47,6 +47,16 @@ test('desktop voice cannot shard its frozen-clock suite', () => {
   assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('single frozen-clock worker')));
 });
 
+test('desktop CI refuses continuing matrix jobs or tests after the first failure', () => {
+  const good = REAL_DESKTOP.replaceAll('fail-fast: false', 'fail-fast: true').replaceAll('--max-failures=3', '--max-failures=1');
+  for (const [before, after] of [['fail-fast: true', 'fail-fast: false'], ['--max-failures=1', '--max-failures=3']]) {
+    const root = mkdtempSync(join(tmpdir(), 'dilla-desktop-first-failure-'));
+    mkdirSync(join(root, '.github/workflows'), { recursive: true });
+    writeFileSync(join(root, '.github/workflows/desktop.yml'), good.replace(before, after));
+    assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('first failure')), after);
+  }
+});
+
 
 test('compiled helper recovery tests receive the same-commit helper and cannot silently skip', () => {
   const native = REAL_CI.split('\n  rust-native:\n')[1].split('\n  spotify-helper:\n')[0];

@@ -1055,12 +1055,15 @@ export function checkDesktopWorkflow(root) {
   try { text = readFileSync(join(root, '.github', 'workflows', file), 'utf8'); }
   catch (error) { if (error.code === 'ENOENT') return ['desktop.yml: missing desktop acceptance workflow']; throw error; }
   const problems = [];
+  if (/fail-fast:\s*false|--max-failures=(?!1\b)\d+/.test(text)) {
+    problems.push(`${file}: desktop validation must stop on the first failure`);
+  }
   text.split('\n').forEach((line, i) => {
     checkActionReference(line, file, i + 1, problems);
     for (const { re, what } of FORBIDDEN) if (re.test(line)) problems.push(`${file}:${i + 1}: forbidden ${what}`);
   });
   for (const required of [
-    'workflow_call:', 'contents: read', 'fail-fast: false',
+    'workflow_call:', 'contents: read', 'fail-fast: true',
     'os: ubuntu-24.04, platform: linux, arch: x64', 'os: windows-latest, platform: win, arch: x64',
     'os: macos-15-intel, platform: mac, arch: x64', 'os: macos-15, platform: mac, arch: arm64',
     'name: dilla-web-dist', 'name: dilla-desktop-core', 'node node_modules/electron/install.js',

@@ -13,6 +13,7 @@ function Get-TrustedRoots {
   @(Get-ChildItem Cert:\LocalMachine\Root, Cert:\CurrentUser\Root | ForEach-Object { $_.Thumbprint } | Sort-Object -Unique)
 }
 function Get-PinnedFile([string]$Url, [string]$Path, [string]$Sha256) {
+  Write-Output "Downloading pinned audio fixture: $Url"
   Invoke-WebRequest -Uri $Url -OutFile $Path
   if ((Get-FileHash -Algorithm SHA256 $Path).Hash -ne $Sha256) { throw "Audio fixture download hash mismatch: $Path" }
 }
@@ -30,13 +31,20 @@ if ($endpoints.Count -eq 0) {
   # https://github.com/OSSign/vadimgrn--usbip-win2-old/releases/tag/0.9.7.5-preview
   Get-PinnedFile 'https://github.com/OSSign/vadimgrn--usbip-win2-old/releases/download/0.9.7.5-preview/USBip-0.9.7.5-x64-preview.exe' $installer '32d2c909740b2cd2e8ec3c72e8b9415c0d27a2c69b74697c82d6b5e3cd6dd664'
   $signature = Get-AuthenticodeSignature $installer
+  Write-Output "USB/IP publisher verification: $($signature.Status) - $($signature.StatusMessage)"
   if ($signature.Status -ne 'Valid' -or -not $signature.TimeStamperCertificate -or
       $signature.SignerCertificate.Subject -notlike '*CN=Cloudyne Systems (Scheibling Consulting AB)*') {
     throw 'USB/IP installer does not have its expected valid, timestamped publisher signature'
   }
   $roots = Get-TrustedRoots
   $transport = Join-Path $work 'USBip'
-  $setup = Start-Process -FilePath $installer -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/COMPONENTS=main,client', "/DIR=`"$transport`"", "/LOG=`"$work\install.log`"") -PassThru -Wait
+  Write-Output 'Installing the verified USB/IP transport'
+  $setup = Start-Process -FilePath $installer -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/COMPONENTS=main,client', "/DIR=`"$transport`"", "/LOG=`"$work\install.log`"") -PassThru
+  if (-not $setup.WaitForExit(120000)) {
+    & taskkill /PID $setup.Id /T /F
+    throw 'Signed USB/IP installation did not complete within two minutes; see install.log'
+  }
+  Write-Output "USB/IP installer exit: $($setup.ExitCode)"
   if (@(Compare-Object $roots (Get-TrustedRoots)).Count -ne 0) { throw 'The USB/IP installer changed a trusted certificate root store' }
   if ($setup.ExitCode -ne 0) { throw "Signed USB/IP installation failed or requires a reboot: $($setup.ExitCode)" }
   # Verify the installed kernel packages, including the Microsoft attestation.
