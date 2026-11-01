@@ -92,7 +92,33 @@ test('call audio the browser holds back comes back with one press of turn on aud
     // the actual receiver graph and worker counters before closing either peer.
     for (const person of [alice, bob]) {
       const audio = await person.page.evaluate(async () => {
-        const rec = (window as unknown as { __dw?: { contexts: AudioContext[]; remoteTracks: Set<string>; remoteAnalysers: AnalyserNode[]; peerConnections: RTCPeerConnection[] } }).__dw;
+        const rec = (window as unknown as { __dw?: { contexts: AudioContext[]; remoteTracks: Set<string>; remoteAnalysers: AnalyserNode[]; peerConnections: RTCPeerConnection[];
+          captures: MediaStreamTrack[];
+          localSources: { analyser: AnalyserNode; tracks: MediaStreamTrack[] }[];
+          inputStages: { node: AudioWorkletNode; allowed: boolean; gate: { enabled?: boolean; auto?: boolean; thresholdDb?: number }; levels: number; level?: { db: number; thresholdDb: number; open: boolean } }[];
+        } }).__dw;
+        const trackState = (track: MediaStreamTrack) => {
+          const settings = track.getSettings();
+          const constraints = track.getConstraints();
+          const constraint = (value: unknown) => {
+            if (typeof value === 'boolean' || typeof value === 'number') return value;
+            if (value === null || typeof value !== 'object') return undefined;
+            return Object.fromEntries(Object.entries(value).filter(([key, entry]) =>
+              ['exact', 'ideal', 'min', 'max'].includes(key) && ['boolean', 'number'].includes(typeof entry)));
+          };
+          return {
+            capture: rec?.captures.indexOf(track), enabled: track.enabled, muted: track.muted, state: track.readyState,
+            // Explicit allowlist: deviceId, groupId, labels and application identifiers never leave the page.
+            settings: { sampleRate: settings.sampleRate, channelCount: settings.channelCount,
+              echoCancellation: settings.echoCancellation, autoGainControl: settings.autoGainControl, noiseSuppression: settings.noiseSuppression },
+            constraints: { sampleRate: constraint(constraints.sampleRate), channelCount: constraint(constraints.channelCount),
+              echoCancellation: constraint(constraints.echoCancellation), autoGainControl: constraint(constraints.autoGainControl), noiseSuppression: constraint(constraints.noiseSuppression) },
+          };
+        };
+        const analyserState = (analyser: AnalyserNode) => {
+          const samples = new Float32Array(analyser.fftSize); analyser.getFloatTimeDomainData(samples);
+          return { state: analyser.context.state, time: analyser.context.currentTime, rms: Math.sqrt(samples.reduce((sum, sample) => sum + sample * sample, 0) / samples.length) };
+        };
         const connections = await Promise.all((rec?.peerConnections ?? []).map(async connection => {
           const audioStats: Record<string, string | number>[] = [];
           try {
@@ -106,16 +132,20 @@ test('call audio the browser holds back comes back with one press of turn on aud
               audioStats.push(summary);
             });
           } catch { /* A closed connection has no readable statistics. */ }
-          return { state: connection.connectionState, audioStats };
+          return { state: connection.connectionState, audioStats, senders: connection.getSenders().flatMap(sender => sender.track?.kind === 'audio' ? [trackState(sender.track)] : []) };
         }));
         return {
           connections,
           contexts: rec?.contexts.map(context => ({ state: context.state, time: context.currentTime, sampleRate: context.sampleRate })),
           remoteTracks: rec ? [...rec.remoteTracks] : [],
-          analysers: rec?.remoteAnalysers.map(analyser => {
-            const samples = new Float32Array(analyser.fftSize); analyser.getFloatTimeDomainData(samples);
-            return { state: analyser.context.state, time: analyser.context.currentTime, rms: Math.sqrt(samples.reduce((sum, sample) => sum + sample * sample, 0) / samples.length) };
-          }),
+          analysers: rec?.remoteAnalysers.map(analyserState),
+          captures: rec?.captures.map(trackState),
+          localSources: rec?.localSources.map(source => ({ ...analyserState(source.analyser), tracks: source.tracks.map(trackState) })),
+          inputStages: rec?.inputStages.map(stage => ({
+            state: stage.node.context.state, time: stage.node.context.currentTime, allowed: stage.allowed,
+            gate: { enabled: stage.gate?.enabled, auto: stage.gate?.auto, thresholdDb: stage.gate?.thresholdDb },
+            levels: stage.levels, level: stage.level,
+          })),
         };
       }).catch(error => ({ error: String(error) }));
       const workers = await Promise.all(person.page.workers().map(worker => worker.evaluate(() => {

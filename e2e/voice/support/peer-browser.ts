@@ -66,11 +66,14 @@ function installRecorders(): void {
     remoteTracks: Set<string>;
     remoteAnalysers: AnalyserNode[];
     peerConnections: RTCPeerConnection[];
+    captures: MediaStreamTrack[];
+    localSources: { analyser: AnalyserNode; tracks: MediaStreamTrack[] }[];
+    inputStages: { node: AudioWorkletNode; allowed: boolean; gate: unknown; levels: number; level?: { db: number; thresholdDb: number; open: boolean } }[];
   };
   const w = window as unknown as { __dw?: Rec; __dwSetHidden?: (h: boolean) => void };
   if (w.__dw !== undefined) return;
   const rec: Rec = { slices: {}, keyPath: { messages: 0, callKeys: 0, findings: [] }, contexts: [], tones: [], ringTimers: new Set(),
-    blobs: { created: [], revoked: [] }, hidden: false, ringChannels: new Set(), remoteTracks: new Set(), remoteAnalysers: [], peerConnections: [] };
+    blobs: { created: [], revoked: [] }, hidden: false, ringChannels: new Set(), remoteTracks: new Set(), remoteAnalysers: [], peerConnections: [], captures: [], localSources: [], inputStages: [] };
   w.__dw = rec;
 
   // The key path (plan task 10, "Key path in a real browser"): no `ret` or `slice` message between the page and a
@@ -136,6 +139,48 @@ function installRecorders(): void {
     }
     Object.defineProperty(window, name, { value: RecordedContext, configurable: true, writable: true });
   }
+  // Boundary evidence for native capture failures: retain track objects, never device labels or IDs in diagnostics.
+  const mediaDevices = navigator.mediaDevices;
+  if (mediaDevices?.getUserMedia !== undefined) {
+    const getUserMedia = mediaDevices.getUserMedia.bind(mediaDevices);
+    mediaDevices.getUserMedia = async (constraints) => {
+      const stream = await getUserMedia(constraints);
+      rec.captures.push(...stream.getAudioTracks());
+      return stream;
+    };
+  }
+  // Enable only the stage's existing level reporter. It measures the input before the gate and changes no DSP or
+  // capture policy, so a zero raw source, a closed gate and a disabled output remain distinguishable after a failure.
+  const NativeWorklet = window.AudioWorkletNode;
+  if (NativeWorklet !== undefined) {
+    class RecordedWorklet extends NativeWorklet {
+      constructor(context: BaseAudioContext, name: string, options?: AudioWorkletNodeOptions) {
+        super(context, name, name === 'dilla-input-stage'
+          ? { ...options, processorOptions: { ...options?.processorOptions, report: true } } : options);
+        if (name !== 'dilla-input-stage') return;
+        const stage: Rec['inputStages'][number] = {
+          node: this, allowed: options?.processorOptions?.allowed === true,
+          gate: options?.processorOptions?.gate, levels: 0,
+        };
+        rec.inputStages.push(stage);
+        const post = this.port.postMessage;
+        this.port.postMessage = function (...args: [unknown, (Transferable[] | StructuredSerializeOptions)?]) {
+          const message = args[0] as { kind?: string; allowed?: boolean; gate?: unknown } | null;
+          if (message?.kind === 'capture') stage.allowed = message.allowed === true;
+          if (message?.kind === 'gate') stage.gate = message.gate;
+          return Reflect.apply(post, this, args);
+        };
+        this.port.addEventListener('message', (event: MessageEvent) => {
+          const level = event.data as { kind?: string; db: number; thresholdDb: number; open: boolean } | null;
+          if (level?.kind !== 'level') return;
+          stage.levels += 1;
+          stage.level = { db: level.db, thresholdDb: level.thresholdDb, open: level.open };
+        });
+        this.port.start();
+      }
+    }
+    Object.defineProperty(window, 'AudioWorkletNode', { value: RecordedWorklet, configurable: true, writable: true });
+  }
   // web3.3: sound, not only decryption. Every track a peer connection receives is recorded by id; a WebAudio source made
   // from a stream (or from an element whose srcObject) that holds one is tapped by an AnalyserNode as well, so `audible`
   // (voice.ts) reads whether a remote call track reaches the page's audio graph with a signal in it. The media worker's
@@ -152,11 +197,13 @@ function installRecorders(): void {
     Object.defineProperty(window, 'RTCPeerConnection', { value: RecordedPC, configurable: true, writable: true });
   }
   const tap = (ctx: BaseAudioContext, node: AudioNode, stream: unknown): void => {
-    if (!(stream instanceof MediaStream) || !stream.getAudioTracks().some((t) => rec.remoteTracks.has(t.id))) return;
+    if (!(stream instanceof MediaStream)) return;
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 2048;
     node.connect(analyser);
-    rec.remoteAnalysers.push(analyser);
+    const tracks = stream.getAudioTracks();
+    if (tracks.some((track) => rec.remoteTracks.has(track.id))) rec.remoteAnalysers.push(analyser);
+    else rec.localSources.push({ analyser, tracks });
   };
   // createMediaStreamSource and createMediaElementSource live on AudioContext (an OfflineAudioContext has neither).
   const createStreamSource = AudioContext.prototype.createMediaStreamSource;
