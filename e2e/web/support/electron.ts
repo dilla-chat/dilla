@@ -3,6 +3,7 @@ import { canonicalInstance } from '../../../packages/desktop/src/policy.ts';
 import { _electron, type BrowserContext, type BrowserContextOptions, type LaunchOptions, type Page, type ElectronApplication } from '@playwright/test';
 import { mkdtemp, mkdir, rm, access, writeFile } from 'node:fs/promises';
 import { once } from 'node:events';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -35,7 +36,13 @@ export async function launchDesktopContext(profile: string | null, options: Brow
  const app = await _electron.launch({ chromiumSandbox: true, args: [join(root, 'packages/desktop'), `--profile=${directory}`, `--instance=${instance}`, '--allow-loopback', ...(options.launchOptions?.args ?? [])] });
  const child = app.process();
  const ended = once(child, 'close');
- const terminate = () => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); };
+ const terminate = () => {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  // The Windows launcher is cmd.exe, not the Electron PID. Terminate only this
+  // owned launcher's tree if graceful test teardown could not reach the app.
+  if (process.platform === 'win32' && child.pid) spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+  else child.kill('SIGKILL');
+ };
  process.once('exit', terminate);
  const context = app.context(), first = await app.firstWindow();
  // Navigation in these specs is an explicit person action. Answer the native

@@ -21,9 +21,12 @@ test('a second tab waits while the first holds the device and takes over when it
   if (desktopE2E()) {
     const application = desktopApplication(context), worker = page.workers()[0];
     const profile = await application.evaluate(({ app }) => app.getPath('userData'));
+    // Playwright launches through cmd.exe on Windows. Its ChildProcess.spawnfile
+    // is that wrapper, so ask the actual Electron main process for its binary.
+    const executable = await application.evaluate(() => process.execPath);
     const native = await application.browserWindow(page);
     const identity = await native.evaluate(win => { win.hide(); return win.id; }); await native.dispose();
-    const child = spawn(application.process().spawnfile, [join(REPO_ROOT, 'packages/desktop'), `--profile=${profile}`, `--instance=${new URL(page.url()).origin}`, '--allow-loopback'], { stdio: 'ignore' });
+    const child = spawn(executable, [join(REPO_ROOT, 'packages/desktop'), `--profile=${profile}`, `--instance=${new URL(page.url()).origin}`, '--allow-loopback'], { stdio: 'ignore' });
     const timer = setTimeout(() => child.kill('SIGKILL'), 15000);
     try {
       const code = await new Promise<number | null>((done, reject) => { child.once('error', reject); child.once('exit', done); });
