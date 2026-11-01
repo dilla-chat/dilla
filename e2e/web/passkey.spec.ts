@@ -89,8 +89,11 @@ test('passkeys: sign up with one, sign in with a copy of it, add the app, remove
   await button(page, 'factor.passkey.submit').click();
   // Wave B task 3b: the backup codes are on the done step, whose Open dilla waits for their tick.
   await expectHeading(page, COPY.doneTitle);
-  bjorn.backupCodes = (await page.getByRole('list', { name: copy('factor.codes.label'), exact: true }).locator('li').allInnerTexts())
-    .map((c) => c.replace(/\s+/g, ''));
+  // The codes are collapsed on desktop too (parity decision); Show codes opens them.
+  await page.getByRole('button', { name: copy('onboarding.done.codesShow'), exact: true }).click();
+  const codes = page.getByRole('list', { name: copy('factor.codes.label'), exact: true }).locator('li');
+  await expect(codes).toHaveCount(10, { timeout: WAIT });
+  bjorn.backupCodes = (await codes.allInnerTexts()).map((c) => c.replace(/\s+/g, ''));
   expect(bjorn.backupCodes).toHaveLength(10);
   await page.getByRole('checkbox', { name: copy(COPY.codesAck), exact: true }).check();
   await page.getByRole('button', { name: copy(COPY.finish), exact: true }).click();
