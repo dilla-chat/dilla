@@ -11,9 +11,25 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
 jobs:
+  # Runs independently of changes so the first failing root job is covered too. The write
+  # token belongs only to trusted same-repository PRs/main pushes; fork code never runs here.
+  ci-watchdog:
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - run: python3 scripts/ci-watchdog.py
+        env:
+          GH_TOKEN: ${{ github.token }}
   # Decides which parts of the tree the change touches (scripts/ci-areas.mjs holds the path table and its tests) and
   # writes one output per area: go, core, web, e2e, text (the profile-text tables), and code for anything but docs. A pull request whose changed files
-  # all sit under docs/ or are *.md is docs-only: it runs this job and `docs`, and every other job is skipped (a
+  # all sit under docs/ or are *.md is docs-only: it runs this job, `docs`, and workflow infrastructure; test/build jobs are skipped (a
   # skipped job counts as passed for a required check). A push to main, and any diff that cannot be computed, turn
   # every area on. Every job below `docs` carries `needs: changes` and an `if:` on the outputs it depends on.
   changes:
@@ -969,13 +985,25 @@ jobs:
           path: dist/
           if-no-files-found: error
 
-  # One check for the whole workflow, so that a required-check list needs only this name: it is red when any job
-  # failed or was cancelled (a failed `changes` included) and green when the rest passed or were skipped by design.
-  ci-ok:
+  # A DAG barrier prevents the watcher exiting between root jobs and later matrix/reusable
+  # children. This does no build work and never depends on the watcher or final aggregator.
+  ci-work-complete:
     needs: [changes, docs, node, ui, rust-wasm-node, rust-native, rust-wasi, vectors, browser-spike, browser-media, web-build, desktop, core-integration, deny, go, go-native, go-ds, go-api, go-harness, go-fts5-arm64, go-lint, go-vuln, go-sqlc, go-postgres, go-release]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - run: echo "All CI work reached a terminal result"
+
+  # One check for the whole workflow: red on any failure/cancellation, green for success or intentional skips.
+  ci-ok:
+    needs: [ci-watchdog, ci-work-complete, changes, docs, node, ui, rust-wasm-node, rust-native, rust-wasi, vectors, browser-spike, browser-media, web-build, desktop, core-integration, deny, go, go-native, go-ds, go-api, go-harness, go-fts5-arm64, go-lint, go-vuln, go-sqlc, go-postgres, go-release]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+      # Fork PR tokens cannot cancel runs, so their watcher is deliberately skipped.
+      - if: needs.ci-watchdog.result == 'skipped' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
         run: exit 1
       - run: echo ok

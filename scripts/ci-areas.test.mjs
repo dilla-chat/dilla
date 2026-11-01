@@ -146,9 +146,9 @@ test('the reachable output sets come from the tracked files, so a new rule is co
   assert.ok(sets.includes(JSON.stringify(NONE)) && sets.includes(JSON.stringify(ALL)));
 });
 
-test('JOB_GATES names exactly the jobs of ci.yml but changes, docs and ci-ok', () => {
+test('JOB_GATES names exactly the jobs of ci.yml except workflow infrastructure', () => {
   const ci = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
-  const jobs = [...ci.slice(ci.indexOf('\njobs:')).matchAll(/^ {2}([A-Za-z0-9_-]+):\s*$/gm)].map((m) => m[1]).filter((job) => !['changes', 'docs', 'ci-ok'].includes(job));
+  const jobs = [...ci.slice(ci.indexOf('\njobs:')).matchAll(/^ {2}([A-Za-z0-9_-]+):\s*$/gm)].map((m) => m[1]).filter((job) => !['changes', 'docs', 'ci-watchdog', 'ci-work-complete', 'ci-ok'].includes(job));
   assert.deepEqual(jobs.sort(), Object.keys(JOB_GATES).sort());
 });
 

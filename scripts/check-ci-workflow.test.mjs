@@ -57,6 +57,51 @@ test('desktop CI refuses continuing matrix jobs or tests after the first failure
   }
 });
 
+test('CI rejects removing the whole-run watcher or its completion barrier', () => {
+  for (const name of ['ci-watchdog', 'ci-work-complete']) {
+    const changed = REAL_CI.replace(new RegExp(`^  ${name}:\\n[\\s\\S]*?(?=^  [a-z][\\w-]*:|$(?![\\s\\S]))`, 'm'), '');
+    assert.notEqual(changed, REAL_CI);
+    const problems = checkWorkflow(fixture(changed));
+    assert.ok(problems.some(problem => problem.includes(`missing job "${name}"`)), problems.join('\n'));
+  }
+});
+
+test('CI rejects an unsafe, delayed or unbounded whole-run watcher', () => {
+  for (const [before, after] of [
+    ["github.event.pull_request.head.repo.full_name == github.repository)", 'true)'],
+    ['timeout-minutes: 90', 'timeout-minutes: 360'],
+    ['persist-credentials: false', 'persist-credentials: true'],
+    ['actions: write', 'actions: read'],
+    ['actions: write', 'actions: write\n      contents: write'],
+    ['  ci-watchdog:\n', '  ci-watchdog:\n    name: renamed-watcher\n'],
+    ['persist-credentials: false', 'persist-credentials: false\n          repository: untrusted/fork'],
+    ['GH_TOKEN: ${{ github.token }}', 'GH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}'],
+    ['  ci-watchdog:\n', '  ci-watchdog:\n    needs: [changes]\n'],
+    ['run: python3 scripts/ci-watchdog.py', 'run: echo done'],
+  ]) {
+    const changed = REAL_CI.replace(before, after);
+    assert.notEqual(changed, REAL_CI, before);
+    assert.ok(checkWorkflow(fixture(changed)).some(problem => problem.includes('unsafe watchdog')), before);
+  }
+});
+
+test('CI rejects a completion barrier that misses jobs or waits for the watcher', () => {
+  for (const changed of [
+    REAL_CI.replace(/(  ci-work-complete:\n    needs: \[)changes, /, '$1'),
+    REAL_CI.replace(/(  ci-work-complete:\n    needs: \[)/, '$1ci-watchdog, '),
+    REAL_CI.replace(/(  ci-work-complete:\n    needs: \[[^\]]*\]\n)    if: always\(\)\n/, '$1'),
+  ]) {
+    assert.notEqual(changed, REAL_CI);
+    assert.ok(checkWorkflow(fixture(changed)).some(problem => problem.includes('completion barrier')));
+  }
+});
+
+test('CI accepts a skipped watcher only for fork pull requests', () => {
+  const changed = REAL_CI.replace("      - if: needs.ci-watchdog.result == 'skipped' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)\n        run: exit 1\n", '');
+  assert.notEqual(changed, REAL_CI);
+  assert.ok(checkWorkflow(fixture(changed)).some(problem => problem.includes('skipped watcher')));
+});
+
 test('desktop tooling must be built once per native target and verified before every consumer', () => {
   for (const [before, after] of [
     ['node scripts/e2e-test-tools.mjs build artifacts/e2e-test-tools', 'echo skipped build'],
@@ -579,11 +624,14 @@ const CI_OK_JOB = (jobs) => `  ci-ok:
     steps:
       - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
         run: exit 1
+      - if: needs.ci-watchdog.result == 'skipped' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        run: exit 1
       - run: echo ok
 `;
 
 function withChanges(text) {
-  const lines = text.replace('jobs:\n', `jobs:\n${CHANGES_JOB}`).split('\n');
+  const watcher = /^  ci-watchdog:\n[\s\S]*?(?=^  changes:)/m.exec(REAL_CI)[0];
+  const lines = text.replace('jobs:\n', `jobs:\n${watcher}${CHANGES_JOB}`).split('\n');
   const out = [];
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -598,7 +646,15 @@ function withChanges(text) {
     out.push(`    needs: [${['changes', ...needs].join(', ')}]`, `    if: ${gateExpression(key[1])}`);
   }
   const jobs = out.filter((line) => /^ {2}[A-Za-z0-9_-]+:\s*$/.test(line)).map((line) => line.trim().slice(0, -1)).filter((name, i, all) => all.indexOf(name) === i && out.indexOf(`  ${name}:`) > out.indexOf('jobs:'));
-  return `${out.join('\n').replace(/\n$/, '')}\n${CI_OK_JOB(jobs)}`;
+  const barrier = `  ci-work-complete:
+    needs: [${jobs.filter(name => name !== 'ci-watchdog').join(', ')}]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - run: echo "All CI work reached a terminal result"
+`;
+  return `${out.join('\n').replace(/\n$/, '')}\n${barrier}${CI_OK_JOB([...jobs, 'ci-work-complete'])}`;
 }
 
 const GOOD = withChanges(withWasmClang(GOOD_BASE + '  desktop:\n    needs: [web-build]\n    uses: ./.github/workflows/desktop.yml\n'));
@@ -1026,11 +1082,11 @@ test('an upload-artifact step in any job without if-no-files-found: error is rep
   const extra = '\n  extra:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7\n        with:\n          name: x\n          path: y\n      - run: echo after\n';
   const problems = checkWorkflow(fixture(GOOD + extra));
   assert.deepEqual(
-    problems.map((p) => p.replace(/^ci\.yml:\d+: /, '')).filter((p) => !p.includes('JOB_GATES') && !p.includes('"ci-ok"')),
+    problems.map((p) => p.replace(/^ci\.yml:\d+: /, '')).filter((p) => !p.includes('JOB_GATES') && !p.includes('"ci-ok"') && !p.includes('completion barrier')),
     ['actions/upload-artifact without "if-no-files-found: error" — CI is fail-closed'],
   );
   // The same step with the setting is clean.
-  assert.deepEqual(checkWorkflow(fixture(GOOD + extra.replace('          path: y\n', '          path: y\n          if-no-files-found: error\n'))).filter((p) => !p.includes('JOB_GATES') && !p.includes('"ci-ok"')), []);
+  assert.deepEqual(checkWorkflow(fixture(GOOD + extra.replace('          path: y\n', '          path: y\n          if-no-files-found: error\n'))).filter((p) => !p.includes('JOB_GATES') && !p.includes('"ci-ok"') && !p.includes('completion barrier')), []);
 });
 
 // Task 21: the browser E2EE suite.
@@ -1871,7 +1927,9 @@ test('the real ci-ok job needs every other job', () => {
 });
 
 test('a ci-ok job that forgot a job is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace(/(  ci-ok:\n    needs: \[)changes, /, '$1')));
+  const changed = GOOD.replace(/(  ci-ok:\n    needs: \[[^\]]*)changes, /, '$1');
+  assert.notEqual(changed, GOOD);
+  const problems = checkWorkflow(fixture(changed));
   assert.ok(problems.some((p) => p.includes('"ci-ok"') && p.includes('"changes"')), problems.join('\n'));
 });
 

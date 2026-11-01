@@ -9,9 +9,11 @@ import { gateExpression, JOB_GATES, jobRuns, reachableOutputs } from './ci-areas
  * to declare its `needs: rust-wasi` edge (see below).
  */
 export const REQUIRED_JOBS = [
-  // The change filter and the always-on docs gates (CHANGE_GATE_EXEMPT): a docs-only pull request runs only these two.
+  // The change filter and always-on docs gates; infrastructure remains active for docs-only changes too.
   'changes',
   'docs',
+  'ci-watchdog',
+  'ci-work-complete',
   // The aggregator: one check that is red when any job failed or was cancelled and green when the rest passed or were skipped by design.
   'ci-ok',
   'node',
@@ -48,11 +50,11 @@ export const REQUIRED_JOBS = [
 ];
 
 /**
- * The two jobs that run for every change. Every other job needs `changes` and carries the `if:` that JOB_GATES
+ * Infrastructure jobs are exempt from area gates. Every real test/build job needs `changes` and carries the `if:` that JOB_GATES
  * (scripts/ci-areas.mjs) names for it, so a docs-only pull request skips them. A skipped job counts as passed for a
  * required check. `docs` is exempt so the cheap docs gates still run; `changes` is the gate itself.
  */
-export const CHANGE_GATE_EXEMPT = ['changes', 'docs', 'ci-ok'];
+export const CHANGE_GATE_EXEMPT = ['changes', 'docs', 'ci-watchdog', 'ci-work-complete', 'ci-ok'];
 
 /**
  * R22: no escape hatch anywhere in the workflow. Both `always()` spellings are equally valid GitHub
@@ -146,7 +148,7 @@ const REQUIRED_STEPS = {
   // The cheap docs gates, for every change.
   // Their unit tests and the real checks against the real files; check:ci reads the Go tree for the race and Postgres rules.
   docs: ['npm run test:docs-check', 'npm run test:brief-check', 'npm run test:copy-check', 'npm run check:docs', 'npm run check:brief', 'npm run check:copy', 'npm run check:ci'],
-  // The only job that may say `if: always()` (checked below): it must run whatever the others did, and fail on a failure or a cancel.
+  // The final gate runs regardless of dependency results, alongside its no-op completion barrier.
   'ci-ok': ["contains(needs.*.result, 'failure')", "contains(needs.*.result, 'cancelled')"],
   // The testkit artifact hand-off: rust-native builds and uploads it, go downloads it.
   'rust-native': [
@@ -680,8 +682,8 @@ export function checkWorkflow(root) {
     const jobKey = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line);
     if (jobKey !== null) currentJob = jobKey[1];
     for (const { re, what } of FORBIDDEN) {
-      // ci-ok's own job-level `if: always()` is the one allowed escape hatch: a step of it is still held to the rule.
-      if (what === 'if: always()' && currentJob === 'ci-ok' && line === '    if: always()') continue;
+      // Only the final gate and its no-op DAG barrier may run regardless of dependency results.
+      if (what === 'if: always()' && ['ci-ok', 'ci-work-complete'].includes(currentJob) && line === '    if: always()') continue;
       if (re.test(line)) problems.push(`ci.yml:${i + 1}: forbidden "${what}" — CI is fail-closed (R22)`);
     }
     // v0.1.0-web3.1: only release.yml stamps a version; a ci build is 0.0.0-dev, so it is never mistaken for a release.
@@ -707,6 +709,26 @@ export function checkWorkflow(root) {
   }
 
   const jobs = splitJobs(text);
+  if ('ci-watchdog' in jobs) {
+    const body = jobs['ci-watchdog'];
+    const required = [
+      "    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)",
+      '    timeout-minutes: 90',
+      '    permissions:\n      contents: read\n      actions: write',
+      '          persist-credentials: false',
+      '      - run: python3 scripts/ci-watchdog.py\n        env:\n          GH_TOKEN: ${{ github.token }}',
+    ];
+    const permissions = /^    permissions:\n((?:      [^\n]+\n)+)/m.exec(body)?.[1];
+    const steps = jobSteps(body);
+    const expectedSteps = [
+      ['uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7', 'with:', 'persist-credentials: false'],
+      ['run: python3 scripts/ci-watchdog.py', 'env:', 'GH_TOKEN: ${{ github.token }}'],
+    ];
+    if (required.some(value => !body.includes(value)) || /^    (?:needs|name):/m.test(body) || /secrets\./.test(body) ||
+        permissions !== '      contents: read\n      actions: write\n' || JSON.stringify(steps) !== JSON.stringify(expectedSteps)) {
+      problems.push('ci.yml: unsafe watchdog: require an independent, bounded, same-repository watcher with only its job token and credential-free checkout');
+    }
+  }
   for (const name of [...REQUIRED_JOBS, ...Object.keys(BROWSER_WEB_JOBS)]) {
     if (!(name in jobs)) {
       problems.push(`ci.yml: missing job "${name}"`);
@@ -717,13 +739,26 @@ export function checkWorkflow(root) {
     }
   }
 
-  // Every job but the two exempt ones needs `changes` and carries its gate, or it would run on a docs-only pull
+  // Every test/build job needs `changes` and carries its gate, or it would run on a docs-only pull
   // request (or, with a wrong condition, be skipped on code).
   for (const [name, body] of Object.entries(jobs)) {
     const needs = /^ {4}needs:\s*\[([^\]]*)\]\s*$/m.exec(body);
     const needList = needs === null ? [] : needs[1].split(',').map((s) => s.trim());
+    if (name === 'ci-work-complete') {
+      const real = Object.keys(jobs).filter(other => !['ci-ok', 'ci-watchdog', 'ci-work-complete'].includes(other));
+      if (needList.length !== real.length || real.some(other => !needList.includes(other)) ||
+          !body.split('\n').includes('    if: always()') ||
+          !body.includes('    timeout-minutes: 2') ||
+          jobSteps(body).length !== 1 || !body.includes('      - run: echo "All CI work reached a terminal result"')) {
+        problems.push('ci.yml: completion barrier must wait for every real job, exclude the watcher/final gate, and perform only its bounded no-op');
+      }
+      continue;
+    }
     if (name === 'ci-ok') {
       if (!body.split('\n').includes('    if: always()')) problems.push('ci.yml: job "ci-ok" must carry the job-level if: always(), or it is skipped when a job fails');
+      if (!body.includes("      - if: needs.ci-watchdog.result == 'skipped' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)\n        run: exit 1")) {
+        problems.push('ci.yml: job "ci-ok" may accept a skipped watcher only for fork pull requests');
+      }
       for (const other of Object.keys(jobs)) {
         if (other !== 'ci-ok' && !needList.includes(other)) problems.push(`ci.yml: job "ci-ok" must list "${other}" in its needs:`);
       }
