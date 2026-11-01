@@ -767,8 +767,8 @@ func TestMusicRefusalsLogReason(t *testing.T) {
 		{"no call", "no_current_call", 5}, {"can use lookup", "can_use_lookup", 9}, {"cannot use", "forbidden", 2},
 		{"search no resolver", "provider_unavailable", 5}, {"search no args", "invalid_args", 5}, {"search arg type", "invalid_args", 5},
 		{"search resolve", "resolve_failed", 5}, {"search too many", "resolve_failed", 5}, {"search encode", "search_encode", 5},
-		{"state read", "state_read", 9}, {"runtime read", "runtime_state_read", 9}, {"runtime revision", "revision_conflict", 4},
-		{"state dj lookup", "can_dj_lookup", 9}, {"state encode", "state_encode", 9}, {"revision", "revision_conflict", 4},
+		{"state read", "state_read", 9}, {"runtime read", "runtime_state_read", 9}, {"runtime revision", "runtime_revision_mismatch", 4},
+		{"state dj lookup", "can_dj_lookup", 9}, {"state encode", "state_encode", 9}, {"revision", "client_revision_stale", 4},
 		{"dj lookup", "can_dj_lookup", 9}, {"dj recheck", "can_dj_lookup", 9}, {"stop dj lookup", "can_dj_lookup", 9}, {"stop dj recheck", "can_dj_lookup", 9},
 		{"emergency lookup", "can_emergency_stop_lookup", 9}, {"emergency recheck", "can_emergency_stop_lookup", 9},
 		{"cannot dj", "forbidden", 2}, {"dj revoked", "forbidden", 2},
@@ -824,6 +824,7 @@ func TestMusicRefusalsLogReason(t *testing.T) {
 					return music.State{}, 0, errors.New("runtime failed")
 				}
 			case "runtime revision":
+				op, req.Args = protocol.OpMusicVolume, []any{uint64(50)}
 				h.CurrentState = func(context.Context, id.ID, id.ID, id.ID) (music.State, uint64, error) {
 					return music.InitialState(), 1, nil
 				}
@@ -833,6 +834,7 @@ func TestMusicRefusalsLogReason(t *testing.T) {
 				op = protocol.OpMusicState
 				h.Now = func() time.Time { return time.Unix(-1, 0) }
 			case "revision":
+				op, req.Args = protocol.OpMusicVolume, []any{uint64(50)}
 				req.Revision = nil
 			case "dj lookup":
 				fault.fault = "can_dj_lookup"
