@@ -39,6 +39,13 @@ export interface FailClosedScenario {
   ms: number;
 }
 
+export interface IceDeliveryDiagnostics {
+  applied: number[];
+  endOfCandidates: number[];
+  failures: string[];
+  candidates: { side: number; type: string; protocol: string; addressKind: 'mdns' | 'ipv4' | 'ipv6' | 'other' }[];
+}
+
 export interface AfterKill {
   bytesSent: number;
   framesDecoded: number;
@@ -49,7 +56,7 @@ export interface AfterKill {
 export interface FailClosedResult {
   path: 'script-transform' | 'insertable-streams';
   negotiatedCodec: string;
-  transport?: { sender: string; receiver: string; iceSender: string; iceReceiver: string; sourceMuted: boolean; gatheringSender?: string; gatheringReceiver?: string; candidates?: number[]; iceErrors?: number[] };
+  transport?: { sender: string; receiver: string; iceSender: string; iceReceiver: string; sourceMuted: boolean; gatheringSender?: string; gatheringReceiver?: string; candidates?: number[]; iceErrors?: number[]; delivery?: IceDeliveryDiagnostics };
   bytesSent: number;
   framesDecoded: number;
   rendered: number;
@@ -201,16 +208,39 @@ function withFailingReceiveAttach(receiver: RTCRtpReceiver, failure: 'options' |
   }
 }
 
-async function negotiate(a: RTCPeerConnection, b: RTCPeerConnection): Promise<void> {
-  a.onicecandidate = (e) => { if (e.candidate) void b.addIceCandidate(e.candidate); };
-  b.onicecandidate = (e) => { if (e.candidate) void a.addIceCandidate(e.candidate); };
+async function negotiate(a: RTCPeerConnection, b: RTCPeerConnection): Promise<IceDeliveryDiagnostics> {
+  const delivery: IceDeliveryDiagnostics = { applied: [0, 0], endOfCandidates: [0, 0], failures: [], candidates: [] };
+  const ready = [false, false], queues: (RTCIceCandidate | null)[][] = [[], []];
+  const chains = [Promise.resolve(), Promise.resolve()];
+  const peers = [b, a];
+  const forward = (side: number, candidate: RTCIceCandidate | null): void => {
+    if (!ready[side]) { queues[side].push(candidate); return; }
+    chains[side] = chains[side].then(async () => {
+      try { await peers[side].addIceCandidate(candidate); if (candidate) delivery.applied[side]++; else delivery.endOfCandidates[side]++; }
+      catch (error) { delivery.failures.push(`${side}:${error instanceof DOMException ? error.name : 'Error'}`); }
+    });
+  };
+  const receive = (side: number, candidate: RTCIceCandidate | null): void => {
+    if (candidate) {
+      const address = candidate.address ?? '';
+      const addressKind = address.endsWith('.local') ? 'mdns' : /^\d+\.\d+\.\d+\.\d+$/.test(address) ? 'ipv4' : address.includes(':') ? 'ipv6' : 'other';
+      // Deliberately exclude addresses, ports, SDP, usernames and credentials.
+      delivery.candidates.push({ side, type: candidate.type ?? 'unknown', protocol: candidate.protocol ?? 'unknown', addressKind });
+    }
+    forward(side, candidate);
+  };
+  a.onicecandidate = event => receive(0, event.candidate);
+  b.onicecandidate = event => receive(1, event.candidate);
+  const descriptionReady = (side: number): void => { ready[side] = true; for (const candidate of queues[side].splice(0)) forward(side, candidate); };
   await a.setLocalDescription(await a.createOffer());
-  await b.setRemoteDescription(a.localDescription as RTCSessionDescriptionInit);
+  await b.setRemoteDescription(a.localDescription as RTCSessionDescriptionInit); descriptionReady(0);
   await b.setLocalDescription(await b.createAnswer());
-  await a.setRemoteDescription(b.localDescription as RTCSessionDescriptionInit);
+  await a.setRemoteDescription(b.localDescription as RTCSessionDescriptionInit); descriptionReady(1);
+  await Promise.all(chains);
+  return delivery;
 }
 
-export async function runFailClosed(sc: FailClosedScenario, suppliedVideoTrack?: MediaStreamTrack): Promise<FailClosedResult> {
+export async function runFailClosed(sc: FailClosedScenario, suppliedVideoTrack?: MediaStreamTrack, iceServers?: RTCIceServer[]): Promise<FailClosedResult> {
   const streamsPath = 'createEncodedStreams' in RTCRtpSender.prototype;
   const errors: string[] = [];
   let completePublish!: () => void;
@@ -218,8 +248,8 @@ export async function runFailClosed(sc: FailClosedScenario, suppliedVideoTrack?:
   const A = sc.send === 'dilla' ? await manager(DEV_A, 0, errors, pendingPublish) : null;
   const B = sc.recv === 'dilla' ? await manager(DEV_B, 1, errors) : null;
   // livekit forces encodedInsertableStreams whenever a manager exists (RTCEngine.ts:795-804).
-  const a = new RTCPeerConnection(streamsPath && A !== null ? ({ encodedInsertableStreams: true } as RTCConfiguration) : {});
-  const b = new RTCPeerConnection(streamsPath && B !== null ? ({ encodedInsertableStreams: true } as RTCConfiguration) : {});
+  const a = new RTCPeerConnection({ ...(iceServers ? { iceServers } : {}), ...(streamsPath && A !== null ? { encodedInsertableStreams: true } : {}) } as RTCConfiguration);
+  const b = new RTCPeerConnection({ ...(iceServers ? { iceServers } : {}), ...(streamsPath && B !== null ? { encodedInsertableStreams: true } : {}) } as RTCConfiguration);
   const candidates = [0, 0], iceErrors: number[] = [];
   a.addEventListener('icecandidate', event => { if (event.candidate) candidates[0]++; });
   b.addEventListener('icecandidate', event => { if (event.candidate) candidates[1]++; });
@@ -263,7 +293,7 @@ export async function runFailClosed(sc: FailClosedScenario, suppliedVideoTrack?:
       source: sc.source ?? 'camera', kind: 'video', mediaStreamID: source.track.id, codec: sc.label, mediaStreamTrack: source.track,
     });
   }
-  await negotiate(a, b);
+  const delivery = await negotiate(a, b);
   // SDP exchange completes before ICE. Give each platform a complete connected
   // measurement interval rather than counting frames while transport is starting.
   const deadline = performance.now() + 10000;
@@ -296,7 +326,7 @@ export async function runFailClosed(sc: FailClosedScenario, suppliedVideoTrack?:
   const { bytesSent, framesDecoded, negotiatedCodec } = await counters(a, b);
   const result: FailClosedResult = {
     path: streamsPath ? 'insertable-streams' : 'script-transform',
-    transport: { sender: a.connectionState, receiver: b.connectionState, iceSender: a.iceConnectionState, iceReceiver: b.iceConnectionState, sourceMuted: source.track.muted, gatheringSender: a.iceGatheringState, gatheringReceiver: b.iceGatheringState, candidates, iceErrors },
+    transport: { sender: a.connectionState, receiver: b.connectionState, iceSender: a.iceConnectionState, iceReceiver: b.iceConnectionState, sourceMuted: source.track.muted, gatheringSender: a.iceGatheringState, gatheringReceiver: b.iceGatheringState, candidates, iceErrors, delivery },
     negotiatedCodec,
     bytesSent,
     framesDecoded,
@@ -304,7 +334,7 @@ export async function runFailClosed(sc: FailClosedScenario, suppliedVideoTrack?:
     remoteTrackEnded: (remote as MediaStreamTrack | null)?.readyState === 'ended',
     senderTrackEnded: source.track.readyState === 'ended',
     unpublished: [...(A?.s.unpublished ?? [])],
-    errors,
+    errors: [...errors, ...delivery.failures.map(error => `ICE candidate delivery ${error}`)],
     sender: A === null ? null : await statsOrNull(A.m),
     receiver: B === null ? null : await statsOrNull(B.m),
   };
@@ -337,9 +367,9 @@ export async function runFailClosed(sc: FailClosedScenario, suppliedVideoTrack?:
 
 /** Native capture uses an explicit pending-publish barrier so blocked frames
  * remain available throughout ICE setup and the complete observation interval. */
-export async function runProtectedVideo(track: MediaStreamTrack, options: { source?: string; receiver?: boolean; ms?: number } = {}): Promise<FailClosedResult> {
+export async function runProtectedVideo(track: MediaStreamTrack, options: { source?: string; receiver?: boolean; ms?: number; iceServers?: RTCIceServer[] } = {}): Promise<FailClosedResult> {
   try {
-    return await runFailClosed({ send: 'dilla', recv: options.receiver === false ? 'none' : 'dilla', source: options.source ?? 'screen_share', label: 'vp8', ms: options.ms ?? 5000 }, track);
+    return await runFailClosed({ send: 'dilla', recv: options.receiver === false ? 'none' : 'dilla', source: options.source ?? 'screen_share', label: 'vp8', ms: options.ms ?? 5000 }, track, options.iceServers);
   } finally { track.stop(); }
 }
 

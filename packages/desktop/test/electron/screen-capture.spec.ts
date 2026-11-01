@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { startLoopbackStun } from '../support/loopback-stun.ts';
 import { nativeTrace } from '../support/trace.ts';
 import type { FailClosedResult, VideoObservation } from '../../../media/harness/failclosed.ts';
 
@@ -13,7 +14,8 @@ let otherInstance: Page | undefined;
 const test = base.extend<{ twoInstances: boolean }>({ twoInstances: [false, { option: true }] });
 let page: Page, directory: string, profile: string, title: string;
 let stopTrace: (() => Promise<void>) | undefined;
-type ValidationWindow = Window & { validation: { capture(): Promise<MediaStream>; screen(options?: { source?: string; receiver?: boolean; ms?: number }): Promise<ScreenResult> } };
+let stun: Awaited<ReturnType<typeof startLoopbackStun>> | undefined;
+type ValidationWindow = Window & { validation: { capture(): Promise<MediaStream>; screen(options?: { source?: string; receiver?: boolean; ms?: number; iceServers?: RTCIceServer[] }): Promise<ScreenResult> } };
 type ScreenResult = FailClosedResult & { audioTracks: number };
 
 async function exitOwned(app: ElectronApplication | undefined): Promise<void> {
@@ -37,6 +39,7 @@ async function brokers(): Promise<number[]> {
 }
 
 test.beforeEach(async ({ twoInstances }, info) => {
+ stun = await startLoopbackStun();
  directory = await mkdtemp(join(tmpdir(), 'dilla-screen-actor-'));
  profile = await mkdtemp(join(tmpdir(), 'dilla-screen-owner-'));
  if (twoInstances) await writeFile(join(profile, 'desktop.json'), JSON.stringify({ version: 1, instances: ['http://127.0.0.1:1/', 'http://127.0.0.1:1/team/'], autostart: false }));
@@ -97,7 +100,7 @@ test.afterEach(async () => {
  finally {
   stopTrace = undefined;
   const owner = desktop, source = actor; desktop = undefined; actor = undefined;
-  try { await exitOwned(owner); } finally { await exitOwned(source); }
+  try { await exitOwned(owner); } finally { try { await exitOwned(source); } finally { await stun?.close(); stun = undefined; } }
   await Promise.all([directory, profile].filter(Boolean).map(path => rm(path, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 })));
  }
 });
@@ -124,7 +127,7 @@ async function startAction(action: 'screen' | 'capture', options?: { source?: st
     }, error => { (globalThis as any).__screenError = String(error); });
    }
   }; document.body.append(button);
- }, { action, options });
+ }, { action, options: action === 'screen' ? { ...options, iceServers: [{ urls: stun!.urls }] } : options });
  await page.getByRole('button', { name: 'Start native screen acceptance', exact: true }).click();
 }
 async function completed<T>(): Promise<T> {
@@ -133,6 +136,7 @@ async function completed<T>(): Promise<T> {
  expect(outcome.error).toBeUndefined(); expect(outcome.trusted).toBe(true);
  await test.info().attach('native-screen-result', { body: JSON.stringify(outcome.result, null, 2), contentType: 'application/json' });
  console.log('NATIVE_SCREEN_RESULT', JSON.stringify(outcome.result));
+ console.log('NATIVE_SCREEN_STUN_REQUESTS', stun?.requests());
  const networkPrompts = await app().evaluate(() => (globalThis as any).__screenNetworkPermissions as string[]);
  for (const message of networkPrompts) expect(['Allow 127.0.0.1:1 to use local network connections for calls?', 'Allow 127.0.0.1:1 to use connections to a local Dilla service?']).toContain(message);
  await test.info().attach('native-screen-network-consent', { body: JSON.stringify(networkPrompts), contentType: 'application/json' });
@@ -187,6 +191,10 @@ test('a selected native application window stays video-only and encrypted throug
  await startAction('screen', { ms: 5000 });
  await assertBrokerIsolation();
  const result = await completed<ScreenResult>();
+ expect(stun!.requests()).toBeGreaterThan(0);
+ expect(result.transport?.delivery?.failures).toEqual([]);
+ expect(result.transport?.delivery?.applied.every(count => count > 0)).toBe(true);
+ expect(result.transport?.delivery?.candidates.some(candidate => candidate.type === 'srflx' && candidate.addressKind === 'ipv4')).toBe(true);
  expect(result.audioTracks).toBe(0); expect(result.transport?.sender).toBe('connected'); expect(result.transport?.receiver).toBe('connected');
  const encrypted = Object.values(result.sender?.encrypted ?? {}).flatMap(Object.values).reduce((sum, count) => sum + count, 0);
  const decrypted = Object.values(result.receiver?.decrypted ?? {}).reduce((sum, count) => sum + count, 0);
@@ -204,6 +212,9 @@ test('an unbound native screen source is blocked while its real input remains li
  await startAction('screen', { source: 'unknown', receiver: false, ms: 5000 });
  await assertBrokerIsolation();
  const result = await completed<ScreenResult>();
+ expect(stun!.requests()).toBeGreaterThan(0);
+ expect(result.transport?.sender).toBe('connected'); expect(result.transport?.receiver).toBe('connected');
+ expect(result.transport?.delivery?.failures).toEqual([]);
  expect(result.audioTracks).toBe(0); expect(result.bytesSent).toBe(0); expect(result.rendered).toBe(0);
  expect(result.sender?.dropped.blocked).toBeGreaterThan(10); expect(result.sender?.passedThrough).toBe(0);
  expect(result.unpublished).toHaveLength(1); expect(result.senderTrackEnded).toBe(false);
