@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import { createServer, type Server } from 'node:http';
 import { createHash, generateKeyPairSync, randomBytes, sign } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { cp, mkdir, mkdtemp, open, readFile, readdir, rm, writeFile, chmod } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, writeFile, chmod } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { Artifact, Release } from '../../../packages/desktop/src/update.ts';
@@ -58,11 +58,16 @@ export async function assertInstalledFuses(binary: string): Promise<void> {
 }
 interface Package { artifact: string; executable: string; app?: string; manifest?: string; sparkleSignature?: string }
 export interface InstalledPackages { root: string; profile: string; reports: string; product: string; installed: string; old: Package; next: Package; setNext(): Promise<void>; dispose(): Promise<void> }
+export async function createInstalledFixtureRoot(parent = tmpdir()): Promise<string> {
+  // Native packaging rejects aliased program trees. macOS /var and Windows
+  // short TEMP names must resolve before identity, profile and cleanup paths.
+  return realpath(await mkdtemp(join(parent, 'dilla-account-installed-')));
+}
 
 /** Full production main, bundled UI and core, with private throwaway trust and
  * transport constants compiled into these two acceptance applications only. */
 export async function createInstalledPackages(instance: string): Promise<InstalledPackages> {
-  const root = await mkdtemp(join(tmpdir(), 'dilla-account-installed-')), id = randomBytes(6).toString('hex'), product = 'DillaAccountAcceptance' + id;
+  const root = await createInstalledFixtureRoot(), id = randomBytes(6).toString('hex'), product = 'DillaAccountAcceptance' + id;
   const appId = process.platform === 'darwin' ? 'dev.dilla.desktop.update-acceptance' : 'dev.dilla.desktop.account-acceptance.' + id;
   const profile = process.platform === 'win32' ? join(process.env.APPDATA!, product) : join(root, 'profile'), reports = join(root, 'reports'), scheme = 'dilla-account-' + id;
   const keys = generateKeyPairSync('ed25519'), publicKey = keys.publicKey.export({ type: 'spki', format: 'pem' }).toString(), sparkleKeys = generateKeyPairSync('ed25519');

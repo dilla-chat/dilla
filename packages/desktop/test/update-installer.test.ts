@@ -3,18 +3,43 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { installedFixture } from './support/installed-update.ts';
 import { installerActorCommand, installerActorParent, runWindowsInstaller, type InstallerActorHost } from '../src/update-installer.ts';
 
-function actorProgram(plan: Parameters<typeof runWindowsInstaller>[0]): string {
- const config = JSON.stringify({ directory: plan.health.directory, installed: plan.installed, nonce: plan.health.nonce, version: plan.oldVersion });
+function actorProgram(plan: Parameters<typeof runWindowsInstaller>[0], pauseReady = false): string {
+ const config = JSON.stringify({ directory: plan.health.directory, installed: plan.installed, nonce: plan.health.nonce, version: plan.oldVersion, pauseReady });
  return `const fs=require('node:fs'),{spawn}=require('node:child_process'),c=${config};
  const worker=spawn(process.execPath,['-e',\`const fs=require('node:fs');const c=\${JSON.stringify(c)};let timer=setInterval(()=>{try{const go=JSON.parse(fs.readFileSync(c.directory+'/installer-go.json','utf8'));if(go.nonce!==c.nonce||go.pid!==process.ppid||go.installerPid!==process.pid)return;const j=JSON.parse(fs.readFileSync(c.directory+'/journal.json','utf8'));if(j.installerPid!==process.pid||j.installerActorPid!==process.ppid)process.exit(7);fs.writeFileSync(c.installed,'installer-ran-after-registration');clearInterval(timer);process.exit(0)}catch{}},10);\`],{stdio:'ignore'});
- fs.writeFileSync(c.directory+'/installer-ready.json',JSON.stringify({format:1,nonce:c.nonce,pid:process.pid,installerPid:worker.pid,version:c.version}),{mode:0o600});worker.on('exit',code=>process.exit(code??8));`;
+ const ready=c.directory+'/installer-ready.json',temporary=ready+'.tmp',bytes=Buffer.from(JSON.stringify({format:1,nonce:c.nonce,pid:process.pid,installerPid:worker.pid,version:c.version})),middle=Math.floor(bytes.length/2),fd=fs.openSync(temporary,'wx',0o600);
+ try{fs.writeFileSync(fd,bytes.subarray(0,middle));if(c.pauseReady){fs.writeFileSync(c.directory+'/installer-ready-staged','');while(!fs.existsSync(c.directory+'/installer-ready-continue'))Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10);}fs.writeFileSync(fd,bytes.subarray(middle));fs.fsyncSync(fd);}finally{fs.closeSync(fd);}fs.renameSync(temporary,ready);worker.on('exit',code=>process.exit(code??8));`;
 }
 const stopped = async (child: { pid?: number }) => {
  if (child.pid) { try { process.kill(-child.pid, 'SIGKILL'); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; } }
 };
+
+test('fixture ready publication hides a partial report until its complete bytes are flushed', { skip: process.platform === 'win32', timeout: 10000 }, async () => installedFixture(async plan => {
+ let actor: ReturnType<typeof spawn> | undefined;
+ try {
+  await runWindowsInstaller(plan, { spawn: async () => {
+   actor = spawn(process.execPath, ['-e', actorProgram(plan, true)], { detached: true, stdio: 'ignore' });
+   const staged = join(plan.health.directory, 'installer-ready-staged'), deadline = Date.now() + 3000;
+   for (;;) {
+    try { await readFile(staged); break; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || Date.now() >= deadline) throw error; }
+    await delay(10);
+   }
+   const ready = join(plan.health.directory, 'installer-ready.json');
+   await assert.rejects(readFile(ready), { code: 'ENOENT' }, 'the strict reader must never observe an in-progress report');
+   const partial = await readFile(ready + '.tmp', 'utf8'); assert.throws(() => JSON.parse(partial), SyntaxError);
+   await assert.rejects(readFile(join(plan.health.directory, 'installer-go.json')), { code: 'ENOENT' });
+   assert.equal(await readFile(plan.installed, 'utf8'), 'working-old-app');
+   await writeFile(join(plan.health.directory, 'installer-ready-continue'), 'continue');
+   return actor;
+  }, stop: stopped, timeoutMs: 3000 });
+  assert.equal(await readFile(plan.installed, 'utf8'), 'installer-ran-after-registration');
+ } finally { if (actor) await stopped(actor); }
+}, 'win32'));
 
 test('installer actor data is encoded without shell interpolation and identity cannot select another plan', async () => installedFixture(async plan => {
  const hostile = "C:\\Users\\fixture';Start-Process calc;#\\AppData\\update.exe";
