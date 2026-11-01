@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/url"
@@ -14,6 +15,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/jonasthim/dilla/internal/bot/music"
 )
 
 func TestYouTubeDiagnosticTextIsBoundedAndPrintable(t *testing.T) {
@@ -74,6 +77,143 @@ func TestIsolatedMetadataRunnerRetainsSandboxStderr(t *testing.T) {
 	}
 	if logs.Len() != 0 {
 		t.Fatalf("startup log=%s", logs.String())
+	}
+}
+
+func TestSandboxSetupFailureIsUnavailable(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, stderr string
+		code         int
+	}{
+		{"uid_map", "bwrap: setting up uid map: Permission denied", 1},
+		{"namespace", "bwrap: No permissions to create new namespace", 1},
+		{"apparmor", "bwrap: AppArmor denied namespace setup; Video unavailable", 1},
+		{"silent", "", 1},
+		{"worker_setup", "", 125},
+		{"output_limit_exit", "", 75},
+		{"clean_exit_without_worker", "", 0},
+		{"misleading_video_refusal", "ERROR: This video is private", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			shim := writeScript(t, t.TempDir(), "bwrap", "cat >&2 <<'DIAGNOSTIC'\n"+tc.stderr+"\nDIAGNOSTIC\nexit "+fmt.Sprint(tc.code))
+			runner := IsolatedMetadataRunner{Bubblewrap: shim, Python: python}
+			output, err := runner.Run(t.Context(), python, nil, 128)
+			if len(output) != 0 || !errors.Is(err, ErrSandboxUnavailable) || errors.Is(err, ErrExtractFailed) || errors.Is(err, ErrMetadataInvalid) || FailureClass(err) != "sandbox_unavailable" {
+				t.Fatalf("setup output=%q error=%v class=%s", output, err, FailureClass(err))
+			}
+			_, err = launchNetworkWorker(t.Context(), shim, python, nil, []string{"pcm"}, time.Second, time.Minute)
+			if !errors.Is(err, ErrSandboxUnavailable) || (&music.StartError{Stage: "provider_pcm", Cause: err}).ProviderFailure() {
+				t.Fatalf("sandbox setup failure would skip track: %v", err)
+			}
+		})
+	}
+}
+
+// This test double runs a child on the host after the real broker handshake.
+// It exercises lifecycle classification even on hosts that prohibit namespaces.
+func handshakingBwrap(t *testing.T) string {
+	t.Helper()
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := `import os, socket, sys
+args = sys.argv[1:]
+path = args[args.index("--bind") + 1]
+child = args[args.index("--") + 1:]
+conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+conn.connect(path)
+conn.sendall(b"DILLA-EGRESS-READY /1.0\r\n\r\n")
+assert conn.recv(4096) == b"DILLA-EGRESS-ACK /1.0\r\n\r\n"
+conn.close()
+os.execv(child[6], child[6:])
+`
+	path := filepath.Join(t.TempDir(), "bwrap")
+	if err := os.WriteFile(path, []byte("#!"+python+"\n"+script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestIsolatedMetadataRunnerClassifiesRunningExtractorFailure(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	extractor := writeScript(t, t.TempDir(), "extractor", "printf 'extractor failed' >&2; exit 1")
+	runner := IsolatedMetadataRunner{Bubblewrap: handshakingBwrap(t), Python: python}
+	for range 20 { // Cover both readiness and process-exit select paths for a fast child.
+		output, err := runner.Run(t.Context(), extractor, nil, 128)
+		if len(output) != 0 || !errors.Is(err, ErrExtractFailed) || errors.Is(err, ErrSandboxUnavailable) {
+			t.Fatalf("running extractor output=%q error=%v class=%s", output, err, FailureClass(err))
+		}
+	}
+}
+
+func TestIsolatedMetadataRunnerBoundsCapturedOutputWithoutNamespaces(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	extractor := writeScript(t, t.TempDir(), "extractor", "head -c 4096 /dev/zero")
+	output, err := (IsolatedMetadataRunner{Bubblewrap: handshakingBwrap(t), Python: python}).Run(t.Context(), extractor, nil, 128)
+	if len(output) != 0 || !errors.Is(err, ErrMetadataTooLarge) {
+		t.Fatalf("bounded output=%d error=%v", len(output), err)
+	}
+}
+
+func TestIsolatedMetadataRunnerRetainsWorkerExitStatus(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		code int
+		want error
+	}{
+		{75, ErrMetadataTooLarge},
+		{125, ErrSandboxUnavailable},
+	} {
+		t.Run(fmt.Sprint(tc.code), func(t *testing.T) {
+			// The shim forwards this exit unchanged, standing in for the worker's
+			// reserved status (the real worker normalizes extractor exits to 1).
+			worker := writeScript(t, t.TempDir(), "worker", "exit "+fmt.Sprint(tc.code))
+			runner := IsolatedMetadataRunner{Bubblewrap: handshakingBwrap(t), Python: python}
+			for range 30 {
+				output, err := runner.Run(t.Context(), worker, nil, 128)
+				if len(output) != 0 || !errors.Is(err, tc.want) {
+					t.Fatalf("worker exit %d: output=%q error=%v want=%v", tc.code, output, err, tc.want)
+				}
+			}
+		})
+	}
+}
+
+func TestCompletedWorkerFailurePreservesProtocolStatus(t *testing.T) {
+	ready := make(chan struct{})
+	close(ready)
+	for _, tc := range []struct {
+		code        int
+		cause, want error
+	}{
+		{1, ErrExtractFailed, ErrExtractFailed},
+		{75, ErrExtractFailed, ErrMetadataTooLarge},
+		{75, ErrPCMStart, ErrPCMLimit},
+		{125, ErrExtractFailed, ErrSandboxUnavailable},
+		{125, ErrPCMStart, ErrSandboxUnavailable},
+	} {
+		p := &isolatedPCM{cmd: &exec.Cmd{}, broker: &egressBroker{ready: ready}, exitCode: tc.code}
+		// The same mapping must apply if Wait closed stdout before the reader
+		// saw EOF, and if the launcher selected process exit before readiness.
+		for _, err := range []error{p.failure(tc.cause), p.startupFailure(tc.cause)} {
+			if !errors.Is(err, tc.want) {
+				t.Errorf("worker exit %d: %v; want %v", tc.code, err, tc.want)
+			}
+		}
 	}
 }
 
@@ -181,15 +321,16 @@ func TestSandboxEarlyExitRetainsVideoOrProviderFailure(t *testing.T) {
 	}{
 		{"ERROR: This video is private", "video_private", true},
 		{"ERROR: HTTP Error 429: Too Many Requests", "http_429", false},
-		{"bwrap: namespace permission denied", "sandbox_unavailable", false},
 	} {
 		t.Run(tc.class, func(t *testing.T) {
-			shim := filepath.Join(t.TempDir(), "bwrap")
-			script := "#!/bin/sh\ncat >&2 <<'DIAGNOSTIC'\n" + tc.raw + "\nDIAGNOSTIC\nexit 1\n"
-			if err := os.WriteFile(shim, []byte(script), 0700); err != nil {
-				t.Fatal(err)
+			extractor := writeScript(t, t.TempDir(), "extractor", "cat >&2 <<'DIAGNOSTIC'\n"+tc.raw+"\nDIAGNOSTIC\nexit 1")
+			process, failure := launchNetworkWorker(t.Context(), handshakingBwrap(t), python, nil, []string{"exec", "128", extractor}, time.Second, time.Minute)
+			if failure == nil {
+				_, _ = io.Copy(io.Discard, process.stdout)
+				<-process.done
+				failure = process.failure(ErrExtractFailed)
+				_ = process.Close()
 			}
-			_, failure := launchNetworkWorker(t.Context(), shim, python, nil, []string{"pcm", "", "", "", "https://youtu.be/aqz-KE-bpKQ"}, time.Second, time.Minute)
 			if FailureClass(failure) != tc.class {
 				t.Fatalf("class=%s want %s: %v", FailureClass(failure), tc.class, failure)
 			}

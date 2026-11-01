@@ -29,10 +29,15 @@ test('compiled helper recovery tests receive the same-commit helper and cannot s
   const run = jobSteps(go).find(step => step.some(line => line.includes('go test -race ./internal/bot/native ./cmd/dillabot')));
   assert.ok(run, 'the native adapter and production dependency tests must run with the compiled helper');
   assert.ok(run.some(line => line.includes("DILLA_BOT_HELPER_INTEGRATION: '1'")));
+  assert.ok(run.some(line => line.includes("DILLA_CONTROL_E2E: '1'")));
   assert.ok(run.some(line => line.includes('DILLA_BOT_HELPER_BIN: ${{ github.workspace }}/target/release/dilla-bot-core')));
   const steps = jobSteps(go);
   const fixtureBuild = steps.findIndex(step => step.some(line => line.includes('cargo test -p dilla-core --test native_bot_group_peer_fixture --no-run --locked')));
   const integration = steps.findIndex(step => step.some(line => line.includes('go test -race ./internal/bot/native ./cmd/dillabot')));
+  const npmInstall = steps.findIndex(step => step.some(line => line.includes('run: npm ci')));
+  assert.ok(npmInstall >= 0 && npmInstall < integration, 'install esbuild before opting into the real client control tests');
+  const botRelease = REAL_RELEASE.split('\n  bot-release:\n')[1].split(/^  \S/m)[0];
+  assert.doesNotMatch(botRelease, /DILLA_CONTROL_E2E|run: npm ci/);
   assert.ok(fixtureBuild >= 0 && fixtureBuild < integration, 'compile the Rust peer before the integration test starts its bounded readiness wait');
 });
 
