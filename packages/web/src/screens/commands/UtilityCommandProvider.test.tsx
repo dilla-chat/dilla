@@ -201,6 +201,8 @@ describe('utility command provider', () => {
     expect(f.poll.myChoices).toEqual([1]); expect(f.poll.counts).toEqual([0n, 1n]); mounted.unmount();
   });
   it('requires an explicit DST fold choice before creating an ambiguous reminder', async () => {
+    // Pin "now" before the 2026-11-01 fold: reminders reach at most 365 days ahead, and New York's next fold after
+    // this one (2027-11-07) is further away than that, so a real clock turns this test into a time bomb.
     vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-10-30T17:00:00Z'));
     const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
     const args = { when: '2026-11-01 01:30', text: 'Call home', timezone: 'America/New_York' };

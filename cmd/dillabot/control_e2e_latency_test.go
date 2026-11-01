@@ -161,6 +161,9 @@ func TestClientMusicControlsEndToEndDuringSweep(t *testing.T) {
 	testClientMusicControlsEndToEnd(t, true)
 }
 func testClientMusicControlsEndToEnd(t *testing.T, duringSweep bool) {
+	if os.Getenv("DILLA_CONTROL_E2E") != "1" {
+		t.Skip("set DILLA_CONTROL_E2E=1 to run control end-to-end tests with node_modules and dilla-bot-core (CI go-native)")
+	}
 	root, err := filepath.Abs("../..")
 	if err != nil {
 		t.Fatal(err)
@@ -174,7 +177,7 @@ func testClientMusicControlsEndToEnd(t *testing.T, duringSweep bool) {
 		t.Fatal(err)
 	}
 	if _, err = os.Stat(binary); err != nil {
-		t.Skip("build dilla-bot-core or set DILLA_BOT_HELPER_BIN for the SQLite helper integration")
+		t.Fatalf("DILLA_CONTROL_E2E=1 requires dilla-bot-core: build it or set DILLA_BOT_HELPER_BIN: %v", err)
 	}
 	bundle := filepath.Join(t.TempDir(), "control-client.mjs")
 	build := exec.CommandContext(t.Context(), filepath.Join(root, "node_modules/.bin/esbuild"), filepath.Join(root, "cmd/dillabot/testdata/control_latency_client.ts"), "--bundle", "--platform=node", "--format=esm", "--outfile="+bundle)

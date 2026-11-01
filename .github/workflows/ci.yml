@@ -1484,6 +1484,7 @@ jobs:
         run: go test -race ./internal/bot/native ./cmd/dillabot
         env:
           DILLA_BOT_HELPER_INTEGRATION: '1'
+          DILLA_CONTROL_E2E: '1'
           DILLA_BOT_HELPER_BIN: ${{ github.workspace }}/target/release/dilla-bot-core
 
   go-ds:

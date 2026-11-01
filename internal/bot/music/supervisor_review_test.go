@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -69,6 +72,27 @@ func TestSupervisorTransientFailureKeepsFiveHundredItems(t *testing.T) {
 	got, err := s.Apply(t.Context(), state.Revision, music.Operation{Kind: music.OpResume})
 	if !errors.Is(err, youtube.ErrSandboxUnavailable) || got.Current == nil || got.Current.ID != "0" || len(got.Queue) != 499 || !got.Paused || starter.calls != 1 {
 		t.Fatalf("state=%+v calls=%d error=%v", got, starter.calls, err)
+	}
+}
+
+func TestSupervisorSandboxSetupFailurePausesQueue(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bwrap := filepath.Join(t.TempDir(), "bwrap")
+	if err := os.WriteFile(bwrap, []byte("#!/bin/sh\nprintf 'bwrap: setting up uid map: Permission denied; Video unavailable\\n' >&2\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	_, failure := (youtube.IsolatedMetadataRunner{Bubblewrap: bwrap, Python: python}).Run(t.Context(), python, nil, 128)
+	if !errors.Is(failure, youtube.ErrSandboxUnavailable) {
+		t.Fatalf("sandbox setup failure=%v", failure)
+	}
+	starter := &reviewStarter{failure: &music.StartError{Stage: "provider_check", Cause: failure}}
+	s, state := reviewSupervisor(t, 3, starter)
+	got, err := s.Apply(t.Context(), state.Revision, music.Operation{Kind: music.OpResume})
+	if !errors.Is(err, youtube.ErrSandboxUnavailable) || !got.Paused || got.Current == nil || got.Current.ID != "0" || len(got.Queue) != 2 || starter.calls != 1 {
+		t.Fatalf("state=%+v calls=%d error=%v; setup failure must pause without discarding a track", got, starter.calls, err)
 	}
 }
 func TestSupervisorNotConfiguredSpotifySkipsThenCaps(t *testing.T) {

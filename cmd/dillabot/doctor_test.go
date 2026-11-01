@@ -504,20 +504,29 @@ func TestDillabotDoctorNamesTheConfigAndSearchedPath(t *testing.T) {
 }
 
 func TestDillabotDoctorYoutubeSandboxProbeReportsLaunchStderr(t *testing.T) {
-	bwrap := filepath.Join(t.TempDir(), "bwrap")
-	if err := os.WriteFile(bwrap, []byte("#!/bin/sh\nprintf 'namespace unavailable\\n'; printf 'namespace unavailable\\n' >&2\nexit 1\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	check := checkYouTubeSandbox(t.Context(), func(name string) (string, error) {
-		if name == "bwrap" {
-			return bwrap, nil
-		}
-		if name == "yt-dlp" {
-			return exec.LookPath("true")
-		}
-		return exec.LookPath(name)
-	})
-	if check.name != "youtube_sandbox" || check.status != "FAIL: sandbox_unavailable: namespace unavailable" {
-		t.Fatalf("check=%+v", check)
+	for _, diagnostic := range []string{
+		"namespace unavailable",
+		"bwrap: No permissions to create new namespace",
+		"bwrap: setting up uid map: Permission denied",
+		"bwrap: AppArmor denied namespace setup; Video unavailable",
+	} {
+		t.Run(diagnostic, func(t *testing.T) {
+			bwrap := filepath.Join(t.TempDir(), "bwrap")
+			if err := os.WriteFile(bwrap, []byte("#!/bin/sh\ncat >&2 <<'DIAGNOSTIC'\n"+diagnostic+"\nDIAGNOSTIC\nexit 1\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			check := checkYouTubeSandbox(t.Context(), func(name string) (string, error) {
+				if name == "bwrap" {
+					return bwrap, nil
+				}
+				if name == "yt-dlp" {
+					return exec.LookPath("true")
+				}
+				return exec.LookPath(name)
+			})
+			if check.name != "youtube_sandbox" || check.status != "FAIL: sandbox_unavailable: "+diagnostic {
+				t.Fatalf("check=%+v", check)
+			}
+		})
 	}
 }
