@@ -126,6 +126,10 @@ func launchNetworkWorker(ctx context.Context, bwrap, python string, tools, worke
 		return nil, ErrSandboxUnavailable
 	}
 	go process.wait()
+	workerFailure := ErrPCMStart
+	if len(workerArgs) > 0 && workerArgs[0] == "exec" {
+		workerFailure = ErrExtractFailed
+	}
 	timer := time.NewTimer(startupTimeout)
 	defer timer.Stop()
 	select {
@@ -133,10 +137,10 @@ func launchNetworkWorker(ctx context.Context, bwrap, python string, tools, worke
 		return process, nil
 	case <-process.done:
 		_ = process.Close()
-		return nil, process.startupFailure()
+		return nil, process.startupFailure(workerFailure)
 	case <-runCtx.Done():
 		_ = process.Close()
-		return nil, process.startupFailure()
+		return nil, process.startupFailure(workerFailure)
 	case <-timer.C:
 		_ = process.Close()
 		return nil, process.failure(errors.Join(ErrSandboxUnavailable, context.DeadlineExceeded))
@@ -352,18 +356,45 @@ func (p *isolatedPCM) failure(cause error) *ProcessError {
 	if stderr != nil {
 		text = stderr.String()
 	}
-	return newProcessError(cause, text, p.exitCode, p.diagnosticInputs...)
-}
-
-// A completed video refusal is a PCM failure; setup and provider faults retain
-// the sandbox sentinel. The worker also cancels runCtx on exit, so both select
-// paths must apply the same cause classification.
-func (p *isolatedPCM) startupFailure() *ProcessError {
-	failure := p.failure(errors.Join(ErrSandboxUnavailable, p.ctxErr))
-	if failure.PermanentPlaybackFailure() {
-		failure.Cause = errors.Join(ErrPCMStart, p.ctxErr)
+	// Only the sandboxed worker can complete the broker handshake. Before that
+	// point, exit codes and stderr belong to sandbox setup, never to a track.
+	// 125 is reserved by the worker for its own setup failures after readiness.
+	unavailable := p.exitCode == 125
+	if p.broker != nil {
+		select {
+		case <-p.broker.ready:
+		default:
+			unavailable = true
+		}
+	}
+	if unavailable {
+		deadline := error(nil)
+		if errors.Is(cause, context.DeadlineExceeded) {
+			deadline = context.DeadlineExceeded
+		}
+		cause = errors.Join(ErrSandboxUnavailable, p.ctxErr, deadline)
+	} else if p.exitCode == 75 {
+		// Wait may close stdout before its reader observes EOF, or finish
+		// before the launcher selects readiness. Retain the worker's limit
+		// status in all paths rather than reporting an extraction failure.
+		switch {
+		case errors.Is(cause, ErrExtractFailed):
+			cause = errors.Join(ErrMetadataTooLarge, p.ctxErr)
+		case errors.Is(cause, ErrPCMStart):
+			cause = errors.Join(ErrPCMLimit, p.ctxErr)
+		}
+	}
+	failure := newProcessError(cause, text, p.exitCode, p.diagnosticInputs...)
+	if unavailable {
+		failure.class = "sandbox_unavailable"
 	}
 	return failure
+}
+
+// A fast worker can finish before launchNetworkWorker selects readiness. Use
+// the same handshake-based classification for both process-exit select paths.
+func (p *isolatedPCM) startupFailure(cause error) *ProcessError {
+	return p.failure(errors.Join(cause, p.ctxErr))
 }
 
 // exec.Cmd.Wait closes StdoutPipe, which can race the reader's final EOF. Read
