@@ -1,62 +1,79 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { readFile, writeFile, copyFile } from 'node:fs/promises';
+import { basename, join } from 'node:path';
 import { runInstalledUpdate, type WatchdogProcesses } from '../src/update-watchdog.ts';
 import { readUpdateJournal } from '../src/update-journal.ts';
 import { reportStartupHealth } from '../src/update-health.ts';
 import { installedFixture } from './support/installed-update.ts';
+import type { InstalledUpdatePlan } from '../src/update-plan.ts';
 
-test('Linux leaves old bytes installed until parent exit and requires exact child health before completing', async () => installedFixture(async plan => {
- const calls: string[] = [];
+// Exercise the common lifecycle through the native adapter supported by this
+// host. Linux still uses actual AppImage replacement/directory durability;
+// Windows models its installer through the production process adapter contract.
+const lifecyclePlatform = process.platform === 'win32' ? 'win32' : 'linux';
+function fixtureInstaller(plan: InstalledUpdatePlan, parentExited: () => boolean, staged: () => void = () => {}): WatchdogProcesses['installWindows'] {
+ return async file => {
+  assert.equal(plan.platform, 'win32'); assert.equal(file, plan.artifactFile);
+  assert.equal(parentExited(), true, 'installer cannot stage before the old parent exits');
+  assert.equal(await readFile(plan.installed, 'utf8'), 'working-old-app');
+  await copyFile(file, plan.installed); staged();
+ };
+}
+
+test('native update leaves old bytes installed until parent exit and requires exact child health before completing', async () => installedFixture(async plan => {
+ const calls: string[] = []; let parentExited = false;
  const child = { pid: process.pid + 100, exitCode: null, signalCode: null };
  const processes: WatchdogProcesses = {
-  waitParent: async pid => { assert.equal(pid, plan.parentPid); assert.equal(await readFile(plan.installed, 'utf8'), 'working-old-app'); calls.push('parent-exited'); },
+  waitParent: async pid => { assert.equal(pid, plan.parentPid); assert.equal(await readFile(plan.installed, 'utf8'), 'working-old-app'); calls.push('parent-exited'); parentExited = true; },
   launch: async (file, health) => {
-   assert.equal(file, plan.installed); assert.ok(health); assert.equal(await readFile(file, 'utf8'), 'authenticated-new-app');
+   assert.equal(parentExited, true); assert.equal(file, plan.installed); assert.ok(health); assert.equal(await readFile(file, 'utf8'), 'authenticated-new-app');
    calls.push('launch'); await reportStartupHealth(plan.userData, health!.version, child.pid, health!.file, health!.nonce); return child;
   },
   stop: async () => { throw new Error('healthy child must survive'); },
-  restoreWindowsMetadata: async () => {}, installWindows: async () => { throw new Error('wrong OS'); },
+  restoreWindowsMetadata: async () => {}, installWindows: fixtureInstaller(plan, () => parentExited, () => { calls.push('stage'); }),
  };
  let now = 0;
  await runInstalledUpdate(plan, processes, { now: () => now, sleep: async () => { now += 100; } });
- assert.deepEqual(calls, ['parent-exited', 'launch']); assert.ok(now >= 1000);
+ assert.deepEqual(calls, ['parent-exited', ...(lifecyclePlatform === 'win32' ? ['stage'] : []), 'launch']); assert.ok(now >= 1000);
  assert.equal((await readUpdateJournal(plan)).phase, 'complete');
  assert.equal((await readUpdateJournal(plan)).childPid, child.pid);
- assert.equal(await readFile(plan.installed + '.previous', 'utf8'), 'working-old-app');
+ assert.equal(await readFile(plan.platform === 'linux' ? plan.installed + '.previous' : join(plan.backup, basename(plan.installed)), 'utf8'), 'working-old-app');
  assert.equal(await readFile(join(plan.userData, 'device-sentinel'), 'utf8'), 'encrypted-device');
-}));
+}, lifecyclePlatform));
 
-test('a child crash during grace is stopped before Linux rollback and the old version relaunches with a retryable record', async () => installedFixture(async plan => {
+test('a child crash during grace is stopped before native rollback and the old version relaunches with a retryable record', async () => installedFixture(async plan => {
+ let parentExited = false;
  const calls: string[] = [], child = { pid: process.pid + 101, exitCode: null as number | null, signalCode: null };
  const processes: WatchdogProcesses = {
-  waitParent: async () => {},
+  waitParent: async () => { parentExited = true; },
   launch: async (file, health) => {
+   assert.equal(parentExited, true);
    if (health) { await reportStartupHealth(plan.userData, health.version, child.pid, health.file, health.nonce); calls.push('new'); return child; }
    assert.equal(await readFile(file, 'utf8'), 'working-old-app'); calls.push('old'); return { ...child, pid: child.pid + 1 };
   },
   stop: async owned => { assert.equal(owned, child); assert.equal(await readFile(plan.installed, 'utf8'), 'authenticated-new-app'); calls.push('stop-owned'); },
-  restoreWindowsMetadata: async () => {}, installWindows: async () => { throw new Error('wrong OS'); },
+  restoreWindowsMetadata: async () => {}, installWindows: fixtureInstaller(plan, () => parentExited),
  };
  let now = 0;
  await runInstalledUpdate(plan, processes, { now: () => now, sleep: async () => { now += 100; if (now >= 500) child.exitCode = 2; } });
  assert.deepEqual(calls, ['new', 'stop-owned', 'old']);
  assert.equal(await readFile(plan.installed, 'utf8'), 'working-old-app');
  assert.deepEqual(await readUpdateJournal(plan), { format: 1, nonce: plan.health.nonce, phase: 'failed', failure: 'startup' });
-}));
+}, lifecyclePlatform));
 
 test('a missing health report restores the old app while a failed parent handoff never changes installation', async () => installedFixture(async plan => {
+ let parentExited = false;
  const child = { pid: process.pid + 101, exitCode: null, signalCode: null };
- const processes: WatchdogProcesses = { waitParent: async () => { throw new Error('parent still running'); }, launch: async () => child, stop: async () => {}, restoreWindowsMetadata: async () => {}, installWindows: async () => {} };
+ const processes: WatchdogProcesses = { waitParent: async () => { throw new Error('parent still running'); }, launch: async () => child, stop: async () => {}, restoreWindowsMetadata: async () => {}, installWindows: fixtureInstaller(plan, () => parentExited) };
  await assert.rejects(runInstalledUpdate(plan, processes), /parent still running/);
  assert.equal(await readFile(plan.installed, 'utf8'), 'working-old-app');
- processes.waitParent = async () => {};
- let now = 0, old = false;
- processes.launch = async (_file, health) => { if (!health) old = true; return child; };
+ processes.waitParent = async () => { parentExited = true; };
+ let now = 0, old = false, healthLaunches = 0;
+ processes.launch = async (_file, health) => { if (!health) old = true; else healthLaunches++; return child; };
  await runInstalledUpdate(plan, processes, { timeoutMs: 500, now: () => now, sleep: async () => { now += 100; } });
- assert.equal(old, true); assert.equal(await readFile(plan.installed, 'utf8'), 'working-old-app');
-}));
+ assert.equal(healthLaunches, 1); assert.equal(old, true); assert.equal(await readFile(plan.installed, 'utf8'), 'working-old-app');
+}, lifecyclePlatform));
 
 test('a tampered artifact fails before mutation and a failed stop never overwrites a live child', async () => installedFixture(async plan => {
  const child = { pid: process.pid + 101, exitCode: 2, signalCode: null };
@@ -68,12 +85,12 @@ test('a tampered artifact fails before mutation and a failed stop never overwrit
 
 test('a child that cannot be stopped keeps rollback pending and never launches over live program bytes', async () => installedFixture(async plan => {
  const child = { pid: process.pid + 101, exitCode: 2, signalCode: null };
- let launches = 0;
- const processes: WatchdogProcesses = { waitParent: async () => {}, launch: async () => { launches++; return child; }, stop: async () => { throw new Error('cannot stop owned child'); }, restoreWindowsMetadata: async () => {}, installWindows: async () => {} };
+ let launches = 0, parentExited = false;
+ const processes: WatchdogProcesses = { waitParent: async () => { parentExited = true; }, launch: async () => { launches++; return child; }, stop: async () => { throw new Error('cannot stop owned child'); }, restoreWindowsMetadata: async () => {}, installWindows: fixtureInstaller(plan, () => parentExited) };
  await assert.rejects(runInstalledUpdate(plan, processes), /cannot stop owned child/);
  assert.equal(launches, 1); assert.equal(await readFile(plan.installed, 'utf8'), 'authenticated-new-app');
  assert.equal((await readUpdateJournal(plan)).phase, 'recovering');
-}));
+}, lifecyclePlatform));
 
 test('Windows awaits installer completion before direct launch and restores old ASAR, executable and device data on startup failure', async () => installedFixture(async (plan, _trust, root) => {
  const child = { pid: process.pid + 102, exitCode: 2, signalCode: null }, calls: string[] = [];
@@ -160,15 +177,15 @@ test('recovery discovers and stops an owned launch even if the helper died befor
 
 test('dropping the activation acknowledgment after durable commit never rolls back a potentially enabled new app', async () => installedFixture(async plan => {
  const child = { pid: process.pid + 100, exitCode: null, signalCode: null };
- let attempted = false;
- const outcome = await runInstalledUpdate(plan, { waitParent: async () => {}, restoreWindowsMetadata: async () => {}, installWindows: async () => {}, stop: async () => { throw new Error('committed app must not be stopped'); },
+ let attempted = false, parentExited = false;
+ const outcome = await runInstalledUpdate(plan, { waitParent: async () => { parentExited = true; }, restoreWindowsMetadata: async () => {}, installWindows: fixtureInstaller(plan, () => parentExited), stop: async () => { throw new Error('committed app must not be stopped'); },
   activate: async () => { attempted = true; throw new Error('activation ACK dropped'); },
   launch: async (_file, health) => { assert.ok(health); await reportStartupHealth(plan.userData, health.version, child.pid, health.file, health.nonce); return child; },
  }, { now: (() => { let now = 0; return () => (now += 100); })(), sleep: async () => {} });
  assert.equal(attempted, true);
  assert.deepEqual(outcome, { phase: 'complete', durable: true }); assert.equal(await readFile(plan.installed, 'utf8'), 'authenticated-new-app');
  assert.equal((await readUpdateJournal(plan)).phase, 'complete');
-}));
+}, lifecyclePlatform));
 
 test('Windows inactive staging preserves the old program and completes its journal before publishing the active slot',async()=>installedFixture(async plan=>{
  const calls:string[]=[],child={pid:process.pid+100,exitCode:null,signalCode:null},target=join(plan.health.directory,'new.exe');await writeFile(target,'inactive new app');let now=0;

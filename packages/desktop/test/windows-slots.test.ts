@@ -4,6 +4,7 @@ import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import { mkdtemp, mkdir, writeFile, readFile, rm, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { pathToFileURL } from 'node:url';
 import { parseWindowsSlot, selectWindowsSlot, verifyWindowsSlot, publishWindowsSlot, WindowsCommitUncertain } from '../src/windows-slots.ts';
 const digest = (raw: Uint8Array | string) => createHash('sha512').update(raw).digest('base64');
 const initial = { format:1,kind:'initial',generation:0,version:'1.0.0',manifestSha512:digest('old') };
@@ -48,9 +49,11 @@ test('real slot open/write/flush/close faults before rename leave the committed 
  const root=await realpath(await mkdtemp(join(tmpdir(),'dilla-slot-io-')));
  try{
   await writeFile(join(root,'windows-active-0.json'),raw(initial));
+  const module=join(root,'slots # %.mjs');
+  await writeFile(module,`export {publishWindowsSlot} from ${JSON.stringify(pathToFileURL(resolve(import.meta.dirname,'../src/windows-slots.ts')).href)};`);
   for(const fault of ['open','writeFile','sync','close','rename-after']){
    const next={...initial,kind:'release',generation:1,nonce:'a'.repeat(64),acceptedAt:Date.now(),version:'1.0.1'},control=join(root,'control.json');
-   await writeFile(control,JSON.stringify({root,fault,next,module:resolve(import.meta.dirname,'../src/windows-slots.ts')}),{mode:0o600});
+   await writeFile(control,JSON.stringify({root,fault,next,module:pathToFileURL(module).href}),{mode:0o600});
    const script=`import fs from 'node:fs/promises';import{syncBuiltinESMExports}from'node:module';const o=JSON.parse(await fs.readFile(process.argv[1],'utf8'));const originalOpen=fs.open,originalRename=fs.rename;fs.open=async(file,...args)=>{const temp=String(file).includes('windows-active-1.json.');if(temp&&o.fault==='open')throw Object.assign(new Error('ENOSPC open'),{code:'ENOSPC'});const h=await originalOpen(file,...args);if(temp&&['writeFile','sync','close'].includes(o.fault)){const original=h[o.fault].bind(h);h[o.fault]=async(...a)=>{if(o.fault==='close')await original(...a);throw Object.assign(new Error('ENOSPC '+o.fault),{code:'ENOSPC'});};}return h;};if(o.fault==='rename-after')fs.rename=async(...a)=>{await originalRename(...a);throw Object.assign(new Error('rename result lost'),{code:'EIO'});};syncBuiltinESMExports();const{publishWindowsSlot}=await import(o.module);try{process.stdout.write(JSON.stringify({result:await publishWindowsSlot(o.root,o.next)}));}catch(e){process.stdout.write(JSON.stringify({code:e.code,name:e.name}));}`;
    const result=spawnSync(process.execPath,['--input-type=module','--eval',script,control],{encoding:'utf8',timeout:10000});assert.equal(result.status,0,result.stderr);
    assert.deepEqual(parseWindowsSlot(await readFile(join(root,'windows-active-0.json'))),initial);

@@ -8,6 +8,7 @@ const require = createRequire(import.meta.url);
 const sourcePath = new URL('../build/windows-installer.nsi', import.meta.url);
 function body(source: string, name: string): string { const match = new RegExp(`Function ${name}\\r?\\n([\\s\\S]*?)FunctionEnd`).exec(source); assert.ok(match, `missing ${name}`); return match[1]; }
 function contract(source: string) {
+ source = source.replace(/\r\n/g, '\n');
  assert.match(source, /RequestExecutionLevel user/);
  assert.doesNotMatch(source, /!include "(?:installer|installSection|multiUser|installUtil)\.nsh"|uninstallOldVersion|UAC_RunElevated|ExecShell|taskkill/i);
  const staging = body(source, 'StageInactiveVersion') + body(source, 'CopyInactivePayload');
@@ -57,8 +58,12 @@ function contract(source: string) {
  assert.match(source, /StrCpy \$INSTDIR "\$LOCALAPPDATA\\Programs\\\$\{PRODUCT_NAME\}"/);
 }
 test('custom NSIS stages only inactive immutable program data and seeds the first slot before shell entry points', async () => contract(await readFile(sourcePath, 'utf8')));
+test('NSIS contract checks the same operations with Windows checkout line endings', async () => {
+ const source = (await readFile(sourcePath, 'utf8')).replace(/\r\n/g, '\n');
+ contract(source.replace(/\n/g, '\r\n'));
+});
 test('installer contract catches staging launcher writes, old-version uninstall and seed order regressions', async () => {
- const source = await readFile(sourcePath, 'utf8');
+ const source = (await readFile(sourcePath, 'utf8')).replace(/\r\n/g, '\n');
  for (const mutation of [source.replace('Function StageInactiveVersion\n', 'Function StageInactiveVersion\n  CopyFiles "evil" "$INSTDIR\\Dilla.exe"\n'), source + '\nuninstallOldVersion\n', source.replace('Call un.MaintenancePreflight', ''), source.replace('Call un.HoldStableLauncher', ''), source.replace('Call un.ArchiveHistory', ''), source.replace('Call AcquireOperation', ''), source.replace('Call CommitInitialMarker', ''), source.replace('Push \"$INSTDIR\\Dilla.exe\"\n    Call un.RequireUnlockedFile', ''), source.replaceAll('0x40010000', '0x10000'), source.replace('Function StageInactiveVersion\n', 'Function StageInactiveVersion\n  WriteRegStr HKCU \"evil\" \"\" \"value\"\n'), source.replace('IfFileExists \"$DataRoot\\windows-active-1.json\" Fail', ''), source.replace('Call CheckOwnedRoot\n', ''), source.replaceAll('windows-active-0.json', 'slot.json'), source.replace('IntOp $1 $2 & 0x400', 'IntOp $1 $0 & 0')]) assert.throws(() => contract(mutation));
 });
 test('Windows hooks finalize after signing, assert before archive, and leave other platforms alone', async () => {

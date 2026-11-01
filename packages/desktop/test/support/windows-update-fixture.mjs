@@ -4,6 +4,9 @@ import assert from 'node:assert/strict';
 // Used only by a separately compiled acceptance app; production trust and
 // transport source are unchanged. Exported to compile these exact transforms.
 export function windowsFixtureSource(name,text,{appId,product,profile,scheme,origin,reports,version}){
+ // Git's native Windows checkout uses CRLF. Transform canonical source lines so
+ // every required observation attaches identically on all acceptance hosts.
+ text=text.replace(/\r\n/g,'\n');
 
      if(name==='updater')text=text.replace(/const feed = `[^`]+`;/,`const feed=${JSON.stringify(origin+'/release.json')};`).replace('url: new URL(this.artifact.url)',`url: new URL(${JSON.stringify(origin+'/artifact')})`).replace('boundedFetch(target.programManifest.url,1048576)',`boundedFetch(${JSON.stringify(origin+'/manifest')},1048576)`);
      if(name==='windows-installation')text=text.replaceAll("'dev.dilla.desktop'",JSON.stringify(appId));
