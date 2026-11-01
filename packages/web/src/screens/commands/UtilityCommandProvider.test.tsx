@@ -175,6 +175,9 @@ describe('utility command provider', () => {
     expect(f.poll.myChoices).toEqual([1]); expect(f.poll.counts).toEqual([0n, 1n]); mounted.unmount();
   });
   it('requires an explicit DST fold choice before creating an ambiguous reminder', async () => {
+    // Pin "now" before the 2026-11-01 fold: reminders reach at most 365 days ahead, and New York's next fold after
+    // this one (2027-11-07) is further away than that, so a real clock turns this test into a time bomb.
+    vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-10-15T12:00:00Z'));
     const user = userEvent.setup(); const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
     let run!: Promise<unknown>; act(() => { run = mounted.captured.value!.handlers.remind!({ commandId: 'remind', args: { when: '2026-11-01 01:30', text: 'Call home' } }, commandContext(f.client, 'cc'.repeat(16))); });
     await screen.findByRole('heading', { name: 'Set a reminder' }); await user.clear(screen.getByLabelText('Time zone')); await user.type(screen.getByLabelText('Time zone'), 'America/New_York');
@@ -183,6 +186,7 @@ describe('utility command provider', () => {
     const result = await run; expect(result).toMatchObject({ status: 'success' }); const mutation = f.requests.find(row => row.operation === 80)!;
     expect(mutation.requestId).toBe('cc'.repeat(16)); const payload = decode(mutation.args[0] as Uint8Array) as unknown[];
     expect(payload[1]).toBe(1n); expect(payload[4]).toBe('America/New_York'); expect(payload[2]).toBe(1_793_514_600n); mounted.unmount();
+    vi.useRealTimers();
   });
 
   it('shows due reminders in the inbox and reuses an uncertain dismissal attempt', async () => {
