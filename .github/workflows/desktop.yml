@@ -46,24 +46,24 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb dbus-x11 libgbm1 libnss3 libasound2t64
+          sudo apt-get install -y xvfb openbox x11-utils dbus-x11 libgbm1 libnss3 libasound2t64
           sudo chown root:root node_modules/electron/dist/chrome-sandbox
           sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
       - if: runner.os == 'Linux'
         run: npm run test:native:linux -w @dilla/desktop
       - if: runner.os == 'Linux'
-        run: xvfb-run -a dbus-run-session -- npm run test:electron -w @dilla/desktop -- --grep-invert "application-audio.spec.ts"
+        run: xvfb-run -a dbus-run-session -- bash packages/desktop/scripts/with-window-manager.sh npm run test:electron -w @dilla/desktop -- --grep-invert "application-audio.spec.ts"
       - if: runner.os != 'Linux'
         run: npm run test:electron -w @dilla/desktop -- --grep-invert "application-audio.spec.ts"
-      - name: Start Windows audio services for real playback acceptance
+      - name: Prepare Windows audio services and verify a real endpoint
         if: runner.os == 'Windows'
-        run: |
-          Start-Service AudioEndpointBuilder
-          Start-Service Audiosrv
-          Get-CimInstance Win32_SoundDevice | Select-Object Name, Status
+        run: ./packages/desktop/scripts/prepare-windows-audio.ps1
+      - name: Record macOS audio hardware for capture acceptance
+        if: runner.os == 'macOS'
+        run: system_profiler SPAudioDataType
       - name: Application audio encryption and exclusion
         if: runner.os == 'Linux'
-        run: xvfb-run -a dbus-run-session -- npm exec -w @dilla/desktop -- playwright test --config playwright.config.ts application-audio.spec.ts
+        run: xvfb-run -a dbus-run-session -- bash packages/desktop/scripts/with-window-manager.sh npm exec -w @dilla/desktop -- playwright test --config playwright.config.ts application-audio.spec.ts
       - name: Application audio encryption and exclusion
         if: runner.os != 'Linux'
         run: npm exec -w @dilla/desktop -- playwright test --config playwright.config.ts application-audio.spec.ts
@@ -142,7 +142,7 @@ jobs:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
       - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev pipewire wireplumber xvfb dbus-x11 libgbm1 libnss3 libasound2t64
+        run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev pipewire wireplumber xvfb openbox x11-utils dbus-x11 libgbm1 libnss3 libasound2t64
       - run: npm ci
       - run: node node_modules/electron/install.js
       - name: Test-host directory locks retain shared and exclusive semantics
@@ -156,7 +156,7 @@ jobs:
           sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
       - name: Shared client end-to-end coverage in Electron
         if: runner.os == 'Linux'
-        run: xvfb-run -a dbus-run-session -- npm exec -w @dilla/e2e -- playwright test --config playwright.desktop.config.ts --project=electron-client --shard=${{ matrix.shard }}/3 --max-failures=3
+        run: xvfb-run -a dbus-run-session -- bash packages/desktop/scripts/with-window-manager.sh npm exec -w @dilla/e2e -- playwright test --config playwright.desktop.config.ts --project=electron-client --shard=${{ matrix.shard }}/3 --max-failures=3
       - name: Shared client end-to-end coverage in Electron
         if: runner.os != 'Linux'
         run: npm exec -w @dilla/e2e -- playwright test --config playwright.desktop.config.ts --project=electron-client --shard=${{ matrix.shard }}/3 --max-failures=3

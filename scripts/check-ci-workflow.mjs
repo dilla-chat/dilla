@@ -1080,10 +1080,10 @@ export function checkDesktopWorkflow(root) {
     'name: dilla-web-dist', 'name: dilla-desktop-core', 'node node_modules/electron/install.js',
     'npm test -w @dilla/desktop', 'npm run typecheck -w @dilla/desktop',
     'npm run build -w @dilla/desktop -- --existing-client', 'npm run build:validation -w @dilla/desktop',
-    'xvfb-run -a dbus-run-session -- npm run test:electron -w @dilla/desktop',
+    'xvfb-run -a dbus-run-session -- bash packages/desktop/scripts/with-window-manager.sh npm run test:electron -w @dilla/desktop',
     'run: npm run test:electron -w @dilla/desktop', 'npm run pack -w @dilla/desktop',
     'node packages/desktop/scripts/check-fuses.mjs', 'node --test packages/desktop/test/native/mac-upgrade.test.mjs',
-    '--grep-invert "application-audio.spec.ts"', 'name: Application audio encryption and exclusion', 'playwright test --config playwright.config.ts application-audio.spec.ts',
+    'prepare-windows-audio.ps1', '--grep-invert "application-audio.spec.ts"', 'name: Application audio encryption and exclusion', 'playwright test --config playwright.config.ts application-audio.spec.ts',
     'npm run dist -w @dilla/desktop', 'name: desktop-installers-${{ matrix.platform }}-${{ matrix.arch }}',
   ]) if (!text.includes(required)) problems.push(`${file}: missing ${required}`);
   if (/--no-sandbox|contents: write|--publish always/.test(text)) problems.push(`${file}: desktop validation must keep sandboxing and cannot publish`);
