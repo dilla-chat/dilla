@@ -11,3 +11,5 @@ html[data-desktop] #root { min-height: calc(100dvh - var(--dw-titlebar-h)); }
 .dw-desktop-titlebar__instance { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 html[data-desktop] :is(.d-onboarding-frame, .d-splash, .dw-other-tab) { min-height: calc(100dvh - var(--dw-titlebar-h)); }
 html[data-desktop] :is(.d-settings-frame, .d-settings-frame.d-settings-frame[data-layout="phone"], .d-lightbox) { top: var(--dw-titlebar-h); height: calc(100dvh - var(--dw-titlebar-h)); }
+
+html[data-desktop-window="authentication"] .d-onboarding-frame__bar { display: none; }

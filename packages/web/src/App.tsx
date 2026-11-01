@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import type { BootPhase, FactorSetupOrigin } from '@dilla/client-core';
 import { Banner } from '@dilla/ui';
+import { startDesktopWindowLayout } from './desktop.ts';
 import { t } from './strings/index.ts';
 import { browser } from './browser.ts';
 import { useCore } from './core/context.tsx';
@@ -263,6 +264,9 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
     if (!signInForCallback.current && route.name !== 'spotifyCallback') void navigate({ name: 'root' }, true);
     signInForCallback.current = false;
   };
+  const windowMode = screen === 'shell' && !onboarding && !signingIn ? 'workspace'
+    : screen === 'boot' ? 'starting' : 'authentication';
+  useLayoutEffect(() => startDesktopWindowLayout(windowMode), [windowMode, screen, phase]);
   const failed = props.fatal ?? startError;
   if (failed) return <Boot fatal={failed} />;
   // The paused view keeps its place after the screens, so it stays mounted (and focused) while the shell goes.

@@ -1,3 +1,4 @@
+import { useNativeViewport } from '../../../packages/desktop/test/support/viewport.ts';
 import { canonicalInstance } from '../../../packages/desktop/src/policy.ts';
 import { _electron, type BrowserContext, type BrowserContextOptions, type LaunchOptions, type Page, type ElectronApplication } from '@playwright/test';
 import { mkdtemp, mkdir, rm, access, writeFile } from 'node:fs/promises';
@@ -36,7 +37,9 @@ export async function launchDesktopContext(profile: string | null, options: Brow
  const goto = first.goto.bind(first);
  first.goto = (url, options) => goto(new URL(url, canonical).href, options);
  applications.set(context, app);
- if (options.viewport) await first.setViewportSize(options.viewport);
+ // Startup/authentication keep their real compact native bounds. Specs can
+ // resize the workspace explicitly; native minimums remain authoritative.
+ await useNativeViewport(app, first);
  let firstTaken = claimWindow, closed = false;
  context.newPage = async (): Promise<Page> => {
   if (!firstTaken && !first.isClosed()) { firstTaken = true; return first; }

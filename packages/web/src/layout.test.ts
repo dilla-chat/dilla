@@ -366,3 +366,10 @@ describe('usePhoneSheet', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });
+
+it('installed desktop clients keep desktop layout even at a phone media-query match', () => {
+ vi.stubGlobal('dillaDesktop', {});
+ vi.stubGlobal('matchMedia', () => ({ matches: true, addEventListener() {}, removeEventListener() {} }));
+ try { const view = renderHook(() => usePhoneLayout()); expect(view.result.current).toBe(false); view.unmount(); }
+ finally { vi.unstubAllGlobals(); }
+});

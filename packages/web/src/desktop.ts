@@ -62,3 +62,22 @@ export function startDesktopLifecycle(bridge = desktopBridge()): () => void {
   });
   return () => { unsubscribe(); window.removeEventListener('beforeunload', beforeUnload); };
 }
+
+
+/** Size the same native window for startup, authentication and the workspace.
+ * Only natural card height crosses this capability; no arbitrary window bounds. */
+export function startDesktopWindowLayout(mode: import('../../desktop/src/window-layout.ts').WindowMode, bridge = desktopBridge()): () => void {
+ if (!bridge) return () => {};
+ document.documentElement.dataset.desktopWindow = mode;
+ const card = mode === 'authentication' ? document.querySelector<HTMLElement>('.d-onboarding-frame__card') : null;
+ let last = '';
+ const update = () => {
+  const height = card ? Math.max(160, Math.min(1600, Math.ceil(card.offsetHeight + 72))) : null;
+  const key = `${mode}:${height}`; if (key === last) return; last = key;
+  void bridge.send({ type: 'window-mode', mode, height }).catch(() => {});
+ };
+ update();
+ const observer = card && typeof ResizeObserver !== 'undefined' ? new ResizeObserver(update) : null;
+ if (card) observer?.observe(card);
+ return () => { observer?.disconnect(); };
+}

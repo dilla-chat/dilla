@@ -1,4 +1,4 @@
-import { desktopE2E } from './support/electron.ts';
+import { desktopApplication, desktopE2E } from './support/electron.ts';
 import { expect } from '@playwright/test';
 import {
   CLASS, COPY, HEX32, PUBLIC_URL, RK_GROUP, TEST_TIMEOUT, WAIT, copy, escapeRegExp, expectHeading, expectShell, nextButton, onboardingFrame,
@@ -14,6 +14,12 @@ test('a server invite, a name and a written-down key make an account that lands 
 
   await page.goto(`/welcome?invite=${encodeURIComponent(invite)}`);
   await expectHeading(page, COPY.connectTitle, { instance: instanceName });
+  if (desktopE2E()) {
+    const app = desktopApplication(context);
+    await expect.poll(() => app.evaluate(({ BrowserWindow }) => ({ width: BrowserWindow.getAllWindows()[0].getContentSize()[0], resizable: BrowserWindow.getAllWindows()[0].isResizable() }))).toEqual({ width: 440, resizable: false });
+    expect(await page.evaluate(() => [innerWidth, innerHeight])).toEqual(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getContentSize()));
+    await page.screenshot({ path: 'desktop-client-results/compact-signup.png' });
+  }
   await expect(page.getByLabel(copy(COPY.inviteLabel), { exact: true })).toHaveValue(invite);
   await nextButton(page).click();
 
@@ -41,6 +47,16 @@ test('a server invite, a name and a written-down key make an account that lands 
   await expectHeading(page, COPY.doneTitle);
   await page.getByRole('button', { name: copy(COPY.finish), exact: true }).click();
   await expectShell(page);
+  if (desktopE2E()) {
+    const app = desktopApplication(context);
+    await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isResizable())).toBe(true);
+    expect(await page.evaluate(() => [innerWidth, innerHeight])).toEqual(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getContentSize()));
+    expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getMinimumSize())).toEqual([900, 600]);
+    await page.setViewportSize({ width: 360, height: 400 });
+    expect(await page.evaluate(() => [innerWidth, innerHeight])).toEqual([900, 600]);
+    await expect(page.locator('[data-layout=phone]')).toHaveCount(0);
+    await page.screenshot({ path: 'desktop-client-results/workspace-signup.png' });
+  }
 
   // The server invite registered the account and joined its server: the person lands in it, with no
   // join dialog and no second paste (ruling 34).

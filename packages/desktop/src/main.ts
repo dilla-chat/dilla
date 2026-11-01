@@ -1,6 +1,7 @@
+import { windowShape, type WindowMode } from './window-layout.ts';
 import { windowAppearance } from './window-appearance.ts';
 import { browserAuth } from './browser-auth.ts';
-import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, protocol, session, shell, Tray, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, protocol, screen, session, shell, Tray, type IpcMainInvokeEvent } from 'electron';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -31,6 +32,8 @@ let preferences: Preferences;
 let tray: Tray;
 let manager: BrowserWindow | null = null;
 const windows = new Map<string, BrowserWindow>();
+const windowModes = new Map<string, WindowMode>();
+const workspaceBounds = new WeakMap<BrowserWindow, Electron.Rectangle>();
 const permissions = new Map<string, Set<string>>();
 const notices = new Map<string, Notification>();
 const ringActions = new Map<string, { title: string; run(action: 'answer' | 'decline'): void }>();
@@ -71,6 +74,28 @@ function owner(event: Pick<IpcMainInvokeEvent, 'sender' | 'senderFrame'>): { ins
 const windowChrome = () => ({ titleBarStyle: 'hidden' as const, ...windowAppearance('signal'), trafficLightPosition: { x: 12, y: 10 }, autoHideMenuBar: true });
 function showWindowMenu(win: BrowserWindow): void { Menu.getApplicationMenu()?.popup({ window: win, x: process.platform === 'darwin' ? 80 : 8, y: 32 }); }
 
+function setWindowMode(instance: string, win: BrowserWindow, mode: WindowMode, height: number | null): void {
+  const previous = windowModes.get(instance) ?? 'starting';
+  // A transient reconnect/error must not collapse an existing workspace.
+  if (previous === 'workspace' && mode === 'starting') return;
+  if (previous === 'workspace' && mode !== 'workspace' && updater.protected()) return;
+  if (previous === mode && (mode !== 'authentication' || height === null)) return;
+  if (previous === 'workspace') workspaceBounds.set(win, win.getNormalBounds());
+  const shape = windowShape(mode, height, screen.getDisplayMatching(win.getBounds()).workAreaSize.height);
+  if (win.isMaximized() && mode !== 'workspace') win.unmaximize();
+  // Toggling resizability restores native size constraints on Linux; apply
+  // the mode minimum afterwards so the compact dialog minimum cannot survive.
+  win.setResizable(shape.resizable); win.setMinimumSize(shape.minWidth, shape.minHeight);
+  if (process.platform !== 'linux') win.setMaximizable(shape.resizable);
+  const saved = mode === 'workspace' ? workspaceBounds.get(win) : undefined;
+  if (saved) win.setBounds(saved);
+  else if (win.getContentSize()[0] !== shape.width || win.getContentSize()[1] !== shape.height) {
+    win.setContentSize(shape.width, shape.height);
+    if (previous !== mode) win.center();
+  }
+  windowModes.set(instance, mode);
+}
+
 function focus(win: BrowserWindow): void { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
 
 function lockWindow(win: BrowserWindow, permits: (url: string) => boolean): void {
@@ -105,8 +130,8 @@ async function openInstance(input: string, path = '/', show = true): Promise<Bro
     return existing;
   }
   const ses = session.fromPartition(partitionFor(instance));
-  const win = new BrowserWindow({ width: 1240, height: 820, minWidth: 640, minHeight: 480, show: false, title: 'Dilla', ...windowChrome(), webPreferences: { ...webPreferences(), session: ses } });
-  windows.set(instance, win);
+  const win = new BrowserWindow({ ...windowShape('starting'), useContentSize: true, maximizable: false, show: false, title: 'Dilla', ...windowChrome(), webPreferences: { ...webPreferences(), session: ses } });
+  windows.set(instance, win); windowModes.set(instance, 'starting');
   updater.expectGuard(instance);
   const origin = new URL(instance).origin;
   const handler = (request: Request): Response | Promise<Response> => {
@@ -157,7 +182,7 @@ async function openInstance(input: string, path = '/', show = true): Promise<Bro
   lockWindow(win, url => isAppNavigation(url, instance));
   win.webContents.on('render-process-gone', () => { updater.expectGuard(instance); stopAppAudio(instance); });
   win.webContents.on('did-start-navigation', (_event, _url, inPlace, mainFrame) => { if (mainFrame && !inPlace) { updater.expectGuard(instance); stopAppAudio(instance); } });
-  win.on('closed', () => { windows.delete(instance); updater.removeGuard(instance); });
+  win.on('closed', () => { windows.delete(instance); windowModes.delete(instance); updater.removeGuard(instance); });
   await win.loadURL(new URL(path, origin).href);
   if (show) focus(win);
   refreshMenu();
@@ -313,6 +338,7 @@ ipcMain.handle('dilla:command', async (event, value: unknown) => {
   else if (command.type === 'badge') { badges.set(instance, command.count); refreshMenu(); }
   else if (command.type === 'stop-app-audio') { if (captures.get(instance)?.id === command.id) stopAppAudio(instance); }
   else if (command.type === 'autostart') await setAutostart(command.enabled);
+  else if (command.type === 'window-mode') setWindowMode(instance, win, command.mode, command.height);
   else if (command.type === 'desktop-theme') {
     const appearance = windowAppearance(command.theme);
     win.setBackgroundColor(appearance.backgroundColor);

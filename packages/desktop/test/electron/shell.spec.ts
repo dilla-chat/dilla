@@ -1,3 +1,4 @@
+import { useNativeViewport } from '../support/viewport.ts';
 import { captureNativeDownload } from '../support/download.ts';
 import { test as base, expect, _electron, type ElectronApplication } from '@playwright/test';
 import { createServer } from 'node:http';
@@ -39,6 +40,7 @@ test.beforeEach(async ({ instanceSuffix, multiInstance }) => {
   profile = await mkdtemp(join(tmpdir(), 'dilla-electron-'));
   if (multiInstance) await writeFile(join(profile, 'desktop.json'), JSON.stringify({ version: 1, instances: [instance, instance + 'team/'], autostart: false }));
   app = await _electron.launch({ chromiumSandbox: true, args: [resolve('.'), `--profile=${profile}`, `--instance=${instance}${instanceSuffix}`, '--allow-loopback'], timeout: 30_000 });
+  const page = await app.firstWindow(); await page.waitForLoadState('load'); await useNativeViewport(app, page);
 });
 test.afterEach(async () => { await app?.close(); await rm(profile, { recursive: true, force: true }); });
 
@@ -179,4 +181,28 @@ test('downloads a decrypted local attachment while refusing blob document naviga
   await page.evaluate(() => { location.href = URL.createObjectURL(new Blob(['<script>globalThis.blobDocumentExecuted=true</script>'], { type: 'text/html' })); });
   expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.getURL())).toBe(instance);
   expect(await page.evaluate(() => (globalThis as any).blobDocumentExecuted)).toBeUndefined();
+});
+
+test('a desktop resize fills the real native content area and cannot shrink into a mobile window', async () => {
+ const page = await app.firstWindow(); await expect(page.locator('#root')).not.toBeEmpty();
+ await page.evaluate(() => (window as any).dillaDesktop.send({ type: 'window-mode', mode: 'workspace', height: null }));
+ await page.setViewportSize({ width: 900, height: 600 });
+ expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getContentSize())).toEqual([900, 600]);
+ expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getMinimumSize()[0])).toBeGreaterThanOrEqual(800);
+ await page.setViewportSize({ width: 360, height: 400 });
+ expect(await page.evaluate(() => ({ width: innerWidth, height: innerHeight }))).toEqual({ width: 900, height: 600 });
+ expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getContentSize())).toEqual([900, 600]);
+});
+
+
+test('startup and sign-in use one compact window which expands only for the workspace', async () => {
+ const page = await app.firstWindow(); await expect(page.locator('#root')).not.toBeEmpty();
+ const id = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].id);
+ expect(await app.evaluate(({ BrowserWindow }) => ({ size: BrowserWindow.getAllWindows()[0].getContentSize(), resizable: BrowserWindow.getAllWindows()[0].isResizable() }))).toEqual({ size: [440, 280], resizable: false });
+ await page.evaluate(() => (window as any).dillaDesktop.send({ type: 'window-mode', mode: 'authentication', height: 500 }));
+ expect(await page.evaluate(() => [innerWidth, innerHeight])).toEqual([440, 500]);
+ await page.evaluate(() => (window as any).dillaDesktop.send({ type: 'window-mode', mode: 'workspace', height: null }));
+ expect(await app.evaluate(({ BrowserWindow }) => ({ id: BrowserWindow.getAllWindows()[0].id, count: BrowserWindow.getAllWindows().length, resizable: BrowserWindow.getAllWindows()[0].isResizable() }))).toEqual({ id, count: 1, resizable: true });
+ await page.waitForFunction(() => innerWidth >= 900 && innerHeight >= 600);
+ await page.screenshot({ path: 'test-results/workspace-native-bounds.png' });
 });
