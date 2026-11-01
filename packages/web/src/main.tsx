@@ -17,7 +17,7 @@ import { desktopBridge, startDesktopLifecycle } from './desktop.ts';
 startDesktopLifecycle();
 applyPreference(window, await readTheme());
 const desktop = await desktopBridge()?.info();
-if (desktop) document.documentElement.dataset.desktop = '';
+if (desktop) { document.documentElement.dataset.desktop = ''; document.documentElement.dataset.desktopPlatform = desktop.platform; }
 const worker = createCoreWorker(desktop ? { instanceURL: desktop.instance } : undefined);
 const client = connectCore(worker);
 const element = document.getElementById('root');

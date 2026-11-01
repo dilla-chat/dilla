@@ -1,28 +1,24 @@
-/* The same quiet rail surface and typography as the client. Native controls
-   remain above the web contents, including when a modal is open. */
-html[data-desktop] { --dw-titlebar-h: 32px; --d-shell-h: calc(100dvh - var(--dw-titlebar-h)); --d-vvtop: var(--dw-titlebar-h); --d-vvh: calc(100dvh - var(--dw-titlebar-h)); }
-html[data-desktop] body { padding-top: var(--dw-titlebar-h); box-sizing: border-box; }
-html[data-desktop] #root { min-height: calc(100dvh - var(--dw-titlebar-h)); }
-.dw-desktop-titlebar { position: fixed; z-index: 10000; top: 0; left: 0; width: 100%; height: var(--dw-titlebar-h); display: flex; align-items: center; gap: 16px; padding: 0 calc(100% - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100%) + 12px) 0 calc(env(titlebar-area-x, 0px) + 12px); box-sizing: border-box; background: var(--bg-3); color: var(--fg-3); font-family: var(--font-mono); font-size: 11px; user-select: none; -webkit-app-region: drag; app-region: drag; }
-.dw-desktop-titlebar[data-platform="darwin"] { padding-left: max(80px, calc(env(titlebar-area-x, 0px) + 12px)); }
-.dw-desktop-titlebar__menu { display: inline-flex; align-items: center; gap: 8px; height: 26px; padding: 0 6px; margin-left: -6px; flex: none; font: inherit; font-weight: 700; color: var(--fg-2); background: transparent; border: 0; border-radius: 4px; cursor: pointer; -webkit-app-region: no-drag; app-region: no-drag; }
-.dw-desktop-titlebar__menu:hover { color: var(--fg); background: var(--hover); }
-.dw-desktop-titlebar__menu:focus-visible { outline: var(--focus-ring); outline-offset: -2px; }
-.dw-desktop-titlebar__instance { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-html[data-desktop] :is(.d-onboarding-frame, .d-splash, .dw-other-tab) { min-height: calc(100dvh - var(--dw-titlebar-h)); }
-html[data-desktop] :is(.d-settings-frame, .d-settings-frame.d-settings-frame[data-layout="phone"], .d-lightbox) { top: var(--dw-titlebar-h); height: calc(100dvh - var(--dw-titlebar-h)); }
-
-html[data-desktop-window="authentication"] .d-onboarding-frame__bar { display: none; }
-
-.dw-desktop-titlebar__controls { display: flex; margin-left: auto; align-self: stretch; margin-right: -12px; flex: none; }
-.dw-desktop-titlebar__controls button, .dw-desktop-card-close { display: grid; place-items: center; width: 40px; padding: 0; color: var(--fg-2); background: transparent; border: 0; -webkit-app-region: no-drag; app-region: no-drag; cursor: pointer; }
+/* Desktop controls share Signal's existing 44px top bar. There is no second row. */
+html[data-desktop] { --dw-titlebar-h: 0px; --d-shell-h: 100dvh; --d-vvtop: 0px; --d-vvh: 100dvh; }
+html[data-desktop] #root { min-height: 100dvh; }
+html[data-desktop] .d-topbar { padding-left: 46px; padding-right: 132px; -webkit-app-region: drag; app-region: drag; }
+html[data-desktop] .d-topbar :is(button, input, a, [role="dialog"]) { -webkit-app-region: no-drag; app-region: no-drag; }
+html[data-desktop-platform="darwin"] .d-topbar { padding-left: 112px; padding-right: 12px; }
+.dw-desktop-titlebar { position: fixed; z-index: 10000; top: 0; left: 0; width: 100%; height: var(--topbar-h); display: flex; align-items: center; justify-content: space-between; pointer-events: none; box-sizing: border-box; color: var(--fg-3); user-select: none; }
+.dw-desktop-titlebar__menu { display: grid; place-items: center; width: 32px; height: 28px; margin-left: 6px; padding: 0; color: var(--fg-2); background: transparent; border: 0; border-radius: var(--r-sm); cursor: pointer; pointer-events: auto; -webkit-app-region: no-drag; app-region: no-drag; }
+.dw-desktop-titlebar[data-platform="darwin"] .dw-desktop-titlebar__menu { margin-left: 78px; }
+.dw-desktop-titlebar__controls { display: flex; height: 100%; }
+.dw-desktop-titlebar__controls button, .dw-desktop-card-close { display: grid; place-items: center; width: 40px; padding: 0; color: var(--fg-2); background: transparent; border: 0; pointer-events: auto; -webkit-app-region: no-drag; app-region: no-drag; cursor: pointer; }
 .dw-desktop-titlebar__controls svg, .dw-desktop-card-close svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.25; }
-.dw-desktop-titlebar__controls button:hover, .dw-desktop-card-close:hover { background: var(--hover); color: var(--fg); }
-.dw-desktop-titlebar__controls button:focus-visible, .dw-desktop-card-close:focus-visible { outline: var(--focus-ring); outline-offset: -3px; }
+.dw-desktop-titlebar__menu:hover, .dw-desktop-titlebar__controls button:hover, .dw-desktop-card-close:hover { background: var(--hover); color: var(--fg); }
+.dw-desktop-titlebar__menu:focus-visible, .dw-desktop-titlebar__controls button:focus-visible, .dw-desktop-card-close:focus-visible { outline: var(--focus-ring); outline-offset: -3px; }
+/* A settings modal covers the page below the existing header. Window controls
+   join its top layer so close/minimize remain usable during modal work. */
+html[data-desktop] .d-settings-frame { top: var(--topbar-h); height: calc(100dvh - var(--topbar-h)); }
 .dw-desktop-card-close, .dw-desktop-card-drag { display: none; }
-html[data-desktop-window="starting"], html[data-desktop-window="authentication"] { --dw-titlebar-h: 0px; }
 html:is([data-desktop-window="starting"], [data-desktop-window="authentication"]) .dw-desktop-titlebar { display: none; }
 html:is([data-desktop-window="starting"], [data-desktop-window="authentication"]) .dw-desktop-card-close { display: grid; position: fixed; top: 6px; right: 6px; width: 22px; height: 22px; border-radius: var(--r-sm); z-index: 10001; }
 html:is([data-desktop-window="starting"], [data-desktop-window="authentication"]) .dw-desktop-card-drag { display: block; position: fixed; inset: 0 34px auto 0; height: 26px; z-index: 10000; -webkit-app-region: drag; app-region: drag; }
 html[data-desktop-window="authentication"] .d-onboarding-frame { padding: 0; background: var(--bg-2); align-items: start; }
+html[data-desktop-window="authentication"] .d-onboarding-frame__bar { display: none; }
 html[data-desktop-window="authentication"] .d-onboarding-frame__card { max-width: none; border: 0; border-radius: 0; box-shadow: none; animation: none; }

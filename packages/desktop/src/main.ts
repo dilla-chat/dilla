@@ -88,7 +88,7 @@ function setWindowMode(instance: string, win: BrowserWindow, mode: WindowMode, h
   // the mode minimum afterwards so the compact dialog minimum cannot survive.
   win.setResizable(shape.resizable); win.setMinimumSize(shape.minWidth, shape.minHeight);
   if (process.platform !== 'linux') win.setMaximizable(shape.resizable);
-  if (process.platform === 'darwin') win.setWindowButtonVisibility(mode === 'workspace');
+  if (process.platform === 'darwin') { win.setWindowButtonVisibility(mode === 'workspace'); if (mode === 'workspace') win.setWindowButtonPosition({ x: 12, y: 16 }); }
   const saved = mode === 'workspace' ? workspaceBounds.get(win) : undefined;
   if (saved) win.setBounds(saved);
   else if (win.getContentSize()[0] !== shape.width || win.getContentSize()[1] !== shape.height) {

@@ -57,11 +57,26 @@ test('a server invite, a name and a written-down key make an account that lands 
     await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isResizable())).toBe(true);
     expect(await page.evaluate(() => [innerWidth, innerHeight])).toEqual(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getContentSize()));
     expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getMinimumSize())).toEqual([900, 600]);
-    await expect(page.locator('.dw-desktop-titlebar')).toBeVisible();
+    await expect(page.locator('.d-topbar .dw-desktop-titlebar')).toBeVisible();
+    const header = await page.locator('.d-topbar').boundingBox();
+    expect(header?.y).toBe(0); expect(header?.height).toBe(44);
+    const close = await page.getByRole('button', { name: 'Close window', exact: true }).boundingBox();
+    if (close) expect(close.y + close.height / 2).toBe(header!.height / 2);
+
     await page.setViewportSize({ width: 360, height: 400 });
     expect(await page.evaluate(() => [innerWidth, innerHeight])).toEqual([900, 600]);
     await expect(page.locator('[data-layout=phone]')).toHaveCount(0);
     await page.screenshot({ path: 'desktop-client-results/workspace-signup.png' });
+    await page.getByRole('button', { name: copy('workspace.open'), exact: true }).click();
+    const settings = page.locator('dialog.d-settings-frame[open]');
+    await expect(settings.locator('.dw-desktop-titlebar')).toBeVisible();
+    if ((await app.evaluate(() => process.platform)) !== 'darwin') {
+      await settings.getByRole('button', { name: 'Minimize window', exact: true }).click();
+      await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isMinimized())).toBe(true);
+      await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].restore());
+    }
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.d-topbar .dw-desktop-titlebar')).toBeVisible();
   }
 
   // The server invite registered the account and joined its server: the person lands in it, with no
