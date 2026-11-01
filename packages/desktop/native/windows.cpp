@@ -34,20 +34,34 @@ static std::string label(HANDLE process) {
     std::string text(size, '\0'); WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, name.data(), int(name.size()), text.data(), size, nullptr, nullptr); return text;
 }
 static void list(DWORD excluded) {
+    const bool diagnostic = std::getenv("DILLA_AUDIO_DIAGNOSTICS") != nullptr;
     auto graph = parents(); std::set<DWORD> found; ComPtr<IMMDeviceEnumerator> enumerator;
     check(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&enumerator)));
     ComPtr<IMMDeviceCollection> devices; check(enumerator->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &devices));
     UINT n = 0; check(devices->GetCount(&n));
+    if (diagnostic) {
+        ComPtr<IMMDevice> output;
+        auto result = enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &output);
+        std::fprintf(stderr, "WASAPI active render endpoints=%u default-render HRESULT=%lu\n", n, static_cast<unsigned long>(result));
+    }
     for (UINT d = 0; d < n; ++d) {
         ComPtr<IMMDevice> device; if (FAILED(devices->Item(d, &device))) continue;
-        ComPtr<IAudioSessionManager2> manager; if (FAILED(device->Activate(__uuidof(IAudioSessionManager2), CLSCTX_ALL, nullptr, reinterpret_cast<void**>(manager.GetAddressOf())))) continue;
-        ComPtr<IAudioSessionEnumerator> sessions; if (FAILED(manager->GetSessionEnumerator(&sessions))) continue;
-        int count = 0; if (FAILED(sessions->GetCount(&count))) continue;
+        ComPtr<IAudioSessionManager2> manager; auto result = device->Activate(__uuidof(IAudioSessionManager2), CLSCTX_ALL, nullptr, reinterpret_cast<void**>(manager.GetAddressOf()));
+        if (diagnostic) std::fprintf(stderr, "WASAPI endpoint=%u activate-manager HRESULT=%lu\n", d, static_cast<unsigned long>(result));
+        if (FAILED(result)) continue;
+        ComPtr<IAudioSessionEnumerator> sessions; result = manager->GetSessionEnumerator(&sessions);
+        if (diagnostic) std::fprintf(stderr, "WASAPI endpoint=%u enumerate-sessions HRESULT=%lu\n", d, static_cast<unsigned long>(result));
+        if (FAILED(result)) continue;
+        int count = 0; result = sessions->GetCount(&count);
+        if (diagnostic) std::fprintf(stderr, "WASAPI endpoint=%u sessions=%d count-HRESULT=%lu\n", d, count, static_cast<unsigned long>(result));
+        if (FAILED(result)) continue;
         for (int i = 0; i < count; ++i) {
             ComPtr<IAudioSessionControl> session; if (FAILED(sessions->GetSession(i, &session))) continue;
             ComPtr<IAudioSessionControl2> control; if (FAILED(session.As(&control))) continue;
             DWORD pid = 0; AudioSessionState state{};
-            if (FAILED(control->GetProcessId(&pid)) || !pid || FAILED(control->GetState(&state)) || state != AudioSessionStateActive) continue;
+            auto processResult = control->GetProcessId(&pid); auto stateResult = control->GetState(&state);
+            if (diagnostic) std::fprintf(stderr, "WASAPI session=%d pid=%lu state=%d process-HRESULT=%lu state-HRESULT=%lu excluded=%d\n", i, static_cast<unsigned long>(pid), static_cast<int>(state), static_cast<unsigned long>(processResult), static_cast<unsigned long>(stateResult), descendant(pid, excluded, graph) || descendant(excluded, pid, graph));
+            if (FAILED(processResult) || !pid || FAILED(stateResult) || state != AudioSessionStateActive) continue;
             if (!descendant(pid, excluded, graph) && !descendant(excluded, pid, graph)) found.insert(pid);
         }
     }

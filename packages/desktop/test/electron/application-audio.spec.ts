@@ -61,11 +61,12 @@ test.beforeEach(async () => {
    if (name === 'selected') { selected = actor; selectedPIDs = [ready!.pid]; } else other = actor;
   }
  } else {
+  env.DILLA_AUDIO_DIAGNOSTICS = '1';
   // Independent real playback applications, without fake media devices or PCM injection.
   const actor = join(root, 'tone.cjs');
-  await writeFile(actor, `const {app,BrowserWindow}=require('electron');let w;app.enableSandbox();app.setPath('userData',process.argv.find(a=>a.startsWith('--actor-profile=')).slice(16));app.commandLine.appendSwitch('autoplay-policy','no-user-gesture-required');app.whenReady().then(()=>{w=new BrowserWindow({webPreferences:{sandbox:true,contextIsolation:true,nodeIntegration:false,backgroundThrottling:false}});w.loadURL('data:text/html,<title>Application audio acceptance</title><script>const c=new AudioContext({sampleRate:48000}),o=c.createOscillator(),g=c.createGain();o.frequency.value='+Number(process.argv.find(a=>a.startsWith('--tone=')).slice(7))+';g.gain.value=0.35;o.connect(g).connect(c.destination);o.start();c.resume();window.audioAcceptance={context:c,oscillator:o};</script>')})`);
-  selected = await _electron.launch({ chromiumSandbox: true, args: [actor, '--tone=1000', '--actor-profile=' + join(root, 'selected-profile')], env });
-  other = await _electron.launch({ chromiumSandbox: true, args: [actor, '--tone=880', '--actor-profile=' + join(root, 'other-profile')], env });
+  await writeFile(actor, `const {app,BrowserWindow}=require('electron');let w;app.enableSandbox();app.setPath('userData',process.argv.find(a=>a.startsWith('--actor-profile=')).slice(16));app.commandLine.appendSwitch('autoplay-policy','no-user-gesture-required');app.commandLine.appendSwitch('enable-logging','file');app.commandLine.appendSwitch('log-file',process.argv.find(a=>a.startsWith('--audio-log=')).slice(12));app.commandLine.appendSwitch('vmodule','audio*=2,core_audio*=2');app.whenReady().then(()=>{w=new BrowserWindow({webPreferences:{sandbox:true,contextIsolation:true,nodeIntegration:false,backgroundThrottling:false}});w.loadURL('data:text/html,<title>Application audio acceptance</title><script>const c=new AudioContext({sampleRate:48000}),o=c.createOscillator(),g=c.createGain();o.frequency.value='+Number(process.argv.find(a=>a.startsWith('--tone=')).slice(7))+';g.gain.value=0.35;o.connect(g).connect(c.destination);o.start();c.resume();window.audioAcceptance={context:c,oscillator:o};</script>')})`);
+  selected = await _electron.launch({ chromiumSandbox: true, args: [actor, '--tone=1000', '--actor-profile=' + join(root, 'selected-profile'), '--audio-log=' + join(root, 'selected-audio.log')], env });
+  other = await _electron.launch({ chromiumSandbox: true, args: [actor, '--tone=880', '--actor-profile=' + join(root, 'other-profile'), '--audio-log=' + join(root, 'other-audio.log')], env });
   for (const [application, frequency] of [[selected, 1000], [other, 880]] as const) {
    const page = await (application as ElectronApplication).firstWindow();
    await page.waitForFunction(frequency => { const a = (window as any).audioAcceptance; return a?.context.state === 'running' && a.context.currentTime > 0.5 && a.oscillator.frequency.value === frequency; }, frequency);
@@ -93,8 +94,15 @@ test.beforeEach(async () => {
   const pid = desktop.process().pid!;
   const result = await exec(binary, ['list', String(pid)], { env, timeout: 12000 });
   sources = JSON.parse(result.stdout);
+  if (i === 0 || i === 19) diagnostic += result.stderr;
   if (sources.some(source => selectedPIDs.includes(Number(source.id.split(':')[1])))) break;
   await pause(250);
+ }
+ if (process.platform === 'win32') {
+  for (const name of ['selected', 'other']) {
+   console.log('NATIVE_AUDIO_DEVICE_LOG', name, await readFile(join(root, name + '-audio.log'), 'utf8').then(log => log.slice(-24000), error => String(error)));
+  }
+  console.log('NATIVE_AUDIO_PROCESS_METRICS', JSON.stringify(await (selected as ElectronApplication).evaluate(({ app }) => app.getAppMetrics().map(({ pid, type, name, serviceName }) => ({ pid, type, name, serviceName })))));
  }
  console.log('NATIVE_AUDIO_ENVIRONMENT', JSON.stringify({ platform: process.platform, sources, selectedPIDs, diagnostic }));
  const source = sources.find(source => selectedPIDs.includes(Number(source.id.split(':')[1])));
