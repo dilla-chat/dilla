@@ -1,5 +1,5 @@
 import { test, expect, _electron, type ElectronApplication } from '@playwright/test';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { spawn, execFile, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import { tmpdir } from 'node:os';
@@ -9,6 +9,7 @@ const pause = (ms: number) => new Promise(done => setTimeout(done, ms));
 let desktop: ElectronApplication, selected: ChildProcess | ElectronApplication, other: ChildProcess | ElectronApplication;
 let root: string, env: Record<string, string>, selectedPIDs: number[];
 const services: ChildProcess[] = [];
+const macActors: { pid: number; path: string }[] = [];
 let diagnostic = '';
 function start(exe: string, args: string[]): ChildProcess {
  const child = spawn(exe, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -43,13 +44,21 @@ test.beforeEach(async () => {
    await writeFile(join(contents, 'Info.plist'), `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleExecutable</key><string>TonePlayer</string><key>CFBundleIdentifier</key><string>dev.dilla.acceptance.${name}</string><key>CFBundleName</key><string>Dilla ${name} audio acceptance</string><key>CFBundlePackageType</key><string>APPL</string></dict></plist>`);
    await exec('codesign', ['--force', '--sign', '-', bundle], { env, timeout: 10000 });
    const file = join(root, name + '.wav'); await writeFile(file, wave(frequency));
-   const actor = start(join(contents, 'MacOS/TonePlayer'), [file]);
-   await new Promise<void>((done, reject) => {
-    let output = ''; const timeout = setTimeout(() => reject(new Error('Independent macOS playback did not start: ' + diagnostic)), 15000);
-    actor.once('exit', code => { clearTimeout(timeout); reject(new Error('macOS playback exited: ' + code + ' ' + diagnostic)); });
-    actor.stdout!.on('data', data => { output += String(data); if (output.includes('NATIVE_TONE_READY ')) { clearTimeout(timeout); console.log(output.trim()); done(); } });
-   });
-   if (name === 'selected') { selected = actor; selectedPIDs = [actor.pid!]; } else other = actor;
+   // Launch as independent applications through LaunchServices. Directly
+   // spawning both executables can group their audio under the test runner's
+   // process responsibility, unlike two apps a person opens from the Dock.
+   const readyFile = join(root, name + '-ready.json');
+   const actor = start('/usr/bin/open', ['-n', '-W', bundle, '--args', file, readyFile]);
+   let ready: { pid: number; bundle: string; time: number } | undefined;
+   for (let attempt = 0; attempt < 150; attempt++) {
+    try { ready = JSON.parse(await readFile(readyFile, 'utf8')); break; } catch { await pause(100); }
+   }
+   expect(ready?.bundle).toBe(`dev.dilla.acceptance.${name}`);
+   expect(ready?.time).toBeGreaterThan(0.5);
+   expect(Number.isSafeInteger(ready?.pid) && ready!.pid > 1).toBe(true);
+   macActors.push({ pid: ready!.pid, path: bundle });
+   console.log('NATIVE_TONE_READY', JSON.stringify(ready));
+   if (name === 'selected') { selected = actor; selectedPIDs = [ready!.pid]; } else other = actor;
   }
  } else {
   // Independent real playback applications, without fake media devices or PCM injection.
@@ -108,6 +117,11 @@ test.afterEach(async () => {
  await desktop?.evaluate(async () => { (globalThis as any).callAudioFixture?.kill?.(); }).catch(() => {});
  await desktop?.close().catch(() => {});
  for (const actor of [selected, other]) if (actor && 'close' in actor) await (actor as ElectronApplication).close().catch(() => {});
+ for (const actor of macActors.splice(0)) {
+  // Do not signal an unrelated process if a failed actor's PID was reused.
+  const command = await exec('/bin/ps', ['-p', String(actor.pid), '-o', 'command=']).then(result => result.stdout, () => '');
+  if (command.includes(actor.path + '/Contents/MacOS/TonePlayer')) await exec('/bin/kill', ['-TERM', String(actor.pid)]).catch(() => {});
+ }
  for (const child of services.splice(0).reverse()) { if (child.exitCode === null && child.signalCode === null) { child.kill(); await new Promise<void>(done => { child.once('close', () => done()); setTimeout(done, 2000); }); } }
  if (root) await rm(root, { recursive: true, force: true });
 });

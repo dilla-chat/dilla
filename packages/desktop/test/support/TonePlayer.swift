@@ -11,7 +11,7 @@ window.title = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? Stri
 window.center()
 window.makeKeyAndOrderFront(nil)
 application.activate(ignoringOtherApps: true)
-guard CommandLine.arguments.count == 2 else { fatalError("Expected a tone file") }
+guard CommandLine.arguments.count == 3 else { fatalError("Expected a tone file and readiness file") }
 let player = try AVAudioPlayer(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1]))
 player.numberOfLoops = -1
 guard player.prepareToPlay(), player.play() else { fatalError("Audio output did not start") }
@@ -19,6 +19,7 @@ let readiness = Timer.scheduledTimer(withTimeInterval: 0.75, repeats: false) { _
     guard player.isPlaying, player.currentTime > 0.5 else { fatalError("Audio output did not advance") }
     let report: [String: Any] = ["pid": ProcessInfo.processInfo.processIdentifier, "bundle": Bundle.main.bundleIdentifier ?? "", "time": player.currentTime]
     let data = try! JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
+    try! data.write(to: URL(fileURLWithPath: CommandLine.arguments[2]), options: [.atomic])
     FileHandle.standardOutput.write(Data("NATIVE_TONE_READY ".utf8) + data + Data("\n".utf8))
 }
 application.run()
