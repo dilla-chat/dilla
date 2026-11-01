@@ -11,9 +11,12 @@ import { applyPreference } from './theme.ts';
 import { browser } from './browser.ts';
 import { watchUpdates } from './update.ts';
 import { createUpdateCheckpointStore } from './update-checkpoint.ts';
+import { desktopBridge, startDesktopLifecycle } from './desktop.ts';
 
+startDesktopLifecycle();
 applyPreference(window, await readTheme());
-const worker = createCoreWorker();
+const desktop = await desktopBridge()?.info();
+const worker = createCoreWorker(desktop ? { instanceURL: desktop.instance } : undefined);
 const client = connectCore(worker);
 const element = document.getElementById('root');
 if (!element) throw new Error('dilla: #root is missing');

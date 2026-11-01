@@ -3449,6 +3449,22 @@ describe('#37: a call knows whether a share carries sound, on both sides', () =>
       return call;
     };
 
+    it('publishes native application audio through the protected screen-share slot without a monitor fallback', async () => {
+      const f = fakes();
+      const call = await sharing(f);
+      const d = deviceTrack();
+      f.deps.applicationAudio = async () => d.track;
+      const gum = vi.fn(async () => { throw new Error('must not capture a system input'); });
+      f.deps.media.getUserMedia = gum;
+      f.room.localParticipant.publishTrack.mockClear();
+      await call.setShareSource('dilla:application');
+      expect(sources(f)).toEqual(['screen_share_audio']);
+      expect(call.state.shareAudio).toBe('app');
+      expect(gum).not.toHaveBeenCalled();
+      await call.setSharing(false);
+      expect(d.stop).toHaveBeenCalled();
+    });
+
     it('publishes the chosen device as screen_share_audio, opened raw and stereo', async () => {
       const f = fakes();
       const call = await sharing(f);

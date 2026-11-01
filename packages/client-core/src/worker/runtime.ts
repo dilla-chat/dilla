@@ -6,6 +6,7 @@ import { indexedDbKekStore } from '../account/kek';
 import type { CoreWasmModule } from '../core-port';
 import { toHex } from '../hex';
 import { Controller, type ControllerParts } from './controller';
+import { workerInstanceURL } from './instance-url';
 
 type WasmModule = CoreWasmModule & { default(): Promise<unknown> };
 let wasm: Promise<WasmModule> | null = null;
@@ -26,7 +27,7 @@ function isNotFound(e: unknown): boolean {
   return e instanceof DOMException && e.name === 'NotFoundError';
 }
 
-export function startCoreWorker(scope: DedicatedWorkerGlobalScope, options: { testHooks: boolean; parts?: Partial<ControllerParts> }): Controller {
+export function startCoreWorker(scope: DedicatedWorkerGlobalScope, options: { testHooks: boolean; parts?: Partial<ControllerParts>; instanceURL?: unknown }): Controller {
   const sleep = (ms: number, signal?: AbortSignal): Promise<void> => new Promise<void>((resolve, reject) => {
     const aborted = (): Error => (signal?.reason instanceof Error ? signal.reason : new DOMException('The operation was aborted.', 'AbortError'));
     if (signal?.aborted === true) { reject(aborted()); return; }
@@ -36,7 +37,7 @@ export function startCoreWorker(scope: DedicatedWorkerGlobalScope, options: { te
   });
   const kek = indexedDbKekStore(scope.indexedDB, scope.crypto.subtle, (a) => scope.crypto.getRandomValues(a));
   const controller = new Controller({
-    origin: scope.location.origin,
+    origin: workerInstanceURL(options.instanceURL, scope.location.origin),
     fetch: scope.fetch.bind(scope),
     // The worker's global WebSocket; lib.webworker declares it as a global, not as a member of the scope type.
     WebSocket: (scope as DedicatedWorkerGlobalScope & typeof globalThis).WebSocket,

@@ -6,17 +6,29 @@ import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gateExpression, JOB_GATES } from './ci-areas.mjs';
-import { BROWSER_WEB_JOBS, checkReleaseWorkflow, checkWorkflow, jobSteps, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEP, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION } from './check-ci-workflow.mjs';
+import { BROWSER_WEB_JOBS, checkDesktopWorkflow, checkReleaseWorkflow, checkWorkflow, jobSteps, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEP, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION } from './check-ci-workflow.mjs';
 
 const NPM_TEST = "      - if: needs.changes.outputs.web != 'false'\n        run: npm test\n";
 const SCRIPT_PATH = fileURLToPath(new URL('./check-ci-workflow.mjs', import.meta.url));
 const REPO_ROOT = join(dirname(SCRIPT_PATH), '..');
 const REAL_CI = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
 const REAL_RELEASE = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'release.yml'), 'utf8');
+const REAL_DESKTOP = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'desktop.yml'), 'utf8');
+
+test('desktop acceptance requires every native target, Electron tests, packaging and fuse verification', () => {
+  assert.deepEqual(checkDesktopWorkflow(REPO_ROOT), []);
+  for (const removed of ['os: macos-15-intel', 'os: macos-15,', 'npm run typecheck -w @dilla/desktop', 'npm run build:validation -w @dilla/desktop', 'node packages/desktop/scripts/check-fuses.mjs']) {
+    const root = mkdtempSync(join(tmpdir(), 'dilla-desktop-ci-'));
+    mkdirSync(join(root, '.github/workflows'), { recursive: true });
+    writeFileSync(join(root, '.github/workflows/desktop.yml'), REAL_DESKTOP.replaceAll(removed, 'removed'));
+    assert.ok(checkDesktopWorkflow(root).length > 0, removed);
+  }
+});
 
 test('workflow steps execute only commit-pinned GitHub actions', () => {
   for (const workflow of [REAL_CI, REAL_RELEASE]) {
     for (const match of workflow.matchAll(/^\s*-?\s*uses:\s*(\S+)/gm)) {
+      if (match[1] === './.github/workflows/desktop.yml') continue;
       assert.match(match[1], /^actions\/[\w-]+(?:\/[\w-]+)?@[0-9a-f]{40}$/);
     }
   }
@@ -564,7 +576,7 @@ function withChanges(text) {
   return `${out.join('\n').replace(/\n$/, '')}\n${CI_OK_JOB(jobs)}`;
 }
 
-const GOOD = withChanges(withWasmClang(GOOD_BASE));
+const GOOD = withChanges(withWasmClang(GOOD_BASE + '  desktop:\n    needs: [web-build]\n    uses: ./.github/workflows/desktop.yml\n'));
 
 const BUDGET = MIN_BROWSER_WEB_TIMEOUT;
 
@@ -588,6 +600,7 @@ function fixture(body, gated = GATED) {
   writeFileSync(join(dir, '.github', 'workflows', 'ci.yml'), body);
   // The CLI also checks release.yml.
   writeFileSync(join(dir, '.github', 'workflows', 'release.yml'), REAL_RELEASE);
+  writeFileSync(join(dir, '.github', 'workflows', 'desktop.yml'), REAL_DESKTOP);
   for (const [pkg, name] of gated) {
     mkdirSync(join(dir, pkg), { recursive: true });
     writeFileSync(join(dir, pkg, `${name}_test.go`), gatedTest(name));
@@ -1621,6 +1634,7 @@ function releaseFixture(release) {
   const dir = mkdtempSync(join(tmpdir(), 'dilla-release-'));
   mkdirSync(join(dir, '.github', 'workflows'), { recursive: true });
   writeFileSync(join(dir, '.github', 'workflows', 'ci.yml'), REAL_CI);
+  writeFileSync(join(dir, '.github', 'workflows', 'desktop.yml'), REAL_DESKTOP);
   writeFileSync(join(dir, '.github', 'workflows', 'release.yml'), release);
   return dir;
 }

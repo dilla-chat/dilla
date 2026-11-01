@@ -47,6 +47,7 @@ export const REQUIRED_JOBS = [
   'chromium-web',
   'firefox-web',
   'webkit-web',
+  'desktop',
 ];
 
 /**
@@ -135,6 +136,7 @@ export const UI_SHOTS_3 = [
 
 /** One load-bearing command per job, so a silently gutted job is caught. */
 const REQUIRED_STEPS = {
+  desktop: ['uses: ./.github/workflows/desktop.yml'],
   // The areas are computed by scripts/ci-areas.mjs (tested in ci-areas.test.mjs), which fails safe to everything.
   // fetch-depth: 0 gives it the base commit to diff against.
   changes: [
@@ -666,6 +668,7 @@ function checkActionReference(line, file, number, problems) {
   const match = /^\s*(?:-\s*)?uses:\s*(\S+)/.exec(line);
   if (!match) return;
   const action = match[1];
+  if (action === './.github/workflows/desktop.yml' && file === 'ci.yml') return;
   if (!action.startsWith('actions/')) {
     problems.push(`${file}:${number}: ${action} is not a GitHub-owned action; use a reviewed local command`);
   } else if (!/^actions\/[\w-]+(?:\/[\w-]+)?@[0-9a-f]{40}$/.test(action)) {
@@ -841,6 +844,7 @@ export function checkWorkflow(root) {
   for (const [job, needs] of [
     ...Object.keys(BROWSER_WEB_JOBS).map((job) => [job, ['rust-native', 'rust-wasi', 'web-build']]),
     ['go-release', ['web-build']],
+    ['desktop', ['web-build']],
   ]) {
     if (!(job in jobs)) continue;
     for (const need of needs) {
@@ -1042,9 +1046,35 @@ export function checkReleaseWorkflow(root) {
   return problems;
 }
 
+export function checkDesktopWorkflow(root) {
+  const file = 'desktop.yml';
+  let text;
+  try { text = readFileSync(join(root, '.github', 'workflows', file), 'utf8'); }
+  catch (error) { if (error.code === 'ENOENT') return ['desktop.yml: missing desktop acceptance workflow']; throw error; }
+  const problems = [];
+  text.split('\n').forEach((line, i) => {
+    checkActionReference(line, file, i + 1, problems);
+    for (const { re, what } of FORBIDDEN) if (re.test(line)) problems.push(`${file}:${i + 1}: forbidden ${what}`);
+  });
+  for (const required of [
+    'workflow_call:', 'contents: read', 'fail-fast: false',
+    'os: ubuntu-24.04, platform: linux, arch: x64', 'os: windows-latest, platform: win, arch: x64',
+    'os: macos-15-intel, platform: mac, arch: x64', 'os: macos-15, platform: mac, arch: arm64',
+    'name: dilla-web-dist', 'name: dilla-desktop-core', 'node node_modules/electron/install.js',
+    'npm test -w @dilla/desktop', 'npm run typecheck -w @dilla/desktop',
+    'npm run build -w @dilla/desktop -- --existing-client', 'npm run build:validation -w @dilla/desktop',
+    'xvfb-run -a dbus-run-session -- npm run test:electron -w @dilla/desktop',
+    'run: npm run test:electron -w @dilla/desktop', 'npm run pack -w @dilla/desktop',
+    'node packages/desktop/scripts/check-fuses.mjs',
+  ]) if (!text.includes(required)) problems.push(`${file}: missing ${required}`);
+  if (/--no-sandbox|contents: write|--publish always/.test(text)) problems.push(`${file}: desktop validation must keep sandboxing and cannot publish`);
+  assertEveryUploadFailsOnNoFiles(text, problems, file);
+  return problems;
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
   const root = process.argv[2] ?? process.cwd();
-  const problems = [...checkWorkflow(root), ...checkReleaseWorkflow(root)];
+  const problems = [...checkWorkflow(root), ...checkReleaseWorkflow(root), ...checkDesktopWorkflow(root)];
   for (const p of problems) console.error(p);
   process.exit(problems.length === 0 ? 0 : 1);
 }
