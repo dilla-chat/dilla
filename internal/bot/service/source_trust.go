@@ -241,6 +241,16 @@ func (t *SourceTrust) trustSender(ctx context.Context, session senderHistorySess
 		return 0, ErrSourceTrustBusy
 	}
 	defer release()
+	// A previous claim holder may have advanced the shared cache since the caller's snapshot.
+	leaves, err := t.native.PendingLeaves(ctx)
+	if err != nil {
+		return 0, trustPhaseError(TrustPhasePendingLeaves, err)
+	}
+	for _, fresh := range leaves {
+		if fresh.User == user && fresh.CachedVersion > cachedVersion {
+			cachedVersion = fresh.CachedVersion
+		}
+	}
 	history, head, _, err := readSenderHistory(ctx, session, user, cachedVersion)
 	if err != nil {
 		return 0, trustPhaseError(TrustPhaseSenderHistory, err)

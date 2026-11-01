@@ -100,7 +100,7 @@ func retryMusicCallGroupJoin(ctx context.Context, calls musicCallJoinReader, cor
 			continue
 		}
 		var conflict *errMusicCallJoinConflict
-		if !errors.As(err, &conflict) || conflicts == len(delays) {
+		if (!errors.As(err, &conflict) && !errors.Is(err, service.ErrSourceTrustBusy)) || conflicts == len(delays) {
 			return err
 		}
 		if err = wait(ctx, delays[conflicts]); err != nil {
@@ -421,6 +421,16 @@ func refreshMusicCallJoinLeaves(ctx context.Context, calls musicCallJoinReader, 
 		}
 		err = func() error {
 			defer release()
+			// The user cache can have advanced after the initial pending snapshot but before this claim.
+			current, err := core.PendingLeaves(ctx)
+			if err != nil {
+				return err
+			}
+			for _, fresh := range current {
+				if fresh.User == leaf.User && fresh.CachedVersion > leaf.CachedVersion {
+					leaf.CachedVersion = fresh.CachedVersion
+				}
+			}
 			history, head, err := musicDeviceListHistory(ctx, calls, leaf.User, leaf.CachedVersion)
 			if err != nil {
 				return err

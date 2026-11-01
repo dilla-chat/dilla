@@ -118,3 +118,5 @@ func (s *Session) Resume() error {
 	}
 	return s.provider.Resume()
 }
+
+func (s *Session) Paused() bool { return s.provider.Paused() }

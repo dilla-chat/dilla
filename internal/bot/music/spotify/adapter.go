@@ -232,27 +232,29 @@ func safePlaybackError(err error) error {
 }
 
 type Playback struct {
-	ctx          context.Context
-	cmd          *exec.Cmd
-	stdin        io.WriteCloser
-	stdout       io.ReadCloser
-	stderr       io.ReadCloser
-	frames       chan []byte
-	statuses     chan Status
-	readErr      chan error
-	done         chan struct{}
-	mu           sync.Mutex
-	stopOnce     sync.Once
-	stopErr      error
-	waitErr      error
-	pending      []byte
-	frame        []byte
-	lastPCM      atomic.Int64
-	paused       atomic.Bool
-	explicitStop atomic.Bool
-	pipeReaders  sync.WaitGroup
-	discard      chan struct{}
-	discardOnce  sync.Once
+	ctx           context.Context
+	cmd           *exec.Cmd
+	stdin         io.WriteCloser
+	stdout        io.ReadCloser
+	stderr        io.ReadCloser
+	frames        chan []byte
+	statuses      chan Status
+	readErr       chan error
+	done          chan struct{}
+	mu            sync.Mutex
+	stopOnce      sync.Once
+	stopErr       error
+	waitErr       error
+	pending       []byte
+	frame         []byte
+	lastPCM       atomic.Int64
+	paused        atomic.Bool
+	locallyPaused atomic.Bool
+	sourceEnded   atomic.Bool
+	explicitStop  atomic.Bool
+	pipeReaders   sync.WaitGroup
+	discard       chan struct{}
+	discardOnce   sync.Once
 }
 
 // PCMFormat describes the helper output, after its 44.1-to-48 kHz conversion.
@@ -308,11 +310,7 @@ func (p *Playback) startPCMWatchdog() {
 			case <-p.done:
 				return
 			case now := <-ticker.C:
-				if p.paused.Load() {
-					p.lastPCM.Store(now.UnixNano())
-					continue
-				}
-				if now.Sub(time.Unix(0, p.lastPCM.Load())) > pcmIdleTimeout {
+				if p.pcmStalled(now) {
 					select {
 					case p.readErr <- ErrPlaybackFailed:
 					default:
@@ -350,6 +348,7 @@ func (p *Playback) discardOutput() {
 }
 
 func (p *Playback) readPCM(r io.Reader) {
+	defer p.sourceEnded.Store(true)
 	defer p.pipeReaders.Done()
 	defer close(p.frames)
 	for {
@@ -389,6 +388,7 @@ func (p *Playback) readPCM(r io.Reader) {
 	}
 }
 func (p *Playback) readStatuses(r io.Reader) {
+	defer p.sourceEnded.Store(true)
 	defer p.pipeReaders.Done()
 	defer close(p.statuses)
 	for {
@@ -624,4 +624,32 @@ func validTrackSource(source string) bool {
 		}
 	}
 	return true
+}
+
+// SetPaused marks local back-pressure without sending a helper control or consuming PCM.
+func (p *Playback) SetPaused(paused bool) {
+	if paused {
+		p.locallyPaused.Store(true)
+	} else {
+		p.lastPCM.Store(time.Now().UnixNano())
+		p.locallyPaused.Store(false)
+	}
+}
+func (p *Playback) SourceGone() bool {
+	if p.sourceEnded.Load() || len(p.readErr) > 0 {
+		return true
+	}
+	select {
+	case <-p.done:
+		return true
+	default:
+		return false
+	}
+}
+func (p *Playback) pcmStalled(now time.Time) bool {
+	if p.paused.Load() || p.locallyPaused.Load() {
+		p.lastPCM.Store(now.UnixNano())
+		return false
+	}
+	return now.Sub(time.Unix(0, p.lastPCM.Load())) > pcmIdleTimeout
 }

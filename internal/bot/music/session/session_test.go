@@ -549,3 +549,38 @@ func TestPublishedStageIncludesJoinBranch(t *testing.T) {
 		t.Fatalf("missing published branch: %s", logs.String())
 	}
 }
+
+type locallyPausedPCM struct {
+	healthPCM
+	paused bool
+}
+
+func (p *locallyPausedPCM) SetPaused(v bool) { p.paused = v }
+
+type locallyPausedStart struct{ p *locallyPausedPCM }
+
+func (p locallyPausedStart) Start(context.Context, string) (io.ReadCloser, error) { return p.p, nil }
+func TestSessionPropagatesLocalSourcePauseWithoutHelperControls(t *testing.T) {
+	lease := &leaseStub{}
+	enc := &encoderStub{done: make(chan struct{})}
+	pub := &pubStub{done: make(chan struct{})}
+	pcm := &locallyPausedPCM{}
+	o := options(&pcmStart{lease: lease}, enc, pub, lease)
+	o.Call.GroupID = o.Group
+	o.PCM = locallyPausedStart{pcm}
+	s, err := Start(t.Context(), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	s.Pause()
+	if !pcm.paused {
+		t.Fatal("source watchdog did not learn about pause")
+	}
+	if err = s.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	if pcm.paused {
+		t.Fatal("source watchdog stayed paused")
+	}
+}

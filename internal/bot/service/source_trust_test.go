@@ -206,3 +206,41 @@ func TestTrustPhaseCauseClassIsBounded(t *testing.T) {
 		}
 	}
 }
+
+type interveningTrustNative struct {
+	duplicatePendingTrustNative
+	claimed bool
+}
+
+func (n *interveningTrustNative) TryClaimTrust(id.ID) (func(), bool) {
+	n.claimed = true
+	return func() {}, true
+}
+func (n *interveningTrustNative) PendingLeaves(context.Context) ([]native.GroupPendingLeaf, error) {
+	leaf := n.leaves[0]
+	if n.claimed {
+		leaf.CachedVersion = 2
+	}
+	return []native.GroupPendingLeaf{leaf}, nil
+}
+func (n *interveningTrustNative) TrustSender(_ context.Context, _ id.ID, _ uint64, _ id.ID, history, _ []byte, _ uint64) (native.GroupTrustVerdict, error) {
+	var rows [][]any
+	if cborx.Unmarshal(history, &rows) != nil || len(rows) != 1 || rows[0][0] != uint64(2) {
+		return native.GroupTrustVerdict{}, errors.New("stale cached version")
+	}
+	n.calls++
+	return native.GroupTrustVerdict{}, nil
+}
+func TestIntakeRereadsCachedAnchorAfterClaim(t *testing.T) {
+	user := sid(40)
+	n := &interveningTrustNative{duplicatePendingTrustNative: duplicatePendingTrustNative{binding: native.Binding{Instance: sid(41), Community: sid(42), Installation: sid(43)}, leaves: []native.GroupPendingLeaf{{Group: sid(44), User: user, Leaf: 1, CachedVersion: 1}}}}
+	trust, err := newSourceTrust(n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := outerDeviceList(t, 2, []byte("two"))
+	session := &fakeDeviceListSession{heads: [][]byte{head, head}, rows: map[uint64][][]any{0: {{uint64(1), []byte("one"), make([]byte, 64), make([]byte, 32)}, {uint64(2), []byte("two"), make([]byte, 64), make([]byte, 32)}}}}
+	if _, err = trust.refreshPendingLeaves(t.Context(), session); err != nil || n.calls != 1 {
+		t.Fatalf("stale pre-claim intake anchor retained: err=%v trusts=%d", err, n.calls)
+	}
+}

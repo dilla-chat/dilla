@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -22,13 +23,15 @@ import (
 
 type sharedMusicTrustCore struct {
 	musicJoinCoreFake
-	mu         sync.Mutex
-	binding    native.Binding
-	user       id.ID
-	cached     uint64
-	active     bool
-	pendingErr error
-	trusts     int
+	mu             sync.Mutex
+	binding        native.Binding
+	user           id.ID
+	cached         uint64
+	active         bool
+	pendingErr     error
+	advanceOnClaim bool
+	busyClaims     int
+	trusts         int
 }
 
 func (c *sharedMusicTrustCore) Binding() native.Binding { return c.binding }
@@ -40,6 +43,14 @@ func (c *sharedMusicTrustCore) PendingLeaves(context.Context) ([]native.GroupPen
 func (c *sharedMusicTrustCore) TryClaimTrust(user id.ID) (func(), bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.busyClaims > 0 {
+		c.busyClaims--
+		return nil, false
+	}
+	if c.advanceOnClaim {
+		c.cached = 2
+		c.advanceOnClaim = false
+	}
 	if c.active || user != c.user {
 		return nil, false
 	}
@@ -79,8 +90,14 @@ func (c *blockedMusicTrustHistory) OwnDeviceList(context.Context, id.ID) ([]byte
 	c.once.Do(func() { close(c.entered); <-c.release })
 	return c.head, nil
 }
-func (c *blockedMusicTrustHistory) DeviceListHistory(context.Context, id.ID, uint64) ([][]any, error) {
-	return c.rows, nil
+func (c *blockedMusicTrustHistory) DeviceListHistory(_ context.Context, _ id.ID, after uint64) ([][]any, error) {
+	var rows [][]any
+	for _, row := range c.rows {
+		if row[0].(uint64) > after {
+			rows = append(rows, row)
+		}
+	}
+	return rows, nil
 }
 func TestMusicJoinTrustAndIntakeTrustNeverFailEachOther(t *testing.T) {
 	core := &sharedMusicTrustCore{musicJoinCoreFake: musicJoinCoreFake{group: id.New()}, binding: native.Binding{Instance: id.New(), Community: id.New(), Installation: id.New()}, user: id.New(), cached: 1}
@@ -170,4 +187,65 @@ func TestMusicJoinTrustReleasesClaimOnHistoryError(t *testing.T) {
 		t.Fatal("history failure leaked trust claim")
 	}
 	release()
+}
+
+func TestMusicJoinRetriesIntakeOwnedTrustClaim(t *testing.T) {
+	calls := &claimRetryMusicCalls{musicJoinCallsFake: musicJoinCallsFake{channel: id.New(), group: id.New()}}
+	core := &sharedMusicTrustCore{musicJoinCoreFake: musicJoinCoreFake{group: calls.group}, user: id.New(), cached: 1, busyClaims: 1}
+	var delays []time.Duration
+	err := retryMusicCallGroupJoin(t.Context(), calls, core, id.New(), id.New(), calls.channel, 1, func(_ context.Context, d time.Duration) error { delays = append(delays, d); return nil })
+	if err != nil || len(delays) != 1 || delays[0] != 250*time.Millisecond || core.trusts != 1 {
+		t.Fatalf("busy join did not retry: err=%v delays=%v trusts=%d", err, delays, core.trusts)
+	}
+}
+
+type claimRetryMusicCalls struct{ musicJoinCallsFake }
+
+func (c *claimRetryMusicCalls) OwnDeviceList(context.Context, id.ID) ([]byte, error) {
+	return cborx.Marshal([]any{uint64(1), []byte("one"), make([]byte, 64), make([]byte, 32)})
+}
+func (c *claimRetryMusicCalls) DeviceListHistory(context.Context, id.ID, uint64) ([][]any, error) {
+	return [][]any{{uint64(1), []byte("one"), make([]byte, 64), make([]byte, 32)}}, nil
+}
+func TestMusicJoinRereadsCachedAnchorAfterClaim(t *testing.T) {
+	group, user := id.New(), id.New()
+	core := &sharedMusicTrustCore{musicJoinCoreFake: musicJoinCoreFake{group: group}, user: user, cached: 1, advanceOnClaim: true}
+	rows := [][]any{{uint64(1), []byte("one"), make([]byte, 64), make([]byte, 32)}, {uint64(2), []byte("two"), make([]byte, 64), make([]byte, 32)}}
+	head, err := cborx.Marshal(rows[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	close(release)
+	calls := &blockedMusicTrustHistory{entered: make(chan struct{}), release: release, head: head, rows: rows}
+	if err = refreshMusicCallJoinLeaves(t.Context(), calls, core, group); err != nil || core.trusts != 1 {
+		t.Fatalf("stale pre-claim anchor retained: err=%v trusts=%d", err, core.trusts)
+	}
+}
+
+func TestMusicJoinBusyRetryIsBoundedAndCancelable(t *testing.T) {
+	for _, cancelOnWait := range []bool{false, true} {
+		t.Run(fmt.Sprint(cancelOnWait), func(t *testing.T) {
+			calls := &claimRetryMusicCalls{musicJoinCallsFake: musicJoinCallsFake{channel: id.New(), group: id.New()}}
+			core := &sharedMusicTrustCore{musicJoinCoreFake: musicJoinCoreFake{group: calls.group}, user: id.New(), cached: 1, busyClaims: 100}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			waits := 0
+			err := retryMusicCallGroupJoin(ctx, calls, core, id.New(), id.New(), calls.channel, 1, func(context.Context, time.Duration) error {
+				waits++
+				if cancelOnWait {
+					cancel()
+					return ctx.Err()
+				}
+				return nil
+			})
+			if cancelOnWait {
+				if !errors.Is(err, context.Canceled) || waits != 1 {
+					t.Fatalf("cancellation ignored: err=%v waits=%d", err, waits)
+				}
+			} else if !errors.Is(err, service.ErrSourceTrustBusy) || waits != 3 || core.joins != 4 {
+				t.Fatalf("busy retry unbounded: err=%v waits=%d attempts=%d", err, waits, core.joins)
+			}
+		})
+	}
 }

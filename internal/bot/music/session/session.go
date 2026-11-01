@@ -420,6 +420,9 @@ func (s *Session) Pause() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.paused = true
+	if p, ok := s.pcm.(interface{ SetPaused(bool) }); ok {
+		p.SetPaused(true)
+	}
 	if p, ok := s.encoder.(music.Pausable); ok {
 		p.Pause()
 	}
@@ -454,8 +457,17 @@ func (s *Session) Resume() error {
 			return err
 		}
 	}
+	if p, ok := s.pcm.(interface{ SetPaused(bool) }); ok {
+		p.SetPaused(false)
+	}
 	s.paused = false
 	return nil
 }
 
 var _ music.Pausable = (*Session)(nil)
+
+func (p *ownedPCM) SetPaused(paused bool) {
+	if source, ok := p.ReadCloser.(interface{ SetPaused(bool) }); ok {
+		source.SetPaused(paused)
+	}
+}

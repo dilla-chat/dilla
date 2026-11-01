@@ -327,3 +327,34 @@ func TestHelperPlaybackFailureClassifiesOnlyTrackSpecificStatus(t *testing.T) {
 		})
 	}
 }
+
+func TestLocallyPausedSpotifyDoesNotTripPCMWatchdog(t *testing.T) {
+	p := &Playback{done: make(chan struct{})}
+	now := time.Now()
+	p.lastPCM.Store(now.UnixNano())
+	p.SetPaused(true)
+	if p.pcmStalled(now.Add(11 * time.Second)) {
+		t.Fatal("backpressured paused helper was classified as stalled")
+	}
+	p.SetPaused(false)
+	resumedAt := time.Unix(0, p.lastPCM.Load())
+	if p.pcmStalled(resumedAt.Add(9 * time.Second)) {
+		t.Fatal("resume did not reset PCM deadline")
+	}
+	if !p.pcmStalled(resumedAt.Add(11 * time.Second)) {
+		t.Fatal("unpaused stalled helper was not detected")
+	}
+}
+func TestSpotifySourceGoneDoesNotConsumePCM(t *testing.T) {
+	p := &Playback{done: make(chan struct{}), statuses: make(chan Status, 4), readErr: make(chan error, 1), frames: make(chan []byte, 1)}
+	p.frames <- []byte("queued")
+	p.SetPaused(true)
+	if p.SourceGone() {
+		t.Fatal("live source classified as gone")
+	}
+	p.pipeReaders.Add(1)
+	p.readStatuses(strings.NewReader(""))
+	if !p.SourceGone() || len(p.frames) != 1 {
+		t.Fatal("helper exit not detected independently of queued PCM")
+	}
+}
