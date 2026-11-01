@@ -62,7 +62,7 @@ func (s *Session) PostBotMessage(ctx context.Context, community, group id.ID, up
 	if err != nil || len(body) > MaxBody {
 		return botprotocol.SendReceipt{}, ErrInvalidConfig
 	}
-	raw, _, err := s.c.do(ctx, s.token, http.MethodPost, "groups/"+groupPath+"/bot/messages", nil, body, MaxBody, true)
+	raw, _, err := s.do(ctx, http.MethodPost, "groups/"+groupPath+"/bot/messages", nil, body, MaxBody, true)
 	if err != nil {
 		return botprotocol.SendReceipt{}, err
 	}
@@ -94,7 +94,7 @@ func (s *Session) BotMessageReceipt(ctx context.Context, community, operation, a
 		return botprotocol.SendReceipt{}, err
 	}
 	query := url.Values{"attempt": []string{attemptPath}}
-	raw, status, err := s.c.do(ctx, s.token, http.MethodGet, "communities/"+communityPath+"/bot/receipts/"+opPath, query, nil, MaxSmallBody, false)
+	raw, status, err := s.do(ctx, http.MethodGet, "communities/"+communityPath+"/bot/receipts/"+opPath, query, nil, MaxSmallBody, false)
 	if err != nil {
 		return botprotocol.SendReceipt{}, sendReceiptError(err, status)
 	}
@@ -125,7 +125,7 @@ func (s *Session) ResolveBotMessage(ctx context.Context, community, operation id
 	if err != nil {
 		return botprotocol.SendReceipt{}, ErrInvalidConfig
 	}
-	raw, _, err := s.c.do(ctx, s.token, http.MethodPost, "communities/"+communityPath+"/bot/receipts/"+opPath+"/resolve", nil, body, MaxSmallBody, true)
+	raw, _, err := s.do(ctx, http.MethodPost, "communities/"+communityPath+"/bot/receipts/"+opPath+"/resolve", nil, body, MaxSmallBody, true)
 	if err != nil {
 		return botprotocol.SendReceipt{}, err
 	}

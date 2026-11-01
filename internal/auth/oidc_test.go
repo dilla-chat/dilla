@@ -2,8 +2,11 @@ package auth_test
 
 import (
 	"context"
+	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -142,6 +145,32 @@ func fakeIDPCounted(t *testing.T) (*httptest.Server, *idpHits) {
 			idToken = sign(t, "https://evil.example", "dilla", "nonce")
 		case "code-wrong-nonce":
 			idToken = sign(t, srv.URL, "dilla", "not-the-nonce")
+		case "code-private-jwk", "code-oversized-jwk":
+			parts := strings.Split(sign(t, srv.URL, "dilla", "nonce"), ".")
+			header := map[string]any{"alg": "RS256", "kid": "test", "typ": "JWT"}
+			jwk := map[string]string{"kty": "RSA", "n": base64.RawURLEncoding.EncodeToString(key.N.Bytes()), "e": "AQAB"}
+			if r.Form.Get("code") == "code-private-jwk" {
+				prime := make([]byte, 2048)
+				prime[0], prime[len(prime)-1] = 0x80, 1
+				jwk["p"] = base64.RawURLEncoding.EncodeToString(prime)
+			} else {
+				modulus := make([]byte, 513) // 4097 bits: just beyond the safe parser bound.
+				modulus[0] = 1
+				jwk["n"] = base64.RawURLEncoding.EncodeToString(modulus)
+			}
+			header["jwk"] = jwk
+			rawHeader, err := json.Marshal(header)
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := base64.RawURLEncoding.EncodeToString(rawHeader) + "." + parts[1]
+			digest := sha256.Sum256([]byte(input))
+			// Sign directly: the fixed JOSE signer correctly refuses these unsafe headers too.
+			sig, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, digest[:])
+			if err != nil {
+				t.Fatal(err)
+			}
+			idToken = input + "." + base64.RawURLEncoding.EncodeToString(sig)
 		default:
 			http.Error(w, `{"error":"invalid_grant"}`, http.StatusBadRequest)
 			return
@@ -239,6 +268,27 @@ func TestIssuerAndAudienceMismatchesAreRefused(t *testing.T) {
 	}
 	if issuer != idp.URL || subject != "sub-123" || email != "jonas@example" {
 		t.Fatalf("claims = %q/%q/%q", issuer, subject, email)
+	}
+}
+
+func TestOIDCRejectsUnsafeEmbeddedRSAKeys(t *testing.T) {
+	idp := fakeIDP(t)
+	c := config.Default().Auth.OIDC
+	c.Enabled, c.Issuer, c.ClientID = true, idp.URL, "dilla"
+	c.RedirectURL = "https://chat.example/v1/auth/oidc/callback"
+	o := auth.NewOIDC(c, "secret", clock.System())
+	for _, tc := range []struct{ code, reason string }{
+		{"code-private-jwk", "private parameters"},
+		{"code-oversized-jwk", "modulus too large"},
+	} {
+		t.Run(tc.code, func(t *testing.T) {
+			if _, _, _, err := o.Exchange(context.Background(), tc.code, "verifier", "nonce"); err == nil || !strings.Contains(err.Error(), tc.reason) {
+				t.Fatalf("unsafe embedded RSA key must be refused by the parser (%s), got %v", tc.reason, err)
+			}
+		})
+	}
+	if _, subject, _, err := o.Exchange(context.Background(), "code-good", "verifier", "nonce"); err != nil || subject != "sub-123" {
+		t.Fatalf("ordinary signed login after refusals: subject=%q, error=%v", subject, err)
 	}
 }
 

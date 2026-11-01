@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jonasthim/dilla/internal/bot/client"
 	musicruntime "github.com/jonasthim/dilla/internal/bot/music/runtime"
 )
 
@@ -97,7 +98,7 @@ func validPhase(v string) bool {
 }
 func validCode(v string) bool {
 	switch v {
-	case "invalid_request", "credential_unavailable", "provider_unavailable", "cancelled", "internal":
+	case "invalid_request", "credential_unavailable", "provider_unavailable", "provider_connect", "provider_connect_timeout", "build_configuration", "playback_timeout", "cancelled", "internal":
 		return true
 	}
 	return false
@@ -107,6 +108,7 @@ func (a *Adapter) Start(ctx context.Context, source string) (*Playback, error) {
 	if a == nil || ctx == nil || a.config.Credential == nil || !validTrackSource(source) {
 		return nil, ErrInvalidConfig
 	}
+	ctx = client.WithoutCooperativeStop(client.WithBackground(ctx))
 	credentialInfo, err := a.config.Credential.Stat()
 	if err != nil || !credentialInfo.Mode().IsRegular() || credentialInfo.Size() < 1 || credentialInfo.Size() > maxCredential {
 		return nil, ErrInvalidConfig
@@ -429,7 +431,7 @@ func (p *Playback) readStatuses(r io.Reader) {
 		}
 		if !st.OK {
 			select {
-			case p.readErr <- fmt.Errorf("%w: %s/%s", ErrPlaybackFailed, st.Phase, *st.Code):
+			case p.readErr <- &helperFailure{phase: st.Phase, code: *st.Code}:
 			default:
 			}
 			return

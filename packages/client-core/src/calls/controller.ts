@@ -26,7 +26,7 @@ export const WAIT_LIST_MS = 10_000;
 /** web3.7 3a-client: a join waits at most this long for the boot sweep of leftover call groups (calls/sweep.ts). */
 export const SWEEP_JOIN_WAIT_MS = 5000;
 
-export type CallRoutes = VoiceRoutes & JoinRoutes & Pick<Routes, 'shareCall' | 'unshareCall' | 'postCallStats' | 'postCallRtt' | 'postProposal'
+export type CallRoutes = VoiceRoutes & JoinRoutes & Pick<Routes, 'shareCall' | 'unshareCall' | 'postCallRtt' | 'postProposal'
   | 'declineCall' | 'postCommit' | 'endCallIfAlone'>;
 
 /** What the call controller reads from, and publishes through, the worker's composition root. */
@@ -64,6 +64,8 @@ export interface CallDeps {
   /** A call of this id begins or ends here: what the worker kept for it (the last voice_self) goes (review M3). */
   callEnded(callHex: string): void;
   track(job: Promise<unknown>): void;
+  /** Disposable WSS sample; unavailable/congested transports drop it without HTTP fallback. */
+  sendStats?(callId: Id, report: CallStats): void;
 }
 
 /** A refusal of the call controller's own; the worker's error mapping reads its code. */
@@ -706,11 +708,10 @@ export class CallController {
     return { token: started.token, iceServers: started.iceServers };
   }
 
-  async stats(report: CallStats): Promise<null> {
+  stats(report: CallStats): Promise<null> {
     const live = this.requireLive();
-    try { await this.deps.routes.postCallStats(live.callId, report); }
-    catch (e) { if (!(e instanceof DillaHttpError && e.status === 429)) throw e; }
-    return null;
+    this.deps.sendStats?.(live.callId, report);
+    return Promise.resolve(null);
   }
 
   /** Signal task 8c: this device's RTT (ms) or a clear (null), for the stage's per-person ping. True once the instance stored

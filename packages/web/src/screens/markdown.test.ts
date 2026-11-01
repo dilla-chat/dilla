@@ -201,14 +201,33 @@ describe('parseMarkdown', () => {
       'links with parentheses': n => 'https://a.b/(x)) '.repeat(n / 17),
       'links in emphasis': n => '*http://a.b/c* '.repeat(n / 15),
     };
+    /**
+     * One 32k parse against eight 4k parses, timed in turns, the best of seven of each. Both sides parse the same number of
+     * characters over about the same time, so a busy runner slows both alike. The old form divided one 32k parse by one 4k
+     * parse floored at 1 ms: a 4k parse takes under 1 ms, so the ratio was the 32k time in ms and the check was "32k in
+     * under 16 ms", which a loaded CI runner missed on a linear parse (2026-10-30, unclosed fences: 18.9).
+     */
+    const growth = (small: string, large: string): number => {
+      parseTreeUncached(small); parseTreeUncached(large);
+      let eight = Infinity;
+      let one = Infinity;
+      for (let k = 0; k < 7; k++) {
+        let t0 = performance.now();
+        for (let i = 0; i < 8; i++) parseTreeUncached(small);
+        eight = Math.min(eight, performance.now() - t0);
+        t0 = performance.now();
+        parseTreeUncached(large);
+        one = Math.min(one, performance.now() - t0);
+      }
+      return one / Math.max(eight, 0.1);
+    };
     for (const [name, make] of Object.entries(cases)) {
-      it(`${name}: grows less than 16-fold from 4k to 32k characters, 4000 in under 25 ms, 50000 in under 250 ms`, () => {
-        const small = best(make(4000));
-        const large = best(make(32000));
-        expect(small).toBeLessThan(25);
+      it(`${name}: grows less than 24-fold from 4k to 32k characters, 4000 in under 25 ms, 50000 in under 250 ms`, () => {
+        expect(best(make(4000))).toBeLessThan(25);
         expect(best(make(50000))).toBeLessThan(250);
-        // Eight times the input must cost less than sixteen times the time (linear is 8). A 1 ms floor keeps timer noise out of the ratio.
-        expect(large / Math.max(small, 1)).toBeLessThan(16);
+        // Eight times the input must cost less than 24 times the time: one 32k parse under three times eight 4k parses
+        // (linear is 1, measured 1.1 to 1.5 for these cases; quadratic is 8).
+        expect(growth(make(4000), make(32000))).toBeLessThan(3);
       });
     }
     it('remembers the parse of a body, so a re-render does not parse again', () => {

@@ -69,6 +69,7 @@ export const settingsWorkspace = {
   'workspace.providers.missing': 'Missing requirements',
   'workspace.providers.loading': 'Checking provider status…',
   'workspace.providers.unavailable': 'Provider status is unavailable. The bot may be offline or may need an update.',
+  'workspace.providers.partial': 'The bot answered, but has not reported provider status yet. Check again.',
   'workspace.providers.refresh': 'Refresh provider status',
   'workspace.providers.stale': 'This observation is out of date. Refresh for current status.',
   'workspace.providers.observed': 'Observed {time}',

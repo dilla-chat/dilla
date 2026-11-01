@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"math"
 	"sync"
 
@@ -15,18 +16,32 @@ import (
 )
 
 const (
-	interactionStatusForbidden   = 2
-	interactionStatusExpired     = 3
-	interactionStatusConflict    = 4
-	interactionStatusUnavailable = 5
-	interactionStatusBusy        = 6
-	interactionStatusInternal    = 9
-	interactionReplayLimit       = 4096
+	interactionStatusInvalid         = 1
+	interactionStatusForbidden       = 2
+	interactionStatusExpired         = 3
+	interactionStatusConflict        = 4
+	interactionStatusUnavailable     = 5
+	interactionStatusBusy            = 6
+	interactionStatusNotFound        = 7
+	interactionStatusUpgradeRequired = 8
+	interactionStatusInternal        = 9
+	interactionReplayLimit           = 4096
 )
 
 var ErrInteractionRequestIDConflict = errors.New("bot interaction request id reused with different input")
 var ErrInteractionDispatcherBusy = errors.New("bot interaction dispatcher replay cache is full")
+
+// ErrInteractionReadReplayNotAuthorized is a definitive refusal of a recomputed read (Jonas
+// 2026-10-30): status 1 invalid, 2 forbidden (the actor lacks the permission or is no longer a
+// member), 3 expired, 7 not_found or 8 upgrade_required. Replaying the same immutable request
+// would answer the same, so the event handler acknowledges the event as undeliverable.
 var ErrInteractionReadReplayNotAuthorized = errors.New("interaction read replay is no longer authorized")
+
+// ErrInteractionReadReplayPending is a refusal that may clear on retry: 4 conflict,
+// 5 unavailable, 6 busy, 9 internal (including a handler error, which Dispatch answers as
+// internal), or a response that does not match the request. The event stays pending; the
+// poller's age limit (InteractionEventMaxPendingAge for interaction groups) still bounds how long.
+var ErrInteractionReadReplayPending = errors.New("interaction read replay is not currently confirmed")
 
 // InteractionNative is the authenticated native event and group-inspection
 // boundary used by the dispatcher.
@@ -321,9 +336,14 @@ func (d *InteractionDispatcher) inspectInteractionEventGroup(ctx context.Context
 }
 
 // ReauthorizeReadReplay reruns a registered read handler and discards its
-// response. It is used before resuming a durable response whose send has not
-// yet been accepted, so revoked or expired reads remain pending without
-// changing the response already bound to that event.
+// response, leaving the response already bound to the event unchanged. It is
+// used before resuming a durable response whose send has not yet been accepted.
+// It returns nil when the read is still authorized (status 0), and
+// ErrInteractionReadReplayNotAuthorized only for a deterministic refusal (status
+// 1 invalid, 2 forbidden, 3 expired, 7 not_found, 8 upgrade_required); the event
+// handler then acknowledges the event as undeliverable. Status 4 conflict,
+// 5 unavailable, 6 busy, 9 internal, a mismatched response, a Dispatch error and
+// a cancelled context return an error that keeps the event pending.
 func (d *InteractionDispatcher) ReauthorizeReadReplay(ctx context.Context, event native.GroupEvent) error {
 	if d == nil || event.Body == nil {
 		return protocol.ErrInvalid
@@ -338,18 +358,36 @@ func (d *InteractionDispatcher) ReauthorizeReadReplay(ctx context.Context, event
 	if !ok || !handler.RecomputeOnReplay {
 		return nil
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	body, err := d.Dispatch(ctx, event)
 	if err != nil {
+		return err
+	}
+	// A handler that observed cancellation may have answered with any status; never let that
+	// answer become a definitive denial.
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	response, err := protocol.DecodeResponse(body)
 	if err != nil {
 		return err
 	}
-	if response.RequestID != request.RequestID || response.CommunityID != d.binding.Community || response.Status != 0 {
-		return ErrInteractionReadReplayNotAuthorized
+	if response.RequestID != request.RequestID || response.CommunityID != d.binding.Community {
+		return fmt.Errorf("%w: response does not match the request", ErrInteractionReadReplayPending)
 	}
-	return nil
+	switch response.Status {
+	case 0:
+		return nil
+	case interactionStatusInvalid, interactionStatusForbidden, interactionStatusExpired, interactionStatusNotFound, interactionStatusUpgradeRequired:
+		// Dispatch itself never answers a read with status 3: ValidateRequestContext checks
+		// expiry only for mutating operations. A read handler may still return it, and an
+		// expired read can never become valid again, so the rule is kept as harmless.
+		return ErrInteractionReadReplayNotAuthorized
+	default:
+		return fmt.Errorf("%w: status %d", ErrInteractionReadReplayPending, response.Status)
+	}
 }
 
 func (d *InteractionDispatcher) begin(ctx context.Context, key interactionReplayKey, fingerprint [32]byte) (*interactionReplay, bool, error) {

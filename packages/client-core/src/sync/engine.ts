@@ -76,6 +76,7 @@ export class SyncEngine implements SyncInternals {
   readonly reframedOnce = new Set<string>();
   readonly trustRetried = new Map<string, 'pending' | 'done'>();
   readonly resyncTried = new Set<string>();
+  readonly recoveryGeneration = new Map<string, bigint>();
   readonly quiet = new Set<string>();
   readonly unexpectedReported = new Set<string>();
   /** Groups whose last membership report was not-member (WB fix wave): a confirmed catch-up withdraws it. */
@@ -500,9 +501,14 @@ export class SyncEngine implements SyncInternals {
     return this.queues.run(`c:${toHex(ch.channelId)}`, async () => {
       const opened = await openChannelFlow(this, ch);
       const group = this.row(opened.groupId);
-      if (opened.state === 2 && group?.kind === 0 && group.communityId !== null) {
+      if (opened.state === 2 && group?.kind === 0 && group.communityId !== null && !this.isStopped) {
+        let observedGeneration = 0n;
         try {
-          await this.queues.run(key(opened.groupId), () => recoverModerationRemovals(this.deps.core, this.deps.routes, opened.groupId, this.deps.onError));
+          await this.queues.run(key(opened.groupId), () => {
+            if (this.isStopped) throw new SyncError('E_SYNC_STOPPED');
+            observedGeneration = this.recoveryGeneration.get(toHex(opened.groupId)) ?? 0n;
+            return recoverModerationRemovals(this.deps.core, this.deps.routes, opened.groupId, this.deps.onError);
+          });
         } catch (e) {
           // A device can rejoin the community before its background catch-up has noticed the
           // Remove. The group row is still state 2, but the member-only removal feed refuses it
@@ -510,12 +516,20 @@ export class SyncEngine implements SyncInternals {
           // then read the feed again before allowing the caller to publish the timeline.
           if (!this.membershipLost(opened.groupId, e)) throw e;
           const resynced = await this.queues.run(key(opened.groupId), async () => {
+            if (this.isStopped) throw new SyncError('E_SYNC_STOPPED');
+            // A proposal/catch-up already on this lane may have replaced our
+            // leaf after the failed read. Its 404 then describes an old local
+            // generation; retry the read without another cursor-moving join.
+            if ((this.recoveryGeneration.get(toHex(opened.groupId)) ?? 0n) !== observedGeneration) return true;
             const joined = await resyncGroup(this, opened.groupId, true);
             if (joined) this.healBlocked.delete(toHex(opened.groupId));
             return joined;
           });
           if (!resynced) throw e;
-          await this.queues.run(key(opened.groupId), () => recoverModerationRemovals(this.deps.core, this.deps.routes, opened.groupId, this.deps.onError));
+          await this.queues.run(key(opened.groupId), () => {
+            if (this.isStopped) throw new SyncError('E_SYNC_STOPPED');
+            return recoverModerationRemovals(this.deps.core, this.deps.routes, opened.groupId, this.deps.onError);
+          });
         }
       }
       return opened;

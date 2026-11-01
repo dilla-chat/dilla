@@ -253,7 +253,7 @@ export function MusicPlayer({ view, variant }: { view: MusicPlayerView; variant:
   const [toast, setToast] = useState<{ text: string; id: number } | undefined>(undefined);
   const run = (action: () => unknown) => () => {
     void Promise.resolve().then(action).catch((error: unknown) => {
-      setToast(prev => ({ text: error instanceof Error ? error.message : t('music.blocked.dj'), id: (prev?.id ?? 0) + 1 }));
+      setToast(prev => ({ text: error instanceof Error && 'code' in error && error.code === 'operation-unavailable' ? t('music.error.operation-unavailable') : error instanceof Error && 'code' in error && error.code === 'unavailable' ? t('music.error.unavailable') : error instanceof Error ? error.message : t('music.blocked.dj'), id: (prev?.id ?? 0) + 1 }));
     });
   };
   return <NowPlaying {...view} variant={variant} {...(toast === undefined ? {} : { toast })}

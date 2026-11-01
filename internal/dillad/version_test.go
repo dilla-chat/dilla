@@ -54,12 +54,12 @@ func identifyWith(t *testing.T, ctx context.Context, c *websocket.Conn, bearer s
 	}
 }
 
-func TestTheGatewayOffersWireFourThreeAndTwo(t *testing.T) {
+func TestTheGatewayOffersWireFiveFourThreeAndTwo(t *testing.T) {
 	_, ts, _ := newGreetedServer(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_, hello := dialHello(t, ctx, ts.URL)
-	for i, want := range [][]uint64{{4, 3, 2}, {1}, {1}} {
+	for i, want := range [][]uint64{{5, 4, 3, 2}, {1}, {1}} {
 		names := []string{"wire_versions", "e2ee_versions", "media_versions"}
 		if got := uints(t, hello[i], names[i]); !slices.Equal(got, want) {
 			t.Fatalf("hello %s = %v, want %v", names[i], got, want)
@@ -274,7 +274,7 @@ func TestTheInstanceDocumentAdvertisesWireFourThreeAndTwo(t *testing.T) {
 	if len(doc) != 11 {
 		t.Fatalf("the instance document has %d elements, want 11", len(doc))
 	}
-	if got := uints(t, doc[0], "wire_versions"); !slices.Equal(got, []uint64{4, 3, 2}) {
-		t.Fatalf("wire_versions = %v, want [4 3 2], the hello's list", got)
+	if got := uints(t, doc[0], "wire_versions"); !slices.Equal(got, []uint64{5, 4, 3, 2}) {
+		t.Fatalf("wire_versions = %v, want [5 4 3 2], the hello's list", got)
 	}
 }

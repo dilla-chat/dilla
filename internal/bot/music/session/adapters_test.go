@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/jonasthim/dilla/internal/bot/music/encode"
@@ -51,7 +52,7 @@ type youtubePCMStub struct {
 func (s *youtubePCMStub) Start(_ context.Context, input string) (io.ReadCloser, error) {
 	s.input = input
 	s.calls++
-	return io.NopCloser(nilReader{}), nil
+	return io.NopCloser(strings.NewReader("\x00\x01\x02\x03")), nil
 }
 
 func TestYouTubePCMAdaptsCanonicalQueueIDToSandboxURL(t *testing.T) {

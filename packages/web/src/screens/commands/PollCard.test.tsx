@@ -46,7 +46,8 @@ it('retains optimistic pressed state through a 30 second refresh while voting', 
   f.pollVote.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
   const answer = await screen.findByRole('button', { name: /Harbour/ }); await userEvent.click(answer);
   const reads = f.pollGet.mock.calls.length; f.tick();
-  await waitFor(() => expect(f.pollGet).toHaveBeenCalledTimes(reads + 1)); await act(async () => { await Promise.resolve(); });
+  await act(async () => { await Promise.resolve(); });
+  expect(f.pollGet).toHaveBeenCalledTimes(reads);
   expect(answer).toHaveAttribute('aria-disabled', 'true');
   expect(answer).toHaveAttribute('aria-pressed', 'true');
   f.setPoll({ revision: 2n, myChoices: [1] }); release(f.poll);
@@ -90,4 +91,16 @@ it('drops your own withdrawn avatar immediately while keeping other voters until
   await waitFor(() => expect(f.pollVote).toHaveBeenCalledWith(expect.objectContaining({ choices: [] })));
   await waitFor(() => expect(screen.queryByRole('img', { name: 'Ada' })).toBeNull());
   expect(screen.getByRole('img', { name: 'Bea' })).toBeInTheDocument();
+});
+
+
+it('keeps a voter read error across a successful periodic refresh', async () => {
+  const f = fixture({ multi: true, counts: [2n, 2n] });
+  await screen.findByText('Open for 24 hours · pick any · 2 voters');
+  f.setPoll({ revision: 2n }); f.pollVoters.mockRejectedValueOnce(new Error('read failed')); f.tick();
+  await screen.findByText('Could not load voter names.');
+  f.setPoll({ revision: 3n }); const reads = f.pollGet.mock.calls.length; f.tick();
+  await waitFor(() => expect(f.pollGet).toHaveBeenCalledTimes(reads + 1));
+  await act(async () => { await Promise.resolve(); });
+  expect(screen.getByRole('alert')).toHaveTextContent('Could not load voter names.');
 });

@@ -60,8 +60,8 @@ func TestInteractionProofRefusalRetriesAreBounded(t *testing.T) {
 		body     []any
 		attempts int
 	}{
-		{"persistent rate limit", 429, []any{"E_RATE_LIMITED", "", uint64(1)}, 4},
-		{"excessive delay", 429, []any{"E_RATE_LIMITED", "", uint64(5001)}, 1},
+		{"persistent rate limit", 429, []any{"E_RATE_LIMITED", "", uint64(100)}, 0},
+		{"long delay", 429, []any{"E_RATE_LIMITED", "", uint64(5001)}, 1},
 		{"overflow delay", 429, []any{"E_RATE_LIMITED", "", ^uint64(0)}, 1},
 		{"authorization", 403, []any{"E_FORBIDDEN", "", nil}, 1},
 		{"unknown outcome", 503, []any{"E_UNAVAILABLE", "", uint64(1)}, 1},
@@ -77,8 +77,10 @@ func TestInteractionProofRefusalRetriesAreBounded(t *testing.T) {
 				reply(w, tc.status, tc.body)
 			}, 0)
 			s, _ := c.Session("bot-session")
-			_, err := s.IssueBotInteractionAdmission(t.Context(), testID(1), testID(2), testID(3), testID(4), testID(5))
-			if err == nil || calls != tc.attempts {
+			ctx, cancel := context.WithTimeout(t.Context(), 450*time.Millisecond)
+			defer cancel()
+			_, err := s.IssueBotInteractionAdmission(ctx, testID(1), testID(2), testID(3), testID(4), testID(5))
+			if err == nil || tc.attempts > 0 && calls != tc.attempts || tc.attempts == 0 && calls < 4 {
 				t.Fatalf("refusal = %v after %d attempts; want %d", err, calls, tc.attempts)
 			}
 		})

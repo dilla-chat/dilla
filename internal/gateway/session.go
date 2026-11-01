@@ -546,6 +546,7 @@ func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*co
 		return nil, false
 	}
 	c.send(Frame{Op: OpResumed, Payload: p, Replay: true})
+	g.sendAppBuild(c)
 	for _, frame := range out.frames {
 		w.enqueueRaw(frame)
 	}
@@ -747,6 +748,10 @@ func (g *Gateway) readLoop(ctx context.Context, c *conn, s sink) {
 // unsubscribe adjust this connection's group set.
 func (g *Gateway) handle(ctx context.Context, c *conn, in Inbound) {
 	switch in.Op {
+	case OpCallStats:
+		g.handleCallStats(c, in)
+	case OpPresenceActivity:
+		g.handlePresenceActivity(ctx, c, in)
 	case OpTypingSet:
 		g.handleTypingSet(ctx, c, in)
 	case OpVoiceSelf:

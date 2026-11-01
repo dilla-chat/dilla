@@ -38,7 +38,7 @@ func (s *Session) BotActorAuthority(ctx context.Context, community, actor id.ID)
 		return out, false, err
 	}
 	path := "communities/" + cid + "/bot/actors/" + uid + "/authority"
-	raw, status, err := s.c.do(ctx, s.token, http.MethodGet, path, nil, nil, MaxSmallBody, false)
+	raw, status, err := s.do(ctx, http.MethodGet, path, nil, nil, MaxSmallBody, false)
 	if err != nil {
 		var apiErr *APIError
 		if errors.As(err, &apiErr) && status == http.StatusNotFound {

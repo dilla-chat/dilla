@@ -10,10 +10,12 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/helper"
 	"github.com/jonasthim/dilla/internal/bot/protocol"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/prioritygate"
 )
 
 var ErrOutcomeUnknown = helper.ErrOutcomeUnknown
@@ -34,11 +36,13 @@ type transport interface {
 
 type Client struct {
 	mu      sync.Mutex
-	gate    chan struct{}
+	gate    *prioritygate.Gate
 	t       transport
 	binding Binding
 	usable  bool
 	closed  bool
+	sources map[id.ID]bool
+	trust   map[id.ID]bool
 }
 
 // Binding reports the immutable identity tuple this helper was opened for.
@@ -72,7 +76,7 @@ func newClient(t transport, binding Binding) (*Client, error) {
 	if t == nil || !binding.valid() {
 		return nil, errors.New("invalid native client binding")
 	}
-	return &Client{gate: make(chan struct{}, 1), t: t, binding: binding, usable: true}, nil
+	return &Client{gate: prioritygate.New(1), t: t, binding: binding, usable: true}, nil
 }
 
 func newOpenedClient(t transport, binding Binding, open ...func() ([]any, error)) (*Client, error) {
@@ -106,7 +110,7 @@ func newOpenedClient(t transport, binding Binding, open ...func() ([]any, error)
 		_ = t.Close()
 		return nil, err
 	}
-	return &Client{gate: make(chan struct{}, 1), t: t, binding: binding, usable: true}, nil
+	return &Client{gate: prioritygate.New(1), t: t, binding: binding, usable: true}, nil
 }
 
 func (b Binding) valid() bool {
@@ -114,14 +118,19 @@ func (b Binding) valid() bool {
 }
 
 func (c *Client) call(ctx context.Context, op protocol.HelperOperation, payload []any, mutation bool, decode func([]any) (any, error)) (any, error) {
-	if err := ctx.Err(); err != nil {
+	if err := client.CooperativeCheckpoint(ctx); err != nil {
 		return nil, err
 	}
-	select {
-	case c.gate <- struct{}{}:
-		defer func() { <-c.gate }()
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	release, err := c.gate.Acquire(ctx, client.RequestPriority(ctx))
+	if err != nil {
+		if errors.Is(err, prioritygate.ErrClosed) {
+			err = helper.ErrClosed
+		}
+		return nil, err
+	}
+	defer release()
+	if err := client.CooperativeCheckpoint(ctx); err != nil {
+		return nil, err
 	}
 	c.mu.Lock()
 	if !c.usable || c.closed {
@@ -130,7 +139,6 @@ func (c *Client) call(ctx context.Context, op protocol.HelperOperation, payload 
 	}
 	c.mu.Unlock()
 	var result []any
-	var err error
 	if op == protocol.HelperGroupApply {
 		result, err = c.t.GroupApply(ctx, payload)
 	} else {
@@ -156,6 +164,7 @@ func outcomeOrValidation(err error, mutation bool) error {
 	return err
 }
 func (c *Client) invalidateLocked() {
+	c.gate.Close()
 	c.mu.Lock()
 	c.usable = false
 	c.closed = true
@@ -400,8 +409,7 @@ func (c *Client) StateTransaction(ctx context.Context, transactionID id.ID, chan
 }
 
 func (c *Client) Close() error {
-	c.gate <- struct{}{}
-	defer func() { <-c.gate }()
+	<-c.gate.Close()
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()

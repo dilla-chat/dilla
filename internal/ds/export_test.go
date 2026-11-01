@@ -373,3 +373,8 @@ func (d *DS) GroupLockFree(groupID id.ID) bool {
 	mu.Unlock()
 	return true
 }
+
+// StoreInstanceProposalForTest reaches the durable proposal sink with incomplete metadata.
+func StoreInstanceProposalForTest(d *DS, ctx context.Context, groupID id.ID, row store.GroupRow, blob []byte, proposal store.ProposalRow) error {
+	return d.storeInstanceProposal(ctx, groupID, row, blob, proposal)
+}

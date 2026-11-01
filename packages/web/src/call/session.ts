@@ -1502,16 +1502,22 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       });
     };
     let totals: MediaTotals = { sent: 0, failed: 0 };
+    let statsBusy = false;
     const reportStats = async (): Promise<void> => {
+      if (statsBusy) return;
+      statsBusy = true;
+      const started = deps.now();
+      try {
       const publisher = (room.engine as unknown as { pcManager?: { publisher?: { getStats?: () => Promise<RTCStatsReport> | undefined } } } | undefined)?.pcManager?.publisher;
       const [rtc, media] = await Promise.all([
         Promise.resolve(publisher?.getStats?.()).catch(() => undefined),
         manager.stats().catch(() => null),
       ]);
-      if (ended || state.phase !== 'connected') return;
+      if (ended || state.phase !== 'connected' || deps.now() - started >= STATS_EVERY_MS) return;
       const next = callStatsReport(connectionOf(rtc), mediaTotals(media), totals);
       totals = next.totals;
       await deps.bridge.call({ m: 'callStats', report: next.report });
+      } finally { statsBusy = false; }
     };
     const statsTick = (): void => {
       if (ended) return;

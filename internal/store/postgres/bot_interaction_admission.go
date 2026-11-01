@@ -58,7 +58,9 @@ func (r *Repo) CompactExpiredBotInteractionAdmissionReceipts(ctx context.Context
 		return wrap(err)
 	}
 	// Request hashes remain as compact tombstones for 30 days after expiry, then
-	// the bounded idempotency window allows that request ID to be reused.
-	_, err = r.tx.ExecContext(ctx, `DELETE FROM bot_interaction_admission_receipts WHERE installation_id=$1 AND not_after<=$2`, installation, now-30*24*60*60)
+	// the bounded idempotency window allows that request ID to be reused. At most one batch per
+	// call, oldest first, so a backlog never holds the writer for long.
+	_, err = r.tx.ExecContext(ctx, `DELETE FROM bot_interaction_admission_receipts WHERE installation_id=$1 AND request_id IN (SELECT request_id FROM bot_interaction_admission_receipts WHERE installation_id=$1 AND not_after<=$2 ORDER BY not_after LIMIT $3)`,
+		installation, now-30*24*60*60, store.BotInteractionAdmissionTombstoneBatch)
 	return wrap(err)
 }

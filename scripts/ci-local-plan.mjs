@@ -51,6 +51,7 @@ export const JOB_MAP = {
   'webkit-web': { weight: 2, group: 'e2e', ports: 'block' },
   deny: { weight: 1 },
   go: { weight: 4, group: 'go' },
+  'go-native': { weight: 4, group: 'go' },
   'go-ds': { weight: 4, group: 'go' },
   'go-api': { weight: 4, group: 'go' },
   'go-harness': { weight: 4, group: 'go' },

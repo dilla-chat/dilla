@@ -124,6 +124,8 @@ export async function externalJoin(s: SyncInternals, eg: ExpectedGroup, budget: 
       throw e;
     }
     s.deps.core.groupJoined(eg.groupId, answer.seq);
+    const hex = toHex(eg.groupId);
+    s.recoveryGeneration.set(hex, (s.recoveryGeneration.get(hex) ?? 0n) + 1n);
     await s.activate(eg.groupId);
     return;
   }

@@ -85,7 +85,7 @@ func (h groupEventRouter) HandleGroupEvent(ctx context.Context, event native.Gro
 				}
 			}
 			slog.Warn("automatic moderation event handling failed", "stage", stageErr.Stage,
-				"error_code", stageErr.Code, "http_status", stageErr.Status, "source_age_seconds", sourceAgeSeconds)
+				"error_code", stageErr.Code, "http_status", stageErr.Status, "source_age_seconds", sourceAgeSeconds, "deferral_count", stageErr.Deferrals)
 		}
 		// Moderation decisions affect moderation only; text is never a command.
 		return h.recoverReply(ctx, event, err)

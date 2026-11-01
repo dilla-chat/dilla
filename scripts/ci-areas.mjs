@@ -98,6 +98,7 @@ export const JOB_GATES = {
   'webkit-web': ['e2e'],
   deny: ['core'],
   go: ['go'],
+  'go-native': ['go'],
   'go-ds': ['go'],
   'go-api': ['go'],
   'go-harness': ['go'],

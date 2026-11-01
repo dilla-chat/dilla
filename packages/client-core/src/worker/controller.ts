@@ -763,7 +763,9 @@ function invalid(command: Record<string, unknown>): string | null {
     const count = operation === 1 || operation === 50 || [11, 12, 17, 18, 20, 21, 25, 70, 71, 74, 80, 81, 82, 83, 84].includes(operation) ? 1
       : operation === 2 || operation === 22 || operation === 31 || operation === 51 || operation === 52 || operation === 63 || operation === 73 ? 2
         : operation === 61 || operation === 72 || operation === 75 ? 3 : 0;
-    if (!Array.isArray(command.args) || command.args.length !== count) return 'interaction arguments are invalid';
+    if (!Array.isArray(command.args) || command.args.length !== count && !(operation === 15 && command.args.length === 1)) return 'interaction arguments are invalid';
+    if (operation === 15 && command.args.length === 1 && (typeof command.args[0] !== 'string' || command.args[0] !== ''
+      && (!ID.test(command.args[0]) || command.args[0] === '0'.repeat(32)))) return 'skip current item is invalid';
     if (operation === 62 && command.args.length !== 0) return 'automatic moderation read arguments are invalid';
     if ((operation === 1 || operation === 2) && (typeof command.args[0] !== 'number' || !Number.isInteger(command.args[0]) || command.args[0] < 0 || command.args[0] > 5)) return 'settings section is invalid';
     if (operation === 2 && (!(command.args[1] instanceof Uint8Array) || command.args[1].length === 0 || command.args[1].length > 2400)) return 'settings document is invalid';
@@ -1036,6 +1038,7 @@ export class Controller {
   private gateway: Gateway | null = null;
   private sync: SyncEngine | null = null;
   private wasDown = false;
+  private lastPresenceActivityAt = -Infinity;
   private selected: string | null = null;
   /** The pending debounced list read per community (op 54 and the unexpected-Welcome belt), by community hex. */
   private readonly communityReloads = new Map<string, number>();
@@ -1171,6 +1174,7 @@ export class Controller {
     this.calls = new CallController({
       core: () => this.core,
       routes: this.routes,
+      sendStats: (callId, report) => this.gateway?.sendCallStats(callId, report) ?? false,
       post: (message, transfer) => { deps.post(message, transfer); },
       publish: (name, value) => {
         if (name === 'voice') this.slices.set('voice', this.visibleVoice(value as VoiceState));
@@ -1486,7 +1490,11 @@ export class Controller {
       case 'setSetting': return this.setSetting(command.key, command.value);
       case 'setPresenceChoice': return this.setPresenceChoice(command.choice);
       case 'updateProfile': return this.updateProfile(command);
-      case 'presenceActivity': return this.routes.sendPresenceActivity().then(() => null);
+      case 'presenceActivity':
+        if (this.deps.now() - this.lastPresenceActivityAt < 5000) return Promise.resolve(null);
+        this.lastPresenceActivityAt = this.deps.now();
+        this.gateway?.sendPresenceActivity();
+        return Promise.resolve(null);
       case 'getAFKSettings': return this.routes.getAFKSettings(fromHex(command.communityId))
         .then(settings => ({ channelId: settings.channelId === null ? null : toHex(settings.channelId),
           timeoutSeconds: settings.timeoutSeconds }));
@@ -2527,7 +2535,8 @@ export class Controller {
       const { generation } = this.connectionState;
       this.connectionState = e.status === 'idle' && e.closeCode === CLIENT_CLOSE.version
         ? { status, generation, reason: 'version' }
-        : { status, generation };
+        : { status, generation, ...(status === 'online' && this.gateway?.acceptedVersions !== undefined && this.gateway.acceptedVersions !== null
+          ? { wireVersion: Number(this.gateway.acceptedVersions.wire) } : {}) };
       this.slices.set('connection', this.connectionState);
       if (status === 'online') this.safely(() => { this.sendOfflineSelf(); });
       if (status === 'offline') for (const community of this.slices.get('communities') ?? []) {
@@ -2543,6 +2552,8 @@ export class Controller {
       }
     } else if (e.type === 'ready') {
       this.onReady(e.info);
+    } else if (e.type === 'frame' && e.frame.op === Op.appBuild) {
+      this.setConnection({ appBuild: e.frame.payload[0] as string });
     } else if (e.type === 'frame' && e.frame.op === Op.presence) {
       this.incomingPresence(e.frame.payload);
     } else if (e.type === 'frame' && e.frame.op === Op.typing) {

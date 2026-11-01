@@ -24,7 +24,7 @@ import (
 const (
 	moderationCaseStateArea      = uint64(4)
 	moderationPurgeCursorArea    = uint64(8)
-	moderationCaseVersion        = uint64(2)
+	moderationCaseVersion        = uint64(3)
 	moderationCaseRetention      = 90 * 24 * time.Hour
 	moderationCaseScanLimit      = uint64(100)
 	moderationCaseMaxValue       = 16 << 10
@@ -113,6 +113,7 @@ func (a AcceptedModerationAction) matches(request ModerationAction, binding nati
 // ModerationCase is an installation-bound record stored in encrypted helper
 // app state. Excerpt is retained only as a bounded, explicitly supplied preview.
 type ModerationCase struct {
+	EnforcementRefused                        bool
 	Community, Group, Channel, Actor, Message string
 	SourceRevision                            uint64
 	Rules                                     []moderation.Rule
@@ -127,6 +128,10 @@ type ModerationCase struct {
 
 // Reason is deterministic from the matched rules and contains no message text.
 func (c ModerationCase) Reason() string {
+	if c.EnforcementRefused {
+		c.EnforcementRefused = false
+		return "enforcement refused: " + c.Reason()
+	}
 	if len(c.Rules) == 0 {
 		return "automatic moderation"
 	}
@@ -163,6 +168,25 @@ func NewModerationCaseSink(n moderationCaseNative, backend ModerationEnforcement
 	return &ModerationCaseSink{native: n, backend: backend, evidenceWriter: moderation.NewEvidenceWriter(n), binding: b, now: now}, nil
 }
 
+// PrepareModerationAction signs a removal while the local MLS membership is available.
+// The runtime commits it with the decision before the first external effect, so
+// a later lost membership cannot prevent receipt-only reconciliation.
+func (s *ModerationCaseSink) PrepareModerationAction(ctx context.Context, action ModerationAction) (ModerationAction, error) {
+	if action.Decision.Action != moderation.ActionRemove {
+		return action, nil
+	}
+	if _, err := s.makeCase(action); err != nil {
+		return action, err
+	}
+	preparer, ok := s.backend.(interface {
+		PrepareModerationAction(context.Context, ModerationAction) (ModerationAction, error)
+	})
+	if !ok {
+		return action, ErrModerationEnforcementUnavailable
+	}
+	return preparer.PrepareModerationAction(ctx, action)
+}
+
 func (s *ModerationCaseSink) ApplyModerationAction(ctx context.Context, action ModerationAction) error {
 	if s == nil || ctx == nil {
 		return ErrModerationCaseState
@@ -181,10 +205,20 @@ func (s *ModerationCaseSink) ApplyModerationAction(ctx context.Context, action M
 		if decodeErr != nil {
 			return AutoModerationStageError{Stage: "case_state_decode", cause: decodeErr}
 		}
+		if existing.EnforcementRefused && !row.EnforcementRefused {
+			// A terminal refusal can commit before its pending slot is released.
+			// Match the same source/decision with only its terminal representation
+			// normalized; the runtime will resume durable refusal completion.
+			refused := row
+			refused.Action, refused.Timeout, refused.EnforcementRefused = moderation.ActionLog, 0, true
+			if sameModerationCaseRequest(existing, refused) {
+				return ErrModerationActionRefused
+			}
+		}
 		if !sameModerationCaseRequest(existing, row) {
 			return ErrModerationCaseConflict
 		}
-		return nil
+		return s.finishCaseEvidence(ctx, existing)
 	}
 	if action.Decision.Action != moderation.ActionLog {
 		backend, ok := s.backend.(acceptedModerationEnforcementBackend)
@@ -209,11 +243,6 @@ func (s *ModerationCaseSink) ApplyModerationAction(ctx context.Context, action M
 		if !accepted.matches(action, s.binding) {
 			return AutoModerationStageError{Stage: "action_receipt_validation", cause: ErrModerationAcceptanceMismatch}
 		}
-		if row.Action == moderation.ActionRemove {
-			if err := s.attachAcceptedEvidence(ctx, row, accepted); err != nil {
-				return AutoModerationStageError{Stage: "evidence_persistence", cause: err}
-			}
-		}
 		row.ServerActionID = accepted.actionID
 		row.ServerOperationID = accepted.operationID
 		row.ServerRevision = accepted.serverRevision
@@ -224,19 +253,35 @@ func (s *ModerationCaseSink) ApplyModerationAction(ctx context.Context, action M
 	}
 	if _, err = s.native.StateTransaction(ctx, id.New(), []native.StateChange{{Area: moderationCaseStateArea, Key: key,
 		ExpectedRevision: current.Revision, Value: encoded}}); err == nil {
-		return nil
+		return s.finishCaseEvidence(ctx, row)
 	}
 	// Helper responses may be lost after commit. A lookup distinguishes that
 	// case from a real write failure without recording message contents in logs.
 	actual, readErr := s.native.StateGet(ctx, moderationCaseStateArea, key)
 	if readErr == nil && actual.Revision > 0 && !actual.Tombstone {
 		if matchErr := s.matchExisting(actual.Value, encoded); matchErr == nil {
-			return nil
+			return s.finishCaseEvidence(ctx, row)
 		} else if errors.Is(matchErr, ErrModerationCaseConflict) {
 			return matchErr
 		}
 	}
 	return AutoModerationStageError{Stage: "case_state_write", cause: err}
+}
+
+// Persist the validated server receipt in the protected case before evidence.
+// A restart can finish local evidence even if the authority that accepted the
+// action has since gone away; it does not submit another enforcement request.
+func (s *ModerationCaseSink) finishCaseEvidence(ctx context.Context, row ModerationCase) error {
+	if row.Action != moderation.ActionRemove {
+		return nil
+	}
+	group, _ := id.Parse(row.Group)
+	accepted := AcceptedModerationAction{actionID: row.ServerActionID, serverRevision: row.ServerRevision, community: s.binding.Community,
+		group: group, targetSequence: row.SourceRevision, operationID: row.ServerOperationID, action: row.Action}
+	if err := s.attachAcceptedEvidence(ctx, row, accepted); err != nil {
+		return AutoModerationStageError{Stage: "evidence_persistence", cause: err}
+	}
+	return nil
 }
 
 // attachAcceptedEvidence persists sensitive details only after the server's
@@ -289,7 +334,7 @@ func (s *ModerationCaseSink) makeCase(a ModerationAction) (ModerationCase, error
 		return ModerationCase{}, ErrModerationCaseState
 	}
 	return ModerationCase{Community: a.Community, Group: a.Group, Channel: a.Channel, Actor: a.Actor, Message: a.Message, SourceRevision: a.SourceRevision,
-		Rules: rules, Action: a.Decision.Action, Timeout: a.Decision.Timeout, Excerpt: moderation.Excerpt(a.Excerpt), ReceivedAt: a.ReceivedAt}, nil
+		EnforcementRefused: a.Decision.EnforcementRefused, Rules: rules, Action: a.Decision.Action, Timeout: a.Decision.Timeout, Excerpt: moderation.Excerpt(a.Excerpt), ReceivedAt: a.ReceivedAt}, nil
 }
 
 func validModerationCaseID(value string) bool {
@@ -306,6 +351,9 @@ func moderationCaseKey(message string, revision uint64) []byte {
 }
 
 func encodeModerationCase(c ModerationCase, b native.Binding) ([]byte, error) {
+	if c.EnforcementRefused && c.Action != moderation.ActionLog {
+		return nil, ErrModerationCaseState
+	}
 	if c.Timeout < 0 || c.ReceivedAt.UnixMilli() <= 0 {
 		return nil, ErrModerationCaseState
 	}
@@ -330,8 +378,12 @@ func encodeModerationCase(c ModerationCase, b native.Binding) ([]byte, error) {
 			return nil, ErrModerationAcceptanceMismatch
 		}
 	}
+	var refused uint64
+	if c.EnforcementRefused {
+		refused = 1
+	}
 	raw, err := cborx.Marshal([]any{moderationCaseVersion, b.Instance, b.Community, b.Installation, c.Community, c.Group, c.Channel, c.Actor, c.Message,
-		c.SourceRevision, rules, string(c.Action), uint64(c.Timeout / time.Millisecond), c.Excerpt, uint64(c.ReceivedAt.UnixMilli()), c.ServerActionID, c.ServerRevision, c.ServerOperationID})
+		c.SourceRevision, rules, string(c.Action), uint64(c.Timeout / time.Millisecond), c.Excerpt, uint64(c.ReceivedAt.UnixMilli()), c.ServerActionID, c.ServerRevision, c.ServerOperationID, refused})
 	if err != nil || len(raw) > moderationCaseMaxValue {
 		return nil, ErrModerationCaseState
 	}
@@ -340,7 +392,7 @@ func encodeModerationCase(c ModerationCase, b native.Binding) ([]byte, error) {
 
 func decodeModerationCase(raw []byte, binding native.Binding) (ModerationCase, error) {
 	var a []any
-	if len(raw) == 0 || len(raw) > moderationCaseMaxValue || cborx.CheckDeterministic(raw) != nil || cborx.Unmarshal(raw, &a) != nil || len(a) != 18 || a[0] != moderationCaseVersion {
+	if len(raw) == 0 || len(raw) > moderationCaseMaxValue || cborx.CheckDeterministic(raw) != nil || cborx.Unmarshal(raw, &a) != nil || ((len(a) != 18 || a[0] != uint64(2)) && (len(a) != 19 || a[0] != moderationCaseVersion)) {
 		return ModerationCase{}, ErrModerationCaseState
 	}
 	instance, iok := moderationCaseID(a[1])
@@ -354,6 +406,13 @@ func decodeModerationCase(raw []byte, binding native.Binding) (ModerationCase, e
 	}
 	str := func(i int) (string, bool) { v, ok := a[i].(string); return v, ok && validModerationCaseID(v) }
 	c := ModerationCase{}
+	if len(a) == 19 {
+		flag, ok := a[18].(uint64)
+		c.EnforcementRefused = flag == 1
+		if !ok || flag > 1 {
+			return ModerationCase{}, ErrModerationCaseState
+		}
+	}
 	var ok bool
 	if c.Community, ok = str(4); !ok || c.Community != binding.Community.String() {
 		return ModerationCase{}, ErrModerationCaseBinding
@@ -390,6 +449,9 @@ func decodeModerationCase(raw []byte, binding native.Binding) (ModerationCase, e
 	}
 	action, ok := a[11].(string)
 	c.Action = moderation.Action(action)
+	if c.EnforcementRefused && c.Action != moderation.ActionLog {
+		return ModerationCase{}, ErrModerationCaseState
+	}
 	if !ok || (c.Action != moderation.ActionLog && c.Action != moderation.ActionRemove && c.Action != moderation.ActionWarn && c.Action != moderation.ActionTimeout) {
 		return ModerationCase{}, ErrModerationCaseState
 	}
@@ -437,7 +499,7 @@ func decodeModerationCase(raw []byte, binding native.Binding) (ModerationCase, e
 func sameModerationCaseRequest(existing, requested ModerationCase) bool {
 	if existing.Community != requested.Community || existing.Group != requested.Group || existing.Channel != requested.Channel ||
 		existing.Actor != requested.Actor || existing.Message != requested.Message || existing.SourceRevision != requested.SourceRevision ||
-		existing.Action != requested.Action || existing.Timeout != requested.Timeout || existing.Excerpt != requested.Excerpt ||
+		existing.EnforcementRefused != requested.EnforcementRefused || existing.Action != requested.Action || existing.Timeout != requested.Timeout || existing.Excerpt != requested.Excerpt ||
 		!existing.ReceivedAt.Equal(requested.ReceivedAt) || len(existing.Rules) != len(requested.Rules) {
 		return false
 	}

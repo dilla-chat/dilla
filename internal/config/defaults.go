@@ -18,7 +18,7 @@ func Default() *Config {
 	c.Instance = Instance{DataDir: "/var/lib/dilla", Discovery: "public"}
 	c.Server = Server{
 		Listen: ":443", PlainListen: "127.0.0.1:8080",
-		ReadHeaderTimeout: "10s", IdleTimeout: "120s", ShutdownGrace: "30s",
+		ReadHeaderTimeout: "10s", ReadBodyTimeout: "30s", IdleTimeout: "120s", ShutdownGrace: "30s",
 	}
 	c.HTTP = HTTP{TrustedOrigins: []string{"dilla://app"}}
 	c.Gateway = Gateway{

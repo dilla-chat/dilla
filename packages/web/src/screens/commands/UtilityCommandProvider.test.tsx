@@ -28,13 +28,13 @@ function utilityFixture() {
   core.set(`overwrites:${COMMUNITY}`, {});
   core.set(`channels:${COMMUNITY}`, [{ id: CHANNEL, communityId: COMMUNITY, kind: 0, mode: 0, name: 'lobby', topic: '', parentId: null, position: 0, slowmode: 0, announcement: false, group: 'active' }]);
   core.set(`members:${COMMUNITY}`, [{ userId: USER, username: 'ada', display: 'Ada', kind: 0, roleIds: [] }]);
-  const requests: { operation: number; requestId: string; args: readonly unknown[] }[] = [];
+  const requests: { operation: number; requestId: string; args: readonly unknown[]; revision: string | null }[] = [];
   const responses: { deliveryId: string; requestId: string; communityId: string; operation: number; channelId: null; status: number; revision: string | null; data: Uint8Array }[] = [];
   let row = pollSummary(); let reminder: unknown[] | null = null; let delivery = 0; let failOperation: number | null = null; let failApplies = true;
   core.handler = command => Promise.resolve().then(() => {
     if (command.m === 'getBotCommandStatus') return { installationId: INSTALLATION, botUserId: BOT, state: 3, revision: '1' };
     if (command.m === 'humanInteractionRequest') {
-      const operation = command.operation; const id = command.requestId; const args = command.args; requests.push({ operation, requestId: id, args });
+      const operation = command.operation; const id = command.requestId; const args = command.args; requests.push({ operation, requestId: id, args, revision: command.revision });
       let data = wire([]); let revision: string | null = null; let status = 0;
       if (operation === 3) data = wire([1n, asBytes(INSTALLATION), asBytes(BOT), 1n, supported]);
       if (operation === 70) { const payload = decode(args[0] as Uint8Array) as unknown[]; const answers = payload[4] as string[];
@@ -45,7 +45,10 @@ function utilityFixture() {
       if (operation === 73 && !(failOperation === operation && !failApplies)) { const choices = decode(args[1] as Uint8Array) as bigint[]; const next = row.revision + 1n;
         row = { ...row, revision: next, myChoices: choices.map(Number), counts: row.answers.map((_, index) => BigInt(choices.includes(BigInt(index)) ? 1 : 0)) };
         data = wire([1n, pollWire(row)]); revision = next.toString(); }
-      if (operation === 74 && !(failOperation === operation && !failApplies)) { row = { ...row, closed: true, revision: row.revision + 1n }; data = wire([1n, pollWire(row)]); revision = row.revision.toString(); }
+      if (operation === 74) {
+        if (command.revision !== row.revision.toString()) status = 4;
+        else if (!(failOperation === operation && !failApplies)) { row = { ...row, closed: true, revision: row.revision + 1n }; data = wire([1n, pollWire(row)]); revision = row.revision.toString(); }
+      }
       if (operation === 75) data = wire([1n, [asBytes(USER)], null]);
       if (operation === 80) { const payload = decode(args[0] as Uint8Array) as unknown[];
         reminder = [asBytes(id), payload[3], BigInt(Math.floor(Date.now() / 1000)) + BigInt(payload[2] as bigint), payload[4], payload[5], payload[6], 0n, 1n]; data = wire([1n, reminder]); revision = '1'; }
@@ -70,7 +73,7 @@ function commandContext(client: CoreClient, requestId: string, over: Partial<Com
 function mount(client: CoreClient, community: string | null = COMMUNITY, onNavigate?: (communityId: string, channelId: string, threadId: string | null) => void) { const captured: { value?: ReturnType<typeof useUtilityCommandProvider> } = {};
   function Probe() { const value = useUtilityCommandProvider(client, community, onNavigate); useEffect(() => { captured.value = value; }); return createElement('div', null, value.dialogs, value.inbox); }
   const view = render(createElement(Probe)); return { captured, ...view, rerenderProbe: () => view.rerender(createElement(Probe)) }; }
-afterEach(() => { vi.restoreAllMocks(); });
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe('utility command provider', () => {
   it('/poll create from the picker opens the New poll dialog', async () => {
@@ -198,6 +201,7 @@ describe('utility command provider', () => {
     expect(f.poll.myChoices).toEqual([1]); expect(f.poll.counts).toEqual([0n, 1n]); mounted.unmount();
   });
   it('requires an explicit DST fold choice before creating an ambiguous reminder', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-10-30T17:00:00Z'));
     const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
     const args = { when: '2026-11-01 01:30', text: 'Call home', timezone: 'America/New_York' };
     expect(await mounted.captured.value!.handlers.remind!({ commandId: 'remind', args }, commandContext(f.client, 'cc'.repeat(16))))
@@ -366,6 +370,103 @@ it('notifies a newly due reminder once, while honoring DND and visibility', () =
 });
 
 describe('poll card binding', () => {
+  const renderPollCard = (client: CoreClient) => render(createElement(PollCard, { client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
+    body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: 0 }));
+  const closeConflict = 'The poll changed. Review the latest results before closing it again.';
+
+  it('closes after a stale-revision conflict by refreshing once', async () => {
+    const user = userEvent.setup(); const f = utilityFixture(); const view = renderPollCard(f.client);
+    await screen.findByRole('button', { name: 'Close poll' });
+    // Another member votes after the creator's last read.
+    f.poll.revision = 2n; f.poll.counts = [1n, 0n];
+    const before = f.requests.length;
+    await user.click(screen.getByRole('button', { name: 'Close poll' }));
+    expect(await screen.findByText('CLOSED')).toBeInTheDocument();
+    const action = f.requests.slice(before).filter(row => row.operation === 74 || row.operation === 71);
+    expect(action.map(row => row.operation)).toEqual([74, 71, 74]);
+    expect(action.filter(row => row.operation === 74).map(row => row.revision)).toEqual(['1', '2']);
+    expect(new Set(action.filter(row => row.operation === 74).map(row => row.requestId)).size).toBe(2);
+    expect(screen.getByRole('button', { name: /^Soup/ })).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument(); view.unmount();
+  });
+
+  it('shows the conflict when the retry also conflicts and does not loop', async () => {
+    const user = userEvent.setup(); const f = utilityFixture(); const view = renderPollCard(f.client);
+    await screen.findByRole('button', { name: 'Close poll' });
+    f.poll.revision = 2n; f.poll.counts = [1n, 0n];
+    const base = f.client.handler;
+    f.client.handler = async command => {
+      const result = await base(command);
+      // A second vote lands after the refreshed snapshot, before its close.
+      if (command.m === 'humanInteractionRequest' && command.operation === 71) f.poll.revision++;
+      return result;
+    };
+    const before = f.requests.length;
+    await user.click(screen.getByRole('button', { name: 'Close poll' }));
+    expect(await screen.findByText(closeConflict)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Close poll' })).toBeEnabled();
+    const action = f.requests.slice(before).filter(row => row.operation === 74 || row.operation === 71);
+    expect(action.map(row => row.operation)).toEqual([74, 71, 74]);
+    expect(f.poll.closed).toBe(false); view.unmount();
+  });
+
+  it('finishes the close refresh when the 30 s tick arrives while it is pending', async () => {
+    let tick!: () => void;
+    const setInterval = window.setInterval.bind(window);
+    vi.spyOn(window, 'setInterval').mockImplementation(((fn: () => void, ms: number) => {
+      if (ms === 30_000) { tick = fn; return 900001; }
+      return setInterval(fn, ms);
+    }) as never);
+    const user = userEvent.setup(); const f = utilityFixture(); const view = renderPollCard(f.client);
+    await screen.findByRole('button', { name: 'Close poll' });
+    f.poll.revision = 2n;
+    const base = f.client.handler; let release: (() => void) | undefined; let held = false;
+    f.client.handler = command => {
+      if (command.m === 'humanInteractionRequest' && command.operation === 71 && !held) {
+        held = true;
+        return new Promise(resolve => { release = () => { void base(command).then(resolve); }; });
+      }
+      return base(command);
+    };
+    const before = f.requests.length;
+    await user.click(screen.getByRole('button', { name: 'Close poll' }));
+    await waitFor(() => expect(release).toBeDefined());
+    await act(async () => { tick(); await Promise.resolve(); });
+    await act(async () => { release!(); await Promise.resolve(); });
+    expect(await screen.findByText('CLOSED')).toBeInTheDocument();
+    expect(f.requests.slice(before).filter(row => row.operation === 74 || row.operation === 71).map(row => row.operation)).toEqual([74, 71, 74]);
+    view.unmount();
+  });
+
+  it('keeps a conflict notice across the 30 s refresh', async () => {
+    let tick!: () => void;
+    const setInterval = window.setInterval.bind(window);
+    vi.spyOn(window, 'setInterval').mockImplementation(((fn: () => void, ms: number) => {
+      if (ms === 30_000) { tick = fn; return 900001; }
+      return setInterval(fn, ms);
+    }) as never);
+    const user = userEvent.setup(); const f = utilityFixture(); const view = renderPollCard(f.client);
+    await screen.findByRole('button', { name: 'Close poll' });
+    f.poll.revision = 2n;
+    const base = f.client.handler;
+    f.client.handler = async command => {
+      const result = await base(command);
+      if (command.m === 'humanInteractionRequest' && command.operation === 71) f.poll.revision++;
+      return result;
+    };
+    await user.click(screen.getByRole('button', { name: 'Close poll' }));
+    await screen.findByText(closeConflict);
+    f.client.handler = base;
+    f.poll.counts = [1n, 0n];
+    act(() => { tick(); });
+    // The new counts prove the periodic read has completed before checking the notice.
+    await screen.findByText('100%');
+    expect(screen.getByText(closeConflict)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Close poll' }));
+    await screen.findByText('CLOSED');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument(); view.unmount();
+  });
+
   it('accepts only the exact final marker line', () => { const marker = `[dilla-poll:v1:${POLL}]`;
     expect(finalPollMarker(`note ${marker}\ntext`)).toBeNull(); expect(finalPollMarker(`${marker}\nanswer`)).toBeNull(); expect(finalPollMarker(`Question\n${marker}`)).toBe(POLL);
     expect(finalPollMarker(`Question\n${marker}\n`)).toBeNull(); expect(finalPollMarker(`Question\n[dilla-poll:v1:${'AB'.repeat(16)}]`)).toBeNull(); });
@@ -721,13 +822,15 @@ describe('utility outcome and privacy regressions', () => {
       body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: PERM.viewChannel | PERM.sendMessages }));
     await screen.findByRole('heading', { name: 'Lunch?' });
     for (const terminal of [2, 3, 4]) {
+      const before = ids.length;
       status = terminal; await user.click(screen.getByRole('button', { name: operation === 73 ? /^Soup/ : 'Close poll' }));
       await waitFor(() => expect(screen.getAllByRole('button', { name: /^(Soup|Salad)/ })[0]).toBeEnabled());
       expect(screen.queryByRole('button', { name: /Retry/ })).not.toBeInTheDocument();
+      expect(ids).toHaveLength(before + (operation === 74 && terminal === 4 ? 2 : 1));
     }
     status = null; await user.click(screen.getByRole('button', { name: operation === 73 ? /^Soup/ : 'Close poll' }));
     await waitFor(() => expect(f.requests.some(row => row.operation === operation)).toBe(true));
-    expect(new Set(ids).size).toBe(3); expect(ids).not.toContain(f.requests.find(row => row.operation === operation)!.requestId); view.unmount();
+    expect(new Set(ids).size).toBe(operation === 74 ? 4 : 3); expect(ids).not.toContain(f.requests.find(row => row.operation === operation)!.requestId); view.unmount();
   });
 
 });

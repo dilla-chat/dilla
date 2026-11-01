@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
+	"log/slog"
 	"math/big"
 	"net"
 	"net/http"
@@ -35,6 +36,7 @@ const (
 type CredentialFunc func(context.Context) (string, error)
 
 type Config struct {
+	Logger              *slog.Logger
 	Client              *client.Client
 	HTTPClient          *http.Client
 	AllowLoopbackHTTP   bool
@@ -47,6 +49,7 @@ type Config struct {
 }
 
 type Client struct {
+	log                            *slog.Logger
 	origin                         *url.URL
 	http                           *http.Client
 	instance, device, user         id.ID
@@ -149,7 +152,10 @@ func New(cfg Config) (*Client, error) {
 	if cfg.QueueSize < 1 || cfg.QueueSize > maxQueueSize {
 		return nil, ErrProtocol
 	}
-	return &Client{origin: u, http: &hcopy, instance: cfg.Client.InstanceID(), device: cfg.ExpectedDeviceID, user: cfg.ExpectedUserID,
+	if cfg.Logger == nil {
+		cfg.Logger = slog.Default()
+	}
+	return &Client{log: cfg.Logger, origin: u, http: &hcopy, instance: cfg.Client.InstanceID(), device: cfg.ExpectedDeviceID, user: cfg.ExpectedUserID,
 		handshakeTimeout: cfg.HandshakeTimeout, writeTimeout: cfg.WriteTimeout, heartbeatAckTimeout: cfg.HeartbeatAckTimeout,
 		events: make(chan Delivery, cfg.QueueSize), ackAvailable: make(map[uint64][32]byte)}, nil
 }
@@ -183,6 +189,7 @@ func (c *Client) Run(ctx context.Context, credential CredentialFunc) error {
 	if ctx == nil || credential == nil {
 		return ErrProtocol
 	}
+	ctx = client.WithoutCooperativeStop(client.WithBackground(ctx))
 	c.mu.Lock()
 	if c.running || c.closed {
 		c.mu.Unlock()
@@ -244,6 +251,7 @@ func (c *Client) Run(ctx context.Context, credential CredentialFunc) error {
 			failures++
 		}
 		delay := reconnectDelay(failures, after)
+		c.log.Info("bot gateway reconnect scheduled", "reason", err.Error(), "fresh_identify", fresh, "backoff", delay)
 		t := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
@@ -723,8 +731,10 @@ func closeOutcome(err error) (bool, error) {
 	}
 	code := websocket.CloseStatus(err)
 	switch code {
-	case 4003, 4004, 4009:
+	case 4003, 4004:
 		return false, ErrTerminal
+	case 4009:
+		return true, errHeartbeatOverdue
 	case 4006:
 		return false, ErrVersion
 	case 4002:

@@ -109,6 +109,7 @@ type musicAnnounceChannelAuthority interface {
 // Only the member who requested the current track may announce it, only while they may DJ in that voice call. One message per (voice channel, current track): the operation id is derived from both, so a
 // retry or a second request returns the first message's receipt instead of posting again.
 type MusicAnnouncements struct {
+	Notices     *MusicSkipNotices
 	Music       *MusicInteractions
 	Authority   rolePanelAuthority
 	Channels    musicAnnounceChannelAuthority
@@ -176,6 +177,12 @@ func (h MusicAnnouncements) announce(ctx context.Context, actor InteractionActor
 	if !visible || bits&musicAnnounceChannelSend != musicAnnounceChannelSend {
 		return InteractionResult{Status: interactionStatusForbidden}, nil
 	}
+	// The existing request also registers the command's text destination before playback.
+	// Resolve the channel's MLS binding now, before remembering it or acknowledging registration.
+	group, err := h.Destination.ResolveTextGroup(ctx, h.CommunityID, text)
+	if err != nil || group.IsZero() {
+		return InteractionResult{Status: interactionStatusUnavailable}, nil
+	}
 	snapshot, err := h.Music.Store.Load(ctx, voice)
 	if err != nil {
 		return InteractionResult{}, err
@@ -193,15 +200,21 @@ func (h MusicAnnouncements) announce(ctx context.Context, actor InteractionActor
 		}
 		state = live
 	}
-	if state.Current == nil || state.Paused {
-		return InteractionResult{Status: interactionStatusUnavailable}, nil
-	}
-	if state.Current.RequesterID != actor.User.String() {
-		return InteractionResult{Status: interactionStatusForbidden}, nil
-	}
 	clock := time.Now
 	if h.Now != nil {
 		clock = h.Now
+	}
+	// Idle/paused requests only register a destination. Do not sample discovery,
+	// spend an announcement slot or post a started card on this path.
+	if state.Current == nil || state.Paused {
+		if h.Notices != nil {
+			h.Notices.Register(voice, text, actor, call.GroupID)
+			return InteractionResult{Data: []byte{0x80}}, nil
+		}
+		return InteractionResult{Status: interactionStatusUnavailable}, nil
+	}
+	if state.Current != nil && state.Current.RequesterID != actor.User.String() {
+		return InteractionResult{Status: interactionStatusForbidden}, nil
 	}
 	// Security review L6: only a track that has just started (a stamped playhead within 30 s), and one new track per
 	// requester per minute; a retry of the same track still resumes its first send.
@@ -215,10 +228,6 @@ func (h MusicAnnouncements) announce(ctx context.Context, actor InteractionActor
 	// The requester's slot is spent only by an accepted send; every other return below gives it back.
 	sent := false
 	defer func() { settle(sent) }()
-	group, err := h.Destination.ResolveTextGroup(ctx, h.CommunityID, text)
-	if err != nil || group.IsZero() {
-		return InteractionResult{Status: interactionStatusUnavailable}, nil
-	}
 	discovery, _, err := h.Discovery.DiscoverObserved(ctx)
 	if err != nil {
 		return InteractionResult{}, err
@@ -248,6 +257,9 @@ func (h MusicAnnouncements) announce(ctx context.Context, actor InteractionActor
 	}
 	// The message is in the channel: the requester's minute is spent, whatever happens to this answer.
 	sent = true
+	if h.Notices != nil {
+		h.Notices.Register(voice, text, actor, call.GroupID)
+	}
 	data, err := cborx.Marshal([]any{text, receipt.SendResponse.Sequence})
 	if err != nil {
 		return InteractionResult{}, err

@@ -249,8 +249,27 @@ install_assets() {
 	install -m 0644 "$WORK/dillabot.service" "$UNIT.new" || return 1
 	mv -f "$UNIT.new" "$UNIT" || return 1
 }
+# service_path prints the PATH the Bot service runs with, so the doctor's
+# dependency check sees what the service sees rather than the caller's PATH
+# (pct exec into the LXC has no /usr/local/bin). Order: an Environment=PATH in
+# the installed unit, then systemd's manager default, then its documented value.
+service_path() {
+	sp=""
+	if [ -r "$UNIT" ]; then
+		sp="$(sed -n 's/^Environment=["]*PATH=\([^" ]*\)["]*[[:space:]]*$/\1/p' "$UNIT" | tail -n 1)"
+	fi
+	if [ -z "$sp" ]; then
+		sp="$(systemctl show-environment 2>/dev/null | sed -n 's/^PATH=//p' | head -n 1)"
+	fi
+	[ -n "$sp" ] || sp="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
+	printf '%s\n' "$sp"
+}
 run_bot_doctor() {
-	runuser -u dillabot -- "$BIN_DIR/dillabot" doctor --config="$CONF"
+	doctor_runuser="$(command -v runuser)" || return 1
+	doctor_env="$(command -v env)" || return 1
+	doctor_path="$(service_path)"
+	log "running dillabot doctor with the service PATH $doctor_path"
+	"$doctor_runuser" -u dillabot -- "$doctor_env" "PATH=$doctor_path" "$BIN_DIR/dillabot" doctor --config="$CONF"
 }
 
 rollback_upgrade() { # BACKUP WAS_ACTIVE

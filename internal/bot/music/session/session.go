@@ -6,12 +6,16 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/music"
 	"github.com/jonasthim/dilla/internal/bot/music/livekit"
+	musicruntime "github.com/jonasthim/dilla/internal/bot/music/runtime"
+	"github.com/jonasthim/dilla/internal/bot/music/spotify"
+	"github.com/jonasthim/dilla/internal/bot/music/youtube"
 	"github.com/jonasthim/dilla/internal/id"
 )
 
@@ -44,12 +48,14 @@ type Options struct {
 	Provider           music.Provider
 	Track              string
 	Call               client.Call
-	Group              id.ID
-	Acquire            LeaseAcquire
-	PCM                PCMStarter
-	Encoder            EncoderStarter
-	Publisher          PublisherStarter
-	Epochs             livekit.EpochSource
+	// PrepareCall runs only after provider PCM and encoder have started.
+	PrepareCall func(context.Context) (client.Call, error)
+	Group       id.ID
+	Acquire     LeaseAcquire
+	PCM         PCMStarter
+	Encoder     EncoderStarter
+	Publisher   PublisherStarter
+	Epochs      livekit.EpochSource
 }
 
 // OptionsForTrack supplies call credentials, provider PCM and epoch-bound
@@ -57,7 +63,17 @@ type Options struct {
 // YouTube options may omit the installation-wide lease.
 type OptionsForTrack func(context.Context, music.Track) (Options, error)
 
+type explicitStartKey struct{}
+
 type QueueStarter struct {
+	LogContext func(context.Context) context.Context
+	Logger     *slog.Logger
+	OnSkipped  func(context.Context, []music.SkippedTrack)
+	// OnCallEnded clears call-scoped registrations after a successful room leave.
+	OnCallEnded func()
+	// SetCallEnded installs call cleanup in the retained room lifecycle reporter.
+	SetCallEnded func(func())
+
 	OptionsFor OptionsForTrack
 	// ResetConnection is reserved for an explicit playback action. Automatic EOF
 	// advancement cannot clear a disconnected room's terminal state.
@@ -73,7 +89,12 @@ type QueueStarter struct {
 // LeaveIdle leaves the retained room when nothing is playing.
 func (s QueueStarter) LeaveIdle() error {
 	if s.LeaveConnection != nil {
-		return s.LeaveConnection()
+		if err := s.LeaveConnection(); err != nil {
+			return err
+		}
+		if s.OnCallEnded != nil {
+			s.OnCallEnded()
+		}
 	}
 	return nil
 }
@@ -90,6 +111,7 @@ func (s QueueStarter) StartExplicit(ctx context.Context, track music.Track) (mus
 			return nil, err
 		}
 	}
+	ctx = context.WithValue(ctx, explicitStartKey{}, true)
 	playback, err := s.Start(ctx, track)
 	if !errors.Is(err, livekit.ErrBinding) || ctx.Err() != nil || s.ResetConnection == nil {
 		return playback, err
@@ -106,7 +128,12 @@ func (s QueueStarter) StartExplicit(ctx context.Context, track music.Track) (mus
 // Close releases the retained connection when its queue owner is closed.
 func (s QueueStarter) Close() error {
 	if s.CloseConnection != nil {
-		return s.CloseConnection()
+		if err := s.CloseConnection(); err != nil {
+			return err
+		}
+		if s.OnCallEnded != nil {
+			s.OnCallEnded()
+		}
 	}
 	return nil
 }
@@ -119,7 +146,16 @@ func (s QueueStarter) Start(ctx context.Context, track music.Track) (music.Playb
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		playback, err := s.startOnce(ctx, track)
+		logger := s.Logger
+		if logger == nil {
+			logger = music.PlaybackLogger(ctx)
+		}
+		explicit, _ := ctx.Value(explicitStartKey{}).(bool)
+		attemptCtx := music.WithPlaybackLogger(ctx, logger.With("provider", string(track.Provider), "attempt", attempt+1, "explicit", explicit))
+		if s.LogContext != nil {
+			attemptCtx = s.LogContext(attemptCtx)
+		}
+		playback, err := s.startOnce(attemptCtx, track)
 		// A previous publisher's departure can remove the replacement during
 		// its handshake. No source was published successfully: close resources
 		// and re-read membership, call credentials and epoch on a bounded retry.
@@ -143,11 +179,15 @@ func (s QueueStarter) startOnce(ctx context.Context, track music.Track) (music.P
 	}
 	o, err := s.OptionsFor(ctx, track)
 	if err != nil {
-		return nil, err
+		var stage *music.StartError
+		if errors.As(err, &stage) {
+			return nil, music.StartStage(ctx, stage.Stage, stage.Cause)
+		}
+		return nil, providerStage(ctx, "provider_check", err)
 	}
 	if (track.Provider != music.ProviderSpotify && track.Provider != music.ProviderYouTube) ||
 		(o.Provider != "" && o.Provider != track.Provider) {
-		return nil, ErrInvalid
+		return nil, music.StartStage(ctx, "provider_check", ErrInvalid)
 	}
 	o.Provider = track.Provider
 	o.Track = track.CanonicalID
@@ -157,28 +197,36 @@ func (s QueueStarter) startOnce(ctx context.Context, track music.Track) (music.P
 // Start acquires the global lease before starting any Spotify audio. The
 // returned session owns every resource through publisher completion.
 func Start(ctx context.Context, o Options) (*Session, error) {
-	if ctx == nil || o.Community.IsZero() || o.Channel.IsZero() || o.Track == "" || o.PCM == nil || o.Encoder == nil || o.Publisher == nil || o.Epochs == nil || o.Call.CallID.IsZero() || o.Group.IsZero() || o.Call.GroupID != o.Group {
+	if ctx == nil {
 		return nil, ErrInvalid
 	}
 	provider := o.Provider
 	if provider == "" {
 		provider = music.ProviderSpotify
 	}
+	if o.Community.IsZero() || o.Channel.IsZero() || o.Track == "" || o.PCM == nil || o.Encoder == nil || o.Publisher == nil || o.Epochs == nil || (o.PrepareCall == nil && (o.Call.CallID.IsZero() || o.Group.IsZero() || o.Call.GroupID != o.Group)) || (provider != music.ProviderSpotify && provider != music.ProviderYouTube) || (provider == music.ProviderSpotify && o.Acquire == nil) {
+		return nil, music.StartStage(ctx, "provider_check", ErrInvalid)
+	}
+	ctx = client.WithoutCooperativeStop(client.WithBackground(ctx))
+	if !o.Group.IsZero() {
+		ctx = music.WithPlaybackGroup(ctx, o.Group)
+	}
+	if checker, ok := o.PCM.(interface{ Check(context.Context) error }); ok {
+		if err := checker.Check(ctx); err != nil {
+			return nil, providerStage(ctx, "provider_check", err)
+		}
+	}
+	_ = music.StartStage(ctx, "provider_check", nil)
 	var lease Lease
 	var err error
 	if provider == music.ProviderSpotify {
-		if o.Acquire == nil {
-			return nil, ErrInvalid
-		}
 		lease, err = o.Acquire(o.Community, o.Channel)
-		if err != nil {
+		if err == nil && lease == nil {
+			err = ErrInvalid
+		}
+		if err = music.StartStage(ctx, "spotify_lease", err); err != nil {
 			return nil, err
 		}
-	} else if provider != music.ProviderYouTube {
-		return nil, ErrInvalid
-	}
-	if provider == music.ProviderSpotify && lease == nil {
-		return nil, ErrInvalid
 	}
 	failed := true
 	defer func() {
@@ -192,26 +240,51 @@ func Start(ctx context.Context, o Options) (*Session, error) {
 		return nil, err
 	}
 	pcm, err := o.PCM.Start(ctx, o.Track)
-	if err != nil {
+	if err == nil && pcm == nil {
+		err = ErrInvalid
+	}
+	if err = providerStage(ctx, "provider_pcm", err); err != nil {
 		return nil, err
 	}
+	pcm = &ownedPCM{ReadCloser: pcm}
 	encoder, err := o.Encoder.Start(ctx, pcm)
-	if err != nil {
+	if err == nil && encoder == nil {
+		err = ErrInvalid
+	}
+	if err = music.StartStage(ctx, "encoder", err); err != nil {
+		_ = pcm.Close()
+		return nil, err
+	}
+	if o.PrepareCall != nil {
+		o.Call, err = o.PrepareCall(ctx)
+		if err != nil {
+			_ = encoder.Close()
+			_ = pcm.Close()
+			return nil, err
+		}
+		o.Group = o.Call.GroupID
+	}
+	ctx = music.WithPlaybackGroup(ctx, o.Group)
+	if err = ctx.Err(); err != nil {
+		_ = encoder.Close()
 		_ = pcm.Close()
 		return nil, err
 	}
 	pub, err := o.Publisher.Start(ctx, o.Call, o.Group, o.Epochs, encoder)
 	if err != nil {
 		_ = encoder.Close()
+		_ = pcm.Close()
 		return nil, err
 	}
-	s := &Session{lease: lease, encoder: encoder, publisher: pub, done: make(chan struct{}), stop: make(chan struct{})}
+	_ = music.StartStage(ctx, "published", nil)
+	s := &Session{lease: lease, pcm: pcm, encoder: encoder, publisher: pub, done: make(chan struct{}), stop: make(chan struct{})}
 	failed = false
 	go s.monitor(ctx)
 	return s, nil
 }
 
 type Session struct {
+	pcm       io.ReadCloser
 	lease     Lease
 	encoder   Encoder
 	publisher Publisher
@@ -241,6 +314,7 @@ func (s *Session) finish(err error) {
 		s.mu.Unlock()
 		_ = s.publisher.Close()
 		_ = s.encoder.Close()
+		_ = s.pcm.Close()
 		if s.lease != nil {
 			_ = s.lease.Release()
 		}
@@ -261,3 +335,44 @@ func (s *Session) Close() error {
 func AcquireSpotify(m *music.SpotifyLeaseManager) LeaseAcquire {
 	return func(c, ch id.ID) (Lease, error) { return m.Acquire(c, ch) }
 }
+
+// ownedPCM lets encoder and session cleanup share one close without losing the
+// provider's PCM format (Spotify is 48 kHz; YouTube is 44.1 kHz).
+type ownedPCM struct {
+	io.ReadCloser
+	once sync.Once
+	err  error
+}
+
+func (p *ownedPCM) Close() error { p.once.Do(func() { p.err = p.ReadCloser.Close() }); return p.err }
+func (p *ownedPCM) PCMFormat() musicruntime.PCMFormat {
+	if formatted, ok := p.ReadCloser.(interface{ PCMFormat() musicruntime.PCMFormat }); ok {
+		return formatted.PCMFormat()
+	}
+	return musicruntime.PCMFormat{SampleRate: youtubePCMRate, Channels: 2}
+}
+
+// providerStage retains provider-specific, bounded diagnostic classes.
+func providerStage(ctx context.Context, stage string, err error) error {
+	if err != nil {
+		class := youtube.FailureClass(err)
+		if spotifyClass := spotify.FailureClass(err); spotifyClass != "unknown" {
+			class = spotifyClass
+		}
+		if class != "unknown" {
+			err = &providerFailureClass{error: err, class: class, permanent: youtube.PermanentPlaybackFailure(err) || spotify.PermanentPlaybackFailure(err)}
+		}
+	}
+	return music.StartStage(ctx, stage, err)
+}
+
+type providerFailureClass struct {
+	error
+	class     string
+	permanent bool
+}
+
+func (e *providerFailureClass) Unwrap() error        { return e.error }
+func (e *providerFailureClass) FailureClass() string { return e.class }
+
+func (e *providerFailureClass) PermanentPlaybackFailure() bool { return e.permanent }

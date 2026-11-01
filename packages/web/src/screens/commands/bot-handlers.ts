@@ -4,14 +4,20 @@ import { BotInteractionBindingMismatchError, BotInteractionRejectedError, BotInt
 import type { CommandExecutionContext, CommandProviderHandlers, CommandSuggestionProvider } from './command-types.ts';
 import { privateResultCopy } from './copy.ts';
 import { BotCommandDialogs, type BotCommandDialogState, type BotCommandDialogValue } from './BotCommandDialogs.tsx';
+import { commandPickerCopy as copy } from './copy.ts';
+import { t } from '../../strings/index.ts';
 
 const ID = /^[0-9a-f]{32}$/u;
+// A link being typed or pasted belongs to strict enqueue validation, never text search.
+const MUSIC_LINK_PREFIX = /^(?:https?:|\/\/|(?:(?:www|music|m)\.)?youtube\.com\/|youtu\.be\/|open\.spotify\.com\/|spotify:(?:track|album|playlist):[A-Za-z0-9]{22}$)/iu;
 const MUSIC_COMMAND_IDS = new Set(['play', 'pause', 'resume', 'skip', 'stop', 'queue', 'nowplaying', 'seek', 'volume', 'shuffle', 'repeat',
   'queue remove', 'queue move', 'queue clear', 'music help']);
 const ok = (message: string): CommandResult => ({ status: 'success', message, private: true });
 const fail = (message: string): CommandResult => ({ status: 'failure', message, private: true });
 const uncertain = (message: string): CommandResult => ({ status: 'uncertain', message, private: true });
 const resultError = (error: unknown): CommandResult => {
+  if (error instanceof Error && 'code' in error && error.code === 'operation-unavailable') return fail(t('music.error.operation-unavailable'));
+  if (error instanceof Error && 'code' in error && error.code === 'unavailable') return fail(t('music.error.unavailable'));
   if (error instanceof BotInteractionRejectedError || error instanceof BotInteractionBindingMismatchError)
     return fail(error.message);
   const requestId = typeof error === 'object' && error !== null && 'requestId' in error ? String(error.requestId) : '';
@@ -60,6 +66,7 @@ function musicReadSummary(commandId: string, invocation: CommandInvocation, cont
   if (commandId === 'queue') {
     const current = state.track === null ? '' : `Now playing: ${state.track.title} — ${state.track.artist}${state.paused ? ' (paused)' : ''}\n`;
     const rows = state.queue.map((item, index) => `${index + 1}. ${item.track.title} — ${item.track.artist}`);
+    if (state.queueTotal !== undefined) rows.push(`Showing ${state.queue.length} of ${state.queueTotal} queued tracks.`);
     return ok(current === '' && rows.length === 0 ? 'The music queue is empty.' : `${current}${rows.join('\n')}`.trim());
   }
   return fail('Unsupported music read command.');
@@ -223,6 +230,23 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
     const originalChannelId = musicCommandAttemptTarget(client, cid, context.requestId);
     if (originalChannelId !== undefined && channelId !== originalChannelId)
       return uncertain('This music attempt is still pending in its original voice channel. Return to that call to reconcile it; the attempt cannot be retargeted.');
+    // Pause and skip are current-state controls. Authority is checked by the Bot;
+    // dispatch directly so a refresh or announcement cannot delay the audio change.
+    if (invocation.commandId === 'pause' || invocation.commandId === 'skip') {
+      const adapter = createVoiceMusicAdapter(client, cid);
+      markMusicCommandAttempt(client, cid, context.requestId, channelId);
+      try {
+        const attempt = { requestId: childId(context.requestId, `music:${invocation.commandId}`) };
+        if (invocation.commandId === 'pause') await adapter.pause(channelId, true, attempt);
+        else await adapter.skip(channelId, attempt);
+        if (!voiceStillCurrent(context, cid, channelId)) return uncertain('Music was updated, but the active voice call changed before completion.');
+        clearMusicCommandAttempt(client, cid, context.requestId);
+        return ok(invocation.commandId === 'pause' ? 'Music paused.' : 'Skipped the current track.');
+      } catch (error) {
+        if (resultError(error).status !== 'uncertain') clearMusicCommandAttempt(client, cid, context.requestId);
+        return resultError(error);
+      }
+    }
     try {
       let adapter: ReturnType<typeof createVoiceMusicAdapter>;
       try { ({ adapter } = await freshMusicState(context, cid, channelId)); }
@@ -255,12 +279,21 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
         clearMusicCommandAttempt(client, cid, context.requestId);
         return true;
       };
+      const registerDestination = async () => {
+        // Notice registration is best effort, including with older Bots. It must
+        // never create a pending playback mutation or prevent an authorized Resume.
+        if (context.binding.channelId !== channelId) {
+          try { await adapter.announce(channelId, context.binding.channelId, attempt('destination')); }
+          catch { /* Playback remains available without a notice destination. */ }
+        }
+        return voiceStillCurrent(context, cid, channelId);
+      };
       switch (invocation.commandId) {
         case 'play': {
           const input = invocation.args['query-or-url']?.trim() ?? '';
           if (!input) return fail('Choose a track or provide a supported Spotify or YouTube URL.');
           let selected = input;
-          const url = /^(?:https?:\/\/|spotify:)/iu.test(input);
+          const url = MUSIC_LINK_PREFIX.test(input);
           if (!url) {
             const found = await adapter.search(channelId, input, attempt('search'));
             if (!context.isCurrent() || requireCommunity(context, cid) !== channelId) return uncertain('Search finished after the conversation or voice call changed.');
@@ -274,6 +307,10 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
             { clearMusicCommandAttempt(client, cid, context.requestId); return ok('The track was added, but playback was not resumed because the voice call changed.'); }
           const afterEnqueue = adapter.state(channelId);
           if (afterEnqueue.status === 'available' && afterEnqueue.paused) {
+            if (!await registerDestination()) {
+              clearMusicCommandAttempt(client, cid, context.requestId);
+              return ok('The track was added, but playback was not resumed because the conversation or voice call changed.');
+            }
             try { await runMutation(() => adapter.pause(channelId, false, attempt('resume'))); }
             catch (error) {
               if (resultError(error).status === 'uncertain') return resultError(error);
@@ -282,20 +319,20 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
             }
           }
           clearMusicCommandAttempt(client, cid, context.requestId);
-          // Jonas 2026-10-28: a /play that started the music is announced where it ran: Glenn posts "{name} started music in
-          // {room}" with the live player card. The Bot checks the requester, the track and this channel's permissions; the
-          // command's own private result does not wait for it.
+          // Destination registration is separate from the public started-music
+          // card, which remains best effort after playback has actually started.
           const afterPlay = adapter.state(channelId);
           if (fresh.track === null && afterPlay.status === 'available' && afterPlay.track !== null && !afterPlay.paused && context.binding.channelId !== channelId)
             void (async () => { await adapter.announce(channelId, context.binding.channelId, attempt('announce')); })().catch(() => undefined);
           return ok('Track added to the music queue.');
         }
-        case 'pause': return await applyControl(() => adapter.pause(channelId, true, attempt('pause')))
-          ? ok('Music paused.') : uncertain('Music was updated, but the active voice call changed before completion.');
-        case 'resume': return await applyControl(() => adapter.pause(channelId, false, attempt('resume')))
-          ? ok('Music resumed.') : uncertain('Music was updated, but the active voice call changed before completion.');
-        case 'skip': return await applyControl(() => adapter.skip(channelId, attempt('skip')))
-          ? ok('Skipped the current track.') : uncertain('Music was updated, but the active voice call changed before completion.');
+        case 'resume': {
+          if (!await registerDestination()) return pendingAttempt
+            ? uncertain('This music attempt is still pending; return to its original active call to reconcile it.')
+            : fail('The conversation or voice call changed before music resumed.');
+          return await applyControl(() => adapter.pause(channelId, false, attempt('resume')))
+            ? ok('Music resumed.') : uncertain('Music was updated, but the active voice call changed before completion.');
+        }
         case 'stop': return await applyControl(() => adapter.stop(channelId, attempt('stop')))
           ? ok('Music stopped.') : uncertain('Music was updated, but the active voice call changed before completion.');
         case 'seek': {
@@ -585,17 +622,20 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
       const trimmed = query.trim();
       const key = `${binding.communityId}:${option.name}`;
       const generation = (staleSearch.current.get(key) ?? 0) + 1; staleSearch.current.set(key, generation);
-      if (trimmed.length < 2 || /^(?:https?:\/\/|spotify:)/iu.test(trimmed)) return [];
+      if (trimmed.length < 2 || MUSIC_LINK_PREFIX.test(trimmed)) return [];
       const channelId = currentCallChannel(client);
       if (channelId === null) return [];
       await new Promise(resolve => setTimeout(resolve, 250));
-      if (staleSearch.current.get(key) !== generation) return [];
+      if (staleSearch.current.get(key) !== generation || currentCallChannel(client) !== channelId) return [];
       try {
         const adapter = createVoiceMusicAdapter(client, communityId);
         const rows = await adapter.search(channelId, trimmed, { requestId: childId(randomId(), `suggest:${trimmed}`) });
-        if (staleSearch.current.get(key) !== generation) return [];
+        if (staleSearch.current.get(key) !== generation || currentCallChannel(client) !== channelId) return [];
         return rows.slice(0, 25).map(row => ({ id: row.id, value: row.input, label: row.title, description: row.artist }));
-      } catch { return []; }
+      } catch {
+        if (staleSearch.current.get(key) !== generation || currentCallChannel(client) !== channelId) return [];
+        return Object.assign([], { notice: copy.musicSearchFailed });
+      }
     }
     return [];
   }, [client, communityId]);

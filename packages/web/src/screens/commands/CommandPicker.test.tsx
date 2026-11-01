@@ -538,3 +538,34 @@ describe('CommandPicker in CommandHost', () => {
     expect(new Set(ids).size).toBe(1);
   });
 });
+
+
+describe('CommandPicker: suggestion failures', () => {
+  it('shows a brief notice when suggestions fail and keeps the draft executable', async () => {
+    const view = renderPicker({ initialText: '/play harbor', suggest: () => Promise.reject(new Error('private provider response')) });
+    expect(await screen.findByText('Suggestions could not be loaded. Try again.')).toBeInTheDocument();
+    expect(screen.queryByText(/private provider response/)).toBeNull();
+    fireEvent.click(send());
+    await waitFor(() => expect(view.props.onExecute).toHaveBeenCalledWith({ commandId: 'play', args: { 'query-or-url': 'harbor' } }));
+  });
+
+  it('does not show a stale suggestion failure after the query changes', async () => {
+    let rejectOld!: (reason: Error) => void;
+    const suggest = vi.fn((_command, _option, query: string) => query === 'old'
+      ? new Promise<readonly CommandSuggestion[]>((_resolve, reject) => { rejectOld = reject; }) : Promise.resolve([]));
+    renderPicker({ initialText: '/play old', suggest });
+    await waitFor(() => expect(suggest).toHaveBeenCalled());
+    fireEvent.change(screen.getByRole('combobox', { name: 'query-or-url' }), { target: { value: 'new' } });
+    await act(() => { rejectOld(new Error('old failure')); return Promise.resolve(); });
+    expect(screen.queryByText('Suggestions could not be loaded. Try again.')).toBeNull();
+  });
+
+  it('does not show a stale suggestion failure after a context switch', async () => {
+    const rejects: Array<(reason: Error) => void> = [];
+    const suggest = () => new Promise<readonly CommandSuggestion[]>((_resolve, reject) => { rejects.push(reject); });
+    const view = renderPicker({ initialText: '/play harbor', suggest });
+    view.rerender(<div className="d-root"><CommandPicker {...view.props} contextKey="community:other" /></div>);
+    await act(() => { rejects[0](new Error('old failure')); return Promise.resolve(); });
+    expect(screen.queryByText('Suggestions could not be loaded. Try again.')).toBeNull();
+  });
+});

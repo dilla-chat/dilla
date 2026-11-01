@@ -81,12 +81,13 @@ test('on a phone without getDisplayMedia the stage offers no share button', asyn
 
     await page.evaluate(() => { Reflect.deleteProperty(MediaDevices.prototype, 'getDisplayMedia'); });
     expect(await page.evaluate(() => typeof navigator.mediaDevices.getDisplayMedia)).toBe('undefined');
-    // Any change of the call renders the toolbar again: a mute and an unmute.
-    await mute.click();
+    // Any change of the call renders the toolbar again: a mute and an unmute. The first toggle is a key press: the
+    // toolbar may re-flow without Share mid-click (any call-state render), which moves Mute under a pointer click.
+    await mute.press('Enter');
     await expect(mute).toHaveAttribute('data-on', 'true', { timeout: WAIT });
+    await expect(share).toHaveCount(0);
     await mute.click();
     await expect(mute).not.toHaveAttribute('data-on', { timeout: WAIT });
-    await expect(share).toHaveCount(0);
     const leave = toolbar.locator('[data-control="leave"]');
     await expect(leave).toBeVisible();
     await leave.click();

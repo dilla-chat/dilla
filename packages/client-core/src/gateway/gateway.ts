@@ -1,3 +1,4 @@
+import type { CallStats } from '../http/routes';
 import { arr, bin, u53, u64, type CborValue } from '../cbor';
 import { DillaHttpError } from '../http/errors';
 import { DROPPABLE_OPS, encodeFrame, decodeFrame, frameOp, Op, type Frame } from './frames';
@@ -47,7 +48,7 @@ export const CLIENT_CLOSE = {
 } as const;
 
 const DEFAULT_MAX_FRAME_BYTES = 131584;
-const WIRE_PREFERENCE = [4n, 3n, 2n] as const;
+const WIRE_PREFERENCE = [5n, 4n, 3n, 2n] as const;
 type TimerName = 'reconnectTimer' | 'handshakeTimer' | 'heartbeatTimer' | 'ackTimer';
 type HelloInfo = Pick<ReadyInfo, 'heartbeatMs' | 'maxFrameBytes' | 'backoffMs' | 'backoffJitterMs'> & {
   versions: bigint[][]; selectedVersions: { wire: bigint; e2ee: bigint; media: bigint };
@@ -262,7 +263,8 @@ export class Gateway {
       // voice presence and DM ring signals of web-3 (ops 50 and 53, L-GW-32, L-GW-33), the structure notice of
       // web-3.1 (op 54), and the away roster notice (op 55, AW4).
       else if ((frame.op >= Op.handshake && frame.op <= Op.messageDeleted) || frame.op === Op.presence || frame.op === Op.typing
-        || frame.op === Op.voiceState || frame.op === Op.callRing || frame.op === Op.communityChanged || frame.op === Op.afkAway) {
+        || frame.op === Op.voiceState || frame.op === Op.callRing || frame.op === Op.communityChanged || frame.op === Op.afkAway
+        || (frame.op === Op.appBuild && (this.acceptedVersions?.wire ?? 0) >= 5)) {
         this.emit({ type: 'frame', frame });
       }
       else if (frame.op === Op.invalidSession || frame.op === Op.reconnect) this.reconnectFrame(frame);
@@ -281,7 +283,7 @@ export class Gateway {
     if (this.current !== 'ready' || this.hello === null) return;
     const interval = Math.min(Math.floor(this.hello.heartbeatMs / 2), GATEWAY.heartbeatMaxMs);
     this.arm('heartbeatTimer', interval, () => {
-      this.send(encodeFrame(Op.heartbeat, 0, null, [this.lastN, 1]));
+      this.send(encodeFrame(Op.heartbeat, 0, null, [this.lastN, 0]));
       if (this.ackTimer === null) {
         this.beatSentAt = this.deps.now();
         this.arm('ackTimer', GATEWAY.ackTimeoutMs, () => this.teardown(CLIENT_CLOSE.heartbeatTimeout, true));
@@ -358,6 +360,33 @@ export class Gateway {
     this.goIdle();
     this.setStatus('idle', null);
     this.lastTyping.clear();
+  }
+
+  private lastStatsAt = -Infinity;
+
+  /** The boolean selects transport once. True also covers a throttled, congested or ambiguously
+   * failed send: callers must never repeat that same sample through HTTP. */
+  sendCallStats(callId: Uint8Array, report: CallStats): boolean {
+    if (this.phase !== 'ready' || (this.acceptedVersions?.wire ?? 0n) < 5n || this.socket?.readyState !== 1) return false;
+    const now = this.deps.now();
+    if (now - this.lastStatsAt < 10_000) return true;
+    this.lastStatsAt = now;
+    if (this.socket.bufferedAmount > 65536) return true;
+    try { this.send(encodeFrame(Op.callStats, 0, null, [callId, report])); } catch { /* A coarse sample is disposable. */ }
+    return true;
+  }
+
+  private lastActivityAt = -Infinity;
+
+  /** True means the wire-5 path owns this sample, including a coalesced/congested drop.
+   * False lets the caller choose the compatibility HTTP path; nothing is queued for reconnect. */
+  sendPresenceActivity(): boolean {
+    if (this.phase !== 'ready' || (this.acceptedVersions?.wire ?? 0n) < 5n || this.socket?.readyState !== 1) return false;
+    const now = this.deps.now();
+    if (now - this.lastActivityAt < 5000) return true;
+    this.lastActivityAt = now;
+    if (this.socket.bufferedAmount <= 65536) this.send(encodeFrame(Op.presenceActivity, 0, null, []));
+    return true;
   }
 
   sendTyping(channelId: Uint8Array, on: boolean): void {

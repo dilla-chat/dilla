@@ -302,6 +302,20 @@ async function startBotRuntime(baseURL: string, dataDir: string, port: number, c
     `state_dir = ${quote(stateDir)}`,
     `reconcile_interval = ${quote(reconcileInterval)}`,
     'allow_loopback_http = true',
+    // The test server does not meter; production pacing is covered by the Go tests.
+    '[rate_limits]',
+    'write_per_second = 1000000',
+    'write_burst = 1000000',
+    'read_per_second = 1000000',
+    'read_burst = 1000000',
+    'message_per_second = 1000000',
+    'message_burst = 1000000',
+    'commit_per_second = 1000000',
+    'commit_burst = 1000000',
+    'proposal_per_second = 1000000',
+    'proposal_burst = 1000000',
+    'keypackage_per_second = 1000000',
+    'keypackage_burst = 1000000',
     '',
   ].join('\n');
   writeFileSync(configPath, config, { mode: 0o600, flag: 'wx' });

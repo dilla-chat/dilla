@@ -27,7 +27,7 @@ func (s *Session) AcceptedModerationRemoval(ctx context.Context, installation, r
 		return out, ErrInvalidConfig
 	}
 	path := "bot-runtime/installations/" + installation.String() + "/moderation/removals/" + request.String()
-	raw, _, err := s.c.do(ctx, s.token, http.MethodGet, path, nil, nil, MaxSmallBody, false)
+	raw, _, err := s.do(ctx, http.MethodGet, path, nil, nil, MaxSmallBody, false)
 	if err != nil {
 		return out, err
 	}

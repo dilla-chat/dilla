@@ -1662,6 +1662,34 @@ func (r *Repo) ListProposals(ctx context.Context, groupID id.ID, epoch uint64, i
 	return out, nil
 }
 
+func (r *Repo) ListClosedGroupLiveProposals(ctx context.Context, limit int32) ([]store.ProposalRow, error) {
+	rows, err := r.r.ListClosedGroupLiveProposals(ctx, sqlitedb.ListClosedGroupLiveProposalsParams{MaxRows: int64(limit)})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.ProposalRow, 0, len(rows))
+	for _, m := range rows {
+		p, err := mlsProposalRow(m)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+func (r *Repo) CountLiveInstanceProposals(ctx context.Context) (map[uint8]int64, error) {
+	rows, err := r.r.CountLiveInstanceProposals(ctx)
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make(map[uint8]int64, len(rows))
+	for _, row := range rows {
+		out[uint8(row.Kind)] = row.N // kind is CHECKed to 0..3 by the schema
+	}
+	return out, nil
+}
+
 func (r *Repo) VoidProposal(ctx context.Context, groupID id.ID, ref []byte, at int64) error {
 	return wrap(r.w.VoidProposal(ctx, sqlitedb.VoidProposalParams{
 		VoidAt: sql.NullInt64{Int64: at, Valid: true}, GroupID: groupID, Ref: ref,

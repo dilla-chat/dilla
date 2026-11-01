@@ -2,7 +2,9 @@ package youtube
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +17,12 @@ import (
 
 func TestNormalizeInputAcceptsSearchVideoAndPlaylist(t *testing.T) {
 	cases := []struct{ input, kind, canonical string }{
+		{"https://youtube.com/shorts/aqz-KE-bpKQ?si=shared", "video", videoURL("aqz-KE-bpKQ")},
+		{"https://youtube.com/live/aqz-KE-bpKQ?si=shared&feature=share", "video", videoURL("aqz-KE-bpKQ")},
+		{"https://youtube.com/embed/aqz-KE-bpKQ", "video", videoURL("aqz-KE-bpKQ")},
+		{"youtube.com/watch?v=aqz-KE-bpKQ", "video", videoURL("aqz-KE-bpKQ")},
+		{"youtu.be/aqz-KE-bpKQ?si=shared", "video", videoURL("aqz-KE-bpKQ")},
+		{"https://youtube.com/playlist?list=PLabc_123&si=shared", "playlist", "https://www.youtube.com/playlist?list=PLabc_123"},
 		{"instrumental study music", "search", "ytsearch5:instrumental study music"},
 		{"https://www.youtube.com/watch?v=aqz-KE-bpKQ", "video", "https://www.youtube.com/watch?v=aqz-KE-bpKQ"},
 		{"https://youtu.be/aqz-KE-bpKQ", "video", "https://www.youtube.com/watch?v=aqz-KE-bpKQ"},
@@ -32,7 +40,7 @@ func TestNormalizeInputAcceptsSearchVideoAndPlaylist(t *testing.T) {
 
 func TestNormalizeInputRejectsUnsafeURLsAndExtractorSyntax(t *testing.T) {
 	inputs := []string{
-		"file:///etc/passwd", "ftp://youtube.com/a", "http://youtube.com/watch?v=aqz-KE-bpKQ",
+		"file:///etc/passwd", "ftp://youtube.com/a",
 		"https://youtube.com.evil.test/watch?v=aqz-KE-bpKQ", "https://user:pass@youtube.com/watch?v=aqz-KE-bpKQ",
 		"https://127.0.0.1/watch?v=aqz-KE-bpKQ", "https://youtube.com:443/watch?v=aqz-KE-bpKQ",
 		"https://youtube.com/watch?v=aqz-KE-bpKQ&v=aqz-KE-bpKQ", "ytsearchall:cat", "youtube:aqz-KE-bpKQ",
@@ -47,7 +55,7 @@ func TestNormalizeInputRejectsUnsafeURLsAndExtractorSyntax(t *testing.T) {
 }
 
 func TestResolveBuildsBoundedQueueDescriptors(t *testing.T) {
-	body := `{"_type":"playlist","extractor_key":"Youtube","playlist_count":2,"entries":[{"_type":"url","ie_key":"Youtube","id":"aqz-KE-bpKQ","title":"one","duration":12.345,"availability":"public"},{"_type":"url","ie_key":"Youtube","id":"BaW_jenozKc","title":"two"}]}`
+	body := `{"_type":"playlist","extractor_key":"Youtube","playlist_count":2,"entries":[{"_type":"url","ie_key":"Youtube","id":"aqz-KE-bpKQ","title":"one","duration":12.345,"availability":"public"},{"_type":"url","ie_key":"Youtube","id":"BaW_jenozKc","title":"two","duration":1}]}`
 	runner := runnerFunc(func(_ context.Context, executable string, args []string, limit int) ([]byte, error) {
 		if executable != "/qualified/yt-dlp" || limit != MaxMetadataBytes {
 			t.Fatalf("runner executable/limit = %q/%d", executable, limit)
@@ -62,7 +70,7 @@ func TestResolveBuildsBoundedQueueDescriptors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tracks) != 2 || tracks[0].ID != "yt:aqz-KE-bpKQ" || tracks[0].Provider != "youtube" || tracks[0].DurationMS != 12345 || tracks[1].DurationMS != 0 {
+	if len(tracks) != 2 || tracks[0].ID != "yt:aqz-KE-bpKQ" || tracks[0].Provider != "youtube" || tracks[0].DurationMS != 12345 || tracks[1].DurationMS != 1000 {
 		t.Fatalf("resolved descriptors = %#v", tracks)
 	}
 }
@@ -374,3 +382,162 @@ func (f runnerFunc) Run(ctx context.Context, executable string, args []string, l
 }
 
 func (runnerFunc) youtubeSandboxedRunner() {}
+
+func TestNormalizeInputAcceptsShareAndAddressBarForms(t *testing.T) {
+	canonical := "https://www.youtube.com/watch?v=aqz-KE-bpKQ"
+	accepted := map[string]string{
+		"https://youtu.be/aqz-KE-bpKQ?si=abc&t=42&feature=share&pp=xyz":                                                              canonical,
+		"https://youtu.be/aqz-KE-bpKQ?unknown=anything":                                                                              canonical,
+		"https://youtu.be/aqz-KE-bpKQ?si=" + strings.Repeat("x", 220):                                                                canonical,
+		"https://www.youtube.com/watch?v=aqz-KE-bpKQ&t=42s&list=PLabc&index=2&si=x&pp=x&feature=share&ab_channel=Test&start_radio=1": canonical,
+		"http://youtube.com/watch?v=aqz-KE-bpKQ":                                                                                     canonical,
+		"https://m.youtube.com/watch?v=aqz-KE-bpKQ&si=x":                                                                             canonical,
+		"https://youtube.com/watch?v=aqz-KE-bpKQ":                                                                                    canonical,
+		"https://music.youtube.com/watch?v=aqz-KE-bpKQ":                                                                              canonical,
+		"https://youtube.com/live/aqz-KE-bpKQ":                                                                                       canonical,
+		"https://youtube.com/shorts/aqz-KE-bpKQ":                                                                                     canonical,
+		"https://youtube.com/playlist?list=PLabc_123":                                                                                "https://www.youtube.com/playlist?list=PLabc_123",
+	}
+	for input, want := range accepted {
+		t.Run(input, func(t *testing.T) {
+			_, got, err := NormalizeInput(input)
+			if err != nil || got != want {
+				t.Fatalf("got %q, %v; want %q", got, err, want)
+			}
+		})
+	}
+	for _, input := range []string{
+		"https://evil.example/watch?v=aqz-KE-bpKQ", "https://youtube.com.evil.example/watch?v=aqz-KE-bpKQ",
+		"https://youtube.com/watch?v=bad", "javascript:alert(1)", "https://a@youtube.com/watch?v=aqz-KE-bpKQ",
+		"https://youtube.com:443/watch?v=aqz-KE-bpKQ", "https://[::1]/watch?v=aqz-KE-bpKQ",
+		"https://youtu.be/aqz-KE-bpKQ?si=" + strings.Repeat("x", 512),
+	} {
+		if _, _, err := NormalizeInput(input); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("accepted %q", input)
+		}
+	}
+}
+
+// The fixture is a field projection of a real pinned yt-dlp response, not a
+// handcrafted response. See testdata/README.md for the exact command.
+func TestResolveRecordedPinnedYTDLPVideo(t *testing.T) {
+	body, err := os.ReadFile("testdata/yt-dlp-2026.10.21-aqz-KE-bpKQ.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, input := range []string{
+		"https://www.youtube.com/watch?v=aqz-KE-bpKQ",
+		"https://youtu.be/aqz-KE-bpKQ?si=shared",
+		"https://youtube.com/shorts/aqz-KE-bpKQ?si=shared",
+	} {
+		t.Run(input, func(t *testing.T) {
+			resolver := MetadataResolver{YTDLP: "/yt-dlp", Node: "/node", runner: runnerFunc(func(_ context.Context, _ string, args []string, _ int) ([]byte, error) {
+				if got := args[len(args)-1]; got != videoURL("aqz-KE-bpKQ") {
+					t.Fatalf("canonical=%q", got)
+				}
+				return body, nil
+			})}
+			tracks, err := resolver.Resolve(t.Context(), input)
+			if err != nil || len(tracks) != 1 {
+				t.Fatalf("Resolve real fixture: tracks=%v err=%v", tracks, err)
+			}
+			if tracks[0].CanonicalID != "aqz-KE-bpKQ" || tracks[0].DurationMS != 635000 || tracks[0].Artist != "Blender" {
+				t.Fatalf("descriptor=%#v", tracks[0])
+			}
+		})
+	}
+}
+
+func TestResolveMetadataFieldFailureClasses(t *testing.T) {
+	body, err := os.ReadFile("testdata/yt-dlp-2026.10.21-aqz-KE-bpKQ.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name, field string
+		value       any
+		reason      string
+	}{
+		{"missing duration", "duration", nil, "missing_duration"},
+		{"zero duration", "duration", 0, "invalid_duration"},
+		{"negative duration", "duration", -1, "invalid_duration"},
+		{"nonnumeric duration", "duration", "private-value", "invalid_duration"},
+		{"duration limit", "duration", 86401, "duration_limit"},
+		{"private", "availability", "private", "availability"},
+		{"live", "live_status", "is_live", "live"},
+		{"live flag", "is_live", true, "live"},
+		{"upcoming", "live_status", "is_upcoming", "live"},
+		{"post live", "live_status", "post_live", "live"},
+		{"extractor", "extractor_key", "Generic", "extractor"},
+		{"type", "_type", "url", "type"},
+		{"id", "id", "private-value", "id"},
+		{"title", "title", "private-value\n", "title"},
+		{"uploader", "uploader", "private-value\n", "uploader"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var data map[string]any
+			if err := json.Unmarshal(body, &data); err != nil {
+				t.Fatal(err)
+			}
+			data[tc.field] = tc.value
+			encoded, err := json.Marshal(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resolver := MetadataResolver{YTDLP: "/yt-dlp", Node: "/node", runner: runnerFunc(func(context.Context, string, []string, int) ([]byte, error) { return encoded, nil })}
+			tracks, err := resolver.Resolve(t.Context(), videoURL("aqz-KE-bpKQ"))
+			if !errors.Is(err, ErrMetadataInvalid) || len(tracks) != 0 {
+				t.Fatalf("tracks=%v err=%v", tracks, err)
+			}
+			wrapped := fmt.Errorf("resolve: %w", err)
+			want := "invalid_metadata:" + tc.reason
+			if got := FailureClass(wrapped); got != want {
+				t.Fatalf("class=%q want=%q", got, want)
+			}
+			if !strings.Contains(err.Error(), want) || strings.Contains(err.Error(), "private-value") || FailureStderr(wrapped) != "" {
+				t.Fatalf("unsafe metadata diagnostics: %v", err)
+			}
+		})
+	}
+	t.Run("absent duration", func(t *testing.T) {
+		var data map[string]any
+		if err := json.Unmarshal(body, &data); err != nil {
+			t.Fatal(err)
+		}
+		delete(data, "duration")
+		encoded, err := json.Marshal(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resolver := MetadataResolver{YTDLP: "/yt-dlp", Node: "/node", runner: runnerFunc(func(context.Context, string, []string, int) ([]byte, error) { return encoded, nil })}
+		_, err = resolver.Resolve(t.Context(), videoURL("aqz-KE-bpKQ"))
+		if !errors.Is(err, ErrMetadataInvalid) || FailureClass(err) != "invalid_metadata:missing_duration" {
+			t.Fatalf("missing duration err=%v class=%s", err, FailureClass(err))
+		}
+	})
+}
+
+func TestResolveRecordedReportedVideo(t *testing.T) {
+	body, err := os.ReadFile("testdata/yt-dlp-2026.10.21-LvH_ft4XR1Q.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := MetadataResolver{YTDLP: "/yt-dlp", Node: "/node", runner: runnerFunc(func(context.Context, string, []string, int) ([]byte, error) { return body, nil })}
+	tracks, err := resolver.Resolve(t.Context(), videoURL("LvH_ft4XR1Q"))
+	if err != nil || len(tracks) != 1 {
+		t.Fatalf("reported video fixture tracks=%v err=%v", tracks, err)
+	}
+	if tracks[0].CanonicalID != "LvH_ft4XR1Q" || tracks[0].DurationMS != 69000 {
+		t.Fatalf("descriptor=%#v", tracks[0])
+	}
+}
+
+func TestNormalizeOrdinaryProviderAndHostSearchText(t *testing.T) {
+	for _, input := range []string{"Spotify: top hits", "youtube.com rewind", "http", "https"} {
+		kind, canonical, err := NormalizeInput(input)
+		if err != nil || kind != "search" || canonical != "ytsearch5:"+input {
+			t.Fatalf("input=%q kind=%q canonical=%q err=%v", input, kind, canonical, err)
+		}
+	}
+}

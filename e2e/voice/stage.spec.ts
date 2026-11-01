@@ -137,7 +137,10 @@ test('the stage shows a tile per camera and screen, focuses a shared screen, and
       const after = await video!.evaluate((v: HTMLVideoElement) => ({ connected: v.isConnected, width: v.videoWidth }));
       expect(after.connected, 'the captured screen video is still in the document').toBe(true);
       expect(after.width, 'and still has a picture').toBeGreaterThan(0);
-      expect(await videoWidthOf(shared)).toBe(before);
+      // Not the same intrinsic width: adaptive stream and simulcast move between layers as the bandwidth estimate ramps
+      // (PR #128 CI read 640, then 1280, across this swap). The tile must still show the same element with a picture.
+      expect(await shared.locator('video').first().evaluate((v, el) => v === el, video)).toBe(true);
+      expect(await videoWidthOf(shared)).toBeGreaterThan(0);
     });
 
     await test.step('4. Escape returns to the grid; every tile is the same width', async () => {

@@ -59,7 +59,7 @@ func (s *Session) BotInteractionGroupAbsent(ctx context.Context, installation, r
 	if err != nil {
 		return false, err
 	}
-	raw, _, err := s.c.do(ctx, s.token, http.MethodGet,
+	raw, _, err := s.do(ctx, http.MethodGet,
 		"bot-runtime/installations/"+inst+"/interaction-admissions/"+request+"/group-absence",
 		nil, nil, 16, false)
 	if err != nil {

@@ -26,7 +26,7 @@ func (s *Session) AcceptedManualWarning(ctx context.Context, installation, reque
 		return AcceptedManualWarningReceipt{}, ErrInvalidConfig
 	}
 	path := "bot-runtime/installations/" + installation.String() + "/moderation/warnings/" + request.String()
-	raw, _, err := s.c.do(ctx, s.token, http.MethodGet, path, nil, nil, MaxSmallBody, false)
+	raw, _, err := s.do(ctx, http.MethodGet, path, nil, nil, MaxSmallBody, false)
 	if err != nil {
 		return AcceptedManualWarningReceipt{}, err
 	}

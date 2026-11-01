@@ -904,6 +904,7 @@ type interactionRegistrationSessionFake struct {
 	candidates                       []id.ID
 	registeredGroups                 []id.ID
 	admissionErr                     error
+	registerErr                      error
 	currentTime                      uint64
 	minimumRevision                  uint64
 	admissions                       map[id.ID]uint64
@@ -979,6 +980,9 @@ func (s *interactionRegistrationSessionFake) BotInteractionContextSnapshot(_ con
 func (s *interactionRegistrationSessionFake) RegisterBotGroupWithAdmissionRequest(_ context.Context, _ id.ID, op id.ID, generation uint64, body []byte, admissionRequest id.ID) (client.BotGroupRegistrationReceipt, error) {
 	s.requestIDs = append(s.requestIDs, admissionRequest)
 	s.registerCalls++
+	if s.registerErr != nil {
+		return client.BotGroupRegistrationReceipt{}, s.registerErr
+	}
 	var a []any
 	if err := cborx.Unmarshal(body, &a); err != nil || len(a) != 5 {
 		return client.BotGroupRegistrationReceipt{}, errors.New("bad interaction body")
@@ -1040,3 +1044,31 @@ func (s *interactionRegistrationSessionFake) GroupInfo(context.Context, id.ID) (
 }
 
 var _ = native.StateValue{}
+
+func TestInteractionRegistrationRateLimitsRemainRetryable(t *testing.T) {
+	for _, stage := range []string{"admission", "keypackage", "registration"} {
+		t.Run(stage, func(t *testing.T) {
+			f := newInteractionRegistrationFixture(t)
+			refusal := &client.APIError{Status: 429, Code: "E_RATE_LIMITED", Outcome: client.OutcomeDefinitive}
+			switch stage {
+			case "admission":
+				f.s.admissionErr = refusal
+			case "keypackage":
+				f.request.ParticipantKeyPackage = nil
+				f.s.keyPackage = []byte{7, 8, 9}
+				f.s.keyPackageErr = refusal
+			case "registration":
+				f.s.registerErr = refusal
+			}
+			if _, err := f.coordinator.Register(t.Context(), f.request); client.RateLimitError(err) == nil {
+				t.Fatalf("lost rate-limit classification: %v", err)
+			}
+			f.s.admissionErr = nil
+			f.s.keyPackageErr = nil
+			f.s.registerErr = nil
+			if got, err := f.coordinator.Register(t.Context(), f.request); err != nil || got.Receipt.GroupID != f.request.Group || len(got.PendingWelcome) == 0 {
+				t.Fatalf("next tick: result=%+v error=%v", got, err)
+			}
+		})
+	}
+}

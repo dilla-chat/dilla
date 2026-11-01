@@ -11,13 +11,13 @@ export const Op = {
   hello: 0, identify: 1, ready: 3, invalidSession: 5, heartbeat: 6, heartbeatAck: 7,
   reconnect: 8, error: 9, commitAck: 12, handshake: 16, commitNeeded: 17,
   epochChanged: 18, messageCt: 19, welcome: 20, messageDeleted: 21,
-  presence: 48, typing: 49, voiceState: 50, typingSet: 51, voiceSelf: 52, callRing: 53, communityChanged: 54, afkAway: 55,
+  presence: 48, typing: 49, voiceState: 50, typingSet: 51, voiceSelf: 52, callRing: 53, communityChanged: 54, afkAway: 55, appBuild: 56, presenceActivity: 57, callStats: 58,
 } as const;
 
 const SPECS: ReadonlyMap<number, { elements: number; grouped: boolean }> = new Map([
   [0, 9], [1, 5], [2, 4], [3, 9], [4, 3], [5, 2], [6, 2], [7, 1], [8, 2],
   [9, 3], [10, 1], [11, 1], [12, 1], [16, 5], [17, 4], [18, 2], [19, 7],
-  [20, 6], [21, 2], [32, 7], [33, 4], [48, 4], [49, 5], [50, 4], [51, 2], [52, 2], [53, 5], [54, 1], [55, 3],
+  [20, 6], [21, 2], [32, 7], [33, 4], [48, 4], [49, 5], [50, 4], [51, 2], [52, 2], [53, 5], [54, 1], [55, 3], [56, 1], [57, 0], [58, 2],
 ].map(([op, elements]) => [op, { elements, grouped: op === 12 || (op >= 16 && op <= 21) }]));
 
 function shape(): never {
@@ -54,6 +54,7 @@ export function decodeFrame(bytes: Uint8Array): Frame {
   if (op === 54n && (n !== 0n || !isId(payload[0]))) shape();
   // op 55 afk_away (AW4): [community_id, user_id, since_ts], since_ts 0 = cleared.
   if (op === 55n && (n !== 0n || !isId(payload[0]) || !isId(payload[1]) || !uint(payload[2]))) shape();
+  if (op === 56n && (n !== 0n || !validAppEntry(payload[0]))) shape();
   return { op: Number(op), n, groupId, payload };
 }
 
@@ -68,7 +69,7 @@ const voiceFlags = (value: CborValue | undefined): boolean => typeof value === '
 /** The ops whose malformed frame the gateway drops without closing the socket: the server's ephemeral voice signals
  *  (L-GW-32, L-GW-33), the structure notice (op 54) and the away roster notice (op 55, AW4). A bad frame of any other op
  *  is still a protocol failure that closes it. */
-export const DROPPABLE_OPS: ReadonlySet<number> = new Set([Op.voiceState, Op.callRing, Op.communityChanged, Op.afkAway]);
+export const DROPPABLE_OPS: ReadonlySet<number> = new Set([Op.voiceState, Op.callRing, Op.communityChanged, Op.afkAway, Op.appBuild]);
 
 /** The op of a frame whose envelope is a four-element array with an op of at most 255, else null; nothing else is read. */
 export function frameOp(bytes: Uint8Array): number | null {
@@ -117,3 +118,7 @@ export function afkAwayOf(frame: Frame): AFKAwayFrame {
     || (since as bigint) > BigInt(Number.MAX_SAFE_INTEGER)) shape();
   return { communityId: community as Uint8Array, userId: user as Uint8Array, since: Number(since) };
 }
+
+/** Same bounded entry grammar as the verified web handler; never a URL or parent traversal. */
+export const validAppEntry = (value: unknown): value is string => typeof value === 'string' && value.length <= 512
+  && /^\/assets\/[A-Za-z0-9_./-]+\.js$/.test(value) && !value.includes('..');

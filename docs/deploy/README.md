@@ -26,6 +26,10 @@ Server settings (task 10c): upgrade `dillad` and `dillabot` together and reload 
   the older one cannot read the new permission bit, so it refuses commands from owners, administrators and DJs.
   Upgrade both together.
 
+Wire 5 adds ephemeral build, presence and coarse-call telemetry frames on the existing gateway. See
+[transport inventory and rollback](../realtime-transport.md) for transport behavior, authorization and native-state
+requirements. API and Bot artifacts must come from the same complete combined release.
+
 Account kind (task S1, wire 4): a tab opened before the upgrade keeps talking wire 3 and works as before; after a reload it
 negotiates wire 4 and starts checking each person's signed account kind. `dillabot` stays on wire 3 next to wire-4
 people, so the order above still holds. Once browsers run wire 4, do not roll `dillad` back below it (see
@@ -47,12 +51,13 @@ sequenceDiagram
     Note over Media: Existing rooms survive the API restart
     Rollout->>Media: Restart after API checks
     Note over Media: A media restart closes its rooms
-    loop On load, on visibility or network return, and while active
+    API-->>Tab: Verified build entry on gateway ready/resume
+    loop On load, visibility/network return, reconnect or a new build hint
         Tab->>API: GET /app-version.json (no-store)
         API-->>Tab: Current JavaScript entry path
     end
     alt Entry differs from the tab's loaded entry
-        Note over Tab: Wait for an open modal form to close
+        Note over Tab: Wait for modal forms and live/recovering calls to finish
         Tab->>Store: Save encrypted view, drafts, files, and call choice
         Tab->>API: Reload the page
         API-->>Tab: Serve the new web build
@@ -70,14 +75,14 @@ sequenceDiagram
     end
 ```
 
-Once a browser has loaded a release with the update watcher, it checks `/app-version.json` when
-the page opens or becomes visible, every 30 seconds while visible, and every 3 seconds during a
-voice call even if the tab is hidden. A changed entry triggers a per-tab encrypted checkpoint of
-the current view, drafts, selected attachments and call choice, followed by a reload and restore.
-An open modal form delays the reload until it closes. A browser without working checkpoint storage
-offers a manual reload instead. Screen sharing needs another click after rejoining because the
-browser requires a user gesture. A tab loaded before this watcher exists cannot update itself;
-tell those members to reload once after the first deployment.
+The current browser verifies `/app-version.json` on startup, foreground, network return and
+gateway reconnect, and when wire 5 supplies a new build entry. It never polls versions periodically.
+An unresolved new hint retries with bounded backoff; verification stops those retries. A changed
+entry waits for open modal forms and live/recovering calls, then checkpoints the view, drafts and
+selected attachments before reloading and restoring them. Pre-login pages and browsers without
+working checkpoint storage offer a manual reload. Screen sharing needs another click after
+rejoining because the browser requires a user gesture. An older tab retains its older updater
+until it reloads; reload it once to receive the current WSS-only activity and coarse-stats producers.
 
 The media sidecar keeps the SFU room alive during an API restart, but the API's signalling and TURN
 connections reset. The browser attempts to rejoin voice after a lost connection. Restarting the
@@ -598,6 +603,19 @@ and run `install.sh` inside it directly.
 
 ### Dilla Bot installation
 
+The Bot's `[rate_limits]` in `/etc/dillabot/bot.toml` also bounds its limiter
+caches: `device_cache_limit` defaults to 1,024, `target_cache_limit` to 2,048
+KeyPackage targets per device, and `global_target_cache_limit` to 16,384 targets
+per client. Zero or absent selects the default; negative or excessively large
+capacities fail configuration validation. A cache entry can be evicted only
+after five minutes idle, with its allowance fully replenished and no request
+waiting on it. Session renewal shares the device budget, including allowance
+spent before an anonymous token was bound to the device. Full caches defer
+before sending an HTTP request (`E_UNAVAILABLE`, retry after 1 second).
+Aggregate cache counts, evictions and capacity-deferral counters contain no
+tokens or identities; the Bot logs deferral milestones without flooding logs.
+
+
 The release includes `install-bot.sh` alongside `install.sh`. Run the Bot installer as root on the
 Linux host after `dillad` is installed and its instance is initialized. The installer downloads and
 checksum-verifies the architecture-matched `dillabot`, native `dilla-bot-core`, and
@@ -675,6 +693,16 @@ This is an operator procedure, not a coordinated Bot/dillad backup and restore a
 `dillad backup` does not include Bot config, credential or state, so a server restore alone is not a
 complete Bot restore. Keep the Bot archive protected: it includes the credential and database key.
 
+`dillabot doctor` reads `/etc/dillabot/bot.toml` by default, the file the installer writes and the
+unit passes to the service; it prints which config path it read. It reports a missing file
+(`no such file at PATH`), an invalid config and an unusable runtime credential as three different
+failures, and never prints the credential. Its YouTube tool check prints the `PATH` it searched.
+The installer runs the doctor with the service's `PATH` (an `Environment=PATH=` in the unit, else
+systemd's default from `systemctl show-environment`, else `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin`),
+so `pct exec`, whose `PATH` lacks `/usr/local/bin`, does not report installed tools as unavailable.
+Run by hand, `dillabot doctor` uses your shell's `PATH`; under `pct exec` run it as
+`PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin dillabot doctor`.
+
 `dillabot doctor --config=/etc/dillabot/bot.toml` checks the local owner-only runtime credential,
 native identity helper, compiled WASI identity module, optional Spotify PCM helper and private
 state directory. The installer runs it as `dillabot` before enabling the unit. It does not contact
@@ -711,12 +739,15 @@ sudo -u dillabot dillabot doctor --config=/etc/dillabot/bot.toml --youtube
 That lock pins `yt-dlp` 2026.10.21 and its matching `yt-dlp-ejs` 0.8.0 with wheel hashes.
 `--youtube` checks that exact yt-dlp version, Node 22 or newer, Python 3.10 or newer, `bwrap`,
 `ffmpeg`, and FFmpeg's `libopus` encoder are locally available. The recorded host smoke used Node
-24.15.0, Python 3.14.8, bubblewrap 0.13.1 and FFmpeg 9.0.2. This doctor check does not inspect the
-installed EJS package, test unprivileged namespace support, contact YouTube, or qualify playback;
+24.15.0, Python 3.14.8, bubblewrap 0.13.1 and FFmpeg 9.0.2. `--youtube` also runs
+`yt-dlp --version` through the real isolated metadata runner to test sandbox startup without
+contacting YouTube. `youtube_sandbox` reports OK or FAIL with a failure class and stderr
+collapsed to one printable line and truncated to 512 bytes. It does not inspect the
+installed EJS package or qualify playback;
 the pinned pair must be installed together from the requirements file. YouTube remains optional,
 so a missing dependency appears as a `WARN` in the normal doctor and does not block service
 installation. `--youtube` makes these checks required and returns a failure if a dependency is
-missing or outside the checked minimum/version.
+missing, outside the checked minimum/version, or unable to start inside the sandbox.
 
 The earlier 2026.8.19 pin resolved a video and captured a bounded PCM sample on 2026-10-22, but a
 later integrated Bot run found yt-dlp 2025.09.26 failed and a direct test with 2026.10.21 succeeded.

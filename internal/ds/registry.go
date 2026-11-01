@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/jonasthim/dilla/internal/auth"
+	botaccess "github.com/jonasthim/dilla/internal/bot/access"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
@@ -1288,11 +1289,11 @@ func (d *DS) Close(ctx context.Context, groupID id.ID) error {
 	return d.states.evict(ctx, groupID)
 }
 
-// ErrNotAlone is CloseIfAlone's refusal: the device is not the group's only current leaf.
-var ErrNotAlone = errors.New("ds: the device is not the group's only current leaf")
+// ErrNotAlone is CloseIfAlone's refusal: the device is not the group's only current non-bot leaf.
+var ErrNotAlone = errors.New("ds: the device is not the group's only current non-bot leaf")
 
-// CloseIfAlone is Close on the condition that deviceID holds the group's only current leaf
-// (protocol/09 § Voice, `DELETE /v1/calls/{call_id}?if_alone=1`): any other member that is not
+// CloseIfAlone is Close on the condition that deviceID holds the group's only current non-bot leaf
+// (protocol/09 § Voice, `DELETE /v1/calls/{call_id}?if_alone=1`): any other non-bot member that is not
 // removed, a joiner whose external commit has landed included, or no current leaf of deviceID,
 // refuses it with ErrNotAlone. The members are read under the group lock that every commit takes,
 // so no commit lands between the check and the close; a commit that comes after it finds the
@@ -1314,7 +1315,11 @@ func (d *DS) CloseIfAlone(ctx context.Context, groupID, deviceID id.ID) error {
 	if err != nil {
 		return err
 	}
-	if !SoleLeaf(members, row.Epoch, deviceID) {
+	sole, err := SoleLeaf(ctx, d.opts.Store, members, row.Epoch, deviceID)
+	if err != nil {
+		return err
+	}
+	if !sole {
 		return ErrNotAlone
 	}
 	if err := d.opts.Store.CloseGroup(ctx, groupID, d.now()); err != nil {
@@ -1324,19 +1329,30 @@ func (d *DS) CloseIfAlone(ctx context.Context, groupID, deviceID id.ID) error {
 }
 
 // SoleLeaf reports whether deviceID holds a current leaf of a group at epoch (added at or before
-// it, not removed) and no other member is left in it (CloseIfAlone's rule).
-func SoleLeaf(members []store.MemberRow, epoch uint64, deviceID id.ID) bool {
+// it, not removed) and no other non-bot member is left in it (CloseIfAlone's rule).
+// Unknown accounts refuse the check rather than being assumed to be bots.
+func SoleLeaf(ctx context.Context, repo store.Repository, members []store.MemberRow, epoch uint64, deviceID id.ID) (bool, error) {
 	sole := false
 	for _, m := range members {
 		if m.RemovedEpoch != nil {
 			continue
 		}
 		if m.DeviceID != deviceID {
-			return false
+			bot, err := botaccess.IsBotUser(ctx, repo, m.UserID)
+			if errors.Is(err, store.ErrNotFound) {
+				return false, nil
+			}
+			if err != nil {
+				return false, err
+			}
+			if !bot {
+				return false, nil
+			}
+			continue
 		}
 		if m.AddedEpoch <= epoch {
 			sole = true
 		}
 	}
-	return sole
+	return sole, nil
 }

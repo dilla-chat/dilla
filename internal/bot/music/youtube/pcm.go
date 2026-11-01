@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/jonasthim/dilla/internal/bot/client"
 )
 
 const (
@@ -38,6 +41,7 @@ func NewBoundedPCMReader(ctx context.Context, source io.ReadCloser, maxBytes int
 	if ctx == nil || source == nil || maxBytes <= 0 {
 		return nil, ErrPCMReaderInput
 	}
+	ctx = client.WithoutCooperativeStop(client.WithBackground(ctx))
 	r := &BoundedPCMReader{ctx: ctx, source: source, limit: maxBytes, done: make(chan struct{})}
 	go func() {
 		select {
@@ -88,6 +92,8 @@ func (r *BoundedPCMReader) Close() error {
 // external path is a bounded CONNECT broker restricted to public YouTube hosts.
 // Bubblewrap and Python 3 are explicit host prerequisites; absence fails closed.
 type PCMStarter struct {
+	// Logger carries installation-scoped sandbox diagnostics. Nil uses slog.Default.
+	Logger      *slog.Logger
 	Bubblewrap  string
 	Python      string
 	YTDLP       string
@@ -106,5 +112,5 @@ func (s PCMStarter) Start(ctx context.Context, source string) (io.ReadCloser, er
 	if err != nil || kind != "video" || canonical != source {
 		return nil, ErrInvalidInput
 	}
-	return s.startIsolated(ctx, canonical)
+	return s.startIsolated(WithDiagnosticLogger(ctx, s.Logger), canonical)
 }

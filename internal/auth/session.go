@@ -872,7 +872,15 @@ func (s *Sessions) Resolve(ctx context.Context, bearer string) (Session, error) 
 	if bearer == "" {
 		return Session{}, server.Errorf(server.CodeUnauthenticated, "")
 	}
-	sum := TokenHash(bearer)
+	return s.ResolveHash(ctx, TokenHash(bearer))
+}
+
+// ResolveHash applies the same current-session authority checks to a gateway's stored opaque
+// hash. It is an internal transport adapter, never an HTTP credential or a client-supplied value.
+func (s *Sessions) ResolveHash(ctx context.Context, sum []byte) (Session, error) {
+	if len(sum) != 32 {
+		return Session{}, server.Errorf(server.CodeUnauthenticated, "")
+	}
 	now := s.clk.Now()
 	row, err := s.repo.GetSessionByHash(ctx, sum, now.Unix())
 	if err != nil {
@@ -997,7 +1005,7 @@ func (s *Sessions) currentBotBinding(ctx context.Context, session store.SessionR
 // RecordCapabilities persists a negotiated selection against the exact bearer session hash.
 // The caller must first resolve the bearer; a deleted/revoked row then makes this write fail.
 func (s *Sessions) RecordCapabilities(ctx context.Context, tokenHash []byte, wire, e2ee, media uint64) error {
-	if len(tokenHash) != 32 || wire < 2 || wire > 4 || e2ee != 1 || media != 1 {
+	if len(tokenHash) != 32 || wire < 2 || wire > 5 || e2ee != 1 || media != 1 {
 		return errors.New("auth: invalid negotiated capabilities")
 	}
 	return s.repo.SetSessionVersions(ctx, tokenHash, wire, e2ee, media)

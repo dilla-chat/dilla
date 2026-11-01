@@ -41,7 +41,7 @@ func (s *Session) MemberProfile(ctx context.Context, community, user id.ID) (Mem
 	if err != nil {
 		return out, false, err
 	}
-	raw, _, err := s.c.do(ctx, s.token, http.MethodGet, "communities/"+cid+"/members/"+uid, nil, nil, MaxSmallBody, false)
+	raw, _, err := s.do(ctx, http.MethodGet, "communities/"+cid+"/members/"+uid, nil, nil, MaxSmallBody, false)
 	if err != nil {
 		var apiErr *APIError
 		if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {

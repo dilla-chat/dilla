@@ -71,7 +71,7 @@ type lifecycleHTTP interface {
 	InstanceLimits(context.Context) (client.Limits, error)
 	Challenge(context.Context, id.ID) (client.SessionChallenge, error)
 	EstablishSession(context.Context, id.ID, []byte, uint64, []byte, any, []byte) (client.DeviceSession, error)
-	NewSession(string) (lifecycleSession, error)
+	NewSession(string, id.ID) (lifecycleSession, error)
 }
 
 type productionIdentityHTTP struct{ c *client.Client }
@@ -89,8 +89,8 @@ func (h productionIdentityHTTP) Challenge(ctx context.Context, device id.ID) (cl
 func (h productionIdentityHTTP) EstablishSession(ctx context.Context, device id.ID, nonce []byte, purpose uint64, signature []byte, registration any, login []byte) (client.DeviceSession, error) {
 	return h.c.EstablishSession(ctx, device, nonce, purpose, signature, registration, login)
 }
-func (h productionIdentityHTTP) NewSession(token string) (lifecycleSession, error) {
-	return h.c.Session(token)
+func (h productionIdentityHTTP) NewSession(token string, device id.ID) (lifecycleSession, error) {
+	return h.c.SessionForDevice(token, device)
 }
 
 // LifecycleOptions controls caller-bounded retries and testable session renewal.
@@ -329,7 +329,7 @@ func (l *Lifecycle) Ensure(ctx context.Context) (LifecycleResult, error) {
 			enrolled, observation, enrollErr := l.runtime.EnrollObserved(ctx, l.install, state.EnrollRequest, state.ClaimID, boot.UMKPublic[:], boot.SSKPublic[:], boot.SigUMKSSK[:], registration)
 			if enrollErr != nil {
 				var apiErr *client.APIError
-				if errors.As(enrollErr, &apiErr) && apiErr.Outcome == client.OutcomeDefinitive {
+				if client.IsDeferred(enrollErr) || errors.As(enrollErr, &apiErr) && apiErr.Outcome == client.OutcomeDefinitive {
 					state.EnrollAttempted = false
 					_, _ = l.saveState(ctx, revision, state)
 				}
@@ -612,7 +612,7 @@ func (l *Lifecycle) establishSession(ctx context.Context, user, device id.ID, di
 		return nil, err
 	}
 	if stored.Token() != "" && !forceRenew && stored.Expires > uint64(max(int64(0), l.now().Unix()+int64(l.renewMargin/time.Second))) {
-		s, e := l.http.NewSession(stored.Token())
+		s, e := l.http.NewSession(stored.Token(), device)
 		if e != nil {
 			return nil, e
 		}
@@ -650,7 +650,7 @@ func (l *Lifecycle) establishSession(ctx context.Context, user, device id.ID, di
 	if err = l.native.StoreSession(ctx, session.Token, session.Expires, session.IdleExpires); err != nil {
 		return nil, err
 	}
-	return l.http.NewSession(session.Token)
+	return l.http.NewSession(session.Token, device)
 }
 
 func (l *Lifecycle) ensureKeyPackages(ctx context.Context, session lifecycleSession, st *identityState, revision *uint64, inventory client.KeyPackageInventory) (bool, error) {

@@ -42,3 +42,4 @@ packages/client-core/harness-dist/
 /dillad
 # the testkit binary the browser and harness jobs download (npm run ci:local copies it here too)
 /artifacts/
+/dillabot

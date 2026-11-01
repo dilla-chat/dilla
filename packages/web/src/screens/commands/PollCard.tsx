@@ -138,7 +138,9 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
 
       const retained = [...attemptMap(props.client)].find(([key]) => key.startsWith(`${identityScope}:`))?.[1];
       if (!busyRef.current || retained === undefined || poll.closed) setSelected(retained?.kind === 'vote' ? retained.choices : poll.myChoices ?? []);
-      setError(!busyRef.current && retained !== undefined ? t(retained.kind === 'vote' ? 'poll.voteUncertain' : 'poll.uncertain') : ''); return poll;
+      // Refreshes update the record without dismissing a mutation or voter-read notice.
+      if (!busyRef.current && retained !== undefined) setError(t(retained.kind === 'vote' ? 'poll.voteUncertain' : 'poll.uncertain'));
+      return poll;
     } catch { if (generation.current === current) invalidate(); return null; }
   }, [utilities, isSameOwner, invalidate, identityScope, sourceAccessible, accessScope, props.client, props.authorId, props.pollId, props.channelId, props.threadId]);
   useEffect(() => {
@@ -153,9 +155,10 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
     const currentVoterGeneration = voterGeneration;
     // A complete authenticated refresh can span several Bot gateway rounds. A
     // cadence tick must not supersede that read before its record can be shown.
+    // Mutations also own their refresh until the action finishes.
     let pending = false;
     const update = async () => {
-      if (pending) return;
+      if (pending || busyRef.current) return;
       pending = true;
       try { await refresh(true); } finally { pending = false; }
     };
@@ -223,7 +226,7 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
       else if (definiteMutationError(cause, immutable, 73)) { rememberAttempt(null); await refresh(); setError(t('poll.conflict')); }
       else if (cause instanceof BotUtilitiesUncertainMutationError) {
         const recovered = await reconcile(immutable, 73);
-        if (recovered === 'accepted') rememberAttempt(null);
+        if (recovered === 'accepted') { rememberAttempt(null); setError(''); }
         else if (recovered === 'conflict') { rememberAttempt(null); await refresh(); setError(t('poll.conflict')); }
         else if (recovered !== 'stale') { await refresh(); setError(t('poll.voteUncertain')); }
       } else { await refresh(); setError(t('poll.voteUncertain')); }
@@ -231,24 +234,39 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
   };
   const close = async () => {
     if (!canClose || busy || (attempt !== null && attempt.kind !== 'close')) return;
-    const pending = attempt ?? { id: requestId(), kind: 'close' as const, choices: [], revision: poll.revision.toString(), scope: scopeKey };
+    let pending = attempt ?? { id: requestId(), kind: 'close' as const, choices: [], revision: poll.revision.toString(), scope: scopeKey };
     if (pending.scope !== scopeKey || pending.kind !== 'close') return;
     rememberAttempt(pending); busyRef.current = true; setBusy(true); setError('');
-    let started = false; let accepted = false;
+    let started = false; let accepted = false; let refreshed = false;
     try { const caps = await utilities.capabilities(); if (!live() || caps.installationId !== installationId || caps.botUserId !== props.authorId) { await refresh(); return; }
       started = true;
-      const updated = await utilities.pollClose({ requestId: pending.id, pollId: poll.id, channelId: poll.channelId, threadId: poll.threadId, revision: pending.revision });
+      let updated: PollSummary;
+      try {
+        updated = await utilities.pollClose({ requestId: pending.id, pollId: poll.id, channelId: poll.channelId, threadId: poll.threadId, revision: pending.revision });
+      } catch (cause) {
+        if (!live() || !definiteMutationError(cause, pending, 74) || !(cause instanceof BotUtilitiesStatusError) || cause.status !== 4) throw cause;
+        // A confirmed revision refusal has no effect. Read current results and
+        // make one fresh close attempt; uncertain outcomes retain their exact ID.
+        rememberAttempt(null);
+        const latest = await refresh(); refreshed = true;
+        if (!live()) return;
+        if (latest === null) { setError(t('poll.readError')); return; }
+        if (latest.closed) { setError(''); return; }
+        pending = { ...pending, id: requestId(), revision: latest.revision.toString() };
+        rememberAttempt(pending);
+        updated = await utilities.pollClose({ requestId: pending.id, pollId: latest.id, channelId: latest.channelId, threadId: latest.threadId, revision: pending.revision });
+      }
       accepted = true;
       const after = await utilities.capabilities(); if (!live() || after.installationId !== installationId || after.botUserId !== props.authorId) return;
-      setRecord({ client: props.client, scope: scopeKey, poll: updated }); rememberAttempt(null); showToast(t('poll.closed')); await refresh(); }
+      setRecord({ client: props.client, scope: scopeKey, poll: updated }); rememberAttempt(null); setError(''); showToast(t('poll.closed')); }
     catch (cause) {
       if (!live()) return;
       if (accepted || (attempt === null && !started)) { rememberAttempt(null); await refresh(); setError(t('poll.readError')); }
-      else if (definiteMutationError(cause, pending, 74)) { rememberAttempt(null); await refresh(); setError(t('poll.closeConflict')); }
+      else if (definiteMutationError(cause, pending, 74)) { rememberAttempt(null); if (!refreshed) await refresh(); setError(t('poll.closeConflict')); }
       else if (cause instanceof BotUtilitiesUncertainMutationError) {
         const recovered = await reconcile(pending, 74);
-        if (recovered === 'accepted') rememberAttempt(null);
-        else if (recovered === 'conflict') { rememberAttempt(null); await refresh(); setError(t('poll.closeConflict')); }
+        if (recovered === 'accepted') { rememberAttempt(null); setError(''); }
+        else if (recovered === 'conflict') { rememberAttempt(null); if (!refreshed) await refresh(); setError(t('poll.closeConflict')); }
         else if (recovered !== 'stale') { await refresh(); setError(t('poll.uncertain')); }
       } else { await refresh(); setError(t('poll.uncertain')); }
     }

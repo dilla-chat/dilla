@@ -642,6 +642,9 @@ async function collapsedCategory(page: Page, serverPath: string): Promise<void> 
   await channelRow(page, RAID).click();
   await expect.soft(channelRow(page, RAID), 'the current row stays in a collapsed category').toBeVisible();
   await expect.soft(channelRow(page, NEWS)).toHaveCount(0);
+  // The read lands once the open timeline has loaded (Shell's markRead effect); leaving before then leaves it unread, so
+  // the row rightly stays (2026-10-30 CI, Firefox: 'general' clicked 56 ms after #raid, its log still aria-busy).
+  await expect(nav(page).locator('.d-chrow', { hasText: RAID }), '#raid is read while open').toHaveAttribute('data-unread', '0', { timeout: WAIT });
   // Leave it: the read row folds too.
   await channelRow(page, 'general').click();
   await expect.soft(channelRow(page, RAID), 'once read and left, the row folds away').toHaveCount(0);

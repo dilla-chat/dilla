@@ -107,7 +107,7 @@ func TestSessionNegotiationRejectsUnsupportedWithoutReplacingSelection(t *testin
 	if rec.Code != http.StatusBadRequest || refusalCode(t, rec) != "E_VERSION" {
 		t.Fatalf("wire 1 negotiation = %d %q, want 400 E_VERSION", rec.Code, refusalCode(t, rec))
 	}
-	assertNegotiationVersionError(t, rec, [][]uint64{{4, 3, 2}, {1}, {1}})
+	assertNegotiationVersionError(t, rec, [][]uint64{{5, 4, 3, 2}, {1}, {1}})
 	s, err := deps.Sessions.Resolve(context.Background(), token)
 	if err != nil {
 		t.Fatal(err)

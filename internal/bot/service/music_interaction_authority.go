@@ -60,7 +60,7 @@ func (a *CommunityMusicInteractionAuthority) CurrentCall(ctx context.Context, ch
 	if state.CallID == nil || state.GroupID == nil {
 		return MusicCallBinding{ChannelID: channel}, nil
 	}
-	return MusicCallBinding{CallID: *state.CallID, ChannelID: channel, Active: true}, nil
+	return MusicCallBinding{CallID: *state.CallID, GroupID: *state.GroupID, ChannelID: channel, Active: true}, nil
 }
 
 //nolint:nilerr // Invalid client input intentionally maps to an unavailable protocol result.

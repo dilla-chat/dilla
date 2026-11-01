@@ -281,6 +281,38 @@ pub(super) fn resolve(u: &UnitScope<'_>, r: Resolution) -> Result<(), ClientErro
     Ok(())
 }
 
+/// Resolve only abandoned external-join uploads; this never changes MLS storage.
+/// The discard hash is identical to bot_group_discard's empty-argument resolution.
+pub(super) fn discard_pending_external_joins(
+    c: &rusqlite::Connection,
+    group_id: &[u8; 16],
+) -> Result<(), StorageError> {
+    let mut e = Encoder::new();
+    e.array(2).uint(2).array(0);
+    let hash = sha256(&e.into_vec());
+    c.execute(
+        "UPDATE app_bot_intents SET state=2,result=NULL,resolution_hash=?2 WHERE group_id=?1 AND kind=5 AND state=0",
+        params![group_id.as_slice(), hash.as_slice()],
+    )?;
+    Ok(())
+}
+
+/// Discard every pending Bot upload whose staged MLS state is being forgotten.
+/// Create, join and commit abort all use the same empty-argument discard hash.
+pub(super) fn discard_pending_for_forgotten_group(
+    c: &rusqlite::Connection,
+    group_id: &[u8; 16],
+) -> Result<(), StorageError> {
+    let mut e = Encoder::new();
+    e.array(2).uint(2).array(0);
+    let hash = sha256(&e.into_vec());
+    c.execute(
+        "UPDATE app_bot_intents SET state=2,result=NULL,resolution_hash=?2 WHERE group_id=?1 AND kind IN (2,5,9) AND state=0",
+        params![group_id.as_slice(), hash.as_slice()],
+    )?;
+    Ok(())
+}
+
 fn intent_kind(
     core: &ClientCore,
     operation_id: &[u8; 16],
@@ -392,6 +424,24 @@ impl ClientCore {
                 .uint(policy)
                 .bytes(group_info)
                 .bytes(ratchet_tree);
+        })?;
+        // Repair pre-fix orphan records only after the row has been forgotten or removed.
+        // ACTIVE, NEEDS_RESYNC, REGISTERING and especially live JOINING rows are untouched.
+        self.write(|_, u| {
+            u.with_conn(|c| {
+                let state: Option<i64> = c
+                    .query_row(
+                        "SELECT state FROM app_groups WHERE group_id=?1",
+                        [group_id.as_slice()],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                if state.is_none() || state == Some(super::groups::STATE_GONE) {
+                    discard_pending_external_joins(c, group_id)?;
+                }
+                Ok(())
+            })?;
+            Ok(())
         })?;
         if let Some(result) = retry(self, intent, group_id)? {
             return Ok(result);

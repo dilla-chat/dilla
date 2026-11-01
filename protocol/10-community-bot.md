@@ -36,7 +36,7 @@ Operation, arguments, channel requirement, mutation:
 - 12 music.enqueue: [input tstr(1..2048 UTF8 bytes)], channel required, mutation
 - 13 music.pause: [], channel required, mutation
 - 14 music.resume: [], channel required, mutation
-- 15 music.skip: [], channel required, mutation
+- 15 music.skip: [] or [expected_current_item:tstr], channel required, mutation
 - 16 music.stop: [], channel required, mutation
 - 17 music.seek: [position_ms uint], channel required, mutation
 - 18 music.volume: [percent uint 0..100], channel required, mutation
@@ -256,7 +256,9 @@ For `music.search`, successful data is `[1, tracks]`, with at most five YouTube
 track tuples. Each tuple is `[queue_item_id, provider, canonical_track_id, title,
 artist, album, duration_ms, requester_id]`, matching the track tuple in
 `music.state`; search tuples use the resolver's stable `yt:<video-id>` ID and an
-empty requester ID. YouTube `canonical_track_id` is the raw 11-character video
+empty requester ID. A flat search suggestion may report duration 0 when unknown;
+enqueue resolves complete metadata and still requires a valid duration.
+YouTube `canonical_track_id` is the raw 11-character video
 ID stored in the queue; the playback adapter converts it to the validated watch
 URL used by the provider. The entire data array is at most 2400 encoded bytes; if the
 provider results do not fit, the server returns the largest prefix that fits.
@@ -284,7 +286,63 @@ read the stamp only when slots 10 and 11 are present, and ignore later slots.
 Reading the state requires the actor's current View channel permission on the
 voice channel, resolved with its overrides.
 
-`music.announce` posts the one public "started music" message: body
+Before starting playback, clients may use the existing `music.announce` request to
+register the command's text channel. While the queue is idle or paused, the Bot
+loads the queue and checks its live revision, DJ authority, and the named text
+channel's view, send and history permissions and MLS binding. Any authorized DJ
+may register a destination for a paused track, including another member's track;
+registration does not spend or require a started-announcement limiter slot. It acknowledges registration with CBOR `[]` (`0x80`)
+without posting a started card. There is no new request field. A refused
+registration does not block Resume or change an existing destination. Active
+playback retains the normal requester, announcement-window and rate checks;
+registration changes only after an accepted announcement send.
+
+Classified track-specific start failures remove an item durably and try the
+next item, ignoring repeat for failed items. Spotify may also skip when a
+pre-helper check proves the integration unconfigured or the requester has no
+linked account. Provider-wide, deployment, network, call, room, cancellation and
+deadline failures pause without removing the item. YouTube soft refusals such as
+"This content isn't available, try again later" pause. Spotify connection errors,
+its 35-second connection timeout and helper build configuration faults also
+pause; only the helper's genuine track-unavailable event permits a track skip.
+A start run tries each item at most once and is bounded by skip count, elapsed
+time and a consecutive-provider-failure circuit breaker; an exhausted queue is
+empty and paused. Stop and shutdown can interrupt a run between attempts.
+
+Skipped items from one start run produce one generic public notice through a
+bounded installation worker after the supervisor lock has been released. A
+single-item notice is `Couldn't play a track. Skipping.`; a batch is
+`Couldn't play {n} tracks. Skipping.` with the batch count in place of `{n}`. No title, requester, URL, provider detail or
+queue item identifier appears in the public message. The worker posts at most
+one notice per voice channel per ten seconds, drops and safely logs the oldest
+unprepared work on overflow, and posts nothing without a registered destination.
+Community, voice and item-derived operation/attempt identities and per-item
+tracking deduplicate repeated or overlapping batches. The in-memory dedupe cache
+is bounded; durable per-item reservations preserve deduplication after eviction.
+The existing encrypted
+native state journals prepared notices' exact body, timestamp, destination group
+and generation before sending, so timeout and restart recovery resume the same
+immutable attempt. `SendAuthorized` checks current call/DJ and text-channel
+authority immediately before preparation and upload. Call end, registrant leave
+and installation disable clear registration and revoke its grant. A transient
+voice transport disconnect, connection lifetime expiry or epoch refresh retains
+the registration for a reconnect; preflight still rechecks the current call and
+clears the grant when that call is definitively inactive. Registrations are bound
+to the active call's MLS group, so a fresh call in the same voice channel cannot
+inherit the previous destination. Server `ROOM_DELETED` and `ROOM_CLOSED`
+disconnect reasons clear the registration immediately; server shutdown and media
+or transport failure retain it for reconnect. An unresolved
+attempt first recovers an existing receipt or uses a resolve-only request to
+close the exact prepared ciphertext without uploading. Once receipt lookup has
+returned not-found, a definitive resolve refusal (missing/closed group, forbidden
+or leaf no longer current) drops the notice from the queue and journal with a
+bounded diagnostic. Every prepared notice also has at most six send/recovery
+attempts, durably reserved before each send so restarting cannot reset the bound.
+Exhausted notices are dropped and logged. Ambiguous native journal
+transactions retain their original transaction ID and body until their outcome
+is known, before a newer notification snapshot is written.
+
+After playback starts, `music.announce` posts the one public "started music" message: body
 `Music started.\n[dilla-music:v1:<voice_channel>:<requester>:<queue_item>]`,
 sent through the Bot's MLS group with a durable receipt, into the named text
 channel's group. The Bot accepts it only from the requester of the current,
@@ -329,6 +387,33 @@ and role hierarchy in the same transaction that records the event and receipt.
 The source sequence and group determine a stable operation ID; an exact replay
 returns the original receipt, including after the request acceptance window.
 Timeouts update the member timeout row, which applies to every upload class.
+
+Both this route and `POST /v1/groups/{group}/moderation/removals` accept
+`?receipt_only=1` for reconciliation. They validate the same authenticated
+installation/device and exact operation payload (including the signed removal
+proof). An existing matching receipt returns its original result. An absent
+receipt returns `404 E_NOT_FOUND` before any new effect, regardless of whether
+the source would otherwise still be eligible. Unknown transport results remain
+retryable; a lookup is never promoted into a new acceptance request.
+
+The Bot checkpoints rolling observations, source deduplication, the processed
+frontier and any pending decision in one protected native state transaction
+before acknowledging a delivery. There are 256 fixed actor shards (each bounded
+by the native 256 KiB value limit) and 1,024 reusable pending slots per
+installation. Full or unpersistable state defers intake before acknowledgement;
+logs expose only the refusal stage and counter. Activation barriers are persisted
+before a configuration update is acknowledged and reused after restart. A legacy
+installation without a checkpoint seeds one conservative barrier. Pending
+old-policy decisions can reconcile existing receipts but cannot authorize new
+effects after disablement, policy change or source expiry. Accepted case receipts
+are saved before evidence attachment, allowing local evidence recovery after
+revocation. Protected case format v3 adds an explicit enforcement-refused flag;
+v2 records remain readable. Checkpoint-only native transactions in this new
+area-8 namespace retain their latest 64 transaction receipts; configuration and
+command receipts keep their existing retention. An older checkpoint retry is
+still guarded by CAS revisions and recovered through row/frontier reconciliation.
+Rolling/dedup snapshots omit observations outside their evaluation windows.
+None of these state formats changes MLS or wire versions.
 
 The server can verify the source message and authorization, but it cannot inspect
 the encrypted message or independently attest that a listed rule matched. Rule
@@ -875,8 +960,11 @@ resolved session's negotiated wire >=3. Missing/older capability yields
 `400 E_VERSION` with `supported=[3]`, allowing the UI to show an upgrade action.
 A request header containing a version is not evidence of negotiation. Existing
 wire-2 sessions can continue using unaffected communities, DMs and account routes.
-The shipping client advertises [3,2], selects the highest supported version, and
+The shipping human client advertises [5,4,3,2], selects the highest supported version, and
 retains an explicit bot-unavailable/upgrade state when selected wire is 2.
+Managed Bots continue to negotiate exactly wire 3. Wires 4 and 5 preserve the Bot
+operations, including music controls and announcement registration; wire 5 adds
+the human client's ephemeral transport described in `02` and `09`.
 Runtime provisioning credentials are a separate scope, never a device session or
 instance-admin bearer. Bot runtime claims and enrollment require the wire-3 body
 contract directly; enrolled bot actions require the normal negotiated session.
@@ -1531,3 +1619,35 @@ pass retries, and new playback still requires fresh call admission. Text-source
 Call-group membership still follows the normal external-join sequence. A helper check
 does not authorize a server request or mint media credentials; the server's current-leaf
 gate remains in force.
+
+### Immediate music controls
+
+Pause (op 13) and skip (op 15) act on the current authorized queue under the
+playback supervisor's state lock. Their required revision field is advisory;
+clients may send 0 without first reading state. Playback advancement by the Bot
+cannot cause a revision conflict for these controls. The Bot rechecks the live
+call and DJ authority before applying them. Other queue mutations retain their
+revision preconditions. Skip accepts an optional current item ID (32 lowercase
+hex characters, nonzero), or an empty string for a visibly empty player. Under
+the same state lock, a mismatched ID succeeds without advancing or writing the
+queue and returns the current snapshot. Clients bind a skip to the item already
+visible locally; concurrent presses or DJs targeting that item advance once.
+Legacy requests with no argument remain unconditional. Immediate limiter
+priority begins only after the initial CanUse and CanDJ checks pass.
+
+A successful pause or skip may return a snapshot v1 in its response data instead
+of the empty mutation receipt. The response revision must match the snapshot.
+Clients use that authenticated snapshot directly; an empty receipt retains the
+state-read fallback for Bots that do not return a snapshot with a control.
+The production handler delegates durable reconciliation to the supervisor
+without an additional handler or runtime state read. If a reload's resend
+conflicts with the immutable durable request body, the client reconciles its
+existing authenticated receipt; missing or failed receipt reads stay uncertain.
+Provider startup runs outside the interaction drain and the supervisor state
+lock, allowing controls to interrupt an in-progress start.
+
+Snapshots that cannot fit all upcoming items within the 2400-byte response data
+limit contain the largest queue prefix that fits, plus an optional slot 12 with
+the total number of upcoming tracks. The stored queue is unchanged. Clients
+expose that total and identify a partial queue listing; within one installation,
+late snapshots cannot replace a newer authenticated revision.

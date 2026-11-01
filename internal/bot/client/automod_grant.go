@@ -25,7 +25,7 @@ func (s *Session) RedeemAutoModerationGrant(ctx context.Context, installation id
 	if err != nil {
 		return false, id.Zero, err
 	}
-	raw, _, err := s.c.do(ctx, s.token, http.MethodPost, "bot-runtime/installations/"+inst+"/automod-grants/redeem", nil, body, maxAutoModerationGrantResponse, true)
+	raw, _, err := s.do(ctx, http.MethodPost, "bot-runtime/installations/"+inst+"/automod-grants/redeem", nil, body, maxAutoModerationGrantResponse, true)
 	if err != nil {
 		return false, id.Zero, err
 	}

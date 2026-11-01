@@ -26,7 +26,7 @@ func (s *Session) GrantJoinRole(ctx context.Context, community, installation, me
 	if err != nil {
 		return JoinRoleGrantReceipt{}, false, ErrProtocol
 	}
-	raw, status, err := s.c.do(ctx, s.token, http.MethodPost, "communities/"+community.String()+"/bot/join-role-grants", nil, body, MaxSmallBody, true)
+	raw, status, err := s.do(ctx, http.MethodPost, "communities/"+community.String()+"/bot/join-role-grants", nil, body, MaxSmallBody, true)
 	if err != nil {
 		return JoinRoleGrantReceipt{}, false, err
 	}

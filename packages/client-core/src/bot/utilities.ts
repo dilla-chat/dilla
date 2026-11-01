@@ -231,13 +231,11 @@ export function decodeBotUtilityCapabilities(data: Uint8Array, expected?: Partia
     const installationId = readId(installation);
     const botUserId = readId(bot);
     if (uint(generation) !== 1n) fail('invalid-response');
-    const operations = list(rawOps, 0, KNOWN_OPERATIONS.size).map(value => {
-      const operation = uint(value, 0n, 255n);
-      const n = Number(operation);
-      if (!KNOWN_OPERATIONS.has(n)) fail('invalid-response');
-      return n;
-    });
-    for (let index = 1; index < operations.length; index++) if (operations[index] <= operations[index - 1]) fail('invalid-response');
+    // Structure and types stay strict (at most 32 strictly ascending uint8 codes); a code this client does not
+    // know is a newer Bot's operation, so it is dropped rather than rejecting the whole report.
+    const reported = list(rawOps, 0, 32).map(value => Number(uint(value, 0n, 255n)));
+    for (let index = 1; index < reported.length; index++) if (reported[index] <= reported[index - 1]) fail('invalid-response');
+    const operations = reported.filter(n => KNOWN_OPERATIONS.has(n));
     if (expected?.installationId !== undefined && installationId !== idText(expected.installationId)) fail('binding-mismatch');
     if (expected?.botUserId !== undefined && botUserId !== idText(expected.botUserId)) fail('binding-mismatch');
     return { version: Number(uint(version)) as 1, installationId, botUserId, supportedOperations: operations };

@@ -860,6 +860,72 @@ describe('membership loss: a kicked device (rule 7, INTEGRATION-SEAMS-01)', () =
     expect(d.membership).toEqual([{ group: toHex(g), status: 'resyncing' }]);
   });
 
+  it('does not repeat a repaired membership loss from a delayed moderation-feed refusal', async () => {
+    const d = device(ds, clock, ME);
+    const g = await openRegistered(ds, d);
+    ds.kick(g, ME.device);
+    ds.readmit(ME.device);
+    const started = deferred(); const release = deferred();
+    const original = d.engine.deps.routes.getModerationRemovals;
+    let feedReads = 0;
+    d.engine.deps.routes.getModerationRemovals = async (...args) => {
+      feedReads += 1;
+      if (feedReads === 1) {
+        started.resolve(); await release.promise;
+        throw httpError(404, 'E_NOT_FOUND');
+      }
+      return original(...args);
+    };
+    const opening = d.engine.openChannel({ communityId: COMMUNITY, channelId: CHANNEL, textGroupId: g });
+    await started.promise;
+    // This work is already on the group lane when the feed's refusal is
+    // delivered. Its proposal read repairs the leaf before open's repair job.
+    const repaired = d.engine.runOnGroup(g, () => d.engine.commitNow(g, 0));
+    let peerSeq = 0n;
+    ds.inject('postResync', { after: () => { peerSeq = ds.peerSend(g, PEER, 'between repairs'); } });
+    release.resolve();
+    await Promise.all([opening, repaired]); await settle();
+    expect.soft(count('postResync')).toBe(1);
+    expect.soft(d.core.bodies(g)).toEqual(['between repairs']);
+    expect(d.core.group(g)?.nextSeq).toBe(peerSeq + 1n);
+    expect(feedReads).toBeGreaterThanOrEqual(2);
+  });
+
+  it('does not let another channel recovery hide a current membership loss', async () => {
+    const d = device(ds, clock, ME);
+    const first = await openRegistered(ds, d);
+    const second = await openRegistered(ds, d, CHANNEL_2);
+    ds.kick(first, ME.device); ds.kick(second, ME.device); ds.readmit(ME.device);
+    const started = deferred(); const release = deferred();
+    const original = d.engine.deps.routes.getModerationRemovals;
+    let refused = false;
+    d.engine.deps.routes.getModerationRemovals = async (...args) => {
+      if (!refused && toHex(args[0]) === toHex(first)) {
+        refused = true; started.resolve(); await release.promise;
+        throw httpError(404, 'E_NOT_FOUND');
+      }
+      return original(...args);
+    };
+    const opening = d.engine.openChannel({ communityId: COMMUNITY, channelId: CHANNEL, textGroupId: first });
+    await started.promise;
+    await d.engine.runOnGroup(second, () => d.engine.commitNow(second, 0));
+    release.resolve(); await opening; await settle();
+    expect(ds.callsOf(ME.device, 'postResync').map((call) => call.group).sort()).toEqual([toHex(first), toHex(second)].sort());
+  });
+
+  it('does not start a new recovery after stop while a moderation read is in flight', async () => {
+    const d = device(ds, clock, ME); const g = await openRegistered(ds, d);
+    const started = deferred(); const release = deferred();
+    d.engine.deps.routes.getModerationRemovals = async () => {
+      started.resolve(); await release.promise; throw httpError(404, 'E_NOT_FOUND');
+    };
+    const opening = d.engine.openChannel({ communityId: COMMUNITY, channelId: CHANNEL, textGroupId: g });
+    const refused = expect(opening).rejects.toMatchObject({ code: 'E_SYNC_STOPPED' });
+    await started.promise; d.engine.stop(); release.resolve(); await refused;
+    expect(count('postResync')).toBe(0);
+    expect(d.core.group(g)?.state).toBe(2);
+  });
+
   it('a 404 on getProposals of an active group is a membership loss: the queued message is sent after the rejoin', async () => {
     const { d, g } = await kicked();
     ds.readmit(ME.device);

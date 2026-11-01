@@ -45,10 +45,27 @@ const button = (scope: Page | Locator, key: string, vars?: Record<string, string
   scope.getByRole('button', { name: copy(key, vars), exact: true });
 const dialogOf = (page: Page, key: string) => page.getByRole('dialog', { name: copy(key), exact: true });
 
+/**
+ * The first two codes' boxes once the list has settled. The Signal Dialog (#121) opens with d-modal, a 240 ms rise and
+ * scale; two separate boundingBox calls inside it read two frames of the animation (2026-10-30 CI: 2.6 px apart). So
+ * the animations around the list finish first, and both boxes come from one frame.
+ */
+async function codeBoxes(list: Locator): Promise<[{ x: number; y: number; width: number; height: number }, { x: number; y: number; width: number; height: number }]> {
+  await expect(list.nth(1)).toBeVisible({ timeout: WAIT });
+  return list.nth(0).evaluate(async (first) => {
+    const animations = (first.closest('dialog') ?? document.documentElement).getAnimations({ subtree: true })
+      .filter((animation) => Number.isFinite(animation.effect?.getComputedTiming().endTime));
+    await Promise.all(animations.map((animation) => animation.finished.catch(() => undefined)));
+    const second = first.parentElement?.children[1];
+    if (second === undefined) throw new Error('the backup codes are not on screen');
+    const box = (el: Element) => { const r = el.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; };
+    return [box(first), box(second)] as [ReturnType<typeof box>, ReturnType<typeof box>];
+  });
+}
+
 /** Flow 10 at 1280 (walk M2): the backup codes stand in two columns, the second code beside the first. */
 async function expectTwoColumns(list: Locator): Promise<void> {
-  const [first, second] = await Promise.all([list.nth(0).boundingBox(), list.nth(1).boundingBox()]);
-  if (first === null || second === null) throw new Error('the backup codes are not on screen');
+  const [first, second] = await codeBoxes(list);
   expect(Math.abs(first.y - second.y), 'the second code stands beside the first').toBeLessThan(2);
   expect(second.x).toBeGreaterThan(first.x + first.width - 1);
   for (const box of [first, second]) expect(box.height, 'a code on one line').toBeLessThan(40);
@@ -56,8 +73,7 @@ async function expectTwoColumns(list: Locator): Promise<void> {
 
 /** Task 10 (README §5.9): the onboarding card is the prototype's 400px, so its backup codes stand in one column, one per line. */
 async function expectOneColumn(list: Locator): Promise<void> {
-  const [first, second] = await Promise.all([list.nth(0).boundingBox(), list.nth(1).boundingBox()]);
-  if (first === null || second === null) throw new Error('the backup codes are not on screen');
+  const [first, second] = await codeBoxes(list);
   expect(second.y, 'the second code stands under the first').toBeGreaterThanOrEqual(first.y + first.height - 1);
   for (const box of [first, second]) expect(box.height, 'a code on one line').toBeLessThan(40);
 }

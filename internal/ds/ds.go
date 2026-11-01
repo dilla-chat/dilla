@@ -258,6 +258,9 @@ type TransactionalPostPolicy interface {
 type DS struct {
 	opts Options
 
+	// gauge is dilla_ds_proposals_outstanding's count (proposal_gauge.go).
+	gauge proposalGauge
+
 	// groupLocks serialises every mutation of one group. One commit per epoch is decided here and
 	// in SQL: the lock keeps two commits for the same epoch from both passing validation, and the
 	// epoch comparison inside the transaction is what makes it durable.
@@ -389,6 +392,12 @@ func New(o Options) (*DS, error) {
 func (d *DS) Start(ctx context.Context) error {
 	if _, err := d.SeedGateway(ctx); err != nil {
 		return err
+	}
+	// The outstanding-proposals gauge starts from SQL, not from zero: the sweep's voids of rows a
+	// previous process issued would otherwise drive it negative. A diagnostic never fails a start;
+	// the first Sweep re-seeds it.
+	if err := d.seedProposalGauge(ctx); err != nil {
+		d.log().Error("seeding the outstanding-proposals gauge failed; the first sweep retries", "err", err)
 	}
 	d.wg.Add(3)
 	go func() {

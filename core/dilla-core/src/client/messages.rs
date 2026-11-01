@@ -1278,29 +1278,6 @@ impl ClientCore {
         wire::decode_send_request(request_body)?;
         let binding = super::bot_intents::binding(self)?;
         let own = self.own()?;
-        let scope = self
-            .read(|c| group_row(c, group_id))?
-            .ok_or_else(not_found)?;
-        if (scope.kind != 0 && !(scope.kind == 3 && interaction_proof.is_some()))
-            || scope.state != STATE_ACTIVE
-            || scope.community_id.as_deref() != Some(binding.community_id.as_slice())
-        {
-            return Err(ClientError::new(
-                E_CORE_STATE,
-                "bot send group is outside its installation scope",
-            ));
-        }
-        if let Some((snapshot_wire, expected)) = interaction_proof {
-            if *group_id != *expected.group.as_bytes()
-                || scope.community_id.as_deref() != Some(expected.community.as_bytes().as_slice())
-            {
-                return Err(bot_send_conflict());
-            }
-            let loaded = self
-                .take_bot_interaction_group_verified(group_id, snapshot_wire, expected)?
-                .ok_or_else(not_found)?;
-            self.keep_group(*group_id, loaded);
-        }
         let request_hash: [u8; 32] = Sha256::digest(request_body).into();
         let op_key = bot_send_op_key(operation_id);
         let attempt_key = bot_send_attempt_key(operation_id, attempt_id);
@@ -1384,6 +1361,33 @@ impl ClientCore {
                 message,
             }
         };
+
+        // Exact pending/accepted retries above return already encrypted bytes after
+        // checking every durable operation binding. Only work that can prepare or
+        // encrypt a new attempt requires current active-group membership.
+        let scope = self
+            .read(|c| group_row(c, group_id))?
+            .ok_or_else(not_found)?;
+        if (scope.kind != 0 && !(scope.kind == 3 && interaction_proof.is_some()))
+            || scope.state != STATE_ACTIVE
+            || scope.community_id.as_deref() != Some(binding.community_id.as_slice())
+        {
+            return Err(ClientError::new(
+                E_CORE_STATE,
+                "bot send group is outside its installation scope",
+            ));
+        }
+        if let Some((snapshot_wire, expected)) = interaction_proof {
+            if *group_id != *expected.group.as_bytes()
+                || scope.community_id.as_deref() != Some(expected.community.as_bytes().as_slice())
+            {
+                return Err(bot_send_conflict());
+            }
+            let loaded = self
+                .take_bot_interaction_group_verified(group_id, snapshot_wire, expected)?
+                .ok_or_else(not_found)?;
+            self.keep_group(*group_id, loaded);
+        }
 
         let row = BotSendRow {
             state: BOT_SEND_PREPARING,
@@ -2915,6 +2919,194 @@ mod bot_send_intent_tests {
         );
         let (_, replay_upload) = upload_from_output(&replay);
         assert_eq!(replay_upload, upload);
+    }
+
+    fn send_metadata(core: &ClientCore) -> Vec<(String, Vec<u8>)> {
+        core.read(|c| {
+            let mut statement = c.prepare("SELECT k,v FROM app_meta ORDER BY k")?;
+            let rows = statement.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+        })
+        .expect("send metadata")
+    }
+
+    fn remove_send_group(conn: &ConnHandle, deleted: bool) {
+        let conn = conn.lock().expect("connection");
+        if deleted {
+            conn.execute(
+                "DELETE FROM app_groups WHERE group_id=?1",
+                [GROUP.as_slice()],
+            )
+            .expect("delete group");
+        } else {
+            conn.execute(
+                "UPDATE app_groups SET state=?1 WHERE group_id=?2",
+                params![STATE_GONE, GROUP.as_slice()],
+            )
+            .expect("leave group");
+        }
+    }
+
+    #[test]
+    fn exact_pending_and_accepted_send_replay_survives_left_or_deleted_group() {
+        for deleted in [false, true] {
+            for accepted in [false, true] {
+                let conn = connection();
+                let mut core = bot(conn.clone());
+                let request = request();
+                let first = core
+                    .bot_send_prepare(&OPERATION, &ATTEMPT, &GROUP, &request, 1_800_000_001, 7)
+                    .expect("prepare");
+                if accepted {
+                    let (_, upload) = upload_from_output(&first);
+                    let mut response = Encoder::new();
+                    response
+                        .array(3)
+                        .uint(1)
+                        .bytes(&[0x5a; 32])
+                        .uint(1_800_000_003);
+                    let accepted_receipt = receipt(ATTEMPT, &upload, 1, Some(&response.into_vec()));
+                    core.bot_send_receipt(&OPERATION, &accepted_receipt)
+                        .expect("accept original send");
+                }
+                drop(core);
+                remove_send_group(&conn, deleted);
+                let mut core = ClientCore::open(conn).expect("reopen after removal");
+                let metadata = send_metadata(&core);
+                let replay = core
+                    .bot_send_prepare(&OPERATION, &ATTEMPT, &GROUP, &request, 1_800_000_001, 7)
+                    .expect("replay original ciphertext after group removal");
+                assert_eq!(replay, first, "deleted={deleted}, accepted={accepted}");
+                assert_eq!(
+                    send_metadata(&core),
+                    metadata,
+                    "replay rewrote native metadata"
+                );
+
+                let mut changed = Encoder::new();
+                changed
+                    .array(4)
+                    .uint(0)
+                    .null()
+                    .text("changed body")
+                    .array(0);
+                let changed = changed.into_vec();
+                for (operation, attempt, body, now, generation) in [
+                    (OPERATION, ATTEMPT, changed.as_slice(), 1_800_000_001, 7),
+                    (OPERATION, ATTEMPT, request.as_slice(), 1_800_000_002, 7),
+                    (OPERATION, ATTEMPT, request.as_slice(), 1_800_000_001, 8),
+                    ([0xab; 16], ATTEMPT, request.as_slice(), 1_800_000_001, 7),
+                    (OPERATION, [0xac; 16], request.as_slice(), 1_800_000_001, 7),
+                ] {
+                    assert!(
+                        core.bot_send_prepare(&operation, &attempt, &GROUP, body, now, generation)
+                            .is_err()
+                    );
+                    assert_eq!(
+                        send_metadata(&core),
+                        metadata,
+                        "refused replay wrote metadata"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn inactive_send_group_refuses_preparing_retry_and_closed_successor_without_writes() {
+        for deleted in [false, true] {
+            for state in [BOT_SEND_PREPARING, BOT_SEND_CLOSED] {
+                let conn = connection();
+                let mut core = bot(conn.clone());
+                let request = request();
+                let first = core
+                    .bot_send_prepare(&OPERATION, &ATTEMPT, &GROUP, &request, 1_800_000_001, 7)
+                    .expect("prepare");
+                let attempt = if state == BOT_SEND_CLOSED {
+                    let (_, upload) = upload_from_output(&first);
+                    core.bot_send_receipt(&OPERATION, &receipt(ATTEMPT, &upload, 0, None))
+                        .expect("close original send");
+                    [0xad; 16]
+                } else {
+                    let key = bot_send_attempt_key(&OPERATION, &ATTEMPT);
+                    let raw = core
+                        .read(|c| super::super::schema::meta_get(c, &key))
+                        .expect("attempt")
+                        .expect("attempt row");
+                    let mut row = decode_bot_send_row(&raw).expect("decode attempt");
+                    row.state = BOT_SEND_PREPARING;
+                    row.epoch = None;
+                    row.class = None;
+                    row.ciphertext_hash = None;
+                    row.upload = None;
+                    row.receipt = None;
+                    conn.lock()
+                        .expect("connection")
+                        .execute(
+                            "UPDATE app_meta SET v=?1 WHERE k=?2",
+                            params![encode_bot_send_row(&row), key],
+                        )
+                        .expect("simulate interrupted preparation");
+                    ATTEMPT
+                };
+                drop(core);
+                remove_send_group(&conn, deleted);
+                let mut core = ClientCore::open(conn).expect("reopen after removal");
+                let metadata = send_metadata(&core);
+                assert!(
+                    core.bot_send_prepare(&OPERATION, &attempt, &GROUP, &request, 1_800_000_001, 7)
+                        .is_err()
+                );
+                assert_eq!(
+                    send_metadata(&core),
+                    metadata,
+                    "inactive retry wrote preparing metadata"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cached_send_replay_still_checks_every_identity_and_scope_binding() {
+        let conn = connection();
+        let mut core = bot(conn.clone());
+        let request = request();
+        core.bot_send_prepare(&OPERATION, &ATTEMPT, &GROUP, &request, 1_800_000_001, 7)
+            .expect("prepare");
+        let own = core.own().expect("own identity");
+        remove_send_group(&conn, true);
+        let request_hash: [u8; 32] = Sha256::digest(&request).into();
+        for field in 0..5 {
+            let mut ids = [INSTALLATION, own.user_id, own.device_id, COMMUNITY, GROUP];
+            ids[field] = [0xfe; 16];
+            let raw = encode_bot_send_operation(
+                &ids[0],
+                &ids[1],
+                &ids[2],
+                &ids[3],
+                &ids[4],
+                &request_hash,
+                &ATTEMPT,
+            );
+            conn.lock()
+                .expect("connection")
+                .execute(
+                    "UPDATE app_meta SET v=?1 WHERE k=?2",
+                    params![raw, bot_send_op_key(&OPERATION)],
+                )
+                .expect("changed binding fixture");
+            let metadata = send_metadata(&core);
+            assert!(
+                core.bot_send_prepare(&OPERATION, &ATTEMPT, &GROUP, &request, 1_800_000_001, 7)
+                    .is_err(),
+                "binding field={field}"
+            );
+            assert_eq!(
+                send_metadata(&core),
+                metadata,
+                "binding refusal wrote metadata"
+            );
+        }
     }
 
     #[test]

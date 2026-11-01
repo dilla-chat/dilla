@@ -67,6 +67,8 @@ export const stage = {
   'callStage.stat.frameAudio': '{height}p · {fps} fps · audio',
   // Task 8b (README §6.6): the music player (NowPlaying), the prototype's copy. 'music.blocked.dj' is today's DJ rule (the
   // "Control music" role permission is wave C), worded like the /play refusal.
+  'music.error.operation-unavailable': "Glenn couldn't do that right now. Try again.",
+  'music.error.unavailable': "Glenn couldn't load that track. Try again or try another link.",
   'music.region': 'Music player',
   'music.playing': 'Now playing',
   'music.paused': 'Paused',

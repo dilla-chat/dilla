@@ -52,11 +52,26 @@ export function MessageLog({ label, children, earlier, emptyLabel, busy, onKeyDo
   const pinned = useRef(true);
   const prevHeight = useRef(0);
   const prevFirst = useRef<Element | null>(null);
+  // The position the log last pinned itself to. A scroll event that still reports it is the log's own move, not the
+  // reader's: when a row grew between the pin and that (asynchronous) event, the event sees the log short of the end,
+  // and taking that as the reader scrolling up left the log stuck there (2026-10-30 CI, an image card that grew when
+  // its thumbnail decoded).
+  const pinnedTop = useRef<number | null>(null);
+  const pin = (el: HTMLElement) => {
+    el.scrollTop = el.scrollHeight;
+    pinnedTop.current = el.scrollTop;
+  };
 
   const onScroll = () => {
     const el = logRef.current;
     if (!el) return;
-    pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight <= PIN_SLACK_PX;
+    const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight <= PIN_SLACK_PX;
+    if (el.scrollTop === pinnedTop.current) {
+      pinned.current = pinned.current || atEnd;
+    } else {
+      pinnedTop.current = null;
+      pinned.current = atEnd;
+    }
   };
 
   // The first paint's rows rise in one after another, 40ms apart (README §5.5); rows that arrive later have no delay.
@@ -65,14 +80,16 @@ export function MessageLog({ label, children, earlier, emptyLabel, busy, onKeyDo
     rows.forEach((row, i) => row.style.setProperty('--d-enter-i', String(i)));
   }, []);
 
-  // A resize of the log (the shell shrinking under a soft keyboard) keeps the end in view for a reader who is at the end.
+  // A resize of the log (the shell shrinking under a soft keyboard), or of its rows without a render of the log (an
+  // image that grows when it decodes, a card's own state), keeps the end in view for a reader who is at the end.
   useLayoutEffect(() => {
     const el = logRef.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
     const observer = new ResizeObserver(() => {
-      if (pinned.current) el.scrollTop = el.scrollHeight;
+      if (pinned.current) pin(el);
     });
     observer.observe(el);
+    if (rowsRef.current) observer.observe(rowsRef.current);
     return () => observer.disconnect();
   }, []);
 
@@ -82,7 +99,10 @@ export function MessageLog({ label, children, earlier, emptyLabel, busy, onKeyDo
     if (!el) return;
     const first = rowsRef.current?.firstElementChild ?? null;
     if (pinned.current) {
-      el.scrollTop = el.scrollHeight;
+      // Only when the content changed height: a render that adds nothing (a row taking focus on a press) must not move
+      // the log under the pointer, or the release lands beside the button it pressed and no click is sent (2026-10-30 CI,
+      // Firefox: "save data.bin" pressed 20 px short of the end, the log jumped 20 px, no download).
+      if (el.scrollHeight !== prevHeight.current) pin(el);
     } else if (prevFirst.current !== null && first !== prevFirst.current) {
       // Earlier rows were put in front: move by the added height so the rows in view stay put.
       el.scrollTop = el.scrollTop + (el.scrollHeight - prevHeight.current);

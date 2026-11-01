@@ -305,6 +305,21 @@ describe('Controller', () => {
     expect(w.core.sendConfirm).toHaveBeenCalledWith(requestId, expect.any(Uint8Array));
   });
 
+
+  it.each([[], ['ab'.repeat(16)], ['']])('preserves optional skip guard %j through the worker CBOR boundary', async (...args) => {
+    const w = world();
+    w.routes.listChannels.mockResolvedValue([{ id: CHANNEL, kind: 1, mode: 0, visibility: 0, parentId: null,
+      name: 'voice', topic: '', position: 0, slowmode: 0, seq: 1n, textGroupId: GROUP }]);
+    await toReady(w);
+    const groupId = new Uint8Array(16).fill(0x52); const requestId = new Uint8Array(16).fill(0x54);
+    w.state.groups.push({ ...textGroup(2), groupId, kind: 3, targetId: new Uint8Array(16).fill(0x53) });
+    w.state.outbox.push({ msgId: requestId, state: 0, error: '', created: 1n, body: 'skip request', type: 0, replyTo: null, attachments: [] });
+    w.call(10_199, { m: 'humanInteractionRequest', communityId: toHex(COMMUNITY), channelId: toHex(CHANNEL),
+      requestId: toHex(requestId), operation: 15, args, revision: '0' });
+    await vi.waitFor(() => expect(w.ret(10_199)).toMatchObject({ ok: true, value: { upload: 'accepted' } }));
+    expect(decode(w.core.humanInteractionSendPrepare.mock.calls[0][3])).toEqual([1n, requestId, COMMUNITY, CHANNEL, 15n, 0n, NOW_S + 30n, args]);
+  });
+
   it('fetches a late interaction Welcome before refusing a Bot request with no local group', async () => {
     const w = world();
     w.routes.listChannels.mockResolvedValue([{ id: CHANNEL, kind: 1, mode: 0, visibility: 0, parentId: null,
@@ -7415,4 +7430,19 @@ it('privacy refresh replaces a cached contact username with their current displa
   w.call(99_881, { m: 'refreshTrust' });
   await vi.waitFor(() => expect(w.ret(99_881)).toMatchObject({ ok: true }));
   expect(w.last<TrustSummary[]>('trust')?.find(row => row.userId === toHex(STRANGER))?.name).toBe('Mira');
+});
+
+it('sends input activity only over WSS and drops unavailable samples with no HTTP', async () => {
+  let now = 100_000;
+  const w = world({ now: () => now }); await toReady(w);
+  w.gateway.sendPresenceActivity.mockReturnValue(true);
+  w.call(91, { m: 'presenceActivity' }); await settle();
+  w.call(92, { m: 'presenceActivity' }); await settle();
+  expect(w.routes.sendPresenceActivity).not.toHaveBeenCalled();
+  expect(w.gateway.sendPresenceActivity).toHaveBeenCalledTimes(1);
+  // Fresh input during an outage is dropped rather than rerouted through HTTP.
+  w.gateway.sendPresenceActivity.mockReturnValue(false);
+  now += 5000;
+  w.call(93, { m: 'presenceActivity' }); await settle();
+  expect(w.routes.sendPresenceActivity).not.toHaveBeenCalled();
 });

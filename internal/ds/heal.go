@@ -508,8 +508,8 @@ func (d *DS) carryHealedProposals(ctx context.Context, groupID id.ID, fromEpoch 
 	refs := make([][]byte, 0, len(left))
 	for _, r := range left {
 		refs = append(refs, r.Ref)
-		if r.VoidAt == nil && d.opts.Metrics != nil {
-			d.opts.Metrics.DSProposals.WithLabelValues(proposalLabel(r.Kind)).Dec()
+		if r.VoidAt == nil && r.Origin == 0 { // the gauge counts live instance proposals only
+			d.gaugeDec(r.Kind)
 		}
 	}
 	if len(refs) > 0 {

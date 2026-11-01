@@ -23,11 +23,11 @@ import (
 	"github.com/jonasthim/dilla/internal/store/sqlite"
 )
 
-// WireVersion is the current production wire version (wire 4: the account-kind attestation, Task S1
+// WireVersion is the current production wire version (wire 5: ephemeral realtime extensions; wire 4: account-kind attestation, Task S1
 // part 2). BotWireVersion is the version managed Bots negotiate; LegacyWireVersion remains available for
 // existing clients that have not moved to the bot-capable protocol.
 const (
-	WireVersion       = 4
+	WireVersion       = 5
 	BotWireVersion    = 3
 	LegacyWireVersion = 2
 )
@@ -121,7 +121,7 @@ func (o *Options) validate(ctx context.Context) error {
 		o.Health = obs.NewHealth(o.Clock)
 	}
 	if len(o.WireVersions) == 0 {
-		o.WireVersions = []uint64{WireVersion, BotWireVersion, LegacyWireVersion}
+		o.WireVersions = []uint64{WireVersion, 4, BotWireVersion, LegacyWireVersion}
 	}
 	if len(o.E2EEVersions) == 0 {
 		o.E2EEVersions = []uint64{1}

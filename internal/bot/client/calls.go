@@ -70,7 +70,7 @@ func (s *Session) StartCall(ctx context.Context, channel id.ID) (Call, error) {
 	if err != nil {
 		return out, err
 	}
-	raw, _, err := s.c.do(ctx, s.token, http.MethodPost, "channels/"+channelPath+"/calls", nil, body, MaxSmallBody, true)
+	raw, _, err := s.do(ctx, http.MethodPost, "channels/"+channelPath+"/calls", nil, body, MaxSmallBody, true)
 	if err != nil {
 		return out, err
 	}
@@ -193,7 +193,7 @@ func (s *Session) ChannelCall(ctx context.Context, channel id.ID) (ChannelCallSt
 	if err != nil {
 		return out, err
 	}
-	raw, _, err := s.c.do(ctx, s.token, http.MethodGet, "channels/"+p+"/call", nil, nil, MaxSmallBody, false)
+	raw, _, err := s.do(ctx, http.MethodGet, "channels/"+p+"/call", nil, nil, MaxSmallBody, false)
 	if err != nil {
 		return out, err
 	}
@@ -259,7 +259,7 @@ func (s *Session) ReportCallRTT(ctx context.Context, callID id.ID, ms uint32) er
 	if err != nil {
 		return err
 	}
-	_, _, err = s.c.do(ctx, s.token, http.MethodPost, "calls/"+p+"/rtt", nil, body, MaxSmallBody, true)
+	_, _, err = s.do(ctx, http.MethodPost, "calls/"+p+"/rtt", nil, body, MaxSmallBody, true)
 	return err
 }
 
@@ -273,6 +273,6 @@ func (s *Session) EndCall(ctx context.Context, callID id.ID, ifAlone bool) error
 	if ifAlone {
 		q = url.Values{"if_alone": []string{"1"}}
 	}
-	_, _, err = s.c.do(ctx, s.token, http.MethodDelete, "calls/"+p, q, nil, MaxSmallBody, true)
+	_, _, err = s.do(ctx, http.MethodDelete, "calls/"+p, q, nil, MaxSmallBody, true)
 	return err
 }

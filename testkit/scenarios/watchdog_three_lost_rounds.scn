@@ -27,3 +27,25 @@ sync bob
 commit bob
 sync alice
 expect_reject E_NOT_FOUND fork_report alice chat
+
+# A sole member with an outstanding Add survives repeated kept cycles and can still commit it.
+client dave
+client erin
+group solo kind=text target=d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8 community=none creator=dave
+admit solo erin
+ack_commit dave
+advance_clock 2s
+ack_commit dave
+advance_clock 2s
+ack_commit dave
+advance_clock 2s
+advance_clock 2s
+ack_commit dave
+advance_clock 2s
+ack_commit dave
+advance_clock 2s
+ack_commit dave
+advance_clock 2s
+advance_clock 4s
+commit dave solo
+send dave solo the sole member can still commit

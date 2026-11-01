@@ -108,12 +108,28 @@ describe('utility response decoders', () => {
     expect(() => decodeBotUtilityCapabilities(data([1n, id(7), id(8), 1n, [3n]]), { installationId: hex(9) })).toThrow(BotUtilitiesError);
   });
 
-  it('rejects unsupported, duplicate, unsorted, or malformed capability entries', () => {
+  it('decodes the report of a Bot with Music on, which includes the music announce operation (25)', () => {
+    // internal/bot/protocol/codec.go OpMusicState..OpMusicAnnounce (10..25): the Bot reports these to each member when
+    // Music is on (internal/bot/service/command_capabilities.go). Rejecting 25 hid every Bot command from the picker.
+    const music = [10n, 11n, 12n, 13n, 14n, 15n, 16n, 17n, 18n, 19n, 20n, 21n, 22n, 23n, 25n];
+    const caps = decodeBotUtilityCapabilities(data([1n, id(7), id(8), 1n, [3n, ...music, 70n, 71n, 72n, 73n, 74n, 75n, 80n, 81n, 82n, 83n, 84n]]));
+    expect(caps.supportedOperations).toContain(25);
+    expect(caps.supportedOperations).toContain(70);
+    expect(caps.supportedOperations).toContain(80);
+  });
+
+  it('drops an operation this client does not know and keeps the rest of the report', () => {
+    const caps = decodeBotUtilityCapabilities(data([1n, id(7), id(8), 1n, [3n, 70n, 199n, 255n]]));
+    expect(caps.supportedOperations).toEqual([3, 70]);
+  });
+
+  it('rejects duplicate, unsorted, or malformed capability entries', () => {
     for (const value of [
       [1n, id(7), id(8), 1n, [70n, 70n]],
       [1n, id(7), id(8), 1n, [71n, 70n]],
       [1n, id(7), id(8), 1n, [999n]],
-      [1n, id(7), id(8), 1n, [3n, 26n]],
+      [1n, id(7), id(8), 1n, [256n]],
+      [1n, id(7), id(8), 1n, ['70']],
       [2n, id(7), id(8), 1n, [3n]],
     ]) expect(() => decodeBotUtilityCapabilities(data(value))).toThrow(BotUtilitiesError);
   });

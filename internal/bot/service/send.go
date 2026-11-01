@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"math"
+	"net/http"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/helper"
@@ -14,6 +15,27 @@ import (
 )
 
 var ErrSendTerminal = errors.New("bot send attempt is already accepted or unknown")
+
+// ErrSendNotPrepared is a terminal resolve-only result: native cannot replay
+// ciphertext for this exact immutable input. It is never a reason to upload a
+// replacement or fabricate a receipt; the caller may discard its notification.
+var ErrSendNotPrepared = errors.New("bot send has no recoverable prepared ciphertext")
+
+// sendRefusedError marks a definitive resolve refusal after receipt lookup has
+// proved this exact attempt has no receipt. Recovery cannot upload a substitute.
+type sendRefusedError struct{ cause error }
+
+func (e sendRefusedError) Error() string        { return "bot prepared send resolution refused" }
+func (e sendRefusedError) Unwrap() error        { return e.cause }
+func (e sendRefusedError) Is(target error) bool { return target == ErrSendTerminal }
+func (e sendRefusedError) FailureClass() string { return "send_terminal" }
+
+type sendNotPreparedError struct{ cause error }
+
+func (e sendNotPreparedError) Error() string        { return ErrSendNotPrepared.Error() }
+func (e sendNotPreparedError) Unwrap() error        { return e.cause }
+func (e sendNotPreparedError) Is(target error) bool { return target == ErrSendNotPrepared }
+func (e sendNotPreparedError) FailureClass() string { return "send_not_prepared" }
 
 // SendNative is the bounded native-state and crypto boundary consumed by the
 // coordinator. Production passes native.Client; runtime integration tests can
@@ -118,6 +140,14 @@ func (s *SendCoordinator) SendAuthorized(ctx context.Context, session SendSessio
 	return s.sendWithPreflight(ctx, session, in, preflight)
 }
 
+// ResolvePrepared settles an ordinary-group attempt after its caller loses
+// authority. It recovers an existing receipt first, otherwise reconstructs the
+// same durable ciphertext and asks the server to close or resolve that attempt.
+// It never calls PostBotMessage and never creates a replacement send identity.
+func (s *SendCoordinator) ResolvePrepared(ctx context.Context, session SendSession, in SendInput) (protocol.SendReceipt, error) {
+	return s.sendAttempt(ctx, session, in, nil, true)
+}
+
 func (s *SendCoordinator) send(ctx context.Context, session sendSession, in SendInput) (protocol.SendReceipt, error) {
 	return s.sendWithPreflight(ctx, session, in, nil)
 }
@@ -127,6 +157,10 @@ func (s *SendCoordinator) send(ctx context.Context, session sendSession, in Send
 // confirmed unchanged; an attempt with no receipt must pass preflight before
 // any native preparation or network send can occur.
 func (s *SendCoordinator) sendWithPreflight(ctx context.Context, session sendSession, in SendInput, preflight func(context.Context) error) (protocol.SendReceipt, error) {
+	return s.sendAttempt(ctx, session, in, preflight, false)
+}
+
+func (s *SendCoordinator) sendAttempt(ctx context.Context, session sendSession, in SendInput, preflight func(context.Context) error, resolveOnly bool) (protocol.SendReceipt, error) {
 	if s == nil || session == nil || in.OperationID.IsZero() || in.AttemptID.IsZero() || in.GroupID.IsZero() || in.ExpectedGeneration == 0 || in.ExpectedGeneration > math.MaxInt64 || in.OriginalNow > math.MaxInt64 || len(in.RequestBody) == 0 || in.PredecessorAttemptID != nil && in.PredecessorAttemptID.IsZero() {
 		return protocol.SendReceipt{}, errors.New("invalid send input")
 	}
@@ -161,6 +195,35 @@ func (s *SendCoordinator) sendWithPreflight(ctx context.Context, session sendSes
 	}
 	if !errors.Is(lookupErr, client.ErrBotSendReceiptNotFound) {
 		return protocol.SendReceipt{}, lookupErr
+	}
+	if resolveOnly {
+		// PrepareSend replays the original immutable native attempt. No active
+		// group or posting permission is needed to recover or close old ciphertext.
+		prepared, err := s.native.PrepareSend(ctx, in.OperationID, in.AttemptID, in.GroupID, in.RequestBody, in.OriginalNow, in.ExpectedGeneration)
+		if err != nil {
+			var status *helper.StatusError
+			// Exact ready ciphertext replays before native's active-group gate. A
+			// permanent conflict/not-found here cannot reconstruct this attempt; keep
+			// unknown, transport and deadline failures retryable instead.
+			if errors.As(err, &status) && (status.Status == 4 || status.Status == 7) {
+				return protocol.SendReceipt{}, sendNotPreparedError{cause: err}
+			}
+			return protocol.SendReceipt{}, err
+		}
+		upload, resolution, err := preparedSendArtifacts(in, prepared)
+		if err != nil {
+			return protocol.SendReceipt{}, err
+		}
+		receipt, err := session.ResolveBotMessage(ctx, s.binding.Community, in.OperationID, resolution)
+		if err != nil {
+			var refusal *client.APIError
+			if errors.As(err, &refusal) && refusal.Outcome == client.OutcomeDefinitive &&
+				(refusal.Status == http.StatusNotFound || refusal.Status == http.StatusForbidden || refusal.Code == "E_LEAF_NOT_CURRENT") {
+				return protocol.SendReceipt{}, sendRefusedError{cause: err}
+			}
+			return protocol.SendReceipt{}, err
+		}
+		return s.confirm(ctx, in.OperationID, receipt, upload, resolution)
 	}
 	if preflight != nil {
 		if err := preflight(ctx); err != nil {
@@ -200,12 +263,10 @@ func (s *SendCoordinator) sendWithPreflight(ctx context.Context, session sendSes
 	if err != nil {
 		return protocol.SendReceipt{}, err
 	}
-	if len(prepared.Ciphertext) == 0 || prepared.Epoch > math.MaxInt64 || prepared.Class > 1 {
-		return protocol.SendReceipt{}, errors.New("native helper returned invalid prepared send")
+	upload, resolution, err := preparedSendArtifacts(in, prepared)
+	if err != nil {
+		return protocol.SendReceipt{}, err
 	}
-	predecessor := cloneID(in.PredecessorAttemptID)
-	upload := client.BotMessageUpload{OperationID: in.OperationID, AttemptID: in.AttemptID, PredecessorAttemptID: predecessor, ExpectedGeneration: in.ExpectedGeneration, Epoch: prepared.Epoch, PrivateMessage: append([]byte(nil), prepared.Ciphertext...), Class: prepared.Class}
-	resolution := client.BotMessageResolution{AttemptID: in.AttemptID, PredecessorAttemptID: cloneID(predecessor), GroupID: in.GroupID, ExpectedGeneration: in.ExpectedGeneration, Epoch: prepared.Epoch, Class: prepared.Class, CiphertextSHA256: sha256.Sum256(prepared.Ciphertext)}
 
 	// A retry after a crash first checks whether the previous process completed
 	// the POST and lost its response.
@@ -229,6 +290,11 @@ func (s *SendCoordinator) sendWithPreflight(ctx context.Context, session sendSes
 	if postErr == nil {
 		return s.confirm(ctx, in.OperationID, receipt, upload, resolution)
 	}
+	// A definitive rate refusal never entered the upload handler. Keep the
+	// prepared attempt pending; receipt resolution would close an unsent attempt.
+	if client.IsDeferred(postErr) {
+		return protocol.SendReceipt{}, postErr
+	}
 	// A lost or malformed HTTP result is not evidence of refusal. Recheck the
 	// exact attempt, then let the server close/resolve that same ciphertext.
 	receipt, lookupErr = session.BotMessageReceipt(ctx, s.binding.Community, in.OperationID, in.AttemptID, in.GroupID)
@@ -243,6 +309,16 @@ func (s *SendCoordinator) sendWithPreflight(ctx context.Context, session sendSes
 		return protocol.SendReceipt{}, errors.Join(postErr, err)
 	}
 	return s.confirm(ctx, in.OperationID, receipt, upload, resolution)
+}
+
+func preparedSendArtifacts(in SendInput, prepared native.PreparedSend) (client.BotMessageUpload, client.BotMessageResolution, error) {
+	if len(prepared.Ciphertext) == 0 || prepared.Epoch > math.MaxInt64 || prepared.Class > 1 {
+		return client.BotMessageUpload{}, client.BotMessageResolution{}, errors.New("native helper returned invalid prepared send")
+	}
+	predecessor := cloneID(in.PredecessorAttemptID)
+	upload := client.BotMessageUpload{OperationID: in.OperationID, AttemptID: in.AttemptID, PredecessorAttemptID: predecessor, ExpectedGeneration: in.ExpectedGeneration, Epoch: prepared.Epoch, PrivateMessage: append([]byte(nil), prepared.Ciphertext...), Class: prepared.Class}
+	resolution := client.BotMessageResolution{AttemptID: in.AttemptID, PredecessorAttemptID: cloneID(predecessor), GroupID: in.GroupID, ExpectedGeneration: in.ExpectedGeneration, Epoch: prepared.Epoch, Class: prepared.Class, CiphertextSHA256: sha256.Sum256(prepared.Ciphertext)}
+	return upload, resolution, nil
 }
 
 // Ordinary groups use the generic helper inspection. A managed Bot interaction is listed only by

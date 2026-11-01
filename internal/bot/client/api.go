@@ -481,7 +481,7 @@ func (s *Session) Negotiate(ctx context.Context, wire, e2ee, media []uint64) (Ne
 	if e != nil {
 		return out, e
 	}
-	raw, _, e := s.c.do(ctx, s.token, http.MethodPost, "sessions/negotiate", nil, b, MaxSmallBody, true)
+	raw, _, e := s.do(ctx, http.MethodPost, "sessions/negotiate", nil, b, MaxSmallBody, true)
 	if e != nil {
 		return out, e
 	}
@@ -540,7 +540,7 @@ func (s *Session) PublishKeyPackages(ctx context.Context, installation, operatio
 	if operation.IsZero() {
 		return 0, ErrInvalidConfig
 	}
-	raw, _, err := s.c.do(ctx, s.token, http.MethodPost, "bot-runtime/installations/"+inst+"/keypackages", nil, request, MaxDSBody, true)
+	raw, _, err := s.do(ctx, http.MethodPost, "bot-runtime/installations/"+inst+"/keypackages", nil, request, MaxDSBody, true)
 	if err != nil {
 		return 0, err
 	}
@@ -571,7 +571,7 @@ func (s *Session) KeyPackagePublicationReceiptObserved(ctx context.Context, inst
 	if err != nil {
 		return out, ResponseObservation{}, err
 	}
-	raw, _, observation, err := s.c.doObserved(ctx, s.token, http.MethodGet, "bot-runtime/installations/"+inst+"/keypackages/"+op, nil, nil, MaxSmallBody, false)
+	raw, _, observation, err := s.doObserved(ctx, http.MethodGet, "bot-runtime/installations/"+inst+"/keypackages/"+op, nil, nil, MaxSmallBody, false)
 	if err != nil {
 		return out, observation, err
 	}
@@ -609,7 +609,7 @@ func (s *Session) installationMutation(ctx context.Context, installation id.ID, 
 		method = http.MethodPut
 	}
 	path := "bot-runtime/installations/" + i + "/" + action
-	raw, _, e := s.c.do(ctx, s.token, method, path, nil, body, MaxRuntimeBody, true)
+	raw, _, e := s.do(ctx, method, path, nil, body, MaxRuntimeBody, true)
 	if e != nil {
 		return out, e
 	}
@@ -639,7 +639,7 @@ func (s *Session) PublishDeviceList(ctx context.Context, user id.ID, version uin
 	if e != nil {
 		return e
 	}
-	_, _, e = s.c.do(ctx, s.token, http.MethodPut, "users/"+u+"/device-list", nil, b, MaxSmallBody, true)
+	_, _, e = s.do(ctx, http.MethodPut, "users/"+u+"/device-list", nil, b, MaxSmallBody, true)
 	return e
 }
 func (s *Session) OwnDeviceList(ctx context.Context, user id.ID) ([]byte, error) {
@@ -647,7 +647,7 @@ func (s *Session) OwnDeviceList(ctx context.Context, user id.ID) ([]byte, error)
 	if e != nil {
 		return nil, e
 	}
-	raw, _, e := s.c.do(ctx, s.token, http.MethodGet, "users/"+u+"/device-list", nil, nil, MaxSmallBody, false)
+	raw, _, e := s.do(ctx, http.MethodGet, "users/"+u+"/device-list", nil, nil, MaxSmallBody, false)
 	if e != nil {
 		return nil, e
 	}
@@ -680,7 +680,7 @@ func (s *Session) DeviceListHistory(ctx context.Context, user id.ID, after uint6
 	}
 	q := url.Values{}
 	qnum(q, "after", after)
-	raw, _, e := s.c.do(ctx, s.token, http.MethodGet, "users/"+u+"/device-list", q, nil, MaxBody, false)
+	raw, _, e := s.do(ctx, http.MethodGet, "users/"+u+"/device-list", q, nil, MaxBody, false)
 	if e != nil {
 		return nil, e
 	}
@@ -718,7 +718,7 @@ func (s *Session) KeyPackage(ctx context.Context, device id.ID) ([]byte, error) 
 	if e != nil {
 		return nil, e
 	}
-	raw, _, e := s.c.do(ctx, s.token, http.MethodGet, "devices/"+d+"/keypackage", nil, nil, MaxDSBody, false)
+	raw, _, e := s.do(ctx, http.MethodGet, "devices/"+d+"/keypackage", nil, nil, MaxDSBody, false)
 	if e != nil {
 		return nil, e
 	}
@@ -748,7 +748,7 @@ func (s *Session) Welcomes(ctx context.Context, after uint64, limit uint64) ([]W
 	q := url.Values{}
 	qnum(q, "after", after)
 	qnum(q, "limit", limit)
-	raw, _, e := s.c.do(ctx, s.token, http.MethodGet, "welcomes", q, nil, MaxBody, false)
+	raw, _, e := s.do(ctx, http.MethodGet, "welcomes", q, nil, MaxBody, false)
 	if e != nil {
 		return nil, e
 	}
@@ -821,7 +821,7 @@ func (s *Session) AcknowledgeWelcome(ctx context.Context, welcome uint64) error 
 	if welcome == 0 || welcome > maxStoredSequence {
 		return ErrInvalidConfig
 	}
-	_, _, e := s.c.do(ctx, s.token, http.MethodDelete, "welcomes/"+strconv.FormatUint(welcome, 10), nil, nil, MaxSmallBody, true)
+	_, _, e := s.do(ctx, http.MethodDelete, "welcomes/"+strconv.FormatUint(welcome, 10), nil, nil, MaxSmallBody, true)
 	return e
 }
 
@@ -843,7 +843,7 @@ func (s *Session) groupInfoAt(ctx context.Context, base string, group id.ID) (Gr
 	if e != nil {
 		return out, e
 	}
-	raw, _, e := s.c.do(ctx, s.token, http.MethodGet, base+g+"/info", nil, nil, MaxBody, false)
+	raw, _, e := s.do(ctx, http.MethodGet, base+g+"/info", nil, nil, MaxBody, false)
 	if e != nil {
 		return out, e
 	}
@@ -872,7 +872,7 @@ func (s *Session) GroupTree(ctx context.Context, group id.ID) (GroupTree, error)
 	if e != nil {
 		return out, e
 	}
-	raw, _, e := s.c.do(ctx, s.token, http.MethodGet, "groups/"+g+"/tree", nil, nil, MaxBody, false)
+	raw, _, e := s.do(ctx, http.MethodGet, "groups/"+g+"/tree", nil, nil, MaxBody, false)
 	if e != nil {
 		return out, e
 	}
@@ -904,7 +904,7 @@ func (s *Session) RegisterGroup(ctx context.Context, group id.ID, binding, info,
 	if e != nil {
 		return 0, e
 	}
-	raw, _, e := s.c.do(ctx, s.token, http.MethodPost, "groups", nil, b, MaxDSBody, true)
+	raw, _, e := s.do(ctx, http.MethodPost, "groups", nil, b, MaxDSBody, true)
 	if e != nil {
 		return 0, e
 	}
@@ -965,7 +965,7 @@ func (s *Session) registerBotGroup(ctx context.Context, installation, operation 
 	if err != nil {
 		return BotGroupRegistrationReceipt{}, ErrInvalidConfig
 	}
-	raw, _, err := s.c.do(ctx, s.token, http.MethodPost, "bot-runtime/installations/"+inst+"/groups", nil, request, MaxSmallBody, true)
+	raw, _, err := s.do(ctx, http.MethodPost, "bot-runtime/installations/"+inst+"/groups", nil, request, MaxSmallBody, true)
 	if err != nil {
 		return BotGroupRegistrationReceipt{}, err
 	}
@@ -985,7 +985,7 @@ func (s *Session) BotGroupRegistrationReceipt(ctx context.Context, installation,
 	if err != nil {
 		return BotGroupRegistrationReceipt{}, err
 	}
-	raw, _, err := s.c.do(ctx, s.token, http.MethodGet, "bot-runtime/installations/"+inst+"/groups/"+op, nil, nil, MaxSmallBody, false)
+	raw, _, err := s.do(ctx, http.MethodGet, "bot-runtime/installations/"+inst+"/groups/"+op, nil, nil, MaxSmallBody, false)
 	if err != nil {
 		var apiErr *APIError
 		if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound && apiErr.Code == "E_NOT_FOUND" {
@@ -1092,7 +1092,7 @@ func (s *Session) groupPageAt(ctx context.Context, base string, group id.ID, kin
 	q := url.Values{}
 	qnum(q, "from", from)
 	qnum(q, "limit", limit)
-	raw, _, e := s.c.do(ctx, s.token, http.MethodGet, base+g+"/"+kind, q, nil, MaxBody, false)
+	raw, _, e := s.do(ctx, http.MethodGet, base+g+"/"+kind, q, nil, MaxBody, false)
 	if e != nil {
 		return out, e
 	}
@@ -1212,7 +1212,7 @@ func (s *Session) Proposals(ctx context.Context, group id.ID) ([][]any, error) {
 	if e != nil {
 		return nil, e
 	}
-	raw, _, e := s.c.do(ctx, s.token, http.MethodGet, "groups/"+g+"/proposals", nil, nil, MaxBody, false)
+	raw, _, e := s.do(ctx, http.MethodGet, "groups/"+g+"/proposals", nil, nil, MaxBody, false)
 	if e != nil {
 		return nil, e
 	}
@@ -1248,7 +1248,7 @@ func (s *Session) HealStatus(ctx context.Context, group id.ID) (HealStatus, erro
 
 func (s *Session) healStatusAt(ctx context.Context, path string) (HealStatus, error) {
 	var out HealStatus
-	raw, _, err := s.c.do(ctx, s.token, http.MethodGet, path, nil, nil, MaxSmallBody, false)
+	raw, _, err := s.do(ctx, http.MethodGet, path, nil, nil, MaxSmallBody, false)
 	if err != nil {
 		return out, err
 	}
@@ -1275,7 +1275,7 @@ func (s *Session) BotInteractionHealStatus(ctx context.Context, installation, gr
 	if err != nil {
 		return InteractionHealStatus{}, err
 	}
-	raw, _, err := s.c.do(ctx, s.token, http.MethodGet, path, nil, nil, MaxSmallBody, false)
+	raw, _, err := s.do(ctx, http.MethodGet, path, nil, nil, MaxSmallBody, false)
 	if err != nil {
 		return InteractionHealStatus{}, err
 	}
@@ -1367,7 +1367,7 @@ func (s *Session) healAt(ctx context.Context, path string, groupInfo []byte, tai
 	if err != nil {
 		return out, err
 	}
-	raw, _, err := s.c.do(ctx, s.token, http.MethodPost, path, nil, b, MaxDSBody, true)
+	raw, _, err := s.do(ctx, http.MethodPost, path, nil, b, MaxDSBody, true)
 	if err != nil {
 		return out, err
 	}
@@ -1404,7 +1404,7 @@ func (s *Session) ForkReport(ctx context.Context, group id.ID, epoch, sequence u
 	if err != nil {
 		return err
 	}
-	raw, _, err := s.c.do(ctx, s.token, http.MethodPost, "groups/"+g+"/fork-report", nil, b, MaxSmallBody, true)
+	raw, _, err := s.do(ctx, http.MethodPost, "groups/"+g+"/fork-report", nil, b, MaxSmallBody, true)
 	if err != nil {
 		return err
 	}
@@ -1472,7 +1472,7 @@ func (s *Session) SendMessage(ctx context.Context, group id.ID, epoch uint64, ci
 	if e != nil {
 		return out, e
 	}
-	raw, _, e := s.c.do(ctx, s.token, http.MethodPost, "groups/"+g+"/message", nil, b, MaxDSBody, true)
+	raw, _, e := s.do(ctx, http.MethodPost, "groups/"+g+"/message", nil, b, MaxDSBody, true)
 	if e != nil {
 		return out, e
 	}
@@ -1506,7 +1506,7 @@ func (s *Session) groupMutation(ctx context.Context, group id.ID, action string,
 	if action == "commit" {
 		bodyLimit = MaxCommitBody
 	}
-	raw, _, e := s.c.do(ctx, s.token, http.MethodPost, "groups/"+g+"/"+action, nil, b, bodyLimit, true)
+	raw, _, e := s.do(ctx, http.MethodPost, "groups/"+g+"/"+action, nil, b, bodyLimit, true)
 	if e != nil {
 		return out, e
 	}
@@ -1553,12 +1553,12 @@ func (s *Session) advanceCursorAt(ctx context.Context, base string, group id.ID,
 	if e != nil {
 		return e
 	}
-	_, _, e = s.c.do(ctx, s.token, http.MethodPost, base+g+"/cursor", nil, b, MaxSmallBody, true)
+	_, _, e = s.do(ctx, http.MethodPost, base+g+"/cursor", nil, b, MaxSmallBody, true)
 	return e
 }
 
 func (s *Session) Communities(ctx context.Context) ([]Community, error) {
-	raw, _, e := s.c.do(ctx, s.token, http.MethodGet, "communities", nil, nil, MaxBody, false)
+	raw, _, e := s.do(ctx, http.MethodGet, "communities", nil, nil, MaxBody, false)
 	if e != nil {
 		return nil, e
 	}
@@ -1599,7 +1599,7 @@ func (s *Session) Channels(ctx context.Context, community id.ID) ([]Channel, err
 	if e != nil {
 		return nil, e
 	}
-	raw, _, e := s.c.do(ctx, s.token, http.MethodGet, "communities/"+c+"/channels", nil, nil, MaxBody, false)
+	raw, _, e := s.do(ctx, http.MethodGet, "communities/"+c+"/channels", nil, nil, MaxBody, false)
 	if e != nil {
 		return nil, e
 	}
@@ -1662,7 +1662,7 @@ func (s *Session) ChannelPermissions(ctx context.Context, channelID id.ID) (uint
 	if err != nil {
 		return 0, err
 	}
-	raw, _, err := s.c.do(ctx, s.token, http.MethodGet, "channels/"+c+"/permissions", nil, nil, MaxSmallBody, false)
+	raw, _, err := s.do(ctx, http.MethodGet, "channels/"+c+"/permissions", nil, nil, MaxSmallBody, false)
 	if err != nil {
 		return 0, err
 	}

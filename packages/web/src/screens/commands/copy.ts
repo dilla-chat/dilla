@@ -8,6 +8,8 @@ export const commandPickerCopy = {
   listHint: '↑↓ move · tab complete · esc close',
   fieldHint: 'tab next field · ↵ run · esc leave',
   noMatch: (draft: string) => `No command matches ${draft}`,
+  musicSearchFailed: 'Music search failed. Try again.',
+  suggestionsFailed: 'Suggestions could not be loaded. Try again.',
   sendAsText: 'Send as text',
   notACommand: (name: string) => `/${name} isn’t a command here. To post it as text, start with //.`,
   pressToRun: 'press ↵ to run',

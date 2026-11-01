@@ -2,6 +2,7 @@ package spotify
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -111,4 +112,74 @@ func fakeTokenProtocolHelper(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return helper
+}
+
+func TestPCMStarterPreservesCredentialLoadCause(t *testing.T) {
+	starter, err := NewPCMStarter("/bin/true", t.TempDir(), func(context.Context) (string, error) { return "", os.ErrPermission })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, start := range []bool{false, true} {
+		var loadErr error
+		if start {
+			_, loadErr = starter.Start(t.Context(), "spotify:track:0123456789012345678901")
+		} else {
+			loadErr = starter.Check(t.Context())
+		}
+		if !errors.Is(loadErr, os.ErrPermission) || !errors.Is(loadErr, ErrCredentialUnavailable) {
+			t.Fatalf("load cause lost: %v", loadErr)
+		}
+		if strings.Contains(loadErr.Error(), os.ErrPermission.Error()) {
+			t.Fatal("raw load cause exposed")
+		}
+	}
+}
+
+func TestPCMStarterMissingCredentialIsPermanentButLoadFailurePauses(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		token     string
+		loadErr   error
+		permanent bool
+	}{
+		{name: "unlinked", permanent: true},
+		{name: "transient load", loadErr: os.ErrPermission},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			starter, err := NewPCMStarter("/bin/true", t.TempDir(), func(context.Context) (string, error) { return tc.token, tc.loadErr })
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, start := range []bool{false, true} {
+				var failure error
+				if start {
+					_, failure = starter.Start(t.Context(), "spotify:track:0123456789012345678901")
+				} else {
+					failure = starter.Check(t.Context())
+				}
+				capability, ok := failure.(interface{ PermanentPlaybackFailure() bool })
+				if (ok && capability.PermanentPlaybackFailure()) != tc.permanent {
+					t.Fatalf("start=%v permanent=%v want %v: %v", start, ok && capability.PermanentPlaybackFailure(), tc.permanent, failure)
+				}
+			}
+		})
+	}
+}
+
+func TestPCMStarterPreservesMissingProviderSentinel(t *testing.T) {
+	starter, err := NewPCMStarter("/bin/true", t.TempDir(), func(context.Context) (string, error) { return "", ErrProviderUnavailable })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, start := range []bool{false, true} {
+		var failure error
+		if start {
+			_, failure = starter.Start(t.Context(), "spotify:track:0123456789012345678901")
+		} else {
+			failure = starter.Check(t.Context())
+		}
+		if !errors.Is(failure, ErrProviderUnavailable) || !errors.Is(failure, ErrCredentialUnavailable) || !PermanentPlaybackFailure(failure) {
+			t.Fatalf("missing-provider load classification lost: %v", failure)
+		}
+	}
 }

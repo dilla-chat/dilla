@@ -150,7 +150,7 @@ def main(argv):
     }
     if command is not None:
         try:
-            child = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env, close_fds=True)
+            child = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=None, env=env, close_fds=True)
             children.append(child)
             total = 0
             too_large = False
@@ -189,11 +189,11 @@ def main(argv):
     if node:
         args[1:1] = ["--js-runtimes", "node:" + node]
     try:
-        yt = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env, close_fds=True)
+        yt = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=None, env=env, close_fds=True)
         children.append(yt)
         ff = subprocess.Popen(
             [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-i", "pipe:0", "-f", "s16le", "-ar", "44100", "-ac", "2", "pipe:1"],
-            stdin=yt.stdout, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env, close_fds=True,
+            stdin=yt.stdout, stdout=subprocess.PIPE, stderr=None, env=env, close_fds=True,
         )
         children.append(ff)
         yt.stdout.close()

@@ -17,7 +17,7 @@ func negotiationSupported(d Deps) [][]uint64 {
 		return append([]uint64(nil), v...)
 	}
 	return [][]uint64{
-		pick(d.WireVersions, []uint64{4, 3, 2}),
+		pick(d.WireVersions, []uint64{5, 4, 3, 2}),
 		pick(d.E2EEVersions, []uint64{1}),
 		pick(d.MediaVersions, []uint64{1}),
 	}

@@ -380,7 +380,7 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
         if (suggestionsGeneration.current.get(option.name) !== generation || contextNow.current !== requestedContext) return;
         setFields(previous => {
           const current = previous[option.name];
-          return current?.text === query ? { ...previous, [option.name]: { ...current, suggestions: [] } } : previous;
+          return current?.text === query ? { ...previous, [option.name]: { ...current, suggestions: Object.assign([], { notice: copy.suggestionsFailed }) } } : previous;
         });
       });
     });
@@ -392,7 +392,7 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
     const option = options[index];
     if (option === undefined) return;
     dirty.current = true;
-    setFields(previous => ({ ...previous, [option.name]: { text: value, suggestions: previous[option.name]?.suggestions ?? [] } }));
+    setFields(previous => ({ ...previous, [option.name]: { text: value, suggestions: [] } }));
     setSugSel(0); setError(null);
   };
   const accept = (pick: Sug) => {

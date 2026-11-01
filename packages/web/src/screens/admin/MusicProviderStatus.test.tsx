@@ -8,7 +8,14 @@ import { MusicProviderStatus } from './MusicProviderStatus.tsx';
 import { noteSpotifyReturn } from '../../settings/spotify-return.ts';
 
 const cid = '11'.repeat(16); const installationId = '22'.repeat(16);
-function setup(status = 0, wrongInstallation = false, age = 0, empty = false, legacy = false, capabilityData?: Uint8Array, linked = true, pending?: 'send' | 'read') {
+/** When each operation's answer becomes readable, in ms after that operation was sent; null never answers. */
+type AnswerTiming = { 0?: number | null; 24?: number | null };
+function setup(status = 0, wrongInstallation = false, age = 0, empty = false, legacy = false, capabilityData?: Uint8Array, linked = true, pending?: 'send' | 'read', timing: AnswerTiming = {}) {
+  const sentAt: Record<number, number> = {};
+  const unanswered = (op: number) => {
+    const delay = timing[op as 0 | 24];
+    return delay === null || (delay !== undefined && Date.now() < (sentAt[op] ?? 0) + delay);
+  };
   const fake = new FakeClient();
   fake.set('account', account());
   fake.set('communities', [{ id: cid, name: 'Music test', owner: ME.id }]);
@@ -18,8 +25,8 @@ function setup(status = 0, wrongInstallation = false, age = 0, empty = false, le
   fake.handler = command => Promise.resolve((() => {
     if (pending === 'send' && command.m === 'humanInteractionRequest' || pending === 'read' && command.m === 'readBotInteractionResponses') return new Promise<never>(() => {});
     if (command.m === 'getBotCommandStatus') return { installationId, botUserId: null, state: 3, revision: '1' };
-    if (command.m === 'humanInteractionRequest') { requestId = command.requestId; operation = command.operation; return { requestId, upload: 'accepted' }; }
-    if (command.m === 'readBotInteractionResponses') return { responses: empty ? [] : [{ requestId, communityId: cid, operation, status: operation === 0 ? 0 : status, deliveryId: operation === 0 ? '8' : '9', channelId: null, revision: null,
+    if (command.m === 'humanInteractionRequest') { requestId = command.requestId; operation = command.operation; sentAt[operation] = Date.now(); return { requestId, upload: 'accepted' }; }
+    if (command.m === 'readBotInteractionResponses') return { responses: empty || unanswered(operation) ? [] : [{ requestId, communityId: cid, operation, status: operation === 0 ? 0 : status, deliveryId: operation === 0 ? '8' : '9', channelId: null, revision: null,
       data: operation === 0 ? capabilityData ?? encode(legacy ? [1, fromHex('44'.repeat(16)), 0, 1, 0] : [2, fromHex('44'.repeat(16)), 0, 1, 0, [24]])
         : encodeMusicProviderStatus({ version: 1, installationId: fromHex(wrongInstallation ? '33'.repeat(16) : installationId), observedAt: BigInt(Math.floor(Date.now() / 1000) - age),
         spotifyAccount: linked ? 'linked' : 'not_linked', spotifyAccountReason: linked ? 'none' : 'missing_credentials', spotifyPlayback: 'missing_requirements', spotifyPlaybackReason: 'helper_missing',
@@ -93,6 +100,38 @@ describe('music provider status', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(31_000); });
     expect(screen.getByRole('status')).toHaveTextContent('unavailable');
     expect(screen.getByRole('button', { name: 'Check again' })).toBeEnabled();
+  });
+  // CT 144, 2026-10-30: operation 0 was answered after 25 s and operation 24 had 5 s left of a
+  // shared deadline. Each answer has its own thirty seconds, measured from its own send.
+  it('gives operation 24 its own thirty seconds after a slow operation 0', async () => {
+    vi.useFakeTimers();
+    const { fake } = setup(0, false, 0, false, false, undefined, true, undefined, { 0: 25_000, 24: 20_000 });
+    await act(async () => { await vi.advanceTimersByTimeAsync(31_000); });
+    expect(fake.callsOf('humanInteractionRequest').map(call => call.operation)).toEqual([0, 24]);
+    expect(screen.getByRole('status')).not.toHaveTextContent('unavailable');
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(screen.getByText(/^Linked · /)).toBeVisible();
+  });
+  it('shows that the bot answered and offers Check again when operation 24 is not answered', async () => {
+    vi.useFakeTimers();
+    const { fake } = setup(0, false, 0, false, false, undefined, true, undefined, { 24: null });
+    await act(async () => { await vi.advanceTimersByTimeAsync(29_000); });
+    expect(screen.getByRole('status')).toHaveTextContent('Checking provider status…');
+    await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+    expect(screen.getByRole('status')).toHaveTextContent('The bot answered, but has not reported provider status yet. Check again.');
+    expect(screen.getByRole('status')).not.toHaveTextContent('unavailable');
+    expect(screen.getByRole('button', { name: 'Check again' })).toBeEnabled();
+    expect(screen.queryByText(/^Linked · /)).not.toBeInTheDocument();
+    const reads = fake.callsOf('readBotInteractionResponses').length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(fake.callsOf('readBotInteractionResponses')).toHaveLength(reads);
+  });
+  it('still reports unavailable when operation 0 is not answered within its own thirty seconds', async () => {
+    vi.useFakeTimers();
+    const { fake } = setup(0, false, 0, false, false, undefined, true, undefined, { 0: null });
+    await act(async () => { await vi.advanceTimersByTimeAsync(31_000); });
+    expect(screen.getByRole('status')).toHaveTextContent('unavailable');
+    expect(fake.callsOf('humanInteractionRequest').map(call => call.operation)).toEqual([0]);
   });
   it('keeps a completed observation until its freshness window expires', async () => {
     vi.useFakeTimers();

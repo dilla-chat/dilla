@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -56,6 +57,16 @@ helper_executable = "/usr/libexec/dilla-bot-core"
 wasi_module = "/usr/lib/dilla/dilla_core_wasi.wasm"
 state_dir = "/var/lib/dillabot"
 reconcile_interval = "30s"
+[rate_limits]
+device_cache_limit = 4
+target_cache_limit = 8
+global_target_cache_limit = 16
+write_per_second = 1.0
+write_burst = 15
+read_per_second = 6.0
+read_burst = 30
+message_per_second = 0.5
+message_burst = 5
 `
 	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
 		t.Fatal(err)
@@ -64,6 +75,21 @@ reconcile_interval = "30s"
 	got, err := loadConfig(configPath)
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
+	}
+	if got.RateLimits.WritePerSecond != 1 || got.RateLimits.WriteBurst != 15 || got.RateLimits.ReadPerSecond != 6 || got.RateLimits.ReadBurst != 30 || got.RateLimits.MessagePerSecond != .5 || got.RateLimits.MessageBurst != 5 {
+		t.Fatalf("rate limits not loaded: %+v", got.RateLimits)
+	}
+	if got.RateLimits.DeviceCacheLimit != 4 || got.RateLimits.TargetCacheLimit != 8 || got.RateLimits.GlobalTargetCacheLimit != 16 {
+		t.Fatalf("cache limits not loaded: %+v", got.RateLimits)
+	}
+	if err := os.WriteFile(configPath, []byte(strings.Replace(config, "device_cache_limit = 4", "device_cache_limit = -1", 1)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadConfig(configPath); !errors.Is(err, errConfigInvalid) {
+		t.Fatalf("invalid limiter cache config accepted: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte(config), 0600); err != nil {
+		t.Fatal(err)
 	}
 	if got.InstanceID.String() != "01010101010101010101010101010101" || got.RuntimeCredentialFile != credential {
 		t.Fatalf("loaded config does not preserve configured instance and credential file")

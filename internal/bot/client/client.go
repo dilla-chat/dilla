@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -49,15 +50,22 @@ type Config struct {
 	InstanceID        id.ID
 	AllowLoopbackHTTP bool
 	Timeout           time.Duration
+	RateLimits        RateLimits
 }
 
 type Client struct {
-	base          *url.URL
-	http          *http.Client
-	instance      id.ID
-	timeout       time.Duration
-	allowLoopback bool
-	discovered    atomic.Bool
+	base                           *url.URL
+	http                           *http.Client
+	instance                       id.ID
+	timeout                        time.Duration
+	allowLoopback                  bool
+	discovered                     atomic.Bool
+	rateMu                         sync.Mutex
+	rates                          RateLimits
+	buckets                        map[string]*deviceLimiter
+	devices                        map[string]string
+	targetBuckets                  int
+	cacheEvictions, cacheDeferrals uint64
 }
 
 type Runtime struct {
@@ -65,8 +73,9 @@ type Runtime struct {
 	token string
 }
 type Session struct {
-	c     *Client
-	token string
+	c             *Client
+	token         string
+	deviceRateKey string
 }
 
 func (*Session) String() string   { return "bot client.Session{token:[redacted]}" }
@@ -111,8 +120,12 @@ func New(cfg Config) (*Client, error) {
 	if timeout <= 0 {
 		timeout = DefaultTimeout
 	}
+	rates, err := cfg.RateLimits.defaults()
+	if err != nil {
+		return nil, err
+	}
 	u.Path, u.RawPath, u.RawQuery, u.Fragment = "", "", "", ""
-	return &Client{base: u, http: &hcopy, instance: cfg.InstanceID, timeout: timeout, allowLoopback: cfg.AllowLoopbackHTTP}, nil
+	return &Client{base: u, http: &hcopy, instance: cfg.InstanceID, timeout: timeout, allowLoopback: cfg.AllowLoopbackHTTP, rates: rates, buckets: make(map[string]*deviceLimiter), devices: make(map[string]string)}, nil
 }
 
 func (c *Client) Runtime(token string) (*Runtime, error) {
@@ -206,13 +219,62 @@ func (c *Client) endpoint(path string, q url.Values) *url.URL {
 	return &u
 }
 
+type deviceRateContextKey struct{}
+
+func (s *Session) rateContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if s.deviceRateKey == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, deviceRateContextKey{}, s.deviceRateKey)
+}
+
+func (s *Session) do(ctx context.Context, method, path string, query url.Values, body []byte, maxBytes int64, mutation bool) ([]byte, int, error) {
+	return s.c.do(s.rateContext(ctx), s.token, method, path, query, body, maxBytes, mutation)
+}
+
+func (s *Session) doObserved(ctx context.Context, method, path string, query url.Values, body []byte, maxBytes int64, mutation bool) ([]byte, int, ResponseObservation, error) {
+	return s.c.doObserved(s.rateContext(ctx), s.token, method, path, query, body, maxBytes, mutation)
+}
+
 func (c *Client) do(ctx context.Context, token, method, path string, query url.Values, body []byte, maxBytes int64, mutation bool) ([]byte, int, error) {
 	b, status, _, err := c.doObserved(ctx, token, method, path, query, body, maxBytes, mutation)
 	return b, status, err
 }
 
 func (c *Client) doObserved(ctx context.Context, token, method, path string, query url.Values, body []byte, maxBytes int64, mutation bool) ([]byte, int, ResponseObservation, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+	var last error
+	for attempt := 0; ; attempt++ {
+		if err := c.waitRate(ctx, token, method, path); err != nil {
+			if last != nil {
+				return nil, http.StatusTooManyRequests, ResponseObservation{}, errors.Join(last, err)
+			}
+			return nil, 0, ResponseObservation{}, err
+		}
+		raw, status, observation, err := c.doObservedOnce(ctx, token, method, path, query, body, maxBytes, mutation)
+		refusal := RateLimitError(err)
+		if refusal == nil {
+			return raw, status, observation, err
+		}
+		last = err
+		if waitErr := waitRetry(ctx, retryDelay(refusal, attempt)); waitErr != nil {
+			return raw, status, observation, errors.Join(err, waitErr)
+		}
+	}
+}
+
+func (c *Client) doObservedOnce(ctx context.Context, token, method, path string, query url.Values, body []byte, maxBytes int64, mutation bool) ([]byte, int, ResponseObservation, error) {
 	var observation ResponseObservation
+	if err := CooperativeCheckpoint(ctx); err != nil {
+		return nil, 0, observation, err
+	}
 	if path != "instance" && !c.discovered.Load() {
 		return nil, 0, observation, errors.New("bot client: discovery required before API use")
 	}
@@ -300,7 +362,17 @@ func (c *Client) doObserved(ctx context.Context, token, method, path string, que
 		} else {
 			return nil, resp.StatusCode, observation, ErrProtocol
 		}
-		return nil, resp.StatusCode, observation, parseAPIError(resp.StatusCode, code, a)
+		apiErr := parseAPIError(resp.StatusCode, code, a)
+		if apiErr.Code == "E_RATE_LIMITED" && apiErr.RetryAfterMS == nil {
+			if seconds, err := strconv.ParseUint(resp.Header.Get("Retry-After"), 10, 32); err == nil {
+				ms := seconds * 1000
+				apiErr.RetryAfterMS = &ms
+			} else if at, err := http.ParseTime(resp.Header.Get("Retry-After")); err == nil {
+				ms := uint64(max(int64(0), time.Until(at).Milliseconds()))
+				apiErr.RetryAfterMS = &ms
+			}
+		}
+		return nil, resp.StatusCode, observation, apiErr
 	}
 	if maxBytes <= 0 || maxBytes > MaxBody {
 		maxBytes = MaxBody
@@ -425,7 +497,7 @@ func errorShape(a []any) bool {
 		if len(a) != 3 {
 			return false
 		}
-		if (a[0] == "E_RATE_LIMITED" || a[0] == "E_UNAVAILABLE") && retry == nil {
+		if a[0] == "E_UNAVAILABLE" && retry == nil {
 			return false
 		}
 		if retry != nil && a[0] != "E_RATE_LIMITED" && a[0] != "E_COMMIT_REQUIRED" && a[0] != "E_UNAVAILABLE" {

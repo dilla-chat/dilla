@@ -12,9 +12,72 @@ import (
 	"testing"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
+	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/bot/service"
 	"github.com/jonasthim/dilla/internal/cborx"
+	"github.com/jonasthim/dilla/internal/id"
 )
+
+// queuePoller models the durable event queue for interactionEventRuntime: events in order, each
+// acknowledged only after its handler succeeds; a failing handler stops the pass at that event.
+type queuePoller struct {
+	events []native.GroupEvent
+}
+
+func (q *queuePoller) PollOnce(ctx context.Context, handler service.GroupEventHandler) (service.GroupEventPollResult, error) {
+	var result service.GroupEventPollResult
+	for len(q.events) > 0 {
+		head := q.events[0]
+		if err := handler.HandleGroupEvent(ctx, head); err != nil {
+			return result, err
+		}
+		q.events = q.events[1:]
+		result.Handled++
+		result.AcknowledgedThrough = head.DeliveryID
+	}
+	return result, nil
+}
+
+type recordingHandler struct{ handled []id.ID }
+
+func (h *recordingHandler) HandleGroupEvent(_ context.Context, event native.GroupEvent) error {
+	h.handled = append(h.handled, event.SenderUser)
+	return nil
+}
+
+// The production runtime applies the hold: an event from an unrefreshed sender never reaches the
+// inner handler.
+func TestInteractionEventRuntimeNeverHandsAHeldSendersEventToTheHandler(t *testing.T) {
+	b := id.New()
+	handler := &recordingHandler{}
+	runtime := newInteractionEventRuntime(&queuePoller{events: []native.GroupEvent{{DeliveryID: 1, SenderUser: b}}}, handler)
+	if _, err := runtime.DrainHolding(t.Context(), map[id.ID]bool{b: true}); !errors.Is(err, service.ErrGroupEventHeld) {
+		t.Fatalf("DrainHolding error %v, want the held sender", err)
+	}
+	if len(handler.handled) != 0 {
+		t.Fatalf("the handler received a held sender's event: %v", handler.handled)
+	}
+}
+
+// Jonas 2026-10-30: after a restart (a fresh runtime), the reconcile pass's isolating trust stage
+// reports a stale member B; the pass's drain dispatches A's command and holds B's.
+func TestRestartWithAStaleMemberDispatchesOthersAndHoldsThem(t *testing.T) {
+	a, b := id.New(), id.New()
+	var steps []string
+	unrefreshed, err := refreshTrust(t.Context(), trustOutcome{steps: &steps, refresh: service.TrustRefresh{Unrefreshed: map[id.ID]bool{b: true}}}, nil, func(service.TrustRefresh) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := &recordingHandler{}
+	queue := &queuePoller{events: []native.GroupEvent{{DeliveryID: 1, SenderUser: a}, {DeliveryID: 2, SenderUser: b}}}
+	fresh := newInteractionEventRuntime(queue, handler)
+	if _, err := fresh.DrainHolding(t.Context(), unrefreshed); !errors.Is(err, service.ErrGroupEventHeld) {
+		t.Fatalf("DrainHolding error %v, want B's event held", err)
+	}
+	if !reflect.DeepEqual(handler.handled, []id.ID{a}) || len(queue.events) != 1 || queue.events[0].SenderUser != b {
+		t.Fatalf("handled %v, queued %v: want A's command dispatched and B's held", handler.handled, queue.events)
+	}
+}
 
 type readinessMembership struct {
 	steps        *[]string
@@ -46,10 +109,15 @@ func TestMembershipReadinessBeforePrivateRestore(t *testing.T) {
 	for _, tc := range []struct {
 		name                                                        string
 		pending, denied, membershipDenied, syncDenied, alreadyReady bool
+		staleUser, trustFails                                       bool
 		want                                                        []string
 		stage                                                       string
 	}{
 		{name: "reenabled", want: []string{"membership", "trust", "ready", "heal", "interaction_sync"}, stage: "interaction_source_sync"},
+		// Jonas 2026-10-30: one member's stale device-list history isolates that member and the
+		// pass goes on (no freeze after a restart); a general trust failure stays fatal.
+		{name: "stale_user_isolated", staleUser: true, want: []string{"membership", "trust", "ready", "heal", "interaction_sync"}, stage: "interaction_source_sync"},
+		{name: "general_trust_failure", trustFails: true, want: []string{"membership", "trust"}, stage: "membership_trust"},
 		{name: "already_ready", alreadyReady: true, want: []string{"membership", "trust", "heal", "interaction_sync"}, stage: "interaction_source_sync"},
 		{name: "source_forbidden", syncDenied: true, want: []string{"membership", "trust", "ready", "heal", "interaction_sync"}, stage: "interaction_source_sync"},
 		{name: "pending_membership", pending: true, want: []string{"membership", "trust", "ready"}, stage: "readiness"},
@@ -137,7 +205,28 @@ func TestMembershipReadinessBeforePrivateRestore(t *testing.T) {
 			if tc.membershipDenied {
 				membership.reconcileErr = errors.New("membership denied")
 			}
-			ready, healed, stage, err := reconcileMembershipReadiness(t.Context(), installation, n, session, membership, readinessTrust{steps: &steps})
+			stale := id.New()
+			trustUnavailable := errors.New("server unavailable")
+			var trust intakeTrust = readinessTrust{steps: &steps}
+			switch {
+			case tc.staleUser:
+				trust = trustOutcome{steps: &steps, refresh: service.TrustRefresh{Unrefreshed: map[id.ID]bool{stale: true}}}
+			case tc.trustFails:
+				trust = trustOutcome{steps: &steps, err: trustUnavailable}
+			}
+			ready, healed, stage, unrefreshed, err := reconcileMembershipReadiness(t.Context(), installation, n, session, membership, trust, func(service.TrustRefresh) {})
+			if tc.trustFails {
+				if !errors.Is(err, trustUnavailable) || ready || unrefreshed != nil {
+					t.Fatalf("general trust failure: ready=%v unrefreshed=%v err=%v, want fatal", ready, unrefreshed, err)
+				}
+			}
+			if tc.staleUser {
+				if err != nil || !ready || !unrefreshed[stale] || len(unrefreshed) != 1 {
+					t.Fatalf("stale user: ready=%v unrefreshed=%v err=%v, want ready with the stale user isolated", ready, unrefreshed, err)
+				}
+			} else if len(unrefreshed) != 0 {
+				t.Fatalf("unexpected unrefreshed %v", unrefreshed)
+			}
 			if !reflect.DeepEqual(steps, tc.want) {
 				t.Fatalf("steps=%v want=%v; ready=%v stage=%s err=%v", steps, tc.want, ready, stage, err)
 			}
@@ -153,6 +242,8 @@ func TestMembershipReadinessBeforePrivateRestore(t *testing.T) {
 				if !errors.Is(err, membership.reconcileErr) {
 					t.Fatalf("membership denial lost: %v", err)
 				}
+			} else if tc.trustFails {
+				return
 			} else if err != nil || ready == tc.pending {
 				t.Fatalf("ready=%v err=%v", ready, err)
 			}

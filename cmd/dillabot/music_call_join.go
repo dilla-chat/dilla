@@ -8,10 +8,12 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"time"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
+	"github.com/jonasthim/dilla/internal/bot/helper"
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
@@ -30,6 +32,81 @@ type musicCallMembershipForgetter interface {
 	CallGroupForget(context.Context, id.ID) error
 }
 
+type musicCallJoinReader interface {
+	musicCallMembershipReader
+	ChannelCall(context.Context, id.ID) (client.ChannelCallState, error)
+	GroupInfo(context.Context, id.ID) (client.GroupInfo, error)
+	GroupTree(context.Context, id.ID) (client.GroupTree, error)
+	Resync(context.Context, id.ID, []byte, []byte) (client.SequenceResult, error)
+	OwnDeviceList(context.Context, id.ID) ([]byte, error)
+	DeviceListHistory(context.Context, id.ID, uint64) ([][]any, error)
+}
+type musicCallJoinCore interface {
+	musicCallMembershipForgetter
+	Groups(context.Context) ([]native.GroupInfo, error)
+	GroupIntentResult(context.Context, id.ID) (*native.GroupIntentResult, error)
+	ExternalJoin(context.Context, id.ID, id.ID, id.ID, uint64, uint64, []byte, []byte) (native.GroupExternalJoinResult, error)
+	DiscardGroup(context.Context, id.ID, id.ID) error
+	PendingLeaves(context.Context) ([]native.GroupPendingLeaf, error)
+	TrustSender(context.Context, id.ID, uint64, id.ID, []byte, []byte, uint64) (native.GroupTrustVerdict, error)
+	CallJoinCheck(context.Context, id.ID) error
+	GroupJoined(context.Context, id.ID, id.ID, uint64) error
+	CallMediaEpoch(context.Context, id.ID) (native.CallMediaEpoch, error)
+}
+
+// This carries no core free text or MLS bytes. A later Resume always gets a fresh retry budget.
+type errMusicCallJoinConflict struct {
+	group id.ID
+	state int64
+	epoch uint64
+}
+
+func (e *errMusicCallJoinConflict) Error() string {
+	return "music call-group external_join: retryable conflict"
+}
+func (e *errMusicCallJoinConflict) Retryable() bool { return true }
+
+// An unusable pending upload outside JOINING cannot be replayed or safely forgotten.
+type errMusicCallJoinUnusable struct{}
+
+func (*errMusicCallJoinUnusable) Error() string {
+	return "music call-group unusable_pending: pending join intent cannot be resumed"
+}
+func (*errMusicCallJoinUnusable) Retryable() bool { return false }
+
+var errMusicCallJoinDiscarded = errors.New("music call-group non-resumable join discarded")
+
+func waitMusicCallJoin(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func retryMusicCallGroupJoin(ctx context.Context, calls musicCallJoinReader, core musicCallJoinCore, installation, community, channel id.ID, policy uint64, wait func(context.Context, time.Duration) error) error {
+	delays := [...]time.Duration{250 * time.Millisecond, time.Second, 2 * time.Second}
+	conflicts, discarded := 0, false
+	for {
+		err := musicCallGroupJoinAttempt(ctx, calls, core, installation, community, channel, policy)
+		if errors.Is(err, errMusicCallJoinDiscarded) && !discarded {
+			discarded = true
+			continue
+		}
+		var conflict *errMusicCallJoinConflict
+		if !errors.As(err, &conflict) || conflicts == len(delays) {
+			return err
+		}
+		if err = wait(ctx, delays[conflicts]); err != nil {
+			return err
+		}
+		conflicts++
+	}
+}
+
 // ensureMusicCallGroupJoined performs the same security sequence as the browser call join:
 // stage an external join, refresh signed device-list pins, gate the staged call epoch, post the
 // exact commit, and resolve the helper intent from the accepted resync sequence.
@@ -37,6 +114,10 @@ func ensureMusicCallGroupJoined(ctx context.Context, calls *client.Session, core
 	if ctx == nil || calls == nil || core == nil || installation.IsZero() || community.IsZero() || channel.IsZero() || policy == 0 {
 		return errors.New("music call-group join dependencies unavailable")
 	}
+	return retryMusicCallGroupJoin(ctx, calls, core, installation, community, channel, policy, waitMusicCallJoin)
+}
+
+func musicCallGroupJoinAttempt(ctx context.Context, calls musicCallJoinReader, core musicCallJoinCore, installation, community, channel id.ID, policy uint64) error {
 	call, err := calls.ChannelCall(ctx, channel)
 	if err != nil {
 		return musicCallJoinStageError("channel_call", err)
@@ -52,11 +133,16 @@ func ensureMusicCallGroupJoined(ctx context.Context, calls *client.Session, core
 	if err := forgetSupersededMusicCallGroups(ctx, core, groups, community, channel, group); err != nil {
 		return musicCallJoinStageError("forget_superseded_group", err)
 	}
-	var localJoinEpoch uint64
+	var localJoinEpoch, localEpoch uint64
+	var localState int64 = -1
 	for _, existing := range groups {
 		if existing.ID != group {
 			continue
 		}
+		if existing.State > 4 {
+			return errors.New("music call-group state is not joinable")
+		}
+		localState, localEpoch = int64(existing.State), existing.Epoch
 		if existing.State == 4 {
 			if err = core.CallGroupForget(ctx, group); err != nil {
 				return musicCallJoinStageError("forget_gone_group", err)
@@ -89,15 +175,55 @@ func ensureMusicCallGroupJoined(ctx context.Context, calls *client.Session, core
 	}
 	operation := musicCallJoinOperation(installation, group, baseEpoch)
 
-	intent, err := core.GroupIntentResult(ctx, operation)
-	if err != nil {
-		return musicCallJoinStageError("intent_read", err)
-	}
 	var joined native.GroupExternalJoinResult
-	if intent != nil {
-		if intent.Kind != 5 || intent.Group != group || intent.State != 0 || len(intent.Result) == 0 {
-			return errors.New("music call-group join intent is not resumable")
+	var intent *native.GroupIntentResult
+	var nonResumable id.ID
+	for generation := 0; ; generation++ {
+		if generation >= 64 {
+			return errors.New("music call-group join intent retry limit exceeded")
 		}
+		intent, err = core.GroupIntentResult(ctx, operation)
+		if err != nil {
+			return musicCallJoinStageError("intent_read", err)
+		}
+		if intent == nil {
+			break
+		}
+		if intent.Kind != 5 || intent.Group != group {
+			return errors.New("music call-group join intent binding mismatch")
+		}
+		if intent.State != 0 || len(intent.Result) == 0 {
+			nonResumable = operation
+			if intent.State == 0 {
+				break
+			}
+			// Follow a deterministic chain past terminal operations. A later Resume
+			// follows the same chain and recovers the exact staged upload after a lost reply.
+			digest := sha256.Sum256(append([]byte("dilla.bot.music-call-retry.v1\x00"), operation[:]...))
+			copy(operation[:], digest[:len(operation)])
+			continue
+		}
+		break
+	}
+	if intent != nil && intent.State == 0 && len(intent.Result) == 0 && localState != 1 {
+		// The interaction handler logs this terminal failure once with operation context.
+		return &errMusicCallJoinUnusable{}
+	}
+	// session.QueueStarter is owned by one music.Supervisor per channel; the
+	// supervisor serializes starts. No competing join can stage a new upload
+	// between this snapshot, discard and forget.
+	if (intent == nil || len(intent.Result) == 0) && !nonResumable.IsZero() && localState == 1 {
+		if err = core.DiscardGroup(ctx, nonResumable, group); err != nil {
+			return musicCallJoinStageError("discard_non_resumable", err)
+		}
+		// An already resolved discard may leave a historical JOINING row behind.
+		if err = core.CallGroupForget(ctx, group); err != nil {
+			return musicCallJoinStageError("forget_non_resumable", err)
+		}
+		slog.WarnContext(ctx, "music call-group join retry", "stage", "discard_non_resumable", "group_id", group.String(), "local_state", localState, "epoch", localEpoch)
+		return errMusicCallJoinDiscarded
+	}
+	if intent != nil {
 		joined, err = decodeMusicExternalJoinResult(intent.Result)
 		if err != nil {
 			return musicCallJoinStageError("intent_decode", err)
@@ -120,6 +246,11 @@ func ensureMusicCallGroupJoined(ctx context.Context, calls *client.Session, core
 		}
 		joined, err = core.ExternalJoin(ctx, operation, group, channel, 1, policy, infoBody, treeBody)
 		if err != nil {
+			var status *helper.StatusError
+			if errors.As(err, &status) && status.Status == 4 {
+				slog.WarnContext(ctx, "music call-group join retry", "stage", "external_join", "group_id", group.String(), "local_state", localState, "epoch", localEpoch)
+				return &errMusicCallJoinConflict{group: group, state: localState, epoch: localEpoch}
+			}
 			return musicCallJoinStageError("external_join", err)
 		}
 	}
@@ -245,7 +376,7 @@ func decodeMusicExternalJoinResult(body []byte) (native.GroupExternalJoinResult,
 	return native.GroupExternalJoinResult{Commit: append([]byte(nil), commit...), GroupInfo: append([]byte(nil), info...)}, nil
 }
 
-func refreshMusicCallJoinLeaves(ctx context.Context, calls *client.Session, core *native.Client, group id.ID) error {
+func refreshMusicCallJoinLeaves(ctx context.Context, calls musicCallJoinReader, core musicCallJoinCore, group id.ID) error {
 	leaves, err := core.PendingLeaves(ctx)
 	if err != nil {
 		return err
@@ -275,7 +406,7 @@ func refreshMusicCallJoinLeaves(ctx context.Context, calls *client.Session, core
 	return nil
 }
 
-func musicDeviceListHistory(ctx context.Context, calls *client.Session, user id.ID, cachedVersion uint64) ([]byte, []byte, error) {
+func musicDeviceListHistory(ctx context.Context, calls musicCallJoinReader, user id.ID, cachedVersion uint64) ([]byte, []byte, error) {
 	const maxVersions = 1024
 	headRaw, err := calls.OwnDeviceList(ctx, user)
 	if err != nil {

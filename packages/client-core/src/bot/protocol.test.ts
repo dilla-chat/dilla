@@ -169,3 +169,14 @@ describe('music provider status', () => {
     expect(() => decodeMusicProviderStatus(encode([1n, id(9), 1n, 99n, 0n, 1n, 0n, 2n, 1n]))).toThrow();
   });
 });
+
+
+it('roundtrips optional expected-current skip arguments and rejects malformed guards', () => {
+  for (const args of [[], ['ab'.repeat(16)], ['']]) {
+    const input = { ...request(15, args), channelId: id(3), revision: 0n, expires: 110n };
+    expect(bot.decodeBotRequest(bot.encodeBotRequest(input)).args).toEqual(args);
+  }
+  for (const args of [[null], [1n], ['bad-id'], ['ab'.repeat(16), 'cd'.repeat(16)]]) {
+    expect(() => bot.encodeBotRequest({ ...request(15, args), channelId: id(3), revision: 0n, expires: 110n })).toThrow(bot.BotError);
+  }
+});

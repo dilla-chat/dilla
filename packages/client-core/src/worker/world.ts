@@ -182,6 +182,8 @@ export class GatewayDouble {
   stop(): void { this.stops += 1; this.log.push('gateway.stop'); }
   subscribe(listener: (e: GatewayEvent) => void): () => void { this.listeners.push(listener); return () => {}; }
   commitAck(): void {}
+  sendCallStats = vi.fn(() => false);
+  sendPresenceActivity = vi.fn(() => false);
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the arguments make the double match the gateway
   sendTyping = vi.fn((_channel: Uint8Array, _on: boolean): void => {});
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the arguments make the double match the gateway

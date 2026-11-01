@@ -119,6 +119,43 @@ func (q *Queries) CountKeyPackages(ctx context.Context, arg CountKeyPackagesPara
 	return count, err
 }
 
+const countLiveInstanceProposals = `-- name: CountLiveInstanceProposals :many
+SELECT p.kind::bigint AS kind, count(*)::bigint AS n FROM mls_pending_proposals p
+JOIN mls_groups g ON g.group_id = p.group_id
+WHERE p.origin = 0 AND p.void_at IS NULL AND (g.closed_at IS NOT NULL OR p.epoch = g.epoch)
+GROUP BY p.kind ORDER BY p.kind
+`
+
+type CountLiveInstanceProposalsRow struct {
+	Kind int64
+	N    int64
+}
+
+// The gauge counts current-epoch instance proposals in open groups and all epochs in closed
+// groups, whose rows the closed-group void clears. Old open-group rows cannot be committed.
+func (q *Queries) CountLiveInstanceProposals(ctx context.Context) ([]CountLiveInstanceProposalsRow, error) {
+	rows, err := q.db.QueryContext(ctx, countLiveInstanceProposals)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CountLiveInstanceProposalsRow{}
+	for rows.Next() {
+		var i CountLiveInstanceProposalsRow
+		if err := rows.Scan(&i.Kind, &i.N); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const countPendingJoins = `-- name: CountPendingJoins :one
 SELECT count(*) FROM pending_joins WHERE group_id = $1
 `
@@ -580,6 +617,55 @@ func (q *Queries) ListBarredMembers(ctx context.Context, arg ListBarredMembersPa
 			&i.SignatureKey,
 			&i.AddedEpoch,
 			&i.RemovedEpoch,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listClosedGroupLiveProposals = `-- name: ListClosedGroupLiveProposals :many
+SELECT p.group_id, p.ref, p.epoch, p.kind, p.target_leaf, p.target_device, p.key_package, p.origin, p.action_id, p.issued_at, p.ttl, p.void_at FROM mls_pending_proposals p
+JOIN mls_groups g ON g.group_id = p.group_id
+WHERE g.closed_at IS NOT NULL AND p.void_at IS NULL
+ORDER BY p.group_id, p.ref LIMIT $1::bigint
+`
+
+type ListClosedGroupLiveProposalsParams struct {
+	MaxRows int64
+}
+
+// The non-void proposals, any epoch, of the CLOSED groups: no commit can land in a closed group and
+// no group is ever reopened, so the sweep voids them (every other proposal walk reads open groups).
+func (q *Queries) ListClosedGroupLiveProposals(ctx context.Context, arg ListClosedGroupLiveProposalsParams) ([]MlsPendingProposals, error) {
+	rows, err := q.db.QueryContext(ctx, listClosedGroupLiveProposals, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []MlsPendingProposals{}
+	for rows.Next() {
+		var i MlsPendingProposals
+		if err := rows.Scan(
+			&i.GroupID,
+			&i.Ref,
+			&i.Epoch,
+			&i.Kind,
+			&i.TargetLeaf,
+			&i.TargetDevice,
+			&i.KeyPackage,
+			&i.Origin,
+			&i.ActionID,
+			&i.IssuedAt,
+			&i.Ttl,
+			&i.VoidAt,
 		); err != nil {
 			return nil, err
 		}

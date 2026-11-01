@@ -53,6 +53,10 @@ export async function advanceClock(control: string, seconds: number): Promise<vo
  * counter at or below the last one used, so the pick is max(c, last+1). Prefer the current window: picking c-1 would
  * expire if the host ticks between reading its clock and the browser's auto-submit. While the next unspent counter
  * is past c+1 the host clock moves 30 s at a time, only as far as needed. Records the counter in `account.lastCounter`.
+ *
+ * Never c-1: a host started with advanceClockWithWall ticks its clock with the wall clock, and c-1 falls out of the
+ * window the moment the clock reaches the next step, which can be between this read and the server's check (the
+ * 2026-10-30 CI failures: "That code did not match"). A pick of c or later stays good for at least one whole step.
  */
 export async function nextCode(control: string, account: { totpSecret: string | null; lastCounter: number }, options: {
   /** Visual worlds tick naturally; never skew their signed Bot clock or force retention through a synthetic advance. */

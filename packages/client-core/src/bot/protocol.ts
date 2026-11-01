@@ -109,13 +109,17 @@ function validateUtilityPayload(raw: unknown, poll: boolean): Uint8Array {
   return b;
 }
 function validateArgs(op: number, a: unknown[]): void {
-  const spec = ops[op]; if (!spec) fail('E_BOT_OPERATION'); if (a.length !== spec.count) fail('E_BOT_SHAPE');
+  const spec = ops[op]; if (!spec) fail('E_BOT_OPERATION'); if (a.length !== spec.count && !(op === 15 && a.length === 1)) fail('E_BOT_SHAPE');
   const u = (i:number,min=0n,max=MAX) => { a[i]=uint(a[i],min,max); };
   const t = (i:number,min:number,max:number,ctrl=false) => { a[i]=text(a[i],min,max,ctrl); };
   const ident=(i:number)=>{a[i]=id(a[i]);};
   switch(op) {
     case 1: case 2: u(0,0n,5n); if(op===2) a[1]=cborBytes(a[1],1,2400); break;
     case 11: t(0,1,200,true); break; case 12: t(0,1,2048,true); break;
+    case 15:
+      if (a.length === 1 && (typeof a[0] !== 'string' || a[0] !== ''
+        && (!/^[0-9a-f]{32}$/u.test(a[0]) || a[0] === '0'.repeat(32)))) fail('E_BOT_SHAPE');
+      break;
     case 17: u(0); break; case 18: u(0,0n,100n); break; case 20: u(0,0n,2n); break;
     case 21: case 25: ident(0); break; case 22: ident(0); a[1]=nullable(a[1],id); break;
     case 30: t(0,1,2000); break;

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -408,6 +410,71 @@ func TestExplicitStartRefreshesBindingAfterDelayedRoomDisconnect(t *testing.T) {
 			}
 			if !errors.Is(err, wantErr) || calls != tc.wantCalls || resets != tc.wantResets {
 				t.Fatalf("err=%v options=%d resets=%d", err, calls, resets)
+			}
+		})
+	}
+}
+
+type schedulingPCM struct{ api *client.Client }
+
+func (p schedulingPCM) Start(ctx context.Context, _ string) (io.ReadCloser, error) {
+	if client.RequestPriority(ctx) != 0 || client.CooperativeCheckpoint(ctx) != nil {
+		return nil, errors.New("playback retained a worker turn")
+	}
+	_, err := p.api.Discover(ctx)
+	var response *client.APIError
+	if !errors.As(err, &response) || response.Status != 503 {
+		return nil, errors.New("playback retained the command's interactive priority")
+	}
+	return &pcmStub{}, nil
+}
+
+type schedulingTransport struct{}
+
+func (schedulingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: 503, Header: http.Header{"Content-Type": []string{"application/cbor"}}, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
+}
+func TestPlaybackSessionClearsInteractiveScheduling(t *testing.T) {
+	api, err := client.New(client.Config{BaseURL: "https://example.invalid", InstanceID: id.New(), HTTPClient: &http.Client{Transport: schedulingTransport{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := &leaseStub{}
+	enc := &encoderStub{done: make(chan struct{})}
+	pub := &pubStub{done: make(chan struct{})}
+	o := options(&pcmStart{lease: lease}, enc, pub, lease)
+	o.Call.GroupID = o.Group
+	o.PCM = schedulingPCM{api: api}
+	ctx := client.WithInteractive(client.WithCooperativeStop(t.Context(), func() bool { return true }))
+	playback, err := Start(ctx, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer playback.Close()
+}
+
+func TestStartClosesAudioAndLeaseOnLateCallFailure(t *testing.T) {
+	for _, stage := range []string{"call_group_join", "call_token", "call_fields"} {
+		t.Run(stage, func(t *testing.T) {
+			lease, pcm := &leaseStub{}, &pcmStub{}
+			enc := &encoderStub{done: make(chan struct{})}
+			pub := &pubStub{done: make(chan struct{})}
+			o := options(&pcmStart{lease: lease}, enc, pub, lease)
+			o.PCM = plainPCMStart{source: pcm}
+			failure := errors.New("late call failure")
+			o.Call, o.Group = client.Call{}, id.ID{}
+			o.PrepareCall = func(context.Context) (client.Call, error) {
+				if lease.released.Load() != 0 || enc.closed.Load() != 0 {
+					t.Fatal("resources closed before call preparation")
+				}
+				return client.Call{}, &music.StartError{Stage: stage, Cause: failure}
+			}
+			_, err := Start(context.Background(), o)
+			if !errors.Is(err, failure) {
+				t.Fatalf("start = %v", err)
+			}
+			if pcm.closed.Load() != 1 || enc.closed.Load() != 1 || lease.released.Load() != 1 || pub.closed.Load() != 0 {
+				t.Fatalf("cleanup pcm=%d encoder=%d lease=%d publisher=%d", pcm.closed.Load(), enc.closed.Load(), lease.released.Load(), pub.closed.Load())
 			}
 		})
 	}

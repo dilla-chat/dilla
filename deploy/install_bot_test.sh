@@ -40,6 +40,7 @@ cat >"$STUBS/runuser" <<'STUB'
 echo "runuser $*" >>"$BOT_TEST_LOG"
 while [ "$#" -gt 0 ] && [ "$1" != -- ]; do shift; done
 shift
+case "$1" in */env) shift; export "$1"; shift ;; esac
 case "$1" in
 */dillabot) shift; exec "$FAKE_BOT" "$@" ;;
 *) exec "$@" ;;
@@ -52,6 +53,7 @@ if [ "$1" = start ] && [ -n "${BOT_TEST_FAIL_START_FIRST:-}" ]; then
 	n=$((n + 1)); echo "$n" >"$BOT_TEST_START_COUNT"
 	[ "$n" -gt 1 ] || exit 1
 fi
+if [ "$1" = show-environment ] && [ -n "${BOT_TEST_SERVICE_PATH:-}" ]; then echo "PATH=$BOT_TEST_SERVICE_PATH"; fi
 if [ "$1" = is-active ]; then [ "${BOT_TEST_ACTIVE:-1}" = 1 ]; fi
 STUB
 cat >"$STUBS/dillad" <<'STUB'
@@ -69,6 +71,10 @@ if [ -n "${BOT_TEST_DOCTOR_FAIL_AFTER_FIRST:-}" ]; then
 	n=0; [ ! -f "$BOT_TEST_DOCTOR_COUNT" ] || n="$(cat "$BOT_TEST_DOCTOR_COUNT")"
 	n=$((n + 1)); echo "$n" >"$BOT_TEST_DOCTOR_COUNT"
 	[ "$n" -lt 2 ] || exit 1
+fi
+if [ -n "${BOT_TEST_DOCTOR_PATH_LOG:-}" ]; then
+	echo "$PATH" >"$BOT_TEST_DOCTOR_PATH_LOG"
+	if command -v yt-dlp >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then echo 'youtube_dependencies OK'; else echo 'youtube_dependencies WARN: yt-dlp unavailable; node unavailable'; fi
 fi
 echo 'runtime_credential OK'
 echo 'native_helper OK'
@@ -271,6 +277,34 @@ if PATH="$STUBS:$PATH" DILLA_INSTALL_ROOT="$ROOT" BOT_TEST_LOG="$LOG" "$INSTALL"
 [ "$(sha256sum "$ROOT/etc/dillabot/runtime.token")" = "$BEFORE" ] || fail "refused rerun changed credential"
 grep -q 'files or state already exist' "$TMP/err" || fail "rerun refusal was not explained"
 pass "rerun refuses without replacing Bot credential"
+
+# The doctor's dependency check runs with the service's PATH, not the caller's:
+# `pct exec` has no /usr/local/bin, while systemd's default PATH does.
+SVCBIN="$TMP/service-bin"
+mkdir -p "$SVCBIN"
+printf '#!/bin/sh\n' >"$SVCBIN/yt-dlp"
+printf '#!/bin/sh\n' >"$SVCBIN/node"
+chmod +x "$SVCBIN/yt-dlp" "$SVCBIN/node"
+PROOT="$TMP/path-root"
+mkdir -p "$PROOT/etc/dilla" "$PROOT/usr/local/bin" "$PROOT/etc/ssl/certs"
+chmod 0750 "$PROOT/etc/dilla"
+printf 'server config\n' >"$PROOT/etc/dilla/dilla.toml"
+cp "$STUBS/dillad" "$PROOT/usr/local/bin/dillad"
+DOCTOR_PATH_LOG="$TMP/doctor-path"
+# shellcheck disable=SC2086
+if PATH="$STUBS:/usr/bin:/bin" DILLA_INSTALL_ROOT="$PROOT" BOT_TEST_LOG="$LOG" BOT_TEST_DOCTOR_PATH_LOG="$DOCTOR_PATH_LOG" BOT_TEST_SERVICE_PATH="$SVCBIN:/usr/bin" "$INSTALL" --base-url=https://chat.example.org --instance-id=01010101010101010101010101010101 --dillad-config="$PROOT/etc/dilla/dilla.toml" --release-url="file://$REL" >"$TMP/out" 2>"$TMP/err"; then :; else fail "install with a minimal caller PATH failed: $(cat "$TMP/err")"; fi
+[ "$(cat "$DOCTOR_PATH_LOG")" = "$SVCBIN:/usr/bin" ] || fail "doctor ran with PATH $(cat "$DOCTOR_PATH_LOG"), not the service PATH"
+grep -q "service PATH $SVCBIN:/usr/bin" "$TMP/err" || fail "installer did not name the PATH it used for the doctor"
+grep -q '^systemctl show-environment$' "$LOG" || fail "installer did not ask systemd for its default PATH"
+pass "the doctor's dependency check uses the service PATH, not the caller's"
+# A PATH set by the installed unit wins over systemd's default.
+printf '[Service]\nEnvironment="PATH=%s"\n' "$SVCBIN" >"$TMP/unit-with-path"
+eval "$(sed -n '/^service_path() {/,/^}/p' "$INSTALL")"
+UNIT="$TMP/unit-with-path"
+[ "$(PATH="$STUBS:/usr/bin:/bin" BOT_TEST_LOG="$LOG" BOT_TEST_SERVICE_PATH=/elsewhere service_path)" = "$SVCBIN" ] || fail "the unit's Environment=PATH is not read"
+UNIT="$TMP/no-such-unit"
+[ "$(PATH="$STUBS:/usr/bin:/bin" BOT_TEST_LOG="$LOG" service_path)" = /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin ] || fail "the documented systemd PATH is not the last fallback"
+pass "an Environment=PATH in the unit is honoured"
 
 # A tampered release artifact is rejected before account, state or service changes.
 BAD="$TMP/bad-release"
