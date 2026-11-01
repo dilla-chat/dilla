@@ -113,6 +113,19 @@ test('protected reload needs an explicit native confirmation and cancelling reta
  expect(await page.evaluate(() => (window as any).__beforeReload)).toBeUndefined();
 });
 
+test('an explicit focused video action can enter and leave HTML fullscreen', async () => {
+ const page = await app.firstWindow();
+ await page.evaluate(() => {
+  const button = document.createElement('button'); button.textContent = 'Fullscreen acceptance';
+  button.onclick = () => { void button.requestFullscreen().catch(() => {}); };
+  document.body.appendChild(button);
+ });
+ await page.getByRole('button', { name: 'Fullscreen acceptance', exact: true }).click();
+ await expect.poll(() => page.evaluate(() => document.fullscreenElement?.textContent)).toBe('Fullscreen acceptance');
+ await page.evaluate(() => document.exitFullscreen());
+ await expect.poll(() => page.evaluate(() => document.fullscreenElement)).toBeNull();
+});
+
 test('rejects malicious IPC and remote document navigation and keeps storage across reload', async () => {
   const page = await app.firstWindow();
   await page.waitForURL(instance);

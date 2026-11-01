@@ -172,12 +172,12 @@ async function openInstance(input: string, path = '/', show = true): Promise<Bro
       && permissionOriginMatches(requestingOrigin, instance) && trustedFrame({ url: contents.getURL(), top: true }, instance);
     // Copy uses Chromium's sanitized clipboard-write permission. Never grant reads,
     // background writes, or clipboard access to a frame/another instance.
-    if (permission === 'clipboard-sanitized-write') return trusted && win.isVisible() && win.isFocused();
+    if (permission === 'clipboard-sanitized-write' || permission === 'fullscreen') return trusted && win.isVisible() && win.isFocused();
     return trusted && allowed.has(permission);
   });
   ses.setPermissionRequestHandler((contents, permission, callback, details) => {
     if (contents !== win.webContents || details.isMainFrame === false || !trustedFrame({ url: details.requestingUrl, top: true }, instance)) { callback(false); return; }
-    if (permission === 'clipboard-sanitized-write') { callback(win.isVisible() && win.isFocused()); return; }
+    if (permission === 'clipboard-sanitized-write' || permission === 'fullscreen') { callback(win.isVisible() && win.isFocused()); return; }
     if (!['media', 'notifications', 'speaker-selection', 'local-network', 'loopback-network'].includes(permission)) { callback(false); return; }
     if (allowed.has(permission)) { callback(true); return; }
     const label = permission === 'media' ? 'microphone or camera' : permission === 'notifications' ? 'notifications' : permission === 'local-network' ? 'local network connections for calls' : permission === 'loopback-network' ? 'connections to a local Dilla service' : 'audio output selection';
