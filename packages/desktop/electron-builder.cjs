@@ -13,7 +13,7 @@ module.exports = {
   artifactName: 'dilla-${version}-${os}-${arch}.${ext}',
   protocols: [{ name: 'Dilla invite', schemes: ['dilla'] }],
   publish: [{ provider: 'github', owner: 'jonasthim', repo: 'dilla', releaseType: 'draft' }],
-  linux: { target: [{ target: 'AppImage', arch: ['x64'] }], category: 'Network', icon: 'assets/icon.png' },
+  linux: { syncDesktopName: true, target: [{ target: 'AppImage', arch: ['x64'] }], category: 'Network', icon: 'assets/icon.png' },
   win: { target: [{ target: 'nsis', arch: ['x64'] }], icon: 'assets/icon.png' },
   nsis: { perMachine: false, oneClick: true, allowElevation: false, deleteAppDataOnUninstall: false },
   mac: {

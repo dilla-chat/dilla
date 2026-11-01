@@ -18,6 +18,7 @@ import type { DesktopEvent, DesktopInfo } from './contract.ts';
 protocol.registerSchemesAsPrivileged([{ scheme: 'dilla-internal', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 app.enableSandbox();
 app.setName('Dilla');
+if (process.platform === 'linux') app.setDesktopName('dev.dilla.desktop.desktop');
 nativeTheme.themeSource = 'dark';
 if (process.platform === 'win32') app.setAppUserModelId('dev.dilla.desktop');
 const arg = (name: string): string | undefined => process.argv.find(value => value.startsWith(`--${name}=`))?.slice(name.length + 3);
@@ -71,7 +72,7 @@ function owner(event: Pick<IpcMainInvokeEvent, 'sender' | 'senderFrame'>): { ins
   throw new Error('Untrusted desktop IPC sender');
 }
 
-const windowChrome = () => ({ titleBarStyle: 'hidden' as const, ...windowAppearance('signal'), trafficLightPosition: { x: 12, y: 10 }, autoHideMenuBar: true });
+const windowChrome = () => ({ icon: process.platform === 'linux' ? nativeImage.createFromPath(join(__dirname, 'icon.png')).resize({ width: 128, height: 128 }) : join(__dirname, 'icon.png'), titleBarStyle: 'hidden' as const, ...windowAppearance('signal'), trafficLightPosition: { x: 12, y: 10 }, autoHideMenuBar: true });
 function showWindowMenu(win: BrowserWindow): void { Menu.getApplicationMenu()?.popup({ window: win, x: process.platform === 'darwin' ? 80 : 8, y: 32 }); }
 
 function setWindowMode(instance: string, win: BrowserWindow, mode: WindowMode, height: number | null): void {
@@ -414,6 +415,7 @@ void waitForPreviousProcess(previousProcess).then(() => {
     app.on('window-all-closed', () => { /* Tray owns the application's lifetime. */ });
     app.on('activate', () => { const win = [...windows.values()][0]; if (win) focus(win); else void showManager(); });
     void app.whenReady().then(async () => {
+      if (process.platform === 'darwin') app.dock?.setIcon(join(__dirname, 'icon.png'));
       bundle = await loadBundle(!app.isPackaged && process.argv.includes('--media-validation') ? join(__dirname, '../validation-dist') : join(__dirname, 'client'));
       preferences = new Preferences(app.getPath('userData'), allowLoopback);
       await preferences.load();

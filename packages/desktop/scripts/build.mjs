@@ -20,3 +20,5 @@ await cp(resolve(root, 'src/manager.html'), resolve(root, 'dist/manager.html'));
 await build({ entryPoints: [resolve(root, 'src/manager.ts')], outfile: resolve(root, 'dist/manager.js'), bundle: true, platform: 'browser', target: 'es2022' });
 await cp(resolve(root, 'src/manager.css'), resolve(root, 'dist/manager.css'));
 await cp(resolve(root, 'assets/tray.png'), resolve(root, 'dist/tray.png'));
+
+await cp(resolve(root, 'assets/icon.png'), resolve(root, 'dist/icon.png'));
