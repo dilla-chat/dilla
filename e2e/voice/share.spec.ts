@@ -266,10 +266,10 @@ test('a share without sound says so on both sides', async ({ peerBrowser, browse
     // Before the share: no notice (D4, nothing before the picker).
     await expect(notice).not.toContainText(copy(noticeKey));
 
-    await startShare(alice.page, firefox ? [] : [copy('callStage.share.tab')]);
+    await startShare(alice.page, firefox || desktopE2E() ? [] : [copy('callStage.share.tab')]);
     await expect(share).toHaveAttribute('data-on', 'true', { timeout: WAIT });
     const opts = await alice.page.evaluate(() => (globalThis as unknown as { __dmOpts?: unknown }).__dmOpts);
-    expect(opts, 'the options the share gave getDisplayMedia').toEqual(desktopE2E() ? { ...SHARE_OPTIONS, audio: false, systemAudio: 'exclude', windowAudio: 'exclude' } : firefox ? SHARE_OPTIONS_FIREFOX : SHARE_OPTIONS);
+    expect(opts, 'the options the share gave getDisplayMedia').toEqual(desktopE2E() || firefox ? SHARE_OPTIONS_FIREFOX : SHARE_OPTIONS);
     if (desktopE2E()) expect(await alice.page.evaluate(() => (globalThis as any).__dmStripped), 'native sharing never requests whole-system audio').toBe(0);
     if (!firefox && !desktopE2E()) {
       // The fake picker's stream carried sound, so the silence below is the wrapper's, as a Linux window share's is.

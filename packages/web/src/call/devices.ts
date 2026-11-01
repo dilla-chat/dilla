@@ -2,6 +2,7 @@
 // the screen with whatever sound the browser gives (#37). Nothing here publishes; the session does.
 import { MIC_CAPTURE, SCREEN_AUDIO_CAPTURE, SCREEN_DISPLAY_HINTS } from '@dilla/media';
 import { DEFAULT_SHARE_OPTIONS, shareVideoConstraints, type ShareOptions } from './share-options.ts';
+import { desktopBridge } from '../desktop.ts';
 
 export interface CaptureMedia {
   getUserMedia(constraints: MediaStreamConstraints): Promise<MediaStream>;
@@ -86,12 +87,21 @@ export interface ScreenCapture { video: MediaStreamTrack; audio: MediaStreamTrac
  * sound hints say exclude, so the browser offers none).
  */
 export async function acquireScreen(media: DisplayMedia, o: ShareOptions = DEFAULT_SHARE_OPTIONS): Promise<ScreenCapture> {
-  const hints = o.systemAudio ? SCREEN_DISPLAY_HINTS : { ...SCREEN_DISPLAY_HINTS, systemAudio: 'exclude' as const, windowAudio: 'exclude' as const };
-  const stream = await media.getDisplayMedia({ video: shareVideoConstraints(o), audio: o.systemAudio ? { ...SCREEN_AUDIO_CAPTURE } : false, ...hints });
+  // Desktop audio comes only from the selected native application. Never ask
+  // the OS/browser screen picker for whole-system or tab audio, including when
+  // the native application-audio backend is unavailable or denied permission.
+  const desktop = desktopBridge() !== undefined;
+  const withAudio = o.systemAudio && !desktop;
+  const hints = withAudio ? SCREEN_DISPLAY_HINTS : { ...SCREEN_DISPLAY_HINTS, systemAudio: 'exclude' as const, windowAudio: 'exclude' as const };
+  const stream = await media.getDisplayMedia({ video: shareVideoConstraints(o), audio: withAudio ? { ...SCREEN_AUDIO_CAPTURE } : false, ...hints });
   const video = stream.getVideoTracks()[0];
   if (video === undefined) {
     stopAll(stream);
     throw Object.assign(new Error('E_UNAVAILABLE: no screen track'), { name: 'NotFoundError' });
+  }
+  if (desktop) {
+    for (const track of stream.getAudioTracks()) track.stop();
+    return { video, audio: null, audioKind: 'none' };
   }
   const audio = stream.getAudioTracks()[0] ?? null;
   if (audio === null) return { video, audio: null, audioKind: 'none' };
