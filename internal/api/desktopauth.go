@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/jonasthim/dilla/internal/desktopauth"
@@ -9,7 +10,11 @@ import (
 )
 
 func (d Deps) registerDesktopAuth(m *server.Mux) {
-	handler := desktopauth.Handler(d.desktopAuth, "https://"+d.Domain, func(r *http.Request) bool {
+	var origins []string
+	if d.Config != nil {
+		origins = d.Config.Auth.WebAuthn.RPOrigins
+	}
+	handler := desktopauth.Handler(d.desktopAuth, desktopBrowserOrigin(d.Domain, origins), func(r *http.Request) bool {
 		if d.Limiter == nil || d.Config == nil {
 			return false
 		}
@@ -23,4 +28,20 @@ func (d Deps) registerDesktopAuth(m *server.Mux) {
 	})
 	m.Handle("GET /desktop-auth/{path...}", handler)
 	m.Handle("POST /desktop-auth/{path...}", handler)
+}
+
+// The ceremony runs at the configured browser relying-party origin. Never
+// infer its CSRF boundary from an incoming Origin, Host or forwarded header.
+func desktopBrowserOrigin(domain string, origins []string) string {
+	for _, raw := range origins {
+		u, err := url.Parse(raw)
+		if err != nil || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Host == "" || (u.Path != "" && u.Path != "/") {
+			continue
+		}
+		loopback := u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1" || u.Hostname() == "::1"
+		if u.Scheme == "https" || (u.Scheme == "http" && loopback) {
+			return u.Scheme + "://" + u.Host
+		}
+	}
+	return "https://" + domain
 }
