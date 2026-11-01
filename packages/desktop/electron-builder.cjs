@@ -17,7 +17,7 @@ module.exports = {
   win: { target: [{ target: 'nsis', arch: ['x64'] }], icon: 'assets/icon.png' },
   nsis: { perMachine: false, oneClick: true, allowElevation: false, deleteAppDataOnUninstall: false },
   mac: {
-    target: [{ target: 'dmg', arch: ['x64', 'arm64'] }, { target: 'zip', arch: ['x64', 'arm64'] }],
+    target: [{ target: 'dmg', arch: [process.arch] }, { target: 'zip', arch: [process.arch] }],
     extraFiles: [{ from: 'native-bin/Sparkle.framework', to: 'Frameworks/Sparkle.framework' }],
     icon: 'assets/icon.png', identity: '-', notarize: false,
     extendInfo: {
