@@ -1,5 +1,6 @@
+import { windowAppearance } from './window-appearance.ts';
 import { browserAuth } from './browser-auth.ts';
-import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, Menu, nativeImage, Notification, protocol, session, shell, Tray, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, protocol, session, shell, Tray, type IpcMainInvokeEvent } from 'electron';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -66,7 +67,7 @@ function owner(event: Pick<IpcMainInvokeEvent, 'sender' | 'senderFrame'>): { ins
   throw new Error('Untrusted desktop IPC sender');
 }
 
-const windowChrome = { titleBarStyle: 'hidden' as const, titleBarOverlay: { color: '#00000000', symbolColor: '#8d929b', height: 32 }, trafficLightPosition: { x: 12, y: 10 }, autoHideMenuBar: true };
+const windowChrome = () => ({ titleBarStyle: 'hidden' as const, ...windowAppearance(nativeTheme.shouldUseHighContrastColors ? 'high-contrast' : nativeTheme.shouldUseDarkColors ? 'signal' : 'light'), trafficLightPosition: { x: 12, y: 10 }, autoHideMenuBar: true });
 function showWindowMenu(win: BrowserWindow): void { Menu.getApplicationMenu()?.popup({ window: win, x: process.platform === 'darwin' ? 80 : 8, y: 32 }); }
 
 function focus(win: BrowserWindow): void { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
@@ -103,7 +104,7 @@ async function openInstance(input: string, path = '/', show = true): Promise<Bro
     return existing;
   }
   const ses = session.fromPartition(partitionFor(instance));
-  const win = new BrowserWindow({ width: 1240, height: 820, minWidth: 640, minHeight: 480, show: false, title: 'Dilla', ...windowChrome, webPreferences: { ...webPreferences(), session: ses } });
+  const win = new BrowserWindow({ width: 1240, height: 820, minWidth: 640, minHeight: 480, show: false, title: 'Dilla', ...windowChrome(), webPreferences: { ...webPreferences(), session: ses } });
   windows.set(instance, win);
   updater.expectGuard(instance);
   const origin = new URL(instance).origin;
@@ -182,7 +183,7 @@ async function openInvite(input: string): Promise<void> {
 async function showManager(): Promise<void> {
   if (!shellReady || askingQuit || quitting) return;
   if (manager && !manager.isDestroyed()) { focus(manager); return; }
-  manager = new BrowserWindow({ width: 720, height: 760, minWidth: 480, title: 'Dilla — your instances', ...windowChrome, webPreferences: webPreferences() });
+  manager = new BrowserWindow({ width: 720, height: 760, minWidth: 480, title: 'Dilla — your instances', ...windowChrome(), backgroundColor: '#0c1218', titleBarOverlay: { color: '#0c1218', symbolColor: '#a5b5c2', height: 32 }, webPreferences: webPreferences() });
   lockWindow(manager, url => url === 'dilla-internal://setup/');
   manager.on('closed', () => { manager = null; });
   await manager.loadURL('dilla-internal://setup/');
@@ -311,6 +312,11 @@ ipcMain.handle('dilla:command', async (event, value: unknown) => {
   else if (command.type === 'badge') { badges.set(instance, command.count); refreshMenu(); }
   else if (command.type === 'stop-app-audio') { if (captures.get(instance)?.id === command.id) stopAppAudio(instance); }
   else if (command.type === 'autostart') await setAutostart(command.enabled);
+  else if (command.type === 'desktop-theme') {
+    const appearance = windowAppearance(command.theme);
+    win.setBackgroundColor(appearance.backgroundColor);
+    if (process.platform !== 'darwin') win.setTitleBarOverlay(appearance.titleBarOverlay);
+  }
   else if (command.type === 'window-menu') showWindowMenu(win);
   else if (command.type === 'check-update') await updater.check();
   else if (command.type === 'restart-update') await requestQuit(true);

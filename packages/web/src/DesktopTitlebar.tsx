@@ -1,9 +1,20 @@
+import { useEffect } from 'react';
 import type { DesktopBridge, DesktopInfo } from '../../desktop/src/contract.ts';
 import './DesktopTitlebar.css';
 
 /** Native window controls occupy the overlay's reserved area. Only the menu
  * button opts out of dragging; the renderer receives no native menu arguments. */
 export function DesktopTitlebar({ bridge, info }: { bridge: DesktopBridge; info: DesktopInfo }) {
+ useEffect(() => {
+  const update = () => {
+   const theme = document.documentElement.dataset.theme;
+   if (theme === 'signal' || theme === 'light' || theme === 'high-contrast') void bridge.send({ type: 'desktop-theme', theme }).catch(() => {});
+  };
+  update();
+  const observer = new MutationObserver(update);
+  observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  return () => observer.disconnect();
+ }, [bridge]);
  const instance = new URL(info.instance);
  return <header className="dw-desktop-titlebar" data-platform={info.platform} aria-label="Dilla window">
   <button type="button" className="dw-desktop-titlebar__menu" aria-label="Dilla menu" aria-haspopup="menu" title="Dilla menu" onClick={() => { void bridge.send({ type: 'window-menu' }).catch(() => {}); }}>

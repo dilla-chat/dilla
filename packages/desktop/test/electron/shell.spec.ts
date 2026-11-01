@@ -129,3 +129,39 @@ test.describe('multiple instances', () => {
     expect(new Set(identities)).toEqual(new Set([instance, instance + 'team/']));
   });
 });
+
+
+test('short startup content keeps an opaque theme-matched background across window resizes', async () => {
+  const page = await app.firstWindow();
+  await expect(page.locator('.d-splash')).toBeVisible();
+  // Reproduce a small content surface with unused space around it.
+  await page.locator('.d-splash').evaluate(node => { (node as HTMLElement).style.minHeight = '120px'; });
+  for (const theme of ['signal', 'light', 'high-contrast']) {
+    await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
+    const nativeColor = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getBackgroundColor());
+    const colors = await page.evaluate(nativeColor => {
+      const canvas = document.createElement('canvas'), context = canvas.getContext('2d')!;
+      // Electron returns #AARRGGBB; CSS uses #RRGGBBAA.
+      const color = nativeColor.length === 9 ? '#' + nativeColor.slice(3) + nativeColor.slice(1, 3) : nativeColor;
+      context.fillStyle = color; context.fillRect(0, 0, 1, 1);
+      const native = [...context.getImageData(0, 0, 1, 1).data];
+      context.clearRect(0, 0, 1, 1); context.fillStyle = getComputedStyle(document.body).backgroundColor; context.fillRect(0, 0, 1, 1);
+      return { native, document: [...context.getImageData(0, 0, 1, 1).data] };
+    }, nativeColor);
+    expect(colors.native).toEqual(colors.document);
+    expect(colors.native[3]).toBe(255);
+    for (const size of [{ width: 900, height: 600 }, { width: 1240, height: 820 }]) {
+      await page.setViewportSize(size);
+      const samples = await page.evaluate(async () => {
+        const samples: number[][] = [];
+        for (let i = 0; i < 10; i++) {
+          await new Promise(requestAnimationFrame);
+          samples.push([innerHeight, document.documentElement.scrollHeight, document.body.getBoundingClientRect().bottom, document.getElementById('root')!.getBoundingClientRect().bottom]);
+        }
+        return samples;
+      });
+      expect(new Set(samples.map(sample => JSON.stringify(sample))).size).toBe(1);
+      expect(samples[0].slice(1)).toEqual([size.height, size.height, size.height]);
+    }
+  }
+});

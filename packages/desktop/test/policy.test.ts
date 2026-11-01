@@ -78,3 +78,9 @@ test('permission origins accept Electron origin URLs with a trailing slash, whil
  assert.equal(permissionOriginMatches('https://chat.test', 'https://chat.test/team/'), true);
  for (const value of ['null', 'https://chat.test.evil/', 'https://evil.test/', 'https://user@chat.test/', 'http://chat.test/']) assert.equal(permissionOriginMatches(value, 'https://chat.test/'), false);
 });
+
+
+test('native window appearance accepts only the app themes, never arbitrary transparency or colors', () => {
+  for (const theme of ['signal', 'light', 'high-contrast']) assert.deepEqual(validateCommand({ type: 'desktop-theme', theme }), { type: 'desktop-theme', theme });
+  for (const value of [{ type: 'desktop-theme', theme: 'transparent' }, { type: 'desktop-theme', theme: 'light', color: '#00000000' }, { type: 'desktop-theme', theme: { bg: 'red' } }]) assert.throws(() => validateCommand(value));
+});

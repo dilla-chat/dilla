@@ -78,12 +78,13 @@ export function validateCommand(value: unknown): DesktopCommand {
   const command = object(value);
   const fields: Record<string, string[]> = {
     badge: ['count'], guard: ['activeCall', 'unsavedDraft'], 'quit-ack': ['id', 'activeCall', 'unsavedDraft'], autostart: ['enabled'],
-    'notify-ring': ['id', 'title', 'body'], notify: ['id', 'title', 'body'], 'dismiss-notification': ['id'], 'stop-app-audio': ['id'], 'check-update': [], 'restart-update': [], 'window-menu': [],
+    'notify-ring': ['id', 'title', 'body'], notify: ['id', 'title', 'body'], 'dismiss-notification': ['id'], 'stop-app-audio': ['id'], 'check-update': [], 'restart-update': [], 'window-menu': [], 'desktop-theme': ['theme'],
   };
   const type = typeof command.type === 'string' ? command.type : '';
   if (!Object.hasOwn(fields, type)) throw new Error('Unknown desktop command');
   const expected = ['type', ...fields[type]];
   if (Object.keys(command).length !== expected.length || !Object.keys(command).every(key => expected.includes(key))) throw new Error('Invalid desktop command fields');
+  if (type === 'desktop-theme' && !['signal', 'light', 'high-contrast'].includes(command.theme as string)) throw new Error('Invalid desktop theme');
   if (type === 'badge' && (!Number.isSafeInteger(command.count) || (command.count as number) < 0 || (command.count as number) > 9999)) throw new Error('Invalid badge');
   if (['guard', 'quit-ack'].includes(type) && (typeof command.activeCall !== 'boolean' || typeof command.unsavedDraft !== 'boolean')) throw new Error('Invalid quit guard');
   if (type === 'quit-ack' && (typeof command.id !== 'string' || !/^[a-f0-9-]{36}$/.test(command.id))) throw new Error('Invalid quit acknowledgment');
