@@ -81,7 +81,7 @@ test('the search palette finds a setting and opens its section', async ({ page, 
   const result = page.getByRole('option', { name: new RegExp(`${copy('workspace.group.you')} / ${copy('workspace.voice')}`) }).first();
   await expect(result).toBeVisible({ timeout: WAIT });
   await result.click();
-  await expect(page).toHaveURL('/settings/voice', { timeout: WAIT });
+  await expect(page).toHaveURL(/\/settings\/voice$/, { timeout: WAIT });
   const settings = page.getByRole('dialog', { name: copy('settings.title'), exact: true });
   await expect(settings.getByRole('heading', { name: copy('settings.voice.section'), exact: true })).toBeVisible();
   await closeSettings(page);
@@ -101,10 +101,10 @@ test('Appearance controls fit desktop rows and the phone section header keeps it
     // matchMedia updates the React phone layout after the viewport resize event.
     await expect.poll(async () => new Set(await group.getByRole('radio').evaluateAll(
       elements => elements.map(el => Math.round(el.getBoundingClientRect().y)),
-    )).size, { message: `theme option rows at ${width}px` }).toBe(width >= 1024 ? 1 : 2);
+    )).size, { message: `the Signal option stays on one row at ${width}px` }).toBe(1);
     const overflow = await settings.locator('.d-settings-frame__body').evaluate(el => el.scrollWidth > el.clientWidth);
     expect(overflow, `settings overflow at ${width}px`).toBe(false);
-    if (width < 768) {
+    if ((page.viewportSize()?.width ?? width) < 768) {
       // Task 10 (README §5.10): the nav's chips name the section; the section's own title is in the content.
       await expect(settings.locator('.d-settings-nav__item[aria-current="page"]')).toHaveText(copy('workspace.appearance'));
       await expect(settings.getByRole('heading', { level: 2, name: copy('appearance.title'), exact: true })).toBeVisible();
@@ -134,13 +134,13 @@ test('a dirty Profile draft survives Keep editing and is discarded only after co
   let prompt = page.getByRole('dialog', { name: 'Discard unsaved changes?', exact: true });
   await expect(prompt).toBeVisible({ timeout: WAIT });
   await prompt.getByRole('button', { name: 'Keep editing', exact: true }).click();
-  await expect(page).toHaveURL('/settings/profile', { timeout: WAIT });
+  await expect(page).toHaveURL(/\/settings\/profile$/, { timeout: WAIT });
   await expect(display).toHaveValue(DRAFT);
   await nav.getByRole('button', { name: copy('workspace.signin'), exact: true }).click();
   prompt = page.getByRole('dialog', { name: 'Discard unsaved changes?', exact: true });
   await expect(prompt).toBeVisible({ timeout: WAIT });
   await prompt.getByRole('button', { name: 'Discard changes', exact: true }).click();
-  await expect(page).toHaveURL('/settings/signin', { timeout: WAIT });
+  await expect(page).toHaveURL(/\/settings\/signin$/, { timeout: WAIT });
   await expect(settings.getByRole('heading', { name: copy('workspace.signin'), exact: true })).toBeFocused();
   await closeSettings(page);
 });

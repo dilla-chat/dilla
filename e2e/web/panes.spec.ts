@@ -5,6 +5,7 @@ import { expect, type Page } from '@playwright/test';
 import { addServerVia, TEST_TIMEOUT, WAIT, copy, expectAccessible, expectComposerReady, railNav, signUp, test } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
+import { desktopE2E } from './support/electron.ts';
 
 const EMPTY: HostConfig = { port: 8521, control: 8522, webRoot: 'packages/web/dist' };
 const SERVER = 'Midgard Crew';
@@ -114,7 +115,10 @@ test('the sidebar splitter drags and takes keys, the width survives a reload, an
   await sidebarSplitter(page).focus();
   await page.keyboard.press('End');
   const mainBox = async () => page.getByRole('main').evaluate(el => { const r = el.getBoundingClientRect(); return { left: r.left, right: r.right, width: r.width }; });
-  await expect.poll(async () => Math.round((await mainBox()).width), { message: 'main at the 24rem floor' }).toBe(384);
+  if (desktopE2E()) {
+    expect(page.viewportSize()!.width).toBe(900);
+    await expect.poll(async () => Math.round((await mainBox()).width), { message: 'main respects its floor at the native desktop minimum' }).toBeGreaterThanOrEqual(384);
+  } else await expect.poll(async () => Math.round((await mainBox()).width), { message: 'main at the 24rem floor' }).toBe(384);
   const header = page.locator('.d-channel-header');
   expect(await header.evaluate(el => el.getBoundingClientRect().height), 'the header stays one bar at 24rem').toBeLessThanOrEqual(44.5) /* one --bar-h */;
   // A folded action is display:none (no box); what is left, the "more" menu among it, is measured.
@@ -139,7 +143,8 @@ test('the sidebar splitter drags and takes keys, the width survives a reload, an
   await page.setViewportSize({ width: 1280, height: 800 });
   await expect.poll(() => sidebarWidth(page), { message: 'the default width before the flip' }).toBeCloseTo(244, 0);
   await page.setViewportSize({ width: 390, height: 844 });
-  await expect(sidebarSplitter(page)).toHaveCount(0);
+  if (desktopE2E()) { expect(page.viewportSize()!.width).toBe(900); await expect(sidebarSplitter(page)).toBeVisible(); }
+  else await expect(sidebarSplitter(page)).toHaveCount(0);
   await page.setViewportSize({ width: 1280, height: 800 });
   await expect(sidebarSplitter(page)).toBeVisible({ timeout: WAIT });
   await expect.poll(() => sidebarWidth(page), { message: 'the sidebar after phone -> desktop' }).toBeCloseTo(244, 0);

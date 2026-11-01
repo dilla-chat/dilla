@@ -37,13 +37,13 @@ export const test = base.extend<Fixtures>({
   // tracing on every context launchPersistentContext makes and keeps the trace when the test fails
   // (playwright 1.63.0, lib/index.js:134-145, 648-651); a second tracing.start throws
   // "Tracing has been already started".
-  holder: async ({ playwright, browserName, launchOptions, headless, channel, viewport, baseURL, profileDir }, use) => {
+  holder: async ({ playwright, browserName, launchOptions, headless, channel, viewport, baseURL, profileDir, permissions }, use) => {
     const holder: Holder = {
       context: null,
       open: async () => {
         const type: BrowserType = playwright[browserName];
         const context = desktopE2E()
-          ? await launchDesktopContext(profileDir, { launchOptions, viewport, baseURL })
+          ? await launchDesktopContext(profileDir, { launchOptions, viewport, baseURL, permissions })
           : await type.launchPersistentContext(profileDir, { ...launchOptions, headless, channel, viewport, baseURL });
         holder.context = context;
         return context;

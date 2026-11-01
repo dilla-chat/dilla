@@ -1,10 +1,13 @@
 // A CDP virtual authenticator for the passkey flows (Chromium only). The host must run with -webauthn-origin so the
 // relying party matches the page's hostname (HostConfig.webauthnOrigin).
 import type { CDPSession, Page } from '@playwright/test';
+import { desktopE2E } from './electron.ts';
+import { systemBrowserAuthenticator } from './system-browser.ts';
 
 export interface VirtualAuthenticator { cdp: CDPSession; authenticatorId: string }
 
 export async function addAuthenticator(page: Page): Promise<VirtualAuthenticator> {
+  if (desktopE2E()) return systemBrowserAuthenticator(page);
   const cdp = await page.context().newCDPSession(page);
   await cdp.send('WebAuthn.enable');
   const { authenticatorId } = await cdp.send('WebAuthn.addVirtualAuthenticator', {

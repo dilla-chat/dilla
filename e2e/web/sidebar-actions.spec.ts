@@ -11,6 +11,7 @@ import { addServerVia,
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { launchSecond, secondProfileDir } from './support/second-harness';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
+import { desktopApplication, desktopE2E } from './support/electron.ts';
 
 const EMPTY: HostConfig = { port: 8523, control: 8524, webRoot: 'packages/web/dist' };
 const SERVER = 'Midgard Crew';
@@ -93,7 +94,7 @@ test('the owner adds a channel with the "+"; a member makes a link under server 
     await expectAccessible(page2, 'server settings, Invites, for a member');
 
     // He makes a link and copies it; in Chromium the clipboard is read back and compared to the URL the dialog shows.
-    if (browserName === 'chromium') await second.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: h.url });
+    if (browserName === 'chromium' && !desktopE2E()) await second.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: h.url });
     // Signal task 10c: the link shows once in the Invites card with Copy; a member without Manage server is offered
     // no "never" and no "∞".
     await expect(settings.getByRole('radio', { name: copy('serverSettings.invites.ttl.never'), exact: true })).toHaveCount(0);
@@ -106,7 +107,8 @@ test('the owner adds a channel with the "+"; a member makes a link under server 
     await settings.getByRole('button', { name: copy('serverSettings.invites.copy'), exact: true }).click();
     if (browserName === 'chromium') {
       await expect(field).toBeHidden({ timeout: WAIT });
-      expect(await page2.evaluate(() => navigator.clipboard.readText()), 'the clipboard holds the shown URL').toBe(shown);
+      const copied = desktopE2E() ? await desktopApplication(second).evaluate(({ clipboard }) => clipboard.readText()) : await page2.evaluate(() => navigator.clipboard.readText());
+      expect(copied, 'the clipboard holds the shown URL').toBe(shown);
     }
     await page2.keyboard.press('Escape');
     await expect(settings).toBeHidden();
@@ -115,9 +117,14 @@ test('the owner adds a channel with the "+"; a member makes a link under server 
     await page.setViewportSize({ width: 390, height: 844 });
     await page2.setViewportSize({ width: 390, height: 844 });
     for (const p of [page, page2]) {
-      const backButton = button(p, 'nav.back');
-      await expect(backButton).toBeVisible({ timeout: WAIT });
-      await backButton.click();
+      if (desktopE2E()) {
+        expect(p.viewportSize()!.width).toBe(900);
+        await expect(p.locator('.d-app-shell')).not.toHaveAttribute('data-layout', 'phone');
+      } else {
+        const backButton = button(p, 'nav.back');
+        await expect(backButton).toBeVisible({ timeout: WAIT });
+        await backButton.click();
+      }
       await expect(button(p, 'admin.open')).toBeVisible({ timeout: WAIT });
       await expect(p.locator('.d-channel-list__head').getByRole('button', { name: copy('search.open'), exact: true })).toHaveCount(0);
       await expect(button(p, 'nav.server.menu')).toHaveCount(0);

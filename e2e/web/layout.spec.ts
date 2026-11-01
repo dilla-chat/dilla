@@ -1,5 +1,6 @@
 import { themes } from '../../packages/design-tokens/src/tokens';
 import { openInviteInClient } from './support/invite';
+import { desktopE2E } from './support/electron.ts';
 // web3.9 E-GEO: the layout grammar of the alignment pass, measured in a real browser. From an empty host (with its in-process
 // LiveKit) Ada starts "Midgard Crew" and gives it two categories, text channels, an announcement channel, a voice channel with
 // a live person in it, the built-in AFK channel and a direct message; then every rule of the grammar is read as a rect at
@@ -745,7 +746,7 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
   await page.locator('[data-settings-section="index"]').click();
   const userSettings = settingsDialog(page);
   await expect(userSettings).toBeVisible({ timeout: WAIT });
-  await expect(page).toHaveURL('/settings', { timeout: WAIT });
+  await expect(page).toHaveURL(/\/settings$/, { timeout: WAIT });
   await expectTargets(page, tag, 'the user settings index');
   await expect(userSettings.getByRole('button', { name: copy('workspace.profile'), exact: true })).toBeVisible();
   await expect(page.locator('.d-app-shell').getByRole('navigation', { name: copy('nav.tabs.label'), exact: true })).toHaveCount(0);
@@ -753,12 +754,12 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
   expect(frameBox?.x).toBe(0);
   expect(frameBox?.width).toBe(size.width);
   await userSettings.getByRole('button', { name: copy('workspace.profile'), exact: true }).click();
-  await expect(page).toHaveURL('/settings/profile', { timeout: WAIT });
+  await expect(page).toHaveURL(/\/settings\/profile$/, { timeout: WAIT });
   await expectTargets(page, tag, 'a user settings section');
   await expect(userSettings.getByRole('button', { name: copy('workspace.back'), exact: true })).toHaveCount(0);
   await expect(userSettings.getByRole('button', { name: copy('workspace.profile'), exact: true })).toHaveAttribute('aria-current', 'page');
   await page.goBack();
-  await expect(page).toHaveURL('/settings', { timeout: WAIT });
+  await expect(page).toHaveURL(/\/settings$/, { timeout: WAIT });
   await page.keyboard.press('Escape');
   await expect(userSettings).toBeHidden({ timeout: WAIT });
 
@@ -873,6 +874,7 @@ test('FA1: phone controls outside the shell keep the prototype sizes, and the in
     // Task 10 fix round 1: Devices draws only device rows (no settings rows), so a device row also says the section is in.
     await expect(page.locator('.d-settings-row, .d-voice-settings, .d-device-row').first()).toBeVisible({ timeout: WAIT });
     await expectPrototypeSizes(page, `settings, ${section} at 390`, section === 'voice' ? VOICE_SIZES : SETTINGS_SIZES.slice(0, 1));
+    await closeSettings(page);
   }
   // Signal task 10 fix round 1: Settings → Devices has no refresh button (the prototype's rows); the list refreshes on open.
 
@@ -907,10 +909,11 @@ test('FA1: phone controls outside the shell keep the prototype sizes, and the in
   await page.keyboard.press('Escape');
   await expect(admin).toBeHidden({ timeout: WAIT });
   await page.setViewportSize({ width: 390, height: 844 });
-  await expect(page.locator('.d-app-shell')).toHaveAttribute('data-layout', 'phone', { timeout: WAIT });
+  if (desktopE2E()) { expect(page.viewportSize()!.width).toBe(900); await expect(page.locator('.d-app-shell')).not.toHaveAttribute('data-layout', 'phone'); }
+  else await expect(page.locator('.d-app-shell')).toHaveAttribute('data-layout', 'phone', { timeout: WAIT });
   const back = page.getByRole('button', { name: copy('nav.back'), exact: true });
   if (await back.isVisible().catch(() => false)) await back.click();
-  await expect(page.locator('.d-app-shell')).toHaveAttribute('data-pane', 'list', { timeout: WAIT });
+  if (!desktopE2E()) await expect(page.locator('.d-app-shell')).toHaveAttribute('data-pane', 'list', { timeout: WAIT });
   await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
   await expect(admin).toBeVisible({ timeout: WAIT });
   await admin.getByRole('navigation', { name: copy('admin.nav'), exact: true }).getByRole('button', { name: copy('admin.nav.invites'), exact: true }).click();
@@ -927,9 +930,12 @@ test('FA1: phone controls outside the shell keep the prototype sizes, and the in
   await page.keyboard.press('Escape');
   await expect(admin).toBeHidden({ timeout: WAIT });
   // Opened from the app (You → Open settings), so Settings knows the server; a reload of /settings/notifications would not.
-  await page.getByRole('navigation', { name: copy('nav.tabs.label'), exact: true }).getByRole('link', { name: new RegExp(`^${copy('nav.tab.you')}`) }).click();
-  await page.getByRole('button', { name: copy('you.settings'), exact: true }).click();
-  await page.getByRole('navigation', { name: copy('settings.nav.label'), exact: true }).getByRole('button', { name: copy('workspace.notifications'), exact: true }).click();
+  if (desktopE2E()) await openSettings(page, 'notifications');
+  else {
+    await page.getByRole('navigation', { name: copy('nav.tabs.label'), exact: true }).getByRole('link', { name: new RegExp(`^${copy('nav.tab.you')}`) }).click();
+    await page.getByRole('button', { name: copy('you.settings'), exact: true }).click();
+    await page.getByRole('navigation', { name: copy('settings.nav.label'), exact: true }).getByRole('button', { name: copy('workspace.notifications'), exact: true }).click();
+  }
   await expect(page.locator('.d-settings-frame__body .d-segmented__option').first()).toBeVisible({ timeout: WAIT });
   await expectPrototypeSizes(page, 'settings, notifications at 390', [['.d-settings-frame__body .d-segmented__option', 26]]);
 });
@@ -1020,6 +1026,13 @@ test('the DM and the voice layout give each element its room', async ({ page, pl
 
     // D4: the phone's call stage fills the view and its controls end directly above the tab bar.
     await page.setViewportSize({ width: 390, height: 844 });
+    if (desktopE2E()) {
+      expect(page.viewportSize()!.width).toBe(900);
+      await expect(page.locator('.d-app-shell')).not.toHaveAttribute('data-layout', 'phone');
+      await expect(page.locator(AFK_ACTION)).toBeVisible();
+      await expectNoOverflow(page, '900x844', 'desktop minimum voice preview');
+      return;
+    }
     await expect(page.locator('.d-app-shell')).toHaveAttribute('data-layout', 'phone', { timeout: WAIT });
     const afkAction = page.locator(AFK_ACTION);
     await expect(afkAction).toBeVisible({ timeout: WAIT });
@@ -1187,6 +1200,14 @@ test('FA4: search rows, phone settings index, channel reorder and privacy Compar
 
     // On phone, You has one settings entry point. The modal index and section replace the shell's tab bar.
     await page.setViewportSize({ width: 390, height: 844 });
+    if (desktopE2E()) {
+      expect(page.viewportSize()!.width).toBe(900);
+      const nativeSettings = await openSettings(page, 'privacy');
+      await expect(nativeSettings.getByRole('button', { name: copy('workspace.privacy'), exact: true })).toHaveAttribute('aria-current', 'page');
+      await expectAccessibleInThemes(page, 'desktop settings at the native minimum');
+      await closeSettings(page);
+      return;
+    }
     const tabs = page.getByRole('navigation', { name: copy('nav.tabs.label'), exact: true });
     await tabs.getByRole('link', { name: copy('nav.tab.you'), exact: true }).click();
     const settingsEntry = page.locator('[data-settings-section="index"]');
@@ -1197,18 +1218,18 @@ test('FA4: search rows, phone settings index, channel reorder and privacy Compar
     await settingsEntry.click();
     const phoneSettings = settingsDialog(page);
     await expect(phoneSettings).toBeVisible({ timeout: WAIT });
-    await expect(page).toHaveURL('/settings', { timeout: WAIT });
+    await expect(page).toHaveURL(/\/settings$/, { timeout: WAIT });
     await expect(phoneSettings.getByRole('button', { name: copy('settings.close'), exact: true })).toBeVisible();
     await expect(phoneSettings.getByRole('button', { name: copy('workspace.privacy'), exact: true })).toBeVisible();
     await phoneSettings.getByRole('button', { name: copy('workspace.privacy'), exact: true }).click();
-    await expect(page).toHaveURL('/settings/privacy', { timeout: WAIT });
+    await expect(page).toHaveURL(/\/settings\/privacy$/, { timeout: WAIT });
     // Task 10 (README §5.10): chips above the section, no Back.
     await expect(phoneSettings.getByRole('button', { name: copy('workspace.back'), exact: true })).toHaveCount(0);
     await expect(phoneSettings.getByRole('button', { name: copy('workspace.privacy'), exact: true })).toHaveAttribute('aria-current', 'page');
     await expect(page.locator('.d-app-shell').getByRole('navigation', { name: copy('nav.tabs.label'), exact: true })).toHaveCount(0);
     await expectAccessibleInThemes(page, 'a phone settings section');
     await page.goBack();
-    await expect(page).toHaveURL('/settings', { timeout: WAIT });
+    await expect(page).toHaveURL(/\/settings$/, { timeout: WAIT });
     await expectAccessibleInThemes(page, 'the phone settings index');
     await page.keyboard.press('Escape');
     await expect(phoneSettings).toBeHidden({ timeout: WAIT });

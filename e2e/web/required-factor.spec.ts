@@ -13,6 +13,7 @@ import { addServerVia,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { launchSecond, secondProfileDir } from './support/second-harness';
+import { desktopApplication, desktopE2E, launchDesktopContext } from './support/electron.ts';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
 import { rmSync } from 'node:fs';
 
@@ -112,14 +113,18 @@ async function cleoReopens(
   // 1. Cleo signs up through that invite and closes the page on the factor choice.
   const dir = secondProfileDir(testInfo.project.name, testInfo.workerIndex);
   const cleo = newAccount('Cleo', h.control);
-  const first = await launchSecond(playwright, browserName, { launchOptions, headless, channel, viewport, baseURL: h.url }, dir);
+  let first = await launchSecond(playwright, browserName, { launchOptions, headless, channel, viewport, baseURL: h.url }, dir);
   try {
     const p1 = first.pages()[0] ?? (await first.newPage());
     await openInviteInClient(p1, link, () => guard.attach(first));
     await signUpToFactor(p1, cleo);
     // She closes the page (a blank tab keeps the browser, and so the profile, open) and opens the app again in it.
-    const p2 = await first.newPage();
-    await p1.close();
+    let p2: Page;
+    if (desktopE2E()) {
+      await first.close();
+      first = await launchDesktopContext(dir, { launchOptions, baseURL: h.url });
+      p2 = first.pages()[0];
+    } else { p2 = await first.newPage(); await p1.close(); }
     await p2.goto('/welcome');
     await expectForced(p2);
     await expectAccessible(p2, 'forced second factor: choose');
@@ -206,6 +211,18 @@ test('a second tab takes dilla over from a tab on the forced screen', async ({ p
   const ada = await adaInTheShell(page, h);
   await resetFactors(h.control, ada.username);
   await expectForced(page);
+  if (desktopE2E()) {
+    const application = desktopApplication(context);
+    const win = await application.browserWindow(page);
+    try { await win.evaluate(win => win.close()); await application.evaluate(({ app }) => app.emit('activate')); }
+    finally { await win.dispose(); }
+    expect(context.pages()).toHaveLength(1);
+    await expectForced(page);
+    await setUpAgain(page, ada);
+    await openChannel(page, 'Asgard Crew', 'general');
+    await expectComposerReady(page, 'general');
+    return;
+  }
   const second = await context.newPage();
   await second.goto('/');
   await expect(splash(second, COPY.otherTab)).toBeVisible({ timeout: WAIT });

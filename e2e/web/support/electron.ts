@@ -6,6 +6,7 @@ import { once } from 'node:events';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { en } from '../../../packages/web/src/strings/en.ts';
 
 export const desktopE2E = () => process.env.DILLA_ELECTRON_E2E === '1';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -31,15 +32,56 @@ export async function launchDesktopContext(profile: string | null, options: Brow
  const terminate = () => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); };
  process.once('exit', terminate);
  const context = app.context(), first = await app.firstWindow();
+ // Navigation in these specs is an explicit person action. Answer the native
+ // reload confirmation without racing it through CDP's browser-dialog adapter.
+ // Native shell acceptance separately proves both Stay and Reload choices.
+ first.on('dialog', () => {});
+ await app.evaluate(({ dialog }, permissions) => {
+  const original = dialog.showMessageBoxSync.bind(dialog);
+  dialog.showMessageBoxSync = ((...args: any[]) => args.at(-1).title === 'Reload Dilla?' ? 1 : (original as any)(...args)) as typeof dialog.showMessageBoxSync;
+  const asynchronous = dialog.showMessageBox.bind(dialog);
+  dialog.showMessageBox = (async (...args: any[]) => {
+   const options = args.at(-1);
+   if (options.title === 'Dilla permission') {
+    const names = options.message.includes('microphone or camera') ? ['microphone', 'camera']
+     : options.message.includes('notifications') ? ['notifications']
+     : options.message.includes('local network') ? ['local-network']
+     : options.message.includes('local Dilla') ? ['loopback-network'] : [];
+    return { response: names.some(name => permissions.includes(name)) ? 1 : 0, checkboxChecked: false };
+   }
+   return (asynchronous as any)(...args);
+  }) as typeof dialog.showMessageBox;
+ }, [...(options.permissions ?? []), 'local-network', 'loopback-network', ...(options.launchOptions?.args?.includes('--use-fake-ui-for-media-stream') ? ['microphone', 'camera'] : [])]);
  await first.waitForLoadState('load');
  await first.locator('#root').waitFor({ state: 'attached' });
- await first.waitForFunction(() => (document.getElementById('root')?.childElementCount ?? 0) > 0);
+ // A real desktop already started its worker before the fixture attaches.
+ // Do not tear down its first keystore transaction with a second navigation.
+ await first.waitForFunction(starting => (document.getElementById('root')?.childElementCount ?? 0) > 0
+  && document.querySelector('.d-splash__line')?.textContent !== starting, en['boot.loading.status']);
  const goto = first.goto.bind(first);
  first.goto = (url, options) => goto(new URL(url, canonical).href, options);
  applications.set(context, app);
  // Startup/authentication keep their real compact native bounds. Specs can
  // resize the workspace explicitly; native minimums remain authoritative.
  await useNativeViewport(app, first);
+ let requestedWorkspace = options.viewport ?? null, appliedWorkspace: typeof requestedWorkspace = null;
+ const resize = first.setViewportSize.bind(first);
+ first.setViewportSize = async requested => {
+  requestedWorkspace = requested;
+  if (await first.evaluate(() => document.documentElement.dataset.desktopWindow === 'workspace')) {
+   await resize(requested); appliedWorkspace = requested;
+  }
+ };
+ await first.addLocatorHandler(first.locator('body'), async () => {
+  const win = await app.browserWindow(first);
+  try { await win.evaluate(win => { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }); }
+  finally { await win.dispose(); }
+  await first.waitForFunction(() => document.hasFocus());
+  if (requestedWorkspace && appliedWorkspace !== requestedWorkspace
+    && await first.evaluate(() => document.documentElement.dataset.desktopWindow === 'workspace')) {
+   await resize(requestedWorkspace); appliedWorkspace = requestedWorkspace;
+  }
+ }, { noWaitAfter: true });
  let firstTaken = claimWindow, closed = false;
  context.newPage = async (): Promise<Page> => {
   if (!firstTaken && !first.isClosed()) { firstTaken = true; return first; }
