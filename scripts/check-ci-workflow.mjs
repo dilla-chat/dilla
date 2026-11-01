@@ -1057,19 +1057,52 @@ export function checkDesktopWorkflow(root) {
     'npm run dist -w @dilla/desktop', 'name: desktop-installers-${{ matrix.platform }}-${{ matrix.arch }}',
   ]) if (!text.includes(required)) problems.push(`${file}: missing ${required}`);
   if (/--no-sandbox|contents: write|--publish always/.test(text)) problems.push(`${file}: desktop validation must keep sandboxing and cannot publish`);
-  const client = text.split('\n  client:\n')[1]?.split(/\n  [a-z][a-z0-9-]*:\n/)[0] ?? '';
+  const body = job => text.split(`\n  ${job}:\n`)[1]?.split(/\n  [a-z][a-z0-9-]*:\n/)[0] ?? '';
+  const tooling = body('test-tools');
+  for (const required of [
+    'os: ubuntu-24.04, platform: linux, arch: x64', 'os: windows-latest, platform: win, arch: x64',
+    'os: macos-15-intel, platform: mac, arch: x64', 'os: macos-15, platform: mac, arch: arm64',
+    'node scripts/e2e-test-tools.mjs build artifacts/e2e-test-tools',
+    'name: dilla-e2e-tools-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.sha }}', 'path: artifacts/e2e-test-tools', 'overwrite: true',
+  ]) if (!tooling.includes(required)) problems.push(`${file}: native tooling producer missing ${required}`);
+  if (/^    needs:|shard:/m.test(tooling)) problems.push(`${file}: tooling must build once per native target without waiting for test jobs`);
+  const buildStep = jobSteps(tooling).find(step => step.some(line => line.includes('node scripts/e2e-test-tools.mjs build ')));
+  if (buildStep?.some(line => /\bif:/.test(line))) problems.push(`${file}: tooling builds cannot be bypassed by a cache hit`);
+  if (/^    needs:/m.test(body('native'))) problems.push(`${file}: native acceptance must stay independent of tooling builds`);
+  for (const job of ['client', 'voice']) {
+    const consumer = body(job);
+    for (const required of [
+      'needs: test-tools', 'DILLA_E2E_TOOLING_DIR: ${{ github.workspace }}/artifacts/e2e-test-tools',
+      'name: dilla-e2e-tools-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.sha }}',
+      'path: artifacts/e2e-test-tools', 'node scripts/e2e-test-tools.mjs verify artifacts/e2e-test-tools',
+      '--max-failures=1',
+    ]) if (!consumer.includes(required)) problems.push(`${file}: ${job} tooling consumer missing ${required}`);
+    if (!consumer.includes("go test ./internal/ops -run 'Lock|BackupAndServe|ServeAdmits'")) {
+      problems.push(`${file}: ${job} must retain native test-host directory locks coverage`);
+    }
+    if (/cargo build|^\s+(?:run-id|repository|github-token):/m.test(consumer)) {
+      problems.push(`${file}: ${job} tooling must reuse the verified artifact from this run without rebuilding`);
+    }
+    const steps = jobSteps(consumer);
+    const verify = steps.findIndex(step => step.some(line => line.includes('node scripts/e2e-test-tools.mjs verify ')));
+    const acceptance = steps.findIndex(step => step.some(line => /playwright test/.test(line)));
+    if (verify < 0 || acceptance < 0 || verify >= acceptance || steps[verify]?.some(line => /\bif:/.test(line))) {
+      problems.push(`${file}: ${job} tooling verification must run unconditionally before acceptance`);
+    }
+  }
+  const client = body('client');
   for (const required of [
     'shard: [1, 2, 3]', 'os: [ubuntu-24.04, windows-latest, macos-15-intel, macos-15]',
     'os: ubuntu-24.04, platform: linux, arch: x64', 'os: windows-latest, platform: win, arch: x64',
     'os: macos-15-intel, platform: mac, arch: x64', 'os: macos-15, platform: mac, arch: arm64',
-    'name: dilla-core-wasi', 'cargo build -p dilla-testkit --release --locked', 'node packages/desktop/scripts/prepare-browser-sandbox.mjs',
+    'name: dilla-core-wasi', 'node packages/desktop/scripts/prepare-browser-sandbox.mjs',
     'playwright test --config playwright.desktop.config.ts --project=electron-client --shard=${{ matrix.shard }}/3',
   ]) if (!client.includes(required)) problems.push(`${file}: shared Electron client coverage missing ${required}`);
-  const voice = text.split('\n  voice:\n')[1]?.split(/\n  [a-z][a-z0-9-]*:\n/)[0] ?? '';
+  const voice = body('voice');
   for (const required of ['desktop-voice-${{ matrix.platform }}-${{ matrix.arch }}',
     'os: [ubuntu-24.04, windows-latest, macos-15-intel, macos-15]',
     'playwright.desktop-voice.config.ts --project=electron-voice --workers=1', 'DILLA_E2E_NOTIFICATIONS', 'dunst',
-    'name: dilla-core-wasi', 'cargo build -p dilla-testkit --release --locked', 'node packages/desktop/scripts/prepare-browser-sandbox.mjs',
+    'name: dilla-core-wasi', 'node packages/desktop/scripts/prepare-browser-sandbox.mjs',
     'name: Desktop performance comparison', 'node packages/desktop/scripts/run-performance.mjs', 'name: desktop-performance-']) {
     if (!voice.includes(required)) problems.push(`${file}: Electron voice coverage missing ${required}`);
   }

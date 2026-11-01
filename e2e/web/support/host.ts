@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import type { FullConfig } from '@playwright/test';
 import { parseInvite } from './driver.ts';
 import { verifyShippingCoreWasmInDist } from './shipping-wasm.mjs';
+import { verifyTestTools } from '../../../scripts/e2e-test-tools.mjs';
 import { arr, decode } from '../../../packages/client-core/src/cbor/index';
 
 /** web3.8 E2 (pre-flight C-13): `wire` is the one wire version the host's hello offers (`-wire`; 1 or more); the version-reload suite
@@ -14,10 +15,13 @@ import { arr, decode } from '../../../packages/client-core/src/cbor/index';
  *  `departureTimeout` (seconds, `-sfu-departure-timeout`) lengthens the rooms' departure timeout (task-10 fix review N3). */
 export interface HostConfig { port: number; control: number; webRoot: string | null; webauthnOrigin?: string; wire?: number; keepData?: boolean; botRuntime?: boolean; botReconcileInterval?: string; advanceClockWithWall?: boolean; sfu?: { port: number; udpPort: number; departureTimeout?: number } }
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-export const TESTHOST_BIN = join(REPO_ROOT, 'target', process.platform === 'win32' ? 'dilla-testhost.exe' : 'dilla-testhost');
-export const DILLABOT_BIN = join(REPO_ROOT, 'target', process.platform === 'win32' ? 'dillabot.exe' : 'dillabot');
+const TOOLING_DIR = process.env.DILLA_E2E_TOOLING_DIR;
+const verifyPrebuiltTools = () => TOOLING_DIR === undefined ? undefined : verifyTestTools(TOOLING_DIR, { repoRoot: REPO_ROOT });
+const prebuiltTools = verifyPrebuiltTools();
+export const TESTHOST_BIN = prebuiltTools?.testhost ?? join(REPO_ROOT, 'target', process.platform === 'win32' ? 'dilla-testhost.exe' : 'dilla-testhost');
+export const DILLABOT_BIN = prebuiltTools?.bot ?? join(REPO_ROOT, 'target', process.platform === 'win32' ? 'dillabot.exe' : 'dillabot');
 const CARGO_TARGET_ROOT = resolve(REPO_ROOT, process.env.CARGO_TARGET_DIR ?? 'target');
-export const BOT_HELPER_BIN = join(CARGO_TARGET_ROOT, 'release', process.platform === 'win32' ? 'dilla-bot-core.exe' : 'dilla-bot-core');
+export const BOT_HELPER_BIN = prebuiltTools?.botHelper ?? join(CARGO_TARGET_ROOT, 'release', process.platform === 'win32' ? 'dilla-bot-core.exe' : 'dilla-bot-core');
 export const WASI_CORE = join(REPO_ROOT, 'internal', 'mlswasi', 'testdata', 'dilla_core_wasi.wasm');
 const WAIT_MS = process.env.CI === 'true' ? 90_000 : 60_000;
 const HOST_DATA_ROOT = process.env.DILLA_E2E_HOST_DATA_ROOT ?? '/tmp/dw';
@@ -25,7 +29,7 @@ const hostDataDir = (port: number): string => join(HOST_DATA_ROOT, `host-${Strin
 
 function ensureShippingCoreWasm(): void {
   const artifact = join(REPO_ROOT, 'packages', 'core-wasm', 'pkg', 'dilla_core_wasm_bg.wasm');
-  if (process.env.CI === 'true') {
+  if (process.env.CI === 'true' || prebuiltTools !== undefined) {
     // CI downloads the verified dilla-web-dist artifact into packages/web/dist;
     // the wasm-pack source package is intentionally absent from that artifact.
     verifyShippingCoreWasmInDist(join(REPO_ROOT, 'packages', 'web', 'dist'));
@@ -119,11 +123,12 @@ export interface StartedHost { url: string; control: string; invite: string; run
  * invite, no account, no server, no channel (v0.1.0-web3.1's create-flow suite starts a second one of these).
  */
 export async function startTestHost(c: HostConfig): Promise<StartedHost> {
+  verifyPrebuiltTools();
   // Browser CI uses the web-build and rust-wasi artifacts from this commit.
   // Local runs rebuild both so acceptance cannot pass on stale UI or core code.
   if (c.botRuntime === true && c.webRoot !== null) {
     ensureShippingCoreWasm();
-    if (process.env.CI !== 'true') {
+    if (process.env.CI !== 'true' && prebuiltTools === undefined) {
       rebuildShippingWasiCore();
       execFileSync(process.env.NPM ?? 'npm', ['run', 'build', '-w', '@dilla/web'], { cwd: REPO_ROOT, stdio: 'inherit' });
     }
@@ -262,6 +267,10 @@ async function postControl(port: number, path: string, body: unknown): Promise<v
 // Suites with time-dependent behavior can warm these builds in a setup hook,
 // giving cold compilation its own budget instead of consuming delivery time.
 export async function prepareBotRuntimeBinaries(): Promise<void> {
+  if (verifyPrebuiltTools() !== undefined) {
+    if (prebuiltTools?.bot === undefined || prebuiltTools.botHelper === undefined) throw new Error('Prebuilt Bot runtime tools are only available on Linux');
+    return;
+  }
   await runInherited(process.env.GO ?? 'go', ['-C', REPO_ROOT, 'build', '-o', DILLABOT_BIN, './cmd/dillabot']);
   await runInherited(process.env.CARGO ?? 'cargo', ['build', '-p', 'dilla-bot-core', '--release', '--locked']);
 }
@@ -405,7 +414,9 @@ export default async function globalSetup(config: FullConfig): Promise<() => Pro
   if (c.webRoot !== null && !existsSync(join(REPO_ROOT, c.webRoot, 'index.html'))) {
     throw new Error(`${join(REPO_ROOT, c.webRoot)} has no index.html: build it first (npm run build:harness -w @dilla/client-core, or npm run build -w @dilla/web)`);
   }
-  execFileSync(process.env.GO ?? 'go', ['-C', REPO_ROOT, 'build', '-o', TESTHOST_BIN, './cmd/dilla-testhost'], { stdio: 'inherit' });
+  const tools = verifyPrebuiltTools();
+  if (tools === undefined) execFileSync(process.env.GO ?? 'go', ['-C', REPO_ROOT, 'build', '-o', TESTHOST_BIN, './cmd/dilla-testhost'], { stdio: 'inherit' });
+  else process.env.DILLA_TESTKIT = tools.testkit;
   // The Bot binaries are built here, before any test, not by the first Bot test: a cold release build of dilla-bot-core
   // took 2m52s on a CI runner, inside that test's 180 s timeout (PR #121, moderation-evidence.spec.ts in a web shard).
   // Each later startBotRuntime rebuild is a no-op.

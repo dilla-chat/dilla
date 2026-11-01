@@ -57,6 +57,38 @@ test('desktop CI refuses continuing matrix jobs or tests after the first failure
   }
 });
 
+test('desktop tooling must be built once per native target and verified before every consumer', () => {
+  for (const [before, after] of [
+    ['node scripts/e2e-test-tools.mjs build artifacts/e2e-test-tools', 'echo skipped build'],
+    ['needs: test-tools', 'needs: rust-native'],
+    ['DILLA_E2E_TOOLING_DIR:', 'UNUSED_TOOLING_DIR:'],
+    ['node scripts/e2e-test-tools.mjs verify artifacts/e2e-test-tools', 'echo skipped verification'],
+    ['name: dilla-e2e-tools-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.sha }}', 'name: stale-tools'],
+    ['overwrite: true', 'overwrite: false'],
+    ["go test ./internal/ops -run 'Lock|BackupAndServe|ServeAdmits'", 'echo skipped locks'],
+  ]) {
+    const root = mkdtempSync(join(tmpdir(), 'dilla-tooling-ci-'));
+    mkdirSync(join(root, '.github/workflows'), { recursive: true });
+    const changed = REAL_DESKTOP.replaceAll(before, after);
+    assert.notEqual(changed, REAL_DESKTOP, before);
+    writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
+    assert.ok(checkDesktopWorkflow(root).some(problem => /tooling|directory locks/i.test(problem)), before);
+  }
+});
+
+test('desktop native acceptance stays independent and tooling never comes from another run', () => {
+  for (const changed of [
+    REAL_DESKTOP.replace('  native:\n', '  native:\n    needs: test-tools\n'),
+    REAL_DESKTOP.replaceAll('path: artifacts/e2e-test-tools\n', 'path: artifacts/e2e-test-tools\n          run-id: 123\n'),
+    REAL_DESKTOP.replace('  client:\n', '  client:\n    unrelated:\n      - run: cargo build -p dilla-testkit --release --locked\n'),
+  ]) {
+    const root = mkdtempSync(join(tmpdir(), 'dilla-tooling-scope-'));
+    mkdirSync(join(root, '.github/workflows'), { recursive: true });
+    writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
+    assert.ok(checkDesktopWorkflow(root).some(problem => /tooling|independent/i.test(problem)));
+  }
+});
+
 
 test('compiled helper recovery tests receive the same-commit helper and cannot silently skip', () => {
   const native = REAL_CI.split('\n  rust-native:\n')[1].split('\n  rust-wasi:\n')[0];

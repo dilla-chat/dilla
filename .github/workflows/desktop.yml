@@ -4,6 +4,48 @@ on:
 permissions:
   contents: read
 jobs:
+  test-tools:
+    name: desktop-test-tools-${{ matrix.platform }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { os: ubuntu-24.04, platform: linux, arch: x64 }
+          - { os: windows-latest, platform: win, arch: x64 }
+          - { os: macos-15-intel, platform: mac, arch: x64 }
+          - { os: macos-15, platform: mac, arch: arm64 }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: desktop-test-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            desktop-test-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+      - run: rustup show active-toolchain
+      # The script always rebuilds from this checkout; caches supply compilation intermediates only.
+      # Linux additionally supplies the actual production Bot and native helper, with separate Cargo feature scopes.
+      - run: node scripts/e2e-test-tools.mjs build artifacts/e2e-test-tools
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: dilla-e2e-tools-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.sha }}
+          path: artifacts/e2e-test-tools
+          if-no-files-found: error
+          # A rerun-all replaces this run's earlier producer artifact for the same target and SHA.
+          overwrite: true
+
   native:
     name: desktop-${{ matrix.platform }}-${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
@@ -113,6 +155,9 @@ jobs:
 
   client:
     name: desktop-client-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.shard }}
+    needs: test-tools
+    env:
+      DILLA_E2E_TOOLING_DIR: ${{ github.workspace }}/artifacts/e2e-test-tools
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
@@ -131,18 +176,16 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
+      # Default download scope is this workflow run; verification also binds checkout SHA and native OS/arch.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-e2e-tools-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.sha }}
+          path: artifacts/e2e-test-tools
+      - run: node scripts/e2e-test-tools.mjs verify artifacts/e2e-test-tools
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: desktop-client-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
-      - run: rustup show active-toolchain
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-web-dist
@@ -164,7 +207,6 @@ jobs:
       - run: npm exec -w @dilla/e2e -- playwright install --with-deps chromium
       - if: runner.os == 'Linux'
         run: node packages/desktop/scripts/prepare-browser-sandbox.mjs
-      - run: cargo build -p dilla-testkit --release --locked
       - run: npm run build -w @dilla/desktop -- --existing-client
       - if: runner.os == 'Linux'
         run: |
@@ -187,6 +229,9 @@ jobs:
 
   voice:
     name: desktop-voice-${{ matrix.platform }}-${{ matrix.arch }}
+    needs: test-tools
+    env:
+      DILLA_E2E_TOOLING_DIR: ${{ github.workspace }}/artifacts/e2e-test-tools
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
@@ -204,18 +249,16 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
+      # Default download scope is this workflow run; verification also binds checkout SHA and native OS/arch.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-e2e-tools-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.sha }}
+          path: artifacts/e2e-test-tools
+      - run: node scripts/e2e-test-tools.mjs verify artifacts/e2e-test-tools
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: desktop-voice-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
-      - run: rustup show active-toolchain
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-web-dist
@@ -237,7 +280,6 @@ jobs:
       - run: npm exec -w @dilla/e2e -- playwright install --with-deps chromium
       - if: runner.os == 'Linux'
         run: node packages/desktop/scripts/prepare-browser-sandbox.mjs
-      - run: cargo build -p dilla-testkit --release --locked
       - run: npm run build -w @dilla/desktop -- --existing-client
       - if: runner.os == 'Linux'
         run: |
