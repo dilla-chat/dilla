@@ -117,10 +117,24 @@
   - The broker logs per CONNECT, at Debug: the host class (youtube|googlevideo|other), DNS ms, dial ms, the winning address family and the number of failed addresses. It never logs a full URL or the video id.
   - The worker writes monotonic marks to stderr: spawn, first yt-dlp byte, first PCM.
   - `YouTubePCM.Start` logs sandbox_ready separately from first_sample.
-- [ ] **Step 2: The fix, decided by CT 144's check** (the controller fills this in before dispatch):
-  - if IPv6 is blackholed or slow, dial the validated addresses happy-eyeballs style (IPv4/IPv6 raced with a 250 ms stagger), keep the all-public validation, and add the test `TestBrokerConnectsFastWhenIPv6Blackholes` (a fake resolver with [blackholed v6, good v4] connects in under 400 ms);
-  - if the cold yt-dlp cache is the cost, bind-mount a persistent bot-owned cache directory (player cache only) and add a test that the mount is present and is not HOME.
-- [ ] **Step 3:** Run the gates and commit `fix(bot): the YouTube start logs its timing and <fix>`.
+- [ ] **Step 2: Node compile cache.**
+  - **CT 144 evidence (Homelab, 2026-11-01):**
+    - IPv6 is unrouted and fails in about 1 ms, so the broker is not the cost;
+    - yt-dlp writes nothing to its cache, so warm equals cold;
+    - `--js-runtimes node` adds about 2.2 s per extraction (3.7 s with it, 1.5 s without).
+  - **Jonas, 2026-11-01:** keep Node and the challenge solver, and add a persistent compile cache.
+  - **Implement:**
+    - give Node `NODE_COMPILE_CACHE=<dir>` in both the metadata and the PCM sandboxes;
+    - `<dir>` is a Bot-owned, 0700 directory under the Bot's state directory (`<state>/node-compile-cache`), created by the Bot;
+    - bind-mount read-write only that directory, at a fixed path inside the sandbox. Nothing else of the state dir is visible, and it is never HOME.
+  - **Security** (this crosses the sandbox boundary, so it gets a security review):
+    - the cache persists across sandbox runs, so a compromised run could write entries the next run loads. V8 checks the source hash and the version flags of each entry; rely on that, and document it;
+    - cap the directory at 64 MiB: the Bot empties it at start-up if it is larger, and never follows symlinks while doing so;
+    - doctor reports the directory's presence and size.
+  - **Tests:**
+    - `TestSandboxesMountOnlyTheNodeCompileCache` (bwrap args: one `--bind` of the cache dir, plus the env var);
+    - `TestOversizedNodeCompileCacheIsEmptiedWithoutFollowingLinks`.
+- [ ] **Step 3:** Run the gates and commit `fix(bot): the YouTube start logs its timing and keeps a Node compile cache across starts`.
 
 ### Task 6: Close
 
