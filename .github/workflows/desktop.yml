@@ -236,7 +236,9 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: desktop-voice-diagnostics-${{ matrix.platform }}-${{ matrix.arch }}
-          path: e2e/desktop-voice-results/**/autoplay-*.json
+          path: |
+            e2e/desktop-voice-results/**/autoplay-*.json
+            e2e/desktop-voice-results/**/signal-lifecycle.json
           if-no-files-found: error
       - if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7

@@ -14,6 +14,7 @@ import { observeNativeNotifications } from './native-notifications.ts';
 import { writeFixtures } from '../../media/support/fixtures.ts';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { markSignalLifecycle } from './signal-lifecycle.ts';
 
 /** One wait for one state (Global Constraints: at least 30 s locally, 90 s in CI). voice.ts re-exports it. */
 export const WAIT = process.env.CI === 'true' ? 90_000 : 30_000;
@@ -447,12 +448,15 @@ export const test = base.extend<{ peerBrowser: PeerBrowsers }>({
         // A failed leave is recorded and fails the test at the end, after the context is closed anyway: thrown from a
         // spec's `finally` it would hide the error that sent the test there.
         try {
+          await markSignalLifecycle(person.page, 'before-leave');
           await leaveIfInCall(person.page);
         } catch (e) {
           leaveFailures.push(`${person.name}: ${String(e).split('\n')[0]}`);
         } finally {
           await guard.collectWorkers();
+          await markSignalLifecycle(person.page, 'before-context-close');
           await person.context.close();
+          await markSignalLifecycle(person.page, 'after-context-close');
         }
       },
     };
