@@ -228,3 +228,10 @@ func newProcessError(cause error, raw string, exitCode int, inputs ...string) *P
 	raw = diagnosticYouTubeToken.ReplaceAllString(raw, "${1}[redacted]:")
 	return &ProcessError{Cause: cause, Stderr: DiagnosticText(raw), ExitCode: exitCode, class: class}
 }
+
+func diagnosticLogger(ctx context.Context) *slog.Logger {
+	if logger, ok := ctx.Value(diagnosticLoggerKey{}).(*slog.Logger); ok && logger != nil {
+		return logger
+	}
+	return slog.Default()
+}

@@ -48,6 +48,8 @@ func (s YouTubePCM) Start(ctx context.Context, track string) (io.ReadCloser, err
 	if err != nil || kind != "video" || normalized != canonical {
 		return nil, youtube.ErrInvalidInput
 	}
+	ctx = youtube.WithDiagnosticLogger(ctx, music.PlaybackLogger(ctx))
+	started := time.Now()
 	var pcm io.ReadCloser
 	if source, ok := s.Source.(interface {
 		StartAt(context.Context, string, int64) (io.ReadCloser, error)
@@ -65,6 +67,8 @@ func (s YouTubePCM) Start(ctx context.Context, track string) (io.ReadCloser, err
 	if pcm == nil {
 		return nil, ErrInvalid
 	}
+	readyAt := time.Now()
+	music.PlaybackLogger(ctx).DebugContext(ctx, "youtube PCM start", "stage", "sandbox_ready", "elapsed_ms", readyAt.Sub(started).Milliseconds())
 	source := &ownedPCM{ReadCloser: pcm}
 	// The sandbox's READY handshake precedes yt-dlp. Prove the decoder produced
 	// one s16 stereo sample before admitting the bot to a call, retaining it for
@@ -81,6 +85,7 @@ func (s YouTubePCM) Start(ctx context.Context, track string) (io.ReadCloser, err
 		_ = source.Close()
 		return nil, err
 	}
+	music.PlaybackLogger(ctx).DebugContext(ctx, "youtube PCM start", "stage", "first_sample", "elapsed_ms", time.Since(readyAt).Milliseconds())
 	return &prefetchedYouTubePCM{Reader: io.MultiReader(bytes.NewReader(frame[:]), source), source: source}, nil
 }
 

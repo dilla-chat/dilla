@@ -8,6 +8,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 
 READY = b"DILLA-EGRESS-READY /1.0\r\n\r\n"
 ACK = b"DILLA-EGRESS-ACK /1.0\r\n\r\n"
@@ -189,12 +190,16 @@ def main(argv):
     ]
     if node:
         args[1:1] = ["--js-runtimes", "node:" + node]
+    def mark(stage):
+        print("DILLA_YT_TIMING", stage, time.monotonic_ns(), file=sys.stderr, flush=True)
+
     try:
+        mark("spawn")
         yt = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=None, env=env, close_fds=True)
         children.append(yt)
         ff = subprocess.Popen(
             [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-i", "pipe:0", "-ss", start_at, "-f", "s16le", "-ar", "44100", "-ac", "2", "pipe:1"],
-            stdin=yt.stdout, stdout=subprocess.PIPE, stderr=None, env=env, close_fds=True,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=None, env=env, close_fds=True,
         )
         children.append(ff)
         def watch_failure(child):
@@ -202,13 +207,35 @@ def main(argv):
                 os._exit(1)
         for child in (yt, ff):
             threading.Thread(target=watch_failure, args=(child,), daemon=True).start()
-        yt.stdout.close()
+        def pump_ytdlp():
+            first = True
+            try:
+                while True:
+                    chunk = os.read(yt.stdout.fileno(), 32768)
+                    if not chunk:
+                        break
+                    if first:
+                        mark("first_yt_dlp_byte")
+                        first = False
+                    ff.stdin.write(chunk)
+                    ff.stdin.flush()
+            except (OSError, BrokenPipeError):
+                pass
+            finally:
+                yt.stdout.close()
+                try:
+                    ff.stdin.close()
+                except OSError:
+                    pass
+        threading.Thread(target=pump_ytdlp, daemon=True).start()
         total = 0
         too_large = False
         while True:
-            chunk = ff.stdout.read(32768)
+            chunk = os.read(ff.stdout.fileno(), 32768)
             if not chunk:
                 break
+            if total == 0:
+                mark("first_pcm")
             if total + len(chunk) > limit:
                 allowed = max(0, limit - total)
                 if allowed:

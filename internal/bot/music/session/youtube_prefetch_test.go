@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -181,5 +182,21 @@ sys.exit(1)
 				t.Fatalf("error=%v class=%s want class=%s permanent=%v", failure, music.FailureClass(failure), tc.class, tc.permanent)
 			}
 		})
+	}
+}
+
+func TestYouTubePCMLogsSandboxReadyAndFirstSampleSeparately(t *testing.T) {
+	var logs bytes.Buffer
+	ctx := music.WithPlaybackLogger(t.Context(), slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	adapter := YouTubePCM{Source: youtubeSourceFunc(func(context.Context, string) (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader([]byte{0, 1, 2, 3})), nil
+	})}
+	pcm, err := adapter.Start(ctx, "abcdefghijk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pcm.Close()
+	if !strings.Contains(logs.String(), `"stage":"sandbox_ready"`) || !strings.Contains(logs.String(), `"stage":"first_sample"`) || !strings.Contains(logs.String(), `"elapsed_ms":`) || strings.Contains(logs.String(), "abcdefghijk") {
+		t.Fatalf("missing/redaction timing log: %s", logs.String())
 	}
 }

@@ -6,11 +6,13 @@ import (
 	_ "embed"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -97,7 +99,7 @@ func launchNetworkWorker(ctx context.Context, bwrap, python string, tools, worke
 		_ = os.RemoveAll(root)
 		return nil, ErrSandboxUnavailable
 	}
-	broker := newEgressBroker(listener)
+	broker := newEgressBroker(ctx, listener)
 	runCtx, cancel := context.WithTimeout(ctx, maxDuration)
 	cmd, stdout, err := sandboxCommand(runCtx, bwrap, python, tools, workerArgs, socketPath)
 	if err != nil {
@@ -217,7 +219,7 @@ func sandboxCommand(ctx context.Context, bwrap, python string, tools, workerArgs
 	}
 	cmd.WaitDelay = 2 * time.Second
 	cmd.Env = []string{"PATH=/usr/bin:/bin", "LANG=C"}
-	cmd.Stderr = &sandboxStderr{}
+	cmd.Stderr = &sandboxStderr{ctx: ctx, logger: diagnosticLogger(ctx)}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, nil, err
@@ -336,14 +338,27 @@ var _ io.ReadCloser = (*boundedProcessPCM)(nil)
 
 // sandboxStderr bounds memory while continuing to drain the subprocess pipe.
 type sandboxStderr struct {
-	mu   sync.Mutex
-	data bytes.Buffer
+	mu     sync.Mutex
+	data   bytes.Buffer
+	ctx    context.Context
+	logger *slog.Logger
+	line   []byte
 }
 
 func (b *sandboxStderr) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	n := len(p)
+	if b.logger != nil {
+		for _, c := range p {
+			if c == '\n' {
+				b.logMark(string(b.line))
+				b.line = b.line[:0]
+			} else if len(b.line) < 512 {
+				b.line = append(b.line, c)
+			}
+		}
+	}
 	if remaining := 4096 - b.data.Len(); remaining > 0 {
 		_, _ = b.data.Write(p[:min(len(p), remaining)])
 	}
@@ -410,4 +425,21 @@ func (r *boundedProcessPCM) SourceGone() bool {
 	default:
 		return false
 	}
+}
+
+func (b *sandboxStderr) logMark(line string) {
+	fields := strings.Fields(line)
+	if len(fields) != 3 || fields[0] != "DILLA_YT_TIMING" {
+		return
+	}
+	switch fields[1] {
+	case "spawn", "first_yt_dlp_byte", "first_pcm":
+	default:
+		return
+	}
+	ns, err := strconv.ParseInt(fields[2], 10, 64)
+	if err != nil || ns <= 0 {
+		return
+	}
+	b.logger.DebugContext(b.ctx, "youtube worker timing", "mark", fields[1], "monotonic_ns", ns)
 }
