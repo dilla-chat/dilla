@@ -281,3 +281,52 @@ export async function runFailClosed(sc: FailClosedScenario): Promise<FailClosedR
   }
   return result;
 }
+
+/** Real audio transport/worker/decoder acceptance. The caller supplies a track
+ * acquired through the shipping native application-capture capability. */
+export async function runProtectedAudio(track: MediaStreamTrack, options: { source?: string; receiver?: boolean; ms?: number } = {}) {
+  const errors: string[] = [];
+  const A = await manager(DEV_A, 0, errors);
+  const B = options.receiver === false ? null : await manager(DEV_B, 1, errors);
+  const a = new RTCPeerConnection({ encodedInsertableStreams: true } as RTCConfiguration);
+  const b = new RTCPeerConnection(B ? { encodedInsertableStreams: true } as RTCConfiguration : {});
+  const context = new AudioContext({ sampleRate: 48000 });
+  const analyser = context.createAnalyser(); analyser.fftSize = 8192; analyser.smoothingTimeConstant = 0;
+  const mute = context.createGain(); mute.gain.value = 0; analyser.connect(mute).connect(context.destination);
+  await context.resume();
+  const element = document.createElement('audio'); element.autoplay = true; element.volume = 0; document.body.append(element);
+  b.ontrack = event => {
+    element.srcObject = new MediaStream([event.track]);
+    void element.play().catch(error => errors.push(String(error)));
+    B?.s.engine.emit('mediaTrackAdded', event.track, event.streams[0], event.receiver);
+    B?.s.room.emit('trackSubscribed', { kind: 'audio', mediaStreamID: event.track.id }, { source: 'screen_share_audio', trackInfo: { mimeType: 'audio/opus', encryption: 1 } }, { identity: DEV_A });
+    context.createMediaStreamSource(new MediaStream([event.track])).connect(analyser);
+  };
+  const transceiver = a.addTransceiver(track, { direction: 'sendonly', streams: [new MediaStream([track])] });
+  // Match the shipping E2EE publish defaults: RED/PCMU/PCMA are forbidden.
+  transceiver.setCodecPreferences((RTCRtpSender.getCapabilities('audio')?.codecs ?? []).filter(codec => codec.mimeType.toLowerCase() === 'audio/opus'));
+  A.s.room.localParticipant.emit('localSenderCreated', transceiver.sender, { source: options.source ?? 'screen_share_audio', kind: 'audio', mediaStreamID: track.id, mediaStreamTrack: track });
+  try {
+    await negotiate(a, b);
+    const started = performance.now(), deadline = started + (options.ms ?? 6000);
+    const peaks = { selected: -200, call: -200, other: -200 };
+    let firstAudioMs: number | null = null;
+    const data = new Float32Array(analyser.frequencyBinCount);
+    while (performance.now() < deadline) {
+      analyser.getFloatFrequencyData(data);
+      for (const [name, hz] of [['selected', 1000], ['call', 440], ['other', 880]] as const) {
+        const bin = Math.round(hz * analyser.fftSize / context.sampleRate);
+        peaks[name] = Math.max(peaks[name], ...data.subarray(bin - 2, bin + 3));
+      }
+      if (firstAudioMs === null && peaks.selected > -40) firstAudioMs = performance.now() - started;
+      await new Promise(done => setTimeout(done, 50));
+    }
+    let bytesSent = 0, packetsSent = 0;
+    const inbound: unknown[] = [];
+    (await b.getStats()).forEach(row => { if (row.type === 'inbound-rtp' && row.kind === 'audio') inbound.push(row); });
+    (await a.getStats()).forEach((row: { type: string; kind?: string; bytesSent?: number; packetsSent?: number }) => {
+      if (row.type === 'outbound-rtp' && row.kind === 'audio') { bytesSent += row.bytesSent ?? 0; packetsSent += row.packetsSent ?? 0; }
+    });
+    return { peaks, firstAudioMs, bytesSent, packetsSent, inbound, audioContext: { state: context.state, time: context.currentTime, sampleRate: context.sampleRate }, transport: [a.connectionState, b.connectionState], errors, sender: await statsOrNull(A.m), receiver: B ? await statsOrNull(B.m) : null };
+  } finally { track.stop(); a.close(); b.close(); element.remove(); await context.close(); A.worker.terminate(); B?.worker.terminate(); }
+}

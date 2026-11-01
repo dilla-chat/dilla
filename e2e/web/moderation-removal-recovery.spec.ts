@@ -1,3 +1,4 @@
+import { openInviteInClient } from './support/invite';
 // Signed moderator removals through the shipped browser client. The host starts empty and every
 // account, role, invite, message and removal is made through the UI; no database fixture is used.
 import { expect, type BrowserContext, type Locator, type Page } from '@playwright/test';
@@ -44,8 +45,7 @@ const memberRow = (page: Page, name: string) => page.getByRole('complementary', 
 }).getByRole('listitem').filter({ hasText: name });
 
 async function memberPage(page: Page, invite: string, name: string): Promise<void> {
-  await page.goto(new URL(invite).pathname);
-  await page.getByRole('link', { name: 'Open dilla in this browser', exact: true }).click();
+  await openInviteInClient(page, invite);
   await completeSignUp(page, newAccount(name, `http://127.0.0.1:${String(HOST.control)}`), instance);
   await expect(railItem(page, SERVER)).toBeVisible();
   await openChannel(page, SERVER, 'general');

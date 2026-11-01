@@ -1,3 +1,4 @@
+import { openInviteInClient } from './support/invite';
 // web3.8, WS4 (item 11): the sidebar's actions moved. From an empty host, Ada (the owner) starts "Midgard Crew" and makes a
 // channel through the "+" in the channel list's header; Björn (a member with the default @everyone: create invite, no manage
 // channels) has no "+", opens server settings, selects Invites, makes a link and copies it. At 390x844 the header has the search icon
@@ -69,8 +70,7 @@ test('the owner adds a channel with the "+"; a member makes a link under server 
   try {
     const page2 = second.pages()[0] ?? (await second.newPage());
     await page2.setViewportSize({ width: 1280, height: 800 });
-    await page2.goto(new URL(link).pathname);
-    await page2.getByRole('link', { name: 'Open dilla in this browser', exact: true }).click();
+    await openInviteInClient(page2, link);
     await completeSignUp(page2, newAccount(FRIEND, h.control), instance);
     await expect(railItem(page2, SERVER)).toBeVisible({ timeout: WAIT });
     await railItem(page2, SERVER).click();

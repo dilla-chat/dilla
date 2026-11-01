@@ -52,9 +52,21 @@ jobs:
       - if: runner.os == 'Linux'
         run: npm run test:native:linux -w @dilla/desktop
       - if: runner.os == 'Linux'
-        run: xvfb-run -a dbus-run-session -- npm run test:electron -w @dilla/desktop
+        run: xvfb-run -a dbus-run-session -- npm run test:electron -w @dilla/desktop -- --grep-invert "application audio"
       - if: runner.os != 'Linux'
-        run: npm run test:electron -w @dilla/desktop
+        run: npm run test:electron -w @dilla/desktop -- --grep-invert "application audio"
+      - name: Start Windows audio services for real playback acceptance
+        if: runner.os == 'Windows'
+        run: |
+          Start-Service AudioEndpointBuilder
+          Start-Service Audiosrv
+          Get-CimInstance Win32_SoundDevice | Select-Object Name, Status
+      - name: Application audio encryption and exclusion
+        if: runner.os == 'Linux'
+        run: xvfb-run -a dbus-run-session -- npm exec -w @dilla/desktop -- playwright test --config playwright.config.ts application-audio.spec.ts
+      - name: Application audio encryption and exclusion
+        if: runner.os != 'Linux'
+        run: npm exec -w @dilla/desktop -- playwright test --config playwright.config.ts application-audio.spec.ts
       - run: npm run pack -w @dilla/desktop -- --config.electronDist=../../node_modules/electron/dist --${{ matrix.platform }} --${{ matrix.arch }}
         env:
           CSC_FOR_PULL_REQUEST: 'true' # Only the configured ad-hoc identity; no commercial signing credentials.
@@ -87,7 +99,6 @@ jobs:
 
   client:
     name: desktop-client-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.shard }}
-    needs: [native]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:

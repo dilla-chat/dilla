@@ -1,3 +1,4 @@
+import { openInviteInClient } from './support/invite';
 // v0.1.0-web3.7, slow mode and announcement channels from an empty instance. Like admin.spec.ts this suite starts a test host of
 // its own with no account, no server and no channel, and runs everything through the shipping clients: two browsers, one owner
 // and one member. Nothing here seeds state or calls the instance's API on anyone's behalf (GET /v1/instance for the name the
@@ -97,11 +98,7 @@ test('slow mode and an announcement channel from an empty instance: the wait, th
     await installWorkerPort(second);
     const uploads = await holdUploads(second);
     const page2 = second.pages()[0] ?? (await second.newPage());
-    await page2.goto(new URL(link).pathname);
-    const openLink = page2.getByRole('link', { name: 'Open dilla in this browser', exact: true });
-    await expect(openLink).toHaveAttribute('href', /^\/welcome\?invite=[^&\s]+$/);
-    await guard.attach(second);
-    await openLink.click();
+    await openInviteInClient(page2, link, () => guard.attach(second));
     await completeSignUp(page2, newAccount(FRIEND, h.control), instance);
     await expect(railItem(page2, SERVER)).toBeVisible({ timeout: WAIT });
     await openChannel(page2, SERVER, 'general');

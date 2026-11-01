@@ -1,3 +1,4 @@
+import { openInviteInClient } from './support/invite';
 // web3.9 E-GEO: the layout grammar of the alignment pass, measured in a real browser. From an empty host (with its in-process
 // LiveKit) Ada starts "Midgard Crew" and gives it two categories, text channels, an announcement channel, a voice channel with
 // a live person in it, the built-in AFK channel and a direct message; then every rule of the grammar is read as a rect at
@@ -341,12 +342,7 @@ test('the layout grammar holds at desktop, tablet, phone, narrow and keyboard-he
   try {
     if (browserName === 'chromium') await second.grantPermissions(['microphone']);
     const mira = second.pages()[0] ?? (await second.newPage());
-    await mira.goto(new URL(link).pathname);
-    const openLink = mira.getByRole('link', { name: 'Open dilla in this browser', exact: true });
-    await expect(openLink).toBeVisible({ timeout: WAIT });
-    // The guard watches the web client, not the instance's static invite page (Firefox asks it for /favicon.ico under its default-src 'none').
-    await guard.attach(second);
-    await openLink.click();
+    await openInviteInClient(mira, link, () => guard.attach(second));
     await completeSignUp(mira, newAccount(FRIEND, h.control), instance);
     await expect(railItem(mira, SERVER)).toBeVisible({ timeout: WAIT });
     await railItem(mira, SERVER).click();
@@ -959,11 +955,7 @@ test('the DM and the voice layout give each element its room', async ({ page, pl
   const second = await launchSecond(playwright, browserName, { launchOptions: friendLaunch(browserName, launchOptions) as typeof launchOptions, headless, channel, viewport: { width: 1440, height: 900 }, baseURL: h.url }, secondDir);
   try {
     const cy = second.pages()[0] ?? (await second.newPage());
-    await cy.goto(new URL(link).pathname);
-    const openLink = cy.getByRole('link', { name: 'Open dilla in this browser', exact: true });
-    await expect(openLink).toBeVisible({ timeout: WAIT });
-    await guard.attach(second);
-    await openLink.click();
+    await openInviteInClient(cy, link, () => guard.attach(second));
     await completeSignUp(cy, newAccount('Cy', h.control), instance);
     await expect(railItem(cy, 'Ydalir')).toBeVisible({ timeout: WAIT });
     await homeTile(cy).click();
@@ -1099,10 +1091,7 @@ test('FA4: search rows, phone settings index, channel reorder and privacy Compar
   const second = await launchSecond(playwright, browserName, { launchOptions, headless, channel, viewport: { width: 1440, height: 900 }, baseURL: h.url }, secondDir);
   try {
     const mira = second.pages()[0] ?? (await second.newPage());
-    await mira.goto(new URL(link).pathname);
-    const openLink = mira.getByRole('link', { name: 'Open dilla in this browser', exact: true });
-    await expect(openLink).toBeVisible({ timeout: WAIT });
-    await openLink.click();
+    await openInviteInClient(mira, link);
     await completeSignUp(mira, newAccount(FRIEND, h.control), instance);
     await railItem(mira, SERVER).click();
     await channelRow(mira, 'general').click();

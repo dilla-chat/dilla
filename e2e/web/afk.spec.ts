@@ -1,3 +1,4 @@
+import { openInviteInClient } from './support/invite';
 // web3.9 E-AFK: the built-in AFK channel, from an empty instance and from a web3.8 one. This suite starts a test host of its
 // own with its in-process LiveKit, and runs a server through the shipping clients: Ada the owner and Björn a member, each in
 // a desktop browser of their own, and Björn again in a phone-emulated browser (a second device of his). The instance's API
@@ -318,8 +319,7 @@ test('1. a new server has one AFK voice channel, listed last, for the owner and 
   expect((await afkSnapshot(a)).channel, 'the AFK snapshot names it').toBe(afkId);
 
   const link = await makeInviteLink(a.page, SERVER);
-  await b.page.goto(new URL(link).pathname);
-  await b.page.getByRole('link', { name: 'Open dilla in this browser', exact: true }).click();
+  await openInviteInClient(b.page, link);
   bjornAccount = await completeSignUp(b.page, newAccount(FRIEND, h.control), instance);
   await railItem(b.page, SERVER).click();
   await expectAfkLast(b.page, 'AFK');

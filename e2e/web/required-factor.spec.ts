@@ -1,3 +1,4 @@
+import { openInviteInClient } from './support/invite';
 // v0.1.0-web3.6, a required second factor reaches every device, from an empty instance. Like create.spec.ts this suite starts a
 // test host of its own with no account, no server and no channel. Three people meet the forced set-up through the shipping
 // client alone: Cleo, who signs up through an invite and closes the page at the factor choice; Ada, whose account the operator
@@ -114,11 +115,7 @@ async function cleoReopens(
   const first = await launchSecond(playwright, browserName, { launchOptions, headless, channel, viewport, baseURL: h.url }, dir);
   try {
     const p1 = first.pages()[0] ?? (await first.newPage());
-    await p1.goto(new URL(link).pathname);
-    // As admin.spec.ts does: the guard watches from the app on. Firefox asks the server-rendered invite page for /favicon.ico,
-    // which the page's img-src refuses (the page declares no icon link).
-    await guard.attach(first);
-    await p1.getByRole('link', { name: 'Open dilla in this browser', exact: true }).click();
+    await openInviteInClient(p1, link, () => guard.attach(first));
     await signUpToFactor(p1, cleo);
     // She closes the page (a blank tab keeps the browser, and so the profile, open) and opens the app again in it.
     const p2 = await first.newPage();
