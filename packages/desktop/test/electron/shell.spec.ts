@@ -71,6 +71,22 @@ test('runs the installed React client in an isolated sandbox without executing s
   await expect(page.locator('#root')).not.toBeEmpty();
 });
 
+test('focused copy writes text to the system clipboard while clipboard reads and hidden writes stay denied', async () => {
+ const page = await app.firstWindow();
+ await page.evaluate(() => {
+  const button = document.createElement('button'); button.textContent = 'Copy acceptance text';
+  button.onclick = () => { void navigator.clipboard.writeText('dilla clipboard acceptance').then(() => { button.dataset.copied = 'true'; }, () => { button.dataset.copied = 'false'; }); };
+  document.body.appendChild(button);
+ });
+ await page.getByRole('button', { name: 'Copy acceptance text', exact: true }).click();
+ await expect(page.getByRole('button', { name: 'Copy acceptance text', exact: true })).toHaveAttribute('data-copied', 'true');
+ expect(await app.evaluate(({ clipboard }) => clipboard.readText())).toBe('dilla clipboard acceptance');
+ expect(await page.evaluate(async () => { try { await navigator.clipboard.readText(); return 'allowed'; } catch { return 'denied'; } })).toBe('denied');
+ await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].hide());
+ expect(await page.evaluate(async () => { try { await navigator.clipboard.writeText('hidden write'); return 'allowed'; } catch { return 'denied'; } })).toBe('denied');
+ expect(await app.evaluate(({ clipboard }) => clipboard.readText())).toBe('dilla clipboard acceptance');
+});
+
 test('rejects malicious IPC and remote document navigation and keeps storage across reload', async () => {
   const page = await app.firstWindow();
   await page.waitForURL(instance);

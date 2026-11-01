@@ -163,13 +163,18 @@ async function openInstance(input: string, path = '/', show = true): Promise<Bro
   });
   const allowed = permissions.get(instance) ?? new Set<string>();
   permissions.set(instance, allowed);
-  ses.setPermissionCheckHandler((contents, permission, requestingOrigin) => {
-    return contents === win.webContents && permissionOriginMatches(requestingOrigin, instance) && allowed.has(permission)
-      && trustedFrame({ url: contents.getURL(), top: true }, instance);
+  ses.setPermissionCheckHandler((contents, permission, requestingOrigin, details) => {
+    const trusted = contents === win.webContents && details.isMainFrame
+      && permissionOriginMatches(requestingOrigin, instance) && trustedFrame({ url: contents.getURL(), top: true }, instance);
+    // Copy uses Chromium's sanitized clipboard-write permission. Never grant reads,
+    // background writes, or clipboard access to a frame/another instance.
+    if (permission === 'clipboard-sanitized-write') return trusted && win.isVisible() && win.isFocused();
+    return trusted && allowed.has(permission);
   });
   ses.setPermissionRequestHandler((contents, permission, callback, details) => {
-    if (contents !== win.webContents || details.isMainFrame === false || !trustedFrame({ url: details.requestingUrl, top: true }, instance)
-      || !['media', 'notifications', 'speaker-selection', 'local-network', 'loopback-network'].includes(permission)) { callback(false); return; }
+    if (contents !== win.webContents || details.isMainFrame === false || !trustedFrame({ url: details.requestingUrl, top: true }, instance)) { callback(false); return; }
+    if (permission === 'clipboard-sanitized-write') { callback(win.isVisible() && win.isFocused()); return; }
+    if (!['media', 'notifications', 'speaker-selection', 'local-network', 'loopback-network'].includes(permission)) { callback(false); return; }
     if (allowed.has(permission)) { callback(true); return; }
     const label = permission === 'media' ? 'microphone or camera' : permission === 'notifications' ? 'notifications' : permission === 'local-network' ? 'local network connections for calls' : permission === 'loopback-network' ? 'connections to a local Dilla service' : 'audio output selection';
     void dialog.showMessageBox(win, { type: 'question', title: 'Dilla permission', message: `Allow ${new URL(instance).host} to use ${label}?`, buttons: ['Deny', 'Allow'], defaultId: 0, cancelId: 0 })
