@@ -256,3 +256,21 @@ Each element gets a presence Noul and a Box on both images, plus optional `state
 - **Q-C:** a capped multi-choice voter walk displays the distinct count read so far as “{n}+ voters”. Reads are bounded to ten pages per poll and ten per answer, with at most two answer walks in flight.
 
 Task 8 upload captures can use `@bytes/26214401/huge.bin` in an upload step. The runner creates the bytes in memory, so a 25 MB fixture is not stored in Git. An app side with `holdUploads: true` holds blob uploads until its frame is captured, then releases them; the waiting-toast state is reached by picking a file and pressing Send normally. ReactionTooltip pairs use a UI story under Q6 (web wiring is wave C).
+
+### Task 9d audit corrections (2026-11-01)
+
+The parity world now saves the server's inactive timeout as 15 minutes through Server Settings →
+Overview, so `task-4/t4-afk-phone` uses the prototype's “After 15 minutes”. Apply these corrections
+when regenerating the 9d report:
+
+| Row | Classification | Reason |
+|---|---|---|
+| `task-4/t4-afk-phone` | match | The world's AFK timeout is 15 minutes, matching the prototype's copy. Header, empty-state treatment and Go AFK button size agree; the prototype phone bezel is excluded. |
+| `task-5/gap102-phone-settings-signin` | accepted deviation | This account has an authenticator and no passkey, so its removal guard and Add passkey state differ from the prototype's factor inventory. Phone navigation, Sign-in heading, factor-row geometry/icons and 32px action buttons agree. |
+| `wave-a-gaps/gap102-phone-settings-signin` | accepted deviation | This account has an authenticator and no passkey, so its removal guard and Add passkey state differ from the prototype's factor inventory. Phone navigation, Sign-in heading, factor-row geometry/icons and 32px action buttons agree. |
+
+`parity/task-9d/results.md` and `counts.json` are absent from this checkout. No report or counts
+were regenerated, and historical screenshots were not relabeled as new captures. The AFK change
+moves one row to match; aligning the duplicate Sign-in rows moves one row to accepted deviation,
+so these two corrections leave the audit's aggregate counts unchanged (42 match, 130 accepted
+deviation, 0 differs, 172 total).

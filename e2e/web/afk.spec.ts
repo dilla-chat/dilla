@@ -642,6 +642,11 @@ test('7. with view_channel left out of his roles community-wide, Björn still se
   const a = person(ada, OWNER);
   const b = person(bjorn, FRIEND);
   await expect(dock(b.page).locator('.d-voice-dock')).toHaveCount(0, { timeout: WAIT });
+  // Test 6 leaves Björn away while his desktop stays connected. A message clears that state
+  // before his channel permissions change, so Idle offers Go AFK.
+  await openChannel(b.page, SERVER, 'general');
+  await sendText(b.page, 'general', 'back at the desk');
+  for (const p of [a, b]) await expect(awayPeople(p.page, RENAMED)).toHaveCount(0, { timeout: WAIT });
   // The role editor: @everyone loses "view channels", so none of Björn's roles grants it anywhere (R35).
   await setEveryone(a, 'perm.view', false);
   await expect(channelRow(b.page, 'general')).toHaveCount(0, { timeout: WAIT });

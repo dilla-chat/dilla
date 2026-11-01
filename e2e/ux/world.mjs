@@ -248,6 +248,13 @@ for (const n of ['harbour', 'Late night lounge for people who never sleep']) awa
 await byText(ada, 'button', 'admin.open').click().then(() => byText(ada, 'menuitem', 'signalSettings.menu.serverSettings').click());
 const settings = byText(ada, 'dialog', 'admin.title');
 await settings.waitFor({ timeout: WAIT });
+// Match the prototype's “After 15 minutes” through the same server setting people use.
+await settings.getByRole('navigation', { name: t('admin.nav'), exact: true }).getByRole('button', { name: t('admin.nav.overview'), exact: true }).click();
+await settings.getByRole('radiogroup', { name: t('admin.overview.afk'), exact: true })
+  .getByRole('radio', { name: t('admin.overview.afk.900'), exact: true }).click();
+await settings.getByRole('button', { name: t('admin.overview.save'), exact: true }).click();
+await settings.locator('.d-settings-frame__footer').getByRole('button', { name: t('admin.overview.save'), exact: true })
+  .waitFor({ state: 'hidden', timeout: WAIT });
 await settings.getByRole('navigation', { name: t('admin.nav'), exact: true }).getByRole('button', { name: t('workspace.invites'), exact: true }).click();
 // Task 3b review I1: unlimited uses, so every parity pair that signs up through it (task 3b's six steps, desktop and
 // phone) also joins the server, and the done step's panel can name it.
