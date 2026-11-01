@@ -36,9 +36,16 @@ test.beforeEach(async () => {
  } else {
   // Independent real playback applications, without fake media devices or PCM injection.
   const actor = join(root, 'tone.cjs');
-  await writeFile(actor, `const {app,BrowserWindow}=require('electron');app.enableSandbox();app.commandLine.appendSwitch('autoplay-policy','no-user-gesture-required');app.whenReady().then(()=>{const w=new BrowserWindow({webPreferences:{sandbox:true,contextIsolation:true,nodeIntegration:false,backgroundThrottling:false}});w.loadURL('data:text/html,<title>Application audio acceptance</title><script>const c=new AudioContext({sampleRate:48000}),o=c.createOscillator(),g=c.createGain();o.frequency.value='+process.argv[2]+';g.gain.value=0.35;o.connect(g).connect(c.destination);o.start();c.resume();</script>')})`);
-  selected = await _electron.launch({ chromiumSandbox: true, args: [actor, '1000'], env });
-  other = await _electron.launch({ chromiumSandbox: true, args: [actor, '880'], env });
+  await writeFile(actor, `const {app,BrowserWindow}=require('electron');let w;app.enableSandbox();app.setPath('userData',process.argv.find(a=>a.startsWith('--actor-profile=')).slice(16));app.commandLine.appendSwitch('autoplay-policy','no-user-gesture-required');app.whenReady().then(()=>{w=new BrowserWindow({webPreferences:{sandbox:true,contextIsolation:true,nodeIntegration:false,backgroundThrottling:false}});w.loadURL('data:text/html,<title>Application audio acceptance</title><script>const c=new AudioContext({sampleRate:48000}),o=c.createOscillator(),g=c.createGain();o.frequency.value='+Number(process.argv.find(a=>a.startsWith('--tone=')).slice(7))+';g.gain.value=0.35;o.connect(g).connect(c.destination);o.start();c.resume();window.audioAcceptance={context:c,oscillator:o};</script>')})`);
+  selected = await _electron.launch({ chromiumSandbox: true, args: [actor, '--tone=1000', '--actor-profile=' + join(root, 'selected-profile')], env });
+  other = await _electron.launch({ chromiumSandbox: true, args: [actor, '--tone=880', '--actor-profile=' + join(root, 'other-profile')], env });
+  for (const [application, frequency] of [[selected, 1000], [other, 880]] as const) {
+   const page = await (application as ElectronApplication).firstWindow();
+   await page.waitForFunction(frequency => { const a = (window as any).audioAcceptance; return a?.context.state === 'running' && a.context.currentTime > 0.5 && a.oscillator.frequency.value === frequency; }, frequency);
+   console.log('NATIVE_AUDIO_PLAYBACK', JSON.stringify(await page.evaluate(() => { const a = (window as any).audioAcceptance; return { frequency: a.oscillator.frequency.value, state: a.context.state, time: a.context.currentTime, output: a.context.getOutputTimestamp() }; })));
+  }
+  // Wait for real playback before sampling process IDs: Chromium's audio service
+  // is created lazily, and WASAPI attributes its session to that utility process.
   selectedPIDs = await (selected as ElectronApplication).evaluate(({ app }) => [process.pid, ...app.getAppMetrics().map(metric => metric.pid)]);
  }
  desktop = await _electron.launch({ chromiumSandbox: true, args: [resolve('.'), `--profile=${join(root, 'profile')}`, '--instance=http://127.0.0.1:1/', '--allow-loopback', '--allow-loopback-in-peer-connection', '--media-validation'], env });

@@ -1083,7 +1083,7 @@ export function checkDesktopWorkflow(root) {
     'xvfb-run -a dbus-run-session -- npm run test:electron -w @dilla/desktop',
     'run: npm run test:electron -w @dilla/desktop', 'npm run pack -w @dilla/desktop',
     'node packages/desktop/scripts/check-fuses.mjs', 'node --test packages/desktop/test/native/mac-upgrade.test.mjs',
-    'name: Application audio encryption and exclusion', 'playwright test --config playwright.config.ts application-audio.spec.ts',
+    '--grep-invert "application-audio.spec.ts"', 'name: Application audio encryption and exclusion', 'playwright test --config playwright.config.ts application-audio.spec.ts',
     'npm run dist -w @dilla/desktop', 'name: desktop-installers-${{ matrix.platform }}-${{ matrix.arch }}',
   ]) if (!text.includes(required)) problems.push(`${file}: missing ${required}`);
   if (/--no-sandbox|contents: write|--publish always/.test(text)) problems.push(`${file}: desktop validation must keep sandboxing and cannot publish`);

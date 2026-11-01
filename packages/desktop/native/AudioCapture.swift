@@ -16,9 +16,13 @@ func related(_ pid: pid_t, _ root: pid_t) -> Bool {
     for _ in 0..<128 { if current == root { return true }; if current <= 1 { break }; let parent = parentPID(current); if parent == current { break }; current = parent }
     return false
 }
-func identity(_ app: SCRunningApplication) -> String {
-    let launched = NSRunningApplication(processIdentifier: app.processID)?.launchDate?.timeIntervalSince1970 ?? 0
-    return "\(UInt64(max(1, launched * 1000))):\(app.processID)"
+// ScreenCaptureKit can enumerate processes that AppKit does not represent as
+// NSRunningApplication. A kernel start time also protects against PID reuse.
+func identity(_ pid: pid_t) -> String? {
+    var info = proc_bsdinfo()
+    let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+    guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
+    return "\(info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec):\(pid)"
 }
 final class AudioOutput: NSObject, SCStreamOutput, SCStreamDelegate {
     func stream(_ stream: SCStream, didStopWithError error: Error) { fputs("application capture ended\n", stderr); exit(1) }
@@ -63,10 +67,10 @@ final class AudioOutput: NSObject, SCStreamOutput, SCStreamDelegate {
             let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: false)
             let applications = content.applications.filter { $0.processID > 1 && !related($0.processID, excluded) && !related(excluded, $0.processID) && !$0.applicationName.isEmpty }
             if args[1] == "list" && args.count == 3 {
-                let sources = applications.map { Source(id: identity($0), label: $0.applicationName) }
+                let sources = applications.compactMap { app in identity(app.processID).map { Source(id: $0, label: app.applicationName) } }
                 FileHandle.standardOutput.write(try JSONEncoder().encode(sources)); return
             }
-            guard args[1] == "capture", args.count == 4, let app = applications.first(where: { identity($0) == args[2] }), let display = content.displays.first else { throw CaptureError.missingApplication }
+            guard args[1] == "capture", args.count == 4, let app = applications.first(where: { identity($0.processID) == args[2] }), let display = content.displays.first else { throw CaptureError.missingApplication }
             let filter = SCContentFilter(display: display, including: [app], exceptingWindows: [])
             let configuration = SCStreamConfiguration()
             configuration.capturesAudio = true; configuration.excludesCurrentProcessAudio = true
@@ -76,7 +80,7 @@ final class AudioOutput: NSObject, SCStreamOutput, SCStreamDelegate {
             let stream = SCStream(filter: filter, configuration: configuration, delegate: output)
             try stream.addStreamOutput(output, type: .audio, sampleHandlerQueue: DispatchQueue(label: "dev.dilla.application-audio"))
             try await stream.startCapture()
-            while NSRunningApplication(processIdentifier: app.processID)?.isTerminated == false { try await Task.sleep(nanoseconds: 500_000_000) }
+            while identity(app.processID) == args[2] { try await Task.sleep(nanoseconds: 500_000_000) }
             try await stream.stopCapture()
         } catch { fputs("application audio unavailable: \(error)\n", stderr); exit(1) }
     }

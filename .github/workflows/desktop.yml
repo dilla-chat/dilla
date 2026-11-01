@@ -52,9 +52,9 @@ jobs:
       - if: runner.os == 'Linux'
         run: npm run test:native:linux -w @dilla/desktop
       - if: runner.os == 'Linux'
-        run: xvfb-run -a dbus-run-session -- npm run test:electron -w @dilla/desktop -- --grep-invert "application audio"
+        run: xvfb-run -a dbus-run-session -- npm run test:electron -w @dilla/desktop -- --grep-invert "application-audio.spec.ts"
       - if: runner.os != 'Linux'
-        run: npm run test:electron -w @dilla/desktop -- --grep-invert "application audio"
+        run: npm run test:electron -w @dilla/desktop -- --grep-invert "application-audio.spec.ts"
       - name: Start Windows audio services for real playback acceptance
         if: runner.os == 'Windows'
         run: |
