@@ -1,3 +1,4 @@
+import { themes } from '@dilla/design-tokens';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -123,7 +124,7 @@ describe('CreateServer', () => {
     expect(screen.queryByText(labels.body)).toBeNull();
   });
 
-  it.each(['signal', 'light', 'high-contrast'])('has no serious axe violations in %s, idle, refused and partial', async theme => {
+  it.each(Object.keys(themes))('has no serious axe violations in %s, idle, refused and partial', async theme => {
     document.documentElement.dataset.theme = theme;
     for (const over of [{}, { error: 'Give the server a name.' }, { partial: PartialStory.args.partial }]) {
       const { container, unmount } = render(<div className="d-root"><CreateServer {...props(over)} /></div>);

@@ -5,7 +5,7 @@ import { Icon } from '../Icon/Icon.tsx';
 import { IconButton } from '../IconButton/IconButton.tsx';
 import { Tooltip } from '../Tooltip/Tooltip.tsx';
 
-// Switch the theme in the toolbar (signal, light, high-contrast). A real 390px phone width.
+// The theme toolbar uses the shared theme catalog. A real 390px phone width.
 const meta = { title: 'Shell/PhoneHeader', component: PhoneHeader, parameters: { layout: 'fullscreen' } } satisfies Meta<typeof PhoneHeader>;
 export default meta;
 type Story = StoryObj<typeof meta>;

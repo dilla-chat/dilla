@@ -1,3 +1,4 @@
+import { themes } from '@dilla/design-tokens';
 import { readFileSync } from 'node:fs';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -116,7 +117,7 @@ describe('MemberList', () => {
     expect(screen.queryByRole('heading', { level: 3 })).toBeNull();
   });
 
-  it.each(['signal', 'light', 'high-contrast'])('has no serious axe violations in %s, listed, loading and empty', async theme => {
+  it.each(Object.keys(themes))('has no serious axe violations in %s, listed, loading and empty', async theme => {
     document.documentElement.dataset.theme = theme;
     for (const over of [{}, { loading: true }, { groups: [] }]) {
       const { container, unmount } = render(<div className="d-root"><MemberList {...props(over)} /></div>);

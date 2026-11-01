@@ -1,3 +1,5 @@
+import ts from 'typescript';
+import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fsp from 'node:fs/promises';
@@ -93,4 +95,29 @@ test('a story declaring phoneViewport is shot only at 360 by 740, as the test ru
   assert.equal(shootsAt({ phoneViewport: true }, { width: 360, height: 800 }), false);
   assert.equal(shootsAt({}, VIEWPORT), true);
   assert.equal(shootsAt(undefined, { width: 360, height: 740 }), true);
+});
+
+// Story-specific globals must obey the same catalog as the toolbar and app.
+test('every story declares only supported theme globals', async () => {
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src');
+  const invalid = [];
+  async function visit(directory) {
+    for (const entry of await fsp.readdir(directory, { withFileTypes: true })) {
+      const file = path.join(directory, entry.name);
+      if (entry.isDirectory()) { await visit(file); continue; }
+      if (!file.endsWith('.stories.tsx')) continue;
+      const source = ts.createSourceFile(file, await fsp.readFile(file, 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+      const walk = node => {
+        if (ts.isPropertyAssignment(node) && node.name.getText(source) === 'globals' && ts.isObjectLiteralExpression(node.initializer)) {
+          for (const property of node.initializer.properties) {
+            if (ts.isPropertyAssignment(property) && property.name.getText(source) === 'theme' && ts.isStringLiteral(property.initializer) && !THEMES.includes(property.initializer.text)) invalid.push(`${path.relative(root, file)}: ${property.initializer.text}`);
+          }
+        }
+        ts.forEachChild(node, walk);
+      };
+      walk(source);
+    }
+  }
+  await visit(root);
+  assert.deepEqual(invalid, []);
 });

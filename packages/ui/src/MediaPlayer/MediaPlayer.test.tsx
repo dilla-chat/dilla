@@ -1,3 +1,4 @@
+import { themes } from '@dilla/design-tokens';
 import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, it, expect, vi } from 'vitest';
@@ -102,7 +103,7 @@ describe('MediaPlayer', () => {
     expect(save).toHaveTextContent(/^save$/);
   });
 
-  it.each(['signal', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {
+  it.each(Object.keys(themes))('passes axe at its default story args in %s', async theme => {
     document.documentElement.dataset.theme = theme;
     const { container } = render(<div className="d-root"><MediaPlayer {...(meta.args as MediaPlayerProps)} /></div>);
     // jsdom has no layout or canvas, so contrast is left to the Storybook axe run in a real browser.

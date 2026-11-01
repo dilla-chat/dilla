@@ -1,3 +1,4 @@
+import { themes } from '@dilla/design-tokens';
 import { readFileSync } from 'node:fs';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, it, expect, vi } from 'vitest';
@@ -213,7 +214,7 @@ describe('CallTile', () => {
   });
 
 
-  it.each(['signal', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {
+  it.each(Object.keys(themes))('passes axe at its default story args in %s', async theme => {
     document.documentElement.dataset.theme = theme;
     const { container } = render(<div className="d-root"><ul><CallTile {...(meta.args as CallTileProps)} /></ul></div>);
     // jsdom has no layout or canvas, so contrast is left to the Storybook axe run in a real browser.

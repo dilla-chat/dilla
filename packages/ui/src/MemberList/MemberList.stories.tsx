@@ -68,8 +68,8 @@ function expectMembers(root: HTMLElement, story: string): void {
   btn.blur();
 }
 export const Default: Story = { play: ({ canvasElement }) => { expectMembers(canvasElement, 'MemberList'); } };
-export const ThreeSections: Story = { ...Default, globals: { theme: 'light' } };
-export const ThreeSectionsHighContrast: Story = { ...Default, globals: { theme: 'high-contrast' } };
+
+
 /** The prototype's members aside (Midgard Crew): a coloured role group, the presence group and the bots group. */
 export const Prototype: Story = {
   ...Default,

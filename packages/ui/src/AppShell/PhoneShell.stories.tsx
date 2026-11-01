@@ -44,7 +44,7 @@ function ServerHeadMenu() {
       { id: 'mode:mentions', label: 'Notify: mentions only', checked: false, group: 'Notifications' }, { id: 'mode:nothing', label: 'Notify: nothing', checked: false, group: 'Notifications' }]} />;
 }
 
-// A 390 × 844 phone (an iPhone 14). Switch the theme in the toolbar (signal, light, high-contrast). The decorator's 16px
+// A 390 × 844 phone (an iPhone 14). The theme toolbar uses the shared theme catalog. The decorator's 16px
 // padding is taken back so the shell fills the frame exactly.
 const meta = { title: 'Shell/Phone', parameters: { layout: 'fullscreen', webStyles: true } } satisfies Meta;
 export default meta;
