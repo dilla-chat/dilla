@@ -7,10 +7,17 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { en } from '../../../packages/web/src/strings/en.ts';
+import { desktopNetwork } from './desktop-network.ts';
 
 export const desktopE2E = () => process.env.DILLA_ELECTRON_E2E === '1';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const applications = new WeakMap<BrowserContext, ElectronApplication>();
+const suspensions = new WeakMap<BrowserContext, () => Promise<() => Promise<BrowserContext>>>();
+/** Stop the real process, retaining its encrypted device store for a later launch. */
+export async function suspendDesktopContext(context: BrowserContext): Promise<() => Promise<BrowserContext>> {
+ const suspend = suspensions.get(context); if (!suspend) throw new Error('No desktop profile owns this context');
+ return suspend();
+}
 export function desktopApplication(context: BrowserContext): ElectronApplication {
  const application = applications.get(context); if (!application) throw new Error('No desktop application owns this test context');
  return application;
@@ -18,8 +25,7 @@ export function desktopApplication(context: BrowserContext): ElectronApplication
 
 /** Each browser-profile fixture becomes an actual sandboxed desktop process.
  * The installed client and its worker keep their normal origin/storage boundary. */
-export async function launchDesktopContext(profile: string | null, options: BrowserContextOptions & { launchOptions?: LaunchOptions }, claimWindow = true): Promise<BrowserContext> {
- const temporary = profile === null;
+export async function launchDesktopContext(profile: string | null, options: BrowserContextOptions & { launchOptions?: LaunchOptions }, claimWindow = true, temporary = profile === null): Promise<BrowserContext> {
  const directory = profile ?? await mkdtemp(join(tmpdir(), 'dilla-client-e2e-'));
  await mkdir(directory, { recursive: true });
  const instance = options.baseURL ?? `http://127.0.0.1:${process.env.DILLA_E2E_PORT ?? '8463'}/`;
@@ -60,6 +66,7 @@ export async function launchDesktopContext(profile: string | null, options: Brow
   && document.querySelector('.d-splash__line')?.textContent !== starting, en['boot.loading.status']);
  const goto = first.goto.bind(first);
  first.goto = (url, options) => goto(new URL(url, canonical).href, options);
+ const stopNetwork = await desktopNetwork(context, app, first);
  applications.set(context, app);
  // Startup/authentication keep their real compact native bounds. Specs can
  // resize the workspace explicitly; native minimums remain authoritative.
@@ -82,7 +89,12 @@ export async function launchDesktopContext(profile: string | null, options: Brow
    await resize(requestedWorkspace); appliedWorkspace = requestedWorkspace;
   }
  }, { noWaitAfter: true });
- let firstTaken = claimWindow, closed = false;
+ let firstTaken = claimWindow, closed = false, retainProfile = false;
+ suspensions.set(context, async () => {
+  retainProfile = true;
+  await context.close();
+  return () => launchDesktopContext(directory, options, false, temporary);
+ });
  context.newPage = async (): Promise<Page> => {
   if (!firstTaken && !first.isClosed()) { firstTaken = true; return first; }
   // One window per instance is the product contract. Tests of extra tabs need
@@ -102,7 +114,9 @@ export async function launchDesktopContext(profile: string | null, options: Brow
   }
   globalThis.process.removeListener('exit', terminate);
   applications.delete(context);
-  if (temporary) await rm(directory, { recursive: true, force: true });
+  suspensions.delete(context);
+  await stopNetwork();
+  if (temporary && !retainProfile) await rm(directory, { recursive: true, force: true });
  };
  return context;
 }
