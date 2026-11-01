@@ -89,3 +89,9 @@ test('native layout admits only fixed modes and bounded authentication height', 
  for (const value of [{ type: 'window-mode', mode: 'starting', height: null }, { type: 'window-mode', mode: 'workspace', height: null }, { type: 'window-mode', mode: 'authentication', height: 500 }]) assert.deepEqual(validateCommand(value), value);
  for (const value of [{ type: 'window-mode', mode: 'mobile', height: null }, { type: 'window-mode', mode: 'workspace', height: 200 }, { type: 'window-mode', mode: 'authentication', height: -1 }, { type: 'window-mode', mode: 'authentication', height: Infinity }, { type: 'window-mode', mode: 'authentication', height: 500, width: 1 }]) assert.throws(() => validateCommand(value));
 });
+
+
+test('window controls are a closed capability for the owning window only', () => {
+ for (const action of ['close', 'minimize', 'toggle-maximize']) assert.deepEqual(validateCommand({ type: 'window-control', action }), { type: 'window-control', action });
+ for (const command of [{ type: 'window-control', action: 'exec' }, { type: 'window-control', action: 'close', windowId: 1 }, { type: 'window-control', action: 'resize', width: 400 }]) assert.throws(() => validateCommand(command));
+});

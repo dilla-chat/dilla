@@ -16,8 +16,13 @@ test('a server invite, a name and a written-down key make an account that lands 
   await expectHeading(page, COPY.connectTitle, { instance: instanceName });
   if (desktopE2E()) {
     const app = desktopApplication(context);
-    await expect.poll(() => app.evaluate(({ BrowserWindow }) => ({ width: BrowserWindow.getAllWindows()[0].getContentSize()[0], resizable: BrowserWindow.getAllWindows()[0].isResizable() }))).toEqual({ width: 440, resizable: false });
+    await expect.poll(() => app.evaluate(({ BrowserWindow }) => ({ width: BrowserWindow.getAllWindows()[0].getContentSize()[0], resizable: BrowserWindow.getAllWindows()[0].isResizable() }))).toEqual({ width: 400, resizable: false });
     expect(await page.evaluate(() => [innerWidth, innerHeight])).toEqual(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getContentSize()));
+    await expect(page.locator('.dw-desktop-titlebar')).toBeHidden();
+    const card = await page.locator('.d-onboarding-frame__card').boundingBox();
+    expect(card?.x).toBe(0); expect(card?.y).toBe(0); expect(card?.width).toBe(400);
+    expect(Math.ceil(card!.height)).toBe(await page.evaluate(() => innerHeight));
+    await expect(page.getByRole('button', { name: 'Close login window' })).toBeVisible();
     await page.screenshot({ path: 'desktop-client-results/compact-signup.png' });
   }
   await expect(page.getByLabel(copy(COPY.inviteLabel), { exact: true })).toHaveValue(invite);
@@ -52,6 +57,7 @@ test('a server invite, a name and a written-down key make an account that lands 
     await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isResizable())).toBe(true);
     expect(await page.evaluate(() => [innerWidth, innerHeight])).toEqual(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getContentSize()));
     expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getMinimumSize())).toEqual([900, 600]);
+    await expect(page.locator('.dw-desktop-titlebar')).toBeVisible();
     await page.setViewportSize({ width: 360, height: 400 });
     expect(await page.evaluate(() => [innerWidth, innerHeight])).toEqual([900, 600]);
     await expect(page.locator('[data-layout=phone]')).toHaveCount(0);

@@ -87,6 +87,7 @@ function setWindowMode(instance: string, win: BrowserWindow, mode: WindowMode, h
   // the mode minimum afterwards so the compact dialog minimum cannot survive.
   win.setResizable(shape.resizable); win.setMinimumSize(shape.minWidth, shape.minHeight);
   if (process.platform !== 'linux') win.setMaximizable(shape.resizable);
+  if (process.platform === 'darwin') win.setWindowButtonVisibility(mode === 'workspace');
   const saved = mode === 'workspace' ? workspaceBounds.get(win) : undefined;
   if (saved) win.setBounds(saved);
   else if (win.getContentSize()[0] !== shape.width || win.getContentSize()[1] !== shape.height) {
@@ -130,7 +131,8 @@ async function openInstance(input: string, path = '/', show = true): Promise<Bro
     return existing;
   }
   const ses = session.fromPartition(partitionFor(instance));
-  const win = new BrowserWindow({ ...windowShape('starting'), useContentSize: true, maximizable: false, show: false, title: 'Dilla', ...windowChrome(), webPreferences: { ...webPreferences(), session: ses } });
+  const win = new BrowserWindow({ ...windowShape('starting'), useContentSize: true, ...(process.platform === 'linux' ? {} : { maximizable: false }), show: false, title: 'Dilla', ...windowChrome(), titleBarOverlay: false, webPreferences: { ...webPreferences(), session: ses } });
+  if (process.platform === 'darwin') win.setWindowButtonVisibility(false);
   windows.set(instance, win); windowModes.set(instance, 'starting');
   updater.expectGuard(instance);
   const origin = new URL(instance).origin;
@@ -342,9 +344,13 @@ ipcMain.handle('dilla:command', async (event, value: unknown) => {
   else if (command.type === 'desktop-theme') {
     const appearance = windowAppearance(command.theme);
     win.setBackgroundColor(appearance.backgroundColor);
-    if (process.platform !== 'darwin') win.setTitleBarOverlay(appearance.titleBarOverlay);
   }
   else if (command.type === 'window-menu') showWindowMenu(win);
+  else if (command.type === 'window-control') {
+    if (command.action === 'close') win.close();
+    else if (command.action === 'minimize') win.minimize();
+    else if (windowModes.get(instance) === 'workspace') { if (win.isMaximized()) win.unmaximize(); else win.maximize(); }
+  }
   else if (command.type === 'check-update') await updater.check();
   else if (command.type === 'restart-update') await requestQuit(true);
   else if (command.type === 'dismiss-notification') { const key = noticeKey(instance, command.id); notices.get(key)?.close(); notices.delete(key); ringActions.delete(key); refreshMenu(); }

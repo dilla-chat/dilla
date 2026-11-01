@@ -13,3 +13,16 @@ html[data-desktop] :is(.d-onboarding-frame, .d-splash, .dw-other-tab) { min-heig
 html[data-desktop] :is(.d-settings-frame, .d-settings-frame.d-settings-frame[data-layout="phone"], .d-lightbox) { top: var(--dw-titlebar-h); height: calc(100dvh - var(--dw-titlebar-h)); }
 
 html[data-desktop-window="authentication"] .d-onboarding-frame__bar { display: none; }
+
+.dw-desktop-titlebar__controls { display: flex; margin-left: auto; align-self: stretch; margin-right: -12px; flex: none; }
+.dw-desktop-titlebar__controls button, .dw-desktop-card-close { display: grid; place-items: center; width: 40px; padding: 0; color: var(--fg-2); background: transparent; border: 0; -webkit-app-region: no-drag; app-region: no-drag; cursor: pointer; }
+.dw-desktop-titlebar__controls svg, .dw-desktop-card-close svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.25; }
+.dw-desktop-titlebar__controls button:hover, .dw-desktop-card-close:hover { background: var(--hover); color: var(--fg); }
+.dw-desktop-titlebar__controls button:focus-visible, .dw-desktop-card-close:focus-visible { outline: var(--focus-ring); outline-offset: -3px; }
+.dw-desktop-card-close, .dw-desktop-card-drag { display: none; }
+html[data-desktop-window="starting"], html[data-desktop-window="authentication"] { --dw-titlebar-h: 0px; }
+html:is([data-desktop-window="starting"], [data-desktop-window="authentication"]) .dw-desktop-titlebar { display: none; }
+html:is([data-desktop-window="starting"], [data-desktop-window="authentication"]) .dw-desktop-card-close { display: grid; position: fixed; top: 6px; right: 6px; width: 22px; height: 22px; border-radius: var(--r-sm); z-index: 10001; }
+html:is([data-desktop-window="starting"], [data-desktop-window="authentication"]) .dw-desktop-card-drag { display: block; position: fixed; inset: 0 34px auto 0; height: 26px; z-index: 10000; -webkit-app-region: drag; app-region: drag; }
+html[data-desktop-window="authentication"] .d-onboarding-frame { padding: 0; background: var(--bg-2); align-items: start; }
+html[data-desktop-window="authentication"] .d-onboarding-frame__card { max-width: none; border: 0; border-radius: 0; box-shadow: none; animation: none; }

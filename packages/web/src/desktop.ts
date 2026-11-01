@@ -72,7 +72,7 @@ export function startDesktopWindowLayout(mode: import('../../desktop/src/window-
  const card = mode === 'authentication' ? document.querySelector<HTMLElement>('.d-onboarding-frame__card') : null;
  let last = '';
  const update = () => {
-  const height = card ? Math.max(160, Math.min(1600, Math.ceil(card.offsetHeight + 72))) : null;
+  const height = card ? Math.max(160, Math.min(1600, Math.ceil(card.offsetHeight))) : null;
   const key = `${mode}:${height}`; if (key === last) return; last = key;
   void bridge.send({ type: 'window-mode', mode, height }).catch(() => {});
  };

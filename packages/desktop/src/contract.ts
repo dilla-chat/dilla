@@ -11,6 +11,7 @@ export type DesktopCommand =
   | { type: 'desktop-theme'; theme: import('../../design-tokens/src/tokens.ts').ThemeName }
   | { type: 'window-mode'; mode: import('./window-layout.ts').WindowMode; height: number | null }
   | { type: 'window-menu' }
+  | { type: 'window-control'; action: 'minimize' | 'toggle-maximize' | 'close' }
   | { type: 'check-update' }
   | { type: 'restart-update' };
 

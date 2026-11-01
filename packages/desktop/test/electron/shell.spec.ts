@@ -50,6 +50,9 @@ test('runs the installed React client in an isolated sandbox without executing s
   await expect(page.locator('#root')).not.toBeEmpty();
   const info = await page.evaluate(() => (window as any).dillaDesktop.info());
   expect(info.instance).toBe(instance);
+  await expect(page.getByRole('button', { name: 'Close login window', exact: true })).toBeVisible();
+  await page.evaluate(() => (window as any).dillaDesktop.send({ type: 'window-mode', mode: 'workspace', height: null }));
+  await page.evaluate(() => { document.documentElement.dataset.desktopWindow = 'workspace'; });
   await expect(page.getByRole('button', { name: 'Dilla menu', exact: true })).toBeVisible();
   expect(await page.locator('.dw-desktop-titlebar').evaluate(node => Math.round(node.getBoundingClientRect().height))).toBe(32);
   expect(await page.locator('.d-splash, .d-onboarding-frame').first().evaluate(node => node.getBoundingClientRect().top)).toBeGreaterThanOrEqual(32);
@@ -90,7 +93,8 @@ test('rejects malicious IPC and remote document navigation and keeps storage acr
 test('closing a window keeps the client alive for background work', async () => {
   const page = await app.firstWindow();
   await page.waitForURL(instance);
-  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close());
+  await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isVisible())).toBe(true);
+  await page.getByRole('button', { name: 'Close login window', exact: true }).click();
   await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map(win => ({ visible: win.isVisible(), destroyed: win.isDestroyed() }))))
     .toEqual([{ visible: false, destroyed: false }]);
 });
@@ -198,9 +202,9 @@ test('a desktop resize fills the real native content area and cannot shrink into
 test('startup and sign-in use one compact window which expands only for the workspace', async () => {
  const page = await app.firstWindow(); await expect(page.locator('#root')).not.toBeEmpty();
  const id = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].id);
- expect(await app.evaluate(({ BrowserWindow }) => ({ size: BrowserWindow.getAllWindows()[0].getContentSize(), resizable: BrowserWindow.getAllWindows()[0].isResizable() }))).toEqual({ size: [440, 280], resizable: false });
+ expect(await app.evaluate(({ BrowserWindow }) => ({ size: BrowserWindow.getAllWindows()[0].getContentSize(), resizable: BrowserWindow.getAllWindows()[0].isResizable() }))).toEqual({ size: [400, 280], resizable: false });
  await page.evaluate(() => (window as any).dillaDesktop.send({ type: 'window-mode', mode: 'authentication', height: 500 }));
- expect(await page.evaluate(() => [innerWidth, innerHeight])).toEqual([440, 500]);
+ expect(await page.evaluate(() => [innerWidth, innerHeight])).toEqual([400, 500]);
  await page.evaluate(() => (window as any).dillaDesktop.send({ type: 'window-mode', mode: 'workspace', height: null }));
  expect(await app.evaluate(({ BrowserWindow }) => ({ id: BrowserWindow.getAllWindows()[0].id, count: BrowserWindow.getAllWindows().length, resizable: BrowserWindow.getAllWindows()[0].isResizable() }))).toEqual({ id, count: 1, resizable: true });
  await page.waitForFunction(() => innerWidth >= 900 && innerHeight >= 600);

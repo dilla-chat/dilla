@@ -79,12 +79,13 @@ export function validateCommand(value: unknown): DesktopCommand {
   const command = object(value);
   const fields: Record<string, string[]> = {
     badge: ['count'], guard: ['activeCall', 'unsavedDraft'], 'quit-ack': ['id', 'activeCall', 'unsavedDraft'], autostart: ['enabled'],
-    'notify-ring': ['id', 'title', 'body'], notify: ['id', 'title', 'body'], 'dismiss-notification': ['id'], 'stop-app-audio': ['id'], 'check-update': [], 'restart-update': [], 'window-mode': ['mode', 'height'], 'window-menu': [], 'desktop-theme': ['theme'],
+    'notify-ring': ['id', 'title', 'body'], notify: ['id', 'title', 'body'], 'dismiss-notification': ['id'], 'stop-app-audio': ['id'], 'check-update': [], 'restart-update': [], 'window-mode': ['mode', 'height'], 'window-menu': [], 'window-control': ['action'], 'desktop-theme': ['theme'],
   };
   const type = typeof command.type === 'string' ? command.type : '';
   if (!Object.hasOwn(fields, type)) throw new Error('Unknown desktop command');
   const expected = ['type', ...fields[type]];
   if (Object.keys(command).length !== expected.length || !Object.keys(command).every(key => expected.includes(key))) throw new Error('Invalid desktop command fields');
+  if (type === 'window-control' && !['minimize', 'toggle-maximize', 'close'].includes(command.action as string)) throw new Error('Invalid window control');
   if (type === 'window-mode' && (!['starting', 'authentication', 'workspace'].includes(command.mode as string)
     || (command.height !== null && (command.mode !== 'authentication' || !Number.isSafeInteger(command.height) || (command.height as number) < 160 || (command.height as number) > 1600)))) throw new Error('Invalid desktop window mode');
   if (type === 'desktop-theme' && (typeof command.theme !== 'string' || !Object.hasOwn(themes, command.theme))) throw new Error('Invalid desktop theme');
