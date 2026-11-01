@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 
 async function inPage(run) {
-  const browser = await chromium.launch({ headless: true });
+  // channel 'chromium' as in the e2e configs: CI installs the full Chromium, not the headless shell.
+  const browser = await chromium.launch({ headless: true, channel: 'chromium' });
   try { await run(await browser.newPage()); } finally { await browser.close(); }
 }
 
