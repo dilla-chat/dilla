@@ -1099,7 +1099,8 @@ export function checkDesktopWorkflow(root) {
   for (const required of ['desktop-voice-${{ matrix.platform }}-${{ matrix.arch }}',
     'os: [ubuntu-24.04, windows-latest, macos-15-intel, macos-15]',
     'playwright.desktop-voice.config.ts --project=electron-voice --workers=1', 'DILLA_E2E_NOTIFICATIONS', 'dunst',
-    'name: dilla-core-wasi', 'cargo build -p dilla-testkit --release --locked']) {
+    'name: dilla-core-wasi', 'cargo build -p dilla-testkit --release --locked',
+    'name: Desktop performance comparison', 'node packages/desktop/scripts/run-performance.mjs', 'name: desktop-performance-']) {
     if (!voice.includes(required)) problems.push(`${file}: Electron voice coverage missing ${required}`);
   }
   if (/--shard|shard:/.test(voice)) problems.push(`${file}: the desktop voice suite must preserve its single frozen-clock worker`);

@@ -6,7 +6,7 @@
 //   switch that reports the page as hidden (a ring notifies only while the tab is hidden, flow 06);
 // - the project's media permissions (Chromium) and fake devices (both engines, from the config).
 // Init scripts are injected by the protocol, so the page's CSP never governs them.
-import { test as base, expect, type Browser, type BrowserContext, type ConsoleMessage, type Locator, type Page, type Worker } from '@playwright/test';
+import { test as base, expect, type Browser, type BrowserContext, type ConsoleMessage, type LaunchOptions, type Locator, type Page, type Worker } from '@playwright/test';
 import { copy, FIREFOX_FAVICON_LINE, isFirefoxBrowserFaviconViolation, recordNotifications } from '../../web/support/app';
 import { desktopE2E } from '../../web/support/electron.ts';
 import { desktopVoiceContext } from './desktop.ts';
@@ -295,7 +295,7 @@ export interface PeerBrowsers {
   /** Opens one person's context and page; at most a few per test, each closed by `close` (or the fixture's net). `browser`
    *  (web3.4 V4): a browser the spec launched with switches of its own, instead of the worker's; the spec closes it after
    *  closing the people it opened there. */
-  open(name: string, opts?: { viewport?: { width: number; height: number }; browser?: Browser }): Promise<Person>;
+  open(name: string, opts?: { viewport?: { width: number; height: number }; browser?: Browser; launchOptions?: LaunchOptions }): Promise<Person>;
   /** Leaves the call through the app's own leave, waits for the media worker to end, then closes the context. */
   close(person: Person): Promise<void>;
   /** Hands a native peer (anything with an idempotent close) to the fixture, which closes it after the people, whatever
@@ -368,7 +368,7 @@ export const test = base.extend<{ peerBrowser: PeerBrowsers }>({
       async open(name, opts) {
         if (desktopE2E() && opts?.browser) throw new Error('Browser tab capture requires a native application-audio counterpart');
         const context = desktopE2E()
-          ? await desktopVoiceContext({ baseURL, permissions, launchOptions, viewport: opts?.viewport ?? viewport })
+          ? await desktopVoiceContext({ baseURL, permissions, launchOptions: opts?.launchOptions ?? launchOptions, viewport: opts?.viewport ?? viewport })
           : await openContext(opts?.browser ?? browser, { baseURL, permissions, viewport: opts?.viewport ?? viewport });
         await guard.attach(context);
         await context.addInitScript(installRecorders);

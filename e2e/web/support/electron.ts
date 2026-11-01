@@ -66,7 +66,9 @@ export async function launchDesktopContext(profile: string | null, options: Brow
   && document.querySelector('.d-splash__line')?.textContent !== starting, en['boot.loading.status']);
  const goto = first.goto.bind(first);
  first.goto = (url, options) => goto(new URL(url, canonical).href, options);
- const stopNetwork = await desktopNetwork(context, app, first);
+ // Comparative performance uses the unwrapped production transport. Fault
+ // injection/HTTP event forwarding belong only to the behavioral test suite.
+ const stopNetwork = process.env.DILLA_PERFORMANCE_CLIENT === 'desktop' ? async () => {} : await desktopNetwork(context, app, first);
  applications.set(context, app);
  // Startup/authentication keep their real compact native bounds. Specs can
  // resize the workspace explicitly; native minimums remain authoritative.

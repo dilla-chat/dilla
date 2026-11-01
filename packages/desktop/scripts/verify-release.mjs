@@ -5,7 +5,7 @@ import { appcast } from './feed-format.mjs';
 import { verifyRelease, verifyArtifact } from '../src/update.ts';
 
 export const TARGETS = ['linux-x64', 'win-x64', 'mac-x64', 'mac-arm64'];
-const REQUIRED = ['Installed upgrade acceptance', 'Application audio encryption and exclusion', 'Desktop performance comparison'];
+const REQUIRED = ['Installed upgrade acceptance', 'Application audio encryption and exclusion'];
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 
 /** Publication checks the complete accepted run, not just a green build or a
@@ -30,7 +30,9 @@ export async function verifyDesktopBundle({ metadata, signature, trust, director
   for (let shard = 1; shard <= 3; shard++) {
    if (!jobs.some(job => job.name.endsWith(`desktop-client-${target}-${shard}`) && job.conclusion === 'success')) throw new Error(`Missing Electron client coverage: ${target}-${shard}`);
   }
-  if (!jobs.some(job => job.name.endsWith(`desktop-voice-${target}`) && job.conclusion === 'success')) throw new Error(`Missing Electron voice coverage: ${target}`);
+  const voice = jobs.find(job => job.name.endsWith(`desktop-voice-${target}`) && job.conclusion === 'success');
+  if (!voice) throw new Error(`Missing Electron voice coverage: ${target}`);
+  if (!voice.steps?.some(step => step.name === 'Desktop performance comparison' && step.conclusion === 'success')) throw new Error(`${target}: missing accepted performance comparison`);
  }
  if (!source.review || source.review.status !== 'approved' || source.review.tree !== source.tree || !/^[a-f0-9]{64}$/.test(source.review.sha256)) throw new Error('An independent security review must approve this source tree');
  if (!source.notes || !/^[a-f0-9]{64}$/.test(source.notes.sha256) || digest(await readFile(join(directory, 'release-notes.md'))) !== source.notes.sha256) throw new Error('Release notes digest mismatch');
@@ -42,7 +44,7 @@ export async function verifyDesktopBundle({ metadata, signature, trust, director
   const bytes = await readFile(join(directory, `performance-${target}.json`));
   if (digest(bytes) !== record.sha256) throw new Error('Performance report digest mismatch: ' + target);
   const report = JSON.parse(bytes);
-  if (report.format !== 1 || report.target !== target || report.sourceCommit !== source.commit || report.status !== 'measured'
+  if (report.format !== 1 || report.target !== target || report.sourceCommit !== source.commit || report.sourceDirty !== false || report.status !== 'measured'
     || !['startup', 'memory', 'idleCPU', 'interaction', 'callAudio'].every(metric => Array.isArray(report[metric]) && report[metric].length > 0
       && report[metric].every(sample => Number.isFinite(sample.browser) && sample.browser >= 0 && Number.isFinite(sample.desktop) && sample.desktop >= 0))) throw new Error('Incomplete measured performance comparison: ' + target);
  }

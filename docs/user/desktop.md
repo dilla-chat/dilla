@@ -43,22 +43,26 @@ these development switches.
 Closing an instance window hides it in the tray. Use the tray to reopen it, change
 the optional login startup preference, check for updates, or quit. Autostart is
 available only in installed builds. Notification clicks open the existing client
-destination. Direct Answer/Decline notification actions are still a launch gate.
+destination. Native Answer/Decline actions and background ringing have Linux
+acceptance coverage; their remaining platform checks still gate release.
 `dilla://invite/chat.example.com/CODE` supports validated HTTPS host/port invites;
 path-scoped invite URLs do not yet have a deep-link representation.
 
-## What is still blocked
+## Acceptance and updates
 
-Application-audio capture and the system-browser sign-in handoff are **not
-implemented**. The bridge reports both capabilities as unavailable. Screen capture
-currently supplies video only; it never substitutes whole-system audio. Password
-and code/recovery UI reuse the existing worker, but hardware permission, real sign-in,
-passkey/OIDC handoff, enrolment and recovery acceptance have not passed on all OSes.
+Application audio and the system-browser sign-in handoff are implemented. Linux
+selected-application capture passes its encrypted delivery and exclusion checks.
+The Windows hosted CI runner has no audio endpoint; macOS unrelated-application
+exclusion still needs a passing native gate. A failed capture must remain a visible
+error rather than substitute whole-system or unencrypted audio. Password,
+second-factor, passkey and recovery flows retain the existing worker and device
+model. Real passkey browser handoff and recovery have local acceptance coverage;
+the complete platform acceptance matrix remains open.
 
 Windows/Linux update transport authenticates a detached Ed25519 signature over the
 exact release JSON before consuming its artifact hashes. Keys are compiled into
-`packages/desktop/src/update-keys.ts`; the list is deliberately empty until the
-maintainer provisions the release trust root. Checks fail closed with a visible,
+`packages/desktop/src/update-keys.ts` from the provisioned public release trust
+root. Private signing keys remain separate from CI and publishing credentials. Checks fail closed with a visible,
 retryable error. A publishing token is not a signing key. The fixed GitHub feeds use
 separate `desktop-stable` and `desktop-beta` release tags; the installed version fixes
 the channel. Metadata must expire within 93 days and list versioned GitHub artifacts.
@@ -73,17 +77,25 @@ failure to spawn restores that backup. Runtime health after process startup rema
 an installed acceptance gate. Windows uses the per-user NSIS installer without
 an elevation fallback. Installed-version fault and restart tests remain required.
 
-macOS automatic updates are blocked until a narrow Sparkle bridge and a real
-unsigned-to-unsigned installed upgrade pass acceptance. The app does not substitute
-Electron's signed-app updater or a manual-update release.
+macOS uses a narrow Sparkle bridge with signed update feeds and archives. Actual
+unsigned-to-unsigned installed upgrades passed on Intel and Apple Silicon using
+ad-hoc signing and normal OS protections. The broader installed fault matrix and
+complete release gates still apply.
 
 Preview packaging is available with `npm run pack -w @dilla/desktop`; it creates an
 unpacked app for validation and never publishes. Installer targets are configured
-for AppImage, per-user NSIS, and macOS DMG/ZIP. There is intentionally no publishing
-workflow. Commercial OS signing/notarization is not configured; macOS packaging uses
+for AppImage, per-user NSIS, and macOS DMG/ZIP. The publication workflow refuses
+missing platform acceptance, measured performance, an independent security review,
+or unauthenticated artifacts; no desktop release has been published. Commercial OS signing/notarization is not configured; macOS packaging uses
 ad-hoc signing. Windows and macOS may warn about an unidentified publisher. Use the
 OS's normal installation approval flow; do not disable SmartScreen, Gatekeeper, SIP
 or quarantine protections to make a test pass.
 
 See [platform findings and launch gates](../desktop/FOUNDATIONS.md) for the remaining
 work. Packaging success does not satisfy those gates.
+
+The workspace uses the integrated Signal header and desktop window controls.
+Startup and sign-in use a compact card; the main workspace has a minimum native
+size of 900 by 600 pixels and does not switch to the phone layout. Signal is the
+only supported palette, with the theming infrastructure and stored preferences
+preserved.

@@ -9,10 +9,11 @@ const W = 320, H = 240, FPS = 20, SECONDS = 2;
 const RATE = 48_000;
 
 /** Y4M frames with a moving gradient (so the encoder emits delta frames), and a 1 kHz mono tone. */
-export function writeFixtures(dir: string): { y4m: string; wav: string } {
+export function writeFixtures(dir: string, toneHz = 1000): { y4m: string; wav: string } {
+  if (!Number.isFinite(toneHz) || toneHz < 100 || toneHz > 10000) throw new Error('Invalid fake microphone tone');
   mkdirSync(dir, { recursive: true });
   const y4m = join(dir, 'fake-320x240.y4m');
-  const wav = join(dir, 'fake-1khz-48k.wav');
+  const wav = join(dir, toneHz === 1000 ? 'fake-1khz-48k.wav' : `fake-${toneHz}hz-48k.wav`);
   const frameBytes = W * H * 3 / 2;
   const header = Buffer.from(`YUV4MPEG2 W${W} H${H} F${FPS}:1 Ip A1:1 C420jpeg\n`);
   const y4mSize = header.length + FPS * SECONDS * (6 + frameBytes);
@@ -33,7 +34,7 @@ export function writeFixtures(dir: string): { y4m: string; wav: string } {
     b.write('fmt ', 12); b.writeUInt32LE(16, 16); b.writeUInt16LE(1, 20); b.writeUInt16LE(1, 22);
     b.writeUInt32LE(RATE, 24); b.writeUInt32LE(RATE * 2, 28); b.writeUInt16LE(2, 32); b.writeUInt16LE(16, 34);
     b.write('data', 36); b.writeUInt32LE(samples * 2, 40);
-    for (let i = 0; i < samples; i++) b.writeInt16LE(Math.round(Math.sin((2 * Math.PI * 1000 * i) / RATE) * 0.5 * 32767), 44 + i * 2);
+    for (let i = 0; i < samples; i++) b.writeInt16LE(Math.round(Math.sin((2 * Math.PI * toneHz * i) / RATE) * 0.5 * 32767), 44 + i * 2);
     writeFileSync(wav, b);
   }
   return { y4m, wav };
