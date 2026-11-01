@@ -190,15 +190,14 @@ func TestABadBindingIsRefusedGenerically(t *testing.T) {
 	enrolPasskeyWith(t, h, token, device, stepUp(t, h, token, stepUpPassword, pw))
 
 	// A password login now owes a passkey (needs 2): a live binding, used as the control below.
-	_, out := login(t, h, u.Username, pw)
-	live, _ := out[0].(string)
+	login(t, h, u.Username, pw)
 	complete := deps.Assertions.Issue(u.ID, 0)
 	passkeyOwn := deps.Assertions.Issue(u.ID, 1)
 	expired := deps.Assertions.IssuePassword(u.ID, 1)
 	advance(t, deps, 6*time.Minute)
 	// `live` expired too with the clock: mint a fresh live one after the advance.
-	_, out = login(t, h, u.Username, pw)
-	live, _ = out[0].(string)
+	_, out := login(t, h, u.Username, pw)
+	live, _ := out[0].(string)
 
 	var bodies [][]byte
 	for name, bad := range map[string]string{"unknown": "not-a-token", "expired": expired, "complete": complete, "a passkey login's": passkeyOwn} {

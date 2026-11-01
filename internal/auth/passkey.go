@@ -366,6 +366,11 @@ func (p *Passkeys) BeginLogin(ctx context.Context) (id.ID, []byte, error) {
 	return ceremonyID, options, nil
 }
 
+// ErrCeremonyGone is FinishLogin's answer when the ceremony row is absent: expired, evicted at the cap, already spent
+// or never issued. The route refuses it like any failed login but does not count it against the address (wave B task 3
+// security re-check): a person who picked a passkey after the ceremony's 120 s guessed nothing.
+var ErrCeremonyGone = errors.New("auth: the ceremony is expired, evicted or unknown")
+
 // FinishLogin uses ValidatePasskeyLogin, which hands back the resolved user as
 // well as the credential, so dillad never has to ask for a handle first. The
 // plain discoverable variant returns only the credential.
@@ -377,12 +382,8 @@ func (p *Passkeys) BeginLogin(ctx context.Context) (id.ID, []byte, error) {
 // would report UV on every later presence-only assertion.
 //
 // A ceremony with a user set is a step-up (BeginStepUp), never a login, and is refused. An
-// assertion naming a credential id or a user handle this rp_id does not hold is ErrPasskeyUnknown.
-// ErrCeremonyGone is FinishLogin's answer when the ceremony row is absent: expired, evicted at the cap, already spent
-// or never issued. The route refuses it like any failed login but does not count it against the address (wave B task 3
-// security re-check): a person who picked a passkey after the ceremony's 120 s guessed nothing.
-var ErrCeremonyGone = errors.New("auth: the ceremony is expired, evicted or unknown")
-
+// assertion naming a credential id or a user handle this rp_id does not hold is ErrPasskeyUnknown. An absent
+// ceremony row is ErrCeremonyGone.
 func (p *Passkeys) FinishLogin(ctx context.Context, ceremonyID id.ID, response []byte) (id.ID, bool, error) {
 	session, owner, err := p.takeSession(ctx, ceremonyID, ceremonyLogin)
 	if errors.Is(err, store.ErrNotFound) {

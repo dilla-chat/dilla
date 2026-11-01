@@ -168,7 +168,7 @@ const classPasskeyBegin = "passkey_begin"
 
 // classPasskeyBeginNet meters the same begins per network (IPv4 /24, IPv6 /48), so an attacker spreading begins over
 // one network's addresses meets one bucket (security review A2).
-const classPasskeyBeginNet = "passkey_begin_net"
+const classPasskeyBeginNet = "passkey_begin_net" //nolint:gosec // G101: a rate-limit class name, not a credential
 
 func secondFactorKey(addr string) string { return "2fa\x00" + addr }
 
@@ -1456,6 +1456,7 @@ func (d Deps) CallbackOIDC(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, d.storeError(r, terr))
 		return
 	}
+	//nolint:gosec // G710: the target is https://{configured domain}/ with a server-minted one-time token in the fragment; no request input reaches it
 	http.Redirect(w, r, d.oidcReturnURL(d.Assertions.Issue(userID, needs)), http.StatusFound)
 }
 
