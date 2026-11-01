@@ -1,4 +1,3 @@
-import { desktopE2E } from './support/electron.ts';
 import { expect } from '@playwright/test';
 import {
   COPY, HEX32, PEER_PASSWORD, SIGNIN, TEST_TIMEOUT, WAIT, closeSettings, copy, deviceRows, expectAccessible,
@@ -39,7 +38,7 @@ test('a second browser joins the account by password and recovery key, and the f
       return [name, sessionStorage.getItem(name)];
     }) }));
   expect(webStorage).toEqual({ local: 0, cookie: '',
-    session: desktopE2E() ? [] : [['dilla.update.tab', expect.stringMatching(/^[0-9a-f]{32}$/)]] });
+    session: [['dilla.update.tab', expect.stringMatching(/^[0-9a-f]{32}$/)]] });
 
   // The peer speaks: both browsers of the account read it.
   const fromPeer = `peer to both ${tag()}`;

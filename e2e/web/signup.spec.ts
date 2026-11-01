@@ -104,8 +104,11 @@ test('a server invite, a name and a written-down key make an account that lands 
       const name = sessionStorage.key(index)!;
       return [name, sessionStorage.getItem(name)];
     }) }));
+  // Explicit desktop reloads now use the same encrypted draft checkpoint flow.
+  // Its random tab marker is the only session-storage entry; no device key or
+  // credential may appear here on either client.
   expect(webStorage).toEqual({ local: 0, cookie: '',
-    session: desktopE2E() ? [] : [['dilla.update.tab', expect.stringMatching(/^[0-9a-f]{32}$/)]] });
+    session: [['dilla.update.tab', expect.stringMatching(/^[0-9a-f]{32}$/)]] });
   expect(await context.cookies()).toEqual([]);
 
   // The device KEK is wrapped by a non-extractable WebCrypto key (C7, L-TS-05).
