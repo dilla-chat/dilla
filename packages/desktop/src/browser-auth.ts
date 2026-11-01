@@ -8,12 +8,12 @@ export type BrowserAuthResult = { response?: string; assertion?: string; needs: 
 /** Only a fixed ceremony navigation reaches the system browser. The verifier is
  * held in main memory, expires after two minutes, and never occurs in a URL. */
 export async function browserAuth(instance: string, value: unknown, deps: {
-  open(url: string): Promise<unknown>; fetch?: typeof fetch; signal?: AbortSignal;
+  open(url: string): Promise<unknown>; fetch?: typeof fetch; signal?: AbortSignal; allowLoopback?: boolean;
 }): Promise<BrowserAuthResult> {
   const request = value as Partial<BrowserAuthRequest> | null;
   if (!request || typeof request !== 'object' || Object.keys(request).sort().join(',') !== 'kind,options'
     || !['get', 'create', 'oidc'].includes(request.kind ?? '') || typeof request.options !== 'string' || request.options.length > 65536) throw new Error('Invalid browser ceremony');
-  const base = new URL('desktop-auth/', canonicalInstance(instance));
+  const base = new URL('desktop-auth/', canonicalInstance(instance, deps.allowLoopback));
   const signal = AbortSignal.any([AbortSignal.timeout(120000), ...(deps.signal ? [deps.signal] : [])]);
   const verifier = randomBytes(32).toString('base64url');
   const transport = deps.fetch ?? fetch;

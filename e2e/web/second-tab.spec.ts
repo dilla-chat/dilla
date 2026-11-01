@@ -1,7 +1,10 @@
 import { expect } from '@playwright/test';
+import { spawn } from 'node:child_process';
+import { join } from 'node:path';
+import { desktopApplication, desktopE2E } from './support/electron.ts';
 import {
   COPY, TEST_TIMEOUT, WAIT, expectAccessible, expectShell, instanceInvite, joinCommunity, messageRow,
-  openChannel, railNav, sendText, signUp, splash, tag, test,
+  openChannel, railNav, sendText, signUp, splash, tag, test, REPO_ROOT,
 } from './support/app';
 
 test.describe.configure({ timeout: TEST_TIMEOUT });
@@ -14,6 +17,25 @@ test('a second tab waits while the first holds the device and takes over when it
   await joinCommunity(page, peer, setup);
   await openChannel(page, peer.communityName, channel);
   const browserDevice = (await peer.waitForDevices(2)).find((d) => d !== setup.device_id);
+
+  if (desktopE2E()) {
+    const application = desktopApplication(context), worker = page.workers()[0];
+    const profile = await application.evaluate(({ app }) => app.getPath('userData'));
+    const native = await application.browserWindow(page);
+    const identity = await native.evaluate(win => { win.hide(); return win.id; }); await native.dispose();
+    const child = spawn(application.process().spawnfile, [join(REPO_ROOT, 'packages/desktop'), `--profile=${profile}`, `--instance=${new URL(page.url()).origin}`, '--allow-loopback'], { stdio: 'ignore' });
+    const timer = setTimeout(() => child.kill('SIGKILL'), 15000);
+    try {
+      const code = await new Promise<number | null>((done, reject) => { child.once('error', reject); child.once('exit', done); });
+      expect(code, 'a duplicate launch hands off and exits cleanly').toBe(0);
+    } finally { clearTimeout(timer); }
+    await expect.poll(() => application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map(win => ({ id: win.id, visible: win.isVisible() })))).toEqual([{ id: identity, visible: true }]);
+    expect(context.pages()).toHaveLength(1); expect(page.workers()[0]).toBe(worker);
+    const text = `after duplicate desktop launch ${tag()}`;
+    await sendText(page, channel, text);
+    expect((await peer.waitFor(text)).sender_device).toBe(browserDevice);
+    return;
+  }
 
   const second = await context.newPage();
   await second.goto('/');

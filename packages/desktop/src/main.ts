@@ -108,11 +108,15 @@ function setWindowMode(instance: string, win: BrowserWindow, mode: WindowMode, h
 function focus(win: BrowserWindow): void { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
 
 function lockWindow(win: BrowserWindow, permits: (url: string) => boolean): void {
-  win.webContents.on('will-prevent-unload', () => {
+  win.webContents.on('will-prevent-unload', event => {
     // A last-moment draft/recovery transition still cancels an unload; never leave the quit latch set.
+    const wasQuitting = quitting;
     quitting = false;
     updater.cancelledQuit();
     for (const client of windows.values()) client.setEnabled(true);
+    if (!wasQuitting && dialog.showMessageBoxSync(win, { type: 'question', title: 'Reload Dilla?',
+      message: 'Reloading ends any active call. Unsaved changes may be lost.',
+      buttons: ['Stay', 'Reload'], defaultId: 0, cancelId: 0, noLink: true }) === 1) event.preventDefault();
   });
   win.webContents.on('will-attach-webview', event => { event.preventDefault(); });
   win.webContents.on('will-navigate', (event, url) => { if (!permits(url)) event.preventDefault(); });
@@ -311,7 +315,7 @@ ipcMain.handle('dilla:browser-auth', async (event, request: unknown, ...args: un
  win.webContents.once('did-start-navigation', cancel);
  win.webContents.once('render-process-gone', cancel);
  win.once('closed', cancel);
- try { return await browserAuth(instance, request, { open: url => shell.openExternal(url), signal: controller.signal }); }
+ try { return await browserAuth(instance, request, { open: url => shell.openExternal(url), signal: controller.signal, allowLoopback }); }
  finally {
   browserCeremonies.delete(instance);
   win.webContents.removeListener('did-start-navigation', cancel);
@@ -421,7 +425,7 @@ void waitForPreviousProcess(previousProcess).then(() => {
       const link = argv.find(value => value.startsWith('dilla://'));
       if (!shellReady) { if (link) pendingInvites.push(link); return; }
       if (link) void openInvite(link);
-      else void showManager();
+      else { const win = [...windows.values()][0]; if (win) focus(win); else void showManager(); }
     });
     app.on('before-quit', event => { if (!quitting) { event.preventDefault(); void requestQuit(); } });
     app.on('will-quit', () => { for (const instance of captures.keys()) stopAppAudio(instance); });

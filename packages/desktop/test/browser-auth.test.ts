@@ -30,3 +30,11 @@ test('browser handoff rejects malformed replies and arbitrary capability argumen
   await assert.rejects(browserAuth('https://chat.test/', { kind: 'oidc', options: '' }, { open: async () => { opened = true; }, fetch: async () => Response.json({ id: 'https://evil.test' }) }), /Invalid/);
   assert.equal(opened, false);
 });
+
+test('loopback ceremonies require the development-only authorization used by the native instance boundary', async () => {
+ const request = { kind: 'get', options: '{}' };
+ const deps = { open: async (_url: string) => {}, fetch: async (url: string | URL | Request) => Response.json(String(url).endsWith('/request') ? { id: 'A'.repeat(43) } : { response: '{}', needs: 0 }) };
+ await assert.rejects(browserAuth('http://127.0.0.1:8463/', request, deps), /HTTPS/);
+ assert.deepEqual(await browserAuth('http://127.0.0.1:8463/', request, { ...deps, allowLoopback: true }), { response: '{}', needs: 0 });
+ await assert.rejects(browserAuth('http://remote.test/', request, { ...deps, allowLoopback: true }), /HTTPS/);
+});

@@ -87,6 +87,32 @@ test('focused copy writes text to the system clipboard while clipboard reads and
  expect(await app.evaluate(({ clipboard }) => clipboard.readText())).toBe('dilla clipboard acceptance');
 });
 
+test('protected reload needs an explicit native confirmation and cancelling retains the document', async () => {
+ const page = await app.firstWindow();
+ page.on('dialog', () => {}); // Electron's native unload handler owns this decision.
+ await page.evaluate(() => {
+  (window as any).__beforeReload = true;
+  window.addEventListener('beforeunload', event => { event.preventDefault(); event.returnValue = ''; });
+ });
+ await app.evaluate(({ BrowserWindow, dialog }) => {
+  (globalThis as any).__reloadPrompts = 0;
+  dialog.showMessageBoxSync = ((_win: unknown, options: any) => {
+   if (options.title !== 'Reload Dilla?') throw new Error('Unexpected native prompt');
+   (globalThis as any).__reloadPrompts++; return 0;
+  }) as typeof dialog.showMessageBoxSync;
+  BrowserWindow.getAllWindows()[0].webContents.reload();
+ });
+ await expect.poll(() => app.evaluate(() => (globalThis as any).__reloadPrompts)).toBe(1);
+ expect(await page.evaluate(() => (window as any).__beforeReload)).toBe(true);
+ const loaded = page.waitForEvent('load');
+ await app.evaluate(({ BrowserWindow, dialog }) => {
+  dialog.showMessageBoxSync = (() => 1) as typeof dialog.showMessageBoxSync;
+  BrowserWindow.getAllWindows()[0].webContents.reload();
+ });
+ await loaded;
+ expect(await page.evaluate(() => (window as any).__beforeReload)).toBeUndefined();
+});
+
 test('rejects malicious IPC and remote document navigation and keeps storage across reload', async () => {
   const page = await app.firstWindow();
   await page.waitForURL(instance);
