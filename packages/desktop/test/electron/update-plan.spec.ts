@@ -60,7 +60,7 @@ test('installed update preparation preserves the real ASAR archive through Elect
      } finally { try { await ended; } finally { clearTimeout(fallback); } }
     }
    }
-   await rm(root, { recursive: true, force: true });
+   await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
  }
 });

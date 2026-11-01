@@ -5,6 +5,7 @@ from functools import partial
 import io
 import json
 import os
+import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -12,6 +13,7 @@ import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError, URLError
 
+sys.dont_write_bytecode = True
 path = Path(__file__).with_name("ci-watchdog.py")
 spec = importlib.util.spec_from_file_location("ci_watchdog", path)
 watchdog = importlib.util.module_from_spec(spec)
