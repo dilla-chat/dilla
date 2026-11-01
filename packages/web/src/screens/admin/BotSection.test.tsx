@@ -11,8 +11,6 @@ import { ServerSettings } from './ServerSettings.tsx';
 import { AutoModerationSettingsPanel } from './AutoModerationSettingsPanel.tsx';
 import { BotSection, type BotPageKind } from './BotSection.tsx';
 
-vi.mock('./spotify-link.ts', async importOriginal => ({ ...await importOriginal<typeof import('./spotify-link.ts')>(), authorizeSpotify: vi.fn() }));
-import { authorizeSpotify, spotifySession } from './spotify-link.ts';
 
 const SERVER = 'a1'.repeat(16);
 type Installation = { id: string; communityId: string; state: 0 | 1 | 2 | 3 | 4 | 5; revision: string;
@@ -512,36 +510,6 @@ describe('the server bot settings', () => {
     expect(screen.getByRole('switch', { name: en['serverSettings.bot.cap.welcome'] })).toBeChecked();
   });
 
-  it('requires step-up, stores only attempt context, and opens the Spotify authorization URL', async () => {
-    spotifySession.clear();
-    vi.mocked(authorizeSpotify).mockClear();
-    const { fake, user } = setupPage('music', { ...ROW, state: 3, capabilities: 1 });
-    fake.handler = command => {
-      if (command.m === 'getBotInstallation') return Promise.resolve({ ...ROW, state: 3, capabilities: 1 });
-      if (command.m === 'stepUp') return Promise.resolve({ token: 'short-lived-step-up' });
-      if (command.m === 'beginBotSpotifyAttempt') return Promise.resolve({
-        attemptId: 'dd'.repeat(16), authorizeUrl: 'https://accounts.spotify.com/authorize?state=csrf-only', expires: `${Math.floor(Date.now() / 1000) + 600}`,
-      });
-      return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
-    };
-    await waitFor(() => expect(screen.getByRole('button', { name: en['admin.bot.music.spotifyLink'] })).not.toHaveAttribute('aria-disabled', 'true'));
-    await user.type(screen.getByRole('textbox', { name: en['admin.bot.music.spotifyClientId'] }), 'client');
-    await user.click(screen.getByRole('button', { name: en['admin.bot.music.spotifyLink'] }));
-    expect(screen.getByRole('dialog', { name: en['factorSettings.stepUp.title'] })).toBeInTheDocument();
-    await user.type(screen.getByLabelText(en['factorSettings.stepUp.password']), 'local-password');
-    await user.click(screen.getByRole('button', { name: en['factorSettings.stepUp.confirm'] }));
-    await waitFor(() => expect(authorizeSpotify).toHaveBeenCalledWith('https://accounts.spotify.com/authorize?state=csrf-only'));
-    const stored = spotifySession.getItem('dilla.spotifyAttempt');
-    expect(stored).toContain(SERVER);
-    expect(stored).toContain('dd'.repeat(16));
-    expect(stored).toContain('csrf-only');
-    expect(stored).not.toContain('oauth-code');
-    expect(fake.callsOf('beginBotSpotifyAttempt')).toEqual([expect.objectContaining({ communityId: SERVER, stepUp: 'short-lived-step-up', clientId: 'client' })]);
-    expect(screen.getByRole('group', { name: en['serverSettings.music.youtube'] })).toBeInTheDocument();
-    expect(screen.getByRole('textbox', { name: en['admin.bot.music.spotifyClientId'] })).toBeInTheDocument();
-    expect(fake.calls.map(call => call.m)).toEqual(['getBotInstallation', 'refreshFactors', 'getBotSpotifyConfig',
-      'getBotCommandStatus', 'stepUp', 'beginBotSpotifyAttempt']);
-  });
 
   it('saves one approved join-role setting with a request ID and explains future-join assignment', async () => {
     const initial = { ...ROW, state: 3 as const, revision: '3' };

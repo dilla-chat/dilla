@@ -59,7 +59,7 @@ test('desktop CI refuses continuing matrix jobs or tests after the first failure
 
 
 test('compiled helper recovery tests receive the same-commit helper and cannot silently skip', () => {
-  const native = REAL_CI.split('\n  rust-native:\n')[1].split('\n  spotify-helper:\n')[0];
+  const native = REAL_CI.split('\n  rust-native:\n')[1].split('\n  rust-wasi:\n')[0];
   const unit = REAL_CI.split('\n  go:\n')[1].split('\n  go-native:\n')[0];
   const go = REAL_CI.split('\n  go-native:\n')[1]?.split('\n  go-ds:\n')[0] ?? '';
   assert.ok(go, 'native integrations need a separate bounded job instead of consuming the unit job budget');
@@ -75,6 +75,7 @@ test('compiled helper recovery tests receive the same-commit helper and cannot s
   assert.ok(run.some(line => line.includes("DILLA_BOT_HELPER_INTEGRATION: '1'")));
   assert.ok(run.some(line => line.includes("DILLA_CONTROL_E2E: '1'")));
   assert.ok(run.some(line => line.includes('DILLA_BOT_HELPER_BIN: ${{ github.workspace }}/target/release/dilla-bot-core')));
+  assert.ok(run.some(line => line.includes('./internal/bot/music/persistence')), 'encrypted queue upgrades must run against the compiled helper');
   const steps = jobSteps(go);
   const fixtureBuild = steps.findIndex(step => step.some(line => line.includes('cargo test -p dilla-core --test native_bot_group_peer_fixture --no-run --locked')));
   const integration = steps.findIndex(step => step.some(line => line.includes('go test -race ./internal/bot/native ./cmd/dillabot')));
@@ -276,13 +277,6 @@ jobs:
           name: dilla-core-wasi
           path: target/wasm32-wasip1/release/dilla_core_wasi.wasm
           if-no-files-found: error
-  spotify-helper:
-    runs-on: ubuntu-latest
-    steps:
-      - run: cargo fmt --manifest-path crates/dilla-spotify-helper/Cargo.toml -- --check
-      - run: cargo clippy --manifest-path crates/dilla-spotify-helper/Cargo.toml --all-targets --locked -- -D warnings
-      - run: cargo test --manifest-path crates/dilla-spotify-helper/Cargo.toml --locked
-      - run: cargo build --manifest-path crates/dilla-spotify-helper/Cargo.toml --release --locked
   vectors:
     runs-on: ubuntu-latest
     steps:
@@ -1607,12 +1601,6 @@ test('the real release workflow passes every rule', () => {
   assert.deepEqual(checkReleaseWorkflow(REPO_ROOT), []);
 });
 
-test('the release Spotify helper must be built for arm64', () => {
-  assertReported(
-    releaseProblems((t) => t.replace('runner: ubuntu-24.04-arm', 'runner: ubuntu-latest')),
-    'build native amd64 and arm64 assets',
-  );
-});
 
 test('a release workflow without the release job is reported', () => {
   assertReported(releaseProblems((t) => t.replace(/\n {2}release:\n[\s\S]*$/, '\n')), 'missing job "release"');

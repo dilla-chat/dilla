@@ -162,11 +162,13 @@ describe('bot application codecs', () => {
 describe('music provider status', () => {
   it('roundtrips a bounded versioned snapshot and rejects unknown enums', () => {
     const snapshot = { version: 1 as const, installationId: id(9), observedAt: 1_800_000_000n,
-      spotifyAccount: 'linked' as const, spotifyAccountReason: 'none' as const,
-      spotifyPlayback: 'configured' as const, spotifyPlaybackReason: 'none' as const,
       youtubePlayback: 'missing_requirements' as const, youtubePlaybackReason: 'dependencies_missing' as const };
     expect(decodeMusicProviderStatus(encodeMusicProviderStatus(snapshot))).toEqual(snapshot);
-    expect(() => decodeMusicProviderStatus(encode([1n, id(9), 1n, 99n, 0n, 1n, 0n, 2n, 1n]))).toThrow();
+    expect(decode(encodeMusicProviderStatus(snapshot))).toEqual([1n, id(9), 1_800_000_000n, 0n, 0n, 0n, 0n, 2n, 8n]);
+    // Older snapshots may contain values in retired slots; the active YouTube positions stay fixed.
+    expect(decodeMusicProviderStatus(encode([1n, id(9), 1_800_000_000n, 2n, 0n, 1n, 0n, 2n, 8n]))).toEqual(snapshot);
+    expect(() => decodeMusicProviderStatus(encode([1n, id(9), 1n, 0n, 0n, 0n, 0n, 2n, 1n]))).toThrow();
+    expect(() => decodeMusicProviderStatus(encode([1n, id(9), 1n, 0n, 0n, 0n, 0n, 99n, 1n]))).toThrow();
   });
 });
 

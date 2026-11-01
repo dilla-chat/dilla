@@ -228,17 +228,15 @@ esac
 FAKE
 chmod 0755 "$FAKE"
 
-# A release directory: the server, WASI and Spotify helper assets under their release names, and SHA256SUMS.
+# A release directory: the server and WASI assets under their release names, and SHA256SUMS.
 # make_release DIR [BINARY]
 make_release() {
 	mkdir -p "$1"
 	cp "${2:-$FAKE}" "$1/dillad-linux-amd64"
 	cp "${2:-$FAKE}" "$1/dillad-linux-arm64"
-	cp "${2:-$FAKE}" "$1/dilla-spotify-helper-linux-amd64"
-	cp "${2:-$FAKE}" "$1/dilla-spotify-helper-linux-arm64"
 	printf '\0asm fake core %s\n' "$1" >"$1/dilla_core_wasi.wasm"
 	cp "$INSTALL" "$1/install.sh" 2>/dev/null || : >"$1/install.sh"
-	(cd "$1" && sha256sum dillad-linux-amd64 dillad-linux-arm64 dilla-spotify-helper-linux-amd64 dilla-spotify-helper-linux-arm64 dilla_core_wasi.wasm install.sh >SHA256SUMS)
+	(cd "$1" && sha256sum dillad-linux-amd64 dillad-linux-arm64 dilla_core_wasi.wasm install.sh >SHA256SUMS)
 }
 
 REL="$TMP/release"
@@ -455,11 +453,6 @@ seed_root
 # shellcheck disable=SC2086
 KEEP_ROOT=1 run $PROXY_ARGS --public-ip 203.0.113.10 --udp-port 7999 $URL
 check_common_install "a behind-proxy install prints only the link and installs per §3"
-if cmp -s "$ROOT/usr/local/libexec/dilla-spotify-helper" "$REL/dilla-spotify-helper-linux-amd64" && [ "$(mode_of "$ROOT/usr/local/libexec/dilla-spotify-helper")" = 755 ]; then
-	pass "a release install places the checked Spotify helper at its operator-configured path"
-else
-	fail "a release install places the checked Spotify helper at its operator-configured path" "missing, incorrect or unsafe helper"
-fi
 T="$ROOT/etc/dilla/dilla.toml"
 want_toml() { # TABLE KEY WANT
 	got="$(toml_get "$T" "$1" "$2")"

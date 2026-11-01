@@ -19,7 +19,7 @@ type StartError struct {
 func (e *StartError) Error() string { return e.Stage + ": " + e.Cause.Error() }
 func (e *StartError) Unwrap() error { return e.Cause }
 func (e *StartError) ProviderFailure() bool {
-	if errors.Is(e.Cause, context.Canceled) || errors.Is(e.Cause, context.DeadlineExceeded) || errors.Is(e.Cause, ErrSpotifyBusy) {
+	if errors.Is(e.Cause, context.Canceled) || errors.Is(e.Cause, context.DeadlineExceeded) {
 		return false
 	}
 	var cause interface{ PermanentPlaybackFailure() bool }
@@ -61,9 +61,6 @@ func FailureClass(err error) string {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "deadline"
 	}
-	if errors.Is(err, ErrSpotifyBusy) {
-		return "provider_busy"
-	}
 	var apiErr *client.APIError
 	if errors.As(err, &apiErr) {
 		return fmt.Sprintf("http_%d", apiErr.Status)
@@ -79,8 +76,6 @@ func FailureClass(err error) string {
 			return "invalid"
 		case "provider_pcm":
 			return "pcm_start"
-		case "spotify_lease":
-			return "lease_unavailable"
 		case "encoder":
 			return "encoder"
 		case "call_group_join":

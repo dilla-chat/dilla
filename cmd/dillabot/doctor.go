@@ -80,13 +80,6 @@ func runDoctorCommand(args []string, stdout, stderr io.Writer) int {
 	} else {
 		checks = append(checks, botDoctorCheck{name: "native_helper", status: "OK: executable helper is available"})
 	}
-	if cfg.SpotifyHelperExecutable != "" {
-		if err := validateHelperExecutable(cfg.SpotifyHelperExecutable); err != nil {
-			checks = append(checks, botDoctorCheck{name: "spotify_pcm_helper", status: "FAIL: executable helper is unavailable or unsafe"})
-		} else {
-			checks = append(checks, botDoctorCheck{name: "spotify_pcm_helper", status: "OK: executable helper is available"})
-		}
-	}
 	if binary, readErr := readDoctorWASI(cfg.WASIModule); readErr != nil {
 		checks = append(checks, botDoctorCheck{name: "wasi_identity_module", status: "FAIL: module is unavailable or unsafe"})
 	} else {

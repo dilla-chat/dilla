@@ -17,7 +17,6 @@ import { Shell } from './screens/Shell.tsx';
 import { visibleChannel } from './screens/shell-model.ts';
 import { SignIn } from './screens/SignIn.tsx';
 import { OtherTab } from './screens/OtherTab.tsx';
-import { SpotifyCallback } from './screens/admin/SpotifyCallback.tsx';
 import { requestHandover } from './handover.ts';
 import { flushSync } from 'react-dom';
 import type { ShellUpdateDeps } from './screens/Shell.tsx';
@@ -46,21 +45,6 @@ function defaultReload(href: string): void {
 export function App(props: { fatal: UiError | null; reload?: (href: string) => void; update?: ShellUpdateDeps }): React.JSX.Element {
   const client = useCore();
   const [route, navigate] = useRoute();
-  const callbackSearch = route.name === 'spotifyCallback' ? route.search : '';
-  const spotifyCallbackSearch = useRef(callbackSearch);
-  const spotifyCallbackScrubbed = useRef(false);
-  useLayoutEffect(() => {
-    if (route.name !== 'spotifyCallback') {
-      spotifyCallbackScrubbed.current = false;
-      spotifyCallbackSearch.current = '';
-      return;
-    }
-    if (spotifyCallbackScrubbed.current) return;
-    // Capture only in this page's memory, then remove the authorization code before Boot or sign-in can be shown.
-    spotifyCallbackSearch.current = callbackSearch;
-    replaceHistoryState(window.history.state, '', window.location.pathname);
-    spotifyCallbackScrubbed.current = true;
-  }, [route.name, callbackSearch]);
   const account = useSlice('account');
   const updateSignedIn = account?.phase === 'ready';
   const [preLoginUpdate, setPreLoginUpdate] = useState(false);
@@ -242,11 +226,10 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
   // Onboarding stays mounted after the phase turns ready, until its done step calls onFinish; so does SignIn.
   const [onboarding, setOnboarding] = useState(false);
   const [signingIn, setSigningIn] = useState(false);
-  const signInForCallback = useRef(false);
   useEffect(() => {
     if (screen === 'onboarding') { setOnboarding(true); setSigningIn(false); }
-    if (screen === 'signin') { signInForCallback.current = route.name === 'spotifyCallback'; setSigningIn(true); setOnboarding(false); }
-  }, [screen, route.name]);
+    if (screen === 'signin') { setSigningIn(true); setOnboarding(false); }
+  }, [screen]);
   const finish = (result: SignupResult) => {
     setOnboarding(false);
     if (result.communityId !== null) {
@@ -261,8 +244,7 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
   };
   const finishSignIn = () => {
     setSigningIn(false);
-    if (!signInForCallback.current && route.name !== 'spotifyCallback') void navigate({ name: 'root' }, true);
-    signInForCallback.current = false;
+    void navigate({ name: 'root' }, true);
   };
   const windowMode = screen === 'shell' && !onboarding && !signingIn ? 'workspace'
     : screen === 'boot' ? 'starting' : 'authentication';
@@ -287,7 +269,7 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
     onRetry={() => takeThisTab()} onConfirm={() => takeThisTab(true)} onKeep={keepCall} />;
   else body = screenBody();
   return <>{preLoginUpdate && account?.phase !== 'ready' ? <Banner tone="info"
-    action={{ label: t('update.reloadNow'), onAction: () => props.update?.reload() }}>{t('update.beforeLogin')}</Banner> : null}{body}{pausedView}{route.name === 'spotifyCallback' ? <SpotifyCallback search={spotifyCallbackSearch.current} /> : null}</>;
+    action={{ label: t('update.reloadNow'), onAction: () => props.update?.reload() }}>{t('update.beforeLogin')}</Banner> : null}{body}{pausedView}</>;
 
   function screenBody(): ReactNode {
     if (screen === 'signin' || (signingIn && phase === 'ready')) return <SignIn onFinish={finishSignIn} />;
@@ -297,8 +279,7 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
       case 'factor': return <ForcedFactor />;
       case 'boot': return <Boot fatal={null} />;
       // Settings opens over the shell, which stays mounted and shows the route Settings was opened from (L-TS-27).
-      case 'shell': return route.name === 'spotifyCallback' ? null
-        : workspaceReady ? <Shell update={props.update} /> : <Boot fatal={null} />;
+      case 'shell': return workspaceReady ? <Shell update={props.update} /> : <Boot fatal={null} />;
     }
   }
 }

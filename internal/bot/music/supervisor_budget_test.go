@@ -34,6 +34,6 @@ func TestStartBudgetSuccessfulStartResetsConsecutiveSkips(t *testing.T) {
 		t.Fatalf("success budget = %+v", b)
 	}
 	if maxStartDuration != 45*time.Second {
-		t.Fatalf("start duration = %v, want 45s beyond Spotify's 35s connect timeout", maxStartDuration)
+		t.Fatalf("start duration = %v, want 45s bounded provider start budget", maxStartDuration)
 	}
 }

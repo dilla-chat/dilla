@@ -8,9 +8,6 @@ import (
 
 func track(id string, provider Provider) Track {
 	canonicalID := "abcdefghijk"
-	if provider == ProviderSpotify {
-		canonicalID = "spotify:track:0123456789012345678901"
-	}
 	return Track{ID: id, Provider: provider, CanonicalID: canonicalID, Title: "Title " + id, RequesterID: "member-1", DurationMS: 180_000}
 }
 
@@ -39,7 +36,7 @@ func TestPlaylistImportIsAtomicAtQueueLimit(t *testing.T) {
 	}
 
 	before := state
-	_, err := Apply(state, state.Revision, Operation{Kind: OpImportPlaylist, Tracks: []Track{track("overflow", ProviderSpotify)}})
+	_, err := Apply(state, state.Revision, Operation{Kind: OpImportPlaylist, Tracks: []Track{track("overflow", ProviderYouTube)}})
 	if !errors.Is(err, ErrQueueFull) {
 		t.Fatalf("overflow import error = %v, want ErrQueueFull", err)
 	}
@@ -63,7 +60,7 @@ func TestPlaylistImportRejectsInvalidItemWithoutPartialMutation(t *testing.T) {
 }
 
 func TestStopEndsCurrentTrackAndLeavesRemainderPaused(t *testing.T) {
-	state := apply(t, InitialState(), Operation{Kind: OpEnqueue, Tracks: []Track{track("one", ProviderYouTube), track("two", ProviderSpotify)}})
+	state := apply(t, InitialState(), Operation{Kind: OpEnqueue, Tracks: []Track{track("one", ProviderYouTube), track("two", ProviderYouTube)}})
 	state = apply(t, state, Operation{Kind: OpResume})
 	if state.Current == nil || state.Paused {
 		t.Fatal("resume did not start first queued track")
@@ -90,7 +87,7 @@ func TestRepeatCurrentAffectsNaturalCompletionButSkipAdvancesOnce(t *testing.T) 
 }
 
 func TestRepeatQueueCyclesCompletedTrackToTail(t *testing.T) {
-	state := apply(t, InitialState(), Operation{Kind: OpEnqueue, Tracks: []Track{track("one", ProviderYouTube), track("two", ProviderSpotify)}})
+	state := apply(t, InitialState(), Operation{Kind: OpEnqueue, Tracks: []Track{track("one", ProviderYouTube), track("two", ProviderYouTube)}})
 	state = apply(t, state, Operation{Kind: OpResume})
 	state = apply(t, state, Operation{Kind: OpSetRepeat, Repeat: RepeatQueue})
 	state = apply(t, state, Operation{Kind: OpComplete})
@@ -166,12 +163,9 @@ func TestCanonicalIDsMustMatchProvider(t *testing.T) {
 		provider Provider
 		id       string
 	}{
-		{"youtube rejects spotify URI", ProviderYouTube, "spotify:track:0123456789012345678901"},
+		{"youtube rejects unsupported URI", ProviderYouTube, "unsupported:track"},
 		{"youtube rejects URL", ProviderYouTube, "https://youtube.com/watch?v=abcdefghijk"},
 		{"youtube rejects path", ProviderYouTube, "/tmp/audio.ogg"},
-		{"spotify rejects youtube ID", ProviderSpotify, "abcdefghijk"},
-		{"spotify rejects URL", ProviderSpotify, "https://user:pass@open.spotify.com/track/0123456789012345678901"},
-		{"spotify rejects playlist descriptor", ProviderSpotify, "spotify:playlist:0123456789012345678901"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

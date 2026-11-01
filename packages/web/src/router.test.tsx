@@ -44,8 +44,6 @@ describe('parseRoute', () => {
     ['/settings/privacy', '', { settingsFrom: null, compareUser: 'ab'.repeat(16) }, { name: 'settings', section: 'privacy', from: null, compare: 'ab'.repeat(16) }],
     ['/settings/privacy', '', { settingsFrom: null, compareUser: 'not-hex' }, { name: 'settings', section: 'privacy', from: null }],
     ['/settings/diagnostics', '', null, { name: 'settings', section: 'diagnostics', from: null }],
-    ['/settings/bot/music/spotify/callback', '?code=one&state=two', null,
-      { name: 'spotifyCallback', search: '?code=one&state=two' }],
     ['/settings/signin', '', null, { name: 'settings', section: 'signin', from: null }],
     ['/settings/unrecognized', '', null, { name: 'settings', section: null, from: null }],
     [`/c/${C}/settings`, '', { settingsFrom: `/c/${CH}/settings/roles` }, { name: 'serverSettings', communityId: C, section: null, from: null }],
@@ -77,7 +75,6 @@ describe('routePath', () => {
     expect(routePath({ name: 'settings', section: null, from: null })).toBe('/settings');
     expect(routePath({ name: 'serverSettings', communityId: C, section: null, from: null })).toBe(`/c/${C}/settings`);
     expect(routePath({ name: 'serverSettings', communityId: C, section: 'roles', from: null })).toBe(`/c/${C}/settings/roles`);
-    expect(routePath({ name: 'spotifyCallback', search: '?code=x' })).toBe('/settings/bot/music/spotify/callback?code=x');
     expect(routeOf('/welcome?invite=a%20b%26c')).toEqual({ name: 'welcome', invite: 'a b&c', signin: null });
     expect(routeOf('/welcome?signin=race')).toEqual({ name: 'welcome', invite: null, signin: 'race' });
     expect(routeOf('/welcome?invite=a%20b%26c&signin=race')).toEqual({ name: 'welcome', invite: 'a b&c', signin: 'race' });

@@ -1,5 +1,8 @@
 # Combined security and realtime acceptance
 
+> Historical document: Spotify integration was removed from Dilla on 2026-11-01.
+> Provider setup, playback claims, and release gates below describe the earlier implementation.
+
 Implementation and independent review are complete. One PR contains the full scope; its checks are the authority for final-head CI status. No release or deployment is authorized by this report alone.
 
 ## Post-merge speaking measurement

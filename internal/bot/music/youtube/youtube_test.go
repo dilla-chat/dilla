@@ -534,7 +534,7 @@ func TestResolveRecordedReportedVideo(t *testing.T) {
 }
 
 func TestNormalizeOrdinaryProviderAndHostSearchText(t *testing.T) {
-	for _, input := range []string{"Spotify: top hits", "youtube.com rewind", "http", "https"} {
+	for _, input := range []string{"youtube.com rewind", "http", "https"} {
 		kind, canonical, err := NormalizeInput(input)
 		if err != nil || kind != "search" || canonical != "ytsearch5:"+input {
 			t.Fatalf("input=%q kind=%q canonical=%q err=%v", input, kind, canonical, err)

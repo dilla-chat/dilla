@@ -17,8 +17,7 @@ func TestMusicProviderStatusRequiresFreshViewAuditLogAndRecomputesReplay(t *test
 	calls := 0
 	h := MusicProviderStatusInteractions{Authority: authority, CommunityID: community, Snapshot: func(context.Context) MusicProviderStatusSnapshot {
 		calls++
-		return MusicProviderStatusSnapshot{InstallationID: installation, ObservedAt: observed, SpotifyAccount: ProviderAccountLinked,
-			SpotifyPlayback: ProviderConfigured, YouTubePlayback: ProviderMissingRequirements}
+		return MusicProviderStatusSnapshot{InstallationID: installation, ObservedAt: observed, YouTubePlayback: ProviderMissingRequirements}
 	}}
 	handler := h.Handlers()[protocol.OpMusicProvidersStatus]
 	request := protocol.Request{CommunityID: community, Args: []any{}}
@@ -36,6 +35,14 @@ func TestMusicProviderStatusRequiresFreshViewAuditLogAndRecomputesReplay(t *test
 	if err := cborx.Unmarshal(second.Data, &data); err != nil || len(data) != 9 || data[0] != uint64(1) || data[2] != uint64(101) {
 		t.Fatalf("provider snapshot = %#v, err=%v", data, err)
 	}
+	for slot := 3; slot <= 6; slot++ {
+		if data[slot] != uint64(0) {
+			t.Fatalf("reserved slot %d = %#v", slot, data[slot])
+		}
+	}
+	if data[7] != uint64(ProviderMissingRequirements) || data[8] != uint64(ProviderReasonNone) {
+		t.Fatalf("provider status wire positions changed: %#v", data)
+	}
 	authority.result = clientAuthorityWithBits(1 << 17) // viewAuditLog alone is insufficient.
 	denied, err := handler.Handle(context.Background(), actor, request)
 	if err != nil || denied.Status != interactionStatusForbidden || calls != 2 {
@@ -52,8 +59,7 @@ func TestMusicProviderStatusRejectsWrongSnapshotIdentityAndBoundsPayload(t *test
 	h := MusicProviderStatusInteractions{Authority: &overviewAuthorityFake{result: clientAuthorityWithBits(1 << 16), present: true}, CommunityID: community,
 		Snapshot: func(context.Context) MusicProviderStatusSnapshot {
 			return MusicProviderStatusSnapshot{InstallationID: id.New(), ObservedAt: 1,
-				SpotifyAccount: ProviderAccountUnknown, SpotifyAccountReason: ProviderReasonUnavailable, SpotifyPlayback: ProviderSetupUnknown,
-				SpotifyPlaybackReason: ProviderReasonUnavailable, YouTubePlayback: ProviderSetupUnknown, YouTubePlaybackReason: ProviderReasonUnavailable}
+				YouTubePlayback: ProviderSetupUnknown, YouTubePlaybackReason: ProviderReasonUnavailable}
 		}}
 	result, err := h.Handlers()[protocol.OpMusicProvidersStatus].Handle(context.Background(), InteractionActor{User: interactionID(6)}, protocol.Request{CommunityID: community})
 	if err != nil || result.Status != 0 || len(result.Data) > musicProviderStatusDataLimit {
@@ -72,7 +78,7 @@ func TestMusicProviderStatusDispatcherRecomputesFreshReplayAndAuthorization(t *t
 	handler := MusicProviderStatusInteractions{Authority: authority, CommunityID: community, Snapshot: func(context.Context) MusicProviderStatusSnapshot {
 		reads++
 		return MusicProviderStatusSnapshot{InstallationID: installation, ObservedAt: observed,
-			SpotifyAccount: ProviderAccountUnknown, SpotifyPlayback: ProviderSetupUnknown, YouTubePlayback: ProviderSetupUnknown}
+			YouTubePlayback: ProviderSetupUnknown}
 	}}
 	dispatcher, event, binding := interactionFixture(t, handler.Handlers())
 	body, err := protocol.EncodeRequest(protocol.Request{RequestID: interactionID(8), CommunityID: binding.Community,
@@ -116,5 +122,18 @@ func TestMusicProviderStatusDispatcherRecomputesFreshReplayAndAuthorization(t *t
 	denied, err := protocol.DecodeResponse(deniedBody)
 	if err != nil || denied.Status != interactionStatusForbidden || reads != 2 || authority.calls != 3 {
 		t.Fatalf("revoked replay response=%+v err=%v reads=%d authority=%d", denied, err, reads, authority.calls)
+	}
+}
+
+func TestMusicProviderStatusRejectsReservedReasonValues(t *testing.T) {
+	community := interactionID(2)
+	for reason := ProviderReason(1); reason < ProviderReasonDependenciesMissing; reason++ {
+		h := MusicProviderStatusInteractions{Authority: &overviewAuthorityFake{result: clientAuthorityWithBits(1 << 16), present: true}, CommunityID: community,
+			Snapshot: func(context.Context) MusicProviderStatusSnapshot {
+				return MusicProviderStatusSnapshot{InstallationID: id.New(), ObservedAt: 1, YouTubePlaybackReason: reason}
+			}}
+		if _, err := h.Handlers()[protocol.OpMusicProvidersStatus].Handle(context.Background(), InteractionActor{User: interactionID(6)}, protocol.Request{CommunityID: community}); err == nil {
+			t.Fatalf("reserved reason %d accepted", reason)
+		}
 	}
 }

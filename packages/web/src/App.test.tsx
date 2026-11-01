@@ -2,7 +2,7 @@ import { afterEach, describe, it, expect, vi } from 'vitest';
 import { StrictMode } from 'react';
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import type { DmSummary, Notice, SliceName } from '@dilla/client-core';
+import type { DmSummary, Notice } from '@dilla/client-core';
 import { CoreProvider } from './core/context.tsx';
 import { FakeClient, refusal } from './test/fake-client.ts';
 import { account } from './test/fixtures.ts';
@@ -10,7 +10,6 @@ import { browser } from './browser.ts';
 import { readJoinError, replaceHistoryState } from './router.ts';
 import { App, screenFor } from './App.tsx';
 import { requestHandover } from './handover.ts';
-import { spotifySession } from './screens/admin/spotify-link.ts';
 
 vi.mock('./handover.ts', () => ({ requestHandover: vi.fn(async () => {}) }));
 
@@ -39,64 +38,6 @@ describe('screenFor', () => {
 });
 
 describe('App', () => {
-  it('renders the Spotify callback screen on its canonical deep-link path', async () => {
-    const fake = new FakeClient();
-    fake.set('account', account());
-    const state = 'csrf-app-test';
-    spotifySession.setItem('dilla.spotifyAttempt', JSON.stringify({ communityId: '11'.repeat(16),
-      attemptId: '22'.repeat(16), state, expires: `${Math.floor(Date.now() / 1000) + 600}`,
-      instanceId: account().instance!.id, userId: account().user!.id, deviceId: account().deviceId }));
-    replaceHistoryState(null, '', `/settings/bot/music/spotify/callback?code=oauth-code&state=${state}`);
-    render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
-    await waitFor(() => expect(window.location.pathname).toBe(`/c/${'11'.repeat(16)}/settings/music`));
-    expect(screen.queryByText('Linked')).not.toBeInTheDocument();
-    expect(fake.callsOf('callbackBotSpotifyAttempt')).toHaveLength(1);
-  });
-
-  it('scrubs the callback code before sign-in, retains it in memory, and delivers after sign-in finishes', async () => {
-    const fake = new FakeClient();
-    const signedIn = account();
-    fake.set('communities', [{ id: '11'.repeat(16), name: 'Midgard', owner: 'ee'.repeat(16) }]);
-    const communityId = '11'.repeat(16);
-    fake.set(`channels:${communityId}` as SliceName, []);
-    fake.set(`permissions:${communityId}` as SliceName, { top: 0, owner: false, manageCommunity: true, manageChannels: false,
-      kickMembers: false, banMembers: false, createInvite: false, manageRoles: false, loaded: true, overwritesLoaded: true,
-      everyoneId: 'ab'.repeat(16) });
-    fake.set('account', account({ phase: 'signin-login', signIn: { username: null, factor: null } }));
-    fake.handler = command => {
-      if (command.m === 'signInLogin') {
-        fake.set('account', { ...fake.get('account')!, phase: 'signin-key', signIn: { username: command.username, factor: null } });
-        return Promise.resolve({ needs: 0 });
-      }
-      if (command.m === 'signInKey') {
-        fake.set('account', { ...signedIn, phase: 'ready' });
-        return Promise.resolve(null);
-      }
-      if (command.m === 'callbackBotSpotifyAttempt') return Promise.resolve(null);
-      return Promise.resolve(null);
-    };
-    const state = 'csrf-signin-test';
-    spotifySession.setItem('dilla.spotifyAttempt', JSON.stringify({ communityId: '11'.repeat(16),
-      attemptId: '22'.repeat(16), state, expires: `${Math.floor(Date.now() / 1000) + 600}`,
-      instanceId: signedIn.instance!.id, userId: signedIn.user!.id, deviceId: signedIn.deviceId }));
-    replaceHistoryState(null, '', `/settings/bot/music/spotify/callback?code=oauth-code&state=${state}`);
-    const user = userEvent.setup();
-    render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
-    expect(window.location.search).toBe('');
-    expect(screen.getByText('Sign in to dilla.test')).toBeInTheDocument();
-    await user.type(screen.getByRole('textbox', { name: 'Username' }), 'ada');
-    await user.type(screen.getByLabelText('Password'), 'correct horse');
-    await user.click(screen.getByRole('button', { name: 'Continue' }));
-    await user.click(screen.getByRole('textbox', { name: 'Recovery key' }));
-    await user.paste('7K2M-QX9D-H4TB-R8NW-C3VF-J6PZ-A1GE-Y5KS-M0QT-B7XH-W2DN-F9RC-P4ZA');
-    await user.click(screen.getByRole('button', { name: 'Add this browser' }));
-    await user.click(screen.getByRole('button', { name: 'Open dilla' }));
-    await waitFor(() => expect(window.location.pathname).toBe(`/c/${'11'.repeat(16)}/settings/music`));
-    expect(screen.queryByText('Linked')).not.toBeInTheDocument();
-    expect(window.location.pathname).toBe(`/c/${'11'.repeat(16)}/settings/music`);
-    expect(fake.callsOf('callbackBotSpotifyAttempt')).toHaveLength(1);
-  });
-
   it('keeps waiting for release, then offers retry when hand-over is refused', async () => {
     let fail!: (error: Error) => void;
     vi.mocked(requestHandover).mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject; }));

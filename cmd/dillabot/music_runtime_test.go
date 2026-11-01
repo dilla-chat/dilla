@@ -12,7 +12,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -24,46 +23,17 @@ import (
 	"github.com/jonasthim/dilla/internal/bot/music/livekit"
 	"github.com/jonasthim/dilla/internal/bot/music/persistence"
 	"github.com/jonasthim/dilla/internal/bot/music/session"
-	"github.com/jonasthim/dilla/internal/bot/music/spotify"
 	"github.com/jonasthim/dilla/internal/bot/music/youtube"
 	"github.com/jonasthim/dilla/internal/bot/native"
-	"github.com/jonasthim/dilla/internal/bot/spotifyauth"
 	botstrings "github.com/jonasthim/dilla/internal/bot/strings"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
 )
 
-type spotifyCredentialsFake struct {
-	token spotifyauth.Token
-	err   error
-}
+type runtimeRoundTripper func(*http.Request) (*http.Response, error)
 
-func (f spotifyCredentialsFake) Load(context.Context) (spotifyauth.Token, error) {
-	return f.token, f.err
-}
-
-type spotifyCatalogRoundTripper func(*http.Request) (*http.Response, error)
-
-func (f spotifyCatalogRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+func (f runtimeRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
 	return f(request)
-}
-
-func TestInstallationSpotifyCatalogResolverUsesCredentialAndActor(t *testing.T) {
-	requester := id.New()
-	client := &http.Client{Transport: spotifyCatalogRoundTripper(func(request *http.Request) (*http.Response, error) {
-		if request.URL.String() != "https://api.spotify.com/v1/tracks/0123456789012345678901" || request.Header.Get("Authorization") != "Bearer installation-access-token" {
-			t.Fatalf("Spotify request URL=%q authorization=%q", request.URL, request.Header.Get("Authorization"))
-		}
-		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"id":"0123456789012345678901","type":"track","name":"Song","uri":"spotify:track:0123456789012345678901","duration_ms":123000,"artists":[{"name":"Artist"}],"album":{"name":"Record"}}`))}, nil
-	})}
-	resolver := installationSpotifyCatalogResolver{
-		credentials: spotifyCredentialsFake{token: spotifyauth.Token{AccessToken: "installation-access-token"}},
-		catalog:     spotify.NewCatalog(client),
-	}
-	tracks, err := resolver.ResolveSpotify(context.Background(), "spotify:track:0123456789012345678901", requester)
-	if err != nil || len(tracks) != 1 || tracks[0].Provider != music.ProviderSpotify || tracks[0].RequesterID != requester.String() || tracks[0].Title != "Song" {
-		t.Fatalf("resolved tracks=%+v err=%v, want one authenticated Spotify track attributed to actor", tracks, err)
-	}
 }
 
 type runtimeCalls struct {
@@ -83,7 +53,7 @@ func (c *runtimeCalls) StartCall(_ context.Context, channel id.ID) (client.Call,
 	return c.call, c.err
 }
 
-func TestYouTubeQueueStarterDoesNotSubstituteForSpotify(t *testing.T) {
+func TestYouTubeQueueStarterRejectsUnsupportedProvider(t *testing.T) {
 	community, channel := id.New(), id.New()
 	calls := &runtimeCalls{call: client.Call{CallID: channel, GroupID: id.New(), LiveKitURL: "wss://media.example", Token: "token"}}
 	starter, err := newMusicQueueStarter(musicRuntimeDeps{Community: community, Channel: channel, Calls: calls,
@@ -91,9 +61,9 @@ func TestYouTubeQueueStarterDoesNotSubstituteForSpotify(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = starter.OptionsFor(context.Background(), music.Track{Provider: music.ProviderSpotify, CanonicalID: "spotify:track:123"})
+	_, err = starter.OptionsFor(context.Background(), music.Track{Provider: music.Provider("unsupported"), CanonicalID: "unsupported:track"})
 	if err == nil || calls.starts != 0 {
-		t.Fatalf("Spotify fell through to YouTube runtime: error=%v calls=%d", err, calls.starts)
+		t.Fatalf("Unsupported provider fell through to YouTube runtime: error=%v calls=%d", err, calls.starts)
 	}
 }
 
@@ -191,14 +161,17 @@ func (n *runtimeStateNative) StateGet(_ context.Context, _ uint64, key []byte) (
 func (n *runtimeStateNative) StateTransaction(_ context.Context, _ id.ID, changes []native.StateChange) ([]uint64, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	c := changes[0]
-	old := n.rows[string(c.Key)]
-	if old.Revision != c.ExpectedRevision {
-		return nil, persistence.ErrConflict
+	for _, c := range changes {
+		if n.rows[string(c.Key)].Revision != c.ExpectedRevision {
+			return nil, persistence.ErrConflict
+		}
 	}
-	revision := old.Revision + 1
-	n.rows[string(c.Key)] = native.StateValue{Revision: revision, Value: append([]byte(nil), c.Value...)}
-	return []uint64{revision}, nil
+	revisions := make([]uint64, len(changes))
+	for i, c := range changes {
+		revisions[i] = c.ExpectedRevision + 1
+		n.rows[string(c.Key)] = native.StateValue{Revision: revisions[i], Value: append([]byte(nil), c.Value...)}
+	}
+	return revisions, nil
 }
 
 func TestMusicSnapshotBridgeRejectsStaleAndMissingSessions(t *testing.T) {
@@ -433,27 +406,14 @@ func TestMusicLiveResumeStartsOnlyItsRoomAfterPausedRestart(t *testing.T) {
 	}
 }
 
-func testLeaseManager(t *testing.T) *music.SpotifyLeaseManager {
-	t.Helper()
-	dir := t.TempDir()
-	if err := os.Chmod(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	manager, err := music.NewSpotifyLeaseManager(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return manager
-}
-
 func TestNewMusicQueueStarterResolvesTrackToRoomCallAndProvider(t *testing.T) {
 	channel, community, group := id.New(), id.New(), id.New()
 	calls := &runtimeCalls{call: client.Call{CallID: channel, GroupID: group, LiveKitURL: "wss://relay.example", Token: "call-token"}}
 	youtubePCM := runtimePCM{}
 	starter, err := newMusicQueueStarter(musicRuntimeDeps{
-		Community: community, Calls: calls, SpotifyPCM: runtimePCM{}, YouTubePCM: youtubePCM,
+		Community: community, Calls: calls, YouTubePCM: youtubePCM,
 		Encoder: runtimeEncoder{}, Publisher: runtimePublisher{}, Epochs: runtimeEpochs{},
-		Channel: channel, LeaseManager: testLeaseManager(t), Lifetime: time.Minute,
+		Channel: channel, Lifetime: time.Minute,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -528,29 +488,6 @@ func TestMusicQueueStarterJoinsCallGroupBeforeMintingCallCredentials(t *testing.
 	}
 }
 
-func TestMusicQueueStarterAttachesGlobalLeaseOnlyToSpotifyUse(t *testing.T) {
-	channel, community, group := id.New(), id.New(), id.New()
-	calls := &runtimeCalls{call: client.Call{CallID: channel, GroupID: group, LiveKitURL: "wss://relay.example", Token: "call-token"}}
-	starter, err := newMusicQueueStarter(musicRuntimeDeps{Community: community, Channel: channel, Calls: calls, SpotifyPCM: runtimePCM{}, YouTubePCM: runtimePCM{}, LeaseManager: testLeaseManager(t), Encoder: runtimeEncoder{}, Epochs: runtimeEpochs{}, Lifetime: time.Minute})
-	if err != nil {
-		t.Fatal(err)
-	}
-	spotifyOptions, err := starter.OptionsFor(context.Background(), music.Track{Provider: music.ProviderSpotify, CanonicalID: "spotify:track:1234567890123456789012"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if spotifyOptions.Acquire == nil {
-		t.Fatal("Spotify options must use the installation-wide lease")
-	}
-	youtubeOptions, err := starter.OptionsFor(context.Background(), music.Track{Provider: music.ProviderYouTube, CanonicalID: "https://www.youtube.com/watch?v=abcdefghijk"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if youtubeOptions.Acquire != nil {
-		t.Fatal("YouTube options must not acquire the Spotify lease")
-	}
-}
-
 func TestNewMusicQueueStarterRejectsMissingProviderConfiguration(t *testing.T) {
 	_, err := newMusicQueueStarter(musicRuntimeDeps{})
 	if err == nil {
@@ -568,9 +505,9 @@ func TestMusicQueueStarterIsolatesUnavailableProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("YouTube-only configuration rejected: %v", err)
 	}
-	_, err = starter.OptionsFor(context.Background(), music.Track{Provider: music.ProviderSpotify, CanonicalID: "spotify:track:1234567890123456789012"})
+	_, err = starter.OptionsFor(context.Background(), music.Track{Provider: music.Provider("unsupported"), CanonicalID: "unsupported:track"})
 	if err == nil {
-		t.Fatal("Spotify request succeeded without a Spotify PCM provider")
+		t.Fatal("Unsupported provider request succeeded")
 	}
 	if calls.channel != (id.ID{}) {
 		t.Fatal("unavailable provider triggered a call before failing closed")
@@ -651,8 +588,8 @@ func TestInstallationYouTubeStarterUsesScopedCallAndNativeMediaDependencies(t *t
 	if !ok || encoder.Config.Options.FFmpegPath != "ffmpeg" {
 		t.Fatalf("encoder = %#v", options.Encoder)
 	}
-	if _, ok := options.Publisher.(session.RetainedLiveKitPublisher); !ok || options.Epochs != epochs || options.Acquire != nil {
-		t.Fatalf("publisher/epoch/lease dependencies = %#v", options)
+	if _, ok := options.Publisher.(session.RetainedLiveKitPublisher); !ok || options.Epochs != epochs {
+		t.Fatalf("publisher/epoch dependencies = %#v", options)
 	}
 
 	badEpochs := &runtimeBoundEpochSource{binding: native.Binding{Instance: instance, Community: community, Installation: id.New()}}
@@ -681,7 +618,7 @@ func TestInstallationYouTubeStarterUsesScopedCallAndNativeMediaDependencies(t *t
 
 func TestMusicQueueStarterRejectsCallForDifferentChannel(t *testing.T) {
 	calls := &runtimeCalls{call: client.Call{CallID: id.New(), GroupID: id.New(), LiveKitURL: "wss://relay.example", Token: "token"}}
-	starter, err := newMusicQueueStarter(musicRuntimeDeps{Community: id.New(), Channel: id.New(), Calls: calls, SpotifyPCM: runtimePCM{}, YouTubePCM: runtimePCM{}, LeaseManager: testLeaseManager(t), Encoder: runtimeEncoder{}, Publisher: runtimePublisher{}, Epochs: runtimeEpochs{}, Lifetime: time.Minute})
+	starter, err := newMusicQueueStarter(musicRuntimeDeps{Community: id.New(), Channel: id.New(), Calls: calls, YouTubePCM: runtimePCM{}, Encoder: runtimeEncoder{}, Publisher: runtimePublisher{}, Epochs: runtimeEpochs{}, Lifetime: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1094,28 +1031,34 @@ func TestMusicSupervisorAutoAdvanceDoesNotInheritCooperativeStop(t *testing.T) {
 	}
 }
 
+type selectiveRuntimePCM struct{}
+
+func (selectiveRuntimePCM) Start(ctx context.Context, input string) (io.ReadCloser, error) {
+	if strings.Contains(input, "bbcdefghijk") {
+		return nil, youtube.ErrInvalidInput
+	}
+	return (liveRuntimePCM{}).Start(ctx, input)
+}
+
 type failingRuntimePCM struct{ err error }
 
 func (p failingRuntimePCM) Start(context.Context, string) (io.ReadCloser, error) { return nil, p.err }
 
 func TestMusicQueueStarterProviderFailsBeforeJoin(t *testing.T) {
-	for _, provider := range []music.Provider{music.ProviderSpotify, music.ProviderYouTube} {
+	for _, provider := range []music.Provider{music.ProviderYouTube} {
 		t.Run(string(provider), func(t *testing.T) {
 			community, channel := id.New(), id.New()
 			calls := &runtimeCalls{call: client.Call{CallID: channel, GroupID: id.New(), LiveKitURL: "wss://media.example", Token: "secret"}}
 			joins := 0
-			failure := spotify.ErrPlaybackFailed
+			failure := youtube.ErrExtractFailed
 			starter, err := newMusicQueueStarter(musicRuntimeDeps{Community: community, Channel: channel, Calls: calls,
 				JoinCallGroup: func(context.Context) error { joins++; return nil },
-				SpotifyPCM:    failingRuntimePCM{failure}, YouTubePCM: failingRuntimePCM{failure}, LeaseManager: testLeaseManager(t),
-				Encoder: liveRuntimeEncoderStarter{}, Publisher: runtimePublisher{}, Epochs: runtimeEpochs{}, Lifetime: time.Minute})
+				YouTubePCM:    failingRuntimePCM{failure},
+				Encoder:       liveRuntimeEncoderStarter{}, Publisher: runtimePublisher{}, Epochs: runtimeEpochs{}, Lifetime: time.Minute})
 			if err != nil {
 				t.Fatal(err)
 			}
-			canonical := "spotify:track:0123456789012345678901"
-			if provider == music.ProviderYouTube {
-				canonical = "abcdefghijk"
-			}
+			canonical := "abcdefghijk"
 			_, err = starter.StartExplicit(context.Background(), music.Track{Provider: provider, CanonicalID: canonical})
 			if !errors.Is(err, failure) {
 				t.Fatalf("start = %v", err)
@@ -1139,8 +1082,7 @@ func TestMusicResumeSkipsBrokenProviderHead(t *testing.T) {
 			calls := &runtimeCalls{call: client.Call{CallID: channel, GroupID: id.New(), LiveKitURL: "wss://media.example", Token: "secret"}}
 			joins, lines := 0, 0
 			starter, err := newMusicQueueStarter(musicRuntimeDeps{Community: community, Channel: channel, Calls: calls,
-				JoinCallGroup: func(context.Context) error { joins++; return nil }, SpotifyPCM: failingRuntimePCM{fmt.Errorf("%w: playback/provider_unavailable", spotify.ErrPlaybackFailed)},
-				YouTubePCM: liveRuntimePCM{}, LeaseManager: testLeaseManager(t), Encoder: liveRuntimeEncoderStarter{},
+				JoinCallGroup: func(context.Context) error { joins++; return nil }, YouTubePCM: selectiveRuntimePCM{}, Encoder: liveRuntimeEncoderStarter{},
 				Publisher: &liveRuntimePublisherStarter{starts: map[id.ID]int{}}, Epochs: runtimeEpochs{}, Lifetime: time.Minute})
 			if err != nil {
 				t.Fatal(err)
@@ -1151,7 +1093,7 @@ func TestMusicResumeSkipsBrokenProviderHead(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer supervisor.Close()
-			tracks := []music.Track{{ID: "broken", Provider: music.ProviderSpotify, CanonicalID: "spotify:track:0123456789012345678901", Title: "Broken", RequesterID: "member"}, {ID: "working", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "Working", RequesterID: "member"}}
+			tracks := []music.Track{{ID: "broken", Provider: music.ProviderYouTube, CanonicalID: "bbcdefghijk", Title: "Broken", RequesterID: "member"}, {ID: "working", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "Working", RequesterID: "member"}}
 			state, err := music.Apply(music.InitialState(), 0, music.Operation{Kind: music.OpEnqueue, Tracks: tracks})
 			if err != nil {
 				t.Fatal(err)
@@ -1190,24 +1132,17 @@ func TestMusicResumeSkipsBrokenProviderHead(t *testing.T) {
 }
 
 func TestMusicStartStagesFailOnce(t *testing.T) {
-	for _, stage := range []string{"provider_check", "spotify_lease", "provider_pcm", "encoder", "call_group_join", "call_token", "call_fields"} {
+	for _, stage := range []string{"provider_check", "provider_pcm", "encoder", "call_group_join", "call_token", "call_fields"} {
 		t.Run(stage, func(t *testing.T) {
 			channel, community := id.New(), id.New()
 			failure := errors.New("sensitive provider URL https://private.example/token")
 			calls := &runtimeCalls{call: client.Call{CallID: channel, GroupID: id.New(), LiveKitURL: "wss://media.example", Token: "secret-token"}}
-			leases := testLeaseManager(t)
-			deps := musicRuntimeDeps{Community: community, Channel: channel, Calls: calls, SpotifyPCM: liveRuntimePCM{}, YouTubePCM: liveRuntimePCM{}, LeaseManager: leases, Encoder: liveRuntimeEncoderStarter{}, Publisher: runtimePublisher{}, Epochs: runtimeEpochs{}, Lifetime: time.Minute}
+			deps := musicRuntimeDeps{Community: community, Channel: channel, Calls: calls, YouTubePCM: liveRuntimePCM{}, Encoder: liveRuntimeEncoderStarter{}, Publisher: runtimePublisher{}, Epochs: runtimeEpochs{}, Lifetime: time.Minute}
 			switch stage {
 			case "provider_check":
-				deps.SpotifyPCM = nil
-			case "spotify_lease":
-				lease, err := leases.Acquire(community, channel)
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer lease.Release()
+				deps.YouTubePCM = nil
 			case "provider_pcm":
-				deps.SpotifyPCM = failingRuntimePCM{failure}
+				deps.YouTubePCM = failingRuntimePCM{failure}
 			case "encoder":
 				deps.Encoder = runtimeEncoder{}
 			case "call_group_join":
@@ -1223,7 +1158,7 @@ func TestMusicStartStagesFailOnce(t *testing.T) {
 			}
 			var output bytes.Buffer
 			starter.Logger = slog.New(slog.NewJSONHandler(&output, nil)).With("installation_id", id.New().String(), "device_id", id.New().String(), "channel_id", channel.String())
-			_, err = starter.StartExplicit(context.Background(), music.Track{Provider: music.ProviderSpotify, CanonicalID: "spotify:track:0123456789012345678901"})
+			_, err = starter.StartExplicit(context.Background(), music.Track{Provider: music.ProviderYouTube, CanonicalID: "bbcdefghijk"})
 			if err == nil {
 				t.Fatal("failure accepted")
 			}
@@ -1265,7 +1200,7 @@ func TestMusicResumeCapsBrokenTracksWithoutRepeating(t *testing.T) {
 				t.Fatal(err)
 			}
 			calls := &runtimeCalls{}
-			starter, err := newMusicQueueStarter(musicRuntimeDeps{Community: community, Channel: channel, Calls: calls, SpotifyPCM: failingRuntimePCM{fmt.Errorf("%w: playback/provider_unavailable", spotify.ErrPlaybackFailed)}, LeaseManager: testLeaseManager(t), Encoder: liveRuntimeEncoderStarter{}, Publisher: runtimePublisher{}, Epochs: runtimeEpochs{}, Lifetime: time.Minute})
+			starter, err := newMusicQueueStarter(musicRuntimeDeps{Community: community, Channel: channel, Calls: calls, YouTubePCM: failingRuntimePCM{youtube.ErrInvalidInput}, Encoder: liveRuntimeEncoderStarter{}, Publisher: runtimePublisher{}, Epochs: runtimeEpochs{}, Lifetime: time.Minute})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1282,7 +1217,7 @@ func TestMusicResumeCapsBrokenTracksWithoutRepeating(t *testing.T) {
 			defer supervisor.Close()
 			tracks := []music.Track{}
 			for _, name := range []string{"one", "two", "three"} {
-				tracks = append(tracks, music.Track{ID: name, Provider: music.ProviderSpotify, CanonicalID: "spotify:track:0123456789012345678901", Title: name, RequesterID: "member"})
+				tracks = append(tracks, music.Track{ID: name, Provider: music.ProviderYouTube, CanonicalID: "bbcdefghijk", Title: name, RequesterID: "member"})
 			}
 			state, err := supervisor.Apply(context.Background(), 0, music.Operation{Kind: music.OpEnqueue, Tracks: tracks})
 			if err != nil {
@@ -1332,5 +1267,158 @@ func TestMusicNoticeHolderIsSharedAcrossDisableAndReenable(t *testing.T) {
 	}
 	if registry.SkipNotices(installation) != first {
 		t.Fatal("re-enable replaced the shared holder")
+	}
+}
+
+func TestRestoreMusicQueuesIsolatesAndRecoversUnsupportedLegacyChannel(t *testing.T) {
+	for _, conflict := range []bool{false, true} {
+		for _, legacyFirst := range []bool{false, true} {
+			t.Run(fmt.Sprintf("conflict=%v legacyFirst=%v", conflict, legacyFirst), func(t *testing.T) {
+				community, healthy, legacy := id.New(), id.New(), id.New()
+				n := &runtimeStateNative{binding: native.Binding{Instance: id.New(), Community: community, Installation: id.New()}, rows: map[string]native.StateValue{}}
+				stateStore, err := persistence.New(n, community)
+				if err != nil {
+					t.Fatal(err)
+				}
+				queued, err := music.Apply(music.InitialState(), 0, music.Operation{Kind: music.OpEnqueue, Tracks: []music.Track{{ID: "healthy", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "Healthy", RequesterID: "member"}}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := stateStore.Save(t.Context(), healthy, 0, queued); err != nil {
+					t.Fatal(err)
+				}
+				healthyKey := "dilla.bot.music.v1/" + community.String() + "/" + healthy.String()
+				healthyOriginal := append([]byte(nil), n.rows[healthyKey].Value...)
+				old := queued
+				old.Queue = append([]music.Track{{ID: "retired", Provider: music.Provider("spotify"), CanonicalID: "spotify:track:0123456789012345678901", Title: "Retired", RequesterID: "member"}}, old.Queue...)
+				body, err := json.Marshal(old)
+				if err != nil {
+					t.Fatal(err)
+				}
+				original, err := cborx.Marshal([]any{uint64(1), body})
+				if err != nil {
+					t.Fatal(err)
+				}
+				legacyKey := "dilla.bot.music.v1/" + community.String() + "/" + legacy.String()
+				archiveKey := "dilla.bot.music.quarantine.v1/" + community.String() + "/" + legacy.String() + "/1"
+				n.rows[legacyKey] = native.StateValue{Revision: 1, Value: original}
+				if conflict {
+					n.rows[archiveKey] = native.StateValue{Revision: 1, Value: []byte{0x81, 0x01}}
+				}
+				channels := []client.Channel{{ID: healthy, CommunityID: community, Kind: musicVoiceChannelKind}, {ID: legacy, CommunityID: community, Kind: musicVoiceChannelKind}}
+				if legacyFirst {
+					channels[0], channels[1] = channels[1], channels[0]
+				}
+				starts := 0
+				closes := map[id.ID]int{}
+				queues, err := restoreMusicSupervisorsWithStarterFactory(t.Context(), community, channels, stateStore, func(channel id.ID) (session.QueueStarter, error) {
+					return session.QueueStarter{OptionsFor: func(context.Context, music.Track) (session.Options, error) {
+						starts++
+						return session.Options{}, session.ErrInvalid
+					}, CloseConnection: func() error { closes[channel]++; return nil }}, nil
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer queues.Close()
+				if queues.supervisors[healthy] == nil || starts != 0 || closes[healthy] != 0 || !bytes.Equal(n.rows[healthyKey].Value, healthyOriginal) || n.rows[healthyKey].Revision != 1 {
+					t.Fatal("legacy channel interrupted healthy paused restoration")
+				}
+				if _, err := queues.supervisors[healthy].Apply(t.Context(), 1, music.Operation{Kind: music.OpSetVolume, Volume: 50}); err != nil {
+					t.Fatalf("healthy channel unavailable: %v", err)
+				}
+				if conflict {
+					if queues.supervisors[legacy] != nil || closes[legacy] != 1 || !bytes.Equal(n.rows[legacyKey].Value, original) || n.rows[legacyKey].Revision != 1 {
+						t.Fatal("failed quarantine changed legacy data or kept its resources")
+					}
+				} else {
+					if queues.supervisors[legacy] == nil || !bytes.Equal(n.rows[archiveKey].Value, original) {
+						t.Fatal("legacy row was not recovered and preserved")
+					}
+					recovered := queues.supervisors[legacy].State()
+					if !recovered.Paused || recovered.Revision != 2 || len(recovered.Queue) != 1 || recovered.Queue[0].Provider != music.ProviderYouTube {
+						t.Fatalf("legacy remainder=%+v", recovered)
+					}
+					if _, err := queues.supervisors[legacy].Apply(t.Context(), recovered.Revision, music.Operation{Kind: music.OpClear}); err != nil {
+						t.Fatalf("recovered channel cannot be cleared: %v", err)
+					}
+					if !bytes.Equal(n.rows[archiveKey].Value, original) {
+						t.Fatal("clearing recovered channel changed archived original")
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestRegistryReconcileRepeatedUnsupportedChannelKeepsHealthyRuntime(t *testing.T) {
+	community, installation, healthy, legacy, newHealthy := id.New(), id.New(), id.New(), id.New(), id.New()
+	n := &runtimeStateNative{binding: native.Binding{Instance: id.New(), Community: community, Installation: installation}, rows: map[string]native.StateValue{}}
+	stateStore, err := persistence.New(n, community)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := music.Apply(music.InitialState(), 0, music.Operation{Kind: music.OpEnqueue, Tracks: []music.Track{{ID: "healthy", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "Healthy", RequesterID: "member"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stateStore.Save(t.Context(), healthy, 0, state); err != nil {
+		t.Fatal(err)
+	}
+	healthyKey := "dilla.bot.music.v1/" + community.String() + "/" + healthy.String()
+	healthyOriginal := append([]byte(nil), n.rows[healthyKey].Value...)
+	state.Queue[0].Provider = music.Provider("retired")
+	body, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original, err := cborx.Marshal([]any{uint64(1), body})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyKey := "dilla.bot.music.v1/" + community.String() + "/" + legacy.String()
+	archiveKey := "dilla.bot.music.quarantine.v1/" + community.String() + "/" + legacy.String() + "/1"
+	n.rows[legacyKey] = native.StateValue{Revision: 1, Value: original}
+	n.rows[archiveKey] = native.StateValue{Revision: 1, Value: []byte{0x81, 0x01}}
+	channels := []client.Channel{{ID: healthy, CommunityID: community, Kind: musicVoiceChannelKind}, {ID: legacy, CommunityID: community, Kind: musicVoiceChannelKind}}
+	closes := map[id.ID]int{}
+	starterFor := func(channel id.ID) (session.QueueStarter, error) {
+		starter := unavailableMusicQueueStarter()
+		starter.CloseConnection = func() error { closes[channel]++; return nil }
+		return starter, nil
+	}
+	registry := newMusicQueueRegistry()
+	defer registry.Close()
+	var first *music.Supervisor
+	for pass := 0; pass < 4; pass++ {
+		if pass == 1 {
+			channels = append(channels, client.Channel{ID: newHealthy, CommunityID: community, Kind: musicVoiceChannelKind})
+		}
+		owned, err := registry.ReconcileWithStarterFactory(t.Context(), installation, community, botMusicCapability, channels, n, starterFor)
+		if err != nil || owned != (pass == 0) {
+			t.Fatalf("pass %d ownership=%v error=%v", pass, owned, err)
+		}
+		current := registry.runtimes[installation].queues.supervisors[healthy]
+		if pass == 0 {
+			first = current
+		}
+		if first == nil || current != first || n.closed || registry.Native(installation, community) != n || closes[healthy] != 0 {
+			t.Fatalf("pass %d disrupted healthy runtime", pass)
+		}
+		if _, ok := registry.QueueStore(installation, community); !ok {
+			t.Fatalf("pass %d removed live queue store", pass)
+		}
+		if pass > 0 && registry.runtimes[installation].queues.supervisors[newHealthy] == nil {
+			t.Fatal("quarantined channel prevented adding a healthy channel")
+		}
+		if !bytes.Equal(n.rows[healthyKey].Value, healthyOriginal) || n.rows[healthyKey].Revision != 1 || !bytes.Equal(n.rows[legacyKey].Value, original) || n.rows[legacyKey].Revision != 1 {
+			t.Fatalf("pass %d rewrote unchanged queues", pass)
+		}
+	}
+	if closes[legacy] != 4 {
+		t.Fatalf("failed channel's resources were not released each pass: %d", closes[legacy])
+	}
+	if _, err := first.Apply(t.Context(), first.State().Revision, music.Operation{Kind: music.OpSetVolume, Volume: 75}); err != nil {
+		t.Fatalf("healthy supervisor was not usable after repeated reconciliation: %v", err)
 	}
 }

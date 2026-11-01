@@ -8,6 +8,28 @@ the updated client reopens community voice during the upgrade window. This page 
 script (`deploy/install.sh`, the one supported install: a native systemd install), the systemd units it
 writes, and the Proxmox LXC helper. There is no container image.
 
+### Retired music provider settings and queues
+
+Spotify integration has been removed. Older generated server configurations can
+still contain a `[bot_spotify]` table with `client_id` and `redirect_url`. Older Bot
+files can contain `spotify_client_id`, `spotify_redirect_url`, and
+`spotify_helper_executable`. The loaders accept and discard those retired settings
+without rewriting the files; unrelated unknown fields remain errors. Newly written
+configuration omits the retired settings.
+
+When a stored music queue contains an unsupported provider, the Bot archives the
+exact original snapshot in its encrypted private state and replaces the active
+queue in the same atomic transaction. Valid YouTube items remain available and
+paused. An unsupported current item is removed from the active state and its
+playhead resets. Ordinary queue edits and Clear work after recovery; the original
+archive remains private and encrypted, including after an active queue is cleared.
+
+If the archive transaction cannot commit, the original queue remains untouched.
+The affected channel stays unavailable while healthy channels continue operating.
+After resolving storage or transaction errors, restart the Bot to retry recovery.
+Recovery logs identify the channel and error class without track contents or
+credentials.
+
 ### Open tabs during an upgrade
 
 Music player (task 8b): upgrade `dillad` with its web client first and reload open tabs, then `dillabot`. An older
@@ -391,10 +413,9 @@ Exit status 78 means `dilla.toml` is wrong; the unit does not restart on it
 
 `deploy/install.sh` does everything in this section on a Debian 13 machine, LXC container or VM, as
 root, with no Docker: it runs the static `dillad` binary as the two systemd services above. Every
-release attaches it beside `dillad-linux-amd64`, `dillad-linux-arm64`, the two architecture-matched
-`dilla-spotify-helper-linux-*` binaries, `dilla_core_wasi.wasm` and `SHA256SUMS`, with the release's
-own tag stamped into it. So the `install.sh` of a release installs
-that release, and there is no "latest". Download it from the release you want, read it, then run it
+release attaches it beside `dillad-linux-amd64`, `dillad-linux-arm64`,
+`dilla_core_wasi.wasm` and `SHA256SUMS`, with the release's own tag stamped into it.
+So the `install.sh` of a release installs that release, and there is no "latest". Download it from the release you want, read it, then run it
 in one of two modes. The examples use the tag `v0.1.0-web3`; take yours from the
 [releases page](https://github.com/jonasthim/dilla/releases).
 
@@ -417,13 +438,12 @@ What it does, in order:
 
 1. It checks every argument against what dillad accepts. It refuses to run as anyone but root, and
    refuses if `/etc/dilla/dilla.toml` or a non-empty `/var/lib/dillad` already holds an instance.
-2. It downloads `dillad-linux-<amd64|arm64>`, the matching `dilla-spotify-helper-linux-<amd64|arm64>`,
-   `dilla_core_wasi.wasm` and `SHA256SUMS` from `releases/download/<tag>/`. It uses curl, else wget, and apt installs only
+2. It downloads `dillad-linux-<amd64|arm64>`, `dilla_core_wasi.wasm` and `SHA256SUMS`
+   from `releases/download/<tag>/`. It uses curl, else wget, and apt installs only
    what is missing of `curl` and `ca-certificates`. Every downloaded file is checked with
    `sha256sum -c` before anything is installed. Any of these stops it: a mismatch, an empty
    `SHA256SUMS`, or one without a line for an asset.
-3. It installs `dillad`, the core beside it, the Spotify helper at `/usr/local/libexec/dilla-spotify-helper`,
-   the unit, and creates the `dillad` user.
+3. It installs `dillad`, the core beside it, the unit, and creates the `dillad` user.
 4. It runs `dillad init --config=/etc/dilla/dilla.toml` and edits that file for the mode. In both modes it sets
    `livekit.udp_port` (`--udp-port`, 7882) and `livekit.node_ip` (`--node-ip`, when given).
    - `--behind-proxy` sets:
@@ -589,7 +609,7 @@ stdout is the bootstrap invite link and nothing else; every progress line goes t
 - **Flags.** The container flags (`--ctid`, `--hostname`, `--bridge`, `--storage`,
   `--template-storage`) stay on the host. The mode flags, `--version`, `--release-url`,
   `--udp-port`, `--node-ip` and `--insecure-skip-verify` are passed to `install.sh`.
-- **Files.** `--binary`, `--core`, `--spotify-helper` and `--sums` are pushed into the container
+- **Files.** `--binary`, `--core` and `--sums` are pushed into the container
   first. Anything not given locally is downloaded and checked inside the container.
 - **Failures.** If the install fails after the container was created, the helper prints the
   `pct stop`/`pct destroy` commands that remove it.
@@ -704,7 +724,7 @@ Run by hand, `dillabot doctor` uses your shell's `PATH`; under `pct exec` run it
 `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin dillabot doctor`.
 
 `dillabot doctor --config=/etc/dillabot/bot.toml` checks the local owner-only runtime credential,
-native identity helper, compiled WASI identity module, optional Spotify PCM helper and private
+native identity helper, compiled WASI identity module and private
 state directory. The installer runs it as `dillabot` before enabling the unit. It does not contact
 the Dilla server or prove that an installation is reconciled; use `systemctl status dillabot` and
 `journalctl -u dillabot` for process and reconciliation diagnostics. A healthy local doctor is not
@@ -754,20 +774,6 @@ later integrated Bot run found yt-dlp 2025.09.26 failed and a direct test with 2
 The lock now uses 2026.10.21 with EJS 0.8.0, which its upstream project metadata also specifies.
 The direct test does not establish cross-server or full provider qualification; keep YouTube music
 reported as unavailable until its intended-host acceptance is complete.
-
-The server `install.sh` also places the architecture-matched Spotify PCM helper at
-`/usr/local/libexec/dilla-spotify-helper`. Enter the public Spotify application client ID in
-community Bot settings and register the callback URL shown there in the Spotify application
-dashboard. Linking works without the PCM helper; playback remains unavailable until it is
-installed and configured. To enable PCM playback, configure the absolute
-`spotify_helper_executable = "/usr/local/libexec/dilla-spotify-helper"` path. Spotify authorization
-remains in Dilla server settings. The helper uses librespot's native TLS backend and needs the
-OpenSSL 3 runtime libraries (`libssl.so.3` and `libcrypto.so.3`). On Debian 13, install
-`libssl3t64` and confirm `ldd /usr/local/libexec/dilla-spotify-helper` has no `not found` entries
-before enabling playback. The child receives its short-lived access token through inherited
-file descriptor 3, while its arguments contain only the canonical track URI. This wiring and its
-synthetic subprocess tests do not qualify real Spotify playback. Do not put provider credentials in
-command arguments or logs.
 
 Per-installation state includes `database.key` and an encrypted SQLite database with possible
 WAL/journal sidecars under `/var/lib/dillabot`. Keep the key and database files together; losing the

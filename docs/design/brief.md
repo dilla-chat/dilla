@@ -177,8 +177,8 @@ are 16px text, and there is no top bar.
 Settings fills the viewport as a native modal workspace: a 15rem grouped sidebar and independently scrolling content, centered together within 80rem. Ordinary forms use at most 48rem, lists 64rem; padding is 2rem on spacious screens and 1rem on constrained screens. There is no floating perimeter, backdrop dismissal, rounded outer border or modal shadow. The persistent Close control shows an Escape hint.
 
 Settings content is left aligned with the pane padding. Simple preference rows use balanced,
-flexible columns that stack when their contents no longer fit. Compound forms (provider keys,
-Spotify configuration and welcome templates) sit below their labels and descriptions; a whole
+flexible columns that stack when their contents no longer fit. Compound forms (provider keys
+and welcome templates) sit below their labels and descriptions; a whole
 form must never be squeezed into a compact control column. Bot identity, name, lifecycle and
 capability controls have separate visual groups. On phones, Back and the section title occupy
 the first header row; ongoing call controls occupy a separate row so the title stays readable.

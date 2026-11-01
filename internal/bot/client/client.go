@@ -600,12 +600,6 @@ func expectedStatus(method, path string) (int, bool) {
 		if len(parts) == 4 && parts[3] == "claim" && method == http.MethodPost {
 			return 200, true
 		}
-		if len(parts) == 5 && parts[3] == "spotify" && parts[4] == "claim" && method == http.MethodPost {
-			return 200, true
-		}
-		if len(parts) == 5 && parts[3] == "spotify" && parts[4] == "config" && method == http.MethodGet {
-			return 200, true
-		}
 		if len(parts) == 4 && parts[3] == "enroll" && method == http.MethodPost {
 			return 201, true
 		}

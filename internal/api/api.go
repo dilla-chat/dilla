@@ -168,11 +168,6 @@ type Deps struct {
 	BotIdentity *botidentity.Verifier
 	// BotRuntime authenticates operator credentials independently of human device sessions.
 	BotRuntime *botruntime.Manager
-	// BotSpotifyClientID and BotSpotifyRedirectURL are public OAuth configuration.
-	// The redirect must be the exact HTTPS URI registered with Spotify.
-	BotSpotifyClientID    string
-	BotSpotifyRedirectURL string
-	botSpotify            *botSpotifyBroker
 	// BotRevoked runs after disable/removal commits to close online transport and prompt MLS removals.
 	BotRevoked func(context.Context, store.BotInstallationRow, bool)
 	// BotEnrolled runs after a new bot identity, membership and role commit, so
@@ -224,9 +219,6 @@ func Register(m *server.Mux, d Deps) {
 		d.desktopAuth = desktopauth.New(d.Clock.Now)
 	}
 	d.registerDesktopAuth(m)
-	if d.botSpotify == nil {
-		d.botSpotify = newBotSpotifyBroker(d.Clock)
-	}
 	if d.UploadMeter == nil && d.Config != nil {
 		d.UploadMeter = NewUploadMeter(d.Clock, d.Config.Blobs)
 	}

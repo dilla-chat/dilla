@@ -106,14 +106,14 @@ esac`)
 		}
 	}
 	work := t.TempDir()
-	binary, core, spotifyHelper := filepath.Join(work, "dillad"), filepath.Join(work, "core.wasm"), filepath.Join(work, "spotify-helper")
-	for _, f := range []string{binary, core, spotifyHelper} {
+	binary, core := filepath.Join(work, "dillad"), filepath.Join(work, "core.wasm")
+	for _, f := range []string{binary, core} {
 		if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
 	cmd := exec.CommandContext(t.Context(), bash, "proxmox-lxc.sh", "--domain=chat.example.org", "--public-ip=192.0.2.10",
-		"--agree-tos", "--insecure-skip-verify", "--binary="+binary, "--core="+core, "--spotify-helper="+spotifyHelper)
+		"--agree-tos", "--insecure-skip-verify", "--binary="+binary, "--core="+core)
 	cmd.Env = []string{"PATH=" + bin}
 	var stdout, stderr strings.Builder
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
@@ -132,8 +132,7 @@ esac`)
 	}
 	for _, want := range []string{
 		"pct push 4242 " + filepath.Join(mustAbs(t, "."), "install.sh") + " /root/dilla-install/install.sh",
-		"pct push 4242 " + spotifyHelper + " /root/dilla-install/dilla-spotify-helper --perms 0755",
-		"pct exec 4242 -- sh /root/dilla-install/install.sh --public --domain=chat.example.org --public-ip=192.0.2.10 --agree-tos --insecure-skip-verify --binary=/root/dilla-install/dillad --core=/root/dilla-install/dilla_core_wasi.wasm --spotify-helper=/root/dilla-install/dilla-spotify-helper",
+		"pct exec 4242 -- sh /root/dilla-install/install.sh --public --domain=chat.example.org --public-ip=192.0.2.10 --agree-tos --insecure-skip-verify --binary=/root/dilla-install/dillad --core=/root/dilla-install/dilla_core_wasi.wasm",
 	} {
 		if !strings.Contains(string(log), want) {
 			t.Errorf("pct was never called as %q; calls:\n%s", want, log)

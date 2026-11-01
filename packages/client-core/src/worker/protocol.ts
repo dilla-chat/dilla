@@ -21,7 +21,6 @@ export type Command =
   | { m: 'refreshCommunities' }
   | { m: 'getBotInstallation'; communityId: string }
   | { m: 'getBotCommandStatus'; communityId: string }
-  | { m: 'getBotSpotifyConfig'; communityId: string }
   | { m: 'patchBotProfile'; communityId: string; display: string }
   // Typed future request contract only. The worker refuses it until human kind-3 interaction groups are authenticated.
   | { m: 'listModerationCases'; communityId: string; requestId: string; offset: 0 }
@@ -43,9 +42,6 @@ export type Command =
       options: readonly { emoji: string; roleId: string }[] }
   | { m: 'configureBotInstallation'; communityId: string; requestId: string; expectedRevision: string | null; capabilities: number; stepUp: string }
   | { m: 'disableBotInstallation'; communityId: string; requestId: string; expectedRevision: string }
-  | { m: 'beginBotSpotifyAttempt'; communityId: string; stepUp: string; clientId: string }
-  | { m: 'callbackBotSpotifyAttempt'; communityId: string; attemptId: string; state: string; code: string }
-  | { m: 'cancelBotSpotifyAttempt'; communityId: string; attemptId: string }
   | { m: 'openChannel'; channelId: string }
   | { m: 'closeChannel'; channelId: string }
   | { m: 'loadEarlier'; channelId: string }

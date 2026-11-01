@@ -3,18 +3,13 @@ import { BotInteractionUncertainError, createBotInteractionClient, decodeMusicPr
 import { Button, SettingsRow } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
 import { useSlice } from '../../core/use-slice.ts';
-import { t, type StringKey } from '../../strings/index.ts';
-import { spotifyReturnDeadline } from '../../settings/spotify-return.ts';
+import { t } from '../../strings/index.ts';
 
-const labels: Record<string, StringKey> = {
-  unknown: 'workspace.providers.unknown', not_linked: 'workspace.providers.notLinked', linked: 'workspace.providers.linked',
-  needs_attention: 'workspace.providers.attention', configured: 'workspace.providers.configured', missing_requirements: 'workspace.providers.missing',
-};
 const newRequestId = () => toHex(crypto.getRandomValues(new Uint8Array(16)));
 /** How long each operation's answer may take, from that operation's own send. */
 const ANSWER_DEADLINE_MS = 30_000;
 
-/** Operation 24 observes runtime state. OAuth delivery and local configuration never imply an account is linked. */
+/** Operation 24 observes runtime playback requirements. */
 export function MusicProviderStatus({ communityId, installationId }: { communityId: string; installationId: string | null }) {
   const client = useCore();
   const access = useSlice(`permissions:${communityId}`);
@@ -32,7 +27,6 @@ export function MusicProviderStatus({ communityId, installationId }: { community
   }, []);
   useEffect(() => {
     let stopped = false;
-    let timer: number | undefined;
     let answerTimer: number | undefined;
     let attempt = 0;
     let known = false;
@@ -40,7 +34,6 @@ export function MusicProviderStatus({ communityId, installationId }: { community
     setSnapshot(null);
     if (!authorized || installationId === null) { setPhase('unavailable'); return; }
     setPhase('loading');
-    const oauthDeadline = spotifyReturnDeadline(communityId);
     const interactions = createBotInteractionClient(client, communityId);
     let requestId = newRequestId();
     // Ask an operation understood by older bots before sending the new status operation.
@@ -53,11 +46,6 @@ export function MusicProviderStatus({ communityId, installationId }: { community
       if (known) return;
       setPhase(operation === 0 ? 'unavailable' : 'partial');
     };
-    const later = (work: () => Promise<void>) => {
-      if (!canRead()) return;
-      if (oauthDeadline !== null && Date.now() >= oauthDeadline) { setPhase('unavailable'); return; }
-      timer = window.setTimeout(() => void work(), 1000);
-    };
     const request = async (): Promise<void> => {
       if (!canRead()) return;
       const mine = ++attempt;
@@ -67,7 +55,6 @@ export function MusicProviderStatus({ communityId, installationId }: { community
       answerTimer = window.setTimeout(() => {
         if (!current()) return;
         stopped = true;
-        if (timer !== undefined) window.clearTimeout(timer);
         unanswered();
       }, ANSWER_DEADLINE_MS);
       try {
@@ -86,9 +73,6 @@ export function MusicProviderStatus({ communityId, installationId }: { community
         if (toHex(observed.installationId) !== installationId || observed.observedAt > BigInt(Math.floor(Date.now() / 1000) + 5)) throw new Error('invalid observation');
         known = true;
         setSnapshot(observed); setNow(Date.now()); setPhase('known');
-        if (oauthDeadline !== null && observed.spotifyAccount !== 'linked' && Date.now() < oauthDeadline) {
-          requestId = newRequestId(); later(request);
-        }
       } catch (error) {
         if (!current()) return;
         window.clearTimeout(answerTimer);
@@ -98,15 +82,13 @@ export function MusicProviderStatus({ communityId, installationId }: { community
       }
     };
     void request();
-    return () => { stopped = true; window.clearTimeout(answerTimer); if (timer !== undefined) window.clearTimeout(timer); };
+    return () => { stopped = true; window.clearTimeout(answerTimer); };
   }, [client, communityId, installationId, authorized, generation]);
   const shown = authorized ? snapshot : null;
   const stale = shown !== null && now / 1000 - Number(shown.observedAt) > 60;
   const current = phase === 'known' && !stale;
   const youtube = current && shown ? shown.youtubePlayback : 'unknown';
   const busy = authorized && phase === 'loading';
-  // Task 10c, the prototype's Music page: YouTube is one row (its host status, a READY tag, "Check again"); Spotify's
-  // observed account and setup follow as the row the Spotify link sits under.
   const youtubeHint = busy ? t('workspace.providers.loading') : stale ? t('workspace.providers.stale')
     : phase === 'unavailable' || !authorized ? t('workspace.providers.unavailable')
       : phase === 'partial' ? t('workspace.providers.partial')
@@ -120,9 +102,5 @@ export function MusicProviderStatus({ communityId, installationId }: { community
         onClick={() => { if (authorized && installationId !== null && !busy) refresh(value => value + 1); }}>{t('serverSettings.music.checkAgain')}</Button>
       <span className="d-sr-only" role="status">{youtubeHint}</span>
     </SettingsRow>
-    {shown ? <SettingsRow id="music-provider-spotify" icon="music" label={t('workspace.providers.spotifyAccount')}
-      hint={`${t(labels[current ? shown.spotifyAccount : 'unknown'])} · ${t('workspace.providers.spotifySetup')}: ${t(labels[current ? shown.spotifyPlayback : 'unknown'])} · ${t('workspace.providers.observed', { time: new Date(Number(shown.observedAt) * 1000).toLocaleString() })}`}>
-      <span />
-    </SettingsRow> : null}
   </>;
 }

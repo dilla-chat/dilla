@@ -27,7 +27,7 @@ import { DillaHttpError } from '../http/errors';
 import {
   BIO_MAX_CHARS, CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, DISPLAY_MAX_CHARS, GIF_OFFSET_MAX, GIF_QUERY_MAX_BYTES,
   INVITE_TTL_MAX_S, INVITE_USES_MAX, BOT_CAPABILITIES_MAX, BOT_MUSIC_VOLUMES, BOT_MUSIC_IDLE_MINUTES, STATUS_MAX_CHARS, Routes, nameProblem, profileTextProblem, profileTextValue,
-  type ChannelRow, type BotInstallationRow, type BotSpotifyAttempt, type Factors, type Instance, type Limits, type MemberRow, type NewChannelKind,
+  type ChannelRow, type BotInstallationRow, type Factors, type Instance, type Limits, type MemberRow, type NewChannelKind,
 } from '../http/routes';
 import { NOTICE_READ_MAX, appendNotices, buildBadges, noticeOf, type NoticeDraft } from '../state/badges';
 import { buildTimeline, channelGroup, channelGroupState, type GroupMembership } from '../state/derive';
@@ -199,7 +199,6 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'refreshCommunities',
   'getBotInstallation',
   'getBotCommandStatus',
-  'getBotSpotifyConfig',
   'patchBotProfile',
   'listModerationCases',
   'listManualModerationEvidence',
@@ -218,9 +217,6 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'registerRolePanel',
   'configureBotInstallation',
   'disableBotInstallation',
-  'beginBotSpotifyAttempt',
-  'callbackBotSpotifyAttempt',
-  'cancelBotSpotifyAttempt',
   'openChannel',
   'closeChannel',
   'loadEarlier',
@@ -390,11 +386,10 @@ function awayPatched(away: readonly { userId: string; since: number }[], change:
   if (at >= 0 && away[at].since >= change.since) return null;
   return [...away.filter((_, i) => i !== at), change].sort(byUserId);
 }
-const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'callId' | 'msgId' | 'deviceId' | 'userId' | 'inviteId' | 'roleId' | 'targetId' | 'rootMsgId' | 'requestId' | 'attemptId' | 'installationId' | 'proofRequestId')[]>> = {
+const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'callId' | 'msgId' | 'deviceId' | 'userId' | 'inviteId' | 'roleId' | 'targetId' | 'rootMsgId' | 'requestId' | 'installationId' | 'proofRequestId')[]>> = {
   selectCommunity: ['communityId'],
   getBotInstallation: ['communityId'],
   getBotCommandStatus: ['communityId'],
-  getBotSpotifyConfig: ['communityId'],
   patchBotProfile: ['communityId'],
   listModerationCases: ['communityId', 'requestId'],
   listManualModerationEvidence: ['communityId', 'requestId'],
@@ -413,9 +408,6 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   registerRolePanel: ['communityId', 'requestId', 'channelId'],
   configureBotInstallation: ['communityId', 'requestId'],
   disableBotInstallation: ['communityId', 'requestId'],
-  beginBotSpotifyAttempt: ['communityId'],
-  callbackBotSpotifyAttempt: ['communityId', 'attemptId'],
-  cancelBotSpotifyAttempt: ['communityId', 'attemptId'],
   createChannel: ['communityId'],
   createRole: ['communityId'],
   updateRole: ['communityId', 'roleId'],
@@ -512,7 +504,6 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'refreshCommunities',
     'getBotInstallation',
     'getBotCommandStatus',
-    'getBotSpotifyConfig',
     'patchBotProfile',
     'listModerationCases',
     'listManualModerationEvidence',
@@ -531,9 +522,6 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'registerRolePanel',
     'configureBotInstallation',
     'disableBotInstallation',
-    'beginBotSpotifyAttempt',
-    'callbackBotSpotifyAttempt',
-    'cancelBotSpotifyAttempt',
     'openChannel',
     'closeChannel',
     'loadEarlier',
@@ -821,16 +809,6 @@ function invalid(command: Record<string, unknown>): string | null {
   }
   if (m === 'patchBotProfile' && (typeof command.display !== 'string' || command.display.trim() === ''
     || profileTextProblem(command.display, DISPLAY_MAX_CHARS, false) !== null)) return 'bot display name is invalid';
-  if (m === 'beginBotSpotifyAttempt' && (typeof command.stepUp !== 'string' || command.stepUp.length < 1 || command.stepUp.length > 4096
-    || typeof command.clientId !== 'string' || !/^[A-Za-z0-9]{1,256}$/u.test(command.clientId))) {
-    return 'Spotify application setting is invalid';
-  }
-  if (m === 'callbackBotSpotifyAttempt') {
-    if (typeof command.state !== 'string' || UTF8.encode(command.state).length < 1 || UTF8.encode(command.state).length > 256
-      || /\p{Cc}/u.test(command.state)) return 'state is invalid';
-    if (typeof command.code !== 'string' || UTF8.encode(command.code).length < 1 || UTF8.encode(command.code).length > 2048
-      || /[\r\n\0]/u.test(command.code)) return 'code is invalid';
-  }
   if (m === 'setMemberTimeout') {
     const expires = command.expires;
     if (typeof expires !== 'string' || !SEQ.test(expires) || BigInt(expires) > 0xffff_ffff_ffff_ffffn) {
@@ -1428,7 +1406,6 @@ export class Controller {
       case 'refreshCommunities': return this.refreshCommunities().then(() => null);
       case 'getBotInstallation': return this.getBotInstallation(command.communityId);
       case 'getBotCommandStatus': return this.getBotCommandStatus(command.communityId);
-      case 'getBotSpotifyConfig': return this.getBotSpotifyConfig(command.communityId);
       case 'patchBotProfile': return this.patchBotProfile(command.communityId, command.display);
       case 'listModerationCases': return this.listModerationCases(command);
       case 'listManualModerationEvidence': return this.listManualModerationEvidence(command);
@@ -1447,9 +1424,6 @@ export class Controller {
       case 'registerRolePanel': return this.registerRolePanel(command);
       case 'configureBotInstallation': return this.configureBotInstallation(command);
       case 'disableBotInstallation': return this.disableBotInstallation(command);
-      case 'beginBotSpotifyAttempt': return this.beginBotSpotifyAttempt(command);
-      case 'callbackBotSpotifyAttempt': return this.callbackBotSpotifyAttempt(command);
-      case 'cancelBotSpotifyAttempt': return this.cancelBotSpotifyAttempt(command);
       case 'openChannel': return this.openChannel(command.channelId);
       case 'closeChannel': return this.closeChannel(command.channelId);
       case 'loadEarlier': return this.loadEarlier(command.channelId);
@@ -1583,11 +1557,6 @@ export class Controller {
     const row = await this.routes.getBotCommandStatus(fromHex(communityId));
     return row === null ? null : { installationId: toHex(row.installationId),
       botUserId: row.botUserId === null ? null : toHex(row.botUserId), state: row.state, revision: row.revision.toString() };
-  }
-
-  private async getBotSpotifyConfig(communityId: string): Promise<{ clientId: string; redirectUrl: string }> {
-    if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
-    return this.routes.getBotSpotifyConfig(fromHex(communityId));
   }
 
   private async patchBotProfile(communityId: string, display: string): Promise<string> {
@@ -2097,26 +2066,6 @@ export class Controller {
     if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
     const row = await this.routes.disableBotInstallation(fromHex(command.communityId), fromHex(command.requestId), BigInt(command.expectedRevision));
     return botInstallationView(row);
-  }
-
-  private async beginBotSpotifyAttempt(command: Extract<Command, { m: 'beginBotSpotifyAttempt' }>): Promise<{
-    attemptId: string; authorizeUrl: string; expires: string;
-  }> {
-    if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
-    const attempt: BotSpotifyAttempt = await this.routes.beginBotSpotifyAttempt(fromHex(command.communityId), command.stepUp, command.clientId);
-    return { attemptId: toHex(attempt.attemptId), authorizeUrl: attempt.authorizeUrl, expires: attempt.expires.toString() };
-  }
-
-  private async callbackBotSpotifyAttempt(command: Extract<Command, { m: 'callbackBotSpotifyAttempt' }>): Promise<null> {
-    if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
-    await this.routes.callbackBotSpotifyAttempt(fromHex(command.communityId), fromHex(command.attemptId), command.state, command.code);
-    return null;
-  }
-
-  private async cancelBotSpotifyAttempt(command: Extract<Command, { m: 'cancelBotSpotifyAttempt' }>): Promise<null> {
-    if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
-    await this.routes.cancelBotSpotifyAttempt(fromHex(command.communityId), fromHex(command.attemptId));
-    return null;
   }
 
   // ---- slices ----

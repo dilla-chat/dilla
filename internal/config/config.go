@@ -84,20 +84,12 @@ type Config struct {
 	Log          Log          `toml:"log"`
 	Metrics      Metrics      `toml:"metrics"`
 	Doctor       Doctor       `toml:"doctor"`
-	BotSpotify   BotSpotify   `toml:"bot_spotify"`
 
 	// turnExplicitlyEnabled records whether the operator wrote turn.enabled,
 	// set by Load from a second, non-strict decode (see write-up in defaults.go).
 	turnExplicitlyEnabled bool `toml:"-"`
 	// maxFrameBytes is derived by Derive; see MaxFrameBytes.
 	maxFrameBytes uint64 `toml:"-"`
-}
-
-// BotSpotify contains the public Spotify OAuth application and the exact
-// HTTPS callback URI registered for this instance. No provider secret belongs here.
-type BotSpotify struct {
-	ClientID    string `toml:"client_id"`
-	RedirectURL string `toml:"redirect_url"`
 }
 
 type Instance struct {

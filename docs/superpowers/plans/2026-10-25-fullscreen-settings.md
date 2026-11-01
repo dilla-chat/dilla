@@ -1,5 +1,8 @@
 # Fullscreen user and server settings
 
+> Historical document: Spotify integration was removed from Dilla on 2026-11-01.
+> Provider setup, playback claims, and release gates below describe the earlier implementation.
+
 Approved implementation plan supplied by the user on 2026-10-25. Baseline:
 fresh `origin/main`, `4b5ca243`. Deliver one reviewed PR; no merge or deployment.
 

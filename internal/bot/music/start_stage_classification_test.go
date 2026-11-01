@@ -12,8 +12,8 @@ func (e classifiedPlaybackFailure) Error() string                  { return "bou
 func (e classifiedPlaybackFailure) PermanentPlaybackFailure() bool { return e.permanent }
 
 func TestStartErrorUsesCauseRatherThanStage(t *testing.T) {
-	for _, stage := range []string{"provider_check", "provider_pcm", "spotify_lease", "room_connect"} {
-		for _, cause := range []error{errors.New("unknown"), classifiedPlaybackFailure{false}, context.Canceled, context.DeadlineExceeded, ErrSpotifyBusy} {
+	for _, stage := range []string{"provider_check", "provider_pcm", "room_connect"} {
+		for _, cause := range []error{errors.New("unknown"), classifiedPlaybackFailure{false}, context.Canceled, context.DeadlineExceeded} {
 			if (&StartError{Stage: stage, Cause: cause}).ProviderFailure() {
 				t.Errorf("%s with %v would discard queue item", stage, cause)
 			}

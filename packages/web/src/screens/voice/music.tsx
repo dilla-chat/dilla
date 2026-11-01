@@ -143,10 +143,10 @@ function musicView({ state, room, bot, members, trust, inCall, now, onToggle, on
   }
   const requester = (track: VoiceMusicTrack) => (track.requesterId === undefined ? '' : userName(track.requesterId, members, trust));
   const current = state.track;
-  const source = (track: VoiceMusicTrack) => t(track.provider === 'spotify' ? 'music.source.spotify' : 'music.source.youtube');
+  const source = t('music.source.youtube');
   const meta = current === null ? t('music.idleIn', { bot, room })
-    : current.requesterId === undefined ? t('music.metaNoRequester', { source: source(current), room })
-      : t('music.meta', { source: source(current), name: requester(current), room });
+    : current.requesterId === undefined ? t('music.metaNoRequester', { source, room })
+      : t('music.meta', { source, name: requester(current), room });
   return {
     ...base,
     ...(current === null ? {} : { track: { title: current.title, by: requester(current), durationS: current.durationMs / 1000 } }),

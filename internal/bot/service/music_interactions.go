@@ -5,8 +5,6 @@ import (
 	"errors"
 	"log/slog"
 	"math"
-	"net/url"
-	"strings"
 	"time"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
@@ -55,21 +53,16 @@ type MusicTrackResolver interface {
 	Resolve(context.Context, string) ([]music.Track, error)
 }
 
-type SpotifyMusicTrackResolver interface {
-	ResolveSpotify(context.Context, string, id.ID) ([]music.Track, error)
-}
-
 // MusicInteractions authorizes encrypted queue mutations and hands committed
 // state or immediate controls to the retained playback supervisor.
 type MusicInteractions struct {
-	Logger          *slog.Logger
-	Store           musicStateStore
-	Authority       MusicInteractionAuthority
-	Resolver        MusicTrackResolver
-	SpotifyResolver SpotifyMusicTrackResolver
-	InstallationID  id.ID
-	CommunityID     id.ID
-	DeviceID        id.ID
+	Logger         *slog.Logger
+	Store          musicStateStore
+	Authority      MusicInteractionAuthority
+	Resolver       MusicTrackResolver
+	InstallationID id.ID
+	CommunityID    id.ID
+	DeviceID       id.ID
 	// CurrentState exposes the retained supervisor's live state. The handler
 	// accepts it only when its revision still matches the durable store row.
 	CurrentState musicRuntimeStateReader
@@ -299,27 +292,18 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 		}
 		var tracks []music.Track
 		var resolveErr error
-		spotifyInput := isSpotifyCatalogInput(input)
-		if spotifyInput {
-			reason = "provider_unavailable"
-			if h.SpotifyResolver == nil {
-				return InteractionResult{Status: interactionStatusUnavailable}, nil
-			}
-			tracks, resolveErr = h.SpotifyResolver.ResolveSpotify(ctx, input, actor.User)
-		} else {
-			reason = "provider_unavailable"
-			if h.Resolver == nil {
-				return InteractionResult{Status: interactionStatusUnavailable}, nil
-			}
-			tracks, resolveErr = h.Resolver.Resolve(ctx, input)
+		reason = "provider_unavailable"
+		if h.Resolver == nil {
+			return InteractionResult{Status: interactionStatusUnavailable}, nil
 		}
+		tracks, resolveErr = h.Resolver.Resolve(ctx, input)
 		reason, diagnostic = "resolve_failed", resolveErr
-		if resolveErr != nil || len(tracks) == 0 || len(tracks) > youtube.MaxPlaylistItems || (spotifyInput && len(tracks) > 500) {
+		if resolveErr != nil || len(tracks) == 0 || len(tracks) > youtube.MaxPlaylistItems {
 			return InteractionResult{Status: interactionStatusUnavailable}, nil
 		}
 		reason = "provider_mismatch"
 		for i := range tracks {
-			if spotifyInput && tracks[i].Provider != music.ProviderSpotify || !spotifyInput && tracks[i].Provider != music.ProviderYouTube {
+			if tracks[i].Provider != music.ProviderYouTube {
 				return InteractionResult{Status: interactionStatusUnavailable}, nil
 			}
 			tracks[i].ID = id.New().String()
@@ -473,21 +457,6 @@ func (h MusicInteractions) clock() time.Time {
 		return h.Now()
 	}
 	return time.Now()
-}
-
-// isSpotifyCatalogInput keeps Spotify catalog links on their authenticated
-// resolver path. The catalog itself performs strict URI and URL validation;
-// this dispatch only prevents malformed Spotify links reaching YouTube.
-func isSpotifyCatalogInput(input string) bool {
-	if strings.HasPrefix(input, "spotify:") {
-		return true
-	}
-	u, err := url.Parse(input)
-	if err != nil {
-		return strings.Contains(strings.ToLower(input), "spotify.com/")
-	}
-	host := strings.ToLower(u.Hostname())
-	return host == "open.spotify.com" || host == "www.spotify.com"
 }
 
 func (h MusicInteractions) pauseUnstartedPlayback(ctx context.Context, channel id.ID, committedRevision, observedRevision uint64) uint64 {

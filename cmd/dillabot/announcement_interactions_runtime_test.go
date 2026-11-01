@@ -64,9 +64,7 @@ func TestRuntimeInteractionHandlersRegisterAnnouncementMutationsWithInHandlerRev
 func TestRuntimeInteractionHandlersRegisterProviderStatusAsRecomputedRead(t *testing.T) {
 	community := id.New()
 	status := service.MusicProviderStatusInteractions{CommunityID: community, Authority: runtimeProviderStatusAuthority{}, Snapshot: func(context.Context) service.MusicProviderStatusSnapshot {
-		return service.MusicProviderStatusSnapshot{InstallationID: id.New(), ObservedAt: 1, SpotifyAccount: service.ProviderAccountUnknown,
-			SpotifyAccountReason: service.ProviderReasonUnavailable, SpotifyPlayback: service.ProviderSetupUnknown,
-			SpotifyPlaybackReason: service.ProviderReasonUnavailable, YouTubePlayback: service.ProviderSetupUnknown,
+		return service.MusicProviderStatusSnapshot{InstallationID: id.New(), ObservedAt: 1, YouTubePlayback: service.ProviderSetupUnknown,
 			YouTubePlaybackReason: service.ProviderReasonUnavailable}
 	}}
 	base := runtimeInteractionHandlers(service.OverviewInteractions{CommunityID: community}, service.AnnouncementInteractions{CommunityID: community}, service.ModerationInteractions{CommunityID: community}, nil, nil, nil, nil)

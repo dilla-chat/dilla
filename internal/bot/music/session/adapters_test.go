@@ -8,7 +8,6 @@ import (
 
 	"github.com/jonasthim/dilla/internal/bot/music/encode"
 	musicruntime "github.com/jonasthim/dilla/internal/bot/music/runtime"
-	"github.com/jonasthim/dilla/internal/bot/music/spotify"
 )
 
 func TestRuntimeEncoderUsesProviderPCMFormat(t *testing.T) {
@@ -18,7 +17,6 @@ func TestRuntimeEncoderUsesProviderPCMFormat(t *testing.T) {
 		rate int
 	}{
 		{"youtube", io.NopCloser(nilReader{}), 44100},
-		{"spotify", &spotify.Playback{}, 48000},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var got musicruntime.PCMFormat

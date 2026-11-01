@@ -22,16 +22,14 @@ from pathlib import Path
 DEFAULT_TIMEOUT = 5.0
 MAX_OUTPUT = 65536
 MAX_DURATION = 5.0
-DOCTOR_TOOLS = ("librespot", "yt-dlp", "ffmpeg", "ffprobe", "js-runtime")
+DOCTOR_TOOLS = ("yt-dlp", "ffmpeg", "ffprobe", "js-runtime")
 DEFAULT_NAMES = {
-    "librespot": ("dilla-librespot-probe",),
     "yt-dlp": ("yt-dlp",),
     "ffmpeg": ("ffmpeg",),
     "ffprobe": ("ffprobe",),
     "js-runtime": ("deno", "node", "bun"),
 }
 VERSION_ARGS = {
-    "librespot": ("--version",),
     "yt-dlp": ("--version",),
     "ffmpeg": ("-version",),
     "ffprobe": ("-version",),
@@ -290,7 +288,6 @@ def validate_opus(ffprobe: str, audio: Path) -> int:
 
 
 def _path_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--librespot-bin")
     parser.add_argument("--yt-dlp-bin")
     parser.add_argument("--ffmpeg-bin")
     parser.add_argument("--ffprobe-bin")

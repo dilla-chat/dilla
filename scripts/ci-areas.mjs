@@ -81,7 +81,6 @@ export const JOB_GATES = {
   // Besides the wasm core's tests it runs packages/media's typecheck, wasm tests and the LiveKit schema check.
   'rust-wasm-node': ['web'],
   'rust-wasi': ['code'],
-  'spotify-helper': ['code'],
   vectors: ['core'],
   'browser-spike': ['e2e'],
   'browser-media': ['e2e'],

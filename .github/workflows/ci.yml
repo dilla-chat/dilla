@@ -272,25 +272,6 @@ jobs:
           path: target/release/dilla-testkit
           if-no-files-found: error
 
-  spotify-helper:
-    needs: [changes]
-    if: needs.changes.outputs.code != 'false'
-    strategy:
-      fail-fast: true
-      matrix:
-        include:
-          - arch: amd64
-            runner: ubuntu-latest
-          - arch: arm64
-            runner: ubuntu-24.04-arm
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - run: cargo fmt --manifest-path crates/dilla-spotify-helper/Cargo.toml -- --check
-      - run: cargo clippy --manifest-path crates/dilla-spotify-helper/Cargo.toml --all-targets --locked -- -D warnings
-      - run: cargo test --manifest-path crates/dilla-spotify-helper/Cargo.toml --locked
-      - run: cargo build --manifest-path crates/dilla-spotify-helper/Cargo.toml --release --locked
-
   rust-wasi:
     needs: [changes]
     if: needs.changes.outputs.code != 'false'
@@ -758,7 +739,7 @@ jobs:
       - name: Compile the Rust peer before its bounded readiness check
         run: cargo test -p dilla-core --test native_bot_group_peer_fixture --no-run --locked
       - name: Compiled helper and production moderation recovery integration
-        run: go test -race ./internal/bot/native ./cmd/dillabot
+        run: go test -race ./internal/bot/native ./cmd/dillabot ./internal/bot/music/persistence
         env:
           DILLA_BOT_HELPER_INTEGRATION: '1'
           DILLA_CONTROL_E2E: '1'
@@ -991,7 +972,7 @@ jobs:
   # One check for the whole workflow, so that a required-check list needs only this name: it is red when any job
   # failed or was cancelled (a failed `changes` included) and green when the rest passed or were skipped by design.
   ci-ok:
-    needs: [changes, docs, node, ui, rust-wasm-node, rust-native, rust-wasi, vectors, browser-spike, browser-media, web-build, desktop, core-integration, deny, go, go-native, go-ds, go-api, go-harness, go-fts5-arm64, go-lint, go-vuln, go-sqlc, go-postgres, go-release, spotify-helper]
+    needs: [changes, docs, node, ui, rust-wasm-node, rust-native, rust-wasi, vectors, browser-spike, browser-media, web-build, desktop, core-integration, deny, go, go-native, go-ds, go-api, go-harness, go-fts5-arm64, go-lint, go-vuln, go-sqlc, go-postgres, go-release]
     if: always()
     runs-on: ubuntu-latest
     steps:
