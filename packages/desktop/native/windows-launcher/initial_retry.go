@@ -13,7 +13,6 @@ import (
 )
 
 var errInitialExists = errors.New("installation or active history already exists")
-var errIncompleteInitial = errors.New("owned incomplete initial installation")
 
 // The marker is atomically committed before any program/update-root creation.
 // A matching marker alone is insufficient: only exact same-package byte prefixes
@@ -121,12 +120,12 @@ func samePackagePrefix(source, destination string) error {
 		return err
 	}
 	defer func() { _ = guard.Close() }()
-	expected, err := os.Open(source)
+	expected, err := os.Open(source) // #nosec G304 -- Source is a fixed packaged file or an authenticated manifest allowlist entry.
 	if err != nil {
 		return err
 	}
 	defer func() { _ = expected.Close() }()
-	actual, err := os.Open(destination)
+	actual, err := os.Open(destination) // #nosec G304 -- The fixed owned destination and its ancestors remain pinned by guard above.
 	if err != nil {
 		return err
 	}

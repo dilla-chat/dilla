@@ -7,13 +7,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
-	"github.com/jonasthim/dilla/internal/desktoplaunch"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/jonasthim/dilla/internal/desktoplaunch"
 )
 
 func committedUpgrade(t *testing.T, cfg *buildConfig, l layout) (string, []byte) {

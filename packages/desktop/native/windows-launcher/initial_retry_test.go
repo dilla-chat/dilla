@@ -40,12 +40,11 @@ func TestIncompleteInitialRetryRequiresExactOwnedPackageSubsetAndZeroHistory(t *
 			if err = os.WriteFile(markerPath, marker, 0600); err != nil {
 				t.Fatal(err)
 			}
-			id := ""
 			entries, err := os.ReadDir(filepath.Join(l.stableRoot, "versions"))
 			if err != nil {
 				t.Fatal(err)
 			}
-			id = entries[0].Name()
+			id := entries[0].Name()
 			switch fault {
 			case "zero-filled copy":
 				padded := make([]byte, len(self))

@@ -99,7 +99,7 @@ func TestTerminalUninstallAuthenticatesMetadataWithoutRequiringAnyProgramHealthy
 					t.Fatal(err)
 				}
 				err = maintenancePreflight(l, cfg, "uninstall", func(pid int64) (bool, error) { return pid == 4321, nil }, 99, "")
-				allowed := damage != "unresolved journal" && damage != "live owned helper" && damage != "wrong active nonce" && !(phase == "complete" && (damage == "bad release signature" || damage == "bad exact installer"))
+				allowed := damage != "unresolved journal" && damage != "live owned helper" && damage != "wrong active nonce" && (phase != "complete" || (damage != "bad release signature" && damage != "bad exact installer"))
 				if (err == nil) != allowed {
 					t.Fatalf("terminal removal allowed=%v: %v", allowed, err)
 				}

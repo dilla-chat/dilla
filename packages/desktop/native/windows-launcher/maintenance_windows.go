@@ -20,6 +20,8 @@ import (
 	"github.com/jonasthim/dilla/internal/desktoplaunch"
 )
 
+var errIncompleteInitial = errors.New("owned incomplete initial installation")
+
 type operationMutex struct {
 	handle       syscall.Handle
 	lockedThread bool
