@@ -1,9 +1,10 @@
-import { verifyDesktopBundle } from './verify-release.mjs';
+import { verifyDesktopBundle, PUBLIC_ACCEPTANCE_RECORDS } from './verify-release.mjs';
 import { createHash, createPrivateKey, createPublicKey, sign, verify } from 'node:crypto';
 import { readFile, writeFile, mkdir, lstat } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import { verifyWindowsProgramManifest } from '../src/windows-manifest.ts';
 import { appcast, signedAppcast, sparkleVersion } from './feed-format.mjs';
 export { appcast, signedAppcast, sparkleVersion } from './feed-format.mjs';
 
@@ -34,6 +35,14 @@ export async function signDesktopRelease({ version, artifactsDirectory, keysDire
    artifact.sparkleSignature = sign(null, bytes, sparkleKey).toString('base64');
    if (!verify(null, bytes, createPublicKey(sparkleKey), Buffer.from(artifact.sparkleSignature, 'base64'))) throw new Error('Sparkle archive signature self-check failed');
   }
+  if (platform === 'win32') {
+   const manifestName = `dilla-${version}-win-${arch}.manifest.json`, manifestFile = join(artifactsDirectory, manifestName), info = await lstat(manifestFile);
+   if (!info.isFile() || info.isSymbolicLink() || info.size < 1 || info.size > 1048576) throw new Error('Invalid final Windows program manifest');
+   const manifestBytes = await readFile(manifestFile), sha512 = createHash('sha512').update(manifestBytes).digest('base64');
+   verifyWindowsProgramManifest(manifestBytes, sha512, { version, channel, arch });
+   artifact.programManifest = { url: `https://github.com/jonasthim/dilla/releases/download/desktop-v${version}/${manifestName}`, size: manifestBytes.length, sha512 };
+   release.assets.push({ name: manifestName, size: manifestBytes.length, sha512 });
+  }
   release.artifacts.push(artifact);
   release.assets.push({ name, size: bytes.length, sha512: artifact.sha512 });
  }
@@ -51,7 +60,7 @@ export async function signDesktopRelease({ version, artifactsDirectory, keysDire
  await verifyDesktopBundle({ metadata: bytes, signature: signature.toString('base64'), trust, directory: artifactsDirectory, run, jobs, version, feeds, now: now.getTime() });
  await writeFile(join(outputDirectory, `desktop-${channel}.json`), bytes, { flag: 'wx' });
  await writeFile(join(outputDirectory, `desktop-${channel}.json.sig`), signature.toString('base64') + '\n', { flag: 'wx' });
- for (const name of ['release-notes.md', 'security-review.md', ...['linux-x64', 'win-x64', 'mac-x64', 'mac-arm64'].map(target => `performance-${target}.json`)]) {
+ for (const name of PUBLIC_ACCEPTANCE_RECORDS) {
   await writeFile(join(outputDirectory, name), await readFile(join(artifactsDirectory, name)), { flag: 'wx' });
  }
  for (const artifact of release.artifacts.filter(a => a.platform === 'darwin')) {

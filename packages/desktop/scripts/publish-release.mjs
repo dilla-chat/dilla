@@ -1,9 +1,9 @@
-import { readFile, writeFile, appendFile, mkdir } from 'node:fs/promises';
+import { readFile, appendFile, mkdir } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { verifyRelease } from '../src/update.ts';
-import { verifyDesktopBundle } from './verify-release.mjs';
+import { verifyDesktopBundle, publicReleaseRecords, stagePublicReleaseRecords } from './verify-release.mjs';
 
 const repository = 'jonasthim/dilla';
 const root = resolve(import.meta.dirname, '../../..');
@@ -50,10 +50,10 @@ for (let page = 1; ; page++) {
  jobs.push(...result.jobs); if (result.jobs.length < 100) break;
 }
 await mkdir(directory, { recursive: true });
-const records = [metadataName, metadataName + '.sig', 'release-notes.md', 'security-review.md', ...['linux-x64', 'win-x64', 'mac-x64', 'mac-arm64'].map(target => `performance-${target}.json`), 'appcast-x64.xml', 'appcast-arm64.xml'];
-for (const name of records) await writeFile(join(directory, name), await readFile(join(candidate, name)), { flag: 'wx' });
+const records = publicReleaseRecords(channel);
+await stagePublicReleaseRecords({ candidate, directory, channel });
 await verifyDesktopBundle({ metadata, signature, trust, directory, run, jobs, version });
-console.log('Verified accepted native/client CI, review, performance reports and all six installer/update hashes.');
+console.log('Verified accepted native/client CI, native build provenance, installed-account proofs, review, performance reports, installer/update hashes and the Windows program manifest.');
 if (mode === 'verify') process.exit(0);
 
 async function findRelease(tag) { return api(`/repos/${repository}/releases/tags/${encodeURIComponent(tag)}`, {}, true); }

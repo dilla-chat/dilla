@@ -7,6 +7,7 @@ interface Application {
 
 /** Renderer unloads can still veto a requested quit. Replacing the AppImage or
  * launching NSIS is authorized only after every renderer has accepted closing. */
+export class UnstoppedUpdateHelper extends Error {}
 export class NativeQuitInstaller {
  private pending: ((event: QuitEvent) => void) | null = null;
  private installing = false;
@@ -26,6 +27,9 @@ export class NativeQuitInstaller {
  }
  private async finish(commit: () => Promise<void>): Promise<void> {
   try { await commit(); this.app.exit(0); }
-  catch (error) { this.installing = false; this.failed(error); }
+  catch (error) {
+   if (error instanceof UnstoppedUpdateHelper) { this.app.exit(1); return; }
+   this.installing = false; this.failed(error);
+  }
  }
 }

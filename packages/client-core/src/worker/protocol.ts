@@ -3,6 +3,7 @@ import type { CallKeys, CallStatsReport, SliceName, WorkerError } from '../state
 
 export type Command =
   | { m: 'start' }
+  | { m: 'runtimeReady' } // local bundled WASM + persistence probe; no network or account data
   | { m: 'signupBegin' }
   // → { communityId, joinError }; with factorOwed: true (and no join yet) when the account stops at factor-setup.
   | { m: 'signupSubmit'; invite: string; username: string; display: string; password: string | null; recoveryKeyAcknowledged: true }

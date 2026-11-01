@@ -1,6 +1,7 @@
 import { createHash, createPublicKey, verify, timingSafeEqual } from 'node:crypto';
 
-export interface Artifact { platform: string; arch: string; url: string; size: number; sha512: string; sparkleSignature?: string }
+export interface PublishedProgramManifest { url: string; size: number; sha512: string }
+export interface Artifact { platform: string; arch: string; url: string; size: number; sha512: string; sparkleSignature?: string; programManifest?: PublishedProgramManifest }
 export interface Release { format: 1; version: string; channel: 'stable' | 'beta'; publishedAt: string; expiresAt: string; artifacts: Artifact[] }
 interface VerifyContext { publicKeys: readonly string[]; channel: 'stable' | 'beta'; platform: string; arch: string; currentVersion: string; now: number }
 const versionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-beta\.(0|[1-9]\d*))?$/;

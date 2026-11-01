@@ -82,3 +82,22 @@ test('health tickets use a canonical profile while reports accept the app profil
  let now = 0;
  await waitForStartupHealth(ticket, { pid: process.pid, exitCode: null, signalCode: null }, { now: () => now, sleep: async () => { now += 100; } });
 }));
+
+test('watchdog readiness is a distinct exact-process acknowledgment, never application startup health', async () => fixture(async root => {
+ const { reportWatchdogReady, waitForWatchdogReady } = await import('../src/update-health.ts');
+ const ticket = await createStartupHealth(root, '1.0.1');
+ const child = { pid: process.pid, exitCode: null, signalCode: null };
+ await reportWatchdogReady(root, '1.0.0', process.pid, ticket.nonce);
+ let now = 0;
+ await waitForWatchdogReady(ticket, '1.0.0', child, { now: () => now, sleep: async () => { now += 100; } });
+ await assert.rejects(readFile(ticket.file), { code: 'ENOENT' });
+ now = 0;
+ await assert.rejects(waitForStartupHealth(ticket, child, { timeoutMs: 500, now: () => now, sleep: async () => { now += 100; } }), /timed out/);
+}));
+
+test('withdrawing readiness during the grace interval cannot leave an earlier healthy timestamp latched', async () => fixture(async root => {
+ const ticket = await createStartupHealth(root, '1.0.1'), child = { pid: process.pid, exitCode: null, signalCode: null };
+ await reportStartupHealth(root, '1.0.1', process.pid, ticket.file, ticket.nonce);
+ let now = 0;
+ await assert.rejects(waitForStartupHealth(ticket, child, { timeoutMs: 1600, now: () => now, sleep: async () => { now += 100; if (now === 500) await rm(ticket.file); } }), /timed out/);
+}));

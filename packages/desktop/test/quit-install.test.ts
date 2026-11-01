@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { NativeQuitInstaller } from '../src/quit-install.ts';
+import { NativeQuitInstaller, UnstoppedUpdateHelper } from '../src/quit-install.ts';
 
 class Application extends EventEmitter {
  exits: number[] = [];
@@ -33,4 +33,12 @@ test('a verified native install finishes before exit and failure keeps the worki
  installer.arm(() => new Promise<void>(done => { finish = done; }));
  app.emit('will-quit', { preventDefault() {} }); await tick();
  assert.deepEqual(app.exits, []); finish(); await tick(); assert.deepEqual(app.exits, [0]);
+});
+
+test('an uncertain armed helper that cannot be drained never reopens old UI', async () => {
+ const app = new Application(); let reopened = false;
+ const installer = new NativeQuitInstaller(app, () => { reopened = true; });
+ installer.arm(() => Promise.reject(new UnstoppedUpdateHelper('helper drain failed')));
+ app.emit('will-quit', { preventDefault() {} }); await tick();
+ assert.equal(reopened, false); assert.deepEqual(app.exits, [1]);
 });

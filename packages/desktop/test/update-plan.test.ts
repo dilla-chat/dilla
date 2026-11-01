@@ -60,7 +60,7 @@ test('a plan cannot overlap the device-data directory or be redirected by editin
 
 test('Windows keeps an independent renamed watchdog and fingerprints the ASAR as well as Electron', async () => fixture(async (options, trust, root) => {
  const plan = await prepareInstalledUpdate(options, trust);
- assert.equal(plan.watchdog, join(plan.backup, 'dilla-update-watchdog.exe'));
+ assert.equal(plan.watchdog, join(plan.health.directory, 'watchdog-app/dilla-update-watchdog.exe'));
  assert.equal(await readFile(join(plan.backup, 'resources/app.asar'), 'utf8'), 'working-old-ASAR');
  assert.equal(await readFile(options.installed, 'utf8'), 'working-old-AppImage');
  await readInstalledUpdate(options.userData, plan.health.nonce, { ...trust, executable: plan.watchdog });
@@ -105,7 +105,7 @@ test('Windows refuses a linked staged installer even when its target has authent
 // Fault only the external flush boundary. Reads, copies, hashing, cleanup, and
 // plan preparation remain real; omitting a required flush makes preparation
 // resolve and fails the rejection assertion.
-for (const target of ['update.exe', 'previous-app/dilla.exe', 'previous-app/icudtl.dat', 'previous-app/resources/app.asar', 'previous-app/resources/app.asar.unpacked/native.node', 'previous-app/dilla-update-watchdog.exe', ...(process.platform === 'win32' ? [] : ['previous-app/resources', 'previous-app', 'startup', 'updates', 'profile'])]) {
+for (const target of ['update.exe', 'previous-app/dilla.exe', 'previous-app/icudtl.dat', 'previous-app/resources/app.asar', 'previous-app/resources/app.asar.unpacked/native.node', 'watchdog-app/dilla-update-watchdog.exe', 'watchdog-app/dilla.exe', 'watchdog-app/resources/app.asar', ...(process.platform === 'win32' ? [] : ['previous-app/resources', 'previous-app', 'startup', 'updates', 'profile'])]) {
  test(`a failed preparation flush leaves the working installation untouched: ${target}`, async t => fixture(async (options, trust) => {
   const original = updateFS.promises.open;
   t.mock.method(updateFS.promises, 'open', async (...args: Parameters<typeof original>) => {
@@ -181,3 +181,83 @@ for (const existing of [true, false]) {
   assert.equal(await readFile(options.installed, 'utf8'), 'working-old-AppImage');
  }, 'win32'));
 }
+
+test('recovery rereads the same authenticated backup after installation changed, while initial-plan replay stays refused', async () => fixture(async (options, trust) => {
+ const { readRecoverableInstalledUpdate } = await import('../src/update-plan.ts');
+ const { writeUpdateJournal } = await import('../src/update-journal.ts');
+ const plan = await prepareInstalledUpdate(options, trust);
+ await writeFile(plan.installed, 'partially-installed-new-version');
+ await assert.rejects(readInstalledUpdate(plan.userData, plan.health.nonce, { ...trust, executable: plan.watchdog }), /working installation/);
+ await assert.rejects(readRecoverableInstalledUpdate(plan.userData, plan.health.nonce, { ...trust, executable: plan.watchdog }), /phase/);
+ await writeUpdateJournal(plan, { phase: 'installing' });
+ const recovery = await readRecoverableInstalledUpdate(plan.userData, plan.health.nonce, { ...trust, executable: plan.watchdog });
+ assert.equal(recovery.oldFingerprint, plan.oldFingerprint);
+ await writeFile(plan.backup, 'damaged-old-app');
+ await assert.rejects(readRecoverableInstalledUpdate(plan.userData, plan.health.nonce, { ...trust, executable: plan.watchdog }), /helper/);
+}));
+
+test('a restarted new app can authenticate its old watchdog for interrupted recovery without selecting another installation', async () => fixture(async (options, trust, root) => {
+ const { readUpdateForRestart } = await import('../src/update-plan.ts');
+ const { writeUpdateJournal } = await import('../src/update-journal.ts');
+ const plan = await prepareInstalledUpdate(options, trust);
+ await writeUpdateJournal(plan, { phase: 'launching' }); await writeFile(plan.installed, 'new-app-version');
+ const recovery = await readUpdateForRestart(plan.userData, plan.health.nonce, { ...trust, version: '1.0.1', installed: plan.installed });
+ assert.equal(recovery.watchdog, plan.watchdog);
+ await assert.rejects(readUpdateForRestart(plan.userData, plan.health.nonce, { ...trust, installed: join(root, 'another.AppImage') }), /installation/);
+}));
+
+test('the private plan pins its authenticated target architecture as well as platform', async () => fixture(async (options, trust) => {
+ const plan = await prepareInstalledUpdate(options, trust);
+ assert.equal(plan.arch, trust.arch);
+ const file = join(plan.health.directory, 'plan.json'), stored = JSON.parse(await readFile(file, 'utf8'));
+ stored.arch = 'arm64'; await writeFile(file, JSON.stringify(stored));
+ await assert.rejects(readInstalledUpdate(plan.userData, plan.health.nonce, { ...trust, executable: plan.watchdog }), /paths|target/);
+}));
+
+test('ENOSPC during staging never changes the working installation or device data', async t => fixture(async (options, trust) => {
+ const original = updateFS.promises.copyFile;
+ t.mock.method(updateFS.promises, 'copyFile', async (...args: Parameters<typeof original>) => {
+  if (String(args[1]).endsWith('update.AppImage')) throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+  return original(...args);
+ });
+ try { await assert.rejects(prepareInstalledUpdate(options, trust), { code: 'ENOSPC' }); assert.equal(await readFile(options.installed, 'utf8'), 'working-old-AppImage'); }
+ finally { t.mock.restoreAll(); }
+}));
+
+test('Windows recovery accepts a consumed rollback tree only after both installed bytes and independent watchdog still verify', async () => fixture(async (options, trust) => {
+ const { restoreWindowsProgram, readRecoverableInstalledUpdate } = await import('../src/update-plan.ts');
+ const { writeUpdateJournal } = await import('../src/update-journal.ts');
+ const plan = await prepareInstalledUpdate(options, trust);
+ await writeFile(plan.installed, 'partial-install'); await writeUpdateJournal(plan, { phase: 'recovering' });
+ await restoreWindowsProgram(plan);
+ await assert.rejects(lstat(plan.backup), { code: 'ENOENT' });
+ await readRecoverableInstalledUpdate(plan.userData, plan.health.nonce, { ...trust, executable: plan.watchdog });
+ await writeFile(plan.installed, 'another-app');
+ await assert.rejects(readRecoverableInstalledUpdate(plan.userData, plan.health.nonce, { ...trust, executable: plan.watchdog }));
+}, 'win32'));
+
+test('an expired descriptor cannot install again, but its already committed recovery may still restore the verified working copy', async () => fixture(async (options, trust) => {
+ const { readRecoverableInstalledUpdate } = await import('../src/update-plan.ts'), { writeUpdateJournal } = await import('../src/update-journal.ts');
+ const plan = await prepareInstalledUpdate(options, trust); await writeUpdateJournal(plan, { phase: 'installing' });
+ const later = { ...trust, now: trust.now! + 2 * 3600000, executable: plan.watchdog };
+ await assert.rejects(readInstalledUpdate(plan.userData, plan.health.nonce, later), /Expired/);
+ const recovery = await readRecoverableInstalledUpdate(plan.userData, plan.health.nonce, later);
+ assert.equal(recovery.oldFingerprint, plan.oldFingerprint);
+}));
+
+test('a stale durable mutation phase can reopen a restored old app only with active nonce, exact old version and complete verified old bytes', async () => fixture(async (options, trust) => {
+ const { readRestoredInstalledUpdate } = await import('../src/update-plan.ts'), { activateInstalledUpdate } = await import('../src/update-state.ts'), { writeUpdateJournal } = await import('../src/update-journal.ts');
+ const plan = await prepareInstalledUpdate(options, trust); await activateInstalledUpdate(plan); await writeUpdateJournal(plan, { phase: 'installing' });
+ await readRestoredInstalledUpdate(plan.userData, plan.health.nonce, { ...trust, installed: plan.installed });
+ await assert.rejects(readRestoredInstalledUpdate(plan.userData, plan.health.nonce, { ...trust, version: '1.0.1', installed: plan.installed }), /version/);
+ await writeFile(plan.installed, 'partially-installed-new');
+ await assert.rejects(readRestoredInstalledUpdate(plan.userData, plan.health.nonce, { ...trust, installed: plan.installed }), /restored/);
+}));
+
+test('a restored old launch remains usable when the last visible journal is complete but later quota failures prevented failure status', async () => fixture(async (options, trust) => {
+ const { readRestoredInstalledUpdate } = await import('../src/update-plan.ts'), { activateInstalledUpdate } = await import('../src/update-state.ts'), { writeUpdateJournal } = await import('../src/update-journal.ts');
+ const plan = await prepareInstalledUpdate(options, trust); await activateInstalledUpdate(plan);
+ await writeUpdateJournal(plan, { phase: 'complete', childPid: process.pid + 100 });
+ const restored = await readRestoredInstalledUpdate(plan.userData, plan.health.nonce, { ...trust, installed: plan.installed });
+ assert.equal(restored.oldVersion, trust.version);
+}));

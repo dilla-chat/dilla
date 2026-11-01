@@ -1,5 +1,6 @@
-import type { ConsoleMessage, Page, TestInfo } from '@playwright/test';
+import type { ConsoleMessage, ElectronApplication, Page, TestInfo } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
+import { startSignalWire } from './signal-wire.ts';
 
 export const SIGNAL_PREFIX = 'DILLA_SIGNAL_LIFECYCLE ';
 type SignalEvent = 'created' | 'open' | 'close-request' | 'closed' | 'error' | 'limit';
@@ -87,12 +88,13 @@ const recorders = new WeakMap<Page, Recorder>();
 /** Only explicitly diagnosed cases register a recorder. Other tests retain their existing teardown verbatim. */
 export async function markSignalLifecycle(page: Page, mark: Mark): Promise<void> { await recorders.get(page)?.(mark); }
 
-export function signalLifecycleDiagnostics(info: TestInfo, suite: 'csp-axe' | 'afk' = 'csp-axe'): {
-  watch(person: { name: string; page: Page }): Promise<void>; save(): Promise<void>;
+export function signalLifecycleDiagnostics(info: TestInfo, suite: 'csp-axe' | 'afk' | 'autoplay' = 'csp-axe'): {
+  watch(person: { name: string; page: Page }, application?: ElectronApplication): Promise<void>; save(): Promise<void>;
 } {
   const started = Date.now();
   const events: object[] = [];
   const dispose: (() => void)[] = [];
+  const finishWire: (() => Promise<void>)[] = [];
   let dropped = 0;
   const append = (actor: Actor, source: string, facts: object) => {
     if (events.length >= 256) { dropped++; return; }
@@ -102,9 +104,17 @@ export function signalLifecycleDiagnostics(info: TestInfo, suite: 'csp-axe' | 'a
     console.log(`Signal lifecycle diagnostic: ${JSON.stringify(event)}`);
   };
   return {
-    async watch(person) {
+    async watch(person, application) {
       if (!['alice', 'bob', 'ada', 'bjorn', 'phone'].includes(person.name)) throw new Error('Unknown signal diagnostic actor');
       const actor = person.name as Actor;
+      const wire = application ? await startSignalWire(application) : undefined;
+      let wireDone: Promise<void> | undefined;
+      const stopWire = () => wireDone ??= (async () => {
+        if (!wire) return;
+        try { for (const facts of await wire()) append(actor, 'wire', facts); }
+        catch { append(actor, 'wire', { event: 'capture-unavailable' }); }
+      })();
+      finishWire.push(stopWire);
       const listener = (message: ConsoleMessage) => {
         const text = message.text(), socket = signalObservation(text), sdk = sdkSignalEvent(text);
         if (socket) append(actor, 'websocket', socket);
@@ -123,12 +133,16 @@ export function signalLifecycleDiagnostics(info: TestInfo, suite: 'csp-axe' | 'a
         try {
           const snapshot = await Promise.race([read, new Promise<typeof unavailable>(resolve => { timer = setTimeout(() => resolve(unavailable), 500); })]);
           append(actor, 'mark', { mark, ...snapshot, workers: person.page.isClosed() ? 0 : person.page.workers().length });
-        } finally { clearTimeout(timer); }
+        } finally {
+          clearTimeout(timer);
+          if (mark === 'before-context-close') await stopWire();
+        }
       });
       await person.page.context().addInitScript(installSignalObserver);
       await person.page.evaluate(installSignalObserver);
     },
     async save() {
+      for (const finish of finishWire) await finish();
       const path = info.outputPath('signal-lifecycle.json');
       await writeFile(path, JSON.stringify({ version: 1, suite, platform: process.platform, dropped, events }));
       await info.attach('Signal lifecycle diagnostic', { path, contentType: 'application/json' });

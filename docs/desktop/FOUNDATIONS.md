@@ -8,8 +8,11 @@ together; mobile, package-manager distributions and global push-to-talk are excl
 
 - Electron 45.2.1 shell, bundled React/core/media, sandbox/context isolation, typed
   and validated preload commands, frame ownership checks, navigation/resource locks,
-  strict CSP and verified bundled-asset manifest. Encryption keys remain in the core
-  worker. Per-URL partitions preserve scheme, host, port and path identity.
+  strict CSP and verified bundled-asset manifest. Account, identity and MLS keys
+  remain in the core worker. The existing media path briefly relays derived call
+  keys through the owning renderer into its media worker, then wipes the relay
+  buffers; native desktop capabilities never receive these keys. Per-URL
+  partitions preserve scheme, host, port and path identity.
 - Instance chooser and native unfamiliar-host confirmation; one window per instance;
   persistent non-secret shell preferences; tray/close-to-tray, optional autostart,
   native notification routing and unread badges, strict invite parsing.
@@ -41,10 +44,19 @@ together; mobile, package-manager distributions and global push-to-talk are excl
 
 ## Evidence as of 2026-11-01
 
-The Linux native suite passed 17 tests, including actual encrypted selected-app
-capture and exclusion. GitHub's Linux native and voice jobs passed at commit
-`0401ed40617e03fc9e16b16c3148b7f14b4d5759`. Client parity is still being completed;
-no aggregate all-platform release acceptance is claimed. Local regression checks
+All four native platform jobs passed at commit
+`18d7af4c9076e2f57251f48b51a092dc2cae515b`: [Linux x64](https://github.com/jonasthim/dilla/actions/runs/41341631786/job/124953502087),
+[Windows x64](https://github.com/jonasthim/dilla/actions/runs/41341631786/job/124953502110),
+[macOS Intel](https://github.com/jonasthim/dilla/actions/runs/41341631786/job/124953502067)
+and [macOS Apple Silicon](https://github.com/jonasthim/dilla/actions/runs/41341631786/job/124953502127).
+These jobs cover bundled-shell acceptance, actual encrypted selected-application
+audio with own-call and unrelated-application exclusion, fail-closed unbound
+senders, packaging and fuse validation. Both Mac jobs also passed the unsigned
+Sparkle installed-upgrade gate, including rejected feeds/archives, interrupted
+downloads, retries and a cancelled quit followed by preparation again. The same
+run was cancelled at the first Windows client-suite failure; native job success
+does not imply full client, voice or release acceptance. GitHub's Linux voice job previously passed at commit
+`0401ed40617e03fc9e16b16c3148b7f14b4d5759`. Local regression checks
 also cover actual OS pointer hits on search/window controls, copied text through
 the native clipboard boundary, external-browser passkeys, device recovery, signed
 moderation recovery after a process restart, and ciphertext class tampering.
@@ -97,20 +109,22 @@ passing a hardware gate.
 
 | Gate | Linux x64 | Windows x64 | macOS Intel / Apple Silicon |
 |---|---|---|---|
-| Bundled shell and encrypted loopback video | Passed locally and CI | Native tests pass; audio preflight blocks | Native CI gates present |
+| Bundled shell and encrypted loopback video | Native CI passed | Native CI passed | Native CI passed on both architectures |
 | Real encrypted SFU call; mic/camera permission denial | Voice CI passed; denial coverage open | Voice CI pending | Voice CI pending |
-| Selected application audio and own-call exclusion; no plaintext | Actual native gate passed | Signed virtual USB audio provisioning added; actual capture gate pending | Implemented; unrelated-app leakage still blocks launch pending LaunchServices test |
+| Selected application audio and own-call exclusion; no plaintext | Actual native gate passed | Actual native gate passed using signed virtual USB audio | Actual native gate passed on both architectures |
 | Persistent sign-in, enrolment and recovery | Actual bundled-client tests pass; full parity open | Full parity pending | Full parity pending |
 | Passkey/OIDC system-browser handoff, single-use PKCE completion | Actual passkey ceremony and protocol tests pass | Platform acceptance pending | Platform acceptance pending |
 | Background Answer/Decline, ringing, sleep/resume/reconnect | Native ringing actions pass; sleep/resume open | Platform acceptance pending | Platform acceptance pending |
 | Multiple instances, permissions and deep links end to end | Partial native acceptance; full gate open | Platform acceptance pending | Platform acceptance pending |
-| Installed upgrades: corruption, interruption, disk space, drafts, recovery | Open | Open | Complete fault matrix open |
+| Installed upgrades: corruption, interruption, disk space, drafts, recovery | Actual fault matrix and stored-account/KEK/history/recovery/draft guards passed locally; normal FUSE CI pending | Stable launcher, signed slots, installer faults and OS entry fixtures implemented; native CI pending | Feed/archive/download failures and retries passed; full-account upgrade CI pending |
 | Unsigned Sparkle installed upgrade with OS protections intact | N/A | N/A | Actual upgrade passed on both architectures |
 | Full client E2E parity in Electron | Remaining adaptations under test | Pending | Pending |
 | Startup, memory, idle CPU, interaction and call/audio comparison | Measurement harness under validation | Pending | Pending |
 
-The code review in this session is an implementation review. It does not satisfy the
-required independent security review of the completed native application.
+Independent review identified application-audio lifetime and build-provenance
+findings; both now have regression-tested fixes. Release still requires approval
+of the final source tree and completion of every platform gate. Source approval
+does not substitute for native acceptance.
 
 After every gate passes, prepare migration instructions and download routes while
 preserving API/WSS, authentication handoff, invite routes and existing browser device

@@ -1088,11 +1088,45 @@ export function checkDesktopWorkflow(root) {
     'xvfb-run -a dbus-run-session -- bash packages/desktop/scripts/with-window-manager.sh npm run test:electron -w @dilla/desktop',
     'run: npm run test:electron -w @dilla/desktop', 'npm run pack -w @dilla/desktop',
     'node packages/desktop/scripts/check-fuses.mjs', 'node --test packages/desktop/test/native/mac-upgrade.test.mjs',
+    'node --test packages/desktop/test/native/installed-upgrade.test.mjs', 'libfuse2t64', 'name: desktop-installed-upgrade-',
     'prepare-windows-audio.ps1', '--grep-invert "application-audio.spec.ts"', 'name: Application audio encryption and exclusion', 'playwright test --config playwright.config.ts application-audio.spec.ts',
     'npm run dist -w @dilla/desktop', 'name: desktop-installers-${{ matrix.platform }}-${{ matrix.arch }}',
   ]) if (!text.includes(required)) problems.push(`${file}: missing ${required}`);
   if (/--no-sandbox|contents: write|--publish always/.test(text)) problems.push(`${file}: desktop validation must keep sandboxing and cannot publish`);
   const body = job => text.split(`\n  ${job}:\n`)[1]?.split(/\n  [a-z][a-z0-9-]*:\n/)[0] ?? '';
+  const nativeSteps = jobSteps(body('native'));
+  const proof = nativeSteps.findIndex(step => step.some(line => line.includes('name: desktop-installed-upgrade-')));
+  const buildProvenance = nativeSteps.findIndex(step => step.some(line => line.includes('name: Record native desktop build provenance')));
+  const finalDistribution = nativeSteps.findLastIndex(step => step.some(line => line.includes('run: npm run dist -w @dilla/desktop')));
+  const finalFuses = nativeSteps.findLastIndex(step => step.some(line => line.includes('run: node packages/desktop/scripts/check-fuses.mjs')));
+  const installerUpload = nativeSteps.findIndex(step => step.some(line => line.includes('name: desktop-installers-')));
+  if (buildProvenance < 0 || finalDistribution < 0 || finalFuses <= finalDistribution || buildProvenance <= finalFuses || installerUpload <= buildProvenance
+    || nativeSteps[buildProvenance]?.some(line => /\bif:/.test(line))
+    || !nativeSteps[buildProvenance]?.some(line => line.includes('run: node packages/desktop/scripts/build-provenance.mjs packages/desktop/out ${{ matrix.platform }}-${{ matrix.arch }}'))
+    || !nativeSteps[installerUpload]?.some(line => line.trim() === 'packages/desktop/out/build-provenance-*.json')) {
+    problems.push(`${file}: build provenance must authenticate final fused installers and accompany their accepted bytes`);
+  }
+  const lastPlaywright = nativeSteps.findLastIndex(step => step.some(line => /npm run test:electron|playwright test/.test(line)));
+  const installed = nativeSteps.map((step, index) => step.some(line => /node --test packages\/desktop\/test\/native\/(?:mac-upgrade|installed-upgrade)\.test\.mjs/.test(line)) ? index : -1).filter(index => index >= 0);
+  if (proof < 0 || installed.some(index => index <= lastPlaywright || index >= proof)) problems.push(`${file}: installed acceptance proof must follow Playwright cleanup and precede upload`);
+  for (const os of ['Linux', 'Windows']) {
+    if (!nativeSteps.some(step => step.some(line => line.includes('name: Installed upgrade acceptance'))
+      && step.some(line => line.includes(`if: runner.os == '${os}'`))
+      && step.some(line => line.includes('node --test packages/desktop/test/native/installed-upgrade.test.mjs')))) {
+      problems.push(`${file}: ${os} requires actual installed upgrade acceptance`);
+    }
+  }
+  for (const [name, command] of [
+    ['Windows launcher kernel acceptance', 'go test ./internal/desktoplaunch ./packages/desktop/native/windows-launcher'],
+    ['Windows installer maintenance acceptance', 'node --test packages/desktop/test/native/windows-installer-maintenance.test.mjs packages/desktop/test/native/windows-installer-syntax.test.mjs'],
+  ]) {
+    if (!nativeSteps.some(step => step.some(line => line.includes(`name: ${name}`))
+      && step.some(line => line.includes("if: runner.os == 'Windows'"))
+      && step.some(line => line.includes(`run: ${command}`)))) problems.push(`${file}: ${name} requires actual Windows acceptance`);
+  }
+  if (!nativeSteps.some(step => step.some(line => line.includes('name: desktop-installers-'))
+    && step.some(line => line.trim() === 'packages/desktop/out/*.manifest.json'))) problems.push(`${file}: Windows signed program manifest must accompany its accepted installer`);
+  if (/APPIMAGE_EXTRACT_AND_RUN|--appimage-extract/.test(body('native'))) problems.push(`${file}: Linux installed acceptance must exercise normal FUSE launch`);
   const tooling = body('test-tools');
   for (const required of [
     'os: ubuntu-24.04, platform: linux, arch: x64', 'os: windows-latest, platform: win, arch: x64',
@@ -1126,6 +1160,18 @@ export function checkDesktopWorkflow(root) {
     }
   }
   const client = body('client');
+  for (const required of ['e2e/web/support/installed-keyring.sh', 'libasound2t64 gnome-keyring libfuse2t64',
+    'CHROME_DEVEL_SANDBOX: ${{ github.workspace }}/node_modules/electron/dist/chrome-sandbox',
+    'node packages/desktop/scripts/installed-account-proof.mjs e2e/desktop-client-results']) {
+    if (!client.includes(required)) problems.push(`${file}: installed account acceptance missing ${required}`);
+  }
+  if (/APPIMAGE_EXTRACT_AND_RUN|--appimage-extract|--password-store=basic/.test(client)) problems.push(`${file}: installed account acceptance must keep normal FUSE and OS credential protection`);
+  const accountUpload = jobSteps(client).find(step => step.some(line => line.includes('name: Installed account upgrade proof')));
+  if (!accountUpload || !accountUpload.some(line => line.includes("if: steps.installed-account.outputs.present == 'true'"))
+    || !accountUpload.some(line => line.includes('name: desktop-installed-account-${{ matrix.platform }}-${{ matrix.arch }}'))
+    || !accountUpload.some(line => line.includes('path: packages/desktop/test-report/installed-account-${{ matrix.platform }}-${{ matrix.arch }}.json'))) {
+    problems.push(`${file}: installed account proof must upload only from its owning shard`);
+  }
   for (const required of [
     'shard: [1, 2, 3]', 'os: [ubuntu-24.04, windows-latest, macos-15-intel, macos-15]',
     'os: ubuntu-24.04, platform: linux, arch: x64', 'os: windows-latest, platform: win, arch: x64',

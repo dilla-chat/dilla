@@ -1,11 +1,33 @@
 import { createHash, createPublicKey, verify } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile, lstat } from 'node:fs/promises';
 import { join, basename } from 'node:path';
 import { appcast } from './feed-format.mjs';
+import { verifyWindowsRelease } from '../src/windows-release.ts';
+import { verifyWindowsProgramManifest } from '../src/windows-manifest.ts';
 import { verifyRelease, verifyArtifact } from '../src/update.ts';
+import { verifyInstalledAccountReport } from './installed-account-proof.mjs';
+import { buildProvenanceName, readBuildProvenanceFile, verifyBuildProvenance, verifyCandidateBuildRecord } from './build-provenance.mjs';
 
 export const TARGETS = ['linux-x64', 'win-x64', 'mac-x64', 'mac-arm64'];
-const REQUIRED = ['Installed upgrade acceptance', 'Application audio encryption and exclusion'];
+export const BUILD_PROVENANCE_RECORDS = Object.freeze(TARGETS.map(buildProvenanceName));
+export const PUBLIC_ACCEPTANCE_RECORDS = Object.freeze(['release-notes.md', 'security-review.md',
+ ...TARGETS.flatMap(target => [`performance-${target}.json`, `installed-account-${target}.json`]), ...BUILD_PROVENANCE_RECORDS]);
+/** Shared by the offline signer and the online publisher. Only public,
+ * authenticated acceptance records enter a candidate or versioned release. */
+export function publicReleaseRecords(channel) {
+ if (!['stable', 'beta'].includes(channel)) throw new Error('Invalid desktop publication channel');
+ return [`desktop-${channel}.json`, `desktop-${channel}.json.sig`, ...PUBLIC_ACCEPTANCE_RECORDS, 'appcast-x64.xml', 'appcast-arm64.xml'];
+}
+/** The publisher downloads these four records inside the accepted installer
+ * artifacts. Verify their independent copies before staging candidate records;
+ * the signed candidate may never create or overwrite native build provenance. */
+export async function stagePublicReleaseRecords({ candidate, directory, channel }) {
+ const records = publicReleaseRecords(channel);
+ for (const name of BUILD_PROVENANCE_RECORDS) await verifyCandidateBuildRecord(join(candidate, name), join(directory, name));
+ for (const name of records) if (!BUILD_PROVENANCE_RECORDS.includes(name)) {
+  await writeFile(join(directory, name), await readFile(join(candidate, name)), { flag: 'wx' });
+ }
+}
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 
 /** Publication checks the complete accepted run, not just a green build or a
@@ -14,6 +36,7 @@ export async function verifyDesktopBundle({ metadata, signature, trust, director
  const channel = version.includes('-beta.') ? 'beta' : 'stable';
  const release = verifyRelease(metadata, signature.trim(), { publicKeys: trust.metadataPublicKeys, channel, platform: 'linux', arch: 'x64', currentVersion: '0.0.0', now });
  if (release.version !== version) throw new Error('Release tag and authenticated version differ');
+ verifyWindowsRelease(metadata, signature.trim(), { publicKeys: trust.metadataPublicKeys, channel, platform: 'win32', arch: 'x64', currentVersion: '0.0.0', now });
  const expectedTargets = ['linux-x64', 'win32-x64', 'darwin-x64', 'darwin-arm64'];
  if (release.artifacts.length !== 4 || expectedTargets.some(target => !release.artifacts.some(a => `${a.platform}-${a.arch}` === target))) throw new Error('All desktop platforms must release together');
  const source = release.source;
@@ -22,14 +45,31 @@ export async function verifyDesktopBundle({ metadata, signature, trust, director
  if (run.id !== source.ciRun || run.head_sha !== source.head || run.name !== 'ci' || run.status !== 'completed' || run.conclusion !== 'success'
    || run.repository?.full_name !== 'jonasthim/dilla' || run.head_repository?.full_name !== 'jonasthim/dilla') throw new Error('The accepted same-repository CI run must be complete and successful');
  if (!Array.isArray(jobs)) throw new Error('Missing complete CI job inventory');
+ const builds = source.builds;
+ if (!builds || typeof builds !== 'object' || Array.isArray(builds) || Object.keys(builds).length !== TARGETS.length
+   || TARGETS.some(target => !Object.hasOwn(builds, target))) throw new Error('Missing build provenance digests');
+ for (const target of TARGETS) {
+  const record = builds[target];
+  if (!record || typeof record !== 'object' || Array.isArray(record) || Object.keys(record).length !== 1 || !/^[a-f0-9]{64}$/.test(record.sha256)) throw new Error('Missing build provenance digest: ' + target);
+  const bytes = await readBuildProvenanceFile(join(directory, buildProvenanceName(target)));
+  if (digest(bytes) !== record.sha256) throw new Error('Build provenance digest mismatch: ' + target);
+  verifyBuildProvenance(JSON.parse(bytes), target, { commit: source.commit, tree: source.tree, ciRun: source.ciRun, version }, release.assets);
+ }
  for (const target of TARGETS) {
   const native = jobs.find(job => job.name.endsWith(`desktop-${target}`));
   if (!native || native.conclusion !== 'success') throw new Error('Missing accepted native target: ' + target);
-  const gates = target.startsWith('mac-') ? [...REQUIRED, 'Installed unsigned Sparkle upgrade and signed-feed rejection'] : REQUIRED;
+  // Both are actual installed-version fault/retry tests. macOS additionally
+  // proves unsigned Sparkle installation rather than running the NSIS/AppImage fixture.
+  const gates = ['Record native desktop build provenance', 'Application audio encryption and exclusion', target.startsWith('mac-')
+   ? 'Installed unsigned Sparkle upgrade and signed-feed rejection' : 'Installed upgrade acceptance'];
+  if(target==='win-x64')gates.push('Windows launcher kernel acceptance','Windows installer maintenance acceptance');
   for (const gate of gates) if (!native.steps?.some(step => step.name === gate && step.conclusion === 'success')) throw new Error(`${target}: missing accepted ${gate}`);
   for (let shard = 1; shard <= 3; shard++) {
    if (!jobs.some(job => job.name.endsWith(`desktop-client-${target}-${shard}`) && job.conclusion === 'success')) throw new Error(`Missing Electron client coverage: ${target}-${shard}`);
   }
+  const accountProofs = jobs.filter(job => job.conclusion === 'success' && [1, 2, 3].some(shard => job.name.endsWith(`desktop-client-${target}-${shard}`)))
+   .flatMap(job => job.steps ?? []).filter(step => step.name === 'Installed account upgrade proof' && step.conclusion === 'success');
+  if (accountProofs.length !== 1) throw new Error(`${target}: installed-account upgrade proof must succeed in exactly one client shard`);
   const voice = jobs.find(job => job.name.endsWith(`desktop-voice-${target}`) && job.conclusion === 'success');
   if (!voice) throw new Error(`Missing Electron voice coverage: ${target}`);
   if (!voice.steps?.some(step => step.name === 'Desktop performance comparison' && step.conclusion === 'success')) throw new Error(`${target}: missing accepted performance comparison`);
@@ -48,12 +88,24 @@ export async function verifyDesktopBundle({ metadata, signature, trust, director
     || !['startup', 'memory', 'idleCPU', 'interaction', 'callAudio'].every(metric => Array.isArray(report[metric]) && report[metric].length > 0
       && report[metric].every(sample => Number.isFinite(sample.browser) && sample.browser >= 0 && Number.isFinite(sample.desktop) && sample.desktop >= 0))) throw new Error('Incomplete measured performance comparison: ' + target);
  }
+ const installedAccounts = source.installedAccounts;
+ if (!installedAccounts || typeof installedAccounts !== 'object' || Array.isArray(installedAccounts)
+  || Object.keys(installedAccounts).length !== TARGETS.length || TARGETS.some(target => !Object.hasOwn(installedAccounts, target))) throw new Error('Missing installed-account acceptance digests');
+ for (const target of TARGETS) {
+  const record = installedAccounts[target];
+  if (!record || typeof record !== 'object' || Array.isArray(record) || Object.keys(record).length !== 1 || !/^[a-f0-9]{64}$/.test(record.sha256)) throw new Error('Missing installed-account acceptance digest: ' + target);
+  const file = join(directory, `installed-account-${target}.json`), info = await lstat(file);
+  if (!info.isFile() || info.isSymbolicLink() || info.size < 1 || info.size > 8192) throw new Error('Invalid installed-account report file: ' + target);
+  const bytes = await readFile(file);
+  if (bytes.length > 8192 || digest(bytes) !== record.sha256) throw new Error('Installed-account report digest mismatch: ' + target);
+  verifyInstalledAccountReport(JSON.parse(bytes), target, source.commit);
+ }
  const assets = release.assets;
  const requiredNames = [
-  `dilla-${version}-linux-x64.AppImage`, `dilla-${version}-win-x64.exe`,
+  `dilla-${version}-linux-x64.AppImage`, `dilla-${version}-win-x64.exe`, `dilla-${version}-win-x64.manifest.json`,
   ...['x64', 'arm64'].flatMap(arch => [`dilla-${version}-mac-${arch}.zip`, `dilla-${version}-mac-${arch}.dmg`]),
  ];
- if (!Array.isArray(assets) || assets.length !== requiredNames.length || requiredNames.some(name => assets.filter(asset => asset.name === name).length !== 1)) throw new Error('All six installable/update artifacts must be authenticated');
+ if (!Array.isArray(assets) || assets.length !== requiredNames.length || requiredNames.some(name => assets.filter(asset => asset.name === name).length !== 1)) throw new Error('All installable/update artifacts and the Windows manifest must be authenticated');
  for (const asset of assets) {
   if (typeof asset.name !== 'string' || basename(asset.name) !== asset.name || !requiredNames.includes(asset.name)
     || !Number.isSafeInteger(asset.size) || asset.size < 1 || typeof asset.sha512 !== 'string' || !/^[A-Za-z0-9+/]{86}==$/.test(asset.sha512)) throw new Error('Invalid release asset');
@@ -65,6 +117,11 @@ export async function verifyDesktopBundle({ metadata, signature, trust, director
  for (const artifact of release.artifacts) {
   const asset = assets.find(asset => asset.name === new URL(artifact.url).pathname.split('/').at(-1));
   if (!asset || asset.sha512 !== artifact.sha512 || asset.size !== artifact.size) throw new Error('Update and installer descriptor mismatch');
+  if (artifact.platform === 'win32') {
+   const manifest = artifact.programManifest, manifestAsset = assets.find(asset => asset.name === new URL(manifest.url).pathname.split('/').at(-1));
+   if (!manifestAsset || manifestAsset.size !== manifest.size || manifestAsset.sha512 !== manifest.sha512) throw new Error('Windows manifest and authenticated asset differ');
+   verifyWindowsProgramManifest(await readFile(join(directory, manifestAsset.name)), manifest.sha512, {version, channel, arch:artifact.arch});
+  }
   if (artifact.platform === 'darwin') {
    const archive = await readFile(join(directory, asset.name));
    if (!verify(null, archive, sparkleKey, Buffer.from(artifact.sparkleSignature, 'base64'))) throw new Error('Sparkle archive signature mismatch');

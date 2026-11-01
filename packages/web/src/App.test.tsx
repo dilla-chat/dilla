@@ -678,3 +678,85 @@ it('sends coalesced input activity, with no activity on mount or foreground alon
   expect(fake.callsOf('presenceActivity')).toHaveLength(2);
   view.unmount(); clock.mockRestore();
 });
+
+describe('desktop startup health', () => {
+ it('proves local health without opening the account store until main releases durable activation', async () => {
+  const sent: unknown[] = [], fake = new FakeClient();
+  let activate!: () => void;
+  const activated = new Promise<void>(done => { activate = done; });
+  const waitForStartup = vi.fn(() => activated);
+  vi.stubGlobal('dillaDesktop', { send: (message: unknown) => { sent.push(message); return Promise.resolve(); }, waitForStartup });
+  try {
+   render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
+   await waitFor(() => expect(sent).toContainEqual({ type: 'boot-ready', usable: true }));
+   expect(fake.callsOf('start'), 'ordinary startup opens the real account store').toHaveLength(0);
+   expect(waitForStartup).toHaveBeenCalledOnce();
+   await act(async () => { activate(); await activated; });
+   await waitFor(() => expect(fake.callsOf('start')).toHaveLength(1));
+  } finally { cleanup(); vi.unstubAllGlobals(); }
+ });
+ it('does not open an account after a pending startup was unmounted', async () => {
+  const fake = new FakeClient(); let activate!: () => void;
+  const activated = new Promise<void>(done => { activate = done; });
+  const waitForStartup = vi.fn(() => activated);
+  vi.stubGlobal('dillaDesktop', { send: () => Promise.resolve(), waitForStartup });
+  try {
+   const view = render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
+   await waitFor(() => expect(waitForStartup).toHaveBeenCalledOnce());
+   view.unmount();
+   await act(async () => { activate(); await activated; });
+   expect(fake.callsOf('start')).toHaveLength(0);
+  } finally { cleanup(); vi.unstubAllGlobals(); }
+ });
+ it('StrictMode starts an account only once after pending activation', async () => {
+  const fake = new FakeClient(); let activate!: () => void;
+  const activated = new Promise<void>(done => { activate = done; });
+  const waitForStartup = vi.fn(() => activated);
+  vi.stubGlobal('dillaDesktop', { send: () => Promise.resolve(), waitForStartup });
+  try {
+   render(<StrictMode><CoreProvider client={fake}><App fatal={null} /></CoreProvider></StrictMode>);
+   await waitFor(() => expect(waitForStartup).toHaveBeenCalledOnce());
+   expect(fake.callsOf('start')).toHaveLength(0);
+   await act(async () => { activate(); await activated; });
+   await waitFor(() => expect(fake.callsOf('start')).toHaveLength(1));
+  } finally { cleanup(); vi.unstubAllGlobals(); }
+ });
+ it('waits for actual local runtime readiness and still acknowledges an offline network start', async () => {
+  const sent: unknown[] = [], fake = new FakeClient();
+  let ready!: () => void;
+  fake.handler = c => c.m === 'runtimeReady' ? new Promise<void>(done => { ready = done; }) : c.m === 'start' ? Promise.reject(refusal({ code: 'E_NETWORK' })) : Promise.resolve(null);
+  vi.stubGlobal('dillaDesktop', { send: (message: unknown) => { sent.push(message); return Promise.resolve(); } });
+  try {
+   render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
+   expect(sent).not.toContainEqual({ type: 'boot-ready', usable: true });
+   await act(async () => { ready(); await Promise.resolve(); });
+   await waitFor(() => expect(sent).toContainEqual({ type: 'boot-ready', usable: true }));
+   expect(fake.calls.findIndex(c => c.m === 'runtimeReady')).toBeLessThan(fake.calls.findIndex(c => c.m === 'start'));
+  } finally { vi.unstubAllGlobals(); }
+ });
+ it('never acknowledges broken WASM/persistence or a fatal worker even when its window mode is authentication', async () => {
+  for (const failed of ['rpc', 'fatal'] as const) {
+   const sent: unknown[] = [], fake = new FakeClient(); fake.set('account', account({ phase: 'needs-signup' }));
+   fake.handler = c => c.m === 'runtimeReady' && failed === 'rpc' ? Promise.reject(refusal({ code: 'E_CORE_WASM' })) : Promise.resolve(null);
+   vi.stubGlobal('dillaDesktop', { send: (message: unknown) => { sent.push(message); return Promise.resolve(); } });
+   try {
+    render(<CoreProvider client={fake}><App fatal={failed === 'fatal' ? { code: 'E_WORKER', detail: '', status: 0, retryAfterMs: null } : null} /></CoreProvider>);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(sent).not.toContainEqual({ type: 'boot-ready', usable: true });
+   } finally { cleanup(); vi.unstubAllGlobals(); }
+  }
+ });
+});
+
+describe('remote account errors and local installed readiness', () => {
+ for (const code of ['E_NETWORK', 'E_UNAUTHENTICATED', 'E_FORBIDDEN', 'E_CBOR_SHAPE', 'E_INTERNAL']) {
+  it(`keeps local startup healthy when the selected server returns ${code}`, async () => {
+   const sent: unknown[] = [], fake = new FakeClient();
+   fake.set('account', account({ phase: 'error', error: { code, detail: '', status: code === 'E_UNAUTHENTICATED' ? 401 : 403, retryAfterMs: null } }));
+   fake.handler = c => c.m === 'start' ? Promise.reject(refusal({ code, status: code === 'E_UNAUTHENTICATED' ? 401 : 403 })) : Promise.resolve(null);
+   vi.stubGlobal('dillaDesktop', { send: (message: unknown) => { sent.push(message); return Promise.resolve(); } });
+   try { render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>); await waitFor(() => expect(sent.at(-1)).toEqual({ type: 'boot-ready', usable: true })); }
+   finally { cleanup(); vi.unstubAllGlobals(); }
+  });
+ }
+});

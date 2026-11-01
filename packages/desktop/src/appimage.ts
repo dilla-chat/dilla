@@ -19,7 +19,7 @@ async function sync(path: string): Promise<void> {
 }
 
 /** Stage on the destination filesystem before changing the working file. Keep its stable name for autostart. */
-export async function replaceAppImage(source: string, destination: string, artifact: Integrity, launch: (path: string) => Promise<void>): Promise<void> {
+export async function replaceAppImage(source: string, destination: string, artifact: Integrity, launch: (path: string) => Promise<void>, beforeRollback: () => Promise<void> = async () => {}): Promise<void> {
   if (!isAbsolute(source) || !isAbsolute(destination) || source === destination) throw new Error('Invalid AppImage paths');
   const stage = `${destination}.update-${randomUUID()}`;
   const backupStage = `${stage}.previous`;
@@ -40,7 +40,7 @@ export async function replaceAppImage(source: string, destination: string, artif
     await sync(dirname(destination));
     await launch(destination);
   } catch (error) {
-    if (replaced) { await rename(backup, destination); await sync(dirname(destination)); }
+    if (replaced) { await beforeRollback(); await rename(backup, destination); await sync(dirname(destination)); }
     throw error;
   } finally {
     await rm(stage, { force: true });

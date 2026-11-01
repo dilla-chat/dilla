@@ -1,15 +1,22 @@
-import { NativeQuitInstaller } from './quit-install.ts';
+import { NativeQuitInstaller, UnstoppedUpdateHelper } from './quit-install.ts';
 import { loadSparkle, type SparkleInstaller } from './sparkle.ts';
 import { app } from 'electron';
 import { AppImageUpdater, NsisUpdater, type AppUpdater } from 'electron-updater';
 import { Provider, type ProviderRuntimeOptions } from 'electron-updater/out/providers/Provider.js';
 import type { UpdateInfo, ResolvedUpdateFileInfo } from 'electron-updater/out/types.js';
 import { rm } from 'node:fs/promises';
-import { spawn } from 'node:child_process';
+import { currentWindowsInstallation } from './windows-installation.ts';
+import { verifyWindowsRelease } from './windows-release.ts';
+import { verifyWindowsProgramManifest } from './windows-manifest.ts';
+import { prepareInstalledUpdate } from './update-plan.ts';
+import { launchUpdateWatchdog } from './update-runtime.ts';
+import { snapshotUninstall } from './update-registry.ts';
+import { activateInstalledUpdate } from './update-state.ts';
+import { writeUpdateJournal } from './update-journal.ts';
 import type { CustomPublishOptions } from 'builder-util-runtime';
 import { RELEASE_PUBLIC_KEYS } from './update-keys.ts';
 import { newerVersion, verifyRelease, UpdateCoordinator, type Artifact, type Release, type UpdateState } from './update.ts';
-import { replaceAppImage, verifyArtifactFile } from './appimage.ts';
+import { verifyArtifactFile } from './appimage.ts';
 
 const channel = app.getVersion().includes('-beta.') ? 'beta' : 'stable';
 const feed = `https://github.com/jonasthim/dilla/releases/download/desktop-${channel}/desktop-${channel}.json`;
@@ -53,6 +60,8 @@ export function createUpdater(changed: (state: UpdateState) => void, failedQuit:
   let sparkle: SparkleInstaller | null = null;
   let target: Artifact | null = null;
   let downloadedPath: string | null = null;
+  let programManifest: Uint8Array | undefined;
+  let descriptor: { metadata: Uint8Array; signature: string } | null = null;
   // Do not instantiate Electron's macOS updater: unsigned builds MUST use the Sparkle bridge.
   let coordinator: UpdateCoordinator;
   const installer = new NativeQuitInstaller(app, error => { coordinator.installationFailed(error); failedQuit(); });
@@ -62,11 +71,12 @@ export function createUpdater(changed: (state: UpdateState) => void, failedQuit:
       if (RELEASE_PUBLIC_KEYS.length === 0) throw new Error('Launch blocked: no desktop release signing key is embedded');
       if (process.platform === 'linux' && !process.env.APPIMAGE) throw new Error('Updates require the installed AppImage');
       const [bytes, signature] = await Promise.all([boundedFetch(feed, 1_048_576), boundedFetch(feed + '.sig', 128)]);
-      const release = verifyRelease(bytes, Buffer.from(signature).toString('utf8').trim(), {
+      const release = (process.platform === 'win32' ? verifyWindowsRelease : verifyRelease)(bytes, Buffer.from(signature).toString('utf8').trim(), {
         publicKeys: RELEASE_PUBLIC_KEYS, channel, platform: process.platform, arch: process.arch,
         currentVersion: '0.0.0', now: Date.now(),
       });
       if (!newerVersion(release.version, app.getVersion())) return null;
+      descriptor = { metadata: bytes, signature: Buffer.from(signature).toString('utf8').trim() };
       target = release.artifacts.find(a => a.platform === process.platform && a.arch === process.arch)!;
       if (process.platform === 'darwin') { sparkle ??= loadSparkle(process.resourcesPath, app); return release; }
       // A new native object on every retry also discards electron-updater's in-memory cached download descriptor.
@@ -83,6 +93,8 @@ export function createUpdater(changed: (state: UpdateState) => void, failedQuit:
     download: async release => {
       if (process.platform === 'darwin' && sparkle && target) { await sparkle.prepare(release, target); return; }
       if (!native || !target) throw new Error('No verified update');
+      programManifest = undefined;
+      if(process.platform==='win32'){if(!target.programManifest)throw new Error('Missing authenticated Windows manifest');programManifest=await boundedFetch(target.programManifest.url,1048576);if(programManifest.byteLength!==target.programManifest.size)throw new Error('Windows manifest size differs');verifyWindowsProgramManifest(programManifest,target.programManifest.sha512,{version:release.version,channel,arch:'x64'});}
       const files = await native.downloadUpdate();
       if (files.length !== 1) throw new Error('Unexpected update artifacts');
       try { await verifyArtifactFile(files[0], target); downloadedPath = files[0]; }
@@ -94,19 +106,24 @@ export function createUpdater(changed: (state: UpdateState) => void, failedQuit:
       if (!native || !target || !downloadedPath) throw new Error('No verified native update');
       try { await verifyArtifactFile(downloadedPath, target); }
       catch (error) { await rm(downloadedPath, { force: true }); downloadedPath = null; throw error; }
-      const launch = (path: string, args: string[]): Promise<void> => new Promise((resolve, reject) => {
-        const child = spawn(path, args, { detached: true, stdio: 'ignore', env: { ...process.env, APPIMAGE_SILENT_INSTALL: 'true', DILLA_UPDATE_PREVIOUS_PID: String(process.pid) } });
-        child.once('error', reject); child.once('spawn', () => { child.unref(); resolve(); });
-      });
+      if (!descriptor || !['linux', 'win32'].includes(process.platform)) throw new Error('No authenticated update descriptor');
       const file = downloadedPath, artifact = target;
       installer.arm(async () => {
        // Recheck after unload as well: no installer sees an unauthenticated cache file.
        await verifyArtifactFile(file, artifact);
-       if (process.platform === 'linux') {
-        await replaceAppImage(file, process.env.APPIMAGE!, artifact, path => launch(path, []));
-       } else {
-        // The authenticated, per-user NSIS installer. Never fall back to elevation or shell.openPath.
-        await launch(file, ['/S', '--updated', '--force-run']);
+       const platform = process.platform as 'linux' | 'win32';
+       const installed = platform === 'linux' ? process.env.APPIMAGE! : process.execPath;
+       const windows=platform==='win32'?await currentWindowsInstallation(app.getPath('userData'),installed,{publicKeys:RELEASE_PUBLIC_KEYS,version:app.getVersion(),channel,arch:process.arch,productName:app.getName()}):undefined;
+       const uninstall = windows ? await snapshotUninstall(windows.root) : undefined;
+       const plan = await prepareInstalledUpdate({ userData: app.getPath('userData'), installed, downloaded: file, parentPid: process.pid,
+        metadata: descriptor!.metadata, signature: descriptor!.signature, ...(uninstall ? { uninstall } : {}), ...(windows ? {windows,programManifest}: {}) },
+        { publicKeys: RELEASE_PUBLIC_KEYS, platform, arch: process.arch, version: app.getVersion(), channel });
+       const watchdog = await launchUpdateWatchdog(plan);
+       try { await activateInstalledUpdate(plan); await watchdog.arm(); }
+       catch (error) {
+        try { await watchdog.cancel(); } catch { throw new UnstoppedUpdateHelper('The update helper could not be stopped safely'); }
+        try { await writeUpdateJournal(plan, { phase: 'failed', failure: 'interrupted' }); } catch { /* The verified working app remains usable; the retained preparation still requires retry. */ }
+        throw error;
        }
       });
     },

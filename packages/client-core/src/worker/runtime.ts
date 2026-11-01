@@ -7,6 +7,7 @@ import type { CoreWasmModule } from '../core-port';
 import { toHex } from '../hex';
 import { Controller, type ControllerParts } from './controller';
 import { workerInstanceURL } from './instance-url';
+import { localRuntimeReadiness } from './runtime-readiness';
 
 type WasmModule = CoreWasmModule & { default(): Promise<unknown> };
 let wasm: Promise<WasmModule> | null = null;
@@ -51,6 +52,7 @@ export function startCoreWorker(scope: DedicatedWorkerGlobalScope, options: { te
     // A callKeys push transfers its key buffer (L-TS-52): the post detaches it here, so no copy stays in the worker.
     post: (message, transfer) => { scope.postMessage(message, transfer ?? []); },
     testHooks: options.testHooks,
+    runtimeReady: localRuntimeReadiness(loadCoreWasm),
     boot: async (instance) => {
       const mod = await loadCoreWasm();
       // The root is asked for lazily: a private WebKit window rejects getDirectory(), and boot()'s probe must report that first.

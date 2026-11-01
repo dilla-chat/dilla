@@ -1,10 +1,13 @@
 const channel = require('./package.json').version.includes('-beta.') ? 'beta' : 'stable';
-const { sparklePublicKey } = require('./release-trust.json');
+const { sparklePublicKey, metadataPublicKeys } = require('./release-trust.json');
+const windowsHooks = require('./scripts/windows-builder-hooks.cjs').createWindowsBuilderHooks({ metadataPublicKeys });
 module.exports = {
   appId: 'dev.dilla.desktop', productName: 'Dilla', executableName: 'dilla-desktop',
   directories: { output: 'out', buildResources: 'assets' },
   files: ['dist/**', 'package.json'],
   asar: true,
+  afterSign: windowsHooks.afterSign,
+  artifactBuildStarted: windowsHooks.artifactBuildStarted,
   beforePack: async context => {
     const arch = { x64: 1, arm64: 3 }[process.arch];
     if (context.electronPlatformName !== process.platform || context.arch !== arch) throw new Error('Build desktop native capabilities on the matching OS and architecture');
@@ -15,7 +18,7 @@ module.exports = {
   publish: [{ provider: 'github', owner: 'jonasthim', repo: 'dilla', releaseType: 'draft' }],
   linux: { syncDesktopName: true, target: [{ target: 'AppImage', arch: ['x64'] }], category: 'Network', icon: 'assets/icon.png' },
   win: { target: [{ target: 'nsis', arch: ['x64'] }], icon: 'assets/icon.png' },
-  nsis: { perMachine: false, oneClick: true, allowElevation: false, deleteAppDataOnUninstall: false },
+  nsis: { script: 'build/windows-installer.nsi', perMachine: false, oneClick: true, allowElevation: false, packElevateHelper: false, preCompressedFileExtensions: [], differentialPackage: false, deleteAppDataOnUninstall: false },
   mac: {
     target: [{ target: 'dmg', arch: [process.arch] }, { target: 'zip', arch: [process.arch] }],
     extraFiles: [{ from: 'native-bin/Sparkle.framework', to: 'Frameworks/Sparkle.framework' }],

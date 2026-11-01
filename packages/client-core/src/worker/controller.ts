@@ -64,6 +64,7 @@ export interface ControllerDeps {
   setTimeout(fn: () => void, ms: number): number; clearTimeout(id: number): void;
   sleep(ms: number, signal?: AbortSignal): Promise<void>;
   boot(instance: Instance): Promise<BootOutcome>;
+  runtimeReady?(): Promise<null>;                    // local WASM/persistence capability; no identity work
   resetDevice(instance: Instance): Promise<void>;  // removes the KEK record and the OPFS directory dilla/<instance hex>
   /** Posts to the own page; `transfer` moves buffers (a callKeys key, L-TS-52) instead of copying them. */
   post(message: FromWorker, transfer?: Transferable[]): void;
@@ -187,6 +188,7 @@ function coreInput(e: unknown, details: ReadonlySet<string>): boolean {
 type Method = Command['m'];
 const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'start',
+  'runtimeReady',
   'signupBegin',
   'signupSubmit',
   'signupReset',
@@ -669,6 +671,7 @@ const VALIDATORS: Partial<Record<Method, (c: Record<string, unknown>) => string 
 function invalid(command: Record<string, unknown>): string | null {
   const m = command.m as string;
   if (!COMMANDS.has(m)) return `unknown command ${m}`;
+  if (m === 'runtimeReady' && Object.keys(command).length !== 1) return 'runtimeReady takes no fields';
   for (const field of ID_FIELDS[m as Method] ?? []) {
     const value = command[field];
     if (typeof value !== 'string' || !ID.test(value)) return `${field} is not 32 lowercase hex`;
@@ -1358,7 +1361,7 @@ export class Controller {
     if (problem !== null) { this.refuse(id, 'E_BAD_INPUT', problem); return; }
     const command = data.command;
     if (this.barrier.isClosed()) { this.refuse(id, 'E_NOT_READY', ''); return; }
-    if (command.m !== 'start' && !ACCEPTS[this.phase].includes(command.m)) {
+    if (command.m !== 'start' && command.m !== 'runtimeReady' && !ACCEPTS[this.phase].includes(command.m)) {
       this.refuse(id, 'E_NOT_READY', `the phase is ${this.phase}`);
       return;
     }
@@ -1394,6 +1397,7 @@ export class Controller {
   private dispatch(command: Command, searchId: number | null): Promise<unknown> {
     switch (command.m) {
       case 'start': return this.start();
+      case 'runtimeReady': return this.deps.runtimeReady ? this.deps.runtimeReady() : Promise.reject(new Refusal('E_NOT_READY', ''));
       case 'signupBegin': return this.signupBegin();
       case 'signupSubmit': return this.signupSubmit(command);
       case 'signupReset': return this.signupReset();

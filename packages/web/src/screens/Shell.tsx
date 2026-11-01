@@ -1864,8 +1864,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   useEffect(() => {
     setDesktopGuard({ activeCall: call.channelId !== null || call.recoveryChannelId !== null || recentUpdateCall !== null,
       unsavedDraft: updateBlocked || draft.text.length > 0 || (threadDraft?.text.length ?? 0) > 0 || (pendingAttachments?.length ?? 0) > 0 });
-    return () => { setDesktopGuard({ activeCall: false, unsavedDraft: false }); };
   }, [call.channelId, call.recoveryChannelId, recentUpdateCall, updateBlocked, draft.text, threadDraft, pendingAttachments]);
+  useEffect(() => () => { setDesktopGuard({ activeCall: false, unsavedDraft: false }); }, []);
   const [updateError, setUpdateError] = useState(false);
   const [updateRetry, setUpdateRetry] = useState(0);
   const [restoreError, setRestoreError] = useState(false);

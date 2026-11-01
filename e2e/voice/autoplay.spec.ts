@@ -9,6 +9,8 @@ import { expect, test } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
 import { writeFile } from 'node:fs/promises';
 import { AUDIBLE_RMS, VoicePeer, WAIT, audible, audibleLevel, copy, dock, heard, joinVoice, noiseOff, onboard, self, tile } from './support/voice';
+import { markSignalLifecycle, signalLifecycleDiagnostics } from './support/signal-lifecycle.ts';
+import { desktopApplication, desktopE2E } from '../web/support/electron.ts';
 
 watchContexts(test);
 
@@ -58,8 +60,11 @@ test('call audio the browser holds back comes back with one press of turn on aud
   const peer = peerBrowser.track(await VoicePeer.start());
   const alice = await peerBrowser.open('alice');
   const bob = await peerBrowser.open('bob');
-  await bob.context.addInitScript(holdAudioBack);
+  const signalDiagnostics = signalLifecycleDiagnostics(testInfo, 'autoplay');
   try {
+    await signalDiagnostics.watch(alice, desktopE2E() ? desktopApplication(alice.context) : undefined);
+    await signalDiagnostics.watch(bob, desktopE2E() ? desktopApplication(bob.context) : undefined);
+    await bob.context.addInitScript(holdAudioBack);
     await peer.setup();
     await onboard(alice, peer, 'alice');
     await onboard(bob, peer, 'bob');
@@ -88,82 +93,86 @@ test('call audio the browser holds back comes back with one press of turn on aud
       await expect(turnOn).toHaveCount(0);
     });
   } finally {
-    // A test's finally runs before Playwright finalizes its failed status. Keep
-    // the actual receiver graph and worker counters before closing either peer.
-    for (const person of [alice, bob]) {
-      const audio = await person.page.evaluate(async () => {
-        const rec = (window as unknown as { __dw?: { contexts: AudioContext[]; remoteTracks: Set<string>; remoteAnalysers: AnalyserNode[]; peerConnections: RTCPeerConnection[];
-          captures: MediaStreamTrack[];
-          localSources: { analyser: AnalyserNode; tracks: MediaStreamTrack[] }[];
-          inputStages: { node: AudioWorkletNode; allowed: boolean; gate: { enabled?: boolean; auto?: boolean; thresholdDb?: number }; levels: number; level?: { db: number; thresholdDb: number; open: boolean } }[];
-        } }).__dw;
-        const trackState = (track: MediaStreamTrack) => {
-          const settings = track.getSettings();
-          const constraints = track.getConstraints();
-          const constraint = (value: unknown) => {
-            if (typeof value === 'boolean' || typeof value === 'number') return value;
-            if (value === null || typeof value !== 'object') return undefined;
-            return Object.fromEntries(Object.entries(value).filter(([key, entry]) =>
-              ['exact', 'ideal', 'min', 'max'].includes(key) && ['boolean', 'number'].includes(typeof entry)));
+    try {
+      // A test's finally runs before Playwright finalizes its failed status. Keep
+      // the actual receiver graph and worker counters before closing either peer.
+      for (const person of [alice, bob]) {
+        const audio = await person.page.evaluate(async () => {
+          const rec = (window as unknown as { __dw?: { contexts: AudioContext[]; remoteTracks: Set<string>; remoteAnalysers: AnalyserNode[]; peerConnections: RTCPeerConnection[];
+            captures: MediaStreamTrack[];
+            localSources: { analyser: AnalyserNode; tracks: MediaStreamTrack[] }[];
+            inputStages: { node: AudioWorkletNode; allowed: boolean; gate: { enabled?: boolean; auto?: boolean; thresholdDb?: number }; levels: number; level?: { db: number; thresholdDb: number; open: boolean } }[];
+          } }).__dw;
+          const trackState = (track: MediaStreamTrack) => {
+            const settings = track.getSettings();
+            const constraints = track.getConstraints();
+            const constraint = (value: unknown) => {
+              if (typeof value === 'boolean' || typeof value === 'number') return value;
+              if (value === null || typeof value !== 'object') return undefined;
+              return Object.fromEntries(Object.entries(value).filter(([key, entry]) =>
+                ['exact', 'ideal', 'min', 'max'].includes(key) && ['boolean', 'number'].includes(typeof entry)));
+            };
+            return {
+              capture: rec?.captures.indexOf(track), enabled: track.enabled, muted: track.muted, state: track.readyState,
+              // Explicit allowlist: deviceId, groupId, labels and application identifiers never leave the page.
+              settings: { sampleRate: settings.sampleRate, channelCount: settings.channelCount,
+                echoCancellation: settings.echoCancellation, autoGainControl: settings.autoGainControl, noiseSuppression: settings.noiseSuppression },
+              constraints: { sampleRate: constraint(constraints.sampleRate), channelCount: constraint(constraints.channelCount),
+                echoCancellation: constraint(constraints.echoCancellation), autoGainControl: constraint(constraints.autoGainControl), noiseSuppression: constraint(constraints.noiseSuppression) },
+            };
           };
+          const analyserState = (analyser: AnalyserNode) => {
+            const samples = new Float32Array(analyser.fftSize); analyser.getFloatTimeDomainData(samples);
+            return { state: analyser.context.state, time: analyser.context.currentTime, rms: Math.sqrt(samples.reduce((sum, sample) => sum + sample * sample, 0) / samples.length) };
+          };
+          const connections = await Promise.all((rec?.peerConnections ?? []).map(async connection => {
+            const audioStats: Record<string, string | number>[] = [];
+            try {
+              (await connection.getStats()).forEach(stat => {
+                if (stat.kind !== 'audio' || !['media-source', 'inbound-rtp', 'outbound-rtp'].includes(stat.type)) return;
+                const summary: Record<string, string | number> = { type: stat.type };
+                // No candidate addresses, certificates, identity, SDP or key data.
+                for (const field of ['audioLevel', 'totalAudioEnergy', 'totalSamplesDuration', 'packetsSent', 'bytesSent', 'packetsReceived', 'bytesReceived', 'totalSamplesReceived', 'concealedSamples', 'silentConcealedSamples']) {
+                  if (typeof stat[field] === 'number') summary[field] = stat[field];
+                }
+                audioStats.push(summary);
+              });
+            } catch { /* A closed connection has no readable statistics. */ }
+            return { state: connection.connectionState, audioStats, senders: connection.getSenders().flatMap(sender => sender.track?.kind === 'audio' ? [trackState(sender.track)] : []) };
+          }));
           return {
-            capture: rec?.captures.indexOf(track), enabled: track.enabled, muted: track.muted, state: track.readyState,
-            // Explicit allowlist: deviceId, groupId, labels and application identifiers never leave the page.
-            settings: { sampleRate: settings.sampleRate, channelCount: settings.channelCount,
-              echoCancellation: settings.echoCancellation, autoGainControl: settings.autoGainControl, noiseSuppression: settings.noiseSuppression },
-            constraints: { sampleRate: constraint(constraints.sampleRate), channelCount: constraint(constraints.channelCount),
-              echoCancellation: constraint(constraints.echoCancellation), autoGainControl: constraint(constraints.autoGainControl), noiseSuppression: constraint(constraints.noiseSuppression) },
+            connections,
+            contexts: rec?.contexts.map(context => ({ state: context.state, time: context.currentTime, sampleRate: context.sampleRate })),
+            remoteTracks: rec ? [...rec.remoteTracks] : [],
+            analysers: rec?.remoteAnalysers.map(analyserState),
+            captures: rec?.captures.map(trackState),
+            localSources: rec?.localSources.map(source => ({ ...analyserState(source.analyser), tracks: source.tracks.map(trackState) })),
+            inputStages: rec?.inputStages.map(stage => ({
+              state: stage.node.context.state, time: stage.node.context.currentTime, allowed: stage.allowed,
+              gate: { enabled: stage.gate?.enabled, auto: stage.gate?.auto, thresholdDb: stage.gate?.thresholdDb },
+              levels: stage.levels, level: stage.level,
+            })),
           };
-        };
-        const analyserState = (analyser: AnalyserNode) => {
-          const samples = new Float32Array(analyser.fftSize); analyser.getFloatTimeDomainData(samples);
-          return { state: analyser.context.state, time: analyser.context.currentTime, rms: Math.sqrt(samples.reduce((sum, sample) => sum + sample * sample, 0) / samples.length) };
-        };
-        const connections = await Promise.all((rec?.peerConnections ?? []).map(async connection => {
-          const audioStats: Record<string, string | number>[] = [];
-          try {
-            (await connection.getStats()).forEach(stat => {
-              if (stat.kind !== 'audio' || !['media-source', 'inbound-rtp', 'outbound-rtp'].includes(stat.type)) return;
-              const summary: Record<string, string | number> = { type: stat.type };
-              // No candidate addresses, certificates, identity, SDP or key data.
-              for (const field of ['audioLevel', 'totalAudioEnergy', 'totalSamplesDuration', 'packetsSent', 'bytesSent', 'packetsReceived', 'bytesReceived', 'totalSamplesReceived', 'concealedSamples', 'silentConcealedSamples']) {
-                if (typeof stat[field] === 'number') summary[field] = stat[field];
-              }
-              audioStats.push(summary);
-            });
-          } catch { /* A closed connection has no readable statistics. */ }
-          return { state: connection.connectionState, audioStats, senders: connection.getSenders().flatMap(sender => sender.track?.kind === 'audio' ? [trackState(sender.track)] : []) };
-        }));
-        return {
-          connections,
-          contexts: rec?.contexts.map(context => ({ state: context.state, time: context.currentTime, sampleRate: context.sampleRate })),
-          remoteTracks: rec ? [...rec.remoteTracks] : [],
-          analysers: rec?.remoteAnalysers.map(analyserState),
-          captures: rec?.captures.map(trackState),
-          localSources: rec?.localSources.map(source => ({ ...analyserState(source.analyser), tracks: source.tracks.map(trackState) })),
-          inputStages: rec?.inputStages.map(stage => ({
-            state: stage.node.context.state, time: stage.node.context.currentTime, allowed: stage.allowed,
-            gate: { enabled: stage.gate?.enabled, auto: stage.gate?.auto, thresholdDb: stage.gate?.thresholdDb },
-            levels: stage.levels, level: stage.level,
-          })),
-        };
-      }).catch(error => ({ error: String(error) }));
-      const workers = await Promise.all(person.page.workers().map(worker => worker.evaluate(() => {
-        const stats = (globalThis as unknown as { __dillaMediaStats?: Record<string, unknown> }).__dillaMediaStats;
-        if (!stats) return null;
-        const { encrypted, decrypted, verified, emptyFrames, dropped, passedThrough } = stats;
-        return { encrypted, decrypted, verified, emptyFrames, dropped, passedThrough };
-      }).catch(error => ({ error: String(error) }))));
-      const diagnostic = JSON.stringify({ person: person.name, audio, workers });
-      // The fail-fast workflow can cancel a large trace upload. Keep this small,
-      // explicitly allowlisted snapshot in the job log and upload it first.
-      console.log(`Autoplay audio diagnostic: ${diagnostic}`);
-      const path = testInfo.outputPath(`autoplay-${person.name}.json`);
-      await writeFile(path, diagnostic);
-      await testInfo.attach(`autoplay-${person.name}`, { path, contentType: 'application/json' });
-    }
-    await peerBrowser.close(bob);
-    await peerBrowser.close(alice);
-    await peer.close();
+        }).catch(error => ({ error: String(error) }));
+        const workers = await Promise.all(person.page.workers().map(worker => worker.evaluate(() => {
+          const stats = (globalThis as unknown as { __dillaMediaStats?: Record<string, unknown> }).__dillaMediaStats;
+          if (!stats) return null;
+          const { encrypted, decrypted, verified, emptyFrames, dropped, passedThrough } = stats;
+          return { encrypted, decrypted, verified, emptyFrames, dropped, passedThrough };
+        }).catch(error => ({ error: String(error) }))));
+        const diagnostic = JSON.stringify({ person: person.name, audio, workers });
+        // The fail-fast workflow can cancel a large trace upload. Keep this small,
+        // explicitly allowlisted snapshot in the job log and upload it first.
+        console.log(`Autoplay audio diagnostic: ${diagnostic}`);
+        const path = testInfo.outputPath(`autoplay-${person.name}.json`);
+        await writeFile(path, diagnostic);
+        await testInfo.attach(`autoplay-${person.name}`, { path, contentType: 'application/json' });
+      }
+      await markSignalLifecycle(alice.page, 'body-complete');
+      await markSignalLifecycle(bob.page, 'body-complete');
+      await peerBrowser.close(bob);
+      await peerBrowser.close(alice);
+      await peer.close();
+    } finally { await signalDiagnostics.save(); }
   }
 });
