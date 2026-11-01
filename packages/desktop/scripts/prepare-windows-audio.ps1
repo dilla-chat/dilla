@@ -25,6 +25,15 @@ if ($endpoints.Count -eq 0) {
   }
   $work = Join-Path $env:RUNNER_TEMP 'dilla-windows-audio'
   New-Item -ItemType Directory -Path $work -Force | Out-Null
+  function Invoke-AudioDeviceSetup([string]$File, [string[]]$Arguments, [string]$Label) {
+    Write-Output "USB/IP device setup: $Label"
+    $owned = Start-Process -FilePath $File -ArgumentList $Arguments -PassThru -NoNewWindow -RedirectStandardOutput (Join-Path $work "$Label.out") -RedirectStandardError (Join-Path $work "$Label.err")
+    if (-not $owned.WaitForExit(60000)) {
+      & taskkill /PID $owned.Id /T /F
+      throw "USB/IP device setup timed out: $Label"
+    }
+    if ($owned.ExitCode -ne 0) { throw "USB/IP device setup failed: $Label ($($owned.ExitCode))" }
+  }
   $installer = Join-Path $work 'USBip-0.9.7.5-x64-preview.exe'
   # This corrected release removes the development-root-certificate installation
   # present in earlier installers. It contains Microsoft-attested driver catalogs.
@@ -37,19 +46,30 @@ if ($endpoints.Count -eq 0) {
     throw 'USB/IP installer does not have its expected valid, timestamped publisher signature'
   }
   $roots = Get-TrustedRoots
-  $transport = Join-Path $work 'USBip'
-  # Install only the matching signed user-space tools. The installer's `client`
-  # component runs pnputil /install against EVERY USB 3 root hub, and hangs on
-  # the hosted VM. Stage the extension below before creating our new controller.
-  Write-Output 'Installing the verified USB/IP user-space tools'
-  $setup = Start-Process -FilePath $installer -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/COMPONENTS=main', "/DIR=`"$transport`"", "/LOG=`"$work\install.log`"") -PassThru
-  if (-not $setup.WaitForExit(120000)) {
-    & taskkill /PID $setup.Id /T /F
-    throw 'Signed USB/IP installation did not complete within two minutes; see install.log'
+  # The installer's client component is FIXED: even /COMPONENTS=main runs
+  # pnputil /install against unrelated USB root hubs and hangs the hosted VM.
+  # Never execute it. Extract only the authenticated user-space files instead.
+  # This pinned innoextract build supports the installer's Inno Setup 6.4.3.
+  # https://github.com/UserUnknownFactor/innoextract_win/tree/643
+  $extractorArchive = Join-Path $work 'innoextract643.zip'
+  Get-PinnedFile 'https://github.com/UserUnknownFactor/innoextract_win/releases/download/643/innoextract643.zip' $extractorArchive 'a61219f066cd240f7dba9043e894087397dfbda0539fb1ec2e59c9e66938d019'
+  $extractor = Join-Path $work 'innoextract'
+  Expand-Archive -Path $extractorArchive -DestinationPath $extractor
+  $unpacked = Join-Path $work 'USBip'
+  Invoke-AudioDeviceSetup (Join-Path $extractor 'innoextract.exe') @('--extract', '--no-extract-unknown', '--include', 'app\usbip.exe', '--include', 'app\devnode.exe', '--include', 'app\libusbip.dll', '--include', 'app\resources.dll', '--output-dir', "`"$unpacked`"", "`"$installer`"") 'extract-tools'
+  $transport = Join-Path $unpacked 'app'
+  $toolHashes = @{
+    'usbip.exe' = '27b2e198d20965f5ec4eaa06df37257dfa36a0965c5b87682de18333fca34b40'
+    'devnode.exe' = 'a10dafab0e07ba8074213e48857a2db9a506032d8ef2dba4a4c74c9b0c1f922d'
+    'libusbip.dll' = '59f91eebdf1585092f96ee79f044b78eff4a1d139fad3906f742a8b7f3cf34ee'
+    'resources.dll' = 'af2960d0bcae2e090e1b2512526ad07148884b3752b07de1feb9d3306f2441a0'
   }
-  Write-Output "USB/IP installer exit: $($setup.ExitCode)"
-  if (@(Compare-Object $roots (Get-TrustedRoots)).Count -ne 0) { throw 'The USB/IP installer changed a trusted certificate root store' }
-  if ($setup.ExitCode -ne 0) { throw "Signed USB/IP installation failed or requires a reboot: $($setup.ExitCode)" }
+  foreach ($file in $toolHashes.Keys) {
+    if ((Get-FileHash -Algorithm SHA256 (Join-Path $transport $file)).Hash -ne $toolHashes[$file]) {
+      throw "Extracted USB/IP tool hash mismatch: $file"
+    }
+  }
+  if (@(Compare-Object $roots (Get-TrustedRoots)).Count -ne 0) { throw 'USB/IP tool extraction changed a trusted certificate root store' }
   $drivers = Join-Path $work 'drivers'
   New-Item -ItemType Directory -Path $drivers -Force | Out-Null
   $files = @{
@@ -69,19 +89,11 @@ if ($endpoints.Count -eq 0) {
       throw "Downloaded USB/IP kernel catalog lacks valid Microsoft attestation: $name"
     }
   }
-  function Invoke-AudioDeviceSetup([string]$File, [string[]]$Arguments, [string]$Label) {
-    Write-Output "USB/IP device setup: $Label"
-    $owned = Start-Process -FilePath $File -ArgumentList $Arguments -PassThru -NoNewWindow -RedirectStandardOutput (Join-Path $work "$Label.out") -RedirectStandardError (Join-Path $work "$Label.err")
-    if (-not $owned.WaitForExit(60000)) {
-      & taskkill /PID $owned.Id /T /F
-      throw "USB/IP device setup timed out: $Label"
-    }
-    if ($owned.ExitCode -ne 0) { throw "USB/IP device setup failed: $Label ($($owned.ExitCode))" }
-  }
   # Pre-stage only: no /install and no restart of unrelated root hubs. Windows
   # applies this signed extension when the new USB/IP controller enumerates.
   Invoke-AudioDeviceSetup "$env:windir\System32\pnputil.exe" @('/add-driver', "`"$drivers\usbip2_filter.inf`"") 'stage-filter'
   Invoke-AudioDeviceSetup (Join-Path $transport 'devnode.exe') @('install', "`"$drivers\usbip2_ude.inf`"", 'ROOT\USBIP_WIN2\UDE') 'create-controller'
+  if (@(Compare-Object $roots (Get-TrustedRoots)).Count -ne 0) { throw 'USB/IP device setup changed a trusted certificate root store' }
   # Verify the installed kernel packages, including the Microsoft attestation.
   foreach ($name in @('usbip2_ude', 'usbip2_filter')) {
     $catalog = Get-ChildItem "$env:windir\System32\DriverStore\FileRepository\$name.inf_amd64_*\$name.cat" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
