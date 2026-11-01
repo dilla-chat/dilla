@@ -1,4 +1,6 @@
 import { expect } from '@playwright/test';
+import { desktopE2E } from '../support/electron';
+import { expectDesktopQuitBlocked } from '../support/desktop-quit';
 import {
   COPY, PAST_BROWSER_SESSION_S, TEST_TIMEOUT, WAIT, advanceClock, attachInput, clearKek, composerBox, copy, expectAccessible,
   expectComposerReady, expectHeading, expectShell, instanceInvite, joinCommunity, messageRow, onboardingFrame,
@@ -7,7 +9,8 @@ import {
 
 test.describe.configure({ timeout: TEST_TIMEOUT });
 
-test('a new web build reloads an open tab and restores its draft and selected file', async ({ page, peer, instanceName }) => {
+test(desktopE2E() ? 'an installed client ignores web update hints and protects its draft and selected file on native quit'
+  : 'a new web build reloads an open tab and restores its draft and selected file', async ({ page, peer, instanceName }) => {
   const setup = await peer.setup();
   await peer.register();
   await signUp(page, instanceInvite(), instanceName);
@@ -18,6 +21,20 @@ test('a new web build reloads an open tab and restores its draft and selected fi
   await attachInput(page).setInputFiles({ name: 'update-notes.txt', mimeType: 'text/plain', buffer: Buffer.from('saved file') });
   await expect(trayEntries(page)).toHaveCount(1, { timeout: WAIT });
   await expect(trayEntries(page).first()).toHaveAttribute('data-phase', 'ready', { timeout: WAIT });
+
+  if (desktopE2E()) {
+    // Servers cannot choose or replace executable desktop UI. A native quit
+    // consults the renderer guard and retains both the draft and selected file.
+    let hints = 0, loads = 0;
+    page.on('request', request => { if (new URL(request.url()).pathname === '/app-version.json') hints++; });
+    page.on('load', () => { loads++; });
+    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    await expectDesktopQuitBlocked(page.context());
+    expect(hints).toBe(0); expect(loads).toBe(0);
+    await expect(composerBox(page, peer.channelName)).toHaveValue(draft);
+    await expect(trayEntries(page).first()).toContainText('update-notes.txt');
+    return;
+  }
 
   let first = true;
   await page.route('**/app-version.json', async route => {
