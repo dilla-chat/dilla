@@ -1,3 +1,4 @@
+import { themes, type ThemeName } from '@dilla/design-tokens';
 import { useEffect, useRef, useState } from 'react';
 import { Banner, Icon, Segmented, SettingsRow, type IconName } from '@dilla/ui';
 import { isThemePref, readTheme, writeTheme, type ThemePref } from '../../prefs.ts';
@@ -9,12 +10,8 @@ import { useSlice } from '../../core/use-slice.ts';
 const TITLE_ID = 'appearance-title';
 /** The theme row's tile glyph (README §5.9 icon tiles; task 10). */
 const THEME_ICON: IconName = 'eye';
-const THEMES: readonly { value: ThemePref; key: StringKey }[] = [
-  { value: 'system', key: 'appearance.theme.system' },
-  { value: 'signal', key: 'appearance.theme.signal' },
-  { value: 'light', key: 'appearance.theme.light' },
-  { value: 'high-contrast', key: 'appearance.theme.contrast' },
-];
+const THEME_LABELS: Record<ThemeName, StringKey> = { signal: 'appearance.theme.signal' };
+const THEMES = (Object.keys(themes) as ThemeName[]).map(value => ({ value, key: THEME_LABELS[value] }));
 
 /**
  * Settings → Appearance (L-TS-26, Q24): the theme. The choice applies at once and is kept in the page's own
@@ -24,14 +21,14 @@ const THEMES: readonly { value: ThemePref; key: StringKey }[] = [
 export function Appearance(): React.JSX.Element {
   const client = useCore();
   const settings = useSlice('settings') ?? {};
-  const [value, setValue] = useState<ThemePref>('system');
+  const [value, setValue] = useState<ThemePref>('signal');
   const [pending, setPending] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   // A choice made before the stored preference arrives wins over it.
   const chosen = useRef(false);
   useEffect(() => {
     let live = true;
-    void readTheme().then(stored => { if (live && !chosen.current) setValue(stored); });
+    void readTheme().then(stored => { if (live && !chosen.current) setValue(stored === 'system' ? 'signal' : stored); });
     return () => { live = false; };
   }, []);
 

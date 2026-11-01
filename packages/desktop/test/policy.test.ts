@@ -81,6 +81,6 @@ test('permission origins accept Electron origin URLs with a trailing slash, whil
 
 
 test('native window appearance accepts only the app themes, never arbitrary transparency or colors', () => {
-  for (const theme of ['signal', 'light', 'high-contrast']) assert.deepEqual(validateCommand({ type: 'desktop-theme', theme }), { type: 'desktop-theme', theme });
-  for (const value of [{ type: 'desktop-theme', theme: 'transparent' }, { type: 'desktop-theme', theme: 'light', color: '#00000000' }, { type: 'desktop-theme', theme: { bg: 'red' } }]) assert.throws(() => validateCommand(value));
+  for (const theme of ['signal']) assert.deepEqual(validateCommand({ type: 'desktop-theme', theme }), { type: 'desktop-theme', theme });
+  for (const value of [{ type: 'desktop-theme', theme: 'light' }, { type: 'desktop-theme', theme: 'high-contrast' }, { type: 'desktop-theme', theme: 'transparent' }, { type: 'desktop-theme', theme: 'light', color: '#00000000' }, { type: 'desktop-theme', theme: { bg: 'red' } }]) assert.throws(() => validateCommand(value));
 });

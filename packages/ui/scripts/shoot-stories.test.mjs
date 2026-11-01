@@ -28,8 +28,8 @@ test('builds the iframe URL with the theme global and the story view mode', () =
     'http://127.0.0.1:6016/iframe.html?id=form-textfield--empty&globals=theme:high-contrast&viewMode=story');
 });
 
-test('shoots three themes at 1280 by 800', () => {
-  assert.deepEqual(THEMES, ['signal', 'light', 'high-contrast']);
+test('shoots the Signal catalog theme at 1280 by 800', () => {
+  assert.deepEqual(THEMES, ['signal']);
   assert.deepEqual(VIEWPORT, { width: 1280, height: 800 });
 });
 

@@ -211,22 +211,22 @@ describe('MemberList role colour on the name (P1)', () => {
     expect(nameOf('Eira').style.color).toBe('');
   });
 
-  it('judges per theme: a pale colour passes on signal and falls back on the light theme', () => {
+  it('uses the catalog default for a retired theme attribute', () => {
     document.documentElement.dataset.theme = 'signal';
     const { unmount } = render(<MemberList {...pale()} />);
     expect(nameOf('Pale').style.color).not.toBe('');
     unmount();
     document.documentElement.dataset.theme = 'light';
     render(<MemberList {...pale()} />);
-    expect(nameOf('Pale').style.color).toBe('');
+    expect(nameOf('Pale').style.color).toBe('rgb(241, 196, 15)');
   });
 
-  it('follows a theme switch while mounted', async () => {
+  it('keeps Signal role-colour contrast when a retired theme attribute appears while mounted', async () => {
     document.documentElement.dataset.theme = 'signal';
     render(<MemberList {...pale()} />);
     expect(nameOf('Pale').style.color).not.toBe('');
     document.documentElement.dataset.theme = 'light';
-    await waitFor(() => expect(nameOf('Pale').style.color).toBe(''));
+    await waitFor(() => expect(nameOf('Pale').style.color).toBe('rgb(241, 196, 15)'));
   });
 
   it('has no serious axe violations with coloured names', async () => {

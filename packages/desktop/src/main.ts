@@ -17,6 +17,7 @@ import type { DesktopEvent, DesktopInfo } from './contract.ts';
 protocol.registerSchemesAsPrivileged([{ scheme: 'dilla-internal', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 app.enableSandbox();
 app.setName('Dilla');
+nativeTheme.themeSource = 'dark';
 if (process.platform === 'win32') app.setAppUserModelId('dev.dilla.desktop');
 const arg = (name: string): string | undefined => process.argv.find(value => value.startsWith(`--${name}=`))?.slice(name.length + 3);
 const allowLoopback = !app.isPackaged && process.argv.includes('--allow-loopback');
@@ -67,7 +68,7 @@ function owner(event: Pick<IpcMainInvokeEvent, 'sender' | 'senderFrame'>): { ins
   throw new Error('Untrusted desktop IPC sender');
 }
 
-const windowChrome = () => ({ titleBarStyle: 'hidden' as const, ...windowAppearance(nativeTheme.shouldUseHighContrastColors ? 'high-contrast' : nativeTheme.shouldUseDarkColors ? 'signal' : 'light'), trafficLightPosition: { x: 12, y: 10 }, autoHideMenuBar: true });
+const windowChrome = () => ({ titleBarStyle: 'hidden' as const, ...windowAppearance('signal'), trafficLightPosition: { x: 12, y: 10 }, autoHideMenuBar: true });
 function showWindowMenu(win: BrowserWindow): void { Menu.getApplicationMenu()?.popup({ window: win, x: process.platform === 'darwin' ? 80 : 8, y: 32 }); }
 
 function focus(win: BrowserWindow): void { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }

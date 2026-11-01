@@ -1,3 +1,4 @@
+import { themes } from '../../packages/design-tokens/src/tokens';
 import { expect, type Locator } from '@playwright/test';
 import { advanceClock, composerBox, copy, expectAccessible, closeSettings, instanceInvite, joinCommunity, openChannel, openSettings, Peer, rowById, settingsDialog, signUp, WAIT } from './support/app';
 import { test } from './support/second';
@@ -213,7 +214,7 @@ test('switching channel with an unsent draft shows no error banner', async ({ pa
   await expect(page.getByText(/E_NOT_READY|That did not work/)).toHaveCount(0);
 });
 
-test('desktop, phone and reflow keep controls accessible in three themes', async ({ page, peer, instanceName }) => {
+test('desktop, phone and reflow keep controls accessible in Signal', async ({ page, peer, instanceName }) => {
   const setup = await peer.setup({});
   await peer.register();
   await signUp(page, instanceInvite(), instanceName);
@@ -222,7 +223,7 @@ test('desktop, phone and reflow keep controls accessible in three themes', async
   await peer.waitForDevices(2, setup.channel_id);
   for (const viewport of [{ width: 1280, height: 800 }, { width: 360, height: 740 }, { width: 320, height: 740 }]) {
     await page.setViewportSize(viewport);
-    for (const theme of ['signal', 'light', 'high-contrast']) {
+    for (const theme of Object.keys(themes)) {
       await page.evaluate(value => { document.documentElement.dataset.theme = value; }, theme);
       await expectAccessible(page, `${theme} ${viewport.width}px`);
       const layout = await page.evaluate(() => ({

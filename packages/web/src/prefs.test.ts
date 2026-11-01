@@ -8,7 +8,7 @@ describe('the theme preference', () => {
   it('reads system when nothing is stored, and round-trips every preference', async () => {
     const idb = new FakeIdb();
     expect(await readTheme(idb.factory)).toBe('system');
-    for (const theme of ['signal', 'light', 'high-contrast', 'system'] as const) {
+    for (const theme of ['signal', 'system'] as const) {
       await writeTheme(theme, idb.factory);
       expect(await readTheme(idb.factory)).toBe(theme);
     }
@@ -18,9 +18,9 @@ describe('the theme preference', () => {
   });
   it('stores exactly one record, the theme, and nothing else', async () => {
     const idb = new FakeIdb();
-    await writeTheme('light', idb.factory);
+    await writeTheme('signal', idb.factory);
     expect([...idb.stores.keys()]).toEqual([PREFS_STORE]);
-    expect([...(idb.stores.get(PREFS_STORE) ?? new Map()).entries()]).toEqual([['theme', { v: 1, theme: 'light' }]]);
+    expect([...(idb.stores.get(PREFS_STORE) ?? new Map()).entries()]).toEqual([['theme', { v: 1, theme: 'signal' }]]);
   });
   it.each([
     ['a newer record', { v: 2, theme: 'light' }],
@@ -35,7 +35,7 @@ describe('the theme preference', () => {
   });
   it('reads a stored legacy mesh preference as signal, and mesh is no longer a preference', async () => {
     const idb = new FakeIdb();
-    await writeTheme('light', idb.factory);
+    await writeTheme('signal', idb.factory);
     idb.stores.get(PREFS_STORE)?.set('theme', { v: 1, theme: 'mesh' });
     expect(await readTheme(idb.factory)).toBe('signal');
     expect(isThemePref('mesh')).toBe(false);
@@ -45,7 +45,7 @@ describe('the theme preference', () => {
     const idb = new FakeIdb();
     idb.failOpen = true;
     expect(await readTheme(idb.factory)).toBe('system');
-    await expect(writeTheme('light', idb.factory)).rejects.toThrow('E_PREFS');
+    await expect(writeTheme('signal', idb.factory)).rejects.toThrow('E_PREFS');
   });
   it('reads system when the open never answers, after the timeout', async () => {
     vi.useFakeTimers();
@@ -60,9 +60,18 @@ describe('the theme preference', () => {
     await vi.advanceTimersByTimeAsync(1);
     await expect(read).resolves.toBe('system');
   });
-  it('knows the four preferences', () => {
-    expect(['system', 'signal', 'light', 'high-contrast'].every(isThemePref)).toBe(true);
+  it('knows the catalog theme and legacy system preference', () => {
+    expect(['system', 'signal'].every(isThemePref)).toBe(true);
+    expect(['light', 'high-contrast'].some(isThemePref)).toBe(false);
     expect(isThemePref('dark')).toBe(false);
     expect(isThemePref(undefined)).toBe(false);
   });
+});
+
+
+it.each(['light', 'high-contrast'])('maps the retired %s preference to Signal without changing the stored record', async theme => {
+ const idb = new FakeIdb(); await writeTheme('signal', idb.factory);
+ idb.stores.get(PREFS_STORE)?.set('theme', { v: 1, theme });
+ expect(await readTheme(idb.factory)).toBe('signal');
+ expect(idb.stores.get(PREFS_STORE)?.get('theme')).toEqual({ v: 1, theme });
 });

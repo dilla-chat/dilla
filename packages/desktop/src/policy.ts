@@ -1,3 +1,4 @@
+import { themes } from '../../design-tokens/src/tokens.ts';
 import { createHash } from 'node:crypto';
 import type { DesktopCommand } from './contract.ts';
 
@@ -84,7 +85,7 @@ export function validateCommand(value: unknown): DesktopCommand {
   if (!Object.hasOwn(fields, type)) throw new Error('Unknown desktop command');
   const expected = ['type', ...fields[type]];
   if (Object.keys(command).length !== expected.length || !Object.keys(command).every(key => expected.includes(key))) throw new Error('Invalid desktop command fields');
-  if (type === 'desktop-theme' && !['signal', 'light', 'high-contrast'].includes(command.theme as string)) throw new Error('Invalid desktop theme');
+  if (type === 'desktop-theme' && (typeof command.theme !== 'string' || !Object.hasOwn(themes, command.theme))) throw new Error('Invalid desktop theme');
   if (type === 'badge' && (!Number.isSafeInteger(command.count) || (command.count as number) < 0 || (command.count as number) > 9999)) throw new Error('Invalid badge');
   if (['guard', 'quit-ack'].includes(type) && (typeof command.activeCall !== 'boolean' || typeof command.unsavedDraft !== 'boolean')) throw new Error('Invalid quit guard');
   if (type === 'quit-ack' && (typeof command.id !== 'string' || !/^[a-f0-9-]{36}$/.test(command.id))) throw new Error('Invalid quit acknowledgment');

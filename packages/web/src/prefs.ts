@@ -1,7 +1,8 @@
 // The page's own preferences (L-TS-26): one IndexedDB database, one store, one record — the theme. It is read
 // before the first paint and never holds a key, a token or an id; the worker's store is not touched.
 
-export type ThemePref = 'system' | 'signal' | 'light' | 'high-contrast';
+import { themes, type ThemeName } from '@dilla/design-tokens';
+export type ThemePref = 'system' | ThemeName;
 
 export const PREFS_DB = 'dilla-ui';
 export const PREFS_DB_VERSION = 1;
@@ -10,7 +11,7 @@ export const PREFS_STORE = 'prefs';
 export const PREFS_TIMEOUT_MS = 500;
 
 const THEME_KEY = 'theme';
-const THEME_PREFS: readonly string[] = ['system', 'signal', 'light', 'high-contrast'];
+const THEME_PREFS: readonly string[] = ['system', ...Object.keys(themes)];
 
 export function isThemePref(value: unknown): value is ThemePref {
   return typeof value === 'string' && THEME_PREFS.includes(value);
@@ -51,7 +52,7 @@ function themeOf(record: unknown): ThemePref {
   const { v, theme } = record as Record<string, unknown>;
   if (v !== 1) return 'system';
   // Mesh was removed; a preference stored before that reads as Signal (no DB version bump: the next write stores it).
-  const current = theme === 'mesh' ? 'signal' : theme;
+  const current = ['mesh', 'light', 'high-contrast'].includes(theme as string) ? 'signal' : theme;
   return isThemePref(current) ? current : 'system';
 }
 

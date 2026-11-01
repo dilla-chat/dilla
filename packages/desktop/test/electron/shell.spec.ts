@@ -136,7 +136,7 @@ test('short startup content keeps an opaque theme-matched background across wind
   await expect(page.locator('.d-splash')).toBeVisible();
   // Reproduce a small content surface with unused space around it.
   await page.locator('.d-splash').evaluate(node => { (node as HTMLElement).style.minHeight = '120px'; });
-  for (const theme of ['signal', 'light', 'high-contrast']) {
+  for (const theme of ['signal']) {
     await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
     const nativeColor = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getBackgroundColor());
     const colors = await page.evaluate(nativeColor => {

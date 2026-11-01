@@ -1,3 +1,4 @@
+import { themes } from '../../packages/design-tokens/src/tokens';
 import { expect } from '@playwright/test';
 import { addServerVia,
   COPY, HOST, TEST_TIMEOUT, WAIT, copy, escapeRegExp, expectAccessible, expectHeading, expectShell, instanceInvite,
@@ -74,7 +75,7 @@ test('the host serves the built client with the headers, types, cache rules and 
   expect(post.headers()['allow']).toBe('GET, HEAD');
 });
 
-test('every state of the slice passes axe with target-size, in all three themes, without a CSP violation', async ({ page, context, peer, guard, instanceName }) => {
+test('every state of the slice passes axe with target-size, in the Signal theme, without a CSP violation', async ({ page, context, peer, guard, instanceName }) => {
   const setup = await peer.setup();
   await peer.register();
   const channel = peer.channelName;
@@ -136,14 +137,14 @@ test('every state of the slice passes axe with target-size, in all three themes,
   await expect(messageRow(page, channel, body)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
   await expectAccessible(page, 'conversation');
 
-  // The three themes, set where the app sets them (on <html>, L-UI DOM contract); --bg proves each one took effect.
+  // The catalog theme, set where the app sets them (on <html>, L-UI DOM contract); --bg proves each one took effect.
   const backgrounds = new Set<string>();
-  for (const theme of ['signal', 'light', 'high-contrast'] as const) {
+  for (const theme of Object.keys(themes)) {
     await page.evaluate((name) => { document.documentElement.dataset.theme = name; }, theme);
     backgrounds.add(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--bg').trim()));
     await expectAccessible(page, `conversation in the ${theme} theme`);
   }
-  expect(backgrounds.size).toBe(3);
+  expect(backgrounds.size).toBe(Object.keys(themes).length);
 
   const second = await context.newPage();
   await second.goto('/');

@@ -1,3 +1,4 @@
+import { themes } from '../../packages/design-tokens/src/tokens';
 import { openInviteInClient } from './support/invite';
 // web3.9 E-GEO: the layout grammar of the alignment pass, measured in a real browser. From an empty host (with its in-process
 // LiveKit) Ada starts "Midgard Crew" and gives it two categories, text channels, an announcement channel, a voice channel with
@@ -1056,9 +1057,9 @@ test('the DM and the voice layout give each element its room', async ({ page, pl
 // ---------------------------------------------------------------------------------------------------
 // web3.9 FA4 (AUDIT-2 J1, H5, H6, I6, I7): search results with #channel, author and time and a KeyHint footer; the You tab's icons
 // with sign out; one phone settings entry point and an index/back traversal; the admin reorder as arrow icon buttons with truncated names; privacy
-// "Compare with ..." as ghost buttons. Read as rects and computed styles, with axe in all three themes where the surface is new.
+// "Compare with ..." as ghost buttons. Read as rects and computed styles, with axe in the Signal theme where the surface is new.
 
-const THEMES = ['signal', 'light', 'high-contrast'] as const;
+const THEMES = Object.keys(themes);
 async function expectAccessibleInThemes(page: Page, state: string): Promise<void> {
   const before = await page.evaluate(() => document.documentElement.dataset.theme ?? '');
   try {

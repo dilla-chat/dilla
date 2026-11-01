@@ -12,17 +12,13 @@ describe('kebab', () => {
 
 describe('renderCss', () => {
   const css = renderCss();
-  it('sets the signal theme on :root and the others on data-theme', () => {
+  it('sets Signal on :root and the named theme selector', () => {
     expect(css).toMatch(/:root\s*{[^}]*--bg:\s*#08090B;/);
     expect(css).toMatch(/\[data-theme="signal"\]\s*{[^}]*--bg:\s*#08090B;/);
-    expect(css).toMatch(/\[data-theme="light"\]\s*{[^}]*--bg:\s*#F5F6F5;/);
-    expect(css).toMatch(/\[data-theme="high-contrast"\]\s*{[^}]*--link-underline:\s*1;/);
     expect(css.toLowerCase()).not.toContain('mesh');
   });
-  it('emits --knob: white on signal and light, black on high-contrast (the toggle knob)', () => {
+  it('emits the Signal toggle knob token', () => {
     expect(css).toMatch(/\[data-theme="signal"\]\s*{[^}]*--knob:\s*#FFFFFF;/);
-    expect(css).toMatch(/\[data-theme="light"\]\s*{[^}]*--knob:\s*#FFFFFF;/);
-    expect(css).toMatch(/\[data-theme="high-contrast"\]\s*{[^}]*--knob:\s*#000000;/);
   });
   it('emits the prototype values the scale lacked (ruling K)', () => {
     expect(css).toMatch(/\[data-theme="signal"\]\s*{[^}]*--track-off:\s*#2A303A;/);
@@ -57,13 +53,9 @@ describe('renderCss', () => {
     expect(css).toMatch(/\[data-theme="signal"\]\s*{[^}]*--control-edge:\s*#2A303A;/);
     expect(css).toMatch(/\[data-theme="signal"\]\s*{[^}]*--control-edge-field:\s*#252A33;/);
     expect(css).toMatch(/\[data-theme="signal"\]\s*{[^}]*--control-edge-key:\s*#3A404A;/);
-    expect(css).toMatch(/\[data-theme="light"\]\s*{[^}]*--control-edge:\s*#6F776F;/);
-    expect(css).toMatch(/\[data-theme="high-contrast"\]\s*{[^}]*--control-edge-field:\s*#FFFFFF;/);
   });
   it('emits the top bar values (task 5, rulings K and L)', () => {
     expect(css).toMatch(/\[data-theme="signal"\]\s*{[^}]*--line-strong:\s*#2A303A;/);
-    expect(css).toMatch(/\[data-theme="light"\]\s*{[^}]*--line-strong:\s*#B4BBB4;/);
-    expect(css).toMatch(/\[data-theme="high-contrast"\]\s*{[^}]*--line-strong:\s*#FFFFFF;/);
     expect(css).toMatch(/\[data-theme="signal"\]\s*{[^}]*--brand-ink:\s*#FFFFFF;/);
     expect(css).toMatch(/--text-ui: 0\.75rem;/);
     expect(css).toMatch(/--text-badge: 0\.5625rem;/);
@@ -95,14 +87,11 @@ describe('renderCss', () => {
   it('zeroes --duration-toggle under reduced motion', () => {
     expect(css).toMatch(/prefers-reduced-motion: reduce[\s\S]*--duration-toggle: 0ms;/);
   });
-  it('follows the OS light setting only when no theme is chosen', () => {
-    expect(css).toMatch(/@media \(prefers-color-scheme: light\)\s*{\s*:root:not\(\[data-theme\]\)\s*{[^}]*--bg:\s*#F5F6F5;[^}]*--accent:\s*#005799;/);
-  });
-  it('follows the OS contrast preference only when no theme is chosen', () => {
-    expect(css).toMatch(/@media \(prefers-contrast: more\)\s*{\s*:root:not\(\[data-theme\]\)\s*{[^}]*--bg:\s*#000000;[^}]*--accent:\s*#9CCBFF;/);
-    // and it comes after the colour-scheme block, so a user who asks for
-    // more contrast gets it even when the OS is set to light.
-    expect(css.indexOf('@media (prefers-contrast: more)')).toBeGreaterThan(css.indexOf('@media (prefers-color-scheme: light)'));
+  it('emits only the Signal theme and keeps its color scheme independent of OS light preferences', () => {
+    expect(css).not.toContain('[data-theme="light"]');
+    expect(css).not.toContain('[data-theme="high-contrast"]');
+    expect(css).not.toContain('prefers-color-scheme');
+    expect(css).toContain('color-scheme: dark');
   });
   it('emits densities', () => {
     expect(css).toMatch(/\[data-density="compact"\]\s*{[^}]*--avatar-size:\s*1\.75rem;/);

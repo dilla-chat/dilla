@@ -1,3 +1,4 @@
+import { themes } from '../../../packages/design-tokens/src/tokens';
 // The voice suite's page contract and its native peer (L-E2E-31 helpers): `joinVoice`, `tileState`, `audioRunning`,
 // `heard`, `notificationsSeen`, and reads of what the recorders of peer-browser.ts saw. Every wait waits for a state —
 // `data-voice-state`, `data-call-phase`, `data-ring`, `data-media-state`, the voice snapshot, a media counter — never
@@ -208,12 +209,12 @@ export async function buildWav(page: Page): Promise<Buffer> {
   return Buffer.from(b64, 'base64');
 }
 
-/** axe (serious and critical, target-size on) in the three themes, then at 360×740 in the first; restores both. */
+/** axe (serious and critical, target-size on) in the catalog themes, then at 360×740 in the first; restores both. */
 export async function axeEverywhere(page: Page, state: string): Promise<void> {
   const viewport = page.viewportSize();
   const theme = await page.evaluate(() => document.documentElement.dataset.theme ?? null);
   try {
-    for (const name of ['signal', 'light', 'high-contrast'] as const) {
+    for (const name of Object.keys(themes)) {
       await page.evaluate((n) => { document.documentElement.dataset.theme = n; }, name);
       await expectAccessible(page, `${state} in the ${name} theme`);
     }

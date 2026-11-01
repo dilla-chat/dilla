@@ -8,7 +8,7 @@ export type DesktopCommand =
   | { type: 'notify'; id: string; title: string; body: string }
   | { type: 'dismiss-notification'; id: string }
   | { type: 'stop-app-audio'; id: string }
-  | { type: 'desktop-theme'; theme: 'signal' | 'light' | 'high-contrast' }
+  | { type: 'desktop-theme'; theme: import('../../design-tokens/src/tokens.ts').ThemeName }
   | { type: 'window-menu' }
   | { type: 'check-update' }
   | { type: 'restart-update' };

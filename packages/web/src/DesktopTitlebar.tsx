@@ -8,7 +8,7 @@ export function DesktopTitlebar({ bridge, info }: { bridge: DesktopBridge; info:
  useEffect(() => {
   const update = () => {
    const theme = document.documentElement.dataset.theme;
-   if (theme === 'signal' || theme === 'light' || theme === 'high-contrast') void bridge.send({ type: 'desktop-theme', theme }).catch(() => {});
+   if (theme === 'signal') void bridge.send({ type: 'desktop-theme', theme }).catch(() => {});
   };
   update();
   const observer = new MutationObserver(update);
