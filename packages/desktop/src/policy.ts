@@ -2,6 +2,7 @@ import { themes } from '../../design-tokens/src/tokens.ts';
 import { SETTINGS_REGISTRY } from '../../web/src/settings/registry.ts';
 import { createHash } from 'node:crypto';
 import type { DesktopCommand } from './contract.ts';
+import { captureId, captureOptions } from './screen-capture-contract.ts';
 
 const unsafeUrl = /[\s\\\u0000-\u001f\u007f]/;
 
@@ -83,6 +84,7 @@ export function validateCommand(value: unknown): DesktopCommand {
   const fields: Record<string, string[]> = {
     badge: ['count'], guard: ['activeCall', 'unsavedDraft'], 'quit-ack': ['id', 'activeCall', 'unsavedDraft'], autostart: ['enabled'],
     'notify-ring': ['id', 'title', 'body'], notify: ['id', 'title', 'body'], 'dismiss-notification': ['id'], 'stop-app-audio': ['id'], 'check-update': [], 'restart-update': [], 'window-mode': ['mode', 'height'], 'window-menu': [], 'window-control': ['action'], 'desktop-theme': ['theme'],
+    'stop-screen-capture': ['id'], 'configure-screen-capture': ['id', 'options'],
   };
   const type = typeof command.type === 'string' ? command.type : '';
   if (!Object.hasOwn(fields, type)) throw new Error('Unknown desktop command');
@@ -96,6 +98,10 @@ export function validateCommand(value: unknown): DesktopCommand {
   if (['guard', 'quit-ack'].includes(type) && (typeof command.activeCall !== 'boolean' || typeof command.unsavedDraft !== 'boolean')) throw new Error('Invalid quit guard');
   if (type === 'quit-ack' && (typeof command.id !== 'string' || !/^[a-f0-9-]{36}$/.test(command.id))) throw new Error('Invalid quit acknowledgment');
   if (type === 'autostart' && typeof command.enabled !== 'boolean') throw new Error('Invalid startup preference');
+  if (type === 'stop-screen-capture' || type === 'configure-screen-capture') {
+    if (!captureId(command.id)) throw new Error('Invalid screen capture id');
+    if (type === 'configure-screen-capture') captureOptions(command.options);
+  }
   if (type === 'notify-ring' || type === 'notify' || type === 'dismiss-notification' || type === 'stop-app-audio') {
     if (typeof command.id !== 'string' || !/^[A-Za-z0-9:_-]{1,128}$/.test(command.id)) throw new Error('Invalid notification id');
   }

@@ -15,10 +15,19 @@ if (process.isMainFrame) {
       try { if (samples instanceof Float32Array && samples.length === 960) audioListeners.get(id)?.(samples); }
       finally { ipcRenderer.send('dilla:pcm-ack', id); }
     });
+    ipcRenderer.on('dilla:screen-port', (event, value: unknown) => {
+      const id = value && typeof value === 'object' && 'id' in value ? value.id : null;
+      if (typeof id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id) || event.ports.length !== 1) {
+        for (const port of event.ports) port.close();
+        return;
+      }
+      window.postMessage({ type: 'dilla-screen-capture-port', id }, location.origin, [event.ports[0]]);
+    });
     const bridge: DesktopBridge = {
       info: () => ipcRenderer.invoke('dilla:info'),
       send: (command: DesktopCommand) => ipcRenderer.invoke('dilla:command', command),
       browserAuth: request => ipcRenderer.invoke('dilla:browser-auth', request),
+      requestScreenCapture: options => ipcRenderer.invoke('dilla:screen-capture', options),
       requestAppAudio: () => ipcRenderer.invoke('dilla:app-audio'),
       onAppAudio: (id, listener) => {
         audioListeners.set(id, listener);

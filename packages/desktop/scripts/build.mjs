@@ -16,6 +16,9 @@ if (!process.argv.includes('--existing-client')) {
 await cp(resolve(repo, 'packages/web/dist'), resolve(root, 'dist/client'), { recursive: true });
 await build({ entryPoints: [resolve(root, 'src/main.ts')], outfile: resolve(root, 'dist/main.cjs'), bundle: true, platform: 'node', target: 'node24', format: 'cjs', external: ['electron', 'electron-updater', 'electron-updater/*'] });
 await build({ entryPoints: [resolve(root, 'src/preload.ts')], outfile: resolve(root, 'dist/preload.cjs'), bundle: true, platform: 'node', target: 'es2022', format: 'cjs', external: ['electron'] });
+await build({ entryPoints: [resolve(root, 'src/screen-capture-preload.ts')], outfile: resolve(root, 'dist/screen-capture-preload.cjs'), bundle: true, platform: 'node', target: 'es2022', format: 'cjs', external: ['electron'] });
+await build({ entryPoints: [resolve(root, 'src/screen-capture-broker.ts')], outfile: resolve(root, 'dist/screen-capture-broker.js'), bundle: true, platform: 'browser', target: 'es2022', format: 'iife' });
+await cp(resolve(root, 'src/screen-capture.html'), resolve(root, 'dist/screen-capture.html'));
 await cp(resolve(root, 'src/manager.html'), resolve(root, 'dist/manager.html'));
 await build({ entryPoints: [resolve(root, 'src/manager.ts')], outfile: resolve(root, 'dist/manager.js'), bundle: true, platform: 'browser', target: 'es2022' });
 await cp(resolve(root, 'src/manager.css'), resolve(root, 'dist/manager.css'));

@@ -1,7 +1,7 @@
 import { windowShape, type WindowMode } from './window-layout.ts';
 import { windowAppearance } from './window-appearance.ts';
 import { browserAuth } from './browser-auth.ts';
-import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, protocol, screen, session, shell, Tray, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, protocol, screen, session, shell, Tray, type IpcMainInvokeEvent } from 'electron';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -13,6 +13,8 @@ import { linuxAutostart } from './autostart.ts';
 import { createUpdater } from './updater.ts';
 import { waitForPreviousProcess } from './handoff.ts';
 import { NativeAudio } from './native-audio.ts';
+import { ScreenCaptureBroker } from './screen-capture.ts';
+import { captureOptions } from './screen-capture-contract.ts';
 import type { DesktopEvent, DesktopInfo } from './contract.ts';
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'dilla-internal', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
@@ -47,6 +49,10 @@ function closeNotices(instance: string): void {
 const badges = new Map<string, number>();
 const audioExecutable = join(app.isPackaged ? join(process.resourcesPath, 'native') : join(__dirname, '../native-bin'), process.platform === 'win32' ? 'dilla-audio.exe' : 'dilla-audio');
 const captures = new Map<string, { id: string; label: string; audio: NativeAudio; inFlight: number }>();
+const screenCapture = new ScreenCaptureBroker({ directory: __dirname, onEnded: (instance, id) => {
+ const win = windows.get(instance);
+ if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) win.webContents.send('dilla:event', { type: 'screen-capture-ended', id } satisfies DesktopEvent);
+} });
 function stopAppAudio(instance: string): void {
   const capture = captures.get(instance); if (!capture) return;
   captures.delete(instance); capture.audio.stop();
@@ -172,11 +178,14 @@ async function openInstance(input: string, path = '/', show = true): Promise<Bro
       && permissionOriginMatches(requestingOrigin, instance) && trustedFrame({ url: contents.getURL(), top: true }, instance);
     // Copy uses Chromium's sanitized clipboard-write permission. Never grant reads,
     // background writes, or clipboard access to a frame/another instance.
+    // A chat capture grant also permits legacy capture that bypasses source selection.
+    if (permission === 'display-capture') return false;
     if (permission === 'clipboard-sanitized-write' || permission === 'fullscreen') return trusted && win.isVisible() && win.isFocused();
     return trusted && allowed.has(permission);
   });
   ses.setPermissionRequestHandler((contents, permission, callback, details) => {
     if (contents !== win.webContents || details.isMainFrame === false || !trustedFrame({ url: details.requestingUrl, top: true }, instance)) { callback(false); return; }
+    if (permission === 'display-capture') { callback(false); return; }
     if (permission === 'clipboard-sanitized-write' || permission === 'fullscreen') { callback(win.isVisible() && win.isFocused()); return; }
     if (!['media', 'notifications', 'speaker-selection', 'local-network', 'loopback-network'].includes(permission)) { callback(false); return; }
     if (allowed.has(permission)) { callback(true); return; }
@@ -184,16 +193,7 @@ async function openInstance(input: string, path = '/', show = true): Promise<Bro
     void dialog.showMessageBox(win, { type: 'question', title: 'Dilla permission', message: `Allow ${new URL(instance).host} to use ${label}?`, buttons: ['Deny', 'Allow'], defaultId: 0, cancelId: 0 })
       .then(result => { if (result.response === 1) allowed.add(permission); callback(result.response === 1); }).catch(() => callback(false));
   });
-  ses.setDisplayMediaRequestHandler((request, callback) => {
-    if (!request.userGesture || request.frame !== win.webContents.mainFrame || !permissionOriginMatches(request.securityOrigin, instance)) { callback(null); return; }
-    // The Linux capturer delegates selection to xdg-desktop-portal on Wayland. No whole-system audio fallback.
-    void desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 0, height: 0 } }).then(async sources => {
-      if (sources.length === 0) { callback(null); return; }
-      const choice = await dialog.showMessageBox(win, { title: 'Share your screen', message: 'Choose what to share', buttons: ['Cancel', ...sources.map(source => source.name)], cancelId: 0, defaultId: 0 });
-      if (choice.response === 0 || !sources[choice.response - 1]) callback(null);
-      else callback({ video: sources[choice.response - 1] });
-    }).catch(() => callback(null));
-  }, { useSystemPicker: true });
+  ses.setDisplayMediaRequestHandler((_request, callback) => { callback(null); }, { useSystemPicker: false });
   ses.on('will-download', (event, item) => { if (!item.getURL().startsWith(`blob:${origin}/`)) event.preventDefault(); });
   win.webContents.on('did-start-navigation', (_event, _url, _inPlace, mainFrame) => { if (mainFrame) closeNotices(instance); });
   win.webContents.on('render-process-gone', () => closeNotices(instance));
@@ -307,6 +307,11 @@ ipcMain.handle('dilla:info', event => {
   return { version: app.getVersion(), platform: process.platform, instance, capabilities: { applicationAudio: existsSync(audioExecutable), browserAuth: true, notifications: Notification.isSupported(), screenCapture: true } } satisfies DesktopInfo;
 });
 const browserCeremonies = new Map<string, AbortController>();
+ipcMain.handle('dilla:screen-capture', async (event, options: unknown, ...args: unknown[]) => {
+ const { instance, win } = owner(event);
+ if (args.length || askingQuit || quitting || !win.isVisible() || !win.isFocused()) throw new Error('Screen capture unavailable');
+ return screenCapture.request(instance, win, captureOptions(options));
+});
 ipcMain.handle('dilla:browser-auth', async (event, request: unknown, ...args: unknown[]) => {
  const { instance, win } = owner(event);
  if (args.length || browserCeremonies.has(instance) || askingQuit || quitting) throw new Error('A browser sign-in is already running or Dilla is quitting');
@@ -356,6 +361,8 @@ ipcMain.handle('dilla:command', async (event, value: unknown) => {
   }
   else if (command.type === 'badge') { badges.set(instance, command.count); refreshMenu(); }
   else if (command.type === 'stop-app-audio') { if (captures.get(instance)?.id === command.id) stopAppAudio(instance); }
+  else if (command.type === 'stop-screen-capture') screenCapture.stop(instance, command.id);
+  else if (command.type === 'configure-screen-capture') await screenCapture.configure(instance, command.id, command.options);
   else if (command.type === 'autostart') await setAutostart(command.enabled);
   else if (command.type === 'window-mode') setWindowMode(instance, win, command.mode, command.height);
   else if (command.type === 'desktop-theme') {
@@ -428,7 +435,7 @@ void waitForPreviousProcess(previousProcess).then(() => {
       else { const win = [...windows.values()][0]; if (win) focus(win); else void showManager(); }
     });
     app.on('before-quit', event => { if (!quitting) { event.preventDefault(); void requestQuit(); } });
-    app.on('will-quit', () => { for (const instance of captures.keys()) stopAppAudio(instance); });
+    app.on('will-quit', () => { for (const instance of captures.keys()) stopAppAudio(instance); screenCapture.stopAll(); });
     app.on('window-all-closed', () => { /* Tray owns the application's lifetime. */ });
     app.on('activate', () => { const win = [...windows.values()][0]; if (win) focus(win); else void showManager(); });
     void app.whenReady().then(async () => {

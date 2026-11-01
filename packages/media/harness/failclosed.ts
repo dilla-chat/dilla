@@ -59,8 +59,45 @@ export interface FailClosedResult {
   errors: string[];
   sender: DillaMediaStats | null;
   receiver: DillaMediaStats | null;
+  /** Only present when a caller supplies a real native video track. */
+  nativeVideo?: { input: VideoObservation; receiver: VideoObservation; observationMs: number };
   /** With `kill`: what was sent, decoded and rendered after the worker failed (from KILL_SETTLE_MS on). */
   afterKill?: AfterKill;
+}
+
+export interface VideoObservation {
+  frames: number; spanMs: number; width: number; height: number;
+  patternedFrames: number; distinctSamples: number; maxRedFraction: number; maxCyanFraction: number;
+}
+
+/** Observe decoded pixels; never substitutes a source or feeds pixels into capture. */
+function observeVideo(video: HTMLVideoElement): { snapshot(): VideoObservation; stop(): void } {
+  const canvas = document.createElement('canvas'); canvas.width = 16; canvas.height = 12;
+  const context = canvas.getContext('2d', { willReadFrequently: true })!;
+  let running = true, first = 0, last = 0;
+  const samples = new Set<string>();
+  const result: VideoObservation = { frames: 0, spanMs: 0, width: 0, height: 0, patternedFrames: 0, distinctSamples: 0, maxRedFraction: 0, maxCyanFraction: 0 };
+  const frame: VideoFrameRequestCallback = now => {
+    if (!running) return;
+    result.frames++; if (!first) first = now; last = now;
+    result.width = video.videoWidth; result.height = video.videoHeight;
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const data = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    let red = 0, cyan = 0;
+    const signature: string[] = [];
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i] > 140 && data[i + 1] < 130 && data[i + 2] < 170) red++;
+      if (data[i] < 130 && data[i + 1] > 140 && data[i + 2] > 140) cyan++;
+      signature.push(`${data[i] >> 5}${data[i + 1] >> 5}${data[i + 2] >> 5}`);
+    }
+    const redFraction = red / (data.length / 4), cyanFraction = cyan / (data.length / 4);
+    result.maxRedFraction = Math.max(result.maxRedFraction, redFraction); result.maxCyanFraction = Math.max(result.maxCyanFraction, cyanFraction);
+    if (redFraction > 0.1 && cyanFraction > 0.1) result.patternedFrames++;
+    if (samples.size < 64) samples.add(signature.join(''));
+    video.requestVideoFrameCallback(frame);
+  };
+  video.requestVideoFrameCallback(frame);
+  return { snapshot: () => ({ ...result, spanMs: last - first, distinctSamples: samples.size }), stop: () => { running = false; } };
 }
 
 const KILL_SETTLE_MS = 500;
@@ -77,7 +114,7 @@ class StandIns {
       unpublishTrack: async (t: { mediaStreamID: string; mediaStreamTrack: MediaStreamTrack }) => {
         this.unpublished.push(t.mediaStreamID);
         // livekit's unpublishTrack first awaits the pending publish (LocalParticipant.ts:1578-1587).
-        // Audio provides an explicit completion barrier; the video scenarios retain their fixed delay.
+        // Native tracks provide an explicit completion barrier; canvas video retains its fixed delay.
         await (pendingPublish ?? new Promise((r) => setTimeout(r, UNPUBLISH_DELAY_MS)));
         t.mediaStreamTrack.stop(); // stopLocalTrackOnUnpublish, livekit's default
       },
@@ -173,10 +210,12 @@ async function negotiate(a: RTCPeerConnection, b: RTCPeerConnection): Promise<vo
   await a.setRemoteDescription(b.localDescription as RTCSessionDescriptionInit);
 }
 
-export async function runFailClosed(sc: FailClosedScenario): Promise<FailClosedResult> {
+export async function runFailClosed(sc: FailClosedScenario, suppliedVideoTrack?: MediaStreamTrack): Promise<FailClosedResult> {
   const streamsPath = 'createEncodedStreams' in RTCRtpSender.prototype;
   const errors: string[] = [];
-  const A = sc.send === 'dilla' ? await manager(DEV_A, 0, errors) : null;
+  let completePublish!: () => void;
+  const pendingPublish = suppliedVideoTrack ? new Promise<void>(resolve => { completePublish = resolve; }) : undefined;
+  const A = sc.send === 'dilla' ? await manager(DEV_A, 0, errors, pendingPublish) : null;
   const B = sc.recv === 'dilla' ? await manager(DEV_B, 1, errors) : null;
   // livekit forces encodedInsertableStreams whenever a manager exists (RTCEngine.ts:795-804).
   const a = new RTCPeerConnection(streamsPath && A !== null ? ({ encodedInsertableStreams: true } as RTCConfiguration) : {});
@@ -186,12 +225,19 @@ export async function runFailClosed(sc: FailClosedScenario): Promise<FailClosedR
   b.addEventListener('icecandidate', event => { if (event.candidate) candidates[1]++; });
   a.addEventListener('icecandidateerror', event => { iceErrors.push(event.errorCode); });
   b.addEventListener('icecandidateerror', event => { iceErrors.push(event.errorCode); });
-  const source = canvasTrack();
+  const source = suppliedVideoTrack ? { track: suppliedVideoTrack, stop: () => {} } : canvasTrack();
   const video = document.createElement('video');
   video.muted = true;
   video.autoplay = true;
   document.getElementById('media')?.append(video);
   let remote: MediaStreamTrack | null = null;
+  const input = suppliedVideoTrack ? document.createElement('video') : null;
+  if (input) {
+    input.muted = true; input.autoplay = true; input.srcObject = new MediaStream([source.track]);
+    document.getElementById('media')?.append(input); await input.play();
+  }
+  const inputObservation = input ? observeVideo(input) : null;
+  const receiverObservation = suppliedVideoTrack ? observeVideo(video) : null;
 
   b.ontrack = (e: RTCTrackEvent) => {
     remote = e.track;
@@ -199,7 +245,7 @@ export async function runFailClosed(sc: FailClosedScenario): Promise<FailClosedR
       const emit = (): void => { B.s.engine.emit('mediaTrackAdded', e.track, e.streams[0], e.receiver); };
       if (sc.recvFailure !== undefined) withFailingReceiveAttach(e.receiver, sc.recvFailure, emit);
       else emit();
-      B.s.room.emit('trackSubscribed', { kind: 'video', mediaStreamID: e.track.id }, { source: 'camera', trackInfo: { mimeType: 'video/VP8', encryption: 1 } }, { identity: DEV_A });
+      B.s.room.emit('trackSubscribed', { kind: 'video', mediaStreamID: e.track.id }, { source: sc.source ?? 'camera', trackInfo: { mimeType: 'video/VP8', encryption: 1 } }, { identity: DEV_A });
     }
     video.srcObject = new MediaStream([e.track]);
   };
@@ -230,6 +276,7 @@ export async function runFailClosed(sc: FailClosedScenario): Promise<FailClosedR
   const tick = (): void => { if (!counting) return; rendered++; video.requestVideoFrameCallback(tick); };
   video.requestVideoFrameCallback(tick);
   const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+  const observationStarted = performance.now();
   let killed: { bytesSent: number; framesDecoded: number; rendered: number; terminated: () => boolean } | null = null;
   if (sc.kill !== undefined) {
     const victim = sc.kill === 'sender' ? A : B;
@@ -261,6 +308,10 @@ export async function runFailClosed(sc: FailClosedScenario): Promise<FailClosedR
     sender: A === null ? null : await statsOrNull(A.m),
     receiver: B === null ? null : await statsOrNull(B.m),
   };
+  if (inputObservation && receiverObservation) {
+    result.nativeVideo = { input: inputObservation.snapshot(), receiver: receiverObservation.snapshot(), observationMs: performance.now() - observationStarted };
+    inputObservation.stop(); receiverObservation.stop();
+  }
   if (killed !== null) {
     result.afterKill = {
       bytesSent: bytesSent - killed.bytesSent,
@@ -269,17 +320,27 @@ export async function runFailClosed(sc: FailClosedScenario): Promise<FailClosedR
       workerTerminated: killed.terminated(),
     };
   }
+  completePublish?.();
   source.stop();
   source.track.stop();
   a.close();
   b.close();
   video.remove();
+  input?.remove();
   for (const x of [A, B]) {
     if (x === null) continue;
     x.m.dispose();
     x.worker.terminate();
   }
   return result;
+}
+
+/** Native capture uses an explicit pending-publish barrier so blocked frames
+ * remain available throughout ICE setup and the complete observation interval. */
+export async function runProtectedVideo(track: MediaStreamTrack, options: { source?: string; receiver?: boolean; ms?: number } = {}): Promise<FailClosedResult> {
+  try {
+    return await runFailClosed({ send: 'dilla', recv: options.receiver === false ? 'none' : 'dilla', source: options.source ?? 'screen_share', label: 'vp8', ms: options.ms ?? 5000 }, track);
+  } finally { track.stop(); }
 }
 
 /** Real audio transport/worker/decoder acceptance. The caller supplies a track
