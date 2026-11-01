@@ -49,6 +49,7 @@ export interface AfterKill {
 export interface FailClosedResult {
   path: 'script-transform' | 'insertable-streams';
   negotiatedCodec: string;
+  transport?: { sender: string; receiver: string; iceSender: string; iceReceiver: string; sourceMuted: boolean };
   bytesSent: number;
   framesDecoded: number;
   rendered: number;
@@ -128,6 +129,7 @@ function canvasTrack(): { track: MediaStreamTrack; stop: () => void } {
   const canvas = document.createElement('canvas');
   canvas.width = 320;
   canvas.height = 240;
+  document.body.append(canvas);
   const ctx = canvas.getContext('2d');
   let n = 0;
   const timer = setInterval(() => {
@@ -135,7 +137,7 @@ function canvasTrack(): { track: MediaStreamTrack; stop: () => void } {
     ctx.fillStyle = `hsl(${(n++ * 7) % 360} 70% 50%)`;
     ctx.fillRect(0, 0, 320, 240);
   }, 33);
-  return { track: canvas.captureStream(30).getVideoTracks()[0], stop: () => clearInterval(timer) };
+  return { track: canvas.captureStream(30).getVideoTracks()[0], stop: () => { clearInterval(timer); canvas.remove(); } };
 }
 
 /** Swaps RTCRtpScriptTransform / createEncodedStreams for ones that throw while `fn` runs. */
@@ -211,6 +213,12 @@ export async function runFailClosed(sc: FailClosedScenario): Promise<FailClosedR
     });
   }
   await negotiate(a, b);
+  // SDP exchange completes before ICE. Give each platform a complete connected
+  // measurement interval rather than counting frames while transport is starting.
+  const deadline = performance.now() + 10000;
+  while (a.connectionState !== 'connected' && a.connectionState !== 'failed' && performance.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
 
   let rendered = 0;
   let counting = true;
@@ -236,6 +244,7 @@ export async function runFailClosed(sc: FailClosedScenario): Promise<FailClosedR
   const { bytesSent, framesDecoded, negotiatedCodec } = await counters(a, b);
   const result: FailClosedResult = {
     path: streamsPath ? 'insertable-streams' : 'script-transform',
+    transport: { sender: a.connectionState, receiver: b.connectionState, iceSender: a.iceConnectionState, iceReceiver: b.iceConnectionState, sourceMuted: source.track.muted },
     negotiatedCodec,
     bytesSent,
     framesDecoded,

@@ -30,7 +30,7 @@ function oneCoreWasm(): Plugin {
     enforce: 'pre',
     resolveId(source, importer) {
       if (!importer || !source.startsWith('.')) return null;
-      const path = resolve(dirname(importer.split('?')[0]), source);
+      const path = resolve(dirname(importer.split('?')[0]), source).replaceAll('\\', '/');
       for (const [pattern, target] of ONE_CORE_WASM) if (pattern.test(path)) return target;
       return null;
     },

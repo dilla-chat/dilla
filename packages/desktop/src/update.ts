@@ -1,6 +1,6 @@
 import { createHash, createPublicKey, verify, timingSafeEqual } from 'node:crypto';
 
-export interface Artifact { platform: string; arch: string; url: string; size: number; sha512: string }
+export interface Artifact { platform: string; arch: string; url: string; size: number; sha512: string; sparkleSignature?: string }
 export interface Release { format: 1; version: string; channel: 'stable' | 'beta'; publishedAt: string; expiresAt: string; artifacts: Artifact[] }
 interface VerifyContext { publicKeys: readonly string[]; channel: 'stable' | 'beta'; platform: string; arch: string; currentVersion: string; now: number }
 const versionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-beta\.(0|[1-9]\d*))?$/;
@@ -44,6 +44,7 @@ export function verifyRelease(bytes: Uint8Array, signature: string, ctx: VerifyC
     platforms.add(id);
     if (typeof artifact.url !== 'string' || !/^https:\/\/github\.com\/jonasthim\/dilla\/releases\/download\/desktop-v[0-9A-Za-z.-]+\/[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(artifact.url)
       || new URL(artifact.url).pathname !== `/jonasthim/dilla/releases/download/desktop-v${doc.version}/${artifact.url.split('/').at(-1)}`) throw new Error('Invalid artifact URL');
+    if (artifact.platform === 'darwin' && (typeof artifact.sparkleSignature !== 'string' || !/^[A-Za-z0-9+/]{86}==$/.test(artifact.sparkleSignature))) throw new Error('Missing authenticated Sparkle archive signature');
     const extension = artifact.platform === 'linux' ? '.AppImage' : artifact.platform === 'win32' ? '.exe' : '.zip';
     if (!artifact.url.endsWith(extension) || artifact.url.split('/').at(-1)!.includes('..') || !Number.isSafeInteger(artifact.size)
       || artifact.size < 1 || artifact.size > 4 * 1024 ** 3 || typeof artifact.sha512 !== 'string'

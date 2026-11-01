@@ -77,3 +77,13 @@ describe('desktop integration', () => {
     expect(currentClicks).toBe(1);
   });
 });
+
+it('ring actions are delivered only to the live notification and retired on close', () => {
+ const fixture = bridge(); const Ctor = desktopNotificationCtor(fixture.desktop, () => 'granted');
+ const note = new Ctor('Incoming call', { tag: 'dilla-ring-current' });
+ let action = ''; note.onaction = next => { action = next; note.close(); };
+ expect(fixture.commands[0]).toMatchObject({ type: 'notify-ring' });
+ fixture.emit({ type: 'notification-action', id: 'dilla-ring-stale', action: 'answer' }); expect(action).toBe('');
+ fixture.emit({ type: 'notification-action', id: 'dilla-ring-current', action: 'decline' }); expect(action).toBe('decline');
+ fixture.emit({ type: 'notification-action', id: 'dilla-ring-current', action: 'answer' }); expect(action).toBe('decline');
+});

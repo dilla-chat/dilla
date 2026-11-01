@@ -16,8 +16,9 @@ test('release keys stay private, are separate, and cannot overwrite installed tr
   const bytes = Buffer.from('release descriptor');
   assert.ok(verify(null, bytes, trust.metadataPublicKeys[0], sign(null, bytes, privateKey)));
   const sparkle = Buffer.from((await readFile(join(root, 'sparkle-private.key'), 'utf8')).trim(), 'base64');
-  assert.equal(sparkle.length, 64);
-  assert.equal(sparkle.subarray(32).toString('base64'), trust.sparklePublicKey);
+  assert.equal(sparkle.length, 32);
+  const signing = createPrivateKey({ key: { kty: 'OKP', crv: 'Ed25519', d: sparkle.toString('base64url'), x: Buffer.from(trust.sparklePublicKey, 'base64').toString('base64url') }, format: 'jwk' });
+  assert.equal(createPublicKey(signing).export({ type: 'spki', format: 'der' }).subarray(-32).toString('base64'), trust.sparklePublicKey);
   assert.notEqual(createPublicKey(privateKey).export({ type: 'spki', format: 'der' }).subarray(-32).toString('base64'), trust.sparklePublicKey);
   assert.match(result.metadataFingerprint, /^[a-f0-9]{64}$/);
   if (process.platform !== 'win32') assert.equal((await stat(join(root, 'metadata-private.pem'))).mode & 0o777, 0o600);

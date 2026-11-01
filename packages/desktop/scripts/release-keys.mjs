@@ -1,5 +1,5 @@
-import { generateKeyPairSync, createPublicKey, createHash } from 'node:crypto';
-import { mkdir, writeFile, readFile } from 'node:fs/promises';
+import { generateKeyPairSync, createPublicKey, createPrivateKey, createHash } from 'node:crypto';
+import { mkdir, writeFile, readFile, rename } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -16,13 +16,25 @@ export async function createReleaseKeys(directory) {
   const trust = { metadataPublicKeys: [publicKey], sparklePublicKey: rawPublic.toString('base64') };
   // Exclusive creation refuses accidental replacement or loss of an installed trust root.
   await writeFile(join(root, 'metadata-private.pem'), metadata.privateKey.export({ format: 'pem', type: 'pkcs8' }), { flag: 'wx', mode: 0o600 });
-  await writeFile(join(root, 'sparkle-private.key'), Buffer.concat([rawPrivate, rawPublic]).toString('base64') + '\n', { flag: 'wx', mode: 0o600 });
+  await writeFile(join(root, 'sparkle-private.key'), rawPrivate.toString('base64') + '\n', { flag: 'wx', mode: 0o600 });
   rawPrivate.fill(0);
   await writeFile(join(root, 'release-trust.json'), JSON.stringify(trust, null, 2) + '\n', { flag: 'wx', mode: 0o644 });
   return { directory: root, metadataFingerprint: createHash('sha256').update(createPublicKey(publicKey).export({ type: 'spki', format: 'der' })).digest('hex') };
 }
+export async function normalizeSparkleKey(directory) {
+ const root = resolve(directory), file = join(root, 'sparkle-private.key');
+ const trust = JSON.parse(await readFile(join(root, 'release-trust.json'), 'utf8'));
+ const secret = Buffer.from((await readFile(file, 'utf8')).trim(), 'base64');
+ if (secret.length === 32) return;
+ if (secret.length !== 64 || secret.subarray(32).toString('base64') !== trust.sparklePublicKey) throw new Error('Unrecognized Sparkle key encoding');
+ const key = createPrivateKey({ key: { kty: 'OKP', crv: 'Ed25519', d: secret.subarray(0, 32).toString('base64url'), x: secret.subarray(32).toString('base64url') }, format: 'jwk' });
+ if (createPublicKey(key).export({ type: 'spki', format: 'der' }).subarray(-32).toString('base64') !== trust.sparklePublicKey) throw new Error('Sparkle public key mismatch');
+ await writeFile(file + '.normalized', secret.subarray(0, 32).toString('base64') + '\n', { mode: 0o600, flag: 'wx' });
+ await rename(file + '.normalized', file); secret.fill(0);
+}
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   if (process.argv[2] === 'create' && process.argv[3] && process.argv.length === 4) console.log(JSON.stringify(await createReleaseKeys(process.argv[3])));
+  else if (process.argv[2] === 'normalize-sparkle' && process.argv[3] && process.argv.length === 4) { await normalizeSparkleKey(process.argv[3]); console.log('Normalized Sparkle seed encoding; public trust is unchanged.'); }
   else if (process.argv[2] === 'import-public' && process.argv[3] && process.argv.length === 4) {
     const source = JSON.parse(await readFile(process.argv[3], 'utf8'));
     if (!Array.isArray(source.metadataPublicKeys) || !source.metadataPublicKeys.length || source.metadataPublicKeys.some(k => createPublicKey(k).asymmetricKeyType !== 'ed25519') || Buffer.from(source.sparklePublicKey, 'base64').length !== 32) throw new Error('Invalid release public keys');

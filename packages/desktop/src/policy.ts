@@ -78,7 +78,7 @@ export function validateCommand(value: unknown): DesktopCommand {
   const command = object(value);
   const fields: Record<string, string[]> = {
     badge: ['count'], guard: ['activeCall', 'unsavedDraft'], 'quit-ack': ['id', 'activeCall', 'unsavedDraft'], autostart: ['enabled'],
-    notify: ['id', 'title', 'body'], 'dismiss-notification': ['id'], 'stop-app-audio': ['id'], 'check-update': [], 'restart-update': [],
+    'notify-ring': ['id', 'title', 'body'], notify: ['id', 'title', 'body'], 'dismiss-notification': ['id'], 'stop-app-audio': ['id'], 'check-update': [], 'restart-update': [],
   };
   const type = typeof command.type === 'string' ? command.type : '';
   if (!Object.hasOwn(fields, type)) throw new Error('Unknown desktop command');
@@ -88,10 +88,10 @@ export function validateCommand(value: unknown): DesktopCommand {
   if (['guard', 'quit-ack'].includes(type) && (typeof command.activeCall !== 'boolean' || typeof command.unsavedDraft !== 'boolean')) throw new Error('Invalid quit guard');
   if (type === 'quit-ack' && (typeof command.id !== 'string' || !/^[a-f0-9-]{36}$/.test(command.id))) throw new Error('Invalid quit acknowledgment');
   if (type === 'autostart' && typeof command.enabled !== 'boolean') throw new Error('Invalid startup preference');
-  if (type === 'notify' || type === 'dismiss-notification' || type === 'stop-app-audio') {
+  if (type === 'notify-ring' || type === 'notify' || type === 'dismiss-notification' || type === 'stop-app-audio') {
     if (typeof command.id !== 'string' || !/^[A-Za-z0-9:_-]{1,128}$/.test(command.id)) throw new Error('Invalid notification id');
   }
-  if (type === 'notify') {
+  if (type === 'notify' || type === 'notify-ring') {
     if (typeof command.title !== 'string' || command.title.length < 1 || command.title.length > 256 || typeof command.body !== 'string' || command.body.length > 4096) throw new Error('Invalid notification');
   }
   return command as unknown as DesktopCommand;

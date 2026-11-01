@@ -12,6 +12,7 @@ test.beforeEach(async () => {
   desktop = await _electron.launch({ chromiumSandbox: true, args: [resolve('.'), `--profile=${profile}`, '--instance=http://127.0.0.1:1/', '--allow-loopback', '--media-validation'] });
   page = await desktop.firstWindow();
   await page.waitForFunction(() => 'validation' in window);
+  await page.bringToFront();
 });
 test.afterEach(async () => { await desktop?.close(); await rm(profile, { recursive: true, force: true }); });
 

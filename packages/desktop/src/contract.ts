@@ -4,6 +4,7 @@ export type DesktopCommand =
   | { type: 'guard'; activeCall: boolean; unsavedDraft: boolean }
   | { type: 'quit-ack'; id: string; activeCall: boolean; unsavedDraft: boolean }
   | { type: 'autostart'; enabled: boolean }
+  | { type: 'notify-ring'; id: string; title: string; body: string }
   | { type: 'notify'; id: string; title: string; body: string }
   | { type: 'dismiss-notification'; id: string }
   | { type: 'stop-app-audio'; id: string }
@@ -11,6 +12,7 @@ export type DesktopCommand =
   | { type: 'restart-update' };
 
 export type DesktopEvent = { type: 'notification-click' | 'notification-close'; id: string }
+  | { type: 'notification-action'; id: string; action: 'answer' | 'decline' }
   | { type: 'app-audio-ended'; id: string }
   | { type: 'update'; phase: string; message?: string }
   | { type: 'prepare-quit'; id: string };

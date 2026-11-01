@@ -30,6 +30,13 @@ let manager: BrowserWindow | null = null;
 const windows = new Map<string, BrowserWindow>();
 const permissions = new Map<string, Set<string>>();
 const notices = new Map<string, Notification>();
+const ringActions = new Map<string, { title: string; run(action: 'answer' | 'decline'): void }>();
+const noticeKey = (instance: string, id: string) => `${partitionFor(instance)}:${id}`;
+function closeNotices(instance: string): void {
+ const prefix = partitionFor(instance) + ':';
+ for (const [key, note] of notices) if (key.startsWith(prefix)) { ringActions.delete(key); notices.delete(key); note.close(); }
+ refreshMenu();
+}
 const badges = new Map<string, number>();
 const audioExecutable = join(app.isPackaged ? join(process.resourcesPath, 'native') : join(__dirname, '../native-bin'), process.platform === 'win32' ? 'dilla-audio.exe' : 'dilla-audio');
 const captures = new Map<string, { id: string; label: string; audio: NativeAudio; inFlight: number }>();
@@ -138,6 +145,9 @@ async function openInstance(input: string, path = '/', show = true): Promise<Bro
     }).catch(() => callback(null));
   }, { useSystemPicker: true });
   ses.on('will-download', (event, item) => { if (!item.getURL().startsWith(`blob:${origin}/`)) event.preventDefault(); });
+  win.webContents.on('did-start-navigation', (_event, _url, _inPlace, mainFrame) => { if (mainFrame) closeNotices(instance); });
+  win.webContents.on('render-process-gone', () => closeNotices(instance));
+  win.on('closed', () => closeNotices(instance));
   lockWindow(win, url => isAppNavigation(url, instance));
   win.webContents.on('render-process-gone', () => { updater.expectGuard(instance); stopAppAudio(instance); });
   win.webContents.on('did-start-navigation', (_event, _url, inPlace, mainFrame) => { if (mainFrame && !inPlace) { updater.expectGuard(instance); stopAppAudio(instance); } });
@@ -222,6 +232,7 @@ function refreshMenu(): void {
   tray.setToolTip(updater.state.phase === 'error' ? 'Dilla — update failed; open the tray to retry' : count ? `Dilla — ${count} unread` : 'Dilla');
   const template: Electron.MenuItemConstructorOptions[] = [
     ...[...captures].map(([instance, capture]) => ({ label: `Sharing application sound: ${capture.label} — stop`, click: () => stopAppAudio(instance) })),
+    ...[...ringActions.values()].map(ring => ({ label: ring.title, submenu: [{ label: 'Answer', click: () => ring.run('answer') }, { label: 'Decline', click: () => ring.run('decline') }] })),
     { label: 'Your instances…', click: () => { void showManager(); } },
     ...[...windows].map(([instance, win]) => ({ label: new URL(instance).host + (new URL(instance).pathname === '/' ? '' : new URL(instance).pathname), click: () => focus(win) })),
     { type: 'separator' },
@@ -298,20 +309,34 @@ ipcMain.handle('dilla:command', async (event, value: unknown) => {
   else if (command.type === 'autostart') await setAutostart(command.enabled);
   else if (command.type === 'check-update') await updater.check();
   else if (command.type === 'restart-update') await requestQuit(true);
-  else if (command.type === 'dismiss-notification') { notices.get(`${instance}:${command.id}`)?.close(); notices.delete(`${instance}:${command.id}`); }
-  else if (command.type === 'notify') {
+  else if (command.type === 'dismiss-notification') { const key = noticeKey(instance, command.id); notices.get(key)?.close(); notices.delete(key); ringActions.delete(key); refreshMenu(); }
+  else if (command.type === 'notify' || command.type === 'notify-ring') {
     if (!Notification.isSupported() || !permissions.get(instance)?.has('notifications')) return;
-    const key = `${instance}:${command.id}`;
+    const key = noticeKey(instance, command.id);
     const previous = notices.get(key);
     if (notices.size >= 64 && !notices.has(key)) return;
-    const note = new Notification({ title: command.title, body: command.body, silent: false });
-    note.on('click', () => { focus(win); win.webContents.send('dilla:event', { type: 'notification-click', id: command.id } satisfies DesktopEvent); });
+    const ring = command.type === 'notify-ring';
+    const note = new Notification({ title: command.title, body: command.body, silent: ring, ...(ring ? {
+      actions: [{ type: 'button', text: 'Answer' }, { type: 'button', text: 'Decline' }], timeoutType: 'never', urgency: 'critical',
+    } as const : {}) });
+    const current = () => notices.get(key) === note && !win.isDestroyed() && !win.webContents.isDestroyed();
+    const action = (choice: 'answer' | 'decline') => {
+      if (!current() || !ring) return;
+      ringActions.delete(key);
+      win.webContents.send('dilla:event', { type: 'notification-action', id: command.id, action: choice } satisfies DesktopEvent);
+      notices.delete(key); note.close(); refreshMenu();
+      if (choice === 'answer') focus(win);
+    };
+    note.on('action', event => { if (event.actionIndex === 0) action('answer'); else if (event.actionIndex === 1) action('decline'); });
+    if (ring) ringActions.set(key, { title: command.title, run: action });
+    else ringActions.delete(key);
+    note.on('click', () => { if (!current()) return; focus(win); win.webContents.send('dilla:event', { type: 'notification-click', id: command.id } satisfies DesktopEvent); });
     note.on('close', () => {
       if (notices.get(key) !== note) return;
-      notices.delete(key);
+      notices.delete(key); ringActions.delete(key); refreshMenu();
       if (!win.isDestroyed()) win.webContents.send('dilla:event', { type: 'notification-close', id: command.id } satisfies DesktopEvent);
     });
-    notices.set(key, note); previous?.close(); note.show();
+    notices.set(key, note); previous?.close(); note.show(); refreshMenu();
   }
 });
 ipcMain.handle('dilla:manager', async (event, value: unknown) => {

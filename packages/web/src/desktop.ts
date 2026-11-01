@@ -14,6 +14,7 @@ export function desktopNotificationCtor(bridge: DesktopBridge, permission: () =>
   const active = registry;
   return class implements NotificationHandle {
     static get permission(): NotificationPermission { return permission(); }
+    onaction: ((action: 'answer' | 'decline') => void) | null = null;
     onclick: ((event: Event) => unknown) | null = null;
     private readonly id: string;
     private readonly unsubscribe: () => void;
@@ -22,10 +23,11 @@ export function desktopNotificationCtor(bridge: DesktopBridge, permission: () =>
       active.get(this.id)?.retire();
       this.unsubscribe = bridge.onEvent(event => {
         if (event.type === 'notification-click' && event.id === this.id) this.onclick?.(new Event('click'));
+        if (event.type === 'notification-action' && event.id === this.id) this.onaction?.(event.action);
         if (event.type === 'notification-close' && event.id === this.id) this.retire();
       });
       active.set(this.id, this);
-      void bridge.send({ type: 'notify', id: this.id, title: title.slice(0, 256), body: (options.body ?? '').slice(0, 4096) }).catch(() => {});
+      void bridge.send({ type: this.id.startsWith('dilla-ring-') ? 'notify-ring' : 'notify', id: this.id, title: title.slice(0, 256), body: (options.body ?? '').slice(0, 4096) }).catch(() => {});
     }
     retire(): void { this.unsubscribe(); if (active.get(this.id) === this) active.delete(this.id); }
     close(): void {

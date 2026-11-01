@@ -8,6 +8,8 @@
 @property(nonatomic,strong) SPUUpdater *updater;
 @property(nonatomic,copy) NSString *version;
 @property(nonatomic,copy) NSString *artifactURL;
+@property(nonatomic,copy) NSString *buildVersion;
+@property(nonatomic,copy) NSString *archiveSignature;
 @property(nonatomic,copy) void (^installReply)(SPUUserUpdateChoice);
 @property(nonatomic,copy) void (^cancelDownload)(void);
 @property(nonatomic) napi_env env;
@@ -27,15 +29,19 @@ static DillaSparkle *driver;
 - (NSString *)feedURLStringForUpdater:(SPUUpdater *)updater {return [NSBundle.mainBundle objectForInfoDictionaryKey:@"SUFeedURL"];}
 - (BOOL)updaterShouldPromptForPermissionToCheckForUpdates:(SPUUpdater *)updater {return NO;}
 - (BOOL)updater:(SPUUpdater *)updater shouldDownloadReleaseNotesForUpdate:(SUAppcastItem *)item {return NO;}
+- (BOOL)matchesItem:(SUAppcastItem *)item {
+ NSDictionary *enclosure = item.propertiesDictionary[@"enclosure"];
+ return !item.informationOnlyUpdate && [item.versionString isEqualToString:self.buildVersion] && [item.fileURL.absoluteString isEqualToString:self.artifactURL] && [enclosure[@"sparkle:edSignature"] isEqualToString:self.archiveSignature];
+}
 - (BOOL)updater:(SPUUpdater *)updater shouldProceedWithUpdate:(SUAppcastItem *)item updateCheck:(SPUUpdateCheck)check error:(NSError **)error {
- BOOL valid = !item.informationOnlyUpdate && [item.versionString isEqualToString:self.version] && [item.fileURL.absoluteString isEqualToString:self.artifactURL];
+ BOOL valid = [self matchesItem:item];
  if (!valid) *error=[NSError errorWithDomain:@"dev.dilla.desktop.update" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Sparkle feed does not match the authenticated desktop release"}];
  return valid;
 }
 - (void)showUpdatePermissionRequest:(SPUUpdatePermissionRequest *)request reply:(void (^)(SUUpdatePermissionResponse *))reply {reply([[SUUpdatePermissionResponse alloc] initWithAutomaticUpdateChecks:NO sendSystemProfile:NO]);}
 - (void)showUserInitiatedUpdateCheckWithCancellation:(void (^)(void))cancellation {self.cancelDownload=cancellation;}
 - (void)showUpdateFoundWithAppcastItem:(SUAppcastItem *)item state:(SPUUserUpdateState *)state reply:(void (^)(SPUUserUpdateChoice))reply {
- if (item.informationOnlyUpdate || ![item.versionString isEqualToString:self.version] || ![item.fileURL.absoluteString isEqualToString:self.artifactURL]) {reply(SPUUserUpdateChoiceDismiss);[self finish:@"Unexpected Sparkle update target"];return;}
+ if (![self matchesItem:item]) {reply(SPUUserUpdateChoiceDismiss);[self finish:@"Unexpected Sparkle update target"];return;}
  reply(SPUUserUpdateChoiceInstall);
 }
 - (void)showUpdateReleaseNotesWithDownloadData:(SPUDownloadData *)data {}
@@ -61,14 +67,21 @@ static NSString *String(napi_env env,napi_value value) {
  char buffer[4097];napi_get_value_string_utf8(env,value,buffer,sizeof(buffer),&size);return [[NSString alloc] initWithBytes:buffer length:size encoding:NSUTF8StringEncoding];
 }
 static napi_value Prepare(napi_env env,napi_callback_info info) {
- size_t argc=2;napi_value args[2];napi_get_cb_info(env,info,&argc,args,nullptr,nullptr);
- if(argc!=2 || ![NSThread isMainThread]) {napi_throw_error(env,nullptr,"Invalid Sparkle call");return nullptr;}
- NSString *version=String(env,args[0]),*url=String(env,args[1]);
- if(!version || !url || ![url hasPrefix:[@"https://github.com/jonasthim/dilla/releases/download/desktop-v" stringByAppendingFormat:@"%@/",version]] || ![url hasSuffix:@".zip"]) {napi_throw_error(env,nullptr,"Invalid Sparkle target");return nullptr;}
+ size_t argc=3;napi_value args[3];napi_get_cb_info(env,info,&argc,args,nullptr,nullptr);
+ if(argc!=3 || ![NSThread isMainThread]) {napi_throw_error(env,nullptr,"Invalid Sparkle call");return nullptr;}
+ NSString *version=String(env,args[0]),*url=String(env,args[1]),*signature=String(env,args[2]);
+ if(!version || !url || !signature || signature.length != 88 || ![url hasPrefix:[@"https://github.com/jonasthim/dilla/releases/download/desktop-v" stringByAppendingFormat:@"%@/",version]] || ![url hasSuffix:@".zip"]) {napi_throw_error(env,nullptr,"Invalid Sparkle target");return nullptr;}
  if(!driver) {
   NSBundle *bundle=NSBundle.mainBundle;
   NSString *feed=[bundle objectForInfoDictionaryKey:@"SUFeedURL"];
-  NSString *expected=[[bundle objectForInfoDictionaryKey:@"DillaDesktopChannel"] isEqualToString:@"beta"] ? @"https://github.com/jonasthim/dilla/releases/download/desktop-beta/appcast.xml" : @"https://github.com/jonasthim/dilla/releases/download/desktop-stable/appcast.xml";
+  NSString *arch =
+#if defined(__arm64__)
+  @"arm64";
+#else
+  @"x64";
+#endif
+  NSString *expected=[[bundle objectForInfoDictionaryKey:@"DillaDesktopChannel"] isEqualToString:@"beta"] ? @"https://github.com/jonasthim/dilla/releases/download/desktop-beta/" : @"https://github.com/jonasthim/dilla/releases/download/desktop-stable/";
+  expected=[expected stringByAppendingFormat:@"appcast-%@.xml",arch];
   if(![feed isEqualToString:expected] || ![[bundle objectForInfoDictionaryKey:@"SURequireSignedFeed"] boolValue] || ![[bundle objectForInfoDictionaryKey:@"SUVerifyUpdateBeforeExtraction"] boolValue] || [[bundle objectForInfoDictionaryKey:@"SUPublicEDKey"] length]!=44) {napi_throw_error(env,nullptr,"Desktop release trust is not provisioned");return nullptr;}
   driver=[DillaSparkle new];driver.env=env;
   driver.updater=[[SPUUpdater alloc] initWithHostBundle:bundle applicationBundle:bundle userDriver:driver delegate:driver];
@@ -76,7 +89,7 @@ static napi_value Prepare(napi_env env,napi_callback_info info) {
   NSError *error=nil;if(![driver.updater startUpdater:&error]) {driver=nil;napi_throw_error(env,nullptr,error.localizedDescription.UTF8String);return nullptr;}
  }
  if(driver.pending || driver.installReply || !driver.updater.canCheckForUpdates) {napi_throw_error(env,nullptr,"Sparkle update already in progress");return nullptr;}
- driver.version=version;driver.artifactURL=url;driver.env=env;
+ driver.version=version;driver.archiveSignature=signature;driver.buildVersion=[version stringByReplacingOccurrencesOfString:@"-beta." withString:@"b"];driver.artifactURL=url;driver.env=env;
  napi_value promise;napi_deferred deferred;napi_create_promise(env,&deferred,&promise);driver.pending=deferred;
  [driver.updater checkForUpdates];return promise;
 }

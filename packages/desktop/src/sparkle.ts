@@ -2,7 +2,7 @@ import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import type { Artifact, Release } from './update.ts';
 
-interface Bridge { prepare(version: string, artifactURL: string): Promise<string>; commit(): void; cancel(): void }
+interface Bridge { prepare(version: string, artifactURL: string, signature: string): Promise<string>; commit(): void; cancel(): void }
 export interface QuitEvents { once(name: 'will-quit', callback: () => void): unknown; removeListener(name: 'will-quit', callback: () => void): unknown }
 
 /** Native installation is released after renderer unloads, so a cancelled quit
@@ -13,7 +13,8 @@ export class SparkleInstaller {
   private readonly app: QuitEvents;
   constructor(native: Bridge, app: QuitEvents) { this.native = native; this.app = app; }
   async prepare(release: Release, artifact: Artifact): Promise<void> {
-    const version = await this.native.prepare(release.version, artifact.url);
+    if (!artifact.sparkleSignature) throw new Error('Missing authenticated Sparkle signature');
+    const version = await this.native.prepare(release.version, artifact.url, artifact.sparkleSignature);
     if (version !== release.version) { this.native.cancel(); throw new Error('Sparkle prepared an unexpected version'); }
   }
   install(): void {
