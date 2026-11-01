@@ -35,7 +35,7 @@ type OIDC struct {
 // spends: the nonce the id_token must carry, and the PKCE verifier the token
 // endpoint must be given. The `state` is not a field because state IS the key
 // these are filed under, and the browser carries it in the state cookie.
-type Pending struct{ Nonce, Verifier string }
+type Pending struct{ Nonce, Verifier, DesktopRequest string }
 
 type pendingLogin struct {
 	p       Pending

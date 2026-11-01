@@ -49,3 +49,5 @@ packages/desktop/test-results/
 packages/desktop/test-report/
 packages/desktop/validation-dist/
 packages/desktop/native-bin/
+
+packages/desktop/.native-tools/

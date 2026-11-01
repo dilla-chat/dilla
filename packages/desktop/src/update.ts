@@ -60,7 +60,7 @@ export function verifyArtifact(bytes: Uint8Array, artifact: Artifact): boolean {
 }
 
 export interface QuitGuard { activeCall: boolean; unsavedDraft: boolean }
-interface UpdateDriver { check(): Promise<Release | null>; download(release: Release): Promise<void>; install(): void | Promise<void> }
+interface UpdateDriver { cancelledQuit?(): void; check(): Promise<Release | null>; download(release: Release): Promise<void>; install(): void | Promise<void> }
 export type UpdateState = { phase: 'idle' | 'checking' | 'downloading' | 'ready' | 'installing' | 'error'; message?: string };
 
 export class UpdateCoordinator {
@@ -74,6 +74,7 @@ export class UpdateCoordinator {
   setGuard(instance: string, value: QuitGuard): void { this.guards.set(instance, value); }
   removeGuard(instance: string): void { this.guards.delete(instance); }
   cancelledQuit(): void {
+    if (this.state.phase === 'installing') this.driver.cancelledQuit?.();
     if (this.state.phase === 'installing') this.set({ phase: 'error', message: 'Restart was cancelled. The app is still running; retry after saving your drafts.' });
   }
   protected(): boolean { return [...this.guards.values()].some(guard => guard === null || guard.activeCall || guard.unsavedDraft); }

@@ -545,6 +545,7 @@ export function world(opts: {
     resume: vi.fn((): Promise<0 | 2 | 'revoked'> => Promise.resolve(2)),
   };
   const enrol = {
+    oidc: vi.fn((_assertion: string, _needs: 0 | 1 | 2) => { calls.push('enrol.oidc'); }),
     login: vi.fn((_username: string, _password: string): Promise<{ needs: 0 | 1 | 2 }> => { calls.push('enrol.login'); return Promise.resolve({ needs: 0 }); }),
     totp: vi.fn((_code: string) => { calls.push('enrol.totp'); return Promise.resolve(); }),
     passkey: vi.fn((_ceremonyId: Uint8Array, _response: string): Promise<{ needs: 0 | 1 }> => { calls.push('enrol.passkey'); return Promise.resolve({ needs: 0 }); }),

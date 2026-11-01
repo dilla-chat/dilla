@@ -1,4 +1,4 @@
-/** This is the entire privileged surface. Encryption keys and authentication tokens never cross it. */
+/** This is the entire privileged surface. Encryption keys and persistent authentication tokens never cross it. */
 export type DesktopCommand =
   | { type: 'badge'; count: number }
   | { type: 'guard'; activeCall: boolean; unsavedDraft: boolean }
@@ -27,6 +27,7 @@ export interface DesktopBridge {
   info(): Promise<DesktopInfo>;
   send(command: DesktopCommand): Promise<void>;
   onEvent(listener: (event: DesktopEvent) => void): () => void;
+  browserAuth?(request: import('./browser-auth.ts').BrowserAuthRequest): Promise<import('./browser-auth.ts').BrowserAuthResult>;
   requestAppAudio?(): Promise<AudioSource | null>;
   onAppAudio?(id: string, listener: (samples: Float32Array) => void): () => void;
 }

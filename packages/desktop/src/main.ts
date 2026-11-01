@@ -1,3 +1,4 @@
+import { browserAuth } from './browser-auth.ts';
 import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, Menu, nativeImage, Notification, protocol, session, shell, Tray, type IpcMainInvokeEvent } from 'electron';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -242,7 +243,24 @@ function refreshMenu(): void {
 
 ipcMain.handle('dilla:info', event => {
   const { instance } = owner(event);
-  return { version: app.getVersion(), instance, capabilities: { applicationAudio: existsSync(audioExecutable), browserAuth: false, notifications: Notification.isSupported(), screenCapture: true } } satisfies DesktopInfo;
+  return { version: app.getVersion(), instance, capabilities: { applicationAudio: existsSync(audioExecutable), browserAuth: true, notifications: Notification.isSupported(), screenCapture: true } } satisfies DesktopInfo;
+});
+const browserCeremonies = new Map<string, AbortController>();
+ipcMain.handle('dilla:browser-auth', async (event, request: unknown, ...args: unknown[]) => {
+ const { instance, win } = owner(event);
+ if (args.length || browserCeremonies.has(instance) || askingQuit || quitting) throw new Error('A browser sign-in is already running or Dilla is quitting');
+ const controller = new AbortController(); browserCeremonies.set(instance, controller);
+ const cancel = () => controller.abort();
+ win.webContents.once('did-start-navigation', cancel);
+ win.webContents.once('render-process-gone', cancel);
+ win.once('closed', cancel);
+ try { return await browserAuth(instance, request, { open: url => shell.openExternal(url), signal: controller.signal }); }
+ finally {
+  browserCeremonies.delete(instance);
+  win.webContents.removeListener('did-start-navigation', cancel);
+  win.webContents.removeListener('render-process-gone', cancel);
+  win.removeListener('closed', cancel);
+ }
 });
 ipcMain.handle('dilla:app-audio', async (event, ...args: unknown[]) => {
   const { instance, win } = owner(event);

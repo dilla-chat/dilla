@@ -171,7 +171,7 @@ describe('the factor-setup phase (web3.6 C2)', () => {
     expect(ACCEPTS['factor-setup']).toEqual(['factorSetupDone', 'forgetBrowser', 'refreshFactors', 'factorTotpBegin', 'factorTotpConfirm', 'factorPasskeyBegin', 'factorPasskeyFinish', 'resign']);
     expect(ACCEPTS['signin-passkey']).toEqual(['signInPasskeyBegin', 'signInPasskey', 'signInBackupCode', 'signInCancel']);
     // C2 review finding 8: the two sign-in rows the wave widened.
-    expect(ACCEPTS['signin-login']).toEqual(['signInLogin', 'signInPasskeyBegin', 'signInPasskey', 'signInCancel']);
+    expect(ACCEPTS['signin-login']).toEqual(['signInOIDC', 'signInLogin', 'signInPasskeyBegin', 'signInPasskey', 'signInCancel']);
     expect(ACCEPTS['signin-totp']).toEqual(['signInTotp', 'signInPasskeyBegin', 'signInPasskey', 'signInBackupCode', 'signInCancel']);
   });
 });

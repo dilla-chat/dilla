@@ -16,6 +16,7 @@ if (process.isMainFrame) {
     const bridge: DesktopBridge = {
       info: () => ipcRenderer.invoke('dilla:info'),
       send: (command: DesktopCommand) => ipcRenderer.invoke('dilla:command', command),
+      browserAuth: request => ipcRenderer.invoke('dilla:browser-auth', request),
       requestAppAudio: () => ipcRenderer.invoke('dilla:app-audio'),
       onAppAudio: (id, listener) => {
         audioListeners.set(id, listener);

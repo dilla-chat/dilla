@@ -1,3 +1,4 @@
+import { loadSparkle, type SparkleInstaller } from './sparkle.ts';
 import { app } from 'electron';
 import { AppImageUpdater, NsisUpdater, type AppUpdater } from 'electron-updater';
 import { Provider, type ProviderRuntimeOptions } from 'electron-updater/out/providers/Provider.js';
@@ -48,21 +49,15 @@ class PreparedProvider extends Provider<UpdateInfo> {
 
 export function createUpdater(changed: (state: UpdateState) => void): UpdateCoordinator {
   let native: AppImageUpdater | NsisUpdater | null = null;
+  let sparkle: SparkleInstaller | null = null;
   let target: Artifact | null = null;
   let downloadedPath: string | null = null;
   // Do not instantiate Electron's macOS updater: unsigned builds MUST use the Sparkle bridge.
   return new UpdateCoordinator({
     check: async () => {
       if (!app.isPackaged) throw new Error('Automatic updates need an installed acceptance build');
-      if (process.platform === 'darwin') throw new Error('Launch blocked: the unsigned Sparkle upgrade gate has not passed');
       if (RELEASE_PUBLIC_KEYS.length === 0) throw new Error('Launch blocked: no desktop release signing key is embedded');
       if (process.platform === 'linux' && !process.env.APPIMAGE) throw new Error('Updates require the installed AppImage');
-      // A new native object on every retry also discards electron-updater's in-memory cached download descriptor.
-      native = process.platform === 'win32' ? new NsisUpdater() : process.platform === 'linux' ? new AppImageUpdater() : null;
-      if (!native) throw new Error('No native updater for this platform');
-      native.autoDownload = false; native.autoInstallOnAppQuit = false; native.allowDowngrade = false;
-      native.allowPrerelease = channel === 'beta'; native.disableDifferentialDownload = true;
-      native.on('error', () => {}); // Rejected check/download promises carry the error to the coordinator.
       const [bytes, signature] = await Promise.all([boundedFetch(feed, 1_048_576), boundedFetch(feed + '.sig', 128)]);
       const release = verifyRelease(bytes, Buffer.from(signature).toString('utf8').trim(), {
         publicKeys: RELEASE_PUBLIC_KEYS, channel, platform: process.platform, arch: process.arch,
@@ -70,19 +65,29 @@ export function createUpdater(changed: (state: UpdateState) => void): UpdateCoor
       });
       if (!newerVersion(release.version, app.getVersion())) return null;
       target = release.artifacts.find(a => a.platform === process.platform && a.arch === process.arch)!;
+      if (process.platform === 'darwin') { sparkle ??= loadSparkle(process.resourcesPath, app); return release; }
+      // A new native object on every retry also discards electron-updater's in-memory cached download descriptor.
+      native = process.platform === 'win32' ? new NsisUpdater() : process.platform === 'linux' ? new AppImageUpdater() : null;
+      if (!native) throw new Error('No native updater for this platform');
+      native.autoDownload = false; native.autoInstallOnAppQuit = false; native.allowDowngrade = false;
+      native.allowPrerelease = channel === 'beta'; native.disableDifferentialDownload = true;
+      native.on('error', () => {}); // Rejected check/download promises carry the error to the coordinator.
       native.setFeedURL({ provider: 'custom', updateProvider: PreparedProvider, release, artifact: target });
       const checked = await native.checkForUpdates();
       if (!checked?.isUpdateAvailable) return null;
       return release;
     },
-    download: async () => {
+    download: async release => {
+      if (process.platform === 'darwin' && sparkle && target) { await sparkle.prepare(release, target); return; }
       if (!native || !target) throw new Error('No verified update');
       const files = await native.downloadUpdate();
       if (files.length !== 1) throw new Error('Unexpected update artifacts');
       try { await verifyArtifactFile(files[0], target); downloadedPath = files[0]; }
       catch (error) { await rm(files[0], { force: true }); downloadedPath = null; throw error; }
     },
+    cancelledQuit: () => sparkle?.cancelledQuit(),
     install: async () => {
+      if (process.platform === 'darwin' && sparkle) { sparkle.install(); return; }
       if (!native || !target || !downloadedPath) throw new Error('No verified native update');
       try { await verifyArtifactFile(downloadedPath, target); }
       catch (error) { await rm(downloadedPath, { force: true }); downloadedPath = null; throw error; }

@@ -231,6 +231,7 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'retrySend',
   'discardSend',
   'signInBegin',
+  'signInOIDC',
   'signInLogin',
   'signInTotp',
   'signInKey',
@@ -368,7 +369,7 @@ type PendingRolePanelAction = { communityId: string; channelId: string; messageS
 /** The account slice's view of GET /v1/instance: auth_methods 0 password, 1 totp, 2 passkey. */
 const instanceStateOf = (instance: Instance): NonNullable<AccountState['instance']> => ({
   id: toHex(instance.instanceId), name: instance.name, registrationMode: instance.registrationMode,
-  passwordSignup: instance.authMethods.includes(0), totp: instance.authMethods.includes(1), passkeys: instance.authMethods.includes(2),
+  passwordSignup: instance.authMethods.includes(0), totp: instance.authMethods.includes(1), passkeys: instance.authMethods.includes(2), oidc: instance.authMethods.includes(3),
 });
 const signInOf = (username: string | null, factor: 'totp' | 'passkey' | null): NonNullable<AccountState['signIn']> =>
   ({ username, factor });
@@ -495,7 +496,7 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
   'needs-signup': ['signupBegin', 'signInBegin'],
   'signup-keys': ['signupSubmit', 'signupReset'],
   // web3.6: a passkey on its own signs in from the login step (W2's usePasskey), so signin-login takes its finish too.
-  'signin-login': ['signInLogin', 'signInPasskeyBegin', 'signInPasskey', 'signInCancel'],
+  'signin-login': ['signInOIDC', 'signInLogin', 'signInPasskeyBegin', 'signInPasskey', 'signInCancel'],
   'signin-totp': ['signInTotp', 'signInPasskeyBegin', 'signInPasskey', 'signInBackupCode', 'signInCancel'],
   'signin-passkey': ['signInPasskeyBegin', 'signInPasskey', 'signInBackupCode', 'signInCancel'],
   'signin-key': ['signInKey', 'signInCancel'],
@@ -885,6 +886,7 @@ function invalid(command: Record<string, unknown>): string | null {
     if (command.password !== null && typeof command.password !== 'string') return 'password is not a string';
     if (command.recoveryKeyAcknowledged !== true) return 'the recovery key is not acknowledged';
   }
+  if (m === 'signInOIDC' && (typeof command.assertion !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(command.assertion) || ![0, 1, 2].includes(command.needs as number))) return 'invalid OIDC assertion';
   if (m === 'signInLogin') {
     if (blank(command.username)) return 'username is empty';
     if (typeof command.password !== 'string' || command.password === '') return 'password is empty';
@@ -1455,6 +1457,7 @@ export class Controller {
       case 'retrySend': return this.retrySend(command.msgId);
       case 'discardSend': return this.discardSend(command.msgId);
       case 'signInBegin': return this.signInBegin();
+      case 'signInOIDC': return this.signInOIDC(command.assertion, command.needs);
       case 'signInLogin': return this.step(() => this.signInLogin(command.username, command.password));
       case 'signInTotp': return this.step(() => this.signInTotp(command.code));
       case 'signInKey': return this.step(() => this.signInKey(command.recoveryKey));
@@ -2925,6 +2928,14 @@ export class Controller {
   /** The password is passed to Enrol.login and held in no field (L-TS-21). web3.8 (R6): the login never registers.
    *  With no second factor owed, Enrol holds the settled assertion and the key step follows; signInKey registers it
    *  after the key's form check, back to back with the fetch, the enrolment and the list PUT (REGISTRATION-DEVICES-02). */
+  private signInOIDC(assertion: string, needs: 0 | 1 | 2): Promise<{ needs: 0 | 1 | 2 }> {
+    this.requireEnrol().oidc(assertion, needs);
+    this.assertionAt = this.elapsed();
+    this.setAccount({ phase: needs === 1 ? 'signin-totp' : needs === 2 ? 'signin-passkey' : 'signin-key',
+      signIn: signInOf(null, needs === 1 ? 'totp' : needs === 2 ? 'passkey' : null), error: null });
+    return Promise.resolve({ needs });
+  }
+
   private async signInLogin(rawUsername: string, password: string): Promise<{ needs: 0 | 1 | 2 }> {
     const enrol = this.requireEnrol();
     const username = rawUsername.trim();

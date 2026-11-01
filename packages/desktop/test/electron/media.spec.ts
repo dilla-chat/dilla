@@ -18,6 +18,7 @@ test.afterEach(async () => { await desktop?.close(); await rm(profile, { recursi
 async function run(scenario: FailClosedScenario): Promise<FailClosedResult> {
   const result = await page.evaluate(s => (window as any).validation.run(s), scenario) as FailClosedResult;
   await test.info().attach('encrypted-media-counters', { body: JSON.stringify(result, null, 2), contentType: 'application/json' });
+  console.log('ENCRYPTED_MEDIA_RESULT', JSON.stringify(result));
   return result;
 }
 

@@ -61,6 +61,7 @@ export type Command =
   // worker holds the settled assertion, and signInKey registers it after the key's form check, back to back with the
   // fetch, the enrolment and the list PUT (REGISTRATION-DEVICES-02). The login, the code and the passkey carry no key
   // (pre-flight C-3); only signInKey and signInBackupCode do.
+  | { m: 'signInOIDC'; assertion: string; needs: 0 | 1 | 2 }
   | { m: 'signInLogin'; username: string; password: string }    // → { needs }: 1 signin-totp, 2 signin-passkey, 0 signin-key
   | { m: 'signInTotp'; code: string }                            // signin-totp → signin-key
   // web3.6 (flow 10). The ceremony runs in the page (navigator.credentials); the worker holds no WebAuthn state.
