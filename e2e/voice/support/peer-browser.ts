@@ -65,11 +65,12 @@ function installRecorders(): void {
     ringChannels: Set<string>;
     remoteTracks: Set<string>;
     remoteAnalysers: AnalyserNode[];
+    peerConnections: RTCPeerConnection[];
   };
   const w = window as unknown as { __dw?: Rec; __dwSetHidden?: (h: boolean) => void };
   if (w.__dw !== undefined) return;
   const rec: Rec = { slices: {}, keyPath: { messages: 0, callKeys: 0, findings: [] }, contexts: [], tones: [], ringTimers: new Set(),
-    blobs: { created: [], revoked: [] }, hidden: false, ringChannels: new Set(), remoteTracks: new Set(), remoteAnalysers: [] };
+    blobs: { created: [], revoked: [] }, hidden: false, ringChannels: new Set(), remoteTracks: new Set(), remoteAnalysers: [], peerConnections: [] };
   w.__dw = rec;
 
   // The key path (plan task 10, "Key path in a real browser"): no `ret` or `slice` message between the page and a
@@ -144,6 +145,7 @@ function installRecorders(): void {
     class RecordedPC extends NativePC {
       constructor(config?: RTCConfiguration) {
         super(config);
+        rec.peerConnections.push(this);
         this.addEventListener('track', (ev) => { rec.remoteTracks.add((ev as RTCTrackEvent).track.id); });
       }
     }

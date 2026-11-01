@@ -7,6 +7,7 @@
 // scope for V3; the suite's Chromium switch is the rule this script tightens).
 import { expect, test } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
+import { writeFile } from 'node:fs/promises';
 import { AUDIBLE_RMS, VoicePeer, WAIT, audible, audibleLevel, copy, dock, heard, joinVoice, noiseOff, onboard, self, tile } from './support/voice';
 
 watchContexts(test);
@@ -90,9 +91,25 @@ test('call audio the browser holds back comes back with one press of turn on aud
     // A test's finally runs before Playwright finalizes its failed status. Keep
     // the actual receiver graph and worker counters before closing either peer.
     for (const person of [alice, bob]) {
-      const audio = await person.page.evaluate(() => {
-        const rec = (window as unknown as { __dw?: { contexts: AudioContext[]; remoteTracks: Set<string>; remoteAnalysers: AnalyserNode[] } }).__dw;
+      const audio = await person.page.evaluate(async () => {
+        const rec = (window as unknown as { __dw?: { contexts: AudioContext[]; remoteTracks: Set<string>; remoteAnalysers: AnalyserNode[]; peerConnections: RTCPeerConnection[] } }).__dw;
+        const connections = await Promise.all((rec?.peerConnections ?? []).map(async connection => {
+          const audioStats: Record<string, string | number>[] = [];
+          try {
+            (await connection.getStats()).forEach(stat => {
+              if (stat.kind !== 'audio' || !['media-source', 'inbound-rtp', 'outbound-rtp'].includes(stat.type)) return;
+              const summary: Record<string, string | number> = { type: stat.type };
+              // No candidate addresses, certificates, identity, SDP or key data.
+              for (const field of ['audioLevel', 'totalAudioEnergy', 'totalSamplesDuration', 'packetsSent', 'bytesSent', 'packetsReceived', 'bytesReceived', 'totalSamplesReceived', 'concealedSamples', 'silentConcealedSamples']) {
+                if (typeof stat[field] === 'number') summary[field] = stat[field];
+              }
+              audioStats.push(summary);
+            });
+          } catch { /* A closed connection has no readable statistics. */ }
+          return { state: connection.connectionState, audioStats };
+        }));
         return {
+          connections,
           contexts: rec?.contexts.map(context => ({ state: context.state, time: context.currentTime, sampleRate: context.sampleRate })),
           remoteTracks: rec ? [...rec.remoteTracks] : [],
           analysers: rec?.remoteAnalysers.map(analyser => {
@@ -107,7 +124,13 @@ test('call audio the browser holds back comes back with one press of turn on aud
         const { encrypted, decrypted, verified, emptyFrames, dropped, passedThrough } = stats;
         return { encrypted, decrypted, verified, emptyFrames, dropped, passedThrough };
       }).catch(error => ({ error: String(error) }))));
-      await testInfo.attach(`autoplay-${person.name}`, { body: JSON.stringify({ audio, workers }), contentType: 'application/json' });
+      const diagnostic = JSON.stringify({ person: person.name, audio, workers });
+      // The fail-fast workflow can cancel a large trace upload. Keep this small,
+      // explicitly allowlisted snapshot in the job log and upload it first.
+      console.log(`Autoplay audio diagnostic: ${diagnostic}`);
+      const path = testInfo.outputPath(`autoplay-${person.name}.json`);
+      await writeFile(path, diagnostic);
+      await testInfo.attach(`autoplay-${person.name}`, { path, contentType: 'application/json' });
     }
     await peerBrowser.close(bob);
     await peerBrowser.close(alice);
