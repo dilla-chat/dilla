@@ -3975,7 +3975,7 @@ export class Controller {
 
   /** EOD E6: saves the given profile fields (a field left out is left alone, '' clears one), then shows the saved text on the
    *  account and on the own row of every loaded member list, with no read: the server stored what was sent, trimmed. Other
-   *  people's edits arrive with their next member-list read. */
+   *  people's edits trigger a member-list re-read through community_changed. */
   private async updateProfile(command: { display?: string; statusMsg?: string; bio?: string }): Promise<null> {
     const saved = {
       ...(command.display === undefined ? {} : { display: profileTextValue(command.display) }),

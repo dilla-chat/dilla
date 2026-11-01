@@ -1,10 +1,14 @@
 package api_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
+	"sync"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/fxamacker/cbor/v2"
 
@@ -15,6 +19,7 @@ import (
 )
 
 type presenceGatewayFake struct {
+	mu     sync.Mutex
 	live   map[id.ID]bool
 	to     []id.ID
 	frames []gateway.Frame
@@ -41,8 +46,16 @@ func (g *presenceGatewayFake) PresenceStatus(user id.ID, choice uint8) uint8 {
 }
 func (g *presenceGatewayFake) Activity(id.ID) {}
 func (g *presenceGatewayFake) DeliverUser(user id.ID, frame gateway.Frame) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	g.to = append(g.to, user)
 	g.frames = append(g.frames, frame)
+}
+
+func (g *presenceGatewayFake) snapshot() ([]id.ID, []gateway.Frame) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return append([]id.ID(nil), g.to...), append([]gateway.Frame(nil), g.frames...)
 }
 
 func TestPresenceChoiceAndSnapshotAreMemberScoped(t *testing.T) {
@@ -154,4 +167,155 @@ func TestPresenceBroadcastRetriesAfterAudienceReadFailure(t *testing.T) {
 		}
 	}
 	t.Fatalf("retry did not reach peer: %v", gw.to)
+}
+
+// These integration tests catch missing profile hints, redundant reloads and cross-community leaks.
+type profilePresenceEnv struct {
+	h                     http.Handler
+	deps                  api.Deps
+	gw                    *presenceGatewayFake
+	owner, peer, stranger id.ID
+	token                 string
+	communities           []id.ID
+}
+
+func newProfilePresenceEnv(t *testing.T) profilePresenceEnv {
+	t.Helper()
+	gw := &presenceGatewayFake{live: map[id.ID]bool{}}
+	h, deps := newTestAPIWired(t, func(d *api.Deps) { d.Presence = api.NewPresenceService(d.Repo, gw, d.Clock) })
+	owner, _, _ := seedSession(t, deps)
+	peer, _, token := seedSession(t, deps)
+	stranger, _, _ := seedSession(t, deps)
+	e := profilePresenceEnv{h: h, deps: deps, gw: gw, owner: owner.ID, peer: peer.ID, stranger: stranger.ID, token: token}
+	for _, users := range [][]id.ID{{owner.ID, peer.ID}, {owner.ID, peer.ID}, {owner.ID, stranger.ID}} {
+		cid := id.New()
+		e.communities = append(e.communities, cid)
+		if err := deps.Repo.CreateCommunity(t.Context(), store.CommunityRow{ID: cid, Owner: owner.ID, Name: "test", PolicyJSON: []byte("{}"), PolicyVersion: 1, Created: 1}); err != nil {
+			t.Fatal(err)
+		}
+		for _, user := range users {
+			gw.live[user] = true
+			if err := deps.Repo.PutMember(t.Context(), store.MemberOfCommunityRow{CommunityID: cid, UserID: user, Joined: 1}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	return e
+}
+
+func (e profilePresenceEnv) patch(t *testing.T, body []any) {
+	t.Helper()
+	if rec := cborCall(t, e.h, http.MethodPatch, "/v1/accounts/me", e.token, body); rec.Code != http.StatusNoContent {
+		t.Fatalf("patch = %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func (e profilePresenceEnv) advance(d time.Duration) {
+	// The instance clock is deliberately frozen, as in the browser testhost.
+	time.Sleep(d)
+	synctest.Wait()
+}
+
+func (e profilePresenceEnv) wantHints(t *testing.T, rounds int) {
+	t.Helper()
+	to, frames := e.gw.snapshot()
+	if len(frames) != 4*rounds {
+		t.Fatalf("got %d hints, want %d", len(frames), 4*rounds)
+	}
+	for _, cid := range e.communities[:2] {
+		want, err := cbor.Marshal([]any{cid})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, user := range []id.ID{e.owner, e.peer} {
+			count := 0
+			for i, frame := range frames {
+				if to[i] == user && frame.Op == gateway.OpCommunityChanged && bytes.Equal(frame.Payload, want) {
+					count++
+				}
+			}
+			if count != rounds {
+				t.Fatalf("community %s recipient %s: %d hints, want %d", cid, user, count, rounds)
+			}
+		}
+	}
+}
+
+func TestPatchMeTellsCoMembersToReReadTheMemberList(t *testing.T) {
+	for _, field := range []int{0, 1, 2} {
+		t.Run([]string{"display", "status", "bio"}[field], func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				e := newProfilePresenceEnv(t)
+				body := []any{nil, nil, nil}
+				body[field] = "Björn"
+				e.patch(t, body)
+				e.advance(2 * time.Second)
+				e.wantHints(t, 1)
+			})
+		})
+	}
+}
+
+func TestPatchMeNoVisibleChangeSendsNothing(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newProfilePresenceEnv(t)
+		if err := e.deps.Repo.UpdateProfile(t.Context(), e.peer, profileStr("Björn"), profileStr("working"), profileStr("hello")); err != nil {
+			t.Fatal(err)
+		}
+		e.patch(t, []any{nil, nil, nil})
+		e.patch(t, []any{"Björn", "  working  ", "hello"})
+		e.advance(3 * time.Second)
+		if _, frames := e.gw.snapshot(); len(frames) != 0 {
+			t.Fatalf("no-op patches sent %d frames", len(frames))
+		}
+	})
+}
+
+func TestPatchMeRapidEditsCoalesce(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newProfilePresenceEnv(t)
+		e.patch(t, []any{"Björn", nil, nil})
+		e.advance(time.Second)
+		e.patch(t, []any{nil, "working", nil})
+		e.patch(t, []any{nil, nil, "hello"})
+		e.advance(999 * time.Millisecond)
+		if _, frames := e.gw.snapshot(); len(frames) != 0 {
+			t.Fatal("burst notified before the coalescing window elapsed")
+		}
+		e.advance(time.Millisecond)
+		e.wantHints(t, 1)
+		// The final write is persisted before the sole hint, and a later edit gets a new hint.
+		user, err := e.deps.Repo.GetUser(t.Context(), e.peer)
+		if err != nil || user.Display != "Björn" || user.StatusMsg != "working" || user.Bio != "hello" {
+			t.Fatalf("profile = %+v, %v", user, err)
+		}
+		e.patch(t, []any{nil, "available", nil})
+		e.advance(2 * time.Second)
+		e.wantHints(t, 2)
+	})
+}
+
+func TestPatchMeOnlyNotifiesCommunitiesTheUserBelongsTo(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newProfilePresenceEnv(t)
+		e.patch(t, []any{"Björn", nil, nil})
+		// Membership is resolved at delivery, so leaving during the window sends no stale hint.
+		if err := e.deps.Repo.DeleteMember(t.Context(), e.communities[1], e.peer); err != nil {
+			t.Fatal(err)
+		}
+		e.advance(2 * time.Second)
+		to, frames := e.gw.snapshot()
+		if len(frames) != 2 {
+			t.Fatalf("got %d hints, want 2 for the remaining community", len(frames))
+		}
+		want, err := cbor.Marshal([]any{e.communities[0]})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, frame := range frames {
+			if to[i] == e.stranger || frame.Op != gateway.OpCommunityChanged || !bytes.Equal(frame.Payload, want) {
+				t.Fatalf("hint escaped the user's community: %s %+v", to[i], frame)
+			}
+		}
+	})
 }

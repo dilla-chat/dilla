@@ -340,11 +340,22 @@ func (d Deps) PatchMe(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
+	old, err := d.Repo.GetUser(r.Context(), sess.UserID)
+	if err != nil {
+		server.WriteError(w, d.storeError(r, err))
+		return
+	}
+	// Compare normalized values, including bio (returned with the member list's profile).
+	visibleChanged := display != nil && *display != old.Display ||
+		status != nil && *status != old.StatusMsg || bio != nil && *bio != old.Bio
 	// One UPDATE that names only the given fields, so two devices changing different fields never
 	// overwrite each other (a null leaves the column as it is).
 	if err := d.Repo.UpdateProfile(r.Context(), sess.UserID, display, status, bio); err != nil {
 		server.WriteError(w, d.storeError(r, err))
 		return
+	}
+	if visibleChanged {
+		d.Presence.ProfileChanged(r.Context(), sess.UserID)
 	}
 	d.noContent(w, r)
 }

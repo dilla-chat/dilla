@@ -474,7 +474,8 @@ sends it, after the change commits, to every live connection of every member of 
 when a channel of it is created, updated or deleted (`09` § Channels) and when the community is
 patched (`09` § Communities). It is also sent after a member joins, leaves, is kicked or is
 banned; after a role is created, changed, deleted, granted or revoked; after a channel overwrite is
-put or deleted; and after a community is deleted (to its members at that moment). The user a
+put or deleted; after a member's display name, status message or avatar changed; after a member's
+bio changed; and after a community is deleted (to its members at that moment). The user a
 leave, kick or ban removed is sent it once, after the commit, to every live connection; a ban of a
 non-member sends nothing to that user. No one else is sent it. It names the
 community and nothing else: a client that lists the community reads its channels and members

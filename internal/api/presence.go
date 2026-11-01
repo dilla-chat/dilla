@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/gateway"
@@ -21,15 +22,71 @@ type PresenceGateway interface {
 }
 
 type PresenceService struct {
-	repo store.Repository
-	gw   PresenceGateway
-	clk  clock.Clock
-	mu   sync.Mutex
-	last map[id.ID]uint8
+	repo           store.Repository
+	gw             PresenceGateway
+	clk            clock.Clock
+	mu             sync.Mutex
+	last           map[id.ID]uint8
+	profilePending map[id.ID]struct{}
 }
 
 func NewPresenceService(repo store.Repository, gw PresenceGateway, clk clock.Clock) *PresenceService {
-	return &PresenceService{repo: repo, gw: gw, clk: clk, last: map[id.ID]uint8{}}
+	return &PresenceService{repo: repo, gw: gw, clk: clk, last: map[id.ID]uint8{}, profilePending: map[id.ID]struct{}{}}
+}
+
+// ProfileChanged coalesces a user's committed profile edits over a fixed two-second window,
+// across devices. The trailing hint sees the final profile and current membership; continuously
+// editing cannot postpone delivery indefinitely or trigger more than one fan-out per window.
+// DeliverUser sends to live connections only, with no persistence or offline replay.
+func (p *PresenceService) ProfileChanged(ctx context.Context, user id.ID) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	if _, pending := p.profilePending[user]; pending {
+		p.mu.Unlock()
+		return
+	}
+	p.profilePending[user] = struct{}{}
+	// This transport debounce follows wall time, independently of the instance clock
+	// used for presence/AFK expiry (which the testhost can freeze or jump).
+	timer := clock.System().NewTimer(2 * time.Second)
+	p.mu.Unlock()
+	ctx = context.WithoutCancel(ctx)
+	go func() {
+		defer timer.Stop()
+		<-timer.C()
+		p.mu.Lock()
+		delete(p.profilePending, user)
+		p.mu.Unlock()
+		// Request cancellation must not lose the committed hint, but failed storage must not
+		// leave its fan-out running without a bound.
+		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		communities, err := p.repo.ListCommunitiesForUser(ctx, user)
+		if err != nil {
+			return
+		}
+		for _, community := range communities {
+			payload, err := gateway.CommunityChangedPayload(community.ID)
+			if err != nil {
+				continue
+			}
+			members, err := communityMemberIDs(ctx, p.repo, community.ID)
+			if err != nil {
+				continue
+			}
+			frame := gateway.Frame{Op: gateway.OpCommunityChanged, Payload: payload}
+			seen := make(map[id.ID]struct{}, len(members))
+			for _, member := range members {
+				if _, sent := seen[member]; sent {
+					continue
+				}
+				seen[member] = struct{}{}
+				p.gw.DeliverUser(member, frame)
+			}
+		}
+	}()
 }
 
 func (p *PresenceService) status(ctx context.Context, user id.ID) (uint8, error) {
