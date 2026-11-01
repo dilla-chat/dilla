@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
+	"github.com/jonasthim/dilla/internal/bot/service"
 	"github.com/jonasthim/dilla/internal/id"
 )
 
@@ -345,6 +346,10 @@ func (r *botGatewayRuntime) finishCommandJob(pool *commandWorkers, job commandJo
 	r.pendingMu.Unlock()
 	if warn && r.log != nil {
 		attrs := []any{"installation_id", job.work.installation.String(), "group_id", job.work.group.String(), "error", err.Error(), "retry_after", delay}
+		var trustErr *service.TrustPhaseError
+		if errors.As(err, &trustErr) {
+			attrs = append(attrs, "phase", trustErr.Phase.String(), "cause_class", trustErr.CauseClass())
+		}
 		if isPanic {
 			attrs = append(attrs, "stack", string(panicErr.stack))
 		}

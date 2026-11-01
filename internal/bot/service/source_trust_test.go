@@ -191,3 +191,18 @@ func TestTrustPendingLeavesRefreshesEachUserOncePerBatch(t *testing.T) {
 		t.Fatalf("recovered=%d trust calls=%d revalidated=%v, want one list refresh and both group revalidations", recovered, n.calls, n.revalidated)
 	}
 }
+
+func TestTrustPhaseCauseClassIsBounded(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{{context.Canceled, "ctx_canceled"}, {context.DeadlineExceeded, "deadline"}, {ErrSenderHistoryStale, "history_stale"}, {ErrSourceTrustBusy, "busy"}, {errors.New("https://private.invalid/secret"), "unknown"}} {
+		var e *TrustPhaseError
+		if !errors.As(trustPhaseError(TrustPhaseSenderTrust, tc.err), &e) {
+			t.Fatal("missing trust phase")
+		}
+		if got := e.CauseClass(); got != tc.want {
+			t.Fatalf("cause class=%q want %q", got, tc.want)
+		}
+	}
+}

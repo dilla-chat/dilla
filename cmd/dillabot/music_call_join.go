@@ -16,6 +16,7 @@ import (
 	"github.com/jonasthim/dilla/internal/bot/helper"
 	"github.com/jonasthim/dilla/internal/bot/music"
 	"github.com/jonasthim/dilla/internal/bot/native"
+	"github.com/jonasthim/dilla/internal/bot/service"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
 )
@@ -43,6 +44,7 @@ type musicCallJoinReader interface {
 	DeviceListHistory(context.Context, id.ID, uint64) ([][]any, error)
 }
 type musicCallJoinCore interface {
+	TryClaimTrust(id.ID) (func(), bool)
 	musicCallMembershipForgetter
 	Groups(context.Context) ([]native.GroupInfo, error)
 	GroupIntentResult(context.Context, id.ID) (*native.GroupIntentResult, error)
@@ -407,19 +409,35 @@ func refreshMusicCallJoinLeaves(ctx context.Context, calls musicCallJoinReader, 
 	if len(pending) > maxMusicCallJoinLeaves {
 		return errors.New("music call-group trust refresh exceeds limit")
 	}
+
+	refreshed := make(map[id.ID]bool)
 	for _, leaf := range pending {
-		history, head, err := musicDeviceListHistory(ctx, calls, leaf.User, leaf.CachedVersion)
+		if refreshed[leaf.User] {
+			continue
+		}
+		release, claimed := core.TryClaimTrust(leaf.User)
+		if !claimed {
+			return service.ErrSourceTrustBusy
+		}
+		err = func() error {
+			defer release()
+			history, head, err := musicDeviceListHistory(ctx, calls, leaf.User, leaf.CachedVersion)
+			if err != nil {
+				return err
+			}
+			now := time.Now().Unix()
+			if now < 0 {
+				return errors.New("music call-group trust refresh clock is invalid")
+			}
+			_, err = core.TrustSender(ctx, group, uint64(leaf.Leaf), leaf.User, history, head, uint64(now))
+			return err
+		}()
 		if err != nil {
 			return err
 		}
-		now := time.Now().Unix()
-		if now < 0 {
-			return errors.New("music call-group trust refresh clock is invalid")
-		}
-		if _, err = core.TrustSender(ctx, group, uint64(leaf.Leaf), leaf.User, history, head, uint64(now)); err != nil {
-			return err
-		}
+		refreshed[leaf.User] = true
 	}
+
 	return nil
 }
 

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
+	"github.com/jonasthim/dilla/internal/bot/helper"
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
@@ -490,4 +491,29 @@ func bytesEqual(a, b []byte) bool {
 		}
 	}
 	return true
+}
+
+// CauseClass is a bounded diagnostic; signed lists, URLs and native free text stay private.
+func (e *TrustPhaseError) CauseClass() string {
+	switch {
+	case errors.Is(e.err, context.Canceled):
+		return "ctx_canceled"
+	case errors.Is(e.err, context.DeadlineExceeded):
+		return "deadline"
+	case errors.Is(e.err, ErrSenderHistoryStale):
+		return "history_stale"
+	case errors.Is(e.err, ErrSourceTrustBusy):
+		return "busy"
+	case errors.Is(e.err, client.ErrProtocol):
+		return "protocol"
+	}
+	var api *client.APIError
+	if errors.As(e.err, &api) {
+		return "http_error"
+	}
+	var status *helper.StatusError
+	if errors.As(e.err, &status) {
+		return "native_refusal"
+	}
+	return "unknown"
 }
