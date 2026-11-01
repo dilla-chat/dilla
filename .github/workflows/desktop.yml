@@ -60,10 +60,14 @@ jobs:
         run: xvfb-run -a dbus-run-session -- bash packages/desktop/scripts/with-window-manager.sh npm run test:electron -w @dilla/desktop -- --grep-invert "application-audio.spec.ts"
       - if: runner.os != 'Linux'
         run: npm run test:electron -w @dilla/desktop -- --grep-invert "application-audio.spec.ts"
-      - name: Prepare Windows audio services and verify a real endpoint
+      - name: Application audio encryption and exclusion (Windows signed audio fixture)
         if: runner.os == 'Windows'
         timeout-minutes: 5
-        run: ./packages/desktop/scripts/prepare-windows-audio.ps1
+        run: |
+          ./packages/desktop/scripts/prepare-windows-audio.ps1 -Run {
+            npm exec -w @dilla/desktop -- playwright test --config playwright.config.ts application-audio.spec.ts
+            if ($LASTEXITCODE -ne 0) { throw 'Windows application audio acceptance failed' }
+          }
       - name: Record macOS audio hardware for capture acceptance
         if: runner.os == 'macOS'
         run: system_profiler SPAudioDataType
@@ -71,7 +75,7 @@ jobs:
         if: runner.os == 'Linux'
         run: xvfb-run -a dbus-run-session -- bash packages/desktop/scripts/with-window-manager.sh npm exec -w @dilla/desktop -- playwright test --config playwright.config.ts application-audio.spec.ts
       - name: Application audio encryption and exclusion
-        if: runner.os != 'Linux'
+        if: runner.os == 'macOS'
         run: npm exec -w @dilla/desktop -- playwright test --config playwright.config.ts application-audio.spec.ts
       - run: npm run pack -w @dilla/desktop -- --config.electronDist=../../node_modules/electron/dist --${{ matrix.platform }} --${{ matrix.arch }}
         env:

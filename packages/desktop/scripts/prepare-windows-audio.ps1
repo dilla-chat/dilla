@@ -1,6 +1,7 @@
 # CI only: a pinned, signed USB/IP transport plus a loopback USB Audio Class
 # device. Windows supplies the audio class driver. No test signing, certificate
 # installation, clock changes, reboot, or OS protection changes are permitted.
+param([Parameter(Mandatory = $true)][scriptblock]$Run)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Start-Service AudioEndpointBuilder
@@ -18,6 +19,8 @@ function Get-PinnedFile([string]$Url, [string]$Path, [string]$Sha256) {
   if ((Get-FileHash -Algorithm SHA256 $Path).Hash -ne $Sha256) { throw "Audio fixture download hash mismatch: $Path" }
 }
 
+$fixtureServer = $null
+try {
 $endpoints = @(Get-AudioEndpoints)
 if ($endpoints.Count -eq 0) {
   if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_OS -ne 'Windows' -or -not $env:RUNNER_TEMP) {
@@ -117,11 +120,11 @@ if ($endpoints.Count -eq 0) {
   $server = Join-Path $work 'dilla-ci-audio.exe'
   & go -C $source build -buildvcs=false -trimpath -o $server ./cmd/dilla-ci-audio
   if ($LASTEXITCODE -ne 0) { throw 'Virtual USB audio server build failed' }
-  $process = Start-Process -FilePath $server -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $work 'server.out') -RedirectStandardError (Join-Path $work 'server.err')
+  $fixtureServer = Start-Process -FilePath $server -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $work 'server.out') -RedirectStandardError (Join-Path $work 'server.err')
   $usbip = Join-Path $transport 'usbip.exe'
   $deadline = (Get-Date).AddSeconds(30)
   do {
-    if ($process.HasExited) { throw 'Virtual USB audio server exited before attaching its device' }
+    if ($fixtureServer.HasExited) { throw 'Virtual USB audio server exited before attaching its device' }
     $devices = & $usbip list -r 127.0.0.1 2>&1
     $listed = $LASTEXITCODE -eq 0
     if (-not $listed) { Start-Sleep -Milliseconds 200 }
@@ -141,3 +144,11 @@ if ($endpoints.Count -eq 0) {
   throw 'The signed virtual USB audio device did not expose a working Windows audio endpoint'
 }
 $endpoints | Format-Table FriendlyName, Status
+# The runner reaps children when this shell exits. Keep the real USB device
+# server owned by this step until acceptance completes, then clean it up.
+& $Run
+} finally {
+  if ($fixtureServer -and -not $fixtureServer.HasExited) {
+    Stop-Process -Id $fixtureServer.Id -Force
+  }
+}
