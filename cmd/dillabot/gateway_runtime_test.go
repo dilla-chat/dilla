@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/jonasthim/dilla/internal/auth"
@@ -120,6 +121,12 @@ func TestPrivateGroupJoinedAfterReadyWakesCommandIntake(t *testing.T) {
 	}
 	runtime := newBotGatewayRuntime(t.Context(), api, true, log)
 	defer runtime.Close()
+	polled := make(chan id.ID, 1)
+	runtime.SetInteractionPoller(installation, func(_ context.Context, group id.ID) error {
+		polled <- group
+		return nil
+	})
+	runtime.StartCommandWorkers()
 	if err := runtime.Ensure(installation, device, user, "session"); err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +156,7 @@ ownEcho:
 		select {
 		case <-runtime.Wake():
 			t.Fatal("own ciphertext echo woke command intake")
-		case <-runtime.Interaction():
+		case <-polled:
 			t.Fatal("own ciphertext echo woke interaction intake")
 		case <-ownDeadline.C:
 			break ownEcho
@@ -168,9 +175,11 @@ ownEcho:
 	for {
 		gw.DeliverGroup(group, gateway.Frame{Op: gateway.OpMessageCT, GroupID: &group, Payload: payload, Replay: true})
 		select {
-		case <-runtime.Interaction():
-			// A participant's message in a private interaction group is a command: it takes
-			// the unthrottled interaction wake, not the general 5 s throttled one.
+		case polledGroup := <-polled:
+			if polledGroup != group {
+				t.Fatalf("polled group %s, want private group %s", polledGroup, group)
+			}
+			// A participant's message reaches its installation's command worker.
 			select {
 			case <-runtime.Wake():
 				t.Fatal("an interaction-group message also took the throttled general wake")
@@ -186,44 +195,45 @@ ownEcho:
 	}
 }
 
-// Interaction signals carry their installation and group. Repeated messages in one group coalesce
-// into one narrow poll of that group; an installation without a fast-path poller (mid
-// reconciliation) falls back to the throttled general wake.
+// Repeated notifications coalesce while every group keeps its first place in line.
 func TestInteractionSignalsCoalescePerGroup(t *testing.T) {
 	runtime := newBotGatewayRuntime(t.Context(), nil, true, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	installation, unpolled, a, b := id.New(), id.New(), id.New(), id.New()
-	var polled []id.ID
-	runtime.SetInteractionPoller(installation, func(_ context.Context, group id.ID) error { polled = append(polled, group); return nil })
+	installation, a, b := id.New(), id.New(), id.New()
+	runtime.SetInteractionPoller(installation, func(context.Context, id.ID) error { return nil })
 	for range 10 {
 		runtime.notifyInteraction(installation, a)
 	}
 	runtime.notifyInteraction(installation, b)
-	select {
-	case <-runtime.Interaction():
-	default:
-		t.Fatal("no interaction signal")
+	pool := newCommandBatchTestPool(t)
+	now := time.Now()
+	for _, group := range []id.ID{a, b} {
+		jobs, _, _ := runtime.commandBatch(pool, now)
+		if len(jobs) != 1 || jobs[0].work.group != group {
+			t.Fatalf("jobs=%v, want group %s once in notification order", jobs, group)
+		}
+		releaseCommandBatch(pool, jobs)
+		now = now.Add(interactionSpacing)
 	}
-	t0 := time.Unix(1_800_000_000, 0)
-	runtime.PollInteractions(t.Context(), t0)
-	inOrder := len(polled) == 2 && polled[0] == a && polled[1] == b
-	reversed := len(polled) == 2 && polled[0] == b && polled[1] == a
-	if !inOrder && !reversed {
-		t.Fatalf("polled %v, want each messaged group once", polled)
-	}
-	if n := runtime.PollInteractions(t.Context(), t0.Add(time.Minute)); n != 0 || len(polled) != 2 {
-		t.Fatalf("a drained signal polled again: %v (%d synced)", polled, n)
-	}
-	runtime.notifyInteraction(unpolled, a)
-	runtime.PollInteractions(t.Context(), t0)
-	select {
-	case <-runtime.Wake():
-	default:
-		t.Fatal("an installation without a fast-path poller did not fall back to the general wake")
+	if jobs, _, pending := runtime.commandBatch(pool, now); len(jobs) != 0 || pending {
+		t.Fatalf("drained notifications left jobs=%v pending=%v", jobs, pending)
 	}
 }
 
-// A removed installation leaves no fast-path state behind: RetainOnly forgets its pending groups and
-// its budget. Drop (a manager's Restart) keeps the budget, so a restart cannot reset a flood's bound.
+func newCommandBatchTestPool(t *testing.T) *commandWorkers {
+	t.Helper()
+	return &commandWorkers{ctx: t.Context(), active: make(map[id.ID]context.CancelFunc), background: make(map[id.ID]bool), retry: make(map[interactionWork]time.Time)}
+}
+
+func releaseCommandBatch(pool *commandWorkers, jobs []commandJob) {
+	for _, job := range jobs {
+		job.cancel()
+		delete(pool.active, job.work.installation)
+		delete(pool.background, job.work.installation)
+	}
+}
+
+// RetainOnly forgets removed installations' pending groups and budgets. Drop keeps
+// the budget so a manager restart cannot reset a flood's allowance.
 func TestRetainOnlyForgetsRemovedInstallationsInteractionState(t *testing.T) {
 	runtime := newBotGatewayRuntime(t.Context(), nil, true, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	kept, removed := id.New(), id.New()
@@ -232,7 +242,9 @@ func TestRetainOnlyForgetsRemovedInstallationsInteractionState(t *testing.T) {
 		runtime.SetInteractionPoller(installation, func(context.Context, id.ID) error { return nil })
 		runtime.notifyInteraction(installation, id.New())
 	}
-	runtime.PollInteractions(t.Context(), t0) // creates both budgets
+	pool := newCommandBatchTestPool(t)
+	jobs, _, _ := runtime.commandBatch(pool, t0) // creates both budgets
+	releaseCommandBatch(pool, jobs)
 	runtime.notifyInteraction(removed, id.New())
 	runtime.notifyInteraction(kept, id.New())
 	state := func(installation id.ID) (budget, pending bool) {
@@ -253,151 +265,141 @@ func TestRetainOnlyForgetsRemovedInstallationsInteractionState(t *testing.T) {
 	}
 }
 
-func drainSignal(ch <-chan struct{}) bool {
-	select {
-	case <-ch:
-		return true
-	default:
-		return false
-	}
-}
-
-// One fast poll syncs at most interactionGroupCap groups; the rest stay pending, re-signalled for
-// the next allowed poll, so a member writing into many groups cannot make one poll do O(N) syncs.
-func TestInteractionPollSyncsAtMostTheCapAndRequeuesTheRest(t *testing.T) {
-	runtime := newBotGatewayRuntime(t.Context(), nil, true, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	installation := id.New()
-	seen := map[id.ID]int{}
-	runtime.SetInteractionPoller(installation, func(_ context.Context, group id.ID) error { seen[group]++; return nil })
-	const groups = interactionGroupCap + 2 // above the cap, at or below the fallback
-	for range groups {
-		runtime.notifyInteraction(installation, id.New())
-	}
-	drainSignal(runtime.Interaction())
-	t0 := time.Unix(1_800_000_000, 0)
-	if n := runtime.PollInteractions(t.Context(), t0); n != interactionGroupCap || len(seen) != interactionGroupCap {
-		t.Fatalf("first poll synced %d groups (%d distinct), want the cap %d", n, len(seen), interactionGroupCap)
-	}
-	if !drainSignal(runtime.Interaction()) {
-		t.Fatal("the requeued groups were not re-signalled for the next poll")
-	}
-	// The first poll was charged four groups against a burst of three: the installation's next
-	// poll waits for its budget, then takes the rest.
-	if n := runtime.PollInteractions(t.Context(), t0.Add(interactionSpacing)); n != 0 {
-		t.Fatalf("the installation polled again with a spent budget (%d groups)", n)
-	}
-	drainSignal(runtime.Interaction())
-	if n := runtime.PollInteractions(t.Context(), t0.Add(2*gatewayWakeThrottle)); n != groups-interactionGroupCap || len(seen) != groups {
-		t.Fatalf("second poll synced %d, %d distinct in all; want the remaining %d", n, len(seen), groups-interactionGroupCap)
-	}
-	for group, n := range seen {
-		if n != 1 {
-			t.Fatalf("group %s synced %d times", group, n)
-		}
-	}
-	if drainSignal(runtime.Interaction()) || drainSignal(runtime.Wake()) {
-		t.Fatal("nothing should be left pending")
-	}
-}
-
-// Past interactionGroupFallback pending groups, the fast path does no single-group syncs at all:
-// it hands the work to the throttled general wake, whose one full sweep covers every group.
-func TestManyPendingInteractionGroupsFallBackToOneThrottledSweep(t *testing.T) {
-	runtime := newBotGatewayRuntime(t.Context(), nil, true, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	installation := id.New()
-	synced := 0
-	runtime.SetInteractionPoller(installation, func(context.Context, id.ID) error { synced++; return nil })
-	for range 20 {
-		runtime.notifyInteraction(installation, id.New())
-	}
-	drainSignal(runtime.Interaction())
-	t0 := time.Unix(1_800_000_000, 0)
-	if n := runtime.PollInteractions(t.Context(), t0); n != 0 || synced != 0 {
-		t.Fatalf("20 pending groups caused %d single-group syncs, want 0 (fallback)", synced)
-	}
-	if !drainSignal(runtime.Wake()) {
-		t.Fatal("20 pending groups did not fall back to the general wake")
-	}
-	if drainSignal(runtime.Interaction()) || runtime.PollInteractions(t.Context(), t0) != 0 {
-		t.Fatal("the fallback left groups pending on the fast path")
-	}
-}
-
 func TestInteractionRateLimitRequeuesForNextTick(t *testing.T) {
-	runtime := newBotGatewayRuntime(t.Context(), nil, true, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	installation, group := id.New(), id.New()
-	calls := 0
-	retry := uint64(1000)
-	runtime.SetInteractionPoller(installation, func(context.Context, id.ID) error {
-		calls++
-		if calls == 1 {
-			return &client.APIError{Status: 429, Code: "E_RATE_LIMITED", Outcome: client.OutcomeDefinitive, RetryAfterMS: &retry}
+	synctest.Test(t, func(t *testing.T) {
+		runtime := newBotGatewayRuntime(t.Context(), nil, true, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		defer runtime.Close()
+		installation, group := id.New(), id.New()
+		var calls atomic.Int32
+		retry := uint64(1000)
+		runtime.SetInteractionPoller(installation, func(context.Context, id.ID) error {
+			if calls.Add(1) == 1 {
+				return &client.APIError{Status: 429, Code: "E_RATE_LIMITED", Outcome: client.OutcomeDefinitive, RetryAfterMS: &retry}
+			}
+			return nil
+		})
+		runtime.StartCommandWorkers()
+		runtime.notifyInteraction(installation, group)
+		synctest.Wait()
+		if calls.Load() != 1 {
+			t.Fatalf("initial calls=%d", calls.Load())
 		}
-		return nil
+		time.Sleep(500 * time.Millisecond)
+		synctest.Wait()
+		if calls.Load() != 1 {
+			t.Fatal("retried before Retry-After")
+		}
+		time.Sleep(500 * time.Millisecond)
+		synctest.Wait()
+		if calls.Load() != 2 {
+			t.Fatal("deferred command not resumed after Retry-After")
+		}
+		time.Sleep(time.Second)
+		synctest.Wait()
+		if calls.Load() != 2 {
+			t.Fatal("delivered command retried again")
+		}
 	})
-	runtime.notifyInteraction(installation, group)
-	now := time.Unix(1800000000, 0)
-	runtime.now = func() time.Time { return now }
-	runtime.PollInteractions(t.Context(), now)
-	if delay, pending := runtime.NextInteraction(now); !pending || delay < time.Second {
-		t.Fatalf("pending=%v delay=%s", pending, delay)
-	}
-	runtime.PollInteractions(t.Context(), now.Add(500*time.Millisecond))
-	if calls != 1 {
-		t.Fatal("retried before Retry-After")
-	}
-	runtime.PollInteractions(t.Context(), now.Add(time.Second))
-	if calls != 2 {
-		t.Fatal("deferred command not resumed on the next tick")
-	}
-	if _, pending := runtime.NextInteraction(now.Add(time.Second)); pending {
-		t.Fatal("delivered command still pending")
-	}
 }
 
 func TestInteractionRateLimitStopsBatchAndDefersFromCompletion(t *testing.T) {
-	runtime := newBotGatewayRuntime(t.Context(), nil, true, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	installation := id.New()
-	now := time.Unix(1800000000, 0)
-	runtime.now = func() time.Time { return now }
-	retry := uint64(1000)
-	calls := 0
-	runtime.SetInteractionPoller(installation, func(context.Context, id.ID) error {
-		calls++
-		if calls == 1 {
-			now = now.Add(30 * time.Second)
-			return &client.APIError{Status: 429, Code: "E_RATE_LIMITED", Outcome: client.OutcomeDefinitive, RetryAfterMS: &retry}
+	synctest.Test(t, func(t *testing.T) {
+		runtime := newBotGatewayRuntime(t.Context(), nil, true, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		defer runtime.Close()
+		installation := id.New()
+		retry := uint64(1000)
+		var calls atomic.Int32
+		polled := make(chan time.Time, 4)
+		runtime.SetInteractionPoller(installation, func(context.Context, id.ID) error {
+			polled <- time.Now()
+			if calls.Add(1) == 1 {
+				time.Sleep(30 * time.Second)
+				return &client.APIError{Status: 429, Code: "E_RATE_LIMITED", Outcome: client.OutcomeDefinitive, RetryAfterMS: &retry}
+			}
+			return nil
+		})
+		for range 3 {
+			runtime.notifyInteraction(installation, id.New())
 		}
-		return nil
+		started := time.Now()
+		runtime.StartCommandWorkers()
+		synctest.Wait()
+		time.Sleep(30 * time.Second)
+		synctest.Wait()
+		if calls.Load() != 1 {
+			t.Fatalf("rate limit did not stop the installation: %d calls", calls.Load())
+		}
+		time.Sleep(time.Second - time.Millisecond)
+		synctest.Wait()
+		if calls.Load() != 1 {
+			t.Fatal("Retry-After was measured from job start instead of completion")
+		}
+		time.Sleep(time.Millisecond)
+		synctest.Wait()
+		for range 2 {
+			time.Sleep(250 * time.Millisecond)
+			synctest.Wait()
+		}
+		if calls.Load() != 4 {
+			t.Fatalf("deferred groups did not resume after completion: %d calls", calls.Load())
+		}
+		<-polled // the original failed attempt
+		if resumed := (<-polled).Sub(started); resumed != 31*time.Second {
+			t.Fatalf("deferred work resumed at %s, want 31s", resumed)
+		}
 	})
-	for range 3 {
-		runtime.notifyInteraction(installation, id.New())
-	}
-	runtime.PollInteractions(t.Context(), now)
-	if calls != 1 {
-		t.Fatalf("rate limit did not stop installation batch: %d calls", calls)
-	}
-	if delay, pending := runtime.NextInteraction(now); !pending || delay < time.Second {
-		t.Fatalf("delay=%s pending=%v after 30-second HTTP retry", delay, pending)
-	}
-	runtime.PollInteractions(t.Context(), now.Add(time.Second))
-	if calls != 4 {
-		t.Fatalf("not all deferred groups resumed: %d calls", calls)
-	}
 }
 
 func TestInteractionRetryAfterDeferralCappedAtThirtySeconds(t *testing.T) {
-	runtime := newBotGatewayRuntime(t.Context(), nil, true, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	installation, group := id.New(), id.New()
-	retry := ^uint64(0)
-	runtime.SetInteractionPoller(installation, func(context.Context, id.ID) error {
-		return &client.APIError{Status: 429, Code: "E_RATE_LIMITED", Outcome: client.OutcomeDefinitive, RetryAfterMS: &retry}
+	synctest.Test(t, func(t *testing.T) {
+		runtime := newBotGatewayRuntime(t.Context(), nil, true, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		defer runtime.Close()
+		installation, group := id.New(), id.New()
+		retry := ^uint64(0)
+		var calls atomic.Int32
+		runtime.SetInteractionPoller(installation, func(context.Context, id.ID) error {
+			if calls.Add(1) == 1 {
+				return &client.APIError{Status: 429, Code: "E_RATE_LIMITED", Outcome: client.OutcomeDefinitive, RetryAfterMS: &retry}
+			}
+			return nil
+		})
+		runtime.StartCommandWorkers()
+		runtime.notifyInteraction(installation, group)
+		synctest.Wait()
+		time.Sleep(30*time.Second - time.Millisecond)
+		synctest.Wait()
+		if calls.Load() != 1 {
+			t.Fatalf("retried before capped delay: %d calls", calls.Load())
+		}
+		time.Sleep(time.Millisecond)
+		synctest.Wait()
+		if calls.Load() != 2 {
+			t.Fatalf("did not retry after capped delay: %d calls", calls.Load())
+		}
 	})
-	now := time.Unix(1800000000, 0)
-	runtime.now = func() time.Time { return now }
-	runtime.notifyInteraction(installation, group)
-	runtime.PollInteractions(t.Context(), now)
-	if got := runtime.deferred[installation].Sub(now); got != 30*time.Second {
-		t.Fatalf("deferral=%s", got)
+}
+
+func TestInteractionGroupBudgetExhaustionDoesNotSpendAnotherGroupsAllowance(t *testing.T) {
+	runtime := newBotGatewayRuntime(t.Context(), nil, true, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	installation, flooded, quiet := id.New(), id.New(), id.New()
+	runtime.SetInteractionPoller(installation, func(context.Context, id.ID) error { return nil })
+	now := time.Now()
+	runtime.budgetLocked(installation, flooded).spend(now, interactionBurst)
+	runtime.notifyInteraction(installation, flooded)
+	runtime.notifyInteraction(installation, quiet)
+	pool := newCommandBatchTestPool(t)
+	jobs, _, _ := runtime.commandBatch(pool, now)
+	if len(jobs) != 1 || jobs[0].work.group != quiet {
+		t.Fatalf("jobs=%v, want only quiet group", jobs)
+	}
+	releaseCommandBatch(pool, jobs)
+	jobs, delay, pending := runtime.commandBatch(pool, now)
+	if len(jobs) != 0 || !pending || delay != interactionRefill {
+		t.Fatalf("flood refill: jobs=%v pending=%v delay=%s", jobs, pending, delay)
+	}
+	jobs, _, _ = runtime.commandBatch(pool, now.Add(interactionRefill))
+	defer releaseCommandBatch(pool, jobs)
+	if len(jobs) != 1 || jobs[0].work.group != flooded {
+		t.Fatalf("refilled jobs=%v, want flooded group", jobs)
 	}
 }

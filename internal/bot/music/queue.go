@@ -103,6 +103,9 @@ type Operation struct {
 	Enabled    bool
 	Seed       uint64
 	Repeat     RepeatMode
+	// ExpectedCurrentItemID makes an immediate skip conditional on the item the
+	// caller saw. Nil preserves legacy unconditional skips; empty means no item.
+	ExpectedCurrentItemID *string
 	// NowMS is the Bot's Unix time in milliseconds when the operation applies. With it, Apply first settles the
 	// playhead a playing track has reached, then stamps PositionAtMS; 0 leaves the playhead fields as they are.
 	NowMS int64

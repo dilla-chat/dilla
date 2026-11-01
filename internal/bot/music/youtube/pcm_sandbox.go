@@ -86,7 +86,7 @@ func (s PCMStarter) executable(path, name string) (string, error) {
 }
 
 func launchNetworkWorker(ctx context.Context, bwrap, python string, tools, workerArgs []string, startupTimeout, maxDuration time.Duration) (_ *isolatedPCM, failure error) {
-	ctx = client.WithoutBackgroundYield(ctx)
+	ctx = client.WithoutCooperativeStop(client.WithBackground(ctx))
 	root, err := newSandboxTempDir()
 	if err != nil {
 		return nil, ErrSandboxUnavailable
@@ -133,10 +133,10 @@ func launchNetworkWorker(ctx context.Context, bwrap, python string, tools, worke
 		return process, nil
 	case <-process.done:
 		_ = process.Close()
-		return nil, process.failure(errors.Join(ErrSandboxUnavailable, process.ctxErr))
+		return nil, process.startupFailure()
 	case <-runCtx.Done():
 		_ = process.Close()
-		return nil, process.failure(errors.Join(ErrSandboxUnavailable, process.ctxErr))
+		return nil, process.startupFailure()
 	case <-timer.C:
 		_ = process.Close()
 		return nil, process.failure(errors.Join(ErrSandboxUnavailable, context.DeadlineExceeded))
@@ -290,7 +290,7 @@ func (r *boundedProcessPCM) Read(p []byte) (int, error) {
 			_ = r.Close()
 			return 0, ErrPCMLimit
 		}
-		if err == io.EOF {
+		if processReadEnded(err) {
 			<-r.process.done
 			if r.process.ctxErr != nil {
 				return 0, r.process.ctxErr
@@ -299,7 +299,7 @@ func (r *boundedProcessPCM) Read(p []byte) (int, error) {
 				return 0, ErrPCMLimit
 			}
 			if r.process.err != nil {
-				return 0, ErrPCMStart
+				return 0, r.process.failure(ErrPCMStart)
 			}
 		}
 		return 0, err
@@ -309,7 +309,7 @@ func (r *boundedProcessPCM) Read(p []byte) (int, error) {
 	}
 	n, err := r.process.stdout.Read(p)
 	r.read += int64(n)
-	if err == io.EOF {
+	if processReadEnded(err) {
 		<-r.process.done
 		if r.process.ctxErr != nil {
 			return n, r.process.ctxErr
@@ -318,7 +318,7 @@ func (r *boundedProcessPCM) Read(p []byte) (int, error) {
 			return n, ErrPCMLimit
 		}
 		if r.process.err != nil {
-			return n, ErrPCMStart
+			return n, r.process.failure(ErrPCMStart)
 		}
 	}
 	return n, err
@@ -346,11 +346,28 @@ func (b *sandboxStderr) Write(p []byte) (int, error) {
 	return n, nil
 }
 func (b *sandboxStderr) String() string { b.mu.Lock(); defer b.mu.Unlock(); return b.data.String() }
-func (p *isolatedPCM) failure(cause error) error {
+func (p *isolatedPCM) failure(cause error) *ProcessError {
 	stderr, _ := p.cmd.Stderr.(*sandboxStderr)
 	text := ""
 	if stderr != nil {
 		text = stderr.String()
 	}
 	return newProcessError(cause, text, p.exitCode, p.diagnosticInputs...)
+}
+
+// A completed video refusal is a PCM failure; setup and provider faults retain
+// the sandbox sentinel. The worker also cancels runCtx on exit, so both select
+// paths must apply the same cause classification.
+func (p *isolatedPCM) startupFailure() *ProcessError {
+	failure := p.failure(errors.Join(ErrSandboxUnavailable, p.ctxErr))
+	if failure.PermanentPlaybackFailure() {
+		failure.Cause = errors.Join(ErrPCMStart, p.ctxErr)
+	}
+	return failure
+}
+
+// exec.Cmd.Wait closes StdoutPipe, which can race the reader's final EOF. Read
+// the completed process diagnostics for either pipe termination signal.
+func processReadEnded(err error) bool {
+	return errors.Is(err, io.EOF) || errors.Is(err, os.ErrClosed) || errors.Is(err, io.ErrClosedPipe)
 }

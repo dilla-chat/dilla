@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/music"
 	"github.com/jonasthim/dilla/internal/bot/music/persistence"
 	"github.com/jonasthim/dilla/internal/bot/music/youtube"
@@ -155,7 +156,7 @@ func TestMusicInteractionsNotifiesSnapshotBridgeOnlyAfterSuccessfulCommit(t *tes
 		t.Fatalf("successful commit result=%+v err=%v bridge revisions=%v", result, err, commits)
 	}
 	request.Revision = uint64Ptr(0)
-	result, err = h.handle(context.Background(), InteractionActor{User: id.New()}, request, protocol.OpMusicPause)
+	result, err = h.handle(context.Background(), InteractionActor{User: id.New()}, request, protocol.OpMusicResume)
 	if err != nil || result.Status != interactionStatusConflict || len(commits) != 1 {
 		t.Fatalf("conflicting commit result=%+v err=%v bridge revisions=%v, want no second notification", result, err, commits)
 	}
@@ -1035,6 +1036,261 @@ func TestMusicSearchUsesSearchProfileAndEnqueueStaysStrict(t *testing.T) {
 			}
 			if store.saves != 0 {
 				t.Fatal("search profile leaked into queue persistence")
+			}
+		})
+	}
+}
+
+func TestMusicStateReadReturnsDurableSnapshotDespiteRuntimeSkew(t *testing.T) {
+	for _, runtimeRevision := range []uint64{0, 2} {
+		t.Run(fmt.Sprint(runtimeRevision), func(t *testing.T) {
+			channel, community := id.New(), id.New()
+			state := music.InitialState()
+			state.Revision = 1
+			stateStore := &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: state, Revision: 1}}
+			authority := &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: true, dj: true}
+			h := MusicInteractions{Store: stateStore, Authority: authority, CommunityID: community, CurrentState: func(context.Context, id.ID, id.ID, id.ID) (music.State, uint64, error) {
+				state := music.InitialState()
+				state.Revision = runtimeRevision
+				return state, runtimeRevision, nil
+			}}
+			result, err := h.handle(t.Context(), InteractionActor{User: id.New()}, protocol.Request{CommunityID: community, ChannelID: &channel}, protocol.OpMusicState)
+			if err != nil || result.Status != 0 || result.Revision == nil || *result.Revision != 1 {
+				t.Fatalf("runtime=%d read=%+v err=%v", runtimeRevision, result, err)
+			}
+		})
+	}
+}
+
+type musicPriorityAuthority struct {
+	*musicInteractionAuthorityFake
+	priorities []int
+}
+
+func (a *musicPriorityAuthority) CurrentCall(ctx context.Context, channel id.ID) (MusicCallBinding, error) {
+	a.priorities = append(a.priorities, client.RequestPriority(ctx))
+	return a.musicInteractionAuthorityFake.CurrentCall(ctx, channel)
+}
+func (a *musicPriorityAuthority) CanUse(ctx context.Context, actor InteractionActor, call MusicCallBinding) (bool, error) {
+	a.priorities = append(a.priorities, client.RequestPriority(ctx))
+	return a.musicInteractionAuthorityFake.CanUse(ctx, actor, call)
+}
+func (a *musicPriorityAuthority) CanDJ(ctx context.Context, actor InteractionActor, call MusicCallBinding) (bool, error) {
+	a.priorities = append(a.priorities, client.RequestPriority(ctx))
+	return a.musicInteractionAuthorityFake.CanDJ(ctx, actor, call)
+}
+
+type musicUnreadableStore struct{ t *testing.T }
+
+func (s musicUnreadableStore) Load(context.Context, id.ID) (persistence.Snapshot, error) {
+	s.t.Error("immediate handler read the queue before supervisor serialization")
+	return persistence.Snapshot{}, errors.New("unexpected handler load")
+}
+func (s musicUnreadableStore) Save(context.Context, id.ID, uint64, music.State) (persistence.Snapshot, error) {
+	s.t.Error("immediate handler saved outside supervisor serialization")
+	return persistence.Snapshot{}, errors.New("unexpected handler save")
+}
+
+func TestImmediateMusicControlsAuthorizeBeforePriorityAndSkipHandlerStateReads(t *testing.T) {
+	for _, op := range []protocol.Operation{protocol.OpMusicPause, protocol.OpMusicSkip} {
+		for _, access := range []struct {
+			name     string
+			user, dj bool
+		}{
+			{"allowed", true, true}, {"cannot_use", false, true}, {"cannot_dj", true, false},
+		} {
+			t.Run(fmt.Sprintf("%d/%s", op, access.name), func(t *testing.T) {
+				channel := id.New()
+				authority := &musicPriorityAuthority{musicInteractionAuthorityFake: &musicInteractionAuthorityFake{
+					call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: access.user, dj: access.dj,
+				}}
+				called := false
+				h := MusicInteractions{Store: musicUnreadableStore{t}, Authority: authority, CommunityID: id.New(),
+					CurrentState: func(context.Context, id.ID, id.ID, id.ID) (music.State, uint64, error) {
+						t.Error("immediate handler queried runtime before supervisor serialization")
+						return music.State{}, 0, errors.New("unexpected runtime read")
+					},
+					OnImmediateControl: func(ctx context.Context, _, _, _ id.ID, control music.Operation) (music.State, error) {
+						called = true
+						if client.RequestPriority(ctx) != 2 {
+							t.Error("authorized control lost immediate priority")
+						}
+						state := music.InitialState()
+						state.Revision = 7
+						return state, nil
+					},
+				}
+				result, err := h.handle(client.WithInteractive(context.Background()), InteractionActor{User: id.New()}, protocol.Request{
+					CommunityID: h.CommunityID, ChannelID: &channel, Revision: uint64Ptr(0),
+				}, op)
+				if err != nil {
+					t.Fatal(err)
+				}
+				allowed := access.user && access.dj
+				if called != allowed || allowed && (result.Status != 0 || result.Revision == nil || *result.Revision != 7) || !allowed && result.Status != interactionStatusForbidden {
+					t.Fatalf("result=%+v callback=%v allowed=%v", result, called, allowed)
+				}
+				for i, priority := range authority.priorities {
+					want := 1
+					if allowed && i >= 3 {
+						want = 2
+					}
+					if priority != want {
+						t.Errorf("authority check %d priority=%d want %d; authorization must precede immediate priority", i, priority, want)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestMusicSkipAcceptsOptionalExpectedCurrentItem(t *testing.T) {
+	for _, args := range [][]any{nil, {id.New().String()}, {""}} {
+		op, ok := musicOperation(protocol.OpMusicSkip, args)
+		if !ok || op.Kind != music.OpSkip {
+			t.Fatalf("args=%v operation=%+v ok=%v", args, op, ok)
+		}
+		if len(args) == 0 {
+			if op.ExpectedCurrentItemID != nil {
+				t.Fatal("legacy skip unexpectedly guarded")
+			}
+		} else if op.ExpectedCurrentItemID == nil || *op.ExpectedCurrentItemID != args[0] {
+			t.Fatalf("expected-current guard lost: %+v", op)
+		}
+	}
+	for _, args := range [][]any{{uint64(1)}, {"not-an-id"}, {nil}, {id.New().String(), id.New().String()}} {
+		if _, ok := musicOperation(protocol.OpMusicSkip, args); ok {
+			t.Errorf("accepted malformed skip args=%v", args)
+		}
+	}
+}
+
+func TestImmediateMusicSkipReplaysExactRequestWithoutAdvancingAgain(t *testing.T) {
+	channel := interactionID(5)
+	current := id.New().String()
+	store := &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: music.InitialState()}}
+	authority := &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: true, dj: true}
+	calls := 0
+	h := MusicInteractions{Store: store, Authority: authority, CommunityID: interactionID(2), Now: func() time.Time { return time.Unix(100, 0) },
+		OnImmediateControl: func(_ context.Context, _, _, _ id.ID, op music.Operation) (music.State, error) {
+			calls++
+			if op.ExpectedCurrentItemID == nil || *op.ExpectedCurrentItemID != current {
+				t.Error("skip lost its expected current item")
+			}
+			state := music.InitialState()
+			state.Revision = 1
+			return state, nil
+		},
+	}
+	dispatcher, event, _ := interactionFixture(t, h.Handlers())
+	body, err := protocol.EncodeRequest(protocol.Request{RequestID: id.New(), CommunityID: h.CommunityID, ChannelID: &channel,
+		Operation: protocol.OpMusicSkip, Revision: uint64Ptr(0), Expires: uint64Ptr(120), Args: []any{current}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event.Body = &body
+	first, err := dispatcher.Dispatch(context.Background(), event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := dispatcher.Dispatch(context.Background(), event)
+	if err != nil || first != replay || calls != 1 || interactionResponse(t, first).Status != 0 {
+		t.Fatalf("replay=%v calls=%d err=%v response=%+v", first == replay, calls, err, interactionResponse(t, first))
+	}
+}
+
+func TestImmediateMusicControlsStillRecheckCallDJAndExpiry(t *testing.T) {
+	for _, op := range []protocol.Operation{protocol.OpMusicPause, protocol.OpMusicSkip} {
+		for _, refusal := range []string{"call_changed", "dj_revoked", "expired"} {
+			t.Run(fmt.Sprintf("%d/%s", op, refusal), func(t *testing.T) {
+				channel := id.New()
+				authority := &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: true, dj: true}
+				request := protocol.Request{ChannelID: &channel, Revision: uint64Ptr(0)}
+				want := uint64(interactionStatusForbidden)
+				switch refusal {
+				case "call_changed":
+					changed := authority.call
+					changed.CallID = id.New()
+					authority.callAfterFirst = &changed
+					want = interactionStatusConflict
+				case "dj_revoked":
+					denied := false
+					authority.djAfterFirst = &denied
+				case "expired":
+					request.Expires = uint64Ptr(100)
+					want = interactionStatusExpired
+				}
+				h := MusicInteractions{Store: musicUnreadableStore{t}, Authority: authority, CommunityID: id.New(), Now: func() time.Time { return time.Unix(100, 0) },
+					OnImmediateControl: func(context.Context, id.ID, id.ID, id.ID, music.Operation) (music.State, error) {
+						t.Error("refused immediate control reached playback")
+						return music.InitialState(), nil
+					},
+				}
+				request.CommunityID = h.CommunityID
+				result, err := h.handle(t.Context(), InteractionActor{User: id.New()}, request, op)
+				if err != nil || result.Status != want {
+					t.Fatalf("result=%+v err=%v want=%d", result, err, want)
+				}
+			})
+		}
+	}
+}
+
+func TestMusicSkipFallbackHonorsStaleGuardAfterFinalAuthorization(t *testing.T) {
+	for _, name := range []string{"different_item", "expected_empty", "now_empty", "call_changed", "dj_revoked", "expired"} {
+		t.Run(name, func(t *testing.T) {
+			channel := id.New()
+			state := music.InitialState()
+			state.Revision = 7
+			state.Current = &music.Track{ID: id.New().String(), Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "Current", RequesterID: id.New().String()}
+			state.Queue = []music.Track{{ID: id.New().String(), Provider: music.ProviderYouTube, CanonicalID: "bcdefghijkl", Title: "Next", RequesterID: id.New().String()}}
+			expected := id.New().String()
+			if name == "expected_empty" {
+				expected = ""
+			}
+			if name == "now_empty" {
+				state.Current = nil
+			}
+			store := &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: state, Revision: state.Revision}}
+			authority := &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: true, dj: true}
+			want := uint64(0)
+			expires := uint64(120)
+			switch name {
+			case "call_changed":
+				changed := authority.call
+				changed.CallID = id.New()
+				authority.callAfterFirst = &changed
+				want = interactionStatusConflict
+			case "dj_revoked":
+				denied := false
+				authority.djAfterFirst = &denied
+				want = interactionStatusForbidden
+			case "expired":
+				expires = 100
+				want = interactionStatusExpired
+			}
+			h := MusicInteractions{Store: store, Authority: authority, CommunityID: id.New(), Now: func() time.Time { return time.Unix(100, 0) },
+				OnPersistedSnapshot: func(context.Context, id.ID, id.ID, id.ID, music.State, uint64, bool) (uint64, error) {
+					t.Error("stale guarded skip reached playback handoff")
+					return 0, nil
+				},
+			}
+			result, err := h.handle(t.Context(), InteractionActor{User: id.New()}, protocol.Request{CommunityID: h.CommunityID, ChannelID: &channel,
+				Revision: uint64Ptr(0), Expires: &expires, Args: []any{expected}}, protocol.OpMusicSkip)
+			if err != nil || result.Status != want || store.saves != 0 {
+				t.Fatalf("result=%+v err=%v saves=%d want status=%d without writes", result, err, store.saves, want)
+			}
+			if want == 0 {
+				data, err := encodeMusicSnapshot(state, true, h.clock().UnixMilli())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if result.Revision == nil || *result.Revision != state.Revision || !bytes.Equal(result.Data, data) {
+					t.Fatalf("stale skip must return unchanged snapshot: result=%+v", result)
+				}
+				if authority.callChecks != 2 || authority.roleChecks != 2 {
+					t.Fatalf("stale skip bypassed final authorization: calls=%d roles=%d", authority.callChecks, authority.roleChecks)
+				}
 			}
 		})
 	}

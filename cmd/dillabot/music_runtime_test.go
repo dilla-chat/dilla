@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -1036,7 +1037,7 @@ func (c boundaryCalls) StartCall(ctx context.Context, _ id.ID) (client.Call, err
 	return c.call, c.probe.probe(ctx)
 }
 
-func TestMusicSupervisorAutoAdvanceDoesNotInheritSweepYield(t *testing.T) {
+func TestMusicSupervisorAutoAdvanceDoesNotInheritCooperativeStop(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/cbor")
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -1061,7 +1062,7 @@ func TestMusicSupervisorAutoAdvanceDoesNotInheritSweepYield(t *testing.T) {
 		t.Fatal(err)
 	}
 	var pending atomic.Bool
-	sweepCtx := client.WithBackgroundYield(t.Context(), pending.Load)
+	sweepCtx := client.WithCooperativeStop(t.Context(), pending.Load)
 	//nolint:staticcheck // SA1012: deliberately invalid lifetime tests rejection before context normalization.
 	if _, err := newMusicSupervisor(nil, channel, store, starter); err == nil {
 		t.Fatal("nil supervisor lifetime was accepted")
@@ -1138,13 +1139,13 @@ func TestMusicResumeSkipsBrokenProviderHead(t *testing.T) {
 			calls := &runtimeCalls{call: client.Call{CallID: channel, GroupID: id.New(), LiveKitURL: "wss://media.example", Token: "secret"}}
 			joins, lines := 0, 0
 			starter, err := newMusicQueueStarter(musicRuntimeDeps{Community: community, Channel: channel, Calls: calls,
-				JoinCallGroup: func(context.Context) error { joins++; return nil }, SpotifyPCM: failingRuntimePCM{spotify.ErrPlaybackFailed},
+				JoinCallGroup: func(context.Context) error { joins++; return nil }, SpotifyPCM: failingRuntimePCM{fmt.Errorf("%w: playback/provider_unavailable", spotify.ErrPlaybackFailed)},
 				YouTubePCM: liveRuntimePCM{}, LeaseManager: testLeaseManager(t), Encoder: liveRuntimeEncoderStarter{},
 				Publisher: &liveRuntimePublisherStarter{starts: map[id.ID]int{}}, Epochs: runtimeEpochs{}, Lifetime: time.Minute})
 			if err != nil {
 				t.Fatal(err)
 			}
-			starter.OnSkipped = func(context.Context, music.Track, error) { lines++ }
+			starter.OnSkipped = func(_ context.Context, skips []music.SkippedTrack) { lines += len(skips) }
 			supervisor, err := newMusicSupervisor(context.Background(), channel, store, starter)
 			if err != nil {
 				t.Fatal(err)
@@ -1254,7 +1255,7 @@ func TestMusicStartStagesFailOnce(t *testing.T) {
 	}
 }
 
-func TestMusicResumeDrainsThreeBrokenTracksWithoutRepeating(t *testing.T) {
+func TestMusicResumeCapsBrokenTracksWithoutRepeating(t *testing.T) {
 	for _, repeat := range []music.RepeatMode{music.RepeatOff, music.RepeatCurrent, music.RepeatQueue} {
 		t.Run(string(rune('0'+repeat)), func(t *testing.T) {
 			community, channel := id.New(), id.New()
@@ -1264,13 +1265,15 @@ func TestMusicResumeDrainsThreeBrokenTracksWithoutRepeating(t *testing.T) {
 				t.Fatal(err)
 			}
 			calls := &runtimeCalls{}
-			starter, err := newMusicQueueStarter(musicRuntimeDeps{Community: community, Channel: channel, Calls: calls, SpotifyPCM: failingRuntimePCM{spotify.ErrPlaybackFailed}, LeaseManager: testLeaseManager(t), Encoder: liveRuntimeEncoderStarter{}, Publisher: runtimePublisher{}, Epochs: runtimeEpochs{}, Lifetime: time.Minute})
+			starter, err := newMusicQueueStarter(musicRuntimeDeps{Community: community, Channel: channel, Calls: calls, SpotifyPCM: failingRuntimePCM{fmt.Errorf("%w: playback/provider_unavailable", spotify.ErrPlaybackFailed)}, LeaseManager: testLeaseManager(t), Encoder: liveRuntimeEncoderStarter{}, Publisher: runtimePublisher{}, Epochs: runtimeEpochs{}, Lifetime: time.Minute})
 			if err != nil {
 				t.Fatal(err)
 			}
 			var lines []string
-			starter.OnSkipped = func(_ context.Context, track music.Track, _ error) {
-				lines = append(lines, botstrings.MusicSkipped(track.Title, "provider unavailable"))
+			starter.OnSkipped = func(_ context.Context, skips []music.SkippedTrack) {
+				for range skips {
+					lines = append(lines, botstrings.MusicSkipped("", "provider unavailable"))
+				}
 			}
 			supervisor, err := newMusicSupervisor(context.Background(), channel, store, starter)
 			if err != nil {
@@ -1293,22 +1296,41 @@ func TestMusicResumeDrainsThreeBrokenTracksWithoutRepeating(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if state.Current != nil || len(state.Queue) != 0 || !state.Paused || len(lines) != 3 || calls.starts != 0 {
+			if state.Current == nil || state.Current.ID != "three" || len(state.Queue) != 0 || !state.Paused || len(lines) != 2 || calls.starts != 0 {
 				t.Fatalf("state=%+v lines=%v calls=%d", state, lines, calls.starts)
 			}
 			durable, err := store.Load(context.Background(), channel)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if durable.State.Current != nil || len(durable.State.Queue) != 0 || !durable.State.Paused {
+			if durable.State.Current == nil || durable.State.Current.ID != "three" || len(durable.State.Queue) != 0 || !durable.State.Paused {
 				t.Fatalf("durable=%+v", durable.State)
 			}
 			if _, err := supervisor.Apply(context.Background(), state.Revision, music.Operation{Kind: music.OpResume}); err != nil {
 				t.Fatal(err)
 			}
 			if len(lines) != 3 {
-				t.Fatal("empty queue retried a failed item")
+				t.Fatal("next Resume did not skip the remaining failed item")
 			}
 		})
+	}
+}
+
+func TestMusicNoticeHolderIsSharedAcrossDisableAndReenable(t *testing.T) {
+	registry := newMusicQueueRegistry()
+	installation := id.New()
+	first := registry.SkipNotices(installation)
+	if err := registry.Disable(installation); err != nil {
+		t.Fatal(err)
+	}
+	second := registry.SkipNotices(installation)
+	if first != second {
+		t.Fatal("Disable split handler and starter notice holders")
+	}
+	if err := registry.DisableMusic(installation); err != nil {
+		t.Fatal(err)
+	}
+	if registry.SkipNotices(installation) != first {
+		t.Fatal("re-enable replaced the shared holder")
 	}
 }

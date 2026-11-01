@@ -48,7 +48,7 @@ func RateLimitError(err error) *APIError {
 }
 
 // IsDeferred recognizes only trees of retry-safe refusals or cooperative
-// yields (and their cancellation causes), never a joined permanent failure.
+// stops (and their cancellation causes), never a joined permanent failure.
 func IsDeferred(err error) bool {
 	found := false
 	var transient func(error) bool
@@ -71,7 +71,7 @@ func IsDeferred(err error) bool {
 		if wrapped, ok := err.(interface{ Unwrap() error }); ok {
 			return transient(wrapped.Unwrap())
 		}
-		if errors.Is(err, ErrBackgroundYield) || RateLimitError(err) != nil {
+		if errors.Is(err, ErrCooperativeStop) || RateLimitError(err) != nil {
 			found = true
 			return true
 		}
@@ -95,17 +95,34 @@ func retryDelay(refusal *APIError, attempt int) time.Duration {
 }
 
 func waitRetry(ctx context.Context, delay time.Duration) error {
+	// The previous exchange has completed: waiting for Retry-After is a safe
+	// boundary, and stopping here must leave the request context alive.
+	if err := CooperativeCheckpoint(ctx); err != nil {
+		return err
+	}
 	delay = max(delay, time.Millisecond)
 	if deadline, ok := ctx.Deadline(); ok && delay > time.Until(deadline) {
 		return context.DeadlineExceeded
 	}
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
+	var stopped <-chan time.Time
+	if stop, _ := ctx.Value(cooperativeStopKey{}).(func() bool); stop != nil {
+		ticker := time.NewTicker(25 * time.Millisecond)
+		defer ticker.Stop()
+		stopped = ticker.C
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+			return CooperativeCheckpoint(ctx)
+		case <-stopped:
+			if err := CooperativeCheckpoint(ctx); err != nil {
+				return err
+			}
+		}
 	}
 }
 

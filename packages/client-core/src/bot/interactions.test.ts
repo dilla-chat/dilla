@@ -547,3 +547,61 @@ it('rejects an in-flight status lookup after the account device/store scope chan
   await expect(pending).rejects.toThrow('changed during authorization');
   expect(sends).toBe(0);
 });
+
+it('binds the authenticated installation before an upload with an uncertain outcome', async () => {
+  const scope = { installationId: INSTALLATION, botUserId: null, revision: '1' };
+  const dispatched = vi.fn();
+  const f = fake(command => {
+    if (command.m === 'getBotCommandStatus') return { ...scope, state: 3 };
+    if (command.m === 'humanInteractionRequest') {
+      expect(dispatched).toHaveBeenCalledExactlyOnceWith(scope);
+      expect(Object.isFrozen(dispatched.mock.calls[0][0])).toBe(true);
+      return { requestId: REQUEST, upload: 'unknown' };
+    }
+    return null;
+  });
+  await expect(createBotInteractionClient(f.client, COMMUNITY).request({ requestId: REQUEST, operation: 13,
+    channelId: '55'.repeat(16), args: [], revision: '0', onDispatch: dispatched })).rejects.toBeInstanceOf(BotInteractionUncertainError);
+  expect(dispatched).toHaveBeenCalledExactlyOnceWith(scope);
+  expect(f.calls.filter(call => call.m === 'humanInteractionRequest')).toHaveLength(1);
+});
+
+it('does not report dispatch before the expected installation has been authorized', async () => {
+  const dispatched = vi.fn();
+  const f = fake(command => command.m === 'getBotCommandStatus'
+    ? { installationId: INSTALLATION, botUserId: null, revision: '1', state: 3 } : null);
+  await expect(createBotInteractionClient(f.client, COMMUNITY).request({ requestId: REQUEST, operation: 13,
+    channelId: '55'.repeat(16), args: [], revision: '0', onDispatch: dispatched,
+    expectedScope: { installationId: 'bb'.repeat(16), botUserId: null, revision: '1' } })).rejects.toBeInstanceOf(BotInteractionBindingMismatchError);
+  expect(dispatched).not.toHaveBeenCalled();
+  expect(f.calls.filter(call => call.m === 'humanInteractionRequest')).toHaveLength(0);
+});
+
+it.each(['upload-call-failed', 'upload-unresolved', 'response-read-failed'] as const)('distinguishes %s for prior-request receipt recovery', async failure => {
+  const f = fake(command => {
+    if (command.m === 'getBotCommandStatus') return { installationId: INSTALLATION, botUserId: null, state: 3, revision: '1' };
+    if (command.m === 'humanInteractionRequest') {
+      if (failure === 'upload-call-failed') throw new Error('interaction request id conflicts with a prior request');
+      return { requestId: REQUEST, upload: failure === 'upload-unresolved' ? 'unknown' : 'accepted' };
+    }
+    if (command.m === 'readBotInteractionResponses') throw new Error('response read failed');
+    return null;
+  });
+  await expect(createBotInteractionClient(f.client, COMMUNITY).request({ requestId: REQUEST, operation: 70, args: ['same'] }))
+    .rejects.toMatchObject({ requestId: REQUEST, uploadCallFailed: failure === 'upload-call-failed' });
+  expect(f.calls.filter(row => row.m === 'readBotInteractionResponses')).toHaveLength(failure === 'response-read-failed' ? 1 : 0);
+});
+
+it('keeps upload timeout distinct from a rejected worker upload call', async () => {
+  vi.useFakeTimers();
+  const f = fake(command => {
+    if (command.m === 'getBotCommandStatus') return { installationId: INSTALLATION, botUserId: null, state: 3, revision: '1' };
+    if (command.m === 'humanInteractionRequest') return new Promise(() => {});
+    return null;
+  });
+  const pending = createBotInteractionClient(f.client, COMMUNITY).request({ requestId: REQUEST, operation: 70, args: ['same'] });
+  const rejected = expect(pending).rejects.toMatchObject({ requestId: REQUEST, uploadCallFailed: false });
+  await vi.advanceTimersByTimeAsync(30_001);
+  await rejected;
+  expect(f.calls.some(row => row.m === 'readBotInteractionResponses')).toBe(false);
+});

@@ -22,6 +22,7 @@ const (
 var (
 	ErrSourceNeedsResync = errors.New("source group needs resynchronization")
 	ErrSourceGroupGone   = errors.New("source group is gone")
+	ErrSourceSyncBusy    = errors.New("source group synchronization is already active")
 )
 
 type sourceSyncNative interface {
@@ -80,16 +81,19 @@ type SourceSync struct {
 	options    sourceSyncOptions
 	snapshotMu sync.Mutex
 	snapshots  map[id.ID]interactionSnapshotCacheEntry
+	activeMu   sync.Mutex
+	active     map[id.ID]bool
 }
 
 type interactionSnapshotCacheEntry struct {
-	wire      []byte
-	details   interactionSnapshotDetails
-	refreshAt time.Time
+	wire       []byte
+	details    interactionSnapshotDetails
+	refreshAt  time.Time
+	descriptor native.InteractionGroupDescriptor
 }
 
-// NewSourceSync binds synchronization to one opened native identity. The caller serializes this
-// service with lifecycle and future command work on the installation queue.
+// NewSourceSync binds synchronization to one opened native identity. Independent groups may
+// progress concurrently; overlapping passes for one group defer without waiting for network I/O.
 func NewSourceSync(n *native.Client, options SourceSyncOptions) (*SourceSync, error) {
 	if n == nil {
 		return nil, errors.New("missing native client")
@@ -139,6 +143,11 @@ func (s *SourceSync) sync(ctx context.Context, session sourceSyncSession, expect
 		(expected.Kind != 0 && expected.Kind != 1 && expected.Kind != 3) {
 		return out, errors.New("invalid source sync target")
 	}
+	release, claimed := s.claimGroup(expected.Group)
+	if !claimed {
+		return SourceSyncResult{More: true}, ErrSourceSyncBusy
+	}
+	defer release()
 	var local native.GroupInfo
 	var err error
 	if expected.Kind == 3 {
@@ -294,6 +303,28 @@ func (s *SourceSync) sync(ctx context.Context, session sourceSyncSession, expect
 	return out, nil
 }
 
+func (s *SourceSync) claimGroup(group id.ID) (func(), bool) {
+	// Production claims belong to the opened native identity: a reconciler can
+	// be rebuilt while an older command callback is still catching up a group.
+	if shared, ok := s.native.(interface{ TryClaimSource(id.ID) (func(), bool) }); ok {
+		return shared.TryClaimSource(group)
+	}
+	s.activeMu.Lock()
+	defer s.activeMu.Unlock()
+	if s.active[group] {
+		return nil, false
+	}
+	if s.active == nil {
+		s.active = make(map[id.ID]bool)
+	}
+	s.active[group] = true
+	return func() {
+		s.activeMu.Lock()
+		delete(s.active, group)
+		s.activeMu.Unlock()
+	}, true
+}
+
 func validateSourceGroup(g native.GroupInfo, binding native.Binding, expected native.GroupExpected) error {
 	if g.ID == expected.Group && g.State == 3 {
 		return ErrSourceNeedsResync
@@ -384,7 +415,7 @@ func (s *SourceSync) inspectInteractionGroup(ctx context.Context, session source
 func (s *SourceSync) freshInteractionSnapshot(ctx context.Context, session interactionGroupSyncSession, descriptor native.InteractionGroupDescriptor) ([]byte, interactionSnapshotDetails, error) {
 	now := s.options.now()
 	s.snapshotMu.Lock()
-	if cached, ok := s.snapshots[descriptor.Group]; ok && now.Before(cached.refreshAt) {
+	if cached, ok := s.snapshots[descriptor.Group]; ok && cached.descriptor == descriptor && now.Before(cached.refreshAt) {
 		wire := append([]byte(nil), cached.wire...)
 		s.snapshotMu.Unlock()
 		return wire, cached.details, nil
@@ -402,7 +433,7 @@ func (s *SourceSync) freshInteractionSnapshot(ctx context.Context, session inter
 	if err != nil {
 		return nil, interactionSnapshotDetails{}, err
 	}
-	entry := interactionSnapshotCacheEntry{wire: append([]byte(nil), wire...), details: details, refreshAt: s.options.now().Add(15 * time.Second)}
+	entry := interactionSnapshotCacheEntry{wire: append([]byte(nil), wire...), details: details, refreshAt: s.options.now().Add(15 * time.Second), descriptor: descriptor}
 	s.snapshotMu.Lock()
 	if len(s.snapshots) >= maxMembershipGroups {
 		for group, old := range s.snapshots {

@@ -803,3 +803,61 @@ func TestGatewayCommandNotBlockedBySlowBackgroundHTTP(t *testing.T) {
 	<-done
 
 }
+
+// Queued catch-up is scoped like a command hint, but retains the sweep's priority
+// and idle schedule even when text wakes enqueue the same private group repeatedly.
+func TestScopedBackgroundInteractionCatchupKeepsPriorityAndIdleBackoff(t *testing.T) {
+	r, n, base, community, _, _ := membershipFixture(t)
+	now := time.Unix(1800000000, 0)
+	r.source.options.now = func() time.Time { return now }
+	group := membershipID(21)
+	binding := native.InteractionGroupBinding{Instance: n.binding.Instance, Installation: n.binding.Installation, Community: community, BotUser: membershipID(23), ParticipantUser: membershipID(22), ParticipantDevice: membershipID(24), PolicyVersion: 3, E2EEVersion: 1}
+	botDevice := membershipID(25)
+	descriptor := native.InteractionGroupDescriptor{Group: group, Binding: binding, BotDevice: botDevice, Epoch: 1, State: 2}
+	n.interactionGroups = []native.InteractionGroupDescriptor{descriptor}
+	n.interactionInspected = native.InteractionGroupInspectResult{Binding: binding, BotDevice: botDevice, Epoch: 1, State: 2, NextSequence: 1}
+	base.interactionBinding, base.interactionBotDevice, base.interactionGroup = binding, botDevice, group
+	session := priorityInteractionSession{membershipFakeSession: base, t: t}
+	for range 5 {
+		result, err := r.reconcileInteractionGroupBackgroundOnce(t.Context(), session, group)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = result
+	}
+	if base.interactionInfoCalls != 1 {
+		t.Fatalf("background info polls=%d, want 1", base.interactionInfoCalls)
+	}
+	if delay := r.InteractionGroupDelay(descriptor); delay != time.Second {
+		t.Fatalf("idle delay=%v, want 1s", delay)
+	}
+	if _, err := r.reconcileInteractionGroupOnce(t.Context(), base, group); err != nil {
+		t.Fatal(err)
+	}
+	if base.interactionInfoCalls != 2 {
+		t.Fatal("interactive hint did not bypass idle schedule")
+	}
+	now = now.Add(3 * time.Second)
+	if _, err := r.reconcileInteractionGroupBackgroundOnce(t.Context(), session, group); err != nil {
+		t.Fatal(err)
+	}
+	if base.interactionInfoCalls != 3 {
+		t.Fatal("due background poll did not resume")
+	}
+	descriptor.Epoch++
+	if delay := r.InteractionGroupDelay(descriptor); delay != 0 {
+		t.Fatalf("changed descriptor delayed by %v", delay)
+	}
+}
+
+type priorityInteractionSession struct {
+	*membershipFakeSession
+	t *testing.T
+}
+
+func (s priorityInteractionSession) BotInteractionGroupInfo(ctx context.Context, installation, group id.ID) (client.GroupInfo, error) {
+	if got := client.RequestPriority(ctx); got != 0 {
+		s.t.Errorf("background catch-up priority=%d, want 0", got)
+	}
+	return s.membershipFakeSession.BotInteractionGroupInfo(ctx, installation, group)
+}

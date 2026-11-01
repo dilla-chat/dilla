@@ -127,8 +127,13 @@ type sdkLogger struct {
 	cause error
 }
 
+// detachedLoggerContext carries room logging identity without retaining attempt values or cancellation.
+func detachedLoggerContext(ctx context.Context) context.Context {
+	return music.WithPlaybackGroup(music.WithPlaybackLogger(context.Background(), music.PlaybackLogger(ctx)), music.PlaybackGroup(ctx))
+}
+
 func newSDKLogger(ctx context.Context) *sdkLogger {
-	return &sdkLogger{Logger: protoLogger.GetDiscardLogger(), ctx: ctx}
+	return &sdkLogger{Logger: protoLogger.GetDiscardLogger(), ctx: detachedLoggerContext(ctx)}
 }
 func (*sdkLogger) Debugw(string, ...any)                       {}
 func (*sdkLogger) Infow(string, ...any)                        {}

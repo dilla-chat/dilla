@@ -909,12 +909,12 @@ func TestEnrollmentYieldClearsAttemptAndRefreshesClaim(t *testing.T) {
 	instance, community, installation := sid(1), sid(2), sid(3)
 	user, device := sid(45), sid(44)
 	n := newFakeNative(instance, community, installation)
-	r := &fakeLifecycleRuntime{installation: client.Installation{ID: installation, CommunityID: community, State: 0, Revision: 1}, user: user, device: device, enrollErrOnce: client.ErrBackgroundYield}
+	r := &fakeLifecycleRuntime{installation: client.Installation{ID: installation, CommunityID: community, State: 0, Revision: 1}, user: user, device: device, enrollErrOnce: client.ErrCooperativeStop}
 	list, _ := cborx.Marshal([]any{uint64(1), []byte("list"), make([]byte, 64), make([]byte, 32)})
 	s := &fakeIdentitySession{installation: client.Installation{ID: installation, CommunityID: community, State: 2, Revision: 2, BotUser: &user, BotDevice: &device}, list: list}
 	h := &fakeIdentityHTTP{instance: instance, user: user, device: device, session: s}
 	lifecycle := newIdentityLifecycle(instance, community, installation, n, r, h, LifecycleOptions{Now: func() time.Time { return time.Unix(1_800_000_000, 0) }, DesiredPackages: 8, RenewMargin: time.Minute})
-	if _, err := lifecycle.Ensure(t.Context()); !errors.Is(err, client.ErrBackgroundYield) {
+	if _, err := lifecycle.Ensure(t.Context()); !errors.Is(err, client.ErrCooperativeStop) {
 		t.Fatal(err)
 	}
 	state, err := decodeIdentityState(n.state)

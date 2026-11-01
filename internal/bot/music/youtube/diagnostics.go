@@ -20,10 +20,73 @@ type ProcessError struct {
 	Cause    error
 	Stderr   string
 	ExitCode int
+	class    string
 }
 
 func (e *ProcessError) Error() string { return e.Cause.Error() }
 func (e *ProcessError) Unwrap() error { return e.Cause }
+func (e *ProcessError) PermanentPlaybackFailure() bool {
+	if errors.Is(e.Cause, context.Canceled) || errors.Is(e.Cause, context.DeadlineExceeded) {
+		return false
+	}
+	switch e.class {
+	case "video_unavailable", "video_private", "video_removed", "video_region_restricted", "video_age_restricted", "video_too_long":
+		return true
+	}
+	return false
+}
+
+// PermanentPlaybackFailure is deliberately limited to validated track input,
+// metadata, and bounded yt-dlp video refusal classes. Host/provider faults pause.
+func PermanentPlaybackFailure(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var process *ProcessError
+	if errors.As(err, &process) && process.class != "" {
+		return process.PermanentPlaybackFailure()
+	}
+	return errors.Is(err, ErrInvalidInput) || errors.Is(err, ErrMetadataInvalid)
+}
+
+// processFailureClass inspects only bounded subprocess diagnostics and returns
+// fixed labels. Provider-wide refusals take precedence over generic video text.
+func processFailureClass(raw string) string {
+	text := strings.ToLower(raw[:min(len(raw), 4096)])
+	contains := func(markers ...string) bool {
+		for _, marker := range markers {
+			if strings.Contains(text, marker) {
+				return true
+			}
+		}
+		return false
+	}
+	switch {
+	case contains("http error 429", "http 429", "too many requests"):
+		return "http_429"
+	case contains("not a bot", "bot check", "bot-check", "automated requests"):
+		return "bot_check"
+	case contains("http error 403", "http 403"):
+		return "http_403"
+	case contains("name resolution", "name or service not known", "network is unreachable", "connection refused", "connection reset", "timed out", "temporary failure", "unable to download webpage", "unable to download api page"):
+		return "network"
+	case contains("try again later", "content isn't available", "content isn’t available"):
+		return "rate_limited"
+	case contains("video is private", "private video"):
+		return "video_private"
+	case contains("video has been removed", "video was removed", "video has been deleted", "video is no longer available"):
+		return "video_removed"
+	case contains("not available in your country", "not made this video available in your country", "not available in your region", "geo restricted", "geo-restricted"):
+		return "video_region_restricted"
+	case contains("confirm your age", "age-restricted", "age restricted", "inappropriate for some users"):
+		return "video_age_restricted"
+	case contains("video is too long", "video duration exceeds", "longer than maximum duration"):
+		return "video_too_long"
+	case contains("video unavailable", "this video is unavailable"):
+		return "video_unavailable"
+	}
+	return ""
+}
 
 // DiagnosticText produces one printable line, at most 512 UTF-8 bytes including
 // the truncation marker. Whitespace separates words; other controls are removed.
@@ -57,6 +120,12 @@ func (e *metadataError) Unwrap() error    { return ErrMetadataInvalid }
 func invalidMetadata(reason string) error { return &metadataError{reason: reason} }
 
 func FailureClass(err error) string {
+	if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		var process *ProcessError
+		if errors.As(err, &process) && process.class != "" {
+			return process.class
+		}
+	}
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
 		return "deadline_exceeded"
@@ -119,6 +188,10 @@ var diagnosticYouTubeToken = regexp.MustCompile(`(\[youtube[^\]]*\]\s+)[^\r\n]*?
 
 // Redact raw text before normalization or truncation can split a private value.
 func newProcessError(cause error, raw string, exitCode int, inputs ...string) *ProcessError {
+	class := ""
+	if exitCode != 0 {
+		class = processFailureClass(raw)
+	}
 	var secrets []string
 	for _, input := range inputs {
 		if input == "" {
@@ -153,5 +226,5 @@ func newProcessError(cause error, raw string, exitCode int, inputs ...string) *P
 	// Known search text (which can contain colons) is gone before the generic
 	// extractor token fallback handles IDs belonging to other playlist videos.
 	raw = diagnosticYouTubeToken.ReplaceAllString(raw, "${1}[redacted]:")
-	return &ProcessError{Cause: cause, Stderr: DiagnosticText(raw), ExitCode: exitCode}
+	return &ProcessError{Cause: cause, Stderr: DiagnosticText(raw), ExitCode: exitCode, class: class}
 }

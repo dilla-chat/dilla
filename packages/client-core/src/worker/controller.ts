@@ -762,7 +762,9 @@ function invalid(command: Record<string, unknown>): string | null {
     const count = operation === 1 || operation === 50 || [11, 12, 17, 18, 20, 21, 25, 70, 71, 74, 80, 81, 82, 83, 84].includes(operation) ? 1
       : operation === 2 || operation === 22 || operation === 31 || operation === 51 || operation === 52 || operation === 63 || operation === 73 ? 2
         : operation === 61 || operation === 72 || operation === 75 ? 3 : 0;
-    if (!Array.isArray(command.args) || command.args.length !== count) return 'interaction arguments are invalid';
+    if (!Array.isArray(command.args) || command.args.length !== count && !(operation === 15 && command.args.length === 1)) return 'interaction arguments are invalid';
+    if (operation === 15 && command.args.length === 1 && (typeof command.args[0] !== 'string' || command.args[0] !== ''
+      && (!ID.test(command.args[0]) || command.args[0] === '0'.repeat(32)))) return 'skip current item is invalid';
     if (operation === 62 && command.args.length !== 0) return 'automatic moderation read arguments are invalid';
     if ((operation === 1 || operation === 2) && (typeof command.args[0] !== 'number' || !Number.isInteger(command.args[0]) || command.args[0] < 0 || command.args[0] > 5)) return 'settings section is invalid';
     if (operation === 2 && (!(command.args[1] instanceof Uint8Array) || command.args[1].length === 0 || command.args[1].length > 2400)) return 'settings document is invalid';

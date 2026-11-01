@@ -66,6 +66,61 @@ func TestRateCacheNeverEvictsSpentBudget(t *testing.T) {
 		}
 	})
 }
+
+func TestRateCacheRenewalPreservesWaitingPrioritiesAndSpentBudget(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c := cacheClient(t, RateLimits{DeviceCacheLimit: 1, WriteBurst: 1, WritePerSecond: 1})
+		old, err := c.SessionForDevice("old", testID(1))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = c.waitRate(old.rateContext(t.Context()), "old", "POST", "groups/x/cursor"); err != nil {
+			t.Fatal(err)
+		}
+		admitted := make(chan string, 3)
+		for _, waiter := range []struct {
+			name string
+			ctx  context.Context
+		}{
+			{"background", t.Context()},
+			{"interactive", WithInteractive(t.Context())},
+		} {
+			go func() {
+				if waitErr := c.waitRate(old.rateContext(waiter.ctx), "old", "POST", "groups/x/cursor"); waitErr != nil {
+					admitted <- waitErr.Error()
+					return
+				}
+				admitted <- waiter.name
+			}()
+		}
+		synctest.Wait()
+		current, err := c.SessionForDevice("renewed", testID(1))
+		if err != nil {
+			t.Fatal(err)
+		}
+		go func() {
+			if waitErr := c.waitRate(current.rateContext(WithImmediateControl(t.Context())), "renewed", "POST", "groups/x/cursor"); waitErr != nil {
+				admitted <- waitErr.Error()
+				return
+			}
+			admitted <- "control"
+		}()
+		synctest.Wait()
+		if _, err = c.SessionForDevice("unrelated", testID(2)); !errors.Is(err, ErrRateCacheCapacity) {
+			t.Fatalf("cache replaced a waiting device: %v", err)
+		}
+		start := time.Now()
+		for i, want := range []string{"control", "interactive", "background"} {
+			if got := <-admitted; got != want {
+				t.Fatalf("admission %d=%s, want %s", i, got, want)
+			}
+			if elapsed := time.Since(start); elapsed != time.Duration(i+1)*time.Second {
+				t.Fatalf("renewal refreshed the shared budget: admission %d at %s", i, elapsed)
+			}
+		}
+	})
+}
+
 func TestRateCacheTargetLimitsAndIdleEviction(t *testing.T) {
 	for _, global := range []bool{false, true} {
 		t.Run(fmt.Sprint(global), func(t *testing.T) {

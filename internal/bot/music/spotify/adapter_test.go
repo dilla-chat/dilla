@@ -286,3 +286,44 @@ func mustFakeProtocolHelper(t *testing.T, withPCM bool) string {
 	path, _ := fakeProtocolHelper(t, withPCM)
 	return path
 }
+
+func TestHelperPlaybackFailureClassifiesOnlyTrackSpecificStatus(t *testing.T) {
+	for _, tc := range []struct {
+		phase, code string
+		permanent   bool
+	}{
+		{"playback", "provider_unavailable", true},
+		{"authorization", "provider_connect", false},
+		{"authorization", "provider_connect_timeout", false},
+		{"startup", "build_configuration", false},
+		{"playback", "playback_timeout", false},
+		{"playback", "invalid_request", false},
+		{"authorization", "provider_unavailable", false},
+		{"playback", "credential_unavailable", false},
+		{"playback", "internal", false},
+		{"playback", "cancelled", false},
+	} {
+		t.Run(tc.phase+"/"+tc.code, func(t *testing.T) {
+			helper := mustFakeProtocolHelper(t, false)
+			status := frameStatus(`{"ok":false,"phase":"` + tc.phase + `","code":"` + tc.code + `"}`)
+			if err := os.WriteFile(filepath.Join(filepath.Dir(helper), "status"), status, 0600); err != nil {
+				t.Fatal(err)
+			}
+			adapter, err := New(Config{HelperPath: helper, StateDir: t.TempDir(), Credential: credential(t)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, failure := adapter.Start(t.Context(), "spotify:track:0123456789012345678901")
+			capability, ok := failure.(interface{ PermanentPlaybackFailure() bool })
+			if (ok && capability.PermanentPlaybackFailure()) != tc.permanent {
+				t.Fatalf("permanent=%v want %v: %v", ok && capability.PermanentPlaybackFailure(), tc.permanent, failure)
+			}
+			if !errors.Is(failure, ErrPlaybackFailed) {
+				t.Fatalf("lost playback sentinel: %v", failure)
+			}
+			if got := FailureClass(failure); got != tc.code {
+				t.Fatalf("helper status class=%q want=%q: %v", got, tc.code, failure)
+			}
+		})
+	}
+}

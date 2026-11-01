@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -20,21 +19,36 @@ import (
 	"github.com/jonasthim/dilla/internal/id"
 )
 
-func backgroundAPI(t *testing.T) *client.Client {
+func backgroundAPI(t *testing.T, active ...id.ID) *client.Client {
 	t.Helper()
 	instance := id.New()
 	document, err := cborx.Marshal([]any{[]any{uint64(3)}, []any{uint64(1)}, []any{uint64(1)}, instance, uint64(1), "probe", uint64(0), []any{uint64(0)}, uint64(1), id.New(), make([]byte, 32)})
 	if err != nil {
 		t.Fatal(err)
 	}
+	rows := make([]any, 0, len(active))
+	for _, installation := range active {
+		rows = append(rows, []any{installation, id.New(), uint64(3), uint64(1), id.New(), id.New(), uint64(1), uint64(1), uint64(0), uint64(0), nil, uint64(100), uint64(5)})
+	}
+	inventory, err := cborx.Marshal(rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deferred, err := cborx.Marshal([]any{"E_RATE_LIMITED", "try later", nil})
+	if err != nil {
+		t.Fatal(err)
+	}
 	api, err := client.New(client.Config{BaseURL: "https://example.invalid", InstanceID: instance,
 		RateLimits: client.RateLimits{ReadPerSecond: 1e6, ReadBurst: 1000000},
 		HTTPClient: &http.Client{Transport: spotifyCatalogRoundTripper(func(r *http.Request) (*http.Response, error) {
-			body := document
+			body, status := document, http.StatusOK
 			if r.URL.Path == "/v1/bot-runtime/installations" {
-				body = []byte{0x80}
-			} // empty current inventory
-			return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"application/cbor"}}, Body: io.NopCloser(bytes.NewReader(body)), Request: r}, nil
+				body = inventory
+			} else if r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/status") {
+				// Defer dependency rebuilding after retained maintenance has run.
+				body, status = deferred, http.StatusTooManyRequests
+			}
+			return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": []string{"application/cbor"}}, Body: io.NopCloser(bytes.NewReader(body)), Request: r}, nil
 		})}})
 	if err != nil {
 		t.Fatal(err)
@@ -48,76 +62,13 @@ func backgroundProbe(t *testing.T) func(context.Context) error {
 	return func(ctx context.Context) error { _, err := api.Discover(ctx); return err }
 }
 
-func TestEveryInstallationReconcilesWithinTwoPasses(t *testing.T) {
-	now := time.Now()
-	progress := backgroundProgress{lastNonYielded: now, interval: 30 * time.Second}
-	installations := []client.Installation{{ID: id.New()}, {ID: id.New()}, {ID: id.New()}, {ID: id.New()}}
-	completed := make(map[id.ID]bool)
-	probe := backgroundProbe(t)
-	for range 2 {
-		pass := progress.start(now)
-		if pass.retry && pass.order(installations)[0].ID != progress.resume {
-			t.Fatal("interrupted installation was not resumed first")
-		}
-		for _, installation := range pass.order(installations) {
-			stage := "membership"
-			ctx := pass.context(t.Context(), installation.ID, &stage, func() bool { return installation.ID != installations[0].ID })
-			// Admit an actual HTTP request using the production scheduling context.
-			err := probe(ctx)
-			if errors.Is(err, client.ErrBackgroundYield) {
-				continue
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			completed[installation.ID] = true
-		}
-		var err error
-		if pass.yielded {
-			err = client.ErrBackgroundYield
-		}
-		progress.finish(pass, now, err)
-	}
-	if len(completed) != len(installations) {
-		t.Fatalf("only %d of %d installations completed in two passes", len(completed), len(installations))
-	}
-}
-
-func TestProgressFloorForcesPassUnderSustainedCommands(t *testing.T) {
-	start := time.Now()
-	progress := backgroundProgress{lastNonYielded: start, interval: 30 * time.Second}
-	stage := "identity"
-	probe := backgroundProbe(t)
-	for _, elapsed := range []time.Duration{time.Second, 30 * time.Second, 91 * time.Second} {
-		pass := progress.start(start.Add(elapsed))
-		ctx := pass.context(t.Context(), id.New(), &stage, func() bool { return true })
-		err := probe(ctx)
-		if elapsed < 90*time.Second {
-			if !errors.Is(err, client.ErrBackgroundYield) {
-				t.Fatalf("normal pass did not yield: %v", err)
-			}
-			progress.finish(pass, start.Add(elapsed), err)
-		} else {
-			if err != nil {
-				t.Fatalf("progress-floor pass still yielded: %v", err)
-			}
-			progress.finish(pass, start.Add(elapsed), nil)
-		}
-	}
-	if progress.lastNonYielded != start.Add(91*time.Second) {
-		t.Fatal("yielded pass reset the progress floor")
-	}
-}
-
 func TestMaintenanceRunsWithCommandsEveryFiveSeconds(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		now := time.Now()
-		progress := backgroundProgress{lastNonYielded: now, interval: 30 * time.Second}
 		installation := id.New()
 		var announcements, utilities []time.Time
-		var pending bool
 		// These are the same two tasks bound to scheduler.RunDue and utilities.maintain
-		// in reconcile. Each performs real admission; a leaked yield fails the pass.
+		// in reconcile. Real admission must keep running while a worker handles a command.
 		probe := backgroundProbe(t)
 		task := func(times *[]time.Time) func(context.Context) error {
 			return func(ctx context.Context) error {
@@ -128,26 +79,44 @@ func TestMaintenanceRunsWithCommandsEveryFiveSeconds(t *testing.T) {
 				return nil
 			}
 		}
-		r := newBotGatewayRuntime(t.Context(), nil, false, nil)
+		api := backgroundAPI(t, installation)
+		if _, err := api.Discover(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		runtime, err := api.Runtime("runtime-credential")
+		if err != nil {
+			t.Fatal(err)
+		}
+		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+		r := newBotGatewayRuntime(t.Context(), api, false, logger)
+		registry := newMusicQueueRegistry()
+		defer func() { _ = registry.Close() }()
+		cfg := config{StateDir: t.TempDir()}
+		statuses := newRuntimeStatusTracker("test")
 		r.maintenance = map[id.ID]backgroundMaintenance{installation: {run: func(ctx context.Context) error {
 			return runBackgroundMaintenance(ctx, task(&announcements), task(&utilities))
 		}}}
+		commandStarted, releaseCommand := make(chan struct{}), make(chan struct{})
+		r.SetInteractionPoller(installation, func(context.Context, id.ID) error {
+			select {
+			case <-commandStarted:
+			default:
+				close(commandStarted)
+			}
+			<-releaseCommand
+			return nil
+		})
+		r.StartCommandWorkers()
+		defer r.Close()
+		defer close(releaseCommand)
+		r.notifyInteraction(installation, id.New())
+		<-commandStarted
 		for elapsed := time.Duration(0); elapsed <= 125*time.Second; elapsed += 5 * time.Second {
-			pending = true // a new command on every iteration, including the initial burst
-			pass := progress.start(time.Now())
-			stage := "membership"
-			ctx := pass.context(t.Context(), installation, &stage, func() bool { return pending })
-			done := make(map[id.ID]bool)
-			if err := r.maintain(ctx, done); err != nil {
-				t.Fatalf("maintenance yielded: %v", err)
+			// New hints stay pending while the command worker is occupied.
+			r.notifyInteraction(installation, id.New())
+			if err := reconcile(t.Context(), cfg, api, runtime, nil, registry, newAutoModerationEventState(), nil, r, statuses, logger); err != nil {
+				t.Fatalf("reconciliation stopped during a command: %v", err)
 			}
-			// A newly rebound helper in this pass must not run the task twice.
-			if err := r.maintainOne(ctx, installation, done); err != nil {
-				t.Fatal(err)
-			}
-			passErr := probe(ctx)
-			progress.finish(pass, time.Now(), passErr)
-			pending = false
 			time.Sleep(5 * time.Second)
 		}
 		for _, times := range [][]time.Time{announcements, utilities} {
@@ -163,57 +132,6 @@ func TestMaintenanceRunsWithCommandsEveryFiveSeconds(t *testing.T) {
 			}
 		}
 	})
-}
-
-func TestYieldedPassLogsOnceWithStage(t *testing.T) {
-	var logs bytes.Buffer
-	pass := &backgroundPass{yielded: true, installation: id.New(), stage: "membership_source_sync"}
-	reportBackgroundPass(slog.New(slog.NewJSONHandler(&logs, nil)), pass, client.ErrBackgroundYield)
-	text := logs.String()
-	if strings.Count(text, "\n") != 1 || !strings.Contains(text, "bot background pass yielded to a command") || !strings.Contains(text, `"stage":"membership_source_sync"`) || strings.Contains(text, "healthy") || strings.Contains(text, "rate limited") {
-		t.Fatalf("incorrect yield log: %s", text)
-	}
-}
-
-func TestBackgroundYieldReadyRacesWithPollerUpdates(t *testing.T) {
-	r := newBotGatewayRuntime(t.Context(), nil, false, nil)
-	installation, group := id.New(), id.New()
-	r.notifyInteraction(installation, group)
-	var readers sync.WaitGroup
-	readers.Add(1)
-	go func() {
-		defer readers.Done()
-		for range 2000 {
-			r.backgroundYieldReady(time.Now(), id.ID{})
-		}
-	}()
-	for range 1000 {
-		r.SetInteractionPoller(installation, func(context.Context, id.ID) error { return nil })
-		r.RetainOnly(nil)
-		r.notifyInteraction(installation, group)
-	}
-	readers.Wait()
-	r.RetainOnly(nil)
-}
-
-func TestInterruptedAdmissionKeepsYieldingUntilNextPass(t *testing.T) {
-	now := time.Now()
-	progress := backgroundProgress{lastNonYielded: now, interval: 30 * time.Second}
-	installation := id.New()
-	stage := "membership"
-	probe := backgroundProbe(t)
-	pass := progress.start(now)
-	ctx := pass.context(t.Context(), installation, &stage, func() bool { return true })
-	for range 2 {
-		if err := probe(ctx); !errors.Is(err, client.ErrBackgroundYield) {
-			t.Fatalf("caught yield resumed background work: %v", err)
-		}
-	}
-	progress.finish(pass, now, client.ErrBackgroundYield)
-	next := progress.start(now)
-	if err := probe(next.context(t.Context(), installation, &stage, func() bool { return true })); err != nil {
-		t.Fatalf("resumed installation yielded: %v", err)
-	}
 }
 
 func TestRemovedInstallationDoesNotRunMaintenance(t *testing.T) {
@@ -241,9 +159,7 @@ func TestRemovedInstallationDoesNotRunMaintenance(t *testing.T) {
 	r.maintenance = map[id.ID]backgroundMaintenance{installation: {run: func(ctx context.Context) error { return runBackgroundMaintenance(ctx, task, task) }}}
 	registry := newMusicQueueRegistry()
 	t.Cleanup(func() { _ = registry.Close() })
-	progress := backgroundProgress{lastNonYielded: time.Now(), interval: 30 * time.Second}
-	pass := progress.start(time.Now())
-	err = reconcile(t.Context(), config{StateDir: t.TempDir()}, api, runtime, nil, registry, newAutoModerationEventState(), nil, r, newRuntimeStatusTracker("test"), logger, pass)
+	err = reconcile(t.Context(), config{StateDir: t.TempDir()}, api, runtime, nil, registry, newAutoModerationEventState(), nil, r, newRuntimeStatusTracker("test"), logger)
 	if runs != 0 {
 		t.Fatalf("removed installation ran RunDue/maintain %d times", runs)
 	}
@@ -252,43 +168,6 @@ func TestRemovedInstallationDoesNotRunMaintenance(t *testing.T) {
 	}
 	if _, exists := r.maintenance[installation]; exists {
 		t.Fatal("removed installation retained maintenance")
-	}
-}
-
-func TestDiscoveryOnlyYieldPreservesInterruptedInstallation(t *testing.T) {
-	now := time.Now()
-	progress := backgroundProgress{lastNonYielded: now, interval: 30 * time.Second}
-	installation := id.New()
-	stage := "membership"
-	probe := backgroundProbe(t)
-	pass := progress.start(now)
-	if err := probe(pass.context(t.Context(), installation, &stage, func() bool { return true })); !errors.Is(err, client.ErrBackgroundYield) {
-		t.Fatal(err)
-	}
-	progress.finish(pass, now, client.ErrBackgroundYield)
-	discovery := progress.start(now)
-	if err := probe(discovery.context(t.Context(), id.ID{}, &stage, func() bool { return true })); !errors.Is(err, client.ErrBackgroundYield) {
-		t.Fatal(err)
-	}
-	progress.finish(discovery, now, client.ErrBackgroundYield)
-	resumed := progress.start(now)
-	if err := probe(resumed.context(t.Context(), installation, &stage, func() bool { return true })); err != nil {
-		t.Fatalf("discovery discarded protected work: %v", err)
-	}
-}
-
-func TestFirstTimeSetupMayYieldToAnotherInstallation(t *testing.T) {
-	r := newBotGatewayRuntime(t.Context(), nil, false, nil)
-	existing := id.New()
-	r.SetInteractionPoller(existing, func(context.Context, id.ID) error { return nil })
-	r.notifyInteraction(existing, id.New())
-	progress := backgroundProgress{lastNonYielded: time.Now(), interval: 30 * time.Second}
-	pass := progress.start(time.Now())
-	setup := id.New()
-	stage := "identity"
-	ctx := pass.context(t.Context(), setup, &stage, func() bool { return r.backgroundYieldReady(time.Now(), id.ID{}) })
-	if err := backgroundProbe(t)(ctx); !errors.Is(err, client.ErrBackgroundYield) {
-		t.Fatalf("another ready installation did not interrupt first setup: %v", err)
 	}
 }
 
@@ -320,46 +199,6 @@ func TestStaleMaintenanceDoesNotSkipRecoveredRuntime(t *testing.T) {
 	}
 }
 
-func TestProgressFloorSurvivesPersistentErrors(t *testing.T) {
-	for _, tc := range []struct {
-		name       string
-		err        error
-		incomplete bool
-	}{
-		{"installation failure", errors.New("installation unavailable"), false},
-		{"maintenance failure", errors.New("maintenance failed"), false},
-		{"Spotify guard", errors.New("Spotify guard unavailable"), false},
-		{"server deferral", &client.APIError{Status: 429, Code: "E_RATE_LIMITED", Outcome: client.OutcomeDefinitive}, true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			now := time.Now()
-			progress := backgroundProgress{lastNonYielded: now, interval: 30 * time.Second}
-			probe := backgroundProbe(t)
-			for range 3 {
-				failed := progress.start(now)
-				failed.incomplete = tc.incomplete
-				now = now.Add(61 * time.Second)
-				progress.finish(failed, now, tc.err)
-				next := progress.start(now.Add(30 * time.Second))
-				stage := "membership"
-				if err := probe(next.context(t.Context(), id.New(), &stage, func() bool { return true })); !errors.Is(err, client.ErrBackgroundYield) {
-					t.Fatalf("error disabled interactive priority: %v", err)
-				}
-			}
-		})
-	}
-}
-
-func TestProgressFloorAllowsLongReconcileInterval(t *testing.T) {
-	start := time.Now()
-	progress := backgroundProgress{lastNonYielded: start, interval: 120 * time.Second}
-	pass := progress.start(start.Add(120 * time.Second))
-	stage := "membership"
-	if err := backgroundProbe(t)(pass.context(t.Context(), id.New(), &stage, func() bool { return true })); !errors.Is(err, client.ErrBackgroundYield) {
-		t.Fatalf("normal 120s interval disabled priority: %v", err)
-	}
-}
-
 func TestMaintenanceErrorsCarryInstallationID(t *testing.T) {
 	r := newBotGatewayRuntime(t.Context(), nil, false, nil)
 	installation := id.New()
@@ -369,5 +208,29 @@ func TestMaintenanceErrorsCarryInstallationID(t *testing.T) {
 	var scoped *installationMaintenanceError
 	if !errors.As(err, &scoped) || scoped.installation != installation || !errors.Is(err, failure) || !strings.Contains(err.Error(), installation.String()) {
 		t.Fatalf("maintenance error lost installation or cause: %v", err)
+	}
+}
+
+func TestMaintenanceRunsOncePerPassAfterTaskFailure(t *testing.T) {
+	r := newBotGatewayRuntime(t.Context(), nil, false, nil)
+	installation := id.New()
+	runs := 0
+	failure := errors.New("announcement publication failed")
+	r.SetMaintenance(installation, backgroundMaintenance{run: func(context.Context) error {
+		runs++
+		return failure
+	}})
+	for range 2 {
+		done := make(map[id.ID]bool)
+		if err := r.maintain(t.Context(), done); !errors.Is(err, failure) {
+			t.Fatalf("maintenance error=%v", err)
+		}
+		// Rebinding during this pass must not run a retained task twice.
+		if err := r.maintainOne(t.Context(), installation, done); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if runs != 2 {
+		t.Fatalf("maintenance ran %d times in two passes, want 2", runs)
 	}
 }

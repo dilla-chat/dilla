@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/native"
@@ -321,14 +322,18 @@ func TestGatewayCommandIntakeReadsPrivateSourcesBeforeDispatch(t *testing.T) {
 	}
 }
 
-// probeIntakePriority makes an actual client request at each intake boundary.
-// A background context would defer locally before reaching the transport.
+// probeIntakePriority checks scheduling priority and makes a client request at
+// each intake boundary, including trust, dispatch and response delivery.
 type probeIntakePriority struct {
 	api   *client.Client
 	calls int
+	want  int
 }
 
 func (p *probeIntakePriority) probe(ctx context.Context) error {
+	if got := client.RequestPriority(ctx); got != p.want {
+		return fmt.Errorf("priority = %d, want %d", got, p.want)
+	}
 	p.calls++
 	_, err := p.api.Discover(ctx)
 	var apiErr *client.APIError
@@ -341,21 +346,13 @@ func (p *probeIntakePriority) ReconcileInteractionGroupOnce(ctx context.Context,
 	return service.MembershipResult{}, p.probe(ctx)
 }
 func (p *probeIntakePriority) RefreshPendingLeaves(ctx context.Context, _ *client.Session) (service.TrustRefresh, error) {
-	return service.TrustRefresh{}, p.probeBackground(ctx)
+	return service.TrustRefresh{}, p.probe(ctx)
 }
 func (p *probeIntakePriority) DrainHolding(ctx context.Context, _ map[id.ID]bool) (service.GroupEventPollResult, error) {
-	return service.GroupEventPollResult{}, p.probeBackground(ctx)
-}
-func (p *probeIntakePriority) probeBackground(ctx context.Context) error {
-	p.calls++
-	_, err := p.api.Discover(client.WithBackgroundYield(ctx, func() bool { return true }))
-	if !errors.Is(err, client.ErrBackgroundYield) {
-		return fmt.Errorf("installation-wide work inherited interactive priority: %w", err)
-	}
-	return nil
+	return service.GroupEventPollResult{}, p.probe(ctx)
 }
 
-func TestInteractionFastPathLimitsPriorityToSpecificGroup(t *testing.T) {
+func TestInteractionFastPathPreservesPriorityThroughTrustAndDrain(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/cbor")
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -365,9 +362,9 @@ func TestInteractionFastPathLimitsPriorityToSpecificGroup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	probe := &probeIntakePriority{api: api}
+	probe := &probeIntakePriority{api: api, want: 1}
 	poll := newInteractionIntakePoller(probe, probe, nil, probe, noUnrefreshed(t))
-	ctx := client.WithBackgroundYield(t.Context(), func() bool { return true })
+	ctx := client.WithInteractive(t.Context())
 	if err := poll(ctx, id.New()); err != nil {
 		t.Fatal(err)
 	}
@@ -386,7 +383,7 @@ func TestInteractionEventPropagatesPriorityThroughReply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	probe := &probeIntakePriority{api: api}
+	probe := &probeIntakePriority{api: api, want: 1}
 	event := native.GroupEvent{DeliveryID: 1, Group: id.New()}
 	handler := newInteractionEventHandler(
 		interactionGroupInspectorFunc(func(ctx context.Context, group id.ID) (native.GroupInfo, error) {
@@ -395,11 +392,94 @@ func TestInteractionEventPropagatesPriorityThroughReply(t *testing.T) {
 		interactionDispatcherFunc(func(ctx context.Context, _ native.GroupEvent) (string, error) { return "reply", probe.probe(ctx) }),
 		interactionResponseSenderFunc(func(ctx context.Context, _ native.GroupEvent, _ string) (bool, error) { return true, probe.probe(ctx) }),
 	)
-	ctx := client.WithBackgroundYield(t.Context(), func() bool { return true })
+	ctx := t.Context()
 	if err := handler.HandleGroupEvent(ctx, event); err != nil {
 		t.Fatal(err)
 	}
 	if probe.calls != 3 {
 		t.Fatalf("priority checked at %d event boundaries", probe.calls)
+	}
+}
+
+type scopedCatchupProbe struct {
+	interactive, background int
+}
+
+func (p *scopedCatchupProbe) ReconcileInteractionGroupOnce(ctx context.Context, _ *client.Session, _ id.ID) (service.MembershipResult, error) {
+	p.interactive++
+	return service.MembershipResult{}, nil
+}
+func (p *scopedCatchupProbe) ReconcileInteractionGroupBackgroundOnce(ctx context.Context, _ *client.Session, _ id.ID) (service.MembershipResult, error) {
+	p.background++
+	if client.RequestPriority(ctx) != 0 {
+		return service.MembershipResult{}, errors.New("background priority lost")
+	}
+	return service.MembershipResult{}, nil
+}
+func TestInteractionIntakeRoutesBackgroundCatchupToIdleRespectingSync(t *testing.T) {
+	probe := &scopedCatchupProbe{}
+	var steps []string
+	poll := newInteractionIntakePoller(probe, readinessTrust{steps: &steps}, nil, commandDrainFunc(func(context.Context) (service.GroupEventPollResult, error) {
+		return service.GroupEventPollResult{}, nil
+	}), noUnrefreshed(t))
+	if err := poll(t.Context(), id.New()); err != nil {
+		t.Fatal(err)
+	}
+	if probe.background != 1 || probe.interactive != 0 {
+		t.Fatalf("background=%d interactive=%d", probe.background, probe.interactive)
+	}
+	if err := poll(client.WithInteractive(t.Context()), id.New()); err != nil {
+		t.Fatal(err)
+	}
+	if probe.background != 1 || probe.interactive != 1 {
+		t.Fatalf("background=%d interactive=%d", probe.background, probe.interactive)
+	}
+}
+
+func TestInteractionIntakePreservesBusyTrustHoldReason(t *testing.T) {
+	busy := id.New()
+	var steps []string
+	handler := &recordingHandler{}
+	queue := &queuePoller{events: []native.GroupEvent{{DeliveryID: 1, SenderUser: busy}}}
+	runtime := newInteractionEventRuntime(queue, handler)
+	poll := newInteractionIntakePoller(namedGroupSync{steps: &steps}, trustOutcome{steps: &steps, refresh: service.TrustRefresh{Busy: map[id.ID]bool{busy: true}}}, nil, countSkipped{holdingEventDrainer: runtime, report: func(int) { t.Fatal("busy event skipped") }}, func(service.TrustRefresh) {})
+	if err := poll(t.Context(), id.New()); !errors.Is(err, service.ErrGroupEventTrustBusy) {
+		t.Fatalf("busy trust error=%v", err)
+	}
+	if len(handler.handled) != 0 || len(queue.events) != 1 {
+		t.Fatalf("handled=%v queued=%v", handler.handled, queue.events)
+	}
+}
+
+type idleCatchupMembership struct{ installationMembership }
+
+func (idleCatchupMembership) InteractionGroupDelay(native.InteractionGroupDescriptor) time.Duration {
+	return time.Second
+}
+func TestCommandOwnedMembershipDoesNotQueueIdleInteractionGroups(t *testing.T) {
+	installation, group := id.New(), id.New()
+	runtime := &botGatewayRuntime{}
+	membership := commandOwnedMembership{installationMembership: idleCatchupMembership{}, source: privateNotificationSource{group: group}, runtime: runtime, installation: installation}
+	if _, err := membership.ReconcileInteractionGroupsOnce(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	runtime.pendingMu.Lock()
+	defer runtime.pendingMu.Unlock()
+	if runtime.pending[installation][group] {
+		t.Fatal("idle interaction group queued on pass/text wake")
+	}
+}
+
+func TestCountSkippedPreservesDeliveryAndFailureDetails(t *testing.T) {
+	cause := errors.New("handler failed")
+	first := time.Unix(1800000000, 0)
+	skipped := []service.SkippedGroupEvent{{DeliveryID: 41, FirstFailure: first, Cause: cause}}
+	var reported []service.SkippedGroupEvent
+	drain := countSkipped{holdingEventDrainer: skippedDrain{result: service.GroupEventPollResult{Skipped: skipped}}, reportSkipped: func(events []service.SkippedGroupEvent) { reported = events }}
+	if _, err := drain.DrainHolding(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(reported) != 1 || reported[0].DeliveryID != 41 || !reported[0].FirstFailure.Equal(first) || !errors.Is(reported[0].Cause, cause) {
+		t.Fatalf("reported skips=%+v", reported)
 	}
 }

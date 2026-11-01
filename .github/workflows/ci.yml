@@ -1470,6 +1470,12 @@ jobs:
           name: dilla-bot-core
           path: target/release
       - run: chmod +x target/release/dilla-bot-core
+      # TestClientMusicControlsEndToEnd bundles the real web client with esbuild from node_modules.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
       # The adapter starts this peer through cargo, then allows 90 s for readiness. Compile before
       # that runtime deadline so a cold Go runner reports compiler errors here instead of timing out.
       - name: Compile the Rust peer before its bounded readiness check

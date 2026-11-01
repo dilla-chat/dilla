@@ -119,7 +119,11 @@ func (d *callDS) CloseIfAlone(ctx context.Context, g, dev id.ID) error {
 	if err != nil {
 		return err
 	}
-	if !ds.SoleLeaf(members, row.Epoch, dev) {
+	sole, err := ds.SoleLeaf(ctx, d.repo, members, row.Epoch, dev)
+	if err != nil {
+		return err
+	}
+	if !sole {
 		return fmt.Errorf("callDS: %w", ds.ErrNotAlone)
 	}
 	return d.Close(ctx, g)

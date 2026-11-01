@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/native"
@@ -75,27 +74,6 @@ func TestRateDeferredReadinessKeepsRetainedHelperAlive(t *testing.T) {
 	cleanupUnreadyInstallation(installation, false, errors.New("membership denied"), registry, moderation)
 	if !source.closed || registry.Native(installation, community) != nil {
 		t.Fatal("non-transient readiness failure did not clean up the runtime")
-	}
-}
-
-func TestBackgroundYieldsOnlyWhenFastPathCanRun(t *testing.T) {
-	r := newBotGatewayRuntime(t.Context(), nil, false, nil)
-	installation, group := id.New(), id.New()
-	r.notifyInteraction(installation, group)
-	now := time.Now()
-	if r.backgroundYieldReady(now, id.ID{}) {
-		t.Fatal("first-time setup yielded without a fast path")
-	}
-	if !r.backgroundYieldReady(now, installation) {
-		t.Fatal("retained fast path did not interrupt sweep")
-	}
-	r.SetInteractionPoller(installation, func(context.Context, id.ID) error { return nil })
-	if !r.backgroundYieldReady(now, id.ID{}) {
-		t.Fatal("ready command did not interrupt sweep")
-	}
-	r.budgetLocked(installation).spend(now, interactionBurst)
-	if r.backgroundYieldReady(now, id.ID{}) {
-		t.Fatal("budget-delayed command prevented background progress")
 	}
 }
 

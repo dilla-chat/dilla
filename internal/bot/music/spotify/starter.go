@@ -42,11 +42,14 @@ func (s *PCMStarter) Start(ctx context.Context, track string) (io.ReadCloser, er
 		return nil, ctx.Err()
 	}
 	if err != nil {
-		return nil, ErrCredentialUnavailable
+		return nil, &credentialFailure{cause: err}
+	}
+	if token == "" {
+		return nil, ErrProviderUnavailable
 	}
 	credential, err := NewAccessTokenFile(token)
 	if err != nil {
-		return nil, ErrCredentialUnavailable
+		return nil, &credentialFailure{cause: err}
 	}
 	adapter, err := New(Config{HelperPath: s.helperPath, StateDir: s.stateDir, Credential: credential})
 	if err != nil {
@@ -85,15 +88,24 @@ var _ io.ReadCloser = (*credentialPlayback)(nil)
 
 // Check verifies a linked credential before taking a playback slot or joining a call.
 func (s *PCMStarter) Check(ctx context.Context) error {
+	if ctx == nil {
+		return ErrInvalidConfig
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if s == nil || s.loadToken == nil {
-		return ErrCredentialUnavailable
+		return ErrProviderUnavailable
 	}
 	token, err := s.loadToken(ctx)
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	if err != nil || token == "" {
-		return ErrCredentialUnavailable
+	if err != nil {
+		return &credentialFailure{cause: err}
+	}
+	if token == "" {
+		return ErrProviderUnavailable
 	}
 	return nil
 }

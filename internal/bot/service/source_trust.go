@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"sync"
 	"time"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
@@ -20,6 +21,8 @@ const (
 )
 
 var ErrSenderHistoryStale = errors.New("sender device-list history is stale")
+
+var ErrSourceTrustBusy = errors.New("sender trust refresh is already active")
 
 // TrustPhase is a fixed, non-sensitive trust-refresh substage for diagnostics.
 type TrustPhase uint8
@@ -83,10 +86,12 @@ type SourceTrust struct {
 	native  senderTrustNative
 	binding native.Binding
 	now     func() time.Time
+	mu      sync.Mutex
+	active  map[id.ID]bool
 }
 
 // NewSourceTrust binds trust recovery to one opened native identity.
-func NewSourceTrust(n *native.Client) (*SourceTrust, error) {
+func NewSourceTrust(n senderTrustNative) (*SourceTrust, error) {
 	if n == nil {
 		return nil, errors.New("missing native client")
 	}
@@ -126,10 +131,13 @@ func (t *SourceTrust) trustPendingLeaves(ctx context.Context, session senderHist
 type TrustRefresh struct {
 	Recovered   uint32
 	Unrefreshed map[id.ID]bool
+	// Busy holds senders already being refreshed by another pass, without aging their events.
+	Busy map[id.ID]bool
 }
 
 // RefreshPendingLeaves is TrustPendingLeaves for command intake: a failure scoped to one sender
-// (its signed device-list history is stale) leaves that sender unrefreshed and the pass continues
+// (its signed device-list history is stale) leaves that sender unrefreshed. A sender
+// owned by another refresh is reported separately in Busy. The pass continues
 // with the others. Every other failure (reading the pending leaves, a server or API failure, a
 // native-core refusal or limit, group revalidation, the clock) stays fatal to the pass.
 func (t *SourceTrust) RefreshPendingLeaves(ctx context.Context, session *client.Session) (TrustRefresh, error) {
@@ -152,6 +160,9 @@ func senderScopedTrustFailure(err error) bool {
 
 func (t *SourceTrust) pendingLeaves(ctx context.Context, session senderHistorySession, isolate bool) (TrustRefresh, error) {
 	var out TrustRefresh
+	if err := client.CooperativeCheckpoint(ctx); err != nil {
+		return out, err
+	}
 	leaves, err := t.native.PendingLeaves(ctx)
 	if err != nil {
 		return out, trustPhaseError(TrustPhasePendingLeaves, err)
@@ -159,11 +170,11 @@ func (t *SourceTrust) pendingLeaves(ctx context.Context, session senderHistorySe
 	var recovered uint64
 	refreshedUsers := make(map[id.ID]bool, len(leaves))
 	for _, leaf := range leaves {
-		if err = ctx.Err(); err != nil {
+		if err = client.CooperativeCheckpoint(ctx); err != nil {
 			return TrustRefresh{}, err
 		}
-		if out.Unrefreshed[leaf.User] {
-			continue // this sender's history is stale; its leaves stay pending (held by the core)
+		if out.Unrefreshed[leaf.User] || out.Busy[leaf.User] {
+			continue // this sender is stale or busy; its leaves stay pending in the core
 		}
 		// TrustSender validates the signed list against every current leaf for this user and
 		// updates the shared cached list. A second pending row from this snapshot would still
@@ -182,13 +193,23 @@ func (t *SourceTrust) pendingLeaves(ctx context.Context, session senderHistorySe
 		}
 		n, e := t.trustSender(ctx, session, leaf.Group, uint64(leaf.Leaf), leaf.User, leaf.CachedVersion)
 		if e != nil {
-			if !isolate || ctx.Err() != nil || !senderScopedTrustFailure(e) {
+			if errors.Is(e, client.ErrCooperativeStop) {
 				return TrustRefresh{}, e
 			}
-			if out.Unrefreshed == nil {
-				out.Unrefreshed = map[id.ID]bool{}
+			if !isolate || ctx.Err() != nil || !senderScopedTrustFailure(e) && !errors.Is(e, ErrSourceTrustBusy) {
+				return TrustRefresh{}, e
 			}
-			out.Unrefreshed[leaf.User] = true
+			if errors.Is(e, ErrSourceTrustBusy) {
+				if out.Busy == nil {
+					out.Busy = map[id.ID]bool{}
+				}
+				out.Busy[leaf.User] = true
+			} else {
+				if out.Unrefreshed == nil {
+					out.Unrefreshed = map[id.ID]bool{}
+				}
+				out.Unrefreshed[leaf.User] = true
+			}
 			continue
 		}
 		refreshedUsers[leaf.User] = true
@@ -214,6 +235,11 @@ func (t *SourceTrust) trustSender(ctx context.Context, session senderHistorySess
 	if group.IsZero() || user.IsZero() || leaf > math.MaxUint32 {
 		return 0, errors.New("invalid sender trust target")
 	}
+	release, claimed := t.claimUser(user)
+	if !claimed {
+		return 0, ErrSourceTrustBusy
+	}
+	defer release()
 	history, head, _, err := readSenderHistory(ctx, session, user, cachedVersion)
 	if err != nil {
 		return 0, trustPhaseError(TrustPhaseSenderHistory, err)
@@ -250,22 +276,54 @@ func (t *SourceTrust) trustProposedAdds(ctx context.Context, session senderHisto
 		return err
 	}
 	for _, add := range adds {
-		if err = ctx.Err(); err != nil {
+		if err = client.CooperativeCheckpoint(ctx); err != nil {
 			return err
 		}
-		history, head, _, e := readSenderHistory(ctx, session, add.User, add.CachedVersion)
-		if e != nil {
-			return e
-		}
-		now := t.now().Unix()
-		if now <= 0 {
-			return ErrSenderHistoryStale
-		}
-		if _, e = t.native.TrustProposedAdd(ctx, group, proposals, uint64(add.Index), add.User, history, head, uint64(now)); e != nil {
+		if e := t.trustProposedAdd(ctx, session, group, proposals, add); e != nil {
 			return e
 		}
 	}
 	return nil
+}
+
+func (t *SourceTrust) trustProposedAdd(ctx context.Context, session senderHistorySession, group id.ID, proposals []byte, add native.GroupProposedAdd) error {
+	release, claimed := t.claimUser(add.User)
+	if !claimed {
+		return ErrSourceTrustBusy
+	}
+	defer release()
+	history, head, _, err := readSenderHistory(ctx, session, add.User, add.CachedVersion)
+	if err != nil {
+		return err
+	}
+	now := t.now().Unix()
+	if now <= 0 {
+		return ErrSenderHistoryStale
+	}
+	_, err = t.native.TrustProposedAdd(ctx, group, proposals, uint64(add.Index), add.User, history, head, uint64(now))
+	return err
+}
+
+// The native sender cache is shared by every group for a user. Claim only that
+// user, releasing the mutex before any HTTP/helper call so unrelated senders proceed.
+func (t *SourceTrust) claimUser(user id.ID) (func(), bool) {
+	if shared, ok := t.native.(interface{ TryClaimTrust(id.ID) (func(), bool) }); ok {
+		return shared.TryClaimTrust(user)
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.active[user] {
+		return nil, false
+	}
+	if t.active == nil {
+		t.active = make(map[id.ID]bool)
+	}
+	t.active[user] = true
+	return func() {
+		t.mu.Lock()
+		delete(t.active, user)
+		t.mu.Unlock()
+	}, true
 }
 
 // readSenderHistory returns the encoded outer history rows and the candidate head's INNER signed
@@ -276,7 +334,7 @@ func readSenderHistory(ctx context.Context, session senderHistorySession, user i
 	}
 	var rowsUsed, bytesUsed uint64
 	for attempt := 0; attempt < 2; attempt++ {
-		if err := ctx.Err(); err != nil {
+		if err := client.CooperativeCheckpoint(ctx); err != nil {
 			return nil, nil, 0, err
 		}
 		candidateRaw, err := session.OwnDeviceList(ctx, user)
@@ -306,7 +364,7 @@ func readSenderHistory(ctx context.Context, session senderHistorySession, user i
 			rowsUsed++
 		} else {
 			for after < version {
-				if err = ctx.Err(); err != nil {
+				if err = client.CooperativeCheckpoint(ctx); err != nil {
 					return nil, nil, 0, err
 				}
 				page, pageErr := session.DeviceListHistory(ctx, user, after)

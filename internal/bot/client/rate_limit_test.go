@@ -364,3 +364,155 @@ func TestRetiredSessionDoesNotRecreateTokenBuckets(t *testing.T) {
 		t.Fatal("overlapping sessions reset budget")
 	}
 }
+
+// Waiting resume/start requests must not reserve tokens ahead of pause/skip.
+func TestImmediateControlTakesNextTokenBeforeInteractiveAndBackground(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		limiter := newPriorityLimiter(1, 1)
+		if !limiter.Allow() {
+			t.Fatal("missing initial burst")
+		}
+		admitted := make(chan string, 3)
+		start := time.Now()
+		for _, waiter := range []struct {
+			name string
+			ctx  context.Context
+		}{
+			{"background", t.Context()},
+			{"interactive", WithInteractive(t.Context())},
+		} {
+			go func() {
+				if err := limiter.Wait(waiter.ctx); err != nil {
+					t.Error(err)
+					return
+				}
+				admitted <- waiter.name
+			}()
+		}
+		synctest.Wait()
+		go func() {
+			if err := limiter.Wait(WithImmediateControl(t.Context())); err != nil {
+				t.Error(err)
+				return
+			}
+			admitted <- "control"
+		}()
+		synctest.Wait()
+		for i, want := range []string{"control", "interactive", "background"} {
+			if got := <-admitted; got != want {
+				t.Fatalf("admission %d=%s, want %s", i, got, want)
+			}
+			if elapsed := time.Since(start); elapsed != time.Duration(i+1)*time.Second {
+				t.Fatalf("admission %d after %s, rate cap changed", i, elapsed)
+			}
+		}
+	})
+}
+
+func TestImmediateControlCancellationAndBackgroundLifetimeClearPriority(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		limiter := newPriorityLimiter(1, 1)
+		limiter.Allow()
+		ctx, cancel := context.WithCancel(WithImmediateControl(t.Context()))
+		done := make(chan error, 1)
+		go func() { done <- limiter.Wait(ctx) }()
+		synctest.Wait()
+		cancel()
+		if err := <-done; !errors.Is(err, context.Canceled) {
+			t.Fatal(err)
+		}
+		if limiter.immediate != 0 || limiter.interactive != 0 {
+			t.Fatal("cancelled control waiter retained priority")
+		}
+		lifetime := WithBackground(WithImmediateControl(t.Context()))
+		if immediate, _ := lifetime.Value(immediateControlContextKey{}).(bool); immediate {
+			t.Fatal("background lifetime inherited immediate control")
+		}
+		if interactive, _ := lifetime.Value(interactiveContextKey{}).(bool); interactive {
+			t.Fatal("background lifetime inherited interactive priority")
+		}
+	})
+}
+
+// Sustained ordinary command demand must leave a bounded share of the same
+// device's tokens for maintenance, without consuming any token early.
+func TestBackgroundProgressDuringSustainedInteractiveDemand(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		limiter := newPriorityLimiter(1, 1)
+		limiter.Allow()
+		admitted := make(chan string, 17)
+		start := time.Now()
+		go func() {
+			if err := limiter.Wait(t.Context()); err != nil {
+				admitted <- "error: " + err.Error()
+				return
+			}
+			admitted <- "background"
+		}()
+		for range 16 {
+			go func() {
+				if err := limiter.Wait(WithInteractive(t.Context())); err != nil {
+					admitted <- "error: " + err.Error()
+					return
+				}
+				admitted <- "interactive"
+			}()
+		}
+		synctest.Wait()
+		for i := range 17 {
+			want := "interactive"
+			if i == 8 {
+				want = "background"
+			}
+			if got := <-admitted; got != want {
+				t.Fatalf("admission %d=%s, want %s", i+1, got, want)
+			}
+			if elapsed := time.Since(start); elapsed != time.Duration(i+1)*time.Second {
+				t.Fatalf("admission %d after %s, rate cap changed", i+1, elapsed)
+			}
+		}
+	})
+}
+
+func TestImmediateControlPrecedesReservedBackgroundToken(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		limiter := newPriorityLimiter(1, 1)
+		limiter.Allow()
+		admitted := make(chan string, 11)
+		go func() {
+			if err := limiter.Wait(t.Context()); err != nil {
+				admitted <- "error: " + err.Error()
+				return
+			}
+			admitted <- "background"
+		}()
+		for range 9 {
+			go func() {
+				if err := limiter.Wait(WithInteractive(t.Context())); err != nil {
+					admitted <- "error: " + err.Error()
+					return
+				}
+				admitted <- "interactive"
+			}()
+		}
+		synctest.Wait()
+		for range 8 {
+			if got := <-admitted; got != "interactive" {
+				t.Fatalf("ordinary command burst interrupted by %s", got)
+			}
+		}
+		go func() {
+			if err := limiter.Wait(WithImmediateControl(t.Context())); err != nil {
+				admitted <- "error: " + err.Error()
+				return
+			}
+			admitted <- "control"
+		}()
+		synctest.Wait()
+		for _, want := range []string{"control", "background", "interactive"} {
+			if got := <-admitted; got != want {
+				t.Fatalf("admission=%s, want %s", got, want)
+			}
+		}
+	})
+}

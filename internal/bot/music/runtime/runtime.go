@@ -46,7 +46,7 @@ func Start(ctx context.Context, source io.ReadCloser, format PCMFormat, capacity
 	if err != nil {
 		return nil, err
 	}
-	runCtx, cancel := context.WithCancel(client.WithoutBackgroundYield(ctx))
+	runCtx, cancel := context.WithCancel(client.WithoutCooperativeStop(client.WithBackground(ctx)))
 	s := &Session{provider: provider, cancel: cancel, done: make(chan struct{})}
 	go func() {
 		err := encode.BridgeWithOptions(runCtx, source, format.SampleRate, format.Channels, provider, options)

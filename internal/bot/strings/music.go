@@ -1,26 +1,18 @@
 // Package botstrings contains the Bot's user-facing copy.
 package botstrings
 
-import (
-	"fmt"
-	"regexp"
-	"strings"
-	"unicode"
-)
+import "fmt"
 
-var musicURL = regexp.MustCompile(`(?i)(?:[a-z][a-z0-9+.-]*://|www\.)\S+`)
+// MusicSkipped publishes no queue metadata or provider failure details. The
+// arguments remain for compatibility with callers of the original copy helper.
+func MusicSkipped(_, _ string) string {
+	return "Couldn't play a track. Skipping."
+}
 
-// MusicSkipped includes a bounded title and a fixed reason, never a provider URL.
-func MusicSkipped(title, reason string) string {
-	title = musicURL.ReplaceAllString(title, "")
-	title = strings.Join(strings.Fields(strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
-			return ' '
-		}
-		return r
-	}, title)), " ")
-	if title == "" {
-		title = "this track"
+// MusicSkippedBatch coalesces one start's skips without exposing their titles.
+func MusicSkippedBatch(count int, reason string) string {
+	if count <= 1 {
+		return MusicSkipped("", reason)
 	}
-	return fmt.Sprintf("Couldn't play %s (%s). Skipping.", title, reason)
+	return fmt.Sprintf("Couldn't play %d tracks. Skipping.", count)
 }

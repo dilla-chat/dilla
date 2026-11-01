@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sync/atomic"
 	"time"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
@@ -76,6 +77,9 @@ type GroupEventHandler interface {
 
 var ErrGroupEventHandler = errors.New("group event handler failed")
 
+// ErrGroupEventPollBusy leaves the shared cumulative cursor owned by its current drain.
+var ErrGroupEventPollBusy = errors.New("group event polling is already active")
+
 // GroupEventHandlerError keeps the failed delivery and its cause. It still matches
 // ErrGroupEventHandler, so the event stays pending exactly as before.
 type GroupEventHandlerError struct {
@@ -132,12 +136,13 @@ type GroupEventPollResult struct {
 // GroupEventPoller drains one bounded page of the helper's durable event queue.
 // The native helper, rather than this process, persists the acknowledgement.
 type GroupEventPoller struct {
+	active  atomic.Bool
 	native  groupEventNative
 	binding native.Binding
 	now     func() time.Time
 }
 
-func NewGroupEventPoller(n *native.Client) (*GroupEventPoller, error) {
+func NewGroupEventPoller(n groupEventNative) (*GroupEventPoller, error) {
 	if n == nil {
 		return nil, errors.New("missing group event source")
 	}
@@ -160,6 +165,13 @@ func (p *GroupEventPoller) PollOnce(ctx context.Context, handler GroupEventHandl
 	if p == nil || handler == nil || ctx == nil {
 		return result, errors.New("missing group event poll dependency")
 	}
+	if !p.active.CompareAndSwap(false, true) {
+		return GroupEventPollResult{More: true}, ErrGroupEventPollBusy
+	}
+	defer p.active.Store(false)
+	if err := client.CooperativeCheckpoint(ctx); err != nil {
+		return result, err
+	}
 	page, err := p.native.ReadGroupEvents(ctx, 0, 100)
 	if err != nil {
 		return result, err
@@ -168,23 +180,27 @@ func (p *GroupEventPoller) PollOnce(ctx context.Context, handler GroupEventHandl
 		return result, errors.New("invalid group event page")
 	}
 	for _, event := range page.Events {
-		if err := ctx.Err(); err != nil {
+		if err := client.CooperativeCheckpoint(ctx); err != nil {
 			return result, err
 		}
 		if event.Community != p.binding.Community || event.DeliveryID <= result.AcknowledgedThrough || event.DeliveryID > page.Next {
 			return result, errors.New("invalid group event binding or order")
 		}
+		// Once dispatch begins, finish this event and its durable acknowledgement.
+		// A command hint only stops the turn before the next event.
+		eventCtx := client.WithoutCooperativeStop(ctx)
 		var skipped *SkippedGroupEvent
-		handlingErr := handler.HandleGroupEvent(ctx, event)
-		if errors.Is(handlingErr, client.ErrBackgroundYield) && client.IsDeferred(handlingErr) {
-			return result, handlingErr
+		handlingErr := handler.HandleGroupEvent(eventCtx, event)
+		if errors.Is(handlingErr, ErrGroupEventTrustBusy) || errors.Is(handlingErr, client.ErrCooperativeStop) {
+			result.More = true
+			return result, &GroupEventHandlerError{DeliveryID: event.DeliveryID, Err: handlingErr}
 		}
 		if refusal := client.RateLimitError(handlingErr); refusal != nil {
 			// A middleware refusal did not execute the operation. Leave the queue and
 			// its durable failure/hold history untouched, even at the age limit.
 			result.More = true
 			result.RateLimited = refusal
-			return result, nil //nolint:nilerr // The refusal is reported as pending work in result.RateLimited, not a failed pass.
+			return result, nil // The refusal is reported as pending work in result.RateLimited, not a failed pass.
 		}
 		if err := handlingErr; err != nil {
 			var moderationErr AutoModerationStageError
@@ -201,7 +217,7 @@ func (p *GroupEventPoller) PollOnce(ctx context.Context, handler GroupEventHandl
 			if isUndeliverableGroupEvent(err) {
 				skipped = &SkippedGroupEvent{DeliveryID: event.DeliveryID, Cause: err}
 			} else {
-				first, aged, ageErr := p.failureAge(ctx, event, errors.Is(err, ErrGroupEventHeld))
+				first, aged, ageErr := p.failureAge(eventCtx, event, errors.Is(err, ErrGroupEventHeld))
 				if ageErr != nil || !aged || ctx.Err() != nil {
 					return result, &GroupEventHandlerError{DeliveryID: event.DeliveryID, Err: errors.Join(err, ageErr)}
 				}
@@ -209,7 +225,7 @@ func (p *GroupEventPoller) PollOnce(ctx context.Context, handler GroupEventHandl
 					Cause: fmt.Errorf("%w: %w", ErrGroupEventPendingTooLong, err)}
 			}
 		}
-		if err := p.native.AcknowledgeGroupEvents(ctx, event.DeliveryID); err != nil {
+		if err := p.native.AcknowledgeGroupEvents(eventCtx, event.DeliveryID); err != nil {
 			return result, err
 		}
 		if skipped == nil {
@@ -378,6 +394,37 @@ func HoldUnrefreshedSenders(handler GroupEventHandler, unrefreshed map[id.ID]boo
 func (h holdUnrefreshedSenders) HandleGroupEvent(ctx context.Context, event native.GroupEvent) error {
 	if h.hold[event.SenderUser] {
 		return ErrGroupEventHeld
+	}
+	return h.next.HandleGroupEvent(ctx, event)
+}
+
+// ErrGroupEventTrustBusy holds an event while another pass refreshes its sender.
+// Contention does not start or advance durable failed-handling history.
+var ErrGroupEventTrustBusy = errors.New("group event held: sender trust refresh is active")
+
+// HoldBusySenders holds events for senders whose refresh is owned by another pass.
+// The poller leaves their journal entries and failure history untouched.
+func HoldBusySenders(handler GroupEventHandler, busy map[id.ID]bool) GroupEventHandler {
+	if len(busy) == 0 {
+		return handler
+	}
+	hold := make(map[id.ID]bool, len(busy))
+	for user, busy := range busy {
+		if busy {
+			hold[user] = true
+		}
+	}
+	return holdBusySenders{next: handler, hold: hold}
+}
+
+type holdBusySenders struct {
+	next GroupEventHandler
+	hold map[id.ID]bool
+}
+
+func (h holdBusySenders) HandleGroupEvent(ctx context.Context, event native.GroupEvent) error {
+	if h.hold[event.SenderUser] {
+		return ErrGroupEventTrustBusy
 	}
 	return h.next.HandleGroupEvent(ctx, event)
 }

@@ -123,3 +123,27 @@ func TestPoolRoomEndLogsOnceWithReasonAndCorrelation(t *testing.T) {
 		})
 	}
 }
+
+func TestSDKLoggerDetachesAttemptContext(t *testing.T) {
+	type attemptKey struct{}
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	_, group := poolCall(91, 92)
+	original := music.WithPlaybackGroup(music.WithPlaybackLogger(context.WithValue(context.Background(), attemptKey{}, "private-attempt"), logger), group)
+	ctx, cancel := context.WithCancel(original)
+	sdk := newSDKLogger(ctx)
+	cancel()
+	if sdk.ctx.Err() != nil || sdk.ctx.Done() != nil {
+		t.Fatal("SDK logger retained cancellation")
+	}
+	if sdk.ctx.Value(attemptKey{}) != nil {
+		t.Fatal("SDK logger retained attempt values")
+	}
+	if music.PlaybackLogger(sdk.ctx) != logger || music.PlaybackGroup(sdk.ctx) != group {
+		t.Fatal("room logging correlation lost")
+	}
+	sdk.Warnw("ignored", nil)
+	if logs.Len() == 0 {
+		t.Fatal("detached logger did not log")
+	}
+}

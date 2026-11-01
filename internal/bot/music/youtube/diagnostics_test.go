@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net/url"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -127,5 +129,96 @@ func TestRedactionCoversSearchContainingColon(t *testing.T) {
 	err := newProcessError(ErrExtractFailed, "[youtube:search] "+query+": failed", 1, query)
 	if got := FailureStderr(err); got != "[youtube:search] [redacted]: failed" {
 		t.Fatalf("stderr=%q", got)
+	}
+}
+
+func TestYouTubeProcessClassifiesPermanentVideoFailures(t *testing.T) {
+	for _, tc := range []struct {
+		raw, class string
+		permanent  bool
+	}{
+		{"ERROR: Video unavailable", "video_unavailable", true},
+		{"ERROR: [youtube] id: Video unavailable. This content isn't available, try again later.", "rate_limited", false},
+		{"ERROR: Video unavailable. This content isn’t available, try again later.", "rate_limited", false},
+		{"ERROR: Video unavailable. This content isn't available", "rate_limited", false},
+		{"ERROR: Video unavailable. This content isn’t available", "rate_limited", false},
+		{"ERROR: This video is private", "video_private", true},
+		{"ERROR: This video has been removed by the uploader", "video_removed", true},
+		{"ERROR: The uploader has not made this video available in your country", "video_region_restricted", true},
+		{"ERROR: Sign in to confirm your age", "video_age_restricted", true},
+		{"ERROR: Video is too long", "video_too_long", true},
+		{"ERROR: HTTP Error 429: Too Many Requests; Video unavailable", "http_429", false},
+		{"ERROR: Sign in to confirm you're not a bot; Video unavailable", "bot_check", false},
+		{"ERROR: HTTP Error 403: Forbidden", "http_403", false},
+		{"ERROR: Unable to download webpage: Temporary failure in name resolution", "network", false},
+		{"bwrap: namespace permission denied", "sandbox_unavailable", false},
+	} {
+		t.Run(tc.class, func(t *testing.T) {
+			failure := newProcessError(ErrSandboxUnavailable, tc.raw, 1)
+			if FailureClass(failure) != tc.class {
+				t.Fatalf("class=%s want %s", FailureClass(failure), tc.class)
+			}
+			classified, ok := any(failure).(interface{ PermanentPlaybackFailure() bool })
+			if !ok || classified.PermanentPlaybackFailure() != tc.permanent {
+				t.Fatalf("permanent=%v want %v", ok && classified.PermanentPlaybackFailure(), tc.permanent)
+			}
+		})
+	}
+	canceled := newProcessError(context.Canceled, "Video unavailable", 1)
+	if classified, ok := any(canceled).(interface{ PermanentPlaybackFailure() bool }); ok && classified.PermanentPlaybackFailure() {
+		t.Fatal("canceled yt-dlp must pause")
+	}
+}
+
+func TestSandboxEarlyExitRetainsVideoOrProviderFailure(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		raw, class string
+		permanent  bool
+	}{
+		{"ERROR: This video is private", "video_private", true},
+		{"ERROR: HTTP Error 429: Too Many Requests", "http_429", false},
+		{"bwrap: namespace permission denied", "sandbox_unavailable", false},
+	} {
+		t.Run(tc.class, func(t *testing.T) {
+			shim := filepath.Join(t.TempDir(), "bwrap")
+			script := "#!/bin/sh\ncat >&2 <<'DIAGNOSTIC'\n" + tc.raw + "\nDIAGNOSTIC\nexit 1\n"
+			if err := os.WriteFile(shim, []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			_, failure := launchNetworkWorker(t.Context(), shim, python, nil, []string{"pcm", "", "", "", "https://youtu.be/aqz-KE-bpKQ"}, time.Second, time.Minute)
+			if FailureClass(failure) != tc.class {
+				t.Fatalf("class=%s want %s: %v", FailureClass(failure), tc.class, failure)
+			}
+			if tc.permanent && errors.Is(failure, ErrSandboxUnavailable) {
+				t.Fatal("video refusal mislabeled as sandbox setup failure")
+			}
+			capability, ok := failure.(interface{ PermanentPlaybackFailure() bool })
+			if (ok && capability.PermanentPlaybackFailure()) != tc.permanent {
+				t.Fatalf("permanent=%v want %v", ok && capability.PermanentPlaybackFailure(), tc.permanent)
+			}
+		})
+	}
+}
+
+type closedStdoutReader struct{}
+
+func (closedStdoutReader) Read([]byte) (int, error) { return 0, os.ErrClosed }
+
+func TestPCMReadClosedPipePreservesCompletedVideoFailure(t *testing.T) {
+	capture := &sandboxStderr{}
+	_, _ = capture.Write([]byte("ERROR: This video is private"))
+	done := make(chan struct{})
+	close(done)
+	process := &isolatedPCM{stdout: io.NopCloser(closedStdoutReader{}), cmd: &exec.Cmd{Stderr: capture}, done: done, err: errors.New("child exited"), exitCode: 1}
+	reader := &boundedProcessPCM{process: process, limit: 100}
+	var sample [4]byte
+	_, err := reader.Read(sample[:])
+	var failure *ProcessError
+	if !errors.As(err, &failure) || !errors.Is(err, ErrPCMStart) || !failure.PermanentPlaybackFailure() || FailureClass(err) != "video_private" {
+		t.Fatalf("closed pipe lost process failure: %v class=%s", err, FailureClass(err))
 	}
 }

@@ -176,14 +176,18 @@ func (r *interactionEventRuntime) Drain(ctx context.Context) (service.GroupEvent
 	return r.DrainHolding(ctx, nil)
 }
 
-// DrainHolding is Drain with the events of unrefreshed senders held (service.HoldUnrefreshedSenders):
-// they are neither dispatched nor acknowledged and stay at the head of the queue.
+// DrainHolding is Drain with unrefreshed senders held instead of dispatched.
 func (r *interactionEventRuntime) DrainHolding(ctx context.Context, unrefreshed map[id.ID]bool) (service.GroupEventPollResult, error) {
+	return r.DrainTrustHolding(ctx, service.TrustRefresh{Unrefreshed: unrefreshed})
+}
+
+// DrainTrustHolding keeps stale-history holds distinct from refresh contention.
+func (r *interactionEventRuntime) DrainTrustHolding(ctx context.Context, refresh service.TrustRefresh) (service.GroupEventPollResult, error) {
 	var total service.GroupEventPollResult
 	if r == nil || ctx == nil || r.poller == nil || r.handler == nil {
 		return total, errors.New("missing interaction event runtime dependency")
 	}
-	handler := service.HoldUnrefreshedSenders(r.handler, unrefreshed)
+	handler := service.HoldBusySenders(service.HoldUnrefreshedSenders(r.handler, refresh.Unrefreshed), refresh.Busy)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for pass := 0; pass < maxInteractionEventPollPasses; pass++ {

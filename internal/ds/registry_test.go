@@ -579,3 +579,35 @@ func TestCloseIfAloneLeavesAGroupWithAnotherMemberOpen(t *testing.T) {
 		t.Fatal("CloseIfAlone closed a group that has other members")
 	}
 }
+
+func TestCloseIfAloneIgnoresManagedBotLeaves(t *testing.T) {
+	h := newDSHarness(t)
+	reg, human := h.mustRegisterOneLeaf(t, "one-leaf-0")
+	botUser, botDevice := id.New(), id.New()
+	h.account(t, botUser, botDevice)
+	setUserKind(t, h, botUser, 1)
+	row, err := h.repo.GetGroup(t.Context(), reg.GroupID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	members, err := h.repo.ListMembers(t.Context(), reg.GroupID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Closing a call reads its stored roster; no MLS operation is needed to exercise the
+	// extra bot leaf. Keep the caller's genuine one-leaf registration intact.
+	members = append(members, store.MemberRow{GroupID: reg.GroupID, LeafIndex: 1, UserID: botUser,
+		DeviceID: botDevice, SignatureKey: bytes.Repeat([]byte{4}, 32), AddedEpoch: row.Epoch})
+	if err := h.repo.ReplaceMembers(t.Context(), reg.GroupID, row.Epoch, members); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.ds.CloseIfAlone(t.Context(), reg.GroupID, id.New()); !errors.Is(err, ds.ErrNotAlone) {
+		t.Fatalf("a nonmember beside a bot = %v, want ErrNotAlone", err)
+	}
+	if err := h.ds.CloseIfAlone(t.Context(), reg.GroupID, human.DeviceID); err != nil {
+		t.Fatalf("the only human beside a bot cannot close the group: %v", err)
+	}
+	if row, err := h.repo.GetGroup(t.Context(), reg.GroupID); err != nil || row.ClosedAt == nil {
+		t.Fatalf("the group is still open: %+v, %v", row, err)
+	}
+}

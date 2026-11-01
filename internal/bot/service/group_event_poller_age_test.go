@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
@@ -423,4 +424,80 @@ func mustCBOR(t *testing.T, v any) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+func TestBusyTrustHoldDoesNotStartFailureAge(t *testing.T) {
+	q := ageTestQueue()
+	busy := id.New()
+	q.events[0].SenderUser = busy
+	dispatched := 0
+	next := groupEventHandlerFunc(func(context.Context, native.GroupEvent) error { dispatched++; return nil })
+	handler := HoldBusySenders(next, map[id.ID]bool{busy: true})
+	start := time.Unix(1800000000, 0)
+	for _, at := range []time.Time{start, start.Add(time.Hour), start.Add(24 * time.Hour)} {
+		result, err := pollAt(t, t.Context(), q, at, handler)
+		if !errors.Is(err, ErrGroupEventTrustBusy) || q.acked != 0 || len(result.Skipped) != 0 || dispatched != 0 {
+			t.Fatalf("busy hold: result=%+v err=%v ack=%d dispatched=%d", result, err, q.acked, dispatched)
+		}
+		if len(q.state) != 0 {
+			t.Fatal("trust contention persisted failure age")
+		}
+	}
+	held := HoldUnrefreshedSenders(next, map[id.ID]bool{busy: true})
+	if _, err := pollAt(t, t.Context(), q, start.Add(25*time.Hour), held); !errors.Is(err, ErrGroupEventHeld) {
+		t.Fatal(err)
+	}
+	for _, value := range q.state {
+		var record groupEventFailureRecord
+		if err := cborx.Unmarshal(value.Value, &record); err != nil {
+			t.Fatal(err)
+		}
+		if record.HeldAttempts != 1 || record.HeldFirst != uint64(start.Add(25*time.Hour).Unix()) {
+			t.Fatalf("actual trust failure inherited busy age: %+v", record)
+		}
+	}
+}
+
+func TestBusyTrustHoldLeavesExistingFailureHistoryUntouched(t *testing.T) {
+	q := ageTestQueue()
+	busy := id.New()
+	q.events[0].SenderUser = busy
+	next := groupEventHandlerFunc(func(context.Context, native.GroupEvent) error { return nil })
+	start := time.Unix(1800000000, 0)
+	_, _ = pollAt(t, t.Context(), q, start, HoldUnrefreshedSenders(next, map[id.ID]bool{busy: true}))
+	before := make(map[string]native.StateValue)
+	for key, value := range q.state {
+		before[key] = value
+	}
+	_, err := pollAt(t, t.Context(), q, start.Add(2*time.Hour), HoldBusySenders(next, map[id.ID]bool{busy: true}))
+	if !errors.Is(err, ErrGroupEventTrustBusy) || q.acked != 0 {
+		t.Fatalf("busy hold err=%v ack=%d", err, q.acked)
+	}
+	for key, value := range q.state {
+		if value.Revision != before[key].Revision || !bytesEqual(value.Value, before[key].Value) {
+			t.Fatal("busy hold mutated existing failure record")
+		}
+	}
+}
+
+func TestGroupEventCooperativeStopFinishesCurrentHandlerAndAcknowledgement(t *testing.T) {
+	q := ageTestQueue()
+	stop := false
+	ctx := client.WithCooperativeStop(t.Context(), func() bool { return stop })
+	var dispatched []uint64
+	handler := groupEventHandlerFunc(func(ctx context.Context, event native.GroupEvent) error {
+		dispatched = append(dispatched, event.DeliveryID)
+		stop = true
+		if err := client.CooperativeCheckpoint(ctx); err != nil {
+			t.Fatalf("current event interrupted: %v", err)
+		}
+		return nil
+	})
+	result, err := pollAt(t, ctx, q, time.Unix(1800000000, 0), handler)
+	if !errors.Is(err, client.ErrCooperativeStop) || q.acked != 1 || result.AcknowledgedThrough != 1 || len(dispatched) != 1 {
+		t.Fatalf("stop result=%+v err=%v ack=%d dispatch=%v", result, err, q.acked, dispatched)
+	}
+	if len(q.state) != 0 {
+		t.Fatal("cooperative stop persisted a failure age")
+	}
 }

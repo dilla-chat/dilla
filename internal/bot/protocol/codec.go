@@ -217,7 +217,7 @@ func validateRequest(r Request) error {
 		return invalid()
 	}
 	mut, channel, count := requestShape(r.Operation)
-	if count < 0 || len(r.Args) != count {
+	if count < 0 || len(r.Args) != count && (r.Operation != OpMusicSkip || len(r.Args) != 1) {
 		return invalid()
 	}
 	if channel != (r.ChannelID != nil) || (r.ChannelID != nil && !isID(*r.ChannelID)) {
@@ -310,8 +310,21 @@ func validateArgs(op Operation, a []any) error {
 		return ok && len(v) >= minimum && len(v) <= maximum && validArray(v)
 	}
 	switch op {
-	case OpOverviewGet, OpCapabilities, OpMusicState, OpMusicProvidersStatus, OpMusicPause, OpMusicResume, OpMusicSkip, OpMusicStop, OpMusicShuffle, OpMusicClear:
+	case OpOverviewGet, OpCapabilities, OpMusicState, OpMusicProvidersStatus, OpMusicPause, OpMusicResume, OpMusicStop, OpMusicShuffle, OpMusicClear:
 		return nil
+	case OpMusicSkip:
+		if len(a) == 0 {
+			return nil
+		}
+		expected, ok := a[0].(string)
+		if !ok {
+			return invalid()
+		}
+		if expected == "" {
+			return nil
+		}
+		item, err := id.Parse(expected)
+		return boolErr(err == nil && !item.IsZero())
 	case OpSettingsGet:
 		return boolErr(u(0, 5))
 	case OpSettingsPut:

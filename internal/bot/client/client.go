@@ -272,6 +272,9 @@ func (c *Client) doObserved(ctx context.Context, token, method, path string, que
 
 func (c *Client) doObservedOnce(ctx context.Context, token, method, path string, query url.Values, body []byte, maxBytes int64, mutation bool) ([]byte, int, ResponseObservation, error) {
 	var observation ResponseObservation
+	if err := CooperativeCheckpoint(ctx); err != nil {
+		return nil, 0, observation, err
+	}
 	if path != "instance" && !c.discovered.Load() {
 		return nil, 0, observation, errors.New("bot client: discovery required before API use")
 	}

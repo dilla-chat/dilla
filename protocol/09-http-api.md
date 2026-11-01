@@ -1140,7 +1140,7 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
 | `POST /v1/calls/{call_id}/rtt` | `[ms(uint)]` or `[]` | `204` once the SFU carries `ms` (0..5000, the device's round-trip time to the SFU in whole milliseconds) as the device's participant attribute `dilla.rtt`, or, with `[]`, no longer carries one (the client is paused or reconnecting; a clear is never rate limited and is a no-op when nothing is set); only the caller's own identity and only that key are written, through the SFU's admin API; `400 E_INVALID_REQUEST` for any other body; `429 E_RATE_LIMITED` with `retry_after_ms` for a second value within 1.5 s; `404 E_NOT_FOUND` when the call has ended or the device is not in its room | `view_channel`, and a current leaf of the call's group |
 | `POST /v1/calls/{call_id}/stats` | `[candidate_type(uint), relay_protocol(uint\|null), rtt_ms(uint), fraction_lost_permille(uint), decrypt_failures(uint), frames_encrypted(uint)]` | `204`; `429 E_RATE_LIMITED` above one report per device per 5 s; `404 E_NOT_FOUND` once the call has ended; `403 E_FORBIDDEN` for a barred device; `400 E_INVALID_REQUEST` for `decrypt_failures` or `frames_encrypted` above 1048576 | `view_channel` and `connect`, and a current leaf of the call's group |
 | `DELETE /v1/calls/{call_id}` | — | `204`, also when the call has already ended or its call group is closed; `403 E_FORBIDDEN` for a barred device and for a device that is listen-only in the call's room for media that is not dilla's | `view_channel` and `connect`, and a current leaf of the call's group while that group is open |
-| `DELETE /v1/calls/{call_id}?if_alone=1` | — | as `DELETE /v1/calls/{call_id}`, but a live call ends only while the caller's device is the call group's only current leaf (no other member that is not removed), checked under the group lock that every commit takes; `409 E_CALL_NOT_ALONE` otherwise, and nothing ends; `400 E_INVALID_REQUEST` for any other value of `if_alone` | as `DELETE /v1/calls/{call_id}` |
+| `DELETE /v1/calls/{call_id}?if_alone=1` | — | as `DELETE /v1/calls/{call_id}`, but a live call ends only while the caller's device holds a current leaf and no other non-bot member remains (managed-bot leaves are ignored), checked under the group lock that every commit takes; `409 E_CALL_NOT_ALONE` otherwise, and nothing ends; `400 E_INVALID_REQUEST` for any other value of `if_alone` | as `DELETE /v1/calls/{call_id}` |
 | `GET /v1/channels/{id}/call` | — | `200 [group_id(bstr16\|null), call_id(bstr16\|null), participants([[user_id(bstr16), device_id(bstr16), flags(uint)]])]`; `400 E_INVALID_REQUEST` for a text channel or a category | `view_channel`, or a participant of the DM or group DM |
 | `GET /v1/communities/{id}/calls` | — | `200 [[channel_id(bstr16), call_id(bstr16), participants]]`, the live calls of the voice channels the caller may view, sorted by `channel_id`, unpaginated; `404 E_NOT_FOUND` for a non-member | membership |
 | `POST /v1/calls/{call_id}/decline` | `[expires_ts(uint)]` | `204`, also when the user was no longer ringing or `expires_ts` names no ring; `400 E_INVALID_REQUEST` for a call of a community voice channel or a malformed body; `404 E_NOT_FOUND` for an unknown or ended call | a participant of the call's DM or group DM |
@@ -1522,7 +1522,16 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   away (which unpublishes its tracks), its sharing slot is freed, a start mints it a listen-only
   token, the signalling proxy admits it listen-only, and a share answers `403 E_FORBIDDEN`. A second
   such track disconnects it from the room.
-- **Ending.** `DELETE` ends the call for everyone and is kept to its participants. A call also ends
+- **Ending.** `DELETE` ends the call for everyone and is kept to its participants. Managed bots do
+  not keep a call alive after its last non-bot member leaves: when two consecutive reconciliations
+  of the whole room, at least one room-sweep interval apart, find a managed-bot leaf but no non-bot
+  leaf present in the room or admitted within the 30-second join window, the instance ends
+  the call with reason `bots_only` and deletes the room instead of proposing Removes that only the
+  bots could commit. Any whole-room grant sync can make these observations, including a room sweep,
+  room resync or channel-wide permission change. A human present or inside the join window, or an
+  uncertain account, group or participant listing, resets the observations. A member whose account
+  kind cannot be read is logged and skipped for absent-leaf tracking; other absent leaves still
+  progress, while the call stays live. Managed bots are not eligible committers. A call also ends
   when the SFU closes its room — 20 seconds after the last participant leaves, or 300 seconds after
   it was opened when nobody joined; a report of the close of a room the SFU has since re-opened
   under the same name, for a start that came after it, ends nothing, and neither does one the
@@ -1545,8 +1554,9 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   session names and that was created at least 600 seconds ago: at most 1 024 groups per pass,
   oldest first, the rest at the next pass. A live call's group is never closed this way; ending a
   live call stays `DELETE /v1/calls/{call_id}` by a current leaf. A client that leaves a call it
-  believes it is alone in ends it with `?if_alone=1`, so a device whose external commit has just
-  landed keeps the call (`409 E_CALL_NOT_ALONE`); the unconditional form is unchanged. A closed group answers as above
+  believes it is alone in ends it with `?if_alone=1`; managed-bot leaves are ignored, while another
+  non-bot device whose external commit has just landed keeps the call (`409 E_CALL_NOT_ALONE`);
+  the unconditional form is unchanged. A closed group answers as above
   (`403 E_LEAF_NOT_CURRENT` at a start), `GET /v1/channels/{id}/call` no longer names it, and the
   next joiner registers a fresh call group. A start that read the group open and writes its call
   after the close is ended at once and answers `503 E_UNAVAILABLE` with `retry_after_ms`; a start whose

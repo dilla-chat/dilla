@@ -443,3 +443,16 @@ func TestSpotifyCredentialsRefreshRotatesRefreshToken(t *testing.T) {
 		t.Fatal("rotation was not persisted")
 	}
 }
+
+func TestSpotifyLoadDistinguishesNoAccountFromTransientRead(t *testing.T) {
+	credentials, _, state, _ := spotifyFixture(t)
+	if _, err := credentials.Load(t.Context()); !errors.Is(err, ErrSpotifyNotLinked) {
+		t.Fatalf("missing account=%v", err)
+	}
+	failure := errors.New("sensitive transient read details")
+	state.stateErr = failure
+	_, err := credentials.Load(t.Context())
+	if errors.Is(err, ErrSpotifyNotLinked) || !errors.Is(err, ErrSpotifyCredentials) || !errors.Is(err, failure) || err.Error() != ErrSpotifyCredentials.Error() {
+		t.Fatalf("read failure=%v", err)
+	}
+}

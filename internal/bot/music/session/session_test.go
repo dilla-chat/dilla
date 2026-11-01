@@ -418,8 +418,12 @@ func TestExplicitStartRefreshesBindingAfterDelayedRoomDisconnect(t *testing.T) {
 type schedulingPCM struct{ api *client.Client }
 
 func (p schedulingPCM) Start(ctx context.Context, _ string) (io.ReadCloser, error) {
-	_, err := p.api.Discover(client.WithBackgroundYield(ctx, func() bool { return true }))
-	if !errors.Is(err, client.ErrBackgroundYield) {
+	if client.RequestPriority(ctx) != 0 || client.CooperativeCheckpoint(ctx) != nil {
+		return nil, errors.New("playback retained a worker turn")
+	}
+	_, err := p.api.Discover(ctx)
+	var response *client.APIError
+	if !errors.As(err, &response) || response.Status != 503 {
 		return nil, errors.New("playback retained the command's interactive priority")
 	}
 	return &pcmStub{}, nil
@@ -441,7 +445,7 @@ func TestPlaybackSessionClearsInteractiveScheduling(t *testing.T) {
 	o := options(&pcmStart{lease: lease}, enc, pub, lease)
 	o.Call.GroupID = o.Group
 	o.PCM = schedulingPCM{api: api}
-	ctx := client.WithInteractive(client.WithBackgroundYield(t.Context(), func() bool { return true }))
+	ctx := client.WithInteractive(client.WithCooperativeStop(t.Context(), func() bool { return true }))
 	playback, err := Start(ctx, o)
 	if err != nil {
 		t.Fatal(err)

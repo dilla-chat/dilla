@@ -22,7 +22,8 @@ func (e *StartError) ProviderFailure() bool {
 	if errors.Is(e.Cause, context.Canceled) || errors.Is(e.Cause, context.DeadlineExceeded) || errors.Is(e.Cause, ErrSpotifyBusy) {
 		return false
 	}
-	return e.Stage == "provider_check" || e.Stage == "provider_pcm" || e.Stage == "spotify_lease"
+	var cause interface{ PermanentPlaybackFailure() bool }
+	return errors.As(e.Cause, &cause) && cause.PermanentPlaybackFailure()
 }
 
 type playbackLoggerKey struct{}
@@ -75,7 +76,7 @@ func FailureClass(err error) string {
 	if errors.As(err, &stage) {
 		switch stage.Stage {
 		case "provider_check":
-			return "provider_unavailable"
+			return "invalid"
 		case "provider_pcm":
 			return "pcm_start"
 		case "spotify_lease":

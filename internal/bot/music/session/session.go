@@ -68,7 +68,11 @@ type explicitStartKey struct{}
 type QueueStarter struct {
 	LogContext func(context.Context) context.Context
 	Logger     *slog.Logger
-	OnSkipped  func(context.Context, music.Track, error)
+	OnSkipped  func(context.Context, []music.SkippedTrack)
+	// OnCallEnded clears call-scoped registrations after a successful room leave.
+	OnCallEnded func()
+	// SetCallEnded installs call cleanup in the retained room lifecycle reporter.
+	SetCallEnded func(func())
 
 	OptionsFor OptionsForTrack
 	// ResetConnection is reserved for an explicit playback action. Automatic EOF
@@ -85,7 +89,12 @@ type QueueStarter struct {
 // LeaveIdle leaves the retained room when nothing is playing.
 func (s QueueStarter) LeaveIdle() error {
 	if s.LeaveConnection != nil {
-		return s.LeaveConnection()
+		if err := s.LeaveConnection(); err != nil {
+			return err
+		}
+		if s.OnCallEnded != nil {
+			s.OnCallEnded()
+		}
 	}
 	return nil
 }
@@ -119,7 +128,12 @@ func (s QueueStarter) StartExplicit(ctx context.Context, track music.Track) (mus
 // Close releases the retained connection when its queue owner is closed.
 func (s QueueStarter) Close() error {
 	if s.CloseConnection != nil {
-		return s.CloseConnection()
+		if err := s.CloseConnection(); err != nil {
+			return err
+		}
+		if s.OnCallEnded != nil {
+			s.OnCallEnded()
+		}
 	}
 	return nil
 }
@@ -193,7 +207,7 @@ func Start(ctx context.Context, o Options) (*Session, error) {
 	if o.Community.IsZero() || o.Channel.IsZero() || o.Track == "" || o.PCM == nil || o.Encoder == nil || o.Publisher == nil || o.Epochs == nil || (o.PrepareCall == nil && (o.Call.CallID.IsZero() || o.Group.IsZero() || o.Call.GroupID != o.Group)) || (provider != music.ProviderSpotify && provider != music.ProviderYouTube) || (provider == music.ProviderSpotify && o.Acquire == nil) {
 		return nil, music.StartStage(ctx, "provider_check", ErrInvalid)
 	}
-	ctx = client.WithoutBackgroundYield(ctx)
+	ctx = client.WithoutCooperativeStop(client.WithBackground(ctx))
 	if !o.Group.IsZero() {
 		ctx = music.WithPlaybackGroup(ctx, o.Group)
 	}
@@ -342,11 +356,11 @@ func (p *ownedPCM) PCMFormat() musicruntime.PCMFormat {
 func providerStage(ctx context.Context, stage string, err error) error {
 	if err != nil {
 		class := youtube.FailureClass(err)
-		if errors.Is(err, spotify.ErrCredentialUnavailable) {
-			class = "credential_unavailable"
+		if spotifyClass := spotify.FailureClass(err); spotifyClass != "unknown" {
+			class = spotifyClass
 		}
 		if class != "unknown" {
-			err = &providerFailureClass{error: err, class: class}
+			err = &providerFailureClass{error: err, class: class, permanent: youtube.PermanentPlaybackFailure(err) || spotify.PermanentPlaybackFailure(err)}
 		}
 	}
 	return music.StartStage(ctx, stage, err)
@@ -354,8 +368,11 @@ func providerStage(ctx context.Context, stage string, err error) error {
 
 type providerFailureClass struct {
 	error
-	class string
+	class     string
+	permanent bool
 }
 
 func (e *providerFailureClass) Unwrap() error        { return e.error }
 func (e *providerFailureClass) FailureClass() string { return e.class }
+
+func (e *providerFailureClass) PermanentPlaybackFailure() bool { return e.permanent }

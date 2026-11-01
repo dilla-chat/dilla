@@ -25,6 +25,7 @@ const (
 
 var (
 	ErrSpotifyCredentials       = errors.New("spotify credentials unavailable")
+	ErrSpotifyNotLinked         = fmt.Errorf("%w: no linked account", ErrSpotifyCredentials)
 	ErrSpotifyState             = errors.New("invalid spotify credential state")
 	ErrSpotifyCredentialBinding = errors.New("spotify credential installation binding mismatch")
 	ErrSpotifyConflict          = errors.New("spotify credential state changed")
@@ -182,7 +183,7 @@ func (s *SpotifyCredentials) Load(ctx context.Context) (spotifyauth.Token, error
 		return spotifyauth.Token{}, err
 	}
 	if state == nil {
-		return spotifyauth.Token{}, ErrSpotifyCredentials
+		return spotifyauth.Token{}, ErrSpotifyNotLinked
 	}
 	if state.legacy {
 		state, revision, err = s.migrateLegacy(ctx, state, revision)
@@ -257,7 +258,7 @@ type spotifyCredentialState struct {
 func (s *SpotifyCredentials) read(ctx context.Context) (*spotifyCredentialState, uint64, error) {
 	v, err := s.native.StateGet(ctx, spotifyCredentialArea, s.key())
 	if err != nil {
-		return nil, 0, ErrSpotifyCredentials
+		return nil, 0, &spotifyCredentialLoadError{cause: err}
 	}
 	if v.Tombstone {
 		return nil, v.Revision, ErrSpotifyState
@@ -415,3 +416,8 @@ func (s *SpotifyCredentials) key() []byte {
 func validSpotifySecret(v string) bool {
 	return v != "" && len(v) <= 8192 && !strings.ContainsAny(v, "\r\n\x00")
 }
+
+type spotifyCredentialLoadError struct{ cause error }
+
+func (e *spotifyCredentialLoadError) Error() string   { return ErrSpotifyCredentials.Error() }
+func (e *spotifyCredentialLoadError) Unwrap() []error { return []error{ErrSpotifyCredentials, e.cause} }

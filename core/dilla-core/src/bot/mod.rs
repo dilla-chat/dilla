@@ -601,7 +601,13 @@ fn is_mutation(op: u64) -> bool {
 }
 fn args_match(op: u64, a: &RequestArgs) -> bool {
     match op {
-        0 | 3 | 10 | 13..=16 | 19 | 23 | 24 => matches!(a, RequestArgs::None),
+        0 | 3 | 10 | 13 | 14 | 16 | 19 | 23 | 24 => matches!(a, RequestArgs::None),
+        15 => {
+            matches!(a, RequestArgs::None)
+                || matches!(a, RequestArgs::Text(s) if s.is_empty()
+                || s.len() == 32 && s.bytes().any(|b| b != b'0')
+                    && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+        }
         1 => matches!(a, RequestArgs::Section { section: 0..=5 }),
         2 => matches!(a, RequestArgs::SettingsPut { section: 0..=5, .. }),
         11 => matches!(a,RequestArgs::Text(s) if text_valid(s,1,200,true)),
@@ -745,10 +751,20 @@ fn decode_args(d: &mut Decoder<'_>, op: u64) -> Result<RequestArgs, CborError> {
         offset: d.position(),
     };
     Ok(match op {
-        0 | 3 | 10 | 13..=16 | 19 | 23 | 24 => {
+        0 | 3 | 10 | 13 | 14 | 16 | 19 | 23 | 24 => {
             d.array(0)?;
             RequestArgs::None
         }
+        15 => match d.array_len()? {
+            0 => RequestArgs::None,
+            1 => RequestArgs::Text(bounded_text(d, 0, 32, false)?),
+            _ => {
+                return Err(CborError::TypeMismatch {
+                    expected: "skip args",
+                    offset: d.position(),
+                });
+            }
+        },
         1 => {
             d.array(1)?;
             RequestArgs::Section { section: d.uint()? }
@@ -1827,6 +1843,32 @@ mod tests {
         assert!(matches!(decoded.args, RequestArgs::Id(id) if id.as_bytes() == &[4; 16]));
         assert_eq!(decoded.encode_cbor().unwrap(), request(0));
         assert!(Request::decode_cbor(&request(1)).is_err());
+    }
+
+    #[test]
+    fn music_skip_accepts_optional_expected_current_item() {
+        let request = |args: RequestArgs| Request {
+            request_id: MsgId::from_bytes([1; 16]),
+            community_id: CommunityId::from_bytes([2; 16]),
+            channel_id: Some(ChannelId::from_bytes([3; 16])),
+            operation: 15,
+            revision: Some(0),
+            expires: Some(130),
+            args,
+        };
+        for args in [
+            RequestArgs::None,
+            RequestArgs::Text("ab".repeat(16)),
+            RequestArgs::Text(String::new()),
+        ] {
+            let original = request(args);
+            let encoded = original.encode_cbor().expect("valid skip guard");
+            let decoded = Request::decode_cbor(&encoded).expect("decode skip guard");
+            assert!(decoded == original);
+        }
+        for value in ["bad-id".to_owned(), "AB".repeat(16), "00".repeat(16)] {
+            assert!(request(RequestArgs::Text(value)).encode_cbor().is_err());
+        }
     }
 
     #[test]

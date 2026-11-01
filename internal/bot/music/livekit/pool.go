@@ -6,11 +6,11 @@ import (
 	"sync"
 	"time"
 
+	lkproto "github.com/livekit/protocol/livekit"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/pion/webrtc/v4"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
-	"github.com/jonasthim/dilla/internal/bot/music"
 	"github.com/jonasthim/dilla/internal/bot/music/counter"
 	"github.com/jonasthim/dilla/internal/bot/music/runtime"
 	"github.com/jonasthim/dilla/internal/bot/native"
@@ -20,9 +20,10 @@ import (
 )
 
 var (
-	ErrPoolClosed = errors.New("music livekit: publisher pool is closed")
-	ErrPoolDead   = errors.New("music livekit: publisher room ended; explicit reset required")
-	ErrPoolBusy   = errors.New("music livekit: publisher track is already active")
+	ErrPoolCallEnded = errors.New("music livekit: server call ended")
+	ErrPoolClosed    = errors.New("music livekit: publisher pool is closed")
+	ErrPoolDead      = errors.New("music livekit: publisher room ended; explicit reset required")
+	ErrPoolBusy      = errors.New("music livekit: publisher track is already active")
 )
 
 type poolRoom interface{ Disconnect() }
@@ -102,6 +103,7 @@ type Pool struct {
 	startDone   chan struct{}
 	closeDone   chan struct{}
 	generation  uint64
+	roomEnded   func()
 
 	// rtt reports the room's RTT for the stage (Signal task 8c: the bot's "63 ms"); nil reports nothing. roomRTT reads it
 	// from a room (lksdkRoomRTT by default; a test's fake), rttEvery is the read cadence.
@@ -120,6 +122,16 @@ func (p *Pool) SetRTTReporter(report func(context.Context, id.ID, uint32) error)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.rtt = report
+}
+
+// SetRoomEndedReporter reports an explicit idle leave or definitive server call
+// end once per generation.
+// Transport disconnects, lifetime expiry and epoch changes may reconnect to the
+// same call and retain its registration. Reports run outside the pool lock.
+func (p *Pool) SetRoomEndedReporter(report func()) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.roomEnded = report
 }
 
 // lksdkRoomRTT is the selected ICE candidate pair's current round-trip time on the room's publisher connection (the
@@ -339,7 +351,7 @@ func (p *Pool) acquireRoom(ctx context.Context, call client.Call, binding poolBi
 		b := binding
 		p.bound = &b
 	}
-	roomCtx, cancel := context.WithTimeout(music.WithPlaybackLogger(context.Background(), music.PlaybackLogger(ctx)), p.lifetime)
+	roomCtx, cancel := context.WithTimeout(detachedLoggerContext(ctx), p.lifetime)
 	p.roomCtx, p.roomCancel = roomCtx, cancel
 	p.generation++
 	gen := p.generation
@@ -424,19 +436,36 @@ func (p *Pool) markDead(generation uint64, cause error) {
 		p.mu.Unlock()
 		return
 	}
-	conn, cancel := p.markDeadLocked(cause)
+	if errors.Is(cause, ErrPoolDead) && p.connection != nil {
+		if room, ok := p.connection.room.(interface {
+			DisconnectReason() lkproto.DisconnectReason
+		}); ok {
+			switch room.DisconnectReason() {
+			case lkproto.DisconnectReason_ROOM_DELETED, lkproto.DisconnectReason_ROOM_CLOSED:
+				cause = ErrPoolCallEnded
+			}
+		}
+	}
+	conn, cancel, report := p.markDeadLocked(cause)
 	ctx := p.roomCtx
 	p.mu.Unlock()
 	logRoomEnded(ctx, cause)
+	if report != nil {
+		report()
+	}
 	teardown(conn, cancel)
 }
 
 // markDeadLocked marks the pool dead and hands back what the caller must tear down once it has
 // released p.mu.
-func (p *Pool) markDeadLocked(cause error) (*poolConnection, context.CancelFunc) {
+func (p *Pool) markDeadLocked(cause error) (*poolConnection, context.CancelFunc, func()) {
 	p.dead = true
 	p.deadReason = cause
-	return p.connection, p.roomCancel
+	var report func()
+	if errors.Is(cause, ErrPoolIdle) || errors.Is(cause, ErrPoolCallEnded) {
+		report = p.roomEnded
+	}
+	return p.connection, p.roomCancel, report
 }
 
 func teardown(conn *poolConnection, cancel context.CancelFunc) {
@@ -489,10 +518,13 @@ func (p *Pool) LeaveIdle() error {
 	// Fix round 1 (I4): the idle check and the dead mark share one critical section, so a Start
 	// that begins after the check finds the pool dead and waits for Reset rather than racing a
 	// disconnect of the room it just reused. The disconnect itself runs outside the lock.
-	conn, cancel := p.markDeadLocked(ErrPoolIdle)
+	conn, cancel, report := p.markDeadLocked(ErrPoolIdle)
 	ctx := p.roomCtx
 	p.mu.Unlock()
 	logRoomEnded(ctx, ErrPoolIdle)
+	if report != nil {
+		report()
+	}
 	teardown(conn, cancel)
 	return p.Reset()
 }

@@ -753,6 +753,9 @@ func (d *DS) storeInstanceProposal(ctx context.Context, groupID id.ID, row store
 	if err != nil {
 		return err
 	}
+	if p.Kind == uint8(mlswasi.ProposalRemove) && p.TargetLeaf != nil {
+		d.log().InfoContext(ctx, "proposed a Remove", "group_id", groupID.String(), "device_id", p.TargetDevice, "leaf", *p.TargetLeaf)
+	}
 	if d.opts.Gateway != nil {
 		payload, perr := gateway.HandshakePayload(seq, row.Epoch, handshakeProposal, nil, blob)
 		if perr == nil {

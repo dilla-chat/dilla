@@ -45,15 +45,16 @@ const (
 )
 
 var (
-	ErrProtocol      = errors.New("bot gateway: invalid protocol frame")
-	ErrVersion       = errors.New("bot gateway: unsupported protocol version")
-	ErrIdentity      = errors.New("bot gateway: gateway identity mismatch")
-	ErrBackpressure  = errors.New("bot gateway: event queue is full; authoritative sync required")
-	ErrAckOrder      = errors.New("bot gateway: replay acknowledgement is not the next durable frame")
-	ErrStaleDelivery = errors.New("bot gateway: delivery belongs to an obsolete stream")
-	ErrTerminal      = errors.New("bot gateway: session is terminal or requires reauthentication")
-	errReplayGap     = errors.New("bot gateway: replay gap; authoritative sync required")
-	errTransport     = errors.New("bot gateway: transport disconnected")
+	ErrProtocol         = errors.New("bot gateway: invalid protocol frame")
+	ErrVersion          = errors.New("bot gateway: unsupported protocol version")
+	ErrIdentity         = errors.New("bot gateway: gateway identity mismatch")
+	ErrBackpressure     = errors.New("bot gateway: event queue is full; authoritative sync required")
+	ErrAckOrder         = errors.New("bot gateway: replay acknowledgement is not the next durable frame")
+	ErrStaleDelivery    = errors.New("bot gateway: delivery belongs to an obsolete stream")
+	ErrTerminal         = errors.New("bot gateway: session is terminal or requires reauthentication")
+	errHeartbeatOverdue = errors.New("bot gateway: heartbeat overdue; re-identification required")
+	errReplayGap        = errors.New("bot gateway: replay gap; authoritative sync required")
+	errTransport        = errors.New("bot gateway: transport disconnected")
 )
 
 type Hello struct {
