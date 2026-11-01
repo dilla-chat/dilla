@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, createHash, sign } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, writeFile, rm, symlink, rename, readdir, lstat } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, rm, symlink, rename, readdir, lstat, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { prepareInstalledUpdate, readInstalledUpdate } from '../src/update-plan.ts';
@@ -10,7 +10,8 @@ import { updateFS } from '../src/update-fs.ts';
 type Options = Parameters<typeof prepareInstalledUpdate>[0];
 type Trust = Parameters<typeof prepareInstalledUpdate>[1];
 async function fixture(run: (options: Options, trust: Trust, root: string) => Promise<void>, platform: 'linux' | 'win32' = 'linux') {
- const root = await mkdtemp(join(tmpdir(), 'dilla-update-plan-'));
+ // Expected paths share the canonical fixture root on every host platform.
+ const root = await realpath(await mkdtemp(join(tmpdir(), 'dilla-update-plan-')));
  try {
   const keys = generateKeyPairSync('ed25519'), bytes = Buffer.from('authenticated-new-AppImage');
   const suffix = platform === 'linux' ? '.AppImage' : '.exe';

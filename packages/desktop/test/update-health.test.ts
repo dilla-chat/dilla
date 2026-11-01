@@ -1,12 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile, rm, symlink, mkdir } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm, symlink, mkdir, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createStartupHealth, reportStartupHealth, waitForStartupHealth } from '../src/update-health.ts';
 
 async function fixture(run: (root: string) => Promise<void>) {
- const root = await mkdtemp(join(tmpdir(), 'dilla-startup-health-'));
+ // macOS's temporary directory has a /var -> /private/var ancestor alias.
+ const root = await realpath(await mkdtemp(join(tmpdir(), 'dilla-startup-health-')));
  try { await run(root); } finally { await rm(root, { recursive: true, force: true }); }
 }
 
