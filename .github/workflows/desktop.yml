@@ -7,7 +7,7 @@ jobs:
   native:
     name: desktop-${{ matrix.platform }}-${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -36,7 +36,8 @@ jobs:
       - run: node node_modules/electron/install.js
       - run: npm test -w @dilla/desktop
       - run: npm run typecheck -w @dilla/desktop
-      - run: npm run build -w @dilla/desktop -- --existing-client
+      - id: desktop-build
+        run: npm run build -w @dilla/desktop -- --existing-client
       - run: npm run build:validation -w @dilla/desktop
       - name: Linux display and Chromium sandbox helper
         if: runner.os == 'Linux'
@@ -51,6 +52,9 @@ jobs:
         run: xvfb-run -a dbus-run-session -- npm run test:electron -w @dilla/desktop
       - if: runner.os != 'Linux'
         run: npm run test:electron -w @dilla/desktop
+      - name: Installed unsigned Sparkle upgrade and signed-feed rejection
+        if: always() && runner.os == 'macOS' && steps.desktop-build.outcome == 'success'
+        run: node --test packages/desktop/test/native/mac-upgrade.test.mjs
       - run: npm run pack -w @dilla/desktop -- --config.electronDist=../../node_modules/electron/dist --${{ matrix.platform }} --${{ matrix.arch }}
       - run: node packages/desktop/scripts/check-fuses.mjs
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7

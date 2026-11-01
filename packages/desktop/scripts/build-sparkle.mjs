@@ -21,4 +21,7 @@ execFileSync('tar', ['-xf', archive, '-C', cache], { stdio: 'inherit' });
 await cp(resolve(cache, 'Sparkle.framework'), resolve(root, 'native-bin/Sparkle.framework'), { recursive: true, verbatimSymlinks: true });
 const headers = resolve(dirname(dirname(process.execPath)), 'include/node');
 await access(resolve(headers, 'node_api.h'));
-execFileSync('clang++', ['-std=c++17', '-fobjc-arc', '-fblocks', '-O2', '-bundle', '-undefined', 'dynamic_lookup', '-DNODE_GYP_MODULE_NAME=dilla_sparkle', '-I', headers, '-F', resolve(cache), '-framework', 'Cocoa', '-framework', 'Sparkle', '-Wl,-rpath,@loader_path/../../Frameworks', '-mmacosx-version-min=13.0', resolve(root, 'native/SparkleBridge.mm'), '-o', resolve(root, 'native-bin/dilla-sparkle.node')], { stdio: 'inherit' });
+const acceptance = process.argv.includes('--acceptance');
+const output = resolve(root, acceptance ? 'acceptance-bin' : 'native-bin');
+await mkdir(output, { recursive: true });
+execFileSync('clang++', [...(acceptance ? ['-DDILLA_SPARKLE_ACCEPTANCE=1'] : []), '-std=c++17', '-fobjc-arc', '-fblocks', '-O2', '-bundle', '-undefined', 'dynamic_lookup', '-DNODE_GYP_MODULE_NAME=dilla_sparkle', '-I', headers, '-F', resolve(cache), '-framework', 'Cocoa', '-framework', 'Sparkle', '-Wl,-rpath,@loader_path/../../Frameworks', '-mmacosx-version-min=13.0', resolve(root, 'native/SparkleBridge.mm'), '-o', resolve(output, 'dilla-sparkle.node')], { stdio: 'inherit' });

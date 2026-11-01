@@ -51,3 +51,5 @@ packages/desktop/validation-dist/
 packages/desktop/native-bin/
 
 packages/desktop/.native-tools/
+
+packages/desktop/acceptance-bin/

@@ -70,7 +70,12 @@ static napi_value Prepare(napi_env env,napi_callback_info info) {
  size_t argc=3;napi_value args[3];napi_get_cb_info(env,info,&argc,args,nullptr,nullptr);
  if(argc!=3 || ![NSThread isMainThread]) {napi_throw_error(env,nullptr,"Invalid Sparkle call");return nullptr;}
  NSString *version=String(env,args[0]),*url=String(env,args[1]),*signature=String(env,args[2]);
- if(!version || !url || !signature || signature.length != 88 || ![url hasPrefix:[@"https://github.com/jonasthim/dilla/releases/download/desktop-v" stringByAppendingFormat:@"%@/",version]] || ![url hasSuffix:@".zip"]) {napi_throw_error(env,nullptr,"Invalid Sparkle target");return nullptr;}
+ BOOL targetAllowed = [url hasPrefix:[@"https://github.com/jonasthim/dilla/releases/download/desktop-v" stringByAppendingFormat:@"%@/",version]] && [url hasSuffix:@".zip"];
+#if defined(DILLA_SPARKLE_ACCEPTANCE)
+ // This branch is compiled only into a separate test addon, never native-bin.
+ targetAllowed = [NSBundle.mainBundle.bundleIdentifier isEqualToString:@"dev.dilla.desktop.update-acceptance"] && [url isEqualToString:@"http://127.0.0.1:18849/DillaUpdateAcceptance.zip"];
+#endif
+ if(!version || !url || !signature || signature.length != 88 || !targetAllowed) {napi_throw_error(env,nullptr,"Invalid Sparkle target");return nullptr;}
  if(!driver) {
   NSBundle *bundle=NSBundle.mainBundle;
   NSString *feed=[bundle objectForInfoDictionaryKey:@"SUFeedURL"];
@@ -82,6 +87,9 @@ static napi_value Prepare(napi_env env,napi_callback_info info) {
 #endif
   NSString *expected=[[bundle objectForInfoDictionaryKey:@"DillaDesktopChannel"] isEqualToString:@"beta"] ? @"https://github.com/jonasthim/dilla/releases/download/desktop-beta/" : @"https://github.com/jonasthim/dilla/releases/download/desktop-stable/";
   expected=[expected stringByAppendingFormat:@"appcast-%@.xml",arch];
+#if defined(DILLA_SPARKLE_ACCEPTANCE)
+  expected=@"http://127.0.0.1:18849/appcast.xml";
+#endif
   if(![feed isEqualToString:expected] || ![[bundle objectForInfoDictionaryKey:@"SURequireSignedFeed"] boolValue] || ![[bundle objectForInfoDictionaryKey:@"SUVerifyUpdateBeforeExtraction"] boolValue] || [[bundle objectForInfoDictionaryKey:@"SUPublicEDKey"] length]!=44) {napi_throw_error(env,nullptr,"Desktop release trust is not provisioned");return nullptr;}
   driver=[DillaSparkle new];driver.env=env;
   driver.updater=[[SPUUpdater alloc] initWithHostBundle:bundle applicationBundle:bundle userDriver:driver delegate:driver];
