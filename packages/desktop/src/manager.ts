@@ -1,5 +1,7 @@
-type Manager = { list(): Promise<string[]>; connect(instance: string): Promise<void> };
+type Manager = { platform: string; menu(): Promise<void>; list(): Promise<string[]>; connect(instance: string): Promise<void> };
 const manager = (window as unknown as { dillaManager: Manager }).dillaManager;
+document.documentElement.dataset.platform = manager.platform;
+document.querySelector('#app-menu')!.addEventListener('click', () => { void manager.menu().catch(() => {}); });
 const form = document.querySelector('form')!;
 const input = document.querySelector<HTMLInputElement>('#instance')!;
 const error = document.querySelector('#error')!;

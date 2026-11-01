@@ -78,7 +78,7 @@ export function validateCommand(value: unknown): DesktopCommand {
   const command = object(value);
   const fields: Record<string, string[]> = {
     badge: ['count'], guard: ['activeCall', 'unsavedDraft'], 'quit-ack': ['id', 'activeCall', 'unsavedDraft'], autostart: ['enabled'],
-    'notify-ring': ['id', 'title', 'body'], notify: ['id', 'title', 'body'], 'dismiss-notification': ['id'], 'stop-app-audio': ['id'], 'check-update': [], 'restart-update': [],
+    'notify-ring': ['id', 'title', 'body'], notify: ['id', 'title', 'body'], 'dismiss-notification': ['id'], 'stop-app-audio': ['id'], 'check-update': [], 'restart-update': [], 'window-menu': [],
   };
   const type = typeof command.type === 'string' ? command.type : '';
   if (!Object.hasOwn(fields, type)) throw new Error('Unknown desktop command');
@@ -95,4 +95,12 @@ export function validateCommand(value: unknown): DesktopCommand {
     if (typeof command.title !== 'string' || command.title.length < 1 || command.title.length > 256 || typeof command.body !== 'string' || command.body.length > 4096) throw new Error('Invalid notification');
   }
   return command as unknown as DesktopCommand;
+}
+
+/** Electron may supply an origin as either a serialized origin or an origin URL. */
+export function permissionOriginMatches(input: string, instance: string): boolean {
+  try {
+    const url = new URL(input);
+    return !url.username && !url.password && !unsafeUrl.test(input) && url.origin === new URL(instance).origin;
+  } catch { return false; }
 }

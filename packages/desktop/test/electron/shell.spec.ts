@@ -47,6 +47,10 @@ test('runs the installed React client in an isolated sandbox without executing s
   await expect(page.locator('#root')).not.toBeEmpty();
   const info = await page.evaluate(() => (window as any).dillaDesktop.info());
   expect(info.instance).toBe(instance);
+  await expect(page.getByRole('button', { name: 'Dilla menu', exact: true })).toBeVisible();
+  expect(await page.locator('.dw-desktop-titlebar').evaluate(node => Math.round(node.getBoundingClientRect().height))).toBe(32);
+  expect(await page.locator('.d-splash, .d-onboarding-frame').first().evaluate(node => node.getBoundingClientRect().top)).toBeGreaterThanOrEqual(32);
+  await page.screenshot({ path: 'test-results/integrated-titlebar.png' });
   expect(info.capabilities.applicationAudio).toBe(true);
   expect(await page.evaluate(() => ({ node: typeof (window as any).require, process: typeof (window as any).process, remote: (window as any).remoteCodeExecuted })))
     .toEqual({ node: 'undefined', process: 'undefined', remote: undefined });

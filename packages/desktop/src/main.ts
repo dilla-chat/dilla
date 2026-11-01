@@ -5,7 +5,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { loadBundle, bundledResponse, type Bundle } from './bundle.ts';
-import { canonicalInstance, externalLink, isAppNavigation, parseInvite, partitionFor, trustedFrame, validateCommand, instanceRequestURL } from './policy.ts';
+import { canonicalInstance, externalLink, isAppNavigation, parseInvite, partitionFor, trustedFrame, validateCommand, instanceRequestURL, permissionOriginMatches } from './policy.ts';
 import { Preferences } from './preferences.ts';
 import { linuxAutostart } from './autostart.ts';
 import { createUpdater } from './updater.ts';
@@ -66,6 +66,9 @@ function owner(event: Pick<IpcMainInvokeEvent, 'sender' | 'senderFrame'>): { ins
   throw new Error('Untrusted desktop IPC sender');
 }
 
+const windowChrome = { titleBarStyle: 'hidden' as const, titleBarOverlay: { color: '#00000000', symbolColor: '#8d929b', height: 32 }, trafficLightPosition: { x: 12, y: 10 }, autoHideMenuBar: true };
+function showWindowMenu(win: BrowserWindow): void { Menu.getApplicationMenu()?.popup({ window: win, x: process.platform === 'darwin' ? 80 : 8, y: 32 }); }
+
 function focus(win: BrowserWindow): void { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
 
 function lockWindow(win: BrowserWindow, permits: (url: string) => boolean): void {
@@ -100,7 +103,7 @@ async function openInstance(input: string, path = '/', show = true): Promise<Bro
     return existing;
   }
   const ses = session.fromPartition(partitionFor(instance));
-  const win = new BrowserWindow({ width: 1240, height: 820, minWidth: 640, minHeight: 480, show: false, title: 'Dilla', webPreferences: { ...webPreferences(), session: ses } });
+  const win = new BrowserWindow({ width: 1240, height: 820, minWidth: 640, minHeight: 480, show: false, title: 'Dilla', ...windowChrome, webPreferences: { ...webPreferences(), session: ses } });
   windows.set(instance, win);
   updater.expectGuard(instance);
   const origin = new URL(instance).origin;
@@ -124,7 +127,7 @@ async function openInstance(input: string, path = '/', show = true): Promise<Bro
   const allowed = permissions.get(instance) ?? new Set<string>();
   permissions.set(instance, allowed);
   ses.setPermissionCheckHandler((contents, permission, requestingOrigin) => {
-    return contents === win.webContents && requestingOrigin === origin && allowed.has(permission)
+    return contents === win.webContents && permissionOriginMatches(requestingOrigin, instance) && allowed.has(permission)
       && trustedFrame({ url: contents.getURL(), top: true }, instance);
   });
   ses.setPermissionRequestHandler((contents, permission, callback, details) => {
@@ -136,7 +139,7 @@ async function openInstance(input: string, path = '/', show = true): Promise<Bro
       .then(result => { if (result.response === 1) allowed.add(permission); callback(result.response === 1); }).catch(() => callback(false));
   });
   ses.setDisplayMediaRequestHandler((request, callback) => {
-    if (!request.userGesture || request.frame !== win.webContents.mainFrame || request.securityOrigin !== origin) { callback(null); return; }
+    if (!request.userGesture || request.frame !== win.webContents.mainFrame || !permissionOriginMatches(request.securityOrigin, instance)) { callback(null); return; }
     // The Linux capturer delegates selection to xdg-desktop-portal on Wayland. No whole-system audio fallback.
     void desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 0, height: 0 } }).then(async sources => {
       if (sources.length === 0) { callback(null); return; }
@@ -179,7 +182,7 @@ async function openInvite(input: string): Promise<void> {
 async function showManager(): Promise<void> {
   if (!shellReady || askingQuit || quitting) return;
   if (manager && !manager.isDestroyed()) { focus(manager); return; }
-  manager = new BrowserWindow({ width: 720, height: 760, minWidth: 480, title: 'Dilla — your instances', webPreferences: webPreferences() });
+  manager = new BrowserWindow({ width: 720, height: 760, minWidth: 480, title: 'Dilla — your instances', ...windowChrome, webPreferences: webPreferences() });
   lockWindow(manager, url => url === 'dilla-internal://setup/');
   manager.on('closed', () => { manager = null; });
   await manager.loadURL('dilla-internal://setup/');
@@ -255,7 +258,7 @@ function refreshMenu(): void {
 
 ipcMain.handle('dilla:info', event => {
   const { instance } = owner(event);
-  return { version: app.getVersion(), instance, capabilities: { applicationAudio: existsSync(audioExecutable), browserAuth: true, notifications: Notification.isSupported(), screenCapture: true } } satisfies DesktopInfo;
+  return { version: app.getVersion(), platform: process.platform, instance, capabilities: { applicationAudio: existsSync(audioExecutable), browserAuth: true, notifications: Notification.isSupported(), screenCapture: true } } satisfies DesktopInfo;
 });
 const browserCeremonies = new Map<string, AbortController>();
 ipcMain.handle('dilla:browser-auth', async (event, request: unknown, ...args: unknown[]) => {
@@ -308,6 +311,7 @@ ipcMain.handle('dilla:command', async (event, value: unknown) => {
   else if (command.type === 'badge') { badges.set(instance, command.count); refreshMenu(); }
   else if (command.type === 'stop-app-audio') { if (captures.get(instance)?.id === command.id) stopAppAudio(instance); }
   else if (command.type === 'autostart') await setAutostart(command.enabled);
+  else if (command.type === 'window-menu') showWindowMenu(win);
   else if (command.type === 'check-update') await updater.check();
   else if (command.type === 'restart-update') await requestQuit(true);
   else if (command.type === 'dismiss-notification') { const key = noticeKey(instance, command.id); notices.get(key)?.close(); notices.delete(key); ringActions.delete(key); refreshMenu(); }
@@ -344,6 +348,7 @@ ipcMain.handle('dilla:manager', async (event, value: unknown) => {
   if (!manager || event.sender !== manager.webContents || event.senderFrame !== manager.webContents.mainFrame || event.senderFrame?.url !== 'dilla-internal://setup/') throw new Error('Untrusted instance chooser');
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid manager request');
   const command = value as Record<string, unknown>;
+  if (command.type === 'window-menu' && Object.keys(command).length === 1) { showWindowMenu(manager); return; }
   if (command.type === 'list' && Object.keys(command).length === 1) return preferences.instances;
   if (command.type === 'connect' && Object.keys(command).length === 2 && typeof command.instance === 'string') {
     const instance = canonicalInstance(command.instance, allowLoopback);

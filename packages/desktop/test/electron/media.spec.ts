@@ -11,7 +11,8 @@ test.beforeEach(async () => {
   profile = await mkdtemp(join(tmpdir(), 'dilla-media-validation-'));
   desktop = await _electron.launch({ chromiumSandbox: true, args: [resolve('.'), `--profile=${profile}`, '--instance=http://127.0.0.1:1/', '--allow-loopback', '--allow-loopback-in-peer-connection', '--media-validation'] });
   page = await desktop.firstWindow();
-  // Explicit browser permission grant for the isolated loopback fixture. This
+  // Explicit media/local-network browser grants allow ICE host candidates in the
+  // isolated loopback fixture (no real microphone/camera is opened). This
   // changes neither macOS privacy settings nor the installed app's policy.
   await desktop.evaluate(({ BrowserWindow, app, systemPreferences }) => {
     const win = BrowserWindow.getAllWindows()[0], origin = new URL(win.webContents.getURL()).origin;
@@ -19,11 +20,11 @@ test.beforeEach(async () => {
     (globalThis as any).mediaDiagnostics = diagnostics;
     win.webContents.session.setPermissionCheckHandler((contents, permission, requestingOrigin) => {
       diagnostics.permissions.push({ permission, origin: requestingOrigin, owner: contents === win.webContents });
-      return contents === win.webContents && requestingOrigin === origin && ['local-network', 'loopback-network'].includes(permission);
+      return contents === win.webContents && new URL(requestingOrigin).origin === origin && ['media', 'local-network', 'loopback-network'].includes(permission);
     });
     win.webContents.session.setPermissionRequestHandler((contents, permission, callback, details) => {
       diagnostics.permissions.push({ permission, origin: details.requestingUrl, owner: contents === win.webContents });
-      callback(contents === win.webContents && new URL(details.requestingUrl).origin === origin && ['local-network', 'loopback-network'].includes(permission));
+      callback(contents === win.webContents && new URL(details.requestingUrl).origin === origin && ['media', 'local-network', 'loopback-network'].includes(permission));
     });
   });
   await page.waitForFunction(() => 'validation' in window);

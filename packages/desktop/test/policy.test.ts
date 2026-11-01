@@ -64,3 +64,17 @@ test('the desktop boundary validates every command, rejects extra fields and can
     assert.throws(() => validateCommand(cmd));
   }
 });
+
+test('the integrated app menu is a parameterless capability', () => {
+  assert.deepEqual(validateCommand({ type: 'window-menu' }), { type: 'window-menu' });
+  for (const extra of [{ x: -1 }, { window: 'other-instance' }, { items: [{ role: 'quit' }] }]) {
+    assert.throws(() => validateCommand({ type: 'window-menu', ...extra }));
+  }
+});
+
+test('permission origins accept Electron origin URLs with a trailing slash, while refusing other hosts', async () => {
+ const { permissionOriginMatches } = await import('../src/policy.ts');
+ assert.equal(permissionOriginMatches('https://chat.test/', 'https://chat.test/team/'), true);
+ assert.equal(permissionOriginMatches('https://chat.test', 'https://chat.test/team/'), true);
+ for (const value of ['null', 'https://chat.test.evil/', 'https://evil.test/', 'https://user@chat.test/', 'http://chat.test/']) assert.equal(permissionOriginMatches(value, 'https://chat.test/'), false);
+});

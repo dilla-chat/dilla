@@ -1,0 +1,13 @@
+/* The same quiet rail surface and typography as the client. Native controls
+   remain above the web contents, including when a modal is open. */
+html[data-desktop] { --dw-titlebar-h: 32px; --d-shell-h: calc(100dvh - var(--dw-titlebar-h)); --d-vvtop: var(--dw-titlebar-h); --d-vvh: calc(100dvh - var(--dw-titlebar-h)); }
+html[data-desktop] body { padding-top: var(--dw-titlebar-h); box-sizing: border-box; }
+html[data-desktop] #root { min-height: calc(100dvh - var(--dw-titlebar-h)); }
+.dw-desktop-titlebar { position: fixed; z-index: 10000; top: 0; left: 0; width: 100%; height: var(--dw-titlebar-h); display: flex; align-items: center; gap: 16px; padding: 0 calc(100% - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100%) + 12px) 0 calc(env(titlebar-area-x, 0px) + 12px); box-sizing: border-box; background: var(--bg-3); color: var(--fg-3); font-family: var(--font-mono); font-size: 11px; user-select: none; -webkit-app-region: drag; app-region: drag; }
+.dw-desktop-titlebar[data-platform="darwin"] { padding-left: max(80px, calc(env(titlebar-area-x, 0px) + 12px)); }
+.dw-desktop-titlebar__menu { display: inline-flex; align-items: center; gap: 8px; height: 26px; padding: 0 6px; margin-left: -6px; flex: none; font: inherit; font-weight: 700; color: var(--fg-2); background: transparent; border: 0; border-radius: 4px; cursor: pointer; -webkit-app-region: no-drag; app-region: no-drag; }
+.dw-desktop-titlebar__menu:hover { color: var(--fg); background: var(--hover); }
+.dw-desktop-titlebar__menu:focus-visible { outline: var(--focus-ring); outline-offset: -2px; }
+.dw-desktop-titlebar__instance { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+html[data-desktop] :is(.d-onboarding-frame, .d-splash, .dw-other-tab) { min-height: calc(100dvh - var(--dw-titlebar-h)); }
+html[data-desktop] :is(.d-settings-frame, .d-settings-frame.d-settings-frame[data-layout="phone"], .d-lightbox) { top: var(--dw-titlebar-h); height: calc(100dvh - var(--dw-titlebar-h)); }

@@ -8,6 +8,7 @@ export type DesktopCommand =
   | { type: 'notify'; id: string; title: string; body: string }
   | { type: 'dismiss-notification'; id: string }
   | { type: 'stop-app-audio'; id: string }
+  | { type: 'window-menu' }
   | { type: 'check-update' }
   | { type: 'restart-update' };
 
@@ -18,6 +19,7 @@ export type DesktopEvent = { type: 'notification-click' | 'notification-close'; 
   | { type: 'prepare-quit'; id: string };
 
 export interface DesktopInfo {
+  platform?: string;
   version: string;
   instance: string;
   capabilities: { applicationAudio: boolean; browserAuth: boolean; notifications: boolean; screenCapture: true };

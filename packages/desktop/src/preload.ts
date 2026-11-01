@@ -4,6 +4,8 @@ import type { DesktopBridge, DesktopCommand, DesktopEvent } from './contract.ts'
 if (process.isMainFrame) {
   if (location.protocol === 'dilla-internal:') {
     contextBridge.exposeInMainWorld('dillaManager', Object.freeze({
+      platform: process.platform,
+      menu: () => ipcRenderer.invoke('dilla:manager', { type: 'window-menu' }),
       list: () => ipcRenderer.invoke('dilla:manager', { type: 'list' }),
       connect: (instance: string) => ipcRenderer.invoke('dilla:manager', { type: 'connect', instance }),
     }));
