@@ -5,7 +5,7 @@
   "license": "AGPL-3.0-or-later",
   "type": "module",
   "scripts": {
-    "test": "node --test unit/peer-seed.test.mjs unit/totp.test.mjs",
+    "test": "node --test unit/peer-seed.test.mjs unit/totp.test.mjs unit/media-fixtures.test.mjs",
     "test:e2e": "playwright test --config playwright.desktop.config.ts --project=electron-client",
     "test:e2e:matrix": "playwright test --config playwright.config.ts --project=chromium",
     "test:e2e:media": "playwright test --config playwright.media.config.ts --project=chromium-media",

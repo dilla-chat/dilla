@@ -2,18 +2,32 @@
 // --use-file-for-fake-video-capture / --use-file-for-fake-audio-capture (media_switches.cc at
 // 153.0.8010.12); Firefox has its own fake devices (640x480@30 and a 1 kHz tone) and takes prefs,
 // never `permissions` ("Unknown permission: camera").
-import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join, posix } from 'node:path';
 
 const W = 320, H = 240, FPS = 20, SECONDS = 2;
 const RATE = 48_000;
+
+/**
+ * Chromium's macOS audio-service sandbox can read the user's audio plug-in subtree, but not arbitrary temporary files.
+ * A denied fake WAV read leaves a live microphone producing zeros (simple_sources.cc, FileSource::LoadWavFile).
+ * Keep test audio data inside that existing read grant; no sandbox switches or application signatures change.
+ * Pinned policy: https://chromium.googlesource.com/chromium/src/+/156.0.8078.75/sandbox/policy/mac/audio.sb#17
+ */
+export function captureAudioDirectory(requested: string, platform: NodeJS.Platform = process.platform, home = homedir()): string {
+  return platform === 'darwin' ? posix.join(home, 'Library', 'Audio', 'Plug-Ins', 'dilla-e2e-media-fixtures') : requested;
+}
 
 /** Y4M frames with a moving gradient (so the encoder emits delta frames), and a 1 kHz mono tone. */
 export function writeFixtures(dir: string, toneHz = 1000): { y4m: string; wav: string } {
   if (!Number.isFinite(toneHz) || toneHz < 100 || toneHz > 10000) throw new Error('Invalid fake microphone tone');
   mkdirSync(dir, { recursive: true });
   const y4m = join(dir, 'fake-320x240.y4m');
-  const wav = join(dir, toneHz === 1000 ? 'fake-1khz-48k.wav' : `fake-${toneHz}hz-48k.wav`);
+  const audioDirectory = captureAudioDirectory(dir);
+  mkdirSync(audioDirectory, { recursive: true });
+  // Seatbelt checks resolved paths; avoid passing a symlink spelling such as /var instead of /private/var.
+  const wav = join(process.platform === 'darwin' ? realpathSync(audioDirectory) : audioDirectory, toneHz === 1000 ? 'fake-1khz-48k.wav' : `fake-${toneHz}hz-48k.wav`);
   const frameBytes = W * H * 3 / 2;
   const header = Buffer.from(`YUV4MPEG2 W${W} H${H} F${FPS}:1 Ip A1:1 C420jpeg\n`);
   const y4mSize = header.length + FPS * SECONDS * (6 + frameBytes);
