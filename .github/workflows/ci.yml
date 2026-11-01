@@ -720,6 +720,8 @@ jobs:
         with:
           path: ~/.cache/apt-debs
           key: ${{ steps.apt-chromium-voice.outputs.cache-primary-key }}
+      # The voice fixture's own unit tests drive a real page, so they run here, where Chromium is installed.
+      - run: npm run test:voice-fixture -w @dilla/e2e
       - run: npm run test:e2e:voice:chromium -w @dilla/e2e
         env:
           DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
