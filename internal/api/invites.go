@@ -72,8 +72,8 @@ func (d Deps) RedeemInvite(w http.ResponseWriter, r *http.Request) {
 // reference and no form, and one same-origin link into the web client: it is one
 // card a human reads before following that link or pasting the code into a
 // client, and anything more is a phishing surface an instance hands out to
-// strangers by construction. The colours are the Signal tokens as literals, dark
-// and light (packages/design-tokens/dist/tokens.css, pinned by TestLandingTokensMatchSignal).
+// strangers by construction. The colours use the sole supported Signal palette
+// (packages/design-tokens/dist/tokens.css, pinned by TestLandingTokensMatchSignal).
 // The font is the web client's JetBrains Mono when dillad serves one (Deps.LandingFont,
 // R43; font-src 'self' is the only thing the CSP widens), else the system monospace.
 var landingPage = template.Must(template.New("invite").Parse(`<!doctype html>
@@ -87,7 +87,6 @@ var landingPage = template.Must(template.New("invite").Parse(`<!doctype html>
 <style>
 {{if .Font}}@font-face{font-family:"JetBrains Mono";font-style:normal;font-weight:100 800;font-display:swap;src:url("{{.Font}}") format("woff2")}
 {{end}}:root{color-scheme:dark;--bg:#08090B;--bg-2:#0B0D10;--surface:#0D1014;--fg:#E4E8EE;--fg-2:#8C939E;--accent:#5AA8E6;--accent-ink:#03121E;--hairline:#1A1D23}
-@media (prefers-color-scheme: light){:root{color-scheme:light;--bg:#F5F6F5;--bg-2:#ECEEEC;--surface:#FFFFFF;--fg:#14171A;--fg-2:#3F453F;--accent:#005799;--accent-ink:#FFFFFF;--hairline:#CBD0CB}}
 *{box-sizing:border-box}
 body{margin:0;min-height:100vh;background:var(--bg);color:var(--fg);font-family:{{if .Font}}"JetBrains Mono",{{end}}ui-monospace,"SFMono-Regular",Menlo,Consolas,"Liberation Mono",monospace;font-size:13.5px;line-height:1.5}
 .bar{display:flex;align-items:center;gap:7px;height:2rem;padding:0 12px;background:var(--bg-2);border-bottom:1px solid var(--hairline);font-weight:700;letter-spacing:.14em}
