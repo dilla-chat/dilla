@@ -72,7 +72,7 @@ function commandContext(client: CoreClient, requestId: string, over: Partial<Com
 function mount(client: CoreClient, community: string | null = COMMUNITY, onNavigate?: (communityId: string, channelId: string, threadId: string | null) => void) { const captured: { value?: ReturnType<typeof useUtilityCommandProvider> } = {};
   function Probe() { const value = useUtilityCommandProvider(client, community, onNavigate); useEffect(() => { captured.value = value; }); return createElement('div', null, value.dialogs, value.inbox); }
   const view = render(createElement(Probe)); return { captured, ...view, rerenderProbe: () => view.rerender(createElement(Probe)) }; }
-afterEach(() => { vi.restoreAllMocks(); });
+afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe('utility command provider', () => {
   it('publishes a poll through the adapter from the focused create dialog', async () => {
@@ -175,6 +175,8 @@ describe('utility command provider', () => {
     expect(f.poll.myChoices).toEqual([1]); expect(f.poll.counts).toEqual([0n, 1n]); mounted.unmount();
   });
   it('requires an explicit DST fold choice before creating an ambiguous reminder', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(Date.UTC(2026, 9, 31, 12));
     const user = userEvent.setup(); const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
     let run!: Promise<unknown>; act(() => { run = mounted.captured.value!.handlers.remind!({ commandId: 'remind', args: { when: '2026-11-01 01:30', text: 'Call home' } }, commandContext(f.client, 'cc'.repeat(16))); });
     await screen.findByRole('heading', { name: 'Set a reminder' }); await user.clear(screen.getByLabelText('Time zone')); await user.type(screen.getByLabelText('Time zone'), 'America/New_York');

@@ -28,6 +28,7 @@ module.exports = {
       SUPublicEDKey: sparklePublicKey, SURequireSignedFeed: true, SUVerifyUpdateBeforeExtraction: true,
       SUEnableAutomaticChecks: false, SUAutomaticallyUpdate: false, SUEnableInstallerLauncherService: true,
       SUEnableDownloaderService: false,
+      NSLocalNetworkUsageDescription: 'Dilla connects to your chosen instance and encrypted calls on your local network.',
       NSMicrophoneUsageDescription: 'Dilla uses your microphone in encrypted calls.',
       NSCameraUsageDescription: 'Dilla uses your camera when you enable video in a call.',
       NSScreenCaptureUsageDescription: 'Dilla shares the screen or application you choose in a call.',

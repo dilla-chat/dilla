@@ -2,6 +2,7 @@ package desktopauth
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -16,7 +17,7 @@ func TestHTTPBrowserHandoffRequiresCookieOriginAndPKCE(t *testing.T) {
 	b := New(time.Now)
 	h := Handler(b, "https://chat.test", nil)
 	call := func(method, path, body, origin string, cookie *http.Cookie) *httptest.ResponseRecorder {
-		r := httptest.NewRequest(method, "https://chat.test/desktop-auth/"+path, strings.NewReader(body))
+		r := httptest.NewRequestWithContext(context.Background(), method, "https://chat.test/desktop-auth/"+path, strings.NewReader(body))
 		r.Header.Set("Content-Type", "application/json")
 		if origin != "" {
 			r.Header.Set("Origin", origin)

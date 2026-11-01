@@ -21,7 +21,7 @@ const client = connectCore(worker);
 const element = document.getElementById('root');
 if (!element) throw new Error('dilla: #root is missing');
 const root = createRoot(element);
-const update = { currentEntry: new URL(import.meta.url).pathname, watch: watchUpdates,
+const update = desktop ? undefined : { currentEntry: new URL(import.meta.url).pathname, watch: watchUpdates,
   store: createUpdateCheckpointStore(indexedDB, crypto, Date.now), reload: () => browser.reload() };
 const show = (fatal: UiError | null) => root.render(<StrictMode><CoreProvider client={client}><App fatal={fatal} update={update} /></CoreProvider></StrictMode>);
 show(null);

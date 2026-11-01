@@ -33,7 +33,7 @@ func Handler(b *Broker, origin string, allow func(*http.Request) bool) http.Hand
 		path := strings.TrimPrefix(r.URL.Path, "/desktop-auth/")
 		if path == "app.js" && r.Method == "GET" {
 			w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
-			w.Write(browserJS)
+			_, _ = w.Write(browserJS)
 			return
 		}
 		read := func(out any) bool {
@@ -52,7 +52,7 @@ func Handler(b *Broker, origin string, allow func(*http.Request) bool) http.Hand
 		write := func(code int, v any) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(code)
-			json.NewEncoder(w).Encode(v)
+			_ = json.NewEncoder(w).Encode(v)
 		}
 		if path == "request" && r.Method == "POST" {
 			var request Request
@@ -83,7 +83,7 @@ func Handler(b *Broker, origin string, allow func(*http.Request) bool) http.Hand
 			}
 			http.SetCookie(w, &http.Cookie{Name: "__Secure-dilla-desktop", Value: cookie, Path: "/desktop-auth/" + id + "/", MaxAge: 120, Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode})
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			io.WriteString(w, page)
+			_, _ = io.WriteString(w, page)
 			return
 		}
 		if len(parts) != 2 {

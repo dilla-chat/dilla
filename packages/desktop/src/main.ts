@@ -128,9 +128,9 @@ async function openInstance(input: string, path = '/', show = true): Promise<Bro
   });
   ses.setPermissionRequestHandler((contents, permission, callback, details) => {
     if (contents !== win.webContents || details.isMainFrame === false || !trustedFrame({ url: details.requestingUrl, top: true }, instance)
-      || !['media', 'notifications', 'speaker-selection'].includes(permission)) { callback(false); return; }
+      || !['media', 'notifications', 'speaker-selection', 'local-network', 'loopback-network'].includes(permission)) { callback(false); return; }
     if (allowed.has(permission)) { callback(true); return; }
-    const label = permission === 'media' ? 'microphone or camera' : permission === 'notifications' ? 'notifications' : 'audio output selection';
+    const label = permission === 'media' ? 'microphone or camera' : permission === 'notifications' ? 'notifications' : permission === 'local-network' ? 'local network connections for calls' : permission === 'loopback-network' ? 'connections to a local Dilla service' : 'audio output selection';
     void dialog.showMessageBox(win, { type: 'question', title: 'Dilla permission', message: `Allow ${new URL(instance).host} to use ${label}?`, buttons: ['Deny', 'Allow'], defaultId: 0, cancelId: 0 })
       .then(result => { if (result.response === 1) allowed.add(permission); callback(result.response === 1); }).catch(() => callback(false));
   });

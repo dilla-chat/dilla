@@ -412,7 +412,7 @@ func TestDesktopOIDCCallbackCompletesOnlyThePKCEInitiator(t *testing.T) {
 	sum := sha256.Sum256([]byte(verifier))
 	challenge := base64.RawURLEncoding.EncodeToString(sum[:])
 	post := func(path, body string, cookie *http.Cookie) *httptest.ResponseRecorder {
-		req := httptest.NewRequest("POST", path, strings.NewReader(body))
+		req := httptest.NewRequestWithContext(context.Background(), "POST", path, strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Origin", "https://dilla.test")
 		if cookie != nil {

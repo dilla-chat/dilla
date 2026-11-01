@@ -48,6 +48,7 @@ export function bundledResponse(bundle: Bundle, request: Request, instance: stri
   const dataPath = /^\/(v1\/|i\/|gateway(?:\/|$)|rtc(?:\/|$))/;
   if (!url.pathname.startsWith('/assets/') && (dataPath.test(url.pathname) || (base !== '/' && url.pathname.startsWith(base) && dataPath.test(url.pathname.slice(base.length - 1))))) return null;
   if (request.method !== 'GET' && request.method !== 'HEAD') return new Response('Method not allowed', { status: 405 });
+  if (url.pathname === '/favicon.ico') return new Response(null, { status: 204 });
   const path = isAppNavigation(request.url, instance) ? 'index.html' : url.pathname.slice(1);
   const file = bundle.get(path);
   if (!file) return new Response('Not found in installed client', { status: 404 });

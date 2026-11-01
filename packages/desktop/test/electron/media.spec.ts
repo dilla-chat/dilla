@@ -9,8 +9,15 @@ let page: Page;
 let profile: string;
 test.beforeEach(async () => {
   profile = await mkdtemp(join(tmpdir(), 'dilla-media-validation-'));
-  desktop = await _electron.launch({ chromiumSandbox: true, args: [resolve('.'), `--profile=${profile}`, '--instance=http://127.0.0.1:1/', '--allow-loopback', '--media-validation'] });
+  desktop = await _electron.launch({ chromiumSandbox: true, args: [resolve('.'), `--profile=${profile}`, '--instance=http://127.0.0.1:1/', '--allow-loopback', '--allow-loopback-in-peer-connection', '--media-validation'] });
   page = await desktop.firstWindow();
+  // Explicit browser permission grant for the isolated loopback fixture. This
+  // changes neither macOS privacy settings nor the installed app's policy.
+  await desktop.evaluate(({ BrowserWindow }) => {
+    const win = BrowserWindow.getAllWindows()[0], origin = new URL(win.webContents.getURL()).origin;
+    win.webContents.session.setPermissionCheckHandler((contents, permission, requestingOrigin) => contents === win.webContents && requestingOrigin === origin && ['local-network', 'loopback-network'].includes(permission));
+    win.webContents.session.setPermissionRequestHandler((contents, permission, callback, details) => callback(contents === win.webContents && new URL(details.requestingUrl).origin === origin && ['local-network', 'loopback-network'].includes(permission)));
+  });
   await page.waitForFunction(() => 'validation' in window);
   await page.bringToFront();
 });

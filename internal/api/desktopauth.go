@@ -1,10 +1,11 @@
 package api
 
 import (
-	"github.com/jonasthim/dilla/internal/desktopauth"
-	"github.com/jonasthim/dilla/internal/server"
 	"net/http"
 	"strings"
+
+	"github.com/jonasthim/dilla/internal/desktopauth"
+	"github.com/jonasthim/dilla/internal/server"
 )
 
 func (d Deps) registerDesktopAuth(m *server.Mux) {
