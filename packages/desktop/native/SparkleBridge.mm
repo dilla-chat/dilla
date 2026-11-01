@@ -41,7 +41,17 @@ static DillaSparkle *driver;
 - (void)showUpdatePermissionRequest:(SPUUpdatePermissionRequest *)request reply:(void (^)(SUUpdatePermissionResponse *))reply {reply([[SUUpdatePermissionResponse alloc] initWithAutomaticUpdateChecks:NO sendSystemProfile:NO]);}
 - (void)showUserInitiatedUpdateCheckWithCancellation:(void (^)(void))cancellation {self.cancelDownload=cancellation;}
 - (void)showUpdateFoundWithAppcastItem:(SUAppcastItem *)item state:(SPUUserUpdateState *)state reply:(void (^)(SPUUserUpdateChoice))reply {
- if (![self matchesItem:item]) {reply(SPUUserUpdateChoiceDismiss);[self finish:@"Unexpected Sparkle update target"];return;}
+ if (![self matchesItem:item]) {
+  // Dismiss preserves an already installing update, including installation on
+  // later termination. A stale target must lose that permission completely.
+  reply(state.stage == SPUUserUpdateStageInstalling ? SPUUserUpdateChoiceSkip : SPUUserUpdateChoiceDismiss);
+  [self finish:@"Unexpected Sparkle update target"];return;
+ }
+ if (state.stage == SPUUserUpdateStageInstalling) {
+  // Sparkle can resume a previously prepared installer. Replying Install here
+  // would quit immediately, bypassing the renderer's guarded will-quit flow.
+  self.installReply=reply;self.cancelDownload=nil;[self finish:nil];return;
+ }
  reply(SPUUserUpdateChoiceInstall);
 }
 - (void)showUpdateReleaseNotesWithDownloadData:(SPUDownloadData *)data {}
@@ -109,7 +119,10 @@ static napi_value Commit(napi_env env,napi_callback_info info) {
 }
 static napi_value Cancel(napi_env env,napi_callback_info info) {
  if(driver.cancelDownload) {driver.cancelDownload();driver.cancelDownload=nil;}
- if(driver.installReply) {void (^reply)(SPUUserUpdateChoice)=driver.installReply;driver.installReply=nil;reply(SPUUserUpdateChoiceDismiss);}
+ // At the ready/installing stage Skip cancels the prepared installer. Unlike
+ // Dismiss, it cannot leave a deferred installation armed for a later quit.
+ // From showReadyToInstallAndRelaunch this does not skip the version for retry.
+ if(driver.installReply) {void (^reply)(SPUUserUpdateChoice)=driver.installReply;driver.installReply=nil;reply(SPUUserUpdateChoiceSkip);}
  [driver finish:@"Update cancelled; retry when ready"];
  napi_value result;napi_get_undefined(env,&result);return result;
 }
