@@ -1,5 +1,11 @@
 # dilla desktop: plan
 
+> Superseded by the approved 2026-10-31 desktop-only-apps plan: ship all desktop
+> platforms together with a bundled client, no package-manager distribution, and
+> mandatory unsigned Sparkle upgrade acceptance. Do not execute the conflicting
+> Linux-first or server-loaded decisions below. See
+> [current foundation status](../../desktop/FOUNDATIONS.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development. Phase 0 spikes come first, and each ends in a FINDINGS note and a go/no-go.
 
 ## Context

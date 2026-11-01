@@ -66,7 +66,7 @@ export async function acquireCamera(media: CaptureMedia): Promise<MediaStreamTra
 }
 
 /** What sound a share carries: a tab's, the system's (a screen or a window), or none (#37). */
-export type ShareAudioKind = 'tab' | 'system' | 'none';
+export type ShareAudioKind = 'tab' | 'system' | 'app' | 'none';
 export interface ScreenCapture { video: MediaStreamTrack; audio: MediaStreamTrack | null; audioKind: ShareAudioKind }
 
 /**

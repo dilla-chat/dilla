@@ -50,6 +50,8 @@ export const PATH_RULES = [
   ] },
   // internal/api/invites_test.go (TestLandingTokensMatchMesh) reads dist/tokens.css.
   { areas: ['go'], patterns: ['packages/design-tokens/**'] },
+  // webdist_test.go consumes a built client directory when it exists locally.
+  { areas: ['go'], patterns: ['packages/web/dist', 'packages/web/dist/**'] },
   // packages/client-core/src/profile-text.test.ts reads the RGI sequences the generator writes for the Go tests too.
   { areas: ['web'], patterns: ['internal/auth/testdata/rgi-zwj-sequences.txt'] },
   // packages/media/scripts/check-protocol-schema.mjs compares @livekit/protocol with this Go golden.
@@ -85,6 +87,7 @@ export const JOB_GATES = {
   'browser-spike': ['e2e'],
   'browser-media': ['e2e'],
   'web-build': ['e2e'],
+  desktop: ['e2e'],
   'chromium-web': ['e2e'],
   'firefox-web': ['e2e'],
   'webkit-web': ['e2e'],

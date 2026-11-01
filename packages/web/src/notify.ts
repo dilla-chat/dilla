@@ -9,6 +9,7 @@ import type { CoreClient, Notice, Ring } from '@dilla/client-core';
 import type { PermissionState } from './notify-permission.ts';
 import { t } from './strings/index.ts';
 import { mergeMembers, nameBook, plainBody } from './screens/shell-model.ts';
+import { desktopBridge, desktopNotificationCtor } from './desktop.ts';
 
 export interface NotificationHandle { onclick: ((ev: Event) => unknown) | null; close(): void; }
 export interface NotificationCtor { readonly permission: NotificationPermission; new (title: string, options: NotificationOptions): NotificationHandle; }
@@ -48,6 +49,8 @@ export function noticeTitle(notice: Notice, names: { channel: string | null; ser
 /** globalThis.Notification, or undefined where the browser has none. */
 export function notificationCtor(): NotificationCtor | undefined {
   const n = (globalThis as { Notification?: unknown }).Notification;
+  const desktop = desktopBridge();
+  if (desktop !== undefined) return desktopNotificationCtor(desktop, () => typeof n === 'function' ? (n as NotificationCtor).permission : 'denied');
   return typeof n === 'function' ? n as NotificationCtor : undefined;
 }
 

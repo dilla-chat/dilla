@@ -14,6 +14,9 @@ import {
 } from '@dilla/media';
 import { reportProcessorStatus } from './processor-status.ts';
 import { acquireCamera, acquireMic, acquireScreen, type CaptureMedia, type DisplayMedia, type ScreenCapture, type ShareAudioKind } from './devices.ts';
+import { APPLICATION_SOURCE, acquireApplicationAudio, applicationAudioAvailable } from './app-audio.ts';
+import { desktopBridge } from '../desktop.ts';
+import { t } from '../strings/index.ts';
 import { createKeyRelay, toEpochKeys } from './keys.ts';
 import {
   analyserMeter, LEVEL_PUBLISH_MS, SPEAK_TICK_MS, SpeakingDetector, type LevelMeter,
@@ -124,6 +127,7 @@ export interface PageCall {
 export interface NoiseProcessor { setPttActive(active: boolean): void; setCaptureAllowed?(allowed: boolean): void; setMode?(mode: 'vad' | 'ptt'): void; flush?(): void; destroy?(): Promise<void> }
 
 export interface PageCallDeps {
+  applicationAudio?: () => Promise<MediaStreamTrack>;
   bridge: Pick<CoreClient, 'call' | 'onCallKeys'>;
   joinCall: (o: JoinCallOptions) => Promise<CallSession>;
   now(): number;
@@ -1177,11 +1181,14 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       if (!permitted('screenAudio')) throw new PageCallError('E_FORBIDDEN');
       let track: MediaStreamTrack;
       try {
+        if (id === APPLICATION_SOURCE) track = await (deps.applicationAudio ?? acquireApplicationAudio)();
+        else {
         const stream = await deps.media.getUserMedia({ audio: { deviceId: { exact: id }, echoCancellation: false, noiseSuppression: false,
           autoGainControl: false, channelCount: 2 } });
         const got = stream.getAudioTracks()[0];
         if (got === undefined) { for (const t of stream.getTracks()) t.stop(); throw new PageCallError('E_UNAVAILABLE'); }
         track = got;
+        }
       } catch (err) {
         throw pageCallError(err);
       }
@@ -1235,9 +1242,10 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       };
       track.addEventListener('ended', onEnded);
       s.device = { track, pub, onEnded };
-      set({ shareAudio: 'device', shareSource: id });
+      set({ shareAudio: id === APPLICATION_SOURCE ? 'app' : 'device', shareSource: id });
     });
     const shareSources = async (): Promise<{ sources: ShareSource[]; labeled: boolean }> => {
+      if (desktopBridge()) return { labeled: true, sources: await applicationAudioAvailable() ? [{ id: APPLICATION_SOURCE, label: t('voice.shareAudio.application'), monitor: false }] : [] };
       let all: MediaDeviceInfo[] = [];
       try { all = await deps.media.enumerateDevices(); } catch { all = []; }
       const raw = all.filter((d) => d.kind === 'audioinput');

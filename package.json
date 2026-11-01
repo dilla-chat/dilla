@@ -35,7 +35,9 @@
     "noise:test": "node --test experiments/noise/test/*.test.mjs experiments/noise/*.test.mjs",
     "noise:build": "DILLA_NOISE_MODE=evaluation npm run build -w @dilla/web",
     "noise:build:beta": "DILLA_NOISE_MODE=beta npm run build -w @dilla/web",
-    "test:noise-release": "node --test scripts/release-noise-mode.test.mjs experiments/noise/build-gate.test.mjs"
+    "test:noise-release": "node --test scripts/release-noise-mode.test.mjs experiments/noise/build-gate.test.mjs",
+    "desktop:build": "npm run build -w @dilla/desktop",
+    "desktop:test": "npm test -w @dilla/desktop"
   },
   "devDependencies": {
     "eslint": "9.39.5",

@@ -577,10 +577,19 @@ jobs:
           if-no-files-found: error
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
+          name: dilla-desktop-core
+          path: packages/core-wasm/pkg/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
           name: dilla-core-harness
           path: packages/client-core/harness-dist/
           if-no-files-found: error
 
+  desktop:
+    needs: [changes, web-build]
+    if: needs.changes.outputs.e2e != 'false'
+    uses: ./.github/workflows/desktop.yml
   chromium-web:
     needs: [changes, rust-native, rust-wasi, web-build]
     if: needs.changes.outputs.e2e != 'false'
@@ -1091,7 +1100,7 @@ jobs:
   # One check for the whole workflow, so that a required-check list needs only this name: it is red when any job
   # failed or was cancelled (a failed `changes` included) and green when the rest passed or were skipped by design.
   ci-ok:
-    needs: [changes, docs, node, ui, rust-wasm-node, rust-native, rust-wasi, vectors, browser-spike, browser-media, web-build, chromium-web, firefox-web, webkit-web, deny, go, go-ds, go-api, go-harness, go-fts5-arm64, go-lint, go-vuln, go-sqlc, go-postgres, go-release, spotify-helper]
+    needs: [changes, docs, node, ui, rust-wasm-node, rust-native, rust-wasi, vectors, browser-spike, browser-media, web-build, desktop, chromium-web, firefox-web, webkit-web, deny, go, go-ds, go-api, go-harness, go-fts5-arm64, go-lint, go-vuln, go-sqlc, go-postgres, go-release, spotify-helper]
     if: always()
     runs-on: ubuntu-latest
     steps:

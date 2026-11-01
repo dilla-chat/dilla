@@ -1,0 +1,66 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { canonicalInstance, partitionFor, parseInvite, isAppNavigation, externalLink, validateCommand, trustedFrame, instanceRequestURL } from '../src/policy.ts';
+
+test('instance identity includes scheme, port and the entire canonical URL', () => {
+  assert.equal(canonicalInstance('https://EXAMPLE.com:443'), 'https://example.com/');
+  assert.equal(canonicalInstance('https://example.com/team'), 'https://example.com/team/');
+  assert.equal(partitionFor('https://EXAMPLE.com:443/'), partitionFor('https://example.com/'));
+  const keys = new Set(['https://example.com/', 'https://example.com:8443/', 'https://example.com/a/', 'https://example.com/b/'].map(partitionFor));
+  assert.equal(keys.size, 4);
+  assert.match(partitionFor('https://example.com/'), /^persist:dilla-[a-f0-9]{64}$/);
+});
+
+test('instances reject credentials, URL confusion and insecure non-loopback origins', () => {
+  for (const url of ['http://example.com', 'file:///etc/passwd', 'https://a@b/', 'https://b/?token=x', 'https://b/#x', ' https://b/', 'https://b/\\evil', 'https://b/\n', 'https://b/%2fother']) {
+    assert.throws(() => canonicalInstance(url), url);
+  }
+  assert.throws(() => canonicalInstance('http://127.0.0.1:8443/'));
+  assert.equal(canonicalInstance('http://127.0.0.1:8443/', true), 'http://127.0.0.1:8443/');
+  assert.throws(() => canonicalInstance('http://127.0.0.1.evil/', true));
+  assert.throws(() => canonicalInstance('https://example.com/assets/'));
+});
+
+test('HTTP API and gateway paths reach the entire selected instance base path exactly once', () => {
+  assert.equal(instanceRequestURL('https://chat.test/v1/instance', 'https://chat.test/team/'), 'https://chat.test/team/v1/instance');
+  assert.equal(instanceRequestURL('wss://chat.test/gateway?ticket=opaque', 'https://chat.test/team/'), 'wss://chat.test/team/gateway?ticket=opaque');
+  assert.equal(instanceRequestURL('https://chat.test/v1/messages', 'https://chat.test/'), 'https://chat.test/v1/messages');
+  assert.equal(instanceRequestURL('wss://chat.test/team/gateway?ticket=x', 'https://chat.test/team/'), 'wss://chat.test/team/gateway?ticket=x');
+  assert.equal(instanceRequestURL('https://other.test/v1/instance', 'https://chat.test/team/'), 'https://other.test/v1/instance');
+  assert.equal(instanceRequestURL('https://chat.test/v1/v1/instance', 'https://chat.test/v1/'), 'https://chat.test/v1/v1/instance');
+  assert.equal(instanceRequestURL('https://chat.test/v1/instance', 'https://chat.test/v1/'), 'https://chat.test/v1/v1/instance');
+  assert.equal(instanceRequestURL('wss://chat.test/gateway/team/gateway', 'https://chat.test/gateway/team/'), 'wss://chat.test/gateway/team/gateway');
+});
+
+test('invites carry only a validated HTTPS instance and code, with no credentials', () => {
+  assert.deepEqual(parseInvite('dilla://invite/example.com/ABCD-EFGH'), { instance: 'https://example.com/', code: 'ABCD-EFGH' });
+  assert.deepEqual(parseInvite('dilla://invite/chat.example:8443/abc_DEF'), { instance: 'https://chat.example:8443/', code: 'abc_DEF' });
+  for (const link of ['dilla://invite/a@b/code', 'dilla://invite/b/a/b', 'dilla://invite/b/code?token=secret', 'dilla://invite/b/code#x', 'dilla://invite/b/%2e%2e', 'dilla://invite/b/%2F', 'dilla://auth/b/token', 'dilla://invite/b/', 'https://invite/b/code', 'dilla://invite/b/code\n']) {
+    assert.throws(() => parseInvite(link), link);
+  }
+});
+
+test('navigation admits bundled app routes and refuses API HTML, frames and external documents', () => {
+  for (const path of ['/', '/welcome?invite=abc', '/settings/voice', '/c/' + 'a'.repeat(32), '/dm/' + 'b'.repeat(32)]) {
+    assert.equal(isAppNavigation('https://chat.test' + path, 'https://chat.test/'), true, path);
+  }
+  for (const path of ['/v1/blob/evil', '/i/code', '//evil.test', '/assets/main.js', '/unknown', '/welcome?token=secret']) {
+    assert.equal(isAppNavigation('https://chat.test' + path, 'https://chat.test/'), false, path);
+  }
+  assert.equal(isAppNavigation('https://other.test/', 'https://chat.test/'), false);
+  assert.equal(trustedFrame({ url: 'https://chat.test/', top: true }, 'https://chat.test/'), true);
+  assert.equal(trustedFrame({ url: 'https://chat.test/', top: false }, 'https://chat.test/'), false);
+  assert.equal(trustedFrame({ url: 'https://chat.test/v1/evil', top: true }, 'https://chat.test/'), false);
+  assert.equal(externalLink('javascript:alert(1)'), null);
+  assert.equal(externalLink('file:///etc/passwd'), null);
+  assert.equal(externalLink('https://user:password@example.com'), null);
+  assert.equal(externalLink('https://example.com/doc'), 'https://example.com/doc');
+});
+
+test('the desktop boundary validates every command, rejects extra fields and cannot access files or shell', () => {
+  assert.deepEqual(validateCommand({ type: 'badge', count: 3 }), { type: 'badge', count: 3 });
+  assert.deepEqual(validateCommand({ type: 'guard', activeCall: true, unsavedDraft: false }), { type: 'guard', activeCall: true, unsavedDraft: false });
+  for (const cmd of [null, [], { type: 'exec', command: 'id' }, { type: 'badge', count: -1 }, { type: 'badge', count: 1.1 }, { type: 'badge', count: 1, path: '/etc/passwd' }, { type: 'guard', activeCall: false }, { type: 'notify', id: 'n', title: 'x', body: 'x', url: 'file:///etc/passwd' }, { type: 'notify', id: '../secret', title: 'x', body: 'x' }, { type: 'autostart', enabled: 'true' }]) {
+    assert.throws(() => validateCommand(cmd));
+  }
+});

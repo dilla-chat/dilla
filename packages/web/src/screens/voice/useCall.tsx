@@ -10,6 +10,7 @@ import type { CallState, CoreClient } from '@dilla/client-core';
 import { SETTINGS } from '@dilla/client-core';
 import { isPushToTalkKey } from '@dilla/ui';
 import { shareAudioAdvice } from '../../call/share-audio-advice.ts';
+import { desktopBridge } from '../../desktop.ts';
 import { loadCallModule, type CallModule } from '../../call/load.ts';
 import type { PageCall, PageCallState, ShareSource } from '../../call/session.ts';
 import { createSounds, type Sounds } from '../../call/sounds.ts';
@@ -1338,7 +1339,8 @@ export function useCall(o: UseCallOptions): CallView {
 /** #37: the silent-share notice that names what this browser and system can do. */
 function shareAudioKey(): StringKey {
   const data = (navigator as Navigator & { userAgentData?: { platform?: string; brands?: Array<{ brand: string }> } }).userAgentData;
-  const advice = shareAudioAdvice({ ua: navigator.userAgent, uaPlatform: data?.platform, brands: data?.brands?.map(b => b.brand) });
+  const advice = shareAudioAdvice({ ua: navigator.userAgent, uaPlatform: data?.platform, brands: data?.brands?.map(b => b.brand), desktop: desktopBridge() !== undefined });
+  if (advice === 'app') return 'voice.shareAudio.none.application';
   return advice === 'unsupported' ? 'voice.shareAudio.none.unsupported'
     : advice === 'tab-or-system' ? 'voice.shareAudio.none.tabOrSystem' : 'voice.shareAudio.none.tabOnly';
 }
