@@ -140,9 +140,29 @@ test('selected application reaches an encrypted listener while other application
 });
 test('native application audio without an authenticated source slot cannot fall back to plaintext', async () => {
  const page = await desktop.firstWindow();
- const result = await page.evaluate(() => (window as any).validation.audio({ source: 'unknown', receiver: false, ms: 4000 }));
+ const result = await page.evaluate(async () => {
+  // Exercise a pending publish that outlives the harness's former two-second
+  // unpublish timer. Capture must reach the blocker after negotiation completes.
+  const createOffer = RTCPeerConnection.prototype.createOffer;
+  RTCPeerConnection.prototype.createOffer = new Proxy(createOffer, {
+   async apply(target, connection, args) {
+    await new Promise(done => setTimeout(done, 2500));
+    return Reflect.apply(target, connection, args);
+   },
+  });
+  try { return await (window as any).validation.audio({ source: 'unknown', receiver: false, ms: 4000 }); }
+  finally { RTCPeerConnection.prototype.createOffer = createOffer; }
+ });
+ console.log('NATIVE_AUDIO_UNAUTHENTICATED_SENDER', JSON.stringify(result));
+ expect(result.transport).toEqual(['connected', 'connected']);
+ expect(result.inputPeaks.selected, 'real native audio must reach the sender before rejection is measured').toBeGreaterThan(-35);
+ expect(result.senderTrackEnded).toBe(false);
+ expect(result.errors).toEqual(['a1a1: E_BAD_OPTIONS: track source unknown has no slot']);
+ expect(result.unpublished).toEqual([result.trackID]);
  expect(result.bytesSent).toBe(0);
+ expect(result.packetsSent).toBe(0);
  expect(result.peaks.selected).toBeLessThan(-80);
  expect(result.sender?.dropped.blocked).toBeGreaterThan(10);
+ expect(result.sender?.droppedByTrack[result.trackID]).toBeGreaterThan(10);
  expect(result.sender?.passedThrough).toBe(0);
 });

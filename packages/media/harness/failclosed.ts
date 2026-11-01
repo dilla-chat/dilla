@@ -70,15 +70,15 @@ class StandIns {
   readonly engine = new EventEmitter();
   readonly unpublished: string[] = [];
 
-  constructor(identity: string) {
+  constructor(identity: string, pendingPublish?: Promise<void>) {
     const lp = Object.assign(new EventEmitter(), {
       identity,
       isE2EEEnabled: true,
       unpublishTrack: async (t: { mediaStreamID: string; mediaStreamTrack: MediaStreamTrack }) => {
         this.unpublished.push(t.mediaStreamID);
-        // livekit's unpublishTrack first awaits the pending publish (LocalParticipant.ts:1578-1587); the delay keeps
-        // the track live long enough for its frames to meet the blocking transform.
-        await new Promise((r) => setTimeout(r, UNPUBLISH_DELAY_MS));
+        // livekit's unpublishTrack first awaits the pending publish (LocalParticipant.ts:1578-1587).
+        // Audio provides an explicit completion barrier; the video scenarios retain their fixed delay.
+        await (pendingPublish ?? new Promise((r) => setTimeout(r, UNPUBLISH_DELAY_MS)));
         t.mediaStreamTrack.stop(); // stopLocalTrackOnUnpublish, livekit's default
       },
     });
@@ -90,14 +90,14 @@ function epoch(selfLeaf: number): EpochKeys {
   return { groupId: 'failclosed', epoch: 7n, baseKey: new Uint8Array(16).fill(0x5c), selfLeaf, minEpoch: 7n, roster: ROSTER };
 }
 
-async function manager(identity: string, selfLeaf: number, errors: string[]): Promise<{ m: DillaE2EEManager; s: StandIns; worker: Worker; terminated: () => boolean }> {
+async function manager(identity: string, selfLeaf: number, errors: string[], pendingPublish?: Promise<void>): Promise<{ m: DillaE2EEManager; s: StandIns; worker: Worker; terminated: () => boolean }> {
   const worker = createMediaWorker();
   let terminated = false;
   const terminate = worker.terminate.bind(worker);
   worker.terminate = (): void => { terminated = true; terminate(); };
   const m = new DillaE2EEManager(worker, { initTimeoutMs: 60_000 }); // unbundled dev-server worker on a slow runner
   m.on('encryptionError', (e: Error) => errors.push(`${identity.slice(0, 4)}: ${e.message}`));
-  const s = new StandIns(identity);
+  const s = new StandIns(identity, pendingPublish);
   m.setup(s.room as unknown as Room);
   m.setupEngine(s.engine);
   await m.installEpoch(epoch(selfLeaf));
@@ -286,13 +286,20 @@ export async function runFailClosed(sc: FailClosedScenario): Promise<FailClosedR
  * acquired through the shipping native application-capture capability. */
 export async function runProtectedAudio(track: MediaStreamTrack, options: { source?: string; receiver?: boolean; ms?: number } = {}) {
   const errors: string[] = [];
-  const A = await manager(DEV_A, 0, errors);
+  // Keep livekit's pending-publish stand-in pending until the observation ends.
+  // A wall-clock unpublish delay can stop capture before ICE or native audio
+  // starts, leaving the blocking transform with no frames to inspect.
+  let completePublish!: () => void;
+  const pendingPublish = new Promise<void>(resolve => { completePublish = resolve; });
+  const A = await manager(DEV_A, 0, errors, pendingPublish);
   const B = options.receiver === false ? null : await manager(DEV_B, 1, errors);
   const a = new RTCPeerConnection({ encodedInsertableStreams: true } as RTCConfiguration);
   const b = new RTCPeerConnection(B ? { encodedInsertableStreams: true } as RTCConfiguration : {});
   const context = new AudioContext({ sampleRate: 48000 });
   const analyser = context.createAnalyser(); analyser.fftSize = 8192; analyser.smoothingTimeConstant = 0;
   const mute = context.createGain(); mute.gain.value = 0; analyser.connect(mute).connect(context.destination);
+  const inputAnalyser = context.createAnalyser(); inputAnalyser.fftSize = 8192; inputAnalyser.smoothingTimeConstant = 0;
+  context.createMediaStreamSource(new MediaStream([track])).connect(inputAnalyser).connect(mute);
   await context.resume();
   const element = document.createElement('audio'); element.autoplay = true; element.volume = 0; document.body.append(element);
   b.ontrack = event => {
@@ -308,8 +315,13 @@ export async function runProtectedAudio(track: MediaStreamTrack, options: { sour
   A.s.room.localParticipant.emit('localSenderCreated', transceiver.sender, { source: options.source ?? 'screen_share_audio', kind: 'audio', mediaStreamID: track.id, mediaStreamTrack: track });
   try {
     await negotiate(a, b);
+    const connectionDeadline = performance.now() + 10000;
+    while (a.connectionState !== 'connected' && a.connectionState !== 'failed' && performance.now() < connectionDeadline) {
+      await new Promise(done => setTimeout(done, 50));
+    }
     const started = performance.now(), deadline = started + (options.ms ?? 6000);
     const peaks = { selected: -200, call: -200, other: -200 };
+    const inputPeaks = { selected: -200, call: -200, other: -200 };
     let firstAudioMs: number | null = null;
     const data = new Float32Array(analyser.frequencyBinCount);
     while (performance.now() < deadline) {
@@ -317,6 +329,11 @@ export async function runProtectedAudio(track: MediaStreamTrack, options: { sour
       for (const [name, hz] of [['selected', 1000], ['call', 440], ['other', 880]] as const) {
         const bin = Math.round(hz * analyser.fftSize / context.sampleRate);
         peaks[name] = Math.max(peaks[name], ...data.subarray(bin - 2, bin + 3));
+      }
+      inputAnalyser.getFloatFrequencyData(data);
+      for (const [name, hz] of [['selected', 1000], ['call', 440], ['other', 880]] as const) {
+        const bin = Math.round(hz * inputAnalyser.fftSize / context.sampleRate);
+        inputPeaks[name] = Math.max(inputPeaks[name], ...data.subarray(bin - 2, bin + 3));
       }
       if (firstAudioMs === null && peaks.selected > -40) firstAudioMs = performance.now() - started;
       await new Promise(done => setTimeout(done, 50));
@@ -327,6 +344,6 @@ export async function runProtectedAudio(track: MediaStreamTrack, options: { sour
     (await a.getStats()).forEach((row: { type: string; kind?: string; bytesSent?: number; packetsSent?: number }) => {
       if (row.type === 'outbound-rtp' && row.kind === 'audio') { bytesSent += row.bytesSent ?? 0; packetsSent += row.packetsSent ?? 0; }
     });
-    return { peaks, firstAudioMs, bytesSent, packetsSent, inbound, audioContext: { state: context.state, time: context.currentTime, sampleRate: context.sampleRate }, transport: [a.connectionState, b.connectionState], errors, sender: await statsOrNull(A.m), receiver: B ? await statsOrNull(B.m) : null };
-  } finally { track.stop(); a.close(); b.close(); element.remove(); await context.close(); A.worker.terminate(); B?.worker.terminate(); }
+    return { peaks, inputPeaks, firstAudioMs, bytesSent, packetsSent, inbound, trackID: track.id, senderTrackEnded: track.readyState === 'ended', unpublished: [...A.s.unpublished], audioContext: { state: context.state, time: context.currentTime, sampleRate: context.sampleRate }, transport: [a.connectionState, b.connectionState], errors, sender: await statsOrNull(A.m), receiver: B ? await statsOrNull(B.m) : null };
+  } finally { completePublish(); track.stop(); a.close(); b.close(); element.remove(); await context.close(); A.worker.terminate(); B?.worker.terminate(); }
 }
