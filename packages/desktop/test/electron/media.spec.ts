@@ -13,10 +13,18 @@ test.beforeEach(async () => {
   page = await desktop.firstWindow();
   // Explicit browser permission grant for the isolated loopback fixture. This
   // changes neither macOS privacy settings nor the installed app's policy.
-  await desktop.evaluate(({ BrowserWindow }) => {
+  await desktop.evaluate(({ BrowserWindow, app, systemPreferences }) => {
     const win = BrowserWindow.getAllWindows()[0], origin = new URL(win.webContents.getURL()).origin;
-    win.webContents.session.setPermissionCheckHandler((contents, permission, requestingOrigin) => contents === win.webContents && requestingOrigin === origin && ['local-network', 'loopback-network'].includes(permission));
-    win.webContents.session.setPermissionRequestHandler((contents, permission, callback, details) => callback(contents === win.webContents && new URL(details.requestingUrl).origin === origin && ['local-network', 'loopback-network'].includes(permission)));
+    const diagnostics = { origin, policy: win.webContents.getWebRTCIPHandlingPolicy(), loopbackSwitch: app.commandLine.hasSwitch('allow-loopback-in-peer-connection'), gpu: app.getGPUFeatureStatus(), microphone: process.platform === 'darwin' ? systemPreferences.getMediaAccessStatus('microphone') : 'not-applicable', permissions: [] as { permission: string; origin: string; owner: boolean }[] };
+    (globalThis as any).mediaDiagnostics = diagnostics;
+    win.webContents.session.setPermissionCheckHandler((contents, permission, requestingOrigin) => {
+      diagnostics.permissions.push({ permission, origin: requestingOrigin, owner: contents === win.webContents });
+      return contents === win.webContents && requestingOrigin === origin && ['local-network', 'loopback-network'].includes(permission);
+    });
+    win.webContents.session.setPermissionRequestHandler((contents, permission, callback, details) => {
+      diagnostics.permissions.push({ permission, origin: details.requestingUrl, owner: contents === win.webContents });
+      callback(contents === win.webContents && new URL(details.requestingUrl).origin === origin && ['local-network', 'loopback-network'].includes(permission));
+    });
   });
   await page.waitForFunction(() => 'validation' in window);
   await page.bringToFront();
@@ -26,6 +34,7 @@ test.afterEach(async () => { await desktop?.close(); await rm(profile, { recursi
 async function run(scenario: FailClosedScenario): Promise<FailClosedResult> {
   const result = await page.evaluate(s => (window as any).validation.run(s), scenario) as FailClosedResult;
   await test.info().attach('encrypted-media-counters', { body: JSON.stringify(result, null, 2), contentType: 'application/json' });
+  console.log('ENCRYPTED_MEDIA_CONTEXT', JSON.stringify(await desktop.evaluate(() => (globalThis as any).mediaDiagnostics)));
   console.log('ENCRYPTED_MEDIA_RESULT', JSON.stringify(result));
   return result;
 }

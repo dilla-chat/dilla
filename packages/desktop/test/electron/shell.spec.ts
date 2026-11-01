@@ -84,7 +84,7 @@ test('closing a window keeps the client alive for background work', async () => 
   const page = await app.firstWindow();
   await page.waitForURL(instance);
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close());
-  expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map(win => ({ visible: win.isVisible(), destroyed: win.isDestroyed() }))))
+  await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map(win => ({ visible: win.isVisible(), destroyed: win.isDestroyed() }))))
     .toEqual([{ visible: false, destroyed: false }]);
 });
 

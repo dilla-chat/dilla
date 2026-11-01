@@ -18,11 +18,11 @@ type Fixtures = {
 };
 
 export const test = base.extend<Fixtures>({
-  browser: async ({ browser }, use) => {
+  browser: async ({ browser, launchOptions }, use) => {
     if (!desktopE2E()) { await use(browser); return; }
     const original = browser.newContext.bind(browser);
     const contexts: BrowserContext[] = [];
-    browser.newContext = async options => { const context = await launchDesktopContext(null, options ?? {}, false); contexts.push(context); return context; };
+    browser.newContext = async options => { const context = await launchDesktopContext(null, { ...options, launchOptions }, false); contexts.push(context); return context; };
     try { await use(browser); }
     finally { browser.newContext = original; await Promise.all(contexts.map(context => context.close())); }
   },

@@ -49,7 +49,7 @@ export interface AfterKill {
 export interface FailClosedResult {
   path: 'script-transform' | 'insertable-streams';
   negotiatedCodec: string;
-  transport?: { sender: string; receiver: string; iceSender: string; iceReceiver: string; sourceMuted: boolean };
+  transport?: { sender: string; receiver: string; iceSender: string; iceReceiver: string; sourceMuted: boolean; gatheringSender?: string; gatheringReceiver?: string; candidates?: number[]; iceErrors?: number[] };
   bytesSent: number;
   framesDecoded: number;
   rendered: number;
@@ -181,6 +181,11 @@ export async function runFailClosed(sc: FailClosedScenario): Promise<FailClosedR
   // livekit forces encodedInsertableStreams whenever a manager exists (RTCEngine.ts:795-804).
   const a = new RTCPeerConnection(streamsPath && A !== null ? ({ encodedInsertableStreams: true } as RTCConfiguration) : {});
   const b = new RTCPeerConnection(streamsPath && B !== null ? ({ encodedInsertableStreams: true } as RTCConfiguration) : {});
+  const candidates = [0, 0], iceErrors: number[] = [];
+  a.addEventListener('icecandidate', event => { if (event.candidate) candidates[0]++; });
+  b.addEventListener('icecandidate', event => { if (event.candidate) candidates[1]++; });
+  a.addEventListener('icecandidateerror', event => { iceErrors.push(event.errorCode); });
+  b.addEventListener('icecandidateerror', event => { iceErrors.push(event.errorCode); });
   const source = canvasTrack();
   const video = document.createElement('video');
   video.muted = true;
@@ -244,7 +249,7 @@ export async function runFailClosed(sc: FailClosedScenario): Promise<FailClosedR
   const { bytesSent, framesDecoded, negotiatedCodec } = await counters(a, b);
   const result: FailClosedResult = {
     path: streamsPath ? 'insertable-streams' : 'script-transform',
-    transport: { sender: a.connectionState, receiver: b.connectionState, iceSender: a.iceConnectionState, iceReceiver: b.iceConnectionState, sourceMuted: source.track.muted },
+    transport: { sender: a.connectionState, receiver: b.connectionState, iceSender: a.iceConnectionState, iceReceiver: b.iceConnectionState, sourceMuted: source.track.muted, gatheringSender: a.iceGatheringState, gatheringReceiver: b.iceGatheringState, candidates, iceErrors },
     negotiatedCodec,
     bytesSent,
     framesDecoded,
