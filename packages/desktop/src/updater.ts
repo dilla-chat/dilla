@@ -1,3 +1,4 @@
+import { NativeQuitInstaller } from './quit-install.ts';
 import { loadSparkle, type SparkleInstaller } from './sparkle.ts';
 import { app } from 'electron';
 import { AppImageUpdater, NsisUpdater, type AppUpdater } from 'electron-updater';
@@ -47,13 +48,15 @@ class PreparedProvider extends Provider<UpdateInfo> {
   }
 }
 
-export function createUpdater(changed: (state: UpdateState) => void): UpdateCoordinator {
+export function createUpdater(changed: (state: UpdateState) => void, failedQuit: () => void): UpdateCoordinator {
   let native: AppImageUpdater | NsisUpdater | null = null;
   let sparkle: SparkleInstaller | null = null;
   let target: Artifact | null = null;
   let downloadedPath: string | null = null;
   // Do not instantiate Electron's macOS updater: unsigned builds MUST use the Sparkle bridge.
-  return new UpdateCoordinator({
+  let coordinator: UpdateCoordinator;
+  const installer = new NativeQuitInstaller(app, error => { coordinator.installationFailed(error); failedQuit(); });
+  coordinator = new UpdateCoordinator({
     check: async () => {
       if (!app.isPackaged) throw new Error('Automatic updates need an installed acceptance build');
       if (RELEASE_PUBLIC_KEYS.length === 0) throw new Error('Launch blocked: no desktop release signing key is embedded');
@@ -85,7 +88,7 @@ export function createUpdater(changed: (state: UpdateState) => void): UpdateCoor
       try { await verifyArtifactFile(files[0], target); downloadedPath = files[0]; }
       catch (error) { await rm(files[0], { force: true }); downloadedPath = null; throw error; }
     },
-    cancelledQuit: () => sparkle?.cancelledQuit(),
+    cancelledQuit: () => { sparkle?.cancelledQuit(); installer.cancel(); },
     install: async () => {
       if (process.platform === 'darwin' && sparkle) { sparkle.install(); return; }
       if (!native || !target || !downloadedPath) throw new Error('No verified native update');
@@ -95,12 +98,18 @@ export function createUpdater(changed: (state: UpdateState) => void): UpdateCoor
         const child = spawn(path, args, { detached: true, stdio: 'ignore', env: { ...process.env, APPIMAGE_SILENT_INSTALL: 'true', DILLA_UPDATE_PREVIOUS_PID: String(process.pid) } });
         child.once('error', reject); child.once('spawn', () => { child.unref(); resolve(); });
       });
-      if (process.platform === 'linux') {
-        await replaceAppImage(downloadedPath, process.env.APPIMAGE!, target, path => launch(path, []));
-      } else {
+      const file = downloadedPath, artifact = target;
+      installer.arm(async () => {
+       // Recheck after unload as well: no installer sees an unauthenticated cache file.
+       await verifyArtifactFile(file, artifact);
+       if (process.platform === 'linux') {
+        await replaceAppImage(file, process.env.APPIMAGE!, artifact, path => launch(path, []));
+       } else {
         // The authenticated, per-user NSIS installer. Never fall back to elevation or shell.openPath.
-        await launch(downloadedPath, ['--updated', '--force-run']);
-      }
+        await launch(file, ['/S', '--updated', '--force-run']);
+       }
+      });
     },
   }, changed);
+  return coordinator;
 }

@@ -74,6 +74,9 @@ export class UpdateCoordinator {
   expectGuard(instance: string): void { this.guards.set(instance, null); }
   setGuard(instance: string, value: QuitGuard): void { this.guards.set(instance, value); }
   removeGuard(instance: string): void { this.guards.delete(instance); }
+  installationFailed(error: unknown): void {
+    this.set({ phase: 'error', message: error instanceof Error ? error.message : 'Installation failed; try again' });
+  }
   cancelledQuit(): void {
     if (this.state.phase === 'installing') this.driver.cancelledQuit?.();
     if (this.state.phase === 'installing') this.set({ phase: 'error', message: 'Restart was cancelled. The app is still running; retry after saving your drafts.' });

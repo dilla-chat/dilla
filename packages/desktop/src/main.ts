@@ -58,6 +58,13 @@ let quitProbe: { id: string; waiting: Set<string>; done(): void } | null = null;
 const updater = createUpdater(state => {
   for (const win of windows.values()) if (!win.isDestroyed()) win.webContents.send('dilla:event', { type: 'update', ...state } satisfies DesktopEvent);
   refreshMenu();
+}, () => {
+  quitting = false; askingQuit = false;
+  void (async () => {
+    for (const instance of preferences.instances) await openInstance(instance);
+    if (windows.size === 0) await showManager();
+    dialog.showErrorBox('Dilla update failed', updater.state.message ?? 'The working version is still available. Check for updates to retry.');
+  })().catch(error => { dialog.showErrorBox('Dilla could not reopen', String(error)); });
 });
 
 const webPreferences = () => ({ preload: join(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false,
@@ -249,13 +256,13 @@ async function requestQuit(restart = false): Promise<void> {
     if (restart && updater.state.phase !== 'ready') return;
     const ready = updater.state.phase === 'ready';
     for (const win of windows.values()) win.setEnabled(false);
-    const installed = await updater.quit(true);
-    if (ready && !installed) {
+    const prepared = await updater.quit(true);
+    if (ready && !prepared) {
       for (const win of windows.values()) win.setEnabled(true);
       dialog.showErrorBox('Dilla update failed', updater.state.message ?? 'The working version is still available. Check for updates to retry.');
       return;
     }
-    quitting = true; for (const instance of captures.keys()) stopAppAudio(instance); app.quit();
+    quitting = true; app.quit();
   } finally { askingQuit = false; }
 }
 
@@ -412,6 +419,7 @@ void waitForPreviousProcess(previousProcess).then(() => {
       else void showManager();
     });
     app.on('before-quit', event => { if (!quitting) { event.preventDefault(); void requestQuit(); } });
+    app.on('will-quit', () => { for (const instance of captures.keys()) stopAppAudio(instance); });
     app.on('window-all-closed', () => { /* Tray owns the application's lifetime. */ });
     app.on('activate', () => { const win = [...windows.values()][0]; if (win) focus(win); else void showManager(); });
     void app.whenReady().then(async () => {
