@@ -15,6 +15,8 @@ import { addServerVia,
   openSettings, railItem, railNav, sendText, signUp, type Account, type SettingsSection,
 } from '../../web/support/app';
 import { WAIT, mediaWorkers, type Person } from './peer-browser';
+import { desktopApplication, desktopE2E } from '../../web/support/electron.ts';
+import { nativeNotificationsSeen } from './native-notifications.ts';
 
 export { WAIT, closeSettings, copy, instanceInvite };
 /** The shell is up again (after a reload): the rail shows and no onboarding step does. */
@@ -469,12 +471,18 @@ export async function ringTimerLive(page: Page): Promise<boolean> {
 
 /** `notificationsSeen`: each desktop notification the page raised, as `{title, tag, closed}`. */
 export async function notificationsSeen(page: Page): Promise<{ title: string; tag: string; closed: boolean }[]> {
+  if (desktopE2E()) return nativeNotificationsSeen(page);
   return page.evaluate(() => (window as unknown as { __dillaNotifications: { title: string; tag: string; closed: boolean }[] })
     .__dillaNotifications.map((n) => ({ title: n.title, tag: n.tag, closed: n.closed })));
 }
 
 /** Reports the tab as hidden (or visible again) to the page, with a `visibilitychange`. */
 export async function setHidden(page: Page, hidden: boolean): Promise<void> {
+  if (desktopE2E()) {
+    const win = await desktopApplication(page.context()).browserWindow(page);
+    try { await win.evaluate((win, hidden) => { if (hidden) win.hide(); else { win.show(); win.focus(); } }, hidden); }
+    finally { await win.dispose(); }
+  }
   await page.evaluate((h) => (window as unknown as { __dwSetHidden(h: boolean): void }).__dwSetHidden(h), hidden);
 }
 

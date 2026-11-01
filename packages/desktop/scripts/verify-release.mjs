@@ -30,6 +30,7 @@ export async function verifyDesktopBundle({ metadata, signature, trust, director
   for (let shard = 1; shard <= 3; shard++) {
    if (!jobs.some(job => job.name.endsWith(`desktop-client-${target}-${shard}`) && job.conclusion === 'success')) throw new Error(`Missing Electron client coverage: ${target}-${shard}`);
   }
+  if (!jobs.some(job => job.name.endsWith(`desktop-voice-${target}`) && job.conclusion === 'success')) throw new Error(`Missing Electron voice coverage: ${target}`);
  }
  if (!source.review || source.review.status !== 'approved' || source.review.tree !== source.tree || !/^[a-f0-9]{64}$/.test(source.review.sha256)) throw new Error('An independent security review must approve this source tree');
  if (!source.notes || !/^[a-f0-9]{64}$/.test(source.notes.sha256) || digest(await readFile(join(directory, 'release-notes.md'))) !== source.notes.sha256) throw new Error('Release notes digest mismatch');

@@ -8,6 +8,9 @@
 // Init scripts are injected by the protocol, so the page's CSP never governs them.
 import { test as base, expect, type Browser, type BrowserContext, type ConsoleMessage, type Locator, type Page, type Worker } from '@playwright/test';
 import { copy, FIREFOX_FAVICON_LINE, isFirefoxBrowserFaviconViolation, recordNotifications } from '../../web/support/app';
+import { desktopE2E } from '../../web/support/electron.ts';
+import { desktopVoiceContext } from './desktop.ts';
+import { observeNativeNotifications } from './native-notifications.ts';
 
 /** One wait for one state (Global Constraints: at least 30 s locally, 90 s in CI). voice.ts re-exports it. */
 export const WAIT = process.env.CI === 'true' ? 90_000 : 30_000;
@@ -351,7 +354,7 @@ async function openContext(browser: Browser, o: { baseURL: string | undefined; p
 
 /** L-E2E-31 `peerBrowser`: the people of a test, each a browser context of their own. */
 export const test = base.extend<{ peerBrowser: PeerBrowsers }>({
-  peerBrowser: async ({ browser, baseURL, permissions, viewport }, use, testInfo) => {
+  peerBrowser: async ({ browser, baseURL, permissions, viewport, launchOptions }, use, testInfo) => {
     const guard = newGuard(testInfo.project.name);
     const open: Person[] = [];
     const peers: { close(): Promise<void> }[] = [];
@@ -363,10 +366,14 @@ export const test = base.extend<{ peerBrowser: PeerBrowsers }>({
         return peer;
       },
       async open(name, opts) {
-        const context = await openContext(opts?.browser ?? browser, { baseURL, permissions, viewport: opts?.viewport ?? viewport });
+        if (desktopE2E() && opts?.browser) throw new Error('Browser tab capture requires a native application-audio counterpart');
+        const context = desktopE2E()
+          ? await desktopVoiceContext({ baseURL, permissions, launchOptions, viewport: opts?.viewport ?? viewport })
+          : await openContext(opts?.browser ?? browser, { baseURL, permissions, viewport: opts?.viewport ?? viewport });
         await guard.attach(context);
         await context.addInitScript(installRecorders);
-        await recordNotifications(context);
+        if (desktopE2E()) await observeNativeNotifications(context);
+        else await recordNotifications(context);
         const page = await context.newPage();
         const person = { name, context, page };
         open.push(person);

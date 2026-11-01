@@ -1,3 +1,4 @@
+import { desktopE2E } from '../web/support/electron.ts';
 // VOICE-E2E (web-3 task 10): a screen share and a camera, on and off, as the other browser sees them. Chromium only:
 // headless Firefox has no screen capture to pick and its fake camera is not a capture Playwright can grant (media plan
 // DEV-63; NV-10 records screen share as a Chromium-measured path). Screen share starts from the person's own click
@@ -247,7 +248,7 @@ test('a share without sound says so on both sides', async ({ peerBrowser, browse
     await alice.context.addInitScript(silentDisplayMedia, firefox);
     // The notice names what this browser can do (#37): Firefox shares no sound; Chromium a tab's, and on Windows, ChromeOS and
     // macOS the system's too. Playwright's desktop Chrome profile claims a Windows UA, so the platform is read from the page.
-    const noticeKey = firefox ? 'voice.shareAudio.none.unsupported' : await noticeKeyOf(alice.page);
+    const noticeKey = desktopE2E() ? 'voice.shareAudio.none.application' : firefox ? 'voice.shareAudio.none.unsupported' : await noticeKeyOf(alice.page);
     await peer.setup();
     await onboard(alice, peer, 'alice');
     await onboard(bob, peer, 'bob');
@@ -268,8 +269,9 @@ test('a share without sound says so on both sides', async ({ peerBrowser, browse
     await startShare(alice.page, firefox ? [] : [copy('callStage.share.tab')]);
     await expect(share).toHaveAttribute('data-on', 'true', { timeout: WAIT });
     const opts = await alice.page.evaluate(() => (globalThis as unknown as { __dmOpts?: unknown }).__dmOpts);
-    expect(opts, 'the options the share gave getDisplayMedia').toEqual(firefox ? SHARE_OPTIONS_FIREFOX : SHARE_OPTIONS);
-    if (!firefox) {
+    expect(opts, 'the options the share gave getDisplayMedia').toEqual(desktopE2E() ? { ...SHARE_OPTIONS, audio: false, systemAudio: 'exclude', windowAudio: 'exclude' } : firefox ? SHARE_OPTIONS_FIREFOX : SHARE_OPTIONS);
+    if (desktopE2E()) expect(await alice.page.evaluate(() => (globalThis as any).__dmStripped), 'native sharing never requests whole-system audio').toBe(0);
+    if (!firefox && !desktopE2E()) {
       // The fake picker's stream carried sound, so the silence below is the wrapper's, as a Linux window share's is.
       expect(await alice.page.evaluate(() => (globalThis as unknown as { __dmStripped: number }).__dmStripped), 'audio tracks stripped')
         .toBeGreaterThan(0);
@@ -322,6 +324,7 @@ const rowState = (page: Page, name: string, key: string): Locator => page.locato
   .locator(`.d-voice-row__state[data-state="${key}"]`);
 
 test('a shared tab’s sound is heard by the other browser', async ({ peerBrowser, browserName, playwright, channel, headless }) => {
+  test.skip(desktopE2E(), 'Desktop has no browser tabs. Required native application-audio.spec.ts replaces this with real selected-application audio, call-audio exclusion and authenticated slot-3 transport on every OS.');
   test.skip(browserName !== 'chromium', 'DEV-63 / NV-10: screen capture, and a tab picked by its title, are Chromium only');
   const tabPicking = await playwright.chromium.launch({
     ...(channel === undefined ? {} : { channel }),

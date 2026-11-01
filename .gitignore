@@ -56,3 +56,6 @@ packages/desktop/acceptance-bin/
 
 e2e/desktop-client-report/
 e2e/desktop-client-results/
+
+/e2e/desktop-voice-results/
+/e2e/desktop-voice-report/

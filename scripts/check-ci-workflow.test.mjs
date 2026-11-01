@@ -18,13 +18,21 @@ const REAL_DESKTOP = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'deskt
 
 test('desktop acceptance requires every native target, Electron tests, packaging and fuse verification', () => {
   assert.deepEqual(checkDesktopWorkflow(REPO_ROOT), []);
-  for (const removed of ['with-window-manager.sh', 'prepare-windows-audio.ps1', '--grep-invert "application-audio.spec.ts"', 'Application audio encryption and exclusion', 'application-audio.spec.ts', 'os: macos-15-intel', 'os: macos-15,', 'npm run typecheck -w @dilla/desktop', 'npm run build:validation -w @dilla/desktop', 'node packages/desktop/scripts/check-fuses.mjs', 'node --test packages/desktop/test/native/mac-upgrade.test.mjs', 'npm run dist -w @dilla/desktop', 'shard: [1, 2, 3]', 'os: [ubuntu-24.04, windows-latest, macos-15-intel, macos-15]', 'playwright.desktop.config.ts']) {
+  for (const removed of ['playwright.desktop-voice.config.ts', 'DILLA_E2E_NOTIFICATIONS', 'dunst', 'with-window-manager.sh', 'prepare-windows-audio.ps1', '--grep-invert "application-audio.spec.ts"', 'Application audio encryption and exclusion', 'application-audio.spec.ts', 'os: macos-15-intel', 'os: macos-15,', 'npm run typecheck -w @dilla/desktop', 'npm run build:validation -w @dilla/desktop', 'node packages/desktop/scripts/check-fuses.mjs', 'node --test packages/desktop/test/native/mac-upgrade.test.mjs', 'npm run dist -w @dilla/desktop', 'shard: [1, 2, 3]', 'os: [ubuntu-24.04, windows-latest, macos-15-intel, macos-15]', 'playwright.desktop.config.ts']) {
     const root = mkdtempSync(join(tmpdir(), 'dilla-desktop-ci-'));
     mkdirSync(join(root, '.github/workflows'), { recursive: true });
     writeFileSync(join(root, '.github/workflows/desktop.yml'), REAL_DESKTOP.replaceAll(removed, 'removed'));
     assert.ok(checkDesktopWorkflow(root).length > 0, removed);
   }
 });
+
+test('desktop voice cannot shard its frozen-clock suite', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dilla-desktop-voice-ci-'));
+  mkdirSync(join(root, '.github/workflows'), { recursive: true });
+  writeFileSync(join(root, '.github/workflows/desktop.yml'), REAL_DESKTOP.replaceAll('playwright.desktop-voice.config.ts --project=electron-voice --workers=1', 'playwright.desktop-voice.config.ts --project=electron-voice --workers=1 --shard=1/2'));
+  assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('single frozen-clock worker')));
+});
+
 
 test('compiled helper recovery tests receive the same-commit helper and cannot silently skip', () => {
   const native = REAL_CI.split('\n  rust-native:\n')[1].split('\n  spotify-helper:\n')[0];

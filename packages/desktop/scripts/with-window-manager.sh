@@ -3,8 +3,10 @@
 # require a window manager. Start one only when the test display has none.
 set -euo pipefail
 desktop_wm_pid=''
+desktop_notify_pid=''
 desktop_wm_log=$(mktemp "${TMPDIR:-/tmp}/dilla-wm.XXXXXX")
 cleanup() {
+  if [[ -n "$desktop_notify_pid" ]]; then kill "$desktop_notify_pid" 2>/dev/null || true; wait "$desktop_notify_pid" 2>/dev/null || true; fi
   if [[ -n "$desktop_wm_pid" ]]; then kill "$desktop_wm_pid" 2>/dev/null || true; wait "$desktop_wm_pid" 2>/dev/null || true; fi
   rm -f "$desktop_wm_log"
 }
@@ -20,5 +22,17 @@ if ! has_manager; then
     sleep 0.05
   done
   if ! has_manager; then cat "$desktop_wm_log"; exit 1; fi
+fi
+has_notifications() { [[ $(dbus-send --session --print-reply --dest=org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus.NameHasOwner string:org.freedesktop.Notifications 2>/dev/null) == *'boolean true'* ]]; }
+if [[ "${DILLA_E2E_NOTIFICATIONS:-0}" == '1' ]] && ! has_notifications; then
+  command -v dunst >/dev/null || { echo 'Native notification acceptance requires dunst'; exit 1; }
+  dunst --config /dev/null >>"$desktop_wm_log" 2>&1 &
+  desktop_notify_pid=$!
+  for ((attempt = 0; attempt < 100; attempt++)); do
+    if has_notifications; then break; fi
+    if ! kill -0 "$desktop_notify_pid" 2>/dev/null; then cat "$desktop_wm_log"; exit 1; fi
+    sleep 0.05
+  done
+  if ! has_notifications; then cat "$desktop_wm_log"; exit 1; fi
 fi
 "$@"

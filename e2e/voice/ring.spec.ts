@@ -12,6 +12,7 @@ import {
   notificationsSeen, onboard, openDm, ringChannelsSeen, ringPings, ringTimerLive, rings, self, setHidden, slice, stripButton, tile, tones,
 } from './support/voice';
 import { dmComposer, dmLog } from '../web/support/app';
+import { desktopE2E } from '../web/support/electron.ts';
 
 watchContexts(test);
 
@@ -76,6 +77,12 @@ test('answer: bob rings (banner, sound, one notification while hidden), answers,
     // Product walk I5: the DM call at 360 px stacks without overlap: the stage's toolbar sits under the tiles, never over
     // one; off the stage, the phone's call bar is on screen and clear of the tab bar and the header.
     await bob.page.setViewportSize({ width: 360, height: 740 });
+    if (desktopE2E()) {
+      expect(bob.page.viewportSize()!.width).toBeGreaterThanOrEqual(900);
+      await expect(bob.page.locator('.d-app-shell')).not.toHaveAttribute('data-layout', 'phone');
+      await expect(bob.page.locator('.d-call-bar')).toHaveCount(0);
+      return;
+    }
     await expect.poll(() => phoneOverlaps(bob.page), POLL).toEqual([]);
     await bob.page.getByRole('button', { name: copy('nav.back'), exact: true }).click();
     await expect(bob.page.locator('.d-call-bar')).toBeVisible({ timeout: WAIT });

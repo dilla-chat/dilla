@@ -20,6 +20,7 @@ test('publication refuses missing native acceptance even when the generic CI sta
   for (const target of TARGETS) {
    jobs.push({ name: `desktop / desktop-${target}`, conclusion: 'success', steps: ['Installed upgrade acceptance', 'Application audio encryption and exclusion', 'Desktop performance comparison', 'Installed unsigned Sparkle upgrade and signed-feed rejection'].map(name => ({ name, conclusion: 'success' })) });
    for (let n = 1; n <= 3; n++) jobs.push({ name: `desktop / desktop-client-${target}-${n}`, conclusion: 'success' });
+   jobs.push({ name: `desktop / desktop-voice-${target}`, conclusion: 'success' });
    const report = Buffer.from(JSON.stringify({ format: 1, target, sourceCommit: source.commit, status: 'measured', ...Object.fromEntries(['startup', 'memory', 'idleCPU', 'interaction', 'callAudio'].map(metric => [metric, [{ browser: 1, desktop: 2 }]])) }));
    await writeFile(join(directory, `performance-${target}.json`), report); source.performance[target] = { sha256: createHash('sha256').update(report).digest('hex') };
   }
@@ -32,6 +33,7 @@ test('publication refuses missing native acceptance even when the generic CI sta
   const metadata = Buffer.from(JSON.stringify(release)), signature = sign(null, metadata, key.privateKey).toString('base64');
   const context = { metadata, signature, trust: { metadataPublicKeys: [key.publicKey.export({ type: 'spki', format: 'pem' }).toString()], sparklePublicKey: sparkle.publicKey.export({ type: 'spki', format: 'der' }).subarray(-32).toString('base64') }, directory, run: { id: 10, head_sha: source.head, name: 'ci', status: 'completed', conclusion: 'success', repository: { full_name: 'jonasthim/dilla' }, head_repository: { full_name: 'jonasthim/dilla' } }, jobs, version, now: Date.parse('2026-11-02') };
   assert.equal((await verifyDesktopBundle(context)).version, version);
+  await assert.rejects(verifyDesktopBundle({ ...context, jobs: jobs.filter(job => !job.name.endsWith('desktop-voice-win-x64')) }), /Missing Electron voice/);
   await assert.rejects(verifyDesktopBundle({ ...context, jobs: jobs.filter(job => !job.name.endsWith('desktop-client-mac-arm64-3')) }), /Missing Electron/);
   const noAudio = structuredClone(jobs); noAudio[0].steps = noAudio[0].steps!.filter(step => !step.name.includes('audio encryption'));
   await assert.rejects(verifyDesktopBundle({ ...context, jobs: noAudio }), /missing accepted Application audio/);

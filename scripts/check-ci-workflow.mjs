@@ -1095,6 +1095,14 @@ export function checkDesktopWorkflow(root) {
     'name: dilla-core-wasi', 'cargo build -p dilla-testkit --release --locked',
     'playwright test --config playwright.desktop.config.ts --project=electron-client --shard=${{ matrix.shard }}/3',
   ]) if (!client.includes(required)) problems.push(`${file}: shared Electron client coverage missing ${required}`);
+  const voice = text.split('\n  voice:\n')[1]?.split(/\n  [a-z][a-z0-9-]*:\n/)[0] ?? '';
+  for (const required of ['desktop-voice-${{ matrix.platform }}-${{ matrix.arch }}',
+    'os: [ubuntu-24.04, windows-latest, macos-15-intel, macos-15]',
+    'playwright.desktop-voice.config.ts --project=electron-voice --workers=1', 'DILLA_E2E_NOTIFICATIONS', 'dunst',
+    'name: dilla-core-wasi', 'cargo build -p dilla-testkit --release --locked']) {
+    if (!voice.includes(required)) problems.push(`${file}: Electron voice coverage missing ${required}`);
+  }
+  if (/--shard|shard:/.test(voice)) problems.push(`${file}: the desktop voice suite must preserve its single frozen-clock worker`);
   assertEveryUploadFailsOnNoFiles(text, problems, file);
   return problems;
 }

@@ -3,6 +3,7 @@
 // held. Frame counts are compared over a fixed number of bob's own encrypted frames, never over a sleep (lesson c).
 import { expect, test } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
+import { desktopE2E } from '../web/support/electron.ts';
 import {
   VoicePeer, WAIT, audioRunning, copy, framesPass, heard, heardCount, joinVoice, noiseOff, onboard, pushToTalk, self,
   openText, sentCount, tile,
@@ -90,6 +91,13 @@ test('Control+Shift+M and Control+Shift+D show alice muted and deafened to bob; 
       // Fix round 1 (Jonas): no push-to-talk line on the stage or in the dock; the dock has no meter.
       await expect(alice.page.locator('.dw-voice-dock__mode, .dw-voice-dock [role="meter"]')).toHaveCount(0);
       await alice.page.setViewportSize({ width: 360, height: 740 });
+      if (desktopE2E()) {
+        expect(alice.page.viewportSize()!.width).toBeGreaterThanOrEqual(900);
+        await openText(alice.page, peer.communityName, peer.textName);
+        await expect(alice.page.locator('.d-voice-dock')).toBeInViewport({ ratio: 1 });
+        await expect(alice.page.locator('.d-call-bar')).toHaveCount(0);
+        return;
+      }
       // The phone shell holds the call in a bar and shows no dock: step off the stage, onto the text channel.
       await alice.page.getByRole('button', { name: copy('nav.back'), exact: true }).click();
       await openText(alice.page, peer.communityName, peer.textName);
