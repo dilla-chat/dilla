@@ -96,7 +96,7 @@ SQLite and PostgreSQL enforce the cap; the maintenance tick prunes expired rows.
 flag on a successful password login that still owes a factor. Older servers omit
 it and new clients read omission as zero. Response decoders must allow that
 third element; clients that require exactly two elements need updating. Passkey finish accepts an optional
-third password-login assertion; it must be live and still owe a factor. A
+third first-factor (password or OIDC) login assertion; it must be live and still owe a factor. A
 matching passkey consumes it; another account's passkey returns 403
 `E_PASSKEY_OTHER_ACCOUNT` without issuing an assertion. Older two-element finish
 requests keep their meaning.
