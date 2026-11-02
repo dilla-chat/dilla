@@ -49,11 +49,20 @@ type warmStarter struct {
 	offsets []int64
 	current *warmPlayback
 	left    int
+	// block, when set, holds every start after the first until it closes or the start is cancelled.
+	block chan struct{}
 }
 
 func (s *warmStarter) Start(ctx context.Context, _ music.Track) (music.Playback, error) {
 	s.starts++
 	s.offsets = append(s.offsets, music.StartAtMS(ctx))
+	if s.block != nil && s.starts > 1 {
+		select {
+		case <-s.block:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	s.current = &warmPlayback{supervisorPlayback: supervisorPlayback{done: make(chan struct{})}}
 	return s.current, nil
 }

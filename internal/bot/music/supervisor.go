@@ -232,13 +232,13 @@ func (s *Supervisor) applyLocked(ctx context.Context, expected uint64, op Operat
 	next, err := Apply(base, expected, op)
 	if err != nil {
 		var rollbackErr error
-		skipped, rollbackErr = s.rollbackPauseLocked(before, wasPaused)
+		skipped, rollbackErr = s.rollbackPauseLocked(before, wasPaused, async)
 		return cloneState(s.state), errors.Join(err, rollbackErr)
 	}
 	revision, err := s.store.Save(ctx, s.channel, s.revision, next)
 	if err != nil {
 		var rollbackErr error
-		skipped, rollbackErr = s.rollbackPauseLocked(before, wasPaused)
+		skipped, rollbackErr = s.rollbackPauseLocked(before, wasPaused, async)
 		return cloneState(s.state), errors.Join(err, rollbackErr)
 	}
 	s.state, s.revision = next, revision
@@ -526,6 +526,19 @@ func (s *Supervisor) startLocked(ctx context.Context, explicit bool, budget *sta
 		}
 		if budget.exhausted(time.Now()) {
 			return skips, s.pauseLocked(ctx)
+		}
+		if s.atTrackEndLocked() {
+			// A cold start at the end produces no audio: the track has finished.
+			next, applyErr := Apply(cloneState(s.state), s.state.Revision, Operation{Kind: OpComplete, NowMS: time.Now().UnixMilli()})
+			if applyErr != nil {
+				return skips, applyErr
+			}
+			revision, saveErr := s.store.Save(runCtx, s.channel, s.revision, next)
+			if saveErr != nil {
+				return skips, saveErr
+			}
+			s.state, s.revision = next, revision
+			continue
 		}
 		track := *s.state.Current
 		startCtx := WithStartAtMS(runCtx, s.state.PositionMS)

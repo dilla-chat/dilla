@@ -28,7 +28,7 @@ func (s *pauseReviewStore) Save(ctx context.Context, channel id.ID, expected uin
 	}
 	return s.supervisorStore.Save(ctx, channel, expected, state)
 }
-func pauseReviewFixture(t *testing.T, provider music.Provider, duration int64) (*music.Supervisor, *warmStarter, *pauseReviewStore) {
+func pauseReviewFixture(t *testing.T, provider music.Provider, duration int64, opts ...music.SupervisorOption) (*music.Supervisor, *warmStarter, *pauseReviewStore) {
 	t.Helper()
 	n := &supervisorNative{rows: map[string]native.StateValue{}, binding: native.Binding{Instance: tid(1), Community: tid(2), Installation: tid(3)}}
 	inner, err := persistence.New(n, tid(2))
@@ -37,7 +37,7 @@ func pauseReviewFixture(t *testing.T, provider music.Provider, duration int64) (
 	}
 	store := &pauseReviewStore{supervisorStore: supervisorStore{inner}}
 	st := &warmStarter{}
-	s, err := music.NewSupervisor(t.Context(), tid(4), store, st)
+	s, err := music.NewSupervisor(t.Context(), tid(4), store, st, opts...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,5 +225,87 @@ func TestPlayingMetadataRefreshPreservesLivePosition(t *testing.T) {
 	}
 	if state.Paused || state.PositionMS != 42000 || state.PositionAtMS != before.PositionAtMS || state.Volume != 50 {
 		t.Fatalf("state=%+v before=%+v", state, before)
+	}
+}
+
+func awaitReviewState(t *testing.T, s *music.Supervisor, ok func(music.State) bool) music.State {
+	t.Helper()
+	until := time.Now().Add(2 * time.Second)
+	for time.Now().Before(until) {
+		if state := s.State(); ok(state) {
+			return state
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("state never settled: %+v", s.State())
+	return music.State{}
+}
+func TestResumeAfterBoundAtTrackEndAdvancesToNextTrack(t *testing.T) {
+	clock := &pauseClock{}
+	s, st, _ := pauseReviewFixture(t, music.ProviderYouTube, 41000, music.WithPauseClock(clock.after))
+	state, err := s.ApplyImmediate(t.Context(), music.Operation{Kind: music.OpPause})
+	if err != nil || state.PositionMS != 41000 {
+		t.Fatalf("pause=%+v err=%v", state, err)
+	}
+	clock.advance(11 * time.Minute)
+	state, err = s.Apply(t.Context(), s.State().Revision, music.Operation{Kind: music.OpResume})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Current == nil || state.Current.ID != "b" || state.Paused || st.starts != 2 || st.offsets[1] != 0 {
+		t.Fatalf("state=%+v starts=%d offsets=%v", state, st.starts, st.offsets)
+	}
+}
+func TestRecoveryColdStartAtTrackEndAdvances(t *testing.T) {
+	s, st, _ := pauseReviewFixture(t, music.ProviderYouTube, 41000)
+	if _, err := s.ApplyImmediate(t.Context(), music.Operation{Kind: music.OpPause}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Apply(t.Context(), s.State().Revision, music.Operation{Kind: music.OpResume}); err != nil {
+		t.Fatal(err)
+	}
+	p := st.current
+	p.position = 40500
+	p.err = errors.Join(music.ErrSourceGone, errors.New("source failed after resume"))
+	close(p.done)
+	state := awaitReviewState(t, s, func(x music.State) bool { return x.Current != nil && x.Current.ID == "b" && x.PositionAtMS > 0 })
+	if state.Paused || st.starts != 2 || st.offsets[1] != 0 {
+		t.Fatalf("state=%+v starts=%d offsets=%v", state, st.starts, st.offsets)
+	}
+}
+func TestUnknownDurationIsNeverTreatedAsFinished(t *testing.T) {
+	s, st, _ := pauseReviewFixture(t, music.ProviderYouTube, 0)
+	p := st.current
+	if _, err := s.ApplyImmediate(t.Context(), music.Operation{Kind: music.OpPause}); err != nil {
+		t.Fatal(err)
+	}
+	p.gone = true
+	state, err := s.Apply(t.Context(), s.State().Revision, music.Operation{Kind: music.OpResume})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Current == nil || state.Current.ID != "a" || st.starts != 2 || st.offsets[1] != 42000 {
+		t.Fatalf("state=%+v starts=%d offsets=%v", state, st.starts, st.offsets)
+	}
+}
+func TestPauseRollbackColdStartDoesNotBlockImmediateControl(t *testing.T) {
+	s, st, store := pauseReviewFixture(t, music.ProviderYouTube, 60000)
+	st.block = make(chan struct{})
+	t.Cleanup(func() { close(st.block) })
+	p := st.current
+	store.fail = true
+	store.beforeFailure = func() { p.gone = true }
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.ApplyImmediate(t.Context(), music.Operation{Kind: music.OpPause})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("save succeeded")
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("ApplyImmediate blocked on the rollback cold start")
 	}
 }

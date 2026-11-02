@@ -30,6 +30,16 @@ func WithPauseClock(after func(time.Duration, func()) Timer) SupervisorOption {
 
 const maxPausedDuration = 10 * time.Minute
 
+// trackEndSlackMS is how close to its end a cold start counts as the track having finished.
+const trackEndSlackMS = 1000
+
+// atTrackEndLocked reports whether a start would seek to (or past) the current track's end.
+// An unknown duration is never the end.
+func (s *Supervisor) atTrackEndLocked() bool {
+	c := s.state.Current
+	return c != nil && c.DurationMS > 0 && s.state.PositionMS > 0 && s.state.PositionMS >= c.DurationMS-trackEndSlackMS
+}
+
 func (s *Supervisor) canHoldPlaybackLocked() bool {
 	_, ok := s.playback.(Pausable)
 	return ok && s.state.Current != nil && s.state.Current.Provider == ProviderYouTube
@@ -47,7 +57,7 @@ func (s *Supervisor) playbackPositionLocked(p Pausable) int64 {
 
 // rollbackPauseLocked restores the pre-operation state as well as the live gate.
 // A source lost during the failed write needs a replacement at the captured position.
-func (s *Supervisor) rollbackPauseLocked(before State, wasPaused bool) ([]SkippedTrack, error) {
+func (s *Supervisor) rollbackPauseLocked(before State, wasPaused, async bool) ([]SkippedTrack, error) {
 	position := s.state.PositionMS
 	s.state = before
 	if wasPaused || !s.pausedPlayback {
@@ -59,6 +69,13 @@ func (s *Supervisor) rollbackPauseLocked(before State, wasPaused bool) ([]Skippe
 		return nil, nil
 	}
 	s.state.PositionMS, s.state.PositionAtMS = position, 0
+	if async {
+		// ApplyImmediate must return promptly; the replacement start runs deferred.
+		s.scheduleStartLocked()
+		s.idleCheckLocked()
+		s.signalLocked()
+		return nil, nil
+	}
 	skipped, err := s.startLocked(s.ctx, false, nil)
 	if err != nil {
 		_ = s.pauseLocked(s.ctx)
