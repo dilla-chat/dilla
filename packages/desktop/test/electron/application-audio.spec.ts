@@ -4,6 +4,7 @@ import { spawn, execFile, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { installNativeAudioDiagnostics } from '../support/audio-diagnostics.ts';
 const exec = promisify(execFile);
 const pause = (ms: number) => new Promise(done => setTimeout(done, ms));
 let desktop: ElectronApplication, selected: ChildProcess | ElectronApplication, other: ChildProcess | ElectronApplication;
@@ -89,6 +90,7 @@ test.beforeEach(async () => {
   await page.evaluate(async () => { const context = new AudioContext({ sampleRate: 48000 }), oscillator = context.createOscillator(), gain = context.createGain(); oscillator.frequency.value = 440; gain.gain.value = 0.35; oscillator.connect(gain).connect(context.destination); oscillator.start(); await context.resume(); (globalThis as any).callAudioFixture = context; });
  }
  const binary = resolve('native-bin', process.platform === 'win32' ? 'dilla-audio.exe' : 'dilla-audio');
+ await desktop.evaluate(installNativeAudioDiagnostics, { binary });
  let sources: { id: string; label: string }[] = [];
  for (let i = 0; i < 20; i++) {
   const pid = desktop.process().pid!;
@@ -122,6 +124,10 @@ test.beforeEach(async () => {
  }, { binary, sourceID: source!.id });
 });
 test.afterEach(async () => {
+ await desktop?.evaluate(() => {
+  (globalThis as any).__stopNativeAudioDiagnostics?.();
+  return (globalThis as any).__nativeAudioDiagnostics;
+ }).then(records => console.log('NATIVE_AUDIO_PROCESS_LIFECYCLE', JSON.stringify(records))).catch(() => {});
  await desktop?.evaluate(async () => { (globalThis as any).callAudioFixture?.kill?.(); }).catch(() => {});
  await desktop?.close().catch(() => {});
  for (const actor of [selected, other]) if (actor && 'close' in actor) await (actor as ElectronApplication).close().catch(() => {});
