@@ -88,7 +88,7 @@ const recorders = new WeakMap<Page, Recorder>();
 /** Only explicitly diagnosed cases register a recorder. Other tests retain their existing teardown verbatim. */
 export async function markSignalLifecycle(page: Page, mark: Mark): Promise<void> { await recorders.get(page)?.(mark); }
 
-export function signalLifecycleDiagnostics(info: TestInfo, suite: 'csp-axe' | 'afk' | 'autoplay' = 'csp-axe'): {
+export function signalLifecycleDiagnostics(info: TestInfo, suite: 'csp-axe' | 'afk' | 'autoplay' | 'blocked' = 'csp-axe'): {
   watch(person: { name: string; page: Page }, application?: ElectronApplication): Promise<void>; save(): Promise<void>;
 } {
   const started = Date.now();
@@ -129,7 +129,7 @@ export function signalLifecycleDiagnostics(info: TestInfo, suite: 'csp-axe' | 'a
         const unavailable = { phase: person.page.isClosed() ? 'closed' : 'unavailable', hasLeave: false };
         const read = person.page.isClosed() ? Promise.resolve(unavailable) : person.page.evaluate(() => {
           const value = document.querySelector('[data-call-phase]')?.getAttribute('data-call-phase');
-          const phase = value && ['in', 'preview', 'outgoing', 'connecting', 'reconnecting', 'ended', 'removed', 'blocked'].includes(value) ? value : 'other';
+          const phase = value && ['in', 'preview', 'outgoing', 'connecting', 'reconnecting', 'ended', 'removed', 'blocked', 'paused'].includes(value) ? value : 'other';
           return { phase, hasLeave: document.querySelector('[data-control="leave"], .dw-voice-dock, .d-call-bar') !== null };
         }).catch(() => unavailable);
         try {
