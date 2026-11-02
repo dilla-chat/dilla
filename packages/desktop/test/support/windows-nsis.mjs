@@ -32,14 +32,14 @@ export function withInitialInstallDiagnostics(source) {
  source = source.replaceAll('\r\n', '\n');
  const sites = [], wrappers = [], conditions = []; let current = '', preflights = 0, renames = 0, retryRefusal = '';
  source = source.split('\n').map(line => {
-  if (/^\s*!if/.test(line)) conditions.push(line.trim() === '!if "${Prefix}" != "un."');
+  if (/^\s*!if/.test(line)) conditions.push(line.trim() === '!if "${Prefix}" != "un."' ? 'install' : line.trim() === '!if "${Prefix}" == "un."' ? 'uninstall' : null);
   if (/^\s*!endif\s*$/.test(line)) conditions.pop();
   const declaration = /^Function ([^\s]+)/.exec(line); if (declaration) current = declaration[1].replace('${Prefix}', '');
   const refusal = /^(\s+)Call (\$\{Prefix\})?Fail$/.exec(line);
   if (refusal) {
    sites.push(current + ':refusal-' + (sites.length + 1));
    const name = 'FixtureRefusal' + sites.length;
-   const prefixes = refusal[2] && !conditions.includes(true) ? ['', 'un.'] : [''];
+   const prefixes = !refusal[2] || conditions.includes('install') ? [''] : conditions.includes('uninstall') ? ['un.'] : ['', 'un.'];
    if (current === 'PrepareInitialInstallation') {
     if (retryRefusal) throw new Error('Initial install diagnostic boundary changed');
     retryRefusal = name;

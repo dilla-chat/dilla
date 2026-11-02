@@ -112,15 +112,103 @@ test('Windows account fixture replaces both actual compiled identity boundaries 
   assert.throws(() => fixtures.fixtureWindowsInstallationSource(source.replaceAll('description.appId', 'description.changed'), identity), /identity boundary/);
 });
 
-test('installed account automation retains production fuses and cannot enable Node inspection', () => {
+test('installed account automation retains production fuses and cannot enable Node inspection', async () => {
   assert.deepEqual(INSTALLED_FUSES, { runAsNode: false, enableCookieEncryption: true,
     enableNodeOptionsEnvironmentVariable: false, enableNodeCliInspectArguments: false,
     enableEmbeddedAsarIntegrityValidation: true, onlyLoadAppFromAsar: true, grantFileProtocolExtraPrivileges: false });
-  const input = "app.setName('Dilla');\nconst allowLoopback = !app.isPackaged && process.argv.includes('--allow-loopback');\nconst updater = createUpdater(state => {\n";
+  const input = await readFile(new URL('../../packages/desktop/src/main.ts', import.meta.url), 'utf8');
   const compiled = fixtureMainSource(input, { product: 'DillaAccountFixture', profile: '/private/fixture-profile', reports: '/private/reports', scheme: 'dilla-account-fixture', version: '1.0.0' });
   assert.match(compiled, /remote-debugging-port/);
   assert.match(compiled, /--update-watchdog/);
   assert.match(compiled, /const allowLoopback = true/);
   assert.doesNotMatch(compiled, /devTools:\s*true|--inspect|no-sandbox|nodeIntegration:\s*true/);
   assert.throws(() => fixtureMainSource(input.replace('const updater =', 'const renamed ='), { product: 'DillaAccountFixture', profile: '/private/fixture-profile', reports: '/private/reports', scheme: 'dilla-account-fixture', version: '1.0.0' }), /boundary/);
+});
+
+test('compiled installed startup recorder preserves actual fetch receiver, arguments, response and errors without private data', async () => {
+  assert.equal(typeof fixtures.fixtureStartupDiagnosticsSource, 'function');
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'dilla-account-startup-events-')));
+  try {
+    const fs = createRequire(import.meta.url)('node:fs');
+    const diagnostic = runInNewContext(createRequire(import.meta.url)('esbuild').transformSync(fixtures.fixtureStartupDiagnosticsSource() + ';globalThis.compiled={fetch:__accountFetch,observeSession:__accountObserveSession,observeWindow:__accountObserveWindow}', { loader: 'ts' }).code + ';compiled', { __accountFS: fs, __accountReports: root, __accountRole: 'ordinary', Buffer, URL, app: { getVersion: () => '1.0.1' }, Date });
+    const request = new Request('http://127.0.0.1:12345/v1/instance?credential=PRIVATE_SECRET'), options = { bypassCustomProtocolHandlers: true };
+    const response = new Response('PRIVATE_SECRET response body', { status: 200 });
+    let calls = 0;
+    const session = { fetch(actualRequest, actualOptions) { assert.equal(this, session); assert.equal(actualRequest, request); assert.equal(actualOptions, options); calls++; return Promise.resolve(response); } };
+    assert.equal(await diagnostic.fetch(session, request, options), response); assert.equal(calls, 1); assert.equal(response.bodyUsed, false);
+    assert.equal(await response.text(), 'PRIVATE_SECRET response body');
+    const original = new Error('net::ERR_CONNECTION_REFUSED http://PRIVATE_SECRET/?token=SECRET');
+    const rejected = { fetch() { return Promise.reject(original); } };
+    await assert.rejects(diagnostic.fetch(rejected, new Request('http://127.0.0.1/v1/session'), options), error => error === original);
+    const thrown = { fetch() { throw original; } };
+    assert.throws(() => diagnostic.fetch(thrown, request, options), error => error === original);
+    const callbacks = {}, lifecycle = {};
+    diagnostic.observeSession({ webRequest: { onCompleted(cb) { callbacks.completed = cb; }, onErrorOccurred(cb) { callbacks.error = cb; } } });
+    callbacks.error({ url: 'http://PRIVATE_SECRET/v1/instance/limits?secret=SECRET', method: 'GET', error: 'net::ERR_TIMED_OUT' });
+    diagnostic.observeWindow({ webContents: { on(event, cb) { lifecycle[event] = cb; } } });
+    lifecycle['did-fail-load']({}, -102, 'PRIVATE_SECRET', 'http://PRIVATE_SECRET');
+    lifecycle['render-process-gone']({}, { reason: 'crashed', exitCode: 17, private: 'PRIVATE_SECRET' });
+    const raw = await readFile(join(root, 'startup-1.0.1.jsonl'), 'utf8'), events = raw.trim().split('\n').map(line => JSON.parse(line));
+    assert.deepEqual(events.slice(0, 4).map(e => e.stage), ['fetch-begin', 'fetch-response', 'fetch-begin', 'fetch-reject']);
+    assert.equal(events[0].route, 'instance'); assert.equal(events[3].code, -102);
+    assert.ok(events.some(e => e.stage === 'request-error' && e.route === 'limits' && e.code === -7));
+    assert.ok(events.some(e => e.stage === 'load-failed' && e.code === -102));
+    assert.ok(events.some(e => e.stage === 'renderer-gone' && e.code === 17));
+    assert.doesNotMatch(raw, /PRIVATE_SECRET|SECRET|credential|token|https?:|response body/);
+    const diskFull = { ...fs, writeSync() { throw Object.assign(new Error('PRIVATE_SECRET disk failure'), { code: 'ENOSPC' }); } };
+    const unavailable = runInNewContext(createRequire(import.meta.url)('esbuild').transformSync(fixtures.fixtureStartupDiagnosticsSource() + ';globalThis.compiled=__accountFetch', { loader: 'ts' }).code + ';compiled', { __accountFS: diskFull, __accountReports: root, __accountRole: 'ordinary', Buffer, URL, app: { getVersion: () => '1.0.1' }, Date });
+    const untouched = new Response('still private');
+    assert.equal(await unavailable({ fetch() { return Promise.resolve(untouched); } }, request, options), untouched); assert.equal(untouched.bodyUsed, false);
+    await assert.rejects(unavailable(rejected, request, options), error => error === original);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('installed startup events retain the first pending request and cap writes before later noise', async () => {
+  assert.equal(typeof fixtures.fixtureStartupDiagnosticsSource, 'function');
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'dilla-account-pending-events-')));
+  try {
+    const fs = createRequire(import.meta.url)('node:fs');
+    const diagnostic = runInNewContext(createRequire(import.meta.url)('esbuild').transformSync(fixtures.fixtureStartupDiagnosticsSource() + ';globalThis.compiled={fetch:__accountFetch,emit:__accountEmit}', { loader: 'ts' }).code + ';compiled', { __accountFS: fs, __accountReports: root, __accountRole: 'ordinary', Buffer, URL, app: { getVersion: () => '1.0.1' }, Date });
+    let reject;
+    const pending = diagnostic.fetch({ fetch() { return new Promise((_, fail) => { reject = fail; }); } }, new Request('http://127.0.0.1/v1/instance'), { bypassCustomProtocolHandlers: true });
+    let events = (await readFile(join(root, 'startup-1.0.1.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+    assert.equal(events.length, 1); assert.equal(events[0].stage, 'fetch-begin'); assert.equal(events[0].route, 'instance');
+    const aborted = new Error('net::ERR_ABORTED PRIVATE_SECRET'); reject(aborted); await assert.rejects(pending, e => e === aborted);
+    for (let i = 0; i < 500; i++) diagnostic.emit('request-blocked', 'http://PRIVATE_SECRET/v1/instance', 'GET', 0, -20);
+    const raw = await readFile(join(root, 'startup-1.0.1.jsonl'), 'utf8'); events = raw.trim().split('\n').map(JSON.parse);
+    assert.equal(events.length, 96); assert.equal(events[1].stage, 'fetch-reject'); assert.equal(events[1].code, -3);
+    assert.ok(Buffer.byteLength(raw) <= 32768); assert.doesNotMatch(raw, /PRIVATE_SECRET|http:/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('startup snapshot reads only bounded regular event files and reconstructs fixed public fields', async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'dilla-account-event-reader-'))), reports = join(root, 'reports'), profile = join(root, 'profile');
+  const input = { reports, profile, installed: join(root, 'missing'), platform: 'linux', expectedVersion: '1.0.1' };
+  try {
+    await mkdir(reports); await mkdir(profile);
+    const path = join(reports, 'startup-1.0.1.jsonl');
+    const event = { seq: 1, stage: 'fetch-begin', route: 'instance', method: 'GET', status: 0, code: 0, elapsedMs: 0, secret: 'PRIVATE_SECRET' };
+    await writeFile(path, JSON.stringify(event) + '\n');
+    let result = await installedAccountDiagnostics(input);
+    assert.equal(result.startup[1].status, 'ok'); assert.equal(result.startup[1].records[0].route, 'instance');
+    assert.doesNotMatch(JSON.stringify(result), /PRIVATE_SECRET|secret/);
+    await writeFile(path, JSON.stringify({ ...event, route: 'http://PRIVATE_SECRET' }) + '\n');
+    result = await installedAccountDiagnostics(input); assert.equal(result.startup[1].status, 'malformed'); assert.deepEqual(result.startup[1].records, []);
+    await writeFile(path, '{PRIVATE_SECRET malformed'); result = await installedAccountDiagnostics(input); assert.equal(result.startup[1].status, 'malformed');
+    await writeFile(path, 'PRIVATE_SECRET'.repeat(3000)); result = await installedAccountDiagnostics(input); assert.equal(result.startup[1].status, 'oversized');
+    await rm(path); const secret = join(root, 'PRIVATE_SECRET'); await mkdir(secret); await symlink(secret, path, process.platform === 'win32' ? 'junction' : 'dir');
+    result = await installedAccountDiagnostics(input); assert.equal(result.startup[1].status, 'unsafe'); assert.deepEqual(result.startup[1].records, []);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('actual installed main source records startup before requests without changing protocol options or production listeners', async () => {
+  const source = await readFile(new URL('../../packages/desktop/src/main.ts', import.meta.url), 'utf8');
+  const transformed = fixtureMainSource(source, { product: 'OwnedFixture', profile: '/fixture/profile', reports: '/fixture/reports', scheme: 'dilla-owned', version: '1.0.1' });
+  assert.equal(transformed.split('__accountObserveSession(ses);').length - 1, 1);
+  assert.equal(transformed.split('__accountObserveWindow(win);').length - 1, 1);
+  assert.ok(transformed.indexOf('__accountObserveSession(ses);') < transformed.indexOf('await ses.protocol.handle('));
+  for (const request of ['request', 'forwarded']) assert.ok(transformed.includes(`return __accountFetch(ses, ${request}, { bypassCustomProtocolHandlers: true });`));
+  assert.equal(transformed.split('ses.webRequest.onBeforeRequest(').length, source.split('ses.webRequest.onBeforeRequest(').length);
+  const require = createRequire(import.meta.url); assert.doesNotThrow(() => require('esbuild').transformSync(transformed, { loader: 'ts', format: 'cjs' }));
+  assert.throws(() => fixtureMainSource(source.replace('const ses = session.fromPartition(partitionFor(instance));', 'const ses = changed();'), { product: 'OwnedFixture', profile: '/fixture/profile', reports: '/fixture/reports', scheme: 'dilla-owned', version: '1.0.1' }), /boundary changed/);
 });

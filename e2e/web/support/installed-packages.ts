@@ -30,15 +30,46 @@ function replaceBoundary(source: string, boundary: string, replacement: string):
   return source.replace(boundary, replacement);
 }
 
+/** Compiled only into disposable installed fixtures. Events are sanitized before
+ * the bounded private write; no request/response payload is inspected. */
+export function fixtureStartupDiagnosticsSource(): string {
+  return `
+let __accountSequence=0;
+const __accountRoute=(input:any)=>{try{const p=new URL(typeof input==='string'?input:input.url).pathname;
+ if(p==='/v1/instance')return'instance';if(p==='/v1/instance/limits')return'limits';
+ if(/^\\/v1\\/sessions?(?:\\/|$)/.test(p))return'session';if(p.includes('/factors'))return'factor';
+ if(p.includes('/backup'))return'backup';if(p.includes('/devices'))return'device';if(p.startsWith('/v1/accounts'))return'account';
+ if(p.startsWith('/v1/'))return'other-api';if(p.startsWith('/assets/'))return p.endsWith('.wasm')?'asset-wasm':p.endsWith('.js')?'asset-script':p.endsWith('.css')?'asset-style':'other-asset';return'other';}catch{return'other';}};
+const __accountCode=(error:any)=>{const name=typeof error==='string'?error:typeof error?.message==='string'?error.message:'';
+ const known:{[key:string]:number}={ERR_FAILED:-2,ERR_ABORTED:-3,ERR_TIMED_OUT:-7,ERR_ACCESS_DENIED:-10,ERR_BLOCKED_BY_CLIENT:-20,ERR_CONNECTION_CLOSED:-100,ERR_CONNECTION_RESET:-101,ERR_CONNECTION_REFUSED:-102,ERR_NAME_NOT_RESOLVED:-105,ERR_INTERNET_DISCONNECTED:-106,ERR_CONNECTION_TIMED_OUT:-118};
+ const token=/\\b(ERR_[A-Z_]+)\\b/.exec(name.slice(0,512));return token?known[token[1]]??0:0;};
+function __accountEmit(stage:string,url:any='',method:any='OTHER',status=0,code=0,elapsedMs=0){
+ if(__accountRole!=='ordinary'||__accountSequence>=96)return;
+ const event={seq:__accountSequence+1,stage,route:__accountRoute(url),method:['GET','POST','PUT','PATCH','DELETE','HEAD','OPTIONS'].includes(method)?method:'OTHER',status:Number.isInteger(status)&&status>=100&&status<=599?status:0,code:Number.isInteger(code)&&code>=-2147483648&&code<=2147483647?code:0,elapsedMs:Math.max(0,Math.min(600000,Math.floor(elapsedMs)))};
+ let fd:number|undefined;try{const path=__accountReports+'/startup-'+app.getVersion()+'.jsonl';let before;try{before=__accountFS.lstatSync(path);if(!before.isFile()||before.isSymbolicLink())return;}catch(e:any){if(e.code!=='ENOENT')return;}
+ fd=__accountFS.openSync(path,__accountFS.constants.O_WRONLY|__accountFS.constants.O_APPEND|__accountFS.constants.O_CREAT|(__accountFS.constants.O_NOFOLLOW??0),0o600);
+ const opened=__accountFS.fstatSync(fd);if(!opened.isFile()||(before&&(opened.ino!==before.ino||opened.dev!==before.dev)))return;
+ const line=JSON.stringify(event)+'\\n';if(opened.size+Buffer.byteLength(line)>32768)return;__accountFS.writeSync(fd,line);__accountSequence++;}catch{}finally{if(fd!==undefined)try{__accountFS.closeSync(fd);}catch{}}
+}
+function __accountFetch(ses:any,request:any,options:any){const started=Date.now();__accountEmit('fetch-begin',request,request.method);
+ try{return ses.fetch(request,options).then((response:any)=>{__accountEmit('fetch-response',request,request.method,response.status,0,Date.now()-started);return response;},(error:any)=>{__accountEmit('fetch-reject',request,request.method,0,__accountCode(error),Date.now()-started);throw error;});}
+ catch(error){__accountEmit('fetch-reject',request,request.method,0,__accountCode(error),Date.now()-started);throw error;}}
+function __accountObserveSession(ses:any){ses.webRequest.onCompleted((d:any)=>__accountEmit('request-complete',d.url,d.method,d.statusCode));ses.webRequest.onErrorOccurred((d:any)=>__accountEmit('request-error',d.url,d.method,0,__accountCode(d.error)));}
+function __accountObserveWindow(win:any){win.webContents.on('did-finish-load',()=>__accountEmit('document-loaded'));win.webContents.on('did-fail-load',(_e:any,code:number)=>__accountEmit('load-failed','','OTHER',0,code));win.webContents.on('render-process-gone',(_e:any,d:any)=>__accountEmit('renderer-gone','','OTHER',0,d.exitCode));}
+`;
+}
+
 /** Compiled fixture instrumentation only; no shipping URL/key/CLI override or
  * Node inspector. CDP controls the actual isolated bundled renderer. */
 export function fixtureMainSource(source: string, cfg: FixtureIdentity): string {
+  if (source.includes('ses.webRequest.onCompleted(') || source.includes('ses.webRequest.onErrorOccurred(')) throw new Error('Installed account fixture diagnostic listener boundary changed');
   const identity = `app.setName(${JSON.stringify(cfg.product)}); app.setPath('userData',${JSON.stringify(cfg.profile)});`;
   if (!source.includes("app.setName('Dilla');")) throw new Error('Installed account fixture name boundary changed');
   source = source.replaceAll("app.setName('Dilla');", identity);
   source = source.replace(identity, identity + `
 const __accountFS=process.getBuiltinModule('fs'),__accountReports=${JSON.stringify(cfg.reports)};
 const __accountRole=process.argv.some(v=>v.startsWith('--update-watchdog'))?'watchdog':process.argv.some(v=>v.startsWith('--update-bootstrap'))?'bootstrap':'ordinary';
+${fixtureStartupDiagnosticsSource()}
 let __accountStart=null;try{const s=__accountFS.readFileSync('/proc/self/stat','utf8');__accountStart=s.slice(s.lastIndexOf(')')+2).split(' ')[19];}catch{}
 __accountFS.appendFileSync(__accountReports+'/processes.jsonl',JSON.stringify({pid:process.pid,role:__accountRole,start:__accountStart,version:app.getVersion(),executable:process.execPath})+'\\n');
 if(__accountRole==='ordinary'){app.commandLine.appendSwitch('remote-debugging-address','127.0.0.1');app.commandLine.appendSwitch('remote-debugging-port','0');}
@@ -46,6 +77,10 @@ const __accountDialog=dialog.showMessageBox.bind(dialog);
 dialog.showMessageBox=(async(...args:any[])=>{const o=args.at(-1);if(o.title==='Dilla permission')return{response:1,checkboxChecked:false};if(o.title==='Dilla is still in use'){__accountFS.writeFileSync(__accountReports+'/protected-quit.json',JSON.stringify({version:app.getVersion(),pid:process.pid}));return{response:0,checkboxChecked:false};}return(__accountDialog as any)(...args);}) as typeof dialog.showMessageBox;
 dialog.showErrorBox=((title:string,content:string)=>{__accountFS.writeFileSync(__accountReports+'/native-error.json',JSON.stringify({version:app.getVersion(),title,content}));}) as typeof dialog.showErrorBox;
 `);
+  source = replaceBoundary(source, 'const ses = session.fromPartition(partitionFor(instance));', 'const ses = session.fromPartition(partitionFor(instance)); __accountObserveSession(ses);');
+  source = replaceBoundary(source, "windows.set(instance, win); windowModes.set(instance, 'starting');", "windows.set(instance, win); windowModes.set(instance, 'starting'); __accountObserveWindow(win);");
+  for (const request of ['request', 'forwarded']) source = replaceBoundary(source, `return ses.fetch(${request}, { bypassCustomProtocolHandlers: true });`, `return __accountFetch(ses, ${request}, { bypassCustomProtocolHandlers: true });`);
+  source = replaceBoundary(source, 'callback({ cancel });', "if(cancel)__accountEmit('request-blocked',details.url,details.method,0,-20); callback({ cancel });");
   source = replaceBoundary(source, "const allowLoopback = !app.isPackaged && process.argv.includes('--allow-loopback');", 'const allowLoopback = true;');
   source = replaceBoundary(source, 'const updater = createUpdater(state => {', `const updater = createUpdater(state => { __accountFS.writeFileSync(__accountReports+'/update-'+app.getVersion()+'.json',JSON.stringify({pid:process.pid,version:app.getVersion(),state}));`);
   return source.replaceAll("app.setAsDefaultProtocolClient('dilla'", `app.setAsDefaultProtocolClient(${JSON.stringify(cfg.scheme)}`);

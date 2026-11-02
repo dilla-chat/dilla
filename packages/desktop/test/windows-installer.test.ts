@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile, writeFile, mkdir, symlink, mkdtemp, rm, realpath } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, symlink, mkdtemp, rm, realpath, copyFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
-import { spawnSync, execFileSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { createHash, generateKeyPairSync } from 'node:crypto';
 // @ts-expect-error test tooling is JavaScript
 import { compileWindowsNSIS, withInitialInstallDiagnostics, withInitialRetryNativeDiagnostic, initialRetryNativeDiagnostic } from './support/windows-nsis.mjs';
@@ -137,9 +137,41 @@ Section
 SectionEnd
 ` });
 }
+async function compileHeldChildRenameProbe(directory: string, mode: 'held' | 'mapped' | 'released' = 'held'): Promise<string> {
+ const source = (await readFile(sourcePath, 'utf8')).replaceAll('${Prefix}', '');
+ const { nsisEscapeString } = require('app-builder-lib/out/targets/nsis/nsisScriptGenerator');
+ return compileWindowsNSIS({ directory, archive: join(directory, 'unused.7z'), name: 'child-rename-' + mode + '.exe', transform: () => `
+Name "Private Dilla retained-child rename boundary"
+RequestExecutionLevel user
+SilentInstall silent
+!include "LogicLib.nsh"
+${mode === 'held' ? `Var StableLauncherHandle\nFunction HoldStableLauncher\n${body(source, 'HoldStableLauncher')}\nFunctionEnd\nFunction ReleaseStableLauncher\n${body(source, 'ReleaseStableLauncher')}\nFunctionEnd` : ''}
+Function Fail
+ ${mode === 'held' ? 'Call ReleaseStableLauncher' : ''}
+ SetErrorLevel 2
+ Quit
+FunctionEnd
+Section
+ StrCpy $INSTDIR "${nsisEscapeString(join(directory, 'program'))}"
+ ${mode === 'held' ? 'Call HoldStableLauncher' : ''}
+ ${mode !== 'released' ? `ClearErrors
+ Rename "$INSTDIR" "${nsisEscapeString(join(directory, 'archived'))}"
+ IfErrors blocked
+ Call Fail
+ blocked:` : ''}
+ ${mode === 'held' ? 'Call ReleaseStableLauncher' : ''}
+ ${mode !== 'mapped' ? `ClearErrors
+ Rename "$INSTDIR" "${nsisEscapeString(join(directory, 'archived'))}"
+ IfErrors 0 +2
+  Call Fail` : ''}
+ SetErrorLevel 0
+SectionEnd
+` });
+}
 test('the actual extracted NSIS CheckPath compiles with the pinned System plugin', async () => {
  const root = await realpath(await mkdtemp(join(tmpdir(), 'dilla-check-path-compile-')));
  try {
+  for (const mode of ['held', 'mapped', 'released'] as const) assert.equal((await readFile(await compileHeldChildRenameProbe(root, mode))).subarray(0, 2).toString(), 'MZ');
   const executable = await compileCheckPathProbe(root, join(root, 'missing'), 'check-path.exe');
   assert.equal((await readFile(executable)).subarray(0, 2).toString(), 'MZ');
   assert.equal((await readFile(await compileDiagnosticBranchProbe(root, true))).subarray(0, 2).toString(), 'MZ');
@@ -148,6 +180,58 @@ test('the actual extracted NSIS CheckPath compiles with the pinned System plugin
    assert.equal((await readFile(await compileInitialRenameProbe(root, hooked, kind, succeeds))).subarray(0, 2).toString(), 'MZ');
   }
  } finally { await rm(root, { recursive: true, force: true }); }
+});
+test('native retained launcher child blocks parent rename until released despite DELETE sharing', { skip: process.platform !== 'win32', timeout: 30000 }, async () => {
+ const root = await realpath(await mkdtemp(join(tmpdir(), 'dilla-held-child-')));
+ try {
+  await mkdir(join(root, 'program')); await writeFile(join(root, 'program', 'Dilla.exe'), 'unchanged held launcher');
+  const executable = await compileHeldChildRenameProbe(root);
+  const child = spawnSync(executable, ['/S'], { windowsHide: true, timeout: 10000, encoding: 'utf8', maxBuffer: 1024 });
+  assert.ifError(child.error); assert.equal(child.status, 0, 'same directory rename must fail while held and succeed only after release');
+  await assert.rejects(readFile(join(root, 'program', 'Dilla.exe')), { code: 'ENOENT' });
+  assert.equal(await readFile(join(root, 'archived', 'Dilla.exe'), 'utf8'), 'unchanged held launcher');
+ } finally { await rm(root, { recursive: true, force: true }); }
+});
+test('native mapped descendant blocks atomic quarantine until verified process exit', { skip: process.platform !== 'win32', timeout: 60000 }, async () => {
+ const root = await realpath(await mkdtemp(join(tmpdir(), 'dilla-mapped-child-'))), program = join(root, 'program'), executable = join(program, 'Dilla.exe'), ready = join(root, 'ready');
+ let child: ReturnType<typeof spawn> | undefined;
+ let exited: Promise<void> | undefined;
+ const bounded = async (promise: Promise<void>) => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try { await Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('Owned mapped fixture exit timeout')), 10000); })]); }
+  finally { clearTimeout(timer); }
+ };
+ try {
+  await mkdir(program); await copyFile(process.execPath, executable);
+  const digest = createHash('sha256').update(await readFile(executable)).digest('hex');
+  const blockedProbe = await compileHeldChildRenameProbe(root, 'mapped'), releasedProbe = await compileHeldChildRenameProbe(root, 'released');
+  child = spawn(executable, ['-e', "require('node:fs').writeFileSync(process.argv[1], 'ready'); setInterval(() => {}, 1000)", ready], { stdio: 'ignore', windowsHide: true });
+  exited = new Promise<void>((resolve, reject) => { child!.once('error', reject); child!.once('exit', () => resolve()); });
+  // Observe rejection immediately even if process creation fails before readiness.
+  void exited.catch(() => {});
+  const deadline = Date.now() + 10000;
+  for (;;) {
+   try { assert.equal(await readFile(ready, 'utf8'), 'ready'); break; }
+   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+   assert.equal(child.exitCode, null, 'owned PE must remain mapped until rename proof');
+   assert.ok(Date.now() < deadline, 'owned PE ready handshake');
+   await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  const runProbe = (file: string) => { const result = spawnSync(file, ['/S'], { windowsHide: true, timeout: 10000, encoding: 'utf8', maxBuffer: 1024 }); assert.ifError(result.error); assert.equal(result.status, 0); };
+  runProbe(blockedProbe);
+  assert.equal(createHash('sha256').update(await readFile(executable)).digest('hex'), digest, 'failed quarantine preserves the mapped PE');
+  await assert.rejects(realpath(join(root, 'archived')), { code: 'ENOENT' });
+  assert.equal(child.exitCode, null, 'the refusal occurred while the image was still mapped');
+  child.kill(); await bounded(exited);
+  runProbe(releasedProbe);
+  await assert.rejects(realpath(program), { code: 'ENOENT' });
+  assert.equal(createHash('sha256').update(await readFile(join(root, 'archived', 'Dilla.exe'))).digest('hex'), digest);
+ } finally {
+  try {
+   if (child && child.exitCode === null && child.signalCode === null) child.kill();
+   if (exited) await bounded(exited);
+  } finally { await rm(root, { recursive: true, force: true }); }
+ }
 });
 test('native initial rename diagnostics preserve baseline success and failure flags and registers', { skip: process.platform !== 'win32', timeout: 30000 }, async () => {
  const root = await realpath(await mkdtemp(join(tmpdir(), 'dilla-rename-flags-')));
@@ -259,6 +343,13 @@ test('installer creates a new protected payload before extraction and retains no
  assert.match(body(privateSource, 'RequireEmptyPayload'), /FindNextFileW[^\n]+\?e/);
  assert.match(body(source, 'Fail'), /Call ReleasePrivatePayload/);
  assert.match(body(source, '.onGUIEnd'), /Call ReleasePrivatePayload/);
+});
+test('partial retry uses its atomic parent rename without retaining a self-blocking child handle', async () => {
+ const source = await readFile(sourcePath, 'utf8'), prepare = body(source, 'PrepareInitialInstallation');
+ assert.doesNotMatch(prepare, /Call HoldStableLauncher/);
+ assert.match(prepare, /Call RequireUnlockedFile/);
+ assert.match(prepare, /Rename "\$INSTDIR" "\$ProgramArchive"\n\s+IfErrors Fail/);
+ assert.match(source, /Call un.HoldStableLauncher/);
 });
 test('private payload fault boundaries survive actual LF and CRLF NSIS checkouts', async () => {
  const source = (await readFile(sourcePath, 'utf8')).replaceAll('\r\n', '\n');
