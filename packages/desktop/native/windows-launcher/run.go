@@ -80,6 +80,15 @@ func runLauncher(l layout, cfg buildConfig, args arguments, out io.Writer, launc
 	if args.mode == "describe" {
 		return 0, describe(cfg, out)
 	}
+	// A committed generation-zero seed is not permission to launch until setup
+	// has finished registration and removed its exact ownership marker. Presence,
+	// unreadability or unsafe marker types all hold ordinary launch and state.
+	if _, markerErr := os.Lstat(filepath.Join(l.userData, "initial-install.json")); !os.IsNotExist(markerErr) {
+		if args.mode == "launch" {
+			return 0, nil
+		}
+		return 1, errors.New("initial setup finalization is pending")
+	}
 	for _, root := range []string{l.stableRoot, l.userData, l.updates} {
 		guard, e := desktoplaunch.PinOwnedDirectory(root)
 		if e != nil {

@@ -4,11 +4,9 @@ package desktoplaunch
 
 import (
 	"bytes"
-	"crypto/rand"
 	"crypto/sha512"
 	"encoding/base64"
 	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -254,11 +252,9 @@ func (c *InitialRootClaim) PublishInitialSeed(seed []byte) (attempted bool, err 
 	if c.layout != nil || len(seed) < 1 || len(seed) > 4096 || c.seed != nil {
 		return false, errors.New("invalid initial seed publication")
 	}
-	var nonce [16]byte
-	if _, err = rand.Read(nonce[:]); err != nil {
-		return false, err
-	}
-	temporary := ".initial-seed-" + hex.EncodeToString(nonce[:]) + ".tmp"
+	// A later explicit setup may authenticate only this fixed crash residue.
+	// Never introduce random temporary names into the update namespace.
+	temporary := "initial-slot.tmp"
 	c.seedTemporaryName = temporary
 	sum := sha512.Sum512(seed)
 	if err = c.copyVerifiedFile(temporary, bytes.NewReader(seed), int64(len(seed)), base64.StdEncoding.EncodeToString(sum[:])); err != nil {
@@ -277,7 +273,7 @@ func (c *InitialRootClaim) PublishInitialSeed(seed []byte) (attempted bool, err 
 // ObserveInitialSeed opens only metadata relative to the retained claimed root;
 // bytes are reread through the original held seed handle, never a reopened path.
 func (c *InitialRootClaim) ObserveInitialSeed(expected []byte) (exact, absent bool, err error) {
-	if c.seed == nil || c.seed.file == nil || c.entries["."] == nil || c.entries["."].file == nil || len(expected) == 0 {
+	if c == nil || c.entries["."] == nil || c.entries["."].file == nil || len(expected) == 0 {
 		return false, false, errors.New("unprepared initial seed observation")
 	}
 	file, err := openInitialClaimMetadata(c.entries["."].file, "windows-active-0.json", false)
@@ -288,6 +284,9 @@ func (c *InitialRootClaim) ObserveInitialSeed(expected []byte) (exact, absent bo
 		return false, false, err
 	}
 	defer func() { err = errors.Join(err, file.Close()) }()
+	if c.seed == nil || c.seed.file == nil {
+		return false, false, errors.New("observed final seed has no retained publication identity")
+	}
 	actualInfo, err := file.Stat()
 	if err != nil {
 		return false, false, err
@@ -317,7 +316,8 @@ func (c *InitialRootClaim) FlushInitialSeed() error {
 }
 
 func initialNTError(err error) error {
-	if status, ok := err.(windows.NTStatus); ok {
+	var status windows.NTStatus
+	if errors.As(err, &status) {
 		return status.Errno()
 	}
 	return err
@@ -327,12 +327,9 @@ func createInitialObject(parent *os.File, name, path string, directory bool) (ob
 	if (!validProgramPath(name) && (!fixedManifestName.MatchString(name) || directory)) || strings.Contains(name, "/") {
 		return nil, errors.New("invalid initial claim component")
 	}
-	token, err := windows.OpenCurrentProcessToken()
-	if err != nil {
-		return nil, err
-	}
+	// TOKEN_QUERY pseudo-handle has no owned handle to close.
+	token := windows.GetCurrentProcessToken()
 	user, err := token.GetTokenUser()
-	_ = token.Close()
 	if err != nil {
 		return nil, err
 	}

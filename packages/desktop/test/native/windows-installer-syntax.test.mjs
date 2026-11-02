@@ -6,7 +6,7 @@ import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
-import { compileWindowsNSIS, withMaintenanceTimingFixture, withInitialInstallDiagnostics, initialInstallDiagnostic, withInitialSlotFlushFailure, withInitialRetryNativeDiagnostic, initialRetryNativeDiagnostic } from '../support/windows-nsis.mjs';
+import { compileWindowsNSIS, withMaintenanceTimingFixture, withInitialInstallDiagnostics, initialInstallDiagnostic, withInitialCommitResultFailure, withInitialRetryNativeDiagnostic, initialRetryNativeDiagnostic } from '../support/windows-nsis.mjs';
 test('native retry diagnostics retain only bounded classifications and execute only in failure wrappers', async () => {
  const original = await readFile(new URL('../../build/windows-installer.nsi', import.meta.url), 'utf8'), diagnostic = withInitialInstallDiagnostics(original).source;
  const hooked = withInitialRetryNativeDiagnostic(diagnostic, 'private-diagnostic.test.exe');
@@ -24,20 +24,17 @@ test('focused initial retry mode refuses the production workflow and unrelated r
   assert.equal(result.status, 1); assert.match(result.stdout + result.stderr, /Focused initial retry diagnostics require the temporary Windows installer probe/);
  }
 });
-test('the initial slot flush fault is applied to actual LF and CRLF installer sources', async () => {
- const source = (await readFile(new URL('../../build/windows-installer.nsi', import.meta.url), 'utf8')).replaceAll('\r\n', '\n');
- for (const input of [source, source.replaceAll('\n', '\r\n')]) {
-  const transformed = withInitialSlotFlushFailure(input);
-  assert.equal(transformed.includes('\r'), false, 'the fault transform normalizes Windows source line endings');
-  assert.equal(/  StrCpy \$1 0\n  System::Call 'kernel32::CloseHandle\(p r0\)'\n  StrCmp \$1 0 Fail/.test(transformed), true, 'the injected failure still closes the handle and reaches the real refusal guard');
-  assert.equal((transformed.match(/FlushFileBuffers/g) ?? []).length, (source.match(/FlushFileBuffers/g) ?? []).length - 1, 'only the initial slot flush is faulted');
+test('a lost native commit result wraps the actual handoff for LF and CRLF source', async () => {
+ const source=(await readFile(new URL('../../build/windows-installer.nsi',import.meta.url),'utf8')).replaceAll('\r\n','\n');
+ for(const input of [source,source.replaceAll('\n','\r\n')]){
+  const hooked=withInitialCommitResultFailure(input);
+  assert.equal(hooked.includes('\r'),false);
+  assert.match(hooked,/Function FixtureInitialCommitResult\n  ExecWait .*--installer-retry=initial' \$InitialNativeExit\n  StrCmp \$InitialNativeExit 0 0 \+2\n    StrCpy \$InitialNativeExit 1/);
+  assert.equal((hooked.match(/--installer-retry=initial/g)??[]).length,1,'the real native transaction must execute exactly once');
  }
-});
-test('the initial slot flush fault rejects missing and duplicate source boundaries', async () => {
- const source = (await readFile(new URL('../../build/windows-installer.nsi', import.meta.url), 'utf8')).replaceAll('\r\n', '\n');
- const boundary = "  System::Call 'kernel32::FlushFileBuffers(p r0)i.r1'\n  System::Call 'kernel32::CloseHandle(p r0)'";
- assert.throws(() => withInitialSlotFlushFailure(source.replace(boundary, '  ; missing fixture boundary')), /boundary/);
- assert.throws(() => withInitialSlotFlushFailure(source + '\n' + boundary), /boundary/);
+ const boundary=source.split('\n').find(line=>line.includes("--installer-retry=initial'"));
+ assert.throws(()=>withInitialCommitResultFailure(source.replace(boundary,'')),/boundary/);
+ assert.throws(()=>withInitialCommitResultFailure(source+'\n'+boundary),/boundary/);
 });
 function preservesOriginalInstructions(original, transformed) {
  const functions = source => new Map([...source.replaceAll('\r\n', '\n').matchAll(/^Function ([^\n]+)\n([\s\S]*?)^FunctionEnd/gm)].map(match => [match[1], match[2].trimEnd().split('\n')]));
@@ -50,8 +47,8 @@ function preservesOriginalInstructions(original, transformed) {
   for (let index = 0; index < oldLines.length; index++) {
    const line = oldLines[index];
    if (/^\s+Call (?:\$\{Prefix\})?Fail$/.test(line)) assert.match(lines[index], /^\s+Call (?:\$\{Prefix\})?FixtureRefusal\d+$/);
-   else if (/^\s+ExecWait .*--installer-preflight=initial.* \$0$/.test(line)) assert.match(lines[index], /^\s+Call FixtureInitialPreflight\d+$/);
-   else if (name === 'PrepareInitialInstallation' && /^\s+Rename /.test(line)) assert.match(lines[index], /^\s+Call FixtureInitialRename[12]$/);
+   else if (/^\s+ExecWait .*--installer-preflight=initial' \$0$/.test(line)) assert.match(lines[index], /^\s+Call FixtureInitialPreflight\d+$/);
+   else if (/^\s+ExecWait .*--installer-(?:retry|finalize)=initial' \$InitialNativeExit$/.test(line)) assert.match(lines[index], /^\s+Call FixtureInitialMutation[12]$/);
    else assert.equal(lines[index], line, name + ': original instruction unchanged');
   }
  }
@@ -65,21 +62,16 @@ test('initial diagnostic wrappers preserve relative branch positions and refuse 
  assert.throws(() => preservesOriginalInstructions(original, source.replace(/(\n\s+Call FixtureRefusal\d+)/, '\n  StrCpy $FixtureFailureSite 1$1')), /instruction positions/);
  assert.throws(() => preservesOriginalInstructions(original, source.replace(/(\n\s+Call FixtureInitialPreflight\d+)/, '$1\n  StrCpy $FixtureNativeExit $0')), /instruction positions/);
 });
-test('initial retry refusal distinguishes both preflights and namespace renames without changing instruction slots', async () => {
- const original = (await readFile(new URL('../../build/windows-installer.nsi', import.meta.url), 'utf8')).replaceAll('\r\n', '\n');
- for (const input of [original, original.replaceAll('\n', '\r\n')]) {
-  const { source, sites } = withInitialInstallDiagnostics(input);
-  preservesOriginalInstructions(input, source);
-  assert.deepEqual(sites.slice(-4), ['PrepareInitialInstallation:preflight-1', 'PrepareInitialInstallation:preflight-2', 'PrepareInitialInstallation:program-rename', 'PrepareInitialInstallation:data-rename']);
-  for (const [id, stage] of [[1, 1], [2, 2]]) assert.match(source, new RegExp(`Function FixtureInitialPreflight${id}\\n  StrCpy \\$FixtureInitialStage ${stage}\\n  ExecWait`));
-  for (const [id, stage, from, to] of [[1, 3, 'INSTDIR', 'ProgramArchive'], [2, 4, 'DataRoot', 'DataArchive']]) {
-   assert.ok(source.includes(`Function FixtureInitialRename${id}\n  StrCpy $FixtureInitialStage ${stage}\n    Rename "$${from}" "$${to}"\nFunctionEnd`));
-  }
-  for (let stage = 1; stage <= 4; stage++) assert.ok(source.includes(`StrCmp $FixtureInitialStage ${stage} 0 +2\n    StrCpy $FixtureFailureSite ${sites.length - 4 + stage}`));
+test('initial retry diagnostics retain both read-only preflight stages and native-owned quarantine',async()=>{
+ const original=(await readFile(new URL('../../build/windows-installer.nsi',import.meta.url),'utf8')).replaceAll('\r\n','\n');
+ for(const input of [original,original.replaceAll('\n','\r\n')]){
+  const {source,sites}=withInitialInstallDiagnostics(input);
+  preservesOriginalInstructions(input,source);
+  assert.deepEqual(sites.slice(-2),['PrepareInitialInstallation:preflight-1','PrepareInitialInstallation:preflight-2']);
+  for(const id of [1,2])assert.ok(source.includes(`Function FixtureInitialPreflight${id}\n  StrCpy $FixtureInitialStage ${id}\n  ExecWait`));
+  assert.doesNotMatch(source,/Function FixtureInitialRename/,'native Go alone owns reversible quarantine');
+  assert.equal((source.match(/Function FixtureInitialMutation[12]\n  ExecWait [^\n]+\n  StrCpy \$FixtureNativeExit \$InitialNativeExit\nFunctionEnd/g)??[]).length,2,'both mutating handoffs record their actual result without touching original flags or registers');
  }
- const rename = '    Rename "$INSTDIR" "$ProgramArchive"';
- assert.throws(() => withInitialInstallDiagnostics(original.replace(rename, '    ; removed rename')), /boundary changed/);
- assert.throws(() => withInitialInstallDiagnostics(original.replace(rename, rename + '\n' + rename)), /boundary changed/);
 });
 test('private initial installer diagnostics expose only static refusal phases and numeric guard statuses', async () => {
  const source = await readFile(new URL('../../build/windows-installer.nsi', import.meta.url), 'utf8');
@@ -103,7 +95,7 @@ test('custom Windows installer compiles with the actual pinned NSIS builder head
   const bytes = await readFile(file);
   assert.equal(bytes.subarray(0, 2).toString(), 'MZ');
   assert.ok(bytes.length > 10_000);
-  const faulted = await compileWindowsNSIS({ directory: root, archive, name: 'initial-slot-flush-failure.exe', transform: source => withInitialSlotFlushFailure(source.replaceAll('\r\n', '\n').replaceAll('\n', '\r\n')) });
+  const faulted = await compileWindowsNSIS({ directory: root, archive, name: 'initial-commit-result-failure.exe', transform: source => withInitialCommitResultFailure(source.replaceAll('\r\n', '\n').replaceAll('\n', '\r\n')) });
   assert.equal((await readFile(faulted)).subarray(0, 2).toString(), 'MZ');
  } finally { await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
 });

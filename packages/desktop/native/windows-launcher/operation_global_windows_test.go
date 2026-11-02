@@ -5,6 +5,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -254,7 +255,7 @@ func TestGlobalOperationMutexForeignExistingOwner(t *testing.T) {
 	name, _ := syscall.UTF16PtrFromString(`Global\Dilla.Install.` + cfg.AppID + "." + sid)
 	raw, _, callErr := kernelDLL.NewProc("CreateMutexW").Call(uintptr(unsafe.Pointer(&sa)), 0, uintptr(unsafe.Pointer(name)))
 	if raw == 0 {
-		if callErr == syscall.Errno(1307) {
+		if errors.Is(callErr, syscall.Errno(1307)) {
 			t.Skip("process token cannot assign a foreign owner")
 		}
 		t.Fatal("foreign-owner fixture creation failed")

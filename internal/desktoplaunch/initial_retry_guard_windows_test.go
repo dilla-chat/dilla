@@ -87,12 +87,20 @@ func TestWindowsInitialRetryLeaseRejectsMappedImageAndPreventsNewMapping(t *test
 		t.Fatal(err)
 	}
 	defer func() { _ = guard.Close() }()
-	blocked := exec.Command(path, "-test.run=^TestInitialRetryLeaseMappedChild$")
+	blockedCtx, blockedCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer blockedCancel()
+	if err = blockedCtx.Err(); err != nil {
+		t.Fatal("mapping exclusion control expired before CreateProcess", err)
+	}
+	blocked := exec.CommandContext(blockedCtx, path, "-test.run=^TestInitialRetryLeaseMappedChild$")
 	blocked.Env = command.Env
 	if err = blocked.Start(); err == nil {
 		_ = blocked.Process.Kill()
 		_ = blocked.Wait()
 		t.Fatal("retained mutation lease allowed a new image mapping")
+	}
+	if err = blockedCtx.Err(); err != nil {
+		t.Fatal("mapping exclusion was not proved: CreateProcess context expired", err)
 	}
 	if err = guard.Close(); err != nil {
 		t.Fatal(err)

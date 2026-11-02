@@ -168,3 +168,57 @@ func copyInitialLayoutFixture(claim *InitialRootClaim) error {
 	}
 	return nil
 }
+
+func TestWindowsInitialSeedObservationBeforePreparationIsPositiveEvidence(t *testing.T) {
+	claim, err := ClaimInitialUpdateRoot(filepath.Join(t.TempDir(), "updates"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = claim.Rollback() }()
+	exact, absent, err := claim.ObserveInitialSeed([]byte("expected seed"))
+	if err != nil || exact || !absent {
+		t.Fatalf("unprepared absent observation: %v %v %v", exact, absent, err)
+	}
+	if err = os.WriteFile(filepath.Join(claim.entries["."].file.Name(), "windows-active-0.json"), []byte("foreign"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	exact, absent, err = claim.ObserveInitialSeed([]byte("expected seed"))
+	if err == nil || exact || absent {
+		t.Fatalf("unheld final must remain unknown: %v %v %v", exact, absent, err)
+	}
+}
+
+func TestWindowsInitialSeedFailedPublishKeepsOnlyFixedAuthenticatedTemporary(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "updates")
+	claim, err := ClaimInitialUpdateRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = claim.Rollback() }()
+	final := filepath.Join(root, "windows-active-0.json")
+	if err = os.WriteFile(final, []byte("preexisting authority"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	attempted, err := claim.PublishInitialSeed([]byte("prepared package seed"))
+	if !attempted || err == nil {
+		t.Fatalf("no-replace publication: %v %v", attempted, err)
+	}
+	if err = claim.Close(); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("unexpected publication residue count: %d", len(entries))
+	}
+	temporary, err := os.ReadFile(filepath.Join(root, "initial-slot.tmp"))
+	if err != nil || string(temporary) != "prepared package seed" {
+		t.Fatal("fixed same-package residue missing", err)
+	}
+	actual, err := os.ReadFile(final)
+	if err != nil || string(actual) != "preexisting authority" {
+		t.Fatal("replaced existing authority", err)
+	}
+}

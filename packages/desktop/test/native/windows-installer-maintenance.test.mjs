@@ -10,7 +10,7 @@ import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { createHash, generateKeyPairSync, randomUUID, sign } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { setTimeout as pause } from 'node:timers/promises';
-import { compileWindowsNSIS, withMaintenanceTimingFixture, withInitialInstallDiagnostics, initialInstallDiagnostic, withInitialSlotFlushFailure, withInitialRetryNativeDiagnostic, initialRetryNativeDiagnostic } from '../support/windows-nsis.mjs';
+import { compileWindowsNSIS, withMaintenanceTimingFixture, withInitialInstallDiagnostics, initialInstallDiagnostic, withInitialCommitResultFailure, withInitialRetryNativeDiagnostic, initialRetryNativeDiagnostic } from '../support/windows-nsis.mjs';
 import { finalizeWindowsProgram } from '../../scripts/windows-package.mjs';
 import { createWindowsProgramManifest } from '../../src/windows-manifest.ts';
 const require = createRequire(import.meta.url);
@@ -81,9 +81,10 @@ test(retryOnly ? 'FOCUSED DIAGNOSTIC ONLY: actual interrupted first-install retr
   execFileSync('go', ['test', '-c', '-o', nativeHelper, './packages/desktop/native/windows-launcher'], { cwd: repository, env: { ...process.env, CGO_ENABLED: '0' }, stdio: 'pipe' });
   await writeFile(nativeRequest, JSON.stringify({ config: state.config, report: nativeReport }));
   let diagnosticSites;
-  const installer = await compile('dilla-fixture-native.exe', source => {
+  const instrument = source => {
    const diagnostic = withInitialInstallDiagnostics(withMaintenanceTimingFixture(source)); diagnosticSites = diagnostic.sites; return withInitialRetryNativeDiagnostic(diagnostic.source, nativeHelper);
-  });
+  };
+  const installer = await compile('dilla-fixture-native.exe', instrument);
   await mkdir(profile, { recursive: true });
   const account = join(profile, 'opaque-account-keystore-and-preferences.sentinel');
   await writeFile(account, 'existing account / KEK / OPFS / preferences must survive');
@@ -241,9 +242,20 @@ test(retryOnly ? 'FOCUSED DIAGNOSTIC ONLY: actual interrupted first-install retr
   } else {
    run(uninstaller, ['/S']); await eventually(async () => !await exists(program), 'focused initial retry preparation');
   }
-  const paused = await compile('dilla-fixture-interrupt.exe', source => source.replace('  CopyFiles /SILENT "$PLUGINSDIR\\payload\\initial-slot.json"', '  Sleep 300000\n  CopyFiles /SILENT "$PLUGINSDIR\\payload\\initial-slot.json"'));
+  const paused = await compile('dilla-fixture-interrupt.exe', source => {
+   const boundary='  Call RunInitialTransaction';
+   assert.equal(source.split(boundary).length,2);
+   return source.replace(boundary,'  Sleep 300000\n'+boundary);
+  });
   const interrupted = start(paused, ['/S']); processes.push(interrupted);
-  await eventually(async () => await exists(join(profile, 'initial-install.json')) && await exists(join(program, 'Dilla.exe')) && await exists(updates) && !await exists(slot), 'durable owned marker and copied program before initial slot commit', 120_000);
+  await eventually(async () => await exists(join(profile, 'initial-install.json')) && !await exists(program) && !await exists(updates), 'durable owned marker before native handoff', 120_000);
+  // Construct the exact authenticated prefix state a terminated native copy can
+  // leave. This test does not claim to interrupt a kernel CopyFile operation.
+  await mkdir(tree,{recursive:true}); await mkdir(join(program,'manifests')); await mkdir(updates);
+  await writeFile(join(program,'Dilla.exe'),(await readFile(join(app,'Dilla.exe'))).subarray(0,128));
+  await writeFile(runtime,(await readFile(join(app,'versions','v-'+digest.slice(0,32),'dilla-desktop.exe'))).subarray(0,65536));
+  await writeFile(manifest,originalManifest);
+  await writeFile(slot,(await readFile(join(app,'initial-slot.json'))).subarray(0,12));
   await stop(interrupted);
   const partialProgram = await snapshot(program), partialProfile = await snapshot(profile);
   const direct = spawnSync(join(app, 'Dilla.exe'), ['--installer-preflight=initial'], { timeout: 30000, windowsHide: true, stdio: 'ignore' });
@@ -272,18 +284,21 @@ test(retryOnly ? 'FOCUSED DIAGNOSTIC ONLY: actual interrupted first-install retr
   assert.equal(await exists(slot), true, 'same installer must recover owned interrupted first copy');
   assert.equal(await readFile(account, 'utf8'), 'existing account / KEK / OPFS / preferences must survive');
   run(uninstaller, ['/S']); await eventually(async () => !await exists(program), 'interrupted retry cleanup');
-  const flushFailure = await compile('dilla-fixture-flush-failure.exe', withInitialSlotFlushFailure);
-  assert.throws(() => run(flushFailure, ['/S']), 'injected seed flush failure must fail setup');
+  const commitResultFailure = await compile('dilla-fixture-commit-result-failure.exe', source => withInitialCommitResultFailure(instrument(source)));
+  assert.throws(() => run(commitResultFailure, ['/S']), 'lost native success result must fail setup without rollback');
+  assert.equal(await exists(slot), true, 'the actual native commit remains visible after its success result is lost');
+  const committedProgram=await snapshot(program);
   assert.equal(await exists(join(profile, 'initial-install.json')), true);
   run(installer, ['/S']);
-  assert.equal(await exists(slot), true, 'failed initial flush must leave a safe retry');
+  assert.equal(await exists(slot), true, 'a new explicit setup must finalize the complete same-package native commit');
+  assert.deepEqual(await snapshot(program),committedProgram,'finalize-only must not recopy or quarantine committed program bytes');
   assert.equal(await readFile(account, 'utf8'), 'existing account / KEK / OPFS / preferences must survive');
  } finally {
   for (const child of processes) await stop(child).catch(() => {});
   if (uninstaller && await exists(uninstaller)) { try { run(uninstaller, ['/S']); } catch {} }
   // These roots are generated fixture identities, never runtime-selected product paths.
   await rm(program, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-  for (const entry of await readdir(join(process.env.LOCALAPPDATA, 'Programs')).catch(() => [])) if (entry.startsWith(productName + '-incomplete-{')) await rm(join(process.env.LOCALAPPDATA, 'Programs', entry), { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  for (const entry of await readdir(join(process.env.LOCALAPPDATA, 'Programs')).catch(() => [])) if (new RegExp('^'+productName+'-incomplete-[a-f0-9]{32}$').test(entry)) await rm(join(process.env.LOCALAPPDATA, 'Programs', entry), { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   await rm(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   await rm(temporary, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
  }

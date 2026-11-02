@@ -186,6 +186,12 @@ func main() {
 		}
 		return
 	}
+	if args.mode == "installer-retry-initial" || args.mode == "installer-initial-complete" || args.mode == "installer-finalize-initial" {
+		if e = runInitialInstallerMode(cfg, strings.TrimPrefix(args.mode, "installer-")); e != nil {
+			os.Exit(1)
+		}
+		return
+	}
 	if strings.HasPrefix(args.mode, "installer-") {
 		if e = runMaintenance(cfg, strings.TrimPrefix(args.mode, "installer-"), args.packageManifest); e != nil {
 			if errors.Is(e, errIncompleteInitial) {

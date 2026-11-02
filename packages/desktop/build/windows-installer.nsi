@@ -32,9 +32,21 @@ Var DataRoot
 Var Staging
 Var Arguments
 Var OperationMutex
+Var GlobalOperationMutex
+Var GlobalOperationHeld
+Var GlobalToken
+Var GlobalTokenInfo
+Var GlobalSIDString
+Var GlobalUserSID
+Var GlobalDescriptor
+Var GlobalActualDescriptor
+Var GlobalExpectedString
+Var GlobalActualString
+Var GlobalAttributes
 Var DataArchive
-Var ProgramArchive
 Var InitialRetry
+Var InitialNativeExit
+Var InitialNativeError
 Var GeneratedGUID
 Var InitialMarkerArchived
 Var StableLauncherHandle
@@ -64,7 +76,6 @@ Var PayloadCleanupFailed
 Function Fail
   Call ReleasePrivatePayload
   Call ReleaseStableLauncher
-  Call RestoreInitialArchives
   Call ReleaseOperation
   MessageBox MB_OK|MB_ICONSTOP "Dilla setup could not safely complete. Quit Dilla from its tray menu and retry. Existing device data is preserved." /SD IDOK
   SetErrorLevel 2
@@ -177,7 +188,7 @@ FunctionEnd
 
 Function .onInit
   Call InitializePrivatePayload
-  StrCpy $OperationMutex 0
+  Call InitializeOperation
   StrCpy $StableLauncherHandle 0
   SetShellVarContext current
   SetRegView 64
@@ -188,6 +199,7 @@ Function .onInit
   StrCpy $INSTDIR "$LOCALAPPDATA\Programs\${PRODUCT_NAME}"
   StrCpy $DataRoot "$APPDATA\${PRODUCT_NAME}\updates"
   StrCpy $Staging 0
+  StrCpy $InitialRetry 0
   ${GetParameters} $Arguments
   ClearErrors
   ${GetOptions} $Arguments "--updated" $0
@@ -267,24 +279,21 @@ Function StageInactiveVersion
 FunctionEnd
 
 Function InstallInitial
+  ; This generated program belongs to this exact marker-owning NSIS artifact.
+  ; It is copied and verified by the native transaction BEFORE seed authority.
+  ClearErrors
+  WriteUninstaller "$PLUGINSDIR\payload\Uninstall ${PRODUCT_NAME}.exe"
+  IfErrors Fail
   Call PrepareInitialInstallation
-  ; A second interactive setup cannot reset accepted history or the launcher.
-  Push "$INSTDIR"
-  Call CheckPath
-  Push "$DataRoot"
-  Call CheckPath
-  Push "$INSTDIR"
-  Call RequireAbsentPath
-  Push "$DataRoot"
-  Call RequireAbsentPath
   ${If} $InitialRetry != 1
+    ; Fresh setup has no authority to replace an installed or partial root.
+    Push "$INSTDIR"
+    Call RequireAbsentPath
+    Push "$DataRoot"
+    Call RequireAbsentPath
     IfFileExists "$SMPROGRAMS\${PRODUCT_NAME}.lnk" Fail
     IfFileExists "$DESKTOP\${PRODUCT_NAME}.lnk" Fail
   ${EndIf}
-  IfFileExists "$INSTDIR\*" Fail
-  IfFileExists "$DataRoot\*" Fail
-  IfFileExists "$DataRoot\windows-active-0.json" Fail
-  IfFileExists "$DataRoot\windows-active-1.json" Fail
   ReadRegStr $0 HKCU "${DILLA_UNINSTALL_KEY}" InstallLocation
   ${If} $0 != ""
     ${If} $InitialRetry != 1
@@ -294,21 +303,13 @@ Function InstallInitial
       Goto Fail
   ${EndIf}
   Call CommitInitialMarker
-  Call CopyInactivePayload
-  ClearErrors
-  CopyFiles /SILENT "$PLUGINSDIR\payload\Dilla.exe" "$INSTDIR\Dilla.exe"
+  ; The native owner performs all reversible moves, retained file guards,
+  ; no-replace claims, exact program/uninstaller copy and atomic seed last.
+  Call RunInitialTransaction
+  ExecWait '$\"$PLUGINSDIR\payload\Dilla.exe$\" --installer-preflight=initial-complete' $0
   IfErrors Fail
-  CreateDirectory "$DataRoot"
-  CopyFiles /SILENT "$PLUGINSDIR\payload\initial-slot.json" "$DataRoot\windows-active-0.json"
-  IfErrors Fail
-  ; Flush the committed seed before any user entry point can launch it.
-  System::Call 'kernel32::CreateFileW(w "$DataRoot\windows-active-0.json", i 0x40000000, i 0, p 0, i 3, i 0x80, p 0)p.r0'
-  StrCmp $0 -1 Fail
-  System::Call 'kernel32::FlushFileBuffers(p r0)i.r1'
-  System::Call 'kernel32::CloseHandle(p r0)'
-  StrCmp $1 0 Fail
-  WriteUninstaller "$INSTDIR\Uninstall ${PRODUCT_NAME}.exe"
-  IfErrors Fail
+  StrCmp $0 0 +2
+    Goto Fail
   ClearErrors
   WriteRegStr HKCU "${DILLA_UNINSTALL_KEY}" InstallLocation "$INSTDIR"
   WriteRegStr HKCU "${DILLA_UNINSTALL_KEY}" DisplayName "${PRODUCT_NAME}"
@@ -328,9 +329,9 @@ Function InstallInitial
   IfFileExists "$DESKTOP\${PRODUCT_NAME}.lnk" +2
     CreateShortCut "$DESKTOP\${PRODUCT_NAME}.lnk" "$INSTDIR\Dilla.exe"
   IfErrors Fail
-  ClearErrors
-  Delete "$APPDATA\${PRODUCT_NAME}\initial-install.json"
-  IfErrors Fail
+  ; Registration succeeded. Native finalization revalidates complete authority
+  ; and removes ONLY the exact setup marker through its retained identity.
+  Call FinalizeInitialTransaction
   ; Installation never auto-launches. Ordinary shell entry runs the stable exe.
   Return
   Fail:
@@ -430,7 +431,7 @@ FunctionEnd
 Function un.onInit
   Call un.InitializePrivatePayload
   StrCpy $StableLauncherHandle 0
-  StrCpy $OperationMutex 0
+  Call un.InitializeOperation
   Call un.AcquireOperation
   InitPluginsDir
   Call un.CheckOwnedRoot
@@ -487,10 +488,157 @@ Section "Uninstall"
     Call un.Fail
 SectionEnd
 
+; A per-token-user Global gate serializes cooperating new launchers/installers
+; across sessions. Keep the legacy Local gate for old same-session launchers.
+; Existing Global objects are authenticated, never adopted on name alone.
+!define /math DILLA_MUTEX_SA_SIZE ${NSIS_PTR_SIZE} * 3
+!macro GlobalOperationFunctions Prefix
+Function ${Prefix}InitializeOperation
+  StrCpy $OperationMutex 0
+  StrCpy $GlobalOperationMutex 0
+  StrCpy $GlobalOperationHeld 0
+  StrCpy $GlobalToken 0
+  StrCpy $GlobalTokenInfo 0
+  StrCpy $GlobalSIDString 0
+  StrCpy $GlobalDescriptor 0
+  StrCpy $GlobalActualDescriptor 0
+  StrCpy $GlobalExpectedString 0
+  StrCpy $GlobalActualString 0
+  StrCpy $GlobalAttributes 0
+FunctionEnd
+Function ${Prefix}AcquireGlobalOperation
+  System::Call 'kernel32::GetCurrentProcess()p.r0'
+  System::Call 'advapi32::OpenProcessToken(p r0, i 8, *p.r1)i.r2'
+  StrCmp $2 0 Fail
+  StrCpy $GlobalToken $1
+  System::Call 'advapi32::GetTokenInformation(p $GlobalToken, i 1, p 0, i 0, *i.r1)i.r0 ?e'
+  Pop $2
+  StrCmp $0 0 0 Fail
+  StrCmp $2 122 0 Fail
+  IntCmp $1 8 Fail Fail +1
+  IntCmp $1 65536 +1 +1 Fail
+  System::Alloc $1
+  Pop $GlobalTokenInfo
+  StrCmp $GlobalTokenInfo 0 Fail
+  System::Call 'advapi32::GetTokenInformation(p $GlobalToken, i 1, p $GlobalTokenInfo, i r1, *i.r2)i.r0'
+  StrCmp $0 0 Fail
+  IntCmp $2 $1 +1 +1 Fail
+  IntCmp $2 8 +1 Fail +1
+  System::Call '*$GlobalTokenInfo(p.r0)'
+  System::Call 'advapi32::IsValidSid(p r0)i.r2'
+  StrCmp $2 0 Fail
+  System::Call 'advapi32::ConvertSidToStringSidW(p r0, *p.r1)i.r2'
+  StrCmp $2 0 Fail
+  StrCpy $GlobalSIDString $1
+  System::Call 'kernel32::lstrcpynW(w .r9, p $GlobalSIDString, i ${NSIS_MAX_STRLEN})p.r0'
+  StrCmp $0 0 Fail
+  StrCpy $GlobalUserSID $9
+  StrCpy $9 "O:$GlobalUserSID"
+  StrCpy $9 "$9D:P(A;;0x1f0001;;;$GlobalUserSID)"
+  ${If} $GlobalUserSID != "S-1-5-18"
+    StrCpy $9 "$9(A;;0x1f0001;;;SY)"
+  ${EndIf}
+  ${If} $GlobalUserSID != "S-1-5-32-544"
+    StrCpy $9 "$9(A;;0x1f0001;;;BA)"
+  ${EndIf}
+  System::Call 'advapi32::ConvertStringSecurityDescriptorToSecurityDescriptorW(w r9, i 1, *p.r0, p 0)i.r1'
+  StrCmp $1 0 Fail
+  StrCpy $GlobalDescriptor $0
+  System::Call '*(i ${DILLA_MUTEX_SA_SIZE}, p $GlobalDescriptor, i 0)p.r0'
+  StrCpy $GlobalAttributes $0
+  StrCmp $GlobalAttributes 0 Fail
+  StrCpy $9 "Global\Dilla.Install.${APP_ID}.$GlobalUserSID"
+  StrLen $0 $9
+  IntCmp $0 259 +1 +1 Fail
+  System::Call 'kernel32::CreateMutexW(p $GlobalAttributes, i 0, w r9)p.r0'
+  StrCmp $0 0 Fail
+  StrCpy $GlobalOperationMutex $0
+  ; SE_KERNEL_OBJECT, OWNER|DACL. Read back even when CreateMutex ignored our SD.
+  System::Call 'advapi32::GetSecurityInfo(p $GlobalOperationMutex, i 6, i 5, p 0, p 0, p 0, p 0, *p.r0)i.r1'
+  StrCmp $1 0 0 Fail
+  StrCpy $GlobalActualDescriptor $0
+  StrCmp $GlobalActualDescriptor 0 Fail
+  System::Call 'advapi32::GetSecurityDescriptorControl(p $GlobalActualDescriptor, *i.r0, *i.r1)i.r2'
+  StrCmp $2 0 Fail
+  IntOp $0 $0 & 0x1004
+  IntCmp $0 0x1004 +1 Fail Fail
+  ; Both strings are produced by the same native canonicalizer. Equality binds
+  ; the owner, protected control and every exact ACE/mask, without wildcard SIDs.
+  System::Call 'advapi32::ConvertSecurityDescriptorToStringSecurityDescriptorW(p $GlobalDescriptor, i 1, i 5, *p.r0, *i.r1)i.r2'
+  StrCmp $2 0 Fail
+  StrCpy $GlobalExpectedString $0
+  IntCmp $1 1 Fail Fail +1
+  IntCmp $1 ${NSIS_MAX_STRLEN} +1 +1 Fail
+  System::Call 'kernel32::lstrcpynW(w .r8, p $GlobalExpectedString, i ${NSIS_MAX_STRLEN})p.r0'
+  StrCmp $0 0 Fail
+  System::Call 'advapi32::ConvertSecurityDescriptorToStringSecurityDescriptorW(p $GlobalActualDescriptor, i 1, i 5, *p.r0, *i.r1)i.r2'
+  StrCmp $2 0 Fail
+  StrCpy $GlobalActualString $0
+  IntCmp $1 1 Fail Fail +1
+  IntCmp $1 ${NSIS_MAX_STRLEN} +1 +1 Fail
+  System::Call 'kernel32::lstrcpynW(w .r9, p $GlobalActualString, i ${NSIS_MAX_STRLEN})p.r0'
+  StrCmp $0 0 Fail
+  StrCmp $8 $9 0 Fail
+  System::Call 'kernel32::GetHandleInformation(p $GlobalOperationMutex, *i.r0)i.r1'
+  StrCmp $1 0 Fail
+  IntOp $0 $0 & 1
+  StrCmp $0 0 0 Fail
+  System::Call 'kernel32::WaitForSingleObject(p $GlobalOperationMutex, i 5000)i.r0'
+  ${If} $0 != 0
+  ${AndIf} $0 != 128
+    Goto Fail
+  ${EndIf}
+  StrCpy $GlobalOperationHeld 1
+  Call ${Prefix}FreeGlobalOperationSecurity
+  Return
+  Fail:
+    Call ${Prefix}Fail
+FunctionEnd
+Function ${Prefix}FreeGlobalOperationSecurity
+  ${If} $GlobalToken != 0
+    System::Call 'kernel32::CloseHandle(p $GlobalToken)'
+    StrCpy $GlobalToken 0
+  ${EndIf}
+  ${If} $GlobalTokenInfo != 0
+    System::Free $GlobalTokenInfo
+    StrCpy $GlobalTokenInfo 0
+  ${EndIf}
+  ${If} $GlobalAttributes != 0
+    System::Free $GlobalAttributes
+    StrCpy $GlobalAttributes 0
+  ${EndIf}
+  !insertmacro FreeGlobalLocal $GlobalSIDString
+  !insertmacro FreeGlobalLocal $GlobalDescriptor
+  !insertmacro FreeGlobalLocal $GlobalActualDescriptor
+  !insertmacro FreeGlobalLocal $GlobalExpectedString
+  !insertmacro FreeGlobalLocal $GlobalActualString
+FunctionEnd
+Function ${Prefix}ReleaseGlobalOperation
+  Call ${Prefix}FreeGlobalOperationSecurity
+  ${If} $GlobalOperationMutex != 0
+    ${If} $GlobalOperationHeld == 1
+      System::Call 'kernel32::ReleaseMutex(p $GlobalOperationMutex)'
+    ${EndIf}
+    System::Call 'kernel32::CloseHandle(p $GlobalOperationMutex)'
+    StrCpy $GlobalOperationMutex 0
+    StrCpy $GlobalOperationHeld 0
+  ${EndIf}
+FunctionEnd
+!macroend
+!macro FreeGlobalLocal Variable
+  ${If} ${Variable} != 0
+    System::Call 'kernel32::LocalFree(p ${Variable})'
+    StrCpy ${Variable} 0
+  ${EndIf}
+!macroend
+!insertmacro GlobalOperationFunctions ""
+!insertmacro GlobalOperationFunctions "un."
+
 ; Maintenance snapshots trust the current user, Administrators and SYSTEM.
 ; This mutex excludes cooperating NSIS/Go entry paths, not hostile same-user code.
 !macro OperationFunctions Prefix
 Function ${Prefix}AcquireOperation
+  Call ${Prefix}AcquireGlobalOperation
   System::Call 'kernel32::CreateMutexW(p 0, i 0, w "Local\Dilla.Install.${APP_ID}")p.r0'
   StrCmp $0 0 0 +2
     Call ${Prefix}Fail
@@ -506,21 +654,27 @@ Function ${Prefix}ReleaseOperation
   IfErrors 0 +2
     Call ${Prefix}Fail
   Call ${Prefix}ReleaseStableLauncher
+  Call ${Prefix}ReleaseMutexes
+FunctionEnd
+Function ${Prefix}ReleaseMutexes
   ${If} $OperationMutex != 0
     System::Call 'kernel32::ReleaseMutex(p $OperationMutex)'
     System::Call 'kernel32::CloseHandle(p $OperationMutex)'
     StrCpy $OperationMutex 0
   ${EndIf}
+  Call ${Prefix}ReleaseGlobalOperation
 FunctionEnd
 ; Holding this fixed owned file denies new read/execute mappings while still
 ; allowing the installer itself to rename/delete it. Existing mapped images make
 ; GENERIC_WRITE fail before any archive/deletion. This is not a path-taking ABI.
+!if "${Prefix}" == "un."
 Function ${Prefix}HoldStableLauncher
   System::Call 'kernel32::CreateFileW(w "$INSTDIR\Dilla.exe", i 0x40010000, i 4, p 0, i 3, i 0x80, p 0)p.r0'
   StrCmp $0 -1 0 +2
     Call ${Prefix}Fail
   StrCpy $StableLauncherHandle $0
 FunctionEnd
+!endif
 Function ${Prefix}ReleaseStableLauncher
   ${If} $StableLauncherHandle != 0
     System::Call 'kernel32::CloseHandle(p $StableLauncherHandle)'
@@ -599,29 +753,7 @@ Function PrepareInitialInstallation
   IfErrors Fail
   StrCmp $0 10 +2
     Goto Fail
-  IfFileExists "$INSTDIR\Dilla.exe" 0 +2
-    Call HoldStableLauncher
-  Call GenerateGUID
-  StrCpy $ProgramArchive "$LOCALAPPDATA\Programs\${PRODUCT_NAME}-incomplete-$GeneratedGUID"
-  Push "$ProgramArchive"
-  Call RequireAbsentPath
-  System::Call 'kernel32::GetFileAttributesW(w "$INSTDIR")i.r0'
-  ${If} $0 != -1
-    ClearErrors
-    Rename "$INSTDIR" "$ProgramArchive"
-    IfErrors Fail
-  ${EndIf}
-  StrCpy $DataArchive "$APPDATA\${PRODUCT_NAME}\updates-incomplete-$GeneratedGUID"
-  Push "$DataArchive"
-  Call RequireAbsentPath
-  System::Call 'kernel32::GetFileAttributesW(w "$DataRoot")i.r0'
-  ${If} $0 != -1
-    ClearErrors
-    Rename "$DataRoot" "$DataArchive"
-    IfErrors Fail
-  ${EndIf}
   done:
-    Call ReleaseStableLauncher
     Return
   Fail:
     Call Fail
@@ -654,19 +786,33 @@ Function CommitInitialMarker
   Fail:
     Call Fail
 FunctionEnd
-Function RestoreInitialArchives
-  ${If} $InitialRetry == 1
-    System::Call 'kernel32::GetFileAttributesW(w "$INSTDIR")i.r0'
-    ${If} $0 == -1
-    ${AndIf} $ProgramArchive != ""
-      Rename "$ProgramArchive" "$INSTDIR"
-    ${EndIf}
-    System::Call 'kernel32::GetFileAttributesW(w "$DataRoot")i.r0'
-    ${If} $0 == -1
-    ${AndIf} $DataArchive != ""
-      Rename "$DataArchive" "$DataRoot"
-    ${EndIf}
-  ${EndIf}
+Function RunInitialTransaction
+  Call ReleaseMutexes
+  ClearErrors
+  ExecWait '$\"$PLUGINSDIR\payload\Dilla.exe$\" --installer-retry=initial' $InitialNativeExit
+  StrCpy $InitialNativeError 0
+  IfErrors 0 +2
+    StrCpy $InitialNativeError 1
+  ; Always reacquire before interpreting the handoff result. There is no NSIS
+  ; archive rollback: native committed-or-uncertain authority remains untouched.
+  Call AcquireOperation
+  StrCmp $InitialNativeError 0 +2
+    Call Fail
+  StrCmp $InitialNativeExit 0 +2
+    Call Fail
+FunctionEnd
+Function FinalizeInitialTransaction
+  Call ReleaseMutexes
+  ClearErrors
+  ExecWait '$\"$PLUGINSDIR\payload\Dilla.exe$\" --installer-finalize=initial' $InitialNativeExit
+  StrCpy $InitialNativeError 0
+  IfErrors 0 +2
+    StrCpy $InitialNativeError 1
+  Call AcquireOperation
+  StrCmp $InitialNativeError 0 +2
+    Call Fail
+  StrCmp $InitialNativeExit 0 +2
+    Call Fail
 FunctionEnd
 
 Function un.MaintenancePreflight

@@ -24,32 +24,52 @@ var errIncompleteInitial = errors.New("owned incomplete initial installation")
 
 type operationMutex struct {
 	handle       syscall.Handle
+	global       syscall.Handle
 	lockedThread bool
 }
 
 func (m *operationMutex) Close() {
-	if m != nil && m.handle != 0 {
+	if m == nil {
+		return
+	}
+	if m.handle != 0 {
 		_, _, _ = kernelDLL.NewProc("ReleaseMutex").Call(uintptr(m.handle))
 		_ = syscall.CloseHandle(m.handle)
 		m.handle = 0
-		if m.lockedThread {
-			m.lockedThread = false
-			runtime.UnlockOSThread()
-		}
+	}
+	if m.global != 0 {
+		_, _, _ = kernelDLL.NewProc("ReleaseMutex").Call(uintptr(m.global))
+		_ = syscall.CloseHandle(m.global)
+		m.global = 0
+	}
+	if m.lockedThread {
+		m.lockedThread = false
+		runtime.UnlockOSThread()
 	}
 }
 
-// Local\ scopes this compiled application identity to the interactive session.
-// Default Windows object security limits access to the creating user/admins.
+// The restricted per-user Global gate is acquired before the legacy Local gate.
+// Local-only participants remain excluded only within their own session.
 //
 //nolint:gosec // G103: fixed mutex ABI reads a Go-owned UTF16 compiled-identity name.
 func acquireOperationMutex(cfg buildConfig) (owned *operationMutex, acquired bool, errResult error) {
 	runtime.LockOSThread()
+	var global syscall.Handle
 	defer func() {
 		if !acquired {
+			if global != 0 {
+				_, _, _ = kernelDLL.NewProc("ReleaseMutex").Call(uintptr(global))
+				_ = syscall.CloseHandle(global)
+			}
 			runtime.UnlockOSThread()
 		}
 	}()
+	var got bool
+	var err error
+	global, got, err = acquireGlobalOperationMutex(cfg)
+	if err != nil || !got {
+		return nil, false, err
+	}
 	name, err := syscall.UTF16PtrFromString(`Local\Dilla.Install.` + cfg.AppID)
 	if err != nil {
 		return nil, false, err
@@ -58,7 +78,7 @@ func acquireOperationMutex(cfg buildConfig) (owned *operationMutex, acquired boo
 	if handle == 0 {
 		return nil, false, callErr
 	}
-	mutex := &operationMutex{handle: syscall.Handle(handle), lockedThread: true}
+	mutex := &operationMutex{handle: syscall.Handle(handle), global: global, lockedThread: true}
 	result, err := syscall.WaitForSingleObject(mutex.handle, 0)
 	if err != nil {
 		_ = syscall.CloseHandle(mutex.handle)
@@ -322,7 +342,7 @@ func runMaintenance(cfg buildConfig, mode, packageManifest string) error {
 			return err
 		}
 		defer func() { _ = guard.Close() }()
-		file, err := os.Open(expected)
+		file, err := os.Open(expected) // #nosec G304 -- Fixed active nonce installer path stays authenticated and pinned.
 		if err != nil {
 			return err
 		}

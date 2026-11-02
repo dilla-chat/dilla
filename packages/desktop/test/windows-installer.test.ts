@@ -95,48 +95,6 @@ SectionEnd
 `;
  return compileWindowsNSIS({ directory, archive: join(directory, 'unused.7z'), name: `flag-${hooked}-${errorFlag}-${status}.exe`, transform: () => hooked ? withInitialRetryNativeDiagnostic(source, join(directory, 'unused-diagnostic.exe')) : source });
 }
-async function compileInitialRenameProbe(directory: string, hooked: boolean, kind: number, succeeds: boolean): Promise<string> {
- const original = await readFile(sourcePath, 'utf8'), transformed = withInitialInstallDiagnostics(original).source;
- const operation = body(transformed, 'FixtureInitialRename' + kind);
- const { nsisEscapeString } = require('app-builder-lib/out/targets/nsis/nsisScriptGenerator');
- const fixed = (name: string) => nsisEscapeString(join(directory, name));
- return compileWindowsNSIS({ directory, archive: join(directory, 'unused.7z'), name: `rename-${hooked}-${kind}-${succeeds}.exe`, transform: () => `
-Name "Private Dilla rename diagnostic boundary"
-RequestExecutionLevel user
-SilentInstall silent
-${hooked ? 'Var FixtureInitialStage' : ''}
-Var ProgramArchive
-Var DataRoot
-Var DataArchive
-${hooked ? `Function FixtureInitialRename${kind}\n${operation}\nFunctionEnd` : ''}
-Section
- StrCpy $INSTDIR "${fixed('old')}"
- StrCpy $DataRoot "${fixed('old')}"
- StrCpy $ProgramArchive "${fixed('new')}"
- StrCpy $DataArchive "${fixed('new')}"
- ${succeeds ? 'CreateDirectory "$INSTDIR"' : ''}
- StrCpy $0 "unchanged-register"
- ClearErrors
- ${hooked ? 'Call FixtureInitialRename' + kind : kind === 1 ? 'Rename "$INSTDIR" "$ProgramArchive"' : 'Rename "$DataRoot" "$DataArchive"'}
- IfErrors error_seen no_error
- error_seen:
- StrCpy $R0 1
- Goto observed
- no_error:
- StrCpy $R0 0
- observed:
- StrCmp $R0 ${succeeds ? 0 : 1} 0 fail
- StrCmp $0 "unchanged-register" 0 fail
- ${hooked ? 'StrCmp $FixtureInitialStage ' + (kind + 2) + ' 0 fail' : ''}
- RMDir "$ProgramArchive"
- SetErrorLevel 0
- Goto done
- fail:
- SetErrorLevel 2
- done:
-SectionEnd
-` });
-}
 async function compileHeldChildRenameProbe(directory: string, mode: 'held' | 'mapped' = 'held'): Promise<string> {
  const source = (await readFile(sourcePath, 'utf8')).replaceAll('${Prefix}', '');
  const { nsisEscapeString } = require('app-builder-lib/out/targets/nsis/nsisScriptGenerator');
@@ -176,9 +134,7 @@ test('the actual extracted NSIS CheckPath compiles with the pinned System plugin
   assert.equal((await readFile(executable)).subarray(0, 2).toString(), 'MZ');
   assert.equal((await readFile(await compileDiagnosticBranchProbe(root, true))).subarray(0, 2).toString(), 'MZ');
   assert.equal((await readFile(await compileDiagnosticFlagProbe(root, true, true, 1))).subarray(0, 2).toString(), 'MZ');
-  for (const kind of [1, 2]) for (const succeeds of [true, false]) for (const hooked of [false, true]) {
-   assert.equal((await readFile(await compileInitialRenameProbe(root, hooked, kind, succeeds))).subarray(0, 2).toString(), 'MZ');
-  }
+
  } finally { await rm(root, { recursive: true, force: true }); }
 });
 test('native retained launcher child blocks parent rename until released despite DELETE sharing', { skip: process.platform !== 'win32', timeout: 30000 }, async () => {
@@ -231,16 +187,6 @@ test('native parent rename can succeed while a descendant image remains mapped',
   } finally { await rm(root, { recursive: true, force: true }); }
  }
 });
-test('native initial rename diagnostics preserve baseline success and failure flags and registers', { skip: process.platform !== 'win32', timeout: 30000 }, async () => {
- const root = await realpath(await mkdtemp(join(tmpdir(), 'dilla-rename-flags-')));
- try {
-  for (const kind of [1, 2]) for (const succeeds of [true, false]) for (const hooked of [false, true]) {
-   const executable = await compileInitialRenameProbe(root, hooked, kind, succeeds);
-   const child = spawnSync(executable, ['/S'], { windowsHide: true, timeout: 10000, encoding: 'utf8', maxBuffer: 1024 });
-   assert.ifError(child.error); assert.equal(child.status, 0, `rename ${kind}, success=${succeeds}, hooked=${hooked}`);
-  }
- } finally { await rm(root, { recursive: true, force: true }); }
-});
 test('native retry diagnostic hook preserves original NSIS error flags and exit statuses', { skip: process.platform !== 'win32', timeout: 30000 }, async () => {
  const root = await realpath(await mkdtemp(join(tmpdir(), 'dilla-diagnostic-flags-')));
  try {
@@ -282,11 +228,22 @@ function contract(source: string) {
  assert.match(staging, /CopyFiles[^\n]+\\versions\\\$\{DILLA_PROGRAM_ID\}/);
  assert.match(staging, /CopyFiles[^\n]+\\manifests\\\$\{DILLA_MANIFEST_NAME\}/);
  const initial = body(source, 'InstallInitial');
- assert.match(initial, /CopyFiles[^\n]+initial-slot\.json[^\n]+windows-active-0\.json/);
- assert.ok(initial.indexOf('windows-active-0.json') < initial.indexOf('CreateShortCut'));
- assert.match(initial, /Push "\$INSTDIR"\n  Call RequireAbsentPath/);
+ assert.doesNotMatch(initial, /CopyFiles|Delete |Rename |CopyInactivePayload/);
+ assert.ok(initial.indexOf('WriteUninstaller "$PLUGINSDIR') < initial.indexOf('Call RunInitialTransaction'));
+ assert.ok(initial.indexOf('Call RunInitialTransaction') < initial.indexOf('CreateShortCut'));
+ assert.match(initial, /Push "\$INSTDIR"\n\s+Call RequireAbsentPath/);
  assert.match(initial, /CreateShortCut[^\n]+\$INSTDIR\\Dilla\.exe/);
- assert.match(initial, /IfFileExists "\$DataRoot\\windows-active-1.json" Fail/);
+ assert.match(initial, /--installer-preflight=initial-complete/);
+ assert.match(initial, /Call FinalizeInitialTransaction/);
+ assert.ok(initial.indexOf('CreateShortCut') < initial.indexOf('Call FinalizeInitialTransaction'));
+ for(const [name,mode] of [['RunInitialTransaction','retry'],['FinalizeInitialTransaction','finalize']]) {
+  const handoff=body(source,name);
+  assert.ok(handoff.indexOf('Call ReleaseMutexes')<handoff.indexOf('ExecWait'));
+  assert.match(handoff,new RegExp('--installer-'+mode+'=initial'));
+  assert.ok(handoff.indexOf('ExecWait')<handoff.indexOf('Call AcquireOperation'));
+  assert.ok(handoff.indexOf('Call AcquireOperation')<handoff.indexOf('StrCmp $InitialNativeExit'));
+ }
+ assert.doesNotMatch(source,/Function RestoreInitialArchives|Rename "\$INSTDIR" "\$ProgramArchive"/);
  assert.match(body(source, 'un.onInit'), /Call un.CheckOwnedRoot/);
  const uninstall = /Section "Uninstall"([\s\S]*?)SectionEnd/.exec(source)![1];
  assert.match(uninstall, /Push "\$INSTDIR\\Dilla\.exe"\n    Call un.RequireUnlockedFile/);
@@ -311,11 +268,14 @@ function contract(source: string) {
  assert.equal([...prepare.matchAll(/--installer-preflight=initial/g)].length, 2);
  assert.ok(prepare.lastIndexOf('--installer-preflight=initial') > prepare.lastIndexOf('Call CheckTree'));
  assert.match(prepare, /StrCmp \"?\$0 10/);
- assert.ok(prepare.indexOf('Call RequireUnlockedFile') < prepare.indexOf('Rename \"$INSTDIR'));
+ assert.match(prepare,/Call RequireUnlockedFile/);
+ assert.doesNotMatch(prepare,/Rename |HoldStableLauncher/);
  const marker = body(source, 'CommitInitialMarker');
  assert.match(marker, /FlushFileBuffers/); assert.match(marker, /MoveFileExW[^\n]+initial-install\.json[^\n]+i 8/);
  assert.match(initial, /Call CommitInitialMarker/);
- assert.ok(initial.indexOf('Call CommitInitialMarker') < initial.indexOf('Call CopyInactivePayload'));
+ assert.ok(initial.indexOf('Call CommitInitialMarker') < initial.indexOf('Call RunInitialTransaction'));
+ assert.match(body(source.replaceAll('${Prefix}', ''),'AcquireOperation'),/Call AcquireGlobalOperation/);
+ assert.match(body(source.replaceAll('${Prefix}', ''),'ReleaseMutexes'),/Call ReleaseGlobalOperation/);
 
  assert.match(body(source.replaceAll('${Prefix}', 'un.'), 'un.CheckOwnedRoot'), /ReadRegStr[^\n]+InstallLocation/);
  assert.match(source, /IntOp \$1 \$2 & 0x400/);
@@ -476,7 +436,7 @@ test('NSIS contract checks the same operations with Windows checkout line ending
 });
 test('installer contract catches staging launcher writes, old-version uninstall and seed order regressions', async () => {
  const source = (await readFile(sourcePath, 'utf8')).replace(/\r\n/g, '\n');
- for (const mutation of [source.replace('Function StageInactiveVersion\n', 'Function StageInactiveVersion\n  CopyFiles "evil" "$INSTDIR\\Dilla.exe"\n'), source + '\nuninstallOldVersion\n', source.replace('Call un.MaintenancePreflight', ''), source.replace('Call un.HoldStableLauncher', ''), source.replace('Call un.ArchiveHistory', ''), source.replace('Call AcquireOperation', ''), source.replace('Call CommitInitialMarker', ''), source.replace('Push \"$INSTDIR\\Dilla.exe\"\n    Call un.RequireUnlockedFile', ''), source.replaceAll('0x40010000', '0x10000'), source.replace('Function StageInactiveVersion\n', 'Function StageInactiveVersion\n  WriteRegStr HKCU \"evil\" \"\" \"value\"\n'), source.replace('IfFileExists \"$DataRoot\\windows-active-1.json\" Fail', ''), source.replace('Call CheckOwnedRoot\n', ''), source.replaceAll('windows-active-0.json', 'slot.json'), source.replace('IntOp $1 $2 & 0x400', 'IntOp $1 $0 & 0')]) assert.throws(() => contract(mutation));
+ for (const mutation of [source.replace('Function StageInactiveVersion\n', 'Function StageInactiveVersion\n  CopyFiles "evil" "$INSTDIR\\Dilla.exe"\n'), source + '\nuninstallOldVersion\n', source.replace('Call un.MaintenancePreflight', ''), source.replace('Call un.HoldStableLauncher', ''), source.replace('Call un.ArchiveHistory', ''), source.replace('Call AcquireOperation', ''), source.replace('Call CommitInitialMarker', ''), source.replace('Push \"$INSTDIR\\Dilla.exe\"\n    Call un.RequireUnlockedFile', ''), source.replaceAll('0x40010000', '0x10000'), source.replace('Function StageInactiveVersion\n', 'Function StageInactiveVersion\n  WriteRegStr HKCU \"evil\" \"\" \"value\"\n'), source.replace('Call RunInitialTransaction', ''), source.replace('Call CheckOwnedRoot\n', ''), source.replace('--installer-preflight=initial-complete', '--changed-authority'), source.replace('IntOp $1 $2 & 0x400', 'IntOp $1 $0 & 0')]) assert.throws(() => contract(mutation));
 });
 test('Windows hooks finalize after signing, assert before archive, and leave other platforms alone', async () => {
  const { createWindowsBuilderHooks } = require('../scripts/windows-builder-hooks.cjs');

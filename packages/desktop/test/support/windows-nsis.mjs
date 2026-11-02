@@ -30,7 +30,7 @@ export async function compileWindowsNSIS({ directory, archive, productName = 'Di
  * Never store NSIS registers that may contain paths or account data. */
 export function withInitialInstallDiagnostics(source) {
  source = source.replaceAll('\r\n', '\n');
- const sites = [], wrappers = [], conditions = []; let current = '', preflights = 0, renames = 0, retryRefusal = '';
+ const sites = [], wrappers = [], conditions = []; let current = '', preflights = 0, mutations = 0, retryRefusal = '';
  source = source.split('\n').map(line => {
   if (/^\s*!if/.test(line)) conditions.push(line.trim() === '!if "${Prefix}" != "un."' ? 'install' : line.trim() === '!if "${Prefix}" == "un."' ? 'uninstall' : null);
   if (/^\s*!endif\s*$/.test(line)) conditions.pop();
@@ -47,23 +47,22 @@ export function withInitialInstallDiagnostics(source) {
    for (const prefix of prefixes) wrappers.push(`Function ${prefix}${name}\n  StrCpy $FixtureFailureSite ${sites.length}\n${current === 'PrepareInitialInstallation' ? '@@INITIAL_RETRY_STAGE_SITES@@\n' : ''}  Call ${prefix}Fail\nFunctionEnd\n`);
    return `${refusal[1]}Call ${refusal[2] ?? ''}${name}`;
   }
-  if (/^\s+ExecWait .*--installer-preflight=initial.* \$0$/.test(line)) {
+  if (/^\s+ExecWait .*--installer-preflight=initial' \$0$/.test(line)) {
    if (current !== 'PrepareInitialInstallation') throw new Error('Initial install diagnostic boundary changed');
    const name = 'FixtureInitialPreflight' + (++preflights);
    wrappers.push(`Function ${name}\n  StrCpy $FixtureInitialStage ${preflights}\n${line}\n  StrCpy $FixtureNativeExit $0\nFunctionEnd\n`);
    return '  Call ' + name;
   }
-  if (current === 'PrepareInitialInstallation' && /^\s+Rename /.test(line)) {
-   const expected = ['    Rename "$INSTDIR" "$ProgramArchive"', '    Rename "$DataRoot" "$DataArchive"'];
-   if (line !== expected[renames]) throw new Error('Initial install diagnostic boundary changed');
-   const name = 'FixtureInitialRename' + (++renames);
-   wrappers.push(`Function ${name}\n  StrCpy $FixtureInitialStage ${renames + 2}\n${line}\nFunctionEnd\n`);
-   return line.match(/^\s*/)[0] + 'Call ' + name;
+  if (/^\s+ExecWait .*--installer-(?:retry|finalize)=initial' \$InitialNativeExit$/.test(line)) {
+   if (!['RunInitialTransaction','FinalizeInitialTransaction'].includes(current)) throw new Error('Initial mutation diagnostic boundary changed');
+   const name='FixtureInitialMutation'+(++mutations);
+   wrappers.push(`Function ${name}\n${line}\n  StrCpy $FixtureNativeExit $InitialNativeExit\nFunctionEnd\n`);
+   return '  Call '+name;
   }
   return line;
  }).join('\n');
- if (preflights !== 2 || renames !== 2 || !retryRefusal || sites.length < 10 || !source.includes('Function Fail\n') || !source.includes('Function .onInit\n') || !source.includes('Var DataRoot\n')) throw new Error('Initial install diagnostic boundary changed');
- const stageSites = ['preflight-1', 'preflight-2', 'program-rename', 'data-rename'].map((stage, index) => {
+ if (preflights !== 2 || mutations !== 2 || !retryRefusal || sites.length < 10 || !source.includes('Function Fail\n') || !source.includes('Function .onInit\n') || !source.includes('Var DataRoot\n')) throw new Error('Initial install diagnostic boundary changed');
+ const stageSites = ['preflight-1', 'preflight-2'].map((stage, index) => {
   sites.push('PrepareInitialInstallation:' + stage);
   return `  StrCmp $FixtureInitialStage ${index + 1} 0 +2\n    StrCpy $FixtureFailureSite ${sites.length}`;
  }).join('\n');
@@ -124,11 +123,19 @@ export function initialRetryNativeDiagnostic(value) {
  return { format: 1, stage: value.stage, reason: value.reason, nativeError: value.nativeError };
 }
 
-export function withInitialSlotFlushFailure(source) {
+// The native transaction has already committed before this test-only lost
+// success result. This is not a simulated Windows FlushFileBuffers failure.
+export function withInitialCommitResultFailure(source) {
  source = source.replaceAll('\r\n', '\n');
- const boundary = "  System::Call 'kernel32::FlushFileBuffers(p r0)i.r1'\n  System::Call 'kernel32::CloseHandle(p r0)'";
- if (source.split(boundary).length !== 2) throw new Error('Initial slot flush-failure fixture boundary changed');
- return source.replace(boundary, "  StrCpy $1 0\n  System::Call 'kernel32::CloseHandle(p r0)'");
+ const boundary = source.split('\n').filter(line => /^  ExecWait .*--installer-retry=initial' \$InitialNativeExit$/.test(line));
+ if (boundary.length !== 1) throw new Error('Initial native commit-result fixture boundary changed');
+ return source.replace(boundary[0], '  Call FixtureInitialCommitResult') + `
+Function FixtureInitialCommitResult
+${boundary[0]}
+  StrCmp $InitialNativeExit 0 0 +2
+    StrCpy $InitialNativeExit 1
+FunctionEnd
+`;
 }
 
 export function withMaintenanceTimingFixture(source) {

@@ -45,7 +45,7 @@ func acquireGlobalOperationMutex(cfg buildConfig) (handle syscall.Handle, acquir
 	if e != nil {
 		return 0, false, errors.New("cannot read global operation token")
 	}
-	defer token.Close()
+	defer func() { _ = token.Close() }()
 	user, e := token.GetTokenUser()
 	if e != nil || user.User.Sid == nil {
 		return 0, false, errors.New("cannot read global operation user")
@@ -82,7 +82,7 @@ func acquireGlobalOperationMutex(cfg buildConfig) (handle syscall.Handle, acquir
 	if ok == 0 || descriptor == 0 {
 		return 0, false, errors.New("cannot construct global operation security")
 	}
-	defer syscall.LocalFree(syscall.Handle(descriptor))
+	defer func() { _, _ = syscall.LocalFree(syscall.Handle(descriptor)) }()
 	attributes := syscall.SecurityAttributes{Length: uint32(unsafe.Sizeof(syscall.SecurityAttributes{})), SecurityDescriptor: descriptor, InheritHandle: 0}
 	raw, _, _ := kernelDLL.NewProc("CreateMutexW").Call(uintptr(unsafe.Pointer(&attributes)), 0, uintptr(unsafe.Pointer(name)))
 	if raw == 0 {
@@ -136,7 +136,7 @@ func checkGlobalOperationMutexSecurity(advapi *syscall.LazyDLL, handle syscall.H
 	if code != 0 || descriptor == 0 {
 		return unsafeObject
 	}
-	defer syscall.LocalFree(syscall.Handle(descriptor))
+	defer func() { _, _ = syscall.LocalFree(syscall.Handle(descriptor)) }()
 	ok, _, _ := advapi.NewProc("IsValidSecurityDescriptor").Call(descriptor)
 	if ok == 0 || owner == nil || dacl == nil {
 		return unsafeObject

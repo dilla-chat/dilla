@@ -24,7 +24,13 @@ func parseArguments(args []string) (arguments, error) {
 	if len(args) == 1 && (args[0] == "--describe" || args[0] == "--state") {
 		return arguments{mode: args[0][2:]}, nil
 	}
-	if len(args) == 1 && (args[0] == "--installer-preflight=initial" || args[0] == "--installer-preflight=uninstall") {
+	if len(args) == 1 && args[0] == "--installer-retry=initial" {
+		return arguments{mode: "installer-retry-initial"}, nil
+	}
+	if len(args) == 1 && args[0] == "--installer-finalize=initial" {
+		return arguments{mode: "installer-finalize-initial"}, nil
+	}
+	if len(args) == 1 && (args[0] == "--installer-preflight=initial" || args[0] == "--installer-preflight=uninstall" || args[0] == "--installer-preflight=initial-complete") {
 		return arguments{mode: "installer-" + strings.TrimPrefix(args[0], "--installer-preflight=")}, nil
 	}
 	if len(args) == 2 && args[0] == "--installer-preflight=stage" && strings.HasPrefix(args[1], "--package-manifest-sha512=") {
