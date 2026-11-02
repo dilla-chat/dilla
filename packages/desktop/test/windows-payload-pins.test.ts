@@ -124,7 +124,8 @@ function setListDenied(path: string, deny: boolean): void {
  const literal = "'" + path.replaceAll("'", "''") + "'";
  const script = `$ErrorActionPreference='Stop'; $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User;
  $acl=New-Object Security.AccessControl.DirectorySecurity; $acl.SetOwner($sid); $acl.SetAccessRuleProtection($true,$false);
- $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sid,[Security.AccessControl.FileSystemRights]::FullControl,[Security.AccessControl.AccessControlType]::Allow)));
+ $inherit=[Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit;
+ $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sid,[Security.AccessControl.FileSystemRights]::FullControl,$inherit,[Security.AccessControl.PropagationFlags]::None,[Security.AccessControl.AccessControlType]::Allow)));
  ${deny ? '$acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sid,[Security.AccessControl.FileSystemRights]::ListDirectory,[Security.AccessControl.AccessControlType]::Deny)));' : ''}
  [IO.Directory]::SetAccessControl(${literal},$acl);`;
  execFileSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { windowsHide: true, timeout: 15000, stdio: 'pipe' });
@@ -177,6 +178,10 @@ async function nativeProbe(kind: Case, crlf: boolean): Promise<void> {
    phase('old-path-check-start');
    await assert.rejects(realpath(target), { code: 'ENOENT' });
    phase('assertions-end');
+  } catch (error) {
+   const code = (error as NodeJS.ErrnoException | null)?.code;
+   phase('failure-' + (typeof code === 'string' && ['EACCES', 'EPERM', 'ENOENT', 'ERR_ASSERTION'].includes(code) ? code : 'other'));
+   throw error;
   } finally {
    if (kind === 'traverse-only') for (const [name, path] of [['original', target], ['renamed', moved]]) {
     try {
