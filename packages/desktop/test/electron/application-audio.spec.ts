@@ -5,6 +5,7 @@ import { promisify } from 'node:util';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { installNativeAudioDiagnostics } from '../support/audio-diagnostics.ts';
+import { APPLICATION_AUDIO_TONES } from '../../../media/harness/application-audio-tones.ts';
 const exec = promisify(execFile);
 const pause = (ms: number) => new Promise(done => setTimeout(done, ms));
 let desktop: ElectronApplication, selected: ChildProcess | ElectronApplication, other: ChildProcess | ElectronApplication;
@@ -31,14 +32,14 @@ test.beforeEach(async () => {
   start('pipewire', []);
   for (let i = 0; i < 50; i++) { try { await exec('pw-cli', ['info', '0'], { env, timeout: 500 }); break; } catch { if (i === 49) throw new Error(diagnostic); await pause(100); } }
   start('wireplumber', []); await pause(500);
-  for (const [name, frequency] of [['selected', 1000], ['other', 880], ['call', 440]] as const) await writeFile(join(root, name + '.wav'), wave(frequency));
+  for (const [name, frequency] of Object.entries(APPLICATION_AUDIO_TONES)) await writeFile(join(root, name + '.wav'), wave(frequency));
   selected = start('pw-play', ['--target=0', '--properties={ application.name="Dilla Selected Acceptance" }', join(root, 'selected.wav')]);
   other = start('pw-play', ['--target=0', '--properties={ application.name="Dilla Other Acceptance" }', join(root, 'other.wav')]);
   selectedPIDs = [(selected as ChildProcess).pid!];
  } else if (process.platform === 'darwin') {
   const executable = join(root, 'TonePlayer');
   await exec('swiftc', ['-O', resolve('test/support/TonePlayer.swift'), '-o', executable], { env, timeout: 60000 });
-  for (const [name, frequency] of [['selected', 1000], ['other', 880]] as const) {
+  for (const [name, frequency] of [['selected', APPLICATION_AUDIO_TONES.selected], ['other', APPLICATION_AUDIO_TONES.other]] as const) {
    const bundle = join(root, name + '.app'), contents = join(bundle, 'Contents');
    await mkdir(join(contents, 'MacOS'), { recursive: true });
    await exec('cp', [executable, join(contents, 'MacOS/TonePlayer')], { env });
@@ -66,9 +67,9 @@ test.beforeEach(async () => {
   // Independent real playback applications, without fake media devices or PCM injection.
   const actor = join(root, 'tone.cjs');
   await writeFile(actor, `const {app,BrowserWindow}=require('electron');let w;app.enableSandbox();app.setPath('userData',process.argv.find(a=>a.startsWith('--actor-profile=')).slice(16));app.commandLine.appendSwitch('autoplay-policy','no-user-gesture-required');app.commandLine.appendSwitch('enable-logging','file');app.commandLine.appendSwitch('log-file',process.argv.find(a=>a.startsWith('--audio-log=')).slice(12));app.commandLine.appendSwitch('vmodule','audio*=2,core_audio*=2');app.whenReady().then(()=>{w=new BrowserWindow({webPreferences:{sandbox:true,contextIsolation:true,nodeIntegration:false,backgroundThrottling:false}});w.loadURL('data:text/html,<title>Application audio acceptance</title><script>const c=new AudioContext({sampleRate:48000}),o=c.createOscillator(),g=c.createGain();o.frequency.value='+Number(process.argv.find(a=>a.startsWith('--tone=')).slice(7))+';g.gain.value=0.35;o.connect(g).connect(c.destination);o.start();c.resume();window.audioAcceptance={context:c,oscillator:o};</script>')})`);
-  selected = await _electron.launch({ chromiumSandbox: true, args: [actor, '--tone=1000', '--actor-profile=' + join(root, 'selected-profile'), '--audio-log=' + join(root, 'selected-audio.log')], env });
-  other = await _electron.launch({ chromiumSandbox: true, args: [actor, '--tone=880', '--actor-profile=' + join(root, 'other-profile'), '--audio-log=' + join(root, 'other-audio.log')], env });
-  for (const [application, frequency] of [[selected, 1000], [other, 880]] as const) {
+  selected = await _electron.launch({ chromiumSandbox: true, args: [actor, '--tone=' + APPLICATION_AUDIO_TONES.selected, '--actor-profile=' + join(root, 'selected-profile'), '--audio-log=' + join(root, 'selected-audio.log')], env });
+  other = await _electron.launch({ chromiumSandbox: true, args: [actor, '--tone=' + APPLICATION_AUDIO_TONES.other, '--actor-profile=' + join(root, 'other-profile'), '--audio-log=' + join(root, 'other-audio.log')], env });
+  for (const [application, frequency] of [[selected, APPLICATION_AUDIO_TONES.selected], [other, APPLICATION_AUDIO_TONES.other]] as const) {
    const page = await (application as ElectronApplication).firstWindow();
    await page.waitForFunction(frequency => { const a = (window as any).audioAcceptance; return a?.context.state === 'running' && a.context.currentTime > 0.5 && a.oscillator.frequency.value === frequency; }, frequency);
    console.log('NATIVE_AUDIO_PLAYBACK', JSON.stringify(await page.evaluate(() => { const a = (window as any).audioAcceptance; return { frequency: a.oscillator.frequency.value, state: a.context.state, time: a.context.currentTime, output: a.context.getOutputTimestamp() }; })));
@@ -87,7 +88,7 @@ test.beforeEach(async () => {
  if (process.platform === 'linux') {
   await desktop.evaluate(async (_electron, file) => { const { spawn } = process.getBuiltinModule('node:child_process'); (globalThis as any).callAudioFixture = spawn('pw-play', ['--target=0', '--properties={ application.name="Dilla Own Call Acceptance" }', file], { stdio: 'ignore' }); }, join(root, 'call.wav'));
  } else {
-  await page.evaluate(async () => { const context = new AudioContext({ sampleRate: 48000 }), oscillator = context.createOscillator(), gain = context.createGain(); oscillator.frequency.value = 440; gain.gain.value = 0.35; oscillator.connect(gain).connect(context.destination); oscillator.start(); await context.resume(); (globalThis as any).callAudioFixture = context; });
+  await page.evaluate(async callFrequency => { const context = new AudioContext({ sampleRate: 48000 }), oscillator = context.createOscillator(), gain = context.createGain(); oscillator.frequency.value = callFrequency; gain.gain.value = 0.35; oscillator.connect(gain).connect(context.destination); oscillator.start(); await context.resume(); (globalThis as any).callAudioFixture = context; }, APPLICATION_AUDIO_TONES.call);
  }
  const binary = resolve('native-bin', process.platform === 'win32' ? 'dilla-audio.exe' : 'dilla-audio');
  await desktop.evaluate(installNativeAudioDiagnostics, { binary });

@@ -8,6 +8,7 @@ import { EventEmitter } from 'events';
 import type { Room } from 'livekit-client';
 import { createMediaWorker, DillaE2EEManager, type EpochKeys } from '../src/manager';
 import type { DillaMediaStats } from '../src/protocol';
+import { accumulateAudioTonePeaks } from './application-audio-tones.ts';
 
 const DEV_A = 'a1'.repeat(16);
 const DEV_B = 'b2'.repeat(16);
@@ -417,15 +418,9 @@ export async function runProtectedAudio(track: MediaStreamTrack, options: { sour
     const data = new Float32Array(analyser.frequencyBinCount);
     while (performance.now() < deadline) {
       analyser.getFloatFrequencyData(data);
-      for (const [name, hz] of [['selected', 1000], ['call', 440], ['other', 880]] as const) {
-        const bin = Math.round(hz * analyser.fftSize / context.sampleRate);
-        peaks[name] = Math.max(peaks[name], ...data.subarray(bin - 2, bin + 3));
-      }
+      accumulateAudioTonePeaks(peaks, data, analyser.fftSize, context.sampleRate);
       inputAnalyser.getFloatFrequencyData(data);
-      for (const [name, hz] of [['selected', 1000], ['call', 440], ['other', 880]] as const) {
-        const bin = Math.round(hz * inputAnalyser.fftSize / context.sampleRate);
-        inputPeaks[name] = Math.max(inputPeaks[name], ...data.subarray(bin - 2, bin + 3));
-      }
+      accumulateAudioTonePeaks(inputPeaks, data, inputAnalyser.fftSize, context.sampleRate);
       if (firstAudioMs === null && peaks.selected > -40) firstAudioMs = performance.now() - started;
       await new Promise(done => setTimeout(done, 50));
     }
