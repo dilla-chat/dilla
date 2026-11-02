@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { DesktopBridge } from '../../src/contract.ts';
 import { nativeTrace } from '../support/trace.ts';
+import { en } from '../../../web/src/strings/en.ts';
 
 interface NativePrompt {
  title: string; message: string; detail?: string; buttons: string[];
@@ -19,6 +20,7 @@ let profile: string;
 let instance: string;
 let stopTrace: (() => Promise<void>) | undefined;
 let nativeStderr = '';
+const rendererFailures: { type: string; message: string }[] = [];
 const network: string[] = [];
 const server = createServer((req, res) => {
  network.push(req.url!);
@@ -26,6 +28,14 @@ const server = createServer((req, res) => {
  res.end('<script>globalThis.remoteCodeExecuted = true</script>untrusted instance response');
 });
 const test = base.extend<{ twoInstances: boolean }>({ twoInstances: [false, { option: true }] });
+async function waitForLocalStartup(page: Page): Promise<void> {
+ await page.waitForLoadState('load');
+ // Document load precedes React and the local worker. Keep the existing
+ // shell.spec.ts startup condition within this test's unchanged 45s budget.
+ await page.waitForFunction(starting => (document.getElementById('root')?.childElementCount ?? 0) > 0
+   && document.querySelector('.d-splash__line')?.textContent !== starting, en['boot.loading.status']);
+ await expect(page.locator('#root')).not.toBeEmpty();
+}
 
 test.beforeAll(async () => {
  await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
@@ -34,6 +44,7 @@ test.beforeAll(async () => {
 test.afterAll(async () => { server.closeAllConnections(); await new Promise<void>(done => server.close(() => done())); });
 test.beforeEach(async ({ twoInstances }, info) => {
  network.length = 0;
+ rendererFailures.length = 0;
  profile = await mkdtemp(join(tmpdir(), 'dilla-native-permissions-'));
  if (twoInstances) await writeFile(join(profile, 'desktop.json'), JSON.stringify({ version: 1, instances: [instance, instance + 'team/'], autostart: false }));
  // Fake devices make availability deterministic without opening physical hardware.
@@ -44,8 +55,9 @@ test.beforeEach(async ({ twoInstances }, info) => {
  stopTrace = await nativeTrace(desktop.context(), info);
  await desktop.evaluate(({ BrowserWindow }) => { (globalThis as any).__permissionCrashes = []; for (const win of BrowserWindow.getAllWindows()) win.webContents.on('render-process-gone', (_event, details) => { (globalThis as any).__permissionCrashes.push(details); }); });
  const page = await desktop.firstWindow();
- await page.waitForLoadState('load');
- await expect(page.locator('#root')).not.toBeEmpty();
+ page.on('pageerror', error => { rendererFailures.push({ type: 'pageerror', message: error.message }); rendererFailures.splice(0, rendererFailures.length - 20); });
+ page.on('requestfailed', request => { rendererFailures.push({ type: 'requestfailed', message: `${new URL(request.url()).pathname} ${request.failure()?.errorText}` }); rendererFailures.splice(0, rendererFailures.length - 20); });
+ await waitForLocalStartup(page);
  await desktop.evaluate(({ dialog }) => {
   (globalThis as any).__permissionPrompts = [];
   (globalThis as any).__permissionAnswer = 0;
@@ -63,8 +75,20 @@ test.afterEach(async () => {
  try {
   if (desktop && test.info().status !== 'passed') {
    const crashes = await desktop.evaluate(() => (globalThis as any).__permissionCrashes).catch(() => []);
-   await test.info().attach('native-permission-diagnostics', { body: JSON.stringify({ crashes, stderr: nativeStderr }), contentType: 'application/json' });
-   console.log('NATIVE_PERMISSION_DIAGNOSTICS', JSON.stringify({ crashes, stderr: nativeStderr }));
+   const page = desktop.windows()[0];
+   let timer: ReturnType<typeof setTimeout> | undefined;
+   const startup = await Promise.race([
+    page?.evaluate(() => ({ path: location.pathname, readyState: document.readyState,
+     rootChildren: document.getElementById('root')?.childElementCount ?? 0,
+     splash: document.querySelector('.d-splash__line')?.textContent ?? null,
+     desktopWindow: document.documentElement.dataset.desktopWindow ?? null,
+     resources: performance.getEntriesByType('resource').slice(-20).map(entry => ({ name: new URL(entry.name).pathname, start: entry.startTime, duration: entry.duration })),
+    })).catch(error => ({ error: String(error) })) ?? Promise.resolve({ error: 'No renderer window' }),
+    new Promise(resolve => { timer = setTimeout(() => resolve({ error: 'Renderer diagnostics did not answer within 2 seconds' }), 2000); }),
+   ]).finally(() => clearTimeout(timer));
+   const diagnostics = { crashes, stderr: nativeStderr, rendererFailures, startup };
+   await test.info().attach('native-permission-diagnostics', { body: JSON.stringify(diagnostics), contentType: 'application/json' });
+   console.log('NATIVE_PERMISSION_DIAGNOSTICS', JSON.stringify(diagnostics));
   }
   await stopTrace?.();
  }
@@ -145,7 +169,7 @@ test.describe('instance permission ownership', () => {
   await expect.poll(() => application().windows().length).toBe(2);
   const pages = application().windows();
   const first = pages[0], second = pages[1];
-  await Promise.all(pages.map(page => expect(page.locator('#root')).not.toBeEmpty()));
+  await Promise.all(pages.map(waitForLocalStartup));
   await focus(first);
   await application().evaluate(() => { (globalThis as any).__permissionAnswer = 1; });
   // Permission only: no Notification object or OS notification is created.
