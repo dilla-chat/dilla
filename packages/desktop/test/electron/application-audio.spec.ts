@@ -92,9 +92,9 @@ test.beforeEach(async () => {
  const binary = resolve('native-bin', process.platform === 'win32' ? 'dilla-audio.exe' : 'dilla-audio');
  await desktop.evaluate(installNativeAudioDiagnostics, { binary });
  let sources: { id: string; label: string }[] = [];
+ const excludedPID = await desktop.evaluate(() => process.pid);
  for (let i = 0; i < 20; i++) {
-  const pid = desktop.process().pid!;
-  const result = await exec(binary, ['list', String(pid)], { env, timeout: 12000 });
+  const result = await exec(binary, ['list', String(excludedPID)], { env, timeout: 12000 });
   sources = JSON.parse(result.stdout);
   if (i === 0 || i === 19) diagnostic += result.stderr;
   if (sources.some(source => selectedPIDs.includes(Number(source.id.split(':')[1])))) break;
@@ -106,7 +106,7 @@ test.beforeEach(async () => {
   }
   console.log('NATIVE_AUDIO_PROCESS_METRICS', JSON.stringify(await (selected as ElectronApplication).evaluate(({ app }) => app.getAppMetrics().map(({ pid, type, name, serviceName }) => ({ pid, type, name, serviceName })))));
  }
- console.log('NATIVE_AUDIO_ENVIRONMENT', JSON.stringify({ platform: process.platform, sources, selectedPIDs, diagnostic }));
+ console.log('NATIVE_AUDIO_ENVIRONMENT', JSON.stringify({ platform: process.platform, sources, selectedPIDs, excludedPID, diagnostic }));
  const source = sources.find(source => selectedPIDs.includes(Number(source.id.split(':')[1])));
  expect(source, 'a real selected playback process must be discoverable by the shipping native backend').toBeDefined();
  expect(sources.some(source => source.label === 'Dilla Own Call Acceptance')).toBe(false);
