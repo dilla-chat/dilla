@@ -43,7 +43,7 @@ try {
   child.once('error', reject); child.once('exit', (code, signal) => code === 0 ? resolve() : reject(new Error(`Stock probe failed: ${code ?? signal}`)));
  });
  if (instanceResponses <= beforeApp) throw new Error('Stock client made no successful HTTPS instance request');
- console.log('Stock client connected through the native confirmation and reached onboarding over HTTPS. Account and installed lifecycle acceptance were not tested.');
+ console.log('Stock client connected through native confirmation and reached onboarding over HTTPS. Shared account and upgrade acceptance run separately.');
 } finally {
  if (proxy) { const server = proxy; await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
  await host.stop();

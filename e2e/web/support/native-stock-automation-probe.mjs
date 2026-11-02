@@ -3,11 +3,12 @@
 import { chromium } from '@playwright/test';
 import { FuseState, FuseV1Options, getCurrentFuseWire } from '@electron/fuses';
 import { spawn } from 'node:child_process';
-import { readFile, readlink, rm } from 'node:fs/promises';
+import { readFile, readlink, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { once } from 'node:events';
 import { stockManagerPage } from './native-stock-manager.mjs';
 import { confirmOwnedConnect } from './native-stock-connect.mjs';
+import { observeRendererSandbox } from './native-stock-sandbox.mjs';
 
 if (process.env.GITHUB_ACTIONS !== 'true' || process.platform !== 'linux' || !process.getuid?.() || !process.env.XDG_CONFIG_HOME)
  throw new Error('Probe requires a non-root disposable GitHub Linux runner and dedicated XDG config');
@@ -20,7 +21,7 @@ for (const key of [FuseV1Options.RunAsNode, FuseV1Options.EnableNodeOptionsEnvir
 for (const key of [FuseV1Options.EnableCookieEncryption, FuseV1Options.EnableEmbeddedAsarIntegrityValidation, FuseV1Options.OnlyLoadAppFromAsar]) if (wire[key] !== FuseState.ENABLE) throw new Error('Missing installed fuse');
 const portFile = join(process.env.XDG_CONFIG_HOME, 'Dilla', 'DevToolsActivePort');
 await rm(portFile, { force: true });
-const child = spawn(executable, ['--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0'], { stdio: 'ignore' });
+const child = spawn('/usr/bin/dilla-desktop', ['--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0'], { stdio: 'ignore' });
 let browser;
 try {
  await once(child, 'spawn');
@@ -52,7 +53,11 @@ try {
  }
  if (!instance) throw new Error('Stock app did not open the selected instance');
  await instance.getByRole('heading', { name: `Join ${instanceName}`, exact: true }).waitFor({ state: 'visible', timeout: 90000 });
- console.log('Stock client reached its real test instance onboarding. This is not installed acceptance.');
+ if (process.env.DILLA_NATIVE_ACCEPTANCE_OUTPUT) {
+  const sandbox = await observeRendererSandbox(browser, child.pid, [page, instance]);
+  await writeFile(process.env.DILLA_NATIVE_ACCEPTANCE_OUTPUT, JSON.stringify({ httpsOnboarding: true, sandbox }) + '\n', { flag: 'wx', mode: 0o644 });
+  console.log('Installed stock client reached HTTPS onboarding with observed renderer sandboxing.');
+ } else console.log('Stock client reached its real test instance onboarding. This is not installed acceptance.');
 } finally {
  if (browser) await browser.close().catch(() => {});
  if (child.exitCode === null && child.signalCode === null) { child.kill('SIGTERM'); await Promise.race([once(child, 'exit'), new Promise(resolve => setTimeout(resolve, 5000))]); if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); }

@@ -26,7 +26,25 @@ test('AUR recipe pins exact immutable DEB and package version', () => {
  assert.ok(files.PKGBUILD.includes(hash));
  assert.ok(files['.SRCINFO'].includes(hash));
  assert.match(files['.SRCINFO'], /depends = libpipewire\n/);
+ assert.match(files.PKGBUILD, /^options=\('!strip'\)$/m, 'binary repackaging must preserve the accepted ELF and ASAR-integrity-bearing executable');
+ assert.match(files['.SRCINFO'], /\toptions = !strip\n/);
  assert.throws(() => aurRecipe('0.1.0-beta.1', 'SKIP'));
+});
+
+test('real AUR package function preserves the standard Chromium setuid helper', { skip: process.platform !== 'linux' }, async () => {
+ const root = await mkdtemp(join(tmpdir(), 'dilla-aur-helper-'));
+ try {
+  const source = join(root, 'source'), pkg = join(root, 'pkg'), payload = join(root, 'payload');
+  await mkdir(source); await mkdir(pkg); await mkdir(join(payload, 'opt/Dilla'), { recursive: true });
+  await writeFile(join(payload, 'opt/Dilla/chrome-sandbox'), 'standard helper fixture', { mode: 0o755 });
+  execFileSync('bsdtar', ['-czf', join(source, 'data.tar.gz'), '-C', payload, 'opt']);
+  await writeFile(join(source, 'debian-binary'), '2.0\n');
+  const name = 'dilla-1.2.3-linux-x64.deb';
+  execFileSync('bsdtar', ['--format=ar', '-cf', join(source, name), '-C', source, 'debian-binary', 'data.tar.gz']);
+  const recipe = join(root, 'PKGBUILD'); await writeFile(recipe, aurRecipe('1.2.3', 'a'.repeat(64)).PKGBUILD);
+  execFileSync('bash', ['-eu', '-c', 'source "$1"; package', 'aur-fixture', recipe], { env: { ...process.env, srcdir: source, pkgdir: pkg } });
+  assert.equal((await stat(join(pkg, 'opt/Dilla/chrome-sandbox'))).mode & 0o7777, 0o4755);
+ } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test('native packaging removes write access for non-owner without following links', { skip: process.platform !== 'linux' }, async () => {

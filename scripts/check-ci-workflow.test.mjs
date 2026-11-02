@@ -167,13 +167,36 @@ test('Linux sandbox foundation is required exactly once by completion and final 
 const REAL_RELEASE = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'release.yml'), 'utf8');
 
 const REAL_DESKTOP = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'desktop.yml'), 'utf8');
+test('desktop checker refuses missing installed native package acceptance gates', () => {
+ const block = REAL_DESKTOP.split('\n  native-linux-package-acceptance:\n')[1]?.split(/\n  [a-z][a-z0-9-]*:\n/)[0] ?? '';
+ const root = fixture(GOOD);
+ writeFileSync(join(root, '.github/workflows/desktop.yml'), REAL_DESKTOP.replace('\n  native-linux-package-acceptance:\n' + block, ''));
+ assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('native package acceptance')));
+});
+test('native format acceptance rejects skipped/commented runs, omitted formats and foreign artifacts', () => {
+ const block = REAL_DESKTOP.split('\n  native-linux-package-acceptance:\n')[1]?.split(/\n  [a-z][a-z0-9-]*:\n/)[0] ?? '';
+ assert.ok(block);
+ for (const [before, after] of [
+  ['format: aur, label: AUR', 'format: aur, label: RPM'],
+  ['needs: [test-tools, native-linux-packages]', 'needs: test-tools'],
+  ['persist-credentials: false', 'persist-credentials: true'],
+  ['run: bash e2e/web/support/native-linux-package-run.sh', '# run: bash e2e/web/support/native-linux-package-run.sh'],
+  ['name: Installed ${{ matrix.label }} package acceptance', 'name: Installed ${{ matrix.label }} package acceptance\n        if: false'],
+  ['name: desktop-installers-linux-packages-x64', 'run-id: 123\n          name: desktop-installers-linux-packages-x64'],
+ ]) {
+  assert.ok(block.includes(before));
+  const root = fixture(GOOD); writeFileSync(join(root, '.github/workflows/desktop.yml'), REAL_DESKTOP.replace(block, block.replace(before, after)));
+  assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('native package acceptance')), before);
+ }
+});
 test('desktop workflow checker requires the native feasibility job and its installed ASAR comparison', () => {
+ const stock = /^  native-stock-feasibility:\n[\s\S]*?(?=^  [a-z][\w-]*:)/m.exec(REAL_DESKTOP)[0];
  for (const [before, after] of [
   ['  native-stock-feasibility:', '  removed-stock-feasibility:'],
   ['          cmp "$RUNNER_TEMP/native-extracted/opt/Dilla/resources/app.asar" /opt/Dilla/resources/app.asar', '          # cmp "$RUNNER_TEMP/native-extracted/opt/Dilla/resources/app.asar" /opt/Dilla/resources/app.asar'],
   ['          persist-credentials: false', '          persist-credentials: true'],
  ]) {
-  const root = fixture(GOOD), changed = REAL_DESKTOP.replace(before, after);
+  const root = fixture(GOOD), changed = REAL_DESKTOP.replace(stock, stock.replace(before, after));
   assert.notEqual(changed, REAL_DESKTOP);
   writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
   assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('native stock feasibility')));

@@ -117,8 +117,14 @@ same-run `desktop-linux-package-acceptance-{deb,rpm,aur}-x64` jobs, each with it
 `Installed {DEB,RPM,AUR} package acceptance` step. These must exercise the actual
 source-bound installed format, normal launch and sandboxing. The new producer is
 build/source proof only and supplies none of those gates. The existing Ubuntu
-stock-DEB feasibility run proved installation and HTTPS Connect/onboarding; it
-qualifies neither the full native-format release nor RPM/AUR installed behavior.
+stock-DEB feasibility run proved installation and HTTPS Connect/onboarding. The
+format gates consume the exact same-run release packages, install through apt,
+dnf or makepkg/pacman, and observe normal launch, HTTPS onboarding and renderer
+sandboxing against the same shipping payload. Ubuntu 24.04 is the runtime baseline;
+pinned Fedora/Arch userspace containers do not establish native SELinux/kernel
+qualification. Default local-file package signature policy is preserved; these
+checks do not claim signed distribution-repository publication. The gates still
+need actual successful CI runs before native-format release is qualified.
 The shared Linux account/key continuity and existing normal AppImage upgrade
 requirements remain in force.
 

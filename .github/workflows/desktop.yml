@@ -18,6 +18,8 @@ jobs:
           - { os: macos-15, platform: mac, arch: arm64 }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
@@ -157,6 +159,57 @@ jobs:
             ${{ runner.temp }}/native-linux-packages/build-provenance-linux-packages-x64.json
           if-no-files-found: error
 
+  native-linux-package-acceptance:
+    name: desktop-linux-package-acceptance-${{ matrix.format }}-x64
+    needs: [test-tools, native-linux-packages]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { format: deb, label: DEB }
+          - { format: rpm, label: RPM }
+          - { format: aur, label: AUR }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: desktop-installers-linux-packages-x64
+          path: ${{ runner.temp }}/native-linux-package-inputs
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-e2e-tools-linux-x64-${{ github.sha }}
+          path: artifacts/e2e-test-tools
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-web-dist
+          path: packages/web/dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - run: sudo apt-get update && sudo apt-get install -y libarchive-tools
+      # Attach to installed Electron via CDP; no downloaded test browser or
+      # Electron/npm native build is used by this acceptance consumer.
+      - run: npm ci --ignore-scripts
+      - name: Test native package acceptance observers
+        run: node --test e2e/unit/native-linux-package-acceptance.test.mjs e2e/unit/native-stock-sandbox.test.mjs
+      - name: Installed ${{ matrix.label }} package acceptance
+        run: bash e2e/web/support/native-linux-package-run.sh "${{ matrix.format }}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: desktop-linux-package-observation-${{ matrix.format }}-x64
+          path: |
+            ${{ runner.temp }}/native-linux-package-acceptance/*.json
+            ${{ runner.temp }}/native-linux-package-acceptance/*.txt
+          if-no-files-found: error
+
   native:
     name: desktop-${{ matrix.platform }}-${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
@@ -171,6 +224,8 @@ jobs:
           - { os: macos-15, platform: mac, arch: arm64 }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
@@ -317,6 +372,8 @@ jobs:
           - { os: macos-15, platform: mac, arch: arm64 }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
@@ -416,6 +473,8 @@ jobs:
           - { os: macos-15, platform: mac, arch: arm64 }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc

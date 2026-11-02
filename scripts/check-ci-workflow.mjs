@@ -2,6 +2,8 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { gateExpression, JOB_GATES, jobRuns, reachableOutputs } from './ci-areas.mjs';
 import { checkNativeStockFeasibility } from './check-native-stock-feasibility.mjs';
+import { createRequire } from 'node:module';
+const yaml = createRequire(import.meta.url)('js-yaml');
 
 /**
  * Every job the workflow must carry (interfaces §5). Ruling L added the two Go jobs: they landed with
@@ -1227,6 +1229,29 @@ export function checkDesktopWorkflow(root) {
   if (/--no-sandbox|contents: write|--publish always/.test(text)) problems.push(`${file}: desktop validation must keep sandboxing and cannot publish`);
   const body = job => text.split(`\n  ${job}:\n`)[1]?.split(/\n  [a-z][a-z0-9-]*:\n/)[0] ?? '';
   const nativeSteps = jobSteps(body('native'));
+  const formatAcceptance = body('native-linux-package-acceptance');
+  for (const required of [
+    'name: desktop-linux-package-acceptance-${{ matrix.format }}-x64',
+    'needs: [test-tools, native-linux-packages]', 'runs-on: ubuntu-24.04',
+    '- { format: deb, label: DEB }', '- { format: rpm, label: RPM }', '- { format: aur, label: AUR }',
+    'persist-credentials: false', 'node-version-file: .nvmrc',
+    'name: desktop-installers-linux-packages-x64', 'path: ${{ runner.temp }}/native-linux-package-inputs',
+    'name: dilla-e2e-tools-linux-x64-${{ github.sha }}', 'name: dilla-web-dist', 'name: dilla-core-wasi',
+    'run: npm ci --ignore-scripts',
+    'run: node --test e2e/unit/native-linux-package-acceptance.test.mjs e2e/unit/native-stock-sandbox.test.mjs',
+    'name: Installed ${{ matrix.label }} package acceptance\n        run: bash e2e/web/support/native-linux-package-run.sh "${{ matrix.format }}"',
+    'name: desktop-linux-package-observation-${{ matrix.format }}-x64', 'if-no-files-found: error',
+  ]) if (!formatAcceptance.includes(required)) problems.push(`${file}: native package acceptance missing ${required}`);
+  if (/^\s*if:|continue-on-error|run-id:|repository:|github-token:|persist-credentials: true|build-native-linux-packages|--no-sandbox/m.test(formatAcceptance)) problems.push(`${file}: native package acceptance must consume same-run artifacts without skips, rebuilds or credentials`);
+  try {
+    const job = yaml.load(text).jobs['native-linux-package-acceptance'], steps = job?.steps ?? [];
+    const download = name => steps.findIndex(step => step.uses?.startsWith('actions/download-artifact@') && step.with?.name === name);
+    const accept = steps.findIndex(step => step.name === 'Installed ${{ matrix.label }} package acceptance' && step.run === 'bash e2e/web/support/native-linux-package-run.sh "${{ matrix.format }}"');
+    if (JSON.stringify(job?.strategy?.matrix?.include) !== JSON.stringify([{format:'deb',label:'DEB'},{format:'rpm',label:'RPM'},{format:'aur',label:'AUR'}])
+      || steps.filter(step => step.uses?.startsWith('actions/checkout@') && step.with?.['persist-credentials'] === false).length !== 1
+      || accept < 0 || ['desktop-installers-linux-packages-x64','dilla-e2e-tools-linux-x64-${{ github.sha }}','dilla-web-dist','dilla-core-wasi'].some(name => download(name) < 0 || download(name) >= accept)
+      || [...steps, job].some(item => !item || Object.hasOwn(item,'if') || Object.hasOwn(item,'continue-on-error'))) problems.push(`${file}: native package acceptance must execute all three formats after their same-run artifact downloads`);
+  } catch { problems.push(`${file}: invalid native package acceptance YAML`); }
   const packages = body('native-linux-packages'), packageSteps = jobSteps(packages);
   const packageBuild = `name: Build native Linux release packages
 run: |
