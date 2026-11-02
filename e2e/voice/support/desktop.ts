@@ -1,12 +1,31 @@
-import type { BrowserContext, LaunchOptions } from '@playwright/test';
+import { test as playwrightTest, type BrowserContext, type LaunchOptions, type TestInfo } from '@playwright/test';
+import { writeFile } from 'node:fs/promises';
 import { desktopApplication, launchDesktopContext } from '../../web/support/electron.ts';
+import { prepareMacNotificationDiagnostic } from '../../web/support/mac-notification-diagnostics.ts';
 
 export const liveDesktopVoiceContexts = new Set<BrowserContext>();
+let diagnosticNumber = 0;
 
 export async function desktopVoiceContext(options: { baseURL?: string; permissions?: string[]; launchOptions: LaunchOptions; viewport?: { width: number; height: number } | null }): Promise<BrowserContext> {
- const context = await launchDesktopContext(null, options, false);
- const application = desktopApplication(context);
+ let info: TestInfo | undefined;
+ try { info = playwrightTest.info(); } catch { /* Standalone callers have no artifact owner. */ }
+ const enabled = process.env.DILLA_E2E_MAC_NOTIFICATION_DIAGNOSTICS === '1' && !process.env.DILLA_PERFORMANCE_CLIENT;
+ const path = enabled && process.platform === 'darwin' ? info?.outputPath(`mac-native-notification-${++diagnosticNumber}.json`) : undefined;
+ const diagnostic = await prepareMacNotificationDiagnostic({ enabled, environment: options.launchOptions.env, report: async facts => {
+  console.info('Mac native notification diagnostic: ' + JSON.stringify(facts));
+  if (path) {
+   await writeFile(path, JSON.stringify(facts));
+   if (facts.finished) await info?.attach('Mac native notification diagnostic', { path, contentType: 'application/json' });
+  }
+ } });
+ let context: BrowserContext | undefined;
  try {
+  context = await launchDesktopContext(null, diagnostic ? { ...options, launchOptions: { ...options.launchOptions, env: diagnostic.environment } } : options, false);
+  const application = desktopApplication(context);
+  if (diagnostic) {
+   try { await diagnostic.runtime(await application.evaluate(({ app }) => ({ execPath: process.execPath, isPackaged: app.isPackaged }))); }
+   catch { await diagnostic.capture(); } // Evidence collection cannot replace a product/test error.
+  }
   await application.evaluate(({ dialog }, permissions) => {
    const original = dialog.showMessageBox.bind(dialog);
    const synchronous = dialog.showMessageBoxSync.bind(dialog);
@@ -38,9 +57,13 @@ export async function desktopVoiceContext(options: { baseURL?: string; permissio
   }
   liveDesktopVoiceContexts.add(context);
   const close = context.close.bind(context);
-  context.close = async options => { try { await close(options); } finally { liveDesktopVoiceContexts.delete(context); } };
+  const ownedContext = context;
+  context.close = async options => { try { await close(options); } finally { liveDesktopVoiceContexts.delete(ownedContext); await diagnostic?.finish(); } };
   return context;
- } catch (error) { await context.close(); throw error; }
+ } catch (error) {
+  try { await context?.close(); } catch { /* Preserve the original launch or permission failure. */ }
+  await diagnostic?.finish(); throw error;
+ }
 }
 
 export interface NativeScreenRequest {

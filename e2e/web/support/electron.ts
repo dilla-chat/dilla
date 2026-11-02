@@ -10,6 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { en } from '../../../packages/web/src/strings/en.ts';
 import { desktopNetwork } from './desktop-network.ts';
+import { electronChildEnvironment } from './mac-notification-diagnostics.ts';
 
 export const desktopE2E = () => process.env.DILLA_ELECTRON_E2E === '1';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -37,7 +38,9 @@ export async function launchDesktopContext(profile: string | null, options: Brow
  const canonical = canonicalInstance(instance, true);
  try { await access(join(directory, 'desktop.json')); }
  catch { await writeFile(join(directory, 'desktop.json'), JSON.stringify({ version: 1, instances: [canonical], autostart: false })); }
- const app = await _electron.launch({ chromiumSandbox: true, args: [join(root, 'packages/desktop'), `--profile=${directory}`, `--instance=${instance}`, '--allow-loopback', ...(options.launchOptions?.args ?? [])] });
+ const app = await _electron.launch({ chromiumSandbox: true,
+  ...(options.launchOptions?.env === undefined ? {} : { env: electronChildEnvironment(options.launchOptions.env) }),
+  args: [join(root, 'packages/desktop'), `--profile=${directory}`, `--instance=${instance}`, '--allow-loopback', ...(options.launchOptions?.args ?? [])] });
  const child = app.process();
  const ended = once(child, 'close');
  const terminate = () => {

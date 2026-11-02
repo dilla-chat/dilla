@@ -406,14 +406,17 @@ jobs:
       - run: node node_modules/electron/install.js
       - name: Test-host directory locks retain shared and exclusive semantics
         run: go test ./internal/ops -run 'Lock|BackupAndServe|ServeAdmits'
-      - run: npm exec -w @dilla/e2e -- playwright install --with-deps chromium
-      - if: runner.os == 'Linux'
-        run: node packages/desktop/scripts/prepare-browser-sandbox.mjs
       - run: npm run build -w @dilla/desktop -- --existing-client
       - if: runner.os == 'Linux'
         run: |
           sudo chown root:root node_modules/electron/dist/chrome-sandbox
           sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+      - name: macOS native notification authorization diagnostic
+        if: runner.os == 'macOS'
+        env:
+          DILLA_E2E_MAC_NOTIFICATION_DIAGNOSTICS: '1'
+        run: |
+          npm exec -w @dilla/e2e -- playwright test --config playwright.desktop-voice.config.ts --project=electron-voice ring.spec.ts --grep "answer: bob rings" --workers=1 --max-failures=1
       - name: Desktop voice end-to-end coverage in Electron
         if: runner.os == 'Linux'
         env:
@@ -421,7 +424,12 @@ jobs:
         run: xvfb-run -a dbus-run-session -- bash packages/desktop/scripts/with-window-manager.sh npm exec -w @dilla/e2e -- playwright test --config playwright.desktop-voice.config.ts --project=electron-voice --workers=1 --max-failures=1
       - name: Desktop voice end-to-end coverage in Electron
         if: runner.os != 'Linux'
+        env:
+          DILLA_E2E_MAC_NOTIFICATION_DIAGNOSTICS: '1'
         run: npm exec -w @dilla/e2e -- playwright test --config playwright.desktop-voice.config.ts --project=electron-voice --workers=1 --max-failures=1
+      - run: npm exec -w @dilla/e2e -- playwright install --with-deps chromium
+      - if: runner.os == 'Linux'
+        run: node packages/desktop/scripts/prepare-browser-sandbox.mjs
       - name: Desktop performance comparison
         if: runner.os == 'Linux'
         env:
@@ -442,6 +450,7 @@ jobs:
           path: |
             e2e/desktop-voice-results/**/autoplay-*.json
             e2e/desktop-voice-results/**/signal-lifecycle.json
+            e2e/desktop-voice-results/**/mac-native-notification-*.json
           if-no-files-found: error
       - if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7

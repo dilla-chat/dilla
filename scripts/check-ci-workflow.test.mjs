@@ -323,6 +323,19 @@ test('desktop voice cannot shard its frozen-clock suite', () => {
   assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('single frozen-clock worker')));
 });
 
+test('Electron voice runs before downloading the browser performance baseline', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dilla-voice-baseline-order-'));
+  mkdirSync(join(root, '.github/workflows'), { recursive: true });
+  addE2ePackage(root);
+  const start = REAL_DESKTOP.indexOf('\n  voice:\n'), end = REAL_DESKTOP.indexOf('\n  client:\n', start);
+  const command = '      - run: npm exec -w @dilla/e2e -- playwright install --with-deps chromium\n';
+  let voice = REAL_DESKTOP.slice(start, end);
+  assert.equal(voice.split(command).length, 2);
+  voice = voice.replace(command, '').replace('      - name: Desktop voice end-to-end coverage in Electron\n', command + '      - name: Desktop voice end-to-end coverage in Electron\n');
+  writeFileSync(join(root, '.github/workflows/desktop.yml'), REAL_DESKTOP.slice(0, start) + voice + REAL_DESKTOP.slice(end));
+  assert.ok(checkDesktopWorkflow(root).some(problem => /browser baseline.*after Electron voice/.test(problem)));
+});
+
 test('installed upgrade acceptance cannot omit either NSIS or normal FUSE launch', () => {
   for (const [before, after] of [
     ["if: runner.os == 'Windows'\n        run: node --test packages/desktop/test/native/installed-upgrade.test.mjs", "if: runner.os == 'macOS'\n        run: node --test packages/desktop/test/native/installed-upgrade.test.mjs"],

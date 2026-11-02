@@ -1424,6 +1424,13 @@ run: node packages/desktop/scripts/test-linux-sandbox-package.mjs packages/deskt
     if (!voice.includes(required)) problems.push(`${file}: Electron voice coverage missing ${required}`);
   }
   if (/--shard|shard:/.test(voice)) problems.push(`${file}: the desktop voice suite must preserve its single frozen-clock worker`);
+  const voiceSteps = jobSteps(voice);
+  const lastVoice = voiceSteps.findLastIndex(step => step.includes('name: Desktop voice end-to-end coverage in Electron'));
+  const baselineInstall = voiceSteps.findIndex(step => step.includes('run: npm exec -w @dilla/e2e -- playwright install --with-deps chromium'));
+  const baselineSandbox = voiceSteps.findIndex(step => step.includes('run: node packages/desktop/scripts/prepare-browser-sandbox.mjs'));
+  const firstPerformance = voiceSteps.findIndex(step => step.includes('name: Desktop performance comparison'));
+  if (lastVoice < 0 || baselineInstall <= lastVoice || baselineSandbox <= baselineInstall || firstPerformance <= baselineSandbox)
+    problems.push(`${file}: browser baseline setup must run after Electron voice and before performance measurement`);
   assertEveryUploadFailsOnNoFiles(text, problems, file);
   return problems;
 }
