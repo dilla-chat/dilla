@@ -30,7 +30,7 @@ export async function compileWindowsNSIS({ directory, archive, productName = 'Di
  * Never store NSIS registers that may contain paths or account data. */
 export function withInitialInstallDiagnostics(source) {
  source = source.replaceAll('\r\n', '\n');
- const sites = [], wrappers = [], conditions = []; let current = '', preflights = 0;
+ const sites = [], wrappers = [], conditions = []; let current = '', preflights = 0, renames = 0, retryRefusal = '';
  source = source.split('\n').map(line => {
   if (/^\s*!if/.test(line)) conditions.push(line.trim() === '!if "${Prefix}" != "un."');
   if (/^\s*!endif\s*$/.test(line)) conditions.pop();
@@ -40,18 +40,34 @@ export function withInitialInstallDiagnostics(source) {
    sites.push(current + ':refusal-' + (sites.length + 1));
    const name = 'FixtureRefusal' + sites.length;
    const prefixes = refusal[2] && !conditions.includes(true) ? ['', 'un.'] : [''];
-   for (const prefix of prefixes) wrappers.push(`Function ${prefix}${name}\n  StrCpy $FixtureFailureSite ${sites.length}\n  Call ${prefix}Fail\nFunctionEnd\n`);
+   if (current === 'PrepareInitialInstallation') {
+    if (retryRefusal) throw new Error('Initial install diagnostic boundary changed');
+    retryRefusal = name;
+   }
+   for (const prefix of prefixes) wrappers.push(`Function ${prefix}${name}\n  StrCpy $FixtureFailureSite ${sites.length}\n${current === 'PrepareInitialInstallation' ? '@@INITIAL_RETRY_STAGE_SITES@@\n' : ''}  Call ${prefix}Fail\nFunctionEnd\n`);
    return `${refusal[1]}Call ${refusal[2] ?? ''}${name}`;
   }
   if (/^\s+ExecWait .*--installer-preflight=initial.* \$0$/.test(line)) {
+   if (current !== 'PrepareInitialInstallation') throw new Error('Initial install diagnostic boundary changed');
    const name = 'FixtureInitialPreflight' + (++preflights);
-   wrappers.push(`Function ${name}\n${line}\n  StrCpy $FixtureNativeExit $0\nFunctionEnd\n`);
+   wrappers.push(`Function ${name}\n  StrCpy $FixtureInitialStage ${preflights}\n${line}\n  StrCpy $FixtureNativeExit $0\nFunctionEnd\n`);
    return '  Call ' + name;
+  }
+  if (current === 'PrepareInitialInstallation' && /^\s+Rename /.test(line)) {
+   const expected = ['    Rename "$INSTDIR" "$ProgramArchive"', '    Rename "$DataRoot" "$DataArchive"'];
+   if (line !== expected[renames]) throw new Error('Initial install diagnostic boundary changed');
+   const name = 'FixtureInitialRename' + (++renames);
+   wrappers.push(`Function ${name}\n  StrCpy $FixtureInitialStage ${renames + 2}\n${line}\nFunctionEnd\n`);
+   return line.match(/^\s*/)[0] + 'Call ' + name;
   }
   return line;
  }).join('\n');
- if (preflights !== 2 || sites.length < 10 || !source.includes('Function Fail\n') || !source.includes('Function .onInit\n') || !source.includes('Var DataRoot\n')) throw new Error('Initial install diagnostic boundary changed');
- source = source.replace('Var DataRoot\n', 'Var FixtureFailureSite\nVar FixtureNativeExit\nVar DataRoot\n')
+ if (preflights !== 2 || renames !== 2 || !retryRefusal || sites.length < 10 || !source.includes('Function Fail\n') || !source.includes('Function .onInit\n') || !source.includes('Var DataRoot\n')) throw new Error('Initial install diagnostic boundary changed');
+ const stageSites = ['preflight-1', 'preflight-2', 'program-rename', 'data-rename'].map((stage, index) => {
+  sites.push('PrepareInitialInstallation:' + stage);
+  return `  StrCmp $FixtureInitialStage ${index + 1} 0 +2\n    StrCpy $FixtureFailureSite ${sites.length}`;
+ }).join('\n');
+ source = source.replace('Var DataRoot\n', 'Var FixtureFailureSite\nVar FixtureNativeExit\nVar FixtureInitialStage\nVar DataRoot\n')
   .replace('Function .onInit\n', 'Function .onInit\n  StrCpy $FixtureNativeExit "not-run"\n')
   .replace('Function Fail\n', `Function Fail
   Push $R9
@@ -62,7 +78,7 @@ export function withInitialInstallDiagnostics(source) {
 `);
  // Original instruction positions stay one-for-one: relative +N branches must
  // skip the same operations. Diagnostic instructions live only in wrappers.
- return { source: source + '\n' + wrappers.join('\n'), sites: Object.freeze(sites) };
+ return { source: source + '\n' + wrappers.join('\n').replace('@@INITIAL_RETRY_STAGE_SITES@@', stageSites), sites: Object.freeze(sites) };
 }
 export function initialInstallDiagnostic(value, sites) {
  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 3 || value.format !== 1

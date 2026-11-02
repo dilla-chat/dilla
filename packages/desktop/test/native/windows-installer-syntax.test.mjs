@@ -51,6 +51,7 @@ function preservesOriginalInstructions(original, transformed) {
    const line = oldLines[index];
    if (/^\s+Call (?:\$\{Prefix\})?Fail$/.test(line)) assert.match(lines[index], /^\s+Call (?:\$\{Prefix\})?FixtureRefusal\d+$/);
    else if (/^\s+ExecWait .*--installer-preflight=initial.* \$0$/.test(line)) assert.match(lines[index], /^\s+Call FixtureInitialPreflight\d+$/);
+   else if (name === 'PrepareInitialInstallation' && /^\s+Rename /.test(line)) assert.match(lines[index], /^\s+Call FixtureInitialRename[12]$/);
    else assert.equal(lines[index], line, name + ': original instruction unchanged');
   }
  }
@@ -63,6 +64,22 @@ test('initial diagnostic wrappers preserve relative branch positions and refuse 
  // Reproduce the two dangerous prior insertions across original +N branches.
  assert.throws(() => preservesOriginalInstructions(original, source.replace(/(\n\s+Call FixtureRefusal\d+)/, '\n  StrCpy $FixtureFailureSite 1$1')), /instruction positions/);
  assert.throws(() => preservesOriginalInstructions(original, source.replace(/(\n\s+Call FixtureInitialPreflight\d+)/, '$1\n  StrCpy $FixtureNativeExit $0')), /instruction positions/);
+});
+test('initial retry refusal distinguishes both preflights and namespace renames without changing instruction slots', async () => {
+ const original = (await readFile(new URL('../../build/windows-installer.nsi', import.meta.url), 'utf8')).replaceAll('\r\n', '\n');
+ for (const input of [original, original.replaceAll('\n', '\r\n')]) {
+  const { source, sites } = withInitialInstallDiagnostics(input);
+  preservesOriginalInstructions(input, source);
+  assert.deepEqual(sites.slice(-4), ['PrepareInitialInstallation:preflight-1', 'PrepareInitialInstallation:preflight-2', 'PrepareInitialInstallation:program-rename', 'PrepareInitialInstallation:data-rename']);
+  for (const [id, stage] of [[1, 1], [2, 2]]) assert.match(source, new RegExp(`Function FixtureInitialPreflight${id}\\n  StrCpy \\$FixtureInitialStage ${stage}\\n  ExecWait`));
+  for (const [id, stage, from, to] of [[1, 3, 'INSTDIR', 'ProgramArchive'], [2, 4, 'DataRoot', 'DataArchive']]) {
+   assert.ok(source.includes(`Function FixtureInitialRename${id}\n  StrCpy $FixtureInitialStage ${stage}\n    Rename "$${from}" "$${to}"\nFunctionEnd`));
+  }
+  for (let stage = 1; stage <= 4; stage++) assert.ok(source.includes(`StrCmp $FixtureInitialStage ${stage} 0 +2\n    StrCpy $FixtureFailureSite ${sites.length - 4 + stage}`));
+ }
+ const rename = '    Rename "$INSTDIR" "$ProgramArchive"';
+ assert.throws(() => withInitialInstallDiagnostics(original.replace(rename, '    ; removed rename')), /boundary changed/);
+ assert.throws(() => withInitialInstallDiagnostics(original.replace(rename, rename + '\n' + rename)), /boundary changed/);
 });
 test('private initial installer diagnostics expose only static refusal phases and numeric guard statuses', async () => {
  const source = await readFile(new URL('../../build/windows-installer.nsi', import.meta.url), 'utf8');
