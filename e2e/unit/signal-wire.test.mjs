@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { signalWireSummary } from '../voice/support/signal-wire.ts';
+import { signalWireSummary, startSignalWire } from '../voice/support/signal-wire.ts';
 
 function fixture() {
   const names = ['REQUEST_ALIVE', 'HTTP_STREAM_REQUEST_BOUND_TO_JOB', 'SOCKET_POOL_BOUND_TO_SOCKET', 'WEBSOCKET_SENT_FRAME_HEADER', 'WEBSOCKET_RECV_FRAME_HEADER', 'SOCKET_READ_ERROR'];
@@ -42,4 +42,18 @@ test('a burst cannot produce an unbounded wire diagnostic', () => {
   const [summary] = signalWireSummary(log);
   assert.equal(summary.frames.length, 32); assert.equal(summary.errors.length, 32);
   assert.equal(summary.sentClose, 2000);
+});
+
+
+test('a pre-existing NetLog capture is never started or stopped by another diagnostic owner', async () => {
+  const { stat } = await import('node:fs/promises'), { dirname } = await import('node:path');
+  let path, starts = 0, stops = 0;
+  const netLog = { currentlyLogging: true, async startLogging() { starts++; }, async stopLogging() { stops++; } };
+  const application = { evaluate: async (fn, argument) => {
+    path = argument;
+    return fn({ BrowserWindow: { getAllWindows: () => [{ webContents: { session: { netLog } } }] } }, argument);
+  } };
+  await assert.rejects(startSignalWire(application), /Private signal capture already active/);
+  assert.equal(starts, 0); assert.equal(stops, 0); assert.equal(netLog.currentlyLogging, true);
+  await assert.rejects(stat(dirname(path)), { code: 'ENOENT' });
 });

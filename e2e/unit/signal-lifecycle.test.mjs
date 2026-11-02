@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { EventEmitter, once } from 'node:events';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { WebSocketServer } from 'ws';
 import { SIGNAL_PREFIX, installSignalObserver, markSignalLifecycle, signalLifecycleDiagnostics, signalObservation, sdkSignalEvent } from '../voice/support/signal-lifecycle.ts';
@@ -125,6 +125,49 @@ test('AFK diagnostics persist a real abrupt close between explicit leave and hos
       assert.ok(saved.events.findIndex(event => event.mark === 'before-host-stop') > cut);
       assert.equal(/PRIVATE_SECRET|access_token|127\.0\.0\.1/.test(JSON.stringify(saved)), false);
       assert.equal(attachments.length, 1);
+      assert.equal(page.listenerCount('console'), 0);
+    });
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('a failed optional bounded NetLog capture retains real unclean-close observations and cleans private output', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dilla-signal-diagnostic-'));
+  let privatePath, stops = 0;
+  const netLog = {
+    currentlyLogging: false,
+    async startLogging(path, options) {
+      privatePath = path;
+      assert.deepEqual(options, { captureMode: 'default', maxFileSize: 8 * 1024 * 1024 });
+      await writeFile(path, 'PRIVATE_SECRET raw diagnostic routing data');
+      this.currentlyLogging = true; // Electron retains its exporter after a native start rejection.
+      throw new Error('net::ERR_INSUFFICIENT_RESOURCES PRIVATE_SECRET');
+    },
+    async stopLogging() { stops++; this.currentlyLogging = false; throw new Error('net::ERR_UNEXPECTED'); },
+  };
+  const application = { evaluate: async (fn, argument) => fn({ BrowserWindow: { getAllWindows: () => [{ webContents: { session: { netLog } } }] } }, argument) };
+  try {
+    await server(async (server, origin) => {
+      const page = new EventEmitter();
+      const native = { WebSocket, URL, performance, console: { info: text => page.emit('console', { text: () => text }) } };
+      Object.assign(page, {
+        context: () => ({ addInitScript: async () => {} }),
+        evaluate: async fn => fn === installSignalObserver ? runInNewContext(`(${fn.toString()})()`, native) : { phase: 'in', hasLeave: true },
+        isClosed: () => false, workers: () => [],
+      });
+      const diagnostics = signalLifecycleDiagnostics({ outputPath: name => join(dir, name), attach: async () => {} }, 'autoplay');
+      await diagnostics.watch({ name: 'alice', page }, application);
+      const connected = once(server, 'connection'), socket = new native.WebSocket(`${origin}/rtc/v1?access_token=PRIVATE_SECRET`);
+      await once(socket, 'open');
+      const [remote] = await connected, closed = once(socket, 'close');
+      remote.terminate(); await closed;
+      await diagnostics.save();
+      const saved = JSON.parse(await readFile(join(dir, 'signal-lifecycle.json'), 'utf8'));
+      assert.equal(saved.events.filter(event => event.source === 'wire' && event.event === 'capture-unavailable').length, 1);
+      assert.ok(saved.events.some(event => event.source === 'websocket' && event.event === 'closed' && event.code === 1006 && event.clean === false));
+      assert.doesNotMatch(JSON.stringify(saved), /PRIVATE_SECRET|access_token|ERR_INSUFFICIENT|127\.0\.0\.1/);
+      assert.equal(stops, 1); assert.equal(netLog.currentlyLogging, false);
+      await assert.rejects(readFile(privatePath), { code: 'ENOENT' });
+      await assert.rejects(stat(dirname(privatePath)), { code: 'ENOENT' });
       assert.equal(page.listenerCount('console'), 0);
     });
   } finally { await rm(dir, { recursive: true, force: true }); }
