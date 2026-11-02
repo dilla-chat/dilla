@@ -12,6 +12,8 @@ import { verifyRelease, type Artifact, type Release } from '../../../packages/de
 import { fixtureSandboxFeed } from '../../../packages/desktop/test/support/linux-sandbox-fixture-feed.mjs';
 // @ts-expect-error fixture helper is JavaScript
 import { provisionInstalledSandbox } from '../../../packages/desktop/test/support/linux-installed-sandbox-bootstrap.mjs';
+// @ts-expect-error fixture helper is JavaScript
+import { fixtureDesktopMetadata, fixtureLinuxDesktopOptions } from '../../../packages/desktop/test/support/linux-fixture-desktop.mjs';
 
 const repository = resolve(import.meta.dirname, '../../..');
 const desktop = join(repository, 'packages/desktop');
@@ -152,7 +154,7 @@ export async function createInstalledPackages(instance: string): Promise<Install
       const project = join(root, 'project-' + version), out = join(root, 'out-' + version), dist = join(project, 'dist');
       await mkdir(dist, { recursive: true }); await cp(join(desktop, 'dist'), dist, { recursive: true });
       await rm(join(dist, 'client'), { recursive: true, force: true }); await cp(join(repository, 'packages/web/dist'), join(dist, 'client'), { recursive: true });
-      await writeFile(join(project, 'package.json'), JSON.stringify({ name: 'dilla-account-acceptance-' + id, version, main: 'dist/main.cjs', description: 'Installed account acceptance', author: 'Dilla', license: 'AGPL-3.0-or-later' }));
+      await writeFile(join(project, 'package.json'), JSON.stringify({ name: 'dilla-account-acceptance-' + id, version, ...(process.platform === 'linux' ? fixtureDesktopMetadata() : {}), main: 'dist/main.cjs', description: 'Installed account acceptance', author: 'Dilla', license: 'AGPL-3.0-or-later' }));
       await build({ entryPoints: [join(desktop, 'src/preload.ts')], outfile: join(dist, 'preload.cjs'), bundle: true, platform: 'node', target: 'es2022', format: 'cjs', external: ['electron'] });
       await build({ entryPoints: [join(desktop, 'src/main.ts')], outfile: join(dist, process.platform === 'linux' ? 'main-app.cjs' : 'main.cjs'), define: process.platform === 'linux' ? { __DILLA_LINUX_INSTALL_KIND__: JSON.stringify('appimage') } : {}, bundle: true, platform: 'node', target: 'node24', format: 'cjs', external: ['electron'], banner: { js: installedEntrypointBanner(reports, version) }, plugins: [{ name: 'compiled-account-acceptance', setup(plugin) {
         plugin.onLoad({ filter: /[\\/]src[\\/]update-keys\.ts$/ }, () => ({ contents: `export const RELEASE_PUBLIC_KEYS=${JSON.stringify([publicKey])};`, loader: 'ts' }));
@@ -172,7 +174,7 @@ export async function createInstalledPackages(instance: string): Promise<Install
       } }] });
       const base: Record<string, unknown> = { appId, productName: product, executableName: 'dilla-desktop', toolsets: require(join(desktop, 'electron-builder.cjs')).toolsets, electronVersion: '45.2.1', electronDist: join(repository, 'node_modules/electron/dist'), directories: { output: out }, files: ['dist/**', 'package.json'], asar: true, afterPack: join(desktop, 'scripts/linux-appimage-launcher.cjs'), artifactBuildStarted: join(desktop, 'scripts/linux-appimage-artifact.cjs'), appImage: { executableArgs: [] },
         protocols: [{ name: 'CI-owned Dilla account fixture', schemes: [scheme] }], publish: { provider: 'generic', url: origin }, artifactName: `account-${version}.\${ext}`, electronFuses: INSTALLED_FUSES,
-        linux: { target: 'AppImage', category: 'Network', icon: join(desktop, 'assets/icon.png') }, win: { target: 'nsis', icon: join(desktop, 'assets/icon.png') },
+        linux: { ...fixtureLinuxDesktopOptions(), target: 'AppImage', category: 'Network', icon: join(desktop, 'assets/icon.png') }, win: { target: 'nsis', icon: join(desktop, 'assets/icon.png') },
         nsis: { script: join(desktop, 'build/windows-installer.nsi'), perMachine: false, oneClick: true, allowElevation: false, packElevateHelper: false, preCompressedFileExtensions: [], differentialPackage: false, deleteAppDataOnUninstall: false } };
       if (process.platform === 'darwin') Object.assign(base, { extraResources: [{ from: join(desktop, 'acceptance-bin/dilla-sparkle.node'), to: 'native/dilla-sparkle.node' }], mac: { target: 'dir', identity: '-', notarize: false,
         extraFiles: [{ from: join(desktop, 'native-bin/Sparkle.framework'), to: 'Frameworks/Sparkle.framework' }], extendInfo: { CFBundleVersion: version, SUFeedURL: origin + '/appcast.xml', SUPublicEDKey: sparklePublicKey, SURequireSignedFeed: true, SUVerifyUpdateBeforeExtraction: true, SUEnableAutomaticChecks: false, SUAutomaticallyUpdate: false, SUEnableInstallerLauncherService: true, SUEnableDownloaderService: false, NSAppTransportSecurity: { NSAllowsLocalNetworking: true } } } });
