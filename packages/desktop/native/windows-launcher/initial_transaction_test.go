@@ -54,9 +54,7 @@ func TestInitialPublicationNeverRollsBackVisibleOrUncertainAuthority(t *testing.
 		{"definitive prepublication refusal", initialPublicationNotInvoked, initialSeedAbsent, initialPrecommit},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			state := initialPrecommit
-			state = initialPublishAttempted
-			state = reconcileInitialPublication(state, tc.outcome, tc.observed)
+			state := reconcileInitialPublication(initialPublishAttempted, tc.outcome, tc.observed)
 			if state != tc.want {
 				t.Fatalf("got %v, want %v", state, tc.want)
 			}

@@ -86,7 +86,7 @@ func classifyInitialInstallation(l layout, cfg buildConfig, payload string, pkg 
 		return initialHold, errors.New("initial final and temporary seeds coexist")
 	}
 	var actual []byte
-	readErr := error(os.ErrNotExist)
+	readErr := os.ErrNotExist
 	if names["windows-active-0.json"] {
 		actual, readErr = readMetadata(filepath.Join(l.updates, "windows-active-0.json"), 4096)
 		if readErr != nil {
