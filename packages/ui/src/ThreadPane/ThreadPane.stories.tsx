@@ -10,7 +10,7 @@ import { ChannelHeader } from '../ChannelHeader/ChannelHeader.tsx';
 import { CommunityRail } from '../CommunityRail/CommunityRail.tsx';
 
 // A public thread: the root, its replies and its own composer. Strings are flow 11's (strings/thread.ts), as en.ts holds
-// them. Switch the theme in the toolbar (signal, light, high-contrast).
+// them. The theme toolbar uses the shared theme catalog.
 const meta = {
   title: 'Conversation/ThreadPane', component: ThreadPane, parameters: { layout: 'fullscreen' },
 } satisfies Meta<typeof ThreadPane>;

@@ -113,8 +113,8 @@ const oneListPlay = ({ canvasElement }: { canvasElement: HTMLElement }) => {
   if (people.length !== 4) throw new Error(`OneList: ${String(people.length)} nested people, not 4`);
 };
 export const OneList: Story = { args: ONE_LIST_ARGS, globals: { theme: 'signal' }, play: oneListPlay };
-export const OneListLight: Story = { args: ONE_LIST_ARGS, globals: { theme: 'light' }, play: oneListPlay };
-export const OneListHighContrast: Story = { args: ONE_LIST_ARGS, globals: { theme: 'high-contrast' }, play: oneListPlay };
+
+
 
 // web3.9 (UI-2): the row grammar. One name x and one trailing-slot right edge down the whole list.
 const MIXED_VOICE = {
@@ -175,15 +175,15 @@ const phonePlay = (story: string) => ({ canvasElement }: { canvasElement: HTMLEl
 };
 
 export const Mixed: Story = { args: MIXED_ARGS, globals: { theme: 'signal' }, decorators: [tall(240)], play: mixedPlay };
-export const MixedLight: Story = { args: MIXED_ARGS, globals: { theme: 'light' }, decorators: [tall(240)], play: mixedPlay };
-export const MixedHighContrast: Story = { args: MIXED_ARGS, globals: { theme: 'high-contrast' }, decorators: [tall(240)], play: mixedPlay };
+
+
 export const MixedPhone: Story = { args: MIXED_ARGS, globals: { theme: 'signal' }, decorators: [tall(360, true)], play: ({ canvasElement }) => { mixedPlay({ canvasElement }); phonePlay('MixedPhone')({ canvasElement }); } };
 
 const COLLAPSED_ARGS = { ...MIXED_ARGS, categories: [{ id: 'lounge', name: 'lounge', collapsed: true }, { id: 'raids', name: 'raids', collapsed: true }] };
 /** Both collapsed: each keeps the rows that are current, unread, mentioned or joined (R23). */
 export const Collapsed: Story = { args: COLLAPSED_ARGS, globals: { theme: 'signal' }, decorators: [tall(240)] };
-export const CollapsedLight: Story = { args: COLLAPSED_ARGS, globals: { theme: 'light' }, decorators: [tall(240)] };
-export const CollapsedHighContrast: Story = { args: COLLAPSED_ARGS, globals: { theme: 'high-contrast' }, decorators: [tall(240)] };
+
+
 
 const UNREAD_ARGS = { activeId: 'm', rowLabel: ROW_LABEL, channels: [
   { id: 'q', name: 'quiet', kind: 'text', readable: false },
@@ -196,8 +196,8 @@ const UNREAD_ARGS = { activeId: 'm', rowLabel: ROW_LABEL, channels: [
 ] as const };
 /** The selected mark (fill and 2px bar), the unread mark (bright name and 4px tick), the mention pill over the unread pill. */
 export const UnreadAndMention: Story = { args: UNREAD_ARGS, globals: { theme: 'signal' } };
-export const UnreadAndMentionLight: Story = { args: UNREAD_ARGS, globals: { theme: 'light' } };
-export const UnreadAndMentionHighContrast: Story = { args: UNREAD_ARGS, globals: { theme: 'high-contrast' } };
+
+
 export const UnreadAndMentionPhone: Story = { args: UNREAD_ARGS, globals: { theme: 'signal' }, decorators: [tall(360, true)], play: phonePlay('UnreadAndMentionPhone') };
 
 // Signal parity (README §5.4): the prototype's Midgard Crew sidebar at its first paint.

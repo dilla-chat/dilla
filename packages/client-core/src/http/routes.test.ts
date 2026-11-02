@@ -2104,45 +2104,6 @@ describe('managed community bot installation routes', () => {
   });
 });
 
-describe('bot Spotify authorization routes', () => {
-  const ATTEMPT = fill(16, 0x29);
-  const STATE = 'a'.repeat(43);
-  const CODE = 'spotify-code';
-  const authorizeUrl = 'https://accounts.spotify.com/authorize?response_type=code&client_id=client&redirect_uri=https%3A%2F%2Fdilla.test%2Fspotify&scope=streaming%20user-read-email%20user-read-private&state=' + STATE + '&code_challenge_method=S256&code_challenge=' + 'b'.repeat(43);
-
-  it('starts an attempt, forwards state/code once, and cancels with no content', async () => {
-    const { routes, t } = setup();
-    t.replies.push(cborReply(200, [ATTEMPT, authorizeUrl, 1_800_000_000]));
-    await expect(routes.beginBotSpotifyAttempt(COMMUNITY, 'step-up', 'client')).resolves.toEqual({
-      attemptId: ATTEMPT, authorizeUrl, expires: 1_800_000_000n,
-    });
-    expect(t.seen[0]).toMatchObject({ method: 'POST', url: `https://dilla.test/v1/communities/${hex(COMMUNITY)}/bot/spotify/attempts`, body: encode(['step-up', 'client']) });
-    t.replies.push(cborReply(202, [1]));
-    await expect(routes.callbackBotSpotifyAttempt(COMMUNITY, ATTEMPT, STATE, CODE)).resolves.toBeUndefined();
-    expect(t.seen[1]).toMatchObject({ method: 'POST', url: `https://dilla.test/v1/communities/${hex(COMMUNITY)}/bot/spotify/attempts/${hex(ATTEMPT)}/callback`, body: encode([STATE, CODE]) });
-    t.replies.push(noContent());
-    await expect(routes.cancelBotSpotifyAttempt(COMMUNITY, ATTEMPT)).resolves.toBeUndefined();
-  });
-
-  it('surfaces authorization refusals and rejects malformed broker replies', async () => {
-    const refused = setup();
-    refused.t.replies.push(refusal(403, 'E_FORBIDDEN', 'step-up required'));
-    await expect(refused.routes.beginBotSpotifyAttempt(COMMUNITY, 'stale', 'client')).rejects.toMatchObject({ status: 403, code: 'E_FORBIDDEN' });
-    const withQuery = (mutate: (url: URL) => void): string => { const url = new URL(authorizeUrl); mutate(url); return url.toString(); };
-    const invalidUrls = ['https://evil.test/authorize', withQuery(u => { u.port = '444'; }),
-      withQuery(u => { u.searchParams.append('state', STATE); }), withQuery(u => { u.searchParams.set('client_id', ''); }),
-      withQuery(u => { u.searchParams.set('code_challenge', ''); }), withQuery(u => { u.searchParams.append('unexpected', 'x'); })];
-    for (const reply of [...invalidUrls.map(url => [ATTEMPT, url, 1_800_000_000]), [ATTEMPT, authorizeUrl], [ATTEMPT, authorizeUrl, 0]]) {
-      const { routes, t } = setup();
-      t.replies.push(cborReply(200, reply));
-      await expect(routes.beginBotSpotifyAttempt(COMMUNITY, 'step-up', 'client')).rejects.toMatchObject({ code: /E_CBOR_/ });
-    }
-    const malformedAck = setup();
-    malformedAck.t.replies.push(cborReply(202, [2]));
-    await expect(malformedAck.routes.callbackBotSpotifyAttempt(COMMUNITY, ATTEMPT, STATE, CODE)).rejects.toMatchObject({ code: 'E_CBOR_SHAPE' });
-  });
-});
-
 // Task 10c: an open-ended invite is max_uses 0 and ttl_seconds 0 on the wire; the answer's expires is 0 for "never".
 it('sends "never" and "∞" as zeros and reads a never-expiring answer', async () => {
   const { routes, t, http } = setup();

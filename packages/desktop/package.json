@@ -1,0 +1,35 @@
+{
+  "name": "@dilla/desktop",
+  "version": "0.1.0-beta.1",
+  "private": true,
+  "description": "Dilla desktop platform validation build",
+  "license": "AGPL-3.0-or-later",
+  "author": "Dilla contributors",
+  "type": "module",
+  "main": "dist/main.cjs",
+  "scripts": {
+    "test": "node --test test/*.test.ts test/linux-sandbox-package.test.mjs test/linux-sandbox-probe-entry.test.mjs test/inspect-linux-sandbox-package.test.mjs test/native-linux-packages.test.mjs test/native-build-version.test.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "node scripts/build.mjs",
+    "build:validation": "vite build --config validation.vite.config.ts && node ../../scripts/write-manifest.mjs validation-dist",
+    "start": "electron .",
+    "pack": "electron-builder --config electron-builder.cjs --dir --publish never",
+    "test:electron": "playwright test --config playwright.config.ts",
+    "build:native": "node scripts/build-native.mjs",
+    "test:native:linux": "dbus-run-session -- node --test test/native/linux-audio.test.ts",
+    "dist": "electron-builder --config electron-builder.cjs --publish never"
+  },
+  "dependencies": {
+    "electron-updater": "6.8.11"
+  },
+  "devDependencies": {
+    "@electron/fuses": "2.1.3",
+    "@playwright/test": "1.63.0",
+    "@types/node": "^24",
+    "electron": "45.2.1",
+    "electron-builder": "26.18.0",
+    "esbuild": "0.27.4",
+    "typescript": "5.9.3"
+  },
+  "desktopName": "dev.dilla.desktop.desktop"
+}

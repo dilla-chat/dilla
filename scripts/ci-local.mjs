@@ -33,7 +33,7 @@ const SNAPSHOTS = join(OUT, 'snapshots');
 const EVERYTHING = { go: true, core: true, web: true, e2e: true, text: true, code: true };
 
 const USAGE = `usage: npm run ci:local -- [options]
-  --only <job,...>   run these jobs (ci.yml names, or a matrix leg such as spotify-helper-amd64, or codeql) and what they need
+  --only <job,...>   run these jobs (ci.yml names, or a matrix leg such as a native target, or codeql) and what they need
   --no-deps          with --only: do not run the needed jobs; reuse their artifacts from an earlier run
   --changed          the jobs the ci-areas gates run for this branch's diff against origin/main (uncommitted files included)
   --stress           run the Go and browser jobs on a quarter of the CPUs beside a busy-loop load, like a loaded runner
@@ -908,11 +908,11 @@ async function main() {
       const info = JOB_MAP[job.name];
       const skip = skipReason(job, process.arch);
       console.log(`\n${id}${job.needs.length ? ` (needs ${job.needs.join(', ')})` : ''} weight ${info.weight}${info.ports ? ` ports:${info.ports}` : ''}${info.exclusive ? ' exclusive' : ''}${skip ? ` -> SKIPPED: ${skip}` : ''}${info.kind && info.kind !== 'steps' ? ` [${info.kind}]` : ''}`);
-      if (!info.kind || info.kind === 'steps') job.steps.forEach((s, n) => console.log(`  ${String(n + 1).padStart(2)}. ${describeStep(s, job)}`));
+      if (!skip && (!info.kind || info.kind === 'steps')) job.steps.forEach((s, n) => console.log(`  ${String(n + 1).padStart(2)}. ${describeStep(s, job)}`));
     }
     return;
   }
-  const runnable = selection.filter((id) => id in EXTRA_JOBS || JOB_MAP[byId.get(id).name].kind !== 'aggregate');
+  const runnable = selection.filter((id) => id in EXTRA_JOBS || (JOB_MAP[byId.get(id).name].kind !== 'aggregate' && skipReason(byId.get(id), process.arch) === null));
   const missing = missingTools(requiredTools(runnable.filter((id) => !(id in EXTRA_JOBS)).map((id) => byId.get(id)), args));
   if (args.doctor) {
     console.log(missing.length === 0 ? 'ci-local: every prerequisite of the selected jobs is on PATH' : `ci-local: missing prerequisites:\n  ${missing.join('\n  ')}`);

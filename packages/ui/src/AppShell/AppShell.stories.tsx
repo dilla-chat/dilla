@@ -158,14 +158,8 @@ export const BottomPanelSplitterTopBar: Story = {
     if (sep.getBoundingClientRect().top < bar.getBoundingClientRect().bottom - 1) throw new Error('the splitter runs into the top bar');
   },
 };
-export const BottomPanelLight: Story = {
-  render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={{ bottom: <>{dock}{userPanel}</> }} /></div>,
-  globals: { theme: 'light' }, play: bottomPlay,
-};
-export const BottomPanelHighContrast: Story = {
-  render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={{ bottom: <>{dock}{userPanel}</> }} /></div>,
-  globals: { theme: 'high-contrast' }, play: bottomPlay,
-};
+
+
 /**
  * B1, R12: under the 44px top bar, the main header and the members bar both have their hairline at y=44+44 from the shell's
  * top, and the user panel is 64 high (--panel-h).

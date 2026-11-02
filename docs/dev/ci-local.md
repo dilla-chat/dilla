@@ -55,7 +55,9 @@ or `${{ }}` expression that ci-local can't map or doesn't explicitly skip, the c
 | job | why |
 | --- | --- |
 | `go-fts5-arm64` | it needs a native linux/arm64 runner (`ubuntu-24.04-arm`). The job tests FTS5 on arm64 itself, so a cross-build or qemu wouldn't be the same check. It runs on an arm64 machine. |
-| `spotify-helper-arm64` | it needs a native linux/arm64 runner. The amd64 leg runs. |
+| `linux-sandbox-foundation` | requires disposable Ubuntu 22.04/24.04 runners and privileged kernel fixtures. |
+| `desktop` | requires native Linux, Windows and macOS acceptance runners in `desktop.yml`. |
+| `ci-watchdog` | GitHub run cancellation is replaced by the local fail-fast scheduler. |
 | `codeql` (extra) | it runs only when the `codeql` CLI is on PATH, and is otherwise reported as SKIPPED with the install hint. When it runs, it creates databases for actions, go, javascript-typescript and rust and analyses them with the code-scanning suites. Results at error level or with a security severity of 7 or more fail it. |
 
 A skipped job is always listed in the summary with its reason.
@@ -94,7 +96,7 @@ throwaway container. `CI=true` and the `GITHUB_*`/`RUNNER_*` variables are set a
 - `--changed`: the jobs the `changes` job would turn on for this branch against `origin/main` (or `main`). Committed,
   staged, unstaged and untracked files all count. As in CI, the diff fails safe to everything.
 - `--only <job,…>`: those jobs and the jobs they need. A ci.yml name selects every matrix leg; a leg is
-  `spotify-helper-amd64`. `--no-deps` leaves the needed jobs out and reuses their artifacts from an earlier run.
+  `linux-sandbox-foundation-ubuntu-22.04`. `--no-deps` leaves the needed jobs out and reuses their artifacts from an earlier run.
 - `--stress`: the Go and browser jobs run pinned (`taskset`) to a quarter of the CPUs (at least 2), beside one
   busy-loop process per pinned CPU. This brings out the timing flakes a loaded runner does: TOTP window edges,
   animation waits, fixed-millisecond checks and package timeouts.

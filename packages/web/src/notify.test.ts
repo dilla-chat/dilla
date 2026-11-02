@@ -252,7 +252,7 @@ describe('ringNotification (flow 06, R1, R8)', () => {
     const d = deps(Ctor);
     const handle = ringNotification(ring(), d);
     expect(made).toHaveLength(1);
-    expect(made[0]).toMatchObject({ title: 'bob is calling', options: { body: 'Open dilla to answer.', tag: `dilla-ring-${DM}` } });
+    expect(made[0]).toMatchObject({ title: 'bob is calling', options: { body: 'Open dilla to answer.', tag: `dilla-ring-${DM}-${ring().ringTs}` } });
     made[0].onclick?.(new Event('click'));
     expect(d.focus).toHaveBeenCalled();
     expect(d.open).toHaveBeenCalledWith(DM);

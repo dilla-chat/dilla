@@ -7,12 +7,11 @@ import { errorOf, type UiError } from '../../core/errors.ts';
 import { useSlice } from '../../core/use-slice.ts';
 import { t, type StringKey } from '../../strings/index.ts';
 import { StepUpDialog } from '../settings/StepUpDialog.tsx';
-import { useSettingsEdit, useSettingsWorkspace, type SettingsEditState } from '../../settings/edit-state.tsx';
+import { useSettingsEdit, type SettingsEditState } from '../../settings/edit-state.tsx';
 import { ModerationLog } from './ModerationLog.tsx';
 import { AutoModerationSettingsPanel } from './AutoModerationSettingsPanel.tsx';
 import { WelcomeSettingsPanel, type WelcomeSettingsGateway } from './WelcomeSettingsPanel.tsx';
 import { type SectionProps } from './shared.ts';
-import { authorizeSpotify, spotifySession } from './spotify-link.ts';
 import { MusicProviderStatus } from './MusicProviderStatus.tsx';
 import { useRoute } from '../../router.ts';
 import { useBotDraftState, useBotMutation } from './bot-settings-context.tsx';
@@ -26,9 +25,7 @@ type Installation = { id: string; communityId: string; state: 0 | 1 | 2 | 3 | 4 
   // Task 10c: present on the manager's read (and the music settings answer), absent on a mutation's answer.
   restartRequested?: string; restartHandled?: string; version?: string | null; musicVolume?: number; musicIdleMinutes?: number };
 type Phase = 'idle' | 'stepup';
-type StepUpPurpose = 'bot' | 'spotify';
 type JoinRoleSetting = { roleId: string | null; installationId: string };
-const SPOTIFY_ATTEMPT_KEY = 'dilla.spotifyAttempt';
 const BOT_STATUS_POLL_INTERVAL_MS = 2_000;
 const BOT_STATUS_POLL_LIMIT = 30;
 
@@ -72,7 +69,6 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
   const client = useCore();
   const base = useId();
   const factors = useSlice('factors');
-  const workspace = useSettingsWorkspace();
   const [, navigate] = useRoute();
   const beginMutation = useBotMutation();
   const members = useSlice(`members:${communityId}`);
@@ -88,16 +84,12 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
   const [joinRoleValue, setJoinRoleValue] = useBotDraftState(communityId, 'bot.joinRoleValue', '');
   const [joinRoleLoadedFor, setJoinRoleLoadedFor] = useBotDraftState<string | null>(communityId, 'bot.joinRoleLoadedFor', null);
   const [joinRoleError, setJoinRoleError] = useBotDraftState<string | null>(communityId, 'bot.joinRoleError', null);
-  const [spotifyClientId, setSpotifyClientId] = useBotDraftState(communityId, 'bot.spotifyClientId', '');
-  const [spotifyRedirectUrl, setSpotifyRedirectUrl] = useBotDraftState(communityId, 'bot.spotifyRedirectUrl', '');
-  const [spotifyConfigError, setSpotifyConfigError] = useBotDraftState<string | null>(communityId, 'bot.spotifyConfigError', null);
   const [botNameDraft, setBotNameDraft] = useBotDraftState(communityId, 'bot.nameDraft', '');
   const [botNameOverride, setBotNameOverride] = useBotDraftState<{ userId: string; display: string } | null>(communityId, 'bot.nameOverride', null);
   const [botNameError, setBotNameError] = useBotDraftState<string | null>(communityId, 'bot.nameError', null);
   const [loadedFor, setLoadedFor] = useBotDraftState<string | null>(communityId, 'bot.loadedFor', null);
   const [error, setError] = useBotDraftState<string | null>(communityId, 'bot.error', null);
   const [phase, setPhase] = useState<Phase>('idle');
-  const [stepUpPurpose, setStepUpPurpose] = useState<StepUpPurpose>('bot');
   const capabilitySaveResolver = useRef<((saved: boolean) => void) | null>(null);
   const [busyFor, setBusyFor] = useBotDraftState<string | null>(communityId, 'bot.busyFor', null);
   const [selectedCapabilities, setSelectedCapabilities] = useBotDraftState(communityId, 'bot.capabilities', POLLS_AND_REMINDERS);
@@ -162,20 +154,6 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
     });
     return () => { canceled = true; };
   }, [access?.loaded, access?.manageCommunity, access?.manageRoles, client, communityId, page, setJoinRole, setJoinRoleError, setJoinRoleLoadedFor, setJoinRoleValue]);
-
-
-  useEffect(() => {
-    if (page !== 'music' || access?.loaded !== true || !access.manageCommunity) return;
-    let canceled = false;
-    const generation = readGeneration.current;
-    void client.call({ m: 'getBotSpotifyConfig', communityId }).then(value => {
-      if (canceled || generation !== readGeneration.current || value === null) return;
-      const setting = value as { clientId: string; redirectUrl: string };
-      setSpotifyClientId(setting.clientId); setSpotifyRedirectUrl(setting.redirectUrl);
-    }).catch(() => { if (!canceled && generation === readGeneration.current) setSpotifyConfigError(t('admin.bot.music.spotifyConfigFailed')); });
-    return () => { canceled = true; };
-  }, [access?.loaded, access?.manageCommunity, client, communityId, page, setSpotifyClientId, setSpotifyConfigError, setSpotifyRedirectUrl]);
-
 
   const installationCommunityId = installation?.communityId;
   const installationState = installation?.state;
@@ -253,7 +231,6 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
   };
   const enable = () => {
     if (busy || !current || currentError !== null || factors === undefined || access?.loaded !== true || !access.manageCommunity) return;
-    setStepUpPurpose('bot');
     setPhase('stepup');
   };
   const configure = async (stepUp: string): Promise<boolean> => {
@@ -320,53 +297,6 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
     finally { setBusyFor(value => value === requestCommunity ? null : value); finishMutation?.(); }
   }, [busy, selectedCommunity, communityId, current, currentError, access?.manageRoles, joinRoleValue, joinRole, currentInstallation?.id, beginMutation,
     setBusyFor, setJoinRoleError, client, announce, setJoinRole]);
-  const linkSpotify = () => {
-    if (busy || !current || currentError !== null || factors === undefined) return;
-    if (!/^[A-Za-z0-9]{1,256}$/u.test(spotifyClientId)) {
-      setSpotifyConfigError(t('admin.bot.music.spotifyClientIdInvalid'));
-      return;
-    }
-    setSpotifyConfigError(null);
-    setStepUpPurpose('spotify');
-    setPhase('stepup');
-  };
-  const beginSpotify = (stepUp: string) => {
-    if (busy || selectedCommunity.current !== communityId || !current || currentError !== null) return;
-    const requestCommunity = communityId;
-    const generation = readGeneration.current;
-    const finishMutation = beginMutation?.();
-    setBusyFor(requestCommunity);
-    setError(null);
-    let attemptId: string | null = null;
-    void client.call({ m: 'beginBotSpotifyAttempt', communityId: requestCommunity, stepUp, clientId: spotifyClientId }).then((value) => {
-      if (generation !== readGeneration.current || selectedCommunity.current !== requestCommunity) return;
-      const attempt = value as { attemptId?: unknown; authorizeUrl?: unknown; expires?: unknown };
-      if (typeof attempt.attemptId !== 'string' || !/^[0-9a-f]{32}$/.test(attempt.attemptId)
-        || typeof attempt.authorizeUrl !== 'string' || typeof attempt.expires !== 'string' || !/^\d+$/.test(attempt.expires)) {
-        throw new Error('invalid Spotify attempt');
-      }
-      attemptId = attempt.attemptId;
-      const authorize = new URL(attempt.authorizeUrl);
-      const states = authorize.searchParams.getAll('state');
-      const expires = Number(attempt.expires);
-      if (authorize.protocol !== 'https:' || authorize.hostname !== 'accounts.spotify.com' || authorize.port !== ''
-        || authorize.pathname !== '/authorize' || states.length !== 1 || states[0].length < 1 || states[0].length > 256
-        || !Number.isSafeInteger(expires) || expires <= Math.floor(Date.now() / 1000)) throw new Error('invalid Spotify authorization URL');
-      const account = client.get('account');
-      if (account?.phase !== 'ready' || !account.instance?.id || !account.user?.id || !account.deviceId) throw new Error('no active account');
-      // This tab stores only public identifiers, the CSRF state and expiry. Authorization codes and all credentials
-      // remain transient in the callback request and worker bridge.
-      spotifySession.setItem(SPOTIFY_ATTEMPT_KEY, JSON.stringify({ communityId: requestCommunity,
-        attemptId: attempt.attemptId, state: states[0], expires: attempt.expires,
-        instanceId: account.instance.id, userId: account.user.id, deviceId: account.deviceId }));
-      authorizeSpotify(attempt.authorizeUrl);
-    }).catch(() => {
-      try { spotifySession.removeItem(SPOTIFY_ATTEMPT_KEY); } catch { /* storage may be unavailable */ }
-      if (attemptId !== null) void client.call({ m: 'cancelBotSpotifyAttempt', communityId: requestCommunity, attemptId }).catch(() => undefined);
-      if (generation === readGeneration.current) setError(t('admin.bot.music.callbackFailed'));
-    }).finally(() => { setBusyFor(value => value === requestCommunity ? null : value); finishMutation?.(); });
-  };
-
   const bot = communityBotMember(members, currentInstallation?.userId);
   const botDisplay = bot && botNameOverride?.userId === bot.userId ? botNameOverride.display : bot?.display || bot?.username || '';
   useEffect(() => {
@@ -415,7 +345,7 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
     if (!capabilityDirty) return true;
     return new Promise(resolve => {
       capabilitySaveResolver.current = resolve;
-      setStepUpPurpose('bot'); setPhase('stepup');
+      setPhase('stepup');
     });
   }, [page, saveJoinRole, capabilityDirty]);
   const canSavePage = page === 'bot' ? access?.loaded === true && access.manageCommunity && factors !== undefined
@@ -608,15 +538,6 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
             onChange={v => saveMusic(musicVolume, Number(v))} />
         </SettingsRow>
         {musicError !== null ? <p role="alert">{musicError}</p> : null}
-        <SettingsRow id={`${base}-spotify-row`} icon="music" label={t('serverSettings.music.spotify')} hint={t('admin.bot.music.spotifyClientIdHelp')} layout="stacked">
-          <TextField id={`${base}-spotify-client-id`} label={t('admin.bot.music.spotifyClientId')} value={spotifyClientId}
-            maxLength={256} disabled={busy || access?.manageCommunity !== true} autoComplete="off" spellCheck={false}
-            onChange={value => { setSpotifyClientId(value.trim()); setSpotifyConfigError(null); }} />
-          {spotifyRedirectUrl !== '' ? <p><strong>{t('admin.bot.music.spotifyCallback')}</strong> <code>{spotifyRedirectUrl}</code></p> : null}
-          {spotifyConfigError !== null ? <p role="alert">{spotifyConfigError}</p> : null}
-          <Button size="sm" aria-disabled={busy || !current || currentError !== null || factors === undefined || undefined}
-            onClick={linkSpotify}>{busy ? t('admin.bot.music.spotifyLinking') : t('admin.bot.music.spotifyLink')}</Button>
-        </SettingsRow>
       </> : null}
       {page === 'welcome' ? <WelcomeSettingsPanel communityId={communityId} serverName={serverName} channels={textChannels}
         enabled={welcomeEnabled} canManage={access?.loaded === true && access.manageCommunity} gateway={welcomeGateway} />
@@ -640,10 +561,7 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
           onChange={value => { setBotNameDraft(value); setBotNameError(null); }} error={botNameError ?? undefined} initialFocus />
       </Dialog>
       <StepUpDialog open={phase === 'stepup'} hasPassword={factors?.hasPassword ?? true} notice={null}
-        onToken={value => { setPhase('idle'); if (stepUpPurpose === 'spotify') {
-          const authorize = () => beginSpotify(value);
-          if (workspace) void workspace.requestNavigation(authorize); else authorize();
-        } else void configure(value).then(saved => { capabilitySaveResolver.current?.(saved); capabilitySaveResolver.current = null; }); }}
+        onToken={value => { setPhase('idle'); void configure(value).then(saved => { capabilitySaveResolver.current?.(saved); capabilitySaveResolver.current = null; }); }}
         onClose={() => { setPhase('idle'); capabilitySaveResolver.current?.(false); capabilitySaveResolver.current = null; }} />
     </section>
   );

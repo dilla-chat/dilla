@@ -1596,7 +1596,7 @@ Chromium keeps sockets in its profile directories, so the script needs a short t
 
 Open the settings button in the top bar on desktop, or **You → Open settings** on a phone.
 Search within settings by setting name or a related word such as microphone, password
-or Spotify. Search only lists sections you are allowed to use; it does not search
+or music. Search only lists sections you are allowed to use; it does not search
 member names, account data or configuration values.
 
 Theme, density, reduced motion, notifications, voice preferences and personal roles
@@ -1608,14 +1608,10 @@ confirmation that the bot has applied it.
 
 Server settings group server configuration, people, automation and moderation.
 Music contains who can DJ (the roles with **Control music (DJ)**, set in **Roles**),
-the bot's default volume and idle-leave time, Spotify application configuration and
-linking, and provider status. **Authorization received; waiting for the bot** means the authorization
-was delivered. **Linked** appears only when the bot reports valid stored credentials
-for this installation. It does not confirm Spotify Premium, current token acceptance
-or successful playback. Spotify and YouTube playback setup separately report
-**Configured**, **Missing requirements** or **Unknown**. Refresh reads the runtime;
-observations older than a minute are stale. An older or offline bot may leave status
-unavailable while configuration and linking remain usable.
+the bot's default volume and idle-leave time, and YouTube provider status.
+Playback setup reports **Configured**, **Missing requirements** or **Unknown**.
+Refresh reads the runtime; observations older than a minute are stale. An older or
+offline bot may leave status unavailable while configuration remains usable.
 
 Playback uses music commands from the command picker. Join a voice channel first.
 See [Music](music.md) for setup and the Control music (DJ) permission.

@@ -1,3 +1,4 @@
+import { openInviteInClient } from './support/invite';
 import { expect, type Browser, type BrowserContext, type Page } from '@playwright/test';
 import type { Locator } from '@playwright/test';
 import {
@@ -101,8 +102,7 @@ async function disableBot(page: Page): Promise<void> {
 
 async function joinAs(page: Page, host: StartedHost, inviteLink: string, instance: string, display: string) {
   const account = newAccount(display, host.control);
-  await page.goto(new URL(inviteLink).pathname);
-  await page.getByRole('link', { name: 'Open dilla in this browser', exact: true }).click();
+  await openInviteInClient(page, inviteLink);
   await completeSignUp(page, account, instance);
   await openChannel(page, COMMUNITY, GENERAL);
   return account;

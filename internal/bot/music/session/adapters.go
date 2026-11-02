@@ -11,13 +11,10 @@ import (
 	"github.com/jonasthim/dilla/internal/bot/music/encode"
 	"github.com/jonasthim/dilla/internal/bot/music/livekit"
 	musicruntime "github.com/jonasthim/dilla/internal/bot/music/runtime"
-	"github.com/jonasthim/dilla/internal/bot/music/spotify"
 	"github.com/jonasthim/dilla/internal/bot/music/youtube"
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/id"
 )
-
-type Spotify struct{ Adapter *spotify.Adapter }
 
 // YouTubePCM maps the provider-native video ID stored in a queue entry to the
 // canonical URL accepted by the sandboxed YouTube PCM source.
@@ -83,10 +80,6 @@ type prefetchedYouTubePCM struct {
 
 func (p *prefetchedYouTubePCM) Close() error                      { return p.source.Close() }
 func (p *prefetchedYouTubePCM) PCMFormat() musicruntime.PCMFormat { return p.source.PCMFormat() }
-
-func (s Spotify) Start(ctx context.Context, track string) (io.ReadCloser, error) {
-	return s.Adapter.Start(ctx, track)
-}
 
 type EncoderConfig struct {
 	Capacity int

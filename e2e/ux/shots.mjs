@@ -1,3 +1,4 @@
+import { themes } from '../../packages/design-tokens/src/tokens.ts';
 // The audit's screens, one named step per screen, shot from the running world (npm run ux:world -w @dilla/e2e).
 //   node e2e/ux/shots.mjs                          every step at its default sizes and themes
 //   node e2e/ux/shots.mjs --list                   the steps
@@ -60,10 +61,10 @@ async function joinVoice(h, name) {
   await wait(h, 2500);
 }
 
-const desktop = { who: 'ada', sizes: [[1440, 900], [1024, 768]], themes: ['signal', 'light', 'high-contrast'], tag: 'd' };
+const desktop = { who: 'ada', sizes: [[1440, 900], [1024, 768]], themes: Object.keys(themes), tag: 'd' };
 const desktopSignal = { ...desktop, themes: ['signal'] };
 const desktop1440 = { ...desktop, sizes: [[1440, 900]], themes: ['signal'] };
-const phone = { who: 'phone', sizes: [[390, 844], [360, 740]], themes: ['signal', 'light'], tag: 'p' };
+const phone = { who: 'phone', sizes: [[390, 844], [360, 740]], themes: Object.keys(themes), tag: 'p' };
 const phoneSignal = { ...phone, themes: ['signal'] };
 
 // ---------------------------------------------------------------------------------------------------

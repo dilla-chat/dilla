@@ -28,7 +28,6 @@ type Provider string
 
 const (
 	ProviderYouTube Provider = "youtube"
-	ProviderSpotify Provider = "spotify"
 )
 
 // Track is the stable, bounded descriptor stored in the encrypted queue.
@@ -372,18 +371,6 @@ func validCanonicalID(provider Provider, id string) bool {
 		for i := 0; i < len(id); i++ {
 			c := id[i]
 			if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '_' && c != '-' {
-				return false
-			}
-		}
-		return true
-	case ProviderSpotify:
-		const prefix = "spotify:track:"
-		if len(id) != len(prefix)+22 || id[:len(prefix)] != prefix {
-			return false
-		}
-		for i := len(prefix); i < len(id); i++ {
-			c := id[i]
-			if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') {
 				return false
 			}
 		}

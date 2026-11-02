@@ -48,6 +48,7 @@ import { UserPanel } from './UserPanel.tsx';
 import type { watchUpdates } from '../update.ts';
 import type { createUpdateCheckpointStore } from '../update-checkpoint.ts';
 import { updateTabId } from '../update-checkpoint.ts';
+import { desktopBridge, setDesktopGuard } from '../desktop.ts';
 import { captureViewPlace, restoreViewPlace, validViewPlace, type ViewPlace } from '../update-view.ts';
 import { browser } from '../browser.ts';
 import { CommandProvider } from './commands/CommandContext.tsx';
@@ -1205,6 +1206,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     const counts = sumBadges(list.filter(ch => ch.kind !== CATEGORY).map(ch => rowBadge(badges, settings, ch.id, c.id)));
     return { id: c.id, name: c.name, unread: counts.unread, mentions: counts.mentions };
   });
+  const nativeUnread = Math.min(9999, Object.values(badges ?? {}).reduce((total, value) => total + value.unread, 0));
+  useEffect(() => { void desktopBridge()?.send({ type: 'badge', count: nativeUnread }).catch(() => {}); }, [nativeUnread]);
 
   // Flow 07: the instance serves no role bits before the permissions read, so ownership stands in for ManageChannels until then.
   const owner = community !== null && self !== null && community.owner === self.id;
@@ -1948,7 +1951,13 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     || editChannelId !== null || adminFor !== null || ui.editing !== null || threadEditing;
   const updateCallBlocked = call.channelId !== null || call.recoveryChannelId !== null;
   const updateVoiceActive = useRef(false);
+  const pendingAttachments = useSlice(`tray:${targetId ?? ''}`);
   updateVoiceActive.current = call.channelId !== null || call.recoveryChannelId !== null || recentUpdateCall !== null;
+  useEffect(() => {
+    setDesktopGuard({ activeCall: call.channelId !== null || call.recoveryChannelId !== null || recentUpdateCall !== null,
+      unsavedDraft: updateBlocked || draft.text.length > 0 || (threadDraft?.text.length ?? 0) > 0 || (pendingAttachments?.length ?? 0) > 0 });
+  }, [call.channelId, call.recoveryChannelId, recentUpdateCall, updateBlocked, draft.text, threadDraft, pendingAttachments]);
+  useEffect(() => () => { setDesktopGuard({ activeCall: false, unsavedDraft: false }); }, []);
   const [updateError, setUpdateError] = useState(false);
   const [updateRetry, setUpdateRetry] = useState(0);
   const [restoreError, setRestoreError] = useState(false);

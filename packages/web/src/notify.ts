@@ -9,8 +9,9 @@ import type { CoreClient, Notice, Ring } from '@dilla/client-core';
 import type { PermissionState } from './notify-permission.ts';
 import { t } from './strings/index.ts';
 import { mergeMembers, nameBook, plainBody } from './screens/shell-model.ts';
+import { desktopBridge, desktopNotificationCtor } from './desktop.ts';
 
-export interface NotificationHandle { onclick: ((ev: Event) => unknown) | null; close(): void; }
+export interface NotificationHandle { onaction?: ((action: 'answer' | 'decline') => void) | null; onclick: ((ev: Event) => unknown) | null; close(): void; }
 export interface NotificationCtor { readonly permission: NotificationPermission; new (title: string, options: NotificationOptions): NotificationHandle; }
 export interface NotifyContext { permission: PermissionState; settings: Readonly<Record<string, string>>; visible: boolean; onScreen: string | null;
   presenceChoice?: string;
@@ -50,6 +51,8 @@ export function noticeTitle(notice: Notice, names: { channel: string | null; ser
 /** globalThis.Notification, or undefined where the browser has none. */
 export function notificationCtor(): NotificationCtor | undefined {
   const n = (globalThis as { Notification?: unknown }).Notification;
+  const desktop = desktopBridge();
+  if (desktop !== undefined) return desktopNotificationCtor(desktop, () => typeof n === 'function' ? (n as NotificationCtor).permission : 'denied');
   return typeof n === 'function' ? n as NotificationCtor : undefined;
 }
 
@@ -142,6 +145,7 @@ export interface RingNotifyDeps {
   visible: boolean;
   focus(): void;
   open(channelId: string): void;
+  action?(action: 'answer' | 'decline'): void;
 }
 
 /**
@@ -164,7 +168,8 @@ export function ringNotification(ring: Ring, deps: RingNotifyDeps): Notification
   if (effectiveNotifyMode(deps.settings, ring.channelId, deps.kind, server) === 'nothing') return null;
   try {
     const note = new Ctor(t('call.ring.notifyTitle', { name: ring.callerName }),
-      { body: t('call.ring.notifyBody'), tag: `dilla-ring-${ring.callId}`, silent: false });
+      { body: t('call.ring.notifyBody'), tag: `dilla-ring-${ring.callId}-${ring.ringTs}`, silent: false });
+    note.onaction = action => { note.close(); deps.action?.(action); };
     note.onclick = () => {
       deps.focus();
       deps.open(ring.channelId);

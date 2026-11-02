@@ -1,3 +1,4 @@
+import { openInviteInClient } from './support/invite';
 // Manual text timeout acceptance from an empty testhost. Every account, server, role, voice channel and DM is made through
 // the shipping Chromium clients; the timeout itself is applied and cleared through the member card.
 import { tmpdir } from 'node:os';
@@ -102,8 +103,7 @@ test('manual text timeout blocks community writes and recovers while read, voice
   try {
     await second.grantPermissions(['microphone']);
     const member = second.pages()[0] ?? await second.newPage();
-    await member.goto(new URL(invite).pathname);
-    await member.getByRole('link', { name: 'Open dilla in this browser', exact: true }).click();
+    await openInviteInClient(member, invite);
     await guard.attach(second);
     await completeSignUp(member, newAccount(MEMBER, h.control), instance);
     await expect(railItem(member, SERVER)).toBeVisible({ timeout: WAIT });

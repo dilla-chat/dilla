@@ -1,3 +1,4 @@
+import { openInviteInClient } from './support/invite';
 // v0.1.0-web3.4, server admin from an empty instance. Like create.spec.ts this suite starts a test host of its own with no
 // account, no server and no channel, and runs a server through the shipping clients only: two browsers, one owner and one
 // member. Nothing here seeds state or calls the instance's API on anyone's behalf (GET /v1/instance for the name the
@@ -120,11 +121,7 @@ test('a server run from an empty instance: members, rename, channel edit, kick, 
   const second = await launchSecond(playwright, browserName, { launchOptions, headless, channel, viewport, baseURL: h.url }, secondDir);
   try {
     const page2 = second.pages()[0] ?? (await second.newPage());
-    await page2.goto(new URL(link).pathname);
-    const openLink = page2.getByRole('link', { name: 'Open dilla in this browser', exact: true });
-    await expect(openLink).toHaveAttribute('href', /^\/welcome\?invite=[^&\s]+$/);
-    await guard.attach(second);
-    await openLink.click();
+    await openInviteInClient(page2, link, () => guard.attach(second));
     await completeSignUp(page2, newAccount(FRIEND, h.control), instance);
     await expect(railItem(page2, SERVER)).toBeVisible({ timeout: WAIT });
     await openChannel(page2, SERVER, 'general');

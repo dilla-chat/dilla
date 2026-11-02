@@ -1,3 +1,4 @@
+import { themes } from '@dilla/design-tokens';
 import { readFileSync } from 'node:fs';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -324,7 +325,7 @@ describe('ProfileCard placement', () => {
 });
 
 describe('ProfileCard accessibility', () => {
-  it.each(['signal', 'light', 'high-contrast'])('has no serious axe violations in %s, as popover and as sheet', async theme => {
+  it.each(Object.keys(themes))('has no serious axe violations in %s, as popover and as sheet', async theme => {
     document.documentElement.dataset.theme = theme;
     for (const layout of ['popover', 'sheet'] as const) {
       const { container, unmount } = render(<div className="d-root"><ProfileCard {...props({ layout, status: 'in a meeting', bio: 'line one\nline two' })} /></div>);

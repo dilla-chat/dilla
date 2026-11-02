@@ -78,8 +78,9 @@ As of 2026-10-22, in the web client:
 - More than one working tab per browser: a second tab waits and shows nothing of the conversation until you move
   the app to it.
 
-Beyond the web client: no desktop app (Electron) or mobile app, no published security review, and no published capacity
-figures yet.
+Beyond the web client: an [Electron validation shell](docs/user/desktop.md) is in development.
+The supported desktop release remains gated on Linux, Windows and macOS acceptance together;
+keep using the browser client. There is no mobile app, published security review or published capacity report yet.
 
 ## Run it
 
@@ -105,6 +106,7 @@ camera and screen share, push to talk, the call code, AFK channels, sounds, and 
 |---|---|
 | `protocol/` | Normative protocol documents and conformance test vectors (Apache-2.0) |
 | `packages/protocol-vectors` | TypeScript reference implementation that generates the vectors (Apache-2.0) |
+| `packages/desktop` | Bundled Electron client, platform validation and packaging (not yet a supported release) |
 | `docs/superpowers/specs` | Product and system design specifications |
 | `docs/superpowers/plans` | Implementation plans |
 | `docs/design` | Design brief, and the Signal design reference in `docs/design/signal` (the current design) |

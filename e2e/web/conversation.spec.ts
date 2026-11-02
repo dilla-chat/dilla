@@ -1,5 +1,8 @@
+import { desktopE2E } from './support/electron.ts';
+import { saveDownload } from './support/download';
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { rm, writeFile } from 'node:fs/promises';
 import { expect, type Page } from '@playwright/test';
 import {
   CLASS, HEX32, TEST_TIMEOUT, WAIT, attachInput, channelRow, composerBox, copy, deleteDialog, drawImage, editorBox,
@@ -40,7 +43,10 @@ test('edit, reply, react, pin and delete between the browser and the peer', asyn
   for (const width of [360, 320]) { // 320 CSS px also represents a 1280 px window at 400% zoom.
     await page.setViewportSize({ width, height: 740 });
     // Below 48rem the shell is the phone shell; it re-mounts the panes once, and a focus given before that is lost.
-    await expect(page.locator('.d-app-shell')).toHaveAttribute('data-layout', 'phone');
+    if (desktopE2E()) {
+      expect(page.viewportSize()!.width).toBe(900);
+      await expect(page.locator('.d-app-shell')).not.toHaveAttribute('data-layout', 'phone');
+    } else await expect(page.locator('.d-app-shell')).toHaveAttribute('data-layout', 'phone');
     await own.focus();
     await expect(rowToolbar(own)).toBeVisible();
     const narrowActionsFit = await rowToolbar(own).evaluate((bar) => [...bar.querySelectorAll('button')].every((button) => {
@@ -291,19 +297,16 @@ test('images and files go both ways', async ({ page, peer, instanceName }) => {
   const full = box.getByRole('img', { name: 'map.png', exact: true });
   await expect.poll(() => full.evaluate((el: HTMLImageElement) => (el.complete ? el.naturalWidth : 0)), { timeout: WAIT }).toBe(320);
   await expectAccessible(page, 'lightbox');
-  const [mapDownload] = await Promise.all([
-    page.waitForEvent('download', { timeout: WAIT }),
-    box.getByRole('button', { name: copy('shell.lightbox.save'), exact: true }).click(),
-  ]);
-  expect(sha256Hex(readFileSync(await mapDownload.path()))).toBe(map.sha256);
+  const mapDownload = await saveDownload(page, () => box.getByRole('button', { name: copy('shell.lightbox.save'), exact: true }).click());
+  expect(sha256Hex(readFileSync(mapDownload.path))).toBe(map.sha256);
   await page.keyboard.press('Escape');
   await expect(box).toHaveCount(0);
 
   const save = messageRow(page, channel, dataBody).getByRole('button', { name: copy('shell.attachment.save', { name: 'data.bin' }), exact: true });
   await expect(save).toBeVisible({ timeout: WAIT });
-  const [download] = await Promise.all([page.waitForEvent('download', { timeout: WAIT }), save.click()]);
-  expect(download.suggestedFilename()).toBe('data.bin');
-  expect(sha256Hex(readFileSync(await download.path()))).toBe(dataSent.sha256);
+  const download = await saveDownload(page, () => save.click());
+  expect(download.filename).toBe('data.bin');
+  expect(sha256Hex(readFileSync(download.path))).toBe(dataSent.sha256);
 
   // Deleting the browser's message removes its references from the instance.
   for (const x of received.attachments) expect(await peer.blobStatus(x.blob_id)).toBe(200);
@@ -318,54 +321,62 @@ test('images and files go both ways', async ({ page, peer, instanceName }) => {
   await expect.poll(() => peer.blobStatus(mapSent.blob_id), { timeout: WAIT }).toBe(404);
 });
 
-test('a 25 MB file goes through and one byte more stays as an oversized card with a toast', async ({ page, context, peer, instanceName }) => {
+test('a 25 MB file goes through and one byte more stays as an oversized card with a toast', async ({ page, context, peer, instanceName }, testInfo) => {
   const puts: string[] = [];
   context.on('request', (r) => {
     if (r.method() === 'PUT' && BLOB_PUT.test(new URL(r.url()).pathname)) puts.push(r.url());
   });
   const { channel } = await enter(page, peer, instanceName);
 
-  const big = randomBytes(26_214_400);
-  await attachInput(page).setInputFiles({ name: 'big.bin', mimeType: 'application/octet-stream', buffer: big });
-  await expect(trayEntries(page)).toHaveCount(1, { timeout: WAIT });
-  await expect(trayEntries(page).first()).toHaveAttribute('data-phase', 'ready', { timeout: WAIT });
-  expect(puts).toHaveLength(1);
-  const text = `big ${tag()}`;
-  await composerBox(page, channel).fill(text);
-  await composerBox(page, channel).press('Enter');
-  await expect(messageRow(page, channel, text)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
-  const got = await peer.waitForRow((m) => m.body === text && m.attachments.length === 1, 'the 25 MB file');
-  expect(got.attachments[0].size).toBe(26_214_400);
-  const fetched = await peer.fetchAttachment(got.seq, 0);
-  expect(fetched.sha256).toBe(sha256Hex(big));
-  expect(fetched.size).toBe(26_214_400);
+  const bigPath = testInfo.outputPath('big.bin'), overPath = testInfo.outputPath('over.bin');
+  // Select real files without serializing 25 MiB through the renderer's CDP utility world.
+  try {
+    const big = randomBytes(26_214_400);
+    await writeFile(bigPath, big);
+    await writeFile(overPath, Buffer.alloc(26_214_401, 7));
+    await attachInput(page).setInputFiles(bigPath);
+    await expect(trayEntries(page)).toHaveCount(1, { timeout: WAIT });
+    await expect(trayEntries(page).first()).toHaveAttribute('data-phase', 'ready', { timeout: WAIT });
+    expect(puts).toHaveLength(1);
+    const text = `big ${tag()}`;
+    await composerBox(page, channel).fill(text);
+    await composerBox(page, channel).press('Enter');
+    await expect(messageRow(page, channel, text)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
+    const got = await peer.waitForRow((m) => m.body === text && m.attachments.length === 1, 'the 25 MB file');
+    expect(got.attachments[0].size).toBe(26_214_400);
+    const fetched = await peer.fetchAttachment(got.seq, 0);
+    expect(fetched.sha256).toBe(sha256Hex(big));
+    expect(fetched.size).toBe(26_214_400);
 
-  await attachInput(page).setInputFiles({ name: 'over.bin', mimeType: 'application/octet-stream', buffer: Buffer.alloc(26_214_401, 7) });
-  await expect(page.locator('.d-np-toast')).toHaveText(copy('shell.tray.overLimitToast'), { timeout: WAIT });
-  await expect(trayEntries(page)).toHaveCount(1);
-  await expect(trayEntries(page).first()).toContainText('Over 25 MB');
-  await expect(trayEntries(page).first()).toHaveAttribute('data-failed', 'true');
-  expect(puts).toHaveLength(1);
-  await trayEntries(page).first().getByRole('button', { name: copy('shell.tray.remove', { name: 'over.bin' }), exact: true }).click();
+    await attachInput(page).setInputFiles(overPath);
+    await expect(page.locator('.d-np-toast')).toHaveText(copy('shell.tray.overLimitToast'), { timeout: WAIT });
+    await expect(trayEntries(page)).toHaveCount(1);
+    await expect(trayEntries(page).first()).toContainText('Over 25 MB');
+    await expect(trayEntries(page).first()).toHaveAttribute('data-failed', 'true');
+    expect(puts).toHaveLength(1);
+    await trayEntries(page).first().getByRole('button', { name: copy('shell.tray.remove', { name: 'over.bin' }), exact: true }).click();
 
-  // Hold the next real upload: Send must toast without creating a message.
-  let releaseUpload!: () => void;
-  const uploadGate = new Promise<void>(resolve => { releaseUpload = resolve; });
-  const uploadPattern = '**/v1/channels/*/blobs/*';
-  await context.route(uploadPattern, async route => { if (route.request().method() === 'PUT') await uploadGate; await route.continue(); });
-  await attachInput(page).setInputFiles({ name: 'small.bin', mimeType: 'application/octet-stream', buffer: Buffer.from('ten bytes!') });
-  await expect(trayEntries(page).first()).toHaveAttribute('data-phase', 'uploading', { timeout: WAIT });
-  const waitingText = `waiting ${tag()}`;
-  await composerBox(page, channel).fill(waitingText);
-  await composerBox(page, channel).press('Enter');
-  await expect(page.locator('.d-np-toast')).toHaveText(copy('shell.tray.notReady'));
-  await expect(messageRow(page, channel, waitingText)).toHaveCount(0);
-  releaseUpload();
-  await expect(trayEntries(page).first()).toHaveAttribute('data-phase', 'ready', { timeout: WAIT });
-  await context.unroute(uploadPattern);
-  expect(puts).toHaveLength(2);
-  await trayEntries(page).first().getByRole('button', { name: copy('shell.tray.remove', { name: 'small.bin' }), exact: true }).click();
-  await expect(trayEntries(page)).toHaveCount(0, { timeout: WAIT });
+    // Hold the next real upload: Send must toast without creating a message.
+    let releaseUpload!: () => void;
+    const uploadGate = new Promise<void>(resolve => { releaseUpload = resolve; });
+    const uploadPattern = '**/v1/channels/*/blobs/*';
+    await context.route(uploadPattern, async route => { if (route.request().method() === 'PUT') await uploadGate; await route.continue(); });
+    await attachInput(page).setInputFiles({ name: 'small.bin', mimeType: 'application/octet-stream', buffer: Buffer.from('ten bytes!') });
+    await expect(trayEntries(page).first()).toHaveAttribute('data-phase', 'uploading', { timeout: WAIT });
+    const waitingText = `waiting ${tag()}`;
+    await composerBox(page, channel).fill(waitingText);
+    await composerBox(page, channel).press('Enter');
+    await expect(page.locator('.d-np-toast')).toHaveText(copy('shell.tray.notReady'));
+    await expect(messageRow(page, channel, waitingText)).toHaveCount(0);
+    releaseUpload();
+    await expect(trayEntries(page).first()).toHaveAttribute('data-phase', 'ready', { timeout: WAIT });
+    await context.unroute(uploadPattern);
+    expect(puts).toHaveLength(2);
+    await trayEntries(page).first().getByRole('button', { name: copy('shell.tray.remove', { name: 'small.bin' }), exact: true }).click();
+    await expect(trayEntries(page)).toHaveCount(0, { timeout: WAIT });
+  } finally {
+    await Promise.all([rm(bigPath, { force: true }), rm(overPath, { force: true })]);
+  }
 });
 
 test('B sees what A makes', async ({ page, peer, second, instanceName }) => {
@@ -429,16 +440,13 @@ test('B sees what A makes', async ({ page, peer, second, instanceName }) => {
   await expect(box).toBeVisible({ timeout: WAIT });
   const full = box.getByRole('img', { name: 'drawn.png', exact: true });
   await expect.poll(() => full.evaluate((el: HTMLImageElement) => (el.complete ? el.naturalWidth : 0)), { timeout: WAIT }).toBe(320);
-  const [imageDownload] = await Promise.all([
-    b.waitForEvent('download', { timeout: WAIT }),
-    box.getByRole('button', { name: copy('shell.lightbox.save'), exact: true }).click(),
-  ]);
-  expect(sha256Hex(readFileSync(await imageDownload.path()))).toBe(drawn.sha256);
+  const imageDownload = await saveDownload(b, () => box.getByRole('button', { name: copy('shell.lightbox.save'), exact: true }).click());
+  expect(sha256Hex(readFileSync(imageDownload.path))).toBe(drawn.sha256);
   await b.keyboard.press('Escape');
   await expect(box).toHaveCount(0);
   const save = rowB.getByRole('button', { name: copy('shell.attachment.save', { name: 'notes.bin' }), exact: true });
-  const [download] = await Promise.all([b.waitForEvent('download', { timeout: WAIT }), save.click()]);
-  expect(sha256Hex(readFileSync(await download.path()))).toBe(sha256Hex(notes));
+  const download = await saveDownload(b, () => save.click());
+  expect(sha256Hex(readFileSync(download.path))).toBe(sha256Hex(notes));
   expect(drawn.sha256).toMatch(/^[0-9a-f]{64}$/);
 });
 

@@ -5,14 +5,14 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { areasFor, classifyFile, computeAreas, gateExpression, JOB_GATES, jobRuns, reachableOutputs, trackedFiles } from './ci-areas.mjs';
+import { areasFor, classifyFile, computeAreas, gateExpression, JOB_GATES, PATH_RULES, jobRuns, reachableOutputs, trackedFiles } from './ci-areas.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./ci-areas.mjs', import.meta.url));
 const REPO_ROOT = join(dirname(SCRIPT), '..');
 
 const NONE = { go: false, core: false, web: false, e2e: false, text: false, code: false };
 const ALL = { go: true, core: true, web: true, e2e: true, text: true, code: true };
-const BROWSERS = ['chromium-core', 'chromium-voice', 'chromium-web-1', 'chromium-web-2', 'chromium-web-3', 'firefox-core', 'firefox-voice', 'firefox-web-1', 'firefox-web-2', 'firefox-web-3', 'webkit-web'];
+const BROWSERS = ['core-integration'];
 const ranJobs = (outputs) => Object.keys(JOB_GATES).filter((job) => jobRuns(job, outputs));
 
 test('docs-only changes set no area', () => {
@@ -53,6 +53,14 @@ test('the design tokens are read by a Go test, so they run the Go jobs too', () 
   const outputs = areasFor(['packages/design-tokens/dist/tokens.css']);
   assert.deepEqual(outputs, { go: true, core: false, web: true, e2e: true, text: false, code: true });
   assert.ok(jobRuns('go-api', outputs));
+});
+
+test('sandbox bootstrap changes run Go interop and retain web and desktop coverage', () => {
+  const outputs = areasFor(['packages/desktop/native/linux-sandbox/frontend/bootstrap.py']);
+  assert.deepEqual(outputs, { go: true, core: false, web: true, e2e: true, text: false, code: true });
+  for (const job of ['go', 'go-native', 'ui', 'desktop', 'linux-sandbox-foundation']) assert.ok(jobRuns(job, outputs), job);
+  const neighbor = areasFor(['packages/desktop/native/linux-sandbox/frontend/other.py']);
+  assert.deepEqual(neighbor, { go: false, core: false, web: true, e2e: true, text: false, code: true });
 });
 
 test('the LiveKit schema golden is read by the media checks, which run with web', () => {
@@ -146,10 +154,17 @@ test('the reachable output sets come from the tracked files, so a new rule is co
   assert.ok(sets.includes(JSON.stringify(NONE)) && sets.includes(JSON.stringify(ALL)));
 });
 
-test('JOB_GATES names exactly the jobs of ci.yml but changes, docs and ci-ok', () => {
+test('JOB_GATES names exactly the jobs of ci.yml except workflow infrastructure', () => {
   const ci = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
-  const jobs = [...ci.slice(ci.indexOf('\njobs:')).matchAll(/^ {2}([A-Za-z0-9_-]+):\s*$/gm)].map((m) => m[1]).filter((job) => !['changes', 'docs', 'ci-ok'].includes(job));
+  const jobs = [...ci.slice(ci.indexOf('\njobs:')).matchAll(/^ {2}([A-Za-z0-9_-]+):\s*$/gm)].map((m) => m[1]).filter((job) => !['changes', 'docs', 'ci-watchdog', 'ci-work-complete', 'ci-ok'].includes(job));
   assert.deepEqual(jobs.sort(), Object.keys(JOB_GATES).sort());
+});
+
+test('Linux sandbox foundation shares desktop fail-safe code eligibility', () => {
+  assert.deepEqual(JOB_GATES['linux-sandbox-foundation'], ['e2e']);
+  for (const outputs of [...reachableOutputs(), {}, { e2e: '' }]) {
+    assert.equal(jobRuns('linux-sandbox-foundation', outputs), jobRuns('desktop', outputs));
+  }
 });
 
 // The guard for the whole table: every file that a test or a build reads from another place must trigger the
@@ -159,7 +174,11 @@ const UNRUN_READERS = ['e2e/scripts/shoot-docs.test.mjs'];
 const READER_AREA = { internal: 'go', cmd: 'go', packages: 'web', core: 'core', testkit: 'core', e2e: 'e2e' };
 // This build-tagged Go test runs only in web-build/go-release, both gated by the web area.
 // A local generated dist must not make the scanner mistake it for an ordinary Go-job reader.
-const READER_PATH_AREA = { 'internal/web/webdist_test.go': 'web' };
+const READER_PATH_AREA = {
+  'internal/web/webdist_test.go': 'web',
+  // Desktop units run in the reusable desktop workflow, whose real gate is e2e.
+  'packages/desktop/test/linux-appimage-launcher.test.ts': 'e2e',
+};
 
 function relativeReads(file, text) {
   const reads = [];
@@ -175,6 +194,14 @@ function relativeReads(file, text) {
   }
   return reads.filter((read) => read.startsWith('..'));
 }
+
+test('native maintenance diagnostic audit follows its exact Go source dependency',()=>{
+ const path='internal/desktopsandbox/native_root_linux_test.go';assert.equal(areasFor([path]).web,true);
+ assert.equal(areasFor(['internal/desktopsandbox/another_native_test.go']).web,false);
+ const index=PATH_RULES.findIndex(rule=>rule.patterns.length===1&&rule.patterns[0]===path&&rule.areas.join(',')==='web');assert.ok(index>=0);
+ const [rule]=PATH_RULES.splice(index,1);
+ try{assert.equal(areasFor([path]).web,false,'omitting the exact dependency loses the privacy audit consumer');}finally{PATH_RULES.splice(index,0,rule);}
+});
 
 test('every path the code reads from another place is covered by a rule', () => {
   const found = [];

@@ -6,8 +6,16 @@
 //   switch that reports the page as hidden (a ring notifies only while the tab is hidden, flow 06);
 // - the project's media permissions (Chromium) and fake devices (both engines, from the config).
 // Init scripts are injected by the protocol, so the page's CSP never governs them.
-import { test as base, expect, type Browser, type BrowserContext, type ConsoleMessage, type Locator, type Page, type Worker } from '@playwright/test';
+import { test as base, expect, type Browser, type BrowserContext, type ConsoleMessage, type LaunchOptions, type Locator, type Page, type Worker } from '@playwright/test';
 import { copy, FIREFOX_FAVICON_LINE, isFirefoxBrowserFaviconViolation, recordNotifications } from '../../web/support/app';
+import { desktopE2E } from '../../web/support/electron.ts';
+import { desktopVoiceContext } from './desktop.ts';
+import { observeNativeNotifications } from './native-notifications.ts';
+import { writeFixtures } from '../../media/support/fixtures.ts';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { markSignalLifecycle } from './signal-lifecycle.ts';
+import { signalCloseGuard } from './signal-close-guard.ts';
 
 /** One wait for one state (Global Constraints: at least 30 s locally, 90 s in CI). voice.ts re-exports it. */
 export const WAIT = process.env.CI === 'true' ? 90_000 : 30_000;
@@ -59,11 +67,15 @@ function installRecorders(): void {
     ringChannels: Set<string>;
     remoteTracks: Set<string>;
     remoteAnalysers: AnalyserNode[];
+    peerConnections: RTCPeerConnection[];
+    captures: MediaStreamTrack[];
+    localSources: { analyser: AnalyserNode; tracks: MediaStreamTrack[] }[];
+    inputStages: { node: AudioWorkletNode; allowed: boolean; gate: unknown; levels: number; level?: { db: number; thresholdDb: number; open: boolean } }[];
   };
   const w = window as unknown as { __dw?: Rec; __dwSetHidden?: (h: boolean) => void };
   if (w.__dw !== undefined) return;
   const rec: Rec = { slices: {}, keyPath: { messages: 0, callKeys: 0, findings: [] }, contexts: [], tones: [], ringTimers: new Set(),
-    blobs: { created: [], revoked: [] }, hidden: false, ringChannels: new Set(), remoteTracks: new Set(), remoteAnalysers: [] };
+    blobs: { created: [], revoked: [] }, hidden: false, ringChannels: new Set(), remoteTracks: new Set(), remoteAnalysers: [], peerConnections: [], captures: [], localSources: [], inputStages: [] };
   w.__dw = rec;
 
   // The key path (plan task 10, "Key path in a real browser"): no `ret` or `slice` message between the page and a
@@ -129,6 +141,48 @@ function installRecorders(): void {
     }
     Object.defineProperty(window, name, { value: RecordedContext, configurable: true, writable: true });
   }
+  // Boundary evidence for native capture failures: retain track objects, never device labels or IDs in diagnostics.
+  const mediaDevices = navigator.mediaDevices;
+  if (mediaDevices?.getUserMedia !== undefined) {
+    const getUserMedia = mediaDevices.getUserMedia.bind(mediaDevices);
+    mediaDevices.getUserMedia = async (constraints) => {
+      const stream = await getUserMedia(constraints);
+      rec.captures.push(...stream.getAudioTracks());
+      return stream;
+    };
+  }
+  // Enable only the stage's existing level reporter. It measures the input before the gate and changes no DSP or
+  // capture policy, so a zero raw source, a closed gate and a disabled output remain distinguishable after a failure.
+  const NativeWorklet = window.AudioWorkletNode;
+  if (NativeWorklet !== undefined) {
+    class RecordedWorklet extends NativeWorklet {
+      constructor(context: BaseAudioContext, name: string, options?: AudioWorkletNodeOptions) {
+        super(context, name, name === 'dilla-input-stage'
+          ? { ...options, processorOptions: { ...options?.processorOptions, report: true } } : options);
+        if (name !== 'dilla-input-stage') return;
+        const stage: Rec['inputStages'][number] = {
+          node: this, allowed: options?.processorOptions?.allowed === true,
+          gate: options?.processorOptions?.gate, levels: 0,
+        };
+        rec.inputStages.push(stage);
+        const post = this.port.postMessage;
+        this.port.postMessage = function (...args: [unknown, (Transferable[] | StructuredSerializeOptions)?]) {
+          const message = args[0] as { kind?: string; allowed?: boolean; gate?: unknown } | null;
+          if (message?.kind === 'capture') stage.allowed = message.allowed === true;
+          if (message?.kind === 'gate') stage.gate = message.gate;
+          return Reflect.apply(post, this, args);
+        };
+        this.port.addEventListener('message', (event: MessageEvent) => {
+          const level = event.data as { kind?: string; db: number; thresholdDb: number; open: boolean } | null;
+          if (level?.kind !== 'level') return;
+          stage.levels += 1;
+          stage.level = { db: level.db, thresholdDb: level.thresholdDb, open: level.open };
+        });
+        this.port.start();
+      }
+    }
+    Object.defineProperty(window, 'AudioWorkletNode', { value: RecordedWorklet, configurable: true, writable: true });
+  }
   // web3.3: sound, not only decryption. Every track a peer connection receives is recorded by id; a WebAudio source made
   // from a stream (or from an element whose srcObject) that holds one is tapped by an AnalyserNode as well, so `audible`
   // (voice.ts) reads whether a remote call track reaches the page's audio graph with a signal in it. The media worker's
@@ -138,17 +192,20 @@ function installRecorders(): void {
     class RecordedPC extends NativePC {
       constructor(config?: RTCConfiguration) {
         super(config);
+        rec.peerConnections.push(this);
         this.addEventListener('track', (ev) => { rec.remoteTracks.add((ev as RTCTrackEvent).track.id); });
       }
     }
     Object.defineProperty(window, 'RTCPeerConnection', { value: RecordedPC, configurable: true, writable: true });
   }
   const tap = (ctx: BaseAudioContext, node: AudioNode, stream: unknown): void => {
-    if (!(stream instanceof MediaStream) || !stream.getAudioTracks().some((t) => rec.remoteTracks.has(t.id))) return;
+    if (!(stream instanceof MediaStream)) return;
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 2048;
     node.connect(analyser);
-    rec.remoteAnalysers.push(analyser);
+    const tracks = stream.getAudioTracks();
+    if (tracks.some((track) => rec.remoteTracks.has(track.id))) rec.remoteAnalysers.push(analyser);
+    else rec.localSources.push({ analyser, tracks });
   };
   // createMediaStreamSource and createMediaElementSource live on AudioContext (an OfflineAudioContext has neither).
   const createStreamSource = AudioContext.prototype.createMediaStreamSource;
@@ -225,11 +282,12 @@ function installRecorders(): void {
   };
 }
 
-function newGuard(projectName: string): Guard & { attach(context: BrowserContext): Promise<void> } {
+function newGuard(projectName: string): Guard & { attach(context: BrowserContext): Promise<void>; beginLeave(context: BrowserContext): void } {
   const cspViolations: CspViolation[] = [];
   const consoleErrors: string[] = [];
   const pageErrors: string[] = [];
   const workers: Worker[] = [];
+  const signalGuards = new WeakMap<BrowserContext, ReturnType<typeof signalCloseGuard>>();
   // A worker's own securitypolicyviolation listener is installed by an evaluate that runs after the worker has started
   // (Playwright has no init script for workers), so a violation in its first tick (wasm instantiation, an early fetch)
   // can be missed by it (task-10 review M8). The worker's console is watched from the moment Playwright reports the
@@ -254,7 +312,14 @@ function newGuard(projectName: string): Guard & { attach(context: BrowserContext
   };
   return {
     cspViolations, consoleErrors, pageErrors,
+    beginLeave(context) {
+      const signal = signalGuards.get(context);
+      if (!signal) throw new Error('Cannot leave an unguarded voice context');
+      signal.beginLeave();
+    },
     async attach(context: BrowserContext): Promise<void> {
+      const signal = signalCloseGuard();
+      signalGuards.set(context, signal);
       await context.exposeBinding('__dillaCspViolation', (_source, v: CspViolation) => {
         if (!isFirefoxBrowserFaviconViolation(projectName, v)) cspViolations.push(v);
       });
@@ -266,9 +331,10 @@ function newGuard(projectName: string): Guard & { attach(context: BrowserContext
         });
       });
       context.on('console', (m) => {
+        const expectedSignalClose = signal.observe(m.text());
         const resourceLine = projectName === 'chromium-voice' && BY_DESIGN_RESOURCE_LINE.test(m.text());
         const firefoxFavicon = projectName.startsWith('firefox') && FIREFOX_FAVICON_LINE.test(m.text());
-        if (m.type() === 'error' && !resourceLine && !firefoxFavicon && !firefoxUnloadLine(projectName, m.text(), m.location().url)) consoleErrors.push(m.text());
+        if (m.type() === 'error' && !expectedSignalClose && !resourceLine && !firefoxFavicon && !firefoxUnloadLine(projectName, m.text(), m.location().url)) consoleErrors.push(m.text());
       });
       context.on('weberror', (e) => { pageErrors.push(String(e.error())); });
       context.on('page', watchPage);
@@ -292,7 +358,7 @@ export interface PeerBrowsers {
   /** Opens one person's context and page; at most a few per test, each closed by `close` (or the fixture's net). `browser`
    *  (web3.4 V4): a browser the spec launched with switches of its own, instead of the worker's; the spec closes it after
    *  closing the people it opened there. */
-  open(name: string, opts?: { viewport?: { width: number; height: number }; browser?: Browser }): Promise<Person>;
+  open(name: string, opts?: { viewport?: { width: number; height: number }; browser?: Browser; launchOptions?: LaunchOptions }): Promise<Person>;
   /** Leaves the call through the app's own leave, waits for the media worker to end, then closes the context. */
   close(person: Person): Promise<void>;
   /** Hands a native peer (anything with an idempotent close) to the fixture, which closes it after the people, whatever
@@ -351,11 +417,12 @@ async function openContext(browser: Browser, o: { baseURL: string | undefined; p
 
 /** L-E2E-31 `peerBrowser`: the people of a test, each a browser context of their own. */
 export const test = base.extend<{ peerBrowser: PeerBrowsers }>({
-  peerBrowser: async ({ browser, baseURL, permissions, viewport }, use, testInfo) => {
+  peerBrowser: async ({ browser, baseURL, permissions, viewport, launchOptions }, use, testInfo) => {
     const guard = newGuard(testInfo.project.name);
     const open: Person[] = [];
     const peers: { close(): Promise<void> }[] = [];
     const leaveFailures: string[] = [];
+    let microphone = 0;
     const people: PeerBrowsers = {
       guard,
       track(peer) {
@@ -363,10 +430,22 @@ export const test = base.extend<{ peerBrowser: PeerBrowsers }>({
         return peer;
       },
       async open(name, opts) {
-        const context = await openContext(opts?.browser ?? browser, { baseURL, permissions, viewport: opts?.viewport ?? viewport });
+        if (desktopE2E() && opts?.browser) throw new Error('Browser tab capture requires a native application-audio counterpart');
+        let media = opts?.launchOptions ?? launchOptions;
+        if (desktopE2E() && !opts?.launchOptions) {
+          // Identical looped tones at both ends can be cancelled as echo by the
+          // shipping AEC, especially on macOS. Give independent desktop devices
+          // distinct capture sources, as the comparative call benchmark does.
+          const capture = writeFixtures(join(tmpdir(), 'dilla-media-fixtures'), [1000, 600, 1400, 1800][microphone++ % 4]);
+          media = { ...media, args: media.args?.map(arg => arg.startsWith('--use-file-for-fake-audio-capture=') ? `--use-file-for-fake-audio-capture=${capture.wav}` : arg) };
+        }
+        const context = desktopE2E()
+          ? await desktopVoiceContext({ baseURL, permissions, launchOptions: media, viewport: opts?.viewport ?? viewport })
+          : await openContext(opts?.browser ?? browser, { baseURL, permissions, viewport: opts?.viewport ?? viewport });
         await guard.attach(context);
         await context.addInitScript(installRecorders);
-        await recordNotifications(context);
+        if (desktopE2E()) await observeNativeNotifications(context);
+        else await recordNotifications(context);
         const page = await context.newPage();
         const person = { name, context, page };
         open.push(person);
@@ -379,12 +458,16 @@ export const test = base.extend<{ peerBrowser: PeerBrowsers }>({
         // A failed leave is recorded and fails the test at the end, after the context is closed anyway: thrown from a
         // spec's `finally` it would hide the error that sent the test there.
         try {
+          guard.beginLeave(person.context);
+          await markSignalLifecycle(person.page, 'before-leave');
           await leaveIfInCall(person.page);
         } catch (e) {
           leaveFailures.push(`${person.name}: ${String(e).split('\n')[0]}`);
         } finally {
           await guard.collectWorkers();
+          await markSignalLifecycle(person.page, 'before-context-close');
           await person.context.close();
+          await markSignalLifecycle(person.page, 'after-context-close');
         }
       },
     };

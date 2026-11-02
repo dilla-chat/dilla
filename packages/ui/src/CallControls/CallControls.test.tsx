@@ -1,3 +1,4 @@
+import { themes } from '@dilla/design-tokens';
 import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, it, expect, vi } from 'vitest';
@@ -336,7 +337,7 @@ describe('CallControls', () => {
     expect(screen.getByRole('button', { name: 'share screen' })).toHaveFocus();
   });
 
-  it.each(['signal', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {
+  it.each(Object.keys(themes))('passes axe at its default story args in %s', async theme => {
     document.documentElement.dataset.theme = theme;
     const { container } = render(<div className="d-root"><CallControls {...(meta.args as CallControlsProps)} /></div>);
     // jsdom has no layout or canvas, so contrast is left to the Storybook axe run in a real browser.

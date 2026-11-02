@@ -1,6 +1,8 @@
 import { decodeFrame } from '../../packages/client-core/src/gateway/frames';
 import { expect, test } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
+import { desktopE2E } from '../web/support/electron.ts';
+import { expectDesktopQuitBlocked } from '../web/support/desktop-quit.ts';
 import { VoicePeer, WAIT, copy, joinVoice, noiseOff, onboard, tile } from './support/voice';
 
 watchContexts(test);
@@ -47,6 +49,13 @@ test('a live call sends coarse reports over the existing socket and defers an up
     await alice.context.route('**/app-version.json', route => route.fulfill({ json: { entry: '/assets/next-call-build.js' } }));
     const versions = http.version;
     await alice.page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    if (desktopE2E()) {
+      expect(http.version).toBe(versions);
+      await expectDesktopQuitBlocked(alice.context);
+      await expect(tile(alice.page, 'bob')).toHaveAttribute('data-voice-state', 'ok');
+      await expect(tile(bob.page, 'alice')).toHaveAttribute('data-voice-state', 'ok');
+      return;
+    }
     await expect.poll(() => http.version).toBe(versions + 1);
     await expect(alice.page.getByText(copy('update.finishCall'), { exact: true })).toBeVisible();
     await expect(tile(alice.page, 'bob')).toHaveAttribute('data-voice-state', 'ok');

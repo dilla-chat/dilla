@@ -17,17 +17,12 @@ import (
 	"github.com/jonasthim/dilla/internal/id"
 )
 
-type leaseStub struct{ released atomic.Int32 }
-
-func (l *leaseStub) Release() error { l.released.Add(1); return nil }
-
 type pcmStub struct{ closed atomic.Int32 }
 
 func (p *pcmStub) Read([]byte) (int, error) { return 0, io.EOF }
 func (p *pcmStub) Close() error             { p.closed.Add(1); return nil }
 
 type pcmStart struct {
-	lease *leaseStub
 	calls atomic.Int32
 	fail  bool
 }
@@ -38,9 +33,6 @@ func (p plainPCMStart) Start(context.Context, string) (io.ReadCloser, error) { r
 
 func (p *pcmStart) Start(context.Context, string) (io.ReadCloser, error) {
 	p.calls.Add(1)
-	if p.lease.released.Load() != 0 {
-		panic("lease already released")
-	}
 	if p.fail {
 		return nil, errors.New("pcm")
 	}
@@ -95,16 +87,15 @@ func (epochStub) CallMediaEpoch(context.Context, id.ID) (native.CallMediaEpoch, 
 	return native.CallMediaEpoch{}, nil
 }
 
-func options(pcm *pcmStart, enc *encoderStub, pub *pubStub, lease *leaseStub) Options {
-	return Options{Community: id.New(), Channel: id.New(), Track: "spotify:track:123", Call: client.Call{CallID: id.New(), GroupID: id.New()}, Group: id.New(), Acquire: func(id.ID, id.ID) (Lease, error) { return lease, nil }, PCM: pcm, Encoder: encStart{enc: enc}, Publisher: pubStart{pub: pub}, Epochs: epochStub{}}
+func options(pcm *pcmStart, enc *encoderStub, pub *pubStub) Options {
+	return Options{Community: id.New(), Channel: id.New(), Track: "abcdefghijk", Call: client.Call{CallID: id.New(), GroupID: id.New()}, Group: id.New(), PCM: pcm, Encoder: encStart{enc: enc}, Publisher: pubStart{pub: pub}, Epochs: epochStub{}}
 }
 
-func TestStartAcquiresLeaseBeforeAudioAndReleasesAfterCompletion(t *testing.T) {
-	lease := &leaseStub{}
-	pcm := &pcmStart{lease: lease}
+func TestStartOwnsResourcesThroughCompletion(t *testing.T) {
+	pcm := &pcmStart{}
 	enc := &encoderStub{done: make(chan struct{})}
 	pub := &pubStub{done: make(chan struct{})}
-	o := options(pcm, enc, pub, lease)
+	o := options(pcm, enc, pub)
 	o.Call.GroupID = o.Group
 	s, err := Start(context.Background(), o)
 	if err != nil {
@@ -113,70 +104,49 @@ func TestStartAcquiresLeaseBeforeAudioAndReleasesAfterCompletion(t *testing.T) {
 	if pcm.calls.Load() != 1 {
 		t.Fatalf("PCM starts=%d", pcm.calls.Load())
 	}
-	if lease.released.Load() != 0 {
-		t.Fatal("lease released before playback ended")
-	}
 	close(pub.done)
 	if err := s.Wait(); err != nil {
 		t.Fatal(err)
 	}
-	if lease.released.Load() != 1 || enc.closed.Load() != 1 || pub.closed.Load() != 1 {
-		t.Fatalf("cleanup lease=%d encoder=%d publisher=%d", lease.released.Load(), enc.closed.Load(), pub.closed.Load())
+	if enc.closed.Load() != 1 || pub.closed.Load() != 1 {
+		t.Fatalf("cleanup encoder=%d publisher=%d", enc.closed.Load(), pub.closed.Load())
 	}
 }
 
-func TestStartFailuresReleaseLeaseAndPartialResources(t *testing.T) {
-	t.Run("lease", func(t *testing.T) {
-		lease := &leaseStub{}
-		p := &pcmStart{lease: lease}
-		e := &encoderStub{done: make(chan struct{})}
-		pub := &pubStub{done: make(chan struct{})}
-		o := options(p, e, pub, lease)
-		o.Call.GroupID = o.Group
-		o.Acquire = func(id.ID, id.ID) (Lease, error) { return nil, errors.New("busy") }
-		if _, err := Start(context.Background(), o); err == nil {
-			t.Fatal("expected error")
-		}
-		if p.calls.Load() != 0 {
-			t.Fatal("audio started without lease")
-		}
-	})
+func TestStartFailuresReleasePartialResources(t *testing.T) {
 	t.Run("PCM", func(t *testing.T) {
-		lease := &leaseStub{}
-		p := &pcmStart{lease: lease, fail: true}
+		p := &pcmStart{fail: true}
 		e := &encoderStub{done: make(chan struct{})}
 		pub := &pubStub{done: make(chan struct{})}
-		o := options(p, e, pub, lease)
+		o := options(p, e, pub)
 		o.Call.GroupID = o.Group
 		if _, err := Start(context.Background(), o); err == nil {
 			t.Fatal("expected error")
 		}
-		if lease.released.Load() != 1 || p.calls.Load() != 1 {
-			t.Fatal("lease/PCM cleanup mismatch")
+		if p.calls.Load() != 1 {
+			t.Fatal("PCM cleanup mismatch")
 		}
 	})
 	t.Run("publisher", func(t *testing.T) {
-		lease := &leaseStub{}
-		p := &pcmStart{lease: lease}
+		p := &pcmStart{}
 		e := &encoderStub{done: make(chan struct{})}
-		o := options(p, e, &pubStub{done: make(chan struct{})}, lease)
+		o := options(p, e, &pubStub{done: make(chan struct{})})
 		o.Call.GroupID = o.Group
 		o.Publisher = pubStart{fail: true}
 		if _, err := Start(context.Background(), o); err == nil {
 			t.Fatal("expected error")
 		}
-		if lease.released.Load() != 1 || e.closed.Load() != 1 {
+		if e.closed.Load() != 1 {
 			t.Fatal("partial resources not closed")
 		}
 	})
 }
 
-func TestConcurrentCloseReleasesLeaseOnce(t *testing.T) {
-	lease := &leaseStub{}
-	p := &pcmStart{lease: lease}
+func TestConcurrentCloseReleasesResourcesOnce(t *testing.T) {
+	p := &pcmStart{}
 	e := &encoderStub{done: make(chan struct{})}
 	pub := &pubStub{done: make(chan struct{})}
-	o := options(p, e, pub, lease)
+	o := options(p, e, pub)
 	o.Call.GroupID = o.Group
 	s, err := Start(context.Background(), o)
 	if err != nil {
@@ -188,45 +158,24 @@ func TestConcurrentCloseReleasesLeaseOnce(t *testing.T) {
 		go func() { defer wg.Done(); _ = s.Close() }()
 	}
 	wg.Wait()
-	if lease.released.Load() != 1 {
-		t.Fatalf("lease releases=%d", lease.released.Load())
+	if e.closed.Load() != 1 || pub.closed.Load() != 1 {
+		t.Fatalf("encoder closes=%d publisher closes=%d", e.closed.Load(), pub.closed.Load())
 	}
-}
-
-func TestYouTubeSessionDoesNotAcquireInstallationSpotifyLease(t *testing.T) {
-	lease := &leaseStub{}
-	enc := &encoderStub{done: make(chan struct{})}
-	pub := &pubStub{done: make(chan struct{})}
-	o := options(&pcmStart{lease: lease}, enc, pub, lease)
-	o.Provider = "youtube"
-	o.Acquire = nil
-	o.PCM = plainPCMStart{source: &pcmStub{}}
-	o.Call.GroupID = o.Group
-	s, err := Start(context.Background(), o)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if lease.released.Load() != 0 {
-		t.Fatal("YouTube session touched Spotify lease")
-	}
-	_ = s.Close()
 }
 
 func TestQueueStarterRejectsProviderMismatchBeforePlayback(t *testing.T) {
 	called := false
-	lease := &leaseStub{}
 	enc := &encoderStub{done: make(chan struct{})}
 	pub := &pubStub{done: make(chan struct{})}
 	starter := QueueStarter{OptionsFor: func(context.Context, music.Track) (Options, error) {
 		called = true
-		o := options(&pcmStart{lease: lease}, enc, pub, lease)
+		o := options(&pcmStart{}, enc, pub)
 		o.Provider = music.ProviderYouTube
-		o.Acquire = nil
 		o.PCM = plainPCMStart{source: &pcmStub{}}
 		o.Call.GroupID = o.Group
 		return o, nil
 	}}
-	playback, err := starter.Start(context.Background(), music.Track{Provider: music.ProviderSpotify, CanonicalID: "track"})
+	playback, err := starter.Start(context.Background(), music.Track{Provider: music.Provider("unsupported"), CanonicalID: "track"})
 	if playback != nil {
 		_ = playback.Close()
 	}
@@ -249,9 +198,8 @@ func TestQueueStarterRechecksMembershipAfterServerDisconnect(t *testing.T) {
 		calls++
 		enc := &encoderStub{done: make(chan struct{})}
 		encoders = append(encoders, enc)
-		o := options(&pcmStart{lease: &leaseStub{}}, enc, pub, &leaseStub{})
+		o := options(&pcmStart{}, enc, pub)
 		o.Provider = music.ProviderYouTube
-		o.Acquire = nil
 		o.PCM = plainPCMStart{source: &pcmStub{}}
 		o.Call.GroupID = o.Group
 		attempt := calls
@@ -307,21 +255,18 @@ func TestQueueStarterBoundsDisconnectRetriesAndKeepsBindingRefusalsTerminal(t *t
 	}
 }
 
-func TestQueueStarterReleasesSpotifyLeaseBeforeRetry(t *testing.T) {
-	var leases []*leaseStub
+func TestQueueStarterReleasesResourcesBeforeRetry(t *testing.T) {
 	var encoders []*encoderStub
 	pub := &pubStub{done: make(chan struct{})}
 	starter := QueueStarter{OptionsFor: func(context.Context, music.Track) (Options, error) {
-		if len(leases) > 0 && (leases[len(leases)-1].released.Load() != 1 || encoders[len(encoders)-1].closed.Load() != 1) {
+		if len(encoders) > 0 && encoders[len(encoders)-1].closed.Load() != 1 {
 			t.Fatal("retry began before cleanup")
 		}
-		lease := &leaseStub{}
-		leases = append(leases, lease)
 		enc := &encoderStub{done: make(chan struct{})}
 		encoders = append(encoders, enc)
-		o := options(&pcmStart{lease: lease}, enc, pub, lease)
+		o := options(&pcmStart{}, enc, pub)
 		o.Call.GroupID = o.Group
-		attempt := len(leases)
+		attempt := len(encoders)
 		o.Publisher = publisherStartFunc(func(context.Context, client.Call, id.ID, livekit.EpochSource, Encoder) (Publisher, error) {
 			if attempt == 1 {
 				return nil, livekit.ErrEpochChanged
@@ -330,12 +275,12 @@ func TestQueueStarterReleasesSpotifyLeaseBeforeRetry(t *testing.T) {
 		})
 		return o, nil
 	}}
-	playback, err := starter.Start(context.Background(), music.Track{Provider: music.ProviderSpotify, CanonicalID: "track"})
+	playback, err := starter.Start(context.Background(), music.Track{Provider: music.ProviderYouTube, CanonicalID: "track"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	_ = playback.Close()
-	if len(leases) != 2 || leases[1].released.Load() != 1 || encoders[1].closed.Load() != 1 {
+	if len(encoders) != 2 || encoders[1].closed.Load() != 1 {
 		t.Fatal("retry resources not released exactly once")
 	}
 }
@@ -439,10 +384,9 @@ func TestPlaybackSessionClearsInteractiveScheduling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lease := &leaseStub{}
 	enc := &encoderStub{done: make(chan struct{})}
 	pub := &pubStub{done: make(chan struct{})}
-	o := options(&pcmStart{lease: lease}, enc, pub, lease)
+	o := options(&pcmStart{}, enc, pub)
 	o.Call.GroupID = o.Group
 	o.PCM = schedulingPCM{api: api}
 	ctx := client.WithInteractive(client.WithCooperativeStop(t.Context(), func() bool { return true }))
@@ -453,18 +397,18 @@ func TestPlaybackSessionClearsInteractiveScheduling(t *testing.T) {
 	defer playback.Close()
 }
 
-func TestStartClosesAudioAndLeaseOnLateCallFailure(t *testing.T) {
+func TestStartClosesAudioOnLateCallFailure(t *testing.T) {
 	for _, stage := range []string{"call_group_join", "call_token", "call_fields"} {
 		t.Run(stage, func(t *testing.T) {
-			lease, pcm := &leaseStub{}, &pcmStub{}
+			pcm := &pcmStub{}
 			enc := &encoderStub{done: make(chan struct{})}
 			pub := &pubStub{done: make(chan struct{})}
-			o := options(&pcmStart{lease: lease}, enc, pub, lease)
+			o := options(&pcmStart{}, enc, pub)
 			o.PCM = plainPCMStart{source: pcm}
 			failure := errors.New("late call failure")
 			o.Call, o.Group = client.Call{}, id.ID{}
 			o.PrepareCall = func(context.Context) (client.Call, error) {
-				if lease.released.Load() != 0 || enc.closed.Load() != 0 {
+				if pcm.closed.Load() != 0 || enc.closed.Load() != 0 {
 					t.Fatal("resources closed before call preparation")
 				}
 				return client.Call{}, &music.StartError{Stage: stage, Cause: failure}
@@ -473,8 +417,8 @@ func TestStartClosesAudioAndLeaseOnLateCallFailure(t *testing.T) {
 			if !errors.Is(err, failure) {
 				t.Fatalf("start = %v", err)
 			}
-			if pcm.closed.Load() != 1 || enc.closed.Load() != 1 || lease.released.Load() != 1 || pub.closed.Load() != 0 {
-				t.Fatalf("cleanup pcm=%d encoder=%d lease=%d publisher=%d", pcm.closed.Load(), enc.closed.Load(), lease.released.Load(), pub.closed.Load())
+			if pcm.closed.Load() != 1 || enc.closed.Load() != 1 || pub.closed.Load() != 0 {
+				t.Fatalf("cleanup pcm=%d encoder=%d publisher=%d", pcm.closed.Load(), enc.closed.Load(), pub.closed.Load())
 			}
 		})
 	}

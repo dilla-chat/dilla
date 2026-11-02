@@ -1,0 +1,229 @@
+# dilla.toml — dillad instance configuration.
+# Parsed with github.com/pelletier/go-toml/v2 in STRICT mode: an unknown
+# key or table aborts start-up with exit code 78 and a line and column.
+# Secrets are always *_file (mode 0600), never inline.
+
+[instance]
+  # REQUIRED. Public DNS name this instance answers on.
+  domain = 'chat.example'
+  # REQUIRED unless tls.mode = "behind_proxy". IPv4/IPv6 literal.
+  public_ip = '203.0.113.7'
+  # State root. systemd StateDirectory=dilla.
+  data_dir = '/var/lib/dilla'
+  # "public" | "session" — auth on GET /v1/instance.
+  discovery = 'public'
+
+[server]
+  listen = ':443'
+  plain_listen = '127.0.0.1:8080'
+  trusted_proxy_cidrs = []
+  read_header_timeout = '10s'
+  read_body_timeout = '30s'
+  idle_timeout = '120s'
+  shutdown_grace = '30s'
+
+[http]
+  trusted_origins = ['dilla://app']
+
+[gateway]
+  heartbeat_interval = '30s'
+  session_idle_close = '90s'
+  read_limit_bytes = 16384
+  frame_burst = 60
+  frame_burst_max = 120
+
+[tls]
+  mode = 'acme_tls_alpn'
+  email = ''
+  agreed = true
+  ca = ''
+  test_ca = ''
+  profile = ''
+  renewal_window_ratio = 0.0
+  storage_dir = ''
+
+  [tls.dns]
+    provider = ''
+    credentials_file = ''
+    ttl = '0s'
+    propagation_delay = '0s'
+    propagation_timeout = '2m'
+    resolvers = []
+    override_domain = ''
+
+[turn]
+  enabled = true
+  listen = ''
+  realm = ''
+  shared_secret_file = 'turn.secret'
+  relay_ip = '203.0.113.7'
+  credential_ttl = '1h'
+  max_allocation_age = '2h'
+  allocations_per_device = 4
+  proxy_protocol = false
+  public_url = ''
+
+[livekit]
+  enabled = true
+  mode = 'in_process'
+  bind_address = '127.0.0.1'
+  port = 7880
+  udp_port = 7882
+  tcp_port = 0
+  node_ip = ''
+  use_external_ip = false
+  advertise_internal_ip = true
+  stun_servers = []
+  api_key = 'dilla'
+  api_secret_file = 'livekit.secret'
+  max_voice_participants = 25
+  max_publishers = 10
+  webhook_listen = '127.0.0.1:7883'
+  vp9 = false
+  max_share_bitrate_kbps = 8000
+  max_audio_bitrate_kbps = 64
+  limit_num_tracks = 0
+  limit_bytes_per_sec = 0
+  ips_excludes = []
+  extra_config_file = ''
+
+[db]
+  driver = 'sqlite'
+  path = '/var/lib/dilla/dilla.db'
+  dsn = ''
+  max_open_conns = 0
+  conn_max_lifetime = '0s'
+  auto_migrate = true
+  pre_migration_backup = true
+
+[blobs]
+  dir = '/var/lib/dilla/blobs'
+  backend = 'fs'
+  max_blob_bytes = 104857600
+  quota_bytes_per_user = 10737418240
+  store_max_bytes = 0
+  pending_ttl = '24h'
+  gc_grace = '24h'
+  gc_interval = '1h'
+  upload_timeout = '15m'
+  uploads_per_minute = 20
+  upload_bytes_per_day = 5368709120
+
+[limits]
+  max_ciphertext_bytes = 131072
+  max_attachment_bytes = 104857600
+  max_keypackages_per_device = 32
+  keypackage_refill_threshold = 8
+
+  [limits.rate]
+    enabled = true
+    sweep_interval = '30s'
+    max_keys = 100000
+    max_retry_after = '1h'
+    message_per_second = 1.0
+    message_burst = 20
+    commit_per_second = 2.0
+    commit_burst = 40
+    proposal_per_second = 0.5
+    proposal_burst = 10
+    read_per_second = 10.0
+    read_burst = 60
+    write_per_second = 2.0
+    write_burst = 20
+    login_per_second = 0.003
+    login_burst = 5
+    login_failed_per_second = 0.17
+    login_failed_burst = 3
+    register_per_second = 0.17
+    register_burst = 3
+    invite_per_second = 0.1
+    invite_burst = 5
+    unauth_per_second = 1.0
+    unauth_burst = 20
+    invalid_per_second = 0.2
+    invalid_burst = 60
+    password_concurrency = 0
+
+[retention]
+  handshake_days = 30
+  ciphertext_days = 30
+
+[registration]
+  mode = 'invite'
+  email_required = false
+  captcha = false
+  # The 8-hex reference of the bootstrap invite dillad init minted. Never the code itself.
+  admin_invite = ''
+
+[auth]
+  methods = ['password', 'totp', 'passkey']
+
+  [auth.password]
+    argon2_memory_kib = 19456
+    argon2_iterations = 2
+    argon2_parallelism = 1
+    argon2_salt_bytes = 16
+    argon2_key_bytes = 32
+    hash_memory_budget_mib = 256
+    pepper_file = ''
+
+  [auth.totp]
+    issuer = ''
+    period = 30
+    skew = 1
+    digits = 6
+    algorithm = 'SHA1'
+    secret_size = 20
+    recovery_codes = 10
+
+  [auth.webauthn]
+    rp_id = ''
+    rp_display_name = ''
+    rp_origins = []
+    user_verification = 'required'
+
+  [auth.oidc]
+    enabled = false
+    issuer = ''
+    client_id = ''
+    client_secret_file = ''
+    redirect_url = ''
+    scopes = ['openid', 'profile', 'email']
+    auto_create = false
+
+  [auth.session]
+    native_lifetime = '720h'
+    browser_lifetime = '168h'
+    browser_idle = '12h'
+    max_per_device = 8
+    reauth_window = '300s'
+    max_devices_per_user = 8
+    enrolments_per_hour = 3
+
+  [auth.lockout]
+    observation_window = '15m'
+    free_attempts = 4
+    first_lockout = '30s'
+    lockout_ceiling = '1h'
+    hard_ceiling = 100
+
+[log]
+  level = 'info'
+  format = 'json'
+  add_source = false
+
+[metrics]
+  enabled = true
+  path = '/metrics'
+  # When true, a scrape must carry Authorization: Bearer $DILLA_METRICS_TOKEN (an environment variable, never a dilla.toml key); unset, no scrape succeeds.
+  require_admin = true
+
+[doctor]
+  clock_peers = []
+  clock_skew_max = '60s'
+  turn_probe = true
+  udp_probe = true
+
+[bot_spotify]
+  client_id = ''
+  redirect_url = ''

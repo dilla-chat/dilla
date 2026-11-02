@@ -4,8 +4,8 @@ import type { ThemePref } from './prefs.ts';
 export const THEME_QUERIES = { light: '(prefers-color-scheme: light)', contrast: '(prefers-contrast: more)' } as const;
 
 export function preferredTheme(matchMedia: (query: string) => { matches: boolean }): ThemeName {
-  if (matchMedia(THEME_QUERIES.contrast).matches) return 'high-contrast';
-  if (matchMedia(THEME_QUERIES.light).matches) return 'light';
+  // The named theme machinery remains; the current catalog contains Signal.
+  void matchMedia;
   return 'signal';
 }
 

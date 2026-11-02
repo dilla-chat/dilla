@@ -42,13 +42,10 @@ const dialog = (page: import('@playwright/test').Page, name: string, vars?: Reco
 const settingsNav = (settings: import('@playwright/test').Locator, key: string) =>
   settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
     .getByRole('button', { name: copy(key), exact: true });
-// Signal task 10c: the Music page's YouTube row (its status line and READY tag) and the Spotify account row.
+// Signal task 10c: the Music page's YouTube status line and READY tag.
 const expectProviderRuntimeEvidence = async (settings: import('@playwright/test').Locator): Promise<void> => {
   const youtube = settings.locator('[data-setting="music-providers"]');
   await expect(youtube.getByRole('status')).toHaveText(copy('serverSettings.music.youtubeReady'), { timeout: 35_000 });
-  // The fresh fixture has no Spotify account state, and the pinned provider tools above are present.
-  await expect(settings.getByRole('group', { name: copy('workspace.providers.spotifyAccount'), exact: true }))
-    .toContainText(copy('workspace.providers.notLinked'));
 };
 const memberRow = (page: import('@playwright/test').Page, server: string, name: string) =>
   page.getByRole('complementary', { name: copy('members.region', { server }), exact: true })

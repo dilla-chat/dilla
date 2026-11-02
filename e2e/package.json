@@ -5,9 +5,7 @@
   "license": "AGPL-3.0-or-later",
   "type": "module",
   "scripts": {
-    "test": "node --test unit/peer-seed.test.mjs unit/totp.test.mjs",
-    "test:voice-fixture": "node --test unit/voice-fixture.test.mjs",
-    "test:layout-source": "node --test unit/conversation-layout.test.mjs",
+    "test": "node --test unit/peer-seed.test.mjs unit/totp.test.mjs unit/media-fixtures.test.mjs unit/signal-lifecycle.test.mjs unit/installed-packages.test.mjs unit/signal-wire.test.mjs unit/signal-close-guard.test.mjs",
     "test:e2e": "playwright test --config playwright.config.ts --project=chromium",
     "test:e2e:matrix": "playwright test --config playwright.config.ts --project=chromium --project=firefox --project=webkit --project=firefox-persistent",
     "test:e2e:media": "playwright test --config playwright.media.config.ts --project=chromium-media --project=firefox-media",
@@ -27,7 +25,11 @@
     "docs:shots": "node scripts/shoot-docs.mjs",
     "ux:world": "node ux/world.mjs",
     "ux:shots": "node ux/shots.mjs",
-    "ux:sheets": "node ux/sheets.mjs"
+    "ux:sheets": "node ux/sheets.mjs",
+    "test:e2e:voice": "playwright test --config playwright.desktop-voice.config.ts --project=electron-voice",
+    "test:voice-fixture": "node --test unit/voice-fixture.test.mjs",
+    "test:layout-source": "node --test unit/conversation-layout.test.mjs",
+    "test:e2e:desktop": "playwright test --config playwright.desktop.config.ts --project=electron-client"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",

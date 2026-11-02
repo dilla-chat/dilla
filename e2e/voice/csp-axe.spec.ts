@@ -9,14 +9,18 @@ import {
   stripButton,
 } from './support/voice';
 import { attachInput, dmComposer, dmLog, trayEntries } from '../web/support/app';
+import { markSignalLifecycle, signalLifecycleDiagnostics } from './support/signal-lifecycle.ts';
 
 watchContexts(test);
 
-test('the ring, the call, a player and Settings → Voice pass axe in three themes and at 360×740, with no CSP violation', async ({ peerBrowser }) => {
+test('the ring, the call, a player and Settings → Voice pass axe in three themes and at 360×740, with no CSP violation', async ({ peerBrowser }, testInfo) => {
   const peer = peerBrowser.track(await VoicePeer.start());
   const alice = await peerBrowser.open('alice');
   const bob = await peerBrowser.open('bob');
+  const diagnostics = signalLifecycleDiagnostics(testInfo);
   try {
+    await diagnostics.watch(alice);
+    await diagnostics.watch(bob);
     await dmPair(alice, bob, peer);
 
     await test.step('an inline player, idle and ready', async () => {
@@ -65,9 +69,13 @@ test('the ring, the call, a player and Settings → Voice pass axe in three them
 
     await peerBrowser.guard.collectWorkers();
     expect(peerBrowser.guard.cspViolations, 'securitypolicyviolation events during the call and the ring').toEqual([]);
+    await markSignalLifecycle(alice.page, 'body-complete');
+    await markSignalLifecycle(bob.page, 'body-complete');
   } finally {
-    await peerBrowser.close(bob);
-    await peerBrowser.close(alice);
-    await peer.close();
+    try {
+      await peerBrowser.close(bob);
+      await peerBrowser.close(alice);
+      await peer.close();
+    } finally { await diagnostics.save(); }
   }
 });

@@ -1606,7 +1606,7 @@ describe('Controller', () => {
     await vi.waitFor(() => expect(h.account()?.phase).toBe('other-tab'), { timeout: LEADER.otherTabGraceMs + 3_000 });
     expect(h.ret(1)).toEqual({ t: 'ret', id: 1, ok: true, value: null });
     expect(h.account()?.instance).toEqual({ id: INSTANCE_HEX, name: 'dilla.test', registrationMode: 0, passwordSignup: true, totp: false,
-      passkeys: false });
+      passkeys: false, oidc: false });
     expect(h.connection()).toEqual({ status: 'offline', generation: null });
     release();
     await vi.waitFor(() => expect(h.account()?.phase).toBe('unsupported'));
@@ -7445,4 +7445,24 @@ it('sends input activity only over WSS and drops unavailable samples with no HTT
   now += 5000;
   w.call(93, { m: 'presenceActivity' }); await settle();
   expect(w.routes.sendPresenceActivity).not.toHaveBeenCalled();
+});
+
+
+describe('Desktop OIDC assertion adoption', () => {
+ it.each([0, 1, 2] as const)('keeps factor debt %i and defers registration until the key step', async needs => {
+  const w = world({ phase: 0 });
+  await toLoginStep(w);
+  w.call(3, { m: 'signInOIDC', assertion: 'A'.repeat(43), needs });
+  await vi.waitFor(() => expect(w.ret(3)).toMatchObject({ ok: true, value: { needs } }));
+  expect(w.account()?.phase).toBe(needs === 1 ? 'signin-totp' : needs === 2 ? 'signin-passkey' : 'signin-key');
+  expect(w.enrol.oidc).toHaveBeenCalledWith('A'.repeat(43), needs);
+  expect(w.enrol.register).not.toHaveBeenCalled();
+  expect(w.core.recoveryKeyCheck).not.toHaveBeenCalled();
+ });
+ it('rejects malformed OIDC input before touching enrollment', async () => {
+  const w = world({ phase: 0 }); await toLoginStep(w);
+  w.call(3, { m: 'signInOIDC', assertion: 'https://evil.test', needs: 0 });
+  await vi.waitFor(() => expect(w.ret(3)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
+  expect(w.enrol.oidc).not.toHaveBeenCalled();
+ });
 });

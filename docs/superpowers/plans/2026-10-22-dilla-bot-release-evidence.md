@@ -1,5 +1,8 @@
 # Dilla Bot release evidence — 22 October 2026
 
+> Historical document: Spotify integration was removed from Dilla on 2026-11-01.
+> Provider setup, playback claims, and release gates below describe the earlier implementation.
+
 ## Latest checkpoint — 23 October 2026
 
 Strict Chromium passed the public YouTube playlist acceptance, including playlist import, authenticated encrypted media, audible playback after Skip, and queue isolation. Music publishers now reserve durable SFrame counters per call epoch and Bot leaf. Admin rejoin Chromium passes on `043102f7`; the second-device Bot interaction scenario remains open.

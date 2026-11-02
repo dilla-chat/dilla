@@ -42,8 +42,8 @@ const badgePlay = (story: string) => ({ canvasElement }: { canvasElement: HTMLEl
 };
 /** A server selected (the accent square with its ring), unread servers, and the `@` tile quiet. */
 export const WithHome: Story = { args: FULL, globals: { theme: 'signal' }, play: badgePlay('WithHome') };
-export const WithHomeLight: Story = { args: FULL, globals: { theme: 'light' }, play: badgePlay('WithHomeLight') };
-export const WithHomeHighContrast: Story = { args: FULL, globals: { theme: 'high-contrast' }, play: badgePlay('WithHomeHighContrast') };
+
+
 /** Home selected (DMs open) with unread messages and a mention (the count at the bottom right). */
 export const HomeSelected: Story = { args: { ...FULL, activeId: null, home: { ...HOME, selected: true, unread: 3, mentions: 1, itemLabel: 'direct messages, unread 3, mentions 1' } }, globals: { theme: 'signal' }, play: badgePlay('HomeSelected') };
 export const HomeUnread: Story = { args: { ...FULL, home: { ...HOME, unread: 5, itemLabel: 'direct messages, unread 5' } }, globals: { theme: 'signal' }, play: badgePlay('HomeUnread') };

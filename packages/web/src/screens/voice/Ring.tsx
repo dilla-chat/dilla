@@ -44,6 +44,12 @@ function useRingNotifications(p: RingFlowProps): void {
       if (open.current.has(k)) continue;
       const kind = p.dms?.find(d => d.id === ring.channelId)?.kind ?? 3;
       const note = ringNotification(ring, { Notification: notificationCtor(), settings: p.settings, kind, visible, presenceChoice: p.presenceChoice,
+        action: action => {
+          const current = live.current.rings?.find(candidate => key(candidate) === k);
+          if (!current || current.busy || current.quiet || live.current.presenceChoice === 'dnd') return;
+          if (action === 'answer') { window.focus(); live.current.onAnswer(current.channelId); }
+          else void live.current.client.call({ m: 'callDecline', callId: current.callId, ringTs: current.ringTs }).catch(() => undefined);
+        },
         focus: () => window.focus(), open: id => live.current.onOpen(id) });
       // A ring that may not notify is remembered too, so a later render never raises it.
       open.current.set(k, note ?? { onclick: null, close: () => undefined });

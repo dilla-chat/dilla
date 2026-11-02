@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { PasskeyError, createPasskey, getPasskey, passkeysUsable, passkeyErrorKind } from './webauthn.ts';
+import { PasskeyError, conditionalMediationAvailable, createPasskey, getPasskey, passkeysUsable, passkeyErrorKind } from './webauthn.ts';
 
 // A go-webauthn options document: every binary member is base64url without padding, as the library marshals it.
 const CHALLENGE = 'Zm9vYmFyLWNoYWxsZW5nZS1fLQ';
@@ -33,6 +33,22 @@ function install(credentials: Partial<CredentialsContainer>): void {
   Object.defineProperty(navigator, 'credentials', { value: credentials, configurable: true });
 }
 afterEach(() => { Reflect.deleteProperty(navigator, 'credentials'); vi.restoreAllMocks(); });
+
+it('uses explicit browser handoffs in the desktop shell instead of starting conditional autofill', async () => {
+  const browserAuth = vi.fn(async () => ({ response: 'browser credential' }));
+  const conditional = vi.fn(async () => true);
+  vi.stubGlobal('dillaDesktop', { browserAuth });
+  vi.stubGlobal('PublicKeyCredential', { isConditionalMediationAvailable: conditional });
+  vi.stubGlobal('isSecureContext', true);
+  try {
+    expect(await conditionalMediationAvailable()).toBe(false);
+    expect(conditional).not.toHaveBeenCalled();
+    expect(browserAuth).not.toHaveBeenCalled();
+    expect(await getPasskey(GET)).toBe('browser credential');
+    expect(await createPasskey(CREATE)).toBe('browser credential');
+    expect(browserAuth.mock.calls).toEqual([[{ kind: 'get', options: GET }], [{ kind: 'create', options: CREATE }]]);
+  } finally { vi.unstubAllGlobals(); }
+});
 
 function created(extra: Record<string, unknown> = {}) {
   return { id: CRED, rawId: bytes(251, 255, 191, 0, 1, 2, 3), type: 'public-key', authenticatorAttachment: 'platform',

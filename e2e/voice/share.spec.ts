@@ -1,7 +1,10 @@
+import { observeDesktopScreen } from './support/desktop.ts';
+import { desktopE2E } from '../web/support/electron.ts';
 // VOICE-E2E (web-3 task 10): a screen share and a camera, on and off, as the other browser sees them. Chromium only:
 // headless Firefox has no screen capture to pick and its fake camera is not a capture Playwright can grant (media plan
 // DEV-63; NV-10 records screen share as a Chromium-measured path). Screen share starts from the person's own click
-// (`getDisplayMedia` needs that activation); the fake UI flag picks the screen. #37's share without sound also runs in
+// (browser getDisplayMedia or the typed desktop broker). Electron selects a real named native window; the browser
+// fixture's fake UI flag picks its screen. #37's share without sound also runs in
 // Firefox, on a drawn capture in place of the picker (see `silentDisplayMedia`).
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -42,8 +45,11 @@ const SHARE_OPTIONS_FIREFOX = {
 function silentDisplayMedia(substitute: boolean): void {
   const w = globalThis as unknown as { __dmOpts?: unknown; __dmStripped: number };
   w.__dmStripped = 0;
-  const native = MediaDevices.prototype.getDisplayMedia;
-  MediaDevices.prototype.getDisplayMedia = async function (this: MediaDevices, options?: DisplayMediaStreamOptions) {
+  const devices = navigator.mediaDevices;
+  if (!devices?.getDisplayMedia) return; // Initial non-secure documents expose no media interface.
+  const prototype = Object.getPrototypeOf(devices) as MediaDevices;
+  const native = prototype.getDisplayMedia;
+  prototype.getDisplayMedia = async function (this: MediaDevices, options?: DisplayMediaStreamOptions) {
     w.__dmOpts = JSON.parse(JSON.stringify(options ?? null)) as unknown;
     if (substitute) {
       const canvas = document.createElement('canvas');
@@ -178,6 +184,7 @@ test('a screen share and a camera reach the other browser verified, and stop', a
   const peer = peerBrowser.track(await VoicePeer.start());
   const alice = await peerBrowser.open('alice');
   const bob = await peerBrowser.open('bob');
+  let native: Awaited<ReturnType<typeof observeDesktopScreen>> | undefined;
   try {
     await peer.setup();
     await onboard(alice, peer, 'alice');
@@ -189,6 +196,7 @@ test('a screen share and a camera reach the other browser verified, and stop', a
     const seen = tile(bob.page, 'alice');
     await expect(seen).toHaveAttribute('data-voice-state', 'ok', { timeout: WAIT });
     await heard(bob.page, a.device);
+    if (desktopE2E()) native = await observeDesktopScreen(alice.context, bob.context);
     const controls = alice.page.getByRole('toolbar', { name: copy('voice.controls.voice'), exact: true });
     // Signal §5.6: the stage's tile is the camera or the screen itself (no glyph for them on the tile, as the prototype); the
     // sidebar's voice row still says it (camera, LIVE), so that is where bob reads alice's camera and share.
@@ -199,6 +207,11 @@ test('a screen share and a camera reach the other browser verified, and stop', a
       const share = controls.locator('[data-control="share"]');
       await startShare(alice.page);
       await expect(share).toHaveAttribute('data-on', 'true', { timeout: WAIT });
+      if (native) {
+        expect(await native.requests()).toEqual([{ fields: ['frameRate', 'height', 'width'], width: 1920, height: 1080, frameRate: 30, owningMainFrame: true }]);
+        expect(await native.selections()).toEqual([{ source: expect.stringMatching(/^Dilla voice screen source [0-9a-f-]{36}$/), cancelled: false }]);
+        expect(await native.brokers()).toBe(1);
+      }
       // web3.8: the screen is a tile of its own; alice's person tile stays an avatar (she shares no camera).
       const shared = screenTile(bob.page, 'alice');
       await expect(word('screen')).toBeVisible({ timeout: WAIT });
@@ -209,6 +222,7 @@ test('a screen share and a camera reach the other browser verified, and stop', a
       await share.click();
       await expect(word('screen')).toHaveCount(0, { timeout: WAIT });
       await expect(shared).toHaveCount(0, { timeout: WAIT });
+      if (native) await expect.poll(() => native!.brokers(), POLL).toBe(0);
     });
 
     await test.step('camera on, then off', async () => {
@@ -223,6 +237,7 @@ test('a screen share and a camera reach the other browser verified, and stop', a
       await expect(seen).not.toHaveAttribute('data-media', 'true', { timeout: WAIT });
     });
   } finally {
+    await native?.dispose();
     await peerBrowser.close(bob);
     await peerBrowser.close(alice);
     await peer.close();
@@ -243,11 +258,12 @@ test('a share without sound says so on both sides', async ({ peerBrowser, browse
   const peer = peerBrowser.track(await VoicePeer.start());
   const alice = await peerBrowser.open('alice');
   const bob = await peerBrowser.open('bob');
+  let native: Awaited<ReturnType<typeof observeDesktopScreen>> | undefined;
   try {
-    await alice.context.addInitScript(silentDisplayMedia, firefox);
+    if (!desktopE2E()) await alice.context.addInitScript(silentDisplayMedia, firefox);
     // The notice names what this browser can do (#37): Firefox shares no sound; Chromium a tab's, and on Windows, ChromeOS and
     // macOS the system's too. Playwright's desktop Chrome profile claims a Windows UA, so the platform is read from the page.
-    const noticeKey = firefox ? 'voice.shareAudio.none.unsupported' : await noticeKeyOf(alice.page);
+    const noticeKey = desktopE2E() ? 'voice.shareAudio.none.application' : firefox ? 'voice.shareAudio.none.unsupported' : await noticeKeyOf(alice.page);
     await peer.setup();
     await onboard(alice, peer, 'alice');
     await onboard(bob, peer, 'bob');
@@ -265,14 +281,30 @@ test('a share without sound says so on both sides', async ({ peerBrowser, browse
     // Before the share: no notice (D4, nothing before the picker).
     await expect(notice).not.toContainText(copy(noticeKey));
 
-    await startShare(alice.page, firefox ? [] : [copy('callStage.share.tab')]);
+    if (desktopE2E()) native = await observeDesktopScreen(alice.context, bob.context);
+    await startShare(alice.page, firefox || desktopE2E() ? [] : [copy('callStage.share.tab')]);
     await expect(share).toHaveAttribute('data-on', 'true', { timeout: WAIT });
-    const opts = await alice.page.evaluate(() => (globalThis as unknown as { __dmOpts?: unknown }).__dmOpts);
-    expect(opts, 'the options the share gave getDisplayMedia').toEqual(firefox ? SHARE_OPTIONS_FIREFOX : SHARE_OPTIONS);
-    if (!firefox) {
-      // The fake picker's stream carried sound, so the silence below is the wrapper's, as a Linux window share's is.
-      expect(await alice.page.evaluate(() => (globalThis as unknown as { __dmStripped: number }).__dmStripped), 'audio tracks stripped')
-        .toBeGreaterThan(0);
+    if (native) {
+      expect(await native.requests(), 'the actual typed screen request delivered to the shipping main handler').toEqual([
+        { fields: ['frameRate', 'height', 'width'], width: 1920, height: 1080, frameRate: 30, owningMainFrame: true },
+      ]);
+      expect(await native.selections(), 'a real native application window was selected, without a screen fallback').toEqual([
+        { source: expect.stringMatching(/^Dilla voice screen source [0-9a-f-]{36}$/), cancelled: false },
+      ]);
+      expect(await native.brokers(), 'the selected video comes from the real isolated capture broker').toBe(1);
+      const senders = await alice.page.evaluate(() => {
+        const connections = (globalThis as any).__dw.peerConnections as RTCPeerConnection[];
+        const tracks = [...new Map(connections.flatMap(connection => connection.getSenders()).flatMap(sender => sender.track?.readyState === 'live' ? [sender.track] : []).map(track => [track.id, track])).values()];
+        return { video: tracks.filter(track => track.kind === 'video').length, audio: tracks.filter(track => track.kind === 'audio').length };
+      });
+      expect(senders, 'one native screen video plus the existing microphone; no screen-audio sender').toEqual({ video: 1, audio: 1 });
+    } else {
+      const opts = await alice.page.evaluate(() => (globalThis as unknown as { __dmOpts?: unknown }).__dmOpts);
+      expect(opts, 'the options the browser share gave getDisplayMedia').toEqual(firefox ? SHARE_OPTIONS_FIREFOX : SHARE_OPTIONS);
+      if (!firefox) {
+        expect(await alice.page.evaluate(() => (globalThis as unknown as { __dmStripped: number }).__dmStripped), 'audio tracks stripped')
+          .toBeGreaterThan(0);
+      }
     }
     // The sharer: one polite notice, in the stage's status region, that says how to share sound.
     await expect(notice).toContainText(copy(noticeKey), { timeout: WAIT });
@@ -290,6 +322,8 @@ test('a share without sound says so on both sides', async ({ peerBrowser, browse
     await expect(silentMenu.getByRole('menuitemcheckbox')).toHaveCount(0);
     await bob.page.keyboard.press('Escape');
     // E2EE: the screen's frames went out encrypted (slot 2), and no screen-audio frame was sent at all (slot 3).
+    const receivedTrack = await shared.locator('video').evaluate((video: HTMLVideoElement) => (video.srcObject as MediaStream).getVideoTracks()[0]!.id);
+    expect(await verifiedTrack(bob.page, receivedTrack), 'the shown screen track was authenticated by the receiving media worker').toBeGreaterThan(0);
     expect(await slotSent(alice.page, 2), 'screen frames alice encrypted').toBeGreaterThan(0);
     expect(await slotSent(alice.page, 3), 'screen-audio frames alice encrypted (none published)').toBe(0);
 
@@ -299,11 +333,39 @@ test('a share without sound says so on both sides', async ({ peerBrowser, browse
     await expect(notice).not.toContainText(copy(noticeKey), { timeout: WAIT });
     await expect(mark).toHaveCount(0, { timeout: WAIT });
     await expect(shared).toHaveCount(0, { timeout: WAIT });
+    if (native) await expect.poll(() => native!.brokers(), POLL).toBe(0);
   } finally {
+    await native?.dispose();
     await peerBrowser.close(bob);
     await peerBrowser.close(alice);
     await peer.close();
   }
+});
+
+test('cancelling native screen selection publishes no video or sound and leaves the voice call usable', async ({ peerBrowser }) => {
+  test.skip(!desktopE2E(), 'The typed native picker belongs to Electron; browser cancellation is covered by the browser capture contract.');
+  const peer = peerBrowser.track(await VoicePeer.start());
+  const alice = await peerBrowser.open('alice'), bob = await peerBrowser.open('bob');
+  let native: Awaited<ReturnType<typeof observeDesktopScreen>> | undefined;
+  try {
+    await peer.setup(); await onboard(alice, peer, 'alice'); await onboard(bob, peer, 'bob'); await peer.seat(2);
+    const a = await self(alice.page);
+    await joinVoice(alice.page, peer.communityName, peer.voiceName); await joinVoice(bob.page, peer.communityName, peer.voiceName);
+    await heard(bob.page, a.device);
+    native = await observeDesktopScreen(alice.context, bob.context, true);
+    const share = alice.page.getByRole('toolbar', { name: copy('voice.controls.voice'), exact: true }).locator('[data-control="share"]');
+    await startShare(alice.page);
+    await expect.poll(() => native!.requests(), POLL).toEqual([{ fields: ['frameRate', 'height', 'width'], width: 1920, height: 1080, frameRate: 30, owningMainFrame: true }]);
+    await expect.poll(() => native!.selections(), POLL).toEqual([{ source: expect.stringMatching(/^Dilla voice screen source [0-9a-f-]{36}$/), cancelled: true }]);
+    await expect(share).not.toHaveAttribute('data-on', { timeout: WAIT });
+    await expect(screenTile(bob.page, 'alice')).toHaveCount(0);
+    await expect(stage(alice.page).locator('.d-call-stage__notice[role="status"]')).not.toContainText(copy('voice.shareAudio.none.application'));
+    expect(await native.brokers()).toBe(0);
+    expect(await slotSent(alice.page, 2)).toBe(0); expect(await slotSent(alice.page, 3)).toBe(0);
+    const sentBefore = await sentCount(alice.page);
+    await framesPass(alice.page, sentBefore, 10); await heard(bob.page, a.device);
+    await expect(tile(bob.page, 'alice')).toHaveAttribute('data-voice-state', 'ok', { timeout: WAIT });
+  } finally { await native?.dispose(); await peerBrowser.close(bob); await peerBrowser.close(alice); await peer.close(); }
 });
 
 // web3.4 V4: the share's sound, not only its picture. With the fake picker off, Chromium picks the tab that
@@ -322,6 +384,7 @@ const rowState = (page: Page, name: string, key: string): Locator => page.locato
   .locator(`.d-voice-row__state[data-state="${key}"]`);
 
 test('a shared tab’s sound is heard by the other browser', async ({ peerBrowser, browserName, playwright, channel, headless }) => {
+  test.skip(desktopE2E(), 'Desktop has no browser tabs. Required native application-audio.spec.ts replaces this with real selected-application audio, call-audio exclusion and authenticated slot-3 transport on every OS.');
   test.skip(browserName !== 'chromium', 'DEV-63 / NV-10: screen capture, and a tab picked by its title, are Chromium only');
   const tabPicking = await playwright.chromium.launch({
     ...(channel === undefined ? {} : { channel }),

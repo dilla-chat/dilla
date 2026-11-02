@@ -14,6 +14,10 @@ import {
 } from '@dilla/media';
 import { reportProcessorStatus, reportStageStatus } from './processor-status.ts';
 import { acquireCamera, acquireMic, acquireScreen, type CaptureMedia, type DisplayMedia, type ScreenCapture, type ShareAudioKind } from './devices.ts';
+import { APPLICATION_SOURCE, acquireApplicationAudio, applicationAudioAvailable } from './app-audio.ts';
+import { desktopBridge } from '../desktop.ts';
+import { acquireDesktopScreen } from './desktop-screen.ts';
+import { t } from '../strings/index.ts';
 import { createKeyRelay, toEpochKeys } from './keys.ts';
 import { DEFAULT_SHARE_OPTIONS, shareEncoding, shareVideoConstraints, type ShareOptions } from './share-options.ts';
 import { readTileStats, type TileStats } from './tile-stats.ts';
@@ -180,6 +184,7 @@ export interface InputStage {
 }
 
 export interface PageCallDeps {
+  applicationAudio?: () => Promise<MediaStreamTrack>;
   bridge: Pick<CoreClient, 'call' | 'onCallKeys'>;
   joinCall: (o: JoinCallOptions) => Promise<CallSession>;
   now(): number;
@@ -320,7 +325,7 @@ export function browserDeps(bridge: PageCallDeps['bridge']): PageCallDeps {
     media: {
       getUserMedia: (c) => md.getUserMedia(c),
       enumerateDevices: () => md.enumerateDevices(),
-      getDisplayMedia: (o) => md.getDisplayMedia(o),
+      getDisplayMedia: (o) => desktopBridge() ? acquireDesktopScreen(o) : md.getDisplayMedia(o),
     },
   };
 }
@@ -1293,10 +1298,12 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         }
       }
       // #37: the sound the share carries, as published: none when the browser gave no audio or the grant did not allow it.
+      const sourceEnded = (): boolean => tracks.video.readyState === 'ended';
       let shareAudio: ShareAudioKind = 'none';
       let videoPub: LocalPub | null = null;
       try {
         usable();
+        if (sourceEnded()) throw new PageCallError('E_UNAVAILABLE');
         videoPub = await local.publishTrack(tracks.video, { source: SOURCE.screen, screenShareEncoding: shareEncoding(o, caps.maxShareBitrateBps) });
         if (tracks.audio !== null && permitted('screenAudio')) {
           await local.publishTrack(tracks.audio, screenAudioOptions(caps));
@@ -1310,7 +1317,9 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         throw pageCallError(err);
       }
       // WB client I2: a pause (or the end) that came while the publish was in flight: nothing stays published.
-      if (ended || state.paused) {
+      // The native source can also end before its publication promise settles,
+      // before the steady-state ended listener below has been installed.
+      if (ended || state.paused || sourceEnded()) {
         await local.unpublishTrack(tracks.video).catch(() => undefined);
         if (tracks.audio !== null) await local.unpublishTrack(tracks.audio).catch(() => undefined);
         tracks.video.stop();
@@ -1319,7 +1328,15 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         throw new PageCallError('E_UNAVAILABLE');
       }
       // The browser’s own "stop sharing" ends the video track.
-      const onEnded = (): void => { void setSharing(false).catch(() => undefined); };
+      const onEnded = (): void => {
+        if (ended || screen?.video !== tracks.video) return;
+        void inLane(async () => {
+          // A replacement may finish before this source's queued teardown runs.
+          if (ended || screen?.video !== tracks.video) return;
+          await stopScreen();
+          await shareOffIfIdle();
+        }).catch(() => undefined);
+      };
       tracks.video.addEventListener('ended', onEnded);
       // #37 m1: the share's own audio track ends while the video goes on (an audio device change, say): the share is silent
       // from then on, so the viewers' mark and the sharer's notice follow. The dead publication is withdrawn.
@@ -1350,7 +1367,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         } catch (err) {
           throw pageCallError(err);
         }
-        if (ended || state.paused || screen !== s) {
+        if (ended || state.paused || screen !== s || next.video.readyState === 'ended') {
           next.video.stop();
           next.audio?.stop();
           throw new PageCallError('E_UNAVAILABLE');
@@ -1403,11 +1420,14 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       if (!permitted('screenAudio')) throw new PageCallError('E_FORBIDDEN');
       let track: MediaStreamTrack;
       try {
+        if (id === APPLICATION_SOURCE) track = await (deps.applicationAudio ?? acquireApplicationAudio)();
+        else {
         const stream = await deps.media.getUserMedia({ audio: { deviceId: { exact: id }, echoCancellation: false, noiseSuppression: false,
           autoGainControl: false, channelCount: 2 } });
         const got = stream.getAudioTracks()[0];
         if (got === undefined) { for (const t of stream.getTracks()) t.stop(); throw new PageCallError('E_UNAVAILABLE'); }
         track = got;
+        }
       } catch (err) {
         throw pageCallError(err);
       }
@@ -1461,9 +1481,10 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       };
       track.addEventListener('ended', onEnded);
       s.device = { track, pub, onEnded };
-      set({ shareAudio: 'device', shareSource: id });
+      set({ shareAudio: id === APPLICATION_SOURCE ? 'app' : 'device', shareSource: id });
     });
     const shareSources = async (): Promise<{ sources: ShareSource[]; labeled: boolean }> => {
+      if (desktopBridge()) return { labeled: true, sources: await applicationAudioAvailable() ? [{ id: APPLICATION_SOURCE, label: t('voice.shareAudio.application'), monitor: false }] : [] };
       let all: MediaDeviceInfo[] = [];
       try { all = await deps.media.enumerateDevices(); } catch { all = []; }
       const raw = all.filter((d) => d.kind === 'audioinput');

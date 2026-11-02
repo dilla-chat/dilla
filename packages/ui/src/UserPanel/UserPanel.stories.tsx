@@ -77,12 +77,12 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Default: Story = { globals: { theme: 'signal' } };
-export const Light: Story = { globals: { theme: 'light' } };
-export const HighContrast: Story = { globals: { theme: 'high-contrast' } };
+
+
 /** Muted and deafened: the glyphs swap and the toggles are pressed, in every theme. */
 export const MutedAndDeafened: Story = { args: { muted: true, deafened: true }, globals: { theme: 'signal' } };
-export const MutedAndDeafenedLight: Story = { args: { muted: true, deafened: true }, globals: { theme: 'light' } };
-export const MutedAndDeafenedHighContrast: Story = { args: { muted: true, deafened: true }, globals: { theme: 'high-contrast' } };
+
+
 /** A long name truncates; the controls keep their size. */
 export const LongName: Story = { args: { name: 'Augusta Ada King-Noel, Countess of Lovelace', username: 'countess.of.lovelace' } };
 
@@ -95,8 +95,7 @@ export const WideSidebar: Story = {
 /** Push to talk: the PTT tag on the mic, and the ring while the key is held, in every theme. */
 const PTT = { tag: 'PTT', description: 'push to talk', held: false };
 export const PushToTalk: Story = { args: { ptt: PTT }, globals: { theme: 'signal' } };
-export const PushToTalkLight: Story = { args: { ptt: PTT }, globals: { theme: 'light' } };
-export const PushToTalkHighContrast: Story = { args: { ptt: { ...PTT, held: true } }, globals: { theme: 'high-contrast' } };
+
 export const PushToTalkHeld: Story = { args: { ptt: { ...PTT, held: true } }, globals: { theme: 'signal' } };
 
 // Signal §5.4: the panel as the prototype draws it (no gear: the top bar holds it; the status under the name), one story per

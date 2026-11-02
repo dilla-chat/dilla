@@ -142,60 +142,6 @@ func TestLoadConfigRejectsUnknownKeys(t *testing.T) {
 	}
 }
 
-func TestLoadConfigValidatesOptionalSpotifyOAuthPair(t *testing.T) {
-	dir := t.TempDir()
-	credential := filepath.Join(dir, "runtime.token")
-	if err := os.WriteFile(credential, []byte("dbr_"+base64.RawURLEncoding.EncodeToString(make([]byte, 32))), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	base := `base_url = "https://dilla.example"
-instance_id = "01010101010101010101010101010101"
-runtime_credential_file = "` + credential + `"
-helper_executable = "/usr/libexec/dilla-bot-core"
-wasi_module = "/usr/lib/dilla/dilla_core_wasi.wasm"
-state_dir = "/var/lib/dillabot"
-reconcile_interval = "30s"
-`
-	for _, tc := range []struct {
-		suffix string
-		good   bool
-	}{
-		{``, true},
-		{`spotify_helper_executable = "/usr/local/libexec/dilla-spotify-helper"
-`, true},
-		{`spotify_helper_executable = "dilla-spotify-helper"
-`, false},
-		{`spotify_client_id = "public-client"
-spotify_redirect_url = "https://dilla.example/settings/bot/music/spotify/callback"
-`, true},
-		{`spotify_client_id = "public-client"
-spotify_redirect_url = "https://dilla.example/settings/bot/music/spotify/callback"
-spotify_helper_executable = "/usr/local/libexec/dilla-spotify-helper"
-`, true},
-		{`spotify_client_id = "public-client"
-`, false},
-		{`spotify_client_id = "public-client"
-spotify_redirect_url = "http://dilla.example/callback"
-`, false},
-		{`spotify_client_id = "public-client"
-spotify_redirect_url = "https://dilla.example/settings/bot/music/spotify/callback"
-spotify_helper_executable = "dilla-spotify-helper"
-`, false},
-	} {
-		path := filepath.Join(dir, "bot.toml")
-		if err := os.WriteFile(path, []byte(base+tc.suffix), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		cfg, err := loadConfig(path)
-		if (err == nil) != tc.good {
-			t.Fatalf("load config with suffix %q: %v", tc.suffix, err)
-		}
-		if tc.good && strings.Contains(tc.suffix, "spotify_client_id") && cfg.SpotifyClientID != "public-client" {
-			t.Fatal("valid Spotify client ID was not loaded")
-		}
-	}
-}
-
 func TestLoadDatabaseKeyCreatesPrivatePerInstallationKey(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "state")
 	if err := os.Mkdir(root, 0o700); err != nil {
@@ -271,5 +217,50 @@ func TestValidateHelperExecutableRequiresRegularExecutable(t *testing.T) {
 	}
 	if err := validateHelperExecutable(path); err != nil {
 		t.Fatalf("helper preflight rejected an executable file: %v", err)
+	}
+}
+
+func TestLoadConfigDiscardsOnlyKnownRetiredKeys(t *testing.T) {
+	dir := t.TempDir()
+	credential := filepath.Join(dir, "runtime.token")
+	if err := os.WriteFile(credential, []byte("dbr_"+base64.RawURLEncoding.EncodeToString(make([]byte, 32))), 0600); err != nil {
+		t.Fatal(err)
+	}
+	body := fmt.Sprintf(`base_url = "https://dilla.example"
+instance_id = "01010101010101010101010101010101"
+runtime_credential_file = %q
+helper_executable = "/usr/libexec/dilla-bot-core"
+wasi_module = "/usr/lib/dilla/dilla_core_wasi.wasm"
+state_dir = "/var/lib/dillabot"
+reconcile_interval = "30s"
+`, credential)
+	for _, tc := range []struct {
+		name, extra string
+		valid       bool
+	}{
+		{"legacy empty", "spotify_client_id = ''\nspotify_redirect_url = ''\nspotify_helper_executable = ''\n", true},
+		{"legacy configured", "spotify_client_id = 'retired'\nspotify_redirect_url = 'https://chat.example/retired'\nspotify_helper_executable = '/no-longer-installed-helper'\n", true},
+		{"unknown legacy key", "spotify_client_secret = 'unexpected'\n", false},
+		{"unknown normal key", "state_directory = '/var/lib/dillabot'\n", false},
+		{"wrong legacy type", "spotify_client_id = 42\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(dir, "bot.toml")
+			raw := []byte(body + tc.extra)
+			if err := os.WriteFile(path, raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := loadConfig(path)
+			if (err == nil) != tc.valid {
+				t.Fatalf("config valid=%v error=%v", tc.valid, err)
+			}
+			if tc.valid && (cfg.HelperExecutable != "/usr/libexec/dilla-bot-core" || cfg.StateDir != "/var/lib/dillabot") {
+				t.Fatal("retired config changed active settings")
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || string(after) != string(raw) {
+				t.Fatal("loading rewrote installed config")
+			}
+		})
 	}
 }

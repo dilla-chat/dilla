@@ -1,3 +1,4 @@
+import { openInviteInClient } from './support/invite';
 import { expect } from '@playwright/test';
 import { addServerVia, completeSignUp, copy, makeInviteLink, newAccount, openChannel, railItem, signUp, test } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
@@ -30,8 +31,7 @@ test('a warning made in the web client can be retrieved from Bot settings', asyn
     targetContext = await browser.newContext({ baseURL: host.url });
     await guard.attach(targetContext);
     const targetPage = await targetContext.newPage();
-    await targetPage.goto(new URL(invite).pathname);
-    await targetPage.getByRole('link', { name: 'Open dilla in this browser', exact: true }).click();
+    await openInviteInClient(targetPage, invite);
     await completeSignUp(targetPage, newAccount(TARGET, host.control), instanceName);
     await expect(railItem(targetPage, SERVER)).toBeVisible();
     await openChannel(targetPage, SERVER, 'general');

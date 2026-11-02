@@ -267,8 +267,6 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	deviceLists := ds.NewDeviceLists(o.Repo, wasm)
 	deps.BotIdentity = botidentity.NewVerifier(wasm)
 	deps.BotRuntime = botruntime.New(o.Repo, o.Clock.Now)
-	deps.BotSpotifyClientID = o.Config.BotSpotify.ClientID
-	deps.BotSpotifyRedirectURL = o.Config.BotSpotify.RedirectURL
 	sessions.DeviceLists = deviceListGate{lists: deviceLists}
 
 	// The gateway, then the delivery service: ds holds *gateway.Gateway, and

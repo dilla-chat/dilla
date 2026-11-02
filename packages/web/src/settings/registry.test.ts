@@ -20,8 +20,8 @@ describe('settings registry', () => {
   it('searches static synonyms with every term and never exposes forbidden settings', () => {
     expect(searchSettings('user', 'MICROPHONE input').some(r => r.section.id === 'voice')).toBe(true);
     expect(searchSettings('user', 'microphone bananas')).toEqual([]);
-    expect(searchSettings('server', 'spotify', { loaded: true })).toEqual([]);
-    expect(searchSettings('server', 'spotify', { loaded: true, manageCommunity: true }).map(r => r.section.id)).toEqual(expect.arrayContaining(['music']));
+    expect(searchSettings('server', 'youtube', { loaded: true })).toEqual([]);
+    expect(searchSettings('server', 'youtube', { loaded: true, manageCommunity: true }).map(r => r.section.id)).toEqual(expect.arrayContaining(['music']));
   });
   it('ranks exact labels before prefixes and uses static stable anchors', () => {
     expect(searchSettings('user', 'Profile')[0]?.label).toBe('Profile');

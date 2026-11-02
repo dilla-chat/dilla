@@ -1,6 +1,7 @@
 import type {
   BrowserContext, LaunchOptions, Page, PlaywrightWorkerArgs, PlaywrightWorkerOptions, ViewportSize,
 } from '@playwright/test';
+import { desktopE2E, launchDesktopContext } from './electron.ts';
 import { mkdirSync, rmSync } from 'node:fs';
 import { PROFILE_ROOT, expect, test as base } from './persistent';
 
@@ -20,6 +21,7 @@ export async function launchSecond(
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true });
   const { launchOptions, headless, channel, viewport, baseURL } = options;
+  if (desktopE2E()) return launchDesktopContext(dir, { launchOptions, viewport, baseURL });
   return playwright[browserName].launchPersistentContext(dir, { ...launchOptions, headless, channel, viewport, baseURL });
 }
 

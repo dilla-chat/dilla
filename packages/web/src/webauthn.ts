@@ -1,3 +1,4 @@
+import { desktopBridge } from './desktop.ts';
 // The browser's passkey glue. The instance (go-webauthn) sends its options as JSON in which every binary member is
 // base64url, and wants the browser's answer the same way. This file converts both ways by hand: it uses neither
 // PublicKeyCredential.parseCreationOptionsFromJSON nor toJSON(), which not every supported browser has.
@@ -135,6 +136,14 @@ function envelope(credential: Credential): { head: Json; response: Json; raw: Js
 /** Creates a passkey from the instance's registration options (`{publicKey:{…}}`, base64url members). Resolves with the
  *  credential as JSON for the finish call; rejects with a PasskeyError. */
 export async function createPasskey(optionsJson: string): Promise<string> {
+  const bridge = desktopBridge();
+  if (bridge?.browserAuth) {
+    try {
+      const result = await bridge.browserAuth({ kind: 'create', options: optionsJson });
+      if (typeof result.response !== 'string') throw new Error('Missing browser credential');
+      return result.response;
+    } catch (error) { throw new PasskeyError('other', error instanceof Error ? error.message : 'Browser sign-in failed'); }
+  }
   const pk = publicKeyOf(optionsJson);
   if (!isObject(pk.rp) || !isObject(pk.user)) throw bad('no rp or user');
   const publicKey = {
@@ -159,6 +168,7 @@ export async function createPasskey(optionsJson: string): Promise<string> {
 /** Wave B task 3 (Jonas, fix round 1): whether the browser can offer passkeys in the username field's autofill (WebAuthn
  *  conditional mediation). False where the API is missing or the check throws. */
 export async function conditionalMediationAvailable(): Promise<boolean> {
+  if (desktopBridge()?.browserAuth) return false; // The native shell uses an explicit system-browser handoff.
   if (typeof window === 'undefined' || !('PublicKeyCredential' in window) || !window.isSecureContext) return false;
   const check = (window.PublicKeyCredential as unknown as { isConditionalMediationAvailable?: () => Promise<boolean> }).isConditionalMediationAvailable;
   if (typeof check !== 'function') return false;
@@ -169,6 +179,14 @@ export async function conditionalMediationAvailable(): Promise<boolean> {
  *  with the assertion as JSON; rejects with a PasskeyError. `conditional` makes it the username field's autofill request
  *  (mediation 'conditional'), ended by aborting its signal; the same options and the same rules apply. */
 export async function getPasskey(optionsJson: string, conditional?: { signal: AbortSignal }): Promise<string> {
+  const bridge = desktopBridge();
+  if (bridge?.browserAuth) {
+    try {
+      const result = await bridge.browserAuth({ kind: 'get', options: optionsJson });
+      if (typeof result.response !== 'string') throw new Error('Missing browser credential');
+      return result.response;
+    } catch (error) { throw new PasskeyError('other', error instanceof Error ? error.message : 'Browser sign-in failed'); }
+  }
   const pk = publicKeyOf(optionsJson);
   const publicKey = {
     ...(pk as unknown as Partial<PublicKeyCredentialRequestOptions>),

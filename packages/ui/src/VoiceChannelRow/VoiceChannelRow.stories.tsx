@@ -104,8 +104,8 @@ export const JoinFocused: Story = {
   globals: { theme: 'signal' },
   play: async ({ canvasElement }) => { await expectJoinRing(canvasElement, 'JoinFocused'); },
 };
-export const JoinFocusedLight: Story = { ...JoinFocused, globals: { theme: 'light' } };
-export const JoinFocusedHighContrast: Story = { ...JoinFocused, globals: { theme: 'high-contrast' } };
+
+
 /** V2: a participant's mute and deafen glyphs are 0.25rem apart and end 8px inside the list's right edge, one glyph or two. */
 export const GlyphInset: Story = {
   args: { current: true, joined: true, participants: [person('ada', { muted: true, deafened: true }), person('bo', { muted: true }), person('cy')] },
@@ -151,8 +151,8 @@ export const AwayRoster: Story = {
   args: { name: 'AFK', labels: { ...meta.args.labels, away: 'away' },
     participants: [person('ada', { away: true, web: false }), person('bo', { away: true, web: false })] },
 };
-export const EveryStateLight: Story = { ...EveryState, globals: { theme: 'light' } };
-export const EveryStateHighContrast: Story = { ...EveryState, globals: { theme: 'high-contrast' } };
+
+
 
 // Signal §8: one story per state, with the prototype's people (harbour, Midgard Crew).
 const HARBOUR = [person('Ada'), person('Björn'), person('Kari'), person('Ole')];

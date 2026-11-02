@@ -3,7 +3,6 @@ import { SettingsRow } from './SettingsRow.tsx';
 import { Segmented } from '../Segmented/Segmented.tsx';
 import { Toggle } from '../Toggle/Toggle.tsx';
 import { Button } from '../Button/Button.tsx';
-import { TextField } from '../TextField/TextField.tsx';
 
 // Every string is L-COPY-02's (notify.*; the per-channel row's name is notify.title.channel filled in).
 const noop = () => {};
@@ -16,13 +15,6 @@ export default meta;
 type Story = StoryObj;
 export const Permission: Story = {
   render: () => <SettingsRow id="notify-permission" label="desktop notifications" hint={BODY}><Button variant="accent">turn on</Button></SettingsRow>,
-};
-export const ConfigurationForm: Story = {
-  render: () => <SettingsRow id="provider" label="Spotify" layout="stacked"
-    hint="Create a Spotify application, then paste its public client ID here.">
-    <TextField id="provider-client-id" label="Spotify application client ID" value="" onChange={noop} />
-    <Button>Link Spotify account</Button>
-  </SettingsRow>,
 };
 export const NotifyDefault: Story = {
   render: () => (

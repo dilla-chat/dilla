@@ -17,6 +17,8 @@ import {
   onboard, openVoiceOnly, peerName, self, sentCount, stage, stripButton, tile,
 } from './support/voice';
 import { dmComposer, dmsNav, homeTile, openSettings } from '../web/support/app';
+import { desktopApplication, desktopE2E } from '../web/support/electron.ts';
+import { markSignalLifecycle, signalLifecycleDiagnostics } from './support/signal-lifecycle.ts';
 
 watchContexts(test);
 
@@ -155,11 +157,14 @@ test('(b) a device that fails the signed-list check joins mid-call: alice leaves
   }
 });
 
-test('(c) a contact whose identity changes mid-call pauses the call for each browser until verified or gone (RV-3)', async ({ peerBrowser }) => {
+test('(c) a contact whose identity changes mid-call pauses the call for each browser until verified or gone (RV-3)', async ({ peerBrowser }, testInfo) => {
   const peer = peerBrowser.track(await VoicePeer.start());
   const alice = await peerBrowser.open('alice');
   const bob = await peerBrowser.open('bob');
+  const diagnostics = signalLifecycleDiagnostics(testInfo, 'blocked');
   try {
+    await diagnostics.watch(alice, desktopE2E() ? desktopApplication(alice.context) : undefined);
+    await diagnostics.watch(bob, desktopE2E() ? desktopApplication(bob.context) : undefined);
     const s = await peer.setup();
     const call = s.voice_channel_id;
     await onboard(alice, peer, 'alice');
@@ -226,10 +231,14 @@ test('(c) a contact whose identity changes mid-call pauses the call for each bro
       await expect.poll(() => heardCount(bob.page, a.device), POLL).toBeGreaterThan(h1);
       await expect(tile(alice.page, 'bob')).toHaveAttribute('data-voice-state', 'ok', { timeout: WAIT });
     });
+    await markSignalLifecycle(alice.page, 'body-complete');
+    await markSignalLifecycle(bob.page, 'body-complete');
   } finally {
-    await peerBrowser.close(bob);
-    await peerBrowser.close(alice);
-    await peer.close();
+    try {
+      await peerBrowser.close(bob);
+      await peerBrowser.close(alice);
+      await peer.close();
+    } finally { await diagnostics.save(); }
   }
 });
 

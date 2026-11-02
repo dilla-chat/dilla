@@ -9,7 +9,7 @@ import { t } from '../../strings/index.ts';
 
 const ID = /^[0-9a-f]{32}$/u;
 // A link being typed or pasted belongs to strict enqueue validation, never text search.
-const MUSIC_LINK_PREFIX = /^(?:https?:|\/\/|(?:(?:www|music|m)\.)?youtube\.com\/|youtu\.be\/|open\.spotify\.com\/|spotify:(?:track|album|playlist):[A-Za-z0-9]{22}$)/iu;
+const MUSIC_LINK_PREFIX = /^(?:https?:|\/\/|(?:(?:www|music|m)\.)?youtube\.com\/|youtu\.be\/)/iu;
 const MUSIC_COMMAND_IDS = new Set(['play', 'pause', 'resume', 'skip', 'stop', 'queue', 'nowplaying', 'seek', 'volume', 'shuffle', 'repeat',
   'queue remove', 'queue move', 'queue clear', 'music help']);
 const ok = (message: string): CommandResult => ({ status: 'success', message, private: true });
@@ -291,7 +291,7 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
       switch (invocation.commandId) {
         case 'play': {
           const input = invocation.args['query-or-url']?.trim() ?? '';
-          if (!input) return fail('Choose a track or provide a supported Spotify or YouTube URL.');
+          if (!input) return fail('Choose a track or provide a supported YouTube URL.');
           let selected = input;
           const url = MUSIC_LINK_PREFIX.test(input);
           if (!url) {

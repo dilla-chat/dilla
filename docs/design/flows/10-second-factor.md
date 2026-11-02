@@ -20,6 +20,7 @@ Every human account on an instance has a second factor, and the server enforces 
 | 12. Backup codes | An ordered list of codes (a real `<ol>`) with Print and Copy. The checkbox is unticked and Continue is disabled with its hint. Ticked: Continue is enabled. Copied: a polite announcement. | `factor.codes.title`, `factor.codes.body`, `factor.codes.notKey`, `factor.codes.label`, `factor.codes.print`, `factor.codes.copy`, `factor.codes.copied`, `factor.codes.ack`, `factor.codes.ackHint`, `factor.codes.next` |
 | 13. Forced done | The last step of the forced set-up, after the backup codes. The announcement is spoken when the factor is in place. | `factor.done.title`, `factor.done.totp`, `factor.done.passkey`, `factor.done.next`, `factor.added` |
 | 14. Sign-in with a passkey | The username field's autofill offers passkeys (WebAuthn conditional mediation, wave B task 3 fix round 1; in a browser without it, the button `factorSignin.usePasskey`), or a passkey screen after the password. The browser asks for the passkey on Use passkey. A failure and an unknown passkey are banners. | `factorSignin.passkey.title`, `factorSignin.passkey.body`, `factorSignin.passkey.submit`, `factorSignin.passkey.working`, `factorSignin.passkey.failed`, `factorSignin.passkey.unknown`, `factorSignin.passkey.unusable` |
+| 14a. Desktop identity provider | When the instance offers OIDC, the desktop login opens a short-lived system-browser ceremony. Return to the same factor or recovery-key steps; cancelling leaves sign-in unchanged. | `factorSignin.oidc.submit`, `factorSignin.oidc.working` |
 | 15. Sign-in needs a code after a passkey | The passkey did not check the person, so step 3 turns into the code form with a note above it. | `factorSignin.passkey.needsCode` |
 | 16. Backup-code sign-in, a failure, codes left | A link under the code boxes (wave B task 3: "Use a backup code", beside "Use a passkey" for an account that just used one) leads to a backup-code field. A refused code is a banner. After signing in with a backup code the shell says how many remain. | `factorSignin.useBackup`, `factorSignin.code.usePasskey`, `factorSignin.backup.title`, `factorSignin.backup.body`, `factorSignin.backup.label`, `factorSignin.backup.failed`, `factorSignin.backup.format`, `factorSignin.left.one`, `factorSignin.left.other` |
 | 17. Settings loading and error | Settings → Sign-in while the factors load, then on a failed load a message and a Try again button. | `factorSettings.loading`, `factorSettings.error.load`, `factorSettings.retry` |
@@ -124,6 +125,8 @@ Polite, through the screen's `useAnnouncer` (it queues, so two in a row are both
 - `factor.error.tooMany='Too many attempts. Try again in {seconds} s.'`
 - `factor.error.network='The connection dropped. Check it and try again.'`
 - `factor.error.other='That did not work ({code}). Try again.'`
+- `factorSignin.oidc.submit='Sign in with your identity provider'`
+- `factorSignin.oidc.working='Finish signing in in your browser…'`
 - `factorSignin.usePasskey='Sign in with a passkey'`
 - `factorSignin.passkey.otherAccount='That passkey belongs to another account.'`
 - `factorSignin.passkey.title='Use your passkey'`

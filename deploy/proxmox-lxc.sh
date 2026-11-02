@@ -44,11 +44,10 @@ container options:
 passed to install.sh:
   --version TAG        the release to install (default: the tag stamped into the
                        install.sh beside this script; a copy from git has none)
-  --release-url URL    where dillad-linux-<arch>, the Spotify helper, dilla_core_wasi.wasm and
+  --release-url URL    where dillad-linux-<arch>, dilla_core_wasi.wasm and
                        SHA256SUMS are downloaded from (default: releases/download/TAG)
   --binary PATH        use this dillad binary instead of downloading one
   --core PATH          use this dilla_core_wasi.wasm instead of downloading one
-  --spotify-helper PATH use this Spotify helper instead of downloading one
   --sums PATH          check local files against this SHA256SUMS
   --insecure-skip-verify  install local files without a --sums check
   --udp-port N         LiveKit's media port (default 7882)
@@ -63,7 +62,6 @@ STORAGE="local-lvm"
 TEMPLATE_STORAGE="local"
 BINARY=""
 CORE=""
-SPOTIFY_HELPER=""
 SUMS=""
 RELEASE_URL=""
 BEHIND_PROXY=0
@@ -101,7 +99,6 @@ while [ "$#" -gt 0 ]; do
 	--template-storage) TEMPLATE_STORAGE="$value" ;;
 	--binary) BINARY="$value" ;;
 	--core) CORE="$value" ;;
-	--spotify-helper) SPOTIFY_HELPER="$value" ;;
 	--sums) SUMS="$value" ;;
 	--behind-proxy) BEHIND_PROXY=1 ;;
 	--agree-tos | --insecure-skip-verify | --no-media-ip) INSTALL_ARGS+=("$flag") ;;
@@ -143,7 +140,6 @@ INSTALLER="$SCRIPT_DIR/install.sh"
 FILE_ARGS=()
 [ -z "$BINARY" ] || FILE_ARGS+=(--binary=/root/dilla-install/dillad)
 [ -z "$CORE" ] || FILE_ARGS+=(--core=/root/dilla-install/dilla_core_wasi.wasm)
-[ -z "$SPOTIFY_HELPER" ] || FILE_ARGS+=(--spotify-helper=/root/dilla-install/dilla-spotify-helper)
 [ -z "$SUMS" ] || FILE_ARGS+=(--sums=/root/dilla-install/SHA256SUMS)
 
 # install.sh validates the arguments here, before a container exists.
@@ -182,7 +178,7 @@ if pct status "$CTID" >/dev/null 2>&1; then
 	die "container $CTID already exists; choose another --ctid"
 fi
 
-for f in "$BINARY" "$CORE" "$SPOTIFY_HELPER" "$SUMS"; do
+for f in "$BINARY" "$CORE" "$SUMS"; do
 	[ -z "$f" ] || [ -s "$f" ] || die "$f is missing or empty"
 done
 # Whatever is not local is downloaded inside the container; a release URL that
@@ -232,7 +228,6 @@ pct exec "$CTID" -- install -d -m 0700 /root/dilla-install >&2
 pct push "$CTID" "$INSTALLER" /root/dilla-install/install.sh --perms 0700 >&2
 [ -z "$BINARY" ] || pct push "$CTID" "$BINARY" /root/dilla-install/dillad --perms 0755 >&2
 [ -z "$CORE" ] || pct push "$CTID" "$CORE" /root/dilla-install/dilla_core_wasi.wasm --perms 0644 >&2
-[ -z "$SPOTIFY_HELPER" ] || pct push "$CTID" "$SPOTIFY_HELPER" /root/dilla-install/dilla-spotify-helper --perms 0755 >&2
 [ -z "$SUMS" ] || pct push "$CTID" "$SUMS" /root/dilla-install/SHA256SUMS --perms 0644 >&2
 
 log "running install.sh in container $CTID"

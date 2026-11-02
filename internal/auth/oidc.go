@@ -35,7 +35,7 @@ type OIDC struct {
 // spends: the nonce the id_token must carry, and the PKCE verifier the token
 // endpoint must be given. The `state` is not a field because state IS the key
 // these are filed under, and the browser carries it in the state cookie.
-type Pending struct{ Nonce, Verifier string }
+type Pending struct{ Nonce, Verifier, DesktopRequest string }
 
 type pendingLogin struct {
 	p       Pending
@@ -211,4 +211,12 @@ func StateCookie(name, value string, maxAge int) *http.Cookie {
 		Name: name, Value: value, Path: "/v1/auth/oidc/callback",
 		MaxAge: maxAge, Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode,
 	}
+}
+
+// DesktopOIDCStateCookie uses the browser's default path so an instance hosted
+// under a reverse-proxy prefix keeps the proof on its own OIDC directory. The
+// callback matches it only to a pending desktop ceremony, separately from the
+// legacy browser cookie.
+func DesktopOIDCStateCookie(value string, maxAge int) *http.Cookie {
+	return &http.Cookie{Name: "__Secure-dilla-desktop-oidc", Value: value, MaxAge: maxAge, Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode}
 }

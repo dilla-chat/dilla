@@ -1,3 +1,4 @@
+import { themes } from '../../packages/design-tokens/src/tokens.ts';
 // Re-shoots the screenshots of the user documentation (docs/user/screenshots/*.png) against a real
 // dilla-testhost serving the built web client, the way the web e2e starts it (e2e/web/support/host.ts).
 //
@@ -1128,7 +1129,7 @@ async function main(argv) {
         await mira.screenshot({ path: path.join(o.uiOut, `${name}.${theme}.png`) });
       };
       const channelMenu = mira.getByRole('button', { name: t('nav.channel.menu'), exact: true });
-      for (const theme of ['signal', 'light', 'high-contrast']) {
+      for (const theme of Object.keys(themes)) {
         // Right after opening: the tab bar shows, nothing is focused and there is no keyboard.
         await phoneBack.click();
         await phoneTabs.waitFor({ state: 'visible', timeout: WAIT });

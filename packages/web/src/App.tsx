@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import type { BootPhase, FactorSetupOrigin } from '@dilla/client-core';
 import { Banner } from '@dilla/ui';
+import { desktopBridge, startDesktopWindowLayout } from './desktop.ts';
 import { t } from './strings/index.ts';
 import { browser } from './browser.ts';
 import { useCore } from './core/context.tsx';
@@ -16,7 +17,6 @@ import { Shell } from './screens/Shell.tsx';
 import { visibleChannel } from './screens/shell-model.ts';
 import { SignIn, type SignInTarget } from './screens/SignIn.tsx';
 import { OtherTab } from './screens/OtherTab.tsx';
-import { SpotifyCallback } from './screens/admin/SpotifyCallback.tsx';
 import { requestHandover } from './handover.ts';
 import { flushSync } from 'react-dom';
 import type { ShellUpdateDeps } from './screens/Shell.tsx';
@@ -45,21 +45,6 @@ function defaultReload(href: string): void {
 export function App(props: { fatal: UiError | null; reload?: (href: string) => void; update?: ShellUpdateDeps }): React.JSX.Element {
   const client = useCore();
   const [route, navigate] = useRoute();
-  const callbackSearch = route.name === 'spotifyCallback' ? route.search : '';
-  const spotifyCallbackSearch = useRef(callbackSearch);
-  const spotifyCallbackScrubbed = useRef(false);
-  useLayoutEffect(() => {
-    if (route.name !== 'spotifyCallback') {
-      spotifyCallbackScrubbed.current = false;
-      spotifyCallbackSearch.current = '';
-      return;
-    }
-    if (spotifyCallbackScrubbed.current) return;
-    // Capture only in this page's memory, then remove the authorization code before Boot or sign-in can be shown.
-    spotifyCallbackSearch.current = callbackSearch;
-    replaceHistoryState(window.history.state, '', window.location.pathname);
-    spotifyCallbackScrubbed.current = true;
-  }, [route.name, callbackSearch]);
   const account = useSlice('account');
   const updateSignedIn = account?.phase === 'ready';
   const [preLoginUpdate, setPreLoginUpdate] = useState(false);
@@ -96,7 +81,21 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
   const [paused, setPaused] = useState<'no' | 'resigning' | 'released'>('no');
   const resigning = useRef(false);
   const [startError, setStartError] = useState<UiError | null>(null);
-  useEffect(() => { client.call({ m: 'start' }).catch(e => setStartError(errorOf(e))); }, [client]);
+  const bridge = desktopBridge();
+  useEffect(() => {
+    let live = true;
+    void (async () => {
+      // Probe the installed local worker before start's network work. Being
+      // offline must not classify authenticated installed bytes as broken.
+      if (bridge) {
+        await client.call({ m: 'runtimeReady' });
+        if (!live) return;
+      }
+      if (!live) return;
+      await client.call({ m: 'start' });
+    })().catch(e => { if (live) setStartError(errorOf(e)); });
+    return () => { live = false; };
+  }, [client, bridge]);
   useEffect(() => {
     document.documentElement.dataset.density = settings?.density === 'compact' ? 'compact' : 'regular';
     document.documentElement.dataset.reduceMotion = settings?.reduceMotion === 'on' || settings?.reduceMotion === 'off'
@@ -241,11 +240,10 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
   // Onboarding stays mounted after the phase turns ready, until its done step calls onFinish; so does SignIn.
   const [onboarding, setOnboarding] = useState(false);
   const [signingIn, setSigningIn] = useState(false);
-  const signInForCallback = useRef(false);
   useEffect(() => {
     if (screen === 'onboarding') { setOnboarding(true); setSigningIn(false); }
-    if (screen === 'signin') { signInForCallback.current = route.name === 'spotifyCallback'; setSigningIn(true); setOnboarding(false); }
-  }, [screen, route.name]);
+    if (screen === 'signin') { setSigningIn(true); setOnboarding(false); }
+  }, [screen]);
   const finish = (result: SignupResult) => {
     setOnboarding(false);
     if (result.communityId !== null) {
@@ -261,11 +259,16 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
   // Wave B task 3 fix round 1: the done step's panel names a server and channel; "Open dilla" opens exactly that one.
   const finishSignIn = (target?: SignInTarget) => {
     setSigningIn(false);
-    if (!signInForCallback.current && route.name !== 'spotifyCallback') {
-      void navigate(target === undefined ? { name: 'root' } : { name: 'channel', communityId: target.communityId, channelId: target.channelId }, true);
-    }
-    signInForCallback.current = false;
+    void navigate(target === undefined ? { name: 'root' } : { name: 'channel', communityId: target.communityId, channelId: target.channelId }, true);
   };
+  const windowMode = screen === 'shell' && !onboarding && !signingIn ? 'workspace'
+    : screen === 'boot' ? 'starting' : 'authentication';
+  const [workspaceReady, setWorkspaceReady] = useState(() => !desktopBridge());
+  useLayoutEffect(() => {
+    const bridge = desktopBridge(); if (!bridge) return;
+    if (windowMode !== 'workspace') setWorkspaceReady(false);
+    return startDesktopWindowLayout(windowMode, bridge, () => setWorkspaceReady(true));
+  }, [windowMode, screen, phase]);
   const failed = props.fatal ?? startError;
   if (failed) return <Boot fatal={failed} />;
   // The paused view keeps its place after the screens, so it stays mounted (and focused) while the shell goes.
@@ -281,7 +284,7 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
     onRetry={() => takeThisTab()} onConfirm={() => takeThisTab(true)} onKeep={keepCall} />;
   else body = screenBody();
   return <>{preLoginUpdate && account?.phase !== 'ready' ? <Banner tone="info"
-    action={{ label: t('update.reloadNow'), onAction: () => props.update?.reload() }}>{t('update.beforeLogin')}</Banner> : null}{body}{pausedView}{route.name === 'spotifyCallback' ? <SpotifyCallback search={spotifyCallbackSearch.current} /> : null}</>;
+    action={{ label: t('update.reloadNow'), onAction: () => props.update?.reload() }}>{t('update.beforeLogin')}</Banner> : null}{body}{pausedView}</>;
 
   function screenBody(): ReactNode {
     if (screen === 'signin' || (signingIn && phase === 'ready')) return <SignIn onFinish={finishSignIn} />;
@@ -291,8 +294,7 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
       case 'factor': return <ForcedFactor />;
       case 'boot': return <Boot fatal={null} />;
       // Settings opens over the shell, which stays mounted and shows the route Settings was opened from (L-TS-27).
-      case 'shell': return route.name === 'spotifyCallback' ? null
-        : <Shell update={props.update} />;
+      case 'shell': return workspaceReady ? <Shell update={props.update} /> : <Boot fatal={null} />;
     }
   }
 }

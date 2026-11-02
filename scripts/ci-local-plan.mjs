@@ -26,13 +26,17 @@ import { parseYaml } from './ci-local-yaml.mjs';
  */
 export const JOB_MAP = {
   changes: { kind: 'areas', weight: 0 },
+  'ci-watchdog': { kind: 'aggregate', weight: 0, skip: 'GitHub run cancellation is replaced by the local fail-fast scheduler' },
+  'ci-work-complete': { kind: 'aggregate', weight: 0 },
+  'linux-sandbox-foundation': { weight: 2, skip: 'requires disposable Ubuntu 22.04/24.04 native runners with privileged kernel fixtures' },
+  desktop: { weight: 4, skip: 'requires the Linux, Windows and macOS native platform acceptance runners in desktop.yml' },
+  'core-integration': { weight: 2, group: 'e2e', ports: 'block' },
   docs: { weight: 1 },
   // ci-areas.test.mjs's reader scan skips targets that do not exist: on a runner packages/web/dist never does when it runs.
   node: { weight: 2, locks: ['tracked-tree'], cleanTree: ['npm run test:ci-check'] },
   ui: { weight: 3, ports: 'ui' },
   'rust-wasm-node': { weight: 4 },
   'rust-native': { weight: 4 },
-  'spotify-helper': { weight: 2 },
   'rust-wasi': { weight: 2 },
   vectors: { weight: 2, locks: ['tracked-tree'] },
   'browser-spike': { weight: 3, group: 'e2e', ports: 'fixed' },
@@ -234,6 +238,7 @@ export function classifyStep(step, job = {}) {
     if (!version) throw new Error(`step "${step.name}" no longer checks a clang version`);
     return { kind: 'prereq', tool: 'llvm', version, reason: 'apt.llvm.org packages: the local LLVM of the same line stands in' };
   }
+  if (/^sudo apt-get update && sudo apt-get install -y libgtk-3-dev(?: pkg-config)?$/.test(script)) return { kind: 'prereq', tool: 'gtk', reason: 'GTK3 headers and pkg-config must be installed locally' };
   if (APT_RUNS.some((re) => re.test(script))) return { kind: 'noop', reason: 'apt cache: no apt here' };
   const pw = PLAYWRIGHT_INSTALL.exec(script);
   if (pw) {
@@ -253,11 +258,11 @@ export function classifyStep(step, job = {}) {
   return { kind: 'run', script: mapped, memo, note: prlimit >= 0 ? 'sudo prlimit: raised without sudo where the hard limit allows' : null };
 }
 
-/** The jobs of a parsed workflow, a matrix job expanded into one job per leg (`spotify-helper-amd64`). */
+/** The jobs of a parsed workflow, a matrix job expanded into one job per leg (one job per native target). */
 export function expandJobs(workflow) {
   const out = [];
   for (const [name, body] of Object.entries(workflow.jobs ?? {})) {
-    const allowed = new Set(['needs', 'if', 'runs-on', 'steps', 'env', 'timeout-minutes', 'strategy', 'services', 'outputs']);
+    const allowed = new Set(['needs', 'if', 'runs-on', 'steps', 'env', 'timeout-minutes', 'strategy', 'services', 'outputs', 'name', 'permissions', 'uses']);
     for (const key of Object.keys(body)) if (!allowed.has(key)) throw new Error(`job "${name}": key "${key}" is unmapped`);
     const needs = body.needs === undefined || body.needs === null ? [] : Array.isArray(body.needs) ? body.needs : [body.needs];
     const legs = body.strategy?.matrix?.include ?? [null];
@@ -266,7 +271,7 @@ export function expandJobs(workflow) {
       const id = matrix === null ? name : `${name}-${Object.values(matrix)[0]}`;
       const runsOn = substitute(body['runs-on'], { matrix: matrix ?? {} });
       out.push({
-        id, name, matrix: matrix ?? {}, runsOn, needs, if: body.if ?? null,
+        id, name, matrix: matrix ?? {}, runsOn, needs, if: name === 'ci-watchdog' ? null : body.if ?? null,
         env: body.env ?? {}, steps: body.steps ?? [], timeout: body['timeout-minutes'] === undefined ? 360 : Number(body['timeout-minutes']),
         services: body.services ?? {},
       });
@@ -277,6 +282,7 @@ export function expandJobs(workflow) {
 
 /** Why a job cannot run on this machine, or null. */
 export function skipReason(job, arch = 'x64') {
+  if (JOB_MAP[job.name]?.skip) return JOB_MAP[job.name].skip;
   if (/-arm\b|arm64/.test(job.runsOn) && arch !== 'arm64') return `needs a native linux/arm64 runner (${job.runsOn}); this machine is ${arch}`;
   return null;
 }
@@ -409,6 +415,7 @@ export function localMirrorProblems(text) {
     } catch (e) {
       problems.push(`${where}: ${e.message}`);
     }
+    if (JOB_MAP[job.name]?.skip) continue;
     for (const command of JOB_MAP[job.name]?.cleanTree ?? []) {
       if (!job.steps.some((s) => typeof s.run === 'string' && s.run.trim() === command)) problems.push(`${where}: cleanTree names "${command}", which is not a run step of the job`);
     }

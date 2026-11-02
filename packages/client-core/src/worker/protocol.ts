@@ -3,6 +3,7 @@ import type { CallKeys, CallStatsReport, SliceName, WorkerError } from '../state
 
 export type Command =
   | { m: 'start' }
+  | { m: 'runtimeReady' } // local bundled WASM + persistence probe; no network or account data
   | { m: 'signupBegin' }
   // → { communityId, joinError }; with factorOwed: true (and no join yet) when the account stops at factor-setup.
   | { m: 'signupSubmit'; invite: string; username: string; display: string; password: string | null; recoveryKeyAcknowledged: true }
@@ -21,7 +22,6 @@ export type Command =
   | { m: 'refreshCommunities' }
   | { m: 'getBotInstallation'; communityId: string }
   | { m: 'getBotCommandStatus'; communityId: string }
-  | { m: 'getBotSpotifyConfig'; communityId: string }
   | { m: 'patchBotProfile'; communityId: string; display: string }
   // Typed future request contract only. The worker refuses it until human kind-3 interaction groups are authenticated.
   | { m: 'listModerationCases'; communityId: string; requestId: string; offset: 0 }
@@ -43,9 +43,6 @@ export type Command =
       options: readonly { emoji: string; roleId: string }[] }
   | { m: 'configureBotInstallation'; communityId: string; requestId: string; expectedRevision: string | null; capabilities: number; stepUp: string }
   | { m: 'disableBotInstallation'; communityId: string; requestId: string; expectedRevision: string }
-  | { m: 'beginBotSpotifyAttempt'; communityId: string; stepUp: string; clientId: string }
-  | { m: 'callbackBotSpotifyAttempt'; communityId: string; attemptId: string; state: string; code: string }
-  | { m: 'cancelBotSpotifyAttempt'; communityId: string; attemptId: string }
   | { m: 'openChannel'; channelId: string }
   | { m: 'closeChannel'; channelId: string }
   | { m: 'loadEarlier'; channelId: string }
@@ -61,6 +58,7 @@ export type Command =
   // worker holds the settled assertion, and signInKey registers it after the key's form check, back to back with the
   // fetch, the enrolment and the list PUT (REGISTRATION-DEVICES-02). The login, the code and the passkey carry no key
   // (pre-flight C-3); only signInKey and signInBackupCode do.
+  | { m: 'signInOIDC'; assertion: string; needs: 0 | 1 | 2 }
   | { m: 'signInLogin'; username: string; password: string }    // → { needs }: 1 signin-totp, 2 signin-passkey, 0 signin-key
   | { m: 'signInTotp'; code: string }                            // signin-totp → signin-key
   // web3.6 (flow 10). The ceremony runs in the page (navigator.credentials); the worker holds no WebAuthn state.

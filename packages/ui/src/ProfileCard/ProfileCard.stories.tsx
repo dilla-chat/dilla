@@ -113,13 +113,11 @@ export const You: Story = {
   ...beside('u5'),
   args: { name: 'Mira', username: 'mira', status: undefined, presence: 'online', isYou: true, bio: '', roles: [{ name: 'raid lead', color: 0xe9b6ec }, { name: '@everyone', color: null }], actions: [] },
 };
-export const PersonLight: Story = { ...Person, globals: { theme: 'light' } };
-export const PersonHighContrast: Story = { ...Person, globals: { theme: 'high-contrast' } };
+
+
 
 export const PhoneSheet: Story = {
   render: args => <PhoneLayoutProvider value><ProfileCard {...args} /></PhoneLayoutProvider>,
   parameters: { layout: 'fullscreen' }, globals: { theme: 'signal' },
   play: ({ canvasElement }) => expectSheet(canvasElement, 'ProfileCard sheet'),
 };
-export const PhoneSheetLight: Story = { ...PhoneSheet, globals: { theme: 'light' } };
-export const PhoneSheetHighContrast: Story = { ...PhoneSheet, globals: { theme: 'high-contrast' } };

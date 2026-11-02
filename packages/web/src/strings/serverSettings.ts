@@ -112,5 +112,4 @@ export const serverSettings = {
   'serverSettings.music.idleHint': 'After Stop, {bot} stays silent at most 30 minutes',
   'serverSettings.music.idle.option': '{minutes}m',
   'serverSettings.music.saved': 'Music settings saved.',
-  'serverSettings.music.spotify': 'Spotify',
 } as const;

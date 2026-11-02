@@ -1,6 +1,7 @@
 package persistence
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -40,17 +41,22 @@ func (m *memoryNative) StateGet(_ context.Context, area uint64, key []byte) (nat
 
 func (m *memoryNative) StateTransaction(_ context.Context, _ id.ID, changes []native.StateChange) ([]uint64, error) {
 	m.txCalls++
-	change := changes[0]
-	k := rowKey{change.Area, string(change.Key)}
-	current := m.rows[k]
-	if current.Revision != change.ExpectedRevision {
-		return nil, ErrConflict
+	for _, change := range changes {
+		current := m.rows[rowKey{change.Area, string(change.Key)}]
+		if current.Revision != change.ExpectedRevision {
+			return nil, ErrConflict
+		}
 	}
-	m.rows[k] = native.StateValue{Revision: current.Revision + 1, Value: append([]byte(nil), change.Value...)}
+	revisions := make([]uint64, len(changes))
+	for i, change := range changes {
+		k := rowKey{change.Area, string(change.Key)}
+		revisions[i] = change.ExpectedRevision + 1
+		m.rows[k] = native.StateValue{Revision: revisions[i], Value: append([]byte(nil), change.Value...)}
+	}
 	if m.loseReply {
 		return nil, native.ErrOutcomeUnknown
 	}
-	return []uint64{current.Revision + 1}, nil
+	return revisions, nil
 }
 
 func testID(n byte) (v id.ID) { v[15] = n; return }
@@ -227,5 +233,149 @@ func TestQueueAndEncodedValueBounds(t *testing.T) {
 	}
 	if _, err := encode(tooMany); !errors.Is(err, ErrMalformed) {
 		t.Fatalf("queue count bound error = %v", err)
+	}
+}
+
+func unsupportedStateValue(t *testing.T, state music.State) []byte {
+	t.Helper()
+	body, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := cborx.Marshal([]any{stateFormat, body})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return value
+}
+
+func legacyQueueState() music.State {
+	old := testTrack("retired")
+	old.Provider = music.Provider("spotify")
+	old.CanonicalID = "spotify:track:0123456789012345678901"
+	queued := old
+	queued.ID = "retired-queued"
+	return music.State{Revision: 1, Current: &old, Queue: []music.Track{queued, testTrack("supported")}, PositionMS: 4000, PositionAtMS: 5000, Volume: 75, Repeat: music.RepeatQueue}
+}
+
+func TestLoadQuarantinesUnsupportedProvidersAndPreservesExactOriginal(t *testing.T) {
+	for _, loseReply := range []bool{false, true} {
+		t.Run(fmt.Sprint("lost reply=", loseReply), func(t *testing.T) {
+			n := newMemoryNative()
+			n.loseReply = loseReply
+			s := newStore(t, n, testID(1))
+			channel := testID(2)
+			original := unsupportedStateValue(t, legacyQueueState())
+			key := rowKey{stateArea, string(s.key(channel))}
+			n.rows[key] = native.StateValue{Revision: 1, Value: original}
+			got, err := s.Load(t.Context(), channel)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Revision != 2 || !got.State.Paused || got.State.Current != nil || len(got.State.Queue) != 1 || got.State.Queue[0].ID != "supported" || got.State.PositionMS != 0 || got.State.PositionAtMS != 0 || got.State.Volume != 75 || got.State.Repeat != music.RepeatQueue {
+				t.Fatalf("recovered state=%+v", got)
+			}
+			archive := n.rows[rowKey{stateArea, string(s.quarantineKey(channel, 1))}]
+			if archive.Revision != 1 || !bytes.Equal(archive.Value, original) {
+				t.Fatal("original queue was not archived exactly")
+			}
+			if n.txCalls != 1 || len(n.rows) != 2 {
+				t.Fatal("quarantine was not one two-row transaction")
+			}
+			if _, err := s.Load(t.Context(), channel); err != nil || n.txCalls != 1 {
+				t.Fatalf("repeat load repeated quarantine: %v", err)
+			}
+			cleared := applied(t, got.State, music.Operation{Kind: music.OpClear})
+			if _, err := s.Save(t.Context(), channel, got.Revision, cleared); err != nil {
+				t.Fatalf("normal queue clear failed after recovery: %v", err)
+			}
+			if !bytes.Equal(n.rows[rowKey{stateArea, string(s.quarantineKey(channel, 1))}].Value, original) {
+				t.Fatal("normal controls changed the archive")
+			}
+		})
+	}
+}
+
+func TestQuarantineConflictDoesNotPartiallyRewriteQueue(t *testing.T) {
+	n := newMemoryNative()
+	s := newStore(t, n, testID(1))
+	channel := testID(2)
+	original := unsupportedStateValue(t, legacyQueueState())
+	key := rowKey{stateArea, string(s.key(channel))}
+	n.rows[key] = native.StateValue{Revision: 1, Value: original}
+	archiveKey := rowKey{stateArea, string(s.quarantineKey(channel, 1))}
+	n.rows[archiveKey] = native.StateValue{Revision: 1, Value: []byte{0x81, 0x01}}
+	if _, err := s.Load(t.Context(), channel); !errors.Is(err, ErrUnsupportedProvider) {
+		t.Fatalf("conflicting quarantine error=%v", err)
+	}
+	if n.rows[key].Revision != 1 || !bytes.Equal(n.rows[key].Value, original) || !bytes.Equal(n.rows[archiveKey].Value, []byte{0x81, 0x01}) {
+		t.Fatal("conflicting transaction partially changed state")
+	}
+}
+
+func TestQuarantineValidatesSupportedRemainderBeforeWriting(t *testing.T) {
+	n := newMemoryNative()
+	s := newStore(t, n, testID(1))
+	channel := testID(2)
+	state := legacyQueueState()
+	state.Queue[1].CanonicalID = "invalid"
+	original := unsupportedStateValue(t, state)
+	key := rowKey{stateArea, string(s.key(channel))}
+	n.rows[key] = native.StateValue{Revision: 1, Value: original}
+	if _, err := s.Load(t.Context(), channel); !errors.Is(err, ErrMalformed) {
+		t.Fatalf("malformed remainder accepted: %v", err)
+	}
+	if n.txCalls != 0 || !bytes.Equal(n.rows[key].Value, original) {
+		t.Fatal("invalid remainder changed persisted state")
+	}
+}
+
+func TestQuarantinePreservesSupportedCurrentTrackAndPosition(t *testing.T) {
+	n := newMemoryNative()
+	s := newStore(t, n, testID(1))
+	channel := testID(2)
+	state := legacyQueueState()
+	current := testTrack("current")
+	state.Current = &current
+	original := unsupportedStateValue(t, state)
+	key := rowKey{stateArea, string(s.key(channel))}
+	n.rows[key] = native.StateValue{Revision: 1, Value: original}
+	got, err := s.Load(t.Context(), channel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State.Current == nil || got.State.Current.ID != "current" || got.State.PositionMS != state.PositionMS || got.State.PositionAtMS != state.PositionAtMS || !got.State.Paused {
+		t.Fatalf("supported current track changed: %+v", got.State)
+	}
+}
+
+type corruptedQuarantineReply struct {
+	*memoryNative
+	corruptActive bool
+}
+
+func (n corruptedQuarantineReply) StateTransaction(ctx context.Context, tx id.ID, changes []native.StateChange) ([]uint64, error) {
+	if _, err := n.memoryNative.StateTransaction(ctx, tx, changes); err != nil {
+		return nil, err
+	}
+	i := 0
+	if n.corruptActive {
+		i = 1
+	}
+	k := rowKey{changes[i].Area, string(changes[i].Key)}
+	row := n.rows[k]
+	row.Value = []byte{0x81, 0x00}
+	n.rows[k] = row
+	return nil, native.ErrOutcomeUnknown
+}
+func TestQuarantineLostReplyRequiresBothExactRows(t *testing.T) {
+	for _, corruptActive := range []bool{false, true} {
+		n := corruptedQuarantineReply{newMemoryNative(), corruptActive}
+		s := newStore(t, n, testID(1))
+		channel := testID(2)
+		n.rows[rowKey{stateArea, string(s.key(channel))}] = native.StateValue{Revision: 1, Value: unsupportedStateValue(t, legacyQueueState())}
+		if _, err := s.Load(t.Context(), channel); !errors.Is(err, ErrUnsupportedProvider) {
+			t.Fatalf("inexact readback accepted: %v", err)
+		}
 	}
 }

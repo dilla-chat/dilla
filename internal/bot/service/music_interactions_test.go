@@ -31,19 +31,6 @@ type musicInteractionResolverFake struct {
 	onResolve func()
 }
 
-type musicSpotifyResolverFake struct {
-	tracks     []music.Track
-	err        error
-	inputs     []string
-	requesters []id.ID
-}
-
-func (r *musicSpotifyResolverFake) ResolveSpotify(_ context.Context, input string, requester id.ID) ([]music.Track, error) {
-	r.inputs = append(r.inputs, input)
-	r.requesters = append(r.requesters, requester)
-	return append([]music.Track(nil), r.tracks...), r.err
-}
-
 func (r *musicInteractionResolverFake) Resolve(_ context.Context, input string) ([]music.Track, error) {
 	r.inputs = append(r.inputs, input)
 	if r.onResolve != nil {
@@ -452,51 +439,6 @@ func TestMusicEnqueueImportsResolvedPlaylistAtomicallyWithStableQueueIDs(t *test
 	}
 }
 
-func TestMusicEnqueueImportsSpotifyPlaylistAtomicallyForActor(t *testing.T) {
-	channel, community, actorID := interactionID(165), interactionID(162), interactionID(168)
-	store := &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: music.InitialState(), Revision: 0}}
-	authority := &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: true, dj: true}
-	input := "https://open.spotify.com/playlist/BBBBBBBBBBBBBBBBBBBBBB"
-	resolver := &musicSpotifyResolverFake{tracks: []music.Track{
-		{Provider: music.ProviderSpotify, CanonicalID: "spotify:track:0123456789012345678901", Title: "One"},
-		{Provider: music.ProviderSpotify, CanonicalID: "spotify:track:1123456789012345678901", Title: "Two"},
-	}}
-	h := MusicInteractions{Store: store, Authority: authority, CommunityID: community, SpotifyResolver: resolver}
-	request := protocol.Request{CommunityID: community, ChannelID: &channel, Revision: uint64Ptr(0), Args: []any{input}}
-	result, err := h.handle(context.Background(), InteractionActor{User: actorID}, request, protocol.OpMusicEnqueue)
-	if err != nil || result.Status != 0 || result.Revision == nil || *result.Revision != 1 {
-		t.Fatalf("Spotify enqueue result=%+v err=%v resolver inputs=%v, want committed revision 1", result, err, resolver.inputs)
-	}
-	if len(resolver.inputs) != 1 || resolver.inputs[0] != input || len(resolver.requesters) != 1 || resolver.requesters[0] != actorID {
-		t.Fatalf("Spotify resolver inputs=%v requesters=%v, want one input with actor requester", resolver.inputs, resolver.requesters)
-	}
-	if store.saves != 1 || len(store.snapshot.State.Queue) != 2 || store.snapshot.State.Queue[0].Provider != music.ProviderSpotify || store.snapshot.State.Queue[1].Provider != music.ProviderSpotify {
-		t.Fatalf("saved=%d queue=%+v, want one atomic Spotify playlist import", store.saves, store.snapshot.State.Queue)
-	}
-	for _, track := range store.snapshot.State.Queue {
-		if track.ID == "" || track.RequesterID != actorID.String() {
-			t.Fatalf("queued track=%+v, want stable ID and actor requester", track)
-		}
-	}
-}
-
-func TestMusicEnqueueRejectsOversizedSpotifyImportWithoutPartialWrite(t *testing.T) {
-	channel, community := interactionID(175), interactionID(172)
-	tracks := make([]music.Track, 501)
-	for i := range tracks {
-		tracks[i] = music.Track{Provider: music.ProviderSpotify, CanonicalID: "spotify:track:0123456789012345678901", Title: "Track"}
-	}
-	store := &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: music.InitialState(), Revision: 0}}
-	authority := &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: true, dj: true}
-	resolver := &musicSpotifyResolverFake{tracks: tracks}
-	h := MusicInteractions{Store: store, Authority: authority, CommunityID: community, SpotifyResolver: resolver}
-	request := protocol.Request{CommunityID: community, ChannelID: &channel, Revision: uint64Ptr(0), Args: []any{"spotify:playlist:BBBBBBBBBBBBBBBBBBBBBB"}}
-	result, err := h.handle(context.Background(), InteractionActor{User: interactionID(178)}, request, protocol.OpMusicEnqueue)
-	if err != nil || result.Status != interactionStatusUnavailable || store.saves != 0 || len(store.snapshot.State.Queue) != 0 {
-		t.Fatalf("oversized Spotify enqueue result=%+v err=%v saves=%d queue=%d, want unavailable without partial write", result, err, store.saves, len(store.snapshot.State.Queue))
-	}
-}
-
 func TestMusicEnqueueRejectsWholePlaylistWhenQueueCapWouldBeExceeded(t *testing.T) {
 	channel, community := interactionID(75), interactionID(72)
 	state := music.InitialState()
@@ -560,17 +502,17 @@ func TestMusicEnqueueRejectsExpiredRequestAfterSlowResolution(t *testing.T) {
 	}
 }
 
-func TestMusicSearchRefusesSpotifyAndBoundsEncodedResults(t *testing.T) {
-	t.Run("Spotify", func(t *testing.T) {
+func TestMusicSearchRefusesUnsupportedProvidersAndBoundsEncodedResults(t *testing.T) {
+	t.Run("unsupported provider", func(t *testing.T) {
 		channel, community := interactionID(95), interactionID(92)
 		store := &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: music.InitialState(), Revision: 0}}
 		authority := &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: true}
-		resolver := &musicInteractionResolverFake{tracks: []music.Track{{ID: "spotify-item", Provider: music.ProviderSpotify, CanonicalID: "spotify:track:0123456789012345678901", Title: "Track"}}}
+		resolver := &musicInteractionResolverFake{tracks: []music.Track{{ID: "unsupported-item", Provider: music.Provider("unsupported"), CanonicalID: "unsupported:track", Title: "Track"}}}
 		h := MusicInteractions{Store: store, Authority: authority, CommunityID: community, Resolver: resolver}
 		request := protocol.Request{CommunityID: community, ChannelID: &channel, Args: []any{"one song"}}
 		result, err := h.handle(context.Background(), InteractionActor{User: id.New()}, request, protocol.OpMusicSearch)
 		if err != nil || result.Status != interactionStatusUnavailable || len(result.Data) != 0 || store.saves != 0 {
-			t.Fatalf("Spotify search result=%+v err=%v saves=%d, want unavailable and no queue write", result, err, store.saves)
+			t.Fatalf("Unsupported provider search result=%+v err=%v saves=%d, want unavailable and no queue write", result, err, store.saves)
 		}
 	})
 	t.Run("response limit", func(t *testing.T) {
@@ -772,9 +714,9 @@ func TestMusicRefusalsLogReason(t *testing.T) {
 		{"dj lookup", "can_dj_lookup", 9}, {"dj recheck", "can_dj_lookup", 9}, {"stop dj lookup", "can_dj_lookup", 9}, {"stop dj recheck", "can_dj_lookup", 9},
 		{"emergency lookup", "can_emergency_stop_lookup", 9}, {"emergency recheck", "can_emergency_stop_lookup", 9},
 		{"cannot dj", "forbidden", 2}, {"dj revoked", "forbidden", 2},
-		{"enqueue no args", "invalid_args", 5}, {"enqueue arg type", "invalid_args", 5}, {"youtube unavailable", "provider_unavailable", 5}, {"spotify unavailable", "provider_unavailable", 5},
+		{"enqueue no args", "invalid_args", 5}, {"enqueue arg type", "invalid_args", 5}, {"youtube unavailable", "provider_unavailable", 5},
 		{"enqueue resolve", "resolve_failed", 5}, {"enqueue empty", "resolve_failed", 5}, {"enqueue too many", "resolve_failed", 5},
-		{"provider mismatch", "provider_mismatch", 5}, {"spotify mismatch", "provider_mismatch", 5}, {"invalid op", "invalid_operation", 5},
+		{"provider mismatch", "provider_mismatch", 5}, {"invalid op", "invalid_operation", 5},
 		{"invalid track", "apply_failed", 5}, {"apply revision", "apply_failed", 4},
 		{"call changed", "call_changed", 4}, {"expired", "expired", 3}, {"save failed", "save_failed", 9}, {"save conflict", "save_failed", 4},
 	}
@@ -816,7 +758,7 @@ func TestMusicRefusalsLogReason(t *testing.T) {
 			case "search too many":
 				resolver.tracks = make([]music.Track, youtube.MaxSearchResults+1)
 			case "search encode":
-				resolver.tracks[0].Provider = music.ProviderSpotify
+				resolver.tracks[0].Provider = music.Provider("unsupported")
 			case "state read":
 				h.Store = musicFaultStore{musicStateStore: store, loadErr: errors.New("load failed")}
 			case "runtime read":
@@ -851,17 +793,12 @@ func TestMusicRefusalsLogReason(t *testing.T) {
 			case "dj revoked":
 				revoked := false
 				authority.djAfterFirst = &revoked
-			case "spotify unavailable":
-				req.Args = []any{"spotify:track:1234567890123456789012"}
 			case "enqueue empty":
 				resolver.tracks = nil
 			case "enqueue too many":
 				resolver.tracks = make([]music.Track, youtube.MaxPlaylistItems+1)
 			case "provider mismatch":
-				resolver.tracks[0].Provider = music.ProviderSpotify
-			case "spotify mismatch":
-				req.Args = []any{"spotify:track:1234567890123456789012"}
-				h.SpotifyResolver = &musicSpotifyResolverFake{tracks: resolver.tracks}
+				resolver.tracks[0].Provider = music.Provider("unsupported")
 			case "invalid op":
 				op, req.Args = protocol.OpMusicVolume, nil
 			case "invalid track":

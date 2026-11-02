@@ -1,28 +1,28 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { applyPreference, applyTheme, followSystemTheme, preferredTheme, THEME_QUERIES } from './theme.ts';
 
 const matching = (on: string[]) => (q: string) => ({ matches: on.includes(q) });
 
 describe('preferredTheme', () => {
-  it('follows the OS, and contrast wins over the colour scheme', () => {
+  it('resolves system preferences to the only catalog theme', () => {
     expect(preferredTheme(matching([]))).toBe('signal');
-    expect(preferredTheme(matching([THEME_QUERIES.light]))).toBe('light');
-    expect(preferredTheme(matching([THEME_QUERIES.contrast]))).toBe('high-contrast');
-    expect(preferredTheme(matching([THEME_QUERIES.light, THEME_QUERIES.contrast]))).toBe('high-contrast');
+    expect(preferredTheme(matching([THEME_QUERIES.light]))).toBe('signal');
+    expect(preferredTheme(matching([THEME_QUERIES.contrast]))).toBe('signal');
+    expect(preferredTheme(matching([THEME_QUERIES.light, THEME_QUERIES.contrast]))).toBe('signal');
   });
 });
 
 describe('applyTheme', () => {
   it('sets the theme and the regular density', () => {
     const el = document.createElement('html');
-    applyTheme(el, 'light');
-    expect(el.dataset.theme).toBe('light');
+    applyTheme(el, 'signal');
+    expect(el.dataset.theme).toBe('signal');
     expect(el.dataset.density).toBe('regular');
   });
   it('keeps a chosen density when the theme changes', () => {
     const el = document.createElement('html');
     el.dataset.density = 'compact';
-    applyTheme(el, 'light');
+    applyTheme(el, 'signal');
     expect(el.dataset.density).toBe('compact');
   });
 });
@@ -41,7 +41,7 @@ describe('followSystemTheme', () => {
     expect(doc.documentElement.dataset.theme).toBe('signal');
     on.add(THEME_QUERIES.light);
     handlers.get(THEME_QUERIES.light)?.forEach(h => h());
-    expect(doc.documentElement.dataset.theme).toBe('light');
+    expect(doc.documentElement.dataset.theme).toBe('signal');
     stop();
     expect(handlers.get(THEME_QUERIES.light)?.size ?? 0).toBe(0);
     expect(handlers.get(THEME_QUERIES.contrast)?.size ?? 0).toBe(0);
@@ -67,14 +67,14 @@ describe('applyPreference', () => {
     applyPreference(s.win, 'system');
     expect(s.doc.documentElement.dataset.theme).toBe('signal');
     expect(s.listening()).toBe(2);
-    applyPreference(s.win, 'light');
-    expect(s.doc.documentElement.dataset.theme).toBe('light');
+    applyPreference(s.win, 'signal');
+    expect(s.doc.documentElement.dataset.theme).toBe('signal');
     expect(s.listening()).toBe(0);
     s.on.add(THEME_QUERIES.contrast);
     s.fire(THEME_QUERIES.contrast);
-    expect(s.doc.documentElement.dataset.theme).toBe('light');
+    expect(s.doc.documentElement.dataset.theme).toBe('signal');
     applyPreference(s.win, 'system');
-    expect(s.doc.documentElement.dataset.theme).toBe('high-contrast');
+    expect(s.doc.documentElement.dataset.theme).toBe('signal');
     expect(s.listening()).toBe(2);
     applyPreference(s.win, 'system');
     expect(s.listening()).toBe(2);
@@ -83,4 +83,14 @@ describe('applyPreference', () => {
     expect(s.doc.documentElement.dataset.density).toBe('regular');
     expect(s.listening()).toBe(0);
   });
+});
+
+it('resolves stored and system preferences through the Signal-only catalog', () => {
+  vi.stubGlobal('matchMedia', (query: string) => ({ media: query, matches: true, addEventListener() {}, removeEventListener() {} }));
+  try {
+    for (const theme of ['system', 'signal'] as const) {
+      applyPreference(window, theme);
+      expect(document.documentElement.dataset.theme).toBe('signal');
+    }
+  } finally { vi.unstubAllGlobals(); }
 });

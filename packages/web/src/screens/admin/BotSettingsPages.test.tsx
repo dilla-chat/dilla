@@ -31,7 +31,6 @@ describe('bot settings pages', () => {
     expect(screen.queryByRole('heading', { name: 'Automatic moderation' })).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Moderation log' })).not.toBeInTheDocument();
     expect(client.callsOf('getBotJoinRole')).toHaveLength(0);
-    expect(client.callsOf('getBotSpotifyConfig')).toHaveLength(0);
   });
 
   it('opens an audit-only moderation log without installation management reads', async () => {

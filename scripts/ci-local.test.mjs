@@ -106,11 +106,11 @@ test('an unmapped action, sudo step, if: form, expression or service fails the s
 });
 
 test('a matrix job becomes one job per leg, and an arm64 leg is skipped with its reason on x64', () => {
-  assert.deepEqual(JOBS.filter((j) => j.name === 'spotify-helper').map((j) => [j.id, j.runsOn]), [['spotify-helper-amd64', 'ubuntu-latest'], ['spotify-helper-arm64', 'ubuntu-24.04-arm']]);
-  assert.match(skipReason(job('spotify-helper-arm64'), 'x64'), /native linux\/arm64 runner/);
+  const matrix = expandJobs({ jobs: { native: { 'runs-on': '${{ matrix.os }}', strategy: { matrix: { include: [{ arch: 'amd64', os: 'ubuntu-latest' }, { arch: 'arm64', os: 'ubuntu-24.04-arm' }] } } } } });
+  assert.deepEqual(matrix.map(j => j.id), ['native-amd64', 'native-arm64']);
+  assert.match(skipReason(matrix[1], 'x64'), /native linux\/arm64 runner/);
   assert.match(skipReason(job('go-fts5-arm64'), 'x64'), /native linux\/arm64 runner/);
   assert.equal(skipReason(job('go-fts5-arm64'), 'arm64'), null);
-  assert.equal(skipReason(job('spotify-helper-amd64'), 'x64'), null);
 });
 
 test('the needs graph: a job brings what it needs, in dependency order, and a cycle or unknown need throws', () => {
@@ -121,18 +121,15 @@ test('the needs graph: a job brings what it needs, in dependency order, and a cy
   const fake = [{ id: 'a', name: 'a', needs: ['b'] }, { id: 'b', name: 'b', needs: ['a'] }];
   assert.throws(() => dependencyClosure(fake, ['a']), /cycle/);
   assert.throws(() => dependencyClosure([{ id: 'a', name: 'a', needs: ['zz'] }], ['a']), /unknown job "zz"/);
-  // ci-ok needs both spotify-helper legs.
-  assert.ok(dependencyClosure(JOBS, ['ci-ok']).includes('spotify-helper-arm64'));
 });
 
 test('--only picks those jobs and their needs; --no-deps leaves the needs out; an unknown name lists the jobs', () => {
   assert.deepEqual(selectJobs(JOBS, { only: ['go'], outputs: EVERYTHING }), ['changes', 'rust-wasi', 'go']);
   assert.deepEqual(selectJobs(JOBS, { only: ['go'], outputs: EVERYTHING, deps: false }), ['go']);
-  assert.deepEqual(selectJobs(JOBS, { only: ['spotify-helper'], outputs: EVERYTHING, deps: false }), ['spotify-helper-amd64', 'spotify-helper-arm64']);
   assert.deepEqual(selectJobs(JOBS, { only: ['codeql'], outputs: EVERYTHING }), ['codeql']);
   // ci-ok aggregates what ran; naming it does not pull in the whole workflow.
   assert.deepEqual(selectJobs(JOBS, { only: ['docs', 'ci-ok'], outputs: EVERYTHING }), ['docs', 'ci-ok']);
-  assert.throws(() => selectJobs(JOBS, { only: ['nope'], outputs: EVERYTHING }), /unknown job "nope"; jobs: changes, docs/);
+  assert.throws(() => selectJobs(JOBS, { only: ['nope'], outputs: EVERYTHING }), /unknown job "nope"; jobs:.*changes, docs/);
 });
 
 test('a full run covers every ci.yml job and the extra jobs', () => {
@@ -145,7 +142,7 @@ test('a full run covers every ci.yml job and the extra jobs', () => {
 test('--changed runs what the ci-areas gates would: a docs-only diff runs only changes, docs and ci-ok', () => {
   const outputs = changedOutputs('base', ['docs/user/x.md', 'README.md']);
   assert.equal(outputs.code, false);
-  assert.deepEqual(selectJobs(JOBS, { only: null, outputs }), ['changes', 'docs', 'ci-ok']);
+  assert.deepEqual(selectJobs(JOBS, { only: null, outputs }), ['changes', 'docs', 'ci-watchdog', 'ci-work-complete', 'ci-ok']);
 });
 
 test('--changed: a Go file runs the Go jobs and the browser suites, not the Rust lint or ui', () => {

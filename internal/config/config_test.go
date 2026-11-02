@@ -172,30 +172,6 @@ func TestAPepperFileIsRefused(t *testing.T) {
 	}
 }
 
-func TestBotSpotifyOAuthConfigRequiresPairedExactHTTPSRedirect(t *testing.T) {
-	for _, tc := range []struct {
-		name, client, redirect string
-		wantErr                bool
-	}{
-		{"disabled", "", "", false},
-		{"complete", "public-id", "https://chat.example/settings/music/callback", false},
-		{"missing redirect", "public-id", "", true},
-		{"insecure redirect", "public-id", "http://chat.example/callback", true},
-		{"userinfo redirect", "public-id", "https://user@chat.example/callback", true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			c := base()
-			c.BotSpotify.ClientID = tc.client
-			c.BotSpotify.RedirectURL = tc.redirect
-			err := c.Validate()
-			gotErr := err != nil && strings.Contains(err.Error(), "bot_spotify.")
-			if gotErr != tc.wantErr {
-				t.Fatalf("Bot Spotify validation error=%v wantErr=%v; all errors: %v", gotErr, tc.wantErr, err)
-			}
-		})
-	}
-}
-
 func TestNoFieldIsATimeDuration(t *testing.T) {
 	var forbidden = reflect.TypeOf(time.Duration(0))
 	var walk func(reflect.Type, string)
@@ -717,5 +693,69 @@ func TestOrdinaryBodyReadBudgetIsConfigurableAndValidated(t *testing.T) {
 		if budget != "40ms" && err == nil {
 			t.Fatalf("invalid body budget %q accepted", budget)
 		}
+	}
+}
+
+// legacy-generated.toml is byte-for-byte output from the pre-removal
+// Config.WriteConfig at de8c81c735c5d838dac348b4f036e57cc189112d.
+func TestLegacyGeneratedConfigLoadsWithoutRewriting(t *testing.T) {
+	original, err := os.ReadFile("testdata/legacy-generated.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := loadTestdata(t, "legacy-generated.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile("dilla.toml")
+	if err != nil || !bytes.Equal(after, original) {
+		t.Fatal("loading legacy config rewrote the operator's file")
+	}
+	if c.Instance.Domain != "chat.example" || c.TURN.SharedSecretFile != "turn.secret" || c.LiveKit.APISecretFile != "livekit.secret" {
+		t.Fatal("legacy config changed live settings or secret paths")
+	}
+	var output bytes.Buffer
+	if err := c.WriteConfig(&output); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), "bot_spotify") {
+		t.Fatal("newly generated config contains retired settings")
+	}
+}
+
+func TestLegacyConfigStillRejectsUnknownKeys(t *testing.T) {
+	original, err := os.ReadFile("testdata/legacy-generated.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, suffix string
+		valid        bool
+	}{
+		{"old nonempty application", "client_id = 'retired-client'\nredirect_url = 'https://chat.example/retired'\n", true},
+		{"unknown retired field", "client_id = ''\nredirect_url = ''\nclient_secret = 'unexpected'\n", false},
+		{"wrong legacy type", "client_id = 42\nredirect_url = ''\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeSecrets(t, dir)
+			t.Chdir(dir)
+			prefix := strings.Split(string(original), "[bot_spotify]")[0]
+			body := []byte(prefix + "[bot_spotify]\n" + tc.suffix)
+			if err := os.WriteFile("dilla.toml", body, 0600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := config.Load("dilla.toml")
+			if (err == nil) != tc.valid {
+				t.Fatalf("legacy config valid=%v error=%v", tc.valid, err)
+			}
+			if !tc.valid && (!strings.Contains(err.Error(), "line") || !strings.Contains(err.Error(), "column")) {
+				t.Fatalf("configuration error lost source position: %v", err)
+			}
+			after, err := os.ReadFile("dilla.toml")
+			if err != nil || !bytes.Equal(after, body) {
+				t.Fatal("legacy config rewritten")
+			}
+		})
 	}
 }

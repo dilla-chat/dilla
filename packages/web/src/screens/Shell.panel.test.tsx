@@ -53,6 +53,25 @@ async function joinVoice(app: ReturnType<typeof shell>) {
   await main().findByRole('toolbar', { name: 'voice channel controls' });
 }
 
+it('keeps the desktop call guard active through draft and attachment updates, then clears it on unmount', async () => {
+  const commands: { type: string; activeCall?: boolean; unsavedDraft?: boolean }[] = [];
+  const app = shell();
+  vi.stubGlobal('dillaDesktop', { send: (command: typeof commands[number]) => { commands.push(command); return Promise.resolve(); }, onEvent: () => () => {} });
+  await joinVoice(app);
+  act(() => pushHistoryState(null, '', `/c/${A}/${TEXT}`));
+  app.client.publish(`timeline:${TEXT}`, { channelId: TEXT, group: 'active', items: [], hasEarlier: false });
+  expect(commands.filter(command => command.type === 'guard').at(-1)?.activeCall).toBe(true);
+  commands.length = 0;
+  await app.user.type(await screen.findByRole('textbox', { name: 'message #lobby' }), 'draft');
+  app.client.publish(`tray:${TEXT}`, [{ id: 'pending', name: 'note.txt', size: 4, mime: 'text/plain', image: false, phase: 'preparing', reason: '' }]);
+  const guards = commands.filter(command => command.type === 'guard');
+  expect(guards.length).toBeGreaterThan(1);
+  expect(guards.every(command => command.activeCall === true)).toBe(true);
+  expect(guards.at(-1)?.unsavedDraft).toBe(true);
+  app.view.unmount();
+  expect(commands.filter(command => command.type === 'guard').at(-1)).toEqual({ type: 'guard', activeCall: false, unsavedDraft: false });
+});
+
 describe('the desktop user panel', () => {
   it('shows the display name and, under it, the presence label (Signal §5.4), not @username', async () => {
     const app = shell();

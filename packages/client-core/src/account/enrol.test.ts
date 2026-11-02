@@ -776,3 +776,23 @@ describe('Enrol.fetch on a wire-4 head', () => {
     expect(arr(decode(fetched.listBody), 4)).toHaveLength(4);
   });
 });
+
+describe('OIDC enrollment uses existing factor debt and device registration', () => {
+  it('holds a settled assertion until the recovery key step registers the device', async () => {
+    const a = account();
+    const answer = await a.routes.passwordLogin('ada', PASSWORD);
+    a.enrol.oidc(answer.assertion, answer.needs);
+    expect(lines(a.server).filter(x => x.includes('/devices'))).toEqual([]);
+    expect(await a.enrol.register(INSTANCE)).toEqual({ userId: a.userId });
+    await expect(a.enrol.register(INSTANCE)).rejects.toThrow('E_NO_ASSERTION');
+  });
+  it('refuses registration while an OIDC assertion still owes a factor', async () => {
+    const a = account({ totp: '123456' });
+    const answer = await a.routes.passwordLogin('ada', PASSWORD);
+    expect(answer.needs).toBe(1);
+    a.enrol.oidc(answer.assertion, answer.needs);
+    await expect(a.enrol.register(INSTANCE)).rejects.toThrow('E_NO_ASSERTION');
+    await a.enrol.totp('123456');
+    expect(await a.enrol.register(INSTANCE)).toEqual({ userId: a.userId });
+  });
+});

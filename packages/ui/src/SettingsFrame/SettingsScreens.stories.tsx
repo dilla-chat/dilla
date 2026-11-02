@@ -1,3 +1,4 @@
+import { themes } from '@dilla/design-tokens';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { useEffect, useState, type ReactNode } from 'react';
 import { SettingsFrame } from './SettingsFrame.tsx';
@@ -146,9 +147,7 @@ export const Appearance: Story = {
       <section aria-labelledby="s-appearance" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--group-gap)' }}>
         <h2 id="s-appearance">{t('appearance.title')}</h2>
         <SettingsRow id="s-theme-row" label={t('appearance.theme.label')}>
-          <Segmented id="s-theme" label={t('appearance.theme.label')} value="system" onChange={noop} options={[
-            { value: 'system', label: t('appearance.theme.system') }, { value: 'signal', label: t('appearance.theme.signal') },
-            { value: 'light', label: t('appearance.theme.light') }, { value: 'high-contrast', label: t('appearance.theme.contrast') }]} />
+          <Segmented id="s-theme" label={t('appearance.theme.label')} value="signal" onChange={noop} options={Object.keys(themes).map(value => ({ value, label: value === 'signal' ? t('appearance.theme.signal') : value }))} />
         </SettingsRow>
       </section>
     </Frame>

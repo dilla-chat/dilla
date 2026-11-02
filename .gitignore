@@ -4,6 +4,7 @@
 /dist/
 /node_modules/
 **/node_modules/
+/artifacts/e2e-test-tools/
 *.wasm
 !third_party/noise/deepfilter/df_bg.wasm
 packages/ui/storybook-static/
@@ -43,3 +44,24 @@ packages/client-core/harness-dist/
 # the testkit binary the browser and harness jobs download (npm run ci:local copies it here too)
 /artifacts/
 /dillabot
+
+# Desktop builds and native helpers
+packages/desktop/dist/
+packages/desktop/out/
+packages/desktop/test-results/
+packages/desktop/test-report/
+packages/desktop/validation-dist/
+packages/desktop/native-bin/
+
+packages/desktop/.native-tools/
+
+packages/desktop/acceptance-bin/
+
+e2e/desktop-client-report/
+e2e/desktop-client-results/
+
+/e2e/desktop-voice-results/
+/e2e/desktop-voice-report/
+
+/e2e/performance-results-browser/
+/e2e/performance-results-desktop/

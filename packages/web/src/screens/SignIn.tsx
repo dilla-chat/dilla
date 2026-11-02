@@ -9,6 +9,7 @@ import { useSlice, useSlices } from '../core/use-slice.ts';
 import { orderChannels } from './shell-model.ts';
 import { t, type StringKey } from '../strings/index.ts';
 import { PasskeyError, conditionalMediationAvailable, getPasskey, passkeysUsable } from '../webauthn.ts';
+import { desktopBridge } from '../desktop.ts';
 import { useAnnouncer } from './announcer.ts';
 import { doneProblem, type DoneProblem } from './factor/doneRefusal.ts';
 import { FactorSetup } from './factor/FactorSetup.tsx';
@@ -16,7 +17,7 @@ import { ForgetBrowser } from './factor/ForgetBrowser.tsx';
 
 const KEY_LENGTH = 52;
 type Field = 'username' | 'password' | 'code' | 'key' | 'backup' | 'passkey';
-type SignInCommand = 'login' | 'totp' | 'key' | 'passkey' | 'backup';
+type SignInCommand = 'oidc' | 'login' | 'totp' | 'key' | 'passkey' | 'backup';
 type Shown = 'login' | 'totp' | 'key' | 'noBackup' | 'done' | 'passkey' | 'backup' | 'factor';
 const FIELD_ID: Readonly<Record<Field, string>> = {
   username: 'signin-username', password: 'signin-password', code: 'signin-code', key: 'signin-key',
@@ -398,6 +399,17 @@ export function SignIn(props: { onFinish(target?: SignInTarget): void }): React.
     setBackupHeld(true);
     requestFocus('heading');
   };
+  const submitOIDC = () => {
+    const bridge = desktopBridge();
+    if (blocked || !bridge?.browserAuth) return;
+    setBanner(null); setErrors({}); begin('oidc', 'login');
+    const go = async () => {
+      const result = await bridge.browserAuth!({ kind: 'oidc', options: '' });
+      if (!result.assertion || ![0, 1, 2].includes(result.needs)) throw new Error('Invalid browser sign-in');
+      await client.call({ m: 'signInOIDC', assertion: result.assertion, needs: result.needs as 0 | 1 | 2 });
+    };
+    run('oidc', go(), () => { setPassword(''); });
+  };
   /** The passkey on its own: the instance's options go to the browser and its answer back; the page makes no challenge. */
   const submitPasskey = (from: Shown) => {
     if (blocked) return;
@@ -663,6 +675,9 @@ export function SignIn(props: { onFinish(target?: SignInTarget): void }): React.
         onFocus={() => { if (!blocked) setAutofillArmed(true); }} />
       <TextField id={FIELD_ID.password} type="password" label={t('signin.login.password')} value={password}
         onChange={change('password', setPassword)} error={errorText('password')} required autoComplete="current-password" />
+      {instance?.oidc && desktopBridge()?.browserAuth ? <Button variant="ghost" type="button" onClick={submitOIDC} {...blockedProps}>
+        {t(busy === 'oidc' ? 'factorSignin.oidc.working' : 'factorSignin.oidc.submit')}
+      </Button> : null}
       {/* Fix round 1 (Jonas): passkeys come from the username field's autofill; no button. Fix round 2: a browser without
           conditional mediation keeps the button (an accepted deviation for those browsers only). */}
       {passkeysUsable(instance) && autofillArmed ? (

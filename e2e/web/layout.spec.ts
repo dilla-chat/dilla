@@ -1,3 +1,6 @@
+import { themes } from '../../packages/design-tokens/src/tokens';
+import { openInviteInClient } from './support/invite';
+import { desktopE2E } from './support/electron.ts';
 // web3.9 E-GEO: the layout grammar of the alignment pass, measured in a real browser. From an empty host (with its in-process
 // LiveKit) Ada starts "Midgard Crew" and gives it two categories, text channels, an announcement channel, a voice channel with
 // a live person in it, the built-in AFK channel and a direct message; then every rule of the grammar is read as a rect at
@@ -338,16 +341,11 @@ test('the layout grammar holds at desktop, tablet, phone, narrow and keyboard-he
   const secondDir = secondProfileDir(testInfo.project.name, testInfo.workerIndex);
   const second = await launchSecond(playwright, browserName, { launchOptions: friendLaunch(browserName, launchOptions), headless, channel, viewport: { width: 1440, height: 900 }, baseURL: h.url }, secondDir);
   const phoneDir = `${PROFILE_ROOT}/${testInfo.project.name}-${testInfo.workerIndex}-phone`;
-  let phoneContext: BrowserContext | null = null;
+  const phoneContext: { current: BrowserContext | null } = { current: null };
   try {
     if (browserName === 'chromium') await second.grantPermissions(['microphone']);
     const mira = second.pages()[0] ?? (await second.newPage());
-    await mira.goto(new URL(link).pathname);
-    const openLink = mira.getByRole('link', { name: 'Open dilla in this browser', exact: true });
-    await expect(openLink).toBeVisible({ timeout: WAIT });
-    // The guard watches the web client, not the instance's static invite page (Firefox asks it for /favicon.ico under its default-src 'none').
-    await guard.attach(second);
-    await openLink.click();
+    await openInviteInClient(mira, link, () => guard.attach(second));
     await completeSignUp(mira, newAccount(FRIEND, h.control), instance);
     await expect(railItem(mira, SERVER)).toBeVisible({ timeout: WAIT });
     await railItem(mira, SERVER).click();
@@ -390,45 +388,48 @@ test('the layout grammar holds at desktop, tablet, phone, narrow and keyboard-he
     await test.step('a collapsed category keeps its current and unread rows', async () => { await attempt('collapsed category', () => collapsedCategory(page, serverPath)); });
 
     lap('desktop and search and collapse done');
-    // 4. Phone: a touch phone where the engine has one (Chromium, WebKit), Ada's second device; Firefox has no mobile emulation,
-    // and 390 and 360 wide is a phone layout there too, so its own page is resized.
-    let phone: Page = page;
-    if (browserName !== 'firefox') {
-      rmSync(phoneDir, { recursive: true, force: true });
-      mkdirSync(phoneDir, { recursive: true });
-      phoneContext = await playwright[browserName].launchPersistentContext(phoneDir, {
-        ...launchOptions, headless, channel, ...PHONE, viewport: { width: 390, height: 844 }, baseURL: h.url,
-      });
-      await guard.attach(phoneContext);
-      phone = await phoneContext.newPage();
-      await signIn(phone, ada, instance);
-    }
-    lap('phone signed in');
-    // The phone joined after the first long message, so it cannot read it: Ada writes another for the phone's log.
-    await openPath(page, serverPath);
-    await channelRow(page, 'general').click();
-    if (phone !== page) {
-      // A new device joins each group on its own after it signs in (one external commit per group), so Ada writes only
-      // once the phone holds #general and her desktop has its join: the phone's composer opens when it holds the group,
-      // and the desktop reading a line the phone wrote there is past that join. Written earlier, Ada's line raced the
-      // join (a 422 for her stale epoch, or a line the phone never read, CI run 39664262787), and the phone's first
-      // view reloaded its page while it was still syncing. Now the phone stays on #general until the line is in.
-      await openPath(phone, serverPath);
-      await expectComposerReady(phone, 'general');
-      const here = `the phone is in ${String(Date.now())}`;
-      await sendText(phone, 'general', here);
-      await expect(messageRow(page, 'general', here)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
-    }
-    const again = `and again ${LONG_WORD}`;
-    await sendText(page, 'general', again);
-    if (phone !== page) await expect(messageRow(phone, 'general', again)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
-    for (const size of SIZES.filter(s => s.phone)) {
-      await phone.setViewportSize({ width: size.width, height: size.height });
-      await test.step(`phone ${size.tag}`, async () => { await attempt(`phone ${size.tag}`, () => phoneGrammar(phone, size, serverPath, voicePath)); });
-    }
+    await test.step('mobile viewport grammar', async step => {
+      step.skip(desktopE2E(), 'Mobile UI is outside the desktop release; native minimum window sizes cannot emulate a phone. The browser layout lane retains these mobile assertions.');
+      // 4. Phone: a touch phone where the engine has one (Chromium, WebKit), Ada's second device; Firefox has no mobile emulation,
+      // and 390 and 360 wide is a phone layout there too, so its own page is resized.
+      let phone: Page = page;
+      if (browserName !== 'firefox') {
+        rmSync(phoneDir, { recursive: true, force: true });
+        mkdirSync(phoneDir, { recursive: true });
+        phoneContext.current = await playwright[browserName].launchPersistentContext(phoneDir, {
+          ...launchOptions, headless, channel, ...PHONE, viewport: { width: 390, height: 844 }, baseURL: h.url,
+        });
+        await guard.attach(phoneContext.current);
+        phone = await phoneContext.current.newPage();
+        await signIn(phone, ada, instance);
+      }
+      lap('phone signed in');
+      // The phone joined after the first long message, so it cannot read it: Ada writes another for the phone's log.
+      await openPath(page, serverPath);
+      await channelRow(page, 'general').click();
+      if (phone !== page) {
+        // A new device joins each group on its own after it signs in (one external commit per group), so Ada writes only
+        // once the phone holds #general and her desktop has its join: the phone's composer opens when it holds the group,
+        // and the desktop reading a line the phone wrote there is past that join. Written earlier, Ada's line raced the
+        // join (a 422 for her stale epoch, or a line the phone never read, CI run 39664262787), and the phone's first
+        // view reloaded its page while it was still syncing. Now the phone stays on #general until the line is in.
+        await openPath(phone, serverPath);
+        await expectComposerReady(phone, 'general');
+        const here = `the phone is in ${String(Date.now())}`;
+        await sendText(phone, 'general', here);
+        await expect(messageRow(page, 'general', here)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
+      }
+      const again = `and again ${LONG_WORD}`;
+      await sendText(page, 'general', again);
+      if (phone !== page) await expect(messageRow(phone, 'general', again)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
+      for (const size of SIZES.filter(s => s.phone)) {
+        await phone.setViewportSize({ width: size.width, height: size.height });
+        await test.step(`phone ${size.tag}`, async () => { await attempt(`phone ${size.tag}`, () => phoneGrammar(phone, size, serverPath, voicePath)); });
+      }
+    });
   } finally {
     await guard.collectWorkers();
-    await phoneContext?.close();
+    await phoneContext.current?.close();
     await second.close();
     rmSync(secondDir, { recursive: true, force: true });
     rmSync(phoneDir, { recursive: true, force: true });
@@ -750,7 +751,7 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
   await page.locator('[data-settings-section="index"]').click();
   const userSettings = settingsDialog(page);
   await expect(userSettings).toBeVisible({ timeout: WAIT });
-  await expect(page).toHaveURL('/settings', { timeout: WAIT });
+  await expect(page).toHaveURL(/\/settings$/, { timeout: WAIT });
   await expectTargets(page, tag, 'the user settings index');
   await expect(userSettings.getByRole('button', { name: copy('workspace.profile'), exact: true })).toBeVisible();
   await expect(page.locator('.d-app-shell').getByRole('navigation', { name: copy('nav.tabs.label'), exact: true })).toHaveCount(0);
@@ -758,12 +759,12 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
   expect(frameBox?.x).toBe(0);
   expect(frameBox?.width).toBe(size.width);
   await userSettings.getByRole('button', { name: copy('workspace.profile'), exact: true }).click();
-  await expect(page).toHaveURL('/settings/profile', { timeout: WAIT });
+  await expect(page).toHaveURL(/\/settings\/profile$/, { timeout: WAIT });
   await expectTargets(page, tag, 'a user settings section');
   await expect(userSettings.getByRole('button', { name: copy('workspace.back'), exact: true })).toHaveCount(0);
   await expect(userSettings.getByRole('button', { name: copy('workspace.profile'), exact: true })).toHaveAttribute('aria-current', 'page');
   await page.goBack();
-  await expect(page).toHaveURL('/settings', { timeout: WAIT });
+  await expect(page).toHaveURL(/\/settings$/, { timeout: WAIT });
   await page.keyboard.press('Escape');
   await expect(userSettings).toBeHidden({ timeout: WAIT });
 
@@ -878,6 +879,7 @@ test('FA1: phone controls outside the shell keep the prototype sizes, and the in
     // Task 10 fix round 1: Devices draws only device rows (no settings rows), so a device row also says the section is in.
     await expect(page.locator('.d-settings-row, .d-voice-settings, .d-device-row').first()).toBeVisible({ timeout: WAIT });
     await expectPrototypeSizes(page, `settings, ${section} at 390`, section === 'voice' ? VOICE_SIZES : SETTINGS_SIZES.slice(0, 1));
+    await closeSettings(page);
   }
   // Signal task 10 fix round 1: Settings → Devices has no refresh button (the prototype's rows); the list refreshes on open.
 
@@ -912,10 +914,11 @@ test('FA1: phone controls outside the shell keep the prototype sizes, and the in
   await page.keyboard.press('Escape');
   await expect(admin).toBeHidden({ timeout: WAIT });
   await page.setViewportSize({ width: 390, height: 844 });
-  await expect(page.locator('.d-app-shell')).toHaveAttribute('data-layout', 'phone', { timeout: WAIT });
+  if (desktopE2E()) { expect(page.viewportSize()!.width).toBe(900); await expect(page.locator('.d-app-shell')).not.toHaveAttribute('data-layout', 'phone'); }
+  else await expect(page.locator('.d-app-shell')).toHaveAttribute('data-layout', 'phone', { timeout: WAIT });
   const back = page.getByRole('button', { name: copy('nav.back'), exact: true });
   if (await back.isVisible().catch(() => false)) await back.click();
-  await expect(page.locator('.d-app-shell')).toHaveAttribute('data-pane', 'list', { timeout: WAIT });
+  if (!desktopE2E()) await expect(page.locator('.d-app-shell')).toHaveAttribute('data-pane', 'list', { timeout: WAIT });
   await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
   await expect(admin).toBeVisible({ timeout: WAIT });
   await admin.getByRole('navigation', { name: copy('admin.nav'), exact: true }).getByRole('button', { name: copy('admin.nav.invites'), exact: true }).click();
@@ -932,9 +935,12 @@ test('FA1: phone controls outside the shell keep the prototype sizes, and the in
   await page.keyboard.press('Escape');
   await expect(admin).toBeHidden({ timeout: WAIT });
   // Opened from the app (You → Open settings), so Settings knows the server; a reload of /settings/notifications would not.
-  await page.getByRole('navigation', { name: copy('nav.tabs.label'), exact: true }).getByRole('link', { name: new RegExp(`^${copy('nav.tab.you')}`) }).click();
-  await page.getByRole('button', { name: copy('you.settings'), exact: true }).click();
-  await page.getByRole('navigation', { name: copy('settings.nav.label'), exact: true }).getByRole('button', { name: copy('workspace.notifications'), exact: true }).click();
+  if (desktopE2E()) await openSettings(page, 'notifications');
+  else {
+    await page.getByRole('navigation', { name: copy('nav.tabs.label'), exact: true }).getByRole('link', { name: new RegExp(`^${copy('nav.tab.you')}`) }).click();
+    await page.getByRole('button', { name: copy('you.settings'), exact: true }).click();
+    await page.getByRole('navigation', { name: copy('settings.nav.label'), exact: true }).getByRole('button', { name: copy('workspace.notifications'), exact: true }).click();
+  }
   await expect(page.locator('.d-settings-frame__body .d-segmented__option').first()).toBeVisible({ timeout: WAIT });
   await expectPrototypeSizes(page, 'settings, notifications at 390', [['.d-settings-frame__body .d-segmented__option', 26]]);
 });
@@ -961,11 +967,7 @@ test('the DM and the voice layout give each element its room', async ({ page, pl
   const second = await launchSecond(playwright, browserName, { launchOptions: friendLaunch(browserName, launchOptions) as typeof launchOptions, headless, channel, viewport: { width: 1440, height: 900 }, baseURL: h.url }, secondDir);
   try {
     const cy = second.pages()[0] ?? (await second.newPage());
-    await cy.goto(new URL(link).pathname);
-    const openLink = cy.getByRole('link', { name: 'Open dilla in this browser', exact: true });
-    await expect(openLink).toBeVisible({ timeout: WAIT });
-    await guard.attach(second);
-    await openLink.click();
+    await openInviteInClient(cy, link, () => guard.attach(second));
     await completeSignUp(cy, newAccount('Cy', h.control), instance);
     await expect(railItem(cy, 'Ydalir')).toBeVisible({ timeout: WAIT });
     await homeTile(cy).click();
@@ -1029,6 +1031,13 @@ test('the DM and the voice layout give each element its room', async ({ page, pl
 
     // D4: the phone's call stage fills the view and its controls end directly above the tab bar.
     await page.setViewportSize({ width: 390, height: 844 });
+    if (desktopE2E()) {
+      expect(page.viewportSize()!.width).toBe(900);
+      await expect(page.locator('.d-app-shell')).not.toHaveAttribute('data-layout', 'phone');
+      await expect(page.locator(AFK_ACTION)).toBeVisible();
+      await expectNoOverflow(page, '900x844', 'desktop minimum voice preview');
+      return;
+    }
     await expect(page.locator('.d-app-shell')).toHaveAttribute('data-layout', 'phone', { timeout: WAIT });
     const afkAction = page.locator(AFK_ACTION);
     await expect(afkAction).toBeVisible({ timeout: WAIT });
@@ -1063,9 +1072,9 @@ test('the DM and the voice layout give each element its room', async ({ page, pl
 // ---------------------------------------------------------------------------------------------------
 // web3.9 FA4 (AUDIT-2 J1, H5, H6, I6, I7): search results with #channel, author and time and a KeyHint footer; the You tab's icons
 // with sign out; one phone settings entry point and an index/back traversal; the admin reorder as arrow icon buttons with truncated names; privacy
-// "Compare with ..." as ghost buttons. Read as rects and computed styles, with axe in all three themes where the surface is new.
+// "Compare with ..." as ghost buttons. Read as rects and computed styles, with axe in the Signal theme where the surface is new.
 
-const THEMES = ['signal', 'light', 'high-contrast'] as const;
+const THEMES = Object.keys(themes);
 async function expectAccessibleInThemes(page: Page, state: string): Promise<void> {
   const before = await page.evaluate(() => document.documentElement.dataset.theme ?? '');
   try {
@@ -1098,10 +1107,7 @@ test('FA4: search rows, phone settings index, channel reorder and privacy Compar
   const second = await launchSecond(playwright, browserName, { launchOptions, headless, channel, viewport: { width: 1440, height: 900 }, baseURL: h.url }, secondDir);
   try {
     const mira = second.pages()[0] ?? (await second.newPage());
-    await mira.goto(new URL(link).pathname);
-    const openLink = mira.getByRole('link', { name: 'Open dilla in this browser', exact: true });
-    await expect(openLink).toBeVisible({ timeout: WAIT });
-    await openLink.click();
+    await openInviteInClient(mira, link);
     await completeSignUp(mira, newAccount(FRIEND, h.control), instance);
     await railItem(mira, SERVER).click();
     await channelRow(mira, 'general').click();
@@ -1196,6 +1202,14 @@ test('FA4: search rows, phone settings index, channel reorder and privacy Compar
 
     // On phone, You has one settings entry point. The modal index and section replace the shell's tab bar.
     await page.setViewportSize({ width: 390, height: 844 });
+    if (desktopE2E()) {
+      expect(page.viewportSize()!.width).toBe(900);
+      const nativeSettings = await openSettings(page, 'privacy');
+      await expect(nativeSettings.getByRole('button', { name: copy('workspace.privacy'), exact: true })).toHaveAttribute('aria-current', 'page');
+      await expectAccessibleInThemes(page, 'desktop settings at the native minimum');
+      await closeSettings(page);
+      return;
+    }
     const tabs = page.getByRole('navigation', { name: copy('nav.tabs.label'), exact: true });
     await tabs.getByRole('link', { name: copy('nav.tab.you'), exact: true }).click();
     const settingsEntry = page.locator('[data-settings-section="index"]');
@@ -1206,18 +1220,18 @@ test('FA4: search rows, phone settings index, channel reorder and privacy Compar
     await settingsEntry.click();
     const phoneSettings = settingsDialog(page);
     await expect(phoneSettings).toBeVisible({ timeout: WAIT });
-    await expect(page).toHaveURL('/settings', { timeout: WAIT });
+    await expect(page).toHaveURL(/\/settings$/, { timeout: WAIT });
     await expect(phoneSettings.getByRole('button', { name: copy('settings.close'), exact: true })).toBeVisible();
     await expect(phoneSettings.getByRole('button', { name: copy('workspace.privacy'), exact: true })).toBeVisible();
     await phoneSettings.getByRole('button', { name: copy('workspace.privacy'), exact: true }).click();
-    await expect(page).toHaveURL('/settings/privacy', { timeout: WAIT });
+    await expect(page).toHaveURL(/\/settings\/privacy$/, { timeout: WAIT });
     // Task 10 (README §5.10): chips above the section, no Back.
     await expect(phoneSettings.getByRole('button', { name: copy('workspace.back'), exact: true })).toHaveCount(0);
     await expect(phoneSettings.getByRole('button', { name: copy('workspace.privacy'), exact: true })).toHaveAttribute('aria-current', 'page');
     await expect(page.locator('.d-app-shell').getByRole('navigation', { name: copy('nav.tabs.label'), exact: true })).toHaveCount(0);
     await expectAccessibleInThemes(page, 'a phone settings section');
     await page.goBack();
-    await expect(page).toHaveURL('/settings', { timeout: WAIT });
+    await expect(page).toHaveURL(/\/settings$/, { timeout: WAIT });
     await expectAccessibleInThemes(page, 'the phone settings index');
     await page.keyboard.press('Escape');
     await expect(phoneSettings).toBeHidden({ timeout: WAIT });

@@ -1,0 +1,13 @@
+{
+  "goVersion": "go1.27.3",
+  "generation": 1,
+  "publishedAt": "2026-11-02T00:00:00Z",
+  "expiresAt": "2027-01-31T00:00:00Z",
+  "publicKeys": ["qQe0Z4MLDeYmXACcEHo3Z7SU0klZSccu+nMD90pOcJg="],
+  "helper": {
+    "version": "electron-45.2.1-linux-x64",
+    "size": 15216,
+    "sha256": "f16e2562837856845cfc8ebf4aa7f78b57fdadc6b69130509b1db87ce5d2f869",
+    "sha512": "5BbUCM3R6/rS855eihQ/leAad3sK4Spk2/XIb6RlNd7V6X8S8q5mds5GIEeYxJ9++v5jZRl+AeukBa+arNqNog=="
+  }
+}

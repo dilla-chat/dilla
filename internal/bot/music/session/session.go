@@ -1,5 +1,4 @@
-// Package session composes the installation-wide Spotify slot with one
-// per-call Spotify, encoder, and LiveKit playback lifecycle.
+// Package session composes the per-call provider, encoder, and LiveKit playback lifecycle.
 package session
 
 import (
@@ -14,15 +13,12 @@ import (
 	"github.com/jonasthim/dilla/internal/bot/music"
 	"github.com/jonasthim/dilla/internal/bot/music/livekit"
 	musicruntime "github.com/jonasthim/dilla/internal/bot/music/runtime"
-	"github.com/jonasthim/dilla/internal/bot/music/spotify"
 	"github.com/jonasthim/dilla/internal/bot/music/youtube"
 	"github.com/jonasthim/dilla/internal/id"
 )
 
 var ErrInvalid = errors.New("music session: invalid configuration")
 
-type Lease interface{ Release() error }
-type LeaseAcquire func(id.ID, id.ID) (Lease, error)
 type PCMStarter interface {
 	Start(context.Context, string) (io.ReadCloser, error)
 }
@@ -51,7 +47,6 @@ type Options struct {
 	// PrepareCall runs only after provider PCM and encoder have started.
 	PrepareCall func(context.Context) (client.Call, error)
 	Group       id.ID
-	Acquire     LeaseAcquire
 	PCM         PCMStarter
 	Encoder     EncoderStarter
 	Publisher   PublisherStarter
@@ -59,8 +54,7 @@ type Options struct {
 }
 
 // OptionsForTrack supplies call credentials, provider PCM and epoch-bound
-// publisher dependencies for a queue track. Spotify options include Acquire;
-// YouTube options may omit the installation-wide lease.
+// publisher dependencies for a queue track.
 type OptionsForTrack func(context.Context, music.Track) (Options, error)
 
 type explicitStartKey struct{}
@@ -185,7 +179,7 @@ func (s QueueStarter) startOnce(ctx context.Context, track music.Track) (music.P
 		}
 		return nil, providerStage(ctx, "provider_check", err)
 	}
-	if (track.Provider != music.ProviderSpotify && track.Provider != music.ProviderYouTube) ||
+	if track.Provider != music.ProviderYouTube ||
 		(o.Provider != "" && o.Provider != track.Provider) {
 		return nil, music.StartStage(ctx, "provider_check", ErrInvalid)
 	}
@@ -194,17 +188,16 @@ func (s QueueStarter) startOnce(ctx context.Context, track music.Track) (music.P
 	return Start(ctx, o)
 }
 
-// Start acquires the global lease before starting any Spotify audio. The
-// returned session owns every resource through publisher completion.
+// Start owns every resource through publisher completion.
 func Start(ctx context.Context, o Options) (*Session, error) {
 	if ctx == nil {
 		return nil, ErrInvalid
 	}
 	provider := o.Provider
 	if provider == "" {
-		provider = music.ProviderSpotify
+		provider = music.ProviderYouTube
 	}
-	if o.Community.IsZero() || o.Channel.IsZero() || o.Track == "" || o.PCM == nil || o.Encoder == nil || o.Publisher == nil || o.Epochs == nil || (o.PrepareCall == nil && (o.Call.CallID.IsZero() || o.Group.IsZero() || o.Call.GroupID != o.Group)) || (provider != music.ProviderSpotify && provider != music.ProviderYouTube) || (provider == music.ProviderSpotify && o.Acquire == nil) {
+	if o.Community.IsZero() || o.Channel.IsZero() || o.Track == "" || o.PCM == nil || o.Encoder == nil || o.Publisher == nil || o.Epochs == nil || (o.PrepareCall == nil && (o.Call.CallID.IsZero() || o.Group.IsZero() || o.Call.GroupID != o.Group)) || provider != music.ProviderYouTube {
 		return nil, music.StartStage(ctx, "provider_check", ErrInvalid)
 	}
 	ctx = client.WithoutCooperativeStop(client.WithBackground(ctx))
@@ -217,26 +210,7 @@ func Start(ctx context.Context, o Options) (*Session, error) {
 		}
 	}
 	_ = music.StartStage(ctx, "provider_check", nil)
-	var lease Lease
-	var err error
-	if provider == music.ProviderSpotify {
-		lease, err = o.Acquire(o.Community, o.Channel)
-		if err == nil && lease == nil {
-			err = ErrInvalid
-		}
-		if err = music.StartStage(ctx, "spotify_lease", err); err != nil {
-			return nil, err
-		}
-	}
-	failed := true
-	defer func() {
-		if failed {
-			if lease != nil {
-				_ = lease.Release()
-			}
-		}
-	}()
-	if err = ctx.Err(); err != nil {
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	pcm, err := o.PCM.Start(ctx, o.Track)
@@ -277,15 +251,13 @@ func Start(ctx context.Context, o Options) (*Session, error) {
 		return nil, err
 	}
 	_ = music.StartStage(ctx, "published", nil)
-	s := &Session{lease: lease, pcm: pcm, encoder: encoder, publisher: pub, done: make(chan struct{}), stop: make(chan struct{})}
-	failed = false
+	s := &Session{pcm: pcm, encoder: encoder, publisher: pub, done: make(chan struct{}), stop: make(chan struct{})}
 	go s.monitor(ctx)
 	return s, nil
 }
 
 type Session struct {
 	pcm       io.ReadCloser
-	lease     Lease
 	encoder   Encoder
 	publisher Publisher
 	done      chan struct{}
@@ -315,9 +287,6 @@ func (s *Session) finish(err error) {
 		_ = s.publisher.Close()
 		_ = s.encoder.Close()
 		_ = s.pcm.Close()
-		if s.lease != nil {
-			_ = s.lease.Release()
-		}
 		close(s.stop)
 	})
 }
@@ -331,13 +300,8 @@ func (s *Session) Close() error {
 	return s.err
 }
 
-// AcquireSpotify adapts the concrete global lease manager for Options.
-func AcquireSpotify(m *music.SpotifyLeaseManager) LeaseAcquire {
-	return func(c, ch id.ID) (Lease, error) { return m.Acquire(c, ch) }
-}
-
 // ownedPCM lets encoder and session cleanup share one close without losing the
-// provider's PCM format (Spotify is 48 kHz; YouTube is 44.1 kHz).
+// provider's PCM format.
 type ownedPCM struct {
 	io.ReadCloser
 	once sync.Once
@@ -356,11 +320,8 @@ func (p *ownedPCM) PCMFormat() musicruntime.PCMFormat {
 func providerStage(ctx context.Context, stage string, err error) error {
 	if err != nil {
 		class := youtube.FailureClass(err)
-		if spotifyClass := spotify.FailureClass(err); spotifyClass != "unknown" {
-			class = spotifyClass
-		}
 		if class != "unknown" {
-			err = &providerFailureClass{error: err, class: class, permanent: youtube.PermanentPlaybackFailure(err) || spotify.PermanentPlaybackFailure(err)}
+			err = &providerFailureClass{error: err, class: class, permanent: youtube.PermanentPlaybackFailure(err)}
 		}
 	}
 	return music.StartStage(ctx, stage, err)

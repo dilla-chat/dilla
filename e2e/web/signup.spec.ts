@@ -1,3 +1,5 @@
+import { clickNative } from './support/native-click.ts';
+import { desktopApplication, desktopE2E } from './support/electron.ts';
 import { expect } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import { instanceSlug } from '../../packages/web/src/screens/recovery-file';
@@ -15,6 +17,17 @@ test('a server invite, a name and a written-down key make an account that lands 
 
   await page.goto(`/welcome?invite=${encodeURIComponent(invite)}`);
   await expectHeading(page, COPY.connectTitle, { instance: instanceName });
+  if (desktopE2E()) {
+    const app = desktopApplication(context);
+    await expect.poll(() => app.evaluate(({ BrowserWindow }) => ({ width: BrowserWindow.getAllWindows()[0].getContentSize()[0], resizable: BrowserWindow.getAllWindows()[0].isResizable() }))).toEqual({ width: 400, resizable: false });
+    expect(await page.evaluate(() => [innerWidth, innerHeight])).toEqual(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getContentSize()));
+    await expect(page.locator('.dw-desktop-titlebar')).toBeHidden();
+    const card = await page.locator('.d-onboarding-frame__card').boundingBox();
+    expect(card?.x).toBe(0); expect(card?.y).toBe(0); expect(card?.width).toBe(400);
+    expect(Math.ceil(card!.height)).toBe(await page.evaluate(() => innerHeight));
+    await expect(page.getByRole('button', { name: 'Close login window' })).toBeVisible();
+    await page.screenshot({ path: 'desktop-client-results/compact-signup.png' });
+  }
   await expect(page.getByLabel(copy(COPY.inviteLabel), { exact: true })).toHaveValue(invite);
   await nextButton(page).click();
 
@@ -53,6 +66,48 @@ test('a server invite, a name and a written-down key make an account that lands 
   await expectHeading(page, COPY.doneTitle);
   await page.getByRole('button', { name: copy(COPY.finish), exact: true }).click();
   await expectShell(page);
+  if (desktopE2E()) {
+    const app = desktopApplication(context);
+    await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isResizable())).toBe(true);
+    expect(await page.evaluate(() => [innerWidth, innerHeight])).toEqual(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getContentSize()));
+    expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getMinimumSize())).toEqual([900, 600]);
+    await expect(page.locator('.d-topbar .dw-desktop-titlebar')).toBeVisible();
+    const header = await page.locator('.d-topbar').boundingBox();
+    expect(header?.y).toBe(0); expect(header?.height).toBe(44);
+    if (process.platform === 'darwin') {
+      // macOS keeps its native traffic lights in the integrated header.
+      await expect(page.getByRole('button', { name: 'Close window', exact: true })).toHaveCount(0);
+      expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isClosable())).toBe(true);
+      expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getWindowButtonPosition())).toEqual({ x: 12, y: 16 });
+    } else {
+      const close = await page.getByRole('button', { name: 'Close window', exact: true }).boundingBox();
+      expect(close).not.toBeNull();
+      expect(close!.y + close!.height / 2).toBe(header!.height / 2);
+    }
+
+    await page.setViewportSize({ width: 360, height: 400 });
+    expect(await page.evaluate(() => [innerWidth, innerHeight])).toEqual([900, 600]);
+    await expect(page.locator('[data-layout=phone]')).toHaveCount(0);
+    const search = page.getByRole('button', { name: copy('topbar.search'), exact: true });
+    for (const target of [search, search.locator('.d-topbar__search-text'), search.locator('kbd')]) {
+      await clickNative(app, page, target);
+      await expect(page.locator('.d-search-palette')).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(page.locator('.d-search-palette')).toBeHidden();
+      await expect(page.locator('.d-topbar .dw-desktop-titlebar')).toBeVisible();
+    }
+    await page.screenshot({ path: 'desktop-client-results/workspace-signup.png' });
+    await clickNative(app, page, page.getByRole('button', { name: copy('workspace.open'), exact: true }));
+    const settings = page.locator('dialog.d-settings-frame[open]');
+    await expect(settings.locator('.dw-desktop-titlebar')).toBeVisible();
+    if ((await app.evaluate(() => process.platform)) !== 'darwin') {
+      await clickNative(app, page, settings.getByRole('button', { name: 'Minimize window', exact: true }));
+      await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isMinimized())).toBe(true);
+      await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].restore());
+    }
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.d-topbar .dw-desktop-titlebar')).toBeVisible();
+  }
 
   // The server invite registered the account and joined its server: the person lands in it, with no
   // join dialog and no second paste (ruling 34).
@@ -70,6 +125,9 @@ test('a server invite, a name and a written-down key make an account that lands 
       const name = sessionStorage.key(index)!;
       return [name, sessionStorage.getItem(name)];
     }) }));
+  // Explicit desktop reloads now use the same encrypted draft checkpoint flow.
+  // Its random tab marker is the only session-storage entry; no device key or
+  // credential may appear here on either client.
   expect(webStorage).toEqual({ local: 0, cookie: '',
     session: [['dilla.update.tab', expect.stringMatching(/^[0-9a-f]{32}$/)]] });
   expect(await context.cookies()).toEqual([]);

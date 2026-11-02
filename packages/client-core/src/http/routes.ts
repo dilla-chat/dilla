@@ -125,7 +125,6 @@ export const BOT_CAPABILITIES_MAX = 0x3ff;
 /** The Music page's options (Task 10c); the instance and the Bot accept nothing else. */
 export const BOT_MUSIC_VOLUMES = [25, 50, 75, 100] as const;
 export const BOT_MUSIC_IDLE_MINUTES = [5, 15, 30] as const;
-export interface BotSpotifyAttempt { attemptId: Uint8Array; authorizeUrl: string; expires: bigint }
 export interface SelfRoleRow { id: Uint8Array; name: string; position: number; selfSelected: boolean }
 export interface RolePanelOptionInput { emoji: string; roleId: Uint8Array }
 export interface RoleRow { id: Uint8Array; name: string; color: number; position: number; allow: number; deny: number;
@@ -371,32 +370,6 @@ function botInstallationRow(value: CborValue, communityId: Uint8Array): BotInsta
     row.extra = extra;
   }
   return row;
-}
-function botSpotifyAttempt(value: CborValue): BotSpotifyAttempt {
-  const a = arr(value);
-  if (a.length !== 3) throw new CborError('E_CBOR_SHAPE', 'expected three Spotify attempt fields');
-  const attemptId = bin(a[0], 16);
-  const authorizeUrl = str(a[1]);
-  const expires = u64(a[2]);
-  let url: URL;
-  try { url = new URL(authorizeUrl); } catch { throw new CborError('E_CBOR_RANGE', 'invalid Spotify authorization URL'); }
-  const names = ['response_type', 'client_id', 'redirect_uri', 'scope', 'state', 'code_challenge_method', 'code_challenge'];
-  const unique = names.every(name => url.searchParams.getAll(name).length === 1);
-  const redirect = url.searchParams.get('redirect_uri');
-  let redirectUrl: URL | null = null;
-  if (redirect !== null) { try { redirectUrl = new URL(redirect); } catch { /* rejected below */ } }
-  if (url.protocol !== 'https:' || url.hostname !== 'accounts.spotify.com' || url.port !== '' || url.pathname !== '/authorize'
-    || url.username !== '' || url.password !== '' || url.hash !== '' || !unique || [...url.searchParams.keys()].some(k => !names.includes(k))
-    || url.searchParams.get('response_type') !== 'code' || url.searchParams.get('scope') !== 'streaming user-read-email user-read-private'
-    || url.searchParams.get('code_challenge_method') !== 'S256'
-    || !(url.searchParams.get('client_id') ?? '').trim() || redirectUrl === null || redirectUrl.protocol !== 'https:'
-    || redirectUrl.hostname === '' || redirectUrl.username !== '' || redirectUrl.password !== '' || redirectUrl.hash !== ''
-    || !/^[A-Za-z0-9_-]{43}$/u.test(url.searchParams.get('state') ?? '')
-    || !/^[A-Za-z0-9_-]{43}$/u.test(url.searchParams.get('code_challenge') ?? '')) {
-    throw new CborError('E_CBOR_RANGE', 'invalid Spotify authorization URL');
-  }
-  if (expires === 0n) throw new CborError('E_CBOR_RANGE', 'invalid Spotify attempt expiry');
-  return { attemptId, authorizeUrl, expires };
 }
 function inviteRow(value: CborValue): InviteRow {
   const a = atLeast(value, 9);
@@ -761,39 +734,6 @@ export class Routes {
     const body = encode([inputId('requestId', requestId), expectedRevision]);
     return botInstallationRow(decode(await this.body('POST', `/v1/communities/${id('communityId', communityId)}/bot/disable`,
       'write', true, { body, retry429: false })), communityId);
-  }
-  async getBotSpotifyConfig(communityId: Uint8Array): Promise<{ clientId: string; redirectUrl: string }> {
-    const raw = await this.body('GET', `/v1/communities/${id('communityId', communityId)}/bot/spotify/config`, 'read', true);
-    const a = arr(decode(raw));
-    if (a.length !== 2) throw new CborError('E_CBOR_SHAPE', 'invalid Spotify application setting');
-    return { clientId: str(a[0]), redirectUrl: str(a[1]) };
-  }
-  async beginBotSpotifyAttempt(communityId: Uint8Array, stepUp: string, clientId: string): Promise<BotSpotifyAttempt> {
-    if (typeof stepUp !== 'string' || stepUp.length < 1 || stepUp.length > 4096) throw new RangeError('E_ROUTE_INPUT: invalid step-up token');
-    if (!/^[A-Za-z0-9]{1,256}$/u.test(clientId)) throw new RangeError('E_ROUTE_INPUT: invalid Spotify client ID');
-    const path = `/v1/communities/${id('communityId', communityId)}/bot/spotify/attempts`;
-    const body = encode([stepUp, clientId]);
-    const response = await this.http.request({ method: 'POST', path, bucket: 'write', idempotent: false,
-      body, retry429: false, ok: [200], maxBodyBytes: 4096 });
-    return botSpotifyAttempt(decode(response.body));
-  }
-  async callbackBotSpotifyAttempt(communityId: Uint8Array, attemptId: Uint8Array, state: string, code: string): Promise<void> {
-    const stateBytes = UTF8.encode(state);
-    const codeBytes = UTF8.encode(code);
-    if (stateBytes.length < 1 || stateBytes.length > 256 || CONTROL.test(state)
-      || codeBytes.length < 1 || codeBytes.length > 2048 || /[\r\n\0]/u.test(code)) {
-      throw new RangeError('E_ROUTE_INPUT: invalid Spotify callback');
-    }
-    const path = `/v1/communities/${id('communityId', communityId)}/bot/spotify/attempts/${id('attemptId', attemptId)}/callback`;
-    const response = await this.http.request({ method: 'POST', path, bucket: 'write', idempotent: false,
-      body: encode([state, code]), retry429: false, ok: [202], maxBodyBytes: 256 });
-    const a = arr(decode(response.body));
-    if (a.length !== 1 || u53(a[0]) !== 1) throw new CborError('E_CBOR_SHAPE', 'invalid Spotify callback acknowledgement');
-  }
-  async cancelBotSpotifyAttempt(communityId: Uint8Array, attemptId: Uint8Array): Promise<void> {
-    await this.http.request({ method: 'DELETE',
-      path: `/v1/communities/${id('communityId', communityId)}/bot/spotify/attempts/${id('attemptId', attemptId)}`,
-      bucket: 'write', idempotent: true, ok: [204], maxBodyBytes: 0 });
   }
   /** GET /v1/communities/{id}/roles: [[id, name, color, position, allow, deny, hoist, mentionable]], at most ROLES_MAX. */
   async listRoles(communityId: Uint8Array): Promise<RoleRow[]> {

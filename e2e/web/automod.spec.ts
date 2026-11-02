@@ -1,3 +1,4 @@
+import { openInviteInClient } from './support/invite';
 import { expect } from '@playwright/test';
 import {
   addServerVia, completeSignUp, composerBox, copy, makeInviteLink, messageRow, newAccount, openChannel, railItem, signUp, test, WAIT,
@@ -80,8 +81,7 @@ test('automatic moderation starts log-only, decrypts repeats, bounds evidence, a
     targetContext = await browser.newContext({ baseURL: host.url });
     await guard.attach(targetContext);
     const targetPage = await targetContext.newPage();
-    await targetPage.goto(new URL(invite).pathname);
-    await targetPage.getByRole('link', { name: 'Open dilla in this browser', exact: true }).click();
+    await openInviteInClient(targetPage, invite);
     await completeSignUp(targetPage, newAccount(TARGET, host.control), instanceName);
     await expect(railItem(targetPage, SERVER)).toBeVisible();
     await openChannel(targetPage, SERVER, 'general');

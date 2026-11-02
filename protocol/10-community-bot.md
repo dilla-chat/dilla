@@ -81,17 +81,16 @@ uint8 operation codes. A legacy, malformed, or unavailable response does not
 authorize sending operation 24. Older runtimes therefore remain usable without
 receiving an unknown operation that could block their interaction delivery.
 
-Operation 24 returns `[version=1, installation_id, observed_at, spotify_account,
-spotify_account_reason, spotify_playback, spotify_playback_reason,
+Operation 24 returns `[version=1, installation_id, observed_at, reserved_3,
+reserved_4, reserved_5, reserved_6,
 youtube_playback, youtube_playback_reason]`. `installation_id` is bstr16 and
-`observed_at` is a Unix timestamp in seconds. Account values are `0 unknown`,
-`1 not_linked`, `2 linked`, and `3 needs_attention`; setup values are `0 unknown`,
-`1 configured`, and `2 missing_requirements`. Reason values are `0 none`, `1
-missing_credentials`, `2 invalid_credentials`, `3 binding_mismatch`, `4
-account_mismatch`, `5 helper_missing`, `6 helper_invalid`, `7
-state_directory_unavailable`, `8 dependencies_missing`, `9 unsupported_bot`, and
-`10 unavailable`. The response contains no account identifiers, paths, provider
-errors, tokens, or OAuth codes. The handler checks the actor's current
+`observed_at` is a Unix timestamp in seconds. Slots 3 through 6 are reserved:
+new runtimes emit zero, and clients ignore unsigned integer values retained in
+older encrypted receipts. Setup values are `0 unknown`, `1 configured`, and
+`2 missing_requirements`. Reason values are `0 none`, `8 dependencies_missing`,
+`9 unsupported_bot`, and `10 unavailable`; values 1 through 7 are reserved.
+The remaining fields keep their existing indexes and enum values. The response
+contains no paths, provider errors, or credentials. The handler checks the actor's current
 `manage_community` authority and recomputes the response on an exact replay.
 
 The native client keeps unconsumed responses in its encrypted journal, with a
@@ -266,8 +265,7 @@ provider results do not fit, the server returns the largest prefix that fits.
 at most 500 YouTube tracks and commits all descriptors in one revision-checked
 queue operation, or commits none. Queue item IDs are freshly generated per
 enqueue and requester IDs come from the authenticated actor. An import that
-would exceed the 500-item queue limit fails without a partial import. Spotify
-search and enqueue remain unavailable until separately qualified. The existing
+would exceed the 500-item queue limit fails without a partial import. The
 YouTube resolver accepts only its bounded search/video/playlist grammar and
 runs extraction in its public-YouTube-only network sandbox; arbitrary extractor
 syntax and other hosts are rejected.
@@ -298,13 +296,9 @@ playback retains the normal requester, announcement-window and rate checks;
 registration changes only after an accepted announcement send.
 
 Classified track-specific start failures remove an item durably and try the
-next item, ignoring repeat for failed items. Spotify may also skip when a
-pre-helper check proves the integration unconfigured or the requester has no
-linked account. Provider-wide, deployment, network, call, room, cancellation and
+next item, ignoring repeat for failed items. Provider-wide, deployment, network, call, room, cancellation and
 deadline failures pause without removing the item. YouTube soft refusals such as
-"This content isn't available, try again later" pause. Spotify connection errors,
-its 35-second connection timeout and helper build configuration faults also
-pause; only the helper's genuine track-unavailable event permits a track skip.
+"This content isn't available, try again later" pause.
 A start run tries each item at most once and is bounded by skip count, elapsed
 time and a consecutive-provider-failure circuit breaker; an exhausted queue is
 empty and paused. Stop and shutdown can interrupt a run between attempts.
@@ -1548,47 +1542,6 @@ evidence retention and includes targets a client has not downloaded. Clients syn
 markers before publishing recovered timelines and exclude removed content from
 late originals/edits, search, pins, replies and attachment previews. Expiry gates
 new acceptance only, not interpretation of already accepted proofs.
-
-## Spotify setup boundary
-
-Server settings > Music owns the guided setup. Connection is installation-
-wide, with one dedicated Premium account and a single active Spotify session.
-Account changes require a freshly checked instance-admin session and normal
-step-up; community managers see necessary readiness/busy state only. The web
-client talks to authenticated Dilla APIs, never directly to a provider process.
-
-| Method and path | Auth | Request | Response |
-| --- | --- | --- | --- |
-| `GET /v1/admin/bot/spotify` | A | — | `[revision, state, failure_code|null]` |
-| `POST /v1/admin/bot/spotify/authorize` | A, step-up | `[request_id, expected_revision, client_id]` | `[attempt_id, authorization_url, expires]` |
-| `POST /v1/admin/bot/spotify/complete` | A, initiating session | `[attempt_id, callback_url]` | `[revision, state, failure_code|null]` |
-| `DELETE /v1/admin/bot/spotify/authorization/{attempt}` | A, initiating session | `[]` | 204 |
-| `DELETE /v1/admin/bot/spotify` | A, step-up | `[request_id, expected_revision]` | `[revision, state, failure_code|null]` |
-
-State0 disconnected,1 authorizing,2 connected,3 reconnect_required,4 unavailable.
-client_id is a public provider application identifier, not a secret. OAuth state
-and PKCE verifier are single-use, expire after ten minutes and bind the initiating
-admin session and runtime installation. Auth begin/complete are conveyed to the
-private provider helper; tokens never return to the browser. Callback processing
-validates state, expiry, exact registered redirect and the current initiating
-admin session before token exchange. An accepted callback is consumed even on
-exchange failure; a new attempt is required. Changing authority, cancelling or
-replacing an attempt invalidates the prior one. Do not log callback URLs/query
-strings, authorization codes, verifier or tokens; no analytics/traces on callback
-pages. Disconnect stops Spotify audio, releases its slot, deletes local credentials
-and leaves queues paused. It does not claim remote account revocation unless that
-provider action actually succeeds.
-
-The callback mechanism MUST be supported by the OAuth client registration. A
-self-hosted HTTPS callback requires its exact URI registered for client_id. The
-probe's existing fixed loopback callback cannot automatically reach a remote
-Dilla server. The setup adapter must resolve this before claiming shipping
-onboarding; no assumed wildcard callback and no implicit new hosted relay. OAuth
-callback completion above is an authenticated private API step, not a public
-redirect endpoint. The UI must handle the browser return without placing secrets
-in persistent client storage. Missing Spotify authorization disables Spotify
-playback only; YouTube and independent bot features continue. Real account
-qualification remains a required release check, not a development prerequisite.
 
 ## Vectors
 

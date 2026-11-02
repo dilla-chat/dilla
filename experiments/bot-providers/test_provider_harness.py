@@ -66,7 +66,7 @@ class ProcessTests(unittest.TestCase):
         self.assertNotIn("/definitely/missing", str(caught.exception))
 
     def test_nonzero_version_command_is_not_available(self):
-        result = harness.probe_tool("librespot", "/bin/false")
+        result = harness.probe_tool("yt-dlp", "/bin/false")
         self.assertFalse(result.available)
         self.assertEqual(result.reason, "version command failed")
 
@@ -123,16 +123,16 @@ class ProcessTests(unittest.TestCase):
 
 
 class DoctorTests(unittest.TestCase):
-    def test_cli_checks_direct_pcm_provider_without_audio_server_dependency(self):
+    def test_cli_checks_youtube_prerequisites_without_audio_server_dependency(self):
         output = io.StringIO()
         with redirect_stdout(output):
             code = harness.main([
-                "doctor", "--librespot-bin", "/bin/true",
+                "doctor",
                 "--yt-dlp-bin", "/bin/true", "--ffmpeg-bin", "/bin/true",
                 "--ffprobe-bin", "/bin/true", "--js-runtime-bin", "/bin/true",
             ])
         self.assertEqual(code, 0)
-        self.assertIn("librespot: available", output.getvalue())
+        self.assertIn("yt-dlp: available", output.getvalue())
         self.assertNotIn("soloist", output.getvalue())
         self.assertNotIn("audio-tool", output.getvalue())
         self.assertIn("provider qualification: unverified", output.getvalue())
@@ -150,7 +150,7 @@ class DoctorTests(unittest.TestCase):
             fake = Path(temporary) / "tool"
             fake.write_text("#!/bin/sh\necho 'tool version 4.5.6 /home/private/token=secret'\n")
             fake.chmod(0o700)
-            result = harness.probe_tool("librespot", str(fake))
+            result = harness.probe_tool("yt-dlp", str(fake))
         self.assertTrue(result.available)
         self.assertEqual(result.version, "4.5.6")
 

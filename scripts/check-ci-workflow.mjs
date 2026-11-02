@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { gateExpression, JOB_GATES, jobRuns, reachableOutputs } from './ci-areas.mjs';
 import { localMirrorProblems } from './ci-local-plan.mjs';
+import { checkNativeStockFeasibility } from './check-native-stock-feasibility.mjs';
 
 /**
  * Every job the workflow must carry (interfaces §5). Ruling L added the two Go jobs: they landed with
@@ -10,9 +11,11 @@ import { localMirrorProblems } from './ci-local-plan.mjs';
  * to declare its `needs: rust-wasi` edge (see below).
  */
 export const REQUIRED_JOBS = [
-  // The change filter and the always-on docs gates (CHANGE_GATE_EXEMPT): a docs-only pull request runs only these two.
+  // The change filter and always-on docs gates; infrastructure remains active for docs-only changes too.
   'changes',
   'docs',
+  'ci-watchdog',
+  'ci-work-complete',
   // The aggregator: one check that is red when any job failed or was cancelled and green when the rest passed or were skipped by design.
   'ci-ok',
   'node',
@@ -20,7 +23,6 @@ export const REQUIRED_JOBS = [
   'rust-native',
   'rust-wasm-node',
   'rust-wasi',
-  'spotify-helper',
   'vectors',
   'browser-spike',
   'browser-media',
@@ -43,17 +45,18 @@ export const REQUIRED_JOBS = [
   'go-sqlc',
   'go-postgres',
   'go-release',
-  // Task 26 (web-1): build the client once and run its browser integration suites; web-2c splits the suites into one
-  // job per Playwright engine and suite (BROWSER_WEB_JOBS below, which checkWorkflow adds to this list).
+  // Build the client once for the Signal browser matrix, shared encrypted-core integration and native desktop acceptance.
   'web-build',
+  'linux-sandbox-foundation',
+  'desktop',
 ];
 
 /**
- * The two jobs that run for every change. Every other job needs `changes` and carries the `if:` that JOB_GATES
+ * Infrastructure jobs are exempt from area gates. Every real test/build job needs `changes` and carries the `if:` that JOB_GATES
  * (scripts/ci-areas.mjs) names for it, so a docs-only pull request skips them. A skipped job counts as passed for a
  * required check. `docs` is exempt so the cheap docs gates still run; `changes` is the gate itself.
  */
-export const CHANGE_GATE_EXEMPT = ['changes', 'docs', 'ci-ok'];
+export const CHANGE_GATE_EXEMPT = ['changes', 'docs', 'ci-watchdog', 'ci-work-complete', 'ci-ok'];
 
 /**
  * R22: no escape hatch anywhere in the workflow. Both `always()` spellings are equally valid GitHub
@@ -61,6 +64,7 @@ export const CHANGE_GATE_EXEMPT = ['changes', 'docs', 'ci-ok'];
  * failure, so the gate matches `always()` anywhere on an `if:` line rather than only the bare
  * `if: always()` form — `if: ${{ always() }}` is the more common of the two in practice.
  */
+const DESKTOP_BROWSER = { re: /run:.*playwright\s+install[^\n]*\b(?:firefox|webkit)\b/, what: 'unsupported browser engine in desktop-only CI' };
 const FORBIDDEN = [
   { re: /\|\|\s*true/, what: '|| true' },
   { re: /continue-on-error/, what: 'continue-on-error' },
@@ -79,16 +83,7 @@ const FORBIDDEN = [
 export const NON_RACE_STEP =
   "go test -timeout 5m ./cmd/dilla-loadrig ./cmd/dilla-mediabot ./internal/media ./internal/sfu -run 'TestALoopbackCellDecryptsEverything|TestTwoBotsDecryptEachOtherThroughTheSFU|TestGoPublisherToGoSubscriberDecryptsThroughTheSFU|TestTheSFUOfferCarriesOnlyTheDillaCodecs|TestPromotionAddsTheVideoSourcesAndDemotionRemovesThem'";
 
-/**
- * Browser suites run in parallel, one job per Playwright engine and suite. One job per engine ran core, web and voice
- * in sequence: Chromium took about 2 minutes of core, 46 of web (113 tests, one worker; 45.6 minutes in run 40968460827
- * on 2026-10-29, which hit the old 70-minute cap before voice) and 10 of voice, and Firefox's web suite reached 47
- * minutes on 2026-10-26. Jonas's ruling of 2026-10-30 splits them: a core job (20 minutes), a voice job (30) and the web
- * suite as three Playwright shards (`--shard=i/3`) of 35 minutes each, 40 for Firefox's, which is the slower engine.
- * Each shard is about a third of the web suite plus about 3 minutes of setup, so the caps keep margin. WebKit runs only
- * the signup and reload specs (ruling 22), too few to shard, and keeps its single 30-minute web job. `suite` is the
- * Playwright suite the job runs, `shard` its 1-based shard of WEB_SHARDS (null for an unsharded job).
- */
+/** Keep Wave B browser acceptance beside the desktop shared-core integration and native platform workflow. */
 export const WEB_SHARDS = 3;
 export const BROWSER_WEB_JOBS = {
   'chromium-core': { engine: 'chromium', suite: 'core', shard: null, timeout: 20 },
@@ -102,6 +97,7 @@ export const BROWSER_WEB_JOBS = {
   'firefox-web-2': { engine: 'firefox', suite: 'web', shard: 2, timeout: 40 },
   'firefox-web-3': { engine: 'firefox', suite: 'web', shard: 3, timeout: 40 },
   'webkit-web': { engine: 'webkit', suite: 'web', shard: null, timeout: 30 },
+  'core-integration': { engine: 'chromium', suite: 'core', shard: null, timeout: 20 },
 };
 export const MIN_BROWSER_WEB_TIMEOUT = 20;
 
@@ -126,6 +122,7 @@ function browserWebSteps(job, spec) {
     'path: packages/client-core/harness-dist',
     `npx playwright install --with-deps ${spec.engine}`,
     browserSuiteCommand(spec),
+    ...(job === 'chromium-voice' ? ['npm run test:voice-fixture -w @dilla/e2e'] : []),
     // The suite step's own env and (for Firefox) the audio server are checked as steps, not as substrings: checkSuiteSteps.
     TESTKIT_ENV,
     'if: failure()',
@@ -151,6 +148,7 @@ export const UI_SHOTS_3 = [
 
 /** One load-bearing command per job, so a silently gutted job is caught. */
 const REQUIRED_STEPS = {
+  desktop: ['uses: ./.github/workflows/desktop.yml'],
   // The areas are computed by scripts/ci-areas.mjs (tested in ci-areas.test.mjs), which fails safe to everything.
   // fetch-depth: 0 gives it the base commit to diff against.
   changes: [
@@ -163,7 +161,7 @@ const REQUIRED_STEPS = {
   // The cheap docs gates, for every change.
   // Their unit tests and the real checks against the real files; check:ci reads the Go tree for the race and Postgres rules.
   docs: ['npm run test:docs-check', 'npm run test:brief-check', 'npm run test:copy-check', 'npm run check:docs', 'npm run check:brief', 'npm run check:copy', 'npm run check:ci'],
-  // The only job that may say `if: always()` (checked below): it must run whatever the others did, and fail on a failure or a cancel.
+  // The final gate runs regardless of dependency results, alongside its no-op completion barrier.
   'ci-ok': ["contains(needs.*.result, 'failure')", "contains(needs.*.result, 'cancelled')"],
   // The testkit artifact hand-off: rust-native builds and uploads it, go downloads it.
   'rust-native': [
@@ -208,12 +206,6 @@ const REQUIRED_STEPS = {
     'path: target/wasm32-wasip1/release/dilla_core_wasi.wasm',
     'if-no-files-found: error',
   ],
-  'spotify-helper': [
-    'cargo fmt --manifest-path crates/dilla-spotify-helper/Cargo.toml -- --check',
-    'cargo clippy --manifest-path crates/dilla-spotify-helper/Cargo.toml --all-targets --locked -- -D warnings',
-    'cargo test --manifest-path crates/dilla-spotify-helper/Cargo.toml --locked',
-    'cargo build --manifest-path crates/dilla-spotify-helper/Cargo.toml --release --locked',
-  ],
   // The repository's pattern is that every scripts/check-*.mjs gate runs its own unit tests in the
   // `node` job (test:docs-check, test:brief-check, test:copy-check). This gate enforces that for
   // itself, so it cannot silently rot.
@@ -257,7 +249,7 @@ const REQUIRED_STEPS = {
     'wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/media/wasm',
     'go build -o target/dilla-mediabot ./cmd/dilla-mediabot',
     'node packages/media/scripts/extract-rnnoise-wasm.mjs',
-    'npx playwright install --with-deps chromium firefox',
+    'npx playwright install --with-deps chromium',
     'sh scripts/ci-audio-server.sh',
     'npm run test:e2e:media -w @dilla/e2e',
     'unsupported-sfu-codec.spec.ts',
@@ -625,6 +617,115 @@ export function jobSteps(body) {
   return steps;
 }
 
+// Loading the complete module on Linux includes the cgo GTK setup frontend.
+// Keep it in vet/lint/vulnerability/race coverage, including future full-tree
+// jobs: provide headers before loading rather than hiding the package with cgo.
+function checkWholeModuleGTK(jobs, problems) {
+  const loadsAll = line => /(?:\bgo\s+(?:vet|test|list|build)\b|\bgolangci-lint\s+run\b|\bgovulncheck(?:@\S+)?\b)[^\n]*\s\.\/\.\.\.(?=\s|$|[);|])/.test(line);
+  for (const [name, body] of Object.entries(jobs)) {
+    if (!/^ {4}runs-on: ubuntu-\S+$/m.test(body)) continue;
+    const steps = jobSteps(body), consumers = steps.map((step, index) => step.some(loadsAll) ? index : -1).filter(index => index >= 0);
+    if (!consumers.length) continue;
+    const gtk = steps.findIndex(step => step.length === 1 && step[0] === 'run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev');
+    if (gtk < 0 || consumers.some(index => index <= gtk)) problems.push(`ci.yml: job "${name}" must install GTK development headers before loading all Go packages`);
+    const header = body.split(/^ {4}steps:/m)[0];
+    if (/\bCGO_ENABLED:\s*['"]?0\b/.test(header) || consumers.some(index => steps[index].some(line => !/^(?:name|id):/.test(line) && /\bCGO_ENABLED(?:=|:\s*['"]?)0\b|^if:/.test(line)))) {
+      problems.push(`ci.yml: job "${name}" must retain cgo GTK frontend coverage in whole-module checks`);
+    }
+  }
+}
+
+// Narrow cancellation finalizers for the reviewed disposable fixture only.
+// Full job shape below also rejects reordered, duplicate or extra steps.
+const SANDBOX_MAINTENANCE_CONTROLS = [
+  "      - name: Portable sandbox maintenance controls",
+  "        if: matrix.lane == 'managed'",
+  "        run: node --test packages/desktop/test/linux-sandbox-maintenance.test.mjs",
+  "      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7",
+  "        if: matrix.lane == 'managed'",
+  "        with:",
+  "          go-version-file: go.mod",
+  "      - name: Root sandbox maintenance kernel proof",
+  "        id: sandbox_maintenance",
+  "        if: matrix.lane == 'managed'",
+  "        timeout-minutes: 8",
+  "        run: node --test packages/desktop/test/native/linux-sandbox-maintenance.test.mjs",
+  "        env:",
+  "          DILLA_LINUX_SANDBOX_FOUNDATION_LANE: managed",
+].join('\n');
+const SANDBOX_MAINTENANCE_CLEANUP = [
+  "      - name: Cleanup root sandbox maintenance fixture",
+  "        if: always() && matrix.lane == 'managed' && contains(fromJSON('[\"success\",\"failure\",\"cancelled\"]'), steps.sandbox_maintenance.outcome)",
+  "        timeout-minutes: 1",
+  "        run: node packages/desktop/test/native/linux-sandbox-maintenance.test.mjs --cleanup-only",
+  "        env:",
+  "          DILLA_LINUX_SANDBOX_FOUNDATION_LANE: managed",
+].join('\n');
+const SANDBOX_MAINTENANCE_ARTIFACT = [
+  "      - name: Preserve root sandbox maintenance proof",
+  "        if: always() && matrix.lane == 'managed' && contains(fromJSON('[\"success\",\"failure\",\"cancelled\"]'), steps.sandbox_maintenance.outcome)",
+  "        timeout-minutes: 1",
+  "        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7",
+  "        with:",
+  "          name: linux-sandbox-maintenance-managed",
+  "          path: packages/desktop/test-results/linux-sandbox-maintenance-managed.json",
+  "          if-no-files-found: error",
+  "          retention-days: 3",
+].join('\n');
+
+// Keep this feasibility proof independent of asset builds and long Windows tests.
+// Exact native lanes/commands prohibit extracted execution and host-policy overrides.
+function checkLinuxSandboxFoundationJob(jobs, problems) {
+  if (!jobs['linux-sandbox-foundation']) return;
+  const expected = [
+    "needs: [changes]",
+    "if: needs.changes.outputs.e2e != 'false'",
+    "name: linux-sandbox-foundation-${{ matrix.lane }}",
+    "runs-on: ${{ matrix.os }}",
+    "timeout-minutes: 15",
+    "strategy:",
+    "fail-fast: true",
+    "matrix:",
+    "include:",
+    "- os: ubuntu-22.04", "lane: namespace",
+    "- os: ubuntu-24.04", "lane: managed",
+    "steps:",
+    "- uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7",
+    "with:",
+    "persist-credentials: false",
+    "- uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7",
+    "with:",
+    "node-version-file: .nvmrc",
+    "cache: npm",
+    "- run: |",
+    "sudo apt-get update",
+    "case \"$(lsb_release -rs)\" in",
+    "22.04) sudo apt-get install -y xvfb dbus-x11 libnss3 libgbm1 libgtk-3-0 libasound2 libfuse2 ;;",
+    "24.04) sudo apt-get install -y xvfb dbus-x11 libnss3 libgbm1 libgtk-3-0t64 libasound2t64 libfuse2t64 ;;",
+    "*) exit 1 ;;",
+    "esac",
+    "- run: npm ci",
+    "- run: node node_modules/electron/install.js",
+    ...SANDBOX_MAINTENANCE_CONTROLS.split('\n').map(line => line.trim()),
+    ...SANDBOX_MAINTENANCE_CLEANUP.split('\n').map(line => line.trim()),
+    ...SANDBOX_MAINTENANCE_ARTIFACT.split('\n').map(line => line.trim()),
+    "- id: sandbox_foundation",
+    "run: xvfb-run -a dbus-run-session -- node --test packages/desktop/test/native/linux-sandbox-foundation.test.mjs",
+    "env:",
+    "DILLA_LINUX_SANDBOX_FOUNDATION_LANE: ${{ matrix.lane }}",
+    "- if: always() && contains(fromJSON('[\"success\",\"failure\",\"cancelled\"]'), steps.sandbox_foundation.outcome)",
+    "uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7",
+    "with:",
+    "name: linux-sandbox-foundation-${{ matrix.lane }}",
+    "path: packages/desktop/test-results/linux-sandbox-foundation-${{ matrix.lane }}.json",
+    "if-no-files-found: error",
+  ].join('\n');
+  const actual = jobs['linux-sandbox-foundation'].split('\n').map(line => line.trim()).filter(line => line && !line.startsWith('#')).join('\n');
+  if (actual !== expected) problems.push('ci.yml: Linux sandbox foundation must run both fixed native Ubuntu lanes with unchanged host policy, pinned provisioning and the unfiltered FUSE feasibility fixture');
+  const needs = /^ {4}needs: \[([^\]\n]*)\]$/m.exec(jobs.desktop ?? '')?.[1].split(',').map(name => name.trim()) ?? [];
+  if (!needs.includes('linux-sandbox-foundation')) problems.push('ci.yml: desktop must wait for Linux sandbox foundation');
+}
+
 /**
  * Each browser job is a `run:` step of its own for its one suite, carrying the testkit binary in its own env, and it runs
  * no other `test:e2e` suite (a job folded back into several suites would hide a split job's budget). In Firefox an
@@ -684,6 +785,7 @@ function checkActionReference(line, file, number, problems) {
   const match = /^\s*(?:-\s*)?uses:\s*(\S+)/.exec(line);
   if (!match) return;
   const action = match[1];
+  if (action === './.github/workflows/desktop.yml' && file === 'ci.yml') return;
   if (!action.startsWith('actions/')) {
     problems.push(`${file}:${number}: ${action} is not a GitHub-owned action; use a reviewed local command`);
   } else if (!/^actions\/[\w-]+(?:\/[\w-]+)?@[0-9a-f]{40}$/.test(action)) {
@@ -697,13 +799,27 @@ export function checkWorkflow(root) {
   const problems = [];
 
   let currentJob = null;
-  text.split('\n').forEach((line, i) => {
+  const workflowLines = text.split('\n');
+  workflowLines.forEach((line, i) => {
     checkActionReference(line, 'ci.yml', i + 1, problems);
     const jobKey = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line);
     if (jobKey !== null) currentJob = jobKey[1];
     for (const { re, what } of FORBIDDEN) {
-      // ci-ok's own job-level `if: always()` is the one allowed escape hatch: a step of it is still held to the rule.
-      if (what === 'if: always()' && currentJob === 'ci-ok' && line === '    if: always()') continue;
+      // Only the final gate and its no-op DAG barrier may run regardless of dependency results.
+      if (what === 'if: always()' && ['ci-ok', 'ci-work-complete'].includes(currentJob) && line === '    if: always()') continue;
+      // Preserve only the bounded sandbox observation file after a failed
+      // native test. This action cannot execute or bypass an acceptance step.
+      if (what === 'if: always()' && currentJob === 'linux-sandbox-foundation' && workflowLines.slice(i, i + 6).join('\n') === [
+        "      - if: always() && contains(fromJSON('[\"success\",\"failure\",\"cancelled\"]'), steps.sandbox_foundation.outcome)",
+        '        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7',
+        '        with:',
+        '          name: linux-sandbox-foundation-${{ matrix.lane }}',
+        '          path: packages/desktop/test-results/linux-sandbox-foundation-${{ matrix.lane }}.json',
+        '          if-no-files-found: error',
+      ].join('\n')) continue;
+      if (what === 'if: always()' && currentJob === 'linux-sandbox-foundation' &&
+          [SANDBOX_MAINTENANCE_CLEANUP, SANDBOX_MAINTENANCE_ARTIFACT].some(block =>
+            workflowLines.slice(i - 1, i - 1 + block.split('\n').length).join('\n') === block)) continue;
       if (re.test(line)) problems.push(`ci.yml:${i + 1}: forbidden "${what}" — CI is fail-closed (R22)`);
     }
     // v0.1.0-web3.1: only release.yml stamps a version; a ci build is 0.0.0-dev, so it is never mistaken for a release.
@@ -713,6 +829,9 @@ export function checkWorkflow(root) {
 
   if (!/^concurrency:$/m.test(text) || !/cancel-in-progress: true/.test(text)) {
     problems.push('ci.yml: missing the workflow-level concurrency block with cancel-in-progress: true');
+  }
+  if (!/^concurrency:\n {2}group: \$\{\{ github\.workflow \}\}-\$\{\{ github\.ref \}\}\n {2}cancel-in-progress: true$/m.test(text)) {
+    problems.push('ci.yml: concurrency group must be workflow/ref so newer commits cancel obsolete runs for the same pull request');
   }
   if (!/^permissions:\n {2}contents: read$/m.test(text)) {
     problems.push('ci.yml: the workflow-level token must be read-only (permissions: contents: read)');
@@ -726,6 +845,26 @@ export function checkWorkflow(root) {
   }
 
   const jobs = splitJobs(text);
+  if ('ci-watchdog' in jobs) {
+    const body = jobs['ci-watchdog'];
+    const required = [
+      "    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)",
+      '    timeout-minutes: 90',
+      '    permissions:\n      contents: read\n      actions: write',
+      '          persist-credentials: false',
+      '      - run: python3 scripts/ci-watchdog.py\n        env:\n          GH_TOKEN: ${{ github.token }}',
+    ];
+    const permissions = /^    permissions:\n((?:      [^\n]+\n)+)/m.exec(body)?.[1];
+    const steps = jobSteps(body);
+    const expectedSteps = [
+      ['uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7', 'with:', 'persist-credentials: false'],
+      ['run: python3 scripts/ci-watchdog.py', 'env:', 'GH_TOKEN: ${{ github.token }}'],
+    ];
+    if (required.some(value => !body.includes(value)) || /^    (?:needs|name):/m.test(body) || /secrets\./.test(body) ||
+        permissions !== '      contents: read\n      actions: write\n' || JSON.stringify(steps) !== JSON.stringify(expectedSteps)) {
+      problems.push('ci.yml: unsafe watchdog: require an independent, bounded, same-repository watcher with only its job token and credential-free checkout');
+    }
+  }
   for (const name of [...REQUIRED_JOBS, ...Object.keys(BROWSER_WEB_JOBS)]) {
     if (!(name in jobs)) {
       problems.push(`ci.yml: missing job "${name}"`);
@@ -735,14 +874,33 @@ export function checkWorkflow(root) {
       if (!jobs[name].includes(step)) problems.push(`ci.yml: job "${name}" is missing: ${step}`);
     }
   }
+  checkWholeModuleGTK(jobs, problems);
+  checkLinuxSandboxFoundationJob(jobs, problems);
 
-  // Every job but the two exempt ones needs `changes` and carries its gate, or it would run on a docs-only pull
+  // Every test/build job needs `changes` and carries its gate, or it would run on a docs-only pull
   // request (or, with a wrong condition, be skipped on code).
   for (const [name, body] of Object.entries(jobs)) {
     const needs = /^ {4}needs:\s*\[([^\]]*)\]\s*$/m.exec(body);
     const needList = needs === null ? [] : needs[1].split(',').map((s) => s.trim());
+    if (name === 'ci-work-complete') {
+      const real = Object.keys(jobs).filter(other => !['ci-ok', 'ci-watchdog', 'ci-work-complete'].includes(other));
+      if (needList.length !== real.length || real.some(other => !needList.includes(other)) ||
+          !body.split('\n').includes('    if: always()') ||
+          !body.includes('    timeout-minutes: 2') ||
+          jobSteps(body).length !== 1 || !body.includes('      - run: echo "All CI work reached a terminal result"')) {
+        problems.push('ci.yml: completion barrier must wait for every real job, exclude the watcher/final gate, and perform only its bounded no-op');
+      }
+      continue;
+    }
     if (name === 'ci-ok') {
+      const others = Object.keys(jobs).filter(other => other !== 'ci-ok');
+      if (needList.length !== others.length || new Set(needList).size !== others.length || needList.some(other => !others.includes(other))) {
+        problems.push('ci.yml: job "ci-ok" must list every other job exactly once in its needs:');
+      }
       if (!body.split('\n').includes('    if: always()')) problems.push('ci.yml: job "ci-ok" must carry the job-level if: always(), or it is skipped when a job fails');
+      if (!body.includes("      - if: needs.ci-watchdog.result == 'skipped' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)\n        run: exit 1")) {
+        problems.push('ci.yml: job "ci-ok" may accept a skipped watcher only for fork pull requests');
+      }
       for (const other of Object.keys(jobs)) {
         if (other !== 'ci-ok' && !needList.includes(other)) problems.push(`ci.yml: job "ci-ok" must list "${other}" in its needs:`);
       }
@@ -859,6 +1017,7 @@ export function checkWorkflow(root) {
   for (const [job, needs] of [
     ...Object.keys(BROWSER_WEB_JOBS).map((job) => [job, ['rust-native', 'rust-wasi', 'web-build']]),
     ['go-release', ['web-build']],
+    ['desktop', ['web-build']],
   ]) {
     if (!(job in jobs)) continue;
     for (const need of needs) {
@@ -889,8 +1048,8 @@ export function checkWorkflow(root) {
  * 23 pin, the size profile, the placeholder guard), and it uses only actions ci.yml uses at the same versions. It
  * builds and pushes no container image: the release is the native install's (Jonas, 2026-10-14).
  */
-export const RELEASE_JOBS = ['tag', 'web-build', 'rust-wasi', 'spotify-helper', 'bot-release', 'go-release', 'release'];
-export const RELEASE_ASSETS = ['dillad-linux-amd64', 'dillad-linux-arm64', 'dillabot-linux-amd64', 'dillabot-linux-arm64', 'dilla-bot-core-linux-amd64', 'dilla-bot-core-linux-arm64', 'dilla-spotify-helper-linux-amd64', 'dilla-spotify-helper-linux-arm64', 'dilla_core_wasi.wasm', 'install.sh', 'install-bot.sh'];
+export const RELEASE_JOBS = ['tag', 'web-build', 'rust-wasi', 'bot-release', 'go-release', 'release'];
+export const RELEASE_ASSETS = ['dillad-linux-amd64', 'dillad-linux-arm64', 'dillabot-linux-amd64', 'dillabot-linux-arm64', 'dilla-bot-core-linux-amd64', 'dilla-bot-core-linux-arm64', 'dilla_core_wasi.wasm', 'install.sh', 'install-bot.sh'];
 const RELEASE_STEPS = {
   tag: [
     'test "$GITHUB_REF" = "refs/tags/$tag"',
@@ -910,12 +1069,6 @@ const RELEASE_STEPS = {
     'name: dilla-web-dist',
   ],
   'rust-wasi': REQUIRED_STEPS['rust-wasi'],
-  'spotify-helper': [
-    ...REQUIRED_STEPS['spotify-helper'],
-    'name: dilla-spotify-helper-${{ matrix.arch }}',
-    'path: dist/dilla-spotify-helper-linux-${{ matrix.arch }}',
-    'if-no-files-found: error',
-  ],
   'bot-release': [
     'name: dilla-core-wasi',
     'path: internal/mlswasi/testdata',
@@ -940,7 +1093,6 @@ const RELEASE_STEPS = {
   release: [
     'cp deploy/install.sh release/install.sh',
     'cp deploy/install-bot.sh release/install-bot.sh',
-    'pattern: dilla-spotify-helper-*',
     'pattern: dilla-bot-*',
     'merge-multiple: true',
     // install.sh downloads from the tag stamped into it (review I1): no "latest", which a prerelease never is.
@@ -957,7 +1109,7 @@ const RELEASE_STEPS = {
   ],
 };
 const RELEASE_VERSION_ENV = 'VERSION: ${{ needs.tag.outputs.version }}';
-const RELEASE_NEEDS = { 'web-build': ['tag'], 'rust-wasi': ['tag'], 'spotify-helper': ['tag'], 'bot-release': ['tag', 'rust-wasi'], 'go-release': ['tag', 'web-build'], release: ['tag', 'go-release', 'rust-wasi', 'spotify-helper', 'bot-release'] };
+const RELEASE_NEEDS = { 'web-build': ['tag'], 'rust-wasi': ['tag'], 'bot-release': ['tag', 'rust-wasi'], 'go-release': ['tag', 'web-build'], release: ['tag', 'go-release', 'rust-wasi', 'bot-release'] };
 
 export function checkReleaseWorkflow(root) {
   const file = 'release.yml';
@@ -997,11 +1149,6 @@ export function checkReleaseWorkflow(root) {
   }
 
   const jobs = splitJobs(text);
-  if (!/runner: ubuntu-24\.04-arm/.test(jobs['spotify-helper'] ?? '')
-    || !/arch: arm64/.test(jobs['spotify-helper'] ?? '')
-    || !/arch: amd64/.test(jobs['spotify-helper'] ?? '')) {
-    problems.push(`${file}: job "spotify-helper" must build native amd64 and arm64 assets`);
-  }
   for (const name of RELEASE_JOBS) {
     if (!(name in jobs)) {
       problems.push(`${file}: missing job "${name}"`);
@@ -1068,9 +1215,186 @@ export function checkLocalMirror(root) {
   return localMirrorProblems(readFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'utf8'));
 }
 
+export function checkDesktopWorkflow(root) {
+  const file = 'desktop.yml';
+  let text;
+  try { text = readFileSync(join(root, '.github', 'workflows', file), 'utf8'); }
+  catch (error) { if (error.code === 'ENOENT') return ['desktop.yml: missing desktop acceptance workflow']; throw error; }
+  const problems = [];
+  problems.push(...checkNativeStockFeasibility(text, { workflow: true }).map(problem => `${file}: native stock feasibility: ${problem}`));
+  if (/fail-fast:\s*false|--max-failures=(?!1\b)\d+/.test(text)) {
+    problems.push(`${file}: desktop validation must stop on the first failure`);
+  }
+  text.split('\n').forEach((line, i) => {
+    checkActionReference(line, file, i + 1, problems);
+    for (const { re, what } of [...FORBIDDEN, DESKTOP_BROWSER]) if (re.test(line)) problems.push(`${file}:${i + 1}: forbidden ${what}`);
+  });
+  for (const required of [
+    'workflow_call:', 'contents: read', 'fail-fast: true',
+    'os: ubuntu-24.04, platform: linux, arch: x64', 'os: windows-latest, platform: win, arch: x64',
+    'os: macos-15-intel, platform: mac, arch: x64', 'os: macos-15, platform: mac, arch: arm64',
+    'name: dilla-web-dist', 'name: dilla-desktop-core', 'node node_modules/electron/install.js',
+    'npm test -w @dilla/desktop', 'npm run typecheck -w @dilla/desktop',
+    'npm run build -w @dilla/desktop -- --existing-client', 'npm run build:validation -w @dilla/desktop',
+    'xvfb-run -a dbus-run-session -- bash packages/desktop/scripts/with-window-manager.sh npm run test:electron -w @dilla/desktop',
+    'run: npm run test:electron -w @dilla/desktop', 'npm run pack -w @dilla/desktop',
+    'node packages/desktop/scripts/check-fuses.mjs', 'node --test packages/desktop/test/native/mac-upgrade.test.mjs',
+    'node --test packages/desktop/test/native/installed-upgrade.test.mjs', 'libfuse2t64', 'name: desktop-installed-upgrade-',
+    'prepare-windows-audio.ps1', '--grep-invert "application-audio.spec.ts"', 'name: Application audio encryption and exclusion', 'playwright test --config playwright.config.ts application-audio.spec.ts',
+    'npm run dist -w @dilla/desktop', 'name: desktop-installers-${{ matrix.platform }}-${{ matrix.arch }}',
+  ]) if (!text.includes(required)) problems.push(`${file}: missing ${required}`);
+  if (/--no-sandbox|contents: write|--publish always/.test(text)) problems.push(`${file}: desktop validation must keep sandboxing and cannot publish`);
+  const body = job => text.split(`\n  ${job}:\n`)[1]?.split(/\n  [a-z][a-z0-9-]*:\n/)[0] ?? '';
+  const nativeSteps = jobSteps(body('native'));
+  // Installed AppImages compile the GTK launcher and provision their exact
+  // compiled initial capsule inside the isolated test, not a copied bare helper.
+  for (const job of ['native','voice','client']) {
+    const steps=jobSteps(body(job));
+    const headers=steps.findIndex(step=>step.length===2 && step[0]==="if: runner.os == 'Linux'"
+      && /^run: sudo apt-get update && sudo apt-get install -y [a-z0-9.+ -]+$/.test(step[1])
+      && step[1].split(' ').includes('libgtk-3-dev') && step[1].split(' ').includes('pkg-config'));
+    const build=steps.findIndex(step=>step.includes('run: npm run build -w @dilla/desktop -- --existing-client'));
+    if(headers<0 || build<0 || headers>=build)problems.push(`${file}: installed sandbox GTK compiler prerequisites must precede ${job} builds`);
+  }
+  const nativeGo=nativeSteps.findIndex(step=>step.join('\n')===`uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+with:
+go-version-file: go.mod
+cache-dependency-path: go.sum`);
+  const controls=nativeSteps.findIndex(step=>step.join('\n')===`name: Linux installed sandbox prerequisite controls
+if: runner.os == 'Linux'
+run: |
+CGO_ENABLED=0 go test ./packages/desktop/test/fixtures/linux-installed-sandbox-bootstrap
+node --test packages/desktop/test/linux-installed-sandbox-bootstrap.test.mjs packages/desktop/test/linux-sandbox-package-runner.test.mjs packages/desktop/test/linux-installed-runtime-proof.test.mjs`);
+  const installedLinux=nativeSteps.findIndex(step=>step.includes('name: Installed upgrade acceptance') && step.includes("if: runner.os == 'Linux'"));
+  const nativeUnit=nativeSteps.findIndex(step=>step.some(line=>line.includes('run: npm test -w @dilla/desktop')));
+  if(nativeGo<0 || nativeUnit<=nativeGo || controls<=nativeGo || controls>=installedLinux)problems.push(`${file}: installed sandbox controls require pinned native Go and unfiltered controls before installed acceptance`);
+  for(const [job,name,guard,artifact]of [
+    ['native','Initial installed sandbox prerequisite proof',"runner.os == 'Linux'",'desktop-initial-sandbox-native-linux-x64'],
+    ['client','Initial installed account sandbox prerequisite proof',"runner.os == 'Linux' && steps.installed-account.outputs.present == 'true'",'desktop-initial-sandbox-account-linux-x64'],
+  ]){
+    const expected=`name: ${name}\nif: ${guard}\nuses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7\nwith:\nname: ${artifact}\npath: \${{ runner.temp }}/dilla-installed-sandbox-initial.json\nif-no-files-found: error`;
+    if(jobSteps(body(job)).filter(step=>step.join('\n')===expected).length!==1)problems.push(`${file}: installed sandbox requires exact job-selected initial prerequisite proof upload for ${job}`);
+  }
+  const desktopBuild = nativeSteps.findIndex(step=>step.includes('id: desktop-build') && step.includes('run: npm run build -w @dilla/desktop -- --existing-client'));
+  const failureUpload = `if: failure() && steps.desktop-build.outcome == 'success'
+uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+with:
+name: desktop-failure-\${{ matrix.platform }}-\${{ matrix.arch }}
+path: |
+packages/desktop/test-results
+\${{ runner.temp }}/dilla-windows-audio/*.log
+\${{ runner.temp }}/dilla-windows-audio/*.out
+\${{ runner.temp }}/dilla-windows-audio/*.err
+if-no-files-found: error`;
+  const failureUploads = nativeSteps.map((step,index)=>step.join('\n')===failureUpload ? index : -1).filter(index=>index>=0);
+  if(desktopBuild<0 || failureUploads.length!==1 || failureUploads[0]<=desktopBuild)problems.push(`${file}: native failure diagnostics require the exact post-build upload`);
+  const unitSteps = nativeSteps.filter(step => step.some(line => line.includes('run: npm test -w @dilla/desktop')));
+  if (unitSteps.length !== 1 || unitSteps[0].join('\n') !== 'run: npm test -w @dilla/desktop') {
+    problems.push(`${file}: desktop unit tests must run on every native platform`);
+  }
+  const proof = nativeSteps.findIndex(step => step.some(line => line.includes('name: desktop-installed-upgrade-')));
+  const sandboxGateName = 'name: Linux AppImage sandbox native acceptance';
+  const sandboxGates = nativeSteps.map((step,index)=>step.includes(sandboxGateName)?index:-1).filter(index=>index>=0);
+  const sandboxGate = `name: Linux AppImage sandbox native acceptance
+if: runner.os == 'Linux'
+run: node packages/desktop/test/support/linux-installed-runtime-proof.mjs packages/desktop/test-results/linux-installed-upgrade.json`;
+  if(sandboxGates.length!==1 || nativeSteps[sandboxGates[0]]?.join('\n')!==sandboxGate
+    || sandboxGates[0]<=installedLinux || sandboxGates[0]>=proof)
+    problems.push(`${file}: installed AppImage sandbox requires exact non-bypassable kernel proof verification after Linux installed upgrade and before upload`);
+  const buildProvenance = nativeSteps.findIndex(step => step.some(line => line.includes('name: Record native desktop build provenance')));
+  const finalDistribution = nativeSteps.findLastIndex(step => step.some(line => line.includes('run: npm run dist -w @dilla/desktop')));
+  const finalFuses = nativeSteps.findLastIndex(step => step.some(line => line.includes('run: node packages/desktop/scripts/check-fuses.mjs')));
+  const installerUpload = nativeSteps.findIndex(step => step.some(line => line.includes('name: desktop-installers-')));
+  if (buildProvenance < 0 || finalDistribution < 0 || finalFuses <= finalDistribution || buildProvenance <= finalFuses || installerUpload <= buildProvenance
+    || nativeSteps[buildProvenance]?.some(line => /\bif:/.test(line))
+    || !nativeSteps[buildProvenance]?.some(line => line.includes('run: node packages/desktop/scripts/build-provenance.mjs packages/desktop/out ${{ matrix.platform }}-${{ matrix.arch }}'))
+    || !nativeSteps[installerUpload]?.some(line => line.trim() === 'packages/desktop/out/build-provenance-*.json')) {
+    problems.push(`${file}: build provenance must authenticate final fused installers and accompany their accepted bytes`);
+  }
+  const mutation=nativeSteps.findIndex(step=>step.join('\n')===`name: Linux AppImage final package inspection mutations
+if: runner.os == 'Linux'
+run: node packages/desktop/scripts/test-linux-sandbox-package.mjs packages/desktop/out`);
+  if(mutation<=finalDistribution || mutation>=buildProvenance)problems.push(`${file}: installed sandbox final-image mutation command must run unfiltered after distribution and before provenance`);
+  for(const glob of ['packages/desktop/out/*.sandbox','packages/desktop/out/*.sandbox.json'])if(!nativeSteps[installerUpload]?.some(line=>line.trim()===glob))problems.push(`${file}: installed sandbox accepted component sidecars must accompany final AppImage`);
+  const lastPlaywright = nativeSteps.findLastIndex(step => step.some(line => /npm run test:electron|playwright test/.test(line)));
+  const installed = nativeSteps.map((step, index) => step.some(line => /node --test packages\/desktop\/test\/native\/(?:mac-upgrade|installed-upgrade)\.test\.mjs/.test(line)) ? index : -1).filter(index => index >= 0);
+  if (proof < 0 || installed.some(index => index <= lastPlaywright || index >= proof)) problems.push(`${file}: installed acceptance proof must follow Playwright cleanup and precede upload`);
+  for (const os of ['Linux', 'Windows']) {
+    if (!nativeSteps.some(step => step.some(line => line.includes('name: Installed upgrade acceptance'))
+      && step.some(line => line.includes(`if: runner.os == '${os}'`))
+      && step.some(line => line.includes('node --test packages/desktop/test/native/installed-upgrade.test.mjs')))) {
+      problems.push(`${file}: ${os} requires actual installed upgrade acceptance`);
+    }
+  }
+  if (/APPIMAGE_EXTRACT_AND_RUN|--appimage-extract/.test(body('native'))) problems.push(`${file}: Linux installed acceptance must exercise normal FUSE launch`);
+  const tooling = body('test-tools');
+  for (const required of [
+    'os: ubuntu-24.04, platform: linux, arch: x64', 'os: windows-latest, platform: win, arch: x64',
+    'os: macos-15-intel, platform: mac, arch: x64', 'os: macos-15, platform: mac, arch: arm64',
+    'node scripts/e2e-test-tools.mjs build artifacts/e2e-test-tools',
+    'name: dilla-e2e-tools-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.sha }}', 'path: artifacts/e2e-test-tools', 'overwrite: true',
+  ]) if (!tooling.includes(required)) problems.push(`${file}: native tooling producer missing ${required}`);
+  if (/^    needs:|shard:/m.test(tooling)) problems.push(`${file}: tooling must build once per native target without waiting for test jobs`);
+  const buildStep = jobSteps(tooling).find(step => step.some(line => line.includes('node scripts/e2e-test-tools.mjs build ')));
+  if (buildStep?.some(line => /\bif:/.test(line))) problems.push(`${file}: tooling builds cannot be bypassed by a cache hit`);
+  if (/^    needs:/m.test(body('native'))) problems.push(`${file}: native acceptance must stay independent of tooling builds`);
+  for (const job of ['client', 'voice']) {
+    const consumer = body(job);
+    for (const required of [
+      'needs: test-tools', 'DILLA_E2E_TOOLING_DIR: ${{ github.workspace }}/artifacts/e2e-test-tools',
+      'name: dilla-e2e-tools-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.sha }}',
+      'path: artifacts/e2e-test-tools', 'node scripts/e2e-test-tools.mjs verify artifacts/e2e-test-tools',
+      '--max-failures=1',
+    ]) if (!consumer.includes(required)) problems.push(`${file}: ${job} tooling consumer missing ${required}`);
+    if (!consumer.includes("go test ./internal/ops -run 'Lock|BackupAndServe|ServeAdmits'")) {
+      problems.push(`${file}: ${job} must retain native test-host directory locks coverage`);
+    }
+    if (/cargo build|^\s+(?:run-id|repository|github-token):/m.test(consumer)) {
+      problems.push(`${file}: ${job} tooling must reuse the verified artifact from this run without rebuilding`);
+    }
+    const steps = jobSteps(consumer);
+    const verify = steps.findIndex(step => step.some(line => line.includes('node scripts/e2e-test-tools.mjs verify ')));
+    const acceptance = steps.findIndex(step => step.some(line => /playwright test/.test(line)));
+    if (verify < 0 || acceptance < 0 || verify >= acceptance || steps[verify]?.some(line => /\bif:/.test(line))) {
+      problems.push(`${file}: ${job} tooling verification must run unconditionally before acceptance`);
+    }
+  }
+  const client = body('client');
+  for (const required of ['e2e/web/support/installed-keyring.sh', 'libasound2t64 gnome-keyring libfuse2t64',
+    'CHROME_DEVEL_SANDBOX: ${{ github.workspace }}/node_modules/electron/dist/chrome-sandbox',
+    'node packages/desktop/scripts/installed-account-proof.mjs e2e/desktop-client-results']) {
+    if (!client.includes(required)) problems.push(`${file}: installed account acceptance missing ${required}`);
+  }
+  if (/APPIMAGE_EXTRACT_AND_RUN|--appimage-extract|--password-store=basic/.test(client)) problems.push(`${file}: installed account acceptance must keep normal FUSE and OS credential protection`);
+  const accountUpload = jobSteps(client).find(step => step.some(line => line.includes('name: Installed account upgrade proof')));
+  if (!accountUpload || !accountUpload.some(line => line.includes("if: steps.installed-account.outputs.present == 'true'"))
+    || !accountUpload.some(line => line.includes('name: desktop-installed-account-${{ matrix.platform }}-${{ matrix.arch }}'))
+    || !accountUpload.some(line => line.includes('path: packages/desktop/test-report/installed-account-${{ matrix.platform }}-${{ matrix.arch }}.json'))) {
+    problems.push(`${file}: installed account proof must upload only from its owning shard`);
+  }
+  for (const required of [
+    'shard: [1, 2, 3]', 'os: [ubuntu-24.04, windows-latest, macos-15-intel, macos-15]',
+    'os: ubuntu-24.04, platform: linux, arch: x64', 'os: windows-latest, platform: win, arch: x64',
+    'os: macos-15-intel, platform: mac, arch: x64', 'os: macos-15, platform: mac, arch: arm64',
+    'name: dilla-core-wasi', 'node packages/desktop/scripts/prepare-browser-sandbox.mjs',
+    'playwright test --config playwright.desktop.config.ts --project=electron-client --shard=${{ matrix.shard }}/3',
+  ]) if (!client.includes(required)) problems.push(`${file}: shared Electron client coverage missing ${required}`);
+  const voice = body('voice');
+  for (const required of ['desktop-voice-${{ matrix.platform }}-${{ matrix.arch }}',
+    'os: [ubuntu-24.04, windows-latest, macos-15-intel, macos-15]',
+    'playwright.desktop-voice.config.ts --project=electron-voice --workers=1', 'DILLA_E2E_NOTIFICATIONS', 'dunst',
+    'name: dilla-core-wasi', 'node packages/desktop/scripts/prepare-browser-sandbox.mjs',
+    'name: Desktop performance comparison', 'node packages/desktop/scripts/run-performance.mjs', 'name: desktop-performance-']) {
+    if (!voice.includes(required)) problems.push(`${file}: Electron voice coverage missing ${required}`);
+  }
+  if (/--shard|shard:/.test(voice)) problems.push(`${file}: the desktop voice suite must preserve its single frozen-clock worker`);
+  assertEveryUploadFailsOnNoFiles(text, problems, file);
+  return problems;
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
   const root = process.argv[2] ?? process.cwd();
-  const problems = [...checkWorkflow(root), ...checkReleaseWorkflow(root), ...checkLocalMirror(root)];
+  const problems = [...checkWorkflow(root), ...checkReleaseWorkflow(root), ...checkLocalMirror(root), ...checkDesktopWorkflow(root)];
   for (const p of problems) console.error(p);
   process.exit(problems.length === 0 ? 0 : 1);
 }

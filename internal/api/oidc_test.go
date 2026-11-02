@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -397,5 +399,76 @@ func TestTheOIDCRoutesRefuseWhenNoIdentityProviderIsConfigured(t *testing.T) {
 		if res.Code != http.StatusNotImplemented {
 			t.Fatalf("%s answered %d, want 501", path, res.Code)
 		}
+	}
+}
+
+func TestDesktopOIDCCallbackCompletesOnlyThePKCEInitiator(t *testing.T) {
+	h, d, idp := newOIDCAPI(t, false)
+	user, _, _ := seedAPIDevice(t, d)
+	if err := d.Repo.PutOIDCIdentity(context.Background(), idp.URL, "sub-123", user.ID, d.Clock.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	verifier := strings.Repeat("a", 43)
+	sum := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(sum[:])
+	post := func(path, body string, cookie *http.Cookie) *httptest.ResponseRecorder {
+		req := httptest.NewRequestWithContext(context.Background(), "POST", path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Origin", "https://dilla.test")
+		if cookie != nil {
+			req.AddCookie(cookie)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		return w
+	}
+	created := post("/desktop-auth/request", `{"kind":"oidc","options":"","challenge":"`+challenge+`"}`, nil)
+	var request struct {
+		ID string `json:"id"`
+	}
+	if created.Code != 201 || json.Unmarshal(created.Body.Bytes(), &request) != nil {
+		t.Fatal(created.Code, created.Body)
+	}
+	page := getWithCookies(h, "/desktop-auth/"+request.ID+"/")
+	cookie := setCookie(t, page, "__Secure-dilla-desktop")
+	launch := post("/desktop-auth/"+request.ID+"/oidc", `{}`, cookie)
+	var ticket struct {
+		Ticket string `json:"ticket"`
+	}
+	if launch.Code != 200 || json.Unmarshal(launch.Body.Bytes(), &ticket) != nil {
+		t.Fatal(launch.Code, launch.Body)
+	}
+	startURL := "/v1/auth/oidc/start?desktop_request=" + request.ID + "&desktop_ticket=" + ticket.Ticket
+	start := getWithCookies(h, startURL)
+	if start.Code != 302 {
+		t.Fatal(start.Code, start.Body)
+	}
+	loc, _ := url.Parse(start.Header().Get("Location"))
+	q := loc.Query()
+	idp.setNonce(q.Get("nonce"))
+	if replay := getWithCookies(h, startURL); replay.Code != 401 {
+		t.Fatal("browser ticket replay", replay.Code)
+	}
+	callback := getWithCookies(h, "/v1/auth/oidc/callback?code=code-good&state="+q.Get("state"), setCookie(t, start, "__Secure-dilla-desktop-oidc"))
+	if callback.Code != 302 || callback.Header().Get("Location") != "../../../desktop-auth/"+request.ID+"/?done=1" {
+		t.Fatal(callback.Code, callback.Header())
+	}
+	if strings.Contains(callback.Header().Get("Location"), "assertion") {
+		t.Fatal("assertion in browser navigation")
+	}
+	result := post("/desktop-auth/"+request.ID+"/consume", `{"verifier":"`+verifier+`"}`, nil)
+	var completed struct {
+		Assertion string `json:"assertion"`
+		Needs     uint8  `json:"needs"`
+	}
+	if result.Code != 200 || json.Unmarshal(result.Body.Bytes(), &completed) != nil {
+		t.Fatal(result.Code, result.Body)
+	}
+	got, owes, ok := d.Assertions.Spend(completed.Assertion)
+	if !ok || got != user.ID || owes || completed.Needs != 0 {
+		t.Fatal(got, owes, ok, completed)
+	}
+	if replay := post("/desktop-auth/"+request.ID+"/consume", `{"verifier":"`+verifier+`"}`, nil); replay.Code != 404 {
+		t.Fatal("completion replay", replay.Code)
 	}
 }

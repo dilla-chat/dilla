@@ -35,7 +35,7 @@ describe('rings (flow 06, R1–R8)', () => {
     expect(app.sounds.ringing).toBe(true);
     expect(app.notifications).toHaveLength(1);
     expect(app.notifications[0].title).toBe('bob is calling');
-    expect(app.notifications[0].options).toMatchObject({ body: 'Open dilla to answer.', tag: `dilla-ring-${DM}` });
+    expect(app.notifications[0].options).toMatchObject({ body: 'Open dilla to answer.', tag: `dilla-ring-${DM}-${ring().ringTs}` });
     expect(document.querySelector('[data-doc-state="call-ring"]')).not.toBeNull();
     // The same ring republished raises nothing new.
     app.client.publish('rings', [ring({ busy: false, quiet: false })]);

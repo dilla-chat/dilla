@@ -96,7 +96,6 @@ export const stage = {
   'music.meta': '{source} · requested by {name} · {room}',
   'music.metaNoRequester': '{source} · {room}',
   'music.source.youtube': 'YouTube',
-  'music.source.spotify': 'Spotify',
   'music.blocked.join': 'Join {room} to control playback',
   'music.blocked.dj': 'A DJ, owner, or administrator must control music in this voice channel.',
 };

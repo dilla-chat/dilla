@@ -1,3 +1,4 @@
+import { desktopBridge } from './desktop.ts';
 import { pushHistoryState, replaceHistoryState, subscribeCommittedTraversal } from './router.ts';
 import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react';
 
@@ -9,12 +10,12 @@ import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react';
 export const PHONE_QUERY = '(max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem)';
 
 function subscribe(onChange: () => void): () => void {
-  if (typeof window.matchMedia !== 'function') return () => undefined;
+  if (desktopBridge() || typeof window.matchMedia !== 'function') return () => undefined;
   const query = window.matchMedia(PHONE_QUERY);
   query.addEventListener('change', onChange);
   return () => query.removeEventListener('change', onChange);
 }
-const snapshot = (): boolean => typeof window.matchMedia === 'function' && window.matchMedia(PHONE_QUERY).matches;
+const snapshot = (): boolean => !desktopBridge() && typeof window.matchMedia === 'function' && window.matchMedia(PHONE_QUERY).matches;
 
 /** The layout right now, read from the window (not from a render): for handlers that must act on the live viewport. */
 export const phoneNow = snapshot;
