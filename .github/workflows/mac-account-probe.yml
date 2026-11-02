@@ -271,12 +271,22 @@ jobs:
           path: packages/client-core/harness-dist/
           if-no-files-found: error
 
-  desktop:
+  desktop-arm:
     needs: [web-build, rust-wasi]
     uses: ./.github/workflows/desktop.yml
+    with:
+      os: macos-15
+      arch: arm64
+
+  desktop-intel:
+    needs: [web-build, rust-wasi]
+    uses: ./.github/workflows/desktop.yml
+    with:
+      os: macos-15-intel
+      arch: x64
 
   ci-work-complete:
-    needs: [web-build, rust-wasi, desktop]
+    needs: [web-build, rust-wasi, desktop-arm, desktop-intel]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -284,7 +294,7 @@ jobs:
       - run: echo "All macOS probe work reached a terminal result"
 
   ci-ok:
-    needs: [ci-watchdog, ci-work-complete, web-build, rust-wasi, desktop]
+    needs: [ci-watchdog, ci-work-complete, web-build, rust-wasi, desktop-arm, desktop-intel]
     if: always()
     runs-on: ubuntu-latest
     steps:

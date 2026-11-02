@@ -2,19 +2,20 @@
 name: focused macOS installed-account diagnostics
 on:
   workflow_call:
+    inputs:
+      os:
+        required: true
+        type: string
+      arch:
+        required: true
+        type: string
 permissions:
   contents: read
 jobs:
   test-tools:
-    name: desktop-test-tools-${{ matrix.platform }}-${{ matrix.arch }}
-    runs-on: ${{ matrix.os }}
+    name: desktop-test-tools-mac-${{ inputs.arch }}
+    runs-on: ${{ inputs.os }}
     timeout-minutes: 30
-    strategy:
-      fail-fast: true
-      matrix:
-        include:
-          - { os: macos-15-intel, platform: mac, arch: x64 }
-          - { os: macos-15, platform: mac, arch: arm64 }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
@@ -38,25 +39,19 @@ jobs:
       - run: node scripts/e2e-test-tools.mjs build artifacts/e2e-test-tools
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: dilla-e2e-tools-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.sha }}
+          name: dilla-e2e-tools-mac-${{ inputs.arch }}-${{ github.sha }}
           path: artifacts/e2e-test-tools
           if-no-files-found: error
           # A rerun-all replaces this run's earlier producer artifact for the same target and SHA.
           overwrite: true
 
   client:
-    name: desktop-account-${{ matrix.platform }}-${{ matrix.arch }}
+    name: desktop-account-mac-${{ inputs.arch }}
     needs: test-tools
     env:
       DILLA_E2E_TOOLING_DIR: ${{ github.workspace }}/artifacts/e2e-test-tools
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ inputs.os }}
     timeout-minutes: 60
-    strategy:
-      fail-fast: true
-      matrix:
-        include:
-          - { os: macos-15-intel, platform: mac, arch: x64 }
-          - { os: macos-15, platform: mac, arch: arm64 }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
@@ -66,7 +61,7 @@ jobs:
       # Default download scope is this workflow run; verification also binds checkout SHA and native OS/arch.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          name: dilla-e2e-tools-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.sha }}
+          name: dilla-e2e-tools-mac-${{ inputs.arch }}-${{ github.sha }}
           path: artifacts/e2e-test-tools
       - run: node scripts/e2e-test-tools.mjs verify artifacts/e2e-test-tools
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
@@ -95,18 +90,18 @@ jobs:
         run: npm exec -w @dilla/e2e -- playwright test --config playwright.desktop.config.ts --project=electron-client web/installed-upgrade-account.spec.ts --workers=1 --max-failures=1
       - name: Collect installed account upgrade proof
         id: installed-account
-        run: node packages/desktop/scripts/installed-account-proof.mjs e2e/desktop-client-results ${{ matrix.platform }}-${{ matrix.arch }} packages/desktop/test-report
+        run: node packages/desktop/scripts/installed-account-proof.mjs e2e/desktop-client-results mac-${{ inputs.arch }} packages/desktop/test-report
       - name: Installed account upgrade proof
         if: steps.installed-account.outputs.present == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: desktop-installed-account-${{ matrix.platform }}-${{ matrix.arch }}
-          path: packages/desktop/test-report/installed-account-${{ matrix.platform }}-${{ matrix.arch }}.json
+          name: desktop-installed-account-mac-${{ inputs.arch }}
+          path: packages/desktop/test-report/installed-account-mac-${{ inputs.arch }}.json
           if-no-files-found: error
       - if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: desktop-account-diagnostics-${{ matrix.platform }}-${{ matrix.arch }}
+          name: desktop-account-diagnostics-mac-${{ inputs.arch }}
           path: |
             e2e/desktop-client-results/**/signal-lifecycle.json
             e2e/desktop-client-results/**/installed-startup-diagnostics.json
@@ -114,7 +109,7 @@ jobs:
       - if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: desktop-account-failure-${{ matrix.platform }}-${{ matrix.arch }}
+          name: desktop-account-failure-mac-${{ inputs.arch }}
           path: |
             e2e/desktop-client-results
             e2e/desktop-client-report
