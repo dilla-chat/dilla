@@ -1,0 +1,295 @@
+# Temporary focused installed-account diagnostics. Not acceptance or full-platform release proof.
+name: macOS installed-account diagnostic probe
+on:
+  push:
+    branches: [ci/desktop-macos-account]
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  CARGO_TERM_COLOR: always
+jobs:
+  ci-watchdog:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/ci/desktop-macos-account'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      # Exact trusted watchdog implementation, with only this branch identity
+      # and the matching work-complete barrier adapted for the probe DAG.
+      - run: |
+          python3 - <<'PYWATCH'
+          #!/usr/bin/env python3
+          """Cancel only this trusted CI run at its first failure, using its job-local token."""
+          import json
+          import os
+          import re
+          import sys
+          import time
+          from urllib.error import HTTPError, URLError
+          from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+
+          class NoRedirect(HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  # Never forward the bearer token to an API-supplied redirect destination.
+                  raise HTTPError(req.full_url, code, "redirect refused", headers, fp)
+
+
+          class GitHubRun:
+              def __init__(self, repository, run_id, token, *, opener=None, sleep=time.sleep):
+                  if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+                      raise ValueError("invalid GITHUB_REPOSITORY")
+                  if not re.fullmatch(r"[1-9][0-9]*", run_id):
+                      raise ValueError("invalid GITHUB_RUN_ID")
+                  if not token:
+                      raise ValueError("missing job token")
+                  self.url = f"https://api.github.com/repos/{repository}/actions/runs/{run_id}"
+                  self.token = token
+                  self.open = opener or build_opener(NoRedirect()).open
+                  self.sleep = sleep
+
+              def request(self, suffix, method="GET"):
+                  for attempt in range(3):
+                      request = Request(self.url + suffix, method=method, headers={
+                          "Accept": "application/vnd.github+json",
+                          "Authorization": f"Bearer {self.token}",
+                          "X-GitHub-Api-Version": "2026-03-10",
+                      })
+                      try:
+                          with self.open(request, timeout=8) as response:
+                              body = response.read()
+                              return json.loads(body) if body else {}
+                      except HTTPError as error:
+                          code = error.code
+                          error.close()
+                          if method == "POST" and code == 409:
+                              # A stuck running workflow can also return 409. Only a fresh
+                              # state read proves that external completion won this race.
+                              state = self.request("")
+                              if state.get("status") == "completed":
+                                  return {}
+                              raise RuntimeError("GitHub cancellation unconfirmed: HTTP 409 and run is not completed") from None
+                          if code not in (429, 500, 502, 503, 504):
+                              raise RuntimeError(f"GitHub API returned HTTP {code}") from None
+                      except (URLError, TimeoutError, OSError):
+                          pass
+                      if attempt < 2:
+                          self.sleep(attempt + 1)
+                  raise RuntimeError("GitHub API unavailable after 3 attempts")
+
+              def jobs(self):
+                  jobs = []
+                  for page in range(1, 101):
+                      data = self.request(f"/jobs?filter=latest&per_page=100&page={page}")
+                      batch = data["jobs"]
+                      jobs.extend(batch)
+                      if len(jobs) >= data["total_count"]:
+                          return jobs
+                      if not batch:
+                          raise RuntimeError("GitHub returned an incomplete jobs page")
+                  raise RuntimeError("GitHub job pagination exceeded its bound")
+
+              def cancel(self):
+                  self.request("/cancel", "POST")
+
+
+          def from_environment(env, event):
+              repository = env.get("GITHUB_REPOSITORY", "")
+              event_name = env.get("GITHUB_EVENT_NAME")
+              same_repo_pr = (event_name == "pull_request" and
+                              event.get("pull_request", {}).get("head", {}).get("repo", {}).get("full_name") == repository)
+              main_push = event_name == "push" and env.get("GITHUB_REF") == "refs/heads/ci/desktop-macos-account"
+              if not (same_repo_pr or main_push):
+                  raise ValueError("watchdog requires the trusted macOS probe branch push")
+              return GitHubRun(repository, env.get("GITHUB_RUN_ID", ""), env.get("GH_TOKEN", ""))
+
+
+          def watch(api, *, sleep=time.sleep, monotonic=time.monotonic, max_seconds=89 * 60):
+              deadline = monotonic() + max_seconds
+              acceptable = {"success", "skipped", "neutral"}
+              while monotonic() < deadline:
+                  # ci-ok waits for us. The completion barrier waits for every real DAG leaf,
+                  # including reusable-workflow children that GitHub discovers after startup.
+                  jobs = [j for j in api.jobs() if j["name"] not in {"ci-watchdog", "ci-ok"}]
+                  for job in jobs:
+                      completed_failure = (job["status"] == "completed" and
+                                           job.get("conclusion") not in acceptable)
+                      step_failure = any(s["status"] == "completed" and s.get("conclusion") not in acceptable
+                                         for s in job.get("steps", []))
+                      if completed_failure or step_failure:
+                          print("CI failure detected; cancelling this workflow run.", flush=True)
+                          # Completed jobs have finished failure-artifact uploads. A failed
+                          # step gets only three seconds for uploads, never an unbounded wait.
+                          if not completed_failure:
+                              sleep(min(3, max(0, deadline - monotonic())))
+                          api.cancel()
+                          return "cancelled"
+                  names = {j["name"] for j in jobs if j["status"] == "completed"}
+                  if {"ci-work-complete"} <= names and all(j["status"] == "completed" for j in jobs):
+                      print("All CI work completed; watcher finished.", flush=True)
+                      return "complete"
+                  sleep(min(5, max(0, deadline - monotonic())))
+              raise RuntimeError("CI watchdog deadline exceeded")
+
+
+          def main():
+              api = None
+              try:
+                  with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as event_file:
+                      event = json.load(event_file)
+                  api = from_environment(os.environ, event)
+                  watch(api)
+              except Exception as error:
+                  # Requests sanitize network failures; unexpected exceptions reveal only
+                  # their type. Never dump headers, API bodies or the bearer token.
+                  detail = str(error) if isinstance(error, (RuntimeError, ValueError, KeyError)) else type(error).__name__
+                  token = os.environ.get("GH_TOKEN")
+                  if token:
+                      detail = detail.replace(token, "***")
+                  print(f"::error::CI watchdog failed: {detail}", file=sys.stderr)
+                  # Only a fully validated trusted client may act. Losing monitoring must
+                  # abort the expensive jobs too, while keeping this watcher visibly red.
+                  if api is not None:
+                      try:
+                          api.cancel()
+                      except Exception:
+                          print("::error::CI watchdog could not confirm workflow cancellation", file=sys.stderr)
+                  return 1
+              return 0
+
+
+          if __name__ == "__main__":
+              sys.exit(main())
+          PYWATCH
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  rust-wasi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: rustup show active-toolchain
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+      - run: cargo build -p dilla-core-wasi --target wasm32-wasip1 --release --locked
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: dilla-core-wasi
+          path: target/wasm32-wasip1/release/dilla_core_wasi.wasm
+          if-no-files-found: error
+
+  web-build:
+    runs-on: ubuntu-24.04
+    # Build the bundled UI once for Electron, shared core integration and go-release, so every
+    # consumer tests or ships the same bytes. The webdist test is web.New's manifest check over
+    # packages/web/dist, where the build left it: nothing is copied into internal/web/dist (ruling 38).
+    timeout-minutes: 15
+    # The wasm C build (sqlite-wasm-rs compiles SQLite3MC through cc) uses clang 23, the dev box's major:
+    # the runner's own clang emits about 25 KB more wasm, so the D5 budget would not mean the same bytes here.
+    env:
+      CC_wasm32_unknown_unknown: /usr/bin/clang-23
+      AR_wasm32_unknown_unknown: /usr/bin/llvm-ar-23
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: clang 23 for the wasm C build
+        run: |
+          test "$(lsb_release -cs)" = noble
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o "$RUNNER_TEMP/llvm-snapshot.asc"
+          gpg --dearmor -o "$RUNNER_TEMP/apt-llvm.gpg" "$RUNNER_TEMP/llvm-snapshot.asc"
+          primaries=$(gpg --show-keys --with-colons "$RUNNER_TEMP/apt-llvm.gpg" | awk -F: '$1 == "pub" { want = 1; next } $1 == "fpr" && want { print $10; want = 0 }')
+          test "$primaries" = 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
+          sudo install -m 0644 "$RUNNER_TEMP/apt-llvm.gpg" /usr/share/keyrings/apt-llvm.gpg
+          cmp "$RUNNER_TEMP/apt-llvm.gpg" /usr/share/keyrings/apt-llvm.gpg
+          echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list
+          sudo apt-get update
+          apt-cache policy clang-23 llvm-23
+          v=$(apt-cache policy clang-23 | awk '/Candidate:/ { print $2 }')
+          case "$v" in 1:23.1.*~++*) ;; *) echo "expected clang 23.1.x candidate, got $v"; exit 1 ;; esac
+          sudo apt-get install -y --no-install-recommends "clang-23=$v" "llvm-23=$v" "libllvm23=$v" "libclang-cpp23=$v" "libclang1-23=$v" "libclang-common-23-dev=$v" "llvm-23-linker-tools=$v" "llvm-23-runtime=$v"
+          for p in clang-23 llvm-23 libllvm23 libclang-cpp23 libclang1-23 libclang-common-23-dev llvm-23-linker-tools llvm-23-runtime; do test "$(dpkg-query -W -f='${Version}' "$p")" = "$v"; done
+          /usr/bin/clang-23 --version | grep -F "clang version 23.1."
+          /usr/bin/clang-23 --version
+          /usr/bin/llvm-ar-23 --version
+      - run: rustup show active-toolchain
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - run: bash scripts/install-ci-tool.sh wasm-bindgen
+      - run: bash scripts/install-ci-tool.sh wasm-pack
+      - run: bash scripts/install-ci-tool.sh binaryen
+      - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg
+      - run: node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm
+      - run: npm ci
+      - run: npm run typecheck -w @dilla/core-wasm
+      - run: npm run typecheck -w @dilla/client-core
+      - run: npm run typecheck -w @dilla/web
+      - run: npm run typecheck:e2e
+      - run: npm run build -w @dilla/web
+      - run: npm run test:noise-release
+      # The dist guard fails (never skips) on any data: URL in the built CSS or JS; it needs the build above.
+      - run: npm run -w @dilla/web test:dist
+      - run: npm run build:harness -w @dilla/client-core
+      - run: go test -tags webdist ./internal/web/...
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: dilla-web-dist
+          path: packages/web/dist/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: dilla-desktop-core
+          path: packages/core-wasm/pkg/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: dilla-core-harness
+          path: packages/client-core/harness-dist/
+          if-no-files-found: error
+
+  desktop:
+    needs: [web-build, rust-wasi]
+    uses: ./.github/workflows/desktop.yml
+
+  ci-work-complete:
+    needs: [web-build, rust-wasi, desktop]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - run: echo "All macOS probe work reached a terminal result"
+
+  ci-ok:
+    needs: [ci-watchdog, ci-work-complete, web-build, rust-wasi, desktop]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+      - if: needs.ci-watchdog.result != 'success'
+        run: exit 1
+      - run: echo "macOS-only diagnostic probe completed; not full release proof"
