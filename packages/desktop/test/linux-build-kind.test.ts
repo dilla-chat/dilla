@@ -5,12 +5,12 @@ import vm from 'node:vm';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-async function buildFixture(argv: string[], platform = 'linux') {
+async function buildFixture(argv: string[], platform = 'linux', windowsNewlines = false) {
  const source = await readFile(new URL('../scripts/build.mjs', import.meta.url), 'utf8');
  const operations: string[] = [], builds: any[] = [];
  // Execute the actual build body with its external build/filesystem/process
  // dependencies captured; no native/web build or output directory is touched.
- const body = source.replace(/^import .*;\n/gm, '').replaceAll('import.meta.url', 'buildModuleURL');
+ const body = (windowsNewlines ? source.replace(/\r?\n/g, '\r\n') : source).replace(/^import .*;\r?\n/gm, '').replaceAll('import.meta.url', 'buildModuleURL');
  const context = vm.createContext({
   process: { platform, argv: ['node', 'build.mjs', ...argv], env: { npm_execpath: 'fixture-npm', DILLA_LINUX_INSTALL_KIND: 'system-package' }, execPath: 'node' },
   build: async (options: any) => { builds.push(options); }, execFileSync: () => operations.push('exec'),
@@ -38,4 +38,10 @@ test('nonLinux builds remain unmarked and preserve their own updater authority',
   const fixture = await buildFixture([], platform); await fixture.run();
   assert.equal(fixture.builds[0].define?.__DILLA_LINUX_INSTALL_KIND__, undefined);
  }
+});
+
+test('build fixture executes CRLF checkout without losing build assertions', async () => {
+ const fixture = await buildFixture(['--linux-install-kind=system-package'], 'linux', true);
+ await fixture.run();
+ assert.equal(fixture.builds[0].define?.__DILLA_LINUX_INSTALL_KIND__, JSON.stringify('system-package'));
 });

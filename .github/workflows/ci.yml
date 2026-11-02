@@ -631,6 +631,7 @@ jobs:
       # Keep short controls ahead of the long lifecycle test so an early failure
       # reaches the step API immediately instead of waiting for Node's file order.
       - run: node --test packages/desktop/test/native/windows-installer-syntax.test.mjs packages/desktop/test/windows-operation-gate.test.ts
+      - run: npm test -w @dilla/desktop
       - run: node --test packages/desktop/test/native/windows-installer-maintenance.test.mjs
 
   linux-sandbox-foundation:

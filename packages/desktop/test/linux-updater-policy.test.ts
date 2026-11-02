@@ -1,3 +1,4 @@
+import { assertPortableEsbuildFilter } from './support/portable-esbuild-filter.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
@@ -7,6 +8,7 @@ import { generateKeyPairSync, sign } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { resolve } from 'node:path';
 const load = createRequire(import.meta.url);
+const keysFilter = /[\\/]update-keys\.ts$/;
 const pair = generateKeyPairSync('ed25519');
 const publicKey = pair.publicKey.export({ type: 'spki', format: 'pem' }).toString();
 const version = '0.1.1';
@@ -20,7 +22,7 @@ function releaseBytes() {
 async function compiledDriver(kind?: 'appimage' | 'system-package', invalidSignature = false) {
  const output = await build({ entryPoints: [resolve(import.meta.dirname, '../src/updater.ts')], bundle: true, write: false, platform: 'node', format: 'cjs', external: ['electron', 'electron-updater', 'electron-updater/*'],
   define: kind ? { __DILLA_LINUX_INSTALL_KIND__: JSON.stringify(kind) } : {}, plugins: [{ name: 'fixture-public-key', setup(plugin) {
-   plugin.onLoad({ filter: /\/update-keys\.ts$/ }, () => ({ contents: `export const RELEASE_PUBLIC_KEYS = ${JSON.stringify([publicKey])}`, loader: 'ts' }));
+   plugin.onLoad({ filter: keysFilter }, () => ({ contents: `export const RELEASE_PUBLIC_KEYS = ${JSON.stringify([publicKey])}`, loader: 'ts' }));
   } }] });
  const effects: string[] = [], phases: string[] = [];
  const app = Object.assign(new EventEmitter(), { isPackaged: true, getVersion: () => '0.1.0', getPath: () => { effects.push('profile'); return '/forbidden/profile'; }, exit: () => effects.push('exit') });
@@ -80,4 +82,8 @@ test('compiled native driver refuses direct download/install calls before profil
  coordinator.state = { phase: 'ready' };
  assert.equal(await coordinator.quit(true), false);
  assert.deepEqual(effects, []);
+});
+
+test('update-keys fixture intercepts both POSIX and Windows module paths', async () => {
+ await assertPortableEsbuildFilter(keysFilter, 'update-keys');
 });

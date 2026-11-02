@@ -850,6 +850,7 @@ const WINDOWS_INSTALLER_JOB = `  windows-installer:
       - run: node node_modules/electron/install.js
       - run: node packages/desktop/scripts/prepare-nsis.mjs
       - run: ${WINDOWS_INSTALLER_CONTROLS}
+      - run: npm test -w @dilla/desktop
       - run: ${WINDOWS_INSTALLER_MAINTENANCE}
 `;
 const LINUX_FOUNDATION_JOB = /^  linux-sandbox-foundation:\n[\s\S]*?(?=^  desktop:)/m.exec(REAL_CI)[0].replace(/^    needs:.*\n/m, '').replace(/^    if:.*\n/m, '');
@@ -905,21 +906,47 @@ test('independent Windows installer runs the full native fixture and interop bef
   assert.deepEqual(checkWorkflow(fixture(GOOD)), []);
 });
 
+test('Windows desktop units run unconditionally after controls and before maintenance', () => {
+  const body = /  windows-installer:\n[\s\S]*?(?=^  linux-sandbox-foundation:)/m.exec(REAL_CI)[0];
+  const steps = jobSteps(body);
+  const controls = steps.findIndex(step => step.includes(`run: ${WINDOWS_INSTALLER_CONTROLS}`));
+  const unit = steps.findIndex(step => step.includes('run: npm test -w @dilla/desktop'));
+  const maintenance = steps.findIndex(step => step.includes(`run: ${WINDOWS_INSTALLER_MAINTENANCE}`));
+  assert.equal(unit, controls + 1);
+  assert.equal(maintenance, unit + 1);
+  assert.deepEqual(steps[unit], ['run: npm test -w @dilla/desktop']);
+});
+
+test('desktop units retain all non-Windows platforms and cannot be conditionally narrowed', () => {
+  const step = "      - if: runner.os != 'Windows'\n        run: npm test -w @dilla/desktop\n";
+  assert.ok(REAL_DESKTOP.includes(step));
+  for (const replacement of ['', step.replace("!= 'Windows'", "== 'Linux'"), step.replace("!= 'Windows'", "== 'macOS'")]) {
+    const root = mkdtempSync(join(tmpdir(), 'dilla-unit-platform-ci-'));
+    mkdirSync(join(root, '.github/workflows'), { recursive: true });
+    writeFileSync(join(root, '.github/workflows/desktop.yml'), REAL_DESKTOP.replace(step, replacement));
+    assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('non-Windows desktop unit')));
+  }
+});
+
 test('independent Windows installer exposes short control failures before full maintenance starts', () => {
   const body = /  windows-installer:\n[\s\S]*?(?=^  linux-sandbox-foundation:)/m.exec(REAL_CI)[0];
   const steps = jobSteps(body);
   const controls = steps.findIndex(step => step.includes(`run: ${WINDOWS_INSTALLER_CONTROLS}`));
   const maintenance = steps.findIndex(step => step.includes(`run: ${WINDOWS_INSTALLER_MAINTENANCE}`));
   assert.ok(controls >= 0, 'short syntax/interop controls have their own complete step');
-  assert.equal(maintenance, controls + 1, 'full maintenance runs in the next step after controls succeed');
+  assert.equal(maintenance, controls + 2, 'desktop units run between controls and full maintenance');
   const fixtureBody = /  windows-installer:\n[\s\S]*?(?=^  linux-sandbox-foundation:)/m.exec(GOOD)[0];
   const controlStep = `      - run: ${WINDOWS_INSTALLER_CONTROLS}\n`;
   const maintenanceStep = `      - run: ${WINDOWS_INSTALLER_MAINTENANCE}\n`;
+  const unitStep = '      - run: npm test -w @dilla/desktop\n';
   for (const changed of [
     fixtureBody.replace(controlStep, ''),
     fixtureBody.replace(maintenanceStep, ''),
-    fixtureBody.replace(controlStep + maintenanceStep, maintenanceStep + controlStep),
-    fixtureBody.replace(controlStep + maintenanceStep, `      - run: ${WINDOWS_INSTALLER_MAINTENANCE} packages/desktop/test/native/windows-installer-syntax.test.mjs packages/desktop/test/windows-operation-gate.test.ts\n`),
+    fixtureBody.replace(controlStep + unitStep + maintenanceStep, maintenanceStep + unitStep + controlStep),
+    fixtureBody.replace(unitStep, ''),
+    fixtureBody.replace(unitStep + maintenanceStep, maintenanceStep + unitStep),
+    fixtureBody.replace(unitStep, "      - if: false\n        run: npm test -w @dilla/desktop\n"),
+    fixtureBody.replace(controlStep + unitStep + maintenanceStep, `      - run: ${WINDOWS_INSTALLER_MAINTENANCE} packages/desktop/test/native/windows-installer-syntax.test.mjs packages/desktop/test/windows-operation-gate.test.ts\n`),
   ]) {
     assert.notEqual(changed, fixtureBody);
     assert.ok(checkWorkflow(fixture(GOOD.replace(fixtureBody, changed))).some(problem => problem.includes('independent Windows installer')));

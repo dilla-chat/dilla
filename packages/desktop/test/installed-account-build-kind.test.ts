@@ -1,3 +1,4 @@
+import { assertPortableEsbuildFilter } from './support/portable-esbuild-filter.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile, mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
@@ -13,6 +14,9 @@ import { build, transform, type BuildOptions } from 'esbuild';
 import { fixtureMainSource, fixtureWindowsInstallationSource } from '../../../e2e/web/support/installed-packages.ts';
 
 const load = createRequire(import.meta.url);
+const bundleFilter = /[\\/]bundle\.ts$/;
+const windowsFilter = /[\\/]windows-installation\.ts$/;
+const runtimeFilter = /[\\/]update-runtime\.ts$/;
 const desktop = resolve(import.meta.dirname, '..');
 async function actualAccountBuildOptions(platform: string, publicKey: string, root = '/owned-fixture'): Promise<BuildOptions> {
  const source = await readFile(resolve(desktop, '../../e2e/web/support/installed-packages.ts'), 'utf8');
@@ -90,9 +94,9 @@ for (const platform of ['linux', 'win32', 'darwin']) test('compiled installed ac
  const runtime = "export class UpdateStartupHeld extends Error {} export function takeStartupLaunch(){return {}} export function watchdogNonce(){return null} export function watchdogRecovery(){return false} export function bootstrapNonce(){return null} export async function resumeInterruptedUpdate(){return false} "
   + ['runWindowsBootstrap', 'verifyRestoredWindowsStartup', 'runUpdateWatchdog', 'verifyRestoredLaunch', 'waitForRegisteredStartup', 'waitForStartupActivation', 'launchUpdateWatchdog'].map(name => `export async function ${name}(){throw Error('unexpected install role')}`).join(';');
  const compiled = await build({ ...options, write: false, outfile: undefined, external: ['electron', 'electron-updater', 'electron-updater/*'], plugins: [{ name: 'native-os-boundaries', setup(plugin) {
-  plugin.onLoad({ filter: /\/update-runtime\.ts$/ }, () => ({ contents: runtime, loader: 'ts' }));
-  plugin.onLoad({ filter: /\/windows-installation\.ts$/ }, () => ({ contents: "export async function currentWindowsInstallation(){return {launcher:'/owned/Dilla.exe'}}; export async function verifyWindowsProgram(){}; export async function readWindowsSlots(){}; export async function verifyWindowsInstallationSnapshot(){}", loader: 'ts' }));
-  plugin.onLoad({ filter: /\/bundle\.ts$/ }, () => ({ contents: 'export async function loadBundle(){return {}}; export function bundledResponse(){return undefined}', loader: 'ts' }));
+  plugin.onLoad({ filter: runtimeFilter }, () => ({ contents: runtime, loader: 'ts' }));
+  plugin.onLoad({ filter: windowsFilter }, () => ({ contents: "export async function currentWindowsInstallation(){return {launcher:'/owned/Dilla.exe'}}; export async function verifyWindowsProgram(){}; export async function readWindowsSlots(){}; export async function verifyWindowsInstallationSnapshot(){}", loader: 'ts' }));
+  plugin.onLoad({ filter: bundleFilter }, () => ({ contents: 'export async function loadBundle(){return {}}; export function bundledResponse(){return undefined}', loader: 'ts' }));
  }, }, ...(options.plugins ?? [])] });
  let requestHandler: ((request: Request) => Promise<Response>) | undefined;
  let requests = 0, windows = 0, quit = false;
@@ -139,4 +143,16 @@ for (const platform of ['linux', 'win32', 'darwin']) test('compiled installed ac
  const startup = await readFile(join(root, 'reports/startup-1.0.0.jsonl'), 'utf8');
  assert.match(startup, /"stage":"fetch-begin"/); assert.match(startup, /"stage":"fetch-response"/); assert.match(startup, /"stage":"document-loaded"/);
  assert.equal(update?.state.phase, 'checking'); assert.deepEqual(errors, []);
+});
+
+test('update-runtime fixture intercepts both POSIX and Windows module paths', async () => {
+ await assertPortableEsbuildFilter(runtimeFilter, 'update-runtime');
+});
+
+test('windows-installation fixture intercepts both POSIX and Windows module paths', async () => {
+ await assertPortableEsbuildFilter(windowsFilter, 'windows-installation');
+});
+
+test('bundle fixture intercepts both POSIX and Windows module paths', async () => {
+ await assertPortableEsbuildFilter(bundleFilter, 'bundle');
 });

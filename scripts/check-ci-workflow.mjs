@@ -725,9 +725,10 @@ go-version-file: go.mod
 - run: node node_modules/electron/install.js
 - run: node packages/desktop/scripts/prepare-nsis.mjs
 - run: node --test packages/desktop/test/native/windows-installer-syntax.test.mjs packages/desktop/test/windows-operation-gate.test.ts
+- run: npm test -w @dilla/desktop
 - run: node --test packages/desktop/test/native/windows-installer-maintenance.test.mjs`;
   const actual = jobs['windows-installer'].split('\n').map(line => line.trim()).filter(line => line && !line.startsWith('#')).join('\n');
-  if (actual !== expected) problems.push('ci.yml: independent Windows installer gate must run pinned provisioning, short syntax/interop controls first and full unfiltered maintenance in the next step within its fixed budget');
+  if (actual !== expected) problems.push('ci.yml: independent Windows installer gate must run pinned provisioning, short syntax/interop controls, unconditional desktop units and full unfiltered maintenance in order within its fixed budget');
   const desktopNeeds = /^ {4}needs: \[([^\]\n]*)\]$/m.exec(jobs.desktop ?? '')?.[1].split(',').map(name => name.trim()) ?? [];
   if (!desktopNeeds.includes('windows-installer')) {
     problems.push('ci.yml: desktop must wait for the independent Windows installer gate via needs: windows-installer');
@@ -1244,6 +1245,10 @@ export function checkDesktopWorkflow(root) {
   if (/--no-sandbox|contents: write|--publish always/.test(text)) problems.push(`${file}: desktop validation must keep sandboxing and cannot publish`);
   const body = job => text.split(`\n  ${job}:\n`)[1]?.split(/\n  [a-z][a-z0-9-]*:\n/)[0] ?? '';
   const nativeSteps = jobSteps(body('native'));
+  const unitSteps = nativeSteps.filter(step => step.some(line => line.includes('run: npm test -w @dilla/desktop')));
+  if (unitSteps.length !== 1 || unitSteps[0].join('\n') !== "if: runner.os != 'Windows'\nrun: npm test -w @dilla/desktop") {
+    problems.push(`${file}: non-Windows desktop unit tests must run on every other native platform`);
+  }
   const proof = nativeSteps.findIndex(step => step.some(line => line.includes('name: desktop-installed-upgrade-')));
   const buildProvenance = nativeSteps.findIndex(step => step.some(line => line.includes('name: Record native desktop build provenance')));
   const finalDistribution = nativeSteps.findLastIndex(step => step.some(line => line.includes('run: npm run dist -w @dilla/desktop')));

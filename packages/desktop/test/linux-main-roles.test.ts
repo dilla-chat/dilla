@@ -1,3 +1,4 @@
+import { assertPortableEsbuildFilter } from './support/portable-esbuild-filter.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
@@ -6,6 +7,7 @@ import { createRequire } from 'node:module';
 import { EventEmitter } from 'node:events';
 import { resolve } from 'node:path';
 const load = createRequire(import.meta.url);
+const installationFilter = /[\\/]linux-installation\.ts$/;
 const nonce = 'a'.repeat(64);
 const flush = async () => { for (let index = 0; index < 8; index++) await new Promise<void>(done => setImmediate(done)); };
 async function mainFixture(options: { kind?: 'system-package' | 'appimage'; argv?: string[]; env?: Record<string, string>; packaged?: boolean; validNative?: boolean; holdNative?: boolean; nativeLayout?: boolean; ownsLock?: boolean } = {}) {
@@ -14,7 +16,7 @@ async function mainFixture(options: { kind?: 'system-package' | 'appimage'; argv
  const validation = options.holdNative ? new Promise<void>(done => { releaseValidation = done; }) : Promise.resolve();
  const output = await build({ entryPoints: [resolve(import.meta.dirname, '../src/main.ts')], bundle: true, write: false, platform: 'node', format: 'cjs', external: ['electron', 'electron-updater', 'electron-updater/*'],
   define: options.kind ? { __DILLA_LINUX_INSTALL_KIND__: JSON.stringify(options.kind) } : {}, plugins: options.validNative ? [{ name: 'protected-native-result-only', setup(plugin) {
-   plugin.onLoad({ filter: /\/linux-installation\.ts$/ }, () => ({ contents: `export async function resolveLinuxInstallation(context) { globalThis.recordNative(context); await globalThis.validation; return {installKind:'system-package',identity:{}}; }`, loader: 'ts' }));
+   plugin.onLoad({ filter: installationFilter }, () => ({ contents: `export async function resolveLinuxInstallation(context) { globalThis.recordNative(context); await globalThis.validation; return {installKind:'system-package',identity:{}}; }`, loader: 'ts' }));
   } }] : [] });
  const app = Object.assign(new EventEmitter(), { isPackaged: options.packaged ?? true,
   getVersion: () => '0.1.0', getName: () => 'Dilla', getPath: () => { effects.push('profile'); throw Error('profile must not be accessed'); },
@@ -80,4 +82,8 @@ test('repacking compiled native ASAR under an AppImage layout refuses startup', 
 for (const kind of ['system-package', undefined] as const) test('normal managed/unmarked packaged startup skips AppImage recovery discovery: ' + String(kind), async () => {
  const fixture = await mainFixture({ kind, validNative: kind === 'system-package', ownsLock: true });
  assert.ok(fixture.effects.includes('lock')); assert.equal(fixture.effects.includes('profile'), false); assert.deepEqual(fixture.errors, []);
+});
+
+test('linux-installation fixture intercepts both POSIX and Windows module paths', async () => {
+ await assertPortableEsbuildFilter(installationFilter, 'linux-installation');
 });
