@@ -1,3 +1,4 @@
+# Temporary focused native mutex diagnostics; not installer or release acceptance.
 name: Windows installer probe
 on:
   push:
@@ -10,24 +11,13 @@ concurrency:
 jobs:
   windows-installer:
     runs-on: windows-2025
-    timeout-minutes: 30
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
-          node-version-file: .nvmrc
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
-      - run: npm ci
-      - run: node node_modules/electron/install.js
-      - name: Prepare pinned NSIS compiler before parallel tests
-        run: node packages/desktop/scripts/prepare-nsis.mjs
-      - name: Windows launcher kernel acceptance
-        run: go test ./internal/desktoplaunch ./packages/desktop/native/windows-launcher
-      - name: Native path and installer control-flow probes
-        run: node --test packages/desktop/test/windows-installer.test.ts packages/desktop/test/windows-payload-pins.test.ts
-      - name: Focused interrupted-install diagnostic (not full maintenance acceptance)
-        env:
-          DILLA_FIXTURE_INITIAL_RETRY_ONLY: '1'
-        run: node --test packages/desktop/test/native/windows-installer-maintenance.test.mjs packages/desktop/test/native/windows-installer-syntax.test.mjs
+      - name: Native Global mutex contention, abandonment and security diagnostics
+        run: go test -count=1 -v -timeout=2m -run '^TestGlobalOperationMutex' ./packages/desktop/native/windows-launcher
