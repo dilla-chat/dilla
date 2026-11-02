@@ -17,7 +17,27 @@ function windowsEnvironment() {
  for (const line of variables.split(/\r?\n/)) { const split = line.indexOf('='); if (split > 0) env[line.slice(0, split)] = line.slice(split + 1); }
  return env;
 }
-export async function compileNativeLauncher({ file, config, iconFile }) {
+// Only public resource bytes exist here; the bootstrap config is passed to Go
+// later and is never written into this COFF object.
+export async function reportCoffLinkFailure(error, resourceFile, onCoffLinkFailure) {
+ try {
+  const object = await open(resourceFile, 'r');
+  try {
+   const size = (await object.stat()).size;
+   if (size > 16 * 1024 * 1024) console.error('Windows launcher COFF diagnostic: object exceeds size limit');
+   else {
+    const bytes = Buffer.alloc(size), { bytesRead } = await object.read(bytes, 0, size, 0);
+    if (bytesRead !== size) throw new Error('incomplete resource read');
+    if (onCoffLinkFailure) {
+     try { await onCoffLinkFailure(Buffer.from(bytes)); } catch { console.error('Windows launcher COFF capture: unavailable'); }
+    }
+    console.error('Windows launcher COFF diagnostic:', JSON.stringify(describeCoffResource(bytes)));
+   }
+  } finally { await object.close(); }
+ } catch { console.error('Windows launcher COFF diagnostic: unavailable'); }
+ throw error;
+}
+export async function compileNativeLauncher({ file, config, iconFile, onCoffLinkFailure }) {
  if (process.platform !== 'win32' || !iconFile || config.arch !== 'x64') throw new Error('Build the branded Windows launcher on native Windows x64');
  const root = await mkdtemp(join(tmpdir(), 'dilla-launcher-build-'));
  try {
@@ -40,19 +60,7 @@ export async function compileNativeLauncher({ file, config, iconFile }) {
   try {
    execFileSync('go', ['build', '-trimpath', '-ldflags', `-H=windowsgui -s -w -X main.bootstrapConfig=${encoded}`, '-o', file, './packages/desktop/native/windows-launcher'], { cwd: root, env, stdio: 'inherit' });
   } catch (error) {
-   // Preserve the original link failure even if diagnostic collection fails.
-   try {
-    const object = await open(join(packageDirectory, 'branding.syso'), 'r');
-    try {
-     const size = (await object.stat()).size;
-     if (size > 16 * 1024 * 1024) console.error('Windows launcher COFF diagnostic: object exceeds size limit');
-     else {
-      const bytes = Buffer.alloc(size), { bytesRead } = await object.read(bytes, 0, size, 0);
-      console.error('Windows launcher COFF diagnostic:', JSON.stringify(describeCoffResource(bytes.subarray(0, bytesRead))));
-     }
-    } finally { await object.close(); }
-   } catch { console.error('Windows launcher COFF diagnostic: unavailable'); }
-   throw error;
+   await reportCoffLinkFailure(error, join(packageDirectory, 'branding.syso'), onCoffLinkFailure);
   }
  } finally { await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
 }

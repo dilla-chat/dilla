@@ -726,7 +726,14 @@ go-version-file: go.mod
 - run: node packages/desktop/scripts/prepare-nsis.mjs
 - run: node --test packages/desktop/test/native/windows-installer-syntax.test.mjs packages/desktop/test/windows-operation-gate.test.ts
 - run: npm test -w @dilla/desktop
-- run: node packages/desktop/scripts/windows-launcher-smoke.mjs
+- id: launcher_smoke
+run: node packages/desktop/scripts/windows-launcher-smoke.mjs --capture-coff
+- if: failure() && steps.launcher_smoke.outcome == 'failure'
+uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+with:
+name: windows-launcher-smoke-coff
+path: packages/desktop/test-results/windows-launcher-smoke-failure.syso
+if-no-files-found: error
 - run: node --test packages/desktop/test/native/windows-installer-maintenance.test.mjs`;
   const actual = jobs['windows-installer'].split('\n').map(line => line.trim()).filter(line => line && !line.startsWith('#')).join('\n');
   if (actual !== expected) problems.push('ci.yml: independent Windows installer gate must run pinned provisioning, short syntax/interop controls, unconditional desktop units, launcher smoke and full unfiltered maintenance in order within its fixed budget');

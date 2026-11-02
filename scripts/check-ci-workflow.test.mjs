@@ -830,7 +830,9 @@ const WINDOWS_KERNEL_JOB = `  windows-kernel:
       - run: go test -count=1 -failfast -v -timeout=2m ./internal/desktoplaunch ./packages/desktop/native/windows-launcher
 `;
 const WINDOWS_INSTALLER_CONTROLS = 'node --test packages/desktop/test/native/windows-installer-syntax.test.mjs packages/desktop/test/windows-operation-gate.test.ts';
-const WINDOWS_LAUNCHER_SMOKE = 'node packages/desktop/scripts/windows-launcher-smoke.mjs';
+const WINDOWS_LAUNCHER_SMOKE = 'node packages/desktop/scripts/windows-launcher-smoke.mjs --capture-coff';
+const WINDOWS_SMOKE_STEP = `      - id: launcher_smoke\n        run: ${WINDOWS_LAUNCHER_SMOKE}\n`;
+const WINDOWS_SMOKE_UPLOAD = `      - if: failure() && steps.launcher_smoke.outcome == 'failure'\n        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7\n        with:\n          name: windows-launcher-smoke-coff\n          path: packages/desktop/test-results/windows-launcher-smoke-failure.syso\n          if-no-files-found: error\n`;
 const WINDOWS_INSTALLER_MAINTENANCE = 'node --test packages/desktop/test/native/windows-installer-maintenance.test.mjs';
 const WINDOWS_INSTALLER_JOB = `  windows-installer:
     needs: [windows-kernel]
@@ -852,8 +854,7 @@ const WINDOWS_INSTALLER_JOB = `  windows-installer:
       - run: node packages/desktop/scripts/prepare-nsis.mjs
       - run: ${WINDOWS_INSTALLER_CONTROLS}
       - run: npm test -w @dilla/desktop
-      - run: ${WINDOWS_LAUNCHER_SMOKE}
-      - run: ${WINDOWS_INSTALLER_MAINTENANCE}
+${WINDOWS_SMOKE_STEP}${WINDOWS_SMOKE_UPLOAD}      - run: ${WINDOWS_INSTALLER_MAINTENANCE}
 `;
 const LINUX_FOUNDATION_JOB = /^  linux-sandbox-foundation:\n[\s\S]*?(?=^  desktop:)/m.exec(REAL_CI)[0].replace(/^    needs:.*\n/m, '').replace(/^    if:.*\n/m, '');
 const GOOD = withChanges(withWasmClang(GOOD_BASE + WINDOWS_KERNEL_JOB + WINDOWS_INSTALLER_JOB + LINUX_FOUNDATION_JOB + '  desktop:\n    needs: [web-build, windows-kernel, windows-installer, linux-sandbox-foundation]\n    uses: ./.github/workflows/desktop.yml\n'));
@@ -917,7 +918,7 @@ test('Windows desktop units run unconditionally after controls and before mainte
   assert.equal(unit, controls + 1);
   const smoke = steps.findIndex(step => step.includes(`run: ${WINDOWS_LAUNCHER_SMOKE}`));
   assert.equal(smoke, unit + 1);
-  assert.equal(maintenance, smoke + 1);
+  assert.equal(maintenance, smoke + 2);
   assert.deepEqual(steps[unit], ['run: npm test -w @dilla/desktop']);
 });
 
@@ -938,22 +939,26 @@ test('independent Windows installer exposes short control failures before full m
   const controls = steps.findIndex(step => step.includes(`run: ${WINDOWS_INSTALLER_CONTROLS}`));
   const maintenance = steps.findIndex(step => step.includes(`run: ${WINDOWS_INSTALLER_MAINTENANCE}`));
   assert.ok(controls >= 0, 'short syntax/interop controls have their own complete step');
-  assert.equal(maintenance, controls + 3, 'desktop units and launcher smoke run before full maintenance');
+  assert.equal(maintenance, controls + 4, 'desktop units and launcher smoke run before full maintenance');
   const fixtureBody = /  windows-installer:\n[\s\S]*?(?=^  linux-sandbox-foundation:)/m.exec(GOOD)[0];
   const controlStep = `      - run: ${WINDOWS_INSTALLER_CONTROLS}\n`;
   const maintenanceStep = `      - run: ${WINDOWS_INSTALLER_MAINTENANCE}\n`;
   const unitStep = '      - run: npm test -w @dilla/desktop\n';
-  const smokeStep = `      - run: ${WINDOWS_LAUNCHER_SMOKE}\n`;
+  const smokeStep = WINDOWS_SMOKE_STEP;
+  const uploadStep = WINDOWS_SMOKE_UPLOAD;
   for (const changed of [
     fixtureBody.replace(controlStep, ''),
     fixtureBody.replace(maintenanceStep, ''),
     fixtureBody.replace(smokeStep, ''),
-    fixtureBody.replace(smokeStep + maintenanceStep, maintenanceStep + smokeStep),
-    fixtureBody.replace(controlStep + unitStep + smokeStep + maintenanceStep, maintenanceStep + smokeStep + unitStep + controlStep),
+    fixtureBody.replace(uploadStep, ''),
+    fixtureBody.replace('--capture-coff', ''),
+    fixtureBody.replace("failure() && steps.launcher_smoke.outcome == 'failure'", 'failure()'),
+    fixtureBody.replace(smokeStep + uploadStep + maintenanceStep, maintenanceStep + smokeStep + uploadStep),
+    fixtureBody.replace(controlStep + unitStep + smokeStep + uploadStep + maintenanceStep, maintenanceStep + uploadStep + smokeStep + unitStep + controlStep),
     fixtureBody.replace(unitStep, ''),
-    fixtureBody.replace(unitStep + smokeStep + maintenanceStep, maintenanceStep + smokeStep + unitStep),
+    fixtureBody.replace(unitStep + smokeStep + uploadStep + maintenanceStep, maintenanceStep + uploadStep + smokeStep + unitStep),
     fixtureBody.replace(unitStep, "      - if: false\n        run: npm test -w @dilla/desktop\n"),
-    fixtureBody.replace(controlStep + unitStep + smokeStep + maintenanceStep, `      - run: ${WINDOWS_INSTALLER_MAINTENANCE} packages/desktop/test/native/windows-installer-syntax.test.mjs packages/desktop/test/windows-operation-gate.test.ts\n`),
+    fixtureBody.replace(controlStep + unitStep + smokeStep + uploadStep + maintenanceStep, `      - run: ${WINDOWS_INSTALLER_MAINTENANCE} packages/desktop/test/native/windows-installer-syntax.test.mjs packages/desktop/test/windows-operation-gate.test.ts\n`),
   ]) {
     assert.notEqual(changed, fixtureBody);
     assert.ok(checkWorkflow(fixture(GOOD.replace(fixtureBody, changed))).some(problem => problem.includes('independent Windows installer')));

@@ -1,13 +1,17 @@
 // Bounded, read-only diagnostics for a COFF resource object rejected by Go.
 // Symbol names are constrained to identifier characters so paths are never logged.
 export function describeCoffResource(b) {
- const fail=error=>({error});
+ const header={fileLength:Buffer.isBuffer(b)?b.length:null};
+ const fail=error=>({error,header});
  if (!Buffer.isBuffer(b) || b.length<20 || b.length>16*1024*1024) return fail('invalid COFF header');
  const machine=b.readUInt16LE(0), count=b.readUInt16LE(2), symOffset=b.readUInt32LE(8), symCount=b.readUInt32LE(12), optional=b.readUInt16LE(16), sectionOffset=20+optional;
+ Object.assign(header,{machine:'0x'+machine.toString(16).padStart(4,'0'),sectionCount:count,symbolTableOffset:symOffset,symbolCount:symCount,optionalHeaderLength:optional,stringTableOffset:symOffset?symOffset+symCount*18:null,stringTableLength:null});
+ if (header.stringTableOffset!==null && header.stringTableOffset+4<=b.length) header.stringTableLength=b.readUInt32LE(header.stringTableOffset);
  if (!machine || optional || count>128 || sectionOffset+count*40>b.length) return fail('invalid COFF section table');
- if (symCount>200000 || symOffset+symCount*18+4>b.length) return fail('invalid COFF symbol table');
- const stringOffset=symOffset+symCount*18, stringSize=b.readUInt32LE(stringOffset);
- if (stringSize<4 || stringOffset+stringSize>b.length) return fail('invalid COFF string table');
+ if (symCount>200000 || (!symOffset && symCount) || (symOffset && symOffset+symCount*18+4>b.length)) return fail('invalid COFF symbol table');
+ const stringOffset=header.stringTableOffset, stringSize=header.stringTableLength ?? 0;
+ // Go's debug/pe treats all lengths <= 4 as empty, including a zero length.
+ if (stringSize>4 && stringOffset+stringSize>b.length) return fail('invalid COFF string table');
  const safe=s=>/^[A-Za-z0-9_@.$?]{1,64}$/.test(s)?s:'[redacted]';
  const nameAt=(offset,length)=>safe(b.toString('ascii',offset,offset+length).split('\0',1)[0]);
  const sections=[], ranges=[];
@@ -35,5 +39,5 @@ export function describeCoffResource(b) {
   i+=aux+1;
  }
  for(const [at,n] of ranges) for(let i=0;i<n;i++) {const entry=indexMap.get(b.readUInt32LE(at+i*10+4));if(entry)entry.relocationReferences++;}
- return {machine:'0x'+machine.toString(16).padStart(4,'0'),sections,negativeSymbols,truncated};
+ return {machine:header.machine,sections,negativeSymbols,truncated,header};
 }
