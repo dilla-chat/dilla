@@ -11,7 +11,12 @@ observer=e2e/web/support/native-linux-package-acceptance.mjs
 run_user() {
   # A private display, bus, password-protected disposable keyring and NSS CA
   # are created by the existing stock test. No login profile or sudo policy.
-  runuser -u dilla-ci -- env HOME=/home/dilla-ci PATH="$PATH" \
+  install -d -m 700 -o dilla-ci -g dilla-ci /home/dilla-ci/.config /home/dilla-ci/.cache \
+    /home/dilla-ci/.local/share /home/dilla-ci/.run /home/dilla-ci/tmp
+  runuser -u dilla-ci -- env -i HOME=/home/dilla-ci USER=dilla-ci LOGNAME=dilla-ci PATH="$PATH" LANG=C.UTF-8 \
+    XDG_CONFIG_HOME=/home/dilla-ci/.config XDG_CACHE_HOME=/home/dilla-ci/.cache \
+    XDG_DATA_HOME=/home/dilla-ci/.local/share XDG_RUNTIME_DIR=/home/dilla-ci/.run TMPDIR=/home/dilla-ci/tmp \
+    DILLA_E2E_HOST_DATA_ROOT=/home/dilla-ci/tmp/hosts \
     GITHUB_ACTIONS=true "GITHUB_REPOSITORY=$GITHUB_REPOSITORY" \
     "GITHUB_SHA=$GITHUB_SHA" "GITHUB_RUN_ID=$GITHUB_RUN_ID" "GITHUB_RUN_ATTEMPT=$GITHUB_RUN_ATTEMPT" \
     CI=true DILLA_E2E_TOOLING_DIR=/home/dilla-ci/workspace/artifacts/e2e-test-tools \
@@ -25,9 +30,9 @@ run_user() {
 }
 
 if [[ "${1:-}" == --host-installed ]]; then
-  [[ $EUID == 0 && "$format" == deb && -n "${RUNNER_TEMP:-}" ]]
-  inputs="$RUNNER_TEMP/native-linux-package-inputs"
-  output="$RUNNER_TEMP/native-linux-package-acceptance"
+  [[ $EUID == 0 && "$format" == deb ]]
+  inputs=/home/dilla-ci/native-linux-package-inputs
+  output=/home/dilla-ci/native-linux-package-acceptance
   run_user
   exit
 fi
@@ -92,12 +97,22 @@ if [[ "$format" == deb ]]; then
   sudo useradd --create-home --shell /bin/bash dilla-ci
   sudo cp -a "$GITHUB_WORKSPACE" /home/dilla-ci/workspace
   sudo chown -R dilla-ci:dilla-ci /home/dilla-ci/workspace
-  sudo chown dilla-ci:dilla-ci "$output"
+  # runner.temp may have private ancestors. Give the dedicated UID independent
+  # copies rather than changing traversal rights on the runner's home/temp.
+  sudo cp -a "$inputs" /home/dilla-ci/native-linux-package-inputs
+  sudo install -d -m 700 -o dilla-ci -g dilla-ci /home/dilla-ci/native-linux-package-acceptance
+  sudo cp "$output/inputs.json" "$output/signature-policy-before.txt" "$output/installed-manager-packages.txt" /home/dilla-ci/native-linux-package-acceptance/
+  sudo chown -R dilla-ci:dilla-ci /home/dilla-ci/native-linux-package-inputs /home/dilla-ci/native-linux-package-acceptance
   # Sudo is the hosted runner's existing package-install boundary. It grants
   # no sudo access to dilla-ci and forwards only these explicit CI variables.
   sudo env "PATH=$PATH" GITHUB_ACTIONS=true "GITHUB_REPOSITORY=$GITHUB_REPOSITORY" \
     "GITHUB_SHA=$GITHUB_SHA" "GITHUB_RUN_ID=$GITHUB_RUN_ID" "GITHUB_RUN_ATTEMPT=$GITHUB_RUN_ATTEMPT" \
-    "RUNNER_TEMP=$RUNNER_TEMP" bash e2e/web/support/native-linux-package-run.sh --host-installed deb
+    bash e2e/web/support/native-linux-package-run.sh --host-installed deb
+  # Read reports with only the test UID's access, then write them as the runner
+  # for upload. No elevated reader follows test-owned paths.
+  for report in installed.json runtime.json acceptance-deb.json; do
+    sudo -H -u dilla-ci cat "/home/dilla-ci/native-linux-package-acceptance/$report" > "$output/$report"
+  done
 else
   case "$format" in
     rpm) image='registry.fedoraproject.org/fedora:44@sha256:9b53c238bb4e9f6221b4820bbdfa61c1bd8273d386dacaaed429a81dd7362085' ;;
