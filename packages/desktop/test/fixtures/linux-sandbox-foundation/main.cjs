@@ -1,0 +1,70 @@
+const { app, BrowserWindow, ipcMain, session } = require('electron');
+const fs = require('node:fs');
+const path = require('node:path');
+const { pathToFileURL } = require('node:url');
+const args = process.argv.filter(arg => arg.startsWith('--foundation-'));
+const get = key => args.find(arg => arg.startsWith(key + '='))?.slice(key.length + 1);
+const mode = get('--foundation-mode'), nonce = get('--foundation-nonce'), profile = get('--foundation-profile');
+if (args.length !== 3 || !['probe', 'ordinary', 'wrong-token', 'wrong-frame', 'timeout', 'crash', 'fabricated-error'].includes(mode)
+    || !/^[a-f0-9]{64}$/.test(nonce || '') || !path.isAbsolute(profile || '') || process.getuid() === 0) app.exit(31);
+else {
+  app.setPath('userData', profile);
+  fs.mkdirSync(path.join(profile, 'session'), { recursive: true, mode: 0o700 });
+  app.setPath('sessionData', path.join(profile, 'session'));
+  if (mode === 'crash') process.crash();
+  else if (mode === 'fabricated-error') {
+    process.stderr.write('[FATAL:zygote_host_impl_linux.cc:132] No usable sandbox!\n');
+    app.exit(32);
+  } else void app.whenReady().then(async () => {
+    const ses = session.fromPartition('foundation-' + nonce);
+    const page = pathToFileURL(path.join(__dirname, 'probe.html')).href;
+    let deniedRequests = 0;
+    ses.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+    ses.setPermissionCheckHandler(() => false);
+    ses.webRequest.onBeforeRequest((details, callback) => {
+      const cancel = details.url !== page;
+      if (cancel) deniedRequests++;
+      callback({ cancel });
+    });
+    // Exercise the request fence against a reserved, non-routable origin. The
+    // webRequest callback must cancel before DNS/transport; no remote UI loads.
+    await ses.fetch('https://foundation.invalid/blocked').then(
+      () => { throw new Error('fixture network fence failed'); },
+      () => { if (deniedRequests !== 1) throw new Error('fixture request fence was not reached'); });
+    const options = behavior => ({
+      show: false,
+      webPreferences: { session: ses, sandbox: true, contextIsolation: true, nodeIntegration: false,
+        preload: path.join(__dirname, 'preload.cjs'),
+        additionalArguments: ['--foundation-nonce=' + nonce, '--foundation-ack=' + behavior] },
+    });
+    const behavior = ['timeout', 'wrong-frame'].includes(mode) ? 'silent' : mode === 'wrong-token' ? 'wrong' : 'valid';
+    const win = new BrowserWindow(options(behavior));
+    const seal = window => {
+      window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+      window.webContents.on('will-navigate', event => event.preventDefault());
+      window.webContents.on('will-attach-webview', event => event.preventDefault());
+    };
+    seal(win);
+    let sent = false;
+    ipcMain.on('foundation-ack', (event, value) => {
+      if (sent || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame
+          || event.senderFrame.url !== page || !value || Object.keys(value).sort().join(',') !== 'contextIsolated,nonce,sandboxed'
+          || value.nonce !== nonce || value.sandboxed !== true || value.contextIsolated !== true) return;
+      sent = true;
+      fs.writeSync(3, JSON.stringify({ format: 1, kind: 'sandbox-foundation', mode, nonce,
+        mainPid: process.pid, rendererPid: win.webContents.getOSProcessId(), execPath: process.execPath,
+        sandboxed: true, contextIsolated: true, deniedRequests }) + '\n');
+      // One report, then wait for the owning parent's acknowledgement while it
+      // checks live kernel facts. No report path or renderer capability exists.
+      const ack = Buffer.alloc(1);
+      if (fs.readSync(4, ack, 0, 1, null) !== 1 || ack[0] !== 1) app.exit(33);
+      else app.exit(0);
+    });
+    await win.loadURL(page);
+    if (mode === 'wrong-frame') {
+      const other = new BrowserWindow(options('valid'));
+      seal(other);
+      await other.loadURL(page);
+    }
+  }).catch(() => app.exit(34));
+}

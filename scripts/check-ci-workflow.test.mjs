@@ -12,6 +12,56 @@ const NPM_TEST = "      - if: needs.changes.outputs.web != 'false'\n        run:
 const SCRIPT_PATH = fileURLToPath(new URL('./check-ci-workflow.mjs', import.meta.url));
 const REPO_ROOT = join(dirname(SCRIPT_PATH), '..');
 const REAL_CI = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
+
+test('Linux sandbox foundation has independent native Ubuntu lanes ahead of desktop', () => {
+  assert.match(REAL_CI, /^  linux-sandbox-foundation:\n    needs: \[changes\]/m);
+  const body = /^  linux-sandbox-foundation:\n[\s\S]*?(?=^  [a-z][\w-]*:)/m.exec(REAL_CI)?.[0] ?? '';
+  assert.match(body, /os: ubuntu-22\.04, lane: namespace/);
+  assert.match(body, /os: ubuntu-24\.04, lane: managed/);
+  assert.match(body, /xvfb-run -a dbus-run-session -- node --test packages\/desktop\/test\/native\/linux-sandbox-foundation\.test\.mjs/);
+  assert.match(body, /- if: always\(\)\n        uses: actions\/upload-artifact@/);
+  assert.match(REAL_CI, /  desktop:\n    needs: \[[^\]\n]*\blinux-sandbox-foundation\]/);
+});
+
+test('Linux sandbox foundation rejects omitted lanes, fake proofs and delayed or weakened execution', () => {
+  const body = /^  linux-sandbox-foundation:\n[\s\S]*?(?=^  desktop:)/m.exec(GOOD)[0];
+  for (const [before, after] of [
+    ['needs: [changes]', 'needs: [changes, windows-installer]'],
+    ['timeout-minutes: 15', 'timeout-minutes: 90'],
+    ['fail-fast: true', 'fail-fast: false'],
+    ['os: ubuntu-22.04, lane: namespace', 'os: ubuntu-24.04, lane: namespace'],
+    ['          - { os: ubuntu-24.04, lane: managed }\n', ''],
+    ['lane: managed', 'lane: namespace'],
+    ['persist-credentials: false', 'persist-credentials: true'],
+    ['node-version-file: .nvmrc', 'node-version: latest'],
+    ['actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1', 'actions/setup-node@1111111111111111111111111111111111111111'],
+    ['run: npm ci', 'run: npm install'],
+    ['node --test packages/desktop/test/native/linux-sandbox-foundation.test.mjs', 'node --test --test-name-pattern=kernel packages/desktop/test/native/linux-sandbox-foundation.test.mjs'],
+    ['DILLA_LINUX_SANDBOX_FOUNDATION_LANE: ${{ matrix.lane }}', 'DILLA_LINUX_SANDBOX_FOUNDATION_LANE: omitted'],
+    ['      - run: xvfb-run', '      - if: false\n        run: xvfb-run'],
+    ['    steps:', '    env:\n      APPIMAGE_EXTRACT_AND_RUN: 1\n    steps:'],
+    ['          sudo apt-get update', '          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0\n          sudo apt-get update'],
+    ['          if-no-files-found: error', '          if-no-files-found: ignore'],
+    ['      - if: always()\n        uses: actions/upload-artifact@', '      - uses: actions/upload-artifact@'],
+  ]) {
+    const changed = body.replace(before, after); assert.notEqual(changed, body, before);
+    assert.ok(checkWorkflow(fixture(GOOD.replace(body, changed))).some(problem => problem.includes('Linux sandbox foundation')), before);
+  }
+  assert.ok(checkWorkflow(fixture(GOOD.replace(body, ''))).some(problem => problem.includes('missing job "linux-sandbox-foundation"')));
+  const changed = GOOD.replace('windows-installer, linux-sandbox-foundation]', 'windows-installer]');
+  assert.notEqual(changed, GOOD);
+  assert.ok(checkWorkflow(fixture(changed)).some(problem => problem.includes('desktop') && problem.includes('Linux sandbox foundation')));
+});
+
+test('Linux sandbox foundation is required exactly once by completion and final gates', () => {
+  for (const name of ['ci-work-complete', 'ci-ok']) {
+    const body = jobBody(name);
+    for (const replacement of ['', 'linux-sandbox-foundation, linux-sandbox-foundation, ']) {
+      const changed = body.replace('linux-sandbox-foundation, ', replacement); assert.notEqual(changed, body);
+      assert.ok(checkWorkflow(fixture(GOOD.replace(body, changed))).some(problem => name === 'ci-ok' ? problem.includes('"ci-ok"') : problem.includes('completion barrier')));
+    }
+  }
+});
 const REAL_RELEASE = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'release.yml'), 'utf8');
 
 const REAL_DESKTOP = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'desktop.yml'), 'utf8');
@@ -767,11 +817,12 @@ const WINDOWS_INSTALLER_JOB = `  windows-installer:
       - run: ${WINDOWS_INSTALLER_CONTROLS}
       - run: ${WINDOWS_INSTALLER_MAINTENANCE}
 `;
-const GOOD = withChanges(withWasmClang(GOOD_BASE + WINDOWS_KERNEL_JOB + WINDOWS_INSTALLER_JOB + '  desktop:\n    needs: [web-build, windows-kernel, windows-installer]\n    uses: ./.github/workflows/desktop.yml\n'));
+const LINUX_FOUNDATION_JOB = /^  linux-sandbox-foundation:\n[\s\S]*?(?=^  desktop:)/m.exec(REAL_CI)[0].replace(/^    needs:.*\n/m, '').replace(/^    if:.*\n/m, '');
+const GOOD = withChanges(withWasmClang(GOOD_BASE + WINDOWS_KERNEL_JOB + WINDOWS_INSTALLER_JOB + LINUX_FOUNDATION_JOB + '  desktop:\n    needs: [web-build, windows-kernel, windows-installer, linux-sandbox-foundation]\n    uses: ./.github/workflows/desktop.yml\n'));
 
 test('early Windows kernel gate runs both native packages before desktop acceptance', () => {
   assert.match(REAL_CI, /^  windows-kernel:/m);
-  assert.match(REAL_CI, /  desktop:\n    needs: \[changes, web-build, rust-wasi, windows-kernel, windows-installer\]/);
+  assert.match(REAL_CI, /  desktop:\n    needs: \[changes, web-build, rust-wasi, windows-kernel, windows-installer, linux-sandbox-foundation\]/);
   assert.deepEqual(checkWorkflow(fixture(GOOD)), []);
 });
 
@@ -795,10 +846,10 @@ test('early Windows kernel gate refuses omissions, filtered tests and heavyweigh
     assert.ok(checkWorkflow(fixture(GOOD.replace(body, changed))).some(problem => problem.includes('early Windows kernel')), before);
   }
   assert.ok(checkWorkflow(fixture(GOOD.replace(body, ''))).some(problem => problem.includes('missing job "windows-kernel"')));
-  const unblocked = GOOD.replace('needs: [changes, web-build, windows-kernel, windows-installer]', 'needs: [changes, web-build, windows-installer]');
+  const unblocked = GOOD.replace('needs: [changes, web-build, windows-kernel, windows-installer, linux-sandbox-foundation]', 'needs: [changes, web-build, windows-installer]');
   assert.notEqual(unblocked, GOOD);
   assert.ok(checkWorkflow(fixture(unblocked)).some(problem => problem.includes('desktop') && problem.includes('windows-kernel')));
-  const wrongDependency = GOOD.replace('needs: [changes, web-build, windows-kernel, windows-installer]', 'needs: [changes, web-build, windows-kernel-old, windows-installer]');
+  const wrongDependency = GOOD.replace('needs: [changes, web-build, windows-kernel, windows-installer, linux-sandbox-foundation]', 'needs: [changes, web-build, windows-kernel-old, windows-installer]');
   assert.ok(checkWorkflow(fixture(wrongDependency)).some(problem => problem.includes('desktop') && problem.includes('early Windows kernel')));
 });
 
@@ -815,18 +866,18 @@ test('early Windows kernel is included exactly once in completion and final gate
 test('independent Windows installer runs the full native fixture and interop before desktop', () => {
   assert.match(REAL_CI, /^  windows-installer:/m);
   assert.match(REAL_CI, /  windows-installer:\n    needs: \[changes, windows-kernel\]/);
-  assert.match(REAL_CI, /  desktop:\n    needs: \[changes, web-build, rust-wasi, windows-kernel, windows-installer\]/);
+  assert.match(REAL_CI, /  desktop:\n    needs: \[changes, web-build, rust-wasi, windows-kernel, windows-installer, linux-sandbox-foundation\]/);
   assert.deepEqual(checkWorkflow(fixture(GOOD)), []);
 });
 
 test('independent Windows installer exposes short control failures before full maintenance starts', () => {
-  const body = /  windows-installer:\n[\s\S]*?(?=^  desktop:)/m.exec(REAL_CI)[0];
+  const body = /  windows-installer:\n[\s\S]*?(?=^  linux-sandbox-foundation:)/m.exec(REAL_CI)[0];
   const steps = jobSteps(body);
   const controls = steps.findIndex(step => step.includes(`run: ${WINDOWS_INSTALLER_CONTROLS}`));
   const maintenance = steps.findIndex(step => step.includes(`run: ${WINDOWS_INSTALLER_MAINTENANCE}`));
   assert.ok(controls >= 0, 'short syntax/interop controls have their own complete step');
   assert.equal(maintenance, controls + 1, 'full maintenance runs in the next step after controls succeed');
-  const fixtureBody = /  windows-installer:\n[\s\S]*?(?=^  desktop:)/m.exec(GOOD)[0];
+  const fixtureBody = /  windows-installer:\n[\s\S]*?(?=^  linux-sandbox-foundation:)/m.exec(GOOD)[0];
   const controlStep = `      - run: ${WINDOWS_INSTALLER_CONTROLS}\n`;
   const maintenanceStep = `      - run: ${WINDOWS_INSTALLER_MAINTENANCE}\n`;
   for (const changed of [
@@ -841,7 +892,7 @@ test('independent Windows installer exposes short control failures before full m
 });
 
 test('independent Windows installer refuses filters, artifact prerequisites and altered provisioning', () => {
-  const body = /  windows-installer:\n[\s\S]*?(?=^  desktop:)/m.exec(GOOD)[0];
+  const body = /  windows-installer:\n[\s\S]*?(?=^  linux-sandbox-foundation:)/m.exec(GOOD)[0];
   for (const [before, after] of [
     ['runs-on: windows-2025', 'runs-on: ubuntu-latest'],
     ['timeout-minutes: 25', 'timeout-minutes: 90'],
@@ -870,7 +921,7 @@ test('independent Windows installer refuses filters, artifact prerequisites and 
   }
   assert.ok(checkWorkflow(fixture(GOOD.replace(body, ''))).some(problem => problem.includes('missing job "windows-installer"')));
   for (const replacement of ['needs: [changes, web-build, windows-kernel]', 'needs: [changes, web-build, windows-kernel, windows-installer-old]']) {
-    const changed = GOOD.replace('needs: [changes, web-build, windows-kernel, windows-installer]', replacement);
+    const changed = GOOD.replace('needs: [changes, web-build, windows-kernel, windows-installer, linux-sandbox-foundation]', replacement);
     assert.notEqual(changed, GOOD);
     assert.ok(checkWorkflow(fixture(changed)).some(problem => problem.includes('desktop') && problem.includes('independent Windows installer')));
   }

@@ -87,6 +87,7 @@ export const JOB_GATES = {
   'web-build': ['e2e'],
   'windows-kernel': ['e2e'],
   'windows-installer': ['e2e'],
+  'linux-sandbox-foundation': ['e2e'],
   desktop: ['e2e'],
   'core-integration': ['e2e'],
   deny: ['core'],

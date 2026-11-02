@@ -48,6 +48,7 @@ export const REQUIRED_JOBS = [
   'web-build',
   'windows-kernel',
   'windows-installer',
+  'linux-sandbox-foundation',
   'desktop',
 ];
 
@@ -631,6 +632,55 @@ go-version-file: go.mod
   }
 }
 
+// Keep this feasibility proof independent of asset builds and long Windows tests.
+// Exact native lanes/commands prohibit extracted execution and host-policy overrides.
+function checkLinuxSandboxFoundationJob(jobs, problems) {
+  if (!jobs['linux-sandbox-foundation']) return;
+  const expected = [
+    "needs: [changes]",
+    "if: needs.changes.outputs.e2e != 'false'",
+    "name: linux-sandbox-foundation-${{ matrix.lane }}",
+    "runs-on: ${{ matrix.os }}",
+    "timeout-minutes: 15",
+    "strategy:",
+    "fail-fast: true",
+    "matrix:",
+    "include:",
+    "- { os: ubuntu-22.04, lane: namespace }",
+    "- { os: ubuntu-24.04, lane: managed }",
+    "steps:",
+    "- uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7",
+    "with:",
+    "persist-credentials: false",
+    "- uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7",
+    "with:",
+    "node-version-file: .nvmrc",
+    "cache: npm",
+    "- run: |",
+    "sudo apt-get update",
+    "case \"$(lsb_release -rs)\" in",
+    "22.04) sudo apt-get install -y xvfb dbus-x11 libnss3 libgbm1 libgtk-3-0 libasound2 libfuse2 ;;",
+    "24.04) sudo apt-get install -y xvfb dbus-x11 libnss3 libgbm1 libgtk-3-0t64 libasound2t64 libfuse2t64 ;;",
+    "*) exit 1 ;;",
+    "esac",
+    "- run: npm ci",
+    "- run: node node_modules/electron/install.js",
+    "- run: xvfb-run -a dbus-run-session -- node --test packages/desktop/test/native/linux-sandbox-foundation.test.mjs",
+    "env:",
+    "DILLA_LINUX_SANDBOX_FOUNDATION_LANE: ${{ matrix.lane }}",
+    "- if: always()",
+    "uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7",
+    "with:",
+    "name: linux-sandbox-foundation-${{ matrix.lane }}",
+    "path: packages/desktop/test-results/linux-sandbox-foundation-${{ matrix.lane }}.json",
+    "if-no-files-found: error",
+  ].join('\n');
+  const actual = jobs['linux-sandbox-foundation'].split('\n').map(line => line.trim()).filter(line => line && !line.startsWith('#')).join('\n');
+  if (actual !== expected) problems.push('ci.yml: Linux sandbox foundation must run both fixed native Ubuntu lanes with unchanged host policy, pinned provisioning and the unfiltered FUSE feasibility fixture');
+  const needs = /^ {4}needs: \[([^\]\n]*)\]$/m.exec(jobs.desktop ?? '')?.[1].split(',').map(name => name.trim()) ?? [];
+  if (!needs.includes('linux-sandbox-foundation')) problems.push('ci.yml: desktop must wait for Linux sandbox foundation');
+}
+
 // This native fixture has no bundled-web/WASI prerequisite. Keep both complete
 // lifecycle files and the Go/NSIS interop control ahead of the desktop matrix.
 // Short controls must finish in their own step before the long maintenance test,
@@ -739,13 +789,24 @@ export function checkWorkflow(root) {
   const problems = [];
 
   let currentJob = null;
-  text.split('\n').forEach((line, i) => {
+  const workflowLines = text.split('\n');
+  workflowLines.forEach((line, i) => {
     checkActionReference(line, 'ci.yml', i + 1, problems);
     const jobKey = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line);
     if (jobKey !== null) currentJob = jobKey[1];
     for (const { re, what } of FORBIDDEN) {
       // Only the final gate and its no-op DAG barrier may run regardless of dependency results.
       if (what === 'if: always()' && ['ci-ok', 'ci-work-complete'].includes(currentJob) && line === '    if: always()') continue;
+      // Preserve only the bounded sandbox observation file after a failed
+      // native test. This action cannot execute or bypass an acceptance step.
+      if (what === 'if: always()' && currentJob === 'linux-sandbox-foundation' && workflowLines.slice(i, i + 6).join('\n') === [
+        '      - if: always()',
+        '        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7',
+        '        with:',
+        '          name: linux-sandbox-foundation-${{ matrix.lane }}',
+        '          path: packages/desktop/test-results/linux-sandbox-foundation-${{ matrix.lane }}.json',
+        '          if-no-files-found: error',
+      ].join('\n')) continue;
       if (re.test(line)) problems.push(`ci.yml:${i + 1}: forbidden "${what}" — CI is fail-closed (R22)`);
     }
     // v0.1.0-web3.1: only release.yml stamps a version; a ci build is 0.0.0-dev, so it is never mistaken for a release.
@@ -802,6 +863,7 @@ export function checkWorkflow(root) {
   }
   checkWindowsKernelJob(jobs, problems);
   checkWindowsInstallerJob(jobs, problems);
+  checkLinuxSandboxFoundationJob(jobs, problems);
 
   // Every test/build job needs `changes` and carries its gate, or it would run on a docs-only pull
   // request (or, with a wrong condition, be skipped on code).

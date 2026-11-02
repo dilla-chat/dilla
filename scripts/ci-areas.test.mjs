@@ -166,6 +166,13 @@ test('independent Windows installer uses desktop eligibility and fails safe on m
   }
 });
 
+test('Linux sandbox foundation shares desktop fail-safe code eligibility', () => {
+  assert.deepEqual(JOB_GATES['linux-sandbox-foundation'], ['e2e']);
+  for (const outputs of [...reachableOutputs(), {}, { e2e: '' }]) {
+    assert.equal(jobRuns('linux-sandbox-foundation', outputs), jobRuns('desktop', outputs));
+  }
+});
+
 // The guard for the whole table: every file that a test or a build reads from another place must trigger the
 // reader's jobs when it changes. It scans the sources for relative paths in reads and resolves them.
 // Readers that no CI job runs (pre-existing): e2e/scripts/shoot-docs.test.mjs reads docs/user/*.md, and nothing runs it.
