@@ -23,7 +23,7 @@ export interface LinuxInstallationContext {
  installKind: LinuxInstallKind; version: string; channel: 'stable' | 'beta'; arch: string;
  executable: string; resourcesPath: string;
 }
-export type LinuxInstallation = { installKind: 'system-package'; identity: NativePackageIdentity } | { installKind: 'appimage' };
+export type LinuxInstallation = { installKind: 'system-package'; identity: NativePackageIdentity; identitySha512: string } | { installKind: 'appimage' };
 function exact(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
  return value !== null && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === keys.length && Object.keys(value).every(key => keys.includes(key));
 }
@@ -98,7 +98,7 @@ export function parseNativePackageIdentity(raw: Uint8Array, context: Pick<LinuxI
   names.add(file.path); previous = file.path; total += Number(file.size);
   if (total > 8 * 1024 ** 3) throw new Error('Native package payload size limit');
  }
- for (const required of ['app/dilla-desktop', 'app/resources/app.asar', 'chrome-sandbox', 'package-maintainer']) if (!doc.payload.some(file => file.path === required && file.size > 0)) throw new Error('Missing native package authority file');
+ for (const required of ['app/dilla-desktop', 'app/resources/app.asar', 'app/resources/native/dilla-admission.node', 'chrome-sandbox', 'package-maintainer']) if (!doc.payload.some(file => file.path === required && file.size > 0)) throw new Error('Missing native package authority file');
  const helper = doc.helper;
  const helperFile = doc.payload.find(file => file.path === 'chrome-sandbox')!;
  if (!exact(helper, ['generation', 'compatibilityEpoch', 'sandboxApi', 'size', 'sha512']) || !Number.isSafeInteger(helper.generation) || Number(helper.generation) < 1
@@ -150,7 +150,9 @@ export async function resolveLinuxInstallation(context: LinuxInstallationContext
  }
  if (context.installKind !== 'system-package' || context.executable !== EXECUTABLE || context.resourcesPath !== RESOURCES) throw new Error('Unsupported Linux installation layout');
  for (const ancestor of ['/', '/usr', '/usr/lib', '/usr/lib/dilla', ROOT]) await directory(ancestor);
- const identity = parseNativePackageIdentity((await readProtected(IDENTITY))!, context);
+ const identityBytes = (await readProtected(IDENTITY))!;
+ const identitySha512 = createHash('sha512').update(identityBytes).digest('base64');
+ const identity = parseNativePackageIdentity(identityBytes, context);
  const files = new Map(identity.payload.map(file => [ROOT + '/' + file.path, file]));
  const seen = new Set<string>(); let adjacent = false;
  const walk = async (path: string): Promise<void> => {
@@ -178,8 +180,8 @@ export async function resolveLinuxInstallation(context: LinuxInstallationContext
  if (!adjacent || seen.size !== files.size) throw new Error('Incomplete native package payload');
  // Detect replacement of the identity during the full read-only verification.
  const finalIdentity = await readProtected(IDENTITY);
- if (!finalIdentity!.equals(Buffer.from(JSON.stringify(identity))) && JSON.stringify(parseNativePackageIdentity(finalIdentity!, context)) !== JSON.stringify(identity)) throw new Error('Native package identity changed');
- return { installKind: 'system-package', identity };
+ if (!finalIdentity!.equals(identityBytes)) throw new Error('Native package identity changed');
+ return { installKind: 'system-package', identity, identitySha512 };
 }
 export type LinuxInstallationRole = 'check' | 'download' | 'install' | 'recovery' | 'watchdog' | 'sandbox-setup';
 export function assertLinuxInstallationRole(installation: LinuxInstallation, role: LinuxInstallationRole): void {

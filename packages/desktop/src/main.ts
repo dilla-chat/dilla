@@ -14,6 +14,7 @@ import { linuxAutostart } from './autostart.ts';
 import { createUpdater } from './updater.ts';
 import { LINUX_INSTALL_KIND, assertLinuxSelfUpdate } from './linux-build.ts';
 import { resolveLinuxInstallation } from './linux-installation.ts';
+import { holdLinuxAdmission } from './linux-admission.ts';
 import { desktopReleasePage } from './update.ts';
 import { waitForPreviousProcess } from './handoff.ts';
 import { NativeAudio } from './native-audio.ts';
@@ -34,17 +35,22 @@ import { startupHealthFile, reportStartupHealth, withdrawStartupHealth } from '.
 
 // Role selection and health-environment consumption precede ordinary app boot,
 // single-instance acquisition, renderers, tray and unrelated process launches.
-protocol.registerSchemesAsPrivileged([{ scheme: 'dilla-internal', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
-app.enableSandbox();
 const linuxApplicationUpdates = process.platform !== 'linux' || LINUX_INSTALL_KIND === 'appimage';
 void initializeDesktop().catch(error => { console.error('Dilla could not initialize:', error); app.exit(1); });
 
 async function initializeDesktop(): Promise<void> {
+ const admission = process.platform === 'linux' && LINUX_INSTALL_KIND === 'system-package' ? holdLinuxAdmission() : undefined;
+ protocol.registerSchemesAsPrivileged([{ scheme: 'dilla-internal', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
+ app.enableSandbox();
  if (process.platform === 'linux') {
-  if (LINUX_INSTALL_KIND !== 'unknown') await resolveLinuxInstallation({
+  if (LINUX_INSTALL_KIND !== 'unknown') {
+   const installation = await resolveLinuxInstallation({
    installKind: LINUX_INSTALL_KIND, version: app.getVersion(), channel: app.getVersion().includes('-beta.') ? 'beta' : 'stable', arch: process.arch,
    executable: process.execPath, resourcesPath: process.resourcesPath,
-  });
+   });
+   if (admission && (installation.installKind !== 'system-package' || admission.manager !== installation.identity.manager
+    || admission.identitySha512 !== installation.identitySha512 || admission.manager === 'alpm')) throw new Error('Native admission does not match the verified package; repair using your package manager');
+  }
   const installationRole = process.argv.some(value => value.startsWith('--update-') || value.startsWith('--sandbox-') || value === '--setup-sandbox' || value.startsWith('--setup-sandbox='))
    || ['DILLA_UPDATE_STARTUP_NONCE', 'DILLA_UPDATE_PREVIOUS_PID', 'DILLA_UPDATE_RECOVERED_NONCE'].some(key => process.env[key] !== undefined);
   if (installationRole) assertLinuxSelfUpdate();

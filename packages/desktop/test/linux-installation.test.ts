@@ -8,7 +8,7 @@ import { updateFS } from '../src/update-fs.ts';
 import { parseNativePackageIdentity, resolveLinuxInstallation, assertLinuxInstallationRole, type NativePackageIdentity } from '../src/linux-installation.ts';
 const root = '/usr/lib/dilla/native';
 const context = { installKind: 'system-package' as const, version: '0.1.0-beta.10', channel: 'beta' as const, arch: 'x64', executable: root + '/app/dilla-desktop', resourcesPath: root + '/app/resources' };
-const contents: Record<string, string> = { 'app/dilla-desktop': 'electron', 'app/resources/app.asar': 'application', 'chrome-sandbox': 'sandbox', 'package-maintainer': 'maintainer' };
+const contents: Record<string, string> = { 'app/dilla-desktop': 'electron', 'app/resources/app.asar': 'application', 'app/resources/native/dilla-admission.node': 'addon', 'chrome-sandbox': 'sandbox', 'package-maintainer': 'maintainer' };
 const hash = (value: string) => createHash('sha512').update(value).digest('base64');
 function identity(): NativePackageIdentity {
  return { format: 1, installKind: 'system-package', manager: 'deb', upstreamVersion: context.version, packageVersion: '0.1.0~beta.10-1', arch: 'x64', channel: 'beta',
@@ -36,6 +36,7 @@ test('strict identity binds exact schema, versions, channel, helper tuple and pa
   (value: any) => value.payload[0].size = 2 ** 53,
   (value: any) => value.payload.push(value.payload[0]),
   (value: any) => value.payload.reverse(),
+  (value: any) => { value.payload = value.payload.filter((file: any) => file.path !== 'app/resources/native/dilla-admission.node'); },
   (value: any) => value.payload.splice(0, 1),
   (value: any) => value.payload.push({ path: 'app/resources', size: 0, sha512: hash('') }),
  ]) { const value = identity(); mutate(value); assert.throws(() => parseNativePackageIdentity(encode(value), context)); }
@@ -104,6 +105,7 @@ test('resolves only the fixed complete root-owned native tree', async t => {
  const installation = await resolveLinuxInstallation(context);
  assert.equal(installation.installKind, 'system-package');
  assert.deepEqual(installation.identity, identity());
+ assert.equal(installation.identitySha512, hash(JSON.stringify(identity())));
  assertLinuxInstallationRole(installation, 'check');
  for (const role of ['download', 'install', 'recovery', 'watchdog', 'sandbox-setup'] as const) assert.throws(() => assertLinuxInstallationRole(installation, role), /package manager/);
 });
@@ -114,6 +116,7 @@ for (const alteration of [
  { path: context.executable, nlink: 2 },
  { path: context.executable, gid: 1000 }, { path: context.executable, mode: 0o775 },
  { path: root + '/app/resources/app.asar', contents: 'tampered!!!' },
+ { path: root + '/app/resources/native/dilla-admission.node', contents: 'alter' },
  { path: root + '/chrome-sandbox', mode: 0o755 },
  { path: root + '/package-maintainer', mode: 0o4755 },
  { path: root + '/app/resources', symlink: true }, { extra: true },
@@ -132,4 +135,20 @@ test('unknown builds and wrong native executable/resources fail before touching 
  for (const value of [{ ...context, installKind: 'unknown' as const }, { ...context, executable: '/home/user/dilla' }, { ...context, resourcesPath: '/home/user/resources' }]) await assert.rejects(resolveLinuxInstallation(value), /installation|layout/);
  await assert.rejects(resolveLinuxInstallation({ ...context, installKind: 'appimage' }), /installation|layout/);
  assert.equal(read.mock.callCount(), 0);
+});
+
+test('protected identity reread rejects a semantically identical byte replacement', async t => {
+ const directory = await fixture(t);let identityReads = 0;
+ const originalLstat = updateFS.promises.lstat;
+ t.mock.method(updateFS.promises, 'lstat', async (path: string) => {
+  if (path === root + '/package.json' && ++identityReads === 2) await writeFile(join(directory, 'package.json'), JSON.stringify(identity(), null, 2));
+  return originalLstat(path);
+ });
+ await assert.rejects(resolveLinuxInstallation(context), /identity changed/);
+});
+
+test('native identity digest binds the original protected bytes, including formatting', async t => {
+ const raw=JSON.stringify(identity(),null,2);await fixture(t,{path:root+'/package.json',contents:raw});
+ const result=await resolveLinuxInstallation(context);
+ assert.equal(result.installKind,'system-package');assert.equal(result.identitySha512,hash(raw));assert.notEqual(result.identitySha512,hash(JSON.stringify(identity())));
 });
