@@ -25,5 +25,7 @@ jobs:
         run: go test ./internal/desktoplaunch ./packages/desktop/native/windows-launcher
       - name: Native path and installer control-flow probes
         run: node --test packages/desktop/test/windows-installer.test.ts
-      - name: Windows installer maintenance acceptance
+      - name: Focused interrupted-install diagnostic (not full maintenance acceptance)
+        env:
+          DILLA_FIXTURE_INITIAL_RETRY_ONLY: '1'
         run: node --test packages/desktop/test/native/windows-installer-maintenance.test.mjs packages/desktop/test/native/windows-installer-syntax.test.mjs
