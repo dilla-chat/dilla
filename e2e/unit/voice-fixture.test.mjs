@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chromium } from 'playwright';
+// @playwright/test, as every e2e spec: its browser build is the one CI installs.
+import { chromium } from '@playwright/test';
 
 async function inPage(run) {
   // channel 'chromium' as in the e2e configs: CI installs the full Chromium, not the headless shell.
