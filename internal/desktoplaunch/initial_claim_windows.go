@@ -223,14 +223,14 @@ func (c *InitialRootClaim) VerifyLayout() error {
 			}
 			opened, err := openInitialClaimMetadata(object.file, entry.Name(), expected.directory)
 			if err != nil {
-				return err
+				return fmt.Errorf("initial child metadata open: %w", err)
 			}
 			var actual, held syscall.ByHandleFileInformation
 			actualErr := syscall.GetFileInformationByHandle(syscall.Handle(opened.Fd()), &actual)
 			heldErr := syscall.GetFileInformationByHandle(syscall.Handle(expected.file.Fd()), &held)
 			closeErr := opened.Close()
 			if err = errors.Join(actualErr, heldErr, closeErr); err != nil {
-				return err
+				return fmt.Errorf("initial child metadata identity: %w", err)
 			}
 			if actual.VolumeSerialNumber != held.VolumeSerialNumber || actual.FileIndexHigh != held.FileIndexHigh || actual.FileIndexLow != held.FileIndexLow || actual.FileAttributes&syscall.FILE_ATTRIBUTE_REPARSE_POINT != 0 || (actual.FileAttributes&syscall.FILE_ATTRIBUTE_DIRECTORY != 0) != expected.directory || !expected.directory && actual.NumberOfLinks != 1 {
 				return errors.New("initial destination identity changed")

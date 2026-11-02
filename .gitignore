@@ -4,6 +4,7 @@
 /dist/
 /node_modules/
 **/node_modules/
+/artifacts/e2e-test-tools/
 *.wasm
 !third_party/noise/deepfilter/df_bg.wasm
 packages/ui/storybook-static/
