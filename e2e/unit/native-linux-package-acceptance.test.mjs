@@ -5,10 +5,40 @@ import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { verifyNativePackageInputs, comparePayloads, readNativePayload } from '../web/support/native-linux-package-acceptance.mjs';
+import { createRequire } from 'node:module';
+import { verifyNativePackageInputs, comparePayloads, readNativePayload, readInstalledDesktopEntry } from '../web/support/native-linux-package-acceptance.mjs';
 import { createPackage, uncache } from '@electron/asar';
 import { writeAurRecipe } from '../../packages/desktop/scripts/build-native-linux-packages.mjs';
 const expected = { commit: 'a'.repeat(40), tree: 'b'.repeat(40), ciRun: 123, version: '1.2.3' };
+test('installed observation reads the exact desktop entry emitted by the pinned native packager', async () => {
+ const root = await mkdtemp(join(tmpdir(), 'dilla-format-desktop-'));
+ try {
+  const require = createRequire(import.meta.url);
+  const { LinuxTargetHelper } = require('app-builder-lib/out/targets/LinuxTargetHelper.js');
+  const config = require('../../packages/desktop/electron-builder.native-linux.cjs');
+  const metadata = require('../../packages/desktop/package.json');
+  const helper = new LinuxTargetHelper({ config, platformSpecificBuildOptions: config.linux, info: { metadata }, executableName: config.executableName, fileAssociations: [], appInfo: { productName: config.productName, sanitizedProductName: config.productName, description: metadata.description } });
+  const desktop = await helper.computeDesktopEntry(config.linux);
+  const applications = join(root, 'usr/share/applications'); await mkdir(applications, { recursive: true });
+  const entry = join(applications, helper.getDesktopFileName() + '.desktop');
+  await writeFile(entry, desktop);
+  assert.equal(await readInstalledDesktopEntry(root), desktop);
+  // An unrelated or legacy desktop entry must not satisfy the observation.
+  await rm(entry); await writeFile(join(applications, 'dilla-desktop.desktop'), desktop);
+  await assert.rejects(readInstalledDesktopEntry(root), { code: 'ENOENT' });
+ } finally { await rm(root, { recursive: true, force: true }); }
+});
+test('installed desktop observation still requires the launcher and dilla protocol', async () => {
+ const root = await mkdtemp(join(tmpdir(), 'dilla-format-desktop-invalid-'));
+ try {
+  const applications = join(root, 'usr/share/applications'); await mkdir(applications, { recursive: true });
+  const entry = join(applications, 'dev.dilla.desktop.desktop');
+  for (const desktop of ['[Desktop Entry]\nExec=/usr/bin/other %U\nMimeType=x-scheme-handler/dilla;\n', '[Desktop Entry]\nExec=/opt/Dilla/dilla-desktop %U\nMimeType=x-scheme-handler/other;\n']) {
+   await writeFile(entry, desktop);
+   await assert.rejects(readInstalledDesktopEntry(root), /Missing desktop\/protocol registration/);
+  }
+ } finally { await rm(root, { recursive: true, force: true }); }
+});
 test('acceptance binds actual same-run package bytes and canonical recipe before manager execution', async () => {
  const root = await mkdtemp(join(tmpdir(), 'dilla-format-input-'));
  try {

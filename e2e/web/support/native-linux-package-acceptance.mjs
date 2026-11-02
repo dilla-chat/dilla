@@ -74,6 +74,13 @@ async function prepare(inputs, output, expected) {
  await verifyNativePackageInputs(inputs, expected);
  await json(join(output, 'inputs.json'), { producer, payload: debPayload });
 }
+export async function readInstalledDesktopEntry(root = '/') {
+ // The stock DEB/RPM targets honor desktopName with syncDesktopName enabled;
+ // the AUR recipe retains that exact DEB entry.
+ const desktop = await readFile(join(root, 'usr/share/applications/dev.dilla.desktop.desktop'), 'utf8');
+ if (!/^Exec=.*dilla-desktop/m.test(desktop) || !/^MimeType=.*x-scheme-handler\/dilla[;\s]/m.test(desktop)) throw new Error('Missing desktop/protocol registration');
+ return desktop;
+}
 async function installed(inputs, output, format, expected) {
  const producer = await verifyNativePackageInputs(inputs, expected), prepared = JSON.parse(await readFile(join(output, 'inputs.json'), 'utf8'));
  if (JSON.stringify(producer) !== JSON.stringify(prepared.producer)) throw new Error('Producer identity changed');
@@ -96,8 +103,7 @@ async function installed(inputs, output, format, expected) {
  if (!['/opt/Dilla/dilla-desktop', '/etc/alternatives/dilla-desktop'].includes(entry) || run('readlink', ['-f', '/usr/bin/dilla-desktop']) !== '/opt/Dilla/dilla-desktop') throw new Error('Wrong installed launcher');
  const helper = await lstat('/opt/Dilla/chrome-sandbox'), mode = helper.mode & 0o7777;
  if (!helper.isFile() || helper.uid !== 0 || helper.gid !== 0 || ![0o755, 0o4755].includes(mode) || (format === 'aur' && mode !== 0o4755)) throw new Error('Unexpected standard sandbox helper ownership/mode');
- const desktop = await readFile('/usr/share/applications/dilla-desktop.desktop', 'utf8');
- if (!/^Exec=.*dilla-desktop/m.test(desktop) || !/^MimeType=.*x-scheme-handler\/dilla[;\s]/m.test(desktop)) throw new Error('Missing desktop/protocol registration');
+ const desktop = await readInstalledDesktopEntry();
  const userspace = await readFile('/etc/os-release', 'utf8'), kernel = run('uname', ['-sr']);
  const signaturePolicySnapshotSha256 = sha(await readFile(join(output, 'signature-policy-before.txt')));
  await json(join(output, 'installed.json'), { format, manager, builtPackage, userspace, kernel, signaturePolicySnapshotSha256, helper: { uid: helper.uid, gid: helper.gid, mode: mode.toString(8) }, desktopSha256: sha(desktop), payload: prepared.payload });
