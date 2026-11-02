@@ -5,6 +5,10 @@
 **Decision owner:** The user delegates routine implementation decisions. The mechanisms below are engineering decisions for review, not additional preference questions.
 **Plan:** [Implementation plan](../plans/2026-11-02-dilla-linux-sandbox.md).
 
+## Native-package scope amendment
+
+The user's later .deb/.rpm/AUR request supersedes the earlier package-format non-goal. The [native-package design](2026-11-02-dilla-linux-native-packages-design.md) and [plan](../plans/2026-11-02-dilla-linux-native-packages.md) define that additional scope. AppImage's fixed ownership root is now /usr/lib/dilla/appimage; native packages use sibling /usr/lib/dilla/native. Their common /usr/lib/dilla parent is root-owned 0755 and validated, but emptiness/authority checks apply to the selected ownership leaf, never its sibling. Neither owner changes or recursively removes the other leaf or shared parent. The single-helper/floor rules below apply within the AppImage domain; a package-owned helper has an independent persistent floor and only its package manager may change it. The same component-generation numbering is reused, without claiming one owner revokes the other's installed helper. Task 1's framing, signature domain, bounds and pure validation contract are unchanged.
+
 ## Outcome and evidence
 
 Keep AppImage distribution, default Ubuntu support, renderer sandboxing and automatic verified application updates. Determine prerequisites automatically and use the normal desktop administrator prompt only when a secure system component needs installation/maintenance. People do not choose namespace mechanisms, paths, helper versions or shell commands. There is no unsandboxed mode.
@@ -13,9 +17,9 @@ The unsafe builder fallback is already removed. Normal FUSE upgrade/recovery pas
 
 ## Decision and alternatives
 
-Use one machine-wide Chromium helper at `/usr/lib/dilla/chrome-sandbox`, maintained by a root-owned **non-setuid** offline program. The adjacent AppImage helper becomes an absolute symlink to that location, preserved in SquashFS. All users, channels, retained applications and recovery/watchdog copies share the current compatible helper. No old privileged helper version is retained.
+Use one machine-wide Chromium helper at `/usr/lib/dilla/appimage/chrome-sandbox`, maintained by a root-owned **non-setuid** offline program. The adjacent AppImage helper becomes an absolute symlink to that location, preserved in SquashFS. All users, channels, retained applications and recovery/watchdog copies share the current compatible helper. No old privileged helper version is retained.
 
-Namespace-only support would exclude the failing Ubuntu configuration. Changing package formats expands approved packaging scope. A custom permanently-setuid broker adds a privileged runtime protocol. Those alternatives are not selected. Direct `pkexec(userOwnedPath)` is rejected: hashing a pathname before authentication does not bind the subsequently executed inode.
+Namespace-only support would exclude the failing Ubuntu configuration. Native .deb/.rpm/AUR distribution is now selected in the [native-package design](2026-11-02-dilla-linux-native-packages-design.md); this ADR governs the AppImage ownership domain. A custom permanently-setuid broker adds a privileged runtime protocol. Those alternatives are not selected. Direct `pkexec(userOwnedPath)` is rejected: hashing a pathname before authentication does not bind the subsequently executed inode.
 
 Use separate unprivileged native launch/setup and root maintainer executables, built with the existing Go toolchain/standard cryptography and existing `x/sys/unix` syscall dependency. The maintainer is `CGO_ENABLED=0` and never links/loads GUI libraries; only the unprivileged frontend may link the existing desktop GTK3 prerequisite for fixed explanatory UI. Never run Electron as root. No daemon, privileged networking or renderer filesystem/shell capability is introduced.
 
@@ -42,7 +46,7 @@ Linux FD-exec is required; no mutable-path or `ETXTBSY` workaround is allowed. P
 
 **Authorization scope:** first installation still assumes the administrator chose an authentic AppImage, as for a downloaded installer. Frozen code/digests prevent prompt-time pathname substitution; they cannot authenticate a frontend already replaced before invocation. The first OS dialog identifies `/usr/bin/python3`, not a cryptographically app-specific polkit action. The unprivileged frontend shows a fixed native GTK3 explanation before that normal prompt; no remote content is loaded and the root process has no GUI. GTK3 is already an Electron desktop prerequisite; binding this small fixed dialog and its availability must be proved on supported Ubuntu rather than installing a new GUI framework. No blanket Python policy, new permissive polkit rule, retained authorization or `auth_admin_keep` is installed. Missing distro Python/pkexec/session agent is an actionable prerequisite error, never a PATH/shell fallback.
 
-Later authorization invokes only `/usr/bin/pkexec --disable-internal-agent /usr/lib/dilla/sandbox-maintainer`. It accepts a dedicated-signature-authorized constrained capsule; unsigned first-install data never authorizes a resident update. Cancellation and authorization failure remain distinct (126/127); Dilla never handles the password. Branded polkit policy is outside this design and not necessary for correctness.
+Later authorization invokes only `/usr/bin/pkexec --disable-internal-agent /usr/lib/dilla/appimage/sandbox-maintainer`. It accepts a dedicated-signature-authorized constrained capsule; unsigned first-install data never authorizes a resident update. Cancellation and authorization failure remain distinct (126/127); Dilla never handles the password. Branded polkit policy is outside this design and not necessary for correctness.
 
 ## Capsule, signature and freshness
 
@@ -89,7 +93,7 @@ Pin bundle URL to the approved GitHub release/version and fixed `.sandbox` asset
 
 ## Fixed system layout and status
 
-| Object under `/usr/lib/dilla/` | Ownership/mode | Meaning |
+| Object under `/usr/lib/dilla/appimage/` | Ownership/mode | Meaning |
 |---|---|---|
 | Parent directory | root:root 0755 | Pinned trusted ancestor, no writable ACL |
 | `sandbox-maintainer` | root:root 0755, one link | Non-setuid fixed maintenance entry |
