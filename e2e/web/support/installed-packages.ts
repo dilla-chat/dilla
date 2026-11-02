@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { cp, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, writeFile, chmod } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+import { installedEntrypointBanner } from './installed-launch-diagnostics.ts';
 import type { Artifact, Release } from '../../../packages/desktop/src/update.ts';
 
 const repository = resolve(import.meta.dirname, '../../..');
@@ -101,7 +102,7 @@ export async function assertInstalledFuses(binary: string): Promise<void> {
   for (const key of [FuseV1Options.EnableCookieEncryption, FuseV1Options.EnableEmbeddedAsarIntegrityValidation, FuseV1Options.OnlyLoadAppFromAsar]) if (wire[key] !== FuseState.ENABLE) throw new Error('Installed account fixture lacks an Electron fuse');
 }
 interface Package { artifact: string; executable: string; app?: string; manifest?: string; sparkleSignature?: string }
-export interface InstalledPackages { root: string; profile: string; reports: string; product: string; installed: string; old: Package; next: Package; setNext(): Promise<void>; dispose(): Promise<void> }
+export interface InstalledPackages { started: number; appId: string; root: string; profile: string; reports: string; product: string; installed: string; old: Package; next: Package; setNext(): Promise<void>; dispose(): Promise<void> }
 export async function createInstalledFixtureRoot(parent = tmpdir()): Promise<string> {
   // Native packaging rejects aliased program trees. macOS /var and Windows
   // short TEMP names must resolve before identity, profile and cleanup paths.
@@ -111,7 +112,7 @@ export async function createInstalledFixtureRoot(parent = tmpdir()): Promise<str
 /** Full production main, bundled UI and core, with private throwaway trust and
  * transport constants compiled into these two acceptance applications only. */
 export async function createInstalledPackages(instance: string): Promise<InstalledPackages> {
-  const root = await createInstalledFixtureRoot(), id = randomBytes(6).toString('hex'), product = 'DillaAccountAcceptance' + id;
+  const started = Date.now(), root = await createInstalledFixtureRoot(), id = randomBytes(6).toString('hex'), product = 'DillaAccountAcceptance' + id;
   const appId = process.platform === 'darwin' ? 'dev.dilla.desktop.update-acceptance' : 'dev.dilla.desktop.account-acceptance.' + id;
   const profile = process.platform === 'win32' ? join(process.env.APPDATA!, product) : join(root, 'profile'), reports = join(root, 'reports'), scheme = 'dilla-account-' + id;
   const keys = generateKeyPairSync('ed25519'), publicKey = keys.publicKey.export({ type: 'spki', format: 'pem' }).toString(), sparkleKeys = generateKeyPairSync('ed25519');
@@ -139,7 +140,7 @@ export async function createInstalledPackages(instance: string): Promise<Install
       await rm(join(dist, 'client'), { recursive: true, force: true }); await cp(join(repository, 'packages/web/dist'), join(dist, 'client'), { recursive: true });
       await writeFile(join(project, 'package.json'), JSON.stringify({ name: 'dilla-account-acceptance-' + id, version, main: 'dist/main.cjs', description: 'Installed account acceptance', author: 'Dilla', license: 'AGPL-3.0-or-later' }));
       await build({ entryPoints: [join(desktop, 'src/preload.ts')], outfile: join(dist, 'preload.cjs'), bundle: true, platform: 'node', target: 'es2022', format: 'cjs', external: ['electron'] });
-      await build({ entryPoints: [join(desktop, 'src/main.ts')], outfile: join(dist, 'main.cjs'), bundle: true, platform: 'node', target: 'node24', format: 'cjs', external: ['electron'], plugins: [{ name: 'compiled-account-acceptance', setup(plugin) {
+      await build({ entryPoints: [join(desktop, 'src/main.ts')], outfile: join(dist, 'main.cjs'), bundle: true, platform: 'node', target: 'node24', format: 'cjs', external: ['electron'], banner: { js: installedEntrypointBanner(reports, version) }, plugins: [{ name: 'compiled-account-acceptance', setup(plugin) {
         plugin.onLoad({ filter: /[\\/]src[\\/]update-keys\.ts$/ }, () => ({ contents: `export const RELEASE_PUBLIC_KEYS=${JSON.stringify([publicKey])};`, loader: 'ts' }));
         plugin.onLoad({ filter: /[\\/]src[\\/]main\.ts$/ }, () => ({ contents: fixtureMainSource(sourceMain, { product, profile, reports, scheme, version }), loader: 'ts', resolveDir: join(desktop, 'src') }));
         plugin.onLoad({ filter: /[\\/]src[\\/]updater\.ts$/ }, () => {
@@ -182,7 +183,7 @@ export async function createInstalledPackages(instance: string): Promise<Install
     if (process.platform === 'linux') { await mkdir(join(root, 'Applications')); installed = join(root, 'Applications/Dilla.AppImage'); await cp(old.artifact, installed); await chmod(installed, 0o700); }
     else if (process.platform === 'win32') { execFileSync(old.artifact, ['/S'], { timeout: 120000, stdio: ['ignore', log.fd, log.fd] }); installed = join(process.env.LOCALAPPDATA!, 'Programs', product, 'Dilla.exe'); }
     else { await mkdir(join(root, 'Applications')); const app = join(root, 'Applications', product + '.app'); execFileSync('ditto', [old.app!, app]); installed = join(app, 'Contents/MacOS', (await readdir(join(app, 'Contents/MacOS')))[0]); }
-    return { root, profile, reports, product, installed, old, next, setNext: () => setRelease(next, '1.0.1'), dispose: async () => {
+    return { started, appId, root, profile, reports, product, installed, old, next, setNext: () => setRelease(next, '1.0.1'), dispose: async () => {
       if (process.platform === 'win32') { try { execFileSync(join(process.env.LOCALAPPDATA!, 'Programs', product, 'Uninstall ' + product + '.exe'), ['/S'], { timeout: 120000, stdio: ['ignore', log.fd, log.fd] }); } catch { /* Keep diagnostic files when a safe uninstall refuses. */ } }
       await new Promise<void>(done => server!.close(() => done())); await log.close();
       if (!process.env.DILLA_KEEP_ACCOUNT_FIXTURE) { await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); if (process.platform === 'win32') await rm(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }

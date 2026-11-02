@@ -7,6 +7,7 @@ import { canonicalInstance } from '../../../packages/desktop/src/policy.ts';
 import { test as appTest, WAIT, copy } from './app.ts';
 import { assertInstalledFuses, createInstalledPackages, type InstalledPackages } from './installed-packages.ts';
 import { installedAccountDiagnostics, installedPostFailureDiagnostics } from './installed-diagnostics.ts';
+import { installedNativeLaunchDiagnostics } from './installed-launch-diagnostics.ts';
 
 const pause = () => new Promise(done => setTimeout(done, 100));
 interface ProcessReport { pid: number; role: string; start: string | null; version: string; executable: string }
@@ -65,6 +66,12 @@ export class InstalledAccountApp {
   async postFailureDiagnostics(failureObserved: boolean) {
     return installedPostFailureDiagnostics({ reports: this.packages.reports, instance: this.instance, control: process.env.DILLA_TESTKIT_CONTROL,
       expectedVersion: this.expectedVersion, failureObserved });
+  }
+  async nativeLaunchDiagnostics(failureObserved: boolean) {
+    return installedNativeLaunchDiagnostics({ reports: this.packages.reports, installed: this.packages.installed,
+      product: this.packages.product, appId: this.packages.appId, started: this.packages.started,
+      expectedApp: this.packages.next.app ?? '', expectedExecutable: this.packages.next.executable,
+      platform: process.platform, failureObserved });
   }
   async prepareUpdate(): Promise<void> {
     await this.packages.setNext();
@@ -144,17 +151,25 @@ export const test = appTest.extend<{ installed: InstalledAccountApp }>({
           // startup snapshot is logged above. These optional probes get a
           // separate 10-second teardown budget; startup/assertion budgets stay
           // unchanged and no probe may retry or replace the original failure.
-          let probeTimer: ReturnType<typeof setTimeout> | undefined;
+          let probeTimer: ReturnType<typeof setTimeout> | undefined, acceptingDiagnostics = true;
           try {
-            const result = await Promise.race([installed.postFailureDiagnostics(info.status !== info.expectedStatus), new Promise(resolve => {
-              probeTimer = setTimeout(() => resolve({ format: 1, status: 'unavailable' }), 10000);
+            // Native checks run alongside network checks, inside this same total
+            // budget. Neither can replace or postpone the already failed assertion.
+            const collect = async (kind: 'network' | 'native') => {
+              try {
+                const result = kind === 'network' ? await installed.postFailureDiagnostics(true) : await installed.nativeLaunchDiagnostics(true);
+                if (!acceptingDiagnostics) return;
+                const diagnostic = JSON.stringify(result), file = info.outputPath(kind === 'network' ? 'installed-post-failure-network.json' : 'installed-native-launch-diagnostics.json');
+                console.log((kind === 'network' ? 'INSTALLED_POST_FAILURE_NETWORK_DIAGNOSTICS ' : 'INSTALLED_NATIVE_LAUNCH_DIAGNOSTICS ') + diagnostic);
+                await writeFile(file, diagnostic, { mode: 0o600 });
+                await info.attach(kind === 'network' ? 'Installed post-failure network diagnostics' : 'Installed native launch diagnostics', { path: file, contentType: 'application/json' });
+              } catch { /* Preserve the original failure even if an optional probe fails. */ }
+            };
+            await Promise.race([Promise.all([collect('network'), collect('native')]), new Promise<void>(resolve => {
+              probeTimer = setTimeout(resolve, 10000);
             })]);
-            const diagnostic = JSON.stringify(result), file = info.outputPath('installed-post-failure-network.json');
-            console.log('INSTALLED_POST_FAILURE_NETWORK_DIAGNOSTICS ' + diagnostic);
-            await writeFile(file, diagnostic, { mode: 0o600 });
-            await info.attach('Installed post-failure network diagnostics', { path: file, contentType: 'application/json' });
           } catch { /* Preserve the existing failed assertion even if every probe fails. */ }
-          finally { clearTimeout(probeTimer); }
+          finally { acceptingDiagnostics = false; clearTimeout(probeTimer); }
         }
         await installed.stop();
         if (info.status !== info.expectedStatus) {

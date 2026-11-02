@@ -5,6 +5,7 @@ import { join, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { generateKeyPairSync } from 'node:crypto';
 import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import { createServer } from 'node:net';
 import { installedAccountDiagnostics } from '../web/support/installed-diagnostics.ts';
@@ -297,4 +298,132 @@ test('stalled post-failure probes are bounded and cannot replace the original fa
     assert.deepEqual(result.probes.map(probe => [probe.status, probe.code]), [['failed', -7], ['failed', -7]]);
     assert.equal(result.main.status, 'unavailable'); assert.ok(Date.now() - started < 8000, 'optional diagnostics must not wait indefinitely');
   } finally { server.closeAllConnections(); await new Promise(done => server.close(done)); await rm(root, { recursive: true, force: true }); }
+});
+
+test('native launch fingerprints report exact owned bytes, modes and architecture without following unsafe files', async () => {
+  const diagnostics = await import('../web/support/installed-launch-diagnostics.ts');
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'dilla-launch-image-'))), file = join(root, 'dilla-desktop');
+  try {
+    const bytes = Buffer.alloc(64); bytes.writeUInt32LE(0xfeedfacf, 0); bytes.writeUInt32LE(0x01000007, 4); bytes.write('PRIVATE_SECRET', 16);
+    await writeFile(file, bytes, { mode: 0o700 });
+    const image = await diagnostics.launchImageFingerprint(file);
+    assert.equal(image.status, 'ok'); assert.equal(image.arch, 'x64'); assert.equal(image.size, 64);
+    assert.equal(image.sha512, createRequire(import.meta.url)('node:crypto').createHash('sha512').update(bytes).digest('base64'));
+    if (process.platform !== 'win32') assert.equal(image.executable, true);
+    assert.doesNotMatch(JSON.stringify(image), /PRIVATE_SECRET|dilla-desktop|http:/);
+    await rm(file); const directory = join(root, 'PRIVATE_SECRET'); await mkdir(directory); await symlink(directory, file, process.platform === 'win32' ? 'junction' : 'dir');
+    assert.equal((await diagnostics.launchImageFingerprint(file)).status, 'unsafe');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('compiled fixture entry banner records before actual main imports and never swallows an import failure', async () => {
+  const diagnostics = await import('../web/support/installed-launch-diagnostics.ts');
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'dilla-launch-entry-')));
+  try {
+    const source = await readFile(new URL('../../packages/desktop/src/main.ts', import.meta.url), 'utf8');
+    const esbuild = createRequire(import.meta.url)('esbuild'), fs = createRequire(import.meta.url)('node:fs');
+    const result = await esbuild.build({ stdin: { contents: source, loader: 'ts', resolveDir: fileURLToPath(new URL('../../packages/desktop/src/', import.meta.url)) }, bundle: true, platform: 'node', format: 'cjs', packages: 'external', write: false, banner: { js: diagnostics.installedEntrypointBanner(root, '1.0.1') } });
+    const original = new Error('PRIVATE_SECRET require failure'), handlers = {};
+    const childProcess = Object.create(process); childProcess.on = (name, fn) => { handlers[name] = fn; return childProcess; };
+    assert.throws(() => runInNewContext(result.outputFiles[0].text, { process: childProcess, Buffer, Date, console, require(name) { if (name === 'electron') throw original; return createRequire(import.meta.url)(name); } }), e => e === original);
+    let events = (await readFile(join(root, 'entry-1.0.1.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+    assert.equal(events[0].stage, 'before-imports'); assert.equal(events[0].version, '1.0.1');
+    assert.equal(handlers.uncaughtException, undefined); assert.equal(typeof handlers.uncaughtExceptionMonitor, 'function');
+    original.code = 'MODULE_NOT_FOUND'; handlers.uncaughtExceptionMonitor(original); handlers.exit(1);
+    events = (await readFile(join(root, 'entry-1.0.1.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+    assert.equal(events[1].stage, 'uncaught'); assert.equal(events[1].code, 'MODULE_NOT_FOUND'); assert.equal(events[2].exitCode, 1);
+    assert.doesNotMatch(JSON.stringify(events), /PRIVATE_SECRET|require failure|http:/);
+    assert.equal(fs.statSync(join(root, 'entry-1.0.1.jsonl')).size < 8192, true);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('native crash and OS log decoders retain only exact owned fixture facts and fixed codes', async () => {
+  const diagnostics = await import('../web/support/installed-launch-diagnostics.ts');
+  const identity = { appId: 'dev.dilla.desktop.update-acceptance', product: 'DillaAccountAcceptance012345abcdef', installed: '/owned/private/Dilla.app/Contents/MacOS/dilla-desktop' };
+  const crash = { pid: 123, procPath: identity.installed, bundleInfo: { CFBundleIdentifier: identity.appId }, exception: { type: 'EXC_CRASH', private: 'PRIVATE_SECRET' }, termination: { namespace: 'DYLD', code: 1, reasons: ['PRIVATE_SECRET Library missing'] }, threads: ['PRIVATE_SECRET'] };
+  const record = diagnostics.parseOwnedCrash(JSON.stringify({ private: 'PRIVATE_SECRET' }) + '\n' + JSON.stringify(crash), identity);
+  assert.deepEqual(record, { pid: 123, exception: 'EXC_CRASH', namespace: 'DYLD', code: 1 });
+  assert.equal(diagnostics.parseOwnedCrash(JSON.stringify({ ...crash, procPath: '/unrelated/private' }), identity), null);
+  const logs = diagnostics.parseOwnedLaunchLogs(JSON.stringify({ eventMessage: `Failed to relaunch bundle at ${identity.product} PRIVATE_SECRET OSStatus=-10810` }) + '\n' + JSON.stringify({ eventMessage: 'unrelated PRIVATE_SECRET' }), identity.product);
+  assert.deepEqual(logs.records, [{ stage: 'relaunch-failed', code: -10810 }]);
+  assert.doesNotMatch(JSON.stringify({ record, logs }), /PRIVATE_SECRET|owned\/private|http:|threads|eventMessage/);
+});
+
+test('entry monitor observes actual process import failure without handling it or changing its exit', async () => {
+  const diagnostics = await import('../web/support/installed-launch-diagnostics.ts');
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'dilla-launch-exit-')));
+  try {
+    const file = join(root, 'fixture.cjs');
+    await writeFile(file, diagnostics.installedEntrypointBanner(root, '1.0.1') + "\nrequire('dilla-fixture-intentionally-missing-PRIVATE_SECRET');");
+    const child = createRequire(import.meta.url)('node:child_process').spawnSync(process.execPath, [file], { encoding: 'utf8', timeout: 5000 });
+    assert.equal(child.status, 1); assert.match(child.stderr, /MODULE_NOT_FOUND/);
+    const report = await diagnostics.readLaunchEntries(root, '1.0.1');
+    assert.equal(report.status, 'ok'); assert.deepEqual(report.records.map(record => record.stage), ['before-imports', 'uncaught', 'exit']);
+    assert.equal(report.records[1].code, 'MODULE_NOT_FOUND'); assert.equal(report.records[2].exitCode, 1);
+    assert.doesNotMatch(JSON.stringify(report), /PRIVATE_SECRET|fixture\.cjs|Cannot find/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('native launch reports reject malformed oversized and symlinked fixture entry files', async () => {
+  const diagnostics = await import('../web/support/installed-launch-diagnostics.ts');
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'dilla-launch-private-'))), file = join(root, 'entry-1.0.1.jsonl');
+  try {
+    await writeFile(file, '{PRIVATE_SECRET'); assert.equal((await diagnostics.readLaunchEntries(root, '1.0.1')).status, 'malformed');
+    await writeFile(file, 'PRIVATE_SECRET'.repeat(1000)); assert.equal((await diagnostics.readLaunchEntries(root, '1.0.1')).status, 'oversized');
+    await rm(file); const directory = join(root, 'PRIVATE_SECRET'); await mkdir(directory); await symlink(directory, file, process.platform === 'win32' ? 'junction' : 'dir');
+    const result = await diagnostics.readLaunchEntries(root, '1.0.1'); assert.equal(result.status, 'unsafe'); assert.deepEqual(result.records, []);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('failure-only native collector compares actual fixture images and discards unrelated OS evidence', async () => {
+  const diagnostics = await import('../web/support/installed-launch-diagnostics.ts');
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'dilla-launch-collector-')));
+  const product = 'DillaAccountAcceptance012345abcdef', app = join(root, product + '.app'), expectedApp = join(root, 'next.app'), reports = join(root, 'reports'), crashDirectory = join(root, 'crashes');
+  const installed = join(app, 'Contents/MacOS/dilla-desktop'), expectedExecutable = join(expectedApp, 'Contents/MacOS/dilla-desktop');
+  try {
+    await mkdir(reports); await mkdir(crashDirectory);
+    for (const bundle of [app, expectedApp]) {
+      await mkdir(join(bundle, 'Contents/MacOS'), { recursive: true }); await mkdir(join(bundle, 'Contents/Resources'));
+      await writeFile(join(bundle, 'Contents/MacOS/dilla-desktop'), Buffer.from('PRIVATE_SECRET executable'), { mode: 0o700 });
+      await writeFile(join(bundle, 'Contents/Resources/app.asar'), 'PRIVATE_SECRET asar');
+    }
+    await writeFile(join(app, 'Contents/Info.plist'), '<key>CFBundleVersion</key><string>1.0.1</string><key>CFBundleExecutable</key><string>dilla-desktop</string><key>private</key><string>PRIVATE_SECRET</string>');
+    const input = { installed, expectedExecutable, expectedApp, reports, product, appId: 'dev.dilla.desktop.update-acceptance', started: Date.now() - 1000, platform: 'darwin', failureObserved: true };
+    const crash = { pid: 123, procPath: installed, bundleInfo: { CFBundleIdentifier: input.appId }, exception: { type: 'EXC_CRASH' }, termination: { namespace: 'DYLD', code: 1, reasons: ['PRIVATE_SECRET'] } };
+    await writeFile(join(crashDirectory, 'dilla-desktop-owned.ips'), JSON.stringify(crash));
+    await writeFile(join(crashDirectory, 'dilla-desktop-unrelated.ips'), JSON.stringify({ ...crash, procPath: '/unrelated/PRIVATE_SECRET' }));
+    const calls = [];
+    const runCommand = async (executable, args) => {
+      calls.push([executable, args]);
+      if (executable === '/bin/ps') return { status: 0, stdout: `123 ${process.getuid?.() ?? 0} S ${installed}\n124 0 R /unrelated/PRIVATE_SECRET`, stderr: '' };
+      if (executable === '/usr/bin/log') return { status: 0, stdout: JSON.stringify({ eventMessage: `Failed to relaunch ${product} PRIVATE_SECRET OSStatus=-10810` }), stderr: '' };
+      assert.equal(executable, '/usr/bin/codesign'); assert.equal(args.at(-1), app);
+      return { status: 0, stdout: '', stderr: 'Signature=adhoc\nCDHash=' + 'ab'.repeat(20) + '\nAuthority=PRIVATE_SECRET\n' };
+    };
+    const dependencies = { runCommand, crashDirectory };
+    assert.equal((await diagnostics.installedNativeLaunchDiagnostics({ ...input, failureObserved: false }, dependencies)).status, 'not-requested');
+    assert.equal((await diagnostics.installedNativeLaunchDiagnostics({ ...input, product: 'unsafe PRIVATE_SECRET' }, dependencies)).status, 'unsafe');
+    assert.equal(calls.length, 0, 'no process/log probe before the original assertion failed or for an unsafe identity');
+    const report = await diagnostics.installedNativeLaunchDiagnostics(input, dependencies);
+    assert.equal(report.status, 'ok'); assert.equal(report.executableMatches, true); assert.equal(report.asarMatches, true);
+    assert.deepEqual(report.plist, { status: 'ok', version: '1.0.1', executableMatches: true });
+    assert.equal(report.codeSignature.adHoc, true); assert.equal(report.codeSignature.cdHash, 'ab'.repeat(20));
+    assert.deepEqual(report.crashes.records, [{ pid: 123, exception: 'EXC_CRASH', namespace: 'DYLD', code: 1 }]);
+    assert.deepEqual(report.logs.records, [{ stage: 'relaunch-failed', code: -10810 }]);
+    assert.equal(calls.length, 4); assert.ok(calls.every(([executable]) => ['/usr/bin/codesign', '/usr/bin/log', '/bin/ps'].includes(executable)));
+    assert.doesNotMatch(JSON.stringify(report), /PRIVATE_SECRET|unrelated|procPath|eventMessage|Authority|dilla-launch-collector/);
+    await writeFile(installed, 'different actual executable');
+    assert.equal((await diagnostics.installedNativeLaunchDiagnostics(input, dependencies)).executableMatches, false);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('native launch instrumentation is compiled before main imports and shares the existing postfailure budget', async () => {
+  const packages = await readFile(new URL('../web/support/installed-packages.ts', import.meta.url), 'utf8');
+  const app = await readFile(new URL('../web/support/installed-app.ts', import.meta.url), 'utf8');
+  assert.match(packages, /banner: \{ js: installedEntrypointBanner\(reports, version\) \}/);
+  assert.match(app, /Promise\.all\(\[collect\('network'\), collect\('native'\)\]\)/);
+  assert.equal(app.match(/setTimeout\(resolve, 10000\)/g)?.length, 1);
+  assert.ok(app.indexOf("console.log('INSTALLED_STARTUP_DIAGNOSTICS '") < app.indexOf("collect('native')"));
+  assert.match(app, /if \(info\.status !== info\.expectedStatus\)/);
+  assert.match(app, /if \(!acceptingDiagnostics\) return/);
 });

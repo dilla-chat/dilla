@@ -17,7 +17,7 @@ interface PrivateRead { status: Status; present: boolean; text?: string }
 
 /** Never follow a report symlink or read an unbounded/racing replacement. No
  * private file text, exception or pathname is returned by the public snapshot. */
-async function boundedRegular(file: string, limit: number): Promise<PrivateRead> {
+export async function boundedRegular(file: string, limit: number): Promise<PrivateRead> {
   let present = false;
   try {
     const before = await lstat(file); present = true;
