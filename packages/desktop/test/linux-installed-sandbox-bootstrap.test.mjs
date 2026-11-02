@@ -84,3 +84,18 @@ test('exporter builds only HEAD bytes even when Git ignores an injected compiler
   const safe=join(destination,'safe');run('go',['build','-buildvcs=false','-o',safe,'.'],destination);assert.equal(run(safe,[]),'reviewed');
  }finally{await rm(root,{recursive:true,force:true});await rm(destination,{recursive:true,force:true});}
 });
+
+test('actual Node socket stdin is rejected while exact unlinked read-only capsule FD satisfies the existing Python contract',{skip:process.platform!=='linux'},async()=>{
+ const {openCapsuleStdin}=await import('./support/linux-installed-sandbox-bootstrap.mjs');
+ const probe='import os,stat,fcntl,sys; s=os.fstat(0); ok=stat.S_ISREG(s.st_mode) or stat.S_ISFIFO(s.st_mode); print("REG" if stat.S_ISREG(s.st_mode) else "SOCKET" if stat.S_ISSOCK(s.st_mode) else "OTHER"); sys.stdout.flush(); sys.exit(42) if not ok else None; assert fcntl.fcntl(0,fcntl.F_GETFL)&os.O_ACCMODE==os.O_RDONLY; assert s.st_nlink==0; assert sys.stdin.buffer.read()==b"exact public capsule bytes"';
+ const {spawnSync}=await import('node:child_process');const bytes=Buffer.from('exact public capsule bytes');
+ const rejected=spawnSync('/usr/bin/python3',['-I','-S','-c',probe],{input:bytes,encoding:'utf8'});assert.equal(rejected.status,42);assert.equal(rejected.stdout.trim(),'SOCKET');
+ const root=await realpath(await mkdtemp(join(tmpdir(),'sandbox-stdin-')));let input;
+ try{input=await openCapsuleStdin(root,bytes);const accepted=spawnSync('/usr/bin/python3',['-I','-S','-c',probe],{stdio:[input.fd,'pipe','pipe'],encoding:'utf8'});assert.equal(accepted.status,0,accepted.stderr);assert.equal(accepted.stdout.trim(),'REG');assert.deepEqual(await (await import('node:fs/promises')).readdir(root),[]);}finally{await input?.close();await rm(root,{recursive:true,force:true});}
+});
+test('prerequisite command errors retain fixed bootstrap stage and exit reason without raw arguments or output',async()=>{
+ const {prerequisiteCommandFailure}=await import('./support/linux-installed-sandbox-bootstrap.mjs');
+ const error=prerequisiteCommandFailure('bootstrap',{status:1,stdout:'PRIVATE_CAPSULE=never',stderr:'Dilla sandbox bootstrap refused unsafe or incomplete setup.\n'});
+ assert.match(error.message,/bootstrap.*exit=1.*bootstrap-refused/);assert.equal(error.prerequisiteDiagnostic.reason,'bootstrap-refused');
+ const unknown=prerequisiteCommandFailure('bootstrap',{status:null,signal:'SIGTERM',error:{code:'ETIMEDOUT'},stderr:'PRIVATE_ENV=secret\n'.repeat(10000)});const raw=JSON.stringify(unknown.prerequisiteDiagnostic);assert.doesNotMatch(raw,/PRIVATE_ENV|secret|PRIVATE_CAPSULE/);assert.equal(unknown.prerequisiteDiagnostic.signal,'SIGTERM');assert.equal(unknown.prerequisiteDiagnostic.spawnError,'ETIMEDOUT');assert.equal(unknown.prerequisiteDiagnostic.truncated,true);assert.ok(raw.length<1024);
+});

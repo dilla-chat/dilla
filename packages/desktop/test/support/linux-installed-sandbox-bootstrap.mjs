@@ -80,8 +80,30 @@ export async function readBoundedOwned(filename,max,{uid=process.getuid(),mode}=
 async function hashOwnedFile(filename,max){
  const path=resolve(filename);if(filename!==path||await realpath(path)!==path)invalid();const file=await open(path,constants.O_RDONLY|constants.O_NOFOLLOW);try{const before=await file.stat({bigint:true});if(!before.isFile()||before.uid!==BigInt(process.getuid())||before.nlink!==1n||before.size<1n||before.size>BigInt(max)||(before.mode&0o22n)!==0n)invalid();const h=createHash('sha512');let total=0;for await(const b of file.createReadStream({autoClose:false})){total+=b.length;if(total>max)invalid();h.update(b);}if(BigInt(total)!==before.size||!same(before,await file.stat({bigint:true})))invalid();return h.digest('base64');}finally{await file.close();}
 }
-function execute(program,args,{input,env,cwd=repository,timeout=120000,maxBuffer=262144}={}){
- const result=spawnSync(program,args,{cwd,input,env:env??process.env,encoding:'utf8',timeout,maxBuffer});if(result.error||result.signal||result.status!==0)throw Error('Installed sandbox prerequisite command failed');return result.stdout;
+// Node's spawn pipes are Unix sockets. Keep the production REG/FIFO contract:
+// freeze verified public bytes in a private inode, close the only writer, pin
+// read-only, then unlink before handing only FD0 to the fixed OS interpreter.
+export async function openCapsuleStdin(directory,bytes){
+ if(process.getuid?.()<=0||!Buffer.isBuffer(bytes)||bytes.length<1||bytes.length>48*1024**2||!isAbsolute(directory)||await realpath(directory)!==directory)invalid();
+ const parent=await lstat(directory);if(!parent.isDirectory()||parent.isSymbolicLink()||parent.uid!==process.getuid()||(parent.mode&0o7777)!==0o700)invalid();
+ const filename=join(directory,'capsule.stdin'),writer=await open(filename,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);let original;
+ try{await writer.writeFile(bytes);await writer.sync();original=await writer.stat({bigint:true});}finally{await writer.close();}
+ let input;
+ try{input=await open(filename,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);const info=await input.stat({bigint:true});if(!info.isFile()||info.uid!==BigInt(process.getuid())||info.nlink!==1n||info.size!==BigInt(bytes.length)||(info.mode&0o7777n)!==0o600n||info.dev!==original.dev||info.ino!==original.ino)invalid();await rm(filename);if((await input.stat()).nlink!==0)invalid();return input;}
+ catch(error){await input?.close().catch(()=>{});await rm(filename,{force:true}).catch(()=>{});throw error;}
+}
+export function prerequisiteCommandFailure(stage,result){
+ const allowed=['command','build-exporter','export-bootstrap','bootstrap','check-ready'];if(!allowed.includes(stage))stage='command';
+ const stderr=typeof result.stderr==='string'?Buffer.from(result.stderr):Buffer.alloc(0),selected=stderr.subarray(0,4096),text=selected.toString('utf8').trim();
+ const reason=text==='Dilla sandbox bootstrap refused unsafe or incomplete setup.'?'bootstrap-refused':text==='Dilla sandbox maintenance requires a safe authorized retry.'?'maintenance-refused':text==='sudo: a password is required'?'authorization-required':'unrecognized-output';
+ const signal=['SIGTERM','SIGKILL','SIGABRT','SIGSEGV','SIGPIPE'].includes(result.signal)?result.signal:null;
+ const spawnError=result.error?['ETIMEDOUT','ENOBUFS','ENOENT','EACCES','EPIPE','ENOMEM'].includes(result.error.code)?result.error.code:'other':null;
+ const diagnostic={format:1,stage,exitCode:Number.isInteger(result.status)&&result.status>=0&&result.status<=255?result.status:null,signal,spawnError,reason,stderrSha256:createHash('sha256').update(selected).digest('hex'),truncated:stderr.length>4096};
+ const error=Error('Installed sandbox prerequisite '+stage+' failed (exit='+(diagnostic.exitCode??'unavailable')+'; '+reason+'; signal='+(signal??'none')+'; spawn='+(spawnError??'none')+')');error.prerequisiteDiagnostic=diagnostic;return error;
+}
+function execute(program,args,{input,stdinFd,env,cwd=repository,timeout=120000,maxBuffer=262144,stage='command'}={}){
+ if(stdinFd!==undefined&&(!Number.isInteger(stdinFd)||stdinFd<0||input!==undefined))invalid();
+ const result=spawnSync(program,args,{cwd,input,stdio:stdinFd===undefined?'pipe':[stdinFd,'pipe','pipe'],env:env??process.env,encoding:'utf8',timeout,maxBuffer});if(result.error||result.signal||result.status!==0)throw prerequisiteCommandFailure(stage,result);return result.stdout;
 }
 export function validateReadyProof({status,receipt,expected}){
  if(!exact(status,['format','status','generation','compatibilityEpoch','sandboxApi','maintainerSha512','helperSha512'])||status.format!==1||status.status!=='ready'||status.generation!==expected.generation||status.compatibilityEpoch!==1||status.sandboxApi!==1||status.maintainerSha512!==expected.maintainerSha512||status.helperSha512!==expected.helperSha512)invalid();
@@ -108,15 +130,16 @@ export async function provisionInstalledSandbox({image,configurationFile}){
  try{
   const snapshot=join(build,'source');await mkdir(snapshot,{mode:0o700});await createSourceSnapshot(repository,job.sha,snapshot);
   const exporter=join(build,'exporter');const flags='-X main.expectedCapsuleSHA512='+expected.capsuleSha512+' -X main.compiledPublicConfiguration='+Buffer.from(JSON.stringify(configuration)).toString('base64');
-  execute('go',['build','-mod=readonly','-trimpath','-buildvcs=false','-ldflags',flags,'-o',exporter,'./packages/desktop/test/fixtures/linux-installed-sandbox-bootstrap'],{cwd:snapshot,env:{...process.env,CGO_ENABLED:'0',GOOS:'linux',GOARCH:'amd64',GOENV:'off',GOWORK:'off',GOFLAGS:'',GOEXPERIMENT:'',GOTOOLCHAIN:configuration.goVersion}});
-  const emitted=JSON.parse(execute(exporter,[],{input:capsule,timeout:10000}));
+  execute('go',['build','-mod=readonly','-trimpath','-buildvcs=false','-ldflags',flags,'-o',exporter,'./packages/desktop/test/fixtures/linux-installed-sandbox-bootstrap'],{stage:'build-exporter',cwd:snapshot,env:{...process.env,CGO_ENABLED:'0',GOOS:'linux',GOARCH:'amd64',GOENV:'off',GOWORK:'off',GOFLAGS:'',GOEXPERIMENT:'',GOTOOLCHAIN:configuration.goVersion}});
+  const emitted=JSON.parse(execute(exporter,[],{stage:'export-bootstrap',input:capsule,timeout:10000}));
   if(!exact(emitted,['format','capsuleSha512','manifestSha512','maintainerSha512','helperSha512','generation','constants','argv'])||emitted.format!==1||['capsuleSha512','manifestSha512','maintainerSha512','helperSha512','generation'].some(k=>emitted[k]!==expected[k]))invalid();
   const args=sudoBootstrapArguments(emitted.argv);
   const finalSource=await verifySourceCheckout(repository,job.sha);if(finalSource.sourceTree!==source.sourceTree)invalid();
-  execute('/usr/bin/sudo',args,{input:capsule,env:{PATH:'/usr/bin:/bin',LANG:'C',LC_ALL:'C'},timeout:90000,maxBuffer:4096});
+  const capsuleStdin=await openCapsuleStdin(build,capsule);
+  try{execute('/usr/bin/sudo',args,{stage:'bootstrap',stdinFd:capsuleStdin.fd,env:{PATH:'/usr/bin:/bin',LANG:'C',LC_ALL:'C'},timeout:90000,maxBuffer:4096});}finally{await capsuleStdin.close();}
   const [manager,helper,receiptFile]=await Promise.all([readBoundedOwned(root+'/sandbox-maintainer',32*1024**2,{uid:0,mode:0o755}),readBoundedOwned(root+'/chrome-sandbox',8*1024**2,{uid:0,mode:0o4755}),readBoundedOwned(root+'/sandbox-receipt.json',131072,{uid:0,mode:0o644})]);
   for(const file of [manager,helper,receiptFile])if(file.info.gid!==0n)invalid();if(hash(manager.bytes)!==expected.maintainerSha512||hash(helper.bytes)!==expected.helperSha512)invalid();
-  const status=JSON.parse(execute(root+'/sandbox-maintainer',['--check'],{env:{PATH:'/usr/bin:/bin',LANG:'C',LC_ALL:'C'},timeout:5000,maxBuffer:4096}));
+  const status=JSON.parse(execute(root+'/sandbox-maintainer',['--check'],{stage:'check-ready',env:{PATH:'/usr/bin:/bin',LANG:'C',LC_ALL:'C'},timeout:5000,maxBuffer:4096}));
   const receipt=parsePublicConfiguration(receiptFile.bytes.toString('utf8'));const committed=validateReadyProof({status,receipt,expected});
   const proof={format:1,kind:'dilla-installed-sandbox-initial',...job,...source,...committed,status:'ready',generation:expected.generation,imageSha512,capsuleSha512:expected.capsuleSha512,manifestSha512:expected.manifestSha512,maintainerSha512:expected.maintainerSha512,helperSha512:expected.helperSha512,receiptSha512:hash(receiptFile.bytes),helperDevice:String(helper.info.dev),helperInode:String(helper.info.ino),helperMode:0o4755,disposalOnly:true};
   const output=join(temp,'dilla-installed-sandbox-initial.json');await writeFile(output,JSON.stringify(proof,null,2)+'\n',{flag:'wx',mode:0o600});return proof;
