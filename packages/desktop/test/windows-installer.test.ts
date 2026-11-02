@@ -191,10 +191,10 @@ test('installer creates a new protected payload before extraction and retains no
  assert.match(extract, /File \/oname=\$PLUGINSDIR\\payload\\payload\.7z/);
  assert.match(extract, /Delete "\$PLUGINSDIR\\payload\\payload\.7z"/);
  assert.match(prepare, /GetTokenInformation/); assert.match(prepare, /O:\$PayloadUserSID[\s\S]*D:P.*OICI;FA/);
- assert.match(prepare, /NtCreateFile[^\n]+i 3, i 2, i 0x200021/); assert.match(prepare, /StrCmp \$1 2 0 Fail ; FILE_CREATED/);
+ assert.match(prepare, /NtCreateFile[^\n]+i 0x1200A0[^\n]+i 3, i 2, i 0x200021/); assert.match(prepare, /StrCmp \$1 2 0 Fail ; FILE_CREATED/);
  assert.doesNotMatch(prepare, /CreateDirectoryW|SetNamedSecurityInfo|SetFileSecurity|SetSecurityInfo/);
  assert.match(prepare, /GetDriveTypeW/); assert.match(prepare, /StrCmp \$R1 \$R3 normalize_root/); assert.match(prepare, /normalize_root:\r?\n\s+StrCpy \$R0 \$PayloadDriveRoot/);
- assert.match(body(privateSource, 'PinPayloadDirectory'), /CreateFileW[^\n]+i 3[^\n]+0x02200000/);
+ assert.match(body(privateSource, 'PinPayloadDirectory'), /CreateFileW[^\n]+i 0x200A0, i 3[^\n]+0x02200000/);
  assert.match(body(privateSource, 'PinPayloadDirectory'), /GetFileInformationByHandle/);
  assert.match(prepare, /Call VerifyPrivatePayload/);
  assert.match(body(privateSource, 'VerifyPrivatePayload'), /EqualSid/);
@@ -207,10 +207,10 @@ test('installer creates a new protected payload before extraction and retains no
 });
 test('private payload fault boundaries survive actual LF and CRLF NSIS checkouts', async () => {
  const source = (await readFile(sourcePath, 'utf8')).replaceAll('\r\n', '\n');
- const boundary = '  Push "$PLUGINSDIR\\payload"\n  Call PinPayloadDirectory\n  ; The atomic handle';
+ const boundaries = ['  Push "$PLUGINSDIR\\payload"\n  Call PinPayloadDirectory\n  ; The atomic handle', '  Call FreePayloadSecurity\n  StrCmp $PayloadCleanupFailed 0 +2\n    Goto Fail\n  Return'];
  for (const input of [source, source.replaceAll('\n', '\r\n')]) {
   const prepare = body(input.replaceAll('${Prefix}', ''), 'PreparePrivatePayload');
-  assert.equal(prepare.split(boundary).length, 2, 'the actual post-creation fault boundary must match exactly once');
+  for (const boundary of boundaries) assert.equal(prepare.split(boundary).length, 2, 'each actual creation/retained fault boundary must match exactly once');
   assert.equal(prepare.includes('\r'), false, 'extracted fixture functions use normalized newlines');
  }
 });
@@ -228,7 +228,7 @@ test('native private NSIS payload passes unchanged Go ACL guards and refuses uns
   const request = join(root, 'request.json'), report = join(root, 'initial-retry-native.json'); await writeFile(request, JSON.stringify({ config, report }));
   const other = join(root, 'other'), junction = join(root, 'junction'); await mkdir(other); await symlink(other, junction, 'junction');
   const { nsisEscapeString } = require('app-builder-lib/out/targets/nsis/nsisScriptGenerator');
-  for (const kind of ['default', 'unsafe-acl', 'protected', 'preexisting', 'reparse', 'api-error', 'substituted-acl', 'substituted-nonempty', 'dangling-payload']) {
+  for (const kind of ['default', 'unsafe-acl', 'protected', 'preexisting', 'reparse', 'api-error', 'substituted-acl', 'retained-pin', 'substituted-nonempty', 'dangling-payload']) {
    await rm(report, { force: true });
    const substituted = join(root, kind + '-substituted');
    const danglingTarget = join(root, 'must-remain-absent');
@@ -239,14 +239,17 @@ test('native private NSIS payload passes unchanged Go ACL guards and refuses uns
    if (kind === 'unsafe-acl') functions = functions.replace('D:P(A;OICI;FA;', 'D:P(A;OICI;0x00130041;;;WD)(A;OICI;FA;');
    if (kind === 'reparse') functions = functions.replaceAll('$PLUGINSDIR', nsisEscapeString(junction));
    if (kind === 'api-error') functions = functions.replace(/System::Call 'ntdll::NtCreateFile[^\n]+/, 'StrCpy $1 -1');
-   if (kind.startsWith('substituted-')) {
-    const boundary = '  Push "$PLUGINSDIR\\payload"\n  Call PinPayloadDirectory\n  ; The atomic handle';
-    assert.equal(functions.split(boundary).length, 2, 'inject exactly after actual atomic creation and before its second pin');
+   if (kind.startsWith('substituted-') || kind === 'retained-pin') {
+    const atomicBoundary = '  Push "$PLUGINSDIR\\payload"\n  Call PinPayloadDirectory\n  ; The atomic handle';
+    const retainedBoundary = '  Call FreePayloadSecurity\n  StrCmp $PayloadCleanupFailed 0 +2\n    Goto Fail\n  Return';
+    const boundary = kind === 'retained-pin' ? retainedBoundary : atomicBoundary;
+    assert.equal(functions.split(boundary).length, 2, 'inject exactly at the actual creation or retained-pin boundary');
     const marker = (outcome: 'entered' | 'renamed' | 'observed' = 'observed') => `  FileOpen $0 "${nsisEscapeString(substituted)}" w
   IfErrors Fail
   FileWrite $0 "${outcome}"
   FileClose $0`;
-    const injection = kind === 'substituted-acl' ? `
+    const injection = kind === 'substituted-acl' || kind === 'retained-pin' ? `
+${kind === 'retained-pin' ? '  StrCmp $PayloadCreatedHandle 0 +2\n    Call Fail' : ''}
 ${marker('entered')}
   ClearErrors
   Rename "$PLUGINSDIR\\payload" "$PLUGINSDIR\\original-payload"
@@ -264,7 +267,7 @@ ${marker()}
   FileClose $0
 ${marker()}
 `;
-    functions = functions.replace(boundary, injection + boundary);
+    functions = functions.replace(boundary, kind === 'retained-pin' ? boundary.replace('  Return', injection + '  Return') : injection + boundary);
    }
    const globals = [...source.matchAll(/^Var Payload[^\r\n]+/gm)].map(match => match[0]).join('\n');
    const executable = await compileWindowsNSIS({ directory: root, archive, name: kind + '.exe', transform: () => `
@@ -315,9 +318,9 @@ Section
 SectionEnd
 ` });
    const child = spawnSync(executable, ['/S'], { encoding: 'utf8', timeout: 30000, windowsHide: true, env: { ...process.env, DILLA_INITIAL_RETRY_DIAGNOSTIC_REQUEST: request }, maxBuffer: 1024 });
-   if (['preexisting','reparse','api-error','substituted-acl','substituted-nonempty','dangling-payload'].includes(kind)) {
+   if (['preexisting','reparse','api-error','substituted-acl','retained-pin','substituted-nonempty','dangling-payload'].includes(kind)) {
     assert.equal(child.status, 2, kind + ' must fail before helper execution'); await assert.rejects(readFile(report), { code: 'ENOENT' });
-    if (kind.startsWith('substituted-')) assert.equal(await readFile(substituted, 'utf8'), 'observed', 'the live atomic handle blocked replacement, or the actual pinned-empty guard refused injected content');
+    if (kind.startsWith('substituted-') || kind === 'retained-pin') assert.equal(await readFile(substituted, 'utf8'), 'observed', 'the actual creation/retained handle blocked replacement, or the pinned-empty guard refused injected content');
     if (kind === 'dangling-payload') { assert.equal(await readFile(substituted, 'utf8'), 'observed', 'the dangling final junction was created before the actual FILE_CREATE call'); await assert.rejects(realpath(danglingTarget), { code: 'ENOENT' }); }
     continue;
    }
