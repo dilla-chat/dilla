@@ -650,6 +650,44 @@ go-version-file: go.mod
   }
 }
 
+// Narrow cancellation finalizers for the reviewed disposable fixture only.
+// Full job shape below also rejects reordered, duplicate or extra steps.
+const SANDBOX_MAINTENANCE_CONTROLS = [
+  "      - name: Portable sandbox maintenance controls",
+  "        if: matrix.lane == 'managed'",
+  "        run: node --test packages/desktop/test/linux-sandbox-maintenance.test.mjs",
+  "      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7",
+  "        if: matrix.lane == 'managed'",
+  "        with:",
+  "          go-version-file: go.mod",
+  "      - name: Root sandbox maintenance kernel proof",
+  "        id: sandbox_maintenance",
+  "        if: matrix.lane == 'managed'",
+  "        timeout-minutes: 8",
+  "        run: node --test packages/desktop/test/native/linux-sandbox-maintenance.test.mjs",
+  "        env:",
+  "          DILLA_LINUX_SANDBOX_FOUNDATION_LANE: managed",
+].join('\n');
+const SANDBOX_MAINTENANCE_CLEANUP = [
+  "      - name: Cleanup root sandbox maintenance fixture",
+  "        if: always() && matrix.lane == 'managed' && contains(fromJSON('[\"success\",\"failure\",\"cancelled\"]'), steps.sandbox_maintenance.outcome)",
+  "        timeout-minutes: 1",
+  "        run: node packages/desktop/test/native/linux-sandbox-maintenance.test.mjs --cleanup-only",
+  "        env:",
+  "          DILLA_LINUX_SANDBOX_FOUNDATION_LANE: managed",
+].join('\n');
+const SANDBOX_MAINTENANCE_ARTIFACT = [
+  "      - name: Preserve root sandbox maintenance proof",
+  "        if: always() && matrix.lane == 'managed' && contains(fromJSON('[\"success\",\"failure\",\"cancelled\"]'), steps.sandbox_maintenance.outcome)",
+  "        timeout-minutes: 1",
+  "        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7",
+  "        with:",
+  "          name: linux-sandbox-maintenance-managed",
+  "          path: packages/desktop/test-results/linux-sandbox-maintenance-managed.json",
+  "          if-no-files-found: error",
+  "          retention-days: 3",
+].join('\n');
+
 // Keep this feasibility proof independent of asset builds and long Windows tests.
 // Exact native lanes/commands prohibit extracted execution and host-policy overrides.
 function checkLinuxSandboxFoundationJob(jobs, problems) {
@@ -683,6 +721,9 @@ function checkLinuxSandboxFoundationJob(jobs, problems) {
     "esac",
     "- run: npm ci",
     "- run: node node_modules/electron/install.js",
+    ...SANDBOX_MAINTENANCE_CONTROLS.split('\n').map(line => line.trim()),
+    ...SANDBOX_MAINTENANCE_CLEANUP.split('\n').map(line => line.trim()),
+    ...SANDBOX_MAINTENANCE_ARTIFACT.split('\n').map(line => line.trim()),
     "- run: xvfb-run -a dbus-run-session -- node --test packages/desktop/test/native/linux-sandbox-foundation.test.mjs",
     "env:",
     "DILLA_LINUX_SANDBOX_FOUNDATION_LANE: ${{ matrix.lane }}",
@@ -834,6 +875,9 @@ export function checkWorkflow(root) {
         '          path: packages/desktop/test-results/linux-sandbox-foundation-${{ matrix.lane }}.json',
         '          if-no-files-found: error',
       ].join('\n')) continue;
+      if (what === 'if: always()' && currentJob === 'linux-sandbox-foundation' &&
+          [SANDBOX_MAINTENANCE_CLEANUP, SANDBOX_MAINTENANCE_ARTIFACT].some(block =>
+            workflowLines.slice(i - 1, i - 1 + block.split('\n').length).join('\n') === block)) continue;
       if (re.test(line)) problems.push(`ci.yml:${i + 1}: forbidden "${what}" — CI is fail-closed (R22)`);
     }
     // v0.1.0-web3.1: only release.yml stamps a version; a ci build is 0.0.0-dev, so it is never mistaken for a release.

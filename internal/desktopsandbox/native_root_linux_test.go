@@ -41,8 +41,94 @@ func nativeFail(t *testing.T, e error) {
 		t.Fatal(e)
 	}
 }
+
+// The fixed /run lease survives deletion of the payload. FD3 is an inherited
+// read-only description with EX flock authority, not an authority-free handle.
+// Only hash-verified fixed actors receive it; never unlock it before process exit.
+type nativeLifecycleState struct {
+	Format     int      `json:"format"`
+	RunID      string   `json:"runId"`
+	Attempt    string   `json:"attempt"`
+	SHA        string   `json:"sha"`
+	Nonce      string   `json:"nonce"`
+	Phase      string   `json:"phase"`
+	Device     string   `json:"device"`
+	Inode      string   `json:"inode"`
+	Hashes     []string `json:"hashes"`
+	LockDevice string   `json:"lockDevice"`
+	LockInode  string   `json:"lockInode"`
+}
+
+var nativeLeaseState *nativeLifecycleState
+
+func nativeLifecycle(t *testing.T, closed bool) {
+	t.Helper()
+	if unix.Geteuid() != 0 {
+		t.Fatal("root lifecycle fixture requires disposable CI")
+	}
+	parent, e := unix.Open("/run", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	nativeFail(t, e)
+	defer func() { _ = unix.Close(parent) }()
+	f := &fixedFiles{layout: appImageLayout()}
+	nativeFail(t, f.safeDir(parent, 0o755, false))
+	nativeFail(t, f.captureMount(parent))
+	control, e := unix.Openat(parent, "dilla-sandbox-maintenance-ci", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	nativeFail(t, e)
+	defer func() { _ = unix.Close(control) }()
+	nativeFail(t, f.safeDir(control, 0o700, true))
+	nativeFail(t, f.sameDevice(control))
+	_, canonical := nativeRead(t, control, "lock", 0, 0o600)
+	var inherited unix.Stat_t
+	nativeFail(t, unix.Fstat(3, &inherited))
+	if !sameStat(canonical, inherited) {
+		t.Fatal("wrong lifecycle lease descriptor")
+	}
+	nativeFail(t, f.sameDevice(3))
+	access, e := unix.FcntlInt(3, unix.F_GETFL, 0)
+	nativeFail(t, e)
+	if access&unix.O_ACCMODE != unix.O_RDONLY {
+		t.Fatal("lifecycle lease must be read-only")
+	}
+	nativeFail(t, unix.Flock(3, unix.LOCK_EX|unix.LOCK_NB))
+	unix.CloseOnExec(3)
+	// Admission is revalidated after acquiring/reacquiring the same OFD lock.
+	raw, _ := nativeRead(t, control, "state.json", 8192, 0o600)
+	_, e = exactObject(raw, "format", "runId", "attempt", "sha", "nonce", "phase", "device", "inode", "hashes", "lockDevice", "lockInode")
+	nativeFail(t, e)
+	nativeFail(t, validateJSON(raw))
+	var state nativeLifecycleState
+	nativeFail(t, json.Unmarshal(raw, &state))
+	expected := "active"
+	if closed {
+		expected = "closed"
+	}
+	nonce, e := hex.DecodeString(state.Nonce)
+	nativeFail(t, e)
+	if state.LockDevice != strconv.FormatUint(inherited.Dev, 10) || state.LockInode != strconv.FormatUint(inherited.Ino, 10) || state.Format != 1 || state.RunID != nativeRunID || state.Attempt != nativeAttempt || state.SHA != nativeHead || state.Phase != expected || len(nonce) != 32 || hex.EncodeToString(nonce) != state.Nonce || len(state.Hashes) != 4 {
+		t.Fatal("closed, foreign or malformed lifecycle state")
+	}
+	for _, h := range state.Hashes {
+		if !validDigest(h) {
+			t.Fatal("invalid lifecycle digest")
+		}
+	}
+	nativeLeaseState = &state
+}
+func nativeLeaseFile(t *testing.T) *os.File {
+	t.Helper()
+	if nativeLeaseState == nil {
+		t.Fatal("missing lifecycle admission")
+	}
+	fd, e := unix.Dup(3)
+	nativeFail(t, e)
+	unix.CloseOnExec(fd)
+	return os.NewFile(uintptr(fd), "owned read-only lifecycle lease")
+}
 func nativeCommon(t *testing.T) int {
 	t.Helper()
+	if nativeLeaseState == nil {
+		t.Fatal("missing lifecycle exclusion")
+	}
 	if unix.Geteuid() != 0 || nativeRunID == "" || nativeAttempt == "" || len(nativeHead) != 40 {
 		t.Fatal("unconfigured disposable root fixture")
 	}
@@ -117,7 +203,7 @@ func nativeOwnership(t *testing.T, common int) nativeOwner {
 	nativeFail(t, json.Unmarshal(raw, &owner))
 	var s unix.Stat_t
 	nativeFail(t, unix.Fstat(common, &s))
-	if owner.Format != 1 || owner.RunID != nativeRunID || owner.Attempt != nativeAttempt || owner.SHA != nativeHead || len(owner.Nonce) != 64 || owner.Device != strconv.FormatUint(s.Dev, 10) || owner.Inode != strconv.FormatUint(s.Ino, 10) || owner.Phase != "verified" || !validDigest(owner.NativeSHA512) {
+	if nativeLeaseState == nil || owner.Nonce != nativeLeaseState.Nonce || owner.Device != nativeLeaseState.Device || owner.Inode != nativeLeaseState.Inode || owner.NativeSHA512 != nativeLeaseState.Hashes[0] || owner.Format != 1 || owner.RunID != nativeRunID || owner.Attempt != nativeAttempt || owner.SHA != nativeHead || len(owner.Nonce) != 64 || owner.Device != strconv.FormatUint(s.Dev, 10) || owner.Inode != strconv.FormatUint(s.Ino, 10) || owner.Phase != "verified" || !validDigest(owner.NativeSHA512) {
 		t.Fatal("foreign or unverified CI ownership")
 	}
 	nonce, e := hex.DecodeString(owner.Nonce)
@@ -242,6 +328,9 @@ func nativeStartHolder(t *testing.T) *nativeHolder {
 	cmd.Env = []string{"LANG=C", "LC_ALL=C"}
 	cmd.Dir = "/"
 	cmd.SysProcAttr = &unixSysProcAttrNobody
+	lease := nativeLeaseFile(t)
+	defer func() { _ = lease.Close() }()
+	cmd.ExtraFiles = []*os.File{lease}
 	input, e := cmd.StdinPipe()
 	nativeFail(t, e)
 	out, e := cmd.StdoutPipe()
@@ -292,6 +381,9 @@ func nativeFresh(t *testing.T) int {
 	cmd.Env = []string{"LANG=C", "LC_ALL=C"}
 	cmd.Dir = "/"
 	cmd.SysProcAttr = &unixSysProcAttrNobody
+	lease := nativeLeaseFile(t)
+	defer func() { _ = lease.Close() }()
+	cmd.ExtraFiles = []*os.File{lease}
 	raw, e := cmd.Output()
 	nativeFail(t, e)
 	return nativeCredential(t, strings.TrimSpace(string(raw)), 0, "2")
@@ -452,6 +544,7 @@ func nativeProductionAbsent(t *testing.T) {
 	}
 }
 func TestDisposableRootCleanup(t *testing.T) {
+	nativeLifecycle(t, true)
 	common := nativeCommon(t)
 	nativeOwnership(t, common)
 	nativeFail(t, unix.Close(common))
@@ -489,6 +582,7 @@ func TestDisposableRootCleanup(t *testing.T) {
 var nativeCrashPoints = map[string]string{"demoted": "sync-file:old-helper", "helper": "exchange:chrome-sandbox", "receipt": "exchange:sandbox-receipt.json", "remove": "unlink:root:chrome-sandbox", "initial": "publish:sandbox-transaction.json", "terminal": "unlink:root:sandbox-transaction.json"}
 
 func TestDisposableRootActor(t *testing.T) {
+	nativeLifecycle(t, false)
 	if len(os.Args) == 0 {
 		t.Fatal("missing fixed actor role")
 	}
@@ -529,6 +623,9 @@ func nativeCrash(t *testing.T, role string) {
 		binary = nativeRoot + "/.runner/native.test"
 	}
 	cmd := exec.CommandContext(t.Context(), binary, "-test.run=^TestDisposableRootActor$", "-test.timeout=30s", "--", role)
+	lease := nativeLeaseFile(t)
+	defer func() { _ = lease.Close() }()
+	cmd.ExtraFiles = []*os.File{lease}
 	cmd.Env = []string{"LANG=C", "LC_ALL=C"}
 	cmd.Dir = "/"
 	out, e := cmd.StdoutPipe()
@@ -682,6 +779,7 @@ func nativeHostile(t *testing.T) (int, bool) {
 	return 2, true
 }
 func TestDisposableRootTransaction(t *testing.T) {
+	nativeLifecycle(t, false)
 	nativeProductionAbsent(t)
 	common := nativeCommon(t)
 	nativeOwnership(t, common)

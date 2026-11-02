@@ -1,6 +1,9 @@
 # CI ONLY. Pass this fixed source as argv to OS Python -I -S, never a file path.
 import base64
 import errno
+import fcntl
+import select
+import time
 import hashlib
 import json
 import os
@@ -10,6 +13,10 @@ import sys
 
 ANCHOR = "/"
 PARTS = ("usr", "lib", "dilla-sandbox-maintenance-ci")
+LIFE_ANCHOR = "/run"
+LIFE_NAME = "dilla-sandbox-maintenance-ci"
+LOCK_TIMEOUT = 5.0
+INPUT_TIMEOUT = 30.0
 OWNER_UID = 0
 OWNER_GID = 0
 MAX_NATIVE = 33554432
@@ -173,7 +180,7 @@ def write_marker(root, value, first):
     os.fsync(root)
 
 
-def initialize(parent, identity):
+def initialize(parent, identity, lifecycle):
     # mkdir must fail on any preexisting entry. Never adopt it, even if empty.
     os.mkdir(PARTS[-1], 0o755, dir_fd=parent)
     root = None
@@ -183,7 +190,7 @@ def initialize(parent, identity):
         require(os.fstat(root).st_dev == os.fstat(parent).st_dev and mount_id(root) == mount_id(parent))
         os.fchmod(root, 0o755)
         s = os.fstat(root)
-        value = dict(format=1, runId=identity[0], attempt=identity[1], sha=identity[2], nonce=os.urandom(32).hex(), device=str(s.st_dev), inode=str(s.st_ino), phase="initialized", nativeSha512="")
+        value = dict(format=1, runId=identity[0], attempt=identity[1], sha=identity[2], nonce=lifecycle["nonce"], device=str(s.st_dev), inode=str(s.st_ino), phase="initialized", nativeSha512="")
         write_marker(root, value, True)
         os.fsync(parent)
         os.mkdir(".runner", 0o700, dir_fd=root)
@@ -313,47 +320,235 @@ def cleanup(parent, root, value):
         require(len(raw) >= 20 and raw[:6] == b"\x7fELF\x02\x01" and raw[18:20] == b"\x3e\x00")
         named(runner, "native.test", *p)
         require(os.execve in os.supports_fd)
-        os.execve(p[0], ["native.test", "-test.run=^TestDisposableRootCleanup$", "-test.timeout=25s", "-test.v"], SAFE_ENV)
+        executable = fcntl.fcntl(p[0], fcntl.F_DUPFD_CLOEXEC, 32)
+        inherit_lease()
+        os.execve(executable, ["native.test", "-test.run=^TestDisposableRootCleanup$", "-test.timeout=25s", "-test.v"], SAFE_ENV)
     finally:
         if p is not None:
             os.close(p[0])
         os.close(runner)
 
 
+
+LEASE = None
+
+
+def write_lifecycle(control, value, first=False):
+    raw = json.dumps(value, separators=(",", ":")).encode("ascii")
+    require(len(raw) <= 8192)
+    name = "state.json" if first else "state.next"
+    fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=control)
+    try:
+        os.fchmod(fd, 0o600)
+        offset = 0
+        while offset < len(raw):
+            n = os.write(fd, raw[offset:])
+            require(n > 0)
+            offset += n
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    if not first:
+        os.rename("state.next", "state.json", src_dir_fd=control, dst_dir_fd=control)
+    os.fsync(control)
+
+
+def read_lifecycle(control, identity):
+    p = pin(control, "state.json", (0o600,), 8192)
+    require(p is not None)
+    try:
+        v = json.loads(read_pin(p, 8192), object_pairs_hook=exact_pairs, parse_constant=lambda _: require(False))
+    finally:
+        os.close(p[0])
+    require(type(v) is dict and set(v) == {"format", "runId", "attempt", "sha", "nonce", "phase", "device", "inode", "hashes", "lockDevice", "lockInode"})
+    require(type(v["format"]) is int and v["format"] == 1 and [v["runId"], v["attempt"], v["sha"]] == identity)
+    require(type(v["nonce"]) is str and re.fullmatch(r"[0-9a-f]{64}", v["nonce"]) is not None)
+    require(v["phase"] in ("initializing", "active", "closed"))
+    require(type(v["hashes"]) is list and len(v["hashes"]) in (0, 4))
+    if len(v["hashes"]) == 0:
+        require(v["phase"] == "closed" and v["device"] == "0" and v["inode"] == "0")
+    for h in v["hashes"]:
+        digest(h)
+    for key in ("device", "inode", "lockDevice", "lockInode"):
+        require(type(v[key]) is str and re.fullmatch(r"0|[1-9][0-9]{0,19}", v[key]) is not None)
+    return v
+
+
+def lifecycle(role, identity, hashes):
+    global LEASE
+    parent = os.open(LIFE_ANCHOR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    control = None
+    try:
+        safe_dir(parent)
+        fresh = False
+        try:
+            control = descend(parent, LIFE_NAME, 0o700)
+        except FileNotFoundError:
+            require(role in ("init", "cleanup"))
+            os.mkdir(LIFE_NAME, 0o700, dir_fd=parent)
+            control = descend(parent, LIFE_NAME, 0o700)
+            fresh = True
+        entries(control, ("lock", "state.json", "state.next"))
+        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
+        if fresh:
+            flags |= os.O_CREAT | os.O_EXCL
+        fd = os.open("lock", flags, 0o600, dir_fd=control)
+        try:
+            s = os.fstat(fd)
+            require(stat.S_ISREG(s.st_mode) and s.st_uid == OWNER_UID and s.st_gid == OWNER_GID and s.st_nlink == 1 and s.st_size == 0 and stat.S_IMODE(s.st_mode) == 0o600)
+            attrs(fd)
+            require(s.st_dev == os.fstat(control).st_dev and mount_id(fd) == mount_id(control))
+            snapshot = info(fd)
+            deadline = time.monotonic() + LOCK_TIMEOUT
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    require(role != "cleanup" and time.monotonic() < deadline)
+                    time.sleep(0.02)
+            named(control, "lock", fd, snapshot)
+            if fresh:
+                require(role in ("init", "cleanup"))
+                # Closing an as-yet absent admission is still durable: a late
+                # initializer must not create payload after passing cleanup.
+                v = dict(format=1, runId=identity[0], attempt=identity[1], sha=identity[2], nonce=os.urandom(32).hex(), phase="closed" if role == "cleanup" else "initializing", device="0", inode="0", hashes=hashes, lockDevice=str(s.st_dev), lockInode=str(s.st_ino))
+                write_lifecycle(control, v, True)
+                os.fsync(parent)
+            else:
+                v = read_lifecycle(control, identity)
+                require(role != "init")
+                require(v["phase"] != "initializing")
+            require(v["lockDevice"] == str(s.st_dev) and v["lockInode"] == str(s.st_ino))
+            pending = pin(control, "state.next", (0o600,), 8192)
+            if pending is not None:
+                try:
+                    require(role == "cleanup")
+                    named(control, "state.next", *pending)
+                    os.unlink("state.next", dir_fd=control)
+                    os.fsync(control)
+                finally:
+                    os.close(pending[0])
+            if role != "cleanup":
+                require(fresh or v["phase"] == "active")
+            LEASE = fd
+            return control, v
+        except Exception:
+            os.close(fd)
+            raise
+    except Exception:
+        if control is not None:
+            os.close(control)
+        raise
+    finally:
+        os.close(parent)
+
+
+def inherit_lease():
+    require(LEASE is not None and fcntl.fcntl(LEASE, fcntl.F_GETFL) & os.O_ACCMODE == os.O_RDONLY)
+    # Read-only is not authority-free: every propagated FD retains the same
+    # flock open-file-description. Only fixed hash-verified helpers receive it.
+    duplicate = fcntl.fcntl(LEASE, fcntl.F_DUPFD_CLOEXEC, 32)
+    try:
+        os.dup2(duplicate, 3, inheritable=True)
+    finally:
+        os.close(duplicate)
+
+
+def stage_copy(root, value, state, role):
+    require(value["phase"] == "initialized")
+    choices = {"stage-native": (0, "native.test", 0o700, MAX_NATIVE), "stage-v1": (1, "credential-v1", 0o555, MAX_HELPER), "stage-v2": (2, "credential-v2", 0o555, MAX_HELPER), "stage-observer": (3, "observer", 0o555, MAX_HELPER)}
+    index, name, mode, limit = choices[role]
+    folder = root if index == 3 else descend(root, ".runner", 0o700)
+    fd = None
+    try:
+        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=folder)
+        h = hashlib.sha512()
+        total = 0
+        deadline = time.monotonic() + INPUT_TIMEOUT
+        while True:
+            remaining = deadline - time.monotonic()
+            require(remaining > 0 and select.select([0], [], [], remaining)[0])
+            chunk = os.read(0, min(65536, limit + 1 - total))
+            if not chunk:
+                break
+            total += len(chunk)
+            require(total <= limit)
+            h.update(chunk)
+            offset = 0
+            while offset < len(chunk):
+                n = os.write(fd, chunk[offset:])
+                require(n > 0)
+                offset += n
+        require(base64.b64encode(h.digest()).decode("ascii") == state["hashes"][index])
+        os.fchmod(fd, mode)
+        os.fsync(fd)
+        os.close(fd)
+        fd = None
+        os.fsync(folder)
+    finally:
+        if fd is not None:
+            os.close(fd)
+        if folder != root:
+            os.close(folder)
+
+
 def run():
     require(os.geteuid() == OWNER_UID and len(sys.argv) >= 5)
     role, identity = sys.argv[1], sys.argv[2:5]
-    require(role in ("init", "verify", "cleanup"))
+    require(role in ("init", "verify", "run", "cleanup", "stage-native", "stage-v1", "stage-v2", "stage-observer"))
     require(all(re.fullmatch(r"[1-9][0-9]{0,19}", x) is not None for x in identity[:2]) and re.fullmatch(r"[0-9a-f]{40}", identity[2]) is not None)
-    require(len(sys.argv) == (9 if role == "verify" else 5))
+    require(len(sys.argv) == (9 if role in ("init", "verify") else 5))
+    hashes = [digest(x) for x in sys.argv[5:]]
     os.umask(0o077)
-    parent = parent_directory()
+    control, state = lifecycle(role, identity, hashes)
+    parent = None
     root = None
     try:
+        parent = parent_directory()
         if role == "init":
-            initialize(parent, identity)
+            initialize(parent, identity, state)
+            root = descend(parent, PARTS[-1], 0o755)
+            state["device"], state["inode"], state["phase"] = str(os.fstat(root).st_dev), str(os.fstat(root).st_ino), "active"
+            write_lifecycle(control, state)
             return
         try:
             root = descend(parent, PARTS[-1], 0o755)
         except FileNotFoundError:
-            require(role == "cleanup")
+            require(role == "cleanup" and state["phase"] == "closed")
+            os.fsync(control)
             return
         value = marker(root, identity)
-        if role == "verify":
-            expected = [digest(x) for x in sys.argv[5:]]
-            require(copied_files(root) == expected)
-            value["phase"], value["nativeSha512"] = "verified", expected[0]
-            write_marker(root, value, False)
-        else:
+        require(value["nonce"] == state["nonce"] and value["device"] == state["device"] and value["inode"] == state["inode"])
+        if role == "cleanup":
+            # This exclusive lease proves every controlled actor has released
+            # its inherited description. Never signal a PID from a record.
+            state["phase"] = "closed"
+            write_lifecycle(control, state)
             cleanup(parent, root, value)
+        elif role == "verify":
+            require(hashes == state["hashes"] and copied_files(root) == hashes)
+            value["phase"], value["nativeSha512"] = "verified", hashes[0]
+            write_marker(root, value, False)
+        elif role == "run":
+            require(value["phase"] == "verified" and value["nativeSha512"] == state["hashes"][0] and copied_files(root) == state["hashes"])
+            inherit_lease()
+            os.execve("/usr/bin/unshare", ["unshare", "--mount", "--propagation", "private", "--", "/usr/lib/dilla-sandbox-maintenance-ci/.runner/native.test", "-test.run=^TestDisposableRootTransaction$", "-test.timeout=4m", "-test.v"], SAFE_ENV)
+        else:
+            stage_copy(root, value, state, role)
     finally:
         if root is not None:
             os.close(root)
-        os.close(parent)
+        if parent is not None:
+            os.close(parent)
+        if control is not None:
+            os.close(control)
+        if LEASE is not None:
+            os.close(LEASE)
 
 
 try:
     run()
 except Exception:
-    sys.stderr.write("Dilla CI maintenance staging refused unsafe state.\n")
+    sys.stderr.write("Dilla CI maintenance staging refused unsafe or busy lifecycle.\n")
     sys.exit(1)

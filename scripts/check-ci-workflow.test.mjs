@@ -81,6 +81,77 @@ test('Linux sandbox foundation rejects omitted lanes, fake proofs and delayed or
   assert.ok(checkWorkflow(fixture(changed)).some(problem => problem.includes('desktop') && problem.includes('Linux sandbox foundation')));
 });
 
+const MAINTENANCE_CLEANUP_IF = `always() && matrix.lane == 'managed' && contains(fromJSON('["success","failure","cancelled"]'), steps.sandbox_maintenance.outcome)`;
+const MAINTENANCE_PORTABLE = 'node --test packages/desktop/test/linux-sandbox-maintenance.test.mjs';
+const MAINTENANCE_NATIVE = 'node --test packages/desktop/test/native/linux-sandbox-maintenance.test.mjs';
+const MAINTENANCE_CLEANUP = 'node packages/desktop/test/native/linux-sandbox-maintenance.test.mjs --cleanup-only';
+
+test('managed maintenance CI runs portable controls then pinned Go/native/always cleanup before unchanged foundation',()=>{
+ const body=jobBody('linux-sandbox-foundation'),steps=jobSteps(body);
+ const index=command=>steps.findIndex(step=>step.includes('run: '+command));
+ const portable=index(MAINTENANCE_PORTABLE),go=steps.findIndex(step=>step.includes('uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7'));
+ const native=index(MAINTENANCE_NATIVE),cleanup=index(MAINTENANCE_CLEANUP),foundation=index('xvfb-run -a dbus-run-session -- node --test packages/desktop/test/native/linux-sandbox-foundation.test.mjs');
+ assert.ok(portable>=0&&go>portable&&native>go&&cleanup>native&&foundation>cleanup);
+ for(const step of [steps[portable],steps[go],steps[native]])assert.ok(step.includes("if: matrix.lane == 'managed'"));
+ assert.ok(steps[native].includes('id: sandbox_maintenance'));assert.ok(steps[native].includes('DILLA_LINUX_SANDBOX_FOUNDATION_LANE: managed'));
+ assert.ok(steps[cleanup].includes('if: '+MAINTENANCE_CLEANUP_IF));assert.ok(steps[cleanup].includes('timeout-minutes: 1'));
+ const proof=steps.find(step=>step.includes('path: packages/desktop/test-results/linux-sandbox-maintenance-managed.json'));
+ assert.ok(steps.indexOf(proof)>cleanup&&steps.indexOf(proof)<foundation);
+ assert.ok(proof.includes('if-no-files-found: error'));assert.ok(proof.includes('if: '+MAINTENANCE_CLEANUP_IF));assert.ok(proof.includes('retention-days: 3'));
+});
+
+test('managed maintenance CI refuses omissions, broad guards, late cleanup, setup drift and filtered native execution',()=>{
+ const body=jobBody('linux-sandbox-foundation');const steps=jobSteps(body);
+ for(const [before,after]of [
+  [MAINTENANCE_PORTABLE,MAINTENANCE_PORTABLE+' --test-name-pattern=partial'],
+  [MAINTENANCE_NATIVE,MAINTENANCE_NATIVE.replace('node --test','node --test --test-name-pattern=kernel')],
+  [MAINTENANCE_CLEANUP,MAINTENANCE_CLEANUP.replace(' --cleanup-only','')],
+  ['timeout-minutes: 1\n        run: '+MAINTENANCE_CLEANUP,'timeout-minutes: 15\n        run: '+MAINTENANCE_CLEANUP],
+  [MAINTENANCE_CLEANUP_IF,'always()'],
+  [MAINTENANCE_CLEANUP_IF,MAINTENANCE_CLEANUP_IF.replace("matrix.lane == 'managed' && ",'')],
+  [MAINTENANCE_CLEANUP_IF,MAINTENANCE_CLEANUP_IF.replace('"cancelled"','"skipped"')],
+  [MAINTENANCE_CLEANUP_IF,MAINTENANCE_CLEANUP_IF.replace('always()','success()')],
+  ['actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e','actions/setup-go@1111111111111111111111111111111111111111'],
+  ['path: packages/desktop/test-results/linux-sandbox-maintenance-managed.json','path: packages/desktop/test-results/**'],
+  ['name: linux-sandbox-maintenance-managed\n          path:', 'name: linux-sandbox-maintenance-managed\n          if-no-files-found: ignore\n          path:'],
+ ]){
+  const changed=body.replace(before,after);assert.notEqual(changed,body,before);
+  assert.ok(checkWorkflow(fixture(GOOD.replace(body,changed))).some(problem=>problem.includes('Linux sandbox foundation')),before);
+ }
+ for(const command of [MAINTENANCE_PORTABLE,MAINTENANCE_NATIVE,MAINTENANCE_CLEANUP]){
+  const step=steps.find(step=>step.includes('run: '+command));assert.ok(step);
+  // Drop the complete YAML step, not merely a token in a comment.
+  const lines=body.split('\n'),start=lines.findIndex(line=>line.trim()==='run: '+command||line.trim()==='- run: '+command);assert.ok(start>=0);
+  let first=start;while(first>0&&!lines[first].startsWith('      - '))first--;
+  let last=first+1;while(last<lines.length&&!lines[last].startsWith('      - '))last++;
+  const changed=[...lines.slice(0,first),...lines.slice(last)].join('\n');
+  assert.ok(checkWorkflow(fixture(GOOD.replace(body,changed))).some(problem=>problem.includes('Linux sandbox foundation')));
+ }
+ // Moving the cleanup behind the mounted foundation could leave privileged
+ // leftovers throughout unrelated Electron execution; order is part of proof.
+ const cleanupStart=body.indexOf('      - name: Cleanup root sandbox maintenance fixture');assert.ok(cleanupStart>=0);
+ const cleanupEnd=body.indexOf('      - ',cleanupStart+8);const block=body.slice(cleanupStart,cleanupEnd);
+ const changed=body.slice(0,cleanupStart)+body.slice(cleanupEnd)+block;
+ assert.ok(checkWorkflow(fixture(GOOD.replace(body,changed))).some(problem=>problem.includes('Linux sandbox foundation')));
+});
+
+test('managed maintenance cleanup allowance is confined to exact job and finalizer blocks',()=>{
+ const body=jobBody('linux-sandbox-foundation');const lines=body.split('\n');
+ function blockContaining(text){const at=lines.findIndex(line=>line.includes(text));assert.ok(at>=0,text);let start=at;while(start>0&&!lines[start].startsWith('      - '))start--;let end=start+1;while(end<lines.length&&!lines[end].startsWith('      - '))end++;return lines.slice(start,end).join('\n').replace(/\n*$/,'')+'\n';}
+ const setup=blockContaining('uses: actions/setup-go@'),cleanup=blockContaining('name: Cleanup root sandbox maintenance fixture'),artifact=blockContaining('name: Preserve root sandbox maintenance proof');
+ for(const changed of [body.replace(setup,''),body.replace(setup,setup.replace("        if: matrix.lane == 'managed'\n",'')),body.replace(setup,'')+setup,body.replace(artifact,''),
+  body.replace(cleanup,cleanup.replace('        run:', '        continue-on-error: true\n        run:')),
+  body.replace(cleanup,cleanup.replace(MAINTENANCE_CLEANUP,MAINTENANCE_CLEANUP+' || true')),
+  body.replace(artifact,artifact.replace('if-no-files-found: error','if-no-files-found: ignore')),
+  body.replace(artifact,artifact.replace('retention-days: 3','retention-days: 90'))]){
+  assert.notEqual(changed,body);assert.ok(checkWorkflow(fixture(GOOD.replace(body,changed))).some(problem=>problem.includes('Linux sandbox foundation')));
+ }
+ const otherJob=GOOD.replace(NPM_TEST,cleanup+NPM_TEST);assert.notEqual(otherJob,GOOD);
+ assert.ok(checkWorkflow(fixture(otherJob)).some(problem=>problem.includes('R22')&&problem.includes('always()')));
+ const rebuilt=body.replace(cleanup,cleanup.replace(MAINTENANCE_CLEANUP,MAINTENANCE_NATIVE));
+ assert.ok(checkWorkflow(fixture(GOOD.replace(body,rebuilt))).some(problem=>problem.includes('R22')&&problem.includes('always()')));
+});
+
 test('Linux sandbox foundation is required exactly once by completion and final gates', () => {
   for (const name of ['ci-work-complete', 'ci-ok']) {
     const body = jobBody(name);

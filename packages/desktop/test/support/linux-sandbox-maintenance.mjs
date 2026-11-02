@@ -1,15 +1,14 @@
 // Content-free CI fixture only. No production root, key or runtime override.
 import {readFileSync} from 'node:fs';
 import {posix} from 'node:path';
-const {isAbsolute,join,normalize}=posix;
+const {isAbsolute,normalize}=posix;
 export const MAINTENANCE_ROOT='/usr/lib/dilla-sandbox-maintenance-ci';
 export const STAGING_PROGRAM=readFileSync(new URL('../fixtures/linux-sandbox-maintenance/root-stage.py',import.meta.url),'utf8');
 const digest=x=>typeof x==='string'&&/^[A-Za-z0-9+/]{86}==$/.test(x)&&Buffer.from(x,'base64').toString('base64')===x;
 export function maintenanceCommands({build,identity,hashes}){
  if(!isAbsolute(build)||normalize(build)!==build||!Array.isArray(identity)||identity.length!==3||!identity.slice(0,2).every(x=>typeof x==='string'&&/^[1-9][0-9]{0,19}$/.test(x))||!/^[0-9a-f]{40}$/.test(identity[2])||!Array.isArray(hashes)||hashes.length!==4||!hashes.every(digest))throw Error('Invalid maintenance inputs');
  const stage=role=>['/usr/bin/python3','-I','-S','-c',STAGING_PROGRAM,role,...identity];
- const install=(source,destination,mode)=>['/usr/bin/install','-o','root','-g','root','-m',mode,'--',join(build,source),destination];
- return [stage('init'),install('native.test',MAINTENANCE_ROOT+'/.runner/native.test','0700'),install('credential-v1',MAINTENANCE_ROOT+'/.runner/credential-v1','0555'),install('credential-v2',MAINTENANCE_ROOT+'/.runner/credential-v2','0555'),install('held-fd',MAINTENANCE_ROOT+'/observer','0555'),[...stage('verify'),...hashes],['/usr/bin/timeout','--signal=TERM','--kill-after=5s','300s','/usr/bin/unshare','--mount','--propagation','private','--',MAINTENANCE_ROOT+'/.runner/native.test','-test.run=^TestDisposableRootTransaction$','-test.timeout=4m','-test.v'],['/usr/bin/timeout','--signal=TERM','--kill-after=5s','30s',...stage('cleanup')]];
+ return [[...stage('init'),...hashes],stage('stage-native'),stage('stage-v1'),stage('stage-v2'),stage('stage-observer'),[...stage('verify'),...hashes],['/usr/bin/timeout','--signal=TERM','--kill-after=5s','300s',...stage('run')],['/usr/bin/timeout','--signal=TERM','--kill-after=5s','30s',...stage('cleanup')]];
 }
 export function verifyMaintenanceProof(stdout){
  const fail=()=>{throw Error('Invalid maintenance proof');};

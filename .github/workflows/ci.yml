@@ -671,6 +671,35 @@ jobs:
           esac
       - run: npm ci
       - run: node node_modules/electron/install.js
+      - name: Portable sandbox maintenance controls
+        if: matrix.lane == 'managed'
+        run: node --test packages/desktop/test/linux-sandbox-maintenance.test.mjs
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        if: matrix.lane == 'managed'
+        with:
+          go-version-file: go.mod
+      - name: Root sandbox maintenance kernel proof
+        id: sandbox_maintenance
+        if: matrix.lane == 'managed'
+        timeout-minutes: 8
+        run: node --test packages/desktop/test/native/linux-sandbox-maintenance.test.mjs
+        env:
+          DILLA_LINUX_SANDBOX_FOUNDATION_LANE: managed
+      - name: Cleanup root sandbox maintenance fixture
+        if: always() && matrix.lane == 'managed' && contains(fromJSON('["success","failure","cancelled"]'), steps.sandbox_maintenance.outcome)
+        timeout-minutes: 1
+        run: node packages/desktop/test/native/linux-sandbox-maintenance.test.mjs --cleanup-only
+        env:
+          DILLA_LINUX_SANDBOX_FOUNDATION_LANE: managed
+      - name: Preserve root sandbox maintenance proof
+        if: always() && matrix.lane == 'managed' && contains(fromJSON('["success","failure","cancelled"]'), steps.sandbox_maintenance.outcome)
+        timeout-minutes: 1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: linux-sandbox-maintenance-managed
+          path: packages/desktop/test-results/linux-sandbox-maintenance-managed.json
+          if-no-files-found: error
+          retention-days: 3
       - run: xvfb-run -a dbus-run-session -- node --test packages/desktop/test/native/linux-sandbox-foundation.test.mjs
         env:
           DILLA_LINUX_SANDBOX_FOUNDATION_LANE: ${{ matrix.lane }}

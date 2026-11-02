@@ -25,7 +25,7 @@ function command(program,args,options={}){
  const result=spawnSync(program,args,{cwd:repository,env:process.env,encoding:'utf8',timeout:310_000,maxBuffer:1<<20,...options});
  if(result.error||result.signal||result.status!==0)throw Error('Maintenance fixture command failed ('+(Number.isInteger(result.status)?result.status:'unavailable')+')');return result.stdout;
 }
-function privileged(args){return command('/usr/bin/sudo',args,{env:safeEnv});}
+function privileged(args,input){return command('/usr/bin/sudo',args,{env:safeEnv,...(input===undefined?{}:{input})});}
 async function policy(){
  const result={};for(const name of ['apparmor_restrict_unprivileged_userns','unprivileged_userns_clone']){
   try{const raw=(await readFile('/proc/sys/kernel/'+name,'utf8')).trim();assert.match(raw,/^[0-9]{1,4}$/);result[name]=raw;}catch(error){if(error.code==='ENOENT')result[name]='absent';else throw error;}
@@ -48,7 +48,7 @@ export async function runMaintenance(t){
   proof.stage='build-go';command('go',['test','-c','-tags=dilla_sandbox_native','-ldflags='+flags,'-o',join(build,'native.test'),'./internal/desktopsandbox'],{env:{...process.env,CGO_ENABLED:'0'}});
   proof.stage='preflight';command(join(build,'native.test'),['-test.run=^TestNativeCompiledConfiguration$']);
   const hashes=await Promise.all(['native.test','credential-v1','credential-v2','held-fd'].map(hash));commands=maintenanceCommands({build,identity:job,hashes});
-  attempted=true;const stages=['init','copy-native','copy-v1','copy-v2','copy-observer','verify'];for(const [i,args]of commands.slice(0,-2).entries()){proof.stage=stages[i];privileged(args);}
+  attempted=true;const stages=['init','copy-native','copy-v1','copy-v2','copy-observer','verify'];for(const [i,args]of commands.slice(0,-2).entries()){proof.stage=stages[i];const source=i>0&&i<5?['native.test','credential-v1','credential-v2','held-fd'][i-1]:undefined;privileged(args,source?await readFile(join(build,source)):undefined);}
   proof.stage='kernel';const observed=verifyMaintenanceProof(privileged(commands.at(-2)));
   proof.stage='policy';assert.deepEqual(await policy(),before,'host security policy changed');for(const path of ['/usr/lib/dilla/appimage','/usr/lib/dilla/native'])assert.equal(await absent(path),true);
   proof.kernel=observed;proof.status='passed';proof.stage='complete';
