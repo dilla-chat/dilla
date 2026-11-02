@@ -3,6 +3,7 @@ const { sparklePublicKey, metadataPublicKeys } = require('./release-trust.json')
 const windowsHooks = require('./scripts/windows-builder-hooks.cjs').createWindowsBuilderHooks({ metadataPublicKeys });
 module.exports = {
   appId: 'dev.dilla.desktop', productName: 'Dilla', executableName: 'dilla-desktop',
+  toolsets: { nsis: '1.2.1' }, // Hash-pinned NSIS 3.12 bundle; avoid the legacy temporary-directory runtime.
   directories: { output: 'out', buildResources: 'assets' },
   files: ['dist/**', 'package.json'],
   asar: true,

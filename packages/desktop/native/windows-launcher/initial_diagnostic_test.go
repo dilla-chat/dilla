@@ -92,6 +92,48 @@ func diagnoseInitialRetry(l layout, cfg buildConfig, payload string) initialRetr
 	}
 	return initialRetryDiagnostic{1, "ready", "retry-authorized", 0}
 }
+
+func diagnosePayloadACL(cfg buildConfig, payload string) initialRetryDiagnostic {
+	for _, item := range []struct{ stage, path string }{{"payload-root", payload}, {"payload-manifest-directory", filepath.Join(payload, "manifests")}} {
+		guard, err := desktoplaunch.PinOwnedDirectory(item.path)
+		if err != nil {
+			return initialDiagnosticFailure(item.stage, err)
+		}
+		_ = guard.Close()
+	}
+	name, err := desktoplaunch.ManifestName(cfg.InitialManifestSHA512)
+	if err != nil {
+		return initialDiagnosticFailure("manifest-identity", err)
+	}
+	raw, err := readMetadata(filepath.Join(payload, "manifests", name), 1_048_576)
+	if err != nil {
+		return initialDiagnosticFailure("payload-manifest-read", err)
+	}
+	manifest, err := desktoplaunch.VerifyManifest(raw, cfg.InitialManifestSHA512, desktoplaunch.ManifestContext{Version: cfg.InitialVersion, Channel: cfg.Channel, Arch: cfg.Arch})
+	if err != nil {
+		return initialDiagnosticFailure("payload-manifest-verify", err)
+	}
+	id, _ := desktoplaunch.TreeID(cfg.InitialManifestSHA512)
+	tree, err := desktoplaunch.VerifyTree(filepath.Join(payload, "versions", id), manifest)
+	if err != nil {
+		return initialDiagnosticFailure("payload-tree", err)
+	}
+	_ = tree.Close()
+	return initialRetryDiagnostic{1, "ready", "retry-authorized", 0}
+}
+
+func TestPayloadACLDiagnosticUsesUnchangedDirectoryFileAndTreeGuards(t *testing.T) {
+	cfg, _, payload := diagnosticFixture(t)
+	if result := diagnosePayloadACL(cfg, payload); result.Stage != "ready" {
+		t.Fatalf("payload guard stage %s", result.Stage)
+	}
+	if err := os.RemoveAll(filepath.Join(payload, "manifests")); err != nil {
+		t.Fatal(err)
+	}
+	if result := diagnosePayloadACL(cfg, payload); result.Stage != "payload-manifest-directory" {
+		t.Fatalf("payload guard stage %s", result.Stage)
+	}
+}
 func diagnosticFixture(t *testing.T) (buildConfig, layout, string) {
 	t.Helper()
 	cfg, l := initialInstallation(t)
