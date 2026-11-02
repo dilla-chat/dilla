@@ -360,7 +360,7 @@ def read_lifecycle(control, identity):
         v = json.loads(read_pin(p, 8192), object_pairs_hook=exact_pairs, parse_constant=lambda _: require(False))
     finally:
         os.close(p[0])
-    require(type(v) is dict and set(v) == {"format", "runId", "attempt", "sha", "nonce", "phase", "device", "inode", "hashes", "lockDevice", "lockInode"})
+    require(type(v) is dict and set(v) == {"format", "runId", "attempt", "sha", "nonce", "phase", "device", "inode", "hashes", "lockDevice", "lockInode", "lockMountID"})
     require(type(v["format"]) is int and v["format"] == 1 and [v["runId"], v["attempt"], v["sha"]] == identity)
     require(type(v["nonce"]) is str and re.fullmatch(r"[0-9a-f]{64}", v["nonce"]) is not None)
     require(v["phase"] in ("initializing", "active", "closed"))
@@ -371,6 +371,7 @@ def read_lifecycle(control, identity):
         digest(h)
     for key in ("device", "inode", "lockDevice", "lockInode"):
         require(type(v[key]) is str and re.fullmatch(r"0|[1-9][0-9]{0,19}", v[key]) is not None)
+    require(type(v["lockMountID"]) is str and re.fullmatch(r"[1-9][0-9]{0,19}", v["lockMountID"]) is not None and int(v["lockMountID"]) < 2**64)
     return v
 
 
@@ -412,14 +413,14 @@ def lifecycle(role, identity, hashes):
                 require(role in ("init", "cleanup"))
                 # Closing an as-yet absent admission is still durable: a late
                 # initializer must not create payload after passing cleanup.
-                v = dict(format=1, runId=identity[0], attempt=identity[1], sha=identity[2], nonce=os.urandom(32).hex(), phase="closed" if role == "cleanup" else "initializing", device="0", inode="0", hashes=hashes, lockDevice=str(s.st_dev), lockInode=str(s.st_ino))
+                v = dict(format=1, runId=identity[0], attempt=identity[1], sha=identity[2], nonce=os.urandom(32).hex(), phase="closed" if role == "cleanup" else "initializing", device="0", inode="0", hashes=hashes, lockDevice=str(s.st_dev), lockInode=str(s.st_ino), lockMountID=str(mount_id(fd)))
                 write_lifecycle(control, v, True)
                 os.fsync(parent)
             else:
                 v = read_lifecycle(control, identity)
                 require(role != "init")
                 require(v["phase"] != "initializing")
-            require(v["lockDevice"] == str(s.st_dev) and v["lockInode"] == str(s.st_ino))
+            require(v["lockDevice"] == str(s.st_dev) and v["lockInode"] == str(s.st_ino) and v["lockMountID"] == str(mount_id(fd)))
             pending = pin(control, "state.next", (0o600,), 8192)
             if pending is not None:
                 try:

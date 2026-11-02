@@ -6,7 +6,7 @@ import {createHash} from 'node:crypto';
 import {lstat,mkdtemp,readFile,realpath,rm,mkdir,writeFile} from 'node:fs/promises';
 import {isAbsolute,join,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {MAINTENANCE_ROOT,maintenanceCommands,verifyMaintenanceProof,STAGING_PROGRAM,preserveMaintenanceFailure,maintenanceCommandFailure,captureMaintenanceFailure} from '../support/linux-sandbox-maintenance.mjs';
+import {MAINTENANCE_ROOT,maintenanceCommands,verifyMaintenanceProof,STAGING_PROGRAM,preserveMaintenanceFailure,maintenanceCommandFailure,captureMaintenanceFailure,maintenanceCommandDiagnostic} from '../support/linux-sandbox-maintenance.mjs';
 
 const repository=resolve(import.meta.dirname,'../../../..');
 const fixture=fileURLToPath(new URL('../fixtures/linux-sandbox-maintenance/',import.meta.url));
@@ -49,7 +49,9 @@ export async function runMaintenance(t){
   proof.stage='preflight';command(join(build,'native.test'),['-test.run=^TestNativeCompiledConfiguration$']);
   const hashes=await Promise.all(['native.test','credential-v1','credential-v2','held-fd'].map(hash));commands=maintenanceCommands({build,identity:job,hashes});
   attempted=true;const stages=['init','copy-native','copy-v1','copy-v2','copy-observer','verify'];for(const [i,args]of commands.slice(0,-2).entries()){proof.stage=stages[i];const source=i>0&&i<5?['native.test','credential-v1','credential-v2','held-fd'][i-1]:undefined;privileged(args,source?await readFile(join(build,source)):undefined);}
-  proof.stage='kernel';const observed=verifyMaintenanceProof(privileged(commands.at(-2)));
+  proof.stage='kernel';const kernelStdout=privileged(commands.at(-2));
+  proof.kernelAdmission=maintenanceCommandDiagnostic({status:0,stdout:kernelStdout});
+  const observed=verifyMaintenanceProof(kernelStdout);
   proof.stage='policy';assert.deepEqual(await policy(),before,'host security policy changed');for(const path of ['/usr/lib/dilla/appimage','/usr/lib/dilla/native'])assert.equal(await absent(path),true);
   proof.kernel=observed;proof.status='passed';proof.stage='complete';
  }catch(error){failure=captureMaintenanceFailure(proof,error);}finally{

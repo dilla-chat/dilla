@@ -46,72 +46,104 @@ func nativeFail(t *testing.T, e error) {
 // read-only description with EX flock authority, not an authority-free handle.
 // Only hash-verified fixed actors receive it; never unlock it before process exit.
 type nativeLifecycleState struct {
-	Format     int      `json:"format"`
-	RunID      string   `json:"runId"`
-	Attempt    string   `json:"attempt"`
-	SHA        string   `json:"sha"`
-	Nonce      string   `json:"nonce"`
-	Phase      string   `json:"phase"`
-	Device     string   `json:"device"`
-	Inode      string   `json:"inode"`
-	Hashes     []string `json:"hashes"`
-	LockDevice string   `json:"lockDevice"`
-	LockInode  string   `json:"lockInode"`
+	Format      int      `json:"format"`
+	RunID       string   `json:"runId"`
+	Attempt     string   `json:"attempt"`
+	SHA         string   `json:"sha"`
+	Nonce       string   `json:"nonce"`
+	Phase       string   `json:"phase"`
+	Device      string   `json:"device"`
+	Inode       string   `json:"inode"`
+	Hashes      []string `json:"hashes"`
+	LockDevice  string   `json:"lockDevice"`
+	LockInode   string   `json:"lockInode"`
+	LockMountID string   `json:"lockMountID"`
 }
 
 var nativeLeaseState *nativeLifecycleState
 
+// Fixed content-free checkpoints; these observations never authorize admission.
+func nativeLifecyclePhase(phase string) {
+	fmt.Println("DILLA_NATIVE_LIFECYCLE_PHASE " + phase)
+}
+
 func nativeLifecycle(t *testing.T, closed bool) {
 	t.Helper()
+	nativeLifecyclePhase("root-identity")
 	if unix.Geteuid() != 0 {
 		t.Fatal("root lifecycle fixture requires disposable CI")
 	}
+	nativeLifecyclePhase("run-open")
 	parent, e := unix.Open("/run", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	nativeFail(t, e)
 	defer func() { _ = unix.Close(parent) }()
 	f := &fixedFiles{layout: appImageLayout()}
+	nativeLifecyclePhase("run-metadata-attributes")
 	nativeFail(t, f.safeDir(parent, 0o755, false))
+	nativeLifecyclePhase("run-capture-mount")
 	nativeFail(t, f.captureMount(parent))
+	nativeLifecyclePhase("control-open")
 	control, e := unix.Openat(parent, "dilla-sandbox-maintenance-ci", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	nativeFail(t, e)
 	defer func() { _ = unix.Close(control) }()
+	nativeLifecyclePhase("control-metadata-attributes")
 	nativeFail(t, f.safeDir(control, 0o700, true))
+	nativeLifecyclePhase("control-mount")
 	nativeFail(t, f.sameDevice(control))
+	nativeLifecyclePhase("lock-read")
 	_, canonical := nativeRead(t, control, "lock", 0, 0o600)
 	var inherited unix.Stat_t
+	nativeLifecyclePhase("lease-stat")
 	nativeFail(t, unix.Fstat(3, &inherited))
+	nativeLifecyclePhase("lease-inode")
 	if !sameStat(canonical, inherited) {
 		t.Fatal("wrong lifecycle lease descriptor")
 	}
-	nativeFail(t, f.sameDevice(3))
+	nativeLifecyclePhase("lease-mount-stat")
+	device, mount, e := mountInfo(3)
+	nativeFail(t, e)
+	fmt.Printf("DILLA_NATIVE_LIFECYCLE_LEASE %t %t\n", device == f.device, mount == f.mountID)
+	nativeLifecyclePhase("lease-mount")
+	// Cross-namespace FD3 binding is checked against protected admission below.
+
+	nativeLifecyclePhase("lease-access")
 	access, e := unix.FcntlInt(3, unix.F_GETFL, 0)
 	nativeFail(t, e)
 	if access&unix.O_ACCMODE != unix.O_RDONLY {
 		t.Fatal("lifecycle lease must be read-only")
 	}
+	nativeLifecyclePhase("lease-lock")
 	nativeFail(t, unix.Flock(3, unix.LOCK_EX|unix.LOCK_NB))
 	unix.CloseOnExec(3)
 	// Admission is revalidated after acquiring/reacquiring the same OFD lock.
+	nativeLifecyclePhase("state-read")
 	raw, _ := nativeRead(t, control, "state.json", 8192, 0o600)
-	_, e = exactObject(raw, "format", "runId", "attempt", "sha", "nonce", "phase", "device", "inode", "hashes", "lockDevice", "lockInode")
+	nativeLifecyclePhase("state-fields")
+	_, e = exactObject(raw, "format", "runId", "attempt", "sha", "nonce", "phase", "device", "inode", "hashes", "lockDevice", "lockInode", "lockMountID")
 	nativeFail(t, e)
+	nativeLifecyclePhase("state-json")
 	nativeFail(t, validateJSON(raw))
 	var state nativeLifecycleState
 	nativeFail(t, json.Unmarshal(raw, &state))
+	nativeLifecyclePhase("state-mount-binding")
+	nativeFail(t, nativeLeaseBinding(canonical, inherited, f.mountID, device, mount, state.LockMountID))
 	expected := "active"
 	if closed {
 		expected = "closed"
 	}
+	nativeLifecyclePhase("state-identity")
 	nonce, e := hex.DecodeString(state.Nonce)
 	nativeFail(t, e)
 	if state.LockDevice != strconv.FormatUint(inherited.Dev, 10) || state.LockInode != strconv.FormatUint(inherited.Ino, 10) || state.Format != 1 || state.RunID != nativeRunID || state.Attempt != nativeAttempt || state.SHA != nativeHead || state.Phase != expected || len(nonce) != 32 || hex.EncodeToString(nonce) != state.Nonce || len(state.Hashes) != 4 {
 		t.Fatal("closed, foreign or malformed lifecycle state")
 	}
+	nativeLifecyclePhase("state-digests")
 	for _, h := range state.Hashes {
 		if !validDigest(h) {
 			t.Fatal("invalid lifecycle digest")
 		}
 	}
+	nativeLifecyclePhase("admitted")
 	nativeLeaseState = &state
 }
 func nativeLeaseFile(t *testing.T) *os.File {

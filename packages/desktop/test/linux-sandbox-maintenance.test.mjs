@@ -187,11 +187,12 @@ test('a queued stage revalidates the closed tombstone after acquiring the lifecy
 });
 
 test('a replacement lifecycle lock or foreign lifecycle record cannot authorize cleanup',{skip:process.platform!=='linux'},async t=>{
- for(const change of ['lock-inode','foreign-state','lock-mode']){
+ for(const change of ['lock-inode','foreign-state','lock-mode','missing-lock-mount','changed-lock-mount','zero-lock-mount','null-lock-mount','padded-lock-mount']){
   const f=await fixture(t);pass(f.run('init'));const control=join(f.base,'lifecycle');
   if(change==='lock-inode'){await rename(join(control,'lock'),join(f.base,'original-lock'));await writeFile(join(control,'lock'),'',{mode:0o600});}
   if(change==='foreign-state'){const file=join(control,'state.json');const state=JSON.parse(await readFile(file,'utf8'));state.runId='999';await writeFile(file,JSON.stringify(state));}
   if(change==='lock-mode')await chmod(join(control,'lock'),0o644);
+  if(change.endsWith('lock-mount')){const file=join(control,'state.json'),state=JSON.parse(await readFile(file,'utf8'));if(change==='missing-lock-mount')delete state.lockMountID;if(change==='changed-lock-mount')state.lockMountID=String(BigInt(state.lockMountID)+1n);if(change==='zero-lock-mount')state.lockMountID='0';if(change==='null-lock-mount')state.lockMountID=null;if(change==='padded-lock-mount')state.lockMountID='0'+state.lockMountID;await writeFile(file,JSON.stringify(state));}
   refused(f.run('cleanup'));assert.ok((await stat(f.root)).isDirectory());
  }
 });
@@ -205,7 +206,7 @@ test('actual failing child retains audited native assertion and syscall reason i
  const output='=== RUN   TestDisposableRootTransaction\n    native_root_linux_test.go:801: invalid Linux sandbox protected state\n    native_root_linux_test.go:802: open /usr/lib/dilla-sandbox-maintenance-ci/appimage/chrome-sandbox: permission denied\n--- FAIL: TestDisposableRootTransaction (0.01s)\nPRIVATE_FIXTURE_KEY=secret-private-material\n';
  const result=spawnSync(process.execPath,['-e','process.stdout.write('+JSON.stringify(output)+');process.stderr.write("SECRET_ENV=unrelated\\n");process.exit(1)'],{encoding:'utf8'});
  const original=maintenanceCommandFailure(result),proof={stage:'kernel',primaryFailure:false};assert.equal(captureMaintenanceFailure(proof,original),original);
- const base=await mkdtemp(join(tmpdir(),'native-failure-proof-'));t.after(()=>rm(base,{recursive:true,force:true}));const file=join(base,'proof.json');await writeFile(file,JSON.stringify(proof),{mode:0o600});const rendered=await readFile(file,'utf8');assert.equal(JSON.parse(rendered).primaryFailure,true);
+ const base=await mkdtemp(join(tmpdir(),'native-failure-proof-'));t.after(()=>rm(base,{recursive:true,force:true}));const file=join(base,'proof.json');await writeFile(file,JSON.stringify(proof),{mode:0o600});const rendered=await readFile(file,'utf8');assert.equal(JSON.parse(rendered).primaryFailure,true);assert.deepEqual(JSON.parse(rendered).kernelAdmission,original.maintenanceDiagnostic);
  assert.equal(original.maintenanceDiagnostic.exitCode,1);assert.match(rendered,/invalid Linux sandbox protected state/);assert.match(rendered,/permission denied/);assert.match(rendered,/801/);assert.match(rendered,/TestDisposableRootTransaction/);
  assert.doesNotMatch(rendered,/PRIVATE_FIXTURE_KEY|secret-private-material|SECRET_ENV|unrelated/);
  const actions=[];assert.equal(await preserveMaintenanceFailure(original,[()=>{actions.push('cleanup');throw Error('cleanup');},()=>{actions.push('proof');t.diagnostic(rendered);}]),original);assert.deepEqual(actions,['cleanup','proof']);
@@ -225,4 +226,23 @@ test('native failure output audit covers every current fixed assertion without a
  for(const match of source.matchAll(/t\.Fatal\("([^"\n]*)"/g))assert.ok(AUDITED_NATIVE_REASONS.has(match[1]),'unaudited fixed assertion');
  const value=maintenanceCommandFailure({status:1,stdout:'native_root_linux_test.go:99: '+('fixed crash point not reached '.repeat(100))+'permission denied\nnative_root_linux_test.go:100: SECRET_ENV=private\n'}).maintenanceDiagnostic;
  assert.equal(value.entries[0].kind,'unrecognized-assertion');assert.equal(value.entries[1].kind,'unrecognized-assertion');assert.doesNotMatch(JSON.stringify(value),/SECRET_ENV|private/);
+});
+
+test('lifecycle admission diagnostics distinguish inherited old mount from canonical namespace without weakening validation',async()=>{
+ const {maintenanceCommandFailure,NATIVE_LIFECYCLE_PHASES}=await import('./support/linux-sandbox-maintenance.mjs');
+ const source=await readFile(new URL('../../../internal/desktopsandbox/native_root_linux_test.go',import.meta.url),'utf8');for(const phase of source.matchAll(/nativeLifecyclePhase\("([^"]+)"\)/g))assert.ok(NATIVE_LIFECYCLE_PHASES.has(phase[1]));
+ const value=maintenanceCommandFailure({status:1,stdout:'DILLA_NATIVE_LIFECYCLE_PHASE lease-mount\nDILLA_NATIVE_LIFECYCLE_LEASE true false\n    native_root_linux_test.go:782: invalid Linux sandbox protected state\n'}).maintenanceDiagnostic;
+ assert.deepEqual(value.entries,[{kind:'lifecycle-phase',phase:'lease-mount'},{kind:'lifecycle-mount',deviceMatches:true,mountMatches:false},{kind:'assertion',line:782,reason:'invalid Linux sandbox protected state'}]);
+ const bad=maintenanceCommandFailure({status:1,stdout:'DILLA_NATIVE_LIFECYCLE_PHASE PRIVATE_KEY\nDILLA_NATIVE_LIFECYCLE_LEASE true SECRET\n'}).maintenanceDiagnostic;
+ assert.equal(bad.entries.length,0);assert.equal(bad.unknownLines,2);assert.doesNotMatch(JSON.stringify(bad),/PRIVATE_KEY|SECRET/);
+});
+
+test('actual successful native stdout preserves sanitized admission observations in private proof',async t=>{
+ const {maintenanceCommandDiagnostic,verifyMaintenanceProof}=await import('./support/linux-sandbox-maintenance.mjs');
+ const kernel={format:1,kind:'dilla-sandbox-maintenance-kernel',positive:0,demoted:65534,exchanged:65534,unlinked:65534,fresh:0,recoveries:6,mounts:2,lateInode:true,nativeUntouched:true,productionAbsent:true};
+ const output='DILLA_NATIVE_LIFECYCLE_PHASE lease-mount\nDILLA_NATIVE_LIFECYCLE_LEASE true false\nDILLA_SANDBOX_MAINTENANCE_PROOF '+JSON.stringify(kernel)+'\nPRIVATE_FIXTURE_MATERIAL=never-retain\n';
+ const result=spawnSync(process.execPath,['-e','process.stdout.write('+JSON.stringify(output)+')'],{encoding:'utf8'});assert.equal(result.status,0);
+ const proof={stage:'kernel',kernelAdmission:maintenanceCommandDiagnostic(result)};proof.kernel=verifyMaintenanceProof(result.stdout);proof.status='passed';
+ const base=await mkdtemp(join(tmpdir(),'native-success-proof-'));t.after(()=>rm(base,{recursive:true,force:true}));const path=join(base,'proof.json');await writeFile(path,JSON.stringify(proof),{mode:0o600});const raw=await readFile(path,'utf8'),saved=JSON.parse(raw);
+ assert.deepEqual(saved.kernelAdmission.entries,[{kind:'lifecycle-phase',phase:'lease-mount'},{kind:'lifecycle-mount',deviceMatches:true,mountMatches:false}]);assert.equal(saved.kernelAdmission.exitCode,0);assert.deepEqual(saved.kernel,kernel);assert.doesNotMatch(raw,/PRIVATE_FIXTURE_MATERIAL|never-retain/);
 });
