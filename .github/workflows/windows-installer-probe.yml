@@ -24,7 +24,7 @@ jobs:
       - name: Windows launcher kernel acceptance
         run: go test ./internal/desktoplaunch ./packages/desktop/native/windows-launcher
       - name: Native path and installer control-flow probes
-        run: node --test packages/desktop/test/windows-installer.test.ts
+        run: node --test packages/desktop/test/windows-installer.test.ts packages/desktop/test/windows-payload-pins.test.ts
       - name: Focused interrupted-install diagnostic (not full maintenance acceptance)
         env:
           DILLA_FIXTURE_INITIAL_RETRY_ONLY: '1'
