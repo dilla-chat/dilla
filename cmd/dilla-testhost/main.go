@@ -172,9 +172,10 @@ func run(o options) error {
 		return err
 	}
 
-	publicSrv := &http.Server{Handler: host.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	var requestDiagnostics instanceRequestDiagnostics
+	publicSrv := &http.Server{Handler: requestDiagnostics.public(host.Handler()), ReadHeaderTimeout: 10 * time.Second}
 	controlSrv := &http.Server{
-		Handler:           dilladtest.ControlHandler(host),
+		Handler:           requestDiagnostics.control(dilladtest.ControlHandler(host)),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	errs := make(chan error, 2)
