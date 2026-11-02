@@ -410,3 +410,22 @@ test('native launch instrumentation is compiled before main imports and shares t
   assert.match(app, /if \(info\.status !== info\.expectedStatus\)/);
   assert.match(app, /if \(!acceptingDiagnostics\) return/);
 });
+
+test('installed fixture passively reports the loaded renderer PID and effective security preferences', async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'dilla-runtime-report-')));
+  try {
+    const fs = createRequire(import.meta.url)('node:fs'), callbacks = {};
+    const observe = runInNewContext(createRequire(import.meta.url)('esbuild').transformSync(fixtures.fixtureStartupDiagnosticsSource() + ';globalThis.observe=__accountObserveWindow', { loader: 'ts' }).code + ';observe', {
+      __accountFS: fs, __accountReports: root, __accountRole: 'ordinary', Buffer, URL, Date,
+      app: { getVersion: () => '1.0.1' }, process: { pid: 123, execPath: '/tmp/.mount_owned/dilla-desktop' },
+    });
+    const preferences = { sandbox: true, contextIsolation: true, nodeIntegration: false, private: 'PRIVATE_SECRET' };
+    observe({ webContents: { on(event, cb) { callbacks[event] = cb; }, getOSProcessId: () => 456, getLastWebPreferences: () => preferences } });
+    callbacks['did-finish-load']();
+    const raw = await readFile(join(root, 'runtime-1.0.1.json'), 'utf8');
+    assert.deepEqual(JSON.parse(raw), { format: 1, version: '1.0.1', mainPid: 123, rendererPid: 456, executable: '/tmp/.mount_owned/dilla-desktop', sandbox: true, contextIsolation: true, nodeIntegration: false });
+    assert.doesNotMatch(raw, /PRIVATE_SECRET|private/);
+    preferences.sandbox = false; callbacks['did-finish-load']();
+    assert.equal(JSON.parse(await readFile(join(root, 'runtime-1.0.1.json'), 'utf8')).sandbox, false, 'reports effective state rather than a constant acceptance claim');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

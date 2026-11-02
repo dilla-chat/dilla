@@ -6,6 +6,7 @@ import { readFile, writeFile, rm, mkdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
 import { setTimeout as pause } from 'node:timers/promises';
+import { observeInstalledRuntime, readRuntimeReport, verifyInstalledRuntimeProof } from '../support/linux-installed-runtime-proof.mjs';
 import { createInstalledPackages, assertInstalledFuses } from '../../../../e2e/web/support/installed-packages.ts';
 const digest = bytes => createHash('sha512').update(bytes).digest('base64');
 async function until(read, label, timeout = 120000) {
@@ -32,6 +33,8 @@ async function owned(report, packages) {
 // One normal engine handoff. The separate full account acceptance suite retains
 // encrypted history, device-key continuity, draft and selected-file safeguards.
 test('installed AppImage/NSIS upgrades and relaunches through electron-updater', { skip: !['linux','win32'].includes(process.platform), timeout: 900000 }, async () => {
+ const output = join(import.meta.dirname,'../../test-results');
+ await rm(join(output,`${process.platform}-installed-upgrade.json`),{force:true});
  const instance = 'https://desktop-update-offline.invalid/';
  const packages = await createInstalledPackages(instance), browsers = new Map();
  const reportFile = version => join(packages.reports, `update-${version}.json`);
@@ -50,7 +53,8 @@ test('installed AppImage/NSIS upgrades and relaunches through electron-updater',
   assert.ok(runtime && await owned(runtime,packages),'actual owned installed runtime');
   await assertInstalledFuses(process.platform === 'linux' ? `/proc/${runtime.pid}/exe` : runtime.executable);
   assert.deepEqual(await page.evaluate(() => ({require:typeof window.require,process:typeof window.process})),{require:'undefined',process:'undefined'});
-  return {page,pid:runtime.pid,version:info.version};
+  const sandbox = process.platform === 'linux' ? await observeInstalledRuntime(await readRuntimeReport(join(packages.reports,`runtime-${version}.json`)),runtime) : undefined;
+  return {page,pid:runtime.pid,version:info.version,sandbox};
  },`installed ${version}`);
  try {
   const sentinel = join(packages.profile,'device-sentinel'); await writeFile(sentinel,'existing profile retained');
@@ -71,12 +75,14 @@ test('installed AppImage/NSIS upgrades and relaunches through electron-updater',
   assert.equal(profileRetained,true);
   assert.deepEqual((await json(join(packages.profile,'desktop.json'))).instances,[instance]);
   await until(async()=>!await owned({...(await reports()).find(report=>report.pid===old.pid)},packages),'old runtime exit');
-  const output = join(import.meta.dirname,'../../test-results');
   await mkdir(output,{recursive:true});
-  await writeFile(join(output,`${process.platform}-installed-upgrade.json`),JSON.stringify({
+  const proof = {
    format:1,platform:process.platform,arch:process.arch,engine:process.platform==='linux'?'AppImageUpdater':'NsisUpdater',
    from:old.version,to:next.version,profileRetained,
-  })+'\n');
+   ...(process.platform==='linux'?{sandbox:[old.sandbox,next.sandbox]}:{}),
+  };
+  if(process.platform==='linux')verifyInstalledRuntimeProof(proof);
+  await writeFile(join(output,`${process.platform}-installed-upgrade.json`),JSON.stringify(proof)+'\n');
  } finally {
   const observed=await reports().catch(()=>[]);
   for(const report of observed.reverse())if(await owned(report,packages)){

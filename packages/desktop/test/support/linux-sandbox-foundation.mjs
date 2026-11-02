@@ -41,7 +41,7 @@ export async function inspectRendererExecutable(pid, read=realpath, privileged=p
   return privileged(path);
  }
 }
-async function kernelFacts(mainPid,rendererPid) {
+export async function kernelFacts(mainPid,rendererPid) {
  const [main,renderer,command,mainLabel]=await Promise.all([status(mainPid),status(rendererPid),readFile('/proc/'+rendererPid+'/cmdline','utf8'),readFile('/proc/'+mainPid+'/attr/current','utf8')]);
  let cursor=rendererPid,descendant=false;
  for(let i=0;i<8&&cursor>1;i++){const current=await status(cursor);cursor=current.ppid;if(cursor===mainPid){descendant=true;break;}}

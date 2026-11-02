@@ -2259,3 +2259,20 @@ test('the docs job must run the real checks, not only their unit tests', () => {
     assert.ok(problems.some((p) => p.includes('"docs"') && p.includes(step)), `${step}: ${problems.join('\n')}`);
   }
 });
+
+test('installed AppImage sandbox gate requires exact verification after actual upgrade and before upload', () => {
+ const step = `      - name: Linux AppImage sandbox native acceptance\n        if: runner.os == 'Linux'\n        run: node packages/desktop/test/support/linux-installed-runtime-proof.mjs packages/desktop/test-results/linux-installed-upgrade.json\n`;
+ assert.ok(REAL_DESKTOP.includes(step), 'missing actual installed AppImage kernel proof gate');
+ for(const changed of [
+  REAL_DESKTOP.replace(step,''),REAL_DESKTOP.replace(step,step.replace("runner.os == 'Linux'",'false')),
+  REAL_DESKTOP.replace(step,step.replace('        run:','        continue-on-error: true\n        run:')),
+  REAL_DESKTOP.replace(step,step.replace('run: node ','run: echo ')),
+  REAL_DESKTOP.replace(step,step.replace('linux-installed-upgrade.json','other.json')),
+  REAL_DESKTOP.replace(step,step.replace('native acceptance','diagnostic acceptance')),
+  REAL_DESKTOP.replace(step,'').replace('      - name: Installed upgrade acceptance\n',step+'      - name: Installed upgrade acceptance\n'),
+  REAL_DESKTOP.replace(step,step.replace('        run:','        env:\n          NODE_OPTIONS: --import ./fake-proof.mjs\n        run:')),
+ ]){
+  assert.notEqual(changed,REAL_DESKTOP);const root=fixture(GOOD);writeFileSync(join(root,'.github/workflows/desktop.yml'),changed);
+  assert.ok(checkDesktopWorkflow(root).some(p=>p.includes('installed AppImage sandbox')),changed);
+ }
+});

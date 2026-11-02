@@ -1245,7 +1245,7 @@ cache-dependency-path: go.sum`);
 if: runner.os == 'Linux'
 run: |
 CGO_ENABLED=0 go test ./packages/desktop/test/fixtures/linux-installed-sandbox-bootstrap
-node --test packages/desktop/test/linux-installed-sandbox-bootstrap.test.mjs packages/desktop/test/linux-sandbox-package-runner.test.mjs`);
+node --test packages/desktop/test/linux-installed-sandbox-bootstrap.test.mjs packages/desktop/test/linux-sandbox-package-runner.test.mjs packages/desktop/test/linux-installed-runtime-proof.test.mjs`);
   const installedLinux=nativeSteps.findIndex(step=>step.includes('name: Installed upgrade acceptance') && step.includes("if: runner.os == 'Linux'"));
   const nativeUnit=nativeSteps.findIndex(step=>step.some(line=>line.includes('run: npm test -w @dilla/desktop')));
   if(nativeGo<0 || nativeUnit<=nativeGo || controls<=nativeGo || controls>=installedLinux)problems.push(`${file}: installed sandbox controls require pinned native Go and unfiltered controls before installed acceptance`);
@@ -1274,6 +1274,14 @@ if-no-files-found: error`;
     problems.push(`${file}: desktop unit tests must run on every native platform`);
   }
   const proof = nativeSteps.findIndex(step => step.some(line => line.includes('name: desktop-installed-upgrade-')));
+  const sandboxGateName = 'name: Linux AppImage sandbox native acceptance';
+  const sandboxGates = nativeSteps.map((step,index)=>step.includes(sandboxGateName)?index:-1).filter(index=>index>=0);
+  const sandboxGate = `name: Linux AppImage sandbox native acceptance
+if: runner.os == 'Linux'
+run: node packages/desktop/test/support/linux-installed-runtime-proof.mjs packages/desktop/test-results/linux-installed-upgrade.json`;
+  if(sandboxGates.length!==1 || nativeSteps[sandboxGates[0]]?.join('\n')!==sandboxGate
+    || sandboxGates[0]<=installedLinux || sandboxGates[0]>=proof)
+    problems.push(`${file}: installed AppImage sandbox requires exact non-bypassable kernel proof verification after Linux installed upgrade and before upload`);
   const buildProvenance = nativeSteps.findIndex(step => step.some(line => line.includes('name: Record native desktop build provenance')));
   const finalDistribution = nativeSteps.findLastIndex(step => step.some(line => line.includes('run: npm run dist -w @dilla/desktop')));
   const finalFuses = nativeSteps.findLastIndex(step => step.some(line => line.includes('run: node packages/desktop/scripts/check-fuses.mjs')));

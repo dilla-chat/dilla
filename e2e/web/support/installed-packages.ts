@@ -63,7 +63,9 @@ function __accountWatchProbe(ses:any,instance:any){if(__accountRole!=='ordinary'
  try{__accountFS.writeFileSync(__accountReports+'/probe-result-'+app.getVersion()+'.json',JSON.stringify({format:1,status,httpStatus,code,elapsedMs:Math.min(10000,Math.max(0,Date.now()-started))}),{flag:'wx',mode:0o600});}catch{}})();
  },100);timer.unref();}
 function __accountObserveSession(ses:any,instance?:string){ses.webRequest.onCompleted((d:any)=>__accountEmit('request-complete',d.url,d.method,d.statusCode));ses.webRequest.onErrorOccurred((d:any)=>__accountEmit('request-error',d.url,d.method,0,__accountCode(d.error)));__accountWatchProbe(ses,instance);}
-function __accountObserveWindow(win:any){win.webContents.on('did-finish-load',()=>__accountEmit('document-loaded'));win.webContents.on('did-fail-load',(_e:any,code:number)=>__accountEmit('load-failed','','OTHER',0,code));win.webContents.on('render-process-gone',(_e:any,d:any)=>__accountEmit('renderer-gone','','OTHER',0,d.exitCode));}
+function __accountObserveWindow(win:any){win.webContents.on('did-finish-load',()=>{__accountEmit('document-loaded');
+ if(__accountRole!=='ordinary')return;
+ try{const p=win.webContents.getLastWebPreferences();__accountFS.writeFileSync(__accountReports+'/runtime-'+app.getVersion()+'.json',JSON.stringify({format:1,version:app.getVersion(),mainPid:process.pid,rendererPid:win.webContents.getOSProcessId(),executable:process.execPath,sandbox:p.sandbox,contextIsolation:p.contextIsolation,nodeIntegration:p.nodeIntegration}),{flag:__accountFS.constants.O_WRONLY|__accountFS.constants.O_CREAT|__accountFS.constants.O_TRUNC|(__accountFS.constants.O_NOFOLLOW??0),mode:0o600});}catch{}});win.webContents.on('did-fail-load',(_e:any,code:number)=>__accountEmit('load-failed','','OTHER',0,code));win.webContents.on('render-process-gone',(_e:any,d:any)=>__accountEmit('renderer-gone','','OTHER',0,d.exitCode));}
 `;
 }
 

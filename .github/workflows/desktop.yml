@@ -151,7 +151,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           CGO_ENABLED=0 go test ./packages/desktop/test/fixtures/linux-installed-sandbox-bootstrap
-          node --test packages/desktop/test/linux-installed-sandbox-bootstrap.test.mjs packages/desktop/test/linux-sandbox-package-runner.test.mjs
+          node --test packages/desktop/test/linux-installed-sandbox-bootstrap.test.mjs packages/desktop/test/linux-sandbox-package-runner.test.mjs packages/desktop/test/linux-installed-runtime-proof.test.mjs
       - run: npm test -w @dilla/desktop
       - run: npm run typecheck -w @dilla/desktop
       - id: desktop-build
@@ -195,6 +195,9 @@ jobs:
       - name: Installed upgrade acceptance
         if: runner.os == 'Linux'
         run: xvfb-run -a dbus-run-session -- bash packages/desktop/scripts/with-window-manager.sh node --test packages/desktop/test/native/installed-upgrade.test.mjs
+      - name: Linux AppImage sandbox native acceptance
+        if: runner.os == 'Linux'
+        run: node packages/desktop/test/support/linux-installed-runtime-proof.mjs packages/desktop/test-results/linux-installed-upgrade.json
       - name: Installed upgrade acceptance
         if: runner.os == 'Windows'
         run: node --test packages/desktop/test/native/installed-upgrade.test.mjs
