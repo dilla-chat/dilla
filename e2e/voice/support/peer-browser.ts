@@ -15,6 +15,7 @@ import { writeFixtures } from '../../media/support/fixtures.ts';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { markSignalLifecycle } from './signal-lifecycle.ts';
+import { signalCloseGuard } from './signal-close-guard.ts';
 
 /** One wait for one state (Global Constraints: at least 30 s locally, 90 s in CI). voice.ts re-exports it. */
 export const WAIT = process.env.CI === 'true' ? 90_000 : 30_000;
@@ -281,11 +282,12 @@ function installRecorders(): void {
   };
 }
 
-function newGuard(projectName: string): Guard & { attach(context: BrowserContext): Promise<void> } {
+function newGuard(projectName: string): Guard & { attach(context: BrowserContext): Promise<void>; beginLeave(context: BrowserContext): void } {
   const cspViolations: CspViolation[] = [];
   const consoleErrors: string[] = [];
   const pageErrors: string[] = [];
   const workers: Worker[] = [];
+  const signalGuards = new WeakMap<BrowserContext, ReturnType<typeof signalCloseGuard>>();
   // A worker's own securitypolicyviolation listener is installed by an evaluate that runs after the worker has started
   // (Playwright has no init script for workers), so a violation in its first tick (wasm instantiation, an early fetch)
   // can be missed by it (task-10 review M8). The worker's console is watched from the moment Playwright reports the
@@ -310,7 +312,14 @@ function newGuard(projectName: string): Guard & { attach(context: BrowserContext
   };
   return {
     cspViolations, consoleErrors, pageErrors,
+    beginLeave(context) {
+      const signal = signalGuards.get(context);
+      if (!signal) throw new Error('Cannot leave an unguarded voice context');
+      signal.beginLeave();
+    },
     async attach(context: BrowserContext): Promise<void> {
+      const signal = signalCloseGuard();
+      signalGuards.set(context, signal);
       await context.exposeBinding('__dillaCspViolation', (_source, v: CspViolation) => {
         if (!isFirefoxBrowserFaviconViolation(projectName, v)) cspViolations.push(v);
       });
@@ -322,9 +331,10 @@ function newGuard(projectName: string): Guard & { attach(context: BrowserContext
         });
       });
       context.on('console', (m) => {
+        const expectedSignalClose = signal.observe(m.text());
         const resourceLine = projectName === 'chromium-voice' && BY_DESIGN_RESOURCE_LINE.test(m.text());
         const firefoxFavicon = projectName.startsWith('firefox') && FIREFOX_FAVICON_LINE.test(m.text());
-        if (m.type() === 'error' && !resourceLine && !firefoxFavicon && !firefoxUnloadLine(projectName, m.text(), m.location().url)) consoleErrors.push(m.text());
+        if (m.type() === 'error' && !expectedSignalClose && !resourceLine && !firefoxFavicon && !firefoxUnloadLine(projectName, m.text(), m.location().url)) consoleErrors.push(m.text());
       });
       context.on('weberror', (e) => { pageErrors.push(String(e.error())); });
       context.on('page', watchPage);
@@ -448,6 +458,7 @@ export const test = base.extend<{ peerBrowser: PeerBrowsers }>({
         // A failed leave is recorded and fails the test at the end, after the context is closed anyway: thrown from a
         // spec's `finally` it would hide the error that sent the test there.
         try {
+          guard.beginLeave(person.context);
           await markSignalLifecycle(person.page, 'before-leave');
           await leaveIfInCall(person.page);
         } catch (e) {
