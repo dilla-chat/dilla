@@ -24,6 +24,22 @@ export async function cleanupAdmissionGroup(child,observedChild) {
 
 const waitExit = child => new Promise((done,reject)=>{child.once('error',reject);child.once('exit',(code,signal)=>done({code,signal}));});
 const deadline = (promise,label,ms=15000) => Promise.race([promise,new Promise((_,reject)=>{const timer=setTimeout(()=>reject(Error(label+' timed out')),ms);timer.unref();})]);
+// Inputs are owned test processes and the fixed gate. Expose only bounded
+// phase labels and numeric observations, never process paths or stderr.
+export async function checkAdmissionRelease({exit,exclusive,readChild,pause=()=>new Promise(done=>setTimeout(done,100)),facts}) {
+ facts.phase='release-main-wait';const result=await deadline(exit,'main exit');
+ facts.phase='release-main-result';facts.mainCode=Number.isInteger(result.code)?result.code:null;facts.mainSignal=result.signal===null?0:1;
+ assert.deepEqual(result,{code:0,signal:null});
+ facts.phase='release-lock-probe';
+ for(let i=0;i<50;i++){facts.attempts=i+1;facts.lockStatus=exclusive();if(facts.lockStatus===0)break;await pause();}
+ facts.phase='release-lock-busy';assert.equal(facts.lockStatus,0);
+ facts.phase='release-child-read';let child;
+ try{child=await readChild();}catch(error){facts.childReadError=error?.code==='ENOENT'?1:error?.code==='EACCES'?2:error?.code==='EPERM'?3:4;throw error;}
+ facts.childState=child.live?1:0;facts.childIdentity=child.identity?1:0;
+ facts.phase='release-child-dead';assert.equal(child.live,true);
+ facts.phase='release-child-identity';assert.equal(child.identity,true);
+ facts.phase='release-complete';
+}
 export async function runAdmissionProof({mount,image,root}) {
  assert.equal(process.env.GITHUB_ACTIONS,'true');
  const gate=join(root,'admission-base','gate'),lock=join(gate,'lock');
@@ -51,12 +67,12 @@ export async function runAdmissionProof({mount,image,root}) {
   });
   return {child,exit,nonce,report:()=>deadline(reports.length?Promise.resolve(reports.shift()):new Promise(done=>{waiter=done;}),'admission phase'),stderr:()=>stderr};
  };
- let main,late,descendant,phase='window';
+ let main,late,descendant,failed=false;const facts={phase:'window',mainCode:null,mainSignal:null,attempts:0,lockStatus:null,childState:null,childIdentity:null,childReadError:0,cleanupError:0};
  try {
   assert.equal(exclusive(),0);main=launch(join(root,'admission-profile'));
   const check=async phase=>assert.deepEqual(await main.report(),{format:1,nonce:main.nonce,phase,pid:main.child.pid});
   await check('window');assert.equal(exclusive(),1);assert.equal(publishPending(),1);
-  phase='tray';main.child.stdio[4].write('tray\n');
+  facts.phase='tray';main.child.stdio[4].write('tray\n');
   const tray=await main.report(),candidate=tray?.childPid;
   assert.deepEqual(tray,{format:1,nonce:main.nonce,phase:'tray',pid:main.child.pid,childPid:candidate});
   assert.ok(Number.isSafeInteger(candidate)&&candidate>1);
@@ -65,22 +81,20 @@ export async function runAdmissionProof({mount,image,root}) {
   descendant=candidate;
   const startTime=(await readFile('/proc/'+descendant+'/stat','utf8')).split(') ')[1].split(' ')[19];
   assert.equal(exclusive(),1);assert.equal(publishPending(),1);
-  phase='release';main.child.stdio[4].write('exit\n');
-  assert.deepEqual(await deadline(main.exit,'main exit'),{code:0,signal:null});
-  // Allow Chromium's own child processes to wind down. A surviving inherited
-  // open description keeps EX busy and fails the bounded proof.
-  let available=false;for(let i=0;i<50;i++){if(exclusive()===0){available=true;break;}await new Promise(done=>setTimeout(done,100));}
-  assert.equal(available,true,'a surviving Chromium descendant retained admission');
-  const afterStat=(await readFile('/proc/'+descendant+'/stat','utf8')).split(') ')[1].split(' ');
-  assert.notEqual(afterStat[0],'Z');assert.equal(afterStat[19],startTime);
-  phase='pending';assert.equal(publishPending(),0);
+  facts.phase='release-command';main.child.stdio[4].write('exit\n');
+  await checkAdmissionRelease({exit:main.exit,exclusive,facts,readChild:async()=>{
+   const afterStat=(await readFile('/proc/'+descendant+'/stat','utf8')).split(') ')[1].split(' ');
+   return {live:afterStat[0]!=='Z',identity:afterStat[19]===startTime};
+  }});
+  facts.phase='pending';assert.equal(publishPending(),0);
   const lateProfile=join(root,'admission-late-profile');late=launch(lateProfile);
   assert.deepEqual(await deadline(late.exit,'pending launch'),{code:40,signal:null});
   await assert.rejects(access(lateProfile),{code:'ENOENT'});
   assert.equal(exclusive(),0);
   return {format:1,status:'passed',directElf:true,windowBusy:true,trayBusy:true,pendingRefusedBeforeProfile:true,lockReleasedWithSpawnedChildAlive:true};
- } catch { throw Error('admission proof failed: '+phase); } finally {
-  await cleanupAdmissionGroup(main?.child,descendant);
-  await cleanupAdmissionGroup(late?.child);
+ } catch { failed=true; } finally {
+  try{await cleanupAdmissionGroup(main?.child,descendant);}catch{facts.cleanupError|=1;}
+  try{await cleanupAdmissionGroup(late?.child);}catch{facts.cleanupError|=2;}
+  if(failed || facts.cleanupError)throw Error('admission proof failed: '+JSON.stringify(facts));
  }
 }

@@ -240,3 +240,18 @@ test('owned process group cleanup kills a surviving child after its leader exits
   assert.equal(live,false,'owned child survived cleanup');
  } finally {try{process.kill(-leader.pid,'SIGKILL');}catch{}}
 });
+
+test('admission release reports distinct bounded failures for main exit, lock and child identity', async()=>{
+ const {checkAdmissionRelease}=await import('./linux-admission.test.mjs');
+ const observe=async (options={})=>{
+  const facts={phase:'release',mainCode:null,mainSignal:null,attempts:0,lockStatus:null,childState:null,childIdentity:null,childReadError:0};
+  const defaults={exit:Promise.resolve({code:0,signal:null}),exclusive:()=>0,readChild:async()=>({live:true,identity:true}),pause:async()=>{},facts};
+  try{await checkAdmissionRelease({...defaults,...options});return facts;}catch{return facts;}
+ };
+ assert.equal((await observe({exit:Promise.resolve({code:7,signal:null})})).phase,'release-main-result');
+ const busy=await observe({exclusive:()=>1});assert.equal(busy.phase,'release-lock-busy');assert.equal(busy.attempts,50);assert.equal(busy.lockStatus,1);
+ const missing=await observe({readChild:async()=>{throw Object.assign(Error('private path'),{code:'ENOENT'});}});assert.equal(missing.phase,'release-child-read');assert.equal(missing.childReadError,1);
+ assert.equal((await observe({readChild:async()=>({live:false,identity:true})})).phase,'release-child-dead');
+ assert.equal((await observe({readChild:async()=>({live:true,identity:false})})).phase,'release-child-identity');
+ assert.equal((await observe()).phase,'release-complete');
+});
