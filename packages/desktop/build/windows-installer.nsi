@@ -515,12 +515,14 @@ FunctionEnd
 ; Holding this fixed owned file denies new read/execute mappings while still
 ; allowing the installer itself to rename/delete it. Existing mapped images make
 ; GENERIC_WRITE fail before any archive/deletion. This is not a path-taking ABI.
+!if "${Prefix}" == "un."
 Function ${Prefix}HoldStableLauncher
   System::Call 'kernel32::CreateFileW(w "$INSTDIR\Dilla.exe", i 0x40010000, i 4, p 0, i 3, i 0x80, p 0)p.r0'
   StrCmp $0 -1 0 +2
     Call ${Prefix}Fail
   StrCpy $StableLauncherHandle $0
 FunctionEnd
+!endif
 Function ${Prefix}ReleaseStableLauncher
   ${If} $StableLauncherHandle != 0
     System::Call 'kernel32::CloseHandle(p $StableLauncherHandle)'
@@ -599,8 +601,8 @@ Function PrepareInitialInstallation
   IfErrors Fail
   StrCmp $0 10 +2
     Goto Fail
-  IfFileExists "$INSTDIR\Dilla.exe" 0 +2
-    Call HoldStableLauncher
+  ; The atomic parent-directory rename is the final kernel exclusion boundary.
+  ; A retained child handle would itself prevent that directory rename.
   Call GenerateGUID
   StrCpy $ProgramArchive "$LOCALAPPDATA\Programs\${PRODUCT_NAME}-incomplete-$GeneratedGUID"
   Push "$ProgramArchive"
