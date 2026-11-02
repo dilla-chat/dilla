@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { createWindowsProgramManifest, verifyWindowsProgramManifest, verifyWindowsProgramTree, windowsProgramID } from '../src/windows-manifest.ts';
 import { describeCoffResource } from './windows-coff-diagnostic.mjs';
+import { normalizeWindowsCoffResource } from './windows-coff-compat.mjs';
 const desktop = resolve(import.meta.dirname, '..'), repository = resolve(desktop, '../..');
 const sha512 = raw => createHash('sha512').update(raw).digest('base64');
 function windowsEnvironment() {
@@ -56,6 +57,8 @@ export async function compileNativeLauncher({ file, config, iconFile, onCoffLink
   const env = windowsEnvironment();
   execFileSync('rc.exe', ['/nologo', '/fo', 'branding.res', 'branding.rc'], { cwd: packageDirectory, env, stdio: 'inherit' });
   execFileSync('cvtres.exe', ['/NOLOGO', '/MACHINE:X64', '/OUT:branding.syso', 'branding.res'], { cwd: packageDirectory, env, stdio: 'inherit' });
+  const resourceObject = join(packageDirectory, 'branding.syso');
+  await writeFile(resourceObject, normalizeWindowsCoffResource(await readFile(resourceObject)));
   const encoded = Buffer.from(JSON.stringify(config)).toString('base64');
   try {
    execFileSync('go', ['build', '-trimpath', '-ldflags', `-H=windowsgui -s -w -X main.bootstrapConfig=${encoded}`, '-o', file, './packages/desktop/native/windows-launcher'], { cwd: root, env, stdio: 'inherit' });
