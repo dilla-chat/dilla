@@ -7,6 +7,8 @@ import {join,resolve,isAbsolute} from 'node:path';
 import {randomBytes} from 'node:crypto';
 import {readFileSync} from 'node:fs';
 
+// Closing the final control write also releases a pending fs.read in the child.
+export function sendAdmissionExit(stream) { stream.end('exit\n'); }
 export async function makeAdmissionRoot(runnerTemp) {
  if(typeof runnerTemp!=='string' || !isAbsolute(runnerTemp) || await realpath(runnerTemp)!==runnerTemp)throw Error('invalid runner temporary directory');
  const info=await stat(runnerTemp);if(!info.isDirectory() || info.uid!==process.getuid())throw Error('unsafe runner temporary directory');
@@ -95,7 +97,7 @@ export async function runAdmissionProof({mount,image,root}) {
   assert.equal(exclusive(),1);assert.equal(publishPending(),1);
   const mainStart=(await readFile('/proc/'+main.child.pid+'/stat','utf8')).split(') ')[1].split(' ')[19];
   const initialMain=mainProcessFacts(main.child.pid,mainStart);assert.equal(initialMain.mainOwner,1);assert.equal(initialMain.mainIdentity,1);
-  facts.phase='release-command';main.child.stdio[4].write('exit\n');
+  facts.phase='release-command';sendAdmissionExit(main.child.stdio[4]);
   await checkAdmissionRelease({exit:main.exit,exclusive,facts,captureMain:()=>mainProcessFacts(main.child.pid,mainStart),readChild:async()=>{
    const afterStat=(await readFile('/proc/'+descendant+'/stat','utf8')).split(') ')[1].split(' ');
    return {live:afterStat[0]!=='Z',identity:afterStat[19]===startTime};

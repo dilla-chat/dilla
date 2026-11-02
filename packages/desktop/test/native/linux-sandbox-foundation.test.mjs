@@ -274,6 +274,7 @@ test('admission fixture reports exit command and exit call before quitting',asyn
 });
 
 test('admission control stream reads sequential tray and exit commands on real pipes',async()=>{
+ const {sendAdmissionExit}=await import('./linux-admission.test.mjs');
  const {spawn}=await import('node:child_process'),{fileURLToPath}=await import('node:url');
  const fixture=fileURLToPath(new URL('../fixtures/linux-sandbox-foundation/admission.cjs',import.meta.url));
  const script=`const fs=require('node:fs'),vm=require('node:vm'),path=require('node:path');
@@ -284,9 +285,30 @@ test('admission control stream reads sequential tray and exit commands on real p
  vm.runInThisContext('(function(require,process){'+fs.readFileSync(process.argv[1],'utf8')+'})')(load,p);`;
  const child=spawn(process.execPath,['-e',script,fixture],{stdio:['ignore','ignore','pipe','pipe','pipe']});
  let text='',phases=[];child.stdio[3].setEncoding('utf8');
- child.stdio[3].on('data',chunk=>{text+=chunk;let i;while((i=text.indexOf('\n'))>=0){const report=JSON.parse(text.slice(0,i));text=text.slice(i+1);phases.push(report.phase);if(report.phase==='window')child.stdio[4].write('tray\n');if(report.phase==='tray')child.stdio[4].write('exit\n');}});
+ child.stdio[3].on('data',chunk=>{text+=chunk;let i;while((i=text.indexOf('\n'))>=0){const report=JSON.parse(text.slice(0,i));text=text.slice(i+1);phases.push(report.phase);if(report.phase==='window')child.stdio[4].write('tray\n');if(report.phase==='tray')sendAdmissionExit(child.stdio[4]);}});
  const timer=setTimeout(()=>child.kill('SIGKILL'),3000);
  try {const result=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',(code,signal)=>resolve({code,signal}));});
   assert.deepEqual(result,{code:0,signal:null});assert.deepEqual(phases,['window','tray','exit-command','exit-call']);
+ } finally {clearTimeout(timer);if(child.exitCode===null&&child.signalCode===null)child.kill('SIGKILL');}
+});
+
+test('final admission command closes its pipe after delivering all queued bytes',async()=>{
+ const {sendAdmissionExit}=await import('./linux-admission.test.mjs');
+ const {PassThrough}=await import('node:stream');
+ const pipe=new PassThrough();let bytes='';pipe.setEncoding('utf8');pipe.on('data',chunk=>{bytes+=chunk;});
+ const ended=new Promise(done=>pipe.once('end',done));pipe.write('tray\n');sendAdmissionExit(pipe);await ended;
+ assert.equal(bytes,'tray\nexit\n');assert.equal(pipe.writableEnded,true);
+});
+
+test('an open control writer keeps a real fs read stream alive until EOF',async()=>{
+ const {spawn}=await import('node:child_process');
+ const source=`const fs=require('node:fs');const stream=fs.createReadStream(null,{fd:4,autoClose:false,encoding:'utf8'});stream.on('data',()=>fs.writeSync(3,'received\\n'));`;
+ const child=spawn(process.execPath,['-e',source],{stdio:['ignore','ignore','pipe','pipe','pipe']});
+ const exit=new Promise((done,reject)=>{child.once('error',reject);child.once('exit',(code,signal)=>done({code,signal}));});
+ const timer=setTimeout(()=>child.kill('SIGKILL'),3000);
+ try {
+  const received=new Promise(done=>child.stdio[3].once('data',done));child.stdio[4].write('exit\n');await received;
+  const state=await Promise.race([exit.then(()=> 'exited'),new Promise(done=>setTimeout(()=>done('waiting'),100))]);assert.equal(state,'waiting');
+  child.stdio[4].end();assert.deepEqual(await exit,{code:0,signal:null});
  } finally {clearTimeout(timer);if(child.exitCode===null&&child.signalCode===null)child.kill('SIGKILL');}
 });
