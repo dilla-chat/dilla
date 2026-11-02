@@ -1,7 +1,6 @@
 const channel = require('./package.json').version.includes('-beta.') ? 'beta' : 'stable';
-const { sparklePublicKey, metadataPublicKeys } = require('./release-trust.json');
+const { sparklePublicKey } = require('./release-trust.json');
 const linuxHooks = require('./scripts/linux-appimage-launcher.cjs');
-const windowsHooks = require('./scripts/windows-builder-hooks.cjs').createWindowsBuilderHooks({ metadataPublicKeys });
 module.exports = {
   appId: 'dev.dilla.desktop', productName: 'Dilla', executableName: 'dilla-desktop',
   toolsets: { nsis: '1.2.1' }, // Hash-pinned NSIS 3.12 bundle; avoid the legacy temporary-directory runtime.
@@ -9,8 +8,7 @@ module.exports = {
   files: ['dist/**', 'package.json'],
   asar: true,
   afterPack: linuxHooks,
-  afterSign: windowsHooks.afterSign,
-  artifactBuildStarted: async event => { await linuxHooks.artifactBuildStarted(event); await windowsHooks.artifactBuildStarted(event); },
+  artifactBuildStarted: linuxHooks.artifactBuildStarted,
   beforePack: async context => {
     const arch = { x64: 1, arm64: 3 }[process.arch];
     if (context.electronPlatformName !== process.platform || context.arch !== arch) throw new Error('Build desktop native capabilities on the matching OS and architecture');
@@ -23,8 +21,8 @@ module.exports = {
   linux: { artifactName: 'dilla-${version}-linux-x64.${ext}', syncDesktopName: true, target: [{ target: 'AppImage', arch: ['x64'] }], category: 'Network', icon: 'assets/icon.png' },
   // The pinned legacy AppImage target otherwise adds --no-sandbox to Exec.
   appImage: { executableArgs: [] },
-  win: { target: [{ target: 'nsis', arch: ['x64'] }], icon: 'assets/icon.png' },
-  nsis: { script: 'build/windows-installer.nsi', perMachine: false, oneClick: true, allowElevation: false, packElevateHelper: false, preCompressedFileExtensions: [], differentialPackage: false, deleteAppDataOnUninstall: false },
+  win: { target: [{ target: 'nsis', arch: ['x64'] }], icon: 'assets/icon.png', verifyUpdateCodeSignature: false, forceCodeSigning: false },
+  nsis: { perMachine: false, oneClick: true, allowElevation: false, packElevateHelper: false, differentialPackage: false, deleteAppDataOnUninstall: false },
   mac: {
     target: [{ target: 'dmg', arch: [process.arch] }, { target: 'zip', arch: [process.arch] }],
     extraFiles: [{ from: 'native-bin/Sparkle.framework', to: 'Frameworks/Sparkle.framework' }],

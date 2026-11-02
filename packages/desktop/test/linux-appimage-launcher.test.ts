@@ -25,7 +25,9 @@ test('AppImage artifact hook refuses missing or wrong build context',async()=>{
 });
 test('production and installed builders select both packaging hooks',async()=>{
  const production=require('../electron-builder.cjs');assert.equal(production.afterPack,hook);assert.deepEqual(production.appImage.executableArgs,[]);
- for(const file of [new URL('./native/installed-upgrade.test.mjs',import.meta.url),new URL('../../../e2e/web/support/installed-packages.ts',import.meta.url)]){
+ const smoke=await readFile(new URL('./native/installed-upgrade.test.mjs',import.meta.url),'utf8');
+ assert.match(smoke,/createInstalledPackages\(instance\)/);
+ for(const file of [new URL('../../../e2e/web/support/installed-packages.ts',import.meta.url)]){
   const source=await readFile(file,'utf8');assert.match(source,/scripts\/linux-appimage-launcher\.cjs/);assert.match(source,/createLinuxAppImageHooks/);
  }
 });

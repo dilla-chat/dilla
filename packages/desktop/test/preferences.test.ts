@@ -4,7 +4,7 @@ import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Preferences } from '../src/preferences.ts';
-import { desktopEntry } from '../src/autostart.ts';
+import { desktopEntry, rebindLinuxAutostart } from '../src/autostart.ts';
 
 test('persists only authorized canonical instances and startup choice, without losing earlier instances', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dilla-preferences-'));
@@ -29,4 +29,15 @@ test('Linux autostart quotes the exact executable and never interpolates shell s
   assert.throws(() => desktopEntry('/opt/dilla\nExec=evil'));
   assert.throws(() => desktopEntry('relative/dilla'));
   assert.ok(!desktopEntry('/opt/$weird`name/dilla').includes('"/opt/$weird`name/dilla"'));
+});
+
+test('stock AppImage rename rebinds autostart synchronously with the same safe Exec quoting', async () => {
+ const root = await mkdtemp(join(tmpdir(), 'dilla-autostart-rebind-'));
+ try {
+  const path = join(root, 'Dilla $value 1.0.1.AppImage');
+  rebindLinuxAutostart(root, path);
+  assert.equal(await readFile(join(root, 'autostart/dilla-desktop.desktop'), 'utf8'), desktopEntry(path));
+  assert.throws(() => rebindLinuxAutostart(root, '/opt/update\nExec=evil'));
+  assert.equal(await readFile(join(root, 'autostart/dilla-desktop.desktop'), 'utf8'), desktopEntry(path));
+ } finally { await rm(root, { recursive: true, force: true }); }
 });

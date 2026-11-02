@@ -1,4 +1,5 @@
 import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 
 /** Desktop Entry Exec quoting (not a shell command). Backslashes are escaped again for the key-value layer. */
@@ -14,4 +15,12 @@ export async function linuxAutostart(configDirectory: string, executable: string
   if (!enabled) { await rm(path, { force: true }); return; }
   await mkdir(dir, { recursive: true, mode: 0o700 });
   await writeFile(path, desktopEntry(executable), { mode: 0o600 });
+}
+
+/** AppImageUpdater emits its rename event synchronously inside quitAndInstall.
+ * Write before it exits, using the same fixed entry and Exec quoting as settings. */
+export function rebindLinuxAutostart(configDirectory: string, executable: string): void {
+  const entry = desktopEntry(executable), directory = join(configDirectory, 'autostart');
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  writeFileSync(join(directory, 'dilla-desktop.desktop'), entry, { mode: 0o600 });
 }

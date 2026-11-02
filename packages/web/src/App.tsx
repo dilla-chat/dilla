@@ -82,7 +82,6 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
   const resigning = useRef(false);
   const [startError, setStartError] = useState<UiError | null>(null);
   const bridge = desktopBridge();
-  const [localRuntimeReady, setLocalRuntimeReady] = useState(false);
   useEffect(() => {
     let live = true;
     void (async () => {
@@ -91,23 +90,12 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
       if (bridge) {
         await client.call({ m: 'runtimeReady' });
         if (!live) return;
-        setLocalRuntimeReady(true);
-        // Ordinary start opens the account store and may migrate it. The
-        // authenticated main activation must commit before those writes begin.
-        await bridge.waitForStartup?.();
       }
       if (!live) return;
       await client.call({ m: 'start' });
     })().catch(e => { if (live) setStartError(errorOf(e)); });
     return () => { live = false; };
   }, [client, bridge]);
-  useEffect(() => {
-    if (!bridge) return;
-    // Remote discovery/account refusals do not diagnose installed local bytes.
-    const usable = localRuntimeReady && props.fatal === null;
-    void bridge.send({ type: 'boot-ready', usable }).catch(() => {});
-    return () => { void bridge.send({ type: 'boot-ready', usable: false }).catch(() => {}); };
-  }, [bridge, localRuntimeReady, props.fatal]);
   useEffect(() => {
     document.documentElement.dataset.density = settings?.density === 'compact' ? 'compact' : 'regular';
     document.documentElement.dataset.reduceMotion = settings?.reduceMotion === 'on' || settings?.reduceMotion === 'off'

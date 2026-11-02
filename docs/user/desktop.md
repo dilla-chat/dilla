@@ -74,55 +74,22 @@ There is no instance-supplied feed, downgrade path, or forced installation.
 Verified downloads use `electron-updater`. Installation runs only after an actual
 quit/restart request and fresh acknowledgments from every renderer. Calls,
 recovering calls, drafts, open editors and pending attachments block installation.
-Reload is guarded too. AppImage replacement stages and verifies on the destination
-filesystem, preserves the installed filename, and retains a `.previous` backup. A
-previous-version Electron helper waits for the old app to exit, then requires the
-exact new main process, signed version and private startup nonce to report usable
-local startup and survive a grace interval. Failed startup stops only the owned
-new process before restoring the working program. Windows waits for its per-user
-NSIS installer to finish within five minutes. It stages only a new immutable version
-tree behind a stable native `Dilla.exe`, then launches and validates the exact new
-executable. The signed program manifest covers the executable, ASAR and runtime
-files. Failure retains the old committed slot and working tree; no update removes
-the normal launcher. Owned HKCU version/size values change only after commitment.
-The installer starts suspended inside an owned Windows job, resumes only after its
-actual process identifiers are recorded, and is stopped before recovery if its
-watchdog exits or it times out. It has no elevation fallback. Device data stays
-outside the program trees.
+Reload is guarded too. Windows NSIS and Linux AppImage updates use the pinned
+standard `electron-updater` installation and relaunch behavior. Windows installs
+per user without elevation; uninstall preserves Dilla application data. Native
+DEB/RPM/AUR installations use their package manager. Program installation stays
+separate from device/account data.
 
-Preparation happens after renderer unload acceptance. It retains an old AppImage
-copy on Linux. Windows currently prepares two independent old program copies for
-its temporary helper and recovery verification, while retaining the old installed
-version. It therefore needs roughly twice the old program size in preparation
-space, plus the downloaded installer and new inactive version. Only the fixed
-signed inactive target can be quarantined for an explicit retry; it is never
-substituted for the selected old program. The temporary helper also runs an Electron main
-process. Updated windows stay hidden and disabled, with user actions blocked,
-until a private main-process handshake confirms durable completion. Account startup
-also waits for that handshake. The Windows complete journal is flushed before its
-new slot is published; a published version cannot trigger a later rollback. A
-visible journal rename alone does not activate the app. Before the old parent
-exits, its helper must acknowledge readiness and an authenticated arm sent only
-after the active pointer flush succeeds. Private phase and failure records support interrupted recovery and an
-explicit retry; the retained failure status disables automatic checks until an
-explicit retry, so ordinary quits cannot silently repeat it. Backups are retained for recovery.
-
-Local health covers the bundled UI, worker/WASM initialization and a disposable
-OPFS persistence probe. It does not open an account's SQLite store or KEK, and
-remote discovery, authentication and network failures do not trigger rollback.
-Installed device enrolment, recovery, stored-account and draft acceptance remain
-separate gates. File contents are flushed on Windows, but Node cannot reliably
-flush directory entries there; this is not a complete power-loss guarantee.
-The native installed-version fault and restart matrix remains a release gate.
-The [Windows stable launcher and version-directory implementation](../desktop/WINDOWS-UPDATE-BOOTSTRAP.md)
-remains under independent review and needs actual native Windows interruption,
-slot, retry and installer-maintenance acceptance. Local Linux acceptance uses
-AppImage extract-and-run mode; ordinary FUSE-mounted acceptance remains a CI gate.
+Dilla verifies signed feed metadata and artifact hashes, then delegates installation
+to the platform updater. It does not promise automatic rollback or restoration
+after interrupted installation or failed startup. The former custom launcher,
+immutable Windows slots and recovery journal are removed. Normal installed-upgrade,
+account/key continuity and tampered-feed/artifact rejection remain acceptance gates;
+Windows and normal FUSE AppImage acceptance must be rerun on the final source tree.
 
 macOS uses a narrow Sparkle bridge with signed update feeds and archives. Actual
 unsigned-to-unsigned installed upgrades passed on Intel and Apple Silicon using
-ad-hoc signing and normal OS protections. The broader installed fault matrix and
-complete release gates still apply.
+ad-hoc signing and normal OS protections. The installed-account and complete release gates still apply.
 
 Preview packaging is available with `npm run pack -w @dilla/desktop`; it creates an
 unpacked app for validation and never publishes. Installer targets are configured

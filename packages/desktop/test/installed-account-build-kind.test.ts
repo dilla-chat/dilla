@@ -13,12 +13,10 @@ import vm from 'node:vm';
 import ts from 'typescript';
 import { build, transform, type BuildOptions } from 'esbuild';
 
-import { fixtureMainSource, fixtureWindowsInstallationSource } from '../../../e2e/web/support/installed-packages.ts';
+import { fixtureMainSource } from '../../../e2e/web/support/installed-packages.ts';
 
 const load = createRequire(import.meta.url);
 const bundleFilter = /[\\/]bundle\.ts$/;
-const windowsFilter = /[\\/]windows-installation\.ts$/;
-const runtimeFilter = /[\\/]update-runtime\.ts$/;
 const desktop = resolve(import.meta.dirname, '..');
 async function actualAccountBuildOptions(platform: string, publicKey: string, root = '/owned-fixture', origin = 'http://127.0.0.1:12345'): Promise<BuildOptions> {
  const source = await readFile(resolve(desktop, '../../e2e/web/support/installed-packages.ts'), 'utf8');
@@ -35,12 +33,12 @@ async function actualAccountBuildOptions(platform: string, publicKey: string, ro
  assert.ok(boundary);
  // Evaluate the actual compiler options and fixture transport plugin closures,
  // without invoking electron-builder, a package install, server or profile boot.
- const names = ['process', 'join', 'desktop', 'dist', 'publicKey', 'installedEntrypointBanner', 'reports', 'version', 'origin', 'sourceUpdater', 'fixtureWindowsInstallationSource', 'readFile', 'appId', 'fixtureMainSource', 'sourceMain', 'product', 'profile', 'scheme', 'sandboxConfig'];
+ const names = ['process', 'join', 'desktop', 'dist', 'publicKey', 'installedEntrypointBanner', 'reports', 'version', 'origin', 'sourceUpdater', 'readFile', 'appId', 'fixtureMainSource', 'sourceMain', 'product', 'profile', 'scheme', 'sandboxConfig'];
  const code = await transform('(function(scope) { const {' + names.join(',') + '} = scope; ' + boundary + '\nreturn (' + options[0] + '); })', { loader: 'ts' });
  return vm.runInThisContext(code.code)({
   process: { platform }, join, desktop, dist: join(root, 'dist'), publicKey,
   installedEntrypointBanner: () => '', reports: join(root, 'reports'), version: '1.0.0',
-  origin, fixtureMainSource, sourceMain: await readFile(join(desktop, 'src/main.ts'), 'utf8'), product: 'DillaAccountFixture', profile: join(root, 'profile'), scheme: 'dilla-account-fixture', fixtureWindowsInstallationSource, readFile, appId: 'dev.dilla.desktop.account-acceptance.fixture', sourceUpdater: await readFile(join(desktop, 'src/updater.ts'), 'utf8'), sandboxConfig: fixtureComponent.config,
+  origin, fixtureMainSource, sourceMain: await readFile(join(desktop, 'src/main.ts'), 'utf8'), product: 'DillaAccountFixture', profile: join(root, 'profile'), scheme: 'dilla-account-fixture', readFile, appId: 'dev.dilla.desktop.account-acceptance.fixture', sourceUpdater: await readFile(join(desktop, 'src/updater.ts'), 'utf8'), sandboxConfig: fixtureComponent.config,
  });
 }
 test('installed account build selects AppImage authority only for Linux on every host', async () => {
@@ -103,11 +101,7 @@ for (const platform of ['linux', 'win32', 'darwin']) test('compiled installed ac
  const options = await actualAccountBuildOptions(platform, generateKeyPairSync('ed25519').publicKey.export({ type: 'spki', format: 'pem' }).toString(), root);
  // Substitute native OS entry verification and bundle resources only; compile
  // the actual transformed main and all its injected diagnostic callbacks.
- const runtime = "export class UpdateStartupHeld extends Error {} export function takeStartupLaunch(){return {}} export function watchdogNonce(){return null} export function watchdogRecovery(){return false} export function bootstrapNonce(){return null} export async function resumeInterruptedUpdate(){return false} "
-  + ['runWindowsBootstrap', 'verifyRestoredWindowsStartup', 'runUpdateWatchdog', 'verifyRestoredLaunch', 'waitForRegisteredStartup', 'waitForStartupActivation', 'launchUpdateWatchdog'].map(name => `export async function ${name}(){throw Error('unexpected install role')}`).join(';');
  const compiled = await build({ ...options, write: false, outfile: undefined, external: ['electron', 'electron-updater', 'electron-updater/*'], plugins: [{ name: 'native-os-boundaries', setup(plugin) {
-  plugin.onLoad({ filter: runtimeFilter }, () => ({ contents: runtime, loader: 'ts' }));
-  plugin.onLoad({ filter: windowsFilter }, () => ({ contents: "export async function currentWindowsInstallation(){return {launcher:'/owned/Dilla.exe'}}; export async function verifyWindowsProgram(){}; export async function readWindowsSlots(){}; export async function verifyWindowsInstallationSnapshot(){}", loader: 'ts' }));
   plugin.onLoad({ filter: bundleFilter }, () => ({ contents: 'export async function loadBundle(){return {}}; export function bundledResponse(){return undefined}', loader: 'ts' }));
  }, }, ...(options.plugins ?? [])] });
  let requestHandler: ((request: Request) => Promise<Response>) | undefined;
@@ -155,14 +149,6 @@ for (const platform of ['linux', 'win32', 'darwin']) test('compiled installed ac
  const startup = await readFile(join(root, 'reports/startup-1.0.0.jsonl'), 'utf8');
  assert.match(startup, /"stage":"fetch-begin"/); assert.match(startup, /"stage":"fetch-response"/); assert.match(startup, /"stage":"document-loaded"/);
  assert.equal(update?.state.phase, 'checking'); assert.deepEqual(errors, []);
-});
-
-test('update-runtime fixture intercepts both POSIX and Windows module paths', async () => {
- await assertPortableEsbuildFilter(runtimeFilter, 'update-runtime');
-});
-
-test('windows-installation fixture intercepts both POSIX and Windows module paths', async () => {
- await assertPortableEsbuildFilter(windowsFilter, 'windows-installation');
 });
 
 test('bundle fixture intercepts both POSIX and Windows module paths', async () => {

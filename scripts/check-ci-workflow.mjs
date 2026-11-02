@@ -47,8 +47,6 @@ export const REQUIRED_JOBS = [
   // Build the bundled client once for Electron and retain shared encrypted-core
   // integration (BROWSER_WEB_JOBS below) without browser compatibility lanes.
   'web-build',
-  'windows-kernel',
-  'windows-installer',
   'linux-sandbox-foundation',
   'desktop',
 ];
@@ -626,31 +624,6 @@ function checkWholeModuleGTK(jobs, problems) {
   }
 }
 
-// This cheap prerequisite must stay native and run both complete Go packages.
-// An exact bounded job shape also rejects filters, conditional steps, GOOS
-// overrides, and asset provisioning that would hide or delay the kernel gate.
-function checkWindowsKernelJob(jobs, problems) {
-  if (!jobs['windows-kernel']) return;
-  const expected = `needs: [changes]
-if: needs.changes.outputs.e2e != 'false'
-runs-on: windows-2025
-timeout-minutes: 10
-steps:
-- uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-with:
-persist-credentials: false
-- uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-with:
-go-version-file: go.mod
-- run: go test -count=1 -failfast -v -timeout=2m ./internal/desktoplaunch ./packages/desktop/native/windows-launcher`;
-  const actual = jobs['windows-kernel'].split('\n').map(line => line.trim()).filter(line => line && !line.startsWith('#')).join('\n');
-  if (actual !== expected) problems.push('ci.yml: early Windows kernel gate must run only pinned checkout/setup-go and both unfiltered native Go packages on Windows within its fixed budget');
-  const desktopNeeds = /^ {4}needs: \[([^\]\n]*)\]$/m.exec(jobs.desktop ?? '')?.[1].split(',').map(name => name.trim()) ?? [];
-  if (!desktopNeeds.includes('windows-kernel')) {
-    problems.push('ci.yml: desktop must wait for the early Windows kernel gate via needs: windows-kernel');
-  }
-}
-
 // Narrow cancellation finalizers for the reviewed disposable fixture only.
 // Full job shape below also rejects reordered, duplicate or extra steps.
 const SANDBOX_MAINTENANCE_CONTROLS = [
@@ -740,50 +713,6 @@ function checkLinuxSandboxFoundationJob(jobs, problems) {
   if (actual !== expected) problems.push('ci.yml: Linux sandbox foundation must run both fixed native Ubuntu lanes with unchanged host policy, pinned provisioning and the unfiltered FUSE feasibility fixture');
   const needs = /^ {4}needs: \[([^\]\n]*)\]$/m.exec(jobs.desktop ?? '')?.[1].split(',').map(name => name.trim()) ?? [];
   if (!needs.includes('linux-sandbox-foundation')) problems.push('ci.yml: desktop must wait for Linux sandbox foundation');
-}
-
-// This native fixture has no bundled-web/WASI prerequisite. Keep both complete
-// lifecycle files and the Go/NSIS interop control independent of the desktop matrix.
-// Short controls must finish in their own step before the long maintenance test,
-// so its runtime cannot hide an earlier file's failure from the step API.
-// Exact shape rejects filtered modes, ignored failures and extra authority/env.
-function checkWindowsInstallerJob(jobs, problems) {
-  if (!jobs['windows-installer']) return;
-  const expected = `needs: [changes, windows-kernel]
-if: needs.changes.outputs.e2e != 'false'
-runs-on: windows-2025
-timeout-minutes: 25
-steps:
-- uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-with:
-persist-credentials: false
-- uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-with:
-node-version-file: .nvmrc
-cache: npm
-- uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-with:
-go-version-file: go.mod
-- run: npm ci
-- run: node node_modules/electron/install.js
-- run: node packages/desktop/scripts/prepare-nsis.mjs
-- run: node --test packages/desktop/test/native/windows-installer-syntax.test.mjs packages/desktop/test/windows-operation-gate.test.ts
-- run: npm test -w @dilla/desktop
-- id: launcher_smoke
-run: node packages/desktop/scripts/windows-launcher-smoke.mjs --capture-coff
-- if: failure() && steps.launcher_smoke.outcome == 'failure'
-uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-with:
-name: windows-launcher-smoke-coff
-path: packages/desktop/test-results/windows-launcher-smoke-failure.syso
-if-no-files-found: error
-- run: node --test packages/desktop/test/native/windows-installer-maintenance.test.mjs`;
-  const actual = jobs['windows-installer'].split('\n').map(line => line.trim()).filter(line => line && !line.startsWith('#')).join('\n');
-  if (actual !== expected) problems.push('ci.yml: independent Windows installer gate must run pinned provisioning, short syntax/interop controls, unconditional desktop units, launcher smoke and full unfiltered maintenance in order within its fixed budget');
-  const desktopNeeds = /^ {4}needs: \[([^\]\n]*)\]$/m.exec(jobs.desktop ?? '')?.[1].split(',').map(name => name.trim()) ?? [];
-  if (desktopNeeds.includes('windows-installer')) {
-    problems.push('ci.yml: desktop must not wait for the independent Windows installer maintenance gate');
-  }
 }
 
 /**
@@ -934,9 +863,7 @@ export function checkWorkflow(root) {
       if (!jobs[name].includes(step)) problems.push(`ci.yml: job "${name}" is missing: ${step}`);
     }
   }
-  checkWindowsKernelJob(jobs, problems);
   checkWholeModuleGTK(jobs, problems);
-  checkWindowsInstallerJob(jobs, problems);
   checkLinuxSandboxFoundationJob(jobs, problems);
 
   // Every test/build job needs `changes` and carries its gate, or it would run on a docs-only pull
@@ -1343,8 +1270,8 @@ if-no-files-found: error`;
   const failureUploads = nativeSteps.map((step,index)=>step.join('\n')===failureUpload ? index : -1).filter(index=>index>=0);
   if(desktopBuild<0 || failureUploads.length!==1 || failureUploads[0]<=desktopBuild)problems.push(`${file}: native failure diagnostics require the exact post-build upload`);
   const unitSteps = nativeSteps.filter(step => step.some(line => line.includes('run: npm test -w @dilla/desktop')));
-  if (unitSteps.length !== 1 || unitSteps[0].join('\n') !== "if: runner.os != 'Windows'\nrun: npm test -w @dilla/desktop") {
-    problems.push(`${file}: non-Windows desktop unit tests must run on every other native platform`);
+  if (unitSteps.length !== 1 || unitSteps[0].join('\n') !== 'run: npm test -w @dilla/desktop') {
+    problems.push(`${file}: desktop unit tests must run on every native platform`);
   }
   const proof = nativeSteps.findIndex(step => step.some(line => line.includes('name: desktop-installed-upgrade-')));
   const buildProvenance = nativeSteps.findIndex(step => step.some(line => line.includes('name: Record native desktop build provenance')));
@@ -1372,11 +1299,6 @@ run: node packages/desktop/scripts/test-linux-sandbox-package.mjs packages/deskt
       problems.push(`${file}: ${os} requires actual installed upgrade acceptance`);
     }
   }
-  // These full Windows gates run once in ci.yml before this reusable workflow.
-  if (/windows-installer-maintenance\.test\.mjs/.test(text)) problems.push(`${file}: duplicate Windows maintenance acceptance belongs only in the independent CI gate`);
-  if (/go test[^\n]*packages\/desktop\/native\/windows-launcher/.test(text)) problems.push(`${file}: duplicate Windows kernel acceptance belongs only in the independent CI gate`);
-  if (!nativeSteps.some(step => step.some(line => line.includes('name: desktop-installers-'))
-    && step.some(line => line.trim() === 'packages/desktop/out/*.manifest.json'))) problems.push(`${file}: Windows signed program manifest must accompany its accepted installer`);
   if (/APPIMAGE_EXTRACT_AND_RUN|--appimage-extract/.test(body('native'))) problems.push(`${file}: Linux installed acceptance must exercise normal FUSE launch`);
   const tooling = body('test-tools');
   for (const required of [

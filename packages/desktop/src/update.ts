@@ -1,8 +1,8 @@
 import { createHash, createPublicKey, verify, timingSafeEqual } from 'node:crypto';
 
-export interface PublishedProgramManifest { url: string; size: number; sha512: string }
-export interface LinuxSandboxDescriptor { compatibilityEpoch: 1; minimumGeneration: number; bundle: PublishedProgramManifest }
-export interface Artifact { platform: string; arch: string; url: string; size: number; sha512: string; sparkleSignature?: string; programManifest?: PublishedProgramManifest; linuxSandbox?: LinuxSandboxDescriptor }
+export interface PublishedAsset { url: string; size: number; sha512: string }
+export interface LinuxSandboxDescriptor { compatibilityEpoch: 1; minimumGeneration: number; bundle: PublishedAsset }
+export interface Artifact { platform: string; arch: string; url: string; size: number; sha512: string; sparkleSignature?: string; linuxSandbox?: LinuxSandboxDescriptor }
 export interface ReleaseAsset { name: string; size: number; sha512: string }
 export interface Release { assets?: ReleaseAsset[]; format: 1; version: string; channel: 'stable' | 'beta'; publishedAt: string; expiresAt: string; artifacts: Artifact[] }
 interface VerifyContext { publicKeys: readonly string[]; channel: 'stable' | 'beta'; platform: string; arch: string; currentVersion: string; now: number }
@@ -94,7 +94,7 @@ export function verifyArtifact(bytes: Uint8Array, artifact: Artifact): boolean {
 }
 
 export interface QuitGuard { activeCall: boolean; unsavedDraft: boolean }
-interface UpdateDriver { ownership?: 'package-manager'; cancelledQuit?(): void; check(): Promise<Release | null>; download(release: Release): Promise<void>; preparePrerequisites?(): Promise<void>; install(): void | Promise<void> }
+interface UpdateDriver { ownership?: 'package-manager'; cancelledQuit?(): void; check(): Promise<Release | null>; download(release: Release): Promise<void>; preparePrerequisites?(): Promise<void>; install(relaunch: boolean): void | Promise<void> }
 export type UpdateState = { phase: 'idle' | 'checking' | 'downloading' | 'ready' | 'installing' | 'error'; message?: string }
  | { phase: 'available'; version: string; message: string };
 
@@ -143,10 +143,10 @@ export class UpdateCoordinator {
       this.set({ phase: 'ready' });
     } catch (error) { this.set({ phase: 'error', message: error instanceof Error ? error.message : 'Update failed; try again' }); }
   }
-  async quit(actualQuit: boolean): Promise<boolean> {
+  async quit(actualQuit: boolean, relaunch = false): Promise<boolean> {
     if (this.driver.ownership === 'package-manager' || !actualQuit || this.protected() || this.state.phase !== 'ready') return false;
     this.set({ phase: 'installing' });
-    try { await this.driver.install(); return true; }
+    try { await this.driver.install(relaunch); return true; }
     catch (error) { this.set({ phase: 'error', message: error instanceof Error ? error.message : 'Installation failed; try again' }); return false; }
   }
 }

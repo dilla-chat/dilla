@@ -10,34 +10,23 @@ import { loadBundle, bundledResponse, type Bundle } from './bundle.ts';
 import { canonicalInstance, externalLink, isAppNavigation, parseInvite, partitionFor, trustedFrame, validateCommand, instanceRequestURL, permissionOriginMatches } from './policy.ts';
 import { Preferences } from './preferences.ts';
 import { fetchInstanceData } from './request-forwarding.ts';
-import { linuxAutostart } from './autostart.ts';
+import { linuxAutostart, rebindLinuxAutostart } from './autostart.ts';
 import { createUpdater } from './updater.ts';
 import { LINUX_INSTALL_KIND, assertLinuxSelfUpdate } from './linux-build.ts';
 import { resolveLinuxInstallation } from './linux-installation.ts';
 import { desktopReleasePage } from './update.ts';
-import { waitForPreviousProcess } from './handoff.ts';
 import { NativeAudio } from './native-audio.ts';
 import { ScreenCaptureBroker } from './screen-capture.ts';
 import { captureOptions } from './screen-capture-contract.ts';
 import type { DesktopEvent, DesktopInfo } from './contract.ts';
 
-import { RELEASE_PUBLIC_KEYS } from './update-keys.ts';
-import { windowsRegistrationWarning } from './windows-diagnostic.ts';
-import { currentWindowsInstallation } from './windows-installation.ts';
-import { bootstrapNonce,runWindowsBootstrap,verifyRestoredWindowsStartup,watchdogNonce, watchdogRecovery, runUpdateWatchdog, takeStartupLaunch, resumeInterruptedUpdate, UpdateStartupHeld, verifyRestoredLaunch, waitForRegisteredStartup, waitForStartupActivation } from './update-runtime.ts';
-import type { InstalledUpdatePlan } from './update-plan.ts';
-import { pendingStartupCommand } from './update-startup-ui.ts';
-import { pendingInstalledUpdate } from './update-state.ts';
-import { StartupUsability } from './update-usability.ts';
-import { StartupActivationGate } from './startup-activation-gate.ts';
-import { startupHealthFile, reportStartupHealth, withdrawStartupHealth } from './update-health.ts';
-
-// Role selection and health-environment consumption precede ordinary app boot,
-// single-instance acquisition, renderers, tray and unrelated process launches.
-const linuxApplicationUpdates = process.platform !== 'linux' || LINUX_INSTALL_KIND === 'appimage';
 void initializeDesktop().catch(error => { console.error('Dilla could not initialize:', error); app.exit(1); });
 
 async function initializeDesktop(): Promise<void> {
+ // Stock AppImageUpdater executes the new image once for integration on a quit
+ // without relaunch. Honor its marker before profile or single-instance startup.
+ if (process.platform === 'linux' && process.env.APPIMAGE_EXIT_AFTER_INSTALL === 'true') { app.exit(0); return; }
+ delete process.env.APPIMAGE_EXIT_AFTER_INSTALL;
  protocol.registerSchemesAsPrivileged([{ scheme: 'dilla-internal', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
  app.enableSandbox();
  if (process.platform === 'linux') {
@@ -47,46 +36,14 @@ async function initializeDesktop(): Promise<void> {
    executable: process.execPath, resourcesPath: process.resourcesPath,
    });
   }
-  const installationRole = process.argv.some(value => value.startsWith('--update-') || value.startsWith('--sandbox-') || value === '--setup-sandbox' || value.startsWith('--setup-sandbox='))
-   || ['DILLA_UPDATE_STARTUP_NONCE', 'DILLA_UPDATE_PREVIOUS_PID', 'DILLA_UPDATE_RECOVERED_NONCE'].some(key => process.env[key] !== undefined);
-  if (installationRole) assertLinuxSelfUpdate();
+  const sandboxRole = process.argv.some(value => value.startsWith('--sandbox-') || value === '--setup-sandbox' || value.startsWith('--setup-sandbox='));
+  if (sandboxRole) assertLinuxSelfUpdate();
  }
  app.setName('Dilla');
-try {
- const startupLaunch = takeStartupLaunch(process.env);
- const nonce = watchdogNonce(process.argv), recovery = watchdogRecovery(process.argv), bootstrap=bootstrapNonce(process.argv);
- if(bootstrap){
-  if(!app.isPackaged||process.platform!=='win32'||startupLaunch.nonce||startupLaunch.recoveredNonce||startupLaunch.previousPid)throw new Error('Windows bootstrap requires its installed old program');
-  void runWindowsBootstrap(app.getPath('userData'),process.execPath,bootstrap,{publicKeys:RELEASE_PUBLIC_KEYS,platform:'win32',arch:process.arch,version:app.getVersion(),channel:app.getVersion().includes('-beta.')?'beta':'stable'},()=>app.requestSingleInstanceLock()).then(code=>app.exit(code),error=>{console.error('Dilla Windows bootstrap failed:',error);app.exit(1);});
- } else if (nonce) {
-  if (!app.isPackaged || (process.platform !== 'linux' && process.platform !== 'win32')) throw new Error('Update watchdog requires an installed app');
-  const platform = process.platform;
-  void runUpdateWatchdog(app.getPath('userData'), nonce, { publicKeys: RELEASE_PUBLIC_KEYS, platform, arch: process.arch,
-   version: app.getVersion(), channel: app.getVersion().includes('-beta.') ? 'beta' : 'stable',
-   executable: platform === 'linux' ? process.env.APPIMAGE! : process.execPath }, startupLaunch.previousPid, recovery).then(() => app.exit(0), error => { console.error('Dilla update recovery failed:', error); app.exit(1); });
- } else {
-  void (async () => {
-   let recoveryError: string | undefined;
-   let activationPlan: InstalledUpdatePlan | undefined;
-   let restoredPlan:InstalledUpdatePlan|undefined;
-   if (startupLaunch.nonce) {
-    if (!app.isPackaged || (process.platform !== 'linux' && process.platform !== 'win32')) throw new Error('Updated startup requires an installed app');
-    activationPlan = await waitForRegisteredStartup(app.getPath('userData'), process.platform === 'linux' ? process.env.APPIMAGE! : process.execPath, startupLaunch.nonce, process.pid,
-     { publicKeys: RELEASE_PUBLIC_KEYS, platform: process.platform, arch: process.arch, version: app.getVersion(), channel: app.getVersion().includes('-beta.') ? 'beta' : 'stable' });
-   }
-   if (startupLaunch.recoveredNonce) {
-    if (!app.isPackaged || (process.platform !== 'linux' && process.platform !== 'win32')) throw new Error('Restored update requires an installed app');
-    restoredPlan=await verifyRestoredLaunch(app.getPath('userData'), process.platform === 'linux' ? process.env.APPIMAGE! : process.execPath, startupLaunch.recoveredNonce,
-     { publicKeys: RELEASE_PUBLIC_KEYS, platform: process.platform, arch: process.arch, version: app.getVersion(), channel: app.getVersion().includes('-beta.') ? 'beta' : 'stable' });
-    recoveryError = 'The update did not finish. The working version and your device data are retained. Check for updates to retry.';
-   }
-   startDesktop(startupLaunch, recoveryError, activationPlan,restoredPlan);
-  })().catch(error => { console.error('Dilla could not start:', error); app.exit(1); });
- }
-} catch (error) { console.error('Dilla could not initialize:', error); app.exit(1); }
+ startDesktop();
 }
 
-function startDesktop(startupLaunch: { nonce?: string; previousPid?: string }, recoveryError?: string, activationPlan?: InstalledUpdatePlan,restoredPlan?:InstalledUpdatePlan): void {
+function startDesktop(): void {
 app.setName('Dilla');
 if (process.platform === 'linux') app.setDesktopName('dev.dilla.desktop.desktop');
 nativeTheme.themeSource = 'dark';
@@ -98,9 +55,6 @@ const hidden = process.argv.includes('--hidden');
 let quitting = false;
 let askingQuit = false;
 let shellReady = false;
-let startupActivated = activationPlan === undefined;
-let windowsLauncher=activationPlan?.windows?.launcher??restoredPlan?.windows?.launcher;
-const startupGate = new StartupActivationGate(startupActivated);
 let bundle: Bundle;
 let preferences: Preferences;
 let tray: Tray;
@@ -136,12 +90,6 @@ function stopActiveAppAudio(instance: string, id?: string): void {
   if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) win.webContents.send('dilla:event', { type: 'app-audio-ended', id: capture.id } satisfies DesktopEvent);
   refreshMenu();
 }
-const startupUsability = new StartupUsability(async usable => {
- if (!startupLaunch.nonce) return;
- if (usable) await reportStartupHealth(app.getPath('userData'), app.getVersion(), process.pid,
-  await startupHealthFile(app.getPath('userData'), startupLaunch.nonce), startupLaunch.nonce);
- else await withdrawStartupHealth(app.getPath('userData'), startupLaunch.nonce);
-});
 let quitProbe: { id: string; waiting: Set<string>; done(): void } | null = null;
 const updater = createUpdater(state => {
   for (const win of windows.values()) if (!win.isDestroyed()) win.webContents.send('dilla:event', { type: 'update', ...state } satisfies DesktopEvent);
@@ -151,8 +99,10 @@ const updater = createUpdater(state => {
   void (async () => {
     for (const instance of preferences.instances) await openInstance(instance);
     if (windows.size === 0) await showManager();
-    dialog.showErrorBox('Dilla update failed', updater.state.message ?? 'The working version is still available. Check for updates to retry.');
+    dialog.showErrorBox('Dilla update failed', updater.state.message ?? 'The update could not be installed. Check for updates to retry.');
   })().catch(error => { dialog.showErrorBox('Dilla could not reopen', String(error)); });
+}, path => {
+  if (preferences.autostart) rebindLinuxAutostart(app.getPath('appData'), path);
 });
 
 const webPreferences = () => ({ preload: join(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false,
@@ -193,11 +143,10 @@ function setWindowMode(instance: string, win: BrowserWindow, mode: WindowMode, h
   windowModes.set(instance, mode);
 }
 
-function focus(win: BrowserWindow): void { if (!startupActivated) return; if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
+function focus(win: BrowserWindow): void { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
 
 function lockWindow(win: BrowserWindow, permits: (url: string) => boolean): void {
   win.webContents.on('will-prevent-unload', event => {
-    if (!startupActivated) return;
     // A last-moment draft/recovery transition still cancels an unload; never leave the quit latch set.
     const wasQuitting = quitting;
     quitting = false;
@@ -213,7 +162,7 @@ function lockWindow(win: BrowserWindow, permits: (url: string) => boolean): void
   win.webContents.on('will-frame-navigate', event => { if (!event.isMainFrame || !permits(event.url)) event.preventDefault(); });
   win.webContents.setWindowOpenHandler(({ url }) => {
     const link = externalLink(url);
-    if (link && startupActivated) void shell.openExternal(link).catch(() => {});
+    if (link) void shell.openExternal(link).catch(() => {});
     return { action: 'deny' };
   });
   win.on('close', event => { if (!quitting) { event.preventDefault(); win.hide(); } });
@@ -234,9 +183,8 @@ async function openInstance(input: string, path = '/', show = true): Promise<Bro
   const ses = session.fromPartition(partitionFor(instance));
   const win = new BrowserWindow({ ...windowShape('starting'), useContentSize: true, ...(process.platform === 'linux' ? {} : { maximizable: false }), show: false, title: 'Dilla', ...windowChrome(), titleBarOverlay: false, webPreferences: { ...webPreferences(), session: ses } });
   if (process.platform === 'darwin') win.setWindowButtonVisibility(false);
-  win.setEnabled(startupActivated);
   windows.set(instance, win); windowModes.set(instance, 'starting');
-  updater.expectGuard(instance); startupUsability.expect(instance);
+  updater.expectGuard(instance);
   const origin = new URL(instance).origin;
   const handler = (request: Request): Response | Promise<Response> => {
     if (new URL(request.url).origin !== origin) return fetchInstanceData(ses, request);
@@ -258,7 +206,6 @@ async function openInstance(input: string, path = '/', show = true): Promise<Bro
   const allowed = permissions.get(instance) ?? new Set<string>();
   permissions.set(instance, allowed);
   ses.setPermissionCheckHandler((contents, permission, requestingOrigin, details) => {
-    if (!startupActivated) return false;
     const trusted = contents === win.webContents && details.isMainFrame
       && permissionOriginMatches(requestingOrigin, instance) && trustedFrame({ url: contents.getURL(), top: true }, instance);
     // Copy uses Chromium's sanitized clipboard-write permission. Never grant reads,
@@ -270,7 +217,6 @@ async function openInstance(input: string, path = '/', show = true): Promise<Bro
     return trusted && allowed.has(permission);
   });
   ses.setPermissionRequestHandler((contents, permission, callback, details) => {
-    if (!startupActivated) { callback(false); return; }
     if (contents !== win.webContents || details.isMainFrame === false || !trustedFrame({ url: details.requestingUrl, top: true }, instance)) { callback(false); return; }
     if (permission === 'display-capture') { callback(false); return; }
     if (permission === 'clipboard-sanitized-write' || permission === 'fullscreen') { callback(win.isVisible() && win.isFocused()); return; }
@@ -286,9 +232,9 @@ async function openInstance(input: string, path = '/', show = true): Promise<Bro
   win.webContents.on('render-process-gone', () => closeNotices(instance));
   win.on('closed', () => closeNotices(instance));
   lockWindow(win, url => isAppNavigation(url, instance));
-  win.webContents.on('render-process-gone', () => { void startupUsability.status(instance, false); updater.expectGuard(instance); stopAppAudio(instance); });
-  win.webContents.on('did-start-navigation', (_event, _url, inPlace, mainFrame) => { if (mainFrame && !inPlace) { void startupUsability.status(instance, false); updater.expectGuard(instance); stopAppAudio(instance); } });
-  win.on('closed', () => { windows.delete(instance); windowModes.delete(instance); updater.removeGuard(instance); void startupUsability.status(instance, false); });
+  win.webContents.on('render-process-gone', () => { updater.expectGuard(instance); stopAppAudio(instance); });
+  win.webContents.on('did-start-navigation', (_event, _url, inPlace, mainFrame) => { if (mainFrame && !inPlace) { updater.expectGuard(instance); stopAppAudio(instance); } });
+  win.on('closed', () => { windows.delete(instance); windowModes.delete(instance); updater.removeGuard(instance); });
   await win.loadURL(new URL(path, origin).href);
   if (show) focus(win);
   refreshMenu();
@@ -305,7 +251,6 @@ async function confirmInstance(input: string): Promise<boolean> {
 }
 
 async function openInvite(input: string): Promise<void> {
-  if (!startupActivated) { pendingInvites.push(input); return; }
   if (askingQuit || quitting) return;
   try {
     const invite = parseInvite(input);
@@ -316,21 +261,16 @@ async function openInvite(input: string): Promise<void> {
 async function showManager(): Promise<void> {
   if (!shellReady || askingQuit || quitting) return;
   if (manager && !manager.isDestroyed()) { focus(manager); return; }
-  manager = new BrowserWindow({ show: startupActivated, width: 720, height: 760, minWidth: 480, title: 'Dilla — your instances', ...windowChrome(), backgroundColor: '#0c1218', titleBarOverlay: { color: '#0c1218', symbolColor: '#a5b5c2', height: 32 }, webPreferences: webPreferences() });
-  manager.setEnabled(startupActivated);
+  manager = new BrowserWindow({ show: true, width: 720, height: 760, minWidth: 480, title: 'Dilla — your instances', ...windowChrome(), backgroundColor: '#0c1218', titleBarOverlay: { color: '#0c1218', symbolColor: '#a5b5c2', height: 32 }, webPreferences: webPreferences() });
   lockWindow(manager, url => url === 'dilla-internal://setup/');
-  manager.on('closed', () => { manager = null; void startupUsability.managerUnloaded(); });
-  manager.webContents.on('render-process-gone', () => { void startupUsability.managerUnloaded(); });
-  manager.webContents.on('did-start-navigation', (_event, _url, inPlace, mainFrame) => { if (mainFrame && !inPlace) void startupUsability.managerUnloaded(); });
-  manager.webContents.on('did-finish-load', () => { if (manager && !manager.isDestroyed() && manager.webContents.getURL() === 'dilla-internal://setup/') void startupUsability.managerLoaded(); });
+  manager.on('closed', () => { manager = null; });
   await manager.loadURL('dilla-internal://setup/');
-  if (manager.webContents.getURL() === 'dilla-internal://setup/') await startupUsability.managerLoaded();
 }
 
 async function setAutostart(enabled: boolean): Promise<void> {
   if (!app.isPackaged) throw new Error('Autostart is available in installed builds');
   if (process.platform === 'linux') await linuxAutostart(app.getPath('appData'), LINUX_INSTALL_KIND === 'system-package' ? '/usr/bin/dilla-desktop' : process.env.APPIMAGE ?? process.execPath, enabled);
-  else app.setLoginItemSettings({ openAtLogin: enabled, path: process.platform==='win32'&&app.isPackaged?windowsLauncher:process.execPath, args: ['--hidden'] });
+  else app.setLoginItemSettings({ openAtLogin: enabled, path: process.execPath, args: ['--hidden'] });
   await preferences.setAutostart(enabled);
   refreshMenu();
 }
@@ -356,7 +296,6 @@ async function collectQuitGuards(): Promise<boolean> {
 }
 
 async function requestQuit(restart = false): Promise<void> {
-  if (!startupActivated) { quitting = true; app.exit(1); return; }
   if (askingQuit || quitting) return;
   askingQuit = true;
   for (const selection of audioSelections.values()) selection.abort();
@@ -366,16 +305,16 @@ async function requestQuit(restart = false): Promise<void> {
     const ready = updater.state.phase === 'ready';
     if (ready) {
       if (!await updater.preparePrerequisites()) {
-        dialog.showErrorBox('Dilla update failed', updater.state.message ?? 'The working version is still available. Check for updates to retry.');
+        dialog.showErrorBox('Dilla update failed', updater.state.message ?? 'The update could not be installed. Check for updates to retry.');
         return;
       }
       if (!await collectQuitGuards()) return;
     }
     for (const win of windows.values()) win.setEnabled(false);
-    const prepared = await updater.quit(true);
+    const prepared = await updater.quit(true, restart);
     if (ready && !prepared) {
       for (const win of windows.values()) win.setEnabled(true);
-      dialog.showErrorBox('Dilla update failed', updater.state.message ?? 'The working version is still available. Check for updates to retry.');
+      dialog.showErrorBox('Dilla update failed', updater.state.message ?? 'The update could not be installed. Check for updates to retry.');
       return;
     }
     quitting = true; app.quit();
@@ -417,32 +356,14 @@ ipcMain.handle('dilla:info', event => {
   return { version: app.getVersion(), platform: process.platform, instance, capabilities: { applicationAudio: existsSync(audioExecutable), browserAuth: true, notifications: Notification.isSupported(), screenCapture: true } } satisfies DesktopInfo;
 });
 const browserCeremonies = new Map<string, AbortController>();
-ipcMain.handle('dilla:startup-ready', async (event, ...args: unknown[]) => {
- const { win } = owner(event);
- if (args.length) throw new Error('Startup wait takes no arguments');
- const abort = new AbortController();
- const cancel = () => abort.abort();
- const navigation = (_event: unknown, _url: string, inPlace: boolean, mainFrame: boolean) => { if (mainFrame && !inPlace) cancel(); };
- win.once('closed', cancel);
- win.webContents.once('destroyed', cancel);
- win.webContents.once('render-process-gone', cancel);
- win.webContents.on('did-start-navigation', navigation);
- try { await startupGate.wait(win, abort.signal); owner(event); }
- finally {
-  win.removeListener('closed', cancel);
-  win.webContents.removeListener('destroyed', cancel);
-  win.webContents.removeListener('render-process-gone', cancel);
-  win.webContents.removeListener('did-start-navigation', navigation);
- }
-});
 ipcMain.handle('dilla:screen-capture', async (event, options: unknown, ...args: unknown[]) => {
  const { instance, win } = owner(event);
- if (!startupActivated || args.length || askingQuit || quitting || !win.isVisible() || !win.isFocused()) throw new Error('Screen capture unavailable');
+ if (args.length || askingQuit || quitting || !win.isVisible() || !win.isFocused()) throw new Error('Screen capture unavailable');
  return screenCapture.request(instance, win, captureOptions(options));
 });
 ipcMain.handle('dilla:browser-auth', async (event, request: unknown, ...args: unknown[]) => {
  const { instance, win } = owner(event);
- if (!startupActivated || args.length || browserCeremonies.has(instance) || askingQuit || quitting) throw new Error('A browser sign-in is already running or Dilla is quitting');
+ if (args.length || browserCeremonies.has(instance) || askingQuit || quitting) throw new Error('A browser sign-in is already running or Dilla is quitting');
  const controller = new AbortController(); browserCeremonies.set(instance, controller);
  const cancel = () => controller.abort();
  win.webContents.once('did-start-navigation', cancel);
@@ -457,7 +378,6 @@ ipcMain.handle('dilla:browser-auth', async (event, request: unknown, ...args: un
  }
 });
 ipcMain.handle('dilla:app-audio', async (event, ...args: unknown[]) => {
- if (!startupActivated) throw new Error('Dilla is validating its installed update');
   const { instance, win } = owner(event);
   if (args.length || !existsSync(audioExecutable) || askingQuit || quitting || !win.isVisible() || !win.isFocused()) throw new Error('Application audio is unavailable');
   if (audioSelections.has(instance)) throw new Error('Application audio selection already open');
@@ -517,7 +437,6 @@ ipcMain.on('dilla:pcm-ack', (event, id: unknown) => {
 ipcMain.handle('dilla:command', async (event, value: unknown) => {
   const { instance, win } = owner(event);
   const command = validateCommand(value);
-  if (!startupActivated && !pendingStartupCommand(command.type)) throw new Error('Dilla is validating its installed update');
   if (command.type === 'guard') {
     const wasActive = updater.guards.get(instance)?.activeCall === true;
     updater.setGuard(instance, command);
@@ -534,7 +453,6 @@ ipcMain.handle('dilla:command', async (event, value: unknown) => {
   else if (command.type === 'stop-screen-capture') screenCapture.stop(instance, command.id);
   else if (command.type === 'configure-screen-capture') await screenCapture.configure(instance, command.id, command.options);
   else if (command.type === 'autostart') await setAutostart(command.enabled);
-  else if (command.type === 'boot-ready') await startupUsability.status(instance, command.usable);
   else if (command.type === 'window-mode') setWindowMode(instance, win, command.mode, command.height);
   else if (command.type === 'desktop-theme') {
     const appearance = windowAppearance(command.theme);
@@ -582,7 +500,6 @@ ipcMain.handle('dilla:manager', async (event, value: unknown) => {
   if (!manager || event.sender !== manager.webContents || event.senderFrame !== manager.webContents.mainFrame || event.senderFrame?.url !== 'dilla-internal://setup/') throw new Error('Untrusted instance chooser');
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid manager request');
   const command = value as Record<string, unknown>;
-  if (!startupActivated && command.type !== 'list') throw new Error('Dilla is validating its installed update');
   if (command.type === 'window-menu' && Object.keys(command).length === 1) { showWindowMenu(manager); return; }
   if (command.type === 'list' && Object.keys(command).length === 1) return preferences.instances;
   if (command.type === 'connect' && Object.keys(command).length === 2 && typeof command.instance === 'string') {
@@ -595,42 +512,22 @@ ipcMain.handle('dilla:manager', async (event, value: unknown) => {
 
 const pendingInvites: string[] = [];
 app.on('open-url', (event, url) => { event.preventDefault(); if (preferences) void openInvite(url); else pendingInvites.push(url); });
-const previousProcess = startupLaunch.previousPid;
-void waitForPreviousProcess(previousProcess).then(async () => {
+void (async () => {
   if (!app.requestSingleInstanceLock()) { quitting = true; app.quit(); }
   else {
-    // The lock serializes discovery/recovery and closes an early no-active
-    // snapshot racing the quitting owner's final publication and exit.
-    if (linuxApplicationUpdates && app.isPackaged && !startupLaunch.nonce && !('recoveredNonce' in startupLaunch) && (process.platform === 'linux' || process.platform === 'win32')) {
-     try {
-      if (await resumeInterruptedUpdate(app.getPath('userData'), process.platform === 'linux' ? process.env.APPIMAGE! : process.execPath,
-       { publicKeys: RELEASE_PUBLIC_KEYS, platform: process.platform, arch: process.arch, version: app.getVersion(), channel: app.getVersion().includes('-beta.') ? 'beta' : 'stable' })) { quitting = true; app.exit(0); return; }
-     } catch (error) { if (error instanceof UpdateStartupHeld) throw error; throw new UpdateStartupHeld('The interrupted update could not be verified. Restart Dilla after recovery finishes.'); }
-    }
-    if(restoredPlan?.windows)await verifyRestoredWindowsStartup(restoredPlan,{publicKeys:RELEASE_PUBLIC_KEYS,platform:'win32',arch:process.arch,version:app.getVersion(),channel:app.getVersion().includes('-beta.')?'beta':'stable'});
-    if(app.isPackaged&&process.platform==='win32'&&!windowsLauncher)windowsLauncher=(await currentWindowsInstallation(app.getPath('userData'),process.execPath,{publicKeys:RELEASE_PUBLIC_KEYS,version:app.getVersion(),channel:app.getVersion().includes('-beta.')?'beta':'stable',arch:process.arch,productName:app.getName()})).launcher;
     app.on('second-instance', (_event, argv) => {
       const link = argv.find(value => value.startsWith('dilla://'));
-      if (!shellReady || !startupActivated) { if (link) pendingInvites.push(link); return; }
+      if (!shellReady) { if (link) pendingInvites.push(link); return; }
       if (link) void openInvite(link);
       else { const win = [...windows.values()][0]; if (win) focus(win); else void showManager(); }
     });
     app.on('before-quit', event => { if (!quitting) { event.preventDefault(); void requestQuit(); } });
     app.on('will-quit', () => { for (const selection of audioSelections.values()) selection.abort(); for (const instance of captures.keys()) stopAppAudio(instance); screenCapture.stopAll(); });
     app.on('window-all-closed', () => { /* Tray owns the application's lifetime. */ });
-    app.on('activate', () => { if (!startupActivated) return; const win = [...windows.values()][0]; if (win) focus(win); else void showManager(); });
+    app.on('activate', () => { const win = [...windows.values()][0]; if (win) focus(win); else void showManager(); });
     void app.whenReady().then(async () => {
       if (process.platform === 'darwin') app.dock?.setIcon(join(__dirname, 'icon.png'));
       bundle = await loadBundle(!app.isPackaged && process.argv.includes('--media-validation') ? join(__dirname, '../validation-dist') : join(__dirname, 'client'));
-      let previousUpdateFailure = recoveryError;
-      if (linuxApplicationUpdates && app.isPackaged && !startupLaunch.nonce && (process.platform === 'linux' || process.platform === 'win32')) {
-       try {
-        const pending = await pendingInstalledUpdate(app.getPath('userData'), app.getVersion());
-        if (pending && !previousUpdateFailure) previousUpdateFailure = pending.failure === 'metadata'
-         ? 'The working program was restored, but its update registration could not be restored. Check for updates to retry.'
-         : 'The update did not finish. The working version and your device data are retained. Check for updates to retry.';
-       } catch { previousUpdateFailure ??= 'The update status could not be read. Check for updates to retry.'; }
-      }
       preferences = new Preferences(app.getPath('userData'), allowLoopback);
       await preferences.load();
       await protocol.handle('dilla-internal', async request => {
@@ -648,44 +545,28 @@ void waitForPreviousProcess(previousProcess).then(async () => {
       const activateTray = () => {
        tray = new Tray(nativeImage.createFromPath(join(__dirname, 'tray.png')));
        tray.on('click', () => { const win = [...windows.values()][0]; if (win) focus(win); else void showManager(); });
-       if(app.isPackaged){if(process.platform==='win32'){if(!windowsLauncher)throw new Error('Missing verified Windows shell entry point');app.setAsDefaultProtocolClient('dilla',windowsLauncher,[]);}else app.setAsDefaultProtocolClient('dilla');}
+       if (app.isPackaged) app.setAsDefaultProtocolClient('dilla');
       };
       shellReady = true;
-      if (startupActivated) activateTray();
+      activateTray();
       const initial = arg('instance');
-      if (initial && startupActivated) {
+      if (initial) {
         const instance = canonicalInstance(initial, allowLoopback);
         if (allowLoopback && new URL(instance).protocol === 'http:') await preferences.addInstance(instance);
         if (await confirmInstance(instance)) await openInstance(instance, '/', !hidden);
       }
       for (const instance of preferences.instances) if (!windows.has(instance)) await openInstance(instance, '/', !hidden);
-      if (startupActivated) for (const link of [...pendingInvites.splice(0), ...process.argv.filter(value => value.startsWith('dilla://'))]) await openInvite(link);
+      for (const link of [...pendingInvites.splice(0), ...process.argv.filter(value => value.startsWith('dilla://'))]) await openInvite(link);
       if (windows.size === 0) await showManager();
-      await startupUsability.seal();
-      if (activationPlan) {
-       await waitForStartupActivation(activationPlan, process.pid);
-       startupActivated = true;
-       startupGate.open();
-       for (const win of windows.values()) { win.setEnabled(true); if (!hidden) focus(win); }
-       if (manager && !manager.isDestroyed()) { manager.setEnabled(true); if (!hidden) focus(manager); }
-       activateTray();
-       for (const link of [...pendingInvites.splice(0), ...process.argv.filter(value => value.startsWith('dilla://'))]) await openInvite(link);
-      }
-      if(activationPlan?.windows&&await windowsRegistrationWarning(activationPlan))previousUpdateFailure='Dilla updated successfully, but its Apps & Features version could not be refreshed. Your device data is retained; retry setup to repair its registration.';
       refreshMenu();
-      if (previousUpdateFailure) {
-       updater.installationFailed(new Error(previousUpdateFailure));
-       dialog.showErrorBox('Dilla update failed', previousUpdateFailure);
-      }
-      if (app.isPackaged && !previousUpdateFailure) {
+      if (app.isPackaged) {
         void updater.check();
         setInterval(() => { void updater.check(); }, 4 * 60 * 60 * 1000).unref();
       }
     }).catch(error => {
-      if (!startupActivated) { quitting = true; app.exit(1); return; }
       dialog.showErrorBox('Dilla could not start', String(error)); quitting = true; app.quit();
     });
   }
-}).catch(error => { if (error instanceof UpdateStartupHeld) { console.error('Dilla update startup is held:', error); quitting = true; app.exit(1); return; } dialog.showErrorBox('Dilla could not finish restarting', String(error)); quitting = true; app.quit(); });
+})().catch(error => { dialog.showErrorBox('Dilla could not finish restarting', String(error)); quitting = true; app.quit(); });
 
 }

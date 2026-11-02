@@ -2,8 +2,6 @@ import { createHash, createPublicKey, verify } from 'node:crypto';
 import { readFile, writeFile, lstat } from 'node:fs/promises';
 import { join, basename } from 'node:path';
 import { appcast } from './feed-format.mjs';
-import { verifyWindowsRelease } from '../src/windows-release.ts';
-import { verifyWindowsProgramManifest } from '../src/windows-manifest.ts';
 import { verifyRelease, verifyArtifact } from '../src/update.ts';
 import { inspectLinuxSandboxCapsule, verifyLinuxSandboxRelease } from '../src/linux-sandbox-release.ts';
 import { assertDedicatedKeys, parsePublicConfiguration } from './linux-sandbox-package.mjs';
@@ -43,7 +41,7 @@ async function verifyBundle({ metadata, signature, trust, directory, run, jobs, 
  const channel = version.includes('-beta.') ? 'beta' : 'stable';
  const release = verifyRelease(metadata, signature.trim(), { publicKeys: trust.metadataPublicKeys, channel, platform: 'linux', arch: 'x64', currentVersion: '0.0.0', now });
  if (release.version !== version) throw new Error('Release tag and authenticated version differ');
- verifyWindowsRelease(metadata, signature.trim(), { publicKeys: trust.metadataPublicKeys, channel, platform: 'win32', arch: 'x64', currentVersion: '0.0.0', now });
+ verifyRelease(metadata, signature.trim(), { publicKeys: trust.metadataPublicKeys, channel, platform: 'win32', arch: 'x64', currentVersion: '0.0.0', now });
  const expectedTargets = ['linux-x64', 'win32-x64', 'darwin-x64', 'darwin-arm64'];
  if (release.artifacts.length !== 4 || expectedTargets.some(target => !release.artifacts.some(a => `${a.platform}-${a.arch}` === target))) throw new Error('All desktop platforms must release together');
  const source = release.source;
@@ -65,11 +63,10 @@ async function verifyBundle({ metadata, signature, trust, directory, run, jobs, 
  for (const target of TARGETS) {
   const native = jobs.find(job => job.name.endsWith(`desktop-${target}`));
   if (!native || native.conclusion !== 'success') throw new Error('Missing accepted native target: ' + target);
-  // Both are actual installed-version fault/retry tests. macOS additionally
+  // Each target requires its installed-upgrade acceptance. macOS additionally
   // proves unsigned Sparkle installation rather than running the NSIS/AppImage fixture.
   const gates = ['Record native desktop build provenance', 'Application audio encryption and exclusion', target.startsWith('mac-')
    ? 'Installed unsigned Sparkle upgrade and signed-feed rejection' : 'Installed upgrade acceptance'];
-  if(target==='win-x64')gates.push('Windows launcher kernel acceptance','Windows installer maintenance acceptance');
   if(target==='linux-x64')gates.push('Linux AppImage sandbox native acceptance');
   for (const gate of gates) if (!native.steps?.some(step => step.name === gate && step.conclusion === 'success')) throw new Error(`${target}: missing accepted ${gate}`);
   for (let shard = 1; shard <= 3; shard++) {
@@ -110,10 +107,10 @@ async function verifyBundle({ metadata, signature, trust, directory, run, jobs, 
  }
  const assets = release.assets;
  const requiredNames = [
-  `dilla-${version}-linux-x64.AppImage`, ...['sandbox','sandbox.json','sandbox.sig'].map(ext => `dilla-${version}-linux-x64.${ext}`), `dilla-${version}-win-x64.exe`, `dilla-${version}-win-x64.manifest.json`,
+  `dilla-${version}-linux-x64.AppImage`, ...['sandbox','sandbox.json','sandbox.sig'].map(ext => `dilla-${version}-linux-x64.${ext}`), `dilla-${version}-win-x64.exe`,
   ...['x64', 'arm64'].flatMap(arch => [`dilla-${version}-mac-${arch}.zip`, `dilla-${version}-mac-${arch}.dmg`]),
  ];
- if (!Array.isArray(assets) || assets.length !== requiredNames.length || requiredNames.some(name => assets.filter(asset => asset.name === name).length !== 1)) throw new Error('All installable/update artifacts and the Windows manifest must be authenticated');
+ if (!Array.isArray(assets) || assets.length !== requiredNames.length || requiredNames.some(name => assets.filter(asset => asset.name === name).length !== 1)) throw new Error('All installable/update artifacts must be authenticated');
  for (const asset of assets) {
   if (typeof asset.name !== 'string' || basename(asset.name) !== asset.name || !requiredNames.includes(asset.name)
     || !Number.isSafeInteger(asset.size) || asset.size < 1 || typeof asset.sha512 !== 'string' || !/^[A-Za-z0-9+/]{86}==$/.test(asset.sha512)) throw new Error('Invalid release asset');
@@ -137,11 +134,6 @@ async function verifyBundle({ metadata, signature, trust, directory, run, jobs, 
  for (const artifact of release.artifacts) {
   const asset = assets.find(asset => asset.name === new URL(artifact.url).pathname.split('/').at(-1));
   if (!asset || asset.sha512 !== artifact.sha512 || asset.size !== artifact.size) throw new Error('Update and installer descriptor mismatch');
-  if (artifact.platform === 'win32') {
-   const manifest = artifact.programManifest, manifestAsset = assets.find(asset => asset.name === new URL(manifest.url).pathname.split('/').at(-1));
-   if (!manifestAsset || manifestAsset.size !== manifest.size || manifestAsset.sha512 !== manifest.sha512) throw new Error('Windows manifest and authenticated asset differ');
-   verifyWindowsProgramManifest(await readFile(join(directory, manifestAsset.name)), manifest.sha512, {version, channel, arch:artifact.arch});
-  }
   if (artifact.platform === 'darwin') {
    const archive = await readFile(join(directory, asset.name));
    if (!verify(null, archive, sparkleKey, Buffer.from(artifact.sparkleSignature, 'base64'))) throw new Error('Sparkle archive signature mismatch');

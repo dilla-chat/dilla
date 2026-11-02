@@ -109,7 +109,6 @@ test('server settings remain trusted bundled routes, with only registered sectio
  for (const path of ['/unknown', '/invites/v1/evil', '/invites?token=secret']) assert.equal(isAppNavigation(prefix + path, base), false);
 });
 
-test('startup readiness carries only one boolean, never a renderer-selected path, nonce, process or version', () => {
- for (const usable of [false, true]) assert.deepEqual(validateCommand({ type: 'boot-ready', usable }), { type: 'boot-ready', usable });
- for (const command of [{ type: 'boot-ready' }, { type: 'boot-ready', usable: 'yes' }, { type: 'boot-ready', usable: true, file: '/tmp/report' }, { type: 'boot-ready', usable: true, nonce: 'a'.repeat(64) }, { type: 'boot-ready', usable: true, pid: 123 }, { type: 'boot-ready', usable: true, version: '1.0.1' }]) assert.throws(() => validateCommand(command));
+test('removed startup health command is unavailable to renderers', () => {
+ for (const command of [{ type: 'boot-ready', usable: true }, { type: 'boot-ready' }, { type: 'boot-ready', usable: 'yes' }, { type: 'boot-ready', usable: true, file: '/tmp/report' }, { type: 'boot-ready', usable: true, nonce: 'a'.repeat(64) }, { type: 'boot-ready', usable: true, pid: 123 }, { type: 'boot-ready', usable: true, version: '1.0.1' }]) assert.throws(() => validateCommand(command));
 });

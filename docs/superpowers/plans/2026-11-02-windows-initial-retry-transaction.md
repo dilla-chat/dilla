@@ -1,5 +1,9 @@
 # Windows Initial Retry Transaction Implementation Plan
 
+> Superseded on 2026-11-02 by the user-approved standard updater reset.
+> This historical custom NSIS/launcher crash-recovery plan is no longer an
+> implementation or release requirement. See [current Windows packaging](../../desktop/WINDOWS-UPDATE-BOOTSTRAP.md).
+
 > **For agentic workers:** Use `superpowers:executing-plans` inline after parent approval. No subagents, staging, commits, or pushes by the implementer.
 
 **Goal:** Recover an authenticated interrupted initial installation without overwriting a mapped program, adopting a recreated root, or modifying account data.

@@ -43,26 +43,22 @@ async function mainFixture(options: { kind?: 'system-package' | 'appimage'; argv
  await flush();
  return { effects, errors, environment, releaseValidation: async () => { releaseValidation(); await flush(); } };
 }
-test('compiled native main completes layout validation before consuming startup markers or touching a profile', async () => {
- const fixture = await mainFixture({ kind: 'system-package', validNative: true, holdNative: true, env: { DILLA_UPDATE_STARTUP_NONCE: nonce } });
+test('compiled native main validates layout before ordinary single-instance startup', async () => {
+ const fixture = await mainFixture({ kind: 'system-package', validNative: true, holdNative: true });
  assert.deepEqual(fixture.effects, ['native-validation:system-package']);
- assert.equal(fixture.environment.DILLA_UPDATE_STARTUP_NONCE, nonce);
  await fixture.releaseValidation();
- assert.ok(fixture.errors.some(error => /package manager/.test(error)));
- assert.equal(fixture.environment.DILLA_UPDATE_STARTUP_NONCE, nonce);
- assert.deepEqual(fixture.effects, ['native-validation:system-package', 'exit:1']);
+ assert.ok(fixture.effects.includes('lock')); assert.equal(fixture.effects.includes('profile'),false);
 });
-for (const argv of [[`--update-watchdog=${nonce}`], [`--update-watchdog=${nonce}`, '--update-recovery'], [`--update-bootstrap=${nonce}`], ['--sandbox-setup'], ['--setup-sandbox']]) {
- test('compiled native main rejects installation role before profile/spawn: ' + argv.join(' '), async () => {
+for (const argv of [['--sandbox-setup'], ['--setup-sandbox']]) {
+ test('compiled native main rejects sandbox installation role before profile/spawn: ' + argv.join(' '), async () => {
   const fixture = await mainFixture({ kind: 'system-package', validNative: true, argv });
   assert.ok(fixture.errors.some(error => /package manager/.test(error)));
   assert.deepEqual(fixture.effects, ['native-validation:system-package', 'exit:1']);
  });
 }
-test('unmarked packaged main rejects watchdog authority even when APPIMAGE is spoofed', async () => {
- const fixture = await mainFixture({ argv: [`--update-watchdog=${nonce}`] });
- assert.ok(fixture.errors.some(error => /installation authority/.test(error)));
- assert.deepEqual(fixture.effects, ['exit:1']);
+test('stock AppImage install-only launch exits before layout, profile, lock or UI startup', async () => {
+ const fixture = await mainFixture({ kind: 'appimage', env: { APPIMAGE_EXIT_AFTER_INSTALL:'true' } });
+ assert.deepEqual(fixture.effects,['exit:0']); assert.deepEqual(fixture.errors,[]);
 });
 test('unmarked normal development still reaches ordinary single-instance startup', async () => {
  const fixture = await mainFixture({ packaged: false, argv: ['--instance=https://chat.test', 'dilla://invite/example'] });

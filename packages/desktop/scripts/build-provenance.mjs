@@ -14,7 +14,7 @@ function validVersion(version) {
 export function buildArtifactNames(target, version) {
  validVersion(version); if (!Object.hasOwn(PLATFORMS, target)) throw new Error('Invalid build provenance target');
  const prefix = `dilla-${version}-${target}`;
- return target === 'linux-x64' ? [prefix + '.AppImage', prefix + '.sandbox', prefix + '.sandbox.json'] : target === 'win-x64' ? [prefix + '.exe', prefix + '.manifest.json'] : [prefix + '.dmg', prefix + '.zip'];
+ return target === 'linux-x64' ? [prefix + '.AppImage', prefix + '.sandbox', prefix + '.sandbox.json'] : target === 'win-x64' ? [prefix + '.exe'] : [prefix + '.dmg', prefix + '.zip'];
 }
 export function buildProvenanceName(target) {
  if (!Object.hasOwn(PLATFORMS, target)) throw new Error('Invalid build provenance target');

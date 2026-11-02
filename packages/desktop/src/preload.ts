@@ -23,11 +23,7 @@ if (process.isMainFrame) {
       }
       window.postMessage({ type: 'dilla-screen-capture-port', id }, location.origin, [event.ports[0]]);
     });
-    // Remounting the UI shares one native wait; renderer calls cannot build an
-    // unbounded queue of pending activation requests in main.
-    let startupReady: Promise<void> | undefined;
     const bridge: DesktopBridge = {
-      waitForStartup: () => startupReady ??= ipcRenderer.invoke('dilla:startup-ready'),
       info: () => ipcRenderer.invoke('dilla:info'),
       send: (command: DesktopCommand) => ipcRenderer.invoke('dilla:command', command),
       browserAuth: request => ipcRenderer.invoke('dilla:browser-auth', request),

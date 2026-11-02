@@ -12,7 +12,6 @@ export type DesktopCommand =
   | { type: 'configure-screen-capture'; id: string; options: ScreenCaptureOptions }
   | { type: 'desktop-theme'; theme: import('../../design-tokens/src/tokens.ts').ThemeName }
   | { type: 'window-mode'; mode: import('./window-layout.ts').WindowMode; height: number | null }
-  | { type: 'boot-ready'; usable: boolean }
   | { type: 'window-menu' }
   | { type: 'window-control'; action: 'minimize' | 'toggle-maximize' | 'close' }
   | { type: 'check-update' }
@@ -38,8 +37,6 @@ export interface ScreenCaptureSource { id: string; displaySurface: 'monitor' | '
 export interface AudioSource { id: string; label: string }
 
 export interface DesktopBridge {
-  /** Resolves only after main has durably activated an installed update. */
-  waitForStartup?(): Promise<void>;
   info(): Promise<DesktopInfo>;
   send(command: DesktopCommand): Promise<void>;
   onEvent(listener: (event: DesktopEvent) => void): () => void;

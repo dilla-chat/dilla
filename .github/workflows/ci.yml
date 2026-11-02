@@ -592,56 +592,7 @@ jobs:
           path: packages/client-core/harness-dist/
           if-no-files-found: error
 
-  # Exercise Windows filesystem/security contracts before provisioning desktop acceptance.
-  windows-kernel:
-    needs: [changes]
-    if: needs.changes.outputs.e2e != 'false'
-    runs-on: windows-2025
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with:
-          go-version-file: go.mod
-      - run: go test -count=1 -failfast -v -timeout=2m ./internal/desktoplaunch ./packages/desktop/native/windows-launcher
-
-  # The native fixture builds its own complete package from pinned Electron and
-  # Go/NSIS sources, so Linux/macOS acceptance cannot cancel its first execution.
-  windows-installer:
-    needs: [changes, windows-kernel]
-    if: needs.changes.outputs.e2e != 'false'
-    runs-on: windows-2025
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with:
-          go-version-file: go.mod
-      - run: npm ci
-      - run: node node_modules/electron/install.js
-      - run: node packages/desktop/scripts/prepare-nsis.mjs
-      # Keep short controls ahead of the long lifecycle test so an early failure
-      # reaches the step API immediately instead of waiting for Node's file order.
-      - run: node --test packages/desktop/test/native/windows-installer-syntax.test.mjs packages/desktop/test/windows-operation-gate.test.ts
-      - run: npm test -w @dilla/desktop
-      - id: launcher_smoke
-        run: node packages/desktop/scripts/windows-launcher-smoke.mjs --capture-coff
-      - if: failure() && steps.launcher_smoke.outcome == 'failure'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: windows-launcher-smoke-coff
-          path: packages/desktop/test-results/windows-launcher-smoke-failure.syso
-          if-no-files-found: error
-      - run: node --test packages/desktop/test/native/windows-installer-maintenance.test.mjs
-
+  # Keep Linux sandbox security controls ahead of native desktop acceptance.
   linux-sandbox-foundation:
     needs: [changes]
     if: needs.changes.outputs.e2e != 'false'
@@ -712,7 +663,7 @@ jobs:
           if-no-files-found: error
 
   desktop:
-    needs: [changes, web-build, rust-wasi, windows-kernel, linux-sandbox-foundation]
+    needs: [changes, web-build, rust-wasi, linux-sandbox-foundation]
     if: needs.changes.outputs.e2e != 'false'
     uses: ./.github/workflows/desktop.yml
   core-integration:
@@ -1110,7 +1061,7 @@ jobs:
   # A DAG barrier prevents the watcher exiting between root jobs and later matrix/reusable
   # children. This does no build work and never depends on the watcher or final aggregator.
   ci-work-complete:
-    needs: [changes, docs, node, ui, rust-wasm-node, rust-native, rust-wasi, vectors, browser-spike, browser-media, web-build, windows-kernel, windows-installer, linux-sandbox-foundation, desktop, core-integration, deny, go, go-native, go-ds, go-api, go-harness, go-fts5-arm64, go-lint, go-vuln, go-sqlc, go-postgres, go-release]
+    needs: [changes, docs, node, ui, rust-wasm-node, rust-native, rust-wasi, vectors, browser-spike, browser-media, web-build, linux-sandbox-foundation, desktop, core-integration, deny, go, go-native, go-ds, go-api, go-harness, go-fts5-arm64, go-lint, go-vuln, go-sqlc, go-postgres, go-release]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -1119,7 +1070,7 @@ jobs:
 
   # One check for the whole workflow: red on any failure/cancellation, green for success or intentional skips.
   ci-ok:
-    needs: [ci-watchdog, ci-work-complete, changes, docs, node, ui, rust-wasm-node, rust-native, rust-wasi, vectors, browser-spike, browser-media, web-build, windows-kernel, windows-installer, linux-sandbox-foundation, desktop, core-integration, deny, go, go-native, go-ds, go-api, go-harness, go-fts5-arm64, go-lint, go-vuln, go-sqlc, go-postgres, go-release]
+    needs: [ci-watchdog, ci-work-complete, changes, docs, node, ui, rust-wasm-node, rust-native, rust-wasi, vectors, browser-spike, browser-media, web-build, linux-sandbox-foundation, desktop, core-integration, deny, go, go-native, go-ds, go-api, go-harness, go-fts5-arm64, go-lint, go-vuln, go-sqlc, go-postgres, go-release]
     if: always()
     runs-on: ubuntu-latest
     steps:

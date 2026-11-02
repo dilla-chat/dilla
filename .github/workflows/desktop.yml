@@ -152,8 +152,7 @@ jobs:
         run: |
           CGO_ENABLED=0 go test ./packages/desktop/test/fixtures/linux-installed-sandbox-bootstrap
           node --test packages/desktop/test/linux-installed-sandbox-bootstrap.test.mjs packages/desktop/test/linux-sandbox-package-runner.test.mjs
-      - if: runner.os != 'Windows'
-        run: npm test -w @dilla/desktop
+      - run: npm test -w @dilla/desktop
       - run: npm run typecheck -w @dilla/desktop
       - id: desktop-build
         run: npm run build -w @dilla/desktop -- --existing-client
@@ -232,7 +231,6 @@ jobs:
             packages/desktop/out/*.sandbox
             packages/desktop/out/*.sandbox.json
             packages/desktop/out/*.exe
-            packages/desktop/out/*.manifest.json
             packages/desktop/out/build-provenance-*.json
             packages/desktop/out/*.dmg
             packages/desktop/out/*.zip

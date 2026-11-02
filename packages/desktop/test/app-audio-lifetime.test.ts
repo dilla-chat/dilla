@@ -10,7 +10,7 @@ import { transform } from 'esbuild';
 async function fixture() {
  const source = await readFile(new URL('../src/main.ts', import.meta.url), 'utf8');
  const section = (from: string, to: string) => source.slice(source.indexOf(from), source.indexOf(to));
- const code = section('const captures =', 'const startupUsability =')
+ const code = section('const captures =', 'let quitProbe:')
   + section("ipcMain.handle('dilla:app-audio'", "ipcMain.on('dilla:pcm-ack'")
   + section("ipcMain.handle('dilla:command'", "ipcMain.handle('dilla:manager'");
  const handlers = new Map<string, (...args: any[]) => any>();
@@ -34,7 +34,7 @@ async function fixture() {
   windows, __dirname: '/immutable', AbortController,
   ipcMain: { handle: (name: string, handler: (...args: any[]) => any) => handlers.set(name, handler) },
   owner: (input: typeof event) => { if (input.sender !== win.webContents || input.senderFrame !== win.webContents.mainFrame || win.destroyed || win.webContents.destroyed) throw Error('Untrusted owner'); return { instance, win }; },
-  ScreenCaptureBroker: class {}, startupActivated: true, askingQuit: false, quitting: false,
+  ScreenCaptureBroker: class {}, askingQuit: false, quitting: false,
   existsSync: () => true, audioExecutable: '/immutable/dilla-audio',
   refreshMenu() {}, randomUUID: () => `capture-${native.length}`,
   validateCommand: (value: unknown) => value,

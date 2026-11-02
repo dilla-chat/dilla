@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"syscall"
 )
@@ -23,19 +22,14 @@ const (
 
 // decideLaunch receives a validated compatibility state. Incompatible ready
 // state must be converted to unsafe before reaching this decision.
-func decideLaunch(state string, strict bool) launchDecision {
+func decideLaunch(state string) launchDecision {
 	switch state {
 	case "missing":
-		if strict {
-			return decisionExec
-		}
 		return decisionProbe
 	case "ready":
 		return decisionExec
 	case "maintenance":
-		if !strict {
-			return decisionRepair
-		}
+		return decisionRepair
 	}
 	return decisionStop
 }
@@ -43,64 +37,13 @@ func decideLaunch(state string, strict bool) launchDecision {
 var roleNonce = regexp.MustCompile(`\A[0-9a-f]{64}\z`)
 var errRole = errors.New("invalid reserved launch role")
 
-func strictRole(args, env []string) (bool, error) {
-	seen := map[string]bool{}
-	strict := false
+func validateLaunchArgs(args []string) error {
 	for _, arg := range args {
-		if strings.HasPrefix(arg, "--dilla-sandbox-") || arg == "--setup-sandbox" || strings.HasPrefix(arg, "--setup-sandbox=") || strings.HasPrefix(arg, "--sandbox-") {
-			return false, errRole
-		}
-		if !strings.HasPrefix(arg, "--update-") {
-			continue
-		}
-		key, value, has := strings.Cut(arg, "=")
-		if seen[key] {
-			return false, errRole
-		}
-		seen[key] = true
-		switch key {
-		case "--update-watchdog", "--update-launch":
-			if !has || !roleNonce.MatchString(value) {
-				return false, errRole
-			}
-			strict = true
-		case "--update-recovery":
-			if has {
-				return false, errRole
-			}
-			strict = true
-		default:
-			return false, errRole
+		if strings.HasPrefix(arg, "--dilla-sandbox-") || arg == "--setup-sandbox" || strings.HasPrefix(arg, "--setup-sandbox=") || strings.HasPrefix(arg, "--sandbox-") || strings.HasPrefix(arg, "--update-") {
+			return errRole
 		}
 	}
-	if seen["--update-recovery"] && !seen["--update-watchdog"] || seen["--update-watchdog"] && seen["--update-launch"] {
-		return false, errRole
-	}
-	markers := map[string]bool{}
-	for _, entry := range env {
-		key, value, has := strings.Cut(entry, "=")
-		switch key {
-		case "DILLA_UPDATE_STARTUP_NONCE", "DILLA_UPDATE_RECOVERED_NONCE", "DILLA_UPDATE_PREVIOUS_PID":
-			if !has || markers[key] {
-				return false, errRole
-			}
-			markers[key] = true
-			strict = true
-			if key != "DILLA_UPDATE_PREVIOUS_PID" && !roleNonce.MatchString(value) {
-				return false, errRole
-			}
-			if key == "DILLA_UPDATE_PREVIOUS_PID" {
-				n, e := strconv.ParseUint(value, 10, 31)
-				if e != nil || n < 2 || strconv.FormatUint(n, 10) != value {
-					return false, errRole
-				}
-			}
-		}
-	}
-	if markers["DILLA_UPDATE_STARTUP_NONCE"] && markers["DILLA_UPDATE_RECOVERED_NONCE"] {
-		return false, errRole
-	}
-	return strict, nil
+	return nil
 }
 
 type dispatchDeps struct {
@@ -112,7 +55,7 @@ type dispatchDeps struct {
 
 var errLaunch = errors.New("sandbox prerequisite not satisfied")
 
-func dispatch(args []string, strict bool, d dispatchDeps) error {
+func dispatch(args []string, d dispatchDeps) error {
 	if d.status == nil || d.probe == nil || d.ensure == nil || d.exec == nil {
 		return errLaunch
 	}
@@ -120,7 +63,7 @@ func dispatch(args []string, strict bool, d dispatchDeps) error {
 	if e != nil {
 		return errLaunch
 	}
-	switch decideLaunch(state, strict) {
+	switch decideLaunch(state) {
 	case decisionExec:
 		return d.exec(args)
 	case decisionProbe:
@@ -182,6 +125,14 @@ func DispatchLaunch(args []string, e EmbeddedCapsule) error {
 
 // DispatchLaunchVersion receives only the product version compiled by packaging.
 func DispatchLaunchVersion(args []string, e EmbeddedCapsule, compiledVersion string) error {
+	// electron-updater executes the new image for integration when the user quits
+	// without relaunching. This stock marker must never open UI or authorize setup.
+	if os.Getenv("APPIMAGE_EXIT_AFTER_INSTALL") == "true" {
+		if len(args) != 0 {
+			return errRole
+		}
+		return nil
+	}
 	if len(e.unsigned) == 0 {
 		return errLaunch
 	}
@@ -199,7 +150,7 @@ func DispatchLaunchVersion(args []string, e EmbeddedCapsule, compiledVersion str
 	if prepare {
 		return prepareUpdate(nonce, e, false)
 	}
-	strict, err := strictRole(args, os.Environ())
+	err = validateLaunchArgs(args)
 	if err != nil {
 		return err
 	}
@@ -248,7 +199,7 @@ func DispatchLaunchVersion(args []string, e EmbeddedCapsule, compiledVersion str
 			return syscall.Exec(owned.electron, append([]string{owned.electron}, argv...), env)
 		},
 	}
-	return dispatch(args, strict, deps)
+	return dispatch(args, deps)
 }
 func launchEnvironment(env []string, appdir string) []string {
 	result := make([]string, 0, len(env)+1)

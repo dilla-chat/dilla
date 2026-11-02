@@ -5,7 +5,6 @@ import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { parsePublicConfiguration, assertDedicatedKeys } from './linux-sandbox-package.mjs';
-import { verifyWindowsProgramManifest } from '../src/windows-manifest.ts';
 import { appcast, signedAppcast, sparkleVersion } from './feed-format.mjs';
 export { appcast, signedAppcast, sparkleVersion } from './feed-format.mjs';
 
@@ -49,14 +48,6 @@ export async function signDesktopRelease({ version, artifactsDirectory, keysDire
   if (platform === 'darwin') {
    artifact.sparkleSignature = sign(null, bytes, sparkleKey).toString('base64');
    if (!verify(null, bytes, createPublicKey(sparkleKey), Buffer.from(artifact.sparkleSignature, 'base64'))) throw new Error('Sparkle archive signature self-check failed');
-  }
-  if (platform === 'win32') {
-   const manifestName = `dilla-${version}-win-${arch}.manifest.json`, manifestFile = join(artifactsDirectory, manifestName), info = await lstat(manifestFile);
-   if (!info.isFile() || info.isSymbolicLink() || info.size < 1 || info.size > 1048576) throw new Error('Invalid final Windows program manifest');
-   const manifestBytes = await readFile(manifestFile), sha512 = createHash('sha512').update(manifestBytes).digest('base64');
-   verifyWindowsProgramManifest(manifestBytes, sha512, { version, channel, arch });
-   artifact.programManifest = { url: `https://github.com/jonasthim/dilla/releases/download/desktop-v${version}/${manifestName}`, size: manifestBytes.length, sha512 };
-   release.assets.push({ name: manifestName, size: manifestBytes.length, sha512 });
   }
   release.artifacts.push(artifact);
   release.assets.push({ name, size: bytes.length, sha512: artifact.sha512 });

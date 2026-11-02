@@ -18,9 +18,9 @@ together; mobile, package-manager distributions and global push-to-talk are excl
   native notification routing and unread badges, strict invite parsing.
 - Authenticated update descriptors and hashes, fixed stable/beta GitHub feeds,
   startup/four-hour polling in installed builds, manual checking, retryable errors,
-  background download and quit-only installation guards. Cache hashes are checked
-  again immediately before installation; corrupt cache entries are evicted. Linux
-  stages replacement on the destination filesystem with a retained working backup.
+  background download and quit-only installation guards. The pinned standard NSIS/AppImage updater owns installation and relaunch.
+  Native package managers own DEB/RPM/AUR updates; macOS retains Sparkle. The
+  custom crash-recovery, rollback and Windows launcher layer has been removed.
 - AppImage, per-user NSIS and ad-hoc macOS packaging configuration. Hardened packaged
   fuses are checked on the binary. CI adds all four native targets without deleting
   the shared protocol/security jobs. Product client/voice acceptance runs in Electron
@@ -80,7 +80,8 @@ installed client still boots, no script/document is fetched from that server,
 malformed IPC is rejected, prohibited navigation retains the existing document,
 reload keeps storage, and closing a window keeps the renderer alive. Unit tests
 cover tampered signatures/hashes, wrong channels/targets/URLs, expired metadata,
-download and installation failures, call/draft guards and AppImage rollback.
+download and installation failures and call/draft guards. No crash restoration
+guarantee is claimed.
 Subpath configuration is delivered to the core worker before boot, constrained to
 the same origin, so the gateway uses the full base path before creating a socket.
 The executable `/assets/` namespace is reserved for installed bytes, even when an
@@ -116,7 +117,7 @@ passing a hardware gate.
 | Passkey/OIDC system-browser handoff, single-use PKCE completion | Actual passkey ceremony and protocol tests pass | Platform acceptance pending | Platform acceptance pending |
 | Background Answer/Decline, ringing, sleep/resume/reconnect | Native ringing actions pass; sleep/resume open | Platform acceptance pending | Platform acceptance pending |
 | Multiple instances, permissions and deep links end to end | Partial native acceptance; full gate open | Platform acceptance pending | Platform acceptance pending |
-| Installed upgrades: corruption, interruption, disk space, drafts, recovery | Actual fault matrix and stored-account/KEK/history/recovery/draft guards passed locally; normal FUSE CI pending | Stable launcher, signed slots, installer faults and OS entry fixtures implemented; native CI pending | Feed/archive/download failures and retries passed; full-account upgrade CI pending |
+| Installed upgrades, account continuity and quit guards | Standard AppImage upgrade and stored-account proof require final-source CI | Standard per-user NSIS upgrade and stored-account proof require final-source CI | Feed/archive/download failures and retries passed; final-source full-account upgrade CI pending |
 | Unsigned Sparkle installed upgrade with OS protections intact | N/A | N/A | Actual upgrade passed on both architectures |
 | Full client E2E parity in Electron | Remaining adaptations under test | Pending | Pending |
 | Startup, memory, idle CPU, interaction and call/audio comparison | Measurement harness under validation | Pending | Pending |

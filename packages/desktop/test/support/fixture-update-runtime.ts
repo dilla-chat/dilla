@@ -24,9 +24,7 @@ export function fixtureSandbox(version:string) {
  return {version,descriptor,assets,capsule,manifest,signature,keys:fixture.config.publicKeys,now:Date.now()};
 }
 const desktop=resolve(import.meta.dirname,'../..');
-const names=['plan','state','journal','runtime','watchdog','activation','health','fs','cache','windowsSlots'] as const;
-const modules={plan:'update-plan',state:'update-state',journal:'update-journal',runtime:'update-runtime',watchdog:'update-watchdog',activation:'update-activation',health:'update-health',fs:'update-fs',cache:'linux-sandbox-cache',windowsSlots:'windows-slots'};
-const code=names.map(name=>`export * as ${name} from ${JSON.stringify(join(desktop,'src',modules[name]+'.ts'))};`).join('\n');
+const code=`export * as cache from ${JSON.stringify(join(desktop,'src/linux-sandbox-cache.ts'))};`;
 const root=await mkdtemp(join(tmpdir(),'dilla-fixture-compiled-')); process.once('exit',()=>rmSync(root,{recursive:true,force:true}));
 export const fixtureRuntimePath=join(root,'runtime.mjs');
 await build({stdin:{contents:code,resolveDir:desktop,loader:'ts'},outfile:fixtureRuntimePath,bundle:true,platform:'node',format:'esm',target:'node24',plugins:[{name:'compile-fixture-sandbox-trust',setup(plugin){
@@ -34,6 +32,6 @@ await build({stdin:{contents:code,resolveDir:desktop,loader:'ts'},outfile:fixtur
  if (process.platform === 'win32') plugin.onLoad({filter:/[\\/]src[\\/]linux-sandbox-cache\.ts$/},async args=>({contents:fixtureCacheSource(await readFile(args.path,'utf8'),process.platform),loader:'ts',resolveDir:join(desktop,'src')}));
 }}]});
 export const fixtureRuntime=await import(pathToFileURL(fixtureRuntimePath).href) as {
- plan:typeof import('../../src/update-plan.ts'); state:typeof import('../../src/update-state.ts'); journal:typeof import('../../src/update-journal.ts'); runtime:typeof import('../../src/update-runtime.ts'); watchdog:typeof import('../../src/update-watchdog.ts'); activation:typeof import('../../src/update-activation.ts'); health:typeof import('../../src/update-health.ts'); fs:typeof import('../../src/update-fs.ts'); cache:typeof import('../../src/linux-sandbox-cache.ts'); windowsSlots:typeof import('../../src/windows-slots.ts');
+ cache: typeof import('../../src/linux-sandbox-cache.ts');
 };
 export async function fixtureSandboxCache(userData:string,version='1.0.1') {return fixtureRuntime.cache.saveSandboxSidecars(userData,fixtureSandbox(version));}

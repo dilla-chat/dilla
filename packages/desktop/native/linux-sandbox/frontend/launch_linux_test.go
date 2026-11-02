@@ -9,18 +9,13 @@ import (
 
 func TestLaunchDecisionPreservesManagedStates(t *testing.T) {
 	for _, tc := range []struct {
-		state  string
-		strict bool
-		want   launchDecision
+		state string
+		want  launchDecision
 	}{
-		{"missing", false, decisionProbe}, {"missing", true, decisionExec},
-		{"ready", false, decisionExec}, {"ready", true, decisionExec},
-		{"maintenance", false, decisionRepair}, {"maintenance", true, decisionStop},
-		{"removed", false, decisionStop}, {"unsafe", false, decisionStop},
+		{"missing", decisionProbe}, {"ready", decisionExec}, {"maintenance", decisionRepair}, {"removed", decisionStop}, {"unsafe", decisionStop},
 	} {
-		got := decideLaunch(tc.state, tc.strict)
-		if got != tc.want {
-			t.Errorf("state=%s strict=%v: got %v want %v", tc.state, tc.strict, got, tc.want)
+		if got := decideLaunch(tc.state); got != tc.want {
+			t.Errorf("state=%s got %v want %v", tc.state, got, tc.want)
 		}
 	}
 }
@@ -52,27 +47,31 @@ func TestFatalRequiresOwnedSignalExactPinnedMessage(t *testing.T) {
 	}
 }
 
-func TestStrictLaunchRoles(t *testing.T) {
-	n := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	for _, tc := range []struct {
-		args, env       []string
-		strict, invalid bool
-	}{
-		{[]string{"dilla://invite?x=--update-watchdog"}, nil, false, false},
-		{[]string{"--update-watchdog=" + n}, nil, true, false},
-		{[]string{"--update-watchdog=" + n, "--update-recovery"}, nil, true, false},
-		{[]string{"--update-recovery"}, nil, false, true},
-		{[]string{"--update-watchdog=x"}, nil, false, true},
-		{[]string{"--update-watchdog=" + n, "--update-watchdog=" + n}, nil, false, true},
-		{[]string{"--dilla-sandbox-probe=" + n}, nil, false, true},
-		{nil, []string{"DILLA_UPDATE_STARTUP_NONCE=" + n}, true, false},
-		{nil, []string{"DILLA_UPDATE_STARTUP_NONCE=x"}, false, true},
-		{nil, []string{"DILLA_UPDATE_STARTUP_NONCE=" + n, "DILLA_UPDATE_RECOVERED_NONCE=" + n}, false, true},
-	} {
-		got, err := strictRole(tc.args, tc.env)
-		if got != tc.strict || (err != nil) != tc.invalid {
-			t.Errorf("args %q env %q got %v err %v", tc.args, tc.env, got, err)
+func TestReservedLaunchArgs(t *testing.T) {
+	if err := validateLaunchArgs([]string{"dilla://invite?x=--update-watchdog"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, arg := range []string{"--update-watchdog=old", "--update-launch=old", "--update-recovery", "--dilla-sandbox-probe=x", "--setup-sandbox"} {
+		if validateLaunchArgs([]string{arg}) == nil {
+			t.Fatalf("accepted reserved role %s", arg)
 		}
+	}
+}
+func TestStockInstallOnlyLaunchCannotProvisionOrRunElectron(t *testing.T) {
+	t.Setenv("APPIMAGE_EXIT_AFTER_INSTALL", "true")
+	// Empty compiled configuration would fail ordinary startup before resolving
+	// a mount or contacting the component. Install-only returns without either.
+	if err := DispatchLaunchVersion(nil, EmbeddedCapsule{}, "1.0.1"); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"--dilla-sandbox-prepare-update=" + strings.Repeat("a", 64)}, {"--setup-sandbox"}, {"dilla://invite/a"}} {
+		if DispatchLaunchVersion(args, EmbeddedCapsule{}, "1.0.1") == nil {
+			t.Fatal("accepted mixed install-only role")
+		}
+	}
+	t.Setenv("APPIMAGE_EXIT_AFTER_INSTALL", "")
+	if DispatchLaunchVersion(nil, EmbeddedCapsule{}, "1.0.1") == nil {
+		t.Fatal("ordinary startup bypassed compiled configuration")
 	}
 }
 
@@ -130,22 +129,13 @@ func TestDispatchProbeAndRepairSequence(t *testing.T) {
 		exec:   func(args []string) error { calls = append(calls, "exec:"+strings.Join(args, "|")); return nil },
 	}
 	args := []string{"two words", "dilla://invite/a"}
-	if e := dispatch(args, false, deps); e != nil {
+	if e := dispatch(args, deps); e != nil {
 		t.Fatal(e)
 	}
 	got := strings.Join(calls, ",")
 	want := "status,probe,ensure,status,probe,exec:two words|dilla://invite/a"
 	if got != want {
 		t.Fatalf("got %q want %q", got, want)
-	}
-}
-func TestStrictDispatchNeverPrompts(t *testing.T) {
-	for _, state := range []string{"maintenance", "removed", "unsafe"} {
-		called := false
-		deps := dispatchDeps{status: func() (string, error) { return state, nil }, ensure: func() error { called = true; return nil }, probe: func() (ProbeResult, error) { called = true; return ProbeSandboxed, nil }, exec: func([]string) error { called = true; return nil }}
-		if dispatch(nil, true, deps) == nil || called {
-			t.Fatalf("state %s authorized or launched", state)
-		}
 	}
 }
 
@@ -180,15 +170,15 @@ func TestFailedProbeNeverOffersSetup(t *testing.T) {
 	for _, result := range []ProbeResult{ProbeFailed, ProbeTimedOut} {
 		called := false
 		deps := dispatchDeps{status: func() (string, error) { return "missing", nil }, probe: func() (ProbeResult, error) { return result, nil }, ensure: func() error { called = true; return nil }, exec: func([]string) error { called = true; return nil }}
-		if dispatch(nil, false, deps) == nil || called {
+		if dispatch(nil, deps) == nil || called {
 			t.Fatalf("result %s offered setup or executed", result)
 		}
 	}
 }
-func TestLaunchEnvironmentRemovesSandboxOverridesAndPreservesUpdateMarkers(t *testing.T) {
-	env := launchEnvironment([]string{"APPDIR=/untrusted", "CHROME_DEVEL_SANDBOX=/tmp/x", "NODE_OPTIONS=bad", "LD_PRELOAD=bad", "DILLA_UPDATE_STARTUP_NONCE=kept", "DISPLAY=:1"}, "/mounted")
+func TestLaunchEnvironmentRemovesSandboxOverrides(t *testing.T) {
+	env := launchEnvironment([]string{"APPDIR=/untrusted", "CHROME_DEVEL_SANDBOX=/tmp/x", "NODE_OPTIONS=bad", "LD_PRELOAD=bad", "DISPLAY=:1"}, "/mounted")
 	got := strings.Join(env, "|")
-	if got != "DILLA_UPDATE_STARTUP_NONCE=kept|DISPLAY=:1|APPDIR=/mounted" {
+	if got != "DISPLAY=:1|APPDIR=/mounted" {
 		t.Fatal(got)
 	}
 }

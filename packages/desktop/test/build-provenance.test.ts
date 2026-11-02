@@ -33,9 +33,9 @@ test('the actual AppImage desktop entry preserves Chromium sandboxing', async ()
  const target = appImageTarget('1.2.3-beta.4');
  assert.equal(await target.desktopEntry.value, 'AppRun %U');
 });
-test('every target binds exactly its native installable bytes, including the Windows manifest', () => {
+test('every target binds exactly its native installable bytes, with no recovery sidecar', () => {
  assert.deepEqual(targets.map(value => buildArtifactNames(value, '1.2.3-beta.4')), [
-  ['dilla-1.2.3-beta.4-linux-x64.AppImage', 'dilla-1.2.3-beta.4-linux-x64.sandbox', 'dilla-1.2.3-beta.4-linux-x64.sandbox.json'], ['dilla-1.2.3-beta.4-win-x64.exe', 'dilla-1.2.3-beta.4-win-x64.manifest.json'],
+  ['dilla-1.2.3-beta.4-linux-x64.AppImage', 'dilla-1.2.3-beta.4-linux-x64.sandbox', 'dilla-1.2.3-beta.4-linux-x64.sandbox.json'], ['dilla-1.2.3-beta.4-win-x64.exe'],
   ['dilla-1.2.3-beta.4-mac-x64.dmg', 'dilla-1.2.3-beta.4-mac-x64.zip'], ['dilla-1.2.3-beta.4-mac-arm64.dmg', 'dilla-1.2.3-beta.4-mac-arm64.zip'],
  ]);
  for (const value of ['../outside', 'linux-arm64', 'win32-x64']) assert.throws(() => buildArtifactNames(value, '1.2.3'));

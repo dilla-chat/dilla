@@ -160,20 +160,6 @@ test('JOB_GATES names exactly the jobs of ci.yml except workflow infrastructure'
   assert.deepEqual(jobs.sort(), Object.keys(JOB_GATES).sort());
 });
 
-test('early Windows kernel uses the same fail-safe eligibility as desktop acceptance', () => {
-  assert.deepEqual(JOB_GATES['windows-kernel'], ['e2e']);
-  for (const outputs of [...reachableOutputs(), {}, { e2e: '' }]) {
-    assert.equal(jobRuns('windows-kernel', outputs), jobRuns('desktop', outputs));
-  }
-});
-
-test('independent Windows installer uses desktop eligibility and fails safe on missing outputs', () => {
-  assert.deepEqual(JOB_GATES['windows-installer'], ['e2e']);
-  for (const outputs of [...reachableOutputs(), {}, { e2e: '' }]) {
-    assert.equal(jobRuns('windows-installer', outputs), jobRuns('desktop', outputs));
-  }
-});
-
 test('Linux sandbox foundation shares desktop fail-safe code eligibility', () => {
   assert.deepEqual(JOB_GATES['linux-sandbox-foundation'], ['e2e']);
   for (const outputs of [...reachableOutputs(), {}, { e2e: '' }]) {

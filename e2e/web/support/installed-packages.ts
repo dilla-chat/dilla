@@ -24,14 +24,6 @@ export const INSTALLED_FUSES = Object.freeze({ runAsNode: false, enableCookieEnc
   enableNodeOptionsEnvironmentVariable: false, enableNodeCliInspectArguments: false,
   enableEmbeddedAsarIntegrityValidation: true, onlyLoadAppFromAsar: true, grantFileProtocolExtraPrivileges: false });
 interface FixtureIdentity { product: string; profile: string; reports: string; scheme: string; version: string }
-export function fixtureWindowsInstallationSource(source: string, appId: string): string {
-  let replaced = 0;
-  const compiled = source.replace(/description\.appId\s*!==\s*'dev\.dilla\.desktop'/g, () => {
-    replaced++; return `description.appId !== ${JSON.stringify(appId)}`;
-  });
-  if (replaced !== 2) throw new Error('Installed account fixture Windows identity boundary changed');
-  return compiled;
-}
 function replaceBoundary(source: string, boundary: string, replacement: string): string {
   if (source.split(boundary).length !== 2) throw new Error(`Installed account fixture boundary changed: ${boundary}`);
   return source.replace(boundary, replacement);
@@ -87,7 +79,7 @@ export function fixtureMainSource(source: string, cfg: FixtureIdentity): string 
   // assignment is now inside initializeDesktop, after native role validation.
   source = replaceBoundary(source, initialization, `
 const __accountFS=process.getBuiltinModule('fs'),__accountReports=${JSON.stringify(cfg.reports)};
-const __accountRole=process.argv.some(v=>v.startsWith('--update-watchdog'))?'watchdog':process.argv.some(v=>v.startsWith('--update-bootstrap'))?'bootstrap':'ordinary';
+const __accountRole='ordinary';
 ${fixtureStartupDiagnosticsSource()}
 ${initialization}`);
   source = source.replace(identity, identity + `
@@ -112,11 +104,10 @@ export async function assertInstalledFuses(binary: string): Promise<void> {
   for (const key of [FuseV1Options.RunAsNode, FuseV1Options.EnableNodeOptionsEnvironmentVariable, FuseV1Options.EnableNodeCliInspectArguments, FuseV1Options.GrantFileProtocolExtraPrivileges]) if (wire[key] !== FuseState.DISABLE) throw new Error('Installed account fixture weakened an Electron fuse');
   for (const key of [FuseV1Options.EnableCookieEncryption, FuseV1Options.EnableEmbeddedAsarIntegrityValidation, FuseV1Options.OnlyLoadAppFromAsar]) if (wire[key] !== FuseState.ENABLE) throw new Error('Installed account fixture lacks an Electron fuse');
 }
-interface Package { artifact: string; executable: string; app?: string; manifest?: string; sparkleSignature?: string }
+interface Package { artifact: string; executable: string; app?: string; sparkleSignature?: string }
 export interface InstalledPackages { started: number; appId: string; root: string; profile: string; reports: string; product: string; installed: string; old: Package; next: Package; setNext(): Promise<void>; dispose(): Promise<void> }
 export async function createInstalledFixtureRoot(parent = tmpdir()): Promise<string> {
-  // Native packaging rejects aliased program trees. macOS /var and Windows
-  // short TEMP names must resolve before identity, profile and cleanup paths.
+  // Resolve macOS /var and Windows short TEMP aliases before fixture cleanup.
   return realpath(await mkdtemp(join(parent, 'dilla-account-installed-')));
 }
 
@@ -131,7 +122,7 @@ export async function createInstalledPackages(instance: string): Promise<Install
   sandboxConfig.publicKeys = [sandboxKeys.publicKey.export({type:'spki',format:'der'}).subarray(-32).toString('base64')];
   const sandboxConfigPath = join(root,'fixture-sandbox-config.json'); await writeFile(sandboxConfigPath,JSON.stringify(sandboxConfig));
   const sparklePublicKey = sparkleKeys.publicKey.export({ type: 'spki', format: 'der' }).subarray(-32).toString('base64');
-  let server: Server | undefined, metadata: Buffer, signature = '', current: Package | undefined, archive: Buffer | undefined, feed = '';
+  let server: Server | undefined, metadata: Buffer, signature = '', archive: Buffer | undefined, feed = '';
   let fixtureSidecars = new Map<string,Buffer>();
   const log = await open(join(root, 'package.log'), 'a');
   try {
@@ -143,7 +134,6 @@ export async function createInstalledPackages(instance: string): Promise<Install
       else if (request.url?.startsWith('/sandbox-fixture/')) { const data=fixtureSidecars.get(request.url.slice('/sandbox-fixture/'.length)); if (!data) {response.writeHead(404);response.end();} else {response.setHeader('content-length',data.length);response.end(data);} }
       else if (request.url === '/artifact' || request.url === '/DillaUpdateAcceptance.zip') response.end(archive);
       else if (request.url === '/appcast.xml') { response.setHeader('content-type', 'application/xml'); response.end(feed); }
-      else if (request.url === '/manifest' && current?.manifest) void readFile(current.manifest).then(bytes => response.end(bytes), () => { response.writeHead(500); response.end(); });
       else { response.writeHead(404); response.end(); }
     });
     await new Promise<void>((done, fail) => { server!.once('error', fail); server!.listen(process.platform === 'darwin' ? 18849 : 0, '127.0.0.1', done); });
@@ -166,23 +156,21 @@ export async function createInstalledPackages(instance: string): Promise<Install
           if (feeds?.length !== 1) throw new Error('Installed account fixture feed boundary changed');
           let source = replaceBoundary(sourceUpdater, feeds[0], `const feed=${JSON.stringify(origin + '/release.json')};`);
           source = replaceBoundary(source, 'url: new URL(this.artifact.url)', `url: new URL(${JSON.stringify(origin + '/artifact')})`);
-          source = replaceBoundary(source, 'boundedFetch(target.programManifest.url,1048576)', `boundedFetch(${JSON.stringify(origin + '/manifest')},1048576)`);
           source = replaceBoundary(source, 'await sparkle.prepare(release, target);', `await sparkle.prepare(release, { ...target, url: ${JSON.stringify(origin + '/DillaUpdateAcceptance.zip')} });`);
           return { contents: source, loader: 'ts', resolveDir: join(desktop, 'src') };
         });
-        plugin.onLoad({ filter: /[\\/]src[\\/]windows-installation\.ts$/ }, async args => ({ contents: fixtureWindowsInstallationSource(await readFile(args.path, 'utf8'), appId), loader: 'ts', resolveDir: join(desktop, 'src') }));
       } }] });
       const base: Record<string, unknown> = { appId, productName: product, executableName: 'dilla-desktop', toolsets: require(join(desktop, 'electron-builder.cjs')).toolsets, electronVersion: '45.2.1', electronDist: join(repository, 'node_modules/electron/dist'), directories: { output: out }, files: ['dist/**', 'package.json'], asar: true, afterPack: join(desktop, 'scripts/linux-appimage-launcher.cjs'), artifactBuildStarted: join(desktop, 'scripts/linux-appimage-artifact.cjs'), appImage: { executableArgs: [] },
         protocols: [{ name: 'CI-owned Dilla account fixture', schemes: [scheme] }], publish: { provider: 'generic', url: origin }, artifactName: `account-${version}.\${ext}`, electronFuses: INSTALLED_FUSES,
         linux: { ...fixtureLinuxDesktopOptions(), target: 'AppImage', category: 'Network', icon: join(desktop, 'assets/icon.png') }, win: { target: 'nsis', icon: join(desktop, 'assets/icon.png') },
-        nsis: { script: join(desktop, 'build/windows-installer.nsi'), perMachine: false, oneClick: true, allowElevation: false, packElevateHelper: false, preCompressedFileExtensions: [], differentialPackage: false, deleteAppDataOnUninstall: false } };
+        nsis: { perMachine: false, oneClick: true, allowElevation: false, packElevateHelper: false, preCompressedFileExtensions: [], differentialPackage: false, deleteAppDataOnUninstall: false } };
       if (process.platform === 'darwin') Object.assign(base, { extraResources: [{ from: join(desktop, 'acceptance-bin/dilla-sparkle.node'), to: 'native/dilla-sparkle.node' }], mac: { target: 'dir', identity: '-', notarize: false,
         extraFiles: [{ from: join(desktop, 'native-bin/Sparkle.framework'), to: 'Frameworks/Sparkle.framework' }], extendInfo: { CFBundleVersion: version, SUFeedURL: origin + '/appcast.xml', SUPublicEDKey: sparklePublicKey, SURequireSignedFeed: true, SUVerifyUpdateBeforeExtraction: true, SUEnableAutomaticChecks: false, SUAutomaticallyUpdate: false, SUEnableInstallerLauncherService: true, SUEnableDownloaderService: false, NSAppTransportSecurity: { NSAllowsLocalNetworking: true } } } });
       const config = join(project, 'builder.cjs');
-      await writeFile(config, `const hooks=require(${JSON.stringify(join(desktop, 'scripts/windows-builder-hooks.cjs'))}).createWindowsBuilderHooks({metadataPublicKeys:${JSON.stringify([publicKey])}});const linux=require(${JSON.stringify(join(desktop, 'scripts/linux-appimage-launcher.cjs'))}).createLinuxAppImageHooks({configuration:${JSON.stringify(sandboxConfigPath)}});module.exports={...${JSON.stringify(base)},afterPack:linux.afterPack,afterSign:hooks.afterSign,artifactBuildStarted:async event=>{await linux.artifactBuildStarted(event);await hooks.artifactBuildStarted(event);}};`);
+      await writeFile(config, `const linux=require(${JSON.stringify(join(desktop, 'scripts/linux-appimage-launcher.cjs'))}).createLinuxAppImageHooks({configuration:${JSON.stringify(sandboxConfigPath)}});module.exports={...${JSON.stringify(base)},afterPack:linux.afterPack,artifactBuildStarted:linux.artifactBuildStarted};`);
       execFileSync(process.execPath, [join(repository, 'node_modules/electron-builder/cli.js'), '--projectDir', project, '--config', config, process.platform === 'linux' ? '--linux' : process.platform === 'win32' ? '--win' : '--mac', '--' + process.arch, ...(process.platform === 'darwin' ? ['--dir'] : []), '--publish', 'never'], { cwd: repository, stdio: ['ignore', log.fd, log.fd], env: { ...process.env, CSC_FOR_PULL_REQUEST: 'true' } });
       if (process.platform === 'linux') { const executable = join(out, 'linux-unpacked/dilla-desktop'); await assertInstalledFuses(executable); return { artifact: join(out, `account-${version}.AppImage`), executable }; }
-      if (process.platform === 'win32') { const versions = join(out, 'win-unpacked/versions'), directories = await readdir(versions); if (directories.length !== 1) throw new Error('Expected one finalized Windows program'); const executable = join(versions, directories[0], 'dilla-desktop.exe'); await assertInstalledFuses(executable); return { artifact: join(out, `account-${version}.exe`), executable, manifest: join(out, `dilla-${version}-win-x64.manifest.json`) }; }
+      if (process.platform === 'win32') { const executable = join(out, 'win-unpacked/dilla-desktop.exe'); await assertInstalledFuses(executable); return { artifact: join(out, `account-${version}.exe`), executable }; }
       const app = join(out, process.arch === 'arm64' ? 'mac-arm64' : 'mac', String(base.executableName) + '.app'), bins = await readdir(join(app, 'Contents/MacOS')); if (bins.length !== 1) throw new Error('Expected one macOS runtime');
       const executable = join(app, 'Contents/MacOS', bins[0]); await assertInstalledFuses(executable); execFileSync('codesign', ['--verify', '--deep', '--strict', app], { stdio: ['ignore', log.fd, log.fd] });
       const artifact = join(out, 'DillaUpdateAcceptance.zip'); execFileSync('ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', app, artifact]); return { artifact, executable, app, sparkleSignature: sign(null, await readFile(artifact), sparkleKeys.privateKey).toString('base64') };
@@ -191,11 +179,10 @@ export async function createInstalledPackages(instance: string): Promise<Install
     // Hosted disposable setup uses the same capsule and public trust as both real apps.
     if (process.platform === 'linux' && process.env.GITHUB_ACTIONS === 'true') await provisionInstalledSandbox({ image: old.artifact, configurationFile: sandboxConfigPath });
     const setRelease = async (value: Package, version: string) => {
-      current = value; archive = await readFile(value.artifact); const now = Date.now(), extension = process.platform === 'linux' ? 'AppImage' : process.platform === 'win32' ? 'exe' : 'zip';
+      archive = await readFile(value.artifact); const now = Date.now(), extension = process.platform === 'linux' ? 'AppImage' : process.platform === 'win32' ? 'exe' : 'zip';
       const sandbox = process.platform === 'linux' ? await fixtureSandboxFeed(value.artifact,version,sandboxKeys,sandboxConfig,now) : null;
       if (sandbox) {const stem=value.artifact.slice(0,-'.AppImage'.length),base=`dilla-${version}-linux-x64.sandbox`; fixtureSidecars=new Map([[base,await readFile(stem+'.sandbox')],[base+'.json',await readFile(stem+'.sandbox.json')],[base+'.sig',sandbox.signature]]);}
       const artifact: Artifact = { platform: process.platform, arch: process.arch, url: `https://github.com/jonasthim/dilla/releases/download/desktop-v${version}/${process.platform === 'linux' ? `dilla-${version}-linux-x64` : `account-${version}`}.${extension}`, ...(sandbox ? {linuxSandbox:sandbox.linuxSandbox} : {}), size: archive.length, sha512: hash(archive), ...(value.sparkleSignature ? { sparkleSignature: value.sparkleSignature } : {}) };
-      if (value.manifest) { const bytes = await readFile(value.manifest); artifact.programManifest = { url: `https://github.com/jonasthim/dilla/releases/download/desktop-v${version}/dilla-${version}-win-x64.manifest.json`, size: bytes.length, sha512: hash(bytes) }; }
       const release: Release = { format: 1, ...(sandbox ? {assets:sandbox.assets} : {}), version, channel: 'stable', publishedAt: new Date(now - 1000).toISOString(), expiresAt: new Date(now + 3600000).toISOString(), artifacts: [artifact] };
       metadata = Buffer.from(JSON.stringify(release)); signature = sign(null, metadata, keys.privateKey).toString('base64');
       verifyRelease(metadata,signature,{publicKeys:[publicKey],channel:'stable',platform:process.platform,arch:process.arch,currentVersion:'0.0.0',now});
@@ -204,10 +191,10 @@ export async function createInstalledPackages(instance: string): Promise<Install
     await setRelease(old, '1.0.0');
     let installed: string;
     if (process.platform === 'linux') { await mkdir(join(root, 'Applications')); installed = join(root, 'Applications/Dilla.AppImage'); await cp(old.artifact, installed); await chmod(installed, 0o700); }
-    else if (process.platform === 'win32') { execFileSync(old.artifact, ['/S'], { timeout: 120000, stdio: ['ignore', log.fd, log.fd] }); installed = join(process.env.LOCALAPPDATA!, 'Programs', product, 'Dilla.exe'); }
+    else if (process.platform === 'win32') { execFileSync(old.artifact, ['/S', '/D=' + join(root, 'installed')], { timeout: 120000, stdio: ['ignore', log.fd, log.fd] }); installed = join(root, 'installed/dilla-desktop.exe'); }
     else { await mkdir(join(root, 'Applications')); const app = join(root, 'Applications', product + '.app'); execFileSync('ditto', [old.app!, app]); installed = join(app, 'Contents/MacOS', (await readdir(join(app, 'Contents/MacOS')))[0]); }
     return { started, appId, root, profile, reports, product, installed, old, next, setNext: () => setRelease(next, '1.0.1'), dispose: async () => {
-      if (process.platform === 'win32') { try { execFileSync(join(process.env.LOCALAPPDATA!, 'Programs', product, 'Uninstall ' + product + '.exe'), ['/S'], { timeout: 120000, stdio: ['ignore', log.fd, log.fd] }); } catch { /* Keep diagnostic files when a safe uninstall refuses. */ } }
+      if (process.platform === 'win32') { try { execFileSync(join(root, 'installed/Uninstall dilla-desktop.exe'), ['/S'], { timeout: 120000, stdio: ['ignore', log.fd, log.fd] }); } catch { /* Keep diagnostic files when a safe uninstall refuses. */ } }
       await new Promise<void>(done => server!.close(() => done())); await log.close();
       if (!process.env.DILLA_KEEP_ACCOUNT_FIXTURE) { await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); if (process.platform === 'win32') await rm(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
     } };

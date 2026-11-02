@@ -11,7 +11,6 @@ import { createServer } from 'node:net';
 import { installedAccountDiagnostics } from '../web/support/installed-diagnostics.ts';
 import { fixtureMainSource, INSTALLED_FUSES } from '../web/support/installed-packages.ts';
 import * as fixtures from '../web/support/installed-packages.ts';
-import { finalizeWindowsProgram } from '../../packages/desktop/scripts/windows-package.mjs';
 
 test('installed failure diagnostics retain actual process, update, bundle and endpoint facts without private data', async () => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'dilla-account-diagnostic-'))), reports = join(root, 'reports'), profile = join(root, 'profile');
@@ -86,31 +85,15 @@ test('macOS account fixture locates the exact bundle produced by its declared ex
   }
 });
 
-test('installed account packaging resolves temporary aliases before strict Windows tree validation', async () => {
+test('installed account packaging resolves temporary aliases before fixture cleanup', async () => {
   const parent = await realpath(await mkdtemp(join(tmpdir(), 'dilla-account-path-')));
   try {
     const physical = join(parent, 'physical'), alias = join(parent, 'alias'); await mkdir(physical);
     await symlink(physical, alias, process.platform === 'win32' ? 'junction' : 'dir');
-    const root = await fixtures.createInstalledFixtureRoot(alias), outDir = join(root, 'out'), appOutDir = join(outDir, 'win-unpacked');
-    await mkdir(join(appOutDir, 'resources'), { recursive: true });
-    await writeFile(join(appOutDir, 'dilla-desktop.exe'), 'portable packaging fixture'); await writeFile(join(appOutDir, 'resources/app.asar'), 'portable ASAR fixture');
-    // Exercise the actual packaging/tree-validation boundary. This portable
-    // compiler stand-in makes no claim about native Windows execution.
-    const publicKey = generateKeyPairSync('ed25519').publicKey.export({ type: 'spki', format: 'pem' }).toString();
-    await finalizeWindowsProgram({ appOutDir, outDir, version: '1.0.0', arch: 'x64', productName: 'DillaAccountAcceptanceFixture', appId: 'dev.dilla.desktop.account-acceptance.fixture', publicKeys: [publicKey],
-      compileLauncher: async ({ file }) => { await writeFile(file, 'portable launcher fixture'); } });
+    const root = await fixtures.createInstalledFixtureRoot(alias);
     assert.equal(root, await realpath(root));
-    assert.ok(root.startsWith(physical + sep), 'fixture identity and cleanup must use its physical root');
+    assert.ok(root.startsWith(physical + sep));
   } finally { await rm(parent, { recursive: true, force: true }); }
-});
-
-test('Windows account fixture replaces both actual compiled identity boundaries and rejects missing boundaries', async () => {
-  const source = await readFile(new URL('../../packages/desktop/src/windows-installation.ts', import.meta.url), 'utf8');
-  const identity = 'dev.dilla.desktop.account-acceptance.fixture';
-  const compiled = fixtures.fixtureWindowsInstallationSource(source, identity);
-  assert.equal((compiled.match(/description\.appId\s*!==\s*"dev\.dilla\.desktop\.account-acceptance\.fixture"/g) ?? []).length, 2);
-  assert.doesNotMatch(compiled, /description\.appId\s*!==\s*'dev\.dilla\.desktop'/);
-  assert.throws(() => fixtures.fixtureWindowsInstallationSource(source.replaceAll('description.appId', 'description.changed'), identity), /identity boundary/);
 });
 
 test('installed account automation retains production fuses and cannot enable Node inspection', async () => {
@@ -120,7 +103,7 @@ test('installed account automation retains production fuses and cannot enable No
   const input = await readFile(new URL('../../packages/desktop/src/main.ts', import.meta.url), 'utf8');
   const compiled = fixtureMainSource(input, { product: 'DillaAccountFixture', profile: '/private/fixture-profile', reports: '/private/reports', scheme: 'dilla-account-fixture', version: '1.0.0' });
   assert.match(compiled, /remote-debugging-port/);
-  assert.match(compiled, /--update-watchdog/);
+  assert.doesNotMatch(compiled, /--update-watchdog|--update-bootstrap/);
   assert.match(compiled, /const allowLoopback = true/);
   assert.doesNotMatch(compiled, /devTools:\s*true|--inspect|no-sandbox|nodeIntegration:\s*true/);
   assert.throws(() => fixtureMainSource(input.replace('const updater =', 'const renamed ='), { product: 'DillaAccountFixture', profile: '/private/fixture-profile', reports: '/private/reports', scheme: 'dilla-account-fixture', version: '1.0.0' }), /boundary/);

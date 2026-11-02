@@ -53,7 +53,7 @@ await mkdir(directory, { recursive: true });
 const records = publicReleaseRecords(channel);
 await stagePublicReleaseRecords({ candidate, directory, channel, version });
 await verifyDesktopBundle({ metadata, signature, trust, directory, run, jobs, version });
-console.log('Verified accepted native/client CI, native build provenance, installed-account proofs, review, performance reports, installer/update hashes and the Windows program manifest.');
+console.log('Verified accepted native/client CI, native build provenance, installed-account proofs, review, performance reports, installer/update hashes and Linux sandbox signatures.');
 if (mode === 'verify') process.exit(0);
 
 async function findRelease(tag) { return api(`/repos/${repository}/releases/tags/${encodeURIComponent(tag)}`, {}, true); }
