@@ -136,31 +136,68 @@ for (const crlf of [false, true]) {
   try { for (const kind of cases) await compileProbe(root, kind, crlf); }
   finally { await rm(root, { recursive: true, force: true }); }
  });
- for (const kind of cases) test(`native shipping pin ${kind}, ${crlf ? 'CRLF' : 'LF'}`, { skip: process.platform !== 'win32', timeout: 60000 }, async () => {
+}
+
+async function nativeProbe(kind: Case, crlf: boolean): Promise<void> {
+  const started = performance.now();
+  // Fixed case/phase labels and elapsed time only: no paths, native errors,
+  // command lines or ACL contents enter these first-failure diagnostics.
+  const phase = (name: string) => console.log(`WINDOWS_PIN_PROBE ${kind} ${crlf ? 'CRLF' : 'LF'} ${name} ${Math.round(performance.now() - started)}ms`);
+  phase('setup-start');
   const root = await realpath(await mkdtemp(join(tmpdir(), 'dilla-pin-native-'))), target = join(root, 'ancestor'), moved = join(root, 'renamed');
   try {
    await mkdir(join(target, 'child'), { recursive: true }); await writeFile(join(target, 'child', 'identity.txt'), 'original');
+   phase('compile-start');
    const executable = await compileProbe(root, kind, crlf);
-   if (kind === 'traverse-only') setListDenied(target, true);
+   phase('compile-end');
+   if (kind === 'traverse-only') { phase('deny-list-start'); setListDenied(target, true); phase('deny-list-end'); }
+   phase('native-start');
    const child = spawnSync(executable, ['/S'], { windowsHide: true, timeout: 15000, encoding: 'utf8', maxBuffer: 4096 });
+   phase('native-end');
    assert.ifError(child.error);
+   phase('report-read-start');
    const result = await readFile(join(root, 'result.txt'), 'utf8');
+   phase('report-read-end');
+   phase('assertions-start');
    if (kind === 'delete-open') {
     assert.equal(child.status, 2, result);
     assert.equal(result, 'pin:32', 'the actual pin must refuse the already-open DELETE handle with ERROR_SHARING_VIOLATION');
     // Its owning process has exited; the otherwise identical pin and rename
     // must now succeed, proving the conflict was the preexisting DELETE handle.
-    const retry = spawnSync(await compileProbe(root, 'ancestor', crlf), ['/S'], { windowsHide: true, timeout: 15000, encoding: 'utf8', maxBuffer: 4096 });
+    phase('retry-compile-start');
+    const retryExecutable = await compileProbe(root, 'ancestor', crlf);
+    phase('retry-native-start');
+    const retry = spawnSync(retryExecutable, ['/S'], { windowsHide: true, timeout: 15000, encoding: 'utf8', maxBuffer: 4096 });
+    phase('retry-native-end');
     assert.ifError(retry.error); assert.equal(retry.status, 0, await readFile(join(root, 'result.txt'), 'utf8'));
    } else { assert.equal(child.status, 0, result); assert.equal(result, 'complete:0'); }
+   phase('identity-read-start');
    assert.equal(await readFile(join(moved, 'child', 'identity.txt'), 'utf8'), 'original');
+   phase('identity-read-end');
+   phase('old-path-check-start');
    await assert.rejects(realpath(target), { code: 'ENOENT' });
+   phase('assertions-end');
   } finally {
-   if (kind === 'traverse-only') for (const path of [target, moved]) {
-    try { await realpath(path); setListDenied(path, false); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+   if (kind === 'traverse-only') for (const [name, path] of [['original', target], ['renamed', moved]]) {
+    try {
+     phase(`restore-${name}-realpath-start`); await realpath(path); phase(`restore-${name}-realpath-end`);
+     phase(`restore-${name}-acl-start`); setListDenied(path, false); phase(`restore-${name}-acl-end`);
+    } catch (error) {
+     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+     phase(`restore-${name}-missing`);
+    }
    }
+   phase('remove-start');
    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+   phase('remove-end');
   }
- });
 }
+
+test('native shipping directory pins retain all six LF/CRLF contracts', { skip: process.platform !== 'win32', timeout: 60000 }, async context => {
+ // A failure stops the matrix. Timeout cancellation also prevents an eventual
+ // completion of the current case from starting another expensive native probe.
+ for (const crlf of [false, true]) for (const kind of cases) {
+  context.signal.throwIfAborted();
+  await nativeProbe(kind, crlf);
+ }
+});

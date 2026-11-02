@@ -1,6 +1,6 @@
 import { chromium, expect, type Browser, type BrowserContext, type Page } from '@playwright/test';
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
-import { readFile, rm } from 'node:fs/promises';
+import { readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { DesktopBridge } from '../../../packages/desktop/src/contract.ts';
 import { canonicalInstance } from '../../../packages/desktop/src/policy.ts';
@@ -128,7 +128,12 @@ export const test = appTest.extend<{ installed: InstalledAccountApp }>({
             const snapshot = await Promise.race([installed.failureDiagnostics(), new Promise(resolve => {
               timer = setTimeout(() => resolve({ format: 1, status: 'unavailable' }), 2000);
             })]);
-            await info.attach('Installed startup diagnostics', { body: JSON.stringify(snapshot), contentType: 'application/json' });
+            const diagnostic = JSON.stringify(snapshot), file = info.outputPath('installed-startup-diagnostics.json');
+            // Keep the bounded, sanitized snapshot in job logs even if immediate
+            // first-failure cancellation interrupts subsequent artifact uploads.
+            console.log('INSTALLED_STARTUP_DIAGNOSTICS ' + diagnostic);
+            await writeFile(file, diagnostic, { mode: 0o600 });
+            await info.attach('Installed startup diagnostics', { path: file, contentType: 'application/json' });
           } catch { /* Optional diagnostics never replace the original test failure. */ }
           finally { clearTimeout(timer); }
         }

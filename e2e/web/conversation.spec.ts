@@ -2,6 +2,7 @@ import { desktopE2E } from './support/electron.ts';
 import { saveDownload } from './support/download';
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { rm, writeFile } from 'node:fs/promises';
 import { expect, type Page } from '@playwright/test';
 import {
   CLASS, HEX32, TEST_TIMEOUT, WAIT, attachInput, channelRow, composerBox, copy, deleteDialog, drawImage, editorBox,
@@ -320,38 +321,46 @@ test('images and files go both ways', async ({ page, peer, instanceName }) => {
   await expect.poll(() => peer.blobStatus(mapSent.blob_id), { timeout: WAIT }).toBe(404);
 });
 
-test('a 25 MB file goes through and one byte more is refused', async ({ page, context, peer, instanceName }) => {
+test('a 25 MB file goes through and one byte more is refused', async ({ page, context, peer, instanceName }, testInfo) => {
   const puts: string[] = [];
   context.on('request', (r) => {
     if (r.method() === 'PUT' && BLOB_PUT.test(new URL(r.url()).pathname)) puts.push(r.url());
   });
   const { channel } = await enter(page, peer, instanceName);
 
-  const big = randomBytes(26_214_400);
-  await attachInput(page).setInputFiles({ name: 'big.bin', mimeType: 'application/octet-stream', buffer: big });
-  await expect(trayEntries(page)).toHaveCount(1, { timeout: WAIT });
-  await expect(trayEntries(page).first()).toHaveAttribute('data-phase', 'ready', { timeout: WAIT });
-  expect(puts).toHaveLength(1);
-  const text = `big ${tag()}`;
-  await composerBox(page, channel).fill(text);
-  await composerBox(page, channel).press('Enter');
-  await expect(messageRow(page, channel, text)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
-  const got = await peer.waitForRow((m) => m.body === text && m.attachments.length === 1, 'the 25 MB file');
-  expect(got.attachments[0].size).toBe(26_214_400);
-  const fetched = await peer.fetchAttachment(got.seq, 0);
-  expect(fetched.sha256).toBe(sha256Hex(big));
-  expect(fetched.size).toBe(26_214_400);
+  const bigPath = testInfo.outputPath('big.bin'), overPath = testInfo.outputPath('over.bin');
+  // Select real files without serializing 25 MiB through the renderer's CDP utility world.
+  try {
+    const big = randomBytes(26_214_400);
+    await writeFile(bigPath, big);
+    await writeFile(overPath, Buffer.alloc(26_214_401, 7));
+    await attachInput(page).setInputFiles(bigPath);
+    await expect(trayEntries(page)).toHaveCount(1, { timeout: WAIT });
+    await expect(trayEntries(page).first()).toHaveAttribute('data-phase', 'ready', { timeout: WAIT });
+    expect(puts).toHaveLength(1);
+    const text = `big ${tag()}`;
+    await composerBox(page, channel).fill(text);
+    await composerBox(page, channel).press('Enter');
+    await expect(messageRow(page, channel, text)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
+    const got = await peer.waitForRow((m) => m.body === text && m.attachments.length === 1, 'the 25 MB file');
+    expect(got.attachments[0].size).toBe(26_214_400);
+    const fetched = await peer.fetchAttachment(got.seq, 0);
+    expect(fetched.sha256).toBe(sha256Hex(big));
+    expect(fetched.size).toBe(26_214_400);
 
-  await attachInput(page).setInputFiles({ name: 'over.bin', mimeType: 'application/octet-stream', buffer: Buffer.alloc(26_214_401, 7) });
-  await expect(page.getByRole('alert').filter({ hasText: copy('shell.tray.tooLarge', { name: 'over.bin' }) })).toBeVisible({ timeout: WAIT });
-  await expect(trayEntries(page)).toHaveCount(0);
+    await attachInput(page).setInputFiles(overPath);
+    await expect(page.getByRole('alert').filter({ hasText: copy('shell.tray.tooLarge', { name: 'over.bin' }) })).toBeVisible({ timeout: WAIT });
+    await expect(trayEntries(page)).toHaveCount(0);
 
-  // The positive control: the next upload is seen, so the refused one made no request.
-  await attachInput(page).setInputFiles({ name: 'small.bin', mimeType: 'application/octet-stream', buffer: Buffer.from('ten bytes!') });
-  await expect(trayEntries(page).first()).toHaveAttribute('data-phase', 'ready', { timeout: WAIT });
-  expect(puts).toHaveLength(2);
-  await trayEntries(page).first().getByRole('button', { name: copy('shell.tray.remove', { name: 'small.bin' }), exact: true }).click();
-  await expect(trayEntries(page)).toHaveCount(0, { timeout: WAIT });
+    // The positive control: the next upload is seen, so the refused one made no request.
+    await attachInput(page).setInputFiles({ name: 'small.bin', mimeType: 'application/octet-stream', buffer: Buffer.from('ten bytes!') });
+    await expect(trayEntries(page).first()).toHaveAttribute('data-phase', 'ready', { timeout: WAIT });
+    expect(puts).toHaveLength(2);
+    await trayEntries(page).first().getByRole('button', { name: copy('shell.tray.remove', { name: 'small.bin' }), exact: true }).click();
+    await expect(trayEntries(page)).toHaveCount(0, { timeout: WAIT });
+  } finally {
+    await Promise.all([rm(bigPath, { force: true }), rm(overPath, { force: true })]);
+  }
 });
 
 test('B sees what A makes', async ({ page, peer, second, instanceName }) => {
