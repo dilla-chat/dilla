@@ -4,12 +4,13 @@ import { readFile, writeFile, mkdir, symlink, mkdtemp, rm, realpath } from 'node
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, execFileSync } from 'node:child_process';
+import { createHash, generateKeyPairSync } from 'node:crypto';
 // @ts-expect-error test tooling is JavaScript
-import { compileWindowsNSIS, withInitialInstallDiagnostics, withInitialRetryNativeDiagnostic } from './support/windows-nsis.mjs';
+import { compileWindowsNSIS, withInitialInstallDiagnostics, withInitialRetryNativeDiagnostic, initialRetryNativeDiagnostic } from './support/windows-nsis.mjs';
 const require = createRequire(import.meta.url);
 const sourcePath = new URL('../build/windows-installer.nsi', import.meta.url);
-function body(source: string, name: string): string { const match = new RegExp(`Function ${name}\\r?\\n([\\s\\S]*?)FunctionEnd`).exec(source); assert.ok(match, `missing ${name}`); return match[1]; }
+function body(source: string, name: string): string { const match = new RegExp(`Function ${name}\\r?\\n([\\s\\S]*?)FunctionEnd`).exec(source); assert.ok(match, `missing ${name}`); return match[1].replaceAll('\r\n', '\n'); }
 async function compileCheckPathProbe(directory: string, target: string, name: string): Promise<string> {
  const original = await readFile(sourcePath, 'utf8'), check = body(original.replaceAll('${Prefix}', ''), 'CheckPath');
  const { nsisEscapeString } = require('app-builder-lib/out/targets/nsis/nsisScriptGenerator');
@@ -184,6 +185,153 @@ function contract(source: string) {
  assert.doesNotMatch(source, /RMDir \/r "\$(?:APPDATA|DataRoot)|DeleteRegKey[^\n]+Software\\Dilla/);
  assert.match(source, /StrCpy \$INSTDIR "\$LOCALAPPDATA\\Programs\\\$\{PRODUCT_NAME\}"/);
 }
+test('installer creates a new protected payload before extraction and retains non-delete-sharing ancestor pins', async () => {
+ const source = await readFile(sourcePath, 'utf8'), privateSource = source.replaceAll('${Prefix}', ''), extract = body(source, 'ExtractPayload'), prepare = body(privateSource, 'PreparePrivatePayload');
+ assert.ok(extract.indexOf('Call PreparePrivatePayload') >= 0 && extract.indexOf('Call PreparePrivatePayload') < extract.indexOf('SetOutPath'));
+ assert.match(extract, /File \/oname=\$PLUGINSDIR\\payload\\payload\.7z/);
+ assert.match(extract, /Delete "\$PLUGINSDIR\\payload\\payload\.7z"/);
+ assert.match(prepare, /GetTokenInformation/); assert.match(prepare, /O:\$PayloadUserSID[\s\S]*D:P.*OICI;FA/);
+ assert.match(prepare, /NtCreateFile[^\n]+i 0x1200A0[^\n]+i 3, i 2, i 0x200021/); assert.match(prepare, /StrCmp \$1 2 0 Fail ; FILE_CREATED/);
+ assert.doesNotMatch(prepare, /CreateDirectoryW|SetNamedSecurityInfo|SetFileSecurity|SetSecurityInfo/);
+ assert.match(prepare, /GetDriveTypeW/); assert.match(prepare, /StrCmp \$R1 \$R3 normalize_root/); assert.match(prepare, /normalize_root:\r?\n\s+StrCpy \$R0 \$PayloadDriveRoot/);
+ assert.match(body(privateSource, 'PinPayloadDirectory'), /CreateFileW[^\n]+i 0x200A0, i 3[^\n]+0x02200000/);
+ assert.match(body(privateSource, 'PinPayloadDirectory'), /GetFileInformationByHandle/);
+ assert.match(prepare, /Call VerifyPrivatePayload/);
+ assert.match(body(privateSource, 'VerifyPrivatePayload'), /EqualSid/);
+ assert.match(body(privateSource, 'VerifyPrivatePayload'), /GetSecurityDescriptorControl/);
+ assert.match(body(privateSource, 'VerifyPrivatePayload'), /ConvertSecurityDescriptorToStringSecurityDescriptorW/);
+ assert.match(body(privateSource, 'RequireEmptyPayload'), /FindFirstFileW[^\n]+\?e/);
+ assert.match(body(privateSource, 'RequireEmptyPayload'), /FindNextFileW[^\n]+\?e/);
+ assert.match(body(source, 'Fail'), /Call ReleasePrivatePayload/);
+ assert.match(body(source, '.onGUIEnd'), /Call ReleasePrivatePayload/);
+});
+test('private payload fault boundaries survive actual LF and CRLF NSIS checkouts', async () => {
+ const source = (await readFile(sourcePath, 'utf8')).replaceAll('\r\n', '\n');
+ const boundaries = ['  Push "$PLUGINSDIR\\payload"\n  Call PinPayloadDirectory\n  ; The atomic handle', '  Call FreePayloadSecurity\n  StrCmp $PayloadCleanupFailed 0 +2\n    Goto Fail\n  Return'];
+ for (const input of [source, source.replaceAll('\n', '\r\n')]) {
+  const prepare = body(input.replaceAll('${Prefix}', ''), 'PreparePrivatePayload');
+  for (const boundary of boundaries) assert.equal(prepare.split(boundary).length, 2, 'each actual creation/retained fault boundary must match exactly once');
+  assert.equal(prepare.includes('\r'), false, 'extracted fixture functions use normalized newlines');
+ }
+});
+test('native private NSIS payload passes unchanged Go ACL guards and refuses unsafe or preexisting namespaces', { skip: process.platform !== 'win32', timeout: 120000 }, async () => {
+ const root = await realpath(await mkdtemp(join(tmpdir(), 'dilla-private-payload-')));
+ try {
+  const hash = (raw: Uint8Array) => createHash('sha512').update(raw).digest('base64'), source = await readFile(sourcePath, 'utf8');
+  const runtime = Buffer.from('program'), manifest = Buffer.from(JSON.stringify({ format: 1, kind: 'dilla-desktop-program', version: '1.2.3', channel: 'stable', platform: 'win32', arch: 'x64', files: [{ path: 'dilla-desktop.exe', size: runtime.length, sha512: hash(runtime) }] }));
+  const digest = hash(manifest), hex = Buffer.from(digest, 'base64').toString('hex'), id = 'v-' + hex.slice(0, 32), payload = join(root, 'archive-source');
+  await mkdir(join(payload, 'versions', id), { recursive: true }); await mkdir(join(payload, 'manifests'));
+  await writeFile(join(payload, 'versions', id, 'dilla-desktop.exe'), runtime); await writeFile(join(payload, 'manifests', hex + '.json'), manifest);
+  const archive = join(root, 'payload.7z'); await require('app-builder-lib/out/targets/archive').archive('7z', archive, payload, { withoutDir: true, compression: 'normal', installTimeDecodable: true });
+  const binary = join(root, 'private-acl.test.exe'); execFileSync('go', ['test', '-c', '-o', binary, './packages/desktop/native/windows-launcher'], { cwd: join(import.meta.dirname, '../../..'), env: { ...process.env, CGO_ENABLED: '0' }, stdio: 'pipe', timeout: 60000 });
+  const config = { format: 1, appId: 'dev.dilla.privatepayload.fixture', productName: 'DillaPrivatePayloadFixture', channel: 'stable', arch: 'x64', initialVersion: '1.2.3', initialManifestSha512: digest, publicKeys: [generateKeyPairSync('ed25519').publicKey.export({ type: 'spki', format: 'pem' }).toString()] };
+  const request = join(root, 'request.json'), report = join(root, 'initial-retry-native.json'); await writeFile(request, JSON.stringify({ config, report }));
+  const other = join(root, 'other'), junction = join(root, 'junction'); await mkdir(other); await symlink(other, junction, 'junction');
+  const { nsisEscapeString } = require('app-builder-lib/out/targets/nsis/nsisScriptGenerator');
+  for (const kind of ['default', 'unsafe-acl', 'protected', 'preexisting', 'reparse', 'api-error', 'substituted-acl', 'retained-pin', 'substituted-nonempty', 'dangling-payload']) {
+   await rm(report, { force: true });
+   const substituted = join(root, kind + '-substituted');
+   const danglingTarget = join(root, 'must-remain-absent');
+   let functions = ['InitializePrivatePayload','PreparePrivatePayload','PinPayloadDirectory','VerifyPrivatePayload','RequireEmptyPayload','VerifyPayloadPluginOwner','FreePayloadSecurity','ReleasePrivatePayload','CheckPath','CheckTree','RequireUnlockedFile','ExtractPayload'].map(name => `Function ${name}\n${body(source.replaceAll('${Prefix}', ''), name)}\nFunctionEnd\n`).join('\n');
+   functions = functions.replace(/Function PinPayloadDirectory\r?\n  Exch \$0/, 'Function PinPayloadDirectory\n  Exch $0\n  StrCmp $0 $PayloadDriveRoot 0 +2\n    StrCpy $ProbeRootSeen 1');
+   const freeMacros = [...source.matchAll(/^!macro FreePayload(?:Local|Buffer) Variable\r?\n[\s\S]*?^!macroend/gm)].map(match => match[0]).join('\n');
+   if (kind === 'default') functions = functions.replace('  Call PreparePrivatePayload', '  Nop');
+   if (kind === 'unsafe-acl') functions = functions.replace('D:P(A;OICI;FA;', 'D:P(A;OICI;0x00130041;;;WD)(A;OICI;FA;');
+   if (kind === 'reparse') functions = functions.replaceAll('$PLUGINSDIR', nsisEscapeString(junction));
+   if (kind === 'api-error') functions = functions.replace(/System::Call 'ntdll::NtCreateFile[^\n]+/, 'StrCpy $1 -1');
+   if (kind.startsWith('substituted-') || kind === 'retained-pin') {
+    const atomicBoundary = '  Push "$PLUGINSDIR\\payload"\n  Call PinPayloadDirectory\n  ; The atomic handle';
+    const retainedBoundary = '  Call FreePayloadSecurity\n  StrCmp $PayloadCleanupFailed 0 +2\n    Goto Fail\n  Return';
+    const boundary = kind === 'retained-pin' ? retainedBoundary : atomicBoundary;
+    assert.equal(functions.split(boundary).length, 2, 'inject exactly at the actual creation or retained-pin boundary');
+    const marker = (outcome: 'entered' | 'renamed' | 'observed' = 'observed') => `  FileOpen $0 "${nsisEscapeString(substituted)}" w
+  IfErrors Fail
+  FileWrite $0 "${outcome}"
+  FileClose $0`;
+    const injection = kind === 'substituted-acl' || kind === 'retained-pin' ? `
+${kind === 'retained-pin' ? '  StrCmp $PayloadCreatedHandle 0 +2\n    Call Fail' : ''}
+${marker('entered')}
+  ClearErrors
+  Rename "$PLUGINSDIR\\payload" "$PLUGINSDIR\\original-payload"
+  IfErrors blocked
+  ; A successful rename is a security regression, even if a later check fails.
+${marker('renamed')}
+  Call Fail
+  blocked:
+${marker()}
+  Call Fail
+` : `
+  FileOpen $0 "$PLUGINSDIR\\payload\\substituted" w
+  IfErrors Fail
+  FileWrite $0 "unexpected content"
+  FileClose $0
+${marker()}
+`;
+    functions = functions.replace(boundary, kind === 'retained-pin' ? boundary.replace('  Return', injection + '  Return') : injection + boundary);
+   }
+   const globals = [...source.matchAll(/^Var Payload[^\r\n]+/gm)].map(match => match[0]).join('\n');
+   const executable = await compileWindowsNSIS({ directory: root, archive, name: kind + '.exe', transform: () => `
+Name "Private Dilla ACL probe"
+RequestExecutionLevel user
+SilentInstall silent
+!include "LogicLib.nsh"
+!include "FileFunc.nsh"
+!define DILLA_PROGRAM_ID "${id}"
+!define DILLA_MANIFEST_NAME "${hex}.json"
+!define /math DILLA_OBJECT_ATTRIBUTES_SIZE \${NSIS_PTR_SIZE} * 6
+${globals}
+Var ProbeRootSeen
+${freeMacros}
+Function .onInit
+ Call InitializePrivatePayload
+ StrCpy $ProbeRootSeen 0
+ InitPluginsDir
+FunctionEnd
+Function Fail
+ Call ReleasePrivatePayload
+ SetErrorLevel 2
+ Quit
+FunctionEnd
+${functions}
+Section
+ GetFunctionAddress $R9 PreparePrivatePayload
+ ${kind === 'preexisting' ? 'CreateDirectory "$PLUGINSDIR\\payload"' : 'Nop'}
+ ${kind === 'dangling-payload' ? `nsExec::ExecToStack /TIMEOUT=10000 '\"$SYSDIR\\cmd.exe\" /d /c mklink /J \"$PLUGINSDIR\\payload\" \"${nsisEscapeString(danglingTarget)}\"'
+ Pop $R0
+ Pop $R1
+ StrCmp $R0 0 +2
+  Call Fail
+ FileOpen $0 "${nsisEscapeString(substituted)}" w
+ IfErrors 0 +2
+  Call Fail
+ FileWrite $0 "observed"
+ FileClose $0` : 'Nop'}
+ Call ExtractPayload
+ ${kind === 'default' ? 'Nop' : 'StrCmp $ProbeRootSeen 1 +2\n  Call Fail'}
+ nsExec::ExecToStack /TIMEOUT=15000 '"${nsisEscapeString(binary)}" -test.run=TestInitialRetryNativeDiagnostic -test.count=1 -dilla-acl-only "-dilla-initial-payload=$PLUGINSDIR\\payload"'
+ Pop $R0
+ Pop $R1
+ StrCmp $R0 0 +2
+  Call Fail
+ Call ReleasePrivatePayload
+ SetErrorLevel 0
+SectionEnd
+` });
+   const child = spawnSync(executable, ['/S'], { encoding: 'utf8', timeout: 30000, windowsHide: true, env: { ...process.env, DILLA_INITIAL_RETRY_DIAGNOSTIC_REQUEST: request }, maxBuffer: 1024 });
+   if (['preexisting','reparse','api-error','substituted-acl','retained-pin','substituted-nonempty','dangling-payload'].includes(kind)) {
+    assert.equal(child.status, 2, kind + ' must fail before helper execution'); await assert.rejects(readFile(report), { code: 'ENOENT' });
+    if (kind.startsWith('substituted-') || kind === 'retained-pin') assert.equal(await readFile(substituted, 'utf8'), 'observed', 'the actual creation/retained handle blocked replacement, or the pinned-empty guard refused injected content');
+    if (kind === 'dangling-payload') { assert.equal(await readFile(substituted, 'utf8'), 'observed', 'the dangling final junction was created before the actual FILE_CREATE call'); await assert.rejects(realpath(danglingTarget), { code: 'ENOENT' }); }
+    continue;
+   }
+   assert.equal(child.status, 0, kind + ': bounded payload probe must complete');
+   const result = initialRetryNativeDiagnostic(JSON.parse(await readFile(report, 'utf8')));
+   if (kind === 'protected') assert.equal(result.stage, 'ready', 'real private descendants must pass unchanged Go ownership/DACL/file/tree guards');
+   else if (kind === 'unsafe-acl') assert.equal(result.reason, 'untrusted-acl', kind + ': unsafe inherited mutation rights remain rejected');
+   else assert.ok(result.stage === 'ready' || result.reason === 'untrusted-acl', 'observe the modern toolchain default without assuming its ACL policy');
+  }
+ } finally { await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
+});
 test('custom NSIS stages only inactive immutable program data and seeds the first slot before shell entry points', async () => contract(await readFile(sourcePath, 'utf8')));
 test('NSIS contract checks the same operations with Windows checkout line endings', async () => {
  const source = (await readFile(sourcePath, 'utf8')).replace(/\r\n/g, '\n');

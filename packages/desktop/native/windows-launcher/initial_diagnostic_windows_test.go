@@ -14,6 +14,7 @@ import (
 )
 
 var initialDiagnosticPayload = flag.String("dilla-initial-payload", "", "private acceptance payload")
+var initialDiagnosticACLOnly = flag.Bool("dilla-acl-only", false, "private acceptance ACL probe")
 
 // Invoked only in the compiled acceptance test binary, while the failing NSIS
 // still holds its actual extracted payload, passed by its fixed fixture macro.
@@ -43,15 +44,19 @@ func TestInitialRetryNativeDiagnostic(t *testing.T) {
 	result := initialRetryDiagnostic{1, "request", "other-validation", 0}
 	cfg, err := parseBuildConfig(base64.StdEncoding.EncodeToString(input.Config))
 	if err == nil {
-		var l layout
-		l, err = maintenanceLayout(cfg)
-		if err != nil {
-			result = initialDiagnosticFailure("layout", err)
+		if *initialDiagnosticACLOnly && filepath.IsAbs(*initialDiagnosticPayload) {
+			result = diagnosePayloadACL(cfg, *initialDiagnosticPayload)
 		} else {
-			if !filepath.IsAbs(*initialDiagnosticPayload) {
-				result = initialRetryDiagnostic{1, "payload-directory", "other-validation", 0}
+			var l layout
+			l, err = maintenanceLayout(cfg)
+			if err != nil {
+				result = initialDiagnosticFailure("layout", err)
 			} else {
-				result = diagnoseInitialRetry(l, cfg, *initialDiagnosticPayload)
+				if !filepath.IsAbs(*initialDiagnosticPayload) {
+					result = initialRetryDiagnostic{1, "payload-directory", "other-validation", 0}
+				} else {
+					result = diagnoseInitialRetry(l, cfg, *initialDiagnosticPayload)
+				}
 			}
 		}
 	}
