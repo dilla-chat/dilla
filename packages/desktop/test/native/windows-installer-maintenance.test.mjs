@@ -10,7 +10,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { createHash, generateKeyPairSync, randomUUID, sign } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { setTimeout as pause } from 'node:timers/promises';
-import { compileWindowsNSIS, withMaintenanceTimingFixture, withInitialInstallDiagnostics, initialInstallDiagnostic } from '../support/windows-nsis.mjs';
+import { compileWindowsNSIS, withMaintenanceTimingFixture, withInitialInstallDiagnostics, initialInstallDiagnostic, withInitialSlotFlushFailure } from '../support/windows-nsis.mjs';
 import { finalizeWindowsProgram } from '../../scripts/windows-package.mjs';
 import { createWindowsProgramManifest } from '../../src/windows-manifest.ts';
 const require = createRequire(import.meta.url);
@@ -241,7 +241,7 @@ test('native installer preserves every byte on mapped Go/Electron images, archiv
   assert.equal(await exists(slot), true, 'same installer must recover owned interrupted first copy');
   assert.equal(await readFile(account, 'utf8'), 'existing account / KEK / OPFS / preferences must survive');
   run(uninstaller, ['/S']); await eventually(async () => !await exists(program), 'interrupted retry cleanup');
-  const flushFailure = await compile('dilla-fixture-flush-failure.exe', source => source.replace("  System::Call 'kernel32::FlushFileBuffers(p r0)i.r1'\n  System::Call 'kernel32::CloseHandle(p r0)'", "  StrCpy $1 0\n  System::Call 'kernel32::CloseHandle(p r0)'"));
+  const flushFailure = await compile('dilla-fixture-flush-failure.exe', withInitialSlotFlushFailure);
   assert.throws(() => run(flushFailure, ['/S']), 'injected seed flush failure must fail setup');
   assert.equal(await exists(join(profile, 'initial-install.json')), true);
   run(installer, ['/S']);
