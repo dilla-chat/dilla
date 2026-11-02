@@ -5,6 +5,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, writeFile, readFile, copyFile, realpath, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+import { createRequire } from 'node:module';
 // @ts-expect-error build tooling is JavaScript
 import { buildArtifactNames, buildProvenanceName, verifyBuildProvenance, emitBuildProvenance, verifyCandidateBuildRecord } from '../scripts/build-provenance.mjs';
 
@@ -12,6 +13,26 @@ const targets = ['linux-x64', 'win-x64', 'mac-x64', 'mac-arm64'];
 const platform = ({ linux: 'linux', win32: 'win', darwin: 'mac' } as Record<string, string>)[process.platform];
 const target = platform + '-' + process.arch;
 const sha = (bytes: Uint8Array) => createHash('sha512').update(bytes).digest('base64');
+const require = createRequire(import.meta.url);
+function appImageTarget(version: string) {
+ const config = require('../electron-builder.cjs');
+ // Initialize the public entry point before its mutually dependent internals.
+ require('app-builder-lib');
+ const { PlatformPackager } = require('app-builder-lib/out/platformPackager');
+ const AppImageTarget = require('app-builder-lib/out/targets/appimage/AppImageTarget').default;
+ const packager = Object.create(PlatformPackager.prototype);
+ Object.assign(packager, { info: { config }, platform: { buildConfigurationKey: 'linux' }, platformSpecificBuildOptions: config.linux,
+  appInfo: { version, buildVersion: version, productName: 'Dilla', productFilename: 'Dilla', name: 'dilla-desktop' } });
+ return new AppImageTarget('AppImage', packager, { computeDesktopEntry: (_options: unknown, exec: string) => exec }, 'unused-artifact-directory');
+}
+test('the pinned AppImage packager emits the exact authenticated Linux artifact name', () => {
+ const target = appImageTarget('1.2.3-beta.4'), { Arch } = require('builder-util');
+ assert.equal(target.packager.expandArtifactNamePattern(target.options, 'AppImage', Arch.x64), buildArtifactNames('linux-x64', '1.2.3-beta.4')[0]);
+});
+test('the actual AppImage desktop entry preserves Chromium sandboxing', async () => {
+ const target = appImageTarget('1.2.3-beta.4');
+ assert.equal(await target.desktopEntry.value, 'AppRun %U');
+});
 test('every target binds exactly its native installable bytes, including the Windows manifest', () => {
  assert.deepEqual(targets.map(value => buildArtifactNames(value, '1.2.3-beta.4')), [
   ['dilla-1.2.3-beta.4-linux-x64.AppImage'], ['dilla-1.2.3-beta.4-win-x64.exe', 'dilla-1.2.3-beta.4-win-x64.manifest.json'],

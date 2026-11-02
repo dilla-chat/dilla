@@ -16,7 +16,10 @@ module.exports = {
   artifactName: 'dilla-${version}-${os}-${arch}.${ext}',
   protocols: [{ name: 'Dilla invite', schemes: ['dilla'] }],
   publish: [{ provider: 'github', owner: 'jonasthim', repo: 'dilla', releaseType: 'draft' }],
-  linux: { syncDesktopName: true, target: [{ target: 'AppImage', arch: ['x64'] }], category: 'Network', icon: 'assets/icon.png' },
+  // AppImage expands ${arch} to x86_64; release descriptors use canonical x64.
+  linux: { artifactName: 'dilla-${version}-linux-x64.${ext}', syncDesktopName: true, target: [{ target: 'AppImage', arch: ['x64'] }], category: 'Network', icon: 'assets/icon.png' },
+  // The pinned legacy AppImage target otherwise adds --no-sandbox to Exec.
+  appImage: { executableArgs: [] },
   win: { target: [{ target: 'nsis', arch: ['x64'] }], icon: 'assets/icon.png' },
   nsis: { script: 'build/windows-installer.nsi', perMachine: false, oneClick: true, allowElevation: false, packElevateHelper: false, preCompressedFileExtensions: [], differentialPackage: false, deleteAppDataOnUninstall: false },
   mac: {
