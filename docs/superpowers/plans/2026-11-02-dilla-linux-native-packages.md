@@ -49,6 +49,8 @@
 
 ### Task 2: fixed native lifecycle and startup admission feasibility
 
+The reviewed [admission and manager contract](../specs/2026-11-02-dilla-linux-native-admission-design.md) refines the initial outline below. It controls the permanent manager binding, main-only lifetime lock, ALPM intact-hook qualification and post-unpack target admission. Begin with the unprivileged bridge proof; privileged implementation still needs its separate source and kernel review.
+
 **Consumes:** NativePackageIdentity and component hashes/generation/epoch; existing safe Linux FD primitives.
 **Produces:** fixed root lifecycle roles prepare-install, commit-install, prepare-remove, commit-remove, check; bounded receipt/intent/tombstone at the fixed native state root. No caller path/key/network arguments.
 
@@ -64,7 +66,7 @@
 
 - [ ] Add RED package inspection tests rejecting unshare-based policy selection, ignored chmod, AppArmor/SELinux/sysctl edits, helper payload4755, shell/network bootstrap, unknown file trees, wrong desktop/protocol target or undeclared ELF dependencies. Assert root-owned immutable payload and fixed native helper symlink.
 - [ ] Implement separate native staging/explicit format metadata and hooks; package DEB/RPM names dilla, AUR dilla-bin provides/conflicts dilla. No AppImage hooks in native staging, no generic builder root scripts. Hook arguments encode only exact package lifecycle/version modes, with bounded manager-specific adapter validation.
-- [ ] Native manager ordering proof: DEB fresh/upgrade/abort-upgrade/abort-remove/remove/purge; RPM new pre/post plus old preun/postun on upgrade; ALPM installed PreTransaction AbortOnFail before upgrade/remove plus first-install configuration. Prove failure before unpack leaves old bytes intact; failed post/configure leaves new helper0755/pending; forced manager rollback to a lower-generation payload leaves repair hold, never old SUID restoration. Missing pre-hook/unsafe state aborts, never quietly unpacks over a still-privileged old FD.
+- [ ] Native manager ordering proof: DEB fresh/upgrade/abort-upgrade/abort-remove/remove/purge; RPM new pre/post plus old preun/postun on upgrade; ALPM installed PreTransaction AbortOnFail before upgrade/remove plus first-install configuration. Prove failure before unpack leaves old bytes intact; failed post/configure leaves new helper0755/pending; forced manager rollback to a lower-generation payload leaves repair hold, never old SUID restoration. With the qualified intact effective pre-hook, failure aborts before unpack. A root-removed or disabled ALPM hook is outside the qualified precondition and cannot provide a pre-unpack abort guarantee; record that negative honestly and refuse qualification. Unsafe callable lifecycle state holds.
 - [ ] Generate AUR PKGBUILD/.SRCINFO/fixed hooks from the accepted immutable DEB URL/hash; makepkg ordinary user, pacman installation. Reject SKIP/latest/curl-root-script/dynamic checksums and compare extracted runtime/helper/script identities to DEB. No AUR account access/submission.
 - [ ] Run node --test packages/desktop/test/linux-packages.test.ts packages/desktop/test/linux-package-version.test.ts; inspect with dpkg-deb, rpm -qpl/-qp --scripts, makepkg --printsrcinfo and namcap on native tools. Root reviews exact final scripts and helper mode/ownership exception.
 
