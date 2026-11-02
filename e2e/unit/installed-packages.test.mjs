@@ -4,9 +4,33 @@ import { readFile, mkdtemp, mkdir, realpath, symlink, writeFile, rm } from 'node
 import { join, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { generateKeyPairSync } from 'node:crypto';
+import { createRequire } from 'node:module';
+import { runInNewContext } from 'node:vm';
 import { fixtureMainSource, INSTALLED_FUSES } from '../web/support/installed-packages.ts';
 import * as fixtures from '../web/support/installed-packages.ts';
 import { finalizeWindowsProgram } from '../../packages/desktop/scripts/windows-package.mjs';
+
+test('macOS account fixture locates the exact bundle produced by its declared executable name', async () => {
+  const require = createRequire(import.meta.url), { AppInfo } = require('app-builder-lib/out/appInfo.js');
+  const source = await readFile(new URL('../web/support/installed-packages.ts', import.meta.url), 'utf8');
+  const executableName = /executableName: '([^']+)'/.exec(source)?.[1];
+  assert.equal(executableName, 'dilla-desktop');
+  // Evaluate the fixture's actual bundle lookup and compare it to the pinned
+  // builder's naming contract. No macOS executable is launched on this host.
+  const lookup = /const app = (join\(out,[^\n]+?\)), bins = await readdir/.exec(source)?.[1];
+  assert.ok(lookup, 'the actual bundle lookup must be covered');
+  const product = 'DillaAccountAcceptanceIsolatedFixture';
+  const base = { productName: product, executableName };
+  const info = new AppInfo({ config: base, metadata: { name: 'account-fixture', version: '1.0.0' } });
+  assert.equal(info.productName, product);
+  assert.equal(info.productFilename, executableName);
+  for (const arch of ['arm64', 'x64']) {
+    const out = join(tmpdir(), 'owned-account-packaging-output');
+    const actual = runInNewContext(lookup, { join, out, product, base, process: { arch } });
+    assert.equal(actual, join(out, arch === 'arm64' ? 'mac-arm64' : 'mac', info.productFilename + '.app'));
+    assert.notEqual(actual, join(out, arch === 'arm64' ? 'mac-arm64' : 'mac', product + '.app'));
+  }
+});
 
 test('installed account packaging resolves temporary aliases before strict Windows tree validation', async () => {
   const parent = await realpath(await mkdtemp(join(tmpdir(), 'dilla-account-path-')));
