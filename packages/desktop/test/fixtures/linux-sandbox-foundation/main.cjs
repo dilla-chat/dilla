@@ -1,7 +1,8 @@
-const { app, BrowserWindow, ipcMain, session } = require('electron');
+const { app, BrowserWindow, ipcMain, session, protocol } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
-const { pathToFileURL } = require('node:url');
+const page = 'dilla-foundation://probe/index.html';
+protocol.registerSchemesAsPrivileged([{ scheme: 'dilla-foundation', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 const args = process.argv.filter(arg => arg.startsWith('--foundation-'));
 const get = key => args.find(arg => arg.startsWith(key + '='))?.slice(key.length + 1);
 const mode = get('--foundation-mode'), nonce = get('--foundation-nonce'), profile = get('--foundation-profile');
@@ -17,7 +18,10 @@ else {
     app.exit(32);
   } else void app.whenReady().then(async () => {
     const ses = session.fromPartition('foundation-' + nonce);
-    const page = pathToFileURL(path.join(__dirname, 'probe.html')).href;
+    ses.protocol.handle('dilla-foundation', request => {
+      if (request.url !== page || request.method !== 'GET') return new Response(null, { status: 404 });
+      return new Response(fs.readFileSync(path.join(__dirname, 'probe.html')), { headers: { 'content-type': 'text/html; charset=utf-8' } });
+    });
     let deniedRequests = 0;
     ses.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
     ses.setPermissionCheckHandler(() => false);

@@ -2,6 +2,28 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { foundationResult, inspectRendererExecutable } from '../support/linux-sandbox-foundation.mjs';
 
+test('packaged fixture serves its content-free page through its isolated custom protocol', async()=>{
+ const {readFile}=await import('node:fs/promises'),vm=await import('node:vm');
+ const {createRequire}=await import('node:module'),load=createRequire(import.meta.url);
+ const source=await readFile(new URL('../fixtures/linux-sandbox-foundation/main.cjs',import.meta.url),'utf8');
+ let registered=false,handler,requestFence,loaded;const reads=[],errors=[];
+ const ses={protocol:{handle:(scheme,callback)=>{assert.equal(scheme,'dilla-foundation');handler=callback;}},
+  setPermissionRequestHandler(){},setPermissionCheckHandler(){},webRequest:{onBeforeRequest:callback=>{requestFence=callback;}},
+  fetch:async url=>{requestFence({url},result=>assert.equal(result.cancel,true));throw Error('denied before transport');}};
+ const app={setPath(){},exit:code=>errors.push(code),whenReady:()=>{assert.equal(registered,true);return Promise.resolve();}};
+ class Window {webContents={setWindowOpenHandler(){},on(){}};async loadURL(url){loaded=url;}}
+ vm.runInNewContext(source,{require:name=>name==='electron'?{app,BrowserWindow:Window,ipcMain:{on(){}},session:{fromPartition:()=>ses},protocol:{registerSchemesAsPrivileged:schemes=>{assert.equal(schemes[0].scheme,'dilla-foundation');registered=true;}}}:name==='node:fs'?{mkdirSync(){},readFileSync:path=>{reads.push(path);return Buffer.from('<!doctype html><title>Content-free fixture</title>');}}:load(name),
+  process:{argv:['dilla','--foundation-mode=probe','--foundation-nonce='+'a'.repeat(64),'--foundation-profile=/private-fixture'],getuid:()=>1000},
+  __dirname:'/immutable/resources/app.asar',Response,Buffer});
+ for(let i=0;i<4;i++)await new Promise(done=>setImmediate(done));
+ assert.deepEqual(errors,[]);assert.equal(typeof handler,'function');assert.equal(loaded,'dilla-foundation://probe/index.html');
+ const good=await handler(new Request(loaded));assert.equal(good.status,200);assert.match(await good.text(),/Content-free fixture/);
+ assert.deepEqual(reads,['/immutable/resources/app.asar/probe.html']);
+ for(const request of [new Request('dilla-foundation://probe/other.html'),new Request(loaded,{method:'POST'})])assert.equal((await handler(request)).status,404);
+ assert.equal(reads.length,1,'unrecognized requests must not choose a file');
+ let accepted;requestFence({url:loaded},result=>{accepted=result.cancel;});assert.equal(accepted,false);
+});
+
 test('nondumpable renderer observation keeps its executable identity check', async t=>{
  const previous=process.env.GITHUB_ACTIONS;t.after(()=>{if(previous===undefined)delete process.env.GITHUB_ACTIONS;else process.env.GITHUB_ACTIONS=previous;});
  process.env.GITHUB_ACTIONS='true';const paths=[];
