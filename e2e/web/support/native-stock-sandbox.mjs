@@ -14,8 +14,13 @@ export function assertRendererSandbox(browser, before, after, cmdline) {
  if (JSON.stringify(before) !== JSON.stringify(after)) throw new Error('Renderer process identity changed during observation');
  if (before.noNewPrivs !== 1 || before.seccomp !== 2 || !/^0+$/.test(before.capEff)) throw new Error('Renderer kernel sandbox is not active');
  if (before.filters <= browser.filters) throw new Error('Renderer has no additional seccomp filter above browser/container inheritance');
- const args = cmdline.split('\0');
- if (!args.includes('--type=renderer')) throw new Error('Expected a real renderer process');
+ const records = cmdline.split('\0').filter(Boolean);
+ // Chromium's Linux zygote calls SetProcessTitleFromCommandLine after fork,
+ // flattening argv into one NUL-terminated title: executable --type=... .
+ // Preserve actual argv boundaries otherwise, including spaces inside values.
+ const args = records.length === 1 && /^\/\S+ --type=/.test(records[0]) ? records[0].split(' ') : records;
+ const types = args.filter(arg => arg.startsWith('--type='));
+ if (types.length !== 1 || types[0] !== '--type=renderer') throw new Error('Expected a real renderer process');
  if (args.some(arg => /^--(?:no-sandbox|disable-(?:setuid-sandbox|seccomp-filter-sandbox|namespace-sandbox))(?:=|$)/.test(arg))) throw new Error('Renderer sandbox bypass');
 }
 export async function observeRendererSandbox(browser, appPid, pages) {
