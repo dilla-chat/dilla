@@ -60,6 +60,9 @@ export function MessageLog({ label, children, earlier, emptyLabel, busy, onKeyDo
   const pin = (el: HTMLElement) => {
     el.scrollTop = el.scrollHeight;
     pinnedTop.current = el.scrollTop;
+    // ResizeObserver can pin a decoded thumbnail without rendering this component. Record that height too, so a
+    // later focus render does not re-pin after scrollIntoView and move the image between pointer press and release.
+    prevHeight.current = el.scrollHeight;
   };
 
   const onScroll = () => {

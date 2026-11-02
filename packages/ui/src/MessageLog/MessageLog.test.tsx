@@ -123,6 +123,36 @@ describe('MessageLog', () => {
       vi.unstubAllGlobals();
     });
 
+    it('a focus render after thumbnail growth preserves the browser scroll for an image press', () => {
+      install();
+      try {
+        const { rerender } = render(log(['a']));
+        const el = screen.getByRole('log');
+        const m = { scrollHeight: 1000, clientHeight: 400 };
+        metrics(el, m);
+        let top = 0;
+        Object.defineProperty(el, 'scrollTop', { configurable: true, get: () => top,
+          set: (v: number) => { top = Math.max(0, Math.min(v, m.scrollHeight - m.clientHeight)); } });
+        rerender(log(['a', 'image', 'file']));
+        expect(el.scrollTop).toBe(600);
+
+        // The thumbnail grows without rendering MessageLog; ResizeObserver already follows it to the end.
+        m.scrollHeight = 1090;
+        callbacks.forEach(cb => cb());
+        expect(el.scrollTop).toBe(690);
+        // scrollIntoView moves the image before its press. The asynchronous scroll event has not arrived when
+        // mousedown focuses its row and renders the log again (Mac Intel CI, 2026-11-02).
+        el.scrollTop = 600;
+        rerender(log(['a', 'image', 'file']));
+        expect(el.scrollTop).toBe(600);
+
+        // A later height change still follows the end when no reader scroll has unpinned the log.
+        m.scrollHeight = 1130;
+        rerender(log(['a', 'image', 'file', 'next']));
+        expect(el.scrollTop).toBe(730);
+      } finally { vi.unstubAllGlobals(); }
+    });
+
     it('a reader who scrolls up after a pin is not pulled back by a row that grows', () => {
       install();
       const { rerender } = render(log(['a']));
