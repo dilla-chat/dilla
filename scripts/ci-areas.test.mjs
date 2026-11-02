@@ -55,6 +55,14 @@ test('the design tokens are read by a Go test, so they run the Go jobs too', () 
   assert.ok(jobRuns('go-api', outputs));
 });
 
+test('sandbox bootstrap changes run Go interop and retain web and desktop coverage', () => {
+  const outputs = areasFor(['packages/desktop/native/linux-sandbox/frontend/bootstrap.py']);
+  assert.deepEqual(outputs, { go: true, core: false, web: true, e2e: true, text: false, code: true });
+  for (const job of ['go', 'go-native', 'ui', 'desktop', 'linux-sandbox-foundation']) assert.ok(jobRuns(job, outputs), job);
+  const neighbor = areasFor(['packages/desktop/native/linux-sandbox/frontend/other.py']);
+  assert.deepEqual(neighbor, { go: false, core: false, web: true, e2e: true, text: false, code: true });
+});
+
 test('the LiveKit schema golden is read by the media checks, which run with web', () => {
   const outputs = areasFor(['internal/sfu/testdata/livekit-signal-schema.json']);
   assert.deepEqual(outputs, { go: true, core: false, web: true, e2e: true, text: false, code: true });
