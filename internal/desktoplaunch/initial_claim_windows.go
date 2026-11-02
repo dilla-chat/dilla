@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -354,12 +355,12 @@ func createInitialObject(parent *os.File, name, path string, directory bool) (ob
 		options = windows.FILE_SYNCHRONOUS_IO_NONALERT | windows.FILE_OPEN_REPARSE_POINT | windows.FILE_DIRECTORY_FILE
 		share = windows.FILE_SHARE_READ | windows.FILE_SHARE_WRITE
 	}
-	err = windows.NtCreateFile(&handle, windows.GENERIC_READ|windows.GENERIC_WRITE|windows.DELETE, &attributes, &status, nil, windows.FILE_ATTRIBUTE_NORMAL, share, windows.FILE_CREATE, options, 0, 0)
+	err = windows.NtCreateFile(&handle, windows.FILE_GENERIC_READ|windows.FILE_GENERIC_WRITE|windows.DELETE, &attributes, &status, nil, windows.FILE_ATTRIBUTE_NORMAL, share, windows.FILE_CREATE, options, 0, 0)
 	if err != nil {
 		if handle != 0 {
 			_ = windows.CloseHandle(handle)
 		}
-		return nil, initialNTError(err)
+		return nil, fmt.Errorf("initial claim create: %w", initialNTError(err))
 	}
 	if handle == 0 || handle == windows.InvalidHandle {
 		return nil, errors.New("invalid initial created handle")
