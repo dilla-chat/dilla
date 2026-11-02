@@ -89,7 +89,7 @@ export async function buildFoundationImage(project,out,admissionResources) {
   extraResources:admissionResources ? [{from:admissionResources,to:'admission-proof'}] : [],
   electronFuses:production.electronFuses,linux:{target:['AppImage'],category:'Utility',icon:resolve(import.meta.dirname,'../../assets/icon.png')},
   artifactName:'dilla-sandbox-foundation.AppImage',appImage:{executableArgs:[]},
-  afterPack:async context=>{await safeHook(context);await fs.rm(resolve(context.appOutDir,'chrome-sandbox'));await fs.symlink(FIXTURE_HELPER,resolve(context.appOutDir,'chrome-sandbox'));}
+  afterPack:async context=>{await safeHook.foundation(context);await fs.rm(resolve(context.appOutDir,'chrome-sandbox'));await fs.symlink(FIXTURE_HELPER,resolve(context.appOutDir,'chrome-sandbox'));}
  }});
  return resolve(out,'dilla-sandbox-foundation.AppImage');
 }

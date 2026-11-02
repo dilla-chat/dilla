@@ -25,7 +25,11 @@ if (!process.argv.includes('--existing-client')) {
   execFileSync(process.execPath, [process.env.npm_execpath, 'run', 'build', '-w', '@dilla/web'], { cwd: repo, stdio: 'inherit' });
 }
 await cp(resolve(repo, 'packages/web/dist'), resolve(root, 'dist/client'), { recursive: true });
-await build({ entryPoints: [resolve(root, 'src/main.ts')], outfile: resolve(root, 'dist/main.cjs'), define: linuxDefine, bundle: true, platform: 'node', target: 'node24', format: 'cjs', external: ['electron', 'electron-updater', 'electron-updater/*'] });
+const sandboxBootstrap = process.platform === 'linux' && linuxInstallKind === 'appimage';
+await build({ entryPoints: [resolve(root, 'src/main.ts')], outfile: resolve(root, sandboxBootstrap ? 'dist/main-app.cjs' : 'dist/main.cjs'), define: linuxDefine, bundle: true, platform: 'node', target: 'node24', format: 'cjs', external: ['electron', 'electron-updater', 'electron-updater/*'] });
+if (sandboxBootstrap) {
+  for (const file of ['linux-sandbox-bootstrap.cjs', 'linux-sandbox-probe-arguments.cjs', 'linux-sandbox-probe-main.cjs', 'linux-sandbox-probe-preload.cjs', 'linux-sandbox-probe.html']) await cp(resolve(root, 'src', file), resolve(root, 'dist', file === 'linux-sandbox-bootstrap.cjs' ? 'main.cjs' : file));
+}
 await build({ entryPoints: [resolve(root, 'src/preload.ts')], outfile: resolve(root, 'dist/preload.cjs'), bundle: true, platform: 'node', target: 'es2022', format: 'cjs', external: ['electron'] });
 await build({ entryPoints: [resolve(root, 'src/screen-capture-preload.ts')], outfile: resolve(root, 'dist/screen-capture-preload.cjs'), bundle: true, platform: 'node', target: 'es2022', format: 'cjs', external: ['electron'] });
 await build({ entryPoints: [resolve(root, 'src/screen-capture-broker.ts')], outfile: resolve(root, 'dist/screen-capture-broker.js'), bundle: true, platform: 'browser', target: 'es2022', format: 'iife' });

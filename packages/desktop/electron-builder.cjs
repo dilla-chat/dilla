@@ -1,5 +1,6 @@
 const channel = require('./package.json').version.includes('-beta.') ? 'beta' : 'stable';
 const { sparklePublicKey, metadataPublicKeys } = require('./release-trust.json');
+const linuxHooks = require('./scripts/linux-appimage-launcher.cjs');
 const windowsHooks = require('./scripts/windows-builder-hooks.cjs').createWindowsBuilderHooks({ metadataPublicKeys });
 module.exports = {
   appId: 'dev.dilla.desktop', productName: 'Dilla', executableName: 'dilla-desktop',
@@ -7,9 +8,9 @@ module.exports = {
   directories: { output: 'out', buildResources: 'assets' },
   files: ['dist/**', 'package.json'],
   asar: true,
-  afterPack: require('./scripts/linux-appimage-launcher.cjs'),
+  afterPack: linuxHooks,
   afterSign: windowsHooks.afterSign,
-  artifactBuildStarted: windowsHooks.artifactBuildStarted,
+  artifactBuildStarted: async event => { await linuxHooks.artifactBuildStarted(event); await windowsHooks.artifactBuildStarted(event); },
   beforePack: async context => {
     const arch = { x64: 1, arm64: 3 }[process.arch];
     if (context.electronPlatformName !== process.platform || context.arch !== arch) throw new Error('Build desktop native capabilities on the matching OS and architecture');

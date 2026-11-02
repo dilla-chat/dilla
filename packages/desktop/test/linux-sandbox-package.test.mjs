@@ -65,7 +65,7 @@ test('maintenance keys cannot overlap application metadata or Sparkle trust', as
   assert.throws(() => assertDedicatedKeys(config, { metadataPublicKeys: [pem], sparklePublicKey: key }), /separate/i);
 });
 
-test('maintainer output is independent of inherited Go build settings', async () => {
+test('maintainer output is independent of inherited Go build settings', {skip: process.platform !== 'linux'}, async () => {
   const { mkdtemp, readFile, rm, writeFile } = await import('node:fs/promises');
   const { tmpdir } = await import('node:os');
   const { join, resolve } = await import('node:path');

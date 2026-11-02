@@ -9,7 +9,7 @@
   "main": "dist/main.cjs",
   "scripts": {
     "pretest": "node scripts/prepare-nsis.mjs",
-    "test": "node --test test/*.test.ts",
+    "test": "node --test test/*.test.ts test/linux-sandbox-package.test.mjs test/linux-sandbox-probe-entry.test.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "build": "node scripts/build.mjs",
     "build:validation": "vite build --config validation.vite.config.ts && node ../../scripts/write-manifest.mjs validation-dist",
