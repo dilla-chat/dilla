@@ -1,9 +1,17 @@
 # Desktop platform findings and launch gates
 
-Status: **NO-GO for desktop-only launch**. The approved 2026-10-31 plan replaces the
-2026-10-21 Linux-first/server-loaded plan. Linux, Windows and macOS must be accepted
-together. Linux also requires stock DEB/RPM and AUR package acceptance; mobile and
+Status snapshot, 2026-11-02: **NO-GO for desktop-only launch**. The approved
+2026-10-31 plan replaces the 2026-10-21 Linux-first/server-loaded plan. Linux,
+Windows and macOS must be accepted together. Linux also requires stock DEB/RPM and AUR package acceptance; mobile and
 global push-to-talk are excluded.
+
+The evidence and open-gate table below are dated snapshots, not a permanent release
+status. After publication, use the signed desktop metadata and authenticated release
+notes, security review, performance, installed-account and build-provenance records
+attached to the [versioned desktop release](https://github.com/jonasthim/dilla/releases/tag/desktop-v0.1.0-beta.1)
+for its final status and evidence. This document does not establish readiness for a
+later source tree. Publishing the application does not deploy the server or enable
+browser download navigation.
 
 ## Implemented foundation
 
@@ -107,7 +115,7 @@ installs the standard setuid Chromium sandbox helper instead of disabling OS
 protections. No physical microphone, camera or selected application is simulated as
 passing a hardware gate.
 
-## Mandatory acceptance, still open
+## Mandatory acceptance snapshot (2026-11-01)
 
 | Gate | Linux x64 | Windows x64 | macOS Intel / Apple Silicon |
 |---|---|---|---|

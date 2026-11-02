@@ -1,6 +1,7 @@
 # Dilla desktop validation builds
 
-The desktop application is under development. **Keep using the existing browser client.**
+Validation snapshot, 2026-11-02: the desktop application is under development.
+**Keep using the existing browser client.**
 The first supported desktop release must ship Linux x64, Windows x64, and macOS Intel
 and Apple Silicon together. No desktop-only server release is ready.
 
@@ -142,7 +143,12 @@ Preview packaging is available with `npm run pack -w @dilla/desktop`; it creates
 unpacked app for validation and never publishes. Installer targets are configured
 for AppImage, stock DEB/RPM, an AUR recipe archive, per-user NSIS, and macOS DMG/ZIP. Native Linux formats use the standard package manager and check-only update behavior. The publication workflow refuses
 missing platform acceptance, measured performance, an independent security review,
-or unauthenticated artifacts; no desktop release has been published.
+or unauthenticated artifacts. Before publication, the verifier requires complete
+acceptance evidence for the exact final source and installer bytes. After
+publication, consult the signed metadata and authenticated acceptance records on
+the [versioned desktop release](https://github.com/jonasthim/dilla/releases/tag/desktop-v0.1.0-beta.1)
+for that version’s final status. Application publication alone does not change
+`--desktop-downloads` or roll out a desktop-only server.
 
 Each native job records its actual clean Git commit/tree, workflow run and final
 installer hashes after fuse verification. Its `build-provenance-<target>.json`
@@ -159,8 +165,8 @@ cannot vouch for that separately compiled payload. Both AUR recipe members must
 exactly match the generated versioned release DEB URL and the actual DEB SHA-256.
 The signed inventory contains twelve assets and still has four updater targets.
 
-Native-format installed acceptance is still pending. Publication requires successful
-same-run `desktop-linux-package-acceptance-{deb,rpm,aur}-x64` jobs, each with its
+At this snapshot, native-format installed acceptance is still pending. Publication
+requires successful same-run `desktop-linux-package-acceptance-{deb,rpm,aur}-x64` jobs, each with its
 `Installed {DEB,RPM,AUR} package acceptance` step. These must exercise the actual
 source-bound installed format, normal launch and sandboxing. The new producer is
 build/source proof only and supplies none of those gates. The existing Ubuntu
@@ -183,8 +189,9 @@ ad-hoc signing. Windows and macOS may warn about an unidentified publisher. Use 
 OS's normal installation approval flow; do not disable SmartScreen, Gatekeeper, SIP
 or quarantine protections to make a test pass.
 
-See [platform findings and launch gates](../desktop/FOUNDATIONS.md) for the remaining
-work. Packaging success does not satisfy those gates.
+See [platform findings and launch gates](../desktop/FOUNDATIONS.md) for the dated
+acceptance snapshot and release evidence. Packaging success does not satisfy those
+gates.
 
 The workspace uses the integrated Signal header and desktop window controls.
 Startup and sign-in use a compact card; the main workspace has a minimum native
