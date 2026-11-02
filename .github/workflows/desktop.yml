@@ -98,13 +98,14 @@ jobs:
           name: desktop-installed-account-mac-${{ inputs.arch }}
           path: packages/desktop/test-report/installed-account-mac-${{ inputs.arch }}.json
           if-no-files-found: error
-      - if: failure()
+      - name: Optional installed-account startup diagnostics
+        if: failure() && hashFiles('e2e/desktop-client-results/**/installed-startup-diagnostics.json', 'e2e/desktop-client-results/**/installed-post-failure-network.json') != ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: desktop-account-diagnostics-mac-${{ inputs.arch }}
           path: |
-            e2e/desktop-client-results/**/signal-lifecycle.json
             e2e/desktop-client-results/**/installed-startup-diagnostics.json
+            e2e/desktop-client-results/**/installed-post-failure-network.json
           if-no-files-found: error
       - if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
