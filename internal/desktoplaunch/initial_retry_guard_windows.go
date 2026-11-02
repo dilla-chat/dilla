@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"golang.org/x/sys/windows"
 )
 
 func openInitialRetryFile(path string) (file *os.File, err error) {
@@ -47,13 +49,14 @@ func openInitialRetryFile(path string) (file *os.File, err error) {
 	return file, nil
 }
 
+// DuplicateHandle preserves the original object, access and sharing. A fresh
+// os.File has fresh Go dirInfo, whose first query uses DirectoryRestartInfo.
+// The kernel cursor is shared: callers serialize enumeration of a held object
+// (the owning initial transaction and claims are not concurrent-use APIs).
 func openInitialEnumeration(file *os.File) (*os.File, error) {
-	handle, _, err := streamDLL.NewProc("ReOpenFile").Call(file.Fd(), syscall.FILE_LIST_DIRECTORY|0x80|syscall.SYNCHRONIZE, syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE|syscall.FILE_SHARE_DELETE, syscall.FILE_FLAG_OPEN_REPARSE_POINT|syscall.FILE_FLAG_BACKUP_SEMANTICS)
-	if handle == 0 || handle == uintptr(syscall.InvalidHandle) {
-		if err == syscall.Errno(0) {
-			err = errors.New("initial directory reopen failed")
-		}
+	var duplicate windows.Handle
+	if err := windows.DuplicateHandle(windows.CurrentProcess(), windows.Handle(file.Fd()), windows.CurrentProcess(), &duplicate, 0, false, windows.DUPLICATE_SAME_ACCESS); err != nil {
 		return nil, err
 	}
-	return os.NewFile(handle, file.Name()), nil
+	return os.NewFile(uintptr(duplicate), file.Name()), nil
 }
