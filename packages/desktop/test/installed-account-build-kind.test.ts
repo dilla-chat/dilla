@@ -43,7 +43,13 @@ async function actualAccountBuildOptions(platform: string, publicKey: string, ro
   origin, fixtureMainSource, sourceMain: await readFile(join(desktop, 'src/main.ts'), 'utf8'), product: 'DillaAccountFixture', profile: join(root, 'profile'), scheme: 'dilla-account-fixture', fixtureWindowsInstallationSource, readFile, appId: 'dev.dilla.desktop.account-acceptance.fixture', sourceUpdater: await readFile(join(desktop, 'src/updater.ts'), 'utf8'), sandboxConfig: fixtureComponent.config,
  });
 }
-test('actual installed account Linux build retains AppImage authority through authenticated download to ready', async t => {
+test('installed account build selects AppImage authority only for Linux on every host', async () => {
+ const pair = generateKeyPairSync('ed25519'), publicKey = pair.publicKey.export({ type: 'spki', format: 'pem' }).toString();
+ assert.equal((await actualAccountBuildOptions('linux', publicKey)).define?.__DILLA_LINUX_INSTALL_KIND__, JSON.stringify('appimage'));
+ for (const platform of ['win32', 'darwin']) assert.equal((await actualAccountBuildOptions(platform, publicKey)).define?.__DILLA_LINUX_INSTALL_KIND__, undefined);
+});
+
+test('actual installed account Linux build retains AppImage authority through authenticated download to ready', { skip: process.platform !== 'linux' ? 'requires Linux UID and private filesystem modes' : false }, async t => {
  const root = await mkdtemp(join(tmpdir(), 'dilla-account-kind-'));
  t.after(() => rm(root, { recursive: true, force: true }));
  const pair = generateKeyPairSync('ed25519'), publicKey = pair.publicKey.export({ type: 'spki', format: 'pem' }).toString();
@@ -86,7 +92,6 @@ test('actual installed account Linux build retains AppImage authority through au
  assert.deepEqual(requested, ['/release.json', '/release.json.sig', ...['','.json','.sig'].map(suffix=>`/sandbox-fixture/dilla-1.0.1-linux-x64.sandbox${suffix}`)]);
  const {readdir,readFile:readCached}=await import('node:fs/promises'), cacheRoot=join(root,'sandbox-sidecars'), dirs=await readdir(cacheRoot); assert.equal(dirs.length,1);
  for (const [name,expected] of [['capsule',sandbox.capsule],['manifest',sandbox.manifest],['signature',sandbox.signature]] as const) assert.deepEqual(await readCached(join(cacheRoot,dirs[0],name)),expected);
- for (const platform of ['win32', 'darwin']) assert.equal((await actualAccountBuildOptions(platform, publicKey)).define?.__DILLA_LINUX_INSTALL_KIND__, undefined);
 });
 
 for (const platform of ['linux', 'win32', 'darwin']) test('compiled installed account main shares actual lifecycle diagnostics across initializer and desktop: ' + platform, async t => {

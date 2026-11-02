@@ -26,7 +26,7 @@ test('sandbox downloads reject unapproved redirects and oversized bodies', async
  } finally { globalThis.fetch = original; }
 });
 
-test('private sidecar cache is durable and reauthenticates disk bytes on every read', async () => {
+test('private sidecar cache is durable and reauthenticates disk bytes on every read', { skip: process.platform !== 'linux' ? 'requires Linux UID and private filesystem modes' : false }, async () => {
  const root = await mkdtemp(join(tmpdir(), 'dilla-cache-test-'));
  try {
   const f = sandboxReleaseFixture(), name = 'dilla-1.2.3-linux-x64.sandbox';

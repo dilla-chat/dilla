@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { launchSandboxPreparation, launchSandboxCheck, SandboxPreparationAmbiguous, SandboxPreparationGate } from '../src/linux-sandbox-prepare.ts';
 
-test('preparation accepts only a complete nonce-bound report from its own child', async () => {
+test('preparation accepts only a complete nonce-bound report from its own child', { skip: process.platform !== 'linux' ? 'requires Linux executable scripts and inherited IPC' : false }, async () => {
  const dir = await mkdtemp(join(tmpdir(), 'dilla-prepare-test-'));
  try {
   const script = join(dir, 'candidate');
@@ -17,7 +17,7 @@ test('preparation accepts only a complete nonce-bound report from its own child'
  } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test('signal death with a surviving detached child leaves preparation outcome ambiguous', async () => {
+test('signal death with a surviving detached child leaves preparation outcome ambiguous', { skip: process.platform !== 'linux' ? 'requires Linux signals and executable scripts' : false }, async () => {
  const dir = await mkdtemp(join(tmpdir(), 'dilla-prepare-signal-')), pidFile = join(dir, 'descendant'); let pid: number | undefined;
  try {
   const script = join(dir, 'candidate');
@@ -30,7 +30,7 @@ test('signal death with a surviving detached child leaves preparation outcome am
  } finally { if (!pid) { try { pid = Number(await readFile(pidFile, 'utf8')); } catch {} } if (pid && pid > 1) { try { process.kill(pid, 'SIGKILL'); } catch {} } await rm(dir, { recursive: true, force: true }); }
 });
 
-test('lost, partial, malformed and excessive reports after spawn are ambiguous only for preparation', async () => {
+test('lost, partial, malformed and excessive reports after spawn are ambiguous only for preparation', { skip: process.platform !== 'linux' ? 'requires Linux executable scripts and inherited IPC' : false }, async () => {
  const dir = await mkdtemp(join(tmpdir(), 'dilla-prepare-reports-'));
  try {
   for (const [name, content] of [['lost', ''], ['partial', '{'], ['malformed', '{}\n'], ['overflow', 'x'.repeat(513)]]) {
@@ -42,7 +42,7 @@ test('lost, partial, malformed and excessive reports after spawn are ambiguous o
  } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test('overflow termination retains ambiguity while a detached descendant remains alive', async () => {
+test('overflow termination retains ambiguity while a detached descendant remains alive', { skip: process.platform !== 'linux' ? 'requires Linux signals and executable scripts' : false }, async () => {
  const dir = await mkdtemp(join(tmpdir(), 'dilla-prepare-overflow-')), pidFile = join(dir, 'descendant'); let pid: number | undefined;
  try {
   const script = join(dir, 'candidate');

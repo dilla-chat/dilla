@@ -2,13 +2,14 @@
 // esbuild in the same module that reads update plans; production trust is never
 // changed and no runtime key override is exposed by the application.
 import { build } from 'esbuild';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { sign } from 'node:crypto';
 import { sandboxReleaseFixture } from './linux-sandbox-release-fixture.ts';
+import { fixtureCacheSource } from './fixture-cache-portability.ts';
 
 const fixture = sandboxReleaseFixture();
 const now=Date.now(), doc=JSON.parse(fixture.manifest.toString());
@@ -30,6 +31,7 @@ const root=await mkdtemp(join(tmpdir(),'dilla-fixture-compiled-')); process.once
 export const fixtureRuntimePath=join(root,'runtime.mjs');
 await build({stdin:{contents:code,resolveDir:desktop,loader:'ts'},outfile:fixtureRuntimePath,bundle:true,platform:'node',format:'esm',target:'node24',plugins:[{name:'compile-fixture-sandbox-trust',setup(plugin){
  plugin.onLoad({filter:/[\\/]linux-sandbox-component\.json$/},()=>({contents:JSON.stringify({...fixture.config,publishedAt:doc.publishedAt,expiresAt:doc.expiresAt}),loader:'json'}));
+ if (process.platform === 'win32') plugin.onLoad({filter:/[\\/]src[\\/]linux-sandbox-cache\.ts$/},async args=>({contents:fixtureCacheSource(await readFile(args.path,'utf8'),process.platform),loader:'ts',resolveDir:join(desktop,'src')}));
 }}]});
 export const fixtureRuntime=await import(pathToFileURL(fixtureRuntimePath).href) as {
  plan:typeof import('../../src/update-plan.ts'); state:typeof import('../../src/update-state.ts'); journal:typeof import('../../src/update-journal.ts'); runtime:typeof import('../../src/update-runtime.ts'); watchdog:typeof import('../../src/update-watchdog.ts'); activation:typeof import('../../src/update-activation.ts'); health:typeof import('../../src/update-health.ts'); fs:typeof import('../../src/update-fs.ts'); cache:typeof import('../../src/linux-sandbox-cache.ts'); windowsSlots:typeof import('../../src/windows-slots.ts');
