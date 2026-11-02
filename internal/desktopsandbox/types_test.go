@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestProtectedRecordDecodersRejectAmbiguousUnsafeOrUnboundedState(t *testing.T) {
@@ -123,5 +124,41 @@ func TestEmptyInitialSignatureHasExactStringEncodingNotNull(t *testing.T) {
 	null = bytes.Replace(raw, []byte(`"signature":""`), []byte(`"signature":null`), 1)
 	if _, err := ParseInstallIntent(null); err == nil {
 		t.Fatal("null silently selected initial-anchor signature mode")
+	}
+}
+
+func TestRemovedReceiptKeepsHistoricalComponentAdmissionAndLaterOperationTime(t *testing.T) {
+	c, trust, _ := fixture(t, 1)
+	r := receiptFor(t, c)
+	raw, _ := json.Marshal(r)
+	var wire map[string]any
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatal(err)
+	}
+	wire["state"] = "removed"
+	wire["completedOperation"] = "remove"
+	wire["lastOperationAt"] = testNow.Add(48 * time.Hour).UnixMilli()
+	raw, _ = json.Marshal(wire)
+	removed, err := ParseReceipt(raw)
+	if err != nil {
+		t.Fatal("removed receipt needs a later operation time without re-admitting expired code", err)
+	}
+	if removed.AcceptedAt != r.AcceptedAt {
+		t.Fatal("component admission time changed during removal")
+	}
+	if err = VerifyReceipt(removed, trust, testNow.Add(48*time.Hour)); err != nil {
+		t.Fatal("offline removal rechecked component expiry at operation time", err)
+	}
+	for _, bad := range []any{nil, float64(0), float64(r.AcceptedAt - 1)} {
+		wire["lastOperationAt"] = bad
+		raw, _ = json.Marshal(wire)
+		if _, err = ParseReceipt(raw); err == nil {
+			t.Fatal("invalid operation clock floor accepted")
+		}
+	}
+	delete(wire, "lastOperationAt")
+	raw, _ = json.Marshal(wire)
+	if _, err = ParseReceipt(raw); err == nil {
+		t.Fatal("old receipt silently lost operation clock floor")
 	}
 }

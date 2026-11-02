@@ -21,7 +21,7 @@ func manifestOf(t *testing.T, c Capsule) Manifest {
 func receiptFor(t *testing.T, c Capsule) Receipt {
 	t.Helper()
 	m := manifestOf(t, c)
-	r := Receipt{Format: 1, Authorization: "maintenance-signature", InitialAnchorSHA512: digest([]byte("root initial anchor")), Manifest: base64.StdEncoding.EncodeToString(c.Manifest), Signature: base64.StdEncoding.EncodeToString(c.Signature), AcceptedAt: testNow.Add(-30 * time.Minute).UnixMilli(), MaximumGeneration: m.Generation, MaintainerSHA512: m.Maintainer.SHA512, HelperSHA512: m.Helper.SHA512, CompatibilityEpoch: 1, SandboxAPI: 1, State: "active", CompletedOperation: "install", TransactionSHA512: digest([]byte("root install intent"))}
+	r := Receipt{Format: 1, Authorization: "maintenance-signature", InitialAnchorSHA512: digest([]byte("root initial anchor")), Manifest: base64.StdEncoding.EncodeToString(c.Manifest), Signature: base64.StdEncoding.EncodeToString(c.Signature), AcceptedAt: testNow.Add(-30 * time.Minute).UnixMilli(), LastOperationAt: testNow.Add(-30 * time.Minute).UnixMilli(), MaximumGeneration: m.Generation, MaintainerSHA512: m.Maintainer.SHA512, HelperSHA512: m.Helper.SHA512, CompatibilityEpoch: 1, SandboxAPI: 1, State: "active", CompletedOperation: "install", TransactionSHA512: digest([]byte("root install intent"))}
 	raw, _ := json.Marshal(r)
 	parsed, err := ParseReceipt(raw)
 	if err != nil {
@@ -434,5 +434,83 @@ func TestInitialInstallIntentNeedsMatchingBootstrapAuthority(t *testing.T) {
 	trust.Bootstrap = nil
 	if _, err := VerifyCapsule(c, trust, Receipt{}, testNow); err == nil {
 		t.Fatal("unsigned intent substituted for the bootstrap anchor")
+	}
+}
+
+func operationReceipt(t *testing.T, c Capsule, last int64, state string) Receipt {
+	t.Helper()
+	r := receiptFor(t, c)
+	r.LastOperationAt = last
+	r.State = state
+	if state == "removed" {
+		r.CompletedOperation = "remove"
+	}
+	raw, _ := json.Marshal(r)
+	parsed, err := ParseReceipt(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return parsed
+}
+func freshGenerationAt(t *testing.T, c Capsule, key ed25519.PrivateKey, generation int64, at time.Time) Capsule {
+	t.Helper()
+	next := copyCapsule(c)
+	mutateManifest(t, &next, key, func(m map[string]any) {
+		m["generation"] = generation
+		m["publishedAt"] = at.Add(-time.Hour).Format(time.RFC3339)
+		m["expiresAt"] = at.Add(24 * time.Hour).Format(time.RFC3339)
+	})
+	return next
+}
+
+func TestTombstoneOperationClockSurvivesExpiredComponentAndRejectsReinstallRollback(t *testing.T) {
+	old, trust, key := fixture(t, 1)
+	removedAt := testNow.Add(48 * time.Hour)
+	r := operationReceipt(t, old, removedAt.UnixMilli(), "removed")
+	candidate := freshGenerationAt(t, old, key, 2, removedAt)
+	if VerifyReceipt(r, trust, removedAt) != nil {
+		t.Fatal("removal after component expiry required fresh signing")
+	}
+	if _, err := VerifyCapsule(candidate, trust, r, removedAt.Add(-time.Millisecond)); err == nil {
+		t.Fatal("clock rollback behind tombstone operation admitted new code")
+	}
+	if _, err := VerifyCapsule(candidate, trust, r, removedAt); err != nil {
+		t.Fatal("signed fresh reinstall at preserved floor rejected", err)
+	}
+}
+
+func TestPendingAdmissionCannotPrecedePriorOperationClock(t *testing.T) {
+	old, trust, key := fixture(t, 1)
+	removedAt := testNow.Add(48 * time.Hour)
+	r := operationReceipt(t, old, removedAt.UnixMilli(), "removed")
+	candidate := freshGenerationAt(t, old, key, 2, removedAt)
+	p := pendingFor(t, old, &r)
+	p.Generation = 2
+	p.Manifest = base64.StdEncoding.EncodeToString(candidate.Manifest)
+	p.Signature = base64.StdEncoding.EncodeToString(candidate.Signature)
+	p.AcceptedAt = removedAt.Add(-time.Millisecond).UnixMilli()
+	raw, _ := json.Marshal(p)
+	parsed, err := ParseInstallIntent(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trust.Pending = &parsed
+	if _, err = VerifyCapsule(candidate, trust, r, removedAt.Add(time.Hour)); err == nil {
+		t.Fatal("pending admission borrowed older component timestamp instead of operation floor")
+	}
+}
+
+func TestHistoricalCompletionRecordsNewOperationTimeWithoutChangingComponentAcceptance(t *testing.T) {
+	c, trust, _ := fixture(t, 1)
+	completedAt := testNow.Add(48 * time.Hour)
+	r := operationReceipt(t, c, completedAt.UnixMilli(), "active")
+	if r.AcceptedAt >= r.LastOperationAt {
+		t.Fatal("fixture did not separate admission and completion")
+	}
+	if err := VerifyReceipt(r, trust, completedAt); err != nil {
+		t.Fatal("historical accepted bytes expired before completion", err)
+	}
+	if CheckCompatibility(Requirements{1, 1, 1}, r) != nil {
+		t.Fatal("committed helper stopped working offline")
 	}
 }

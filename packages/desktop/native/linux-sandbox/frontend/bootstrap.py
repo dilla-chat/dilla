@@ -260,7 +260,7 @@ def record(parent, name, limit):
 
 
 def receipt(value):
-    exact(value, "format authorization initialAnchorSha512 manifest signature acceptedAt maximumGeneration maintainerSha512 helperSha512 compatibilityEpoch sandboxApi state completedOperation transactionSha512")
+    exact(value, "format authorization initialAnchorSha512 manifest signature acceptedAt lastOperationAt maximumGeneration maintainerSha512 helperSha512 compatibilityEpoch sandboxApi state completedOperation transactionSha512")
     require(type(value["format"]) is int and value["format"] == 1)
     raw = b64(value["manifest"], 65536)
     meta = manifest(raw)
@@ -273,6 +273,8 @@ def receipt(value):
     require(value["authorization"] in ("initial-digest", "maintenance-signature"))
     b64(value["signature"], 64, 0 if value["authorization"] == "initial-digest" else 64)
     admission(value["acceptedAt"], meta)
+    natural(value["lastOperationAt"])
+    require(value["acceptedAt"] <= value["lastOperationAt"] <= 253402300799999)
     return value
 
 

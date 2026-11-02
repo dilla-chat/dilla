@@ -97,6 +97,7 @@ type Receipt struct {
 	Manifest            string `json:"manifest"`
 	Signature           string `json:"signature"`
 	AcceptedAt          int64  `json:"acceptedAt"`
+	LastOperationAt     int64  `json:"lastOperationAt"`
 	MaximumGeneration   int64  `json:"maximumGeneration"`
 	MaintainerSHA512    string `json:"maintainerSha512"`
 	HelperSHA512        string `json:"helperSha512"`
@@ -198,7 +199,7 @@ func ParseBootstrapAnchor(raw []byte) (BootstrapAnchor, error) {
 }
 func ParseReceipt(raw []byte) (Receipt, error) {
 	var r Receipt
-	obj, err := decodeRecord(raw, 128<<10, []string{"format", "authorization", "initialAnchorSha512", "manifest", "signature", "acceptedAt", "maximumGeneration", "maintainerSha512", "helperSha512", "compatibilityEpoch", "sandboxApi", "state", "completedOperation", "transactionSha512"}, &r)
+	obj, err := decodeRecord(raw, 128<<10, []string{"format", "authorization", "initialAnchorSha512", "manifest", "signature", "acceptedAt", "lastOperationAt", "maximumGeneration", "maintainerSha512", "helperSha512", "compatibilityEpoch", "sandboxApi", "state", "completedOperation", "transactionSha512"}, &r)
 	if err != nil || !jsonString(obj["signature"]) {
 		return Receipt{}, ErrState
 	}

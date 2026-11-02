@@ -322,7 +322,7 @@ func rootReceipt(t *testing.T, f capsuleFixture, anchorHash string) []byte {
 	if e := json.Unmarshal(f.capsule.Manifest, &m); e != nil {
 		t.Fatal(e)
 	}
-	raw, e := json.Marshal(desktopsandbox.Receipt{Format: 1, Authorization: "initial-digest", InitialAnchorSHA512: anchorHash, Manifest: base64.StdEncoding.EncodeToString(f.capsule.Manifest), Signature: "", AcceptedAt: time.Now().Add(-time.Minute).UnixMilli(), MaximumGeneration: m.Generation, MaintainerSHA512: m.Maintainer.SHA512, HelperSHA512: m.Helper.SHA512, CompatibilityEpoch: 1, SandboxAPI: 1, State: "active", CompletedOperation: "install", TransactionSHA512: testHash("completed initial transaction")})
+	raw, e := json.Marshal(desktopsandbox.Receipt{Format: 1, Authorization: "initial-digest", InitialAnchorSHA512: anchorHash, Manifest: base64.StdEncoding.EncodeToString(f.capsule.Manifest), Signature: "", AcceptedAt: time.Now().Add(-time.Minute).UnixMilli(), LastOperationAt: time.Now().Add(-time.Minute).UnixMilli(), MaximumGeneration: m.Generation, MaintainerSHA512: m.Maintainer.SHA512, HelperSHA512: m.Helper.SHA512, CompatibilityEpoch: 1, SandboxAPI: 1, State: "active", CompletedOperation: "install", TransactionSHA512: testHash("completed initial transaction")})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -704,5 +704,61 @@ func TestExplanationCannotChangeCompiledCapsuleOrPublicTrust(t *testing.T) {
 	}}
 	if _, e = ensure(embedded, InitialSetup, deps); e != nil {
 		t.Fatal(e)
+	}
+}
+
+func TestPythonReceiptUsesSeparateOperationClockAndRejectsOldWire(t *testing.T) {
+	f := makeCapsule(t, 1)
+	root := fixtureRoot(t)
+	seedInitialAnchor(t, f, root)
+	stage := filepath.Join(root, ".sandbox-staging")
+	anchor, e := os.ReadFile(filepath.Join(stage, "bootstrap-anchor.json"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = os.WriteFile(filepath.Join(root, "sandbox-maintainer"), f.capsule.Maintainer, 0o755); e != nil {
+		t.Fatal(e)
+	}
+	var wire map[string]any
+	if e = json.Unmarshal(rootReceipt(t, f, hashBuffer(anchor)), &wire); e != nil {
+		t.Fatal(e)
+	}
+	wire["lastOperationAt"] = time.Now().Add(48 * time.Hour).UnixMilli()
+	raw, _ := json.Marshal(wire)
+	if _, e = desktopsandbox.ParseReceipt(raw); e != nil {
+		t.Fatal(e)
+	}
+	path := filepath.Join(root, "sandbox-receipt.json")
+	if e = os.WriteFile(path, raw, 0o644); e != nil {
+		t.Fatal(e)
+	}
+	if out, fail, e := python(t, fixtureProgram(t, f.constants, root), nil); e != nil || len(out) == 0 {
+		t.Fatalf("Python rechecked expiry against last operation: %v %s", e, fail)
+	}
+	for _, kind := range []string{"missing", "null", "decreasing"} {
+		t.Run(kind, func(t *testing.T) {
+			changed := map[string]any{}
+			for k, v := range wire {
+				changed[k] = v
+			}
+			switch kind {
+			case "missing":
+				delete(changed, "lastOperationAt")
+			case "null":
+				changed["lastOperationAt"] = nil
+			case "decreasing":
+				changed["lastOperationAt"] = 1
+			}
+			bad, _ := json.Marshal(changed)
+			if _, e = desktopsandbox.ParseReceipt(bad); e == nil {
+				t.Fatal("Go accepted invalid clock wire")
+			}
+			if e = os.WriteFile(path, bad, 0o644); e != nil {
+				t.Fatal(e)
+			}
+			if out, _, e := python(t, fixtureProgram(t, f.constants, root), nil); e == nil || len(out) > 0 {
+				t.Fatal("Python accepted incompatible operation-clock state")
+			}
+		})
 	}
 }

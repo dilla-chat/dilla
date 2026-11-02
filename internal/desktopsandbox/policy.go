@@ -30,7 +30,7 @@ func VerifyCapsule(input Capsule, trust Trust, receipt Receipt, now time.Time) (
 	}
 	// Publication skew is independent of protected history. Even a one-ms
 	// rollback must not become a new lower floor through repeated admissions.
-	if !validMoment(now.UnixMilli()) || (!absent(receipt) && now.UnixMilli() < receipt.AcceptedAt) {
+	if !validMoment(now.UnixMilli()) || (!absent(receipt) && now.UnixMilli() < receipt.LastOperationAt) {
 		return VerifiedCapsule{}, ErrTime
 	}
 	if trust.Removing != nil {
@@ -150,7 +150,7 @@ func receiptManifest(r Receipt) ([]byte, []byte, Manifest, error) {
 		return nil, nil, Manifest{}, ErrState
 	}
 	sig, e := decodeBase64(r.Signature, 64)
-	if e != nil || r.Format != 1 || !validMoment(r.AcceptedAt) || r.MaximumGeneration != m.Generation || r.MaintainerSHA512 != m.Maintainer.SHA512 || r.HelperSHA512 != m.Helper.SHA512 || r.CompatibilityEpoch != 1 || r.SandboxAPI != 1 || !validDigest(r.InitialAnchorSHA512) || !validDigest(r.TransactionSHA512) {
+	if e != nil || r.Format != 1 || !validMoment(r.AcceptedAt) || !validMoment(r.LastOperationAt) || r.LastOperationAt < r.AcceptedAt || r.MaximumGeneration != m.Generation || r.MaintainerSHA512 != m.Maintainer.SHA512 || r.HelperSHA512 != m.Helper.SHA512 || r.CompatibilityEpoch != 1 || r.SandboxAPI != 1 || !validDigest(r.InitialAnchorSHA512) || !validDigest(r.TransactionSHA512) {
 		return nil, nil, Manifest{}, ErrState
 	}
 	if (r.State == "active" && r.CompletedOperation != "install") || (r.State == "removed" && r.CompletedOperation != "remove") || (r.State != "active" && r.State != "removed") {
@@ -222,7 +222,7 @@ func verifyPending(c Capsule, m Manifest, trust Trust, r Receipt, now time.Time)
 			return time.Time{}, "", ErrState
 		}
 	} else {
-		if p.AcceptedAt < r.AcceptedAt {
+		if p.AcceptedAt < r.LastOperationAt {
 			return time.Time{}, "", ErrTime
 		}
 		_, _, oldManifest, _ := receiptManifest(r)
