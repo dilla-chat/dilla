@@ -52,6 +52,8 @@ export const PATH_RULES = [
   { areas: ['web'], patterns: ['internal/desktopsandbox/native_root_linux_test.go'] },
   // internal/desktopsandbox/transaction_linux_test.go runs the frontend bootstrap for interop coverage.
   { areas: ['go'], patterns: ['packages/desktop/native/linux-sandbox/frontend/bootstrap.py'] },
+  // internal/web/downloads_test.go verifies the embedded brand against this desktop asset.
+  { areas: ['go'], patterns: ['packages/desktop/assets/tray.png'] },
   // internal/api/invites_test.go (TestLandingTokensMatchMesh) reads dist/tokens.css.
   { areas: ['go'], patterns: ['packages/design-tokens/**'] },
   { areas: ['go'], patterns: ['packages/web/dist', 'packages/web/dist/**'] },
