@@ -92,6 +92,8 @@ jobs:
       - run: npm run test:install
       - run: bash deploy/install_bot_test.sh
       - if: needs.changes.outputs.web != 'false'
+        run: sudo apt-get update && sudo apt-get install -y libarchive-tools
+      - if: needs.changes.outputs.web != 'false'
         run: npm test
       - name: vectors are up to date
         if: needs.changes.outputs.web != 'false'
