@@ -242,25 +242,27 @@ test('native private NSIS payload passes unchanged Go ACL guards and refuses uns
    if (kind.startsWith('substituted-')) {
     const boundary = '  Push "$PLUGINSDIR\\payload"\n  Call PinPayloadDirectory\n  ; The atomic handle';
     assert.equal(functions.split(boundary).length, 2, 'inject exactly after actual atomic creation and before its second pin');
-    const marker = `  FileOpen $0 "${nsisEscapeString(substituted)}" w
+    const marker = (outcome: 'entered' | 'renamed' | 'observed' = 'observed') => `  FileOpen $0 "${nsisEscapeString(substituted)}" w
   IfErrors Fail
-  FileWrite $0 "observed"
+  FileWrite $0 "${outcome}"
   FileClose $0`;
     const injection = kind === 'substituted-acl' ? `
+${marker('entered')}
   ClearErrors
   Rename "$PLUGINSDIR\\payload" "$PLUGINSDIR\\original-payload"
   IfErrors blocked
   ; A successful rename is a security regression, even if a later check fails.
+${marker('renamed')}
   Call Fail
   blocked:
-${marker}
+${marker()}
   Call Fail
 ` : `
   FileOpen $0 "$PLUGINSDIR\\payload\\substituted" w
   IfErrors Fail
   FileWrite $0 "unexpected content"
   FileClose $0
-${marker}
+${marker()}
 `;
     functions = functions.replace(boundary, injection + boundary);
    }
