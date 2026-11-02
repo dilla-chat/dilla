@@ -51,8 +51,8 @@ function __accountEmit(stage:string,url:any='',method:any='OTHER',status=0,code=
  const opened=__accountFS.fstatSync(fd);if(!opened.isFile()||(before&&(opened.ino!==before.ino||opened.dev!==before.dev)))return;
  const line=JSON.stringify(event)+'\\n';if(opened.size+Buffer.byteLength(line)>32768)return;__accountFS.writeSync(fd,line);__accountSequence++;}catch{}finally{if(fd!==undefined)try{__accountFS.closeSync(fd);}catch{}}
 }
-function __accountFetch(ses:any,request:any,options:any){const started=Date.now();__accountEmit('fetch-begin',request,request.method);
- try{return ses.fetch(request,options).then((response:any)=>{__accountEmit('fetch-response',request,request.method,response.status,0,Date.now()-started);return response;},(error:any)=>{__accountEmit('fetch-reject',request,request.method,0,__accountCode(error),Date.now()-started);throw error;});}
+function __accountFetch(ses:any,request:any,options:any,forward?:()=>Promise<Response>){const started=Date.now();__accountEmit('fetch-begin',request,request.method);
+ try{return (forward?forward():ses.fetch(request,options)).then((response:any)=>{__accountEmit('fetch-response',request,request.method,response.status,0,Date.now()-started);return response;},(error:any)=>{__accountEmit('fetch-reject',request,request.method,0,__accountCode(error),Date.now()-started);throw error;});}
  catch(error){__accountEmit('fetch-reject',request,request.method,0,__accountCode(error),Date.now()-started);throw error;}}
 let __accountProbeWatching=false,__accountProbeUsed=false;
 function __accountWatchProbe(ses:any,instance:any){if(__accountRole!=='ordinary'||__accountProbeWatching)return;
@@ -88,7 +88,7 @@ dialog.showErrorBox=((title:string,content:string)=>{__accountFS.writeFileSync(_
 `);
   source = replaceBoundary(source, 'const ses = session.fromPartition(partitionFor(instance));', 'const ses = session.fromPartition(partitionFor(instance)); __accountObserveSession(ses, instance);');
   source = replaceBoundary(source, "windows.set(instance, win); windowModes.set(instance, 'starting');", "windows.set(instance, win); windowModes.set(instance, 'starting'); __accountObserveWindow(win);");
-  for (const request of ['request', 'forwarded']) source = replaceBoundary(source, `return ses.fetch(${request}, { bypassCustomProtocolHandlers: true });`, `return __accountFetch(ses, ${request}, { bypassCustomProtocolHandlers: true });`);
+  for (const request of ['request', 'forwarded']) source = replaceBoundary(source, `return fetchInstanceData(ses, ${request});`, `return __accountFetch(ses, ${request}, undefined, () => fetchInstanceData(ses, ${request}));`);
   source = replaceBoundary(source, 'callback({ cancel });', "if(cancel)__accountEmit('request-blocked',details.url,details.method,0,-20); callback({ cancel });");
   source = replaceBoundary(source, "const allowLoopback = !app.isPackaged && process.argv.includes('--allow-loopback');", 'const allowLoopback = true;');
   source = replaceBoundary(source, 'const updater = createUpdater(state => {', `const updater = createUpdater(state => { __accountFS.writeFileSync(__accountReports+'/update-'+app.getVersion()+'.json',JSON.stringify({pid:process.pid,version:app.getVersion(),state}));`);

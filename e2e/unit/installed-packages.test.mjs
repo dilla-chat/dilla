@@ -155,6 +155,11 @@ test('compiled installed startup recorder preserves actual fetch receiver, argum
     assert.ok(events.some(e => e.stage === 'load-failed' && e.code === -102));
     assert.ok(events.some(e => e.stage === 'renderer-gone' && e.code === 17));
     assert.doesNotMatch(raw, /PRIVATE_SECRET|SECRET|credential|token|https?:|response body/);
+    // The installed fixture records around the actual production helper, so
+    // tracing cannot accidentally restore the old ambient-cookie behavior.
+    const { fetchInstanceData } = await import('../../packages/desktop/src/request-forwarding.ts'); let forwardedCalls = 0;
+    const forwardingSession = { fetch(input, init) { assert.equal(this, forwardingSession); assert.equal(input, request); assert.deepEqual(init, { bypassCustomProtocolHandlers: true, credentials: 'omit', redirect: 'error', cache: 'no-store' }); forwardedCalls++; return Promise.resolve(response); } };
+    assert.equal(await diagnostic.fetch(forwardingSession, request, undefined, () => fetchInstanceData(forwardingSession, request)), response); assert.equal(forwardedCalls, 1);
     const diskFull = { ...fs, writeSync() { throw Object.assign(new Error('PRIVATE_SECRET disk failure'), { code: 'ENOSPC' }); } };
     const unavailable = runInNewContext(createRequire(import.meta.url)('esbuild').transformSync(fixtures.fixtureStartupDiagnosticsSource() + ';globalThis.compiled=__accountFetch', { loader: 'ts' }).code + ';compiled', { __accountFS: diskFull, __accountReports: root, __accountRole: 'ordinary', Buffer, URL, app: { getVersion: () => '1.0.1' }, Date });
     const untouched = new Response('still private');
@@ -207,7 +212,7 @@ test('actual installed main source records startup before requests without chang
   assert.equal(transformed.split('__accountObserveSession(ses, instance);').length - 1, 1);
   assert.equal(transformed.split('__accountObserveWindow(win);').length - 1, 1);
   assert.ok(transformed.indexOf('__accountObserveSession(ses, instance);') < transformed.indexOf('await ses.protocol.handle('));
-  for (const request of ['request', 'forwarded']) assert.ok(transformed.includes(`return __accountFetch(ses, ${request}, { bypassCustomProtocolHandlers: true });`));
+  for (const request of ['request', 'forwarded']) assert.ok(transformed.includes(`return __accountFetch(ses, ${request}, undefined, () => fetchInstanceData(ses, ${request}));`));
   assert.equal(transformed.split('ses.webRequest.onBeforeRequest(').length, source.split('ses.webRequest.onBeforeRequest(').length);
   const require = createRequire(import.meta.url); assert.doesNotThrow(() => require('esbuild').transformSync(transformed, { loader: 'ts', format: 'cjs' }));
   assert.throws(() => fixtureMainSource(source.replace('const ses = session.fromPartition(partitionFor(instance));', 'const ses = changed();'), { product: 'OwnedFixture', profile: '/fixture/profile', reports: '/fixture/reports', scheme: 'dilla-owned', version: '1.0.1' }), /boundary changed/);
