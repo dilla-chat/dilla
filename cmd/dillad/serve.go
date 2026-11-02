@@ -131,6 +131,7 @@ func newMetrics() *obs.Metrics {
 // binary's surface and an end-to-end test's surface are one thing.
 func runServe(args []string, stdout, stderr io.Writer) error {
 	fs, cfgPath := newFlagSet("serve", stderr)
+	desktopDownloads := fs.Bool("desktop-downloads", false, "serve desktop downloads for browser navigation (enable only after desktop acceptance)")
 	if err := parse(fs, args, stdout); err != nil {
 		return err
 	}
@@ -296,6 +297,7 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 		Config: cfg, Repo: repo, Clock: clock.System(), Log: log,
 		Metrics: metrics, Health: health, ScrapeToken: os.Getenv(metricsTokenEnv),
 		Blobs: blobStore, Relay: relayRev,
+		DesktopDownloads: *desktopDownloads,
 	}
 	if callSFU != nil {
 		opts.SFU = callSFU

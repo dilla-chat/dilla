@@ -64,6 +64,7 @@ type file struct {
 	data              []byte
 	contentType, etag string
 	immutable         bool
+	noStore           bool
 }
 
 // Handler serves one verified client tree; it is safe for concurrent use and immutable after New.
@@ -247,27 +248,34 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	http.NotFound(w, r)
 }
 
-func (h *Handler) serve(w http.ResponseWriter, r *http.Request, f file) {
+func (h *Handler) securityHeaders(w http.ResponseWriter, r *http.Request) {
 	headers := w.Header()
 	headers.Set("X-Content-Type-Options", "nosniff")
 	headers.Set("Referrer-Policy", "no-referrer")
 	headers.Set("X-Frame-Options", "DENY")
 	headers.Set("Permissions-Policy", permissionsPolicy)
-	headers.Set("ETag", f.etag)
-	if f.immutable {
-		headers.Set("Cache-Control", "public, max-age=31536000, immutable")
-	} else {
-		headers.Set("Cache-Control", "no-cache")
-	}
 	csp := cspHead
 	if dnsHost.MatchString(r.Host) || ipv6Host.MatchString(r.Host) {
 		csp += " ws://" + r.Host + " wss://" + r.Host
 	}
 	headers.Set("Content-Security-Policy", csp+cspTail)
+}
+
+func (h *Handler) serve(w http.ResponseWriter, r *http.Request, f file) {
+	h.securityHeaders(w, r)
+	headers := w.Header()
+	headers.Set("ETag", f.etag)
+	if f.noStore {
+		headers.Set("Cache-Control", "no-store")
+	} else if f.immutable {
+		headers.Set("Cache-Control", "public, max-age=31536000, immutable")
+	} else {
+		headers.Set("Cache-Control", "no-cache")
+	}
 	for _, validator := range strings.Split(r.Header.Get("If-None-Match"), ",") {
 		validator = strings.TrimSpace(validator)
 		validator = strings.TrimPrefix(validator, "W/")
-		if validator == "*" || validator == f.etag {
+		if !f.noStore && (validator == "*" || validator == f.etag) {
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
@@ -283,13 +291,17 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, f file) {
 // Fallback sends paths routed for their method, or under a reserved prefix, to the mux.
 // It registers nothing and checks the mux on each request, so later registrations work.
 func (h *Handler) Fallback(mux *server.Mux) http.Handler {
+	return h.fallback(mux, h)
+}
+
+func (h *Handler) fallback(mux *server.Mux, navigation http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, pattern := mux.Mux().Handler(r)
-		if pattern != "" || reserved(clean(r.URL.Path)) {
+		if pattern != "" || reserved(clean(r.URL.Path)) || (navigation != h && (r.URL.Path == "/desktop-auth" || strings.HasPrefix(r.URL.Path, "/desktop-auth/"))) {
 			mux.ServeHTTP(w, r)
 			return
 		}
-		h.ServeHTTP(w, r)
+		navigation.ServeHTTP(w, r)
 	})
 }
 

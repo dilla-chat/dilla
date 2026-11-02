@@ -2,7 +2,8 @@
 
 Status: **NO-GO for desktop-only launch**. The approved 2026-10-31 plan replaces the
 2026-10-21 Linux-first/server-loaded plan. Linux, Windows and macOS must be accepted
-together; mobile, package-manager distributions and global push-to-talk are excluded.
+together. Linux also requires stock DEB/RPM and AUR package acceptance; mobile and
+global push-to-talk are excluded.
 
 ## Implemented foundation
 
@@ -127,9 +128,16 @@ findings; both now have regression-tested fixes. Release still requires approval
 of the final source tree and completion of every platform gate. Source approval
 does not substitute for native acceptance.
 
-After every gate passes, prepare migration instructions and download routes while
-preserving API/WSS, authentication handoff, invite routes and existing browser device
-data. Only then may browser visits become downloads. Desktop client and voice jobs replace the former browser compatibility matrix.
+Download routes and [migration instructions](../user/desktop.md#browser-migration-preparation-disabled)
+are prepared behind the explicit `--desktop-downloads` server flag, which defaults
+to false. The original browser client and test host remain the default. The static
+Signal page uses fixed GitHub beta download aliases and keeps the API/WSS, RTC,
+authentication handoff and invite routes. Existing browser storage stays reachable
+through an explicit one-hour same-origin migration preference, with the original
+trusted UI and asset URLs. It adds no device linking, key export or historical
+message transfer: desktop uses saved recovery-key enrolment and is a new device.
+Only after every desktop and release gate passes and the accepted beta is published
+may the flag be enabled and ordinary browser visits become downloads. Desktop client and voice jobs replace the former browser compatibility matrix.
 The encrypted-store/core-worker and media protocol harnesses remain on Chromium
 for shared security checks; browser authentication/invite ceremonies remain covered
 from Electron. Unsupported Firefox/WebKit engines are no longer installed in CI. No server rollout or browser retirement

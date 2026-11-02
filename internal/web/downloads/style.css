@@ -1,0 +1,22 @@
+/* Signal palette and JetBrains Mono match the existing client and invite page. */
+:root{color-scheme:dark;--bg:#08090B;--bg-2:#0B0D10;--surface:#0D1014;--fg:#E4E8EE;--fg-2:#8C939E;--accent:#5AA8E6;--hairline:#1A1D23}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;background:var(--bg);color:var(--fg);font-family:"JetBrains Mono",ui-monospace,"SFMono-Regular",Menlo,Consolas,"Liberation Mono",monospace;font-size:14px;line-height:1.65}
+.bar{display:flex;align-items:center;gap:8px;height:44px;padding:0 16px;background:var(--bg-2);border-bottom:1px solid var(--hairline);font-weight:700;letter-spacing:.14em}
+.bar img{display:block}
+main{max-width:58rem;margin:0 auto;padding:4rem 1.5rem}
+h1{margin:0;font-size:clamp(2rem,6vw,3rem);line-height:1.2;letter-spacing:-.04em}
+.intro{margin:.75rem 0 1.5rem;font-size:1.125rem;color:var(--fg)}
+p{max-width:70ch;color:var(--fg-2)}
+h2{margin:2.5rem 0 1rem;font-size:1.125rem;line-height:1.4}
+a{color:var(--accent);text-underline-offset:4px}
+a:focus-visible{outline:2px solid var(--fg);outline-offset:4px}
+.downloads{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 2rem;margin:0;padding:0;list-style:none}
+.downloads a{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:4px 1rem;min-height:72px;padding:12px 0;border-top:1px solid var(--hairline);text-decoration:none}
+.downloads a:hover,.downloads a:focus-visible{background:var(--surface)}
+.downloads strong{font-size:1rem;font-weight:600}
+.downloads span{color:var(--fg-2);font-size:.8125rem}
+.migration{margin-top:2.5rem;border-top:1px solid var(--hairline)}
+.migration-link{display:inline-block;min-height:44px;padding:10px 0;font-weight:600}
+.note{margin-top:0;font-size:.8125rem}
+@media(max-width:38rem){main{padding:2rem 1.25rem}.downloads{grid-template-columns:1fr}.downloads a{min-height:64px}}

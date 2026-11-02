@@ -16,6 +16,53 @@ Use the existing recovery/enrolment flow when testing a desktop device, and keep
 working browser device and your recovery key. A reload must preserve IndexedDB and
 OPFS; real enrolment/recovery acceptance is still required on every platform.
 
+## Browser migration preparation (disabled)
+
+The server has an explicit `dillad serve` flag, `--desktop-downloads`, which defaults
+to **false**. Do not enable it until Linux, Windows, both macOS architectures and
+all release acceptance gates pass, and the accepted desktop beta is published.
+The ordinary server and E2E test host still serve the original browser client.
+This preparation does not retire browser access or publish a desktop release.
+
+When selected after acceptance, normal browser navigation and `/download` serve a
+static Signal download page. Linux x64 AppImage, Windows x64 installer and macOS
+Intel/Apple Silicon DMGs link to the fixed public GitHub `desktop-beta` aliases.
+Downloads start only when a person follows a link. There is no instance-defined
+download host, update feed or executable remote UI. The existing API, gateway,
+RTC, invite content negotiation and browser sign-in handoff retain their routes.
+
+For an existing account, desktop is a **new device**. Sign in through the configured
+account flow, complete any required second factor, then use the **saved
+52-character recovery key** to enrol it. Password authentication alone cannot
+unlock the account's keys on a fresh desktop device. Backup codes replace a second
+factor; they are not the recovery key. This uses existing recovery-key enrolment,
+not device linking, key export or a transfer of browser storage.
+
+Messages sent before a new device joins are not shown on it. Keep the existing
+browser device until you have confirmed the desktop account, identity and the
+conversations available there. Keep the browser for older conversations you still
+need. Do not sign out, revoke or forget that browser device, or clear its site data,
+while it is needed. A reload retains the existing IndexedDB/OPFS locations.
+
+If the saved recovery key is unavailable, **keep the working browser device**.
+The download page's **Open existing browser device for migration** link goes to
+`/browser-migration`, sets a one-hour Secure, HttpOnly, SameSite=Lax UI preference
+cookie and redirects to `/` on the same origin. The complete original trusted
+client and its assets remain available at their original URLs, so existing device
+storage is reachable. The cookie contains only a UI selection; it confers no
+session, account or device authority. The page never reads or erases browser
+storage, and cannot reveal or export a lost recovery key. Browser chat compatibility
+is not a supported product surface after the eventual switch; this is retained
+migration access, renewable through the explicit entry while needed.
+
+`/download` always displays downloads, including during migration.
+`/browser-migration/exit` clears only that UI preference and redirects to
+`/download`; expiry or exit does not revoke the browser device or clear its data.
+The existing `dilla://invite/<HTTPS host[:port]>/<code>` grammar is reused for
+**Open Dilla desktop** on public invites when downloads are selected. It carries
+no credentials. Path-scoped instances still require connecting to their complete
+HTTPS instance URL and pasting the displayed code; no new deep-link format is added.
+
 ## Build and run from source
 
 Use the pinned Node and Rust versions in the repository, and the existing wasm build

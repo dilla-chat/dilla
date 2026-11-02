@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -111,22 +113,54 @@ h1{margin:0;font-size:1.375rem;line-height:1.3;font-weight:700;letter-spacing:.0
 <p class="label">Invite code</p>
 <code class="code">{{.Code}}</code>
 <p class="meta">{{if .ExpiresAt}}<time datetime="{{.ExpiresAt}}">{{.Expires}}</time>{{else}}{{.Expires}}{{end}} · {{.Uses}}</p>
-<a class="open" href="/welcome?invite={{.Code}}">Open dilla in this browser</a>
-<p class="note">Or paste the code into a dilla client for {{.Instance}}. This page never asks for a password.</p>
+{{if .DesktopDownloads}}
+{{if .DesktopInvite}}<a class="open" href="{{.DesktopInvite}}">Open Dilla desktop</a>{{end}}
+<p class="note"><a href="/download">Download Dilla desktop</a></p>
+<p class="note">Connect to {{.Instance}} and paste this invite code. This page never asks for a password.</p>
+{{else}}<a class="open" href="/welcome?invite={{.Code}}">Open dilla in this browser</a>
+<p class="note">Or paste the code into a dilla client for {{.Instance}}. This page never asks for a password.</p>{{end}}
 </main>
 </body></html>
 `))
 
 type landingData struct {
-	Instance    string
-	Community   string
-	Code        string
-	Title       string
-	Description string
-	ExpiresAt   string // the ISO instant, for <time datetime>; empty for an invite that never expires
-	Expires     string // "Expires in 23 hours" or "Expires on 2 January 2006 (UTC)"
-	Uses        string // "1 use left" or "2 uses left"
-	Font        string // the same-origin JetBrains Mono woff2, or "" for the system stack (R43)
+	Instance         string
+	Community        string
+	Code             string
+	Title            string
+	Description      string
+	ExpiresAt        string // the ISO instant, for <time datetime>; empty for an invite that never expires
+	Expires          string // "Expires in 23 hours" or "Expires on 2 January 2006 (UTC)"
+	Uses             string // "1 use left" or "2 uses left"
+	DesktopDownloads bool
+	DesktopInvite    template.URL // generated only by desktopInviteURL, never from request Host
+	Font             string       // the same-origin JetBrains Mono woff2, or "" for the system stack (R43)
+}
+
+// Match the existing desktop parser's dilla://invite/<host[:port]>/<code>
+// grammar. The configured instance domain is the only authority; request Host,
+// credentials, queries and fragments never enter this link. Path-scoped instances
+// have no representation in that parser and must use the displayed code.
+var desktopInviteHost = regexp.MustCompile(`^[A-Za-z0-9.\[\]:-]+$`)
+var desktopInviteCode = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+
+func desktopInviteURL(domain, code string) template.URL {
+	if !desktopInviteHost.MatchString(domain) || !desktopInviteCode.MatchString(code) {
+		return ""
+	}
+	u, err := url.Parse("https://" + domain + "/")
+	if err != nil || u.Host != domain || u.Hostname() == "" || strings.HasSuffix(u.Hostname(), ".") || u.User != nil || u.Path != "/" || u.RawQuery != "" || u.Fragment != "" {
+		return ""
+	}
+	if port := u.Port(); port != "" {
+		n, err := strconv.Atoi(port)
+		if err != nil || n > 65535 {
+			return ""
+		}
+	}
+	// This explicit trusted URL is needed because html/template blocks custom
+	// schemes. Both components above are restricted to the existing parser grammar.
+	return template.URL("dilla://invite/" + domain + "/" + code) //nolint:gosec // G203: validated fixed-scheme invite, no credentials or arbitrary URL
 }
 
 // landingExpiry words an expiry for a reader: under 48 hours the rounded-down
@@ -253,15 +287,17 @@ func (d Deps) InviteLanding(w http.ResponseWriter, r *http.Request) {
 		expiresAt, expires = time.Unix(invite.ExpiresAt, 0).UTC().Format(time.RFC3339), landingExpiry(invite.ExpiresAt, now)
 	}
 	if err := landingPage.Execute(w, landingData{
-		Instance:    d.Domain,
-		Community:   community,
-		Code:        r.PathValue("code"),
-		Title:       title,
-		Description: description,
-		ExpiresAt:   expiresAt,
-		Expires:     expires,
-		Uses:        uses,
-		Font:        d.LandingFont,
+		Instance:         d.Domain,
+		Community:        community,
+		Code:             r.PathValue("code"),
+		Title:            title,
+		Description:      description,
+		ExpiresAt:        expiresAt,
+		Expires:          expires,
+		Uses:             uses,
+		Font:             d.LandingFont,
+		DesktopDownloads: d.DesktopDownloads,
+		DesktopInvite:    desktopInviteURL(d.Domain, r.PathValue("code")),
 	}); err != nil {
 		d.logf(r, "api: render invite landing", "err", err)
 	}
