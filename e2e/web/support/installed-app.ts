@@ -6,6 +6,7 @@ import type { DesktopBridge } from '../../../packages/desktop/src/contract.ts';
 import { canonicalInstance } from '../../../packages/desktop/src/policy.ts';
 import { test as appTest, WAIT, copy } from './app.ts';
 import { assertInstalledFuses, createInstalledPackages, type InstalledPackages } from './installed-packages.ts';
+import { installedAccountDiagnostics } from './installed-diagnostics.ts';
 
 const pause = () => new Promise(done => setTimeout(done, 100));
 interface ProcessReport { pid: number; role: string; start: string | null; version: string; executable: string }
@@ -14,6 +15,7 @@ export class InstalledAccountApp {
   private readonly instance: string;
   private readonly browsers = new Map<number, Browser>();
   private readonly launchers: ChildProcess[] = [];
+  private expectedVersion = '1.0.0';
   context!: BrowserContext;
   page!: Page;
   constructor(packages: InstalledPackages, instance: string) { this.packages = packages; this.instance = instance; }
@@ -25,6 +27,7 @@ export class InstalledAccountApp {
     return this.waitForVersion(version);
   }
   async waitForVersion(version: string): Promise<BrowserContext> {
+    this.expectedVersion = version;
     const deadline = Date.now() + 180000; let last: unknown;
     while (Date.now() < deadline) {
       try {
@@ -54,6 +57,10 @@ export class InstalledAccountApp {
       await pause();
     }
     throw new Error('Installed renderer did not reach ' + version + ': ' + String(last));
+  }
+  async failureDiagnostics() {
+    return installedAccountDiagnostics({ reports: this.packages.reports, profile: this.packages.profile, installed: this.packages.installed,
+      platform: process.platform, expectedVersion: this.expectedVersion, previousPort: this.browsers.keys().next().value });
   }
   async prepareUpdate(): Promise<void> {
     await this.packages.setNext();
@@ -115,9 +122,19 @@ export const test = appTest.extend<{ installed: InstalledAccountApp }>({
     try { await use(installed); }
     finally {
       try {
+        if (info.status !== info.expectedStatus) {
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            const snapshot = await Promise.race([installed.failureDiagnostics(), new Promise(resolve => {
+              timer = setTimeout(() => resolve({ format: 1, status: 'unavailable' }), 2000);
+            })]);
+            await info.attach('Installed startup diagnostics', { body: JSON.stringify(snapshot), contentType: 'application/json' });
+          } catch { /* Optional diagnostics never replace the original test failure. */ }
+          finally { clearTimeout(timer); }
+        }
         await installed.stop();
         if (info.status !== info.expectedStatus) {
-          for (const [name, file] of [['Installed packaging log', join(packages.root, 'package.log')], ['Installed native error', join(packages.reports, 'native-error.json')]]) {
+          for (const [name, file] of [['Installed packaging log', join(packages.root, 'package.log')]]) {
             try { await info.attach(name, { body: await readFile(file), contentType: name.endsWith('error') ? 'application/json' : 'text/plain' }); } catch { /* A report may not have been produced. */ }
           }
         }
