@@ -236,7 +236,7 @@ export type SliceName = 'account' | 'connection' | 'communities' | `channels:${s
   | `communityChanges:${string}`
   | `afk:${string}`
   | 'dms' | 'devices' | 'badges' | 'notices' | 'settings' | 'trust' | 'sendBlocks' | 'search' | 'diagnostics'
-  | `typing:${string}` | `pins:${string}` | `tray:${string}` | 'call' | 'voice' | 'rings'
+  | `typing:${string}` | `pins:${string}` | `tray:${string}` | 'pendingAttachments' | 'call' | 'voice' | 'rings'
   | `permissions:${string}` | `roles:${string}` | `overwrites:${string}` | `bans:${string}` | `invites:${string}` | 'removals' | 'factors'
   | `slow:${string}` | `thread:${string}` | `threads:${string}`;
 export interface SliceTypes { account: AccountState; connection: ConnectionState; communities: CommunitySummary[];
@@ -244,6 +244,8 @@ export interface SliceTypes { account: AccountState; connection: ConnectionState
   [k: `channels:${string}`]: ChannelSummary[]; [k: `members:${string}`]: MemberSummary[]; [k: `presence:${string}`]: PresenceState; [k: `timeline:${string}`]: TimelineState;
   [k: `afk:${string}`]: AFKState | null;
   [k: `pins:${string}`]: PinnedItem[]; [k: `tray:${string}`]: TrayItem[];
+  /** Whether any conversation retains a file tray; no file data or descriptors. */
+  pendingAttachments: boolean;
   [k: `typing:${string}`]: TypingState[];
   [k: `permissions:${string}`]: CommunityAccess; [k: `roles:${string}`]: RoleSummary[];
   /** channel id (hex) → its overwrites; a channel with none is absent. */
