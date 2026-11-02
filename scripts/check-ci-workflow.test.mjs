@@ -47,7 +47,8 @@ test('Linux sandbox foundation has independent native Ubuntu lanes ahead of desk
   assert.match(body, /os: ubuntu-22\.04, lane: namespace/);
   assert.match(body, /os: ubuntu-24\.04, lane: managed/);
   assert.match(body, /xvfb-run -a dbus-run-session -- node --test packages\/desktop\/test\/native\/linux-sandbox-foundation\.test\.mjs/);
-  assert.match(body, /- if: always\(\)\n        uses: actions\/upload-artifact@/);
+  assert.match(body, /id: sandbox_foundation/);
+  assert.match(body, /steps\.sandbox_foundation\.outcome\)\n        uses: actions\/upload-artifact@/);
   assert.match(REAL_CI, /  desktop:\n    needs: \[[^\]\n]*\blinux-sandbox-foundation\]/);
 });
 
@@ -66,11 +67,13 @@ test('Linux sandbox foundation rejects omitted lanes, fake proofs and delayed or
     ['run: npm ci', 'run: npm install'],
     ['node --test packages/desktop/test/native/linux-sandbox-foundation.test.mjs', 'node --test --test-name-pattern=kernel packages/desktop/test/native/linux-sandbox-foundation.test.mjs'],
     ['DILLA_LINUX_SANDBOX_FOUNDATION_LANE: ${{ matrix.lane }}', 'DILLA_LINUX_SANDBOX_FOUNDATION_LANE: omitted'],
-    ['      - run: xvfb-run', '      - if: false\n        run: xvfb-run'],
+    ['      - id: sandbox_foundation\n        run: xvfb-run', '      - id: sandbox_foundation\n        if: false\n        run: xvfb-run'],
     ['    steps:', '    env:\n      APPIMAGE_EXTRACT_AND_RUN: 1\n    steps:'],
     ['          sudo apt-get update', '          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0\n          sudo apt-get update'],
     ['          if-no-files-found: error', '          if-no-files-found: ignore'],
-    ['      - if: always()\n        uses: actions/upload-artifact@', '      - uses: actions/upload-artifact@'],
+    ["      - if: always() && contains(fromJSON('[\"success\",\"failure\",\"cancelled\"]'), steps.sandbox_foundation.outcome)\n        uses: actions/upload-artifact@", '      - uses: actions/upload-artifact@'],
+    ["steps.sandbox_foundation.outcome)","steps.sandbox_maintenance.outcome)"],
+    ["always() && contains(fromJSON('[\"success\",\"failure\",\"cancelled\"]'), steps.sandbox_foundation.outcome)","always()"],
   ]) {
     const changed = body.replace(before, after); assert.notEqual(changed, body, before);
     assert.ok(checkWorkflow(fixture(GOOD.replace(body, changed))).some(problem => problem.includes('Linux sandbox foundation')), before);

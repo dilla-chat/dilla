@@ -48,6 +48,8 @@ export const PATH_RULES = [
     'scripts/gen-profile-text-tables.mjs', 'internal/auth/profile_tables.go', 'internal/auth/profile_text.go', 'internal/auth/testdata/rgi-zwj-sequences.txt',
     'packages/client-core/src/profile-tables.ts', 'packages/client-core/src/profile-text.ts',
   ] },
+  // Portable maintenance output privacy audit reads this exact native test source.
+  { areas: ['web'], patterns: ['internal/desktopsandbox/native_root_linux_test.go'] },
   // internal/desktopsandbox/transaction_linux_test.go runs the frontend bootstrap for interop coverage.
   { areas: ['go'], patterns: ['packages/desktop/native/linux-sandbox/frontend/bootstrap.py'] },
   // internal/api/invites_test.go (TestLandingTokensMatchMesh) reads dist/tokens.css.

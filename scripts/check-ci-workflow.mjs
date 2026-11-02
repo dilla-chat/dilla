@@ -725,10 +725,11 @@ function checkLinuxSandboxFoundationJob(jobs, problems) {
     ...SANDBOX_MAINTENANCE_CONTROLS.split('\n').map(line => line.trim()),
     ...SANDBOX_MAINTENANCE_CLEANUP.split('\n').map(line => line.trim()),
     ...SANDBOX_MAINTENANCE_ARTIFACT.split('\n').map(line => line.trim()),
-    "- run: xvfb-run -a dbus-run-session -- node --test packages/desktop/test/native/linux-sandbox-foundation.test.mjs",
+    "- id: sandbox_foundation",
+    "run: xvfb-run -a dbus-run-session -- node --test packages/desktop/test/native/linux-sandbox-foundation.test.mjs",
     "env:",
     "DILLA_LINUX_SANDBOX_FOUNDATION_LANE: ${{ matrix.lane }}",
-    "- if: always()",
+    "- if: always() && contains(fromJSON('[\"success\",\"failure\",\"cancelled\"]'), steps.sandbox_foundation.outcome)",
     "uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7",
     "with:",
     "name: linux-sandbox-foundation-${{ matrix.lane }}",
@@ -869,7 +870,7 @@ export function checkWorkflow(root) {
       // Preserve only the bounded sandbox observation file after a failed
       // native test. This action cannot execute or bypass an acceptance step.
       if (what === 'if: always()' && currentJob === 'linux-sandbox-foundation' && workflowLines.slice(i, i + 6).join('\n') === [
-        '      - if: always()',
+        "      - if: always() && contains(fromJSON('[\"success\",\"failure\",\"cancelled\"]'), steps.sandbox_foundation.outcome)",
         '        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7',
         '        with:',
         '          name: linux-sandbox-foundation-${{ matrix.lane }}',

@@ -6,7 +6,7 @@ import {createHash} from 'node:crypto';
 import {lstat,mkdtemp,readFile,realpath,rm,mkdir,writeFile} from 'node:fs/promises';
 import {isAbsolute,join,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {MAINTENANCE_ROOT,maintenanceCommands,verifyMaintenanceProof,STAGING_PROGRAM,preserveMaintenanceFailure} from '../support/linux-sandbox-maintenance.mjs';
+import {MAINTENANCE_ROOT,maintenanceCommands,verifyMaintenanceProof,STAGING_PROGRAM,preserveMaintenanceFailure,maintenanceCommandFailure,captureMaintenanceFailure} from '../support/linux-sandbox-maintenance.mjs';
 
 const repository=resolve(import.meta.dirname,'../../../..');
 const fixture=fileURLToPath(new URL('../fixtures/linux-sandbox-maintenance/',import.meta.url));
@@ -23,7 +23,7 @@ async function ciBoundary(){
 async function absent(path){try{await lstat(path);return false;}catch(error){if(error.code==='ENOENT')return true;throw error;}}
 function command(program,args,options={}){
  const result=spawnSync(program,args,{cwd:repository,env:process.env,encoding:'utf8',timeout:310_000,maxBuffer:1<<20,...options});
- if(result.error||result.signal||result.status!==0)throw Error('Maintenance fixture command failed ('+(Number.isInteger(result.status)?result.status:'unavailable')+')');return result.stdout;
+ if(result.error||result.signal||result.status!==0)throw maintenanceCommandFailure(result);return result.stdout;
 }
 function privileged(args,input){return command('/usr/bin/sudo',args,{env:safeEnv,...(input===undefined?{}:{input})});}
 async function policy(){
@@ -52,9 +52,9 @@ export async function runMaintenance(t){
   proof.stage='kernel';const observed=verifyMaintenanceProof(privileged(commands.at(-2)));
   proof.stage='policy';assert.deepEqual(await policy(),before,'host security policy changed');for(const path of ['/usr/lib/dilla/appimage','/usr/lib/dilla/native'])assert.equal(await absent(path),true);
   proof.kernel=observed;proof.status='passed';proof.stage='complete';
- }catch(error){failure=error;proof.primaryFailure=true;}finally{
+ }catch(error){failure=captureMaintenanceFailure(proof,error);}finally{
   failure=await preserveMaintenanceFailure(failure,[async()=>{
-   if(attempted){try{await cleanupMaintenance();assert.equal(await absent(MAINTENANCE_ROOT),true);}catch{proof.cleanupFailure=true;proof.status='failed';throw Error('Maintenance fixture cleanup failed');}}
+   if(attempted){try{await cleanupMaintenance();assert.equal(await absent(MAINTENANCE_ROOT),true);}catch(error){proof.cleanupFailure=true;proof.status='failed';if(error.maintenanceDiagnostic)proof.cleanupDiagnostic=error.maintenanceDiagnostic;throw Error('Maintenance fixture cleanup failed');}}
   },async()=>{
    const records=resolve(import.meta.dirname,'../..','test-results');await mkdir(records,{recursive:true});await writeFile(join(records,'linux-sandbox-maintenance-managed.json'),JSON.stringify(proof,null,2)+'\n');
   },()=>rm(build,{recursive:true,force:true})]);

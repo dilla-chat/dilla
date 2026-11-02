@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { areasFor, classifyFile, computeAreas, gateExpression, JOB_GATES, jobRuns, reachableOutputs, trackedFiles } from './ci-areas.mjs';
+import { areasFor, classifyFile, computeAreas, gateExpression, JOB_GATES, PATH_RULES, jobRuns, reachableOutputs, trackedFiles } from './ci-areas.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./ci-areas.mjs', import.meta.url));
 const REPO_ROOT = join(dirname(SCRIPT), '..');
@@ -208,6 +208,14 @@ function relativeReads(file, text) {
   }
   return reads.filter((read) => read.startsWith('..'));
 }
+
+test('native maintenance diagnostic audit follows its exact Go source dependency',()=>{
+ const path='internal/desktopsandbox/native_root_linux_test.go';assert.equal(areasFor([path]).web,true);
+ assert.equal(areasFor(['internal/desktopsandbox/another_native_test.go']).web,false);
+ const index=PATH_RULES.findIndex(rule=>rule.patterns.length===1&&rule.patterns[0]===path&&rule.areas.join(',')==='web');assert.ok(index>=0);
+ const [rule]=PATH_RULES.splice(index,1);
+ try{assert.equal(areasFor([path]).web,false,'omitting the exact dependency loses the privacy audit consumer');}finally{PATH_RULES.splice(index,0,rule);}
+});
 
 test('every path the code reads from another place is covered by a rule', () => {
   const found = [];

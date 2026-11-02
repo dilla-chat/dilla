@@ -199,3 +199,30 @@ test('a replacement lifecycle lock or foreign lifecycle record cannot authorize 
 test('cleanup before initialization leaves a closed admission tombstone that rejects a late initializer',{skip:process.platform!=='linux'},async t=>{
  const f=await fixture(t);pass(f.run('cleanup'));refused(f.run('init'));await assert.rejects(stat(f.root),{code:'ENOENT'});const state=JSON.parse(await readFile(join(f.base,'lifecycle/state.json'),'utf8'));assert.equal(state.phase,'closed');
 });
+
+test('actual failing child retains audited native assertion and syscall reason in proof and TAP without raw private output',async t=>{
+ const {maintenanceCommandFailure,preserveMaintenanceFailure,captureMaintenanceFailure}=await import('./support/linux-sandbox-maintenance.mjs');
+ const output='=== RUN   TestDisposableRootTransaction\n    native_root_linux_test.go:801: invalid Linux sandbox protected state\n    native_root_linux_test.go:802: open /usr/lib/dilla-sandbox-maintenance-ci/appimage/chrome-sandbox: permission denied\n--- FAIL: TestDisposableRootTransaction (0.01s)\nPRIVATE_FIXTURE_KEY=secret-private-material\n';
+ const result=spawnSync(process.execPath,['-e','process.stdout.write('+JSON.stringify(output)+');process.stderr.write("SECRET_ENV=unrelated\\n");process.exit(1)'],{encoding:'utf8'});
+ const original=maintenanceCommandFailure(result),proof={stage:'kernel',primaryFailure:false};assert.equal(captureMaintenanceFailure(proof,original),original);
+ const base=await mkdtemp(join(tmpdir(),'native-failure-proof-'));t.after(()=>rm(base,{recursive:true,force:true}));const file=join(base,'proof.json');await writeFile(file,JSON.stringify(proof),{mode:0o600});const rendered=await readFile(file,'utf8');assert.equal(JSON.parse(rendered).primaryFailure,true);
+ assert.equal(original.maintenanceDiagnostic.exitCode,1);assert.match(rendered,/invalid Linux sandbox protected state/);assert.match(rendered,/permission denied/);assert.match(rendered,/801/);assert.match(rendered,/TestDisposableRootTransaction/);
+ assert.doesNotMatch(rendered,/PRIVATE_FIXTURE_KEY|secret-private-material|SECRET_ENV|unrelated/);
+ const actions=[];assert.equal(await preserveMaintenanceFailure(original,[()=>{actions.push('cleanup');throw Error('cleanup');},()=>{actions.push('proof');t.diagnostic(rendered);}]),original);assert.deepEqual(actions,['cleanup','proof']);
+});
+test('native diagnostics enforce finite output bounds, safe signal codes and explicit unknown/truncated markers',async()=>{
+ const {maintenanceCommandFailure}=await import('./support/linux-sandbox-maintenance.mjs');
+ for(const result of [{status:null,signal:'SIGTERM',error:{code:'ETIMEDOUT'},stdout:'x'.repeat(100000),stderr:'secret'}, {status:1,signal:'secret-signal',error:{code:'SECRET'},stdout:'native_root_linux_test.go:99: PRIVATE_SECRET\n'},{status:1,stdout:'native_root_linux_test.go:12: operation not permitted\n'.repeat(5000)}]){
+  const value=maintenanceCommandFailure(result).maintenanceDiagnostic,raw=JSON.stringify(value);assert.ok(Buffer.byteLength(raw)<=65536);assert.doesNotMatch(raw,/PRIVATE_SECRET|SECRET|secret-signal/);assert.equal(value.format,1);assert.ok(value.entries.length<=128);assert.equal(typeof value.unknownLines,'number');assert.match(value.unknownSha256,/^[a-f0-9]{64}$/);
+ }
+ const timed=maintenanceCommandFailure({status:null,signal:'SIGTERM',error:{code:'ETIMEDOUT'},stdout:'x'.repeat(100000)}).maintenanceDiagnostic;assert.equal(timed.truncated,true);assert.equal(timed.signal,'SIGTERM');assert.equal(timed.spawnError,'ETIMEDOUT');
+});
+
+test('native failure output audit covers every current fixed assertion without admitting arbitrary text',async()=>{
+ const {AUDITED_NATIVE_REASONS,maintenanceCommandFailure}=await import('./support/linux-sandbox-maintenance.mjs');
+ const source=await readFile(new URL('../../../internal/desktopsandbox/native_root_linux_test.go',import.meta.url),'utf8');
+ assert.doesNotMatch(source,/t\.(?:Fatalf|Errorf|Logf|Log)\(/);
+ for(const match of source.matchAll(/t\.Fatal\("([^"\n]*)"/g))assert.ok(AUDITED_NATIVE_REASONS.has(match[1]),'unaudited fixed assertion');
+ const value=maintenanceCommandFailure({status:1,stdout:'native_root_linux_test.go:99: '+('fixed crash point not reached '.repeat(100))+'permission denied\nnative_root_linux_test.go:100: SECRET_ENV=private\n'}).maintenanceDiagnostic;
+ assert.equal(value.entries[0].kind,'unrecognized-assertion');assert.equal(value.entries[1].kind,'unrecognized-assertion');assert.doesNotMatch(JSON.stringify(value),/SECRET_ENV|private/);
+});

@@ -700,10 +700,11 @@ jobs:
           path: packages/desktop/test-results/linux-sandbox-maintenance-managed.json
           if-no-files-found: error
           retention-days: 3
-      - run: xvfb-run -a dbus-run-session -- node --test packages/desktop/test/native/linux-sandbox-foundation.test.mjs
+      - id: sandbox_foundation
+        run: xvfb-run -a dbus-run-session -- node --test packages/desktop/test/native/linux-sandbox-foundation.test.mjs
         env:
           DILLA_LINUX_SANDBOX_FOUNDATION_LANE: ${{ matrix.lane }}
-      - if: always()
+      - if: always() && contains(fromJSON('["success","failure","cancelled"]'), steps.sandbox_foundation.outcome)
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: linux-sandbox-foundation-${{ matrix.lane }}
