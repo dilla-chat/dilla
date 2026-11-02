@@ -1,4 +1,4 @@
-# Temporary focused native mutex diagnostics; not installer or release acceptance.
+# Temporary focused native recovery diagnostics; not installer or release acceptance.
 name: Windows installer probe
 on:
   push:
@@ -19,5 +19,5 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
-      - name: Native Global mutex contention, abandonment and security diagnostics
-        run: go test -count=1 -v -timeout=2m -run '^TestGlobalOperationMutex' ./packages/desktop/native/windows-launcher
+      - name: Native recovery file identities, sharing, rollback and mutex diagnostics
+        run: go test -count=1 -failfast -v -timeout=2m ./internal/desktoplaunch ./packages/desktop/native/windows-launcher
