@@ -2,6 +2,7 @@ package desktoplaunch
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -149,7 +150,7 @@ func (f *FileGuard) CompareInitialPrefix(expected io.Reader) error {
 func readInitialDirectory(file *os.File, visit func(os.DirEntry) error) (err error) {
 	enumeration, err := openInitialEnumeration(file)
 	if err != nil {
-		return err
+		return fmt.Errorf("initial enumeration reopen: %w", err)
 	}
 	defer func() { err = errors.Join(err, enumeration.Close()) }()
 	for {
@@ -163,7 +164,7 @@ func readInitialDirectory(file *os.File, visit func(os.DirEntry) error) (err err
 			return nil
 		}
 		if readErr != nil {
-			return readErr
+			return fmt.Errorf("initial enumeration read: %w", readErr)
 		}
 	}
 }
