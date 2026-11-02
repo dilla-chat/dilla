@@ -159,7 +159,11 @@ const UNRUN_READERS = ['e2e/scripts/shoot-docs.test.mjs'];
 const READER_AREA = { internal: 'go', cmd: 'go', packages: 'web', core: 'core', testkit: 'core', e2e: 'e2e' };
 // This build-tagged Go test runs only in web-build/go-release, both gated by the web area.
 // A local generated dist must not make the scanner mistake it for an ordinary Go-job reader.
-const READER_PATH_AREA = { 'internal/web/webdist_test.go': 'web' };
+const READER_PATH_AREA = {
+  'internal/web/webdist_test.go': 'web',
+  // Desktop units run in the reusable desktop workflow, whose real gate is e2e.
+  'packages/desktop/test/linux-appimage-launcher.test.ts': 'e2e',
+};
 
 function relativeReads(file, text) {
   const reads = [];

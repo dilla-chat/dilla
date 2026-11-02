@@ -1,12 +1,92 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile, mkdtemp, rm, realpath } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, symlink, mkdtemp, rm, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
+import { spawnSync } from 'node:child_process';
+// @ts-expect-error test tooling is JavaScript
+import { compileWindowsNSIS, withInitialInstallDiagnostics } from './support/windows-nsis.mjs';
 const require = createRequire(import.meta.url);
 const sourcePath = new URL('../build/windows-installer.nsi', import.meta.url);
 function body(source: string, name: string): string { const match = new RegExp(`Function ${name}\\r?\\n([\\s\\S]*?)FunctionEnd`).exec(source); assert.ok(match, `missing ${name}`); return match[1]; }
+async function compileCheckPathProbe(directory: string, target: string, name: string): Promise<string> {
+ const original = await readFile(sourcePath, 'utf8'), check = body(original.replaceAll('${Prefix}', ''), 'CheckPath');
+ const { nsisEscapeString } = require('app-builder-lib/out/targets/nsis/nsisScriptGenerator');
+ return compileWindowsNSIS({ directory, archive: join(directory, 'unused.7z'), name, transform: () => `
+Name "Private Dilla path boundary"
+RequestExecutionLevel user
+SilentInstall silent
+!include "LogicLib.nsh"
+!include "FileFunc.nsh"
+Function Fail
+ SetErrorLevel 2
+ Quit
+FunctionEnd
+Function CheckPath
+${check}
+FunctionEnd
+Section
+ Push "${nsisEscapeString(target)}"
+ Call CheckPath
+ SetErrorLevel 0
+SectionEnd
+` });
+}
+async function compileDiagnosticBranchProbe(directory: string, equal: boolean): Promise<string> {
+ const original = await readFile(sourcePath, 'utf8'), source = withInitialInstallDiagnostics(original).source;
+ const guard = /StrCmp \$0 \$INSTDIR \+2\r?\n\s+Call FixtureRefusal\d+/.exec(body(source.replaceAll('${Prefix}', ''), 'CheckOwnedRoot'));
+ assert.ok(guard, 'actual relative owned-root guard retained');
+ const wrapper = /Call (FixtureRefusal\d+)/.exec(guard[0])![1];
+ return compileWindowsNSIS({ directory, archive: join(directory, 'unused.7z'), name: 'diagnostic-branch-' + equal + '.exe', transform: () => `
+Name "Private Dilla diagnostic branch"
+RequestExecutionLevel user
+SilentInstall silent
+Var FixtureFailureSite
+Function Fail
+ SetErrorLevel 2
+ Quit
+FunctionEnd
+Function ${wrapper}
+${body(source, wrapper)}
+FunctionEnd
+Section
+ StrCpy $INSTDIR "private-fixed-value"
+ StrCpy $0 "${equal ? 'private-fixed-value' : 'private-mismatch'}"
+ ${guard[0]}
+ SetErrorLevel 0
+SectionEnd
+` });
+}
+test('the actual extracted NSIS CheckPath compiles with the pinned System plugin', async () => {
+ const root = await realpath(await mkdtemp(join(tmpdir(), 'dilla-check-path-compile-')));
+ try {
+  const executable = await compileCheckPathProbe(root, join(root, 'missing'), 'check-path.exe');
+  assert.equal((await readFile(executable)).subarray(0, 2).toString(), 'MZ');
+  assert.equal((await readFile(await compileDiagnosticBranchProbe(root, true))).subarray(0, 2).toString(), 'MZ');
+ } finally { await rm(root, { recursive: true, force: true }); }
+});
+test('native diagnostic refusal wrappers preserve the actual owned-root +2 branch for success and refusal', { skip: process.platform !== 'win32', timeout: 30000 }, async () => {
+ const root = await realpath(await mkdtemp(join(tmpdir(), 'dilla-diagnostic-branch-')));
+ try {
+  for (const equal of [true, false]) {
+   const executable = await compileDiagnosticBranchProbe(root, equal), result = spawnSync(executable, ['/S'], { timeout: 10000, windowsHide: true, stdio: 'pipe', maxBuffer: 1024 });
+   assert.equal(result.status, equal ? 0 : 2, `relative owned-root branch ${equal ? 'success' : 'refusal'}: status=${result.status}`);
+  }
+ } finally { await rm(root, { recursive: true, force: true }); }
+});
+test('native NSIS CheckPath allows owned existing/missing paths and refuses an owned junction', { skip: process.platform !== 'win32', timeout: 30000 }, async () => {
+ const root = await realpath(await mkdtemp(join(tmpdir(), 'dilla-check-path-native-')));
+ try {
+  const owned = join(root, 'owned'), junction = join(root, 'junction'); await mkdir(owned); await writeFile(join(owned, 'owned-file'), 'private scratch');
+  await symlink(owned, junction, 'junction');
+  for (const [label, path, expected] of [['existing', owned, 0], ['missing-file', join(owned, 'missing'), 0], ['missing-parent', join(owned, 'missing/child'), 0], ['junction', junction, 2]] as const) {
+   const executable = await compileCheckPathProbe(root, path, label + '.exe');
+   const result = spawnSync(executable, ['/S'], { timeout: 10000, windowsHide: true, stdio: 'pipe', maxBuffer: 1024 });
+   assert.equal(result.status, expected, `${label}: read-only CheckPath exit status ${result.status}; signal=${result.signal ?? 'none'}`);
+  }
+ } finally { await rm(root, { recursive: true, force: true }); }
+});
 function contract(source: string) {
  source = source.replace(/\r\n/g, '\n');
  assert.match(source, /RequestExecutionLevel user/);

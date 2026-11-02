@@ -2,7 +2,7 @@
 // establish these image-lock, known-folder, registry, or rename guarantees.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile, stat, realpath } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile, stat, realpath, lstat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createReadStream } from 'node:fs';
@@ -10,7 +10,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { createHash, generateKeyPairSync, randomUUID, sign } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { setTimeout as pause } from 'node:timers/promises';
-import { compileWindowsNSIS, withMaintenanceTimingFixture } from '../support/windows-nsis.mjs';
+import { compileWindowsNSIS, withMaintenanceTimingFixture, withInitialInstallDiagnostics, initialInstallDiagnostic } from '../support/windows-nsis.mjs';
 import { finalizeWindowsProgram } from '../../scripts/windows-package.mjs';
 import { createWindowsProgramManifest } from '../../src/windows-manifest.ts';
 const require = createRequire(import.meta.url);
@@ -75,11 +75,25 @@ test('native installer preserves every byte on mapped Go/Electron images, archiv
   const digest = Buffer.from(state.digest, 'base64').toString('hex');
   await writeFile(archiveFile + '.bootstrap.nsh', `!define DILLA_BOOTSTRAP_EXE "${join(app,'Dilla.exe')}"\n!define DILLA_MANIFEST_SHA512 "${state.digest}"\n!define DILLA_PROGRAM_ID "v-${digest.slice(0, 32)}"\n!define DILLA_MANIFEST_NAME "${digest}.json"\n`);
   const compile = (name, transform) => compileWindowsNSIS({ directory: temporary, archive: archiveFile, productName, appId, name, transform });
-  const installer = await compile('dilla-fixture-native.exe', withMaintenanceTimingFixture);
+  let diagnosticSites;
+  const installer = await compile('dilla-fixture-native.exe', source => {
+   const diagnostic = withInitialInstallDiagnostics(withMaintenanceTimingFixture(source)); diagnosticSites = diagnostic.sites; return diagnostic.source;
+  });
   await mkdir(profile, { recursive: true });
   const account = join(profile, 'opaque-account-keystore-and-preferences.sentinel');
   await writeFile(account, 'existing account / KEK / OPFS / preferences must survive');
-  run(installer, ['/S']);
+  try { run(installer, ['/S']); }
+  catch (error) {
+   let diagnostic = { format: 1, phase: 'unavailable', nativeExit: null };
+   try {
+    const file = join(temporary, 'fixture-install-diagnostic.json'), info = await lstat(file);
+    if (!info.isFile() || info.isSymbolicLink() || info.size < 1 || info.size > 1024) throw new Error('Invalid diagnostic file');
+    const bytes = await readFile(file); if (bytes.length > 1024) throw new Error('Oversized diagnostic');
+    diagnostic = initialInstallDiagnostic(JSON.parse(bytes), diagnosticSites);
+   } catch { /* Report only fixed enum/numeric data, never malformed raw bytes. */ }
+   console.error('INITIAL_INSTALL_FAILURE ' + JSON.stringify(diagnostic));
+   throw error;
+  }
   assert.equal(await exists(slot), true);
   uninstaller = join(program, `Uninstall ${productName}.exe`);
   const tree = join(program, 'versions', 'v-' + digest.slice(0, 32)), runtime = join(tree, 'dilla-desktop.exe');
