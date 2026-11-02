@@ -109,7 +109,7 @@ export async function createInstalledPackages(instance: string): Promise<Install
         });
         plugin.onLoad({ filter: /[\\/]src[\\/]windows-installation\.ts$/ }, async args => ({ contents: fixtureWindowsInstallationSource(await readFile(args.path, 'utf8'), appId), loader: 'ts', resolveDir: join(desktop, 'src') }));
       } }] });
-      const base: Record<string, unknown> = { appId, productName: product, executableName: 'dilla-desktop', electronVersion: '45.2.1', electronDist: join(repository, 'node_modules/electron/dist'), directories: { output: out }, files: ['dist/**', 'package.json'], asar: true,
+      const base: Record<string, unknown> = { appId, productName: product, executableName: 'dilla-desktop', electronVersion: '45.2.1', electronDist: join(repository, 'node_modules/electron/dist'), directories: { output: out }, files: ['dist/**', 'package.json'], asar: true, afterPack: join(desktop, 'scripts/linux-appimage-launcher.cjs'), appImage: { executableArgs: [] },
         protocols: [{ name: 'CI-owned Dilla account fixture', schemes: [scheme] }], publish: { provider: 'generic', url: origin }, artifactName: `account-${version}.\${ext}`, electronFuses: INSTALLED_FUSES,
         linux: { target: 'AppImage', category: 'Network', icon: join(desktop, 'assets/icon.png') }, win: { target: 'nsis', icon: join(desktop, 'assets/icon.png') },
         nsis: { script: join(desktop, 'build/windows-installer.nsi'), perMachine: false, oneClick: true, allowElevation: false, packElevateHelper: false, preCompressedFileExtensions: [], differentialPackage: false, deleteAppDataOnUninstall: false } };

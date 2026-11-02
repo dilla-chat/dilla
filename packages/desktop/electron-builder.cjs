@@ -6,6 +6,7 @@ module.exports = {
   directories: { output: 'out', buildResources: 'assets' },
   files: ['dist/**', 'package.json'],
   asar: true,
+  afterPack: require('./scripts/linux-appimage-launcher.cjs'),
   afterSign: windowsHooks.afterSign,
   artifactBuildStarted: windowsHooks.artifactBuildStarted,
   beforePack: async context => {
