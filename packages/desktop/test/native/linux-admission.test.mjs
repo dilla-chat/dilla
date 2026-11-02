@@ -14,15 +14,22 @@ export async function makeAdmissionRoot(runnerTemp) {
  const info=await stat(runnerTemp);if(!info.isDirectory() || info.uid!==process.getuid())throw Error('unsafe runner temporary directory');
  return mkdtemp(join(runnerTemp,'dilla-sandbox-foundation-'));
 }
-export async function cleanupAdmissionGroup(child,observedChild) {
- if(!child?.pid)return;
- try {process.kill(-child.pid,'SIGKILL');}catch(error){if(error.code!=='ESRCH')throw error;}
- if(child.exitCode===null && child.signalCode===null)await deadline(new Promise((done,reject)=>{child.once('exit',done);child.once('error',reject);}), 'owned main cleanup',5000);
- if(observedChild){for(let i=0;i<100;i++){
-  try {const info=await readFile('/proc/'+observedChild+'/stat','utf8');if(/^\d+ \(.*\) Z /.test(info))return;}
-  catch(error){if(error.code==='ENOENT')return;throw error;}
+export async function waitOwnedChildGone(pid,read=readFile) {
+ for(let i=0;i<100;i++){
+  try {const info=await read('/proc/'+pid+'/stat','utf8');if(/^\d+ \(.*\) Z /.test(info))return;}
+  catch(error){if(['ENOENT','ESRCH'].includes(error.code))return;throw error;}
   await new Promise(done=>setTimeout(done,50));
- }throw Error('owned child cleanup timed out');}
+ }throw Error('owned child cleanup timed out');
+}
+export async function cleanupAdmissionGroup(child,observedChild,diagnostic) {
+ if(!child?.pid)return;
+ if(diagnostic)diagnostic.stage=1;
+ try {process.kill(-child.pid,'SIGKILL');}catch(error){if(error.code!=='ESRCH')throw error;}
+ if(diagnostic)diagnostic.stage=2;
+ if(child.exitCode===null && child.signalCode===null)await deadline(new Promise((done,reject)=>{child.once('exit',done);child.once('error',reject);}), 'owned main cleanup',5000);
+ if(diagnostic)diagnostic.stage=3;
+ if(observedChild)await waitOwnedChildGone(observedChild);
+ if(diagnostic)diagnostic.stage=4;
 }
 
 const waitExit = child => new Promise((done,reject)=>{child.once('error',reject);child.once('exit',(code,signal)=>done({code,signal}));});
@@ -54,6 +61,25 @@ export async function checkAdmissionRelease({exit,exclusive,readChild,captureMai
  facts.phase='release-child-identity';assert.equal(child.identity,true);
  facts.phase='release-complete';
 }
+// Fixed checkpoints distinguish publication, late exit, profile and lock.
+export async function checkAdmissionPending({publish,launch,profile,exclusive,facts}) {
+ facts.phase='pending-publish';facts.pendingPublish=publish();
+ facts.phase='pending-publish-result';assert.equal(facts.pendingPublish,0);
+ facts.phase='pending-launch';const late=launch();
+ facts.phase='pending-exit-wait';let result;
+ try{result=await deadline(late.exit,'pending launch');}finally{facts.lateAdmissionFlag=late.admissionFailure?.()?1:0;}
+ facts.phase='pending-exit-result';facts.lateCode=Number.isInteger(result.code)?result.code:null;facts.lateSignal=result.signal===null?0:1;
+ assert.deepEqual(result,{code:40,signal:null});
+ facts.phase='pending-profile-read';
+ try{await profile();facts.profilePresent=1;}catch(error){
+  facts.profileError=error?.code==='ENOENT'?1:error?.code==='EACCES'?2:error?.code==='EPERM'?3:4;
+  if(error?.code!=='ENOENT')throw error;facts.profilePresent=0;
+ }
+ facts.phase='pending-profile-present';assert.equal(facts.profilePresent,0);
+ facts.phase='pending-lock-probe';facts.pendingLock=exclusive();
+ facts.phase='pending-lock-result';assert.equal(facts.pendingLock,0);
+ facts.phase='pending-complete';
+}
 export async function runAdmissionProof({mount,image,root}) {
  assert.equal(process.env.GITHUB_ACTIONS,'true');
  const gate=join(root,'admission-base','gate'),lock=join(gate,'lock');
@@ -79,9 +105,9 @@ export async function runAdmissionProof({mount,image,root}) {
   child.stdio[3].on('data',chunk=>{output+=chunk.toString();if(output.length>4096){try{process.kill(-child.pid,'SIGKILL');}catch{}return;}let i;
    while((i=output.indexOf('\n'))>=0){let report;try{report=JSON.parse(output.slice(0,i));}catch{report=null;}output=output.slice(i+1);if(report && Object.keys(report).sort().join(',')==='format,nonce,phase,pid' && report.format===1 && report.nonce===nonce && report.pid===child.pid && ['exit-command','exit-call'].includes(report.phase)){if(report.phase==='exit-command')facts.controlCommand=1;else facts.controlExit=1;continue;}if(waiter){const done=waiter;waiter=null;done(report);}else reports.push(report);}
   });
-  return {child,exit,nonce,report:()=>deadline(reports.length?Promise.resolve(reports.shift()):new Promise(done=>{waiter=done;}),'admission phase'),stderr:()=>stderr};
+  return {child,exit,nonce,report:()=>deadline(reports.length?Promise.resolve(reports.shift()):new Promise(done=>{waiter=done;}),'admission phase'),admissionFailure:()=>stderr.includes('DILLA_ADMISSION_PROOF_FAILURE admission\n')};
  };
- let main,late,descendant,failed=false;const facts={phase:'window',mainCode:null,mainSignal:null,attempts:0,lockStatus:null,childState:null,childIdentity:null,childReadError:0,cleanupError:0,controlCommand:0,controlExit:0,mainPresent:null,mainOwner:null,mainIdentity:null,mainState:null,mainReadError:0};
+ let main,late,descendant,failed=false;const facts={phase:'window',mainCode:null,mainSignal:null,attempts:0,lockStatus:null,childState:null,childIdentity:null,childReadError:0,cleanupError:0,primaryFailure:0,controlCommand:0,controlExit:0,mainPresent:null,mainOwner:null,mainIdentity:null,mainState:null,mainReadError:0,pendingPublish:null,lateCode:null,lateSignal:null,lateAdmissionFlag:0,profilePresent:null,profileError:0,pendingLock:null,cleanupMainStage:0,cleanupMainError:0,cleanupLateStage:0,cleanupLateError:0};
  try {
   assert.equal(exclusive(),0);main=launch(join(root,'admission-profile'));
   const check=async phase=>assert.deepEqual(await main.report(),{format:1,nonce:main.nonce,phase,pid:main.child.pid});
@@ -102,15 +128,14 @@ export async function runAdmissionProof({mount,image,root}) {
    const afterStat=(await readFile('/proc/'+descendant+'/stat','utf8')).split(') ')[1].split(' ');
    return {live:afterStat[0]!=='Z',identity:afterStat[19]===startTime};
   }});
-  facts.phase='pending';assert.equal(publishPending(),0);
-  const lateProfile=join(root,'admission-late-profile');late=launch(lateProfile);
-  assert.deepEqual(await deadline(late.exit,'pending launch'),{code:40,signal:null});
-  await assert.rejects(access(lateProfile),{code:'ENOENT'});
-  assert.equal(exclusive(),0);
+  const lateProfile=join(root,'admission-late-profile');
+  await checkAdmissionPending({publish:publishPending,launch:()=>{late=launch(lateProfile);return late;},profile:()=>access(lateProfile),exclusive,facts});
   return {format:1,status:'passed',directElf:true,windowBusy:true,trayBusy:true,pendingRefusedBeforeProfile:true,lockReleasedWithSpawnedChildAlive:true};
- } catch { failed=true; } finally {
-  try{await cleanupAdmissionGroup(main?.child,descendant);}catch{facts.cleanupError|=1;}
-  try{await cleanupAdmissionGroup(late?.child);}catch{facts.cleanupError|=2;}
+ } catch { failed=true;facts.primaryFailure=1; } finally {
+  const mainCleanup={stage:0},lateCleanup={stage:0};
+  const errorCode=error=>error?.code==='ESRCH'?1:error?.code==='ENOENT'?2:error?.code==='EACCES'?3:error?.code==='EPERM'?4:5;
+  try{await cleanupAdmissionGroup(main?.child,descendant,mainCleanup);}catch(error){facts.cleanupError|=1;facts.cleanupMainError=errorCode(error);}finally{facts.cleanupMainStage=mainCleanup.stage;}
+  try{await cleanupAdmissionGroup(late?.child,undefined,lateCleanup);}catch(error){facts.cleanupError|=2;facts.cleanupLateError=errorCode(error);}finally{facts.cleanupLateStage=lateCleanup.stage;}
   if(failed || facts.cleanupError)throw Error('admission proof failed: '+JSON.stringify(facts));
  }
 }

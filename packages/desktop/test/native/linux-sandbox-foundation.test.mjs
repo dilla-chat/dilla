@@ -234,7 +234,7 @@ test('owned process group cleanup kills a surviving child after its leader exits
   await cleanupAdmissionGroup(leader,pid);
   const {readFile}=await import('node:fs/promises');
   let live=true;for(let i=0;i<50;i++){
-   try {const stat=await readFile('/proc/'+pid+'/stat','utf8');live=!/^\d+ \(.*\) Z /.test(stat);}catch(error){if(error.code==='ENOENT')live=false;else throw error;}
+   try {const stat=await readFile('/proc/'+pid+'/stat','utf8');live=!/^\d+ \(.*\) Z /.test(stat);}catch(error){if(['ENOENT','ESRCH'].includes(error.code))live=false;else throw error;}
    if(!live)break;await new Promise(done=>setTimeout(done,20));
   }
   assert.equal(live,false,'owned child survived cleanup');
@@ -311,4 +311,29 @@ test('an open control writer keeps a real fs read stream alive until EOF',async(
   const state=await Promise.race([exit.then(()=> 'exited'),new Promise(done=>setTimeout(()=>done('waiting'),100))]);assert.equal(state,'waiting');
   child.stdio[4].end();assert.deepEqual(await exit,{code:0,signal:null});
  } finally {clearTimeout(timer);if(child.exitCode===null&&child.signalCode===null)child.kill('SIGKILL');}
+});
+
+test('owned child cleanup accepts vanished process reads but rejects access errors',async()=>{
+ const {waitOwnedChildGone}=await import('./linux-admission.test.mjs');
+ for(const code of ['ENOENT','ESRCH'])await waitOwnedChildGone(17,async()=>{throw Object.assign(Error(),{code});});
+ for(const code of ['EACCES','EIO'])await assert.rejects(waitOwnedChildGone(17,async()=>{throw Object.assign(Error(),{code});}),{code});
+});
+
+test('pending admission records exact bounded failure checkpoints',async()=>{
+ const {checkAdmissionPending}=await import('./linux-admission.test.mjs');
+ const run=async(overrides={})=>{
+  const facts={phase:'pending',pendingPublish:null,lateCode:null,lateSignal:null,profilePresent:null,profileError:0,pendingLock:null};
+  const defaults={publish:()=>0,launch:()=>({exit:Promise.resolve({code:40,signal:null})}),profile:async()=>{throw Object.assign(Error(),{code:'ENOENT'});},exclusive:()=>0,facts};
+  try{await checkAdmissionPending({...defaults,...overrides});}catch{}return facts;
+ };
+ assert.equal((await run({publish:()=>{throw Error('private');}})).phase,'pending-publish');
+ assert.equal((await run({publish:()=>1})).phase,'pending-publish-result');
+ assert.equal((await run({launch:()=>{throw Error('private');}})).phase,'pending-launch');
+ assert.equal((await run({launch:()=>({exit:Promise.reject(Error('private'))})})).phase,'pending-exit-wait');
+ assert.equal((await run({launch:()=>({exit:Promise.resolve({code:0,signal:null})})})).phase,'pending-exit-result');
+ assert.equal((await run({profile:async()=>{}})).phase,'pending-profile-present');
+ const denied=await run({profile:async()=>{throw Object.assign(Error(),{code:'EACCES'});}});assert.equal(denied.phase,'pending-profile-read');assert.equal(denied.profileError,2);
+ assert.equal((await run({exclusive:()=>{throw Error('private');}})).phase,'pending-lock-probe');
+ assert.equal((await run({exclusive:()=>1})).phase,'pending-lock-result');
+ assert.equal((await run()).phase,'pending-complete');
 });
