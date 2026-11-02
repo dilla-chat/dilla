@@ -35,7 +35,7 @@ func TestDownloadsServeNavigationWithoutStartingTheClient(t *testing.T) {
 		if rec.Header().Get("Content-Security-Policy") != do(t, client, "GET", "/", nil).Header().Get("Content-Security-Policy") || rec.Header().Get("Referrer-Policy") != "no-referrer" {
 			t.Errorf("headers = %v", rec.Header())
 		}
-		for _, artifact := range []string{"linux-x64.AppImage", "win-x64.exe", "mac-x64.dmg", "mac-arm64.dmg"} {
+		for _, artifact := range []string{"linux-x64.AppImage", "linux-x64.deb", "linux-x64.rpm", "linux-x64.aur.tar.gz", "win-x64.exe", "mac-x64.dmg", "mac-arm64.dmg"} {
 			if !strings.Contains(rec.Body.String(), `href="https://github.com/jonasthim/dilla/releases/download/desktop-beta/dilla-`+artifact+`"`) {
 				t.Errorf("missing fixed %s link", artifact)
 			}
