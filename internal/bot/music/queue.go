@@ -144,8 +144,11 @@ func Apply(state State, expectedRevision uint64, op Operation) (State, error) {
 			startNext(&next)
 		}
 		if next.Current != nil {
-			// Ruling AI: warm resume retains the playhead; cold YouTube starts seek to it.
-			// Spotify has no seek and resets its playhead only after a cold start.
+			// YouTube retains the playhead. Spotify pause frees its resources;
+			// the helper has no seek, so every resume starts it from zero.
+			if next.Current.Provider == ProviderSpotify {
+				next.PositionMS = 0
+			}
 			next.Paused = false
 		}
 	case OpStop:

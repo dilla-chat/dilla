@@ -130,3 +130,22 @@ func TestWorkerTimingLogsOnlyValidatedMarks(t *testing.T) {
 		t.Fatalf("worker logs=%s", logs.String())
 	}
 }
+
+func TestWorkerTimingLogsEachKnownMarkOncePerProcess(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	for range 2 {
+		b := &sandboxStderr{ctx: t.Context(), logger: logger}
+		for range 20 {
+			_, _ = b.Write([]byte("DILLA_YT_TIMING spawn 1\nDILLA_YT_TIMING first_yt_dlp_byte 2\nDILLA_YT_TIMING first_pcm 3\nDILLA_YT_TIMING extra 4\n"))
+		}
+	}
+	for _, mark := range []string{"spawn", "first_yt_dlp_byte", "first_pcm"} {
+		if got := strings.Count(logs.String(), "\"mark\":\""+mark+"\""); got != 2 {
+			t.Fatalf("%s logs=%d want 2", mark, got)
+		}
+	}
+	if strings.Count(logs.String(), "youtube worker timing") != 6 {
+		t.Fatalf("unexpected logs: %s", logs.String())
+	}
+}

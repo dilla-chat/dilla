@@ -221,23 +221,25 @@ func (s *Supervisor) applyLocked(ctx context.Context, expected uint64, op Operat
 	if op.NowMS == 0 {
 		op.NowMS = time.Now().UnixMilli()
 	}
+	before := cloneState(s.state)
 	wasPaused := s.pausedPlayback
 	if op.Kind == OpPause {
-		if _, ok := s.playback.(Pausable); ok {
+		if s.canHoldPlaybackLocked() {
 			s.pausePlaybackLocked()
 		}
 	}
 	base := cloneState(s.state)
 	next, err := Apply(base, expected, op)
 	if err != nil {
-		return cloneState(s.state), err
+		var rollbackErr error
+		skipped, rollbackErr = s.rollbackPauseLocked(before, wasPaused)
+		return cloneState(s.state), errors.Join(err, rollbackErr)
 	}
 	revision, err := s.store.Save(ctx, s.channel, s.revision, next)
 	if err != nil {
-		if !wasPaused && s.pausedPlayback {
-			s.resumePlaybackLocked()
-		}
-		return cloneState(s.state), err
+		var rollbackErr error
+		skipped, rollbackErr = s.rollbackPauseLocked(before, wasPaused)
+		return cloneState(s.state), errors.Join(err, rollbackErr)
 	}
 	s.state, s.revision = next, revision
 	if op.Kind == OpResume {
@@ -358,6 +360,12 @@ func (s *Supervisor) adoptLocked(state State, revision uint64) {
 		// Durable reads are restart-safe (paused), not a live playback command.
 		// Metadata adoption must retain both a live track and an in-flight start.
 		state.Paused = s.state.Paused
+		if !state.Paused && s.playback != nil {
+			// Load clears a playing snapshot's stale playhead for restart safety.
+			// A live metadata refresh must keep this process's playback position.
+			state.PositionMS = s.state.PositionMS
+			state.PositionAtMS = s.state.PositionAtMS
+		}
 		if state.Paused && !s.pausedPlayback {
 			s.pausePlaybackLocked()
 		}
@@ -611,11 +619,14 @@ func (s *Supervisor) monitor(p Playback, budget *startBudget) {
 		return
 	}
 	s.playback = nil
-	if s.pausedPlayback {
+	wasPaused := s.pausedPlayback
+	if wasPaused {
 		s.cancelPauseLocked()
-		s.signalLocked()
-		s.idleCheckLocked()
-		return
+		if err != nil {
+			s.signalLocked()
+			s.idleCheckLocked()
+			return
+		}
 	}
 	logger := s.logger
 	if logger == nil {
@@ -628,15 +639,41 @@ func (s *Supervisor) monitor(p Playback, budget *startBudget) {
 	}
 	defer s.idleCheckLocked()
 	if err != nil {
+		if errors.Is(err, ErrSourceGone) && s.state.Current != nil && s.state.Current.Provider == ProviderYouTube {
+			if source, ok := p.(Pausable); ok {
+				s.state.PositionMS = s.playbackPositionLocked(source)
+				s.state.PositionAtMS = 0
+				var startErr error
+				skipped, startErr = s.startLocked(s.ctx, false, budget)
+				if startErr != nil {
+					_ = s.pauseLocked(s.ctx)
+					if s.onAutomaticPlaybackFailure != nil {
+						s.onAutomaticPlaybackFailure(s.ctx, startErr)
+					}
+				}
+				s.signalLocked()
+				return
+			}
+		}
 		_ = s.pauseLocked(s.ctx)
 		s.signalLocked()
 		return
 	}
-	next, applyErr := Apply(s.state, s.state.Revision, Operation{Kind: OpComplete, NowMS: time.Now().UnixMilli()})
+	// A clean EOF that won the race with Pause still owns its advance.
+	// Complete against a playing base, then keep the successor paused.
+	base := cloneState(s.state)
+	if wasPaused {
+		base.Paused = false
+	}
+	next, applyErr := Apply(base, s.state.Revision, Operation{Kind: OpComplete, NowMS: time.Now().UnixMilli()})
 	if applyErr != nil {
 		_ = s.pauseLocked(s.ctx)
 		s.signalLocked()
 		return
+	}
+	if wasPaused {
+		next.Paused = true
+		next.PositionAtMS = 0
 	}
 	revision, saveErr := s.store.Save(s.ctx, s.channel, s.revision, next)
 	if saveErr != nil {

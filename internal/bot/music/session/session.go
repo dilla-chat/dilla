@@ -301,14 +301,17 @@ type Session struct {
 	paused     bool
 	sourceGone bool
 	startAtMS  int64
+	resumedAt  time.Time
 }
+
+const sourceRecoveryWindow = 5 * time.Second
 
 func (s *Session) monitor(ctx context.Context) {
 	select {
 	case <-ctx.Done():
 		s.finish(ctx.Err())
 	case <-s.publisher.Done():
-		s.finish(s.publisher.Wait())
+		s.finish(s.resumeSourceError(s.publisher.Wait()))
 	case <-s.encoder.Done():
 		s.mu.Lock()
 		paused := s.paused
@@ -323,12 +326,39 @@ func (s *Session) monitor(ctx context.Context) {
 			case <-s.stop:
 			}
 		} else {
-			s.finish(s.encoder.Wait())
+			s.finish(s.resumeSourceError(s.encoder.Wait()))
 		}
 	case <-s.stop:
 	}
 	close(s.done)
 }
+
+// A blocked source can reveal its failure only once reads resume. The publisher
+// can observe that encoder failure first, so both terminal paths classify it.
+// Offer one cold replacement; a new session has no resume window.
+func (s *Session) resumeSourceError(err error) error {
+	if err == nil {
+		return nil
+	}
+	select {
+	case <-s.encoder.Done():
+	default:
+		return err
+	}
+	sourceErr := s.encoder.Wait()
+	if sourceErr == nil || !errors.Is(err, sourceErr) ||
+		errors.Is(sourceErr, context.Canceled) || errors.Is(sourceErr, context.DeadlineExceeded) {
+		return err
+	}
+	s.mu.RLock()
+	paused, resumedAt := s.paused, s.resumedAt
+	s.mu.RUnlock()
+	if !paused && !resumedAt.IsZero() && time.Since(resumedAt) <= sourceRecoveryWindow {
+		return errors.Join(music.ErrSourceGone, err)
+	}
+	return err
+}
+
 func (s *Session) finish(err error) {
 	s.once.Do(func() {
 		s.mu.Lock()
@@ -461,6 +491,7 @@ func (s *Session) Resume() error {
 		p.SetPaused(false)
 	}
 	s.paused = false
+	s.resumedAt = time.Now()
 	return nil
 }
 

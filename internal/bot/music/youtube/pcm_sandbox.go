@@ -338,11 +338,12 @@ var _ io.ReadCloser = (*boundedProcessPCM)(nil)
 
 // sandboxStderr bounds memory while continuing to drain the subprocess pipe.
 type sandboxStderr struct {
-	mu     sync.Mutex
-	data   bytes.Buffer
-	ctx    context.Context
-	logger *slog.Logger
-	line   []byte
+	mu        sync.Mutex
+	data      bytes.Buffer
+	ctx       context.Context
+	logger    *slog.Logger
+	line      []byte
+	seenMarks uint8
 }
 
 func (b *sandboxStderr) Write(p []byte) (int, error) {
@@ -432,8 +433,14 @@ func (b *sandboxStderr) logMark(line string) {
 	if len(fields) != 3 || fields[0] != "DILLA_YT_TIMING" {
 		return
 	}
+	var bit uint8
 	switch fields[1] {
-	case "spawn", "first_yt_dlp_byte", "first_pcm":
+	case "spawn":
+		bit = 1
+	case "first_yt_dlp_byte":
+		bit = 2
+	case "first_pcm":
+		bit = 4
 	default:
 		return
 	}
@@ -441,5 +448,9 @@ func (b *sandboxStderr) logMark(line string) {
 	if err != nil || ns <= 0 {
 		return
 	}
+	if b.seenMarks&bit != 0 {
+		return
+	}
+	b.seenMarks |= bit
 	b.logger.DebugContext(b.ctx, "youtube worker timing", "mark", fields[1], "monotonic_ns", ns)
 }

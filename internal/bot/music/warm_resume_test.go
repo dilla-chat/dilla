@@ -15,17 +15,34 @@ type warmPlayback struct {
 	supervisorPlayback
 	pauses, resumes int
 	gone            bool
+	position        int64
+	paused          bool
+	waitGate        chan struct{}
+	waiting         chan struct{}
 }
 
-func (p *warmPlayback) Pause() { p.pauses++ }
+func (p *warmPlayback) Pause() { p.pauses++; p.paused = true }
 func (p *warmPlayback) Resume() error {
 	p.resumes++
 	if p.gone {
 		return music.ErrSourceGone
 	}
+	p.paused = false
 	return nil
 }
-func (*warmPlayback) PositionMS() int64 { return 42000 }
+func (p *warmPlayback) PositionMS() int64 {
+	if p.position != 0 {
+		return p.position
+	}
+	return 42000
+}
+func (p *warmPlayback) Wait() error {
+	if p.waitGate != nil {
+		close(p.waiting)
+		<-p.waitGate
+	}
+	return p.err
+}
 
 type warmStarter struct {
 	starts  int
@@ -203,8 +220,8 @@ func TestPausedPlaybackCountsAsIdle(t *testing.T) {
 		t.Fatal("paused playback did not arm idle leave")
 	}
 	idle()
-	if st.left != 1 {
-		t.Fatal("idle leave did not run")
+	if st.left != 1 || st.current.closed != 1 {
+		t.Fatalf("idle leave=%d playback closes=%d", st.left, st.current.closed)
 	}
 }
 func TestPersistedSnapshotResumeAfterRestartStartsAtPositionMS(t *testing.T) {

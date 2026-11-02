@@ -170,7 +170,7 @@ func TestLoadRejectsMalformedPersistedState(t *testing.T) {
 
 func fmtJSON(state music.State) ([]byte, error) { return json.Marshal(state) }
 
-func TestRestartAlwaysLoadsPausedAndPreservesPosition(t *testing.T) {
+func TestRestartWhilePlayingResetsStalePosition(t *testing.T) {
 	ctx := context.Background()
 	n := newMemoryNative()
 	s := newStore(t, n, testID(1))
@@ -189,8 +189,8 @@ func TestRestartAlwaysLoadsPausedAndPreservesPosition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !restarted.State.Paused || restarted.State.Current == nil || restarted.State.PositionMS != 1234 {
-		t.Fatalf("restart did not preserve paused position: %#v", restarted.State)
+	if !restarted.State.Paused || restarted.State.Current == nil || restarted.State.PositionMS != 0 {
+		t.Fatalf("restart retained a stale playing position: %#v", restarted.State)
 	}
 }
 
