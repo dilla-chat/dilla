@@ -744,16 +744,37 @@ const WINDOWS_KERNEL_JOB = `  windows-kernel:
           go-version-file: go.mod
       - run: go test -count=1 -failfast -v -timeout=2m ./internal/desktoplaunch ./packages/desktop/native/windows-launcher
 `;
-const GOOD = withChanges(withWasmClang(GOOD_BASE + WINDOWS_KERNEL_JOB + '  desktop:\n    needs: [web-build, windows-kernel]\n    uses: ./.github/workflows/desktop.yml\n'));
+const WINDOWS_INSTALLER_COMMAND = 'node --test packages/desktop/test/native/windows-installer-maintenance.test.mjs packages/desktop/test/native/windows-installer-syntax.test.mjs packages/desktop/test/windows-operation-gate.test.ts';
+const WINDOWS_INSTALLER_JOB = `  windows-installer:
+    needs: [windows-kernel]
+    runs-on: windows-2025
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+      - run: npm ci
+      - run: node node_modules/electron/install.js
+      - run: node packages/desktop/scripts/prepare-nsis.mjs
+      - run: ${WINDOWS_INSTALLER_COMMAND}
+`;
+const GOOD = withChanges(withWasmClang(GOOD_BASE + WINDOWS_KERNEL_JOB + WINDOWS_INSTALLER_JOB + '  desktop:\n    needs: [web-build, windows-kernel, windows-installer]\n    uses: ./.github/workflows/desktop.yml\n'));
 
 test('early Windows kernel gate runs both native packages before desktop acceptance', () => {
   assert.match(REAL_CI, /^  windows-kernel:/m);
-  assert.match(REAL_CI, /  desktop:\n    needs: \[changes, web-build, rust-wasi, windows-kernel\]/);
+  assert.match(REAL_CI, /  desktop:\n    needs: \[changes, web-build, rust-wasi, windows-kernel, windows-installer\]/);
   assert.deepEqual(checkWorkflow(fixture(GOOD)), []);
 });
 
 test('early Windows kernel gate refuses omissions, filtered tests and heavyweight setup', () => {
-  const body = /  windows-kernel:\n[\s\S]*?(?=^  desktop:)/m.exec(GOOD)[0];
+  const body = /  windows-kernel:\n[\s\S]*?(?=^  windows-installer:)/m.exec(GOOD)[0];
   for (const [before, after] of [
     ['runs-on: windows-2025', 'runs-on: ubuntu-latest'],
     ['timeout-minutes: 10', 'timeout-minutes: 60'],
@@ -772,10 +793,10 @@ test('early Windows kernel gate refuses omissions, filtered tests and heavyweigh
     assert.ok(checkWorkflow(fixture(GOOD.replace(body, changed))).some(problem => problem.includes('early Windows kernel')), before);
   }
   assert.ok(checkWorkflow(fixture(GOOD.replace(body, ''))).some(problem => problem.includes('missing job "windows-kernel"')));
-  const unblocked = GOOD.replace('needs: [changes, web-build, windows-kernel]', 'needs: [changes, web-build]');
+  const unblocked = GOOD.replace('needs: [changes, web-build, windows-kernel, windows-installer]', 'needs: [changes, web-build, windows-installer]');
   assert.notEqual(unblocked, GOOD);
   assert.ok(checkWorkflow(fixture(unblocked)).some(problem => problem.includes('desktop') && problem.includes('windows-kernel')));
-  const wrongDependency = GOOD.replace('needs: [changes, web-build, windows-kernel]', 'needs: [changes, web-build, windows-kernel-old]');
+  const wrongDependency = GOOD.replace('needs: [changes, web-build, windows-kernel, windows-installer]', 'needs: [changes, web-build, windows-kernel-old, windows-installer]');
   assert.ok(checkWorkflow(fixture(wrongDependency)).some(problem => problem.includes('desktop') && problem.includes('early Windows kernel')));
 });
 
@@ -786,6 +807,58 @@ test('early Windows kernel is included exactly once in completion and final gate
     assert.ok(checkWorkflow(fixture(GOOD.replace(body, omitted))).some(problem => name === 'ci-ok' ? problem.includes('"ci-ok"') && problem.includes('windows-kernel') : problem.includes('completion barrier')));
     const duplicate = body.replace('windows-kernel, ', 'windows-kernel, windows-kernel, ');
     assert.ok(checkWorkflow(fixture(GOOD.replace(body, duplicate))).some(problem => name === 'ci-ok' ? problem.includes('"ci-ok"') && problem.includes('exactly once') : problem.includes('completion barrier')));
+  }
+});
+
+test('independent Windows installer runs the full native fixture and interop before desktop', () => {
+  assert.match(REAL_CI, /^  windows-installer:/m);
+  assert.match(REAL_CI, /  windows-installer:\n    needs: \[changes, windows-kernel\]/);
+  assert.match(REAL_CI, /  desktop:\n    needs: \[changes, web-build, rust-wasi, windows-kernel, windows-installer\]/);
+  assert.deepEqual(checkWorkflow(fixture(GOOD)), []);
+});
+
+test('independent Windows installer refuses filters, artifact prerequisites and altered provisioning', () => {
+  const body = /  windows-installer:\n[\s\S]*?(?=^  desktop:)/m.exec(GOOD)[0];
+  for (const [before, after] of [
+    ['runs-on: windows-2025', 'runs-on: ubuntu-latest'],
+    ['timeout-minutes: 25', 'timeout-minutes: 90'],
+    ['needs: [changes, windows-kernel]', 'needs: [changes, windows-kernel, web-build]'],
+    ['persist-credentials: false', 'persist-credentials: true'],
+    ['node-version-file: .nvmrc', 'node-version: latest'],
+    ['go-version-file: go.mod', 'go-version: stable'],
+    ['actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1', 'actions/setup-node@1111111111111111111111111111111111111111'],
+    ['actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e', 'actions/setup-go@1111111111111111111111111111111111111111'],
+    ['run: npm ci', 'run: npm install'],
+    ['      - run: node node_modules/electron/install.js\n', ''],
+    ['      - run: node packages/desktop/scripts/prepare-nsis.mjs\n', ''],
+    [WINDOWS_INSTALLER_COMMAND, WINDOWS_INSTALLER_COMMAND.replace(' packages/desktop/test/native/windows-installer-maintenance.test.mjs', '')],
+    [WINDOWS_INSTALLER_COMMAND, WINDOWS_INSTALLER_COMMAND.replace(' packages/desktop/test/native/windows-installer-syntax.test.mjs', '')],
+    [WINDOWS_INSTALLER_COMMAND, WINDOWS_INSTALLER_COMMAND.replace(' packages/desktop/test/windows-operation-gate.test.ts', '')],
+    ['node --test ', "node --test --test-name-pattern='interrupted' "],
+    ['      - run: node --test ', '      - if: false\n        run: node --test '],
+    ['    steps:', "    env:\n      DILLA_FIXTURE_INITIAL_RETRY_ONLY: '1'\n    steps:"],
+    ['    steps:', '    env:\n      GOOS: linux\n    steps:'],
+    ['      - run: npm ci', '      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8\n      - run: npm ci'],
+    [WINDOWS_INSTALLER_COMMAND, `${WINDOWS_INSTALLER_COMMAND} || echo ignored`],
+  ]) {
+    const changed = body.replace(before, after); assert.notEqual(changed, body, before);
+    assert.ok(checkWorkflow(fixture(GOOD.replace(body, changed))).some(problem => problem.includes('independent Windows installer')), before);
+  }
+  assert.ok(checkWorkflow(fixture(GOOD.replace(body, ''))).some(problem => problem.includes('missing job "windows-installer"')));
+  for (const replacement of ['needs: [changes, web-build, windows-kernel]', 'needs: [changes, web-build, windows-kernel, windows-installer-old]']) {
+    const changed = GOOD.replace('needs: [changes, web-build, windows-kernel, windows-installer]', replacement);
+    assert.notEqual(changed, GOOD);
+    assert.ok(checkWorkflow(fixture(changed)).some(problem => problem.includes('desktop') && problem.includes('independent Windows installer')));
+  }
+});
+
+test('independent Windows installer belongs exactly once to completion and final gates', () => {
+  for (const name of ['ci-work-complete', 'ci-ok']) {
+    const body = jobBody(name);
+    for (const replacement of ['', 'windows-installer, windows-installer, ']) {
+      const changed = body.replace('windows-installer, ', replacement); assert.notEqual(changed, body);
+      assert.ok(checkWorkflow(fixture(GOOD.replace(body, changed))).some(problem => name === 'ci-ok' ? problem.includes('"ci-ok"') : problem.includes('completion barrier')));
+    }
   }
 });
 

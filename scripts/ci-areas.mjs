@@ -86,6 +86,7 @@ export const JOB_GATES = {
   'browser-media': ['e2e'],
   'web-build': ['e2e'],
   'windows-kernel': ['e2e'],
+  'windows-installer': ['e2e'],
   desktop: ['e2e'],
   'core-integration': ['e2e'],
   deny: ['core'],

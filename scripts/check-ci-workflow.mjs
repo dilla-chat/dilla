@@ -47,6 +47,7 @@ export const REQUIRED_JOBS = [
   // integration (BROWSER_WEB_JOBS below) without browser compatibility lanes.
   'web-build',
   'windows-kernel',
+  'windows-installer',
   'desktop',
 ];
 
@@ -630,6 +631,38 @@ go-version-file: go.mod
   }
 }
 
+// This native fixture has no bundled-web/WASI prerequisite. Keep both complete
+// lifecycle files and the Go/NSIS interop control ahead of the desktop matrix;
+// exact shape rejects filtered modes, ignored failures and extra authority/env.
+function checkWindowsInstallerJob(jobs, problems) {
+  if (!jobs['windows-installer']) return;
+  const expected = `needs: [changes, windows-kernel]
+if: needs.changes.outputs.e2e != 'false'
+runs-on: windows-2025
+timeout-minutes: 25
+steps:
+- uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+with:
+persist-credentials: false
+- uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+with:
+node-version-file: .nvmrc
+cache: npm
+- uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+with:
+go-version-file: go.mod
+- run: npm ci
+- run: node node_modules/electron/install.js
+- run: node packages/desktop/scripts/prepare-nsis.mjs
+- run: node --test packages/desktop/test/native/windows-installer-maintenance.test.mjs packages/desktop/test/native/windows-installer-syntax.test.mjs packages/desktop/test/windows-operation-gate.test.ts`;
+  const actual = jobs['windows-installer'].split('\n').map(line => line.trim()).filter(line => line && !line.startsWith('#')).join('\n');
+  if (actual !== expected) problems.push('ci.yml: independent Windows installer gate must run pinned Node/Go/Electron/NSIS provisioning and the full unfiltered lifecycle and interop fixtures within its fixed budget');
+  const desktopNeeds = /^ {4}needs: \[([^\]\n]*)\]$/m.exec(jobs.desktop ?? '')?.[1].split(',').map(name => name.trim()) ?? [];
+  if (!desktopNeeds.includes('windows-installer')) {
+    problems.push('ci.yml: desktop must wait for the independent Windows installer gate via needs: windows-installer');
+  }
+}
+
 /**
  * Each browser job is a `run:` step of its own for its one suite, carrying the testkit binary in its own env, and it runs
  * no other `test:e2e` suite (a job folded back into several suites would hide a split job's budget). In Firefox an
@@ -765,6 +798,7 @@ export function checkWorkflow(root) {
     }
   }
   checkWindowsKernelJob(jobs, problems);
+  checkWindowsInstallerJob(jobs, problems);
 
   // Every test/build job needs `changes` and carries its gate, or it would run on a docs-only pull
   // request (or, with a wrong condition, be skipped on code).
