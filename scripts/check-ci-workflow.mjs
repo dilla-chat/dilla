@@ -1265,14 +1265,9 @@ export function checkDesktopWorkflow(root) {
       problems.push(`${file}: ${os} requires actual installed upgrade acceptance`);
     }
   }
-  for (const [name, command] of [
-    ['Windows launcher kernel acceptance', 'go test ./internal/desktoplaunch ./packages/desktop/native/windows-launcher'],
-    ['Windows installer maintenance acceptance', 'node --test packages/desktop/test/native/windows-installer-maintenance.test.mjs packages/desktop/test/native/windows-installer-syntax.test.mjs'],
-  ]) {
-    if (!nativeSteps.some(step => step.some(line => line.includes(`name: ${name}`))
-      && step.some(line => line.includes("if: runner.os == 'Windows'"))
-      && step.some(line => line.includes(`run: ${command}`)))) problems.push(`${file}: ${name} requires actual Windows acceptance`);
-  }
+  // These full Windows gates run once in ci.yml before this reusable workflow.
+  if (/windows-installer-maintenance\.test\.mjs/.test(text)) problems.push(`${file}: duplicate Windows maintenance acceptance belongs only in the independent CI gate`);
+  if (/go test[^\n]*packages\/desktop\/native\/windows-launcher/.test(text)) problems.push(`${file}: duplicate Windows kernel acceptance belongs only in the independent CI gate`);
   if (!nativeSteps.some(step => step.some(line => line.includes('name: desktop-installers-'))
     && step.some(line => line.trim() === 'packages/desktop/out/*.manifest.json'))) problems.push(`${file}: Windows signed program manifest must accompany its accepted installer`);
   if (/APPIMAGE_EXTRACT_AND_RUN|--appimage-extract/.test(body('native'))) problems.push(`${file}: Linux installed acceptance must exercise normal FUSE launch`);

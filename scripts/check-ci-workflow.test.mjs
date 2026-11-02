@@ -118,21 +118,25 @@ test('desktop acceptance requires every native target, Electron tests, packaging
   }
 });
 
-test('Windows release gates require real kernel and maintenance execution and the authenticated manifest artifact', () => {
-  for (const [before, after] of [
-    ['run: go test ./internal/desktoplaunch ./packages/desktop/native/windows-launcher', 'run: echo skipped-kernel'],
-    ["name: Windows launcher kernel acceptance\n        if: runner.os == 'Windows'", "name: Windows launcher kernel acceptance\n        if: runner.os == 'Linux'"],
-    ['node --test packages/desktop/test/native/windows-installer-maintenance.test.mjs packages/desktop/test/native/windows-installer-syntax.test.mjs', 'echo skipped-maintenance'],
-    ["name: Windows installer maintenance acceptance\n        if: runner.os == 'Windows'", "name: Windows installer maintenance acceptance\n        if: runner.os == 'Linux'"],
-    ['            packages/desktop/out/*.manifest.json\n', ''],
+test('desktop workflow rejects duplicate Windows maintenance and kernel acceptance', () => {
+  for (const [command, message] of [
+    ['node --test packages/desktop/test/native/windows-installer-maintenance.test.mjs', 'duplicate Windows maintenance'],
+    ['go test ./internal/desktoplaunch ./packages/desktop/native/windows-launcher', 'duplicate Windows kernel'],
   ]) {
-    const root = mkdtempSync(join(tmpdir(), 'dilla-windows-native-ci-'));
+    const root = mkdtempSync(join(tmpdir(), 'dilla-duplicate-windows-ci-'));
     mkdirSync(join(root, '.github/workflows'), { recursive: true });
-    const changed = REAL_DESKTOP.replace(before, after);
-    assert.notEqual(changed, REAL_DESKTOP, before);
-    writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
-    assert.ok(checkDesktopWorkflow(root).some(problem => /Windows.*acceptance|Windows.*manifest/.test(problem)), before);
+    writeFileSync(join(root, '.github/workflows/desktop.yml'), REAL_DESKTOP + `\n      - run: ${command}\n`);
+    assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes(message)), command);
   }
+});
+
+test('Windows installer artifact retains its authenticated manifest', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dilla-windows-native-ci-'));
+  mkdirSync(join(root, '.github/workflows'), { recursive: true });
+  const changed = REAL_DESKTOP.replace('            packages/desktop/out/*.manifest.json\n', '');
+  assert.notEqual(changed, REAL_DESKTOP);
+  writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
+  assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('Windows') && problem.includes('manifest')));
 });
 
 test('installed account coverage retains OS credential protection, normal FUSE and owning-shard proof collection', () => {

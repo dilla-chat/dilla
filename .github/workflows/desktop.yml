@@ -128,12 +128,6 @@ jobs:
           # Electron's already configured helper, retaining Ubuntu's OS policy.
           CHROME_DEVEL_SANDBOX: ${{ github.workspace }}/node_modules/electron/dist/chrome-sandbox
         run: xvfb-run -a dbus-run-session -- bash packages/desktop/scripts/with-window-manager.sh node --test packages/desktop/test/native/installed-upgrade.test.mjs
-      - name: Windows launcher kernel acceptance
-        if: runner.os == 'Windows'
-        run: go test ./internal/desktoplaunch ./packages/desktop/native/windows-launcher
-      - name: Windows installer maintenance acceptance
-        if: runner.os == 'Windows'
-        run: node --test packages/desktop/test/native/windows-installer-maintenance.test.mjs packages/desktop/test/native/windows-installer-syntax.test.mjs
       - name: Installed upgrade acceptance
         if: runner.os == 'Windows'
         run: node --test packages/desktop/test/native/installed-upgrade.test.mjs
