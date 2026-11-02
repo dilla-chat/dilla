@@ -11,6 +11,16 @@ import (
 
 type DirectoryGuard struct{ guard *VerifiedTree }
 
+// Stat snapshots metadata through the retained validated directory handle.
+// On Windows this eagerly records volume/file identity, so later SameFile calls
+// cannot resolve a renamed directory through its old pathname.
+func (d *DirectoryGuard) Stat() (os.FileInfo, error) {
+	if d == nil || d.guard == nil || len(d.guard.handles) == 0 {
+		return nil, errors.New("closed owned directory guard")
+	}
+	return d.guard.handles[len(d.guard.handles)-1].Stat()
+}
+
 func (d *DirectoryGuard) Close() error {
 	if d == nil || d.guard == nil {
 		return nil

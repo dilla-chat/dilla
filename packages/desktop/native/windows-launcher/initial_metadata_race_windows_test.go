@@ -72,7 +72,7 @@ func TestWindowsInitialRepairHoldsExactFinalPublishedAfterPrepare(t *testing.T) 
 			if err != nil {
 				t.Fatal(err)
 			}
-			before, err := os.Stat(l.stableRoot)
+			before, err := initialOwnedDirectoryInfo(l.stableRoot)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -87,7 +87,7 @@ func TestWindowsInitialRepairHoldsExactFinalPublishedAfterPrepare(t *testing.T) 
 			if err == nil || state != initialPrecommit || retry.programClaim != nil || retry.updatesClaim != nil {
 				t.Fatalf("late exact final was recopied: %v %v", state, err)
 			}
-			after, e := os.Stat(l.stableRoot)
+			after, e := initialOwnedDirectoryInfo(l.stableRoot)
 			if e != nil || !os.SameFile(before, after) {
 				t.Fatal("original program identity not restored", e)
 			}

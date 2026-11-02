@@ -7,6 +7,57 @@ import (
 	"testing"
 )
 
+func TestOwnedDirectoryStatRetainsIdentityAfterRename(t *testing.T) {
+	parent := t.TempDir()
+	original, archived := filepath.Join(parent, "original"), filepath.Join(parent, "archived")
+	if err := os.Mkdir(original, 0700); err != nil {
+		t.Fatal(err)
+	}
+	guard, err := PinOwnedDirectory(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = guard.Close() }()
+	before, err := guard.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = guard.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = guard.Stat(); err == nil {
+		t.Fatal("closed directory guard returned metadata")
+	}
+	if err = os.Rename(original, archived); err != nil {
+		t.Fatal(err)
+	}
+	archivedGuard, err := PinOwnedDirectory(archived)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = archivedGuard.Close() }()
+	after, err := archivedGuard.Stat()
+	if err != nil || !os.SameFile(before, after) {
+		t.Fatal("held directory identity changed after rename", err)
+	}
+	if err = os.Mkdir(original, 0700); err != nil {
+		t.Fatal(err)
+	}
+	replacementGuard, err := PinOwnedDirectory(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = replacementGuard.Close() }()
+	replacement, err := replacementGuard.Stat()
+	if err != nil || os.SameFile(before, replacement) {
+		t.Fatal("recreated old path acquired the archived identity", err)
+	}
+	var missing *DirectoryGuard
+	if _, err = missing.Stat(); err == nil {
+		t.Fatal("nil directory guard returned metadata")
+	}
+}
+
 func TestOwnedFileReadsOnlyBoundedRegularContent(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "slot.json")

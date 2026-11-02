@@ -71,7 +71,7 @@ func initialOwnedDirectoryInfo(path string) (info os.FileInfo, err error) {
 		return nil, err
 	}
 	defer func() { err = errors.Join(err, guard.Close()) }()
-	return os.Stat(path) // #nosec G304 -- Fixed KnownFolder root/archive is pinned against replacement.
+	return guard.Stat()
 }
 
 func moveInitialDirectory(from, to string, original *os.FileInfo, moved *bool) error {

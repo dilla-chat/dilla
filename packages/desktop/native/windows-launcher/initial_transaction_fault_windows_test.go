@@ -81,7 +81,7 @@ func TestWindowsInitialNativePublicationFailuresPreserveAuthorityAndExplicitRetr
 					t.Fatal("postcommit authority damaged", e)
 				}
 				_ = pkg.Close()
-				before, e := os.Stat(l.stableRoot)
+				before, e := initialOwnedDirectoryInfo(l.stableRoot)
 				if e != nil {
 					t.Fatal(e)
 				}
@@ -90,7 +90,7 @@ func TestWindowsInitialNativePublicationFailuresPreserveAuthorityAndExplicitRetr
 				if e != nil || next != initialCommitted {
 					t.Fatal("explicit finalize-only recovery failed", next, e)
 				}
-				after, e := os.Stat(l.stableRoot)
+				after, e := initialOwnedDirectoryInfo(l.stableRoot)
 				if e != nil || !os.SameFile(before, after) {
 					t.Fatal("postcommit recovery requarantined program", e)
 				}

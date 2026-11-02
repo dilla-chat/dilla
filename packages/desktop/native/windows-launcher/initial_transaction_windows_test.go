@@ -69,6 +69,34 @@ func initialNativeFixture(t *testing.T) (buildConfig, layout, string) {
 	return cfg, l, payload
 }
 
+func TestWindowsInitialDirectoryIdentitySurvivesMoveAndRejectsRecreatedPath(t *testing.T) {
+	parent := t.TempDir()
+	original, archive := filepath.Join(parent, "original"), filepath.Join(parent, "archive")
+	if err := os.Mkdir(original, 0700); err != nil {
+		t.Fatal(err)
+	}
+	before, err := initialOwnedDirectoryInfo(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var movedInfo os.FileInfo
+	var moved bool
+	if err = moveInitialDirectory(original, archive, &movedInfo, &moved); err != nil || !moved {
+		t.Fatal("owned directory move did not preserve identity", err)
+	}
+	after, err := initialOwnedDirectoryInfo(archive)
+	if err != nil || !os.SameFile(before, after) || !os.SameFile(movedInfo, after) {
+		t.Fatal("pre-move snapshot lost archived identity", err)
+	}
+	if err = os.Mkdir(original, 0700); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := initialOwnedDirectoryInfo(original)
+	if err != nil || os.SameFile(before, replacement) || os.SameFile(movedInfo, replacement) {
+		t.Fatal("recreated old path acquired the archived identity", err)
+	}
+}
+
 func TestWindowsNativeInitialTransactionCopiesExactPackageAndPreservesAccount(t *testing.T) {
 	cfg, l, payload := initialNativeFixture(t)
 	state, err := executeNativeInitialRepair(l, cfg, payload)
@@ -91,7 +119,7 @@ func TestWindowsNativeInitialTransactionCopiesExactPackageAndPreservesAccount(t 
 		t.Fatal("account changed", e)
 	}
 	// A repeated explicit setup must finalize, not move a complete installation.
-	before, err := os.Stat(l.stableRoot)
+	before, err := initialOwnedDirectoryInfo(l.stableRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +127,7 @@ func TestWindowsNativeInitialTransactionCopiesExactPackageAndPreservesAccount(t 
 	if err != nil || state != initialCommitted {
 		t.Fatal("finalize-only retry failed", err)
 	}
-	after, err := os.Stat(l.stableRoot)
+	after, err := initialOwnedDirectoryInfo(l.stableRoot)
 	if err != nil || !os.SameFile(before, after) {
 		t.Fatal("complete authority was requarantined", err)
 	}
