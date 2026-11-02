@@ -1,3 +1,4 @@
+import { checkNativeAdmissionWiring } from './check-native-admission-ci.mjs';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { gateExpression, JOB_GATES, jobRuns, reachableOutputs } from './ci-areas.mjs';
@@ -1273,6 +1274,10 @@ export function checkDesktopWorkflow(root) {
   try { text = readFileSync(join(root, '.github', 'workflows', file), 'utf8'); }
   catch (error) { if (error.code === 'ENOENT') return ['desktop.yml: missing desktop acceptance workflow']; throw error; }
   const problems = [];
+  let e2ePackage;
+  try { e2ePackage = JSON.parse(readFileSync(join(root, 'e2e', 'package.json'), 'utf8')); }
+  catch { e2ePackage = {}; }
+  if (!checkNativeAdmissionWiring(text, e2ePackage)) problems.push(`${file}: full-client native admission wiring or unit coverage is missing or unsafe`);
   if (/fail-fast:\s*false|--max-failures=(?!1\b)\d+/.test(text)) {
     problems.push(`${file}: desktop validation must stop on the first failure`);
   }

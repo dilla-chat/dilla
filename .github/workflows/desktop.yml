@@ -340,6 +340,18 @@ jobs:
       - name: Shared client end-to-end coverage in Electron
         if: runner.os != 'Linux'
         run: npm exec -w @dilla/e2e -- playwright test --config playwright.desktop.config.ts --project=electron-client --shard=${{ matrix.shard }}/3 --max-failures=1
+      - name: Full-client native admission
+        if: runner.os == 'Linux' && matrix.os == 'ubuntu-24.04' && matrix.arch == 'x64' && matrix.shard == 1
+        env:
+          CHROME_DEVEL_SANDBOX: ${{ github.workspace }}/node_modules/electron/dist/chrome-sandbox
+        run: xvfb-run -a bash e2e/web/support/installed-keyring.sh bash packages/desktop/scripts/with-window-manager.sh npm exec -w @dilla/e2e -- playwright test --config playwright.native-admission.config.ts --project=native-admission --workers=1 --max-failures=1
+      - name: Retain full-client native admission outcome
+        if: (success() || failure()) && runner.os == 'Linux' && matrix.os == 'ubuntu-24.04' && matrix.arch == 'x64' && matrix.shard == 1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: desktop-native-admission-outcome-linux-x64
+          path: e2e/native-admission-results/**/attachments/native-admission-*.json
+          if-no-files-found: error
       - name: Collect installed account upgrade proof
         id: installed-account
         run: node packages/desktop/scripts/installed-account-proof.mjs e2e/desktop-client-results ${{ matrix.platform }}-${{ matrix.arch }} packages/desktop/test-report

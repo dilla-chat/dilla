@@ -164,6 +164,10 @@ test('Linux sandbox foundation is required exactly once by completion and final 
 const REAL_RELEASE = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'release.yml'), 'utf8');
 
 const REAL_DESKTOP = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'desktop.yml'), 'utf8');
+function addE2ePackage(root) {
+  mkdirSync(join(root, 'e2e'), { recursive: true });
+  writeFileSync(join(root, 'e2e/package.json'), readFileSync(join(REPO_ROOT, 'e2e/package.json')));
+}
 
 test('desktop-only CI keeps shared core security and removes unsupported browser client lanes', () => {
   assert.doesNotMatch(REAL_CI, /^  (?:firefox-[^:]+|webkit-[^:]+|chromium-(?:web-[123]|voice|core)):/m);
@@ -184,6 +188,7 @@ test('desktop acceptance requires every native target, Electron tests, packaging
   for (const removed of ['node packages/desktop/scripts/prepare-browser-sandbox.mjs', 'node packages/desktop/scripts/run-performance.mjs', 'name: Desktop performance comparison', 'name: desktop-performance-', 'playwright.desktop-voice.config.ts', 'DILLA_E2E_NOTIFICATIONS', 'dunst', 'with-window-manager.sh', 'prepare-windows-audio.ps1', '--grep-invert "application-audio.spec.ts"', 'Application audio encryption and exclusion', 'application-audio.spec.ts', 'os: macos-15-intel', 'os: macos-15,', 'npm run typecheck -w @dilla/desktop', 'npm run build:validation -w @dilla/desktop', 'node packages/desktop/scripts/check-fuses.mjs', 'node --test packages/desktop/test/native/mac-upgrade.test.mjs', 'node --test packages/desktop/test/native/installed-upgrade.test.mjs', 'libfuse2t64', 'name: desktop-installed-upgrade-', 'npm run dist -w @dilla/desktop', 'shard: [1, 2, 3]', 'os: [ubuntu-24.04, windows-latest, macos-15-intel, macos-15]', 'playwright.desktop.config.ts']) {
     const root = mkdtempSync(join(tmpdir(), 'dilla-desktop-ci-'));
     mkdirSync(join(root, '.github/workflows'), { recursive: true });
+    addE2ePackage(root);
     writeFileSync(join(root, '.github/workflows/desktop.yml'), REAL_DESKTOP.replaceAll(removed, 'removed'));
     assert.ok(checkDesktopWorkflow(root).length > 0, removed);
   }
@@ -196,6 +201,7 @@ test('desktop workflow rejects duplicate Windows maintenance and kernel acceptan
   ]) {
     const root = mkdtempSync(join(tmpdir(), 'dilla-duplicate-windows-ci-'));
     mkdirSync(join(root, '.github/workflows'), { recursive: true });
+    addE2ePackage(root);
     writeFileSync(join(root, '.github/workflows/desktop.yml'), REAL_DESKTOP + `\n      - run: ${command}\n`);
     assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes(message)), command);
   }
@@ -204,6 +210,7 @@ test('desktop workflow rejects duplicate Windows maintenance and kernel acceptan
 test('Windows installer artifact retains its authenticated manifest', () => {
   const root = mkdtempSync(join(tmpdir(), 'dilla-windows-native-ci-'));
   mkdirSync(join(root, '.github/workflows'), { recursive: true });
+    addE2ePackage(root);
   const changed = REAL_DESKTOP.replace('            packages/desktop/out/*.manifest.json\n', '');
   assert.notEqual(changed, REAL_DESKTOP);
   writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
@@ -220,7 +227,8 @@ test('installed account coverage retains OS credential protection, normal FUSE a
   ]) {
     const root = mkdtempSync(join(tmpdir(), 'dilla-account-ci-'));
     mkdirSync(join(root, '.github/workflows'), { recursive: true });
-    const changed = REAL_DESKTOP.replace(before, after); assert.notEqual(changed, REAL_DESKTOP, before);
+    addE2ePackage(root);
+    const changed = REAL_DESKTOP.replaceAll(before, after); assert.notEqual(changed, REAL_DESKTOP, before);
     writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
     assert.ok(checkDesktopWorkflow(root).some(problem => /installed account/i.test(problem)), before);
   }
@@ -238,6 +246,7 @@ test('native build provenance authenticates final fused installers and is upload
     assert.notEqual(changed, REAL_DESKTOP);
     const root = mkdtempSync(join(tmpdir(), 'dilla-build-proof-ci-'));
     mkdirSync(join(root, '.github/workflows'), { recursive: true });
+    addE2ePackage(root);
     writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
     assert.ok(checkDesktopWorkflow(root).some(problem => /build provenance/i.test(problem)));
   }
@@ -246,6 +255,7 @@ test('native build provenance authenticates final fused installers and is upload
 test('desktop voice cannot shard its frozen-clock suite', () => {
   const root = mkdtempSync(join(tmpdir(), 'dilla-desktop-voice-ci-'));
   mkdirSync(join(root, '.github/workflows'), { recursive: true });
+    addE2ePackage(root);
   writeFileSync(join(root, '.github/workflows/desktop.yml'), REAL_DESKTOP.replaceAll('playwright.desktop-voice.config.ts --project=electron-voice --workers=1', 'playwright.desktop-voice.config.ts --project=electron-voice --workers=1 --shard=1/2'));
   assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('single frozen-clock worker')));
 });
@@ -258,6 +268,7 @@ test('installed upgrade acceptance cannot omit either NSIS or normal FUSE launch
   ]) {
     const root = mkdtempSync(join(tmpdir(), 'dilla-installed-ci-'));
     mkdirSync(join(root, '.github/workflows'), { recursive: true });
+    addE2ePackage(root);
     const changed = REAL_DESKTOP.replace(before, after);
     assert.notEqual(changed, REAL_DESKTOP);
     writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
@@ -271,6 +282,7 @@ test('installed proof is produced after Playwright clears output and uploaded af
   assert.notEqual(moved, REAL_DESKTOP);
   const root = mkdtempSync(join(tmpdir(), 'dilla-installed-proof-'));
   mkdirSync(join(root, '.github/workflows'), { recursive: true });
+    addE2ePackage(root);
   writeFileSync(join(root, '.github/workflows/desktop.yml'), moved);
   assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('Playwright cleanup')));
 });
@@ -280,6 +292,7 @@ test('desktop CI refuses continuing matrix jobs or tests after the first failure
   for (const [before, after] of [['fail-fast: true', 'fail-fast: false'], ['--max-failures=1', '--max-failures=3']]) {
     const root = mkdtempSync(join(tmpdir(), 'dilla-desktop-first-failure-'));
     mkdirSync(join(root, '.github/workflows'), { recursive: true });
+    addE2ePackage(root);
     writeFileSync(join(root, '.github/workflows/desktop.yml'), good.replace(before, after));
     assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('first failure')), after);
   }
@@ -342,6 +355,7 @@ test('desktop tooling must be built once per native target and verified before e
   ]) {
     const root = mkdtempSync(join(tmpdir(), 'dilla-tooling-ci-'));
     mkdirSync(join(root, '.github/workflows'), { recursive: true });
+    addE2ePackage(root);
     const changed = REAL_DESKTOP.replaceAll(before, after);
     assert.notEqual(changed, REAL_DESKTOP, before);
     writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
@@ -357,6 +371,7 @@ test('desktop native acceptance stays independent and tooling never comes from a
   ]) {
     const root = mkdtempSync(join(tmpdir(), 'dilla-tooling-scope-'));
     mkdirSync(join(root, '.github/workflows'), { recursive: true });
+    addE2ePackage(root);
     writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
     assert.ok(checkDesktopWorkflow(root).some(problem => /tooling|independent/i.test(problem)));
   }
@@ -999,6 +1014,7 @@ test('desktop units retain all non-Windows platforms and cannot be conditionally
   for (const replacement of ['', step.replace("!= 'Windows'", "== 'Linux'"), step.replace("!= 'Windows'", "== 'macOS'")]) {
     const root = mkdtempSync(join(tmpdir(), 'dilla-unit-platform-ci-'));
     mkdirSync(join(root, '.github/workflows'), { recursive: true });
+    addE2ePackage(root);
     writeFileSync(join(root, '.github/workflows/desktop.yml'), REAL_DESKTOP.replace(step, replacement));
     assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('non-Windows desktop unit')));
   }
@@ -1101,6 +1117,7 @@ function gatedTest(name) {
 function fixture(body, gated = GATED) {
   const dir = mkdtempSync(join(tmpdir(), 'dilla-ci-'));
   mkdirSync(join(dir, '.github', 'workflows'), { recursive: true });
+  addE2ePackage(dir);
   writeFileSync(join(dir, '.github', 'workflows', 'ci.yml'), body);
   // The CLI also checks release.yml.
   writeFileSync(join(dir, '.github', 'workflows', 'release.yml'), REAL_RELEASE);
@@ -2092,6 +2109,7 @@ test('jobs that build no wasm need no clang 23', () => {
 function releaseFixture(release) {
   const dir = mkdtempSync(join(tmpdir(), 'dilla-release-'));
   mkdirSync(join(dir, '.github', 'workflows'), { recursive: true });
+  addE2ePackage(dir);
   writeFileSync(join(dir, '.github', 'workflows', 'ci.yml'), REAL_CI);
   writeFileSync(join(dir, '.github', 'workflows', 'desktop.yml'), REAL_DESKTOP);
   writeFileSync(join(dir, '.github', 'workflows', 'release.yml'), release);
