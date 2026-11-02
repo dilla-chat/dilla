@@ -10,7 +10,7 @@ import { createHash, generateKeyPairSync } from 'node:crypto';
 import { compileWindowsNSIS, withInitialInstallDiagnostics, withInitialRetryNativeDiagnostic, initialRetryNativeDiagnostic } from './support/windows-nsis.mjs';
 const require = createRequire(import.meta.url);
 const sourcePath = new URL('../build/windows-installer.nsi', import.meta.url);
-function body(source: string, name: string): string { const match = new RegExp(`Function ${name}\\r?\\n([\\s\\S]*?)FunctionEnd`).exec(source); assert.ok(match, `missing ${name}`); return match[1]; }
+function body(source: string, name: string): string { const match = new RegExp(`Function ${name}\\r?\\n([\\s\\S]*?)FunctionEnd`).exec(source); assert.ok(match, `missing ${name}`); return match[1].replaceAll('\r\n', '\n'); }
 async function compileCheckPathProbe(directory: string, target: string, name: string): Promise<string> {
  const original = await readFile(sourcePath, 'utf8'), check = body(original.replaceAll('${Prefix}', ''), 'CheckPath');
  const { nsisEscapeString } = require('app-builder-lib/out/targets/nsis/nsisScriptGenerator');
@@ -204,6 +204,15 @@ test('installer creates a new protected payload before extraction and retains no
  assert.match(body(privateSource, 'RequireEmptyPayload'), /FindNextFileW[^\n]+\?e/);
  assert.match(body(source, 'Fail'), /Call ReleasePrivatePayload/);
  assert.match(body(source, '.onGUIEnd'), /Call ReleasePrivatePayload/);
+});
+test('private payload fault boundaries survive actual LF and CRLF NSIS checkouts', async () => {
+ const source = (await readFile(sourcePath, 'utf8')).replaceAll('\r\n', '\n');
+ const boundary = '  Push "$PLUGINSDIR\\payload"\n  Call PinPayloadDirectory\n  ; The atomic handle';
+ for (const input of [source, source.replaceAll('\n', '\r\n')]) {
+  const prepare = body(input.replaceAll('${Prefix}', ''), 'PreparePrivatePayload');
+  assert.equal(prepare.split(boundary).length, 2, 'the actual post-creation fault boundary must match exactly once');
+  assert.equal(prepare.includes('\r'), false, 'extracted fixture functions use normalized newlines');
+ }
 });
 test('native private NSIS payload passes unchanged Go ACL guards and refuses unsafe or preexisting namespaces', { skip: process.platform !== 'win32', timeout: 120000 }, async () => {
  const root = await realpath(await mkdtemp(join(tmpdir(), 'dilla-private-payload-')));
