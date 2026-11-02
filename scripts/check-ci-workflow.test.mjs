@@ -215,7 +215,6 @@ test('installed Linux sandbox preparation cannot lose build prerequisites, contr
   ['node packages/desktop/scripts/test-linux-sandbox-package.mjs packages/desktop/out','true'],
   ["name: Linux AppImage final package inspection mutations\n        if: runner.os == 'Linux'","name: Linux AppImage final package inspection mutations\n        if: false"],
   ['packages/desktop/out/*.sandbox.json','packages/desktop/out/*.other'],
-  ["if: runner.os == 'Windows' || runner.os == 'Linux'","if: runner.os == 'Windows'"],
   ['CGO_ENABLED=0 go test ./packages/desktop/test/fixtures/linux-installed-sandbox-bootstrap','true'],
   ['node --test packages/desktop/test/linux-installed-sandbox-bootstrap.test.mjs','node --test --test-name-pattern=none packages/desktop/test/linux-installed-sandbox-bootstrap.test.mjs'],
   ["name: Linux installed sandbox prerequisite controls\n        if: runner.os == 'Linux'","name: Linux installed sandbox prerequisite controls\n        if: false"],
@@ -225,6 +224,36 @@ test('installed Linux sandbox preparation cannot lose build prerequisites, contr
   const root=fixture(GOOD),changed=REAL_DESKTOP.replaceAll(before,after);assert.notEqual(changed,REAL_DESKTOP,before);
   writeFileSync(join(root,'.github/workflows/desktop.yml'),changed);
   assert.ok(checkDesktopWorkflow(root).some(p=>p.includes('installed sandbox')),before);
+ }
+});
+
+test('native desktop Go setup remains unconditional for every platform', () => {
+ const before = 'cache: npm\n      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7';
+ assert.ok(REAL_DESKTOP.includes(before)); assert.deepEqual(checkDesktopWorkflow(REPO_ROOT), []);
+ for (const guard of ["runner.os == 'Windows'", "runner.os == 'Linux'", 'false', 'success()']) {
+  const root=fixture(GOOD), changed=REAL_DESKTOP.replace(before, `cache: npm\n      - if: ${guard}\n        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7`);
+  assert.notEqual(changed,REAL_DESKTOP); writeFileSync(join(root,'.github/workflows/desktop.yml'),changed);
+  assert.ok(checkDesktopWorkflow(root).some(problem=>problem.includes('pinned native Go')),guard);
+ }
+ const block='      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7\n        with:\n          go-version-file: go.mod\n          cache-dependency-path: go.sum\n';
+ const nativeStart=REAL_DESKTOP.indexOf('  native:\n'), at=REAL_DESKTOP.indexOf(block,nativeStart); assert.ok(at>=0);
+ const without=REAL_DESKTOP.slice(0,at)+REAL_DESKTOP.slice(at+block.length), unit='        run: npm test -w @dilla/desktop\n', unitAt=without.indexOf(unit,nativeStart); assert.ok(unitAt>=0);
+ const reordered=without.slice(0,unitAt+unit.length)+block+without.slice(unitAt+unit.length), root=fixture(GOOD);
+ writeFileSync(join(root,'.github/workflows/desktop.yml'),reordered); assert.ok(checkDesktopWorkflow(root).some(problem=>problem.includes('pinned native Go')));
+});
+
+test('native failure diagnostics run only after a successful desktop build', () => {
+ const guard="if: failure() && steps.desktop-build.outcome == 'success'";
+ const before=`${guard}\n        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7\n        with:\n          name: desktop-failure-`;
+ assert.ok(REAL_DESKTOP.includes(before)); assert.deepEqual(checkDesktopWorkflow(REPO_ROOT),[]);
+ for(const replacement of ['failure()', "failure() && steps.desktop-build.outcome != 'success'", 'always()']) {
+  const root=fixture(GOOD), changed=REAL_DESKTOP.replace(before,before.replace(guard,`if: ${replacement}`)); assert.notEqual(changed,REAL_DESKTOP);
+  writeFileSync(join(root,'.github/workflows/desktop.yml'),changed); assert.ok(checkDesktopWorkflow(root).some(p=>p.includes('native failure diagnostics')),replacement);
+ }
+ const block=`${before}\${{ matrix.platform }}-\${{ matrix.arch }}\n          path: |\n            packages/desktop/test-results\n            \${{ runner.temp }}/dilla-windows-audio/*.log\n            \${{ runner.temp }}/dilla-windows-audio/*.out\n            \${{ runner.temp }}/dilla-windows-audio/*.err\n          if-no-files-found: error`;
+ assert.ok(REAL_DESKTOP.includes(block));
+ for(const changed of [REAL_DESKTOP.replace(block,block.replace('if-no-files-found: error','if-no-files-found: warn')),REAL_DESKTOP.replace(block,block.replace('packages/desktop/test-results','packages/desktop/missing')),REAL_DESKTOP.replace('id: desktop-build','id: other-build')]) {
+  const root=fixture(GOOD);writeFileSync(join(root,'.github/workflows/desktop.yml'),changed);assert.ok(checkDesktopWorkflow(root).some(p=>p.includes('native failure diagnostics')));
  }
 });
 

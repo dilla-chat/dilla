@@ -1310,8 +1310,7 @@ export function checkDesktopWorkflow(root) {
     const build=steps.findIndex(step=>step.includes('run: npm run build -w @dilla/desktop -- --existing-client'));
     if(headers<0 || build<0 || headers>=build)problems.push(`${file}: installed sandbox GTK compiler prerequisites must precede ${job} builds`);
   }
-  const nativeGo=nativeSteps.findIndex(step=>step.join('\n')===`if: runner.os == 'Windows' || runner.os == 'Linux'
-uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+  const nativeGo=nativeSteps.findIndex(step=>step.join('\n')===`uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
 with:
 go-version-file: go.mod
 cache-dependency-path: go.sum`);
@@ -1321,7 +1320,8 @@ run: |
 CGO_ENABLED=0 go test ./packages/desktop/test/fixtures/linux-installed-sandbox-bootstrap
 node --test packages/desktop/test/linux-installed-sandbox-bootstrap.test.mjs packages/desktop/test/linux-sandbox-package-runner.test.mjs`);
   const installedLinux=nativeSteps.findIndex(step=>step.includes('name: Installed upgrade acceptance') && step.includes("if: runner.os == 'Linux'"));
-  if(nativeGo<0 || controls<=nativeGo || controls>=installedLinux)problems.push(`${file}: installed sandbox controls require pinned native Go and unfiltered controls before installed acceptance`);
+  const nativeUnit=nativeSteps.findIndex(step=>step.some(line=>line.includes('run: npm test -w @dilla/desktop')));
+  if(nativeGo<0 || nativeUnit<=nativeGo || controls<=nativeGo || controls>=installedLinux)problems.push(`${file}: installed sandbox controls require pinned native Go and unfiltered controls before installed acceptance`);
   for(const [job,name,guard,artifact]of [
     ['native','Initial installed sandbox prerequisite proof',"runner.os == 'Linux'",'desktop-initial-sandbox-native-linux-x64'],
     ['client','Initial installed account sandbox prerequisite proof',"runner.os == 'Linux' && steps.installed-account.outputs.present == 'true'",'desktop-initial-sandbox-account-linux-x64'],
@@ -1329,6 +1329,19 @@ node --test packages/desktop/test/linux-installed-sandbox-bootstrap.test.mjs pac
     const expected=`name: ${name}\nif: ${guard}\nuses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7\nwith:\nname: ${artifact}\npath: \${{ runner.temp }}/dilla-installed-sandbox-initial.json\nif-no-files-found: error`;
     if(jobSteps(body(job)).filter(step=>step.join('\n')===expected).length!==1)problems.push(`${file}: installed sandbox requires exact job-selected initial prerequisite proof upload for ${job}`);
   }
+  const desktopBuild = nativeSteps.findIndex(step=>step.includes('id: desktop-build') && step.includes('run: npm run build -w @dilla/desktop -- --existing-client'));
+  const failureUpload = `if: failure() && steps.desktop-build.outcome == 'success'
+uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+with:
+name: desktop-failure-\${{ matrix.platform }}-\${{ matrix.arch }}
+path: |
+packages/desktop/test-results
+\${{ runner.temp }}/dilla-windows-audio/*.log
+\${{ runner.temp }}/dilla-windows-audio/*.out
+\${{ runner.temp }}/dilla-windows-audio/*.err
+if-no-files-found: error`;
+  const failureUploads = nativeSteps.map((step,index)=>step.join('\n')===failureUpload ? index : -1).filter(index=>index>=0);
+  if(desktopBuild<0 || failureUploads.length!==1 || failureUploads[0]<=desktopBuild)problems.push(`${file}: native failure diagnostics require the exact post-build upload`);
   const unitSteps = nativeSteps.filter(step => step.some(line => line.includes('run: npm test -w @dilla/desktop')));
   if (unitSteps.length !== 1 || unitSteps[0].join('\n') !== "if: runner.os != 'Windows'\nrun: npm test -w @dilla/desktop") {
     problems.push(`${file}: non-Windows desktop unit tests must run on every other native platform`);

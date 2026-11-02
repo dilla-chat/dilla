@@ -62,7 +62,7 @@ test('matches resident Go ELF acceptance for section and program table edge case
  change('valid compressed section names',b=>{b.writeBigUInt64LE(129n,40);b.writeUInt16LE(64,58);b.writeUInt16LE(2,60);b.writeUInt16LE(1,62);b.writeUInt32LE(1,193);b.writeUInt32LE(3,197);b.writeBigUInt64LE(0x800n,201);b.writeBigUInt64LE(257n,217);b.writeBigUInt64LE(BigInt(24+compressed.length),225);b.writeUInt32LE(1,257);b.writeBigUInt64LE(5n,265);compressed.copy(b,281);},281+compressed.length);
  change('truncated compressed section header',b=>{b.writeBigUInt64LE(129n,40);b.writeUInt16LE(64,58);b.writeUInt16LE(1,60);b.writeBigUInt64LE(0x800n,137);b.writeBigUInt64LE(193n,153);b.writeBigUInt64LE(12n,161);},205);
  const oracle=spawnSync('go',['run','./test/support/linux-sandbox-elf-oracle'],{cwd: new URL('..',import.meta.url),input:JSON.stringify(cases.map(([,bytes])=>bytes.toString('base64'))),encoding:'utf8',timeout:120000,maxBuffer:1048576});
- assert.equal(oracle.status,0,oracle.stderr); const expected=JSON.parse(oracle.stdout) as boolean[];
+ assert.ifError(oracle.error); assert.equal(oracle.status,0,oracle.stderr); const expected=JSON.parse(oracle.stdout) as boolean[];
  for (const [i,[name,bytes]] of cases.entries()) { let actual=true; try {verifyLinuxSandboxRelease(fixture({}, x=>x, bytes));} catch {actual=false;} assert.equal(actual,expected[i],name); }
 });
 
