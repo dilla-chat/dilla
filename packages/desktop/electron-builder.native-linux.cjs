@@ -7,7 +7,8 @@ async function normalizeModes(path) {
  if (info.isDirectory()) for (const name of await readdir(path)) await normalizeModes(join(path, name));
  if (info.isFile() || info.isDirectory()) await chmod(path, info.mode & 0o755);
 }
-const version = require('./package.json').version;
+const override = process.env.DILLA_NATIVE_BUILD_VERSION;
+const version = override === undefined ? require('./package.json').version : override;
 const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-beta\.(0|[1-9]\d*))?$/.exec(version);
 if (!match || !match.slice(1).filter(value => value !== undefined).every(value => Number.isSafeInteger(Number(value)))) throw new Error('Unsupported native package version');
 const base = `${match[1]}.${match[2]}.${match[3]}`, beta = match[4];
@@ -17,7 +18,7 @@ module.exports = {
  files: ['dist/**', 'package.json'], asar: true,
  beforePack: context => { if (process.platform !== 'linux' || process.arch !== 'x64' || context.electronPlatformName !== 'linux' || context.arch !== 1) throw new Error('Native packages require Linux x64'); },
  afterPack: context => normalizeModes(context.appOutDir),
- extraMetadata: { homepage: 'https://github.com/jonasthim/dilla' },
+ extraMetadata: { homepage: 'https://github.com/jonasthim/dilla', ...(override === undefined ? {} : { version }) },
  extraResources: [{ from: 'native-bin', to: 'native', filter: ['dilla-audio*'] }],
  protocols: [{ name: 'Dilla invite', schemes: ['dilla'] }],
  linux: { artifactName: 'dilla-${version}-linux-x64.${ext}', syncDesktopName: true, target: [{ target: 'deb', arch: ['x64'] }, { target: 'rpm', arch: ['x64'] }], category: 'Network', icon: 'assets/icon.png', maintainer: 'Dilla contributors', vendor: 'Dilla contributors' },

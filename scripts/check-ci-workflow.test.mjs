@@ -167,6 +167,18 @@ test('Linux sandbox foundation is required exactly once by completion and final 
 const REAL_RELEASE = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'release.yml'), 'utf8');
 
 const REAL_DESKTOP = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'desktop.yml'), 'utf8');
+test('desktop workflow checker requires the native feasibility job and its installed ASAR comparison', () => {
+ for (const [before, after] of [
+  ['  native-stock-feasibility:', '  removed-stock-feasibility:'],
+  ['          cmp "$RUNNER_TEMP/native-extracted/opt/Dilla/resources/app.asar" /opt/Dilla/resources/app.asar', '          # cmp "$RUNNER_TEMP/native-extracted/opt/Dilla/resources/app.asar" /opt/Dilla/resources/app.asar'],
+  ['          persist-credentials: false', '          persist-credentials: true'],
+ ]) {
+  const root = fixture(GOOD), changed = REAL_DESKTOP.replace(before, after);
+  assert.notEqual(changed, REAL_DESKTOP);
+  writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
+  assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('native stock feasibility')));
+ }
+});
 function addE2ePackage(root) {
   mkdirSync(join(root, 'e2e'), { recursive: true });
   writeFileSync(join(root, 'e2e/package.json'), readFileSync(join(REPO_ROOT, 'e2e/package.json')));

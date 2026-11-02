@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { gateExpression, JOB_GATES, jobRuns, reachableOutputs } from './ci-areas.mjs';
+import { checkNativeStockFeasibility } from './check-native-stock-feasibility.mjs';
 
 /**
  * Every job the workflow must carry (interfaces §5). Ruling L added the two Go jobs: they landed with
@@ -1274,6 +1275,7 @@ export function checkDesktopWorkflow(root) {
   try { text = readFileSync(join(root, '.github', 'workflows', file), 'utf8'); }
   catch (error) { if (error.code === 'ENOENT') return ['desktop.yml: missing desktop acceptance workflow']; throw error; }
   const problems = [];
+  problems.push(...checkNativeStockFeasibility(text, { workflow: true }).map(problem => `${file}: native stock feasibility: ${problem}`));
   if (/fail-fast:\s*false|--max-failures=(?!1\b)\d+/.test(text)) {
     problems.push(`${file}: desktop validation must stop on the first failure`);
   }

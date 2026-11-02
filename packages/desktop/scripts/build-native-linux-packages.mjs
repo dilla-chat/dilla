@@ -31,10 +31,13 @@ export async function writeAurRecipe(version, deb, directory) {
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
  if (process.argv[2] === 'recipe' && process.argv.length === 6) {
   await writeAurRecipe(process.argv[3], resolve(process.argv[4]), resolve(process.argv[5]));
- } else if (process.argv[2] === 'build' && process.argv.length === 4) {
+ } else if (process.argv[2] === 'build' && (process.argv.length === 4 || process.argv.length === 5)) {
   if (process.platform !== 'linux' || process.arch !== 'x64') throw new Error('Native packages require Linux x64');
-  const root = resolve(import.meta.dirname, '..'), output = resolve(process.argv[3]);
-  execFileSync('npm', ['run', 'build', '-w', '@dilla/desktop', '--', '--linux-install-kind=system-package'], { cwd: root, stdio: 'inherit' });
-  execFileSync(resolve(root, '../../node_modules/.bin/electron-builder'), ['--config', 'electron-builder.native-linux.cjs', '--linux', 'deb', 'rpm', '--x64', '--publish', 'never', `-c.directories.output=${output}`], { cwd: root, stdio: 'inherit' });
- } else throw new Error('Usage: build-native-linux-packages.mjs build OUTPUT_DIRECTORY | recipe VERSION DEB RECIPE_DIRECTORY');
+  const root = resolve(import.meta.dirname, '..'), output = resolve(process.argv[3]), version = process.argv[4];
+  if (version !== undefined) linuxPackageVersion(version, 'x64');
+  const env = { ...process.env }; delete env.DILLA_NATIVE_BUILD_VERSION;
+  if (version !== undefined) env.DILLA_NATIVE_BUILD_VERSION = version;
+  execFileSync('npm', ['run', 'build', '-w', '@dilla/desktop', '--', '--linux-install-kind=system-package', ...(version === undefined ? [] : ['--existing-client'])], { cwd: root, stdio: 'inherit', env });
+  execFileSync(resolve(root, '../../node_modules/.bin/electron-builder'), ['--config', 'electron-builder.native-linux.cjs', '--linux', 'deb', 'rpm', '--x64', '--publish', 'never', `-c.directories.output=${output}`], { cwd: root, stdio: 'inherit', env });
+ } else throw new Error('Usage: build-native-linux-packages.mjs build OUTPUT_DIRECTORY [VERSION] | recipe VERSION DEB RECIPE_DIRECTORY');
 }

@@ -27,7 +27,7 @@
     "check:bot-ops": "node scripts/check-bot-operations.mjs",
     "test:bot-ops-check": "node --test scripts/check-bot-operations.test.mjs",
     "typecheck:e2e": "tsc --noEmit -p e2e/tsconfig.json",
-    "test:ci-check": "python3 scripts/ci-watchdog.test.py && node --test scripts/check-ci-workflow.test.mjs scripts/ci-areas.test.mjs scripts/install-ci-tool.test.mjs scripts/fetch-retry.test.mjs scripts/e2e-test-tools.test.mjs",
+    "test:ci-check": "python3 scripts/ci-watchdog.test.py && node --test scripts/check-ci-workflow.test.mjs scripts/check-native-stock-feasibility.test.mjs scripts/ci-areas.test.mjs scripts/install-ci-tool.test.mjs scripts/fetch-retry.test.mjs scripts/e2e-test-tools.test.mjs",
     "test:manifest-writer": "node --test scripts/write-manifest.test.mjs",
     "test:wasm-size-check": "node --test scripts/check-wasm-size.test.mjs",
     "test:install": "bash deploy/install_test.sh",
