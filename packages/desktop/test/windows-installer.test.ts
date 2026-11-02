@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
 // @ts-expect-error test tooling is JavaScript
-import { compileWindowsNSIS, withInitialInstallDiagnostics } from './support/windows-nsis.mjs';
+import { compileWindowsNSIS, withInitialInstallDiagnostics, withInitialRetryNativeDiagnostic } from './support/windows-nsis.mjs';
 const require = createRequire(import.meta.url);
 const sourcePath = new URL('../build/windows-installer.nsi', import.meta.url);
 function body(source: string, name: string): string { const match = new RegExp(`Function ${name}\\r?\\n([\\s\\S]*?)FunctionEnd`).exec(source); assert.ok(match, `missing ${name}`); return match[1]; }
@@ -58,12 +58,59 @@ Section
 SectionEnd
 ` });
 }
+async function compileDiagnosticFlagProbe(directory: string, hooked: boolean, errorFlag: boolean, status: number): Promise<string> {
+ const source = `
+Name "Private Dilla diagnostic flag boundary"
+RequestExecutionLevel user
+SilentInstall silent
+!include "LogicLib.nsh"
+Var FixtureNativeExit
+Function FixtureInitialPreflight1
+  StrCpy $FixtureNativeExit $0
+FunctionEnd
+Function FixtureInitialPreflight2
+  StrCpy $FixtureNativeExit $0
+FunctionEnd
+Section
+ Call FixtureInitialPreflight2
+ StrCpy $0 ${status}
+ ${errorFlag ? 'SetErrors' : 'ClearErrors'}
+ Call FixtureInitialPreflight1
+ IfErrors error_seen no_error
+ error_seen:
+ StrCpy $R0 1
+ Goto observed
+ no_error:
+ StrCpy $R0 0
+ observed:
+ StrCmp $R0 ${errorFlag ? 1 : 0} 0 fail
+ StrCmp $0 ${status} 0 fail
+ SetErrorLevel 0
+ Goto done
+ fail:
+ SetErrorLevel 2
+ done:
+SectionEnd
+`;
+ return compileWindowsNSIS({ directory, archive: join(directory, 'unused.7z'), name: `flag-${hooked}-${errorFlag}-${status}.exe`, transform: () => hooked ? withInitialRetryNativeDiagnostic(source, join(directory, 'unused-diagnostic.exe')) : source });
+}
 test('the actual extracted NSIS CheckPath compiles with the pinned System plugin', async () => {
  const root = await realpath(await mkdtemp(join(tmpdir(), 'dilla-check-path-compile-')));
  try {
   const executable = await compileCheckPathProbe(root, join(root, 'missing'), 'check-path.exe');
   assert.equal((await readFile(executable)).subarray(0, 2).toString(), 'MZ');
   assert.equal((await readFile(await compileDiagnosticBranchProbe(root, true))).subarray(0, 2).toString(), 'MZ');
+  assert.equal((await readFile(await compileDiagnosticFlagProbe(root, true, true, 1))).subarray(0, 2).toString(), 'MZ');
+ } finally { await rm(root, { recursive: true, force: true }); }
+});
+test('native retry diagnostic hook preserves original NSIS error flags and exit statuses', { skip: process.platform !== 'win32', timeout: 30000 }, async () => {
+ const root = await realpath(await mkdtemp(join(tmpdir(), 'dilla-diagnostic-flags-')));
+ try {
+  const env = { ...process.env }; delete env.DILLA_INITIAL_RETRY_DIAGNOSTIC_REQUEST;
+  for (const hooked of [false, true]) for (const errorFlag of [false, true]) for (const status of [0, 1]) {
+   const executable = await compileDiagnosticFlagProbe(root, hooked, errorFlag, status), result = spawnSync(executable, ['/S'], { timeout: 10000, windowsHide: true, stdio: 'pipe', maxBuffer: 1024, env });
+   assert.equal(result.status, 0, `hooked=${hooked}, originalError=${errorFlag}, originalStatus=${status}: status=${result.status}`);
+  }
  } finally { await rm(root, { recursive: true, force: true }); }
 });
 test('native diagnostic refusal wrappers preserve the actual owned-root +2 branch for success and refusal', { skip: process.platform !== 'win32', timeout: 30000 }, async () => {

@@ -5,7 +5,40 @@ import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { compileWindowsNSIS, withMaintenanceTimingFixture, withInitialInstallDiagnostics, initialInstallDiagnostic } from '../support/windows-nsis.mjs';
+import { spawnSync } from 'node:child_process';
+import { compileWindowsNSIS, withMaintenanceTimingFixture, withInitialInstallDiagnostics, initialInstallDiagnostic, withInitialSlotFlushFailure, withInitialRetryNativeDiagnostic, initialRetryNativeDiagnostic } from '../support/windows-nsis.mjs';
+test('native retry diagnostics retain only bounded classifications and execute only in failure wrappers', async () => {
+ const original = await readFile(new URL('../../build/windows-installer.nsi', import.meta.url), 'utf8'), diagnostic = withInitialInstallDiagnostics(original).source;
+ const hooked = withInitialRetryNativeDiagnostic(diagnostic, 'private-diagnostic.test.exe');
+ preservesOriginalInstructions(original, hooked);
+ assert.equal((hooked.match(/nsExec::ExecToStack \/TIMEOUT=15000/g) ?? []).length, 2);
+ assert.equal((hooked.match(/IfErrors FixtureNativeError\d+ FixtureNativeReady\d+\n  FixtureNativeError\d+:\n    SetErrors\n    Return/g) ?? []).length, 2, 'the consumed original error flag must be restored before returning');
+ assert.throws(() => withInitialRetryNativeDiagnostic(original, 'unused'), /boundary/);
+ const valid = { format: 1, stage: 'payload-tree', reason: 'native-error', nativeError: 32 };
+ assert.deepEqual(initialRetryNativeDiagnostic(valid), valid);
+ for (const changed of [{ stage: 'private/path' }, { reason: 'private-key' }, { nativeError: -1 }, { nativeError: 2 ** 32 }, { privateKey: 'never log' }]) assert.throws(() => initialRetryNativeDiagnostic({ ...valid, ...changed }), /^Error: Invalid private native retry diagnostic$/);
+});
+test('focused initial retry mode refuses the production workflow and unrelated refs before any installer work', () => {
+ for (const fields of [{ GITHUB_WORKFLOW: 'ci', GITHUB_REF: 'refs/heads/ci/desktop-windows-installer' }, { GITHUB_WORKFLOW: 'Windows installer probe', GITHUB_REF: 'refs/heads/main' }]) {
+  const result = spawnSync(process.execPath, ['--input-type=module', '--eval', `await import(${JSON.stringify(new URL('./windows-installer-maintenance.test.mjs', import.meta.url).href)});`], { encoding: 'utf8', timeout: 10000, env: { ...process.env, GITHUB_ACTIONS: 'true', DILLA_FIXTURE_INITIAL_RETRY_ONLY: '1', ...fields } });
+  assert.equal(result.status, 1); assert.match(result.stdout + result.stderr, /Focused initial retry diagnostics require the temporary Windows installer probe/);
+ }
+});
+test('the initial slot flush fault is applied to actual LF and CRLF installer sources', async () => {
+ const source = (await readFile(new URL('../../build/windows-installer.nsi', import.meta.url), 'utf8')).replaceAll('\r\n', '\n');
+ for (const input of [source, source.replaceAll('\n', '\r\n')]) {
+  const transformed = withInitialSlotFlushFailure(input);
+  assert.equal(transformed.includes('\r'), false, 'the fault transform normalizes Windows source line endings');
+  assert.equal(/  StrCpy \$1 0\n  System::Call 'kernel32::CloseHandle\(p r0\)'\n  StrCmp \$1 0 Fail/.test(transformed), true, 'the injected failure still closes the handle and reaches the real refusal guard');
+  assert.equal((transformed.match(/FlushFileBuffers/g) ?? []).length, (source.match(/FlushFileBuffers/g) ?? []).length - 1, 'only the initial slot flush is faulted');
+ }
+});
+test('the initial slot flush fault rejects missing and duplicate source boundaries', async () => {
+ const source = (await readFile(new URL('../../build/windows-installer.nsi', import.meta.url), 'utf8')).replaceAll('\r\n', '\n');
+ const boundary = "  System::Call 'kernel32::FlushFileBuffers(p r0)i.r1'\n  System::Call 'kernel32::CloseHandle(p r0)'";
+ assert.throws(() => withInitialSlotFlushFailure(source.replace(boundary, '  ; missing fixture boundary')), /boundary/);
+ assert.throws(() => withInitialSlotFlushFailure(source + '\n' + boundary), /boundary/);
+});
 function preservesOriginalInstructions(original, transformed) {
  const functions = source => new Map([...source.replaceAll('\r\n', '\n').matchAll(/^Function ([^\n]+)\n([\s\S]*?)^FunctionEnd/gm)].map(match => [match[1], match[2].trimEnd().split('\n')]));
  const before = functions(original), after = functions(transformed);
@@ -49,9 +82,11 @@ test('custom Windows installer compiles with the actual pinned NSIS builder head
   await writeFile(archive, 'compile-only fixture; not executed');
   const bootstrap = join(root, 'Dilla.exe'); await writeFile(bootstrap, 'compile-only embedded guard; not executed');
   await writeFile(archive + '.bootstrap.nsh', `!define DILLA_BOOTSTRAP_EXE "${bootstrap}"\n!define DILLA_MANIFEST_SHA512 "${Buffer.alloc(64, 0xaa).toString('base64')}"\n!define DILLA_PROGRAM_ID "v-${'a'.repeat(32)}"\n!define DILLA_MANIFEST_NAME "${'a'.repeat(128)}.json"\n`);
-  const file = await compileWindowsNSIS({ directory: root, archive, transform: source => withInitialInstallDiagnostics(withMaintenanceTimingFixture(source)).source });
+  const file = await compileWindowsNSIS({ directory: root, archive, transform: source => withInitialRetryNativeDiagnostic(withInitialInstallDiagnostics(withMaintenanceTimingFixture(source)).source, join(root, 'private-diagnostic.test.exe')) });
   const bytes = await readFile(file);
   assert.equal(bytes.subarray(0, 2).toString(), 'MZ');
   assert.ok(bytes.length > 10_000);
+  const faulted = await compileWindowsNSIS({ directory: root, archive, name: 'initial-slot-flush-failure.exe', transform: source => withInitialSlotFlushFailure(source.replaceAll('\r\n', '\n').replaceAll('\n', '\r\n')) });
+  assert.equal((await readFile(faulted)).subarray(0, 2).toString(), 'MZ');
  } finally { await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
 });

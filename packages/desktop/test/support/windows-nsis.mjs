@@ -72,6 +72,49 @@ export function initialInstallDiagnostic(value, sites) {
  return { format: 1, phase: sites[value.site - 1], nativeExit: value.nativeExit === 'not-run' ? null : Number(value.nativeExit) };
 }
 
+export function withInitialRetryNativeDiagnostic(source, binary) {
+ const boundary = '  StrCpy $FixtureNativeExit $0\n';
+ if (source.split(boundary).length !== 3) throw new Error('Native retry diagnostic wrapper boundary changed');
+ let wrapper = 0;
+ return source.split(boundary).map((part, index) => {
+  if (index === 0) return part;
+  const id = ++wrapper;
+  const call = [
+  boundary.trimEnd(),
+  `  IfErrors FixtureNativeError${id} FixtureNativeReady${id}`,
+  `  FixtureNativeError${id}:`,
+  '    SetErrors', '    Return',
+  `  FixtureNativeReady${id}:`,
+  '  ${If} $FixtureNativeExit == 1',
+  '    Push $0', '    Push $R8', '    Push $R9',
+  '    ReadEnvStr $R8 "DILLA_INITIAL_RETRY_DIAGNOSTIC_REQUEST"',
+  '    ${IfNot} ${Errors}',
+  `      nsExec::ExecToStack /TIMEOUT=15000 '"${nsisEscapeString(binary)}" -test.run=TestInitialRetryNativeDiagnostic -test.count=1 "-dilla-initial-payload=$PLUGINSDIR\\payload"'`,
+  '      Pop $R9', '      Pop $R8',
+  '    ${EndIf}',
+  '    Pop $R9', '    Pop $R8', '    Pop $0',
+  '  ${EndIf}',
+  '  ClearErrors', // The original error branch returned with SetErrors above.
+  '',
+ ].join('\n');
+  return call + part;
+ }).join('');
+}
+export function initialRetryNativeDiagnostic(value) {
+ const stages = ['request','layout','preflight','marker','manifest-identity','payload-directory','payload-manifest-read','payload-manifest-verify','payload-tree','owned-partial','ready'];
+ const reasons = ['other-validation','missing','native-error','program-digest','program-size','program-extra-entry','marker-mismatch','unknown-directory','unknown-file','prefix-size','prefix-content','update-history','untrusted-owner','null-dacl','untrusted-acl','linked-or-wrong-type','program-incomplete','manifest-digest','retry-authorized'];
+ if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 4 || value.format !== 1 || !stages.includes(value.stage) || !reasons.includes(value.reason)
+  || !Number.isSafeInteger(value.nativeError) || value.nativeError < 0 || value.nativeError > 0xffffffff) throw new Error('Invalid private native retry diagnostic');
+ return { format: 1, stage: value.stage, reason: value.reason, nativeError: value.nativeError };
+}
+
+export function withInitialSlotFlushFailure(source) {
+ source = source.replaceAll('\r\n', '\n');
+ const boundary = "  System::Call 'kernel32::FlushFileBuffers(p r0)i.r1'\n  System::Call 'kernel32::CloseHandle(p r0)'";
+ if (source.split(boundary).length !== 2) throw new Error('Initial slot flush-failure fixture boundary changed');
+ return source.replace(boundary, "  StrCpy $1 0\n  System::Call 'kernel32::CloseHandle(p r0)'");
+}
+
 export function withMaintenanceTimingFixture(source) {
  const held = source.replace('  Call un.HoldStableLauncher', [
   '  Call un.HoldStableLauncher',

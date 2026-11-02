@@ -6,17 +6,19 @@ import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile, stat, realpath, l
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createReadStream } from 'node:fs';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { createHash, generateKeyPairSync, randomUUID, sign } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { setTimeout as pause } from 'node:timers/promises';
-import { compileWindowsNSIS, withMaintenanceTimingFixture, withInitialInstallDiagnostics, initialInstallDiagnostic } from '../support/windows-nsis.mjs';
+import { compileWindowsNSIS, withMaintenanceTimingFixture, withInitialInstallDiagnostics, initialInstallDiagnostic, withInitialSlotFlushFailure, withInitialRetryNativeDiagnostic, initialRetryNativeDiagnostic } from '../support/windows-nsis.mjs';
 import { finalizeWindowsProgram } from '../../scripts/windows-package.mjs';
 import { createWindowsProgramManifest } from '../../src/windows-manifest.ts';
 const require = createRequire(import.meta.url);
 const { archive } = require('app-builder-lib/out/targets/archive');
 const repository = resolve(import.meta.dirname, '../../../..');
 const sha = raw => createHash('sha512').update(raw).digest('hex');
+const retryOnly = process.env.DILLA_FIXTURE_INITIAL_RETRY_ONLY === '1';
+if (retryOnly && process.env.GITHUB_ACTIONS === 'true' && (process.env.GITHUB_WORKFLOW !== 'Windows installer probe' || process.env.GITHUB_REF !== 'refs/heads/ci/desktop-windows-installer')) throw new Error('Focused initial retry diagnostics require the temporary Windows installer probe');
 async function snapshot(root) {
  const result = {};
  async function visit(directory, prefix) {
@@ -48,7 +50,7 @@ async function stop(child) {
 const ps = () => join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe');
 function run(file, args = [], options = {}) { return execFileSync(file, args, { timeout: 120_000, windowsHide: true, stdio: 'pipe', ...options }); }
 
-test('native installer preserves every byte on mapped Go/Electron images, archives only update history, and retries interrupted first setup', { skip: process.platform !== 'win32', timeout: 900_000 }, async () => {
+test(retryOnly ? 'FOCUSED DIAGNOSTIC ONLY: actual interrupted first-install retry' : 'native installer preserves every byte on mapped Go/Electron images, archives only update history, and retries interrupted first setup', { skip: process.platform !== 'win32', timeout: 900_000 }, async () => {
  const temporary = await realpath(await mkdtemp(join(tmpdir(), 'dilla-nsis-native-')));
  const identity = randomUUID().replaceAll('-', '').slice(0, 12), productName = 'DillaInstallerFixture' + identity, appId = 'dev.dilla.installer.fixture.' + identity;
  const program = join(process.env.LOCALAPPDATA, 'Programs', productName), profile = join(process.env.APPDATA, productName);
@@ -75,9 +77,12 @@ test('native installer preserves every byte on mapped Go/Electron images, archiv
   const digest = Buffer.from(state.digest, 'base64').toString('hex');
   await writeFile(archiveFile + '.bootstrap.nsh', `!define DILLA_BOOTSTRAP_EXE "${join(app,'Dilla.exe')}"\n!define DILLA_MANIFEST_SHA512 "${state.digest}"\n!define DILLA_PROGRAM_ID "v-${digest.slice(0, 32)}"\n!define DILLA_MANIFEST_NAME "${digest}.json"\n`);
   const compile = (name, transform) => compileWindowsNSIS({ directory: temporary, archive: archiveFile, productName, appId, name, transform });
+  const nativeHelper = join(temporary, 'initial-retry-diagnostic.test.exe'), nativeRequest = join(temporary, 'initial-retry-request.json'), nativeReport = join(temporary, 'initial-retry-native.json');
+  execFileSync('go', ['test', '-c', '-o', nativeHelper, './packages/desktop/native/windows-launcher'], { cwd: repository, env: { ...process.env, CGO_ENABLED: '0' }, stdio: 'pipe' });
+  await writeFile(nativeRequest, JSON.stringify({ config: state.config, report: nativeReport }));
   let diagnosticSites;
   const installer = await compile('dilla-fixture-native.exe', source => {
-   const diagnostic = withInitialInstallDiagnostics(withMaintenanceTimingFixture(source)); diagnosticSites = diagnostic.sites; return diagnostic.source;
+   const diagnostic = withInitialInstallDiagnostics(withMaintenanceTimingFixture(source)); diagnosticSites = diagnostic.sites; return withInitialRetryNativeDiagnostic(diagnostic.source, nativeHelper);
   });
   await mkdir(profile, { recursive: true });
   const account = join(profile, 'opaque-account-keystore-and-preferences.sentinel');
@@ -99,6 +104,7 @@ test('native installer preserves every byte on mapped Go/Electron images, archiv
   const tree = join(program, 'versions', 'v-' + digest.slice(0, 32)), runtime = join(tree, 'dilla-desktop.exe');
   const manifest = join(program, 'manifests', digest + '.json'), originalManifest = await readFile(manifest);
   const beforeProgram = await snapshot(program), beforeProfile = await snapshot(profile);
+  if (!retryOnly) {
   const errorDialog = async () => {
    await writeFile(manifest, '{unverified');
    const child = start(join(program, 'Dilla.exe')); processes.push(child);
@@ -225,23 +231,38 @@ test('native installer preserves every byte on mapped Go/Electron images, archiv
    assert.equal(await readFile(account, 'utf8'), 'existing account / KEK / OPFS / preferences must survive');
   }
   run(uninstaller, ['/S']); await eventually(async () => !await exists(program), 'terminal signed fixture cleanup');
+  } else {
+   run(uninstaller, ['/S']); await eventually(async () => !await exists(program), 'focused initial retry preparation');
+  }
   const paused = await compile('dilla-fixture-interrupt.exe', source => source.replace('  CopyFiles /SILENT "$PLUGINSDIR\\payload\\initial-slot.json"', '  Sleep 300000\n  CopyFiles /SILENT "$PLUGINSDIR\\payload\\initial-slot.json"'));
   const interrupted = start(paused, ['/S']); processes.push(interrupted);
   await eventually(async () => await exists(join(profile, 'initial-install.json')) && await exists(join(program, 'Dilla.exe')) && await exists(updates) && !await exists(slot), 'durable owned marker and copied program before initial slot commit', 120_000);
   await stop(interrupted);
   const partialProgram = await snapshot(program), partialProfile = await snapshot(profile);
+  const direct = spawnSync(join(app, 'Dilla.exe'), ['--installer-preflight=initial'], { timeout: 30000, windowsHide: true, stdio: 'ignore' });
+  console.error('INITIAL_RETRY_ORIGINAL_PAYLOAD ' + JSON.stringify({ format: 1, exit: direct.status, timedOut: direct.error?.code === 'ETIMEDOUT' }));
+  assert.deepEqual(await snapshot(program), partialProgram); assert.deepEqual(await snapshot(profile), partialProfile);
   await rm(join(temporary, 'fixture-install-diagnostic.json'), { force: true });
-  assert.throws(() => run(installer, ['/S'], { env: { ...process.env, DILLA_FIXTURE_INITIAL_PUBLISH_DURING_SCAN: '1' } }));
+  await rm(nativeReport, { force: true });
+  assert.throws(() => run(installer, ['/S'], { env: { ...process.env, DILLA_FIXTURE_INITIAL_PUBLISH_DURING_SCAN: '1', DILLA_INITIAL_RETRY_DIAGNOSTIC_REQUEST: nativeRequest } }));
   assert.deepEqual(await snapshot(program), partialProgram);
   try { assert.equal(JSON.parse(await readFile(join(updates, 'active.json'))).nonce, 'c'.repeat(64)); }
-  catch (error) { await reportInitialFailure('INITIAL_RETRY_FAILURE'); throw error; }
+  catch (error) {
+   await reportInitialFailure('INITIAL_RETRY_FAILURE');
+   try {
+    const file = await lstat(nativeReport); if (!file.isFile() || file.isSymbolicLink() || file.size < 1 || file.size > 1024) throw new Error('Invalid native diagnostic file');
+    const bytes = await readFile(nativeReport); if (bytes.length > 1024) throw new Error('Oversized native diagnostic');
+    console.error('INITIAL_RETRY_NATIVE_FAILURE ' + JSON.stringify(initialRetryNativeDiagnostic(JSON.parse(bytes))));
+   } catch { console.error('INITIAL_RETRY_NATIVE_FAILURE unavailable'); }
+   throw error;
+  }
   await rm(join(updates, 'active.json')); await rm(join(updates, 'startup-' + 'c'.repeat(64)), { recursive: true });
   assert.deepEqual(await snapshot(profile), partialProfile);
   run(installer, ['/S']);
   assert.equal(await exists(slot), true, 'same installer must recover owned interrupted first copy');
   assert.equal(await readFile(account, 'utf8'), 'existing account / KEK / OPFS / preferences must survive');
   run(uninstaller, ['/S']); await eventually(async () => !await exists(program), 'interrupted retry cleanup');
-  const flushFailure = await compile('dilla-fixture-flush-failure.exe', source => source.replace("  System::Call 'kernel32::FlushFileBuffers(p r0)i.r1'\n  System::Call 'kernel32::CloseHandle(p r0)'", "  StrCpy $1 0\n  System::Call 'kernel32::CloseHandle(p r0)'"));
+  const flushFailure = await compile('dilla-fixture-flush-failure.exe', withInitialSlotFlushFailure);
   assert.throws(() => run(flushFailure, ['/S']), 'injected seed flush failure must fail setup');
   assert.equal(await exists(join(profile, 'initial-install.json')), true);
   run(installer, ['/S']);
