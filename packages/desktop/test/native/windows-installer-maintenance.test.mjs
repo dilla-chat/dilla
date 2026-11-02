@@ -97,6 +97,13 @@ test(retryOnly ? 'FOCUSED DIAGNOSTIC ONLY: actual interrupted first-install retr
    } catch { /* Report only fixed enum/numeric data, never malformed raw bytes. */ }
    console.error(label + ' ' + JSON.stringify(diagnostic));
   };
+  const reportNativeFailure = async label => {
+   try {
+    const file = await lstat(nativeReport); if (!file.isFile() || file.isSymbolicLink() || file.size < 1 || file.size > 1024) throw new Error('Invalid native diagnostic file');
+    const bytes = await readFile(nativeReport); if (bytes.length > 1024) throw new Error('Oversized native diagnostic');
+    console.error(label + ' ' + JSON.stringify(initialRetryNativeDiagnostic(JSON.parse(bytes))));
+   } catch { console.error(label + ' unavailable'); }
+  };
   try { run(installer, ['/S']); }
   catch (error) { await reportInitialFailure('INITIAL_INSTALL_FAILURE'); throw error; }
   assert.equal(await exists(slot), true);
@@ -249,16 +256,19 @@ test(retryOnly ? 'FOCUSED DIAGNOSTIC ONLY: actual interrupted first-install retr
   try { assert.equal(JSON.parse(await readFile(join(updates, 'active.json'))).nonce, 'c'.repeat(64)); }
   catch (error) {
    await reportInitialFailure('INITIAL_RETRY_FAILURE');
-   try {
-    const file = await lstat(nativeReport); if (!file.isFile() || file.isSymbolicLink() || file.size < 1 || file.size > 1024) throw new Error('Invalid native diagnostic file');
-    const bytes = await readFile(nativeReport); if (bytes.length > 1024) throw new Error('Oversized native diagnostic');
-    console.error('INITIAL_RETRY_NATIVE_FAILURE ' + JSON.stringify(initialRetryNativeDiagnostic(JSON.parse(bytes))));
-   } catch { console.error('INITIAL_RETRY_NATIVE_FAILURE unavailable'); }
+   await reportNativeFailure('INITIAL_RETRY_NATIVE_FAILURE');
    throw error;
   }
   await rm(join(updates, 'active.json')); await rm(join(updates, 'startup-' + 'c'.repeat(64)), { recursive: true });
   assert.deepEqual(await snapshot(profile), partialProfile);
-  run(installer, ['/S']);
+  await rm(join(temporary, 'fixture-install-diagnostic.json'), { force: true });
+  await rm(nativeReport, { force: true });
+  try { run(installer, ['/S'], { env: { ...process.env, DILLA_INITIAL_RETRY_DIAGNOSTIC_REQUEST: nativeRequest } }); }
+  catch (error) {
+   await reportInitialFailure('INITIAL_RETRY_RECOVERY_FAILURE');
+   await reportNativeFailure('INITIAL_RETRY_RECOVERY_NATIVE_FAILURE');
+   throw error;
+  }
   assert.equal(await exists(slot), true, 'same installer must recover owned interrupted first copy');
   assert.equal(await readFile(account, 'utf8'), 'existing account / KEK / OPFS / preferences must survive');
   run(uninstaller, ['/S']); await eventually(async () => !await exists(program), 'interrupted retry cleanup');
