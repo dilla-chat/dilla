@@ -1,0 +1,116 @@
+# Secure Linux sandbox prerequisites implementation plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Root may delegate narrowly owned independent work explicitly. No worker stages/commits/pushes without root review.
+
+**Goal:** Make normal mounted AppImages work securely on default restricted Ubuntu and namespace-enabled Linux, automatically handling offline prerequisites through normal administrator authorization only when needed.
+
+**Architecture:** A nonprivileged frontend selects an actual Electron sandbox probe or fixed OS-authorized setup. Frozen first-install interpreter code copies/hashes bytes before descriptor execution; later a root-owned non-setuid maintainer verifies signed constrained capsules. A root transaction revokes/flushed old inode privilege before publishing one compatible replacement, preserving a monotonic shared generation floor.
+
+**Tech Stack:** Existing Go 1.27.3/standard Ed25519+SHA512 and `x/sys/unix`, distro Python 3 isolated mode, pkexec/session polkit agent, Electron 45.2.1, TypeScript/esbuild/electron-builder, Linux FD-relative files/fsync/renameat2.
+
+**Spec:** [Detailed design](../specs/2026-11-02-dilla-linux-sandbox-design.md). Read it before implementing; its exact fixed paths, schemas and bounds govern every task.
+
+## Global constraints
+
+- AppImage and normal FUSE execution remain required; no Linux package-format change, extraction substitution, sandbox-disabling flag, OS policy/signing/Keychain change or privileged networking.
+- System namespace is fixed `/usr/lib/dilla`; one root:root 4755 helper, one non-setuid 0755 maintainer; no runtime root/path/key overrides or renderer shell/filesystem IPC.
+- First-install trust is the authentic AppImage plus ordinary administrator approval. Frozen argv closes prompt-time pathname swaps, not a precompromised frontend; document the initial Python prompt honestly.
+- Capsule format 1: 64 KiB manifest, 64-byte resident signature (zero only for the initial embedded form), 32 MiB maintainer, 8 MiB helper, 48 MiB total; exact EOF and 30s privileged-input deadline. Public maintenance trust is separate from app metadata trust. Production CI builds exact unsigned component bytes; only the final offline signer emits the detached signature. No accepted AppImage/capsule is rebuilt or patched.
+- Epoch/API 1; initial target Linux x64. One generation floor across users and stable/beta. Same-generation different bytes fail. Installed receipt/tombstone and durable authenticated intent never reset on reinstall/rollback.
+- Stage allocations first; demote **and fsync old FD** before new publication. Keep authenticated intent until receipt and retirement are durable. Interrupted demotion can hold fresh startup for normal authorized repair; never re-privilege old.
+- No local host SUID/system modifications. Actual root acceptance runs only disposable CI/VM fixtures. App/account keys remain worker-owned; code here reads no private signing key.
+- Existing signed-feed, actual-quit, fresh/late call/draft guards, health activation, full-account, source/provenance and performance gates remain mandatory.
+
+## Review focus
+
+1. Same-user substitution during administrator prompt must not change executed bytes; hostile/truncated/stalled stdin cannot choose a privileged path or hang forever (Task 2).
+2. Already-open old helper FD must lose future setuid execution, including installer death between demotion and publication; recovery never restores old privilege (Task 3).
+3. A different user/channel or old authentic installer must not reset floor/tombstone or make an incompatible helper satisfy only one app's rollback (Tasks 1, 3, 6).
+4. Namespace-capable generic probes can differ from actual Electron's AppArmor context; only real same-executable renderer sandbox proof qualifies (Task 4).
+5. Authorization may take long enough for calls/recovering calls/drafts/attachments or unload veto to change; every asynchronous preparation needs fresh guards and re-verification before app commit (Task 5).
+
+## File boundaries
+
+| Files | Responsibility |
+|---|---|
+| NEW `internal/desktopsandbox/capsule.go`, `capsule_test.go`, `policy.go`, `policy_test.go` | Portable framing, domain signature/schema, epoch/floor rules |
+| NEW `internal/desktopsandbox/{paths_linux.go,transaction_linux.go,transaction_linux_test.go}` | Fixed rooted descriptors, mode/ACL/link checks, durable forward-only transaction/recovery |
+| NEW `packages/desktop/native/linux-sandbox/maintainer/main.go` and `frontend/{main.go,bootstrap.go,bootstrap_test.go,frontend_linux.go,frontend_linux_test.go}` | Fixed maintainer/check/remove roles, frozen bootstrap frontend and OS authorization |
+| NEW `packages/desktop/scripts/linux-sandbox-package.mjs` and `packages/desktop/test/linux-sandbox-package.test.ts` | Pin helper source hash/version, build/sign-capsule inputs, compile exact literals, enforce final image contract |
+| MODIFY `packages/desktop/scripts/linux-appimage-launcher.cjs`, `build-native.mjs`, `build.mjs`, `electron-builder.cjs` | Shared secure launcher, component inclusion and build ordering |
+| NEW `packages/desktop/src/linux-sandbox.ts`, `linux-sandbox-probe.ts`, `linux-sandbox-probe-preload.ts`, probe HTML; corresponding `test/linux-sandbox*.test.ts` | Main-only fixed prerequisite coordinator, content-free local sandbox probe, no account initialization |
+| MODIFY `src/main.ts`, `updater.ts`, `update.ts`, `update-plan.ts`; relevant guard/plan tests | Signed requirements and fresh pre-quit prerequisite integration |
+| MODIFY public release-trust/key-import formats, `publish-release.mjs`, `verify-release.mjs` and corresponding release tests | Import public maintenance keys only; bind capsule asset/proof and reject missing security requirements |
+| NEW `packages/desktop/test/native/linux-sandbox.test.mjs`; MODIFY existing Linux installed fixture/account packaging, `.github/workflows/desktop.yml`, workflow gate checks and `docs/user/desktop.md` | Actual disposable Linux security acceptance, full app integration and user instructions |
+
+The separate maintainer entry is built with `CGO_ENABLED=0` and must not import GUI libraries; only the unprivileged frontend may use GTK3. Shared parsing/transaction code stays under `internal/desktopsandbox`, not either command package. No Windows/macOS production behavior changes. Privileged syscall fixture seams are compile-only distinct binaries with distinct fixed namespaces/keys, never production flags.
+
+### Task 1: signed capsule and machine-wide compatibility policy
+
+**Interfaces:** `ParseCapsule(io.Reader, Limits) (Capsule,error)` reads bounded framing; `VerifyCapsule(Capsule, Trust, Receipt, time.Time) (VerifiedCapsule,error)` returns fixed component bytes/hashes/generation; `CheckCompatibility(Requirements, Receipt) error`. `Trust` comes only from compiled public keys. `Requirements` is epoch/minimum/API; absence of the entire system namespace is a namespace-only state, not an older helper.
+
+- [ ] Write table-driven tests for exact valid bytes, all length boundaries/EOF excess, truncated input, duplicate/unknown/case-aliased JSON keys, signature-purpose mismatch, noncanonical hashes/date/skew/expiry and wrong ELF architecture.
+- [ ] Add floor tests: stable→beta replay, same-generation changed helper **or maintainer**, old receipt+new durable intent, removed tombstone, installed expired envelope usable but expired fresh introduction rejected, clock rollback and incompatible epoch/API.
+- [ ] Run `go test ./internal/desktopsandbox` to demonstrate RED; implement strict parsing/domain verification and pure policy without privileged IO.
+- [ ] Run focused tests plus `go test -race ./internal/desktopsandbox` (owned cache GOTMPDIR), confirm GREEN; source review includes bounds and no input-selected trust/path. Root commits only reviewed scope.
+
+### Task 2: frozen bootstrap and fixed native maintenance entry
+
+**Interfaces:** frontend `Ensure(EmbeddedCapsule, SetupReason) (SetupOutcome,error)` invokes fixed argv/pipe; `BootstrapProgram(BuildConstants) string` emits literal code. Native no-argument entry reads capsule FD0; `--check` is read-only fixed 4KiB status; `--remove` is the sole other privileged role. No source/destination/command arguments.
+
+- [ ] Write tests that compile/run the **actual emitted Python code** with a nonprivileged compile-distinct rooted fixture: valid copy, tampered payload after prompt pause, path replacement, short/excess/stalled pipe, special-file input rejection, safe environment, and exact protected read-only FD identity before exec.
+- [ ] Exercise actual descriptor exec of a benign compiled fixture ELF, proving writable FD closure (no ETXTBSY fallback) and unchanged arguments/environment. Mutate the original capsule/frontend scratch after argv freeze and assert either exact original protected bytes or refusal, never replacement execution.
+- [ ] Add existing-state tests: old authentic bootstrap sees newer receipt/tombstone/pending intent and dispatches only resident protected maintainer; missing/corrupt resident state cannot reset generation. Test root death after initial anchor fsync but before first resident publication: retry must FD-exec only the previously anchored protected stage even when incoming capsule is older/newer/tampered, and must not copy new bytes on ENOSPC. Precommit missing/mismatched anchor stage holds. Once the operation-bound committed receipt and current components validate, remaining bootstrap cleanup is terminal and already-deleted anchor/stages are not required for dispatch/recovery. Test pre-anchor orphan cleanup and first-resident-present/receipt-absent recovery. Frontend EPIPE is tolerated only with successful child plus fresh ready proof. Validate initial expiry BEFORE anchor persistence; an already expired initial capsule must never gain acceptedAt recovery authority. Prove fixed FD3 carries the same locked open-file-description across actual descriptor exec, no competing acquisition/unlock race and no self-deadlock; native reuses it and restores close-on-exec. Reject Python/shell selected via PATH/PYTHONPATH/site hooks.
+- [ ] Demonstrate RED; implement literal isolated bootstrap and fixed frontend invocation with a fixed unprivileged GTK3 explanation of the initial Python administrator prompt. Test supported-host binding availability without a root GUI/new framework. Never execute user-owned binary paths as root. Introduce no permissive/retained polkit policy.
+- [ ] Run `go test ./packages/desktop/native/linux-sandbox/...` and package-level emitted-code tests on Linux; on other hosts retain pure literal/framing tests with explicit native tests scoped to Linux. Test cancellation126/autherror127/missingagent/dependencies without affecting app/profile files.
+- [ ] Obtain independent focused bootstrap/security review before any disposable-root execution. Root commits reviewed scope; no local system installation.
+
+### Task 3: root transaction, retirement and durable recovery
+
+**Interfaces:** `Install(ctx context.Context, VerifiedCapsule) (Receipt,error)`, `Recover(ctx context.Context) (Receipt,error)`, `ReadStatus() Status`, `Remove(ctx context.Context) error` use only compiled roots. Actual operations hold root-only lock, pinned parent FDs and eager FD-derived identity. Pure fault harness injects at syscall boundaries, not a production runtime option.
+
+- [ ] Write fault matrix tests at every copy/open/write/fsync/chmod/rename/receipt/cleanup boundary with ENOSPC/EDQUOT/EIO and forced process death. Assert before-STAGED failures leave old bytes/mode intact; after revocation recovery proceeds forward or holds, never restores old SUID/SGID or reduces floor.
+- [ ] Add hostile root tests: symlinked parents/children, unexpected hardlinks, writable ACLs/capabilities, cross-device stage, readonly/unsupported fsync, concurrent invocations and swapped inode identities. No broad recursive cleanup or path reconstruction from journal data.
+- [ ] Add real Linux kernel tests on disposable runner: ordinary user opens old setuid ELF FD before maintenance; after revoke/flush/exchange/unlink, exec through that old FD **must not obtain root**. Test manager death after demotion before exchange, then authorized recovery; assert demoted inode and final absence of old privileged stages.
+- [ ] Demonstrate RED; implement STAGED→MAINTAINER-PUBLISHED→REVOKED→HELPER-PUBLISHED→COMMITTED→RETIRED using syscall ordering in spec. Journal phase writes are advisory progress; actual authenticated intent + inode/mode/hash determine safe recovery.
+- [ ] Verify two users/channels, tombstone removal/reinstall, old maintainer's signed update to new maintainer and same-generation conflicts. Verify exact initial bootstrap anchor authority before first resident exists. Publish/fsync new non-setuid maintainer BEFORE helper demotion, publish receipt LAST; kill after each step and recover mixed old-receipt/new-maintainer state through recognized old/new hashes. A receipt-new/component-old observation must hold, never silently select old. Crash after new-maintainer publication during key rotation: new compiled key set must overlap the old key validating pending intent/current receipt; dropping that key is rejected as an unsupported migration, never left to deadlock on recovery.
+- [ ] Add removal RED/GREEN matrix: REMOVE-STAGED→REMOVE-REVOKED→REMOVE-UNLINKED→REMOVE-COMMITTED→intent-clear; crash after unlink before tombstone must finish removal without missing-helper failure or privilege restoration and preserve floor across reinstall. No new capsule or expiry extension is required to finish removal.
+- [ ] Add terminal-cleanup RED/GREEN tests: kill after intent removal, after each bootstrap/retired-child unlink and before anchor removal. Matching committed receipt/current components must permit idempotent cleanup despite ENOENT; it must never re-exec deleted bootstrap stages. Different/newer intent (including same-generation remove), unexpected existing child identity or precommit missing stage still holds. Receipt binds exact immutable transaction hash/operation and initial anchor digest.
+- [ ] Add accepted-time expiry tests: valid signed/root-anchored intent accepted before expiry resumes exact protected bytes after expiry; changed/missing stage, substituted input, lower generation or fabricated acceptance time cannot reuse it; new expired introduction fails before mutation.
+- [ ] Run portable/race tests and disposable-root kernel matrix. Root/security reviewer must inspect crash table and old-FD evidence before merging. Record startup hold/authorized repair interval honestly.
+
+### Task 4: actual sandbox probe, frontend and final AppImage packaging
+
+**Interfaces:** `RunSandboxProbe(OwnedExecutable) (ProbeResult,error)` returns only `sandboxed`, `sandbox-unavailable`, `failed` or `timed-out`; one-use private parent pipe, 10s bound. `DispatchLaunch(args)` ultimately execs the real Electron binary preserving args/PID group, without sandbox policy overrides. Probe role precedes normal app/profile/core/network startup.
+
+- [ ] First make a controlled native fixture demonstrating an actual sandboxed renderer with the **same mounted executable/AppArmor context** and private profile, no account/network initialization. Test success with no `/usr/lib/dilla` component on a namespace-enabled host; wrong frame/ack, arbitrary crash/timeout and fabricated error must not authorize setup. This feasibility gate fails before product changes if the context equivalence cannot be established.
+- [ ] Add tests for exact setup/probe role parsing, unchanged quoted arguments/spaces, no flags from blocked/missing unshare, denied probe networking/permissions, and no profile/core/Keychain/store initialization. Bind probe acknowledgement to exact owned child/frame; do not expose a general renderer capability.
+- [ ] Demonstrate RED; implement content-free probe entry/local document/preload, native frontend and AppRun hook. Managed-ready state execs normally; pending invokes authorized repair; absent managed namespace runs real probe. Strict update roles never prompt: managed state must be ready, while complete absence permits normal protected namespace startup.
+- [ ] Build frontend/maintainer before capsule serialization, emit the exact unsigned manifest/raw capsule **after hashes are final** using immutable per-generation timestamps/config and reproducible `-trimpath -buildvcs=false` maintainer builds (no app-version/commit embedding), compile frontend literal bundle hash/offsets, then package AppImage. Private signing happens only after acceptance; never rebuild the image to embed that detached signature. Maintainer compiles initial helper/generation/epoch constants, never its own hash; first installation compares capsule maintainer hash to its protected executing ELF. The later detached signature covers the external manifest binding both final native components. Inspect actual extracted artifact: exact AppRun, absolute sibling symlink, pinned embedded capsule, final executable/fuses and `.desktop` arguments.
+- [ ] Actual default-Ubuntu FUSE test (unchanged AppArmor/userns): first-launch setup authorized through normal pkexec path, renderer sandbox active. Namespace-enabled FUSE test: no system helper, no authorization, renderer sandbox active. No extract-mode replacement or production profile.
+- [ ] Benchmark cold probe/setup-free/managed ordinary startup with new source and retain current performance limits. Root reviews actual artifacts/native proof before commit.
+
+### Task 5: signed release and quit-safe preparation
+
+**Interfaces:** `prepareSandboxPrerequisites(candidate: VerifiedLinuxCandidate): Promise<void>` is main-only and has no renderer-selected values. Add `UpdateCoordinator.preparePrerequisites()` / driver hook; `collectQuitGuards()` is shared by the initial and post-authorization main checks. The accepted-will-quit path rechecks managed status but never prompts.
+
+- [ ] Add parser/publisher tests requiring signed `linuxSandbox` bounds/URL/version/epoch/minimum/capsule hash; reject missing field, mismatched external/embedded raw capsule, app-metadata key signing root code, unsigned resident update, unauthenticated helper asset and incompatible generation. First install alone accepts exact compiled digest anchor; tombstone/pending/committed state can never re-enter that mode. Compile public maintenance keys through public import only; never read private material from source/tests.
+- [ ] Add lifecycle RED tests for no helper work before actual quit, protected/recovering call/draft/attachment blocks, authcancel/failure leaves parent running, new draft/call after auth blocks again, late unload veto preserved, candidate tamper during auth rejected, and same failed preparation never auto-loops a password prompt.
+- [ ] Add actual offline-signer tests using ephemeral private fixture keys: signing emits only detached signature/feed records, preserves SHA512 of accepted AppImage/capsule/manifest, refuses missing native proofs, changed bytes and generation conflicts. Production code receives private key only in this dedicated final offline signer; build/import/test paths consume public keys only. Require candidate readiness to include cached signed sidecar, and test offline resident maintenance with it plus safe refusal of a lone newer AppImage without it. Manual AppImage launch automatically fetches fixed public sidecars online (no cookies/credentials, approved HTTPS release origins/redirects only, 10s total fetch bound); no person locates files manually. Test offline/bad-signature/auth failure preserving old parent/candidate/data. Keep all seven original platform assets and add three explicit component assets/provenance checks.
+- [ ] Implement preparation while parent/SIL remain alive; reverify artifact and get fresh guards before current helper-ready→pointer fsync→arm ACK→exit sequence. Include helper epoch/minimum in strict signed plans/recovery checks without granting authority to CLI/env/renderer.
+- [ ] Verify helper generation stays newer when app startup/install fails; authenticated old/watchdog/recovered apps still run and account data is preserved. Namespace-only upgrades remain valid with no installed helper.
+- [ ] Run relevant desktop unit/types, real quit-guard native tests, full Linux installed failure/recovery matrix, and actual stored-account/draft migration gate. Root reviews production integration separately from privileged implementation.
+
+### Task 6: native release qualification and installation documentation
+
+**Interfaces:** fixed public proof record covers source/SHA/run, helper generation/hash/epoch/API, actual sandbox mode, actual supported runtime pairs, retirement/fault matrix and no security policy relaxation. Existing release verifier requires this in addition to all prior gates; it cannot accept a diagnostic/subset workflow.
+
+- [ ] Extend actual Linux native/installed-account fixtures to call the shared production packaging/launcher hooks. Use compile-distinct fixture capsule keys and namespace; no runtime production bypass. Confirm real AppImage update, startup failure and rollback use normal updater, not manual replacement.
+- [ ] Test initial authorization cancellation, interrupted maintenance repair, already-open old FD, two-user/channel use, all publicly supported epoch-1 old/current/new runtime pairs and no old privileged inode retained after success. Keep privileged setup actions limited to disposable runner ownership.
+- [ ] Wire required mounted FUSE/default-Ubuntu and namespace-enabled lanes plus provenance/proofs and exact `.sandbox`/`.sandbox.json` CI assets; final offline signer adds only `.sandbox.sig` (canonical64-byte signature text), and publisher requires all ten final assets including these three; add workflow mutation tests rejecting removed/skipped prerequisites or sandbox-disabling settings. CI permission handling remains normal OS-authorized installation on owned disposable infrastructure, not host policy weakening.
+- [ ] Document automatic prerequisite handling, honest initial Python authorization identity, shared-helper maintenance/repair, normal occasional admin needs, offline expiry limits, shared removal/tombstone and account preservation in `docs/user/desktop.md`. Never claim permanently one-time authorization.
+- [ ] Run all four platform native/account/client/voice/performance/source/provenance release gates after independent integrated security review. Root alone commits/pushes. A partial native proof is not release completion.
+
+## Handoff
+
+These two documents are the review deliverable. No privileged code is written until root plus independent security review accepts the immutable bootstrap, unavoidable interrupted-maintenance availability interval and actual-context probe contract. Root controls any delegated implementation boundaries and all commits/pushes; the user's installation-policy choice is already resolved.
