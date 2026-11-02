@@ -204,11 +204,92 @@ test('startup snapshot reads only bounded regular event files and reconstructs f
 test('actual installed main source records startup before requests without changing protocol options or production listeners', async () => {
   const source = await readFile(new URL('../../packages/desktop/src/main.ts', import.meta.url), 'utf8');
   const transformed = fixtureMainSource(source, { product: 'OwnedFixture', profile: '/fixture/profile', reports: '/fixture/reports', scheme: 'dilla-owned', version: '1.0.1' });
-  assert.equal(transformed.split('__accountObserveSession(ses);').length - 1, 1);
+  assert.equal(transformed.split('__accountObserveSession(ses, instance);').length - 1, 1);
   assert.equal(transformed.split('__accountObserveWindow(win);').length - 1, 1);
-  assert.ok(transformed.indexOf('__accountObserveSession(ses);') < transformed.indexOf('await ses.protocol.handle('));
+  assert.ok(transformed.indexOf('__accountObserveSession(ses, instance);') < transformed.indexOf('await ses.protocol.handle('));
   for (const request of ['request', 'forwarded']) assert.ok(transformed.includes(`return __accountFetch(ses, ${request}, { bypassCustomProtocolHandlers: true });`));
   assert.equal(transformed.split('ses.webRequest.onBeforeRequest(').length, source.split('ses.webRequest.onBeforeRequest(').length);
   const require = createRequire(import.meta.url); assert.doesNotThrow(() => require('esbuild').transformSync(transformed, { loader: 'ts', format: 'cjs' }));
   assert.throws(() => fixtureMainSource(source.replace('const ses = session.fromPartition(partitionFor(instance));', 'const ses = changed();'), { product: 'OwnedFixture', profile: '/fixture/profile', reports: '/fixture/reports', scheme: 'dilla-owned', version: '1.0.1' }), /boundary changed/);
+});
+
+test('post-failure probes never start before failure and retain only fixed counts and numeric outcomes', async () => {
+  const diagnostics = await import('../web/support/installed-diagnostics.ts');
+  assert.equal(typeof diagnostics.installedPostFailureDiagnostics, 'function');
+  const { createServer: httpServer } = createRequire(import.meta.url)('node:http');
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'dilla-after-failure-')));
+  let begun = 7, ended = 7, probeRequests = 0, invalidCounterTime = false;
+  const server = httpServer((request, response) => {
+    probeRequests++;
+    if (request.url === '/debug/instance-requests') response.end(JSON.stringify({ begun, ended, canceled: 0, lastBeginUnixMillis: invalidCounterTime ? 'PRIVATE_SECRET' : 1700000000000, lastEndUnixMillis: 1700000000001, secret: 'PRIVATE_SECRET' }));
+    else if (request.url === '/healthz') response.end('PRIVATE_SECRET health body');
+    else if (request.url === '/v1/instance') { begun++; ended++; response.end('PRIVATE_SECRET account body'); }
+    else assert.fail('diagnostic chose an unexpected path');
+  });
+  try {
+    await new Promise(done => server.listen(0, '127.0.0.1', done));
+    const origin = `http://127.0.0.1:${server.address().port}/`;
+    const input = { reports: root, instance: origin, control: origin, expectedVersion: '1.0.1', failureObserved: false };
+    assert.deepEqual(await diagnostics.installedPostFailureDiagnostics(input), { format: 1, status: 'not-requested' }); assert.equal(probeRequests, 0);
+    assert.deepEqual(await diagnostics.installedPostFailureDiagnostics({ ...input, instance: 'http://PRIVATE_SECRET/', failureObserved: true }), { format: 1, status: 'unsafe' }); assert.equal(probeRequests, 0);
+    let watcher;
+    watcher = setInterval(async () => {
+      try { if ((await readFile(join(root, 'probe-request-1.0.1'), 'utf8')) !== '1') return; clearInterval(watcher);
+        await writeFile(join(root, 'probe-result-1.0.1.json'), JSON.stringify({ format: 1, status: 'ok', httpStatus: 200, code: 0, elapsedMs: 3, secret: 'PRIVATE_SECRET' }));
+      } catch { /* The marker has not been created yet. */ }
+    }, 5);
+    const result = await diagnostics.installedPostFailureDiagnostics({ ...input, failureObserved: true }); clearInterval(watcher);
+    assert.equal(result.before.begun, 7); assert.equal(result.before.lastBeginUnixMillis, 1700000000000); assert.equal(result.before.lastEndUnixMillis, 1700000000001); assert.equal(result.after.begun, 8); assert.equal(result.after.ended, 8);
+    assert.deepEqual(result.probes.map(p => [p.target, p.httpStatus]), [['health', 200], ['instance', 200]]); assert.equal(result.main.httpStatus, 200);
+    assert.doesNotMatch(JSON.stringify(result), /PRIVATE_SECRET|secret|https?:|token|body|127\.0\.0\.1/);
+    assert.equal(probeRequests, 4);
+    invalidCounterTime = true; const malformed = await diagnostics.installedPostFailureDiagnostics({ ...input, failureObserved: true });
+    assert.equal(malformed.before.status, 'malformed'); assert.equal(malformed.after.status, 'malformed'); assert.doesNotMatch(JSON.stringify(malformed), /PRIVATE_SECRET|lastBeginUnixMillis/);
+  } finally { await new Promise(done => server.close(done)); await rm(root, { recursive: true, force: true }); }
+});
+
+test('post-failure main result rejects malformed oversized and symlinked private reports', async () => {
+  const diagnostics = await import('../web/support/installed-diagnostics.ts');
+  assert.equal(typeof diagnostics.readInstalledProbeResult, 'function');
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'dilla-after-failure-invalid-'))), path = join(root, 'probe-result-1.0.1.json');
+  try {
+    await writeFile(path, '{PRIVATE_SECRET'); assert.equal((await diagnostics.readInstalledProbeResult(root, '1.0.1')).status, 'malformed');
+    await writeFile(path, 'PRIVATE_SECRET'.repeat(300)); assert.equal((await diagnostics.readInstalledProbeResult(root, '1.0.1')).status, 'oversized');
+    await rm(path); const secret = join(root, 'PRIVATE_SECRET'); await mkdir(secret); await symlink(secret, path, process.platform === 'win32' ? 'junction' : 'dir');
+    const result = await diagnostics.readInstalledProbeResult(root, '1.0.1'); assert.equal(result.status, 'unsafe'); assert.doesNotMatch(JSON.stringify(result), /PRIVATE_SECRET/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('compiled main post-failure sentinel performs one bounded fixed-session operation without reading bodies', async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'dilla-main-probe-')));
+  try {
+    const fs = createRequire(import.meta.url)('node:fs'); let poll, calls = 0;
+    const diagnostic = runInNewContext(createRequire(import.meta.url)('esbuild').transformSync(fixtures.fixtureStartupDiagnosticsSource() + ';globalThis.compiled=__accountObserveSession', { loader: 'ts' }).code + ';compiled', {
+      __accountFS: fs, __accountReports: root, __accountRole: 'ordinary', Buffer, URL, AbortSignal, app: { getVersion: () => '1.0.1' }, Date,
+      setInterval(callback) { poll = callback; return { unref() {} }; }, clearInterval() {}, setTimeout, clearTimeout,
+    });
+    let canceled = false; const response = new Response(new ReadableStream({ cancel() { canceled = true; } }));
+    const session = { webRequest: { onCompleted() {}, onErrorOccurred() {} }, fetch(url, options) { assert.equal(this, session); assert.equal(url, 'http://127.0.0.1:12345/v1/instance'); assert.equal(options.bypassCustomProtocolHandlers, true); assert.equal(options.credentials, 'omit'); assert.equal(options.redirect, 'error'); assert.ok(options.signal); calls++; return Promise.resolve(response); } };
+    diagnostic(session, 'http://127.0.0.1:12345/'); assert.equal(typeof poll, 'function'); poll(); assert.equal(calls, 0);
+    await writeFile(join(root, 'probe-request-1.0.1'), 'PRIVATE_SECRET invalid marker'); poll(); assert.equal(calls, 0);
+    await rm(join(root, 'probe-request-1.0.1')); const secret = join(root, 'PRIVATE_SECRET'); await mkdir(secret); await symlink(secret, join(root, 'probe-request-1.0.1'), process.platform === 'win32' ? 'junction' : 'dir'); poll(); assert.equal(calls, 0);
+    await rm(join(root, 'probe-request-1.0.1')); await writeFile(join(root, 'probe-request-1.0.1'), '1'); poll(); await new Promise(done => setImmediate(done)); poll();
+    assert.equal(calls, 1); assert.equal(canceled, true);
+    const result = JSON.parse(await readFile(join(root, 'probe-result-1.0.1.json'), 'utf8')); assert.equal(result.httpStatus, 200); assert.doesNotMatch(JSON.stringify(result), /PRIVATE_SECRET|http:|body/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('stalled post-failure probes are bounded and cannot replace the original failed assertion', async () => {
+  const diagnostics = await import('../web/support/installed-diagnostics.ts');
+  const { createServer: httpServer } = createRequire(import.meta.url)('node:http');
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'dilla-after-failure-stalled-')));
+  const server = httpServer((request, response) => { if (request.url === '/debug/instance-requests') response.end('{"begun":0,"ended":0,"canceled":0,"lastBeginUnixMillis":0,"lastEndUnixMillis":0}'); });
+  try {
+    await new Promise(done => server.listen(0, '127.0.0.1', done)); const origin = `http://127.0.0.1:${server.address().port}/`;
+    const original = new Error('original failed assertion'); let result;
+    const started = Date.now();
+    await assert.rejects((async () => { try { throw original; } finally { result = await diagnostics.installedPostFailureDiagnostics({ reports: root, instance: origin, control: origin, expectedVersion: '1.0.1', failureObserved: true }); } })(), error => error === original);
+    assert.deepEqual(result.probes.map(probe => [probe.status, probe.code]), [['failed', -7], ['failed', -7]]);
+    assert.equal(result.main.status, 'unavailable'); assert.ok(Date.now() - started < 8000, 'optional diagnostics must not wait indefinitely');
+  } finally { server.closeAllConnections(); await new Promise(done => server.close(done)); await rm(root, { recursive: true, force: true }); }
 });

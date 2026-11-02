@@ -1,5 +1,6 @@
 import { constants } from 'node:fs';
-import { lstat, open } from 'node:fs/promises';
+import { lstat, open, writeFile } from 'node:fs/promises';
+import { request } from 'node:http';
 import { createConnection } from 'node:net';
 import { dirname, join } from 'node:path';
 
@@ -130,4 +131,89 @@ export async function installedAccountDiagnostics(input: Input) {
     installed: { bundleExists: input.platform === 'darwin' && await exists(bundle, true), executableExists: await exists(input.installed), bundleVersion, plistStatus },
     devTools: { present: portFile.present, valid, changed: valid && input.previousPort !== undefined && port !== input.previousPort,
       live: valid && await listening(port), status: portFile.status === 'ok' && !valid ? 'malformed' : portFile.status } };
+}
+
+interface ProbeOutcome { status: 'ok' | 'failed'; httpStatus: number; code: number; elapsedMs: number }
+interface CounterSnapshot { status: Status; begun?: number; ended?: number; canceled?: number; lastBeginUnixMillis?: number; lastEndUnixMillis?: number }
+function safeInteger(value: unknown, max: number): value is number { return Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) <= max; }
+function loopbackPort(value: unknown): number | null {
+  try {
+    if (typeof value !== 'string') return null;
+    const url = new URL(value), port = Number(url.port);
+    return url.protocol === 'http:' && url.hostname === '127.0.0.1' && url.pathname === '/' && !url.username && !url.password && !url.search && !url.hash
+      && Number.isInteger(port) && port >= 1 && port <= 65535 ? port : null;
+  } catch { return null; }
+}
+
+/** No network request is permitted until the harness observed the original
+ * failure. Each request is bounded to two seconds and discards bodies, except
+ * the fixed control endpoint's <=512-byte numeric counter document. */
+async function fixedProbe(port: number, path: '/healthz' | '/v1/instance' | '/debug/instance-requests'): Promise<{ outcome: ProbeOutcome; counters?: CounterSnapshot }> {
+  const started = Date.now();
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = (status: 'ok' | 'failed', httpStatus: number, code: number, counters?: CounterSnapshot) => {
+      if (settled) return; settled = true; clearTimeout(timer);
+      resolve({ outcome: { status, httpStatus, code, elapsedMs: Math.min(10000, Math.max(0, Date.now() - started)) }, ...(counters ? { counters } : {}) });
+    };
+    const req = request({ hostname: '127.0.0.1', port, path, method: 'GET', agent: false }, response => {
+      const status = response.statusCode ?? 0;
+      if (path !== '/debug/instance-requests') { finish('ok', status, 0); response.destroy(); return; }
+      const chunks: Buffer[] = []; let bytes = 0;
+      response.on('data', (chunk: Buffer) => {
+        bytes += chunk.length;
+        if (bytes > 512) { finish('failed', status, 0, { status: 'oversized' }); response.destroy(); return; }
+        chunks.push(chunk);
+      });
+      response.once('error', () => finish('failed', status, 0, { status: 'unavailable' }));
+      response.once('end', () => {
+        try {
+          const value = object(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+          if (status !== 200 || !value || !safeInteger(value.begun, Number.MAX_SAFE_INTEGER) || !safeInteger(value.ended, Number.MAX_SAFE_INTEGER) || !safeInteger(value.canceled, Number.MAX_SAFE_INTEGER) || !safeInteger(value.lastBeginUnixMillis, Number.MAX_SAFE_INTEGER) || !safeInteger(value.lastEndUnixMillis, Number.MAX_SAFE_INTEGER)) throw new Error();
+          finish('ok', status, 0, { status: 'ok', begun: value.begun, ended: value.ended, canceled: value.canceled, lastBeginUnixMillis: value.lastBeginUnixMillis, lastEndUnixMillis: value.lastEndUnixMillis });
+        } catch { finish('failed', status, 0, { status: 'malformed' }); }
+      });
+    });
+    const timer = setTimeout(() => { finish('failed', 0, -7); req.destroy(); }, 2000);
+    req.once('error', error => {
+      const codes: Record<string, number> = { ECONNREFUSED: -102, ECONNRESET: -101, ETIMEDOUT: -7, ENOTFOUND: -105 };
+      finish('failed', 0, codes[(error as NodeJS.ErrnoException).code ?? ''] ?? 0);
+    });
+    req.end();
+  });
+}
+
+export async function readInstalledProbeResult(reports: string, expectedVersion: string): Promise<{ status: Status } | ProbeOutcome> {
+  if (!version(expectedVersion)) return { status: 'unsafe' };
+  const raw = await boundedRegular(join(reports, `probe-result-${expectedVersion}.json`), 2048);
+  if (raw.status !== 'ok') return { status: raw.status };
+  try {
+    const value = object(JSON.parse(raw.text!));
+    if (!value || value.format !== 1 || (value.status !== 'ok' && value.status !== 'failed') || !safeInteger(value.httpStatus, 599)
+      || (value.httpStatus !== 0 && value.httpStatus < 100) || !Number.isSafeInteger(value.code) || Number(value.code) < -2147483648 || Number(value.code) > 2147483647
+      || !safeInteger(value.elapsedMs, 10000)) throw new Error();
+    return { status: value.status, httpStatus: value.httpStatus, code: Number(value.code), elapsedMs: value.elapsedMs };
+  } catch { return { status: 'malformed' }; }
+}
+
+export async function installedPostFailureDiagnostics(input: { reports: string; instance: string; control: string | undefined; expectedVersion: string; failureObserved: boolean }) {
+  if (input.failureObserved !== true) return { format: 1, status: 'not-requested' };
+  const port = loopbackPort(input.instance), control = loopbackPort(input.control);
+  if (port === null || control === null || !version(input.expectedVersion)) return { format: 1, status: 'unsafe' };
+  const before = (await fixedProbe(control, '/debug/instance-requests')).counters ?? { status: 'unavailable' };
+  let requested = false;
+  try { await writeFile(join(input.reports, `probe-request-${input.expectedVersion}`), '1', { flag: 'wx', mode: 0o600 }); requested = true; } catch { /* No overwrite or symlink following. */ }
+  const main = async () => {
+    if (!requested) return { status: 'unavailable' as Status };
+    const deadline = Date.now() + 2400;
+    do {
+      const result = await readInstalledProbeResult(input.reports, input.expectedVersion);
+      if (result.status !== 'missing') return result;
+      await new Promise(done => setTimeout(done, 50));
+    } while (Date.now() < deadline);
+    return { status: 'unavailable' as Status };
+  };
+  const [health, instance, mainResult] = await Promise.all([fixedProbe(port, '/healthz'), fixedProbe(port, '/v1/instance'), main()]);
+  const after = (await fixedProbe(control, '/debug/instance-requests')).counters ?? { status: 'unavailable' };
+  return { format: 1, status: 'ok', before, probes: [{ target: 'health', ...health.outcome }, { target: 'instance', ...instance.outcome }], main: mainResult, after };
 }
