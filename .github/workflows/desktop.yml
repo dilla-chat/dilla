@@ -87,7 +87,7 @@ jobs:
       - run: node node_modules/electron/install.js
       - name: Test Linux feasibility helpers
         run: |
-          node --test e2e/unit/native-https-proxy.test.mjs e2e/unit/native-test-cert.test.mjs e2e/unit/native-stock-manager.test.mjs
+          node --test e2e/unit/native-https-proxy.test.mjs e2e/unit/native-test-cert.test.mjs e2e/unit/native-stock-manager.test.mjs e2e/unit/native-stock-connect.test.mjs
           npm exec -w @dilla/e2e -- playwright test --config playwright.native-stock.config.ts --list
       - name: Build ordinary versioned DEB from shipping client
         run: node packages/desktop/scripts/build-native-linux-packages.mjs build "$RUNNER_TEMP/native-stock" 1.0.0

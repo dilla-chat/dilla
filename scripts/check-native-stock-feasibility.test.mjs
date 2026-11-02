@@ -11,6 +11,7 @@ for (const [name, from, to] of [
  ['install', 'sudo apt-get install -y "$RUNNER_TEMP/native-stock/dilla-1.0.0-linux-x64.deb"', 'echo skipped'],
  ['nonroot', 'sudo -H -u dilla-ci env', 'sudo env'],
  ['credentials', 'persist-credentials: false', 'persist-credentials: true'],
+ ['Connect test', ' e2e/unit/native-stock-connect.test.mjs', ''],
  ['commented ASAR comparison', '          cmp "$RUNNER_TEMP/native-extracted/opt/Dilla/resources/app.asar" /opt/Dilla/resources/app.asar', '          # cmp "$RUNNER_TEMP/native-extracted/opt/Dilla/resources/app.asar" /opt/Dilla/resources/app.asar'],
  ['sandbox', 'xvfb-run -a bash', 'xvfb-run -a --no-sandbox bash'],
  ['if', 'timeout-minutes: 45', 'timeout-minutes: 45\n    if: false'],

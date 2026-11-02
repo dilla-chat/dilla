@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 const yaml = createRequire(import.meta.url)('js-yaml');
 const requiredRuns = [
  'node scripts/e2e-test-tools.mjs verify artifacts/e2e-test-tools',
- 'node --test e2e/unit/native-https-proxy.test.mjs e2e/unit/native-test-cert.test.mjs e2e/unit/native-stock-manager.test.mjs',
+ 'node --test e2e/unit/native-https-proxy.test.mjs e2e/unit/native-test-cert.test.mjs e2e/unit/native-stock-manager.test.mjs e2e/unit/native-stock-connect.test.mjs',
  'node packages/desktop/scripts/build-native-linux-packages.mjs build "$RUNNER_TEMP/native-stock" 1.0.0',
  'sudo apt-get install -y "$RUNNER_TEMP/native-stock/dilla-1.0.0-linux-x64.deb"',
 ];

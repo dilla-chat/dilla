@@ -7,9 +7,13 @@ import { readFile, readlink, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { once } from 'node:events';
 import { stockManagerPage } from './native-stock-manager.mjs';
+import { confirmOwnedConnect } from './native-stock-connect.mjs';
 
 if (process.env.GITHUB_ACTIONS !== 'true' || process.platform !== 'linux' || !process.getuid?.() || !process.env.XDG_CONFIG_HOME)
  throw new Error('Probe requires a non-root disposable GitHub Linux runner and dedicated XDG config');
+const origin = process.env.DILLA_NATIVE_TEST_ORIGIN, instanceName = process.env.DILLA_NATIVE_TEST_INSTANCE_NAME;
+if (!origin || !/^https:\/\/127\.0\.0\.1:[1-9]\d{0,4}\/$/.test(origin) || new URL(origin).port === '' || Number(new URL(origin).port) > 65535 || !instanceName || instanceName.length > 256)
+ throw new Error('Expected the disposable HTTPS test instance');
 const executable = '/opt/Dilla/dilla-desktop';
 const wire = await getCurrentFuseWire(executable);
 for (const key of [FuseV1Options.RunAsNode, FuseV1Options.EnableNodeOptionsEnvironmentVariable, FuseV1Options.EnableNodeCliInspectArguments, FuseV1Options.GrantFileProtocolExtraPrivileges]) if (wire[key] !== FuseState.DISABLE) throw new Error('Unsafe installed fuse');
@@ -35,7 +39,20 @@ try {
  while (Date.now() < deadlinePage && !page) { page = stockManagerPage(browser); if (!page) await new Promise(resolve => setTimeout(resolve, 200)); }
  if (!page) throw new Error('Stock manager window did not become observable');
  await page.locator('#instance').waitFor({ timeout: 10000 });
- console.log('Stock manager attached; fuse, PID and non-root checks passed. This is not installed acceptance.');
+ if (await page.locator('#instances li').count() !== 0) throw new Error('Expected a fresh default instance profile');
+ await page.locator('#instance').fill(origin);
+ await page.getByRole('button', { name: 'Connect', exact: true }).click({ noWaitAfter: true });
+ await confirmOwnedConnect(child.pid);
+ const deadlineInstance = Date.now() + 90000; let instance;
+ while (Date.now() < deadlineInstance && !instance) {
+  const contexts = browser.contexts();
+  if (contexts.length !== 1) throw new Error('Unexpected browser context');
+  instance = contexts[0].pages().find(candidate => candidate.url() === origin);
+  if (!instance) await new Promise(resolve => setTimeout(resolve, 200));
+ }
+ if (!instance) throw new Error('Stock app did not open the selected instance');
+ await instance.getByRole('heading', { name: `Join ${instanceName}`, exact: true }).waitFor({ state: 'visible', timeout: 90000 });
+ console.log('Stock client reached its real test instance onboarding. This is not installed acceptance.');
 } finally {
  if (browser) await browser.close().catch(() => {});
  if (child.exitCode === null && child.signalCode === null) { child.kill('SIGTERM'); await Promise.race([once(child, 'exit'), new Promise(resolve => setTimeout(resolve, 5000))]); if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); }
