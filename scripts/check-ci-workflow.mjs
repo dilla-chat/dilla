@@ -743,7 +743,7 @@ function checkLinuxSandboxFoundationJob(jobs, problems) {
 }
 
 // This native fixture has no bundled-web/WASI prerequisite. Keep both complete
-// lifecycle files and the Go/NSIS interop control ahead of the desktop matrix.
+// lifecycle files and the Go/NSIS interop control independent of the desktop matrix.
 // Short controls must finish in their own step before the long maintenance test,
 // so its runtime cannot hide an earlier file's failure from the step API.
 // Exact shape rejects filtered modes, ignored failures and extra authority/env.
@@ -781,8 +781,8 @@ if-no-files-found: error
   const actual = jobs['windows-installer'].split('\n').map(line => line.trim()).filter(line => line && !line.startsWith('#')).join('\n');
   if (actual !== expected) problems.push('ci.yml: independent Windows installer gate must run pinned provisioning, short syntax/interop controls, unconditional desktop units, launcher smoke and full unfiltered maintenance in order within its fixed budget');
   const desktopNeeds = /^ {4}needs: \[([^\]\n]*)\]$/m.exec(jobs.desktop ?? '')?.[1].split(',').map(name => name.trim()) ?? [];
-  if (!desktopNeeds.includes('windows-installer')) {
-    problems.push('ci.yml: desktop must wait for the independent Windows installer gate via needs: windows-installer');
+  if (desktopNeeds.includes('windows-installer')) {
+    problems.push('ci.yml: desktop must not wait for the independent Windows installer maintenance gate');
   }
 }
 

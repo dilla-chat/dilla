@@ -712,7 +712,7 @@ jobs:
           if-no-files-found: error
 
   desktop:
-    needs: [changes, web-build, rust-wasi, windows-kernel, windows-installer, linux-sandbox-foundation]
+    needs: [changes, web-build, rust-wasi, windows-kernel, linux-sandbox-foundation]
     if: needs.changes.outputs.e2e != 'false'
     uses: ./.github/workflows/desktop.yml
   core-integration:

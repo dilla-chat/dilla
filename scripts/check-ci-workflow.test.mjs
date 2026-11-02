@@ -79,7 +79,7 @@ test('Linux sandbox foundation rejects omitted lanes, fake proofs and delayed or
     assert.ok(checkWorkflow(fixture(GOOD.replace(body, changed))).some(problem => problem.includes('Linux sandbox foundation')), before);
   }
   assert.ok(checkWorkflow(fixture(GOOD.replace(body, ''))).some(problem => problem.includes('missing job "linux-sandbox-foundation"')));
-  const changed = GOOD.replace('windows-installer, linux-sandbox-foundation]', 'windows-installer]');
+  const changed = GOOD.replace('windows-kernel, linux-sandbox-foundation]', 'windows-kernel]');
   assert.notEqual(changed, GOOD);
   assert.ok(checkWorkflow(fixture(changed)).some(problem => problem.includes('desktop') && problem.includes('Linux sandbox foundation')));
 });
@@ -1006,11 +1006,11 @@ const WINDOWS_INSTALLER_JOB = `  windows-installer:
 ${WINDOWS_SMOKE_STEP}${WINDOWS_SMOKE_UPLOAD}      - run: ${WINDOWS_INSTALLER_MAINTENANCE}
 `;
 const LINUX_FOUNDATION_JOB = /^  linux-sandbox-foundation:\n[\s\S]*?(?=^  desktop:)/m.exec(REAL_CI)[0].replace(/^    needs:.*\n/m, '').replace(/^    if:.*\n/m, '');
-const GOOD = withChanges(withWasmClang(GOOD_BASE + WINDOWS_KERNEL_JOB + WINDOWS_INSTALLER_JOB + LINUX_FOUNDATION_JOB + '  desktop:\n    needs: [web-build, windows-kernel, windows-installer, linux-sandbox-foundation]\n    uses: ./.github/workflows/desktop.yml\n'));
+const GOOD = withChanges(withWasmClang(GOOD_BASE + WINDOWS_KERNEL_JOB + WINDOWS_INSTALLER_JOB + LINUX_FOUNDATION_JOB + '  desktop:\n    needs: [web-build, windows-kernel, linux-sandbox-foundation]\n    uses: ./.github/workflows/desktop.yml\n'));
 
 test('early Windows kernel gate runs both native packages before desktop acceptance', () => {
   assert.match(REAL_CI, /^  windows-kernel:/m);
-  assert.match(REAL_CI, /  desktop:\n    needs: \[changes, web-build, rust-wasi, windows-kernel, windows-installer, linux-sandbox-foundation\]/);
+  assert.match(REAL_CI, /  desktop:\n    needs: \[changes, web-build, rust-wasi, windows-kernel, linux-sandbox-foundation\]/);
   assert.deepEqual(checkWorkflow(fixture(GOOD)), []);
 });
 
@@ -1034,10 +1034,10 @@ test('early Windows kernel gate refuses omissions, filtered tests and heavyweigh
     assert.ok(checkWorkflow(fixture(GOOD.replace(body, changed))).some(problem => problem.includes('early Windows kernel')), before);
   }
   assert.ok(checkWorkflow(fixture(GOOD.replace(body, ''))).some(problem => problem.includes('missing job "windows-kernel"')));
-  const unblocked = GOOD.replace('needs: [changes, web-build, windows-kernel, windows-installer, linux-sandbox-foundation]', 'needs: [changes, web-build, windows-installer]');
+  const unblocked = GOOD.replace('needs: [changes, web-build, windows-kernel, linux-sandbox-foundation]', 'needs: [changes, web-build, windows-installer]');
   assert.notEqual(unblocked, GOOD);
   assert.ok(checkWorkflow(fixture(unblocked)).some(problem => problem.includes('desktop') && problem.includes('windows-kernel')));
-  const wrongDependency = GOOD.replace('needs: [changes, web-build, windows-kernel, windows-installer, linux-sandbox-foundation]', 'needs: [changes, web-build, windows-kernel-old, windows-installer]');
+  const wrongDependency = GOOD.replace('needs: [changes, web-build, windows-kernel, linux-sandbox-foundation]', 'needs: [changes, web-build, windows-kernel-old, windows-installer]');
   assert.ok(checkWorkflow(fixture(wrongDependency)).some(problem => problem.includes('desktop') && problem.includes('early Windows kernel')));
 });
 
@@ -1051,10 +1051,10 @@ test('early Windows kernel is included exactly once in completion and final gate
   }
 });
 
-test('independent Windows installer runs the full native fixture and interop before desktop', () => {
+test('independent Windows installer runs the full native fixture and interop alongside desktop', () => {
   assert.match(REAL_CI, /^  windows-installer:/m);
   assert.match(REAL_CI, /  windows-installer:\n    needs: \[changes, windows-kernel\]/);
-  assert.match(REAL_CI, /  desktop:\n    needs: \[changes, web-build, rust-wasi, windows-kernel, windows-installer, linux-sandbox-foundation\]/);
+  assert.match(REAL_CI, /  desktop:\n    needs: \[changes, web-build, rust-wasi, windows-kernel, linux-sandbox-foundation\]/);
   assert.deepEqual(checkWorkflow(fixture(GOOD)), []);
 });
 
@@ -1144,11 +1144,6 @@ test('independent Windows installer refuses filters, artifact prerequisites and 
     assert.ok(checkWorkflow(fixture(GOOD.replace(body, changed))).some(problem => problem.includes('independent Windows installer')), before);
   }
   assert.ok(checkWorkflow(fixture(GOOD.replace(body, ''))).some(problem => problem.includes('missing job "windows-installer"')));
-  for (const replacement of ['needs: [changes, web-build, windows-kernel]', 'needs: [changes, web-build, windows-kernel, windows-installer-old]']) {
-    const changed = GOOD.replace('needs: [changes, web-build, windows-kernel, windows-installer, linux-sandbox-foundation]', replacement);
-    assert.notEqual(changed, GOOD);
-    assert.ok(checkWorkflow(fixture(changed)).some(problem => problem.includes('desktop') && problem.includes('independent Windows installer')));
-  }
 });
 
 test('independent Windows installer belongs exactly once to completion and final gates', () => {
@@ -1159,6 +1154,15 @@ test('independent Windows installer belongs exactly once to completion and final
       assert.ok(checkWorkflow(fixture(GOOD.replace(body, changed))).some(problem => name === 'ci-ok' ? problem.includes('"ci-ok"') : problem.includes('completion barrier')));
     }
   }
+});
+
+test('desktop acceptance runs alongside the required Windows installer maintenance gate', () => {
+  const desktop = jobBody('desktop');
+  const unblocked = desktop.replace(', windows-installer', '');
+  assert.deepEqual(checkWorkflow(fixture(GOOD.replace(desktop, unblocked))), []);
+  const blocked = unblocked.replace('windows-kernel, ', 'windows-kernel, windows-installer, ');
+  assert.notEqual(blocked, unblocked);
+  assert.ok(checkWorkflow(fixture(GOOD.replace(desktop, blocked))).some(problem => problem.includes('desktop') && problem.includes('must not wait') && problem.includes('Windows installer')));
 });
 
 const BUDGET = MIN_BROWSER_WEB_TIMEOUT;
