@@ -24,6 +24,8 @@ jobs:
       - name: Authenticate version, source tree and main-branch tag
         id: plan
         run: node packages/desktop/scripts/publish-release.mjs plan
+      - name: Install pinned release publisher without rebuilding accepted artifacts
+        run: npm ci --ignore-scripts
       - name: Fetch exact accepted installers without rebuilding them
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:

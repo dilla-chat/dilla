@@ -1,5 +1,4 @@
 import { readFile, appendFile, mkdir } from 'node:fs/promises';
-import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { verifyRelease } from '../src/update.ts';
@@ -57,20 +56,8 @@ console.log('Verified accepted native/client CI, native build provenance, instal
 if (mode === 'verify') process.exit(0);
 
 async function findRelease(tag) { return api(`/repos/${repository}/releases/tags/${encodeURIComponent(tag)}`, {}, true); }
-async function upload(target, name, bytes, replace) {
- const existing = target.assets?.find(asset => asset.name === name);
- const sha256 = 'sha256:' + createHash('sha256').update(bytes).digest('hex');
- if (existing?.size === bytes.length && existing.digest === sha256) return;
- if (existing) {
-  if (!replace) throw new Error('An immutable release asset already differs: ' + name);
-  await api(`/repos/${repository}/releases/assets/${existing.id}`, { method: 'DELETE' });
- }
- const url = new URL(`https://uploads.github.com/repos/${repository}/releases/${target.id}/assets`); url.searchParams.set('name', name);
- const response = await fetch(url, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/octet-stream', Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' }, body: bytes, redirect: 'error', signal: AbortSignal.timeout(300000) });
- if (!response.ok) throw new Error(`Release asset upload failed (${response.status}): ${name}`);
- const result = await response.json();
- if (result.size !== bytes.length || result.digest !== sha256) throw new Error('GitHub stored an unexpected asset digest: ' + name);
-}
+const { createReleaseAssetUploader } = await import('./standard-release-upload.mjs');
+const upload = createReleaseAssetUploader({ api, token });
 const notes = await readFile(join(candidate, 'release-notes.md'), 'utf8');
 let target = await findRelease(ref);
 if (!target) target = await api(`/repos/${repository}/releases`, { method: 'POST', body: { tag_name: ref, target_commitish: process.env.GITHUB_SHA, name: `Dilla desktop ${version}`, body: notes, draft: true, prerelease: channel === 'beta' } });
