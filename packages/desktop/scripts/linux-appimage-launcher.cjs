@@ -3,11 +3,9 @@ const { constants } = require('node:fs');
 const { createHash } = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const { tmpdir } = require('node:os');
-const { dirname, join, resolve } = require('node:path');
+const { dirname, isAbsolute, join, resolve } = require('node:path');
 const repo = resolve(__dirname, '../../..');
 const components = join(repo, 'packages/desktop/linux-sandbox-component.json');
-const pending = new Map();
-const key = (out, arch) => `${resolve(out)}:${arch}`;
 const APP_RUN_SCRIPT = `#!/bin/sh
 set -eu
 if [ -z "\${APPDIR:-}" ]; then
@@ -29,15 +27,23 @@ async function foundation(context) {
  await writeFile(join(context.appOutDir, 'AppRun'), APP_RUN_SCRIPT, { mode: 0o755 });
 }
 
+function createLinuxAppImageHooks({ configuration } = {}) {
+ if (typeof configuration !== 'string' || !isAbsolute(configuration)) throw new Error('An absolute public component configuration is required');
+ const pending = new Map();
+ const key = (out, arch) => `${resolve(out)}:${arch}`;
+
 // app-builder-lib invokes afterPack before fuses are changed. Capture context;
 // finalize only when AppImageTarget signals its artifact after the fuse step.
 async function afterPack(context) {
  if (context.electronPlatformName !== 'linux') return;
  if (context.packager.executableName !== 'dilla-desktop') throw new Error('Unexpected Linux packaged executable');
  if (context.arch !== 1) throw new Error('AppImage sandbox requires Linux x64');
+ const version = context.packager.appInfo?.version;
+ const versionMatch = typeof version === 'string' && /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-beta\.(0|[1-9]\d*))?$/.exec(version);
+ if (!versionMatch || versionMatch[0] !== version || !versionMatch.slice(1).filter(x => x !== undefined).every(x => Number.isSafeInteger(Number(x)))) throw new Error('Invalid compiled application version');
  const id = key(context.outDir, context.arch);
  if (pending.has(id)) throw new Error('Duplicate AppImage packaging context');
- pending.set(id, { appOutDir: resolve(context.appOutDir), outDir: resolve(context.outDir) });
+ pending.set(id, { appOutDir: resolve(context.appOutDir), outDir: resolve(context.outDir), version });
 }
 async function artifactBuildStarted(event) {
  if (event.targetPresentableName !== 'AppImage') return;
@@ -51,9 +57,12 @@ async function artifactBuildStarted(event) {
  const elfHash = hash(await readFile(elf)), asarHash = hash(await readFile(asar));
  const temp = await mkdtemp(join(tmpdir(), 'dilla-appimage-'));
  try {
-  const build = join(temp, 'components');
-  execFileSync(process.execPath, [join(__dirname, 'linux-sandbox-package.mjs'), components, helper, build], { cwd: repo, stdio: 'inherit' });
-  const config = JSON.parse(await readFile(components, 'utf8'));
+  const build = join(temp, 'components'), snapshot = join(temp, 'public-configuration.json');
+  const publicBytes = await readFile(configuration);
+  if (publicBytes.length < 1 || publicBytes.length > 16384) throw new Error('Invalid public component configuration size');
+  await writeFile(snapshot, publicBytes, { flag: 'wx' });
+  execFileSync(process.execPath, [join(__dirname, 'linux-sandbox-package.mjs'), snapshot, helper, build, record.version], { cwd: repo, stdio: 'inherit' });
+  const config = JSON.parse(publicBytes.toString('utf8'));
   const env = { ...process.env, GOOS: 'linux', GOARCH: 'amd64', GOAMD64: 'v1', GOENV: 'off', GOWORK: 'off', GOFLAGS: '', GOEXPERIMENT: '', GOTOOLCHAIN: config.goVersion, CGO_ENABLED: '1' };
   execFileSync('go', ['build', '-mod=readonly', '-trimpath', '-buildvcs=false', '-overlay', join(build, 'launcher-overlay.json'), '-o', join(dir, 'dilla-sandbox-launcher'), './packages/desktop/native/linux-sandbox/launcher'], { cwd: repo, env, stdio: 'inherit' });
   const suffix = event.file.slice(0, -'.AppImage'.length);
@@ -66,8 +75,12 @@ async function artifactBuildStarted(event) {
   if (hash(await readFile(elf)) !== elfHash || hash(await readFile(asar)) !== asarHash) throw new Error('AppImage ELF or ASAR changed during packaging');
  } finally { await rm(temp, { recursive: true, force: true }); }
 }
+return { afterPack, artifactBuildStarted };
+}
+const { afterPack, artifactBuildStarted } = createLinuxAppImageHooks({ configuration: components });
 module.exports = afterPack;
 module.exports.artifactBuildStarted = artifactBuildStarted;
 module.exports.foundation = foundation;
 module.exports.APP_RUN_SCRIPT = APP_RUN_SCRIPT;
 module.exports.PRODUCTION_APP_RUN_SCRIPT = PRODUCTION_APP_RUN_SCRIPT;
+module.exports.createLinuxAppImageHooks = createLinuxAppImageHooks;

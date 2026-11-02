@@ -87,15 +87,18 @@ func runProbeProcess(c probeProcessConfig) (result ProbeResult, retErr error) {
 	if e != nil {
 		return ProbeFailed, e
 	}
-	defer reportR.Close()
-	defer reportW.Close()
+	// These pipe closes are cleanup only; the sole acknowledgement write is checked below.
+	defer func() { _ = reportR.Close() }()
+	defer func() { _ = reportW.Close() }()
 	ackR, ackW, e := os.Pipe()
 	if e != nil {
 		return ProbeFailed, e
 	}
-	defer ackR.Close()
-	defer ackW.Close()
-	cmd := exec.Command(c.executable, c.args...)
+	defer func() { _ = ackR.Close() }()
+	defer func() { _ = ackW.Close() }()
+	// The probe owns cancellation and reaping until identity-checked cleanup; avoid independent context-triggered termination.
+	// #nosec G204 -- executable is the fixed Electron sibling from the verified owned mount.
+	cmd := exec.Command(c.executable, c.args...) //nolint:noctx // teardown owns deadline and reaping
 	cmd.Env = c.env
 	cmd.Stdin = nil
 	cmd.Stdout = io.Discard
@@ -138,7 +141,7 @@ func runProbeProcess(c probeProcessConfig) (result ProbeResult, retErr error) {
 	ticker := time.NewTicker(time.Millisecond)
 	defer ticker.Stop()
 	valid, bad, timedOut, exited, firstDone, restDone := false, false, false, false, false, false
-	for !(exited && firstDone && (!valid || restDone)) && !bad && !timedOut {
+	for (!exited || !firstDone || (valid && !restDone)) && !bad && !timedOut {
 		select {
 		case msg := <-first:
 			firstDone = true

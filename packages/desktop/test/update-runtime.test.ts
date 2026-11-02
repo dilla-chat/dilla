@@ -1,6 +1,7 @@
+import { fixtureRuntime } from './support/fixture-update-runtime.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { takeStartupLaunch, updateLaunchEnvironment, watchdogNonce } from '../src/update-runtime.ts';
+const { takeStartupLaunch, updateLaunchEnvironment, watchdogNonce } = fixtureRuntime.runtime;
 
 test('watchdog role accepts one strict nonce and rejects malformed or repeated role arguments', () => {
  const nonce = 'a'.repeat(64);
@@ -21,7 +22,7 @@ test('a replacement watchdog cannot inherit an earlier helper acknowledgment', {
  const { installedFixture } = await import('./support/installed-update.ts');
  const { writeFile, chmod, readFile } = await import('node:fs/promises');
  const { join } = await import('node:path');
- const { launchUpdateWatchdog } = await import('../src/update-runtime.ts');
+ const { launchUpdateWatchdog } = fixtureRuntime.runtime;
  await installedFixture(async plan => {
   const ready = join(plan.health.directory, 'watchdog-ready.json');
   await writeFile(ready, JSON.stringify({ nonce: plan.health.nonce, version: plan.oldVersion, pid: process.pid + 100 }), { mode: 0o600 });
@@ -37,7 +38,7 @@ test('Linux resolves a wrapper launch to the exact owned application main PID be
  const { installedFixture } = await import('./support/installed-update.ts');
  const { writeFile, readFile, copyFile, mkdir, unlink } = await import('node:fs/promises');
  const { join } = await import('node:path');
- const { nativeWatchdogProcesses } = await import('../src/update-runtime.ts');
+ const { nativeWatchdogProcesses } = fixtureRuntime.runtime;
  await installedFixture(async plan => {
   const runtime = join(plan.health.directory, 'runtime'), runtimeNode = join(runtime, 'node');
   await mkdir(runtime); await copyFile(process.execPath, runtimeNode);
@@ -62,7 +63,7 @@ test('Linux resolves a wrapper launch to the exact owned application main PID be
 });
 
 test('Linux process-title flattened argv keeps one exact launch marker but cannot match renderer arguments or a nonce prefix', async () => {
- const { updateProcessMarker } = await import('../src/update-runtime.ts');
+ const { updateProcessMarker } = fixtureRuntime.runtime;
  const marker = '--update-watchdog=' + 'a'.repeat(64);
  assert.equal(updateProcessMarker(['/tmp/a path/dilla-desktop ' + marker, ''], marker), true);
  assert.equal(updateProcessMarker(['/tmp/dilla-desktop', marker, ''], marker), true);
@@ -78,10 +79,10 @@ test('a recovered-launch marker is consumed, never inherited, and cannot coexist
 });
 
 test('updated main cannot begin ordinary boot until its exact PID is durably registered', async () => {
- const { installedFixture } = await import('./support/installed-update.ts'), { writeUpdateJournal } = await import('../src/update-journal.ts');
- const { waitForRegisteredStartup } = await import('../src/update-runtime.ts');
+ const { installedFixture } = await import('./support/installed-update.ts'), { writeUpdateJournal } = fixtureRuntime.journal;
+ const { waitForRegisteredStartup } = fixtureRuntime.runtime;
  await installedFixture(async (plan, trust) => {
-  await (await import('../src/update-state.ts')).activateInstalledUpdate(plan);
+  await (fixtureRuntime.state).activateInstalledUpdate(plan);
   await writeUpdateJournal(plan, { phase: 'launching' });
   let slept = false, now = 0;
   await waitForRegisteredStartup(plan.userData, plan.installed, plan.health.nonce, process.pid, { ...trust, version: plan.health.version }, {
@@ -93,8 +94,8 @@ test('updated main cannot begin ordinary boot until its exact PID is durably reg
 });
 
 test('startup activation waits for durable completion bound to this PID and signed version', { skip: !['linux', 'win32'].includes(process.platform) }, async () => {
- const { installedFixture } = await import('./support/installed-update.ts'), { writeUpdateJournal } = await import('../src/update-journal.ts');
- const { waitForStartupActivation } = await import('../src/update-runtime.ts'), { createStartupActivation } = await import('../src/update-activation.ts');
+ const { installedFixture } = await import('./support/installed-update.ts'), { writeUpdateJournal } = fixtureRuntime.journal;
+ const { waitForStartupActivation } = fixtureRuntime.runtime, { createStartupActivation } = fixtureRuntime.activation;
  await installedFixture(async plan => {
   await writeUpdateJournal(plan, { phase: 'launching', childPid: process.pid });
   const gate = await createStartupActivation(plan, 1000); gate.expect(process.pid); let ready = false;
@@ -127,8 +128,8 @@ const{syncBuiltinESMExports}=await import('node:module');syncBuiltinESMExports()
 
 test('ordinary startup exits while a verified complete transaction still has its exact live watchdog, even after the registered child died', { skip: process.platform !== 'linux' }, async t => {
  const { installedFixture } = await import('./support/installed-update.ts'), { spawn, spawnSync } = await import('node:child_process'), { readFile, writeFile } = await import('node:fs/promises');
- const { activateInstalledUpdate } = await import('../src/update-state.ts'), { writeUpdateJournal } = await import('../src/update-journal.ts'), { reportWatchdogReady } = await import('../src/update-health.ts');
- const { resumeInterruptedUpdate } = await import('../src/update-runtime.ts');
+ const { activateInstalledUpdate } = fixtureRuntime.state, { writeUpdateJournal } = fixtureRuntime.journal, { reportWatchdogReady } = fixtureRuntime.health;
+ const { resumeInterruptedUpdate } = fixtureRuntime.runtime;
  await installedFixture(async (plan, trust) => {
   const assertReadHeld = async (fault: string, version: string) => {
    const { join, resolve } = await import('node:path');
@@ -171,7 +172,7 @@ test('ordinary startup exits while a verified complete transaction still has its
 });
 
 test('the stable Windows launcher role accepts only one exact bootstrap nonce and cannot combine watchdog authority',async()=>{
- const{bootstrapNonce}=await import('../src/update-runtime.ts'),nonce='a'.repeat(64);
+ const{bootstrapNonce}=fixtureRuntime.runtime,nonce='a'.repeat(64);
  assert.equal(bootstrapNonce(['app','--hidden']),null);assert.equal(bootstrapNonce(['app','--update-bootstrap='+nonce]),nonce);
  for(const args of [['--update-bootstrap'],['--update-bootstrap=../outside'],['--update-bootstrap='+nonce,'--update-bootstrap='+nonce],['--update-bootstrap='+nonce,'--update-watchdog='+nonce]])assert.throws(()=>bootstrapNonce(args),/bootstrap/);
 });

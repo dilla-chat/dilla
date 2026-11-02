@@ -12,6 +12,9 @@ import { resolve, join, dirname } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { build } from 'esbuild';
 import { snapshotUninstall } from '../../src/update-registry.ts';
+import { verifyRelease } from '../../src/update.ts';
+import { fixtureSandboxFeed } from '../support/linux-sandbox-fixture-feed.mjs';
+import { provisionInstalledSandbox } from '../support/linux-installed-sandbox-bootstrap.mjs';
 const desktop = resolve(import.meta.dirname, '../..'), repo = resolve(desktop, '../..');
 const platform = process.platform;
 const digest = bytes => createHash('sha512').update(bytes).digest('base64');
@@ -51,10 +54,16 @@ test('installed AppImage/NSIS authenticated upgrade observes real startup health
  const root = await mkdtemp(join(tmpdir(), 'dilla-installed-update-'));
  const id = randomBytes(6).toString('hex'), product = 'DillaUpdateAcceptance' + id;
  const profile = join(root, 'profile'), reports = join(root, 'reports'), logs = join(root, 'process.log');
- const keys = generateKeyPairSync('ed25519'), key = keys.publicKey.export({ type: 'spki', format: 'pem' }).toString();
+ const keys = generateKeyPairSync('ed25519'), key = keys.publicKey.export({ type: 'spki', format: 'pem' }).toString(), sandboxKeys = generateKeyPairSync('ed25519');
+ const sandboxConfig = JSON.parse(await readFile(join(desktop,'linux-sandbox-component.json'),'utf8')); sandboxConfig.publicKeys = [sandboxKeys.publicKey.export({type:'spki',format:'der'}).subarray(-32).toString('base64')];
+ const sandboxConfigPath = join(root,'fixture-sandbox-config.json'), sandboxHook = join(root,'fixture-sandbox-hook.cjs'), sandboxArtifactHook = join(root,'fixture-sandbox-artifact.cjs');
+ await writeFile(sandboxConfigPath,JSON.stringify(sandboxConfig));
+ await writeFile(sandboxHook, `const h=require(${JSON.stringify(join(desktop,'scripts/linux-appimage-launcher.cjs'))}).createLinuxAppImageHooks({configuration:${JSON.stringify(sandboxConfigPath)}});module.exports=h.afterPack;module.exports.artifactBuildStarted=h.artifactBuildStarted;`);
+ await writeFile(sandboxArtifactHook, `module.exports=require(${JSON.stringify(sandboxHook)}).artifactBuildStarted;`);
  const productionKeyHash = digest(await readFile(join(desktop, 'src/update-keys.ts')));
  const log = await open(logs, 'a');
  let server, current, installerBytes, descriptor, signature, pid, launched;
+ let fixtureSidecars = new Map();
  let fault = 'none';
  const outcomes = {};
  try {
@@ -65,6 +74,7 @@ test('installed AppImage/NSIS authenticated upgrade observes real startup health
     const bytes = fault === 'metadata' ? Buffer.from(descriptor.toString().replace('"format":1', '"format":2')) : descriptor;
     res.writeHead(200, { 'content-length': bytes.length }); res.end(bytes);
    } else if (req.url === '/release.json.sig') res.end(signature);
+   else if (req.url?.startsWith('/sandbox-fixture/')) { const data=fixtureSidecars.get(req.url.slice('/sandbox-fixture/'.length)); if (!data) {res.writeHead(404);res.end();} else {res.writeHead(200,{'content-length':data.length});res.end(data);} }
    else if (req.url === '/artifact') {
     if (fault === 'download') { res.writeHead(200, { 'content-length': installerBytes.length }); res.write(installerBytes.subarray(0, 1024)); res.destroy(); }
     else {
@@ -93,6 +103,8 @@ test('installed AppImage/NSIS authenticated upgrade observes real startup health
    await writeFile(join(project, 'package.json'), JSON.stringify({ name: 'dilla-update-acceptance-' + id, version, main: 'dist/main.cjs', description: 'Installed updater acceptance fixture', author: 'Dilla', license: 'AGPL-3.0-or-later' }));
    await build({ entryPoints: [join(desktop, 'src/main.ts')], outfile: join(dist, platform === 'linux' ? 'main-app.cjs' : 'main.cjs'), define: platform === 'linux' ? { __DILLA_LINUX_INSTALL_KIND__: JSON.stringify('appimage') } : {}, bundle: true, platform: 'node', target: 'node24', format: 'cjs', external: ['electron'], plugins: [{ name: 'compiled-fixture-only', setup(plugin) {
     plugin.onLoad({ filter: /\/src\/update-keys\.ts$|\\src\\update-keys\.ts$/ }, () => ({ contents: `export const RELEASE_PUBLIC_KEYS = ${JSON.stringify([key])};`, loader: 'ts' }));
+    plugin.onLoad({filter:/[\\/]linux-sandbox-component\.json$/},()=>({contents:JSON.stringify(sandboxConfig),loader:'json'}));
+    plugin.onLoad({filter:/[\\/]src[\\/]linux-sandbox-cache\.ts$/},async args=>{const source=await readFile(args.path,'utf8'), marker='fetch(current, {'; if(source.split(marker).length!==2)throw Error('Fixture sidecar fetch boundary changed'); return {contents:source.replace(marker, `fetch(new URL(${JSON.stringify(origin + '/sandbox-fixture/')} + current.pathname.split('/').at(-1)), {`),loader:'ts',resolveDir:join(desktop,'src')};});
     plugin.onLoad({ filter: /\/src\/updater\.ts$|\\src\\updater\.ts$/ }, () => ({ contents: ('import { BrowserWindow } from "electron";\n' + sourceUpdater).replace(/const feed = `[^`]+`;/, `const feed = ${JSON.stringify(origin + '/release.json')};`).replace('url: new URL(this.artifact.url)', `url: new URL(${JSON.stringify(origin + '/artifact')})`).replace('const watchdog = await launchUpdateWatchdog(plan);', `const watchdog = await launchUpdateWatchdog(plan); if(plan.health.version==='1.0.11'){app.emit('activate');await new Promise(done=>setTimeout(done,100));process.getBuiltinModule('fs').writeFileSync(${JSON.stringify(join(reports, 'accepted-quit-windows.json'))},JSON.stringify({pid:process.pid,windows:BrowserWindow.getAllWindows().length}));}`), loader: 'ts', resolveDir: join(desktop, 'src') }));
     plugin.onLoad({ filter: /\/src\/update-runtime\.ts$|\\src\\update-runtime\.ts$/ }, () => ({ contents: sourceRuntime.replaceAll("stdio: 'ignore'", "stdio: 'inherit'").replace('await recoverInstalledUpdate(plan, processes); return;', `if(plan.health.version==='1.0.11'){process.getBuiltinModule('fs').appendFileSync(${JSON.stringify(join(reports,'prepared-recovery-owners.jsonl'))},JSON.stringify({pid:process.pid})+'\\n');await new Promise(done=>setTimeout(done,5000));} await recoverInstalledUpdate(plan, processes); return;`), loader: 'ts', resolveDir: join(desktop, 'src') }));
     plugin.onLoad({ filter: /\/src\/update-watchdog\.ts$|\\src\\update-watchdog\.ts$/ }, () => ({ contents: sourceWatchdog.replace('child = await processes.launch(file, plan.health);', "child = await processes.launch(file, plan.health); if (plan.health.version === '1.0.7') await new Promise(done => setTimeout(done, 10000));"), loader: 'ts', resolveDir: join(desktop, 'src') }));
@@ -114,7 +126,7 @@ test('installed AppImage/NSIS authenticated upgrade observes real startup health
      .replace('activateTray();\n       for (const link', `activateTray(); process.getBuiltinModule('fs').writeFileSync(${JSON.stringify(join(reports, version + '-activated.json'))}, JSON.stringify(BrowserWindow.getAllWindows().map(win => ({visible:win.isVisible(),enabled:win.isEnabled()}))));\n       for (const link`)
      .replace('void app.whenReady().then(async () => {', `void app.whenReady().then(async () => { process.getBuiltinModule('fs').appendFileSync(${JSON.stringify(join(reports, version + '-normal-boots.jsonl'))}, JSON.stringify({pid:process.pid,version:app.getVersion()})+'\\n'); ${version === '1.0.2' ? 'app.exit(23); return;' : ''} dialog.showMessageBoxSync = (() => { process.getBuiltinModule('fs').writeFileSync(${JSON.stringify(join(reports, version + '-pending-dialog.json'))}, JSON.stringify({pid:process.pid})); return 0; }) as typeof dialog.showMessageBoxSync;`), loader: 'ts', resolveDir: join(desktop, 'src') }));
    } }] });
-   const base = { appId: 'dev.dilla.desktop.update-acceptance.' + id, productName: product, executableName: 'dilla-desktop', toolsets: desktopBuilder.toolsets, electronVersion: '45.2.1', electronDist: join(repo, 'node_modules/electron/dist'), directories: { output }, files: ['dist/**', 'package.json'], asar: true, afterPack: join(desktop, 'scripts/linux-appimage-launcher.cjs'), artifactBuildStarted: join(desktop, 'scripts/linux-appimage-artifact.cjs'), appImage: { executableArgs: [] }, artifactName: `fixture-${version}.\${ext}`, publish: { provider: 'generic', url: origin }, electronFuses: { runAsNode: false, enableCookieEncryption: true, enableNodeOptionsEnvironmentVariable: false, enableNodeCliInspectArguments: false, enableEmbeddedAsarIntegrityValidation: true, onlyLoadAppFromAsar: true, grantFileProtocolExtraPrivileges: false }, linux: { target: 'AppImage', category: 'Network', icon: join(desktop, 'assets/icon.png') }, win: { target: 'nsis', icon: join(desktop, 'assets/icon.png') }, nsis: { perMachine: false, oneClick: true, allowElevation: false, deleteAppDataOnUninstall: false } };
+   const base = { appId: 'dev.dilla.desktop.update-acceptance.' + id, productName: product, executableName: 'dilla-desktop', toolsets: desktopBuilder.toolsets, electronVersion: '45.2.1', electronDist: join(repo, 'node_modules/electron/dist'), directories: { output }, files: ['dist/**', 'package.json'], asar: true, afterPack: sandboxHook, artifactBuildStarted: sandboxArtifactHook, appImage: { executableArgs: [] }, artifactName: `fixture-${version}.\${ext}`, publish: { provider: 'generic', url: origin }, electronFuses: { runAsNode: false, enableCookieEncryption: true, enableNodeOptionsEnvironmentVariable: false, enableNodeCliInspectArguments: false, enableEmbeddedAsarIntegrityValidation: true, onlyLoadAppFromAsar: true, grantFileProtocolExtraPrivileges: false }, linux: { target: 'AppImage', category: 'Network', icon: join(desktop, 'assets/icon.png') }, win: { target: 'nsis', icon: join(desktop, 'assets/icon.png') }, nsis: { perMachine: false, oneClick: true, allowElevation: false, deleteAppDataOnUninstall: false } };
    if (['1.0.4', '1.0.5', '1.0.6'].includes(version) && platform === 'win32') {
     base.nsis.include = join(project, 'fail-install.nsh');
     await writeFile(base.nsis.include, '!macro customInstall\nFileOpen $0 "$INSTDIR\\partial-fixture.txt" w\nFileWrite $0 "partially installed"\nFileClose $0\n' + (version === '1.0.4' ? 'SetErrorLevel 17\nQuit\n' : 'Sleep 600000\n') + '!macroend\n');
@@ -125,14 +137,19 @@ test('installed AppImage/NSIS authenticated upgrade observes real startup health
    return join(output, `fixture-${version}.${platform === 'linux' ? 'AppImage' : 'exe'}`);
   };
   const next = await pack('1.0.1'), broken = await pack('1.0.2'), delayed = await pack('1.0.3'), failedInstaller = platform === 'win32' ? await pack('1.0.4') : null, hungInstaller = platform === 'win32' ? await pack('1.0.5') : null, interruptedInstaller = platform === 'win32' ? await pack('1.0.6') : null, unregistered = await pack('1.0.7'), race = await pack('1.0.9'), unarmed = await pack('1.0.11'), previous = await pack('1.0.0');
+  // CI auth substitutes only the prompt; install the exact finalized fixture capsule.
+  if (platform === 'linux' && process.env.GITHUB_ACTIONS === 'true') await provisionInstalledSandbox({ image: previous, configurationFile: sandboxConfigPath });
   const installed = platform === 'linux' ? join(root, 'Applications/Dilla.AppImage') : join(process.env.LOCALAPPDATA, 'Programs', product, 'dilla-desktop.exe');
   if (platform === 'linux') { await mkdir(dirname(installed)); await cp(previous, installed); await chmod(installed, 0o700); }
   else { execFileSync(previous, ['/S', '/D=' + dirname(installed)], { stdio: ['ignore', log.fd, log.fd] }); }
   const oldDigest = digest(await readFile(installed));
   const release = async (file, version) => {
    installerBytes = await readFile(file);
-   const now = Date.now(); descriptor = Buffer.from(JSON.stringify({ format: 1, version, channel: 'stable', publishedAt: new Date(now - 1000).toISOString(), expiresAt: new Date(now + 3600000).toISOString(), artifacts: [{ platform, arch: process.arch, url: `https://github.com/jonasthim/dilla/releases/download/desktop-v${version}/dilla-${version}${platform === 'linux' ? '.AppImage' : '.exe'}`, size: installerBytes.length, sha512: digest(installerBytes) }] }));
+   const now = Date.now(), sandbox = platform === 'linux' ? await fixtureSandboxFeed(file,version,sandboxKeys,sandboxConfig,now) : null;
+   if (sandbox) { const stem=file.slice(0,-'.AppImage'.length), base=`dilla-${version}-linux-x64.sandbox`; fixtureSidecars=new Map([[base,await readFile(stem+'.sandbox')],[base+'.json',await readFile(stem+'.sandbox.json')],[base+'.sig',sandbox.signature]]); }
+   descriptor = Buffer.from(JSON.stringify({ format: 1, version, channel: 'stable', publishedAt: new Date(now - 1000).toISOString(), expiresAt: new Date(now + 3600000).toISOString(), ...(sandbox ? {assets:sandbox.assets} : {}), artifacts: [{ platform, arch: process.arch, url: `https://github.com/jonasthim/dilla/releases/download/desktop-v${version}/dilla-${version}${platform === 'linux' ? '-linux-x64.AppImage' : '.exe'}`, size: installerBytes.length, sha512: digest(installerBytes), ...(sandbox ? {linuxSandbox:sandbox.linuxSandbox} : {}) }] }));
    signature = sign(null, descriptor, keys.privateKey).toString('base64');
+   verifyRelease(descriptor, signature, {publicKeys:[key],channel:'stable',platform,arch:process.arch,currentVersion:'0.0.0',now});
   };
   const launch = async (manualRetry = false) => {
    launched = spawn(installed, manualRetry ? ['--fixture-user-retry'] : [], { detached: true, stdio: ['ignore', log.fd, log.fd] }); launched.unref(); pid = launched.pid;

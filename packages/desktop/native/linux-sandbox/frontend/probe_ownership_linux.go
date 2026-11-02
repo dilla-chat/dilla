@@ -3,7 +3,6 @@
 package frontend
 
 import (
-	"golang.org/x/sys/unix"
 	"os"
 	"os/exec"
 	"runtime"
@@ -14,6 +13,8 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
+
+	"golang.org/x/sys/unix"
 )
 
 // Signal only while this process still owns an unreaped leader whose group ID
@@ -79,6 +80,7 @@ type probeScope struct {
 
 func readSubreaper() (int, error) {
 	var value int32
+	// #nosec G103 -- prctl writes a fixed int32 result through this local pointer.
 	e := unix.Prctl(unix.PR_GET_CHILD_SUBREAPER, uintptr(unsafe.Pointer(&value)), 0, 0, 0)
 	runtime.KeepAlive(&value)
 	return int(value), e
@@ -88,7 +90,7 @@ func selfChildrenOnce(deadline time.Time) ([]int, error) {
 	if e != nil {
 		return nil, e
 	}
-	defer unix.Close(fd)
+	defer func() { _ = unix.Close(fd) }()
 	tasks, e := listAt(fd, "task", 512)
 	if e != nil || len(tasks) == 0 {
 		return nil, errProbeCleanup
@@ -207,7 +209,7 @@ func leaderWaitState(pid int) (bool, error) {
 	return info.Signo != 0, nil
 }
 func groupSignal(pid int) error {
-	return signalOwnedGroup(pid, func(id int) (bool, error) { _, e := leaderWaitState(id); return e == nil, e }, unix.Getpgid, unix.Getsid, func(group int, signal syscall.Signal) error { return unix.Kill(group, unix.Signal(signal)) })
+	return signalOwnedGroup(pid, func(id int) (bool, error) { _, e := leaderWaitState(id); return e == nil, e }, unix.Getpgid, unix.Getsid, func(group int, signal syscall.Signal) error { return unix.Kill(group, signal) })
 }
 
 type knownProcess struct {

@@ -26,6 +26,37 @@ test('AppImage artifact hook refuses missing or wrong build context',async()=>{
 test('production and installed builders select both packaging hooks',async()=>{
  const production=require('../electron-builder.cjs');assert.equal(production.afterPack,hook);assert.deepEqual(production.appImage.executableArgs,[]);
  for(const file of [new URL('./native/installed-upgrade.test.mjs',import.meta.url),new URL('../../../e2e/web/support/installed-packages.ts',import.meta.url)]){
-  const source=await readFile(file,'utf8');assert.match(source,/scripts\/linux-appimage-launcher\.cjs/);assert.match(source,/scripts\/linux-appimage-artifact\.cjs/);
+  const source=await readFile(file,'utf8');assert.match(source,/scripts\/linux-appimage-launcher\.cjs/);assert.match(source,/createLinuxAppImageHooks/);
  }
+});
+
+test('fixture hooks require an explicit absolute public configuration',()=>{
+ assert.equal(typeof hook.createLinuxAppImageHooks,'function');
+ assert.throws(()=>hook.createLinuxAppImageHooks({configuration:'relative.json'}),/absolute/i);
+ assert.throws(()=>hook.createLinuxAppImageHooks({}),/configuration/i);
+ const fixture=hook.createLinuxAppImageHooks({configuration:'/tmp/fixture-public.json'});
+ assert.equal(typeof fixture.afterPack,'function');assert.equal(typeof fixture.artifactBuildStarted,'function');
+ assert.notEqual(fixture.afterPack,hook);
+});
+
+test('fixture hook compiles the supplied public maintenance trust into its image launcher', {skip:process.platform!=='linux'||!process.env.DILLA_INSPECT_FIXTURE_ROOT}, async()=>{
+ const {copyFile,readlink}=await import('node:fs/promises'); const {generateKeyPairSync}=await import('node:crypto');
+ const root=await realpath(await mkdtemp(join(tmpdir(),'dilla-fixture-hooks-'))), app=join(root,'app'), out=join(root,'out');
+ try {
+  await mkdir(app);await mkdir(join(app,'resources'));await mkdir(out);
+  const extracted=process.env.DILLA_INSPECT_FIXTURE_ROOT!;
+  await copyFile(join(extracted,'dilla-desktop'),join(app,'dilla-desktop'));
+  await copyFile(join(extracted,'resources/app.asar'),join(app,'resources/app.asar'));
+  await copyFile(new URL('../../../node_modules/electron/dist/chrome-sandbox',import.meta.url),join(app,'chrome-sandbox'));
+  const config=JSON.parse(await readFile(new URL('../linux-sandbox-component.json',import.meta.url),'utf8'));
+  const pair=generateKeyPairSync('ed25519'); const fixtureKey=pair.publicKey.export({type:'spki',format:'der'}).subarray(-32).toString('base64');
+  config.publicKeys=[fixtureKey];const configFile=join(root,'fixture-public.json');await writeFile(configFile,JSON.stringify(config));
+  const fixture=hook.createLinuxAppImageHooks({configuration:configFile});
+  await fixture.afterPack({electronPlatformName:'linux',arch:1,appOutDir:app,outDir:out,packager:{executableName:'dilla-desktop',appInfo:{version:'1.0.0'}}});
+  await fixture.artifactBuildStarted({targetPresentableName:'AppImage',arch:1,file:join(out,'fixture.AppImage')});
+  const launcher=await readFile(join(app,'dilla-sandbox-launcher'));
+  assert.ok(launcher.includes(Buffer.from(fixtureKey)));assert.ok(!launcher.includes(Buffer.from('qQe0Z4MLDeYmXACcEHo3Z7SU0klZSccu+nMD90pOcJg=')));
+  assert.equal(await readlink(join(app,'chrome-sandbox')),'/usr/lib/dilla/appimage/chrome-sandbox');
+  assert.ok((await readFile(join(out,'fixture.sandbox'))).length>0);
+ } finally {await rm(root,{recursive:true,force:true});}
 });

@@ -64,7 +64,7 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
-      - if: runner.os == 'Windows'
+      - if: runner.os == 'Windows' || runner.os == 'Linux'
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
@@ -78,9 +78,14 @@ jobs:
           name: dilla-desktop-core
           path: packages/core-wasm/pkg
       - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev pipewire wireplumber
+        run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev pipewire wireplumber libgtk-3-dev pkg-config
       - run: npm ci
       - run: node node_modules/electron/install.js
+      - name: Linux installed sandbox prerequisite controls
+        if: runner.os == 'Linux'
+        run: |
+          CGO_ENABLED=0 go test ./packages/desktop/test/fixtures/linux-installed-sandbox-bootstrap
+          node --test packages/desktop/test/linux-installed-sandbox-bootstrap.test.mjs packages/desktop/test/linux-sandbox-package-runner.test.mjs
       - if: runner.os != 'Windows'
         run: npm test -w @dilla/desktop
       - run: npm run typecheck -w @dilla/desktop
@@ -124,10 +129,6 @@ jobs:
         run: node --test packages/desktop/test/native/mac-upgrade.test.mjs
       - name: Installed upgrade acceptance
         if: runner.os == 'Linux'
-        env:
-          # FUSE mounts cannot grant SUID privileges. Use this same pinned
-          # Electron's already configured helper, retaining Ubuntu's OS policy.
-          CHROME_DEVEL_SANDBOX: ${{ github.workspace }}/node_modules/electron/dist/chrome-sandbox
         run: xvfb-run -a dbus-run-session -- bash packages/desktop/scripts/with-window-manager.sh node --test packages/desktop/test/native/installed-upgrade.test.mjs
       - name: Installed upgrade acceptance
         if: runner.os == 'Windows'
@@ -137,6 +138,13 @@ jobs:
           name: desktop-installed-upgrade-${{ matrix.platform }}-${{ matrix.arch }}
           path: packages/desktop/test-results/*installed-upgrade.json
           if-no-files-found: error
+      - name: Initial installed sandbox prerequisite proof
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: desktop-initial-sandbox-native-linux-x64
+          path: ${{ runner.temp }}/dilla-installed-sandbox-initial.json
+          if-no-files-found: error
       - run: npm run pack -w @dilla/desktop -- --config.electronDist=../../node_modules/electron/dist --${{ matrix.platform }} --${{ matrix.arch }}
         env:
           CSC_FOR_PULL_REQUEST: 'true' # Only the configured ad-hoc identity; no commercial signing credentials.
@@ -145,6 +153,9 @@ jobs:
         env:
           CSC_FOR_PULL_REQUEST: 'true' # Ad-hoc Mac signing only; no private release keys in CI.
       - run: node packages/desktop/scripts/check-fuses.mjs
+      - name: Linux AppImage final package inspection mutations
+        if: runner.os == 'Linux'
+        run: node packages/desktop/scripts/test-linux-sandbox-package.mjs packages/desktop/out
       - name: Record native desktop build provenance
         run: node packages/desktop/scripts/build-provenance.mjs packages/desktop/out ${{ matrix.platform }}-${{ matrix.arch }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
@@ -152,6 +163,8 @@ jobs:
           name: desktop-installers-${{ matrix.platform }}-${{ matrix.arch }}
           path: |
             packages/desktop/out/*.AppImage
+            packages/desktop/out/*.sandbox
+            packages/desktop/out/*.sandbox.json
             packages/desktop/out/*.exe
             packages/desktop/out/*.manifest.json
             packages/desktop/out/build-provenance-*.json
@@ -220,7 +233,7 @@ jobs:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
       - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev pipewire wireplumber xvfb openbox x11-utils dbus-x11 libgbm1 libnss3 libasound2t64 dunst
+        run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev pipewire wireplumber libgtk-3-dev pkg-config xvfb openbox x11-utils dbus-x11 libgbm1 libnss3 libasound2t64 dunst
       - run: npm ci
       - run: node node_modules/electron/install.js
       - name: Test-host directory locks retain shared and exclusive semantics
@@ -319,7 +332,7 @@ jobs:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
       - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev pipewire wireplumber xvfb openbox x11-utils dbus-x11 libgbm1 libnss3 libasound2t64 gnome-keyring libfuse2t64
+        run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev pipewire wireplumber libgtk-3-dev pkg-config xvfb openbox x11-utils dbus-x11 libgbm1 libnss3 libasound2t64 gnome-keyring libfuse2t64
       - run: npm ci
       - run: node node_modules/electron/install.js
       - name: Test-host directory locks retain shared and exclusive semantics
@@ -355,6 +368,13 @@ jobs:
       - name: Collect installed account upgrade proof
         id: installed-account
         run: node packages/desktop/scripts/installed-account-proof.mjs e2e/desktop-client-results ${{ matrix.platform }}-${{ matrix.arch }} packages/desktop/test-report
+      - name: Initial installed account sandbox prerequisite proof
+        if: runner.os == 'Linux' && steps.installed-account.outputs.present == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: desktop-initial-sandbox-account-linux-x64
+          path: ${{ runner.temp }}/dilla-installed-sandbox-initial.json
+          if-no-files-found: error
       - name: Installed account upgrade proof
         if: steps.installed-account.outputs.present == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7

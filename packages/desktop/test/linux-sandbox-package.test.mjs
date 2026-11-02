@@ -29,13 +29,14 @@ test('refuses missing or malformed public configuration and substituted helper',
 
  test('launcher overlay freezes capsule identity and dedicated public keys', () => {
   const result = buildCapsule(config, maintainer, helper);
-  const source = renderLauncher(config, result);
+  const source = renderLauncher(config, result, '1.2.3-beta.4');
   assert.match(source, /func compiledCapsule\(\) \(frontend.EmbeddedCapsule, error\)/);
   assert.ok(source.includes(result.constants.capsuleSha512));
   assert.ok(source.includes(result.constants.manifestSha512));
   assert.ok(source.includes(result.constants.maintainerSha512));
   assert.ok(source.includes(key));
-  assert.match(source, /frontend.DispatchLaunch/);
+  assert.match(source, /frontend.DispatchLaunchVersion\(os.Args\[1:\], capsule, "1\.2\.3-beta\.4"\)/);
+  for (const invalid of ['', '1.2.3/evil', '1.2.3\n']) assert.throws(() => renderLauncher(config, result, invalid));
 });
 
 test('public maintainer configuration excludes maintainer hash and app identity', async () => {
@@ -78,7 +79,7 @@ test('maintainer output is independent of inherited Go build settings', {skip: p
     const helperFile = join(root, 'node_modules/electron/dist/chrome-sandbox');
     const args = [join(root, 'packages/desktop/scripts/linux-sandbox-package.mjs'), join(root, 'packages/desktop/linux-sandbox-component.json'), helperFile];
     for (const [name, overrides] of [['v1', {GOAMD64:'v1', GOENV:'off', GOWORK:'off'}], ['v3', {GOAMD64:'v3', GOENV:goenv, GOFLAGS:'-tags=tainted', GOWORK:join(dir,'missing.work')} ]]) {
-      execFileSync(process.execPath, [...args, join(dir, name)], { cwd: root, env: {...process.env, ...overrides}, stdio: 'pipe' });
+      execFileSync(process.execPath, [...args, join(dir, name), '1.0.0'], { cwd: root, env: {...process.env, ...overrides}, stdio: 'pipe' });
     }
     for (const file of ['sandbox-maintainer', 'component.sandbox', 'component.sandbox.json']) assert.deepEqual(await readFile(join(dir, 'v1', file)), await readFile(join(dir, 'v3', file)));
   } finally { await rm(dir, {recursive:true, force:true}); }

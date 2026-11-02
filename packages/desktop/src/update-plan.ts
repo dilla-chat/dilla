@@ -13,12 +13,14 @@ import { verifyWindowsInstallationSnapshot, verifyWindowsProgram, readWindowsSlo
 import { sameWindowsSlot } from './windows-slots.ts';
 import { verifyWindowsProgramManifest } from './windows-manifest.ts';
 import type { UninstallSnapshot } from './update-registry.ts';
+import sandboxConfiguration from '../linux-sandbox-component.json' with { type: 'json' };
+import { copySandboxSidecars, readSandboxSidecars, type SandboxSidecarTrust } from './linux-sandbox-cache.ts';
 
 export interface UpdateTrust {
  publicKeys: readonly string[]; platform: 'linux' | 'win32'; arch: string; version: string; channel: 'stable' | 'beta'; now?: number;
 }
 export interface PrepareUpdate {
- userData: string; installed: string; downloaded: string; metadata: Uint8Array; signature: string; parentPid: number; uninstall?: UninstallSnapshot; windows?: WindowsInstallation; programManifest?: Uint8Array;
+ userData: string; installed: string; downloaded: string; metadata: Uint8Array; signature: string; parentPid: number; uninstall?: UninstallSnapshot; windows?: WindowsInstallation; programManifest?: Uint8Array; sandboxDirectory?: string;
 }
 export interface InstalledUpdatePlan {
  format: 1; platform: 'linux' | 'win32'; arch: string; userData: string; installed: string; parentPid: number; oldVersion: string; activationSecret: string; verifiedAt: number;
@@ -74,6 +76,11 @@ async function copyProgram(source: string, destination: string): Promise<void> {
 function target(release: Release, trust: UpdateTrust): Artifact {
  return release.artifacts.find(artifact => artifact.platform === trust.platform && artifact.arch === trust.arch)!;
 }
+function sandboxTrust(release: Release, trust: UpdateTrust): SandboxSidecarTrust {
+ const artifact = target(release, trust);
+ if (!artifact.linuxSandbox || !release.assets) throw new Error('Missing signed Linux sandbox metadata');
+ return { version: release.version, descriptor: artifact.linuxSandbox, assets: release.assets, keys: sandboxConfiguration.publicKeys, now: trust.now ?? Date.now() };
+}
 function authenticate(metadata: Uint8Array, signature: string, trust: UpdateTrust): Release {
  return verifyRelease(metadata, signature, { publicKeys: trust.publicKeys, channel: trust.channel, platform: trust.platform, arch: trust.arch, currentVersion: trust.version, now: trust.now ?? Date.now() });
 }
@@ -96,6 +103,10 @@ export async function prepareInstalledUpdate(options: PrepareUpdate, trust: Upda
  const health = await createStartupHealth(userData, release.version);
  try {
   const artifactFile = join(health.directory, trust.platform === 'linux' ? 'update.AppImage' : 'update.exe');
+  if (trust.platform === 'linux') {
+   if (!options.sandboxDirectory) throw new Error('Missing authenticated sandbox cache');
+   await copySandboxSidecars(options.sandboxDirectory, join(health.directory, 'sandbox'), sandboxTrust(release, trust));
+  }
   await updateFS.promises.copyFile(options.downloaded, artifactFile, constants.COPYFILE_EXCL); await verifyArtifactFile(artifactFile, artifact); await syncUpdateFile(artifactFile);
   const backup = join(health.directory, trust.platform === 'linux' ? 'previous.AppImage' : 'previous-app');
   let watchdog: string;
@@ -165,6 +176,7 @@ async function readPlan(userData: string, nonce: string, trust: UpdateTrust & { 
  // prevent rollback months later; initial installation always checks now.
  const releaseTrust=recovery?{...trust,now:plan.verifiedAt}:trust;
  const release = plan.windows ? verifyWindowsRelease(Buffer.from(plan.metadata,'base64'),plan.signature,{publicKeys:trust.publicKeys,channel:trust.channel,platform:trust.platform,arch:trust.arch,currentVersion:trust.version,now:releaseTrust.now??Date.now()}) : authenticate(Buffer.from(plan.metadata, 'base64'), plan.signature, releaseTrust);
+ if (trust.platform === 'linux') await readSandboxSidecars(join(directory, 'sandbox'), sandboxTrust(release, releaseTrust));
  if(plan.windows){
   if(trust.platform!=='win32')throw new Error('Invalid Windows plan platform');
   await verifyWindowsInstallationSnapshot(plan.windows,userData,plan.installed,trust);

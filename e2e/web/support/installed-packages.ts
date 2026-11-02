@@ -7,7 +7,11 @@ import { cp, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, writeFile, c
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { installedEntrypointBanner } from './installed-launch-diagnostics.ts';
-import type { Artifact, Release } from '../../../packages/desktop/src/update.ts';
+import { verifyRelease, type Artifact, type Release } from '../../../packages/desktop/src/update.ts';
+// @ts-expect-error fixture helper is JavaScript
+import { fixtureSandboxFeed } from '../../../packages/desktop/test/support/linux-sandbox-fixture-feed.mjs';
+// @ts-expect-error fixture helper is JavaScript
+import { provisionInstalledSandbox } from '../../../packages/desktop/test/support/linux-installed-sandbox-bootstrap.mjs';
 
 const repository = resolve(import.meta.dirname, '../../..');
 const desktop = join(repository, 'packages/desktop');
@@ -121,8 +125,12 @@ export async function createInstalledPackages(instance: string): Promise<Install
   const appId = process.platform === 'darwin' ? 'dev.dilla.desktop.update-acceptance' : 'dev.dilla.desktop.account-acceptance.' + id;
   const profile = process.platform === 'win32' ? join(process.env.APPDATA!, product) : join(root, 'profile'), reports = join(root, 'reports'), scheme = 'dilla-account-' + id;
   const keys = generateKeyPairSync('ed25519'), publicKey = keys.publicKey.export({ type: 'spki', format: 'pem' }).toString(), sparkleKeys = generateKeyPairSync('ed25519');
+  const sandboxKeys = generateKeyPairSync('ed25519'), sandboxConfig = JSON.parse(await readFile(join(desktop,'linux-sandbox-component.json'),'utf8'));
+  sandboxConfig.publicKeys = [sandboxKeys.publicKey.export({type:'spki',format:'der'}).subarray(-32).toString('base64')];
+  const sandboxConfigPath = join(root,'fixture-sandbox-config.json'); await writeFile(sandboxConfigPath,JSON.stringify(sandboxConfig));
   const sparklePublicKey = sparkleKeys.publicKey.export({ type: 'spki', format: 'der' }).subarray(-32).toString('base64');
   let server: Server | undefined, metadata: Buffer, signature = '', current: Package | undefined, archive: Buffer | undefined, feed = '';
+  let fixtureSidecars = new Map<string,Buffer>();
   const log = await open(join(root, 'package.log'), 'a');
   try {
     await mkdir(profile, { recursive: true }); await mkdir(reports);
@@ -130,6 +138,7 @@ export async function createInstalledPackages(instance: string): Promise<Install
     server = createServer((request, response) => {
       if (request.url === '/release.json') response.end(metadata);
       else if (request.url === '/release.json.sig') response.end(signature);
+      else if (request.url?.startsWith('/sandbox-fixture/')) { const data=fixtureSidecars.get(request.url.slice('/sandbox-fixture/'.length)); if (!data) {response.writeHead(404);response.end();} else {response.setHeader('content-length',data.length);response.end(data);} }
       else if (request.url === '/artifact' || request.url === '/DillaUpdateAcceptance.zip') response.end(archive);
       else if (request.url === '/appcast.xml') { response.setHeader('content-type', 'application/xml'); response.end(feed); }
       else if (request.url === '/manifest' && current?.manifest) void readFile(current.manifest).then(bytes => response.end(bytes), () => { response.writeHead(500); response.end(); });
@@ -147,6 +156,8 @@ export async function createInstalledPackages(instance: string): Promise<Install
       await build({ entryPoints: [join(desktop, 'src/preload.ts')], outfile: join(dist, 'preload.cjs'), bundle: true, platform: 'node', target: 'es2022', format: 'cjs', external: ['electron'] });
       await build({ entryPoints: [join(desktop, 'src/main.ts')], outfile: join(dist, process.platform === 'linux' ? 'main-app.cjs' : 'main.cjs'), define: process.platform === 'linux' ? { __DILLA_LINUX_INSTALL_KIND__: JSON.stringify('appimage') } : {}, bundle: true, platform: 'node', target: 'node24', format: 'cjs', external: ['electron'], banner: { js: installedEntrypointBanner(reports, version) }, plugins: [{ name: 'compiled-account-acceptance', setup(plugin) {
         plugin.onLoad({ filter: /[\\/]src[\\/]update-keys\.ts$/ }, () => ({ contents: `export const RELEASE_PUBLIC_KEYS=${JSON.stringify([publicKey])};`, loader: 'ts' }));
+        plugin.onLoad({filter:/[\\/]linux-sandbox-component\.json$/},()=>({contents:JSON.stringify(sandboxConfig),loader:'json'}));
+        plugin.onLoad({filter:/[\\/]src[\\/]linux-sandbox-cache\.ts$/},async args=>{const source=await readFile(args.path,'utf8'); return {contents:replaceBoundary(source,'fetch(current, {',`fetch(new URL(${JSON.stringify(origin + '/sandbox-fixture/')} + current.pathname.split('/').at(-1)), {`),loader:'ts',resolveDir:join(desktop,'src')};});
         plugin.onLoad({ filter: /[\\/]src[\\/]main\.ts$/ }, () => ({ contents: fixtureMainSource(sourceMain, { product, profile, reports, scheme, version }), loader: 'ts', resolveDir: join(desktop, 'src') }));
         plugin.onLoad({ filter: /[\\/]src[\\/]updater\.ts$/ }, () => {
           const feeds = sourceUpdater.match(/const feed = `[^`]+`;/g);
@@ -166,7 +177,7 @@ export async function createInstalledPackages(instance: string): Promise<Install
       if (process.platform === 'darwin') Object.assign(base, { extraResources: [{ from: join(desktop, 'acceptance-bin/dilla-sparkle.node'), to: 'native/dilla-sparkle.node' }], mac: { target: 'dir', identity: '-', notarize: false,
         extraFiles: [{ from: join(desktop, 'native-bin/Sparkle.framework'), to: 'Frameworks/Sparkle.framework' }], extendInfo: { CFBundleVersion: version, SUFeedURL: origin + '/appcast.xml', SUPublicEDKey: sparklePublicKey, SURequireSignedFeed: true, SUVerifyUpdateBeforeExtraction: true, SUEnableAutomaticChecks: false, SUAutomaticallyUpdate: false, SUEnableInstallerLauncherService: true, SUEnableDownloaderService: false, NSAppTransportSecurity: { NSAllowsLocalNetworking: true } } } });
       const config = join(project, 'builder.cjs');
-      await writeFile(config, `const hooks=require(${JSON.stringify(join(desktop, 'scripts/windows-builder-hooks.cjs'))}).createWindowsBuilderHooks({metadataPublicKeys:${JSON.stringify([publicKey])}});const linux=require(${JSON.stringify(join(desktop, 'scripts/linux-appimage-artifact.cjs'))});module.exports={...${JSON.stringify(base)},afterSign:hooks.afterSign,artifactBuildStarted:async event=>{await linux(event);await hooks.artifactBuildStarted(event);}};`);
+      await writeFile(config, `const hooks=require(${JSON.stringify(join(desktop, 'scripts/windows-builder-hooks.cjs'))}).createWindowsBuilderHooks({metadataPublicKeys:${JSON.stringify([publicKey])}});const linux=require(${JSON.stringify(join(desktop, 'scripts/linux-appimage-launcher.cjs'))}).createLinuxAppImageHooks({configuration:${JSON.stringify(sandboxConfigPath)}});module.exports={...${JSON.stringify(base)},afterPack:linux.afterPack,afterSign:hooks.afterSign,artifactBuildStarted:async event=>{await linux.artifactBuildStarted(event);await hooks.artifactBuildStarted(event);}};`);
       execFileSync(process.execPath, [join(repository, 'node_modules/electron-builder/cli.js'), '--projectDir', project, '--config', config, process.platform === 'linux' ? '--linux' : process.platform === 'win32' ? '--win' : '--mac', '--' + process.arch, ...(process.platform === 'darwin' ? ['--dir'] : []), '--publish', 'never'], { cwd: repository, stdio: ['ignore', log.fd, log.fd], env: { ...process.env, CSC_FOR_PULL_REQUEST: 'true' } });
       if (process.platform === 'linux') { const executable = join(out, 'linux-unpacked/dilla-desktop'); await assertInstalledFuses(executable); return { artifact: join(out, `account-${version}.AppImage`), executable }; }
       if (process.platform === 'win32') { const versions = join(out, 'win-unpacked/versions'), directories = await readdir(versions); if (directories.length !== 1) throw new Error('Expected one finalized Windows program'); const executable = join(versions, directories[0], 'dilla-desktop.exe'); await assertInstalledFuses(executable); return { artifact: join(out, `account-${version}.exe`), executable, manifest: join(out, `dilla-${version}-win-x64.manifest.json`) }; }
@@ -175,12 +186,17 @@ export async function createInstalledPackages(instance: string): Promise<Install
       const artifact = join(out, 'DillaUpdateAcceptance.zip'); execFileSync('ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', app, artifact]); return { artifact, executable, app, sparkleSignature: sign(null, await readFile(artifact), sparkleKeys.privateKey).toString('base64') };
     };
     const old = await pack('1.0.0'), next = await pack('1.0.1');
+    // Hosted disposable setup uses the same capsule and public trust as both real apps.
+    if (process.platform === 'linux' && process.env.GITHUB_ACTIONS === 'true') await provisionInstalledSandbox({ image: old.artifact, configurationFile: sandboxConfigPath });
     const setRelease = async (value: Package, version: string) => {
       current = value; archive = await readFile(value.artifact); const now = Date.now(), extension = process.platform === 'linux' ? 'AppImage' : process.platform === 'win32' ? 'exe' : 'zip';
-      const artifact: Artifact = { platform: process.platform, arch: process.arch, url: `https://github.com/jonasthim/dilla/releases/download/desktop-v${version}/account-${version}.${extension}`, size: archive.length, sha512: hash(archive), ...(value.sparkleSignature ? { sparkleSignature: value.sparkleSignature } : {}) };
+      const sandbox = process.platform === 'linux' ? await fixtureSandboxFeed(value.artifact,version,sandboxKeys,sandboxConfig,now) : null;
+      if (sandbox) {const stem=value.artifact.slice(0,-'.AppImage'.length),base=`dilla-${version}-linux-x64.sandbox`; fixtureSidecars=new Map([[base,await readFile(stem+'.sandbox')],[base+'.json',await readFile(stem+'.sandbox.json')],[base+'.sig',sandbox.signature]]);}
+      const artifact: Artifact = { platform: process.platform, arch: process.arch, url: `https://github.com/jonasthim/dilla/releases/download/desktop-v${version}/${process.platform === 'linux' ? `dilla-${version}-linux-x64` : `account-${version}`}.${extension}`, ...(sandbox ? {linuxSandbox:sandbox.linuxSandbox} : {}), size: archive.length, sha512: hash(archive), ...(value.sparkleSignature ? { sparkleSignature: value.sparkleSignature } : {}) };
       if (value.manifest) { const bytes = await readFile(value.manifest); artifact.programManifest = { url: `https://github.com/jonasthim/dilla/releases/download/desktop-v${version}/dilla-${version}-win-x64.manifest.json`, size: bytes.length, sha512: hash(bytes) }; }
-      const release: Release = { format: 1, version, channel: 'stable', publishedAt: new Date(now - 1000).toISOString(), expiresAt: new Date(now + 3600000).toISOString(), artifacts: [artifact] };
+      const release: Release = { format: 1, ...(sandbox ? {assets:sandbox.assets} : {}), version, channel: 'stable', publishedAt: new Date(now - 1000).toISOString(), expiresAt: new Date(now + 3600000).toISOString(), artifacts: [artifact] };
       metadata = Buffer.from(JSON.stringify(release)); signature = sign(null, metadata, keys.privateKey).toString('base64');
+      verifyRelease(metadata,signature,{publicKeys:[publicKey],channel:'stable',platform:process.platform,arch:process.arch,currentVersion:'0.0.0',now});
       if (process.platform === 'darwin') { const { appcast, signedAppcast } = require(join(desktop, 'scripts/feed-format.mjs')); feed = signedAppcast(appcast(release, { ...artifact, url: origin + '/DillaUpdateAcceptance.zip' }, value.sparkleSignature!), sparkleKeys.privateKey); }
     };
     await setRelease(old, '1.0.0');

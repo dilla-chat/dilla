@@ -339,17 +339,12 @@ async function setAutostart(enabled: boolean): Promise<void> {
   refreshMenu();
 }
 
-async function requestQuit(restart = false): Promise<void> {
-  if (!startupActivated) { quitting = true; app.exit(1); return; }
-  if (askingQuit || quitting) return;
-  askingQuit = true;
-  for (const selection of audioSelections.values()) selection.abort();
-  try {
+async function collectQuitGuards(): Promise<boolean> {
     // Ask every live renderer for a fresh snapshot. A hung, crashed or uninitialised client blocks installation.
     await new Promise<void>(done => {
       const id = randomUUID();
       const waiting = new Set(windows.keys());
-      const timer = setTimeout(() => { quitProbe = null; done(); }, 3000);
+      const timer = setTimeout(() => { for (const instance of waiting) updater.expectGuard(instance); quitProbe = null; done(); }, 3000);
       quitProbe = { id, waiting, done: () => { clearTimeout(timer); quitProbe = null; done(); } };
       for (const [instance, win] of windows) {
         updater.expectGuard(instance);
@@ -359,10 +354,27 @@ async function requestQuit(restart = false): Promise<void> {
     });
     if (updater.protected()) {
       await dialog.showMessageBox({ type: 'info', title: 'Dilla is still in use', message: 'Finish your call and save your drafts before quitting or updating.', detail: 'You can close the window to keep Dilla running in the tray.', buttons: ['Keep Dilla open'] });
-      return;
+      return false;
     }
+    return true;
+}
+
+async function requestQuit(restart = false): Promise<void> {
+  if (!startupActivated) { quitting = true; app.exit(1); return; }
+  if (askingQuit || quitting) return;
+  askingQuit = true;
+  for (const selection of audioSelections.values()) selection.abort();
+  try {
+    if (!await collectQuitGuards()) return;
     if (restart && updater.state.phase !== 'ready') return;
     const ready = updater.state.phase === 'ready';
+    if (ready) {
+      if (!await updater.preparePrerequisites()) {
+        dialog.showErrorBox('Dilla update failed', updater.state.message ?? 'The working version is still available. Check for updates to retry.');
+        return;
+      }
+      if (!await collectQuitGuards()) return;
+    }
     for (const win of windows.values()) win.setEnabled(false);
     const prepared = await updater.quit(true);
     if (ready && !prepared) {

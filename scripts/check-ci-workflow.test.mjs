@@ -194,6 +194,25 @@ test('desktop acceptance requires every native target, Electron tests, packaging
   }
 });
 
+test('installed Linux sandbox preparation cannot lose build prerequisites, controls or exact proof', () => {
+ for(const [before,after] of [
+  ['libgtk-3-dev pkg-config','libgtk-3-0'],
+  ['node packages/desktop/scripts/test-linux-sandbox-package.mjs packages/desktop/out','true'],
+  ["name: Linux AppImage final package inspection mutations\n        if: runner.os == 'Linux'","name: Linux AppImage final package inspection mutations\n        if: false"],
+  ['packages/desktop/out/*.sandbox.json','packages/desktop/out/*.other'],
+  ["if: runner.os == 'Windows' || runner.os == 'Linux'","if: runner.os == 'Windows'"],
+  ['CGO_ENABLED=0 go test ./packages/desktop/test/fixtures/linux-installed-sandbox-bootstrap','true'],
+  ['node --test packages/desktop/test/linux-installed-sandbox-bootstrap.test.mjs','node --test --test-name-pattern=none packages/desktop/test/linux-installed-sandbox-bootstrap.test.mjs'],
+  ["name: Linux installed sandbox prerequisite controls\n        if: runner.os == 'Linux'","name: Linux installed sandbox prerequisite controls\n        if: false"],
+  ['path: ${{ runner.temp }}/dilla-installed-sandbox-initial.json','path: unknown.json'],
+  ["name: Initial installed sandbox prerequisite proof\n        if: runner.os == 'Linux'","name: Initial installed sandbox prerequisite proof\n        if: always()"],
+ ]){
+  const root=fixture(GOOD),changed=REAL_DESKTOP.replaceAll(before,after);assert.notEqual(changed,REAL_DESKTOP,before);
+  writeFileSync(join(root,'.github/workflows/desktop.yml'),changed);
+  assert.ok(checkDesktopWorkflow(root).some(p=>p.includes('installed sandbox')),before);
+ }
+});
+
 test('desktop workflow rejects duplicate Windows maintenance and kernel acceptance', () => {
   for (const [command, message] of [
     ['node --test packages/desktop/test/native/windows-installer-maintenance.test.mjs', 'duplicate Windows maintenance'],
@@ -263,8 +282,8 @@ test('desktop voice cannot shard its frozen-clock suite', () => {
 test('installed upgrade acceptance cannot omit either NSIS or normal FUSE launch', () => {
   for (const [before, after] of [
     ["if: runner.os == 'Windows'\n        run: node --test packages/desktop/test/native/installed-upgrade.test.mjs", "if: runner.os == 'macOS'\n        run: node --test packages/desktop/test/native/installed-upgrade.test.mjs"],
-    ["if: runner.os == 'Linux'\n        env:\n          # FUSE", "if: runner.os == 'macOS'\n        env:\n          # FUSE"],
-    ['CHROME_DEVEL_SANDBOX:', 'APPIMAGE_EXTRACT_AND_RUN:'],
+    ["if: runner.os == 'Linux'\n        run: xvfb-run -a dbus-run-session -- bash packages/desktop/scripts/with-window-manager.sh node --test packages/desktop/test/native/installed-upgrade.test.mjs", "if: runner.os == 'macOS'\n        run: xvfb-run -a dbus-run-session -- bash packages/desktop/scripts/with-window-manager.sh node --test packages/desktop/test/native/installed-upgrade.test.mjs"],
+    ["name: Installed upgrade acceptance\n        if: runner.os == 'Linux'", "name: Installed upgrade acceptance\n        if: runner.os == 'Linux'\n        env:\n          APPIMAGE_EXTRACT_AND_RUN: 1"],
   ]) {
     const root = mkdtempSync(join(tmpdir(), 'dilla-installed-ci-'));
     mkdirSync(join(root, '.github/workflows'), { recursive: true });

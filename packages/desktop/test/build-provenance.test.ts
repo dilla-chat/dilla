@@ -35,7 +35,7 @@ test('the actual AppImage desktop entry preserves Chromium sandboxing', async ()
 });
 test('every target binds exactly its native installable bytes, including the Windows manifest', () => {
  assert.deepEqual(targets.map(value => buildArtifactNames(value, '1.2.3-beta.4')), [
-  ['dilla-1.2.3-beta.4-linux-x64.AppImage'], ['dilla-1.2.3-beta.4-win-x64.exe', 'dilla-1.2.3-beta.4-win-x64.manifest.json'],
+  ['dilla-1.2.3-beta.4-linux-x64.AppImage', 'dilla-1.2.3-beta.4-linux-x64.sandbox', 'dilla-1.2.3-beta.4-linux-x64.sandbox.json'], ['dilla-1.2.3-beta.4-win-x64.exe', 'dilla-1.2.3-beta.4-win-x64.manifest.json'],
   ['dilla-1.2.3-beta.4-mac-x64.dmg', 'dilla-1.2.3-beta.4-mac-x64.zip'], ['dilla-1.2.3-beta.4-mac-arm64.dmg', 'dilla-1.2.3-beta.4-mac-arm64.zip'],
  ]);
  for (const value of ['../outside', 'linux-arm64', 'win32-x64']) assert.throws(() => buildArtifactNames(value, '1.2.3'));
@@ -56,6 +56,7 @@ test('the CI emitter reads real clean Git HEAD/tree and GITHUB_SHA, never caller
   const artifacts: Array<{ name: string; size: number; sha512: string }> = [];
   for (const name of buildArtifactNames(target, '1.2.3')) { const bytes = Buffer.from('actual native artifact ' + name); await writeFile(join(out, name), bytes); artifacts.push({ name, size: bytes.length, sha512: sha(bytes) }); }
   const environment = { GITHUB_ACTIONS: 'true', GITHUB_REPOSITORY: 'jonasthim/dilla', GITHUB_RUN_ID: '42', GITHUB_SHA: commit };
+  if (target === 'linux-x64') { await assert.rejects(emitBuildProvenance(out, target, { repositoryRoot: root, environment }), /AppImage|EACCES|ENOENT|extract/i); return; }
   const result = await emitBuildProvenance(out, target, { repositoryRoot: root, environment });
   const report = JSON.parse(await readFile(result.file, 'utf8'));
   verifyBuildProvenance(report, target, { commit, tree, ciRun: 42, version: '1.2.3' }, artifacts);
@@ -85,4 +86,34 @@ test('a signing candidate cannot replace CI-downloaded build provenance with a f
   assert.deepEqual(await readFile(downloaded), trusted, 'publisher must leave the trusted downloaded record untouched');
   await rm(downloaded); await assert.rejects(verifyCandidateBuildRecord(candidate, downloaded), /ENOENT|CI.*build provenance/i);
  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('Linux provenance requires extracted sandbox proof and binds external and embedded hashes', () => {
+ const version='1.2.3', target='linux-x64', names=buildArtifactNames(target,version);
+ const artifacts=names.map((name:string)=>({name,size:1,sha512:sha(Buffer.from(name))}));
+ const record={format:1,kind:'dilla-desktop-build',repository:'jonasthim/dilla',target,version,sourceCommit:'1'.repeat(40),sourceTree:'2'.repeat(40),ciRun:1,sourceClean:true,artifacts};
+ const expected={version,commit:record.sourceCommit,tree:record.sourceTree,ciRun:1};
+ assert.throws(()=>verifyBuildProvenance(record,target,expected,artifacts),/sandbox|provenance/i);
+ const proof={capsuleSha512:artifacts[1].sha512,manifestSha512:artifacts[2].sha512,embeddedCapsuleSha512:artifacts[1].sha512,embeddedManifestSha512:artifacts[2].sha512,electronSha512:sha(Buffer.from('fixture-elf')),asarSha512:sha(Buffer.from('fixture-asar'))};
+ verifyBuildProvenance({...record,linuxSandbox:proof},target,expected,artifacts);
+ for (const bad of [{...proof,embeddedCapsuleSha512:proof.manifestSha512},{...proof,capsuleSha512:proof.manifestSha512},{...proof,asarSha512:'bad'}, {...proof,embeddedManifestSha512:undefined}]) assert.throws(()=>verifyBuildProvenance({...record,linuxSandbox:bad},target,expected,artifacts),/provenance/i);
+});
+
+
+test('Linux emitter derives provenance from actual final image and exact sidecars', { skip: process.platform !== 'linux' || !process.env.DILLA_INSPECT_FIXTURE_IMAGE }, async () => {
+ const root=await realpath(await mkdtemp(join(tmpdir(),'dilla-real-image-provenance-')));
+ try {
+  const out=join(root,'out');await mkdir(join(root,'packages/desktop'),{recursive:true});await mkdir(out);
+  const version='0.1.0-beta.1', names=buildArtifactNames('linux-x64',version);
+  await writeFile(join(root,'packages/desktop/package.json'),JSON.stringify({version}));await writeFile(join(root,'.gitignore'),'out/\n');
+  const git=(args:string[])=>execFileSync('git',args,{cwd:root,encoding:'utf8'}).trim();
+  git(['init','-q']);git(['config','core.hooksPath',join(root,'no-hooks')]);git(['add','.']);git(['-c','user.name=Build fixture','-c','user.email=build@invalid.example','-c','commit.gpgsign=false','commit','-q','-m','fixture']);
+  const files=[process.env.DILLA_INSPECT_FIXTURE_IMAGE!,process.env.DILLA_INSPECT_FIXTURE_CAPSULE!,process.env.DILLA_INSPECT_FIXTURE_MANIFEST!];
+  for (let i=0;i<names.length;i++) await copyFile(files[i],join(out,names[i]));
+  const commit=git(['rev-parse','HEAD']), tree=git(['rev-parse','HEAD^{tree}']);
+  const {record}=await emitBuildProvenance(out,'linux-x64',{repositoryRoot:root,environment:{GITHUB_ACTIONS:'true',GITHUB_REPOSITORY:'jonasthim/dilla',GITHUB_RUN_ID:'42',GITHUB_SHA:commit}});
+  verifyBuildProvenance(record,'linux-x64',{version,commit,tree,ciRun:42},record.artifacts);
+  assert.equal(record.linuxSandbox.capsuleSha512,record.artifacts[1].sha512);
+  assert.equal(record.linuxSandbox.manifestSha512,record.artifacts[2].sha512);
+ } finally {await rm(root,{recursive:true,force:true});}
 });

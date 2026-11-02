@@ -1,3 +1,4 @@
+import { fixtureComponent, fixtureSandbox } from './support/fixture-update-runtime.ts';
 import { assertPortableEsbuildFilter } from './support/portable-esbuild-filter.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -7,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import { EventEmitter } from 'node:events';
+import { createServer } from 'node:http';
 import vm from 'node:vm';
 import ts from 'typescript';
 import { build, transform, type BuildOptions } from 'esbuild';
@@ -18,7 +20,7 @@ const bundleFilter = /[\\/]bundle\.ts$/;
 const windowsFilter = /[\\/]windows-installation\.ts$/;
 const runtimeFilter = /[\\/]update-runtime\.ts$/;
 const desktop = resolve(import.meta.dirname, '..');
-async function actualAccountBuildOptions(platform: string, publicKey: string, root = '/owned-fixture'): Promise<BuildOptions> {
+async function actualAccountBuildOptions(platform: string, publicKey: string, root = '/owned-fixture', origin = 'http://127.0.0.1:12345'): Promise<BuildOptions> {
  const source = await readFile(resolve(desktop, '../../e2e/web/support/installed-packages.ts'), 'utf8');
  const parsed = ts.createSourceFile('installed-packages.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
  const options: string[] = [];
@@ -33,34 +35,37 @@ async function actualAccountBuildOptions(platform: string, publicKey: string, ro
  assert.ok(boundary);
  // Evaluate the actual compiler options and fixture transport plugin closures,
  // without invoking electron-builder, a package install, server or profile boot.
- const names = ['process', 'join', 'desktop', 'dist', 'publicKey', 'installedEntrypointBanner', 'reports', 'version', 'origin', 'sourceUpdater', 'fixtureWindowsInstallationSource', 'readFile', 'appId', 'fixtureMainSource', 'sourceMain', 'product', 'profile', 'scheme'];
+ const names = ['process', 'join', 'desktop', 'dist', 'publicKey', 'installedEntrypointBanner', 'reports', 'version', 'origin', 'sourceUpdater', 'fixtureWindowsInstallationSource', 'readFile', 'appId', 'fixtureMainSource', 'sourceMain', 'product', 'profile', 'scheme', 'sandboxConfig'];
  const code = await transform('(function(scope) { const {' + names.join(',') + '} = scope; ' + boundary + '\nreturn (' + options[0] + '); })', { loader: 'ts' });
  return vm.runInThisContext(code.code)({
   process: { platform }, join, desktop, dist: join(root, 'dist'), publicKey,
   installedEntrypointBanner: () => '', reports: join(root, 'reports'), version: '1.0.0',
-  origin: 'http://127.0.0.1:12345', fixtureMainSource, sourceMain: await readFile(join(desktop, 'src/main.ts'), 'utf8'), product: 'DillaAccountFixture', profile: join(root, 'profile'), scheme: 'dilla-account-fixture', fixtureWindowsInstallationSource, readFile, appId: 'dev.dilla.desktop.account-acceptance.fixture', sourceUpdater: await readFile(join(desktop, 'src/updater.ts'), 'utf8'),
+  origin, fixtureMainSource, sourceMain: await readFile(join(desktop, 'src/main.ts'), 'utf8'), product: 'DillaAccountFixture', profile: join(root, 'profile'), scheme: 'dilla-account-fixture', fixtureWindowsInstallationSource, readFile, appId: 'dev.dilla.desktop.account-acceptance.fixture', sourceUpdater: await readFile(join(desktop, 'src/updater.ts'), 'utf8'), sandboxConfig: fixtureComponent.config,
  });
 }
 test('actual installed account Linux build retains AppImage authority through authenticated download to ready', async t => {
  const root = await mkdtemp(join(tmpdir(), 'dilla-account-kind-'));
  t.after(() => rm(root, { recursive: true, force: true }));
  const pair = generateKeyPairSync('ed25519'), publicKey = pair.publicKey.export({ type: 'spki', format: 'pem' }).toString();
- const options = await actualAccountBuildOptions('linux', publicKey);
+ const sandbox=fixtureSandbox('1.0.1'), requested:string[]=[]; let release=Buffer.alloc(0), signature='';
+ const server=createServer((req,res)=>{const path=req.url ?? ''; requested.push(path); const file=path.split('/').at(-1); const bytes=path==='/release.json.sig' ? Buffer.from(signature) : path==='/release.json' ? release : path.startsWith('/sandbox-fixture/') && file?.endsWith('.sandbox.json') ? sandbox.manifest : path.startsWith('/sandbox-fixture/') && file?.endsWith('.sandbox.sig') ? sandbox.signature : path.startsWith('/sandbox-fixture/') && file?.endsWith('.sandbox') ? sandbox.capsule : undefined; if(!bytes){res.writeHead(404);res.end();return;} res.writeHead(200,{'content-length':bytes.length});res.end(bytes); });
+ await new Promise<void>((done,fail)=>{server.once('error',fail);server.listen(0,'127.0.0.1',done);}); t.after(()=>new Promise<void>(done=>server.close(()=>done())));
+ const origin=`http://127.0.0.1:${(server.address() as {port:number}).port}`; const options = await actualAccountBuildOptions('linux', publicKey, root, origin);
  const artifact = Buffer.from('verified acceptance AppImage bytes'), file = join(root, 'download.AppImage');
  await writeFile(file, artifact);
- const now = Date.now(), release = Buffer.from(JSON.stringify({ format: 1, version: '1.0.1', channel: 'stable', publishedAt: new Date(now - 1000).toISOString(), expiresAt: new Date(now + 3600000).toISOString(), artifacts: [{
-  platform: 'linux', arch: 'x64', url: 'https://github.com/jonasthim/dilla/releases/download/desktop-v1.0.1/account-1.0.1.AppImage', size: artifact.length, sha512: createHash('sha512').update(artifact).digest('base64'),
- }] })), signature = sign(null, release, pair.privateKey).toString('base64');
+ const now = Date.now(); release = Buffer.from(JSON.stringify({ format: 1, assets:sandbox.assets, version: '1.0.1', channel: 'stable', publishedAt: new Date(now - 1000).toISOString(), expiresAt: new Date(now + 3600000).toISOString(), artifacts: [{
+  platform: 'linux', arch: 'x64', url: 'https://github.com/jonasthim/dilla/releases/download/desktop-v1.0.1/dilla-1.0.1-linux-x64.AppImage', size: artifact.length, sha512: createHash('sha512').update(artifact).digest('base64'), linuxSandbox:sandbox.descriptor,
+ }] })); signature = sign(null, release, pair.privateKey).toString('base64');
  const compiled = await build({ ...options, entryPoints: [join(desktop, 'src/updater.ts')], outfile: undefined, write: false,
   external: ['electron', 'electron-updater', 'electron-updater/*'] });
- const effects: string[] = [], phases: string[] = [], fetched: string[] = [];
+ const effects: string[] = [], phases: string[] = [];
  class AppImageUpdater extends EventEmitter {
   constructor() { super(); effects.push('AppImageUpdater'); }
   setFeedURL() {}
   async checkForUpdates() { effects.push('check'); return { isUpdateAvailable: true }; }
   async downloadUpdate() { effects.push('download'); return [file]; }
  }
- const app = Object.assign(new EventEmitter(), { isPackaged: true, getVersion: () => '1.0.0' });
+ const app = Object.assign(new EventEmitter(), { isPackaged: true, getVersion: () => '1.0.0', getPath: () => root });
  const module = { exports: {} as any };
  vm.runInNewContext(compiled.outputFiles![0].text, { module, exports: module.exports,
   require(name: string) {
@@ -69,8 +74,8 @@ test('actual installed account Linux build retains AppImage authority through au
    if (name.includes('/providers/Provider')) return { Provider: class {} };
    return load(name);
   },
-  process: { platform: 'linux', arch: 'x64', versions: {}, env: { APPIMAGE: '/owned-fixture/Dilla.AppImage' }, cwd: () => process.cwd() },
-  fetch: async (url: string) => { fetched.push(url); return new Response(url.endsWith('.sig') ? signature : release); },
+  process: { platform: 'linux', arch: 'x64', versions: {}, env: { APPIMAGE: '/owned-fixture/Dilla.AppImage' }, cwd: () => process.cwd(), getuid: () => process.getuid!() },
+  fetch,
   Buffer, URL, TextDecoder, AbortSignal, Error,
  });
  const updater = module.exports.createUpdater((state: { phase: string }) => phases.push(state.phase), () => assert.fail('no installation attempted'));
@@ -78,7 +83,9 @@ test('actual installed account Linux build retains AppImage authority through au
  assert.equal(updater.state.phase, 'ready', updater.state.message);
  assert.deepEqual(phases, ['checking', 'downloading', 'ready']);
  assert.deepEqual(effects, ['AppImageUpdater', 'check', 'download']);
- assert.deepEqual(fetched, ['http://127.0.0.1:12345/release.json', 'http://127.0.0.1:12345/release.json.sig']);
+ assert.deepEqual(requested, ['/release.json', '/release.json.sig', ...['','.json','.sig'].map(suffix=>`/sandbox-fixture/dilla-1.0.1-linux-x64.sandbox${suffix}`)]);
+ const {readdir,readFile:readCached}=await import('node:fs/promises'), cacheRoot=join(root,'sandbox-sidecars'), dirs=await readdir(cacheRoot); assert.equal(dirs.length,1);
+ for (const [name,expected] of [['capsule',sandbox.capsule],['manifest',sandbox.manifest],['signature',sandbox.signature]] as const) assert.deepEqual(await readCached(join(cacheRoot,dirs[0],name)),expected);
  for (const platform of ['win32', 'darwin']) assert.equal((await actualAccountBuildOptions(platform, publicKey)).define?.__DILLA_LINUX_INSTALL_KIND__, undefined);
 });
 

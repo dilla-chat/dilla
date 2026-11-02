@@ -1,11 +1,12 @@
+import { fixtureRuntime, fixtureSandbox, fixtureSandboxCache } from './support/fixture-update-runtime.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, createHash, sign } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, writeFile, rm, symlink, rename, readdir, lstat, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { prepareInstalledUpdate, readInstalledUpdate } from '../src/update-plan.ts';
-import { updateFS } from '../src/update-fs.ts';
+const {prepareInstalledUpdate,readInstalledUpdate} = fixtureRuntime.plan;
+const {updateFS} = fixtureRuntime.fs;
 
 type Options = Parameters<typeof prepareInstalledUpdate>[0];
 type Trust = Parameters<typeof prepareInstalledUpdate>[1];
@@ -18,15 +19,17 @@ async function fixture(run: (options: Options, trust: Trust, root: string) => Pr
   const installed = join(root, 'applications/dilla' + suffix), downloaded = join(root, 'cache/new' + suffix);
   await mkdir(join(root, 'applications')); await mkdir(join(root, 'cache')); await writeFile(installed, 'working-old-AppImage', { mode: 0o700 }); await writeFile(downloaded, bytes);
   if (platform === 'win32') { await mkdir(join(root, 'applications/resources')); await writeFile(join(root, 'applications/resources/app.asar'), 'working-old-ASAR'); await writeFile(join(root, 'applications/icudtl.dat'), 'working-old-runtime'); await mkdir(join(root, 'applications/resources/app.asar.unpacked')); await writeFile(join(root, 'applications/resources/app.asar.unpacked/native.node'), 'working-old-native'); }
-  const artifact = { platform, arch: 'x64', url: 'https://github.com/jonasthim/dilla/releases/download/desktop-v1.0.1/dilla-1.0.1-' + (platform === 'linux' ? 'linux-x64.AppImage' : 'win-x64.exe'), size: bytes.length, sha512: createHash('sha512').update(bytes).digest('base64') };
-  const now = Date.now(), metadata = Buffer.from(JSON.stringify({ format: 1, version: '1.0.1', channel: 'stable', publishedAt: new Date(now - 1000).toISOString(), expiresAt: new Date(now + 3600000).toISOString(), artifacts: [artifact] }));
+  const sandbox=platform === 'linux' ? fixtureSandbox('1.0.1') : undefined;
+  const artifact = { platform, arch: 'x64', url: 'https://github.com/jonasthim/dilla/releases/download/desktop-v1.0.1/dilla-1.0.1-' + (platform === 'linux' ? 'linux-x64.AppImage' : 'win-x64.exe'), size: bytes.length, sha512: createHash('sha512').update(bytes).digest('base64'), ...(sandbox ? {linuxSandbox:sandbox.descriptor} : {}) };
+  const now = Date.now(), metadata = Buffer.from(JSON.stringify({ format: 1, assets:sandbox?.assets ?? [], version: '1.0.1', channel: 'stable', publishedAt: new Date(now - 1000).toISOString(), expiresAt: new Date(now + 3600000).toISOString(), artifacts: [artifact] }));
   const trust = { publicKeys: [keys.publicKey.export({ type: 'spki', format: 'pem' }).toString()], platform, arch: 'x64', version: '1.0.0', channel: 'stable' as const, now };
-  await run({ userData: join(root, 'profile'), installed, downloaded, metadata, signature: sign(null, metadata, keys.privateKey).toString('base64'), parentPid: process.pid }, trust, root);
+  const userData=join(root,'profile'); await mkdir(userData); const sandboxDirectory=sandbox ? await fixtureSandboxCache(userData) : undefined;
+  await run({ userData, installed, downloaded, metadata, signature: sign(null, metadata, keys.privateKey).toString('base64'), parentPid: process.pid, sandboxDirectory }, trust, root);
  } finally { await rm(root, { recursive: true, force: true }); }
 }
 
 test('preparation stages verified bytes and a working helper without changing the installed app or device data', async () => fixture(async (options, trust) => {
- await mkdir(options.userData); await writeFile(join(options.userData, 'device-sentinel'), 'encrypted-device-data');
+ await mkdir(options.userData, {recursive:true}); await writeFile(join(options.userData, 'device-sentinel'), 'encrypted-device-data');
  const plan = await prepareInstalledUpdate(options, trust);
  assert.equal(await readFile(options.installed, 'utf8'), 'working-old-AppImage');
  assert.equal(await readFile(join(options.userData, 'device-sentinel'), 'utf8'), 'encrypted-device-data');
@@ -183,8 +186,8 @@ for (const existing of [true, false]) {
 }
 
 test('recovery rereads the same authenticated backup after installation changed, while initial-plan replay stays refused', async () => fixture(async (options, trust) => {
- const { readRecoverableInstalledUpdate } = await import('../src/update-plan.ts');
- const { writeUpdateJournal } = await import('../src/update-journal.ts');
+ const { readRecoverableInstalledUpdate } = fixtureRuntime.plan;
+ const { writeUpdateJournal } = fixtureRuntime.journal;
  const plan = await prepareInstalledUpdate(options, trust);
  await writeFile(plan.installed, 'partially-installed-new-version');
  await assert.rejects(readInstalledUpdate(plan.userData, plan.health.nonce, { ...trust, executable: plan.watchdog }), /working installation/);
@@ -197,8 +200,8 @@ test('recovery rereads the same authenticated backup after installation changed,
 }));
 
 test('a restarted new app can authenticate its old watchdog for interrupted recovery without selecting another installation', async () => fixture(async (options, trust, root) => {
- const { readUpdateForRestart } = await import('../src/update-plan.ts');
- const { writeUpdateJournal } = await import('../src/update-journal.ts');
+ const { readUpdateForRestart } = fixtureRuntime.plan;
+ const { writeUpdateJournal } = fixtureRuntime.journal;
  const plan = await prepareInstalledUpdate(options, trust);
  await writeUpdateJournal(plan, { phase: 'launching' }); await writeFile(plan.installed, 'new-app-version');
  const recovery = await readUpdateForRestart(plan.userData, plan.health.nonce, { ...trust, version: '1.0.1', installed: plan.installed });
@@ -225,8 +228,8 @@ test('ENOSPC during staging never changes the working installation or device dat
 }));
 
 test('Windows recovery accepts a consumed rollback tree only after both installed bytes and independent watchdog still verify', async () => fixture(async (options, trust) => {
- const { restoreWindowsProgram, readRecoverableInstalledUpdate } = await import('../src/update-plan.ts');
- const { writeUpdateJournal } = await import('../src/update-journal.ts');
+ const { restoreWindowsProgram, readRecoverableInstalledUpdate } = fixtureRuntime.plan;
+ const { writeUpdateJournal } = fixtureRuntime.journal;
  const plan = await prepareInstalledUpdate(options, trust);
  await writeFile(plan.installed, 'partial-install'); await writeUpdateJournal(plan, { phase: 'recovering' });
  await restoreWindowsProgram(plan);
@@ -237,7 +240,7 @@ test('Windows recovery accepts a consumed rollback tree only after both installe
 }, 'win32'));
 
 test('an expired descriptor cannot install again, but its already committed recovery may still restore the verified working copy', async () => fixture(async (options, trust) => {
- const { readRecoverableInstalledUpdate } = await import('../src/update-plan.ts'), { writeUpdateJournal } = await import('../src/update-journal.ts');
+ const { readRecoverableInstalledUpdate } = fixtureRuntime.plan, { writeUpdateJournal } = fixtureRuntime.journal;
  const plan = await prepareInstalledUpdate(options, trust); await writeUpdateJournal(plan, { phase: 'installing' });
  const later = { ...trust, now: trust.now! + 2 * 3600000, executable: plan.watchdog };
  await assert.rejects(readInstalledUpdate(plan.userData, plan.health.nonce, later), /Expired/);
@@ -246,7 +249,7 @@ test('an expired descriptor cannot install again, but its already committed reco
 }));
 
 test('a stale durable mutation phase can reopen a restored old app only with active nonce, exact old version and complete verified old bytes', async () => fixture(async (options, trust) => {
- const { readRestoredInstalledUpdate } = await import('../src/update-plan.ts'), { activateInstalledUpdate } = await import('../src/update-state.ts'), { writeUpdateJournal } = await import('../src/update-journal.ts');
+ const { readRestoredInstalledUpdate } = fixtureRuntime.plan, { activateInstalledUpdate } = fixtureRuntime.state, { writeUpdateJournal } = fixtureRuntime.journal;
  const plan = await prepareInstalledUpdate(options, trust); await activateInstalledUpdate(plan); await writeUpdateJournal(plan, { phase: 'installing' });
  await readRestoredInstalledUpdate(plan.userData, plan.health.nonce, { ...trust, installed: plan.installed });
  await assert.rejects(readRestoredInstalledUpdate(plan.userData, plan.health.nonce, { ...trust, version: '1.0.1', installed: plan.installed }), /version/);
@@ -255,9 +258,25 @@ test('a stale durable mutation phase can reopen a restored old app only with act
 }));
 
 test('a restored old launch remains usable when the last visible journal is complete but later quota failures prevented failure status', async () => fixture(async (options, trust) => {
- const { readRestoredInstalledUpdate } = await import('../src/update-plan.ts'), { activateInstalledUpdate } = await import('../src/update-state.ts'), { writeUpdateJournal } = await import('../src/update-journal.ts');
+ const { readRestoredInstalledUpdate } = fixtureRuntime.plan, { activateInstalledUpdate } = fixtureRuntime.state, { writeUpdateJournal } = fixtureRuntime.journal;
  const plan = await prepareInstalledUpdate(options, trust); await activateInstalledUpdate(plan);
  await writeUpdateJournal(plan, { phase: 'complete', childPid: process.pid + 100 });
  const restored = await readRestoredInstalledUpdate(plan.userData, plan.health.nonce, { ...trust, installed: plan.installed });
  assert.equal(restored.oldVersion, trust.version);
 }));
+
+test('compiled fixture trust rejects a correctly signed cache under another fixture key', async () => {
+ const {sandboxReleaseFixture}=await import('./support/linux-sandbox-release-fixture.ts');
+ const root=await realpath(await mkdtemp(join(tmpdir(),'dilla-fixture-trust-')));
+ try {
+  const f=sandboxReleaseFixture(), version='1.0.1', base=`dilla-${version}-linux-x64.sandbox`, bytes=Buffer.from('fixture app image'), keys=generateKeyPairSync('ed25519'), profile=join(root,'profile');
+  await mkdir(profile); const installed=join(root,'old.AppImage'),downloaded=join(root,'new.AppImage'); await writeFile(installed,'old');await writeFile(downloaded,bytes);
+  const assets=[f.capsule,f.manifest,f.signature].map((data,i)=>({name:base+['','.json','.sig'][i],size:data.length,sha512:f.hash(data)}));
+  const descriptor={compatibilityEpoch:1 as const,minimumGeneration:1,bundle:{url:`https://github.com/jonasthim/dilla/releases/download/desktop-v${version}/${base}`,size:f.capsule.length,sha512:f.hash(f.capsule)}};
+  const sandboxDirectory=await fixtureRuntime.cache.saveSandboxSidecars(profile,{version,descriptor,assets,capsule:f.capsule,manifest:f.manifest,signature:f.signature,keys:f.config.publicKeys,now:Date.now()});
+  const now=Date.now(), metadata=Buffer.from(JSON.stringify({format:1,version,channel:'stable',publishedAt:new Date(now-1000).toISOString(),expiresAt:new Date(now+86400000).toISOString(),assets,artifacts:[{platform:'linux',arch:'x64',url:`https://github.com/jonasthim/dilla/releases/download/desktop-v${version}/dilla-${version}-linux-x64.AppImage`,size:bytes.length,sha512:createHash('sha512').update(bytes).digest('base64'),linuxSandbox:descriptor}]}));
+  const trust={publicKeys:[keys.publicKey.export({type:'spki',format:'pem'}).toString()],platform:'linux' as const,arch:'x64',version:'1.0.0',channel:'stable' as const,now};
+  await assert.rejects(prepareInstalledUpdate({userData:profile,installed,downloaded,metadata,signature:sign(null,metadata,keys.privateKey).toString('base64'),parentPid:process.pid,sandboxDirectory},trust),/sandbox/i);
+  assert.equal(await readFile(installed,'utf8'),'old');
+ } finally {await rm(root,{recursive:true,force:true});}
+});

@@ -1302,6 +1302,35 @@ export function checkDesktopWorkflow(root) {
   if (/--no-sandbox|contents: write|--publish always/.test(text)) problems.push(`${file}: desktop validation must keep sandboxing and cannot publish`);
   const body = job => text.split(`\n  ${job}:\n`)[1]?.split(/\n  [a-z][a-z0-9-]*:\n/)[0] ?? '';
   const nativeSteps = jobSteps(body('native'));
+  // Installed AppImages compile the GTK launcher and provision their exact
+  // compiled initial capsule inside the isolated test, not a copied bare helper.
+  for (const job of ['native','voice','client']) {
+    const steps=jobSteps(body(job));
+    const headers=steps.findIndex(step=>step.length===2 && step[0]==="if: runner.os == 'Linux'"
+      && /^run: sudo apt-get update && sudo apt-get install -y [a-z0-9.+ -]+$/.test(step[1])
+      && step[1].split(' ').includes('libgtk-3-dev') && step[1].split(' ').includes('pkg-config'));
+    const build=steps.findIndex(step=>step.includes('run: npm run build -w @dilla/desktop -- --existing-client'));
+    if(headers<0 || build<0 || headers>=build)problems.push(`${file}: installed sandbox GTK compiler prerequisites must precede ${job} builds`);
+  }
+  const nativeGo=nativeSteps.findIndex(step=>step.join('\n')===`if: runner.os == 'Windows' || runner.os == 'Linux'
+uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+with:
+go-version-file: go.mod
+cache-dependency-path: go.sum`);
+  const controls=nativeSteps.findIndex(step=>step.join('\n')===`name: Linux installed sandbox prerequisite controls
+if: runner.os == 'Linux'
+run: |
+CGO_ENABLED=0 go test ./packages/desktop/test/fixtures/linux-installed-sandbox-bootstrap
+node --test packages/desktop/test/linux-installed-sandbox-bootstrap.test.mjs packages/desktop/test/linux-sandbox-package-runner.test.mjs`);
+  const installedLinux=nativeSteps.findIndex(step=>step.includes('name: Installed upgrade acceptance') && step.includes("if: runner.os == 'Linux'"));
+  if(nativeGo<0 || controls<=nativeGo || controls>=installedLinux)problems.push(`${file}: installed sandbox controls require pinned native Go and unfiltered controls before installed acceptance`);
+  for(const [job,name,guard,artifact]of [
+    ['native','Initial installed sandbox prerequisite proof',"runner.os == 'Linux'",'desktop-initial-sandbox-native-linux-x64'],
+    ['client','Initial installed account sandbox prerequisite proof',"runner.os == 'Linux' && steps.installed-account.outputs.present == 'true'",'desktop-initial-sandbox-account-linux-x64'],
+  ]){
+    const expected=`name: ${name}\nif: ${guard}\nuses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7\nwith:\nname: ${artifact}\npath: \${{ runner.temp }}/dilla-installed-sandbox-initial.json\nif-no-files-found: error`;
+    if(jobSteps(body(job)).filter(step=>step.join('\n')===expected).length!==1)problems.push(`${file}: installed sandbox requires exact job-selected initial prerequisite proof upload for ${job}`);
+  }
   const unitSteps = nativeSteps.filter(step => step.some(line => line.includes('run: npm test -w @dilla/desktop')));
   if (unitSteps.length !== 1 || unitSteps[0].join('\n') !== "if: runner.os != 'Windows'\nrun: npm test -w @dilla/desktop") {
     problems.push(`${file}: non-Windows desktop unit tests must run on every other native platform`);
@@ -1317,6 +1346,11 @@ export function checkDesktopWorkflow(root) {
     || !nativeSteps[installerUpload]?.some(line => line.trim() === 'packages/desktop/out/build-provenance-*.json')) {
     problems.push(`${file}: build provenance must authenticate final fused installers and accompany their accepted bytes`);
   }
+  const mutation=nativeSteps.findIndex(step=>step.join('\n')===`name: Linux AppImage final package inspection mutations
+if: runner.os == 'Linux'
+run: node packages/desktop/scripts/test-linux-sandbox-package.mjs packages/desktop/out`);
+  if(mutation<=finalDistribution || mutation>=buildProvenance)problems.push(`${file}: installed sandbox final-image mutation command must run unfiltered after distribution and before provenance`);
+  for(const glob of ['packages/desktop/out/*.sandbox','packages/desktop/out/*.sandbox.json'])if(!nativeSteps[installerUpload]?.some(line=>line.trim()===glob))problems.push(`${file}: installed sandbox accepted component sidecars must accompany final AppImage`);
   const lastPlaywright = nativeSteps.findLastIndex(step => step.some(line => /npm run test:electron|playwright test/.test(line)));
   const installed = nativeSteps.map((step, index) => step.some(line => /node --test packages\/desktop\/test\/native\/(?:mac-upgrade|installed-upgrade)\.test\.mjs/.test(line)) ? index : -1).filter(index => index >= 0);
   if (proof < 0 || installed.some(index => index <= lastPlaywright || index >= proof)) problems.push(`${file}: installed acceptance proof must follow Playwright cleanup and precede upload`);

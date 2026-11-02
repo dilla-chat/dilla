@@ -1,8 +1,9 @@
+import { fixtureRuntime } from './support/fixture-update-runtime.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeUpdateJournal, readUpdateJournal } from '../src/update-journal.ts';
-import { updateFS } from '../src/update-fs.ts';
-import { createStartupActivation, receiveStartupActivation } from '../src/update-activation.ts';
+const { writeUpdateJournal, readUpdateJournal } = fixtureRuntime.journal;
+const { updateFS } = fixtureRuntime.fs;
+const { createStartupActivation, receiveStartupActivation } = fixtureRuntime.activation;
 import { installedFixture } from './support/installed-update.ts';
 const native = process.platform === 'linux' || process.platform === 'win32';
 

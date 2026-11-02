@@ -1,10 +1,28 @@
 import { createHash, createPublicKey, verify, timingSafeEqual } from 'node:crypto';
 
 export interface PublishedProgramManifest { url: string; size: number; sha512: string }
-export interface Artifact { platform: string; arch: string; url: string; size: number; sha512: string; sparkleSignature?: string; programManifest?: PublishedProgramManifest }
-export interface Release { format: 1; version: string; channel: 'stable' | 'beta'; publishedAt: string; expiresAt: string; artifacts: Artifact[] }
+export interface LinuxSandboxDescriptor { compatibilityEpoch: 1; minimumGeneration: number; bundle: PublishedProgramManifest }
+export interface Artifact { platform: string; arch: string; url: string; size: number; sha512: string; sparkleSignature?: string; programManifest?: PublishedProgramManifest; linuxSandbox?: LinuxSandboxDescriptor }
+export interface ReleaseAsset { name: string; size: number; sha512: string }
+export interface Release { assets?: ReleaseAsset[]; format: 1; version: string; channel: 'stable' | 'beta'; publishedAt: string; expiresAt: string; artifacts: Artifact[] }
 interface VerifyContext { publicKeys: readonly string[]; channel: 'stable' | 'beta'; platform: string; arch: string; currentVersion: string; now: number }
 const versionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-beta\.(0|[1-9]\d*))?$/;
+
+const invalidReleaseJSON = (): never => { throw new Error('Invalid release JSON'); };
+function strictReleaseJSON(raw: Uint8Array): unknown {
+ const text = new TextDecoder('utf-8', { fatal: true }).decode(raw), parsed = JSON.parse(text); let i = 0;
+ const ws = () => { while (i < text.length && /[ \t\r\n]/.test(text[i])) i++; };
+ const str = () => { const start = i++; while (i < text.length) { const c = text[i++]; if (c === '\\') i++; else if (c === '"') return JSON.parse(text.slice(start, i)) as string; } return invalidReleaseJSON(); };
+ const value = (depth: number): void => {
+  if (depth > 16) invalidReleaseJSON(); ws();
+  if (text[i] === '{') { i++; ws(); const seen = new Set<string>(); if (text[i] === '}') { i++; return; } for (;;) { ws(); if (text[i] !== '"') invalidReleaseJSON(); const key = str(); if (seen.has(key)) throw new Error('Duplicate release JSON field'); seen.add(key); ws(); if (text[i++] !== ':') invalidReleaseJSON(); value(depth + 1); ws(); const c = text[i++]; if (c === '}') return; if (c !== ',') invalidReleaseJSON(); } }
+  if (text[i] === '[') { i++; ws(); if (text[i] === ']') { i++; return; } for (;;) { value(depth + 1); ws(); const c = text[i++]; if (c === ']') return; if (c !== ',') invalidReleaseJSON(); } }
+  if (text[i] === '"') { str(); return; }
+  const start = i; while (i < text.length && !/[ \t\r\n,\]}]/.test(text[i])) i++; const token = text.slice(start, i);
+  if (!['true', 'false', 'null'].includes(token) && (!/^(0|[1-9][0-9]*)$/.test(token) || !Number.isSafeInteger(Number(token)))) invalidReleaseJSON();
+ };
+ value(0); ws(); if (i !== text.length) invalidReleaseJSON(); return parsed;
+}
 
 function versionParts(value: string): number[] {
   const match = versionPattern.exec(value);
@@ -29,12 +47,13 @@ export function verifyRelease(bytes: Uint8Array, signature: string, ctx: VerifyC
     catch { return false; }
   });
   if (!valid) throw new Error('Invalid release signature');
-  const doc = JSON.parse(Buffer.from(bytes).toString('utf8')) as Release;
+  const doc = strictReleaseJSON(bytes) as Release;
   if (!doc || doc.format !== 1 || doc.channel !== ctx.channel || typeof doc.version !== 'string'
     || !newerVersion(doc.version, ctx.currentVersion) || (doc.channel === 'stable' && doc.version.includes('-'))
     || (doc.channel === 'beta' && !doc.version.includes('-beta.'))) throw new Error('Invalid release version or channel');
   const published = Date.parse(doc.publishedAt), expires = Date.parse(doc.expiresAt);
-  if (!Number.isFinite(published) || !Number.isFinite(expires) || published > ctx.now + 300_000 || expires <= ctx.now
+  const validUTC = (value: unknown, time: number) => typeof value === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?Z$/.test(value) && Number.isFinite(time) && new Date(time).toISOString().slice(0,19) === value.slice(0,19);
+  if (!validUTC(doc.publishedAt, published) || !validUTC(doc.expiresAt, expires) || !Number.isFinite(published) || !Number.isFinite(expires) || published > ctx.now + 300_000 || expires <= ctx.now
     || expires <= published || expires - published > 93 * 86_400_000) throw new Error('Expired or invalid release dates');
   if (!Array.isArray(doc.artifacts) || doc.artifacts.length < 1 || doc.artifacts.length > 8) throw new Error('Invalid release artifacts');
   const platforms = new Set<string>();
@@ -45,6 +64,19 @@ export function verifyRelease(bytes: Uint8Array, signature: string, ctx: VerifyC
     platforms.add(id);
     if (typeof artifact.url !== 'string' || !/^https:\/\/github\.com\/jonasthim\/dilla\/releases\/download\/desktop-v[0-9A-Za-z.-]+\/[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(artifact.url)
       || new URL(artifact.url).pathname !== `/jonasthim/dilla/releases/download/desktop-v${doc.version}/${artifact.url.split('/').at(-1)}`) throw new Error('Invalid artifact URL');
+    if (artifact.platform === 'linux') {
+      const sandbox = artifact.linuxSandbox, bundle = sandbox?.bundle;
+      const exact = (v: object, keys: string[]) => !!v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === keys.length && keys.every(k => Object.hasOwn(v,k));
+      if (!exact(artifact, ['platform','arch','url','size','sha512','linuxSandbox']) || artifact.arch !== 'x64' || artifact.url !== `https://github.com/jonasthim/dilla/releases/download/desktop-v${doc.version}/dilla-${doc.version}-linux-x64.AppImage` || !sandbox || !exact(sandbox, ['compatibilityEpoch','minimumGeneration','bundle']) || sandbox.compatibilityEpoch !== 1 || !Number.isSafeInteger(sandbox.minimumGeneration) || sandbox.minimumGeneration < 1 || !bundle || !exact(bundle, ['url','size','sha512']) || bundle.url !== `https://github.com/jonasthim/dilla/releases/download/desktop-v${doc.version}/dilla-${doc.version}-linux-x64.sandbox` || !Number.isSafeInteger(bundle.size) || bundle.size < 1 || bundle.size > 48 * 1024 ** 2 || typeof bundle.sha512 !== 'string' || Buffer.from(bundle.sha512, 'base64').length !== 64 || Buffer.from(bundle.sha512, 'base64').toString('base64') !== bundle.sha512) throw new Error('Invalid Linux sandbox descriptor');
+      const names = [`dilla-${doc.version}-linux-x64.sandbox`, `dilla-${doc.version}-linux-x64.sandbox.json`, `dilla-${doc.version}-linux-x64.sandbox.sig`];
+      if (!Array.isArray(doc.assets)) throw new Error('Missing authenticated Linux sandbox assets');
+      const records = names.map(name => doc.assets!.filter(a => a?.name === name));
+      if (records.some(entries => entries.length !== 1)) throw new Error('Missing or duplicate authenticated Linux sandbox assets');
+      for (let index = 0; index < records.length; index++) { const a = records[index][0], limit = [48*1024**2,65536,89][index];
+       if (!exact(a,['name','size','sha512']) || !Number.isSafeInteger(a.size) || a.size < 1 || a.size > limit || (index === 2 && a.size < 88) || typeof a.sha512 !== 'string' || Buffer.from(a.sha512,'base64').length !== 64 || Buffer.from(a.sha512,'base64').toString('base64') !== a.sha512) throw new Error('Invalid authenticated Linux sandbox asset');
+      }
+      if (records[0][0].size !== bundle.size || records[0][0].sha512 !== bundle.sha512) throw new Error('Linux sandbox descriptor and asset differ');
+    } else if (artifact.linuxSandbox !== undefined) throw new Error('Invalid Linux sandbox descriptor target');
     if (artifact.platform === 'darwin' && (typeof artifact.sparkleSignature !== 'string' || !/^[A-Za-z0-9+/]{86}==$/.test(artifact.sparkleSignature))) throw new Error('Missing authenticated Sparkle archive signature');
     const extension = artifact.platform === 'linux' ? '.AppImage' : artifact.platform === 'win32' ? '.exe' : '.zip';
     if (!artifact.url.endsWith(extension) || artifact.url.split('/').at(-1)!.includes('..') || !Number.isSafeInteger(artifact.size)
@@ -62,7 +94,7 @@ export function verifyArtifact(bytes: Uint8Array, artifact: Artifact): boolean {
 }
 
 export interface QuitGuard { activeCall: boolean; unsavedDraft: boolean }
-interface UpdateDriver { ownership?: 'package-manager'; cancelledQuit?(): void; check(): Promise<Release | null>; download(release: Release): Promise<void>; install(): void | Promise<void> }
+interface UpdateDriver { ownership?: 'package-manager'; cancelledQuit?(): void; check(): Promise<Release | null>; download(release: Release): Promise<void>; preparePrerequisites?(): Promise<void>; install(): void | Promise<void> }
 export type UpdateState = { phase: 'idle' | 'checking' | 'downloading' | 'ready' | 'installing' | 'error'; message?: string }
  | { phase: 'available'; version: string; message: string };
 
@@ -90,6 +122,11 @@ export class UpdateCoordinator {
     if (this.state.phase === 'installing') this.set({ phase: 'error', message: 'Restart was cancelled. The app is still running; retry after saving your drafts.' });
   }
   protected(): boolean { return [...this.guards.values()].some(guard => guard === null || guard.activeCall || guard.unsavedDraft); }
+  async preparePrerequisites(): Promise<boolean> {
+    if (this.driver.ownership === 'package-manager' || this.state.phase !== 'ready' || this.protected()) return false;
+    try { await this.driver.preparePrerequisites?.(); return this.state.phase === 'ready'; }
+    catch (error) { this.set({ phase: 'error', message: error instanceof Error ? error.message : 'Update preparation failed; try again' }); return false; }
+  }
   async check(): Promise<void> {
     if (['checking', 'downloading', 'ready', 'installing'].includes(this.state.phase)) return;
     this.set({ phase: 'checking' });

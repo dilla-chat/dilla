@@ -23,7 +23,7 @@ func TestProbeSessionRejectsSiblingJoiningGroup(t *testing.T) {
 	attempted := false
 	result, e := runProbeProcess(probeProcessConfig{executable: os.Args[0], args: []string{"-test.run=^TestProbeFixtureChild$"}, env: append(os.Environ(), "DILLA_TEST_PROBE_CHILD=1"), deadline: time.Now().Add(5 * time.Second), nonce: n, inspect: func(main, _, _ int) error {
 		attempted = true
-		sibling := exec.Command("/bin/sleep", "30")
+		sibling := exec.CommandContext(t.Context(), "/bin/sleep", "30")
 		sibling.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pgid: main}
 		err := sibling.Start()
 		if err == nil {
@@ -64,7 +64,7 @@ func isolatedProbeTest(t *testing.T) bool {
 	if os.Getenv("DILLA_TEST_PROBE_SCOPE") == "1" {
 		return false
 	}
-	command := exec.Command(os.Args[0], "-test.run=^"+t.Name()+"$")
+	command := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^"+t.Name()+"$")
 	command.Env = append(os.Environ(), "DILLA_TEST_PROBE_SCOPE=1")
 	if output, e := command.CombinedOutput(); e != nil {
 		t.Fatalf("isolated: %v %s", e, output)
@@ -158,7 +158,7 @@ func TestProbeHoldsPipeChild(t *testing.T) {
 	if os.Getenv("DILLA_TEST_HOLD_PIPE") != "1" {
 		return
 	}
-	command := exec.Command("/bin/sleep", "30")
+	command := exec.CommandContext(t.Context(), "/bin/sleep", "30")
 	command.ExtraFiles = []*os.File{os.NewFile(3, "report"), os.NewFile(4, "ack")}
 	if command.Start() != nil {
 		os.Exit(9)
@@ -206,7 +206,7 @@ func TestProbeTimeoutKillsDescendantHoldingPipe(t *testing.T) {
 
 func TestProbeDoesNotReturnWhileSamplerRuns(t *testing.T) {
 	if os.Getenv("DILLA_TEST_ISOLATED_SAMPLER") != "1" {
-		command := exec.Command(os.Args[0], "-test.run=^TestProbeDoesNotReturnWhileSamplerRuns$")
+		command := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestProbeDoesNotReturnWhileSamplerRuns$")
 		command.Env = append(os.Environ(), "DILLA_TEST_ISOLATED_SAMPLER=1")
 		if out, e := command.CombinedOutput(); e != nil {
 			t.Fatalf("isolated: %v %s", e, out)
@@ -237,7 +237,7 @@ func TestUnexpectedChildDuringScopeNeverSignalsProbeGroup(t *testing.T) {
 	script := `printf '{"format":1,"kind":"dilla-sandbox-probe","nonce":"%s","mainPid":%s,"rendererPid":999,"sandboxed":true,"contextIsolated":true}\n' "$1" "$$" >&3; read -r x <&4; exec sleep 30`
 	result, e := runProbeProcess(probeProcessConfig{executable: "/bin/sh", args: []string{"-c", script, "probe", n}, deadline: time.Now().Add(250 * time.Millisecond), nonce: n, inspect: func(main, renderer, uid int) error {
 		mainPID = main
-		unexpected = exec.Command("/bin/sleep", "30")
+		unexpected = exec.CommandContext(t.Context(), "/bin/sleep", "30")
 		return unexpected.Start()
 	}})
 	defer func() {
@@ -265,7 +265,7 @@ func TestProbeLiveParentChild(t *testing.T) {
 	if os.Getenv("DILLA_TEST_LIVE_TREE") != "1" {
 		return
 	}
-	child := exec.Command("/bin/sleep", "30")
+	child := exec.CommandContext(t.Context(), "/bin/sleep", "30")
 	if os.Getenv("DILLA_TEST_ESCAPE") == "1" {
 		child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	}

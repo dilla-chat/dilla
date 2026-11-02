@@ -3,6 +3,7 @@
 package frontend
 
 import (
+	"errors"
 	"io"
 	"os"
 	"sort"
@@ -42,7 +43,7 @@ func readAt(dir int, name string, limit int) (string, error) {
 		return "", e
 	}
 	f := os.NewFile(uintptr(fd), name)
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	b, e := io.ReadAll(io.LimitReader(f, int64(limit+1)))
 	if e != nil || len(b) > limit {
 		return "", errProbeReport
@@ -55,9 +56,9 @@ func listAt(dir int, name string, limit int) ([]string, error) {
 		return nil, e
 	}
 	f := os.NewFile(uintptr(fd), name)
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	names, e := f.Readdirnames(limit + 1)
-	if e != nil && e != io.EOF {
+	if e != nil && !errors.Is(e, io.EOF) {
 		return nil, e
 	}
 	if len(names) > limit {
@@ -137,7 +138,7 @@ func readTaskChildren(procDir int, tid string) (string, string, error) {
 	if e != nil {
 		return "", "", e
 	}
-	defer unix.Close(fd)
+	defer func() { _ = unix.Close(fd) }()
 	before, e := readAt(fd, "stat", 8192)
 	if e != nil {
 		return "", "", e

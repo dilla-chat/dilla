@@ -1,9 +1,10 @@
-import { verifyDesktopBundle, PUBLIC_ACCEPTANCE_RECORDS } from './verify-release.mjs';
+import { verifyDesktopBundle, verifyDesktopSigningCandidate, PUBLIC_ACCEPTANCE_RECORDS } from './verify-release.mjs';
 import { createHash, createPrivateKey, createPublicKey, sign, verify } from 'node:crypto';
 import { readFile, writeFile, mkdir, lstat } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import { parsePublicConfiguration, assertDedicatedKeys } from './linux-sandbox-package.mjs';
 import { verifyWindowsProgramManifest } from '../src/windows-manifest.ts';
 import { appcast, signedAppcast, sparkleVersion } from './feed-format.mjs';
 export { appcast, signedAppcast, sparkleVersion } from './feed-format.mjs';
@@ -21,6 +22,8 @@ export async function signDesktopRelease({ version, artifactsDirectory, keysDire
  const sparkleKey = createPrivateKey({ key: { kty: 'OKP', crv: 'Ed25519', d: seed.toString('base64url'), x: Buffer.from(trust.sparklePublicKey, 'base64').toString('base64url') }, format: 'jwk' });
  seed.fill(0);
  if (createPublicKey(sparkleKey).export({ type: 'spki', format: 'der' }).subarray(-32).toString('base64') !== trust.sparklePublicKey) throw new Error('Sparkle signer does not match installed trust');
+ const component = parsePublicConfiguration(await readFile(new URL('../linux-sandbox-component.json', import.meta.url), 'utf8'));
+ assertDedicatedKeys(component, trust);
  const source = JSON.parse(await readFile(join(artifactsDirectory, 'acceptance.json'), 'utf8'));
  const run = JSON.parse(await readFile(join(artifactsDirectory, 'ci-run.json'), 'utf8'));
  const jobs = JSON.parse(await readFile(join(artifactsDirectory, 'ci-jobs.json'), 'utf8'));
@@ -31,6 +34,18 @@ export async function signDesktopRelease({ version, artifactsDirectory, keysDire
   const bytes = await readFile(file);
   if (!bytes.length) throw new Error('Empty installer: ' + name);
   const artifact = { platform, arch, url: `https://github.com/jonasthim/dilla/releases/download/desktop-v${version}/${name}`, size: bytes.length, sha512: createHash('sha512').update(bytes).digest('base64') };
+  if (platform === 'linux') {
+   const capsuleName = `dilla-${version}-linux-x64.sandbox`, manifestName = capsuleName + '.json';
+   for (const [sidecar, limit] of [[capsuleName, 48 * 1024 ** 2], [manifestName, 65536]]) {
+    const info = await lstat(join(artifactsDirectory, sidecar));
+    if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size < 1 || info.size > limit) throw new Error('Invalid accepted sandbox sidecar: ' + sidecar);
+    const data = await readFile(join(artifactsDirectory, sidecar));
+    if (data.length !== info.size) throw new Error('Sandbox sidecar changed: ' + sidecar);
+    release.assets.push({ name: sidecar, size: data.length, sha512: createHash('sha512').update(data).digest('base64') });
+   }
+   const capsule = release.assets.find(a => a.name === capsuleName);
+   artifact.linuxSandbox = { compatibilityEpoch: 1, minimumGeneration: component.generation, bundle: { url: `https://github.com/jonasthim/dilla/releases/download/desktop-v${version}/${capsuleName}`, size: capsule.size, sha512: capsule.sha512 } };
+  }
   if (platform === 'darwin') {
    artifact.sparkleSignature = sign(null, bytes, sparkleKey).toString('base64');
    if (!verify(null, bytes, createPublicKey(sparkleKey), Buffer.from(artifact.sparkleSignature, 'base64'))) throw new Error('Sparkle archive signature self-check failed');
@@ -52,12 +67,25 @@ export async function signDesktopRelease({ version, artifactsDirectory, keysDire
   const bytes = await readFile(file);
   release.assets.push({ name, size: bytes.length, sha512: createHash('sha512').update(bytes).digest('base64') });
  }
- await mkdir(outputDirectory, { recursive: true, mode: 0o700 });
- const bytes = Buffer.from(JSON.stringify(release, null, 2) + '\n');
- const signature = sign(null, bytes, metadataKey);
+ // The preliminary feed carries a placeholder signature asset. The private
+ // maintenance key is opened only after all other acceptance checks pass.
+ const sandboxName = `dilla-${version}-linux-x64.sandbox`, signatureName = sandboxName + '.sig';
+ const placeholder = Buffer.from(Buffer.alloc(64).toString('base64') + '\n');
+ const signatureAsset = { name: signatureName, size: placeholder.length, sha512: createHash('sha512').update(placeholder).digest('base64') }; release.assets.push(signatureAsset);
+ const makeFeeds = () => Object.fromEntries(release.artifacts.filter(a => a.platform === 'darwin').map(artifact => [artifact.arch, signedAppcast(appcast(release, artifact, artifact.sparkleSignature), sparkleKey)]));
+ let bytes = Buffer.from(JSON.stringify(release, null, 2) + '\n'), signature = sign(null, bytes, metadataKey), feeds = makeFeeds();
+ await verifyDesktopSigningCandidate({ metadata: bytes, signature: signature.toString('base64'), trust, directory: artifactsDirectory, run, jobs, version, feeds, now: now.getTime() });
+ const manifest = await readFile(join(artifactsDirectory, sandboxName + '.json'));
+ const maintenanceKey = createPrivateKey(await readFile(join(keysDirectory, 'linux-sandbox-private.pem')));
+ const rawPublic = createPublicKey(maintenanceKey).export({ type: 'spki', format: 'der' }).subarray(-32).toString('base64');
+ if (maintenanceKey.asymmetricKeyType !== 'ed25519' || !component.publicKeys.includes(rawPublic)) throw new Error('Sandbox signer does not match installed dedicated trust');
+ const detached = Buffer.from(sign(null, Buffer.concat([Buffer.from('Dilla Linux sandbox capsule v1\0'), manifest]), maintenanceKey).toString('base64') + '\n');
+ signatureAsset.size = detached.length; signatureAsset.sha512 = createHash('sha512').update(detached).digest('base64');
+ bytes = Buffer.from(JSON.stringify(release, null, 2) + '\n'); signature = sign(null, bytes, metadataKey); feeds = makeFeeds();
  if (!verify(null, bytes, metadataPublic, signature)) throw new Error('Metadata signature self-check failed');
- const feeds = Object.fromEntries(release.artifacts.filter(a => a.platform === 'darwin').map(artifact => [artifact.arch, signedAppcast(appcast(release, artifact, artifact.sparkleSignature), sparkleKey)]));
- await verifyDesktopBundle({ metadata: bytes, signature: signature.toString('base64'), trust, directory: artifactsDirectory, run, jobs, version, feeds, now: now.getTime() });
+ await verifyDesktopBundle({ metadata: bytes, signature: signature.toString('base64'), trust, directory: artifactsDirectory, run, jobs, version, feeds, now: now.getTime(), sandboxSignature: detached });
+ await mkdir(outputDirectory, { recursive: true, mode: 0o700 });
+ await writeFile(join(outputDirectory, signatureName), detached, { flag: 'wx' });
  await writeFile(join(outputDirectory, `desktop-${channel}.json`), bytes, { flag: 'wx' });
  await writeFile(join(outputDirectory, `desktop-${channel}.json.sig`), signature.toString('base64') + '\n', { flag: 'wx' });
  for (const name of PUBLIC_ACCEPTANCE_RECORDS) {

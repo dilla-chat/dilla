@@ -5,6 +5,8 @@ import { appcast } from './feed-format.mjs';
 import { verifyWindowsRelease } from '../src/windows-release.ts';
 import { verifyWindowsProgramManifest } from '../src/windows-manifest.ts';
 import { verifyRelease, verifyArtifact } from '../src/update.ts';
+import { inspectLinuxSandboxCapsule, verifyLinuxSandboxRelease } from '../src/linux-sandbox-release.ts';
+import { assertDedicatedKeys, parsePublicConfiguration } from './linux-sandbox-package.mjs';
 import { verifyInstalledAccountReport } from './installed-account-proof.mjs';
 import { buildProvenanceName, readBuildProvenanceFile, verifyBuildProvenance, verifyCandidateBuildRecord } from './build-provenance.mjs';
 
@@ -21,10 +23,12 @@ export function publicReleaseRecords(channel) {
 /** The publisher downloads these four records inside the accepted installer
  * artifacts. Verify their independent copies before staging candidate records;
  * the signed candidate may never create or overwrite native build provenance. */
-export async function stagePublicReleaseRecords({ candidate, directory, channel }) {
+export async function stagePublicReleaseRecords({ candidate, directory, channel, version }) {
  const records = publicReleaseRecords(channel);
+ if (typeof version !== 'string' || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-beta\.(0|[1-9]\d*))?$/.test(version)) throw new Error('Invalid sandbox signature version');
+ const sandboxSignatureName = `dilla-${version}-linux-x64.sandbox.sig`;
  for (const name of BUILD_PROVENANCE_RECORDS) await verifyCandidateBuildRecord(join(candidate, name), join(directory, name));
- for (const name of records) if (!BUILD_PROVENANCE_RECORDS.includes(name)) {
+ for (const name of [...records, sandboxSignatureName]) if (!BUILD_PROVENANCE_RECORDS.includes(name)) {
   await writeFile(join(directory, name), await readFile(join(candidate, name)), { flag: 'wx' });
  }
 }
@@ -32,7 +36,10 @@ const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 
 /** Publication checks the complete accepted run, not just a green build or a
  * mutable release draft. Signing keys are not part of this process. */
-export async function verifyDesktopBundle({ metadata, signature, trust, directory, run, jobs, version, feeds, now = Date.now() }) {
+const preSigning = Symbol('pre-signing acceptance only');
+export async function verifyDesktopSigningCandidate(options) { return verifyBundle(options, preSigning); }
+export async function verifyDesktopBundle(options) { return verifyBundle(options); }
+async function verifyBundle({ metadata, signature, trust, directory, run, jobs, version, feeds, now = Date.now(), sandboxSignature }, mode) {
  const channel = version.includes('-beta.') ? 'beta' : 'stable';
  const release = verifyRelease(metadata, signature.trim(), { publicKeys: trust.metadataPublicKeys, channel, platform: 'linux', arch: 'x64', currentVersion: '0.0.0', now });
  if (release.version !== version) throw new Error('Release tag and authenticated version differ');
@@ -63,6 +70,7 @@ export async function verifyDesktopBundle({ metadata, signature, trust, director
   const gates = ['Record native desktop build provenance', 'Application audio encryption and exclusion', target.startsWith('mac-')
    ? 'Installed unsigned Sparkle upgrade and signed-feed rejection' : 'Installed upgrade acceptance'];
   if(target==='win-x64')gates.push('Windows launcher kernel acceptance','Windows installer maintenance acceptance');
+  if(target==='linux-x64')gates.push('Linux AppImage sandbox native acceptance');
   for (const gate of gates) if (!native.steps?.some(step => step.name === gate && step.conclusion === 'success')) throw new Error(`${target}: missing accepted ${gate}`);
   for (let shard = 1; shard <= 3; shard++) {
    if (!jobs.some(job => job.name.endsWith(`desktop-client-${target}-${shard}`) && job.conclusion === 'success')) throw new Error(`Missing Electron client coverage: ${target}-${shard}`);
@@ -102,16 +110,28 @@ export async function verifyDesktopBundle({ metadata, signature, trust, director
  }
  const assets = release.assets;
  const requiredNames = [
-  `dilla-${version}-linux-x64.AppImage`, `dilla-${version}-win-x64.exe`, `dilla-${version}-win-x64.manifest.json`,
+  `dilla-${version}-linux-x64.AppImage`, ...['sandbox','sandbox.json','sandbox.sig'].map(ext => `dilla-${version}-linux-x64.${ext}`), `dilla-${version}-win-x64.exe`, `dilla-${version}-win-x64.manifest.json`,
   ...['x64', 'arm64'].flatMap(arch => [`dilla-${version}-mac-${arch}.zip`, `dilla-${version}-mac-${arch}.dmg`]),
  ];
  if (!Array.isArray(assets) || assets.length !== requiredNames.length || requiredNames.some(name => assets.filter(asset => asset.name === name).length !== 1)) throw new Error('All installable/update artifacts and the Windows manifest must be authenticated');
  for (const asset of assets) {
   if (typeof asset.name !== 'string' || basename(asset.name) !== asset.name || !requiredNames.includes(asset.name)
     || !Number.isSafeInteger(asset.size) || asset.size < 1 || typeof asset.sha512 !== 'string' || !/^[A-Za-z0-9+/]{86}==$/.test(asset.sha512)) throw new Error('Invalid release asset');
-  const bytes = await readFile(join(directory, asset.name));
+  if (mode === preSigning && asset.name.endsWith('.sandbox.sig')) continue;
+  if (asset.name.includes('.sandbox') && !(asset.name.endsWith('.sandbox.sig') && sandboxSignature !== undefined)) { const info = await lstat(join(directory, asset.name)); if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size !== asset.size) throw new Error('Invalid sandbox sidecar file: ' + asset.name); }
+  const bytes = asset.name.endsWith('.sandbox.sig') && sandboxSignature !== undefined ? Buffer.from(sandboxSignature) : await readFile(join(directory, asset.name));
   if (!verifyArtifact(bytes, asset)) throw new Error('Release artifact digest mismatch: ' + asset.name);
  }
+ const capsuleName = `dilla-${version}-linux-x64.sandbox`, manifestName = capsuleName + '.json', signatureName = capsuleName + '.sig';
+ const capsuleAsset = assets.find(asset => asset.name === capsuleName), manifestAsset = assets.find(asset => asset.name === manifestName), signatureAsset = assets.find(asset => asset.name === signatureName);
+ const linux = release.artifacts.find(a => a.platform === 'linux' && a.arch === 'x64'), descriptor = linux?.linuxSandbox;
+ if (!descriptor || capsuleAsset.size !== descriptor.bundle.size || capsuleAsset.sha512 !== descriptor.bundle.sha512 || manifestAsset.size > 65536 || signatureAsset.size > 89) throw new Error('Linux sandbox descriptor and assets differ');
+ const capsule = await readFile(join(directory, capsuleName)), manifest = await readFile(join(directory, manifestName));
+ const component = parsePublicConfiguration(await readFile(new URL('../linux-sandbox-component.json', import.meta.url), 'utf8')); assertDedicatedKeys(component, trust);
+ const input = { capsule, manifest, now, minimumGeneration: descriptor.minimumGeneration };
+ const verified = mode === preSigning ? inspectLinuxSandboxCapsule(input) : verifyLinuxSandboxRelease({ ...input, signature: (sandboxSignature !== undefined ? Buffer.from(sandboxSignature) : await readFile(join(directory, signatureName))).toString('utf8'), keys: component.publicKeys });
+ const manifestDocument = JSON.parse(manifest.toString('utf8'));
+ if (manifestDocument.publishedAt !== component.publishedAt || manifestDocument.expiresAt !== component.expiresAt || manifestDocument.helper.size !== component.helper.size || manifestDocument.helper.sha512 !== component.helper.sha512 || verified.generation !== component.generation || verified.compatibilityEpoch !== descriptor.compatibilityEpoch) throw new Error('Linux sandbox configuration does not match accepted component');
  if (typeof trust.sparklePublicKey !== 'string' || Buffer.from(trust.sparklePublicKey, 'base64').length !== 32) throw new Error('Missing installed Sparkle trust');
  const sparkleKey = createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x: Buffer.from(trust.sparklePublicKey, 'base64').toString('base64url') }, format: 'jwk' });
  for (const artifact of release.artifacts) {

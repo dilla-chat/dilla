@@ -1,10 +1,12 @@
+import { fixtureRuntime } from './support/fixture-update-runtime.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile, writeFile, copyFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
-import { runInstalledUpdate, type WatchdogProcesses } from '../src/update-watchdog.ts';
-import { readUpdateJournal } from '../src/update-journal.ts';
-import { reportStartupHealth } from '../src/update-health.ts';
+import type { WatchdogProcesses } from '../src/update-watchdog.ts';
+const { runInstalledUpdate } = fixtureRuntime.watchdog;
+const { readUpdateJournal } = fixtureRuntime.journal;
+const { reportStartupHealth } = fixtureRuntime.health;
 import { installedFixture } from './support/installed-update.ts';
 import type { InstalledUpdatePlan } from '../src/update-plan.ts';
 
@@ -127,8 +129,8 @@ test('a failed Windows installer restores a partially overwritten program before
 }, 'win32'));
 
 test('an interrupted install restores the independently verified old backup without rerunning the artifact', async () => installedFixture(async plan => {
- const { recoverInstalledUpdate } = await import('../src/update-watchdog.ts');
- const { writeUpdateJournal } = await import('../src/update-journal.ts');
+ const { recoverInstalledUpdate } = fixtureRuntime.watchdog;
+ const { writeUpdateJournal } = fixtureRuntime.journal;
  await writeFile(plan.installed, 'interrupted-new-app'); await writeUpdateJournal(plan, { phase: 'installing' });
  const calls: string[] = [];
  await recoverInstalledUpdate(plan, {
@@ -139,7 +141,7 @@ test('an interrupted install restores the independently verified old backup with
 }));
 
 test('Windows rollback restores the pre-staged old tree even when all further content copies fail ENOSPC', async t => installedFixture(async plan => {
- const { updateFS } = await import('../src/update-fs.ts');
+ const { updateFS } = fixtureRuntime.fs;
  t.mock.method(updateFS.promises, 'copyFile', async () => { throw Object.assign(new Error('disk full after NSIS'), { code: 'ENOSPC' }); });
  const processes: WatchdogProcesses = { waitParent: async () => {}, restoreWindowsMetadata: async () => {}, installWindows: async () => { await writeFile(plan.installed, 'partial-new'); throw new Error('NSIS failed'); }, stop: async () => {}, launch: async file => { assert.equal(await readFile(file, 'utf8'), 'working-old-app'); return { pid: process.pid + 100, exitCode: null, signalCode: null }; } };
  try { await runInstalledUpdate(plan, processes); }
@@ -155,7 +157,7 @@ test('a refused Windows registration restore still relaunches the verified old p
 }, 'win32'));
 
 test('Linux interrupted recovery restores a hash-verified on-destination previous AppImage by rename when copies fail ENOSPC', async t => installedFixture(async plan => {
- const { updateFS } = await import('../src/update-fs.ts'), { recoverInstalledUpdate } = await import('../src/update-watchdog.ts'), { writeUpdateJournal } = await import('../src/update-journal.ts');
+ const { updateFS } = fixtureRuntime.fs, { recoverInstalledUpdate } = fixtureRuntime.watchdog, { writeUpdateJournal } = fixtureRuntime.journal;
  await writeFile(plan.installed + '.previous', 'working-old-app'); await writeFile(plan.installed, 'interrupted-new'); await writeUpdateJournal(plan, { phase: 'installing' });
  t.mock.method(updateFS.promises, 'copyFile', async () => { throw Object.assign(new Error('destination full'), { code: 'ENOSPC' }); });
  let old = false;
@@ -165,7 +167,7 @@ test('Linux interrupted recovery restores a hash-verified on-destination previou
 }));
 
 test('recovery discovers and stops an owned launch even if the helper died before recording its PID', async () => installedFixture(async plan => {
- const { writeUpdateJournal } = await import('../src/update-journal.ts'), { recoverInstalledUpdate } = await import('../src/update-watchdog.ts');
+ const { writeUpdateJournal } = fixtureRuntime.journal, { recoverInstalledUpdate } = fixtureRuntime.watchdog;
  await writeUpdateJournal(plan, { phase: 'launching' }); await writeFile(plan.installed, 'new-awaiting-registration');
  const child = { pid: process.pid + 100, exitCode: null, signalCode: null }; let stopped = false;
  await recoverInstalledUpdate(plan, { waitParent: async () => {}, restoreWindowsMetadata: async () => {}, installWindows: async () => {},
@@ -198,7 +200,7 @@ test('Windows inactive staging preserves the old program and completes its journ
 },'win32'));
 
 test('an uncertain Windows slot commit stops the disabled child and never rewrites its complete journal or restores old over a visible new commit',async()=>installedFixture(async plan=>{
- const {WindowsCommitUncertain}=await import('../src/windows-slots.ts');const calls:string[]=[],child={pid:process.pid+100,exitCode:null,signalCode:null};let now=0;
+ const {WindowsCommitUncertain}=fixtureRuntime.windowsSlots;const calls:string[]=[],child={pid:process.pid+100,exitCode:null,signalCode:null};let now=0;
  const result=await runInstalledUpdate(plan,{waitParent:async()=>{},installWindows:async()=>{},launch:async(_file,health)=>{assert.ok(health,'no old relaunch after possible commit');await reportStartupHealth(plan.userData,health.version,child.pid,health.file,health.nonce);return child;},commitWindows:async()=>{throw new WindowsCommitUncertain('uncertain rename');},
   stop:async owned=>{assert.equal(owned,child);calls.push('stop-hidden');},restoreWindowsMetadata:async()=>assert.fail('no postcommit rollback'),activate:async()=>assert.fail('unconfirmed activation remains hidden'),
  },{now:()=>now,sleep:async()=>{now+=100;}});

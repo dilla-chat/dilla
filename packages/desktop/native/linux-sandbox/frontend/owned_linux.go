@@ -58,7 +58,7 @@ func mountedIdentity(path string) (uint64, uint64, uint64, error) {
 		return 0, 0, 0, errOwnedExecutable
 	}
 	var fs unix.Statfs_t
-	if unix.Statfs(path, &fs) != nil || uint64(fs.Type) != 0x65735546 || fs.Flags&unix.ST_RDONLY == 0 {
+	if unix.Statfs(path, &fs) != nil || fs.Type != 0x65735546 || fs.Flags&unix.ST_RDONLY == 0 {
 		return 0, 0, 0, errOwnedExecutable
 	}
 	data, e := os.ReadFile("/proc/self/mountinfo")
@@ -92,7 +92,7 @@ func ownExecutable() (OwnedExecutable, error) {
 	if e != nil {
 		return OwnedExecutable{}, errOwnedExecutable
 	}
-	defer image.Close()
+	defer func() { _ = image.Close() }()
 	if image.Class != elf.ELFCLASS64 || image.Data != elf.ELFDATA2LSB || image.Machine != elf.EM_X86_64 {
 		return OwnedExecutable{}, errOwnedExecutable
 	}

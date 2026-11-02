@@ -1,9 +1,10 @@
+import { fixtureRuntime } from './support/fixture-update-runtime.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { writeFile, readFile } from 'node:fs/promises';
-import { activateInstalledUpdate, pendingInstalledUpdate } from '../src/update-state.ts';
-import { writeUpdateJournal } from '../src/update-journal.ts';
+const { activateInstalledUpdate, pendingInstalledUpdate } = fixtureRuntime.state;
+const { writeUpdateJournal } = fixtureRuntime.journal;
 import { installedFixture } from './support/installed-update.ts';
 test('restart discovery reads one private nonce and a bounded phase/status, never paths or actions from a report', async () => installedFixture(async plan => {
  assert.equal(await pendingInstalledUpdate(plan.userData), null);

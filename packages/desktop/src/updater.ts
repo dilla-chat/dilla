@@ -18,6 +18,11 @@ import type { CustomPublishOptions } from 'builder-util-runtime';
 import { RELEASE_PUBLIC_KEYS } from './update-keys.ts';
 import { newerVersion, verifyRelease, UpdateCoordinator, type Artifact, type Release, type UpdateState } from './update.ts';
 import { verifyArtifactFile } from './appimage.ts';
+import sandboxConfiguration from '../linux-sandbox-component.json' with { type: 'json' };
+import { readSandboxSidecars, saveSandboxSidecars, saveManualSignature, fetchSandboxAsset, type SandboxSidecars } from './linux-sandbox-cache.ts';
+import { launchSandboxPreparation, launchSandboxCheck, SandboxPreparationGate } from './linux-sandbox-prepare.ts';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 const channel = app.getVersion().includes('-beta.') ? 'beta' : 'stable';
 const feed = `https://github.com/jonasthim/dilla/releases/download/desktop-${channel}/desktop-${channel}.json`;
@@ -63,6 +68,13 @@ export function createUpdater(changed: (state: UpdateState) => void, failedQuit:
   let downloadedPath: string | null = null;
   let programManifest: Uint8Array | undefined;
   let descriptor: { metadata: Uint8Array; signature: string } | null = null;
+  let sandbox: SandboxSidecars | null = null;
+  let sandboxDirectory: string | null = null;
+  const sandboxPreparationGate = new SandboxPreparationGate();
+  const verifySandbox = async () => {
+    if (!sandbox || !sandboxDirectory) throw new Error('Missing authenticated sandbox sidecars');
+    return readSandboxSidecars(sandboxDirectory, { ...sandbox, now: Date.now() });
+  };
   // Do not instantiate Electron's macOS updater: unsigned builds MUST use the Sparkle bridge.
   let coordinator: UpdateCoordinator;
   const installer = new NativeQuitInstaller(app, error => { coordinator.installationFailed(error); failedQuit(); });
@@ -102,13 +114,36 @@ export function createUpdater(changed: (state: UpdateState) => void, failedQuit:
       if (process.platform === 'darwin' && sparkle && target) { await sparkle.prepare(release, target); return; }
       if (!native || !target) throw new Error('No verified update');
       programManifest = undefined;
+      sandbox = null;
+      sandboxDirectory = null;
       if(process.platform==='win32'){if(!target.programManifest)throw new Error('Missing authenticated Windows manifest');programManifest=await boundedFetch(target.programManifest.url,1048576);if(programManifest.byteLength!==target.programManifest.size)throw new Error('Windows manifest size differs');verifyWindowsProgramManifest(programManifest,target.programManifest.sha512,{version:release.version,channel,arch:'x64'});}
       const files = await native.downloadUpdate();
       if (files.length !== 1) throw new Error('Unexpected update artifacts');
-      try { await verifyArtifactFile(files[0], target); downloadedPath = files[0]; }
+      try {
+       await verifyArtifactFile(files[0], target);
+       if (process.platform === 'linux') {
+        if (!target.linuxSandbox || !release.assets) throw new Error('Missing authenticated sandbox descriptor');
+        const base = target.linuxSandbox.bundle.url, signal = AbortSignal.timeout(10_000);
+        const [capsule, manifest, signature] = await Promise.all([fetchSandboxAsset(base, 48*1024**2, signal), fetchSandboxAsset(base+'.json', 65536, signal), fetchSandboxAsset(base+'.sig', 89, signal)]);
+        sandbox = { version: release.version, descriptor: target.linuxSandbox, assets: release.assets, capsule, manifest, signature, keys: sandboxConfiguration.publicKeys, now: Date.now() };
+        sandboxDirectory = await saveSandboxSidecars(app.getPath('userData'), sandbox);
+        await saveManualSignature(process.env.XDG_CACHE_HOME || join(homedir(), '.cache'), sandbox);
+        await verifySandbox();
+       }
+       downloadedPath = files[0];
+      }
       catch (error) { await rm(files[0], { force: true }); downloadedPath = null; throw error; }
     },
     cancelledQuit: () => { sparkle?.cancelledQuit(); installer.cancel(); },
+    preparePrerequisites: async () => {
+      if (process.platform !== 'linux' || packageManaged) return;
+      if (!target || !downloadedPath || !sandbox) throw new Error('Missing verified update');
+      await verifyArtifactFile(downloadedPath, target);
+      const verified = await verifySandbox();
+      await sandboxPreparationGate.run(() => launchSandboxPreparation(downloadedPath!, Buffer.from(verified.signature.toString('utf8').trim(), 'base64'), verified));
+      await verifyArtifactFile(downloadedPath, target);
+      await verifySandbox();
+    },
     install: async () => {
       if (process.platform === 'linux') assertLinuxSelfUpdate();
       if (process.platform === 'darwin' && sparkle) { sparkle.install(); return; }
@@ -117,15 +152,22 @@ export function createUpdater(changed: (state: UpdateState) => void, failedQuit:
       catch (error) { await rm(downloadedPath, { force: true }); downloadedPath = null; throw error; }
       if (!descriptor || !['linux', 'win32'].includes(process.platform)) throw new Error('No authenticated update descriptor');
       const file = downloadedPath, artifact = target;
+      if (process.platform === 'linux') await verifySandbox();
       installer.arm(async () => {
        // Recheck after unload as well: no installer sees an unauthenticated cache file.
        await verifyArtifactFile(file, artifact);
+       if (process.platform === 'linux') {
+        const checked = await verifySandbox();
+        await launchSandboxCheck(file, Buffer.from(checked.signature.toString('utf8').trim(), 'base64'), checked);
+        await verifyArtifactFile(file, artifact);
+        await verifySandbox();
+       }
        const platform = process.platform as 'linux' | 'win32';
        const installed = platform === 'linux' ? process.env.APPIMAGE! : process.execPath;
        const windows=platform==='win32'?await currentWindowsInstallation(app.getPath('userData'),installed,{publicKeys:RELEASE_PUBLIC_KEYS,version:app.getVersion(),channel,arch:process.arch,productName:app.getName()}):undefined;
        const uninstall = windows ? await snapshotUninstall(windows.root) : undefined;
        const plan = await prepareInstalledUpdate({ userData: app.getPath('userData'), installed, downloaded: file, parentPid: process.pid,
-        metadata: descriptor!.metadata, signature: descriptor!.signature, ...(uninstall ? { uninstall } : {}), ...(windows ? {windows,programManifest}: {}) },
+        metadata: descriptor!.metadata, signature: descriptor!.signature, ...(platform === 'linux' ? { sandboxDirectory: sandboxDirectory! } : {}), ...(uninstall ? { uninstall } : {}), ...(windows ? {windows,programManifest}: {}) },
         { publicKeys: RELEASE_PUBLIC_KEYS, platform, arch: process.arch, version: app.getVersion(), channel });
        const watchdog = await launchUpdateWatchdog(plan);
        try { await activateInstalledUpdate(plan); await watchdog.arm(); }

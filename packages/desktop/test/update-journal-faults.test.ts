@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { installedFixture } from './support/installed-update.ts';
+import { fixtureRuntimePath } from './support/fixture-update-runtime.ts';
 
 // The child installs the fault before importing updater modules, so even a
 // captured fs.open sees the real open/write/fsync failure boundary. All program
@@ -48,8 +49,8 @@ for (const phase of ['installing', 'recovering', 'failed', 'complete'] as const)
    // URL-sensitive names exercise the child import boundary on every host;
    // each proxy exports the actual module after the child installs its faults.
    const module = join(root, 'watchdog # %.mjs'), healthModule = join(root, 'health # %.mjs');
-   await writeFile(module, `export {runInstalledUpdate} from ${JSON.stringify(pathToFileURL(resolve(import.meta.dirname, '../src/update-watchdog.ts')).href)};`);
-   await writeFile(healthModule, `export {reportStartupHealth} from ${JSON.stringify(pathToFileURL(resolve(import.meta.dirname, '../src/update-health.ts')).href)};`);
+   await writeFile(module, `export const {runInstalledUpdate}=(await import(${JSON.stringify(pathToFileURL(fixtureRuntimePath).href)})).watchdog;`);
+   await writeFile(healthModule, `export const {reportStartupHealth}=(await import(${JSON.stringify(pathToFileURL(fixtureRuntimePath).href)})).health;`);
    await writeFile(control, JSON.stringify({ plan, phase, fault, result, module: pathToFileURL(module).href, healthModule: pathToFileURL(healthModule).href }));
    const child = spawnSync(process.execPath, ['--input-type=module', '--eval', scenario, control], { encoding: 'utf8', timeout: 10000 });
    assert.equal(child.status, 0, child.stderr);

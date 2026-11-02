@@ -51,7 +51,7 @@ for (let page = 1; ; page++) {
 }
 await mkdir(directory, { recursive: true });
 const records = publicReleaseRecords(channel);
-await stagePublicReleaseRecords({ candidate, directory, channel });
+await stagePublicReleaseRecords({ candidate, directory, channel, version });
 await verifyDesktopBundle({ metadata, signature, trust, directory, run, jobs, version });
 console.log('Verified accepted native/client CI, native build provenance, installed-account proofs, review, performance reports, installer/update hashes and the Windows program manifest.');
 if (mode === 'verify') process.exit(0);

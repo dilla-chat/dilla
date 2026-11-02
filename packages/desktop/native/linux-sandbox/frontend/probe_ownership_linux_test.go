@@ -15,7 +15,7 @@ import (
 )
 
 func TestWaitidLeavesExitedGroupLeaderUnreaped(t *testing.T) {
-	cmd := exec.Command("/bin/true")
+	cmd := exec.CommandContext(t.Context(), "/bin/true")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if e := cmd.Start(); e != nil {
 		t.Fatal(e)
@@ -147,7 +147,7 @@ func TestOwnershipTraversalRejectsDuplicateOrCyclicChildren(t *testing.T) {
 
 func TestSubreaperScopeRestoresPriorSettingInIsolatedProcess(t *testing.T) {
 	if os.Getenv("DILLA_TEST_SUBREAPER") != "1" {
-		command := exec.Command(os.Args[0], "-test.run=^TestSubreaperScopeRestoresPriorSettingInIsolatedProcess$")
+		command := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestSubreaperScopeRestoresPriorSettingInIsolatedProcess$")
 		command.Env = append(os.Environ(), "DILLA_TEST_SUBREAPER=1")
 		if out, e := command.CombinedOutput(); e != nil {
 			t.Fatalf("isolated: %v %s", e, out)
@@ -177,14 +177,14 @@ func TestSubreaperScopeRestoresPriorSettingInIsolatedProcess(t *testing.T) {
 
 func TestProbeScopeRejectsPreexistingChildWithoutSignalingIt(t *testing.T) {
 	if os.Getenv("DILLA_TEST_EXISTING_CHILD") != "1" {
-		command := exec.Command(os.Args[0], "-test.run=^TestProbeScopeRejectsPreexistingChildWithoutSignalingIt$")
+		command := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestProbeScopeRejectsPreexistingChildWithoutSignalingIt$")
 		command.Env = append(os.Environ(), "DILLA_TEST_EXISTING_CHILD=1")
 		if out, e := command.CombinedOutput(); e != nil {
 			t.Fatalf("isolated: %v %s", e, out)
 		}
 		return
 	}
-	child := exec.Command("/bin/sleep", "30")
+	child := exec.CommandContext(t.Context(), "/bin/sleep", "30")
 	if e := child.Start(); e != nil {
 		t.Fatal(e)
 	}
@@ -230,14 +230,14 @@ func TestOwnedSnapshotRequiresEveryChildListUnchanged(t *testing.T) {
 
 func TestOwnedTreeFindsOnlyKernelListedDescendants(t *testing.T) {
 	if os.Getenv("DILLA_TEST_OWNED_TREE") != "1" {
-		command := exec.Command(os.Args[0], "-test.run=^TestOwnedTreeFindsOnlyKernelListedDescendants$")
+		command := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestOwnedTreeFindsOnlyKernelListedDescendants$")
 		command.Env = append(os.Environ(), "DILLA_TEST_OWNED_TREE=1")
 		if out, e := command.CombinedOutput(); e != nil {
 			t.Fatalf("isolated: %v %s", e, out)
 		}
 		return
 	}
-	child := exec.Command("/bin/sleep", "30")
+	child := exec.CommandContext(t.Context(), "/bin/sleep", "30")
 	child.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if e := child.Start(); e != nil {
 		t.Fatal(e)
@@ -270,7 +270,7 @@ func TestUnexpectedAdoptedChildForbidsGroupSignal(t *testing.T) {
 
 func TestProbeScopePreservesExistingSubreaper(t *testing.T) {
 	if os.Getenv("DILLA_TEST_ALREADY_SUBREAPER") != "1" {
-		command := exec.Command(os.Args[0], "-test.run=^TestProbeScopePreservesExistingSubreaper$")
+		command := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestProbeScopePreservesExistingSubreaper$")
 		command.Env = append(os.Environ(), "DILLA_TEST_ALREADY_SUBREAPER=1")
 		if out, e := command.CombinedOutput(); e != nil {
 			t.Fatalf("isolated: %v %s", e, out)
@@ -296,14 +296,14 @@ func TestProbeScopePreservesExistingSubreaper(t *testing.T) {
 
 func TestKnownChildRejectsReusedIdentityWithoutSignal(t *testing.T) {
 	if os.Getenv("DILLA_TEST_STALE_CHILD") != "1" {
-		command := exec.Command(os.Args[0], "-test.run=^TestKnownChildRejectsReusedIdentityWithoutSignal$")
+		command := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestKnownChildRejectsReusedIdentityWithoutSignal$")
 		command.Env = append(os.Environ(), "DILLA_TEST_STALE_CHILD=1")
 		if out, e := command.CombinedOutput(); e != nil {
 			t.Fatalf("isolated: %v %s", e, out)
 		}
 		return
 	}
-	child := exec.Command("/bin/sleep", "30")
+	child := exec.CommandContext(t.Context(), "/bin/sleep", "30")
 	if e := child.Start(); e != nil {
 		t.Fatal(e)
 	}

@@ -14,7 +14,7 @@ function validVersion(version) {
 export function buildArtifactNames(target, version) {
  validVersion(version); if (!Object.hasOwn(PLATFORMS, target)) throw new Error('Invalid build provenance target');
  const prefix = `dilla-${version}-${target}`;
- return target === 'linux-x64' ? [prefix + '.AppImage'] : target === 'win-x64' ? [prefix + '.exe', prefix + '.manifest.json'] : [prefix + '.dmg', prefix + '.zip'];
+ return target === 'linux-x64' ? [prefix + '.AppImage', prefix + '.sandbox', prefix + '.sandbox.json'] : target === 'win-x64' ? [prefix + '.exe', prefix + '.manifest.json'] : [prefix + '.dmg', prefix + '.zip'];
 }
 export function buildProvenanceName(target) {
  if (!Object.hasOwn(PLATFORMS, target)) throw new Error('Invalid build provenance target');
@@ -24,11 +24,15 @@ export function buildProvenanceName(target) {
  * must additionally be the CI-downloaded file, never a candidate replacement. */
 export function verifyBuildProvenance(record, target, expected, signedAssets) {
  const names = buildArtifactNames(target, expected.version);
- if (!exact(record, ['format', 'kind', 'repository', 'target', 'version', 'sourceCommit', 'sourceTree', 'ciRun', 'sourceClean', 'artifacts'])
+ if (!exact(record, ['format', 'kind', 'repository', 'target', 'version', 'sourceCommit', 'sourceTree', 'ciRun', 'sourceClean', 'artifacts', ...(target === 'linux-x64' ? ['linuxSandbox'] : [])])
   || record.format !== 1 || record.kind !== 'dilla-desktop-build' || record.repository !== 'jonasthim/dilla' || record.target !== target || record.version !== expected.version) throw new Error('Invalid build provenance fields');
  if (!COMMIT.test(record.sourceCommit) || !COMMIT.test(record.sourceTree) || record.sourceCommit !== expected.commit || record.sourceTree !== expected.tree
   || !Number.isSafeInteger(record.ciRun) || record.ciRun < 1 || record.ciRun !== expected.ciRun || record.sourceClean !== true) throw new Error('Build provenance source binding mismatch');
  if (!Array.isArray(record.artifacts) || record.artifacts.length !== names.length || !Array.isArray(signedAssets)) throw new Error('Invalid build provenance artifacts');
+ if (target === 'linux-x64') {
+  const proof = record.linuxSandbox, fields = ['capsuleSha512','manifestSha512','electronSha512','asarSha512','embeddedCapsuleSha512','embeddedManifestSha512'];
+  if (!exact(proof, fields) || fields.some(field => typeof proof[field] !== 'string' || !HASH.test(proof[field]) || Buffer.from(proof[field], 'base64').toString('base64') !== proof[field]) || proof.capsuleSha512 !== record.artifacts[1]?.sha512 || proof.manifestSha512 !== record.artifacts[2]?.sha512 || proof.embeddedCapsuleSha512 !== proof.capsuleSha512 || proof.embeddedManifestSha512 !== proof.manifestSha512) throw new Error('Invalid Linux sandbox build provenance proof');
+ }
  for (let index = 0; index < names.length; index++) {
   const artifact = record.artifacts[index];
   if (!exact(artifact, ['name', 'size', 'sha512']) || artifact.name !== names[index] || !Number.isSafeInteger(artifact.size) || artifact.size < 1 || artifact.size > 4 * 1024 ** 3
@@ -65,7 +69,16 @@ export async function emitBuildProvenance(directory, target, options = {}) {
  if (git(['status', '--porcelain', '--untracked-files=all']) !== '') throw new Error('Native build provenance requires a clean source checkout');
  const version = JSON.parse(await readFile(join(repositoryRoot, 'packages/desktop/package.json'), 'utf8')).version;
  const artifacts = []; for (const name of buildArtifactNames(target, version)) artifacts.push(await artifactRecord(directory, name));
- const record = { format: 1, kind: 'dilla-desktop-build', repository: 'jonasthim/dilla', target, version, sourceCommit, sourceTree, ciRun: Number(environment.GITHUB_RUN_ID), sourceClean: true, artifacts };
+ let linuxSandbox;
+ if (target === 'linux-x64') {
+  const { inspectAppImage } = await import('./inspect-linux-sandbox-package.mjs');
+  linuxSandbox = await inspectAppImage({ image: join(directory, artifacts[0].name), capsuleFile: join(directory, artifacts[1].name), manifestFile: join(directory, artifacts[2].name) });
+  for (let i=0;i<artifacts.length;i++) {
+   const after=await artifactRecord(directory, artifacts[i].name);
+   if (after.size!==artifacts[i].size || after.sha512!==artifacts[i].sha512) throw new Error('Linux artifact changed during final-image inspection');
+  }
+ }
+ const record = { format: 1, kind: 'dilla-desktop-build', repository: 'jonasthim/dilla', target, version, sourceCommit, sourceTree, ciRun: Number(environment.GITHUB_RUN_ID), sourceClean: true, artifacts, ...(linuxSandbox ? {linuxSandbox} : {}) };
  verifyBuildProvenance(record, target, { commit: sourceCommit, tree: sourceTree, ciRun: record.ciRun, version }, artifacts);
  const file = join(directory, buildProvenanceName(target)); await writeFile(file, JSON.stringify(record) + '\n', { flag: 'wx' }); return { file, record };
 }

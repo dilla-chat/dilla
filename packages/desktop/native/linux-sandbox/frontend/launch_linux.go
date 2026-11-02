@@ -177,8 +177,27 @@ func launchState(s Status, e EmbeddedCapsule) string {
 // DispatchLaunch is called by the unprivileged launcher with its compiled
 // capsule. Runtime arguments cannot choose paths, trust, or setup payloads.
 func DispatchLaunch(args []string, e EmbeddedCapsule) error {
+	return DispatchLaunchVersion(args, e, "")
+}
+
+// DispatchLaunchVersion receives only the product version compiled by packaging.
+func DispatchLaunchVersion(args []string, e EmbeddedCapsule, compiledVersion string) error {
 	if len(e.unsigned) == 0 {
 		return errLaunch
+	}
+	nonce, check, err := checkUpdateRole(args, os.Environ())
+	if err != nil {
+		return err
+	}
+	if check {
+		return prepareUpdate(nonce, e, true)
+	}
+	nonce, prepare, err := prepareUpdateRole(args, os.Environ())
+	if err != nil {
+		return err
+	}
+	if prepare {
+		return prepareUpdate(nonce, e, false)
 	}
 	strict, err := strictRole(args, os.Environ())
 	if err != nil {
@@ -201,10 +220,20 @@ func DispatchLaunch(args []string, e EmbeddedCapsule) error {
 		probe: func() (ProbeResult, error) { return RunSandboxProbe(owned) },
 		ensure: func() error {
 			reason := InitialSetup
+			capsule := e
 			if last.resident {
 				reason = RepairSetup
+				// Pending maintenance resumes an already authorized resident intent.
+				// A new upgrade from ready needs a current dedicated signature.
+				if last.Status == "ready" {
+					var err error
+					capsule, err = manualSignedCapsule(compiledVersion, e)
+					if err != nil {
+						return errLaunch
+					}
+				}
 			}
-			out, err := Ensure(e, reason)
+			out, err := Ensure(capsule, reason)
 			if err != nil || (out != Prepared && out != AlreadyReady) {
 				return errLaunch
 			}
@@ -215,6 +244,7 @@ func DispatchLaunch(args []string, e EmbeddedCapsule) error {
 				return err
 			}
 			env := launchEnvironment(os.Environ(), filepath.Dir(owned.electron))
+			// #nosec G204 -- fixed sibling rechecked on the owned read-only mount; argv is passed directly without a shell.
 			return syscall.Exec(owned.electron, append([]string{owned.electron}, argv...), env)
 		},
 	}
