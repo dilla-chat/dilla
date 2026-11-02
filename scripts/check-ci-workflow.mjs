@@ -1227,6 +1227,36 @@ export function checkDesktopWorkflow(root) {
   if (/--no-sandbox|contents: write|--publish always/.test(text)) problems.push(`${file}: desktop validation must keep sandboxing and cannot publish`);
   const body = job => text.split(`\n  ${job}:\n`)[1]?.split(/\n  [a-z][a-z0-9-]*:\n/)[0] ?? '';
   const nativeSteps = jobSteps(body('native'));
+  const packages = body('native-linux-packages'), packageSteps = jobSteps(packages);
+  const packageBuild = `name: Build native Linux release packages
+run: |
+version="$(node -p "require('./packages/desktop/package.json').version")"
+node --input-type=module -e "import {verifyShippingCoreWasmInDist} from './e2e/web/support/shipping-wasm.mjs'; verifyShippingCoreWasmInDist('packages/web/dist')"
+node packages/desktop/scripts/build-native-linux-packages.mjs build "$RUNNER_TEMP/native-linux-packages" "$version"
+node --input-type=module -e "import {checkDesktopFuses} from './packages/desktop/scripts/check-fuses.mjs'; await checkDesktopFuses(process.argv[1])" "$RUNNER_TEMP/native-linux-packages"
+node packages/desktop/scripts/build-native-linux-packages.mjs recipe "$version" "$RUNNER_TEMP/native-linux-packages/dilla-$version-linux-x64.deb" "$RUNNER_TEMP/native-linux-recipe"
+cp "$RUNNER_TEMP/native-linux-recipe/dilla-$version-linux-x64.aur.tar.gz" "$RUNNER_TEMP/native-linux-packages/"`;
+  const packageProof = 'name: Record native Linux package build provenance\nrun: node packages/desktop/scripts/build-provenance.mjs "$RUNNER_TEMP/native-linux-packages" linux-packages-x64';
+  const packageUpload = `uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+with:
+name: desktop-installers-linux-packages-x64
+path: |
+\${{ runner.temp }}/native-linux-packages/*.deb
+\${{ runner.temp }}/native-linux-packages/*.rpm
+\${{ runner.temp }}/native-linux-packages/*.aur.tar.gz
+\${{ runner.temp }}/native-linux-packages/build-provenance-linux-packages-x64.json
+if-no-files-found: error`;
+  const packageBuildIndex = packageSteps.findIndex(step => step.join('\n') === packageBuild);
+  const packageProofIndex = packageSteps.findIndex(step => step.join('\n') === packageProof);
+  const packageUploadIndex = packageSteps.findIndex(step => step.join('\n') === packageUpload);
+  const packageCheckout = `uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+with:
+persist-credentials: false`;
+  if (!packages.includes('name: desktop-linux-packages-x64') || !packages.includes('runs-on: ubuntu-24.04')
+   || packageSteps[0]?.join('\n') !== packageCheckout || packageBuildIndex < 0 || packageProofIndex <= packageBuildIndex || packageUploadIndex <= packageProofIndex
+   || ['dilla-web-dist', 'dilla-desktop-core'].some(name => !packageSteps.slice(0, packageBuildIndex).some(step => step.includes('name: ' + name) && step.includes('uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8')))
+   || /^\s*if:|run-id:|repository:|github-token:|packages\/desktop\/out|--no-sandbox/m.test(packages)) problems.push(`${file}: native Linux package producer must build the source version with existing client/core, verify fuses and independent clean provenance, and upload only its exact three outputs and record`);
+
   // Installed AppImages compile the GTK launcher and provision their exact
   // compiled initial capsule inside the isolated test, not a copied bare helper.
   for (const job of ['native','voice','client']) {

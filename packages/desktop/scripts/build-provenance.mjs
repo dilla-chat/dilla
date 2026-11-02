@@ -4,7 +4,7 @@ import { lstat, open, readFile, writeFile } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const PLATFORMS = Object.freeze({ 'linux-x64': ['linux', 'x64'], 'win-x64': ['win32', 'x64'], 'mac-x64': ['darwin', 'x64'], 'mac-arm64': ['darwin', 'arm64'] });
+const PLATFORMS = Object.freeze({ 'linux-x64': ['linux', 'x64'], 'linux-packages-x64': ['linux', 'x64'], 'win-x64': ['win32', 'x64'], 'mac-x64': ['darwin', 'x64'], 'mac-arm64': ['darwin', 'arm64'] });
 const COMMIT = /^[a-f0-9]{40}$/, HASH = /^[A-Za-z0-9+/]{86}==$/;
 function exact(value, fields) { return value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === fields.length && fields.every(key => Object.hasOwn(value, key)); }
 function validVersion(version) {
@@ -13,6 +13,7 @@ function validVersion(version) {
 }
 export function buildArtifactNames(target, version) {
  validVersion(version); if (!Object.hasOwn(PLATFORMS, target)) throw new Error('Invalid build provenance target');
+ if (target === 'linux-packages-x64') return ['deb', 'rpm', 'aur.tar.gz'].map(ext => `dilla-${version}-linux-x64.${ext}`);
  const prefix = `dilla-${version}-${target}`;
  return target === 'linux-x64' ? [prefix + '.AppImage', prefix + '.sandbox', prefix + '.sandbox.json'] : target === 'win-x64' ? [prefix + '.exe'] : [prefix + '.dmg', prefix + '.zip'];
 }
@@ -77,6 +78,11 @@ export async function emitBuildProvenance(directory, target, options = {}) {
    const after=await artifactRecord(directory, artifacts[i].name);
    if (after.size!==artifacts[i].size || after.sha512!==artifacts[i].sha512) throw new Error('Linux artifact changed during final-image inspection');
   }
+ }
+ if (target === 'linux-packages-x64') {
+  const { verifyAurRecipe } = await import('./build-native-linux-packages.mjs');
+  await verifyAurRecipe(version, join(directory, artifacts[0].name), join(directory, artifacts[2].name));
+  for (const artifact of artifacts) { const after = await artifactRecord(directory, artifact.name); if (after.size !== artifact.size || after.sha512 !== artifact.sha512) throw new Error('Native package changed during recipe inspection'); }
  }
  const record = { format: 1, kind: 'dilla-desktop-build', repository: 'jonasthim/dilla', target, version, sourceCommit, sourceTree, ciRun: Number(environment.GITHUB_RUN_ID), sourceClean: true, artifacts, ...(linuxSandbox ? {linuxSandbox} : {}) };
  verifyBuildProvenance(record, target, { commit: sourceCommit, tree: sourceTree, ciRun: record.ciRun, version }, artifacts);

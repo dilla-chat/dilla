@@ -4,7 +4,10 @@ import { mkdtemp, writeFile, chmod, stat, symlink, rm, readFile, mkdir }  from '
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { gzipSync, gunzipSync } from 'node:zlib';
 import { createRequire } from 'node:module';
+import * as nativePackages from '../scripts/build-native-linux-packages.mjs';
 import { aurRecipe, writeAurRecipe } from '../scripts/build-native-linux-packages.mjs';
 const require = createRequire(import.meta.url);
 test('native builder keeps stock packages separate from AppImage hooks', () => {
@@ -83,4 +86,44 @@ test('audio helper ELF dependency is represented in all native package metadata'
  assert.match(rpm, /^libpipewire-0\.3\.so\.0\(\)\(64bit\)$/m);
  assert.match(rpm, /^gtk3$/m);
  assert.match(aurRecipe('0.1.0-beta.1', 'a'.repeat(64))['.SRCINFO'], /depends = libpipewire\n/);
+});
+
+
+test('release recipe observation rejects different DEB/version, extra members and symlinks without extraction', { skip: process.platform !== 'linux' }, async () => {
+ const root = await mkdtemp(join(tmpdir(), 'dilla-recipe-release-'));
+ try {
+  const version = '1.2.3-beta.4', deb = join(root, `dilla-${version}-linux-x64.deb`);
+  await writeFile(deb, 'exact accepted DEB');
+  const directory = join(root, 'recipe'), archive = await writeAurRecipe(version, deb, directory);
+  assert.equal(typeof nativePackages.verifyAurRecipe, 'function', 'release must observe both canonical recipe members against the accepted DEB');
+  await nativePackages.verifyAurRecipe(version, deb, archive);
+  const canonicalArchive = await readFile(archive), aliasedName = gunzipSync(canonicalArchive);
+  aliasedName[0] |= 0x80; aliasedName.fill(32, 148, 156);
+  const checksum = aliasedName.subarray(0, 512).reduce((sum, byte) => sum + byte, 0);
+  aliasedName.write(checksum.toString(8).padStart(6, '0') + '\0 ', 148, 'ascii');
+  await writeFile(archive, gzipSync(aliasedName));
+  await assert.rejects(nativePackages.verifyAurRecipe(version, deb, archive), /recipe/i);
+  await writeFile(archive, canonicalArchive);
+  await assert.rejects(nativePackages.verifyAurRecipe('1.2.4', deb, archive), /recipe/i);
+  await writeFile(deb, 'different accepted DEB');
+  await assert.rejects(nativePackages.verifyAurRecipe(version, deb, archive), /recipe/i);
+  await writeFile(deb, 'exact accepted DEB');
+  await writeFile(join(directory, '.SRCINFO'), aurRecipe(version, 'f'.repeat(64))['.SRCINFO']);
+  execFileSync('tar', ['-czf', archive, '-C', directory, '.SRCINFO', 'PKGBUILD']);
+  await assert.rejects(nativePackages.verifyAurRecipe(version, deb, archive), /recipe/i);
+  await writeFile(join(directory, '.SRCINFO'), aurRecipe(version, createHash('sha256').update('exact accepted DEB').digest('hex'))['.SRCINFO']);
+  await writeFile(join(directory, 'extra'), 'unexpected');
+  execFileSync('tar', ['-czf', archive, '-C', directory, '.SRCINFO', 'PKGBUILD', 'extra']);
+  await assert.rejects(nativePackages.verifyAurRecipe(version, deb, archive), /recipe/i);
+  await writeFile(join(directory, 'PKGBUILD'), aurRecipe(version, createHash('sha256').update('exact accepted DEB').digest('hex')).PKGBUILD);
+  execFileSync('tar', ['--transform=s,PKGBUILD,../PKGBUILD,', '-czf', archive, '-C', directory, '.SRCINFO', 'PKGBUILD']);
+  await assert.rejects(nativePackages.verifyAurRecipe(version, deb, archive), /recipe/i);
+  await rm(join(directory, 'PKGBUILD')); await symlink(deb, join(directory, 'PKGBUILD'));
+  execFileSync('tar', ['-czf', archive, '-C', directory, '.SRCINFO', 'PKGBUILD']);
+  await assert.rejects(nativePackages.verifyAurRecipe(version, deb, archive), /recipe/i);
+  await writeFile(archive, gzipSync(Buffer.alloc(65537)));
+  await assert.rejects(nativePackages.verifyAurRecipe(version, deb, archive), /recipe/i);
+  await writeFile(archive, Buffer.alloc(65537));
+  await assert.rejects(nativePackages.verifyAurRecipe(version, deb, archive), /recipe/i);
+ } finally { await rm(root, { recursive: true, force: true }); }
 });

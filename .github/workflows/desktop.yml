@@ -113,6 +113,50 @@ jobs:
         run: |
           sudo -H -u dilla-ci env "PATH=$PATH" "GITHUB_ACTIONS=$GITHUB_ACTIONS" "GITHUB_SHA=$GITHUB_SHA" "GITHUB_RUN_ID=$GITHUB_RUN_ID" "GITHUB_RUN_ATTEMPT=$GITHUB_RUN_ATTEMPT" CI=true DILLA_E2E_TOOLING_DIR=/home/dilla-ci/workspace/artifacts/e2e-test-tools bash -c 'cd /home/dilla-ci/workspace && xvfb-run -a bash e2e/web/support/installed-keyring.sh bash packages/desktop/scripts/with-window-manager.sh npm exec -w @dilla/e2e -- playwright test --config playwright.native-stock.config.ts'
 
+  # Build/source proof only. Installed DEB/RPM/AUR qualification remains a
+  # separate release requirement; this producer does not claim that acceptance.
+  native-linux-packages:
+    name: desktop-linux-packages-x64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-web-dist
+          path: packages/web/dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-desktop-core
+          path: packages/core-wasm/pkg
+      - run: sudo apt-get update && sudo apt-get install -y rpm libpipewire-0.3-dev pkg-config
+      - run: npm ci
+      - run: node node_modules/electron/install.js
+      - name: Build native Linux release packages
+        run: |
+          version="$(node -p "require('./packages/desktop/package.json').version")"
+          node --input-type=module -e "import {verifyShippingCoreWasmInDist} from './e2e/web/support/shipping-wasm.mjs'; verifyShippingCoreWasmInDist('packages/web/dist')"
+          node packages/desktop/scripts/build-native-linux-packages.mjs build "$RUNNER_TEMP/native-linux-packages" "$version"
+          node --input-type=module -e "import {checkDesktopFuses} from './packages/desktop/scripts/check-fuses.mjs'; await checkDesktopFuses(process.argv[1])" "$RUNNER_TEMP/native-linux-packages"
+          node packages/desktop/scripts/build-native-linux-packages.mjs recipe "$version" "$RUNNER_TEMP/native-linux-packages/dilla-$version-linux-x64.deb" "$RUNNER_TEMP/native-linux-recipe"
+          cp "$RUNNER_TEMP/native-linux-recipe/dilla-$version-linux-x64.aur.tar.gz" "$RUNNER_TEMP/native-linux-packages/"
+      - name: Record native Linux package build provenance
+        run: node packages/desktop/scripts/build-provenance.mjs "$RUNNER_TEMP/native-linux-packages" linux-packages-x64
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: desktop-installers-linux-packages-x64
+          path: |
+            ${{ runner.temp }}/native-linux-packages/*.deb
+            ${{ runner.temp }}/native-linux-packages/*.rpm
+            ${{ runner.temp }}/native-linux-packages/*.aur.tar.gz
+            ${{ runner.temp }}/native-linux-packages/build-provenance-linux-packages-x64.json
+          if-no-files-found: error
+
   native:
     name: desktop-${{ matrix.platform }}-${{ matrix.arch }}
     runs-on: ${{ matrix.os }}

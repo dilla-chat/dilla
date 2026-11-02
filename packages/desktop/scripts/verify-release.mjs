@@ -6,10 +6,12 @@ import { verifyRelease, verifyArtifact } from '../src/update.ts';
 import { inspectLinuxSandboxCapsule, verifyLinuxSandboxRelease } from '../src/linux-sandbox-release.ts';
 import { assertDedicatedKeys, parsePublicConfiguration } from './linux-sandbox-package.mjs';
 import { verifyInstalledAccountReport } from './installed-account-proof.mjs';
+import { verifyAurRecipe } from './build-native-linux-packages.mjs';
 import { buildProvenanceName, readBuildProvenanceFile, verifyBuildProvenance, verifyCandidateBuildRecord } from './build-provenance.mjs';
 
 export const TARGETS = ['linux-x64', 'win-x64', 'mac-x64', 'mac-arm64'];
-export const BUILD_PROVENANCE_RECORDS = Object.freeze(TARGETS.map(buildProvenanceName));
+export const BUILD_TARGETS = Object.freeze([...TARGETS, 'linux-packages-x64']);
+export const BUILD_PROVENANCE_RECORDS = Object.freeze(BUILD_TARGETS.map(buildProvenanceName));
 export const PUBLIC_ACCEPTANCE_RECORDS = Object.freeze(['release-notes.md', 'security-review.md',
  ...TARGETS.flatMap(target => [`performance-${target}.json`, `installed-account-${target}.json`]), ...BUILD_PROVENANCE_RECORDS]);
 /** Shared by the offline signer and the online publisher. Only public,
@@ -18,7 +20,7 @@ export function publicReleaseRecords(channel) {
  if (!['stable', 'beta'].includes(channel)) throw new Error('Invalid desktop publication channel');
  return [`desktop-${channel}.json`, `desktop-${channel}.json.sig`, ...PUBLIC_ACCEPTANCE_RECORDS, 'appcast-x64.xml', 'appcast-arm64.xml'];
 }
-/** The publisher downloads these four records inside the accepted installer
+/** The publisher downloads these independent records inside the accepted installer
  * artifacts. Verify their independent copies before staging candidate records;
  * the signed candidate may never create or overwrite native build provenance. */
 export async function stagePublicReleaseRecords({ candidate, directory, channel, version }) {
@@ -51,14 +53,22 @@ async function verifyBundle({ metadata, signature, trust, directory, run, jobs, 
    || run.repository?.full_name !== 'jonasthim/dilla' || run.head_repository?.full_name !== 'jonasthim/dilla') throw new Error('The accepted same-repository CI run must be complete and successful');
  if (!Array.isArray(jobs)) throw new Error('Missing complete CI job inventory');
  const builds = source.builds;
- if (!builds || typeof builds !== 'object' || Array.isArray(builds) || Object.keys(builds).length !== TARGETS.length
-   || TARGETS.some(target => !Object.hasOwn(builds, target))) throw new Error('Missing build provenance digests');
- for (const target of TARGETS) {
+ if (!builds || typeof builds !== 'object' || Array.isArray(builds) || Object.keys(builds).length !== BUILD_TARGETS.length
+   || BUILD_TARGETS.some(target => !Object.hasOwn(builds, target))) throw new Error('Missing build provenance digests');
+ for (const target of BUILD_TARGETS) {
   const record = builds[target];
   if (!record || typeof record !== 'object' || Array.isArray(record) || Object.keys(record).length !== 1 || !/^[a-f0-9]{64}$/.test(record.sha256)) throw new Error('Missing build provenance digest: ' + target);
   const bytes = await readBuildProvenanceFile(join(directory, buildProvenanceName(target)));
   if (digest(bytes) !== record.sha256) throw new Error('Build provenance digest mismatch: ' + target);
   verifyBuildProvenance(JSON.parse(bytes), target, { commit: source.commit, tree: source.tree, ciRun: source.ciRun, version }, release.assets);
+ }
+ const packageProducer = jobs.filter(job => job.name.endsWith('desktop-linux-packages-x64'));
+ if (packageProducer.length !== 1 || packageProducer[0].conclusion !== 'success' || ['Build native Linux release packages', 'Record native Linux package build provenance'].some(name => !packageProducer[0].steps?.some(step => step.name === name && step.conclusion === 'success'))) throw new Error('Missing accepted native Linux package producer');
+ // Build/recipe observation is not installed-package qualification. These
+ // same-run gates deliberately remain required until each format is exercised.
+ for (const format of ['deb', 'rpm', 'aur']) {
+  const accepted = jobs.filter(job => job.name.endsWith(`desktop-linux-package-acceptance-${format}-x64`));
+  if (accepted.length !== 1 || accepted[0].conclusion !== 'success' || !accepted[0].steps?.some(step => step.name === `Installed ${format.toUpperCase()} package acceptance` && step.conclusion === 'success')) throw new Error('Missing installed native Linux package acceptance: ' + format);
  }
  for (const target of TARGETS) {
   const native = jobs.find(job => job.name.endsWith(`desktop-${target}`));
@@ -107,6 +117,7 @@ async function verifyBundle({ metadata, signature, trust, directory, run, jobs, 
  }
  const assets = release.assets;
  const requiredNames = [
+  ...['deb', 'rpm', 'aur.tar.gz'].map(ext => `dilla-${version}-linux-x64.${ext}`),
   `dilla-${version}-linux-x64.AppImage`, ...['sandbox','sandbox.json','sandbox.sig'].map(ext => `dilla-${version}-linux-x64.${ext}`), `dilla-${version}-win-x64.exe`,
   ...['x64', 'arm64'].flatMap(arch => [`dilla-${version}-mac-${arch}.zip`, `dilla-${version}-mac-${arch}.dmg`]),
  ];
@@ -119,6 +130,7 @@ async function verifyBundle({ metadata, signature, trust, directory, run, jobs, 
   const bytes = asset.name.endsWith('.sandbox.sig') && sandboxSignature !== undefined ? Buffer.from(sandboxSignature) : await readFile(join(directory, asset.name));
   if (!verifyArtifact(bytes, asset)) throw new Error('Release artifact digest mismatch: ' + asset.name);
  }
+ await verifyAurRecipe(version, join(directory, `dilla-${version}-linux-x64.deb`), join(directory, `dilla-${version}-linux-x64.aur.tar.gz`));
  const capsuleName = `dilla-${version}-linux-x64.sandbox`, manifestName = capsuleName + '.json', signatureName = capsuleName + '.sig';
  const capsuleAsset = assets.find(asset => asset.name === capsuleName), manifestAsset = assets.find(asset => asset.name === manifestName), signatureAsset = assets.find(asset => asset.name === signatureName);
  const linux = release.artifacts.find(a => a.platform === 'linux' && a.arch === 'x64'), descriptor = linux?.linuxSandbox;

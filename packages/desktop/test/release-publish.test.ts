@@ -4,6 +4,7 @@ import { generateKeyPairSync, createHash, sign } from 'node:crypto';
 import { mkdtemp, mkdir, writeFile, readFile, readdir, copyFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { sandboxReleaseFixture } from './support/linux-sandbox-release-fixture.ts';
 // @ts-expect-error publishing tooling is JavaScript
@@ -14,6 +15,10 @@ import { verifyDesktopBundle, TARGETS, publicReleaseRecords, stagePublicReleaseR
 import { ACCOUNT_CHECKS } from '../scripts/installed-account-proof.mjs';
 // @ts-expect-error build tooling is JavaScript
 import { buildArtifactNames, buildProvenanceName } from '../scripts/build-provenance.mjs';
+
+// @ts-expect-error native recipe tooling is JavaScript
+import { aurRecipe } from '../scripts/build-native-linux-packages.mjs';
+const buildTargets = [...TARGETS, 'linux-packages-x64'];
 
 test('publication refuses missing native acceptance even when the generic CI status is green', async () => {
  const sandbox = sandboxReleaseFixture();
@@ -35,24 +40,32 @@ test('publication refuses missing native acceptance even when the generic CI sta
     target, sourceCommit: source.commit, sourceDirty: false, status: 'passed' }));
    await writeFile(join(directory, `installed-account-${target}.json`), account); source.installedAccounts[target] = { sha256: createHash('sha256').update(account).digest('hex') };
   }
+  for (const format of ['deb', 'rpm', 'aur']) jobs.push({ name: `desktop / desktop-linux-package-acceptance-${format}-x64`, conclusion: 'success', steps: [{ name: `Installed ${format.toUpperCase()} package acceptance`, conclusion: 'success' }] });
+  jobs.push({ name: 'desktop / desktop-linux-packages-x64', conclusion: 'success', steps: ['Build native Linux release packages', 'Record native Linux package build provenance'].map(name => ({ name, conclusion: 'success' })) });
   const assets: Array<{name:string;size:number;sha512:string}> = [];
-  for (const name of [`dilla-${version}-linux-x64.AppImage`, ...['sandbox','sandbox.json','sandbox.sig'].map(ext => `dilla-${version}-linux-x64.${ext}`), `dilla-${version}-win-x64.exe`, ...['x64', 'arm64'].flatMap(arch => [`dilla-${version}-mac-${arch}.zip`, `dilla-${version}-mac-${arch}.dmg`])]) {
+  for (const name of [...['deb', 'rpm', 'aur.tar.gz'].map(ext => `dilla-${version}-linux-x64.${ext}`), `dilla-${version}-linux-x64.AppImage`, ...['sandbox','sandbox.json','sandbox.sig'].map(ext => `dilla-${version}-linux-x64.${ext}`), `dilla-${version}-win-x64.exe`, ...['x64', 'arm64'].flatMap(arch => [`dilla-${version}-mac-${arch}.zip`, `dilla-${version}-mac-${arch}.dmg`])]) {
    const bytes = name.endsWith('.sandbox.sig') ? sandbox.signature : name.endsWith('.sandbox.json') ? sandbox.manifest : name.endsWith('.sandbox') ? sandbox.capsule : Buffer.from(name); await writeFile(join(directory, name), bytes); assets.push({ name, size: bytes.length, sha512: createHash('sha512').update(bytes).digest('base64') });
   }
-  for (const target of TARGETS) {
+  const recipeDirectory = join(directory, 'recipe'); await mkdir(recipeDirectory);
+  for (const [name, value] of Object.entries(aurRecipe(version, createHash('sha256').update(`dilla-${version}-linux-x64.deb`).digest('hex')))) await writeFile(join(recipeDirectory, name), value as string);
+  const recipeName = `dilla-${version}-linux-x64.aur.tar.gz`;
+  execFileSync('tar', ['--format=ustar', '-czf', join(directory, recipeName), '-C', recipeDirectory, '.SRCINFO', 'PKGBUILD']);
+  const recipeBytes = await readFile(join(directory, recipeName)); Object.assign(assets.find(asset => asset.name === recipeName)!, { size: recipeBytes.length, sha512: createHash('sha512').update(recipeBytes).digest('base64') });
+  for (const target of buildTargets) {
    const record = Buffer.from(JSON.stringify({ format: 1, kind: 'dilla-desktop-build', repository: 'jonasthim/dilla', target, version,
     sourceCommit: source.commit, sourceTree: source.tree, ciRun: source.ciRun, sourceClean: true,
     artifacts: buildArtifactNames(target, version).map((name: string) => assets.find(asset => asset.name === name)), ...(target === 'linux-x64' ? {linuxSandbox:{capsuleSha512:sandbox.hash(sandbox.capsule),manifestSha512:sandbox.hash(sandbox.manifest),embeddedCapsuleSha512:sandbox.hash(sandbox.capsule),embeddedManifestSha512:sandbox.hash(sandbox.manifest),electronSha512:sandbox.hash(Buffer.from('fixture-elf')),asarSha512:sandbox.hash(Buffer.from('fixture-asar'))}} : {}) }));
    await writeFile(join(directory, buildProvenanceName(target)), record); source.builds[target] = { sha256: createHash('sha256').update(record).digest('hex') };
   }
-  const release = { format: 1, version, channel: 'stable', publishedAt: '2026-11-01T00:00:00Z', expiresAt: '2026-12-01T00:00:00Z', source, assets, artifacts: assets.filter(asset => !asset.name.endsWith('.dmg') && !asset.name.includes('.sandbox')).map(({name, ...asset}) => ({ ...asset, platform: name.includes('-linux-') ? 'linux' : name.includes('-win-') ? 'win32' : 'darwin', arch: name.includes('arm64') ? 'arm64' : 'x64', url: `https://github.com/jonasthim/dilla/releases/download/desktop-v${version}/${name}`, ...(name.endsWith('-linux-x64.AppImage') ? {linuxSandbox:{compatibilityEpoch:1,minimumGeneration:1,bundle:{url:`https://github.com/jonasthim/dilla/releases/download/desktop-v${version}/dilla-${version}-linux-x64.sandbox`,size:sandbox.capsule.length,sha512:sandbox.hash(sandbox.capsule)}}} : {}), ...(name.endsWith('.zip') ? { sparkleSignature: sign(null, Buffer.from(name), sparkle.privateKey).toString('base64') } : {}) })) };
-  assert.equal(release.assets.length, 9, 'six installers plus three authenticated Linux sandbox assets');
+  const release = { format: 1, version, channel: 'stable', publishedAt: '2026-11-01T00:00:00Z', expiresAt: '2026-12-01T00:00:00Z', source, assets, artifacts: assets.filter(asset => /\.(AppImage|exe|zip)$/.test(asset.name)).map(({name, ...asset}) => ({ ...asset, platform: name.includes('-linux-') ? 'linux' : name.includes('-win-') ? 'win32' : 'darwin', arch: name.includes('arm64') ? 'arm64' : 'x64', url: `https://github.com/jonasthim/dilla/releases/download/desktop-v${version}/${name}`, ...(name.endsWith('-linux-x64.AppImage') ? {linuxSandbox:{compatibilityEpoch:1,minimumGeneration:1,bundle:{url:`https://github.com/jonasthim/dilla/releases/download/desktop-v${version}/dilla-${version}-linux-x64.sandbox`,size:sandbox.capsule.length,sha512:sandbox.hash(sandbox.capsule)}}} : {}), ...(name.endsWith('.zip') ? { sparkleSignature: sign(null, Buffer.from(name), sparkle.privateKey).toString('base64') } : {}) })) };
+  assert.equal(release.assets.length, 12, 'nine installable/recipe assets plus three authenticated Linux sandbox assets');
+  assert.equal(release.artifacts.length, 4, 'package managers own native-format updates');
   for (const artifact of release.artifacts.filter(a => a.platform === 'darwin')) await writeFile(join(directory, `appcast-${artifact.arch}.xml`), signedAppcast(appcast(release, artifact, artifact.sparkleSignature), sparkle.privateKey));
   const metadata = Buffer.from(JSON.stringify(release)), signature = sign(null, metadata, key.privateKey).toString('base64');
   const context = { metadata, signature, trust: { metadataPublicKeys: [key.publicKey.export({ type: 'spki', format: 'pem' }).toString()], sparklePublicKey: sparkle.publicKey.export({ type: 'spki', format: 'der' }).subarray(-32).toString('base64') }, directory, run: { id: 10, head_sha: source.head, name: 'ci', status: 'completed', conclusion: 'success', repository: { full_name: 'jonasthim/dilla' }, head_repository: { full_name: 'jonasthim/dilla' } }, jobs, version, now: Date.parse('2026-11-02') };
   // Further verifier invocations below use isolated fixture trust, never production configuration.
   const testTools = join(directory,'fixture-verifier');
-  for (const relative of ['scripts/verify-release.mjs','scripts/feed-format.mjs','scripts/installed-account-proof.mjs','scripts/build-provenance.mjs','scripts/linux-sandbox-package.mjs','src/update.ts','src/update-fs.ts','src/linux-sandbox-release.ts']) { const path=join(testTools,relative); await mkdir(dirname(path),{recursive:true}); await copyFile(resolve(import.meta.dirname,'..',relative),path); }
+  for (const relative of ['scripts/verify-release.mjs','scripts/feed-format.mjs','scripts/installed-account-proof.mjs','scripts/build-provenance.mjs','scripts/build-native-linux-packages.mjs','scripts/linux-package-version.mjs','scripts/linux-sandbox-package.mjs','src/update.ts','src/update-fs.ts','src/linux-sandbox-release.ts']) { const path=join(testTools,relative); await mkdir(dirname(path),{recursive:true}); await copyFile(resolve(import.meta.dirname,'..',relative),path); }
   await writeFile(join(testTools,'package.json'),JSON.stringify({type:'module'})); await writeFile(join(testTools,'linux-sandbox-component.json'),JSON.stringify(sandbox.config));
   const {verifyDesktopBundle,verifyDesktopSigningCandidate} = await import(pathToFileURL(join(testTools,'scripts/verify-release.mjs')).href);
   assert.equal((await verifyDesktopBundle(context)).version, version);
@@ -85,6 +98,31 @@ test('publication refuses missing native acceptance even when the generic CI sta
   const badDescriptor=JSON.parse(metadata.toString()); badDescriptor.artifacts.find((a:{platform:string})=>a.platform==='linux').linuxSandbox.bundle.sha512=sandbox.hash(sandbox.manifest);
   const badBytes=Buffer.from(JSON.stringify(badDescriptor)); await assert.rejects(verifyDesktopBundle({...context,metadata:badBytes,signature:sign(null,badBytes,key.privateKey).toString('base64')}),/descriptor/i);
   const resign = (changed: unknown) => { const bytes = Buffer.from(JSON.stringify(changed)); return { ...context, metadata: bytes, signature: sign(null, bytes, key.privateKey).toString('base64') }; };
+  for (const ext of ['deb', 'rpm', 'aur.tar.gz']) {
+   const missing = structuredClone(release); missing.assets = missing.assets.filter(asset => !asset.name.endsWith('.' + ext));
+   await assert.rejects(verifyDesktopBundle(resign(missing)), /provenance|authenticated/i);
+  }
+  await assert.rejects(verifyDesktopBundle({ ...context, jobs: jobs.filter(job => !job.name.endsWith('desktop-linux-packages-x64')) }), /native Linux package producer/i);
+  for (const gate of ['Build native Linux release packages', 'Record native Linux package build provenance']) {
+   const absent = structuredClone(jobs); const producer = absent.find(job => job.name.endsWith('desktop-linux-packages-x64'))!; producer.steps = producer.steps!.filter(step => step.name !== gate);
+   await assert.rejects(verifyDesktopBundle({ ...context, jobs: absent }), /native Linux package producer/i);
+  }
+  // A source-clean producer and valid hashes are not installed-package qualification.
+  await assert.rejects(verifyDesktopBundle({ ...context, jobs: jobs.filter(job => !job.name.includes('desktop-linux-package-acceptance-')) }), /installed native Linux package acceptance/i);
+  for (const format of ['deb', 'rpm', 'aur']) {
+   const absent = structuredClone(jobs); absent.find(job => job.name.endsWith(`desktop-linux-package-acceptance-${format}-x64`))!.steps = [];
+   await assert.rejects(verifyDesktopBundle({ ...context, jobs: absent }), /installed native Linux package acceptance/i);
+  }
+  // Even authenticated replacement recipe bytes must pin the accepted DEB.
+  const recipePath = join(directory, recipeName), cleanRecipe = await readFile(recipePath);
+  await writeFile(join(recipeDirectory, 'PKGBUILD'), aurRecipe(version, 'f'.repeat(64)).PKGBUILD);
+  execFileSync('tar', ['--format=ustar', '-czf', recipePath, '-C', recipeDirectory, '.SRCINFO', 'PKGBUILD']);
+  const forgedRecipe = await readFile(recipePath), recipeRelease = structuredClone(release), recipeProofPath = join(directory, buildProvenanceName('linux-packages-x64')), cleanRecipeProof = await readFile(recipeProofPath), recipeProof = JSON.parse(cleanRecipeProof.toString());
+  const changedAsset = { name: recipeName, size: forgedRecipe.length, sha512: createHash('sha512').update(forgedRecipe).digest('base64') };
+  Object.assign(recipeRelease.assets.find(asset => asset.name === recipeName)!, changedAsset); Object.assign(recipeProof.artifacts[2], changedAsset);
+  const changedProof = Buffer.from(JSON.stringify(recipeProof)); await writeFile(recipeProofPath, changedProof); recipeRelease.source.builds['linux-packages-x64'].sha256 = createHash('sha256').update(changedProof).digest('hex');
+  await assert.rejects(verifyDesktopBundle(resign(recipeRelease)), /recipe/i);
+  await writeFile(recipePath, cleanRecipe); await writeFile(recipeProofPath, cleanRecipeProof);
   // PR merge HEAD intentionally differs from API head_sha. The actual native
   // build records, rather than that equality/ancestry, bind accepted source.
   assert.notEqual(source.commit, context.run.head_sha);
@@ -97,7 +135,7 @@ test('publication refuses missing native acceptance even when the generic CI sta
   }
   await assert.rejects(verifyDesktopBundle(resign(unrelatedSource)), /build provenance.*source/i);
   for (const [path, original] of restoredReports) await writeFile(path, original);
-  for (const target of TARGETS) {
+  for (const target of buildTargets) {
    const missing = JSON.parse(metadata.toString()); delete missing.source.builds[target];
    await assert.rejects(verifyDesktopBundle(resign(missing)), /build provenance/i);
    const path = join(directory, buildProvenanceName(target)), clean = await readFile(path);
@@ -117,6 +155,7 @@ test('publication refuses missing native acceptance even when the generic CI sta
     await writeFile(path, bytes); await assert.rejects(verifyDesktopBundle(resign(signed)), /build provenance.*(artifact mismatch|proof)/i);
    }
    await writeFile(path, clean);
+   if (target === 'linux-packages-x64') continue;
    const absent = structuredClone(jobs); absent.find(job => job.name.endsWith(`desktop-${target}`))!.steps = absent.find(job => job.name.endsWith(`desktop-${target}`))!.steps!.filter(step => step.name !== 'Record native desktop build provenance');
    await assert.rejects(verifyDesktopBundle({ ...context, jobs: absent }), /Record native desktop build provenance/);
   }
@@ -144,7 +183,7 @@ test('publication refuses missing native acceptance even when the generic CI sta
   assert.equal(typeof publicReleaseRecords, 'function', 'publisher must share the complete public proof-record inventory');
   const tools = join(directory, 'isolated-signing-tools'), privateKeys = join(directory, 'private-signing-keys'), candidate = join(directory, 'public-candidate');
   await mkdir(privateKeys, { mode: 0o700 });
-  for (const relative of ['scripts/release-feed.mjs', 'scripts/verify-release.mjs', 'scripts/feed-format.mjs', 'scripts/installed-account-proof.mjs', 'scripts/build-provenance.mjs', 'src/update.ts',   'src/update-fs.ts', 'src/linux-sandbox-release.ts', 'scripts/linux-sandbox-package.mjs']) {
+  for (const relative of ['scripts/release-feed.mjs', 'scripts/verify-release.mjs', 'scripts/feed-format.mjs', 'scripts/installed-account-proof.mjs', 'scripts/build-provenance.mjs','scripts/build-native-linux-packages.mjs','scripts/linux-package-version.mjs', 'src/update.ts',   'src/update-fs.ts', 'src/linux-sandbox-release.ts', 'scripts/linux-sandbox-package.mjs']) {
    const file = join(tools, relative); await mkdir(dirname(file), { recursive: true }); await copyFile(resolve(import.meta.dirname, '..', relative), file);
   }
   await writeFile(join(tools, 'package.json'), JSON.stringify({ type: 'module' }));
@@ -164,15 +203,15 @@ test('publication refuses missing native acceptance even when the generic CI sta
   const publicRecords: string[] = publicReleaseRecords('stable');
   assert.deepEqual((await readdir(candidate)).sort(), [...publicRecords, `dilla-${version}-linux-x64.sandbox.sig`].sort(), 'signing candidate and publisher must consume identical public proof records, without private keys');
   for (const target of TARGETS) assert.deepEqual(await readFile(join(candidate, `installed-account-${target}.json`)), await readFile(join(directory, `installed-account-${target}.json`)));
-  for (const target of TARGETS) assert.deepEqual(await readFile(join(candidate, buildProvenanceName(target))), await readFile(join(directory, buildProvenanceName(target))));
+  for (const target of buildTargets) assert.deepEqual(await readFile(join(candidate, buildProvenanceName(target))), await readFile(join(directory, buildProvenanceName(target))));
   // Run the same staging boundary as the publisher: only the records delivered
   // inside the accepted CI installers may establish build/source provenance.
   const downloaded = join(directory, 'independent-ci-download'); await mkdir(downloaded);
-  for (const target of TARGETS) await copyFile(join(directory, buildProvenanceName(target)), join(downloaded, buildProvenanceName(target)));
-  const trustedPath = join(downloaded, buildProvenanceName(TARGETS[0])), candidatePath = join(candidate, buildProvenanceName(TARGETS[0])), trusted = await readFile(trustedPath);
+  for (const target of buildTargets) await copyFile(join(directory, buildProvenanceName(target)), join(downloaded, buildProvenanceName(target)));
+  const trustedPath = join(downloaded, buildProvenanceName('linux-packages-x64')), candidatePath = join(candidate, buildProvenanceName('linux-packages-x64')), trusted = await readFile(trustedPath);
   await writeFile(candidatePath, JSON.stringify({ ...JSON.parse(trusted.toString()), sourceCommit: 'a'.repeat(40) }));
   await assert.rejects(stagePublicReleaseRecords({ candidate, directory: downloaded, channel: 'stable', version }), /CI.*build provenance/i);
-  assert.deepEqual(await readFile(trustedPath), trusted); assert.equal((await readdir(downloaded)).length, 4, 'reject before staging any candidate records');
+  assert.deepEqual(await readFile(trustedPath), trusted); assert.equal((await readdir(downloaded)).length, 5, 'reject before staging any candidate records');
   await writeFile(candidatePath, trusted); await rm(trustedPath);
   await assert.rejects(stagePublicReleaseRecords({ candidate, directory: downloaded, channel: 'stable', version }), /ENOENT|build provenance/i);
   await writeFile(trustedPath, trusted); await stagePublicReleaseRecords({ candidate, directory: downloaded, channel: 'stable', version });

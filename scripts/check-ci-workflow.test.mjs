@@ -2276,3 +2276,23 @@ test('installed AppImage sandbox gate requires exact verification after actual u
   assert.ok(checkDesktopWorkflow(root).some(p=>p.includes('installed AppImage sandbox')),changed);
  }
 });
+
+
+test('native Linux release producer is separate, source-versioned, non-bypassable and uploads only its own outputs', () => {
+ const block = REAL_DESKTOP.split('\n  native-linux-packages:\n')[1]?.split(/\n  [a-z][a-z0-9-]*:\n/)[0] ?? '';
+ const mutations = [
+  REAL_DESKTOP.replace('\n  native-linux-packages:\n' + block, ''),
+  ...[
+   ['name: desktop-installers-linux-packages-x64', 'name: unrelated-native-outputs'],
+   ['linux-packages-x64.json', 'linux-x64.json'],
+   ['"$version"', '1.0.0'],
+   ['name: Record native Linux package build provenance', 'name: Record native Linux package build provenance\n        if: false'],
+   ['name: Build native Linux release packages', 'name: Build native Linux release packages\n        if: false'],
+   ['persist-credentials: false', 'persist-credentials: true'],
+  ].map(([before, after]) => REAL_DESKTOP.replace('\n  native-linux-packages:\n' + block, '\n  native-linux-packages:\n' + block.replaceAll(before, after))),
+ ];
+ for (const changed of mutations) {
+  const root = fixture(GOOD); writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
+  assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('native Linux package producer')));
+ }
+});

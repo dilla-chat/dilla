@@ -93,18 +93,35 @@ ad-hoc signing and normal OS protections. The installed-account and complete rel
 
 Preview packaging is available with `npm run pack -w @dilla/desktop`; it creates an
 unpacked app for validation and never publishes. Installer targets are configured
-for AppImage, per-user NSIS, and macOS DMG/ZIP. The publication workflow refuses
+for AppImage, stock DEB/RPM, an AUR recipe archive, per-user NSIS, and macOS DMG/ZIP. Native Linux formats use the standard package manager and check-only update behavior. The publication workflow refuses
 missing platform acceptance, measured performance, an independent security review,
 or unauthenticated artifacts; no desktop release has been published.
 
 Each native job records its actual clean Git commit/tree, workflow run and final
 installer hashes after fuse verification. Its `build-provenance-<target>.json`
 travels in the same installer artifact. `acceptance.json` supplies exact
-`builds` and `installedAccounts` maps for `linux-x64`, `win-x64`, `mac-x64` and
-`mac-arm64`; every entry contains the SHA-256 of that target's canonical JSON
+`builds` digests for `linux-x64`, `linux-packages-x64`, `win-x64`, `mac-x64` and
+`mac-arm64`. The `installedAccounts` map retains the four client targets; every entry contains the SHA-256 of that target's canonical JSON
 report. The offline signer authenticates those digests. Publication independently
 downloads the accepted run's build records, compares them byte for byte with the
 signing candidate, and never replaces them with candidate-supplied provenance.
+The separate `desktop-linux-packages-x64` producer builds the source package
+version with the existing shipping client/core in an isolated output directory.
+Its record authenticates exactly the DEB, RPM and AUR archive; the AppImage job
+cannot vouch for that separately compiled payload. Both AUR recipe members must
+exactly match the generated versioned release DEB URL and the actual DEB SHA-256.
+The signed inventory contains twelve assets and still has four updater targets.
+
+Native-format installed acceptance is still pending. Publication requires successful
+same-run `desktop-linux-package-acceptance-{deb,rpm,aur}-x64` jobs, each with its
+`Installed {DEB,RPM,AUR} package acceptance` step. These must exercise the actual
+source-bound installed format, normal launch and sandboxing. The new producer is
+build/source proof only and supplies none of those gates. The existing Ubuntu
+stock-DEB feasibility run proved installation and HTTPS Connect/onboarding; it
+qualifies neither the full native-format release nor RPM/AUR installed behavior.
+The shared Linux account/key continuity and existing normal AppImage upgrade
+requirements remain in force.
+
 A previous green run cannot stand in for a different source tree. Every target
 also requires one successful installed-account proof across its three client
 shards, including real device/KEK/history recovery and separate draft/file guards.

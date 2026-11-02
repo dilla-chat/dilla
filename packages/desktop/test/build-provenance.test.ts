@@ -5,6 +5,8 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, writeFile, readFile, copyFile, realpath, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+// @ts-expect-error native packaging tooling is JavaScript
+import { writeAurRecipe } from '../scripts/build-native-linux-packages.mjs';
 import { createRequire } from 'node:module';
 // @ts-expect-error build tooling is JavaScript
 import { buildArtifactNames, buildProvenanceName, verifyBuildProvenance, emitBuildProvenance, verifyCandidateBuildRecord } from '../scripts/build-provenance.mjs';
@@ -116,4 +118,45 @@ test('Linux emitter derives provenance from actual final image and exact sidecar
   assert.equal(record.linuxSandbox.capsuleSha512,record.artifacts[1].sha512);
   assert.equal(record.linuxSandbox.manifestSha512,record.artifacts[2].sha512);
  } finally {await rm(root,{recursive:true,force:true});}
+});
+
+
+test('native system packages have their own exact provenance inventory and source binding', () => {
+ const version = '1.2.3-beta.4', target = 'linux-packages-x64';
+ const names = ['deb', 'rpm', 'aur.tar.gz'].map(ext => `dilla-${version}-linux-x64.${ext}`);
+ assert.deepEqual(buildArtifactNames(target, version), names);
+ assert.equal(buildProvenanceName(target), 'build-provenance-linux-packages-x64.json');
+ const artifacts = names.map(name => ({ name, size: 10, sha512: sha(Buffer.from(name)) }));
+ const record = { format: 1, kind: 'dilla-desktop-build', repository: 'jonasthim/dilla', target, version, sourceCommit: '1'.repeat(40), sourceTree: '2'.repeat(40), ciRun: 42, sourceClean: true, artifacts };
+ const expected = { version, commit: record.sourceCommit, tree: record.sourceTree, ciRun: 42 };
+ verifyBuildProvenance(record, target, expected, artifacts);
+ for (const fields of [{ sourceCommit: '3'.repeat(40) }, { sourceTree: '3'.repeat(40) }, { ciRun: 43 }, { sourceClean: false }, { target: 'linux-x64' }, { artifacts: artifacts.slice(1) }]) assert.throws(() => verifyBuildProvenance({ ...record, ...fields }, target, expected, artifacts), /provenance/i);
+ assert.throws(() => verifyBuildProvenance(record, target, expected, artifacts.map(asset => ({ ...asset, sha512: sha(Buffer.from('other build')) }))), /artifact mismatch/i);
+ assert.throws(() => verifyBuildProvenance(record, 'linux-x64', expected, artifacts), /provenance/i);
+});
+
+
+test('the native-package emitter reads a real clean checkout and independently observes its AUR source pin', { skip: process.platform !== 'linux' || process.arch !== 'x64' }, async () => {
+ const root = await realpath(await mkdtemp(join(tmpdir(), 'dilla-native-build-source-')));
+ try {
+  const out = join(root, 'out'), version = '1.2.3-beta.4', target = 'linux-packages-x64';
+  await mkdir(join(root, 'packages/desktop'), { recursive: true }); await mkdir(out);
+  await writeFile(join(root, 'packages/desktop/package.json'), JSON.stringify({ version })); await writeFile(join(root, '.gitignore'), 'out/\n');
+  const git = (args: string[]) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
+  git(['init', '-q']); git(['config', 'core.hooksPath', join(root, 'no-hooks')]); git(['add', '.']); git(['-c', 'user.name=Build fixture', '-c', 'user.email=build@invalid.example', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'Fixture source']);
+  const commit = git(['rev-parse', 'HEAD']), tree = git(['rev-parse', 'HEAD^{tree}']);
+  const names = buildArtifactNames(target, version);
+  await writeFile(join(out, names[0]), 'source-bound fixture DEB'); await writeFile(join(out, names[1]), 'source-bound fixture RPM');
+  const archive = await writeAurRecipe(version, join(out, names[0]), join(out, 'recipe')); await copyFile(archive, join(out, names[2]));
+  const environment = { GITHUB_ACTIONS: 'true', GITHUB_REPOSITORY: 'jonasthim/dilla', GITHUB_RUN_ID: '42', GITHUB_SHA: commit };
+  const result = await emitBuildProvenance(out, target, { repositoryRoot: root, environment });
+  verifyBuildProvenance(result.record, target, { version, commit, tree, ciRun: 42 }, result.record.artifacts);
+  assert.equal(result.record.artifacts.length, 3); assert.equal(Object.hasOwn(result.record, 'linuxSandbox'), false);
+  await rm(result.file);
+  await assert.rejects(emitBuildProvenance(out, target, { repositoryRoot: root, environment: { ...environment, GITHUB_SHA: 'f'.repeat(40) } }), /GITHUB_SHA/);
+  await writeFile(join(root, 'untracked-change'), 'dirty source');
+  await assert.rejects(emitBuildProvenance(out, target, { repositoryRoot: root, environment }), /clean/);
+  await rm(join(root, 'untracked-change')); await writeFile(join(out, names[0]), 'different DEB after recipe creation');
+  await assert.rejects(emitBuildProvenance(out, target, { repositoryRoot: root, environment }), /recipe/i);
+ } finally { await rm(root, { recursive: true, force: true }); }
 });

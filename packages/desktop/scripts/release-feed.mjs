@@ -52,8 +52,8 @@ export async function signDesktopRelease({ version, artifactsDirectory, keysDire
   release.artifacts.push(artifact);
   release.assets.push({ name, size: bytes.length, sha512: artifact.sha512 });
  }
- for (const arch of ['x64', 'arm64']) {
-  const name = `dilla-${version}-mac-${arch}.dmg`, file = join(artifactsDirectory, name);
+ for (const suffix of ['mac-x64.dmg', 'mac-arm64.dmg', 'linux-x64.deb', 'linux-x64.rpm', 'linux-x64.aur.tar.gz']) {
+  const name = `dilla-${version}-${suffix}`, file = join(artifactsDirectory, name);
   if (!(await lstat(file)).isFile()) throw new Error('Installer must be a regular file: ' + name);
   const bytes = await readFile(file);
   release.assets.push({ name, size: bytes.length, sha512: createHash('sha512').update(bytes).digest('base64') });
