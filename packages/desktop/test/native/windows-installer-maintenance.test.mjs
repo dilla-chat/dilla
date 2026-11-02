@@ -128,9 +128,16 @@ test('native installer preserves every byte on mapped Go/Electron images, archiv
   const held = spawn(uninstaller, ['/S', '_?=' + program], { stdio: 'ignore', windowsHide: true, env: { ...process.env, DILLA_FIXTURE_HOLD_ROOT: '1' } });
   processes.push(held); held.on('error', () => {});
   await eventually(() => exists(join(profile, 'fixture-hold-ready')), 'native retained launcher guard');
-  const mapping = await new Promise(resolveMapping => {
-   const child = spawn(join(program, 'Dilla.exe'), [], { stdio: 'ignore', windowsHide: true }); processes.push(child);
-   child.once('error', () => resolveMapping('blocked')); child.once('spawn', () => resolveMapping('mapped'));
+  const mapping = await new Promise((resolveMapping, rejectMapping) => {
+   const blocked = error => {
+    if (error.code === 'EBUSY') resolveMapping('blocked');
+    else rejectMapping(error);
+   };
+   let child;
+   try { child = spawn(join(program, 'Dilla.exe'), [], { stdio: 'ignore', windowsHide: true }); }
+   catch (error) { blocked(error); return; }
+   processes.push(child);
+   child.once('error', blocked); child.once('spawn', () => resolveMapping('mapped'));
   });
   assert.equal(mapping, 'blocked', 'ordinary root PE mapping must be excluded for the entire uninstall mutation window');
   await stop(held); await rm(join(profile, 'fixture-hold-ready'));
