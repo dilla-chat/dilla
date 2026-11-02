@@ -13,6 +13,34 @@ const SCRIPT_PATH = fileURLToPath(new URL('./check-ci-workflow.mjs', import.meta
 const REPO_ROOT = join(dirname(SCRIPT_PATH), '..');
 const REAL_CI = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
 
+test('whole-module Go jobs provision GTK development files before package loading', () => {
+  for (const name of ['go', 'go-lint', 'go-vuln']) {
+    const body = new RegExp(`^  ${name}:\\n[\\s\\S]*?(?=^  [a-z][\\w-]*:|$(?![\\s\\S]))`, 'm').exec(REAL_CI)[0];
+    const steps = jobSteps(body);
+    const gtk = steps.findIndex(step => step.length === 1 && step[0] === 'run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev');
+    const load = steps.findIndex(step => step.some(line => /(?:go vet|golangci-lint run|govulncheck@\S+) \.\/\.\.\./.test(line)));
+    assert.ok(gtk >= 0 && gtk < load, name + ' must install GTK before loading the Linux cgo frontend');
+  }
+});
+
+test('GTK provisioning cannot be omitted, postponed or bypassed by excluding cgo', () => {
+  for (const name of ['go', 'go-lint', 'go-vuln']) {
+    const body = jobBody(name), setup = '      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev\n';
+    assert.ok(body.includes(setup), name);
+    for (const changed of [body.replace(setup, ''), body.replace('libgtk-3-dev', 'libgtk-3-0'),
+      body.replace(setup, '      - if: false\n        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev\n'),
+      body.replace(setup, '') + setup]) {
+      assert.ok(checkWorkflow(fixture(GOOD.replace(body, changed))).some(problem => problem.includes('GTK')), name);
+    }
+  }
+  const body = jobBody('go-vuln');
+  for (const changed of [body.replace('run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...', 'run: CGO_ENABLED=0 go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...'),
+    body.replace('    steps:', '    env:\n      CGO_ENABLED: 0\n    steps:')]) {
+    assert.notEqual(changed, body);
+    assert.ok(checkWorkflow(fixture(GOOD.replace(body, changed))).some(problem => problem.includes('GTK')));
+  }
+});
+
 test('Linux sandbox foundation has independent native Ubuntu lanes ahead of desktop', () => {
   assert.match(REAL_CI, /^  linux-sandbox-foundation:\n    needs: \[changes\]/m);
   const body = /^  linux-sandbox-foundation:\n[\s\S]*?(?=^  [a-z][\w-]*:)/m.exec(REAL_CI)?.[0] ?? '';
@@ -507,6 +535,7 @@ jobs:
         with:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
+      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev
       - run: go vet ./...
       - run: CGO_ENABLED=0 go build -tags dillapins ./internal/deps
       - run: go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx -e github.com/jonasthim/dilla/internal/ds -e github.com/jonasthim/dilla/internal/api)
@@ -634,11 +663,13 @@ ${browserJobsFixture()}
     runs-on: ubuntu-latest
     steps:
       - run: bash scripts/install-ci-tool.sh golangci-lint
+      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev
       - run: golangci-lint run ./...
 
   go-vuln:
     runs-on: ubuntu-latest
     steps:
+      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 -scan package -tags dillapins ./internal/deps
 

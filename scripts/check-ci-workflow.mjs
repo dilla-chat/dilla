@@ -607,6 +607,24 @@ export function jobSteps(body) {
   return steps;
 }
 
+// Loading the complete module on Linux includes the cgo GTK setup frontend.
+// Keep it in vet/lint/vulnerability/race coverage, including future full-tree
+// jobs: provide headers before loading rather than hiding the package with cgo.
+function checkWholeModuleGTK(jobs, problems) {
+  const loadsAll = line => /(?:\bgo\s+(?:vet|test|list|build)\b|\bgolangci-lint\s+run\b|\bgovulncheck(?:@\S+)?\b)[^\n]*\s\.\/\.\.\.(?=\s|$|[);|])/.test(line);
+  for (const [name, body] of Object.entries(jobs)) {
+    if (!/^ {4}runs-on: ubuntu-\S+$/m.test(body)) continue;
+    const steps = jobSteps(body), consumers = steps.map((step, index) => step.some(loadsAll) ? index : -1).filter(index => index >= 0);
+    if (!consumers.length) continue;
+    const gtk = steps.findIndex(step => step.length === 1 && step[0] === 'run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev');
+    if (gtk < 0 || consumers.some(index => index <= gtk)) problems.push(`ci.yml: job "${name}" must install GTK development headers before loading all Go packages`);
+    const header = body.split(/^ {4}steps:/m)[0];
+    if (/\bCGO_ENABLED:\s*['"]?0\b/.test(header) || consumers.some(index => steps[index].some(line => !/^(?:name|id):/.test(line) && /\bCGO_ENABLED(?:=|:\s*['"]?)0\b|^if:/.test(line)))) {
+      problems.push(`ci.yml: job "${name}" must retain cgo GTK frontend coverage in whole-module checks`);
+    }
+  }
+}
+
 // This cheap prerequisite must stay native and run both complete Go packages.
 // An exact bounded job shape also rejects filters, conditional steps, GOOS
 // overrides, and asset provisioning that would hide or delay the kernel gate.
@@ -862,6 +880,7 @@ export function checkWorkflow(root) {
     }
   }
   checkWindowsKernelJob(jobs, problems);
+  checkWholeModuleGTK(jobs, problems);
   checkWindowsInstallerJob(jobs, problems);
   checkLinuxSandboxFoundationJob(jobs, problems);
 
