@@ -1,3 +1,4 @@
+if (process.argv.some(arg => arg.startsWith('--admission-'))) { require('./admission.cjs'); } else {
 const { app, BrowserWindow, ipcMain, session, protocol } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -92,4 +93,6 @@ else {
     process.stderr.write('DILLA_FOUNDATION_FAILURE ' + JSON.stringify({ format: 1, phase, code, errno }) + '\n');
     app.exit(34);
   });
+}
+
 }

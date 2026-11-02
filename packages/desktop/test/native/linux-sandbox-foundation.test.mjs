@@ -73,6 +73,17 @@ test('packaged fixture serves its content-free page through its isolated custom 
  let accepted;requestFence({url:loaded},result=>{accepted=result.cancel;});assert.equal(accepted,false);
 });
 
+test('admission fixture rejects a pending snapshot before any profile operation', async()=>{
+ const {readFile}=await import('node:fs/promises'),vm=await import('node:vm');
+ const {createRequire}=await import('node:module'),load=createRequire(import.meta.url);
+ const source=await readFile(new URL('../fixtures/linux-sandbox-foundation/admission.cjs',import.meta.url),'utf8');
+ const events=[];
+ const app={exit:code=>events.push(['exit',code]),setPath:()=>events.push(['profile']),on:()=>events.push(['event']),whenReady:()=>new Promise(()=>{})};
+ const requireFixture=name=>name==='electron'?{app}:name==='node:fs'?{mkdirSync:()=>events.push(['mkdir'])}:name.endsWith('/admission.node')?{hold:()=>'{\"state\":\"pending\"}'}:name.endsWith('/parser.cjs')?{parseLinuxAdmission:()=>{throw Error('pending');}}:load(name);
+ vm.runInNewContext('(function(require,process){'+source+'})',{})(requireFixture,{argv:['elf','--admission-mode=proof','--admission-nonce='+'a'.repeat(64),'--admission-profile=/private'],getuid:()=>1000,resourcesPath:'/fixed',stderr:{write:()=>{}}});
+ assert.deepEqual(events,[['exit',40]]);
+});
+
 test('nondumpable renderer observation keeps its executable identity check', async t=>{
  const previous=process.env.GITHUB_ACTIONS;t.after(()=>{if(previous===undefined)delete process.env.GITHUB_ACTIONS;else process.env.GITHUB_ACTIONS=previous;});
  process.env.GITHUB_ACTIONS='true';const paths=[];
@@ -103,7 +114,7 @@ test('actual mounted AppImage sandbox foundation (feasibility only)', {
  skip: !process.env.DILLA_LINUX_SANDBOX_FOUNDATION_LANE, timeout:600_000,
 }, async t=>{
  const {mkdtemp,mkdir,cp,readFile,writeFile,lstat,readlink,stat,statfs,rm,realpath,readdir}=await import('node:fs/promises');
- const {join,resolve}=await import('node:path'),{tmpdir}=await import('node:os');
+ const {join,resolve}=await import('node:path');
  const {spawn,execFileSync}=await import('node:child_process'),{randomBytes,createHash}=await import('node:crypto');
  const {createRequire}=await import('node:module'),require=createRequire(import.meta.url);
  const {buildFoundationImage,runMountedProbe,FIXTURE_HELPER}=await import('../support/linux-sandbox-foundation.mjs');
@@ -113,7 +124,8 @@ test('actual mounted AppImage sandbox foundation (feasibility only)', {
  const absent=async path=>{try{await lstat(path);return false;}catch(e){if(e.code==='ENOENT')return true;throw e;}};
  assert.equal(await absent('/usr/lib/dilla/appimage'),true,'fresh CI must not have a production helper domain');
  assert.equal(await absent('/usr/lib/dilla-sandbox-foundation-ci'),true,'never adopt a preexisting privileged fixture namespace');
- const root=await realpath(await mkdtemp(join(tmpdir(),'dilla-sandbox-foundation-')));
+ const {makeAdmissionRoot}=await import('./linux-admission.test.mjs');
+ const root=await makeAdmissionRoot(process.env.RUNNER_TEMP);
  let mounted,helperInstalled=false,mountChild,mountExit;
  const proof={format:1,feasibilityOnly:true,lane,electron:require('electron/package.json').version,observations:[]};
  const policy=async()=>Object.fromEntries(await Promise.all(['/proc/sys/kernel/apparmor_restrict_unprivileged_userns','/proc/sys/kernel/unprivileged_userns_clone','/sys/module/apparmor/parameters/enabled'].map(async path=>[path,await readFile(path,'utf8').then(x=>x.trim(),e=>{if(e.code==='ENOENT')return 'absent';throw e;})])));
@@ -123,7 +135,15 @@ test('actual mounted AppImage sandbox foundation (feasibility only)', {
   const project=join(root,'project'),out=join(root,'out');await mkdir(project);
   await cp(new URL('../fixtures/linux-sandbox-foundation/',import.meta.url),project,{recursive:true});
   await writeFile(join(project,'package.json'),JSON.stringify({name:'dilla-sandbox-foundation-fixture',version:'1.0.0',main:'main.cjs',description:'Content-free sandbox feasibility fixture',author:'Dilla',license:'AGPL-3.0-or-later'}));
-  const image=await buildFoundationImage(project,out),hash=bytes=>createHash('sha512').update(bytes).digest('hex');
+  // The unprivileged admission binary is compiled for this private CI gate;
+  // neither its path nor fixture owner can be selected at Electron runtime.
+  const resources=join(root,'admission-resources');await mkdir(resources);
+  await mkdir(join(root,'admission-base'),{mode:0o755});
+  const {buildLinuxAdmission}=await import('../../scripts/build-linux-admission.mjs');
+  await buildLinuxAdmission({output:join(resources,'admission.node'),fixture:{directory:join(root,'admission-base','gate'),uid:process.getuid(),gid:process.getgid()}});
+  const {build}=await import('esbuild');
+  await build({entryPoints:[resolve(import.meta.dirname,'../../src/linux-admission.ts')],outfile:join(resources,'parser.cjs'),bundle:true,platform:'node',format:'cjs'});
+  const image=await buildFoundationImage(project,out,resources),hash=bytes=>createHash('sha512').update(bytes).digest('hex');
   const imageDigest=hash(await readFile(image));
   const mountEnv={...process.env};for(const name of ['APPIMAGE_EXTRACT_AND_RUN','APPIMAGE_EXTRACT_AND_RUN_NO_CLEANUP','APPDIR','APPIMAGE','CHROME_DEVEL_SANDBOX'])delete mountEnv[name];
   mountChild=spawn(image,['--appimage-mount'],{env:mountEnv,stdio:['ignore','pipe','pipe']});
@@ -175,6 +195,8 @@ test('actual mounted AppImage sandbox foundation (feasibility only)', {
    const fault=await run(mode);assert.ok(['failed','timed-out'].includes(fault.status),mode+' must never qualify sandbox success or setup');
    if(mode==='crash'){assert.equal(fault.status,'failed');assert.equal(fault.code,null);assert.ok(['SIGTRAP','SIGABRT','SIGSEGV'].includes(fault.signal),'crash control must die from a signal');}
   }
+  const {runAdmissionProof}=await import('./linux-admission.test.mjs');
+  proof.admission=await runAdmissionProof({mount:mounted,image,root});
   assert.deepEqual(await policy(),policyBefore,'host security policy must remain unchanged');
   assert.equal(hash(await readFile(image)),imageDigest,'accepted AppImage bytes changed');
   if(lane==='namespace')assert.equal(await absent('/usr/lib/dilla-sandbox-foundation-ci'),true);
@@ -186,4 +208,35 @@ test('actual mounted AppImage sandbox foundation (feasibility only)', {
   await writeFile(join(records,'linux-sandbox-foundation-'+lane+'.json'),JSON.stringify(proof,null,2)+'\n');
   await rm(root,{recursive:true,force:true});
  }
+});
+
+test('admission CI fixture requires a canonical owned runner temporary directory', async()=>{
+ const {makeAdmissionRoot}=await import('./linux-admission.test.mjs');
+ const {mkdtemp,realpath,rm,symlink}=await import('node:fs/promises');
+ const {join}=await import('node:path'),{tmpdir}=await import('node:os');
+ const base=await realpath(await mkdtemp(join(tmpdir(),'dilla-runner-check-')));
+ try {
+  const root=await makeAdmissionRoot(base);
+  assert.equal(await realpath(root),root);assert.equal(root.startsWith(base+'/'),true);
+  for(const invalid of [undefined,'relative',join(base,'missing')])await assert.rejects(makeAdmissionRoot(invalid));
+  const alias=join(base,'alias');await symlink(base,alias);await assert.rejects(makeAdmissionRoot(alias));
+ } finally {await rm(base,{recursive:true,force:true});}
+});
+
+test('owned process group cleanup kills a surviving child after its leader exits', async()=>{
+ const {cleanupAdmissionGroup}=await import('./linux-admission.test.mjs');
+ const {spawn}=await import('node:child_process');
+ const leader=spawn(process.execPath,['-e',`const p=require('node:child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});p.unref();process.stdout.write(String(p.pid));`],{detached:true,stdio:['ignore','pipe','ignore']});
+ let output='';leader.stdout.on('data',chunk=>output+=chunk);
+ await new Promise((done,reject)=>{leader.once('error',reject);leader.once('exit',done);});
+ const pid=Number(output);assert.ok(Number.isSafeInteger(pid)&&pid>1);process.kill(pid,0);
+ try {
+  await cleanupAdmissionGroup(leader,pid);
+  const {readFile}=await import('node:fs/promises');
+  let live=true;for(let i=0;i<50;i++){
+   try {const stat=await readFile('/proc/'+pid+'/stat','utf8');live=!/^\d+ \(.*\) Z /.test(stat);}catch(error){if(error.code==='ENOENT')live=false;else throw error;}
+   if(!live)break;await new Promise(done=>setTimeout(done,20));
+  }
+  assert.equal(live,false,'owned child survived cleanup');
+ } finally {try{process.kill(-leader.pid,'SIGKILL');}catch{}}
 });

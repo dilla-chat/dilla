@@ -77,7 +77,7 @@ export async function runMountedProbe({mount,image,profile,mode,nonce}) {
   return {...result,code,signal,facts,stderr,observationError};
  }finally{clearTimeout(timer);for(const stream of child.stdio)stream?.destroy();}
 }
-export async function buildFoundationImage(project,out) {
+export async function buildFoundationImage(project,out,admissionResources) {
  const {build,Platform,Arch}=require('electron-builder');
  const production=require('../../electron-builder.cjs');
  const safeHook=require('../../scripts/linux-appimage-launcher.cjs');
@@ -85,7 +85,8 @@ export async function buildFoundationImage(project,out) {
  await build({targets:Platform.LINUX.createTarget(['AppImage'],Arch.x64),publish:'never',projectDir:project,config:{
   appId:'dev.dilla.sandbox.foundation.fixture',productName:'DillaSandboxFoundation',executableName:'dilla-desktop',
   electronVersion:require('electron/package.json').version,electronDist:resolve(import.meta.dirname,'../../../../node_modules/electron/dist'),
-  directories:{output:out},files:['main.cjs','preload.cjs','probe.html','package.json'],asar:true,
+  directories:{output:out},files:['main.cjs','preload.cjs','probe.html','admission.cjs','package.json'],asar:true,
+  extraResources:admissionResources ? [{from:admissionResources,to:'admission-proof'}] : [],
   electronFuses:production.electronFuses,linux:{target:['AppImage'],category:'Utility',icon:resolve(import.meta.dirname,'../../assets/icon.png')},
   artifactName:'dilla-sandbox-foundation.AppImage',appImage:{executableArgs:[]},
   afterPack:async context=>{await safeHook(context);await fs.rm(resolve(context.appOutDir,'chrome-sandbox'));await fs.symlink(FIXTURE_HELPER,resolve(context.appOutDir,'chrome-sandbox'));}
