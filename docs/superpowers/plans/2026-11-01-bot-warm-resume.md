@@ -20,6 +20,7 @@
 - Pause holds the stream and sends silence; resume continues where it paused. After **10 minutes** paused, the Bot frees the stream, and a later resume restarts from where it was paused.
 - Ships as hotfix **v0.1.0-signal1.4.2** from main on `fix/bot-resume-cold-start`, with its own PR.
 - All five fixes (A–E). B's fix waits on CT 144's read-only IPv6/cache check; instrumentation goes in regardless.
+- Jonas, 2026-11-01: Spotify is removed from the Bot in the release right after this hotfix, together with the warm yt-dlp worker and prefetch. Until then a **Spotify pause does not hold**: it frees the Bot's single Spotify slot and its encoder slot at once, as before. Resume restarts the Spotify track from 0.
 - Ruling (controller): Spotify's helper has no seek, so a Spotify resume after the 10-minute bound restarts the track from 0. This is documented in the notes as a known limit. Cost if wrong: one more helper change later.
 
 ## Global Constraints
@@ -117,7 +118,8 @@
   - The broker logs per CONNECT, at Debug: the host class (youtube|googlevideo|other), DNS ms, dial ms, the winning address family and the number of failed addresses. It never logs a full URL or the video id.
   - The worker writes monotonic marks to stderr: spawn, first yt-dlp byte, first PCM.
   - `YouTubePCM.Start` logs sandbox_ready separately from first_sample.
-- [ ] **Step 2: Node compile cache.**
+- [x] **Step 2: DROPPED (Jonas, 2026-11-01).** Implemented and measured, then dropped: yt-dlp feeds the solver to Node over stdin, and Node never compile-caches stdin scripts (a real sandbox run cached only 1.7 KB). The 2.2 s goes to the warm yt-dlp worker in the next Bot release. The patch is kept in the SDD workspace as task-5-step-2.patch. The original step text follows, for the record.
+- [ ] ~~**Step 2: Node compile cache.**~~
   - **CT 144 evidence (Homelab, 2026-11-01):**
     - IPv6 is unrouted and fails in about 1 ms, so the broker is not the cost;
     - yt-dlp writes nothing to its cache, so warm equals cold;
