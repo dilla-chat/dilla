@@ -95,6 +95,48 @@ SectionEnd
 `;
  return compileWindowsNSIS({ directory, archive: join(directory, 'unused.7z'), name: `flag-${hooked}-${errorFlag}-${status}.exe`, transform: () => hooked ? withInitialRetryNativeDiagnostic(source, join(directory, 'unused-diagnostic.exe')) : source });
 }
+async function compileInitialRenameProbe(directory: string, hooked: boolean, kind: number, succeeds: boolean): Promise<string> {
+ const original = await readFile(sourcePath, 'utf8'), transformed = withInitialInstallDiagnostics(original).source;
+ const operation = body(transformed, 'FixtureInitialRename' + kind);
+ const { nsisEscapeString } = require('app-builder-lib/out/targets/nsis/nsisScriptGenerator');
+ const fixed = (name: string) => nsisEscapeString(join(directory, name));
+ return compileWindowsNSIS({ directory, archive: join(directory, 'unused.7z'), name: `rename-${hooked}-${kind}-${succeeds}.exe`, transform: () => `
+Name "Private Dilla rename diagnostic boundary"
+RequestExecutionLevel user
+SilentInstall silent
+${hooked ? 'Var FixtureInitialStage' : ''}
+Var ProgramArchive
+Var DataRoot
+Var DataArchive
+${hooked ? `Function FixtureInitialRename${kind}\n${operation}\nFunctionEnd` : ''}
+Section
+ StrCpy $INSTDIR "${fixed('old')}"
+ StrCpy $DataRoot "${fixed('old')}"
+ StrCpy $ProgramArchive "${fixed('new')}"
+ StrCpy $DataArchive "${fixed('new')}"
+ ${succeeds ? 'CreateDirectory "$INSTDIR"' : ''}
+ StrCpy $0 "unchanged-register"
+ ClearErrors
+ ${hooked ? 'Call FixtureInitialRename' + kind : kind === 1 ? 'Rename "$INSTDIR" "$ProgramArchive"' : 'Rename "$DataRoot" "$DataArchive"'}
+ IfErrors error_seen no_error
+ error_seen:
+ StrCpy $R0 1
+ Goto observed
+ no_error:
+ StrCpy $R0 0
+ observed:
+ StrCmp $R0 ${succeeds ? 0 : 1} 0 fail
+ StrCmp $0 "unchanged-register" 0 fail
+ ${hooked ? 'StrCmp $FixtureInitialStage ' + (kind + 2) + ' 0 fail' : ''}
+ RMDir "$ProgramArchive"
+ SetErrorLevel 0
+ Goto done
+ fail:
+ SetErrorLevel 2
+ done:
+SectionEnd
+` });
+}
 test('the actual extracted NSIS CheckPath compiles with the pinned System plugin', async () => {
  const root = await realpath(await mkdtemp(join(tmpdir(), 'dilla-check-path-compile-')));
  try {
@@ -102,6 +144,19 @@ test('the actual extracted NSIS CheckPath compiles with the pinned System plugin
   assert.equal((await readFile(executable)).subarray(0, 2).toString(), 'MZ');
   assert.equal((await readFile(await compileDiagnosticBranchProbe(root, true))).subarray(0, 2).toString(), 'MZ');
   assert.equal((await readFile(await compileDiagnosticFlagProbe(root, true, true, 1))).subarray(0, 2).toString(), 'MZ');
+  for (const kind of [1, 2]) for (const succeeds of [true, false]) for (const hooked of [false, true]) {
+   assert.equal((await readFile(await compileInitialRenameProbe(root, hooked, kind, succeeds))).subarray(0, 2).toString(), 'MZ');
+  }
+ } finally { await rm(root, { recursive: true, force: true }); }
+});
+test('native initial rename diagnostics preserve baseline success and failure flags and registers', { skip: process.platform !== 'win32', timeout: 30000 }, async () => {
+ const root = await realpath(await mkdtemp(join(tmpdir(), 'dilla-rename-flags-')));
+ try {
+  for (const kind of [1, 2]) for (const succeeds of [true, false]) for (const hooked of [false, true]) {
+   const executable = await compileInitialRenameProbe(root, hooked, kind, succeeds);
+   const child = spawnSync(executable, ['/S'], { windowsHide: true, timeout: 10000, encoding: 'utf8', maxBuffer: 1024 });
+   assert.ifError(child.error); assert.equal(child.status, 0, `rename ${kind}, success=${succeeds}, hooked=${hooked}`);
+  }
  } finally { await rm(root, { recursive: true, force: true }); }
 });
 test('native retry diagnostic hook preserves original NSIS error flags and exit statuses', { skip: process.platform !== 'win32', timeout: 30000 }, async () => {
