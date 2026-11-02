@@ -96,20 +96,16 @@ func incompleteInitial(l layout, cfg buildConfig, payload string) error {
 	if _, err = desktoplaunch.VerifySlot(slot, cfg.trust(), "", time.Now()); err != nil {
 		return err
 	}
-	entries, err := os.ReadDir(l.updates)
-	if os.IsNotExist(err) {
-		return nil
+
+	if err = authorizeInitialStagingMetadata(l, slot); err != nil {
+		return err
 	}
+	names, err := initialUpdateNames(l)
 	if err != nil {
 		return err
 	}
-	for _, entry := range entries {
-		if entry.Name() != "windows-active-0.json" || entry.IsDir() {
-			return errors.New("active or historical update metadata prevents initial retry")
-		}
-		if err = samePackagePrefix(filepath.Join(payload, "initial-slot.json"), filepath.Join(l.updates, entry.Name())); err != nil {
-			return err
-		}
+	if names["windows-active-0.json"] {
+		return samePackagePrefix(filepath.Join(payload, "initial-slot.json"), filepath.Join(l.updates, "windows-active-0.json"))
 	}
 	return nil
 }
