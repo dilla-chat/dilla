@@ -73,17 +73,6 @@ test('packaged fixture serves its content-free page through its isolated custom 
  let accepted;requestFence({url:loaded},result=>{accepted=result.cancel;});assert.equal(accepted,false);
 });
 
-test('admission fixture rejects a pending snapshot before any profile operation', async()=>{
- const {readFile}=await import('node:fs/promises'),vm=await import('node:vm');
- const {createRequire}=await import('node:module'),load=createRequire(import.meta.url);
- const source=await readFile(new URL('../fixtures/linux-sandbox-foundation/admission.cjs',import.meta.url),'utf8');
- const events=[];
- const app={exit:code=>events.push(['exit',code]),setPath:()=>events.push(['profile']),on:()=>events.push(['event']),whenReady:()=>new Promise(()=>{})};
- const requireFixture=name=>name==='electron'?{app}:name==='node:fs'?{mkdirSync:()=>events.push(['mkdir'])}:name.endsWith('/admission.node')?{hold:()=>'{\"state\":\"pending\"}'}:name.endsWith('/parser.cjs')?{parseLinuxAdmission:()=>{throw Error('pending');}}:load(name);
- vm.runInNewContext('(function(require,process){'+source+'})',{})(requireFixture,{argv:['elf','--admission-mode=proof','--admission-nonce='+'a'.repeat(64),'--admission-profile=/private'],getuid:()=>1000,resourcesPath:'/fixed',stderr:{write:()=>{}}});
- assert.deepEqual(events,[['exit',40]]);
-});
-
 test('nondumpable renderer observation keeps its executable identity check', async t=>{
  const previous=process.env.GITHUB_ACTIONS;t.after(()=>{if(previous===undefined)delete process.env.GITHUB_ACTIONS;else process.env.GITHUB_ACTIONS=previous;});
  process.env.GITHUB_ACTIONS='true';const paths=[];
@@ -124,8 +113,10 @@ test('actual mounted AppImage sandbox foundation (feasibility only)', {
  const absent=async path=>{try{await lstat(path);return false;}catch(e){if(e.code==='ENOENT')return true;throw e;}};
  assert.equal(await absent('/usr/lib/dilla/appimage'),true,'fresh CI must not have a production helper domain');
  assert.equal(await absent('/usr/lib/dilla-sandbox-foundation-ci'),true,'never adopt a preexisting privileged fixture namespace');
- const {makeAdmissionRoot}=await import('./linux-admission.test.mjs');
- const root=await makeAdmissionRoot(process.env.RUNNER_TEMP);
+ const runnerTemp=process.env.RUNNER_TEMP;
+ assert.equal(typeof runnerTemp,'string'); assert.equal(resolve(runnerTemp),runnerTemp); assert.equal(await realpath(runnerTemp),runnerTemp);
+ const runnerInfo=await stat(runnerTemp); assert.ok(runnerInfo.isDirectory()); assert.equal(runnerInfo.uid,process.getuid());
+ const root=await mkdtemp(join(runnerTemp,'dilla-sandbox-foundation-'));
  let mounted,helperInstalled=false,mountChild,mountExit;
  const proof={format:1,feasibilityOnly:true,lane,electron:require('electron/package.json').version,observations:[]};
  const policy=async()=>Object.fromEntries(await Promise.all(['/proc/sys/kernel/apparmor_restrict_unprivileged_userns','/proc/sys/kernel/unprivileged_userns_clone','/sys/module/apparmor/parameters/enabled'].map(async path=>[path,await readFile(path,'utf8').then(x=>x.trim(),e=>{if(e.code==='ENOENT')return 'absent';throw e;})])));
@@ -135,15 +126,7 @@ test('actual mounted AppImage sandbox foundation (feasibility only)', {
   const project=join(root,'project'),out=join(root,'out');await mkdir(project);
   await cp(new URL('../fixtures/linux-sandbox-foundation/',import.meta.url),project,{recursive:true});
   await writeFile(join(project,'package.json'),JSON.stringify({name:'dilla-sandbox-foundation-fixture',version:'1.0.0',main:'main.cjs',description:'Content-free sandbox feasibility fixture',author:'Dilla',license:'AGPL-3.0-or-later'}));
-  // The unprivileged admission binary is compiled for this private CI gate;
-  // neither its path nor fixture owner can be selected at Electron runtime.
-  const resources=join(root,'admission-resources');await mkdir(resources);
-  await mkdir(join(root,'admission-base'),{mode:0o755});
-  const {buildLinuxAdmission}=await import('../../scripts/build-linux-admission.mjs');
-  await buildLinuxAdmission({output:join(resources,'admission.node'),fixture:{directory:join(root,'admission-base','gate'),uid:process.getuid(),gid:process.getgid()}});
-  const {build}=await import('esbuild');
-  await build({entryPoints:[resolve(import.meta.dirname,'../../src/linux-admission.ts')],outfile:join(resources,'parser.cjs'),bundle:true,platform:'node',format:'cjs'});
-  const image=await buildFoundationImage(project,out,resources),hash=bytes=>createHash('sha512').update(bytes).digest('hex');
+  const image=await buildFoundationImage(project,out),hash=bytes=>createHash('sha512').update(bytes).digest('hex');
   const imageDigest=hash(await readFile(image));
   const mountEnv={...process.env};for(const name of ['APPIMAGE_EXTRACT_AND_RUN','APPIMAGE_EXTRACT_AND_RUN_NO_CLEANUP','APPDIR','APPIMAGE','CHROME_DEVEL_SANDBOX'])delete mountEnv[name];
   mountChild=spawn(image,['--appimage-mount'],{env:mountEnv,stdio:['ignore','pipe','pipe']});
@@ -195,8 +178,6 @@ test('actual mounted AppImage sandbox foundation (feasibility only)', {
    const fault=await run(mode);assert.ok(['failed','timed-out'].includes(fault.status),mode+' must never qualify sandbox success or setup');
    if(mode==='crash'){assert.equal(fault.status,'failed');assert.equal(fault.code,null);assert.ok(['SIGTRAP','SIGABRT','SIGSEGV'].includes(fault.signal),'crash control must die from a signal');}
   }
-  const {runAdmissionProof}=await import('./linux-admission.test.mjs');
-  proof.admission=await runAdmissionProof({mount:mounted,image,root});
   assert.deepEqual(await policy(),policyBefore,'host security policy must remain unchanged');
   assert.equal(hash(await readFile(image)),imageDigest,'accepted AppImage bytes changed');
   if(lane==='namespace')assert.equal(await absent('/usr/lib/dilla-sandbox-foundation-ci'),true);
@@ -208,132 +189,4 @@ test('actual mounted AppImage sandbox foundation (feasibility only)', {
   await writeFile(join(records,'linux-sandbox-foundation-'+lane+'.json'),JSON.stringify(proof,null,2)+'\n');
   await rm(root,{recursive:true,force:true});
  }
-});
-
-test('admission CI fixture requires a canonical owned runner temporary directory', async()=>{
- const {makeAdmissionRoot}=await import('./linux-admission.test.mjs');
- const {mkdtemp,realpath,rm,symlink}=await import('node:fs/promises');
- const {join}=await import('node:path'),{tmpdir}=await import('node:os');
- const base=await realpath(await mkdtemp(join(tmpdir(),'dilla-runner-check-')));
- try {
-  const root=await makeAdmissionRoot(base);
-  assert.equal(await realpath(root),root);assert.equal(root.startsWith(base+'/'),true);
-  for(const invalid of [undefined,'relative',join(base,'missing')])await assert.rejects(makeAdmissionRoot(invalid));
-  const alias=join(base,'alias');await symlink(base,alias);await assert.rejects(makeAdmissionRoot(alias));
- } finally {await rm(base,{recursive:true,force:true});}
-});
-
-test('owned process group cleanup kills a surviving child after its leader exits', async()=>{
- const {cleanupAdmissionGroup}=await import('./linux-admission.test.mjs');
- const {spawn}=await import('node:child_process');
- const leader=spawn(process.execPath,['-e',`const p=require('node:child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});p.unref();process.stdout.write(String(p.pid));`],{detached:true,stdio:['ignore','pipe','ignore']});
- let output='';leader.stdout.on('data',chunk=>output+=chunk);
- await new Promise((done,reject)=>{leader.once('error',reject);leader.once('exit',done);});
- const pid=Number(output);assert.ok(Number.isSafeInteger(pid)&&pid>1);process.kill(pid,0);
- try {
-  await cleanupAdmissionGroup(leader,pid);
-  const {readFile}=await import('node:fs/promises');
-  let live=true;for(let i=0;i<50;i++){
-   try {const stat=await readFile('/proc/'+pid+'/stat','utf8');live=!/^\d+ \(.*\) Z /.test(stat);}catch(error){if(['ENOENT','ESRCH'].includes(error.code))live=false;else throw error;}
-   if(!live)break;await new Promise(done=>setTimeout(done,20));
-  }
-  assert.equal(live,false,'owned child survived cleanup');
- } finally {try{process.kill(-leader.pid,'SIGKILL');}catch{}}
-});
-
-test('admission release reports distinct bounded failures for main exit, lock and child identity', async()=>{
- const {checkAdmissionRelease}=await import('./linux-admission.test.mjs');
- const observe=async (options={})=>{
-  const facts={phase:'release',mainCode:null,mainSignal:null,attempts:0,lockStatus:null,childState:null,childIdentity:null,childReadError:0};
-  const defaults={exit:Promise.resolve({code:0,signal:null}),exclusive:()=>0,readChild:async()=>({live:true,identity:true}),pause:async()=>{},facts};
-  try{await checkAdmissionRelease({...defaults,...options});return facts;}catch{return facts;}
- };
- const stalled=await observe({exit:Promise.reject(Error('private details')),captureMain:()=>({mainPresent:1,mainOwner:1,mainIdentity:1,mainState:2})});
- assert.equal(stalled.phase,'release-main-wait');assert.equal(stalled.mainState,2);assert.equal(stalled.mainIdentity,1);
- assert.equal((await observe({exit:Promise.resolve({code:7,signal:null})})).phase,'release-main-result');
- const busy=await observe({exclusive:()=>1});assert.equal(busy.phase,'release-lock-busy');assert.equal(busy.attempts,50);assert.equal(busy.lockStatus,1);
- const missing=await observe({readChild:async()=>{throw Object.assign(Error('private path'),{code:'ENOENT'});}});assert.equal(missing.phase,'release-child-read');assert.equal(missing.childReadError,1);
- assert.equal((await observe({readChild:async()=>({live:false,identity:true})})).phase,'release-child-dead');
- assert.equal((await observe({readChild:async()=>({live:true,identity:false})})).phase,'release-child-identity');
- assert.equal((await observe()).phase,'release-complete');
-});
-
-test('admission fixture reports exit command and exit call before quitting',async()=>{
- const {readFile}=await import('node:fs/promises'),vm=await import('node:vm'),{EventEmitter}=await import('node:events');
- const {createRequire}=await import('node:module'),load=createRequire(import.meta.url);
- const source=await readFile(new URL('../fixtures/linux-sandbox-foundation/admission.cjs',import.meta.url),'utf8');
- const events=[],control=new EventEmitter(),app={on(){},setPath(){},whenReady:async()=>{},exit:code=>events.push(['exit',code])};
- class Window {async loadURL(){} destroy(){}}
- class Tray {destroy(){events.push(['destroy']);}}
- const fakeFS={mkdirSync(){},createReadStream:()=>control,writeSync:(_fd,line)=>events.push(['report',JSON.parse(line).phase])};
- const requireFixture=name=>name==='electron'?{app,BrowserWindow:Window,Tray,nativeImage:{createEmpty:()=>({})}}:name==='node:fs'?fakeFS:name==='node:child_process'?{spawn:()=>({pid:10,unref(){}})}:name.endsWith('/admission.node')?{hold:()=>'ready'}:name.endsWith('/parser.cjs')?{parseLinuxAdmission(){}}:load(name);
- vm.runInNewContext('(function(require,process){'+source+'})',{})(requireFixture,{argv:['elf','--admission-mode=proof','--admission-nonce='+'a'.repeat(64),'--admission-profile=/private'],getuid:()=>1000,pid:9,resourcesPath:'/fixed',stderr:{write(){}}});
- for(let i=0;i<4;i++)await new Promise(done=>setImmediate(done));
- control.emit('data','tray\n');control.emit('data','exit\n');
- assert.deepEqual(events,[['report','window'],['report','tray'],['report','exit-command'],['destroy'],['report','exit-call'],['exit',0]]);
-});
-
-test('admission control stream reads sequential tray and exit commands on real pipes',async()=>{
- const {sendAdmissionExit}=await import('./linux-admission.test.mjs');
- const {spawn}=await import('node:child_process'),{fileURLToPath}=await import('node:url');
- const fixture=fileURLToPath(new URL('../fixtures/linux-sandbox-foundation/admission.cjs',import.meta.url));
- const script=`const fs=require('node:fs'),vm=require('node:vm'),path=require('node:path');
- const app={on(){},setPath(){},whenReady:async()=>{},exit:code=>process.exit(code)};
- class Window{async loadURL(){} destroy(){}} class Tray{destroy(){}}
- const load=name=>name==='electron'?{app,BrowserWindow:Window,Tray,nativeImage:{createEmpty:()=>({})}}:name==='node:fs'?{...fs,mkdirSync(){}}:name==='node:child_process'?{spawn:()=>({pid:10,unref(){}})}:name.endsWith('/admission.node')?{hold:()=>''}:name.endsWith('/parser.cjs')?{parseLinuxAdmission(){}}:require(name);
- const p={argv:['elf','--admission-mode=proof','--admission-nonce='+ 'a'.repeat(64),'--admission-profile=/private'],getuid:()=>1000,pid:process.pid,resourcesPath:'/fixed',stderr:process.stderr};
- vm.runInThisContext('(function(require,process){'+fs.readFileSync(process.argv[1],'utf8')+'})')(load,p);`;
- const child=spawn(process.execPath,['-e',script,fixture],{stdio:['ignore','ignore','pipe','pipe','pipe']});
- let text='',phases=[];child.stdio[3].setEncoding('utf8');
- child.stdio[3].on('data',chunk=>{text+=chunk;let i;while((i=text.indexOf('\n'))>=0){const report=JSON.parse(text.slice(0,i));text=text.slice(i+1);phases.push(report.phase);if(report.phase==='window')child.stdio[4].write('tray\n');if(report.phase==='tray')sendAdmissionExit(child.stdio[4]);}});
- const timer=setTimeout(()=>child.kill('SIGKILL'),3000);
- try {const result=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',(code,signal)=>resolve({code,signal}));});
-  assert.deepEqual(result,{code:0,signal:null});assert.deepEqual(phases,['window','tray','exit-command','exit-call']);
- } finally {clearTimeout(timer);if(child.exitCode===null&&child.signalCode===null)child.kill('SIGKILL');}
-});
-
-test('final admission command closes its pipe after delivering all queued bytes',async()=>{
- const {sendAdmissionExit}=await import('./linux-admission.test.mjs');
- const {PassThrough}=await import('node:stream');
- const pipe=new PassThrough();let bytes='';pipe.setEncoding('utf8');pipe.on('data',chunk=>{bytes+=chunk;});
- const ended=new Promise(done=>pipe.once('end',done));pipe.write('tray\n');sendAdmissionExit(pipe);await ended;
- assert.equal(bytes,'tray\nexit\n');assert.equal(pipe.writableEnded,true);
-});
-
-test('an open control writer keeps a real fs read stream alive until EOF',async()=>{
- const {spawn}=await import('node:child_process');
- const source=`const fs=require('node:fs');const stream=fs.createReadStream(null,{fd:4,autoClose:false,encoding:'utf8'});stream.on('data',()=>fs.writeSync(3,'received\\n'));`;
- const child=spawn(process.execPath,['-e',source],{stdio:['ignore','ignore','pipe','pipe','pipe']});
- const exit=new Promise((done,reject)=>{child.once('error',reject);child.once('exit',(code,signal)=>done({code,signal}));});
- const timer=setTimeout(()=>child.kill('SIGKILL'),3000);
- try {
-  const received=new Promise(done=>child.stdio[3].once('data',done));child.stdio[4].write('exit\n');await received;
-  const state=await Promise.race([exit.then(()=> 'exited'),new Promise(done=>setTimeout(()=>done('waiting'),100))]);assert.equal(state,'waiting');
-  child.stdio[4].end();assert.deepEqual(await exit,{code:0,signal:null});
- } finally {clearTimeout(timer);if(child.exitCode===null&&child.signalCode===null)child.kill('SIGKILL');}
-});
-
-test('owned child cleanup accepts vanished process reads but rejects access errors',async()=>{
- const {waitOwnedChildGone}=await import('./linux-admission.test.mjs');
- for(const code of ['ENOENT','ESRCH'])await waitOwnedChildGone(17,async()=>{throw Object.assign(Error(),{code});});
- for(const code of ['EACCES','EIO'])await assert.rejects(waitOwnedChildGone(17,async()=>{throw Object.assign(Error(),{code});}),{code});
-});
-
-test('pending admission records exact bounded failure checkpoints',async()=>{
- const {checkAdmissionPending}=await import('./linux-admission.test.mjs');
- const run=async(overrides={})=>{
-  const facts={phase:'pending',pendingPublish:null,lateCode:null,lateSignal:null,profilePresent:null,profileError:0,pendingLock:null};
-  const defaults={publish:()=>0,launch:()=>({exit:Promise.resolve({code:40,signal:null})}),profile:async()=>{throw Object.assign(Error(),{code:'ENOENT'});},exclusive:()=>0,facts};
-  try{await checkAdmissionPending({...defaults,...overrides});}catch{}return facts;
- };
- assert.equal((await run({publish:()=>{throw Error('private');}})).phase,'pending-publish');
- assert.equal((await run({publish:()=>1})).phase,'pending-publish-result');
- assert.equal((await run({launch:()=>{throw Error('private');}})).phase,'pending-launch');
- assert.equal((await run({launch:()=>({exit:Promise.reject(Error('private'))})})).phase,'pending-exit-wait');
- assert.equal((await run({launch:()=>({exit:Promise.resolve({code:0,signal:null})})})).phase,'pending-exit-result');
- assert.equal((await run({profile:async()=>{}})).phase,'pending-profile-present');
- const denied=await run({profile:async()=>{throw Object.assign(Error(),{code:'EACCES'});}});assert.equal(denied.phase,'pending-profile-read');assert.equal(denied.profileError,2);
- assert.equal((await run({exclusive:()=>{throw Error('private');}})).phase,'pending-lock-probe');
- assert.equal((await run({exclusive:()=>1})).phase,'pending-lock-result');
- assert.equal((await run()).phase,'pending-complete');
 });

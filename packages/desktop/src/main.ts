@@ -14,7 +14,6 @@ import { linuxAutostart } from './autostart.ts';
 import { createUpdater } from './updater.ts';
 import { LINUX_INSTALL_KIND, assertLinuxSelfUpdate } from './linux-build.ts';
 import { resolveLinuxInstallation } from './linux-installation.ts';
-import { holdLinuxAdmission } from './linux-admission.ts';
 import { desktopReleasePage } from './update.ts';
 import { waitForPreviousProcess } from './handoff.ts';
 import { NativeAudio } from './native-audio.ts';
@@ -39,17 +38,14 @@ const linuxApplicationUpdates = process.platform !== 'linux' || LINUX_INSTALL_KI
 void initializeDesktop().catch(error => { console.error('Dilla could not initialize:', error); app.exit(1); });
 
 async function initializeDesktop(): Promise<void> {
- const admission = process.platform === 'linux' && LINUX_INSTALL_KIND === 'system-package' ? holdLinuxAdmission() : undefined;
  protocol.registerSchemesAsPrivileged([{ scheme: 'dilla-internal', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
  app.enableSandbox();
  if (process.platform === 'linux') {
   if (LINUX_INSTALL_KIND !== 'unknown') {
-   const installation = await resolveLinuxInstallation({
+   await resolveLinuxInstallation({
    installKind: LINUX_INSTALL_KIND, version: app.getVersion(), channel: app.getVersion().includes('-beta.') ? 'beta' : 'stable', arch: process.arch,
    executable: process.execPath, resourcesPath: process.resourcesPath,
    });
-   if (admission && (installation.installKind !== 'system-package' || admission.manager !== installation.identity.manager
-    || admission.identitySha512 !== installation.identitySha512 || admission.manager === 'alpm')) throw new Error('Native admission does not match the verified package; repair using your package manager');
   }
   const installationRole = process.argv.some(value => value.startsWith('--update-') || value.startsWith('--sandbox-') || value === '--setup-sandbox' || value.startsWith('--setup-sandbox='))
    || ['DILLA_UPDATE_STARTUP_NONCE', 'DILLA_UPDATE_PREVIOUS_PID', 'DILLA_UPDATE_RECOVERED_NONCE'].some(key => process.env[key] !== undefined);
@@ -333,7 +329,7 @@ async function showManager(): Promise<void> {
 
 async function setAutostart(enabled: boolean): Promise<void> {
   if (!app.isPackaged) throw new Error('Autostart is available in installed builds');
-  if (process.platform === 'linux') await linuxAutostart(app.getPath('appData'), LINUX_INSTALL_KIND === 'system-package' ? '/usr/bin/dilla' : process.env.APPIMAGE ?? process.execPath, enabled);
+  if (process.platform === 'linux') await linuxAutostart(app.getPath('appData'), LINUX_INSTALL_KIND === 'system-package' ? '/usr/bin/dilla-desktop' : process.env.APPIMAGE ?? process.execPath, enabled);
   else app.setLoginItemSettings({ openAtLogin: enabled, path: process.platform==='win32'&&app.isPackaged?windowsLauncher:process.execPath, args: ['--hidden'] });
   await preferences.setAutostart(enabled);
   refreshMenu();

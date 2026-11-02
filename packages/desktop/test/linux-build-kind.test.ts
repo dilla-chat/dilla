@@ -46,10 +46,10 @@ test('build fixture executes CRLF checkout without losing build assertions', asy
  assert.equal(fixture.builds[0].define?.__DILLA_LINUX_INSTALL_KIND__, JSON.stringify('system-package'));
 });
 
-test('only native builds compile the admission addon into isolated staging',async()=>{
+test('native builds do not compile a custom admission addon',async()=>{
  for(const [platform,args,want] of [['linux',['--linux-install-kind=system-package'],true],['linux',[],false],['win32',[],false],['darwin',[],false]] as [string,string[],boolean][]) {
   const fixture=await buildFixture(args,platform);await fixture.run();
   const calls=fixture.commands.filter(args=>args[0].endsWith('build-linux-admission.mjs'));
-  assert.equal(calls.length,want?1:0);if(want)assert.match(calls[0][1],/[\\/]native-admission-stage[\\/]dilla-admission\.node$/);
+  assert.equal(calls.length,0);
  }
 });

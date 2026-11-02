@@ -1,3 +1,5 @@
+> **Superseded 2026-11-02:** Root adopted the standard native package scope in [native packages design](2026-11-02-dilla-linux-native-packages-design.md); this historical native-only admission contract is no longer required. AppImage protections are unchanged.
+
 # Native admission and manager handoff — revised
 
 **Approved for the bounded contract and unprivileged bridge proof only; no privileged backend implementation or native acceptance is approved.** Native plan Task 2; incorporates controller rulings. Minimal mechanism: one main-only N-API admission bridge, persistent lock/public status, private floor/journal, standard manager hooks. No daemon, custom package-manager wrapper, process scanning/killing, AppImage/bootstrap reuse, account access or OS policy changes.

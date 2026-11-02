@@ -12,11 +12,6 @@ const linuxDefine = process.platform === 'linux' ? { __DILLA_LINUX_INSTALL_KIND_
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const repo = resolve(root, '../..');
-if (process.platform === 'linux') {
-  const admissionStage = resolve(root, '.native-tools/native-admission-stage');
-  await rm(admissionStage, { recursive: true, force: true });
-  if (linuxInstallKind === 'system-package') execFileSync(process.execPath, [resolve(root, 'scripts/build-linux-admission.mjs'), resolve(admissionStage, 'dilla-admission.node')], { stdio: 'inherit' });
-}
 execFileSync(process.execPath, [resolve(root, 'scripts/build-native.mjs')], { stdio: 'inherit' });
 await rm(resolve(root, 'dist'), { recursive: true, force: true });
 await mkdir(resolve(root, 'dist'), { recursive: true });

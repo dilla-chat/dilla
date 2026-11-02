@@ -34,5 +34,5 @@ test('native autostart uses the fixed package entry even when APPIMAGE is spoofe
   preferences: { setAutostart: async (enabled: boolean) => { preferences.push(enabled); } }, refreshMenu() {},
  });
  await vm.runInContext((await transform(body + '\nsetAutostart(true);', { loader: 'ts' })).code, context);
- assert.deepEqual(paths, ['/usr/bin/dilla']); assert.deepEqual(preferences, [true]);
+ assert.deepEqual(paths, ['/usr/bin/dilla-desktop']); assert.deepEqual(preferences, [true]);
 });
