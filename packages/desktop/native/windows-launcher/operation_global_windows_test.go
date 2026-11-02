@@ -42,7 +42,22 @@ func TestGlobalOperationMutexProcessHelper(t *testing.T) {
 	}
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
-	h, acquired, err := acquireGlobalOperationMutex(buildConfig{AppID: os.Getenv("DILLA_TEST_GLOBAL_MUTEX_APP")})
+	cfg := buildConfig{AppID: os.Getenv("DILLA_TEST_GLOBAL_MUTEX_APP")}
+	if mode == "retain" {
+		h := retainGlobalTestMutex(t, cfg)
+		defer func() {
+			if err := syscall.CloseHandle(h); err != nil {
+				t.Error("retainer close failed")
+			}
+		}()
+		fmt.Println("retained")
+		var signal [1]byte
+		if _, err := os.Stdin.Read(signal[:]); err != nil {
+			t.Fatal("retainer release input failed")
+		}
+		return
+	}
+	h, acquired, err := acquireGlobalOperationMutex(cfg)
 	if err != nil {
 		os.Exit(21)
 	}
@@ -67,6 +82,48 @@ func TestGlobalOperationMutexProcessHelper(t *testing.T) {
 		os.Exit(25)
 	}
 	releaseGlobalTestMutex(t, h)
+}
+
+// Open-only retention neither creates an object nor acquires its mutex. The
+// exact actual-user name and existing object security match the production gate.
+// No path, externally supplied SID, or production entry point is introduced.
+func retainGlobalTestMutex(t *testing.T, cfg buildConfig) syscall.Handle {
+	t.Helper()
+	if !appIDPattern.MatchString(cfg.AppID) || strings.HasSuffix(cfg.AppID, ".") {
+		t.Fatal("invalid retainer identity")
+	}
+	sid := globalMutexActualSID(t)
+	name, err := syscall.UTF16PtrFromString(`Global\Dilla.Install.` + cfg.AppID + "." + sid)
+	if err != nil {
+		t.Fatal("invalid retainer name")
+	}
+	// SYNCHRONIZE|READ_CONTROL permits existing-object security readback.
+	// This retainer never calls a wait/acquire or release operation.
+	raw, _, _ := kernelDLL.NewProc("OpenMutexW").Call(0x120000, 0, uintptr(unsafe.Pointer(name)))
+	if raw == 0 {
+		t.Fatal("cannot retain existing global object")
+	}
+	h := syscall.Handle(raw)
+	accepted := false
+	defer func() {
+		if !accepted {
+			_ = syscall.CloseHandle(h)
+		}
+	}()
+	advapi, err := systemDLL("advapi32.dll")
+	if err != nil {
+		t.Fatal("retainer security library unavailable")
+	}
+	if err = checkGlobalOperationMutexSecurity(advapi, h, sid); err != nil {
+		t.Fatal("retainer existing security rejected")
+	}
+	var flags uint32
+	ok, _, _ := kernelDLL.NewProc("GetHandleInformation").Call(raw, uintptr(unsafe.Pointer(&flags)))
+	if ok == 0 || flags&1 != 0 {
+		t.Fatal("unsafe retainer handle")
+	}
+	accepted = true
+	return h
 }
 
 func globalMutexChild(t *testing.T, cfg buildConfig, mode string) *exec.Cmd {
@@ -313,5 +370,74 @@ func TestGlobalOperationMutexRejectsInvalidIdentity(t *testing.T) {
 		if strings.Contains(err.Error(), app) && app != "" {
 			t.Fatal("identity leaked in error")
 		}
+	}
+}
+
+func TestGlobalOperationRetainerKeepsOnlyExistingObjectWithoutOwnership(t *testing.T) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	cfg := globalMutexTestConfig(t)
+	h, acquired, err := acquireGlobalOperationMutex(cfg)
+	if err != nil || !acquired {
+		t.Fatal("owner acquisition failed", err)
+	}
+	defer func() {
+		if h != 0 {
+			releaseGlobalTestMutex(t, h)
+		}
+	}()
+	child := globalMutexChild(t, cfg, "retain")
+	out, err := child.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	in, err := child.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer in.Close()
+	if err = child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	exited := false
+	defer func() {
+		if !exited {
+			_ = child.Process.Kill()
+			_ = child.Wait()
+		}
+	}()
+	line, err := bufio.NewReader(out).ReadString('\n')
+	if err != nil || strings.TrimSpace(line) != "retained" {
+		t.Fatal("native retainer did not report owned-handle readiness", err)
+	}
+	releaseGlobalTestMutex(t, h)
+	h = 0
+	// No creator handle remains. OpenExisting must still succeed, so a subsequent
+	// CreateMutex cannot accidentally test a new object's replacement descriptor.
+	retained := retainGlobalTestMutex(t, cfg)
+	if err = syscall.CloseHandle(retained); err != nil {
+		t.Fatal(err)
+	}
+	acquiredHandle, got, err := acquireGlobalOperationMutex(cfg)
+	if err != nil || !got {
+		t.Fatal("open-only retainer took ownership", err)
+	}
+	releaseGlobalTestMutex(t, acquiredHandle)
+	if _, err = in.Write([]byte{1}); err != nil {
+		t.Fatal(err)
+	}
+	if err = child.Wait(); err != nil {
+		t.Fatal("native retainer did not exit cleanly", err)
+	}
+	exited = true
+	sid := globalMutexActualSID(t)
+	name, _ := syscall.UTF16PtrFromString(`Global\Dilla.Install.` + cfg.AppID + "." + sid)
+	raw, _, callErr := kernelDLL.NewProc("OpenMutexW").Call(0x120000, 0, uintptr(unsafe.Pointer(name)))
+	if raw != 0 {
+		_ = syscall.CloseHandle(syscall.Handle(raw))
+		t.Fatal("native retainer leaked its final object handle")
+	}
+	if !errors.Is(callErr, syscall.ERROR_FILE_NOT_FOUND) {
+		t.Fatal("native object disappearance was not established", callErr)
 	}
 }

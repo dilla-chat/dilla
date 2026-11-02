@@ -744,7 +744,8 @@ const WINDOWS_KERNEL_JOB = `  windows-kernel:
           go-version-file: go.mod
       - run: go test -count=1 -failfast -v -timeout=2m ./internal/desktoplaunch ./packages/desktop/native/windows-launcher
 `;
-const WINDOWS_INSTALLER_COMMAND = 'node --test packages/desktop/test/native/windows-installer-maintenance.test.mjs packages/desktop/test/native/windows-installer-syntax.test.mjs packages/desktop/test/windows-operation-gate.test.ts';
+const WINDOWS_INSTALLER_CONTROLS = 'node --test packages/desktop/test/native/windows-installer-syntax.test.mjs packages/desktop/test/windows-operation-gate.test.ts';
+const WINDOWS_INSTALLER_MAINTENANCE = 'node --test packages/desktop/test/native/windows-installer-maintenance.test.mjs';
 const WINDOWS_INSTALLER_JOB = `  windows-installer:
     needs: [windows-kernel]
     runs-on: windows-2025
@@ -763,7 +764,8 @@ const WINDOWS_INSTALLER_JOB = `  windows-installer:
       - run: npm ci
       - run: node node_modules/electron/install.js
       - run: node packages/desktop/scripts/prepare-nsis.mjs
-      - run: ${WINDOWS_INSTALLER_COMMAND}
+      - run: ${WINDOWS_INSTALLER_CONTROLS}
+      - run: ${WINDOWS_INSTALLER_MAINTENANCE}
 `;
 const GOOD = withChanges(withWasmClang(GOOD_BASE + WINDOWS_KERNEL_JOB + WINDOWS_INSTALLER_JOB + '  desktop:\n    needs: [web-build, windows-kernel, windows-installer]\n    uses: ./.github/workflows/desktop.yml\n'));
 
@@ -817,6 +819,27 @@ test('independent Windows installer runs the full native fixture and interop bef
   assert.deepEqual(checkWorkflow(fixture(GOOD)), []);
 });
 
+test('independent Windows installer exposes short control failures before full maintenance starts', () => {
+  const body = /  windows-installer:\n[\s\S]*?(?=^  desktop:)/m.exec(REAL_CI)[0];
+  const steps = jobSteps(body);
+  const controls = steps.findIndex(step => step.includes(`run: ${WINDOWS_INSTALLER_CONTROLS}`));
+  const maintenance = steps.findIndex(step => step.includes(`run: ${WINDOWS_INSTALLER_MAINTENANCE}`));
+  assert.ok(controls >= 0, 'short syntax/interop controls have their own complete step');
+  assert.equal(maintenance, controls + 1, 'full maintenance runs in the next step after controls succeed');
+  const fixtureBody = /  windows-installer:\n[\s\S]*?(?=^  desktop:)/m.exec(GOOD)[0];
+  const controlStep = `      - run: ${WINDOWS_INSTALLER_CONTROLS}\n`;
+  const maintenanceStep = `      - run: ${WINDOWS_INSTALLER_MAINTENANCE}\n`;
+  for (const changed of [
+    fixtureBody.replace(controlStep, ''),
+    fixtureBody.replace(maintenanceStep, ''),
+    fixtureBody.replace(controlStep + maintenanceStep, maintenanceStep + controlStep),
+    fixtureBody.replace(controlStep + maintenanceStep, `      - run: ${WINDOWS_INSTALLER_MAINTENANCE} packages/desktop/test/native/windows-installer-syntax.test.mjs packages/desktop/test/windows-operation-gate.test.ts\n`),
+  ]) {
+    assert.notEqual(changed, fixtureBody);
+    assert.ok(checkWorkflow(fixture(GOOD.replace(fixtureBody, changed))).some(problem => problem.includes('independent Windows installer')));
+  }
+});
+
 test('independent Windows installer refuses filters, artifact prerequisites and altered provisioning', () => {
   const body = /  windows-installer:\n[\s\S]*?(?=^  desktop:)/m.exec(GOOD)[0];
   for (const [before, after] of [
@@ -831,15 +854,16 @@ test('independent Windows installer refuses filters, artifact prerequisites and 
     ['run: npm ci', 'run: npm install'],
     ['      - run: node node_modules/electron/install.js\n', ''],
     ['      - run: node packages/desktop/scripts/prepare-nsis.mjs\n', ''],
-    [WINDOWS_INSTALLER_COMMAND, WINDOWS_INSTALLER_COMMAND.replace(' packages/desktop/test/native/windows-installer-maintenance.test.mjs', '')],
-    [WINDOWS_INSTALLER_COMMAND, WINDOWS_INSTALLER_COMMAND.replace(' packages/desktop/test/native/windows-installer-syntax.test.mjs', '')],
-    [WINDOWS_INSTALLER_COMMAND, WINDOWS_INSTALLER_COMMAND.replace(' packages/desktop/test/windows-operation-gate.test.ts', '')],
+    [WINDOWS_INSTALLER_MAINTENANCE, 'echo missing-maintenance'],
+    [WINDOWS_INSTALLER_CONTROLS, WINDOWS_INSTALLER_CONTROLS.replace(' packages/desktop/test/native/windows-installer-syntax.test.mjs', '')],
+    [WINDOWS_INSTALLER_CONTROLS, WINDOWS_INSTALLER_CONTROLS.replace(' packages/desktop/test/windows-operation-gate.test.ts', '')],
     ['node --test ', "node --test --test-name-pattern='interrupted' "],
     ['      - run: node --test ', '      - if: false\n        run: node --test '],
     ['    steps:', "    env:\n      DILLA_FIXTURE_INITIAL_RETRY_ONLY: '1'\n    steps:"],
     ['    steps:', '    env:\n      GOOS: linux\n    steps:'],
     ['      - run: npm ci', '      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8\n      - run: npm ci'],
-    [WINDOWS_INSTALLER_COMMAND, `${WINDOWS_INSTALLER_COMMAND} || echo ignored`],
+    [WINDOWS_INSTALLER_CONTROLS, `${WINDOWS_INSTALLER_CONTROLS} || echo ignored`],
+    [WINDOWS_INSTALLER_MAINTENANCE, `${WINDOWS_INSTALLER_MAINTENANCE} || echo ignored`],
   ]) {
     const changed = body.replace(before, after); assert.notEqual(changed, body, before);
     assert.ok(checkWorkflow(fixture(GOOD.replace(body, changed))).some(problem => problem.includes('independent Windows installer')), before);

@@ -632,8 +632,10 @@ go-version-file: go.mod
 }
 
 // This native fixture has no bundled-web/WASI prerequisite. Keep both complete
-// lifecycle files and the Go/NSIS interop control ahead of the desktop matrix;
-// exact shape rejects filtered modes, ignored failures and extra authority/env.
+// lifecycle files and the Go/NSIS interop control ahead of the desktop matrix.
+// Short controls must finish in their own step before the long maintenance test,
+// so its runtime cannot hide an earlier file's failure from the step API.
+// Exact shape rejects filtered modes, ignored failures and extra authority/env.
 function checkWindowsInstallerJob(jobs, problems) {
   if (!jobs['windows-installer']) return;
   const expected = `needs: [changes, windows-kernel]
@@ -654,9 +656,10 @@ go-version-file: go.mod
 - run: npm ci
 - run: node node_modules/electron/install.js
 - run: node packages/desktop/scripts/prepare-nsis.mjs
-- run: node --test packages/desktop/test/native/windows-installer-maintenance.test.mjs packages/desktop/test/native/windows-installer-syntax.test.mjs packages/desktop/test/windows-operation-gate.test.ts`;
+- run: node --test packages/desktop/test/native/windows-installer-syntax.test.mjs packages/desktop/test/windows-operation-gate.test.ts
+- run: node --test packages/desktop/test/native/windows-installer-maintenance.test.mjs`;
   const actual = jobs['windows-installer'].split('\n').map(line => line.trim()).filter(line => line && !line.startsWith('#')).join('\n');
-  if (actual !== expected) problems.push('ci.yml: independent Windows installer gate must run pinned Node/Go/Electron/NSIS provisioning and the full unfiltered lifecycle and interop fixtures within its fixed budget');
+  if (actual !== expected) problems.push('ci.yml: independent Windows installer gate must run pinned provisioning, short syntax/interop controls first and full unfiltered maintenance in the next step within its fixed budget');
   const desktopNeeds = /^ {4}needs: \[([^\]\n]*)\]$/m.exec(jobs.desktop ?? '')?.[1].split(',').map(name => name.trim()) ?? [];
   if (!desktopNeeds.includes('windows-installer')) {
     problems.push('ci.yml: desktop must wait for the independent Windows installer gate via needs: windows-installer');

@@ -94,12 +94,8 @@ test('actual NSIS and native Go gates exclude each other and accept the same exi
   assert.equal(spawnSync(probe,['/S'],{timeout:10000,windowsHide:true,stdio:'pipe'}).status,2,'NSIS must authenticate the Go-held object and refuse contention');
   // Keep this exact Go-created object alive after its owner exits; otherwise
   // the next NSIS process could merely create a fresh object with its own ACL.
-  const retained=join(root,'retained');
-  const literal=(value:string)=>"'"+value.replaceAll("'","''")+"'";
-  const script=`$ErrorActionPreference='Stop'; $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; $gate=[Threading.Mutex]::OpenExisting(${literal('Global\\Dilla.Install.'+appId+'.')}+$sid); try { [IO.File]::WriteAllText(${literal(retained)},'retained'); [void][Console]::ReadLine() } finally { $gate.Dispose() }`;
-  const retainer=spawn('powershell.exe',['-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')],{windowsHide:true,stdio:['pipe','ignore','ignore']});processes.push(retainer);
-  for(let i=0;i<200;i++){if(await access(retained).then(()=>true,()=>false))break;assert.equal(retainer.exitCode,null,'existing-object retainer exited early');await delay(25);}
-  assert.equal(await readFile(retained,'utf8'),'retained');
+  const retainer=spawn(helper,['-test.run=^TestGlobalOperationMutexProcessHelper$'],{env:env('retain'),windowsHide:true,stdio:['pipe','pipe','pipe']});processes.push(retainer);
+  await bounded(new Promise<void>((resolve,reject)=>{retainer.once('error',reject);let body='';retainer.stdout!.on('data',chunk=>{body+=chunk.toString();if(body.split(/\r?\n/).includes('retained'))resolve();});retainer.once('exit',()=>reject(new Error('native existing-object retainer exited before readiness')));}));
   const ownerExited=exitOf(owner);owner.stdin!.end('\n');assert.equal(await bounded(ownerExited),0);
   assert.equal(spawnSync(probe,['/S'],{timeout:10000,windowsHide:true,stdio:'pipe'}).status,0,'NSIS must authenticate and acquire the retained Go-created abandoned object');
   const retainedExit=exitOf(retainer);retainer.stdin!.end('\n');assert.equal(await bounded(retainedExit),0);
