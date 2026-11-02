@@ -2,6 +2,55 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { foundationResult, inspectRendererExecutable } from '../support/linux-sandbox-foundation.mjs';
 
+async function pendingFoundationLoad() {
+ const {readFile}=await import('node:fs/promises'),vm=await import('node:vm');
+ const {createRequire}=await import('node:module'),load=createRequire(import.meta.url);
+ const source=await readFile(new URL('../fixtures/linux-sandbox-foundation/main.cjs',import.meta.url),'utf8');
+ const nonce='a'.repeat(64),reports=[],exits=[],diagnostics=[];
+ let resolveLoad,rejectLoad,acknowledge,window,requestFence;
+ const pageLoad=new Promise((resolve,reject)=>{resolveLoad=resolve;rejectLoad=reject;});
+ const ses={protocol:{handle(){}},setPermissionRequestHandler(){},setPermissionCheckHandler(){},webRequest:{onBeforeRequest:callback=>{requestFence=callback;}},
+  fetch:async url=>{requestFence({url},()=>{});throw Error('denied before transport');}};
+ const app={setPath(){},whenReady:()=>Promise.resolve(),exit:code=>{
+  exits.push(code);
+  // Electron destroys a window on app.exit. If loadURL is still pending,
+  // that rejects it even after a valid preload ACK has reached the main.
+  rejectLoad(Object.assign(Error('private profile/path must never be logged'),{code:'ERR_ABORTED'}));
+ }};
+ class Window {
+  constructor(){window=this;this.webContents={mainFrame:{url:'dilla-foundation://probe/index.html'},setWindowOpenHandler(){},on(){},getOSProcessId:()=>12};}
+  loadURL(){return pageLoad;}
+ }
+ vm.runInNewContext(source,{require:name=>name==='electron'?{app,BrowserWindow:Window,ipcMain:{on:(_name,callback)=>{acknowledge=callback;}},session:{fromPartition:()=>ses},protocol:{registerSchemesAsPrivileged(){}}}:name==='node:fs'?{mkdirSync(){},writeSync:(_fd,value)=>{reports.push(JSON.parse(value));},readSync:(_fd,value)=>{value[0]=1;return 1;}}:load(name),
+  process:{argv:['dilla','--foundation-mode=probe','--foundation-nonce='+nonce,'--foundation-profile=/private-fixture'],getuid:()=>1000,pid:11,execPath:'/immutable/dilla-desktop',stderr:{write:line=>diagnostics.push(line)}},
+  __dirname:'/immutable/resources/app.asar',Response,Buffer});
+ const settle=async()=>{for(let i=0;i<4;i++)await new Promise(done=>setImmediate(done));};
+ await settle();assert.equal(typeof acknowledge,'function');
+ return {reports,exits,diagnostics,settle,resolveLoad,rejectLoad,ack:()=>acknowledge({sender:window.webContents,senderFrame:window.webContents.mainFrame},{nonce,sandboxed:true,contextIsolated:true})};
+}
+
+test('trusted preload ACK cannot report or exit before its pending page load completes',async()=>{
+ const fixture=await pendingFoundationLoad();
+ fixture.ack();await fixture.settle();
+ assert.deepEqual(fixture.reports,[],'a valid ACK is only latched while loadURL remains pending');
+ assert.deepEqual(fixture.exits,[],'parent ACK/exit must not destroy the still-loading window');
+ fixture.resolveLoad();await fixture.settle();
+ assert.equal(fixture.reports.length,1);assert.equal(fixture.reports[0].sandboxed,true);
+ assert.deepEqual(fixture.exits,[0]);assert.deepEqual(fixture.diagnostics,[]);
+});
+
+test('a rejected page load after a trusted ACK reports bounded phase/code only',async()=>{
+ for(const [fields,expected] of [[{code:'ERR_ABORTED',errno:-3},{code:'ERR_ABORTED',errno:-3}],
+  [{code:'secret https://private.invalid/token',errno:Infinity},{code:null,errno:null}]]){
+  const fixture=await pendingFoundationLoad();fixture.ack();
+  fixture.rejectLoad(Object.assign(Error('secret profile /path https://private.invalid/token'),fields));
+  await fixture.settle();assert.deepEqual(fixture.reports,[]);assert.deepEqual(fixture.exits,[34]);
+  assert.equal(fixture.diagnostics.length,1);
+  const prefix='DILLA_FOUNDATION_FAILURE ';assert.ok(fixture.diagnostics[0].startsWith(prefix));
+  assert.deepEqual(JSON.parse(fixture.diagnostics[0].slice(prefix.length)),{format:1,phase:'page-load',...expected});
+ }
+});
+
 test('packaged fixture serves its content-free page through its isolated custom protocol', async()=>{
  const {readFile}=await import('node:fs/promises'),vm=await import('node:vm');
  const {createRequire}=await import('node:module'),load=createRequire(import.meta.url);
