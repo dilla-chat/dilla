@@ -499,6 +499,37 @@ describe('Enrol: a passkey bound to the password login', () => {
     const sent = arr(decode(b.server.log.filter((r) => r.path === '/v1/auth/passkey/login/finish').at(-1)?.body ?? new Uint8Array()));
     expect(sent).toHaveLength(2);
   });
+
+  // Desktop merge security review I1: an OIDC login is a first factor as a password is.
+  it('an OIDC sign-in owing a passkey binds it to the signed-in account', async () => {
+    const a = account();
+    const mine = a.server.addPasskey('ada', 'Laptop');
+    a.server.register('bo', new Uint8Array(16).fill(0x77));
+    const bos = a.server.addPasskey('bo', 'Phone');
+    // The fake has no OIDC callback; a password login mints the same first-factor assertion the callback hands over.
+    const answer = await a.routes.passwordLogin('ada', PASSWORD);
+    expect(answer.needs).toBe(2);
+    a.enrol.oidc(answer.assertion, answer.needs);
+    const other = await httpError(a.enrol.passkey((await a.routes.passkeyLoginBegin()).ceremonyId, toHex(bos)));
+    expect([other.status, other.code]).toEqual([403, 'E_PASSKEY_OTHER_ACCOUNT']);
+    const sent = arr(decode(a.server.log.filter((r) => r.path === '/v1/auth/passkey/login/finish').at(-1)?.body ?? new Uint8Array()));
+    expect(sent).toHaveLength(3);
+    expect(sent[2]).toBe(answer.assertion);
+    // Her own passkey, still bound, settles the OIDC login and registers Ada.
+    expect(await a.enrol.passkey((await a.routes.passkeyLoginBegin()).ceremonyId, toHex(mine))).toEqual({ needs: 0 });
+    expect((await a.enrol.register(INSTANCE)).userId).toEqual(a.userId);
+  });
+
+  it('a settled OIDC sign-in binds nothing', async () => {
+    const a = account();
+    const answer = await a.routes.passwordLogin('ada', PASSWORD);
+    expect(answer.needs).toBe(0);
+    a.enrol.oidc(answer.assertion, answer.needs);
+    const key = a.server.addPasskey('ada', 'Laptop');
+    await a.enrol.passkey((await a.routes.passkeyLoginBegin()).ceremonyId, toHex(key));
+    const sent = arr(decode(a.server.log.filter((r) => r.path === '/v1/auth/passkey/login/finish').at(-1)?.body ?? new Uint8Array()));
+    expect(sent).toHaveLength(2);
+  });
 });
 
 /** A browser of a web-1-era account: identified with its v1 accepted; the instance holds no list until a test publishes one. */

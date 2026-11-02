@@ -177,7 +177,7 @@ func TestABoundPasskeyFinishWithItsOwnAccountSignsInAndSpendsThePasswordAssertio
 	}
 }
 
-// The binding token says nothing when it is not a live password login's assertion owing a factor: unknown, expired,
+// The binding token says nothing when it is not a live first-factor login's assertion owing a factor: unknown, expired,
 // complete and a passkey login's own are all the same plain 401, before the ceremony runs.
 func TestABadBindingIsRefusedGenerically(t *testing.T) {
 	h, deps, _ := newPasskeyAPITuned(t, "", false, func(c *config.Config) {
@@ -193,7 +193,7 @@ func TestABadBindingIsRefusedGenerically(t *testing.T) {
 	login(t, h, u.Username, pw)
 	complete := deps.Assertions.Issue(u.ID, 0)
 	passkeyOwn := deps.Assertions.Issue(u.ID, 1)
-	expired := deps.Assertions.IssuePassword(u.ID, 1)
+	expired := deps.Assertions.IssueFirstFactor(u.ID, 1)
 	advance(t, deps, 6*time.Minute)
 	// `live` expired too with the clock: mint a fresh live one after the advance.
 	_, out := login(t, h, u.Username, pw)

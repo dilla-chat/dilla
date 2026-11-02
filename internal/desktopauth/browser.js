@@ -148,6 +148,7 @@
   async function getPasskey(optionsJson, conditional) {
     const bridge = desktopBridge();
     if (bridge?.browserAuth) {
+      if (conditional !== void 0) throw new PasskeyError("cancelled", "Passkey autofill is not available in the desktop app");
       try {
         const result = await bridge.browserAuth({ kind: "get", options: optionsJson });
         if (typeof result.response !== "string") throw new Error("Missing browser credential");

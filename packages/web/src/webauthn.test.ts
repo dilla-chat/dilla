@@ -35,8 +35,8 @@ function install(credentials: Partial<CredentialsContainer>): void {
 afterEach(() => { Reflect.deleteProperty(navigator, 'credentials'); vi.restoreAllMocks(); });
 
 it('uses explicit browser handoffs in the desktop shell instead of starting conditional autofill', async () => {
-  const browserAuth = vi.fn(async () => ({ response: 'browser credential' }));
-  const conditional = vi.fn(async () => true);
+  const browserAuth = vi.fn(() => Promise.resolve({ response: 'browser credential' }));
+  const conditional = vi.fn(() => Promise.resolve(true));
   vi.stubGlobal('dillaDesktop', { browserAuth });
   vi.stubGlobal('PublicKeyCredential', { isConditionalMediationAvailable: conditional });
   vi.stubGlobal('isSecureContext', true);
@@ -47,6 +47,22 @@ it('uses explicit browser handoffs in the desktop shell instead of starting cond
     expect(await getPasskey(GET)).toBe('browser credential');
     expect(await createPasskey(CREATE)).toBe('browser credential');
     expect(browserAuth.mock.calls).toEqual([[{ kind: 'get', options: GET }], [{ kind: 'create', options: CREATE }]]);
+  } finally { vi.unstubAllGlobals(); }
+});
+
+// Desktop merge security review M1: a conditional request in the desktop shell would open the system browser on a
+// username field's focus and spend a passkey_begin token; it is refused before any handoff or browser call.
+it('refuses a conditional passkey request in the desktop shell', async () => {
+  const browserAuth = vi.fn(() => Promise.resolve({ response: 'browser credential' }));
+  const get = vi.fn();
+  install({ get });
+  vi.stubGlobal('dillaDesktop', { browserAuth });
+  try {
+    const refused = await getPasskey(GET, { signal: new AbortController().signal }).then(() => null, (e: unknown) => e);
+    expect(refused).toBeInstanceOf(PasskeyError);
+    expect((refused as PasskeyError).kind).toBe('cancelled');
+    expect(browserAuth).not.toHaveBeenCalled();
+    expect(get).not.toHaveBeenCalled();
   } finally { vi.unstubAllGlobals(); }
 });
 

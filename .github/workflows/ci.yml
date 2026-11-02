@@ -84,6 +84,7 @@ jobs:
       - run: npm run check:css
       - run: npm run test:bot-ops-check
       - run: npm run check:bot-ops
+      - run: npm run check:desktop-auth
       - run: npm run test:ci-check
       - run: npm run test:wasm-size-check
       - run: npm run test:manifest-writer

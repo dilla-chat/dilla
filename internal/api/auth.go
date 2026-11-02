@@ -42,9 +42,9 @@ type assertion struct {
 	userID  id.ID
 	needs   uint8
 	expires time.Time
-	// password marks an assertion a password login issued (IssuePassword): the only kind a passkey finish may be
-	// bound to (PeekPassword, wave B task 3).
-	password bool
+	// firstFactor marks an assertion a first-factor login issued, a password or an OIDC login (IssueFirstFactor): the
+	// only kind a passkey finish may be bound to (PeekFirstFactor, wave B task 3; desktop merge review I1).
+	firstFactor bool
 }
 
 // The `needs` of protocol/09 § Second factors: what a login still owes before its assertion is
@@ -67,24 +67,25 @@ func NewAssertions(clk clock.Clock, ttl time.Duration) *Assertions {
 
 func (a *Assertions) Issue(userID id.ID, needs uint8) string { return a.issue(userID, needs, false) }
 
-// IssuePassword is Issue for a password login's answer, marked so a passkey finish on the code step can be bound to it.
-func (a *Assertions) IssuePassword(userID id.ID, needs uint8) string {
+// IssueFirstFactor is Issue for a first-factor login's answer (a password or an OIDC login), marked so a passkey
+// finish on the second step can be bound to it.
+func (a *Assertions) IssueFirstFactor(userID id.ID, needs uint8) string {
 	return a.issue(userID, needs, true)
 }
 
-// PeekPassword reports the account of a live assertion that a password login issued and that still owes a factor,
-// without spending it. Anything else (unknown, expired, spent, complete, not a password login's) is false, alike.
-func (a *Assertions) PeekPassword(token string) (id.ID, bool) {
+// PeekFirstFactor reports the account of a live assertion that a first-factor login issued and that still owes a
+// factor, without spending it. Anything else (unknown, expired, spent, complete, not a first factor's) is false, alike.
+func (a *Assertions) PeekFirstFactor(token string) (id.ID, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	item, ok := a.items[token]
-	if !ok || !item.password || item.needs == needsNothing || a.clk.Now().After(item.expires) {
+	if !ok || !item.firstFactor || item.needs == needsNothing || a.clk.Now().After(item.expires) {
 		return id.ID{}, false
 	}
 	return item.userID, true
 }
 
-func (a *Assertions) issue(userID id.ID, needs uint8, password bool) string {
+func (a *Assertions) issue(userID id.ID, needs uint8, firstFactor bool) string {
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
 		panic("api: crypto/rand failed: " + err.Error())
@@ -93,7 +94,7 @@ func (a *Assertions) issue(userID id.ID, needs uint8, password bool) string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.sweepLocked()
-	a.items[token] = assertion{userID: userID, needs: needs, expires: a.clk.Now().Add(a.ttl), password: password}
+	a.items[token] = assertion{userID: userID, needs: needs, expires: a.clk.Now().Add(a.ttl), firstFactor: firstFactor}
 	return token
 }
 
@@ -321,7 +322,7 @@ func (d Deps) PasswordLogin(w http.ResponseWriter, r *http.Request) {
 			d.logf(r, "api: ClearLoginFailures", "err", cerr)
 		}
 	}
-	answer := []any{d.Assertions.IssuePassword(user.ID, needs), uint64(needs)}
+	answer := []any{d.Assertions.IssueFirstFactor(user.ID, needs), uint64(needs)}
 	if needs != needsNothing {
 		flag := uint64(0)
 		if passkey {
@@ -1161,7 +1162,7 @@ func (d Deps) FinishPasskeyLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// [ceremony_id, response] or, on the code step (wave B task 3, Jonas), [ceremony_id, response, assertion]: the
-	// password login's held assertion the passkey must belong to.
+	// first-factor (password or OIDC) login's held assertion the passkey must belong to.
 	var raw []cbor.RawMessage
 	if err := server.DecodeBody(w, r, maxCBORBody, &raw); err != nil {
 		server.WriteError(w, err)
@@ -1195,11 +1196,11 @@ func (d Deps) FinishPasskeyLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The binding is checked before the ceremony runs: an unknown, expired, spent or complete assertion, or one no
-	// password login issued, is refused like any failed passkey login, saying nothing about which (and the ceremony
-	// is left for its own expiry).
+	// first-factor login (a password or OIDC) issued, is refused like any failed passkey login, saying nothing about
+	// which (and the ceremony is left for its own expiry).
 	var boundTo *id.ID
 	if len(raw) == 3 {
-		owner, ok := d.Assertions.PeekPassword(bindTo)
+		owner, ok := d.Assertions.PeekFirstFactor(bindTo)
 		if !ok {
 			d.recordAttempt(r, store.UserRow{}, false, addrKey, methodPasskey, false)
 			d.Throttle.RecordFailure(passkeyFailureLedger, ip)
@@ -1224,7 +1225,7 @@ func (d Deps) FinishPasskeyLogin(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(code, ""))
 		return
 	}
-	// A passkey of another account than the password login it is bound to signs in no one (fail closed): no assertion,
+	// A passkey of another account than the first-factor login it is bound to signs in no one (fail closed): no assertion,
 	// and the attempt counts as a failure.
 	if boundTo != nil && *boundTo != userID {
 		d.recordAttempt(r, store.UserRow{ID: userID}, true, addrKey, methodPasskey, false)
@@ -1233,7 +1234,7 @@ func (d Deps) FinishPasskeyLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if boundTo != nil {
-		// The password login's assertion is superseded by the passkey's: spend it.
+		// The first-factor login's assertion is superseded by the passkey's: spend it.
 		d.Assertions.SpendNeeds(bindTo)
 	}
 	needs := needsNothing
@@ -1470,9 +1471,14 @@ func (d Deps) CallbackOIDC(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, d.storeError(r, terr))
 		return
 	}
-	assertion := d.Assertions.Issue(userID, needs)
+	// Bound to its first factor, as a password login's is: a passkey that finishes the second step must be this
+	// account's (desktop merge review I1).
+	assertion := d.Assertions.IssueFirstFactor(userID, needs)
 	if pend.DesktopRequest != "" {
 		if d.desktopAuth == nil || d.desktopAuth.CompleteOIDC(pend.DesktopRequest, assertion, needs) != nil {
+			// The request expired or was taken: the assertion reaches no one, so it is spent here rather than left live
+			// until AssertionTTL (review M3).
+			d.Assertions.SpendNeeds(assertion)
 			server.WriteError(w, server.Errorf(server.CodeUnauthenticated, "desktop browser request expired"))
 			return
 		}

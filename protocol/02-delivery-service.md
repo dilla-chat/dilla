@@ -964,7 +964,7 @@ E_VERSION         : [code, detail, null, wire([uint]), e2ee([uint]), media([uint
 | 401 | `E_UNAUTHENTICATED` | no device session, or an expired or revoked one | establish a session (`§ Device sessions`) |
 | 401 | `E_PASSKEY_UNKNOWN` | the passkey is not registered on this instance | use another sign-in |
 | 403 | `E_FORBIDDEN` | the session is authenticated but not permitted | none |
-| 403 | `E_PASSKEY_OTHER_ACCOUNT` | a passkey login bound to a password login's assertion used another account's passkey | use that account's passkey, its code, or a backup code |
+| 403 | `E_PASSKEY_OTHER_ACCOUNT` | a passkey login bound to a password or OIDC login's assertion used another account's passkey | use that account's passkey, its code, or a backup code |
 | 403 | `E_CHANNEL_MODE` | the operation is not allowed for this channel's mode | use the surface the mode does allow |
 | 403 | `E_FACTOR_REQUIRED` | the session's account owes a second factor | add one (`09` § Second factors) |
 | 403 | `E_LEAF_NOT_CURRENT` | the sending device's leaf is not in the current tree | resync by external commit; show "you are no longer a member" if refused |
@@ -1018,7 +1018,7 @@ who holds none (`09` § Communities), and a factor change without a valid step-u
 distinct, so a client tells the three apart by code, never by detail. `E_PASSKEY_UNKNOWN` (401)
 came with them: a passkey login whose credential this instance does not hold (`09` § Second
 factors), distinct from `E_UNAUTHENTICATED` so the client can say which. `E_PASSKEY_OTHER_ACCOUNT`
-(403) came with wave B task 3: a passkey login bound to a password login (`09` § Second factors)
+(403) came with wave B task 3: a passkey login bound to a password or OIDC login (`09` § Second factors)
 whose passkey belongs to another account. None is a delivery-service code.
 
 The four Plan 2 consumes are declared **here**, in the one task that owns the vocabulary, even though their

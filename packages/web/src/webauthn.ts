@@ -181,6 +181,9 @@ export async function conditionalMediationAvailable(): Promise<boolean> {
 export async function getPasskey(optionsJson: string, conditional?: { signal: AbortSignal }): Promise<string> {
   const bridge = desktopBridge();
   if (bridge?.browserAuth) {
+    // The shell has no autofill: a conditional request would open the system browser on a field's focus and spend a
+    // ceremony, so it is refused here whatever the caller checked (desktop merge review M1).
+    if (conditional !== undefined) throw new PasskeyError('cancelled', 'Passkey autofill is not available in the desktop app');
     try {
       const result = await bridge.browserAuth({ kind: 'get', options: optionsJson });
       if (typeof result.response !== 'string') throw new Error('Missing browser credential');
