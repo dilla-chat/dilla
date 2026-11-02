@@ -9,6 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { loadBundle, bundledResponse, type Bundle } from './bundle.ts';
 import { canonicalInstance, externalLink, isAppNavigation, parseInvite, partitionFor, trustedFrame, validateCommand, instanceRequestURL, permissionOriginMatches } from './policy.ts';
 import { Preferences } from './preferences.ts';
+import { fetchInstanceData } from './request-forwarding.ts';
 import { linuxAutostart } from './autostart.ts';
 import { createUpdater } from './updater.ts';
 import { waitForPreviousProcess } from './handoff.ts';
@@ -219,12 +220,12 @@ async function openInstance(input: string, path = '/', show = true): Promise<Bro
   updater.expectGuard(instance); startupUsability.expect(instance);
   const origin = new URL(instance).origin;
   const handler = (request: Request): Response | Promise<Response> => {
-    if (new URL(request.url).origin !== origin) return ses.fetch(request, { bypassCustomProtocolHandlers: true });
+    if (new URL(request.url).origin !== origin) return fetchInstanceData(ses, request);
     const bundled = bundledResponse(bundle, request, instance);
     if (bundled) return bundled;
     const target = instanceRequestURL(request.url, instance);
     const forwarded = target === request.url ? request : new Request(target, request);
-    return ses.fetch(forwarded, { bypassCustomProtocolHandlers: true });
+    return fetchInstanceData(ses, forwarded);
   };
   // One session and protocol handler per complete canonical URL, not a host-only partition.
   await ses.protocol.handle(new URL(instance).protocol.slice(0, -1), handler);
