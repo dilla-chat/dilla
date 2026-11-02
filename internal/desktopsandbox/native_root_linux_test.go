@@ -673,17 +673,12 @@ func nativeCrash(t *testing.T, role string) {
 			_ = cmd.Wait()
 		}
 	}()
-	reader := bufio.NewReaderSize(file, 512)
-	ready := false
-	for i := 0; i < 8; i++ {
-		if nativeLine(t, file, reader) == "DILLA_NATIVE_CRASH_READY" {
-			ready = true
-			break
-		}
-	}
-	if !ready {
-		t.Fatal("owned actor did not reach exact crash boundary")
-	}
+	nativeFail(t, readNativeCrashReady(file, func(line string) {
+		// Only bounded source-line/known-reason records leave the child parser;
+		// Node's existing bounded sanitizer transports them into the private proof.
+		fmt.Println(line)
+	}))
+
 	nativeFail(t, cmd.Process.Kill())
 	e = cmd.Wait()
 	var exited *exec.ExitError
