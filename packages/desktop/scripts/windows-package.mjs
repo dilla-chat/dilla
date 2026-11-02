@@ -1,9 +1,10 @@
 import { createHash, createPublicKey } from 'node:crypto';
-import { cp, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, open, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { createWindowsProgramManifest, verifyWindowsProgramManifest, verifyWindowsProgramTree, windowsProgramID } from '../src/windows-manifest.ts';
+import { describeCoffResource } from './windows-coff-diagnostic.mjs';
 const desktop = resolve(import.meta.dirname, '..'), repository = resolve(desktop, '../..');
 const sha512 = raw => createHash('sha512').update(raw).digest('base64');
 function windowsEnvironment() {
@@ -36,7 +37,23 @@ async function compileNativeLauncher({ file, config, iconFile }) {
   execFileSync('rc.exe', ['/nologo', '/fo', 'branding.res', 'branding.rc'], { cwd: packageDirectory, env, stdio: 'inherit' });
   execFileSync('cvtres.exe', ['/NOLOGO', '/MACHINE:X64', '/OUT:branding.syso', 'branding.res'], { cwd: packageDirectory, env, stdio: 'inherit' });
   const encoded = Buffer.from(JSON.stringify(config)).toString('base64');
-  execFileSync('go', ['build', '-trimpath', '-ldflags', `-H=windowsgui -s -w -X main.bootstrapConfig=${encoded}`, '-o', file, './packages/desktop/native/windows-launcher'], { cwd: root, env, stdio: 'inherit' });
+  try {
+   execFileSync('go', ['build', '-trimpath', '-ldflags', `-H=windowsgui -s -w -X main.bootstrapConfig=${encoded}`, '-o', file, './packages/desktop/native/windows-launcher'], { cwd: root, env, stdio: 'inherit' });
+  } catch (error) {
+   // Preserve the original link failure even if diagnostic collection fails.
+   try {
+    const object = await open(join(packageDirectory, 'branding.syso'), 'r');
+    try {
+     const size = (await object.stat()).size;
+     if (size > 16 * 1024 * 1024) console.error('Windows launcher COFF diagnostic: object exceeds size limit');
+     else {
+      const bytes = Buffer.alloc(size), { bytesRead } = await object.read(bytes, 0, size, 0);
+      console.error('Windows launcher COFF diagnostic:', JSON.stringify(describeCoffResource(bytes.subarray(0, bytesRead))));
+     }
+    } finally { await object.close(); }
+   } catch { console.error('Windows launcher COFF diagnostic: unavailable'); }
+   throw error;
+  }
  } finally { await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
 }
 /** Run ONLY after Electron's ASAR integrity, fuses, PE edits and signing finish.
