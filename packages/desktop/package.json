@@ -8,6 +8,7 @@
   "type": "module",
   "main": "dist/main.cjs",
   "scripts": {
+    "pretest": "node scripts/prepare-nsis.mjs",
     "test": "node --test test/*.test.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "build": "node scripts/build.mjs",
