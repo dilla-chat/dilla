@@ -76,10 +76,15 @@ export function fixtureMainSource(source: string, cfg: FixtureIdentity): string 
   const identity = `app.setName(${JSON.stringify(cfg.product)}); app.setPath('userData',${JSON.stringify(cfg.profile)});`;
   if (!source.includes("app.setName('Dilla');")) throw new Error('Installed account fixture name boundary changed');
   source = source.replaceAll("app.setName('Dilla');", identity);
-  source = source.replace(identity, identity + `
+  const initialization = "void initializeDesktop().catch(error => { console.error('Dilla could not initialize:', error); app.exit(1); });";
+  // Shared callbacks must remain at module scope. The first setName/profile
+  // assignment is now inside initializeDesktop, after native role validation.
+  source = replaceBoundary(source, initialization, `
 const __accountFS=process.getBuiltinModule('fs'),__accountReports=${JSON.stringify(cfg.reports)};
 const __accountRole=process.argv.some(v=>v.startsWith('--update-watchdog'))?'watchdog':process.argv.some(v=>v.startsWith('--update-bootstrap'))?'bootstrap':'ordinary';
 ${fixtureStartupDiagnosticsSource()}
+${initialization}`);
+  source = source.replace(identity, identity + `
 let __accountStart=null;try{const s=__accountFS.readFileSync('/proc/self/stat','utf8');__accountStart=s.slice(s.lastIndexOf(')')+2).split(' ')[19];}catch{}
 __accountFS.appendFileSync(__accountReports+'/processes.jsonl',JSON.stringify({pid:process.pid,role:__accountRole,start:__accountStart,version:app.getVersion(),executable:process.execPath})+'\\n');
 if(__accountRole==='ordinary'){app.commandLine.appendSwitch('remote-debugging-address','127.0.0.1');app.commandLine.appendSwitch('remote-debugging-port','0');}
@@ -140,7 +145,7 @@ export async function createInstalledPackages(instance: string): Promise<Install
       await rm(join(dist, 'client'), { recursive: true, force: true }); await cp(join(repository, 'packages/web/dist'), join(dist, 'client'), { recursive: true });
       await writeFile(join(project, 'package.json'), JSON.stringify({ name: 'dilla-account-acceptance-' + id, version, main: 'dist/main.cjs', description: 'Installed account acceptance', author: 'Dilla', license: 'AGPL-3.0-or-later' }));
       await build({ entryPoints: [join(desktop, 'src/preload.ts')], outfile: join(dist, 'preload.cjs'), bundle: true, platform: 'node', target: 'es2022', format: 'cjs', external: ['electron'] });
-      await build({ entryPoints: [join(desktop, 'src/main.ts')], outfile: join(dist, 'main.cjs'), bundle: true, platform: 'node', target: 'node24', format: 'cjs', external: ['electron'], banner: { js: installedEntrypointBanner(reports, version) }, plugins: [{ name: 'compiled-account-acceptance', setup(plugin) {
+      await build({ entryPoints: [join(desktop, 'src/main.ts')], outfile: join(dist, 'main.cjs'), define: process.platform === 'linux' ? { __DILLA_LINUX_INSTALL_KIND__: JSON.stringify('appimage') } : {}, bundle: true, platform: 'node', target: 'node24', format: 'cjs', external: ['electron'], banner: { js: installedEntrypointBanner(reports, version) }, plugins: [{ name: 'compiled-account-acceptance', setup(plugin) {
         plugin.onLoad({ filter: /[\\/]src[\\/]update-keys\.ts$/ }, () => ({ contents: `export const RELEASE_PUBLIC_KEYS=${JSON.stringify([publicKey])};`, loader: 'ts' }));
         plugin.onLoad({ filter: /[\\/]src[\\/]main\.ts$/ }, () => ({ contents: fixtureMainSource(sourceMain, { product, profile, reports, scheme, version }), loader: 'ts', resolveDir: join(desktop, 'src') }));
         plugin.onLoad({ filter: /[\\/]src[\\/]updater\.ts$/ }, () => {

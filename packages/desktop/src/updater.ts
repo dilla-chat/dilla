@@ -1,3 +1,4 @@
+import { LINUX_INSTALL_KIND, assertLinuxSelfUpdate } from './linux-build.ts';
 import { NativeQuitInstaller, UnstoppedUpdateHelper } from './quit-install.ts';
 import { loadSparkle, type SparkleInstaller } from './sparkle.ts';
 import { app } from 'electron';
@@ -65,17 +66,23 @@ export function createUpdater(changed: (state: UpdateState) => void, failedQuit:
   // Do not instantiate Electron's macOS updater: unsigned builds MUST use the Sparkle bridge.
   let coordinator: UpdateCoordinator;
   const installer = new NativeQuitInstaller(app, error => { coordinator.installationFailed(error); failedQuit(); });
+  const packageManaged = process.platform === 'linux' && LINUX_INSTALL_KIND === 'system-package';
   coordinator = new UpdateCoordinator({
+    ...(packageManaged ? { ownership: 'package-manager' as const } : {}),
     check: async () => {
       if (!app.isPackaged) throw new Error('Automatic updates need an installed acceptance build');
       if (RELEASE_PUBLIC_KEYS.length === 0) throw new Error('Launch blocked: no desktop release signing key is embedded');
-      if (process.platform === 'linux' && !process.env.APPIMAGE) throw new Error('Updates require the installed AppImage');
+      if (process.platform === 'linux' && !packageManaged) {
+        assertLinuxSelfUpdate();
+        if (!process.env.APPIMAGE) throw new Error('Updates require the installed AppImage');
+      }
       const [bytes, signature] = await Promise.all([boundedFetch(feed, 1_048_576), boundedFetch(feed + '.sig', 128)]);
       const release = (process.platform === 'win32' ? verifyWindowsRelease : verifyRelease)(bytes, Buffer.from(signature).toString('utf8').trim(), {
         publicKeys: RELEASE_PUBLIC_KEYS, channel, platform: process.platform, arch: process.arch,
         currentVersion: '0.0.0', now: Date.now(),
       });
       if (!newerVersion(release.version, app.getVersion())) return null;
+      if (packageManaged) return release;
       descriptor = { metadata: bytes, signature: Buffer.from(signature).toString('utf8').trim() };
       target = release.artifacts.find(a => a.platform === process.platform && a.arch === process.arch)!;
       if (process.platform === 'darwin') { sparkle ??= loadSparkle(process.resourcesPath, app); return release; }
@@ -91,6 +98,7 @@ export function createUpdater(changed: (state: UpdateState) => void, failedQuit:
       return release;
     },
     download: async release => {
+      if (process.platform === 'linux') assertLinuxSelfUpdate();
       if (process.platform === 'darwin' && sparkle && target) { await sparkle.prepare(release, target); return; }
       if (!native || !target) throw new Error('No verified update');
       programManifest = undefined;
@@ -102,6 +110,7 @@ export function createUpdater(changed: (state: UpdateState) => void, failedQuit:
     },
     cancelledQuit: () => { sparkle?.cancelledQuit(); installer.cancel(); },
     install: async () => {
+      if (process.platform === 'linux') assertLinuxSelfUpdate();
       if (process.platform === 'darwin' && sparkle) { sparkle.install(); return; }
       if (!native || !target || !downloadedPath) throw new Error('No verified native update');
       try { await verifyArtifactFile(downloadedPath, target); }

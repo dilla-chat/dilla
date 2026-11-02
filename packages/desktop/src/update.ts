@@ -62,8 +62,15 @@ export function verifyArtifact(bytes: Uint8Array, artifact: Artifact): boolean {
 }
 
 export interface QuitGuard { activeCall: boolean; unsavedDraft: boolean }
-interface UpdateDriver { cancelledQuit?(): void; check(): Promise<Release | null>; download(release: Release): Promise<void>; install(): void | Promise<void> }
-export type UpdateState = { phase: 'idle' | 'checking' | 'downloading' | 'ready' | 'installing' | 'error'; message?: string };
+interface UpdateDriver { ownership?: 'package-manager'; cancelledQuit?(): void; check(): Promise<Release | null>; download(release: Release): Promise<void>; install(): void | Promise<void> }
+export type UpdateState = { phase: 'idle' | 'checking' | 'downloading' | 'ready' | 'installing' | 'error'; message?: string }
+ | { phase: 'available'; version: string; message: string };
+
+export function desktopReleasePage(version: string): string {
+ if (typeof version !== 'string' || versionPattern.exec(version)?.[0] !== version) throw new Error('Invalid desktop release version');
+ versionParts(version);
+ return `https://github.com/jonasthim/dilla/releases/tag/desktop-v${version}`;
+}
 
 export class UpdateCoordinator {
   state: UpdateState = { phase: 'idle' };
@@ -89,13 +96,18 @@ export class UpdateCoordinator {
     try {
       const release = await this.driver.check();
       if (!release) { this.set({ phase: 'idle' }); return; }
+      if (this.driver.ownership === 'package-manager') {
+        desktopReleasePage(release.version);
+        this.set({ phase: 'available', version: release.version, message: `Dilla ${release.version} is available. Update using your package manager.` });
+        return;
+      }
       this.set({ phase: 'downloading' });
       await this.driver.download(release);
       this.set({ phase: 'ready' });
     } catch (error) { this.set({ phase: 'error', message: error instanceof Error ? error.message : 'Update failed; try again' }); }
   }
   async quit(actualQuit: boolean): Promise<boolean> {
-    if (!actualQuit || this.protected() || this.state.phase !== 'ready') return false;
+    if (this.driver.ownership === 'package-manager' || !actualQuit || this.protected() || this.state.phase !== 'ready') return false;
     this.set({ phase: 'installing' });
     try { await this.driver.install(); return true; }
     catch (error) { this.set({ phase: 'error', message: error instanceof Error ? error.message : 'Installation failed; try again' }); return false; }

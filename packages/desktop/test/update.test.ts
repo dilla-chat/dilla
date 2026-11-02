@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
-import { verifyRelease, verifyArtifact, UpdateCoordinator, type Release } from '../src/update.ts';
+import { verifyRelease, verifyArtifact, UpdateCoordinator, desktopReleasePage, type Release } from '../src/update.ts';
 
 const pair = generateKeyPairSync('ed25519');
 const publicKey = pair.publicKey.export({ type: 'spki', format: 'pem' }).toString();
@@ -104,4 +104,35 @@ test('macOS metadata authenticates the exact Sparkle archive signature', () => {
  assert.throws(() => verifyRelease(missing.body, missing.signature, { ...context, platform: 'darwin' }));
  const valid = signed({ ...release, artifacts: [{ ...artifact, sparkleSignature: Buffer.alloc(64).toString('base64') }] });
  assert.equal(verifyRelease(valid.body, valid.signature, { ...context, platform: 'darwin' }).artifacts[0].sparkleSignature, Buffer.alloc(64).toString('base64'));
+});
+
+test('package manager updates expose authenticated availability without downloading or installing', async () => {
+ let downloads = 0, installs = 0;
+ const phases: string[] = [];
+ const updater = new UpdateCoordinator({
+  ownership: 'package-manager', check: async () => release,
+  download: async () => { downloads++; }, install: () => { installs++; },
+ }, state => phases.push(state.phase));
+ await updater.check();
+ assert.deepEqual(updater.state, { phase: 'available', version: '0.1.1', message: 'Dilla 0.1.1 is available. Update using your package manager.' });
+ assert.deepEqual(phases, ['checking', 'available']);
+ assert.equal(downloads, 0);
+ updater.setGuard('a', { activeCall: false, unsavedDraft: false });
+ assert.equal(await updater.quit(true), false);
+ assert.equal(installs, 0);
+ await updater.check();
+ assert.equal(updater.state.phase, 'available');
+ assert.equal(downloads, 0);
+});
+
+test('package manager availability rejects malformed release versions and supports idle rechecks', async () => {
+ let candidate: Release | null = { ...release, version: '0.1.1\n' };
+ const updater = new UpdateCoordinator({ ownership: 'package-manager', check: async () => candidate, download: async () => { throw Error('download forbidden'); }, install: () => { throw Error('install forbidden'); } });
+ await updater.check(); assert.equal(updater.state.phase, 'error');
+ candidate = null; await updater.check(); assert.deepEqual(updater.state, { phase: 'idle' });
+});
+
+test('release pages use only validated full upstream versions and the fixed repository', () => {
+ assert.equal(desktopReleasePage('0.1.0-beta.10'), 'https://github.com/jonasthim/dilla/releases/tag/desktop-v0.1.0-beta.10');
+ for (const value of ['0.1.0\n', 'https://evil.test', '../latest', '0.1.0+build', '9007199254740992.0.0']) assert.throws(() => desktopReleasePage(value));
 });

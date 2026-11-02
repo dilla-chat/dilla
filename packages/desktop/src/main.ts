@@ -12,6 +12,9 @@ import { Preferences } from './preferences.ts';
 import { fetchInstanceData } from './request-forwarding.ts';
 import { linuxAutostart } from './autostart.ts';
 import { createUpdater } from './updater.ts';
+import { LINUX_INSTALL_KIND, assertLinuxSelfUpdate } from './linux-build.ts';
+import { resolveLinuxInstallation } from './linux-installation.ts';
+import { desktopReleasePage } from './update.ts';
 import { waitForPreviousProcess } from './handoff.ts';
 import { NativeAudio } from './native-audio.ts';
 import { ScreenCaptureBroker } from './screen-capture.ts';
@@ -31,9 +34,22 @@ import { startupHealthFile, reportStartupHealth, withdrawStartupHealth } from '.
 
 // Role selection and health-environment consumption precede ordinary app boot,
 // single-instance acquisition, renderers, tray and unrelated process launches.
-app.setName('Dilla');
 protocol.registerSchemesAsPrivileged([{ scheme: 'dilla-internal', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 app.enableSandbox();
+const linuxApplicationUpdates = process.platform !== 'linux' || LINUX_INSTALL_KIND === 'appimage';
+void initializeDesktop().catch(error => { console.error('Dilla could not initialize:', error); app.exit(1); });
+
+async function initializeDesktop(): Promise<void> {
+ if (process.platform === 'linux') {
+  if (LINUX_INSTALL_KIND !== 'unknown') await resolveLinuxInstallation({
+   installKind: LINUX_INSTALL_KIND, version: app.getVersion(), channel: app.getVersion().includes('-beta.') ? 'beta' : 'stable', arch: process.arch,
+   executable: process.execPath, resourcesPath: process.resourcesPath,
+  });
+  const installationRole = process.argv.some(value => value.startsWith('--update-') || value.startsWith('--sandbox-') || value === '--setup-sandbox' || value.startsWith('--setup-sandbox='))
+   || ['DILLA_UPDATE_STARTUP_NONCE', 'DILLA_UPDATE_PREVIOUS_PID', 'DILLA_UPDATE_RECOVERED_NONCE'].some(key => process.env[key] !== undefined);
+  if (installationRole) assertLinuxSelfUpdate();
+ }
+ app.setName('Dilla');
 try {
  const startupLaunch = takeStartupLaunch(process.env);
  const nonce = watchdogNonce(process.argv), recovery = watchdogRecovery(process.argv), bootstrap=bootstrapNonce(process.argv);
@@ -66,6 +82,7 @@ try {
   })().catch(error => { console.error('Dilla could not start:', error); app.exit(1); });
  }
 } catch (error) { console.error('Dilla could not initialize:', error); app.exit(1); }
+}
 
 function startDesktop(startupLaunch: { nonce?: string; previousPid?: string }, recoveryError?: string, activationPlan?: InstalledUpdatePlan,restoredPlan?:InstalledUpdatePlan): void {
 app.setName('Dilla');
@@ -310,7 +327,7 @@ async function showManager(): Promise<void> {
 
 async function setAutostart(enabled: boolean): Promise<void> {
   if (!app.isPackaged) throw new Error('Autostart is available in installed builds');
-  if (process.platform === 'linux') await linuxAutostart(app.getPath('appData'), process.env.APPIMAGE ?? process.execPath, enabled);
+  if (process.platform === 'linux') await linuxAutostart(app.getPath('appData'), LINUX_INSTALL_KIND === 'system-package' ? '/usr/bin/dilla' : process.env.APPIMAGE ?? process.execPath, enabled);
   else app.setLoginItemSettings({ openAtLogin: enabled, path: process.platform==='win32'&&app.isPackaged?windowsLauncher:process.execPath, args: ['--hidden'] });
   await preferences.setAutostart(enabled);
   refreshMenu();
@@ -367,6 +384,9 @@ function refreshMenu(): void {
       if (updater.state.phase === 'error') dialog.showErrorBox('Could not update Dilla', updater.state.message ?? 'Try again');
       else if (updater.state.phase === 'idle') void dialog.showMessageBox({ message: 'Dilla is up to date.', buttons: ['OK'] });
     }); } },
+    ...(updater.state.phase === 'available' ? [{ label: updater.state.message, enabled: false }, { label: 'Update using your package manager', click: () => {
+      if (updater.state.phase === 'available') void shell.openExternal(desktopReleasePage(updater.state.version));
+    } }] : []),
     ...(updater.state.phase === 'ready' ? [{ label: 'Restart to update', click: () => { void requestQuit(true); } }] : []),
     { type: 'separator' }, { label: 'Quit Dilla', click: () => { void requestQuit(); } },
   ];
@@ -567,7 +587,7 @@ void waitForPreviousProcess(previousProcess).then(async () => {
   else {
     // The lock serializes discovery/recovery and closes an early no-active
     // snapshot racing the quitting owner's final publication and exit.
-    if (app.isPackaged && !startupLaunch.nonce && !('recoveredNonce' in startupLaunch) && (process.platform === 'linux' || process.platform === 'win32')) {
+    if (linuxApplicationUpdates && app.isPackaged && !startupLaunch.nonce && !('recoveredNonce' in startupLaunch) && (process.platform === 'linux' || process.platform === 'win32')) {
      try {
       if (await resumeInterruptedUpdate(app.getPath('userData'), process.platform === 'linux' ? process.env.APPIMAGE! : process.execPath,
        { publicKeys: RELEASE_PUBLIC_KEYS, platform: process.platform, arch: process.arch, version: app.getVersion(), channel: app.getVersion().includes('-beta.') ? 'beta' : 'stable' })) { quitting = true; app.exit(0); return; }
@@ -589,7 +609,7 @@ void waitForPreviousProcess(previousProcess).then(async () => {
       if (process.platform === 'darwin') app.dock?.setIcon(join(__dirname, 'icon.png'));
       bundle = await loadBundle(!app.isPackaged && process.argv.includes('--media-validation') ? join(__dirname, '../validation-dist') : join(__dirname, 'client'));
       let previousUpdateFailure = recoveryError;
-      if (app.isPackaged && !startupLaunch.nonce && (process.platform === 'linux' || process.platform === 'win32')) {
+      if (linuxApplicationUpdates && app.isPackaged && !startupLaunch.nonce && (process.platform === 'linux' || process.platform === 'win32')) {
        try {
         const pending = await pendingInstalledUpdate(app.getPath('userData'), app.getVersion());
         if (pending && !previousUpdateFailure) previousUpdateFailure = pending.failure === 'metadata'
