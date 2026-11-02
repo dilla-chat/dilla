@@ -39,8 +39,30 @@ Var GeneratedGUID
 Var InitialMarkerArchived
 Var StableLauncherHandle
 Var ArchivedUpdatesExisting
+Var PayloadPins
+Var PayloadPinCount
+Var PayloadHandle
+Var PayloadInfo
+Var PayloadToken
+Var PayloadTokenInfo
+Var PayloadSIDString
+Var PayloadUserSID
+Var PayloadDriveRoot
+Var PayloadDescriptor
+Var PayloadNameBuffer
+Var PayloadObjectName
+Var PayloadObjectAttributes
+Var PayloadIOStatus
+Var PayloadCreatedHandle
+Var PayloadOwnerDescriptor
+Var PayloadOwnerSIDString
+Var PayloadDACLString
+Var PayloadFindHandle
+Var PayloadFindData
+Var PayloadCleanupFailed
 
 Function Fail
+  Call ReleasePrivatePayload
   Call ReleaseStableLauncher
   Call RestoreInitialArchives
   Call ReleaseOperation
@@ -49,6 +71,7 @@ Function Fail
   Quit
 FunctionEnd
 Function un.Fail
+  Call un.ReleasePrivatePayload
   Call un.ReleaseStableLauncher
   Call un.RestoreHistory
   Call un.ReleaseOperation
@@ -153,6 +176,7 @@ FunctionEnd
 !insertmacro PathChecks "un."
 
 Function .onInit
+  Call InitializePrivatePayload
   StrCpy $OperationMutex 0
   StrCpy $StableLauncherHandle 0
   SetShellVarContext current
@@ -180,10 +204,15 @@ FunctionEnd
 
 Function ExtractPayload
   ; Never extract the complete payload into the live program root.
+  Call PreparePrivatePayload
   SetOutPath "$PLUGINSDIR\payload"
-  File /oname=$PLUGINSDIR\payload.7z "${APP_64}"
+  File /oname=$PLUGINSDIR\payload\payload.7z "${APP_64}"
   ClearErrors
-  Nsis7z::Extract "$PLUGINSDIR\payload.7z"
+  Nsis7z::Extract "$PLUGINSDIR\payload\payload.7z"
+  IfErrors 0 +2
+    Call Fail
+  ClearErrors
+  Delete "$PLUGINSDIR\payload\payload.7z"
   IfErrors 0 +2
     Call Fail
   IfFileExists "$PLUGINSDIR\payload\versions\${DILLA_PROGRAM_ID}\dilla-desktop.exe" +2
@@ -399,6 +428,7 @@ Function un.RequireUnlockedFile
 FunctionEnd
 
 Function un.onInit
+  Call un.InitializePrivatePayload
   StrCpy $StableLauncherHandle 0
   StrCpy $OperationMutex 0
   Call un.AcquireOperation
@@ -472,6 +502,9 @@ Function ${Prefix}AcquireOperation
   ${EndIf}
 FunctionEnd
 Function ${Prefix}ReleaseOperation
+  Call ${Prefix}ReleasePrivatePayload
+  IfErrors 0 +2
+    Call ${Prefix}Fail
   Call ${Prefix}ReleaseStableLauncher
   ${If} $OperationMutex != 0
     System::Call 'kernel32::ReleaseMutex(p $OperationMutex)'
@@ -523,11 +556,11 @@ FunctionEnd
 !insertmacro OperationFunctions "un."
 
 Function StagePreflight
-  SetOutPath "$PLUGINSDIR\maintenance"
+  SetOutPath "$PLUGINSDIR\payload\maintenance"
   ClearErrors
-  CopyFiles /SILENT "$INSTDIR\Dilla.exe" "$PLUGINSDIR\maintenance\Dilla.exe"
+  CopyFiles /SILENT "$INSTDIR\Dilla.exe" "$PLUGINSDIR\payload\maintenance\Dilla.exe"
   IfErrors Fail
-  ExecWait '$\"$PLUGINSDIR\maintenance\Dilla.exe$\" --installer-preflight=stage --package-manifest-sha512=${DILLA_MANIFEST_SHA512}' $0
+  ExecWait '$\"$PLUGINSDIR\payload\maintenance\Dilla.exe$\" --installer-preflight=stage --package-manifest-sha512=${DILLA_MANIFEST_SHA512}' $0
   IfErrors Fail
   StrCmp $0 0 +2
     Goto Fail
@@ -637,13 +670,16 @@ Function RestoreInitialArchives
 FunctionEnd
 
 Function un.MaintenancePreflight
-  SetOutPath "$PLUGINSDIR\maintenance"
+  ${If} $PayloadPins == 0
+    Call un.PreparePrivatePayload
+  ${EndIf}
+  SetOutPath "$PLUGINSDIR\payload\maintenance"
   ClearErrors
   ; Embed the original compiled guard in the uninstaller. Damaged/missing root
   ; Go bytes never supply executable code or filesystem authority for removal.
   File /oname=Dilla.exe "${DILLA_BOOTSTRAP_EXE}"
   IfErrors Fail
-  ExecWait '$\"$PLUGINSDIR\maintenance\Dilla.exe$\" --installer-preflight=uninstall' $0
+  ExecWait '$\"$PLUGINSDIR\payload\maintenance\Dilla.exe$\" --installer-preflight=uninstall' $0
   IfErrors Fail
   StrCmp $0 0 +2
     Goto Fail
@@ -690,4 +726,418 @@ Function un.RestoreHistory
       Rename "$DataArchive" "$DataRoot"
     ${EndIf}
   ${EndIf}
+FunctionEnd
+
+!macro FreePayloadLocal Variable
+    ${If} ${Variable} != 0
+      System::Call 'kernel32::LocalFree(p ${Variable})p.r0'
+      ${If} $0 != 0
+        StrCpy $PayloadCleanupFailed 1
+      ${EndIf}
+      StrCpy ${Variable} 0
+    ${EndIf}
+!macroend
+!macro FreePayloadBuffer Variable
+    ${If} ${Variable} != 0
+      System::Free ${Variable}
+      StrCpy ${Variable} 0
+    ${EndIf}
+!macroend
+
+!define /math DILLA_OBJECT_ATTRIBUTES_SIZE ${NSIS_PTR_SIZE} * 6
+!macro PrivatePayloadFunctions Prefix
+Function ${Prefix}InitializePrivatePayload
+  StrCpy $PayloadPins 0
+  StrCpy $PayloadPinCount 0
+  StrCpy $PayloadHandle 0
+  StrCpy $PayloadInfo 0
+  StrCpy $PayloadToken 0
+  StrCpy $PayloadTokenInfo 0
+  StrCpy $PayloadSIDString 0
+  StrCpy $PayloadDescriptor 0
+  StrCpy $PayloadNameBuffer 0
+  StrCpy $PayloadObjectName 0
+  StrCpy $PayloadObjectAttributes 0
+  StrCpy $PayloadIOStatus 0
+  StrCpy $PayloadCreatedHandle 0
+  StrCpy $PayloadOwnerDescriptor 0
+  StrCpy $PayloadOwnerSIDString 0
+  StrCpy $PayloadDACLString 0
+  StrCpy $PayloadFindHandle -1
+  StrCpy $PayloadFindData 0
+  StrCpy $PayloadCleanupFailed 0
+FunctionEnd
+
+; NSIS's plug-in directory can inherit a WORLD DELETE_CHILD grant. The payload
+; must not inherit it. Protect a NEW child before writing any executable/archive
+; and retain no-delete-sharing pins for its entire existing ancestor chain.
+Function ${Prefix}PreparePrivatePayload
+  StrCpy $PayloadCleanupFailed 0
+  StrCmp $PayloadPins 0 +2
+    Call ${Prefix}Fail
+  ; Only a local drive-absolute namespace is supported. Never pin C: (the
+  ; drive's current directory), a UNC/device path or a mapped remote drive.
+  StrCpy $0 "$PLUGINSDIR" 2
+  StrCmp $0 "\\" Fail
+  StrCpy $0 "$PLUGINSDIR" 1 1
+  StrCmp $0 ":" 0 Fail
+  StrCpy $0 "$PLUGINSDIR" 1 2
+  StrCmp $0 "\" 0 Fail
+  StrCpy $PayloadDriveRoot "$PLUGINSDIR" 3
+  System::Call 'kernel32::GetDriveTypeW(w "$PayloadDriveRoot")i.r0'
+  ${If} $0 != 2
+  ${AndIf} $0 != 3
+  ${AndIf} $0 != 5
+  ${AndIf} $0 != 6
+    Goto Fail
+  ${EndIf}
+  System::Call 'kernel32::GetCurrentProcess()p.r0'
+  System::Call 'advapi32::OpenProcessToken(p r0, i 8, *p.r1)i.r2'
+  StrCmp $2 0 Fail
+  StrCpy $PayloadToken $1
+  System::Call 'advapi32::GetTokenInformation(p $PayloadToken, i 1, p 0, i 0, *i.r1)i.r0 ?e'
+  Pop $2
+  StrCmp $0 0 0 Fail
+  StrCmp $2 122 0 Fail
+  IntCmp $1 8 Fail Fail +1
+  IntCmp $1 65536 +1 +1 Fail
+  System::Alloc $1
+  Pop $PayloadTokenInfo
+  StrCmp $PayloadTokenInfo 0 Fail
+  System::Call 'advapi32::GetTokenInformation(p $PayloadToken, i 1, p $PayloadTokenInfo, i r1, *i.r2)i.r0'
+  StrCmp $0 0 Fail
+  IntCmp $2 $1 +1 +1 Fail
+  IntCmp $2 8 +1 Fail +1
+  System::Call '*$PayloadTokenInfo(p.r0)'
+  System::Call 'advapi32::IsValidSid(p r0)i.r2'
+  StrCmp $2 0 Fail
+  System::Call 'advapi32::ConvertSidToStringSidW(p r0, *p.r1)i.r2'
+  StrCmp $2 0 Fail
+  StrCpy $PayloadSIDString $1
+  System::Call 'kernel32::lstrcpynW(w .r9, p $PayloadSIDString, i ${NSIS_MAX_STRLEN})p.r0'
+  StrCmp $0 0 Fail
+  StrCpy $PayloadUserSID $9
+  System::Alloc 52
+  Pop $PayloadInfo
+  StrCmp $PayloadInfo 0 Fail
+  ; Build the existing path list, then open ROOT -> leaf. Each checked directory
+  ; remains pinned against rename for the entire lifetime of the payload.
+  StrCpy $R0 "$PLUGINSDIR"
+  StrCpy $R2 0
+  StrCpy $R3 "$PayloadDriveRoot" 2
+  collect:
+    Push $R0
+    IntOp $R2 $R2 + 1
+    IntCmp $R2 256 +1 +1 Fail
+    StrCmp $R0 $PayloadDriveRoot pin
+    ${GetParent} "$R0" $R1
+    ; FileFunc GetParent(C:\Users) returns C:, not the drive root C:\.
+    StrCmp $R1 $R3 normalize_root
+    StrCmp $R1 "" Fail
+    StrCmp $R1 $R0 Fail
+    StrCpy $R0 $R1
+    Goto collect
+  normalize_root:
+    StrCpy $R0 $PayloadDriveRoot
+    Goto collect
+  pin:
+    Pop $R0
+    Push $R0
+    Call ${Prefix}PinPayloadDirectory
+    IntOp $R2 $R2 - 1
+    StrCmp $R2 0 +2
+      Goto pin
+  ; Explicit owner and a protected, inheritable DACL: only the current token
+  ; user, SYSTEM and Administrators can mutate this newly created namespace.
+  StrCpy $9 "O:$PayloadUserSID"
+  StrCpy $9 "$9D:P(A;OICI;FA;;;$PayloadUserSID)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+  System::Call 'advapi32::ConvertStringSecurityDescriptorToSecurityDescriptorW(w r9, i 1, *p.r0, p 0)i.r1'
+  StrCmp $1 0 Fail
+  StrCpy $PayloadDescriptor $0
+  ; Constant relative UNICODE_STRING: Length=14, MaximumLength=16. Pointer
+  ; slots include the ABI's required padding on x64 (8/16 bytes total).
+  System::Alloc 16
+  Pop $PayloadNameBuffer
+  StrCmp $PayloadNameBuffer 0 Fail
+  System::Call 'kernel32::lstrcpynW(p $PayloadNameBuffer, w "payload", i 8)p.r0'
+  StrCmp $0 0 Fail
+  System::Call '*(p 0x0010000e, p $PayloadNameBuffer)p.r0'
+  StrCmp $0 0 Fail
+  StrCpy $PayloadObjectName $0
+  ; OBJECT_ATTRIBUTES is six aligned slots (24/48 bytes). RootDirectory is
+  ; the already checked/pinned PLUGINSDIR; no mutable absolute lookup occurs.
+  System::Call '*$PayloadPins(p.r0, p.r1)'
+  System::Call '*(p ${DILLA_OBJECT_ATTRIBUTES_SIZE}, p r1, p $PayloadObjectName, p 0x40, p $PayloadDescriptor, p 0)p.r0'
+  StrCmp $0 0 Fail
+  StrCpy $PayloadObjectAttributes $0
+  System::Call '*(p 0, p 0)p.r0'
+  StrCmp $0 0 Fail
+  StrCpy $PayloadIOStatus $0
+  ; FILE_CREATE=2 never adopts any existing object. Creation and its first
+  ; no-delete-sharing handle are one operation, eliminating a replace window.
+  StrCpy $0 0
+  System::Call 'ntdll::NtCreateFile(*p.r0, i 0x120080, p $PayloadObjectAttributes, p $PayloadIOStatus, p 0, i 128, i 3, i 2, i 0x200021, p 0, i 0)i.r1'
+  StrCpy $PayloadCreatedHandle $0
+  StrCmp $1 0 0 Fail
+  StrCmp $PayloadCreatedHandle 0 Fail
+  StrCmp $PayloadCreatedHandle -1 Fail
+  System::Call '*$PayloadIOStatus(p.r0, p.r1)'
+  StrCmp $0 0 0 Fail
+  StrCmp $1 2 0 Fail ; FILE_CREATED (FILE_OPENED=1 must never be accepted).
+  Push "$PLUGINSDIR\payload"
+  Call ${Prefix}PinPayloadDirectory
+  ; The atomic handle stays open until the second checked pin is registered.
+  ; Verify the actual filesystem enforced our requested descriptor as well.
+  Call ${Prefix}VerifyPrivatePayload
+  ; Filesystems that ignore the supplied DACL cannot establish this contract.
+  System::Call '*$PayloadPins(p.r0, p.r1)'
+  System::Call 'kernel32::GetVolumeInformationByHandleW(p r1, p 0, i 0, p 0, p 0, *i.r2, p 0, i 0)i.r0'
+  StrCmp $0 0 Fail
+  IntOp $2 $2 & 8
+  StrCmp $2 8 0 Fail
+  Call ${Prefix}FreePayloadSecurity
+  StrCmp $PayloadCleanupFailed 0 +2
+    Goto Fail
+  Return
+  Fail:
+    Call ${Prefix}Fail
+FunctionEnd
+
+Function ${Prefix}VerifyPrivatePayload
+  System::Call '*$PayloadPins(p.r0, p.r1)'
+  System::Call 'advapi32::GetSecurityInfo(p r1, i 1, i 5, *p.r0, p 0, p 0, p 0, *p.r1)i.r2'
+  StrCmp $2 0 0 Fail
+  StrCpy $PayloadOwnerDescriptor $1
+  StrCmp $0 0 Fail
+  System::Call '*$PayloadTokenInfo(p.r2)'
+  System::Call 'advapi32::EqualSid(p r0, p r2)i.r3'
+  StrCmp $3 0 Fail
+  System::Call 'advapi32::GetSecurityDescriptorControl(p $PayloadOwnerDescriptor, *i.r0, *i.r1)i.r2'
+  StrCmp $2 0 Fail
+  IntOp $0 $0 & 0x1000
+  StrCmp $0 4096 0 Fail
+  ; Compare the entire canonical ACE body against our in-process descriptor.
+  ; Only the known protected/auto-inherited control spelling may differ.
+  StrCpy $R0 $PayloadDescriptor
+  StrCpy $R1 0
+  descriptor:
+    System::Call 'advapi32::ConvertSecurityDescriptorToStringSecurityDescriptorW(p $R0, i 1, i 4, *p.r0, *i.r1)i.r2'
+    StrCmp $2 0 Fail
+    StrCpy $PayloadDACLString $0
+    IntCmp $1 1 Fail Fail +1
+    IntCmp $1 ${NSIS_MAX_STRLEN} +1 +1 Fail
+    System::Call 'kernel32::lstrcpynW(w .r3, p $PayloadDACLString, i ${NSIS_MAX_STRLEN})p.r0'
+    StrCmp $0 0 Fail
+    System::Call 'kernel32::LocalFree(p $PayloadDACLString)p.r0'
+    StrCmp $0 0 0 Fail
+    StrCpy $PayloadDACLString 0
+    StrCpy $0 $3 4
+    StrCmp $0 "D:P(" protected
+    StrCpy $0 $3 6
+    StrCmp $0 "D:PAI(" 0 Fail
+    StrCpy $3 $3 "" 5
+    Goto canonical
+    protected:
+      StrCpy $3 $3 "" 3
+    canonical:
+    StrCmp $R1 0 expected
+    StrCmp $3 $R2 0 Fail
+    Goto verified
+    expected:
+      StrCpy $R2 $3
+      StrCpy $R0 $PayloadOwnerDescriptor
+      StrCpy $R1 1
+      Goto descriptor
+  verified:
+  Call ${Prefix}RequireEmptyPayload
+  System::Call 'kernel32::LocalFree(p $PayloadOwnerDescriptor)p.r0'
+  StrCmp $0 0 0 Fail
+  StrCpy $PayloadOwnerDescriptor 0
+  Return
+  Fail:
+    Call ${Prefix}Fail
+FunctionEnd
+
+Function ${Prefix}RequireEmptyPayload
+  ; WIN32_FIND_DATAW is 592 bytes; cFileName starts at byte 44.
+  System::Alloc 592
+  Pop $PayloadFindData
+  StrCmp $PayloadFindData 0 Fail
+  System::Call 'kernel32::FindFirstFileW(w "$PLUGINSDIR\payload\*", p $PayloadFindData)p.r0 ?e'
+  Pop $1
+  StrCpy $PayloadFindHandle $0
+  StrCmp $0 -1 0 entry
+  StrCmp $1 2 done Fail
+  entry:
+    System::Int64Op $PayloadFindData + 44
+    Pop $0
+    System::Call 'kernel32::lstrcpynW(w .r1, p r0, i 260)p.r2'
+    StrCmp $2 0 Fail
+    StrCmp $1 "." next
+    StrCmp $1 ".." 0 Fail
+    next:
+      System::Call 'kernel32::FindNextFileW(p $PayloadFindHandle, p $PayloadFindData)i.r0 ?e'
+      Pop $1
+      StrCmp $0 0 0 entry
+      StrCmp $1 18 0 Fail
+  done:
+  ${If} $PayloadFindHandle != -1
+    System::Call 'kernel32::FindClose(p $PayloadFindHandle)i.r0'
+    StrCmp $0 0 Fail
+    StrCpy $PayloadFindHandle -1
+  ${EndIf}
+  System::Free $PayloadFindData
+  StrCpy $PayloadFindData 0
+  Return
+  Fail:
+    Call ${Prefix}Fail
+FunctionEnd
+
+Function ${Prefix}PinPayloadDirectory
+  Exch $0
+  Push $1
+  Push $2
+  Push $3
+  ; READ_CONTROL|READ_ATTRIBUTES, READ|WRITE sharing, NO DELETE sharing.
+  System::Call 'kernel32::CreateFileW(w r0, i 0x20080, i 3, p 0, i 3, i 0x02200000, p 0)p.r1'
+  StrCmp $1 -1 Fail
+  StrCpy $PayloadHandle $1
+  System::Call 'kernel32::GetFileInformationByHandle(p $PayloadHandle, p $PayloadInfo)i.r2'
+  StrCmp $2 0 Fail
+  System::Call '*$PayloadInfo(i.r2)'
+  IntOp $3 $2 & 0x400
+  StrCmp $3 0 0 Fail
+  IntOp $3 $2 & 0x10
+  StrCmp $3 16 0 Fail
+  ; A substituted other-user plug-in directory is not our newly created root.
+  StrCmp $0 "$PLUGINSDIR" 0 owned
+    Call ${Prefix}VerifyPayloadPluginOwner
+  owned:
+  System::Call '*(p $PayloadPins, p $PayloadHandle)p.r2'
+  StrCmp $2 0 Fail
+  StrCpy $PayloadPins $2
+  StrCpy $PayloadHandle 0
+  IntOp $PayloadPinCount $PayloadPinCount + 1
+  IntCmp $PayloadPinCount 257 Fail +1 Fail
+  Pop $3
+  Pop $2
+  Pop $1
+  Pop $0
+  Return
+  Fail:
+    Call ${Prefix}Fail
+FunctionEnd
+
+Function ${Prefix}VerifyPayloadPluginOwner
+  Push $0
+  Push $1
+  Push $2
+  Push $3
+  System::Call 'advapi32::GetSecurityInfo(p $PayloadHandle, i 1, i 1, *p.r0, p 0, p 0, p 0, *p.r1)i.r2'
+  StrCmp $2 0 0 Fail
+  StrCpy $PayloadOwnerDescriptor $1
+  StrCmp $0 0 Fail
+  System::Call 'advapi32::ConvertSidToStringSidW(p r0, *p.r1)i.r2'
+  StrCmp $2 0 Fail
+  StrCpy $PayloadOwnerSIDString $1
+  ; Keep the original TokenUser SID string alive until final resource cleanup.
+  System::Call 'kernel32::lstrcpynW(w .r3, p $PayloadOwnerSIDString, i ${NSIS_MAX_STRLEN})p.r2'
+  StrCmp $2 0 Fail
+  System::Call 'kernel32::LocalFree(p $PayloadOwnerSIDString)p.r2'
+  StrCmp $2 0 0 Fail
+  StrCpy $PayloadOwnerSIDString 0
+  StrCmp $3 $PayloadUserSID trusted
+  StrCmp $3 "S-1-5-18" trusted
+  StrCmp $3 "S-1-5-32-544" trusted
+  Goto Fail
+  trusted:
+  System::Call 'kernel32::LocalFree(p $PayloadOwnerDescriptor)p.r0'
+  StrCmp $0 0 0 Fail
+  StrCpy $PayloadOwnerDescriptor 0
+  Pop $3
+  Pop $2
+  Pop $1
+  Pop $0
+  Return
+  Fail:
+    Call ${Prefix}Fail
+FunctionEnd
+
+Function ${Prefix}FreePayloadSecurity
+  ${If} $PayloadCreatedHandle != 0
+    System::Call 'kernel32::CloseHandle(p $PayloadCreatedHandle)i.r0'
+    ${If} $0 == 0
+      StrCpy $PayloadCleanupFailed 1
+    ${EndIf}
+    StrCpy $PayloadCreatedHandle 0
+  ${EndIf}
+  ${If} $PayloadFindHandle != -1
+    System::Call 'kernel32::FindClose(p $PayloadFindHandle)i.r0'
+    ${If} $0 == 0
+      StrCpy $PayloadCleanupFailed 1
+    ${EndIf}
+    StrCpy $PayloadFindHandle -1
+  ${EndIf}
+  ${If} $PayloadHandle != 0
+    System::Call 'kernel32::CloseHandle(p $PayloadHandle)i.r0'
+    ${If} $0 == 0
+      StrCpy $PayloadCleanupFailed 1
+    ${EndIf}
+    StrCpy $PayloadHandle 0
+  ${EndIf}
+  ${If} $PayloadToken != 0
+    System::Call 'kernel32::CloseHandle(p $PayloadToken)i.r0'
+    ${If} $0 == 0
+      StrCpy $PayloadCleanupFailed 1
+    ${EndIf}
+    StrCpy $PayloadToken 0
+  ${EndIf}
+  !insertmacro FreePayloadLocal $PayloadSIDString
+  !insertmacro FreePayloadLocal $PayloadDescriptor
+  !insertmacro FreePayloadLocal $PayloadOwnerDescriptor
+  !insertmacro FreePayloadLocal $PayloadOwnerSIDString
+  !insertmacro FreePayloadLocal $PayloadDACLString
+  !insertmacro FreePayloadBuffer $PayloadTokenInfo
+  !insertmacro FreePayloadBuffer $PayloadNameBuffer
+  !insertmacro FreePayloadBuffer $PayloadObjectName
+  !insertmacro FreePayloadBuffer $PayloadObjectAttributes
+  !insertmacro FreePayloadBuffer $PayloadIOStatus
+  !insertmacro FreePayloadBuffer $PayloadInfo
+  !insertmacro FreePayloadBuffer $PayloadFindData
+FunctionEnd
+
+Function ${Prefix}ReleasePrivatePayload
+  StrCpy $PayloadCleanupFailed 0
+  Call ${Prefix}FreePayloadSecurity
+  loop:
+    StrCmp $PayloadPins 0 done
+    System::Call '*$PayloadPins(p.r0, p.r1)'
+    System::Free $PayloadPins
+    StrCpy $PayloadPins $0
+    System::Call 'kernel32::CloseHandle(p r1)i.r0'
+    ${If} $0 == 0
+      StrCpy $PayloadCleanupFailed 1
+    ${EndIf}
+    Goto loop
+  done:
+    StrCpy $PayloadPinCount 0
+    ClearErrors
+    StrCmp $PayloadCleanupFailed 0 +2
+      SetErrors
+FunctionEnd
+
+!macroend
+!insertmacro PrivatePayloadFunctions ""
+!insertmacro PrivatePayloadFunctions "un."
+
+Function .onGUIEnd
+  Call ReleasePrivatePayload
+  IfErrors 0 +2
+    SetErrorLevel 2
+FunctionEnd
+
+Function un.onGUIEnd
+  Call un.ReleasePrivatePayload
+  IfErrors 0 +2
+    SetErrorLevel 2
 FunctionEnd

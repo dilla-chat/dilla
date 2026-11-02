@@ -1,8 +1,8 @@
 import { createRequire } from 'node:module';
 import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { spawnSync } from 'node:child_process';
 const require = createRequire(import.meta.url);
+const { sync: spawnSync } = require('cross-spawn');
 require('app-builder-lib');
 const { getMakeNsisPath } = require('app-builder-lib/out/toolsets/windows');
 const { NsisTarget } = require('app-builder-lib/out/targets/nsis/NsisTarget');
@@ -101,7 +101,7 @@ export function withInitialRetryNativeDiagnostic(source, binary) {
  }).join('');
 }
 export function initialRetryNativeDiagnostic(value) {
- const stages = ['request','layout','preflight','marker','manifest-identity','payload-directory','payload-manifest-read','payload-manifest-verify','payload-tree','owned-partial','ready'];
+ const stages = ['request','layout','preflight','marker','manifest-identity','payload-directory','payload-root','payload-manifest-directory','payload-manifest-read','payload-manifest-verify','payload-tree','owned-partial','ready'];
  const reasons = ['other-validation','missing','native-error','program-digest','program-size','program-extra-entry','marker-mismatch','unknown-directory','unknown-file','prefix-size','prefix-content','update-history','untrusted-owner','null-dacl','untrusted-acl','linked-or-wrong-type','program-incomplete','manifest-digest','retry-authorized'];
  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 4 || value.format !== 1 || !stages.includes(value.stage) || !reasons.includes(value.reason)
   || !Number.isSafeInteger(value.nativeError) || value.nativeError < 0 || value.nativeError > 0xffffffff) throw new Error('Invalid private native retry diagnostic');
