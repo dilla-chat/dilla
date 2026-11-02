@@ -5,6 +5,7 @@ import {spawn,spawnSync} from 'node:child_process';
 import {mkdir,writeFile,access,mkdtemp,realpath,stat,readFile} from 'node:fs/promises';
 import {join,resolve,isAbsolute} from 'node:path';
 import {randomBytes} from 'node:crypto';
+import {readFileSync} from 'node:fs';
 
 export async function makeAdmissionRoot(runnerTemp) {
  if(typeof runnerTemp!=='string' || !isAbsolute(runnerTemp) || await realpath(runnerTemp)!==runnerTemp)throw Error('invalid runner temporary directory');
@@ -24,10 +25,21 @@ export async function cleanupAdmissionGroup(child,observedChild) {
 
 const waitExit = child => new Promise((done,reject)=>{child.once('error',reject);child.once('exit',(code,signal)=>done({code,signal}));});
 const deadline = (promise,label,ms=15000) => Promise.race([promise,new Promise((_,reject)=>{const timer=setTimeout(()=>reject(Error(label+' timed out')),ms);timer.unref();})]);
+// Inspect only the directly spawned main, after pinning its UID/start time.
+function mainProcessFacts(pid,start) {
+ try {
+  const status=readFileSync('/proc/'+pid+'/status','utf8');
+  const uid=/^Uid:\s+([0-9]+)\s+([0-9]+)\s+([0-9]+)\s+([0-9]+)/m.exec(status);
+  const owner=uid?.slice(1).every(x=>Number(x)===process.getuid())?1:0;
+  const parts=readFileSync('/proc/'+pid+'/stat','utf8').split(') ')[1].split(' ');
+  return {mainPresent:1,mainOwner:owner,mainIdentity:parts[19]===start?1:0,mainState:({R:1,S:2,D:3,Z:4,T:5,t:5})[parts[0]]??6,mainReadError:0};
+ } catch(error) {return {mainPresent:error?.code==='ENOENT'?0:null,mainOwner:null,mainIdentity:null,mainState:null,mainReadError:error?.code==='ENOENT'?1:error?.code==='EACCES'?2:error?.code==='EPERM'?3:4};}
+}
 // Inputs are owned test processes and the fixed gate. Expose only bounded
 // phase labels and numeric observations, never process paths or stderr.
-export async function checkAdmissionRelease({exit,exclusive,readChild,pause=()=>new Promise(done=>setTimeout(done,100)),facts}) {
- facts.phase='release-main-wait';const result=await deadline(exit,'main exit');
+export async function checkAdmissionRelease({exit,exclusive,readChild,captureMain=()=>({}),pause=()=>new Promise(done=>setTimeout(done,100)),facts}) {
+ facts.phase='release-main-wait';let result;
+ try{result=await deadline(exit,'main exit');}catch(error){Object.assign(facts,captureMain());throw error;}
  facts.phase='release-main-result';facts.mainCode=Number.isInteger(result.code)?result.code:null;facts.mainSignal=result.signal===null?0:1;
  assert.deepEqual(result,{code:0,signal:null});
  facts.phase='release-lock-probe';
@@ -63,11 +75,11 @@ export async function runAdmissionProof({mount,image,root}) {
   const exit=waitExit(child);let output='',stderr='',reports=[],waiter;
   child.stderr.on('data',chunk=>{stderr+=chunk.toString();if(stderr.length>4096)try{process.kill(-child.pid,'SIGKILL');}catch{}});
   child.stdio[3].on('data',chunk=>{output+=chunk.toString();if(output.length>4096){try{process.kill(-child.pid,'SIGKILL');}catch{}return;}let i;
-   while((i=output.indexOf('\n'))>=0){let report;try{report=JSON.parse(output.slice(0,i));}catch{report=null;}output=output.slice(i+1);if(waiter){const done=waiter;waiter=null;done(report);}else reports.push(report);}
+   while((i=output.indexOf('\n'))>=0){let report;try{report=JSON.parse(output.slice(0,i));}catch{report=null;}output=output.slice(i+1);if(report && Object.keys(report).sort().join(',')==='format,nonce,phase,pid' && report.format===1 && report.nonce===nonce && report.pid===child.pid && ['exit-command','exit-call'].includes(report.phase)){if(report.phase==='exit-command')facts.controlCommand=1;else facts.controlExit=1;continue;}if(waiter){const done=waiter;waiter=null;done(report);}else reports.push(report);}
   });
   return {child,exit,nonce,report:()=>deadline(reports.length?Promise.resolve(reports.shift()):new Promise(done=>{waiter=done;}),'admission phase'),stderr:()=>stderr};
  };
- let main,late,descendant,failed=false;const facts={phase:'window',mainCode:null,mainSignal:null,attempts:0,lockStatus:null,childState:null,childIdentity:null,childReadError:0,cleanupError:0};
+ let main,late,descendant,failed=false;const facts={phase:'window',mainCode:null,mainSignal:null,attempts:0,lockStatus:null,childState:null,childIdentity:null,childReadError:0,cleanupError:0,controlCommand:0,controlExit:0,mainPresent:null,mainOwner:null,mainIdentity:null,mainState:null,mainReadError:0};
  try {
   assert.equal(exclusive(),0);main=launch(join(root,'admission-profile'));
   const check=async phase=>assert.deepEqual(await main.report(),{format:1,nonce:main.nonce,phase,pid:main.child.pid});
@@ -81,8 +93,10 @@ export async function runAdmissionProof({mount,image,root}) {
   descendant=candidate;
   const startTime=(await readFile('/proc/'+descendant+'/stat','utf8')).split(') ')[1].split(' ')[19];
   assert.equal(exclusive(),1);assert.equal(publishPending(),1);
+  const mainStart=(await readFile('/proc/'+main.child.pid+'/stat','utf8')).split(') ')[1].split(' ')[19];
+  const initialMain=mainProcessFacts(main.child.pid,mainStart);assert.equal(initialMain.mainOwner,1);assert.equal(initialMain.mainIdentity,1);
   facts.phase='release-command';main.child.stdio[4].write('exit\n');
-  await checkAdmissionRelease({exit:main.exit,exclusive,facts,readChild:async()=>{
+  await checkAdmissionRelease({exit:main.exit,exclusive,facts,captureMain:()=>mainProcessFacts(main.child.pid,mainStart),readChild:async()=>{
    const afterStat=(await readFile('/proc/'+descendant+'/stat','utf8')).split(') ')[1].split(' ');
    return {live:afterStat[0]!=='Z',identity:afterStat[19]===startTime};
   }});

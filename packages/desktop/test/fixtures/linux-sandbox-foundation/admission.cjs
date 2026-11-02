@@ -30,7 +30,7 @@ else {
   control.on('data',chunk=>{input+=chunk; if(input.length>64){app.exit(43);return;} let n;
    while((n=input.indexOf('\n'))>=0){const command=input.slice(0,n);input=input.slice(n+1);
     if(command==='tray' && win){win.destroy();win=null;tray=new Tray(nativeImage.createEmpty());const child=require('node:child_process').spawn('/usr/bin/sleep',['60'],{stdio:'ignore'});child.unref();report('tray',{childPid:child.pid});}
-    else if(command==='exit' && tray){tray.destroy();app.exit(0);}
+    else if(command==='exit' && tray){report('exit-command');tray.destroy();report('exit-call');app.exit(0);}
     else app.exit(43);
    }
   });

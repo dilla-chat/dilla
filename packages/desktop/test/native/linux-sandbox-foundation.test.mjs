@@ -248,10 +248,45 @@ test('admission release reports distinct bounded failures for main exit, lock an
   const defaults={exit:Promise.resolve({code:0,signal:null}),exclusive:()=>0,readChild:async()=>({live:true,identity:true}),pause:async()=>{},facts};
   try{await checkAdmissionRelease({...defaults,...options});return facts;}catch{return facts;}
  };
+ const stalled=await observe({exit:Promise.reject(Error('private details')),captureMain:()=>({mainPresent:1,mainOwner:1,mainIdentity:1,mainState:2})});
+ assert.equal(stalled.phase,'release-main-wait');assert.equal(stalled.mainState,2);assert.equal(stalled.mainIdentity,1);
  assert.equal((await observe({exit:Promise.resolve({code:7,signal:null})})).phase,'release-main-result');
  const busy=await observe({exclusive:()=>1});assert.equal(busy.phase,'release-lock-busy');assert.equal(busy.attempts,50);assert.equal(busy.lockStatus,1);
  const missing=await observe({readChild:async()=>{throw Object.assign(Error('private path'),{code:'ENOENT'});}});assert.equal(missing.phase,'release-child-read');assert.equal(missing.childReadError,1);
  assert.equal((await observe({readChild:async()=>({live:false,identity:true})})).phase,'release-child-dead');
  assert.equal((await observe({readChild:async()=>({live:true,identity:false})})).phase,'release-child-identity');
  assert.equal((await observe()).phase,'release-complete');
+});
+
+test('admission fixture reports exit command and exit call before quitting',async()=>{
+ const {readFile}=await import('node:fs/promises'),vm=await import('node:vm'),{EventEmitter}=await import('node:events');
+ const {createRequire}=await import('node:module'),load=createRequire(import.meta.url);
+ const source=await readFile(new URL('../fixtures/linux-sandbox-foundation/admission.cjs',import.meta.url),'utf8');
+ const events=[],control=new EventEmitter(),app={on(){},setPath(){},whenReady:async()=>{},exit:code=>events.push(['exit',code])};
+ class Window {async loadURL(){} destroy(){}}
+ class Tray {destroy(){events.push(['destroy']);}}
+ const fakeFS={mkdirSync(){},createReadStream:()=>control,writeSync:(_fd,line)=>events.push(['report',JSON.parse(line).phase])};
+ const requireFixture=name=>name==='electron'?{app,BrowserWindow:Window,Tray,nativeImage:{createEmpty:()=>({})}}:name==='node:fs'?fakeFS:name==='node:child_process'?{spawn:()=>({pid:10,unref(){}})}:name.endsWith('/admission.node')?{hold:()=>'ready'}:name.endsWith('/parser.cjs')?{parseLinuxAdmission(){}}:load(name);
+ vm.runInNewContext('(function(require,process){'+source+'})',{})(requireFixture,{argv:['elf','--admission-mode=proof','--admission-nonce='+'a'.repeat(64),'--admission-profile=/private'],getuid:()=>1000,pid:9,resourcesPath:'/fixed',stderr:{write(){}}});
+ for(let i=0;i<4;i++)await new Promise(done=>setImmediate(done));
+ control.emit('data','tray\n');control.emit('data','exit\n');
+ assert.deepEqual(events,[['report','window'],['report','tray'],['report','exit-command'],['destroy'],['report','exit-call'],['exit',0]]);
+});
+
+test('admission control stream reads sequential tray and exit commands on real pipes',async()=>{
+ const {spawn}=await import('node:child_process'),{fileURLToPath}=await import('node:url');
+ const fixture=fileURLToPath(new URL('../fixtures/linux-sandbox-foundation/admission.cjs',import.meta.url));
+ const script=`const fs=require('node:fs'),vm=require('node:vm'),path=require('node:path');
+ const app={on(){},setPath(){},whenReady:async()=>{},exit:code=>process.exit(code)};
+ class Window{async loadURL(){} destroy(){}} class Tray{destroy(){}}
+ const load=name=>name==='electron'?{app,BrowserWindow:Window,Tray,nativeImage:{createEmpty:()=>({})}}:name==='node:fs'?{...fs,mkdirSync(){}}:name==='node:child_process'?{spawn:()=>({pid:10,unref(){}})}:name.endsWith('/admission.node')?{hold:()=>''}:name.endsWith('/parser.cjs')?{parseLinuxAdmission(){}}:require(name);
+ const p={argv:['elf','--admission-mode=proof','--admission-nonce='+ 'a'.repeat(64),'--admission-profile=/private'],getuid:()=>1000,pid:process.pid,resourcesPath:'/fixed',stderr:process.stderr};
+ vm.runInThisContext('(function(require,process){'+fs.readFileSync(process.argv[1],'utf8')+'})')(load,p);`;
+ const child=spawn(process.execPath,['-e',script,fixture],{stdio:['ignore','ignore','pipe','pipe','pipe']});
+ let text='',phases=[];child.stdio[3].setEncoding('utf8');
+ child.stdio[3].on('data',chunk=>{text+=chunk;let i;while((i=text.indexOf('\n'))>=0){const report=JSON.parse(text.slice(0,i));text=text.slice(i+1);phases.push(report.phase);if(report.phase==='window')child.stdio[4].write('tray\n');if(report.phase==='tray')child.stdio[4].write('exit\n');}});
+ const timer=setTimeout(()=>child.kill('SIGKILL'),3000);
+ try {const result=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',(code,signal)=>resolve({code,signal}));});
+  assert.deepEqual(result,{code:0,signal:null});assert.deepEqual(phases,['window','tray','exit-command','exit-call']);
+ } finally {clearTimeout(timer);if(child.exitCode===null&&child.signalCode===null)child.kill('SIGKILL');}
 });
