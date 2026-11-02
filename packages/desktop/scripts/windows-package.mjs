@@ -17,7 +17,7 @@ function windowsEnvironment() {
  for (const line of variables.split(/\r?\n/)) { const split = line.indexOf('='); if (split > 0) env[line.slice(0, split)] = line.slice(split + 1); }
  return env;
 }
-async function compileNativeLauncher({ file, config, iconFile }) {
+export async function compileNativeLauncher({ file, config, iconFile }) {
  if (process.platform !== 'win32' || !iconFile || config.arch !== 'x64') throw new Error('Build the branded Windows launcher on native Windows x64');
  const root = await mkdtemp(join(tmpdir(), 'dilla-launcher-build-'));
  try {

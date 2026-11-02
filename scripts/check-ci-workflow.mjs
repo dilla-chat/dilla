@@ -726,9 +726,10 @@ go-version-file: go.mod
 - run: node packages/desktop/scripts/prepare-nsis.mjs
 - run: node --test packages/desktop/test/native/windows-installer-syntax.test.mjs packages/desktop/test/windows-operation-gate.test.ts
 - run: npm test -w @dilla/desktop
+- run: node packages/desktop/scripts/windows-launcher-smoke.mjs
 - run: node --test packages/desktop/test/native/windows-installer-maintenance.test.mjs`;
   const actual = jobs['windows-installer'].split('\n').map(line => line.trim()).filter(line => line && !line.startsWith('#')).join('\n');
-  if (actual !== expected) problems.push('ci.yml: independent Windows installer gate must run pinned provisioning, short syntax/interop controls, unconditional desktop units and full unfiltered maintenance in order within its fixed budget');
+  if (actual !== expected) problems.push('ci.yml: independent Windows installer gate must run pinned provisioning, short syntax/interop controls, unconditional desktop units, launcher smoke and full unfiltered maintenance in order within its fixed budget');
   const desktopNeeds = /^ {4}needs: \[([^\]\n]*)\]$/m.exec(jobs.desktop ?? '')?.[1].split(',').map(name => name.trim()) ?? [];
   if (!desktopNeeds.includes('windows-installer')) {
     problems.push('ci.yml: desktop must wait for the independent Windows installer gate via needs: windows-installer');
