@@ -592,8 +592,23 @@ jobs:
           path: packages/client-core/harness-dist/
           if-no-files-found: error
 
+  # Exercise Windows filesystem/security contracts before provisioning desktop acceptance.
+  windows-kernel:
+    needs: [changes]
+    if: needs.changes.outputs.e2e != 'false'
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+      - run: go test -count=1 -failfast -v -timeout=2m ./internal/desktoplaunch ./packages/desktop/native/windows-launcher
+
   desktop:
-    needs: [changes, web-build, rust-wasi]
+    needs: [changes, web-build, rust-wasi, windows-kernel]
     if: needs.changes.outputs.e2e != 'false'
     uses: ./.github/workflows/desktop.yml
   core-integration:
@@ -988,7 +1003,7 @@ jobs:
   # A DAG barrier prevents the watcher exiting between root jobs and later matrix/reusable
   # children. This does no build work and never depends on the watcher or final aggregator.
   ci-work-complete:
-    needs: [changes, docs, node, ui, rust-wasm-node, rust-native, rust-wasi, vectors, browser-spike, browser-media, web-build, desktop, core-integration, deny, go, go-native, go-ds, go-api, go-harness, go-fts5-arm64, go-lint, go-vuln, go-sqlc, go-postgres, go-release]
+    needs: [changes, docs, node, ui, rust-wasm-node, rust-native, rust-wasi, vectors, browser-spike, browser-media, web-build, windows-kernel, desktop, core-integration, deny, go, go-native, go-ds, go-api, go-harness, go-fts5-arm64, go-lint, go-vuln, go-sqlc, go-postgres, go-release]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -997,7 +1012,7 @@ jobs:
 
   # One check for the whole workflow: red on any failure/cancellation, green for success or intentional skips.
   ci-ok:
-    needs: [ci-watchdog, ci-work-complete, changes, docs, node, ui, rust-wasm-node, rust-native, rust-wasi, vectors, browser-spike, browser-media, web-build, desktop, core-integration, deny, go, go-native, go-ds, go-api, go-harness, go-fts5-arm64, go-lint, go-vuln, go-sqlc, go-postgres, go-release]
+    needs: [ci-watchdog, ci-work-complete, changes, docs, node, ui, rust-wasm-node, rust-native, rust-wasi, vectors, browser-spike, browser-media, web-build, windows-kernel, desktop, core-integration, deny, go, go-native, go-ds, go-api, go-harness, go-fts5-arm64, go-lint, go-vuln, go-sqlc, go-postgres, go-release]
     if: always()
     runs-on: ubuntu-latest
     steps:

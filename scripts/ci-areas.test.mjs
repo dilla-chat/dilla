@@ -152,6 +152,13 @@ test('JOB_GATES names exactly the jobs of ci.yml except workflow infrastructure'
   assert.deepEqual(jobs.sort(), Object.keys(JOB_GATES).sort());
 });
 
+test('early Windows kernel uses the same fail-safe eligibility as desktop acceptance', () => {
+  assert.deepEqual(JOB_GATES['windows-kernel'], ['e2e']);
+  for (const outputs of [...reachableOutputs(), {}, { e2e: '' }]) {
+    assert.equal(jobRuns('windows-kernel', outputs), jobRuns('desktop', outputs));
+  }
+});
+
 // The guard for the whole table: every file that a test or a build reads from another place must trigger the
 // reader's jobs when it changes. It scans the sources for relative paths in reads and resolves them.
 // Readers that no CI job runs (pre-existing): e2e/scripts/shoot-docs.test.mjs reads docs/user/*.md, and nothing runs it.

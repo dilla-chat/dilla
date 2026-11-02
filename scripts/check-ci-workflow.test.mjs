@@ -732,7 +732,62 @@ function withChanges(text) {
   return `${out.join('\n').replace(/\n$/, '')}\n${barrier}${CI_OK_JOB([...jobs, 'ci-work-complete'])}`;
 }
 
-const GOOD = withChanges(withWasmClang(GOOD_BASE + '  desktop:\n    needs: [web-build]\n    uses: ./.github/workflows/desktop.yml\n'));
+const WINDOWS_KERNEL_JOB = `  windows-kernel:
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+      - run: go test -count=1 -failfast -v -timeout=2m ./internal/desktoplaunch ./packages/desktop/native/windows-launcher
+`;
+const GOOD = withChanges(withWasmClang(GOOD_BASE + WINDOWS_KERNEL_JOB + '  desktop:\n    needs: [web-build, windows-kernel]\n    uses: ./.github/workflows/desktop.yml\n'));
+
+test('early Windows kernel gate runs both native packages before desktop acceptance', () => {
+  assert.match(REAL_CI, /^  windows-kernel:/m);
+  assert.match(REAL_CI, /  desktop:\n    needs: \[changes, web-build, rust-wasi, windows-kernel\]/);
+  assert.deepEqual(checkWorkflow(fixture(GOOD)), []);
+});
+
+test('early Windows kernel gate refuses omissions, filtered tests and heavyweight setup', () => {
+  const body = /  windows-kernel:\n[\s\S]*?(?=^  desktop:)/m.exec(GOOD)[0];
+  for (const [before, after] of [
+    ['runs-on: windows-2025', 'runs-on: ubuntu-latest'],
+    ['timeout-minutes: 10', 'timeout-minutes: 60'],
+    ['go-version-file: go.mod', 'go-version: stable'],
+    ['persist-credentials: false', 'persist-credentials: true'],
+    ['actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e', 'actions/setup-go@1111111111111111111111111111111111111111'],
+    ['-count=1 -failfast -v -timeout=2m', '-count=1 -v -timeout=2m'],
+    ['./internal/desktoplaunch ./packages/desktop/native/windows-launcher', './internal/desktoplaunch'],
+    ['go test -count=1', "go test -run '^TestGlobalOperationMutex' -count=1"],
+    ['      - run: go test', '      - run: npm ci\n      - run: go test'],
+    ['      - run: go test', '      - if: false\n        run: go test'],
+    ['    steps:', '    env:\n      GOOS: linux\n    steps:'],
+    ['    needs: [changes]', '    needs: [changes, web-build]'],
+  ]) {
+    const changed = body.replace(before, after); assert.notEqual(changed, body, before);
+    assert.ok(checkWorkflow(fixture(GOOD.replace(body, changed))).some(problem => problem.includes('early Windows kernel')), before);
+  }
+  assert.ok(checkWorkflow(fixture(GOOD.replace(body, ''))).some(problem => problem.includes('missing job "windows-kernel"')));
+  const unblocked = GOOD.replace('needs: [changes, web-build, windows-kernel]', 'needs: [changes, web-build]');
+  assert.notEqual(unblocked, GOOD);
+  assert.ok(checkWorkflow(fixture(unblocked)).some(problem => problem.includes('desktop') && problem.includes('windows-kernel')));
+  const wrongDependency = GOOD.replace('needs: [changes, web-build, windows-kernel]', 'needs: [changes, web-build, windows-kernel-old]');
+  assert.ok(checkWorkflow(fixture(wrongDependency)).some(problem => problem.includes('desktop') && problem.includes('early Windows kernel')));
+});
+
+test('early Windows kernel is included exactly once in completion and final gates', () => {
+  for (const name of ['ci-work-complete', 'ci-ok']) {
+    const body = jobBody(name);
+    const omitted = body.replace('windows-kernel, ', ''); assert.notEqual(omitted, body);
+    assert.ok(checkWorkflow(fixture(GOOD.replace(body, omitted))).some(problem => name === 'ci-ok' ? problem.includes('"ci-ok"') && problem.includes('windows-kernel') : problem.includes('completion barrier')));
+    const duplicate = body.replace('windows-kernel, ', 'windows-kernel, windows-kernel, ');
+    assert.ok(checkWorkflow(fixture(GOOD.replace(body, duplicate))).some(problem => name === 'ci-ok' ? problem.includes('"ci-ok"') && problem.includes('exactly once') : problem.includes('completion barrier')));
+  }
+});
 
 const BUDGET = MIN_BROWSER_WEB_TIMEOUT;
 

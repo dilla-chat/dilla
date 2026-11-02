@@ -46,6 +46,7 @@ export const REQUIRED_JOBS = [
   // Build the bundled client once for Electron and retain shared encrypted-core
   // integration (BROWSER_WEB_JOBS below) without browser compatibility lanes.
   'web-build',
+  'windows-kernel',
   'desktop',
 ];
 
@@ -604,6 +605,31 @@ export function jobSteps(body) {
   return steps;
 }
 
+// This cheap prerequisite must stay native and run both complete Go packages.
+// An exact bounded job shape also rejects filters, conditional steps, GOOS
+// overrides, and asset provisioning that would hide or delay the kernel gate.
+function checkWindowsKernelJob(jobs, problems) {
+  if (!jobs['windows-kernel']) return;
+  const expected = `needs: [changes]
+if: needs.changes.outputs.e2e != 'false'
+runs-on: windows-2025
+timeout-minutes: 10
+steps:
+- uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+with:
+persist-credentials: false
+- uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+with:
+go-version-file: go.mod
+- run: go test -count=1 -failfast -v -timeout=2m ./internal/desktoplaunch ./packages/desktop/native/windows-launcher`;
+  const actual = jobs['windows-kernel'].split('\n').map(line => line.trim()).filter(line => line && !line.startsWith('#')).join('\n');
+  if (actual !== expected) problems.push('ci.yml: early Windows kernel gate must run only pinned checkout/setup-go and both unfiltered native Go packages on Windows within its fixed budget');
+  const desktopNeeds = /^ {4}needs: \[([^\]\n]*)\]$/m.exec(jobs.desktop ?? '')?.[1].split(',').map(name => name.trim()) ?? [];
+  if (!desktopNeeds.includes('windows-kernel')) {
+    problems.push('ci.yml: desktop must wait for the early Windows kernel gate via needs: windows-kernel');
+  }
+}
+
 /**
  * Each browser job is a `run:` step of its own for its one suite, carrying the testkit binary in its own env, and it runs
  * no other `test:e2e` suite (a job folded back into several suites would hide a split job's budget). In Firefox an
@@ -738,6 +764,7 @@ export function checkWorkflow(root) {
       if (!jobs[name].includes(step)) problems.push(`ci.yml: job "${name}" is missing: ${step}`);
     }
   }
+  checkWindowsKernelJob(jobs, problems);
 
   // Every test/build job needs `changes` and carries its gate, or it would run on a docs-only pull
   // request (or, with a wrong condition, be skipped on code).
@@ -755,6 +782,10 @@ export function checkWorkflow(root) {
       continue;
     }
     if (name === 'ci-ok') {
+      const others = Object.keys(jobs).filter(other => other !== 'ci-ok');
+      if (needList.length !== others.length || new Set(needList).size !== others.length || needList.some(other => !others.includes(other))) {
+        problems.push('ci.yml: job "ci-ok" must list every other job exactly once in its needs:');
+      }
       if (!body.split('\n').includes('    if: always()')) problems.push('ci.yml: job "ci-ok" must carry the job-level if: always(), or it is skipped when a job fails');
       if (!body.includes("      - if: needs.ci-watchdog.result == 'skipped' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)\n        run: exit 1")) {
         problems.push('ci.yml: job "ci-ok" may accept a skipped watcher only for fork pull requests');
