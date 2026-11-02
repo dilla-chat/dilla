@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"errors"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -125,38 +124,7 @@ func samePackagePrefix(source, destination string) error {
 		return err
 	}
 	defer func() { _ = expected.Close() }()
-	actual, err := os.Open(destination) // #nosec G304 -- The fixed owned destination and its ancestors remain pinned by guard above.
-	if err != nil {
-		return err
-	}
-	defer func() { _ = actual.Close() }()
-	a, b := make([]byte, 65536), make([]byte, 65536)
-	zeroTail := false
-	for {
-		count, readErr := actual.Read(a)
-		if count > 0 {
-			if _, err = io.ReadFull(expected, b[:count]); err != nil {
-				return errors.New("initial file exceeds packaged bytes")
-			}
-			for index := 0; index < count; index++ {
-				if !zeroTail && a[index] == b[index] {
-					continue
-				}
-				// CopyFile may preallocate EOF before writing sequential data.
-				// Permit its unwritten zero tail, never unrelated nonzero bytes.
-				if a[index] != 0 {
-					return errors.New("initial file differs from interrupted package")
-				}
-				zeroTail = true
-			}
-		}
-		if errors.Is(readErr, io.EOF) {
-			return nil
-		}
-		if readErr != nil {
-			return readErr
-		}
-	}
+	return guard.CompareInitialPrefix(expected)
 }
 
 func validateInitialMarker(l layout, cfg buildConfig) error {
