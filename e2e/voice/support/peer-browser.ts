@@ -6,7 +6,7 @@
 //   switch that reports the page as hidden (a ring notifies only while the tab is hidden, flow 06);
 // - the project's media permissions (Chromium) and fake devices (both engines, from the config).
 // Init scripts are injected by the protocol, so the page's CSP never governs them.
-import { test as base, expect, type Browser, type BrowserContext, type ConsoleMessage, type LaunchOptions, type Locator, type Page, type Worker } from '@playwright/test';
+import { test as base, expect, type Browser, type BrowserContext, type ConsoleMessage, type LaunchOptions, type Locator, type Page, type TestInfo, type Worker } from '@playwright/test';
 import { copy, FIREFOX_FAVICON_LINE, isFirefoxBrowserFaviconViolation, recordNotifications } from '../../web/support/app';
 import { desktopE2E } from '../../web/support/electron.ts';
 import { desktopVoiceContext } from './desktop.ts';
@@ -415,77 +415,93 @@ async function openContext(browser: Browser, o: { baseURL: string | undefined; p
   });
 }
 
+type PeerBrowserOptions = {
+  baseURL: string | undefined;
+  permissions: string[] | undefined;
+  viewport: { width: number; height: number } | null;
+  launchOptions: LaunchOptions;
+} & ({ desktop: true } | { desktop: false; browser: Browser });
+
+async function withPeerBrowsers(options: PeerBrowserOptions, use: (people: PeerBrowsers) => Promise<void>, testInfo: TestInfo): Promise<void> {
+  const { baseURL, permissions, viewport, launchOptions } = options;
+  const guard = newGuard(testInfo.project.name);
+  const open: Person[] = [];
+  const peers: { close(): Promise<void> }[] = [];
+  const leaveFailures: string[] = [];
+  let microphone = 0;
+  const people: PeerBrowsers = {
+    guard,
+    track(peer) {
+      peers.push(peer);
+      return peer;
+    },
+    async open(name, opts) {
+      if (options.desktop && opts?.browser) throw new Error('Browser tab capture requires a native application-audio counterpart');
+      let media = opts?.launchOptions ?? launchOptions;
+      if (options.desktop && !opts?.launchOptions) {
+        // Identical looped tones at both ends can be cancelled as echo by the
+        // shipping AEC, especially on macOS. Give independent desktop devices
+        // distinct capture sources, as the comparative call benchmark does.
+        const capture = writeFixtures(join(tmpdir(), 'dilla-media-fixtures'), [1000, 600, 1400, 1800][microphone++ % 4]);
+        media = { ...media, args: media.args?.map(arg => arg.startsWith('--use-file-for-fake-audio-capture=') ? `--use-file-for-fake-audio-capture=${capture.wav}` : arg) };
+      }
+      const context = options.desktop
+        ? await desktopVoiceContext({ baseURL, permissions, launchOptions: media, viewport: opts?.viewport ?? viewport })
+        : await openContext(opts?.browser ?? options.browser, { baseURL, permissions, viewport: opts?.viewport ?? viewport });
+      await guard.attach(context);
+      await context.addInitScript(installRecorders);
+      if (options.desktop) await observeNativeNotifications(context);
+      else await recordNotifications(context);
+      const page = await context.newPage();
+      const person = { name, context, page };
+      open.push(person);
+      return person;
+    },
+    async close(person) {
+      const i = open.indexOf(person);
+      if (i < 0) return;
+      open.splice(i, 1);
+      // A failed leave is recorded and fails the test at the end, after the context is closed anyway: thrown from a
+      // spec's `finally` it would hide the error that sent the test there.
+      try {
+        guard.beginLeave(person.context);
+        await markSignalLifecycle(person.page, 'before-leave');
+        await leaveIfInCall(person.page);
+      } catch (e) {
+        leaveFailures.push(`${person.name}: ${String(e).split('\n')[0]}`);
+      } finally {
+        await guard.collectWorkers();
+        await markSignalLifecycle(person.page, 'before-context-close');
+        await person.context.close();
+        await markSignalLifecycle(person.page, 'after-context-close');
+      }
+    },
+  };
+  try {
+    await use(people);
+  } finally {
+    // The net under each spec's own `finally`: whatever is still open is left and closed, then every native peer.
+    try {
+      for (const person of [...open].reverse()) await people.close(person).catch(() => undefined);
+    } finally {
+      for (const peer of [...peers].reverse()) await peer.close().catch(() => undefined);
+    }
+  }
+  await guard.collectWorkers();
+  expect(leaveFailures, 'a leave through the app, then the media worker ended, before each context closed').toEqual([]);
+  expect(guard.cspViolations, 'securitypolicyviolation events').toEqual([]);
+  expect(guard.pageErrors, 'uncaught page errors').toEqual([]);
+  expect(guard.consoleErrors, 'console errors').toEqual([]);
+}
+
 /** L-E2E-31 `peerBrowser`: the people of a test, each a browser context of their own. */
 export const test = base.extend<{ peerBrowser: PeerBrowsers }>({
-  peerBrowser: async ({ browser, baseURL, permissions, viewport, launchOptions }, use, testInfo) => {
-    const guard = newGuard(testInfo.project.name);
-    const open: Person[] = [];
-    const peers: { close(): Promise<void> }[] = [];
-    const leaveFailures: string[] = [];
-    let microphone = 0;
-    const people: PeerBrowsers = {
-      guard,
-      track(peer) {
-        peers.push(peer);
-        return peer;
-      },
-      async open(name, opts) {
-        if (desktopE2E() && opts?.browser) throw new Error('Browser tab capture requires a native application-audio counterpart');
-        let media = opts?.launchOptions ?? launchOptions;
-        if (desktopE2E() && !opts?.launchOptions) {
-          // Identical looped tones at both ends can be cancelled as echo by the
-          // shipping AEC, especially on macOS. Give independent desktop devices
-          // distinct capture sources, as the comparative call benchmark does.
-          const capture = writeFixtures(join(tmpdir(), 'dilla-media-fixtures'), [1000, 600, 1400, 1800][microphone++ % 4]);
-          media = { ...media, args: media.args?.map(arg => arg.startsWith('--use-file-for-fake-audio-capture=') ? `--use-file-for-fake-audio-capture=${capture.wav}` : arg) };
-        }
-        const context = desktopE2E()
-          ? await desktopVoiceContext({ baseURL, permissions, launchOptions: media, viewport: opts?.viewport ?? viewport })
-          : await openContext(opts?.browser ?? browser, { baseURL, permissions, viewport: opts?.viewport ?? viewport });
-        await guard.attach(context);
-        await context.addInitScript(installRecorders);
-        if (desktopE2E()) await observeNativeNotifications(context);
-        else await recordNotifications(context);
-        const page = await context.newPage();
-        const person = { name, context, page };
-        open.push(person);
-        return person;
-      },
-      async close(person) {
-        const i = open.indexOf(person);
-        if (i < 0) return;
-        open.splice(i, 1);
-        // A failed leave is recorded and fails the test at the end, after the context is closed anyway: thrown from a
-        // spec's `finally` it would hide the error that sent the test there.
-        try {
-          guard.beginLeave(person.context);
-          await markSignalLifecycle(person.page, 'before-leave');
-          await leaveIfInCall(person.page);
-        } catch (e) {
-          leaveFailures.push(`${person.name}: ${String(e).split('\n')[0]}`);
-        } finally {
-          await guard.collectWorkers();
-          await markSignalLifecycle(person.page, 'before-context-close');
-          await person.context.close();
-          await markSignalLifecycle(person.page, 'after-context-close');
-        }
-      },
-    };
-    try {
-      await use(people);
-    } finally {
-      // The net under each spec's own `finally`: whatever is still open is left and closed, then every native peer.
-      try {
-        for (const person of [...open].reverse()) await people.close(person).catch(() => undefined);
-      } finally {
-        for (const peer of [...peers].reverse()) await peer.close().catch(() => undefined);
-      }
-    }
-    await guard.collectWorkers();
-    expect(leaveFailures, 'a leave through the app, then the media worker ended, before each context closed').toEqual([]);
-    expect(guard.cspViolations, 'securitypolicyviolation events').toEqual([]);
-    expect(guard.pageErrors, 'uncaught page errors').toEqual([]);
-    expect(guard.consoleErrors, 'console errors').toEqual([]);
-  },
+  // Playwright resolves callback arguments before running their bodies. Desktop
+  // uses Electron contexts and must not request the unused browser fixture.
+  peerBrowser: desktopE2E()
+    ? async ({ baseURL, permissions, viewport, launchOptions }, use, testInfo) =>
+      withPeerBrowsers({ desktop: true, baseURL, permissions, viewport, launchOptions }, use, testInfo)
+    : async ({ browser, baseURL, permissions, viewport, launchOptions }, use, testInfo) =>
+      withPeerBrowsers({ desktop: false, browser, baseURL, permissions, viewport, launchOptions }, use, testInfo),
 });
 export { expect };
