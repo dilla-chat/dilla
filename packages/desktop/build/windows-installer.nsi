@@ -66,9 +66,10 @@ Function ${Prefix}CheckPath
   Push $2
   Push $3
   loop:
-    System::Call 'kernel32::GetFileAttributesW(w r0)i.r2'
+    ; Capture the error before System plug-in cleanup can overwrite it.
+    System::Call 'kernel32::GetFileAttributesW(w r0)i.r2 ?e'
+    Pop $3
     ${If} $2 == -1
-      System::Call 'kernel32::GetLastError()i.r3'
       ${If} $3 != 2
       ${AndIf} $3 != 3
         Call ${Prefix}Fail
