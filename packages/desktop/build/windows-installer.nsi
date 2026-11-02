@@ -873,10 +873,11 @@ Function ${Prefix}PreparePrivatePayload
   System::Call '*(p 0, p 0)p.r0'
   StrCmp $0 0 Fail
   StrCpy $PayloadIOStatus $0
+  ; FILE_TRAVERSE engages Windows share accounting; metadata-only handles do not.
   ; FILE_CREATE=2 never adopts any existing object. Creation and its first
   ; no-delete-sharing handle are one operation, eliminating a replace window.
   StrCpy $0 0
-  System::Call 'ntdll::NtCreateFile(*p.r0, i 0x120080, p $PayloadObjectAttributes, p $PayloadIOStatus, p 0, i 128, i 3, i 2, i 0x200021, p 0, i 0)i.r1'
+  System::Call 'ntdll::NtCreateFile(*p.r0, i 0x1200A0, p $PayloadObjectAttributes, p $PayloadIOStatus, p 0, i 128, i 3, i 2, i 0x200021, p 0, i 0)i.r1'
   StrCpy $PayloadCreatedHandle $0
   StrCmp $1 0 0 Fail
   StrCmp $PayloadCreatedHandle 0 Fail
@@ -998,8 +999,9 @@ Function ${Prefix}PinPayloadDirectory
   Push $1
   Push $2
   Push $3
-  ; READ_CONTROL|READ_ATTRIBUTES, READ|WRITE sharing, NO DELETE sharing.
-  System::Call 'kernel32::CreateFileW(w r0, i 0x20080, i 3, p 0, i 3, i 0x02200000, p 0)p.r1'
+  ; READ_CONTROL|READ_ATTRIBUTES|FILE_TRAVERSE, READ|WRITE sharing, NO DELETE sharing.
+  ; Traverse participates in share accounting without requiring directory listing.
+  System::Call 'kernel32::CreateFileW(w r0, i 0x200A0, i 3, p 0, i 3, i 0x02200000, p 0)p.r1'
   StrCmp $1 -1 Fail
   StrCpy $PayloadHandle $1
   System::Call 'kernel32::GetFileInformationByHandle(p $PayloadHandle, p $PayloadInfo)i.r2'
