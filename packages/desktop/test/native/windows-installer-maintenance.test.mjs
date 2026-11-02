@@ -19,7 +19,7 @@ const repository = resolve(import.meta.dirname, '../../../..');
 const sha = raw => createHash('sha512').update(raw).digest('hex');
 const retryOnly = process.env.DILLA_FIXTURE_INITIAL_RETRY_ONLY === '1';
 if (retryOnly && process.env.GITHUB_ACTIONS === 'true' && (process.env.GITHUB_WORKFLOW !== 'Windows installer probe' || process.env.GITHUB_REF !== 'refs/heads/ci/desktop-windows-installer')) throw new Error('Focused initial retry diagnostics require the temporary Windows installer probe');
-async function snapshot(root) {
+async function snapshotTree(root) {
  const result = {};
  async function visit(directory, prefix) {
   for (const entry of (await readdir(directory, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
@@ -48,18 +48,38 @@ async function stop(child) {
  }
 }
 const ps = () => join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe');
-function run(file, args = [], options = {}) { return execFileSync(file, args, { timeout: 120_000, windowsHide: true, stdio: 'pipe', ...options }); }
+function runCommand(file, args = [], options = {}) { return execFileSync(file, args, { timeout: 120_000, windowsHide: true, stdio: 'pipe', ...options }); }
 
-test(retryOnly ? 'FOCUSED DIAGNOSTIC ONLY: actual interrupted first-install retry' : 'native installer preserves every byte on mapped Go/Electron images, archives only update history, and retries interrupted first setup', { skip: process.platform !== 'win32', timeout: 900_000 }, async () => {
+test(retryOnly ? 'FOCUSED DIAGNOSTIC ONLY: actual interrupted first-install retry' : 'native installer preserves every byte on mapped Go/Electron images, archives only update history, and retries interrupted first setup', { skip: process.platform !== 'win32', timeout: 900_000 }, async t => {
+ const started = Date.now(); let previous = started, commandNumber = 0;
+ const phase = label => {
+  const now = Date.now(), message = `WINDOWS_MAINTENANCE ${label} total_ms=${now - started} since_previous_ms=${now - previous}`;
+  previous = now; t.diagnostic(message); console.error(message);
+ };
+ phase('fixture start');
  const temporary = await realpath(await mkdtemp(join(tmpdir(), 'dilla-nsis-native-')));
  const identity = randomUUID().replaceAll('-', '').slice(0, 12), productName = 'DillaInstallerFixture' + identity, appId = 'dev.dilla.installer.fixture.' + identity;
  const program = join(process.env.LOCALAPPDATA, 'Programs', productName), profile = join(process.env.APPDATA, productName);
  const app = join(temporary, 'payload'), updates = join(profile, 'updates'), slot = join(updates, 'windows-active-0.json');
  const processes = [];
  let uninstaller;
+ const snapshot = async root => {
+  phase('snapshot start');
+  try { return await snapshotTree(root); } finally { phase('snapshot end'); }
+ };
+ const run = (file, args = [], options = {}) => {
+  // Polling the dialog uses PowerShell repeatedly; keep that output bounded.
+  if (file === ps()) return runCommand(file, args, options);
+  const kind = file === uninstaller ? 'uninstall' : file === join(program, 'Dilla.exe') ? 'root' : 'installer';
+  const label = `${kind}-${++commandNumber}`;
+  phase(label + ' start');
+  try { return runCommand(file, args, options); } finally { phase(label + ' end'); }
+ };
  try {
+  phase('copy-electron start');
   // Use the actual pinned Electron PE and DLLs for mapped-image kernel proof.
   await cp(join(repository, 'node_modules/electron/dist'), app, { recursive: true });
+  phase('copy-electron end');
   const electron = join(app, 'electron.exe');
   const { rename } = await import('node:fs/promises'); await rename(electron, join(app, 'dilla-desktop.exe'));
   await mkdir(join(app, 'resources'), { recursive: true });
@@ -67,24 +87,32 @@ test(retryOnly ? 'FOCUSED DIAGNOSTIC ONLY: actual interrupted first-install retr
   await writeFile(join(app, 'resources/fixture-main.cjs'), "require('electron').app.whenReady().then(() => setInterval(() => {}, 1000));\n");
   const releaseKeys = generateKeyPairSync('ed25519');
   const keys = [releaseKeys.publicKey.export({ type: 'spki', format: 'pem' }).toString()];
+  phase('finalize-program start');
   const state = await finalizeWindowsProgram({ appOutDir: app, outDir: temporary, version: '1.2.3', arch: 'x64', productName, appId, publicKeys: keys,
    compileLauncher: async ({ file, config }) => {
     const encoded = Buffer.from(JSON.stringify(config)).toString('base64');
     execFileSync('go', ['build', '-trimpath', '-ldflags', '-H=windowsgui -X main.bootstrapConfig=' + encoded, '-o', file, './packages/desktop/native/windows-launcher'], { cwd: repository, env: { ...process.env, CGO_ENABLED: '0' }, stdio: 'pipe' });
    }, signLauncher: async () => {} });
+  phase('finalize-program end');
   const archiveFile = join(temporary, 'payload.7z');
+  phase('archive start');
   await archive('7z', archiveFile, app, { withoutDir: true, compression: 'normal', installTimeDecodable: true });
+  phase('archive end');
   const digest = Buffer.from(state.digest, 'base64').toString('hex');
   await writeFile(archiveFile + '.bootstrap.nsh', `!define DILLA_BOOTSTRAP_EXE "${join(app,'Dilla.exe')}"\n!define DILLA_MANIFEST_SHA512 "${state.digest}"\n!define DILLA_PROGRAM_ID "v-${digest.slice(0, 32)}"\n!define DILLA_MANIFEST_NAME "${digest}.json"\n`);
   const compile = (name, transform) => compileWindowsNSIS({ directory: temporary, archive: archiveFile, productName, appId, name, transform });
   const nativeHelper = join(temporary, 'initial-retry-diagnostic.test.exe'), nativeRequest = join(temporary, 'initial-retry-request.json'), nativeReport = join(temporary, 'initial-retry-native.json');
+  phase('build-native-helper start');
   execFileSync('go', ['test', '-c', '-o', nativeHelper, './packages/desktop/native/windows-launcher'], { cwd: repository, env: { ...process.env, CGO_ENABLED: '0' }, stdio: 'pipe' });
+  phase('build-native-helper end');
   await writeFile(nativeRequest, JSON.stringify({ config: state.config, report: nativeReport }));
   let diagnosticSites;
   const instrument = source => {
    const diagnostic = withInitialInstallDiagnostics(withMaintenanceTimingFixture(source)); diagnosticSites = diagnostic.sites; return withInitialRetryNativeDiagnostic(diagnostic.source, nativeHelper);
   };
+  phase('compile-installer start');
   const installer = await compile('dilla-fixture-native.exe', instrument);
+  phase('compile-installer end');
   await mkdir(profile, { recursive: true });
   const account = join(profile, 'opaque-account-keystore-and-preferences.sentinel');
   await writeFile(account, 'existing account / KEK / OPFS / preferences must survive');
@@ -111,7 +139,9 @@ test(retryOnly ? 'FOCUSED DIAGNOSTIC ONLY: actual interrupted first-install retr
   uninstaller = join(program, `Uninstall ${productName}.exe`);
   const tree = join(program, 'versions', 'v-' + digest.slice(0, 32)), runtime = join(tree, 'dilla-desktop.exe');
   const manifest = join(program, 'manifests', digest + '.json'), originalManifest = await readFile(manifest);
+  phase('initial-snapshot start');
   const beforeProgram = await snapshot(program), beforeProfile = await snapshot(profile);
+  phase('initial-snapshot end');
   if (!retryOnly) {
   const errorDialog = async () => {
    await writeFile(manifest, '{unverified');
@@ -132,13 +162,16 @@ test(retryOnly ? 'FOCUSED DIAGNOSTIC ONLY: actual interrupted first-install retr
    assert.deepEqual(await snapshot(profile), beforeProfile, 'busy uninstall changed profile/history');
   };
   // Root native Go stays mapped in its actual error MessageBox path.
+  phase('mapped-root start');
   let rootGo = await errorDialog(); await busyUninstall(); await stop(rootGo);
   // Then the actual Electron image, and both image classes together.
+  phase('mapped-electron start');
   const electronChild = start(runtime, [join(tree, 'resources/fixture-main.cjs')]); processes.push(electronChild);
   await pause(1000); assert.equal(electronChild.exitCode, null, 'pinned Electron fixture must remain mapped');
   await busyUninstall(); rootGo = await errorDialog(); await busyUninstall(); await stop(rootGo); await stop(electronChild);
   // Retained launcher write access also blocks the pre-mutex image mapping
   // that an ordinary shortcut would otherwise race against final file deletion.
+  phase('retained-launcher-guard start');
   const held = spawn(uninstaller, ['/S', '_?=' + program], { stdio: 'ignore', windowsHide: true, env: { ...process.env, DILLA_FIXTURE_HOLD_ROOT: '1' } });
   processes.push(held); held.on('error', () => {});
   await eventually(() => exists(join(profile, 'fixture-hold-ready')), 'native retained launcher guard');
@@ -159,6 +192,7 @@ test(retryOnly ? 'FOCUSED DIAGNOSTIC ONLY: actual interrupted first-install retr
   assert.deepEqual(await snapshot(profile), beforeProfile);
   // A parent can publish a pending nonce and exit between the first proof
   // and the last image scan. The second proof must preserve that transaction.
+  phase('publish-during-scan start');
   assert.throws(() => run(uninstaller, ['/S', '_?=' + program], { env: { ...process.env, DILLA_FIXTURE_PUBLISH_DURING_SCAN: '1' } }));
   assert.deepEqual(await snapshot(program), beforeProgram);
   assert.equal(JSON.parse(await readFile(join(updates, 'active.json'))).nonce, 'd'.repeat(64));
@@ -176,6 +210,7 @@ test(retryOnly ? 'FOCUSED DIAGNOSTIC ONLY: actual interrupted first-install retr
   // Explicit removal uses the embedded original read-only guard, even when
   // either Electron or the stable root Go program itself can no longer start.
   for (const damage of ['manifest', 'ASAR', 'version PE', 'missing version PE', 'root Go', 'missing root Go', 'missing updates', 'all versions missing', 'all manifests missing', 'torn published slot', 'nonterminal active']) {
+   phase('damage-case ' + damage + ' start');
    if (!await exists(program)) run(installer, ['/S']);
    if (damage === 'manifest') await writeFile(manifest, '{damaged');
    if (damage === 'ASAR') await writeFile(join(tree, 'resources/app.asar'), 'damaged ASAR');
@@ -214,16 +249,20 @@ test(retryOnly ? 'FOCUSED DIAGNOSTIC ONLY: actual interrupted first-install retr
   const accepted = Date.now(), nonce = 'f'.repeat(64);
   const descriptor = Buffer.from(JSON.stringify({ format: 1, version: '1.2.4', channel: 'stable', publishedAt: new Date(accepted - 3_600_000).toISOString(), expiresAt: new Date(accepted + 86_400_000).toISOString(), artifacts: [{ platform: 'win32', arch: 'x64', url: 'https://github.com/jonasthim/dilla/releases/download/desktop-v1.2.4/dilla-1.2.4-win-x64.exe', size: installerSize, sha512: installerDigest, programManifest: { url: 'https://github.com/jonasthim/dilla/releases/download/desktop-v1.2.4/dilla-1.2.4-win-x64.manifest.json', size: nextRaw.length, sha512: nextDigest } }] }));
   const signature = sign(null, descriptor, releaseKeys.privateKey).toString('base64');
-  for (const [phase, damage] of [['complete', 'new ASAR'], ['complete', 'new manifest'], ['complete', 'old tree'], ['complete', 'all manifests'], ['failed', 'old PE'], ['failed', 'old manifest'], ['failed', 'all versions']]) {
+  for (const [journalPhase, damage] of [['complete', 'new ASAR'], ['complete', 'new manifest'], ['complete', 'old tree'], ['complete', 'all manifests'], ['failed', 'old PE'], ['failed', 'old manifest'], ['failed', 'all versions']]) {
+   phase('signed-case ' + journalPhase + '/' + damage + ' start');
    if (!await exists(program)) run(installer, ['/S']);
    const oldSlot = await readFile(slot), ticket = join(updates, 'startup-' + nonce);
-   await cp(tree, nextTree, { recursive: true }); await writeFile(nextManifest, nextRaw); await mkdir(ticket);
+   phase('signed-tree-copy start');
+   await cp(tree, nextTree, { recursive: true });
+   phase('signed-tree-copy end');
+   await writeFile(nextManifest, nextRaw); await mkdir(ticket);
    await cp(installer, join(ticket, 'update.exe'));
    await writeFile(join(ticket, 'release.json'), descriptor); await writeFile(join(ticket, 'release.json.sig'), signature);
    await writeFile(join(ticket, 'old-slot.json'), oldSlot); await writeFile(join(ticket, 'program-manifest.json'), nextRaw);
    await writeFile(join(ticket, 'plan.json'), JSON.stringify({ verifiedAt: accepted }));
-   await writeFile(join(ticket, 'journal.json'), JSON.stringify(phase === 'complete' ? { format: 1, nonce, phase, childPid: 0x7fffffff, version: '1.2.4' } : { format: 1, nonce, phase, failure: 'interrupted' }));
-   if (phase === 'complete') await writeFile(join(updates, 'windows-active-1.json'), JSON.stringify({ format: 1, kind: 'release', generation: 1, version: '1.2.4', manifestSha512: nextDigest, nonce, acceptedAt: accepted }));
+   await writeFile(join(ticket, 'journal.json'), JSON.stringify(journalPhase === 'complete' ? { format: 1, nonce, phase: journalPhase, childPid: 0x7fffffff, version: '1.2.4' } : { format: 1, nonce, phase: journalPhase, failure: 'interrupted' }));
+   if (journalPhase === 'complete') await writeFile(join(updates, 'windows-active-1.json'), JSON.stringify({ format: 1, kind: 'release', generation: 1, version: '1.2.4', manifestSha512: nextDigest, nonce, acceptedAt: accepted }));
    await writeFile(join(updates, 'active.json'), JSON.stringify({ format: 1, nonce }));
    if (damage === 'new ASAR') await writeFile(join(nextTree, 'resources/app.asar'), 'damaged committed ASAR');
    if (damage === 'new manifest') await writeFile(nextManifest, '{damaged committed manifest');
@@ -233,22 +272,26 @@ test(retryOnly ? 'FOCUSED DIAGNOSTIC ONLY: actual interrupted first-install retr
    if (damage === 'all versions') await rm(join(program, 'versions'), { recursive: true });
    if (damage === 'all manifests') await rm(join(program, 'manifests'), { recursive: true });
    assert.throws(() => run(join(program, 'Dilla.exe'), ['--state']), 'program damage must hold ordinary verification');
-   run(uninstaller, ['/S']); await eventually(async () => !await exists(program), 'terminal ' + phase + '/' + damage + ' removal');
+   run(uninstaller, ['/S']); await eventually(async () => !await exists(program), 'terminal ' + journalPhase + '/' + damage + ' removal');
    assert.equal(await readFile(account, 'utf8'), 'existing account / KEK / OPFS / preferences must survive');
-   run(installer, ['/S']); assert.equal(await exists(slot), true, 'terminal ' + phase + '/' + damage + ' reinstall');
+   run(installer, ['/S']); assert.equal(await exists(slot), true, 'terminal ' + journalPhase + '/' + damage + ' reinstall');
    assert.equal(await readFile(account, 'utf8'), 'existing account / KEK / OPFS / preferences must survive');
   }
   run(uninstaller, ['/S']); await eventually(async () => !await exists(program), 'terminal signed fixture cleanup');
   } else {
    run(uninstaller, ['/S']); await eventually(async () => !await exists(program), 'focused initial retry preparation');
   }
+  phase('compile-interrupted-installer start');
   const paused = await compile('dilla-fixture-interrupt.exe', source => {
    const boundary='  Call RunInitialTransaction';
    assert.equal(source.split(boundary).length,2);
    return source.replace(boundary,'  Sleep 300000\n'+boundary);
   });
+  phase('compile-interrupted-installer end');
   const interrupted = start(paused, ['/S']); processes.push(interrupted);
+  phase('interrupted-marker wait');
   await eventually(async () => await exists(join(profile, 'initial-install.json')) && !await exists(program) && !await exists(updates), 'durable owned marker before native handoff', 120_000);
+  phase('interrupted-marker ready');
   // Construct the exact authenticated prefix state a terminated native copy can
   // leave. This test does not claim to interrupt a kernel CopyFile operation.
   await mkdir(tree,{recursive:true}); await mkdir(join(program,'manifests')); await mkdir(updates);
@@ -258,7 +301,9 @@ test(retryOnly ? 'FOCUSED DIAGNOSTIC ONLY: actual interrupted first-install retr
   await writeFile(slot,(await readFile(join(app,'initial-slot.json'))).subarray(0,12));
   await stop(interrupted);
   const partialProgram = await snapshot(program), partialProfile = await snapshot(profile);
+  phase('initial-preflight start');
   const direct = spawnSync(join(app, 'Dilla.exe'), ['--installer-preflight=initial'], { timeout: 30000, windowsHide: true, stdio: 'ignore' });
+  phase('initial-preflight end');
   console.error('INITIAL_RETRY_ORIGINAL_PAYLOAD ' + JSON.stringify({ format: 1, exit: direct.status, timedOut: direct.error?.code === 'ETIMEDOUT' }));
   assert.deepEqual(await snapshot(program), partialProgram); assert.deepEqual(await snapshot(profile), partialProfile);
   await rm(join(temporary, 'fixture-install-diagnostic.json'), { force: true });
@@ -284,7 +329,9 @@ test(retryOnly ? 'FOCUSED DIAGNOSTIC ONLY: actual interrupted first-install retr
   assert.equal(await exists(slot), true, 'same installer must recover owned interrupted first copy');
   assert.equal(await readFile(account, 'utf8'), 'existing account / KEK / OPFS / preferences must survive');
   run(uninstaller, ['/S']); await eventually(async () => !await exists(program), 'interrupted retry cleanup');
+  phase('compile-commit-failure start');
   const commitResultFailure = await compile('dilla-fixture-commit-result-failure.exe', source => withInitialCommitResultFailure(instrument(source)));
+  phase('compile-commit-failure end');
   assert.throws(() => run(commitResultFailure, ['/S']), 'lost native success result must fail setup without rollback');
   assert.equal(await exists(slot), true, 'the actual native commit remains visible after its success result is lost');
   const committedProgram=await snapshot(program);
@@ -294,6 +341,7 @@ test(retryOnly ? 'FOCUSED DIAGNOSTIC ONLY: actual interrupted first-install retr
   assert.deepEqual(await snapshot(program),committedProgram,'finalize-only must not recopy or quarantine committed program bytes');
   assert.equal(await readFile(account, 'utf8'), 'existing account / KEK / OPFS / preferences must survive');
  } finally {
+  phase('cleanup start');
   for (const child of processes) await stop(child).catch(() => {});
   if (uninstaller && await exists(uninstaller)) { try { run(uninstaller, ['/S']); } catch {} }
   // These roots are generated fixture identities, never runtime-selected product paths.
@@ -301,5 +349,6 @@ test(retryOnly ? 'FOCUSED DIAGNOSTIC ONLY: actual interrupted first-install retr
   for (const entry of await readdir(join(process.env.LOCALAPPDATA, 'Programs')).catch(() => [])) if (new RegExp('^'+productName+'-incomplete-[a-f0-9]{32}$').test(entry)) await rm(join(process.env.LOCALAPPDATA, 'Programs', entry), { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   await rm(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   await rm(temporary, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  phase('cleanup end');
  }
 });
