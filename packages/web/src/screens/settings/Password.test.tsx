@@ -177,7 +177,7 @@ describe('setting a first password', () => {
     const d = await screen.findByRole('dialog', { name: en['settings.password.titleSet'] });
     await fill(user, d, { next: 'first password', again: 'first password{Enter}' });
     const again = await screen.findByRole('dialog', { name: en['factorSettings.stepUp.title'] });
-    expect(within(again).getByText(en['factorSettings.stepUp.expired'])).toBeInTheDocument();
+    expect(await within(again).findByText(en['factorSettings.stepUp.expired'])).toBeInTheDocument();
   });
   it('a session that went stale while the dialog was open closes it with a calm line, and the next press mints a fresh one', async () => {
     let stale = true;
