@@ -6,7 +6,7 @@ import type { DesktopBridge } from '../../../packages/desktop/src/contract.ts';
 import { canonicalInstance } from '../../../packages/desktop/src/policy.ts';
 import { test as appTest, WAIT, copy } from './app.ts';
 import { assertInstalledFuses, createInstalledPackages, type InstalledPackages } from './installed-packages.ts';
-import { installedAccountDiagnostics } from './installed-diagnostics.ts';
+import { installedAccountDiagnostics, installedPostFailureDiagnostics } from './installed-diagnostics.ts';
 
 const pause = () => new Promise(done => setTimeout(done, 100));
 interface ProcessReport { pid: number; role: string; start: string | null; version: string; executable: string }
@@ -61,6 +61,10 @@ export class InstalledAccountApp {
   async failureDiagnostics() {
     return installedAccountDiagnostics({ reports: this.packages.reports, profile: this.packages.profile, installed: this.packages.installed,
       platform: process.platform, expectedVersion: this.expectedVersion, previousPort: this.browsers.keys().next().value });
+  }
+  async postFailureDiagnostics(failureObserved: boolean) {
+    return installedPostFailureDiagnostics({ reports: this.packages.reports, instance: this.instance, control: process.env.DILLA_TESTKIT_CONTROL,
+      expectedVersion: this.expectedVersion, failureObserved });
   }
   async prepareUpdate(): Promise<void> {
     await this.packages.setNext();
@@ -136,6 +140,21 @@ export const test = appTest.extend<{ installed: InstalledAccountApp }>({
             await info.attach('Installed startup diagnostics', { path: file, contentType: 'application/json' });
           } catch { /* Optional diagnostics never replace the original test failure. */ }
           finally { clearTimeout(timer); }
+          // The original assertion has already failed, and its unmodified
+          // startup snapshot is logged above. These optional probes get a
+          // separate 10-second teardown budget; startup/assertion budgets stay
+          // unchanged and no probe may retry or replace the original failure.
+          let probeTimer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            const result = await Promise.race([installed.postFailureDiagnostics(info.status !== info.expectedStatus), new Promise(resolve => {
+              probeTimer = setTimeout(() => resolve({ format: 1, status: 'unavailable' }), 10000);
+            })]);
+            const diagnostic = JSON.stringify(result), file = info.outputPath('installed-post-failure-network.json');
+            console.log('INSTALLED_POST_FAILURE_NETWORK_DIAGNOSTICS ' + diagnostic);
+            await writeFile(file, diagnostic, { mode: 0o600 });
+            await info.attach('Installed post-failure network diagnostics', { path: file, contentType: 'application/json' });
+          } catch { /* Preserve the existing failed assertion even if every probe fails. */ }
+          finally { clearTimeout(probeTimer); }
         }
         await installed.stop();
         if (info.status !== info.expectedStatus) {

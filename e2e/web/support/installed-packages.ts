@@ -54,7 +54,16 @@ function __accountEmit(stage:string,url:any='',method:any='OTHER',status=0,code=
 function __accountFetch(ses:any,request:any,options:any){const started=Date.now();__accountEmit('fetch-begin',request,request.method);
  try{return ses.fetch(request,options).then((response:any)=>{__accountEmit('fetch-response',request,request.method,response.status,0,Date.now()-started);return response;},(error:any)=>{__accountEmit('fetch-reject',request,request.method,0,__accountCode(error),Date.now()-started);throw error;});}
  catch(error){__accountEmit('fetch-reject',request,request.method,0,__accountCode(error),Date.now()-started);throw error;}}
-function __accountObserveSession(ses:any){ses.webRequest.onCompleted((d:any)=>__accountEmit('request-complete',d.url,d.method,d.statusCode));ses.webRequest.onErrorOccurred((d:any)=>__accountEmit('request-error',d.url,d.method,0,__accountCode(d.error)));}
+let __accountProbeWatching=false,__accountProbeUsed=false;
+function __accountWatchProbe(ses:any,instance:any){if(__accountRole!=='ordinary'||__accountProbeWatching)return;
+ let target:string;try{const u=new URL(instance);if(u.protocol!=='http:'||u.hostname!=='127.0.0.1'||u.pathname!=='/'||u.username||u.password||!u.port)return;target=u.origin+'/v1/instance';}catch{return;}__accountProbeWatching=true;
+ const timer=setInterval(()=>{if(__accountProbeUsed)return;let fd:number|undefined;let accepted=false;try{const path=__accountReports+'/probe-request-'+app.getVersion();const before=__accountFS.lstatSync(path);if(!before.isFile()||before.isSymbolicLink()||before.size!==1)return;fd=__accountFS.openSync(path,__accountFS.constants.O_RDONLY|(__accountFS.constants.O_NOFOLLOW??0));const stat=__accountFS.fstatSync(fd);if(stat.ino!==before.ino||stat.dev!==before.dev||!stat.isFile()||stat.size!==1)return;const bytes=Buffer.alloc(2);accepted=__accountFS.readSync(fd,bytes,0,2,0)===1&&bytes[0]===49;}catch{}finally{if(fd!==undefined)try{__accountFS.closeSync(fd);}catch{}}
+ if(!accepted)return;__accountProbeUsed=true;clearInterval(timer);
+ void(async()=>{const started=Date.now();let status='failed',httpStatus=0,code=0,deadline:any;
+ try{const response:any=await Promise.race([ses.fetch(target,{bypassCustomProtocolHandlers:true,credentials:'omit',cache:'no-store',redirect:'error',signal:AbortSignal.timeout(2000)}),new Promise((_r,reject)=>{deadline=setTimeout(()=>reject(new Error('net::ERR_TIMED_OUT')),2000);})]);status='ok';httpStatus=Number.isInteger(response.status)&&response.status>=100&&response.status<=599?response.status:0;void response.body?.cancel().catch(()=>{});}catch(error){code=__accountCode(error);}finally{clearTimeout(deadline);}
+ try{__accountFS.writeFileSync(__accountReports+'/probe-result-'+app.getVersion()+'.json',JSON.stringify({format:1,status,httpStatus,code,elapsedMs:Math.min(10000,Math.max(0,Date.now()-started))}),{flag:'wx',mode:0o600});}catch{}})();
+ },100);timer.unref();}
+function __accountObserveSession(ses:any,instance?:string){ses.webRequest.onCompleted((d:any)=>__accountEmit('request-complete',d.url,d.method,d.statusCode));ses.webRequest.onErrorOccurred((d:any)=>__accountEmit('request-error',d.url,d.method,0,__accountCode(d.error)));__accountWatchProbe(ses,instance);}
 function __accountObserveWindow(win:any){win.webContents.on('did-finish-load',()=>__accountEmit('document-loaded'));win.webContents.on('did-fail-load',(_e:any,code:number)=>__accountEmit('load-failed','','OTHER',0,code));win.webContents.on('render-process-gone',(_e:any,d:any)=>__accountEmit('renderer-gone','','OTHER',0,d.exitCode));}
 `;
 }
@@ -77,7 +86,7 @@ const __accountDialog=dialog.showMessageBox.bind(dialog);
 dialog.showMessageBox=(async(...args:any[])=>{const o=args.at(-1);if(o.title==='Dilla permission')return{response:1,checkboxChecked:false};if(o.title==='Dilla is still in use'){__accountFS.writeFileSync(__accountReports+'/protected-quit.json',JSON.stringify({version:app.getVersion(),pid:process.pid}));return{response:0,checkboxChecked:false};}return(__accountDialog as any)(...args);}) as typeof dialog.showMessageBox;
 dialog.showErrorBox=((title:string,content:string)=>{__accountFS.writeFileSync(__accountReports+'/native-error.json',JSON.stringify({version:app.getVersion(),title,content}));}) as typeof dialog.showErrorBox;
 `);
-  source = replaceBoundary(source, 'const ses = session.fromPartition(partitionFor(instance));', 'const ses = session.fromPartition(partitionFor(instance)); __accountObserveSession(ses);');
+  source = replaceBoundary(source, 'const ses = session.fromPartition(partitionFor(instance));', 'const ses = session.fromPartition(partitionFor(instance)); __accountObserveSession(ses, instance);');
   source = replaceBoundary(source, "windows.set(instance, win); windowModes.set(instance, 'starting');", "windows.set(instance, win); windowModes.set(instance, 'starting'); __accountObserveWindow(win);");
   for (const request of ['request', 'forwarded']) source = replaceBoundary(source, `return ses.fetch(${request}, { bypassCustomProtocolHandlers: true });`, `return __accountFetch(ses, ${request}, { bypassCustomProtocolHandlers: true });`);
   source = replaceBoundary(source, 'callback({ cancel });', "if(cancel)__accountEmit('request-blocked',details.url,details.method,0,-20); callback({ cancel });");
