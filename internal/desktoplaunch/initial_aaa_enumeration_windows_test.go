@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -95,4 +96,37 @@ func TestWindowsInitialEnumerationReopenControlMatrix(t *testing.T) {
 			}
 		}
 	}
+	for _, original := range sources {
+		for _, access := range []uint32{windows.FILE_GENERIC_READ, windows.FILE_GENERIC_READ | windows.FILE_TRAVERSE} {
+			name, e := windows.NewNTUnicodeString(".")
+			if e != nil {
+				t.Fatal(e)
+			}
+			attributes := windows.OBJECT_ATTRIBUTES{RootDirectory: windows.Handle(original.handle), ObjectName: name, Attributes: windows.OBJ_CASE_INSENSITIVE | windows.OBJ_DONT_REPARSE}
+			attributes.Length = uint32(unsafe.Sizeof(attributes))
+			var handle windows.Handle
+			var status windows.IO_STATUS_BLOCK
+			openErr := windows.NtCreateFile(&handle, access, &attributes, &status, nil, 0, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, windows.FILE_OPEN, windows.FILE_DIRECTORY_FILE|windows.FILE_OPEN_REPARSE_POINT|windows.FILE_SYNCHRONOUS_IO_NONALERT, 0, 0)
+			openCode, identityCode, readCode := numeric(initialNTError(openErr)), uint32(0), uint32(0)
+			if openErr == nil {
+				var before, after syscall.ByHandleFileInformation
+				beforeErr := syscall.GetFileInformationByHandle(original.handle, &before)
+				afterErr := syscall.GetFileInformationByHandle(syscall.Handle(handle), &after)
+				identityCode = numeric(errors.Join(beforeErr, afterErr))
+				if identityCode == 0 && (before.VolumeSerialNumber != after.VolumeSerialNumber || before.FileIndexHigh != after.FileIndexHigh || before.FileIndexLow != after.FileIndexLow) {
+					identityCode = 0xfffffffe
+				}
+				file := os.NewFile(uintptr(handle), "private-relative-enumeration-control")
+				_, readErr := file.ReadDir(64)
+				readCode = numeric(readErr)
+				if closeErr := file.Close(); closeErr != nil {
+					t.Fatal(closeErr)
+				}
+			} else if handle != 0 && handle != windows.InvalidHandle {
+				_ = windows.CloseHandle(handle)
+			}
+			t.Logf("INITIAL_ENUM_DOT_CONTROL source=%s access=%08x open=%d identity=%d read=%d", original.name, access, openCode, identityCode, readCode)
+		}
+	}
+
 }
