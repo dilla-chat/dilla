@@ -76,8 +76,15 @@ test('maintainer output is independent of inherited Go build settings', {skip: p
   try {
     const goenv = join(dir, 'goenv');
     await writeFile(goenv, 'GOAMD64=v3\nGOFLAGS=-tags=tainted\n');
-    const helperFile = join(root, 'node_modules/electron/dist/chrome-sandbox');
-    const args = [join(root, 'packages/desktop/scripts/linux-sandbox-package.mjs'), join(root, 'packages/desktop/linux-sandbox-component.json'), helperFile];
+    // This exercises Go environment isolation, not Electron's installed helper.
+    // A valid x64 ELF and fixture public configuration keep lightweight Node CI
+    // independent of ELECTRON_SKIP_BINARY_DOWNLOAD without skipping the build.
+    const { sandboxReleaseFixture } = await import('./support/linux-sandbox-release-fixture.ts');
+    const fixture = sandboxReleaseFixture(), production = JSON.parse(await readFile(join(root, 'packages/desktop/linux-sandbox-component.json'), 'utf8'));
+    const helperFile = join(dir, 'fixture-chrome-sandbox'), configFile = join(dir, 'fixture-component.json');
+    const fixtureHelper = fixture.capsule.subarray(fixture.capsule.length - fixture.config.helper.size);
+    await writeFile(helperFile, fixtureHelper); await writeFile(configFile, JSON.stringify({ ...fixture.config, goVersion: production.goVersion }));
+    const args = [join(root, 'packages/desktop/scripts/linux-sandbox-package.mjs'), configFile, helperFile];
     for (const [name, overrides] of [['v1', {GOAMD64:'v1', GOENV:'off', GOWORK:'off'}], ['v3', {GOAMD64:'v3', GOENV:goenv, GOFLAGS:'-tags=tainted', GOWORK:join(dir,'missing.work')} ]]) {
       execFileSync(process.execPath, [...args, join(dir, name), '1.0.0'], { cwd: root, env: {...process.env, ...overrides}, stdio: 'pipe' });
     }
