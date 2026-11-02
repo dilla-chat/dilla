@@ -107,7 +107,9 @@ export function signalLifecycleDiagnostics(info: TestInfo, suite: 'csp-axe' | 'a
     async watch(person, application) {
       if (!['alice', 'bob', 'ada', 'bjorn', 'phone'].includes(person.name)) throw new Error('Unknown signal diagnostic actor');
       const actor = person.name as Actor;
-      const wire = application ? await startSignalWire(application) : undefined;
+      let wire: Awaited<ReturnType<typeof startSignalWire>> | undefined;
+      try { if (application) wire = await startSignalWire(application); }
+      catch { append(actor, 'wire', { event: 'capture-unavailable' }); }
       let wireDone: Promise<void> | undefined;
       const stopWire = () => wireDone ??= (async () => {
         if (!wire) return;

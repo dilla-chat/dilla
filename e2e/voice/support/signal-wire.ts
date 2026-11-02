@@ -78,7 +78,13 @@ export async function startSignalWire(application: ElectronApplication): Promise
     await application.evaluate(async ({ BrowserWindow }, path) => {
       const log = BrowserWindow.getAllWindows()[0].webContents.session.netLog;
       if (log.currentlyLogging) throw new Error('Private signal capture already active');
-      await log.startLogging(path, { captureMode: 'default', maxFileSize: 8 * 1024 * 1024 });
+      try { await log.startLogging(path, { captureMode: 'default', maxFileSize: 8 * 1024 * 1024 }); }
+      catch (error) {
+        // Electron retains its exporter when Chromium rejects bounded scratch
+        // creation. Release only this failed start, never a pre-existing capture.
+        if (log.currentlyLogging) await log.stopLogging().catch(() => {});
+        throw error;
+      }
     }, path);
   } catch (error) { await rm(directory, { recursive: true, force: true }); throw error; }
   let done: Promise<SignalWire[]> | undefined;

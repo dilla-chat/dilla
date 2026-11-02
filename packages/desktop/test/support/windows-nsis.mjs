@@ -72,6 +72,13 @@ export function initialInstallDiagnostic(value, sites) {
  return { format: 1, phase: sites[value.site - 1], nativeExit: value.nativeExit === 'not-run' ? null : Number(value.nativeExit) };
 }
 
+export function withInitialSlotFlushFailure(source) {
+ source = source.replaceAll('\r\n', '\n');
+ const boundary = "  System::Call 'kernel32::FlushFileBuffers(p r0)i.r1'\n  System::Call 'kernel32::CloseHandle(p r0)'";
+ if (source.split(boundary).length !== 2) throw new Error('Initial slot flush-failure fixture boundary changed');
+ return source.replace(boundary, "  StrCpy $1 0\n  System::Call 'kernel32::CloseHandle(p r0)'");
+}
+
 export function withMaintenanceTimingFixture(source) {
  const held = source.replace('  Call un.HoldStableLauncher', [
   '  Call un.HoldStableLauncher',

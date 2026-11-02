@@ -10,7 +10,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { createHash, generateKeyPairSync, randomUUID, sign } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { setTimeout as pause } from 'node:timers/promises';
-import { compileWindowsNSIS, withMaintenanceTimingFixture, withInitialInstallDiagnostics, initialInstallDiagnostic } from '../support/windows-nsis.mjs';
+import { compileWindowsNSIS, withMaintenanceTimingFixture, withInitialInstallDiagnostics, initialInstallDiagnostic, withInitialSlotFlushFailure } from '../support/windows-nsis.mjs';
 import { finalizeWindowsProgram } from '../../scripts/windows-package.mjs';
 import { createWindowsProgramManifest } from '../../src/windows-manifest.ts';
 const require = createRequire(import.meta.url);
@@ -82,8 +82,7 @@ test('native installer preserves every byte on mapped Go/Electron images, archiv
   await mkdir(profile, { recursive: true });
   const account = join(profile, 'opaque-account-keystore-and-preferences.sentinel');
   await writeFile(account, 'existing account / KEK / OPFS / preferences must survive');
-  try { run(installer, ['/S']); }
-  catch (error) {
+  const reportInitialFailure = async label => {
    let diagnostic = { format: 1, phase: 'unavailable', nativeExit: null };
    try {
     const file = join(temporary, 'fixture-install-diagnostic.json'), info = await lstat(file);
@@ -91,9 +90,10 @@ test('native installer preserves every byte on mapped Go/Electron images, archiv
     const bytes = await readFile(file); if (bytes.length > 1024) throw new Error('Oversized diagnostic');
     diagnostic = initialInstallDiagnostic(JSON.parse(bytes), diagnosticSites);
    } catch { /* Report only fixed enum/numeric data, never malformed raw bytes. */ }
-   console.error('INITIAL_INSTALL_FAILURE ' + JSON.stringify(diagnostic));
-   throw error;
-  }
+   console.error(label + ' ' + JSON.stringify(diagnostic));
+  };
+  try { run(installer, ['/S']); }
+  catch (error) { await reportInitialFailure('INITIAL_INSTALL_FAILURE'); throw error; }
   assert.equal(await exists(slot), true);
   uninstaller = join(program, `Uninstall ${productName}.exe`);
   const tree = join(program, 'versions', 'v-' + digest.slice(0, 32)), runtime = join(tree, 'dilla-desktop.exe');
@@ -230,16 +230,18 @@ test('native installer preserves every byte on mapped Go/Electron images, archiv
   await eventually(async () => await exists(join(profile, 'initial-install.json')) && await exists(join(program, 'Dilla.exe')) && await exists(updates) && !await exists(slot), 'durable owned marker and copied program before initial slot commit', 120_000);
   await stop(interrupted);
   const partialProgram = await snapshot(program), partialProfile = await snapshot(profile);
+  await rm(join(temporary, 'fixture-install-diagnostic.json'), { force: true });
   assert.throws(() => run(installer, ['/S'], { env: { ...process.env, DILLA_FIXTURE_INITIAL_PUBLISH_DURING_SCAN: '1' } }));
   assert.deepEqual(await snapshot(program), partialProgram);
-  assert.equal(JSON.parse(await readFile(join(updates, 'active.json'))).nonce, 'c'.repeat(64));
+  try { assert.equal(JSON.parse(await readFile(join(updates, 'active.json'))).nonce, 'c'.repeat(64)); }
+  catch (error) { await reportInitialFailure('INITIAL_RETRY_FAILURE'); throw error; }
   await rm(join(updates, 'active.json')); await rm(join(updates, 'startup-' + 'c'.repeat(64)), { recursive: true });
   assert.deepEqual(await snapshot(profile), partialProfile);
   run(installer, ['/S']);
   assert.equal(await exists(slot), true, 'same installer must recover owned interrupted first copy');
   assert.equal(await readFile(account, 'utf8'), 'existing account / KEK / OPFS / preferences must survive');
   run(uninstaller, ['/S']); await eventually(async () => !await exists(program), 'interrupted retry cleanup');
-  const flushFailure = await compile('dilla-fixture-flush-failure.exe', source => source.replace("  System::Call 'kernel32::FlushFileBuffers(p r0)i.r1'\n  System::Call 'kernel32::CloseHandle(p r0)'", "  StrCpy $1 0\n  System::Call 'kernel32::CloseHandle(p r0)'"));
+  const flushFailure = await compile('dilla-fixture-flush-failure.exe', withInitialSlotFlushFailure);
   assert.throws(() => run(flushFailure, ['/S']), 'injected seed flush failure must fail setup');
   assert.equal(await exists(join(profile, 'initial-install.json')), true);
   run(installer, ['/S']);
