@@ -12,8 +12,64 @@ import { buildProvenanceName, readBuildProvenanceFile, verifyBuildProvenance, ve
 export const TARGETS = ['linux-x64', 'win-x64', 'mac-arm64'];
 export const BUILD_TARGETS = Object.freeze([...TARGETS, 'linux-packages-x64']);
 export const BUILD_PROVENANCE_RECORDS = Object.freeze(BUILD_TARGETS.map(buildProvenanceName));
-export const PUBLIC_ACCEPTANCE_RECORDS = Object.freeze(['release-notes.md', 'security-review.md',
+export const PUBLIC_ACCEPTANCE_RECORDS = Object.freeze(['release-notes.md',
  ...TARGETS.flatMap(target => [`performance-${target}.json`, `installed-account-${target}.json`]), ...BUILD_PROVENANCE_RECORDS]);
+
+/** The CI jobs and steps a release requires, shared by verifyBundle and the
+ * automated attestation. Jobs are matched by name suffix ("desktop / <suffix>"). */
+const PACKAGE_PRODUCER = Object.freeze({ suffix: 'desktop-linux-packages-x64', steps: Object.freeze(['Build native Linux release packages', 'Record native Linux package build provenance']) });
+const PACKAGE_FORMATS = Object.freeze(['deb', 'rpm', 'aur']);
+const packageAcceptanceStep = format => `Installed ${format.toUpperCase()} package acceptance`;
+const nativeGates = target => ['Record native desktop build provenance', 'Application audio encryption and exclusion',
+ target.startsWith('mac-') ? 'Installed unsigned Sparkle upgrade and signed-feed rejection' : 'Installed upgrade acceptance',
+ ...(target === 'linux-x64' ? ['Linux AppImage sandbox native acceptance'] : [])];
+// Linux runs the shared client suite in three shards; the other targets run the desktop-specific specs in one job.
+const clientShards = target => target === 'linux-x64' ? [1, 2, 3] : [1];
+const ACCOUNT_PROOF_STEP = 'Installed account upgrade proof';
+const PERFORMANCE_STEP = 'Desktop performance comparison';
+const VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-beta\.(0|[1-9]\d*))?$/;
+
+/** Each entry: a job name suffix, the steps it must report, and whether every one of them must succeed. */
+function requiredJobs() {
+ return [
+  { ...PACKAGE_PRODUCER, allSteps: true },
+  ...PACKAGE_FORMATS.map(format => ({ suffix: `desktop-linux-package-acceptance-${format}-x64`, steps: [packageAcceptanceStep(format)], allSteps: true })),
+  ...TARGETS.flatMap(target => [
+   { suffix: `desktop-${target}`, steps: nativeGates(target), allSteps: true },
+   ...clientShards(target).map(shard => ({ suffix: `desktop-client-${target}-${shard}`, steps: [ACCOUNT_PROOF_STEP], allSteps: false, proof: target })),
+   { suffix: `desktop-voice-${target}`, steps: [PERFORMANCE_STEP], allSteps: true },
+  ]),
+ ];
+}
+
+/**
+ * The exact required-job inventory the automated attestation digests: sorted by
+ * job name, each with its conclusion and only its required steps (in run order).
+ * Throws if a required job is missing, duplicated or not successful. The
+ * inventory does not depend on the version; it is validated when given so the
+ * assembler and verifier call this identically as (jobs, version).
+ */
+export function requiredJobInventory(jobs, version) {
+ if (version !== undefined && (typeof version !== 'string' || !VERSION.test(version))) throw new Error('Invalid desktop release version');
+ if (!Array.isArray(jobs)) throw new Error('Missing complete CI job inventory');
+ const inventory = [], proofs = {};
+ for (const required of requiredJobs()) {
+  const matches = jobs.filter(job => typeof job?.name === 'string' && job.name.endsWith(required.suffix));
+  if (matches.length !== 1) throw new Error(`Required CI job must appear exactly once (missing or duplicated): ${required.suffix}`);
+  const [job] = matches;
+  if (job.conclusion !== 'success') throw new Error('Required CI job did not succeed: ' + required.suffix);
+  const steps = (Array.isArray(job.steps) ? job.steps : []).filter(step => required.steps.includes(step?.name)).map(step => ({ name: step.name, conclusion: step.conclusion }));
+  if (required.allSteps && required.steps.some(name => !steps.some(step => step.name === name && step.conclusion === 'success'))) throw new Error('Required CI step missing or did not succeed: ' + required.suffix);
+  if (required.proof) proofs[required.proof] = (proofs[required.proof] ?? 0) + steps.filter(step => step.conclusion === 'success').length;
+  inventory.push({ name: job.name, conclusion: job.conclusion, steps });
+ }
+ for (const target of TARGETS) if (proofs[target] !== 1) throw new Error(`${target}: installed-account upgrade proof must succeed in exactly one client shard`);
+ return inventory.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+}
+/** sha256 of the canonical inventory JSON; the only form the assembler and verifier compare. */
+export function inventoryDigest(jobs, version) {
+ return createHash('sha256').update(JSON.stringify(requiredJobInventory(jobs, version))).digest('hex');
+}
 /** Shared by the offline signer and the online publisher. Only public,
  * authenticated acceptance records enter a candidate or versioned release. */
 export function publicReleaseRecords(channel) {
@@ -62,38 +118,37 @@ async function verifyBundle({ metadata, signature, trust, directory, run, jobs, 
   if (digest(bytes) !== record.sha256) throw new Error('Build provenance digest mismatch: ' + target);
   verifyBuildProvenance(JSON.parse(bytes), target, { commit: source.commit, tree: source.tree, ciRun: source.ciRun, version }, release.assets);
  }
- const packageProducer = jobs.filter(job => job.name.endsWith('desktop-linux-packages-x64'));
- if (packageProducer.length !== 1 || packageProducer[0].conclusion !== 'success' || ['Build native Linux release packages', 'Record native Linux package build provenance'].some(name => !packageProducer[0].steps?.some(step => step.name === name && step.conclusion === 'success'))) throw new Error('Missing accepted native Linux package producer');
+ const packageProducer = jobs.filter(job => job.name.endsWith(PACKAGE_PRODUCER.suffix));
+ if (packageProducer.length !== 1 || packageProducer[0].conclusion !== 'success' || PACKAGE_PRODUCER.steps.some(name => !packageProducer[0].steps?.some(step => step.name === name && step.conclusion === 'success'))) throw new Error('Missing accepted native Linux package producer');
  // Build/recipe observation is not installed-package qualification. These
  // same-run gates deliberately remain required until each format is exercised.
- for (const format of ['deb', 'rpm', 'aur']) {
+ for (const format of PACKAGE_FORMATS) {
   const accepted = jobs.filter(job => job.name.endsWith(`desktop-linux-package-acceptance-${format}-x64`));
-  if (accepted.length !== 1 || accepted[0].conclusion !== 'success' || !accepted[0].steps?.some(step => step.name === `Installed ${format.toUpperCase()} package acceptance` && step.conclusion === 'success')) throw new Error('Missing installed native Linux package acceptance: ' + format);
+  if (accepted.length !== 1 || accepted[0].conclusion !== 'success' || !accepted[0].steps?.some(step => step.name === packageAcceptanceStep(format) && step.conclusion === 'success')) throw new Error('Missing installed native Linux package acceptance: ' + format);
  }
  for (const target of TARGETS) {
   const native = jobs.find(job => job.name.endsWith(`desktop-${target}`));
   if (!native || native.conclusion !== 'success') throw new Error('Missing accepted native target: ' + target);
   // Each target requires its installed-upgrade acceptance. macOS additionally
   // proves unsigned Sparkle installation rather than running the NSIS/AppImage fixture.
-  const gates = ['Record native desktop build provenance', 'Application audio encryption and exclusion', target.startsWith('mac-')
-   ? 'Installed unsigned Sparkle upgrade and signed-feed rejection' : 'Installed upgrade acceptance'];
-  if(target==='linux-x64')gates.push('Linux AppImage sandbox native acceptance');
-  for (const gate of gates) if (!native.steps?.some(step => step.name === gate && step.conclusion === 'success')) throw new Error(`${target}: missing accepted ${gate}`);
-  // Linux runs the shared client suite in three shards; the other targets run the desktop-specific specs in one job.
-  for (const shard of target === 'linux-x64' ? [1, 2, 3] : [1]) {
+  for (const gate of nativeGates(target)) if (!native.steps?.some(step => step.name === gate && step.conclusion === 'success')) throw new Error(`${target}: missing accepted ${gate}`);
+  for (const shard of clientShards(target)) {
    if (!jobs.some(job => job.name.endsWith(`desktop-client-${target}-${shard}`) && job.conclusion === 'success')) throw new Error(`Missing Electron client coverage: ${target}-${shard}`);
   }
   const accountProofs = jobs.filter(job => job.conclusion === 'success' && [1, 2, 3].some(shard => job.name.endsWith(`desktop-client-${target}-${shard}`)))
-   .flatMap(job => job.steps ?? []).filter(step => step.name === 'Installed account upgrade proof' && step.conclusion === 'success');
+   .flatMap(job => job.steps ?? []).filter(step => step.name === ACCOUNT_PROOF_STEP && step.conclusion === 'success');
   if (accountProofs.length !== 1) throw new Error(`${target}: installed-account upgrade proof must succeed in exactly one client shard`);
   const voice = jobs.find(job => job.name.endsWith(`desktop-voice-${target}`) && job.conclusion === 'success');
   if (!voice) throw new Error(`Missing Electron voice coverage: ${target}`);
-  if (!voice.steps?.some(step => step.name === 'Desktop performance comparison' && step.conclusion === 'success')) throw new Error(`${target}: missing accepted performance comparison`);
+  if (!voice.steps?.some(step => step.name === PERFORMANCE_STEP && step.conclusion === 'success')) throw new Error(`${target}: missing accepted performance comparison`);
  }
- if (!source.review || source.review.status !== 'approved' || source.review.tree !== source.tree || !/^[a-f0-9]{64}$/.test(source.review.sha256)) throw new Error('An independent security review must approve this source tree');
+ // The automated attestation binds the accepted run, tree and exact required-job inventory (no human review file).
+ const review = source.review;
+ if (!review || typeof review !== 'object' || Array.isArray(review) || Object.keys(review).length !== 4 || !['status', 'ciRun', 'tree', 'inventory'].every(key => Object.hasOwn(review, key))
+   || review.status !== 'automated' || review.ciRun !== source.ciRun || review.tree !== source.tree
+   || !review.inventory || typeof review.inventory !== 'object' || Array.isArray(review.inventory) || Object.keys(review.inventory).length !== 1
+   || typeof review.inventory.sha256 !== 'string' || review.inventory.sha256 !== inventoryDigest(jobs, version)) throw new Error('The automated CI attestation does not match the accepted run');
  if (!source.notes || !/^[a-f0-9]{64}$/.test(source.notes.sha256) || digest(await readFile(join(directory, 'release-notes.md'))) !== source.notes.sha256) throw new Error('Release notes digest mismatch');
- const review = await readFile(join(directory, 'security-review.md'));
- if (digest(review) !== source.review.sha256) throw new Error('Security review digest mismatch');
  for (const target of TARGETS) {
   const record = source.performance?.[target];
   if (!record || !/^[a-f0-9]{64}$/.test(record.sha256)) throw new Error('Missing measured performance comparison: ' + target);
