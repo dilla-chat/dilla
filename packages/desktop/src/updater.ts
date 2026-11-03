@@ -17,7 +17,8 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 const channel = app.getVersion().includes('-beta.') ? 'beta' : 'stable';
-const feed = `https://github.com/dilla-chat/dilla/releases/download/desktop-${channel}/desktop-${channel}.json`;
+// The channel feed is served from GitHub Pages (scripts/pages-feed.mjs); versioned artifacts stay in their desktop-v releases.
+const feed = `https://dilla-chat.github.io/dilla/${channel}/desktop-${channel}.json`;
 
 async function boundedFetch(url: string, maxBytes: number): Promise<Uint8Array> {
   const response = await fetch(url, { signal: AbortSignal.timeout(30_000), cache: 'no-store' });

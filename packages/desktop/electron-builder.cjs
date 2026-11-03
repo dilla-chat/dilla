@@ -42,7 +42,7 @@ module.exports = {
       CFBundleVersion: require('./package.json').version.replace('-beta.', 'b'),
       NSUserNotificationAlertStyle: 'alert',
       DillaDesktopChannel: channel,
-      SUFeedURL: `https://github.com/dilla-chat/dilla/releases/download/desktop-${channel}/appcast-${process.arch}.xml`,
+      SUFeedURL: `https://dilla-chat.github.io/dilla/${channel}/appcast-${process.arch}.xml`,
       SUPublicEDKey: sparklePublicKey, SURequireSignedFeed: true, SUVerifyUpdateBeforeExtraction: true,
       SUEnableAutomaticChecks: false, SUAutomaticallyUpdate: false, SUEnableInstallerLauncherService: true,
       SUEnableDownloaderService: false,
