@@ -10,6 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { en } from '../../../packages/web/src/strings/en.ts';
 import { desktopNetwork } from './desktop-network.ts';
+import { focusNativePage } from './native-focus.ts';
 import { electronChildEnvironment } from './mac-notification-diagnostics.ts';
 
 export const desktopE2E = () => process.env.DILLA_ELECTRON_E2E === '1';
@@ -97,10 +98,7 @@ export async function launchDesktopContext(profile: string | null, options: Brow
   }
  };
  await first.addLocatorHandler(first.locator('body'), async () => {
-  const win = await app.browserWindow(first);
-  try { await win.evaluate(win => { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }); }
-  finally { await win.dispose(); }
-  await first.waitForFunction(() => document.hasFocus());
+  await focusNativePage(app, first);
   if (requestedWorkspace && appliedWorkspace !== requestedWorkspace
     && await first.evaluate(() => document.documentElement.dataset.desktopWindow === 'workspace')) {
    await resize(requestedWorkspace); appliedWorkspace = requestedWorkspace;
