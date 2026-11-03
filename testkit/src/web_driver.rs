@@ -1368,22 +1368,7 @@ impl WebDriver {
             .runner
             .with_member(&name, |first, _| Ok(first.device_id()))?;
         rotated.remove(&mut ds, &group, old_device)?;
-        // The old device leaves every call group it holds as `call_leave` does (its own Remove, `E_REMOVE_PENDING`
-        // being fine, then it forgets the group). Another member's commit takes the old leaf out; in a group the old
-        // device was alone in nobody can, and the replacement's rejoin (`call_join`) commits that Remove itself.
-        let left: Vec<([u8; 16], Vec<u8>)> = self
-            .calls
-            .iter()
-            .filter(|((actor, _), _)| *actor == Actor::Peer)
-            .map(|((_, channel), g)| (*channel, g.clone()))
-            .collect();
-        for (channel, call_group) in left {
-            self.runner.with_member(&name, |c, ds| {
-                c.leave(ds, &call_group)?;
-                c.forget(&call_group)
-            })?;
-            self.calls.remove(&(Actor::Peer, channel));
-        }
+        self.retire_replaced_calls(&name)?;
         // The old leaf has left the text group: the replacement is the peer's acting device from now on (its sends,
         // syncs and trust witness), and the old device is held only so that a second rotation or enrolment stays
         // refused. `rotate_umk` refuses while a second device exists, so the second actor holds no call group here.
@@ -1395,6 +1380,24 @@ impl WebDriver {
             replaced: true,
         });
         Ok(json!({"user": hex::encode(user), "version": next.unsigned.version}))
+    }
+
+    fn retire_replaced_calls(&mut self, name: &str) -> Result<(), TestkitError> {
+        // Keep the old call leaf until the replacement's `call_join` removes it. Posting an own Remove here
+        // lets another member advance the epoch while the replacement builds its external join, turning that
+        // join into E_COMMIT_INVALID. Rotation still forgets the old device's local call state immediately.
+        let left: Vec<([u8; 16], Vec<u8>)> = self
+            .calls
+            .iter()
+            .filter(|((actor, _), _)| *actor == Actor::Peer)
+            .map(|((_, channel), g)| (*channel, g.clone()))
+            .collect();
+        for (channel, call_group) in left {
+            self.runner
+                .with_member(name, |c, _| c.forget(&call_group))?;
+            self.calls.remove(&(Actor::Peer, channel));
+        }
+        Ok(())
     }
 
     /// `leave`: the acting device proposes its own removal from the group (protocol/01 "Leaving"), the member Remove a
@@ -1502,8 +1505,8 @@ impl WebDriver {
                     } else {
                         c.join_external(ds, &group, &binding)?;
                     }
-                    // A leaf of a device rotate_umk replaced is still in a group nobody committed its own Remove in
-                    // (its proposal died with the epoch the join moved past): the replacement commits it.
+                    // Rotation forgets the replaced device's local call state without proposing a Remove.
+                    // Its leaf stays until the replacement joins and commits this removal itself.
                     let stale: Vec<DeviceId> = c
                         .roster(&group)
                         .unwrap_or_default()
@@ -2062,6 +2065,97 @@ mod tests {
     use dilla_core::ids::{DeviceId, MsgId, UserId};
     use serde_json::json;
     use sha2::{Digest, Sha256};
+
+    #[test]
+    fn rotation_keeps_the_old_call_leaf_until_the_replacement_joins_and_removes_it() {
+        let mut d = driver(1);
+        d.runner = Runner::new(1);
+        for line in [
+            "instance dilla",
+            "client peer",
+            "client alice",
+            "client bob",
+            "group call kind=call target=33333333333333333333333333333333 creator=peer",
+            "join alice call via=external",
+            "join bob call via=external",
+            "sync peer",
+            "sync alice",
+            "sync bob",
+        ] {
+            d.runner.exec_line(line).expect("real MLS call fixture");
+        }
+        let group = d.runner.group_id("call").unwrap();
+        let channel = [0x33; 16];
+        d.calls.insert((Actor::Peer, channel), group.clone());
+        let (old_device, mut replacement, before) = d
+            .runner
+            .with_member("peer", |c, ds| {
+                Ok((
+                    c.device_id(),
+                    c.rotated_device("peer", 99)?,
+                    ds.handshakes(&group, 0)?.len(),
+                ))
+            })
+            .unwrap();
+        d.retire_replaced_calls("peer").unwrap();
+        assert!(!d.calls.contains_key(&(Actor::Peer, channel)));
+        d.runner
+            .with_member("peer", |old, ds| {
+                assert!(
+                    old.epoch_of(&group).is_none(),
+                    "the replaced device forgets its local call state"
+                );
+                let after = ds.handshakes(&group, 0)?;
+                assert_eq!(
+                    after.len(),
+                    before,
+                    "rotation must not post a Remove that races the replacement's external join"
+                );
+                let binding = DillaBinding {
+                    v: 1,
+                    instance_id: InstanceId::from_bytes([0x11; 16]),
+                    community_id: None,
+                    target_id: channel,
+                    kind: GroupKind::Call,
+                    policy_version: 1,
+                    e2ee_version: 1,
+                    media_version: 1,
+                };
+                replacement.join_external(ds, &group, &binding)?;
+                let joined = replacement.roster(&group).unwrap();
+                assert_eq!(
+                    joined.len(),
+                    4,
+                    "the old leaf remains through the replacement join"
+                );
+                assert!(joined.iter().any(|leaf| leaf.device_id == old_device));
+                replacement.remove(ds, &group, old_device)?;
+                Ok(())
+            })
+            .unwrap();
+        let replacement_device = replacement.device_id();
+        for name in ["alice", "bob"] {
+            d.runner
+                .with_member(name, |c, ds| {
+                    c.sync(ds)?;
+                    let roster = c.roster(&group).unwrap();
+                    assert_eq!(
+                        roster.len(),
+                        3,
+                        "both original participants stay in the call"
+                    );
+                    assert!(roster.iter().any(|leaf| leaf.device_id == c.device_id()));
+                    assert!(
+                        roster
+                            .iter()
+                            .any(|leaf| leaf.device_id == replacement_device)
+                    );
+                    assert!(!roster.iter().any(|leaf| leaf.device_id == old_device));
+                    Ok(())
+                })
+                .unwrap();
+        }
+    }
 
     #[test]
     fn signed_history_accepts_a_cached_1024_anchor_and_signed_1025_head() {
