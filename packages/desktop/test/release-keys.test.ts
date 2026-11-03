@@ -8,6 +8,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createPublicKey, createPrivateKey, sign, verify } from 'node:crypto';
+// @ts-expect-error test support is JavaScript
+import { posixRelative } from './support/posix-paths.mjs';
 // @ts-expect-error build tooling is JavaScript
 import { generateKeyMaterial, encodeBase64Buffer, setupRelease, rotateRelease, createGh, secretNamesFor, writePublicTrust, MAC_ROTATION_WARNING } from '../scripts/release-keys.mjs';
 // @ts-expect-error build tooling is JavaScript
@@ -136,7 +138,7 @@ test('setupRelease writes no private key to disk, stdout or stderr', async () =>
  try {
   const [{ copies }] = s.capture.seen;
   const forms = copies.flatMap(copy => { const raw = Buffer.from(copy.toString(), 'base64'); return [copy.toString(), raw.toString('hex'), raw.toString('base64url'), raw.subarray(-32).toString('base64'), raw.subarray(-32).toString('hex')]; });
-  assert.deepEqual(writes.map(w => w.path.slice(s.root.length + 1)).sort(), ['linux-sandbox-component.json', 'release-trust.json', 'src/update-keys.ts']);
+  assert.deepEqual(writes.map(w => posixRelative(s.root, w.path)).sort(), ['linux-sandbox-component.json', 'release-trust.json', 'src/update-keys.ts']);
   for (const { path, data } of writes) for (const [i, form] of forms.entries()) assert.ok(!data.toString('latin1').includes(form), `${path} holds key form ${i}`);
   const printed = output.join('') + s.lines.join('\n');
   for (const form of forms) assert.ok(!printed.includes(form), 'a key form was printed');

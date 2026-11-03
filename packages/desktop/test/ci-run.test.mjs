@@ -8,7 +8,7 @@ import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-test('hardenedGit ignores hooks and fsmonitor planted in the checkout', () => {
+test('hardenedGit ignores hooks and fsmonitor planted in the checkout', t => {
  const root = mkdtempSync(join(tmpdir(), 'dilla-hardened-git-'));
  try {
   const marker = join(root, 'ran'), script = join(root, 'planted.sh');
@@ -20,8 +20,12 @@ test('hardenedGit ignores hooks and fsmonitor planted in the checkout', () => {
   const git = hardenedGit(root);
   git(['status', '--porcelain']); git(['checkout', '-q', '-b', 'other']);
   assert.ok(!existsSync(marker), 'neither the planted fsmonitor nor the planted hook ran');
-  plain(['status', '--porcelain']);
-  assert.ok(existsSync(marker), 'control: plain git runs the planted fsmonitor');
+  // The control needs the VCS to exec a '#!/bin/sh' script named by core.fsmonitor; on Windows that chmod-ed script is not run from a drive path, so the control proves nothing there. The hardening assertion above runs everywhere.
+  if (process.platform === 'win32') t.diagnostic('control skipped on win32: plain git does not run the planted fsmonitor script there');
+  else {
+   plain(['status', '--porcelain']);
+   assert.ok(existsSync(marker), 'control: plain git runs the planted fsmonitor');
+  }
  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

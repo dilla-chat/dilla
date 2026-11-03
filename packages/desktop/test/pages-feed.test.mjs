@@ -1,8 +1,9 @@
+import { posixTree } from './support/posix-paths.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, sign } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -75,7 +76,7 @@ async function setup({ releases = s => [release('1.2.3', s.signedFiles)] } = {})
   api: createGithubApi({ token: 'workflow-token', fetchImpl: options.fetchImpl ?? github.fetch }), fetchImpl: github.fetch, trust: f.trust, sandboxKeys: f.sandbox.config.publicKeys, trustAt, now: f.context.now, macUpdate: 'zip', ...options });
  return { ...s, github, trustAt, trustCalls, build, cleanup: () => rm(root, { recursive: true, force: true }) };
 }
-const tree = async directory => (await readdir(directory, { recursive: true })).sort();
+const tree = posixTree;
 
 // Final review, m8: the bridge's own expected feed URL broke every production Mac update once; bind it to the feed job's layout.
 test('SparkleBridge.mm expects the appcast URL the feed job serves on GitHub Pages', async () => {
