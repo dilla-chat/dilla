@@ -208,7 +208,7 @@ test('the macOS CI disk image check: main\'s key always, and a notarized Develop
     ? '<plist><dict><key>mount-point</key>\n\t<string>/Volumes/Dilla 1.2.3</string></dict></plist>' : f.run(command, args);
    checkMacDiskImage({ out, version, trust: settled, env: { GITHUB_EVENT_NAME: 'push' }, run, log: () => {}, list: dir => { seen.push(dir); return ['Dilla.app']; } });
    assert.deepEqual(seen, ['/Volumes/Dilla 1.2.3']);
-   assert.ok(f.calls.some(call => call[0] === 'plutil' && call.at(-1) === '/Volumes/Dilla 1.2.3/Dilla.app/Contents/Info.plist'));
+   assert.ok(f.calls.some(call => call[0] === 'plutil' && call.at(-1) === join('/Volumes/Dilla 1.2.3', 'Dilla.app', 'Contents', 'Info.plist')));
    assert.ok(f.calls.some(call => call[0] === 'hdiutil' && call[1] === 'detach' && call[2] === '/Volumes/Dilla 1.2.3'));
   }
   assert.throws(() => check(settled, {}, undefined, () => ['A.app', 'B.app']), /exactly one \.app/);
