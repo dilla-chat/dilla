@@ -6,6 +6,9 @@ import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+// Every fixture lives under one per-process root that is removed on exit, so test runs never pile up in the temp dir.
+const TEST_ROOT = mkdtempSync(join(tmpdir(), 'dilla-ci-run-'));
+process.on('exit', () => rmSync(TEST_ROOT, { recursive: true, force: true }));
 import { gateExpression, JOB_GATES } from './ci-areas.mjs';
 import { BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopReleaseWorkflow, checkDesktopWorkflow, DESKTOP_RELEASE_ACTIONS, DESKTOP_RELEASE_SECRETS, checkReleaseWorkflow, checkWorkflow, jobSteps, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_BLOCK, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEPS, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION, WEB_SHARDS } from './check-ci-workflow.mjs';
 
@@ -225,7 +228,7 @@ test('CI refuses reinstalling an unsupported compatibility browser in shared har
 test('desktop acceptance requires every native target, Electron tests, packaging and fuse verification', () => {
   assert.deepEqual(checkDesktopWorkflow(REPO_ROOT), []);
   for (const removed of ['node packages/desktop/scripts/prepare-browser-sandbox.mjs', 'node packages/desktop/scripts/run-performance.mjs', 'name: Desktop performance comparison', 'name: desktop-performance-', 'playwright.desktop-voice.config.ts', 'DILLA_E2E_NOTIFICATIONS', 'dunst', 'with-window-manager.sh', 'prepare-windows-audio.ps1', '--grep-invert "application-audio.spec.ts"', 'Application audio encryption and exclusion', 'application-audio.spec.ts', 'os: macos-15,', 'npm run typecheck -w @dilla/desktop', 'npm run build:validation -w @dilla/desktop', 'node packages/desktop/scripts/check-fuses.mjs', 'node --test packages/desktop/test/native/mac-upgrade.test.mjs', 'node --test packages/desktop/test/native/installed-upgrade.test.mjs', 'libfuse2t64', 'name: desktop-installed-upgrade-', 'npm run dist -w @dilla/desktop', 'arch: x64, shard: 3', "specs: 'web/installed-upgrade-account.spec.ts", 'os: [ubuntu-24.04, windows-latest, macos-15]', 'playwright.desktop.config.ts']) {
-    const root = mkdtempSync(join(tmpdir(), 'dilla-desktop-ci-'));
+    const root = mkdtempSync(join(TEST_ROOT, 'dilla-desktop-ci-'));
     mkdirSync(join(root, '.github/workflows'), { recursive: true });
     addE2ePackage(root);
     writeFileSync(join(root, '.github/workflows/desktop.yml'), REAL_DESKTOP.replaceAll(removed, 'removed'));
@@ -308,7 +311,7 @@ test('installed account coverage retains OS credential protection, normal FUSE a
     ["if: steps.installed-account.outputs.present == 'true'", 'if: false'],
     ['name: desktop-installed-account-', 'name: unrelated-proof-'],
   ]) {
-    const root = mkdtempSync(join(tmpdir(), 'dilla-account-ci-'));
+    const root = mkdtempSync(join(TEST_ROOT, 'dilla-account-ci-'));
     mkdirSync(join(root, '.github/workflows'), { recursive: true });
     addE2ePackage(root);
     const changed = REAL_DESKTOP.replaceAll(before, after); assert.notEqual(changed, REAL_DESKTOP, before);
@@ -327,7 +330,7 @@ test('native build provenance authenticates final fused installers and is upload
     REAL_DESKTOP.replace(fuse, '').replace('      - name: Build installable desktop artifacts\n', fuse + '      - name: Build installable desktop artifacts\n'),
   ]) {
     assert.notEqual(changed, REAL_DESKTOP);
-    const root = mkdtempSync(join(tmpdir(), 'dilla-build-proof-ci-'));
+    const root = mkdtempSync(join(TEST_ROOT, 'dilla-build-proof-ci-'));
     mkdirSync(join(root, '.github/workflows'), { recursive: true });
     addE2ePackage(root);
     writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
@@ -336,7 +339,7 @@ test('native build provenance authenticates final fused installers and is upload
 });
 
 test('desktop voice cannot shard its frozen-clock suite', () => {
-  const root = mkdtempSync(join(tmpdir(), 'dilla-desktop-voice-ci-'));
+  const root = mkdtempSync(join(TEST_ROOT, 'dilla-desktop-voice-ci-'));
   mkdirSync(join(root, '.github/workflows'), { recursive: true });
     addE2ePackage(root);
   writeFileSync(join(root, '.github/workflows/desktop.yml'), REAL_DESKTOP.replaceAll('playwright.desktop-voice.config.ts --project=electron-voice --workers=1', 'playwright.desktop-voice.config.ts --project=electron-voice --workers=1 --shard=1/2'));
@@ -344,7 +347,7 @@ test('desktop voice cannot shard its frozen-clock suite', () => {
 });
 
 test('Electron voice runs before downloading the browser performance baseline', () => {
-  const root = mkdtempSync(join(tmpdir(), 'dilla-voice-baseline-order-'));
+  const root = mkdtempSync(join(TEST_ROOT, 'dilla-voice-baseline-order-'));
   mkdirSync(join(root, '.github/workflows'), { recursive: true });
   addE2ePackage(root);
   const start = REAL_DESKTOP.indexOf('\n  voice:\n'), end = REAL_DESKTOP.indexOf('\n  client:\n', start);
@@ -362,7 +365,7 @@ test('installed upgrade acceptance cannot omit either NSIS or normal FUSE launch
     ["if: runner.os == 'Linux'\n        run: xvfb-run -a dbus-run-session -- bash packages/desktop/scripts/with-window-manager.sh node --test packages/desktop/test/native/installed-upgrade.test.mjs", "if: runner.os == 'macOS'\n        run: xvfb-run -a dbus-run-session -- bash packages/desktop/scripts/with-window-manager.sh node --test packages/desktop/test/native/installed-upgrade.test.mjs"],
     ["name: Installed upgrade acceptance\n        if: runner.os == 'Linux'", "name: Installed upgrade acceptance\n        if: runner.os == 'Linux'\n        env:\n          APPIMAGE_EXTRACT_AND_RUN: 1"],
   ]) {
-    const root = mkdtempSync(join(tmpdir(), 'dilla-installed-ci-'));
+    const root = mkdtempSync(join(TEST_ROOT, 'dilla-installed-ci-'));
     mkdirSync(join(root, '.github/workflows'), { recursive: true });
     addE2ePackage(root);
     const changed = REAL_DESKTOP.replace(before, after);
@@ -376,7 +379,7 @@ test('installed proof is produced after Playwright clears output and uploaded af
   const sparkle = "      - name: Installed unsigned Sparkle upgrade and signed-feed rejection\n        if: runner.os == 'macOS'\n        run: node --test packages/desktop/test/native/mac-upgrade.test.mjs\n";
   const moved = REAL_DESKTOP.replace(sparkle, '').replace('      - name: Linux display and Chromium sandbox helper', sparkle + '      - name: Linux display and Chromium sandbox helper');
   assert.notEqual(moved, REAL_DESKTOP);
-  const root = mkdtempSync(join(tmpdir(), 'dilla-installed-proof-'));
+  const root = mkdtempSync(join(TEST_ROOT, 'dilla-installed-proof-'));
   mkdirSync(join(root, '.github/workflows'), { recursive: true });
     addE2ePackage(root);
   writeFileSync(join(root, '.github/workflows/desktop.yml'), moved);
@@ -386,7 +389,7 @@ test('installed proof is produced after Playwright clears output and uploaded af
 test('desktop CI refuses continuing matrix jobs or tests after the first failure', () => {
   const good = REAL_DESKTOP.replaceAll('fail-fast: false', 'fail-fast: true').replaceAll('--max-failures=3', '--max-failures=1');
   for (const [before, after] of [['fail-fast: true', 'fail-fast: false'], ['--max-failures=1', '--max-failures=3']]) {
-    const root = mkdtempSync(join(tmpdir(), 'dilla-desktop-first-failure-'));
+    const root = mkdtempSync(join(TEST_ROOT, 'dilla-desktop-first-failure-'));
     mkdirSync(join(root, '.github/workflows'), { recursive: true });
     addE2ePackage(root);
     writeFileSync(join(root, '.github/workflows/desktop.yml'), good.replace(before, after));
@@ -449,7 +452,7 @@ test('desktop tooling must be built once per native target and verified before e
     ['overwrite: true', 'overwrite: false'],
     ["go test ./internal/ops -run 'Lock|BackupAndServe|ServeAdmits'", 'echo skipped locks'],
   ]) {
-    const root = mkdtempSync(join(tmpdir(), 'dilla-tooling-ci-'));
+    const root = mkdtempSync(join(TEST_ROOT, 'dilla-tooling-ci-'));
     mkdirSync(join(root, '.github/workflows'), { recursive: true });
     addE2ePackage(root);
     const changed = REAL_DESKTOP.replaceAll(before, after);
@@ -465,7 +468,7 @@ test('desktop native acceptance stays independent and tooling never comes from a
     REAL_DESKTOP.replaceAll('path: artifacts/e2e-test-tools\n', 'path: artifacts/e2e-test-tools\n          run-id: 123\n'),
     REAL_DESKTOP.replace('  client:\n', '  client:\n    unrelated:\n      - run: cargo build -p dilla-testkit --release --locked\n'),
   ]) {
-    const root = mkdtempSync(join(tmpdir(), 'dilla-tooling-scope-'));
+    const root = mkdtempSync(join(TEST_ROOT, 'dilla-tooling-scope-'));
     mkdirSync(join(root, '.github/workflows'), { recursive: true });
     addE2ePackage(root);
     writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
@@ -1006,7 +1009,7 @@ test('desktop units retain all native platforms and cannot be conditionally narr
   const step = '      - run: npm test -w @dilla/desktop\n';
   assert.ok(REAL_DESKTOP.includes(step));
   for (const replacement of ['', "      - if: runner.os == 'Linux'\n        run: npm test -w @dilla/desktop\n", "      - if: runner.os != 'Windows'\n        run: npm test -w @dilla/desktop\n"]) {
-    const root = mkdtempSync(join(tmpdir(), 'dilla-unit-platform-ci-'));
+    const root = mkdtempSync(join(TEST_ROOT, 'dilla-unit-platform-ci-'));
     mkdirSync(join(root, '.github/workflows'), { recursive: true });
     addE2ePackage(root);
     writeFileSync(join(root, '.github/workflows/desktop.yml'), REAL_DESKTOP.replace(step, replacement));
@@ -1031,7 +1034,7 @@ function gatedTest(name) {
 
 // A repository root holding ci.yml and, as Go test files, the race-gated tests in `gated`.
 function fixture(body, gated = GATED) {
-  const dir = mkdtempSync(join(tmpdir(), 'dilla-ci-'));
+  const dir = mkdtempSync(join(TEST_ROOT, 'dilla-ci-'));
   mkdirSync(join(dir, '.github', 'workflows'), { recursive: true });
   addE2ePackage(dir);
   writeFileSync(join(dir, '.github', 'workflows', 'ci.yml'), body);
@@ -1409,14 +1412,14 @@ function runCli(root, cwd) {
 test('the CLI honours a root argument passed from a different cwd', () => {
   // The real ci.yml: the CLI also checks release.yml, whose actions must be ci.yml's at the same versions.
   const root = fixture(REAL_CI);
-  const cwd = mkdtempSync(join(tmpdir(), 'dilla-ci-cwd-'));
+  const cwd = mkdtempSync(join(TEST_ROOT, 'dilla-ci-cwd-'));
   const result = runCli(root, cwd);
   assert.equal(result.status, 0, `stdout: ${result.stdout}\nstderr: ${result.stderr}`);
 });
 
 test('the CLI reports problems in a workflow at the given root, run from elsewhere', () => {
   const root = fixture(GOOD.replace(/  deny:[\s\S]*$/, ''));
-  const cwd = mkdtempSync(join(tmpdir(), 'dilla-ci-cwd-'));
+  const cwd = mkdtempSync(join(TEST_ROOT, 'dilla-ci-cwd-'));
   const result = runCli(root, cwd);
   assert.equal(result.status, 1, `stdout: ${result.stdout}\nstderr: ${result.stderr}`);
   assert.match(result.stderr, /deny/);
@@ -2048,7 +2051,7 @@ test('jobs that build no wasm need no clang 23', () => {
 
 // install-release (2026-10-14): the release workflow, checked against the real ci.yml it must match.
 function releaseFixture(release) {
-  const dir = mkdtempSync(join(tmpdir(), 'dilla-release-'));
+  const dir = mkdtempSync(join(TEST_ROOT, 'dilla-release-'));
   mkdirSync(join(dir, '.github', 'workflows'), { recursive: true });
   addE2ePackage(dir);
   writeFileSync(join(dir, '.github', 'workflows', 'ci.yml'), REAL_CI);
@@ -2269,7 +2272,7 @@ test('a ci.yml build that stamps a quoted version is reported', () => {
 
 test('the CLI checks release.yml too', () => {
   const root = releaseFixture(REAL_RELEASE.replace('release/install.sh release/install-bot.sh release/SHA256SUMS', 'release/install-bot.sh release/SHA256SUMS'));
-  const cwd = mkdtempSync(join(tmpdir(), 'dilla-ci-cwd-'));
+  const cwd = mkdtempSync(join(TEST_ROOT, 'dilla-ci-cwd-'));
   const result = runCli(root, cwd);
   assert.equal(result.status, 1, `stdout: ${result.stdout}\nstderr: ${result.stderr}`);
   assert.match(result.stderr, /release\.yml/);

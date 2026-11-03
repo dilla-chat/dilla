@@ -15,7 +15,21 @@ import { cpuPercent, parsePs } from '../../packages/desktop/scripts/performance-
 
 const execute = promisify(execFile);
 type ProcessSample = { pid: number; cpuSeconds: number; rssBytes: number };
+// Chromium starts and ends helper processes all the time, so a PID can exit between the inventory and the OS query.
+// Take a fresh inventory and retry; only a set that never settles is a measurement failure.
 async function snapshot(context: BrowserContext, cdp: CDPSession | null): Promise<ProcessSample[]> {
+ let last: unknown = null;
+ for (let attempt = 0; attempt < 5; attempt++) {
+  try { return await snapshotOnce(context, cdp); } catch (error) {
+   if (!(error instanceof ProcessChurn)) throw error;
+   last = error;
+   await new Promise(done => setTimeout(done, 200));
+  }
+ }
+ throw new Error('Incomplete OS process measurement', { cause: last });
+}
+class ProcessChurn extends Error {}
+async function snapshotOnce(context: BrowserContext, cdp: CDPSession | null): Promise<ProcessSample[]> {
  const counters: { pid: number; cpuSeconds: number }[] = desktopE2E()
   ? await desktopApplication(context).evaluate(({ app }) => app.getAppMetrics().map(row => ({ pid: row.pid, cpuSeconds: row.cpu.cumulativeCPUUsage! })))
   : (await cdp!.send('SystemInfo.getProcessInfo')).processInfo.map((row: { id: number; cpuTime: number }) => ({ pid: row.id, cpuSeconds: row.cpuTime }));
@@ -23,15 +37,22 @@ async function snapshot(context: BrowserContext, cdp: CDPSession | null): Promis
  if (pids.length < 2 || pids.some(pid => !Number.isSafeInteger(pid) || pid <= 0)) throw new Error('Missing browser process inventory');
  let rows: ProcessSample[];
  if (process.platform === 'win32') {
-  const script = `@(Get-Process -Id ${pids.join(',')} -ErrorAction Stop | ForEach-Object { @{pid=$_.Id;cpuSeconds=$_.CPU;rssBytes=$_.WorkingSet64} }) | ConvertTo-Json -Compress`;
+  // SilentlyContinue: an exited PID is left out (and retried as churn below) instead of failing the whole query.
+  const script = `@(Get-Process -Id ${pids.join(',')} -ErrorAction SilentlyContinue | ForEach-Object { @{pid=$_.Id;cpuSeconds=$_.CPU;rssBytes=$_.WorkingSet64} }) | ConvertTo-Json -Compress`;
   const { stdout } = await execute('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { timeout: 10000 });
-  rows = JSON.parse(stdout);
+  rows = stdout.trim() === '' ? [] : JSON.parse(stdout);
  } else {
-  const { stdout } = await execute('ps', ['-o', 'pid=,rss=,time=', '-p', pids.join(',')], { timeout: 10000 });
+  // ps exits 1 when any listed PID is gone; its stdout still holds the live rows.
+  const stdout = await execute('ps', ['-o', 'pid=,rss=,time=', '-p', pids.join(',')], { timeout: 10000 })
+   .then(result => result.stdout, (error: { code?: number; stdout?: string }) => {
+    if (error.code === 1 && typeof error.stdout === 'string') return error.stdout;
+    throw error;
+   });
   rows = parsePs(stdout);
  }
+ if (rows.length !== pids.length || rows.some(row => !pids.includes(row.pid))) throw new ProcessChurn('A browser process exited during the measurement');
  rows = rows.map(row => ({ ...row, cpuSeconds: counters.find(counter => counter.pid === row.pid)!.cpuSeconds }));
- if (rows.length !== pids.length || rows.some(row => !pids.includes(row.pid) || !Number.isFinite(row.cpuSeconds) || row.cpuSeconds < 0 || !Number.isFinite(row.rssBytes) || row.rssBytes <= 0)) throw new Error('Incomplete OS process measurement');
+ if (rows.some(row => !Number.isFinite(row.cpuSeconds) || row.cpuSeconds < 0 || !Number.isFinite(row.rssBytes) || row.rssBytes <= 0)) throw new Error('Incomplete OS process measurement');
  return rows;
 }
 async function interval(context: BrowserContext, cdp: CDPSession | null, counter?: () => Promise<number>) {

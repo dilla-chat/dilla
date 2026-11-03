@@ -1,7 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+// Fixtures live under one per-process root that is removed on exit.
+const TEST_ROOT = mkdtempSync(join(tmpdir(), 'dilla-areas-run-'));
+process.on('exit', () => rmSync(TEST_ROOT, { recursive: true, force: true }));
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -226,7 +229,7 @@ test('every path the code reads from another place is covered by a rule', () => 
 
 // The CLI against a real repository: the path ci.yml takes.
 function repo() {
-  const dir = mkdtempSync(join(tmpdir(), 'dilla-areas-'));
+  const dir = mkdtempSync(join(TEST_ROOT, 'dilla-areas-'));
   const git = (...args) => execFileSync('git', ['-c', 'user.email=a@b.c', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', ...args], { cwd: dir, encoding: 'utf8' });
   git('init', '-q');
   mkdirSync(join(dir, 'internal'));
