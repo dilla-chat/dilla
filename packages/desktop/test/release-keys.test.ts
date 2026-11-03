@@ -428,6 +428,59 @@ test('rotate --retire deletes exactly the old slot\'s three secrets and only aft
  } finally { await s.cleanup(); }
 });
 
+// Final review, m5: promote comes at least 60 days after rotate, so rotate's dates would leave under 30 days for the gate.
+test('rotate --promote refreshes the sandbox component dates and bumps its generation', async () => {
+ const s = await setUp();
+ try {
+  await rotate(s);
+  const stagedComponent = JSON.parse(await readFile(join(s.root, 'linux-sandbox-component.json'), 'utf8'));
+  const later = new Date(NOW.getTime() + 70 * 86400000);
+  await rotate(s, { promote: true, confirm: async () => 'promote B', now: later });
+  const component = JSON.parse(await readFile(join(s.root, 'linux-sandbox-component.json'), 'utf8'));
+  assert.equal(component.generation, stagedComponent.generation + 1);
+  assert.equal(component.publishedAt, '2027-01-12T12:00:00Z');
+  assert.equal(component.expiresAt, '2027-04-12T12:00:00Z');
+  validateConfiguration(component);
+ } finally { await s.cleanup(); }
+});
+
+// Final review, m6: retiring before a channel's DMG rotation release strands its Macs on the old key.
+test('rotate --retire refuses until every channel with a published release has its rotation release out', async () => {
+ const s = await setUp();
+ try {
+  await rotate(s);
+  const stagedText = await readFile(join(s.root, 'release-trust.json'), 'utf8');
+  await rotate(s, { promote: true, confirm: async () => 'promote B' });
+  const promoted = await readFile(join(s.root, 'release-trust.json'), 'utf8');
+  const STABLE = 'a'.repeat(40), BETA = 'b'.repeat(40);
+  const bot = { login: 'github-actions[bot]', type: 'Bot' };
+  s.github.state.releases = [
+   { tag_name: 'desktop-v1.0.0', draft: false, prerelease: false, immutable: true, author: bot },
+   { tag_name: 'desktop-v1.1.0-beta.1', draft: false, prerelease: true, immutable: true, author: bot },
+  ];
+  s.github.state.tags = { 'desktop-v1.0.0': STABLE, 'desktop-v1.1.0-beta.1': BETA };
+  /** origin/main holds the promote; each tagged commit holds the release-trust.json it was built with. */
+  const releaseGit = (builtAt: Record<string, string>) => (args: string[]) => {
+   if (args[0] === 'merge-base') return '';
+   if (args[0] === 'show' && args[1] === 'origin/main:packages/desktop/release-trust.json') return promoted;
+   const at = args[0] === 'show' ? /^([a-f0-9]{40}):packages\/desktop\/release-trust\.json$/.exec(args[1]) : null;
+   if (at && builtAt[at[1]] !== undefined) return builtAt[at[1]];
+   throw new Error('unexpected git ' + args.join(' '));
+  };
+  const before = await snapshot(s.root);
+  // beta has its rotation release out (built with main's new Sparkle key); stable's newest is still built for the old key.
+  await assert.rejects(rotate(s, { retire: true, git: releaseGit({ [STABLE]: stagedText, [BETA]: promoted }), confirm: async () => 'retire A' }), /stable rotation release/);
+  // A channel whose newest release is not workflow-made cannot be confirmed either.
+  s.github.state.releases[0].author = { login: 'octocat', type: 'User' };
+  await assert.rejects(rotate(s, { retire: true, git: releaseGit({ [STABLE]: promoted, [BETA]: promoted }), confirm: async () => 'retire A' }), /Cannot confirm the stable rotation release/);
+  s.github.state.releases[0].author = bot;
+  assert.equal(s.github.state.envSecrets.size, 6, 'no secret is deleted');
+  assert.deepEqual(await snapshot(s.root), before, 'no file is written');
+  await rotate(s, { retire: true, git: releaseGit({ [STABLE]: promoted, [BETA]: promoted }), confirm: async () => 'retire A' });
+  assert.deepEqual([...s.github.state.envSecrets.keys()].sort(), [...secretNamesFor('B')].sort());
+ } finally { await s.cleanup(); }
+});
+
 test('the real gh adapter never puts a secret in argv and sends it with stdout ignored', async () => {
  const calls: { argv: string[]; stdio: unknown; stdin: Buffer[] }[] = [];
  const { EventEmitter } = await import('node:events');

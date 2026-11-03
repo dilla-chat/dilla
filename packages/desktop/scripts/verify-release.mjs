@@ -22,6 +22,8 @@ const PACKAGE_FORMATS = Object.freeze(['deb', 'rpm', 'aur']);
 const packageAcceptanceStep = format => `Installed ${format.toUpperCase()} package acceptance`;
 const nativeGates = target => ['Record native desktop build provenance', 'Application audio encryption and exclusion',
  target.startsWith('mac-') ? 'Installed unsigned Sparkle upgrade and signed-feed rejection' : 'Installed upgrade acceptance',
+ // The DMG's Developer ID team, notarization and Sparkle key (check-mac-dmg.mjs; final review, m9).
+ ...(target.startsWith('mac-') ? ['macOS update disk image check'] : []),
  ...(target === 'linux-x64' ? ['Linux AppImage sandbox native acceptance'] : [])];
 // Linux runs the shared client suite in three shards; the other targets run the desktop-specific specs in one job.
 const clientShards = target => target === 'linux-x64' ? [1, 2, 3] : [1];

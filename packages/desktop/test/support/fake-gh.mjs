@@ -40,11 +40,20 @@ export function fakeGh(overrides = {}) {
   envSecrets: new Map(Object.entries(overrides.envSecrets ?? {})),
   ignorePolicyDelete: overrides.ignorePolicyDelete ?? false,
   failSecretSet: overrides.failSecretSet ?? null,
+  // Published releases and tag -> commit, for rotate --retire's check of each channel's rotation release.
+  releases: overrides.releases ?? [],
+  tags: overrides.tags ?? {},
  };
  const calls = [];
  let nextPolicy = 100;
  function api(method, path, body) {
-  const [route] = path.split('?');
+  const [route, query = ''] = path.split('?');
+  if (method === 'GET' && route === `${R}/releases`) return ok(Number(new URLSearchParams(query).get('page') ?? 1) === 1 ? state.releases : []);
+  const tagRef = new RegExp(`^${R}/git/ref/tags/(.+)$`).exec(route);
+  if (method === 'GET' && tagRef) {
+   const tag = decodeURIComponent(tagRef[1]);
+   return state.tags[tag] ? ok({ ref: `refs/tags/${tag}`, object: { type: 'commit', sha: state.tags[tag] } }) : missing;
+  }
   if (method === 'GET' && route === 'user') return ok(state.user);
   if (method === 'GET' && route === R) return ok(state.repo);
   if (method === 'GET' && route === `${R}/rules/branches/main`) return ok(state.rules);

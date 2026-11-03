@@ -2722,6 +2722,17 @@ test('a keyed job that no longer refuses a re-run attempt, or skips its main and
   reported({ [`${S}pages-feed.mjs`]: text => text + "\nimport { refuseRerunAttempt } from './keyed-run.mjs';\n" }, 'feed refuses re-runs');
 });
 
+test('environment and secret names in other workflows are matched case-insensitively, as GitHub resolves them (final review, m1)', () => {
+  const job = body => () => `name: sneaky\non: push\npermissions: {}\njobs:\n  x:\n    runs-on: ubuntu-24.04\n${body}    steps:\n      - run: echo\n`;
+  for (const name of ['DESKTOP-RELEASE', 'Desktop-Release', 'desktop-Release']) reported({ '.github/workflows/sneaky.yml': job(`    environment: ${name}\n`) }, `environment ${name}`);
+  for (const name of ['GITHUB-PAGES', 'GitHub-Pages']) reported({ '.github/workflows/sneaky.yml': job(`    environment: ${name}\n`) }, `environment ${name}`);
+  for (const secret of ['desktop_metadata_key_a', 'Desktop_Sparkle_Key_B', 'desktop_SANDBOX_key_a']) {
+    reported({ '.github/workflows/sneaky.yml': job(`    env:\n      K: \${{ secrets.${secret} }}\n`) }, `secret ${secret}`);
+  }
+  reported({ [KEYED]: edit(doc => { doc.jobs.sign.environment = 'Desktop-Release'; }) }, 'keyed sign environment case');
+  reported({ [KEYED]: edit(doc => { doc.jobs.feed.environment = 'GitHub-Pages'; }) }, 'keyed feed environment case');
+});
+
 test('release-keys.mjs importing a non-node module or adding a tag policy is reported', () => {
   const keys = 'packages/desktop/scripts/release-keys.mjs', signer = 'packages/desktop/scripts/release-sign-job.mjs';
   reported({ [keys]: text => "import yaml from 'js-yaml';\n" + text }, 'package import');

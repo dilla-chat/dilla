@@ -292,6 +292,21 @@ test('requiredJobInventory is sorted, complete and covers every job verifyBundle
  } finally { await f.cleanup(); }
 });
 
+// Final review, m9: the one CI step that vouches for the DMG's Developer ID team, notarization and key is named in the attestation.
+test('a release requires the macOS update disk image check of the macOS build job', async () => {
+ const workflow = createRequire(import.meta.url)('js-yaml').load(await readFile(resolve(import.meta.dirname, '../../../.github/workflows/desktop.yml'), 'utf8'));
+ assert.ok(Object.values(workflow.jobs).some((job: any) => job.steps?.some((step: any) => step.name === 'macOS update disk image check')), 'the CI step exists under this name');
+ const jobs = acceptedJobs();
+ const mac = requiredJobInventory(jobs, '1.2.3').find((job: { name: string }) => job.name === 'desktop / desktop-mac-arm64');
+ assert.ok(mac.steps.some((step: { name: string; conclusion: string }) => step.name === 'macOS update disk image check' && step.conclusion === 'success'));
+ for (const change of ['missing', 'skipped'] as const) {
+  const changed = structuredClone(jobs), job = changed.find(item => item.name === 'desktop / desktop-mac-arm64')!;
+  if (change === 'missing') job.steps = job.steps!.filter(step => step.name !== 'macOS update disk image check');
+  else job.steps!.find(step => step.name === 'macOS update disk image check')!.conclusion = 'skipped';
+  assert.throws(() => requiredJobInventory(changed, '1.2.3'), /Required CI step missing or did not succeed: desktop-mac-arm64/, change);
+ }
+});
+
 test('requiredJobInventory ignores extra unrelated jobs', () => {
  const jobs = acceptedJobs(), inventory = requiredJobInventory(jobs, '1.2.3');
  const noisy = [{ name: 'go / test', conclusion: 'failure', steps: [{ name: 'x', conclusion: 'failure' }] }, ...structuredClone(jobs), { name: 'desktop / desktop-test-tools-linux-x64', conclusion: 'success', steps: [] }];
@@ -530,11 +545,40 @@ test('publisher refuses a bad rotation proof before anything is uploaded', async
   }
   await writeFile(path, clean);
   // A proof present while nothing is staged, and a staged run without its proof.
-  await assert.rejects(publisher(p, 'publish', { DESKTOP_STAGED: 'false' }), /rotation proof/i);
+  await assert.rejects(publisher(p, 'publish', { DESKTOP_STAGED: 'false' }), /rotation proof|main’s release-trust\.json/i);
   await rm(path);
   await assert.rejects(publisher(p, 'publish'), /rotation proof/i);
   assert.deepEqual(writes(p), []);
  } finally { await p.cleanup(); }
+});
+
+// Final review, m7: "staged" comes from main's pins, not only from sign's output.
+test('publisher refuses a DESKTOP_STAGED that disagrees with main’s pinned signing.staged', async () => {
+ const p = await publishFixture({ staged: true });
+ try {
+  // sign said nothing is staged and handed over no proof, but main pins a staged slot: the transition release would lack its proof.
+  await rm(join(p.candidate, 'rotation-proof.json'));
+  for (const mode of ['plan', 'publish'] as const) await assert.rejects(publisher(p, mode, { DESKTOP_STAGED: 'false' }), /main’s release-trust\.json/);
+  assert.deepEqual(writes(p), []);
+ } finally { await p.cleanup(); }
+ const q = await publishFixture();
+ try {
+  (q.fixture.trust as { signing?: unknown }).signing = { active: 'A', staged: null };
+  await assert.rejects(publisher(q, 'plan', { DESKTOP_STAGED: 'true' }), /main’s release-trust\.json/);
+  assert.equal((await publisher(q, 'plan')).release.version, q.version);
+ } finally { await q.cleanup(); }
+});
+
+// Final review, m4: a draft another principal made would keep that author after publication, and the feed refuses it.
+test('publisher adopts only a draft the release workflow made', async () => {
+ for (const author of [{ login: 'octocat', type: 'User' }, { login: 'github-actions[bot]', type: 'User' }, { login: 'dependabot[bot]', type: 'Bot' }]) {
+  const p = await publishFixture();
+  try {
+   p.github.addRelease({ tag_name: p.tag, draft: true, author });
+   await assert.rejects(publisher(p, 'publish'), /not made by the release workflow/, author.login);
+   assert.deepEqual(writes(p), [], 'nothing is written');
+  } finally { await p.cleanup(); }
+ }
 });
 
 test('publish job installs no npm dependencies', async () => {

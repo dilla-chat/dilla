@@ -32,7 +32,8 @@ which admits the branch `main` only.
    secrets and run it again.
 
 Never create a `DESKTOP_*` secret with `gh secret set` without `--env desktop-release`: a repository-level secret
-is readable by every branch workflow. `setup`, `rotate` and the gate all refuse while one exists.
+is readable by every branch workflow. `setup` and `rotate` refuse while one exists (the gate cannot list secrets
+with the job token).
 
 ## The 0.1.0-beta.1 path
 
@@ -78,7 +79,10 @@ A desktop release needs no CT 144 upgrade.
   that is a permission problem of the read, not a setting that is off; check the setting by hand
   (`gh api repos/dilla-chat/dilla/…` as admin) before changing anything.
 - **A red `publish`** after a draft was created: re-run the request run; the publisher adopts and normalises the
-  draft (exact asset set, signed notes) and is idempotent.
+  draft (exact asset set, signed notes) and is idempotent. It adopts only a draft the release workflow made (author
+  `github-actions[bot]`): for "the draft … was not made by the release workflow", check who made it (treat an
+  unknown author like a stolen token, below), delete the draft with `gh release delete desktop-v<version>` (the tag
+  stays), and re-run the request run.
 - **A red `feed` after `publish`** (the versioned release is out, the Pages feed is not): re-run **only the failed
   `feed` job** of that keyed run (`gh run rerun <keyed run id> --failed`, only when `feed` is the one failed job).
   It is keyless, uses the signed artifact (kept 3 days) and accepts a byte-identical re-deploy. A new request run
@@ -115,10 +119,13 @@ wrong first (bump the version). They cannot release older code and cannot reach 
 2. Wait at least 60 days and check that installs have moved to a transition build.
 3. `rotate --promote` (typed confirmation `promote B`): B becomes active, A's keys stay pinned for one more
    release, and `signing.macRotation` records the pending macOS key change (`fromSlot: A` and A's Sparkle key).
-   Merge, then release **each channel** once: that channel's first release after the promote is its **rotation
+   It also refreshes the sandbox component (`generation` + 1, fresh `publishedAt`/`expiresAt`), since `rotate`'s
+   dates are at least 60 days old by now. Merge, then release **each channel** once: that channel's first release after the promote is its **rotation
    release** (signed by B; macOS updates through the DMG, below).
 4. After every channel's rotation release is out: `rotate --retire` (typed confirmation `retire A`) deletes slot
    A's three secrets, only once `origin/main` has B active with nothing staged, and clears `signing.macRotation`.
+   Before asking, it checks through the API (`git fetch` first) that each channel's newest published release was
+   built with main's Sparkle key, or that the channel has no release, and refuses otherwise.
    Merge that `release-trust.json`; from then on every release updates macOS with the zip again.
 
 ### macOS: the DMG rotation release
@@ -146,7 +153,8 @@ this way, and the rotation release follows it exactly:
 - **The appcast is signed by the old key (A)**, the key the installed apps trust: `SURequireSignedFeed` checks the
   feed under the installed app's key. The sign job loads slot A for exactly this (`MAC_UPDATE=dmg`).
 
-Macs then move to the new key by updating normally, with no reinstall. Every other release keeps the zip.
+Macs on a transition build then move to the new key by updating normally, with no reinstall (a Mac that skipped
+the transition release is stranded like any other client: see the caveat below). Every other release keeps the zip.
 
 How the flow knows: the gate outputs `mac_update`. It is `dmg` when `signing.macRotation` is set on main **and** the
 channel's newest published release (immutable, made by the workflow) was built at a commit whose `release-trust.json`
@@ -180,8 +188,10 @@ Sparkle's key-change path needs one). Before tagging a channel's rotation releas
    open filtered on `Sparkle`: a failure says which check refused it.
 4. After the channel's next release (zip, all B): the updated Mac installs it as usual.
 
-Caveat: a Windows or Linux client that skipped the transition release rejects releases signed by B and must
-reinstall. `rotate` and `--promote` print the macOS summary.
+Caveat: a Windows, Linux **or macOS** client that skipped the transition release rejects releases signed by B and
+must reinstall. A Mac checks `desktop-<channel>.json` under its pinned metadata keys before Sparkle runs, so a
+pre-transition Mac (metadata key A only) refuses the B-signed rotation release before the DMG path is reached. The
+60-day wait covers all three. `rotate` and `--promote` print the macOS summary.
 
 ## Sandbox component freshness
 
@@ -210,8 +220,8 @@ transition release, `rotation-proof.json`.
 - The signed record attests that CI passed, not that a human reviewed the release.
 - `/proc/<pid>/environ` of the Sign step holds the secrets for its lifetime, on an ephemeral runner; V8 strings and
   `gh`'s own memory cannot be zeroed.
-- Key rotation strands Windows and Linux clients that skipped the transition release, and Macs that skipped their
-  channel's DMG rotation release.
+- Key rotation strands Windows, Linux and macOS clients that skipped the transition release, and Macs that skipped
+  their channel's DMG rotation release.
 - The DMG rotation path is exercised end to end only by the first real rotation (see the hand checks above); CI
   checks the rotation DMG's signature, notarization and key, and the release flow's key use, but not Sparkle itself.
 - First-use behaviour of the environment, secrets and `workflow_run` is only exercised by the first real tag; every

@@ -37,7 +37,7 @@ export async function isolatedReleaseTools(directory, { trust, sandboxConfig, fi
 export function acceptedJobs() {
  const jobs = [];
  for (const target of TARGETS) {
-  jobs.push({ name: `desktop / desktop-${target}`, conclusion: 'success', steps: ['Record native desktop build provenance', 'Application audio encryption and exclusion', target.startsWith('mac-') ? 'Installed unsigned Sparkle upgrade and signed-feed rejection' : 'Installed upgrade acceptance', ...(target === 'linux-x64' ? ['Linux AppImage sandbox native acceptance'] : [])].map(name => ({ name, conclusion: 'success' })) });
+  jobs.push({ name: `desktop / desktop-${target}`, conclusion: 'success', steps: ['Record native desktop build provenance', 'Application audio encryption and exclusion', target.startsWith('mac-') ? 'Installed unsigned Sparkle upgrade and signed-feed rejection' : 'Installed upgrade acceptance', ...(target.startsWith('mac-') ? ['macOS update disk image check'] : []), ...(target === 'linux-x64' ? ['Linux AppImage sandbox native acceptance'] : [])].map(name => ({ name, conclusion: 'success' })) });
   const shards = target === 'linux-x64' ? [1, 2, 3] : [1], proofShard = target === 'linux-x64' ? 2 : 1;
   for (const n of shards) jobs.push({ name: `desktop / desktop-client-${target}-${n}`, conclusion: 'success', steps: [{ name: 'Installed account upgrade proof', conclusion: n === proofShard ? 'success' : 'skipped' }] });
   jobs.push({ name: `desktop / desktop-voice-${target}`, conclusion: 'success', steps: [{ name: 'Desktop performance comparison', conclusion: 'success' }] });

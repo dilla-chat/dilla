@@ -1667,7 +1667,8 @@ export function checkDesktopReleaseWorkflow(root) {
       for (const [job, body] of Object.entries(doc?.jobs ?? {})) {
         if (!body || typeof body !== 'object') continue;
         const environment = typeof body.environment === 'string' ? body.environment : body.environment?.name;
-        if (environment === 'github-pages') problems.push(`${name}: ${job}: the github-pages environment is reserved for desktop-release.yml's feed job`);
+        // GitHub resolves environment and secret names case-insensitively, so every name check here ignores case (final review, m1).
+        if (typeof environment === 'string' && environment.toLowerCase() === 'github-pages') problems.push(`${name}: ${job}: the github-pages environment is reserved for desktop-release.yml's feed job`);
         if (pagesWrite(body.permissions)) problems.push(`${name}: ${job}: pages: write is reserved for desktop-release.yml's feed job`);
         for (const step of Array.isArray(body.steps) ? body.steps : []) {
           if (typeof step?.uses === 'string' && /^actions\/(deploy-pages|upload-pages-artifact)@/.test(step.uses)) problems.push(`${name}: ${job}: ${step.uses.split('@')[0]} is reserved for desktop-release.yml's feed job`);
@@ -1681,12 +1682,12 @@ export function checkDesktopReleaseWorkflow(root) {
       if (typeof value !== 'string') { problems.push(`${name}: ${job}: environment must be a plain name, not a mapping`); continue; }
       if (value.includes('${{')) problems.push(`${name}: ${job}: environment must not be an expression`);
       const allowed = name === 'desktop-release.yml' ? DR_ENVIRONMENTS[job] : undefined;
-      if (allowed !== undefined ? value !== allowed : (name === 'desktop-release.yml' || /desktop-release/.test(value))) problems.push(`${name}: ${job}: environment ${value} is not allowed here; desktop-release belongs to the sign job of desktop-release.yml only`);
+      if (allowed !== undefined ? value !== allowed : (name === 'desktop-release.yml' || /desktop-release/i.test(value))) problems.push(`${name}: ${job}: environment ${value} is not allowed here; desktop-release belongs to the sign job of desktop-release.yml only`);
     }
     if (name === 'desktop-release.yml' || name === 'desktop-release-request.yml') continue;
-    if (/DESKTOP_(METADATA|SPARKLE|SANDBOX)_KEY/.test(text)) problems.push(`${name}: names a desktop signing secret`);
+    if (/DESKTOP_(METADATA|SPARKLE|SANDBOX)_KEY/i.test(text)) problems.push(`${name}: names a desktop signing secret`);
     if (/release-sign-job\.mjs/.test(text)) problems.push(`${name}: runs the desktop sign job script`);
-    if (/desktop-release\b(?![-.])/.test(text)) problems.push(`${name}: names the desktop-release environment`);
+    if (/desktop-release\b(?![-.])/i.test(text)) problems.push(`${name}: names the desktop-release environment`);
     const upstream = doc?.on?.workflow_run?.workflows;
     if ([].concat(upstream ?? []).some(item => item === DR_REQUEST_NAME || item === 'desktop release')) problems.push(`${name}: chains on the desktop release workflows`);
   }

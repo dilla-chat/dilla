@@ -77,6 +77,26 @@ async function setup({ releases = s => [release('1.2.3', s.signedFiles)] } = {})
 }
 const tree = async directory => (await readdir(directory, { recursive: true })).sort();
 
+// Final review, m8: the bridge's own expected feed URL broke every production Mac update once; bind it to the feed job's layout.
+test('SparkleBridge.mm expects the appcast URL the feed job serves on GitHub Pages', async () => {
+ const bridge = await readFile(join(desktop, 'native/SparkleBridge.mm'), 'utf8');
+ const line = /NSString \*expected=\[\[bundle objectForInfoDictionaryKey:@"DillaDesktopChannel"\] isEqualToString:@"beta"\] \? @"([^"]+)" : @"([^"]+)";/.exec(bridge);
+ assert.ok(line, 'the bridge derives its expected feed from DillaDesktopChannel');
+ assert.match(bridge, /expected=\[expected stringByAppendingFormat:@"appcast-%@\.xml",arch\];/);
+ const expected = { beta: `${line[1]}appcast-arm64.xml`, stable: `${line[2]}appcast-arm64.xml` };
+ const s = await setup();
+ try {
+  s.github.addRelease(release('1.3.0-beta.2', signedChannel(s.f, '1.3.0-beta.2')));
+  const { siteDirectory } = await s.build();
+  const served = await tree(siteDirectory);
+  for (const channel of ['beta', 'stable']) {
+   assert.equal(expected[channel], feedUrl(channel, 'appcast-arm64.xml'), channel);
+   assert.ok(expected[channel].startsWith(FEED_SITE), channel);
+   assert.ok(served.includes(expected[channel].slice(FEED_SITE.length)), `${channel}: the feed job serves ${expected[channel]}`);
+  }
+ } finally { await s.cleanup(); }
+});
+
 test('feed build serves the signed channel files and the other channel from its latest published release', async () => {
  const s = await setup();
  try {

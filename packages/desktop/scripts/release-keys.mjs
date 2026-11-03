@@ -6,6 +6,9 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { validateConfiguration, assertDedicatedKeys, parsePublicConfiguration } from './linux-sandbox-package.mjs';
 import { macRotationOf } from './feed-format.mjs';
+import { REPOSITORY } from './ci-run.mjs';
+import { macUpdateFor } from './release-gate.mjs';
+import { trustAtTag } from './pages-feed.mjs';
 
 /**
  * One-time key setup and staged rotation for the keyed desktop release workflow.
@@ -344,6 +347,28 @@ export async function setupRelease({ repo = DEFAULT_REPO, reviewedSha, acceptUnp
  } finally { material.zero(); }
 }
 
+/** gh's read-only REST access in the shape the release scripts' `api(path, options, optional404)` takes. */
+function readOnlyApi(gh, repo) {
+ const prefix = `/repos/${REPOSITORY}/`;
+ return async (path, options = {}, optional404 = false) => {
+  if ((options.method ?? 'GET') !== 'GET' || typeof path !== 'string' || !path.startsWith(prefix)) throw new Error('Only GET requests to the repository are allowed here');
+  try { return await gh.api('GET', `repos/${repo}/${path.slice(prefix.length)}`); } catch (error) { if (optional404 && error.status === 404) return null; throw error; }
+ };
+}
+/**
+ * Final review, m6: retire only once each channel's rotation release is out. The gate's own rule decides: a channel
+ * whose newest published release (immutable, workflow-made) was built for the old Sparkle key still needs its DMG
+ * release ('dmg'); a channel with no published release, or one already on main's key, is done ('zip').
+ */
+async function assertRotationReleasesOut({ gh, repo, git, trust }) {
+ const api = readOnlyApi(gh, repo);
+ for (const channel of ['beta', 'stable']) {
+  let kind;
+  try { kind = await macUpdateFor({ trust, channel, api, trustAt: trustAtTag({ api, git }) }); } catch (error) { throw new Error(`Cannot confirm the ${channel} rotation release: ${error.message}`); }
+  if (kind !== 'zip') throw new Error(`The ${channel} rotation release is not out yet: the newest published ${channel} release was built for the old Sparkle key. Release ${channel} once, then retire`);
+ }
+}
+
 export const MAC_ROTATION_WARNING = 'macOS: Sparkle trusts a single EdDSA key per build, so the Sparkle key changes only at --promote. The first release of each channel after the promote is its rotation release: Macs update through a Developer-ID-signed, notarized DMG that carries the new key, with no reinstall (RELEASING.md). Keep the old slot until every channel has shipped it; a Mac that skips its channel\'s rotation release reinstalls once.';
 
 export async function rotateRelease({ repo = DEFAULT_REPO, promote = false, retire = false, reviewedSha, gh, git = defaultGit, confirm, now = new Date(), root = DESKTOP_ROOT, log = console.log, generate = generateKeyMaterial }) {
@@ -361,7 +386,11 @@ export async function rotateRelease({ repo = DEFAULT_REPO, promote = false, reti
   // rotation release, whose appcast that slot signs (feed-format.mjs).
   const next = { metadataPublicKeys: [trust.metadataPublicKeys.at(-1), trust.metadataPublicKeys[0]], sparklePublicKey: trust.sparkleNextPublicKey,
    signing: { active: staged, staged: null, macRotation: { fromSlot: active, fromSparklePublicKey: trust.sparklePublicKey } } };
-  await writePublicTrust(root, next, { ...component, publicKeys: [component.publicKeys.at(-1), component.publicKeys[0]] });
+  // Promote comes at least 60 days after rotate, so rotate's dates would leave the gate under 30 days: the promote
+  // release refreshes them and bumps the generation, as a freshness refresh does (final review, m5).
+  const nextComponent = { ...component, generation: component.generation + 1, ...freshDates(now), publicKeys: [component.publicKeys.at(-1), component.publicKeys[0]] };
+  validateConfiguration(nextComponent);
+  await writePublicTrust(root, next, nextComponent);
   log(`Promoted slot ${staged}: it signs from the next release; the slot ${active} metadata and sandbox keys stay pinned for one more release.`);
   log(MAC_ROTATION_WARNING);
   log(`Commit ${PUBLIC_FILES.join(', ')}; once that PR is merged and each channel has published its rotation release (the first after the promote), run rotate --retire.`);
@@ -377,6 +406,7 @@ export async function rotateRelease({ repo = DEFAULT_REPO, promote = false, reti
   const names = await gh.secretNames('env');
   if (!secretNamesFor(active).every(name => names.includes(name))) throw new Error(`The active slot ${active} secrets are not all present; refusing to delete slot ${old}`);
   const rotation = macRotationOf(trust);
+  if (rotation) await assertRotationReleasesOut({ gh, repo, git, trust });
   await ask(rotation
    ? `Each channel's rotation release (its first release signed by slot ${active}, updating macOS through a disk image) must already be published; Macs that have not taken it reinstall after this. Type "retire ${old}" to delete the slot ${old} secrets: `
    : `A release signed by slot ${active} must already be published. Type "retire ${old}" to delete the slot ${old} secrets: `, `retire ${old}`);

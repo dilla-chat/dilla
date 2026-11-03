@@ -19,6 +19,9 @@ import { createReleaseAssetUploader, listReleaseAssets, releaseAssetDigest } fro
 const R = `/repos/${REPOSITORY}`;
 const COMMIT = /^[a-f0-9]{40}$/;
 const ROTATION_PROOF = 'rotation-proof.json';
+// The publish job creates releases with the workflow token, so GitHub records the Actions bot as their author;
+// the feed refuses any other author (pages-feed.mjs latestPublished).
+const ACTIONS_BOT = 'github-actions[bot]';
 
 /** The run context; DESKTOP_TAG, DESKTOP_SHA and DESKTOP_MAC_UPDATE come from the gate job's validated outputs, DESKTOP_STAGED from sign's. */
 export function publicationContext(env) {
@@ -57,7 +60,13 @@ async function findDraft(api, tag) {
  }
  if (matches.some(release => release.draft !== true)) throw new Error(`desktop ${tag} is already published`);
  if (matches.length > 1) throw new Error(`Refusing to publish: more than one draft exists for ${tag}`);
- return matches[0] ?? null;
+ // Final review, m4: an adopted draft keeps its author after publication, and the feed then refuses the immutable
+ // release. Only a draft the release workflow made is adopted; any other is refused before anything is written.
+ const [draft] = matches;
+ if (draft && (draft.author?.login !== ACTIONS_BOT || draft.author?.type !== 'Bot')) {
+  throw new Error(`Refusing to publish: the draft for ${tag} was not made by the release workflow (author ${JSON.stringify(draft.author?.login ?? null)}); delete it (gh release delete ${tag}, keeping the tag) and re-run the request run`);
+ }
+ return draft ?? null;
 }
 
 /** Asserts a release's assets are exactly `expected` (name -> bytes): same names, sizes and digests. */
@@ -104,6 +113,8 @@ export async function runPublisher({ mode, env, git, fetchImpl = fetch, trust, v
  // The rotation proof is public and permanent once published: it must verify before anything is written.
  let proof = null;
  try { proof = await readFile(join(candidate, ROTATION_PROOF)); } catch (error) { if (error?.code !== 'ENOENT') throw error; }
+ // Final review, m7: whether a slot is staged comes from main's pins; sign's output must agree with them.
+ if (staged !== ((trust.signing?.staged ?? null) !== null)) throw new Error(`DESKTOP_STAGED=${staged} disagrees with main’s release-trust.json (signing.staged ${JSON.stringify(trust.signing?.staged ?? null)})`);
  if ((proof !== null) !== staged) throw new Error(staged ? 'The staged release lacks its rotation proof' : 'A rotation proof is present although nothing is staged');
  if (staged) {
   const manifest = `dilla-${version}-linux-x64.sandbox.json`, archive = `dilla-${version}-mac-arm64.zip`;
