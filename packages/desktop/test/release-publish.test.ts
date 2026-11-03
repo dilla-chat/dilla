@@ -10,7 +10,7 @@ import { sandboxReleaseFixture } from './support/linux-sandbox-release-fixture.t
 // @ts-expect-error publishing tooling is JavaScript
 import { appcast, signedAppcast } from '../scripts/feed-format.mjs';
 // @ts-expect-error publishing tooling is JavaScript
-import { verifyDesktopBundle, TARGETS, publicReleaseRecords, stagePublicReleaseRecords } from '../scripts/verify-release.mjs';
+import { verifyDesktopBundle, TARGETS, LINUX_CLIENT_SHARDS, publicReleaseRecords, stagePublicReleaseRecords } from '../scripts/verify-release.mjs';
 // @ts-expect-error build tooling is JavaScript
 import { ACCOUNT_CHECKS } from '../scripts/installed-account-proof.mjs';
 // @ts-expect-error build tooling is JavaScript
@@ -31,7 +31,7 @@ test('publication refuses missing native acceptance even when the generic CI sta
   const jobs: { name: string; conclusion: string; steps?: { name: string; conclusion: string }[] }[] = [];
   for (const target of TARGETS) {
    jobs.push({ name: `desktop / desktop-${target}`, conclusion: 'success', steps: ['Record native desktop build provenance', 'Application audio encryption and exclusion', target.startsWith('mac-') ? 'Installed unsigned Sparkle upgrade and signed-feed rejection' : 'Installed upgrade acceptance', ...(target==='linux-x64'?['Linux AppImage sandbox native acceptance']:[])].map(name => ({ name, conclusion: 'success' })) });
-   const shards = target === 'linux-x64' ? [1, 2, 3] : [1], proofShard = target === 'linux-x64' ? 2 : 1;
+   const shards = target === 'linux-x64' ? Array.from({ length: LINUX_CLIENT_SHARDS }, (_, i) => i + 1) : [1], proofShard = target === 'linux-x64' ? 5 : 1;
    for (const n of shards) jobs.push({ name: `desktop / desktop-client-${target}-${n}`, conclusion: 'success', steps: [{ name: 'Installed account upgrade proof', conclusion: n === proofShard ? 'success' : 'skipped' }] });
    jobs.push({ name: `desktop / desktop-voice-${target}`, conclusion: 'success', steps: [{ name: 'Desktop performance comparison', conclusion: 'success' }] });
    const report = Buffer.from(JSON.stringify({ format: 1, target, sourceCommit: source.commit, sourceDirty: false, status: 'measured', ...Object.fromEntries(['startup', 'memory', 'idleCPU', 'interaction', 'callAudio'].map(metric => [metric, [{ browser: 1, desktop: 2 }]])) }));
@@ -173,7 +173,7 @@ test('publication refuses missing native acceptance even when the generic CI sta
     await assert.rejects(verifyDesktopBundle(resign(signed)), /installed.account/i);
    }
    await writeFile(path, clean);
-   const clientJobs = (job: {name: string}) => [1, 2, 3].some(shard => job.name.endsWith(`desktop-client-${target}-${shard}`));
+   const clientJobs = (job: {name: string}) => Array.from({ length: LINUX_CLIENT_SHARDS }, (_, i) => i + 1).some(shard => job.name.endsWith(`desktop-client-${target}-${shard}`));
    const absent = structuredClone(jobs); for (const job of absent.filter(clientJobs)) job.steps = [];
    await assert.rejects(verifyDesktopBundle({ ...context, jobs: absent }), /installed.account.*proof/i);
    // A second successful proof for the target, from another shard on Linux and from a second upload step elsewhere.
@@ -240,7 +240,7 @@ test('publication refuses missing native acceptance even when the generic CI sta
   await assert.rejects(verifyDesktopBundle({ ...context, metadata: dirtyMetadata, signature: sign(null, dirtyMetadata, key.privateKey).toString('base64') }), /Incomplete measured/);
   await writeFile(path, clean);
   await assert.rejects(verifyDesktopBundle({ ...context, jobs: jobs.filter(job => !job.name.endsWith('desktop-client-mac-arm64-1')) }), /Missing Electron/);
-  await assert.rejects(verifyDesktopBundle({ ...context, jobs: jobs.filter(job => !job.name.endsWith('desktop-client-linux-x64-3')) }), /Missing Electron/);
+  await assert.rejects(verifyDesktopBundle({ ...context, jobs: jobs.filter(job => !job.name.endsWith('desktop-client-linux-x64-6')) }), /Missing Electron/);
   const noAudio = structuredClone(jobs); noAudio[0].steps = noAudio[0].steps!.filter(step => !step.name.includes('audio encryption'));
   await assert.rejects(verifyDesktopBundle({ ...context, jobs: noAudio }), /missing accepted Application audio/);
   const originalFeed = await import('node:fs/promises').then(fs => fs.readFile(join(directory, 'appcast-arm64.xml')));

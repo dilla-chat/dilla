@@ -49,7 +49,7 @@ test('a UI-only change runs the web jobs and the browsers, no Go jobs', () => {
   assert.deepEqual(outputs, { go: false, core: false, web: true, e2e: true, text: false, code: true });
   const ran = ranJobs(outputs);
   for (const job of ['node', 'ui', 'rust-wasm-node', 'browser-spike', 'browser-media', 'web-build', 'rust-native', 'rust-wasi', 'go-release', ...BROWSERS]) assert.ok(ran.includes(job), job);
-  for (const job of ['vectors', 'deny', 'go', 'go-native', 'go-ds', 'go-api', 'go-harness', 'go-fts5-arm64', 'go-lint', 'go-vuln', 'go-sqlc', 'go-postgres']) assert.ok(!ran.includes(job), job);
+  for (const job of ['vectors', 'deny', 'go', 'go-checks', 'go-native', 'go-ds', 'go-api', 'go-harness', 'go-fts5-arm64', 'go-lint', 'go-vuln', 'go-sqlc', 'go-postgres']) assert.ok(!ran.includes(job), job);
 });
 
 test('the design tokens are read by a Go test, so they run the Go jobs too', () => {
@@ -77,7 +77,7 @@ test('a Go-only change runs the Go jobs and the browsers, no rust or ui unit job
   const outputs = areasFor(['internal/api/messages.go', 'go.sum']);
   assert.deepEqual(outputs, { go: true, core: false, web: false, e2e: true, text: false, code: true });
   const ran = ranJobs(outputs);
-  for (const job of ['go', 'go-native', 'go-ds', 'go-api', 'go-harness', 'go-lint', 'go-postgres', 'go-release', 'web-build', 'browser-spike', ...BROWSERS]) assert.ok(ran.includes(job), job);
+  for (const job of ['go', 'go-checks', 'go-native', 'go-ds', 'go-api', 'go-harness', 'go-lint', 'go-postgres', 'go-release', 'web-build', 'browser-spike', ...BROWSERS]) assert.ok(ran.includes(job), job);
   for (const job of ['ui', 'rust-wasm-node', 'vectors', 'deny']) assert.ok(!ran.includes(job), job);
 });
 

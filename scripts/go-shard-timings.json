@@ -1,0 +1,52 @@
+{
+  "source": "go test package times (seconds, -race, 4-vCPU ubuntu runner) from the green CI run 41658420078; packages under 2 s take the default",
+  "defaults": { "packageSeconds": 2, "testSeconds": 1 },
+  "splitAboveSeconds": 150,
+  "parallelismNote": "how many package-seconds one runner clears per wall second when packages run side by side: go's 3,620 s of package time took a 1,337 s step (compile included), go-postgres's 938 s took 794 s; a set not listed runs about one package at a time",
+  "parallelism": { "go": 2.7, "go-postgres": 1.2 },
+  "packages": {
+    "go": {
+      "./cmd/dillad": 756,
+      "./internal/dillad/dilladtest": 680,
+      "./internal/dillad": 557,
+      "./internal/store": 475,
+      "./internal/ops": 323,
+      "./internal/auth": 247,
+      "./internal/blob": 78,
+      "./internal/mlswasi": 78,
+      "./internal/desktopsandbox": 67,
+      "./internal/sfu": 49,
+      "./internal/bot/identity": 42,
+      "./packages/desktop/native/linux-sandbox/frontend": 38,
+      "./internal/bot/runtime": 24,
+      "./internal/store/sqlite": 22,
+      "./internal/server": 22,
+      "./internal/bot/client": 21,
+      "./cmd/dillabot": 16,
+      "./internal/bot/service": 15,
+      "./internal/bot/gatewayclient": 11,
+      "./internal/bot/music/session": 8,
+      "./internal/bot/helper": 5,
+      "./internal/bot/announcements": 5,
+      "./internal/bot/music/youtube": 4,
+      "./internal/gateway": 3
+    },
+    "go-api": {
+      "./internal/api": 1196
+    },
+    "go-ds": {
+      "./internal/ds": 1099
+    },
+    "go-harness": {
+      "./internal/testkit": 1053
+    },
+    "go-postgres": {
+      "./internal/store": 714,
+      "./internal/ops": 196,
+      "./internal/store/sqlite": 23,
+      "./internal/store/postgres": 5,
+      "./internal/api": 87
+    }
+  },
+  "tests": {}
+}
