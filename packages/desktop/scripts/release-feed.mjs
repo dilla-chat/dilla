@@ -1,5 +1,5 @@
 import { verifyDesktopBundle, verifyDesktopSigningCandidate, PUBLIC_ACCEPTANCE_RECORDS } from './verify-release.mjs';
-import { createHash, createPrivateKey, createPublicKey, sign, verify } from 'node:crypto';
+import { KeyObject, createHash, createPrivateKey, createPublicKey, sign, verify } from 'node:crypto';
 import { readFile, writeFile, mkdir, lstat } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -8,16 +8,29 @@ import { parsePublicConfiguration, assertDedicatedKeys } from './linux-sandbox-p
 import { appcast, signedAppcast, sparkleVersion } from './feed-format.mjs';
 export { appcast, signedAppcast, sparkleVersion } from './feed-format.mjs';
 
-/** Offline signing. Publishing consumes only this output directory, never keys. */
-export async function signDesktopRelease({ version, artifactsDirectory, keysDirectory, outputDirectory, now = new Date() }) {
+/** In-memory signing keys: `metadata` and `sandbox` are Ed25519 private KeyObjects, `sparkleSeed` the 32-byte Sparkle seed. */
+function validKeys(keys) {
+ const ed25519 = key => key instanceof KeyObject && key.type === 'private' && key.asymmetricKeyType === 'ed25519';
+ if (!keys || typeof keys !== 'object' || !ed25519(keys.metadata) || !ed25519(keys.sandbox) || !Buffer.isBuffer(keys.sparkleSeed)) throw new Error('Signing keys must be Ed25519 private KeyObjects and a Sparkle seed Buffer');
+ return keys;
+}
+
+/** Signs an accepted candidate. Keys come either from a keys directory (offline
+ * signing) or as in-memory key objects (the release workflow), never both; with
+ * `keys`, nothing is read from or written to a keys directory. Publishing
+ * consumes only the output directory, never keys. */
+export async function signDesktopRelease({ version, artifactsDirectory, keysDirectory, keys, outputDirectory, now = new Date() }) {
+ if ((keysDirectory === undefined) === (keys === undefined)) throw new Error('Pass exactly one of keysDirectory or keys');
+ if (keys !== undefined) validKeys(keys);
  sparkleVersion(version);
  const channel = version.includes('-beta.') ? 'beta' : 'stable';
  const trust = JSON.parse(await readFile(new URL('../release-trust.json', import.meta.url), 'utf8'));
- const metadataKey = createPrivateKey(await readFile(join(keysDirectory, 'metadata-private.pem')));
+ const metadataKey = keys ? keys.metadata : createPrivateKey(await readFile(join(keysDirectory, 'metadata-private.pem')));
  const metadataPublic = createPublicKey(metadataKey).export({ type: 'spki', format: 'pem' }).toString();
  if (!trust.metadataPublicKeys.includes(metadataPublic)) throw new Error('Metadata signer does not match installed trust');
- const seed = Buffer.from((await readFile(join(keysDirectory, 'sparkle-private.key'), 'utf8')).trim(), 'base64');
- if (seed.length !== 32) throw new Error('Sparkle signer must use its 32-byte seed format');
+ // A private copy: the caller's seed Buffer stays the caller's to zero.
+ const seed = keys ? Buffer.from(keys.sparkleSeed) : Buffer.from((await readFile(join(keysDirectory, 'sparkle-private.key'), 'utf8')).trim(), 'base64');
+ if (seed.length !== 32) { seed.fill(0); throw new Error('Sparkle signer must use its 32-byte seed format'); }
  const sparkleKey = createPrivateKey({ key: { kty: 'OKP', crv: 'Ed25519', d: seed.toString('base64url'), x: Buffer.from(trust.sparklePublicKey, 'base64').toString('base64url') }, format: 'jwk' });
  seed.fill(0);
  if (createPublicKey(sparkleKey).export({ type: 'spki', format: 'der' }).subarray(-32).toString('base64') !== trust.sparklePublicKey) throw new Error('Sparkle signer does not match installed trust');
@@ -67,7 +80,7 @@ export async function signDesktopRelease({ version, artifactsDirectory, keysDire
  let bytes = Buffer.from(JSON.stringify(release, null, 2) + '\n'), signature = sign(null, bytes, metadataKey), feeds = makeFeeds();
  await verifyDesktopSigningCandidate({ metadata: bytes, signature: signature.toString('base64'), trust, directory: artifactsDirectory, run, jobs, version, feeds, now: now.getTime() });
  const manifest = await readFile(join(artifactsDirectory, sandboxName + '.json'));
- const maintenanceKey = createPrivateKey(await readFile(join(keysDirectory, 'linux-sandbox-private.pem')));
+ const maintenanceKey = keys ? keys.sandbox : createPrivateKey(await readFile(join(keysDirectory, 'linux-sandbox-private.pem')));
  const rawPublic = createPublicKey(maintenanceKey).export({ type: 'spki', format: 'der' }).subarray(-32).toString('base64');
  if (maintenanceKey.asymmetricKeyType !== 'ed25519' || !component.publicKeys.includes(rawPublic)) throw new Error('Sandbox signer does not match installed dedicated trust');
  const detached = Buffer.from(sign(null, Buffer.concat([Buffer.from('Dilla Linux sandbox capsule v1\0'), manifest]), maintenanceKey).toString('base64') + '\n');

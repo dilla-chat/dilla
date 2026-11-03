@@ -53,9 +53,16 @@ export function acceptedJobs() {
  * `layout: 'artifacts'` additionally writes each file into the CI artifact
  * subdirectory it is downloaded from (downloadRoot/<artifact name>/<file>).
  */
-export async function buildReleaseFixture({ version = '1.2.3', directory, now = Date.parse('2026-11-02'), commit = '1'.repeat(40), head = '2'.repeat(40), tree = '3'.repeat(40) } = {}) {
+/** Sandbox component dates around the real clock, for tests that sign with the current time. */
+export function currentSandboxDates(now = Date.now()) {
+ const day = 86400000, start = new Date(Math.floor(now / day) * day - day);
+ const iso = date => date.toISOString().replace('.000Z', 'Z');
+ return { publishedAt: iso(start), expiresAt: iso(new Date(start.getTime() + 61 * day)) };
+}
+
+export async function buildReleaseFixture({ version = '1.2.3', directory, now = Date.parse('2026-11-02'), commit = '1'.repeat(40), head = '2'.repeat(40), tree = '3'.repeat(40), sandboxDates } = {}) {
  directory ??= await mkdtemp(join(tmpdir(), 'dilla-release-fixture-'));
- const sandbox = sandboxReleaseFixture();
+ const sandbox = sandboxReleaseFixture(sandboxDates);
  const key = generateKeyPairSync('ed25519'), sparkle = generateKeyPairSync('ed25519');
  const source = { format: 1, ciRun: 10, commit, head, tree, review: null, builds: {}, performance: {}, installedAccounts: {}, notes: { sha256: '' } };
  const notes = Buffer.from(`Dilla desktop ${version}`); source.notes.sha256 = sha256(notes); await writeFile(join(directory, 'release-notes.md'), notes);
