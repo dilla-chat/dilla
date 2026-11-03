@@ -1,13 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { sign } from 'node:crypto';
+import { generateKeyPairSync, sign } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { FEED_SITE, channelFiles, feedUrl, buildSite, verifyLiveFeed } from '../scripts/pages-feed.mjs';
+import { FEED_SITE, authenticateChannel, channelFiles, feedUrl, buildSite, trustAtTag, verifyLiveFeed } from '../scripts/pages-feed.mjs';
 import { appcast, signedAppcast } from '../scripts/feed-format.mjs';
+import { createGithubApi } from '../scripts/ci-run.mjs';
 import { buildReleaseFixture } from './support/release-fixture.mjs';
+import { fakeGithub } from './support/fake-github.mjs';
 
 const desktop = resolve(import.meta.dirname, '..');
 
@@ -28,15 +31,15 @@ test('Sparkle reads the appcast from GitHub Pages', () => {
  assert.deepEqual(channelFiles(channel), [`desktop-${channel}.json`, `desktop-${channel}.json.sig`, 'appcast-arm64.xml']);
 });
 
-/** Signed channel files (metadata, signature, appcast) for any version, under one fixture's keys. */
-function signedChannel(f, version, { publishedAt = '2026-11-01T00:00:00Z', expiresAt = '2026-12-01T00:00:00Z' } = {}) {
+/** Signed channel files (metadata, signature, appcast) for any version, under the fixture's keys or rotated ones. */
+function signedChannel(f, version, { publishedAt = '2026-11-01T00:00:00Z', expiresAt = '2026-12-01T00:00:00Z', keys = { metadata: f.key.privateKey, sparkle: f.sparkle.privateKey } } = {}) {
  const text = JSON.stringify(f.release).replaceAll(`dilla-${f.version}-`, `dilla-${version}-`).replaceAll(`desktop-v${f.version}/`, `desktop-v${version}/`);
  const release = { ...JSON.parse(text), version, channel: version.includes('-beta.') ? 'beta' : 'stable', publishedAt, expiresAt };
  const metadata = Buffer.from(JSON.stringify(release));
  const darwin = release.artifacts.find(artifact => artifact.platform === 'darwin');
  const [json, sig, feed] = channelFiles(release.channel);
- return new Map([[json, metadata], [sig, Buffer.from(sign(null, metadata, f.key.privateKey).toString('base64') + '\n')],
-  [feed, signedAppcast(appcast(release, darwin, darwin.sparkleSignature), f.sparkle.privateKey)]]);
+ return new Map([[json, metadata], [sig, Buffer.from(sign(null, metadata, keys.metadata).toString('base64') + '\n')],
+  [feed, signedAppcast(appcast(release, darwin, darwin.sparkleSignature), keys.sparkle)]]);
 }
 
 /** The live Pages site, as a fetch that serves a URL -> bytes map and logs every request. */
@@ -51,28 +54,39 @@ function pages(site = new Map()) {
  return { site, log, fetchImpl, publish };
 }
 
-async function setup() {
+/** A published, immutable versioned release carrying the channel files as assets (plus an installer). */
+const release = (version, files, fields = {}) => ({ tag_name: `desktop-v${version}`, draft: false, prerelease: version.includes('-beta.'), immutable: true,
+ files: { ...Object.fromEntries(files), [`dilla-${version}-win-x64.exe`]: Buffer.from('installer') }, ...fields });
+
+async function setup({ releases = s => [release('1.2.3', s.signedFiles)] } = {}) {
  const root = await mkdtemp(join(tmpdir(), 'dilla-pages-feed-'));
  const f = await buildReleaseFixture({ directory: await mkdir(join(root, 'fixture')).then(() => join(root, 'fixture')) });
  const signed = join(root, 'signed'); await mkdir(signed);
- for (const [name, bytes] of signedChannel(f, '1.2.3')) await writeFile(join(signed, name), bytes);
- const live = pages();
- const build = (options = {}) => buildSite({ signedDirectory: signed, channel: 'stable', version: '1.2.3', siteDirectory: join(root, `site-${Math.random()}`), fetchImpl: live.fetchImpl, trust: f.trust, now: f.context.now, ...options });
- return { root, f, signed, live, build, cleanup: () => rm(root, { recursive: true, force: true }) };
+ const signedFiles = signedChannel(f, '1.2.3');
+ for (const [name, bytes] of signedFiles) await writeFile(join(signed, name), bytes);
+ const s = { root, f, signed, signedFiles };
+ const github = fakeGithub({ releases: releases(s) });
+ const trustCalls = [];
+ const trustAt = async tag => { trustCalls.push(tag); return f.trust; };
+ const build = (options = {}) => buildSite({ signedDirectory: signed, channel: 'stable', version: '1.2.3', siteDirectory: join(root, `site-${Math.random()}`),
+  api: createGithubApi({ token: 'workflow-token', fetchImpl: options.fetchImpl ?? github.fetch }), fetchImpl: github.fetch, trust: f.trust, trustAt, now: f.context.now, ...options });
+ return { ...s, github, trustAt, trustCalls, build, cleanup: () => rm(root, { recursive: true, force: true }) };
 }
 const tree = async directory => (await readdir(directory, { recursive: true })).sort();
 
-test('feed build serves the signed channel files and re-serves the verified other channel', async () => {
+test('feed build serves the signed channel files and the other channel from its latest published release', async () => {
  const s = await setup();
  try {
   const first = await s.build();
   assert.deepEqual(await tree(first.siteDirectory), ['stable', 'stable/appcast-arm64.xml', 'stable/desktop-stable.json', 'stable/desktop-stable.json.sig']);
   for (const name of channelFiles('stable')) assert.deepEqual(await readFile(join(first.siteDirectory, 'stable', name)), await readFile(join(s.signed, name)));
   const beta = signedChannel(s.f, '1.3.0-beta.2');
-  s.live.publish('beta', beta);
+  s.github.addRelease(release('1.3.0-beta.1', signedChannel(s.f, '1.3.0-beta.1')));
+  s.github.addRelease(release('1.3.0-beta.2', beta));
   const second = await s.build();
   assert.deepEqual(second.channels, { stable: '1.2.3', beta: '1.3.0-beta.2' });
   for (const [name, bytes] of beta) assert.deepEqual(await readFile(join(second.siteDirectory, 'beta', name)), bytes, 'the other channel is re-served byte for byte');
+  assert.deepEqual(s.trustCalls, ['desktop-v1.3.0-beta.2'], 'the other channel is verified under the pins of the release that carries it');
  } finally { await s.cleanup(); }
 });
 
@@ -81,65 +95,141 @@ test('feed build refuses signed channel files that do not verify under the pins'
  try {
   await writeFile(join(s.signed, 'desktop-stable.json.sig'), Buffer.alloc(64, 1).toString('base64') + '\n');
   await assert.rejects(s.build(), /signature/i);
-  for (const [name, bytes] of signedChannel(s.f, '1.2.3')) await writeFile(join(s.signed, name), bytes);
+  for (const [name, bytes] of s.signedFiles) await writeFile(join(s.signed, name), bytes);
   await assert.rejects(s.build({ version: '1.2.4' }), /version/i);
   await writeFile(join(s.signed, 'appcast-arm64.xml'), 'unsigned');
   await assert.rejects(s.build(), /Sparkle/);
  } finally { await s.cleanup(); }
 });
 
-test('feed build refuses a tampered live other channel and drops an expired one', async () => {
- const s = await setup();
+test('feed build refuses a tampered or incomplete other-channel release and drops an expired one', async () => {
+ const beta = f => signedChannel(f, '1.3.0-beta.2');
+ const cases = [
+  [/Sparkle/, s => release('1.3.0-beta.2', new Map([...beta(s.f), ['appcast-arm64.xml', Buffer.from('tampered')]]))],
+  [/signature/i, s => release('1.3.0-beta.2', new Map([...beta(s.f), ['desktop-beta.json', Buffer.from(beta(s.f).get('desktop-beta.json').toString().replace('1.3.0-beta.2', '1.3.0-beta.9'))]]))],
+  [/lacks/i, s => release('1.3.0-beta.2', new Map([...beta(s.f)].filter(([name]) => name !== 'appcast-arm64.xml')))],
+  [/immutable/i, s => release('1.3.0-beta.2', beta(s.f), { immutable: false })],
+ ];
+ for (const [error, other] of cases) {
+  const s = await setup({ releases: s => [release('1.2.3', s.signedFiles), other(s)] });
+  try { await assert.rejects(s.build(), error); } finally { await s.cleanup(); }
+ }
+ const s = await setup({ releases: s => [release('1.2.3', s.signedFiles), release('1.3.0-beta.2', signedChannel(s.f, '1.3.0-beta.2', { publishedAt: '2026-08-01T00:00:00Z', expiresAt: '2026-10-01T00:00:00Z' }))] });
  try {
-  const beta = signedChannel(s.f, '1.3.0-beta.2');
-  s.live.publish('beta', new Map([...beta, ['appcast-arm64.xml', Buffer.from('tampered')]]));
-  await assert.rejects(s.build(), /Sparkle/);
-  s.live.publish('beta', new Map([...beta, ['desktop-beta.json', Buffer.from(beta.get('desktop-beta.json').toString().replace('1.3.0-beta.2', '1.3.0-beta.9'))]]));
-  await assert.rejects(s.build(), /signature/i);
-  s.live.site.delete(feedUrl('beta', 'appcast-arm64.xml')); s.live.publish('beta', new Map([['desktop-beta.json', beta.get('desktop-beta.json')], ['desktop-beta.json.sig', beta.get('desktop-beta.json.sig')]]));
-  await assert.rejects(s.build(), /incomplete/i);
-  s.live.publish('beta', signedChannel(s.f, '1.3.0-beta.2', { publishedAt: '2026-08-01T00:00:00Z', expiresAt: '2026-10-01T00:00:00Z' }));
   const result = await s.build();
   assert.deepEqual(result.channels, { stable: '1.2.3' });
   assert.deepEqual(result.dropped, ['beta']);
  } finally { await s.cleanup(); }
 });
 
-test('feed build refuses a live same-channel feed that is newer than the release', async () => {
- const s = await setup();
+test('the forward-only baseline is the channel’s latest published immutable release', async () => {
+ const refused = [
+  [/newer/i, s => [release('1.2.3', s.signedFiles), release('1.2.4', signedChannel(s.f, '1.2.4'))]],
+  [/not published/i, s => [release('1.2.2', signedChannel(s.f, '1.2.2'))]],
+  [/not published/i, s => [release('1.2.3', s.signedFiles, { draft: true })]],
+  [/differ/i, s => [release('1.2.3', signedChannel(s.f, '1.2.3', { publishedAt: '2026-11-01T00:00:01Z' }))]],
+  [/immutable/i, s => [release('1.2.3', s.signedFiles, { immutable: false })]],
+ ];
+ for (const [error, releases] of refused) {
+  const s = await setup({ releases });
+  try { await assert.rejects(s.build(), error); } finally { await s.cleanup(); }
+ }
+ // A re-run over its own release, with older releases of both channels around, is accepted.
+ const s = await setup({ releases: s => [release('1.2.2', signedChannel(s.f, '1.2.2')), release('1.2.3', s.signedFiles), release('1.2.10-beta.1', signedChannel(s.f, '1.2.10-beta.1'))] });
  try {
-  s.live.publish('stable', signedChannel(s.f, '1.2.4'));
-  await assert.rejects(s.build(), /newer/i);
-  s.live.publish('stable', signedChannel(s.f, '1.2.3'));
-  await s.build(); // a re-run over its own deployment
-  s.live.publish('stable', signedChannel(s.f, '1.2.2'));
   await s.build();
+  assert.deepEqual((await s.build()).channels, { stable: '1.2.3', beta: '1.2.10-beta.1' });
  } finally { await s.cleanup(); }
 });
 
-test('feed fetches stay on the Pages origin and never follow redirects', async () => {
- const s = await setup();
+test('promote, then release: releases signed under the previous keys do not block the feed', async () => {
+ // Main's pins after `rotate --promote` and `--retire`: new metadata and Sparkle keys only.
+ const s = await setup({ releases: () => [] });
  try {
-  s.live.publish('beta', signedChannel(s.f, '1.3.0-beta.2'));
-  await s.build();
-  assert.ok(s.live.log.length >= 6);
-  for (const entry of s.live.log) {
-   assert.equal(entry.redirect, 'error');
-   assert.ok(entry.url.startsWith(FEED_SITE), entry.url);
-  }
-  const failing = async () => new Response('', { status: 500 });
-  await assert.rejects(s.build({ fetchImpl: failing }), /500/);
+  const metadata = generateKeyPairSync('ed25519'), sparkle = generateKeyPairSync('ed25519');
+  const promoted = { ...s.f.trust, metadataPublicKeys: [metadata.publicKey.export({ type: 'spki', format: 'pem' }).toString()],
+   sparklePublicKey: sparkle.publicKey.export({ type: 'spki', format: 'der' }).subarray(-32).toString('base64') };
+  const current = signedChannel(s.f, '1.2.3', { keys: { metadata: metadata.privateKey, sparkle: sparkle.privateKey } });
+  for (const [name, bytes] of current) await writeFile(join(s.signed, name), bytes);
+  const oldBeta = signedChannel(s.f, '1.3.0-beta.2'), oldStable = signedChannel(s.f, '1.2.2');
+  s.github.addRelease(release('1.2.2', oldStable)); s.github.addRelease(release('1.3.0-beta.2', oldBeta)); s.github.addRelease(release('1.2.3', current));
+  assert.throws(() => authenticateChannel(oldBeta, 'beta', promoted, s.f.context.now), 'the old beta feed does not verify under main’s promoted pins');
+  // The live site still serves the transition release, signed by the old keys: it is never read.
+  const live = pages(); live.publish('stable', oldStable); live.publish('beta', oldBeta);
+  const pins = { 'desktop-v1.3.0-beta.2': s.f.trust };
+  const fetchImpl = (input, init) => String(input).startsWith(FEED_SITE) ? live.fetchImpl(input, init) : s.github.fetch(input, init);
+  const result = await s.build({ trust: promoted, trustAt: async tag => pins[tag], fetchImpl });
+  assert.deepEqual(result.channels, { stable: '1.2.3', beta: '1.3.0-beta.2' });
+  for (const [name, bytes] of oldBeta) assert.deepEqual(await readFile(join(result.siteDirectory, 'beta', name)), bytes);
+  assert.equal(live.log.length, 0);
  } finally { await s.cleanup(); }
+});
+
+test('a defaced live site is ignored: the build never reads Pages', async () => {
+ const s = await setup({ releases: s => [release('1.2.3', s.signedFiles), release('1.3.0-beta.2', signedChannel(s.f, '1.3.0-beta.2'))] });
+ try {
+  const seen = [];
+  const fetchImpl = async (input, init) => {
+   seen.push(String(input));
+   if (String(input).startsWith(FEED_SITE)) return new Response('<h1>defaced</h1>', { status: 200 });
+   return s.github.fetch(input, init);
+  };
+  const result = await s.build({ fetchImpl });
+  assert.deepEqual(result.channels, { stable: '1.2.3', beta: '1.3.0-beta.2' });
+  assert.ok(seen.length > 0 && seen.every(url => !url.startsWith(FEED_SITE)), 'no request to the live site');
+ } finally { await s.cleanup(); }
+});
+
+test('feed fetches stay on the API and the release download hosts, and never follow API redirects', async () => {
+ const s = await setup({ releases: s => [release('1.2.3', s.signedFiles), release('1.3.0-beta.2', signedChannel(s.f, '1.3.0-beta.2'))] });
+ try {
+  await s.build();
+  const api = s.github.state.log.filter(entry => entry.url.startsWith('https://api.github.com/'));
+  assert.ok(api.length >= 3 && api.every(entry => entry.redirect === 'error' && entry.method === 'GET'));
+  const downloads = s.github.state.log.filter(entry => !entry.url.startsWith('https://api.github.com/'));
+  assert.equal(downloads.length, 6);
+  for (const entry of downloads) assert.match(entry.url, /^https:\/\/github\.com\/dilla-chat\/dilla\/releases\/download\/desktop-v[^/]+\/[^/]+$/);
+  const elsewhere = async (input, init) => {
+   const response = await s.github.fetch(input, init);
+   if (!String(input).startsWith('https://github.com/')) return response;
+   const moved = new Response(await response.arrayBuffer(), { status: response.status });
+   Object.defineProperty(moved, 'url', { value: 'https://evil.example/x' });
+   return moved;
+  };
+  await assert.rejects(s.build({ fetchImpl: elsewhere }), /unexpected host/i);
+ } finally { await s.cleanup(); }
+});
+
+test('the pins of a published release are release-trust.json at its tag’s commit, which must be on main', async () => {
+ const root = await mkdtemp(join(tmpdir(), 'dilla-pages-trust-'));
+ try {
+  const git = args => execFileSync('git', ['-c', 'core.hooksPath=/dev/null', ...args], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  git(['init', '-q', '-b', 'main']);
+  for (const [key, value] of [['user.email', 'test@example.invalid'], ['user.name', 'test'], ['commit.gpgsign', 'false']]) git(['config', key, value]);
+  await mkdir(join(root, 'packages/desktop'), { recursive: true });
+  await writeFile(join(root, 'packages/desktop/release-trust.json'), JSON.stringify({ sparklePublicKey: 'old' }));
+  git(['add', '-A']); git(['commit', '-q', '-m', 'old pins']); const old = git(['rev-parse', 'HEAD']);
+  await writeFile(join(root, 'packages/desktop/release-trust.json'), JSON.stringify({ sparklePublicKey: 'new' }));
+  git(['commit', '-q', '-am', 'promote']); git(['update-ref', 'refs/remotes/origin/main', 'HEAD']);
+  git(['checkout', '-q', '-b', 'side', old]); git(['commit', '-q', '--allow-empty', '-m', 'off main']); const side = git(['rev-parse', 'HEAD']);
+  const github = fakeGithub({ tags: { 'desktop-v1.3.0-beta.2': old, 'desktop-v1.3.0-beta.3': side } });
+  const trustAt = trustAtTag({ api: createGithubApi({ token: 't', fetchImpl: github.fetch }), git });
+  assert.deepEqual(await trustAt('desktop-v1.3.0-beta.2'), { sparklePublicKey: 'old' });
+  await assert.rejects(trustAt('desktop-v1.3.0-beta.3'), /not on main/);
+  await assert.rejects(trustAt('v1.0.0'), /Invalid/);
+ } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test('live feed verification retries until the deployed bytes equal the signed files', async () => {
  const s = await setup();
  try {
+  const live = pages();
   let calls = 0;
-  const sleep = async () => { calls++; if (calls === 2) s.live.publish('stable', signedChannel(s.f, '1.2.3')); };
-  await verifyLiveFeed({ signedDirectory: s.signed, channel: 'stable', fetchImpl: s.live.fetchImpl, attempts: 5, sleep });
+  const sleep = async () => { calls++; if (calls === 2) live.publish('stable', signedChannel(s.f, '1.2.3')); };
+  await verifyLiveFeed({ signedDirectory: s.signed, channel: 'stable', fetchImpl: live.fetchImpl, attempts: 5, sleep });
   assert.equal(calls, 2);
-  s.live.site.set(feedUrl('stable', 'appcast-arm64.xml'), Buffer.from('stale'));
-  await assert.rejects(verifyLiveFeed({ signedDirectory: s.signed, channel: 'stable', fetchImpl: s.live.fetchImpl, attempts: 3, sleep: async () => {} }), /does not serve/i);
+  for (const entry of live.log) { assert.equal(entry.redirect, 'error'); assert.ok(entry.url.startsWith(FEED_SITE), entry.url); }
+  live.site.set(feedUrl('stable', 'appcast-arm64.xml'), Buffer.from('stale'));
+  await assert.rejects(verifyLiveFeed({ signedDirectory: s.signed, channel: 'stable', fetchImpl: live.fetchImpl, attempts: 3, sleep: async () => {} }), /does not serve/i);
  } finally { await s.cleanup(); }
 });

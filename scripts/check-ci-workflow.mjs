@@ -1540,7 +1540,7 @@ const DR_RUNS = {
 const DR_UPLOAD = (name, dir) => ({ name, path: `\${{ runner.temp }}/${dir}`, 'if-no-files-found': 'error', 'retention-days': 3 });
 /** Exact `with` of every action step, by job and kind. */
 const DR_WITH = {
-  checkout: job => ['gate', 'sign', 'publish'].includes(job) ? { 'fetch-depth': 0, 'persist-credentials': false } : { 'persist-credentials': false },
+  checkout: job => ['gate', 'sign', 'publish', 'feed'].includes(job) ? { 'fetch-depth': 0, 'persist-credentials': false } : { 'persist-credentials': false },
   'setup-node': () => ({ 'node-version-file': '.nvmrc', 'package-manager-cache': false }),
   'download:desktop-release-gate': () => ({ name: 'desktop-release-gate', path: '${{ runner.temp }}/gate', 'digest-mismatch': 'error' }),
   // sign's two uploads, each by the artifact id sign reports (an id names immutable bytes; a name could be re-uploaded).
@@ -1565,6 +1565,8 @@ const DR_ENV = {
     .map(name => [name.toUpperCase(), GATE_OUT(name)])) },
   'sign release-sign-job': { VERSION: GATE_OUT('version'), ...Object.fromEntries(DESKTOP_RELEASE_SECRETS.map(name => [name, `\${{ secrets.${name} }}`])) },
   'sign release-candidate record-id': { SIGNED_ID: '${{ steps.signed_upload.outputs.artifact-id }}', CANDIDATE_ID: '${{ steps.candidate_upload.outputs.artifact-id }}' },
+  // The feed reads published releases through the API (contents: read), never the live site.
+  'feed pages-feed build': { GH_TOKEN: '${{ github.token }}', CHANNEL: GATE_OUT('channel'), VERSION: GATE_OUT('version') },
   'publish release-candidate verify': { ...Object.fromEntries(['version', 'sha', 'tree', 'run', 'run_record', 'jobs_record'].map(name => [name.toUpperCase(), GATE_OUT(name)])),
     CANDIDATE_DIGEST: '${{ needs.sign.outputs.candidate_digest }}' },
 };

@@ -306,6 +306,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
@@ -324,9 +325,10 @@ jobs:
           VERSION: ${{ needs.gate.outputs.version }}
           STAGED: ${{ needs.sign.outputs.staged }}
           DIGEST: ${{ needs.sign.outputs.digest }}
-      - name: Build the channel feed site
+      - name: Build the channel feed site from the published immutable releases
         run: node packages/desktop/scripts/pages-feed.mjs build "$RUNNER_TEMP/signed" "$CHANNEL" "$VERSION" "$RUNNER_TEMP/site"
         env:
+          GH_TOKEN: ${{ github.token }}
           CHANNEL: ${{ needs.gate.outputs.channel }}
           VERSION: ${{ needs.gate.outputs.version }}
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0

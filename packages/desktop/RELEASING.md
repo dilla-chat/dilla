@@ -64,7 +64,10 @@ A desktop release needs no CT 144 upgrade.
 - **A red `feed` after `publish`** (the versioned release is out, the Pages feed is not): re-run **only the failed
   `feed` job** of that keyed run (`gh run rerun <keyed run id> --failed`). It is keyless, uses the signed artifact
   (kept 3 days) and accepts a byte-identical re-deploy. A new request run cannot redo it: the gate refuses a
-  version that is already published. After 3 days, release the next version instead.
+  version that is already published. After 3 days, release the next version instead. The feed is built from the
+  published immutable releases only (this channel's newest must be this version; the other channel's newest is
+  checked under the pins it was signed for), so a key rotation or a defaced Pages file never blocks it: the live
+  site is simply overwritten.
 - **A red `verify-published`** cannot unpublish an immutable release; treat it as an incident and investigate
   before the next tag.
 

@@ -2556,6 +2556,10 @@ test('checkout ref/repository/path or workflow_run.head_sha is reported', () => 
     ['persist-credentials', doc => { delete step(doc, 'verify-published', 'actions/checkout').with['persist-credentials']; }],
     ['sign fetch-depth', doc => { delete step(doc, 'sign', 'actions/checkout').with['fetch-depth']; }],
     ['sign fetch-depth 1', doc => { step(doc, 'sign', 'actions/checkout').with['fetch-depth'] = 1; }],
+    // The feed reads each published release's pins at its tag's commit (review batch B, I3).
+    ['feed fetch-depth', doc => { delete step(doc, 'feed', 'actions/checkout').with['fetch-depth']; }],
+    ['feed build without the token', doc => { delete step(doc, 'feed', 'Build the channel feed').env.GH_TOKEN; }],
+    ['feed build with a Pages URL', doc => { step(doc, 'feed', 'Build the channel feed').env.LIVE = 'https://dilla-chat.github.io/dilla/'; }],
   ]) reported({ [KEYED]: edit(change) }, label);
 });
 
