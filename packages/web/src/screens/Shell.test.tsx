@@ -1046,6 +1046,91 @@ describe('timeline', () => {
 });
 
 describe('a channel that fails to open', () => {
+  it.each(['before', 'after'] as const)('reopens a failed join when its worker membership becomes active %s the refusal arrives', async ordering => {
+    let rejectOpen!: (reason: unknown) => void;
+    let attempts = 0;
+    const { fake } = setup(`/c/${A}/${GEN}`, { before: client => {
+      client.set(`timeline:${GEN}`, timeline({ group: 'joining' }));
+      client.handler = command => {
+        if (command.m !== 'openChannel') return Promise.resolve(null);
+        if (++attempts === 1) return new Promise((_, reject) => { rejectOpen = reject; });
+        // A recovered membership publishes the channel row; the ordinary open must restore its timeline subscription.
+        client.set(`timeline:${GEN}`, timeline({ items: [item({ key: 's1', body: 'after admission' })] }));
+        return Promise.resolve(null);
+      };
+    } });
+    const activate = () => fake.set(`channels:${A}`, CHANNELS.map(row => row.id === GEN ? { ...row, group: 'active' } : row));
+    if (ordering === 'before') act(activate);
+    await act(async () => { rejectOpen(refusal({ code: 'E_COMMIT_INVALID', status: 422 })); await Promise.resolve(); });
+    if (ordering === 'after') {
+      expect(screen.getByRole('heading', { name: 'This channel did not open' })).toBeInTheDocument();
+      act(() => fake.set('sendBlocks', { [GEN]: { code: 'E_DEVICE_UNLISTED', own: false } }));
+      act(activate);
+    }
+    await waitFor(() => expect(fake.callsOf('openChannel')).toHaveLength(2));
+    expect(screen.queryByRole('heading', { name: 'This channel did not open' })).toBeNull();
+    expect(within(screen.getByRole('log')).getByText('after admission')).toBeInTheDocument();
+    if (ordering === 'before') expect(composer()).not.toHaveAttribute('aria-disabled', 'true');
+    else {
+      // Membership recovery does not lift an existing failed-leaf send gate.
+      expectBlocked();
+      expect(composer()).toHaveAccessibleDescription(expect.stringContaining(en['privacy.leafFailed']));
+    }
+  });
+  it.each(['none', 'joining', 'resync', 'not-member'] as const)('keeps the open refusal when its worker membership is %s, even if another channel activates', async group => {
+    const { fake } = setup(`/c/${A}/${GEN}`, { before: client => {
+      client.set(`timeline:${GEN}`, timeline({ group: 'joining' }));
+      client.handler = command => command.m === 'openChannel'
+        ? Promise.reject(refusal({ code: 'E_COMMIT_INVALID', status: 422 })) : Promise.resolve(null);
+    } });
+    await screen.findByRole('heading', { name: 'This channel did not open' });
+    act(() => fake.set(`channels:${A}`, CHANNELS.map(row => row.id === GEN ? { ...row, group }
+      : row.id === RAND ? { ...row, group: 'active' } : row)));
+    expect(fake.callsOf('openChannel')).toHaveLength(1);
+    expect(screen.getByRole('heading', { name: 'This channel did not open' })).toBeInTheDocument();
+    expectBlocked();
+  });
+  it('keeps a genuine failure of an already active open', async () => {
+    const { fake } = setup(`/c/${A}/${GEN}`, { before: client => {
+      client.set(`channels:${A}`, CHANNELS.map(row => row.id === GEN ? { ...row, group: 'active' } : row));
+      client.set(`timeline:${GEN}`, timeline());
+      client.handler = command => command.m === 'openChannel'
+        ? Promise.reject(refusal({ code: 'E_INTERNAL', status: 500 })) : Promise.resolve(null);
+    } });
+    await screen.findByRole('heading', { name: 'This channel did not open' });
+    act(() => fake.set(`channels:${A}`, [...fake.get(`channels:${A}`)!]));
+    expect(fake.callsOf('openChannel')).toHaveLength(1);
+    expect(screen.getByRole('heading', { name: 'This channel did not open' })).toBeInTheDocument();
+    expectBlocked();
+  });
+  it('keeps a failed recovery open instead of looping while membership stays active', async () => {
+    const { fake } = setup(`/c/${A}/${GEN}`, { before: client => {
+      client.handler = command => command.m === 'openChannel'
+        ? Promise.reject(refusal({ code: 'E_INTERNAL', status: 500 })) : Promise.resolve(null);
+    } });
+    await screen.findByRole('heading', { name: 'This channel did not open' });
+    await act(async () => { fake.set(`channels:${A}`, CHANNELS.map(row => row.id === GEN ? { ...row, group: 'active' } : row)); await Promise.resolve(); });
+    expect(fake.callsOf('openChannel')).toHaveLength(2);
+    expect(screen.getByRole('heading', { name: 'This channel did not open' })).toBeInTheDocument();
+    expectBlocked();
+  });
+  it('ignores a superseded open refusal after leaving and reopening the same channel', async () => {
+    let rejectOld!: (reason: unknown) => void;
+    let attempts = 0;
+    const { fake, user } = setup(`/c/${A}/${GEN}`, { before: client => {
+      client.set(`timeline:${GEN}`, timeline());
+      client.set(`timeline:${RAND}`, timeline({ channelId: RAND }));
+      client.handler = command => command.m === 'openChannel' && command.channelId === GEN && ++attempts === 1
+        ? new Promise((_, reject) => { rejectOld = reject; }) : Promise.resolve(null);
+    } });
+    const channels = within(screen.getByRole('navigation', { name: 'channels' }));
+    await user.click(channels.getByRole('button', { name: /^random/ }));
+    await user.click(channels.getByRole('button', { name: /^general/ }));
+    await act(async () => { rejectOld(refusal({ code: 'E_COMMIT_INVALID', status: 422 })); await Promise.resolve(); });
+    expect(fake.callsOf('openChannel')).toHaveLength(3);
+    expect(screen.queryByRole('heading', { name: 'This channel did not open' })).toBeNull();
+    expect(composer()).not.toHaveAttribute('aria-disabled', 'true');
+  });
   it('says so and can be retried', async () => {
     const { fake, user } = setup('/', { channels: false });
     let attempts = 0;

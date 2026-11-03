@@ -118,29 +118,38 @@ describe('the server bot settings', () => {
   });
 
   it('waits for the exact settings response and acknowledges its opaque lease', async () => {
-    const ready = { ...ROW, state: 3 as const, capabilities: (1 << 4) | (1 << 5), revision: '7' };
-    const { fake, user } = setupPage('automoderation', ready);
-    let prefixOpen = false;
-    fake.handler = command => {
-      if (command.m === 'getBotInstallation') return Promise.resolve(ready);
-      if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: ready.id });
-      if (command.m === 'humanInteractionRequest') return Promise.resolve({ requestId: command.requestId, upload: 'accepted' });
-      if (command.m === 'readBotInteractionResponses') return Promise.resolve({ through: prefixOpen ? 'a'.repeat(32) : null, blocked: !prefixOpen, responses: prefixOpen ? [{
-        deliveryId: '4', sourceSeq: '8', requestId: fake.callsOf('humanInteractionRequest').at(-1)?.requestId ?? '',
-        communityId: SERVER, operation: 62, channelId: null, status: 0, revision: '7',
-        data: encode([1n, 0n, 'log', 'log', 'log', 600000n, []]),
-      }] : [] });
-      return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
-    };
-    await user.click(await screen.findByRole('button', { name: en['admin.bot.automod.load'] }));
-    await waitFor(() => expect(fake.callsOf('readBotInteractionResponses').length).toBeGreaterThan(0));
-    expect(screen.queryByText(en['admin.bot.automod.loaded'])).not.toBeInTheDocument();
-    expect(fake.callsOf('ackBotInteractionResponses')).toHaveLength(0);
-    prefixOpen = true;
-    // The panel polls once a second, so the response arrives on the next poll: up to a full interval plus the
-    // call itself. The default 1 s findBy timeout loses that race whenever the flip lands just after a poll.
-    await screen.findByText(en['admin.bot.automod.loaded'], undefined, { timeout: 5_000 });
-    await waitFor(() => expect(fake.callsOf('ackBotInteractionResponses')).toHaveLength(1));
+    vi.useFakeTimers();
+    let view: ReturnType<typeof setupPage>['view'] | undefined;
+    try {
+      const ready = { ...ROW, state: 3 as const, capabilities: (1 << 4) | (1 << 5), revision: '7' };
+      const setup = setupPage('automoderation', ready, false, false, true, true);
+      const { fake } = setup;
+      view = setup.view;
+      let prefixOpen = false;
+      fake.handler = command => {
+        if (command.m === 'getBotInstallation') return Promise.resolve(ready);
+        if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: ready.id });
+        if (command.m === 'humanInteractionRequest') return Promise.resolve({ requestId: command.requestId, upload: 'accepted' });
+        if (command.m === 'readBotInteractionResponses') return Promise.resolve({ through: prefixOpen ? 'a'.repeat(32) : null, blocked: !prefixOpen, responses: prefixOpen ? [{
+          deliveryId: '4', sourceSeq: '8', requestId: fake.callsOf('humanInteractionRequest').at(-1)?.requestId ?? '',
+          communityId: SERVER, operation: 62, channelId: null, status: 0, revision: '7',
+          data: encode([1n, 0n, 'log', 'log', 'log', 600000n, []]),
+        }] : [] });
+        return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
+      };
+      await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: en['admin.bot.automod.load'] })); await Promise.resolve(); });
+      expect(fake.callsOf('readBotInteractionResponses')).toHaveLength(1);
+      expect(screen.queryByText(en['admin.bot.automod.loaded'])).not.toBeInTheDocument();
+      expect(fake.callsOf('ackBotInteractionResponses')).toHaveLength(0);
+      prefixOpen = true;
+      await act(async () => { await vi.advanceTimersToNextTimerAsync(); });
+      expect(screen.getByText(en['admin.bot.automod.loaded'])).toBeInTheDocument();
+      expect(fake.callsOf('ackBotInteractionResponses')).toEqual([{ m: 'ackBotInteractionResponses', communityId: SERVER, through: 'a'.repeat(32) }]);
+    } finally {
+      view?.unmount();
+      vi.useRealTimers();
+    }
   });
 
   it('loads automatic moderation over op 62 and prepares a step-up protected op 63 save', async () => {

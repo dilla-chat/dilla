@@ -564,8 +564,9 @@ test('4. one timeout row: an idle desktop in general is cut by itself, told it w
   cutting = true;
   // Half the timeout, then Ada's own input (an activity report is sent at most every 5 s), then past it for Björn only.
   await advanceClock(30);
-  await a.page.waitForTimeout(5_500);
+  // Microphone activity during the wait can reset the debounce and suppress the subsequent pointer report.
   const adaActive = activityAccepted(a);
+  await a.page.waitForTimeout(5_500);
   await a.page.mouse.move(400, 300);
   await a.page.mouse.move(420, 320);
   await adaActive;
