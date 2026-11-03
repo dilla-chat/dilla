@@ -16,7 +16,7 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 class GitHubRun:
-    def __init__(self, repository, run_id, token, *, opener=None, sleep=time.sleep):
+    def __init__(self, repository, run_id, token, *, opener=None, sleep=time.sleep, monotonic=time.monotonic):
         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
             raise ValueError("invalid GITHUB_REPOSITORY")
         if not re.fullmatch(r"[1-9][0-9]*", run_id):
@@ -27,20 +27,34 @@ class GitHubRun:
         self.token = token
         self.open = opener or build_opener(NoRedirect()).open
         self.sleep = sleep
+        self.monotonic = monotonic
 
-    def request(self, suffix, method="GET"):
-        for attempt in range(3):
+    def request(self, suffix, method="GET", *, deadline=None):
+        # Only jobs() supplies a recovery deadline. Cancellation and other reads
+        # retain their original three-attempt policy.
+        attempts = 32 if deadline is not None else 3
+        last_reason = "not-observed"
+        for attempt in range(attempts):
+            remaining = deadline - self.monotonic() if deadline is not None else 8
+            if remaining <= 0:
+                break
+            retry_after = 0
             request = Request(self.url + suffix, method=method, headers={
                 "Accept": "application/vnd.github+json",
                 "Authorization": f"Bearer {self.token}",
                 "X-GitHub-Api-Version": "2026-03-10",
             })
             try:
-                with self.open(request, timeout=8) as response:
+                with self.open(request, timeout=min(8, remaining)) as response:
                     body = response.read()
                     return json.loads(body) if body else {}
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                raise RuntimeError("GitHub API returned malformed JSON") from None
             except HTTPError as error:
                 code = error.code
+                header = (error.headers.get("Retry-After", "") if error.headers else "").strip()
+                if re.fullmatch(r"[0-9]{1,10}", header):
+                    retry_after = int(header)
                 error.close()
                 if method == "POST" and code == 409:
                     # A stuck running workflow can also return 409. Only a fresh
@@ -51,16 +65,38 @@ class GitHubRun:
                     raise RuntimeError("GitHub cancellation unconfirmed: HTTP 409 and run is not completed") from None
                 if code not in (429, 500, 502, 503, 504):
                     raise RuntimeError(f"GitHub API returned HTTP {code}") from None
-            except (URLError, TimeoutError, OSError):
-                pass
-            if attempt < 2:
-                self.sleep(attempt + 1)
-        raise RuntimeError("GitHub API unavailable after 3 attempts")
+                last_reason = f"HTTP {code}"
+                if code == 429 and not retry_after:
+                    retry_after = 60
+            except URLError as error:
+                last_reason = "timeout" if isinstance(error.reason, TimeoutError) else "network"
+            except TimeoutError:
+                last_reason = "timeout"
+            except OSError:
+                last_reason = "network"
+            if attempt + 1 < attempts:
+                delay = attempt + 1 if attempt < 2 else 5
+                if deadline is not None:
+                    delay = max(delay, retry_after)
+                    delay = min(delay, max(0, deadline - self.monotonic()))
+                    if attempt == 2:
+                        print(f"CI jobs read temporarily unavailable (last reason: {last_reason}); bounded recovery continues.", flush=True)
+                self.sleep(delay)
+        if deadline is not None:
+            raise RuntimeError(f"GitHub jobs read recovery budget exhausted (last reason: {last_reason})")
+        raise RuntimeError(f"GitHub API unavailable after 3 attempts (last reason: {last_reason})")
 
-    def jobs(self):
+    def jobs(self, *, deadline=None):
+        # Include socket timeouts, retry waits and all pages in one finite read
+        # budget, also bounded by the watcher's existing overall deadline.
+        read_deadline = self.monotonic() + 120
+        if deadline is not None:
+            read_deadline = min(read_deadline, deadline)
         jobs = []
         for page in range(1, 101):
-            data = self.request(f"/jobs?filter=latest&per_page=100&page={page}")
+            data = self.request(f"/jobs?filter=latest&per_page=100&page={page}", deadline=read_deadline)
+            if not isinstance(data, dict) or not isinstance(data.get("jobs"), list) or type(data.get("total_count")) is not int or data["total_count"] < 0:
+                raise RuntimeError("GitHub API returned a malformed jobs response")
             batch = data["jobs"]
             jobs.extend(batch)
             if len(jobs) >= data["total_count"]:
@@ -90,7 +126,7 @@ def watch(api, *, sleep=time.sleep, monotonic=time.monotonic, max_seconds=89 * 6
     while monotonic() < deadline:
         # ci-ok waits for us. The completion barrier waits for every real DAG leaf,
         # including reusable-workflow children that GitHub discovers after startup.
-        jobs = [j for j in api.jobs() if j["name"] not in {"ci-watchdog", "ci-ok"}]
+        jobs = [j for j in api.jobs(deadline=deadline) if j["name"] not in {"ci-watchdog", "ci-ok"}]
         for job in jobs:
             completed_failure = (job["status"] == "completed" and
                                  job.get("conclusion") not in acceptable)

@@ -1,6 +1,6 @@
 """Exercise cancellation decisions and the authenticated HTTP boundary without GitHub."""
 import importlib.util
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from functools import partial
 import io
 import json
@@ -43,6 +43,8 @@ class Transport:
     def __call__(self, request, timeout):
         self.requests.append((request, timeout))
         response = next(self.responses)
+        if callable(response):
+            response = response(request, timeout)
         if isinstance(response, Exception):
             raise response
         return io.BytesIO(json.dumps(response).encode())
@@ -54,7 +56,7 @@ class WatchdogTests(unittest.TestCase):
         transport = Transport(responses)
         clock = clock or Clock()
         api = watchdog.GitHubRun("owner/repo", "123", "test-token", opener=transport,
-                                 sleep=clock.sleep)
+                                 sleep=clock.sleep, monotonic=lambda: clock.now)
         return api, transport, clock
 
     def watch(self, responses, limit=100):
@@ -128,6 +130,7 @@ class WatchdogTests(unittest.TestCase):
                             max_seconds=10 if deadline else 100)
             with patch.dict(os.environ, environment, clear=True), \
                     patch.object(watchdog, "build_opener", return_value=SimpleNamespace(open=transport)), \
+                    patch.object(watchdog, "GitHubRun", partial(watchdog.GitHubRun, sleep=clock.sleep, monotonic=lambda: clock.now)), \
                     patch.object(watchdog, "watch", timer), redirect_stderr(stderr):
                 result = watchdog.main()
         return result, transport, stderr.getvalue()
@@ -227,8 +230,90 @@ class WatchdogTests(unittest.TestCase):
         self.assertEqual(len(transport.requests), 3)
         api, transport, _ = self.client([URLError("offline")] * 3)
         with self.assertRaisesRegex(RuntimeError, "unavailable after 3 attempts"):
-            api.jobs()
+            api.request("/jobs?filter=latest&per_page=100&page=1")
         self.assertEqual(len(transport.requests), 3)
+
+    def test_jobs_recovers_after_three_transient_failures_then_cancels_observed_failure_without_delay(self):
+        for failure in [URLError("PRIVATE_NETWORK_SECRET"), TimeoutError("PRIVATE_TIMEOUT_SECRET"),
+                        HTTPError("https://api.github.com", 503, "PRIVATE_HTTP_SECRET", {}, io.BytesIO(b"PRIVATE_BODY_SECRET"))]:
+            with self.subTest(failure=type(failure).__name__):
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    result, transport, clock = self.watch([failure] * 3 + [
+                        {"total_count": 1, "jobs": [job("native", conclusion="failure")]}, {}])
+                self.assertEqual(result, "cancelled")
+                self.assertEqual(clock.waits, [1, 2, 5])
+                self.assertEqual(len(transport.requests), 5)
+                self.assertEqual(transport.requests[-1][0].get_method(), "POST")
+                self.assertNotIn("PRIVATE_", output.getvalue())
+
+    def test_job_read_outage_budget_includes_request_time_and_caps_remaining_timeout(self):
+        clock = Clock()
+        requests = []
+        def offline(request, timeout):
+            requests.append((request, timeout))
+            clock.now += timeout
+            raise TimeoutError("PRIVATE_TIMEOUT_SECRET")
+        api = watchdog.GitHubRun("owner/repo", "123", "test-token", opener=offline,
+                                 sleep=clock.sleep, monotonic=lambda: clock.now)
+        with self.assertRaisesRegex(RuntimeError, "recovery budget.*timeout") as caught:
+            api.jobs()
+        self.assertLessEqual(clock.now, 120)
+        self.assertGreater(clock.now, 100)
+        self.assertTrue(all(0 < timeout <= 8 for _, timeout in requests))
+        self.assertNotIn("PRIVATE_", str(caught.exception))
+
+    def test_repeated_read_outage_stays_red_and_attempts_existing_fallback_cancellation(self):
+        def read_outage(request, _timeout):
+            return URLError("PRIVATE_SECRET") if request.get_method() == "GET" else {}
+        result, transport, stderr = self.run_main([read_outage] * 100)
+        self.assertEqual(result, 1)
+        self.assertIn("recovery budget", stderr)
+        self.assertIn("network", stderr)
+        self.assertNotIn("PRIVATE_SECRET", stderr)
+        self.assertEqual(transport.requests[-1][0].get_method(), "POST")
+        self.assertLess(len(transport.requests), 100)
+        self.assertNotIn("could not confirm workflow cancellation", stderr)
+
+    def test_retry_after_is_respected_without_exceeding_read_budget(self):
+        for seconds in [12, 3600]:
+            error = HTTPError("https://api.github.com", 429, "PRIVATE_SECRET", {"Retry-After": str(seconds)}, io.BytesIO())
+            api, transport, clock = self.client([error, {"total_count": 0, "jobs": []}])
+            if seconds < 120:
+                self.assertEqual(api.jobs(), [])
+                self.assertEqual(clock.waits, [12])
+                self.assertEqual(len(transport.requests), 2)
+            else:
+                with self.assertRaisesRegex(RuntimeError, "recovery budget.*HTTP 429"):
+                    api.jobs()
+                self.assertEqual(clock.now, 120)
+                self.assertEqual(len(transport.requests), 1)
+
+    def test_definitive_auth_and_malformed_responses_do_not_enter_read_recovery(self):
+        for code in [401, 403, 404]:
+            error = HTTPError("https://api.github.com", code, "PRIVATE_SECRET", {}, io.BytesIO(b"PRIVATE_SECRET"))
+            api, transport, clock = self.client([error])
+            with self.assertRaisesRegex(RuntimeError, f"HTTP {code}"):
+                api.jobs()
+            self.assertEqual(clock.waits, [])
+            self.assertEqual(len(transport.requests), 1)
+        clock = Clock()
+        calls = []
+        def malformed(request, timeout):
+            calls.append(request)
+            return io.BytesIO(b'PRIVATE_SECRET not JSON')
+        api = watchdog.GitHubRun("owner/repo", "123", "test-token", opener=malformed,
+                                 sleep=clock.sleep, monotonic=lambda: clock.now)
+        with self.assertRaisesRegex(RuntimeError, "malformed JSON") as caught:
+            api.jobs()
+        self.assertEqual(clock.waits, [])
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("PRIVATE_SECRET", str(caught.exception))
+        api, transport, clock = self.client([{"total_count": 1, "jobs": "PRIVATE_SECRET"}])
+        with self.assertRaisesRegex(RuntimeError, "malformed jobs response"):
+            api.jobs()
+        self.assertEqual(clock.waits, [])
+        self.assertEqual(len(transport.requests), 1)
 
     def test_permission_error_fails_without_retry_or_disclosing_token(self):
         error = HTTPError("https://api.github.com", 403, "test-token", {}, io.BytesIO(b"test-token"))
