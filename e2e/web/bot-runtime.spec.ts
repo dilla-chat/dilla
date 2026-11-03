@@ -306,8 +306,10 @@ test('device 1 recovers its exact encrypted Bot response after Bot and browser r
     await secondSettings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
       .getByRole('button', { name: copy('workspace.moderationLog'), exact: true }).click();
     await secondSettings.getByRole('button', { name: copy('admin.bot.moderationLog.loadAutomatic'), exact: true }).click();
+    // Device 2's first request also establishes its own interaction group with the Bot, which took over 20 s on a
+    // loaded Linux host (run 635); the acceptance gets the wait every other Bot step of this spec has.
     await expect.poll(() => lastWorkerCommandOutcome(secondPage!, 'listModerationCases'),
-      { timeout: 20_000, intervals: [250, 500, 1_000] }).toEqual({
+      { timeout: 90_000, intervals: [500, 1_000, 2_000] }).toEqual({
       requestId: expect.stringMatching(/^[0-9a-f]{32}$/u), state: 'accepted', code: null, detail: null,
     });
     const secondRequestId = (await lastWorkerCommandOutcome(secondPage, 'listModerationCases')).requestId;
