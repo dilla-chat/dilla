@@ -433,7 +433,11 @@ test('native launch instrumentation is compiled before main imports and shares t
   const app = await readFile(new URL('../web/support/installed-app.ts', import.meta.url), 'utf8');
   assert.match(packages, /banner: \{ js: installedEntrypointBanner\(reports, version\) \}/);
   assert.match(app, /Promise\.all\(\[collect\('network'\), collect\('native'\)\]\)/);
-  assert.equal(app.match(/setTimeout\(resolve, 10000\)/g)?.length, 1);
+  // The probe budget covers the native system log reads, which outlived a ten-second budget on the Apple Silicon host.
+  assert.equal(app.match(/setTimeout\(resolve, LOG_READ_MS \+ 10000\)/g)?.length, 1);
+  const launch = await import('../web/support/installed-launch-diagnostics.ts');
+  assert.equal(launch.LOG_READ_MS, 30000);
+  assert.equal(launch.logStart(Date.UTC(2026, 10, 3, 13, 5, 9) + new Date(Date.UTC(2026, 10, 3, 13, 5, 9)).getTimezoneOffset() * 60000), '2026-11-03 13:05:09');
   assert.ok(app.indexOf("console.log('INSTALLED_STARTUP_DIAGNOSTICS '") < app.indexOf("collect('native')"));
   assert.match(app, /if \(info\.status !== info\.expectedStatus\)/);
   assert.match(app, /if \(!acceptingDiagnostics\) return/);

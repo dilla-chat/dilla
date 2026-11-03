@@ -7,7 +7,7 @@ import { canonicalInstance } from '../../../packages/desktop/src/policy.ts';
 import { test as appTest, WAIT, copy } from './app.ts';
 import { assertInstalledFuses, createInstalledPackages, type InstalledPackages } from './installed-packages.ts';
 import { installedAccountDiagnostics, installedPostFailureDiagnostics } from './installed-diagnostics.ts';
-import { installedNativeLaunchDiagnostics } from './installed-launch-diagnostics.ts';
+import { LOG_READ_MS, installedNativeLaunchDiagnostics } from './installed-launch-diagnostics.ts';
 
 const pause = () => new Promise(done => setTimeout(done, 100));
 interface ProcessReport { pid: number; role: string; start: string | null; version: string; executable: string }
@@ -149,8 +149,9 @@ export const test = appTest.extend<{ installed: InstalledAccountApp }>({
           finally { clearTimeout(timer); }
           // The original assertion has already failed, and its unmodified
           // startup snapshot is logged above. These optional probes get a
-          // separate 10-second teardown budget; startup/assertion budgets stay
-          // unchanged and no probe may retry or replace the original failure.
+          // separate teardown budget sized for the native system log reads;
+          // startup/assertion budgets stay unchanged and no probe may retry or
+          // replace the original failure.
           let probeTimer: ReturnType<typeof setTimeout> | undefined, acceptingDiagnostics = true;
           try {
             // Native checks run alongside network checks, inside this same total
@@ -166,7 +167,7 @@ export const test = appTest.extend<{ installed: InstalledAccountApp }>({
               } catch { /* Preserve the original failure even if an optional probe fails. */ }
             };
             await Promise.race([Promise.all([collect('network'), collect('native')]), new Promise<void>(resolve => {
-              probeTimer = setTimeout(resolve, 10000);
+              probeTimer = setTimeout(resolve, LOG_READ_MS + 10000);
             })]);
           } catch { /* Preserve the existing failed assertion even if every probe fails. */ }
           finally { acceptingDiagnostics = false; clearTimeout(probeTimer); }

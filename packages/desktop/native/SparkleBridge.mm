@@ -112,7 +112,9 @@ static napi_value Prepare(napi_env env,napi_callback_info info) {
  [driver.updater checkForUpdates];return promise;
 }
 static napi_value Commit(napi_env env,napi_callback_info info) {
- // Main calls this only from Electron's will-quit, after renderer unloads.
+ // Main calls this only from Electron's will-quit, after renderer unloads, and
+ // withholds that quit: the installer terminates the host once its stage-2
+ // request has arrived, which is what makes it relaunch the update afterwards.
  if(![NSThread isMainThread] || !driver.installReply) {napi_throw_error(env,nullptr,"No verified Sparkle update");return nullptr;}
  void (^reply)(SPUUserUpdateChoice)=driver.installReply;driver.installReply=nil;reply(SPUUserUpdateChoiceInstall);
  napi_value result;napi_get_undefined(env,&result);return result;

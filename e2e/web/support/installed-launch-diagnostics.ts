@@ -158,10 +158,17 @@ export function parseSparkleLogs(text: string, product: string) {
   return { status: 'ok', records: parsed.filter((_, i) => kept.has(i)), unknownMessages, dropped: parsed.length - kept.size };
 }
 
+/** The failure teardown's budget for the two system log reads; `log show` is slow on a busy runner. */
+export const LOG_READ_MS = 30000;
+/** The moment the packages were built, as `log show --start` wants it: local time to the second. */
+export function logStart(started: number): string {
+  const at = new Date(started), pad = (n: number) => String(n).padStart(2, '0');
+  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}`;
+}
 async function command(executable: string, args: string[], timeout = 2000) {
-  return new Promise<{ status: number | null; stdout: string; stderr: string }>(resolve => {
+  return new Promise<{ status: number | null; stdout: string; stderr: string; timedOut: boolean }>(resolve => {
     execFile(executable, args, { timeout, killSignal: 'SIGKILL', maxBuffer: 1048576, encoding: 'utf8' }, (error, stdout, stderr) => {
-      resolve({ status: error ? typeof error.code === 'number' ? error.code : null : 0, stdout, stderr });
+      resolve({ status: error ? typeof error.code === 'number' ? error.code : null : 0, stdout, stderr, timedOut: error?.killed === true });
     });
   });
 }
@@ -206,12 +213,13 @@ export async function installedNativeLaunchDiagnostics(input: Input, dependencie
     Promise.all(versions.map(version => readLaunchEntries(input.reports, version))),
     runCommand('/usr/bin/codesign', ['--verify', '--deep', '--strict', bundle], 6000), runCommand('/usr/bin/codesign', ['--display', '--verbose=4', bundle]),
     runCommand('/bin/ps', ['-A', '-ww', '-o', 'pid=,uid=,stat=,comm=']),
-    // Each log read and the deep signature check took over two seconds on the macOS Intel host (run 633); all three
-    // still run in parallel within the teardown's ten-second budget.
-    runCommand('/usr/bin/log', ['show', '--style', 'ndjson', '--last', '10m', '--info', '--predicate', `eventMessage CONTAINS "${input.product}"`], 6000),
+    // Each log read and the deep signature check took over two seconds on the macOS Intel host (run 633), and both
+    // log reads of the last ten minutes outlived six seconds on the Apple Silicon host (run 638). The reads cover
+    // only the time since the packages were built and run in parallel within the teardown's log budget.
+    runCommand('/usr/bin/log', ['show', '--style', 'ndjson', '--start', logStart(input.started), '--info', '--predicate', `eventMessage CONTAINS "${input.product}"`], LOG_READ_MS),
     // Sparkle's installer and agent log the install and the relaunch under their own names, redacting paths as <private>,
     // so the product's name finds none of it.
-    runCommand('/usr/bin/log', ['show', '--style', 'ndjson', '--last', '10m', '--info', '--predicate', SPARKLE_PREDICATE], 6000),
+    runCommand('/usr/bin/log', ['show', '--style', 'ndjson', '--start', logStart(input.started), '--info', '--predicate', SPARKLE_PREDICATE], LOG_READ_MS),
     crashReports(input, input.started, dependencies.crashDirectory ?? join(homedir(), 'Library/Logs/DiagnosticReports')), boundedRegular(join(bundle, 'Contents/Info.plist'), 131072),
   ]);
   const ownedProcesses: { pid: number; state: string }[] = [];
@@ -229,6 +237,6 @@ export async function installedNativeLaunchDiagnostics(input: Input, dependencie
     plist: { status: plist.status, version: versions.includes(plistVersion ?? '') ? plistVersion : null, executableMatches: declaredExecutable === basename(input.expectedExecutable) },
     entries, codeSignature: { verifyStatus: verify.status, displayStatus: signature.status, adHoc: /^Signature=adhoc$/mi.test(signature.stderr), cdHash },
     processes: { status: processes.status, records: ownedProcesses }, crashes,
-    logs: { commandStatus: logs.status, ...parseOwnedLaunchLogs(logs.stdout, input.product) },
-    sparkle: { commandStatus: sparkle.status, ...parseSparkleLogs(sparkle.stdout, input.product) } };
+    logs: { commandStatus: logs.status, commandTimedOut: logs.timedOut, ...parseOwnedLaunchLogs(logs.stdout, input.product) },
+    sparkle: { commandStatus: sparkle.status, commandTimedOut: sparkle.timedOut, ...parseSparkleLogs(sparkle.stdout, input.product) } };
 }

@@ -137,8 +137,11 @@ Windows and normal FUSE AppImage acceptance must be rerun on the final source tr
 
 macOS uses a narrow Sparkle bridge with signed update feeds and archives. Actual
 unsigned-to-unsigned installed upgrades passed on Apple Silicon using ad-hoc signing
-and normal OS protections; on Intel the upgrade installs but does not relaunch, so
-Intel Macs are out of the first release. The installed-account and complete release gates still apply.
+and normal OS protections. After the quit that installs an update the app stays open
+until Sparkle's installer ends it, which is what makes the installer relaunch the
+updated app; an installer that never does so is given thirty seconds before the app
+quits by itself (the update is then installed without a relaunch). Intel Macs are out
+of the first release. The installed-account and complete release gates still apply.
 
 Preview packaging is available with `npm run pack -w @dilla/desktop`; it creates an
 unpacked app for validation and never publishes. Installer targets are configured

@@ -165,10 +165,14 @@ has been made here.
   required unsigned Electron upgrade.
 - [GitHub hosted runners](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
   distinguishes `macos-15-intel` from the Apple Silicon `macos-15` runner. Intel Macs
-  are out of the first release (2026-11-03): their installed Sparkle upgrade installs
-  but does not relaunch on that runner, and Apple has sold no Intel Mac since 2023.
-  The `macos-15-intel` jobs and the `mac-x64` release target return together, after
-  that upgrade passes there.
+  are out of the first release (2026-11-03): their installed Sparkle upgrade installed
+  but did not relaunch on that runner, and Apple has sold no Intel Mac since 2023.
+  That relaunch failure was a race the bridge has since closed (the host quit on its
+  own right after its install reply, before Sparkle's installer had its "install and
+  relaunch" request; the host now stays alive until the installer terminates it, as
+  [Sparkle's installer](https://github.com/sparkle-project/Sparkle/blob/2.10.1/Autoupdate/AppInstaller.m)
+  relaunches only after that request). The `macos-15-intel` jobs and the `mac-x64`
+  release target return together, after that upgrade passes there.
 
 ## Comparative performance protocol
 
