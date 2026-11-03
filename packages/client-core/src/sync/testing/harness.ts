@@ -22,7 +22,7 @@ export interface Device {
   readonly membership: { group: string; status: 'resyncing' | 'not-member' | 'member' }[];
   readonly joinAll: JoinAllProgress[];
   readonly unexpected: string[];
-  /** The group hex of every onWelcomeClockSkew report, in call order. */
+  /** Every onWelcomeClockSkew report in call order: the group hex, then `@` and the community hex when the proof names one. */
   readonly clockSkew: string[];
   /** The msg id hex of every row beforeSend was called for, in call order. */
   readonly beforeSends: string[];
@@ -76,7 +76,7 @@ export function device(ds: ModelDs, clock: ManualClock, me: Peer, random = 0.5):
     onMembership: (groupId, status) => { membership.push({ group: toHex(groupId), status }); },
     onJoinAll: (p) => { joinAll.push({ ...p }); },
     onUnexpectedWelcome: (g) => { unexpected.push(toHex(g)); },
-    onWelcomeClockSkew: (g) => { clockSkew.push(toHex(g)); },
+    onWelcomeClockSkew: (g, community) => { clockSkew.push(community === null ? toHex(g) : `${toHex(g)}@${toHex(community)}`); },
     refreshGroupTrust: (groupId: Id) => { refreshes.push(toHex(groupId)); return hooks.refreshGroupTrust(groupId); },
     beforeSend: (groupId: Id, row: OutboxRow) => { beforeSends.push(toHex(row.msgId)); return hooks.beforeSend(groupId, row); },
     onDiscarded: (groupId: Id, row: OutboxRow) => {

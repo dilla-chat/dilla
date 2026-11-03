@@ -276,6 +276,12 @@ pub fn verify(
     {
         return Err(CodecError::Value);
     }
+    // An inverted proof is malformed whatever the clocks say. `issued_at` may now lie ahead of
+    // `now`, so `is_current` alone no longer implies `issued_at < not_after`; the ordering is
+    // checked here, before the lifetime subtraction relies on it.
+    if context.not_after <= context.issued_at {
+        return Err(CodecError::Value);
+    }
     if !is_current(context.issued_at, context.not_after, expected.now) {
         return Err(CodecError::Expired);
     }
@@ -664,6 +670,12 @@ mod tests {
         }
         let (beyond, _, _) = make_wire(&expected, &key, 106, 136, false, false);
         assert_eq!(verify(&beyond, &pin, &expected), Err(CodecError::Expired));
+        // Inside the window on both bounds but inverted (now < not_after < issued_at <= now + 5):
+        // refused as malformed, never reaching the lifetime subtraction.
+        for (issued_at, not_after) in [(105, 101), (103, 103)] {
+            let (inverted, _, _) = make_wire(&expected, &key, issued_at, not_after, false, false);
+            assert_eq!(verify(&inverted, &pin, &expected), Err(CodecError::Value));
+        }
         let (expired, _, _) = make_wire(&expected, &key, 70, 100, false, false);
         assert_eq!(verify(&expired, &pin, &expected), Err(CodecError::Expired));
     }

@@ -10,7 +10,7 @@ import type { SyncInternals } from './internals';
 const groupKey = (g: Id): string => `g:${toHex(g)}`;
 /** The core's INTERACTION_CLOCK_TOLERANCE_SECS (core/dilla-core/src/bot/mod.rs): an instance-clock issued_at may lie this
  *  far ahead of this device's clock. Used here only to name a refusal; the core alone decides acceptance. */
-const INTERACTION_CLOCK_TOLERANCE_S = 5n;
+export const INTERACTION_CLOCK_TOLERANCE_S = 5n;
 
 /** Diagnostics only: whether a current-context proof the core refused lies outside the core's clock window for `now`
  *  (issued_at more than the tolerance ahead, or not_after already passed). A freshly fetched proof can only do so when
@@ -24,6 +24,15 @@ export function proofOutsideClockWindow(payload: Uint8Array, now: bigint): boole
     return issuedAt > now + INTERACTION_CLOCK_TOLERANCE_S || notAfter <= now;
   } catch {
     return false;
+  }
+}
+/** Diagnostics only: the community id in the proof's binding (`payload[7][2]`), or null when unreadable. Unverified,
+ *  like proofOutsideClockWindow: it only scopes the clock-skew name to the community whose Bot request waits. */
+export function proofCommunity(payload: Uint8Array): Id | null {
+  try {
+    return bin(arr(arr(decode(payload), 18)[7], 9)[2], 16);
+  } catch {
+    return null;
   }
 }
 const same = (a: Id, b: Id): boolean => toHex(a) === toHex(b);
@@ -61,7 +70,7 @@ async function applyWelcomeRows(s: SyncInternals, raw: Uint8Array, rows: CborVal
     // A refusal of a proof outside the clock window repeats on every poll while this device's clock is off: retrying
     // cannot fix it, so it is named (diagnostics E_CLOCK_SKEW, and the Bot request's refusal detail) rather than silent.
     const refused = (): void => {
-      if (proofOutsideClockWindow(proof.payload, now)) s.deps.onWelcomeClockSkew?.(group);
+      if (proofOutsideClockWindow(proof.payload, now)) s.deps.onWelcomeClockSkew?.(group, proofCommunity(proof.payload));
       reportUnexpected(s, group);
     };
     let outcomes: WelcomeOutcome[];

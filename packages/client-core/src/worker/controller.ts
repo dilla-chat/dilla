@@ -1129,9 +1129,11 @@ export class Controller {
   /** The one pending expiry sweep per channel, and the deadline (deps.now() ms) it is set for. */
   private readonly typingSweeps = new Map<string, { handle: number; at: number }>();
   private readonly diagnosticsErrors: { code: string; at: number }[] = [];
-  /** deps.now() ms of the last kind-3 Welcome refused for clock skew (sync's onWelcomeClockSkew), and of the last
-   *  E_CLOCK_SKEW diagnostics entry: a kept Welcome is refused on every poll, so the entry repeats at most once a minute. */
-  private welcomeClockSkewSeenMs: number | null = null;
+  /** Per kept kind-3 Welcome group (hex): its community (hex, from the proof; '' when unreadable) and the deps.now() ms
+   *  it was last refused for clock skew (sync's onWelcomeClockSkew). A Bot request names the skew only for its own
+   *  community. The last E_CLOCK_SKEW diagnostics entry: a kept Welcome is refused on every poll, so the entry repeats
+   *  at most once a minute. */
+  private readonly welcomeClockSkew = new Map<string, { communityHex: string; atMs: number }>();
   private welcomeClockSkewLoggedMs: number | null = null;
   private deviceCount = 0;
   /** web-3: voice presence, calls and rings (L-TS-56). */
@@ -1604,7 +1606,8 @@ export class Controller {
     }
     // A Welcome refused for clock skew during this wait is refused again on every poll while the skew lasts, so the
     // request names that instead of the generic missing group.
-    if (rows.length === 0 && this.welcomeClockSkewSeenMs !== null && this.welcomeClockSkewSeenMs >= startedMs) {
+    if (rows.length === 0 && [...this.welcomeClockSkew.values()]
+      .some(seen => seen.communityHex === communityHex && seen.atMs >= startedMs)) {
       throw new Refusal('E_CORE_STATE', INTERACTION_CLOCK_SKEW);
     }
     if (rows.length === 0) throw new Refusal('E_CORE_STATE', NO_INTERACTION_GROUP);
@@ -2116,9 +2119,14 @@ export class Controller {
     this.publishDiagnostics();
   }
 
-  private onWelcomeClockSkew(): void {
+  private onWelcomeClockSkew(groupId: Id, communityId: Id | null): void {
     const now = this.deps.now();
-    this.welcomeClockSkewSeenMs = now;
+    // Bounded: one entry per kept interaction Welcome group, re-inserted on each report so the least recent goes first.
+    const groupHex = toHex(groupId);
+    this.welcomeClockSkew.delete(groupHex);
+    this.welcomeClockSkew.set(groupHex, { communityHex: communityId === null ? '' : toHex(communityId), atMs: now });
+    const oldest = this.welcomeClockSkew.size > 64 ? this.welcomeClockSkew.keys().next().value : undefined;
+    if (oldest !== undefined) this.welcomeClockSkew.delete(oldest);
     if (this.welcomeClockSkewLoggedMs !== null && now - this.welcomeClockSkewLoggedMs < 60_000) return;
     this.welcomeClockSkewLoggedMs = now;
     this.recordError('E_CLOCK_SKEW');
@@ -2448,7 +2456,7 @@ export class Controller {
         void this.barrier.track(this.reloadDms().catch(() => {}));
         if (this.selected !== null) this.scheduleCommunityReload(this.selected);
       },
-      onWelcomeClockSkew: () => { this.onWelcomeClockSkew(); },
+      onWelcomeClockSkew: (g, community) => { this.onWelcomeClockSkew(g, community); },
       beforeSend: (g, row) => this.beforeSend(g, row),
       onDiscarded: (g, row) => { this.onDiscarded(g, row); },
       refreshGroupTrust: (g) => this.refreshGroupTrust(g),

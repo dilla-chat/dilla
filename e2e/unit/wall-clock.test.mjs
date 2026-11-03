@@ -61,9 +61,26 @@ test('an alignment catches up a rewound clock and keeps a deliberate lead', asyn
     assert.equal(state.fake, T + 2);
     state.fake += 2; // a spec puts the instance 2 s ahead on purpose
     state.wall = T * 1_000 + 3_300;
-    assert.equal(await follower.align('in the test'), 0);
+    assert.equal(await follower.align('in the test'), 1);
+    assert.equal(state.fake, T + 5);
     state.wall = T * 1_000 + 4_400;
     assert.equal(await follower.tick(), 1);
-    assert.equal(state.fake, T + 5);
+    assert.equal(state.fake, T + 6);
+    assert.equal(state.fake - Math.floor(state.wall / 1_000), 2);
+  } finally { restore(); }
+});
+
+// Review M1: an alignment while the clock leads must not drop the seconds a delayed ticker has not applied yet.
+test('an alignment during a deliberate lead keeps the whole lead even when the ticker lagged', async () => {
+  const { state, wallMs, restore } = fakeHost(T, T * 1_000);
+  try {
+    const follower = new WallClockFollower('http://control/debug/clock', wallMs);
+    state.fake += 3; // a 3 s lead
+    state.wall = T * 1_000 + 4_500; // the ticker was starved for 4.5 s
+    await follower.align('in the test');
+    assert.equal(state.fake - Math.floor(state.wall / 1_000), 3);
+    state.wall = T * 1_000 + 6_100;
+    await follower.tick();
+    assert.equal(state.fake - Math.floor(state.wall / 1_000), 3);
   } finally { restore(); }
 });

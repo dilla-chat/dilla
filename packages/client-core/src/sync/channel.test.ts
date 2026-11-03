@@ -1,9 +1,10 @@
+import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { encode } from '../cbor';
 import { CoreError, type Id } from '../core-port';
 import { toHex } from '../hex';
 import { SYNC, SyncError } from './engine';
-import { proofOutsideClockWindow, welcomeFrame } from './channel';
+import { INTERACTION_CLOCK_TOLERANCE_S, proofCommunity, proofOutsideClockWindow, welcomeFrame } from './channel';
 import { coreCalls, device, readyInfo, type Device } from './testing/harness';
 import { CHANNEL, COMMUNITY, ME, ManualClock, ModelDs, PEER, at, deferred, httpError, idOf, settle, type RouteName } from './testing/model';
 
@@ -549,6 +550,25 @@ describe('human interaction Welcomes', () => {
     expect(proofOutsideClockWindow(proofAt(now - 30n, now), now)).toBe(true);
     expect(proofOutsideClockWindow(encode([1n, 2n]), now)).toBe(false);
     expect(proofOutsideClockWindow(new Uint8Array([0xff]), now)).toBe(false);
+  });
+
+  it('reads the binding community of a proof to scope a clock-skew report, and null when it is unreadable', () => {
+    const binding = [new Uint8Array(16).fill(1), new Uint8Array(16).fill(2), COMMUNITY, new Uint8Array(16).fill(3),
+      new Uint8Array(16).fill(4), new Uint8Array(16).fill(5), 1n, 1n, 0n];
+    const proof = (field7: unknown): Uint8Array => encode([1n, new Uint8Array(16), new Uint8Array(16), new Uint8Array(32), 1n, 2n,
+      0n, field7, ...Array.from({ length: 10 }, () => 0n)] as Parameters<typeof encode>[0]);
+    expect(toHex(proofCommunity(proof(binding))!)).toBe(toHex(COMMUNITY));
+    expect(proofCommunity(proof(0n))).toBeNull();
+    expect(proofCommunity(proof(binding.slice(0, 8)))).toBeNull();
+    expect(proofCommunity(new Uint8Array([0xff]))).toBeNull();
+  });
+
+  // Review M4: the TypeScript copy only names refusals, but it must not drift from the core's constant.
+  it('uses the same clock tolerance as the core', () => {
+    const rust = readFileSync(new URL('../../../../core/dilla-core/src/bot/mod.rs', import.meta.url), 'utf8');
+    const match = /pub const INTERACTION_CLOCK_TOLERANCE_SECS: u64 = (\d+);/u.exec(rust);
+    expect(match).not.toBeNull();
+    expect(BigInt(match![1])).toBe(INTERACTION_CLOCK_TOLERANCE_S);
   });
 
   it('uses the proof-aware path for a live Welcome frame too', async () => {

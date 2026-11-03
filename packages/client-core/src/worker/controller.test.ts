@@ -736,7 +736,7 @@ describe('Controller', () => {
     const requestId = new Uint8Array(16).fill(0x5b);
     // Sync reports the kept Welcome's clock-window refusal on every poll while the skew lasts.
     w.sync.pollWelcomes.mockImplementation(() => {
-      w.sync.deps!.onWelcomeClockSkew?.(GROUP);
+      w.sync.deps!.onWelcomeClockSkew?.(GROUP, COMMUNITY);
       return Promise.resolve();
     });
     w.call(100, { m: 'listManualModerationEvidence', communityId: toHex(COMMUNITY), requestId: toHex(requestId), cursor: null });
@@ -746,6 +746,24 @@ describe('Controller', () => {
     const skew = (w.last<DiagnosticsState>('diagnostics')?.errors ?? []).filter(error => error.code === 'E_CLOCK_SKEW');
     expect(skew).toHaveLength(1);
     expect(w.core.humanInteractionSendPrepare).not.toHaveBeenCalled();
+  });
+
+  it('names clock skew only for the community whose interaction Welcome was refused for it', async () => {
+    const w = world();
+    await toReady(w);
+    const requestId = new Uint8Array(16).fill(0x5c);
+    // Another community's kept Welcome is refused for skew while this community's request waits.
+    w.sync.pollWelcomes.mockImplementation(() => {
+      w.sync.deps!.onWelcomeClockSkew?.(new Uint8Array(16).fill(0x7e), NEW_COMMUNITY);
+      w.sync.deps!.onWelcomeClockSkew?.(new Uint8Array(16).fill(0x7f), null);
+      return Promise.resolve();
+    });
+    w.call(101, { m: 'listManualModerationEvidence', communityId: toHex(COMMUNITY), requestId: toHex(requestId), cursor: null });
+    await vi.waitFor(() => expect(w.ret(101)).toMatchObject({ ok: false,
+      error: { code: 'E_CORE_STATE', detail: 'missing_interaction_group' } }));
+    // The skew is still logged in diagnostics, once.
+    const skew = (w.last<DiagnosticsState>('diagnostics')?.errors ?? []).filter(error => error.code === 'E_CLOCK_SKEW');
+    expect(skew).toHaveLength(1);
   });
 
   it('selectively acknowledges this community response while preserving another community response', async () => {
