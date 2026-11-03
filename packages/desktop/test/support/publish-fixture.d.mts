@@ -4,10 +4,11 @@ import type { FakeGithub, FakeState } from './fake-github.d.mts';
 
 export const SHA: string;
 export const TREE: string;
+export const MAIN: string;
 export interface PublishFixture {
  root: string; fixture: ReleaseFixture; version: string; channel: string; tag: string; sha: string; tree: string;
  candidate: string; installers: string; tools: { verifier: any; signer: any }; github: FakeGithub;
- env: Record<string, string>; git: (args: string[]) => string; ancestors: Set<string>; now: number; cleanup(): Promise<void>;
+ env: Record<string, string>; git: (args: string[]) => string; ancestors: Set<string>; checkout: { head: string; diff: string }; now: number; cleanup(): Promise<void>;
  stagedKeys?: StagedKeys;
 }
 type Pair = { publicKey: KeyObject; privateKey: KeyObject };

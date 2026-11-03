@@ -11,7 +11,9 @@ import { buildProvenanceName } from '../scripts/build-provenance.mjs';
 import { buildReleaseFixture, isolatedReleaseTools } from './support/release-fixture.mjs';
 import { artifactHost } from './support/artifact-host.mjs';
 
-const SHA = '2'.repeat(40), TREE = '3'.repeat(40);
+const SHA = '2'.repeat(40), TREE = '3'.repeat(40), MAIN = '4'.repeat(40);
+const R = '/repos/dilla-chat/dilla';
+const STATUSES = ['queued', 'in_progress', 'waiting', 'requested', 'pending'];
 
 /** The ten CI artifact zips and the gate's record zip behind the artifact API, plus the gate's env for the sign job. */
 async function setup({ entries } = {}) {
@@ -20,17 +22,58 @@ async function setup({ entries } = {}) {
  const fixture = await buildReleaseFixture({ directory: fixtureDirectory, commit: SHA, head: SHA, tree: TREE });
  const runBytes = Buffer.from(JSON.stringify(fixture.run) + '\n'), jobsBytes = Buffer.from(JSON.stringify(fixture.jobs) + '\n');
  const host = await artifactHost({ fixture, runBytes, jobsBytes, entries });
- const env = { GH_TOKEN: 'workflow-token', VERSION: fixture.version, SHA, TREE, RUN: String(fixture.run.id), PREVIOUS: '', ...host.env };
- // The sign job's API is used only for notes; a first release needs none.
- const api = async path => { throw new Error('unexpected API call ' + path); };
+ const env = { GITHUB_SHA: MAIN, GITHUB_RUN_ID: '5000', GITHUB_RUN_ATTEMPT: '1', GH_TOKEN: 'workflow-token', VERSION: fixture.version, SHA, TREE, RUN: String(fixture.run.id), PREVIOUS: '', ...host.env };
+ // The sign job's API: the unfinished desktop release runs (only this one, 5000); notes for a first release need nothing else.
+ const active = { in_progress: [{ id: 5000 }] };
+ const api = async path => {
+  const status = STATUSES.find(name => path === `${R}/actions/workflows/desktop-release.yml/runs?status=${name}&per_page=100`);
+  if (status) return { workflow_runs: structuredClone(active[status] ?? []) };
+  throw new Error('unexpected API call ' + path);
+ };
+ // The sign job's full-history checkout of main: its HEAD, and the paths that differ from origin/main.
+ const checkout = { head: MAIN, diff: '' };
+ const git = args => {
+  if (args.length === 2 && args[0] === 'rev-parse' && args[1] === 'HEAD') return checkout.head;
+  if (args[0] === 'diff' && args.at(-3) === 'HEAD' && args.at(-2) === 'origin/main') return checkout.diff;
+  throw new Error('Unexpected git call: ' + args.join(' '));
+ };
  let n = 0;
  const build = (changes = {}) => {
   const k = ++n;
-  return buildCandidate({ env: { ...env, ...changes }, api, fetchImpl: host.fetchImpl, zipDirectory: join(root, `zips-${k}`), candidateDirectory: join(root, `candidate-${k}`) })
+  return buildCandidate({ env: { ...env, ...changes }, api, git, fetchImpl: host.fetchImpl, zipDirectory: join(root, `zips-${k}`), candidateDirectory: join(root, `candidate-${k}`) })
    .then(result => ({ ...result, directory: join(root, `candidate-${k}`) }));
  };
- return { root, fixture, host, env, api, build, cleanup: () => rm(root, { recursive: true, force: true }) };
+ return { root, fixture, host, env, api, git, active, checkout, build, cleanup: () => rm(root, { recursive: true, force: true }) };
 }
+
+/** Final review, I-1: "Re-run failed jobs" on an old keyed run reuses that run's gate outputs and runs its old sign code. */
+test('sign refuses a re-run attempt, a checkout that is no longer main’s tip and another active release run, before fetching anything', async () => {
+ const s = await setup();
+ try {
+  const nothingFetched = async () => {
+   assert.deepEqual(s.host.log, [], 'no artifact is fetched');
+   assert.deepEqual((await readdir(s.root)).filter(name => name !== 'fixture'), [], 'no directory is created');
+  };
+  for (const GITHUB_RUN_ATTEMPT of ['2', '0', '01', '', undefined]) await assert.rejects(s.build({ GITHUB_RUN_ATTEMPT }), /re-run attempt/i);
+  await nothingFetched();
+  // sign refuses when its checkout is no longer main's tip (partial re-run).
+  s.checkout.diff = 'packages/desktop/scripts/release-sign-job.mjs\0';
+  await assert.rejects(s.build(), /no longer main’s tip/);
+  s.checkout.diff = '';
+  s.checkout.head = 'f'.repeat(40);
+  await assert.rejects(s.build(), /HEAD differs from GITHUB_SHA/);
+  s.checkout.head = MAIN;
+  for (const GITHUB_SHA of ['', 'main']) await assert.rejects(s.build({ GITHUB_SHA }), /GITHUB_SHA/);
+  for (const GITHUB_RUN_ID of ['', '12a']) await assert.rejects(s.build({ GITHUB_RUN_ID }), /GITHUB_RUN_ID/);
+  s.active.queued = [{ id: 4999 }];
+  await assert.rejects(s.build(), /another desktop release run \(4999\)/i);
+  await nothingFetched();
+  delete s.active.queued;
+  // A docs-only main advance after the run started is still main's code.
+  s.checkout.diff = 'docs/guide.md\0README.md\0';
+  await s.build();
+ } finally { await s.cleanup(); }
+});
 
 test('sign builds the candidate itself from the gate-digested CI zips and the gate’s records', async () => {
  const s = await setup();
@@ -111,7 +154,7 @@ test('the gate’s ids, digests and record hashes are validated, and the directo
   await assert.rejects(s.build({ RUN: '11' }), /gate/i);
   await assert.rejects(s.build({ SHA: 'c'.repeat(40) }), /gate/i);
   const zips = join(s.root, 'existing'); await mkdir(zips);
-  await assert.rejects(buildCandidate({ env: s.env, api: s.api, fetchImpl: s.host.fetchImpl, zipDirectory: zips, candidateDirectory: join(s.root, 'fresh') }), /EEXIST/);
+  await assert.rejects(buildCandidate({ env: s.env, api: s.api, git: s.git, fetchImpl: s.host.fetchImpl, zipDirectory: zips, candidateDirectory: join(s.root, 'fresh') }), /EEXIST/);
  } finally { await s.cleanup(); }
 });
 

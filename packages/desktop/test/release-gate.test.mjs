@@ -87,7 +87,7 @@ function scenario({ version = '1.2.3', expiresAt, layout, trust } = {}) {
  const work = mkdtempSync(join(tmpdir(), 'dilla-gate-out-'));
  const outputFile = join(work, 'github-output');
  writeFileSync(outputFile, '');
- const env = { GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: 'workflow_run', GITHUB_REPOSITORY: 'dilla-chat/dilla', GITHUB_REF: 'refs/heads/main', GITHUB_WORKFLOW_REF: 'dilla-chat/dilla/.github/workflows/desktop-release.yml@refs/heads/main', GITHUB_SHA: shas.head, HINT_TAG: tag, HINT_RUN: '900', GITHUB_RUN_ID: '5000', GITHUB_OUTPUT: outputFile };
+ const env = { GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: 'workflow_run', GITHUB_REPOSITORY: 'dilla-chat/dilla', GITHUB_REF: 'refs/heads/main', GITHUB_WORKFLOW_REF: 'dilla-chat/dilla/.github/workflows/desktop-release.yml@refs/heads/main', GITHUB_SHA: shas.head, HINT_TAG: tag, HINT_RUN: '900', GITHUB_RUN_ID: '5000', GITHUB_RUN_ATTEMPT: '1', GITHUB_OUTPUT: outputFile };
  const outputDirectory = join(work, 'gate');
  const go = (overrides = {}) => runGate({ env: { ...env, ...overrides }, git, api, outputDirectory, now: NOW });
  return { repo, routes, calls, gitCalls, env, go, shas, tag, version, outputFile, outputDirectory, cleanup: () => { repo.cleanup(); rmSync(work, { recursive: true, force: true }); } };
@@ -121,6 +121,15 @@ test('gate refuses when not running as the main-branch workflow_run', async () =
    await refused(s, /main-branch workflow_run|HEAD/, overrides);
   }
   assert.equal(s.calls.length, 0, 'no API call before the run context is proven');
+ } finally { s.cleanup(); }
+});
+
+test('gate refuses a re-run attempt of a keyed run (only feed may be re-run; re-run the request run instead)', async () => {
+ const s = scenario();
+ try {
+  for (const GITHUB_RUN_ATTEMPT of ['2', '3', '0', '01', '1 ', '', undefined]) await refused(s, /re-run|attempt/i, { GITHUB_RUN_ATTEMPT });
+  assert.equal(s.calls.length, 0, 'no API call on a re-run attempt');
+  assert.equal((await s.go()).sha, s.shas.tagged, 'the first attempt passes');
  } finally { s.cleanup(); }
 });
 
@@ -276,13 +285,30 @@ test('gate refuses an extra or missing release artifact', async () => {
  }
 });
 
-test('gate refuses when immutable releases are disabled', async () => {
- for (const value of [{ enabled: false, enforced_by_owner: false }, undefined, {}]) {
-  const s = scenario();
-  try {
-   if (value === undefined) delete s.routes[`${R}/immutable-releases`]; else s.routes[`${R}/immutable-releases`] = value;
-   await refused(s, /immutable/i);
-  } finally { s.cleanup(); }
+test('gate does not read the immutable releases setting: the job token cannot (setup, publish and latestPublished cover it)', async () => {
+ const s = scenario();
+ try {
+  delete s.routes[`${R}/immutable-releases`];
+  s.routes[`${R}/immutable-releases`] = () => { throw new Error('GitHub API request failed (403)'); };
+  assert.equal((await s.go()).sha, s.shas.tagged);
+  assert.ok(!s.calls.some(path => path.includes('immutable-releases')), 'the gate never asks for the admin-only setting');
+ } finally { s.cleanup(); }
+});
+
+test('a posture read the job token cannot do is reported as unreadable, never as off', async () => {
+ for (const path of [`${R}/rules/branches/main`, `${R}/environments/desktop-release`, `${R}/environments/desktop-release/deployment-branch-policies?per_page=100`]) {
+  for (const status of [403, 404]) {
+   const s = scenario();
+   try {
+    s.routes[path] = () => { throw new Error(`GitHub API request failed (${status})`); };
+    const error = await s.go().then(() => null, caught => caught);
+    assert.ok(error, `${path} ${status} is refused`);
+    assert.match(error.message, /^Cannot read the .+ with the job token/, `${path} ${status}`);
+    assert.match(error.message, new RegExp(`\\(${status}\\)`));
+    assert.doesNotMatch(error.message, /must|lacks|disabled|is off/i, `${path} ${status} is not reported as a missing setting`);
+    assert.equal(readFileSync(s.outputFile, 'utf8'), '');
+   } finally { s.cleanup(); }
+  }
  }
 });
 

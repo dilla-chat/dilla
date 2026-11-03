@@ -329,6 +329,30 @@ test('publisher refuses to run outside a main-branch workflow_run', async () => 
  } finally { await p.cleanup(); }
 });
 
+// Final review, I-1: "Re-run failed jobs" on an old keyed run reuses that run's gate and sign outputs and runs its old publish code.
+test('publisher refuses a re-run attempt, a checkout that is no longer main’s tip and another active release run, before any write', async () => {
+ const p = await publishFixture();
+ try {
+  for (const mode of ['plan', 'publish'] as const) {
+   for (const GITHUB_RUN_ATTEMPT of ['2', '0', '01', '', undefined]) await assert.rejects(publisher(p, mode, { GITHUB_RUN_ATTEMPT }), /re-run attempt/i);
+  }
+  assert.deepEqual(p.github.state.log, [], 'nothing is read or written on a re-run attempt');
+  p.checkout.diff = 'packages/desktop/scripts/publish-release.mjs\0';
+  await assert.rejects(publisher(p, 'publish'), /no longer main’s tip/);
+  p.checkout.diff = '';
+  p.checkout.head = 'f'.repeat(40);
+  await assert.rejects(publisher(p, 'publish'), /HEAD differs from GITHUB_SHA/);
+  p.checkout.head = p.env.GITHUB_SHA;
+  p.github.state.active.queued = [{ id: 4999 }];
+  await assert.rejects(publisher(p, 'publish'), /another desktop release run \(4999\)/i);
+  assert.deepEqual(writes(p), []);
+  delete p.github.state.active.queued;
+  p.checkout.diff = 'docs/guide.md\0';
+  await publisher(p, 'publish');
+  assert.equal(p.github.state.releases.find(release => release.tag_name === p.tag)?.draft, false);
+ } finally { await p.cleanup(); }
+});
+
 test('publisher refuses a tag that resolves to another commit than DESKTOP_SHA', async () => {
  const p = await publishFixture();
  try {

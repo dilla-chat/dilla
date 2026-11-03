@@ -1791,6 +1791,19 @@ export function checkDesktopReleaseWorkflow(root) {
   const keys = checkScriptImports(root, 'packages/desktop/scripts/release-keys.mjs', problems);
   const seen = new Set();
   for (const file of DR_KEYED_SCRIPTS) checkScriptImports(root, file, problems, seen);
+  // Final review, I-1: a partial re-run of an old keyed run reuses its gate's outputs with old code. gate, sign
+  // (release-candidate build, before any secret) and publish refuse every attempt but the first and repeat the main
+  // and one-run checks; only the keyless feed job stays re-runnable. Each call must be a statement on its own line.
+  const scriptText = file => { try { return readFileSync(join(root, 'packages/desktop/scripts', file), 'utf8'); } catch { problems.push(`packages/desktop/scripts/${file}: missing`); return ''; } };
+  const statement = (text, call) => new RegExp(`^[ \\t]*${call.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm').test(text);
+  if (!statement(scriptText('keyed-run.mjs'), "if (env.GITHUB_RUN_ATTEMPT !== '1') {")) problems.push("keyed-run.mjs: refuseRerunAttempt must refuse every GITHUB_RUN_ATTEMPT but '1'");
+  for (const [file, job, calls] of [['release-gate.mjs', 'gate', []], ['release-candidate.mjs', 'sign', ['assertCheckoutIsMain(env, git);']], ['publish-release.mjs', 'publish', ['assertCheckoutIsMain(env, git);']]]) {
+    const text = scriptText(file);
+    for (const call of [`refuseRerunAttempt(env, '${job}');`, 'await assertNoOtherReleaseRun(env, api);', ...calls]) {
+      if (!statement(text, call)) problems.push(`${file}: the ${job} job must run ${call} (otherwise a re-run attempt or old keyed code reaches it)`);
+    }
+  }
+  if (/refuseRerunAttempt/.test(scriptText('pages-feed.mjs'))) problems.push('pages-feed.mjs: feed is the one keyed-run job that may be re-run');
   if (keys !== null) {
     if (/type\s*:\s*['"]tag['"]/.test(keys)) problems.push('release-keys.mjs: the desktop-release environment admits no tag policy');
     // The environment setup names exactly one deployment policy: the branch main.

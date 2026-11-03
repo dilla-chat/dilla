@@ -4,7 +4,8 @@ import { lstat, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { assembleAcceptance, expectedArtifactFiles } from './release-assemble.mjs';
-import { EXPECTED_ARTIFACTS, createGithubApi } from './ci-run.mjs';
+import { EXPECTED_ARTIFACTS, createGithubApi, hardenedGit } from './ci-run.mjs';
+import { assertCheckoutIsMain, assertNoOtherReleaseRun, refuseRerunAttempt } from './keyed-run.mjs';
 import { DESKTOP_TAG, generateNotes } from './release-notes.mjs';
 import { downloadArtifactZip, extractArtifactZip } from './artifact-zip.mjs';
 
@@ -96,8 +97,13 @@ function artifactContext(env) {
  * The sign job's candidate, built from bytes the gate fixed: each zip is
  * fetched by id, kept only under the gate's digest and read in-process. Then
  * the notes and acceptance.json are derived here. Both directories must be new.
+ * It first repeats the gate's run checks (final review, I-1): a partial re-run of an old keyed run reaches this
+ * step with the old gate's outputs and old code, before any secret is in scope, and is refused here.
  */
-export async function buildCandidate({ env, api, fetchImpl = fetch, zipDirectory, candidateDirectory }) {
+export async function buildCandidate({ env, api, git, fetchImpl = fetch, zipDirectory, candidateDirectory }) {
+ refuseRerunAttempt(env, 'sign');
+ assertCheckoutIsMain(env, git);
+ await assertNoOtherReleaseRun(env, api);
  const c = context(env, { digest: false });
  const a = artifactContext(env);
  await mkdir(zipDirectory, { mode: 0o700 });
@@ -139,7 +145,7 @@ export async function cli(argv, env, { fetchImpl = fetch } = {}) {
  const [command, ...args] = argv;
  if (command === 'build' && args.length === 2) {
   const [zipDirectory, candidateDirectory] = args.map(path => resolve(path));
-  await buildCandidate({ env, api: createGithubApi({ token: env.GH_TOKEN, fetchImpl }), fetchImpl, zipDirectory, candidateDirectory });
+  await buildCandidate({ env, api: createGithubApi({ token: env.GH_TOKEN, fetchImpl }), git: hardenedGit(resolve(import.meta.dirname, '../../..')), fetchImpl, zipDirectory, candidateDirectory });
   return 'Built the signing candidate from the gate-digested CI artifact zips.';
  }
  if (command === 'digest' && args.length === 2) {

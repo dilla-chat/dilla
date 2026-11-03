@@ -3,11 +3,11 @@ import { appendFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { classifyFile } from '../../../scripts/ci-areas.mjs';
 import { REPOSITORY, createGithubApi, hardenedGit, findGreenPushRun, fetchCiJobs, resolveTagCommit, listRunArtifacts, selectReleaseArtifacts } from './ci-run.mjs';
 import { DESKTOP_TAG, compareDesktopVersions, previousDesktopVersion } from './release-notes.mjs';
 import { macRotationOf } from './feed-format.mjs';
 import { latestPublished, trustAtTag } from './pages-feed.mjs';
+import { assertNoOtherReleaseRun, codeEqual, refuseRerunAttempt } from './keyed-run.mjs';
 
 /**
  * The keyed workflow's first step. Everything is re-derived from the GitHub API
@@ -23,7 +23,6 @@ const WORKFLOW_REF = `${REPOSITORY}/.github/workflows/desktop-release.yml@refs/h
 const REQUEST_WORKFLOW = '.github/workflows/desktop-release-request.yml';
 const CI_OK_INTEGRATION = 15368;
 const SANDBOX_MINIMUM_VALIDITY = 30 * 86400000;
-const ACTIVE_STATUSES = Object.freeze(['queued', 'in_progress', 'waiting', 'requested', 'pending']);
 
 const OUTPUTS = Object.freeze({
  tag: value => TAG.test(value),
@@ -57,16 +56,9 @@ export function writeOutputs(file, values) {
 }
 
 function succeeds(git, args) { try { git(args); return true; } catch { return false; } }
-/** True when every path that differs between the two commits is documentation by the CI classifier itself
- * (classifyFile: a directory named LICENSE or DCO is code). Any git error counts as a difference. */
-function codeEqual(git, a, b) {
- let names;
- try { names = git(['diff', '--name-only', '-z', '--no-renames', '--no-ext-diff', '--no-textconv', a, b, '--']); } catch { return false; }
- if (typeof names !== 'string') return false;
- return names.split('\0').filter(Boolean).every(path => classifyFile(path).docs === true);
-}
+/** A posture read the job token cannot do (403, 404 or any other failure) is reported as unreadable, never as a setting that is off. */
 async function posture(label, read) {
- try { return await read(); } catch (error) { throw new Error(`Cannot read the ${label} posture: ${error.message}`); }
+ try { return await read(); } catch (error) { throw new Error(`Cannot read ${label} with the job token (${error.message}); this says nothing about the setting itself`); }
 }
 
 /**
@@ -91,6 +83,8 @@ export async function runGate({ env, git, api, outputDirectory, now = Date.now()
  // 1. Running as the keyed workflow from main, on the checked-out main commit.
  if (env.GITHUB_ACTIONS !== 'true' || env.GITHUB_EVENT_NAME !== 'workflow_run' || env.GITHUB_REPOSITORY !== REPOSITORY
   || env.GITHUB_REF !== 'refs/heads/main' || env.GITHUB_WORKFLOW_REF !== WORKFLOW_REF || !COMMIT.test(env.GITHUB_SHA ?? '')) throw new Error('The release gate runs only as the main-branch workflow_run of desktop-release.yml');
+ // 1a. Only a keyed run's first attempt: a partial re-run would reuse this gate's outputs with old keyed code (final review, I-1).
+ refuseRerunAttempt(env, 'gate');
  if (git(['rev-parse', 'HEAD']) !== env.GITHUB_SHA) throw new Error('The checked-out HEAD differs from GITHUB_SHA');
  if (!/^[1-9]\d*$/.test(env.GITHUB_RUN_ID ?? '') || !Number.isSafeInteger(Number(env.GITHUB_RUN_ID))) throw new Error('Invalid GITHUB_RUN_ID');
 
@@ -103,12 +97,8 @@ export async function runGate({ env, git, api, outputDirectory, now = Date.now()
  // 2b. One release at a time, failing loudly. The workflow has no concurrency group: GitHub keeps one pending
  // run per group and cancels it silently when a third arrives (review batch B, m5). Every run starts instead,
  // and a run that finds another unfinished desktop release run refuses before anything else.
- for (const status of ACTIVE_STATUSES) {
-  const result = await api(`${R}/actions/workflows/desktop-release.yml/runs?status=${status}&per_page=100`);
-  if (!Array.isArray(result?.workflow_runs)) throw new Error('Malformed workflow run list');
-  const other = result.workflow_runs.find(run => String(run?.id) !== env.GITHUB_RUN_ID);
-  if (other) throw new Error(`Another desktop release run (${other.id}) is ${status}; re-run this release's request run after it finishes`);
- }
+ // sign and publish repeat this check (keyed-run.mjs).
+ await assertNoOtherReleaseRun(env, api);
  const sha = await resolveTagCommit(api, tag);
 
  // 3. The triggering run must be this tag's request workflow push run.
@@ -131,18 +121,18 @@ export async function runGate({ env, git, api, outputDirectory, now = Date.now()
  const tree = git(['rev-parse', `${sha}^{tree}`]);
  if (!COMMIT.test(tree)) throw new Error('Invalid tagged tree');
 
- // 7. Repository posture.
- const immutable = await posture('immutable releases', () => api(`${R}/immutable-releases`, {}, true));
- if (immutable?.enabled !== true) throw new Error('Immutable releases must be enabled');
- const rules = await posture('main ruleset', () => api(`${R}/rules/branches/main`));
+ // 7. Repository posture, as far as the job token can read it. The immutable-releases setting needs admin read
+ // access, which a GITHUB_TOKEN never has (final review, I-2): setup's preflight checks it, publish asserts the
+ // published release is immutable, and latestPublished refuses a mutable release, so the gate does not read it.
+ const rules = await posture('the main ruleset', () => api(`${R}/rules/branches/main`));
  const has = type => Array.isArray(rules) && rules.some(rule => rule?.type === type);
  const ciOk = Array.isArray(rules) && rules.some(rule => rule?.type === 'required_status_checks'
   && rule.parameters?.required_status_checks?.some?.(check => check?.context === 'ci-ok' && check.integration_id === CI_OK_INTEGRATION));
  for (const [ok, what] of [[has('pull_request'), 'pull_request'], [ciOk, `required ci-ok from integration ${CI_OK_INTEGRATION}`], [has('non_fast_forward'), 'non_fast_forward'], [has('deletion'), 'deletion']]) {
   if (!ok) throw new Error('The main ruleset lacks ' + what);
  }
- const environment = await posture('desktop-release environment', () => api(`${R}/environments/desktop-release`));
- const policies = await posture('desktop-release environment', () => api(`${R}/environments/desktop-release/deployment-branch-policies?per_page=100`));
+ const environment = await posture('the desktop-release environment', () => api(`${R}/environments/desktop-release`));
+ const policies = await posture('the desktop-release deployment branch policies', () => api(`${R}/environments/desktop-release/deployment-branch-policies?per_page=100`));
  const list = policies?.branch_policies;
  if (environment?.deployment_branch_policy?.custom_branch_policies !== true || environment.deployment_branch_policy.protected_branches !== false
   || policies?.total_count !== 1 || !Array.isArray(list) || list.length !== 1 || list[0]?.name !== 'main' || list[0]?.type !== 'branch') throw new Error('The desktop-release environment must admit exactly the branch main');

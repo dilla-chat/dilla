@@ -2386,6 +2386,8 @@ const RELEASE_FILES = [
   ...readdirSync(join(REPO_ROOT, '.github', 'workflows')).map(name => `.github/workflows/${name}`),
   // The keyed steps' scripts and everything they import (the checker walks the import graph).
   ...['scripts', 'src'].flatMap(dir => readdirSync(join(REPO_ROOT, 'packages', 'desktop', dir)).filter(name => /\.(mjs|ts)$/.test(name)).map(name => `packages/desktop/${dir}/${name}`)),
+  // keyed-run.mjs (sign's re-run checks) classifies paths with the CI's own classifier.
+  'scripts/ci-areas.mjs',
 ];
 const KEYED = '.github/workflows/desktop-release.yml', REQUEST = '.github/workflows/desktop-release-request.yml';
 /** A temporary root holding the real files with `changes` (path -> text => text) applied. */
@@ -2705,6 +2707,19 @@ test('upload path other than runner.temp/signed is reported', () => {
   reported({ [KEYED]: edit(doc => { step(doc, 'feed', 'upload-pages-artifact').with.path = '${{ runner.temp }}/signed'; }) }, 'pages path');
   reported({ [KEYED]: edit(doc => { step(doc, 'sign', 'Upload the signed candidate').with.path = '${{ runner.temp }}/zips'; }) }, 'raw zips as the candidate');
   reported({ [KEYED]: edit(doc => { step(doc, 'gate', 'Upload the gate').with.path = '${{ runner.temp }}'; }) }, 'gate records path');
+});
+
+test('a keyed job that no longer refuses a re-run attempt, or skips its main and one-run checks, is reported (final review, I-1)', () => {
+  const S = 'packages/desktop/scripts/';
+  reported({ [`${S}keyed-run.mjs`]: text => text.replace("env.GITHUB_RUN_ATTEMPT !== '1'", "Number(env.GITHUB_RUN_ATTEMPT) < 1") }, 'attempt check weakened');
+  for (const [file, job] of [['release-gate.mjs', 'gate'], ['release-candidate.mjs', 'sign'], ['publish-release.mjs', 'publish']]) {
+    reported({ [S + file]: text => text.replace(`refuseRerunAttempt(env, '${job}');`, '') }, `${job}: attempt check removed`);
+    reported({ [S + file]: text => text.replace(`refuseRerunAttempt(env, '${job}');`, `// refuseRerunAttempt(env, '${job}');`) }, `${job}: attempt check commented out`);
+    reported({ [S + file]: text => text.replace('await assertNoOtherReleaseRun(env, api);', '') }, `${job}: one-run check removed`);
+  }
+  for (const file of ['release-candidate.mjs', 'publish-release.mjs']) reported({ [S + file]: text => text.replace('assertCheckoutIsMain(env, git);', '') }, `${file}: main check removed`);
+  // feed stays re-runnable: pages-feed.mjs never refuses an attempt.
+  reported({ [`${S}pages-feed.mjs`]: text => text + "\nimport { refuseRerunAttempt } from './keyed-run.mjs';\n" }, 'feed refuses re-runs');
 });
 
 test('release-keys.mjs importing a non-node module or adding a tag policy is reported', () => {

@@ -52,7 +52,6 @@ test('the release pipeline publishes exactly the signed inventory from a tagged 
   const routes = {
    [`${R}/git/ref/tags/${tag}`]: { ref: `refs/tags/${tag}`, object: { type: 'commit', sha } },
    [`${R}/actions/runs/900`]: { id: 900, path: '.github/workflows/desktop-release-request.yml', event: 'push', head_branch: tag, head_sha: sha, status: 'completed', conclusion: 'success', repository: { full_name: 'dilla-chat/dilla' }, head_repository: { full_name: 'dilla-chat/dilla' } },
-   [`${R}/immutable-releases`]: { enabled: true },
    [`${R}/rules/branches/main`]: [{ type: 'deletion' }, { type: 'non_fast_forward' }, { type: 'pull_request' }, { type: 'required_status_checks', parameters: { required_status_checks: [{ context: 'ci-ok', integration_id: 15368 }] } }],
    [`${R}/environments/desktop-release`]: { deployment_branch_policy: { protected_branches: false, custom_branch_policies: true } },
    [`${R}/environments/desktop-release/deployment-branch-policies?per_page=100`]: { total_count: 1, branch_policies: [{ id: 1, name: 'main', type: 'branch' }] },
@@ -77,7 +76,7 @@ test('the release pipeline publishes exactly the signed inventory from a tagged 
   // gate
   const outputFile = join(root, 'github-output'); await writeFile(outputFile, '');
   const gateDirectory = join(root, 'gate');
-  const gate = await runGate({ env: { GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: 'workflow_run', GITHUB_REPOSITORY: 'dilla-chat/dilla', GITHUB_REF: 'refs/heads/main', GITHUB_WORKFLOW_REF: 'dilla-chat/dilla/.github/workflows/desktop-release.yml@refs/heads/main', GITHUB_SHA: sha, HINT_TAG: tag, HINT_RUN: '900', GITHUB_RUN_ID: '5000', GITHUB_OUTPUT: outputFile }, git: gateGit, api, outputDirectory: gateDirectory, now });
+  const gate = await runGate({ env: { GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: 'workflow_run', GITHUB_REPOSITORY: 'dilla-chat/dilla', GITHUB_REF: 'refs/heads/main', GITHUB_WORKFLOW_REF: 'dilla-chat/dilla/.github/workflows/desktop-release.yml@refs/heads/main', GITHUB_SHA: sha, HINT_TAG: tag, HINT_RUN: '900', GITHUB_RUN_ID: '5000', GITHUB_RUN_ATTEMPT: '1', GITHUB_OUTPUT: outputFile }, git: gateGit, api, outputDirectory: gateDirectory, now });
   assert.equal(gate.previous, 'desktop-v1.2.2');
   for (const args of gitCalls) {
    assert.ok(!['checkout', 'switch', 'worktree', 'reset', 'restore'].includes(args[0]), 'the tagged commit is never checked out: ' + args.join(' '));
@@ -92,7 +91,7 @@ test('the release pipeline publishes exactly the signed inventory from a tagged 
 
   // sign: fetch the gate-digested zips itself and build the candidate in-process; nothing from collect reaches it.
   const candidate = join(root, 'candidate');
-  await buildCandidate({ api, fetchImpl: host.fetchImpl, zipDirectory: join(root, 'zips'), candidateDirectory: candidate, env: { GH_TOKEN: 'workflow-token',
+  await buildCandidate({ api, git, fetchImpl: host.fetchImpl, zipDirectory: join(root, 'zips'), candidateDirectory: candidate, env: { GITHUB_SHA: sha, GITHUB_RUN_ID: '5000', GITHUB_RUN_ATTEMPT: '1', GH_TOKEN: 'workflow-token',
    VERSION: outputs.version, SHA: outputs.sha, TREE: outputs.tree, RUN: outputs.run, ARTIFACT_IDS: outputs.artifact_ids, ARTIFACT_DIGESTS: outputs.artifact_digests,
    RECORDS_ID: host.env.RECORDS_ID, RECORDS_DIGEST: host.env.RECORDS_DIGEST, RUN_RECORD: outputs.run_record, JOBS_RECORD: outputs.jobs_record, PREVIOUS: outputs.previous } });
   const notes = await readFile(join(candidate, 'release-notes.md'), 'utf8');
@@ -113,7 +112,7 @@ test('the release pipeline publishes exactly the signed inventory from a tagged 
 
   // publish: plan, then publish into an in-memory GitHub; then verify what was published.
   const github = fakeGithub({ tags: { [tag]: sha }, runs: { [run.id]: run }, jobs: { [run.id]: fixture.jobs } });
-  const env = { GITHUB_ACTIONS: 'true', GITHUB_REPOSITORY: 'dilla-chat/dilla', GITHUB_EVENT_NAME: 'workflow_run', GITHUB_REF: 'refs/heads/main', GH_TOKEN: 'workflow-token', RUNNER_TEMP: root,
+  const env = { GITHUB_ACTIONS: 'true', GITHUB_REPOSITORY: 'dilla-chat/dilla', GITHUB_EVENT_NAME: 'workflow_run', GITHUB_REF: 'refs/heads/main', GITHUB_SHA: sha, GITHUB_RUN_ID: '5000', GITHUB_RUN_ATTEMPT: '1', GH_TOKEN: 'workflow-token', RUNNER_TEMP: root,
    DESKTOP_TAG: tag, DESKTOP_SHA: sha, DESKTOP_STAGED: 'false', DESKTOP_MAC_UPDATE: outputs.mac_update, DESKTOP_RELEASE_CANDIDATE: signed, DESKTOP_INSTALLERS: candidate };
   for (const mode of ['plan', 'publish']) await runPublisher({ mode, env, git, fetchImpl: github.fetch, trust, verifier: tools.verifier, now });
   const release = github.state.releases.find(item => item.tag_name === tag);

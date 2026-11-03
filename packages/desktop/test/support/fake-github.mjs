@@ -12,7 +12,8 @@ const json = (value, status = 200) => new Response(JSON.stringify(value), { stat
 const missing = () => new Response('{"message":"Not Found"}', { status: 404 });
 
 export function fakeGithub({ tags = {}, runs = {}, jobs = {}, releases = [], immutable = true, onPublish } = {}) {
- const state = { tags: { ...tags }, runs, jobs, releases: [], immutable, log: [], nextRelease: 100, nextAsset: 1000, onPublish };
+ // active: the keyed workflow's unfinished runs by status; by default only the run under test (5000) is in progress.
+ const state = { tags: { ...tags }, runs, jobs, releases: [], immutable, log: [], nextRelease: 100, nextAsset: 1000, onPublish, active: { in_progress: [{ id: 5000 }] } };
  const view = release => ({ ...release, assets: release.assets.map(({ bytes, ...asset }) => ({ ...asset })) });
  const uploadUrl = id => `https://uploads.github.com/repos/${REPOSITORY}/releases/${id}/assets{?name,label}`;
  function addRelease(fields) {
@@ -67,6 +68,7 @@ export function fakeGithub({ tags = {}, runs = {}, jobs = {}, releases = [], imm
    const tag = decodeURIComponent(match[1]), sha = state.tags[tag];
    return sha ? json({ ref: `refs/tags/${tag}`, object: { type: 'commit', sha } }) : missing();
   }
+  if (path === '/actions/workflows/desktop-release.yml/runs' && method === 'GET') return json({ workflow_runs: structuredClone(state.active[url.searchParams.get('status')] ?? []) });
   if ((match = /^\/actions\/runs\/(\d+)$/.exec(path)) && method === 'GET') return state.runs[match[1]] ? json(state.runs[match[1]]) : missing();
   if ((match = /^\/actions\/runs\/(\d+)\/jobs$/.exec(path)) && method === 'GET') return state.jobs[match[1]] ? json({ jobs: page(state.jobs[match[1]], url) }) : missing();
   if ((match = /^\/releases\/tags\/(.+)$/.exec(path)) && method === 'GET') {

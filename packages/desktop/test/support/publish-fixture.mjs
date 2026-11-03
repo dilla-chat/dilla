@@ -8,6 +8,8 @@ import { PUBLIC_ACCEPTANCE_RECORDS } from '../../scripts/verify-release.mjs';
 
 export const SHA = 'a'.repeat(40);
 export const TREE = 'b'.repeat(40);
+/** main's tip as the publish job checked it out (GITHUB_SHA); the tagged commit SHA is an ancestor with no code difference. */
+export const MAIN = 'd'.repeat(40);
 
 /**
  * A signed release as the sign job hands it over (DESKTOP_RELEASE_CANDIDATE), the
@@ -53,14 +55,19 @@ export async function publishFixture({ sha = SHA, commit = sha, tree = TREE, sta
  const gh = fakeGithub({ tags: { [tag]: sha }, runs: { [fixture.run.id]: fixture.run }, jobs: { [fixture.run.id]: fixture.jobs }, ...github });
  const env = {
   GITHUB_ACTIONS: 'true', GITHUB_REPOSITORY: 'dilla-chat/dilla', GITHUB_EVENT_NAME: 'workflow_run', GITHUB_REF: 'refs/heads/main',
+  GITHUB_SHA: MAIN, GITHUB_RUN_ID: '5000', GITHUB_RUN_ATTEMPT: '1',
   GH_TOKEN: 'workflow-token', RUNNER_TEMP: root, DESKTOP_TAG: tag, DESKTOP_SHA: sha, DESKTOP_STAGED: staged ? 'true' : 'false', DESKTOP_MAC_UPDATE: 'zip',
   DESKTOP_RELEASE_CANDIDATE: candidate, DESKTOP_INSTALLERS: installers,
  };
  const ancestors = new Set([sha]);
+ // The publish job's full-history checkout of main: its HEAD, and the paths that differ from origin/main.
+ const checkout = { head: MAIN, diff: '' };
  const git = args => {
+  if (args.length === 2 && args[0] === 'rev-parse' && args[1] === 'HEAD') return checkout.head;
+  if (args[0] === 'diff' && args.at(-3) === 'HEAD' && args.at(-2) === 'origin/main') return checkout.diff;
   if (args[0] === 'merge-base' && args[1] === '--is-ancestor' && args[3] === 'origin/main') { if (!ancestors.has(args[2])) throw new Error('not an ancestor'); return ''; }
   if (args[0] === 'rev-parse' && args[1] === `${commit}^{tree}`) return tree;
   throw new Error('Unexpected git call: ' + args.join(' '));
  };
- return { root, fixture, version, channel, tag, sha, tree, candidate, installers, tools, github: gh, env, git, ancestors, now: fixture.context.now, stagedKeys, cleanup: () => rm(root, { recursive: true, force: true }) };
+ return { root, fixture, version, channel, tag, sha, tree, candidate, installers, tools, github: gh, env, git, ancestors, checkout, now: fixture.context.now, stagedKeys, cleanup: () => rm(root, { recursive: true, force: true }) };
 }

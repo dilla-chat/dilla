@@ -56,21 +56,34 @@ A desktop release needs no CT 144 upgrade.
 - **One tag at a time.** The keyed workflow has no concurrency group, because GitHub would silently cancel a
   pending run when a third arrived. Instead every run starts, and its gate **fails loudly** ("Another desktop
   release run (id) is …") while another `desktop release` run is queued or in progress. Wait for that run, then
-  re-run the refused release's request run (`gh run rerun <request run id>`). Only the `feed` job is serialised
-  (group `desktop-release-feed`), so two Pages deploys never overlap.
+  re-run the refused release's request run (`gh run rerun <request run id>`). `sign` and `publish` repeat the
+  check, so a tag pushed while another release is in `sign` or `publish` can fail both runs; re-run their request
+  runs one at a time. Only the `feed` job is serialised (group `desktop-release-feed`), so two Pages deploys never
+  overlap.
 
 ## Recovery
 
+- **Never re-run `gate`, `sign` or `publish` in a keyed run** (no "Re-run all jobs", no "Re-run failed jobs", no
+  `gh run rerun <keyed run id>` with or without `--failed` or `--job`, unless only `feed` failed). A partial re-run
+  would reuse the old gate's outputs with that run's old code, so all three refuse any attempt but the first
+  (`GITHUB_RUN_ATTEMPT` must be `1`), and `sign` and `publish` also repeat the gate's main-tip and one-run checks.
+  The recovery is always a fresh keyed run: re-run the **request** run, or tag again.
 - **A red `gate`, `collect` or `sign`** leaves nothing public. Fix on `main` and tag the new green commit, or
   re-run the **request** run (`gh run rerun <request run id>`): that starts a fresh keyed run on current `main`.
-  Re-running a keyed run itself fails the gate by design (its code is no longer `main`'s tip).
+- **A red `gate` on the first tag** (a posture read, a first-use assumption about `workflow_run`, the environment or
+  the secrets): nothing is public and the version is not published, but the tagged commit is no longer `main`'s
+  tip once the fix lands. Fix on `main`, wait for its green `ci` push run, delete the unpublished tag
+  (`git push origin :refs/tags/desktop-v<version>` and `git tag -d desktop-v<version>`), then tag the new green
+  commit with the same version. A posture read the job token cannot do reports "Cannot read … with the job token":
+  that is a permission problem of the read, not a setting that is off; check the setting by hand
+  (`gh api repos/dilla-chat/dilla/…` as admin) before changing anything.
 - **A red `publish`** after a draft was created: re-run the request run; the publisher adopts and normalises the
   draft (exact asset set, signed notes) and is idempotent.
 - **A red `feed` after `publish`** (the versioned release is out, the Pages feed is not): re-run **only the failed
-  `feed` job** of that keyed run (`gh run rerun <keyed run id> --failed`). It is keyless, uses the signed artifact
-  (kept 3 days) and accepts a byte-identical re-deploy. A new request run cannot redo it: the gate refuses a
-  version that is already published. After 3 days, release the next version instead. The feed is built from the
-  published immutable releases only (this channel's newest must be this version; the other channel's newest is
+  `feed` job** of that keyed run (`gh run rerun <keyed run id> --failed`, only when `feed` is the one failed job).
+  It is keyless, uses the signed artifact (kept 3 days) and accepts a byte-identical re-deploy. A new request run
+  cannot redo it: the gate refuses a version that is already published. After 3 days, release the next version
+  instead. The feed is built from the published immutable releases only (this channel's newest must be this version; the other channel's newest is
   checked under the pins it was signed for), so a key rotation or a defaced Pages file never blocks it: the live
   site is simply overwritten.
 - **A red `verify-published`** cannot unpublish an immutable release; treat it as an incident and investigate
@@ -202,4 +215,4 @@ transition release, `rotation-proof.json`.
 - The DMG rotation path is exercised end to end only by the first real rotation (see the hand checks above); CI
   checks the rotation DMG's signature, notarization and key, and the release flow's key use, but not Sparkle itself.
 - First-use behaviour of the environment, secrets and `workflow_run` is only exercised by the first real tag; every
-  failure before `publish` leaves nothing public.
+  failure before `publish` leaves nothing public (recovery: Recovery, "A red `gate` on the first tag").

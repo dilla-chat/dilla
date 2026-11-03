@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url';
 import { verifyRelease } from '../src/update.ts';
 import * as releaseVerifier from './verify-release.mjs';
 import { REPOSITORY, createGithubApi, fetchCiJobs, hardenedGit, resolveTagCommit } from './ci-run.mjs';
+import { assertCheckoutIsMain, assertNoOtherReleaseRun, refuseRerunAttempt } from './keyed-run.mjs';
 import { DESKTOP_TAG } from './release-notes.mjs';
 import { createReleaseAssetUploader, listReleaseAssets, releaseAssetDigest } from './standard-release-upload.mjs';
 
@@ -72,9 +73,14 @@ export function assertExactAssets(assets, expected, digest) {
 export async function runPublisher({ mode, env, git, fetchImpl = fetch, trust, verifier = releaseVerifier, now = Date.now() }) {
  if (mode !== 'plan' && mode !== 'publish') throw new Error('Usage: publish-release.mjs plan | publish');
  const { tag, version, channel, sha, staged, macUpdate } = publicationContext(env);
+ // A partial re-run of an old keyed run reuses its gate's and sign's outputs with old publish code (final review, I-1):
+ // only the first attempt publishes, on main's current code, while no other release run is active.
+ refuseRerunAttempt(env, 'publish');
+ assertCheckoutIsMain(env, git);
  const candidate = await runnerDirectory(env, 'DESKTOP_RELEASE_CANDIDATE');
  const directory = await runnerDirectory(env, 'DESKTOP_INSTALLERS');
  const api = createGithubApi({ token: env.GH_TOKEN, fetchImpl });
+ await assertNoOtherReleaseRun(env, api);
 
  // The signed metadata, verified under main's pins, must name exactly DESKTOP_SHA.
  const metadataName = `desktop-${channel}.json`;
