@@ -31,6 +31,19 @@ test('authorization errors preserve only a native numeric code and reject spoofe
  assert.doesNotMatch(JSON.stringify(facts), /SECRET|private|xxx/);
 });
 
+test('Chromium 156 source paths preserve native authorization facts without accepting unrelated sources', () => {
+ const prefix = '[123:1103/003021.000000:INFO:electron/shell/browser/notifications/mac/';
+ const facts = notificationLogFacts(prefix + 'notification_presenter_mac.mm:61] Error requesting notification authorization: Notifications are not allowed for this application\n'
+  + prefix + 'cocoa_notification.mm:200] Error scheduling notification (NOTICE_SECRET) Notifications are not allowed for this application\n'
+  + '[123:1103/003021.000000:INFO:electron/shell/renderer/notification_presenter_mac.mm:61] Notification authorization granted: 1\n');
+ assert.equal(facts.authorization, 'error');
+ assert.equal(facts.authorizationErrorCode, null);
+ assert.equal(facts.schedulingFailed, true);
+ assert.equal(facts.schedulingErrorCode, null);
+ assert.doesNotMatch(JSON.stringify(facts), /NOTICE_SECRET|not allowed/);
+ assert.equal(notificationLogFacts(prefix + 'notification_presenter_mac.mm:64] Notification authorization granted: 1\n').authorization, 'granted');
+});
+
 test('explicit child environments preserve unset values without modifying the parent environment', () => {
  assert.equal(electronChildEnvironment(undefined), undefined);
  const input = { ONE: 'first', UNSET: undefined, ELECTRON_DEBUG_NOTIFICATIONS: '0' };
@@ -153,6 +166,59 @@ test('macOS runtime preparation refuses local hosts and cannot accept an unseale
   assert.throws(() => diagnostics.prepareMacElectronRuntime(options, inspect(...input)), /valid sealed Electron app/);
  }
  assert.throws(() => diagnostics.prepareMacElectronRuntime(options, () => commandResult('', 'PRIVATE_ERROR_SECRET', 1)), error => /seal the Electron app/.test(error.message) && !error.message.includes('PRIVATE_ERROR_SECRET'));
+});
+
+test('macOS CI restores only its disabled Notification Center user service and verifies readiness', () => {
+ assert.equal(typeof diagnostics.prepareMacNotificationService, 'function');
+ const calls = [], reports = [];
+ let disabled = true, available = false, running = false;
+ const options = { platform: 'darwin', environment: { CI: 'true', GITHUB_ACTIONS: 'true', RUNNER_OS: 'macOS' }, uid: 501, report: facts => reports.push(facts) };
+ const facts = diagnostics.prepareMacNotificationService(options, (file, args, options) => {
+  assert.equal(file, '/bin/launchctl'); assert.equal(options.shell, false);
+  calls.push(args);
+  if (args[0] === 'print-disabled') return commandResult(`disabled services = {\n "com.apple.notificationcenterui" => ${disabled}\n "PRIVATE_SERVICE_SECRET" => true\n}`);
+  if (args[0] === 'print') return available ? commandResult(`gui/501/com.apple.notificationcenterui = {\n state = ${running ? 'running' : 'waiting'}\n pid = 123\n PRIVATE_SERVICE_SECRET\n}`) : commandResult('', 'PRIVATE_ERROR_SECRET', 113);
+  if (args[0] === 'enable') disabled = false;
+  else if (args[0] === 'bootstrap') available = true;
+  else if (args[0] === 'kickstart') running = true;
+  else assert.fail('Unexpected operation');
+  return commandResult();
+ });
+ assert.deepEqual(calls, [ ['print-disabled', 'gui/501'], ['print', 'gui/501/com.apple.notificationcenterui'],
+  ['enable', 'gui/501/com.apple.notificationcenterui'], ['bootstrap', 'gui/501', '/System/Library/LaunchAgents/com.apple.notificationcenterui.plist'],
+  ['kickstart', 'gui/501/com.apple.notificationcenterui'], ['print-disabled', 'gui/501'], ['print', 'gui/501/com.apple.notificationcenterui'] ]);
+ assert.deepEqual(facts.before, { disabled: true, available: false, running: false });
+ assert.deepEqual(facts.after, { disabled: false, available: true, running: true });
+ assert.doesNotMatch(JSON.stringify([facts, reports]), /SECRET|authorization|granted/);
+});
+
+test('an enabled running Notification Center is inspected without changing it', () => {
+ assert.equal(typeof diagnostics.prepareMacNotificationService, 'function');
+ const options = { platform: 'darwin', environment: { CI: 'true', GITHUB_ACTIONS: 'true', RUNNER_OS: 'macOS' }, uid: 501 };
+ const facts = diagnostics.prepareMacNotificationService(options, (_file, args) => {
+  assert.ok(['print-disabled', 'print'].includes(args[0]));
+  return args[0] === 'print-disabled' ? commandResult('disabled services = {}') : commandResult('state = running\npid = 123\n');
+ });
+ assert.deepEqual(facts.before, { disabled: false, available: true, running: true });
+ assert.deepEqual(facts.after, facts.before);
+});
+
+test('Notification Center preparation refuses non-CI or root users and fails on unavailable service commands', () => {
+ assert.equal(typeof diagnostics.prepareMacNotificationService, 'function');
+ const options = { platform: 'darwin', environment: { CI: 'true', GITHUB_ACTIONS: 'true', RUNNER_OS: 'macOS' }, uid: 501 };
+ for (const input of [{ ...options, environment: {} }, { ...options, platform: 'linux' }, ...[0, -1, 1.2, NaN].map(uid => ({ ...options, uid }))]) {
+  assert.throws(() => diagnostics.prepareMacNotificationService(input, () => assert.fail('No command allowed')), /macOS CI user/);
+ }
+ for (const failed of ['print-disabled', 'enable', 'bootstrap', 'kickstart']) {
+  assert.throws(() => diagnostics.prepareMacNotificationService(options, (_file, args) => {
+   if (args[0] === failed) return commandResult('', 'PRIVATE_ERROR_SECRET', 1);
+   if (args[0] === 'print-disabled') return commandResult('"com.apple.notificationcenterui" => true\n');
+   if (args[0] === 'print') return commandResult('', '', 113);
+   return commandResult();
+  }), error => /Notification Center/.test(error.message) && !error.message.includes('PRIVATE_ERROR_SECRET'));
+ }
+ assert.throws(() => diagnostics.prepareMacNotificationService(options, (_file, args) =>
+  args[0] === 'print-disabled' ? commandResult('disabled services = {}') : commandResult()), /Notification Center.*running/);
 });
 
 test('an unsigned bundle is distinguishable from an unavailable codesign command without retaining its error text', () => {

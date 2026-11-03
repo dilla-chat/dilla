@@ -17,7 +17,8 @@ export function notificationLogFacts(input: string, previous = emptyNative()) {
  const facts = { ...previous };
  for (const line of input.split('\n')) {
   if (line.length > 2048) continue;
-  const match = /^\[[\d:./ -]+:INFO:(notification_presenter_mac|cocoa_notification)\.mm(?:\(\d+\)|:\d+)\] (.*)$/.exec(line);
+  // Chromium 156 retains the source-relative path after removing ../../.
+  const match = /^\[[\d:./ -]+:INFO:(?:electron\/shell\/browser\/notifications\/mac\/)?(notification_presenter_mac|cocoa_notification)\.mm(?:\(\d+\)|:\d+)\] (.*)$/.exec(line);
   if (!match) continue;
   const [, source, message] = match;
   const code = /\(UNErrorDomain error (\d{1,4})\.\)$/.exec(message);
@@ -89,6 +90,37 @@ export function prepareMacElectronRuntime(options: { execPath: string; platform?
   || identity.signature.kind !== 'adhoc' || identity.signature.linkerSigned || !identity.signature.infoPlistBound || !identity.signature.resourcesSealed)
   throw new Error('macOS CI requires a valid sealed Electron app with a matching bundle and signing identity');
  return identity;
+}
+
+type NotificationServiceState = { disabled: boolean; available: boolean; running: boolean };
+
+/** The macos-15/20260824.0482 Intel runner image unloads this user agent with -w.
+ * Restore that normal OS service for native acceptance, without changing any
+ * app authorization, TCC policy, system daemon or notification preference. */
+export function prepareMacNotificationService(options: { platform?: string; environment?: NodeJS.ProcessEnv; uid?: number;
+ report?: (facts: NotificationServiceState & { phase: 'before' | 'after' }) => void } = {}, run: Run = spawnSync) {
+ const environment = options.environment ?? process.env, uid = options.uid ?? process.getuid?.();
+ if ((options.platform ?? process.platform) !== 'darwin' || environment.CI !== 'true' || environment.GITHUB_ACTIONS !== 'true' || environment.RUNNER_OS !== 'macOS'
+  || !Number.isSafeInteger(uid) || uid! <= 0 || uid! > 2147483647) throw new Error('Notification Center preparation requires a macOS CI user');
+ const domain = `gui/${uid}`, target = `${domain}/com.apple.notificationcenterui`;
+ const command = (args: string[]) => {
+  try { return run('/bin/launchctl', args, { shell: false, encoding: 'utf8', timeout: 5000, maxBuffer: 8192, windowsHide: true }); }
+  catch { return undefined; }
+ };
+ const read = (): NotificationServiceState => {
+  const disabled = command(['print-disabled', domain]), service = command(['print', target]);
+  if (status(disabled) !== 'passed' || status(service) === 'unavailable') throw new Error('Could not inspect the macOS Notification Center user service');
+  return { disabled: /^\s*"com\.apple\.notificationcenterui"\s*=>\s*true\s*$/m.test(disabled!.stdout),
+   available: status(service) === 'passed', running: status(service) === 'passed' && /^\s*state = running\s*$/m.test(service!.stdout) && /^\s*pid = [1-9]\d*\s*$/m.test(service!.stdout) };
+ };
+ const before = read(); options.report?.({ phase: 'before', ...before });
+ const requireSuccess = (args: string[]) => { if (status(command(args)) !== 'passed') throw new Error(`Could not ${args[0]} the macOS Notification Center user service`); };
+ if (before.disabled) requireSuccess(['enable', target]);
+ if (!before.available) requireSuccess(['bootstrap', domain, '/System/Library/LaunchAgents/com.apple.notificationcenterui.plist']);
+ if (!before.running) requireSuccess(['kickstart', target]);
+ const after = read(); options.report?.({ phase: 'after', ...after });
+ if (after.disabled || !after.available || !after.running) throw new Error('macOS Notification Center user service is not enabled and running');
+ return { before, after };
 }
 
 type Facts = { version: number; platform: 'darwin'; finished: boolean; logUnavailable: boolean; logTruncated: boolean;
