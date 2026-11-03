@@ -1,5 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { mkdir } from 'node:fs/promises';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 const root = resolve(import.meta.dirname, '..');
 await mkdir(resolve(root, 'native-bin'), { recursive: true });
@@ -16,6 +18,12 @@ if (process.platform === 'linux') {
     const vars = execFileSync(process.env.ComSpec ?? 'cmd.exe', ['/d', '/s', '/c', `call "${bat}" >nul && set`], { windowsVerbatimArguments: true, encoding: 'utf8' });
     for (const line of vars.split(/\r?\n/)) { const split = line.indexOf('='); if (split > 0) env[line.slice(0, split)] = line.slice(split + 1); }
   }
+  const regressionDirectory = mkdtempSync(resolve(tmpdir(), 'dilla-audio-native-'));
+  try {
+    const regression = resolve(regressionDirectory, 'process-parent-test.exe');
+    execFileSync('cl.exe', ['/nologo', '/std:c++17', '/EHsc', '/W4', '/WX', resolve(root, 'test/native/process-parent.test.cpp'), '/Fe:' + regression], { env, cwd: regressionDirectory, stdio: 'inherit' });
+    execFileSync(regression, [], { env, cwd: regressionDirectory, stdio: 'inherit' });
+  } finally { rmSync(regressionDirectory, { recursive: true, force: true }); }
   execFileSync('cl.exe', ['/nologo', '/std:c++17', '/EHsc', '/O2', '/W4', resolve(root, 'native/windows.cpp'), '/Fe:' + resolve(root, 'native-bin/dilla-audio.exe'), 'ole32.lib', 'mmdevapi.lib', 'runtimeobject.lib'], { env, cwd: resolve(root, 'native-bin'), stdio: 'inherit' });
 } else if (process.platform === 'darwin') {
   execFileSync('swiftc', ['-O', '-parse-as-library', '-target', `${process.arch === 'arm64' ? 'arm64' : 'x86_64'}-apple-macos13.0`, resolve(root, 'native/AudioCapture.swift'), '-o', resolve(root, 'native-bin/dilla-audio')], { stdio: 'inherit' });

@@ -1,5 +1,6 @@
 #define NOMINMAX
 #include "common.hpp"
+#include "process-parent.hpp"
 #include <windows.h>
 #include <mmdeviceapi.h>
 #include <audiopolicy.h>
@@ -14,18 +15,77 @@
 #include <vector>
 using Microsoft::WRL::ComPtr;
 static void check(HRESULT value) { if (FAILED(value)) throw std::runtime_error("WASAPI operation refused (" + std::to_string(uint32_t(value)) + ")"); }
-static std::map<DWORD,DWORD> parents() {
-    std::map<DWORD,DWORD> out; auto snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+static std::map<uint32_t,uint32_t> parents() {
+    std::map<uint32_t,uint32_t> out; auto snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (snapshot == INVALID_HANDLE_VALUE) throw std::runtime_error("process enumeration refused");
     PROCESSENTRY32W row{}; row.dwSize = sizeof row;
     if (Process32FirstW(snapshot, &row)) do { out[row.th32ProcessID] = row.th32ParentProcessID; } while (Process32NextW(snapshot, &row));
     CloseHandle(snapshot); return out;
 }
-static bool descendant(DWORD pid, DWORD root, const std::map<DWORD,DWORD>& graph) {
-    for (int limit = 0; pid && limit < 128; ++limit) { if (pid == root) return true; auto p = graph.find(pid); if (p == graph.end() || p->second == pid) break; pid = p->second; }
-    return false;
-}
 static uint64_t creation(HANDLE process) { FILETIME created{}, ended{}, kernel{}, user{}; if (!GetProcessTimes(process, &created, &ended, &kernel, &user)) throw std::runtime_error("process identity unavailable"); return (uint64_t(created.dwHighDateTime) << 32) | created.dwLowDateTime; }
+// NtQueryInformationProcess classes 0 and 64 and the telemetry prefix are documented at:
+// https://learn.microsoft.com/windows/win32/api/winternl/nf-winternl-ntqueryinformationprocess
+// https://learn.microsoft.com/windows/win32/devnotes/process_telemetry_id_information_type
+// CreateInterruptTime is immune to wall-clock corrections. FILETIME is only an identity, never an ordering clock.
+using QueryProcess = LONG (NTAPI*)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+struct BasicProcess { LONG exitStatus; PVOID peb; ULONG_PTR affinity; LONG priority; ULONG_PTR pid, parent; };
+struct TelemetryPrefix { ULONG headerSize, pid; ULONG64 startKey, createTime, interruptTime; };
+class ProcessTree {
+    struct Record { HANDLE handle = nullptr; application_audio::ProcessBirth birth{}; bool queried = false; LONG basicStatus = -1, telemetryStatus = -1; };
+    std::map<DWORD, Record> records;
+    const bool diagnostic;
+    unsigned reported = 0;
+    static QueryProcess query() {
+        static const auto fn = reinterpret_cast<QueryProcess>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationProcess"));
+        return fn;
+    }
+public:
+    const std::map<uint32_t,uint32_t> graph = parents();
+    explicit ProcessTree(bool diagnostic) : diagnostic(diagnostic) {}
+    ProcessTree(const ProcessTree&) = delete;
+    ProcessTree& operator=(const ProcessTree&) = delete;
+    ~ProcessTree() { for (const auto& entry : records) if (entry.second.handle) CloseHandle(entry.second.handle); }
+    application_audio::ProcessBirth birth(DWORD pid) {
+        auto& record = records[pid];
+        if (!record.queried) {
+            record.queried = true;
+            record.handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, pid);
+            const auto fn = query();
+            if (record.handle && fn && GetProcessId(record.handle) == pid) {
+                BasicProcess basic{}; ULONG size = 0;
+                record.basicStatus = fn(record.handle, 0, &basic, sizeof basic, &size);
+                if (record.basicStatus >= 0 && size >= sizeof basic && basic.pid == pid && basic.parent <= MAXDWORD) {
+                    record.birth.pid = pid; record.birth.parent = uint32_t(basic.parent);
+                    std::vector<unsigned char> buffer(256); ULONG needed = 0;
+                    record.telemetryStatus = fn(record.handle, 64, buffer.data(), ULONG(buffer.size()), &needed);
+                    if (record.telemetryStatus < 0 && needed > buffer.size() && needed <= 65536) {
+                        buffer.resize(needed);
+                        record.telemetryStatus = fn(record.handle, 64, buffer.data(), ULONG(buffer.size()), &needed);
+                    }
+                    if (record.telemetryStatus >= 0 && needed >= sizeof(TelemetryPrefix) && needed <= buffer.size()) {
+                        TelemetryPrefix info{}; std::memcpy(&info, buffer.data(), sizeof info);
+                        if (info.pid == pid && info.headerSize >= sizeof info && info.headerSize <= needed) {
+                            try { record.birth.identity = creation(record.handle); record.birth.interruptTime = info.interruptTime; record.birth.known = true; } catch (...) {}
+                        }
+                    }
+                }
+            }
+            record.birth.live = record.handle && WaitForSingleObject(record.handle, 0) == WAIT_TIMEOUT;
+            if (diagnostic && reported++ < 64) {
+                const auto edge = graph.find(pid);
+                std::fprintf(stderr, "WASAPI ancestry pid=%lu snapshot-parent=%lu actual-parent=%lu identity=%llu interrupt=%llu live=%d known=%d basic-status=%lu telemetry-status=%lu\n",
+                    static_cast<unsigned long>(pid), static_cast<unsigned long>(edge == graph.end() ? 0 : edge->second), static_cast<unsigned long>(record.birth.parent),
+                    static_cast<unsigned long long>(record.birth.identity), static_cast<unsigned long long>(record.birth.interruptTime), record.birth.live, record.birth.known,
+                    static_cast<unsigned long>(record.basicStatus), static_cast<unsigned long>(record.telemetryStatus));
+            }
+        }
+        record.birth.live = record.handle && WaitForSingleObject(record.handle, 0) == WAIT_TIMEOUT;
+        return record.birth;
+    }
+};
+static bool descendant(DWORD pid, DWORD root, ProcessTree& tree) {
+    return application_audio::descendant(pid, root, tree.graph, [&](uint32_t current) { return tree.birth(current); });
+}
 static std::string label(HANDLE process) {
     wchar_t path[32768]; DWORD length = DWORD(std::size(path)); if (!QueryFullProcessImageNameW(process, 0, path, &length)) return "Application";
     std::wstring name(path, length); auto start = name.find_last_of(L"\\/"); if (start != std::wstring::npos) name = name.substr(start + 1);
@@ -35,7 +95,7 @@ static std::string label(HANDLE process) {
 }
 static void list(DWORD excluded) {
     const bool diagnostic = std::getenv("DILLA_AUDIO_DIAGNOSTICS") != nullptr;
-    auto graph = parents(); std::set<DWORD> found; ComPtr<IMMDeviceEnumerator> enumerator;
+    ProcessTree graph(diagnostic); std::set<DWORD> found; ComPtr<IMMDeviceEnumerator> enumerator;
     check(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&enumerator)));
     ComPtr<IMMDeviceCollection> devices; check(enumerator->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &devices));
     UINT n = 0; check(devices->GetCount(&n));
@@ -88,7 +148,7 @@ public:
 static void capture(const char* id, DWORD excluded) {
     std::string key(id); auto colon = key.find(':'); if (colon == std::string::npos) throw std::runtime_error("invalid source");
     auto expected = number(key.substr(0, colon).c_str()); auto pid64 = number(key.substr(colon + 1).c_str());
-    if (pid64 > MAXDWORD) throw std::runtime_error("invalid process"); auto pid = DWORD(pid64); auto graph = parents();
+    if (pid64 > MAXDWORD) throw std::runtime_error("invalid process"); auto pid = DWORD(pid64); ProcessTree graph(std::getenv("DILLA_AUDIO_DIAGNOSTICS") != nullptr);
     if (descendant(pid, excluded, graph) || descendant(excluded, pid, graph)) throw std::runtime_error("cannot capture Dilla call audio");
     auto process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, pid);
     if (!process || creation(process) != expected) throw std::runtime_error("selected application is no longer available");
