@@ -468,7 +468,9 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: desktop-performance-${{ matrix.platform }}-${{ matrix.arch }}
-          path: packages/desktop/test-report/performance-*.json
+          # Exactly the combined report the release collects; the browser and desktop halves stay out of the release
+          # artifact (its file set is checked exactly).
+          path: packages/desktop/test-report/performance-${{ matrix.platform }}-${{ matrix.arch }}.json
           if-no-files-found: error
       - if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
