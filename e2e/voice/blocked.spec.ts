@@ -142,15 +142,18 @@ test('(b) a device that fails the signed-list check joins mid-call: alice leaves
     await peer.waitForCallMembers(call, (d) => d.includes(a.device), 'lists alice');
 
     // A device of the peer that the instance admits but whose signed-list entry carries the wrong tier.
-    await peer.forgeDevice();
-    await peer.callJoin(call, 'second');
-    await expect(notice(alice.page, copy('voice.blockedLeft'))).toBeVisible({ timeout: WAIT });
-    await expect(dock(alice.page)).toHaveCount(0, { timeout: WAIT });
-    await expect(stage(alice.page)).toHaveAttribute('data-call-phase', 'blocked');
-    // Product walk M10: the block came from the call group only, so the join is offered again, and the notice says so.
-    await expect(stage(alice.page).getByRole('button', { name: copy('callStage.preview.join'), exact: true })).toBeVisible();
-    await peer.waitForCallMembers(call, (d) => !d.includes(a.device), 'drops alice');
-    await expect.poll(async () => (await peer.callRead(call)).participants.map((p) => p.device), POLL).not.toContain(a.device);
+    await peerBrowser.guard.expectSecurityLeave(alice.context, async () => {
+      await peer.forgeDevice();
+      await peer.callJoin(call, 'second');
+      await expect(notice(alice.page, copy('voice.blockedLeft'))).toBeVisible({ timeout: WAIT });
+      await expect(dock(alice.page)).toHaveCount(0, { timeout: WAIT });
+      await expect.poll(() => mediaWorkers(alice.page).length, POLL).toBe(0);
+      await expect(stage(alice.page)).toHaveAttribute('data-call-phase', 'blocked');
+      // Product walk M10: the block came from the call group only, so the join is offered again, and the notice says so.
+      await expect(stage(alice.page).getByRole('button', { name: copy('callStage.preview.join'), exact: true })).toBeVisible();
+      await peer.waitForCallMembers(call, (d) => !d.includes(a.device), 'drops alice');
+      await expect.poll(async () => (await peer.callRead(call)).participants.map((p) => p.device), POLL).not.toContain(a.device);
+    });
   } finally {
     await peerBrowser.close(alice);
     await peer.close();

@@ -52,6 +52,9 @@ export interface Guard {
   readonly consoleErrors: string[];
   readonly pageErrors: string[];
   collectWorkers(): Promise<void>;
+  /** Only for an intentional security-triggered leave: the callback performs the trigger and asserts blocked state,
+   *  absent media/dock and removal from the MLS group and room. A new connection revokes the expectation. */
+  expectSecurityLeave(context: BrowserContext, assertLeave: () => Promise<void>): Promise<void>;
 }
 
 /** The page-side recorders (one function, serialised into an init script: it may close over nothing). */
@@ -316,6 +319,11 @@ function newGuard(projectName: string): Guard & { attach(context: BrowserContext
       const signal = signalGuards.get(context);
       if (!signal) throw new Error('Cannot leave an unguarded voice context');
       signal.beginLeave();
+    },
+    async expectSecurityLeave(context, assertLeave) {
+      const signal = signalGuards.get(context);
+      if (!signal) throw new Error('Cannot expect a security leave in an unguarded voice context');
+      await signal.expectSecurityLeave(assertLeave);
     },
     async attach(context: BrowserContext): Promise<void> {
       const signal = signalCloseGuard();

@@ -3,6 +3,7 @@ import { constants } from 'node:fs';
 import { chmod, mkdtemp, open, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /** Preserve Playwright's normal explicit-environment semantics, including unset keys. */
 export function electronChildEnvironment(environment?: NodeJS.ProcessEnv): Record<string, string> | undefined {
@@ -92,58 +93,38 @@ export function prepareMacElectronRuntime(options: { execPath: string; platform?
  return identity;
 }
 
-type NotificationServiceState = { disabled: boolean; available: boolean; running: boolean };
-type NotificationServiceOperation = 'print-disabled' | 'print' | 'enable' | 'bootstrap' | 'kickstart';
-type NotificationServiceReport = (NotificationServiceState & { phase: 'before' | 'after' })
- | { phase: 'unchanged'; reason: 'unaffected-architecture' | 'not-disabled' }
- | { phase: 'command'; operation: NotificationServiceOperation; status: 'passed' | 'failed' | 'unavailable'; exitCode: number | null;
-     reason: 'input-output' | 'permission-denied' | 'not-found' | 'unavailable' | 'other' | null };
+type RegistrationState = { registered: boolean; candidates: number };
+type RegistrationFacts = { before: RegistrationState; after: RegistrationState; registrationStatus: number };
 
-/** The macos-15/20260824.0482 Intel runner image unloads this user agent with -w.
- * Restore only an explicit disabled override on Intel; ARM has a different
- * effective service configuration and already passed native notifications.
- * Restore that normal OS service for native acceptance, without changing any
- * app authorization, TCC policy, system daemon or notification preference. */
-export function prepareMacNotificationService(options: { platform?: string; arch?: string; environment?: NodeJS.ProcessEnv; uid?: number;
- report?: (facts: NotificationServiceReport) => void } = {}, run: Run = spawnSync) {
- const environment = options.environment ?? process.env, uid = options.uid ?? process.getuid?.();
+/** Complete the normal installation contract after sealing the npm app. Direct
+ * executable spawning does not go through Finder's bundle registration path.
+ * Update the same bundle once, including any record made before it was sealed. */
+export function registerMacElectronRuntime(options: { execPath: string; platform?: string; environment?: NodeJS.ProcessEnv;
+ report?: (facts: RegistrationFacts) => void }, run: Run = spawnSync): RegistrationFacts {
+ const environment = options.environment ?? process.env;
+ const expected = fileURLToPath(new URL('../../../node_modules/electron/dist/Electron.app/Contents/MacOS/Electron', import.meta.url));
  if ((options.platform ?? process.platform) !== 'darwin' || environment.CI !== 'true' || environment.GITHUB_ACTIONS !== 'true' || environment.RUNNER_OS !== 'macOS'
-  || !Number.isSafeInteger(uid) || uid! <= 0 || uid! > 2147483647) throw new Error('Notification Center preparation requires a macOS CI user');
- if ((options.arch ?? process.arch) !== 'x64') {
-  options.report?.({ phase: 'unchanged', reason: 'unaffected-architecture' });
-  return { before: null, after: null };
- }
- const domain = `gui/${uid}`, target = `${domain}/com.apple.notificationcenterui`;
- const command = (args: [NotificationServiceOperation, ...string[]]) => {
-  let result: SpawnSyncReturns<string> | undefined;
-  try { result = run('/bin/launchctl', args, { shell: false, encoding: 'utf8', timeout: 5000, maxBuffer: 8192, windowsHide: true }); }
-  catch { /* Report only a fixed status, never exception or command output. */ }
-  const outcome = status(result), error = result?.stderr ?? '';
-  const exitCode = typeof result?.status === 'number' && Number.isInteger(result.status) && result.status >= 0 && result.status <= 255 ? result.status : null;
-  const reason = outcome === 'passed' ? null : outcome === 'unavailable' ? 'unavailable'
-   : /Input\/output error/.test(error) ? 'input-output' : /Operation not permitted|Permission denied/.test(error) ? 'permission-denied'
-   : /Could not find service|No such file or directory|No such process/.test(error) ? 'not-found' : 'other';
-  options.report?.({ phase: 'command', operation: args[0], status: outcome, exitCode, reason });
-  return result;
- };
- const read = (): NotificationServiceState => {
-  const disabled = command(['print-disabled', domain]), service = command(['print', target]);
-  if (status(disabled) !== 'passed' || status(service) === 'unavailable') throw new Error('Could not inspect the macOS Notification Center user service');
-  return { disabled: /^\s*"com\.apple\.notificationcenterui"\s*=>\s*true\s*$/m.test(disabled!.stdout),
-   available: status(service) === 'passed', running: status(service) === 'passed' && /^\s*state = running\s*$/m.test(service!.stdout) && /^\s*pid = [1-9]\d*\s*$/m.test(service!.stdout) };
- };
- const before = read(); options.report?.({ phase: 'before', ...before });
- if (!before.disabled) {
-  options.report?.({ phase: 'unchanged', reason: 'not-disabled' });
-  return { before, after: before };
- }
- const requireSuccess = (args: [NotificationServiceOperation, ...string[]]) => { if (status(command(args)) !== 'passed') throw new Error(`Could not ${args[0]} the macOS Notification Center user service`); };
- requireSuccess(['enable', target]);
- if (!before.available) requireSuccess(['bootstrap', domain, '/System/Library/LaunchAgents/com.apple.notificationcenterui.plist']);
- if (!before.running) requireSuccess(['kickstart', target]);
- const after = read(); options.report?.({ phase: 'after', ...after });
- if (after.disabled || !after.available || !after.running) throw new Error('macOS Notification Center user service is not enabled and running');
- return { before, after };
+  || options.execPath !== expected) throw new Error('Registration requires the exact macOS CI npm Electron executable');
+ const script = fileURLToPath(new URL('./register-mac-electron-runtime.swift', import.meta.url));
+ let result: SpawnSyncReturns<string> | undefined;
+ try { result = run('/usr/bin/xcrun', ['swift', script, expected.slice(0, -'/Contents/MacOS/Electron'.length)], { shell: false, encoding: 'utf8', timeout: 60000, maxBuffer: 8192, windowsHide: true }); }
+ catch { /* Never retain compiler or OS exception text. */ }
+ if (status(result) !== 'passed') throw new Error('Launch Services registration helper failed');
+ let facts: RegistrationFacts;
+ try {
+  const input = JSON.parse(result!.stdout);
+  if (!input || typeof input !== 'object' || Object.keys(input).sort().join(',') !== 'after,before,registrationStatus'
+   || !Number.isInteger(input.registrationStatus) || input.registrationStatus < -2147483648 || input.registrationStatus > 2147483647) throw new Error();
+  const state = (value: any): RegistrationState => {
+   if (!value || typeof value !== 'object' || Object.keys(value).sort().join(',') !== 'candidates,registered' || typeof value.registered !== 'boolean'
+    || !Number.isInteger(value.candidates) || value.candidates < 0 || value.candidates > 4096 || value.registered && value.candidates === 0) throw new Error();
+   return { registered: value.registered, candidates: value.candidates };
+  };
+  facts = { before: state(input.before), after: state(input.after), registrationStatus: input.registrationStatus };
+ } catch { throw new Error('Launch Services registration returned invalid evidence'); }
+ options.report?.(facts);
+ if (facts.registrationStatus !== 0 || !facts.after.registered) throw new Error(`Launch Services did not register the prepared Electron app (OSStatus ${facts.registrationStatus})`);
+ return facts;
 }
 
 type Facts = { version: number; platform: 'darwin'; finished: boolean; logUnavailable: boolean; logTruncated: boolean;

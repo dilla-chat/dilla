@@ -3,6 +3,7 @@ import test from 'node:test';
 import { appendFile, readFile, stat, access, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { electronChildEnvironment, notificationLogFacts, macNotificationIdentity, prepareMacNotificationDiagnostic } from '../web/support/mac-notification-diagnostics.ts';
 import * as diagnostics from '../web/support/mac-notification-diagnostics.ts';
 
@@ -168,94 +169,38 @@ test('macOS runtime preparation refuses local hosts and cannot accept an unseale
  assert.throws(() => diagnostics.prepareMacElectronRuntime(options, () => commandResult('', 'PRIVATE_ERROR_SECRET', 1)), error => /seal the Electron app/.test(error.message) && !error.message.includes('PRIVATE_ERROR_SECRET'));
 });
 
-test('macOS CI restores only its disabled Notification Center user service and verifies readiness', () => {
- assert.equal(typeof diagnostics.prepareMacNotificationService, 'function');
- const calls = [], reports = [];
- let disabled = true, available = false, running = false;
- const options = { platform: 'darwin', arch: 'x64', environment: { CI: 'true', GITHUB_ACTIONS: 'true', RUNNER_OS: 'macOS' }, uid: 501, report: facts => reports.push(facts) };
- const facts = diagnostics.prepareMacNotificationService(options, (file, args, options) => {
-  assert.equal(file, '/bin/launchctl'); assert.equal(options.shell, false);
-  calls.push(args);
-  if (args[0] === 'print-disabled') return commandResult(`disabled services = {\n "com.apple.notificationcenterui" => ${disabled}\n "PRIVATE_SERVICE_SECRET" => true\n}`);
-  if (args[0] === 'print') return available ? commandResult(`gui/501/com.apple.notificationcenterui = {\n state = ${running ? 'running' : 'waiting'}\n pid = 123\n PRIVATE_SERVICE_SECRET\n}`) : commandResult('', 'PRIVATE_ERROR_SECRET', 113);
-  if (args[0] === 'enable') disabled = false;
-  else if (args[0] === 'bootstrap') available = true;
-  else if (args[0] === 'kickstart') running = true;
-  else assert.fail('Unexpected operation');
-  return commandResult();
+test('CI registers only its exact npm Electron bundle and preserves bounded before/after installation facts', () => {
+ assert.equal(typeof diagnostics.registerMacElectronRuntime, 'function');
+ const execPath = fileURLToPath(new URL('../../node_modules/electron/dist/Electron.app/Contents/MacOS/Electron', import.meta.url));
+ const reports = [], calls = [];
+ const expected = { before: { registered: false, candidates: 0 }, after: { registered: true, candidates: 1 }, registrationStatus: 0 };
+ const result = diagnostics.registerMacElectronRuntime({ execPath, platform: 'darwin', environment: { CI: 'true', GITHUB_ACTIONS: 'true', RUNNER_OS: 'macOS' }, report: facts => reports.push(facts) }, (file, args, options) => {
+  calls.push([file, args]); assert.equal(options.shell, false); assert.ok(options.timeout <= 60000); assert.ok(options.maxBuffer <= 8192);
+  return commandResult(JSON.stringify(expected), 'PRIVATE_WARNING_SECRET');
  });
- assert.deepEqual(calls, [ ['print-disabled', 'gui/501'], ['print', 'gui/501/com.apple.notificationcenterui'],
-  ['enable', 'gui/501/com.apple.notificationcenterui'], ['bootstrap', 'gui/501', '/System/Library/LaunchAgents/com.apple.notificationcenterui.plist'],
-  ['kickstart', 'gui/501/com.apple.notificationcenterui'], ['print-disabled', 'gui/501'], ['print', 'gui/501/com.apple.notificationcenterui'] ]);
- assert.deepEqual(facts.before, { disabled: true, available: false, running: false });
- assert.deepEqual(facts.after, { disabled: false, available: true, running: true });
- assert.doesNotMatch(JSON.stringify([facts, reports]), /SECRET|authorization|granted/);
-});
-
-test('an enabled running Notification Center is inspected without changing it', () => {
- assert.equal(typeof diagnostics.prepareMacNotificationService, 'function');
- const options = { platform: 'darwin', arch: 'x64', environment: { CI: 'true', GITHUB_ACTIONS: 'true', RUNNER_OS: 'macOS' }, uid: 501 };
- const facts = diagnostics.prepareMacNotificationService(options, (_file, args) => {
-  assert.ok(['print-disabled', 'print'].includes(args[0]));
-  return args[0] === 'print-disabled' ? commandResult('disabled services = {}') : commandResult('state = running\npid = 123\n');
- });
- assert.deepEqual(facts.before, { disabled: false, available: true, running: true });
- assert.deepEqual(facts.after, facts.before);
-});
-
-test('Notification Center preparation refuses non-CI or root users and fails on unavailable service commands', () => {
- assert.equal(typeof diagnostics.prepareMacNotificationService, 'function');
- const options = { platform: 'darwin', arch: 'x64', environment: { CI: 'true', GITHUB_ACTIONS: 'true', RUNNER_OS: 'macOS' }, uid: 501 };
- for (const input of [{ ...options, environment: {} }, { ...options, platform: 'linux' }, ...[0, -1, 1.2, NaN].map(uid => ({ ...options, uid }))]) {
-  assert.throws(() => diagnostics.prepareMacNotificationService(input, () => assert.fail('No command allowed')), /macOS CI user/);
+ assert.deepEqual(result, expected); assert.deepEqual(reports, [expected]);
+ assert.deepEqual(calls, [['/usr/bin/xcrun', ['swift', fileURLToPath(new URL('../web/support/register-mac-electron-runtime.swift', import.meta.url)), execPath.slice(0, -'/Contents/MacOS/Electron'.length)]]]);
+ for (const input of [{ execPath: '/tmp/Electron.app/Contents/MacOS/Electron' }, { platform: 'linux' }, { environment: {} }]) {
+  assert.throws(() => diagnostics.registerMacElectronRuntime({ execPath, platform: 'darwin', environment: { CI: 'true', GITHUB_ACTIONS: 'true', RUNNER_OS: 'macOS' }, ...input }, () => assert.fail('No installation action allowed')), /macOS CI npm Electron/);
  }
- for (const failed of ['print-disabled', 'enable', 'bootstrap', 'kickstart']) {
-  assert.throws(() => diagnostics.prepareMacNotificationService(options, (_file, args) => {
-   if (args[0] === failed) return commandResult('', 'PRIVATE_ERROR_SECRET', 1);
-   if (args[0] === 'print-disabled') return commandResult('"com.apple.notificationcenterui" => true\n');
-   if (args[0] === 'print') return commandResult('', '', 113);
-   return commandResult();
-  }), error => /Notification Center/.test(error.message) && !error.message.includes('PRIVATE_ERROR_SECRET'));
- }
- assert.throws(() => diagnostics.prepareMacNotificationService(options, (_file, args) =>
-  args[0] === 'print-disabled' ? commandResult('"com.apple.notificationcenterui" => true\n') : commandResult()), /Notification Center.*running/);
 });
 
-test('unaffected ARM runners execute no Notification Center service commands', () => {
- const reports = []; let calls = 0;
- const facts = diagnostics.prepareMacNotificationService({ platform: 'darwin', arch: 'arm64', uid: 501,
-  environment: { CI: 'true', GITHUB_ACTIONS: 'true', RUNNER_OS: 'macOS' }, report: facts => reports.push(facts) }, () => { calls++; assert.fail('ARM must not inspect or mutate the Intel service'); });
- assert.equal(calls, 0);
- assert.deepEqual(facts, { before: null, after: null });
- assert.deepEqual(reports, [{ phase: 'unchanged', reason: 'unaffected-architecture' }]);
-});
-
-test('Intel service absence without an explicit disabled override cannot trigger restoration', () => {
- const calls = [], reports = [];
- const facts = diagnostics.prepareMacNotificationService({ platform: 'darwin', arch: 'x64', uid: 501,
-  environment: { CI: 'true', GITHUB_ACTIONS: 'true', RUNNER_OS: 'macOS' }, report: facts => reports.push(facts) }, (_file, args) => {
-  calls.push(args);
-  if (args[0] === 'print-disabled') return commandResult('disabled services = {}');
-  if (args[0] === 'print') return commandResult('', 'Could not find service PRIVATE_SECRET', 113);
-  assert.fail('Only an explicitly disabled Intel service can be changed');
- });
- assert.deepEqual(calls, [['print-disabled', 'gui/501'], ['print', 'gui/501/com.apple.notificationcenterui']]);
- assert.deepEqual(facts, { before: { disabled: false, available: false, running: false }, after: { disabled: false, available: false, running: false } });
- assert.deepEqual(reports.at(-1), { phase: 'unchanged', reason: 'not-disabled' });
- assert.doesNotMatch(JSON.stringify(reports), /PRIVATE_SECRET/);
-});
-
-test('a failed restoration reports bounded operation, exit status and reason without command output', () => {
+test('registration rejects malformed evidence and reports a real OS failure without leaking command output', () => {
+ assert.equal(typeof diagnostics.registerMacElectronRuntime, 'function');
+ const execPath = fileURLToPath(new URL('../../node_modules/electron/dist/Electron.app/Contents/MacOS/Electron', import.meta.url));
  const reports = [];
- assert.throws(() => diagnostics.prepareMacNotificationService({ platform: 'darwin', arch: 'x64', uid: 501,
-  environment: { CI: 'true', GITHUB_ACTIONS: 'true', RUNNER_OS: 'macOS' }, report: facts => reports.push(facts) }, (_file, args) => {
-  if (args[0] === 'print-disabled') return commandResult('"com.apple.notificationcenterui" => true\n');
-  if (args[0] === 'print') return commandResult('', 'Could not find service PRIVATE_SECRET', 113);
-  if (args[0] === 'bootstrap') return commandResult('', 'Bootstrap failed: 5: Input/output error\nPRIVATE_SECRET', 5);
-  return commandResult();
- }), /Could not bootstrap/);
- assert.ok(reports.some(facts => facts.phase === 'command' && facts.operation === 'bootstrap' && facts.status === 'failed' && facts.exitCode === 5 && facts.reason === 'input-output'));
- assert.doesNotMatch(JSON.stringify(reports), /PRIVATE_SECRET|Bootstrap failed|Could not find/);
+ const options = { execPath, platform: 'darwin', environment: { CI: 'true', GITHUB_ACTIONS: 'true', RUNNER_OS: 'macOS' }, report: facts => reports.push(facts) };
+ for (const output of ['PRIVATE_SECRET', JSON.stringify({ before: { registered: false, candidates: 0 }, after: { registered: true, candidates: 1 }, registrationStatus: 0, PRIVATE_SECRET: 'raw' }),
+  JSON.stringify({ before: { registered: false, candidates: -1 }, after: { registered: true, candidates: 1 }, registrationStatus: 0 }),
+  JSON.stringify({ before: { registered: false, candidates: 0 }, after: { registered: true, candidates: 0 }, registrationStatus: 0 })]) {
+  assert.throws(() => diagnostics.registerMacElectronRuntime(options, () => commandResult(output)), error => /Launch Services/.test(error.message) && !error.message.includes('PRIVATE_SECRET'));
+ }
+ const failure = { before: { registered: false, candidates: 1 }, after: { registered: false, candidates: 1 }, registrationStatus: -10811 };
+ assert.throws(() => diagnostics.registerMacElectronRuntime(options, () => commandResult(JSON.stringify(failure))), /Launch Services.*-10811/);
+ assert.deepEqual(reports.at(-1), failure);
+ const already = { before: { registered: true, candidates: 1 }, after: { registered: true, candidates: 1 }, registrationStatus: 0 };
+ assert.deepEqual(diagnostics.registerMacElectronRuntime(options, () => commandResult(JSON.stringify(already))), already);
+ assert.doesNotMatch(JSON.stringify(reports), /PRIVATE_SECRET/);
 });
 
 test('an unsigned bundle is distinguishable from an unavailable codesign command without retaining its error text', () => {

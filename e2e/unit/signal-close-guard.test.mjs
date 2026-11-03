@@ -34,3 +34,37 @@ test('cleanup in one client never excuses an error in another client', () => {
   assert.equal(alice.observe(closeError), true);
   assert.equal(bob.observe(closeError), false);
 });
+
+test('an explicitly expected security leave permits only its own SDK teardown and is revoked by reconnect', async () => {
+  const alice = signalCloseGuard(), bob = signalCloseGuard();
+  let expectedClose = false;
+  await alice.expectSecurityLeave(async () => {
+    assert.equal(alice.observe(closeError), false, 'security intent alone cannot excuse an active transport failure');
+    alice.observe(disconnect);
+    expectedClose = alice.observe(closeError);
+    bob.observe(disconnect);
+    assert.equal(bob.observe(closeError), false, 'another context has no expected security leave');
+    for (const text of [closeError.replace('1006', '1011'), closeError.replace('1006', '10060'), 'unrelated application error 1006']) {
+      assert.equal(alice.observe(text), false);
+    }
+    // The caller must establish its blocked/no-leaf postconditions before this scope resolves.
+  });
+  assert.equal(expectedClose, true, 'the known security operation deliberately disconnected this SDK');
+  alice.observe('connection state changed: disconnected -> connecting { room: REDACTED }');
+  assert.equal(alice.observe(closeError), false, 'a new active call has no authorization from the old security leave');
+});
+
+test('a failed security-leave postcondition rejects the scope and revokes its authorization', async () => {
+  const guard = signalCloseGuard();
+  let rejected = false;
+  try {
+    await guard.expectSecurityLeave(async () => {
+      guard.observe(disconnect);
+      throw new Error('the expected blocked or leaf-removal postcondition failed');
+    });
+  } catch (error) {
+    rejected = /postcondition failed/.test(String(error));
+  }
+  assert.equal(rejected, true, 'failed security postconditions cannot produce a successful scope');
+  assert.equal(guard.observe(closeError), false);
+});
