@@ -1,8 +1,10 @@
+import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it } from 'vitest';
-import type { Id } from '../core-port';
+import { encode } from '../cbor';
+import { CoreError, type Id } from '../core-port';
 import { toHex } from '../hex';
 import { SYNC, SyncError } from './engine';
-import { welcomeFrame } from './channel';
+import { INTERACTION_CLOCK_TOLERANCE_S, proofCommunity, proofOutsideClockWindow, welcomeFrame } from './channel';
 import { coreCalls, device, readyInfo, type Device } from './testing/harness';
 import { CHANNEL, COMMUNITY, ME, ManualClock, ModelDs, PEER, at, deferred, httpError, idOf, settle, type RouteName } from './testing/model';
 
@@ -494,6 +496,79 @@ describe('human interaction Welcomes', () => {
     ]);
     expect(ds.welcomesFor(ME.device)).toEqual([{ id: 1n, groupId: toHex(group) }]);
     expect(d.unexpected).toEqual([toHex(group)]);
+  });
+
+  it('names a kind-3 Welcome refusal whose proof lies outside the clock window, and only that one', async () => {
+    const now = 1_700_000_000n;
+    const proofAt = (issuedAt: bigint, notAfter: bigint): Uint8Array => encode([1n, new Uint8Array(16).fill(1),
+      new Uint8Array(16).fill(2), new Uint8Array(32).fill(3), issuedAt, notAfter, ...Array.from({ length: 12 }, () => 0n)]);
+    const cases: [string, Uint8Array, boolean][] = [
+      ['instance 6 s ahead', proofAt(now + 6n, now + 36n), true],
+      ['instance 5 s ahead, refused for another reason', proofAt(now + 5n, now + 35n), false],
+      ['in window, refused for another reason', proofAt(now - 1n, now + 29n), false],
+      ['client past not_after', proofAt(now - 30n, now), true],
+      ['unreadable payload', new Uint8Array([1]), false],
+    ];
+    for (const [name, payload, skewed] of cases) {
+      const store = new ModelDs();
+      store.addChannel(COMMUNITY, CHANNEL);
+      const dev = device(store, new ManualClock(), ME);
+      const group = store.peerCreate(PEER, CHANNEL);
+      store.detach(ME.device);
+      store.peerCommit(group, PEER, [ME.device]);
+      store.reattach(ME.device);
+      const routes = dev.engine.deps.routes as typeof dev.engine.deps.routes & {
+        getInteractionAdmissionContext?: (groupId: Id) => Promise<{ payload: Uint8Array; signature: Uint8Array }>;
+      };
+      routes.getInteractionAdmissionContext = () => Promise.resolve({ payload, signature: new Uint8Array(64).fill(2) });
+      const core = dev.engine.deps.core as typeof dev.engine.deps.core & {
+        humanInteractionWelcomeApply?: (body: Uint8Array, proof: Uint8Array, at: bigint) => never;
+      };
+      core.humanInteractionWelcomeApply = (_body, _proof, at) => {
+        expect(at).toBe(now);
+        throw new CoreError('E_BINDING', 'interaction Welcome context rejected');
+      };
+
+      await dev.engine.pollWelcomes();
+      await dev.engine.pollWelcomes();
+
+      expect(dev.clockSkew, name).toEqual(skewed ? [toHex(group), toHex(group)] : []);
+      expect(dev.unexpected, name).toEqual([toHex(group)]);
+      expect(store.welcomesFor(ME.device), name).toEqual([{ id: 1n, groupId: toHex(group) }]);
+      dev.engine.stop();
+    }
+  });
+
+  it('reads only the proof timestamps to name a clock-window refusal', () => {
+    const now = 1_000n;
+    const proofAt = (issuedAt: bigint, notAfter: bigint): Uint8Array =>
+      encode([1n, new Uint8Array(16), new Uint8Array(16), new Uint8Array(32), issuedAt, notAfter, ...Array.from({ length: 12 }, () => 0n)]);
+    expect(proofOutsideClockWindow(proofAt(now + 1n, now + 31n), now)).toBe(false);
+    expect(proofOutsideClockWindow(proofAt(now + 5n, now + 35n), now)).toBe(false);
+    expect(proofOutsideClockWindow(proofAt(now + 6n, now + 36n), now)).toBe(true);
+    expect(proofOutsideClockWindow(proofAt(now - 29n, now + 1n), now)).toBe(false);
+    expect(proofOutsideClockWindow(proofAt(now - 30n, now), now)).toBe(true);
+    expect(proofOutsideClockWindow(encode([1n, 2n]), now)).toBe(false);
+    expect(proofOutsideClockWindow(new Uint8Array([0xff]), now)).toBe(false);
+  });
+
+  it('reads the binding community of a proof to scope a clock-skew report, and null when it is unreadable', () => {
+    const binding = [new Uint8Array(16).fill(1), new Uint8Array(16).fill(2), COMMUNITY, new Uint8Array(16).fill(3),
+      new Uint8Array(16).fill(4), new Uint8Array(16).fill(5), 1n, 1n, 0n];
+    const proof = (field7: unknown): Uint8Array => encode([1n, new Uint8Array(16), new Uint8Array(16), new Uint8Array(32), 1n, 2n,
+      0n, field7, ...Array.from({ length: 10 }, () => 0n)] as Parameters<typeof encode>[0]);
+    expect(toHex(proofCommunity(proof(binding))!)).toBe(toHex(COMMUNITY));
+    expect(proofCommunity(proof(0n))).toBeNull();
+    expect(proofCommunity(proof(binding.slice(0, 8)))).toBeNull();
+    expect(proofCommunity(new Uint8Array([0xff]))).toBeNull();
+  });
+
+  // Review M4: the TypeScript copy only names refusals, but it must not drift from the core's constant.
+  it('uses the same clock tolerance as the core', () => {
+    const rust = readFileSync(new URL('../../../../core/dilla-core/src/bot/mod.rs', import.meta.url), 'utf8');
+    const match = /pub const INTERACTION_CLOCK_TOLERANCE_SECS: u64 = (\d+);/u.exec(rust);
+    expect(match).not.toBeNull();
+    expect(BigInt(match![1])).toBe(INTERACTION_CLOCK_TOLERANCE_S);
   });
 
   it('uses the proof-aware path for a live Welcome frame too', async () => {

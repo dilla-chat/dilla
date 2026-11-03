@@ -1162,7 +1162,15 @@ version,blob,signature,prev_hash,hash]`. The response signature is Ed25519 over
 `ASCII("dilla bot current interaction context v1") || 0x00 || payload`; clients MUST treat
 the proof as a short-lived snapshot (30 seconds), verify the signature against
 the persisted instance signing-key pin, and check its current-state fields before offering
-or processing a Welcome. A human client establishes its first pin from `/v1/instance` over the
+or processing a Welcome. `issued_at` and `accepted_at` are instance-clock values while the
+client checks them against its own clock `now`. The human client allows 5 seconds before
+them: it accepts `accepted_at <= issued_at <= now + 5`. It allows nothing past `not_after`,
+which must be strictly after `now`; `issued_at < not_after` and `not_after - issued_at <= 30`
+hold exactly. The Bot side's pre-registration snapshot check differs: it allows the same 5
+seconds for its `now` ahead of the Bot's clock and also 5 seconds past its `not_after`. A
+client clock more than 5 seconds behind the instance cannot process interaction Welcomes
+until its clock is corrected.
+A human client establishes its first pin from `/v1/instance` over the
 bearer-authenticated session created by account enrollment, and stores that key atomically with
 local enrollment. Neither unauthenticated discovery nor a key included in a proof may establish a
 pin. A later discovery key mismatch fails closed; this version defines no silent key rotation or

@@ -22,6 +22,8 @@ export interface Device {
   readonly membership: { group: string; status: 'resyncing' | 'not-member' | 'member' }[];
   readonly joinAll: JoinAllProgress[];
   readonly unexpected: string[];
+  /** Every onWelcomeClockSkew report in call order: the group hex, then `@` and the community hex when the proof names one. */
+  readonly clockSkew: string[];
   /** The msg id hex of every row beforeSend was called for, in call order. */
   readonly beforeSends: string[];
   /** Every onDiscarded report: the group hex, the msg id hex and the blob id hexes of the row. */
@@ -47,6 +49,7 @@ export function device(ds: ModelDs, clock: ManualClock, me: Peer, random = 0.5):
   const membership: Device['membership'] = [];
   const joinAll: JoinAllProgress[] = [];
   const unexpected: string[] = [];
+  const clockSkew: string[] = [];
   const beforeSends: string[] = [];
   const discarded: Device['discarded'] = [];
   const refreshes: string[] = [];
@@ -73,6 +76,7 @@ export function device(ds: ModelDs, clock: ManualClock, me: Peer, random = 0.5):
     onMembership: (groupId, status) => { membership.push({ group: toHex(groupId), status }); },
     onJoinAll: (p) => { joinAll.push({ ...p }); },
     onUnexpectedWelcome: (g) => { unexpected.push(toHex(g)); },
+    onWelcomeClockSkew: (g, community) => { clockSkew.push(community === null ? toHex(g) : `${toHex(g)}@${toHex(community)}`); },
     refreshGroupTrust: (groupId: Id) => { refreshes.push(toHex(groupId)); return hooks.refreshGroupTrust(groupId); },
     beforeSend: (groupId: Id, row: OutboxRow) => { beforeSends.push(toHex(row.msgId)); return hooks.beforeSend(groupId, row); },
     onDiscarded: (groupId: Id, row: OutboxRow) => {
@@ -82,7 +86,7 @@ export function device(ds: ModelDs, clock: ManualClock, me: Peer, random = 0.5):
     onPosted: (groupId: Id, type: number, _row, seq) => { posted.push({ group: toHex(groupId), type }); if (seq !== undefined) postedSequences.push(seq); },
   });
   engine.start();
-  return { me, core, gateway, engine, changes, outboxChanges, membership, joinAll, unexpected, beforeSends, discarded, refreshes, hooks, slow, posted, postedSequences };
+  return { me, core, gateway, engine, changes, outboxChanges, membership, joinAll, unexpected, clockSkew, beforeSends, discarded, refreshes, hooks, slow, posted, postedSequences };
 }
 
 export function readyInfo(me: Peer, groups: ReadyInfo['groups'] = []): ReadyInfo {

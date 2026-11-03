@@ -719,6 +719,53 @@ describe('Controller', () => {
     expect(w.routes.postMessage).toHaveBeenCalledWith(groupId, expect.any(Uint8Array));
   });
 
+  it('names a missing interaction group in the refusal detail with a fixed code', async () => {
+    const w = world();
+    await toReady(w);
+    const requestId = new Uint8Array(16).fill(0x5a);
+    w.call(99, { m: 'listManualModerationEvidence', communityId: toHex(COMMUNITY), requestId: toHex(requestId), cursor: null });
+    await vi.waitFor(() => expect(w.ret(99)).toMatchObject({ ok: false,
+      error: { code: 'E_CORE_STATE', detail: 'missing_interaction_group' } }));
+    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(90);
+    expect(w.last<DiagnosticsState>('diagnostics')?.errors ?? []).not.toContainEqual(expect.objectContaining({ code: 'E_CLOCK_SKEW' }));
+  });
+
+  it('names a Welcome refused for clock skew in the refusal and logs E_CLOCK_SKEW once', async () => {
+    const w = world();
+    await toReady(w);
+    const requestId = new Uint8Array(16).fill(0x5b);
+    // Sync reports the kept Welcome's clock-window refusal on every poll while the skew lasts.
+    w.sync.pollWelcomes.mockImplementation(() => {
+      w.sync.deps!.onWelcomeClockSkew?.(GROUP, COMMUNITY);
+      return Promise.resolve();
+    });
+    w.call(100, { m: 'listManualModerationEvidence', communityId: toHex(COMMUNITY), requestId: toHex(requestId), cursor: null });
+    await vi.waitFor(() => expect(w.ret(100)).toMatchObject({ ok: false,
+      error: { code: 'E_CORE_STATE', detail: 'interaction_clock_skew' } }));
+    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(90);
+    const skew = (w.last<DiagnosticsState>('diagnostics')?.errors ?? []).filter(error => error.code === 'E_CLOCK_SKEW');
+    expect(skew).toHaveLength(1);
+    expect(w.core.humanInteractionSendPrepare).not.toHaveBeenCalled();
+  });
+
+  it('names clock skew only for the community whose interaction Welcome was refused for it', async () => {
+    const w = world();
+    await toReady(w);
+    const requestId = new Uint8Array(16).fill(0x5c);
+    // Another community's kept Welcome is refused for skew while this community's request waits.
+    w.sync.pollWelcomes.mockImplementation(() => {
+      w.sync.deps!.onWelcomeClockSkew?.(new Uint8Array(16).fill(0x7e), NEW_COMMUNITY);
+      w.sync.deps!.onWelcomeClockSkew?.(new Uint8Array(16).fill(0x7f), null);
+      return Promise.resolve();
+    });
+    w.call(101, { m: 'listManualModerationEvidence', communityId: toHex(COMMUNITY), requestId: toHex(requestId), cursor: null });
+    await vi.waitFor(() => expect(w.ret(101)).toMatchObject({ ok: false,
+      error: { code: 'E_CORE_STATE', detail: 'missing_interaction_group' } }));
+    // The skew is still logged in diagnostics, once.
+    const skew = (w.last<DiagnosticsState>('diagnostics')?.errors ?? []).filter(error => error.code === 'E_CLOCK_SKEW');
+    expect(skew).toHaveLength(1);
+  });
+
   it('selectively acknowledges this community response while preserving another community response', async () => {
     const w = world();
     await toReady(w);
@@ -1736,6 +1783,13 @@ it('scrubs HTTP details and unexpected exception text before any page reply', as
   expect(sanitizeWorkerError(http)).toEqual({ code: 'E_NOT_FOUND', detail: '', status: 404, retryAfterMs: null });
   expect(sanitizeWorkerError(new Error('recovery key SECRET-456'))).toEqual({
     code: 'E_INTERNAL', detail: '', status: 0, retryAfterMs: null,
+  });
+  // Only the worker's own allowlisted refusals carry a detail code; a core error with the same text does not.
+  expect(sanitizeWorkerError(new CoreError('E_CORE_STATE', 'no active interaction group for this community'))).toEqual({
+    code: 'E_CORE_STATE', detail: '', status: 0, retryAfterMs: null,
+  });
+  expect(sanitizeWorkerError(new CoreError('E_CORE_STATE', 'SECRET-321'))).toEqual({
+    code: 'E_CORE_STATE', detail: '', status: 0, retryAfterMs: null,
   });
   const h = harness();
   h.call(71, { m: 'unknown SECRET-789' });

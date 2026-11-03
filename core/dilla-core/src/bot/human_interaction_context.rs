@@ -11,7 +11,7 @@ use crate::{
 use ed25519_dalek::{Signature, VerifyingKey};
 
 use super::{
-    CodecError,
+    CodecError, INTERACTION_CLOCK_TOLERANCE_SECS,
     interaction_admission::AuthenticatedRosterLeaf,
     interaction_snapshot::{SnapshotList, validate_list},
 };
@@ -192,6 +192,13 @@ fn is_nonzero(id: &MsgId) -> bool {
     id.as_bytes().iter().any(|byte| *byte != 0)
 }
 
+/// Whether a proof issued at `issued_at` (instance clock) and valid until `not_after` is current
+/// at the client clock `now`. `issued_at` may lie up to `INTERACTION_CLOCK_TOLERANCE_SECS` ahead
+/// of `now`, the same skew the Bot side allows; expiry is exact.
+pub(crate) fn is_current(issued_at: u64, not_after: u64, now: u64) -> bool {
+    issued_at <= now.saturating_add(INTERACTION_CLOCK_TOLERANCE_SECS) && not_after > now
+}
+
 /// Verify canonical `[payload_bstr, signature_bstr]` using an instance key already pinned by
 /// trusted local configuration. The wire's included signer key is only a consistency check.
 pub fn verify(
@@ -239,6 +246,10 @@ pub fn verify(
         context.roster[1].user,
         context.roster[1].device,
     ];
+    // The instance's timestamps may lie up to the shared skew ahead of this client's clock.
+    let latest_instance_time = expected
+        .now
+        .saturating_add(INTERACTION_CLOCK_TOLERANCE_SECS);
     if ids.iter().any(|id| !is_nonzero(id))
         || context.instance_signer != *pinned_instance_key
         || context.not_after > MAX_I64
@@ -248,7 +259,7 @@ pub fn verify(
         || r.accepted_epoch > MAX_I64
         || r.next_seq == 0
         || r.next_seq > MAX_I64
-        || r.accepted_at > expected.now
+        || r.accepted_at > latest_instance_time
         || context.current_epoch > MAX_I64
         || r.accepted_epoch > context.current_epoch
         || context.eligibility_revision == 0
@@ -265,7 +276,13 @@ pub fn verify(
     {
         return Err(CodecError::Value);
     }
-    if context.issued_at > expected.now || context.not_after <= expected.now {
+    // An inverted proof is malformed whatever the clocks say. `issued_at` may now lie ahead of
+    // `now`, so `is_current` alone no longer implies `issued_at < not_after`; the ordering is
+    // checked here, before the lifetime subtraction relies on it.
+    if context.not_after <= context.issued_at {
+        return Err(CodecError::Value);
+    }
+    if !is_current(context.issued_at, context.not_after, expected.now) {
         return Err(CodecError::Expired);
     }
     if context.not_after - context.issued_at > 30 {
@@ -628,11 +645,50 @@ mod tests {
     }
 
     #[test]
+    fn freshness_allows_an_instance_clock_up_to_five_seconds_ahead_and_keeps_expiry_exact() {
+        // now = 100: issued_at may be at most 105; not_after must be strictly after 100.
+        assert!(is_current(100, 130, 100));
+        assert!(is_current(101, 131, 100));
+        assert!(is_current(104, 134, 100));
+        assert!(is_current(105, 135, 100));
+        assert!(!is_current(106, 136, 100));
+        assert!(is_current(70, 101, 100));
+        assert!(!is_current(70, 100, 100));
+        assert!(!is_current(64, 94, 100));
+        assert!(!is_current(u64::MAX, u64::MAX, 100));
+
+        let expected = expected();
+        let key = SigningKey::from_bytes(&[91; 32]);
+        let pin = key.verifying_key().to_bytes();
+        for issued_at in [101, 104, 105] {
+            let (wire, _, _) = make_wire(&expected, &key, issued_at, issued_at + 30, false, false);
+            assert!(
+                verify(&wire, &pin, &expected).is_ok(),
+                "issued_at = now + {} is accepted",
+                issued_at - expected.now
+            );
+        }
+        let (beyond, _, _) = make_wire(&expected, &key, 106, 136, false, false);
+        assert_eq!(verify(&beyond, &pin, &expected), Err(CodecError::Expired));
+        // Inside the window on both bounds but inverted (now < not_after < issued_at <= now + 5):
+        // refused as malformed, never reaching the lifetime subtraction.
+        for (issued_at, not_after) in [(105, 101), (103, 103)] {
+            let (inverted, _, _) = make_wire(&expected, &key, issued_at, not_after, false, false);
+            assert_eq!(verify(&inverted, &pin, &expected), Err(CodecError::Value));
+        }
+        let (expired, _, _) = make_wire(&expected, &key, 70, 100, false, false);
+        assert_eq!(verify(&expired, &pin, &expected), Err(CodecError::Expired));
+    }
+
+    #[test]
     fn rejects_future_or_overlong_context_and_actual_mls_mismatch() {
         let expected = expected();
         let key = SigningKey::from_bytes(&[91; 32]);
-        let (future, _, _) = make_wire(&expected, &key, 101, 120, false, false);
-        assert!(verify(&future, &key.verifying_key().to_bytes(), &expected).is_err());
+        let (future, _, _) = make_wire(&expected, &key, 106, 120, false, false);
+        assert_eq!(
+            verify(&future, &key.verifying_key().to_bytes(), &expected),
+            Err(CodecError::Expired)
+        );
         let (long, _, _) = make_wire(&expected, &key, 69, 100, false, false);
         assert!(verify(&long, &key.verifying_key().to_bytes(), &expected).is_err());
         let (wire, binding, leaves) = make_wire(&expected, &key, 90, 120, false, false);

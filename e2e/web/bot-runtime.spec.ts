@@ -8,6 +8,7 @@ import {
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
 import { installWorkerPort, portCall } from './support/worker-port';
+import { advanceClock } from './support/totp';
 
 const BOT_RUNTIME_PORT = Number(process.env.DILLA_E2E_BOT_RUNTIME_PORT ?? 8491);
 const HOST: HostConfig = { port: BOT_RUNTIME_PORT, control: BOT_RUNTIME_PORT + 1, webRoot: 'packages/web/dist', botRuntime: true, advanceClockWithWall: true };
@@ -49,15 +50,13 @@ async function lastWorkerCommandOutcome(page: import('@playwright/test').Page, c
     if (returned === undefined) return { requestId: call.command?.requestId ?? null, state: 'waiting', code: null, detail: null };
     if (returned.ok === false) {
       const safeCodes = new Set(['E_CORE_STATE', 'E_SYNC_STOPPED', 'E_BAD_INPUT', 'E_FORBIDDEN', 'E_UNAVAILABLE', 'E_INTERNAL']);
-      const detailText = returned.error?.detail ?? '';
-      const safeDetails: Record<string, string> = {
-        'no active interaction group for this community': 'missing_interaction_group',
-        'multiple active interaction groups make the Bot target ambiguous': 'ambiguous_interaction_group',
-        'unknown community': 'unknown_community',
-      };
+      // The worker sends a detail only as one of its fixed E_CORE_STATE codes (sanitizeWorkerError); anything else is
+      // reported as 'other' so a failure message never carries free text.
+      const detailCode = returned.error?.detail ?? '';
+      const safeDetails = new Set(['missing_interaction_group', 'ambiguous_interaction_group', 'interaction_clock_skew']);
       return { requestId: call.command?.requestId ?? null, state: 'refused',
         code: safeCodes.has(returned.error?.code ?? '') ? returned.error?.code ?? null : 'other',
-        detail: safeDetails[detailText] ?? 'other' };
+        detail: safeDetails.has(detailCode) ? detailCode : 'other' };
     }
     const status = returned.value?.status;
     const state = status === 'accepted' || status === 'pending' || status === 'rejected' || status === 'unknown' ? status : 'unknown';
@@ -293,6 +292,10 @@ test('device 1 recovers its exact encrypted Bot response after Bot and browser r
     // Device 2 enrolls from the same recovery key, gets its own per-device interaction group,
     // and proves that its own encrypted Bot request/response path is usable. This is not a claim
     // that device 2 receives device 1's request ID or response group.
+    // The instance clock runs 2 s ahead of this browser's from here on, within the 5 s the protocol allows: device 2's
+    // interaction Welcome proof is then always issued "in its future", which the core refused outright before
+    // (the intermittent CI failure of this test when the host clock drifted 1 s ahead after the Bot restart).
+    await advanceClock(host.control, 2);
     secondContext = await browser.newContext({ baseURL: host.url });
     await guard.attach(secondContext);
     secondPage = await secondContext.newPage();
