@@ -1,6 +1,6 @@
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -1039,7 +1039,8 @@ function fixture(body, gated = GATED) {
   writeFileSync(join(dir, '.github', 'workflows', 'release.yml'), REAL_RELEASE);
   writeFileSync(join(dir, '.github', 'workflows', 'desktop.yml'), REAL_DESKTOP);
   // ... and the desktop release trampoline with the key scripts it pins.
-  for (const file of ['.github/workflows/desktop-release.yml', '.github/workflows/desktop-release-request.yml', 'packages/desktop/scripts/release-keys.mjs', 'packages/desktop/scripts/release-sign-job.mjs']) {
+  releaseRoots.push(dir);
+  for (const file of RELEASE_FILES.filter(path => !path.startsWith('.github/') || /desktop-release(-request)?\.yml$/.test(path))) {
     mkdirSync(dirname(join(dir, file)), { recursive: true });
     writeFileSync(join(dir, file), readFileSync(join(REPO_ROOT, file), 'utf8'));
   }
@@ -2383,12 +2384,16 @@ test('native Linux release producer is separate, source-versioned, non-bypassabl
 const yaml = createRequire(import.meta.url)('js-yaml');
 const RELEASE_FILES = [
   ...readdirSync(join(REPO_ROOT, '.github', 'workflows')).map(name => `.github/workflows/${name}`),
-  'packages/desktop/scripts/release-keys.mjs', 'packages/desktop/scripts/release-sign-job.mjs',
+  // The keyed steps' scripts and everything they import (the checker walks the import graph).
+  ...['scripts', 'src'].flatMap(dir => readdirSync(join(REPO_ROOT, 'packages', 'desktop', dir)).filter(name => /\.(mjs|ts)$/.test(name)).map(name => `packages/desktop/${dir}/${name}`)),
 ];
 const KEYED = '.github/workflows/desktop-release.yml', REQUEST = '.github/workflows/desktop-release-request.yml';
 /** A temporary root holding the real files with `changes` (path -> text => text) applied. */
+const releaseRoots = [];
+after(() => { for (const root of releaseRoots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function releaseRoot(changes = {}) {
   const root = mkdtempSync(join(tmpdir(), 'dilla-desktop-release-ci-'));
+  releaseRoots.push(root);
   for (const file of RELEASE_FILES) {
     const text = readFileSync(join(REPO_ROOT, file), 'utf8');
     mkdirSync(dirname(join(root, file)), { recursive: true });
@@ -2403,7 +2408,9 @@ function releaseRoot(changes = {}) {
 const edit = mutate => text => { const doc = yaml.load(text); mutate(doc); return yaml.dump(doc, { lineWidth: -1 }); };
 const step = (doc, job, match) => doc.jobs[job].steps.find(item => (item.name ?? item.uses ?? item.run ?? '').includes(match));
 function reported(changes, label) {
-  const problems = checkDesktopReleaseWorkflow(releaseRoot(changes));
+  const root = releaseRoot(changes);
+  const problems = checkDesktopReleaseWorkflow(root);
+  rmSync(root, { recursive: true, force: true });
   assert.ok(problems.length > 0, `not reported: ${label}`);
   return problems;
 }
@@ -2478,7 +2485,8 @@ test('any permission added to sign, contents: write missing from publish, conten
     ['verify write', edit(doc => { doc.jobs['verify-published'].permissions.contents = 'write'; })],
     ['top-level', edit(doc => { doc.permissions = { contents: 'read' }; })],
     ['feed actions', edit(doc => { doc.jobs.feed.permissions.actions = 'write'; })],
-    ['sign actions', edit(doc => { doc.jobs.sign.permissions.actions = 'read'; })],
+    ['sign actions write', edit(doc => { doc.jobs.sign.permissions.actions = 'write'; })],
+    ['sign without actions read', edit(doc => { delete doc.jobs.sign.permissions.actions; })],
     ['collect write', edit(doc => { doc.jobs.collect.permissions.contents = 'write'; })],
     ['gate pull-requests write', edit(doc => { doc.jobs.gate.permissions['pull-requests'] = 'write'; })],
     ['collect needs', edit(doc => { delete doc.jobs.collect.needs; })],
@@ -2493,7 +2501,7 @@ test('any permission added to sign, contents: write missing from publish, conten
 test('a seventh secrets reference, a secrets reference outside the Sign step, secrets[ indexing, secrets: inherit and toJSON(secrets) are reported', () => {
   for (const [label, change] of [
     ['seventh', { [KEYED]: edit(doc => { step(doc, 'sign', 'Sign (').env.DESKTOP_EXTRA = '${{ secrets.DESKTOP_EXTRA }}'; }) }],
-    ['outside', { [KEYED]: edit(doc => { step(doc, 'sign', 'Verify the candidate').env.K = '${{ secrets.DESKTOP_METADATA_KEY_A }}'; }) }],
+    ['outside', { [KEYED]: edit(doc => { step(doc, 'sign', 'Fetch the gate-digested').env.K = '${{ secrets.DESKTOP_METADATA_KEY_A }}'; }) }],
     ['other job', { [KEYED]: edit(doc => { step(doc, 'publish', 'Publish the versioned').env.K = '${{ secrets.DESKTOP_SANDBOX_KEY_B }}'; }) }],
     ['collect job', { [KEYED]: edit(doc => { step(doc, 'collect', 'Collect').env.K = '${{ secrets.GITHUB_TOKEN }}'; }) }],
     ['indexing', { [KEYED]: edit(doc => { step(doc, 'sign', 'Sign (').env.DESKTOP_METADATA_KEY_A = "${{ secrets['DESKTOP_METADATA_KEY_A'] }}"; }) }],
@@ -2521,13 +2529,13 @@ test('defaults, shell, working-directory, container, services, NODE_OPTIONS in s
   for (const [label, change] of [
     ['defaults', doc => { doc.jobs.sign.defaults = { run: { shell: 'bash' } }; }],
     ['workflow defaults', doc => { doc.defaults = { run: { shell: 'bash' } }; }],
-    ['shell', doc => { step(doc, 'sign', 'Verify the candidate').shell = 'bash'; }],
+    ['shell', doc => { step(doc, 'sign', 'Fetch the gate-digested').shell = 'bash'; }],
     ['working-directory', doc => { step(doc, 'sign', 'Sign (')['working-directory'] = 'packages'; }],
     ['container', doc => { doc.jobs.sign.container = 'node:24'; }],
     ['services', doc => { doc.jobs.sign.services = { x: { image: 'redis' } }; }],
-    ['NODE_OPTIONS', doc => { step(doc, 'sign', 'Verify the candidate').env.NODE_OPTIONS = '--require ./x.js'; }],
+    ['NODE_OPTIONS', doc => { step(doc, 'sign', 'Fetch the gate-digested').env.NODE_OPTIONS = '--require ./x.js'; }],
     ['NODE_OPTIONS in collect', doc => { step(doc, 'collect', 'Collect').env.NODE_OPTIONS = '--require ./x.js'; }],
-    ['git hardening', doc => { delete step(doc, 'sign', 'Verify the candidate').env.GIT_CONFIG_GLOBAL; }],
+    ['GH_TOKEN dropped from the build step', doc => { delete step(doc, 'sign', 'Fetch the gate-digested').env.GH_TOKEN; }],
     ['git in sign', doc => { doc.jobs.sign.steps.splice(3, 0, { run: 'git status' }); }],
     ['NODE_PATH in publish', doc => { step(doc, 'publish', 'Publish the versioned').env.NODE_PATH = '/tmp'; }],
     ['job env', doc => { doc.jobs.sign.env = { A: 'b' }; }],
@@ -2560,12 +2568,32 @@ test('download-artifact with pattern, merge-multiple, the triggering run id or n
     ['ids from elsewhere', doc => { step(doc, 'collect', 'Fetch the accepted').with['artifact-ids'] = '${{ needs.gate.outputs.run }}'; }],
     ['digest-mismatch', doc => { step(doc, 'collect', 'Fetch the accepted').with['digest-mismatch'] = 'warn'; }],
     ['signed release from another run', doc => { step(doc, 'publish', 'Fetch the signed').with['run-id'] = '${{ needs.gate.outputs.run }}'; }],
-    ['raw CI artifacts in sign', doc => { step(doc, 'sign', 'Fetch the signing candidate').with = { ...step(doc, 'collect', 'Fetch the accepted').with }; }],
-    ['candidate by name in sign', doc => { const w = step(doc, 'sign', 'Fetch the signing candidate').with; delete w['artifact-ids']; w.name = 'desktop-release-candidate'; }],
-    ['candidate from another run', doc => { step(doc, 'sign', 'Fetch the signing candidate').with['run-id'] = '${{ needs.gate.outputs.run }}'; }],
-    ['second download in sign', doc => { doc.jobs.sign.steps.splice(3, 0, { uses: step(doc, 'sign', 'Fetch the signing candidate').uses, with: { name: 'desktop-signed-release', path: '/tmp/x', 'digest-mismatch': 'error' } }); }],
-    ['raw CI artifacts in publish', doc => { step(doc, 'publish', 'Fetch the signing candidate').with = { ...step(doc, 'collect', 'Fetch the accepted').with }; }],
+    ['candidate from another run', doc => { step(doc, 'publish', 'Fetch the signed candidate').with['run-id'] = '${{ needs.gate.outputs.run }}'; }],
+    ['raw CI artifacts in publish', doc => { step(doc, 'publish', 'Fetch the signed candidate').with = { ...step(doc, 'collect', 'Fetch the accepted').with }; }],
+    ['signed release by name in feed', doc => { const w = step(doc, 'feed', 'Fetch the signed').with; delete w['artifact-ids']; w.name = 'desktop-signed-release'; }],
   ]) reported({ [KEYED]: edit(change) }, label);
+});
+
+test('sign runs no download action at all, and nothing collect produces reaches sign or publish (review batch B, I1/I2)', () => {
+  const collectDownload = doc => ({ ...step(doc, 'collect', 'Fetch the accepted') });
+  for (const [label, change] of [
+    ['raw CI artifacts in sign', doc => { doc.jobs.sign.steps.splice(2, 0, collectDownload(doc)); }],
+    ['a candidate by id in sign', doc => { doc.jobs.sign.steps.splice(2, 0, { uses: collectDownload(doc).uses, with: { 'artifact-ids': '${{ needs.collect.outputs.candidate_id }}', path: '${{ runner.temp }}/candidate', 'digest-mismatch': 'error' } }); }],
+    ['a candidate by name in sign', doc => { doc.jobs.sign.steps.splice(2, 0, { uses: collectDownload(doc).uses, with: { name: 'desktop-release-candidate', path: '${{ runner.temp }}/candidate', 'digest-mismatch': 'error' } }); }],
+    ['collect gains outputs', doc => { doc.jobs.collect.outputs = { candidate_id: '${{ steps.x.outputs.id }}' }; }],
+    ['collect uploads', doc => { doc.jobs.collect.steps.push({ ...step(doc, 'sign', 'Upload the signed candidate'), with: { ...step(doc, 'sign', 'Upload the signed candidate').with, name: 'desktop-release-candidate' } }); }],
+    ['publish candidate from collect', doc => { step(doc, 'publish', 'Fetch the signed candidate').with['artifact-ids'] = '${{ needs.collect.outputs.candidate_id }}'; }],
+    ['publish digest from collect', doc => { step(doc, 'publish', 'Verify the candidate').env.CANDIDATE_DIGEST = '${{ needs.collect.outputs.candidate_digest }}'; }],
+    ['publish signed release by name', doc => { const w = step(doc, 'publish', 'Fetch the signed release').with; delete w['artifact-ids']; w.name = 'desktop-signed-release'; }],
+    ['publish needs collect', doc => { doc.jobs.publish.needs = ['gate', 'collect', 'sign']; }],
+    ['sign zips from collect ids', doc => { step(doc, 'sign', 'Fetch the gate-digested').env.ARTIFACT_IDS = '${{ needs.collect.outputs.artifact_ids }}'; }],
+    ['sign without the records digest', doc => { delete step(doc, 'sign', 'Fetch the gate-digested').env.RECORDS_DIGEST; }],
+    ['gate records output from elsewhere', doc => { doc.jobs.gate.outputs.records_digest = '${{ steps.gate.outputs.run_record }}'; }],
+    ['sign output changed', doc => { doc.jobs.sign.outputs.candidate_id = '${{ steps.candidate_upload.outputs.artifact-id }}'; }],
+  ]) reported({ [KEYED]: edit(change) }, label);
+  // The zip reader and every script the keyed steps import stay on node: built-ins (sign runs no npm ci).
+  reported({ 'packages/desktop/scripts/artifact-zip.mjs': text => "import yauzl from 'yauzl';\n" + text }, 'npm zip reader');
+  reported({ 'packages/desktop/scripts/release-notes.mjs': text => "import x from 'left-pad';\n" + text }, 'npm package in a transitive import');
 });
 
 test('workflow_run.head_branch outside the gate env is reported', () => {
@@ -2603,12 +2631,12 @@ test('an unpinned or third-party action, an action between download and sign, se
 });
 
 test('upload path other than runner.temp/signed is reported', () => {
-  reported({ [KEYED]: edit(doc => { step(doc, 'sign', 'upload-artifact').with.path = '${{ runner.temp }}'; }) }, 'parent');
-  reported({ [KEYED]: edit(doc => { step(doc, 'sign', 'upload-artifact').with.path = '${{ runner.temp }}/candidate'; }) }, 'candidate');
-  reported({ [KEYED]: edit(doc => { step(doc, 'sign', 'upload-artifact').with.name = 'other'; }) }, 'name');
+  reported({ [KEYED]: edit(doc => { step(doc, 'sign', 'Upload the signed release').with.path = '${{ runner.temp }}'; }) }, 'parent');
+  reported({ [KEYED]: edit(doc => { step(doc, 'sign', 'Upload the signed release').with.path = '${{ runner.temp }}/candidate'; }) }, 'candidate');
+  reported({ [KEYED]: edit(doc => { step(doc, 'sign', 'Upload the signed release').with.name = 'other'; }) }, 'name');
   reported({ [KEYED]: edit(doc => { step(doc, 'feed', 'upload-pages-artifact').with.path = '${{ runner.temp }}/signed'; }) }, 'pages path');
-  reported({ [KEYED]: edit(doc => { step(doc, 'collect', 'Upload the signing candidate').with.path = '${{ runner.temp }}/downloaded'; }) }, 'raw downloads as the candidate');
-  reported({ [KEYED]: edit(doc => { step(doc, 'gate', 'upload-artifact').with.path = '${{ runner.temp }}'; }) }, 'gate records path');
+  reported({ [KEYED]: edit(doc => { step(doc, 'sign', 'Upload the signed candidate').with.path = '${{ runner.temp }}/zips'; }) }, 'raw zips as the candidate');
+  reported({ [KEYED]: edit(doc => { step(doc, 'gate', 'Upload the gate').with.path = '${{ runner.temp }}'; }) }, 'gate records path');
 });
 
 test('release-keys.mjs importing a non-node module or adding a tag policy is reported', () => {

@@ -7,22 +7,22 @@ import { join, dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { runGate } from '../scripts/release-gate.mjs';
 import { EXPECTED_ARTIFACTS } from '../scripts/ci-run.mjs';
-import { collectArtifacts, assembleAcceptance } from '../scripts/release-assemble.mjs';
-import { generateNotes } from '../scripts/release-notes.mjs';
-import { writeCandidateDigest, verifyCandidate } from '../scripts/release-candidate.mjs';
+import { buildCandidate, writeCandidateDigest, verifyCandidate } from '../scripts/release-candidate.mjs';
 import { writeDigest, verifyDigest } from '../scripts/candidate-digest.mjs';
 import { runPublisher } from '../scripts/publish-release.mjs';
 import { verifyPublished } from '../scripts/verify-published.mjs';
 import { buildReleaseFixture, isolatedReleaseTools } from './support/release-fixture.mjs';
 import { fakeGithub } from './support/fake-github.mjs';
+import { artifactHost } from './support/artifact-host.mjs';
 
 const R = '/repos/dilla-chat/dilla';
 const der = key => key.export({ type: 'pkcs8', format: 'der' });
 
 /**
- * The keyed workflow end to end, in-process: gate (real git, mocked API) -> collect -> notes -> assemble ->
- * candidate digest -> verify-and-rederive -> signInJob (keys only in env) -> signed digest write/verify ->
- * publish plan and publish (in-memory GitHub) -> verify-published.
+ * The keyed workflow end to end, in-process: gate (real git, mocked API) -> sign's candidate build (the
+ * gate-digested CI zips fetched as blobs and read in-process; notes; acceptance) -> signInJob (keys only in
+ * env) -> signed and candidate digests -> publish's digest checks -> publish plan and publish (in-memory
+ * GitHub) -> verify-published. collect is an early-failure check only and is not on this path.
  */
 test('the release pipeline publishes exactly the signed inventory from a tagged main commit', async () => {
  const root = await mkdtemp(join(tmpdir(), 'dilla-pipeline-'));
@@ -44,6 +44,9 @@ test('the release pipeline publishes exactly the signed inventory from a tagged 
   const { version, channel } = fixture, tag = `desktop-v${version}`, now = fixture.context.now;
   const run = { ...fixture.run, run_number: 5, path: '.github/workflows/ci.yml', event: 'push', head_branch: 'main' };
   const trust = { ...fixture.trust, signing: { active: 'A', staged: null } };
+  // The gate's record bytes are the API's run and jobs as JSON lines; the host stores the ci run's ten zips and the gate's record zip.
+  const runBytes = Buffer.from(JSON.stringify(run) + '\n'), jobsBytes = Buffer.from(JSON.stringify(fixture.jobs) + '\n');
+  const host = await artifactHost({ fixture, runBytes, jobsBytes });
   const pulls = [{ number: 7, title: 'Ship the desktop release [x](http://e)', merged_at: '2026-11-01T00:00:00Z', updated_at: '2026-11-01T00:00:00Z', merge_commit_sha: sha, base: { ref: 'main' } }];
   const routes = {
    [`${R}/git/ref/tags/${tag}`]: { ref: `refs/tags/${tag}`, object: { type: 'commit', sha } },
@@ -54,7 +57,7 @@ test('the release pipeline publishes exactly the signed inventory from a tagged 
    [`${R}/environments/desktop-release/deployment-branch-policies?per_page=100`]: { total_count: 1, branch_policies: [{ id: 1, name: 'main', type: 'branch' }] },
    [`${R}/actions/workflows/ci.yml/runs?head_sha=${sha}&event=push&branch=main&status=completed&per_page=100`]: { workflow_runs: [run] },
    [`${R}/actions/runs/${run.id}/jobs?filter=latest&per_page=100&page=1`]: { jobs: fixture.jobs },
-   [`${R}/actions/runs/${run.id}/artifacts?per_page=100&page=1`]: { artifacts: EXPECTED_ARTIFACTS.map((name, i) => ({ id: 300 + i, name, digest: 'sha256:' + 'e'.repeat(64), expired: false })) },
+   [`${R}/actions/runs/${run.id}/artifacts?per_page=100&page=1`]: { artifacts: EXPECTED_ARTIFACTS.map((name, i) => ({ id: host.ids[i], name, digest: host.digests[i], expired: false })) },
    [`${R}/releases?per_page=100&page=1`]: [{ tag_name: 'desktop-v1.2.2', draft: false }],
    [`${R}/compare/desktop-v1.2.2...${sha}?per_page=100&page=1`]: { commits: [{ sha, commit: { committer: { date: '2026-11-01T00:00:00Z' } } }] },
    [`${R}/pulls?state=closed&base=main&sort=updated&direction=desc&per_page=100&page=1`]: pulls,
@@ -77,20 +80,18 @@ test('the release pipeline publishes exactly the signed inventory from a tagged 
    if (args[0] === 'show') assert.ok([`${sha}:packages/desktop/package.json`, 'HEAD:packages/desktop/linux-sandbox-component.json'].includes(args[1]), args.join(' '));
   }
 
-  // collect (keyless): artifacts by id into separate directories, then the gate's records.
-  const downloaded = join(root, 'downloaded'), candidate = join(root, 'candidate');
-  await fixture.writeArtifactLayout(downloaded);
-  await collectArtifacts({ downloadRoot: downloaded, candidateDirectory: candidate, version });
-  for (const name of ['ci-run.json', 'ci-jobs.json']) await writeFile(join(candidate, name), await readFile(join(gateDirectory, name)), { flag: 'wx' });
-  const notes = await generateNotes({ api, version, sha, previous: gate.previous });
-  assert.equal(notes, `# Dilla desktop ${version}\n\n- #7 \`Ship the desktop release [x](http://e)\`\n`);
-  await writeFile(join(candidate, 'release-notes.md'), notes);
-  const { acceptance } = await assembleAcceptance({ candidateDirectory: candidate, run: JSON.parse(await readFile(join(candidate, 'ci-run.json'), 'utf8')), jobs: JSON.parse(await readFile(join(candidate, 'ci-jobs.json'), 'utf8')), version, commitTree: gate.tree });
-  await writeFile(join(candidate, 'acceptance.json'), JSON.stringify(acceptance, null, 2) + '\n', { flag: 'wx' });
-  const candidateDigest = await writeCandidateDigest(candidate, version);
+  // The gate uploaded its records; the ci run's zips are what GitHub stores under the gate's ids and digests.
+  for (const name of ['ci-run.json', 'ci-jobs.json']) assert.deepEqual(await readFile(join(gateDirectory, name)), name === 'ci-run.json' ? runBytes : jobsBytes);
+  const outputs = Object.fromEntries((await readFile(outputFile, 'utf8')).trim().split('\n').map(line => line.split(/=(.*)/s).slice(0, 2)));
+  assert.equal(outputs.artifact_digests, host.env.ARTIFACT_DIGESTS);
 
-  // sign: verify and re-derive, then sign with the keys only in the Sign step's env.
-  await verifyCandidate({ directory: candidate, api, env: { VERSION: version, SHA: sha, TREE: gate.tree, RUN: String(gate.ciRun), RUN_RECORD: gate.runRecord, JOBS_RECORD: gate.jobsRecord, CANDIDATE_DIGEST: candidateDigest, PREVIOUS: gate.previous } });
+  // sign: fetch the gate-digested zips itself and build the candidate in-process; nothing from collect reaches it.
+  const candidate = join(root, 'candidate');
+  await buildCandidate({ api, fetchImpl: host.fetchImpl, zipDirectory: join(root, 'zips'), candidateDirectory: candidate, env: { GH_TOKEN: 'workflow-token',
+   VERSION: outputs.version, SHA: outputs.sha, TREE: outputs.tree, RUN: outputs.run, ARTIFACT_IDS: outputs.artifact_ids, ARTIFACT_DIGESTS: outputs.artifact_digests,
+   RECORDS_ID: host.env.RECORDS_ID, RECORDS_DIGEST: host.env.RECORDS_DIGEST, RUN_RECORD: outputs.run_record, JOBS_RECORD: outputs.jobs_record, PREVIOUS: outputs.previous } });
+  const notes = await readFile(join(candidate, 'release-notes.md'), 'utf8');
+  assert.equal(notes, `# Dilla desktop ${version}\n\n- #7 \`Ship the desktop release [x](http://e)\`\n`);
   const tools = await isolatedReleaseTools(join(root, 'tools'), { trust, sandboxConfig: fixture.sandbox.config, files: ['scripts/release-sign-job.mjs'] });
   const job = await import(pathToFileURL(join(root, 'tools/scripts/release-sign-job.mjs')).href);
   const secrets = { DESKTOP_METADATA_KEY_A: der(fixture.key.privateKey).toString('base64'), DESKTOP_SPARKLE_KEY_A: der(fixture.sparkle.privateKey).subarray(-32).toString('base64'), DESKTOP_SANDBOX_KEY_A: der(fixture.sandbox.pair.privateKey).toString('base64') };
@@ -99,7 +100,11 @@ test('the release pipeline publishes exactly the signed inventory from a tagged 
   assert.deepEqual(await job.signInJob({ env: signEnv, version, candidateDirectory: candidate, outputDirectory: signed, trust, now: new Date(now) }), { staged: false });
   for (const name of Object.keys(secrets)) assert.ok(!(name in signEnv), 'the key variables are removed');
   const digest = await writeDigest(signed, { channel, version, staged: false });
+  const candidateDigest = await writeCandidateDigest(candidate, version);
+
+  // publish takes only sign's two uploads, each checked against sign's digest.
   await verifyDigest(signed, digest, { channel, version, staged: false });
+  await verifyCandidate({ directory: candidate, env: { VERSION: version, SHA: sha, TREE: gate.tree, RUN: String(gate.ciRun), RUN_RECORD: gate.runRecord, JOBS_RECORD: gate.jobsRecord, CANDIDATE_DIGEST: candidateDigest } });
 
   // publish: plan, then publish into an in-memory GitHub; then verify what was published.
   const github = fakeGithub({ tags: { [tag]: sha }, runs: { [run.id]: run }, jobs: { [run.id]: fixture.jobs } });

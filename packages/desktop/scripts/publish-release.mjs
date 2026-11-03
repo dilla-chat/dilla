@@ -87,7 +87,7 @@ export async function runPublisher({ mode, env, git, fetchImpl = fetch, trust, v
  try { git(['merge-base', '--is-ancestor', sha, 'origin/main']); } catch { throw new Error('DESKTOP_SHA is not an ancestor of main'); }
  if (git(['rev-parse', `${sha}^{tree}`]) !== source.tree) throw new Error('The signed source tree differs from DESKTOP_SHA’s tree');
 
- // The signed records join the independently collected CI files; then the whole bundle is re-verified.
+ // The signed records join the CI files sign fetched under the gate's digests (the candidate); then the whole bundle is re-verified.
  await verifier.stagePublicReleaseRecords({ candidate, directory, channel, version });
  const run = await api(`${R}/actions/runs/${source.ciRun}`);
  const jobs = await fetchCiJobs(api, source.ciRun);

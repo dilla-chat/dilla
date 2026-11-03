@@ -30,7 +30,7 @@ const OUTPUTS = Object.freeze({
  tree: value => COMMIT.test(value),
  run: value => /^[1-9]\d*$/.test(value),
  artifact_ids: value => /^[1-9]\d*(,[1-9]\d*)*$/.test(value),
- // One API digest per artifact id, in the same order; the sign job re-checks them after the download.
+ // One API digest (sha256 of the stored zip) per artifact id, in the same order; sign keeps a fetched zip only if it matches.
  artifact_digests: value => /^sha256:[a-f0-9]{64}(,sha256:[a-f0-9]{64})*$/.test(value),
  // sha256 of the gate's ci-run.json and ci-jobs.json, re-checked after the download.
  run_record: value => /^[a-f0-9]{64}$/.test(value),

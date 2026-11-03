@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, posix } from 'node:path';
 import { gateExpression, JOB_GATES, jobRuns, reachableOutputs } from './ci-areas.mjs';
 import { checkNativeStockFeasibility } from './check-native-stock-feasibility.mjs';
 import { createRequire } from 'node:module';
@@ -1464,9 +1464,10 @@ run: node packages/desktop/scripts/test-linux-sandbox-package.mjs packages/deskt
  * Both workflows are parsed, never text-matched alone, so flow style, mappings, expressions and
  * block scalars cannot hide anything. desktop-release-request.yml is an unprivileged echo on a
  * desktop-v* tag; desktop-release.yml is the main-only workflow_run that holds the keys:
- *   gate -> collect (keyless; the only job that touches raw CI artifacts) -> sign (environment
- *   desktop-release, the six secrets in one step) -> publish (contents: write, no keys)
- *   -> verify-published -> feed (GitHub Pages).
+ *   gate -> collect (keyless early-failure check; no outputs, no uploads) -> sign (environment
+ *   desktop-release: fetches the gate-digested CI zips as blobs and reads them in-process, no
+ *   download action; the six secrets in one step) -> publish (contents: write, no keys; takes only
+ *   sign's uploads by id) -> verify-published -> feed (GitHub Pages).
  */
 export const DESKTOP_RELEASE_SECRETS = Object.freeze(['DESKTOP_METADATA_KEY_A', 'DESKTOP_SPARKLE_KEY_A', 'DESKTOP_SANDBOX_KEY_A', 'DESKTOP_METADATA_KEY_B', 'DESKTOP_SPARKLE_KEY_B', 'DESKTOP_SANDBOX_KEY_B']);
 export const DESKTOP_RELEASE_ACTIONS = Object.freeze([
@@ -1484,12 +1485,23 @@ const DR_JOBS = ['gate', 'collect', 'sign', 'publish', 'verify-published', 'feed
 const DR_PERMISSIONS = {
   gate: { contents: 'read', actions: 'read' },
   collect: { contents: 'read', actions: 'read', 'pull-requests': 'read' },
-  sign: { contents: 'read', 'pull-requests': 'read' },
+  // actions: read only to fetch the gate-digested artifact zips through the REST API.
+  sign: { contents: 'read', actions: 'read', 'pull-requests': 'read' },
   publish: { contents: 'write', actions: 'read' },
   'verify-published': { contents: 'read' },
   feed: { contents: 'read', pages: 'write', 'id-token': 'write' },
 };
-const DR_NEEDS = { collect: ['gate'], sign: ['gate', 'collect'], publish: ['gate', 'collect', 'sign'], 'verify-published': ['gate', 'sign', 'publish'], feed: ['gate', 'sign', 'publish', 'verify-published'] };
+const DR_NEEDS = { collect: ['gate'], sign: ['gate', 'collect'], publish: ['gate', 'sign'], 'verify-published': ['gate', 'sign', 'publish'], feed: ['gate', 'sign', 'publish', 'verify-published'] };
+const GATE_OUT = name => `\${{ needs.gate.outputs.${name} }}`;
+/** Exact job outputs: collect has none, so nothing it produces can reach sign or publish. */
+const DR_OUTPUTS = {
+  gate: { ...Object.fromEntries(['tag', 'version', 'channel', 'sha', 'tree', 'run', 'artifact_ids', 'artifact_digests', 'run_record', 'jobs_record', 'previous'].map(name => [name, `\${{ steps.gate.outputs.${name} }}`])),
+    records_id: '${{ steps.records.outputs.artifact-id }}', records_digest: '${{ steps.records.outputs.artifact-digest }}' },
+  collect: undefined,
+  sign: { staged: '${{ steps.sign.outputs.staged }}', digest: '${{ steps.digest.outputs.digest }}', candidate_digest: '${{ steps.candidate_digest.outputs.candidate_digest }}',
+    signed_id: '${{ steps.ids.outputs.signed_id }}', candidate_id: '${{ steps.ids.outputs.candidate_id }}' },
+  publish: undefined, 'verify-published': undefined, feed: undefined,
+};
 const DR_ENVIRONMENTS = { sign: 'desktop-release', feed: 'github-pages' };
 const DR_JOB_KEYS = new Set(['if', 'needs', 'runs-on', 'timeout-minutes', 'environment', 'permissions', 'outputs', 'steps']);
 const DR_STEP_KEYS = new Set(['name', 'id', 'uses', 'with', 'run', 'env']);
@@ -1497,12 +1509,13 @@ const S = 'node packages/desktop/scripts/';
 /** Every job's exact step sequence, by step kind (see drKind). */
 const DR_ORDER = {
   gate: ['checkout', 'setup-node', 'release-gate', 'upload:desktop-release-gate'],
-  collect: ['checkout', 'setup-node', 'download:desktop-release-gate', 'download:ci', 'release-download-check', 'release-assemble collect', 'release-notes generate',
-    'release-assemble assemble', 'release-candidate digest', 'upload:desktop-release-candidate', 'release-candidate record-id'],
-  sign: ['checkout', 'setup-node', 'download:candidate', 'release-candidate verify-and-rederive', 'release-sign-job', 'candidate-digest write', 'upload:desktop-signed-release'],
-  publish: ['checkout', 'setup-node', 'download:desktop-signed-release', 'candidate-digest verify', 'download:candidate', 'release-candidate verify', 'publish-release plan', 'publish-release publish'],
+  collect: ['checkout', 'setup-node', 'download:desktop-release-gate', 'download:ci', 'release-download-check', 'release-assemble collect', 'release-notes generate', 'release-assemble assemble'],
+  // No download action in sign: `release-candidate build` fetches the gate-digested zips as blobs and reads them in-process.
+  sign: ['checkout', 'setup-node', 'release-candidate build', 'release-sign-job', 'candidate-digest write', 'release-candidate digest',
+    'upload:desktop-signed-release', 'upload:desktop-signed-candidate', 'release-candidate record-id'],
+  publish: ['checkout', 'setup-node', 'download:signed', 'candidate-digest verify', 'download:candidate', 'release-candidate verify', 'publish-release plan', 'publish-release publish'],
   'verify-published': ['checkout', 'setup-node', 'verify-published'],
-  feed: ['checkout', 'setup-node', 'download:desktop-signed-release', 'candidate-digest verify', 'pages-feed build', 'upload-pages', 'deploy-pages', 'pages-feed verify'],
+  feed: ['checkout', 'setup-node', 'download:signed', 'candidate-digest verify', 'pages-feed build', 'upload-pages', 'deploy-pages', 'pages-feed verify'],
 };
 /** Exact run commands. */
 const DR_RUNS = {
@@ -1513,7 +1526,7 @@ const DR_RUNS = {
   'release-assemble assemble': `${S}release-assemble.mjs assemble "$VERSION" "$RUNNER_TEMP/candidate" "$TREE"`,
   'release-candidate digest': `${S}release-candidate.mjs digest "$RUNNER_TEMP/candidate" "$VERSION"`,
   'release-candidate record-id': `${S}release-candidate.mjs record-id`,
-  'release-candidate verify-and-rederive': `${S}release-candidate.mjs verify-and-rederive "$RUNNER_TEMP/candidate"`,
+  'release-candidate build': `${S}release-candidate.mjs build "$RUNNER_TEMP/zips" "$RUNNER_TEMP/candidate"`,
   'release-sign-job': `${S}release-sign-job.mjs "$VERSION" "$RUNNER_TEMP/candidate" "$RUNNER_TEMP/signed"`,
   'candidate-digest write': `${S}candidate-digest.mjs write "$RUNNER_TEMP/signed" "$CHANNEL" "$VERSION" "$STAGED"`,
   'candidate-digest verify': `${S}candidate-digest.mjs verify "$RUNNER_TEMP/signed" "$CHANNEL" "$VERSION" "$STAGED" "$DIGEST"`,
@@ -1530,13 +1543,14 @@ const DR_WITH = {
   checkout: job => ['gate', 'sign', 'publish'].includes(job) ? { 'fetch-depth': 0, 'persist-credentials': false } : { 'persist-credentials': false },
   'setup-node': () => ({ 'node-version-file': '.nvmrc', 'package-manager-cache': false }),
   'download:desktop-release-gate': () => ({ name: 'desktop-release-gate', path: '${{ runner.temp }}/gate', 'digest-mismatch': 'error' }),
-  'download:desktop-signed-release': () => ({ name: 'desktop-signed-release', path: '${{ runner.temp }}/signed', 'digest-mismatch': 'error' }),
+  // sign's two uploads, each by the artifact id sign reports (an id names immutable bytes; a name could be re-uploaded).
+  'download:signed': () => ({ 'artifact-ids': '${{ needs.sign.outputs.signed_id }}', path: '${{ runner.temp }}/signed', 'digest-mismatch': 'error' }),
+  'download:candidate': () => ({ 'artifact-ids': '${{ needs.sign.outputs.candidate_id }}', path: '${{ runner.temp }}/candidate', 'digest-mismatch': 'error' }),
   'download:ci': () => ({ 'github-token': '${{ github.token }}', 'run-id': '${{ needs.gate.outputs.run }}', repository: 'dilla-chat/dilla',
     'artifact-ids': '${{ needs.gate.outputs.artifact_ids }}', path: '${{ runner.temp }}/downloaded', 'digest-mismatch': 'error' }),
-  'download:candidate': () => ({ 'artifact-ids': '${{ needs.collect.outputs.candidate_id }}', path: '${{ runner.temp }}/candidate', 'digest-mismatch': 'error' }),
   'upload:desktop-release-gate': () => DR_UPLOAD('desktop-release-gate', 'gate'),
-  'upload:desktop-release-candidate': () => DR_UPLOAD('desktop-release-candidate', 'candidate'),
   'upload:desktop-signed-release': () => DR_UPLOAD('desktop-signed-release', 'signed'),
+  'upload:desktop-signed-candidate': () => DR_UPLOAD('desktop-signed-candidate', 'candidate'),
   'upload-pages': () => ({ path: '${{ runner.temp }}/site' }),
   'deploy-pages': () => undefined,
 };
@@ -1546,10 +1560,13 @@ const DR_ENV = {
   'gate release-gate': { GH_TOKEN: '${{ github.token }}', HINT_TAG: '${{ github.event.workflow_run.head_branch }}', HINT_RUN: '${{ github.event.workflow_run.id }}' },
   // The notes range starts at the gate's validated previous published release; the notes never read tags.
   'collect release-notes generate': { GH_TOKEN: '${{ github.token }}', VERSION: '${{ needs.gate.outputs.version }}', SHA: '${{ needs.gate.outputs.sha }}', PREVIOUS: '${{ needs.gate.outputs.previous }}' },
-  'sign release-candidate verify-and-rederive': { GH_TOKEN: '${{ github.token }}', VERSION: '${{ needs.gate.outputs.version }}', SHA: '${{ needs.gate.outputs.sha }}',
-    TREE: '${{ needs.gate.outputs.tree }}', RUN: '${{ needs.gate.outputs.run }}', RUN_RECORD: '${{ needs.gate.outputs.run_record }}', JOBS_RECORD: '${{ needs.gate.outputs.jobs_record }}',
-    PREVIOUS: '${{ needs.gate.outputs.previous }}', CANDIDATE_DIGEST: '${{ needs.collect.outputs.candidate_digest }}', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' },
-  'sign release-sign-job': { VERSION: '${{ needs.gate.outputs.version }}', ...Object.fromEntries(DESKTOP_RELEASE_SECRETS.map(name => [name, `\${{ secrets.${name} }}`])) },
+  // Every id and digest the zip fetch trusts comes from the gate's outputs, never from collect.
+  'sign release-candidate build': { GH_TOKEN: '${{ github.token }}', ...Object.fromEntries(['version', 'sha', 'tree', 'run', 'artifact_ids', 'artifact_digests', 'records_id', 'records_digest', 'run_record', 'jobs_record', 'previous']
+    .map(name => [name.toUpperCase(), GATE_OUT(name)])) },
+  'sign release-sign-job': { VERSION: GATE_OUT('version'), ...Object.fromEntries(DESKTOP_RELEASE_SECRETS.map(name => [name, `\${{ secrets.${name} }}`])) },
+  'sign release-candidate record-id': { SIGNED_ID: '${{ steps.signed_upload.outputs.artifact-id }}', CANDIDATE_ID: '${{ steps.candidate_upload.outputs.artifact-id }}' },
+  'publish release-candidate verify': { ...Object.fromEntries(['version', 'sha', 'tree', 'run', 'run_record', 'jobs_record'].map(name => [name.toUpperCase(), GATE_OUT(name)])),
+    CANDIDATE_DIGEST: '${{ needs.sign.outputs.candidate_digest }}' },
 };
 
 function drKind(step) {
@@ -1557,7 +1574,10 @@ function drKind(step) {
     const action = /^actions\/([a-z-]+)@/.exec(step.uses)?.[1];
     if (action === 'download-artifact') {
       const w = step.with ?? {};
-      return w['run-id'] !== undefined || w['github-token'] !== undefined || w.repository !== undefined ? 'download:ci' : w.name !== undefined ? `download:${w.name}` : 'download:candidate';
+      if (w['run-id'] !== undefined || w['github-token'] !== undefined || w.repository !== undefined) return 'download:ci';
+      if (w.name !== undefined) return `download:${w.name}`;
+      const ids = String(w['artifact-ids'] ?? '');
+      return ids.includes('signed_id') ? 'download:signed' : ids.includes('candidate_id') ? 'download:candidate' : 'download:other';
     }
     if (action === 'upload-artifact') return `upload:${step.with?.name}`;
     return DR_ACTION_KINDS[action] ?? `action:${step.uses}`;
@@ -1575,7 +1595,10 @@ function drStrings(value, path = [], out = []) {
 const drSame = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const drNeeds = value => typeof value === 'string' ? [value] : value;
 
-function checkScriptImports(root, file, problems) {
+/** Checks `file` and, with `seen`, every repository file it imports: only node: modules and repository files. */
+function checkScriptImports(root, file, problems, seen = null) {
+  if (seen?.has(file)) return null;
+  seen?.add(file);
   let text;
   try { text = readFileSync(join(root, file), 'utf8'); } catch { problems.push(`${file}: missing`); return null; }
   for (const match of text.matchAll(/(?:^|[\s;])(?:import|export)\s+(?:[^'";]*?\sfrom\s+)?(['"])([^'"]+)\1|import\(\s*([^)]*)\)/g)) {
@@ -1583,9 +1606,14 @@ function checkScriptImports(root, file, problems) {
     const literal = match[2] !== undefined ? specifier : /^(['"])([^'"]+)\1$/.exec(specifier.trim())?.[2];
     if (literal === undefined) { problems.push(`${file}: dynamic import of a computed specifier`); continue; }
     if (!literal.startsWith('node:') && !literal.startsWith('./') && !literal.startsWith('../')) problems.push(`${file}: imports ${literal}; only node: modules and repository files are allowed`);
+    // Static imports load with the module and are followed. A literal dynamic import of a repository
+    // file loads only when its code path runs (build-provenance's CI-only inspectors) and is not walked.
+    else if (seen && match[2] !== undefined && !literal.startsWith('node:')) checkScriptImports(root, posix.join(posix.dirname(file), literal), problems, seen);
   }
   return text;
 }
+/** The scripts the keyed sign job runs; it runs no `npm ci`, so their whole import graph is node: built-ins and repository files. */
+const DR_KEYED_SCRIPTS = Object.freeze(['release-candidate.mjs', 'artifact-zip.mjs', 'release-sign-job.mjs', 'candidate-digest.mjs'].map(name => `packages/desktop/scripts/${name}`));
 
 export function checkDesktopReleaseWorkflow(root) {
   const problems = [];
@@ -1661,8 +1689,11 @@ export function checkDesktopReleaseWorkflow(root) {
       if (!drSame(job.permissions, DR_PERMISSIONS[name])) problems.push(`${k}: ${name}: permissions must be exactly ${JSON.stringify(DR_PERMISSIONS[name])}`);
       if (DR_ENVIRONMENTS[name] !== undefined && job.environment !== DR_ENVIRONMENTS[name]) problems.push(`${k}: ${name}: environment must be ${DR_ENVIRONMENTS[name]}`);
       if (DR_ENVIRONMENTS[name] === undefined && Object.hasOwn(job, 'environment')) problems.push(`${k}: ${name}: must not have an environment`);
+      if (!drSame(job.outputs, DR_OUTPUTS[name])) problems.push(`${k}: ${name}: outputs must be exactly ${JSON.stringify(DR_OUTPUTS[name] ?? null)}`);
       const steps = Array.isArray(job.steps) ? job.steps : [];
       const kinds = steps.map(drKind);
+      // Review batch B, I1/I2: no action in sign ever extracts a zip another job could have produced.
+      if (name === 'sign' && kinds.some(kind => kind.startsWith('download:'))) problems.push(`${k}: sign: no download-artifact step; sign fetches the gate-digested zips itself (release-candidate build)`);
       if (!drSame(kinds, DR_ORDER[name])) problems.push(`${k}: ${name}: steps must be exactly, in order: ${DR_ORDER[name].join(' -> ')} (found ${kinds.join(' -> ')})`);
       steps.forEach((step, i) => {
         const where = `${k}: ${name}: step ${i + 1}`;
@@ -1695,6 +1726,7 @@ export function checkDesktopReleaseWorkflow(root) {
     const gateIndex = (jobs.gate?.steps ?? []).findIndex(step => drKind(step) === 'release-gate');
     for (const [path, value] of drStrings(doc)) {
       const at = path.join('.');
+      if (/needs\s*\.\s*collect\b|needs\s*\[\s*['"]collect/.test(value)) problems.push(`${k}: nothing collect produces may reach another job (${at})`);
       if (/secrets\b/.test(value) && /secrets\s*[.[(]|\(\s*secrets/.test(value)) {
         const key = path[path.length - 1];
         if (!(at === `jobs.sign.steps.${signIndex}.env.${key}` && DESKTOP_RELEASE_SECRETS.includes(key) && value === `\${{ secrets.${key} }}`)) problems.push(`${k}: secrets referenced outside the Sign step's env (${at})`);
@@ -1709,9 +1741,11 @@ export function checkDesktopReleaseWorkflow(root) {
     if (/workflow_run\.(head_sha|head_repository)/.test(text)) problems.push(`${k}: workflow_run.head_sha and head_repository are never used`);
   }
 
-  // The scripts that hold or create the keys import only node: modules and repository files.
+  // The scripts that hold or create the keys, and the whole import graph of the sign job's steps
+  // (the in-process zip reader included), import only node: modules and repository files.
   const keys = checkScriptImports(root, 'packages/desktop/scripts/release-keys.mjs', problems);
-  checkScriptImports(root, 'packages/desktop/scripts/release-sign-job.mjs', problems);
+  const seen = new Set();
+  for (const file of DR_KEYED_SCRIPTS) checkScriptImports(root, file, problems, seen);
   if (keys !== null) {
     if (/type\s*:\s*['"]tag['"]/.test(keys)) problems.push('release-keys.mjs: the desktop-release environment admits no tag policy');
     // The environment setup names exactly one deployment policy: the branch main.

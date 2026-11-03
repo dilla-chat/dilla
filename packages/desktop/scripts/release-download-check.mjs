@@ -10,9 +10,9 @@ import { createGithubApi, listRunArtifacts, selectReleaseArtifacts } from './ci-
  * from the server's (digest-mismatch: error, pinned by the checker); this step
  * proves the server digests of those artifact ids are still the ones the gate
  * accepted (review m4), that the gate's records arrived byte-for-byte, and
- * that the candidate directory does not exist yet. The key boundary is the job
- * split: `sign` never handles raw CI artifacts, only collect's digest-checked
- * candidate, which it verifies itself.
+ * that the candidate directory does not exist yet. collect is an early-failure
+ * check only: nothing it produces reaches `sign`, which fetches the same zips
+ * itself under the gate's digests and reads them in-process (artifact-zip.mjs).
  */
 const IDS = /^[1-9]\d*(,[1-9]\d*)*$/, DIGESTS = /^sha256:[a-f0-9]{64}(,sha256:[a-f0-9]{64})*$/, HEX = /^[a-f0-9]{64}$/;
 const GATE_FILES = Object.freeze(['ci-jobs.json', 'ci-run.json']);
