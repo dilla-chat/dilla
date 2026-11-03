@@ -1,8 +1,16 @@
 const channel = require('./package.json').version.includes('-beta.') ? 'beta' : 'stable';
 const { sparklePublicKey } = require('./release-trust.json');
 const linuxHooks = require('./scripts/linux-appimage-launcher.cjs');
+// macOS signs with the Developer ID certificate the release credentials carry (CSC_LINK and CSC_KEY_PASSWORD, the
+// base64 .p12 and its password) and notarizes with the App Store Connect API key (APPLE_API_KEY, APPLE_API_KEY_ID,
+// APPLE_API_ISSUER); the workflow sets them from repository secrets on the macOS build only. Without them, as in a
+// pull request from a fork or a local build, the app is ad-hoc signed as before. A present certificate that cannot
+// sign fails the build rather than quietly shipping an unsigned app.
+const macSigning = Boolean(process.env.CSC_LINK);
+const macNotarizing = Boolean(process.env.APPLE_API_KEY && process.env.APPLE_API_KEY_ID && process.env.APPLE_API_ISSUER);
 module.exports = {
   appId: 'dev.dilla.desktop', productName: 'Dilla', executableName: 'dilla-desktop',
+  forceCodeSigning: macSigning,
   toolsets: { nsis: '1.2.1' }, // Hash-pinned NSIS 3.12 bundle; avoid the legacy temporary-directory runtime.
   directories: { output: 'out', buildResources: 'assets' },
   files: ['dist/**', 'package.json'],
@@ -26,7 +34,10 @@ module.exports = {
   mac: {
     target: [{ target: 'dmg', arch: [process.arch] }, { target: 'zip', arch: [process.arch] }],
     extraFiles: [{ from: 'native-bin/Sparkle.framework', to: 'Frameworks/Sparkle.framework' }],
-    icon: 'assets/icon.png', identity: '-', notarize: false,
+    // The hardened runtime's entitlements are assets/entitlements.mac.plist and, for the helper processes,
+    // assets/entitlements.mac.inherit.plist, which electron-builder reads from the build resources by those names.
+    icon: 'assets/icon.png', ...(macSigning ? {} : { identity: '-' }), notarize: macNotarizing,
+    hardenedRuntime: true, gatekeeperAssess: false,
     extendInfo: {
       CFBundleVersion: require('./package.json').version.replace('-beta.', 'b'),
       NSUserNotificationAlertStyle: 'alert',

@@ -648,6 +648,7 @@ jobs:
     needs: [changes, web-build, rust-wasi, linux-sandbox-foundation]
     if: needs.changes.outputs.e2e != 'false'
     uses: ./.github/workflows/desktop.yml
+    secrets: inherit # The macOS Developer ID certificate and notarization key, read by its native job alone.
   core-integration:
     needs: [changes, rust-native, rust-wasi, web-build]
     if: needs.changes.outputs.e2e != 'false'

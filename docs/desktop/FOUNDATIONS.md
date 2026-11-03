@@ -30,7 +30,8 @@ browser download navigation.
   background download and quit-only installation guards. The pinned standard NSIS/AppImage updater owns installation and relaunch.
   Native package managers own DEB/RPM/AUR updates; macOS retains Sparkle. The
   custom crash-recovery, rollback and Windows launcher layer has been removed.
-- AppImage, per-user NSIS and ad-hoc macOS packaging configuration. Hardened packaged
+- AppImage, per-user NSIS and macOS packaging configuration: Developer ID signed and
+  notarized when CI holds the credentials, ad-hoc otherwise. Hardened packaged
   fuses are checked on the binary. CI adds the three native targets without deleting
   the shared protocol/security jobs. The shared client and voice suites run in Electron
   on Linux, the same Chromium renderer and media stack as on every other OS; Windows

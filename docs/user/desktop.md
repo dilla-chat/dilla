@@ -188,10 +188,12 @@ requirements remain in force.
 A previous green run cannot stand in for a different source tree. Every target
 also requires one successful installed-account proof across its three client
 shards, including real device/KEK/history recovery and separate draft/file guards.
- Commercial OS signing/notarization is not configured; macOS packaging uses
-ad-hoc signing. Windows and macOS may warn about an unidentified publisher. Use the
-OS's normal installation approval flow; do not disable SmartScreen, Gatekeeper, SIP
-or quarantine protections to make a test pass.
+macOS builds are signed with the project's Developer ID certificate and notarized
+by Apple when the release credentials are present in CI (a pull request from a fork
+builds ad-hoc instead); Windows signing is not configured. Windows, and a macOS
+build made without those credentials, may warn about an unidentified publisher. Use
+the OS's normal installation approval flow; do not disable SmartScreen, Gatekeeper,
+SIP or quarantine protections to make a test pass.
 
 See [platform findings and launch gates](../desktop/FOUNDATIONS.md) for the dated
 acceptance snapshot and release evidence. Packaging success does not satisfy those

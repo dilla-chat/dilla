@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <!-- The helper processes (renderer, GPU, audio and network services) inherit the app's exceptions: V8's JIT,
+         its unsigned executable memory, loading code with another signature, and the microphone and camera. -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <!-- Under the hardened runtime a Developer ID build needs these to be asked for the microphone and the camera
+         at all; the usage strings in Info.plist say why. Screen capture needs no entitlement. -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+    <key>com.apple.security.device.camera</key>
+    <true/>
+  </dict>
+</plist>
