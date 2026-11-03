@@ -77,7 +77,10 @@ test('measure startup, resident memory, idle CPU, search paint and authenticated
   let own: Browser | null = null, listener: Browser | null = null, cdp: CDPSession | null = null;
   const start = performance.now();
   if (!desktopE2E()) own = peerBrowser.track(await chromium.launch({ ...launchOptions, headless: false, chromiumSandbox: true }));
-  const alice = await peerBrowser.open('alice', own ? { browser: own } : undefined);
+  // Alice keeps the project's 1 kHz microphone in both lanes. Without explicit launch options the desktop lane rotates
+  // each new device's tone (peer-browser.ts: 1000, 600, 1400, 1800 Hz), so the second iteration's alice got bob's 600 Hz:
+  // her echo canceller then removed her own tone as echo and bob decrypted silent frames (run 630, macOS arm64).
+  const alice = await peerBrowser.open('alice', own ? { browser: own } : { launchOptions });
   if (!desktopE2E()) await alice.page.goto(baseURL!);
   await alice.page.waitForFunction(() => (document.getElementById('root')?.childElementCount ?? 0) > 0 && !document.querySelector('.d-splash__line'));
   const startup = performance.now() - start;
