@@ -25,8 +25,13 @@ func identity(_ pid: pid_t) -> String? {
     return "\(info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec):\(pid)"
 }
 final class AudioOutput: NSObject, SCStreamOutput, SCStreamDelegate {
-    // The stop reason is the one fact a failed capture leaves behind: the system's own wording, no paths.
-    func stream(_ stream: SCStream, didStopWithError error: Error) { fputs("application capture ended: \(error.localizedDescription)\n", stderr); exit(1) }
+    // Keep failure diagnostics bounded to fixed domain labels and a numeric code.
+    func stream(_ stream: SCStream, didStopWithError error: Error) {
+        let nativeError = error as NSError
+        let domain = nativeError.domain == SCStreamError.errorDomain ? "screencapturekit" : "other"
+        fputs("application capture ended domain=\(domain) code=\(nativeError.code)\n", stderr)
+        exit(1)
+    }
     func stream(_ stream: SCStream, didOutputSampleBuffer sample: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .audio, sample.isValid, let description = sample.formatDescription,
               let format = CMAudioFormatDescriptionGetStreamBasicDescription(description) else { return }
