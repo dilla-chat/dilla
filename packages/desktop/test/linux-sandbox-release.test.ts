@@ -73,3 +73,16 @@ test('freshness uses nanosecond precision at skew, expiry and 93-day boundaries'
  assert.throws(()=>verifyLinuxSandboxRelease(fixture({publishedAt:'2026-11-02T12:05:00Z',expiresAt:'2027-02-03T12:05:00.000000001Z'})));
  assert.throws(()=>verifyLinuxSandboxRelease(fixture({publishedAt:'2026-11-02T11:00:00Z',expiresAt:'2026-11-02T12:00:00Z'})));
 });
+
+test('sandbox capsule signed by the active key verifies under an old launcher list and under the transition list, and a staged-only capsule verifies only under the transition list',()=>{
+ const base=fixture(), stagedPair=generateKeyPairSync('ed25519'), stagedKey=stagedPair.publicKey.export({format:'der',type:'spki'}).subarray(-32).toString('base64');
+ const oldList=base.keys, transitionList=[...base.keys,stagedKey];
+ assert.equal(verifyLinuxSandboxRelease({...base,keys:oldList}).generation,3);
+ assert.equal(verifyLinuxSandboxRelease({...base,keys:transitionList}).generation,3);
+ const message=Buffer.concat([Buffer.from('Dilla Linux sandbox capsule v1\0'),base.manifest]);
+ const stagedSignature=sign(null,message,stagedPair.privateKey).toString('base64')+'\n';
+ assert.equal(verifyLinuxSandboxRelease({...base,signature:stagedSignature,keys:transitionList}).generation,3);
+ assert.throws(()=>verifyLinuxSandboxRelease({...base,signature:stagedSignature,keys:oldList}));
+ const stranger=sign(null,message,generateKeyPairSync('ed25519').privateKey).toString('base64')+'\n';
+ assert.throws(()=>verifyLinuxSandboxRelease({...base,signature:stranger,keys:transitionList}));
+});

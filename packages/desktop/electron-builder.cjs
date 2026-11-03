@@ -1,4 +1,6 @@
 const channel = require('./package.json').version.includes('-beta.') ? 'beta' : 'stable';
+// SUPublicEDKey is always the active Sparkle key, also while a rotation is staged (sparkleNextPublicKey): Sparkle
+// trusts one key per build, so the key changes only with `release-keys.mjs rotate --promote` (see RELEASING.md).
 const { sparklePublicKey } = require('./release-trust.json');
 const linuxHooks = require('./scripts/linux-appimage-launcher.cjs');
 // macOS signs with the Developer ID certificate the release credentials carry (CSC_LINK and CSC_KEY_PASSWORD, the
