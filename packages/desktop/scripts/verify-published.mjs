@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { verifyRelease } from '../src/update.ts';
-import { BUILD_TARGETS, TARGETS, publicReleaseRecords, verifySparkleFeed } from './verify-release.mjs';
+import { BUILD_TARGETS, TARGETS, publicReleaseRecords, verifyRotationProof, verifySparkleFeed } from './verify-release.mjs';
 import { buildProvenanceName } from './build-provenance.mjs';
 import { REPOSITORY, createGithubApi, resolveTagCommit } from './ci-run.mjs';
 import { publicationContext } from './publish-release.mjs';
@@ -19,7 +19,7 @@ const R = `/repos/${REPOSITORY}`;
 const DOWNLOAD_ORIGINS = new Set(['https://github.com', 'https://release-assets.githubusercontent.com', 'https://objects.githubusercontent.com']);
 const MAX_RECORD = 1024 ** 2, MAX_ASSET = 4 * 1024 ** 3;
 
-/** Streams one asset, hashing it; small records are also kept in memory. */
+/** Streams one asset, hashing it. `keep: true` keeps a small record in memory; `keep: 'large'` keeps an asset of any accepted size. */
 async function download(fetchImpl, tag, asset, keep) {
  const expected = `https://github.com/${REPOSITORY}/releases/download/${tag}/${asset.name}`;
  if (asset.browser_download_url !== expected) throw new Error('Unexpected download URL for ' + asset.name);
@@ -30,7 +30,7 @@ async function download(fetchImpl, tag, asset, keep) {
  let size = 0;
  for await (const chunk of response.body) {
   size += chunk.length;
-  if (size > (keep ? MAX_RECORD : MAX_ASSET)) throw new Error('Published asset is too large: ' + asset.name);
+  if (size > (keep === true ? MAX_RECORD : MAX_ASSET)) throw new Error('Published asset is too large: ' + asset.name);
   sha256.update(chunk); sha512.update(chunk);
   if (keep) chunks.push(chunk);
  }
@@ -41,7 +41,7 @@ async function download(fetchImpl, tag, asset, keep) {
 
 const sha256hex = bytes => createHash('sha256').update(bytes).digest('hex');
 
-export async function verifyPublished({ env, fetchImpl = fetch, trust, now = Date.now() }) {
+export async function verifyPublished({ env, fetchImpl = fetch, trust, verifier = { verifyRotationProof }, now = Date.now() }) {
  const { tag, version, channel, sha, staged } = publicationContext(env);
  const api = createGithubApi({ token: env.GH_TOKEN, fetchImpl });
  const published = await api(`${R}/releases/tags/${encodeURIComponent(tag)}`);
@@ -70,9 +70,12 @@ export async function verifyPublished({ env, fetchImpl = fetch, trust, now = Dat
   ...TARGETS.map(target => [`performance-${target}.json`, source.performance?.[target]?.sha256]),
   ...TARGETS.map(target => [`installed-account-${target}.json`, source.installedAccounts?.[target]?.sha256]),
   ...BUILD_TARGETS.map(target => [buildProvenanceName(target), source.builds?.[target]?.sha256])]);
+ // A staged release keeps the files its rotation proof signs (the archive is the large one).
+ const rotationInputs = new Map(staged ? [`dilla-${version}-linux-x64.sandbox.json`, `dilla-${version}-mac-arm64.zip`, `dilla-${version}-linux-x64.sandbox.sig`].map(name => [name, null]) : []);
+ let proofBytes = null;
  for (const name of expected) {
   if (name === metadataName || name === metadataName + '.sig') continue;
-  const signed = signedAssets.get(name), result = await download(fetchImpl, tag, byName.get(name), !signed);
+  const signed = signedAssets.get(name), result = await download(fetchImpl, tag, byName.get(name), !signed || (rotationInputs.has(name) && 'large'));
   if (signed) {
    const hash = Buffer.from(signed.sha512, 'base64');
    if (result.size !== signed.size || hash.length !== result.sha512.length || !timingSafeEqual(hash, result.sha512)) throw new Error('Published asset does not match the signed metadata: ' + name);
@@ -83,10 +86,13 @@ export async function verifyPublished({ env, fetchImpl = fetch, trust, now = Dat
    if (!artifact) throw new Error('Published Sparkle feed for an unsigned target: ' + name);
    verifySparkleFeed(release, artifact, result.bytes, trust);
   } else if (name === 'rotation-proof.json') {
-   const proof = JSON.parse(result.bytes.toString('utf8'));
-   if (proof?.format !== 1 || proof.kind !== 'dilla-desktop-rotation-proof' || proof.version !== version || proof.channel !== channel
-    || proof.metadata?.sha256 !== sha256hex(metadata)) throw new Error('Published rotation proof does not match the signed metadata');
+   proofBytes = result.bytes;
   } else throw new Error('Unchecked published record: ' + name);
+  if (staged && rotationInputs.has(name)) rotationInputs.set(name, result.bytes);
+ }
+ if (staged) {
+  rotationInputs.set(metadataName, metadata);
+  await verifier.verifyRotationProof(proofBytes, { trust, version, channel, files: rotationInputs, metadataSignature: signature, sandboxSignature: rotationInputs.get(`dilla-${version}-linux-x64.sandbox.sig`) });
  }
  return { version, assets: expected.length };
 }

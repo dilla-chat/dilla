@@ -22,7 +22,7 @@ import { aurRecipe } from '../scripts/build-native-linux-packages.mjs';
 import { runPublisher } from '../scripts/publish-release.mjs';
 // @ts-expect-error publishing tooling is JavaScript
 import { createReleaseAssetUploader } from '../scripts/standard-release-upload.mjs';
-import { publishFixture, type PublishFixture } from './support/publish-fixture.mjs';
+import { publishFixture, rotationProof, type PublishFixture } from './support/publish-fixture.mjs';
 import type { FakeRelease } from './support/fake-github.mjs';
 const buildTargets = [...TARGETS, 'linux-packages-x64'];
 
@@ -471,6 +471,45 @@ test('uploads go to uploads.github.com only and never follow redirects', async (
   await assert.rejects(upload({ ...target, ...change }, 'dilla.exe', Buffer.from('x')), /destination|draft|tag/i, JSON.stringify(change));
  }
  assert.deepEqual(calls, []);
+});
+
+test('publisher verifies a staged rotation proof and publishes it', async () => {
+ const p = await publishFixture({ staged: true });
+ try {
+  await publisher(p, 'publish');
+  const release = p.github.state.releases[0];
+  assert.deepEqual(release.assets.map(asset => asset.name).sort(), [...signedNames(p), 'rotation-proof.json'].sort());
+ } finally { await p.cleanup(); }
+});
+
+test('publisher refuses a bad rotation proof before anything is uploaded', async () => {
+ const p = await publishFixture({ staged: true });
+ try {
+  const path = join(p.candidate, 'rotation-proof.json'), clean = await readFile(path);
+  const files = { metadata: p.fixture.metadata, manifest: await readFile(join(p.installers, `dilla-${p.version}-linux-x64.sandbox.json`)), archive: await readFile(join(p.installers, `dilla-${p.version}-mac-arm64.zip`)) };
+  const keys = p.stagedKeys!, unpinned = { ...keys, metadata: generateKeyPairSync('ed25519') };
+  const tampered = JSON.parse(clean.toString()); tampered.sparkle.signature = tampered.metadata.signature;
+  const cases: [string, Buffer | string][] = [
+   ['tampered', Buffer.from(JSON.stringify(tampered))],
+   ['another version', rotationProof({ keys, ...files, version: '1.2.4', channel: p.channel })],
+   ['another channel', rotationProof({ keys, ...files, version: p.version, channel: 'beta' })],
+   ['an unpinned key', rotationProof({ keys: unpinned, ...files, version: p.version, channel: p.channel })],
+   ['another slot', rotationProof({ keys, ...files, version: p.version, channel: p.channel, slot: 'A' })],
+   ['other metadata', rotationProof({ keys, ...files, metadata: Buffer.from('{}'), version: p.version, channel: p.channel })],
+  ];
+  for (const [label, bytes] of cases) {
+   await writeFile(path, bytes);
+   await assert.rejects(publisher(p, 'publish'), /rotation proof/i, label);
+   await assert.rejects(publisher(p, 'plan'), /rotation proof/i, label);
+   assert.deepEqual(writes(p), [], label);
+  }
+  await writeFile(path, clean);
+  // A proof present while nothing is staged, and a staged run without its proof.
+  await assert.rejects(publisher(p, 'publish', { DESKTOP_STAGED: 'false' }), /rotation proof/i);
+  await rm(path);
+  await assert.rejects(publisher(p, 'publish'), /rotation proof/i);
+  assert.deepEqual(writes(p), []);
+ } finally { await p.cleanup(); }
 });
 
 test('publish job installs no npm dependencies', async () => {

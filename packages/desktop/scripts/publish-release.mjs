@@ -95,7 +95,16 @@ export async function runPublisher({ mode, env, git, fetchImpl = fetch, trust, v
  await verifier.verifyDesktopBundle({ metadata, signature, trust, directory, run, jobs, version, now });
  const expected = new Map();
  for (const name of [...release.assets.map(asset => asset.name), ...verifier.publicReleaseRecords(channel)]) expected.set(name, await readFile(join(directory, name)));
- if (staged) expected.set(ROTATION_PROOF, await readFile(join(candidate, ROTATION_PROOF)));
+ // The rotation proof is public and permanent once published: it must verify before anything is written.
+ let proof = null;
+ try { proof = await readFile(join(candidate, ROTATION_PROOF)); } catch (error) { if (error?.code !== 'ENOENT') throw error; }
+ if ((proof !== null) !== staged) throw new Error(staged ? 'The staged release lacks its rotation proof' : 'A rotation proof is present although nothing is staged');
+ if (staged) {
+  const manifest = `dilla-${version}-linux-x64.sandbox.json`, archive = `dilla-${version}-mac-arm64.zip`;
+  await verifier.verifyRotationProof(proof, { trust, version, channel, metadataSignature: signature, sandboxSignature: expected.get(`dilla-${version}-linux-x64.sandbox.sig`),
+   files: new Map([[metadataName, metadata], [manifest, expected.get(manifest)], [archive, expected.get(archive)]]) });
+  expected.set(ROTATION_PROOF, proof);
+ }
  if (mode === 'plan') return { release, expected: [...expected.keys()] };
 
  // A pre-existing draft is adopted only after it is normalised to exactly what was signed.

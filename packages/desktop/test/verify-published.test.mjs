@@ -9,7 +9,7 @@ async function published(options) {
  const p = await publishFixture(options);
  await runPublisher({ mode: 'publish', env: p.env, git: p.git, fetchImpl: p.github.fetch, trust: p.fixture.trust, verifier: p.tools.verifier, now: p.now });
  const release = p.github.state.releases.find(item => item.tag_name === p.tag);
- const verify = (env = {}) => verifyPublished({ env: { ...p.env, ...env }, fetchImpl: p.github.fetch, trust: p.fixture.trust, now: p.now });
+ const verify = (env = {}) => verifyPublished({ env: { ...p.env, ...env }, fetchImpl: p.github.fetch, trust: p.fixture.trust, verifier: p.tools.verifier, now: p.now });
  return { ...p, release, verify };
 }
 const asset = (p, name) => p.release.assets.find(item => item.name === name);
@@ -73,5 +73,19 @@ test('verify-published checks the feed assets against the signed metadata', asyn
   await assert.rejects(p.verify(), /signature/i);
   set(signature, original.signature);
   await p.verify();
+ } finally { await p.cleanup(); }
+});
+
+test('verify-published checks a published rotation proof under the pinned staged keys', async () => {
+ const p = await published({ staged: true });
+ try {
+  assert.equal((await p.verify()).assets, p.release.assets.length);
+  const proof = asset(p, 'rotation-proof.json'), clean = proof.bytes;
+  const changed = JSON.parse(clean.toString()); changed.sandbox.signature = changed.metadata.signature;
+  const bytes = Buffer.from(JSON.stringify(changed));
+  Object.assign(proof, { bytes, size: bytes.length, digest: p.github.sha256(bytes) });
+  await assert.rejects(p.verify(), /rotation proof/i);
+  Object.assign(proof, { bytes: clean, size: clean.length, digest: p.github.sha256(clean) });
+  await assert.rejects(p.verify({ DESKTOP_STAGED: 'false' }), /asset set/i, 'a proof present when nothing is staged');
  } finally { await p.cleanup(); }
 });

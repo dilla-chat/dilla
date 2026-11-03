@@ -218,6 +218,57 @@ async function verifyBundle({ metadata, signature, trust, directory, run, jobs, 
  return release;
 }
 
+const ROTATION_SANDBOX_CONTEXT = 'Dilla Linux sandbox capsule v1\0';
+const rawPublicKey = raw => createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x: Buffer.from(raw, 'base64').toString('base64url') }, format: 'jwk' });
+const pemSigner = (keys, message, signature) => keys.find(key => { try { return verify(null, message, createPublicKey(key), signature); } catch { return false; } });
+const rawSigner = (keys, message, signature) => keys.find(key => { try { return verify(null, message, rawPublicKey(key), signature); } catch { return false; } });
+
+/**
+ * A staged-rotation proof must bind exactly this release (version, channel, the
+ * signed metadata, the sandbox manifest and the macOS archive) and carry a
+ * signature from each staged key, where every staged key is pinned, is not the
+ * key that signed the release, and the staged slot is the one release-trust.json names.
+ * `files` holds the signed metadata, the sandbox manifest and the arm64 archive.
+ */
+export async function verifyRotationProof(proofBytes, { trust, version, channel, files, metadataSignature, sandboxSignature }) {
+ if (!VERSION.test(version ?? '') || !['beta', 'stable'].includes(channel)) throw new Error('Invalid rotation proof context');
+ const fail = what => { throw new Error('Invalid rotation proof: ' + what); };
+ let proof;
+ try { proof = JSON.parse(Buffer.from(proofBytes).toString('utf8')); } catch { fail('not JSON'); }
+ const exact = (value, keys) => value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
+ if (!exact(proof, ['format', 'kind', 'version', 'channel', 'stagedSlot', 'metadata', 'sandbox', 'sparkle']) || proof.format !== 1 || proof.kind !== 'dilla-desktop-rotation-proof') fail('shape');
+ if (proof.version !== version || proof.channel !== channel) fail('another version or channel');
+ const staged = trust?.signing?.staged;
+ if (!['A', 'B'].includes(staged) || proof.stagedSlot !== staged || trust.signing.active === staged) fail('the staged slot is not the one release-trust.json names');
+ const metadataFile = `desktop-${channel}.json`, manifestFile = `dilla-${version}-linux-x64.sandbox.json`, archiveFile = `dilla-${version}-mac-arm64.zip`;
+ const component = parsePublicConfiguration(await readFile(new URL('../linux-sandbox-component.json', import.meta.url), 'utf8'));
+ const entries = [
+  ['metadata', metadataFile, files.get(metadataFile)],
+  ['sandbox', manifestFile, files.get(manifestFile)],
+  ['sparkle', archiveFile, files.get(archiveFile)],
+ ];
+ for (const [kind, file, bytes] of entries) {
+  const entry = proof[kind];
+  if (!exact(entry, kind === 'sandbox' ? ['file', 'sha256', 'publicKey', 'signature', 'context'] : ['file', 'sha256', 'publicKey', 'signature'])) fail(kind + ' entry shape');
+  if (!Buffer.isBuffer(bytes) || entry.file !== file || entry.sha256 !== digest(bytes)) fail(kind + ' does not bind this release');
+  if (typeof entry.signature !== 'string' || !/^[A-Za-z0-9+/]{86}==$/.test(entry.signature)) fail(kind + ' signature');
+ }
+ if (proof.sandbox.context !== 'Dilla Linux sandbox capsule v1\\0') fail('sandbox context');
+ const metadata = files.get(metadataFile), manifest = Buffer.concat([Buffer.from(ROTATION_SANDBOX_CONTEXT), files.get(manifestFile)]), archive = files.get(archiveFile);
+ // Metadata: a pinned key, not the one that signed the release metadata.
+ const activeMetadata = pemSigner(trust.metadataPublicKeys, metadata, Buffer.from(metadataSignature.trim(), 'base64'));
+ if (!trust.metadataPublicKeys.includes(proof.metadata.publicKey) || proof.metadata.publicKey === activeMetadata) fail('the staged metadata key is not pinned');
+ if (!verify(null, metadata, createPublicKey(proof.metadata.publicKey), Buffer.from(proof.metadata.signature, 'base64'))) fail('metadata signature');
+ // Sandbox: a pinned component key, not the one that signed the capsule.
+ const activeSandbox = rawSigner(component.publicKeys, manifest, Buffer.from(sandboxSignature.toString('utf8').trim(), 'base64'));
+ if (!component.publicKeys.includes(proof.sandbox.publicKey) || proof.sandbox.publicKey === activeSandbox) fail('the staged sandbox key is not pinned');
+ if (!verify(null, manifest, rawPublicKey(proof.sandbox.publicKey), Buffer.from(proof.sandbox.signature, 'base64'))) fail('sandbox signature');
+ // Sparkle: exactly the pinned next key.
+ if (typeof trust.sparkleNextPublicKey !== 'string' || proof.sparkle.publicKey !== trust.sparkleNextPublicKey || proof.sparkle.publicKey === trust.sparklePublicKey) fail('the staged Sparkle key is not pinned');
+ if (!verify(null, archive, rawPublicKey(proof.sparkle.publicKey), Buffer.from(proof.sparkle.signature, 'base64'))) fail('sparkle signature');
+ return proof;
+}
+
 /** A signed appcast must carry a valid Sparkle signature under the pinned key and be exactly the appcast of this authenticated release. */
 export function verifySparkleFeed(release, artifact, feed, trust) {
  if (typeof trust.sparklePublicKey !== 'string' || Buffer.from(trust.sparklePublicKey, 'base64').length !== 32) throw new Error('Missing installed Sparkle trust');
