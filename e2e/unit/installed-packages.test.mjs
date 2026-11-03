@@ -330,19 +330,31 @@ test('native crash and OS log decoders retain only exact owned fixture facts and
   const logs = diagnostics.parseOwnedLaunchLogs(JSON.stringify({ eventMessage: `Failed to relaunch bundle at ${identity.product} PRIVATE_SECRET OSStatus=-10810` }) + '\n' + JSON.stringify({ eventMessage: 'unrelated PRIVATE_SECRET' }), identity.product);
   assert.deepEqual(logs.records, [{ stage: 'relaunch-failed', code: -10810 }]);
   assert.doesNotMatch(JSON.stringify({ record, logs }), /PRIVATE_SECRET|owned\/private|http:|threads|eventMessage/);
-  // Sparkle's installer names what it did and did not do under its own process names; only fixed labels and numbers remain.
+  // Sparkle's installer names what it did and did not do under its own process names; only fixed labels, the format
+  // string's words and numbers remain, errors first, repeats folded, and the connection chatter last.
+  const chatter = Array.from({ length: 60 }, (_, i) => ({ timestamp: `2026-11-03 09:21:01.${String(i).padStart(3, '0')}000+0000`, process: 'Autoupdate', messageType: 'Default', eventMessage: `XPC connection ${i} to /private/PRIVATE_SECRET` }));
   const sparkle = diagnostics.parseSparkleLogs([
     { timestamp: '2026-11-03 09:21:02.123456+0000', process: 'Autoupdate', messageType: 'Default', eventMessage: 'Installation of PRIVATE_SECRET finished; terminating target' },
-    { timestamp: '2026-11-03 09:21:03.000000+0000', process: 'Autoupdate', messageType: 'Error', eventMessage: 'Failed to relaunch application at <private>: status=-600' },
+    ...chatter,
+    { timestamp: '2026-11-03 09:21:03.000000+0000', process: 'launchservicesd', messageType: 'Error', eventMessage: 'Failed to relaunch application at <private>: Error Domain=NSOSStatusErrorDomain Code=-600' },
+    { timestamp: 'later', process: identity.product, messageType: 'Info', eventMessage: 'Invalidating XPC connection PRIVATE_SECRET' },
     { timestamp: 'later', process: identity.product, messageType: 'Info', eventMessage: 'Invalidating XPC connection PRIVATE_SECRET' },
     { process: 'PRIVATE_SECRET other', messageType: 'Weird', eventMessage: 'unrelated PRIVATE_SECRET' },
   ].map(v => JSON.stringify(v)).join('\n'), identity.product);
-  assert.deepEqual(sparkle, { status: 'ok', unknownMessages: 1, records: [
-    { process: 'Autoupdate', type: 'Default', stage: 'termination', code: null, atMs: Date.parse('2026-11-03T09:21:02.123+00:00') },
-    { process: 'Autoupdate', type: 'Error', stage: 'relaunch-failed', code: -600, atMs: Date.parse('2026-11-03T09:21:03.000+00:00') },
-    { process: 'host', type: 'Info', stage: 'connection', code: null, atMs: null },
-  ] });
-  assert.doesNotMatch(JSON.stringify(sparkle), /PRIVATE_SECRET|private|eventMessage/);
+  assert.equal(sparkle.status, 'ok'); assert.equal(sparkle.unknownMessages, 1); assert.equal(sparkle.dropped, 0);
+  assert.deepEqual(sparkle.records, [
+    { process: 'Autoupdate', type: 'Default', stage: 'termination', template: 'installation of _ finished terminating target', code: null, atMs: Date.parse('2026-11-03T09:21:02.123+00:00'), count: 1 },
+    { process: 'Autoupdate', type: 'Default', stage: 'connection', template: 'xpc connection _ to _', code: null, atMs: Date.parse('2026-11-03T09:21:01.000+00:00'), count: 60 },
+    { process: 'launchservicesd', type: 'Error', stage: 'relaunch-failed', template: 'failed to relaunch application at _ error _ _', code: -600, atMs: Date.parse('2026-11-03T09:21:03.000+00:00'), count: 1 },
+    { process: 'host', type: 'Info', stage: 'connection', template: 'invalidating xpc connection _', code: null, atMs: null, count: 2 },
+  ]);
+  // Distinct chatter past the bound gives way to errors and other stages; what is kept stays in log order.
+  const flood = Array.from({ length: 60 }, (_, i) => ({ process: 'Autoupdate', messageType: 'Default', eventMessage: `connection ${'x'.repeat(i + 1)} opened` }));
+  const bounded = diagnostics.parseSparkleLogs([...flood, { process: 'Autoupdate', messageType: 'Error', eventMessage: 'Failed to relaunch' }, { process: 'Autoupdate', messageType: 'Default', eventMessage: 'Installation finished' }].map(v => JSON.stringify(v)).join('\n'), identity.product);
+  assert.equal(bounded.records.length, 48); assert.equal(bounded.dropped, 14);
+  assert.deepEqual(bounded.records.slice(-2).map(r => r.stage), ['relaunch-failed', 'installation']);
+  assert.ok(bounded.records.slice(0, 46).every(r => r.stage === 'connection'));
+  assert.doesNotMatch(JSON.stringify(sparkle), /PRIVATE_SECRET|private|eventMessage|Domain/);
 });
 
 test('entry monitor observes actual process import failure without handling it or changing its exit', async () => {
@@ -407,7 +419,7 @@ test('failure-only native collector compares actual fixture images and discards 
     assert.deepEqual(report.crashes.records, [{ pid: 123, exception: 'EXC_CRASH', namespace: 'DYLD', code: 1 }]);
     assert.deepEqual(report.logs.records, [{ stage: 'relaunch-failed', code: -10810 }]);
     assert.equal(report.sparkle.commandStatus, 0);
-    assert.deepEqual(report.sparkle.records, [{ process: 'other', type: 'other', stage: 'relaunch-failed', code: -10810, atMs: null }]);
+    assert.deepEqual(report.sparkle.records, [{ process: 'other', type: 'other', stage: 'relaunch-failed', template: 'failed to relaunch _ _ _', code: -10810, atMs: null, count: 1 }]);
     assert.equal(calls.length, 5); assert.ok(calls.every(([executable]) => ['/usr/bin/codesign', '/usr/bin/log', '/bin/ps'].includes(executable)));
     assert.ok(calls.some(([executable, args]) => executable === '/usr/bin/log' && args.at(-1).includes('org.sparkle-project.Sparkle')), 'the Sparkle processes are read by their own names');
     assert.doesNotMatch(JSON.stringify(report), /PRIVATE_SECRET|unrelated|procPath|eventMessage|Authority|dilla-launch-collector/);

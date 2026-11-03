@@ -103,11 +103,14 @@ export function parseOwnedLaunchLogs(text: string, product: string) {
   return { status: 'ok', records, unknownMessages };
 }
 
-/** Sparkle's installer tool, its installer launcher service and its progress agent, as `log show` names them. */
+/** Sparkle's installer tool, its installer launcher service and its progress agent, as `log show` names them, and the
+ *  system services that launch, police or kill them. Any other process is reported only as such. */
 const SPARKLE_PROCESSES = ['Autoupdate', 'Installer', 'Updater'];
+const SYSTEM_PROCESSES = ['launchservicesd', 'syspolicyd', 'runningboardd', 'kernel', 'lsd', 'launchd', 'xpcproxy', 'coreservicesd', 'opendirectoryd', 'taskgated', 'amfid', 'trustd', 'backgroundtaskmanagementd', 'open'];
 const SPARKLE_PREDICATE = 'subsystem == "org.sparkle-project.Sparkle" OR process == "Autoupdate" OR process == "Installer" OR process == "Updater"';
 const LOG_TYPES = ['Default', 'Info', 'Debug', 'Error', 'Fault'];
-/** What a Sparkle log line is about, as a fixed label: the line's own text never leaves the host. */
+const SPARKLE_RECORDS = 48;
+/** What a Sparkle log line is about, as a fixed label. */
 const SPARKLE_STAGES: [string, (message: string) => boolean][] = [
   ['relaunch-failed', m => /relaunch/i.test(m) && /fail|error|unable|could not|cannot|denied/i.test(m)],
   ['relaunch', m => /relaunch/i.test(m)],
@@ -121,12 +124,21 @@ const SPARKLE_STAGES: [string, (message: string) => boolean][] = [
   ['agent', m => /agent|progress/i.test(m)],
   ['error', m => /error|fail/i.test(m)],
 ];
-/** Sparkle's own lines from `log show --style ndjson`, reduced to who logged, at what level, about what, with any numeric
- *  code: the installer decides the relaunch of the updated app, and the host's exit leaves no other witness of it. */
+/** The static words of a log line's format string: every token with anything but letters (a path, an identifier, a
+ *  number, a quoted or redacted value, a domain) becomes `_`, and at most 24 tokens remain. */
+function logTemplate(message: string): string {
+  return message.trim().split(/\s+/).slice(0, 24).map(token => (/^[A-Za-z]+[.,:;!?]?$/.test(token) ? token.replace(/[.,:;!?]$/, '').toLowerCase() : '_')).join(' ');
+}
+interface SparkleRecord { process: string; type: string; stage: string; template: string; code: number | null; atMs: number | null; count: number }
+/** Sparkle's own lines from `log show --style ndjson`, reduced to who logged, at what level, about what, with the
+ *  format string's words, any numeric code and the time: the installer decides the relaunch of the updated app, and the
+ *  host's exit leaves no other witness of it. Within the bound, errors and faults are kept in preference, then every
+ *  other stage, then the connection chatter; what is kept stays in log order, and a line repeating its predecessor adds
+ *  to its count. */
 export function parseSparkleLogs(text: string, product: string) {
-  const records: { process: string; type: string; stage: string; code: number | null; atMs: number | null }[] = []; let unknownMessages = 0;
-  if (Buffer.byteLength(text) > 1048576) return { records, unknownMessages, status: 'unsafe' };
-  for (const line of text.split('\n').slice(0, 4096)) {
+  const parsed: SparkleRecord[] = []; let unknownMessages = 0;
+  if (Buffer.byteLength(text) > 4194304) return { records: [], unknownMessages, status: 'unsafe' };
+  for (const line of text.split('\n').slice(0, 8192)) {
     try {
       const v = JSON.parse(line), message = v.eventMessage;
       if (typeof message !== 'string' || message.length > 16384) continue;
@@ -134,11 +146,16 @@ export function parseSparkleLogs(text: string, product: string) {
       if (!stage) { unknownMessages++; continue; }
       const token = /\b(?:OSStatus|code|errno|status)\s*[=:]\s*(-?\d{1,10})\b/i.exec(message), code = token ? Number(token[1]) : null;
       const at = typeof v.timestamp === 'string' ? Date.parse(v.timestamp.replace(' ', 'T').replace(/(\.\d{3})\d*([+-]\d{2})(\d{2})$/, '$1$2:$3')) : NaN;
-      const process = typeof v.process === 'string' ? SPARKLE_PROCESSES.includes(v.process) ? v.process : v.process === product ? 'host' : 'other' : 'other';
-      if (records.length < 32) records.push({ process, type: LOG_TYPES.includes(v.messageType) ? v.messageType : 'other', stage, code: integer(code) ? code : null, atMs: Number.isFinite(at) ? at : null });
+      const process = typeof v.process === 'string' ? SPARKLE_PROCESSES.includes(v.process) || SYSTEM_PROCESSES.includes(v.process) ? v.process : v.process === product ? 'host' : 'other' : 'other';
+      const record = { process, type: LOG_TYPES.includes(v.messageType) ? v.messageType : 'other', stage, template: logTemplate(message), code: integer(code) ? code : null, atMs: Number.isFinite(at) ? at : null, count: 1 };
+      const previous = parsed.at(-1);
+      if (previous && previous.process === record.process && previous.type === record.type && previous.stage === record.stage && previous.template === record.template && previous.code === record.code) previous.count++;
+      else parsed.push(record);
     } catch { /* Unrecognized OS log text is never retained. */ }
   }
-  return { status: 'ok', records, unknownMessages };
+  const rank = (r: SparkleRecord) => (r.type === 'Error' || r.type === 'Fault' ? 0 : r.stage === 'connection' ? 2 : 1);
+  const kept = new Set(parsed.map((r, i) => [rank(r), i] as const).sort((a, b) => a[0] - b[0] || a[1] - b[1]).slice(0, SPARKLE_RECORDS).map(([, i]) => i));
+  return { status: 'ok', records: parsed.filter((_, i) => kept.has(i)), unknownMessages, dropped: parsed.length - kept.size };
 }
 
 async function command(executable: string, args: string[], timeout = 2000) {
@@ -187,11 +204,13 @@ export async function installedNativeLaunchDiagnostics(input: Input, dependencie
     launchImageFingerprint(input.installed), launchImageFingerprint(input.expectedExecutable),
     launchImageFingerprint(join(bundle, 'Contents/Resources/app.asar')), launchImageFingerprint(join(input.expectedApp, 'Contents/Resources/app.asar')),
     Promise.all(versions.map(version => readLaunchEntries(input.reports, version))),
-    runCommand('/usr/bin/codesign', ['--verify', '--deep', '--strict', bundle]), runCommand('/usr/bin/codesign', ['--display', '--verbose=4', bundle]),
+    runCommand('/usr/bin/codesign', ['--verify', '--deep', '--strict', bundle], 6000), runCommand('/usr/bin/codesign', ['--display', '--verbose=4', bundle]),
     runCommand('/bin/ps', ['-A', '-ww', '-o', 'pid=,uid=,stat=,comm=']),
-    runCommand('/usr/bin/log', ['show', '--style', 'ndjson', '--last', '10m', '--info', '--predicate', `eventMessage CONTAINS "${input.product}"`]),
+    // Each log read and the deep signature check took over two seconds on the macOS Intel host (run 633); all three
+    // still run in parallel within the teardown's ten-second budget.
+    runCommand('/usr/bin/log', ['show', '--style', 'ndjson', '--last', '10m', '--info', '--predicate', `eventMessage CONTAINS "${input.product}"`], 6000),
     // Sparkle's installer and agent log the install and the relaunch under their own names, redacting paths as <private>,
-    // so the product's name finds none of it. Their own lines take the longer of the two bounded reads.
+    // so the product's name finds none of it.
     runCommand('/usr/bin/log', ['show', '--style', 'ndjson', '--last', '10m', '--info', '--predicate', SPARKLE_PREDICATE], 6000),
     crashReports(input, input.started, dependencies.crashDirectory ?? join(homedir(), 'Library/Logs/DiagnosticReports')), boundedRegular(join(bundle, 'Contents/Info.plist'), 131072),
   ]);
