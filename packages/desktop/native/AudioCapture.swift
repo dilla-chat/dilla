@@ -25,7 +25,8 @@ func identity(_ pid: pid_t) -> String? {
     return "\(info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec):\(pid)"
 }
 final class AudioOutput: NSObject, SCStreamOutput, SCStreamDelegate {
-    func stream(_ stream: SCStream, didStopWithError error: Error) { fputs("application capture ended\n", stderr); exit(1) }
+    // The stop reason is the one fact a failed capture leaves behind: the system's own wording, no paths.
+    func stream(_ stream: SCStream, didStopWithError error: Error) { fputs("application capture ended: \(error.localizedDescription)\n", stderr); exit(1) }
     func stream(_ stream: SCStream, didOutputSampleBuffer sample: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .audio, sample.isValid, let description = sample.formatDescription,
               let format = CMAudioFormatDescriptionGetStreamBasicDescription(description) else { return }

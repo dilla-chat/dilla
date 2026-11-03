@@ -265,10 +265,16 @@ test('DM: a blocked DM call leaves the DM composer enabled', async ({ peerBrowse
     await stripButton(alice.page, 'call.start').click();
     await connected(alice.page);
     await peer.waitForCallMembers(dm.channel_id, (d) => d.includes(a.device), 'lists alice');
-    await peer.forgeDevice();
-    await peer.callJoin(dm.channel_id, 'second');
-    await expect(notice(alice.page, copy('voice.blockedLeft'))).toBeVisible({ timeout: WAIT });
-    await expect(dock(alice.page)).toHaveCount(0, { timeout: WAIT });
+    // The forged device's join makes alice's client leave its own call, as in (b): that leave is the one SDK
+    // disconnect whose aborted signal read LiveKit may still log when the room's deletion races it.
+    await peerBrowser.guard.expectSecurityLeave(alice.context, async () => {
+      await peer.forgeDevice();
+      await peer.callJoin(dm.channel_id, 'second');
+      await expect(notice(alice.page, copy('voice.blockedLeft'))).toBeVisible({ timeout: WAIT });
+      await expect(dock(alice.page)).toHaveCount(0, { timeout: WAIT });
+      await expect.poll(() => mediaWorkers(alice.page).length, POLL).toBe(0);
+      await peer.waitForCallMembers(dm.channel_id, (d) => !d.includes(a.device), 'drops alice');
+    });
     // The call group's block is the call's only: the DM's text group is unaffected and so is its composer.
     await expect(dmComposer(alice.page)).toBeEnabled();
     await expect(dmComposer(alice.page)).not.toHaveAttribute('aria-disabled', 'true');
