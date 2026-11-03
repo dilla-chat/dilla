@@ -330,6 +330,19 @@ test('native crash and OS log decoders retain only exact owned fixture facts and
   const logs = diagnostics.parseOwnedLaunchLogs(JSON.stringify({ eventMessage: `Failed to relaunch bundle at ${identity.product} PRIVATE_SECRET OSStatus=-10810` }) + '\n' + JSON.stringify({ eventMessage: 'unrelated PRIVATE_SECRET' }), identity.product);
   assert.deepEqual(logs.records, [{ stage: 'relaunch-failed', code: -10810 }]);
   assert.doesNotMatch(JSON.stringify({ record, logs }), /PRIVATE_SECRET|owned\/private|http:|threads|eventMessage/);
+  // Sparkle's installer names what it did and did not do under its own process names; only fixed labels and numbers remain.
+  const sparkle = diagnostics.parseSparkleLogs([
+    { timestamp: '2026-11-03 09:21:02.123456+0000', process: 'Autoupdate', messageType: 'Default', eventMessage: 'Installation of PRIVATE_SECRET finished; terminating target' },
+    { timestamp: '2026-11-03 09:21:03.000000+0000', process: 'Autoupdate', messageType: 'Error', eventMessage: 'Failed to relaunch application at <private>: status=-600' },
+    { timestamp: 'later', process: identity.product, messageType: 'Info', eventMessage: 'Invalidating XPC connection PRIVATE_SECRET' },
+    { process: 'PRIVATE_SECRET other', messageType: 'Weird', eventMessage: 'unrelated PRIVATE_SECRET' },
+  ].map(v => JSON.stringify(v)).join('\n'), identity.product);
+  assert.deepEqual(sparkle, { status: 'ok', unknownMessages: 1, records: [
+    { process: 'Autoupdate', type: 'Default', stage: 'termination', code: null, atMs: Date.parse('2026-11-03T09:21:02.123+00:00') },
+    { process: 'Autoupdate', type: 'Error', stage: 'relaunch-failed', code: -600, atMs: Date.parse('2026-11-03T09:21:03.000+00:00') },
+    { process: 'host', type: 'Info', stage: 'connection', code: null, atMs: null },
+  ] });
+  assert.doesNotMatch(JSON.stringify(sparkle), /PRIVATE_SECRET|private|eventMessage/);
 });
 
 test('entry monitor observes actual process import failure without handling it or changing its exit', async () => {
@@ -393,7 +406,10 @@ test('failure-only native collector compares actual fixture images and discards 
     assert.equal(report.codeSignature.adHoc, true); assert.equal(report.codeSignature.cdHash, 'ab'.repeat(20));
     assert.deepEqual(report.crashes.records, [{ pid: 123, exception: 'EXC_CRASH', namespace: 'DYLD', code: 1 }]);
     assert.deepEqual(report.logs.records, [{ stage: 'relaunch-failed', code: -10810 }]);
-    assert.equal(calls.length, 4); assert.ok(calls.every(([executable]) => ['/usr/bin/codesign', '/usr/bin/log', '/bin/ps'].includes(executable)));
+    assert.equal(report.sparkle.commandStatus, 0);
+    assert.deepEqual(report.sparkle.records, [{ process: 'other', type: 'other', stage: 'relaunch-failed', code: -10810, atMs: null }]);
+    assert.equal(calls.length, 5); assert.ok(calls.every(([executable]) => ['/usr/bin/codesign', '/usr/bin/log', '/bin/ps'].includes(executable)));
+    assert.ok(calls.some(([executable, args]) => executable === '/usr/bin/log' && args.at(-1).includes('org.sparkle-project.Sparkle')), 'the Sparkle processes are read by their own names');
     assert.doesNotMatch(JSON.stringify(report), /PRIVATE_SECRET|unrelated|procPath|eventMessage|Authority|dilla-launch-collector/);
     await writeFile(installed, 'different actual executable');
     assert.equal((await diagnostics.installedNativeLaunchDiagnostics(input, dependencies)).executableMatches, false);

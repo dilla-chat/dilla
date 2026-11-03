@@ -103,9 +103,47 @@ export function parseOwnedLaunchLogs(text: string, product: string) {
   return { status: 'ok', records, unknownMessages };
 }
 
-async function command(executable: string, args: string[]) {
+/** Sparkle's installer tool, its installer launcher service and its progress agent, as `log show` names them. */
+const SPARKLE_PROCESSES = ['Autoupdate', 'Installer', 'Updater'];
+const SPARKLE_PREDICATE = 'subsystem == "org.sparkle-project.Sparkle" OR process == "Autoupdate" OR process == "Installer" OR process == "Updater"';
+const LOG_TYPES = ['Default', 'Info', 'Debug', 'Error', 'Fault'];
+/** What a Sparkle log line is about, as a fixed label: the line's own text never leaves the host. */
+const SPARKLE_STAGES: [string, (message: string) => boolean][] = [
+  ['relaunch-failed', m => /relaunch/i.test(m) && /fail|error|unable|could not|cannot|denied/i.test(m)],
+  ['relaunch', m => /relaunch/i.test(m)],
+  ['launch-failed', m => /launch|open/i.test(m) && /fail|error|unable|could not|cannot|denied/i.test(m)],
+  ['termination', m => /terminat|quit/i.test(m)],
+  ['installation', m => /install/i.test(m)],
+  ['extraction', m => /extract|unarchiv|unzip/i.test(m)],
+  ['quarantine', m => /quarantine|gatekeeper|xattr/i.test(m)],
+  ['signature', m => /sign|codesign|eddsa/i.test(m)],
+  ['connection', m => /xpc|connection|invalidat|mach|port/i.test(m)],
+  ['agent', m => /agent|progress/i.test(m)],
+  ['error', m => /error|fail/i.test(m)],
+];
+/** Sparkle's own lines from `log show --style ndjson`, reduced to who logged, at what level, about what, with any numeric
+ *  code: the installer decides the relaunch of the updated app, and the host's exit leaves no other witness of it. */
+export function parseSparkleLogs(text: string, product: string) {
+  const records: { process: string; type: string; stage: string; code: number | null; atMs: number | null }[] = []; let unknownMessages = 0;
+  if (Buffer.byteLength(text) > 1048576) return { records, unknownMessages, status: 'unsafe' };
+  for (const line of text.split('\n').slice(0, 4096)) {
+    try {
+      const v = JSON.parse(line), message = v.eventMessage;
+      if (typeof message !== 'string' || message.length > 16384) continue;
+      const stage = SPARKLE_STAGES.find(([, matches]) => matches(message))?.[0];
+      if (!stage) { unknownMessages++; continue; }
+      const token = /\b(?:OSStatus|code|errno|status)\s*[=:]\s*(-?\d{1,10})\b/i.exec(message), code = token ? Number(token[1]) : null;
+      const at = typeof v.timestamp === 'string' ? Date.parse(v.timestamp.replace(' ', 'T').replace(/(\.\d{3})\d*([+-]\d{2})(\d{2})$/, '$1$2:$3')) : NaN;
+      const process = typeof v.process === 'string' ? SPARKLE_PROCESSES.includes(v.process) ? v.process : v.process === product ? 'host' : 'other' : 'other';
+      if (records.length < 32) records.push({ process, type: LOG_TYPES.includes(v.messageType) ? v.messageType : 'other', stage, code: integer(code) ? code : null, atMs: Number.isFinite(at) ? at : null });
+    } catch { /* Unrecognized OS log text is never retained. */ }
+  }
+  return { status: 'ok', records, unknownMessages };
+}
+
+async function command(executable: string, args: string[], timeout = 2000) {
   return new Promise<{ status: number | null; stdout: string; stderr: string }>(resolve => {
-    execFile(executable, args, { timeout: 2000, killSignal: 'SIGKILL', maxBuffer: 1048576, encoding: 'utf8' }, (error, stdout, stderr) => {
+    execFile(executable, args, { timeout, killSignal: 'SIGKILL', maxBuffer: 1048576, encoding: 'utf8' }, (error, stdout, stderr) => {
       resolve({ status: error ? typeof error.code === 'number' ? error.code : null : 0, stdout, stderr });
     });
   });
@@ -145,13 +183,16 @@ export async function installedNativeLaunchDiagnostics(input: Input, dependencie
     || basename(bundle) !== input.product + '.app' || dirname(input.installed) !== join(bundle, 'Contents/MacOS')
     || dirname(input.expectedExecutable) !== join(input.expectedApp, 'Contents/MacOS') || !Number.isSafeInteger(input.started) || input.started <= 0) return { format: 1, status: 'unsafe' };
   const runCommand = dependencies.runCommand ?? command;
-  const [installed, expected, installedAsar, expectedAsar, entries, verify, signature, processes, logs, crashes, plist] = await Promise.all([
+  const [installed, expected, installedAsar, expectedAsar, entries, verify, signature, processes, logs, sparkle, crashes, plist] = await Promise.all([
     launchImageFingerprint(input.installed), launchImageFingerprint(input.expectedExecutable),
     launchImageFingerprint(join(bundle, 'Contents/Resources/app.asar')), launchImageFingerprint(join(input.expectedApp, 'Contents/Resources/app.asar')),
     Promise.all(versions.map(version => readLaunchEntries(input.reports, version))),
     runCommand('/usr/bin/codesign', ['--verify', '--deep', '--strict', bundle]), runCommand('/usr/bin/codesign', ['--display', '--verbose=4', bundle]),
     runCommand('/bin/ps', ['-A', '-ww', '-o', 'pid=,uid=,stat=,comm=']),
     runCommand('/usr/bin/log', ['show', '--style', 'ndjson', '--last', '10m', '--info', '--predicate', `eventMessage CONTAINS "${input.product}"`]),
+    // Sparkle's installer and agent log the install and the relaunch under their own names, redacting paths as <private>,
+    // so the product's name finds none of it. Their own lines take the longer of the two bounded reads.
+    runCommand('/usr/bin/log', ['show', '--style', 'ndjson', '--last', '10m', '--info', '--predicate', SPARKLE_PREDICATE], 6000),
     crashReports(input, input.started, dependencies.crashDirectory ?? join(homedir(), 'Library/Logs/DiagnosticReports')), boundedRegular(join(bundle, 'Contents/Info.plist'), 131072),
   ]);
   const ownedProcesses: { pid: number; state: string }[] = [];
@@ -169,5 +210,6 @@ export async function installedNativeLaunchDiagnostics(input: Input, dependencie
     plist: { status: plist.status, version: versions.includes(plistVersion ?? '') ? plistVersion : null, executableMatches: declaredExecutable === basename(input.expectedExecutable) },
     entries, codeSignature: { verifyStatus: verify.status, displayStatus: signature.status, adHoc: /^Signature=adhoc$/mi.test(signature.stderr), cdHash },
     processes: { status: processes.status, records: ownedProcesses }, crashes,
-    logs: { commandStatus: logs.status, ...parseOwnedLaunchLogs(logs.stdout, input.product) } };
+    logs: { commandStatus: logs.status, ...parseOwnedLaunchLogs(logs.stdout, input.product) },
+    sparkle: { commandStatus: sparkle.status, ...parseSparkleLogs(sparkle.stdout, input.product) } };
 }
