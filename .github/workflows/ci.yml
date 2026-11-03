@@ -648,7 +648,14 @@ jobs:
     needs: [changes, web-build, rust-wasi, linux-sandbox-foundation]
     if: needs.changes.outputs.e2e != 'false'
     uses: ./.github/workflows/desktop.yml
-    secrets: inherit # The macOS Developer ID certificate and notarization key, read by its native job alone.
+    # The macOS Developer ID certificate and notarization key, read by its native job alone. Named, never
+    # inherited (scripts/check-ci-workflow.mjs forbids inheriting), so no other secret reaches desktop.yml.
+    secrets:
+      CSC_LINK: ${{ secrets.CSC_LINK }}
+      CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
   core-integration:
     needs: [changes, rust-native, rust-wasi, web-build]
     if: needs.changes.outputs.e2e != 'false'

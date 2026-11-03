@@ -1459,9 +1459,270 @@ run: node packages/desktop/scripts/test-linux-sandbox-package.mjs packages/deskt
   return problems;
 }
 
+/*
+ * The desktop release trampoline (plan 2026-11-03, Task 10; job split from implementation batch B).
+ * Both workflows are parsed, never text-matched alone, so flow style, mappings, expressions and
+ * block scalars cannot hide anything. desktop-release-request.yml is an unprivileged echo on a
+ * desktop-v* tag; desktop-release.yml is the main-only workflow_run that holds the keys:
+ *   gate -> collect (keyless; the only job that touches raw CI artifacts) -> sign (environment
+ *   desktop-release, the six secrets in one step) -> publish (contents: write, no keys)
+ *   -> verify-published -> feed (GitHub Pages).
+ */
+export const DESKTOP_RELEASE_SECRETS = Object.freeze(['DESKTOP_METADATA_KEY_A', 'DESKTOP_SPARKLE_KEY_A', 'DESKTOP_SANDBOX_KEY_A', 'DESKTOP_METADATA_KEY_B', 'DESKTOP_SPARKLE_KEY_B', 'DESKTOP_SANDBOX_KEY_B']);
+export const DESKTOP_RELEASE_ACTIONS = Object.freeze([
+  'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1', // v7
+  'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1', // v7
+  'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333', // v8
+  'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9', // v7
+  'actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9', // v5.0.0
+  'actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346', // v5.0.1
+]);
+export const DESKTOP_RELEASE_IF = "github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success'";
+const DR_REQUEST_NAME = 'desktop release request';
+const DR_SIGN_STEP = 'Sign (the only step that receives secrets)';
+const DR_JOBS = ['gate', 'collect', 'sign', 'publish', 'verify-published', 'feed'];
+const DR_PERMISSIONS = {
+  gate: { contents: 'read', actions: 'read' },
+  collect: { contents: 'read', actions: 'read', 'pull-requests': 'read' },
+  sign: { contents: 'read', 'pull-requests': 'read' },
+  publish: { contents: 'write', actions: 'read' },
+  'verify-published': { contents: 'read' },
+  feed: { contents: 'read', pages: 'write', 'id-token': 'write' },
+};
+const DR_NEEDS = { collect: ['gate'], sign: ['gate', 'collect'], publish: ['gate', 'collect', 'sign'], 'verify-published': ['gate', 'sign', 'publish'], feed: ['gate', 'sign', 'publish', 'verify-published'] };
+const DR_ENVIRONMENTS = { sign: 'desktop-release', feed: 'github-pages' };
+const DR_JOB_KEYS = new Set(['if', 'needs', 'runs-on', 'timeout-minutes', 'environment', 'permissions', 'outputs', 'steps']);
+const DR_STEP_KEYS = new Set(['name', 'id', 'uses', 'with', 'run', 'env']);
+const S = 'node packages/desktop/scripts/';
+/** Every job's exact step sequence, by step kind (see drKind). */
+const DR_ORDER = {
+  gate: ['checkout', 'setup-node', 'release-gate', 'upload:desktop-release-gate'],
+  collect: ['checkout', 'setup-node', 'download:desktop-release-gate', 'download:ci', 'release-download-check', 'release-assemble collect', 'release-notes generate',
+    'release-assemble assemble', 'release-candidate digest', 'upload:desktop-release-candidate', 'release-candidate record-id'],
+  sign: ['checkout', 'setup-node', 'download:candidate', 'release-candidate verify-and-rederive', 'release-sign-job', 'candidate-digest write', 'upload:desktop-signed-release'],
+  publish: ['checkout', 'setup-node', 'download:desktop-signed-release', 'candidate-digest verify', 'download:candidate', 'release-candidate verify', 'publish-release plan', 'publish-release publish'],
+  'verify-published': ['checkout', 'setup-node', 'verify-published'],
+  feed: ['checkout', 'setup-node', 'download:desktop-signed-release', 'candidate-digest verify', 'pages-feed build', 'upload-pages', 'deploy-pages', 'pages-feed verify'],
+};
+/** Exact run commands. */
+const DR_RUNS = {
+  'release-gate': `${S}release-gate.mjs "$RUNNER_TEMP/gate"`,
+  'release-download-check': `${S}release-download-check.mjs "$RUNNER_TEMP/gate" "$RUNNER_TEMP/candidate"`,
+  'release-assemble collect': `${S}release-assemble.mjs collect "$VERSION" "$RUNNER_TEMP/downloaded" "$RUNNER_TEMP/candidate" "$RUNNER_TEMP/gate"`,
+  'release-notes generate': `${S}release-notes.mjs generate "$VERSION" "$SHA" "$RUNNER_TEMP/candidate/release-notes.md"`,
+  'release-assemble assemble': `${S}release-assemble.mjs assemble "$VERSION" "$RUNNER_TEMP/candidate" "$TREE"`,
+  'release-candidate digest': `${S}release-candidate.mjs digest "$RUNNER_TEMP/candidate" "$VERSION"`,
+  'release-candidate record-id': `${S}release-candidate.mjs record-id`,
+  'release-candidate verify-and-rederive': `${S}release-candidate.mjs verify-and-rederive "$RUNNER_TEMP/candidate"`,
+  'release-sign-job': `${S}release-sign-job.mjs "$VERSION" "$RUNNER_TEMP/candidate" "$RUNNER_TEMP/signed"`,
+  'candidate-digest write': `${S}candidate-digest.mjs write "$RUNNER_TEMP/signed" "$CHANNEL" "$VERSION" "$STAGED"`,
+  'candidate-digest verify': `${S}candidate-digest.mjs verify "$RUNNER_TEMP/signed" "$CHANNEL" "$VERSION" "$STAGED" "$DIGEST"`,
+  'release-candidate verify': `${S}release-candidate.mjs verify "$RUNNER_TEMP/candidate"`,
+  'publish-release plan': `${S}publish-release.mjs plan`,
+  'publish-release publish': `${S}publish-release.mjs publish`,
+  'verify-published': `${S}verify-published.mjs`,
+  'pages-feed build': `${S}pages-feed.mjs build "$RUNNER_TEMP/signed" "$CHANNEL" "$VERSION" "$RUNNER_TEMP/site"`,
+  'pages-feed verify': `${S}pages-feed.mjs verify "$RUNNER_TEMP/signed" "$CHANNEL"`,
+};
+const DR_UPLOAD = (name, dir) => ({ name, path: `\${{ runner.temp }}/${dir}`, 'if-no-files-found': 'error', 'retention-days': 3 });
+/** Exact `with` of every action step, by job and kind. */
+const DR_WITH = {
+  checkout: job => ['gate', 'sign', 'publish'].includes(job) ? { 'fetch-depth': 0, 'persist-credentials': false } : { 'persist-credentials': false },
+  'setup-node': () => ({ 'node-version-file': '.nvmrc', 'package-manager-cache': false }),
+  'download:desktop-release-gate': () => ({ name: 'desktop-release-gate', path: '${{ runner.temp }}/gate', 'digest-mismatch': 'error' }),
+  'download:desktop-signed-release': () => ({ name: 'desktop-signed-release', path: '${{ runner.temp }}/signed', 'digest-mismatch': 'error' }),
+  'download:ci': () => ({ 'github-token': '${{ github.token }}', 'run-id': '${{ needs.gate.outputs.run }}', repository: 'dilla-chat/dilla',
+    'artifact-ids': '${{ needs.gate.outputs.artifact_ids }}', path: '${{ runner.temp }}/downloaded', 'digest-mismatch': 'error' }),
+  'download:candidate': () => ({ 'artifact-ids': '${{ needs.collect.outputs.candidate_id }}', path: '${{ runner.temp }}/candidate', 'digest-mismatch': 'error' }),
+  'upload:desktop-release-gate': () => DR_UPLOAD('desktop-release-gate', 'gate'),
+  'upload:desktop-release-candidate': () => DR_UPLOAD('desktop-release-candidate', 'candidate'),
+  'upload:desktop-signed-release': () => DR_UPLOAD('desktop-signed-release', 'signed'),
+  'upload-pages': () => ({ path: '${{ runner.temp }}/site' }),
+  'deploy-pages': () => undefined,
+};
+const DR_ACTION_KINDS = { checkout: 'checkout', 'setup-node': 'setup-node', 'upload-pages-artifact': 'upload-pages', 'deploy-pages': 'deploy-pages' };
+/** Exact env of the steps that see the event hints, the keys or the candidate before signing. */
+const DR_ENV = {
+  'gate release-gate': { GH_TOKEN: '${{ github.token }}', HINT_TAG: '${{ github.event.workflow_run.head_branch }}', HINT_RUN: '${{ github.event.workflow_run.id }}' },
+  'sign release-candidate verify-and-rederive': { GH_TOKEN: '${{ github.token }}', VERSION: '${{ needs.gate.outputs.version }}', SHA: '${{ needs.gate.outputs.sha }}',
+    TREE: '${{ needs.gate.outputs.tree }}', RUN: '${{ needs.gate.outputs.run }}', RUN_RECORD: '${{ needs.gate.outputs.run_record }}', JOBS_RECORD: '${{ needs.gate.outputs.jobs_record }}',
+    PREVIOUS: '${{ needs.gate.outputs.previous }}', CANDIDATE_DIGEST: '${{ needs.collect.outputs.candidate_digest }}', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' },
+  'sign release-sign-job': { VERSION: '${{ needs.gate.outputs.version }}', ...Object.fromEntries(DESKTOP_RELEASE_SECRETS.map(name => [name, `\${{ secrets.${name} }}`])) },
+};
+
+function drKind(step) {
+  if (typeof step?.uses === 'string') {
+    const action = /^actions\/([a-z-]+)@/.exec(step.uses)?.[1];
+    if (action === 'download-artifact') {
+      const w = step.with ?? {};
+      return w['run-id'] !== undefined || w['github-token'] !== undefined || w.repository !== undefined ? 'download:ci' : w.name !== undefined ? `download:${w.name}` : 'download:candidate';
+    }
+    if (action === 'upload-artifact') return `upload:${step.with?.name}`;
+    return DR_ACTION_KINDS[action] ?? `action:${step.uses}`;
+  }
+  const match = typeof step?.run === 'string' ? /^node packages\/desktop\/scripts\/([a-z-]+)\.mjs(?: ([a-z-]+))?(?:\s|$)/.exec(step.run) : null;
+  return match ? match[1] + (match[2] ? ' ' + match[2] : '') : `run:${step?.run}`;
+}
+/** Every string in a parsed document, with its path. */
+function drStrings(value, path = [], out = []) {
+  if (typeof value === 'string') out.push([path, value]);
+  else if (Array.isArray(value)) value.forEach((item, i) => drStrings(item, [...path, i], out));
+  else if (value && typeof value === 'object') for (const [key, item] of Object.entries(value)) { out.push([[...path, `key:${key}`], key]); drStrings(item, [...path, key], out); }
+  return out;
+}
+const drSame = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const drNeeds = value => typeof value === 'string' ? [value] : value;
+
+function checkScriptImports(root, file, problems) {
+  let text;
+  try { text = readFileSync(join(root, file), 'utf8'); } catch { problems.push(`${file}: missing`); return null; }
+  for (const match of text.matchAll(/(?:^|[\s;])(?:import|export)\s+(?:[^'";]*?\sfrom\s+)?(['"])([^'"]+)\1|import\(\s*([^)]*)\)/g)) {
+    const specifier = match[2] ?? match[3];
+    const literal = match[2] !== undefined ? specifier : /^(['"])([^'"]+)\1$/.exec(specifier.trim())?.[2];
+    if (literal === undefined) { problems.push(`${file}: dynamic import of a computed specifier`); continue; }
+    if (!literal.startsWith('node:') && !literal.startsWith('./') && !literal.startsWith('../')) problems.push(`${file}: imports ${literal}; only node: modules and repository files are allowed`);
+  }
+  return text;
+}
+
+export function checkDesktopReleaseWorkflow(root) {
+  const problems = [];
+  const directory = join(root, '.github', 'workflows');
+  const files = {};
+  for (const name of readdirSync(directory).filter(name => /\.ya?ml$/.test(name)).sort()) {
+    const text = readFileSync(join(directory, name), 'utf8');
+    let doc;
+    try { doc = yaml.load(text); } catch (error) { problems.push(`${name}: invalid YAML (${error.message.split('\n')[0]})`); continue; }
+    files[name] = { text, doc };
+  }
+  const request = files['desktop-release-request.yml'], keyed = files['desktop-release.yml'];
+  if (!request) problems.push('desktop-release-request.yml: missing');
+  if (!keyed) problems.push('desktop-release.yml: missing');
+
+  // Rules that hold in every workflow: the release environment and secrets are confined.
+  for (const [name, { text, doc }] of Object.entries(files)) {
+    if (/secrets\s*\[/.test(text)) problems.push(`${name}: secrets[...] indexing is forbidden`);
+    if (/secrets\s*:\s*inherit/.test(text)) problems.push(`${name}: secrets: inherit is forbidden; pass named secrets`);
+    if (/toJSON\(\s*secrets\s*\)/i.test(text)) problems.push(`${name}: toJSON(secrets) is forbidden`);
+    for (const [job, body] of Object.entries(doc?.jobs ?? {})) {
+      if (!body || typeof body !== 'object' || !Object.hasOwn(body, 'environment')) continue;
+      const value = body.environment;
+      if (typeof value !== 'string') { problems.push(`${name}: ${job}: environment must be a plain name, not a mapping`); continue; }
+      if (value.includes('${{')) problems.push(`${name}: ${job}: environment must not be an expression`);
+      const allowed = name === 'desktop-release.yml' ? DR_ENVIRONMENTS[job] : undefined;
+      if (allowed !== undefined ? value !== allowed : (name === 'desktop-release.yml' || /desktop-release/.test(value))) problems.push(`${name}: ${job}: environment ${value} is not allowed here; desktop-release belongs to the sign job of desktop-release.yml only`);
+    }
+    if (name === 'desktop-release.yml' || name === 'desktop-release-request.yml') continue;
+    if (/DESKTOP_(METADATA|SPARKLE|SANDBOX)_KEY/.test(text)) problems.push(`${name}: names a desktop signing secret`);
+    if (/release-sign-job\.mjs/.test(text)) problems.push(`${name}: runs the desktop sign job script`);
+    if (/desktop-release\b(?![-.])/.test(text)) problems.push(`${name}: names the desktop-release environment`);
+    const upstream = doc?.on?.workflow_run?.workflows;
+    if ([].concat(upstream ?? []).some(item => item === DR_REQUEST_NAME || item === 'desktop release')) problems.push(`${name}: chains on the desktop release workflows`);
+  }
+
+  if (request) {
+    const { doc, text } = request, r = 'desktop-release-request.yml';
+    if (!drSame(Object.keys(doc ?? {}), ['name', 'on', 'permissions', 'jobs'])) problems.push(`${r}: top level must be exactly name, on, permissions and jobs`);
+    if (doc?.name !== DR_REQUEST_NAME) problems.push(`${r}: name must be "${DR_REQUEST_NAME}"`);
+    if (!drSame(doc?.on, { push: { tags: ['desktop-v*'] } })) problems.push(`${r}: must trigger only on push of desktop-v* tags`);
+    if (!drSame(doc?.permissions, { contents: 'read' })) problems.push(`${r}: permissions must be exactly contents: read`);
+    const jobs = doc?.jobs ?? {}, job = jobs.request;
+    if (!drSame(Object.keys(jobs), ['request'])) problems.push(`${r}: must have exactly one job, request`);
+    if (!job || Object.keys(job).some(key => !['runs-on', 'timeout-minutes', 'steps'].includes(key))) problems.push(`${r}: request may carry only runs-on, timeout-minutes and steps`);
+    if (job?.['runs-on'] !== 'ubuntu-24.04') problems.push(`${r}: request must run on ubuntu-24.04`);
+    if (!drSame(job?.steps, [{ run: 'echo "Desktop release requested; the privileged workflow re-derives everything from main."' }])) problems.push(`${r}: request must only echo (no uses, no env, no expressions)`);
+    if (/secrets|\$\{\{/.test(text)) problems.push(`${r}: must not reference secrets or expressions`);
+    if (keyed && keyed.doc?.on?.workflow_run?.workflows?.[0] !== doc?.name) problems.push('desktop-release.yml: workflow_run must name the request workflow exactly');
+  }
+
+  if (keyed) {
+    const { doc, text } = keyed, k = 'desktop-release.yml';
+    if (!drSame(Object.keys(doc ?? {}), ['name', 'on', 'concurrency', 'permissions', 'jobs'])) problems.push(`${k}: top level must be exactly name, on, concurrency, permissions and jobs (no env or defaults)`);
+    if (doc?.name !== 'desktop release') problems.push(`${k}: name must be "desktop release"`);
+    if (!drSame(doc?.on, { workflow_run: { workflows: [DR_REQUEST_NAME], types: ['completed'] } })) problems.push(`${k}: must trigger only on workflow_run of "${DR_REQUEST_NAME}", types [completed], no branches`);
+    if (!drSame(doc?.concurrency, { group: 'desktop-release', 'cancel-in-progress': false })) problems.push(`${k}: concurrency must be group desktop-release without cancel-in-progress`);
+    if (!drSame(doc?.permissions, {})) problems.push(`${k}: top-level permissions must be {}`);
+    if (/always\(\)|\|\|\s*true|continue-on-error|cancelled\(\)|failure\(\)/.test(text)) problems.push(`${k}: no always(), || true, continue-on-error, cancelled() or failure()`);
+    if (/NODE_OPTIONS|NODE_PATH/.test(text) || /NODE_OPTIONS|NODE_PATH/.test(request?.text ?? '')) problems.push(`${k}: NODE_OPTIONS and NODE_PATH are forbidden in the release workflows`);
+    const jobs = doc?.jobs ?? {};
+    if (!drSame(Object.keys(jobs), DR_JOBS)) problems.push(`${k}: jobs must be exactly ${DR_JOBS.join(', ')}`);
+    let signSteps = 0;
+    for (const name of DR_JOBS) {
+      const job = jobs[name];
+      if (!job || typeof job !== 'object') continue;
+      const extra = Object.keys(job).filter(key => !DR_JOB_KEYS.has(key));
+      if (extra.length) problems.push(`${k}: ${name}: forbidden job keys ${extra.join(', ')} (defaults, container, services, env, continue-on-error...)`);
+      if (name === 'gate' ? job.if !== DESKTOP_RELEASE_IF : Object.hasOwn(job, 'if')) problems.push(`${k}: ${name}: ${name === 'gate' ? `if must be exactly ${DESKTOP_RELEASE_IF}` : 'no if besides the gate\'s'}`);
+      if (!drSame(drNeeds(job.needs), DR_NEEDS[name])) problems.push(`${k}: ${name}: needs must be ${JSON.stringify(DR_NEEDS[name] ?? null)}`);
+      if (job['runs-on'] !== 'ubuntu-24.04') problems.push(`${k}: ${name}: must run on ubuntu-24.04`);
+      if (!Number.isInteger(job['timeout-minutes'])) problems.push(`${k}: ${name}: needs a timeout-minutes`);
+      if (!drSame(job.permissions, DR_PERMISSIONS[name])) problems.push(`${k}: ${name}: permissions must be exactly ${JSON.stringify(DR_PERMISSIONS[name])}`);
+      if (DR_ENVIRONMENTS[name] !== undefined && job.environment !== DR_ENVIRONMENTS[name]) problems.push(`${k}: ${name}: environment must be ${DR_ENVIRONMENTS[name]}`);
+      if (DR_ENVIRONMENTS[name] === undefined && Object.hasOwn(job, 'environment')) problems.push(`${k}: ${name}: must not have an environment`);
+      const steps = Array.isArray(job.steps) ? job.steps : [];
+      const kinds = steps.map(drKind);
+      if (!drSame(kinds, DR_ORDER[name])) problems.push(`${k}: ${name}: steps must be exactly, in order: ${DR_ORDER[name].join(' -> ')} (found ${kinds.join(' -> ')})`);
+      steps.forEach((step, i) => {
+        const where = `${k}: ${name}: step ${i + 1}`;
+        const extraStep = Object.keys(step ?? {}).filter(key => !DR_STEP_KEYS.has(key));
+        if (extraStep.length) problems.push(`${where}: forbidden step keys ${extraStep.join(', ')} (if, shell, working-directory...)`);
+        const kind = kinds[i];
+        if (typeof step?.uses === 'string') {
+          if (!DESKTOP_RELEASE_ACTIONS.includes(step.uses)) problems.push(`${where}: ${step.uses} is not one of the pinned first-party actions`);
+          const expected = DR_WITH[kind]?.(name);
+          if (!drSame(step.with, expected)) problems.push(`${where}: ${kind} must use exactly ${JSON.stringify(expected)}`);
+          if (step.run !== undefined || step.env !== undefined) problems.push(`${where}: an action step carries no run or env`);
+        } else {
+          if (typeof step?.run !== 'string') { problems.push(`${where}: must be a run or uses step`); return; }
+          if (step.run.includes('${{')) problems.push(`${where}: no \${{ }} inside run; pass values through env`);
+          if (DR_RUNS[kind] === undefined || step.run !== DR_RUNS[kind]) problems.push(`${where}: run must be exactly a pinned release command`);
+          if (/\b(npm|npx|git)\b/.test(step.run)) problems.push(`${where}: no npm, npx or git in the release workflow`);
+          for (const key of Object.keys(step.env ?? {})) if (/^(NODE_OPTIONS|NODE_PATH)$/.test(key)) problems.push(`${where}: ${key} is forbidden`);
+        }
+        const pinnedEnv = DR_ENV[`${name} ${kind}`];
+        if (pinnedEnv !== undefined && !drSame(step.env, pinnedEnv)) problems.push(`${where}: env must be exactly ${Object.keys(pinnedEnv).join(', ')}`);
+        if (step?.name === DR_SIGN_STEP) { signSteps++; if (name !== 'sign' || kind !== 'release-sign-job') problems.push(`${where}: only the sign job's signing step carries the Sign name`); }
+        if (kind === 'release-sign-job' && step?.name !== DR_SIGN_STEP) problems.push(`${where}: the signing step must be named "${DR_SIGN_STEP}"`);
+      });
+    }
+    if (signSteps !== 1) problems.push(`${k}: exactly one "${DR_SIGN_STEP}" step`);
+    // Secrets: the six names, once each, only in the Sign step's env; the event payload only in the gate.
+    const secretRefs = [...text.matchAll(/secrets\.([A-Za-z0-9_]+)/g)].map(match => match[1]).sort();
+    if (!drSame(secretRefs, [...DESKTOP_RELEASE_SECRETS].sort())) problems.push(`${k}: the six DESKTOP_* secrets must each be referenced exactly once`);
+    const signIndex = (jobs.sign?.steps ?? []).findIndex(step => step?.name === DR_SIGN_STEP);
+    const gateIndex = (jobs.gate?.steps ?? []).findIndex(step => drKind(step) === 'release-gate');
+    for (const [path, value] of drStrings(doc)) {
+      const at = path.join('.');
+      if (/secrets\b/.test(value) && /secrets\s*[.[(]|\(\s*secrets/.test(value)) {
+        const key = path[path.length - 1];
+        if (!(at === `jobs.sign.steps.${signIndex}.env.${key}` && DESKTOP_RELEASE_SECRETS.includes(key) && value === `\${{ secrets.${key} }}`)) problems.push(`${k}: secrets referenced outside the Sign step's env (${at})`);
+      }
+      if (/github\.event/.test(value)) {
+        const ok = (at === 'jobs.gate.if' && value === DESKTOP_RELEASE_IF)
+          || (at === `jobs.gate.steps.${gateIndex}.env.HINT_TAG` && value === '${{ github.event.workflow_run.head_branch }}')
+          || (at === `jobs.gate.steps.${gateIndex}.env.HINT_RUN` && value === '${{ github.event.workflow_run.id }}');
+        if (!ok) problems.push(`${k}: the workflow_run payload may reach only the gate's if and its HINT_TAG/HINT_RUN env (${at})`);
+      }
+    }
+    if (/workflow_run\.(head_sha|head_repository)/.test(text)) problems.push(`${k}: workflow_run.head_sha and head_repository are never used`);
+  }
+
+  // The scripts that hold or create the keys import only node: modules and repository files.
+  const keys = checkScriptImports(root, 'packages/desktop/scripts/release-keys.mjs', problems);
+  checkScriptImports(root, 'packages/desktop/scripts/release-sign-job.mjs', problems);
+  if (keys !== null) {
+    if (/type\s*:\s*['"]tag['"]/.test(keys)) problems.push('release-keys.mjs: the desktop-release environment admits no tag policy');
+    // Task 11 adds the environment setup; once it does, the policy is the single branch main.
+    if (/deployment-branch-policies/.test(keys) && ((keys.match(/type\s*:\s*['"]branch['"]/g) ?? []).length !== 1 || !/\{\s*name\s*:\s*['"]main['"]\s*,\s*type\s*:\s*['"]branch['"]\s*\}/.test(keys))) {
+      problems.push("release-keys.mjs: the environment policy must be the single { name: 'main', type: 'branch' }");
+    }
+  }
+  return problems;
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
   const root = process.argv[2] ?? process.cwd();
-  const problems = [...checkWorkflow(root), ...checkReleaseWorkflow(root), ...checkDesktopWorkflow(root)];
+  const problems = [...checkWorkflow(root), ...checkReleaseWorkflow(root), ...checkDesktopWorkflow(root), ...checkDesktopReleaseWorkflow(root)];
   for (const p of problems) console.error(p);
   process.exit(problems.length === 0 ? 0 : 1);
 }

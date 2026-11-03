@@ -1,6 +1,17 @@
 name: desktop foundations
 on:
   workflow_call:
+    secrets:
+      CSC_LINK:
+        required: false
+      CSC_KEY_PASSWORD:
+        required: false
+      APPLE_API_KEY:
+        required: false
+      APPLE_API_KEY_ID:
+        required: false
+      APPLE_API_ISSUER:
+        required: false
 permissions:
   contents: read
 jobs:
