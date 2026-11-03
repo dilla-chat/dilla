@@ -11,6 +11,8 @@ test.beforeEach(async () => {
   profile = await mkdtemp(join(tmpdir(), 'dilla-media-validation-'));
   desktop = await _electron.launch({ chromiumSandbox: true, args: [resolve('.'), `--profile=${profile}`, '--instance=http://127.0.0.1:1/', '--allow-loopback', '--allow-loopback-in-peer-connection', '--media-validation'] });
   page = await desktop.firstWindow();
+  // The bundled validation page establishes the origin used by the grants below.
+  await page.waitForFunction(() => 'validation' in window);
   // Explicit media/local-network browser grants allow ICE host candidates in the
   // isolated loopback fixture (no real microphone/camera is opened). This
   // changes neither macOS privacy settings nor the installed app's policy.
@@ -27,7 +29,6 @@ test.beforeEach(async () => {
       callback(contents === win.webContents && new URL(details.requestingUrl).origin === origin && ['media', 'local-network', 'loopback-network'].includes(permission));
     });
   });
-  await page.waitForFunction(() => 'validation' in window);
   await page.bringToFront();
 });
 test.afterEach(async () => { await desktop?.close(); await rm(profile, { recursive: true, force: true }); });
