@@ -2,9 +2,15 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Steps use checkbox (`- [ ]`) syntax.
 
-**Goal:** Pushing `desktop-v<version>` on a main commit whose `ci` push run is green signs the desktop release with fresh keys and publishes the versioned release and the channel feed with no human step, no commit to main by the workflow, and no private key ever reachable outside one tag-only, environment-scoped job.
+**Goal:** Pushing `desktop-v<version>` on a main commit whose `ci` push run is green signs the desktop release with fresh keys and publishes the versioned release and the channel feed with no human step, no commit to main by any workflow, no per-release files, and no private key reachable by anything that does not run from `main`.
 
-**Architecture:** `desktop-release.yml` becomes two jobs. `sign` (environment `desktop-release`, `contents: read` + `actions: read`, holds the keys, installs nothing from npm) runs a gate (`release-gate.mjs`: tag, main ancestry, version, green `ci` push run on exactly that commit, inputs present), downloads that run's artifacts, derives `acceptance.json` (`release-assemble.mjs`), materialises the three keys from secrets into a 0700 dir inside one script (`release-sign-job.mjs`), calls the unchanged `signDesktopRelease`, deletes the keys, writes a `SHA256SUMS` digest, and uploads the signed output as an artifact. `publish` (no environment, no secrets, `contents: write` + `actions: read`) downloads that artifact, verifies the digest the sign job published as a job output, then runs the existing `publish-release.mjs plan/publish` verification (which re-verifies every signature against the public pins and re-downloads the installers from the CI run) and creates both releases. The three things a human used to assemble become: `acceptance.json` (derived from CI artifacts), `ci-run.json`/`ci-jobs.json` (fetched by the gate), and `release-notes.md` + `security-review.md` (committed per version under `packages/desktop/release-inputs/<version>/` in the tagged commit, bound by a tree digest). One-time key creation is `release-keys.mjs setup`.
+**Architecture:** Two workflows.
+1. `desktop-release-request.yml` (name `desktop release request`) starts on a `desktop-v*` tag push. It is unprivileged: top-level `permissions: contents: read`, no environment, no secrets, no `uses:`, one job that echoes. Whatever the tagged commit's copy of it does, it can reach nothing.
+2. `desktop-release.yml` (the keyed workflow) is triggered by `workflow_run` on the completion of that request workflow. GitHub always runs the **default branch's** copy of a `workflow_run` workflow, so only reviewed main code ever holds keys. Its environment `desktop-release` admits deployments from branch `main` only, no tags. It has two jobs:
+   - `sign` (environment `desktop-release`; `contents: read`, `actions: read`, `pull-requests: read`; no `npm ci`) re-derives everything from the GitHub API and git objects: the tag name is only an untrusted hint, resolved through the API to a commit; ancestry of `origin/main`; the version; the green `ci` push run on exactly that commit. It then downloads that `ci` run's artifacts (never any artifact of the triggering run), generates `release-notes.md` from merged PR titles, derives `acceptance.json` including an automated review attestation, writes the keys from secrets into a 0700 dir inside one script, runs the unchanged `signDesktopRelease`, deletes the keys, digests the output, and uploads it.
+   - `publish` (no environment, no secrets, `contents: write`, `actions: read`) verifies the digest, then runs the existing `publish-release.mjs` plan/publish verification and creates both releases.
+
+Checkouts in the keyed workflow are of `main` (the `workflow_run` default) and never of the tag. The tagged commit is read only as git data (`git show <sha>:packages/desktop/package.json`, tree hash) and compared byte-for-byte against main for the three public-pin files. One-time key creation is `release-keys.mjs setup`.
 
 **Tech stack:** Node 24 ESM (`.mjs`, repo scripts), `node:test`, `gh` CLI, GitHub Actions with SHA-pinned first-party actions only.
 
@@ -12,212 +18,193 @@
 
 ## Facts this plan rests on (verified in the repo at 29023b36)
 
-- `signDesktopRelease` (`release-feed.mjs`) reads `acceptance.json`, `ci-run.json`, `ci-jobs.json`, installers, sandbox sidecars, `build-provenance-*.json`, `performance-*.json`, `installed-account-*.json`, `release-notes.md`, `security-review.md` from the artifacts dir and `metadata-private.pem` (Ed25519 PKCS8 PEM), `sparkle-private.key` (base64 of the 32-byte seed), `linux-sandbox-private.pem` (Ed25519 PEM) from the keys dir. It refuses keys that do not match `release-trust.json` / `linux-sandbox-component.json`, and verifies the whole candidate before and after signing. Its imports are `node:` built-ins and repo files only, so the sign job needs no `npm ci`.
-- Nothing in the repo produces `acceptance.json`, `release-notes.md` or `security-review.md` today; a human wrote them. `acceptance.json` is fully derivable (`format`, `ciRun`, `commit`, `head`, `tree`, `builds`/`performance`/`installedAccounts` sha256 maps, `notes.sha256`, `review{status,tree,sha256}`); only notes and review are authored content.
-- `verifyBundle` demands `source.review.tree === source.tree`, `run.name === 'ci'`, `run.conclusion === 'success'`, same-repository head, and the full list of named native/client/voice/package-acceptance jobs and steps. A docs-only commit skips the `desktop` job (`scripts/ci-areas.mjs`: `*.md` and `docs/**` set no area), so such a commit has a green run but no installers and the sign job fails closed. A file matching no rule (for example a `.json`) is "unknown" and forces every area, which the release-inputs manifest relies on.
-- Installer artifact names: `desktop-installers-*`, `desktop-performance-*`, `desktop-installed-account-*` (retention: default 90 days). `ci.yml` uses `cancel-in-progress: true` per ref, so a later push to main cancels an earlier main run; a cancelled run is not green.
-- Public pins of the three key halves: `packages/desktop/release-trust.json` (`metadataPublicKeys`, `sparklePublicKey`; also read by `electron-builder.cjs` into Sparkle `SUPublicEDKey`), `packages/desktop/src/update-keys.ts` (`RELEASE_PUBLIC_KEYS`, written by `release-keys.mjs import-public`), `packages/desktop/linux-sandbox-component.json` (`publicKeys`, `publishedAt`, `expiresAt` at most 93 days apart, embedded into the launcher at build). `test/linux-appimage-launcher.test.ts:60` hard-codes the current sandbox key in a negative assertion.
-- `packages/desktop/scripts/release-keys.mjs` already exists with `create DIR` (writes private keys to disk), `normalize-sparkle` and `import-public`. `check-release-workflow.mjs` (+ `test/release-workflow.test.ts`) currently forbids `secrets.` anywhere in `desktop-release.yml`.
-- Tag-created-by-`GITHUB_TOKEN` events do not start workflow runs; `release.yml` (tags `v*`) has a `contents: write` job; `desktop-beta`/`desktop-stable` feed tags do not match `desktop-v*`.
-- The publisher creates each release as a draft, uploads, then PATCHes `draft: false`. `GET /releases/tags/{tag}` does not return drafts, so a rerun after a half-finished publish would create a second draft. This plan fixes that (Task 6).
+- `signDesktopRelease` (`release-feed.mjs`) reads `acceptance.json`, `ci-run.json`, `ci-jobs.json`, installers, sandbox sidecars, `build-provenance-*.json`, `performance-*.json`, `installed-account-*.json`, `release-notes.md`, `security-review.md` from the artifacts dir and `metadata-private.pem` (Ed25519 PKCS8 PEM), `sparkle-private.key` (base64 32-byte seed), `linux-sandbox-private.pem` (Ed25519 PEM) from the keys dir. It refuses keys that do not match `release-trust.json` / `linux-sandbox-component.json`, and verifies the whole candidate before and after signing. Its imports are `node:` built-ins and repo files only, so the sign job needs no `npm ci`.
+- Nothing in the repo produces `acceptance.json`, `release-notes.md` or `security-review.md`; a human wrote them. `verify-release.mjs` line 93 requires `source.review.status === 'approved'`, `review.tree === source.tree`, a sha256; lines 95-96 read `security-review.md` and compare its digest; `PUBLIC_ACCEPTANCE_RECORDS` lists `security-review.md`. Nothing client-side (`src/*.ts`) validates `source.review`. Other occurrences of the strings are in `release-publish.test.ts`, old plans and `docs/deploy/releases/v0.1.0-signal1.2.md` (history; left alone).
+- `verifyBundle` also demands `run.name === 'ci'`, `run.conclusion === 'success'`, same-repository head, and a fixed inventory of named native/client/voice/package-acceptance jobs and steps. A docs-only commit skips the `desktop` job (`scripts/ci-areas.mjs`), so its green run has no installers and the sign job fails closed; tag the newest commit that touched code.
+- Installer artifact names: `desktop-installers-*`, `desktop-performance-*`, `desktop-installed-account-*` (default 90-day retention). `ci.yml` uses `cancel-in-progress: true` per ref, so a later push to main cancels an earlier main run, and a cancelled run is not green.
+- Public pins of the key halves: `packages/desktop/release-trust.json` (`metadataPublicKeys`, `sparklePublicKey`, also read by `electron-builder.cjs` into `SUPublicEDKey`), `packages/desktop/src/update-keys.ts`, `packages/desktop/linux-sandbox-component.json` (`publicKeys`, `publishedAt`, `expiresAt` at most 93 days apart; embedded into the launcher at build). `test/linux-appimage-launcher.test.ts:60` hard-codes the current sandbox key in a negative assertion.
+- `packages/desktop/scripts/release-keys.mjs` exists with `create DIR` (writes private keys to disk), `normalize-sparkle`, `import-public`. `check-release-workflow.mjs` (+ `test/release-workflow.test.ts`) forbids `secrets.` file-wide in `desktop-release.yml`.
+- Events from `GITHUB_TOKEN` (tags it creates) do not start workflow runs. `release.yml` (tags `v*`) has a `contents: write` job. Feed tags `desktop-beta`/`desktop-stable` do not match `desktop-v*`.
+- The publisher creates each release as a draft, uploads, then PATCHes `draft: false`. `GET /releases/tags/{tag}` omits drafts, so a rerun would create a second draft (fixed in Task 8).
+- For a tag-push run, `workflow_run.head_branch` is the tag name. Whether the `branches:` filter of `workflow_run` matches tag names must be confirmed (Task 9); the gate does not depend on the filter.
 
 ## Global Constraints
 
-- No private key (metadata, Sparkle, sandbox) is ever written to disk by `release-keys.mjs`, printed, logged, put in argv, or put in an environment variable of anything but the one sign step. Buffers that held key material are zeroed after use.
-- The workflow never commits to, tags, or pushes any branch. It cannot, by permissions: neither job has `contents: write` while holding keys, and the publish job writes only releases.
-- `desktop-release.yml` triggers on `push` of tags `desktop-v*` and nothing else. No `workflow_dispatch`, `pull_request*`, `workflow_run`, `workflow_call`, `schedule`, `repository_dispatch`.
-- `secrets.DESKTOP_*` appear exactly three times, in the `env:` of one step of the `sign` job. No other workflow or job references them or `environment: desktop-release`.
-- All actions are first-party (`actions/*`), pinned by full SHA with a version comment. The sign job uses `actions/checkout`, `actions/setup-node`, `actions/download-artifact`, `actions/upload-artifact` and nothing else; the keys exist only during the single script step, after every other action in the job except the final upload has run.
-- Top-level `permissions: {}`; each job declares its own. `sign`: `contents: read`, `actions: read`. `publish`: `contents: write`, `actions: read`.
-- `GITHUB_TOKEN` is passed explicitly only to steps that call the API; checkout uses `persist-credentials: false` in `sign`.
-- Fresh keys only. Algorithms exactly as the scripts expect: metadata Ed25519 PKCS8 PEM, Sparkle Ed25519 32-byte seed base64, sandbox Ed25519 PKCS8 PEM with the raw 32-byte public key base64 in `publicKeys`. The three public keys must be pairwise different (`assertDedicatedKeys`).
-- Every task: strict TDD, narrow per-task gate, then `npm run ci:local` before the final push. Per the repo convention, commits end with the Co-Authored-By and Claude-Session trailers.
-- Do not alter `signDesktopRelease`, `verifyBundle` or `verifyDesktopSigningCandidate` semantics. The new code feeds them; it does not weaken them.
+- No private key is ever written to disk by `release-keys.mjs`, printed, logged, put in argv, or placed in an environment variable of anything but the one sign step. Buffers that held key material are zeroed.
+- No workflow commits, tags or pushes. By permissions: the keyed `sign` job has no write scope; `publish` writes releases only.
+- `desktop-release.yml` triggers only on `workflow_run` of `desktop release request`, `types: [completed]`, `branches: ['desktop-v*']`. The request workflow triggers only on `push` of tags `desktop-v*`. Neither has `workflow_dispatch`, `pull_request*`, `schedule`, `repository_dispatch`, `workflow_call`.
+- `environment: desktop-release` exists only in the `sign` job of `desktop-release.yml`. `secrets.DESKTOP_*` appear exactly three times, in the `env:` of one step of that job.
+- **`workflow_run` rules.** The keyed job never uses `actions/checkout` with `ref:`, `repository:` or `path:` pointing at `github.event.workflow_run.*`, never downloads artifacts of the triggering run (`run-id` comes only from the gate's output for the `ci` run), never executes anything read from the tagged commit, and passes `github.event.workflow_run.*` values only through `env:` of the gate step, where they are untrusted hints validated by regex and re-derived from the API.
+- All actions are first-party (`actions/*`) pinned by full SHA. The request workflow uses none.
+- Top-level `permissions` is `{}` in the keyed workflow and `contents: read` in the request workflow; each keyed job declares its own. `sign`: `contents: read`, `actions: read`, `pull-requests: read`. `publish`: `contents: write`, `actions: read`.
+- Fresh keys only; algorithms exactly as the scripts expect (metadata Ed25519 PKCS8 PEM; Sparkle Ed25519 32-byte seed base64; sandbox Ed25519 PKCS8 PEM with raw 32-byte public key base64). The three public keys must be pairwise different (`assertDedicatedKeys`).
+- Acceptance, build-provenance, installed-account, performance, sandbox and Sparkle checks in `verifyBundle` stay exactly as strict. The only change to `verify-release.mjs` is replacing the human review file with the automated attestation (Task 2).
+- Release notes contain only PR numbers and PR titles, rendered as escaped plain text; never PR bodies, commit messages or author names.
+- Every task: strict TDD, narrow per-task gate, `npm run ci:local` before the final push. Commits end with the Co-Authored-By and Claude-Session trailers.
 
 ## Review Focus
 
 Opus review, boundary-security level, in this order:
-1. `release-sign-job.mjs` and the `sign` job: can any key byte reach disk outside the 0700 dir, an artifact, a log, argv, or a step other than the one named? Is deletion in a `finally` that also runs on signer failure? Does the uploaded artifact contain only the expected exact file set?
-2. `release-gate.mjs`: every check fails closed; the gate reads only the checked-out tag commit and the GitHub API; no check can be satisfied by attacker-chosen bytes (tag message, branch names, PR titles).
-3. The sign-to-publish handoff: digest computed over exactly the artifact bytes, compared in the other job, exact file-set check, no symlinks.
-4. `release-keys.mjs setup`: secret transport (stdin only), in-memory discipline, partial-failure behaviour, environment policy actually being `desktop-v*` tags only, public pins written only after all three secrets are set.
-5. `check-ci-workflow.mjs` additions: each assertion has a mutation test that proves it fires.
-6. Honest wording of residual risk in `RELEASING.md` and in this plan's threat model.
+1. The `workflow_run` trampoline: nothing from the triggering run or the tagged commit is trusted or executed; every value the keyed workflow uses is re-derived; the Task 10 checks fail on each pitfall.
+2. `release-sign-job.mjs` and the `sign` job: can any key byte reach disk outside the 0700 dir, an artifact, a log, argv, or a step other than the named one? Cleanup in `finally`; exact output file set.
+3. `release-gate.mjs`: fail-closed order; tag resolved through the API (lightweight and annotated); main ancestry; version from git data; byte equality of the three pin files with main; green push run for exactly that sha.
+4. The attestation change in `verify-release.mjs`: strictness unchanged elsewhere; inventory computed identically at sign and publish time.
+5. `release-notes.mjs`: escaping, no bodies, no mentions or links from titles.
+6. `release-keys.mjs setup`: stdin-only transport, in-memory discipline, partial-failure behaviour, environment policy exactly branch `main`, refusal when `main` is unprotected.
+7. The sign-to-publish handoff digest.
+8. Honest residual-risk wording.
 
 ## Threat model
 
-Assets: the three private keys; the right to publish a signed feed that installed clients and Sparkle will accept; the integrity of what is signed (the exact CI-built installers).
+Assets: the three private keys; the right to publish a feed that installed clients and Sparkle accept; the integrity of what is signed (the CI-built installers of a green main commit).
 
-Controls common to all rows: environment `desktop-release` is restricted to tags `desktop-v*` (so no branch, PR, `workflow_dispatch` or other-workflow job can read its secrets); secrets are environment-scoped, not repository-scoped; a repository tag ruleset on `desktop-v*` (creation, update, deletion, non-fast-forward restricted to repository admins); the signed content is fixed by the gate to a main commit with a green `ci` push run.
+Controls common to all rows: secrets are environment-scoped to `desktop-release`, whose deployment policy admits only the ref `main`; jobs that can run on ref `main` come only from workflow files merged to main, and the checker (Task 10) fails CI if any other workflow names the environment or the secrets; the keyed workflow is `workflow_run`-triggered, so GitHub loads it from main whatever the tag points at; the signed content is fixed by the gate to a main commit with a green `ci` push run.
 
 | Actor | What they can do | How the design limits it |
 |---|---|---|
-| **PR author** (fork or same-repo) | Run arbitrary code in PR CI; edit workflow files in their PR; try `pull_request_target`/`workflow_run` tricks. | Secrets live in an environment whose deployment policy admits only `desktop-v*` tag refs; a PR ref (`refs/pull/*`) is refused by GitHub before the job starts. `desktop-release.yml` has no PR trigger and the checker (Task 8) fails CI if one appears. A PR cannot create tags. Changing the workflow in a PR does nothing until merged to main, and main requires review. Installers signed are only those built by `ci` on main commits, never PR builds (gate requires `event=push`, `branch=main`). |
-| **Compromised third-party action** | Run code in whatever job uses it with that job's token and env. | No third-party actions are allowed anywhere in `desktop-release.yml` (checker allow-list: four `actions/*` SHAs). Keys exist only inside one `node` process in one step, in a 0700 dir deleted in `finally`; `secrets.*` are referenced only by that step, so earlier actions never receive them in env. The step after signing is `actions/upload-artifact` over the output dir only. The publish job, which does use `actions/download-artifact` and an npm-installed publisher, holds no keys. Residual: a compromise of `actions/*` itself (checkout/setup-node/download run before the key step on the same runner and could leave a background process that watches `$RUNNER_TEMP`). Accepted; reduce by SHA pins, ephemeral hosted runners, and by keeping the sign job to four actions. |
-| **Stolen `GITHUB_TOKEN` from another workflow** | Whatever that run's scopes allow, for the life of that run: read/write contents or releases, re-run or cancel runs, delete artifacts. | The token cannot read environment secrets (no API exposes them) and cannot create or edit an environment (needs admin, not a `GITHUB_TOKEN` scope). Tags created with `GITHUB_TOKEN` do not trigger `desktop-v*` runs. A `contents: write` token could create a draft or tamper with an unpublished draft release, but the publisher only trusts bytes it re-verifies: installers are re-downloaded from the green CI run and checked against hashes inside the metadata signed by keys the token never saw; draft assets are replaced, never trusted. A token with `actions: write` could delete CI artifacts (publish then fails closed) but cannot substitute them: artifact uploads belong to their own run and the build-provenance digests are signed. Immutable published versioned releases cannot have assets replaced (`standard-release-upload.mjs`). The feed release `desktop-beta` is mutable by a `contents: write` token: the assets it can place are unsigned lookalikes that clients reject (signature check against pinned keys), at worst a denial of updates until the next release re-uploads them. |
-| **Push access to non-main branches** | Commit any code and workflow files to a branch; open PRs; create a branch ruleset-permitted tag if not restricted. | Branch pushes never reach the environment (tag policy). The one path to the keys is creating a `desktop-v*` tag: a tag on a branch commit runs *that commit's* workflow file, so it could exfiltrate. Controlled by (a) the tag ruleset limiting `desktop-v*` creation to repository admins, and (b) the gate refusing any tag whose commit is not an ancestor of `origin/main` or has no green `ci` push run (this protects against honest mistakes and against actors without ruleset bypass, but is itself code from the tagged commit, so alone it does not stop a malicious tagger). Residual and stated in the runbook: whoever can create `desktop-v*` tags can exfiltrate the keys by tagging a modified workflow. See "Where Jonas's decisions cannot be met" for the stronger alternative. |
-| **Someone who can push tags** (admin bypass, or a stolen PAT/SSH key of one) | Trigger a release of any commit they can name; re-tag. | Tag on non-main or non-green commit: gate refuses, nothing is signed. Tag on an old but legitimate main commit: gate requires the version to be greater than every published `desktop-v*` of the channel and not already released, and requires committed release inputs for exactly that version, so an old commit can neither roll the feed back nor re-sign a published version. Moving or deleting a published tag is blocked by the ruleset. Malicious workflow edit in the tagged commit: exfiltration possible (the residual above); the damage is bounded by key rotation (runbook) because metadata keys are pinned in shipped clients as a list and Sparkle/sandbox keys rotate through generation bumps. Detection: every run of the environment shows in the Deployments tab and the Actions log. |
+| **PR author** (fork or same-repo) | Run code in PR CI, edit workflow files in their PR, try `pull_request_target`/`workflow_run` tricks. | PR refs are not `main`, so GitHub refuses the environment. A `pull_request_target` run does execute on the base ref, but only for workflow files already on main, and no such file may name the environment (checker). A fork's push does not trigger the base repository's `workflow_run`. A PR cannot create tags. Signed installers are only those `ci` built on main pushes (`event=push`, `branch=main`). Edits to the keyed workflow take effect only after merge to protected main. |
+| **Compromised third-party action** | Run code in the job that uses it with that job's token and env. | No third-party actions in either release workflow (allow-list of four `actions/*` SHAs; the request workflow uses none). Keys exist only inside one `node` process in one step, in a 0700 dir deleted in `finally`; `secrets.*` is referenced only by that step, so earlier actions never receive it. The only action after signing is `upload-artifact` over the output dir. The publish job uses `download-artifact` and an npm-installed publisher but holds no keys. Residual: a compromise of `actions/*` itself (checkout/setup-node/download run earlier on the same ephemeral runner and could leave a watcher on `$RUNNER_TEMP`); accepted. |
+| **Stolen `GITHUB_TOKEN` from another workflow** | Whatever that run's scopes allow, for the run's life: write contents or releases, re-run or cancel runs, delete artifacts. | It cannot read environment secrets, cannot edit environments or branch policies (admin), and tags it creates do not trigger workflows. A `contents: write` token could tamper with an unpublished draft or the mutable feed release, but the publisher trusts only bytes it re-verifies: installers are re-downloaded from the green CI run and checked against hashes inside metadata signed by keys the token never saw; unsigned lookalikes in the feed are rejected by clients (at worst a denial of updates until the next release). It cannot substitute CI artifacts of another run; the build-provenance digests are signed. Published versioned releases are immutable. If it can push to main it is the next row. |
+| **Push access to non-main branches** | Commit anything, including workflow files, to branches; open PRs; create tags if not restricted. | Branch code never runs with the keys: the environment admits only `main`, and a tag on a branch commit only starts the unprivileged request workflow; the keyed workflow from main then refuses the tag (commit not an ancestor of `origin/main`, no green `ci` push run on main for it). Modified workflow files on the tagged commit are never executed with privileges. |
+| **Someone who can push tags** | Start a release run for any commit they can name. | The tagged commit's workflow files and scripts are never executed with keys, so key theft through a tag is closed (it was the residual of a tag-triggered design). They can cause a release only of a commit that is on main, has a green `ci` push run, whose `package.json` version equals the tag, whose version is greater than every published `desktop-v*` of the channel and not yet published, and whose public-pin files equal main's. That is a premature or unwanted release of already-reviewed code, not key exposure. Optional defence in depth: `setup --tag-ruleset` restricts `desktop-v*` creation to admins. |
 
-Residual risk summary (also in `RELEASING.md`): compromise of GitHub-owned actions; an admin-equivalent actor creating a tag with a modified workflow; GitHub itself. Independence of the human security review is not machine-checkable.
+**What remains:** (1) an admin, or anyone able to merge to `main` without review (branch-protection settings), can change the keyed workflow or the environment policy and read the keys; `setup` refuses to run unless `main` is protected, but admin bypass is outside the design; (2) compromise of GitHub-owned actions or GitHub itself; (3) who may start a release is limited only as described above; (4) the automated attestation proves CI passed on the tree, not that a human reviewed it.
 
-## End-to-end path for 0.1.0-beta.1 (after this plan's PR merges)
+## End-to-end path for 0.1.0-beta.1
 
-Precondition: this plan's implementation is merged to main. `packages/desktop/package.json` is already `0.1.0-beta.1`.
+Precondition: `packages/desktop/package.json` is already `0.1.0-beta.1`.
 
-1. **Jonas, once:** `! node packages/desktop/scripts/release-keys.mjs setup` (needs `gh auth` with repo admin). It prints only fingerprints and progress. Effects: environment `desktop-release` exists with a tag-only policy `desktop-v*`; tag ruleset on `desktop-v*` exists; three secrets set from stdin; `release-trust.json`, `src/update-keys.ts`, `linux-sandbox-component.json` rewritten in the working tree. He commits those on a branch and opens the **public-key PR** (`chore(desktop): pin fresh release public keys`).
-2. **Public-key PR merged** (squash). Its `ci` run builds installers that embed the new public keys; wait for green on that main commit (call it M1). This build is not released.
-3. **Release-inputs PR** (a step Jonas's list did not include; see rulings). Claude: runs the independent completed-app security review on M1's tree, writes `release-notes.md` and `security-review.md` under `packages/desktop/release-inputs/0.1.0-beta.1/`, runs `node packages/desktop/scripts/release-assemble.mjs freeze 0.1.0-beta.1` which writes `inputs.json` (version, `reviewedTree` = tree of M1 with the `release-inputs/0.1.0-beta.1` directory removed, sha256 of both documents). Jonas reviews and merges the PR (call the result R). Because `inputs.json` matches no `ci-areas` rule, the `desktop` job runs for R. If anything else lands on main between M1 and R, `reviewedTree` no longer matches and the gate refuses; re-run `freeze` on the new tip and re-review the delta.
-4. **Main's `ci` run on R is green** (`ci-ok`, with the desktop native/client/voice/package-acceptance jobs).
-5. **Claude pushes the tag:** `git tag desktop-v0.1.0-beta.1 R && git push origin desktop-v0.1.0-beta.1`. Nothing else happens by hand: `sign` (gate, download, assemble, sign, digest, upload) then `publish` (digest check, plan, publish) run; the versioned release `desktop-v0.1.0-beta.1` and the `desktop-beta` feed appear published. A desktop release is separate from the server: it does not change `--desktop-downloads` and needs no CT 144 upgrade.
-6. If a step fails before `publish`, nothing is public; fix and use "Re-run jobs" on the same run (same tag, same commit) or delete and recreate the tag only if the cause was in the tagged commit. After `publish` started, rerun is idempotent (Task 6).
+1. **Jonas, once:** `! node packages/desktop/scripts/release-keys.mjs setup`, from the automation branch's checkout (needs `gh auth` as repo admin; `main` must be protected). It prints fingerprints and progress only. Effects: environment `desktop-release` with one deployment policy, branch `main`; three secrets set from stdin; `release-trust.json`, `src/update-keys.ts`, `linux-sandbox-component.json` rewritten in the working tree, which he commits on the branch.
+2. **The PR (this automation plus the public pins) is merged.** It changes workflow and `.json` files, which `ci-areas` treats as every-area, so the merge commit's `ci` run builds all desktop installers with the new public keys.
+3. **Main's `ci` run on that merge commit is green** (merge nothing else first, or the run is cancelled).
+4. **Claude pushes the tag:** `git tag desktop-v0.1.0-beta.1 <merge commit> && git push origin desktop-v0.1.0-beta.1`. `desktop release request` completes in seconds; `desktop release` starts from main; `sign` runs gate, notes, assemble, sign, digest, upload; `publish` verifies and publishes `desktop-v0.1.0-beta.1` and `desktop-beta`. Desktop releases do not change `--desktop-downloads` and need no CT 144 upgrade.
+5. A failure before `publish` leaves nothing public. Fix on main and re-tag the new green commit (delete and re-create the tag if the same version is reused), or use "Re-run jobs" on the keyed run (it re-derives from the tag as it then is). After `publish` started, rerun is idempotent (Task 8).
 
 ## Tasks
 
-Test files live in `packages/desktop/test/` and run with the package's existing `node --test` runner (confirm the exact command in Step 1 of Task 1 by reading `packages/desktop/package.json` and reuse it). Script tests that need `.ts` imports follow `release-publish.test.ts`.
+Test files live in `packages/desktop/test/` and run with the package's existing `node --test` runner (confirm the exact command in Task 1 by reading `packages/desktop/package.json`). Script tests needing `.ts` imports follow `release-publish.test.ts`.
 
-### Task 1: `ci-run.mjs`, shared CI-run lookup and the green-run rule
+### Task 1: `ci-run.mjs`, shared API client and green-run rule
 
-**Files:**
-- Create: `packages/desktop/scripts/ci-run.mjs`
-- Create: `packages/desktop/test/ci-run.test.mjs`
-- Modify: `packages/desktop/scripts/publish-release.mjs` (use the shared helpers instead of its inline `api`/jobs loop; no behaviour change)
+**Files:** Create `packages/desktop/scripts/ci-run.mjs`, `packages/desktop/test/ci-run.test.mjs`. Modify `publish-release.mjs` (use the shared helpers; no behaviour change).
 
-**Interfaces (exact):**
+**Interfaces:**
 ```js
-// All functions take an injected `api(path, options?) => Promise<json|null>` so tests need no network.
 export const REPOSITORY = 'jonasthim/dilla';
-export function createGithubApi({ token, fetchImpl = fetch }): api   // origin api.github.com, path must start /repos/jonasthim/dilla/, redirect:'error', 30 s timeout, 404 -> null only when options.optional404
-export async function findGreenPushRun(api, sha): Promise<run>        // throws if none
-export async function fetchCiJobs(api, runId): Promise<job[]>          // filter=latest, paginated 100
+export function createGithubApi({ token, fetchImpl = fetch }): api   // api.github.com only, path must start /repos/jonasthim/dilla/, redirect:'error', 30 s timeout, 404 -> null only if optional404
+export async function findGreenPushRun(api, sha): Promise<run>        // throws /no green ci push run/
+export async function fetchCiJobs(api, runId): Promise<job[]>          // filter=latest, 100 per page
+export async function resolveTagCommit(api, tag): Promise<string>      // GET git/ref/tags/<tag>; object.type 'commit' -> sha; 'tag' -> GET git/tags/<sha> once, must be a commit; anything else throws
 ```
-`findGreenPushRun` calls `GET /repos/jonasthim/dilla/actions/workflows/ci.yml/runs?head_sha=<sha>&event=push&branch=main&status=completed&per_page=100` and accepts a run only if all hold: `name === 'ci'`, `path === '.github/workflows/ci.yml'`, `event === 'push'`, `head_branch === 'main'`, `head_sha === sha`, `status === 'completed'`, `conclusion === 'success'`, `repository.full_name === head_repository.full_name === REPOSITORY`. Among accepted runs it returns the highest `run_number`. A newer run for the same sha that failed or was cancelled does not invalidate an older green one only if it is a different run id; a run's `run_attempt` is the latest attempt by API definition.
+`findGreenPushRun` queries `actions/workflows/ci.yml/runs?head_sha=<sha>&event=push&branch=main&status=completed&per_page=100` and accepts only runs with `name==='ci'`, `path==='.github/workflows/ci.yml'`, `event==='push'`, `head_branch==='main'`, `head_sha===sha`, `status==='completed'`, `conclusion==='success'`, and `repository.full_name === head_repository.full_name === REPOSITORY`; returns the highest `run_number`.
 
-**Tests (names and assertions):**
-- `findGreenPushRun returns the green push run on exactly that sha` - fixture list with one success; returns it.
-- `findGreenPushRun refuses pull_request, cancelled, failure, in_progress and other-branch runs` - five fixtures, each alone throws `/no green ci push run/`.
-- `findGreenPushRun refuses a run whose head_sha differs from the requested sha` - API returns a run for another sha (hostile response); throws.
-- `findGreenPushRun refuses a fork head repository` - `head_repository.full_name = 'x/dilla'`; throws.
-- `findGreenPushRun refuses a workflow named ci at another path` - `path: '.github/workflows/evil.yml'`; throws.
-- `fetchCiJobs pages until a short page` - two pages (100, 3) yields 103 jobs and requests `page=1`, `page=2`.
-- `createGithubApi rejects a path outside the repository` - `api('/user')` throws before fetch is called.
-- `createGithubApi never follows redirects` - fetch mock records `redirect: 'error'`.
+**Tests:** `findGreenPushRun returns the green push run on exactly that sha`; `findGreenPushRun refuses pull_request, cancelled, failure, in_progress and other-branch runs`; `findGreenPushRun refuses a run whose head_sha differs from the requested sha`; `findGreenPushRun refuses a fork head repository`; `findGreenPushRun refuses a workflow named ci at another path`; `fetchCiJobs pages until a short page` (100 + 3 gives 103, requests page 1 and 2); `resolveTagCommit follows an annotated tag to its commit`; `resolveTagCommit refuses a tag pointing at a tree or blob`; `createGithubApi rejects a path outside the repository`; `createGithubApi never follows redirects`.
 
-- [ ] Step 1: write the failing tests. Step 2: run `node --test packages/desktop/test/ci-run.test.mjs`, expect failures. Step 3: implement, move the inline helpers out of `publish-release.mjs`. Step 4: green, plus `node --test packages/desktop/test/release-publish.test.ts` still green.
-- **Gate:** the two test files above.
-- **Commit:** `refactor(desktop): shared CI-run lookup for release gate and publisher`
+- [ ] Failing tests, implement, green; `release-publish.test.ts` still green.
+- **Gate:** the two test files. **Commit:** `refactor(desktop): shared CI-run lookup and tag resolution for the release flow`
 
-### Task 2: `release-inputs.mjs` and `release-assemble.mjs` (derive `acceptance.json`)
+### Task 2: automated review attestation replaces the human review file
 
-**Files:**
-- Create: `packages/desktop/scripts/release-assemble.mjs`
-- Create: `packages/desktop/test/release-assemble.test.mjs`
-- Create (by the tool, not by hand, in Task 11): `packages/desktop/release-inputs/<version>/{inputs.json,release-notes.md,security-review.md}`
+**Files:** Modify `packages/desktop/scripts/verify-release.mjs`, `packages/desktop/test/release-publish.test.ts`. (`release-feed.mjs` needs no code change: it forwards `source` and `PUBLIC_ACCEPTANCE_RECORDS`.)
 
-**The committed inputs.** `inputs.json`, exact shape, no extra keys:
-```json
-{ "format": 1, "version": "0.1.0-beta.1", "reviewedTree": "<40 hex>",
-  "review": { "status": "approved", "sha256": "<64 hex>" }, "notes": { "sha256": "<64 hex>" } }
-```
-`reviewedTree` is the git tree of the release commit with the directory `packages/desktop/release-inputs/<version>/` removed. It does not depend on the contents of the inputs, so it can be computed before the inputs are written, and it survives squash merges (it names content, not a commit).
+**Changes (exact, minimal):**
+- Remove `'security-review.md'` from `PUBLIC_ACCEPTANCE_RECORDS`.
+- New export `requiredJobInventory(jobs, version)`: returns an array sorted by job `name`, each `{ name, conclusion, steps: [{ name, conclusion }] }`, containing exactly the jobs `verifyBundle` requires (native targets, client shards, voice jobs, the package producer, the three package-acceptance jobs) and, for each, only the steps `verifyBundle` requires by name. Throws if a required job or step is missing or not `success`. Built from the same name lists `verifyBundle` uses (hoist those lists to module constants; do not duplicate them).
+- Replace line 93 and lines 95-96 with: `source.review` must have exactly the keys `status`, `ciRun`, `tree`, `inventory`; `status === 'automated'`; `ciRun === source.ciRun`; `tree === source.tree`; `inventory.sha256 === sha256(JSON.stringify(requiredJobInventory(jobs)))`. The notes check (line 94, `source.notes.sha256` vs `release-notes.md`) stays.
+- `publish-release.mjs` log text drops "review".
 
-**Interfaces (exact):**
+**Tests:** in `release-publish.test.ts`, update the fixture so `source.review = {status:'automated', ciRun, tree, inventory:{sha256}}` and drop `security-review.md`; keep every existing negative case. New: `publication refuses an attestation whose inventory digest does not match the run's jobs` (flip one step conclusion after signing); `publication refuses an attestation for another ci run id`; `publication refuses an attestation for another tree`; `publication refuses the old human review shape` (`status:'approved'`); `requiredJobInventory is sorted, complete and covers every job verifyBundle requires` (mutation: delete each required job in turn; both the function and `verifyBundle` throw); `requiredJobInventory ignores extra unrelated jobs` (digest unchanged when an unrelated job is added).
+
+- **Gate:** `node --test packages/desktop/test/release-publish.test.ts`. **Commit:** `feat(desktop): automated CI attestation replaces the per-release security review file`
+
+### Task 3: `release-notes.mjs`, generated notes from merged PR titles
+
+**Files:** Create `packages/desktop/scripts/release-notes.mjs`, `packages/desktop/test/release-notes.test.mjs`.
+
+**Interfaces:**
 ```js
-export function reviewedTreeOf(commit, version, { git }): string
-  // git = (args:string[], env?) => string. Implementation: temporary GIT_INDEX_FILE under os.tmpdir(),
-  // `read-tree <commit>`, `rm -r --cached --ignore-unmatch -q -- packages/desktop/release-inputs/<version>`, `write-tree`; always removes the temp index.
-export async function readInputs(directory, version): Promise<{ inputs, notes: Buffer, review: Buffer }>
-  // strict key set; sha256 of notes/review files must equal inputs; version must equal; both documents 1..262144 bytes, regular files, not symlinks
-export async function assembleAcceptance({ artifactsDirectory, run, inputsDirectory, version, commitTree, reviewedTree }): Promise<{ acceptance, files }>
-  // acceptance = { format:1, ciRun: run.id, commit: run.head_sha, head: run.head_sha, tree: commitTree,
-  //   review:{status:'approved', tree: commitTree, sha256}, notes:{sha256},
-  //   builds:{[target]:{sha256}} for BUILD_TARGETS from build-provenance-<target>.json,
-  //   performance:{[target]:{sha256}} and installedAccounts:{[target]:{sha256}} for TARGETS }
-  // Throws if reviewedTree (computed) differs from inputs.reviewedTree, or any referenced file is missing / not a regular file.
-// CLI: release-assemble.mjs assemble VERSION ARTIFACTS_DIR   (reads ci-run.json from ARTIFACTS_DIR; copies release-notes.md and security-review.md in; writes acceptance.json with flag 'wx')
-//      release-assemble.mjs freeze VERSION                    (writes inputs.json for the working tree; refuses if notes/review missing or a dirty tree)
+export function escapeMarkdown(text: string, max = 200): string
+  // strips control characters and newlines (to one space), collapses whitespace, truncates to max with an ellipsis,
+  // backslash-escapes ASCII punctuation  \ ` * _ { } [ ] < > ( ) # + - . ! | ~ : " ' $ % ^ = / ? ,  then writes '&' as '&amp;' and '@' as '&#64;'
+export function previousDesktopVersion(tagNames: string[], version: string): string | null
+  // among tags matching the desktop tag regex, the highest semver precedence strictly below `version`; numeric prerelease compare
+export async function generateNotes({ api, version, sha, previous }): Promise<string>
+  // previous = tag name or null. With a previous tag: GET compare/<previous>...<sha> (paginated, 100/page), then for each commit
+  // GET commits/<c>/pulls, keep PRs with merged_at != null and base.ref === 'main'; read ONLY `number` and `title`. Dedupe by number, sort ascending.
+  // Output: "# Dilla desktop <version>\n\n" + lines "- #<n> <escaped title>\n"; more than 250 PRs -> first 250 and "- and N more merged pull requests\n".
+  // No previous tag: "# Dilla desktop <version>\n\nFirst desktop release.\n".
+// CLI: release-notes.mjs generate VERSION SHA OUTPUT_FILE   (token from GH_TOKEN; lists tags via GET git/matching-refs/tags/desktop-v; writes with flag 'wx')
 ```
-The assembler does not judge CI quality: `verifyDesktopSigningCandidate` inside the signer does, from `ci-jobs.json`.
 
-**Tests:**
-- `assembleAcceptance derives every digest from the downloaded artifacts` - fixture dir with all records; each map entry equals the sha256 of the file bytes; `ciRun`, `commit`, `head` from `run`.
-- `assembleAcceptance output is accepted by verifyDesktopSigningCandidate` - reuse the `release-publish.test.ts` fixture builder (extract it to `test/support/release-fixture.mjs` in this task so both tests share it); the derived acceptance replaces the hand-built `source` and signing succeeds.
-- `readInputs refuses a notes file that differs from inputs.json` - flip one byte; throws `/notes digest/`.
-- `readInputs refuses extra keys, wrong format, wrong version and a symlinked document`.
-- `assembleAcceptance refuses a stale reviewedTree` - computed tree differs; throws `/changed since the security review/`.
-- `reviewedTreeOf ignores the inputs directory but nothing else` - temp git repo: tree identical before and after writing inputs, different after editing any other file.
-- `assemble CLI never overwrites an existing acceptance.json` - second run fails with `EEXIST`.
-- `freeze writes inputs.json whose digests match the files and refuses a dirty working tree`.
+**Tests:** `escapeMarkdown neutralises links, images, html, code fences, headings and mentions` (inputs `[x](http://e)`, `![i](u)`, `<img src=x onerror=1>`, triple backticks, `# h`, `@octocat`, `&lt;`; the output has no unescaped `[`, `<`, `` ` ``, `@`); `escapeMarkdown flattens newlines and control characters`; `escapeMarkdown truncates at the limit without cutting an escape pair`; `generateNotes lists numbers and titles only and never reads a PR body` (mock PRs carry poisoned `body`, `user`, `html_url`; a Proxy records no access; output has none of them); `generateNotes skips unmerged PRs and PRs not targeting main`; `generateNotes dedupes a PR that spans several commits`; `generateNotes caps the list at 250`; `previousDesktopVersion picks the numerically previous release (0.1.0-beta.10 after 0.1.0-beta.9) and ignores non-desktop and higher tags`; `generateNotes for a first release names no PRs`; `the CLI refuses to overwrite its output`.
 
-- [ ] Steps: failing tests; run `node --test packages/desktop/test/release-assemble.test.mjs`; implement; green; extend `release-publish.test.ts` import to the shared fixture and keep it green.
-- **Gate:** `release-assemble.test.mjs`, `release-publish.test.ts`.
-- **Commit:** `feat(desktop): derive acceptance.json from CI artifacts and committed release inputs`
+- **Gate:** `node --test packages/desktop/test/release-notes.test.mjs`. **Commit:** `feat(desktop): generate release notes from merged PR titles, escaped`
 
-### Task 3: `release-gate.mjs`
+### Task 4: `release-assemble.mjs`, derive `acceptance.json`
 
-**Files:**
-- Create: `packages/desktop/scripts/release-gate.mjs`
-- Create: `packages/desktop/test/release-gate.test.mjs`
-
-**Interface (exact):**
-```js
-export const TAG = /^desktop-v((0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-beta\.(0|[1-9]\d*))?)$/;
-export async function runGate({ env, git, api, readFile, outputDirectory }): Promise<{ run, version, channel, commit }>
-// CLI: node release-gate.mjs OUTPUT_DIR   (env: GITHUB_*, GH_TOKEN). Writes OUTPUT_DIR/ci-run.json and OUTPUT_DIR/ci-jobs.json (flag 'wx'),
-// appends run=, version=, channel=, commit= to $GITHUB_OUTPUT. Exit non-zero with one-line reason on any failure.
-```
-Checks, in this order, each fail-closed with a distinct message:
-1. `GITHUB_ACTIONS==='true'`, `GITHUB_EVENT_NAME==='push'`, `GITHUB_REF_TYPE==='tag'`, `GITHUB_REPOSITORY==='jonasthim/dilla'`, `GITHUB_REF===refs/tags/${GITHUB_REF_NAME}`, name matches `TAG`.
-2. `git rev-parse HEAD === GITHUB_SHA` (the checkout is the tagged commit) and is a 40-hex.
-3. `git merge-base --is-ancestor GITHUB_SHA origin/main`.
-4. `packages/desktop/package.json` `version` equals the tag version.
-5. `findGreenPushRun(api, GITHUB_SHA)`; `fetchCiJobs`; write the two JSON files.
-6. `packages/desktop/release-inputs/<version>/` holds exactly `inputs.json`, `release-notes.md`, `security-review.md`.
-7. No published release `desktop-v<version>` exists (a draft is allowed: it is a rerun); the version is greater, by semver precedence, than every published `desktop-v*` release of the same channel (list `GET /releases?per_page=100`, paginated).
-8. `linux-sandbox-component.json` `expiresAt` is at least 30 days after now (a fresh release must not ship a capsule about to expire; message names the file and the refresh command in `RELEASING.md`).
-
-**Tests:**
-- `gate passes for a main-ancestor tag with green run, inputs and matching version` - happy path returns `{run, version, channel, commit}` and writes both JSON files.
-- `gate refuses a tag whose commit is not an ancestor of main` - `git` mock throws on `merge-base`.
-- `gate refuses a tag ref that is a branch, a PR ref, or a non-desktop tag` - three env variants.
-- `gate refuses a version that differs from package.json`.
-- `gate refuses when the ci run is red, cancelled, a PR run, or for another sha` - delegates to Task 1; asserts the message surfaces.
-- `gate refuses missing, extra or renamed release input files`.
-- `gate refuses an already published version and allows a draft rerun`.
-- `gate refuses a version not greater than the newest published release of the channel` - table: `0.1.0-beta.1` after `0.1.0-beta.2`, equal, and `0.1.0-beta.10` after `0.1.0-beta.9` passes (numeric, not lexical).
-- `gate refuses a sandbox component expiring within 30 days`.
-- `gate never reads the tag message or annotation` - env has an adversarial `GITHUB_EVENT_PATH` payload; the gate's result is unaffected (asserted by not mocking any read of it).
-
-- [ ] Steps: failing tests, implement, green.
-- **Gate:** `node --test packages/desktop/test/release-gate.test.mjs`.
-- **Commit:** `feat(desktop): release gate for tag, main ancestry, version and green CI run`
-
-### Task 4: `candidate-digest.mjs` (artifact handoff)
-
-**Files:**
-- Create: `packages/desktop/scripts/candidate-digest.mjs`
-- Create: `packages/desktop/test/candidate-digest.test.mjs`
+**Files:** Create `packages/desktop/scripts/release-assemble.mjs`, `packages/desktop/test/release-assemble.test.mjs`, `packages/desktop/test/support/release-fixture.mjs` (extract the fixture builder from `release-publish.test.ts`; both tests use it).
 
 **Interface:**
 ```js
-export const EXPECTED_FILES = (channel, version) => string[]   // publicReleaseRecords(channel) + `dilla-${version}-linux-x64.sandbox.sig`, sorted
-export async function writeDigest(directory, { channel, version }): Promise<string>   // lists directory, requires exactly EXPECTED_FILES, regular non-symlink files, each <= 64 MiB;
-                                                                                      // writes SHA256SUMS ("<sha256>  <name>\n", sorted) with flag 'wx'; returns sha256 hex of SHA256SUMS bytes
-export async function verifyDigest(directory, expectedHex, { channel, version }): Promise<void>
-// CLI: candidate-digest.mjs write DIR CHANNEL VERSION   -> prints digest=<hex> on stdout (public data) and appends to $GITHUB_OUTPUT if set
-//      candidate-digest.mjs verify DIR CHANNEL VERSION DIGEST
+export async function assembleAcceptance({ artifactsDirectory, run, jobs, version, commitTree }): Promise<{ acceptance }>
+  // acceptance = { format:1, ciRun: run.id, commit: run.head_sha, head: run.head_sha, tree: commitTree,
+  //   review: { status:'automated', ciRun: run.id, tree: commitTree, inventory:{ sha256: sha256(JSON.stringify(requiredJobInventory(jobs, version))) } },
+  //   notes: { sha256 of release-notes.md in artifactsDirectory },
+  //   builds:{[t]:{sha256}} (BUILD_TARGETS, from build-provenance-<t>.json), performance:{[t]:{sha256}} and installedAccounts:{[t]:{sha256}} (TARGETS) }
+  // Every referenced file must be a regular, non-symlink file; release-notes.md 1..262144 bytes.
+// CLI: release-assemble.mjs assemble VERSION ARTIFACTS_DIR COMMIT_TREE   (reads ci-run.json, ci-jobs.json, release-notes.md from ARTIFACTS_DIR; writes acceptance.json with flag 'wx')
 ```
-`SHA256SUMS` is itself part of the artifact. `verifyDigest` fails if the file set is not exactly `EXPECTED_FILES` plus `SHA256SUMS`, if any entry mismatches, or if the hash of `SHA256SUMS` differs from `expectedHex`. Because `PUBLIC_ACCEPTANCE_RECORDS` includes `release-notes.md`, the notes ride along.
+Nothing named `release-inputs`, `inputs.json`, `reviewedTree` or a per-release `security-review.md` exists anywhere.
 
-**Tests:** `digest round trip verifies`; `verify refuses one flipped byte in any file`; `verify refuses an extra file, a missing file and a symlink`; `verify refuses a substituted SHA256SUMS with a consistent set` (attacker rewrites both the sums and a file; the outer digest from the sign job catches it); `write refuses to overwrite SHA256SUMS`.
+**Tests:** `assembleAcceptance derives every digest from the downloaded artifacts`; `assembleAcceptance output is accepted by verifyDesktopSigningCandidate` (shared fixture; signing succeeds with the derived acceptance); `assembleAcceptance refuses a missing, symlinked or oversized record`; `assembleAcceptance refuses jobs that lack a required job or step`; `assemble CLI never overwrites an existing acceptance.json`.
 
-- **Gate:** `node --test packages/desktop/test/candidate-digest.test.mjs`.
-- **Commit:** `feat(desktop): digest-checked handoff of the signed release between jobs`
+- **Gate:** `node --test packages/desktop/test/release-assemble.test.mjs packages/desktop/test/release-publish.test.ts`. **Commit:** `feat(desktop): derive acceptance.json and the automated attestation from the accepted CI run`
 
-### Task 5: `release-sign-job.mjs` (keys from secrets, sign, delete)
+### Task 5: `release-gate.mjs` (re-derive everything from main)
 
-**Files:**
-- Create: `packages/desktop/scripts/release-sign-job.mjs`
-- Create: `packages/desktop/test/release-sign-job.test.mjs`
+**Files:** Create `packages/desktop/scripts/release-gate.mjs`, `packages/desktop/test/release-gate.test.mjs`.
+
+**Interface:**
+```js
+export const TAG = /^desktop-v((0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-beta\.(0|[1-9]\d*))?)$/;
+export async function runGate({ env, git, api, outputDirectory }): Promise<{ tag, version, channel, sha, tree, ciRun, previous }>
+// CLI: node release-gate.mjs OUTPUT_DIR. Env: GITHUB_*, GH_TOKEN, HINT_TAG (= workflow_run.head_branch), HINT_RUN (= workflow_run.id).
+//      Writes ci-run.json and ci-jobs.json (flag 'wx'); appends tag=, version=, channel=, sha=, tree=, run=, previous= to $GITHUB_OUTPUT.
+```
+Checks, in order, each fail-closed with its own message. `HINT_*` are untrusted and compared only to what the API says:
+1. Running as the keyed workflow from main: `GITHUB_ACTIONS==='true'`, `GITHUB_EVENT_NAME==='workflow_run'`, `GITHUB_REPOSITORY==='jonasthim/dilla'`, `GITHUB_REF==='refs/heads/main'`, `GITHUB_WORKFLOW_REF` ends with `.github/workflows/desktop-release.yml@refs/heads/main`, `git rev-parse HEAD === GITHUB_SHA`.
+2. `HINT_TAG` matches `TAG`. `sha = resolveTagCommit(api, HINT_TAG)`: the API, not the event payload, says where the tag points.
+3. The triggering run, read from `GET actions/runs/<HINT_RUN>`: `path === '.github/workflows/desktop-release-request.yml'`, `event==='push'`, `head_sha === sha`, same-repository head, `conclusion==='success'` (consistency only; failure means a moved tag or a spoofed hint).
+4. `git merge-base --is-ancestor <sha> origin/main` (full-depth checkout of main).
+5. `git show <sha>:packages/desktop/package.json` parsed as data: `.version` equals the tag version. `tree = git rev-parse <sha>^{tree}`.
+6. `git diff --quiet <sha> HEAD -- packages/desktop/release-trust.json packages/desktop/src/update-keys.ts packages/desktop/linux-sandbox-component.json`, else "public pins changed after this commit was built".
+7. `findGreenPushRun(api, sha)`; `fetchCiJobs`; write both JSON files.
+8. No published release `desktop-v<version>` exists (a draft is allowed); version strictly greater, by semver precedence, than every published `desktop-v*` release of the same channel (`GET releases`, paginated). `previous` is `previousDesktopVersion(tags, version)` as a tag name or empty.
+9. `linux-sandbox-component.json` from main's HEAD (equal to the tag's by 6): `expiresAt` at least 30 days after now.
+No code, script, workflow or document from the tagged commit is read except that `package.json` version string and the tree hash.
+
+**Tests:** `gate passes for a main-ancestor tag with green run and matching version` (outputs and both JSON files); `gate refuses when not running as the main-branch workflow_run` (four env variants: wrong event, wrong ref, wrong workflow ref, HEAD != GITHUB_SHA); `gate resolves an annotated tag through the API, ignoring the tag message`; `gate refuses a hint tag that is not a desktop version tag` (includes `desktop-v1.0.0; rm -rf`, `../x`, leading `v`); `gate ignores a lying HINT_RUN` (run's head_sha differs from the API-resolved sha: refused); `gate refuses a triggering run from another workflow path, a fork, a non-push event or a failed run`; `gate refuses a tag commit that is not an ancestor of main`; `gate refuses a version that differs from the tagged package.json` (reads via mocked `git show`; asserts no checkout of the sha occurred); `gate refuses when a public-pin file differs between the tag commit and main`; `gate refuses red, cancelled, PR and other-sha ci runs`; `gate refuses an already published version and allows a draft rerun`; `gate refuses a version not greater than the newest published release of the channel` (includes beta.10 vs beta.9); `gate refuses a sandbox component expiring within 30 days`.
+
+- **Gate:** `node --test packages/desktop/test/release-gate.test.mjs`. **Commit:** `feat(desktop): release gate that re-derives tag, ancestry, version and green CI from main`
+
+### Task 6: `candidate-digest.mjs` (artifact handoff)
+
+**Files:** Create `packages/desktop/scripts/candidate-digest.mjs`, `packages/desktop/test/candidate-digest.test.mjs`.
+
+**Interface:**
+```js
+export const EXPECTED_FILES = (channel, version) => string[]   // publicReleaseRecords(channel) + `dilla-${version}-linux-x64.sandbox.sig`, sorted (no security-review.md after Task 2)
+export async function writeDigest(directory, { channel, version }): Promise<string>   // exactly EXPECTED_FILES, regular non-symlink files, each <= 64 MiB; writes SHA256SUMS ("<sha256>  <name>\n", sorted, flag 'wx'); returns sha256 hex of SHA256SUMS
+export async function verifyDigest(directory, expectedHex, { channel, version }): Promise<void>
+// CLI: candidate-digest.mjs write DIR CHANNEL VERSION -> appends digest=<hex> to $GITHUB_OUTPUT and prints it; verify DIR CHANNEL VERSION DIGEST
+```
+**Tests:** `digest round trip verifies`; `verify refuses one flipped byte in any file`; `verify refuses an extra file, a missing file and a symlink`; `verify refuses a substituted SHA256SUMS with a consistent set` (the outer digest from the sign job catches it); `write refuses to overwrite SHA256SUMS`.
+
+- **Gate:** `node --test packages/desktop/test/candidate-digest.test.mjs`. **Commit:** `feat(desktop): digest-checked handoff of the signed release between jobs`
+
+### Task 7: `release-sign-job.mjs` (keys from secrets, sign, delete)
+
+**Files:** Create `packages/desktop/scripts/release-sign-job.mjs`, `packages/desktop/test/release-sign-job.test.mjs`.
 
 **Interface:**
 ```js
@@ -228,272 +215,219 @@ export const KEY_ENV = Object.freeze({
 export async function signInJob({ env, version, artifactsDirectory, outputDirectory, tempRoot, sign = signDesktopRelease }): Promise<void>
 // CLI: node release-sign-job.mjs VERSION ARTIFACTS_DIR OUTPUT_DIR   (tempRoot = $RUNNER_TEMP)
 ```
-Behaviour: refuses unless `GITHUB_ACTIONS==='true'`, `GITHUB_REF==='refs/tags/desktop-v'+version`; refuses if any of the three variables is missing or empty; creates `mkdtemp(tempRoot + '/dilla-keys-')` and `chmod 0700`; writes each value with `{flag:'wx', mode:0o600}`; immediately `delete`s the three names from `process.env`; calls `sign({version, artifactsDirectory, keysDirectory, outputDirectory})`; in `finally`, for every key file overwrites with zeros of the same length, `fsync`, unlinks, then `rm` the directory; any cleanup failure throws and fails the job. Never logs a variable's value or length.
+Refuses unless `GITHUB_ACTIONS==='true'`, `GITHUB_REF==='refs/heads/main'`, `GITHUB_EVENT_NAME==='workflow_run'`, and all three variables are non-empty. Creates `mkdtemp(tempRoot/dilla-keys-)` with mode 0700; writes each value `{flag:'wx', mode:0o600}`; deletes the three names from `process.env`; calls `sign`; in `finally` overwrites each key file with zeros, fsyncs, unlinks, removes the dir; a cleanup failure fails the job. Never logs a value or length.
 
-**Tests:**
-- `signInJob refuses to run outside a matching tag ref`.
-- `signInJob refuses a missing key variable and writes nothing`.
-- `key files are 0600 in a 0700 directory under tempRoot and absent after success` - the injected `sign` captures the directory, asserts modes and contents equal the env values, then returns; afterwards the directory does not exist.
-- `key files are gone after the signer throws` - injected `sign` rejects; the directory is gone and the original error is rethrown.
-- `process.env no longer holds the key variables while signing` - asserted inside the injected `sign`.
-- `an end-to-end sign with freshly generated test keys produces a verifiable bundle` - real `signDesktopRelease` with the shared fixture from Task 2 and trust pins swapped via the fixture's temp copy of `release-trust.json` (follow how `release-publish.test.ts` injects keys); output passes `candidate-digest verify` and `verifyDesktopBundle`.
-- `no key material appears in captured stdout/stderr` - spy on `console.*` and `process.stdout.write`; no substring of any key value.
+**Tests:** `signInJob refuses to run outside the main-branch workflow_run`; `signInJob refuses a missing key variable and writes nothing`; `key files are 0600 in a 0700 directory under tempRoot and absent after success`; `key files are gone after the signer throws` (original error rethrown); `process.env no longer holds the key variables while signing`; `an end-to-end sign with freshly generated test keys produces a bundle that passes verifyDesktopBundle and candidate-digest verify` (real `signDesktopRelease`, the shared fixture, trust pins swapped via the fixture's temp `release-trust.json` as `release-publish.test.ts` does); `no key material appears in captured stdout or stderr`.
 
-- **Gate:** `node --test packages/desktop/test/release-sign-job.test.mjs`.
-- **Commit:** `feat(desktop): sign inside the release job from environment secrets, deleting keys after`
+- **Gate:** `node --test packages/desktop/test/release-sign-job.test.mjs`. **Commit:** `feat(desktop): sign inside the keyed job from environment secrets, deleting keys after`
 
-### Task 6: `publish-release.mjs` takes the candidate from the sign job and tolerates reruns
+### Task 8: `publish-release.mjs` runs from main on the sign job's output and tolerates reruns
 
-**Files:**
-- Modify: `packages/desktop/scripts/publish-release.mjs`
-- Modify: `packages/desktop/test/release-publish.test.ts`
+**Files:** Modify `packages/desktop/scripts/publish-release.mjs`, `packages/desktop/test/release-publish.test.ts`.
 
 **Changes (exact):**
-- `candidate` = `resolve(process.env.DESKTOP_RELEASE_CANDIDATE)` (required, must be absolute under `$RUNNER_TEMP`) instead of `packages/desktop/releases/<version>`. Remove `packages/desktop/releases/` from the design; no release output is ever committed.
-- Replace the `git diff --exit-code source.commit GITHUB_SHA -- . ':(exclude)releases/<v>'` by `release.source.commit === process.env.GITHUB_SHA` and `release.source.head === GITHUB_SHA` (the tagged commit is the accepted commit; there is no longer a commit after the accepted one).
-- Keep `merge-base --is-ancestor GITHUB_SHA origin/main` (defence in depth; the sign job already did it).
-- `findRelease(tag)`: if `GET /releases/tags/<tag>` is 404, also scan `GET /releases?per_page=100` pages for `draft === true && tag_name === tag` and return it (GitHub does not return drafts by tag).
-- Releases stay draft-then-publish internally: a draft is the only way to attach assets to an immutable version atomically; the end state is published, never left draft. Keep `prerelease: channel==='beta'`.
-- The `desktop-<channel>` feed is created the same way; unchanged ordering (`.sig`, metadata, appcast last after versioned assets).
+- Run context is the keyed workflow: require `GITHUB_EVENT_NAME==='workflow_run'`, `GITHUB_REF==='refs/heads/main'`. The tag and commit come from `DESKTOP_TAG` and `DESKTOP_SHA` (job outputs of `sign`), validated by the Task 5 `TAG` regex and 40-hex. The publisher re-resolves the tag through `resolveTagCommit` and requires it equals `DESKTOP_SHA`, requires `merge-base --is-ancestor DESKTOP_SHA origin/main`, and requires `release.source.commit === release.source.head === DESKTOP_SHA`. It no longer reads `GITHUB_SHA`/`GITHUB_REF_NAME` for the tag.
+- `candidate` = `DESKTOP_RELEASE_CANDIDATE` (absolute, under `$RUNNER_TEMP`). `packages/desktop/releases/` is gone; the `git diff` exclusion is removed.
+- Release `target_commitish` is `DESKTOP_SHA`.
+- `findRelease(tag)`: on a 404 from `/releases/tags/<tag>` also scan `GET /releases?per_page=100` pages for `draft===true && tag_name===tag`.
+- Release bodies come from the candidate's `release-notes.md` (generated, escaped text). Drafts remain the transient state for atomic attachment; the end state is published.
 
-**Tests (add to `release-publish.test.ts`):**
-- `publisher refuses a tag commit that is not the accepted source commit`.
-- `publisher takes the candidate from DESKTOP_RELEASE_CANDIDATE and refuses a relative or missing path`.
-- `publisher finds an existing draft by tag and does not create a second release` - API mock returns 404 for `/releases/tags/..` and a draft in the list.
-- `publisher publishes the versioned release before touching the feed` - ordered call log.
-- Existing tests that relied on `packages/desktop/releases/<version>` are updated to the env variable.
+**Tests:** `publisher refuses to run outside a main-branch workflow_run`; `publisher refuses a tag that resolves to a different commit than DESKTOP_SHA`; `publisher refuses a signed source commit that is not DESKTOP_SHA`; `publisher refuses a DESKTOP_SHA that is not an ancestor of main`; `publisher takes the candidate from DESKTOP_RELEASE_CANDIDATE and refuses a relative or missing path`; `publisher finds an existing draft by tag and does not create a second release`; `publisher publishes the versioned release before touching the feed` (ordered call log); existing tests updated for the env inputs.
 
-- **Gate:** `node --test packages/desktop/test/release-publish.test.ts packages/desktop/test/ci-run.test.mjs`.
-- **Commit:** `feat(desktop): publish the sign job's candidate, resume drafts, require tag == accepted commit`
+- **Gate:** `node --test packages/desktop/test/release-publish.test.ts packages/desktop/test/ci-run.test.mjs`. **Commit:** `feat(desktop): publish from main on the signed candidate, resume drafts`
 
-### Task 7: `desktop-release.yml`
+### Task 9: the two workflows
 
-**Files:**
-- Modify: `.github/workflows/desktop-release.yml` (full rewrite; action SHAs copied from the current file, `upload-artifact` SHA copied from `desktop.yml`)
+**Files:** Create `.github/workflows/desktop-release-request.yml`. Rewrite `.github/workflows/desktop-release.yml`. (Action SHAs copied from the current file; `upload-artifact` from `desktop.yml`.)
 
-**Exact structure:**
+`desktop-release-request.yml`, exact:
 ```yaml
-name: desktop release
+name: desktop release request
 on:
   push:
     tags: ['desktop-v*']
-concurrency:
-  group: desktop-release
-  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  request:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - run: echo "Desktop release requested; the privileged workflow re-derives everything from main."
+```
+`desktop-release.yml`, exact structure:
+```yaml
+name: desktop release
+on:
+  workflow_run:
+    workflows: ['desktop release request']
+    types: [completed]
+    branches: ['desktop-v*']
+concurrency: { group: desktop-release, cancel-in-progress: false }
 permissions: {}
 jobs:
   sign:
+    if: github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     environment: desktop-release
-    permissions:
-      contents: read
-      actions: read
-    outputs:
-      run: ${{ steps.gate.outputs.run }}
-      version: ${{ steps.gate.outputs.version }}
-      channel: ${{ steps.gate.outputs.channel }}
-      digest: ${{ steps.digest.outputs.digest }}
+    permissions: { contents: read, actions: read, pull-requests: read }
+    outputs: { tag, sha, version, channel, run, digest }   # steps.gate.outputs.* and steps.digest.outputs.digest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with: { fetch-depth: 0, persist-credentials: false }
+        with: { fetch-depth: 0, persist-credentials: false }      # no ref:, default = main tip
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with: { node-version-file: .nvmrc }
-      - name: Gate the tag, main ancestry, version and green ci run
+      - name: Gate (re-derives tag, ancestry, version and green ci run)
         id: gate
         run: node packages/desktop/scripts/release-gate.mjs "$RUNNER_TEMP/candidate"
-        env: { GH_TOKEN: '${{ github.token }}' }
-      - name: Fetch the accepted run's artifacts
+        env: { GH_TOKEN: '${{ github.token }}', HINT_TAG: '${{ github.event.workflow_run.head_branch }}', HINT_RUN: '${{ github.event.workflow_run.id }}' }
+      - name: Fetch the accepted ci run's artifacts
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          github-token: ${{ github.token }}
-          run-id: ${{ steps.gate.outputs.run }}
-          repository: jonasthim/dilla
-          pattern: desktop-{installers,performance,installed-account}-*
-          merge-multiple: true
-          path: ${{ runner.temp }}/candidate
-      - name: Derive acceptance.json from the accepted run and committed inputs
-        run: node packages/desktop/scripts/release-assemble.mjs assemble "${{ steps.gate.outputs.version }}" "$RUNNER_TEMP/candidate"
+        with: { github-token: '${{ github.token }}', run-id: '${{ steps.gate.outputs.run }}', repository: jonasthim/dilla, pattern: 'desktop-{installers,performance,installed-account}-*', merge-multiple: true, path: '${{ runner.temp }}/candidate' }
+      - name: Generate release notes from merged PR titles
+        run: node packages/desktop/scripts/release-notes.mjs generate "$VERSION" "$SHA" "$RUNNER_TEMP/candidate/release-notes.md"
+        env: { GH_TOKEN: '${{ github.token }}', VERSION: '${{ steps.gate.outputs.version }}', SHA: '${{ steps.gate.outputs.sha }}' }
+      - name: Derive acceptance.json and the automated attestation
+        run: node packages/desktop/scripts/release-assemble.mjs assemble "$VERSION" "$RUNNER_TEMP/candidate" "$TREE"
+        env: { VERSION: '${{ steps.gate.outputs.version }}', TREE: '${{ steps.gate.outputs.tree }}' }
       - name: Sign (the only step that receives secrets)
-        run: node packages/desktop/scripts/release-sign-job.mjs "${{ steps.gate.outputs.version }}" "$RUNNER_TEMP/candidate" "$RUNNER_TEMP/signed"
-        env:
-          DESKTOP_METADATA_PRIVATE_PEM: ${{ secrets.DESKTOP_METADATA_PRIVATE_PEM }}
-          DESKTOP_SPARKLE_PRIVATE_KEY: ${{ secrets.DESKTOP_SPARKLE_PRIVATE_KEY }}
-          DESKTOP_LINUX_SANDBOX_PRIVATE_PEM: ${{ secrets.DESKTOP_LINUX_SANDBOX_PRIVATE_PEM }}
+        run: node packages/desktop/scripts/release-sign-job.mjs "$VERSION" "$RUNNER_TEMP/candidate" "$RUNNER_TEMP/signed"
+        env: { VERSION: ..., DESKTOP_METADATA_PRIVATE_PEM: '${{ secrets.DESKTOP_METADATA_PRIVATE_PEM }}', DESKTOP_SPARKLE_PRIVATE_KEY: ..., DESKTOP_LINUX_SANDBOX_PRIVATE_PEM: ... }
       - name: Digest the signed output
         id: digest
-        run: node packages/desktop/scripts/candidate-digest.mjs write "$RUNNER_TEMP/signed" "${{ steps.gate.outputs.channel }}" "${{ steps.gate.outputs.version }}"
+        run: node packages/desktop/scripts/candidate-digest.mjs write "$RUNNER_TEMP/signed" "$CHANNEL" "$VERSION"
+        env: { CHANNEL: ..., VERSION: ... }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with: { name: desktop-signed-release, path: '${{ runner.temp }}/signed', if-no-files-found: error, retention-days: 3 }
   publish:
     needs: sign
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    permissions:
-      contents: write
-      actions: read
-    steps:
-      - checkout (fetch-depth: 0), setup-node (as above)
-      - uses: actions/download-artifact (name: desktop-signed-release, path: ${{ runner.temp }}/signed)
-      - run: node packages/desktop/scripts/candidate-digest.mjs verify "$RUNNER_TEMP/signed" "${{ needs.sign.outputs.channel }}" "${{ needs.sign.outputs.version }}" "${{ needs.sign.outputs.digest }}"
-      - run: node packages/desktop/scripts/publish-release.mjs plan   # env DESKTOP_RELEASE_CANDIDATE: ${{ runner.temp }}/signed
-      - run: npm ci --ignore-scripts
-      - uses: actions/download-artifact (pattern: desktop-installers-*, run-id: ${{ needs.sign.outputs.run }}, path: desktop-release-artifacts, merge-multiple: true)
-      - run: node packages/desktop/scripts/publish-release.mjs publish   # env GH_TOKEN, DESKTOP_RELEASE_CANDIDATE
+    permissions: { contents: write, actions: read }
+    steps: checkout (fetch-depth 0, default main); setup-node;
+      download-artifact name desktop-signed-release -> $RUNNER_TEMP/signed;
+      run candidate-digest.mjs verify (env CHANNEL, VERSION, DIGEST from needs.sign.outputs);
+      npm ci --ignore-scripts;
+      download-artifact pattern desktop-installers-*, run-id needs.sign.outputs.run, repository jonasthim/dilla -> desktop-release-artifacts;
+      run publish-release.mjs plan, then publish (env GH_TOKEN, DESKTOP_TAG, DESKTOP_SHA, DESKTOP_RELEASE_CANDIDATE)
 ```
-Expression values taken from `steps.gate.outputs.*` are validated by the gate before being written (regexes), but are still passed through `env:` in a final implementation rather than interpolated into `run:` (use `env: VERSION: ${{ ... }}` and `"$VERSION"`); the checker enforces no `${{` inside any `run:` line except `runner.temp`/`github.token` style paths. The `tags` filter, `environment` and `permissions` lines above are exactly what Task 8 pins.
+All `${{ }}` values reach scripts through `env:`; no `${{` in any `run:` line. The event-payload hints appear only in the gate step's `env:` and in the job `if`.
 
-**Verification without secrets:** nothing in this task can be executed end to end locally. The first real run is the rehearsal; its failure modes before `publish` leave nothing public. Run `actionlint` if present in `ci:local`, and the Task 8 checks.
+Steps: (1) write both files; (2) read GitHub's `workflow_run` documentation and confirm that `branches: ['desktop-v*']` matches a tag-push run's `head_branch`; if it does not, remove the `branches` line and its checker pin (the gate re-derives the tag, so nothing weakens; the trigger then also fires for branch-push runs, which the gate refuses); (3) run `actionlint` if `ci:local` carries it.
 
-- **Gate:** `node scripts/check-ci-workflow.mjs` (after Task 8), `npm run ci:local`.
-- **Commit:** `ci(desktop): keyed sign job and keyless publish job on desktop-v tags`
+**Verification limits:** the keyed path cannot be executed locally; the first real tag is the rehearsal, and every failure before `publish` is harmless.
 
-### Task 8: `check-ci-workflow.mjs` extensions (and retire `check-release-workflow.mjs`)
+- **Gate:** `node scripts/check-ci-workflow.mjs` (after Task 10), `npm run ci:local`. **Commit:** `ci(desktop): unprivileged tag request workflow and a keyed workflow_run release from main`
 
-**Files:**
-- Modify: `scripts/check-ci-workflow.mjs`
-- Modify: `scripts/check-ci-workflow.test.mjs`
-- Delete: `packages/desktop/scripts/check-release-workflow.mjs`, `packages/desktop/test/release-workflow.test.ts` (its rules forbid `secrets.` and `contents: write` file-wide and would contradict the new design; every rule it enforced is carried over below)
+### Task 10: `check-ci-workflow.mjs` extensions (and retire `check-release-workflow.mjs`)
+
+**Files:** Modify `scripts/check-ci-workflow.mjs`, `scripts/check-ci-workflow.test.mjs`. Delete `packages/desktop/scripts/check-release-workflow.mjs` and `packages/desktop/test/release-workflow.test.ts` (their `secrets.`-anywhere ban contradicts the new shape; every rule is carried over below).
 
 **Interface:**
 ```js
 export const DESKTOP_RELEASE_SECRETS = ['DESKTOP_METADATA_PRIVATE_PEM', 'DESKTOP_SPARKLE_PRIVATE_KEY', 'DESKTOP_LINUX_SANDBOX_PRIVATE_PEM'];
 export const DESKTOP_RELEASE_ACTIONS = [ /* the four actions/* SHAs, exact */ ];
-export function checkDesktopReleaseWorkflow(root): string[]   // problems; wired into the CLI at the bottom of the file next to checkDesktopWorkflow
+export function checkDesktopReleaseWorkflow(root): string[]   // wired into the CLI next to checkDesktopWorkflow
 ```
-Assertions (each yields a problem line prefixed `desktop-release.yml:`):
-1. The whole `on:` block equals `push:\n    tags: ['desktop-v*']` and nothing else (no `branches`, `workflow_dispatch`, `pull_request`, `pull_request_target`, `workflow_run`, `workflow_call`, `schedule`, `repository_dispatch`, `merge_group`).
-2. Top-level `permissions: {}`; jobs are exactly `sign` and `publish`.
-3. `sign` has `environment: desktop-release`, permissions exactly `contents: read` and `actions: read` (so no `contents: write`, `id-token`, `packages`, `pull-requests`, anything else); `publish` has no `environment:`, permissions exactly `contents: write` and `actions: read`, and `needs: sign`.
-4. `${{ secrets.` appears exactly three times in the file, with exactly the three `DESKTOP_RELEASE_SECRETS` names, all inside the single step named "Sign (the only step that receives secrets)" of `sign`; no `secrets: inherit`, no `toJSON(secrets)`, no `env:` at job or workflow level in `sign`.
-5. Every `uses:` is in `DESKTOP_RELEASE_ACTIONS` (exact SHA); `sign` uses only checkout, setup-node, download-artifact, upload-artifact; checkout in `sign` has `persist-credentials: false`; no `continue-on-error`, `always()`, `|| true`, `if: ${{ false }}`.
-6. `sign` contains the step order `gate` -> download -> assemble -> sign -> digest -> upload, and no step between the download and the sign step uses an action (only `run:`); `publish` runs `candidate-digest.mjs verify` before `publish-release.mjs plan`.
-7. Neither job's `run:` lines contain `${{ steps.`/`needs.` interpolation (values come through `env:`).
-8. No other file under `.github/workflows/` mentions `DESKTOP_`-prefixed secrets, `environment: desktop-release`, or triggers on a tag pattern that can match `desktop-v*` (`tags: ['*']`, `desktop-*`, `desktop-v*`) besides `desktop-release.yml`.
-9. Existing jobs of `ci.yml` do not reference `desktop-release` or `release-sign-job.mjs`.
-10. `release-keys.mjs` source (read as text) contains no `writeFile`/`createWriteStream` call whose first argument mentions `private` and sets the environment policy name `desktop-v*` exactly once (guards the one-time setup against regressing to disk writes).
+Assertions (each problem prefixed with the file name):
+1. **Request workflow shape.** `desktop-release-request.yml`: `name: desktop release request`; `on:` exactly `push:\n    tags: ['desktop-v*']`; top-level `permissions:` exactly `contents: read`; exactly one job `request`; no job-level `permissions`, `environment`, `env`, `secrets` or any `uses:` (no actions, no checkout); no `${{ secrets`.
+2. **Keyed trigger.** `desktop-release.yml` `on:` is exactly `workflow_run` with `workflows: ['desktop release request']` (string-equal to the request workflow's `name`), `types: [completed]`, `branches: ['desktop-v*']`; no other trigger (`push`, `pull_request*`, `workflow_dispatch`, `schedule`, `repository_dispatch`, `workflow_call`, `merge_group`).
+3. **Job `if`** of `sign` is exactly the pinned string (event `push` and conclusion `success`).
+4. **Permissions.** Top-level `permissions: {}`; jobs exactly `sign` and `publish`; `sign` permissions exactly `contents: read`, `actions: read`, `pull-requests: read` (no `contents: write`, `id-token`, `packages`, anything else); `publish` exactly `contents: write` and `actions: read`, `needs: sign`, no `environment`.
+5. **Environment confined.** `environment: desktop-release` occurs exactly once in the whole `.github/workflows/` tree: in the `sign` job of `desktop-release.yml`. The three `DESKTOP_RELEASE_SECRETS` occur in `${{ secrets.` exactly three times in total across all workflow files, all inside the step named "Sign (the only step that receives secrets)"; no `secrets: inherit` or `toJSON(secrets)` in the release workflows; no `env:` at job or workflow level in `sign`.
+6. **workflow_run pitfalls.** In `desktop-release.yml`: no `ref:`, `repository:` or `path:` key under any `actions/checkout`; no occurrence of `workflow_run.head_sha` or `workflow_run.head_repository`; `workflow_run.head_branch` and `workflow_run.id` only in the `env:` of the step named "Gate (re-derives ...", and `workflow_run.event`/`.conclusion` only in the job `if`; every `download-artifact` has `run-id: ${{ steps.gate.outputs.run }}` or `${{ needs.sign.outputs.run }}` (never `workflow_run.id`, never omitted); no `${{` interpolation inside any `run:` line; no `run:`/`uses:` references a path of a tag checkout.
+7. **Actions.** Every `uses:` in the two files is one of `DESKTOP_RELEASE_ACTIONS` (exact SHA); `sign` uses only checkout, setup-node, download-artifact, upload-artifact; `sign`'s checkout has `persist-credentials: false`; no `continue-on-error`, `always()`, `|| true`, `if: ${{ false }}`.
+8. **Order.** In `sign`: gate, download, notes, assemble, sign, digest, upload in that order, with only `run:` steps between the download and the sign step; `publish` runs `candidate-digest.mjs ... verify` before `publish-release.mjs ... plan`.
+9. **No other workflow** references `desktop-release` as an environment, `DESKTOP_` secrets, `release-sign-job.mjs`, or triggers with `workflow_run` on `desktop release request`.
+10. **`release-keys.mjs` source (text):** contains no write call whose path argument mentions `private`; defines the environment policy with exactly one `{ name: 'main', type: 'branch' }` and no `type: 'tag'` policy.
 
-**Tests (names, each mutates the real file text and asserts a problem, plus one that the real file is clean):**
-- `desktop release workflow as committed has no problems`.
-- `adding workflow_dispatch, pull_request, workflow_run, a branches filter or a second tag pattern is reported` (five mutations).
-- `removing environment: desktop-release from sign is reported`; `adding an environment to publish is reported`.
-- `adding contents: write to sign is reported`; `adding id-token: write to sign is reported`; `removing contents: write from publish is reported`.
-- `a fourth secrets reference, a secrets reference outside the sign step, secrets: inherit and toJSON(secrets) are reported`.
-- `an unpinned or unknown action, or a third-party action in sign, is reported`.
-- `a step with an action between download and sign is reported`.
-- `a ${{ steps.* }} interpolation in a run line is reported`.
-- `another workflow referencing environment desktop-release is reported` (mutation of a copy of `ci.yml` text through the function's text-level helper).
-- `release-keys.mjs writing a private key path is reported`.
+**Tests (mutations of the real files; each asserts a problem; plus one clean run):** `desktop release workflows as committed have no problems`; `request workflow gaining secrets, an environment, contents: write, a uses: line or a checkout is reported` (five mutations); `keyed workflow gaining push, pull_request, workflow_dispatch, a different upstream name, a missing types or branches filter, or an extra trigger is reported`; `removing or changing the sign job if is reported`; `removing environment: desktop-release from sign, adding an environment to publish, or naming the environment in another workflow is reported`; `adding contents: write, id-token: write or any scope to sign is reported`; `removing contents: write from publish is reported`; `a fourth secrets reference, a secrets reference outside the sign step, secrets: inherit and toJSON(secrets) are reported`; `checkout of workflow_run.head_sha, or any ref:, repository: or path: on checkout, is reported`; `download-artifact with the triggering run id, or without run-id, is reported`; `workflow_run.head_branch outside the gate env is reported`; `a ${{ }} interpolation in a run line is reported`; `an unpinned or third-party action, or an action between download and sign, is reported`; `release-keys.mjs writing a private key path or adding a tag policy is reported`.
 
-- **Gate:** `node --test scripts/check-ci-workflow.test.mjs`; `node scripts/check-ci-workflow.mjs`.
-- **Commit:** `ci: pin the desktop release workflow's trigger, environment, secrets and permissions`
+- **Gate:** `node --test scripts/check-ci-workflow.test.mjs`; `node scripts/check-ci-workflow.mjs`. **Commit:** `ci: pin the desktop release trampoline, environment, secrets and permissions`
 
-### Task 9: `release-keys.mjs setup`
+### Task 11: `release-keys.mjs setup`
 
-**Files:**
-- Modify: `packages/desktop/scripts/release-keys.mjs` (the file exists; extended, see rulings)
-- Modify: `packages/desktop/test/release-keys.test.ts`
-- Modify: `packages/desktop/test/linux-appimage-launcher.test.ts` (line 60: read the sandbox key from `linux-sandbox-component.json` instead of the hard-coded `qQe0Z4...`)
+**Files:** Modify `packages/desktop/scripts/release-keys.mjs` (exists; extended), `packages/desktop/test/release-keys.test.ts`, `packages/desktop/test/linux-appimage-launcher.test.ts` (line 60 reads the sandbox key from `linux-sandbox-component.json` instead of the hard-coded `qQe0Z4...`).
 
-**Removed:** the `create DIR` command (writes private keys to disk) and `normalize-sparkle` (legacy encoding; fresh keys are generated in the right format). `import-public` stays and now shares the writer below.
+**Removed:** `create DIR` (writes private keys to disk) and `normalize-sparkle`. `import-public` stays and shares `writePublicTrust`.
 
-**Interfaces (exact):**
+**Interfaces:**
 ```js
 export function generateKeyMaterial(): {
-  metadata: { privatePem: Buffer, publicPem: string },          // PEM built into a Buffer from DER via encodeBase64Buffer, never a string
-  sparkle:  { seedBase64: Buffer, publicBase64: string },        // seed + '\n' as Buffer
+  metadata: { privatePem: Buffer, publicPem: string },
+  sparkle:  { seedBase64: Buffer, publicBase64: string },
   sandbox:  { privatePem: Buffer, publicBase64: string },
-  zero(): void }                                                 // fills every private Buffer with 0
-export function encodeBase64Buffer(bytes: Buffer, { wrap }?: { wrap?: number }): Buffer   // standard base64, no string intermediates
-export async function setupRelease({ repo = 'jonasthim/dilla', env = 'desktop-release', rotate = false, gh = defaultGh, now = new Date(), root }): Promise<{ fingerprints }>
-// CLI: release-keys.mjs setup [--rotate] [--repo owner/name]
-//      release-keys.mjs import-public PUBLIC_JSON      (unchanged behaviour)
+  zero(): void }
+export function encodeBase64Buffer(bytes: Buffer, { wrap }?: { wrap?: number }): Buffer   // standard base64 into a Buffer, no string intermediate
+export async function setupRelease({ repo = 'jonasthim/dilla', env = 'desktop-release', rotate = false, tagRuleset = false, acceptUnprotectedMain = false, gh = defaultGh, now = new Date(), root }): Promise<{ fingerprints }>
+// CLI: release-keys.mjs setup [--rotate] [--tag-ruleset] [--accept-unprotected-main] [--repo owner/name] | import-public PUBLIC_JSON
 ```
-`gh` is `{ api(args, jsonBody?) , secretSet(name, buffer) }`. `secretSet` spawns `gh secret set NAME --env desktop-release --repo owner/name` with `stdio: ['pipe','ignore','pipe']`, writes the buffer to stdin, ends it, collects stderr (scrubbed of nothing: it never contains the value), rejects on non-zero. Argv never contains key material; a test spies on `spawn`.
+`gh` = `{ api(method, path, jsonBody?), secretSet(name, buffer), secretNames(env) }`; `secretSet` spawns `gh secret set NAME --env desktop-release --repo owner/name` with `stdio:['pipe','ignore','pipe']` and writes the Buffer to stdin; argv never holds key material.
 
-`setupRelease` order, aborting on the first error:
-1. Preflight: `gh auth status` equivalent via `api('user')`; repo admin (`api('repos/{repo}')` `permissions.admin === true`); `git status --porcelain` for the three public files clean.
-2. `PUT repos/{repo}/environments/{env}` with `{ "deployment_branch_policy": { "protected_branches": false, "custom_branch_policies": true }, "can_admins_bypass": false, "reviewers": [], "wait_timer": 0 }`; list `deployment-branch-policies`; delete every policy that is not `{name:'desktop-v*', type:'tag'}`; create that one if missing; re-`GET` and assert exactly one policy, type `tag`, name `desktop-v*`.
-3. Repository ruleset `desktop-release tags` (target `tag`, include `refs/tags/desktop-v*`, rules `creation`, `update`, `deletion`, `non_fast_forward`, bypass actor repository role Admin `always`), created if no ruleset of that name exists, updated otherwise.
-4. If any of the three secrets already exists in the environment (`gh secret list --env`) and not `rotate`, abort before generating anything: "refusing to replace release keys; pass --rotate".
-5. `generateKeyMaterial()`; self-test: sign and verify a probe with each key against its derived public key; `assertDedicatedKeys` on the new public set; construct the new `linux-sandbox-component.json` (same `goVersion`, `helper`; `publicKeys: [sandboxPublic]`; `generation` unchanged on first setup and `+1` when `rotate`; `publishedAt = now` truncated to seconds, `expiresAt = now + 90 days`) and validate with `validateConfiguration`.
-6. Set the three secrets (`DESKTOP_METADATA_PRIVATE_PEM`, `DESKTOP_SPARKLE_PRIVATE_KEY`, `DESKTOP_LINUX_SANDBOX_PRIVATE_PEM`) one by one from the Buffers, then `zero()` in a `finally` (also on failure).
-7. Only after all three succeeded, write `release-trust.json`, `src/update-keys.ts` (via the shared `writePublicTrust`), and `linux-sandbox-component.json`.
-8. Print fingerprints (sha256 of each public key DER), the three file names to commit, and "no private key was written to disk".
-If step 6 fails midway, print which secret names were set and that the repo files were not touched; rerunning with `--rotate` is the recovery.
+Order, aborting on the first error:
+1. Preflight: `GET user`; `GET repos/{repo}` has `permissions.admin`; the three public files have no uncommitted changes; `main` is protected (`GET repos/{repo}/branches/main` `protected===true` or an active branch ruleset covers it), else abort unless `acceptUnprotectedMain`, printing that the whole design depends on it.
+2. `PUT environments/{env}` with `{ deployment_branch_policy: { protected_branches: false, custom_branch_policies: true }, can_admins_bypass: false, reviewers: [], wait_timer: 0 }`; list `deployment-branch-policies`; delete every policy other than `{ name: 'main', type: 'branch' }`; create it if missing; re-GET and assert exactly that one policy.
+3. Only with `tagRuleset` (optional defence in depth): repository ruleset `desktop-release tags` (target `tag`, include `refs/tags/desktop-v*`, rules `creation`, `update`, `deletion`, `non_fast_forward`, bypass actor repository Admin role).
+4. If any of the three secrets already exists and not `rotate`: abort before generating anything.
+5. Generate; self-test (sign/verify probe with each key); `assertDedicatedKeys`; build the new `linux-sandbox-component.json` (same `goVersion` and `helper`; `publicKeys:[sandboxPublic]`; `generation` unchanged on first setup, +1 on rotate; `publishedAt = now` to the second; `expiresAt = now + 90 days`) and validate with `validateConfiguration`.
+6. Set the three secrets from the Buffers; `zero()` in `finally`.
+7. Only after all three succeeded, write `release-trust.json`, `src/update-keys.ts`, `linux-sandbox-component.json`.
+8. Print fingerprints (sha256 of each public DER), the three files to commit, and "no private key was written to disk".
+If step 6 fails midway, print which secret names were set and that repository files are untouched; recover with `--rotate`.
 
-**Tests (all with an injected fake `gh`, no network, no spawn):**
-- `generateKeyMaterial produces keys in the formats signDesktopRelease reads` - parse each: PEM loads with `createPrivateKey`, seed decodes to 32 bytes and round-trips through the JWK path used in `release-feed.mjs`, sandbox raw public is 32 bytes; all three public keys distinct.
-- `encodeBase64Buffer equals Buffer.toString('base64') and never yields a string` - random lengths 0..300, with and without 64-column wrapping.
-- `zero() clears every private Buffer` - all bytes 0 afterwards.
-- `setupRelease sends each key only on stdin` - the fake `secretSet` records names and byte equality with the generated material; a `spawn` spy proves argv contains none of the secret bytes (checked against base64/PEM of each key).
-- `setupRelease writes no private key to disk, stdout or stderr` - run in a temp root with `fs` watchers: only the three public files appear; console output contains none of the private key bytes.
-- `setupRelease creates the environment with exactly one tag policy desktop-v*` - fake `gh` starts with a stale `main` branch policy and no environment; final state has exactly the tag policy, `can_admins_bypass:false`.
-- `setupRelease fails if the policy read-back differs` (fake returns a branch policy).
-- `setupRelease creates or updates the tag ruleset`.
-- `setupRelease refuses to replace existing secrets without --rotate and generates nothing`.
-- `setupRelease leaves the repository files untouched when a secret write fails` and reports which names were set.
-- `setupRelease public output satisfies the verifier's pins` - after a run, `assertDedicatedKeys(component, trust)` passes, `update-keys.ts` contains exactly the PEM in `release-trust.json`, `electron-builder.cjs` loads the new `sparklePublicKey`.
-- `release pins agree` (new, runs in normal CI against the committed files): `RELEASE_PUBLIC_KEYS` equals `release-trust.json.metadataPublicKeys`; sandbox key differs from both.
-- `import-public still writes trust and update-keys and reads no private material` (existing behaviour, kept).
+**Tests (injected fake `gh`, no network, no spawn):** `generateKeyMaterial produces keys in the formats signDesktopRelease reads`; `encodeBase64Buffer equals Buffer.toString('base64') and never yields a string` (lengths 0..300, wrapped and not); `zero() clears every private Buffer`; `setupRelease sends each key only on stdin` (fake records bytes; a `spawn` spy proves argv has none of the key bytes); `setupRelease writes no private key to disk, stdout or stderr`; `setupRelease leaves exactly one deployment policy, branch main, and no tag policy` (starts with a stale tag policy and no environment); `setupRelease fails if the policy read-back differs`; `setupRelease refuses an unprotected main without --accept-unprotected-main`; `setupRelease creates the tag ruleset only with --tag-ruleset`; `setupRelease refuses to replace existing secrets without --rotate and generates nothing`; `setupRelease leaves repository files untouched when a secret write fails` (reports which names were set); `setupRelease public output satisfies the verifier's pins` (`assertDedicatedKeys` passes; `update-keys.ts` equals `release-trust.json`; `electron-builder.cjs` loads the new `sparklePublicKey`); `release pins agree` (runs in normal CI on the committed files); `import-public still writes trust and update-keys and reads no private material`.
 
-- **Gate:** `node --test packages/desktop/test/release-keys.test.ts packages/desktop/test/linux-appimage-launcher.test.ts`.
-- **Commit:** `feat(desktop): one-time release key setup straight into the desktop-release environment`
+- **Gate:** `node --test packages/desktop/test/release-keys.test.ts packages/desktop/test/linux-appimage-launcher.test.ts`. **Commit:** `feat(desktop): one-time release key setup straight into the desktop-release environment`
 
-### Task 10: Docs and runbook
+### Task 12: Docs and runbook
 
-**Files:**
-- Create: `packages/desktop/RELEASING.md` (the one doc a maintainer needs; `packages/desktop/` has no docs dir)
-- Modify: `docs/user/desktop.md` (replace the "offline signer" wording about publication with the automated flow in two sentences; keep it user-facing)
-- Modify: `README.md` "what works" line for desktop updates, if it mentions manual signing (check with `rg -n "offline|sign" README.md`)
-- Re-shoot nothing (no UI change).
+**Files:** Create `packages/desktop/RELEASING.md` (packages/desktop has no docs dir). Modify `docs/user/desktop.md` (replace the "independent security review"/offline-signing wording with two sentences: the release is signed and published by a main-branch workflow after a green CI run; the signed record attests the CI run, not a human review) and the README "what works" line if it mentions manual signing (`rg -n "offline|security review" README.md docs/user/desktop.md`). No screenshots change.
 
-`RELEASING.md` content (short):
-- **Release:** (1) land the code and a version bump in `packages/desktop/package.json`; (2) independent security review of the main tip tree; (3) `release-assemble.mjs freeze <version>` after writing `release-notes.md` and `security-review.md`; PR, merge; (4) wait for green `ci` on that exact commit (do not merge anything else first; a later push cancels the earlier run); (5) `git tag desktop-v<version> <commit> && git push origin desktop-v<version>`; (6) watch `sign` then `publish`; (7) verify `https://github.com/jonasthim/dilla/releases/tag/desktop-v<version>` and `desktop-beta`/`desktop-stable` feed assets; tell the Homelab session.
-- **Failure handling:** red `sign` leaves nothing public; fix the cause on main and move to a new commit, then delete and recreate the tag (admin only) or bump the version; rerun a red `publish` with "Re-run failed jobs".
-- **Sandbox component freshness:** `linux-sandbox-component.json` is valid for at most 93 days; the gate wants 30 days left. Refresh: new `generation`, new dates, same keys, PR, then release.
-- **Key rotation:** routine (yearly or on suspicion): `node packages/desktop/scripts/release-keys.mjs setup --rotate`, public-key PR, release. Metadata keys: `metadataPublicKeys` accepts a list; to avoid stranding installed clients keep the old public key in the list for one release and sign with the new one only after clients have updated (note: `signDesktopRelease` signs with one key and requires it in the list). Sparkle key: Sparkle clients pin one `SUPublicEDKey`; rotation requires a Developer-ID-signed transition release signed with the old key that ships the new key (document as a manual, announced procedure). Sandbox key: `publicKeys` accepts up to 8; add the new key, bump `generation`, release, then drop the old key a release later.
-- **Compromise response:** delete the three environment secrets and the environment (`gh api -X DELETE`), disable the tag ruleset bypass, rotate as above, publish a release that removes the old public keys, announce.
-- **Residual risk** paragraph copied from the threat model.
-- **Reading the audit trail:** repository Deployments (environment `desktop-release`), Actions run, the `SHA256SUMS` in the run's artifact.
+`RELEASING.md` (short):
+- **Release:** land code with the version bump in `packages/desktop/package.json`; wait for green `ci` on the newest code-touching commit of main (merge nothing else first: a later push cancels the earlier run, and a docs-only tip has no installers); `git tag desktop-v<version> <that commit> && git push origin desktop-v<version>`; watch `desktop release request`, then `desktop release` (`sign`, `publish`); check `desktop-v<version>` and the `desktop-beta`/`desktop-stable` assets.
+- **What the workflow trusts:** the tag name is a hint; everything is re-derived from main; nothing from the tagged commit executes.
+- **Failure handling:** a red `sign` leaves nothing public; fix on main, tag the new green commit; "Re-run failed jobs" on a red `publish` is idempotent.
+- **Sandbox component freshness:** valid at most 93 days; the gate wants 30 left; refresh by bumping `generation` and dates (same keys), PR, then release.
+- **Key rotation:** `release-keys.mjs setup --rotate`, commit the public pins, release. Metadata keys: `metadataPublicKeys` is a list; keep the old public key one release so installed clients can update, then drop it. Sparkle: clients pin one `SUPublicEDKey`; rotation needs a transition release signed with the old key that ships the new one (manual, announced). Sandbox: `publicKeys` accepts up to 8; add the new key, bump `generation`, release, drop the old key a release later.
+- **Compromise response:** delete the environment and its secrets (`gh api -X DELETE repos/jonasthim/dilla/environments/desktop-release`), review who can merge to main, rotate as above, ship a release dropping the old keys, announce.
+- **Residual risk:** copied from the threat model's "What remains".
+- **Audit trail:** repository Deployments (environment `desktop-release`), the keyed Actions run, `SHA256SUMS` in its artifact.
 
-- **Gate:** `npm run check:docs` (the docs job's check) and a manual read-through.
-- **Commit:** `docs(desktop): release and key-rotation runbook for the automated flow`
+- **Gate:** `npm run check:docs`; manual read-through. **Commit:** `docs(desktop): release and key-rotation runbook for the automated flow`
 
-### Task 11: Final integration and release-readiness checks
-
-**Files:** none new.
+### Task 13: Final integration
 
 - [ ] `npm run ci:local` clean (includes `check:ci`, `test:ci-check`, docs).
-- [ ] `node packages/desktop/scripts/release-gate.mjs` against a local fixture repo is covered by Task 3; additionally run the whole chain in one fixture test `release-pipeline.test.mjs`: `gate (mock api, temp git repo) -> assemble -> signInJob (fresh keys) -> candidate-digest write -> verify -> publish plan` with `fetch` mocked; asserts the published asset list equals the signed inventory (12 assets) and that no file named `*private*` exists anywhere under the temp dirs after the run.
+- [ ] One fixture test, `release-pipeline.test.mjs`: `gate (mock api, temp git repo with a main and a tagged commit) -> notes -> assemble -> signInJob (fresh keys) -> candidate-digest write -> verify -> publish plan`, `fetch` mocked; asserts the published asset list equals the signed inventory, that no file named `*private*` exists under the temp dirs afterwards, and that nothing was read from the tagged commit's working tree.
 - [ ] Opus boundary-security review per "Review Focus".
-- [ ] Push branch, PR, CI green, merge. After merge, delete the feature branch remotely and locally per the standing branch-cleanup rule.
-- **Commit:** `test(desktop): end-to-end fixture of gate, assemble, sign, digest and publish plan`
+- [ ] Push branch, PR, CI green, merge; delete the feature branch remotely and locally.
+- **Commit:** `test(desktop): end-to-end fixture of gate, notes, assemble, sign, digest and publish plan`
 
 ## Rulings the plan made (not in Jonas's decisions)
 
-1. **Release inputs are committed per version** under `packages/desktop/release-inputs/<version>/` (`release-notes.md`, `security-review.md`, `inputs.json`) in the tagged commit, bound by `reviewedTree`. Alternatives (store in a release draft, or fetch from a PR comment) put authored, signed content outside reviewed history. *Cost if wrong:* one extra PR per release and a brittle exact-tree match (anything merged between review and tag forces a re-freeze and a delta review).
-2. **`acceptance.json` is derived, not authored.** Quality evidence is the CI run's job/step conclusions, which `verifyBundle` already demands. *Cost if wrong:* no human attestation of measured performance beyond "CI passed", which is what the old flow also verified mechanically.
-3. **The security review's independence is not machine-checkable.** The gate only requires a merged, digest-bound file. *Cost if wrong:* a rubber-stamp file ships; mitigation is review of the inputs PR.
-4. **`review.tree` is set to the release commit's tree** (required by `verifyBundle`), while the true review claim is `reviewedTree` (that tree minus the inputs directory). *Cost if wrong:* the signed record slightly overstates what was reviewed (the inputs directory itself).
-5. **A tag ruleset on `desktop-v*`** (creation/update/deletion/non-fast-forward limited to admins) is created by `setup`. *Cost if wrong:* if Claude's push credentials are not admin, tag pushes are rejected until Jonas pushes or adds a bypass actor.
-6. **The gate adds rules beyond "tag on green main commit":** version must exceed every published release of the channel and must not already be published; sandbox component must have at least 30 days left. *Cost if wrong:* a legitimate backport tag for an older line is refused (remedy: temporarily relax by code change).
-7. **Releases are created as drafts and published within the same run** (the only atomic way to attach assets to an immutable versioned release); the end state is published. `findRelease` is fixed to see drafts so reruns do not duplicate. *Cost if wrong:* a crash mid-publish leaves a visible draft (invisible to the public) until rerun.
-8. **`release-keys.mjs` already exists**; it is extended, and its disk-writing `create` and `normalize-sparkle` commands are removed. *Cost if wrong:* anyone with a key directory made by `create` loses the helper (none exist; nothing has been released).
-9. **Secret names** `DESKTOP_METADATA_PRIVATE_PEM`, `DESKTOP_SPARKLE_PRIVATE_KEY`, `DESKTOP_LINUX_SANDBOX_PRIVATE_PEM`; secrets are PEM/base64 text, assembled in Buffers. *Cost if wrong:* renaming needs a coordinated change in setup, workflow and checker.
-10. **`check-release-workflow.mjs` and its test are deleted**; its rules are carried into `check-ci-workflow.mjs`. *Cost if wrong:* a missed rule; Task 8's list was built from the old file line by line.
-11. **`setup` refuses to replace secrets without `--rotate`, bumps the sandbox `generation` only on rotate, and resets `publishedAt/expiresAt`.** *Cost if wrong:* generation 1 with new dates for a fresh start is harmless as nothing shipped.
-12. **The sign job does no `npm ci`**, so no npm dependency code can run in the process that holds keys. *Cost if wrong:* if a future signer import needs a package, the checker (assertion 6 forbids actions, not npm) and review must catch an `npm ci` appearing before the sign step; add that to Task 8 as a failing mutation if it ever lands.
-13. **First-release path gains a release-inputs PR** between the public-key PR and the tag, and tags the release-inputs merge commit, not the public-key merge commit. *Cost if wrong:* none functionally; one more CI cycle (about one desktop build) before beta.1.
-14. **Publisher strictness:** `source.commit === head === GITHUB_SHA`; `packages/desktop/releases/` no longer exists. *Cost if wrong:* none for new releases; any old candidate directory flow is gone.
+1. **The attestation shape**: `source.review = { status:'automated', ciRun, tree, inventory:{sha256} }`, the digest covering the required-job inventory (names, conclusions, required steps). A new signed record format; `verifyBundle` accepts only it. *Cost if wrong:* Task 2 is redone if the record should carry more (for example the full job list); old `approved` bundles no longer verify (none exist).
+2. **Notes use `compare` + `commits/{sha}/pulls`, PR number and title only**, capped at 250, with a fixed "First desktop release." for the first tag. *Cost if wrong:* a long gap between tags shows "and N more"; direct pushes to main (none, with protection) are not listed.
+3. **`pull-requests: read`** on `sign` for the commit-to-PR API. *Cost if wrong:* if `contents: read` suffices it is one unnecessary read scope; dropping it also means editing the checker's pinned set.
+4. **`setup` refuses an unprotected `main`** unless `--accept-unprotected-main`, since the design's whole key boundary is "only reviewed main code runs with the keys". *Cost if wrong:* an extra flag or protection step for Jonas before first use.
+5. **The tag ruleset is optional** (`--tag-ruleset`, off by default); tags no longer reach the keys. *Cost if wrong:* anyone with write access can start a release of a green, higher-version main commit.
+6. **The gate requires byte equality of the three public-pin files between the tagged commit and main's tip.** *Cost if wrong:* after a key rotation merges, an older green commit cannot be released; re-tag a newer commit.
+7. **The gate adds rules beyond "tag on a green main commit":** version greater than all published of the channel and not already published; sandbox component with 30 days left; the triggering request run must be a successful push run of the request workflow for that same sha. *Cost if wrong:* a backport tag for an older line is refused.
+8. **Drafts remain a transient state inside `publish`** (the only atomic way to attach assets to an immutable release); end state published; draft lookup fixed for reruns. *Cost if wrong:* a crash mid-publish leaves an invisible draft until rerun.
+9. **`release-keys.mjs` already exists**; extended, with `create` and `normalize-sparkle` removed. *Cost if wrong:* none (no keys exist).
+10. **Secret names** `DESKTOP_METADATA_PRIVATE_PEM`, `DESKTOP_SPARKLE_PRIVATE_KEY`, `DESKTOP_LINUX_SANDBOX_PRIVATE_PEM`. *Cost if wrong:* renaming touches setup, workflow and checker together.
+11. **`check-release-workflow.mjs` and `release-workflow.test.ts` are deleted**; their rules move into `check-ci-workflow.mjs`. *Cost if wrong:* a missed rule; Task 10 was built from the old file line by line.
+12. **The sign job still does no `npm ci`**, so no npm dependency code runs in the keyed process. *Cost if wrong:* a future signer dependency needs a new checker rule.
+13. **`workflow_run` `branches: ['desktop-v*']` is assumed to match tag-push runs;** Task 9 confirms it and removes the filter and its pin if not. *Cost if wrong:* if unnoticed, the first tag starts no keyed run (fail-safe, visible, one edit to two files).
+14. **The automation and the public pins ship in one PR** (fewer PRs). *Cost if wrong:* a larger review; splitting only requires the pins to merge before the tagged commit.
+15. **Publisher strictness:** `source.commit === head === DESKTOP_SHA`; the tag is re-resolved through the API; `packages/desktop/releases/` no longer exists. *Cost if wrong:* none for new releases.
 
 ## Where Jonas's decisions cannot be met as stated
 
-1. **"Keys never reachable from branch workflow_dispatch or other workflows" is met, but "tag-only environment policy" is not a real boundary against someone who can create `desktop-v*` tags.** A tag push runs the workflow file *from the tagged commit*, so anyone allowed to create the tag can tag a branch commit whose workflow prints the secrets; the environment policy checks only the ref name, and the gate lives in that same commit. The plan compensates with the admin-only tag ruleset (ruling 5) and states the residual honestly. The no-click design that closes it is a trusted-code trampoline: a tiny unprivileged `desktop-release-request.yml` on tag push, and the keyed workflow triggered by `workflow_run` (which always loads the workflow file from the default branch), with the environment restricted to branch `main` and the gate checking the tag commit as data. That departs from "signing job on tag push only" and "policy allows only `desktop-v*` tags", so it is not in this plan; cost of switching later is a rewrite of Task 7/8 and the setup policy (about a day).
-2. **"Write a new `release-keys.mjs`":** the file exists with a disk-writing `create`. Extended in place (ruling 8).
-3. **"Zeroes buffers" is achievable only for Buffers.** V8 strings cannot be zeroed; the script avoids creating strings of private material (custom Buffer base64 encoder), but `gh`'s own process memory and the OS pipe are outside its control.
-4. **"The workflow avoids committing to main unless provably unavoidable":** it is avoidable; nothing commits. Inputs are committed by ordinary PRs before the tag, which is a process change from "commit OUTPUT to `releases/<version>/`".
-5. **"A `ci` push run green on exactly that commit"** can be silently lost to `cancel-in-progress` when another commit lands on main. The tag must be pushed while the run's commit is still green; the runbook says so; the gate fails loudly otherwise. Not fixable without changing `ci.yml` concurrency, which this plan does not touch.
-6. **Jonas's four-step path for 0.1.0-beta.1 omits the release-inputs PR** (notes, security review, `inputs.json`), without which the gate refuses. See "End-to-end path".
-7. **"Publish the releases, not drafts":** drafts remain as a transient state inside the publish step (ruling 7).
-8. **Fresh-key verification of the Sparkle and sandbox pins can only be exercised for real at the first release;** the fixture pipeline test proves the formats, not GitHub's secret and environment behaviour. The first tag is the integration test, and every failure before `publish` is harmless.
+1. **"Signing job on tag push only"** is replaced, per his later decision, by a tag-push request workflow plus a `workflow_run`-triggered keyed workflow whose environment admits `main`, not `desktop-v*` tags. This is the intended change, not a conflict.
+2. **A `workflow_run` workflow starts only if the request run completes**, and only from main's copy of the keyed file; the request workflow must therefore already be on main when the first tag is pushed (it is, in the same PR).
+3. **"Zeroes buffers"** holds for Buffers only. V8 strings cannot be zeroed; the script builds PEM and base64 into Buffers to avoid private strings, but `gh`'s process memory and the OS pipe are outside its control.
+4. **"A `ci` push run green on exactly that commit"** can be silently lost to `cancel-in-progress` when another commit lands on main; the gate fails loudly and the runbook says to tag while that run is the newest. Not fixable without changing `ci.yml` concurrency, which this plan does not touch.
+5. **"Independent review"** no longer exists as a gate; the signed record attests CI, not a human (Jonas's decision). Development-time security reviews remain a process matter outside the release path.
+6. **"Publish the releases, not drafts":** drafts remain transient inside `publish` (ruling 8).
+7. **First-use integration cannot be tested locally.** GitHub's environment, secret and `workflow_run` behaviour is exercised for real only by the first tag; fixtures prove formats and flow. Every failure before `publish` leaves nothing public.
