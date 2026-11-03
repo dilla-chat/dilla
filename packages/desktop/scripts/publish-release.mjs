@@ -3,8 +3,8 @@ import { execFileSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { verifyRelease } from '../src/update.ts';
 import { verifyDesktopBundle, publicReleaseRecords, stagePublicReleaseRecords } from './verify-release.mjs';
+import { REPOSITORY as repository, createGithubApi, fetchCiJobs } from './ci-run.mjs';
 
-const repository = 'dilla-chat/dilla';
 const root = resolve(import.meta.dirname, '../../..');
 const mode = process.argv[2];
 const ref = process.env.GITHUB_REF_NAME ?? '';
@@ -34,20 +34,9 @@ if (mode === 'plan') {
 }
 const token = process.env.GH_TOKEN;
 if (!token) throw new Error('Publishing requires the workflow’s scoped GitHub token');
-async function api(path, options = {}, optional404 = false) {
- const url = new URL(path, 'https://api.github.com');
- if (url.origin !== 'https://api.github.com' || !url.pathname.startsWith(`/repos/${repository}/`)) throw new Error('Invalid publication API destination');
- const response = await fetch(url, { method: options.method ?? 'GET', headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', ...(options.body ? { 'Content-Type': 'application/json' } : {}) }, ...(options.body ? { body: JSON.stringify(options.body) } : {}), redirect: 'error', signal: AbortSignal.timeout(30000) });
- if (optional404 && response.status === 404) return null;
- if (!response.ok) throw new Error(`GitHub publication API failed (${response.status})`);
- return response.status === 204 ? null : response.json();
-}
+const api = createGithubApi({ token });
 const run = await api(`/repos/${repository}/actions/runs/${release.source.ciRun}`);
-const jobs = [];
-for (let page = 1; ; page++) {
- const result = await api(`/repos/${repository}/actions/runs/${release.source.ciRun}/jobs?filter=latest&per_page=100&page=${page}`);
- jobs.push(...result.jobs); if (result.jobs.length < 100) break;
-}
+const jobs = await fetchCiJobs(api, release.source.ciRun);
 await mkdir(directory, { recursive: true });
 const records = publicReleaseRecords(channel);
 await stagePublicReleaseRecords({ candidate, directory, channel, version });

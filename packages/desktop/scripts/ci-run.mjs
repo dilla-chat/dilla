@@ -1,0 +1,108 @@
+import { BUILD_TARGETS, TARGETS } from './verify-release.mjs';
+
+/** Shared GitHub API lookups for the desktop release flow. Every answer is
+ * re-derived from the API; nothing here trusts a value from a workflow event. */
+export const REPOSITORY = 'dilla-chat/dilla';
+const API_ORIGIN = 'https://api.github.com';
+const COMMIT = /^[a-f0-9]{40}$/;
+const RUN_ID = /^[1-9]\d*$/;
+
+/** The exact desktop.yml artifact set one release consumes (desktop.yml upload names). */
+export const EXPECTED_ARTIFACTS = Object.freeze([
+ ...BUILD_TARGETS.map(target => `desktop-installers-${target}`),
+ ...TARGETS.map(target => `desktop-performance-${target}`),
+ ...TARGETS.map(target => `desktop-installed-account-${target}`),
+]);
+const RELEASE_ARTIFACT = /^desktop-(installers|performance|installed-account)-/;
+
+export function createGithubApi({ token, fetchImpl = fetch }) {
+ if (typeof token !== 'string' || !token) throw new Error('The release flow requires the workflow’s scoped GitHub token');
+ return async function api(path, options = {}, optional404 = false) {
+  const url = new URL(path, API_ORIGIN);
+  if (url.origin !== API_ORIGIN || !url.pathname.startsWith(`/repos/${REPOSITORY}/`)) throw new Error('Invalid GitHub API destination');
+  const body = options.body === undefined ? undefined : JSON.stringify(options.body);
+  const response = await fetchImpl(url, {
+   method: options.method ?? 'GET',
+   headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+   ...(body === undefined ? {} : { body }),
+   redirect: 'error', signal: AbortSignal.timeout(30000),
+  });
+  if (optional404 && response.status === 404) return null;
+  if (!response.ok) throw new Error(`GitHub API request failed (${response.status})`);
+  return response.status === 204 ? null : response.json();
+ };
+}
+
+function runId(value) {
+ const text = String(value);
+ if (!RUN_ID.test(text) || !Number.isSafeInteger(Number(text))) throw new Error('Invalid CI run id');
+ return text;
+}
+
+/** The newest successful `ci` push run on main for exactly this commit. */
+export async function findGreenPushRun(api, sha) {
+ if (typeof sha !== 'string' || !COMMIT.test(sha)) throw new Error('Invalid commit sha');
+ const result = await api(`/repos/${REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${sha}&event=push&branch=main&status=completed&per_page=100`);
+ const runs = (Array.isArray(result?.workflow_runs) ? result.workflow_runs : []).filter(run => run && run.name === 'ci' && run.path === '.github/workflows/ci.yml'
+  && run.event === 'push' && run.head_branch === 'main' && run.head_sha === sha && run.status === 'completed' && run.conclusion === 'success'
+  && run.repository?.full_name === REPOSITORY && run.head_repository?.full_name === REPOSITORY
+  && Number.isSafeInteger(run.id) && run.id > 0 && Number.isSafeInteger(run.run_number));
+ if (!runs.length) throw new Error(`There is no green ci push run on main for ${sha}`);
+ return runs.reduce((best, run) => run.run_number > best.run_number ? run : best);
+}
+
+async function paged(api, path, key) {
+ const items = [];
+ for (let page = 1; ; page++) {
+  const result = await api(`${path}${path.includes('?') ? '&' : '?'}per_page=100&page=${page}`);
+  const list = result?.[key];
+  if (!Array.isArray(list)) throw new Error('Malformed GitHub API page');
+  items.push(...list);
+  if (list.length < 100) return items;
+  if (page >= 100) throw new Error('Too many GitHub API pages');
+ }
+}
+
+export async function fetchCiJobs(api, id) {
+ return paged(api, `/repos/${REPOSITORY}/actions/runs/${runId(id)}/jobs?filter=latest`, 'jobs');
+}
+
+/** Exact-match tag lookup; an annotated tag is followed once and must name a commit. */
+export async function resolveTagCommit(api, tag) {
+ if (typeof tag !== 'string' || !/^[A-Za-z0-9._-]+$/.test(tag) || tag.startsWith('.')) throw new Error('Invalid tag name');
+ const ref = await api(`/repos/${REPOSITORY}/git/ref/tags/${encodeURIComponent(tag)}`, {}, true);
+ if (!ref || ref.ref !== `refs/tags/${tag}` || !ref.object || !COMMIT.test(ref.object.sha ?? '')) throw new Error('The tag does not exist: ' + tag);
+ let object = ref.object;
+ if (object.type === 'tag') {
+  const annotated = await api(`/repos/${REPOSITORY}/git/tags/${object.sha}`);
+  object = annotated?.object;
+ }
+ if (!object || object.type !== 'commit' || typeof object.sha !== 'string' || !COMMIT.test(object.sha)) throw new Error('The tag must point at a commit: ' + tag);
+ return object.sha;
+}
+
+export async function listRunArtifacts(api, id) {
+ const artifacts = await paged(api, `/repos/${REPOSITORY}/actions/runs/${runId(id)}/artifacts`, 'artifacts');
+ return artifacts.map(({ id: artifactId, name, digest, expired }) => ({ id: artifactId, name, digest, expired }));
+}
+
+/** The run must carry exactly the expected release artifacts: no extras under
+ * the release prefixes, no duplicates, nothing expired, each with an API digest. */
+export function selectReleaseArtifacts(artifacts) {
+ if (!Array.isArray(artifacts)) throw new Error('Missing CI artifact list');
+ const relevant = artifacts.filter(artifact => typeof artifact?.name === 'string' && RELEASE_ARTIFACT.test(artifact.name));
+ const byName = {};
+ for (const artifact of relevant) {
+  if (Object.hasOwn(byName, artifact.name)) throw new Error('Duplicate CI release artifact: ' + artifact.name);
+  byName[artifact.name] = artifact;
+ }
+ const names = Object.keys(byName);
+ if (names.length !== EXPECTED_ARTIFACTS.length || EXPECTED_ARTIFACTS.some(name => !Object.hasOwn(byName, name))) throw new Error('The CI run must carry exactly the expected desktop release artifacts');
+ for (const name of EXPECTED_ARTIFACTS) {
+  const artifact = byName[name];
+  if (artifact.expired !== false) throw new Error('CI release artifact expired: ' + name);
+  if (typeof artifact.digest !== 'string' || !/^sha256:[a-f0-9]{64}$/.test(artifact.digest)) throw new Error('CI release artifact has no digest: ' + name);
+  if (!Number.isSafeInteger(artifact.id) || artifact.id < 1) throw new Error('Invalid CI release artifact id: ' + name);
+ }
+ return { ids: EXPECTED_ARTIFACTS.map(name => byName[name].id), byName: Object.fromEntries(EXPECTED_ARTIFACTS.map(name => [name, { ...byName[name] }])) };
+}
