@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gateExpression, JOB_GATES } from './ci-areas.mjs';
-import { BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopWorkflow, checkReleaseWorkflow, checkWorkflow, jobSteps, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEP, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION, WEB_SHARDS } from './check-ci-workflow.mjs';
+import { BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopWorkflow, checkReleaseWorkflow, checkWorkflow, jobSteps, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_BLOCK, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEPS, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION, WEB_SHARDS } from './check-ci-workflow.mjs';
 
 const NPM_TEST = "      - if: needs.changes.outputs.web != 'false'\n        run: npm test\n";
 const SCRIPT_PATH = fileURLToPath(new URL('./check-ci-workflow.mjs', import.meta.url));
@@ -908,7 +908,7 @@ ${browserJobsFixture()}
 `;
 
 // The four jobs that build for wasm32-unknown-unknown, as ci.yml writes them: the canonical clang 23 job env and,
-// right after checkout, the canonical pinned install step (ruling of 2026-10-13; hardened after the d3429ce lead).
+// right after checkout, the canonical pinned install steps (ruling of 2026-10-13; hardened after the d3429ce lead).
 const WASM_JOBS = ['rust-wasm-node', 'browser-spike', 'browser-media', 'web-build'];
 
 function withWasmClang(text) {
@@ -918,7 +918,7 @@ function withWasmClang(text) {
     const key = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line);
     if (key) job = key[1];
     if (WASM_JOBS.includes(job) && line === '    steps:') {
-      out.push(WASM_CLANG_ENV_BLOCK, line, '      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7', WASM_CLANG_STEP);
+      out.push(WASM_CLANG_ENV_BLOCK, line, '      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7', WASM_CLANG_BLOCK);
       continue;
     }
     out.push(line);
@@ -1871,35 +1871,54 @@ function editJob(job, edit) {
 }
 
 const STEP_RULE = (job) =>
-  `ci.yml: job "${job}" builds for wasm32-unknown-unknown; its second step, right after actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7, must be exactly the pinned clang 23 step (WASM_CLANG_STEP)`;
+  `ci.yml: job "${job}" builds for wasm32-unknown-unknown; its second to fourth steps, right after actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7, must be exactly the pinned clang 23 steps (WASM_CLANG_STEPS)`;
 const ENV_RULE = (job) =>
   `ci.yml: job "${job}" builds for wasm32-unknown-unknown; its job-level env must be exactly:\n${WASM_CLANG_ENV_BLOCK}`;
 
 const LLVM_PACKAGES = ['clang-23', 'llvm-23', 'libllvm23', 'libclang-cpp23', 'libclang1-23', 'libclang-common-23-dev', 'llvm-23-linker-tools', 'llvm-23-runtime'];
 
-test('the canonical step pins every llvm-toolchain-23 package at one version and reads each back', () => {
-  assert.ok(WASM_CLANG_STEP.includes('          v=$(apt-cache policy clang-23 | awk \'/Candidate:/ { print $2 }\')'));
+/** The install script the canonical steps run: the pin, the fingerprint check and the read-back live there now. */
+const CLANG_SCRIPT = readFileSync(new URL('./ci-llvm.sh', import.meta.url), 'utf8');
+
+test('the canonical steps restore the cached build, run the install script and save a build the cache lacked', () => {
+  assert.equal(WASM_CLANG_STEPS.length, 3);
+  assert.equal(WASM_CLANG_STEPS[1], '      - id: clang23\n        name: clang 23 for the wasm C build\n        run: bash scripts/ci-llvm.sh install');
+  assert.match(WASM_CLANG_STEPS[0], /^      - id: clang23-cache\n        uses: actions\/cache\/restore@[0-9a-f]{40} # v[\d.]+\n/);
+  assert.ok(WASM_CLANG_STEPS[0].includes('          path: ~/.cache/llvm-23-debs\n'));
+  assert.ok(WASM_CLANG_STEPS[0].includes('          restore-keys: llvm-23-debs-${{ runner.arch }}-ubuntu-24.04-'));
+  assert.match(WASM_CLANG_STEPS[2], /^      - if: steps\.clang23\.outputs\.changed == 'true'\n        uses: actions\/cache\/save@[0-9a-f]{40} # v[\d.]+\n/);
+  assert.ok(WASM_CLANG_STEPS[2].includes('          key: llvm-23-debs-${{ runner.arch }}-ubuntu-24.04-${{ steps.clang23.outputs.build }}'));
+  assert.equal(WASM_CLANG_BLOCK, WASM_CLANG_STEPS.join('\n'));
+});
+
+test('the install script pins every llvm-toolchain-23 package at one version and reads each back', () => {
+  assert.ok(CLANG_SCRIPT.includes('v=$(apt-cache policy clang-23 | awk \'/Candidate:/ { print $2 }\')'));
   assert.match(WASM_LLVM_VERSION, /^23\.\d+$/);
-  assert.ok(WASM_CLANG_STEP.includes(`case "$v" in 1:${WASM_LLVM_VERSION}.*~++*)`), 'the signed apt source candidate must stay on LLVM 23.1');
-  const install = WASM_CLANG_STEP.split('\n').find((l) => l.includes('apt-get install'));
+  assert.ok(CLANG_SCRIPT.includes(`case "$v" in 1:${WASM_LLVM_VERSION}.*~++*) ;; *) echo "expected clang ${WASM_LLVM_VERSION}.x candidate, got $v" >&2; exit 1 ;; esac`), 'the signed apt source candidate must stay on LLVM 23.1');
+  const install = CLANG_SCRIPT.split('\n').find((l) => l.includes('apt-get install') && l.includes('clang-23='));
   for (const p of LLVM_PACKAGES) {
     assert.ok(install.includes(` "${p}=$v"`), `${p} is not installed at the pinned version`);
   }
   assert.ok(!/\s(clang-23|llvm-23)(\s|$)/.test(install), 'an unpinned package name in the install line');
-  assert.ok(WASM_CLANG_STEP.includes(`          for p in ${LLVM_PACKAGES.join(' ')}; do test "$(dpkg-query -W -f='\${Version}' "$p")" = "$v"; done`));
-  assert.ok(WASM_CLANG_STEP.includes(`          /usr/bin/clang-23 --version | grep -F "clang version ${WASM_LLVM_VERSION}."`));
-  assert.ok(WASM_CLANG_STEP.includes('          apt-cache policy clang-23 llvm-23'));
+  assert.ok(CLANG_SCRIPT.includes(`for p in ${LLVM_PACKAGES.join(' ')}; do test "$(dpkg-query -W -f='\${Version}' "$p")" = "$v"; done`));
+  assert.ok(CLANG_SCRIPT.includes(`case "$v" in 1:${WASM_LLVM_VERSION}.*~++*) ;; *) echo "expected an installed clang ${WASM_LLVM_VERSION}.x build, got $v" >&2; exit 1 ;; esac`), 'the cached build is read back against the same pin');
+  assert.ok(CLANG_SCRIPT.includes(`"$bin/clang-23" --version | grep -F "clang version ${WASM_LLVM_VERSION}."`));
+  assert.ok(CLANG_SCRIPT.includes('bin="${LLVM_BIN:-/usr/bin}"'), 'the compiler is read back by its absolute path');
+  assert.ok(CLANG_SCRIPT.includes('apt-cache policy clang-23 llvm-23'));
+  assert.ok(CLANG_SCRIPT.includes('packages=(' + LLVM_PACKAGES.join(' ') + ')'), 'the cached build is the same eight packages');
 });
 
-test('the canonical step checks the fingerprint on the keyring apt is pointed at', () => {
-  const lines = WASM_CLANG_STEP.split('\n').map((l) => l.trim());
-  const dearmor = lines.indexOf('gpg --dearmor -o "$RUNNER_TEMP/apt-llvm.gpg" "$RUNNER_TEMP/llvm-snapshot.asc"');
-  const check = lines.indexOf(`test "$primaries" = ${WASM_LLVM_KEY_FPR}`);
-  const install = lines.indexOf('sudo install -m 0644 "$RUNNER_TEMP/apt-llvm.gpg" /usr/share/keyrings/apt-llvm.gpg');
-  const same = lines.indexOf('cmp "$RUNNER_TEMP/apt-llvm.gpg" /usr/share/keyrings/apt-llvm.gpg');
-  const source = lines.findIndex((l) => l.includes('[signed-by=/usr/share/keyrings/apt-llvm.gpg]'));
+test('the install script checks the fingerprint on the keyring apt is pointed at', () => {
+  const lines = CLANG_SCRIPT.split('\n').map((l) => l.trim());
+  assert.ok(lines.includes(`fingerprint=${WASM_LLVM_KEY_FPR}`));
+  assert.ok(lines.includes('keyring="${LLVM_KEYRING:-/usr/share/keyrings/apt-llvm.gpg}"'));
+  const dearmor = lines.indexOf('gpg --dearmor -o "$temp/apt-llvm.gpg" "$temp/llvm-snapshot.asc"');
+  const check = lines.indexOf('test "$primaries" = "$fingerprint"');
+  const install = lines.indexOf('sudo install -m 0644 "$temp/apt-llvm.gpg" "$keyring"');
+  const same = lines.indexOf('cmp "$temp/apt-llvm.gpg" "$keyring"');
+  const source = lines.findIndex((l) => l.includes('[signed-by=$keyring]'));
   assert.ok(dearmor !== -1 && dearmor < check && check < install && install < same && same < source, lines.join('\n'));
-  assert.ok(lines[check - 1].startsWith('primaries=$(gpg --show-keys --with-colons "$RUNNER_TEMP/apt-llvm.gpg"'));
+  assert.ok(lines[check - 1].startsWith('primaries=$(gpg --show-keys --with-colons "$temp/apt-llvm.gpg"'));
   assert.ok(WASM_CLANG_ENV_BLOCK.includes('CC_wasm32_unknown_unknown: /usr/bin/clang-23'));
   assert.ok(WASM_CLANG_ENV_BLOCK.includes('AR_wasm32_unknown_unknown: /usr/bin/llvm-ar-23'));
 });
@@ -1917,26 +1936,26 @@ for (const job of WASM_JOBS) {
     const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace(WASM_CLANG_ENV_BLOCK, `${WASM_CLANG_ENV_BLOCK}\n      CFLAGS_wasm32_unknown_unknown: -O0`))));
     assert.ok(problems.includes(ENV_RULE(job)), problems.join('\n'));
   });
-  test(`a ${job} job installing an unpinned clang is reported`, () => {
-    const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace(' "clang-23=$v"', ' clang-23'))));
+  test(`a ${job} job running the install script with another argument is reported`, () => {
+    const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace('bash scripts/ci-llvm.sh install', 'bash scripts/ci-llvm.sh install --any'))));
     assert.ok(problems.includes(STEP_RULE(job)), problems.join('\n'));
   });
-  test(`a ${job} job pinned to another build is reported`, () => {
-    const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace(WASM_LLVM_VERSION, WASM_LLVM_VERSION.replace('23.1', '23.2')))));
+  test(`a ${job} job restoring another cache is reported`, () => {
+    const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace('~/.cache/llvm-23-debs', '~/.cache/llvm-24-debs'))));
     assert.ok(problems.includes(STEP_RULE(job)), problems.join('\n'));
   });
-  test(`a ${job} job checking another key fingerprint is reported`, () => {
-    const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace(WASM_LLVM_KEY_FPR, '0'.repeat(40)))));
+  test(`a ${job} job saving the cache unconditionally is reported`, () => {
+    const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace("      - if: steps.clang23.outputs.changed == 'true'\n        uses: actions/cache/save", '      - uses: actions/cache/save'))));
     assert.ok(problems.includes(STEP_RULE(job)), problems.join('\n'));
   });
   test(`a ${job} job that skips the clang 23 step with an if: is reported`, () => {
-    const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace('      - name: clang 23 for the wasm C build\n', '      - name: clang 23 for the wasm C build\n        if: false\n'))));
+    const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace('        name: clang 23 for the wasm C build\n', '        name: clang 23 for the wasm C build\n        if: false\n'))));
     assert.ok(problems.includes(STEP_RULE(job)), problems.join('\n'));
   });
   test(`a ${job} job that installs clang 23 after other steps is reported`, () => {
     const moved = editJob(job, (b) => {
-      const without = b.replace(`${WASM_CLANG_STEP}\n`, '');
-      return `${without.replace(/\n*$/, '')}\n${WASM_CLANG_STEP}\n`;
+      const without = b.replace(`${WASM_CLANG_BLOCK}\n`, '');
+      return `${without.replace(/\n*$/, '')}\n${WASM_CLANG_BLOCK}\n`;
     });
     const problems = checkWorkflow(fixture(moved));
     assert.ok(problems.includes(STEP_RULE(job)), problems.join('\n'));
@@ -1948,9 +1967,9 @@ for (const job of WASM_JOBS) {
 test('an evading job that only names the pinned strings in a comment and an echo is reported', () => {
   const evading = editJob('web-build', (b) =>
     b.replace(
-      `${WASM_CLANG_STEP}\n`,
-      `      # ${WASM_CLANG_STEP.split('\n').map((l) => l.trim()).join(' ; ')}\n` +
-        `      - run: echo '${WASM_CLANG_STEP.split('\n').filter((l) => l.includes('apt-get install')).join('').trim()}'\n`,
+      `${WASM_CLANG_BLOCK}\n`,
+      `      # ${WASM_CLANG_BLOCK.split('\n').map((l) => l.trim()).join(' ; ')}\n` +
+        `      - run: echo '${WASM_CLANG_BLOCK.split('\n').filter((l) => l.includes('ci-llvm.sh')).join('').trim()}'\n`,
     ),
   );
   const problems = checkWorkflow(fixture(evading));
@@ -2107,7 +2126,7 @@ test('a tag job that no longer checks the ref is reported', () => {
 });
 
 test('a release web-build without the clang 23 pin is reported', () => {
-  assertReported(releaseProblems((t) => t.replace('      - name: clang 23 for the wasm C build\n', '      - name: clang for the wasm C build\n')), 'clang 23');
+  assertReported(releaseProblems((t) => t.replace('        name: clang 23 for the wasm C build\n', '        name: clang for the wasm C build\n')), 'clang 23');
 });
 
 test('a release go-release that builds before the placeholder guard is reported', () => {

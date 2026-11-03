@@ -200,25 +200,20 @@ jobs:
       AR_wasm32_unknown_unknown: /usr/bin/llvm-ar-23
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: clang 23 for the wasm C build
-        run: |
-          test "$(lsb_release -cs)" = noble
-          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o "$RUNNER_TEMP/llvm-snapshot.asc"
-          gpg --dearmor -o "$RUNNER_TEMP/apt-llvm.gpg" "$RUNNER_TEMP/llvm-snapshot.asc"
-          primaries=$(gpg --show-keys --with-colons "$RUNNER_TEMP/apt-llvm.gpg" | awk -F: '$1 == "pub" { want = 1; next } $1 == "fpr" && want { print $10; want = 0 }')
-          test "$primaries" = 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
-          sudo install -m 0644 "$RUNNER_TEMP/apt-llvm.gpg" /usr/share/keyrings/apt-llvm.gpg
-          cmp "$RUNNER_TEMP/apt-llvm.gpg" /usr/share/keyrings/apt-llvm.gpg
-          echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list
-          sudo apt-get update
-          apt-cache policy clang-23 llvm-23
-          v=$(apt-cache policy clang-23 | awk '/Candidate:/ { print $2 }')
-          case "$v" in 1:23.1.*~++*) ;; *) echo "expected clang 23.1.x candidate, got $v"; exit 1 ;; esac
-          sudo apt-get install -y --no-install-recommends "clang-23=$v" "llvm-23=$v" "libllvm23=$v" "libclang-cpp23=$v" "libclang1-23=$v" "libclang-common-23-dev=$v" "llvm-23-linker-tools=$v" "llvm-23-runtime=$v"
-          for p in clang-23 llvm-23 libllvm23 libclang-cpp23 libclang1-23 libclang-common-23-dev llvm-23-linker-tools llvm-23-runtime; do test "$(dpkg-query -W -f='${Version}' "$p")" = "$v"; done
-          /usr/bin/clang-23 --version | grep -F "clang version 23.1."
-          /usr/bin/clang-23 --version
-          /usr/bin/llvm-ar-23 --version
+      - id: clang23-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/llvm-23-debs
+          key: llvm-23-debs-${{ runner.arch }}-ubuntu-24.04-latest
+          restore-keys: llvm-23-debs-${{ runner.arch }}-ubuntu-24.04-
+      - id: clang23
+        name: clang 23 for the wasm C build
+        run: bash scripts/ci-llvm.sh install
+      - if: steps.clang23.outputs.changed == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/llvm-23-debs
+          key: llvm-23-debs-${{ runner.arch }}-ubuntu-24.04-${{ steps.clang23.outputs.build }}
       - run: rustup show active-toolchain
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -348,25 +343,20 @@ jobs:
       AR_wasm32_unknown_unknown: /usr/bin/llvm-ar-23
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: clang 23 for the wasm C build
-        run: |
-          test "$(lsb_release -cs)" = noble
-          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o "$RUNNER_TEMP/llvm-snapshot.asc"
-          gpg --dearmor -o "$RUNNER_TEMP/apt-llvm.gpg" "$RUNNER_TEMP/llvm-snapshot.asc"
-          primaries=$(gpg --show-keys --with-colons "$RUNNER_TEMP/apt-llvm.gpg" | awk -F: '$1 == "pub" { want = 1; next } $1 == "fpr" && want { print $10; want = 0 }')
-          test "$primaries" = 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
-          sudo install -m 0644 "$RUNNER_TEMP/apt-llvm.gpg" /usr/share/keyrings/apt-llvm.gpg
-          cmp "$RUNNER_TEMP/apt-llvm.gpg" /usr/share/keyrings/apt-llvm.gpg
-          echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list
-          sudo apt-get update
-          apt-cache policy clang-23 llvm-23
-          v=$(apt-cache policy clang-23 | awk '/Candidate:/ { print $2 }')
-          case "$v" in 1:23.1.*~++*) ;; *) echo "expected clang 23.1.x candidate, got $v"; exit 1 ;; esac
-          sudo apt-get install -y --no-install-recommends "clang-23=$v" "llvm-23=$v" "libllvm23=$v" "libclang-cpp23=$v" "libclang1-23=$v" "libclang-common-23-dev=$v" "llvm-23-linker-tools=$v" "llvm-23-runtime=$v"
-          for p in clang-23 llvm-23 libllvm23 libclang-cpp23 libclang1-23 libclang-common-23-dev llvm-23-linker-tools llvm-23-runtime; do test "$(dpkg-query -W -f='${Version}' "$p")" = "$v"; done
-          /usr/bin/clang-23 --version | grep -F "clang version 23.1."
-          /usr/bin/clang-23 --version
-          /usr/bin/llvm-ar-23 --version
+      - id: clang23-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/llvm-23-debs
+          key: llvm-23-debs-${{ runner.arch }}-ubuntu-24.04-latest
+          restore-keys: llvm-23-debs-${{ runner.arch }}-ubuntu-24.04-
+      - id: clang23
+        name: clang 23 for the wasm C build
+        run: bash scripts/ci-llvm.sh install
+      - if: steps.clang23.outputs.changed == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/llvm-23-debs
+          key: llvm-23-debs-${{ runner.arch }}-ubuntu-24.04-${{ steps.clang23.outputs.build }}
       - run: rustup show active-toolchain
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -423,25 +413,20 @@ jobs:
       AR_wasm32_unknown_unknown: /usr/bin/llvm-ar-23
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: clang 23 for the wasm C build
-        run: |
-          test "$(lsb_release -cs)" = noble
-          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o "$RUNNER_TEMP/llvm-snapshot.asc"
-          gpg --dearmor -o "$RUNNER_TEMP/apt-llvm.gpg" "$RUNNER_TEMP/llvm-snapshot.asc"
-          primaries=$(gpg --show-keys --with-colons "$RUNNER_TEMP/apt-llvm.gpg" | awk -F: '$1 == "pub" { want = 1; next } $1 == "fpr" && want { print $10; want = 0 }')
-          test "$primaries" = 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
-          sudo install -m 0644 "$RUNNER_TEMP/apt-llvm.gpg" /usr/share/keyrings/apt-llvm.gpg
-          cmp "$RUNNER_TEMP/apt-llvm.gpg" /usr/share/keyrings/apt-llvm.gpg
-          echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list
-          sudo apt-get update
-          apt-cache policy clang-23 llvm-23
-          v=$(apt-cache policy clang-23 | awk '/Candidate:/ { print $2 }')
-          case "$v" in 1:23.1.*~++*) ;; *) echo "expected clang 23.1.x candidate, got $v"; exit 1 ;; esac
-          sudo apt-get install -y --no-install-recommends "clang-23=$v" "llvm-23=$v" "libllvm23=$v" "libclang-cpp23=$v" "libclang1-23=$v" "libclang-common-23-dev=$v" "llvm-23-linker-tools=$v" "llvm-23-runtime=$v"
-          for p in clang-23 llvm-23 libllvm23 libclang-cpp23 libclang1-23 libclang-common-23-dev llvm-23-linker-tools llvm-23-runtime; do test "$(dpkg-query -W -f='${Version}' "$p")" = "$v"; done
-          /usr/bin/clang-23 --version | grep -F "clang version 23.1."
-          /usr/bin/clang-23 --version
-          /usr/bin/llvm-ar-23 --version
+      - id: clang23-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/llvm-23-debs
+          key: llvm-23-debs-${{ runner.arch }}-ubuntu-24.04-latest
+          restore-keys: llvm-23-debs-${{ runner.arch }}-ubuntu-24.04-
+      - id: clang23
+        name: clang 23 for the wasm C build
+        run: bash scripts/ci-llvm.sh install
+      - if: steps.clang23.outputs.changed == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/llvm-23-debs
+          key: llvm-23-debs-${{ runner.arch }}-ubuntu-24.04-${{ steps.clang23.outputs.build }}
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
@@ -527,25 +512,20 @@ jobs:
       AR_wasm32_unknown_unknown: /usr/bin/llvm-ar-23
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: clang 23 for the wasm C build
-        run: |
-          test "$(lsb_release -cs)" = noble
-          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o "$RUNNER_TEMP/llvm-snapshot.asc"
-          gpg --dearmor -o "$RUNNER_TEMP/apt-llvm.gpg" "$RUNNER_TEMP/llvm-snapshot.asc"
-          primaries=$(gpg --show-keys --with-colons "$RUNNER_TEMP/apt-llvm.gpg" | awk -F: '$1 == "pub" { want = 1; next } $1 == "fpr" && want { print $10; want = 0 }')
-          test "$primaries" = 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
-          sudo install -m 0644 "$RUNNER_TEMP/apt-llvm.gpg" /usr/share/keyrings/apt-llvm.gpg
-          cmp "$RUNNER_TEMP/apt-llvm.gpg" /usr/share/keyrings/apt-llvm.gpg
-          echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list
-          sudo apt-get update
-          apt-cache policy clang-23 llvm-23
-          v=$(apt-cache policy clang-23 | awk '/Candidate:/ { print $2 }')
-          case "$v" in 1:23.1.*~++*) ;; *) echo "expected clang 23.1.x candidate, got $v"; exit 1 ;; esac
-          sudo apt-get install -y --no-install-recommends "clang-23=$v" "llvm-23=$v" "libllvm23=$v" "libclang-cpp23=$v" "libclang1-23=$v" "libclang-common-23-dev=$v" "llvm-23-linker-tools=$v" "llvm-23-runtime=$v"
-          for p in clang-23 llvm-23 libllvm23 libclang-cpp23 libclang1-23 libclang-common-23-dev llvm-23-linker-tools llvm-23-runtime; do test "$(dpkg-query -W -f='${Version}' "$p")" = "$v"; done
-          /usr/bin/clang-23 --version | grep -F "clang version 23.1."
-          /usr/bin/clang-23 --version
-          /usr/bin/llvm-ar-23 --version
+      - id: clang23-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/llvm-23-debs
+          key: llvm-23-debs-${{ runner.arch }}-ubuntu-24.04-latest
+          restore-keys: llvm-23-debs-${{ runner.arch }}-ubuntu-24.04-
+      - id: clang23
+        name: clang 23 for the wasm C build
+        run: bash scripts/ci-llvm.sh install
+      - if: steps.clang23.outputs.changed == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/llvm-23-debs
+          key: llvm-23-debs-${{ runner.arch }}-ubuntu-24.04-${{ steps.clang23.outputs.build }}
       - run: rustup show active-toolchain
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:

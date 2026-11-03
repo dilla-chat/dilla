@@ -486,7 +486,12 @@ function assertWasmPackUsesTheSizeProfile(text, problems, file = 'ci.yml') {
  * apt is pointed at, every llvm-toolchain-23 package is installed at one exact version and read back with
  * dpkg-query, and cc gets absolute paths, which a PATH entry added by a later action cannot shadow. A newer
  * upload to apt.llvm.org removes the pinned build from the archive and fails the step closed; the fix is to
- * re-pin here and in ci.yml, after checking the new build's size.
+ * re-pin in scripts/ci-llvm.sh and in the checker's tests, after checking the new build's size.
+ *
+ * Since run 639 (2026-11-03: apt.llvm.org answered nothing for over twenty minutes and every Linux job failed at
+ * this step) the install is scripts/ci-llvm.sh between an actions/cache restore and save of the build's eight
+ * .deb files: an archive that cannot be reached at all installs the cached build, which apt verified against the
+ * archive's signed index on the run that fetched it. A reachable archive is still pinned or fails closed.
  *
  * The checker holds the canonical text and compares whole blocks, not substrings: a substring rule passes a
  * workflow that names the strings in a comment or another step while the job runs something else (the
@@ -496,7 +501,7 @@ function assertWasmPackUsesTheSizeProfile(text, problems, file = 'ci.yml') {
  */
 export const WASM_LLVM_VERSION = '23.1';
 export const WASM_LLVM_KEY_FPR = '6084F3CF814B57C1CF12EFD515CF4D18AF4F7421';
-const WASM_LLVM_PACKAGES = [
+export const WASM_LLVM_PACKAGES = [
   'clang-23', 'llvm-23', 'libllvm23', 'libclang-cpp23', 'libclang1-23', 'libclang-common-23-dev',
   'llvm-23-linker-tools', 'llvm-23-runtime',
 ];
@@ -505,27 +510,33 @@ export const WASM_CLANG_ENV_BLOCK = [
   '      CC_wasm32_unknown_unknown: /usr/bin/clang-23',
   '      AR_wasm32_unknown_unknown: /usr/bin/llvm-ar-23',
 ].join('\n');
-export const WASM_CLANG_STEP = [
-  '      - name: clang 23 for the wasm C build',
-  '        run: |',
-  '          test "$(lsb_release -cs)" = noble',
-  '          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o "$RUNNER_TEMP/llvm-snapshot.asc"',
-  '          gpg --dearmor -o "$RUNNER_TEMP/apt-llvm.gpg" "$RUNNER_TEMP/llvm-snapshot.asc"',
-  '          primaries=$(gpg --show-keys --with-colons "$RUNNER_TEMP/apt-llvm.gpg" | awk -F: \'$1 == "pub" { want = 1; next } $1 == "fpr" && want { print $10; want = 0 }\')',
-  `          test "$primaries" = ${WASM_LLVM_KEY_FPR}`,
-  '          sudo install -m 0644 "$RUNNER_TEMP/apt-llvm.gpg" /usr/share/keyrings/apt-llvm.gpg',
-  '          cmp "$RUNNER_TEMP/apt-llvm.gpg" /usr/share/keyrings/apt-llvm.gpg',
-  '          echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list',
-  '          sudo apt-get update',
-  '          apt-cache policy clang-23 llvm-23',
-  '          v=$(apt-cache policy clang-23 | awk \'/Candidate:/ { print $2 }\')',
-  `          case "$v" in 1:${WASM_LLVM_VERSION}.*~++*) ;; *) echo "expected clang ${WASM_LLVM_VERSION}.x candidate, got $v"; exit 1 ;; esac`,
-  `          sudo apt-get install -y --no-install-recommends ${WASM_LLVM_PACKAGES.map((p) => `"${p}=$v"`).join(' ')}`,
-  `          for p in ${WASM_LLVM_PACKAGES.join(' ')}; do test "$(dpkg-query -W -f='\${Version}' "$p")" = "$v"; done`,
-  `          /usr/bin/clang-23 --version | grep -F "clang version ${WASM_LLVM_VERSION}."`,
-  '          /usr/bin/clang-23 --version',
-  '          /usr/bin/llvm-ar-23 --version',
-].join('\n');
+/** The three steps every wasm job runs right after checkout, as one block: the cached build of the pinned
+ *  clang 23 line is restored, scripts/ci-llvm.sh installs the line (from apt.llvm.org, or from that cache when the
+ *  archive cannot be reached at all; its pin, fingerprint check and read-back are what the checker's tests hold it
+ *  to), and a build the cache did not hold is saved under its own key. */
+export const WASM_CLANG_STEPS = [
+  [
+    '      - id: clang23-cache',
+    '        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0',
+    '        with:',
+    '          path: ~/.cache/llvm-23-debs',
+    '          key: llvm-23-debs-${{ runner.arch }}-ubuntu-24.04-latest',
+    '          restore-keys: llvm-23-debs-${{ runner.arch }}-ubuntu-24.04-',
+  ].join('\n'),
+  [
+    '      - id: clang23',
+    '        name: clang 23 for the wasm C build',
+    '        run: bash scripts/ci-llvm.sh install',
+  ].join('\n'),
+  [
+    '      - if: steps.clang23.outputs.changed == \'true\'',
+    '        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0',
+    '        with:',
+    '          path: ~/.cache/llvm-23-debs',
+    '          key: llvm-23-debs-${{ runner.arch }}-ubuntu-24.04-${{ steps.clang23.outputs.build }}',
+  ].join('\n'),
+];
+export const WASM_CLANG_BLOCK = WASM_CLANG_STEPS.join('\n');
 
 /** A job builds for the browser target when it names it or runs wasm-pack; the cache key alone also counts. */
 const WASM_JOB = /wasm32[-_]unknown[-_]unknown|wasm-pack/;
@@ -565,10 +576,13 @@ function assertWasmJobsUseClang23(text, jobs, problems, file = 'ci.yml') {
       for (let i = envAt + 1; i < envAt + envLines.length; i++) allowedEnvLines.add(`${name}:${i}`);
     }
     const steps = stepItems(lines);
-    if (lines.filter((l) => /^ {4}steps:/.test(l)).length !== 1 || steps[0] !== '      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7' || steps[1] !== WASM_CLANG_STEP) {
-      problems.push(`${file}: job "${name}" builds for wasm32-unknown-unknown; its second step, right after actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7, must be exactly the pinned clang 23 step (WASM_CLANG_STEP)`);
+    // A release build starts clean (no build cache in release.yml), so it runs the install step alone: an archive
+    // that cannot be reached fails that build closed.
+    const expected = file === 'release.yml' ? [WASM_CLANG_STEPS[1]] : WASM_CLANG_STEPS;
+    if (lines.filter((l) => /^ {4}steps:/.test(l)).length !== 1 || steps[0] !== '      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7' || steps.slice(1, 1 + expected.length).join('\n') !== expected.join('\n')) {
+      problems.push(`${file}: job "${name}" builds for wasm32-unknown-unknown; its ${expected.length === 1 ? 'second step' : 'second to fourth steps'}, right after actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7, must be exactly the pinned clang 23 ${expected.length === 1 ? 'install step (WASM_CLANG_STEPS[1]; a release build starts clean, without the cache steps)' : 'steps (WASM_CLANG_STEPS)'}`);
     }
-    if (steps.filter((s) => s === WASM_CLANG_STEP).length > 1) {
+    if (steps.filter((s) => s === WASM_CLANG_STEPS[1]).length > 1) {
       problems.push(`${file}: job "${name}" carries the clang 23 step more than once`);
     }
     if (/GITHUB_ENV|GITHUB_PATH/.test(body)) {
