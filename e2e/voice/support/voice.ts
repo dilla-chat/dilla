@@ -221,8 +221,11 @@ export async function axeEverywhere(page: Page, state: string): Promise<void> {
       await expectAccessible(page, `${state} in the ${name} theme`);
     }
     await page.evaluate((n) => { document.documentElement.dataset.theme = n; }, 'signal');
-    await page.setViewportSize({ width: 360, height: 740 });
-    await expectAccessible(page, `${state} at 360×740`);
+    // The desktop lane's native minimum keeps a 360 px request at the desktop layout, which the signal pass above covers.
+    if (!desktopE2E()) {
+      await page.setViewportSize({ width: 360, height: 740 });
+      await expectAccessible(page, `${state} at 360×740`);
+    }
   } finally {
     if (viewport !== null) await page.setViewportSize(viewport);
     await page.evaluate((n) => { if (n === null) delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = n; }, theme);

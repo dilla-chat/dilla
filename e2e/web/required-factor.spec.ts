@@ -128,9 +128,12 @@ async function cleoReopens(
     await p2.goto('/welcome');
     await expectForced(p2);
     await expectAccessible(p2, 'forced second factor: choose');
-    await p2.setViewportSize({ width: 360, height: 740 });
-    await expectAccessible(p2, 'forced second factor at 360x740');
-    await p2.setViewportSize(viewport ?? { width: 1280, height: 720 });
+    if (!desktopE2E()) {
+      // The desktop lane's native minimum keeps this at the desktop layout, which the pass above already covers.
+      await p2.setViewportSize({ width: 360, height: 740 });
+      await expectAccessible(p2, 'forced second factor at 360x740');
+      await p2.setViewportSize(viewport ?? { width: 1280, height: 720 });
+    }
     await setUpAgain(p2, cleo);
     if (expectMember) {
       await expect(railItem(p2, SERVER)).toBeVisible({ timeout: WAIT });

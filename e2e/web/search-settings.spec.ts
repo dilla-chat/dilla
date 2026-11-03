@@ -1,4 +1,5 @@
 import { themes } from '../../packages/design-tokens/src/tokens';
+import { desktopE2E } from './support/electron.ts';
 import { expect, type Locator } from '@playwright/test';
 import { advanceClock, composerBox, copy, expectAccessible, closeSettings, instanceInvite, joinCommunity, openChannel, openSettings, Peer, rowById, settingsDialog, signUp, WAIT } from './support/app';
 import { test } from './support/second';
@@ -42,6 +43,7 @@ test('native edit is searched by prefix and deleted text disappears after a posi
 });
 
 test('Privacy, Keyboard and Diagnostics open on a phone with the nav as chips and close with Escape', async ({ page, peer, instanceName }) => {
+  test.skip(desktopE2E(), 'Mobile UI is outside the desktop release: the native minimum window size keeps a 360 px request at the desktop layout. The browser lane retains these mobile assertions.');
   await page.setViewportSize({ width: 360, height: 740 });
   const setup = await peer.setup({});
   await peer.register();
@@ -95,7 +97,8 @@ test('Appearance controls fit desktop rows and the phone section header keeps it
   await openChannel(page, peer.communityName, peer.channelName);
   await peer.waitForDevices(2, setup.channel_id);
   const settings = await openSettings(page, 'appearance');
-  for (const width of [1440, 1024, 390, 320]) {
+  // The desktop lane's native minimum keeps the phone widths at the desktop layout, where the two desktop widths already pass.
+  for (const width of [1440, 1024, 390, 320].filter(width => width >= 768 || !desktopE2E())) {
     await page.setViewportSize({ width, height: 900 });
     const group = settings.getByRole('radiogroup', { name: copy('appearance.theme.label'), exact: true });
     // matchMedia updates the React phone layout after the viewport resize event.
@@ -222,7 +225,7 @@ test('desktop, phone and reflow keep controls accessible in Signal', async ({ pa
   await joinCommunity(page, peer, setup);
   await openChannel(page, peer.communityName, peer.channelName);
   await peer.waitForDevices(2, setup.channel_id);
-  for (const viewport of [{ width: 1280, height: 800 }, { width: 360, height: 740 }, { width: 320, height: 740 }]) {
+  for (const viewport of [{ width: 1280, height: 800 }, { width: 360, height: 740 }, { width: 320, height: 740 }].filter(v => v.width >= 768 || !desktopE2E())) {
     await page.setViewportSize(viewport);
     for (const theme of Object.keys(themes)) {
       await page.evaluate(value => { document.documentElement.dataset.theme = value; }, theme);
