@@ -563,6 +563,7 @@ jobs:
         with:
           name: desktop-client-diagnostics-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.shard }}
           path: |
+            e2e/desktop-client-results/**/error-context.md
             e2e/desktop-client-results/**/signal-lifecycle.json
             e2e/desktop-client-results/**/installed-startup-diagnostics.json
           if-no-files-found: error

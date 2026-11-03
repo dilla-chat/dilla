@@ -54,8 +54,44 @@ jobs:
   # docs-only included.
   docs:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # Temporary read-only extraction of a failed case from an archive larger than the connector limit.
+      # Remove this extraction and its uploads before merging; no downloaded content is executed.
+      - name: Download prior private-channel failure for investigation
+        id: private-debug-download
+        if: github.event_name == 'pull_request' && github.event.pull_request.number == 137 && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          github-token: ${{ github.token }}
+          repository: jonasthim/dilla
+          run-id: 41591844919
+          name: desktop-client-failure-mac-arm64-2
+          path: ${{ runner.temp }}/prior-private-failure
+      - name: Upload prior private-channel error context
+        if: steps.private-debug-download.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: private-channel-prior-context
+          path: ${{ runner.temp }}/prior-private-failure/desktop-client-results/private-private-channels-r-86bf7--lockout-and-a-muted-server-electron-client/error-context.md
+          if-no-files-found: error
+      - name: Upload prior private-channel first renderer trace
+        if: steps.private-debug-download.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: private-channel-prior-renderer-1
+          path: ${{ runner.temp }}/prior-private-failure/desktop-client-results/private-private-channels-r-86bf7--lockout-and-a-muted-server-electron-client/attachments/Electron-renderer-trace-4cff1d7c2af601bf6cc09665be94da4837335bde.zip
+          if-no-files-found: error
+      - name: Upload prior private-channel second renderer trace
+        if: steps.private-debug-download.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: private-channel-prior-renderer-2
+          path: ${{ runner.temp }}/prior-private-failure/desktop-client-results/private-private-channels-r-86bf7--lockout-and-a-muted-server-electron-client/attachments/Electron-renderer-trace-29966fd00b03fa8e52804e82529ea99f49350385.zip
+          if-no-files-found: error
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
