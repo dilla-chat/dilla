@@ -4,6 +4,7 @@ import { lstat, readdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { publicReleaseRecords } from './verify-release.mjs';
+import { isMain } from './is-main.mjs';
 
 /** The signed release travels from `sign` to `publish` as an artifact; the
  * digest of its SHA256SUMS travels as a job output only `sign` can set. */
@@ -73,4 +74,4 @@ export async function cli(argv, env) {
  throw new Error('Usage: candidate-digest.mjs write DIR CHANNEL VERSION STAGED | verify DIR CHANNEL VERSION STAGED DIGEST');
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) console.log(await cli(process.argv.slice(2), process.env));
+if (isMain(import.meta.url)) console.log(await cli(process.argv.slice(2), process.env));

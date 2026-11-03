@@ -9,6 +9,7 @@ import { REPOSITORY, createGithubApi, hardenedGit, resolveTagCommit } from './ci
 import { DESKTOP_TAG, compareDesktopVersions } from './release-notes.mjs';
 import { listReleaseAssets } from './standard-release-upload.mjs';
 import { macArtifactKind, macRotationOf, macUpdateKind, sparkleFeedKey } from './feed-format.mjs';
+import { isMain } from './is-main.mjs';
 
 /**
  * The channel feed lives on GitHub Pages, not in a release: with immutable
@@ -240,4 +241,4 @@ export async function cli(argv, { trust, env = process.env } = {}) {
  throw new Error('Usage: pages-feed.mjs build SIGNED_DIR CHANNEL VERSION SITE_DIR | verify SIGNED_DIR CHANNEL');
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) console.log(await cli(process.argv.slice(2)));
+if (isMain(import.meta.url)) console.log(await cli(process.argv.slice(2)));

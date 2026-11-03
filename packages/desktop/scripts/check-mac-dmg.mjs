@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { macRotationOf } from './feed-format.mjs';
+import { isMain } from './is-main.mjs';
 
 /**
  * The macOS CI job's disk image check, run on every build after the final `dist`:
@@ -60,7 +61,7 @@ function defaultRun(command, args) {
  return command === 'codesign' || command === 'spctl' ? `${result.stdout}${result.stderr}` : result.stdout;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (isMain(import.meta.url)) {
  if (process.argv.length !== 3) throw new Error('Usage: check-mac-dmg.mjs OUT_DIR');
  const desktop = resolve(import.meta.dirname, '..');
  const trust = JSON.parse(readFileSync(join(desktop, 'release-trust.json'), 'utf8'));

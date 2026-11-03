@@ -8,6 +8,7 @@ import { EXPECTED_ARTIFACTS, createGithubApi, hardenedGit } from './ci-run.mjs';
 import { assertCheckoutIsMain, assertNoOtherReleaseRun, refuseRerunAttempt } from './keyed-run.mjs';
 import { DESKTOP_TAG, generateNotes } from './release-notes.mjs';
 import { downloadArtifactZip, extractArtifactZip } from './artifact-zip.mjs';
+import { isMain } from './is-main.mjs';
 
 /**
  * The signing candidate is built by the keyed `sign` job itself (review batch
@@ -167,4 +168,4 @@ export async function cli(argv, env, { fetchImpl = fetch } = {}) {
  throw new Error('Usage: release-candidate.mjs build ZIP_DIR CANDIDATE_DIR | digest DIR VERSION | record-id | verify DIR');
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) console.log(await cli(process.argv.slice(2), process.env));
+if (isMain(import.meta.url)) console.log(await cli(process.argv.slice(2), process.env));

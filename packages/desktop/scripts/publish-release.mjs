@@ -7,6 +7,7 @@ import { REPOSITORY, createGithubApi, fetchCiJobs, hardenedGit, resolveTagCommit
 import { assertCheckoutIsMain, assertNoOtherReleaseRun, refuseRerunAttempt } from './keyed-run.mjs';
 import { DESKTOP_TAG } from './release-notes.mjs';
 import { createReleaseAssetUploader, listReleaseAssets, releaseAssetDigest } from './standard-release-upload.mjs';
+import { isMain } from './is-main.mjs';
 
 /**
  * The keyless `publish` job of desktop-release.yml. It re-verifies the signed
@@ -153,7 +154,7 @@ export async function runPublisher({ mode, env, git, fetchImpl = fetch, trust, v
  return { release, published: after };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (isMain(import.meta.url)) {
  if (process.argv.length !== 3) throw new Error('Usage: publish-release.mjs plan | publish');
  const root = resolve(import.meta.dirname, '../../..');
  const git = hardenedGit(root);

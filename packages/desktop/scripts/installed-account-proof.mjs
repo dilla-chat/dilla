@@ -2,6 +2,7 @@ import { glob, lstat, readFile, writeFile, mkdir, appendFile } from 'node:fs/pro
 import { execFileSync } from 'node:child_process';
 import { join, resolve, basename } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { isMain } from './is-main.mjs';
 
 export const ACCOUNT_CHECKS = Object.freeze(['productionFuses', 'actualSignup', 'sameDeviceAfterUpgrade',
  'wrappedRecordUnchanged', 'encryptedHistoryReadable', 'draftBlockedInstallation', 'selectedFileBlockedInstallation',
@@ -37,7 +38,7 @@ export async function collectInstalledAccountProof(input, target, output, source
  const file = join(output, `installed-account-${target}.json`);
  await writeFile(file, JSON.stringify(report) + '\n'); return { file, report };
 }
-if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+if (isMain(import.meta.url)) {
  const [input, target, output] = process.argv.slice(2);
  if (!output || process.argv.length !== 5 || !process.env.GITHUB_OUTPUT) throw new Error('Usage: installed-account-proof.mjs RESULTS TARGET OUTPUT (GitHub Actions only)');
  const repo = resolve(import.meta.dirname, '../../..');

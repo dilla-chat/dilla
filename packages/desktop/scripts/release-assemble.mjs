@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { BUILD_TARGETS, TARGETS, inventoryDigest } from './verify-release.mjs';
 import { buildArtifactNames, buildProvenanceName, readBuildProvenanceFile } from './build-provenance.mjs';
+import { isMain } from './is-main.mjs';
 
 /** Turns the accepted CI run's downloaded artifacts into a signing candidate.
  * Each artifact is downloaded into its own directory; nothing is ever merged,
@@ -106,4 +107,4 @@ export async function cli(argv) {
  throw new Error('Usage: release-assemble.mjs collect VERSION DOWNLOAD_ROOT CANDIDATE_DIR GATE_DIR | assemble VERSION CANDIDATE_DIR COMMIT_TREE');
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) console.log(await cli(process.argv.slice(2)));
+if (isMain(import.meta.url)) console.log(await cli(process.argv.slice(2)));

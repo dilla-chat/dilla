@@ -9,6 +9,7 @@ import { buildProvenanceName } from './build-provenance.mjs';
 import { REPOSITORY, createGithubApi, resolveTagCommit } from './ci-run.mjs';
 import { publicationContext } from './publish-release.mjs';
 import { listReleaseAssets } from './standard-release-upload.mjs';
+import { isMain } from './is-main.mjs';
 
 /**
  * The keyless `verify-published` job: re-downloads every asset of the published
@@ -100,7 +101,7 @@ export async function verifyPublished({ env, fetchImpl = fetch, trust, verifier 
  return { version, assets: expected.length };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (isMain(import.meta.url)) {
  const root = resolve(import.meta.dirname, '../../..');
  const trust = JSON.parse(await readFile(join(root, 'packages/desktop/release-trust.json'), 'utf8'));
  const result = await verifyPublished({ env: process.env, trust });

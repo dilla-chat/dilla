@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { signDesktopRelease, sparkleKeyFromSeed } from './release-feed.mjs';
 import { parsePublicConfiguration } from './linux-sandbox-package.mjs';
 import { macRotationOf, macUpdateKind } from './feed-format.mjs';
+import { isMain } from './is-main.mjs';
 
 /**
  * The Sign step of the keyed workflow: the only process that holds the private
@@ -145,7 +146,7 @@ function removeKeyVariables(env) {
  for (const name of KEY_VARIABLES) { delete env[name]; delete process.env[name]; }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (isMain(import.meta.url)) {
  if (process.argv.length !== 5) throw new Error('Usage: release-sign-job.mjs VERSION CANDIDATE_DIR OUTPUT_DIR');
  const [version, candidateDirectory, outputDirectory] = process.argv.slice(2);
  const trust = JSON.parse(await readFile(new URL('../release-trust.json', import.meta.url), 'utf8'));

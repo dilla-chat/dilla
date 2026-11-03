@@ -8,6 +8,7 @@ import { DESKTOP_TAG, compareDesktopVersions, previousDesktopVersion } from './r
 import { macRotationOf } from './feed-format.mjs';
 import { latestPublished, trustAtTag } from './pages-feed.mjs';
 import { assertNoOtherReleaseRun, codeEqual, refuseRerunAttempt } from './keyed-run.mjs';
+import { isMain } from './is-main.mjs';
 
 /**
  * The keyed workflow's first step. Everything is re-derived from the GitHub API
@@ -182,7 +183,7 @@ export async function runGate({ env, git, api, outputDirectory, now = Date.now()
  return { tag, version, channel, sha, tree, ciRun: run.id, artifactIds, artifactDigests, runRecord, jobsRecord, previous, macUpdate };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (isMain(import.meta.url)) {
  if (process.argv.length !== 3) throw new Error('Usage: release-gate.mjs GATE_DIR');
  const root = resolve(import.meta.dirname, '../../..');
  const git = hardenedGit(root);

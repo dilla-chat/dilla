@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 
 import { parsePublicConfiguration, assertDedicatedKeys } from './linux-sandbox-package.mjs';
 import { appcast, signedAppcast, sparkleVersion, macRotationOf, macUpdateKind, sparkleFeedKey } from './feed-format.mjs';
+import { isMain } from './is-main.mjs';
 export { appcast, signedAppcast, sparkleVersion } from './feed-format.mjs';
 
 /** In-memory signing keys: `metadata` and `sandbox` are Ed25519 private KeyObjects, `sparkleSeed` the 32-byte Sparkle seed. */
@@ -129,7 +130,7 @@ export async function signDesktopRelease({ version, artifactsDirectory, keysDire
  }
  return release;
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMain(import.meta.url)) {
  const [version, artifactsDirectory, keysDirectory, outputDirectory] = process.argv.slice(2);
  if (!outputDirectory || process.argv.length !== 6) throw new Error('Usage: release-feed.mjs VERSION ARTIFACTS_DIR PRIVATE_KEYS_DIR OUTPUT_DIR');
  const result = await signDesktopRelease({ version, artifactsDirectory: resolve(artifactsDirectory), keysDirectory: resolve(keysDirectory), outputDirectory: resolve(outputDirectory) });

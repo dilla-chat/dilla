@@ -17,7 +17,7 @@ const sha512 = bytes => createHash('sha512').update(bytes).digest('base64');
 
 /** Public tooling copied next to fixture trust, so tests never read or change production pins. */
 export const RELEASE_TOOL_FILES = Object.freeze(['scripts/release-feed.mjs', 'scripts/verify-release.mjs', 'scripts/feed-format.mjs', 'scripts/installed-account-proof.mjs',
- 'scripts/build-provenance.mjs', 'scripts/build-native-linux-packages.mjs', 'scripts/linux-package-version.mjs', 'scripts/linux-sandbox-package.mjs',
+ 'scripts/build-provenance.mjs', 'scripts/is-main.mjs', 'scripts/build-native-linux-packages.mjs', 'scripts/linux-package-version.mjs', 'scripts/linux-sandbox-package.mjs',
  'src/update.ts', 'src/update-fs.ts', 'src/linux-sandbox-release.ts']);
 
 export async function isolatedReleaseTools(directory, { trust, sandboxConfig, files = [] }) {

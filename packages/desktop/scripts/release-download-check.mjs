@@ -3,6 +3,7 @@ import { lstat, readdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createGithubApi, listRunArtifacts, selectReleaseArtifacts } from './ci-run.mjs';
+import { isMain } from './is-main.mjs';
 
 /**
  * Runs in the keyless `collect` job right after the downloads, before anything
@@ -38,7 +39,7 @@ export async function checkDownloads({ env, api, gateDirectory, candidateDirecto
  if (ids.join(',') !== env.ARTIFACT_IDS || digests.join(',') !== env.ARTIFACT_DIGESTS) throw new Error('The run’s artifact ids or digests differ from the ones the gate accepted');
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (isMain(import.meta.url)) {
  if (process.argv.length !== 4) throw new Error('Usage: release-download-check.mjs GATE_DIR CANDIDATE_DIR');
  const [gateDirectory, candidateDirectory] = process.argv.slice(2).map(path => resolve(path));
  await checkDownloads({ env: process.env, api: createGithubApi({ token: process.env.GH_TOKEN }), gateDirectory, candidateDirectory });

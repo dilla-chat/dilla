@@ -152,7 +152,7 @@ test('publication refuses missing native acceptance even when the generic CI sta
   assert.equal(typeof publicReleaseRecords, 'function', 'publisher must share the complete public proof-record inventory');
   const tools = join(directory, 'isolated-signing-tools'), privateKeys = join(directory, 'private-signing-keys'), candidate = join(directory, 'public-candidate');
   await mkdir(privateKeys, { mode: 0o700 });
-  for (const relative of ['scripts/release-feed.mjs', 'scripts/verify-release.mjs', 'scripts/feed-format.mjs', 'scripts/installed-account-proof.mjs', 'scripts/build-provenance.mjs','scripts/build-native-linux-packages.mjs','scripts/linux-package-version.mjs', 'src/update.ts',   'src/update-fs.ts', 'src/linux-sandbox-release.ts', 'scripts/linux-sandbox-package.mjs']) {
+  for (const relative of ['scripts/release-feed.mjs', 'scripts/is-main.mjs', 'scripts/verify-release.mjs', 'scripts/feed-format.mjs', 'scripts/installed-account-proof.mjs', 'scripts/build-provenance.mjs','scripts/build-native-linux-packages.mjs','scripts/linux-package-version.mjs', 'src/update.ts',   'src/update-fs.ts', 'src/linux-sandbox-release.ts', 'scripts/linux-sandbox-package.mjs']) {
    const file = join(tools, relative); await mkdir(dirname(file), { recursive: true }); await copyFile(resolve(import.meta.dirname, '..', relative), file);
   }
   await writeFile(join(tools, 'package.json'), JSON.stringify({ type: 'module' }));

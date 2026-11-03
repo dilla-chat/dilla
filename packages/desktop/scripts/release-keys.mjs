@@ -9,6 +9,7 @@ import { macRotationOf } from './feed-format.mjs';
 import { REPOSITORY } from './ci-run.mjs';
 import { macUpdateFor } from './release-gate.mjs';
 import { trustAtTag } from './pages-feed.mjs';
+import { isMain } from './is-main.mjs';
 
 /**
  * One-time key setup and staged rotation for the keyed desktop release workflow.
@@ -462,7 +463,7 @@ export function parseArgs(argv) {
  return options;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (isMain(import.meta.url)) {
  const { command, flags, values, file } = parseArgs(process.argv.slice(2));
  const repo = values['--repo'] ?? DEFAULT_REPO;
  if (command === 'setup' && !flags.has('--promote') && !flags.has('--retire')) await setupRelease({ repo, reviewedSha: values['--reviewed-sha'], acceptUnprotectedMain: flags.has('--accept-unprotected-main'), gh: createGh({ repo }) });

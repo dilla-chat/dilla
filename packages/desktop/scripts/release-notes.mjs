@@ -2,6 +2,7 @@ import { open, rm } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { REPOSITORY, createGithubApi } from './ci-run.mjs';
+import { isMain } from './is-main.mjs';
 
 /** Release notes are generated from merged PR numbers and titles only. Titles
  * stay editable by their authors after merge, so each is rendered as an inert
@@ -125,7 +126,7 @@ export async function cli(argv, env, { fetchImpl = fetch } = {}) {
  }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (isMain(import.meta.url)) {
  await cli(process.argv.slice(2), process.env);
  console.log('Generated desktop release notes from merged pull request titles.');
 }
