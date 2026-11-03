@@ -156,12 +156,13 @@ test('scopes and keyboard selection stay on the textbox until a target is chosen
   await expect(rowById(page, peer.channelName, sent.msg_id)).toContainText('café compass', { timeout: WAIT });
   // Escape closes the overlay and returns focus to where search was opened.
   await rowById(page, peer.channelName, sent.msg_id).focus();
-  await page.keyboard.press('ControlOrMeta+/');
+  // This alternate shortcut is Control+/ on macOS too (Settings → Keyboard).
+  await page.keyboard.press('Control+/');
   await expect(page.getByRole('combobox', { name: copy('search.placeholder') })).toBeFocused();
   await page.keyboard.press('Escape');
   await expect(page.getByRole('combobox', { name: copy('search.placeholder') })).toHaveCount(0);
   await expect(rowById(page, peer.channelName, sent.msg_id)).toBeFocused();
-  await page.keyboard.press('ControlOrMeta+/');
+  await page.keyboard.press('Control+/');
   const textbox = page.getByRole('combobox', { name: copy('search.placeholder') });
   await textbox.fill('cafe');
   // Task 9 fix round 1 (Jonas): the palette has no scope control; messages are searched everywhere, this conversation's first.
