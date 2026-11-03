@@ -10,14 +10,14 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/jonasthim/dilla/internal/auth"
-	botaccess "github.com/jonasthim/dilla/internal/bot/access"
-	"github.com/jonasthim/dilla/internal/bot/identity"
-	"github.com/jonasthim/dilla/internal/bot/protocol"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/mlswasi"
-	"github.com/jonasthim/dilla/internal/server"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/auth"
+	botaccess "github.com/dilla-chat/dilla/internal/bot/access"
+	"github.com/dilla-chat/dilla/internal/bot/identity"
+	"github.com/dilla-chat/dilla/internal/bot/protocol"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/mlswasi"
+	"github.com/dilla-chat/dilla/internal/server"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // createDeviceRequest is POST /v1/devices' body: the device array of POST /v1/accounts followed by

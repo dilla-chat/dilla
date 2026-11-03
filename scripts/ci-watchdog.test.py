@@ -187,6 +187,29 @@ class WatchdogTests(unittest.TestCase):
         self.assertEqual(clock.waits, [5, 5, 5])
         self.assertTrue(all(r.get_method() == "GET" for r, _ in transport.requests))
 
+    def test_a_rerun_ignores_the_previous_attempts_records_until_its_own_jobs_report(self):
+        # filter=latest returns a job's attempt-1 record until the rerun creates its attempt-2 job.
+        roots = [job("changes"), job("docs"), job("ci-work-complete")]
+        stale = dict(job("desktop / voice", conclusion="cancelled"), run_attempt=1)
+        api, transport, clock = self.client([
+            {"total_count": 4, "jobs": roots + [stale]},
+            {"total_count": 4, "jobs": roots + [dict(job("desktop / voice"), run_attempt=2)]},
+        ])
+        api.run_attempt = 2
+        result = watchdog.watch(api, sleep=clock.sleep, monotonic=lambda: clock.now, max_seconds=100)
+        self.assertEqual(result, "complete")
+        self.assertTrue(all(r.get_method() == "GET" for r, _ in transport.requests))
+
+    def test_a_rerun_still_cancels_on_its_own_attempts_failure(self):
+        roots = [job("changes"), job("docs")]
+        api, transport, clock = self.client([
+            {"total_count": 3, "jobs": roots + [dict(job("go", conclusion="failure"), run_attempt=2)]},
+            {},
+        ])
+        api.run_attempt = 2
+        result = watchdog.watch(api, sleep=clock.sleep, monotonic=lambda: clock.now, max_seconds=100)
+        self.assertEqual(result, "cancelled")
+
     def test_completion_requires_real_roots_and_all_real_jobs(self):
         roots = [job("changes"), job("docs")]
         result, transport, clock = self.watch([

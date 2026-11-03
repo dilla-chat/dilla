@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 func TestDiscoverObservedUsesSamePinnedResponseAndLeavesBadDateUnavailable(t *testing.T) {

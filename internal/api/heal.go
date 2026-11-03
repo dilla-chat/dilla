@@ -3,9 +3,9 @@ package api
 import (
 	"net/http"
 
-	"github.com/jonasthim/dilla/internal/auth"
-	"github.com/jonasthim/dilla/internal/ds"
-	"github.com/jonasthim/dilla/internal/server"
+	"github.com/dilla-chat/dilla/internal/auth"
+	"github.com/dilla-chat/dilla/internal/ds"
+	"github.com/dilla-chat/dilla/internal/server"
 )
 
 // RegisterHeal mounts endpoints 13 and 14, invariant 11's two routes: what the instance still

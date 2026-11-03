@@ -24,7 +24,7 @@ module.exports = {
   extraResources: [{ from: 'native-bin', to: 'native', filter: ['dilla-audio*', 'dilla-sparkle.node'] }],
   artifactName: 'dilla-${version}-${os}-${arch}.${ext}',
   protocols: [{ name: 'Dilla invite', schemes: ['dilla'] }],
-  publish: [{ provider: 'github', owner: 'jonasthim', repo: 'dilla', releaseType: 'draft' }],
+  publish: [{ provider: 'github', owner: 'dilla-chat', repo: 'dilla', releaseType: 'draft' }],
   // AppImage expands ${arch} to x86_64; release descriptors use canonical x64.
   linux: { artifactName: 'dilla-${version}-linux-x64.${ext}', syncDesktopName: true, target: [{ target: 'AppImage', arch: ['x64'] }], category: 'Network', icon: 'assets/icon.png' },
   // The pinned legacy AppImage target otherwise adds --no-sandbox to Exec.
@@ -42,7 +42,7 @@ module.exports = {
       CFBundleVersion: require('./package.json').version.replace('-beta.', 'b'),
       NSUserNotificationAlertStyle: 'alert',
       DillaDesktopChannel: channel,
-      SUFeedURL: `https://github.com/jonasthim/dilla/releases/download/desktop-${channel}/appcast-${process.arch}.xml`,
+      SUFeedURL: `https://github.com/dilla-chat/dilla/releases/download/desktop-${channel}/appcast-${process.arch}.xml`,
       SUPublicEDKey: sparklePublicKey, SURequireSignedFeed: true, SUVerifyUpdateBeforeExtraction: true,
       SUEnableAutomaticChecks: false, SUAutomaticallyUpdate: false, SUEnableInstallerLauncherService: true,
       SUEnableDownloaderService: false,

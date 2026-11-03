@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // copyPayload is a PostgreSQL binary COPY payload of rows tuples, each of two

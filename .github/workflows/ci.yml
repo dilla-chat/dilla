@@ -728,6 +728,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - run: rustup show active-toolchain
       - run: bash scripts/install-ci-tool.sh cargo-deny
+      # The advisory database is cloned from GitHub; retry a dropped connection before the check.
+      - run: for attempt in 1 2 3; do cargo deny fetch && break; sleep 15; done
       - run: cargo deny --all-features check advisories bans licenses sources
 
   go:
@@ -763,7 +765,7 @@ jobs:
       # alone took ~620 s locally under -race and hit a 20-minute timeout here (run 39486567482), so
       # go-api runs it with a budget of its own.
       - name: Unit tests with the race detector (cgo required, do not set CGO_ENABLED=0 here)
-        run: go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx -e github.com/jonasthim/dilla/internal/ds -e github.com/jonasthim/dilla/internal/api)
+        run: go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx -e github.com/dilla-chat/dilla/internal/ds -e github.com/dilla-chat/dilla/internal/api)
         env:
           GORACE: halt_on_error=1
       - name: TURN permission timer backport regression

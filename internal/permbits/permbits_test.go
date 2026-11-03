@@ -5,7 +5,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/permbits"
+	"github.com/dilla-chat/dilla/internal/permbits"
 )
 
 func TestAllMatchesProtocolVectors(t *testing.T) {

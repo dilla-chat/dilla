@@ -15,7 +15,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/bot/client"
 )
 
 // The worker is embedded so production does not depend on a source checkout.

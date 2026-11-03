@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/sframe"
-	"github.com/jonasthim/dilla/internal/sfu"
-	"github.com/jonasthim/dilla/internal/sfu/sfutest"
+	"github.com/dilla-chat/dilla/internal/sframe"
+	"github.com/dilla-chat/dilla/internal/sfu"
+	"github.com/dilla-chat/dilla/internal/sfu/sfutest"
 )
 
 const (

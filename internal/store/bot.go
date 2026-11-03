@@ -3,7 +3,7 @@ package store
 import (
 	"context"
 
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // BotRuntimeRow mirrors bot_runtimes. TokenHash is SHA-256 of the entire dbr_ token.

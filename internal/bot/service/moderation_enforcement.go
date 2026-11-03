@@ -7,11 +7,11 @@ import (
 	"math"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/bot/client"
-	"github.com/jonasthim/dilla/internal/bot/moderation"
-	"github.com/jonasthim/dilla/internal/bot/moderation/operationid"
-	"github.com/jonasthim/dilla/internal/bot/native"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/bot/moderation"
+	"github.com/dilla-chat/dilla/internal/bot/moderation/operationid"
+	"github.com/dilla-chat/dilla/internal/bot/native"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 const botModerationAcceptanceWindow = 25 * time.Second

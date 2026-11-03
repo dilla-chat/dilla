@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/ds"
+	"github.com/dilla-chat/dilla/internal/ds"
 )
 
 // `dillad restore` runs without a delivery service: it performs invariant 11's

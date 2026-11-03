@@ -18,8 +18,8 @@ import (
 
 	"github.com/pressly/goose/v3"
 
-	"github.com/jonasthim/dilla/internal/store/sqlite"
-	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
+	"github.com/dilla-chat/dilla/internal/store/sqlite"
+	sqlitemigrations "github.com/dilla-chat/dilla/internal/store/sqlite/migrations"
 )
 
 var (

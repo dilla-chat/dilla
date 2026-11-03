@@ -30,7 +30,7 @@ test('signal death with a surviving detached child leaves preparation outcome am
  const dir = await mkdtemp(join(tmpdir(), 'dilla-prepare-signal-')), pidFile = join(dir, 'descendant'); let pid: number | undefined;
  try {
   const script = join(dir, 'candidate');
-  await writeCandidate(script, `const fs=require('node:fs'),{spawn}=require('node:child_process');fs.readFileSync(3);const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore'});child.unref();fs.writeFileSync(${JSON.stringify(pidFile)},String(child.pid));process.kill(process.pid,'SIGKILL');\n`);
+  await writeCandidate(script, `const fs=require('node:fs'),{spawn}=require('node:child_process');fs.readFileSync(3);const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore'});child.unref();fs.writeFileSync(require('node:path').join(__dirname,'descendant'),String(child.pid));process.kill(process.pid,'SIGKILL');\n`);
   const gate = new SandboxPreparationGate(); let attempts = 0;
   await assert.rejects(gate.run(() => { attempts++; return launchSandboxPreparation(script, Buffer.alloc(64), { generation: 7, compatibilityEpoch: 1 }); }), SandboxPreparationAmbiguous);
   pid = Number(await readFile(pidFile, 'utf8')); assert.ok(pid > 1); assert.doesNotThrow(() => process.kill(pid!, 0));
@@ -55,7 +55,7 @@ test('overflow termination retains ambiguity while a detached descendant remains
  const dir = await mkdtemp(join(tmpdir(), 'dilla-prepare-overflow-')), pidFile = join(dir, 'descendant'); let pid: number | undefined;
  try {
   const script = join(dir, 'candidate');
-  await writeCandidate(script, `const fs=require('node:fs'),{spawn}=require('node:child_process');fs.readFileSync(3);const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore'});child.unref();fs.writeFileSync(${JSON.stringify(pidFile)},String(child.pid));fs.writeFileSync(4,'x'.repeat(513));setInterval(()=>{},1000);\n`);
+  await writeCandidate(script, `const fs=require('node:fs'),{spawn}=require('node:child_process');fs.readFileSync(3);const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore'});child.unref();fs.writeFileSync(require('node:path').join(__dirname,'descendant'),String(child.pid));fs.writeFileSync(4,'x'.repeat(513));setInterval(()=>{},1000);\n`);
   const gate = new SandboxPreparationGate(); let attempts = 0;
   await assert.rejects(gate.run(() => { attempts++; return launchSandboxPreparation(script, Buffer.alloc(64), { generation: 7, compatibilityEpoch: 1 }); }), SandboxPreparationAmbiguous);
   pid = Number(await readFile(pidFile, 'utf8')); assert.ok(pid > 1); assert.doesNotThrow(() => process.kill(pid!, 0));

@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/store/sqlite"
-	"github.com/jonasthim/dilla/internal/testkit"
+	"github.com/dilla-chat/dilla/internal/store/sqlite"
+	"github.com/dilla-chat/dilla/internal/testkit"
 )
 
 // recordingTB is a testing.TB whose Skip and Skipf record instead of stopping the goroutine, so
@@ -255,13 +255,13 @@ func TestAdvanceClockDrivesTheTwentyFourHourTTL(t *testing.T) {
 // The test-only seeding and the harness must never reach a dillad build.
 func TestTheReleaseBinaryDependsOnNeitherDilladtestNorTestkit(t *testing.T) {
 	out, err := exec.CommandContext(t.Context(), goToolPath(t), "list", "-deps",
-		"github.com/jonasthim/dilla/cmd/dillad").Output()
+		"github.com/dilla-chat/dilla/cmd/dillad").Output()
 	if err != nil {
 		t.Fatalf("go list: %v", err)
 	}
 	for _, forbidden := range []string{
-		"github.com/jonasthim/dilla/internal/dillad/dilladtest",
-		"github.com/jonasthim/dilla/internal/testkit",
+		"github.com/dilla-chat/dilla/internal/dillad/dilladtest",
+		"github.com/dilla-chat/dilla/internal/testkit",
 	} {
 		if strings.Contains(string(out), forbidden) {
 			t.Errorf("cmd/dillad depends on %s: the seeding convenience must never ship", forbidden)

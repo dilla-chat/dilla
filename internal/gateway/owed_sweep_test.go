@@ -3,8 +3,8 @@ package gateway
 import (
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // An operator's `reset-factors` runs in another process and keeps the sessions (web3.6 D5): the row

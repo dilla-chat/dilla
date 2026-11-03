@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/cborx"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 func registrationHash(body []byte) []byte {

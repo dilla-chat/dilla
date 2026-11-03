@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/ds"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/mlswasi"
+	"github.com/dilla-chat/dilla/internal/ds"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/mlswasi"
 )
 
 // A member device unseen for more than 90 days gets one instance Remove of its leaf; a member seen

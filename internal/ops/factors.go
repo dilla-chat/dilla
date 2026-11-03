@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // ResetFactors is the operator's reset of one person's second factor (web3.6 S3, protocol/09

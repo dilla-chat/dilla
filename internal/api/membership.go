@@ -5,8 +5,8 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // DS is the delivery-service surface the api package calls. It is a subset of

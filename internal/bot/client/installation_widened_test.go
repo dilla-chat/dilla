@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // Task 10c: the runtime list answers 8 fields from an older server and 13 from a newer one.

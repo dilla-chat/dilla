@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/config"
-	"github.com/jonasthim/dilla/internal/obs"
+	"github.com/dilla-chat/dilla/internal/config"
+	"github.com/dilla-chat/dilla/internal/obs"
 )
 
 func TestRedactorReplacesSecretKeysAtEveryDepth(t *testing.T) {

@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/dillad"
+	"github.com/dilla-chat/dilla/internal/dillad"
 )
 
 // TestMain puts the wasi core where `dillad serve` looks for it: dillad.CoreFileName beside the

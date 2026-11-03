@@ -14,7 +14,7 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/jonasthim/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/bot/client"
 )
 
 func TestCloseOutcomeHeartbeatOverdueRequiresFreshConnection(t *testing.T) {

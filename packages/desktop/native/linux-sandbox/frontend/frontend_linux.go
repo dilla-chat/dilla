@@ -45,7 +45,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/jonasthim/dilla/internal/desktopsandbox"
+	"github.com/dilla-chat/dilla/internal/desktopsandbox"
 )
 
 const authorizationExecutable = "/usr/bin/pkexec"

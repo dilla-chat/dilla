@@ -185,7 +185,7 @@ done
 # does not answer fails here, before a container exists.
 if [ -z "$BINARY" ] || [ -z "$CORE" ]; then
 	# install.sh --check-args has refused a download with neither a version nor a URL.
-	probe="${RELEASE_URL:-https://github.com/jonasthim/dilla/releases/download/$VERSION}"
+	probe="${RELEASE_URL:-https://github.com/dilla-chat/dilla/releases/download/$VERSION}"
 	log "checking $probe/SHA256SUMS"
 	curl -fsSL -o /dev/null "$probe/SHA256SUMS" >&2 || die "the release at $probe does not answer; nothing was created"
 fi

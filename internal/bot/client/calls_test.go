@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/cborx"
 )
 
 func TestStartCallBindsCallToChannel(t *testing.T) {

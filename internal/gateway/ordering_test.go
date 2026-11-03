@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // A connection must not be reachable by a producer until its handshake frame is on the writer.

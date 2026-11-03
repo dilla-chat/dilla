@@ -17,12 +17,12 @@ import (
 	"github.com/pressly/goose/v3"
 	_ "modernc.org/sqlite"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
-	pgmigrations "github.com/jonasthim/dilla/internal/store/postgres/migrations"
-	"github.com/jonasthim/dilla/internal/store/postgres/pgdb"
-	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
-	"github.com/jonasthim/dilla/internal/store/sqlite/sqlitedb"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
+	pgmigrations "github.com/dilla-chat/dilla/internal/store/postgres/migrations"
+	"github.com/dilla-chat/dilla/internal/store/postgres/pgdb"
+	sqlitemigrations "github.com/dilla-chat/dilla/internal/store/sqlite/migrations"
+	"github.com/dilla-chat/dilla/internal/store/sqlite/sqlitedb"
 )
 
 // methodShapes returns one line per method of an interface type: its name, its

@@ -3,8 +3,8 @@ package gateway
 import (
 	"github.com/fxamacker/cbor/v2"
 
-	"github.com/jonasthim/dilla/internal/cborx"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // payload encodes a fixed-position payload array once. Every producer in the delivery service

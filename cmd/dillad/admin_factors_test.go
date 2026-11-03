@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/auth"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/auth"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // seedEveryFactor gives the user the three things reset-factors removes: a confirmed TOTP secret,

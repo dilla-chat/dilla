@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // web-3 task 3b, L-HTTP-105 (RV-2): the idle call-group close lists the open call groups no live

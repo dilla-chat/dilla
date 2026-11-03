@@ -5,7 +5,7 @@
   "implementationSha256": "675f05a151180ba1fba1e75f17ad97c1629050f7f1fb61d87b3c869099b2ca5d",
   "assetLockSha256": "a7de345ad2255a41f30b8a9bd2ac333fea2bff48e2a6d821df2537246e409604",
   "ciFailure": {
-    "run": "https://github.com/jonasthim/dilla/actions/runs/39065480309",
+    "run": "https://github.com/dilla-chat/dilla/actions/runs/39065480309",
     "failedJob": "firefox-web",
     "otherJobsPassed": 22,
     "error": "InvalidStateError: Can't close an AudioContext twice",

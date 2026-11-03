@@ -12,14 +12,14 @@ import (
 	"github.com/fxamacker/cbor/v2"
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/jonasthim/dilla/internal/api"
-	"github.com/jonasthim/dilla/internal/auth"
-	"github.com/jonasthim/dilla/internal/blob"
-	"github.com/jonasthim/dilla/internal/cborx"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/obs"
-	"github.com/jonasthim/dilla/internal/ops"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/api"
+	"github.com/dilla-chat/dilla/internal/auth"
+	"github.com/dilla-chat/dilla/internal/blob"
+	"github.com/dilla-chat/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/obs"
+	"github.com/dilla-chat/dilla/internal/ops"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // NewInstanceAdmin creates a user whose users.flags has bit 0 set (NV8,

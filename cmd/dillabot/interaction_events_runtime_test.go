@@ -9,10 +9,10 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/bot/helper"
-	"github.com/jonasthim/dilla/internal/bot/native"
-	"github.com/jonasthim/dilla/internal/bot/service"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/bot/helper"
+	"github.com/dilla-chat/dilla/internal/bot/native"
+	"github.com/dilla-chat/dilla/internal/bot/service"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 type interactionPollerFunc func(context.Context, service.GroupEventHandler) (service.GroupEventPollResult, error)

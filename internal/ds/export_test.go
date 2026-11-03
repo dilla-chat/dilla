@@ -5,9 +5,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/mlswasi"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/mlswasi"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // export_test.go exposes three unexported decoders and one unexported rule to the external test

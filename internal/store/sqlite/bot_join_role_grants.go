@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 func scanBotJoinReceipt(row interface{ Scan(...any) error }) (store.BotJoinRoleGrantReceipt, error) {

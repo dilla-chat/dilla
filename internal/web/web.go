@@ -17,7 +17,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/jonasthim/dilla/internal/server"
+	"github.com/dilla-chat/dilla/internal/server"
 )
 
 const ManifestName = "dilla-manifest.json"

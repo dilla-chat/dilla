@@ -5,9 +5,9 @@ import (
 	"errors"
 	"io"
 
-	"github.com/jonasthim/dilla/internal/bot/music"
-	"github.com/jonasthim/dilla/internal/bot/music/encode"
-	musicruntime "github.com/jonasthim/dilla/internal/bot/music/runtime"
+	"github.com/dilla-chat/dilla/internal/bot/music"
+	"github.com/dilla-chat/dilla/internal/bot/music/encode"
+	musicruntime "github.com/dilla-chat/dilla/internal/bot/music/runtime"
 )
 
 var ErrOpusSource = errors.New("youtube: invalid Opus source configuration")

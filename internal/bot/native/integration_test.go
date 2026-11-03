@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/bot/helper"
-	"github.com/jonasthim/dilla/internal/bot/protocol"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/bot/helper"
+	"github.com/dilla-chat/dilla/internal/bot/protocol"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 func TestCompiledHelperNativeLifecycleIntegration(t *testing.T) {

@@ -36,14 +36,14 @@ import (
 	"github.com/pion/turn/v5"
 	"google.golang.org/protobuf/encoding/protojson"
 
-	"github.com/jonasthim/dilla/internal/clock"
-	"github.com/jonasthim/dilla/internal/config"
-	"github.com/jonasthim/dilla/internal/exit"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/obs"
-	"github.com/jonasthim/dilla/internal/ops"
-	"github.com/jonasthim/dilla/internal/server"
-	"github.com/jonasthim/dilla/internal/sfu"
+	"github.com/dilla-chat/dilla/internal/clock"
+	"github.com/dilla-chat/dilla/internal/config"
+	"github.com/dilla-chat/dilla/internal/exit"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/obs"
+	"github.com/dilla-chat/dilla/internal/ops"
+	"github.com/dilla-chat/dilla/internal/server"
+	"github.com/dilla-chat/dilla/internal/sfu"
 )
 
 // rewriteConfig loads cfgPath, applies tune and writes it back.

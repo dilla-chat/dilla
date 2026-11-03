@@ -15,7 +15,7 @@ import (
 
 	"github.com/fxamacker/cbor/v2"
 
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // MaxNesting mirrors dilla-core's cbor::MAX_NESTING.

@@ -11,7 +11,7 @@ import (
 
 	"github.com/livekit/livekit-server/pkg/config"
 
-	"github.com/jonasthim/dilla/internal/sfu/sfutest"
+	"github.com/dilla-chat/dilla/internal/sfu/sfutest"
 )
 
 // Branch review SFU-3: YAML renders the bind address quoted, so it cannot leave its own line, and

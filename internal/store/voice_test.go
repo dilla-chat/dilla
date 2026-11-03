@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // Plan 2 task 16 (P2-D22): 00011_voice.sql's voice_sessions, on both engines.

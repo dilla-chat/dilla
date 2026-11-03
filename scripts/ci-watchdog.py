@@ -37,6 +37,9 @@ class GitHubRun:
         self.open = opener or build_opener(NoRedirect()).open
         self.sleep = sleep
         self.monotonic = monotonic
+        # A rerun's jobs?filter=latest keeps returning a job's earlier-attempt record until
+        # the rerun creates its own job; watch() treats such records as still pending.
+        self.run_attempt = 1
 
     def request(self, suffix, method="GET", *, deadline=None):
         # Only jobs() supplies a recovery deadline. Cancellation and other reads
@@ -131,7 +134,12 @@ def from_environment(env, event):
     main_push = event_name == "push" and env.get("GITHUB_REF") == "refs/heads/main"
     if not (same_repo_pr or main_push):
         raise ValueError("watchdog requires a same-repository pull request or main push")
-    return GitHubRun(repository, env.get("GITHUB_RUN_ID", ""), env.get("GH_TOKEN", ""))
+    api = GitHubRun(repository, env.get("GITHUB_RUN_ID", ""), env.get("GH_TOKEN", ""))
+    attempt = env.get("GITHUB_RUN_ATTEMPT", "1")
+    if not re.fullmatch(r"[1-9][0-9]*", attempt):
+        raise ValueError("invalid GITHUB_RUN_ATTEMPT")
+    api.run_attempt = int(attempt)
+    return api
 
 
 def watch(api, *, sleep=time.sleep, monotonic=time.monotonic, max_seconds=89 * 60):
@@ -140,6 +148,9 @@ def watch(api, *, sleep=time.sleep, monotonic=time.monotonic, max_seconds=89 * 6
         # ci-ok waits for us. The completion barrier waits for every real DAG leaf,
         # including reusable-workflow children that GitHub discovers after startup.
         jobs = [j for j in api.jobs(deadline=deadline) if j["name"] not in {"ci-watchdog", "ci-ok"}]
+        jobs = [dict(j, status="queued", conclusion=None, steps=[])
+                if isinstance(j.get("run_attempt"), int) and j["run_attempt"] < api.run_attempt else j
+                for j in jobs]
         for job in jobs:
             completed_failure, step_failure = failure_state(job)
             if completed_failure or step_failure:

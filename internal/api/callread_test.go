@@ -12,8 +12,8 @@ import (
 	"github.com/fxamacker/cbor/v2"
 	"github.com/livekit/protocol/webhook"
 
-	"github.com/jonasthim/dilla/internal/api"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/api"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // snapshotEntry is one participants element: [user_id, device_id, flags].

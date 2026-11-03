@@ -10,11 +10,11 @@ import (
 	"github.com/livekit/protocol/auth"
 	"github.com/livekit/protocol/livekit"
 
-	"github.com/jonasthim/dilla/internal/api"
-	dillaauth "github.com/jonasthim/dilla/internal/auth"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/sfu"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/api"
+	dillaauth "github.com/dilla-chat/dilla/internal/auth"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/sfu"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 func readyCallBot(t *testing.T, e *env, ch, group id.ID, ownerToken string) (id.ID, id.ID, string) {

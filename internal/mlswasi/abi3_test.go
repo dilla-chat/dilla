@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/cborx"
 )
 
 // abi3_test.go covers the two ABI v3 additions of dillad-1 task 27a (Ruling C, deviations B32

@@ -62,12 +62,12 @@ export function verifyRelease(bytes: Uint8Array, signature: string, ctx: VerifyC
     const id = `${artifact.platform}-${artifact.arch}`;
     if (platforms.has(id)) throw new Error('Duplicate artifact target');
     platforms.add(id);
-    if (typeof artifact.url !== 'string' || !/^https:\/\/github\.com\/jonasthim\/dilla\/releases\/download\/desktop-v[0-9A-Za-z.-]+\/[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(artifact.url)
-      || new URL(artifact.url).pathname !== `/jonasthim/dilla/releases/download/desktop-v${doc.version}/${artifact.url.split('/').at(-1)}`) throw new Error('Invalid artifact URL');
+    if (typeof artifact.url !== 'string' || !/^https:\/\/github\.com\/dilla-chat\/dilla\/releases\/download\/desktop-v[0-9A-Za-z.-]+\/[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(artifact.url)
+      || new URL(artifact.url).pathname !== `/dilla-chat/dilla/releases/download/desktop-v${doc.version}/${artifact.url.split('/').at(-1)}`) throw new Error('Invalid artifact URL');
     if (artifact.platform === 'linux') {
       const sandbox = artifact.linuxSandbox, bundle = sandbox?.bundle;
       const exact = (v: object, keys: string[]) => !!v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === keys.length && keys.every(k => Object.hasOwn(v,k));
-      if (!exact(artifact, ['platform','arch','url','size','sha512','linuxSandbox']) || artifact.arch !== 'x64' || artifact.url !== `https://github.com/jonasthim/dilla/releases/download/desktop-v${doc.version}/dilla-${doc.version}-linux-x64.AppImage` || !sandbox || !exact(sandbox, ['compatibilityEpoch','minimumGeneration','bundle']) || sandbox.compatibilityEpoch !== 1 || !Number.isSafeInteger(sandbox.minimumGeneration) || sandbox.minimumGeneration < 1 || !bundle || !exact(bundle, ['url','size','sha512']) || bundle.url !== `https://github.com/jonasthim/dilla/releases/download/desktop-v${doc.version}/dilla-${doc.version}-linux-x64.sandbox` || !Number.isSafeInteger(bundle.size) || bundle.size < 1 || bundle.size > 48 * 1024 ** 2 || typeof bundle.sha512 !== 'string' || Buffer.from(bundle.sha512, 'base64').length !== 64 || Buffer.from(bundle.sha512, 'base64').toString('base64') !== bundle.sha512) throw new Error('Invalid Linux sandbox descriptor');
+      if (!exact(artifact, ['platform','arch','url','size','sha512','linuxSandbox']) || artifact.arch !== 'x64' || artifact.url !== `https://github.com/dilla-chat/dilla/releases/download/desktop-v${doc.version}/dilla-${doc.version}-linux-x64.AppImage` || !sandbox || !exact(sandbox, ['compatibilityEpoch','minimumGeneration','bundle']) || sandbox.compatibilityEpoch !== 1 || !Number.isSafeInteger(sandbox.minimumGeneration) || sandbox.minimumGeneration < 1 || !bundle || !exact(bundle, ['url','size','sha512']) || bundle.url !== `https://github.com/dilla-chat/dilla/releases/download/desktop-v${doc.version}/dilla-${doc.version}-linux-x64.sandbox` || !Number.isSafeInteger(bundle.size) || bundle.size < 1 || bundle.size > 48 * 1024 ** 2 || typeof bundle.sha512 !== 'string' || Buffer.from(bundle.sha512, 'base64').length !== 64 || Buffer.from(bundle.sha512, 'base64').toString('base64') !== bundle.sha512) throw new Error('Invalid Linux sandbox descriptor');
       const names = [`dilla-${doc.version}-linux-x64.sandbox`, `dilla-${doc.version}-linux-x64.sandbox.json`, `dilla-${doc.version}-linux-x64.sandbox.sig`];
       if (!Array.isArray(doc.assets)) throw new Error('Missing authenticated Linux sandbox assets');
       const records = names.map(name => doc.assets!.filter(a => a?.name === name));
@@ -101,7 +101,7 @@ export type UpdateState = { phase: 'idle' | 'checking' | 'downloading' | 'ready'
 export function desktopReleasePage(version: string): string {
  if (typeof version !== 'string' || versionPattern.exec(version)?.[0] !== version) throw new Error('Invalid desktop release version');
  versionParts(version);
- return `https://github.com/jonasthim/dilla/releases/tag/desktop-v${version}`;
+ return `https://github.com/dilla-chat/dilla/releases/tag/desktop-v${version}`;
 }
 
 export class UpdateCoordinator {

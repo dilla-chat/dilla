@@ -27,8 +27,8 @@ import (
 	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/pion/webrtc/v4"
 
-	"github.com/jonasthim/dilla/internal/media"
-	"github.com/jonasthim/dilla/internal/sframe"
+	"github.com/dilla-chat/dilla/internal/media"
+	"github.com/dilla-chat/dilla/internal/sframe"
 )
 
 type config struct {

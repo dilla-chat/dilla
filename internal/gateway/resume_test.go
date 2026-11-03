@@ -5,7 +5,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // A connection closed with a code protocol/02 marks as NOT resumable must not be parked in the

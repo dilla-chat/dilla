@@ -20,7 +20,7 @@ export const fixtureComponent={...fixture,manifest,capsule,signature};
 export function fixtureSandbox(version:string) {
  const base=`dilla-${version}-linux-x64.sandbox`, files=[capsule,manifest,signature];
  const assets=files.map((bytes,i)=>({name:base+['','.json','.sig'][i],size:bytes.length,sha512:fixture.hash(bytes)}));
- const descriptor={compatibilityEpoch:1 as const,minimumGeneration:1,bundle:{url:`https://github.com/jonasthim/dilla/releases/download/desktop-v${version}/${base}`,size:capsule.length,sha512:fixture.hash(capsule)}};
+ const descriptor={compatibilityEpoch:1 as const,minimumGeneration:1,bundle:{url:`https://github.com/dilla-chat/dilla/releases/download/desktop-v${version}/${base}`,size:capsule.length,sha512:fixture.hash(capsule)}};
  return {version,descriptor,assets,capsule,manifest,signature,keys:fixture.config.publicKeys,now:Date.now()};
 }
 const desktop=resolve(import.meta.dirname,'../..');

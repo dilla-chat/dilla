@@ -4,9 +4,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/clock"
-	"github.com/jonasthim/dilla/internal/config"
-	"github.com/jonasthim/dilla/internal/server"
+	"github.com/dilla-chat/dilla/internal/clock"
+	"github.com/dilla-chat/dilla/internal/config"
+	"github.com/dilla-chat/dilla/internal/server"
 )
 
 // Every test here drives a clock.Fake and never sleeps: the limiter passes

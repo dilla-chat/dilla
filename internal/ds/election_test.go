@@ -7,9 +7,9 @@ import (
 
 	dto "github.com/prometheus/client_model/go"
 
-	"github.com/jonasthim/dilla/internal/ds"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/ds"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // Every test in this file issues an instance proposal FIRST. RequestCommit returns immediately on

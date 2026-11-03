@@ -9,7 +9,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/jonasthim/dilla/internal/obs"
+	"github.com/dilla-chat/dilla/internal/obs"
 )
 
 // A wrapped Registerer is not a Gatherer, and Handler must not assume it is:

@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/cborx"
 )
 
 // Code is a stable E_* string. It is the only thing a client switches on.

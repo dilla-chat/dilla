@@ -281,7 +281,7 @@ const REQUIRED_STEPS = {
     'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8',
     'path: internal/mlswasi/testdata',
     'CGO_ENABLED=0 go build -tags dillapins ./internal/deps',
-    'go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx -e github.com/jonasthim/dilla/internal/ds -e github.com/jonasthim/dilla/internal/api)',
+    'go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx -e github.com/dilla-chat/dilla/internal/ds -e github.com/dilla-chat/dilla/internal/api)',
     'name: dilla-core-wasi',
     NON_RACE_STEP,
   ],
@@ -350,7 +350,7 @@ const REQUIRED_STEPS = {
  * steps are pinned in REQUIRED_STEPS) run them: the union of the two is still the whole module.
  */
 function assertTestStepIsNotNarrowed(workflow, fail) {
-  const line = 'go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx -e github.com/jonasthim/dilla/internal/ds -e github.com/jonasthim/dilla/internal/api)';
+  const line = 'go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx -e github.com/dilla-chat/dilla/internal/ds -e github.com/dilla-chat/dilla/internal/api)';
   if (!workflow.includes(line)) {
     fail(`the go job's test step must be exactly "${line}"`);
   }

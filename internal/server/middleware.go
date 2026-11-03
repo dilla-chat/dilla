@@ -8,7 +8,7 @@ import (
 	"runtime/debug"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/clock"
+	"github.com/dilla-chat/dilla/internal/clock"
 )
 
 // Recover turns a panic in a handler into a 500 with an empty detail. Without

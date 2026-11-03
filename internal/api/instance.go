@@ -5,7 +5,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/server"
+	"github.com/dilla-chat/dilla/internal/server"
 )
 
 // registerInstance mounts the two discovery routes. GET /v1/instance is

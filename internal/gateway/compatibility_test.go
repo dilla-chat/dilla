@@ -6,8 +6,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/auth"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/auth"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 func TestWireTwoFanoutFiltersOnlyEnabledCommunityAndInteractionGroups(t *testing.T) {

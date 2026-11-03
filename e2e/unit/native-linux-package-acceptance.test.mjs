@@ -49,7 +49,7 @@ test('acceptance binds actual same-run package bytes and canonical recipe before
   await rm(join(root, 'recipe'), { recursive: true });
   const artifacts = [];
   for (const ext of ['deb', 'rpm', 'aur.tar.gz']) { const name = `dilla-1.2.3-linux-x64.${ext}`, bytes = await readFile(join(root, name)); artifacts.push({ name, size: bytes.length, sha512: createHash('sha512').update(bytes).digest('base64') }); }
-  const record = { format: 1, kind: 'dilla-desktop-build', repository: 'jonasthim/dilla', target: 'linux-packages-x64', version: expected.version, sourceCommit: expected.commit, sourceTree: expected.tree, ciRun: 123, sourceClean: true, artifacts };
+  const record = { format: 1, kind: 'dilla-desktop-build', repository: 'dilla-chat/dilla', target: 'linux-packages-x64', version: expected.version, sourceCommit: expected.commit, sourceTree: expected.tree, ciRun: 123, sourceClean: true, artifacts };
   await writeFile(join(root, 'build-provenance-linux-packages-x64.json'), JSON.stringify(record));
   assert.equal((await verifyNativePackageInputs(root, expected)).sourceCommit, expected.commit);
   const copied = root + '-handoff';
@@ -74,7 +74,7 @@ test('runtime UID handoff clears runner HOME/XDG/temp and inherited credentials'
   // UID transition/directory setup and the final test process.
   await writeFile(join(root, 'bash'), `#!${process.execPath}\nprocess.stdout.write(JSON.stringify(Object.fromEntries(['HOME','USER','LOGNAME','XDG_CONFIG_HOME','XDG_CACHE_HOME','XDG_DATA_HOME','XDG_RUNTIME_DIR','TMPDIR','RUNNER_TEMP','RUNNER_TOKEN','GITHUB_SHA','DILLA_NATIVE_ACCEPTANCE_OUTPUT'].map(k=>[k,process.env[k]??null]))));\n`, { mode: 0o755 });
   const command = `${fn}\ninstall() { :; }\nrunuser() { shift 3; USER=dilla-ci LOGNAME=dilla-ci "$@"; }\ninputs=/home/dilla-ci/native-linux-package-inputs\noutput=/home/dilla-ci/native-linux-package-acceptance\nformat=deb\nrun_user`;
-  const observed = JSON.parse(execFileSync('/bin/bash', ['-euc', command], { encoding: 'utf8', env: { ...process.env, PATH: `${root}:${process.env.PATH}`, HOME: '/home/runner', XDG_CONFIG_HOME: '/home/runner/.config', XDG_RUNTIME_DIR: '/run/user/runner', TMPDIR: '/private/runner-temp', RUNNER_TEMP: '/private/runner-temp', RUNNER_TOKEN: 'poison-not-a-credential', GITHUB_REPOSITORY: 'jonasthim/dilla', GITHUB_SHA: expected.commit, GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '1' } }));
+  const observed = JSON.parse(execFileSync('/bin/bash', ['-euc', command], { encoding: 'utf8', env: { ...process.env, PATH: `${root}:${process.env.PATH}`, HOME: '/home/runner', XDG_CONFIG_HOME: '/home/runner/.config', XDG_RUNTIME_DIR: '/run/user/runner', TMPDIR: '/private/runner-temp', RUNNER_TEMP: '/private/runner-temp', RUNNER_TOKEN: 'poison-not-a-credential', GITHUB_REPOSITORY: 'dilla-chat/dilla', GITHUB_SHA: expected.commit, GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '1' } }));
   assert.equal(observed.HOME, '/home/dilla-ci');
   assert.equal(observed.XDG_CONFIG_HOME, '/home/dilla-ci/.config');
   assert.equal(observed.USER, 'dilla-ci'); assert.equal(observed.LOGNAME, 'dilla-ci');

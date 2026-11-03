@@ -5,8 +5,8 @@ import (
 	"database/sql"
 	"io"
 
-	"github.com/jonasthim/dilla/internal/store"
-	"github.com/jonasthim/dilla/internal/store/postgres/pgdb"
+	"github.com/dilla-chat/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/store/postgres/pgdb"
 )
 
 // LoadDump replays a store.DumpPostgres stream into db (store.LoadPostgres) and

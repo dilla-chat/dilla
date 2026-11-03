@@ -16,23 +16,24 @@ if ! has_manager; then
   desktop_script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
   openbox --sm-disable --config-file "$desktop_script_dir/../test/support/openbox.xml" >"$desktop_wm_log" 2>&1 &
   desktop_wm_pid=$!
-  for ((attempt = 0; attempt < 100; attempt++)); do
+  # A loaded runner can take several seconds to map the window manager.
+  for ((attempt = 0; attempt < 600; attempt++)); do
     if has_manager; then break; fi
-    if ! kill -0 "$desktop_wm_pid" 2>/dev/null; then cat "$desktop_wm_log"; exit 1; fi
+    if ! kill -0 "$desktop_wm_pid" 2>/dev/null; then echo 'openbox exited before managing the display' >&2; cat "$desktop_wm_log" >&2; exit 1; fi
     sleep 0.05
   done
-  if ! has_manager; then cat "$desktop_wm_log"; exit 1; fi
+  if ! has_manager; then echo 'openbox did not manage the display within 30 s' >&2; cat "$desktop_wm_log" >&2; exit 1; fi
 fi
 has_notifications() { [[ $(dbus-send --session --print-reply --dest=org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus.NameHasOwner string:org.freedesktop.Notifications 2>/dev/null) == *'boolean true'* ]]; }
 if [[ "${DILLA_E2E_NOTIFICATIONS:-0}" == '1' ]] && ! has_notifications; then
   command -v dunst >/dev/null || { echo 'Native notification acceptance requires dunst'; exit 1; }
   dunst --config /dev/null >>"$desktop_wm_log" 2>&1 &
   desktop_notify_pid=$!
-  for ((attempt = 0; attempt < 100; attempt++)); do
+  for ((attempt = 0; attempt < 600; attempt++)); do
     if has_notifications; then break; fi
-    if ! kill -0 "$desktop_notify_pid" 2>/dev/null; then cat "$desktop_wm_log"; exit 1; fi
+    if ! kill -0 "$desktop_notify_pid" 2>/dev/null; then echo 'dunst exited before owning org.freedesktop.Notifications' >&2; cat "$desktop_wm_log" >&2; exit 1; fi
     sleep 0.05
   done
-  if ! has_notifications; then cat "$desktop_wm_log"; exit 1; fi
+  if ! has_notifications; then echo 'dunst did not own org.freedesktop.Notifications within 30 s' >&2; cat "$desktop_wm_log" >&2; exit 1; fi
 fi
 "$@"

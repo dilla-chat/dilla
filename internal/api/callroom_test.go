@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/api"
+	"github.com/dilla-chat/dilla/internal/api"
 )
 
 // A call that is started, ended and started again on one channel within one second (the fake clock

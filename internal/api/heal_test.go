@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/cborx"
-	"github.com/jonasthim/dilla/internal/server"
+	"github.com/dilla-chat/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/server"
 )
 
 // GET /v1/groups/{id}/heal is `[epoch, next_seq, generation, need_from_seq]`. The generation is

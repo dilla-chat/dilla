@@ -3,9 +3,9 @@
 package main
 
 import (
-	"github.com/jonasthim/dilla/internal/bot/moderation"
-	"github.com/jonasthim/dilla/internal/bot/protocol"
-	"github.com/jonasthim/dilla/internal/bot/service"
+	"github.com/dilla-chat/dilla/internal/bot/moderation"
+	"github.com/dilla-chat/dilla/internal/bot/protocol"
+	"github.com/dilla-chat/dilla/internal/bot/service"
 )
 
 func runtimeInteractionHandlers(overview service.OverviewInteractions, announcements service.AnnouncementInteractions, moderationInteractions service.ModerationInteractions, music *service.MusicInteractions, nativeClient service.WelcomeSettingsNative, automodGrant service.AutoModerationGrantRedeemer, automodRuntime service.AutoModerationConfigRuntime, providerStatus ...service.MusicProviderStatusInteractions) map[protocol.Operation]service.InteractionHandlerSpec {

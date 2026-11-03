@@ -6,8 +6,8 @@ import (
 
 	"github.com/fxamacker/cbor/v2"
 
-	"github.com/jonasthim/dilla/internal/api"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/api"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // R44 (web3.9, SRV-CAT): a channel's parent must be a category its author can see, and the

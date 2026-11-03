@@ -6,7 +6,7 @@ import (
 
 	"github.com/fxamacker/cbor/v2"
 
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // web3.9: the settings take a timeout only; the channel is the built-in one, which a manager reads

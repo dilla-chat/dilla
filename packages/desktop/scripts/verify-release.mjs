@@ -50,7 +50,7 @@ async function verifyBundle({ metadata, signature, trust, directory, run, jobs, 
  if (!source || source.format !== 1 || !Number.isSafeInteger(source.ciRun) || source.ciRun < 1
    || ![source.commit, source.head, source.tree].every(value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value))) throw new Error('Missing authenticated acceptance source');
  if (run.id !== source.ciRun || run.head_sha !== source.head || run.name !== 'ci' || run.status !== 'completed' || run.conclusion !== 'success'
-   || run.repository?.full_name !== 'jonasthim/dilla' || run.head_repository?.full_name !== 'jonasthim/dilla') throw new Error('The accepted same-repository CI run must be complete and successful');
+   || run.repository?.full_name !== 'dilla-chat/dilla' || run.head_repository?.full_name !== 'dilla-chat/dilla') throw new Error('The accepted same-repository CI run must be complete and successful');
  if (!Array.isArray(jobs)) throw new Error('Missing complete CI job inventory');
  const builds = source.builds;
  if (!builds || typeof builds !== 'object' || Array.isArray(builds) || Object.keys(builds).length !== BUILD_TARGETS.length

@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/bot/protocol"
-	"github.com/jonasthim/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/bot/protocol"
+	"github.com/dilla-chat/dilla/internal/cborx"
 )
 
 func TestSignRemovalUsesBoundHelperAndChecksReturnedProof(t *testing.T) {

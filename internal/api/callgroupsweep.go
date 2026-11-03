@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // The idle call-group close (web-3, L-HTTP-105, RV-2): an open call group that no live call names is

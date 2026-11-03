@@ -7,7 +7,7 @@ import { appcast, signedAppcast, sparkleVersion } from '../scripts/release-feed.
 test('Sparkle signed feeds authenticate the exact UTF-8 content and archive signature', () => {
  const key = generateKeyPairSync('ed25519'); const bytes = Buffer.from('native application archive');
  const release = { channel: 'beta', version: '1.2.3-beta.4', publishedAt: new Date(0).toISOString() };
- const artifact = { url: 'https://github.com/jonasthim/dilla/releases/download/desktop-v1.2.3-beta.4/dilla-mac.zip', size: bytes.length };
+ const artifact = { url: 'https://github.com/dilla-chat/dilla/releases/download/desktop-v1.2.3-beta.4/dilla-mac.zip', size: bytes.length };
  const archiveSignature = sign(null, bytes, key.privateKey).toString('base64');
  const xml = appcast(release, artifact, archiveSignature); assert.ok(xml.includes('<sparkle:version>1.2.3b4</sparkle:version>'));
  const feed = signedAppcast(xml, key.privateKey) as Buffer;

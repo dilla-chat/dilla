@@ -1,6 +1,6 @@
 package gateway
 
-import "github.com/jonasthim/dilla/internal/server"
+import "github.com/dilla-chat/dilla/internal/server"
 
 // CallStatsReport matches the existing coarse six-element HTTP report. No addresses, input
 // events, credentials or media enter it; the last two counters are deltas since the last sample.

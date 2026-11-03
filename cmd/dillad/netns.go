@@ -8,7 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/jonasthim/dilla/internal/exit"
+	"github.com/dilla-chat/dilla/internal/exit"
 )
 
 // runNetns is a small, idle namespace holder for the Compose deployment. Keeping its container

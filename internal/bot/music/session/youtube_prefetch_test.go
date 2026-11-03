@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/bot/client"
-	"github.com/jonasthim/dilla/internal/bot/music"
-	"github.com/jonasthim/dilla/internal/bot/music/youtube"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/bot/music"
+	"github.com/dilla-chat/dilla/internal/bot/music/youtube"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 type youtubeSourceFunc func(context.Context, string) (io.ReadCloser, error)

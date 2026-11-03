@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/bot/client"
-	"github.com/jonasthim/dilla/internal/bot/helper"
+	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/bot/helper"
 )
 
 func TestSafeTrustErrorAttrsUseFixedClassifications(t *testing.T) {

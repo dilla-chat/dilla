@@ -5,8 +5,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/auth"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/auth"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // connectAs registers a ready connection of device for user (the harness's connect gives every

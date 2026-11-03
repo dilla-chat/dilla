@@ -14,7 +14,7 @@ import (
 
 	"github.com/livekit/protocol/livekit"
 
-	"github.com/jonasthim/dilla/internal/api"
+	"github.com/dilla-chat/dilla/internal/api"
 )
 
 // slowListing is the stub SFU whose room listing hangs until the caller's deadline while slow is set

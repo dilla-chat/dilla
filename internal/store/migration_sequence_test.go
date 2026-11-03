@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	pgmigrations "github.com/jonasthim/dilla/internal/store/postgres/migrations"
-	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
+	pgmigrations "github.com/dilla-chat/dilla/internal/store/postgres/migrations"
+	sqlitemigrations "github.com/dilla-chat/dilla/internal/store/sqlite/migrations"
 )
 
 // The embedded migrations are numbered 1..N with no gap, on both engines, and the two engines

@@ -6,7 +6,7 @@ import (
 
 	"github.com/fxamacker/cbor/v2"
 
-	"github.com/jonasthim/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/cborx"
 )
 
 // ABIError is the guest's error frame [1, code, detail]. The ABI never traps to

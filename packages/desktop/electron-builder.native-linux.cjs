@@ -18,7 +18,7 @@ module.exports = {
  files: ['dist/**', 'package.json'], asar: true,
  beforePack: context => { if (process.platform !== 'linux' || process.arch !== 'x64' || context.electronPlatformName !== 'linux' || context.arch !== 1) throw new Error('Native packages require Linux x64'); },
  afterPack: context => normalizeModes(context.appOutDir),
- extraMetadata: { homepage: 'https://github.com/jonasthim/dilla', ...(override === undefined ? {} : { version }) },
+ extraMetadata: { homepage: 'https://github.com/dilla-chat/dilla', ...(override === undefined ? {} : { version }) },
  extraResources: [{ from: 'native-bin', to: 'native', filter: ['dilla-audio*'] }],
  protocols: [{ name: 'Dilla invite', schemes: ['dilla'] }],
  linux: { artifactName: 'dilla-${version}-linux-x64.${ext}', syncDesktopName: true, target: [{ target: 'deb', arch: ['x64'] }, { target: 'rpm', arch: ['x64'] }], category: 'Network', icon: 'assets/icon.png', maintainer: 'Dilla contributors', vendor: 'Dilla contributors' },

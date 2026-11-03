@@ -26,7 +26,7 @@ export function buildProvenanceName(target) {
 export function verifyBuildProvenance(record, target, expected, signedAssets) {
  const names = buildArtifactNames(target, expected.version);
  if (!exact(record, ['format', 'kind', 'repository', 'target', 'version', 'sourceCommit', 'sourceTree', 'ciRun', 'sourceClean', 'artifacts', ...(target === 'linux-x64' ? ['linuxSandbox'] : [])])
-  || record.format !== 1 || record.kind !== 'dilla-desktop-build' || record.repository !== 'jonasthim/dilla' || record.target !== target || record.version !== expected.version) throw new Error('Invalid build provenance fields');
+  || record.format !== 1 || record.kind !== 'dilla-desktop-build' || record.repository !== 'dilla-chat/dilla' || record.target !== target || record.version !== expected.version) throw new Error('Invalid build provenance fields');
  if (!COMMIT.test(record.sourceCommit) || !COMMIT.test(record.sourceTree) || record.sourceCommit !== expected.commit || record.sourceTree !== expected.tree
   || !Number.isSafeInteger(record.ciRun) || record.ciRun < 1 || record.ciRun !== expected.ciRun || record.sourceClean !== true) throw new Error('Build provenance source binding mismatch');
  if (!Array.isArray(record.artifacts) || record.artifacts.length !== names.length || !Array.isArray(signedAssets)) throw new Error('Invalid build provenance artifacts');
@@ -61,7 +61,7 @@ async function artifactRecord(directory, name) {
  * the trusted Actions environment; the CLI has no commit/tree/approval flags. */
 export async function emitBuildProvenance(directory, target, options = {}) {
  const repositoryRoot = options.repositoryRoot ?? resolve(import.meta.dirname, '../../..'), environment = options.environment ?? process.env;
- if (environment.GITHUB_ACTIONS !== 'true' || environment.GITHUB_REPOSITORY !== 'jonasthim/dilla') throw new Error('Native build provenance requires this repository’s GitHub Actions run');
+ if (environment.GITHUB_ACTIONS !== 'true' || environment.GITHUB_REPOSITORY !== 'dilla-chat/dilla') throw new Error('Native build provenance requires this repository’s GitHub Actions run');
  if (!/^[1-9]\d*$/.test(environment.GITHUB_RUN_ID ?? '') || !Number.isSafeInteger(Number(environment.GITHUB_RUN_ID))) throw new Error('Invalid build provenance CI run');
  const native = PLATFORMS[target]; if (!native || native[0] !== process.platform || native[1] !== process.arch) throw new Error('Build provenance requires its actual native platform');
  const git = args => execFileSync('git', args, { cwd: repositoryRoot, encoding: 'utf8' }).trim();
@@ -84,7 +84,7 @@ export async function emitBuildProvenance(directory, target, options = {}) {
   await verifyAurRecipe(version, join(directory, artifacts[0].name), join(directory, artifacts[2].name));
   for (const artifact of artifacts) { const after = await artifactRecord(directory, artifact.name); if (after.size !== artifact.size || after.sha512 !== artifact.sha512) throw new Error('Native package changed during recipe inspection'); }
  }
- const record = { format: 1, kind: 'dilla-desktop-build', repository: 'jonasthim/dilla', target, version, sourceCommit, sourceTree, ciRun: Number(environment.GITHUB_RUN_ID), sourceClean: true, artifacts, ...(linuxSandbox ? {linuxSandbox} : {}) };
+ const record = { format: 1, kind: 'dilla-desktop-build', repository: 'dilla-chat/dilla', target, version, sourceCommit, sourceTree, ciRun: Number(environment.GITHUB_RUN_ID), sourceClean: true, artifacts, ...(linuxSandbox ? {linuxSandbox} : {}) };
  verifyBuildProvenance(record, target, { commit: sourceCommit, tree: sourceTree, ciRun: record.ciRun, version }, artifacts);
  const file = join(directory, buildProvenanceName(target)); await writeFile(file, JSON.stringify(record) + '\n', { flag: 'wx' }); return { file, record };
 }

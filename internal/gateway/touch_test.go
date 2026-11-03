@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // touchingStore is the harness's store double plus the one optional method the gateway calls when

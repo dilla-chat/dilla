@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 func TestAcceptedModerationRemovalUsesBoundReadAndRejectsMalformedReceipt(t *testing.T) {

@@ -417,12 +417,12 @@ release attaches it beside `dillad-linux-amd64`, `dillad-linux-arm64`,
 `dilla_core_wasi.wasm` and `SHA256SUMS`, with the release's own tag stamped into it.
 So the `install.sh` of a release installs that release, and there is no "latest". Download it from the release you want, read it, then run it
 in one of two modes. The examples use the tag `v0.1.0-web3`; take yours from the
-[releases page](https://github.com/jonasthim/dilla/releases).
+[releases page](https://github.com/dilla-chat/dilla/releases).
 
 Behind a reverse proxy that terminates TLS (Pangolin, Traefik, Caddy, nginx):
 
 ```sh
-curl -fsSLO https://github.com/jonasthim/dilla/releases/download/v0.1.0-web3/install.sh
+curl -fsSLO https://github.com/dilla-chat/dilla/releases/download/v0.1.0-web3/install.sh
 link=$(sh install.sh --behind-proxy --domain chat.example.org \
   --listen 10.0.0.20:8080 --trusted-proxy 10.0.0.5/32 --public-ip 203.0.113.10)
 ```
@@ -430,7 +430,7 @@ link=$(sh install.sh --behind-proxy --domain chat.example.org \
 With dillad terminating TLS itself on 443/tcp:
 
 ```sh
-curl -fsSLO https://github.com/jonasthim/dilla/releases/download/v0.1.0-web3/install.sh
+curl -fsSLO https://github.com/dilla-chat/dilla/releases/download/v0.1.0-web3/install.sh
 link=$(sh install.sh --public --domain chat.example.org --public-ip 203.0.113.10 --agree-tos)
 ```
 
@@ -491,7 +491,7 @@ To upgrade, download the new release's `install.sh` and run it with `--upgrade`.
 copy, pass the new tag with `--version`:
 
 ```sh
-curl -fsSLO https://github.com/jonasthim/dilla/releases/download/v0.1.1/install.sh
+curl -fsSLO https://github.com/dilla-chat/dilla/releases/download/v0.1.1/install.sh
 sh install.sh --upgrade
 ```
 
@@ -595,7 +595,7 @@ on, 2 GiB of memory, an 8 GiB disk), pushes `install.sh` into it and runs it the
 the Proxmox host, from a directory that also holds a release's `install.sh`:
 
 ```sh
-curl -fsSLO https://github.com/jonasthim/dilla/releases/download/v0.1.0-web3/install.sh
+curl -fsSLO https://github.com/dilla-chat/dilla/releases/download/v0.1.0-web3/install.sh
 link=$(./proxmox-lxc.sh --domain chat.example.org --public-ip 203.0.113.10 --agree-tos)
 link=$(./proxmox-lxc.sh --behind-proxy --domain chat.example.org --listen 10.0.0.20:8080 \
   --trusted-proxy 10.0.0.5/32 --public-ip 203.0.113.10)

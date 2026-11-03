@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/ds"
-	"github.com/jonasthim/dilla/internal/store/sqlite"
+	"github.com/dilla-chat/dilla/internal/ds"
+	"github.com/dilla-chat/dilla/internal/store/sqlite"
 )
 
 // M-1 of the integration re-review: a quarantined or revoked device's leaf is owed an instance Remove

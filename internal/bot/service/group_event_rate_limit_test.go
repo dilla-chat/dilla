@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/bot/client"
-	"github.com/jonasthim/dilla/internal/bot/native"
+	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/bot/native"
 )
 
 func TestGroupEventRateLimitDoesNotAgeOrAcknowledge(t *testing.T) {

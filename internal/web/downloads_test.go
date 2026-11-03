@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/server"
+	"github.com/dilla-chat/dilla/internal/server"
 )
 
 func TestDownloadsServeNavigationWithoutStartingTheClient(t *testing.T) {
@@ -36,7 +36,7 @@ func TestDownloadsServeNavigationWithoutStartingTheClient(t *testing.T) {
 			t.Errorf("headers = %v", rec.Header())
 		}
 		for _, artifact := range []string{"linux-x64.AppImage", "linux-x64.deb", "linux-x64.rpm", "linux-x64.aur.tar.gz", "win-x64.exe", "mac-x64.dmg", "mac-arm64.dmg"} {
-			if !strings.Contains(rec.Body.String(), `href="https://github.com/jonasthim/dilla/releases/download/desktop-beta/dilla-`+artifact+`"`) {
+			if !strings.Contains(rec.Body.String(), `href="https://github.com/dilla-chat/dilla/releases/download/desktop-beta/dilla-`+artifact+`"`) {
 				t.Errorf("missing fixed %s link", artifact)
 			}
 		}

@@ -14,7 +14,7 @@ import (
 	"github.com/pion/webrtc/v4/pkg/media"
 	"github.com/pion/webrtc/v4/pkg/media/h264reader"
 
-	"github.com/jonasthim/dilla/internal/sframe"
+	"github.com/dilla-chat/dilla/internal/sframe"
 )
 
 var errNotSPS = errors.New("media: not an SPS NAL")

@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/jonasthim/dilla/internal/bot/service"
+	"github.com/dilla-chat/dilla/internal/bot/service"
 )
 
 const maxStructuralEventPollPasses = 4

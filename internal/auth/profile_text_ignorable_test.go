@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/dilla-chat/dilla/internal/auth"
 )
 
 // Every Default_Ignorable_Code_Point renders as nothing, so none may stand in a text: not alone, not between letters.

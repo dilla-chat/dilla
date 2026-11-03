@@ -8,9 +8,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/clock"
-	"github.com/jonasthim/dilla/internal/obs"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/clock"
+	"github.com/dilla-chat/dilla/internal/obs"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // sweepBatch bounds one pass so the sweeper never holds the single SQLite write

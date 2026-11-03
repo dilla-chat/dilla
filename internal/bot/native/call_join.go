@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 
-	"github.com/jonasthim/dilla/internal/bot/protocol"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/bot/protocol"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // CallJoinCheck applies the native media-key gate to a staged external call-group join.

@@ -16,7 +16,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/web"
+	"github.com/dilla-chat/dilla/internal/web"
 )
 
 // builtDist is the directory under test: DILLA_WEB_DIST when set (go-release: the bytes it is

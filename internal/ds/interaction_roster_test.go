@@ -3,8 +3,8 @@ package ds
 import (
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/mlswasi"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/mlswasi"
 )
 
 func interactionID(b byte) id.ID { var v id.ID; v[0] = b; return v }

@@ -15,7 +15,7 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 
-	"github.com/jonasthim/dilla/internal/exit"
+	"github.com/dilla-chat/dilla/internal/exit"
 )
 
 // minCredentialTTL is the shortest turn.credential_ttl: the relay accepts a credential issued up to

@@ -16,16 +16,16 @@ import (
 
 	"github.com/pressly/goose/v3"
 
-	"github.com/jonasthim/dilla/internal/api"
-	"github.com/jonasthim/dilla/internal/cborx"
-	"github.com/jonasthim/dilla/internal/clock"
-	"github.com/jonasthim/dilla/internal/dillad"
-	"github.com/jonasthim/dilla/internal/dillad/dilladtest"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
-	"github.com/jonasthim/dilla/internal/store/postgres"
-	pgmigrations "github.com/jonasthim/dilla/internal/store/postgres/migrations"
-	"github.com/jonasthim/dilla/internal/store/sqlite"
+	"github.com/dilla-chat/dilla/internal/api"
+	"github.com/dilla-chat/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/clock"
+	"github.com/dilla-chat/dilla/internal/dillad"
+	"github.com/dilla-chat/dilla/internal/dillad/dilladtest"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/store/postgres"
+	pgmigrations "github.com/dilla-chat/dilla/internal/store/postgres/migrations"
+	"github.com/dilla-chat/dilla/internal/store/sqlite"
 )
 
 // Fix wave I18: the composition root, built as `dillad serve` builds it (no ACL and no channel

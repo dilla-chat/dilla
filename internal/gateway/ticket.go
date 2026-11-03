@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/clock"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/clock"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // Tickets mints the single-use 30-second upgrade tickets of POST /v1/gateway/ticket, for browsers

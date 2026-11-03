@@ -58,7 +58,7 @@ test('actual installed account Linux build retains AppImage authority through au
  const artifact = Buffer.from('verified acceptance AppImage bytes'), file = join(root, 'download.AppImage');
  await writeFile(file, artifact);
  const now = Date.now(); release = Buffer.from(JSON.stringify({ format: 1, assets:sandbox.assets, version: '1.0.1', channel: 'stable', publishedAt: new Date(now - 1000).toISOString(), expiresAt: new Date(now + 3600000).toISOString(), artifacts: [{
-  platform: 'linux', arch: 'x64', url: 'https://github.com/jonasthim/dilla/releases/download/desktop-v1.0.1/dilla-1.0.1-linux-x64.AppImage', size: artifact.length, sha512: createHash('sha512').update(artifact).digest('base64'), linuxSandbox:sandbox.descriptor,
+  platform: 'linux', arch: 'x64', url: 'https://github.com/dilla-chat/dilla/releases/download/desktop-v1.0.1/dilla-1.0.1-linux-x64.AppImage', size: artifact.length, sha512: createHash('sha512').update(artifact).digest('base64'), linuxSandbox:sandbox.descriptor,
  }] })); signature = sign(null, release, pair.privateKey).toString('base64');
  const compiled = await build({ ...options, entryPoints: [join(desktop, 'src/updater.ts')], outfile: undefined, write: false,
   external: ['electron', 'electron-updater', 'electron-updater/*'] });

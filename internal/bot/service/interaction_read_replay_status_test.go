@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/bot/protocol"
+	"github.com/dilla-chat/dilla/internal/bot/protocol"
 )
 
 // Only a deterministic refusal may let the event handler acknowledge a saved read response as

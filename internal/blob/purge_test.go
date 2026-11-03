@@ -8,9 +8,9 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/blob"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/blob"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // Purge is the one implementation behind DELETE /v1/admin/blobs/{blob_id} and

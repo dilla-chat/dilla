@@ -15,8 +15,8 @@ import (
 	"syscall"
 	"time"
 
-	youtubemusic "github.com/jonasthim/dilla/internal/bot/music/youtube"
-	"github.com/jonasthim/dilla/internal/mlswasi"
+	youtubemusic "github.com/dilla-chat/dilla/internal/bot/music/youtube"
+	"github.com/dilla-chat/dilla/internal/mlswasi"
 )
 
 type botDoctorCheck struct {

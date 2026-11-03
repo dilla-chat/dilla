@@ -11,8 +11,8 @@ import (
 	"github.com/pion/transport/v4"
 	"github.com/pion/turn/v5"
 
-	"github.com/jonasthim/dilla/internal/clock"
-	"github.com/jonasthim/dilla/internal/config"
+	"github.com/dilla-chat/dilla/internal/clock"
+	"github.com/dilla-chat/dilla/internal/config"
 )
 
 // ACMEIPSettingsForTest is what acme_ip fixes about issuance when the operator

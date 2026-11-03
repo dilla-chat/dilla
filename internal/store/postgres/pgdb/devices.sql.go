@@ -9,7 +9,7 @@ import (
 	"context"
 	"database/sql"
 
-	id "github.com/jonasthim/dilla/internal/id"
+	id "github.com/dilla-chat/dilla/internal/id"
 )
 
 const countLiveDevicesByUser = `-- name: CountLiveDevicesByUser :one

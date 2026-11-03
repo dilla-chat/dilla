@@ -7,7 +7,7 @@ import (
 	"github.com/livekit/protocol/livekit"
 	"github.com/pion/webrtc/v4"
 
-	"github.com/jonasthim/dilla/internal/sframe"
+	"github.com/dilla-chat/dilla/internal/sframe"
 )
 
 // DeviceID parses a LiveKit participant identity as a device_id: exactly 32 lowercase hex digits

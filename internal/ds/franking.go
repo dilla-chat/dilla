@@ -5,7 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // frankingLabel is the domain separator of protocol/04-envelope-and-franking.md's tag. It is 18
