@@ -1,3 +1,4 @@
+import { openInviteInClient } from './support/invite';
 import { randomBytes } from 'node:crypto';
 import { expect } from '@playwright/test';
 import { arr, decode, encode } from '../../packages/client-core/src/cbor/index';
@@ -296,8 +297,7 @@ appTest('paired restore refuses a stale managed Bot announcement until a member 
     secondContext = await browser.newContext({ baseURL: host.url });
     await guard.attach(secondContext);
     const secondPage = await secondContext.newPage();
-    await secondPage.goto(new URL(inviteLink).pathname);
-    await secondPage.getByRole('link', { name: 'Open dilla in this browser' }).click();
+    await openInviteInClient(secondPage, inviteLink);
     await completeSignUp(secondPage, newAccount('Bea', host.control), instanceName);
     await expect(secondPage.getByRole('navigation', { name: copy('shell.rail.label'), exact: true })
       .getByRole('button', { name: SERVER, exact: true })).toBeVisible();

@@ -27,7 +27,7 @@ import { DillaHttpError } from '../http/errors';
 import {
   BIO_MAX_CHARS, CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, DISPLAY_MAX_CHARS, GIF_OFFSET_MAX, GIF_QUERY_MAX_BYTES,
   INVITE_TTL_MAX_S, INVITE_USES_MAX, BOT_CAPABILITIES_MAX, BOT_MUSIC_VOLUMES, BOT_MUSIC_IDLE_MINUTES, STATUS_MAX_CHARS, Routes, nameProblem, profileTextProblem, profileTextValue,
-  type ChannelRow, type BotInstallationRow, type BotSpotifyAttempt, type Factors, type Instance, type Limits, type MemberRow, type NewChannelKind,
+  type ChannelRow, type BotInstallationRow, type Factors, type Instance, type Limits, type MemberRow, type NewChannelKind,
 } from '../http/routes';
 import { NOTICE_READ_MAX, appendNotices, buildBadges, noticeOf, type NoticeDraft } from '../state/badges';
 import { buildTimeline, channelGroup, channelGroupState, type GroupMembership } from '../state/derive';
@@ -64,6 +64,7 @@ export interface ControllerDeps {
   setTimeout(fn: () => void, ms: number): number; clearTimeout(id: number): void;
   sleep(ms: number, signal?: AbortSignal): Promise<void>;
   boot(instance: Instance): Promise<BootOutcome>;
+  runtimeReady?(): Promise<null>;                    // local WASM/persistence capability; no identity work
   resetDevice(instance: Instance): Promise<void>;  // removes the KEK record and the OPFS directory dilla/<instance hex>
   /** Posts to the own page; `transfer` moves buffers (a callKeys key, L-TS-52) instead of copying them. */
   post(message: FromWorker, transfer?: Transferable[]): void;
@@ -187,6 +188,7 @@ function coreInput(e: unknown, details: ReadonlySet<string>): boolean {
 type Method = Command['m'];
 const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'start',
+  'runtimeReady',
   'signupBegin',
   'signupSubmit',
   'signupReset',
@@ -199,7 +201,6 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'refreshCommunities',
   'getBotInstallation',
   'getBotCommandStatus',
-  'getBotSpotifyConfig',
   'patchBotProfile',
   'listModerationCases',
   'listManualModerationEvidence',
@@ -218,9 +219,6 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'registerRolePanel',
   'configureBotInstallation',
   'disableBotInstallation',
-  'beginBotSpotifyAttempt',
-  'callbackBotSpotifyAttempt',
-  'cancelBotSpotifyAttempt',
   'openChannel',
   'closeChannel',
   'loadEarlier',
@@ -231,6 +229,7 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'retrySend',
   'discardSend',
   'signInBegin',
+  'signInOIDC',
   'signInLogin',
   'signInTotp',
   'signInKey',
@@ -368,7 +367,7 @@ type PendingRolePanelAction = { communityId: string; channelId: string; messageS
 /** The account slice's view of GET /v1/instance: auth_methods 0 password, 1 totp, 2 passkey. */
 const instanceStateOf = (instance: Instance): NonNullable<AccountState['instance']> => ({
   id: toHex(instance.instanceId), name: instance.name, registrationMode: instance.registrationMode,
-  passwordSignup: instance.authMethods.includes(0), totp: instance.authMethods.includes(1), passkeys: instance.authMethods.includes(2),
+  passwordSignup: instance.authMethods.includes(0), totp: instance.authMethods.includes(1), passkeys: instance.authMethods.includes(2), oidc: instance.authMethods.includes(3),
 });
 const signInOf = (username: string | null, factor: 'totp' | 'passkey' | null): NonNullable<AccountState['signIn']> =>
   ({ username, factor });
@@ -389,11 +388,10 @@ function awayPatched(away: readonly { userId: string; since: number }[], change:
   if (at >= 0 && away[at].since >= change.since) return null;
   return [...away.filter((_, i) => i !== at), change].sort(byUserId);
 }
-const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'callId' | 'msgId' | 'deviceId' | 'userId' | 'inviteId' | 'roleId' | 'targetId' | 'rootMsgId' | 'requestId' | 'attemptId' | 'installationId' | 'proofRequestId')[]>> = {
+const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'callId' | 'msgId' | 'deviceId' | 'userId' | 'inviteId' | 'roleId' | 'targetId' | 'rootMsgId' | 'requestId' | 'installationId' | 'proofRequestId')[]>> = {
   selectCommunity: ['communityId'],
   getBotInstallation: ['communityId'],
   getBotCommandStatus: ['communityId'],
-  getBotSpotifyConfig: ['communityId'],
   patchBotProfile: ['communityId'],
   listModerationCases: ['communityId', 'requestId'],
   listManualModerationEvidence: ['communityId', 'requestId'],
@@ -412,9 +410,6 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   registerRolePanel: ['communityId', 'requestId', 'channelId'],
   configureBotInstallation: ['communityId', 'requestId'],
   disableBotInstallation: ['communityId', 'requestId'],
-  beginBotSpotifyAttempt: ['communityId'],
-  callbackBotSpotifyAttempt: ['communityId', 'attemptId'],
-  cancelBotSpotifyAttempt: ['communityId', 'attemptId'],
   createChannel: ['communityId'],
   createRole: ['communityId'],
   updateRole: ['communityId', 'roleId'],
@@ -495,7 +490,7 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
   'needs-signup': ['signupBegin', 'signInBegin'],
   'signup-keys': ['signupSubmit', 'signupReset'],
   // web3.6: a passkey on its own signs in from the login step (W2's usePasskey), so signin-login takes its finish too.
-  'signin-login': ['signInLogin', 'signInPasskeyBegin', 'signInPasskey', 'signInCancel'],
+  'signin-login': ['signInOIDC', 'signInLogin', 'signInPasskeyBegin', 'signInPasskey', 'signInCancel'],
   'signin-totp': ['signInTotp', 'signInPasskeyBegin', 'signInPasskey', 'signInBackupCode', 'signInCancel'],
   'signin-passkey': ['signInPasskeyBegin', 'signInPasskey', 'signInBackupCode', 'signInCancel'],
   'signin-key': ['signInKey', 'signInCancel'],
@@ -511,7 +506,6 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'refreshCommunities',
     'getBotInstallation',
     'getBotCommandStatus',
-    'getBotSpotifyConfig',
     'patchBotProfile',
     'listModerationCases',
     'listManualModerationEvidence',
@@ -530,9 +524,6 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'registerRolePanel',
     'configureBotInstallation',
     'disableBotInstallation',
-    'beginBotSpotifyAttempt',
-    'callbackBotSpotifyAttempt',
-    'cancelBotSpotifyAttempt',
     'openChannel',
     'closeChannel',
     'loadEarlier',
@@ -680,6 +671,7 @@ const VALIDATORS: Partial<Record<Method, (c: Record<string, unknown>) => string 
 function invalid(command: Record<string, unknown>): string | null {
   const m = command.m as string;
   if (!COMMANDS.has(m)) return `unknown command ${m}`;
+  if (m === 'runtimeReady' && Object.keys(command).length !== 1) return 'runtimeReady takes no fields';
   for (const field of ID_FIELDS[m as Method] ?? []) {
     const value = command[field];
     if (typeof value !== 'string' || !ID.test(value)) return `${field} is not 32 lowercase hex`;
@@ -820,16 +812,6 @@ function invalid(command: Record<string, unknown>): string | null {
   }
   if (m === 'patchBotProfile' && (typeof command.display !== 'string' || command.display.trim() === ''
     || profileTextProblem(command.display, DISPLAY_MAX_CHARS, false) !== null)) return 'bot display name is invalid';
-  if (m === 'beginBotSpotifyAttempt' && (typeof command.stepUp !== 'string' || command.stepUp.length < 1 || command.stepUp.length > 4096
-    || typeof command.clientId !== 'string' || !/^[A-Za-z0-9]{1,256}$/u.test(command.clientId))) {
-    return 'Spotify application setting is invalid';
-  }
-  if (m === 'callbackBotSpotifyAttempt') {
-    if (typeof command.state !== 'string' || UTF8.encode(command.state).length < 1 || UTF8.encode(command.state).length > 256
-      || /\p{Cc}/u.test(command.state)) return 'state is invalid';
-    if (typeof command.code !== 'string' || UTF8.encode(command.code).length < 1 || UTF8.encode(command.code).length > 2048
-      || /[\r\n\0]/u.test(command.code)) return 'code is invalid';
-  }
   if (m === 'setMemberTimeout') {
     const expires = command.expires;
     if (typeof expires !== 'string' || !SEQ.test(expires) || BigInt(expires) > 0xffff_ffff_ffff_ffffn) {
@@ -885,6 +867,7 @@ function invalid(command: Record<string, unknown>): string | null {
     if (command.password !== null && typeof command.password !== 'string') return 'password is not a string';
     if (command.recoveryKeyAcknowledged !== true) return 'the recovery key is not acknowledged';
   }
+  if (m === 'signInOIDC' && (typeof command.assertion !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(command.assertion) || ![0, 1, 2].includes(command.needs as number))) return 'invalid OIDC assertion';
   if (m === 'signInLogin') {
     if (blank(command.username)) return 'username is empty';
     if (typeof command.password !== 'string' || command.password === '') return 'password is empty';
@@ -1378,7 +1361,7 @@ export class Controller {
     if (problem !== null) { this.refuse(id, 'E_BAD_INPUT', problem); return; }
     const command = data.command;
     if (this.barrier.isClosed()) { this.refuse(id, 'E_NOT_READY', ''); return; }
-    if (command.m !== 'start' && !ACCEPTS[this.phase].includes(command.m)) {
+    if (command.m !== 'start' && command.m !== 'runtimeReady' && !ACCEPTS[this.phase].includes(command.m)) {
       this.refuse(id, 'E_NOT_READY', `the phase is ${this.phase}`);
       return;
     }
@@ -1414,6 +1397,7 @@ export class Controller {
   private dispatch(command: Command, searchId: number | null): Promise<unknown> {
     switch (command.m) {
       case 'start': return this.start();
+      case 'runtimeReady': return this.deps.runtimeReady ? this.deps.runtimeReady() : Promise.reject(new Refusal('E_NOT_READY', ''));
       case 'signupBegin': return this.signupBegin();
       case 'signupSubmit': return this.signupSubmit(command);
       case 'signupReset': return this.signupReset();
@@ -1426,7 +1410,6 @@ export class Controller {
       case 'refreshCommunities': return this.refreshCommunities().then(() => null);
       case 'getBotInstallation': return this.getBotInstallation(command.communityId);
       case 'getBotCommandStatus': return this.getBotCommandStatus(command.communityId);
-      case 'getBotSpotifyConfig': return this.getBotSpotifyConfig(command.communityId);
       case 'patchBotProfile': return this.patchBotProfile(command.communityId, command.display);
       case 'listModerationCases': return this.listModerationCases(command);
       case 'listManualModerationEvidence': return this.listManualModerationEvidence(command);
@@ -1445,9 +1428,6 @@ export class Controller {
       case 'registerRolePanel': return this.registerRolePanel(command);
       case 'configureBotInstallation': return this.configureBotInstallation(command);
       case 'disableBotInstallation': return this.disableBotInstallation(command);
-      case 'beginBotSpotifyAttempt': return this.beginBotSpotifyAttempt(command);
-      case 'callbackBotSpotifyAttempt': return this.callbackBotSpotifyAttempt(command);
-      case 'cancelBotSpotifyAttempt': return this.cancelBotSpotifyAttempt(command);
       case 'openChannel': return this.openChannel(command.channelId);
       case 'closeChannel': return this.closeChannel(command.channelId);
       case 'loadEarlier': return this.loadEarlier(command.channelId);
@@ -1455,6 +1435,7 @@ export class Controller {
       case 'retrySend': return this.retrySend(command.msgId);
       case 'discardSend': return this.discardSend(command.msgId);
       case 'signInBegin': return this.signInBegin();
+      case 'signInOIDC': return this.signInOIDC(command.assertion, command.needs);
       case 'signInLogin': return this.step(() => this.signInLogin(command.username, command.password));
       case 'signInTotp': return this.step(() => this.signInTotp(command.code));
       case 'signInKey': return this.step(() => this.signInKey(command.recoveryKey));
@@ -1580,11 +1561,6 @@ export class Controller {
     const row = await this.routes.getBotCommandStatus(fromHex(communityId));
     return row === null ? null : { installationId: toHex(row.installationId),
       botUserId: row.botUserId === null ? null : toHex(row.botUserId), state: row.state, revision: row.revision.toString() };
-  }
-
-  private async getBotSpotifyConfig(communityId: string): Promise<{ clientId: string; redirectUrl: string }> {
-    if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
-    return this.routes.getBotSpotifyConfig(fromHex(communityId));
   }
 
   private async patchBotProfile(communityId: string, display: string): Promise<string> {
@@ -2094,26 +2070,6 @@ export class Controller {
     if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
     const row = await this.routes.disableBotInstallation(fromHex(command.communityId), fromHex(command.requestId), BigInt(command.expectedRevision));
     return botInstallationView(row);
-  }
-
-  private async beginBotSpotifyAttempt(command: Extract<Command, { m: 'beginBotSpotifyAttempt' }>): Promise<{
-    attemptId: string; authorizeUrl: string; expires: string;
-  }> {
-    if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
-    const attempt: BotSpotifyAttempt = await this.routes.beginBotSpotifyAttempt(fromHex(command.communityId), command.stepUp, command.clientId);
-    return { attemptId: toHex(attempt.attemptId), authorizeUrl: attempt.authorizeUrl, expires: attempt.expires.toString() };
-  }
-
-  private async callbackBotSpotifyAttempt(command: Extract<Command, { m: 'callbackBotSpotifyAttempt' }>): Promise<null> {
-    if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
-    await this.routes.callbackBotSpotifyAttempt(fromHex(command.communityId), fromHex(command.attemptId), command.state, command.code);
-    return null;
-  }
-
-  private async cancelBotSpotifyAttempt(command: Extract<Command, { m: 'cancelBotSpotifyAttempt' }>): Promise<null> {
-    if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
-    await this.routes.cancelBotSpotifyAttempt(fromHex(command.communityId), fromHex(command.attemptId));
-    return null;
   }
 
   // ---- slices ----
@@ -2925,6 +2881,14 @@ export class Controller {
   /** The password is passed to Enrol.login and held in no field (L-TS-21). web3.8 (R6): the login never registers.
    *  With no second factor owed, Enrol holds the settled assertion and the key step follows; signInKey registers it
    *  after the key's form check, back to back with the fetch, the enrolment and the list PUT (REGISTRATION-DEVICES-02). */
+  private signInOIDC(assertion: string, needs: 0 | 1 | 2): Promise<{ needs: 0 | 1 | 2 }> {
+    this.requireEnrol().oidc(assertion, needs);
+    this.assertionAt = this.elapsed();
+    this.setAccount({ phase: needs === 1 ? 'signin-totp' : needs === 2 ? 'signin-passkey' : 'signin-key',
+      signIn: signInOf(null, needs === 1 ? 'totp' : needs === 2 ? 'passkey' : null), error: null });
+    return Promise.resolve({ needs });
+  }
+
   private async signInLogin(rawUsername: string, password: string): Promise<{ needs: 0 | 1 | 2 }> {
     const enrol = this.requireEnrol();
     const username = rawUsername.trim();

@@ -1,3 +1,4 @@
+import { themes } from '@dilla/design-tokens';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, it, expect, vi } from 'vitest';
@@ -173,7 +174,7 @@ describe('UserPanel', () => {
     expect(panelCss).not.toContain('d-user-panel__settings');
   });
 
-  it.each(['signal', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {
+  it.each(Object.keys(themes))('passes axe at its default story args in %s', async theme => {
     document.documentElement.dataset.theme = theme;
     const { container } = render(<div className="d-root"><UserPanel {...(meta.args as UserPanelProps)} /></div>);
     expect((await axe(container, { rules: { 'color-contrast': { enabled: false } } })).violations).toEqual([]);

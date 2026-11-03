@@ -17,6 +17,8 @@ import {
   onboard, openVoiceOnly, peerName, self, sentCount, stage, stripButton, tile,
 } from './support/voice';
 import { dmComposer, dmsNav, homeTile, openSettings } from '../web/support/app';
+import { desktopApplication, desktopE2E } from '../web/support/electron.ts';
+import { markSignalLifecycle, signalLifecycleDiagnostics } from './support/signal-lifecycle.ts';
 
 watchContexts(test);
 
@@ -140,26 +142,32 @@ test('(b) a device that fails the signed-list check joins mid-call: alice leaves
     await peer.waitForCallMembers(call, (d) => d.includes(a.device), 'lists alice');
 
     // A device of the peer that the instance admits but whose signed-list entry carries the wrong tier.
-    await peer.forgeDevice();
-    await peer.callJoin(call, 'second');
-    await expect(notice(alice.page, copy('voice.blockedLeft'))).toBeVisible({ timeout: WAIT });
-    await expect(dock(alice.page)).toHaveCount(0, { timeout: WAIT });
-    await expect(stage(alice.page)).toHaveAttribute('data-call-phase', 'blocked');
-    // Product walk M10: the block came from the call group only, so the join is offered again, and the notice says so.
-    await expect(stage(alice.page).getByRole('button', { name: copy('callStage.preview.join'), exact: true })).toBeVisible();
-    await peer.waitForCallMembers(call, (d) => !d.includes(a.device), 'drops alice');
-    await expect.poll(async () => (await peer.callRead(call)).participants.map((p) => p.device), POLL).not.toContain(a.device);
+    await peerBrowser.guard.expectSecurityLeave(alice.context, async () => {
+      await peer.forgeDevice();
+      await peer.callJoin(call, 'second');
+      await expect(notice(alice.page, copy('voice.blockedLeft'))).toBeVisible({ timeout: WAIT });
+      await expect(dock(alice.page)).toHaveCount(0, { timeout: WAIT });
+      await expect.poll(() => mediaWorkers(alice.page).length, POLL).toBe(0);
+      await expect(stage(alice.page)).toHaveAttribute('data-call-phase', 'blocked');
+      // Product walk M10: the block came from the call group only, so the join is offered again, and the notice says so.
+      await expect(stage(alice.page).getByRole('button', { name: copy('callStage.preview.join'), exact: true })).toBeVisible();
+      await peer.waitForCallMembers(call, (d) => !d.includes(a.device), 'drops alice');
+      await expect.poll(async () => (await peer.callRead(call)).participants.map((p) => p.device), POLL).not.toContain(a.device);
+    });
   } finally {
     await peerBrowser.close(alice);
     await peer.close();
   }
 });
 
-test('(c) a contact whose identity changes mid-call pauses the call for each browser until verified or gone (RV-3)', async ({ peerBrowser }) => {
+test('(c) a contact whose identity changes mid-call pauses the call for each browser until verified or gone (RV-3)', async ({ peerBrowser }, testInfo) => {
   const peer = peerBrowser.track(await VoicePeer.start());
   const alice = await peerBrowser.open('alice');
   const bob = await peerBrowser.open('bob');
+  const diagnostics = signalLifecycleDiagnostics(testInfo, 'blocked');
   try {
+    await diagnostics.watch(alice, desktopE2E() ? desktopApplication(alice.context) : undefined);
+    await diagnostics.watch(bob, desktopE2E() ? desktopApplication(bob.context) : undefined);
     const s = await peer.setup();
     const call = s.voice_channel_id;
     await onboard(alice, peer, 'alice');
@@ -226,10 +234,14 @@ test('(c) a contact whose identity changes mid-call pauses the call for each bro
       await expect.poll(() => heardCount(bob.page, a.device), POLL).toBeGreaterThan(h1);
       await expect(tile(alice.page, 'bob')).toHaveAttribute('data-voice-state', 'ok', { timeout: WAIT });
     });
+    await markSignalLifecycle(alice.page, 'body-complete');
+    await markSignalLifecycle(bob.page, 'body-complete');
   } finally {
-    await peerBrowser.close(bob);
-    await peerBrowser.close(alice);
-    await peer.close();
+    try {
+      await peerBrowser.close(bob);
+      await peerBrowser.close(alice);
+      await peer.close();
+    } finally { await diagnostics.save(); }
   }
 });
 
@@ -253,10 +265,16 @@ test('DM: a blocked DM call leaves the DM composer enabled', async ({ peerBrowse
     await stripButton(alice.page, 'call.start').click();
     await connected(alice.page);
     await peer.waitForCallMembers(dm.channel_id, (d) => d.includes(a.device), 'lists alice');
-    await peer.forgeDevice();
-    await peer.callJoin(dm.channel_id, 'second');
-    await expect(notice(alice.page, copy('voice.blockedLeft'))).toBeVisible({ timeout: WAIT });
-    await expect(dock(alice.page)).toHaveCount(0, { timeout: WAIT });
+    // The forged device's join makes alice's client leave its own call, as in (b): that leave is the one SDK
+    // disconnect whose aborted signal read LiveKit may still log when the room's deletion races it.
+    await peerBrowser.guard.expectSecurityLeave(alice.context, async () => {
+      await peer.forgeDevice();
+      await peer.callJoin(dm.channel_id, 'second');
+      await expect(notice(alice.page, copy('voice.blockedLeft'))).toBeVisible({ timeout: WAIT });
+      await expect(dock(alice.page)).toHaveCount(0, { timeout: WAIT });
+      await expect.poll(() => mediaWorkers(alice.page).length, POLL).toBe(0);
+      await peer.waitForCallMembers(dm.channel_id, (d) => !d.includes(a.device), 'drops alice');
+    });
     // The call group's block is the call's only: the DM's text group is unaffected and so is its composer.
     await expect(dmComposer(alice.page)).toBeEnabled();
     await expect(dmComposer(alice.page)).not.toHaveAttribute('aria-disabled', 'true');

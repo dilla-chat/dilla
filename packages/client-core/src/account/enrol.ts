@@ -32,6 +32,12 @@ export class Enrol {
     this.assertionOwes = owes;
   }
 
+  /** OIDC spends the same server assertion as password login. The server still
+   * enforces its factor debt when the assertion is used for enrollment. */
+  oidc(assertion: string, needs: 0 | 1 | 2): void {
+    this.hold(assertion, needs);
+  }
+
   async login(username: string, password: string): Promise<{ needs: 0 | 1 | 2 }> {
     this.assertion = null;
     this.assertionOwes = 0;

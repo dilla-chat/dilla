@@ -224,32 +224,6 @@ describe('authenticated voice music adapter', () => {
     unsubscribe();
   });
 
-  it('passes Spotify links and URIs unchanged through operation 12', async () => {
-    for (const input of [
-      'https://open.spotify.com/track/1234567890123456789012',
-      'https://open.spotify.com/album/1234567890123456789012',
-      'https://open.spotify.com/playlist/1234567890123456789012',
-      'spotify:track:1234567890123456789012',
-      'spotify:album:1234567890123456789012',
-      'spotify:playlist:1234567890123456789012',
-    ]) {
-      const f = fixture();
-      const unsubscribe = f.adapter.subscribe(CHANNEL, () => undefined);
-      await vi.waitFor(() => expect(f.getRequest(10)).toBeDefined());
-      f.answer(f.getRequest(10), 0, '1', snapshot(1n, false));
-      await vi.waitFor(() => expect(f.adapter.state(CHANNEL).status).toBe('available'));
-
-      const enqueue = f.adapter.enqueue(CHANNEL, input);
-      await vi.waitFor(() => expect(f.getRequest(12)).toBeDefined());
-      expect(f.getRequest(12).args).toEqual([input]);
-      f.answer(f.getRequest(12), 0, '2', encode([]));
-      await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 10)).toHaveLength(2));
-      const reads = f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 10);
-      f.answer(reads[1], 0, '2', snapshot(2n, false));
-      await expect(enqueue).resolves.toBeUndefined();
-      unsubscribe();
-    }
-  });
 
   it('rejects status 5 without a revision as definite unavailable', async () => {
     const f = fixture();
@@ -299,26 +273,13 @@ describe('authenticated voice music adapter', () => {
     f.answer(f.getRequest(10), 0, '1', snapshot(1n, false));
     await vi.waitFor(() => expect(f.adapter.state(CHANNEL).status).toBe('available'));
 
-    const enqueue = f.adapter.enqueue(CHANNEL, 'spotify:track:1234567890123456789012');
+    const enqueue = f.adapter.enqueue(CHANNEL, 'https://youtu.be/abcdefghijk');
     await vi.waitFor(() => expect(f.getRequest(12)).toBeDefined());
     f.answer(f.getRequest(12), 5, '1', encode([]));
     await expect(enqueue).rejects.toBeInstanceOf(VoiceMusicAcceptedUnconfirmedError);
     unsubscribe();
   });
 
-  it('explains when Spotify playback is already active in another voice channel', async () => {
-    const f = fixture();
-    const unsubscribe = f.adapter.subscribe(CHANNEL, () => undefined);
-    await vi.waitFor(() => expect(f.getRequest(10)).toBeDefined());
-    f.answer(f.getRequest(10), 0, '1', snapshot(1n, false));
-    await vi.waitFor(() => expect(f.adapter.state(CHANNEL).status).toBe('available'));
-
-    const enqueue = f.adapter.enqueue(CHANNEL, 'spotify:track:1234567890123456789012');
-    await vi.waitFor(() => expect(f.getRequest(12)).toBeDefined());
-    f.answer(f.getRequest(12), 6, '1', encode([]));
-    await expect(enqueue).rejects.toThrow(/Spotify.*(active|busy)|another voice channel/i);
-    unsubscribe();
-  });
 
   it('does not resolve a mutation on upload receipt and waits for the operation and resulting snapshot', async () => {
     const f = fixture();

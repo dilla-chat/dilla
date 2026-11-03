@@ -16,7 +16,7 @@ export function testHostUrl(): string {
   if (!url) throw new Error('DILLA_TEST_HOST is unset: the web globalSetup exports it');
   return url;
 }
-export function testkitBinary(): string { return process.env.DILLA_TESTKIT ?? join(REPO_ROOT, 'target', 'release', 'dilla-testkit'); }
+export function testkitBinary(): string { return process.env.DILLA_TESTKIT ?? join(REPO_ROOT, 'target', 'release', process.platform === 'win32' ? 'dilla-testkit.exe' : 'dilla-testkit'); }
 
 export interface PeerSetup { username: string; display: string; user_id: string; device_id: string; community_id: string; channel_id: string; channel_ids: string[]; invite_code: string; voice_channel_id: string | null }
 export interface PeerAttachment { index: number; blob_id: string; size: number; mime: string; name: string; thumb: boolean }

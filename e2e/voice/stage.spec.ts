@@ -152,9 +152,9 @@ test('the stage shows a tile per camera and screen, focuses a shared screen, and
       await expect(bob.page.locator('.d-call-stage')).not.toHaveAttribute('data-focused-stage', 'true');
       // Signal §5.6: a tile's width eases over 260ms (the prototype's width transition), so the grid is read once it has settled.
       await expect.poll(async () => {
-        const widths = await Promise.all([0, 1, 2].map((i) => widthOf(items.nth(i))));
+        const widths = await items.evaluateAll(elements => elements.map(element => element.getBoundingClientRect().width));
         return Math.max(...widths) - Math.min(...widths);
-      }, { timeout: WAIT, message: 'every tile is the same width' }).toBeLessThanOrEqual(1);
+      }, { timeout: WAIT, message: 'every tile is the same width in one layout frame' }).toBeLessThanOrEqual(1);
       await expectAccessible(bob.page, 'the grid of three');
     });
 

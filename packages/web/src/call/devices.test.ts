@@ -58,6 +58,18 @@ describe('the microphone (flow 06: listen-only states)', () => {
 });
 
 describe('camera and screen', () => {
+  it('desktop screen capture excludes every browser audio path, including unexpected returned audio', async () => {
+    vi.stubGlobal('dillaDesktop', {});
+    try {
+      const stop = vi.fn(), audio = Object.assign(atrack(true), { stop }), video = vtrack('monitor');
+      const getDisplayMedia = vi.fn(async () => stream(video, audio));
+      const capture = await acquireScreen({ getDisplayMedia }, { surface: 'monitor', resolution: '1080p', fps: 30, systemAudio: true });
+      expect(getDisplayMedia).toHaveBeenCalledWith(expect.objectContaining({ audio: false, systemAudio: 'exclude', windowAudio: 'exclude' }));
+      expect(capture).toEqual({ video, audio: null, audioKind: 'none' });
+      expect(stop).toHaveBeenCalledOnce();
+    } finally { vi.unstubAllGlobals(); }
+  });
+
   it('the camera returns its video track', async () => {
     const v = track('video');
     const m = media(async () => stream(v));

@@ -10,7 +10,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
+	"strconv"
 
 	"github.com/jonasthim/dilla/internal/bot/music"
 	"github.com/jonasthim/dilla/internal/bot/native"
@@ -28,8 +30,11 @@ const (
 var (
 	ErrConflict  = errors.New("music state revision conflict")
 	ErrMalformed = errors.New("malformed persisted music state")
-	ErrTombstone = errors.New("persisted music state was deleted")
-	ErrTooLarge  = errors.New("persisted music state exceeds size limit")
+	// ErrUnsupportedProvider means an unsupported queue could not be safely
+	// recovered, while allowing other voice channels to restore independently.
+	ErrUnsupportedProvider = errors.New("persisted music state uses an unsupported provider")
+	ErrTombstone           = errors.New("persisted music state was deleted")
+	ErrTooLarge            = errors.New("persisted music state exceeds size limit")
 )
 
 // Native is the narrow encrypted application-state API used by Store.
@@ -65,7 +70,9 @@ func New(n Native, community id.ID) (*Store, error) {
 
 // Load returns a fresh paused queue for an absent row. Existing state is
 // validated before use and always returned paused, preserving its position but
-// preventing a process restart from resuming audio.
+// preventing a process restart from resuming audio. Unsupported providers are
+// removed only after atomically archiving the exact original snapshot through
+// the encrypted helper.
 func (s *Store) Load(ctx context.Context, channel id.ID) (Snapshot, error) {
 	if s == nil || channel.IsZero() {
 		return Snapshot{}, errors.New("invalid music voice channel")
@@ -87,11 +94,93 @@ func (s *Store) Load(ctx context.Context, channel id.ID) (Snapshot, error) {
 		return Snapshot{}, ErrMalformed
 	}
 	state, err := decode(v.Value)
-	if err != nil || state.Revision != v.Revision || !valid(state) {
+	if err != nil || state.Revision != v.Revision {
+		return Snapshot{}, ErrMalformed
+	}
+	if len(state.Queue) > music.QueueLimit {
+		return Snapshot{}, ErrMalformed
+	}
+	unsupported := false
+	if state.Current != nil {
+		if state.Current.Provider == "" {
+			return Snapshot{}, ErrMalformed
+		}
+		if state.Current.Provider != music.ProviderYouTube {
+			state.Current = nil
+			state.PositionMS, state.PositionAtMS = 0, 0
+			unsupported = true
+		}
+	}
+	queue := make([]music.Track, 0, len(state.Queue))
+	for _, track := range state.Queue {
+		if track.Provider == "" {
+			return Snapshot{}, ErrMalformed
+		}
+		if track.Provider != music.ProviderYouTube {
+			unsupported = true
+			continue
+		}
+		queue = append(queue, track)
+	}
+	state.Queue = queue
+	if unsupported {
+		return s.quarantineUnsupported(ctx, channel, v, state)
+	}
+	if !valid(state) {
 		return Snapshot{}, ErrMalformed
 	}
 	state.Paused = true
 	return Snapshot{State: state, Revision: v.Revision}, nil
+}
+
+// quarantineUnsupported archives the exact old value and replaces only the active
+// queue in one native CAS transaction. Both values remain encrypted by the helper.
+// A fully valid paused remainder can then be cleared or edited using normal controls.
+func (s *Store) quarantineUnsupported(ctx context.Context, channel id.ID, original native.StateValue, state music.State) (Snapshot, error) {
+	if original.Revision >= math.MaxInt64 {
+		return Snapshot{}, ErrUnsupportedProvider
+	}
+	state.Revision++
+	state.Paused = true
+	value, err := encode(state)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	key := s.key(channel)
+	archiveKey := s.quarantineKey(channel, original.Revision)
+	seed := append([]byte("dilla.bot.music.quarantine.tx.v1\x00"), key...)
+	seed = appendUint64(seed, original.Revision)
+	seed = append(seed, original.Value...)
+	seed = append(seed, value...)
+	hash := sha256.Sum256(seed)
+	tx := id.ID(hash[:16])
+	if tx.IsZero() {
+		return Snapshot{}, ErrUnsupportedProvider
+	}
+	revisions, txErr := s.native.StateTransaction(ctx, tx, []native.StateChange{
+		{Area: stateArea, Key: archiveKey, ExpectedRevision: 0, Value: original.Value},
+		{Area: stateArea, Key: key, ExpectedRevision: original.Revision, Value: value},
+	})
+	if txErr == nil && (len(revisions) != 2 || revisions[0] != 1 || revisions[1] != state.Revision) {
+		txErr = errors.New("invalid music quarantine transaction revision")
+	}
+	if txErr != nil {
+		// As with Save, a lost reply proves nothing. Require both exact committed
+		// values before treating a possibly committed transaction as successful.
+		archive, archiveErr := s.native.StateGet(ctx, stateArea, archiveKey)
+		active, activeErr := s.native.StateGet(ctx, stateArea, key)
+		if archiveErr != nil || activeErr != nil || archive.Tombstone || active.Tombstone ||
+			archive.Revision != 1 || active.Revision != state.Revision ||
+			!bytes.Equal(archive.Value, original.Value) || !bytes.Equal(active.Value, value) {
+			return Snapshot{}, errors.Join(ErrUnsupportedProvider, txErr, archiveErr, activeErr)
+		}
+	}
+	slog.WarnContext(ctx, "bot music queue recovered", "channel_id", channel.String(), "class", "unsupported_provider_quarantined")
+	return Snapshot{State: clone(state), Revision: state.Revision}, nil
+}
+
+func (s *Store) quarantineKey(channel id.ID, revision uint64) []byte {
+	return []byte("dilla.bot.music.quarantine.v1/" + s.community.String() + "/" + channel.String() + "/" + strconv.FormatUint(revision, 10))
 }
 
 // Save atomically replaces one channel's state if expectedRevision is still

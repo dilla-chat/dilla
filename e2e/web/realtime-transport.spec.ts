@@ -4,6 +4,8 @@ import { decodeFrame } from '../../packages/client-core/src/gateway/frames';
 import { addServerVia, copy, instanceInvite, joinCommunity, openChannel, signUp, test, WAIT } from './support/app';
 import { installWorkerPort, portCall, portSlice } from './support/worker-port';
 import { removeHostData, startTestHost, type StartedHost } from './support/host';
+import { desktopE2E } from './support/electron.ts';
+import { expectDesktopQuitBlocked } from './support/desktop-quit.ts';
 
 interface Probe { offset: number; packets: number[][]; socket: WebSocket | null }
 
@@ -80,7 +82,7 @@ test('wire 5 stays free of periodic version/activity/stats HTTP for fifteen idle
   expect((await ops(worker)).filter(op => op === 57 || op === 58)).toEqual([]);
   // Foreground reconciliation is allowed, but foreground is not fabricated input.
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
-  await expect.poll(() => seen.version).toBe(before.version + 1);
+  await expect.poll(() => seen.version).toBe(before.version + (desktopE2E() ? 0 : 1));
   expect((await ops(worker)).filter(op => op === 57)).toHaveLength(0);
   for (let i = 0; i < 3; i++) {
     await advance(page, worker, 5000);
@@ -95,7 +97,7 @@ test('wire 5 stays free of periodic version/activity/stats HTTP for fifteen idle
     await worker.evaluate(() => { (globalThis as unknown as { __realtime: Probe }).__realtime.socket!.close(4000, 'reconnect probe'); });
     await expect.poll(() => connection(page)).toMatchObject({ status: 'offline' });
     await expect.poll(() => connection(page), { timeout: WAIT }).toMatchObject({ status: 'online', wireVersion: 5 });
-    await expect.poll(() => seen.version).toBe(afterInput + i + 1);
+    await expect.poll(() => seen.version).toBe(afterInput + (desktopE2E() ? 0 : i + 1));
   }
   expect((await ops(worker)).filter(op => op === 57)).toHaveLength(3);
   // The notice remains a verified hint; repeated/malformed hints do not reload an unsaved form.
@@ -107,6 +109,13 @@ test('wire 5 stays free of periodic version/activity/stats HTTP for fifteen idle
   const beforeHint = seen.version;
   await notice(worker, '/assets/../bad.js');
   await notice(worker, '/assets/next-build.js'); await notice(worker, '/assets/next-build.js');
+  if (desktopE2E()) {
+    await page.clock.runFor(900_000);
+    expect(seen.version).toBe(beforeHint);
+    await expectDesktopQuitBlocked(context);
+    await expect(dialog.getByRole('textbox', { name: copy('create.server.name'), exact: true })).toHaveValue('unfinished form');
+    return;
+  }
   await expect.poll(() => seen.version).toBe(beforeHint + 1);
   await expect(page.getByText(copy('update.finishDialog'), { exact: true })).toBeVisible();
   await expect(dialog.getByRole('textbox', { name: copy('create.server.name'), exact: true })).toHaveValue('unfinished form');

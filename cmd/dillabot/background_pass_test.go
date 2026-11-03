@@ -40,7 +40,7 @@ func backgroundAPI(t *testing.T, active ...id.ID) *client.Client {
 	}
 	api, err := client.New(client.Config{BaseURL: "https://example.invalid", InstanceID: instance,
 		RateLimits: client.RateLimits{ReadPerSecond: 1e6, ReadBurst: 1000000},
-		HTTPClient: &http.Client{Transport: spotifyCatalogRoundTripper(func(r *http.Request) (*http.Response, error) {
+		HTTPClient: &http.Client{Transport: runtimeRoundTripper(func(r *http.Request) (*http.Response, error) {
 			body, status := document, http.StatusOK
 			if r.URL.Path == "/v1/bot-runtime/installations" {
 				body = inventory
@@ -114,7 +114,7 @@ func TestMaintenanceRunsWithCommandsEveryFiveSeconds(t *testing.T) {
 		for elapsed := time.Duration(0); elapsed <= 125*time.Second; elapsed += 5 * time.Second {
 			// New hints stay pending while the command worker is occupied.
 			r.notifyInteraction(installation, id.New())
-			if err := reconcile(t.Context(), cfg, api, runtime, nil, registry, newAutoModerationEventState(), nil, r, statuses, logger); err != nil {
+			if err := reconcile(t.Context(), cfg, api, runtime, nil, registry, newAutoModerationEventState(), r, statuses, logger); err != nil {
 				t.Fatalf("reconciliation stopped during a command: %v", err)
 			}
 			time.Sleep(5 * time.Second)
@@ -159,7 +159,7 @@ func TestRemovedInstallationDoesNotRunMaintenance(t *testing.T) {
 	r.maintenance = map[id.ID]backgroundMaintenance{installation: {run: func(ctx context.Context) error { return runBackgroundMaintenance(ctx, task, task) }}}
 	registry := newMusicQueueRegistry()
 	t.Cleanup(func() { _ = registry.Close() })
-	err = reconcile(t.Context(), config{StateDir: t.TempDir()}, api, runtime, nil, registry, newAutoModerationEventState(), nil, r, newRuntimeStatusTracker("test"), logger)
+	err = reconcile(t.Context(), config{StateDir: t.TempDir()}, api, runtime, nil, registry, newAutoModerationEventState(), r, newRuntimeStatusTracker("test"), logger)
 	if runs != 0 {
 		t.Fatalf("removed installation ran RunDue/maintain %d times", runs)
 	}

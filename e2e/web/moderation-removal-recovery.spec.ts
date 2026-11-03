@@ -1,3 +1,4 @@
+import { openInviteInClient } from './support/invite';
 // Signed moderator removals through the shipped browser client. The host starts empty and every
 // account, role, invite, message and removal is made through the UI; no database fixture is used.
 import { expect, type BrowserContext, type Locator, type Page } from '@playwright/test';
@@ -5,6 +6,7 @@ import { addServerVia, completeSignUp, copy, makeInviteLink, messageRow, newAcco
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
+import { desktopE2E, suspendDesktopContext } from './support/electron';
 
 const HOST: HostConfig = { port: 8533, control: 8534, webRoot: 'packages/web/dist', advanceClockWithWall: true };
 const SERVER = 'Removal Lab';
@@ -44,8 +46,7 @@ const memberRow = (page: Page, name: string) => page.getByRole('complementary', 
 }).getByRole('listitem').filter({ hasText: name });
 
 async function memberPage(page: Page, invite: string, name: string): Promise<void> {
-  await page.goto(new URL(invite).pathname);
-  await page.getByRole('link', { name: 'Open dilla in this browser', exact: true }).click();
+  await openInviteInClient(page, invite);
   await completeSignUp(page, newAccount(name, `http://127.0.0.1:${String(HOST.control)}`), instance);
   await expect(railItem(page, SERVER)).toBeVisible();
   await openChannel(page, SERVER, 'general');
@@ -112,8 +113,8 @@ test('signed moderator removal reaches a live client and recovers as a tombstone
     const msgId = await authorRow.getAttribute('data-msg-id');
     expect(msgId).toMatch(/^[0-9a-f]{32}$/);
     const authorPath = new URL(author.page.url()).pathname;
-    await author.context.setOffline(true);
-    await author.page.close();
+    const resumeDesktop = desktopE2E() ? await suspendDesktopContext(author.context) : null;
+    if (!resumeDesktop) { await author.context.setOffline(true); await author.page.close(); }
 
     const modRow = messageRow(mod.page, 'general', BODY);
     await expect(modRow).toBeVisible();
@@ -143,8 +144,11 @@ test('signed moderator removal reaches a live client and recovers as a tombstone
 
     // The offline browser's history request arrives after the delete. The signed removal feed must keep
     // its cached message deleted; a second reload proves the recovered state is durable locally too.
-    await author.context.setOffline(false);
-    const recovered = await author.context.newPage();
+    let recovered: Page;
+    if (resumeDesktop) {
+      const context = await resumeDesktop(); contexts.push(context); await guard.attach(context);
+      recovered = await context.newPage();
+    } else { await author.context.setOffline(false); recovered = await author.context.newPage(); }
     await recovered.goto(authorPath);
     const recoveredRow = recovered.locator(`.d-message-row[data-msg-id="${msgId}"]`);
     await expect(recoveredRow).toHaveAttribute('data-state', 'deleted', { timeout: 90_000 });

@@ -14,6 +14,7 @@ function deepFreeze<T>(value: T): T {
 
 export class SliceStore {
   private readonly held = new Map<SliceName, Held>();
+  private readonly nonemptyTrays = new Set<SliceName>();
 
   constructor(private readonly publish: (name: SliceName, rev: number, value: unknown) => void) {}
 
@@ -25,6 +26,11 @@ export class SliceStore {
     const rev = (current?.rev ?? 0) + 1;
     const frozen = deepFreeze(structuredClone(value));
     this.held.set(name, { rev, value: frozen, json });
+    if (name.startsWith('tray:')) {
+      if ((value as SliceTypes[`tray:${string}`]).length > 0) this.nonemptyTrays.add(name);
+      else this.nonemptyTrays.delete(name);
+      this.set('pendingAttachments', this.nonemptyTrays.size > 0);
+    }
     this.publish(name, rev, frozen);
   }
 

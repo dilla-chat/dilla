@@ -3533,6 +3533,22 @@ describe('#37: a call knows whether a share carries sound, on both sides', () =>
       return call;
     };
 
+    it('publishes native application audio through the protected screen-share slot without a monitor fallback', async () => {
+      const f = fakes();
+      const call = await sharing(f);
+      const d = deviceTrack();
+      f.deps.applicationAudio = async () => d.track;
+      const gum = vi.fn(async () => { throw new Error('must not capture a system input'); });
+      f.deps.media.getUserMedia = gum;
+      f.room.localParticipant.publishTrack.mockClear();
+      await call.setShareSource('dilla:application');
+      expect(sources(f)).toEqual(['screen_share_audio']);
+      expect(call.state.shareAudio).toBe('app');
+      expect(gum).not.toHaveBeenCalled();
+      await call.setSharing(false);
+      expect(d.stop).toHaveBeenCalled();
+    });
+
     it('publishes the chosen device as screen_share_audio, opened raw and stereo', async () => {
       const f = fakes();
       const call = await sharing(f);
@@ -3930,6 +3946,99 @@ describe('task 8c: screen-share options', () => {
     expect(call.state.sharing).toBe(true);
   });
 
+  /** A native source can end independently while LiveKit publication awaits. */
+  const endingScreen = () => {
+    const track = videoTrack(), events = new EventTarget(); let readyState = 'live';
+    Object.defineProperty(track, 'readyState', { get: () => readyState });
+    Object.assign(track, {
+      addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events),
+      stop: () => { track.stopped = true; readyState = 'ended'; },
+    });
+    return { track, end: () => { readyState = 'ended'; events.dispatchEvent(new Event('ended')); } };
+  };
+
+  it('a native source ending during initial screen publication is withdrawn instead of becoming a stale active share', async () => {
+    const f = fakes(), source = endingScreen();
+    f.deps.media.getDisplayMedia = vi.fn(async () => streamOf(source.track));
+    const call = await start(f), pending = later<void>();
+    const publish = f.room.localParticipant.publishTrack.getMockImplementation()!;
+    f.room.localParticipant.publishTrack.mockImplementation(async (track, options) => {
+      if (options.source === 'screen_share') await pending.promise;
+      return publish(track, options);
+    });
+    const started = call.setSharing(true, OPTS);
+    const rejected = expect(started).rejects.toMatchObject({ code: 'E_UNAVAILABLE' });
+    await vi.waitFor(() => expect(f.room.localParticipant.publishTrack).toHaveBeenCalledWith(source.track, expect.objectContaining({ source: 'screen_share' })));
+    source.end(); pending.resolve(); await rejected;
+    expect(call.state).toMatchObject({ sharing: false, localScreen: null });
+    expect(f.room.localParticipant.unpublishTrack).toHaveBeenCalledWith(source.track);
+    expect(source.track.stopped).toBe(true);
+    expect(f.calls).toContainEqual({ m: 'callShare', on: false });
+  });
+
+  it('a replacement source ending during publication is withdrawn and leaves no stale new screen owner', async () => {
+    const f = fakes(), old = endingScreen(), next = endingScreen();
+    f.deps.media.getDisplayMedia = vi.fn(async () => streamOf(old.track));
+    const call = await start(f); await call.setSharing(true, OPTS);
+    f.deps.media.getDisplayMedia = vi.fn(async () => streamOf(next.track));
+    const pending = later<void>(), publish = f.room.localParticipant.publishTrack.getMockImplementation()!;
+    f.room.localParticipant.publishTrack.mockImplementation(async (track, options) => {
+      if (track === next.track) await pending.promise;
+      return publish(track, options);
+    });
+    const replacing = call.setShareOptions({ ...OPTS, surface: 'browser' });
+    const rejected = expect(replacing).rejects.toMatchObject({ code: 'E_UNAVAILABLE' });
+    await vi.waitFor(() => expect(f.room.localParticipant.publishTrack).toHaveBeenCalledWith(next.track, expect.objectContaining({ source: 'screen_share' })));
+    next.end(); pending.resolve(); await rejected;
+    expect(call.state).toMatchObject({ sharing: false, localScreen: null });
+    expect(f.room.localParticipant.unpublishTrack).toHaveBeenCalledWith(next.track);
+    expect(next.track.stopped).toBe(true); expect(old.track.stopped).toBe(true);
+    expect(f.calls).toContainEqual({ m: 'callShare', on: false });
+  });
+
+  it('a replacement that already ended before its picker returns preserves the currently published screen', async () => {
+    const f = fakes(), old = endingScreen(), next = endingScreen();
+    f.deps.media.getDisplayMedia = vi.fn(async () => streamOf(old.track));
+    const call = await start(f); await call.setSharing(true, OPTS);
+    f.deps.media.getDisplayMedia = vi.fn(async () => { next.end(); return streamOf(next.track); });
+    await expect(call.setShareOptions({ ...OPTS, surface: 'browser' })).rejects.toMatchObject({ code: 'E_UNAVAILABLE' });
+    expect(call.state.sharing).toBe(true); expect(old.track.stopped).toBe(false); expect(next.track.stopped).toBe(true);
+    expect(f.room.localParticipant.unpublishTrack).not.toHaveBeenCalledWith(old.track);
+    expect(f.room.localParticipant.publishTrack).not.toHaveBeenCalledWith(next.track, expect.anything());
+  });
+
+  it('an old source ending during replacement cannot stop the newly published screen', async () => {
+    const f = fakes();
+    const old = videoTrack(), oldEvents = new EventTarget();
+    const next = videoTrack(), nextEvents = new EventTarget();
+    const oldListener = vi.fn(oldEvents.addEventListener.bind(oldEvents));
+    Object.assign(old, { addEventListener: oldListener, removeEventListener: oldEvents.removeEventListener.bind(oldEvents) });
+    Object.assign(next, { addEventListener: nextEvents.addEventListener.bind(nextEvents), removeEventListener: nextEvents.removeEventListener.bind(nextEvents) });
+    f.deps.media.getDisplayMedia = vi.fn(async () => streamOf(old));
+    const call = await start(f);
+    await call.setSharing(true, OPTS);
+    const staleEnded = oldListener.mock.calls.find(([type]) => type === 'ended')![1] as EventListener;
+    const picker = later<MediaStream>();
+    f.deps.media.getDisplayMedia = vi.fn(() => picker.promise);
+    const replacing = call.setShareOptions({ ...OPTS, surface: 'browser' });
+    await vi.waitFor(() => expect(f.deps.media.getDisplayMedia).toHaveBeenCalledOnce());
+    oldEvents.dispatchEvent(new Event('ended'));
+    picker.resolve(streamOf(next));
+    await replacing;
+    // Let the old source's queued teardown run after replacement, then simulate
+    // another already-dispatched callback from that retired source.
+    await flush();
+    staleEnded(new Event('ended'));
+    await flush();
+    expect(call.state.sharing).toBe(true);
+    expect(next.stopped).toBe(false);
+    expect(f.room.localParticipant.unpublishTrack).not.toHaveBeenCalledWith(next);
+    nextEvents.dispatchEvent(new Event('ended'));
+    await flush();
+    expect(call.state.sharing).toBe(false);
+    expect(next.stopped).toBe(true);
+  });
+
   it('Apply with a new source whose browser picker is cancelled leaves the running share as it was', async () => {
     const f = fakes();
     const { track } = screenSetup(f);
@@ -3939,6 +4048,7 @@ describe('task 8c: screen-share options', () => {
     f.deps.media.getDisplayMedia = vi.fn(async () => { throw Object.assign(new Error('cancelled'), { name: 'NotAllowedError' }); });
     await expect(call.setShareOptions({ ...OPTS, surface: 'browser' })).rejects.toBeDefined();
     expect(f.room.localParticipant.unpublishTrack).not.toHaveBeenCalledWith(track);
+    expect(track.stopped).toBe(false);
     expect(call.state.sharing).toBe(true);
     void first;
   });

@@ -43,7 +43,7 @@ takes no visible space; the connection live region remains mounted.
 | Automation | Bot | Installation lifecycle, enable/disable, display name and capabilities |
 | Automation | Welcome messages | Configuration, destination, preview and confirmed save |
 | Automation | Join roles | Automatic role assignment to new members |
-| Automation | Music | Who can DJ (roles with Control music, edited in Roles), default volume, idle leave, Spotify app configuration/linking and runtime provider observations |
+| Automation | Music | Who can DJ (roles with Control music, edited in Roles), default volume, idle leave and runtime YouTube provider observations |
 | Moderation | Automoderation | Rules, actions, exemptions and configuration |
 | Moderation | Moderation log | Automatic cases and manual evidence; separate journal |
 | Moderation | Bans | Banned members and unban (`admin/BansSection`) |
@@ -60,7 +60,6 @@ the Music settings section explains those commands alongside configuration/statu
 `/settings` is the phone index and desktop Profile. Existing `/settings/:section`
 links, including privacy comparison history state, remain supported. Server roots
 and sections use `/c/:communityId/settings` and `/c/:communityId/settings/:section`.
-The Spotify callback stays `/settings/bot/music/spotify/callback`.
 
 The registry in `packages/web/src/settings/registry.ts` is the source for navigation,
 search and authorization. Loading permissions shows loading. Restricted pages are
@@ -109,15 +108,10 @@ a visible app fallback if the opener disappeared.
 Encrypted operation 24, `music.providers.status`, reads a versioned bounded runtime
 snapshot with installation identity, observation time and fixed status/reason enums.
 It reauthorizes community management and recomputes on replay. It does not play,
-refresh OAuth, consume an authorization attempt or disclose credential material.
+contact the provider or disclose credential material.
 
-Spotify account reports Not linked / Linked / Needs attention / Unknown separately
-from playback setup. Linked means valid installation-bound stored credentials, not
-Premium, token acceptance or successful playback. Spotify and YouTube setup report
-Configured / Missing requirements / Unknown. Callback success means Authorization
-received; waiting for the bot and returns to Music for a fresh observation.
-Reads poll once per second up to 30 seconds, with an OAuth reconciliation window up
-to 60 seconds. Observations older than 60 seconds are stale with their timestamp.
+YouTube playback setup reports Configured / Missing requirements / Unknown.
+Observations older than 60 seconds are stale with their timestamp.
 Unsupported/offline bots show unavailable and Refresh while configuration stays usable.
 An operation-0 capability response must advertise operation 24 before it is sent;
 legacy bots receive no unknown status operation. The worker owns disposable
@@ -125,8 +119,6 @@ capability/status responses, caching at most 64 for 60 seconds and draining only
 a leading observation prefix during authorized journal reads. Leaving Music cannot
 leave its observations blocking later readers, and other features retain ownership
 of their responses.
-
-Real Spotify playback acceptance is separate from automated status-contract tests.
 
 ## Integrated browser evidence
 
@@ -140,7 +132,7 @@ short-viewport, Sign-in, Voice, Members, Music, Automoderation and search states
 ![Draft confirmation inside settings](../../user/screenshots/fullscreen-settings-dirty-draft-confirmation.png)
 
 The Music/Automoderation captures show the unavailable or missing-installation state;
-they are not evidence of a linked Spotify account or successful playback. Automated
+they are not evidence of successful playback. Automated
 runtime protocol tests establish status semantics separately from these UI captures.
 
 ### Form layout follow-up

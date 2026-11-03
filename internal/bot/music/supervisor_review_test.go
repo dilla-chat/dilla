@@ -13,7 +13,6 @@ import (
 
 	"github.com/jonasthim/dilla/internal/bot/music"
 	"github.com/jonasthim/dilla/internal/bot/music/persistence"
-	"github.com/jonasthim/dilla/internal/bot/music/spotify"
 	"github.com/jonasthim/dilla/internal/bot/music/youtube"
 	"github.com/jonasthim/dilla/internal/bot/native"
 )
@@ -95,8 +94,8 @@ func TestSupervisorSandboxSetupFailurePausesQueue(t *testing.T) {
 		t.Fatalf("state=%+v calls=%d error=%v; setup failure must pause without discarding a track", got, starter.calls, err)
 	}
 }
-func TestSupervisorNotConfiguredSpotifySkipsThenCaps(t *testing.T) {
-	starter := &reviewStarter{failure: &music.StartError{Stage: "provider_check", Cause: spotify.ErrProviderUnavailable}}
+func TestSupervisorInvalidProviderInputSkipsThenCaps(t *testing.T) {
+	starter := &reviewStarter{failure: &music.StartError{Stage: "provider_check", Cause: reviewPermanentFailure{}}}
 	s, state := reviewSupervisor(t, 6, starter)
 	got, err := s.Apply(t.Context(), state.Revision, music.Operation{Kind: music.OpResume})
 	if err != nil || starter.calls != 2 || got.Current == nil || got.Current.ID != "2" || len(got.Queue) != 3 || !got.Paused {

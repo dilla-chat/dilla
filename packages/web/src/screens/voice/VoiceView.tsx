@@ -11,6 +11,7 @@ import {
 } from '@dilla/ui';
 import { linkQuality } from '../../call/stats.ts';
 import { shareEstimate, shareSupport, supportedOptions, type ShareOptions, type ShareSupport, type ShareSurface } from '../../call/share-options.ts';
+import { desktopBridge } from '../../desktop.ts';
 import { en, t } from '../../strings/index.ts';
 import { micNoticeKey, participantView, selfName, userName, voiceStateLabels } from '../shell-model.ts';
 import { outgoingText, type CallView } from './useCall.tsx';
@@ -374,7 +375,7 @@ function StatsLine({ v }: { v: VoiceContext }) {
 const SHARE_SUPPORT: ShareSupport = (() => {
   if (typeof navigator === 'undefined') return shareSupport({ ua: '' });
   const data = (navigator as Navigator & { userAgentData?: { platform?: string; brands?: Array<{ brand: string }> } }).userAgentData;
-  return shareSupport({ ua: navigator.userAgent, uaPlatform: data?.platform, brands: data?.brands?.map(b => b.brand) });
+  return shareSupport({ ua: navigator.userAgent, uaPlatform: data?.platform, brands: data?.brands?.map(b => b.brand), desktop: desktopBridge() !== undefined });
 })();
 const PICKER_SOURCE: Record<ShareSurface, SharePickerSource> = { monitor: 'screen', window: 'window', browser: 'tab' };
 const SURFACE: Record<SharePickerSource, ShareSurface> = { screen: 'monitor', window: 'window', tab: 'browser' };

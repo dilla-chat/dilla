@@ -13,7 +13,7 @@
     "e2e"
   ],
   "scripts": {
-    "test": "npm run check:docs && npm run check:brief && npm run check:copy && npm run check:css && npm run check:ci && npm run test:bot-ops-check && npm run check:bot-ops && npm test --workspaces --if-present && npm run lint",
+    "test": "npm run check:docs && npm run check:brief && npm run check:copy && npm run check:css && npm run check:ci && npm run test:bot-ops-check && npm run check:bot-ops && node scripts/test-workspaces.mjs && npm run lint",
     "lint": "eslint --max-warnings 0 --no-error-on-unmatched-pattern packages/client-core packages/web",
     "check:docs": "node scripts/check-protocol-docs.mjs",
     "test:docs-check": "node --test scripts/check-protocol-docs.test.mjs",
@@ -27,7 +27,7 @@
     "check:bot-ops": "node scripts/check-bot-operations.mjs",
     "test:bot-ops-check": "node --test scripts/check-bot-operations.test.mjs",
     "typecheck:e2e": "tsc --noEmit -p e2e/tsconfig.json",
-    "test:ci-check": "node --test scripts/check-ci-workflow.test.mjs scripts/ci-areas.test.mjs scripts/install-ci-tool.test.mjs scripts/fetch-retry.test.mjs",
+    "test:ci-check": "python3 scripts/ci-watchdog.test.py && node --test scripts/check-ci-workflow.test.mjs scripts/check-native-stock-feasibility.test.mjs scripts/ci-areas.test.mjs scripts/install-ci-tool.test.mjs scripts/ci-llvm.test.mjs scripts/fetch-retry.test.mjs scripts/e2e-test-tools.test.mjs scripts/test-workspaces.test.mjs",
     "test:manifest-writer": "node --test scripts/write-manifest.test.mjs",
     "test:wasm-size-check": "node --test scripts/check-wasm-size.test.mjs",
     "test:install": "bash deploy/install_test.sh",
@@ -37,7 +37,9 @@
     "noise:test": "node --test experiments/noise/test/*.test.mjs experiments/noise/*.test.mjs",
     "noise:build": "DILLA_NOISE_MODE=evaluation npm run build -w @dilla/web",
     "noise:build:beta": "DILLA_NOISE_MODE=beta npm run build -w @dilla/web",
-    "test:noise-release": "node --test scripts/release-noise-mode.test.mjs experiments/noise/build-gate.test.mjs"
+    "test:noise-release": "node --test scripts/release-noise-mode.test.mjs experiments/noise/build-gate.test.mjs",
+    "desktop:build": "npm run build -w @dilla/desktop",
+    "desktop:test": "npm test -w @dilla/desktop"
   },
   "devDependencies": {
     "eslint": "9.39.5",

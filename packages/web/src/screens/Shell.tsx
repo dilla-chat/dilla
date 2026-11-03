@@ -48,6 +48,7 @@ import { UserPanel } from './UserPanel.tsx';
 import type { watchUpdates } from '../update.ts';
 import type { createUpdateCheckpointStore } from '../update-checkpoint.ts';
 import { updateTabId } from '../update-checkpoint.ts';
+import { desktopBridge, setDesktopGuard } from '../desktop.ts';
 import { captureViewPlace, restoreViewPlace, validViewPlace, type ViewPlace } from '../update-view.ts';
 import { browser } from '../browser.ts';
 import { CommandProvider } from './commands/CommandContext.tsx';
@@ -278,7 +279,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   const [joinError, setJoinError] = useState<UiError | null>(null);
   const [joined, setJoined] = useState<string | null>(null);
   const [commandError, setCommandError] = useState<UiError | null>(null);
-  const [openFailure, setOpenFailure] = useState<{ channelId: string; error: UiError } | null>(null);
+  const openAttempt = useRef<{ channelId: string; inactive: boolean } | null>(null);
+  const [openFailure, setOpenFailure] = useState<{ attempt: NonNullable<typeof openAttempt.current>; error: UiError } | null>(null);
   const [selectFailure, setSelectFailure] = useState<{ communityId: string; error: UiError } | null>(null);
   // The channel or DM whose loadEarlier call is in flight.
   const [loadingEarlier, setLoadingEarlier] = useState<string | null>(null);
@@ -543,7 +545,11 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   const group: ChannelGroupState = channel !== null
     ? unsupported ? 'unsupported' : timeline?.group ?? channel.group
     : dm !== null ? timeline?.group ?? dm.group : 'none';
-  const openError = openFailure !== null && openFailure.channelId === openId ? openFailure.error : null;
+  // A refused open drops its controller entry, so its old timeline no longer follows membership changes.
+  const workerGroup = channel?.group ?? dm?.group ?? 'none';
+  const currentMembership = useRef({ channelId: openId, group: workerGroup });
+  currentMembership.current = { channelId: openId, group: workerGroup };
+  const openError = openFailure !== null && openFailure.attempt.channelId === openId ? openFailure.error : null;
   // A server whose channels never arrived because its selectCommunity was refused (pre-flight ruling (c)).
   const selectError = selectFailure !== null && selectFailure.communityId === communityId && channels === undefined
     ? selectFailure.error : null;
@@ -678,8 +684,12 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
 
   // A refused open is shown in the main pane, never as a banner (Requirement 14).
   const openChannel = useCallback((id: string) => {
+    const attempt = { channelId: id, inactive: currentMembership.current.channelId === id && currentMembership.current.group !== 'active' };
+    openAttempt.current = attempt;
     setOpenFailure(null);
-    client.call({ m: 'openChannel', channelId: id }).catch((e: unknown) => setOpenFailure({ channelId: id, error: errorOf(e) }));
+    client.call({ m: 'openChannel', channelId: id }).catch((e: unknown) => {
+      if (openAttempt.current === attempt) setOpenFailure({ attempt, error: errorOf(e) });
+    });
   }, [client]);
 
   // Every effect below that navigates does nothing while Settings is open over the shell (L-TS-27, ruling 16).
@@ -814,8 +824,14 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     if (openId === null) return;
     const id = openId;
     openChannel(id);
-    return () => { client.call({ m: 'closeChannel', channelId: id }).catch(report); };
+    return () => { openAttempt.current = null; client.call({ m: 'closeChannel', channelId: id }).catch(report); };
   }, [openId, openChannel, client, report]);
+  // A Welcome can recover membership after a failed external join. Reopen once to restore the controller's
+  // timeline subscription; an already-active open's refusal stays visible, including a failed recovery open.
+  useEffect(() => {
+    if (openFailure !== null && openFailure.attempt === openAttempt.current && openFailure.attempt.inactive
+      && openFailure.attempt.channelId === openId && workerGroup === 'active') openChannel(openId);
+  }, [openFailure, openId, workerGroup, openChannel]);
 
   // (6) Read markers (L-TS-23 markRead): while the open item's timeline is loaded, the page is visible and its badge
   // counts something, the worker moves the marker; once for each distinct (item, newest row, counts). A zero badge
@@ -1164,6 +1180,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     const counts = sumBadges(list.filter(ch => ch.kind !== CATEGORY).map(ch => rowBadge(badges, settings, ch.id, c.id)));
     return { id: c.id, name: c.name, unread: counts.unread, mentions: counts.mentions };
   });
+  const nativeUnread = Math.min(9999, Object.values(badges ?? {}).reduce((total, value) => total + value.unread, 0));
+  useEffect(() => { void desktopBridge()?.send({ type: 'badge', count: nativeUnread }).catch(() => {}); }, [nativeUnread]);
 
   // Flow 07: the instance serves no role bits before the permissions read, so ownership stands in for ManageChannels until then.
   const owner = community !== null && self !== null && community.owner === self.id;
@@ -1856,7 +1874,14 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     || editChannelId !== null || adminFor !== null || ui.editing !== null || threadEditing;
   const updateCallBlocked = call.channelId !== null || call.recoveryChannelId !== null;
   const updateVoiceActive = useRef(false);
+  const pendingAttachments = useSlice('pendingAttachments');
+  const retainedDraft = [...ordinaryDrafts.current.values(), ...threadDrafts.current.values()].some(text => text.length > 0);
   updateVoiceActive.current = call.channelId !== null || call.recoveryChannelId !== null || recentUpdateCall !== null;
+  useEffect(() => {
+    setDesktopGuard({ activeCall: call.channelId !== null || call.recoveryChannelId !== null || recentUpdateCall !== null,
+      unsavedDraft: updateBlocked || retainedDraft || pendingAttachments === true });
+  }, [call.channelId, call.recoveryChannelId, recentUpdateCall, updateBlocked, retainedDraft, pendingAttachments]);
+  useEffect(() => () => { setDesktopGuard({ activeCall: false, unsavedDraft: false }); }, []);
   const [updateError, setUpdateError] = useState(false);
   const [updateRetry, setUpdateRetry] = useState(0);
   const [restoreError, setRestoreError] = useState(false);

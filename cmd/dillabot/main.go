@@ -14,7 +14,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -30,7 +29,6 @@ import (
 	"github.com/jonasthim/dilla/internal/bot/moderation"
 	"github.com/jonasthim/dilla/internal/bot/music"
 	"github.com/jonasthim/dilla/internal/bot/music/session"
-	"github.com/jonasthim/dilla/internal/bot/music/spotify"
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/bot/service"
 	"github.com/jonasthim/dilla/internal/id"
@@ -45,20 +43,17 @@ const maxCredentialBytes = 4096
 var Version = "0.0.0-dev"
 
 type config struct {
-	RateLimits              client.RateLimits `toml:"rate_limits"`
-	BaseURL                 string            `toml:"base_url"`
-	InstanceIDText          string            `toml:"instance_id"`
-	RuntimeCredentialFile   string            `toml:"runtime_credential_file"`
-	HelperExecutable        string            `toml:"helper_executable"`
-	WASIModule              string            `toml:"wasi_module"`
-	StateDir                string            `toml:"state_dir"`
-	ReconcileIntervalText   string            `toml:"reconcile_interval"`
-	AllowLoopbackHTTP       bool              `toml:"allow_loopback_http"`
-	SpotifyClientID         string            `toml:"spotify_client_id"`
-	SpotifyRedirectURL      string            `toml:"spotify_redirect_url"`
-	SpotifyHelperExecutable string            `toml:"spotify_helper_executable"`
-	InstanceID              id.ID             `toml:"-"`
-	ReconcileInterval       time.Duration     `toml:"-"`
+	RateLimits            client.RateLimits `toml:"rate_limits"`
+	BaseURL               string            `toml:"base_url"`
+	InstanceIDText        string            `toml:"instance_id"`
+	RuntimeCredentialFile string            `toml:"runtime_credential_file"`
+	HelperExecutable      string            `toml:"helper_executable"`
+	WASIModule            string            `toml:"wasi_module"`
+	StateDir              string            `toml:"state_dir"`
+	ReconcileIntervalText string            `toml:"reconcile_interval"`
+	AllowLoopbackHTTP     bool              `toml:"allow_loopback_http"`
+	InstanceID            id.ID             `toml:"-"`
+	ReconcileInterval     time.Duration     `toml:"-"`
 }
 
 // defaultConfigPath is where install-bot.sh writes the config and where the
@@ -89,7 +84,15 @@ func loadConfig(path string) (config, error) {
 	}
 	decoder := toml.NewDecoder(strings.NewReader(string(raw)))
 	decoder.DisallowUnknownFields()
-	err = decoder.Decode(&c)
+	// Accept and discard only the retired keys from older installed files.
+	// Unknown fields, including misspelled legacy keys, remain configuration errors.
+	legacy := struct {
+		*config
+		RetiredClientID    string `toml:"spotify_client_id"`
+		RetiredRedirectURL string `toml:"spotify_redirect_url"`
+		RetiredHelper      string `toml:"spotify_helper_executable"`
+	}{config: &c}
+	err = decoder.Decode(&legacy)
 	clear(raw)
 	if err != nil {
 		return c, errConfigInvalid
@@ -100,18 +103,6 @@ func loadConfig(path string) (config, error) {
 	}
 	if c.BaseURL == "" {
 		errs = append(errs, errors.New("base_url is required"))
-	}
-	if c.SpotifyClientID != "" || c.SpotifyRedirectURL != "" {
-		redirect, parseErr := url.Parse(c.SpotifyRedirectURL)
-		if c.SpotifyClientID == "" || len(c.SpotifyClientID) > 256 || strings.ContainsAny(c.SpotifyClientID, "\r\n\x00") ||
-			parseErr != nil || redirect.Scheme != "https" || redirect.Host == "" || redirect.User != nil || redirect.Fragment != "" || len(c.SpotifyRedirectURL) > 2048 {
-			errs = append(errs, errors.New("spotify_client_id and spotify_redirect_url must form a valid HTTPS OAuth pair"))
-		}
-	}
-	// OAuth may be configured in community Bot settings rather than this file.
-	// The installed PCM executable is an independent local deployment setting.
-	if c.SpotifyHelperExecutable != "" && !filepath.IsAbs(c.SpotifyHelperExecutable) {
-		errs = append(errs, errors.New("spotify_helper_executable must be an absolute path"))
 	}
 	c.InstanceID, err = id.Parse(c.InstanceIDText)
 	if err != nil || c.InstanceID.IsZero() {
@@ -383,18 +374,6 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 	if err := validateHelperExecutable(cfg.HelperExecutable); err != nil {
 		return err
 	}
-	if cfg.SpotifyHelperExecutable != "" {
-		if err := validateHelperExecutable(cfg.SpotifyHelperExecutable); err != nil {
-			return errors.New("spotify PCM helper is unavailable")
-		}
-	}
-	var spotifyLeases *music.SpotifyLeaseManager
-	if cfg.SpotifyHelperExecutable != "" {
-		spotifyLeases, err = music.NewSpotifyLeaseManager(cfg.StateDir)
-		if err != nil {
-			return errors.New("spotify playback lease is unavailable")
-		}
-	}
 	logger.Info("bot service starting", "instance_id", cfg.InstanceID.String(), "identity_reconciliation", "enabled", "group_sync", "enabled", "events", "durable_poll_welcome_interaction_and_moderation_dispatch", "music", "paused_restoration_with_configured_pcm_starters")
 	wasm, err := mlswasi.New(ctx, wasmBinary, mlswasi.Options{PoolSize: 1, Priority: client.RequestPriority})
 	if err != nil {
@@ -437,7 +416,7 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 	statuses := newRuntimeStatusTracker(Version)
 	for {
 		started := time.Now()
-		err := reconcile(ctx, cfg, api, runtime, wasm, musicRegistry, autoModerationState, spotifyLeases, gateways, statuses, logger)
+		err := reconcile(ctx, cfg, api, runtime, wasm, musicRegistry, autoModerationState, gateways, statuses, logger)
 		reportBackgroundPass(logger, err)
 
 		// A gateway notification refreshes text sources only. Full reconciliation and
@@ -451,11 +430,7 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 	}
 }
 
-func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *client.Runtime, wasm *mlswasi.Runtime, musicRegistry *musicQueueRegistry, autoModerationState *autoModerationEventState, spotifyLeases *music.SpotifyLeaseManager, gateways *botGatewayRuntime, statuses *runtimeStatusTracker, logger *slog.Logger) error {
-	spotifyGuard, err := service.NewSpotifyAccountGuard(cfg.StateDir)
-	if err != nil {
-		return errors.New("spotify account guard unavailable")
-	}
+func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *client.Runtime, wasm *mlswasi.Runtime, musicRegistry *musicQueueRegistry, autoModerationState *autoModerationEventState, gateways *botGatewayRuntime, statuses *runtimeStatusTracker, logger *slog.Logger) error {
 	// Refresh inventory before retained maintenance so removed installations are
 	// pruned before their tasks can run.
 	installations, err := runtime.ListInstallations(ctx)
@@ -515,21 +490,6 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 				continue
 			}
 			logger.Warn("bot runtime status report deferred", "installation_id", installation.ID.String())
-		}
-		spotifyClientID, spotifyRedirectURL := cfg.SpotifyClientID, cfg.SpotifyRedirectURL
-		spotifyConfigurationKnown := spotifyClientID != ""
-		if current, configErr := runtime.SpotifyConfiguration(ctx, installation.ID); configErr == nil {
-			spotifyClientID, spotifyRedirectURL = current.ClientID, current.RedirectURL
-			spotifyConfigurationKnown = true
-		} else {
-			if client.IsDeferred(configErr) {
-				if refusal := reconciliationRateLimit(configErr); refusal != nil {
-					logBotRateLimit(logger, installation.ID, refusal)
-				}
-				succeeded++
-				continue
-			}
-			logger.Warn("bot Spotify application setting unavailable", "installation_id", installation.ID.String())
 		}
 		oldTextPoller := gateways.TextPoller(installation.ID)
 		oldInteractionPoller := gateways.InteractionPoller(installation.ID)
@@ -670,61 +630,10 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 							var musicDeferred error
 							var musicInteractions *service.MusicInteractions
 							var musicProviderStatus service.MusicProviderStatusInteractions
-							var spotifyPCM session.PCMStarter
-							var spotifyCatalogResolver service.SpotifyMusicTrackResolver
 							if result.Installation.Capabilities&botMusicCapability != 0 {
-								statusReader, statusErr := service.NewSpotifyCredentialStatusReader(runtime, nativeClient, spotifyGuard)
-								statusConfig := cfg
-								statusConfig.SpotifyClientID, statusConfig.SpotifyRedirectURL = spotifyClientID, spotifyRedirectURL
-								musicProviderStatus = newMusicProviderStatusInteractions(installation.ID, installation.CommunityID, result.Session, statusReader, statusConfig)
-								if statusErr != nil {
-									logger.Info("bot provider status will report Spotify credentials as unavailable", "installation_id", installation.ID.String())
-								}
+								musicProviderStatus = newMusicProviderStatusInteractions(installation.ID, installation.CommunityID, result.Session)
 								channels, channelsErr := result.Session.Channels(ctx, installation.CommunityID)
 								if channelsErr == nil {
-									var spotifyCredentials *service.SpotifyCredentials
-									if spotifyClientID != "" && spotifyGuard != nil {
-										var credentialErr error
-										spotifyCredentials, credentialErr = service.NewSpotifyCredentials(runtime, nativeClient, spotifyClientID, spotifyRedirectURL, spotifyGuard)
-										if credentialErr == nil {
-											if _, credentialErr = spotifyCredentials.Load(ctx); credentialErr == nil {
-												spotifyCatalogResolver = installationSpotifyCatalogResolver{credentials: spotifyCredentials, catalog: spotify.NewCatalog(nil)}
-											} else {
-												logger.Info("Spotify catalog enqueue unavailable until this installation links an account", "installation_id", installation.ID.String())
-											}
-										}
-										if credentialErr != nil {
-											logger.Info("Spotify catalog enqueue unavailable", "installation_id", installation.ID.String())
-											spotifyCredentials = nil
-										}
-									}
-									if cfg.SpotifyHelperExecutable != "" && spotifyGuard != nil {
-										if spotifyCredentials == nil {
-											spotifyCredentials, _ = service.NewSpotifyCredentials(runtime, nativeClient, spotifyClientID, spotifyRedirectURL, spotifyGuard)
-										}
-										var credentialErr error
-										if spotifyCredentials != nil {
-											spotifyPCM, credentialErr = spotify.NewPCMStarter(cfg.SpotifyHelperExecutable, cfg.StateDir, func(loadCtx context.Context) (string, error) {
-												token, loadErr := spotifyCredentials.Load(loadCtx)
-												if errors.Is(loadErr, service.ErrSpotifyNotLinked) {
-													return "", spotify.ErrProviderUnavailable
-												}
-												return token.AccessToken, loadErr
-											})
-										} else {
-											credentialErr = service.ErrSpotifyCredentials
-										}
-										if credentialErr != nil {
-											logger.Warn("bot Spotify PCM provider unavailable", "installation_id", installation.ID.String())
-										}
-									}
-									if spotifyPCM == nil {
-										cause := spotify.ErrInvalidConfig
-										if spotifyConfigurationKnown && spotifyClientID == "" {
-											cause = spotify.ErrProviderUnavailable
-										}
-										spotifyPCM = unavailableProviderPCM{cause: cause}
-									}
 									starterFor := func(channel id.ID) (session.QueueStarter, error) {
 										joinCallGroup := func(joinCtx context.Context) error {
 											communityRow, communityErr := result.Session.Community(joinCtx, installation.CommunityID)
@@ -733,7 +642,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 											}
 											return ensureMusicCallGroupJoined(joinCtx, result.Session, nativeClient, installation.ID, installation.CommunityID, channel, communityRow.PolicyVersion)
 										}
-										starter, starterErr := newInstallationMusicQueueStarter(cfg.InstanceID, installation.ID, installation.CommunityID, channel, result.Session, nativeClient, spotifyPCM, nil, spotifyLeases, joinCallGroup)
+										starter, starterErr := newInstallationMusicQueueStarter(cfg.InstanceID, installation.ID, installation.CommunityID, channel, result.Session, nativeClient, nil, joinCallGroup)
 										if starterErr == nil {
 											starter.IdleLeaveAfter = func() time.Duration { return musicRegistry.IdleLeave(installation.ID) }
 											device := id.ID{}
@@ -765,7 +674,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 									ensureErr = errors.Join(ensureErr, channelsErr)
 								} else {
 									var musicErr error
-									musicInteractions, musicErr = newRuntimeMusicInteractions(installation.ID, installation.CommunityID, result.Installation.Capabilities, runtime, result.Session, musicRegistry, logger, spotifyCatalogResolver)
+									musicInteractions, musicErr = newRuntimeMusicInteractions(installation.ID, installation.CommunityID, result.Installation.Capabilities, runtime, result.Session, musicRegistry, logger)
 									if musicErr != nil {
 										logger.Warn("bot music interaction handlers unavailable", "installation_id", installation.ID.String(), "error", musicErr.Error())
 									}
@@ -915,9 +824,6 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 							} else {
 								musicQueueCount = musicRegistry.QueueCount(installation.ID, installation.CommunityID)
 								providers := "youtube"
-								if spotifyPCM != nil {
-									providers += ",spotify"
-								}
 								logger.Info("bot music queue metadata retained paused", "installation_id", installation.ID.String(), "voice_channels", musicQueueCount, "configured_pcm_providers", providers)
 							}
 							scheduleErr = errors.Join(scheduleErr, gateways.maintainOne(ctx, installation.ID, maintained))
@@ -933,19 +839,6 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 			}
 		}
 		cleanupUnreadyInstallation(installation.ID, membershipReady, ensureErr, musicRegistry, autoModerationState)
-		if membershipReady && spotifyClientID != "" {
-			reconcileStage = "spotify_link"
-			credentials, linkErr := service.NewSpotifyCredentials(runtime, nativeClient, spotifyClientID, spotifyRedirectURL, spotifyGuard)
-			if linkErr == nil {
-				linkErr = credentials.ValidateAccount(ctx)
-			}
-			if linkErr == nil {
-				linkErr = credentials.Link(ctx)
-			}
-			if linkErr != nil && !errors.Is(linkErr, service.ErrSpotifyNoPending) {
-				logger.Warn("bot Spotify account link needs attention", "installation_id", installation.ID.String(), "error", linkErr.Error())
-			}
-		}
 		var closeErr error
 		if !retainedNative && !runtimeOwnedNative {
 			closeErr = nativeClient.Close()

@@ -1,3 +1,4 @@
+import { themes } from '@dilla/design-tokens';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -107,7 +108,7 @@ describe('CreateChannel', () => {
     expect(p.onClose).toHaveBeenCalledTimes(1);
   });
 
-  it.each(['signal', 'light', 'high-contrast'])('has no serious axe violations in %s, text and voice', async theme => {
+  it.each(Object.keys(themes))('has no serious axe violations in %s, text and voice', async theme => {
     document.documentElement.dataset.theme = theme;
     for (const over of [{}, { kind: 'announcement' as const, kinds: ['text', 'voice', 'announcement'] as const }, { kind: 'voice' as const, error: 'Give the channel a name.' }]) {
       const { container, unmount } = render(<div className="d-root"><CreateChannel {...props(over)} /></div>);

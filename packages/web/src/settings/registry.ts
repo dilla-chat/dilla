@@ -1,4 +1,4 @@
-import type { IconName } from '@dilla/ui';
+import type { IconName } from '@dilla/ui/icons';
 import { t, type StringKey } from '../strings/index.ts';
 
 export type SettingsSection = 'profile' | 'signin' | 'devices' | 'appearance' | 'notifications' | 'voice' | 'keyboard' | 'privacy' | 'diagnostics';
@@ -82,8 +82,8 @@ export const SETTINGS_REGISTRY: readonly SettingsEntry[] = [
   server('bot', 'workspace.group.automation', can('manageCommunity'), ['installation', 'enable', 'disable', 'display name', 'capabilities']),
   server('welcome', 'workspace.group.automation', can('manageCommunity'), ['greeting', 'destination', 'preview', 'join message']),
   server('joinRoles', 'workspace.group.automation', a => can('manageCommunity')(a) && can('manageRoles')(a), ['automatic', 'new member', 'join role']),
-  server('music', 'workspace.group.automation', can('manageCommunity'), ['dj roles', 'spotify', 'youtube', 'provider', 'link', 'client id', 'playback'], [
-    anchor('music-providers', 'workspace.providers.title', 'spotify', 'youtube', 'linked', 'playback'),
+  server('music', 'workspace.group.automation', can('manageCommunity'), ['dj roles', 'youtube', 'provider', 'playback'], [
+    anchor('music-providers', 'workspace.providers.title', 'youtube', 'playback'),
   ]),
   server('automoderation', 'workspace.group.moderation', can('manageCommunity'), ['automatic', 'rules', 'actions', 'exemptions', 'filter']),
   server('moderationLog', 'workspace.group.moderation', can('viewAuditLog'), ['audit', 'cases', 'evidence', 'manual'], [], true),

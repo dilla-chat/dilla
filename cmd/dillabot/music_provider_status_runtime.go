@@ -5,7 +5,6 @@ package main
 import (
 	"context"
 	"os/exec"
-	"strings"
 	"time"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
@@ -13,7 +12,7 @@ import (
 	"github.com/jonasthim/dilla/internal/id"
 )
 
-func newMusicProviderStatusInteractions(installation, community id.ID, authority serviceMusicProviderAuthority, credentials *service.SpotifyCredentials, cfg config) service.MusicProviderStatusInteractions {
+func newMusicProviderStatusInteractions(installation, community id.ID, authority serviceMusicProviderAuthority) service.MusicProviderStatusInteractions {
 	return service.MusicProviderStatusInteractions{
 		Authority:   authority,
 		CommunityID: community,
@@ -21,19 +20,8 @@ func newMusicProviderStatusInteractions(installation, community id.ID, authority
 			snapshot := service.MusicProviderStatusSnapshot{
 				InstallationID:        installation,
 				ObservedAt:            unixSecondsOrZero(time.Now()),
-				SpotifyAccount:        service.ProviderAccountUnknown,
-				SpotifyAccountReason:  service.ProviderReasonUnavailable,
-				SpotifyPlayback:       service.ProviderSetupUnknown,
-				SpotifyPlaybackReason: service.ProviderReasonUnavailable,
 				YouTubePlayback:       service.ProviderSetupUnknown,
 				YouTubePlaybackReason: service.ProviderReasonUnavailable,
-			}
-			if credentials != nil {
-				snapshot.SpotifyAccount, snapshot.SpotifyAccountReason = credentials.InspectStatus(ctx)
-			}
-			snapshot.SpotifyPlayback, snapshot.SpotifyPlaybackReason = spotifyPlaybackSetup(cfg)
-			if credentials == nil && snapshot.SpotifyPlayback == service.ProviderConfigured {
-				snapshot.SpotifyPlayback, snapshot.SpotifyPlaybackReason = service.ProviderSetupUnknown, service.ProviderReasonUnavailable
 			}
 			snapshot.YouTubePlayback, snapshot.YouTubePlaybackReason = youtubePlaybackSetup()
 			return snapshot
@@ -43,22 +31,6 @@ func newMusicProviderStatusInteractions(installation, community id.ID, authority
 
 type serviceMusicProviderAuthority interface {
 	BotActorAuthority(context.Context, id.ID, id.ID) (client.ActorAuthority, bool, error)
-}
-
-func spotifyPlaybackSetup(cfg config) (service.ProviderSetup, service.ProviderReason) {
-	if cfg.SpotifyHelperExecutable == "" {
-		return service.ProviderMissingRequirements, service.ProviderReasonHelperMissing
-	}
-	if validateHelperExecutable(cfg.SpotifyHelperExecutable) != nil {
-		return service.ProviderMissingRequirements, service.ProviderReasonHelperInvalid
-	}
-	if validatePrivateStateDir(cfg.StateDir) != nil {
-		return service.ProviderMissingRequirements, service.ProviderReasonStateDirectoryUnavailable
-	}
-	if strings.TrimSpace(cfg.SpotifyClientID) == "" || strings.ContainsAny(cfg.SpotifyClientID, "\r\n\x00") || !strings.HasPrefix(cfg.SpotifyRedirectURL, "https://") {
-		return service.ProviderMissingRequirements, service.ProviderReasonDependenciesMissing
-	}
-	return service.ProviderConfigured, service.ProviderReasonNone
 }
 
 func youtubePlaybackSetup() (service.ProviderSetup, service.ProviderReason) {

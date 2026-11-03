@@ -1,5 +1,5 @@
 name: release
-# A GitHub release for a v* tag: dillad, dillabot, its native helper and the Spotify helper for linux/amd64 and linux/arm64,
+# A GitHub release for a v* tag: dillad, dillabot, its native helper for linux/amd64 and linux/arm64,
 # the real web client embedded, the wasm32-wasip1 core, deploy/install.sh, deploy/install-bot.sh
 # and SHA256SUMS over all assets. The two installers handle dillad and dillabot independently. No container image is built or pushed here.
 #
@@ -76,25 +76,9 @@ jobs:
       AR_wasm32_unknown_unknown: /usr/bin/llvm-ar-23
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: clang 23 for the wasm C build
-        run: |
-          test "$(lsb_release -cs)" = noble
-          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o "$RUNNER_TEMP/llvm-snapshot.asc"
-          gpg --dearmor -o "$RUNNER_TEMP/apt-llvm.gpg" "$RUNNER_TEMP/llvm-snapshot.asc"
-          primaries=$(gpg --show-keys --with-colons "$RUNNER_TEMP/apt-llvm.gpg" | awk -F: '$1 == "pub" { want = 1; next } $1 == "fpr" && want { print $10; want = 0 }')
-          test "$primaries" = 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
-          sudo install -m 0644 "$RUNNER_TEMP/apt-llvm.gpg" /usr/share/keyrings/apt-llvm.gpg
-          cmp "$RUNNER_TEMP/apt-llvm.gpg" /usr/share/keyrings/apt-llvm.gpg
-          echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list
-          sudo apt-get update
-          apt-cache policy clang-23 llvm-23
-          v=$(apt-cache policy clang-23 | awk '/Candidate:/ { print $2 }')
-          case "$v" in 1:23.1.*~++*) ;; *) echo "expected clang 23.1.x candidate, got $v"; exit 1 ;; esac
-          sudo apt-get install -y --no-install-recommends "clang-23=$v" "llvm-23=$v" "libllvm23=$v" "libclang-cpp23=$v" "libclang1-23=$v" "libclang-common-23-dev=$v" "llvm-23-linker-tools=$v" "llvm-23-runtime=$v"
-          for p in clang-23 llvm-23 libllvm23 libclang-cpp23 libclang1-23 libclang-common-23-dev llvm-23-linker-tools llvm-23-runtime; do test "$(dpkg-query -W -f='${Version}' "$p")" = "$v"; done
-          /usr/bin/clang-23 --version | grep -F "clang version 23.1."
-          /usr/bin/clang-23 --version
-          /usr/bin/llvm-ar-23 --version
+      - id: clang23
+        name: clang 23 for the wasm C build
+        run: bash scripts/ci-llvm.sh install
       - run: rustup show active-toolchain
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
@@ -134,30 +118,6 @@ jobs:
         with:
           name: dilla-core-wasi
           path: target/wasm32-wasip1/release/dilla_core_wasi.wasm
-          if-no-files-found: error
-
-  spotify-helper:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            runner: ubuntu-latest
-          - arch: arm64
-            runner: ubuntu-24.04-arm
-    runs-on: ${{ matrix.runner }}
-    needs: [tag]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - run: cargo fmt --manifest-path crates/dilla-spotify-helper/Cargo.toml -- --check
-      - run: cargo clippy --manifest-path crates/dilla-spotify-helper/Cargo.toml --all-targets --locked -- -D warnings
-      - run: cargo test --manifest-path crates/dilla-spotify-helper/Cargo.toml --locked
-      - run: cargo build --manifest-path crates/dilla-spotify-helper/Cargo.toml --release --locked
-      - run: mkdir -p dist && install -m 0755 crates/dilla-spotify-helper/target/release/dilla-spotify-helper dist/dilla-spotify-helper-linux-${{ matrix.arch }}
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: dilla-spotify-helper-${{ matrix.arch }}
-          path: dist/dilla-spotify-helper-linux-${{ matrix.arch }}
           if-no-files-found: error
 
   bot-release:
@@ -256,7 +216,7 @@ jobs:
 
   release:
     runs-on: ubuntu-latest
-    needs: [tag, go-release, rust-wasi, spotify-helper, bot-release]
+    needs: [tag, go-release, rust-wasi, bot-release]
     permissions:
       contents: write
     steps:
@@ -271,12 +231,6 @@ jobs:
         with:
           name: dilla-core-wasi
           path: release
-      - name: Fetch the architecture-matched Spotify helpers
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          pattern: dilla-spotify-helper-*
-          path: release
-          merge-multiple: true
       - name: Fetch the architecture-matched Bot services and native helpers
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -294,9 +248,9 @@ jobs:
           sed -i "s/^DILLA_BOT_RELEASE_TAG=\"\"$/DILLA_BOT_RELEASE_TAG=\"$TAG\"/" release/install-bot.sh
           test "$(grep -c "^DILLA_BOT_RELEASE_TAG=\"$TAG\"$" release/install-bot.sh)" -eq 1
           cd release
-          for f in dillad-linux-amd64 dillad-linux-arm64 dillabot-linux-amd64 dillabot-linux-arm64 dilla-bot-core-linux-amd64 dilla-bot-core-linux-arm64 dilla-spotify-helper-linux-amd64 dilla-spotify-helper-linux-arm64 dilla_core_wasi.wasm install.sh install-bot.sh; do test -s "$f"; done
-          test "$(ls | wc -l)" -eq 11
-          sha256sum dillad-linux-amd64 dillad-linux-arm64 dillabot-linux-amd64 dillabot-linux-arm64 dilla-bot-core-linux-amd64 dilla-bot-core-linux-arm64 dilla-spotify-helper-linux-amd64 dilla-spotify-helper-linux-arm64 dilla_core_wasi.wasm install.sh install-bot.sh > SHA256SUMS
+          for f in dillad-linux-amd64 dillad-linux-arm64 dillabot-linux-amd64 dillabot-linux-arm64 dilla-bot-core-linux-amd64 dilla-bot-core-linux-arm64 dilla_core_wasi.wasm install.sh install-bot.sh; do test -s "$f"; done
+          test "$(ls | wc -l)" -eq 9
+          sha256sum dillad-linux-amd64 dillad-linux-arm64 dillabot-linux-amd64 dillabot-linux-arm64 dilla-bot-core-linux-amd64 dilla-bot-core-linux-arm64 dilla_core_wasi.wasm install.sh install-bot.sh > SHA256SUMS
           sha256sum -c --strict SHA256SUMS
           cat SHA256SUMS
       - name: Create the GitHub release
@@ -311,4 +265,4 @@ jobs:
           notes=(--generate-notes)
           if [ -f "docs/deploy/releases/$TAG.md" ]; then notes=(--notes-file "docs/deploy/releases/$TAG.md"); fi
           gh release create "$TAG" --verify-tag --title "$TAG" "${notes[@]}" $flags \
-            release/dillad-linux-amd64 release/dillad-linux-arm64 release/dillabot-linux-amd64 release/dillabot-linux-arm64 release/dilla-bot-core-linux-amd64 release/dilla-bot-core-linux-arm64 release/dilla-spotify-helper-linux-amd64 release/dilla-spotify-helper-linux-arm64 release/dilla_core_wasi.wasm release/install.sh release/install-bot.sh release/SHA256SUMS
+            release/dillad-linux-amd64 release/dillad-linux-arm64 release/dillabot-linux-amd64 release/dillabot-linux-arm64 release/dilla-bot-core-linux-amd64 release/dilla-bot-core-linux-arm64 release/dilla_core_wasi.wasm release/install.sh release/install-bot.sh release/SHA256SUMS

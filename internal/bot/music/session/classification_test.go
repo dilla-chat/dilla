@@ -3,13 +3,11 @@ package session
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net"
 	"testing"
 
 	"github.com/jonasthim/dilla/internal/bot/music"
 	"github.com/jonasthim/dilla/internal/bot/music/livekit"
-	"github.com/jonasthim/dilla/internal/bot/music/spotify"
 	"github.com/jonasthim/dilla/internal/bot/music/youtube"
 )
 
@@ -23,17 +21,12 @@ func TestProviderFailuresDiscardOnlyPermanentCauses(t *testing.T) {
 		{"invalid metadata", youtube.ErrMetadataInvalid, true},
 		{"sandbox", youtube.ErrSandboxUnavailable, false},
 		{"runner", youtube.ErrRunnerRequired, false},
-		{"credential load", spotify.ErrCredentialUnavailable, false},
-		{"production helper playback", fmt.Errorf("%w: playback/provider_unavailable", spotify.ErrPlaybackFailed), true},
-		{"helper invalid request", fmt.Errorf("%w: playback/invalid_request", spotify.ErrPlaybackFailed), false},
-		{"helper credential", fmt.Errorf("%w: authorization/credential_unavailable", spotify.ErrPlaybackFailed), false},
-		{"helper unclassified", spotify.ErrPlaybackFailed, false},
 		{"DNS", &net.DNSError{Err: "temporary", Name: "private.invalid"}, false},
 		{"canceled", context.Canceled, false}, {"deadline", context.DeadlineExceeded, false},
-		{"lease busy", music.ErrSpotifyBusy, false}, {"room", livekit.ErrRoomConnection, false},
+		{"room", livekit.ErrRoomConnection, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			for _, stage := range []string{"provider_check", "provider_pcm", "spotify_lease"} {
+			for _, stage := range []string{"provider_check", "provider_pcm"} {
 				err := providerStage(context.Background(), stage, tc.cause)
 				var failure *music.StartError
 				if !errors.As(err, &failure) || failure.ProviderFailure() != tc.permanent {

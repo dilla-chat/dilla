@@ -77,7 +77,7 @@ func NormalizeInput(value string) (kind string, canonical string, err error) {
 	lower := strings.ToLower(value)
 	if strings.HasPrefix(lower, "ytsearch") || strings.HasPrefix(lower, "youtube:") ||
 		strings.HasPrefix(lower, "file:") || strings.HasPrefix(lower, "ftp:") ||
-		(schemePattern.MatchString(value) && !strings.HasPrefix(lower, "spotify: ")) ||
+		schemePattern.MatchString(value) ||
 		strings.Contains(lower, "youtube.com/") || strings.Contains(lower, "youtu.be/") ||
 		(looksLikeHost(value) && !displayHostSearch(lower)) {
 		return "", "", ErrInvalidInput
@@ -452,7 +452,7 @@ func parseDuration(raw json.RawMessage, allowMissing bool) (int64, error) {
 }
 
 func displayHostSearch(value string) bool {
-	for _, host := range []string{"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be", "open.spotify.com", "www.spotify.com"} {
+	for _, host := range []string{"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"} {
 		if strings.HasPrefix(value, host+" ") {
 			return true
 		}

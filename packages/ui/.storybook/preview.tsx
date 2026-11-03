@@ -1,3 +1,4 @@
+import { themes } from '@dilla/design-tokens';
 import type { Preview } from '@storybook/react-vite';
 import '../src/styles/base.css';
 import { CONVERSATION_CONTRAST_NOT } from '../scripts/prototype-contrast.ts';
@@ -14,7 +15,7 @@ const contrastSelector = `*${CONVERSATION_CONTRAST_NOT}`;
 
 const preview: Preview = {
   globalTypes: {
-    theme: { description: 'Theme', toolbar: { title: 'Theme', items: ['signal', 'light', 'high-contrast'], dynamicTitle: true } },
+    theme: { description: 'Theme', toolbar: { title: 'Theme', items: Object.keys(themes), dynamicTitle: true } },
     density: { description: 'Density', toolbar: { title: 'Density', items: ['compact', 'regular', 'cozy'], dynamicTitle: true } },
     motion: { description: 'Motion', toolbar: { title: 'Motion', items: ['full', 'reduced'], dynamicTitle: true } },
   },

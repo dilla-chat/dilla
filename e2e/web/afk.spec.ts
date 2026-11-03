@@ -1,14 +1,15 @@
+import { openInviteInClient } from './support/invite';
 // web3.9 E-AFK: the built-in AFK channel, from an empty instance and from a web3.8 one. This suite starts a test host of its
 // own with its in-process LiveKit, and runs a server through the shipping clients: Ada the owner and Björn a member, each in
-// a desktop browser of their own, and Björn again in a phone-emulated browser (a second device of his). The instance's API
+// a desktop client of their own, and, in the browser lane, Björn again in a phone-emulated browser (a second device of his). The instance's API
 // is called by the spec only to read (ids, the AFK snapshot) and for the refusals the UI never offers (a delete, a topic
 // patch and a permission overwrite of the AFK channel, each with its control on an ordinary channel); the instance clock is
 // moved through the control listener, and the upgrade case points the community at an administrator's pick as web3.8
 // stored it (POST /debug/afk/legacy, the only legacy hook the test host has) before the host restarts on the same data.
 // That community already holds a built-in AFK (Idle) when the pointer moves; a database with no built-in at all, a missing
 // row and a NULL pointer are SRV-AFK's TestEnsureAFKChannels.
-// An idle move relies on noise suppression silencing the fake microphone's steady tone: speech counts as activity
-// (Shell.tsx), so noise suppression stays on until step 9.
+// Speech counts as activity (Shell.tsx). The desktop idle case uses the real push-to-talk control with no key down;
+// the browser baseline keeps its noise-suppressed fake tone. Step 5 restores open-microphone mode before its rejoin.
 //
 // What it proves (Jonas's decisions, wave plan R1-R5, brief R33-R35; AW5/AW6, R-AW1-R-AW7: AFK means disconnected):
 // - every server has exactly one built-in "AFK" voice channel, listed as the very last row of the list (below every category, MP6);
@@ -29,7 +30,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  expect, type BrowserContext, type ConsoleMessage, type Locator, type Page, type PlaywrightWorkerArgs, type PlaywrightWorkerOptions, type Request,
+  expect, type BrowserContext, type Locator, type Page, type PlaywrightWorkerArgs, type PlaywrightWorkerOptions, type Request,
 } from '@playwright/test';
 import {
   ABORTED_FONT_LINE, ABORTED_JUGGLER_LINE, BY_DESIGN_RESOURCE_LINE, FIREFOX_FAVICON_LINE, TEST_TIMEOUT, WAIT, addServerVia, channelRow, channelsNav, completeSignUp, copy,
@@ -38,8 +39,11 @@ import {
 } from './support/app';
 import { removeHostData, startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { PROFILE_ROOT } from './support/persistent';
+import { desktopApplication, desktopE2E, launchDesktopContext, suspendDesktopContext } from './support/electron.ts';
 import { FIREFOX_MEDIA_PREFS, chromiumMediaArgs, writeFixtures } from '../media/support/fixtures';
-import { connected, dock, micLive, noiseOff, phaseOf, sendsAudio, stage, voiceRow, watchAudio } from '../voice/support/voice';
+import { closeSettings, connected, dock, micLive, noiseOff, openVoiceSettings, phaseOf, sendsAudio, stage, voiceRow, watchAudio } from '../voice/support/voice';
+import { markSignalLifecycle, signalLifecycleDiagnostics } from '../voice/support/signal-lifecycle.ts';
+import { observeSignalConsole, signalCloseGuard } from '../voice/support/signal-close-guard.ts';
 import { arr, decode, encode, type CborInput, type CborValue } from '../../packages/client-core/src/cbor/index';
 
 /** Its own ports (web3.9 reservation): the host, its control listener, and its LiveKit's signalling and ICE ports. */
@@ -61,12 +65,13 @@ let afkId = '';
 let generalVoiceId = '';
 let bjornAccount: Account | null = null;
 
-/** One person's browser: a persistent context of its own (the project's engine, with fake media), its page, the bearer the
+/** One person's client: a persistent context of its own (Electron in the desktop lane, otherwise the project's browser), its page, the bearer the
  *  page's worker last sent (for the spec's reads), and what it printed that the guard refuses. */
-interface Person { name: string; context: BrowserContext; page: Page; bearer: string; errors: string[]; afkPosts: number; awayPuts: number }
+interface Person { name: string; diagnosticActor: 'ada' | 'bjorn' | 'phone'; context: BrowserContext; page: Page; bearer: string; errors: string[]; afkPosts: number; awayPuts: number; signal: ReturnType<typeof signalCloseGuard> }
 let ada: Person | null = null;
 let bjorn: Person | null = null;
 let phone: Person | null = null;
+let signalDiagnostics: ReturnType<typeof signalLifecycleDiagnostics> | null = null;
 /** While the host restarts, a browser's refused connections are expected; nothing else is. */
 let restarting = false;
 /** While a move's cut is expected (steps 4, 6 and 8), LiveKit's lines about it are; nowhere else. */
@@ -90,9 +95,10 @@ function person(p: Person | null, who: string): Person {
   return p;
 }
 
-/** Opens a persistent browser of the project's engine with fake media: the microphone is a steady 1 kHz tone. */
+/** Opens the shipping desktop or the browser baseline with fake media: the microphone is a steady 1 kHz tone. */
 type Launch = Pick<PlaywrightWorkerArgs, 'playwright'> & Pick<PlaywrightWorkerOptions, 'browserName' | 'headless' | 'channel'>;
 async function openPerson(name: string, f: Launch, projectName: string, workerIndex: number, device: 'desktop' | 'phone'): Promise<Person> {
+  if (desktopE2E() && device === 'phone') throw new Error('The desktop AFK lane cannot emulate a mobile client');
   const dir = `${PROFILE_ROOT}/${projectName}-${String(workerIndex)}-afk-${name.toLowerCase()}`;
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true });
@@ -101,11 +107,36 @@ async function openPerson(name: string, f: Launch, projectName: string, workerIn
   const shape = device === 'desktop' ? { viewport: DESKTOP }
     : firefox ? { viewport: { width: 390, height: 844 }, hasTouch: true }
       : { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 3 };
-  const context = await f.playwright[f.browserName].launchPersistentContext(dir, {
+  const context = desktopE2E() ? await launchDesktopContext(dir, {
+    baseURL: ORIGIN, viewport: DESKTOP, permissions: ['microphone'], launchOptions: { args: chromiumMediaArgs(fixtures) },
+  }) : await f.playwright[f.browserName].launchPersistentContext(dir, {
     headless: f.headless, channel: f.channel, baseURL: ORIGIN, ...shape,
     ...(firefox ? { firefoxUserPrefs: FIREFOX_MEDIA_PREFS } : { args: chromiumMediaArgs(fixtures), permissions: ['microphone'] }),
   });
-  const p: Person = { name, context, page: context.pages()[0] ?? (await context.newPage()), bearer: '', errors: [], afkPosts: 0, awayPuts: 0 };
+  return observePerson(name, context, firefox, undefined, device === 'phone' ? 'phone' : name === OWNER ? 'ada' : 'bjorn');
+}
+
+/** Attach the same evidence collectors after an actual desktop process restart as after its first launch. */
+async function observePerson(name: string, context: BrowserContext, firefox = false, prior?: Person, actor: Person['diagnosticActor'] = prior?.diagnosticActor ?? 'bjorn'): Promise<Person> {
+  const p: Person = { name, diagnosticActor: actor, context, page: context.pages()[0] ?? (await context.newPage()),
+    bearer: prior?.bearer ?? '', errors: prior?.errors ?? [], afkPosts: prior?.afkPosts ?? 0, awayPuts: prior?.awayPuts ?? 0, signal: signalCloseGuard() };
+  if (desktopE2E()) {
+    // A secondary person must exercise the shipping native transport and sandbox too. A browser launched directly
+    // here used to make the desktop AFK lane pass through an unrelated, unused Electron fixture.
+    const info = await p.page.evaluate(async () => {
+      const bridge = (window as unknown as { dillaDesktop?: { info(): Promise<{ platform?: string; instance: string }> } }).dillaDesktop;
+      if (!bridge) throw new Error('The AFK person has no native desktop bridge');
+      return bridge.info();
+    });
+    expect(info, `${name} runs in the native desktop client`).toMatchObject({ platform: process.platform, instance: `${ORIGIN}/` });
+    const win = await desktopApplication(context).browserWindow(p.page);
+    try {
+      expect(await win.evaluate(win => {
+        const preferences = win.webContents.getLastWebPreferences();
+        return { sandbox: preferences.sandbox, contextIsolation: preferences.contextIsolation, nodeIntegration: preferences.nodeIntegration };
+      }), `${name}'s shipping renderer sandbox`).toEqual({ sandbox: true, contextIsolation: true, nodeIntegration: false });
+    } finally { await win.dispose(); }
+  }
   context.on('request', (r: Request) => {
     if (!r.url().startsWith(`${ORIGIN}/v1/`)) return;
     // AW5 (R-AW1): any call start or token mint this client asks for in the AFK channel, and each away mark it sends.
@@ -113,9 +144,12 @@ async function openPerson(name: string, f: Launch, projectName: string, workerIn
     if (r.method() === 'PUT' && r.url() === `${ORIGIN}/v1/communities/${communityId}/afk/away`) p.awayPuts += 1;
     void r.allHeaders().then((h) => { const a = h.authorization; if (a?.startsWith('Bearer ') === true) p.bearer = a; }).catch(() => undefined);
   });
-  context.on('console', (m: ConsoleMessage) => {
-    if (m.type() !== 'error') return;
-    const text = m.text();
+  if (desktopE2E()) {
+    // Ordinary native request reports omit headers. Observe this existing authenticated read through the fixture's
+    // pass-through route, so API checks keep using the person's real session without changing any response.
+    await context.route(`${ORIGIN}/v1/communities`, route => route.continue());
+  }
+  observeSignalConsole(context, p.signal, text => {
     if (!firefox && BY_DESIGN_RESOURCE_LINE.test(text)) return;
     if (firefox && (ABORTED_FONT_LINE.test(text) || ABORTED_JUGGLER_LINE.test(text) || FIREFOX_FAVICON_LINE.test(text))) return;
     if (restarting && RESTART_LINE.test(text)) return;
@@ -123,6 +157,8 @@ async function openPerson(name: string, f: Launch, projectName: string, workerIn
     p.errors.push(`${name}: ${text}`);
   });
   context.on('weberror', (e) => { p.errors.push(`${name}: ${String(e.error())}`); });
+  // A resumed process has a new page: retain its native signal evidence in the current case too.
+  if (signalDiagnostics) await signalDiagnostics.watch({ name: p.diagnosticActor, page: p.page });
   // Every live region's text as it changes: what a screen reader would be given to say, in order.
   await context.addInitScript(() => {
     const w = window as unknown as { __said: string[] };
@@ -143,6 +179,15 @@ async function openPerson(name: string, f: Launch, projectName: string, workerIn
 async function closePerson(p: Person | null): Promise<void> {
   if (p === null) return;
   await p.context.close().catch(() => undefined);
+}
+
+/** An explicit person action leaves this call. The shared guard still requires this same client's SDK disconnect;
+ *  active transport failures and a subsequent connection keep their normal error checks. */
+async function leaveFrom(p: Person, control: Locator): Promise<void> {
+  await markSignalLifecycle(p.page, 'before-leave');
+  p.signal.beginLeave();
+  await control.click();
+  await markSignalLifecycle(p.page, 'after-leave');
 }
 
 /** What this page's live regions said since `resetSaid`. */
@@ -185,9 +230,9 @@ async function write(p: Person, method: 'PATCH' | 'PUT' | 'DELETE', path: string
 }
 /** The next activity report of this person's device that the instance accepts (204): arm it before the action that sends it. */
 function activityAccepted(p: Person): Promise<unknown> {
-  return p.context.waitForEvent('requestfinished', { timeout: WAIT, predicate: (r) => r.method() === 'POST'
-    && r.url() === `${ORIGIN}/v1/communities/${communityId}/afk/activity` }).then(async (r) => {
-    expect((await r.response())?.status(), `${p.name}'s activity report`).toBe(204);
+  return p.context.waitForEvent('response', { timeout: WAIT, predicate: (r) => r.request().method() === 'POST'
+    && r.url() === `${ORIGIN}/v1/communities/${communityId}/afk/activity` }).then((r) => {
+    expect(r.status(), `${p.name}'s activity report`).toBe(204);
   });
 }
 /** Moves the instance clock forward (POST /debug/clock); the AFK sweep runs on its own 5 s tick. */
@@ -206,6 +251,16 @@ const dialogOf = (page: Page, key: string, vars?: Record<string, string>) => pag
 const navItem = (dialog: Locator, key: string) =>
   dialog.getByRole('navigation', { name: copy('admin.nav'), exact: true }).getByRole('button', { name: copy(key), exact: true });
 const panelMute = (p: Person) => p.page.locator('.d-user-panel').getByRole('button', { name: copy('voice.mute'), exact: true });
+
+/** Genuine idle input without depending on how a platform's noise processor classifies the fixture's tone. */
+async function setInputMode(p: Person, mode: 'ptt' | 'vad'): Promise<void> {
+  const settings = await openVoiceSettings(p.page);
+  const choice = settings.getByRole('radiogroup', { name: copy('settings.voice.mode'), exact: true })
+    .getByRole('radio', { name: copy(`settings.voice.${mode}`), exact: true });
+  await choice.click();
+  await expect(choice).toHaveAttribute('aria-checked', 'true', { timeout: WAIT });
+  await closeSettings(p.page);
+}
 
 /** Opens server settings and its `section` tab; returns the dialog. */
 async function serverSettings(page: Page, section: 'admin.nav.overview' | 'admin.nav.channels' | 'roles.tab'): Promise<Locator> {
@@ -276,8 +331,25 @@ test.afterAll(async () => {
   removeHostData(HOST.port);
 });
 // eslint-disable-next-line no-empty-pattern
+test.beforeEach(async ({}, testInfo) => {
+  signalDiagnostics = signalLifecycleDiagnostics(testInfo, 'afk');
+  for (const p of [ada, bjorn, phone]) {
+    if (p === null || p.page.isClosed()) continue;
+    await signalDiagnostics.watch({ name: p.diagnosticActor, page: p.page });
+    await markSignalLifecycle(p.page, 'case-start');
+  }
+});
+// eslint-disable-next-line no-empty-pattern
 test.afterEach(async ({}, testInfo) => {
   cutting = false;
+  // Save before the error guard: a console-only failure otherwise misses the failure attachment branch below.
+  // Each allowlisted event is also printed immediately, surviving fast cancellation of the large trace upload.
+  try {
+    for (const p of [ada, bjorn, phone]) if (p !== null) await markSignalLifecycle(p.page, 'body-complete');
+  } finally {
+    await signalDiagnostics?.save();
+    signalDiagnostics = null;
+  }
   // The runner traces only its own context: on a failure the people's pages are attached as they stand.
   if (testInfo.status !== testInfo.expectedStatus) {
     for (const p of [ada, bjorn, phone]) {
@@ -318,8 +390,7 @@ test('1. a new server has one AFK voice channel, listed last, for the owner and 
   expect((await afkSnapshot(a)).channel, 'the AFK snapshot names it').toBe(afkId);
 
   const link = await makeInviteLink(a.page, SERVER);
-  await b.page.goto(new URL(link).pathname);
-  await b.page.getByRole('link', { name: 'Open dilla in this browser', exact: true }).click();
+  await openInviteInClient(b.page, link);
   bjornAccount = await completeSignUp(b.page, newAccount(FRIEND, h.control), instance);
   await railItem(b.page, SERVER).click();
   await expectAfkLast(b.page, 'AFK');
@@ -391,13 +462,13 @@ test('3. no delete, no permissions and no reorder for AFK in server settings, th
   await closeServerSettings(a.page);
 
   // The instance refuses the delete with Ada's own session.
-  const refused = await a.page.request.delete(`/v1/channels/${afkId}`, { headers: { authorization: a.bearer, accept: 'application/cbor' } });
+  const refused = await a.page.request.delete(`${ORIGIN}/v1/channels/${afkId}`, { headers: { authorization: a.bearer, accept: 'application/cbor' } });
   expect(refused.status(), 'DELETE of the AFK channel').toBe(403);
   expect(arr(decode(new Uint8Array(await refused.body())))[0]).toBe('E_FORBIDDEN');
   // Its control, one input apart: an ordinary voice channel she makes deletes.
   await makeVoice(a.page, 'spare');
   const spare = (await channelsOf(a)).find((c) => c.name === 'spare');
-  const deleted = await a.page.request.delete(`/v1/channels/${spare?.id ?? ''}`, { headers: { authorization: a.bearer, accept: 'application/cbor' } });
+  const deleted = await a.page.request.delete(`${ORIGIN}/v1/channels/${spare?.id ?? ''}`, { headers: { authorization: a.bearer, accept: 'application/cbor' } });
   expect(deleted.ok(), `DELETE of an ordinary voice channel (${String(deleted.status())})`).toBe(true);
   await expect(voiceRow(a.page, 'spare')).toHaveCount(0, { timeout: WAIT });
   expect((await channelsOf(a)).filter((c) => c.id === afkId), 'AFK is still there').toHaveLength(1);
@@ -469,6 +540,7 @@ test('4. one timeout row: an idle desktop in general is cut by itself, told it w
   await expectAccessible(a.page, 'server settings with the inactive timeout');
   await closeServerSettings(a.page);
   await expect.poll(async () => (await afkSnapshot(a)).timeout, { timeout: WAIT }).toBe(60);
+  if (desktopE2E()) await setInputMode(b, 'ptt');
 
   // Ada joins voice general and stays active; Björn joins it with one click and does nothing. Each device's first activity
   // report (sent when its session attaches) has landed before the clock moves (M3).
@@ -480,6 +552,10 @@ test('4. one timeout row: an idle desktop in general is cut by itself, told it w
   await voiceRow(b.page, 'general').click();
   await connected(b.page);
   await bjornFirst;
+  if (desktopE2E()) {
+    await expect(panelMute(b)).toHaveAttribute('aria-pressed', 'false');
+    await expect(stage(b.page).locator('.d-call-tile[data-own]')).toHaveAttribute('data-speaking', 'false');
+  }
   await expect(dock(b.page)).toContainText('general');
   await expect(roomPeople(a.page, 'general').filter({ hasText: FRIEND })).toBeVisible({ timeout: WAIT });
   await resetSaid(a);
@@ -488,8 +564,9 @@ test('4. one timeout row: an idle desktop in general is cut by itself, told it w
   cutting = true;
   // Half the timeout, then Ada's own input (an activity report is sent at most every 5 s), then past it for Björn only.
   await advanceClock(30);
-  await a.page.waitForTimeout(5_500);
+  // Microphone activity during the wait can reset the debounce and suppress the subsequent pointer report.
   const adaActive = activityAccepted(a);
+  await a.page.waitForTimeout(5_500);
   await a.page.mouse.move(400, 300);
   await a.page.mouse.move(420, 320);
   await adaActive;
@@ -497,7 +574,12 @@ test('4. one timeout row: an idle desktop in general is cut by itself, told it w
 
   // AW5: the cut leaves him with no call: no dock, and the stage of general (still open) says where he went.
   const moved = copy('afk.moved', { channel: RENAMED });
-  await expect(stage(b.page)).toContainText(moved, { timeout: WAIT });
+  if (desktopE2E()) {
+    // Native locator assertions focus their window. Observe the visible text without bringing the idle person's
+    // window forward: that focus can generate pointer activity and reset the very timeout being measured.
+    await expect.poll(() => b.page.evaluate(() => document.querySelector<HTMLElement>('.dw-voice-stage')?.innerText ?? ''),
+      { timeout: WAIT }).toContain(moved);
+  } else await expect(stage(b.page)).toContainText(moved, { timeout: WAIT });
   await expect(dock(b.page).locator('.d-voice-dock')).toHaveCount(0);
   await expect(phaseOf(b.page)).not.toHaveAttribute('data-call-phase', 'in');
   // AW6: both lists show him under Idle as away, from the away roster, and no longer under general.
@@ -530,6 +612,7 @@ test('4. one timeout row: an idle desktop in general is cut by itself, told it w
 test('5. Björn goes back to general with his own mute state and leaves the roster; Ada clicks Idle, leaves her call and is listed away until she sends a message', async () => {
   const a = person(ada, OWNER);
   const b = person(bjorn, FRIEND);
+  if (desktopE2E()) await setInputMode(b, 'vad');
   // Re-watched before the click: what follows is the return alone. His microphone is captured again, handed over enabled
   // and sent live (he was unmuted before the cut), before any reload.
   await watchAudio(b);
@@ -546,7 +629,7 @@ test('5. Björn goes back to general with his own mute state and leaves the rost
 
   // R-AW3: Ada chooses AFK. Her call is left first (the dock goes), and no call starts in Idle.
   const posts = a.afkPosts;
-  await voiceRow(a.page, RENAMED).click();
+  await leaveFrom(a, voiceRow(a.page, RENAMED));
   await expect(dock(a.page).locator('.d-voice-dock')).toHaveCount(0, { timeout: WAIT });
   for (const p of [a, b]) await expect(awayPeople(p.page, RENAMED).filter({ hasText: OWNER })).toHaveCount(1, { timeout: WAIT });
   await expect(roomPeople(b.page, 'general').filter({ hasText: OWNER })).toHaveCount(0, { timeout: WAIT });
@@ -571,6 +654,7 @@ test('5. Björn goes back to general with his own mute state and leaves the rost
 });
 
 test('6. a phone in general is never cut, its desktop twin cut beside it is not listed away, and the phone going AFK cuts the twin calmly', async ({ playwright, browserName, headless, channel }, testInfo) => {
+  test.skip(desktopE2E(), 'Mobile UI is outside the desktop release; AFK exemption and another active device remain covered by internal/api/afk_pending_test.go and internal/api/afk_away_test.go.');
   const a = person(ada, OWNER);
   const b = person(bjorn, FRIEND);
   if (bjornAccount === null) throw new Error('Björn has no account');
@@ -637,6 +721,11 @@ test('6. a phone in general is never cut, its desktop twin cut beside it is not 
 test('7. with view_channel left out of his roles community-wide, Björn still sees Idle, and a click lists him away there with no call', async () => {
   const a = person(ada, OWNER);
   const b = person(bjorn, FRIEND);
+  // The browser phone case ends his call. Desktop omits that mobile case, so leave the call from step 5 explicitly;
+  // going AFK here would pre-mark him away and stop the permission test below from proving its own AFK click.
+  if (desktopE2E()) {
+    await leaveFrom(b, stage(b.page).locator('[data-control="leave"]'));
+  }
   await expect(dock(b.page).locator('.d-voice-dock')).toHaveCount(0, { timeout: WAIT });
   // The role editor: @everyone loses "view channels", so none of Björn's roles grants it anywhere (R35).
   await setEveryone(a, 'perm.view', false);
@@ -660,10 +749,14 @@ test('7. with view_channel left out of his roles community-wide, Björn still se
 
 test('8. Q2 (revised, AW2 final): his last connection closing keeps Björn away through the 30 s grace, then takes him off the roster; back, nothing joins', async () => {
   const a = person(ada, OWNER);
-  const b = person(bjorn, FRIEND);
+  let b = person(bjorn, FRIEND);
   await expect(awayPeople(a.page, RENAMED).filter({ hasText: FRIEND })).toHaveCount(1, { timeout: WAIT });
   const posts = b.afkPosts;
-  await b.page.goto('about:blank');
+  // The desktop admits only application navigation. Stop the real process and retain its encrypted profile;
+  // an about:blank navigation is a browser-only way to close the last gateway connection.
+  await markSignalLifecycle(b.page, 'before-context-suspend');
+  const resume = desktopE2E() ? await suspendDesktopContext(b.context) : null;
+  if (resume === null) await b.page.goto('about:blank');
   // A reload or a short drop keeps him away: the grace (afkOfflineGrace, 30 s) runs on the host's clock, which stands still
   // here, so he stays listed while the close lands.
   await a.page.waitForTimeout(3_000);
@@ -674,6 +767,8 @@ test('8. Q2 (revised, AW2 final): his last connection closing keeps Björn away 
   // Once the grace ends with no connection, the roster drops him.
   await advanceClock(11);
   await expect(awayPeople(a.page, RENAMED)).toHaveCount(0, { timeout: WAIT });
+  if (resume !== null) { b = await observePerson(b.name, await resume(), false, b); bjorn = b; }
+  await markSignalLifecycle(b.page, 'after-context-resume');
   await b.page.goto(`/c/${communityId}`);
   await expect(railItem(b.page, SERVER)).toBeVisible({ timeout: WAIT });
   await expect(voiceRow(b.page, RENAMED)).toBeVisible({ timeout: WAIT });
@@ -719,7 +814,7 @@ test('9. a web3.8 pick: after the upgrade the server has a new AFK, and lounge a
   await connected(b.page);
   await sendsAudio(b);
   // Signal §5.6: on the joined channel's stage the dock draws nothing; leave from the call bar.
-  await stage(b.page).locator('[data-control="leave"]').click();
+  await leaveFrom(b, stage(b.page).locator('[data-control="leave"]'));
   await expect(dock(b.page).locator('.d-voice-dock')).toHaveCount(0, { timeout: WAIT });
 
   // The old Idle is a plain voice channel too: it has its delete and its permissions; only the new AFK has neither.
@@ -779,11 +874,17 @@ test('10. accessible: the channel list, the AFK row with its away roster and ser
 async function restart(people: Person[]): Promise<void> {
   restarting = true;
   try {
+    for (const p of people) await markSignalLifecycle(p.page, 'before-host-stop');
     await started().stop();
+    for (const p of people) await markSignalLifecycle(p.page, 'after-host-stop');
+    for (const p of people) await markSignalLifecycle(p.page, 'before-host-start');
     host = await startTestHost(HOST);
+    for (const p of people) await markSignalLifecycle(p.page, 'after-host-start');
     for (const p of people) {
+      await markSignalLifecycle(p.page, 'before-page-reload');
       await p.page.reload();
       await expect(railItem(p.page, SERVER)).toBeVisible({ timeout: WAIT });
+      await markSignalLifecycle(p.page, 'after-page-reload');
     }
     // The page's worker sends its bearer again once it is up.
     await expect.poll(async () => (await fetch(`${ORIGIN}/v1/communities/${communityId}/afk`, {

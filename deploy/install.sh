@@ -62,7 +62,7 @@ usage() {
 	cat >&2 <<'USAGE'
 usage: install.sh --behind-proxy --domain NAME --listen ADDR:PORT --trusted-proxy CIDR... (--public-ip IP | --node-ip IP | --no-media-ip) [options]
        install.sh --public --domain NAME --public-ip IP --agree-tos [options]
-       install.sh --upgrade [--yes] [--version TAG] [--release-url URL] [--binary FILE --core FILE --spotify-helper FILE --sums FILE]
+       install.sh --upgrade [--yes] [--version TAG] [--release-url URL] [--binary FILE --core FILE --sums FILE]
 
 Installs dillad as the systemd service `dilla`: the user dillad, /usr/local/bin/dillad
 with dilla_core_wasi.wasm beside it, /var/lib/dillad (0700) and /etc/dilla/dilla.toml
@@ -84,7 +84,7 @@ modes (exactly one):
     --domain NAME        the public DNS name of the instance (instance.domain)
     --public-ip IP       the address clients reach the instance on (instance.public_ip)
     --agree-tos          accept the ACME CA's subscriber agreement (tls.agreed)
-  --upgrade              replace the binary, core and available Spotify helper, restart API and media services,
+  --upgrade              replace the binary and core, restart API and media services,
                          and run doctor; migrates livekit.mode from in_process to sidecar
                          once, saving dilla.toml.prev; rolls back a failed API restart.
                          Restarting the SFU ends every live call, so it first runs
@@ -99,7 +99,6 @@ options:
                          https://github.com/jonasthim/dilla/releases/download/TAG)
   --binary FILE          use this dillad binary instead of downloading one
   --core FILE            use this dilla_core_wasi.wasm instead of downloading one
-  --spotify-helper FILE  use this helper instead of the release's architecture-matched helper
   --sums FILE            the SHA256SUMS to check local files and downloaded assets against
   --insecure-skip-verify install local files without a --sums check
   --udp-port N           LiveKit's media port (livekit.udp_port, default 7882)
@@ -123,7 +122,6 @@ VERSION=""
 RELEASE_URL=""
 BINARY=""
 CORE=""
-SPOTIFY_HELPER=""
 SUMS=""
 INSECURE=0
 NO_MEDIA_IP=0
@@ -153,7 +151,7 @@ while [ "$#" -gt 0 ]; do
 	--behind-proxy | --public | --agree-tos | --upgrade | --yes | --check-args | --insecure-skip-verify | --no-media-ip | -h | --help)
 		shift
 		;;
-	--domain | --public-ip | --listen | --trusted-proxy | --udp-port | --node-ip | --version | --release-url | --binary | --core | --spotify-helper | --sums)
+	--domain | --public-ip | --listen | --trusted-proxy | --udp-port | --node-ip | --version | --release-url | --binary | --core | --sums)
 		[ "$#" -ge 2 ] || die "$flag needs a value"
 		value="$2"
 		shift 2
@@ -216,7 +214,6 @@ while [ "$#" -gt 0 ]; do
 	--release-url) RELEASE_URL="${value%/}" ;;
 	--binary) BINARY="$value" ;;
 	--core) CORE="$value" ;;
-	--spotify-helper) SPOTIFY_HELPER="$value" ;;
 	--sums) SUMS="$value" ;;
 	-h | --help)
 		usage
@@ -338,7 +335,7 @@ fi
 DOWNLOAD=0
 [ -n "$BINARY" ] || DOWNLOAD=1
 [ -n "$CORE" ] || DOWNLOAD=1
-if [ -n "$BINARY$CORE$SPOTIFY_HELPER" ] && [ -z "$SUMS" ] && [ "$INSECURE" -eq 0 ]; then
+if [ -n "$BINARY$CORE" ] && [ -z "$SUMS" ] && [ "$INSECURE" -eq 0 ]; then
 	die "local binaries are checked against a SHA256SUMS: pass --sums FILE, or --insecure-skip-verify to install them unchecked"
 fi
 
@@ -383,8 +380,6 @@ CONF="$CONF_DIR/dilla.toml"
 DATA_DIR="$ROOT/var/lib/dillad"
 BIN_NAME="dillad-linux-$ARCH"
 CORE_NAME="dilla_core_wasi.wasm"
-SPOTIFY_HELPER_NAME="dilla-spotify-helper-linux-$ARCH"
-SPOTIFY_HELPER_DEST="$ROOT/usr/local/libexec/dilla-spotify-helper"
 
 INSTALLED=0
 if [ -e "$CONF" ]; then
@@ -453,16 +448,6 @@ else
 	log "downloading $CORE_NAME from $RELEASE_URL"
 	fetch "$RELEASE_URL/$CORE_NAME" "$WORK/$CORE_NAME"
 	CHECK="$CHECK $CORE_NAME"
-fi
-
-if [ -n "$SPOTIFY_HELPER" ]; then
-	[ -s "$SPOTIFY_HELPER" ] || die "the Spotify helper $SPOTIFY_HELPER is missing or empty"
-	cp "$SPOTIFY_HELPER" "$WORK/$SPOTIFY_HELPER_NAME"
-	if [ -n "$SUMS" ]; then CHECK="$CHECK $SPOTIFY_HELPER_NAME"; else UNCHECKED="$UNCHECKED $SPOTIFY_HELPER_NAME"; fi
-elif [ "$DOWNLOAD" -eq 1 ]; then
-	log "downloading $SPOTIFY_HELPER_NAME from $RELEASE_URL"
-	fetch "$RELEASE_URL/$SPOTIFY_HELPER_NAME" "$WORK/$SPOTIFY_HELPER_NAME"
-	CHECK="$CHECK $SPOTIFY_HELPER_NAME"
 fi
 
 if [ -n "$CHECK" ]; then
@@ -752,10 +737,6 @@ if [ "$UPGRADE" -eq 1 ]; then
 	if ! systemctl restart dilla-media >&2 || ! runuser -u dillad -- "$BIN_DIR/dillad" media --probe --config="$CONF" >&2; then
 		die "the API upgraded, but dilla-media did not become ready; read journalctl -o cat -u dilla-media"
 	fi
-	if [ -f "$WORK/$SPOTIFY_HELPER_NAME" ]; then
-		mkdir -p "$(dirname "$SPOTIFY_HELPER_DEST")"
-		put "$WORK/$SPOTIFY_HELPER_NAME" "$SPOTIFY_HELPER_DEST" 0755
-	fi
 	log "upgrade done; the previous binary, core and config are kept as $BIN_DIR/dillad.prev, $CORE_NAME.prev and $CONF.prev"
 	log "dilla.service was not rewritten; compare it with the release's deploy/dilla.service"
 	exit 0
@@ -767,10 +748,6 @@ mkdir -p "$BIN_DIR" "$ROOT/etc/systemd/system"
 put "$WORK/$BIN_NAME" "$BIN_DIR/dillad" 0755
 # Beside the binary: dillad looks for the wasi core in its own executable's directory.
 put "$WORK/$CORE_NAME" "$BIN_DIR/$CORE_NAME" 0644
-if [ -f "$WORK/$SPOTIFY_HELPER_NAME" ]; then
-	mkdir -p "$(dirname "$SPOTIFY_HELPER_DEST")"
-	put "$WORK/$SPOTIFY_HELPER_NAME" "$SPOTIFY_HELPER_DEST" 0755
-fi
 
 # deploy/dilla.service, verbatim (deploy/install_test.sh compares the two).
 cat >"$WORK/dilla.service" <<'UNIT'

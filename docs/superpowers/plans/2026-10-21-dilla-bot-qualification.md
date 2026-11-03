@@ -1,5 +1,8 @@
 # Dilla Bot qualification record
 
+> Historical document: Spotify integration was removed from Dilla on 2026-11-01.
+> Provider setup, playback claims, and release gates below describe the earlier implementation.
+
 Date: 2026-10-21. Scope: Task 0 baseline and Task 1 development probes.
 Provider revision: the user approved evaluating librespot instead of Soloist.
 The Soloist observations below are retained as historical evidence.

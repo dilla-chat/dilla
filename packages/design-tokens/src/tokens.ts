@@ -1,4 +1,4 @@
-export type ThemeName = 'signal' | 'light' | 'high-contrast';
+export type ThemeName = 'signal';
 
 export type ColorTokens = {
   bg: string; bg2: string; bg3: string; surface: string; surface2: string; surfaceHi: string;
@@ -74,50 +74,7 @@ export const themes: Record<ThemeName, ColorTokens> = {
     meterOff: '#161A20', okLine: 'rgba(124,255,142,0.3)', warnFaint: 'rgba(255,209,106,0.08)', warnLine: 'rgba(255,209,106,0.3)',
     linkUnderline: 0,
   },
-  light: {
-    bg: '#F5F6F5', bg2: '#ECEEEC', bg3: '#E3E6E3', surface: '#FFFFFF', surface2: '#E6E9E6', surfaceHi: '#DDE1DD',
-    hairline: '#CBD0CB', hairline2: '#8F978F', edge: '#6F776F',
-    fg: '#14171A', fgBody: '#14171A', fgStrong: '#3F453F', fg2: '#3F453F', fg3: '#5C635C', fg4: '#A9B0A9', fgLink: '#005799',
-    accent: '#005799', accent2: '#004A82', accentInk: '#FFFFFF', accentSoft: 'rgba(0,87,153,0.12)', brand: '#005799', hover: '#E3E6E3',
-    danger: '#B3261E', warn: '#8A5A00', ok: '#1B7334', mention: '#F2C14E', mentionInk: '#1A1300',
-    okSoft: 'rgba(27,115,52,0.04)', okSoftBorder: 'rgba(27,115,52,0.22)', okTint: 'rgba(27,115,52,0.08)', okBorder: 'rgba(27,115,52,0.25)', okText: '#1B7334',
-    dangerSoft: 'rgba(179,38,30,0.1)', dangerBorder: 'rgba(179,38,30,0.45)', dangerInk: '#FFFFFF', warnSoft: 'rgba(138,90,0,0.05)', scrim: 'rgba(0,0,0,0.4)', knob: '#FFFFFF', trackOff: '#8A918A', accentChip: 'rgba(0,87,153,0.16)', lineStrong: '#B4BBB4', brandInk: '#FFFFFF', hoverHi: '#D6DAD6',
-    controlEdge: '#6F776F', controlEdgeField: '#6F776F', controlEdgeKey: '#6F776F',
-    warnTint: 'rgba(138,90,0,0.14)', fgChip: '#3F453F',
-    accentFaint: 'rgba(0,87,153,0.07)', accentFlash: 'rgba(0,87,153,0.18)', accentHover: 'rgba(0,87,153,0.08)', fgFaint: '#5C635C', scrimTag: 'rgba(20,23,26,0.8)',
-    codeLineNo: '#5C635C', codeComment: '#5C635C', codeBool: '#8A2E8F', codeKeyword: '#5B3BA8', codeRowHover: 'rgba(0,0,0,0.03)',
-    dangerLine: 'rgba(179,38,30,0.5)', surfaceTile: '#FFFFFF', fgQuiet: '#4F564F', patternStripe: 'rgba(0,0,0,0.04)',
-    stageTile: '#FFFFFF', stageStripe: 'rgba(0,0,0,0.03)', scrimTile: 'rgba(255,255,255,0.88)', scrimCaption: 'rgba(255,255,255,0.88)', okEdge: 'rgba(27,115,52,0.7)', okEdgeShare: 'rgba(27,115,52,0.55)', accentHalo: 'rgba(0,87,153,0.35)', dangerHover: '#8F1E18', okInk: '#FFFFFF',
-    cardEdge: '#B4BBB4', accentOpen: 'rgba(0,87,153,0.1)', okDivider: 'rgba(27,115,52,0.15)', toast: '#FFFFFF',
-    // Task 10
-    accentTag: 'rgba(0,87,153,0.12)', dangerEdge: 'rgba(179,38,30,0.45)', dangerFaint: 'rgba(179,38,30,0.08)', accentRing: 'rgba(0,87,153,0.2)', brandGlow: 'rgba(0,87,153,0.12)', accentPick: 'rgba(0,87,153,0.06)',
-    accentSplit: 'rgba(255,255,255,0.25)',
-    // Task 10b
-    meterOff: '#DDE1DD', okLine: 'rgba(27,115,52,0.3)', warnFaint: 'rgba(138,90,0,0.08)', warnLine: 'rgba(138,90,0,0.3)',
-    linkUnderline: 0,
-  },
-  'high-contrast': {
-    bg: '#000000', bg2: '#000000', bg3: '#0A0A0A', surface: '#000000', surface2: '#101010', surfaceHi: '#1C1C1C',
-    hairline: '#FFFFFF', hairline2: '#FFFFFF', edge: '#FFFFFF',
-    fg: '#FFFFFF', fgBody: '#FFFFFF', fgStrong: '#E6E6E6', fg2: '#E6E6E6', fg3: '#C8C8C8', fg4: '#8A8A8A', fgLink: '#9CCBFF',
-    accent: '#9CCBFF', accent2: '#C7E2FF', accentInk: '#000000', accentSoft: 'rgba(156,203,255,0.2)', brand: '#005799', hover: '#1C1C1C',
-    danger: '#FF9A9A', warn: '#FFE08A', ok: '#9BFFA8', mention: '#FFE08A', mentionInk: '#000000',
-    okSoft: 'rgba(155,255,168,0.04)', okSoftBorder: 'rgba(155,255,168,0.22)', okTint: 'rgba(155,255,168,0.08)', okBorder: 'rgba(155,255,168,0.25)', okText: '#9BFFA8',
-    dangerSoft: 'rgba(255,154,154,0.1)', dangerBorder: 'rgba(255,154,154,0.45)', dangerInk: '#000000', warnSoft: 'rgba(255,224,138,0.05)', scrim: 'rgba(0,0,0,0.7)', knob: '#000000', trackOff: '#C8C8C8', accentChip: 'rgba(156,203,255,0.24)', lineStrong: '#FFFFFF', brandInk: '#FFFFFF', hoverHi: '#2A2A2A',
-    controlEdge: '#FFFFFF', controlEdgeField: '#FFFFFF', controlEdgeKey: '#FFFFFF',
-    warnTint: 'rgba(255,224,138,0.2)', fgChip: '#E6E6E6',
-    accentFaint: 'rgba(156,203,255,0.12)', accentFlash: 'rgba(156,203,255,0.3)', accentHover: 'rgba(156,203,255,0.16)', fgFaint: '#C8C8C8', scrimTag: 'rgba(0,0,0,0.85)',
-    codeLineNo: '#C8C8C8', codeComment: '#C8C8C8', codeBool: '#F5C2F7', codeKeyword: '#D9C8FF', codeRowHover: 'rgba(255,255,255,0.08)',
-    dangerLine: 'rgba(255,154,154,0.5)', surfaceTile: '#000000', fgQuiet: '#C8C8C8', patternStripe: 'rgba(255,255,255,0.08)',
-    stageTile: '#000000', stageStripe: 'rgba(255,255,255,0.06)', scrimTile: 'rgba(0,0,0,0.85)', scrimCaption: 'rgba(0,0,0,0.85)', okEdge: '#9BFFA8', okEdgeShare: '#9BFFA8', accentHalo: 'rgba(156,203,255,0.5)', dangerHover: '#FFB8B8', okInk: '#000000',
-    cardEdge: '#FFFFFF', accentOpen: 'rgba(156,203,255,0.2)', okDivider: 'rgba(155,255,168,0.3)', toast: '#000000',
-    // Task 10
-    accentTag: 'rgba(156,203,255,0.2)', dangerEdge: '#FF9A9A', dangerFaint: 'rgba(255,154,154,0.12)', accentRing: 'rgba(156,203,255,0.35)', brandGlow: 'rgba(0,0,0,0)', accentPick: 'rgba(156,203,255,0.1)',
-    accentSplit: 'rgba(0,0,0,0.25)',
-    // Task 10b
-    meterOff: '#1C1C1C', okLine: 'rgba(155,255,168,0.5)', warnFaint: 'rgba(255,224,138,0.12)', warnLine: '#FFE08A',
-    linkUnderline: 1,
-  },
+
 };
 
 /** Every colour token that is a colour: `linkUnderline` is a 0/1 flag, not a colour. */

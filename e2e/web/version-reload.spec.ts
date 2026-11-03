@@ -9,6 +9,7 @@ import { expect, type Page, type TestInfo } from '@playwright/test';
 import { addServerVia, TEST_TIMEOUT, WAIT, copy, composerBox, expectAccessible, expectComposerReady, railNav, signUp, test } from './support/app';
 import { hostArgs, removeHostData, startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
+import { desktopE2E } from './support/electron';
 
 const WIRE2: HostConfig = { port: 8515, control: 8516, webRoot: 'packages/web/dist', keepData: true, wire: 2 };
 const WIRE6: HostConfig = { ...WIRE2, wire: 6 };
@@ -44,7 +45,7 @@ async function swapHost(next: HostConfig): Promise<void> {
 const banner = (page: Page) => page.getByText(copy('shell.banner.clientTooOld'), { exact: true });
 const reloadButton = (page: Page) => page.getByRole('button', { name: copy('reload.action'), exact: true });
 
-const isChromium = (info: TestInfo) => info.project.name.startsWith('chromium');
+const isChromium = (info: TestInfo) => desktopE2E() || info.project.name.startsWith('chromium');
 
 /** The gateway ticket the core worker fetches before it opens each socket (POST /v1/gateway/ticket). */
 const TICKET = /\/v1\/gateway\/ticket$/;
@@ -79,8 +80,9 @@ async function watch(page: Page): Promise<{ sockets: () => number; loads: () => 
   // after the socket exists. (The patch used to be run over the DevTools protocol while the new worker waited for its debugger,
   // but Playwright resumes the worker too, so on a slow runner the worker could take the unpatched WebSocket first.)
   const refuse = async (on: boolean): Promise<void> => {
-    if (!on) { await page.unroute(TICKET); return; }
-    await page.route(TICKET, async (route) => {
+    const transport = desktopE2E() ? page.context() : page;
+    if (!on) { await transport.unroute(TICKET); return; }
+    await transport.route(TICKET, async (route) => {
       for (const worker of page.workers()) await worker.evaluate(refuseSockets);
       patched += 1;
       await route.continue();

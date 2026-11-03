@@ -1,3 +1,5 @@
+import { desktopE2E } from './support/electron.ts';
+import { openInviteInClient } from './support/invite';
 // v0.1.0-web3.1, the regression test of the create-flow incident: a fresh instance could not be used from the web client,
 // and every suite hid it by seeding its servers through dilla-testhost. This suite starts a test host of its own with no
 // account, no server and no channel, and gets from there to two people talking using the shipping client alone: the
@@ -141,14 +143,7 @@ test('from an empty instance: start a server, invite a friend through a link, re
   try {
     await installWorkerPort(second);
     const page2 = second.pages()[0] ?? (await second.newPage());
-    await page2.goto(new URL(link).pathname);
-    const openLink = page2.getByRole('link', { name: 'Open dilla in this browser', exact: true });
-    await expect(openLink).toHaveAttribute('href', /^\/welcome\?invite=[^&\s]+$/);
-    // The guard watches the web client from its first page on. The invite page before it is the instance's static HTML
-    // under `default-src 'none'`: Firefox asks it for /favicon.ico on its own and reports the refusal, which is that CSP
-    // working, not the client's (it is not this suite's to judge).
-    await guard.attach(second);
-    await openLink.click();
+    await openInviteInClient(page2, link, () => guard.attach(second));
     await completeSignUp(page2, newAccount(FRIEND, h.control), instance);
 
     // 5. The second person lands in the server, with #general (review focus 5). "hello from the owner" went out before
@@ -274,8 +269,8 @@ test('from an empty instance: start a server, invite a friend through a link, re
       const size = page.viewportSize();
       await page.setViewportSize({ width: 360, height: 740 });
       try {
-        await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth), { message: `${slug} at 360 px` })
-          .toBeLessThanOrEqual(360);
+        await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth), { message: `${slug} at the supported minimum width` })
+          .toBeLessThanOrEqual(desktopE2E() ? 900 : 360);
       } finally {
         if (size !== null) await page.setViewportSize(size);
       }

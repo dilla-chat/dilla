@@ -9,8 +9,8 @@ export interface VoiceMusicTrack {
   album?: string;
   artworkUrl?: string;
   durationMs: number;
-  /** The provider the snapshot names for a queued or current track ('youtube' or 'spotify'); absent for search results. */
-  provider?: 'youtube' | 'spotify';
+  /** The provider the snapshot names for a queued or current track ('youtube'); absent for search results. */
+  provider?: 'youtube';
   /** The 32-hex user id of the member who queued it (snapshot row slot 7), when the Bot recorded one. */
   requesterId?: string;
 }
@@ -18,7 +18,7 @@ export interface VoiceMusicTrack {
 export interface VoiceMusicQueueItem { id: string; track: VoiceMusicTrack; }
 export interface VoiceMusicSearchResult extends VoiceMusicTrack { input: string; }
 export interface VoiceMusicPermissions { control: boolean; manageQueue: boolean; }
-export type VoiceMusicErrorCode = 'forbidden' | 'conflict' | 'spotify-unavailable' | 'spotify-busy' | 'unavailable' | 'operation-unavailable';
+export type VoiceMusicErrorCode = 'forbidden' | 'conflict' | 'unavailable' | 'operation-unavailable';
 export class VoiceMusicError extends Error {
   constructor(readonly code: VoiceMusicErrorCode, message: string) {
     super(message);
@@ -169,7 +169,7 @@ export function createVoiceMusicAdapter(client: CoreClient, communityId: string)
       if (prior !== null) {
         if (prior.status === 5 && prior.revision === null) throw definiteMusicFailure(operation);
         if (prior.status === 5) throw new VoiceMusicAcceptedUnconfirmedError(attempt.requestId, new Error('The Bot reported an ambiguous persisted outcome.'));
-        if (prior.status !== 0) throw responseError(prior.status, operation === 12 && isSpotifyInput(args[0]));
+        if (prior.status !== 0) throw responseError(prior.status);
         try {
           const receipt = decode(prior.data);
           if (!Array.isArray(receipt) || receipt.length !== 0 || prior.revision === null || !/^(?:0|[1-9]\d*)$/u.test(prior.revision))
@@ -267,7 +267,7 @@ export function createVoiceMusicAdapter(client: CoreClient, communityId: string)
     }
     if (result.status !== 0) {
       if (attempt !== undefined) attempts.delete(attempt.requestId);
-      throw responseError(result.status, operation === 12 && isSpotifyInput(record.args[0]));
+      throw responseError(result.status);
     }
     if (immediate && result.data.length > 1) {
       try {
@@ -381,20 +381,10 @@ function unavailable(): Promise<never> { return Promise.reject(new Error('Authen
 function sameInteractionIdentity(left: BotInteractionScope | undefined, right: BotInteractionScope): boolean {
   return left !== undefined && left.installationId === right.installationId && left.botUserId === right.botUserId;
 }
-function responseError(status: number, spotifyInput = false): Error {
-  if (spotifyInput && status === 5) return new VoiceMusicError('spotify-unavailable', 'Spotify is unavailable or not linked for this community.');
-  if (spotifyInput && status === 6) return new VoiceMusicError('spotify-busy', 'Spotify playback is already active in another voice channel.');
+function responseError(status: number): Error {
   return status === 2 ? new VoiceMusicError('forbidden', 'You do not have permission to control this Bot.')
     : status === 4 ? new VoiceMusicError('conflict', 'Music state changed. Refresh and try again.')
       : new VoiceMusicError('operation-unavailable', 'The Bot could not do that right now. Try again.');
-}
-function isSpotifyInput(value: unknown): boolean {
-  if (typeof value !== 'string') return false;
-  if (/^spotify:(?:track|album|playlist):/iu.test(value.trim())) return true;
-  try {
-    const host = new URL(value).hostname.toLowerCase();
-    return host === 'spotify.link' || host === 'spotify.com' || host.endsWith('.spotify.com');
-  } catch { return false; }
 }
 function newRequestId(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(16));
@@ -436,12 +426,11 @@ function track(value: CborValue): VoiceMusicTrack | null {
   const provider = text(field(row, 1));
   const canonicalId = text(field(row, 2));
   const itemId = text(field(row, 0));
-  const supported = provider === 'youtube' && /^[A-Za-z0-9_-]{11}$/u.test(canonicalId)
-    || provider === 'spotify' && /^spotify:track:[A-Za-z0-9]{22}$/u.test(canonicalId);
+  const supported = provider === 'youtube' && /^[A-Za-z0-9_-]{11}$/u.test(canonicalId);
   if (!supported || !ID.test(itemId)) throw new Error('Unsupported music track.');
   const album = text(field(row, 5));
   const result: VoiceMusicTrack = { id: itemId, title: text(field(row, 3)), artist: text(field(row, 4)), durationMs: uint(field(row, 6)),
-    provider: provider === 'spotify' ? 'spotify' : 'youtube' };
+    provider: 'youtube' };
   if (album !== '') result.album = album;
   // Slot 7 is the requester the Bot recorded (a user id; other markers, such as a search placeholder, are not a person).
   const requester = row[7];

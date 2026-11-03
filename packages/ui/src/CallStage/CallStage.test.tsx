@@ -1,3 +1,4 @@
+import { themes } from '@dilla/design-tokens';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { useState } from 'react';
 import userEvent from '@testing-library/user-event';
@@ -98,7 +99,7 @@ describe('CallStage', () => {
     expect(screen.getByText('Nobody is in voice yet.')).toBeInTheDocument();
   });
 
-  it.each(['signal', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {
+  it.each(Object.keys(themes))('passes axe at its default story args in %s', async theme => {
     document.documentElement.dataset.theme = theme;
     const { container } = render(<div className="d-root"><CallStage {...(meta.args as CallStageProps)} /></div>);
     // jsdom has no layout or canvas, so contrast is left to the Storybook axe run in a real browser.

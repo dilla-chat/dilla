@@ -1,3 +1,4 @@
+import { themes } from '../../../packages/design-tokens/src/tokens';
 // The voice suite's page contract and its native peer (L-E2E-31 helpers): `joinVoice`, `tileState`, `audioRunning`,
 // `heard`, `notificationsSeen`, and reads of what the recorders of peer-browser.ts saw. Every wait waits for a state —
 // `data-voice-state`, `data-call-phase`, `data-ring`, `data-media-state`, the voice snapshot, a media counter — never
@@ -14,6 +15,8 @@ import { addServerVia,
   openSettings, railItem, railNav, sendText, signUp, type Account, type SettingsSection,
 } from '../../web/support/app';
 import { WAIT, mediaWorkers, type Person } from './peer-browser';
+import { desktopApplication, desktopE2E } from '../../web/support/electron.ts';
+import { nativeNotificationsSeen } from './native-notifications.ts';
 
 export { WAIT, closeSettings, copy, instanceInvite };
 /** The shell is up again (after a reload): the rail shows and no onboarding step does. */
@@ -208,18 +211,21 @@ export async function buildWav(page: Page): Promise<Buffer> {
   return Buffer.from(b64, 'base64');
 }
 
-/** axe (serious and critical, target-size on) in the three themes, then at 360×740 in the first; restores both. */
+/** axe (serious and critical, target-size on) in the catalog themes, then at 360×740 in the first; restores both. */
 export async function axeEverywhere(page: Page, state: string): Promise<void> {
   const viewport = page.viewportSize();
   const theme = await page.evaluate(() => document.documentElement.dataset.theme ?? null);
   try {
-    for (const name of ['signal', 'light', 'high-contrast'] as const) {
+    for (const name of Object.keys(themes)) {
       await page.evaluate((n) => { document.documentElement.dataset.theme = n; }, name);
       await expectAccessible(page, `${state} in the ${name} theme`);
     }
     await page.evaluate((n) => { document.documentElement.dataset.theme = n; }, 'signal');
-    await page.setViewportSize({ width: 360, height: 740 });
-    await expectAccessible(page, `${state} at 360×740`);
+    // The desktop lane's native minimum keeps a 360 px request at the desktop layout, which the signal pass above covers.
+    if (!desktopE2E()) {
+      await page.setViewportSize({ width: 360, height: 740 });
+      await expectAccessible(page, `${state} at 360×740`);
+    }
   } finally {
     if (viewport !== null) await page.setViewportSize(viewport);
     await page.evaluate((n) => { if (n === null) delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = n; }, theme);
@@ -468,12 +474,18 @@ export async function ringTimerLive(page: Page): Promise<boolean> {
 
 /** `notificationsSeen`: each desktop notification the page raised, as `{title, tag, closed}`. */
 export async function notificationsSeen(page: Page): Promise<{ title: string; tag: string; closed: boolean }[]> {
+  if (desktopE2E()) return nativeNotificationsSeen(page);
   return page.evaluate(() => (window as unknown as { __dillaNotifications: { title: string; tag: string; closed: boolean }[] })
     .__dillaNotifications.map((n) => ({ title: n.title, tag: n.tag, closed: n.closed })));
 }
 
 /** Reports the tab as hidden (or visible again) to the page, with a `visibilitychange`. */
 export async function setHidden(page: Page, hidden: boolean): Promise<void> {
+  if (desktopE2E()) {
+    const win = await desktopApplication(page.context()).browserWindow(page);
+    try { await win.evaluate((win, hidden) => { if (hidden) win.hide(); else { win.show(); win.focus(); } }, hidden); }
+    finally { await win.dispose(); }
+  }
   await page.evaluate((h) => (window as unknown as { __dwSetHidden(h: boolean): void }).__dwSetHidden(h), hidden);
 }
 

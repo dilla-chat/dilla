@@ -1,3 +1,4 @@
+import { openInviteInClient } from './support/invite';
 import { expect } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import {
@@ -176,8 +177,7 @@ test('literal music command text never executes through the native runtime', asy
     secondContext = await browser.newContext({ baseURL: host.url });
     await guard.attach(secondContext);
     const secondPage = await secondContext.newPage();
-    await secondPage.goto(new URL(inviteLink).pathname);
-    await secondPage.getByRole('link', { name: 'Open dilla in this browser', exact: true }).click();
+    await openInviteInClient(secondPage, inviteLink);
     await completeSignUp(secondPage, newAccount('Bea', host.control), instanceName);
     await openChannel(secondPage, SERVER, 'general');
     await openChannel(page, SERVER, 'general');
@@ -306,8 +306,10 @@ test('device 1 recovers its exact encrypted Bot response after Bot and browser r
     await secondSettings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
       .getByRole('button', { name: copy('workspace.moderationLog'), exact: true }).click();
     await secondSettings.getByRole('button', { name: copy('admin.bot.moderationLog.loadAutomatic'), exact: true }).click();
+    // Device 2's first request also establishes its own interaction group with the Bot, which took over 20 s on a
+    // loaded Linux host (run 635); the acceptance gets the wait every other Bot step of this spec has.
     await expect.poll(() => lastWorkerCommandOutcome(secondPage!, 'listModerationCases'),
-      { timeout: 20_000, intervals: [250, 500, 1_000] }).toEqual({
+      { timeout: 90_000, intervals: [500, 1_000, 2_000] }).toEqual({
       requestId: expect.stringMatching(/^[0-9a-f]{32}$/u), state: 'accepted', code: null, detail: null,
     });
     const secondRequestId = (await lastWorkerCommandOutcome(secondPage, 'listModerationCases')).requestId;
@@ -410,9 +412,7 @@ test('a Roles-enabled bot applies the configured join role on join and rejoin', 
     secondContext = await browser.newContext({ baseURL: host.url });
     await guard.attach(secondContext);
     const secondPage = await secondContext.newPage();
-    await secondPage.goto(new URL(inviteLink).pathname);
-    const openInvite = secondPage.getByRole('link', { name: 'Open dilla in this browser', exact: true });
-    await openInvite.click();
+    await openInviteInClient(secondPage, inviteLink);
     await completeSignUp(secondPage, newAccount('Bea', host.control), instanceName);
     await expect.poll(async () => {
       const openSettings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
@@ -516,8 +516,7 @@ test('a human publishes a bot-authored self-service role panel and its reaction 
     secondContext = await browser.newContext({ baseURL: host.url });
     await guard.attach(secondContext);
     secondPage = await secondContext.newPage();
-    await secondPage.goto(new URL(inviteLink).pathname);
-    await secondPage.getByRole('link', { name: 'Open dilla in this browser', exact: true }).click();
+    await openInviteInClient(secondPage, inviteLink);
     await completeSignUp(secondPage, newAccount('Bea', host.control), instanceName);
     await openChannel(secondPage, SERVER, 'general');
 

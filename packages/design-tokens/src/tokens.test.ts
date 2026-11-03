@@ -1,13 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { themes, TEXT_PAIRS, UI_PAIRS, ACCESSIBLE_THEMES_TEXT_PAIRS, CONTROL_EDGE_KEYS, CONTROL_EDGE_EXEMPT, structural, densities, type ThemeName } from './tokens.ts';
+import { themes, TEXT_PAIRS, UI_PAIRS, CONTROL_EDGE_KEYS, CONTROL_EDGE_EXEMPT, structural, densities, type ThemeName } from './tokens.ts';
 import { contrastRatio } from './contrast.ts';
 
 const names = Object.keys(themes) as ThemeName[];
 
 describe('themes', () => {
-  it('defines signal, light and high-contrast with the same keys', () => {
-    expect([...names].sort()).toEqual(['high-contrast', 'light', 'signal']);
-    expect(names).toEqual(['signal', 'light', 'high-contrast']);
+  it('keeps Signal in the named theme catalog', () => {
+    expect([...names].sort()).toEqual(['signal']);
+    expect(names).toEqual(['signal']);
     const keys = Object.keys(themes.signal).sort();
     for (const n of names) expect(Object.keys(themes[n]).sort()).toEqual(keys);
   });
@@ -15,10 +15,6 @@ describe('themes', () => {
     expect(themes.signal.bg).toBe('#08090B');
     expect(themes.signal.accent).toBe('#5AA8E6');
     expect(themes.signal.fg4).toBe('#5C636E');
-  });
-  it('moves light and high-contrast to the blue accent', () => {
-    expect(themes.light.accent).toBe('#005799');
-    expect(themes['high-contrast'].accent).toBe('#9CCBFF');
   });
 });
 
@@ -32,14 +28,6 @@ describe('WCAG AA guard', () => {
     for (const [fg, bg] of UI_PAIRS) {
       it(`${n}: ui ${fg} on ${bg} is at least 3:1`, () => {
         expect(contrastRatio(themes[n][fg], themes[n][bg])).toBeGreaterThanOrEqual(3);
-      });
-    }
-  }
-  // Task 7 fix round 1: the conversation's quiet text is the prototype's in signal (Ruling Y); light and high-contrast pass.
-  for (const n of ['light', 'high-contrast'] as const) {
-    for (const [fg, bg] of ACCESSIBLE_THEMES_TEXT_PAIRS) {
-      it(`${n}: text ${fg} on ${bg} is at least 4.5:1`, () => {
-        expect(contrastRatio(themes[n][fg], themes[n][bg])).toBeGreaterThanOrEqual(4.5);
       });
     }
   }
@@ -63,8 +51,7 @@ describe('WCAG AA guard', () => {
       });
     }
   }
-  it('high-contrast underlines links', () => {
-    expect(themes['high-contrast'].linkUnderline).toBe(1);
+  it('keeps Signal link styling in the theme tokens', () => {
     expect(themes.signal.linkUnderline).toBe(0);
   });
 });
@@ -134,4 +121,9 @@ describe('Task 11 button weight and toggle track', () => {
     expect(structural.weight.btn).toBe('400');
     expect(structural.motion.track).toBe('200ms');
   });
+});
+
+it('ships one named theme while keeping the shared token catalog', () => {
+  expect(Object.keys(themes)).toEqual(['signal']);
+  expect(Object.keys(themes.signal).length).toBeGreaterThan(80);
 });

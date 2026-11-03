@@ -630,7 +630,9 @@ export async function completeFactorStep(page: Page, account: Account, onStep?: 
   await onStep?.('totp');
   account.totpSecret = await key.inputValue();
   await page.getByLabel(copy('factor.totp.code'), { exact: true }).fill(await nextCode(account.control, account));
-  await page.getByRole('button', { name: copy('factor.totp.submit'), exact: true }).click();
+  // Submit from the field unique to this phase. A native resize can outlive
+  // the response; retrying a generic Continue could target backup codes next.
+  await page.getByLabel(copy('factor.totp.code'), { exact: true }).press('Enter');
   await expectHeading(page, 'factor.codes.title');
   await onStep?.('codes');
   account.backupCodes = (await page.getByRole('list', { name: copy('factor.codes.label'), exact: true }).locator('li').allInnerTexts())

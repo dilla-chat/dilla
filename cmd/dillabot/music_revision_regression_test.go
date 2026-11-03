@@ -10,7 +10,6 @@ import (
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/music"
 	"github.com/jonasthim/dilla/internal/bot/music/persistence"
-	"github.com/jonasthim/dilla/internal/bot/music/spotify"
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/bot/protocol"
 	"github.com/jonasthim/dilla/internal/bot/service"
@@ -41,8 +40,7 @@ func TestProbeSkipThenPause(t *testing.T) {
 	}
 	calls := &runtimeCalls{call: client.Call{CallID: channel, GroupID: id.New(), LiveKitURL: "wss://media.example", Token: "secret"}}
 	starter, err := newMusicQueueStarter(musicRuntimeDeps{Community: community, Channel: channel, Calls: calls,
-		JoinCallGroup: func(context.Context) error { return nil }, SpotifyPCM: failingRuntimePCM{spotify.ErrProviderUnavailable},
-		YouTubePCM: liveRuntimePCM{}, LeaseManager: testLeaseManager(t), Encoder: liveRuntimeEncoderStarter{},
+		JoinCallGroup: func(context.Context) error { return nil }, YouTubePCM: selectiveRuntimePCM{}, Encoder: liveRuntimeEncoderStarter{},
 		Publisher: &liveRuntimePublisherStarter{starts: map[id.ID]int{}}, Epochs: runtimeEpochs{}, Lifetime: time.Minute})
 	if err != nil {
 		t.Fatal(err)
@@ -63,7 +61,7 @@ func TestProbeSkipThenPause(t *testing.T) {
 		},
 	}
 	tracks := []music.Track{
-		{ID: "broken", Provider: music.ProviderSpotify, CanonicalID: "spotify:track:0123456789012345678901", Title: "Broken", RequesterID: "member"},
+		{ID: "broken", Provider: music.ProviderYouTube, CanonicalID: "bbcdefghijk", Title: "Broken", RequesterID: "member"},
 		{ID: "working", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "Working", RequesterID: "member"},
 	}
 	state, _ := music.Apply(music.InitialState(), 0, music.Operation{Kind: music.OpEnqueue, Tracks: tracks})
@@ -108,8 +106,7 @@ func TestHandoffFailureRecoversStateReadAndPause(t *testing.T) {
 	store, _ := persistence.New(n, community)
 	calls := &runtimeCalls{call: client.Call{CallID: channel, GroupID: id.New(), LiveKitURL: "wss://media.example", Token: "secret"}}
 	starter, _ := newMusicQueueStarter(musicRuntimeDeps{Community: community, Channel: channel, Calls: calls,
-		JoinCallGroup: func(context.Context) error { return nil }, SpotifyPCM: failingRuntimePCM{spotify.ErrPlaybackFailed},
-		YouTubePCM: liveRuntimePCM{}, LeaseManager: testLeaseManager(t), Encoder: liveRuntimeEncoderStarter{},
+		JoinCallGroup: func(context.Context) error { return nil }, YouTubePCM: liveRuntimePCM{}, Encoder: liveRuntimeEncoderStarter{},
 		Publisher: &liveRuntimePublisherStarter{starts: map[id.ID]int{}}, Epochs: runtimeEpochs{}, Lifetime: time.Minute})
 	supervisor, _ := newMusicSupervisor(context.Background(), channel, store, starter)
 	defer supervisor.Close()

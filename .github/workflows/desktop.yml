@@ -1,0 +1,585 @@
+name: desktop foundations
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  test-tools:
+    name: desktop-test-tools-${{ matrix.platform }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { os: ubuntu-24.04, platform: linux, arch: x64 }
+          - { os: windows-latest, platform: win, arch: x64 }
+          - { os: macos-15, platform: mac, arch: arm64 }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: desktop-test-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            desktop-test-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+      - run: rustup show active-toolchain
+      # The script always rebuilds from this checkout; caches supply compilation intermediates only.
+      # Linux additionally supplies the actual production Bot and native helper, with separate Cargo feature scopes.
+      - run: node scripts/e2e-test-tools.mjs build artifacts/e2e-test-tools
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: dilla-e2e-tools-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.sha }}
+          path: artifacts/e2e-test-tools
+          if-no-files-found: error
+          # A rerun-all replaces this run's earlier producer artifact for the same target and SHA.
+          overwrite: true
+
+  native-stock-feasibility:
+    name: Ubuntu stock DEB feasibility (not acceptance)
+    needs: test-tools
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-e2e-tools-linux-x64-${{ github.sha }}
+          path: artifacts/e2e-test-tools
+      - run: node scripts/e2e-test-tools.mjs verify artifacts/e2e-test-tools
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-web-dist
+          path: packages/web/dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-desktop-core
+          path: packages/core-wasm/pkg
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - name: Verify checkout and shipping client
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          node --input-type=module -e "import {verifyShippingCoreWasmInDist} from './e2e/web/support/shipping-wasm.mjs'; verifyShippingCoreWasmInDist('packages/web/dist')"
+      - name: Install disposable runner prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm libpipewire-0.3-dev libgtk-3-dev pkg-config xvfb openbox x11-utils dbus-x11 libnss3-tools gnome-keyring
+      - run: npm ci
+      - run: node node_modules/electron/install.js
+      - name: Test Linux feasibility helpers
+        run: |
+          node --test e2e/unit/native-https-proxy.test.mjs e2e/unit/native-test-cert.test.mjs e2e/unit/native-stock-manager.test.mjs e2e/unit/native-stock-connect.test.mjs
+          npm exec -w @dilla/e2e -- playwright test --config playwright.native-stock.config.ts --list
+      - name: Build ordinary versioned DEB from shipping client
+        run: node packages/desktop/scripts/build-native-linux-packages.mjs build "$RUNNER_TEMP/native-stock" 1.0.0
+      - name: Record package and producer digests
+        run: |
+          sha256sum "$RUNNER_TEMP/native-stock/dilla-1.0.0-linux-x64.deb" artifacts/e2e-test-tools/manifest.json packages/web/dist/dilla-manifest.json internal/mlswasi/testdata/dilla_core_wasi.wasm
+          dpkg-deb --field "$RUNNER_TEMP/native-stock/dilla-1.0.0-linux-x64.deb" Package Version Architecture
+      - name: Install stock DEB on disposable runner
+        run: sudo apt-get install -y "$RUNNER_TEMP/native-stock/dilla-1.0.0-linux-x64.deb"
+      - name: Bind installed files and version to the DEB
+        run: |
+          dpkg-deb -x "$RUNNER_TEMP/native-stock/dilla-1.0.0-linux-x64.deb" "$RUNNER_TEMP/native-extracted"
+          cmp "$RUNNER_TEMP/native-extracted/opt/Dilla/dilla-desktop" /opt/Dilla/dilla-desktop
+          cmp "$RUNNER_TEMP/native-extracted/opt/Dilla/resources/app.asar" /opt/Dilla/resources/app.asar
+          test "$(dpkg-query -W -f='${Version}' dilla)" = '1.0.0-1'
+          node -e "const asar=require('@electron/asar'); if(JSON.parse(asar.extractFile('/opt/Dilla/resources/app.asar','package.json')).version !== '1.0.0') throw Error('Wrong installed app version')"
+      - name: Prepare dedicated disposable non-root user
+        run: |
+          sudo useradd --create-home --shell /bin/bash dilla-ci
+          sudo cp -a "$GITHUB_WORKSPACE" /home/dilla-ci/workspace
+          sudo chown -R dilla-ci:dilla-ci /home/dilla-ci/workspace
+      - name: HTTPS test-host and stock manager feasibility
+        run: |
+          sudo -H -u dilla-ci env "PATH=$PATH" "GITHUB_ACTIONS=$GITHUB_ACTIONS" "GITHUB_SHA=$GITHUB_SHA" "GITHUB_RUN_ID=$GITHUB_RUN_ID" "GITHUB_RUN_ATTEMPT=$GITHUB_RUN_ATTEMPT" CI=true DILLA_E2E_TOOLING_DIR=/home/dilla-ci/workspace/artifacts/e2e-test-tools bash -c 'cd /home/dilla-ci/workspace && xvfb-run -a bash e2e/web/support/installed-keyring.sh bash packages/desktop/scripts/with-window-manager.sh npm exec -w @dilla/e2e -- playwright test --config playwright.native-stock.config.ts'
+
+  # Build/source proof only. Installed DEB/RPM/AUR qualification remains a
+  # separate release requirement; this producer does not claim that acceptance.
+  native-linux-packages:
+    name: desktop-linux-packages-x64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-web-dist
+          path: packages/web/dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-desktop-core
+          path: packages/core-wasm/pkg
+      - run: sudo apt-get update && sudo apt-get install -y rpm libpipewire-0.3-dev pkg-config
+      - run: npm ci
+      - run: node node_modules/electron/install.js
+      - name: Build native Linux release packages
+        run: |
+          version="$(node -p "require('./packages/desktop/package.json').version")"
+          node --input-type=module -e "import {verifyShippingCoreWasmInDist} from './e2e/web/support/shipping-wasm.mjs'; verifyShippingCoreWasmInDist('packages/web/dist')"
+          node packages/desktop/scripts/build-native-linux-packages.mjs build "$RUNNER_TEMP/native-linux-packages" "$version"
+          node --input-type=module -e "import {checkDesktopFuses} from './packages/desktop/scripts/check-fuses.mjs'; await checkDesktopFuses(process.argv[1])" "$RUNNER_TEMP/native-linux-packages"
+          node packages/desktop/scripts/build-native-linux-packages.mjs recipe "$version" "$RUNNER_TEMP/native-linux-packages/dilla-$version-linux-x64.deb" "$RUNNER_TEMP/native-linux-recipe"
+          cp "$RUNNER_TEMP/native-linux-recipe/dilla-$version-linux-x64.aur.tar.gz" "$RUNNER_TEMP/native-linux-packages/"
+      - name: Record native Linux package build provenance
+        run: node packages/desktop/scripts/build-provenance.mjs "$RUNNER_TEMP/native-linux-packages" linux-packages-x64
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: desktop-installers-linux-packages-x64
+          path: |
+            ${{ runner.temp }}/native-linux-packages/*.deb
+            ${{ runner.temp }}/native-linux-packages/*.rpm
+            ${{ runner.temp }}/native-linux-packages/*.aur.tar.gz
+            ${{ runner.temp }}/native-linux-packages/build-provenance-linux-packages-x64.json
+          if-no-files-found: error
+
+  native-linux-package-acceptance:
+    name: desktop-linux-package-acceptance-${{ matrix.format }}-x64
+    needs: [test-tools, native-linux-packages]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { format: deb, label: DEB }
+          - { format: rpm, label: RPM }
+          - { format: aur, label: AUR }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: desktop-installers-linux-packages-x64
+          path: ${{ runner.temp }}/native-linux-package-inputs
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-e2e-tools-linux-x64-${{ github.sha }}
+          path: artifacts/e2e-test-tools
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-web-dist
+          path: packages/web/dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - run: sudo apt-get update && sudo apt-get install -y libarchive-tools
+      # Attach to installed Electron via CDP; no downloaded test browser or
+      # Electron/npm native build is used by this acceptance consumer.
+      - run: npm ci --ignore-scripts
+      - name: Test native package acceptance observers
+        run: node --test e2e/unit/native-linux-package-acceptance.test.mjs e2e/unit/native-stock-sandbox.test.mjs
+      - name: Installed ${{ matrix.label }} package acceptance
+        run: bash e2e/web/support/native-linux-package-run.sh "${{ matrix.format }}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: desktop-linux-package-observation-${{ matrix.format }}-x64
+          path: |
+            ${{ runner.temp }}/native-linux-package-acceptance/*.json
+            ${{ runner.temp }}/native-linux-package-acceptance/*.txt
+          if-no-files-found: error
+
+  native:
+    name: desktop-${{ matrix.platform }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { os: ubuntu-24.04, platform: linux, arch: x64 }
+          - { os: windows-latest, platform: win, arch: x64 }
+          - { os: macos-15, platform: mac, arch: arm64 }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-web-dist
+          path: packages/web/dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-desktop-core
+          path: packages/core-wasm/pkg
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev pipewire wireplumber libgtk-3-dev pkg-config libarchive-tools
+      - run: npm ci
+      - run: node node_modules/electron/install.js
+      - name: Seal macOS npm Electron runtime for native notifications
+        if: runner.os == 'macOS'
+        run: node e2e/web/support/prepare-mac-electron-runtime.ts
+      - name: Linux installed sandbox prerequisite controls
+        if: runner.os == 'Linux'
+        run: |
+          CGO_ENABLED=0 go test ./packages/desktop/test/fixtures/linux-installed-sandbox-bootstrap
+          node --test packages/desktop/test/linux-installed-sandbox-bootstrap.test.mjs packages/desktop/test/linux-sandbox-package-runner.test.mjs packages/desktop/test/linux-installed-runtime-proof.test.mjs
+      - run: npm test -w @dilla/desktop
+      - run: npm run typecheck -w @dilla/desktop
+      - id: desktop-build
+        run: npm run build -w @dilla/desktop -- --existing-client
+      - run: npm run build:validation -w @dilla/desktop
+      - name: Linux display and Chromium sandbox helper
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb openbox x11-utils dbus-x11 libgbm1 libnss3 libasound2t64 libfuse2t64
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+      - if: runner.os == 'Linux'
+        run: npm run test:native:linux -w @dilla/desktop
+      - if: runner.os == 'Linux'
+        run: xvfb-run -a dbus-run-session -- bash packages/desktop/scripts/with-window-manager.sh npm run test:electron -w @dilla/desktop -- --grep-invert "application-audio.spec.ts"
+      - if: runner.os != 'Linux'
+        run: npm run test:electron -w @dilla/desktop -- --grep-invert "application-audio.spec.ts"
+      - name: Application audio encryption and exclusion
+        if: runner.os == 'Windows'
+        timeout-minutes: 5
+        run: |
+          ./packages/desktop/scripts/prepare-windows-audio.ps1 -Run {
+            npm exec -w @dilla/desktop -- playwright test --config playwright.config.ts application-audio.spec.ts
+            if ($LASTEXITCODE -ne 0) { throw 'Windows application audio acceptance failed' }
+          }
+      - name: Record macOS audio hardware for capture acceptance
+        if: runner.os == 'macOS'
+        run: system_profiler SPAudioDataType
+      - name: Application audio encryption and exclusion
+        if: runner.os == 'Linux'
+        run: xvfb-run -a dbus-run-session -- bash packages/desktop/scripts/with-window-manager.sh npm exec -w @dilla/desktop -- playwright test --config playwright.config.ts application-audio.spec.ts
+      - name: Application audio encryption and exclusion
+        if: runner.os == 'macOS'
+        run: npm exec -w @dilla/desktop -- playwright test --config playwright.config.ts application-audio.spec.ts
+      # Playwright clears its test-results directory when each invocation starts.
+      # Run installed tests last so their proof survives until the artifact upload.
+      - name: Installed unsigned Sparkle upgrade and signed-feed rejection
+        if: runner.os == 'macOS'
+        run: node --test packages/desktop/test/native/mac-upgrade.test.mjs
+      - name: Installed upgrade acceptance
+        if: runner.os == 'Linux'
+        run: xvfb-run -a dbus-run-session -- bash packages/desktop/scripts/with-window-manager.sh node --test packages/desktop/test/native/installed-upgrade.test.mjs
+      - name: Linux AppImage sandbox native acceptance
+        if: runner.os == 'Linux'
+        run: node packages/desktop/test/support/linux-installed-runtime-proof.mjs packages/desktop/test-results/linux-installed-upgrade.json
+      - name: Installed upgrade acceptance
+        if: runner.os == 'Windows'
+        run: node --test packages/desktop/test/native/installed-upgrade.test.mjs
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: desktop-installed-upgrade-${{ matrix.platform }}-${{ matrix.arch }}
+          path: packages/desktop/test-results/*installed-upgrade.json
+          if-no-files-found: error
+      - name: Initial installed sandbox prerequisite proof
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: desktop-initial-sandbox-native-linux-x64
+          path: ${{ runner.temp }}/dilla-installed-sandbox-initial.json
+          if-no-files-found: error
+      - run: npm run pack -w @dilla/desktop -- --config.electronDist=../../node_modules/electron/dist --${{ matrix.platform }} --${{ matrix.arch }}
+        env:
+          CSC_FOR_PULL_REQUEST: 'true' # Only the configured ad-hoc identity; no commercial signing credentials.
+      - name: Stage the App Store Connect API key for notarization
+        if: runner.os == 'macOS'
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY }}
+        run: if [ -n "$APPLE_API_KEY_P8" ]; then printf '%s\n' "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/AuthKey.p8" && chmod 600 "$RUNNER_TEMP/AuthKey.p8"; fi
+      - name: Build installable desktop artifacts
+        run: npm run dist -w @dilla/desktop -- --config.electronDist=../../node_modules/electron/dist --${{ matrix.platform }} --${{ matrix.arch }}
+        env:
+          CSC_FOR_PULL_REQUEST: 'true' # A pull request of this repository signs like a push; a fork's gets no secrets and stays ad-hoc.
+          # The Developer ID certificate and the notarization key reach the macOS build only; Windows stays unsigned.
+          CSC_LINK: ${{ runner.os == 'macOS' && secrets.CSC_LINK || '' }}
+          CSC_KEY_PASSWORD: ${{ runner.os == 'macOS' && secrets.CSC_KEY_PASSWORD || '' }}
+          APPLE_API_KEY: ${{ runner.os == 'macOS' && secrets.APPLE_API_KEY != '' && format('{0}/AuthKey.p8', runner.temp) || '' }}
+          APPLE_API_KEY_ID: ${{ runner.os == 'macOS' && secrets.APPLE_API_KEY_ID || '' }}
+          APPLE_API_ISSUER: ${{ runner.os == 'macOS' && secrets.APPLE_API_ISSUER || '' }}
+      - run: node packages/desktop/scripts/check-fuses.mjs
+      - name: Linux AppImage final package inspection mutations
+        if: runner.os == 'Linux'
+        run: node packages/desktop/scripts/test-linux-sandbox-package.mjs packages/desktop/out
+      - name: Record native desktop build provenance
+        run: node packages/desktop/scripts/build-provenance.mjs packages/desktop/out ${{ matrix.platform }}-${{ matrix.arch }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: desktop-installers-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            packages/desktop/out/*.AppImage
+            packages/desktop/out/*.sandbox
+            packages/desktop/out/*.sandbox.json
+            packages/desktop/out/*.exe
+            packages/desktop/out/build-provenance-*.json
+            packages/desktop/out/*.dmg
+            packages/desktop/out/*.zip
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: desktop-validation-${{ matrix.platform }}-${{ matrix.arch }}
+          path: packages/desktop/test-report
+          if-no-files-found: error
+      - if: failure() && steps.desktop-build.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: desktop-failure-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            packages/desktop/test-results
+            ${{ runner.temp }}/dilla-windows-audio/*.log
+            ${{ runner.temp }}/dilla-windows-audio/*.out
+            ${{ runner.temp }}/dilla-windows-audio/*.err
+          if-no-files-found: error
+
+  voice:
+    name: desktop-voice-${{ matrix.platform }}-${{ matrix.arch }}
+    needs: test-tools
+    env:
+      DILLA_E2E_TOOLING_DIR: ${{ github.workspace }}/artifacts/e2e-test-tools
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-24.04, windows-latest, macos-15]
+        include:
+          - { os: ubuntu-24.04, platform: linux, arch: x64 }
+          - { os: windows-latest, platform: win, arch: x64 }
+          - { os: macos-15, platform: mac, arch: arm64 }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      # Default download scope is this workflow run; verification also binds checkout SHA and native OS/arch.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-e2e-tools-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.sha }}
+          path: artifacts/e2e-test-tools
+      - run: node scripts/e2e-test-tools.mjs verify artifacts/e2e-test-tools
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-web-dist
+          path: packages/web/dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-desktop-core
+          path: packages/core-wasm/pkg
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev pipewire wireplumber libgtk-3-dev pkg-config xvfb openbox x11-utils dbus-x11 libgbm1 libnss3 libasound2t64 dunst
+      - run: npm ci
+      - run: node node_modules/electron/install.js
+      - name: Seal macOS npm Electron runtime for native notifications
+        if: runner.os == 'macOS'
+        run: node e2e/web/support/prepare-mac-electron-runtime.ts
+      - name: Test-host directory locks retain shared and exclusive semantics
+        run: go test ./internal/ops -run 'Lock|BackupAndServe|ServeAdmits'
+      - run: npm run build -w @dilla/desktop -- --existing-client
+      - if: runner.os == 'Linux'
+        run: |
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+      - name: macOS native notification authorization diagnostic
+        if: runner.os == 'macOS'
+        env:
+          DILLA_E2E_MAC_NOTIFICATION_DIAGNOSTICS: '1'
+        run: |
+          npm exec -w @dilla/e2e -- playwright test --config playwright.desktop-voice.config.ts --project=electron-voice ring.spec.ts --grep "answer: bob rings" --workers=1 --max-failures=1
+      # The voice suite is the same Chromium media stack on every OS; Linux runs it. Windows and macOS keep their
+      # native pieces here: the macOS notification diagnostic above and the performance comparison below.
+      - name: Desktop voice end-to-end coverage in Electron
+        if: runner.os == 'Linux'
+        env:
+          DILLA_E2E_NOTIFICATIONS: '1'
+        run: xvfb-run -a dbus-run-session -- bash packages/desktop/scripts/with-window-manager.sh npm exec -w @dilla/e2e -- playwright test --config playwright.desktop-voice.config.ts --project=electron-voice --workers=1 --max-failures=1
+      - run: npm exec -w @dilla/e2e -- playwright install --with-deps chromium
+      - if: runner.os == 'Linux'
+        run: node packages/desktop/scripts/prepare-browser-sandbox.mjs
+      - name: Desktop performance comparison
+        if: runner.os == 'Linux'
+        env:
+          DILLA_E2E_NOTIFICATIONS: '1'
+        run: xvfb-run -a dbus-run-session -- bash packages/desktop/scripts/with-window-manager.sh node packages/desktop/scripts/run-performance.mjs
+      - name: Desktop performance comparison
+        if: runner.os != 'Linux'
+        run: node packages/desktop/scripts/run-performance.mjs
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: desktop-performance-${{ matrix.platform }}-${{ matrix.arch }}
+          path: packages/desktop/test-report/performance-*.json
+          if-no-files-found: error
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: desktop-voice-diagnostics-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            e2e/desktop-voice-results/**/autoplay-*.json
+            e2e/desktop-voice-results/**/signal-lifecycle.json
+            e2e/desktop-voice-results/**/mac-native-notification-*.json
+          if-no-files-found: error
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: desktop-voice-failure-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            e2e/desktop-voice-results
+            e2e/desktop-voice-report
+            e2e/performance-results-browser
+            e2e/performance-results-desktop
+          if-no-files-found: error
+
+  client:
+    name: desktop-client-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.shard }}
+    needs: test-tools
+    env:
+      DILLA_E2E_TOOLING_DIR: ${{ github.workspace }}/artifacts/e2e-test-tools
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: true
+      # The shared client suite is the same Chromium renderer on every OS: Linux runs all of it, in three shards.
+      # Windows and macOS run the desktop-specific specs alone: the installed upgrade of a real account (the release
+      # verifier's per-target proof) and the native window shell.
+      matrix:
+        include:
+          - { os: ubuntu-24.04, platform: linux, arch: x64, shard: 1 }
+          - { os: ubuntu-24.04, platform: linux, arch: x64, shard: 2 }
+          - { os: ubuntu-24.04, platform: linux, arch: x64, shard: 3 }
+          - { os: windows-latest, platform: win, arch: x64, shard: 1, specs: 'web/installed-upgrade-account.spec.ts web/signup.spec.ts' }
+          - { os: macos-15, platform: mac, arch: arm64, shard: 1, specs: 'web/installed-upgrade-account.spec.ts web/signup.spec.ts' }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      # Default download scope is this workflow run; verification also binds checkout SHA and native OS/arch.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-e2e-tools-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.sha }}
+          path: artifacts/e2e-test-tools
+      - run: node scripts/e2e-test-tools.mjs verify artifacts/e2e-test-tools
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-web-dist
+          path: packages/web/dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-desktop-core
+          path: packages/core-wasm/pkg
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev pipewire wireplumber libgtk-3-dev pkg-config xvfb openbox x11-utils dbus-x11 libgbm1 libnss3 libasound2t64 gnome-keyring libfuse2t64
+      - run: npm ci
+      - run: node node_modules/electron/install.js
+      - name: Seal macOS npm Electron runtime for native notifications
+        if: runner.os == 'macOS'
+        run: node e2e/web/support/prepare-mac-electron-runtime.ts
+      - name: Test-host directory locks retain shared and exclusive semantics
+        run: go test ./internal/ops -run 'Lock|BackupAndServe|ServeAdmits'
+      - run: npm exec -w @dilla/e2e -- playwright install --with-deps chromium
+      - if: runner.os == 'Linux'
+        run: node packages/desktop/scripts/prepare-browser-sandbox.mjs
+      - run: npm run build -w @dilla/desktop -- --existing-client
+      - if: runner.os == 'Linux'
+        run: |
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+      - name: Shared client end-to-end coverage in Electron
+        if: runner.os == 'Linux'
+        env:
+          CHROME_DEVEL_SANDBOX: ${{ github.workspace }}/node_modules/electron/dist/chrome-sandbox
+        run: xvfb-run -a bash e2e/web/support/installed-keyring.sh bash packages/desktop/scripts/with-window-manager.sh npm exec -w @dilla/e2e -- playwright test --config playwright.desktop.config.ts --project=electron-client --shard=${{ matrix.shard }}/3 --max-failures=1
+      - name: Desktop-specific client coverage in Electron
+        if: runner.os != 'Linux'
+        run: npm exec -w @dilla/e2e -- playwright test --config playwright.desktop.config.ts --project=electron-client ${{ matrix.specs }} --max-failures=1
+      - name: Collect installed account upgrade proof
+        id: installed-account
+        run: node packages/desktop/scripts/installed-account-proof.mjs e2e/desktop-client-results ${{ matrix.platform }}-${{ matrix.arch }} packages/desktop/test-report
+      - name: Initial installed account sandbox prerequisite proof
+        if: runner.os == 'Linux' && steps.installed-account.outputs.present == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: desktop-initial-sandbox-account-linux-x64
+          path: ${{ runner.temp }}/dilla-installed-sandbox-initial.json
+          if-no-files-found: error
+      - name: Installed account upgrade proof
+        if: steps.installed-account.outputs.present == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: desktop-installed-account-${{ matrix.platform }}-${{ matrix.arch }}
+          path: packages/desktop/test-report/installed-account-${{ matrix.platform }}-${{ matrix.arch }}.json
+          if-no-files-found: error
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: desktop-client-diagnostics-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.shard }}
+          path: |
+            e2e/desktop-client-results/**/error-context.md
+            e2e/desktop-client-results/**/signal-lifecycle.json
+            e2e/desktop-client-results/**/installed-startup-diagnostics.json
+            e2e/test-results/testhost-*.log
+          if-no-files-found: error
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: desktop-client-failure-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.shard }}
+          path: |
+            e2e/desktop-client-results
+            e2e/desktop-client-report
+          if-no-files-found: error

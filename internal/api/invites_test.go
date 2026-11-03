@@ -876,9 +876,8 @@ func TestLandingOpenGraph(t *testing.T) {
 	}
 }
 
-// The template's literal colours are the Signal tokens, dark (the signal theme)
-// and light (the light theme the system preference selects), read from the
-// generated tokens.css so a token change fails here until the page follows.
+// The template uses the single supported Signal palette. Read generated tokens
+// so a token change fails here until the public invite page follows.
 func TestLandingTokensMatchSignal(t *testing.T) {
 	raw, err := os.ReadFile("../../packages/design-tokens/dist/tokens.css")
 	if err != nil {
@@ -893,16 +892,13 @@ func TestLandingTokensMatchSignal(t *testing.T) {
 		b := css[at:]
 		return b[:strings.Index(b, "}")]
 	}
-	dark := block(`[data-theme="signal"] {`)
-	light := block("@media (prefers-color-scheme: light)")
+	signal := block(`[data-theme="signal"] {`)
 
 	e, code := landingEnv(t, false, 5, 0, 24*time.Hour)
 	_, page := landingBody(t, e, code)
-	cut := strings.Index(page, "prefers-color-scheme: light")
-	if cut < 0 {
-		t.Fatalf("the page has no light scheme:\n%s", page)
+	if strings.Contains(page, "prefers-color-scheme") || !strings.Contains(page, "color-scheme:dark") {
+		t.Fatal("the invite page must use the supported Signal palette regardless of system preference")
 	}
-	pageDark, pageLight := page[:cut], page[cut:]
 	decl := regexp.MustCompile(`--(bg|bg-2|surface|fg|fg-2|accent|accent-ink|hairline):\s*(#[0-9A-Fa-f]{6})`)
 	find := func(src, name string) string {
 		for _, m := range decl.FindAllStringSubmatch(src, -1) {
@@ -913,11 +909,9 @@ func TestLandingTokensMatchSignal(t *testing.T) {
 		return ""
 	}
 	for _, name := range []string{"bg", "bg-2", "surface", "fg", "fg-2", "accent", "accent-ink", "hairline"} {
-		for _, side := range []struct{ tokens, page string }{{dark, pageDark}, {light, pageLight}} {
-			want, got := find(side.tokens, name), find(side.page, name)
-			if want == "" || !strings.EqualFold(got, want) {
-				t.Fatalf("--%s = %q in the page, %q in tokens.css", name, got, want)
-			}
+		want, got := find(signal, name), find(page, name)
+		if want == "" || !strings.EqualFold(got, want) {
+			t.Fatalf("--%s = %q in the page, %q in tokens.css", name, got, want)
 		}
 	}
 }

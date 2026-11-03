@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { SliceStore } from './store';
-import type { AccountState, CommunitySummary, SliceName } from './types';
+import type { AccountState, CommunitySummary, SliceName, TrayItem } from './types';
 
 function account(phase: AccountState['phase']): AccountState {
   return { phase, instance: null, user: null, deviceId: null, recoveryKey: null, error: null, signIn: null, rootMismatch: false, ownTrust: null, factorSetup: null };
@@ -13,6 +13,26 @@ function recording() {
 }
 
 describe('SliceStore', () => {
+  it('publishes only a boolean for pending attachments across every retained tray', () => {
+    const { store, posted } = recording();
+    const file: TrayItem = { id: 'file', name: 'note.txt', size: 4, mime: 'text/plain', image: false, phase: 'preparing', reason: '' };
+    store.set('tray:a', [file]);
+    store.set('tray:b', [file]);
+    store.set('tray:a', []);
+    store.set('tray:b', [{ ...file, phase: 'ready' }]);
+    // Sending/discarding one conversation must not clear another conversation's guard.
+    expect(store.get('pendingAttachments')).toBe(true);
+    expect(posted.filter(p => p.name === 'pendingAttachments').map(p => p.value)).toEqual([true]);
+    store.set('tray:b', []);
+    expect(store.get('pendingAttachments')).toBe(false);
+    // Restored files participate too, and clearing every tray (wipe/reset) releases the guard.
+    store.set('tray:a', [file]);
+    store.set('tray:b', [file]);
+    store.set('tray:a', []);
+    store.set('tray:b', []);
+    expect(posted.filter(p => p.name === 'pendingAttachments').map(p => p.value)).toEqual([true, false, true, false]);
+  });
+
   it('publishes every change with a revision per slice name that starts at 1', () => {
     const { store, posted } = recording();
     store.set('account', account('loading'));

@@ -770,4 +770,6 @@ export const en = {
   'invite.error.forbidden': 'You cannot invite people to this server.',
   'invite.error.other': 'Could not make an invite link ({code}).',
   'invite.options': 'more options',
+  'voice.shareAudio.application': 'an application…',
+  'voice.shareAudio.none.application': 'Choose an application in “sound from” to share its audio. Dilla’s call audio is excluded.',
 } as const;

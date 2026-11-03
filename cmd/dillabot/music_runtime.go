@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"io"
 	"log/slog"
 	"os/exec"
 	"slices"
@@ -16,11 +15,9 @@ import (
 	"github.com/jonasthim/dilla/internal/bot/music/livekit"
 	"github.com/jonasthim/dilla/internal/bot/music/persistence"
 	"github.com/jonasthim/dilla/internal/bot/music/session"
-	"github.com/jonasthim/dilla/internal/bot/music/spotify"
 	"github.com/jonasthim/dilla/internal/bot/music/youtube"
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/bot/service"
-	"github.com/jonasthim/dilla/internal/bot/spotifyauth"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/store"
 )
@@ -127,36 +124,14 @@ type installationMusicNative interface {
 	livekit.EpochSource
 }
 
-type installationSpotifyCredentials interface {
-	Load(context.Context) (spotifyauth.Token, error)
-}
-
-type installationSpotifyCatalogResolver struct {
-	credentials installationSpotifyCredentials
-	catalog     *spotify.Catalog
-}
-
-func (r installationSpotifyCatalogResolver) ResolveSpotify(ctx context.Context, input string, requester id.ID) ([]music.Track, error) {
-	if r.credentials == nil || r.catalog == nil {
-		return nil, service.ErrSpotifyCredentials
-	}
-	token, err := r.credentials.Load(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return r.catalog.Expand(ctx, token.AccessToken, input, requester)
-}
-
 // musicRuntimeDeps contains the process-wide dependencies and the channel
 // identity for one supervisor. Each supervisor gets its own queue/session
-// state; SpotifyLease is shared by all supervisors in this service process.
+// state.
 type musicRuntimeDeps struct {
 	Community, Channel id.ID
 	Calls              musicCallStarter
 	JoinCallGroup      func(context.Context) error
-	SpotifyPCM         session.PCMStarter
 	YouTubePCM         youtube.PCMSourceStarter
-	LeaseManager       *music.SpotifyLeaseManager
 	Encoder            session.EncoderStarter
 	Publisher          session.PublisherStarter
 	Epochs             livekit.EpochSource
@@ -192,27 +167,10 @@ func newMusicQueueStarter(deps musicRuntimeDeps) (session.QueueStarter, error) {
 		if ctx == nil || track.CanonicalID == "" {
 			return session.Options{}, session.ErrInvalid
 		}
-		var pcm session.PCMStarter
-		switch track.Provider {
-		case music.ProviderSpotify:
-			if deps.SpotifyPCM == nil {
-				return session.Options{}, spotify.ErrProviderUnavailable
-			}
-			pcm = deps.SpotifyPCM
-		case music.ProviderYouTube:
-			if deps.YouTubePCM == nil {
-				return session.Options{}, session.ErrInvalid
-			}
-			pcm = session.YouTubePCM{Source: deps.YouTubePCM}
-		default:
+		if track.Provider != music.ProviderYouTube || deps.YouTubePCM == nil {
 			return session.Options{}, session.ErrInvalid
 		}
-		if pcm == nil {
-			return session.Options{}, session.ErrInvalid
-		}
-		if track.Provider == music.ProviderSpotify && deps.LeaseManager == nil {
-			return session.Options{}, session.ErrInvalid
-		}
+		pcm := session.YouTubePCM{Source: deps.YouTubePCM}
 		prepareCall := func(ctx context.Context) (client.Call, error) {
 			var joinErr error
 			if deps.JoinCallGroup != nil {
@@ -231,14 +189,10 @@ func newMusicQueueStarter(deps musicRuntimeDeps) (session.QueueStarter, error) {
 			_ = music.StartStage(ctx, "call_fields", nil)
 			return call, nil
 		}
-		var acquire session.LeaseAcquire
-		if track.Provider == music.ProviderSpotify {
-			acquire = session.AcquireSpotify(deps.LeaseManager)
-		}
 		return session.Options{
 			Community: deps.Community, Channel: deps.Channel, Provider: track.Provider,
 			Track: track.CanonicalID, PrepareCall: prepareCall,
-			Acquire: acquire, PCM: pcm,
+			PCM:     pcm,
 			Encoder: deps.Encoder, Publisher: publisher, Epochs: deps.Epochs,
 		}, nil
 	}
@@ -246,10 +200,10 @@ func newMusicQueueStarter(deps musicRuntimeDeps) (session.QueueStarter, error) {
 }
 
 func newInstallationYouTubeQueueStarter(instance, installation, community, channel id.ID, calls *client.Session, source installationMusicNative) (session.QueueStarter, error) {
-	return newInstallationMusicQueueStarter(instance, installation, community, channel, calls, source, nil, nil, nil)
+	return newInstallationMusicQueueStarter(instance, installation, community, channel, calls, source, nil)
 }
 
-func newInstallationMusicQueueStarter(instance, installation, community, channel id.ID, calls *client.Session, source installationMusicNative, spotifyPCM session.PCMStarter, youtubeSource youtube.PCMSourceStarter, leases *music.SpotifyLeaseManager, joinCallGroup ...func(context.Context) error) (session.QueueStarter, error) {
+func newInstallationMusicQueueStarter(instance, installation, community, channel id.ID, calls *client.Session, source installationMusicNative, youtubeSource youtube.PCMSourceStarter, joinCallGroup ...func(context.Context) error) (session.QueueStarter, error) {
 	if instance.IsZero() || installation.IsZero() || community.IsZero() || channel.IsZero() || calls == nil || source == nil || calls.InstanceID() != instance {
 		return session.QueueStarter{}, errors.New("music runtime dependencies unavailable")
 	}
@@ -267,14 +221,12 @@ func newInstallationMusicQueueStarter(instance, installation, community, channel
 	return newMusicQueueStarter(musicRuntimeDeps{
 		Community: community, Channel: channel, Calls: calls,
 		JoinCallGroup: join,
-		SpotifyPCM:    spotifyPCM,
 		YouTubePCM: func() youtube.PCMSourceStarter {
 			if youtubeSource != nil {
 				return youtubeSource
 			}
 			return youtube.PCMStarter{YTDLP: "yt-dlp", FFmpeg: "ffmpeg", Node: "node", Logger: slog.Default().With("installation_id", installation.String())}
 		}(),
-		LeaseManager: leases,
 		Encoder: session.RuntimeEncoder{Config: session.EncoderConfig{
 			Capacity: 50, Options: encode.Options{FFmpegPath: "ffmpeg"},
 		}},
@@ -303,7 +255,7 @@ type runtimeMusicAuthorityStore struct {
 	community    id.ID
 }
 
-func newRuntimeMusicInteractions(installation, community id.ID, capabilities uint64, runtime *client.Runtime, session *client.Session, registry *musicQueueRegistry, logger *slog.Logger, spotifyResolvers ...service.SpotifyMusicTrackResolver) (*service.MusicInteractions, error) {
+func newRuntimeMusicInteractions(installation, community id.ID, capabilities uint64, runtime *client.Runtime, session *client.Session, registry *musicQueueRegistry, logger *slog.Logger) (*service.MusicInteractions, error) {
 	if capabilities&botMusicCapability == 0 {
 		return nil, nil
 	}
@@ -326,9 +278,6 @@ func newRuntimeMusicInteractions(installation, community id.ID, capabilities uin
 		CurrentState:        registry.CurrentState,
 		OnImmediateControl:  registry.applyImmediateControl,
 		OnPersistedSnapshot: musicSnapshotCommitCallback(registry, logger),
-	}
-	if len(spotifyResolvers) > 0 {
-		handlers.SpotifyResolver = spotifyResolvers[0]
 	}
 	if resolver, err := newYouTubeMetadataResolver(); err == nil {
 		handlers.Resolver = service.LoggingMusicTrackResolver{Resolver: resolver, Logger: logger, InstallationID: installation}
@@ -413,6 +362,7 @@ func restoreMusicSupervisorsWithStarterFactory(ctx context.Context, community id
 	}
 	runtime := &musicQueueRuntime{supervisors: make(map[id.ID]*music.Supervisor), community: community, store: store}
 	seen := make(map[id.ID]struct{}, len(channels))
+	voiceChannels := 0
 	for _, channel := range channels {
 		if channel.ID.IsZero() || channel.CommunityID != community {
 			_ = runtime.Close()
@@ -426,7 +376,8 @@ func restoreMusicSupervisorsWithStarterFactory(ctx context.Context, community id
 		if channel.Kind != musicVoiceChannelKind {
 			continue
 		}
-		if len(runtime.supervisors) == maxMusicSupervisors {
+		voiceChannels++
+		if voiceChannels > maxMusicSupervisors {
 			_ = runtime.Close()
 			return nil, errors.New("music voice channel limit exceeded")
 		}
@@ -441,6 +392,12 @@ func restoreMusicSupervisorsWithStarterFactory(ctx context.Context, community id
 		supervisor, err := newMusicSupervisor(ctx, channel.ID, store, starter)
 		if err != nil {
 			_ = starter.Close()
+			if errors.Is(err, persistence.ErrUnsupportedProvider) {
+				// Quarantine only this channel. Preserve its encrypted row for recovery
+				// and retain healthy channels regardless of inventory order.
+				slog.WarnContext(ctx, "bot music queue channel unavailable", "channel_id", channel.ID.String(), "class", "unsupported_provider")
+				continue
+			}
 			_ = runtime.Close()
 			return nil, err
 		}
@@ -853,6 +810,10 @@ func syncMusicSupervisorsWithStarterFactory(ctx context.Context, runtime *musicQ
 		supervisor, err := newMusicSupervisor(ctx, channel.ID, runtime.store, starter)
 		if err != nil {
 			_ = starter.Close()
+			if errors.Is(err, persistence.ErrUnsupportedProvider) {
+				slog.WarnContext(ctx, "bot music queue channel unavailable", "channel_id", channel.ID.String(), "class", "unsupported_provider")
+				continue
+			}
 			return err
 		}
 		runtime.mu.Lock()
@@ -1049,11 +1010,4 @@ func (r *musicQueueRegistry) SkipNotices(installation id.ID) *service.MusicSkipN
 		r.notices[installation] = &service.MusicSkipNotices{}
 	}
 	return r.notices[installation]
-}
-
-type unavailableProviderPCM struct{ cause error }
-
-func (p unavailableProviderPCM) Check(context.Context) error { return p.cause }
-func (p unavailableProviderPCM) Start(context.Context, string) (io.ReadCloser, error) {
-	return nil, p.cause
 }

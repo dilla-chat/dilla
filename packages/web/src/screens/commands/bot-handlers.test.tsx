@@ -528,8 +528,7 @@ describe('Bot slash command provider', () => {
       const f = fixture(); mountMusicPicker(f.client);
       const field = screen.getByRole('combobox', { name: 'query-or-url' });
       for (const query of ['https:', 'https:/', '//youtu.be/LvH_', 'www.youtube.com/watch?v=LvH_',
-        'youtube.com/watch?v=LvH_', 'youtu.be/LvH_', 'music.youtube.com/watch?v=LvH_', 'm.youtube.com/watch?v=LvH_', 'open.spotify.com/track/', 'spotify:track:0123456789012345678901',
-        'https://www.youtube.com/watch?v=LvH_', 'https://youtu.be/LvH_ft4XR1Q?si=shared']) {
+        'youtube.com/watch?v=LvH_', 'youtu.be/LvH_', 'music.youtube.com/watch?v=LvH_', 'm.youtube.com/watch?v=LvH_', 'https://www.youtube.com/watch?v=LvH_', 'https://youtu.be/LvH_ft4XR1Q?si=shared']) {
         fireEvent.change(field, { target: { value: query } });
         await act(() => vi.advanceTimersByTimeAsync(250));
       }
@@ -538,8 +537,7 @@ describe('Bot slash command provider', () => {
   });
 
   it.each(['youtu.be/LvH_ft4XR1Q?si=shared', 'youtube.com/watch?v=LvH_ft4XR1Q', 'www.youtube.com/watch?v=LvH_ft4XR1Q',
-    'm.youtube.com/watch?v=LvH_ft4XR1Q', 'music.youtube.com/watch?v=LvH_ft4XR1Q', 'open.spotify.com/track/0123456789012345678901',
-    'spotify:track:0123456789012345678901', 'https:', 'https:/', '//youtu.be/LvH_ft4XR1Q'])
+    'm.youtube.com/watch?v=LvH_ft4XR1Q', 'music.youtube.com/watch?v=LvH_ft4XR1Q', 'https:', 'https:/', '//youtu.be/LvH_ft4XR1Q'])
     ('sends URL-like play input %s unchanged to strict enqueue without searching', async input => {
       const f = fixture(); const capture: { value?: ReturnType<typeof useBotCommandProvider> } = {};
       mountProvider(f.client, capture); await waitFor(() => expect(capture.value).toBeDefined());
@@ -548,8 +546,8 @@ describe('Bot slash command provider', () => {
       expect(f.requests.find(row => row.operation === 12)).toMatchObject({ args: [input] });
   });
 
-  it.each(['Spotify: top hits', 'youtube.com rewind', 'spotify:track: top hits', 'http', 'https', 'http songs', 'https music',
-    'www.favorite songs', 'youtube. rewind', 'youtu.be rewind', 'open.spotify.com hits'])
+  it.each(['youtube.com rewind', 'http', 'https', 'http songs', 'https music',
+    'www.favorite songs', 'youtube. rewind', 'youtu.be rewind'])
     ('searches ordinary text %s with the exact op 11 payload in play and autocomplete', async input => {
       vi.useFakeTimers();
       try {

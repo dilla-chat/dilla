@@ -15,15 +15,6 @@ const (
 	musicProviderStatusDataLimit = 256
 )
 
-type ProviderAccount uint64
-
-const (
-	ProviderAccountUnknown ProviderAccount = iota
-	ProviderAccountNotLinked
-	ProviderAccountLinked
-	ProviderAccountNeedsAttention
-)
-
 type ProviderSetup uint64
 
 const (
@@ -35,17 +26,11 @@ const (
 type ProviderReason uint64
 
 const (
-	ProviderReasonNone ProviderReason = iota
-	ProviderReasonMissingCredentials
-	ProviderReasonInvalidCredentials
-	ProviderReasonBindingMismatch
-	ProviderReasonAccountMismatch
-	ProviderReasonHelperMissing
-	ProviderReasonHelperInvalid
-	ProviderReasonStateDirectoryUnavailable
-	ProviderReasonDependenciesMissing
-	ProviderReasonUnsupportedBot
-	ProviderReasonUnavailable
+	ProviderReasonNone ProviderReason = 0
+	// Values 1–7 are reserved for retired provider diagnostics.
+	ProviderReasonDependenciesMissing ProviderReason = 8
+	ProviderReasonUnsupportedBot      ProviderReason = 9
+	ProviderReasonUnavailable         ProviderReason = 10
 )
 
 // MusicProviderStatusSnapshot is a single fresh observation. Its fields are
@@ -53,10 +38,6 @@ const (
 type MusicProviderStatusSnapshot struct {
 	InstallationID        id.ID
 	ObservedAt            uint64
-	SpotifyAccount        ProviderAccount
-	SpotifyAccountReason  ProviderReason
-	SpotifyPlayback       ProviderSetup
-	SpotifyPlaybackReason ProviderReason
 	YouTubePlayback       ProviderSetup
 	YouTubePlaybackReason ProviderReason
 }
@@ -91,15 +72,14 @@ func (h MusicProviderStatusInteractions) get(ctx context.Context, actor Interact
 		return InteractionResult{Status: interactionStatusForbidden}, nil
 	}
 	snapshot := h.Snapshot(ctx)
-	if snapshot.InstallationID.IsZero() || snapshot.ObservedAt == 0 || snapshot.SpotifyAccount > ProviderAccountNeedsAttention ||
-		snapshot.SpotifyAccountReason > ProviderReasonUnavailable || snapshot.SpotifyPlayback > ProviderMissingRequirements ||
-		snapshot.SpotifyPlaybackReason > ProviderReasonUnavailable || snapshot.YouTubePlayback > ProviderMissingRequirements ||
-		snapshot.YouTubePlaybackReason > ProviderReasonUnavailable {
+	if snapshot.InstallationID.IsZero() || snapshot.ObservedAt == 0 || snapshot.YouTubePlayback > ProviderMissingRequirements ||
+		(snapshot.YouTubePlaybackReason != ProviderReasonNone &&
+			(snapshot.YouTubePlaybackReason < ProviderReasonDependenciesMissing || snapshot.YouTubePlaybackReason > ProviderReasonUnavailable)) {
 		return InteractionResult{}, errors.New("invalid music provider status snapshot")
 	}
+	// Keep retired slots zero so YouTube retains its v1 wire positions.
 	data, err := cborx.Marshal([]any{uint64(1), snapshot.InstallationID, snapshot.ObservedAt,
-		uint64(snapshot.SpotifyAccount), uint64(snapshot.SpotifyAccountReason), uint64(snapshot.SpotifyPlayback),
-		uint64(snapshot.SpotifyPlaybackReason), uint64(snapshot.YouTubePlayback), uint64(snapshot.YouTubePlaybackReason)})
+		uint64(0), uint64(0), uint64(0), uint64(0), uint64(snapshot.YouTubePlayback), uint64(snapshot.YouTubePlaybackReason)})
 	if err != nil {
 		return InteractionResult{}, err
 	}

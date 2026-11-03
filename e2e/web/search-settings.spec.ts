@@ -1,3 +1,5 @@
+import { themes } from '../../packages/design-tokens/src/tokens';
+import { desktopE2E } from './support/electron.ts';
 import { expect, type Locator } from '@playwright/test';
 import { advanceClock, composerBox, copy, expectAccessible, closeSettings, instanceInvite, joinCommunity, openChannel, openSettings, Peer, rowById, settingsDialog, signUp, WAIT } from './support/app';
 import { test } from './support/second';
@@ -41,6 +43,7 @@ test('native edit is searched by prefix and deleted text disappears after a posi
 });
 
 test('Privacy, Keyboard and Diagnostics open on a phone with the nav as chips and close with Escape', async ({ page, peer, instanceName }) => {
+  test.skip(desktopE2E(), 'Mobile UI is outside the desktop release: the native minimum window size keeps a 360 px request at the desktop layout. The browser lane retains these mobile assertions.');
   await page.setViewportSize({ width: 360, height: 740 });
   const setup = await peer.setup({});
   await peer.register();
@@ -80,7 +83,7 @@ test('the search palette finds a setting and opens its section', async ({ page, 
   const result = page.getByRole('option', { name: new RegExp(`${copy('workspace.group.you')} / ${copy('workspace.voice')}`) }).first();
   await expect(result).toBeVisible({ timeout: WAIT });
   await result.click();
-  await expect(page).toHaveURL('/settings/voice', { timeout: WAIT });
+  await expect(page).toHaveURL(/\/settings\/voice$/, { timeout: WAIT });
   const settings = page.getByRole('dialog', { name: copy('settings.title'), exact: true });
   await expect(settings.getByRole('heading', { name: copy('settings.voice.section'), exact: true })).toBeVisible();
   await closeSettings(page);
@@ -94,16 +97,17 @@ test('Appearance controls fit desktop rows and the phone section header keeps it
   await openChannel(page, peer.communityName, peer.channelName);
   await peer.waitForDevices(2, setup.channel_id);
   const settings = await openSettings(page, 'appearance');
-  for (const width of [1440, 1024, 390, 320]) {
+  // The desktop lane's native minimum keeps the phone widths at the desktop layout, where the two desktop widths already pass.
+  for (const width of [1440, 1024, 390, 320].filter(width => width >= 768 || !desktopE2E())) {
     await page.setViewportSize({ width, height: 900 });
     const group = settings.getByRole('radiogroup', { name: copy('appearance.theme.label'), exact: true });
     // matchMedia updates the React phone layout after the viewport resize event.
     await expect.poll(async () => new Set(await group.getByRole('radio').evaluateAll(
       elements => elements.map(el => Math.round(el.getBoundingClientRect().y)),
-    )).size, { message: `theme option rows at ${width}px` }).toBe(width >= 1024 ? 1 : 2);
+    )).size, { message: `the Signal option stays on one row at ${width}px` }).toBe(1);
     const overflow = await settings.locator('.d-settings-frame__body').evaluate(el => el.scrollWidth > el.clientWidth);
     expect(overflow, `settings overflow at ${width}px`).toBe(false);
-    if (width < 768) {
+    if ((page.viewportSize()?.width ?? width) < 768) {
       // Task 10 (README §5.10): the nav's chips name the section; the section's own title is in the content.
       await expect(settings.locator('.d-settings-nav__item[aria-current="page"]')).toHaveText(copy('workspace.appearance'));
       await expect(settings.getByRole('heading', { level: 2, name: copy('appearance.title'), exact: true })).toBeVisible();
@@ -133,13 +137,13 @@ test('a dirty Profile draft survives Keep editing and is discarded only after co
   let prompt = page.getByRole('dialog', { name: 'Discard unsaved changes?', exact: true });
   await expect(prompt).toBeVisible({ timeout: WAIT });
   await prompt.getByRole('button', { name: 'Keep editing', exact: true }).click();
-  await expect(page).toHaveURL('/settings/profile', { timeout: WAIT });
+  await expect(page).toHaveURL(/\/settings\/profile$/, { timeout: WAIT });
   await expect(display).toHaveValue(DRAFT);
   await nav.getByRole('button', { name: copy('workspace.signin'), exact: true }).click();
   prompt = page.getByRole('dialog', { name: 'Discard unsaved changes?', exact: true });
   await expect(prompt).toBeVisible({ timeout: WAIT });
   await prompt.getByRole('button', { name: 'Discard changes', exact: true }).click();
-  await expect(page).toHaveURL('/settings/signin', { timeout: WAIT });
+  await expect(page).toHaveURL(/\/settings\/signin$/, { timeout: WAIT });
   await expect(settings.getByRole('heading', { name: copy('workspace.signin'), exact: true })).toBeFocused();
   await closeSettings(page);
 });
@@ -155,12 +159,13 @@ test('scopes and keyboard selection stay on the textbox until a target is chosen
   await expect(rowById(page, peer.channelName, sent.msg_id)).toContainText('café compass', { timeout: WAIT });
   // Escape closes the overlay and returns focus to where search was opened.
   await rowById(page, peer.channelName, sent.msg_id).focus();
-  await page.keyboard.press('ControlOrMeta+/');
+  // This alternate shortcut is Control+/ on macOS too (Settings → Keyboard).
+  await page.keyboard.press('Control+/');
   await expect(page.getByRole('combobox', { name: copy('search.placeholder') })).toBeFocused();
   await page.keyboard.press('Escape');
   await expect(page.getByRole('combobox', { name: copy('search.placeholder') })).toHaveCount(0);
   await expect(rowById(page, peer.channelName, sent.msg_id)).toBeFocused();
-  await page.keyboard.press('ControlOrMeta+/');
+  await page.keyboard.press('Control+/');
   const textbox = page.getByRole('combobox', { name: copy('search.placeholder') });
   await textbox.fill('cafe');
   // Task 9 fix round 1 (Jonas): the palette has no scope control; messages are searched everywhere, this conversation's first.
@@ -213,16 +218,16 @@ test('switching channel with an unsent draft shows no error banner', async ({ pa
   await expect(page.getByText(/E_NOT_READY|That did not work/)).toHaveCount(0);
 });
 
-test('desktop, phone and reflow keep controls accessible in three themes', async ({ page, peer, instanceName }) => {
+test('desktop, phone and reflow keep controls accessible in Signal', async ({ page, peer, instanceName }) => {
   const setup = await peer.setup({});
   await peer.register();
   await signUp(page, instanceInvite(), instanceName);
   await joinCommunity(page, peer, setup);
   await openChannel(page, peer.communityName, peer.channelName);
   await peer.waitForDevices(2, setup.channel_id);
-  for (const viewport of [{ width: 1280, height: 800 }, { width: 360, height: 740 }, { width: 320, height: 740 }]) {
+  for (const viewport of [{ width: 1280, height: 800 }, { width: 360, height: 740 }, { width: 320, height: 740 }].filter(v => v.width >= 768 || !desktopE2E())) {
     await page.setViewportSize(viewport);
-    for (const theme of ['signal', 'light', 'high-contrast']) {
+    for (const theme of Object.keys(themes)) {
       await page.evaluate(value => { document.documentElement.dataset.theme = value; }, theme);
       await expectAccessible(page, `${theme} ${viewport.width}px`);
       const layout = await page.evaluate(() => ({

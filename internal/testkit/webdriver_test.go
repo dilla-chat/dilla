@@ -315,10 +315,11 @@ func TestWebDriverCallStartRingsADMPeer(t *testing.T) {
 	peerGW.noRing(t)
 }
 
-// Task 4 review I1: rotate_umk replaces the peer's acting device. The old device proposes its own Remove in every
-// call group it held, which another member commits (the voice channel, with bob in it); in a group it was alone in
-// (the DM's call group) nobody can, so the replacement's rejoin commits the Remove of the old leaf. Either way the
-// roster ends without the old device.
+// Task 4 review I1: rotate_umk replaces the peer's acting device. The old device forgets every call group it held
+// but proposes no Remove there (a Remove another member commits would move the epoch under the replacement's
+// external join); its leaf stays in the roster until the replacement rejoins that channel, and that rejoin commits
+// the Remove of the old leaf itself. The voice channel (with bob in it) and the DM's call group (the old device
+// alone) both end without the old device.
 func TestWebDriverRotationLeavesTheCallGroups(t *testing.T) {
 	h := testkit.Start(t, testkit.Options{DataDir: t.TempDir(), ProductionACL: true})
 	t.Cleanup(h.Stop)
@@ -347,18 +348,42 @@ func TestWebDriverRotationLeavesTheCallGroups(t *testing.T) {
 
 	peer.ok("sync", nil) // bob's external join moved the text group's epoch
 	peer.ok("rotate_umk", nil)
-	// The old device's own Remove, committed by bob's call_members.
-	waitCallMembers(t, bob, "peer", voice, bobDev)
+	// Rotation posts no Remove in the voice call group: bob's call_members (which commits any outstanding
+	// proposal) still sees the old leaf next to its own.
+	waitCallMembers(t, bob, "peer", voice, old, bobDev)
+	// The replacement's rejoin commits the Remove of the old leaf; bob's roster is then bob and the new device.
+	if j := peer.ok("call_join", map[string]any{"actor": "peer", "channel": voice.String()}); j["leaf"] != float64(2) {
+		t.Fatalf("the replacement's call_join answered %v, want leaf 2 beside the old leaf 0 and bob's leaf 1", j)
+	}
+	waitRosterWithout(t, bob, voice, old, bobDev)
 	// Alone in the DM's call group: the replacement's rejoin takes the old leaf out.
 	peer.ok("call_join", map[string]any{"actor": "peer", "channel": dm.String()})
+	waitRosterWithout(t, peer, dm, old)
+}
+
+// waitRosterWithout polls the driver's call roster of the channel until it is exactly len(keep)+1 devices: every
+// device in keep plus one device that is not gone (the replacement, whose id the harness never learns directly).
+func waitRosterWithout(t *testing.T, d *webDriver, channel id.ID, gone string, keep ...string) {
+	t.Helper()
 	deadline := time.Now().Add(driverWait)
 	for {
-		got := peer.ok("call_members", map[string]any{"actor": "peer", "channel": dm.String()})["devices"].([]any)
-		if len(got) == 1 && got[0] != any(old) {
+		got := d.ok("call_members", map[string]any{"actor": "peer", "channel": channel.String()})["devices"].([]any)
+		others := 0
+		kept := 0
+		for _, device := range got {
+			if device == any(gone) {
+				others = -1 << 30
+			} else if slices.Contains(keep, device.(string)) {
+				kept++
+			} else {
+				others++
+			}
+		}
+		if len(got) == len(keep)+1 && kept == len(keep) && others == 1 {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("after rotate_umk and a rejoin the DM call roster is %v; want the new device only (the old one was %s)", got, old)
+			t.Fatalf("after rotate_umk and a rejoin the call roster of %s is %v; want %v and one new device, not %s", channel, got, keep, gone)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}

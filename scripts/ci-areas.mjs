@@ -48,15 +48,22 @@ export const PATH_RULES = [
     'scripts/gen-profile-text-tables.mjs', 'internal/auth/profile_tables.go', 'internal/auth/profile_text.go', 'internal/auth/testdata/rgi-zwj-sequences.txt',
     'packages/client-core/src/profile-tables.ts', 'packages/client-core/src/profile-text.ts',
   ] },
+  // Portable maintenance output privacy audit reads this exact native test source.
+  { areas: ['web'], patterns: ['internal/desktopsandbox/native_root_linux_test.go'] },
+  // internal/desktopsandbox/transaction_linux_test.go runs the frontend bootstrap for interop coverage.
+  { areas: ['go'], patterns: ['packages/desktop/native/linux-sandbox/frontend/bootstrap.py'] },
+  // internal/web/downloads_test.go verifies the embedded brand against this desktop asset.
+  { areas: ['go'], patterns: ['packages/desktop/assets/tray.png'] },
   // internal/api/invites_test.go (TestLandingTokensMatchMesh) reads dist/tokens.css.
   { areas: ['go'], patterns: ['packages/design-tokens/**'] },
+  { areas: ['go'], patterns: ['packages/web/dist', 'packages/web/dist/**'] },
   // packages/client-core/src/profile-text.test.ts reads the RGI sequences the generator writes for the Go tests too.
   { areas: ['web'], patterns: ['internal/auth/testdata/rgi-zwj-sequences.txt'] },
   // packages/media/scripts/check-protocol-schema.mjs compares @livekit/protocol with this Go golden.
   { areas: ['web'], patterns: ['internal/sfu/testdata/**'] },
 ];
 
-/** What an area drags in with it: the WASI core is used by the Go tests, and the browser suites run the server and the client together. */
+/** What an area drags in with it: the WASI core is used by the Go tests, and desktop acceptance runs the server and bundled client together. */
 export const FORCES = {
   ci: ['go', 'core', 'web', 'e2e', 'text'],
   core: ['go', 'web', 'e2e'],
@@ -69,7 +76,7 @@ export const FORCES = {
 /**
  * The outputs each job of ci.yml is gated on (OR). A job missing here is `changes` or `docs`, which always run.
  * Because the areas imply each other (FORCES), `e2e` is in practice "any code" and `web` is "web or core".
- * - rust-native and rust-wasi run for any code: go-harness and the browser suites download the testkit binary and
+ * - rust-native and rust-wasi run for any code: go-harness and shared integration and desktop suites download the testkit binary and
  *   the WASI core they build. rust-native's lint and test steps are gated on core at step level.
  * - go-release builds the embedded client.
  */
@@ -80,22 +87,13 @@ export const JOB_GATES = {
   // Besides the wasm core's tests it runs packages/media's typecheck, wasm tests and the LiveKit schema check.
   'rust-wasm-node': ['web'],
   'rust-wasi': ['code'],
-  'spotify-helper': ['code'],
   vectors: ['core'],
   'browser-spike': ['e2e'],
   'browser-media': ['e2e'],
   'web-build': ['e2e'],
-  'chromium-core': ['e2e'],
-  'chromium-voice': ['e2e'],
-  'chromium-web-1': ['e2e'],
-  'chromium-web-2': ['e2e'],
-  'chromium-web-3': ['e2e'],
-  'firefox-core': ['e2e'],
-  'firefox-voice': ['e2e'],
-  'firefox-web-1': ['e2e'],
-  'firefox-web-2': ['e2e'],
-  'firefox-web-3': ['e2e'],
-  'webkit-web': ['e2e'],
+  'linux-sandbox-foundation': ['e2e'],
+  desktop: ['e2e'],
+  'core-integration': ['e2e'],
   deny: ['core'],
   go: ['go'],
   'go-native': ['go'],

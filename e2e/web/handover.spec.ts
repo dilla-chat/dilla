@@ -1,4 +1,5 @@
-import { expect } from '@playwright/test';
+import { desktopE2E, desktopApplication } from './support/electron.ts';
+import { expect, type BrowserContext, type Page } from '@playwright/test';
 import { copy, instanceInvite, joinCommunity, openChannel, sendText, signUp, WAIT } from './support/app';
 import { test } from './support/app';
 
@@ -6,13 +7,46 @@ import { test } from './support/app';
 // are per origin and profile, so the second fixture's own persistent profile (support/second.ts) would be a fresh
 // device at onboarding, never other-tab. The page closes in finally; the context is the fixture's.
 
-test('the second tab takes the lock only after the first releases it', async ({ page, context, peer, instanceName }) => {
+async function reopenDesktop(page: Page, context: BrowserContext, action: 'close' | 'minimize' | 'activate'): Promise<void> {
+  const application = desktopApplication(context);
+  const id = await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].id);
+  const workers = page.workers();
+  expect(workers.length).toBeGreaterThan(0);
+  if (action !== 'activate') {
+    await application.evaluate(({ BrowserWindow }, action) => {
+      const window = BrowserWindow.getAllWindows()[0];
+      if (action === 'close') window.close(); else window.minimize();
+    }, action);
+    await expect.poll(() => application.evaluate(({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows()[0]; return window.isMinimized() || !window.isVisible();
+    })).toBe(true);
+  }
+  await application.evaluate(({ app }) => { app.emit('activate'); app.emit('activate'); });
+  await expect.poll(() => application.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows()[0]; return window.isVisible() && !window.isMinimized();
+  })).toBe(true);
+  expect(await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map(window => window.id))).toEqual([id]);
+  expect(context.pages()).toHaveLength(1);
+  expect(page.workers()).toHaveLength(workers.length);
+  for (const worker of workers) expect(page.workers()).toContain(worker);
+  const info = await page.evaluate(() => (window as any).dillaDesktop.info());
+  expect(Object.keys(info).sort()).toEqual(['capabilities', 'instance', 'platform', 'version']);
+  expect(info.instance).toBe(new URL('/', page.url()).href);
+}
+
+test(desktopE2E() ? 'closing to tray and reopening keeps the same enrolled instance' : 'the second tab takes the lock only after the first releases it', async ({ page, context, peer, instanceName }) => {
   const setup = await peer.setup({});
   await peer.register();
   await signUp(page, instanceInvite(), instanceName);
   await joinCommunity(page, peer, setup);
   await openChannel(page, peer.communityName, peer.channelName);
   await peer.waitForDevices(2, setup.channel_id);
+  if (desktopE2E()) {
+    await reopenDesktop(page, context, 'close');
+    await sendText(page, peer.channelName, 'same desktop device sends after reopening');
+    await peer.waitFor('same desktop device sends after reopening');
+    return;
+  }
   const other = { page: await context.newPage() };
   try {
     await other.page.goto('/');
@@ -26,13 +60,14 @@ test('the second tab takes the lock only after the first releases it', async ({ 
   } finally { await other.page.close(); }
 });
 
-test('takeover notices contain exactly three public routing fields', async ({ page, context, peer, instanceName }) => {
+test(desktopE2E() ? 'desktop reactivation exposes only public routing and capability metadata' : 'takeover notices contain exactly three public routing fields', async ({ page, context, peer, instanceName }) => {
   const setup = await peer.setup({});
   await peer.register();
   await signUp(page, instanceInvite(), instanceName);
   await joinCommunity(page, peer, setup);
   await openChannel(page, peer.communityName, peer.channelName);
   await peer.waitForDevices(2, setup.channel_id);
+  if (desktopE2E()) { await reopenDesktop(page, context, 'activate'); return; }
   const install = () => {
     const w = window as typeof window & { __noticeKeys?: [string, string[]][] };
     w.__noticeKeys = [];
@@ -66,13 +101,20 @@ test('takeover notices contain exactly three public routing fields', async ({ pa
 });
 
 // C1 hand-back: the paused tab takes dilla back with its own Use this tab (A -> B -> A), and works again.
-test('hand-over works both ways: A to B, then back to A', async ({ page, context, peer, instanceName }) => {
+test(desktopE2E() ? 'repeated minimize and restore preserves the worker and encrypted chat' : 'hand-over works both ways: A to B, then back to A', async ({ page, context, peer, instanceName }) => {
   const setup = await peer.setup({});
   await peer.register();
   await signUp(page, instanceInvite(), instanceName);
   await joinCommunity(page, peer, setup);
   await openChannel(page, peer.communityName, peer.channelName);
   await peer.waitForDevices(2, setup.channel_id);
+  if (desktopE2E()) {
+    await reopenDesktop(page, context, 'minimize');
+    await reopenDesktop(page, context, 'close');
+    await sendText(page, peer.channelName, 'same worker sends after minimizing and reopening');
+    await peer.waitFor('same worker sends after minimizing and reopening');
+    return;
+  }
   const other = { page: await context.newPage() };
   try {
     await other.page.goto('/');

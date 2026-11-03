@@ -183,8 +183,9 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		Repo: o.Repo, Clock: o.Clock, Log: o.Log, Limiter: limiter, Metrics: o.Metrics,
 		Instance: instance, Domain: o.Config.Instance.Domain,
 		// The invite page's font: the web client dillad serves, found once (R43).
-		LandingFont:  api.LandingFont(tree),
-		Registration: o.Config.Registration, Config: o.Config,
+		LandingFont:      api.LandingFont(tree),
+		DesktopDownloads: o.DesktopDownloads,
+		Registration:     o.Config.Registration, Config: o.Config,
 		Sessions: sessions, Hasher: hasher, Throttle: throttle, Passkeys: passkeys,
 		StepUps:    api.NewStepUps(o.Clock, api.StepUpTTL),
 		Assertions: api.NewAssertions(o.Clock, api.AssertionTTL),
@@ -262,8 +263,6 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	deviceLists := ds.NewDeviceLists(o.Repo, wasm)
 	deps.BotIdentity = botidentity.NewVerifier(wasm)
 	deps.BotRuntime = botruntime.New(o.Repo, o.Clock.Now)
-	deps.BotSpotifyClientID = o.Config.BotSpotify.ClientID
-	deps.BotSpotifyRedirectURL = o.Config.BotSpotify.RedirectURL
 	sessions.DeviceLists = deviceListGate{lists: deviceLists}
 
 	// The gateway, then the delivery service: ds holds *gateway.Gateway, and
@@ -633,6 +632,9 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	// (internal/web.Fallback): the mux keeps its own 404s and 405s, and the
 	// method-less /rtc patterns mountRTC adds stay legal.
 	h := client.Fallback(mux)
+	if o.DesktopDownloads {
+		h = client.DownloadsFallback(mux)
+	}
 	h = generationHeader(h, instance.Generation)
 	// Recover sits INSIDE RequestLog, not outside it. server.RequestLog logs
 	// and calls observe after next.ServeHTTP returns, with no defer, so a panic

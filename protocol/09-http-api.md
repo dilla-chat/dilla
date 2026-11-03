@@ -323,19 +323,12 @@ These additional routes are mounted by `dillad`; the event, moderation-removal
 and role delegation semantics are specified in `10-community-bot.md`. `B`
 requires a live installation-bound managed-bot session and the route's phase,
 community and capability checks. `E` requires an enrolled human session; listed
-permission checks still apply. The Spotify OAuth callback is an authenticated
-CBOR API request, not a public redirect endpoint.
+permission checks still apply.
 
 | Method and path | Auth | Request | Response |
 |---|---|---|---|
 | `GET /v1/communities/{community}/bot/actors/{actor}/authority` | B (ready) | — | `[effective_permission_bits, is_owner(uint), is_administrator(uint)]`; 404 if the community, installation or actor is absent |
 | `GET /v1/communities/{community}/bot/actors/{actor}/channels/{channel}/authority` | B (ready, channel visible to bot) | — | `[community_id,actor_id,channel_id,effective_permission_bits]` for the current human member; 403/404 if installation, membership or visibility checks fail; no-store |
-| `GET /v1/communities/{community}/bot/spotify/config` | E (manage_community) | — | `[client_id, callback_url]` |
-| `GET /v1/bot-runtime/installations/{installation}/spotify/config` | R (owning runtime) | — | `[client_id, callback_url]` |
-| `POST /v1/communities/{community}/bot/spotify/attempts` | E (community bot manager, step-up) | `[step_up_proof]` | `[attempt_id, authorization_url, expires_unix]` |
-| `POST /v1/communities/{community}/bot/spotify/attempts/{attempt}/callback` | E (manage_community, initiating session) | `[state, authorization_code]` | `202 [1]`; exact callback retries also return 202 |
-| `DELETE /v1/communities/{community}/bot/spotify/attempts/{attempt}` | E (manage_community, initiating session) | `[]` | `204` |
-| `POST /v1/bot-runtime/installations/{installation}/spotify/claim` | R (owning runtime) | — | `[attempt_id, authorization_code, pkce_verifier]` or 404 |
 | `GET /v1/communities/{community}/bot/events?after=N&limit=L` | B | — | `[events, next_seq, high_water, floor]`; `after` is exclusive, default limit 100, maximum 250 |
 | `PUT /v1/communities/{community}/bot/events/ack` | B | `[through]` | `204` |
 | `POST /v1/groups/{group}/moderation/removals` | E or B | `[proof_bstr, signature64]` | `[action_id, removal_revision]` |
@@ -384,11 +377,7 @@ Migration 00048 gave `control_music` to every role the community's current,
 non-removed installation had approved, then dropped the approval table; roles
 approved only by a removed installation were not mapped.
 
-The Spotify begin route replaces any pending attempt for that installation.
-Attempts expire after ten minutes and bind the initiating enrolled session;
-the callback state and authorization code are single-use. The runtime claim
-returns the code and PKCE verifier only to the owning runtime. Never put those
-values in logs or persistent browser storage. Event acknowledgement advances
+Event acknowledgement advances
 the installation's durable cursor; a cursor below the retained floor returns
 `410 E_PRUNED`. Self-role policy is bounded to 250 role ids. A role panel must
 reference a live readable-channel message authored by the installed bot, and

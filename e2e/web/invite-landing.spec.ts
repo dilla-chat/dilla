@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { addServerVia, TEST_TIMEOUT, WAIT, copy, signUp, test } from './support/app';
 import { REPO_ROOT, startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
+import { desktopE2E } from './support/electron.ts';
 
 const EMPTY: HostConfig = { port: 8517, control: 8518, webRoot: 'packages/web/dist' };
 const SERVER = 'Midgard Crew';
@@ -52,7 +53,7 @@ async function makeLink(page: Page, h: StartedHost): Promise<string> {
   return url;
 }
 
-test('the invite page names the community, keeps its limits and is shot in both schemes', async ({ page, browser }) => {
+test('the invite page names the community, keeps its limits and is shot in both schemes', async ({ page, browser, playwright }) => {
   const h = host;
   if (h === null) throw new Error('the empty test host did not start');
   const url = await makeLink(page, h);
@@ -61,7 +62,10 @@ test('the invite page names the community, keeps its limits and is shot in both 
 
   // A context of its own: the invite page is static HTML under `default-src 'none'`, and Firefox reports its own
   // /favicon.ico request as a CSP refusal, which is that CSP working and not the web client's guard to judge.
-  const context = await browser.newContext({ baseURL: h.url, viewport: { width: 1280, height: 800 } });
+  // Invite HTML belongs in the system browser. Electron's document allowlist
+  // must continue to refuse loading server-provided HTML into the app window.
+  const external = desktopE2E() ? await playwright.chromium.launch({ channel: 'chromium', headless: true, chromiumSandbox: true }) : null;
+  const context = await (external ?? browser).newContext({ baseURL: h.url, viewport: { width: 1280, height: 800 } });
   try {
     const view = await context.newPage();
     const response = await view.goto(path);
@@ -98,5 +102,6 @@ test('the invite page names the community, keeps its limits and is shot in both 
     }
   } finally {
     await context.close();
+    await external?.close();
   }
 });

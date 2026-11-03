@@ -6,6 +6,12 @@ import {
 
 const o = (over: Partial<ShareOptions> = {}): ShareOptions => ({ ...DEFAULT_SHARE_OPTIONS, ...over });
 
+it.each(['Windows', 'macOS', 'Linux'])('native %s capture delegates source selection and offers no browser/system sound', platform => {
+  const support = shareSupport({ ua: 'Chrome/158.0', uaPlatform: platform, desktop: true });
+  expect(support).toEqual({ surface: false, audio: { monitor: false, window: false, browser: false }, tabOnly: false });
+  expect(supportedOptions(o({ surface: 'browser', systemAudio: true }), support)).toMatchObject({ surface: 'monitor', systemAudio: false });
+});
+
 describe('share options: the capture constraints', () => {
   it('the defaults are the prototype picker’s: the screen, 1080p, 30 fps, with sound', () => {
     expect(DEFAULT_SHARE_OPTIONS).toEqual({ surface: 'monitor', resolution: '1080p', fps: 30, systemAudio: true });

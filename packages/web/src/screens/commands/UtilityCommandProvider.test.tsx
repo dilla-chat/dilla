@@ -72,7 +72,7 @@ function commandContext(client: CoreClient, requestId: string, over: Partial<Com
 function mount(client: CoreClient, community: string | null = COMMUNITY, onNavigate?: (communityId: string, channelId: string, threadId: string | null) => void) { const captured: { value?: ReturnType<typeof useUtilityCommandProvider> } = {};
   function Probe() { const value = useUtilityCommandProvider(client, community, onNavigate); useEffect(() => { captured.value = value; }); return createElement('div', null, value.dialogs, value.inbox); }
   const view = render(createElement(Probe)); return { captured, ...view, rerenderProbe: () => view.rerender(createElement(Probe)) }; }
-afterEach(() => { vi.restoreAllMocks(); });
+afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe('utility command provider', () => {
   it('publishes a poll through the adapter from the focused create dialog', async () => {

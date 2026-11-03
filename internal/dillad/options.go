@@ -83,6 +83,9 @@ type Options struct {
 	// Web is the built browser client dillad serves at its own origin, verified against its
 	// dilla-manifest.json by web.New; nil means web.Embedded().
 	Web fs.FS
+	// DesktopDownloads opts into public download navigation after all desktop
+	// acceptance gates pass. False retains the original browser client/test host.
+	DesktopDownloads bool
 	// LiveKitURL replaces the signalling URL the call routes hand a client ("wss://" plus the
 	// instance's host); "" keeps it. `dillad serve` never sets it: the test host passes its own
 	// ws:// listener, which a browser on loopback can reach (web-3 task 3).

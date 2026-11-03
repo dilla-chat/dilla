@@ -45,7 +45,7 @@ type Options struct {
 // method must unblock a concurrent Read; cancellation and stall handling depend on that contract.
 // Bridge encodes interleaved signed 16-bit little-endian PCM into live 48 kHz stereo Opus.
 // sampleRate and channels describe the PCM source itself; callers must pass the actual format
-// reported by their source because librespot output rates can vary by track/device.
+// reported by their source because source output rates can vary by track/device.
 func Bridge(ctx context.Context, pcm io.Reader, sampleRate, channels int, provider *media.LiveOpusProvider) error {
 	return BridgeWithOptions(ctx, pcm, sampleRate, channels, provider, Options{})
 }

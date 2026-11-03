@@ -80,7 +80,8 @@ export interface ShareSupport {
  *   window's system sound on Windows, ChromeOS and macOS, and only a tab's on Linux;
  * - Firefox and Safari ignore `displaySurface`, capture no tab and give no sound at all (Mozilla bug 1541425).
  */
-export function shareSupport(env: { ua: string; uaPlatform?: string; brands?: string[] }): ShareSupport {
+export function shareSupport(env: { ua: string; uaPlatform?: string; brands?: string[]; desktop?: boolean }): ShareSupport {
+  if (env.desktop) return { surface: false, audio: { monitor: false, window: false, browser: false }, tabOnly: false };
   const { ua } = env;
   const chromium = (env.brands?.some(b => /chrom|edge/i.test(b)) ?? false) || /Chrome\/|Edg\//.test(ua);
   if (!chromium) return { surface: false, audio: { monitor: false, window: false, browser: false }, tabOnly: false };

@@ -151,6 +151,8 @@ export function connectCore(worker: Worker): CoreClient {
   };
 }
 
-export function createCoreWorker(): Worker {
-  return new Worker(new URL('./worker/entry.ts', import.meta.url), { type: 'module', name: 'dilla-core' });
+export function createCoreWorker(options?: { instanceURL: string }): Worker {
+  const worker = new Worker(new URL('./worker/entry.ts', import.meta.url), { type: 'module', name: 'dilla-core' });
+  if (options) worker.postMessage({ t: 'configure-instance', instanceURL: options.instanceURL });
+  return worker;
 }

@@ -22,7 +22,11 @@ export async function injectAxe(page: Page): Promise<void> {
 }
 
 /** Ruling Y (task 7): the conversation's prototype-exact colours under 4.5:1 leave colour-contrast in the signal theme only. */
-const PROTOTYPE_CONTRAST = CONVERSATION_PROTOTYPE_CONTRAST.map(e => e.selector);
+// The dock renders its already-approved stats in a direct decorative span;
+// axe targets that visible text element instead of its approved parent.
+const PROTOTYPE_CONTRAST = CONVERSATION_PROTOTYPE_CONTRAST.flatMap(e => e.selector === '.d-voice-dock__stats'
+  ? [e.selector, `${e.selector} > span[aria-hidden="true"]`]
+  : [e.selector]);
 
 export async function runAxe(page: Page): Promise<AxeFinding[]> {
   await injectAxe(page);

@@ -6,16 +6,475 @@ import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gateExpression, JOB_GATES } from './ci-areas.mjs';
-import { BROWSER_WEB_JOBS, browserSuiteCommand, checkReleaseWorkflow, checkWorkflow, jobSteps, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEP, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION, WEB_SHARDS } from './check-ci-workflow.mjs';
+import { BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopWorkflow, checkReleaseWorkflow, checkWorkflow, jobSteps, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_BLOCK, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEPS, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION, WEB_SHARDS } from './check-ci-workflow.mjs';
 
 const NPM_TEST = "      - if: needs.changes.outputs.web != 'false'\n        run: npm test\n";
 const SCRIPT_PATH = fileURLToPath(new URL('./check-ci-workflow.mjs', import.meta.url));
 const REPO_ROOT = join(dirname(SCRIPT_PATH), '..');
 const REAL_CI = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
+
+test('whole-module Go jobs provision GTK development files before package loading', () => {
+  for (const name of ['go', 'go-lint', 'go-vuln']) {
+    const body = new RegExp(`^  ${name}:\\n[\\s\\S]*?(?=^  [a-z][\\w-]*:|$(?![\\s\\S]))`, 'm').exec(REAL_CI)[0];
+    const steps = jobSteps(body);
+    const gtk = steps.findIndex(step => step.length === 1 && step[0] === 'run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev');
+    const load = steps.findIndex(step => step.some(line => /(?:go vet|golangci-lint run|govulncheck@\S+) \.\/\.\.\./.test(line)));
+    assert.ok(gtk >= 0 && gtk < load, name + ' must install GTK before loading the Linux cgo frontend');
+  }
+});
+
+test('GTK provisioning cannot be omitted, postponed or bypassed by excluding cgo', () => {
+  for (const name of ['go', 'go-lint', 'go-vuln']) {
+    const body = jobBody(name), setup = '      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev\n';
+    assert.ok(body.includes(setup), name);
+    for (const changed of [body.replace(setup, ''), body.replace('libgtk-3-dev', 'libgtk-3-0'),
+      body.replace(setup, '      - if: false\n        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev\n'),
+      body.replace(setup, '') + setup]) {
+      assert.ok(checkWorkflow(fixture(GOOD.replace(body, changed))).some(problem => problem.includes('GTK')), name);
+    }
+  }
+  const body = jobBody('go-vuln');
+  for (const changed of [body.replace('run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...', 'run: CGO_ENABLED=0 go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...'),
+    body.replace('    steps:', '    env:\n      CGO_ENABLED: 0\n    steps:')]) {
+    assert.notEqual(changed, body);
+    assert.ok(checkWorkflow(fixture(GOOD.replace(body, changed))).some(problem => problem.includes('GTK')));
+  }
+});
+
+test('Linux sandbox foundation has independent native Ubuntu lanes ahead of desktop', () => {
+  assert.match(REAL_CI, /^  linux-sandbox-foundation:\n    needs: \[changes\]/m);
+  const body = /^  linux-sandbox-foundation:\n[\s\S]*?(?=^  [a-z][\w-]*:)/m.exec(REAL_CI)?.[0] ?? '';
+  assert.match(body, /os: ubuntu-22\.04, lane: namespace/);
+  assert.match(body, /os: ubuntu-24\.04, lane: managed/);
+  assert.match(body, /xvfb-run -a dbus-run-session -- node --test packages\/desktop\/test\/native\/linux-sandbox-foundation\.test\.mjs/);
+  assert.match(body, /id: sandbox_foundation/);
+  assert.match(body, /steps\.sandbox_foundation\.outcome\)\n        uses: actions\/upload-artifact@/);
+  assert.match(REAL_CI, /  desktop:\n    needs: \[[^\]\n]*\blinux-sandbox-foundation\]/);
+});
+
+test('Linux sandbox foundation rejects omitted lanes, fake proofs and delayed or weakened execution', () => {
+  const body = /^  linux-sandbox-foundation:\n[\s\S]*?(?=^  desktop:)/m.exec(GOOD)[0];
+  for (const [before, after] of [
+    ['needs: [changes]', 'needs: [changes, web-build]'],
+    ['timeout-minutes: 15', 'timeout-minutes: 90'],
+    ['fail-fast: true', 'fail-fast: false'],
+    ['os: ubuntu-22.04, lane: namespace', 'os: ubuntu-24.04, lane: namespace'],
+    ['          - { os: ubuntu-24.04, lane: managed }\n', ''],
+    ['lane: managed', 'lane: namespace'],
+    ['persist-credentials: false', 'persist-credentials: true'],
+    ['node-version-file: .nvmrc', 'node-version: latest'],
+    ['actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1', 'actions/setup-node@1111111111111111111111111111111111111111'],
+    ['run: npm ci', 'run: npm install'],
+    ['node --test packages/desktop/test/native/linux-sandbox-foundation.test.mjs', 'node --test --test-name-pattern=kernel packages/desktop/test/native/linux-sandbox-foundation.test.mjs'],
+    ['DILLA_LINUX_SANDBOX_FOUNDATION_LANE: ${{ matrix.lane }}', 'DILLA_LINUX_SANDBOX_FOUNDATION_LANE: omitted'],
+    ['      - id: sandbox_foundation\n        run: xvfb-run', '      - id: sandbox_foundation\n        if: false\n        run: xvfb-run'],
+    ['    steps:', '    env:\n      APPIMAGE_EXTRACT_AND_RUN: 1\n    steps:'],
+    ['          sudo apt-get update', '          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0\n          sudo apt-get update'],
+    ['          if-no-files-found: error', '          if-no-files-found: ignore'],
+    ["      - if: always() && contains(fromJSON('[\"success\",\"failure\",\"cancelled\"]'), steps.sandbox_foundation.outcome)\n        uses: actions/upload-artifact@", '      - uses: actions/upload-artifact@'],
+    ["steps.sandbox_foundation.outcome)","steps.sandbox_maintenance.outcome)"],
+    ["always() && contains(fromJSON('[\"success\",\"failure\",\"cancelled\"]'), steps.sandbox_foundation.outcome)","always()"],
+  ]) {
+    const changed = body.replace(before, after); assert.notEqual(changed, body, before);
+    assert.ok(checkWorkflow(fixture(GOOD.replace(body, changed))).some(problem => problem.includes('Linux sandbox foundation')), before);
+  }
+  assert.ok(checkWorkflow(fixture(GOOD.replace(body, ''))).some(problem => problem.includes('missing job "linux-sandbox-foundation"')));
+  const changed = GOOD.replace(', linux-sandbox-foundation]', ']');
+  assert.notEqual(changed, GOOD);
+  assert.ok(checkWorkflow(fixture(changed)).some(problem => problem.includes('desktop') && problem.includes('Linux sandbox foundation')));
+});
+
+const MAINTENANCE_CLEANUP_IF = `always() && matrix.lane == 'managed' && contains(fromJSON('["success","failure","cancelled"]'), steps.sandbox_maintenance.outcome)`;
+const MAINTENANCE_PORTABLE = 'node --test packages/desktop/test/linux-sandbox-maintenance.test.mjs';
+const MAINTENANCE_NATIVE = 'node --test packages/desktop/test/native/linux-sandbox-maintenance.test.mjs';
+const MAINTENANCE_CLEANUP = 'node packages/desktop/test/native/linux-sandbox-maintenance.test.mjs --cleanup-only';
+
+test('managed maintenance CI runs portable controls then pinned Go/native/always cleanup before unchanged foundation',()=>{
+ const body=jobBody('linux-sandbox-foundation'),steps=jobSteps(body);
+ const index=command=>steps.findIndex(step=>step.includes('run: '+command));
+ const portable=index(MAINTENANCE_PORTABLE),go=steps.findIndex(step=>step.includes('uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7'));
+ const native=index(MAINTENANCE_NATIVE),cleanup=index(MAINTENANCE_CLEANUP),foundation=index('xvfb-run -a dbus-run-session -- node --test packages/desktop/test/native/linux-sandbox-foundation.test.mjs');
+ assert.ok(portable>=0&&go>portable&&native>go&&cleanup>native&&foundation>cleanup);
+ for(const step of [steps[portable],steps[go],steps[native]])assert.ok(step.includes("if: matrix.lane == 'managed'"));
+ assert.ok(steps[native].includes('id: sandbox_maintenance'));assert.ok(steps[native].includes('DILLA_LINUX_SANDBOX_FOUNDATION_LANE: managed'));
+ assert.ok(steps[cleanup].includes('if: '+MAINTENANCE_CLEANUP_IF));assert.ok(steps[cleanup].includes('timeout-minutes: 1'));
+ const proof=steps.find(step=>step.includes('path: packages/desktop/test-results/linux-sandbox-maintenance-managed.json'));
+ assert.ok(steps.indexOf(proof)>cleanup&&steps.indexOf(proof)<foundation);
+ assert.ok(proof.includes('if-no-files-found: error'));assert.ok(proof.includes('if: '+MAINTENANCE_CLEANUP_IF));assert.ok(proof.includes('retention-days: 3'));
+});
+
+test('managed maintenance CI refuses omissions, broad guards, late cleanup, setup drift and filtered native execution',()=>{
+ const body=jobBody('linux-sandbox-foundation');const steps=jobSteps(body);
+ for(const [before,after]of [
+  [MAINTENANCE_PORTABLE,MAINTENANCE_PORTABLE+' --test-name-pattern=partial'],
+  [MAINTENANCE_NATIVE,MAINTENANCE_NATIVE.replace('node --test','node --test --test-name-pattern=kernel')],
+  [MAINTENANCE_CLEANUP,MAINTENANCE_CLEANUP.replace(' --cleanup-only','')],
+  ['timeout-minutes: 1\n        run: '+MAINTENANCE_CLEANUP,'timeout-minutes: 15\n        run: '+MAINTENANCE_CLEANUP],
+  [MAINTENANCE_CLEANUP_IF,'always()'],
+  [MAINTENANCE_CLEANUP_IF,MAINTENANCE_CLEANUP_IF.replace("matrix.lane == 'managed' && ",'')],
+  [MAINTENANCE_CLEANUP_IF,MAINTENANCE_CLEANUP_IF.replace('"cancelled"','"skipped"')],
+  [MAINTENANCE_CLEANUP_IF,MAINTENANCE_CLEANUP_IF.replace('always()','success()')],
+  ['actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e','actions/setup-go@1111111111111111111111111111111111111111'],
+  ['path: packages/desktop/test-results/linux-sandbox-maintenance-managed.json','path: packages/desktop/test-results/**'],
+  ['name: linux-sandbox-maintenance-managed\n          path:', 'name: linux-sandbox-maintenance-managed\n          if-no-files-found: ignore\n          path:'],
+ ]){
+  const changed=body.replace(before,after);assert.notEqual(changed,body,before);
+  assert.ok(checkWorkflow(fixture(GOOD.replace(body,changed))).some(problem=>problem.includes('Linux sandbox foundation')),before);
+ }
+ for(const command of [MAINTENANCE_PORTABLE,MAINTENANCE_NATIVE,MAINTENANCE_CLEANUP]){
+  const step=steps.find(step=>step.includes('run: '+command));assert.ok(step);
+  // Drop the complete YAML step, not merely a token in a comment.
+  const lines=body.split('\n'),start=lines.findIndex(line=>line.trim()==='run: '+command||line.trim()==='- run: '+command);assert.ok(start>=0);
+  let first=start;while(first>0&&!lines[first].startsWith('      - '))first--;
+  let last=first+1;while(last<lines.length&&!lines[last].startsWith('      - '))last++;
+  const changed=[...lines.slice(0,first),...lines.slice(last)].join('\n');
+  assert.ok(checkWorkflow(fixture(GOOD.replace(body,changed))).some(problem=>problem.includes('Linux sandbox foundation')));
+ }
+ // Moving the cleanup behind the mounted foundation could leave privileged
+ // leftovers throughout unrelated Electron execution; order is part of proof.
+ const cleanupStart=body.indexOf('      - name: Cleanup root sandbox maintenance fixture');assert.ok(cleanupStart>=0);
+ const cleanupEnd=body.indexOf('      - ',cleanupStart+8);const block=body.slice(cleanupStart,cleanupEnd);
+ const changed=body.slice(0,cleanupStart)+body.slice(cleanupEnd)+block;
+ assert.ok(checkWorkflow(fixture(GOOD.replace(body,changed))).some(problem=>problem.includes('Linux sandbox foundation')));
+});
+
+test('managed maintenance cleanup allowance is confined to exact job and finalizer blocks',()=>{
+ const body=jobBody('linux-sandbox-foundation');const lines=body.split('\n');
+ function blockContaining(text){const at=lines.findIndex(line=>line.includes(text));assert.ok(at>=0,text);let start=at;while(start>0&&!lines[start].startsWith('      - '))start--;let end=start+1;while(end<lines.length&&!lines[end].startsWith('      - '))end++;return lines.slice(start,end).join('\n').replace(/\n*$/,'')+'\n';}
+ const setup=blockContaining('uses: actions/setup-go@'),cleanup=blockContaining('name: Cleanup root sandbox maintenance fixture'),artifact=blockContaining('name: Preserve root sandbox maintenance proof');
+ for(const changed of [body.replace(setup,''),body.replace(setup,setup.replace("        if: matrix.lane == 'managed'\n",'')),body.replace(setup,'')+setup,body.replace(artifact,''),
+  body.replace(cleanup,cleanup.replace('        run:', '        continue-on-error: true\n        run:')),
+  body.replace(cleanup,cleanup.replace(MAINTENANCE_CLEANUP,MAINTENANCE_CLEANUP+' || true')),
+  body.replace(artifact,artifact.replace('if-no-files-found: error','if-no-files-found: ignore')),
+  body.replace(artifact,artifact.replace('retention-days: 3','retention-days: 90'))]){
+  assert.notEqual(changed,body);assert.ok(checkWorkflow(fixture(GOOD.replace(body,changed))).some(problem=>problem.includes('Linux sandbox foundation')));
+ }
+ const otherJob=GOOD.replace(NPM_TEST,cleanup+NPM_TEST);assert.notEqual(otherJob,GOOD);
+ assert.ok(checkWorkflow(fixture(otherJob)).some(problem=>problem.includes('R22')&&problem.includes('always()')));
+ const rebuilt=body.replace(cleanup,cleanup.replace(MAINTENANCE_CLEANUP,MAINTENANCE_NATIVE));
+ assert.ok(checkWorkflow(fixture(GOOD.replace(body,rebuilt))).some(problem=>problem.includes('R22')&&problem.includes('always()')));
+});
+
+test('Linux sandbox foundation is required exactly once by completion and final gates', () => {
+  for (const name of ['ci-work-complete', 'ci-ok']) {
+    const body = jobBody(name);
+    for (const replacement of ['', 'linux-sandbox-foundation, linux-sandbox-foundation, ']) {
+      const changed = body.replace('linux-sandbox-foundation, ', replacement); assert.notEqual(changed, body);
+      assert.ok(checkWorkflow(fixture(GOOD.replace(body, changed))).some(problem => name === 'ci-ok' ? problem.includes('"ci-ok"') : problem.includes('completion barrier')));
+    }
+  }
+});
 const REAL_RELEASE = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'release.yml'), 'utf8');
 
+const REAL_DESKTOP = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'desktop.yml'), 'utf8');
+test('desktop checker refuses missing installed native package acceptance gates', () => {
+ const block = REAL_DESKTOP.split('\n  native-linux-package-acceptance:\n')[1]?.split(/\n  [a-z][a-z0-9-]*:\n/)[0] ?? '';
+ const root = fixture(GOOD);
+ writeFileSync(join(root, '.github/workflows/desktop.yml'), REAL_DESKTOP.replace('\n  native-linux-package-acceptance:\n' + block, ''));
+ assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('native package acceptance')));
+});
+test('native format acceptance rejects skipped/commented runs, omitted formats and foreign artifacts', () => {
+ const block = REAL_DESKTOP.split('\n  native-linux-package-acceptance:\n')[1]?.split(/\n  [a-z][a-z0-9-]*:\n/)[0] ?? '';
+ assert.ok(block);
+ for (const [before, after] of [
+  ['format: aur, label: AUR', 'format: aur, label: RPM'],
+  ['needs: [test-tools, native-linux-packages]', 'needs: test-tools'],
+  ['persist-credentials: false', 'persist-credentials: true'],
+  ['run: bash e2e/web/support/native-linux-package-run.sh', '# run: bash e2e/web/support/native-linux-package-run.sh'],
+  ['name: Installed ${{ matrix.label }} package acceptance', 'name: Installed ${{ matrix.label }} package acceptance\n        if: false'],
+  ['name: desktop-installers-linux-packages-x64', 'run-id: 123\n          name: desktop-installers-linux-packages-x64'],
+ ]) {
+  assert.ok(block.includes(before));
+  const root = fixture(GOOD); writeFileSync(join(root, '.github/workflows/desktop.yml'), REAL_DESKTOP.replace(block, block.replace(before, after)));
+  assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('native package acceptance')), before);
+ }
+});
+test('desktop workflow checker requires the native feasibility job and its installed ASAR comparison', () => {
+ const stock = /^  native-stock-feasibility:\n[\s\S]*?(?=^  [a-z][\w-]*:)/m.exec(REAL_DESKTOP)[0];
+ for (const [before, after] of [
+  ['  native-stock-feasibility:', '  removed-stock-feasibility:'],
+  ['          cmp "$RUNNER_TEMP/native-extracted/opt/Dilla/resources/app.asar" /opt/Dilla/resources/app.asar', '          # cmp "$RUNNER_TEMP/native-extracted/opt/Dilla/resources/app.asar" /opt/Dilla/resources/app.asar'],
+  ['          persist-credentials: false', '          persist-credentials: true'],
+ ]) {
+  const root = fixture(GOOD), changed = REAL_DESKTOP.replace(stock, stock.replace(before, after));
+  assert.notEqual(changed, REAL_DESKTOP);
+  writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
+  assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('native stock feasibility')));
+ }
+});
+function addE2ePackage(root) {
+  mkdirSync(join(root, 'e2e'), { recursive: true });
+  writeFileSync(join(root, 'e2e/package.json'), readFileSync(join(REPO_ROOT, 'e2e/package.json')));
+}
+
+test('desktop-only CI keeps shared core security and removes unsupported browser client lanes', () => {
+  assert.doesNotMatch(REAL_CI, /^  (?:firefox-[^:]+|webkit-[^:]+|chromium-(?:web-[123]|voice|core)):/m);
+  assert.match(REAL_CI, /^  core-integration:/m);
+  assert.match(REAL_CI, /uses: \.\/.github\/workflows\/desktop.yml/);
+  const scripts = JSON.parse(readFileSync(join(REPO_ROOT, 'e2e/package.json'), 'utf8')).scripts;
+  for (const name of ['test:e2e:matrix', 'test:e2e:media', 'test:e2e:spike', 'test:e2e:core']) assert.doesNotMatch(scripts[name], /firefox|webkit/);
+});
+
+test('CI refuses reinstalling an unsupported compatibility browser in shared harness jobs', () => {
+  const changed = GOOD.replace('npx playwright install --with-deps chromium', 'npx playwright install --with-deps chromium firefox');
+  assert.notEqual(changed, GOOD);
+  assert.ok(checkWorkflow(fixture(changed)).some(problem => problem.includes('unsupported browser engine')));
+});
+
+test('desktop acceptance requires every native target, Electron tests, packaging and fuse verification', () => {
+  assert.deepEqual(checkDesktopWorkflow(REPO_ROOT), []);
+  for (const removed of ['node packages/desktop/scripts/prepare-browser-sandbox.mjs', 'node packages/desktop/scripts/run-performance.mjs', 'name: Desktop performance comparison', 'name: desktop-performance-', 'playwright.desktop-voice.config.ts', 'DILLA_E2E_NOTIFICATIONS', 'dunst', 'with-window-manager.sh', 'prepare-windows-audio.ps1', '--grep-invert "application-audio.spec.ts"', 'Application audio encryption and exclusion', 'application-audio.spec.ts', 'os: macos-15,', 'npm run typecheck -w @dilla/desktop', 'npm run build:validation -w @dilla/desktop', 'node packages/desktop/scripts/check-fuses.mjs', 'node --test packages/desktop/test/native/mac-upgrade.test.mjs', 'node --test packages/desktop/test/native/installed-upgrade.test.mjs', 'libfuse2t64', 'name: desktop-installed-upgrade-', 'npm run dist -w @dilla/desktop', 'arch: x64, shard: 3', "specs: 'web/installed-upgrade-account.spec.ts", 'os: [ubuntu-24.04, windows-latest, macos-15]', 'playwright.desktop.config.ts']) {
+    const root = mkdtempSync(join(tmpdir(), 'dilla-desktop-ci-'));
+    mkdirSync(join(root, '.github/workflows'), { recursive: true });
+    addE2ePackage(root);
+    writeFileSync(join(root, '.github/workflows/desktop.yml'), REAL_DESKTOP.replaceAll(removed, 'removed'));
+    assert.ok(checkDesktopWorkflow(root).length > 0, removed);
+  }
+});
+
+test('installed Linux sandbox preparation cannot lose build prerequisites, controls or exact proof', () => {
+ for(const [before,after] of [
+  ['libgtk-3-dev pkg-config','libgtk-3-0'],
+  ['node packages/desktop/scripts/test-linux-sandbox-package.mjs packages/desktop/out','true'],
+  ["name: Linux AppImage final package inspection mutations\n        if: runner.os == 'Linux'","name: Linux AppImage final package inspection mutations\n        if: false"],
+  ['packages/desktop/out/*.sandbox.json','packages/desktop/out/*.other'],
+  ['CGO_ENABLED=0 go test ./packages/desktop/test/fixtures/linux-installed-sandbox-bootstrap','true'],
+  ['node --test packages/desktop/test/linux-installed-sandbox-bootstrap.test.mjs','node --test --test-name-pattern=none packages/desktop/test/linux-installed-sandbox-bootstrap.test.mjs'],
+  ["name: Linux installed sandbox prerequisite controls\n        if: runner.os == 'Linux'","name: Linux installed sandbox prerequisite controls\n        if: false"],
+  ['path: ${{ runner.temp }}/dilla-installed-sandbox-initial.json','path: unknown.json'],
+  ["name: Initial installed sandbox prerequisite proof\n        if: runner.os == 'Linux'","name: Initial installed sandbox prerequisite proof\n        if: always()"],
+ ]){
+  const root=fixture(GOOD),changed=REAL_DESKTOP.replaceAll(before,after);assert.notEqual(changed,REAL_DESKTOP,before);
+  writeFileSync(join(root,'.github/workflows/desktop.yml'),changed);
+  assert.ok(checkDesktopWorkflow(root).some(p=>p.includes('installed sandbox')),before);
+ }
+});
+
+test('native desktop Go setup remains unconditional for every platform', () => {
+ const before = 'cache: npm\n      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7';
+ assert.ok(REAL_DESKTOP.includes(before)); assert.deepEqual(checkDesktopWorkflow(REPO_ROOT), []);
+ for (const guard of ["runner.os == 'Windows'", "runner.os == 'Linux'", 'false', 'success()']) {
+  const root=fixture(GOOD), changed=REAL_DESKTOP.replace(before, `cache: npm\n      - if: ${guard}\n        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7`);
+  assert.notEqual(changed,REAL_DESKTOP); writeFileSync(join(root,'.github/workflows/desktop.yml'),changed);
+  assert.ok(checkDesktopWorkflow(root).some(problem=>problem.includes('pinned native Go')),guard);
+ }
+ const block='      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7\n        with:\n          go-version-file: go.mod\n          cache-dependency-path: go.sum\n';
+ const nativeStart=REAL_DESKTOP.indexOf('  native:\n'), at=REAL_DESKTOP.indexOf(block,nativeStart); assert.ok(at>=0);
+ const without=REAL_DESKTOP.slice(0,at)+REAL_DESKTOP.slice(at+block.length), unit='      - run: npm test -w @dilla/desktop\n', unitAt=without.indexOf(unit,nativeStart); assert.ok(unitAt>=0);
+ const reordered=without.slice(0,unitAt+unit.length)+block+without.slice(unitAt+unit.length), root=fixture(GOOD);
+ writeFileSync(join(root,'.github/workflows/desktop.yml'),reordered); assert.ok(checkDesktopWorkflow(root).some(problem=>problem.includes('pinned native Go')));
+});
+
+test('every macOS Electron consumer seals its npm runtime immediately after installation', () => {
+ assert.deepEqual(checkDesktopWorkflow(REPO_ROOT), []);
+ const seal = "      - name: Seal macOS npm Electron runtime for native notifications\n        if: runner.os == 'macOS'\n        run: node e2e/web/support/prepare-mac-electron-runtime.ts\n";
+ const install = '      - run: node node_modules/electron/install.js\n';
+ for (const job of ['native', 'client', 'voice']) {
+  const start = REAL_DESKTOP.indexOf(`\n  ${job}:\n`);
+  const tail = REAL_DESKTOP.slice(start), next = /\n  [a-z][a-z0-9-]*:\n/.exec(tail.slice(1));
+  const end = next ? start + 1 + next.index : REAL_DESKTOP.length;
+  const body = REAL_DESKTOP.slice(start, end);
+  assert.ok(body.includes(install + seal), job);
+  for (const changed of [body.replace(seal, ''), body.replace(seal, seal.replace("runner.os == 'macOS'", "runner.os == 'Linux'")),
+   body.replace(install + seal, seal + install), body.replace(seal, '') + seal]) {
+   const root = fixture(GOOD);
+   writeFileSync(join(root, '.github/workflows/desktop.yml'), REAL_DESKTOP.slice(0, start) + changed + REAL_DESKTOP.slice(end));
+   assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('macOS npm Electron runtime') && problem.includes(job)), job);
+  }
+ }
+});
+
+test('native failure diagnostics run only after a successful desktop build', () => {
+ const guard="if: failure() && steps.desktop-build.outcome == 'success'";
+ const before=`${guard}\n        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7\n        with:\n          name: desktop-failure-`;
+ assert.ok(REAL_DESKTOP.includes(before)); assert.deepEqual(checkDesktopWorkflow(REPO_ROOT),[]);
+ for(const replacement of ['failure()', "failure() && steps.desktop-build.outcome != 'success'", 'always()']) {
+  const root=fixture(GOOD), changed=REAL_DESKTOP.replace(before,before.replace(guard,`if: ${replacement}`)); assert.notEqual(changed,REAL_DESKTOP);
+  writeFileSync(join(root,'.github/workflows/desktop.yml'),changed); assert.ok(checkDesktopWorkflow(root).some(p=>p.includes('native failure diagnostics')),replacement);
+ }
+ const block=`${before}\${{ matrix.platform }}-\${{ matrix.arch }}\n          path: |\n            packages/desktop/test-results\n            \${{ runner.temp }}/dilla-windows-audio/*.log\n            \${{ runner.temp }}/dilla-windows-audio/*.out\n            \${{ runner.temp }}/dilla-windows-audio/*.err\n          if-no-files-found: error`;
+ assert.ok(REAL_DESKTOP.includes(block));
+ for(const changed of [REAL_DESKTOP.replace(block,block.replace('if-no-files-found: error','if-no-files-found: warn')),REAL_DESKTOP.replace(block,block.replace('packages/desktop/test-results','packages/desktop/missing')),REAL_DESKTOP.replace('id: desktop-build','id: other-build')]) {
+  const root=fixture(GOOD);writeFileSync(join(root,'.github/workflows/desktop.yml'),changed);assert.ok(checkDesktopWorkflow(root).some(p=>p.includes('native failure diagnostics')));
+ }
+});
+
+test('installed account coverage retains OS credential protection, normal FUSE and owning-shard proof collection', () => {
+  for (const [before, after] of [
+    ['e2e/web/support/installed-keyring.sh', 'removed-keyring.sh'],
+    ['libasound2t64 gnome-keyring libfuse2t64', 'libasound2t64'],
+    ['node packages/desktop/scripts/installed-account-proof.mjs e2e/desktop-client-results', 'echo skipped-account-proof'],
+    ["if: steps.installed-account.outputs.present == 'true'", 'if: false'],
+    ['name: desktop-installed-account-', 'name: unrelated-proof-'],
+  ]) {
+    const root = mkdtempSync(join(tmpdir(), 'dilla-account-ci-'));
+    mkdirSync(join(root, '.github/workflows'), { recursive: true });
+    addE2ePackage(root);
+    const changed = REAL_DESKTOP.replaceAll(before, after); assert.notEqual(changed, REAL_DESKTOP, before);
+    writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
+    assert.ok(checkDesktopWorkflow(root).some(problem => /installed account/i.test(problem)), before);
+  }
+});
+
+test('native build provenance authenticates final fused installers and is uploaded with their bytes', () => {
+  const record = '      - name: Record native desktop build provenance\n        run: node packages/desktop/scripts/build-provenance.mjs packages/desktop/out ${{ matrix.platform }}-${{ matrix.arch }}\n';
+  const fuse = '      - run: node packages/desktop/scripts/check-fuses.mjs\n';
+  for (const changed of [
+    REAL_DESKTOP.replace(record, ''),
+    REAL_DESKTOP.replace(record, record.replace('        run:', '        if: false\n        run:')),
+    REAL_DESKTOP.replace('            packages/desktop/out/build-provenance-*.json\n', ''),
+    REAL_DESKTOP.replace(fuse, '').replace('      - name: Build installable desktop artifacts\n', fuse + '      - name: Build installable desktop artifacts\n'),
+  ]) {
+    assert.notEqual(changed, REAL_DESKTOP);
+    const root = mkdtempSync(join(tmpdir(), 'dilla-build-proof-ci-'));
+    mkdirSync(join(root, '.github/workflows'), { recursive: true });
+    addE2ePackage(root);
+    writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
+    assert.ok(checkDesktopWorkflow(root).some(problem => /build provenance/i.test(problem)));
+  }
+});
+
+test('desktop voice cannot shard its frozen-clock suite', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dilla-desktop-voice-ci-'));
+  mkdirSync(join(root, '.github/workflows'), { recursive: true });
+    addE2ePackage(root);
+  writeFileSync(join(root, '.github/workflows/desktop.yml'), REAL_DESKTOP.replaceAll('playwright.desktop-voice.config.ts --project=electron-voice --workers=1', 'playwright.desktop-voice.config.ts --project=electron-voice --workers=1 --shard=1/2'));
+  assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('single frozen-clock worker')));
+});
+
+test('Electron voice runs before downloading the browser performance baseline', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dilla-voice-baseline-order-'));
+  mkdirSync(join(root, '.github/workflows'), { recursive: true });
+  addE2ePackage(root);
+  const start = REAL_DESKTOP.indexOf('\n  voice:\n'), end = REAL_DESKTOP.indexOf('\n  client:\n', start);
+  const command = '      - run: npm exec -w @dilla/e2e -- playwright install --with-deps chromium\n';
+  let voice = REAL_DESKTOP.slice(start, end);
+  assert.equal(voice.split(command).length, 2);
+  voice = voice.replace(command, '').replace('      - name: Desktop voice end-to-end coverage in Electron\n', command + '      - name: Desktop voice end-to-end coverage in Electron\n');
+  writeFileSync(join(root, '.github/workflows/desktop.yml'), REAL_DESKTOP.slice(0, start) + voice + REAL_DESKTOP.slice(end));
+  assert.ok(checkDesktopWorkflow(root).some(problem => /browser baseline.*after Electron voice/.test(problem)));
+});
+
+test('installed upgrade acceptance cannot omit either NSIS or normal FUSE launch', () => {
+  for (const [before, after] of [
+    ["if: runner.os == 'Windows'\n        run: node --test packages/desktop/test/native/installed-upgrade.test.mjs", "if: runner.os == 'macOS'\n        run: node --test packages/desktop/test/native/installed-upgrade.test.mjs"],
+    ["if: runner.os == 'Linux'\n        run: xvfb-run -a dbus-run-session -- bash packages/desktop/scripts/with-window-manager.sh node --test packages/desktop/test/native/installed-upgrade.test.mjs", "if: runner.os == 'macOS'\n        run: xvfb-run -a dbus-run-session -- bash packages/desktop/scripts/with-window-manager.sh node --test packages/desktop/test/native/installed-upgrade.test.mjs"],
+    ["name: Installed upgrade acceptance\n        if: runner.os == 'Linux'", "name: Installed upgrade acceptance\n        if: runner.os == 'Linux'\n        env:\n          APPIMAGE_EXTRACT_AND_RUN: 1"],
+  ]) {
+    const root = mkdtempSync(join(tmpdir(), 'dilla-installed-ci-'));
+    mkdirSync(join(root, '.github/workflows'), { recursive: true });
+    addE2ePackage(root);
+    const changed = REAL_DESKTOP.replace(before, after);
+    assert.notEqual(changed, REAL_DESKTOP);
+    writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
+    assert.ok(checkDesktopWorkflow(root).some(problem => /installed.*acceptance|FUSE/.test(problem)));
+  }
+});
+
+test('installed proof is produced after Playwright clears output and uploaded afterwards', () => {
+  const sparkle = "      - name: Installed unsigned Sparkle upgrade and signed-feed rejection\n        if: runner.os == 'macOS'\n        run: node --test packages/desktop/test/native/mac-upgrade.test.mjs\n";
+  const moved = REAL_DESKTOP.replace(sparkle, '').replace('      - name: Linux display and Chromium sandbox helper', sparkle + '      - name: Linux display and Chromium sandbox helper');
+  assert.notEqual(moved, REAL_DESKTOP);
+  const root = mkdtempSync(join(tmpdir(), 'dilla-installed-proof-'));
+  mkdirSync(join(root, '.github/workflows'), { recursive: true });
+    addE2ePackage(root);
+  writeFileSync(join(root, '.github/workflows/desktop.yml'), moved);
+  assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('Playwright cleanup')));
+});
+
+test('desktop CI refuses continuing matrix jobs or tests after the first failure', () => {
+  const good = REAL_DESKTOP.replaceAll('fail-fast: false', 'fail-fast: true').replaceAll('--max-failures=3', '--max-failures=1');
+  for (const [before, after] of [['fail-fast: true', 'fail-fast: false'], ['--max-failures=1', '--max-failures=3']]) {
+    const root = mkdtempSync(join(tmpdir(), 'dilla-desktop-first-failure-'));
+    mkdirSync(join(root, '.github/workflows'), { recursive: true });
+    addE2ePackage(root);
+    writeFileSync(join(root, '.github/workflows/desktop.yml'), good.replace(before, after));
+    assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('first failure')), after);
+  }
+});
+
+test('CI rejects removing the whole-run watcher or its completion barrier', () => {
+  for (const name of ['ci-watchdog', 'ci-work-complete']) {
+    const changed = REAL_CI.replace(new RegExp(`^  ${name}:\\n[\\s\\S]*?(?=^  [a-z][\\w-]*:|$(?![\\s\\S]))`, 'm'), '');
+    assert.notEqual(changed, REAL_CI);
+    const problems = checkWorkflow(fixture(changed));
+    assert.ok(problems.some(problem => problem.includes(`missing job "${name}"`)), problems.join('\n'));
+  }
+});
+
+test('CI rejects an unsafe, delayed or unbounded whole-run watcher', () => {
+  for (const [before, after] of [
+    ["github.event.pull_request.head.repo.full_name == github.repository)", 'true)'],
+    ['timeout-minutes: 90', 'timeout-minutes: 360'],
+    ['persist-credentials: false', 'persist-credentials: true'],
+    ['actions: write', 'actions: read'],
+    ['actions: write', 'actions: write\n      contents: write'],
+    ['  ci-watchdog:\n', '  ci-watchdog:\n    name: renamed-watcher\n'],
+    ['persist-credentials: false', 'persist-credentials: false\n          repository: untrusted/fork'],
+    ['GH_TOKEN: ${{ github.token }}', 'GH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}'],
+    ['  ci-watchdog:\n', '  ci-watchdog:\n    needs: [changes]\n'],
+    ['run: python3 scripts/ci-watchdog.py', 'run: echo done'],
+  ]) {
+    const changed = REAL_CI.replace(before, after);
+    assert.notEqual(changed, REAL_CI, before);
+    assert.ok(checkWorkflow(fixture(changed)).some(problem => problem.includes('unsafe watchdog')), before);
+  }
+});
+
+test('CI rejects a completion barrier that misses jobs or waits for the watcher', () => {
+  for (const changed of [
+    REAL_CI.replace(/(  ci-work-complete:\n    needs: \[)changes, /, '$1'),
+    REAL_CI.replace(/(  ci-work-complete:\n    needs: \[)/, '$1ci-watchdog, '),
+    REAL_CI.replace(/(  ci-work-complete:\n    needs: \[[^\]]*\]\n)    if: always\(\)\n/, '$1'),
+  ]) {
+    assert.notEqual(changed, REAL_CI);
+    assert.ok(checkWorkflow(fixture(changed)).some(problem => problem.includes('completion barrier')));
+  }
+});
+
+test('CI accepts a skipped watcher only for fork pull requests', () => {
+  const changed = REAL_CI.replace("      - if: needs.ci-watchdog.result == 'skipped' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)\n        run: exit 1\n", '');
+  assert.notEqual(changed, REAL_CI);
+  assert.ok(checkWorkflow(fixture(changed)).some(problem => problem.includes('skipped watcher')));
+});
+
+test('desktop tooling must be built once per native target and verified before every consumer', () => {
+  for (const [before, after] of [
+    ['node scripts/e2e-test-tools.mjs build artifacts/e2e-test-tools', 'echo skipped build'],
+    ['needs: test-tools', 'needs: rust-native'],
+    ['DILLA_E2E_TOOLING_DIR:', 'UNUSED_TOOLING_DIR:'],
+    ['node scripts/e2e-test-tools.mjs verify artifacts/e2e-test-tools', 'echo skipped verification'],
+    ['name: dilla-e2e-tools-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.sha }}', 'name: stale-tools'],
+    ['overwrite: true', 'overwrite: false'],
+    ["go test ./internal/ops -run 'Lock|BackupAndServe|ServeAdmits'", 'echo skipped locks'],
+  ]) {
+    const root = mkdtempSync(join(tmpdir(), 'dilla-tooling-ci-'));
+    mkdirSync(join(root, '.github/workflows'), { recursive: true });
+    addE2ePackage(root);
+    const changed = REAL_DESKTOP.replaceAll(before, after);
+    assert.notEqual(changed, REAL_DESKTOP, before);
+    writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
+    assert.ok(checkDesktopWorkflow(root).some(problem => /tooling|directory locks/i.test(problem)), before);
+  }
+});
+
+test('desktop native acceptance stays independent and tooling never comes from another run', () => {
+  for (const changed of [
+    REAL_DESKTOP.replace('  native:\n', '  native:\n    needs: test-tools\n'),
+    REAL_DESKTOP.replaceAll('path: artifacts/e2e-test-tools\n', 'path: artifacts/e2e-test-tools\n          run-id: 123\n'),
+    REAL_DESKTOP.replace('  client:\n', '  client:\n    unrelated:\n      - run: cargo build -p dilla-testkit --release --locked\n'),
+  ]) {
+    const root = mkdtempSync(join(tmpdir(), 'dilla-tooling-scope-'));
+    mkdirSync(join(root, '.github/workflows'), { recursive: true });
+    addE2ePackage(root);
+    writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
+    assert.ok(checkDesktopWorkflow(root).some(problem => /tooling|independent/i.test(problem)));
+  }
+});
+
+
 test('compiled helper recovery tests receive the same-commit helper and cannot silently skip', () => {
-  const native = REAL_CI.split('\n  rust-native:\n')[1].split('\n  spotify-helper:\n')[0];
+  const native = REAL_CI.split('\n  rust-native:\n')[1].split('\n  rust-wasi:\n')[0];
   const unit = REAL_CI.split('\n  go:\n')[1].split('\n  go-native:\n')[0];
   const go = REAL_CI.split('\n  go-native:\n')[1]?.split('\n  go-ds:\n')[0] ?? '';
   assert.ok(go, 'native integrations need a separate bounded job instead of consuming the unit job budget');
@@ -31,6 +490,7 @@ test('compiled helper recovery tests receive the same-commit helper and cannot s
   assert.ok(run.some(line => line.includes("DILLA_BOT_HELPER_INTEGRATION: '1'")));
   assert.ok(run.some(line => line.includes("DILLA_CONTROL_E2E: '1'")));
   assert.ok(run.some(line => line.includes('DILLA_BOT_HELPER_BIN: ${{ github.workspace }}/target/release/dilla-bot-core')));
+  assert.ok(run.some(line => line.includes('./internal/bot/music/persistence')), 'encrypted queue upgrades must run against the compiled helper');
   const steps = jobSteps(go);
   const fixtureBuild = steps.findIndex(step => step.some(line => line.includes('cargo test -p dilla-core --test native_bot_group_peer_fixture --no-run --locked')));
   const integration = steps.findIndex(step => step.some(line => line.includes('go test -race ./internal/bot/native ./cmd/dillabot')));
@@ -44,6 +504,7 @@ test('compiled helper recovery tests receive the same-commit helper and cannot s
 test('workflow steps execute only commit-pinned GitHub actions', () => {
   for (const workflow of [REAL_CI, REAL_RELEASE]) {
     for (const match of workflow.matchAll(/^\s*-?\s*uses:\s*(\S+)/gm)) {
+      if (match[1] === './.github/workflows/desktop.yml') continue;
       assert.match(match[1], /^actions\/[\w-]+(?:\/[\w-]+)?@[0-9a-f]{40}$/);
     }
   }
@@ -51,7 +512,7 @@ test('workflow steps execute only commit-pinned GitHub actions', () => {
 
 test('clang 23 build jobs stay on the Ubuntu 24.04 image they install packages for', () => {
   for (const job of ['rust-wasm-node', 'browser-spike', 'browser-media', 'web-build']) {
-    assert.match(REAL_CI, new RegExp(`^  ${job}:\\n(?:    (?:needs|if):.*\\n)*    runs-on: ubuntu-24\\.04$`, 'm'));
+    assert.match(REAL_CI, new RegExp(`^  ${job}:\\n(?:    (?:name|needs|if):.*\\n)*    runs-on: ubuntu-24\\.04$`, 'm'));
   }
   assert.match(REAL_RELEASE, /^  web-build:\n    runs-on: ubuntu-24\.04$/m);
 });
@@ -231,13 +692,6 @@ jobs:
           name: dilla-core-wasi
           path: target/wasm32-wasip1/release/dilla_core_wasi.wasm
           if-no-files-found: error
-  spotify-helper:
-    runs-on: ubuntu-latest
-    steps:
-      - run: cargo fmt --manifest-path crates/dilla-spotify-helper/Cargo.toml -- --check
-      - run: cargo clippy --manifest-path crates/dilla-spotify-helper/Cargo.toml --all-targets --locked -- -D warnings
-      - run: cargo test --manifest-path crates/dilla-spotify-helper/Cargo.toml --locked
-      - run: cargo build --manifest-path crates/dilla-spotify-helper/Cargo.toml --release --locked
   vectors:
     runs-on: ubuntu-latest
     steps:
@@ -266,6 +720,7 @@ jobs:
         with:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
+      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev
       - run: go vet ./...
       - run: CGO_ENABLED=0 go build -tags dillapins ./internal/deps
       - run: go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx -e github.com/jonasthim/dilla/internal/ds -e github.com/jonasthim/dilla/internal/api)
@@ -290,7 +745,7 @@ jobs:
       - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/media/wasm
       - run: go build -o target/dilla-mediabot ./cmd/dilla-mediabot
       - run: node packages/media/scripts/extract-rnnoise-wasm.mjs
-      - run: npx playwright install --with-deps chromium firefox
+      - run: npx playwright install --with-deps chromium
       - run: sh scripts/ci-audio-server.sh
       - run: npm run test:e2e:media -w @dilla/e2e
         env:
@@ -393,11 +848,13 @@ ${browserJobsFixture()}
     runs-on: ubuntu-latest
     steps:
       - run: bash scripts/install-ci-tool.sh golangci-lint
+      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev
       - run: golangci-lint run ./...
 
   go-vuln:
     runs-on: ubuntu-latest
     steps:
+      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 -scan package -tags dillapins ./internal/deps
 
@@ -451,7 +908,7 @@ ${browserJobsFixture()}
 `;
 
 // The four jobs that build for wasm32-unknown-unknown, as ci.yml writes them: the canonical clang 23 job env and,
-// right after checkout, the canonical pinned install step (ruling of 2026-10-13; hardened after the d3429ce lead).
+// right after checkout, the canonical pinned install steps (ruling of 2026-10-13; hardened after the d3429ce lead).
 const WASM_JOBS = ['rust-wasm-node', 'browser-spike', 'browser-media', 'web-build'];
 
 function withWasmClang(text) {
@@ -461,7 +918,7 @@ function withWasmClang(text) {
     const key = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line);
     if (key) job = key[1];
     if (WASM_JOBS.includes(job) && line === '    steps:') {
-      out.push(WASM_CLANG_ENV_BLOCK, line, '      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7', WASM_CLANG_STEP);
+      out.push(WASM_CLANG_ENV_BLOCK, line, '      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7', WASM_CLANG_BLOCK);
       continue;
     }
     out.push(line);
@@ -508,11 +965,14 @@ const CI_OK_JOB = (jobs) => `  ci-ok:
     steps:
       - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
         run: exit 1
+      - if: needs.ci-watchdog.result == 'skipped' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        run: exit 1
       - run: echo ok
 `;
 
 function withChanges(text) {
-  const lines = text.replace('jobs:\n', `jobs:\n${CHANGES_JOB}`).split('\n');
+  const watcher = /^  ci-watchdog:\n[\s\S]*?(?=^  changes:)/m.exec(REAL_CI)[0];
+  const lines = text.replace('jobs:\n', `jobs:\n${watcher}${CHANGES_JOB}`).split('\n');
   const out = [];
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -527,10 +987,31 @@ function withChanges(text) {
     out.push(`    needs: [${['changes', ...needs].join(', ')}]`, `    if: ${gateExpression(key[1])}`);
   }
   const jobs = out.filter((line) => /^ {2}[A-Za-z0-9_-]+:\s*$/.test(line)).map((line) => line.trim().slice(0, -1)).filter((name, i, all) => all.indexOf(name) === i && out.indexOf(`  ${name}:`) > out.indexOf('jobs:'));
-  return `${out.join('\n').replace(/\n$/, '')}\n${CI_OK_JOB(jobs)}`;
+  const barrier = `  ci-work-complete:
+    needs: [${jobs.filter(name => name !== 'ci-watchdog').join(', ')}]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - run: echo "All CI work reached a terminal result"
+`;
+  return `${out.join('\n').replace(/\n$/, '')}\n${barrier}${CI_OK_JOB([...jobs, 'ci-work-complete'])}`;
 }
 
-const GOOD = withChanges(withWasmClang(GOOD_BASE));
+const LINUX_FOUNDATION_JOB = /^  linux-sandbox-foundation:\n[\s\S]*?(?=^  desktop:)/m.exec(REAL_CI)[0].replace(/^    needs:.*\n/m, '').replace(/^    if:.*\n/m, '');
+const GOOD = withChanges(withWasmClang(GOOD_BASE + LINUX_FOUNDATION_JOB + '  desktop:\n    needs: [web-build, linux-sandbox-foundation]\n    uses: ./.github/workflows/desktop.yml\n'));
+
+test('desktop units retain all native platforms and cannot be conditionally narrowed', () => {
+  const step = '      - run: npm test -w @dilla/desktop\n';
+  assert.ok(REAL_DESKTOP.includes(step));
+  for (const replacement of ['', "      - if: runner.os == 'Linux'\n        run: npm test -w @dilla/desktop\n", "      - if: runner.os != 'Windows'\n        run: npm test -w @dilla/desktop\n"]) {
+    const root = mkdtempSync(join(tmpdir(), 'dilla-unit-platform-ci-'));
+    mkdirSync(join(root, '.github/workflows'), { recursive: true });
+    addE2ePackage(root);
+    writeFileSync(join(root, '.github/workflows/desktop.yml'), REAL_DESKTOP.replace(step, replacement));
+    assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('desktop unit')));
+  }
+});
 
 const BUDGET = MIN_BROWSER_WEB_TIMEOUT;
 
@@ -551,9 +1032,11 @@ function gatedTest(name) {
 function fixture(body, gated = GATED) {
   const dir = mkdtempSync(join(tmpdir(), 'dilla-ci-'));
   mkdirSync(join(dir, '.github', 'workflows'), { recursive: true });
+  addE2ePackage(dir);
   writeFileSync(join(dir, '.github', 'workflows', 'ci.yml'), body);
   // The CLI also checks release.yml.
   writeFileSync(join(dir, '.github', 'workflows', 'release.yml'), REAL_RELEASE);
+  writeFileSync(join(dir, '.github', 'workflows', 'desktop.yml'), REAL_DESKTOP);
   for (const [pkg, name] of gated) {
     mkdirSync(join(dir, pkg), { recursive: true });
     writeFileSync(join(dir, pkg, `${name}_test.go`), gatedTest(name));
@@ -608,6 +1091,11 @@ test('a job that lost a required step is reported', () => {
 test('a missing concurrency block is reported', () => {
   const problems = checkWorkflow(fixture(GOOD.replace(/concurrency:[\s\S]*?cancel-in-progress: true\n/, '')));
   assert.ok(problems.some((p) => p.includes('concurrency')), problems.join('\n'));
+});
+
+test('commit-specific concurrency groups cannot leave obsolete pull-request runs alive', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace('group: ${{ github.workflow }}-${{ github.ref }}', 'group: ${{ github.workflow }}-${{ github.ref }}-${{ github.sha }}')));
+  assert.ok(problems.some((p) => p.includes('concurrency group')), problems.join('\n'));
 });
 
 test('a workflow token without read-only permissions is reported', () => {
@@ -665,7 +1153,7 @@ test('a workflow without the go-harness job is reported', () => {
 });
 
 test('a go-harness job that lost its own timeout is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace(/(  go-harness:\n(?:    (?:needs|if):.*\n)*    runs-on: ubuntu-latest\n)    timeout-minutes: 45\n/, '$1')));
+  const problems = checkWorkflow(fixture(GOOD.replace(/(  go-harness:\n(?:    (?:name|needs|if):.*\n)*    runs-on: ubuntu-latest\n)    timeout-minutes: 45\n/, '$1')));
   assert.ok(problems.some((p) => p.includes('timeout-minutes: 45')), problems.join('\n'));
 });
 
@@ -949,11 +1437,11 @@ test('an upload-artifact step in any job without if-no-files-found: error is rep
   const extra = '\n  extra:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7\n        with:\n          name: x\n          path: y\n      - run: echo after\n';
   const problems = checkWorkflow(fixture(GOOD + extra));
   assert.deepEqual(
-    problems.map((p) => p.replace(/^ci\.yml:\d+: /, '')).filter((p) => !p.includes('JOB_GATES') && !p.includes('"ci-ok"')),
+    problems.map((p) => p.replace(/^ci\.yml:\d+: /, '')).filter((p) => !p.includes('JOB_GATES') && !p.includes('"ci-ok"') && !p.includes('completion barrier')),
     ['actions/upload-artifact without "if-no-files-found: error" — CI is fail-closed'],
   );
   // The same step with the setting is clean.
-  assert.deepEqual(checkWorkflow(fixture(GOOD + extra.replace('          path: y\n', '          path: y\n          if-no-files-found: error\n'))).filter((p) => !p.includes('JOB_GATES') && !p.includes('"ci-ok"')), []);
+  assert.deepEqual(checkWorkflow(fixture(GOOD + extra.replace('          path: y\n', '          path: y\n          if-no-files-found: error\n'))).filter((p) => !p.includes('JOB_GATES') && !p.includes('"ci-ok"') && !p.includes('completion barrier')), []);
 });
 
 // Task 21: the browser E2EE suite.
@@ -1005,7 +1493,7 @@ for (const needle of [
   'name: dilla-testkit',
   'wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/media/wasm',
   'go build -o target/dilla-mediabot ./cmd/dilla-mediabot',
-  'npx playwright install --with-deps chromium firefox',
+  'npx playwright install --with-deps chromium',
   'npm run test:e2e:media -w @dilla/e2e',
   'DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit',
 ]) {
@@ -1209,168 +1697,24 @@ for (const job of Object.keys(BROWSER_WEB_JOBS)) {
   }
 }
 
-// Jonas, 2026-10-30: each engine splits into a core job, a voice job and the web suite as three Playwright shards, one
-// job each. Dropping a job, folding suites back into one job, an unpinned shard or two jobs uploading one artifact name
-// (upload-artifact v4+ refuses a duplicate) is reported.
-test('the browser job table covers core, voice and three web shards for Chromium and Firefox, and WebKit web', () => {
-  const rows = Object.entries(BROWSER_WEB_JOBS).map(([job, { engine, suite, shard, timeout }]) => `${job} ${engine} ${suite} ${shard} ${timeout}`);
-  assert.deepEqual(rows, [
-    'chromium-core chromium core null 20',
-    'chromium-voice chromium voice null 30',
-    'chromium-web-1 chromium web 1 35',
-    'chromium-web-2 chromium web 2 35',
-    'chromium-web-3 chromium web 3 35',
-    'firefox-core firefox core null 20',
-    'firefox-voice firefox voice null 30',
-    'firefox-web-1 firefox web 1 40',
-    'firefox-web-2 firefox web 2 40',
-    'firefox-web-3 firefox web 3 40',
-    'webkit-web webkit web null 30',
-  ]);
-  assert.equal(WEB_SHARDS, 3);
+test('shared core integration uses only the Electron-compatible engine', () => {
+  assert.deepEqual(BROWSER_WEB_JOBS, { 'core-integration': { engine: 'chromium', suite: 'core', shard: null, timeout: 20 } });
+  assert.equal(browserSuiteCommand(BROWSER_WEB_JOBS['core-integration']), 'npm run test:e2e:core:chromium -w @dilla/e2e');
+  assert.equal(WEB_SHARDS, 3, 'desktop client acceptance still has three shards');
 });
 
-test('the shard commands are the web suite with --shard=i/3', () => {
-  assert.equal(browserSuiteCommand(BROWSER_WEB_JOBS['chromium-web-2']), 'npm run test:e2e:web:chromium -w @dilla/e2e -- --shard=2/3');
-  assert.equal(browserSuiteCommand(BROWSER_WEB_JOBS['firefox-voice']), 'npm run test:e2e:voice:firefox -w @dilla/e2e');
-  assert.equal(browserSuiteCommand(BROWSER_WEB_JOBS['webkit-web']), 'npm run test:e2e:web:webkit -w @dilla/e2e');
-});
-
-test('the old per-engine jobs are no longer accepted', () => {
-  assert.ok(!('chromium-web' in BROWSER_WEB_JOBS) && !('firefox-web' in BROWSER_WEB_JOBS));
-  const old = '  chromium-web:\n    needs: [changes, rust-native, rust-wasi, web-build]\n    if: needs.changes.outputs.e2e != \'false\'\n    steps:\n      - run: npm run test:e2e:core:chromium -w @dilla/e2e\n';
-  const problems = checkWorkflow(fixture(GOOD.replace('  deny:', () => `${old}\n  deny:`)));
-  assert.ok(problems.some((p) => p.includes('"chromium-web"') && p.includes('JOB_GATES')), problems.join('\n'));
-});
-
-test('a workflow missing one split job is reported, also when another job runs that suite', () => {
-  const shard = jobBody('chromium-web-2');
-  const problems = checkWorkflow(fixture(GOOD.replace(shard, '')));
-  assert.ok(problems.some((p) => p.includes('missing job "chromium-web-2"')), problems.join('\n'));
-  const merged = jobBody('chromium-web-1').replace(
-    '      - run: npm run test:e2e:web:chromium -w @dilla/e2e -- --shard=1/3\n',
-    '      - run: npm run test:e2e:web:chromium -w @dilla/e2e -- --shard=1/3\n        env:\n          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit\n      - run: npm run test:e2e:web:chromium -w @dilla/e2e -- --shard=2/3\n',
-  );
-  const folded = checkWorkflow(fixture(GOOD.replace(shard, '').replace(jobBody('chromium-web-1'), () => merged)));
-  assert.ok(folded.some((p) => p.includes('missing job "chromium-web-2"')), folded.join('\n'));
-  assert.ok(folded.some((p) => p.includes('"chromium-web-1"') && p.includes('exactly one Playwright suite')), folded.join('\n'));
-});
-
-test('a job that also runs another suite is reported', () => {
-  const body = jobBody('chromium-core');
+test('the core security job cannot be deleted, folded into another suite or given too little time', () => {
+  const body = jobBody('core-integration');
+  assert.ok(checkWorkflow(fixture(GOOD.replace(body, ''))).some(p => p.includes('missing job "core-integration"')));
   const both = body.replace('    steps:\n', '    steps:\n      - run: npm run test:e2e:voice:chromium -w @dilla/e2e\n');
-  const problems = checkWorkflow(fixture(GOOD.replace(body, () => both)));
-  assert.ok(problems.some((p) => p.includes('"chromium-core"') && p.includes('exactly one Playwright suite')), problems.join('\n'));
+  assert.ok(checkWorkflow(fixture(GOOD.replace(body, () => both))).some(p => p.includes('exactly one Playwright suite')));
+  assert.ok(BROWSER_WEB_JOBS['core-integration'].timeout >= MIN_BROWSER_WEB_TIMEOUT);
 });
 
-for (const [job, spec] of Object.entries(BROWSER_WEB_JOBS).filter(([, { shard }]) => shard !== null)) {
-  test(`a ${job} job running the wrong shard, or the whole suite, is reported`, () => {
-    const body = jobBody(job);
-    const command = browserSuiteCommand(spec);
-    assert.ok(body.includes(command), 'fixture sanity: the shard command');
-    const other = spec.shard === 1 ? 2 : 1;
-    for (const changed of [
-      command.replace(`--shard=${spec.shard}/3`, `--shard=${other}/3`),
-      command.replace(`--shard=${spec.shard}/3`, `--shard=${spec.shard}/4`),
-      command.replace(' -- --shard=' + spec.shard + '/3', ''),
-    ]) {
-      const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace(command, changed))));
-      assert.ok(problems.some((p) => p.includes(`"${job}"`) && p.includes(command)), `${changed}: ${problems.join('\n')}`);
-    }
-  });
-}
-
-// Web-3 task 10: Firefox's voice suite runs after the audio server, as browser-media's does.
-test('firefox-voice must start an audio server before the voice suite', () => {
-  const body = jobBody('firefox-voice');
-  const audio = '      - run: sh scripts/ci-audio-server.sh\n';
-  const voice = '      - run: npm run test:e2e:voice:firefox -w @dilla/e2e\n';
-  assert.ok(body.includes(audio) && body.includes(voice), 'fixture sanity: the audio server and the voice suite');
-  const late = body.replace(audio, '').replace(voice + '        env:\n          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit\n', (m) => m + audio);
-  const problems = checkWorkflow(fixture(GOOD.replace(body, () => late)));
-  assert.ok(problems.some((p) => p.includes('firefox-voice') && p.includes('audio server must start before the voice suite')), problems.join('\n'));
-});
-
-// Web3.9 CI2: the web suite has calls too (afk.spec's idle move, the layout's AFK preview). Without the audio server
-// Firefox's AudioContext stays suspended, so a fake microphone's tone reaches no local meter and counts as speech.
-for (const shard of [1, 2, 3]) {
-  const job = `firefox-web-${shard}`;
-  test(`${job} must start an audio server before the web suite`, () => {
-    const body = jobBody(job);
-    const audio = '      - run: sh scripts/ci-audio-server.sh\n';
-    const env = '        env:\n          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit\n';
-    const web = `      - run: npm run test:e2e:web:firefox -w @dilla/e2e -- --shard=${shard}/3\n`;
-    assert.ok(body.includes(audio) && body.includes(web), 'fixture sanity: the audio server and the web suite');
-    const late = body.replace(audio, '').replace(web + env, (m) => m + audio);
-    const problems = checkWorkflow(fixture(GOOD.replace(body, () => late)));
-    assert.ok(problems.some((p) => p.includes(job) && p.includes('audio server must start before the web suite')), problems.join('\n'));
-    const missing = checkWorkflow(fixture(GOOD.replace(body, () => body.replace(audio, ''))));
-    assert.ok(missing.some((p) => p.includes(`"${job}"`) && p.includes('ci-audio-server.sh')), missing.join('\n'));
-  });
-}
-
-test('firefox-core and the Chromium and WebKit jobs need no audio server', () => {
-  for (const job of ['firefox-core', 'chromium-core', 'chromium-voice', 'chromium-web-1', 'webkit-web']) {
-    assert.ok(!jobBody(job).includes('ci-audio-server.sh'), job);
-  }
-  assert.deepEqual(checkWorkflow(fixture(GOOD)), []);
-});
-
-// Web-3 task 10 (review M10): the suite rules match steps, so a comment never satisfies them, and the suite step's own
-// env is required.
-for (const [job, spec] of Object.entries(BROWSER_WEB_JOBS)) {
-  const command = browserSuiteCommand(spec);
-  const step = `      - run: ${command}\n`;
-  const env = '        env:\n          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit\n';
-  test(`a ${job} suite step that is only a comment is reported`, () => {
-    const body = jobBody(job);
-    assert.ok(body.includes(step), 'fixture sanity: the suite step');
-    const commented = body.replace(step, `      # - run: ${command}\n`);
-    const problems = checkWorkflow(fixture(GOOD.replace(body, () => commented)));
-    assert.ok(problems.some((p) => p.includes(`"${job}" is missing: ${command}`)), problems.join('\n'));
-  });
-  test(`a ${job} suite step without its own DILLA_TESTKIT env is reported`, () => {
-    const body = jobBody(job);
-    assert.ok(body.includes(step + env), 'fixture sanity: the suite step and its env');
-    const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace(step + env, step))));
-    assert.ok(problems.some((p) => p.includes(`"${job}"`) && p.includes('without its own env')), problems.join('\n'));
-  });
-}
-
-test('a comment naming the audio server above the suite step does not stand in for the real step after it', () => {
-  const body = jobBody('firefox-voice');
-  const audio = '      - run: sh scripts/ci-audio-server.sh\n';
-  const voice = '      - run: npm run test:e2e:voice:firefox -w @dilla/e2e\n        env:\n          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit\n';
-  assert.ok(body.includes(audio) && body.includes(voice), 'fixture sanity: the audio server, then the voice suite');
-  const sneaky = body.replace(audio, '      # sh scripts/ci-audio-server.sh\n').replace(voice, `${voice}${audio}`);
-  const problems = checkWorkflow(fixture(GOOD.replace(body, () => sneaky)));
-  assert.ok(problems.some((p) => p.includes('firefox-voice') && p.includes('audio server must start before')), problems.join('\n'));
-  const commentOnly = body.replace(audio, '      # - run: sh scripts/ci-audio-server.sh\n');
-  const missing = checkWorkflow(fixture(GOOD.replace(body, () => commentOnly)));
-  assert.ok(missing.some((p) => p.includes('"firefox-voice"') && p.includes('ci-audio-server.sh')), missing.join('\n'));
-});
-
-test('jobSteps drops comment lines and keeps each step\'s own lines', () => {
-  const steps = jobSteps('    steps:\n      # - run: a\n      - run: b\n        env:\n          X: 1\n      # c\n      - uses: d\n');
-  assert.deepEqual(steps, [['run: b', 'env:', 'X: 1'], ['uses: d']]);
-});
-
-test('the browser budgets keep margin over the measured durations', () => {
-  // Chromium's whole web suite took 45.6 minutes on one worker, Firefox's about 47: a third of it plus about 3 minutes of
-  // setup is about 19 minutes, so a shard's cap must not sink under 30.
-  for (const [job, { suite, engine, timeout }] of Object.entries(BROWSER_WEB_JOBS)) {
-    if (suite === 'web' && engine !== 'webkit') assert.ok(timeout >= 35, `${job}: ${timeout}`);
-    if (suite === 'voice') assert.ok(timeout >= 30, `${job}: ${timeout}`);
-    if (suite === 'core') assert.ok(timeout >= 20, `${job}: ${timeout}`);
-  }
-  assert.equal(BROWSER_WEB_JOBS['webkit-web'].timeout, 30);
-});
-
-test('two browser jobs uploading one artifact name are reported', () => {
-  const body = jobBody('firefox-web-2');
-  const shared = body.replace('name: browser-web-results-firefox-web-2', 'name: browser-web-results-firefox-web-1');
-  const problems = checkWorkflow(fixture(GOOD.replace(body, () => shared)));
-  assert.ok(problems.some((p) => p.includes('"firefox-web-2"') && p.includes('browser-web-results-firefox-web-2')), problems.join('\n'));
+test('unsupported browser client jobs are rejected when reintroduced', () => {
+  const old = '  firefox-web-1:\n    needs: [changes]\n    if: needs.changes.outputs.e2e != \'false\'\n    steps:\n      - run: npm run test:e2e:web:firefox -w @dilla/e2e\n';
+  const problems = checkWorkflow(fixture(GOOD.replace('  deny:', () => old + '  deny:')));
+  assert.ok(problems.some(p => p.includes('firefox-web-1') && p.includes('JOB_GATES')));
 });
 
 test('every browser job has its own artifact name in the real ci.yml', () => {
@@ -1384,9 +1728,9 @@ test('the real ci-ok job needs every browser job', () => {
   for (const job of Object.keys(BROWSER_WEB_JOBS)) assert.ok(new RegExp(`needs:[^\\n]*[ \\[]${job}[,\\]]`).test(body), job);
 });
 
-test('a ci-ok job that forgot a browser shard is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace(/(  ci-ok:\n    needs: \[[^\]]*), firefox-web-3/, '$1')));
-  assert.ok(problems.some((p) => p.includes('"ci-ok"') && p.includes('"firefox-web-3"')), problems.join('\n'));
+test('a ci-ok job that forgot core security integration is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace(/(  ci-ok:\n    needs: \[[^\]]*), core-integration/, '$1')));
+  assert.ok(problems.some((p) => p.includes('"ci-ok"') && p.includes('"core-integration"')), problems.join('\n'));
 });
 
 test('a browser job without the e2e gate is reported', () => {
@@ -1527,35 +1871,54 @@ function editJob(job, edit) {
 }
 
 const STEP_RULE = (job) =>
-  `ci.yml: job "${job}" builds for wasm32-unknown-unknown; its second step, right after actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7, must be exactly the pinned clang 23 step (WASM_CLANG_STEP)`;
+  `ci.yml: job "${job}" builds for wasm32-unknown-unknown; its second to fourth steps, right after actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7, must be exactly the pinned clang 23 steps (WASM_CLANG_STEPS)`;
 const ENV_RULE = (job) =>
   `ci.yml: job "${job}" builds for wasm32-unknown-unknown; its job-level env must be exactly:\n${WASM_CLANG_ENV_BLOCK}`;
 
 const LLVM_PACKAGES = ['clang-23', 'llvm-23', 'libllvm23', 'libclang-cpp23', 'libclang1-23', 'libclang-common-23-dev', 'llvm-23-linker-tools', 'llvm-23-runtime'];
 
-test('the canonical step pins every llvm-toolchain-23 package at one version and reads each back', () => {
-  assert.ok(WASM_CLANG_STEP.includes('          v=$(apt-cache policy clang-23 | awk \'/Candidate:/ { print $2 }\')'));
+/** The install script the canonical steps run: the pin, the fingerprint check and the read-back live there now. */
+const CLANG_SCRIPT = readFileSync(new URL('./ci-llvm.sh', import.meta.url), 'utf8');
+
+test('the canonical steps restore the cached build, run the install script and save a build the cache lacked', () => {
+  assert.equal(WASM_CLANG_STEPS.length, 3);
+  assert.equal(WASM_CLANG_STEPS[1], '      - id: clang23\n        name: clang 23 for the wasm C build\n        run: bash scripts/ci-llvm.sh install');
+  assert.match(WASM_CLANG_STEPS[0], /^      - id: clang23-cache\n        uses: actions\/cache\/restore@[0-9a-f]{40} # v[\d.]+\n/);
+  assert.ok(WASM_CLANG_STEPS[0].includes('          path: ~/.cache/llvm-23-debs\n'));
+  assert.ok(WASM_CLANG_STEPS[0].includes('          restore-keys: llvm-23-debs-${{ runner.arch }}-ubuntu-24.04-'));
+  assert.match(WASM_CLANG_STEPS[2], /^      - if: steps\.clang23\.outputs\.changed == 'true'\n        uses: actions\/cache\/save@[0-9a-f]{40} # v[\d.]+\n/);
+  assert.ok(WASM_CLANG_STEPS[2].includes('          key: llvm-23-debs-${{ runner.arch }}-ubuntu-24.04-${{ steps.clang23.outputs.build }}'));
+  assert.equal(WASM_CLANG_BLOCK, WASM_CLANG_STEPS.join('\n'));
+});
+
+test('the install script pins every llvm-toolchain-23 package at one version and reads each back', () => {
+  assert.ok(CLANG_SCRIPT.includes('v=$(apt-cache policy clang-23 | awk \'/Candidate:/ { print $2 }\')'));
   assert.match(WASM_LLVM_VERSION, /^23\.\d+$/);
-  assert.ok(WASM_CLANG_STEP.includes(`case "$v" in 1:${WASM_LLVM_VERSION}.*~++*)`), 'the signed apt source candidate must stay on LLVM 23.1');
-  const install = WASM_CLANG_STEP.split('\n').find((l) => l.includes('apt-get install'));
+  assert.ok(CLANG_SCRIPT.includes(`case "$v" in 1:${WASM_LLVM_VERSION}.*~++*) ;; *) echo "expected clang ${WASM_LLVM_VERSION}.x candidate, got $v" >&2; exit 1 ;; esac`), 'the signed apt source candidate must stay on LLVM 23.1');
+  const install = CLANG_SCRIPT.split('\n').find((l) => l.includes('apt-get install') && l.includes('clang-23='));
   for (const p of LLVM_PACKAGES) {
     assert.ok(install.includes(` "${p}=$v"`), `${p} is not installed at the pinned version`);
   }
   assert.ok(!/\s(clang-23|llvm-23)(\s|$)/.test(install), 'an unpinned package name in the install line');
-  assert.ok(WASM_CLANG_STEP.includes(`          for p in ${LLVM_PACKAGES.join(' ')}; do test "$(dpkg-query -W -f='\${Version}' "$p")" = "$v"; done`));
-  assert.ok(WASM_CLANG_STEP.includes(`          /usr/bin/clang-23 --version | grep -F "clang version ${WASM_LLVM_VERSION}."`));
-  assert.ok(WASM_CLANG_STEP.includes('          apt-cache policy clang-23 llvm-23'));
+  assert.ok(CLANG_SCRIPT.includes(`for p in ${LLVM_PACKAGES.join(' ')}; do test "$(dpkg-query -W -f='\${Version}' "$p")" = "$v"; done`));
+  assert.ok(CLANG_SCRIPT.includes(`case "$v" in 1:${WASM_LLVM_VERSION}.*~++*) ;; *) echo "expected an installed clang ${WASM_LLVM_VERSION}.x build, got $v" >&2; exit 1 ;; esac`), 'the cached build is read back against the same pin');
+  assert.ok(CLANG_SCRIPT.includes(`"$bin/clang-23" --version | grep -F "clang version ${WASM_LLVM_VERSION}."`));
+  assert.ok(CLANG_SCRIPT.includes('bin="${LLVM_BIN:-/usr/bin}"'), 'the compiler is read back by its absolute path');
+  assert.ok(CLANG_SCRIPT.includes('apt-cache policy clang-23 llvm-23'));
+  assert.ok(CLANG_SCRIPT.includes('packages=(' + LLVM_PACKAGES.join(' ') + ')'), 'the cached build is the same eight packages');
 });
 
-test('the canonical step checks the fingerprint on the keyring apt is pointed at', () => {
-  const lines = WASM_CLANG_STEP.split('\n').map((l) => l.trim());
-  const dearmor = lines.indexOf('gpg --dearmor -o "$RUNNER_TEMP/apt-llvm.gpg" "$RUNNER_TEMP/llvm-snapshot.asc"');
-  const check = lines.indexOf(`test "$primaries" = ${WASM_LLVM_KEY_FPR}`);
-  const install = lines.indexOf('sudo install -m 0644 "$RUNNER_TEMP/apt-llvm.gpg" /usr/share/keyrings/apt-llvm.gpg');
-  const same = lines.indexOf('cmp "$RUNNER_TEMP/apt-llvm.gpg" /usr/share/keyrings/apt-llvm.gpg');
-  const source = lines.findIndex((l) => l.includes('[signed-by=/usr/share/keyrings/apt-llvm.gpg]'));
+test('the install script checks the fingerprint on the keyring apt is pointed at', () => {
+  const lines = CLANG_SCRIPT.split('\n').map((l) => l.trim());
+  assert.ok(lines.includes(`fingerprint=${WASM_LLVM_KEY_FPR}`));
+  assert.ok(lines.includes('keyring="${LLVM_KEYRING:-/usr/share/keyrings/apt-llvm.gpg}"'));
+  const dearmor = lines.indexOf('gpg --dearmor -o "$temp/apt-llvm.gpg" "$temp/llvm-snapshot.asc"');
+  const check = lines.indexOf('test "$primaries" = "$fingerprint"');
+  const install = lines.indexOf('sudo install -m 0644 "$temp/apt-llvm.gpg" "$keyring"');
+  const same = lines.indexOf('cmp "$temp/apt-llvm.gpg" "$keyring"');
+  const source = lines.findIndex((l) => l.includes('[signed-by=$keyring]'));
   assert.ok(dearmor !== -1 && dearmor < check && check < install && install < same && same < source, lines.join('\n'));
-  assert.ok(lines[check - 1].startsWith('primaries=$(gpg --show-keys --with-colons "$RUNNER_TEMP/apt-llvm.gpg"'));
+  assert.ok(lines[check - 1].startsWith('primaries=$(gpg --show-keys --with-colons "$temp/apt-llvm.gpg"'));
   assert.ok(WASM_CLANG_ENV_BLOCK.includes('CC_wasm32_unknown_unknown: /usr/bin/clang-23'));
   assert.ok(WASM_CLANG_ENV_BLOCK.includes('AR_wasm32_unknown_unknown: /usr/bin/llvm-ar-23'));
 });
@@ -1573,26 +1936,26 @@ for (const job of WASM_JOBS) {
     const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace(WASM_CLANG_ENV_BLOCK, `${WASM_CLANG_ENV_BLOCK}\n      CFLAGS_wasm32_unknown_unknown: -O0`))));
     assert.ok(problems.includes(ENV_RULE(job)), problems.join('\n'));
   });
-  test(`a ${job} job installing an unpinned clang is reported`, () => {
-    const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace(' "clang-23=$v"', ' clang-23'))));
+  test(`a ${job} job running the install script with another argument is reported`, () => {
+    const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace('bash scripts/ci-llvm.sh install', 'bash scripts/ci-llvm.sh install --any'))));
     assert.ok(problems.includes(STEP_RULE(job)), problems.join('\n'));
   });
-  test(`a ${job} job pinned to another build is reported`, () => {
-    const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace(WASM_LLVM_VERSION, WASM_LLVM_VERSION.replace('23.1', '23.2')))));
+  test(`a ${job} job restoring another cache is reported`, () => {
+    const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace('~/.cache/llvm-23-debs', '~/.cache/llvm-24-debs'))));
     assert.ok(problems.includes(STEP_RULE(job)), problems.join('\n'));
   });
-  test(`a ${job} job checking another key fingerprint is reported`, () => {
-    const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace(WASM_LLVM_KEY_FPR, '0'.repeat(40)))));
+  test(`a ${job} job saving the cache unconditionally is reported`, () => {
+    const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace("      - if: steps.clang23.outputs.changed == 'true'\n        uses: actions/cache/save", '      - uses: actions/cache/save'))));
     assert.ok(problems.includes(STEP_RULE(job)), problems.join('\n'));
   });
   test(`a ${job} job that skips the clang 23 step with an if: is reported`, () => {
-    const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace('      - name: clang 23 for the wasm C build\n', '      - name: clang 23 for the wasm C build\n        if: false\n'))));
+    const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace('        name: clang 23 for the wasm C build\n', '        name: clang 23 for the wasm C build\n        if: false\n'))));
     assert.ok(problems.includes(STEP_RULE(job)), problems.join('\n'));
   });
   test(`a ${job} job that installs clang 23 after other steps is reported`, () => {
     const moved = editJob(job, (b) => {
-      const without = b.replace(`${WASM_CLANG_STEP}\n`, '');
-      return `${without.replace(/\n*$/, '')}\n${WASM_CLANG_STEP}\n`;
+      const without = b.replace(`${WASM_CLANG_BLOCK}\n`, '');
+      return `${without.replace(/\n*$/, '')}\n${WASM_CLANG_BLOCK}\n`;
     });
     const problems = checkWorkflow(fixture(moved));
     assert.ok(problems.includes(STEP_RULE(job)), problems.join('\n'));
@@ -1604,9 +1967,9 @@ for (const job of WASM_JOBS) {
 test('an evading job that only names the pinned strings in a comment and an echo is reported', () => {
   const evading = editJob('web-build', (b) =>
     b.replace(
-      `${WASM_CLANG_STEP}\n`,
-      `      # ${WASM_CLANG_STEP.split('\n').map((l) => l.trim()).join(' ; ')}\n` +
-        `      - run: echo '${WASM_CLANG_STEP.split('\n').filter((l) => l.includes('apt-get install')).join('').trim()}'\n`,
+      `${WASM_CLANG_BLOCK}\n`,
+      `      # ${WASM_CLANG_BLOCK.split('\n').map((l) => l.trim()).join(' ; ')}\n` +
+        `      - run: echo '${WASM_CLANG_BLOCK.split('\n').filter((l) => l.includes('ci-llvm.sh')).join('').trim()}'\n`,
     ),
   );
   const problems = checkWorkflow(fixture(evading));
@@ -1680,7 +2043,9 @@ test('jobs that build no wasm need no clang 23', () => {
 function releaseFixture(release) {
   const dir = mkdtempSync(join(tmpdir(), 'dilla-release-'));
   mkdirSync(join(dir, '.github', 'workflows'), { recursive: true });
+  addE2ePackage(dir);
   writeFileSync(join(dir, '.github', 'workflows', 'ci.yml'), REAL_CI);
+  writeFileSync(join(dir, '.github', 'workflows', 'desktop.yml'), REAL_DESKTOP);
   writeFileSync(join(dir, '.github', 'workflows', 'release.yml'), release);
   return dir;
 }
@@ -1699,12 +2064,6 @@ test('the real release workflow passes every rule', () => {
   assert.deepEqual(checkReleaseWorkflow(REPO_ROOT), []);
 });
 
-test('the release Spotify helper must be built for arm64', () => {
-  assertReported(
-    releaseProblems((t) => t.replace('runner: ubuntu-24.04-arm', 'runner: ubuntu-latest')),
-    'build native amd64 and arm64 assets',
-  );
-});
 
 test('a release workflow without the release job is reported', () => {
   assertReported(releaseProblems((t) => t.replace(/\n {2}release:\n[\s\S]*$/, '\n')), 'missing job "release"');
@@ -1767,7 +2126,7 @@ test('a tag job that no longer checks the ref is reported', () => {
 });
 
 test('a release web-build without the clang 23 pin is reported', () => {
-  assertReported(releaseProblems((t) => t.replace('      - name: clang 23 for the wasm C build\n', '      - name: clang for the wasm C build\n')), 'clang 23');
+  assertReported(releaseProblems((t) => t.replace('        name: clang 23 for the wasm C build\n', '        name: clang for the wasm C build\n')), 'clang 23');
 });
 
 test('a release go-release that builds before the placeholder guard is reported', () => {
@@ -1943,7 +2302,9 @@ test('the real ci-ok job needs every other job', () => {
 });
 
 test('a ci-ok job that forgot a job is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace(/(  ci-ok:\n    needs: \[)changes, /, '$1')));
+  const changed = GOOD.replace(/(  ci-ok:\n    needs: \[[^\]]*)changes, /, '$1');
+  assert.notEqual(changed, GOOD);
+  const problems = checkWorkflow(fixture(changed));
   assert.ok(problems.some((p) => p.includes('"ci-ok"') && p.includes('"changes"')), problems.join('\n'));
 });
 
@@ -1971,4 +2332,41 @@ test('the docs job must run the real checks, not only their unit tests', () => {
     const problems = checkWorkflow(fixture(GOOD.replace(`      - run: npm run ${step}\n`, '')));
     assert.ok(problems.some((p) => p.includes('"docs"') && p.includes(step)), `${step}: ${problems.join('\n')}`);
   }
+});
+
+test('installed AppImage sandbox gate requires exact verification after actual upgrade and before upload', () => {
+ const step = `      - name: Linux AppImage sandbox native acceptance\n        if: runner.os == 'Linux'\n        run: node packages/desktop/test/support/linux-installed-runtime-proof.mjs packages/desktop/test-results/linux-installed-upgrade.json\n`;
+ assert.ok(REAL_DESKTOP.includes(step), 'missing actual installed AppImage kernel proof gate');
+ for(const changed of [
+  REAL_DESKTOP.replace(step,''),REAL_DESKTOP.replace(step,step.replace("runner.os == 'Linux'",'false')),
+  REAL_DESKTOP.replace(step,step.replace('        run:','        continue-on-error: true\n        run:')),
+  REAL_DESKTOP.replace(step,step.replace('run: node ','run: echo ')),
+  REAL_DESKTOP.replace(step,step.replace('linux-installed-upgrade.json','other.json')),
+  REAL_DESKTOP.replace(step,step.replace('native acceptance','diagnostic acceptance')),
+  REAL_DESKTOP.replace(step,'').replace('      - name: Installed upgrade acceptance\n',step+'      - name: Installed upgrade acceptance\n'),
+  REAL_DESKTOP.replace(step,step.replace('        run:','        env:\n          NODE_OPTIONS: --import ./fake-proof.mjs\n        run:')),
+ ]){
+  assert.notEqual(changed,REAL_DESKTOP);const root=fixture(GOOD);writeFileSync(join(root,'.github/workflows/desktop.yml'),changed);
+  assert.ok(checkDesktopWorkflow(root).some(p=>p.includes('installed AppImage sandbox')),changed);
+ }
+});
+
+
+test('native Linux release producer is separate, source-versioned, non-bypassable and uploads only its own outputs', () => {
+ const block = REAL_DESKTOP.split('\n  native-linux-packages:\n')[1]?.split(/\n  [a-z][a-z0-9-]*:\n/)[0] ?? '';
+ const mutations = [
+  REAL_DESKTOP.replace('\n  native-linux-packages:\n' + block, ''),
+  ...[
+   ['name: desktop-installers-linux-packages-x64', 'name: unrelated-native-outputs'],
+   ['linux-packages-x64.json', 'linux-x64.json'],
+   ['"$version"', '1.0.0'],
+   ['name: Record native Linux package build provenance', 'name: Record native Linux package build provenance\n        if: false'],
+   ['name: Build native Linux release packages', 'name: Build native Linux release packages\n        if: false'],
+   ['persist-credentials: false', 'persist-credentials: true'],
+  ].map(([before, after]) => REAL_DESKTOP.replace('\n  native-linux-packages:\n' + block, '\n  native-linux-packages:\n' + block.replaceAll(before, after))),
+ ];
+ for (const changed of mutations) {
+  const root = fixture(GOOD); writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
+  assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('native Linux package producer')));
+ }
 });

@@ -196,9 +196,9 @@ test('mediabot output overflow is capped, terminated, and reaped', async () => {
 test('named Ogg Opus input is encrypted and authenticated in Chromium and Firefox', async ({ browser, browserName }, info) => {
   test.setTimeout(120_000);
   test.skip(!sourcePath, 'unqualified: set DILLA_PROVIDER_OPUS_FILE to a captured Ogg Opus file');
-  test.skip(!providerName, 'unqualified: set DILLA_PROVIDER_NAME to youtube, spotify, or synthetic');
-  if (providerName !== 'youtube' && providerName !== 'spotify' && providerName !== 'synthetic') {
-    throw new Error('DILLA_PROVIDER_NAME must be youtube, spotify, or synthetic');
+  test.skip(!providerName, 'unqualified: set DILLA_PROVIDER_NAME to youtube or synthetic');
+  if (providerName !== 'youtube' && providerName !== 'synthetic') {
+    throw new Error('DILLA_PROVIDER_NAME must be youtube or synthetic');
   }
 
   const scratch = await mkdtemp(join(tmpdir(), 'dilla-provider-opus-'));
