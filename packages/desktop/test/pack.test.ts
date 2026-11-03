@@ -34,7 +34,8 @@ test('Mac signing follows the release credentials: ad-hoc without them, Develope
  for (const name of ['entitlements.mac.plist', 'entitlements.mac.inherit.plist']) {
   const plist = readFileSync(new URL(`../assets/${name}`, import.meta.url), 'utf8');
   for (const key of ['com.apple.security.cs.allow-jit', 'com.apple.security.cs.allow-unsigned-executable-memory', 'com.apple.security.cs.disable-library-validation', 'com.apple.security.device.audio-input', 'com.apple.security.device.camera']) {
-   assert.ok(plist.includes(`<key>${key}</key>\n    <true/>`), `${name}: ${key}`);
+   // A Windows checkout reads the file with CRLF line endings; the key and its value are what matters.
+   assert.match(plist, new RegExp(`<key>${key.replaceAll('.', '\\.')}</key>\\s*<true/>`), `${name}: ${key}`);
   }
  }
 });
