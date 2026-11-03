@@ -62,5 +62,5 @@ export async function publishFixture({ sha = SHA, commit = sha, tree = TREE, sta
   if (args[0] === 'rev-parse' && args[1] === `${commit}^{tree}`) return tree;
   throw new Error('Unexpected git call: ' + args.join(' '));
  };
- return { root, fixture, version, channel, tag, sha, tree, candidate, installers, tools, github: gh, env, git, ancestors, now: fixture.now, stagedKeys, cleanup: () => rm(root, { recursive: true, force: true }) };
+ return { root, fixture, version, channel, tag, sha, tree, candidate, installers, tools, github: gh, env, git, ancestors, now: fixture.context.now, stagedKeys, cleanup: () => rm(root, { recursive: true, force: true }) };
 }

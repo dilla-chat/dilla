@@ -1,8 +1,29 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
- REPOSITORY, EXPECTED_ARTIFACTS, createGithubApi, findGreenPushRun, fetchCiJobs, resolveTagCommit, listRunArtifacts, selectReleaseArtifacts,
+ REPOSITORY, EXPECTED_ARTIFACTS, createGithubApi, findGreenPushRun, fetchCiJobs, resolveTagCommit, listRunArtifacts, selectReleaseArtifacts, hardenedGit,
 } from '../scripts/ci-run.mjs';
+import { execFileSync } from 'node:child_process';
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+test('hardenedGit ignores hooks and fsmonitor planted in the checkout', () => {
+ const root = mkdtempSync(join(tmpdir(), 'dilla-hardened-git-'));
+ try {
+  const marker = join(root, 'ran'), script = join(root, 'planted.sh');
+  writeFileSync(script, `#!/bin/sh\ntouch '${marker}'\nexit 0\n`); chmodSync(script, 0o755);
+  const plain = args => execFileSync('git', args, { cwd: root, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' } });
+  plain(['init', '-q']); writeFileSync(join(root, 'a'), 'a'); plain(['add', 'a']); plain(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'a']);
+  plain(['config', 'core.fsmonitor', script]); plain(['config', 'core.hooksPath', root]);
+  writeFileSync(join(root, 'post-checkout'), `#!/bin/sh\ntouch '${marker}'\n`); chmodSync(join(root, 'post-checkout'), 0o755);
+  const git = hardenedGit(root);
+  git(['status', '--porcelain']); git(['checkout', '-q', '-b', 'other']);
+  assert.ok(!existsSync(marker), 'neither the planted fsmonitor nor the planted hook ran');
+  plain(['status', '--porcelain']);
+  assert.ok(existsSync(marker), 'control: plain git runs the planted fsmonitor');
+ } finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 const SHA = 'a'.repeat(40), OTHER = 'b'.repeat(40);
 const prefix = `/repos/${REPOSITORY}`;

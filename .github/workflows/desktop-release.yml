@@ -1,7 +1,9 @@
 # The keyed desktop release. GitHub always runs the default branch's copy of a
 # workflow_run workflow, so only main's code ever holds the signing keys. The
 # triggering tag is an untrusted hint: the gate re-derives the commit, the green
-# ci run and its exact artifact set from the API and git objects. Pinned in
+# ci run and its exact artifact set from the API and git objects. The raw CI
+# artifacts are handled only by the keyless collect job; sign takes collect's
+# digest-checked candidate on a fresh runner and verifies it itself. Pinned in
 # full by scripts/check-ci-workflow.mjs (checkDesktopReleaseWorkflow).
 name: desktop release
 on:
@@ -13,24 +15,25 @@ concurrency:
   cancel-in-progress: false
 permissions: {}
 jobs:
-  sign:
+  gate:
     if: github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    environment: desktop-release
+    timeout-minutes: 15
     permissions:
       contents: read
       actions: read
-      pull-requests: read
     outputs:
       tag: ${{ steps.gate.outputs.tag }}
-      sha: ${{ steps.gate.outputs.sha }}
       version: ${{ steps.gate.outputs.version }}
       channel: ${{ steps.gate.outputs.channel }}
+      sha: ${{ steps.gate.outputs.sha }}
+      tree: ${{ steps.gate.outputs.tree }}
       run: ${{ steps.gate.outputs.run }}
       artifact_ids: ${{ steps.gate.outputs.artifact_ids }}
-      staged: ${{ steps.sign.outputs.staged }}
-      digest: ${{ steps.digest.outputs.digest }}
+      artifact_digests: ${{ steps.gate.outputs.artifact_digests }}
+      run_record: ${{ steps.gate.outputs.run_record }}
+      jobs_record: ${{ steps.gate.outputs.jobs_record }}
+      previous: ${{ steps.gate.outputs.previous }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -47,44 +50,135 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           HINT_TAG: ${{ github.event.workflow_run.head_branch }}
           HINT_RUN: ${{ github.event.workflow_run.id }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: desktop-release-gate
+          path: ${{ runner.temp }}/gate
+          if-no-files-found: error
+          retention-days: 3
+
+  collect:
+    needs: gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    outputs:
+      candidate_id: ${{ steps.candidate_id.outputs.candidate_id }}
+      candidate_digest: ${{ steps.candidate_digest.outputs.candidate_digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - name: Fetch the gate's records
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: desktop-release-gate
+          path: ${{ runner.temp }}/gate
+          digest-mismatch: error
       - name: Fetch the accepted ci run's artifacts by id
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           github-token: ${{ github.token }}
-          run-id: ${{ steps.gate.outputs.run }}
+          run-id: ${{ needs.gate.outputs.run }}
           repository: dilla-chat/dilla
-          artifact-ids: ${{ steps.gate.outputs.artifact_ids }}
+          artifact-ids: ${{ needs.gate.outputs.artifact_ids }}
           path: ${{ runner.temp }}/downloaded
           digest-mismatch: error
       - name: Check the downloads against the gate
-        run: node packages/desktop/scripts/release-download-check.mjs "$RUNNER_TEMP/gate" "$RUNNER_TEMP/candidate" "$RUNNER_TEMP/signed"
+        run: node packages/desktop/scripts/release-download-check.mjs "$RUNNER_TEMP/gate" "$RUNNER_TEMP/candidate"
         env:
           GH_TOKEN: ${{ github.token }}
-          RUN: ${{ steps.gate.outputs.run }}
-          ARTIFACT_IDS: ${{ steps.gate.outputs.artifact_ids }}
-          ARTIFACT_DIGESTS: ${{ steps.gate.outputs.artifact_digests }}
-          RUN_RECORD: ${{ steps.gate.outputs.run_record }}
-          JOBS_RECORD: ${{ steps.gate.outputs.jobs_record }}
+          RUN: ${{ needs.gate.outputs.run }}
+          ARTIFACT_IDS: ${{ needs.gate.outputs.artifact_ids }}
+          ARTIFACT_DIGESTS: ${{ needs.gate.outputs.artifact_digests }}
+          RUN_RECORD: ${{ needs.gate.outputs.run_record }}
+          JOBS_RECORD: ${{ needs.gate.outputs.jobs_record }}
       - name: Collect artifacts without merging
         run: node packages/desktop/scripts/release-assemble.mjs collect "$VERSION" "$RUNNER_TEMP/downloaded" "$RUNNER_TEMP/candidate" "$RUNNER_TEMP/gate"
         env:
-          VERSION: ${{ steps.gate.outputs.version }}
+          VERSION: ${{ needs.gate.outputs.version }}
       - name: Generate release notes from merged PR titles
         run: node packages/desktop/scripts/release-notes.mjs generate "$VERSION" "$SHA" "$RUNNER_TEMP/candidate/release-notes.md"
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.gate.outputs.version }}
-          SHA: ${{ steps.gate.outputs.sha }}
+          VERSION: ${{ needs.gate.outputs.version }}
+          SHA: ${{ needs.gate.outputs.sha }}
       - name: Derive acceptance.json and the automated attestation
         run: node packages/desktop/scripts/release-assemble.mjs assemble "$VERSION" "$RUNNER_TEMP/candidate" "$TREE"
         env:
-          VERSION: ${{ steps.gate.outputs.version }}
-          TREE: ${{ steps.gate.outputs.tree }}
+          VERSION: ${{ needs.gate.outputs.version }}
+          TREE: ${{ needs.gate.outputs.tree }}
+      - name: Digest the signing candidate
+        id: candidate_digest
+        run: node packages/desktop/scripts/release-candidate.mjs digest "$RUNNER_TEMP/candidate" "$VERSION"
+        env:
+          VERSION: ${{ needs.gate.outputs.version }}
+      - name: Upload the signing candidate
+        id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: desktop-release-candidate
+          path: ${{ runner.temp }}/candidate
+          if-no-files-found: error
+          retention-days: 3
+      - name: Record the candidate artifact id
+        id: candidate_id
+        run: node packages/desktop/scripts/release-candidate.mjs record-id
+        env:
+          CANDIDATE_ID: ${{ steps.upload.outputs.artifact-id }}
+
+  sign:
+    needs: [gate, collect]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: desktop-release
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      staged: ${{ steps.sign.outputs.staged }}
+      digest: ${{ steps.digest.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - name: Fetch the signing candidate by id
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          artifact-ids: ${{ needs.collect.outputs.candidate_id }}
+          path: ${{ runner.temp }}/candidate
+          digest-mismatch: error
+      - name: Verify the candidate and re-derive its notes and acceptance
+        run: node packages/desktop/scripts/release-candidate.mjs verify-and-rederive "$RUNNER_TEMP/candidate"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.gate.outputs.version }}
+          SHA: ${{ needs.gate.outputs.sha }}
+          TREE: ${{ needs.gate.outputs.tree }}
+          RUN: ${{ needs.gate.outputs.run }}
+          RUN_RECORD: ${{ needs.gate.outputs.run_record }}
+          JOBS_RECORD: ${{ needs.gate.outputs.jobs_record }}
+          PREVIOUS: ${{ needs.gate.outputs.previous }}
+          CANDIDATE_DIGEST: ${{ needs.collect.outputs.candidate_digest }}
+          GIT_CONFIG_NOSYSTEM: '1'
+          GIT_CONFIG_GLOBAL: /dev/null
       - name: Sign (the only step that receives secrets)
         id: sign
         run: node packages/desktop/scripts/release-sign-job.mjs "$VERSION" "$RUNNER_TEMP/candidate" "$RUNNER_TEMP/signed"
         env:
-          VERSION: ${{ steps.gate.outputs.version }}
+          VERSION: ${{ needs.gate.outputs.version }}
           DESKTOP_METADATA_KEY_A: ${{ secrets.DESKTOP_METADATA_KEY_A }}
           DESKTOP_SPARKLE_KEY_A: ${{ secrets.DESKTOP_SPARKLE_KEY_A }}
           DESKTOP_SANDBOX_KEY_A: ${{ secrets.DESKTOP_SANDBOX_KEY_A }}
@@ -95,8 +189,8 @@ jobs:
         id: digest
         run: node packages/desktop/scripts/candidate-digest.mjs write "$RUNNER_TEMP/signed" "$CHANNEL" "$VERSION" "$STAGED"
         env:
-          CHANNEL: ${{ steps.gate.outputs.channel }}
-          VERSION: ${{ steps.gate.outputs.version }}
+          CHANNEL: ${{ needs.gate.outputs.channel }}
+          VERSION: ${{ needs.gate.outputs.version }}
           STAGED: ${{ steps.sign.outputs.staged }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
@@ -106,7 +200,7 @@ jobs:
           retention-days: 3
 
   publish:
-    needs: sign
+    needs: [gate, collect, sign]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -130,44 +224,47 @@ jobs:
       - name: Verify the signed release against the sign job's digest
         run: node packages/desktop/scripts/candidate-digest.mjs verify "$RUNNER_TEMP/signed" "$CHANNEL" "$VERSION" "$STAGED" "$DIGEST"
         env:
-          CHANNEL: ${{ needs.sign.outputs.channel }}
-          VERSION: ${{ needs.sign.outputs.version }}
+          CHANNEL: ${{ needs.gate.outputs.channel }}
+          VERSION: ${{ needs.gate.outputs.version }}
           STAGED: ${{ needs.sign.outputs.staged }}
           DIGEST: ${{ needs.sign.outputs.digest }}
-      - name: Fetch the accepted ci run's artifacts by id
+      - name: Fetch the signing candidate by id
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          github-token: ${{ github.token }}
-          run-id: ${{ needs.sign.outputs.run }}
-          repository: dilla-chat/dilla
-          artifact-ids: ${{ needs.sign.outputs.artifact_ids }}
-          path: ${{ runner.temp }}/downloaded
+          artifact-ids: ${{ needs.collect.outputs.candidate_id }}
+          path: ${{ runner.temp }}/candidate
           digest-mismatch: error
-      - name: Collect artifacts without merging
-        run: node packages/desktop/scripts/release-assemble.mjs collect "$VERSION" "$RUNNER_TEMP/downloaded" "$RUNNER_TEMP/installers"
+      - name: Verify the candidate against the collect job's digest
+        run: node packages/desktop/scripts/release-candidate.mjs verify "$RUNNER_TEMP/candidate"
         env:
-          VERSION: ${{ needs.sign.outputs.version }}
+          VERSION: ${{ needs.gate.outputs.version }}
+          SHA: ${{ needs.gate.outputs.sha }}
+          TREE: ${{ needs.gate.outputs.tree }}
+          RUN: ${{ needs.gate.outputs.run }}
+          RUN_RECORD: ${{ needs.gate.outputs.run_record }}
+          JOBS_RECORD: ${{ needs.gate.outputs.jobs_record }}
+          CANDIDATE_DIGEST: ${{ needs.collect.outputs.candidate_digest }}
       - name: Re-verify the signed release for publication
         run: node packages/desktop/scripts/publish-release.mjs plan
         env:
           GH_TOKEN: ${{ github.token }}
-          DESKTOP_TAG: ${{ needs.sign.outputs.tag }}
-          DESKTOP_SHA: ${{ needs.sign.outputs.sha }}
+          DESKTOP_TAG: ${{ needs.gate.outputs.tag }}
+          DESKTOP_SHA: ${{ needs.gate.outputs.sha }}
           DESKTOP_STAGED: ${{ needs.sign.outputs.staged }}
           DESKTOP_RELEASE_CANDIDATE: ${{ runner.temp }}/signed
-          DESKTOP_INSTALLERS: ${{ runner.temp }}/installers
+          DESKTOP_INSTALLERS: ${{ runner.temp }}/candidate
       - name: Publish the versioned release
         run: node packages/desktop/scripts/publish-release.mjs publish
         env:
           GH_TOKEN: ${{ github.token }}
-          DESKTOP_TAG: ${{ needs.sign.outputs.tag }}
-          DESKTOP_SHA: ${{ needs.sign.outputs.sha }}
+          DESKTOP_TAG: ${{ needs.gate.outputs.tag }}
+          DESKTOP_SHA: ${{ needs.gate.outputs.sha }}
           DESKTOP_STAGED: ${{ needs.sign.outputs.staged }}
           DESKTOP_RELEASE_CANDIDATE: ${{ runner.temp }}/signed
-          DESKTOP_INSTALLERS: ${{ runner.temp }}/installers
+          DESKTOP_INSTALLERS: ${{ runner.temp }}/candidate
 
   verify-published:
-    needs: [sign, publish]
+    needs: [gate, sign, publish]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -184,12 +281,12 @@ jobs:
         run: node packages/desktop/scripts/verify-published.mjs
         env:
           GH_TOKEN: ${{ github.token }}
-          DESKTOP_TAG: ${{ needs.sign.outputs.tag }}
-          DESKTOP_SHA: ${{ needs.sign.outputs.sha }}
+          DESKTOP_TAG: ${{ needs.gate.outputs.tag }}
+          DESKTOP_SHA: ${{ needs.gate.outputs.sha }}
           DESKTOP_STAGED: ${{ needs.sign.outputs.staged }}
 
   feed:
-    needs: [sign, publish, verify-published]
+    needs: [gate, sign, publish, verify-published]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment: github-pages
@@ -214,15 +311,15 @@ jobs:
       - name: Verify the signed release against the sign job's digest
         run: node packages/desktop/scripts/candidate-digest.mjs verify "$RUNNER_TEMP/signed" "$CHANNEL" "$VERSION" "$STAGED" "$DIGEST"
         env:
-          CHANNEL: ${{ needs.sign.outputs.channel }}
-          VERSION: ${{ needs.sign.outputs.version }}
+          CHANNEL: ${{ needs.gate.outputs.channel }}
+          VERSION: ${{ needs.gate.outputs.version }}
           STAGED: ${{ needs.sign.outputs.staged }}
           DIGEST: ${{ needs.sign.outputs.digest }}
       - name: Build the channel feed site
         run: node packages/desktop/scripts/pages-feed.mjs build "$RUNNER_TEMP/signed" "$CHANNEL" "$VERSION" "$RUNNER_TEMP/site"
         env:
-          CHANNEL: ${{ needs.sign.outputs.channel }}
-          VERSION: ${{ needs.sign.outputs.version }}
+          CHANNEL: ${{ needs.gate.outputs.channel }}
+          VERSION: ${{ needs.gate.outputs.version }}
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: ${{ runner.temp }}/site
@@ -232,4 +329,4 @@ jobs:
       - name: Check the live feed serves the signed files
         run: node packages/desktop/scripts/pages-feed.mjs verify "$RUNNER_TEMP/signed" "$CHANNEL"
         env:
-          CHANNEL: ${{ needs.sign.outputs.channel }}
+          CHANNEL: ${{ needs.gate.outputs.channel }}

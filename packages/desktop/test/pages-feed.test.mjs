@@ -57,7 +57,7 @@ async function setup() {
  const signed = join(root, 'signed'); await mkdir(signed);
  for (const [name, bytes] of signedChannel(f, '1.2.3')) await writeFile(join(signed, name), bytes);
  const live = pages();
- const build = (options = {}) => buildSite({ signedDirectory: signed, channel: 'stable', version: '1.2.3', siteDirectory: join(root, `site-${Math.random()}`), fetchImpl: live.fetchImpl, trust: f.trust, now: f.now, ...options });
+ const build = (options = {}) => buildSite({ signedDirectory: signed, channel: 'stable', version: '1.2.3', siteDirectory: join(root, `site-${Math.random()}`), fetchImpl: live.fetchImpl, trust: f.trust, now: f.context.now, ...options });
  return { root, f, signed, live, build, cleanup: () => rm(root, { recursive: true, force: true }) };
 }
 const tree = async directory => (await readdir(directory, { recursive: true })).sort();

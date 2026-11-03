@@ -1,4 +1,12 @@
+import { execFileSync } from 'node:child_process';
 import { BUILD_TARGETS, TARGETS } from './verify-release.mjs';
+
+/** git for the release jobs: no hooks, no fsmonitor, no system or global config, whatever the checkout holds. */
+export const GIT_HARDENING = Object.freeze(['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=']);
+export function hardenedGit(cwd) {
+ const env = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' };
+ return args => execFileSync('git', [...GIT_HARDENING, ...args], { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+}
 
 /** Shared GitHub API lookups for the desktop release flow. Every answer is
  * re-derived from the API; nothing here trusts a value from a workflow event. */

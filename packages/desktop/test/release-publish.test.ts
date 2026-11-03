@@ -523,7 +523,7 @@ test('publish job installs no npm dependencies', async () => {
  // Every static import the publisher loads is a node: built-in or a repository file, so `publish` runs without npm ci.
  // The same holds for every script the keyed workflow runs: none of its jobs runs npm ci.
  const repo = resolve(import.meta.dirname, '../../..');
- const entries = ['publish-release', 'verify-published', 'release-gate', 'release-download-check', 'release-assemble', 'release-notes', 'release-sign-job', 'candidate-digest', 'pages-feed']
+ const entries = ['publish-release', 'verify-published', 'release-gate', 'release-download-check', 'release-candidate', 'release-assemble', 'release-notes', 'release-sign-job', 'candidate-digest', 'pages-feed']
   .map(name => resolve(repo, `packages/desktop/scripts/${name}.mjs`));
  for (const step of Object.values(workflow.jobs as Record<string, { steps: { run?: string }[] }>).flatMap(job => job.steps)) {
   const script = /^node (packages\/desktop\/scripts\/[a-z-]+\.mjs)/.exec(step.run ?? '')?.[1];

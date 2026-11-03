@@ -1,11 +1,10 @@
-import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { appendFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { DOC_PATTERNS } from '../../../scripts/ci-areas.mjs';
-import { REPOSITORY, createGithubApi, findGreenPushRun, fetchCiJobs, resolveTagCommit, listRunArtifacts, selectReleaseArtifacts } from './ci-run.mjs';
+import { REPOSITORY, createGithubApi, hardenedGit, findGreenPushRun, fetchCiJobs, resolveTagCommit, listRunArtifacts, selectReleaseArtifacts } from './ci-run.mjs';
 import { DESKTOP_TAG, compareDesktopVersions, previousDesktopVersion } from './release-notes.mjs';
 
 /**
@@ -148,7 +147,7 @@ export async function runGate({ env, git, api, outputDirectory, now = Date.now()
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
  if (process.argv.length !== 3) throw new Error('Usage: release-gate.mjs GATE_DIR');
  const root = resolve(import.meta.dirname, '../../..');
- const git = args => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+ const git = hardenedGit(root);
  const result = await runGate({ env: process.env, git, api: createGithubApi({ token: process.env.GH_TOKEN }), outputDirectory: resolve(process.argv[2]) });
  console.log(`Release gate passed: ${result.tag} at ${result.sha}, ci run ${result.ciRun}, ${result.artifactIds.length} artifacts.`);
 }

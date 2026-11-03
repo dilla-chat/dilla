@@ -1,10 +1,9 @@
 import { readFile, lstat } from 'node:fs/promises';
-import { execFileSync } from 'node:child_process';
 import { isAbsolute, join, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { verifyRelease } from '../src/update.ts';
 import * as releaseVerifier from './verify-release.mjs';
-import { REPOSITORY, createGithubApi, fetchCiJobs, resolveTagCommit } from './ci-run.mjs';
+import { REPOSITORY, createGithubApi, fetchCiJobs, hardenedGit, resolveTagCommit } from './ci-run.mjs';
 import { DESKTOP_TAG } from './release-notes.mjs';
 import { createReleaseAssetUploader, listReleaseAssets, releaseAssetDigest } from './standard-release-upload.mjs';
 
@@ -137,7 +136,7 @@ export async function runPublisher({ mode, env, git, fetchImpl = fetch, trust, v
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
  if (process.argv.length !== 3) throw new Error('Usage: publish-release.mjs plan | publish');
  const root = resolve(import.meta.dirname, '../../..');
- const git = args => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+ const git = hardenedGit(root);
  const trust = JSON.parse(await readFile(join(root, 'packages/desktop/release-trust.json'), 'utf8'));
  const result = await runPublisher({ mode: process.argv[2], env: process.env, git, trust });
  console.log(process.argv[2] === 'plan' ? `Verified the signed desktop ${result.release.version} release for publication.` : `Published desktop ${result.release.version}.`);
