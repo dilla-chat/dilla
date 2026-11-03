@@ -209,6 +209,41 @@ class WatchdogTests(unittest.TestCase):
                          "https://api.github.com/repos/owner/repo/actions/runs/123/jobs?filter=latest&per_page=100&page=1")
         self.assertTrue(transport.requests[1][0].full_url.endswith("page=2"))
 
+    def test_first_page_failure_cancels_before_any_second_page_read_or_recovery(self):
+        for failed in [job("native", conclusion="failure"),
+                       job("native", "in_progress", None, [{"status": "completed", "conclusion": "failure"}])]:
+            with self.subTest(status=failed["status"]):
+                first = [failed] + [job("passing") for _ in range(99)]
+                next_reads = 0
+                def second(request, _timeout):
+                    nonlocal next_reads
+                    if request.get_method() == "GET":
+                        next_reads += 1
+                        if next_reads <= 3:
+                            return URLError("PRIVATE_SECOND_PAGE_OUTAGE")
+                        return {"total_count": 101, "jobs": [job("passing")]}
+                    return {}
+                result, transport, clock = self.watch([
+                    {"total_count": 101, "jobs": first}, second, second, second, second, second])
+                self.assertEqual(result, "cancelled")
+                self.assertEqual(clock.waits, [] if failed["status"] == "completed" else [3])
+                self.assertEqual(len(transport.requests), 2)
+                self.assertEqual(transport.requests[-1][0].get_method(), "POST")
+
+    def test_first_page_completed_roots_and_ignored_failure_cannot_hide_second_page_work(self):
+        first = [job("changes"), job("docs"), job("ci-work-complete"), job("ci-watchdog", conclusion="failure")]
+        first += [job("passing") for _ in range(96)]
+        result, transport, clock = self.watch([
+            {"total_count": 101, "jobs": first},
+            {"total_count": 101, "jobs": [job("native", "in_progress", None)]},
+            {"total_count": 101, "jobs": first},
+            {"total_count": 101, "jobs": [job("native")]},
+        ])
+        self.assertEqual(result, "complete")
+        self.assertEqual(clock.waits, [5])
+        self.assertEqual(len(transport.requests), 4)
+        self.assertEqual([r.full_url.rsplit("=", 1)[1] for r, _ in transport.requests], ["1", "2", "1", "2"])
+
     def test_incomplete_page_cannot_look_like_finished_ci(self):
         api, _, _ = self.client([{"total_count": 2, "jobs": []}])
         with self.assertRaisesRegex(RuntimeError, "incomplete jobs page"):

@@ -15,6 +15,15 @@ class NoRedirect(HTTPRedirectHandler):
         raise HTTPError(req.full_url, code, "redirect refused", headers, fp)
 
 
+def failure_state(job):
+    acceptable = {"success", "skipped", "neutral"}
+    completed_failure = (job["status"] == "completed" and
+                         job.get("conclusion") not in acceptable)
+    step_failure = any(s["status"] == "completed" and s.get("conclusion") not in acceptable
+                       for s in job.get("steps", []))
+    return completed_failure, step_failure
+
+
 class GitHubRun:
     def __init__(self, repository, run_id, token, *, opener=None, sleep=time.sleep, monotonic=time.monotonic):
         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
@@ -99,6 +108,11 @@ class GitHubRun:
                 raise RuntimeError("GitHub API returned a malformed jobs response")
             batch = data["jobs"]
             jobs.extend(batch)
+            # Never let an unread page or its recovery budget delay a failure
+            # already observed. Partial results are returned only for failure;
+            # completion still requires every page below.
+            if any(j["name"] not in {"ci-watchdog", "ci-ok"} and any(failure_state(j)) for j in batch):
+                return jobs
             if len(jobs) >= data["total_count"]:
                 return jobs
             if not batch:
@@ -122,16 +136,12 @@ def from_environment(env, event):
 
 def watch(api, *, sleep=time.sleep, monotonic=time.monotonic, max_seconds=89 * 60):
     deadline = monotonic() + max_seconds
-    acceptable = {"success", "skipped", "neutral"}
     while monotonic() < deadline:
         # ci-ok waits for us. The completion barrier waits for every real DAG leaf,
         # including reusable-workflow children that GitHub discovers after startup.
         jobs = [j for j in api.jobs(deadline=deadline) if j["name"] not in {"ci-watchdog", "ci-ok"}]
         for job in jobs:
-            completed_failure = (job["status"] == "completed" and
-                                 job.get("conclusion") not in acceptable)
-            step_failure = any(s["status"] == "completed" and s.get("conclusion") not in acceptable
-                               for s in job.get("steps", []))
+            completed_failure, step_failure = failure_state(job)
             if completed_failure or step_failure:
                 print("CI failure detected; cancelling this workflow run.", flush=True)
                 # Completed jobs have finished failure-artifact uploads. A failed
