@@ -1,5 +1,6 @@
 // Public-only deterministic Linux sandbox component preparation. No signing keys.
 import { createHash, createPublicKey } from 'node:crypto';
+import { isMain } from './is-main.mjs';
 
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 const sha512 = bytes => createHash('sha512').update(bytes).digest('base64');
@@ -140,7 +141,7 @@ export async function prepareComponents({ config, helper, outputDirectory, compi
   } finally { await rm(temp, { recursive: true, force: true }); }
 }
 
-if (process.argv[1] && import.meta.url === (await import('node:url')).pathToFileURL((await import('node:path')).resolve(process.argv[1])).href) {
+if (isMain(import.meta.url)) {
   const { readFile } = await import('node:fs/promises');
   const [configFile, helperFile, outputDirectory, compiledVersion] = process.argv.slice(2);
   if (!configFile || !helperFile || !outputDirectory || !compiledVersion || process.argv.length !== 6) throw new Error('Usage: linux-sandbox-package.mjs PUBLIC_CONFIG HELPER NEW_OUTPUT_DIRECTORY VERSION');

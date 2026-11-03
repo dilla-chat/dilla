@@ -1,41 +1,353 @@
+# The keyed desktop release. GitHub always runs the default branch's copy of a
+# workflow_run workflow, so only main's code ever holds the signing keys. The
+# triggering tag is an untrusted hint: the gate re-derives the commit, the green
+# ci run and its exact artifact set (ids and zip digests) from the API and git
+# objects. The keyless collect job is an early-failure check only: nothing it
+# produces reaches sign or publish. sign fetches the gate-digested CI zips
+# itself as opaque blobs, reads them in-process, builds the candidate and signs.
+# publish and feed take only sign's uploads, by id, digest-checked against
+# sign's outputs. Pinned in full by scripts/check-ci-workflow.mjs
+# (checkDesktopReleaseWorkflow).
 name: desktop release
 on:
-  push:
-    tags: ['desktop-v*']
-concurrency:
-  group: desktop-release
-  cancel-in-progress: false
-permissions:
-  contents: read
+  workflow_run:
+    workflows: ['desktop release request']
+    types: [completed]
+# No workflow concurrency group: GitHub keeps one pending run per group and
+# silently cancels it when a third arrives. Every run starts, and the gate fails
+# loudly while another desktop release run is queued or in progress.
+permissions: {}
 jobs:
-  publish:
+  gate:
+    if: github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 15
     permissions:
+      contents: read
       actions: read
-      contents: write
+    outputs:
+      tag: ${{ steps.gate.outputs.tag }}
+      version: ${{ steps.gate.outputs.version }}
+      channel: ${{ steps.gate.outputs.channel }}
+      sha: ${{ steps.gate.outputs.sha }}
+      tree: ${{ steps.gate.outputs.tree }}
+      run: ${{ steps.gate.outputs.run }}
+      artifact_ids: ${{ steps.gate.outputs.artifact_ids }}
+      artifact_digests: ${{ steps.gate.outputs.artifact_digests }}
+      run_record: ${{ steps.gate.outputs.run_record }}
+      jobs_record: ${{ steps.gate.outputs.jobs_record }}
+      previous: ${{ steps.gate.outputs.previous }}
+      mac_update: ${{ steps.gate.outputs.mac_update }}
+      records_id: ${{ steps.records.outputs.artifact-id }}
+      records_digest: ${{ steps.records.outputs.artifact-digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
-      - name: Authenticate version, source tree and main-branch tag
-        id: plan
-        run: node packages/desktop/scripts/publish-release.mjs plan
-      - name: Install pinned release publisher without rebuilding accepted artifacts
-        run: npm ci --ignore-scripts
-      - name: Fetch exact accepted installers without rebuilding them
+          package-manager-cache: false
+      - name: Gate (re-derives tag, main equivalence, posture, green ci run and artifact set)
+        id: gate
+        run: node packages/desktop/scripts/release-gate.mjs "$RUNNER_TEMP/gate"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HINT_TAG: ${{ github.event.workflow_run.head_branch }}
+          HINT_RUN: ${{ github.event.workflow_run.id }}
+      - name: Upload the gate's records
+        id: records
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: desktop-release-gate
+          path: ${{ runner.temp }}/gate
+          if-no-files-found: error
+          retention-days: 3
+
+  # Early failure only: the same checks sign repeats, without keys, on the
+  # raw downloads. It has no outputs and uploads nothing.
+  collect:
+    needs: gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - name: Fetch the gate's records
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: desktop-release-gate
+          path: ${{ runner.temp }}/gate
+          digest-mismatch: error
+      - name: Fetch the accepted ci run's artifacts by id
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           github-token: ${{ github.token }}
-          run-id: ${{ steps.plan.outputs.run }}
+          run-id: ${{ needs.gate.outputs.run }}
           repository: dilla-chat/dilla
-          pattern: desktop-installers-*
-          merge-multiple: true
-          path: desktop-release-artifacts
-      - name: Verify and publish exact accepted bytes
+          artifact-ids: ${{ needs.gate.outputs.artifact_ids }}
+          path: ${{ runner.temp }}/downloaded
+          digest-mismatch: error
+      - name: Check the downloads against the gate
+        run: node packages/desktop/scripts/release-download-check.mjs "$RUNNER_TEMP/gate" "$RUNNER_TEMP/candidate"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ needs.gate.outputs.run }}
+          ARTIFACT_IDS: ${{ needs.gate.outputs.artifact_ids }}
+          ARTIFACT_DIGESTS: ${{ needs.gate.outputs.artifact_digests }}
+          RUN_RECORD: ${{ needs.gate.outputs.run_record }}
+          JOBS_RECORD: ${{ needs.gate.outputs.jobs_record }}
+      - name: Collect artifacts without merging
+        run: node packages/desktop/scripts/release-assemble.mjs collect "$VERSION" "$RUNNER_TEMP/downloaded" "$RUNNER_TEMP/candidate" "$RUNNER_TEMP/gate"
+        env:
+          VERSION: ${{ needs.gate.outputs.version }}
+      - name: Generate release notes from merged PR titles
+        run: node packages/desktop/scripts/release-notes.mjs generate "$VERSION" "$SHA" "$RUNNER_TEMP/candidate/release-notes.md"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.gate.outputs.version }}
+          SHA: ${{ needs.gate.outputs.sha }}
+          PREVIOUS: ${{ needs.gate.outputs.previous }}
+      - name: Derive acceptance.json and the automated attestation
+        run: node packages/desktop/scripts/release-assemble.mjs assemble "$VERSION" "$RUNNER_TEMP/candidate" "$TREE"
+        env:
+          VERSION: ${{ needs.gate.outputs.version }}
+          TREE: ${{ needs.gate.outputs.tree }}
+
+  sign:
+    needs: [gate, collect]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: desktop-release
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    outputs:
+      staged: ${{ steps.sign.outputs.staged }}
+      digest: ${{ steps.digest.outputs.digest }}
+      candidate_digest: ${{ steps.candidate_digest.outputs.candidate_digest }}
+      signed_id: ${{ steps.ids.outputs.signed_id }}
+      candidate_id: ${{ steps.ids.outputs.candidate_id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - name: Fetch the gate-digested CI zips and build the candidate in-process
+        run: node packages/desktop/scripts/release-candidate.mjs build "$RUNNER_TEMP/zips" "$RUNNER_TEMP/candidate"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.gate.outputs.version }}
+          SHA: ${{ needs.gate.outputs.sha }}
+          TREE: ${{ needs.gate.outputs.tree }}
+          RUN: ${{ needs.gate.outputs.run }}
+          ARTIFACT_IDS: ${{ needs.gate.outputs.artifact_ids }}
+          ARTIFACT_DIGESTS: ${{ needs.gate.outputs.artifact_digests }}
+          RECORDS_ID: ${{ needs.gate.outputs.records_id }}
+          RECORDS_DIGEST: ${{ needs.gate.outputs.records_digest }}
+          RUN_RECORD: ${{ needs.gate.outputs.run_record }}
+          JOBS_RECORD: ${{ needs.gate.outputs.jobs_record }}
+          PREVIOUS: ${{ needs.gate.outputs.previous }}
+      - name: Sign (the only step that receives secrets)
+        id: sign
+        run: node packages/desktop/scripts/release-sign-job.mjs "$VERSION" "$RUNNER_TEMP/candidate" "$RUNNER_TEMP/signed"
+        env:
+          VERSION: ${{ needs.gate.outputs.version }}
+          MAC_UPDATE: ${{ needs.gate.outputs.mac_update }}
+          DESKTOP_METADATA_KEY_A: ${{ secrets.DESKTOP_METADATA_KEY_A }}
+          DESKTOP_SPARKLE_KEY_A: ${{ secrets.DESKTOP_SPARKLE_KEY_A }}
+          DESKTOP_SANDBOX_KEY_A: ${{ secrets.DESKTOP_SANDBOX_KEY_A }}
+          DESKTOP_METADATA_KEY_B: ${{ secrets.DESKTOP_METADATA_KEY_B }}
+          DESKTOP_SPARKLE_KEY_B: ${{ secrets.DESKTOP_SPARKLE_KEY_B }}
+          DESKTOP_SANDBOX_KEY_B: ${{ secrets.DESKTOP_SANDBOX_KEY_B }}
+      - name: Digest the signed output
+        id: digest
+        run: node packages/desktop/scripts/candidate-digest.mjs write "$RUNNER_TEMP/signed" "$CHANNEL" "$VERSION" "$STAGED"
+        env:
+          CHANNEL: ${{ needs.gate.outputs.channel }}
+          VERSION: ${{ needs.gate.outputs.version }}
+          STAGED: ${{ steps.sign.outputs.staged }}
+      - name: Digest the signed candidate
+        id: candidate_digest
+        run: node packages/desktop/scripts/release-candidate.mjs digest "$RUNNER_TEMP/candidate" "$VERSION"
+        env:
+          VERSION: ${{ needs.gate.outputs.version }}
+      - name: Upload the signed release
+        id: signed_upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: desktop-signed-release
+          path: ${{ runner.temp }}/signed
+          if-no-files-found: error
+          retention-days: 3
+      - name: Upload the signed candidate
+        id: candidate_upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: desktop-signed-candidate
+          path: ${{ runner.temp }}/candidate
+          if-no-files-found: error
+          retention-days: 3
+      - name: Record the uploaded artifact ids
+        id: ids
+        run: node packages/desktop/scripts/release-candidate.mjs record-id
+        env:
+          SIGNED_ID: ${{ steps.signed_upload.outputs.artifact-id }}
+          CANDIDATE_ID: ${{ steps.candidate_upload.outputs.artifact-id }}
+
+  publish:
+    needs: [gate, sign]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - name: Fetch the signed release from the sign job by id
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          artifact-ids: ${{ needs.sign.outputs.signed_id }}
+          path: ${{ runner.temp }}/signed
+          digest-mismatch: error
+      - name: Verify the signed release against the sign job's digest
+        run: node packages/desktop/scripts/candidate-digest.mjs verify "$RUNNER_TEMP/signed" "$CHANNEL" "$VERSION" "$STAGED" "$DIGEST"
+        env:
+          CHANNEL: ${{ needs.gate.outputs.channel }}
+          VERSION: ${{ needs.gate.outputs.version }}
+          STAGED: ${{ needs.sign.outputs.staged }}
+          DIGEST: ${{ needs.sign.outputs.digest }}
+      - name: Fetch the signed candidate from the sign job by id
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          artifact-ids: ${{ needs.sign.outputs.candidate_id }}
+          path: ${{ runner.temp }}/candidate
+          digest-mismatch: error
+      - name: Verify the candidate against the sign job's digest
+        run: node packages/desktop/scripts/release-candidate.mjs verify "$RUNNER_TEMP/candidate"
+        env:
+          VERSION: ${{ needs.gate.outputs.version }}
+          SHA: ${{ needs.gate.outputs.sha }}
+          TREE: ${{ needs.gate.outputs.tree }}
+          RUN: ${{ needs.gate.outputs.run }}
+          RUN_RECORD: ${{ needs.gate.outputs.run_record }}
+          JOBS_RECORD: ${{ needs.gate.outputs.jobs_record }}
+          CANDIDATE_DIGEST: ${{ needs.sign.outputs.candidate_digest }}
+      - name: Re-verify the signed release for publication
+        run: node packages/desktop/scripts/publish-release.mjs plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DESKTOP_TAG: ${{ needs.gate.outputs.tag }}
+          DESKTOP_SHA: ${{ needs.gate.outputs.sha }}
+          DESKTOP_STAGED: ${{ needs.sign.outputs.staged }}
+          DESKTOP_MAC_UPDATE: ${{ needs.gate.outputs.mac_update }}
+          DESKTOP_RELEASE_CANDIDATE: ${{ runner.temp }}/signed
+          DESKTOP_INSTALLERS: ${{ runner.temp }}/candidate
+      - name: Publish the versioned release
         run: node packages/desktop/scripts/publish-release.mjs publish
         env:
           GH_TOKEN: ${{ github.token }}
+          DESKTOP_TAG: ${{ needs.gate.outputs.tag }}
+          DESKTOP_SHA: ${{ needs.gate.outputs.sha }}
+          DESKTOP_STAGED: ${{ needs.sign.outputs.staged }}
+          DESKTOP_MAC_UPDATE: ${{ needs.gate.outputs.mac_update }}
+          DESKTOP_RELEASE_CANDIDATE: ${{ runner.temp }}/signed
+          DESKTOP_INSTALLERS: ${{ runner.temp }}/candidate
+
+  verify-published:
+    needs: [gate, sign, publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - name: Re-download the published release and check it against the signed metadata
+        run: node packages/desktop/scripts/verify-published.mjs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DESKTOP_TAG: ${{ needs.gate.outputs.tag }}
+          DESKTOP_SHA: ${{ needs.gate.outputs.sha }}
+          DESKTOP_STAGED: ${{ needs.sign.outputs.staged }}
+          DESKTOP_MAC_UPDATE: ${{ needs.gate.outputs.mac_update }}
+
+  feed:
+    needs: [gate, sign, publish, verify-published]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: github-pages
+    # Pages deploys never overlap (say, a re-run feed and a newer release's feed).
+    concurrency:
+      group: desktop-release-feed
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - name: Fetch the signed release from the sign job by id
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          artifact-ids: ${{ needs.sign.outputs.signed_id }}
+          path: ${{ runner.temp }}/signed
+          digest-mismatch: error
+      - name: Verify the signed release against the sign job's digest
+        run: node packages/desktop/scripts/candidate-digest.mjs verify "$RUNNER_TEMP/signed" "$CHANNEL" "$VERSION" "$STAGED" "$DIGEST"
+        env:
+          CHANNEL: ${{ needs.gate.outputs.channel }}
+          VERSION: ${{ needs.gate.outputs.version }}
+          STAGED: ${{ needs.sign.outputs.staged }}
+          DIGEST: ${{ needs.sign.outputs.digest }}
+      - name: Build the channel feed site from the published immutable releases
+        run: node packages/desktop/scripts/pages-feed.mjs build "$RUNNER_TEMP/signed" "$CHANNEL" "$VERSION" "$RUNNER_TEMP/site"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHANNEL: ${{ needs.gate.outputs.channel }}
+          VERSION: ${{ needs.gate.outputs.version }}
+          MAC_UPDATE: ${{ needs.gate.outputs.mac_update }}
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: ${{ runner.temp }}/site
+      - name: Deploy the channel feed to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+      - name: Check the live feed serves the signed files
+        run: node packages/desktop/scripts/pages-feed.mjs verify "$RUNNER_TEMP/signed" "$CHANNEL"
+        env:
+          CHANNEL: ${{ needs.gate.outputs.channel }}

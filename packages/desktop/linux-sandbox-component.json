@@ -1,9 +1,11 @@
 {
   "goVersion": "go1.27.3",
   "generation": 1,
-  "publishedAt": "2026-11-02T00:00:00Z",
-  "expiresAt": "2027-01-31T00:00:00Z",
-  "publicKeys": ["qQe0Z4MLDeYmXACcEHo3Z7SU0klZSccu+nMD90pOcJg="],
+  "publishedAt": "2026-11-03T19:35:27Z",
+  "expiresAt": "2027-02-01T19:35:27Z",
+  "publicKeys": [
+    "xHOtXr19JPdyGwefvnuFG9NWKheUqE8ZRZhiL93CsxY="
+  ],
   "helper": {
     "version": "electron-45.2.1-linux-x64",
     "size": 15216,

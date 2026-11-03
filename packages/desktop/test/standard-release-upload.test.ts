@@ -1,96 +1,73 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { GitHubPublisher } from 'electron-publish/out/gitHubPublisher.js';
 // @ts-expect-error publishing tooling is JavaScript
 import { createReleaseAssetUploader } from '../scripts/standard-release-upload.mjs';
 
 const repository = 'dilla-chat/dilla';
 const bytes = Buffer.from('accepted native installer\0\xff', 'latin1');
 const digest = 'sha256:' + createHash('sha256').update(bytes).digest('hex');
-const release = (draft = false, tag = 'desktop-v1.2.3') => ({ id: 42, tag_name: tag, draft, prerelease: false,
- published_at: '2020-01-01T00:00:00Z', upload_url: `https://uploads.github.com/repos/${repository}/releases/42/assets{?name,label}`, assets: [] as any[] });
+const draft = (tag = 'desktop-v1.2.3') => ({ id: 42, tag_name: tag, draft: true, upload_url: `https://uploads.github.com/repos/${repository}/releases/42/assets{?name,label}` });
+type Asset = { id: number; name: string; size: number; digest: string };
+const storeSent = (sent: Buffer): Asset[] => [{ id: 8, name: 'dilla.exe', size: sent.length, digest: 'sha256:' + createHash('sha256').update(sent).digest('hex') }];
 
-function fixture({ skip = false, wrongDigest = false, conflict = false } = {}) {
+function fixture({ initial = [] as Asset[], store = storeSent, status = 201 } = {}) {
  const events: string[] = [];
- let stored: any[] = [];
- // Keep standard upload(), lazy release resolution and request-body processing;
- // replace only the final network request. Any discovery/API request is a bug.
- // @ts-expect-error the pinned publisher's JavaScript network seam is private in its declarations
- class OfflinePublisher extends GitHubPublisher {
-  async githubRequest() { throw new Error('Unexpected publisher release discovery or mutation'); }
-  async doUploadFile(_attempt: number, url: any, name: string, size: number, processRequest: any, target: any) {
-   events.push('upload');
-   assert.equal(url.hostname, 'uploads.github.com');
-   assert.equal(url.path, `/repos/${repository}/releases/42/assets?name=${name}`);
-   assert.equal(size, bytes.length);
-   let sent: Buffer | undefined;
-   processRequest({ setTimeout() {}, end(value: Buffer) { sent = value; } }, (error: Error) => { throw error; });
-   assert.deepEqual(sent, bytes, 'standard publisher receives exact accepted bytes');
-   if (conflict) await (this as any).overwriteArtifact(name, target);
-   if (!skip) stored = [{ id: 7, name, size, digest: wrongDigest ? 'sha256:wrong' : digest }];
-  }
- }
- const api = async (path: string, options: any = {}) => {
-  events.push(options.method ?? 'GET');
-  if (options.method === 'DELETE') {
-   assert.equal(path, `/repos/${repository}/releases/assets/7`); stored = []; return null;
-  }
-  assert.equal(path, `/repos/${repository}/releases/42/assets?per_page=100`);
+ let stored = initial;
+ const api = async (path: string, options: { method?: string } = {}) => {
+  events.push(`${options.method ?? 'GET'} ${path}`);
+  if (options.method === 'DELETE') { stored = stored.filter(asset => path !== `/repos/${repository}/releases/assets/${asset.id}`); return null; }
+  assert.equal(path, `/repos/${repository}/releases/42/assets?per_page=100&page=1`);
   return stored;
  };
- return { events, upload: createReleaseAssetUploader({ api, token: 'workflow-token', Publisher: OfflinePublisher }) };
+ const fetchImpl = async (url: string, init: { redirect: string; headers: Record<string, string>; body: Buffer }) => {
+  events.push(`UPLOAD ${url}`);
+  assert.equal(init.redirect, 'error');
+  assert.equal(init.headers.Authorization, 'Bearer workflow-token');
+  assert.deepEqual(init.body, bytes, 'exact accepted bytes');
+  if (status === 201) stored = store(init.body);
+  return new Response('{}', { status });
+ };
+ return { events, upload: createReleaseAssetUploader({ api, token: 'workflow-token', fetchImpl }) };
 }
+const uploadUrl = `UPLOAD https://uploads.github.com/repos/${repository}/releases/42/assets?name=dilla.exe`;
+const list = `GET /repos/${repository}/releases/42/assets?per_page=100&page=1`;
 
-test('standard publisher uploads exact accepted bytes to an old published channel and checks the remote digest', async () => {
+test('uploads exact bytes to uploads.github.com and checks the stored digest', async () => {
  const { upload, events } = fixture();
- await upload(release(false, 'desktop-stable'), 'dilla-linux-x64.AppImage', bytes, true);
- assert.deepEqual(events, ['upload', 'GET']);
+ await upload(draft(), 'dilla.exe', bytes);
+ assert.deepEqual(events, [list, uploadUrl, list]);
 });
 
-test('identical immutable assets are idempotent and differing published version assets cannot be overwritten', async () => {
- const { upload, events } = fixture();
- const target = release(); target.assets = [{ id: 7, name: 'dilla.exe', size: bytes.length, digest }];
- await upload(target, 'dilla.exe', bytes, false);
- target.assets[0].digest = 'sha256:different';
- await assert.rejects(upload(target, 'dilla.exe', bytes, false), /immutable/i);
- await assert.rejects(upload(target, 'dilla.exe', bytes, true), /immutable/i);
- assert.deepEqual(events, []);
+test('an identical asset is idempotent; a differing draft asset is deleted before upload', async () => {
+ const same = fixture({ initial: [{ id: 7, name: 'dilla.exe', size: bytes.length, digest }] });
+ await same.upload(draft(), 'dilla.exe', bytes);
+ assert.deepEqual(same.events, [list]);
+ const differing = fixture({ initial: [{ id: 7, name: 'dilla.exe', size: 1, digest: 'sha256:old' }] });
+ await differing.upload(draft(), 'dilla.exe', bytes);
+ assert.deepEqual(differing.events, [list, `DELETE /repos/${repository}/releases/assets/7`, uploadUrl, list]);
 });
 
-test('draft replacement deletes the differing asset before standard upload and remote verification', async () => {
- const { upload, events } = fixture();
- const target = release(true); target.assets = [{ id: 7, name: 'dilla.exe', size: 1, digest: 'sha256:old' }];
- await upload(target, 'dilla.exe', bytes, true);
- assert.deepEqual(events, ['DELETE', 'upload', 'GET']);
+test('a failed upload or an unexpected stored digest fails publication', async () => {
+ await assert.rejects(fixture({ status: 422 }).upload(draft(), 'dilla.exe', bytes), /upload failed \(422\)/);
+ await assert.rejects(fixture({ store: () => [] }).upload(draft(), 'dilla.exe', bytes), /digest/);
+ await assert.rejects(fixture({ store: sent => [{ id: 8, name: 'dilla.exe', size: sent.length, digest: 'sha256:wrong' }] }).upload(draft(), 'dilla.exe', bytes), /digest/);
 });
 
-test('standard publisher conflict recovery cannot delete a published immutable asset', async () => {
- const { upload, events } = fixture({ conflict: true });
- await assert.rejects(upload(release(), 'dilla.exe', bytes, false), /immutable/i);
- assert.deepEqual(events, ['upload']);
-});
-
-test('silent publisher skips and incorrect GitHub digests fail publication', async () => {
- for (const options of [{ skip: true }, { wrongDigest: true }]) {
-  const { upload, events } = fixture(options);
-  await assert.rejects(upload(release(), 'dilla.exe', bytes, false), /digest/i);
-  assert.deepEqual(events, ['upload', 'GET']);
- }
-});
-
-test('standard transport cannot upload outside the approved repository, release or asset namespace', async () => {
+test('the uploader cannot write outside the approved repository, a draft versioned release or the asset namespace', async () => {
  for (const change of [
   { upload_url: 'https://example.com/repos/dilla-chat/dilla/releases/42/assets{?name,label}' },
   { upload_url: 'https://uploads.github.com/repos/other/repo/releases/42/assets{?name,label}' },
   { upload_url: `https://uploads.github.com/repos/${repository}/releases/99/assets{?name,label}` },
-  { tag_name: 'v1.2.3' },
+  { tag_name: 'v1.2.3' }, { tag_name: 'desktop-stable' }, { draft: false },
  ]) {
   const { upload, events } = fixture();
-  await assert.rejects(upload({ ...release(), ...change }, 'dilla.exe', bytes, false), /destination|tag/i);
+  await assert.rejects(upload({ ...draft(), ...change }, 'dilla.exe', bytes), /destination|tag|draft/i);
   assert.deepEqual(events, []);
  }
- const { upload, events } = fixture();
- await assert.rejects(upload(release(), '../secret', bytes, false), /asset name/i);
- assert.deepEqual(events, []);
+ for (const name of ['../secret', '.hidden', 'a/b']) {
+  const { upload, events } = fixture();
+  await assert.rejects(upload(draft(), name, bytes), /asset name/i);
+  assert.deepEqual(events, []);
+ }
 });

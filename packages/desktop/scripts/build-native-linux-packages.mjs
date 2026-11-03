@@ -5,6 +5,7 @@ import { basename, resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { gunzipSync } from 'node:zlib';
 import { linuxPackageVersion } from './linux-package-version.mjs';
+import { isMain } from './is-main.mjs';
 
 export function aurRecipe(version, sha256) {
  const v = linuxPackageVersion(version, 'x64');
@@ -62,7 +63,7 @@ export async function writeAurRecipe(version, deb, directory) {
  execFileSync('tar', ['--sort=name', '--mtime=@0', '--owner=0', '--group=0', '--numeric-owner', '-czf', archive, '-C', directory, '.SRCINFO', 'PKGBUILD']);
  return archive;
 }
-if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+if (isMain(import.meta.url)) {
  if (process.argv[2] === 'recipe' && process.argv.length === 6) {
   await writeAurRecipe(process.argv[3], resolve(process.argv[4]), resolve(process.argv[5]));
  } else if (process.argv[2] === 'build' && (process.argv.length === 4 || process.argv.length === 5)) {

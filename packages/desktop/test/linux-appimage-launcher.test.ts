@@ -57,7 +57,7 @@ test('fixture hook compiles the supplied public maintenance trust into its image
   await fixture.afterPack({electronPlatformName:'linux',arch:1,appOutDir:app,outDir:out,packager:{executableName:'dilla-desktop',appInfo:{version:'1.0.0'}}});
   await fixture.artifactBuildStarted({targetPresentableName:'AppImage',arch:1,file:join(out,'fixture.AppImage')});
   const launcher=await readFile(join(app,'dilla-sandbox-launcher'));
-  assert.ok(launcher.includes(Buffer.from(fixtureKey)));assert.ok(!launcher.includes(Buffer.from('qQe0Z4MLDeYmXACcEHo3Z7SU0klZSccu+nMD90pOcJg=')));
+  assert.ok(launcher.includes(Buffer.from(fixtureKey)));for(const pinned of JSON.parse(await readFile(new URL('../linux-sandbox-component.json',import.meta.url),'utf8')).publicKeys) assert.ok(!launcher.includes(Buffer.from(pinned)),'the committed sandbox key is not in the fixture launcher');
   assert.equal(await readlink(join(app,'chrome-sandbox')),'/usr/lib/dilla/appimage/chrome-sandbox');
   assert.ok((await readFile(join(out,'fixture.sandbox'))).length>0);
  } finally {await rm(root,{recursive:true,force:true});}

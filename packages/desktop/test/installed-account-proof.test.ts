@@ -45,6 +45,7 @@ test('verified generated tooling leaves the actual Git source clean while other 
   await writeFile(join(checkout, '.gitignore'), await readFile(new URL('../../../.gitignore', import.meta.url)));
   const scripts = join(checkout, 'packages/desktop/scripts'); await mkdir(scripts, { recursive: true });
   const cli = join(scripts, 'installed-account-proof.mjs'); await writeFile(cli, await readFile(new URL('../scripts/installed-account-proof.mjs', import.meta.url)));
+  await writeFile(join(scripts, 'is-main.mjs'), await readFile(new URL('../scripts/is-main.mjs', import.meta.url)));
   await writeFile(join(checkout, 'source.txt'), 'owned source\n');
   git(['init', '--quiet']); git(['add', '.']); git(['commit', '--quiet', '--no-gpg-sign', '-m', 'owned clean source']);
   const commit = git(['rev-parse', 'HEAD']), tools = join(checkout, 'artifacts/e2e-test-tools'); await mkdir(tools, { recursive: true });

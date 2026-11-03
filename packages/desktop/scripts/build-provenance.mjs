@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { lstat, open, readFile, writeFile } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { isMain } from './is-main.mjs';
 
 const PLATFORMS = Object.freeze({ 'linux-x64': ['linux', 'x64'], 'linux-packages-x64': ['linux', 'x64'], 'win-x64': ['win32', 'x64'], 'mac-arm64': ['darwin', 'arm64'] });
 const COMMIT = /^[a-f0-9]{40}$/, HASH = /^[A-Za-z0-9+/]{86}==$/;
@@ -98,7 +99,7 @@ export async function verifyCandidateBuildRecord(candidateFile, downloadedFile) 
  const candidate = await readBuildProvenanceFile(candidateFile), downloaded = await readBuildProvenanceFile(downloadedFile);
  if (!candidate.equals(downloaded)) throw new Error('CI-downloaded build provenance differs from the signing candidate');
 }
-if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+if (isMain(import.meta.url)) {
  if (process.argv.length !== 4) throw new Error('Usage: build-provenance.mjs ARTIFACT_DIRECTORY NATIVE_TARGET');
  const result = await emitBuildProvenance(resolve(process.argv[2]), process.argv[3]); console.log('Recorded native build provenance: ' + basename(result.file));
 }

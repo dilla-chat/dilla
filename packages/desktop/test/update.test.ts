@@ -133,6 +133,17 @@ test('macOS metadata authenticates the exact Sparkle archive signature', () => {
  assert.equal(verifyRelease(valid.body, valid.signature, { ...context, platform: 'darwin' }).artifacts[0].sparkleSignature, Buffer.alloc(64).toString('base64'));
 });
 
+test('an installed Mac accepts a key-rotation release that updates through its disk image, and no other archive type', () => {
+ const base = { ...release.artifacts[0], linuxSandbox: undefined, platform: 'darwin', sparkleSignature: Buffer.alloc(64).toString('base64') };
+ const at = (name: string) => signed({ ...release, artifacts: [{ ...base, url: `https://github.com/dilla-chat/dilla/releases/download/desktop-v0.1.1/${name}` }] });
+ const dmg = at('dilla-0.1.1-mac-arm64.dmg');
+ assert.equal(verifyRelease(dmg.body, dmg.signature, { ...context, platform: 'darwin' }).artifacts[0].url.split('/').at(-1), 'dilla-0.1.1-mac-arm64.dmg');
+ for (const name of ['dilla-0.1.1-mac-arm64.pkg', 'dilla-0.1.1-mac-arm64.tar.xz', 'dilla-0.1.1-mac-arm64.dmg.blockmap']) {
+  const other = at(name);
+  assert.throws(() => verifyRelease(other.body, other.signature, { ...context, platform: 'darwin' }), /type/, name);
+ }
+});
+
 test('package manager updates expose authenticated availability without downloading or installing', async () => {
  let downloads = 0, installs = 0;
  const phases: string[] = [];
@@ -189,4 +200,47 @@ test('signed release rejects duplicate and noncanonical JSON fields', () => {
 test('signed release dates require real UTC calendar timestamps', () => {
  const doc=signed({...release,publishedAt:'2026-02-30T00:00:00Z',expiresAt:'2026-03-10T00:00:00Z'});
  assert.throws(()=>verifyRelease(doc.body,doc.signature,{...context,now:Date.parse('2026-03-03T00:00:00Z')}));
+});
+
+// --- Staged key rotation (release-keys.mjs rotate / --promote) ---------------------------------
+const pemOf = (key: ReturnType<typeof generateKeyPairSync>['publicKey']) => key.export({ type: 'spki', format: 'pem' }).toString();
+const active = generateKeyPairSync('ed25519'), staged = generateKeyPairSync('ed25519'), stranger = generateKeyPairSync('ed25519');
+const signedBy = (value: unknown, privateKey: typeof pair.privateKey) => { const body = Buffer.from(JSON.stringify(value)); return { body, signature: sign(null, body, privateKey).toString('base64') }; };
+const oldClient = { ...context, publicKeys: [pemOf(active.publicKey)] };
+const transitionClient = { ...context, publicKeys: [pemOf(active.publicKey), pemOf(staged.publicKey)] };
+const promotedClient = { ...context, publicKeys: [pemOf(staged.publicKey), pemOf(active.publicKey)] };
+const releaseAt = (version: string): Release => JSON.parse(JSON.stringify(release).replaceAll('0.1.1', version));
+
+test('a transition release signed by the active key verifies for an old client (list [active]) and a new client (list [active, staged])', () => {
+  const transition = signedBy(release, active.privateKey);
+  assert.equal(verifyRelease(transition.body, transition.signature, oldClient).version, '0.1.1');
+  assert.equal(verifyRelease(transition.body, transition.signature, transitionClient).version, '0.1.1');
+});
+
+test('an updated client (list [active, staged]) accepts a release signed only by the staged key', () => {
+  const promoted = signedBy(releaseAt('0.1.2'), staged.privateKey);
+  assert.equal(verifyRelease(promoted.body, promoted.signature, transitionClient).version, '0.1.2');
+  assert.equal(verifyRelease(promoted.body, promoted.signature, promotedClient).version, '0.1.2');
+});
+
+test('a client that skipped the transition (list [active]) rejects a staged-key-only release', () => {
+  const promoted = signedBy(releaseAt('0.1.2'), staged.privateKey);
+  assert.throws(() => verifyRelease(promoted.body, promoted.signature, oldClient), /signature/);
+});
+
+test('a signature by a key in neither list is rejected', () => {
+  const forged = signedBy(release, stranger.privateKey);
+  for (const client of [oldClient, transitionClient, promotedClient]) assert.throws(() => verifyRelease(forged.body, forged.signature, client), /signature/);
+});
+
+test('an old client accepts the transition feed and, updated to it, trusts the new key', () => {
+  // The transition release's metadata is signed by the active key; its rotation proof signs the same bytes with the staged key.
+  const transition = signedBy(release, active.privateKey);
+  const proof = sign(null, transition.body, staged.privateKey).toString('base64');
+  assert.equal(verifyRelease(transition.body, transition.signature, oldClient).version, '0.1.1');
+  assert.equal(verifyRelease(transition.body, proof, transitionClient).version, '0.1.1', 'the staged signature over the same bytes verifies under the transition pins');
+  assert.throws(() => verifyRelease(transition.body, proof, oldClient), /signature/, 'the old pins do not trust the staged key yet');
+  // Installed from the transition build, the client carries [active, staged]; the next release is signed by the staged key only.
+  const next = signedBy(releaseAt('0.1.2'), staged.privateKey);
+  assert.equal(verifyRelease(next.body, next.signature, { ...transitionClient, currentVersion: '0.1.1' }).version, '0.1.2');
 });

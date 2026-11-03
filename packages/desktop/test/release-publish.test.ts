@@ -4,13 +4,14 @@ import { generateKeyPairSync, createHash, sign } from 'node:crypto';
 import { mkdtemp, mkdir, writeFile, readFile, readdir, copyFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
-import { sandboxReleaseFixture } from './support/linux-sandbox-release-fixture.ts';
+import { createRequire } from 'node:module';
+import { buildReleaseFixture, isolatedReleaseTools, acceptedJobs } from './support/release-fixture.mjs';
 // @ts-expect-error publishing tooling is JavaScript
 import { appcast, signedAppcast } from '../scripts/feed-format.mjs';
 // @ts-expect-error publishing tooling is JavaScript
-import { verifyDesktopBundle, TARGETS, LINUX_CLIENT_SHARDS, publicReleaseRecords, stagePublicReleaseRecords } from '../scripts/verify-release.mjs';
+import { verifyDesktopBundle, TARGETS, LINUX_CLIENT_SHARDS, publicReleaseRecords, stagePublicReleaseRecords, PUBLIC_ACCEPTANCE_RECORDS, requiredJobInventory, inventoryDigest } from '../scripts/verify-release.mjs';
 // @ts-expect-error build tooling is JavaScript
 import { ACCOUNT_CHECKS } from '../scripts/installed-account-proof.mjs';
 // @ts-expect-error build tooling is JavaScript
@@ -18,57 +19,24 @@ import { buildArtifactNames, buildProvenanceName } from '../scripts/build-proven
 
 // @ts-expect-error native recipe tooling is JavaScript
 import { aurRecipe } from '../scripts/build-native-linux-packages.mjs';
+// @ts-expect-error publishing tooling is JavaScript
+import { runPublisher } from '../scripts/publish-release.mjs';
+// @ts-expect-error publishing tooling is JavaScript
+import { createReleaseAssetUploader } from '../scripts/standard-release-upload.mjs';
+import { publishFixture, rotationProof, type PublishFixture } from './support/publish-fixture.mjs';
+import type { FakeRelease } from './support/fake-github.mjs';
 const buildTargets = [...TARGETS, 'linux-packages-x64'];
 
 test('publication refuses missing native acceptance even when the generic CI status is green', async () => {
- const sandbox = sandboxReleaseFixture();
  const directory = await mkdtemp(join(tmpdir(), 'dilla-publish-'));
  try {
-  const key = generateKeyPairSync('ed25519'), sparkle = generateKeyPairSync('ed25519'), version = '1.2.3';
-  const source = { format: 1, ciRun: 10, commit: '1'.repeat(40), head: '2'.repeat(40), tree: '3'.repeat(40), review: { status: 'approved', tree: '3'.repeat(40), sha256: '' }, builds: {} as Record<string, { sha256: string }>, performance: {} as Record<string, { sha256: string }>, installedAccounts: {} as Record<string, { sha256: string }>, notes: { sha256: '' } };
-  const notes = Buffer.from('Dilla desktop 1.2.3'); source.notes.sha256 = createHash('sha256').update(notes).digest('hex'); await writeFile(join(directory, 'release-notes.md'), notes);
-  const review = Buffer.from('Independent completed-app security review'); source.review.sha256 = createHash('sha256').update(review).digest('hex'); await writeFile(join(directory, 'security-review.md'), review);
-  const jobs: { name: string; conclusion: string; steps?: { name: string; conclusion: string }[] }[] = [];
-  for (const target of TARGETS) {
-   jobs.push({ name: `desktop / desktop-${target}`, conclusion: 'success', steps: ['Record native desktop build provenance', 'Application audio encryption and exclusion', target.startsWith('mac-') ? 'Installed unsigned Sparkle upgrade and signed-feed rejection' : 'Installed upgrade acceptance', ...(target==='linux-x64'?['Linux AppImage sandbox native acceptance']:[])].map(name => ({ name, conclusion: 'success' })) });
-   const shards = target === 'linux-x64' ? Array.from({ length: LINUX_CLIENT_SHARDS }, (_, i) => i + 1) : [1], proofShard = target === 'linux-x64' ? 5 : 1;
-   for (const n of shards) jobs.push({ name: `desktop / desktop-client-${target}-${n}`, conclusion: 'success', steps: [{ name: 'Installed account upgrade proof', conclusion: n === proofShard ? 'success' : 'skipped' }] });
-   jobs.push({ name: `desktop / desktop-voice-${target}`, conclusion: 'success', steps: [{ name: 'Desktop performance comparison', conclusion: 'success' }] });
-   const report = Buffer.from(JSON.stringify({ format: 1, target, sourceCommit: source.commit, sourceDirty: false, status: 'measured', ...Object.fromEntries(['startup', 'memory', 'idleCPU', 'interaction', 'callAudio'].map(metric => [metric, [{ browser: 1, desktop: 2 }]])) }));
-   await writeFile(join(directory, `performance-${target}.json`), report); source.performance[target] = { sha256: createHash('sha256').update(report).digest('hex') };
-   const [platform, arch] = ({ 'linux-x64': ['linux', 'x64'], 'win-x64': ['win32', 'x64'], 'mac-arm64': ['darwin', 'arm64'] } as Record<string, string[]>)[target];
-   const account = Buffer.from(JSON.stringify({ format: 1, platform, arch, from: '1.0.0', to: '1.0.1', ...Object.fromEntries(ACCOUNT_CHECKS.map((check: string) => [check, true])),
-    target, sourceCommit: source.commit, sourceDirty: false, status: 'passed' }));
-   await writeFile(join(directory, `installed-account-${target}.json`), account); source.installedAccounts[target] = { sha256: createHash('sha256').update(account).digest('hex') };
-  }
-  for (const format of ['deb', 'rpm', 'aur']) jobs.push({ name: `desktop / desktop-linux-package-acceptance-${format}-x64`, conclusion: 'success', steps: [{ name: `Installed ${format.toUpperCase()} package acceptance`, conclusion: 'success' }] });
-  jobs.push({ name: 'desktop / desktop-linux-packages-x64', conclusion: 'success', steps: ['Build native Linux release packages', 'Record native Linux package build provenance'].map(name => ({ name, conclusion: 'success' })) });
-  const assets: Array<{name:string;size:number;sha512:string}> = [];
-  for (const name of [...['deb', 'rpm', 'aur.tar.gz'].map(ext => `dilla-${version}-linux-x64.${ext}`), `dilla-${version}-linux-x64.AppImage`, ...['sandbox','sandbox.json','sandbox.sig'].map(ext => `dilla-${version}-linux-x64.${ext}`), `dilla-${version}-win-x64.exe`, `dilla-${version}-mac-arm64.zip`, `dilla-${version}-mac-arm64.dmg`]) {
-   const bytes = name.endsWith('.sandbox.sig') ? sandbox.signature : name.endsWith('.sandbox.json') ? sandbox.manifest : name.endsWith('.sandbox') ? sandbox.capsule : Buffer.from(name); await writeFile(join(directory, name), bytes); assets.push({ name, size: bytes.length, sha512: createHash('sha512').update(bytes).digest('base64') });
-  }
-  const recipeDirectory = join(directory, 'recipe'); await mkdir(recipeDirectory);
-  for (const [name, value] of Object.entries(aurRecipe(version, createHash('sha256').update(`dilla-${version}-linux-x64.deb`).digest('hex')))) await writeFile(join(recipeDirectory, name), value as string);
-  const recipeName = `dilla-${version}-linux-x64.aur.tar.gz`;
-  execFileSync('tar', ['--format=ustar', '-czf', join(directory, recipeName), '-C', recipeDirectory, '.SRCINFO', 'PKGBUILD']);
-  const recipeBytes = await readFile(join(directory, recipeName)); Object.assign(assets.find(asset => asset.name === recipeName)!, { size: recipeBytes.length, sha512: createHash('sha512').update(recipeBytes).digest('base64') });
-  for (const target of buildTargets) {
-   const record = Buffer.from(JSON.stringify({ format: 1, kind: 'dilla-desktop-build', repository: 'dilla-chat/dilla', target, version,
-    sourceCommit: source.commit, sourceTree: source.tree, ciRun: source.ciRun, sourceClean: true,
-    artifacts: buildArtifactNames(target, version).map((name: string) => assets.find(asset => asset.name === name)), ...(target === 'linux-x64' ? {linuxSandbox:{capsuleSha512:sandbox.hash(sandbox.capsule),manifestSha512:sandbox.hash(sandbox.manifest),embeddedCapsuleSha512:sandbox.hash(sandbox.capsule),embeddedManifestSha512:sandbox.hash(sandbox.manifest),electronSha512:sandbox.hash(Buffer.from('fixture-elf')),asarSha512:sandbox.hash(Buffer.from('fixture-asar'))}} : {}) }));
-   await writeFile(join(directory, buildProvenanceName(target)), record); source.builds[target] = { sha256: createHash('sha256').update(record).digest('hex') };
-  }
-  const release = { format: 1, version, channel: 'stable', publishedAt: '2026-11-01T00:00:00Z', expiresAt: '2026-12-01T00:00:00Z', source, assets, artifacts: assets.filter(asset => /\.(AppImage|exe|zip)$/.test(asset.name)).map(({name, ...asset}) => ({ ...asset, platform: name.includes('-linux-') ? 'linux' : name.includes('-win-') ? 'win32' : 'darwin', arch: name.includes('arm64') ? 'arm64' : 'x64', url: `https://github.com/dilla-chat/dilla/releases/download/desktop-v${version}/${name}`, ...(name.endsWith('-linux-x64.AppImage') ? {linuxSandbox:{compatibilityEpoch:1,minimumGeneration:1,bundle:{url:`https://github.com/dilla-chat/dilla/releases/download/desktop-v${version}/dilla-${version}-linux-x64.sandbox`,size:sandbox.capsule.length,sha512:sandbox.hash(sandbox.capsule)}}} : {}), ...(name.endsWith('.zip') ? { sparkleSignature: sign(null, Buffer.from(name), sparkle.privateKey).toString('base64') } : {}) })) };
+  const fixture = await buildReleaseFixture({ directory });
+  const { sandbox, key, sparkle, version, source, notes, jobs, assets, recipeDirectory, recipeName, release, metadata, context, resign } = fixture;
   assert.equal(release.assets.length, 10, 'seven installable/recipe assets plus three authenticated Linux sandbox assets');
   assert.equal(release.artifacts.length, 3, 'package managers own native-format updates');
-  for (const artifact of release.artifacts.filter(a => a.platform === 'darwin')) await writeFile(join(directory, `appcast-${artifact.arch}.xml`), signedAppcast(appcast(release, artifact, artifact.sparkleSignature), sparkle.privateKey));
-  const metadata = Buffer.from(JSON.stringify(release)), signature = sign(null, metadata, key.privateKey).toString('base64');
-  const context = { metadata, signature, trust: { metadataPublicKeys: [key.publicKey.export({ type: 'spki', format: 'pem' }).toString()], sparklePublicKey: sparkle.publicKey.export({ type: 'spki', format: 'der' }).subarray(-32).toString('base64') }, directory, run: { id: 10, head_sha: source.head, name: 'ci', status: 'completed', conclusion: 'success', repository: { full_name: 'dilla-chat/dilla' }, head_repository: { full_name: 'dilla-chat/dilla' } }, jobs, version, now: Date.parse('2026-11-02') };
   // Further verifier invocations below use isolated fixture trust, never production configuration.
   const testTools = join(directory,'fixture-verifier');
-  for (const relative of ['scripts/verify-release.mjs','scripts/feed-format.mjs','scripts/installed-account-proof.mjs','scripts/build-provenance.mjs','scripts/build-native-linux-packages.mjs','scripts/linux-package-version.mjs','scripts/linux-sandbox-package.mjs','src/update.ts','src/update-fs.ts','src/linux-sandbox-release.ts']) { const path=join(testTools,relative); await mkdir(dirname(path),{recursive:true}); await copyFile(resolve(import.meta.dirname,'..',relative),path); }
-  await writeFile(join(testTools,'package.json'),JSON.stringify({type:'module'})); await writeFile(join(testTools,'linux-sandbox-component.json'),JSON.stringify(sandbox.config));
-  const {verifyDesktopBundle,verifyDesktopSigningCandidate} = await import(pathToFileURL(join(testTools,'scripts/verify-release.mjs')).href);
+  const { verifier: { verifyDesktopBundle, verifyDesktopSigningCandidate } } = await isolatedReleaseTools(testTools, { trust: context.trust, sandboxConfig: sandbox.config });
   assert.equal((await verifyDesktopBundle(context)).version, version);
   // The fixture acceptance record, metadata, sidecar hashes and signature all
   // bind this malformed ELF; both release paths must reject the ELF itself.
@@ -98,7 +66,6 @@ test('publication refuses missing native acceptance even when the generic CI sta
   const forgedBytes=Buffer.from(JSON.stringify(forgedRelease)); await assert.rejects(verifyDesktopBundle({...context,metadata:forgedBytes,signature:sign(null,forgedBytes,key.privateKey).toString('base64')}),/sandbox/i); await writeFile(sidecarPath,sandbox.signature);
   const badDescriptor=JSON.parse(metadata.toString()); badDescriptor.artifacts.find((a:{platform:string})=>a.platform==='linux').linuxSandbox.bundle.sha512=sandbox.hash(sandbox.manifest);
   const badBytes=Buffer.from(JSON.stringify(badDescriptor)); await assert.rejects(verifyDesktopBundle({...context,metadata:badBytes,signature:sign(null,badBytes,key.privateKey).toString('base64')}),/descriptor/i);
-  const resign = (changed: unknown) => { const bytes = Buffer.from(JSON.stringify(changed)); return { ...context, metadata: bytes, signature: sign(null, bytes, key.privateKey).toString('base64') }; };
   for (const ext of ['deb', 'rpm', 'aur.tar.gz']) {
    const missing = structuredClone(release); missing.assets = missing.assets.filter(asset => !asset.name.endsWith('.' + ext));
    await assert.rejects(verifyDesktopBundle(resign(missing)), /provenance|authenticated/i);
@@ -185,7 +152,7 @@ test('publication refuses missing native acceptance even when the generic CI sta
   assert.equal(typeof publicReleaseRecords, 'function', 'publisher must share the complete public proof-record inventory');
   const tools = join(directory, 'isolated-signing-tools'), privateKeys = join(directory, 'private-signing-keys'), candidate = join(directory, 'public-candidate');
   await mkdir(privateKeys, { mode: 0o700 });
-  for (const relative of ['scripts/release-feed.mjs', 'scripts/verify-release.mjs', 'scripts/feed-format.mjs', 'scripts/installed-account-proof.mjs', 'scripts/build-provenance.mjs','scripts/build-native-linux-packages.mjs','scripts/linux-package-version.mjs', 'src/update.ts',   'src/update-fs.ts', 'src/linux-sandbox-release.ts', 'scripts/linux-sandbox-package.mjs']) {
+  for (const relative of ['scripts/release-feed.mjs', 'scripts/is-main.mjs', 'scripts/verify-release.mjs', 'scripts/feed-format.mjs', 'scripts/installed-account-proof.mjs', 'scripts/build-provenance.mjs','scripts/build-native-linux-packages.mjs','scripts/linux-package-version.mjs', 'src/update.ts',   'src/update-fs.ts', 'src/linux-sandbox-release.ts', 'scripts/linux-sandbox-package.mjs']) {
    const file = join(tools, relative); await mkdir(dirname(file), { recursive: true }); await copyFile(resolve(import.meta.dirname, '..', relative), file);
   }
   await writeFile(join(tools, 'package.json'), JSON.stringify({ type: 'module' }));
@@ -253,4 +220,405 @@ test('publication refuses missing native acceptance even when the generic CI sta
   await writeFile(join(directory, assets[0].name), 'tampered');
   await assert.rejects(verifyDesktopBundle(context), /artifact digest/);
  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+async function attestationFixture() {
+ const directory = await mkdtemp(join(tmpdir(), 'dilla-attestation-'));
+ const fixture = await buildReleaseFixture({ directory });
+ const { verifier } = await isolatedReleaseTools(join(directory, 'fixture-verifier'), { trust: fixture.trust, sandboxConfig: fixture.sandbox.config });
+ return { ...fixture, verifier, cleanup: () => rm(directory, { recursive: true, force: true }) };
+}
+type Changed = { source: { review: Record<string, unknown> & { inventory?: unknown } } };
+const changedRelease = (metadata: Buffer): Changed => JSON.parse(metadata.toString());
+
+test('publication refuses an attestation whose inventory digest does not match the run\'s jobs', async () => {
+ const f = await attestationFixture();
+ try {
+  assert.equal((await f.verifier.verifyDesktopBundle(f.context)).version, f.version);
+  const wrong = changedRelease(f.metadata); wrong.source.review.inventory = { sha256: 'f'.repeat(64) };
+  await assert.rejects(f.verifier.verifyDesktopBundle(f.resign(wrong)), /attestation/i);
+  // A run whose required jobs differ from the attested ones, though every acceptance rule still passes.
+  const jobs = structuredClone(f.jobs); jobs.find(job => job.name.endsWith('desktop-client-linux-x64-1'))!.steps![0].conclusion = 'cancelled';
+  await assert.rejects(f.verifier.verifyDesktopBundle({ ...f.context, jobs }), /attestation/i);
+ } finally { await f.cleanup(); }
+});
+
+test('publication refuses an attestation for another ci run id', async () => {
+ const f = await attestationFixture();
+ try {
+  const wrong = changedRelease(f.metadata); wrong.source.review.ciRun = 11;
+  await assert.rejects(f.verifier.verifyDesktopBundle(f.resign(wrong)), /attestation/i);
+ } finally { await f.cleanup(); }
+});
+
+test('publication refuses an attestation for another tree', async () => {
+ const f = await attestationFixture();
+ try {
+  const wrong = changedRelease(f.metadata); wrong.source.review.tree = 'f'.repeat(40);
+  await assert.rejects(f.verifier.verifyDesktopBundle(f.resign(wrong)), /attestation/i);
+ } finally { await f.cleanup(); }
+});
+
+test('publication refuses the old human review shape', async () => {
+ const f = await attestationFixture();
+ try {
+  const old = changedRelease(f.metadata); old.source.review = { status: 'approved', tree: f.source.tree, sha256: 'a'.repeat(64) };
+  await assert.rejects(f.verifier.verifyDesktopBundle(f.resign(old)), /attestation/i);
+  const extra = changedRelease(f.metadata); extra.source.review = { ...extra.source.review, sha256: 'a'.repeat(64) };
+  await assert.rejects(f.verifier.verifyDesktopBundle(f.resign(extra)), /attestation/i);
+  const approved = changedRelease(f.metadata); approved.source.review.status = 'approved';
+  await assert.rejects(f.verifier.verifyDesktopBundle(f.resign(approved)), /attestation/i);
+  assert.ok(!PUBLIC_ACCEPTANCE_RECORDS.includes('security-review.md'), 'no human review file is part of a release');
+ } finally { await f.cleanup(); }
+});
+
+test('requiredJobInventory is sorted, complete and covers every job verifyBundle requires', async () => {
+ const f = await attestationFixture();
+ try {
+  const inventory = requiredJobInventory(f.jobs, f.version);
+  const names = inventory.map((job: { name: string }) => job.name);
+  assert.deepEqual(names, [...names].sort());
+  assert.equal(inventory.length, f.jobs.length, 'every fixture job is a required job');
+  assert.deepEqual(inventory.find((job: { name: string }) => job.name === 'desktop / desktop-linux-x64'), f.jobs.find(job => job.name === 'desktop / desktop-linux-x64'));
+  for (let index = 0; index < f.jobs.length; index++) {
+   const jobs = f.jobs.filter((_, i) => i !== index);
+   assert.throws(() => requiredJobInventory(jobs, f.version), Error, f.jobs[index].name);
+   await assert.rejects(f.verifier.verifyDesktopBundle({ ...f.context, jobs }), Error, f.jobs[index].name);
+   const failed = structuredClone(f.jobs); failed[index].conclusion = 'failure';
+   assert.throws(() => requiredJobInventory(failed, f.version), /did not succeed/, f.jobs[index].name);
+  }
+  const duplicated = [...f.jobs, structuredClone(f.jobs[0])];
+  assert.throws(() => requiredJobInventory(duplicated, f.version), /exactly once/i);
+ } finally { await f.cleanup(); }
+});
+
+// Final review, m9: the one CI step that vouches for the DMG's Developer ID team, notarization and key is named in the attestation.
+test('a release requires the macOS update disk image check of the macOS build job', async () => {
+ const workflow = createRequire(import.meta.url)('js-yaml').load(await readFile(resolve(import.meta.dirname, '../../../.github/workflows/desktop.yml'), 'utf8'));
+ assert.ok(Object.values(workflow.jobs).some((job: any) => job.steps?.some((step: any) => step.name === 'macOS update disk image check')), 'the CI step exists under this name');
+ const jobs = acceptedJobs();
+ const mac = requiredJobInventory(jobs, '1.2.3').find((job: { name: string }) => job.name === 'desktop / desktop-mac-arm64');
+ assert.ok(mac.steps.some((step: { name: string; conclusion: string }) => step.name === 'macOS update disk image check' && step.conclusion === 'success'));
+ for (const change of ['missing', 'skipped'] as const) {
+  const changed = structuredClone(jobs), job = changed.find(item => item.name === 'desktop / desktop-mac-arm64')!;
+  if (change === 'missing') job.steps = job.steps!.filter(step => step.name !== 'macOS update disk image check');
+  else job.steps!.find(step => step.name === 'macOS update disk image check')!.conclusion = 'skipped';
+  assert.throws(() => requiredJobInventory(changed, '1.2.3'), /Required CI step missing or did not succeed: desktop-mac-arm64/, change);
+ }
+});
+
+test('requiredJobInventory ignores extra unrelated jobs', () => {
+ const jobs = acceptedJobs(), inventory = requiredJobInventory(jobs, '1.2.3');
+ const noisy = [{ name: 'go / test', conclusion: 'failure', steps: [{ name: 'x', conclusion: 'failure' }] }, ...structuredClone(jobs), { name: 'desktop / desktop-test-tools-linux-x64', conclusion: 'success', steps: [] }];
+ for (const job of noisy) job.steps = [{ name: 'Set up job', conclusion: 'success' }, ...(job.steps ?? []), { name: 'Post checkout', conclusion: 'success' }];
+ assert.deepEqual(requiredJobInventory(noisy, '1.2.3'), inventory);
+});
+
+test('requiredJobInventory with and without the version argument matches between assemble and verify', async () => {
+ const f = await attestationFixture();
+ try {
+  assert.deepEqual(requiredJobInventory(f.jobs, f.version), requiredJobInventory(f.jobs));
+  const expected = createHash('sha256').update(JSON.stringify(requiredJobInventory(f.jobs, f.version))).digest('hex');
+  assert.equal(inventoryDigest(f.jobs, f.version), expected);
+  assert.equal(inventoryDigest(f.jobs), expected);
+  assert.equal(f.source.review.inventory.sha256, expected, 'the fixture attests through the shared helper');
+  assert.equal((await f.verifier.verifyDesktopBundle(f.context)).source.review.inventory.sha256, expected);
+  assert.throws(() => requiredJobInventory(f.jobs, '1.2'), /version/i);
+ } finally { await f.cleanup(); }
+});
+
+// ---- Publisher: main-branch workflow_run, draft normalisation, exact asset sets ----
+
+const publisher = (p: PublishFixture, mode: 'plan' | 'publish', env: Record<string, string | undefined> = {}) =>
+ runPublisher({ mode, env: { ...p.env, ...env }, git: p.git, fetchImpl: p.github.fetch, trust: p.fixture.trust, verifier: p.tools.verifier, now: p.now });
+const writes = (p: PublishFixture) => p.github.state.log.filter(entry => entry.method !== 'GET');
+const signedNames = (p: PublishFixture) => [...p.fixture.release.assets.map(asset => asset.name), ...publicReleaseRecords(p.channel)].sort();
+
+test('publisher refuses to run outside a main-branch workflow_run', async () => {
+ const p = await publishFixture();
+ try {
+  for (const env of [{ GITHUB_EVENT_NAME: 'push' }, { GITHUB_REF: `refs/tags/${p.tag}` }, { GITHUB_REF: 'refs/heads/feature' }, { GITHUB_ACTIONS: undefined }, { GITHUB_REPOSITORY: 'other/dilla' }]) {
+   await assert.rejects(publisher(p, 'publish', env), /main-branch workflow_run/);
+  }
+  assert.deepEqual(p.github.state.log, []);
+ } finally { await p.cleanup(); }
+});
+
+// Final review, I-1: "Re-run failed jobs" on an old keyed run reuses that run's gate and sign outputs and runs its old publish code.
+test('publisher refuses a re-run attempt, a checkout that is no longer main’s tip and another active release run, before any write', async () => {
+ const p = await publishFixture();
+ try {
+  for (const mode of ['plan', 'publish'] as const) {
+   for (const GITHUB_RUN_ATTEMPT of ['2', '0', '01', '', undefined]) await assert.rejects(publisher(p, mode, { GITHUB_RUN_ATTEMPT }), /re-run attempt/i);
+  }
+  assert.deepEqual(p.github.state.log, [], 'nothing is read or written on a re-run attempt');
+  p.checkout.diff = 'packages/desktop/scripts/publish-release.mjs\0';
+  await assert.rejects(publisher(p, 'publish'), /no longer main’s tip/);
+  p.checkout.diff = '';
+  p.checkout.head = 'f'.repeat(40);
+  await assert.rejects(publisher(p, 'publish'), /HEAD differs from GITHUB_SHA/);
+  p.checkout.head = p.env.GITHUB_SHA;
+  p.github.state.active.queued = [{ id: 4999 }];
+  await assert.rejects(publisher(p, 'publish'), /another desktop release run \(4999\)/i);
+  assert.deepEqual(writes(p), []);
+  delete p.github.state.active.queued;
+  p.checkout.diff = 'docs/guide.md\0';
+  await publisher(p, 'publish');
+  assert.equal(p.github.state.releases.find(release => release.tag_name === p.tag)?.draft, false);
+ } finally { await p.cleanup(); }
+});
+
+test('publisher refuses a tag that resolves to another commit than DESKTOP_SHA', async () => {
+ const p = await publishFixture();
+ try {
+  p.github.state.tags[p.tag] = 'c'.repeat(40);
+  await assert.rejects(publisher(p, 'publish'), /tag.*DESKTOP_SHA/i);
+  delete p.github.state.tags[p.tag];
+  await assert.rejects(publisher(p, 'publish'), /tag does not exist/i);
+  for (const env of [{ DESKTOP_SHA: 'A'.repeat(40) }, { DESKTOP_TAG: 'desktop-v1.2' }, { DESKTOP_TAG: 'v1.2.3' }]) await assert.rejects(publisher(p, 'publish', env), /Invalid DESKTOP_/);
+  assert.deepEqual(writes(p), []);
+ } finally { await p.cleanup(); }
+});
+
+test('publisher refuses a signed source commit that is not DESKTOP_SHA', async () => {
+ const p = await publishFixture({ commit: 'c'.repeat(40) });
+ try {
+  await assert.rejects(publisher(p, 'publish'), /signed source.*DESKTOP_SHA/i);
+  assert.deepEqual(writes(p), []);
+ } finally { await p.cleanup(); }
+});
+
+test('publisher refuses a DESKTOP_SHA that is not an ancestor of main', async () => {
+ const p = await publishFixture();
+ try {
+  p.ancestors.clear();
+  await assert.rejects(publisher(p, 'publish'), /ancestor of main/i);
+  assert.deepEqual(writes(p), []);
+ } finally { await p.cleanup(); }
+});
+
+test('publisher takes the candidate from DESKTOP_RELEASE_CANDIDATE and refuses a relative or missing path', async () => {
+ const p = await publishFixture();
+ try {
+  for (const env of [{ DESKTOP_RELEASE_CANDIDATE: 'signed' }, { DESKTOP_RELEASE_CANDIDATE: undefined }, { DESKTOP_RELEASE_CANDIDATE: join(p.root, 'absent') },
+   { DESKTOP_RELEASE_CANDIDATE: tmpdir() }, { DESKTOP_RELEASE_CANDIDATE: `${p.root}/signed/../signed` }, { DESKTOP_INSTALLERS: 'installers' }, { RUNNER_TEMP: undefined }]) {
+   await assert.rejects(publisher(p, 'publish', env), /DESKTOP_RELEASE_CANDIDATE|DESKTOP_INSTALLERS|RUNNER_TEMP/, JSON.stringify(env));
+  }
+  assert.deepEqual(writes(p), []);
+  assert.equal((await publisher(p, 'plan')).release.version, p.version);
+  assert.deepEqual(writes(p), [], 'plan verifies without writing');
+ } finally { await p.cleanup(); }
+});
+
+test('publisher normalises an adopted draft (body, name, prerelease, target, extra assets)', async () => {
+ const p = await publishFixture();
+ try {
+  const exe = `dilla-${p.version}-win-x64.exe`;
+  const draft = p.github.addRelease({ tag_name: p.tag, name: 'Totally legit', body: 'Download the [fixed build](https://evil.example)', draft: true, prerelease: true, target_commitish: 'attacker-branch',
+   files: { [exe]: 'forged installer', [`dilla-${p.version}-win-x64-setup.exe`]: 'extra', 'release-notes.md': 'old notes' } });
+  await publisher(p, 'publish');
+  const release = p.github.state.releases.find(item => item.id === draft.id)!;
+  assert.equal(p.github.state.releases.filter(item => item.tag_name === p.tag).length, 1, 'the draft was adopted, not duplicated');
+  assert.equal(release.draft, false);
+  assert.equal(release.name, `Dilla desktop ${p.version}`);
+  assert.equal(release.body, p.fixture.notes.toString());
+  assert.equal(release.prerelease, false);
+  assert.equal(release.target_commitish, p.sha);
+  assert.deepEqual(release.assets.map(asset => asset.name).sort(), signedNames(p));
+  assert.equal(release.assets.find(asset => asset.name === exe)!.bytes.toString(), exe, 'the forged installer was replaced by the accepted bytes');
+  const patch = p.github.state.log.find(entry => entry.method === 'PATCH')!;
+  assert.deepEqual(patch.body, { name: `Dilla desktop ${p.version}`, body: p.fixture.notes.toString(), prerelease: false, target_commitish: p.sha, draft: true }, 'normalised before any upload');
+ } finally { await p.cleanup(); }
+});
+
+test('publisher refuses two drafts for one tag', async () => {
+ const p = await publishFixture();
+ try {
+  p.github.addRelease({ tag_name: p.tag, draft: true }); p.github.addRelease({ tag_name: p.tag, draft: true });
+  await assert.rejects(publisher(p, 'publish'), /more than one draft/i);
+  assert.deepEqual(writes(p), []);
+ } finally { await p.cleanup(); }
+});
+
+test('publisher refuses a published release for the versioned tag', async () => {
+ const p = await publishFixture();
+ try {
+  p.github.addRelease({ tag_name: p.tag, draft: false, immutable: true });
+  await assert.rejects(publisher(p, 'publish'), /already published/i);
+  assert.deepEqual(writes(p), []);
+ } finally { await p.cleanup(); }
+});
+
+test('publisher fails when the published asset set differs from the signed set', async () => {
+ for (const change of ['extra', 'missing', 'digest'] as const) {
+  let add: ((release: FakeRelease) => void) | undefined;
+  const p = await publishFixture({ onPublish: (_state, release) => add?.(release) });
+  add = release => {
+   if (change === 'extra') p.github.addAsset(release, 'extra.exe', Buffer.from('x'));
+   if (change === 'missing') release.assets.pop();
+   if (change === 'digest') release.assets[0].digest = 'sha256:' + 'f'.repeat(64);
+  };
+  try { await assert.rejects(publisher(p, 'publish'), /published asset set/i, change); } finally { await p.cleanup(); }
+ }
+});
+
+test('publisher fails when the tag moved after publishing', async () => {
+ const p = await publishFixture({ onPublish: state => { state.tags[Object.keys(state.tags)[0]] = 'c'.repeat(40); } });
+ try { await assert.rejects(publisher(p, 'publish'), /tag.*DESKTOP_SHA/i); } finally { await p.cleanup(); }
+});
+
+test('publisher fails when the published release is not immutable', async () => {
+ const p = await publishFixture({ immutable: false });
+ try { await assert.rejects(publisher(p, 'publish'), /immutable/i); } finally { await p.cleanup(); }
+});
+
+test('publisher publishes the versioned release before the feed', async () => {
+ // The channel feed is served from GitHub Pages by a later keyless job (Task 8b):
+ // the publisher creates, fills and publishes the versioned release only.
+ const p = await publishFixture();
+ try {
+  await publisher(p, 'publish');
+  const id = p.github.state.releases[0].id;
+  const log = writes(p).map(entry => `${entry.method} ${new URL(entry.url).pathname.replace(/^\/repos\/dilla-chat\/dilla/, '')}`);
+  assert.equal(log[0], 'POST /releases');
+  assert.equal(writes(p)[0].body.draft, true, 'created as a draft');
+  assert.equal(log.at(-1), `PATCH /releases/${id}`);
+  assert.deepEqual(writes(p).at(-1)!.body, { draft: false });
+  assert.ok(log.slice(1, -1).every(entry => entry === `POST /releases/${id}/assets`), 'only uploads between create and publish');
+  assert.ok(writes(p).slice(1, -1).every(entry => new URL(entry.url).origin === 'https://uploads.github.com'));
+  assert.equal(log.length, signedNames(p).length + 2);
+  assert.ok(!p.github.state.log.some(entry => /desktop-(beta|stable)(\/|$)/.test(entry.url)), 'no channel feed release is read or written');
+  assert.deepEqual(p.github.state.releases.map(release => release.tag_name), [p.tag]);
+ } finally { await p.cleanup(); }
+});
+
+test('uploads go to uploads.github.com only and never follow redirects', async () => {
+ const p = await publishFixture();
+ try {
+  await publisher(p, 'publish');
+  assert.ok(p.github.state.log.length > 0);
+  for (const entry of p.github.state.log) {
+   assert.equal(entry.redirect, 'error', entry.url);
+   assert.ok(['https://api.github.com', 'https://uploads.github.com'].includes(new URL(entry.url).origin), entry.url);
+   if (entry.method === 'POST' && entry.url.includes('/assets')) assert.equal(new URL(entry.url).origin, 'https://uploads.github.com');
+  }
+ } finally { await p.cleanup(); }
+ // The uploader itself refuses any other destination.
+ const calls: string[] = [];
+ const upload = createReleaseAssetUploader({ api: async () => [], token: 't', fetchImpl: async (url: string) => { calls.push(url); return new Response('{}', { status: 201 }); } });
+ const target = { id: 7, tag_name: 'desktop-v1.2.3', draft: true, upload_url: 'https://uploads.github.com/repos/dilla-chat/dilla/releases/7/assets{?name,label}' };
+ for (const change of [{ upload_url: 'https://example.com/repos/dilla-chat/dilla/releases/7/assets{?name,label}' }, { upload_url: 'https://uploads.github.com/repos/other/repo/releases/7/assets{?name,label}' }, { id: 8 }, { draft: false }, { tag_name: 'desktop-beta' }]) {
+  await assert.rejects(upload({ ...target, ...change }, 'dilla.exe', Buffer.from('x')), /destination|draft|tag/i, JSON.stringify(change));
+ }
+ assert.deepEqual(calls, []);
+});
+
+test('publisher verifies a staged rotation proof and publishes it', async () => {
+ const p = await publishFixture({ staged: true });
+ try {
+  await publisher(p, 'publish');
+  const release = p.github.state.releases[0];
+  assert.deepEqual(release.assets.map(asset => asset.name).sort(), [...signedNames(p), 'rotation-proof.json'].sort());
+ } finally { await p.cleanup(); }
+});
+
+test('publisher refuses a bad rotation proof before anything is uploaded', async () => {
+ const p = await publishFixture({ staged: true });
+ try {
+  const path = join(p.candidate, 'rotation-proof.json'), clean = await readFile(path);
+  const files = { metadata: p.fixture.metadata, manifest: await readFile(join(p.installers, `dilla-${p.version}-linux-x64.sandbox.json`)), archive: await readFile(join(p.installers, `dilla-${p.version}-mac-arm64.zip`)) };
+  const keys = p.stagedKeys!, unpinned = { ...keys, metadata: generateKeyPairSync('ed25519') };
+  const tampered = JSON.parse(clean.toString()); tampered.sparkle.signature = tampered.metadata.signature;
+  const cases: [string, Buffer | string][] = [
+   ['tampered', Buffer.from(JSON.stringify(tampered))],
+   ['another version', rotationProof({ keys, ...files, version: '1.2.4', channel: p.channel })],
+   ['another channel', rotationProof({ keys, ...files, version: p.version, channel: 'beta' })],
+   ['an unpinned key', rotationProof({ keys: unpinned, ...files, version: p.version, channel: p.channel })],
+   ['another slot', rotationProof({ keys, ...files, version: p.version, channel: p.channel, slot: 'A' })],
+   ['other metadata', rotationProof({ keys, ...files, metadata: Buffer.from('{}'), version: p.version, channel: p.channel })],
+  ];
+  for (const [label, bytes] of cases) {
+   await writeFile(path, bytes);
+   await assert.rejects(publisher(p, 'publish'), /rotation proof/i, label);
+   await assert.rejects(publisher(p, 'plan'), /rotation proof/i, label);
+   assert.deepEqual(writes(p), [], label);
+  }
+  await writeFile(path, clean);
+  // A proof present while nothing is staged, and a staged run without its proof.
+  await assert.rejects(publisher(p, 'publish', { DESKTOP_STAGED: 'false' }), /rotation proof|main’s release-trust\.json/i);
+  await rm(path);
+  await assert.rejects(publisher(p, 'publish'), /rotation proof/i);
+  assert.deepEqual(writes(p), []);
+ } finally { await p.cleanup(); }
+});
+
+// Final review, m7: "staged" comes from main's pins, not only from sign's output.
+test('publisher refuses a DESKTOP_STAGED that disagrees with main’s pinned signing.staged', async () => {
+ const p = await publishFixture({ staged: true });
+ try {
+  // sign said nothing is staged and handed over no proof, but main pins a staged slot: the transition release would lack its proof.
+  await rm(join(p.candidate, 'rotation-proof.json'));
+  for (const mode of ['plan', 'publish'] as const) await assert.rejects(publisher(p, mode, { DESKTOP_STAGED: 'false' }), /main’s release-trust\.json/);
+  assert.deepEqual(writes(p), []);
+ } finally { await p.cleanup(); }
+ const q = await publishFixture();
+ try {
+  (q.fixture.trust as { signing?: unknown }).signing = { active: 'A', staged: null };
+  await assert.rejects(publisher(q, 'plan', { DESKTOP_STAGED: 'true' }), /main’s release-trust\.json/);
+  assert.equal((await publisher(q, 'plan')).release.version, q.version);
+ } finally { await q.cleanup(); }
+});
+
+// Final review, m4: a draft another principal made would keep that author after publication, and the feed refuses it.
+test('publisher adopts only a draft the release workflow made', async () => {
+ for (const author of [{ login: 'octocat', type: 'User' }, { login: 'github-actions[bot]', type: 'User' }, { login: 'dependabot[bot]', type: 'Bot' }]) {
+  const p = await publishFixture();
+  try {
+   p.github.addRelease({ tag_name: p.tag, draft: true, author });
+   await assert.rejects(publisher(p, 'publish'), /not made by the release workflow/, author.login);
+   assert.deepEqual(writes(p), [], 'nothing is written');
+  } finally { await p.cleanup(); }
+ }
+});
+
+test('publish job installs no npm dependencies', async () => {
+ // The keyed workflow's publish job runs no npm command (scripts/check-ci-workflow.mjs pins this too).
+ const yaml = createRequire(import.meta.url)('js-yaml');
+ const workflow = yaml.load(await readFile(resolve(import.meta.dirname, '../../../.github/workflows/desktop-release.yml'), 'utf8'));
+ const steps: { run?: string; uses?: string }[] = workflow.jobs.publish.steps;
+ assert.ok(steps.some(step => step.run?.includes('publish-release.mjs publish')));
+ for (const step of steps) assert.ok(!/\bnpm\b|\bnpx\b/.test(step.run ?? ''), step.run);
+ // Every static import the publisher loads is a node: built-in or a repository file, so `publish` runs without npm ci.
+ // The same holds for every script the keyed workflow runs: none of its jobs runs npm ci.
+ const repo = resolve(import.meta.dirname, '../../..');
+ const entries = ['publish-release', 'verify-published', 'release-gate', 'release-download-check', 'release-candidate', 'release-assemble', 'release-notes', 'release-sign-job', 'candidate-digest', 'pages-feed']
+  .map(name => resolve(repo, `packages/desktop/scripts/${name}.mjs`));
+ for (const step of Object.values(workflow.jobs as Record<string, { steps: { run?: string }[] }>).flatMap(job => job.steps)) {
+  const script = /^node (packages\/desktop\/scripts\/[a-z-]+\.mjs)/.exec(step.run ?? '')?.[1];
+  if (script) assert.ok(entries.includes(resolve(repo, script)), `${script} is loaded without node_modules`);
+ }
+ const seen = new Set<string>(), pending = [...entries];
+ while (pending.length) {
+  const file = pending.pop()!;
+  if (seen.has(file)) continue;
+  seen.add(file);
+  const text = await readFile(file, 'utf8');
+  for (const match of text.matchAll(/(?:^|\n)\s*(?:import|export)\s[^'"]*?from\s+'([^']+)'/g)) {
+   const specifier = match[1];
+   if (specifier.startsWith('node:')) continue;
+   assert.ok(specifier.startsWith('.'), `${file} imports the package ${specifier}`);
+   pending.push(resolve(dirname(file), specifier));
+  }
+ }
+ assert.ok(seen.size > 3);
+ // Proof by loading: the same files copied where no node_modules can be found, then imported.
+ const isolated = await mkdtemp(join(tmpdir(), 'dilla-publisher-graph-'));
+ try {
+  for (const file of seen) { const copy = join(isolated, file.slice(repo.length)); await mkdir(dirname(copy), { recursive: true }); await copyFile(file, copy); }
+  await writeFile(join(isolated, 'package.json'), JSON.stringify({ type: 'module' }));
+  for (const entry of entries) {
+   const result = spawnSync(process.execPath, ['--input-type=module', '-e', `await import(${JSON.stringify(pathToFileURL(join(isolated, entry.slice(repo.length))).href)})`], { encoding: 'utf8', env: { PATH: process.env.PATH }, timeout: 60000 });
+   assert.equal(result.status, 0, `${entry}: ${result.stderr}`);
+  }
+ } finally { await rm(isolated, { recursive: true, force: true }); }
 });

@@ -1,6 +1,13 @@
 const channel = require('./package.json').version.includes('-beta.') ? 'beta' : 'stable';
-const { sparklePublicKey } = require('./release-trust.json');
+// SUPublicEDKey is always the active Sparkle key, also while a rotation is staged (sparkleNextPublicKey): Sparkle
+// trusts one key per build, so the key changes only with `release-keys.mjs rotate --promote` (see RELEASING.md).
+const trust = require('./release-trust.json');
+const { sparklePublicKey } = trust;
 const linuxHooks = require('./scripts/linux-appimage-launcher.cjs');
+// After --promote (signing.macRotation), each channel's next release updates macOS through its DMG, so the DMG is
+// Developer ID signed (dmg.sign) and notarized and stapled (afterAllArtifactBuild) like the app it carries.
+const macRotation = require('./scripts/mac-rotation-dmg.cjs');
+const macRotationPending = macRotation.macRotationPending(trust);
 // macOS signs with the Developer ID certificate the release credentials carry (CSC_LINK and CSC_KEY_PASSWORD, the
 // base64 .p12 and its password) and notarizes with the App Store Connect API key (APPLE_API_KEY, APPLE_API_KEY_ID,
 // APPLE_API_ISSUER); the workflow sets them from repository secrets on the macOS build only. Without them, as in a
@@ -17,6 +24,7 @@ module.exports = {
   asar: true,
   afterPack: linuxHooks,
   artifactBuildStarted: linuxHooks.artifactBuildStarted,
+  afterAllArtifactBuild: macRotation.createAfterAllArtifactBuild({ trust }),
   beforePack: async context => {
     const arch = { x64: 1, arm64: 3 }[process.arch];
     if (context.electronPlatformName !== process.platform || context.arch !== arch) throw new Error('Build desktop native capabilities on the matching OS and architecture');
@@ -31,6 +39,7 @@ module.exports = {
   appImage: { executableArgs: [] },
   win: { target: [{ target: 'nsis', arch: ['x64'] }], icon: 'assets/icon.png', verifyUpdateCodeSignature: false, forceCodeSigning: false },
   nsis: { perMachine: false, oneClick: true, allowElevation: false, packElevateHelper: false, differentialPackage: false, deleteAppDataOnUninstall: false },
+  dmg: { sign: macSigning && macRotationPending },
   mac: {
     target: [{ target: 'dmg', arch: [process.arch] }, { target: 'zip', arch: [process.arch] }],
     extraFiles: [{ from: 'native-bin/Sparkle.framework', to: 'Frameworks/Sparkle.framework' }],
@@ -42,7 +51,7 @@ module.exports = {
       CFBundleVersion: require('./package.json').version.replace('-beta.', 'b'),
       NSUserNotificationAlertStyle: 'alert',
       DillaDesktopChannel: channel,
-      SUFeedURL: `https://github.com/dilla-chat/dilla/releases/download/desktop-${channel}/appcast-${process.arch}.xml`,
+      SUFeedURL: `https://dilla-chat.github.io/dilla/${channel}/appcast-${process.arch}.xml`,
       SUPublicEDKey: sparklePublicKey, SURequireSignedFeed: true, SUVerifyUpdateBeforeExtraction: true,
       SUEnableAutomaticChecks: false, SUAutomaticallyUpdate: false, SUEnableInstallerLauncherService: true,
       SUEnableDownloaderService: false,

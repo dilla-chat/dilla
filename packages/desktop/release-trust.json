@@ -1,6 +1,10 @@
 {
   "metadataPublicKeys": [
-    "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAXTuHc4Y/VXBqK4ftTfuZYhVwK45/QbVrICmf/jYZi7A=\n-----END PUBLIC KEY-----\n"
+    "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAPT530pTGlCCbjSNbXeajnERzU1k9JL2KjSYupHPZjrw=\n-----END PUBLIC KEY-----\n"
   ],
-  "sparklePublicKey": "XSe0Cm/PUaJERCkaDMT+odXHyV7VlsIEtjL5xK2HWlk="
+  "sparklePublicKey": "WVmjsR8I0WySt+5FOQJboNvoc4evI+r8dW5qZq6d+EA=",
+  "signing": {
+    "active": "A",
+    "staged": null
+  }
 }

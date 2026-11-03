@@ -1,6 +1,7 @@
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
@@ -9,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 const TEST_ROOT = mkdtempSync(join(tmpdir(), 'dilla-ci-run-'));
 process.on('exit', () => rmSync(TEST_ROOT, { recursive: true, force: true }));
 import { gateExpression, JOB_GATES } from './ci-areas.mjs';
-import { assertGoShards, BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopWorkflow, checkReleaseWorkflow, checkWorkflow, goShardCommand, goShardMatrix, jobSteps, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_BLOCK, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEPS, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION, WEB_SHARDS } from './check-ci-workflow.mjs';
+import { assertGoShards, BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopReleaseWorkflow, checkDesktopWorkflow, checkReleaseWorkflow, checkWorkflow, DESKTOP_RELEASE_ACTIONS, DESKTOP_RELEASE_SECRETS, goShardCommand, goShardMatrix, jobSteps, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_BLOCK, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEPS, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION, WEB_SHARDS } from './check-ci-workflow.mjs';
 import { POSTGRES_API_RUN, SETS as GO_SHARD_SETS } from './go-shard.mjs';
 
 const NPM_TEST = "      - if: needs.changes.outputs.web != 'false'\n        run: npm test\n";
@@ -1075,6 +1076,12 @@ function fixture(body, gated = GATED) {
   // The CLI also checks release.yml.
   writeFileSync(join(dir, '.github', 'workflows', 'release.yml'), REAL_RELEASE);
   writeFileSync(join(dir, '.github', 'workflows', 'desktop.yml'), REAL_DESKTOP);
+  // ... and the desktop release trampoline with the key scripts it pins.
+  releaseRoots.push(dir);
+  for (const file of RELEASE_FILES.filter(path => !path.startsWith('.github/') || /desktop-release(-request)?\.yml$/.test(path))) {
+    mkdirSync(dirname(join(dir, file)), { recursive: true });
+    writeFileSync(join(dir, file), readFileSync(join(REPO_ROOT, file), 'utf8'));
+  }
   for (const [pkg, name] of gated) {
     mkdirSync(join(dir, pkg), { recursive: true });
     writeFileSync(join(dir, pkg, `${name}_test.go`), gatedTest(name));
@@ -2453,4 +2460,376 @@ test('native Linux release producer is separate, source-versioned, non-bypassabl
   const root = fixture(GOOD); writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
   assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('native Linux package producer')));
  }
+});
+
+// ---- Desktop release trampoline (checkDesktopReleaseWorkflow) ----
+// Every test mutates the real committed files in a temporary copy and expects at least one problem.
+
+const yaml = createRequire(import.meta.url)('js-yaml');
+const RELEASE_FILES = [
+  ...readdirSync(join(REPO_ROOT, '.github', 'workflows')).map(name => `.github/workflows/${name}`),
+  // The keyed steps' scripts and everything they import (the checker walks the import graph).
+  ...['scripts', 'src'].flatMap(dir => readdirSync(join(REPO_ROOT, 'packages', 'desktop', dir)).filter(name => /\.(mjs|ts)$/.test(name)).map(name => `packages/desktop/${dir}/${name}`)),
+  // keyed-run.mjs (sign's re-run checks) classifies paths with the CI's own classifier.
+  'scripts/ci-areas.mjs',
+];
+const KEYED = '.github/workflows/desktop-release.yml', REQUEST = '.github/workflows/desktop-release-request.yml';
+/** A temporary root holding the real files with `changes` (path -> text => text) applied. */
+const releaseRoots = [];
+after(() => { for (const root of releaseRoots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+function releaseRoot(changes = {}) {
+  const root = mkdtempSync(join(tmpdir(), 'dilla-desktop-release-ci-'));
+  releaseRoots.push(root);
+  for (const file of RELEASE_FILES) {
+    const text = readFileSync(join(REPO_ROOT, file), 'utf8');
+    mkdirSync(dirname(join(root, file)), { recursive: true });
+    writeFileSync(join(root, file), changes[file] ? changes[file](text) : text);
+  }
+  for (const [file, change] of Object.entries(changes)) if (!RELEASE_FILES.includes(file)) {
+    mkdirSync(dirname(join(root, file)), { recursive: true }); writeFileSync(join(root, file), change(''));
+  }
+  return root;
+}
+/** A structural change: parse, mutate, dump. */
+const edit = mutate => text => { const doc = yaml.load(text); mutate(doc); return yaml.dump(doc, { lineWidth: -1 }); };
+const step = (doc, job, match) => doc.jobs[job].steps.find(item => (item.name ?? item.uses ?? item.run ?? '').includes(match));
+function reported(changes, label) {
+  const root = releaseRoot(changes);
+  const problems = checkDesktopReleaseWorkflow(root);
+  rmSync(root, { recursive: true, force: true });
+  assert.ok(problems.length > 0, `not reported: ${label}`);
+  return problems;
+}
+
+test('desktop release workflows as committed have no problems', () => {
+  assert.deepEqual(checkDesktopReleaseWorkflow(REPO_ROOT), []);
+  assert.deepEqual(checkDesktopReleaseWorkflow(releaseRoot({ [KEYED]: edit(() => {}), [REQUEST]: edit(() => {}) })), [], 'a parse and re-dump is not a change');
+  assert.equal(DESKTOP_RELEASE_SECRETS.length, 6);
+  assert.ok(DESKTOP_RELEASE_ACTIONS.every(action => /^actions\/[a-z-]+@[0-9a-f]{40}$/.test(action)));
+  const cli = spawnSync(process.execPath, [SCRIPT_PATH, releaseRoot({ [KEYED]: text => text.replace('cancel-in-progress: false', 'cancel-in-progress: true') })], { encoding: 'utf8' });
+  assert.notEqual(cli.status, 0, 'wired into the CLI');
+  assert.match(cli.stderr, /desktop-release\.yml/);
+});
+
+test('the gate\'s macOS update decision reaches sign, publish, verify-published and feed, and only from the gate', () => {
+  for (const [label, change] of [
+    ['no gate output', edit(doc => { delete doc.jobs.gate.outputs.mac_update; })],
+    ['sign without MAC_UPDATE', edit(doc => { delete step(doc, 'sign', 'Sign (the only').env.MAC_UPDATE; })],
+    ['sign MAC_UPDATE from a literal', edit(doc => { step(doc, 'sign', 'Sign (the only').env.MAC_UPDATE = 'dmg'; })],
+    ['publish plan without DESKTOP_MAC_UPDATE', edit(doc => { delete step(doc, 'publish', 'Re-verify').env.DESKTOP_MAC_UPDATE; })],
+    ['publish from sign', edit(doc => { step(doc, 'publish', 'Publish the versioned').env.DESKTOP_MAC_UPDATE = '${{ needs.sign.outputs.staged }}'; })],
+    ['verify-published without DESKTOP_MAC_UPDATE', edit(doc => { delete step(doc, 'verify-published', 'Re-download').env.DESKTOP_MAC_UPDATE; })],
+    ['feed without MAC_UPDATE', edit(doc => { delete step(doc, 'feed', 'Build the channel feed').env.MAC_UPDATE; })],
+  ]) reported({ [KEYED]: change }, label);
+});
+
+test('the macOS update disk image check runs once on macOS after the final fused distribution and before provenance', () => {
+  const check = "      - name: macOS update disk image check\n        if: runner.os == 'macOS'\n        run: node packages/desktop/scripts/check-mac-dmg.mjs packages/desktop/out\n";
+  assert.ok(REAL_DESKTOP.includes(check));
+  for (const [label, changed] of [
+    ['removed', REAL_DESKTOP.replace(check, '')],
+    ['skipped', REAL_DESKTOP.replace(check, check.replace("runner.os == 'macOS'", 'false'))],
+    ['before the fuses', REAL_DESKTOP.replace(check, '').replace('      - run: node packages/desktop/scripts/check-fuses.mjs\n', check + '      - run: node packages/desktop/scripts/check-fuses.mjs\n')],
+    ['twice', REAL_DESKTOP.replace(check, check + check)],
+    ['another directory', REAL_DESKTOP.replace(check, check.replace('packages/desktop/out\n', 'packages/desktop/other\n'))],
+  ]) {
+    assert.notEqual(changed, REAL_DESKTOP, label);
+    const root = fixture(GOOD); writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
+    assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('disk image')), label);
+  }
+});
+
+test('request workflow gaining secrets, an environment, contents: write, any uses or a checkout is reported', () => {
+  for (const [label, change] of [
+    ['secrets', edit(doc => { doc.jobs.request.steps[0].env = { K: '${{ secrets.DESKTOP_METADATA_KEY_A }}' }; })],
+    ['environment', edit(doc => { doc.jobs.request.environment = 'desktop-release'; })],
+    ['contents: write', edit(doc => { doc.permissions.contents = 'write'; })],
+    ['job permissions', edit(doc => { doc.jobs.request.permissions = { contents: 'read' }; })],
+    ['uses', edit(doc => { doc.jobs.request.steps.push({ uses: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' }); })],
+    ['job env', edit(doc => { doc.jobs.request.env = { A: 'b' }; })],
+    ['second job', edit(doc => { doc.jobs.other = doc.jobs.request; })],
+    ['workflow_dispatch', edit(doc => { doc.on.workflow_dispatch = null; })],
+    ['runs-on', edit(doc => { doc.jobs.request['runs-on'] = 'self-hosted'; })],
+    ['name', edit(doc => { doc.name = 'desktop release request 2'; })],
+  ]) reported({ [REQUEST]: change }, label);
+});
+
+test('keyed workflow gaining push, pull_request, workflow_dispatch, a branches filter, a different upstream name or missing types is reported', () => {
+  for (const [label, change] of [
+    ['push', edit(doc => { doc.on.push = { tags: ['desktop-v*'] }; })],
+    ['pull_request', edit(doc => { doc.on.pull_request = null; })],
+    ['workflow_dispatch', edit(doc => { doc.on.workflow_dispatch = null; })],
+    ['branches', edit(doc => { doc.on.workflow_run.branches = ['main']; })],
+    ['upstream name', edit(doc => { doc.on.workflow_run.workflows = ['ci']; })],
+    ['types', edit(doc => { delete doc.on.workflow_run.types; })],
+    ['concurrency', edit(doc => { doc.concurrency = { group: 'desktop-release', 'cancel-in-progress': true }; })],
+  ]) reported({ [KEYED]: change }, label);
+});
+
+test('changing the sign if is reported', () => {
+  // The event check sits on the first job (gate); every later job needs it.
+  reported({ [KEYED]: edit(doc => { doc.jobs.gate.if = "github.event.workflow_run.conclusion == 'success'"; }) }, 'no event check');
+  reported({ [KEYED]: edit(doc => { delete doc.jobs.gate.if; }) }, 'no if');
+  reported({ [KEYED]: edit(doc => { doc.jobs.sign.if = 'true'; }) }, 'an if on sign');
+  reported({ [KEYED]: edit(doc => { doc.jobs.publish.if = 'true'; }) }, 'an if on publish');
+  reported({ [KEYED]: edit(doc => { step(doc, 'publish', 'Publish the versioned').if = 'false'; }) }, 'a step if');
+});
+
+test('removing environment from sign, an environment on publish or verify-published, environment as a mapping or expression elsewhere, or the environment named in another workflow is reported', () => {
+  for (const [label, change] of [
+    ['sign without environment', { [KEYED]: edit(doc => { delete doc.jobs.sign.environment; }) }],
+    ['publish environment', { [KEYED]: edit(doc => { doc.jobs.publish.environment = 'desktop-release'; }) }],
+    ['verify-published environment', { [KEYED]: edit(doc => { doc.jobs['verify-published'].environment = 'other'; }) }],
+    ['mapping on sign', { [KEYED]: edit(doc => { doc.jobs.sign.environment = { name: 'desktop-release' }; }) }],
+    ['feed environment changed', { [KEYED]: edit(doc => { doc.jobs.feed.environment = 'desktop-release'; }) }],
+    ['collect environment', { [KEYED]: edit(doc => { doc.jobs.collect.environment = 'desktop-release'; }) }],
+    ['gate environment', { [KEYED]: edit(doc => { doc.jobs.gate.environment = 'desktop-release'; }) }],
+    ['mapping in ci.yml', { '.github/workflows/release.yml': edit(doc => { Object.values(doc.jobs)[0].environment = { name: 'desktop-release' }; }) }],
+    ['expression in ci.yml', { '.github/workflows/release.yml': edit(doc => { Object.values(doc.jobs)[0].environment = "${{ format('desktop-{0}', 'release') }}"; }) }],
+    ['plain name in another workflow', { '.github/workflows/release.yml': edit(doc => { Object.values(doc.jobs)[0].environment = 'desktop-release'; }) }],
+    ['a new workflow', { '.github/workflows/sneaky.yml': () => 'name: sneaky\non: push\npermissions: {}\njobs:\n  x:\n    runs-on: ubuntu-24.04\n    environment: desktop-release\n    steps:\n      - run: echo\n' }],
+  ]) reported(change, label);
+});
+
+test('any permission added to sign, contents: write missing from publish, contents: write on verify-published are reported', () => {
+  for (const [label, change] of [
+    ['sign write', edit(doc => { doc.jobs.sign.permissions.contents = 'write'; })],
+    ['sign id-token', edit(doc => { doc.jobs.sign.permissions['id-token'] = 'write'; })],
+    ['publish read', edit(doc => { doc.jobs.publish.permissions.contents = 'read'; })],
+    ['verify write', edit(doc => { doc.jobs['verify-published'].permissions.contents = 'write'; })],
+    ['top-level', edit(doc => { doc.permissions = { contents: 'read' }; })],
+    ['feed actions', edit(doc => { doc.jobs.feed.permissions.actions = 'write'; })],
+    ['sign actions write', edit(doc => { doc.jobs.sign.permissions.actions = 'write'; })],
+    ['sign without actions read', edit(doc => { delete doc.jobs.sign.permissions.actions; })],
+    ['collect write', edit(doc => { doc.jobs.collect.permissions.contents = 'write'; })],
+    ['gate pull-requests write', edit(doc => { doc.jobs.gate.permissions['pull-requests'] = 'write'; })],
+    ['collect needs', edit(doc => { delete doc.jobs.collect.needs; })],
+    ['sign needs', edit(doc => { doc.jobs.sign.needs = ['gate']; })],
+    ['publish needs', edit(doc => { doc.jobs.publish.needs = []; })],
+    ['verify needs', edit(doc => { doc.jobs['verify-published'].needs = ['gate', 'sign']; })],
+    ['feed needs', edit(doc => { doc.jobs.feed.needs = ['gate', 'sign', 'publish']; })],
+    ['extra job', edit(doc => { doc.jobs.extra = { 'runs-on': 'ubuntu-24.04', steps: [{ run: 'echo' }] }; })],
+  ]) reported({ [KEYED]: change }, label);
+});
+
+test('a seventh secrets reference, a secrets reference outside the Sign step, secrets[ indexing, secrets: inherit and toJSON(secrets) are reported', () => {
+  for (const [label, change] of [
+    ['seventh', { [KEYED]: edit(doc => { step(doc, 'sign', 'Sign (').env.DESKTOP_EXTRA = '${{ secrets.DESKTOP_EXTRA }}'; }) }],
+    ['outside', { [KEYED]: edit(doc => { step(doc, 'sign', 'Fetch the gate-digested').env.K = '${{ secrets.DESKTOP_METADATA_KEY_A }}'; }) }],
+    ['other job', { [KEYED]: edit(doc => { step(doc, 'publish', 'Publish the versioned').env.K = '${{ secrets.DESKTOP_SANDBOX_KEY_B }}'; }) }],
+    ['collect job', { [KEYED]: edit(doc => { step(doc, 'collect', 'Collect').env.K = '${{ secrets.GITHUB_TOKEN }}'; }) }],
+    ['indexing', { [KEYED]: edit(doc => { step(doc, 'sign', 'Sign (').env.DESKTOP_METADATA_KEY_A = "${{ secrets['DESKTOP_METADATA_KEY_A'] }}"; }) }],
+    ['toJSON', { [KEYED]: edit(doc => { step(doc, 'gate', 'Gate').env.ALL = '${{ toJSON(secrets) }}'; }) }],
+    ['inherit elsewhere', { '.github/workflows/ci.yml': text => text.replace('    uses: ./.github/workflows/desktop.yml\n', '    uses: ./.github/workflows/desktop.yml\n    secrets: inherit\n') }],
+    ['DESKTOP_ secret in another workflow', { '.github/workflows/release.yml': text => text + '\n# ${{ secrets.DESKTOP_METADATA_KEY_A }}\n' }],
+    ['swapped value', { [KEYED]: edit(doc => { step(doc, 'sign', 'Sign (').env.DESKTOP_METADATA_KEY_A = '${{ secrets.DESKTOP_METADATA_KEY_B }}'; }) }],
+  ]) reported(change, label);
+});
+
+test('an extra or missing key in the Sign step env is reported', () => {
+  reported({ [KEYED]: edit(doc => { step(doc, 'sign', 'Sign (').env.GH_TOKEN = '${{ github.token }}'; }) }, 'extra');
+  reported({ [KEYED]: edit(doc => { delete step(doc, 'sign', 'Sign (').env.DESKTOP_SANDBOX_KEY_B; }) }, 'missing');
+  reported({ [KEYED]: edit(doc => { step(doc, 'sign', 'Sign (').name = 'Sign'; }) }, 'renamed');
+  reported({ [KEYED]: edit(doc => { step(doc, 'sign', 'Sign (').run += ' --debug'; }) }, 'run changed');
+});
+
+test('the notes step takes previous from the gate output, not from tags or another value', () => {
+  reported({ [KEYED]: edit(doc => { delete step(doc, 'collect', 'Generate release notes').env.PREVIOUS; }) }, 'missing PREVIOUS');
+  reported({ [KEYED]: edit(doc => { step(doc, 'collect', 'Generate release notes').env.PREVIOUS = ''; }) }, 'empty PREVIOUS');
+  reported({ [KEYED]: edit(doc => { step(doc, 'collect', 'Generate release notes').env.EXTRA = 'x'; }) }, 'extra env');
+});
+
+test('defaults, shell, working-directory, container, services, NODE_OPTIONS in sign are reported', () => {
+  for (const [label, change] of [
+    ['defaults', doc => { doc.jobs.sign.defaults = { run: { shell: 'bash' } }; }],
+    ['workflow defaults', doc => { doc.defaults = { run: { shell: 'bash' } }; }],
+    ['shell', doc => { step(doc, 'sign', 'Fetch the gate-digested').shell = 'bash'; }],
+    ['working-directory', doc => { step(doc, 'sign', 'Sign (')['working-directory'] = 'packages'; }],
+    ['container', doc => { doc.jobs.sign.container = 'node:24'; }],
+    ['services', doc => { doc.jobs.sign.services = { x: { image: 'redis' } }; }],
+    ['NODE_OPTIONS', doc => { step(doc, 'sign', 'Fetch the gate-digested').env.NODE_OPTIONS = '--require ./x.js'; }],
+    ['NODE_OPTIONS in collect', doc => { step(doc, 'collect', 'Collect').env.NODE_OPTIONS = '--require ./x.js'; }],
+    ['GH_TOKEN dropped from the build step', doc => { delete step(doc, 'sign', 'Fetch the gate-digested').env.GH_TOKEN; }],
+    ['git in sign', doc => { doc.jobs.sign.steps.splice(3, 0, { run: 'git status' }); }],
+    ['NODE_PATH in publish', doc => { step(doc, 'publish', 'Publish the versioned').env.NODE_PATH = '/tmp'; }],
+    ['job env', doc => { doc.jobs.sign.env = { A: 'b' }; }],
+    ['workflow env', doc => { doc.env = { A: 'b' }; }],
+    ['continue-on-error', doc => { doc.jobs.sign['continue-on-error'] = true; }],
+    ['runs-on', doc => { doc.jobs.sign['runs-on'] = 'ubuntu-latest'; }],
+  ]) reported({ [KEYED]: edit(change) }, label);
+});
+
+test('checkout ref/repository/path or workflow_run.head_sha is reported', () => {
+  for (const [label, change] of [
+    ['ref', doc => { step(doc, 'sign', 'actions/checkout').with.ref = '${{ github.event.workflow_run.head_branch }}'; }],
+    ['repository', doc => { step(doc, 'publish', 'actions/checkout').with.repository = 'other/dilla'; }],
+    ['path', doc => { step(doc, 'sign', 'actions/checkout').with.path = 'src'; }],
+    ['head_sha', doc => { step(doc, 'gate', 'Gate').env.HINT_SHA = '${{ github.event.workflow_run.head_sha }}'; }],
+    ['head_repository', doc => { step(doc, 'gate', 'Gate').env.HINT_REPO = '${{ github.event.workflow_run.head_repository.full_name }}'; }],
+    ['gate fetch-depth', doc => { delete step(doc, 'gate', 'actions/checkout').with['fetch-depth']; }],
+    ['persist-credentials', doc => { delete step(doc, 'verify-published', 'actions/checkout').with['persist-credentials']; }],
+    ['sign fetch-depth', doc => { delete step(doc, 'sign', 'actions/checkout').with['fetch-depth']; }],
+    ['sign fetch-depth 1', doc => { step(doc, 'sign', 'actions/checkout').with['fetch-depth'] = 1; }],
+    // The feed reads each published release's pins at its tag's commit (review batch B, I3).
+    ['feed fetch-depth', doc => { delete step(doc, 'feed', 'actions/checkout').with['fetch-depth']; }],
+    ['feed build without the token', doc => { delete step(doc, 'feed', 'Build the channel feed').env.GH_TOKEN; }],
+    ['feed build with a Pages URL', doc => { step(doc, 'feed', 'Build the channel feed').env.LIVE = 'https://dilla-chat.github.io/dilla/'; }],
+  ]) reported({ [KEYED]: edit(change) }, label);
+});
+
+test('download-artifact with pattern, merge-multiple, the triggering run id or no artifact-ids is reported', () => {
+  for (const [label, change] of [
+    ['pattern', doc => { step(doc, 'collect', 'Fetch the accepted').with.pattern = 'desktop-*'; }],
+    ['merge-multiple', doc => { step(doc, 'collect', 'Fetch the accepted').with['merge-multiple'] = true; }],
+    ['triggering run', doc => { step(doc, 'collect', 'Fetch the accepted').with['run-id'] = '${{ github.event.workflow_run.id }}'; }],
+    ['no artifact-ids', doc => { delete step(doc, 'collect', 'Fetch the accepted').with['artifact-ids']; }],
+    ['ids from elsewhere', doc => { step(doc, 'collect', 'Fetch the accepted').with['artifact-ids'] = '${{ needs.gate.outputs.run }}'; }],
+    ['digest-mismatch', doc => { step(doc, 'collect', 'Fetch the accepted').with['digest-mismatch'] = 'warn'; }],
+    ['signed release from another run', doc => { step(doc, 'publish', 'Fetch the signed').with['run-id'] = '${{ needs.gate.outputs.run }}'; }],
+    ['candidate from another run', doc => { step(doc, 'publish', 'Fetch the signed candidate').with['run-id'] = '${{ needs.gate.outputs.run }}'; }],
+    ['raw CI artifacts in publish', doc => { step(doc, 'publish', 'Fetch the signed candidate').with = { ...step(doc, 'collect', 'Fetch the accepted').with }; }],
+    ['signed release by name in feed', doc => { const w = step(doc, 'feed', 'Fetch the signed').with; delete w['artifact-ids']; w.name = 'desktop-signed-release'; }],
+  ]) reported({ [KEYED]: edit(change) }, label);
+});
+
+test('review batch B minors: quoted inherit, Pages deploys elsewhere, unpinned step env, a workflow concurrency group', () => {
+  // m1: a quoted inherit is the same YAML value.
+  // (A new caller: ci.yml's desktop call already has a secrets mapping, so editing it would only make the YAML invalid.)
+  const caller = quoted => () => `name: caller\non: push\npermissions: {}\njobs:\n  call:\n    uses: ./.github/workflows/desktop.yml\n    secrets: ${quoted}\n`;
+  for (const quoted of ['"inherit"', "'inherit'", 'inherit']) {
+    const problems = reported({ '.github/workflows/caller.yml': caller(quoted) }, `${quoted} inherit`);
+    assert.ok(problems.some(problem => /caller\.yml: secrets: inherit is forbidden/.test(problem)), quoted);
+  }
+  // Flow style with no space after the colon's key hides it from a naive text match; the parsed check still sees it.
+  const flow = reported({ '.github/workflows/caller.yml': () => 'name: caller\non: push\npermissions: {}\njobs: { call: { uses: ./.github/workflows/desktop.yml, "secrets": "inherit" } }\n' }, 'flow-style inherit');
+  assert.ok(flow.some(problem => /caller\.yml: secrets: inherit is forbidden/.test(problem)));
+  // m2: only desktop-release.yml's feed job may deploy GitHub Pages.
+  const docs = body => () => `name: docs\non: push\npermissions: {}\njobs:\n  site:\n    runs-on: ubuntu-24.04\n${body}    steps:\n      - run: echo\n`;
+  reported({ '.github/workflows/docs.yml': docs('    environment: github-pages\n') }, 'github-pages environment elsewhere');
+  reported({ '.github/workflows/docs.yml': docs('    permissions:\n      pages: write\n      id-token: write\n') }, 'pages: write elsewhere');
+  reported({ '.github/workflows/docs.yml': () => 'name: docs\non: push\npermissions:\n  pages: write\njobs:\n  site:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo\n' }, 'workflow-level pages: write');
+  reported({ '.github/workflows/docs.yml': () => 'name: docs\non: push\npermissions: {}\njobs:\n  site:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346\n' }, 'deploy-pages elsewhere');
+  reported({ '.github/workflows/docs.yml': () => 'name: docs\non: push\npermissions: {}\njobs:\n  site:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: actions/upload-pages-artifact@v5\n        with:\n          path: site\n' }, 'upload-pages-artifact elsewhere');
+  reported({ [KEYED]: edit(doc => { doc.jobs.publish.permissions.pages = 'write'; }) }, 'pages on publish');
+  // m3: every run step's env is pinned; loader and shell variables are refused anywhere.
+  for (const [label, change] of [
+    ['publish DIGEST from collect', doc => { step(doc, 'publish', 'Verify the signed release').env.DIGEST = '${{ needs.gate.outputs.run_record }}'; }],
+    ['BASH_ENV in collect', doc => { step(doc, 'collect', 'Collect').env.BASH_ENV = '/tmp/x'; }],
+    ['LD_PRELOAD after signing', doc => { step(doc, 'sign', 'Digest the signed output').env.LD_PRELOAD = '/tmp/x.so'; }],
+    ['NODE_EXTRA_CA_CERTS in feed', doc => { step(doc, 'feed', 'Build the channel feed').env.NODE_EXTRA_CA_CERTS = '/tmp/ca'; }],
+    ['GIT_DIR in publish', doc => { step(doc, 'publish', 'Publish the versioned').env.GIT_DIR = '/tmp/g'; }],
+    ['extra value in verify-published', doc => { step(doc, 'verify-published', 'Re-download').env.EXTRA = 'x'; }],
+    ['env on an unpinned step', doc => { step(doc, 'collect', 'Derive acceptance').env.TREE = '${{ needs.gate.outputs.sha }}'; }],
+  ]) reported({ [KEYED]: edit(change) }, label);
+  // m5: no workflow-level group (it silently cancels a pending run); the gate refuses while another run is active.
+  reported({ [KEYED]: edit(doc => { doc.concurrency = { group: 'desktop-release', 'cancel-in-progress': false }; }) }, 'workflow concurrency');
+  reported({ [KEYED]: edit(doc => { delete doc.jobs.feed.concurrency; }) }, 'feed deploys unserialised');
+  reported({ [KEYED]: edit(doc => { doc.jobs.feed.concurrency['cancel-in-progress'] = true; }) }, 'feed cancels in progress');
+  reported({ [KEYED]: edit(doc => { doc.jobs.sign.concurrency = { group: 'x' }; }) }, 'concurrency on sign');
+});
+
+test('sign runs no download action at all, and nothing collect produces reaches sign or publish (review batch B, I1/I2)', () => {
+  const collectDownload = doc => ({ ...step(doc, 'collect', 'Fetch the accepted') });
+  for (const [label, change] of [
+    ['raw CI artifacts in sign', doc => { doc.jobs.sign.steps.splice(2, 0, collectDownload(doc)); }],
+    ['a candidate by id in sign', doc => { doc.jobs.sign.steps.splice(2, 0, { uses: collectDownload(doc).uses, with: { 'artifact-ids': '${{ needs.collect.outputs.candidate_id }}', path: '${{ runner.temp }}/candidate', 'digest-mismatch': 'error' } }); }],
+    ['a candidate by name in sign', doc => { doc.jobs.sign.steps.splice(2, 0, { uses: collectDownload(doc).uses, with: { name: 'desktop-release-candidate', path: '${{ runner.temp }}/candidate', 'digest-mismatch': 'error' } }); }],
+    ['collect gains outputs', doc => { doc.jobs.collect.outputs = { candidate_id: '${{ steps.x.outputs.id }}' }; }],
+    ['collect uploads', doc => { doc.jobs.collect.steps.push({ ...step(doc, 'sign', 'Upload the signed candidate'), with: { ...step(doc, 'sign', 'Upload the signed candidate').with, name: 'desktop-release-candidate' } }); }],
+    ['publish candidate from collect', doc => { step(doc, 'publish', 'Fetch the signed candidate').with['artifact-ids'] = '${{ needs.collect.outputs.candidate_id }}'; }],
+    ['publish digest from collect', doc => { step(doc, 'publish', 'Verify the candidate').env.CANDIDATE_DIGEST = '${{ needs.collect.outputs.candidate_digest }}'; }],
+    ['publish signed release by name', doc => { const w = step(doc, 'publish', 'Fetch the signed release').with; delete w['artifact-ids']; w.name = 'desktop-signed-release'; }],
+    ['publish needs collect', doc => { doc.jobs.publish.needs = ['gate', 'collect', 'sign']; }],
+    ['sign zips from collect ids', doc => { step(doc, 'sign', 'Fetch the gate-digested').env.ARTIFACT_IDS = '${{ needs.collect.outputs.artifact_ids }}'; }],
+    ['sign without the records digest', doc => { delete step(doc, 'sign', 'Fetch the gate-digested').env.RECORDS_DIGEST; }],
+    ['gate records output from elsewhere', doc => { doc.jobs.gate.outputs.records_digest = '${{ steps.gate.outputs.run_record }}'; }],
+    ['sign output changed', doc => { doc.jobs.sign.outputs.candidate_id = '${{ steps.candidate_upload.outputs.artifact-id }}'; }],
+  ]) reported({ [KEYED]: edit(change) }, label);
+  // The zip reader and every script the keyed steps import stay on node: built-ins (sign runs no npm ci).
+  reported({ 'packages/desktop/scripts/artifact-zip.mjs': text => "import yauzl from 'yauzl';\n" + text }, 'npm zip reader');
+  reported({ 'packages/desktop/scripts/release-notes.mjs': text => "import x from 'left-pad';\n" + text }, 'npm package in a transitive import');
+});
+
+test('workflow_run.head_branch outside the gate env is reported', () => {
+  reported({ [KEYED]: edit(doc => { step(doc, 'collect', 'Collect').env.TAG = '${{ github.event.workflow_run.head_branch }}'; }) }, 'collect env');
+  reported({ [KEYED]: edit(doc => { doc.jobs.gate.outputs.tag = '${{ github.event.workflow_run.head_branch }}'; }) }, 'outputs');
+  reported({ [KEYED]: edit(doc => { step(doc, 'publish', 'Publish the versioned').env.RUN = '${{ github.event.workflow_run.id }}'; }) }, 'run id');
+  reported({ [KEYED]: edit(doc => { step(doc, 'gate', 'Gate').env.HINT_TAG = '${{ github.event.workflow_run.display_title }}'; }) }, 'other event field');
+});
+
+test('a ${{ }} in a run line, including a block scalar, is reported', () => {
+  reported({ [KEYED]: edit(doc => { step(doc, 'collect', 'Collect').run = 'node x.mjs "${{ needs.gate.outputs.version }}"'; }) }, 'inline');
+  reported({ [KEYED]: text => text.replace('        run: node packages/desktop/scripts/release-candidate.mjs verify "$RUNNER_TEMP/candidate"\n',
+    '        run: |\n          node packages/desktop/scripts/release-candidate.mjs verify "$RUNNER_TEMP/candidate"\n          echo ${{ needs.gate.outputs.tag }}\n') }, 'block scalar');
+  reported({ [REQUEST]: edit(doc => { doc.jobs.request.steps[0].run = 'echo "${{ github.ref_name }}"'; }) }, 'request');
+});
+
+test('an unpinned or third-party action, an action between download and sign, setup-node without package-manager-cache false, or npm in publish is reported', () => {
+  for (const [label, change] of [
+    ['unpinned', doc => { step(doc, 'sign', 'actions/checkout').uses = 'actions/checkout@v7'; }],
+    ['other sha', doc => { step(doc, 'sign', 'actions/checkout').uses = 'actions/checkout@' + 'a'.repeat(40); }],
+    ['third party', doc => { step(doc, 'publish', 'actions/setup-node').uses = 'someone/setup-node@' + 'a'.repeat(40); }],
+    ['action between download and sign', doc => { doc.jobs.sign.steps.splice(3, 0, { uses: step(doc, 'sign', 'actions/setup-node').uses, with: { 'node-version-file': '.nvmrc', 'package-manager-cache': false } }); }],
+    ['pages action in sign', doc => { doc.jobs.sign.steps.push({ uses: step(doc, 'feed', 'upload-pages-artifact').uses, with: { path: 'x' } }); }],
+    ['package-manager-cache', doc => { delete step(doc, 'feed', 'actions/setup-node').with['package-manager-cache']; }],
+    ['npm in publish', doc => { doc.jobs.publish.steps.splice(2, 0, { run: 'npm ci --ignore-scripts' }); }],
+    ['npx in verify', doc => { step(doc, 'verify-published', 'Re-download').run = 'npx tsx packages/desktop/scripts/verify-published.mjs'; }],
+    ['always()', doc => { doc.jobs.feed.if = 'always()'; }],
+    ['|| true', doc => { step(doc, 'publish', 'Re-verify').run += ' || true'; }],
+    ['candidate verify after sign', doc => { const s = doc.jobs.sign.steps; [s[3], s[4]] = [s[4], s[3]]; }],
+    ['step order in collect', doc => { const s = doc.jobs.collect.steps; [s[5], s[6]] = [s[6], s[5]]; }],
+    ['download check skipped', doc => { doc.jobs.collect.steps.splice(4, 1); }],
+    ['digest verify after plan', doc => { const s = doc.jobs.publish.steps; s.push(s.splice(3, 1)[0]); }],
+    ['candidate verify after plan', doc => { const s = doc.jobs.publish.steps; s.push(s.splice(5, 1)[0]); }],
+  ]) reported({ [KEYED]: edit(change) }, label);
+});
+
+test('upload path other than runner.temp/signed is reported', () => {
+  reported({ [KEYED]: edit(doc => { step(doc, 'sign', 'Upload the signed release').with.path = '${{ runner.temp }}'; }) }, 'parent');
+  reported({ [KEYED]: edit(doc => { step(doc, 'sign', 'Upload the signed release').with.path = '${{ runner.temp }}/candidate'; }) }, 'candidate');
+  reported({ [KEYED]: edit(doc => { step(doc, 'sign', 'Upload the signed release').with.name = 'other'; }) }, 'name');
+  reported({ [KEYED]: edit(doc => { step(doc, 'feed', 'upload-pages-artifact').with.path = '${{ runner.temp }}/signed'; }) }, 'pages path');
+  reported({ [KEYED]: edit(doc => { step(doc, 'sign', 'Upload the signed candidate').with.path = '${{ runner.temp }}/zips'; }) }, 'raw zips as the candidate');
+  reported({ [KEYED]: edit(doc => { step(doc, 'gate', 'Upload the gate').with.path = '${{ runner.temp }}'; }) }, 'gate records path');
+});
+
+test('a keyed job that no longer refuses a re-run attempt, or skips its main and one-run checks, is reported (final review, I-1)', () => {
+  const S = 'packages/desktop/scripts/';
+  reported({ [`${S}keyed-run.mjs`]: text => text.replace("env.GITHUB_RUN_ATTEMPT !== '1'", "Number(env.GITHUB_RUN_ATTEMPT) < 1") }, 'attempt check weakened');
+  for (const [file, job] of [['release-gate.mjs', 'gate'], ['release-candidate.mjs', 'sign'], ['publish-release.mjs', 'publish']]) {
+    reported({ [S + file]: text => text.replace(`refuseRerunAttempt(env, '${job}');`, '') }, `${job}: attempt check removed`);
+    reported({ [S + file]: text => text.replace(`refuseRerunAttempt(env, '${job}');`, `// refuseRerunAttempt(env, '${job}');`) }, `${job}: attempt check commented out`);
+    reported({ [S + file]: text => text.replace('await assertNoOtherReleaseRun(env, api);', '') }, `${job}: one-run check removed`);
+  }
+  for (const file of ['release-candidate.mjs', 'publish-release.mjs']) reported({ [S + file]: text => text.replace('assertCheckoutIsMain(env, git);', '') }, `${file}: main check removed`);
+  // feed stays re-runnable: pages-feed.mjs never refuses an attempt.
+  reported({ [`${S}pages-feed.mjs`]: text => text + "\nimport { refuseRerunAttempt } from './keyed-run.mjs';\n" }, 'feed refuses re-runs');
+});
+
+test('environment and secret names in other workflows are matched case-insensitively, as GitHub resolves them (final review, m1)', () => {
+  const job = body => () => `name: sneaky\non: push\npermissions: {}\njobs:\n  x:\n    runs-on: ubuntu-24.04\n${body}    steps:\n      - run: echo\n`;
+  for (const name of ['DESKTOP-RELEASE', 'Desktop-Release', 'desktop-Release']) reported({ '.github/workflows/sneaky.yml': job(`    environment: ${name}\n`) }, `environment ${name}`);
+  for (const name of ['GITHUB-PAGES', 'GitHub-Pages']) reported({ '.github/workflows/sneaky.yml': job(`    environment: ${name}\n`) }, `environment ${name}`);
+  for (const secret of ['desktop_metadata_key_a', 'Desktop_Sparkle_Key_B', 'desktop_SANDBOX_key_a']) {
+    reported({ '.github/workflows/sneaky.yml': job(`    env:\n      K: \${{ secrets.${secret} }}\n`) }, `secret ${secret}`);
+  }
+  reported({ [KEYED]: edit(doc => { doc.jobs.sign.environment = 'Desktop-Release'; }) }, 'keyed sign environment case');
+  reported({ [KEYED]: edit(doc => { doc.jobs.feed.environment = 'GitHub-Pages'; }) }, 'keyed feed environment case');
+});
+
+test('release-keys.mjs importing a non-node module or adding a tag policy is reported', () => {
+  const keys = 'packages/desktop/scripts/release-keys.mjs', signer = 'packages/desktop/scripts/release-sign-job.mjs';
+  reported({ [keys]: text => "import yaml from 'js-yaml';\n" + text }, 'package import');
+  reported({ [keys]: text => text + "\nawait import('left-pad');\n" }, 'dynamic import');
+  reported({ [keys]: text => text + "\nconst policy = { name: 'desktop-v*', type: 'tag' };\n" }, 'tag policy');
+  reported({ [keys]: text => text + "\n// deployment-branch-policies\nconst policies = [{ name: 'main', type: 'branch' }, { name: 'dev', type: 'branch' }];\n" }, 'two branch policies');
+  // Unconditional: removing the environment setup altogether (and with it the policy literal) is reported too.
+  reported({ [keys]: text => text.replaceAll('deployment-branch-policies', 'policies').replace(/\{ name: 'main', type: 'branch' \}/g, '{}') }, 'no main policy');
+  reported({ [signer]: text => "import { x } from 'https://example.com/x.mjs';\n" + text }, 'remote import');
+  reported({ [signer]: text => "import { x } from '@dilla/other';\n" + text }, 'package import in signer');
+});
+
+test('other workflows naming the sign job script or chaining on desktop release request are reported', () => {
+  reported({ '.github/workflows/release.yml': text => text + '\n# node packages/desktop/scripts/release-sign-job.mjs\n' }, 'sign script');
+  reported({ '.github/workflows/sneaky.yml': () => "name: sneaky\non:\n  workflow_run:\n    workflows: ['desktop release request']\n    types: [completed]\npermissions: {}\njobs:\n  x:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo\n" }, 'workflow_run chain');
 });

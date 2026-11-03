@@ -1,6 +1,17 @@
 name: desktop foundations
 on:
   workflow_call:
+    secrets:
+      CSC_LINK:
+        required: false
+      CSC_KEY_PASSWORD:
+        required: false
+      APPLE_API_KEY:
+        required: false
+      APPLE_API_KEY_ID:
+        required: false
+      APPLE_API_ISSUER:
+        required: false
 permissions:
   contents: read
 jobs:
@@ -332,6 +343,11 @@ jobs:
           APPLE_API_KEY_ID: ${{ runner.os == 'macOS' && secrets.APPLE_API_KEY_ID || '' }}
           APPLE_API_ISSUER: ${{ runner.os == 'macOS' && secrets.APPLE_API_ISSUER || '' }}
       - run: node packages/desktop/scripts/check-fuses.mjs
+      # The DMG carries main's Sparkle key; while a macOS key change is pending it is the rotation release's update
+      # and must be Developer ID signed by the app's team, notarized and stapled (RELEASING.md, Staged key rotation).
+      - name: macOS update disk image check
+        if: runner.os == 'macOS'
+        run: node packages/desktop/scripts/check-mac-dmg.mjs packages/desktop/out
       - name: Linux AppImage final package inspection mutations
         if: runner.os == 'Linux'
         run: node packages/desktop/scripts/test-linux-sandbox-package.mjs packages/desktop/out

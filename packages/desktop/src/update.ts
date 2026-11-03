@@ -78,8 +78,10 @@ export function verifyRelease(bytes: Uint8Array, signature: string, ctx: VerifyC
       if (records[0][0].size !== bundle.size || records[0][0].sha512 !== bundle.sha512) throw new Error('Linux sandbox descriptor and asset differ');
     } else if (artifact.linuxSandbox !== undefined) throw new Error('Invalid Linux sandbox descriptor target');
     if (artifact.platform === 'darwin' && (typeof artifact.sparkleSignature !== 'string' || !/^[A-Za-z0-9+/]{86}==$/.test(artifact.sparkleSignature))) throw new Error('Missing authenticated Sparkle archive signature');
-    const extension = artifact.platform === 'linux' ? '.AppImage' : artifact.platform === 'win32' ? '.exe' : '.zip';
-    if (!artifact.url.endsWith(extension) || artifact.url.split('/').at(-1)!.includes('..') || !Number.isSafeInteger(artifact.size)
+    // macOS updates through the zip, or through a Developer-ID-signed disk image for the one release that changes the
+    // Sparkle key (Sparkle accepts an EdDSA key change only from a dmg; the release workflow picks which).
+    const extensions = artifact.platform === 'linux' ? ['.AppImage'] : artifact.platform === 'win32' ? ['.exe'] : ['.zip', '.dmg'];
+    if (!extensions.some(extension => artifact.url.endsWith(extension)) || artifact.url.split('/').at(-1)!.includes('..') || !Number.isSafeInteger(artifact.size)
       || artifact.size < 1 || artifact.size > 4 * 1024 ** 3 || typeof artifact.sha512 !== 'string'
       || !/^[A-Za-z0-9+/]{86}==$/.test(artifact.sha512)) throw new Error('Invalid artifact hash, type or size');
   }

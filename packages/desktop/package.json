@@ -8,7 +8,7 @@
   "type": "module",
   "main": "dist/main.cjs",
   "scripts": {
-    "test": "node --test test/*.test.ts test/linux-sandbox-package.test.mjs test/linux-sandbox-probe-entry.test.mjs test/inspect-linux-sandbox-package.test.mjs test/native-linux-packages.test.mjs test/native-build-version.test.mjs",
+    "test": "node --test test/*.test.ts test/is-main.test.mjs test/linux-sandbox-package.test.mjs test/linux-sandbox-probe-entry.test.mjs test/inspect-linux-sandbox-package.test.mjs test/native-linux-packages.test.mjs test/native-build-version.test.mjs test/ci-run.test.mjs test/release-notes.test.mjs test/release-assemble.test.mjs test/release-gate.test.mjs test/candidate-digest.test.mjs test/release-sign-job.test.mjs test/verify-published.test.mjs test/pages-feed.test.mjs test/posix-paths.test.mjs test/release-download-check.test.mjs test/artifact-zip.test.mjs test/release-candidate.test.mjs test/release-pipeline.test.mjs test/mac-rotation.test.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "build": "node scripts/build.mjs",
     "build:validation": "vite build --config validation.vite.config.ts && node ../../scripts/write-manifest.mjs validation-dist",
@@ -26,6 +26,7 @@
     "@electron/fuses": "2.1.3",
     "@playwright/test": "1.63.0",
     "@types/node": "^24",
+    "commonmark": "0.31.2",
     "electron": "45.2.1",
     "electron-builder": "26.18.0",
     "esbuild": "^0.28.1",

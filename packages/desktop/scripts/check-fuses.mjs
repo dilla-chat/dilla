@@ -2,6 +2,7 @@ import { getCurrentFuseWire, FuseV1Options, FuseState } from '@electron/fuses';
 import { readdir } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { isMain } from './is-main.mjs';
 export async function desktopFuseTargets(out) {
  const targets = [];
  for (const entry of await readdir(out, { withFileTypes: true })) {
@@ -33,4 +34,4 @@ export async function checkDesktopFuses(out = resolve(import.meta.dirname, '../o
   console.log(`Desktop fuses verified: ${path}`);
  }
 }
-if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) await checkDesktopFuses();
+if (isMain(import.meta.url)) await checkDesktopFuses();

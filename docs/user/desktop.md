@@ -113,10 +113,13 @@ the complete platform acceptance matrix remains open.
 Windows/Linux update transport authenticates a detached Ed25519 signature over the
 exact release JSON before consuming its artifact hashes. Keys are compiled into
 `packages/desktop/src/update-keys.ts` from the provisioned public release trust
-root. Private signing keys remain separate from CI and publishing credentials. Checks fail closed with a visible,
-retryable error. A publishing token is not a signing key. The fixed GitHub feeds use
-separate `desktop-stable` and `desktop-beta` release tags; the installed version fixes
-the channel. Metadata must expire within 93 days and list versioned GitHub artifacts.
+root. Private signing keys live only in the release workflow's `desktop-release` environment, which
+admits the `main` branch only; CI builds and the publishing job never hold them. Checks fail closed with a visible,
+retryable error. A publishing token is not a signing key. The channel feeds are served from GitHub Pages
+(`https://dilla-chat.github.io/dilla/beta/` and `/stable/`); the installed version fixes
+the channel. A signing key rotation is seamless for Windows and Linux installs that take the transition release,
+and for Macs that take their channel's rotation release: that one update arrives as a Developer-ID-signed, notarized
+disk image carrying the new key, so Macs move to it by updating normally. Metadata must expire within 93 days and list versioned GitHub artifacts.
 There is no instance-supplied feed, downgrade path, or forced installation.
 
 Verified downloads use `electron-updater`. Installation runs only after an actual
@@ -145,9 +148,10 @@ of the first release. The installed-account and complete release gates still app
 
 Preview packaging is available with `npm run pack -w @dilla/desktop`; it creates an
 unpacked app for validation and never publishes. Installer targets are configured
-for AppImage, stock DEB/RPM, an AUR recipe archive, per-user NSIS, and macOS DMG/ZIP. Native Linux formats use the standard package manager and check-only update behavior. The publication workflow refuses
-missing platform acceptance, measured performance, an independent security review,
-or unauthenticated artifacts. Before publication, the verifier requires complete
+for AppImage, stock DEB/RPM, an AUR recipe archive, per-user NSIS, and macOS DMG/ZIP. Native Linux formats use the standard package manager and check-only update behavior. Each release is signed and
+published by a workflow that runs from `main` after a green CI run of the tagged commit, and it refuses missing
+platform acceptance, measured performance or unauthenticated artifacts. The signed record attests that CI passed,
+not that a human reviewed the release. Before publication, the verifier requires complete
 acceptance evidence for the exact final source and installer bytes. After
 publication, consult the signed metadata and authenticated acceptance records on
 the [versioned desktop release](https://github.com/dilla-chat/dilla/releases/tag/desktop-v0.1.0-beta.1)
@@ -159,7 +163,7 @@ installer hashes after fuse verification. Its `build-provenance-<target>.json`
 travels in the same installer artifact. `acceptance.json` supplies exact
 `builds` digests for `linux-x64`, `linux-packages-x64`, `win-x64` and
 `mac-arm64`. The `installedAccounts` map retains the three client targets; every entry contains the SHA-256 of that target's canonical JSON
-report. The offline signer authenticates those digests. Publication independently
+report. The release workflow's signer authenticates those digests. Publication independently
 downloads the accepted run's build records, compares them byte for byte with the
 signing candidate, and never replaces them with candidate-supplied provenance.
 The separate `desktop-linux-packages-x64` producer builds the source package
