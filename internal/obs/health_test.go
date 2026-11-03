@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/clock"
-	"github.com/jonasthim/dilla/internal/obs"
+	"github.com/dilla-chat/dilla/internal/clock"
+	"github.com/dilla-chat/dilla/internal/obs"
 )
 
 func TestReadyzIsUnreadyUntilEveryGateIsGreen(t *testing.T) {

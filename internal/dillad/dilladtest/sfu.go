@@ -10,7 +10,7 @@ import (
 
 	"github.com/livekit/protocol/livekit"
 
-	"github.com/jonasthim/dilla/internal/sfu"
+	"github.com/dilla-chat/dilla/internal/sfu"
 )
 
 // Default ports of the harness SFU, the same as dillad's own livekit.port and livekit.udp_port.

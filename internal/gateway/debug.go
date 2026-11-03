@@ -3,7 +3,7 @@ package gateway
 import (
 	"time"
 
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // DebugReport is the gateway's side of one device in one group, for a harness that has to explain

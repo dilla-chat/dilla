@@ -6,7 +6,7 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 type expiredEvidencePurger interface {

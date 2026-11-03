@@ -96,7 +96,7 @@ func TestManualFetchUsesCompiledVersionAndExactManifest(t *testing.T) {
 	}
 	sig := ed25519.Sign(f.private, append([]byte("Dilla Linux sandbox capsule v1\x00"), f.capsule.Manifest...))
 	transport := manualRoundTrip(func(r *http.Request) (*http.Response, error) {
-		if r.URL.Host != "github.com" || r.URL.Path != "/jonasthim/dilla/releases/download/desktop-v1.2.3/dilla-1.2.3-linux-x64.sandbox.json" && r.URL.Path != "/jonasthim/dilla/releases/download/desktop-v1.2.3/dilla-1.2.3-linux-x64.sandbox.sig" {
+		if r.URL.Host != "github.com" || r.URL.Path != "/dilla-chat/dilla/releases/download/desktop-v1.2.3/dilla-1.2.3-linux-x64.sandbox.json" && r.URL.Path != "/dilla-chat/dilla/releases/download/desktop-v1.2.3/dilla-1.2.3-linux-x64.sandbox.sig" {
 			t.Fatalf("wrong URL: %s", r.URL)
 		}
 		body := f.capsule.Manifest

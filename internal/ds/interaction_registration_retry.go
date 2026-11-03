@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"errors"
 
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 var errKind3RegistrationReplayConflict = errors.New("ds: kind-3 registration replay does not match its durable admission consumption")

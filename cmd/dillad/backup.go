@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/config"
-	"github.com/jonasthim/dilla/internal/exit"
-	"github.com/jonasthim/dilla/internal/ops"
+	"github.com/dilla-chat/dilla/internal/config"
+	"github.com/dilla-chat/dilla/internal/exit"
+	"github.com/dilla-chat/dilla/internal/ops"
 )
 
 // runBackup is `dillad backup [--out=PATH|-] [--include-blobs] [--label=TEXT]

@@ -6,7 +6,7 @@ import (
 	"crypto/sha256"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/dilla-chat/dilla/internal/auth"
 )
 
 // TokenHash is the one spelling of "what the sessions table stores for a bearer token": `dillad

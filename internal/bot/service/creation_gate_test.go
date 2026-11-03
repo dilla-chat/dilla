@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/bot/polls"
-	"github.com/jonasthim/dilla/internal/bot/protocol"
-	"github.com/jonasthim/dilla/internal/bot/reminders"
-	"github.com/jonasthim/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/bot/polls"
+	"github.com/dilla-chat/dilla/internal/bot/protocol"
+	"github.com/dilla-chat/dilla/internal/bot/reminders"
+	"github.com/dilla-chat/dilla/internal/cborx"
 )
 
 // Task 10c (Jonas, Q4 b): switching Reminders off refuses only creation. Reminders that exist can

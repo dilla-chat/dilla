@@ -7,9 +7,9 @@ import (
 	"errors"
 	"math"
 
-	"github.com/jonasthim/dilla/internal/bot/protocol"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/bot/protocol"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 func (r *Repo) AppendBotStructuralEvent(ctx context.Context, event protocol.Event) (protocol.Event, error) {

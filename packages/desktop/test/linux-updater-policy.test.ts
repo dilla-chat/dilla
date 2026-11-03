@@ -15,9 +15,9 @@ const publicKey = pair.publicKey.export({ type: 'spki', format: 'pem' }).toStrin
 const version = '0.1.1';
 function releaseBytes() {
  return Buffer.from(JSON.stringify({ format: 1, assets:sandboxAssetRecords(version), version, channel: 'stable', publishedAt: new Date(Date.now() - 1000).toISOString(), expiresAt: new Date(Date.now() + 86400000).toISOString(), artifacts: [
-  { platform: 'linux', arch: 'x64', url: `https://github.com/jonasthim/dilla/releases/download/desktop-v${version}/dilla-${version}-linux-x64.AppImage`, size: 1, sha512: Buffer.alloc(64).toString('base64'), linuxSandbox:{compatibilityEpoch:1,minimumGeneration:1,bundle:{url:`https://github.com/jonasthim/dilla/releases/download/desktop-v${version}/dilla-${version}-linux-x64.sandbox`,size:100,sha512:Buffer.alloc(64).toString('base64')}} },
-  { platform: 'win32', arch: 'x64', url: `https://github.com/jonasthim/dilla/releases/download/desktop-v${version}/dilla-${version}-windows-x64.exe`, size: 1, sha512: Buffer.alloc(64).toString('base64') },
-  ...['arm64'].map(arch => ({ platform: 'darwin', arch, url: `https://github.com/jonasthim/dilla/releases/download/desktop-v${version}/dilla-${version}-mac-${arch}.zip`, size: 1, sha512: Buffer.alloc(64).toString('base64'), sparkleSignature: Buffer.alloc(64).toString('base64') })),
+  { platform: 'linux', arch: 'x64', url: `https://github.com/dilla-chat/dilla/releases/download/desktop-v${version}/dilla-${version}-linux-x64.AppImage`, size: 1, sha512: Buffer.alloc(64).toString('base64'), linuxSandbox:{compatibilityEpoch:1,minimumGeneration:1,bundle:{url:`https://github.com/dilla-chat/dilla/releases/download/desktop-v${version}/dilla-${version}-linux-x64.sandbox`,size:100,sha512:Buffer.alloc(64).toString('base64')}} },
+  { platform: 'win32', arch: 'x64', url: `https://github.com/dilla-chat/dilla/releases/download/desktop-v${version}/dilla-${version}-windows-x64.exe`, size: 1, sha512: Buffer.alloc(64).toString('base64') },
+  ...['arm64'].map(arch => ({ platform: 'darwin', arch, url: `https://github.com/dilla-chat/dilla/releases/download/desktop-v${version}/dilla-${version}-mac-${arch}.zip`, size: 1, sha512: Buffer.alloc(64).toString('base64'), sparkleSignature: Buffer.alloc(64).toString('base64') })),
  ] }));
 }
 async function compiledDriver(kind?: 'appimage' | 'system-package', invalidSignature = false) {

@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path';
 import { verifyRelease } from '../src/update.ts';
 import { verifyDesktopBundle, publicReleaseRecords, stagePublicReleaseRecords } from './verify-release.mjs';
 
-const repository = 'jonasthim/dilla';
+const repository = 'dilla-chat/dilla';
 const root = resolve(import.meta.dirname, '../../..');
 const mode = process.argv[2];
 const ref = process.env.GITHUB_REF_NAME ?? '';

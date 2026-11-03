@@ -4,8 +4,8 @@ import (
 	"context"
 	"database/sql"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 func (r *Repo) GetBotInteractionAdmissionReceipt(ctx context.Context, installation, request id.ID) (store.BotInteractionAdmissionReceipt, error) {

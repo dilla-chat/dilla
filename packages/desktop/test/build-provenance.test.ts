@@ -57,7 +57,7 @@ test('the CI emitter reads real clean Git HEAD/tree and GITHUB_SHA, never caller
   const commit = git(['rev-parse', 'HEAD']), tree = git(['rev-parse', 'HEAD^{tree}']);
   const artifacts: Array<{ name: string; size: number; sha512: string }> = [];
   for (const name of buildArtifactNames(target, '1.2.3')) { const bytes = Buffer.from('actual native artifact ' + name); await writeFile(join(out, name), bytes); artifacts.push({ name, size: bytes.length, sha512: sha(bytes) }); }
-  const environment = { GITHUB_ACTIONS: 'true', GITHUB_REPOSITORY: 'jonasthim/dilla', GITHUB_RUN_ID: '42', GITHUB_SHA: commit };
+  const environment = { GITHUB_ACTIONS: 'true', GITHUB_REPOSITORY: 'dilla-chat/dilla', GITHUB_RUN_ID: '42', GITHUB_SHA: commit };
   if (target === 'linux-x64') { await assert.rejects(emitBuildProvenance(out, target, { repositoryRoot: root, environment }), /AppImage|EACCES|ENOENT|extract/i); return; }
   const result = await emitBuildProvenance(out, target, { repositoryRoot: root, environment });
   const report = JSON.parse(await readFile(result.file, 'utf8'));
@@ -93,7 +93,7 @@ test('a signing candidate cannot replace CI-downloaded build provenance with a f
 test('Linux provenance requires extracted sandbox proof and binds external and embedded hashes', () => {
  const version='1.2.3', target='linux-x64', names=buildArtifactNames(target,version);
  const artifacts=names.map((name:string)=>({name,size:1,sha512:sha(Buffer.from(name))}));
- const record={format:1,kind:'dilla-desktop-build',repository:'jonasthim/dilla',target,version,sourceCommit:'1'.repeat(40),sourceTree:'2'.repeat(40),ciRun:1,sourceClean:true,artifacts};
+ const record={format:1,kind:'dilla-desktop-build',repository:'dilla-chat/dilla',target,version,sourceCommit:'1'.repeat(40),sourceTree:'2'.repeat(40),ciRun:1,sourceClean:true,artifacts};
  const expected={version,commit:record.sourceCommit,tree:record.sourceTree,ciRun:1};
  assert.throws(()=>verifyBuildProvenance(record,target,expected,artifacts),/sandbox|provenance/i);
  const proof={capsuleSha512:artifacts[1].sha512,manifestSha512:artifacts[2].sha512,embeddedCapsuleSha512:artifacts[1].sha512,embeddedManifestSha512:artifacts[2].sha512,electronSha512:sha(Buffer.from('fixture-elf')),asarSha512:sha(Buffer.from('fixture-asar'))};
@@ -113,7 +113,7 @@ test('Linux emitter derives provenance from actual final image and exact sidecar
   const files=[process.env.DILLA_INSPECT_FIXTURE_IMAGE!,process.env.DILLA_INSPECT_FIXTURE_CAPSULE!,process.env.DILLA_INSPECT_FIXTURE_MANIFEST!];
   for (let i=0;i<names.length;i++) await copyFile(files[i],join(out,names[i]));
   const commit=git(['rev-parse','HEAD']), tree=git(['rev-parse','HEAD^{tree}']);
-  const {record}=await emitBuildProvenance(out,'linux-x64',{repositoryRoot:root,environment:{GITHUB_ACTIONS:'true',GITHUB_REPOSITORY:'jonasthim/dilla',GITHUB_RUN_ID:'42',GITHUB_SHA:commit}});
+  const {record}=await emitBuildProvenance(out,'linux-x64',{repositoryRoot:root,environment:{GITHUB_ACTIONS:'true',GITHUB_REPOSITORY:'dilla-chat/dilla',GITHUB_RUN_ID:'42',GITHUB_SHA:commit}});
   verifyBuildProvenance(record,'linux-x64',{version,commit,tree,ciRun:42},record.artifacts);
   assert.equal(record.linuxSandbox.capsuleSha512,record.artifacts[1].sha512);
   assert.equal(record.linuxSandbox.manifestSha512,record.artifacts[2].sha512);
@@ -127,7 +127,7 @@ test('native system packages have their own exact provenance inventory and sourc
  assert.deepEqual(buildArtifactNames(target, version), names);
  assert.equal(buildProvenanceName(target), 'build-provenance-linux-packages-x64.json');
  const artifacts = names.map(name => ({ name, size: 10, sha512: sha(Buffer.from(name)) }));
- const record = { format: 1, kind: 'dilla-desktop-build', repository: 'jonasthim/dilla', target, version, sourceCommit: '1'.repeat(40), sourceTree: '2'.repeat(40), ciRun: 42, sourceClean: true, artifacts };
+ const record = { format: 1, kind: 'dilla-desktop-build', repository: 'dilla-chat/dilla', target, version, sourceCommit: '1'.repeat(40), sourceTree: '2'.repeat(40), ciRun: 42, sourceClean: true, artifacts };
  const expected = { version, commit: record.sourceCommit, tree: record.sourceTree, ciRun: 42 };
  verifyBuildProvenance(record, target, expected, artifacts);
  for (const fields of [{ sourceCommit: '3'.repeat(40) }, { sourceTree: '3'.repeat(40) }, { ciRun: 43 }, { sourceClean: false }, { target: 'linux-x64' }, { artifacts: artifacts.slice(1) }]) assert.throws(() => verifyBuildProvenance({ ...record, ...fields }, target, expected, artifacts), /provenance/i);
@@ -148,7 +148,7 @@ test('the native-package emitter reads a real clean checkout and independently o
   const names = buildArtifactNames(target, version);
   await writeFile(join(out, names[0]), 'source-bound fixture DEB'); await writeFile(join(out, names[1]), 'source-bound fixture RPM');
   const archive = await writeAurRecipe(version, join(out, names[0]), join(out, 'recipe')); await copyFile(archive, join(out, names[2]));
-  const environment = { GITHUB_ACTIONS: 'true', GITHUB_REPOSITORY: 'jonasthim/dilla', GITHUB_RUN_ID: '42', GITHUB_SHA: commit };
+  const environment = { GITHUB_ACTIONS: 'true', GITHUB_REPOSITORY: 'dilla-chat/dilla', GITHUB_RUN_ID: '42', GITHUB_SHA: commit };
   const result = await emitBuildProvenance(out, target, { repositoryRoot: root, environment });
   verifyBuildProvenance(result.record, target, { version, commit, tree, ciRun: 42 }, result.record.artifacts);
   assert.equal(result.record.artifacts.length, 3); assert.equal(Object.hasOwn(result.record, 'linuxSandbox'), false);

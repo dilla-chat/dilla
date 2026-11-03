@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/cborx"
 )
 
 func TestBotInteractionGroupReadsUseInstallationScopedRoutes(t *testing.T) {

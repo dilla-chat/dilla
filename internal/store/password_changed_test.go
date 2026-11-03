@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // Task 11 (Jonas, Q7), migration 00052: a password's change time is unknown (nil) after sign-up (PutPasswordCredential), and

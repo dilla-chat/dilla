@@ -5,8 +5,8 @@ import (
 	"errors"
 	"math"
 
-	"github.com/jonasthim/dilla/internal/bot/protocol"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/bot/protocol"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // Leave room for CBOR framing, the proof tuple, and the helper request envelope.

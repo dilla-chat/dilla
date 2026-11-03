@@ -16,8 +16,8 @@ import (
 	"regexp"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/desktopsandbox"
-	"github.com/jonasthim/dilla/packages/desktop/native/linux-sandbox/frontend"
+	"github.com/dilla-chat/dilla/internal/desktopsandbox"
+	"github.com/dilla-chat/dilla/packages/desktop/native/linux-sandbox/frontend"
 )
 
 // Frozen by the unprivileged driver from the finalized package binding and

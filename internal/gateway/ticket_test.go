@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/clock"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/clock"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // The brief lists ticket_test.go among this task's files but gives no body for it; these are the

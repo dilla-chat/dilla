@@ -5,7 +5,7 @@ export function checkPublisherWorkflow(text) {
  const issues = [];
  for (const item of ["tags: ['desktop-v*']", 'contents: read', 'actions: read', 'contents: write', 'fetch-depth: 0',
    'node-version-file: .nvmrc', 'node packages/desktop/scripts/publish-release.mjs plan',
-   'run-id: ${{ steps.plan.outputs.run }}', 'repository: jonasthim/dilla', 'pattern: desktop-installers-*',
+   'run-id: ${{ steps.plan.outputs.run }}', 'repository: dilla-chat/dilla', 'pattern: desktop-installers-*',
    'node packages/desktop/scripts/publish-release.mjs publish', 'GH_TOKEN: ${{ github.token }}']) {
   if (!text.includes(item)) issues.push('Missing desktop publication gate: ' + item);
  }

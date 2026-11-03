@@ -5,8 +5,8 @@ import (
 	"errors"
 	"maps"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // The call work queue (server-half fix wave, lens calls): everything a request, the delivery

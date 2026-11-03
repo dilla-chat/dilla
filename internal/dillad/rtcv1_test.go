@@ -19,12 +19,12 @@ import (
 	"github.com/livekit/protocol/livekit"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/jonasthim/dilla/internal/clock"
-	"github.com/jonasthim/dilla/internal/config"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/server"
-	"github.com/jonasthim/dilla/internal/sfu"
-	"github.com/jonasthim/dilla/internal/sfu/sfutest"
+	"github.com/dilla-chat/dilla/internal/clock"
+	"github.com/dilla-chat/dilla/internal/config"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/server"
+	"github.com/dilla-chat/dilla/internal/sfu"
+	"github.com/dilla-chat/dilla/internal/sfu/sfutest"
 )
 
 // wrappedJoin is a join_request as livekit-client 2.22.3 sends it on /rtc/v1: a JoinRequest inside a

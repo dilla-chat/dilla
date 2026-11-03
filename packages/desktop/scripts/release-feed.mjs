@@ -32,7 +32,7 @@ export async function signDesktopRelease({ version, artifactsDirectory, keysDire
   if (!(await lstat(file)).isFile()) throw new Error('Installer must be a regular file: ' + name);
   const bytes = await readFile(file);
   if (!bytes.length) throw new Error('Empty installer: ' + name);
-  const artifact = { platform, arch, url: `https://github.com/jonasthim/dilla/releases/download/desktop-v${version}/${name}`, size: bytes.length, sha512: createHash('sha512').update(bytes).digest('base64') };
+  const artifact = { platform, arch, url: `https://github.com/dilla-chat/dilla/releases/download/desktop-v${version}/${name}`, size: bytes.length, sha512: createHash('sha512').update(bytes).digest('base64') };
   if (platform === 'linux') {
    const capsuleName = `dilla-${version}-linux-x64.sandbox`, manifestName = capsuleName + '.json';
    for (const [sidecar, limit] of [[capsuleName, 48 * 1024 ** 2], [manifestName, 65536]]) {
@@ -43,7 +43,7 @@ export async function signDesktopRelease({ version, artifactsDirectory, keysDire
     release.assets.push({ name: sidecar, size: data.length, sha512: createHash('sha512').update(data).digest('base64') });
    }
    const capsule = release.assets.find(a => a.name === capsuleName);
-   artifact.linuxSandbox = { compatibilityEpoch: 1, minimumGeneration: component.generation, bundle: { url: `https://github.com/jonasthim/dilla/releases/download/desktop-v${version}/${capsuleName}`, size: capsule.size, sha512: capsule.sha512 } };
+   artifact.linuxSandbox = { compatibilityEpoch: 1, minimumGeneration: component.generation, bundle: { url: `https://github.com/dilla-chat/dilla/releases/download/desktop-v${version}/${capsuleName}`, size: capsule.size, sha512: capsule.sha512 } };
   }
   if (platform === 'darwin') {
    artifact.sparkleSignature = sign(null, bytes, sparkleKey).toString('base64');

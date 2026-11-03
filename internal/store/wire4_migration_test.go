@@ -11,7 +11,7 @@ import (
 
 	"github.com/pressly/goose/v3"
 
-	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
+	sqlitemigrations "github.com/dilla-chat/dilla/internal/store/sqlite/migrations"
 )
 
 func TestAWire3SessionSurvivesTheWire4Migration(t *testing.T) {

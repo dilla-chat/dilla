@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // AW2/AW3 fix round 3: the second re-review's N-A, N-B and N-C.

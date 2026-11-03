@@ -9,14 +9,14 @@ import (
 	"sort"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/auth"
-	automod "github.com/jonasthim/dilla/internal/bot/moderation"
-	"github.com/jonasthim/dilla/internal/bot/moderation/operationid"
-	"github.com/jonasthim/dilla/internal/bot/protocol"
-	"github.com/jonasthim/dilla/internal/cborx"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/server"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/auth"
+	automod "github.com/dilla-chat/dilla/internal/bot/moderation"
+	"github.com/dilla-chat/dilla/internal/bot/moderation/operationid"
+	"github.com/dilla-chat/dilla/internal/bot/protocol"
+	"github.com/dilla-chat/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/server"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 const (

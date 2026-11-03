@@ -3,8 +3,8 @@ package ds
 import (
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/cborx"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 func healBindingV1ForTest(t *testing.T, b Binding) []byte {

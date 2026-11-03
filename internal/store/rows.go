@@ -1,6 +1,6 @@
 package store
 
-import "github.com/jonasthim/dilla/internal/id"
+import "github.com/dilla-chat/dilla/internal/id"
 
 // Every Row mirrors its table's columns one for one, in declaration order
 // (interfaces.md §4.1). Timestamps are int64 unix seconds; counters are uint64;

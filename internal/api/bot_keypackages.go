@@ -4,9 +4,9 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/jonasthim/dilla/internal/auth"
-	botprotocol "github.com/jonasthim/dilla/internal/bot/protocol"
-	"github.com/jonasthim/dilla/internal/server"
+	"github.com/dilla-chat/dilla/internal/auth"
+	botprotocol "github.com/dilla-chat/dilla/internal/bot/protocol"
+	"github.com/dilla-chat/dilla/internal/server"
 )
 
 type botKeyPackageCountResponse struct {

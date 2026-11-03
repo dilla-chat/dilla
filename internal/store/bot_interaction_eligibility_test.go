@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 func interactionEligibilityRevision(t *testing.T, repo store.Repository, community, user id.ID) uint64 {

@@ -8,7 +8,7 @@ global push-to-talk are excluded.
 The evidence and open-gate table below are dated snapshots, not a permanent release
 status. After publication, use the signed desktop metadata and authenticated release
 notes, security review, performance, installed-account and build-provenance records
-attached to the [versioned desktop release](https://github.com/jonasthim/dilla/releases/tag/desktop-v0.1.0-beta.1)
+attached to the [versioned desktop release](https://github.com/dilla-chat/dilla/releases/tag/desktop-v0.1.0-beta.1)
 for its final status and evidence. This document does not establish readiness for a
 later source tree. Publishing the application does not deploy the server or enable
 browser download navigation.
@@ -58,10 +58,10 @@ browser download navigation.
 ## Evidence as of 2026-11-01
 
 All four native platform jobs passed at commit
-`18d7af4c9076e2f57251f48b51a092dc2cae515b`: [Linux x64](https://github.com/jonasthim/dilla/actions/runs/41341631786/job/124953502087),
-[Windows x64](https://github.com/jonasthim/dilla/actions/runs/41341631786/job/124953502110),
-[macOS Intel](https://github.com/jonasthim/dilla/actions/runs/41341631786/job/124953502067)
-and [macOS Apple Silicon](https://github.com/jonasthim/dilla/actions/runs/41341631786/job/124953502127).
+`18d7af4c9076e2f57251f48b51a092dc2cae515b`: [Linux x64](https://github.com/dilla-chat/dilla/actions/runs/41341631786/job/124953502087),
+[Windows x64](https://github.com/dilla-chat/dilla/actions/runs/41341631786/job/124953502110),
+[macOS Intel](https://github.com/dilla-chat/dilla/actions/runs/41341631786/job/124953502067)
+and [macOS Apple Silicon](https://github.com/dilla-chat/dilla/actions/runs/41341631786/job/124953502127).
 These jobs cover bundled-shell acceptance, actual encrypted selected-application
 audio with own-call and unrelated-application exclusion, fail-closed unbound
 senders, packaging and fuse validation. Both Mac jobs also passed the unsigned

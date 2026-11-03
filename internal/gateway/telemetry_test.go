@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/auth"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/auth"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 func statsInbound(t *testing.T, call id.ID, rtt uint32) Inbound {

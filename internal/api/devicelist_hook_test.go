@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // C4 (fix wave), web-2a task 8: an accepted list publish is handed to AfterDeviceList, on a context

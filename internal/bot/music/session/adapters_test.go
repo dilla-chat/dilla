@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/bot/music/encode"
-	musicruntime "github.com/jonasthim/dilla/internal/bot/music/runtime"
+	"github.com/dilla-chat/dilla/internal/bot/music/encode"
+	musicruntime "github.com/dilla-chat/dilla/internal/bot/music/runtime"
 )
 
 func TestRuntimeEncoderUsesProviderPCMFormat(t *testing.T) {

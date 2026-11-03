@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/ops"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/ops"
 )
 
 // TestRevokeAllDevicesRevokesEveryDeviceAndSession: every active device of the person is revoked

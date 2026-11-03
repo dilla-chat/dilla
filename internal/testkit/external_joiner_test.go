@@ -15,7 +15,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/testkit"
+	"github.com/dilla-chat/dilla/internal/testkit"
 )
 
 func TestAnExternalCommitsLeafMustBeItsUploadersOwn(t *testing.T) {

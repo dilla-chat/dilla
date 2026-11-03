@@ -865,14 +865,14 @@ mkdir -p "$TMP/stamped"
 sed 's/^DILLA_RELEASE_TAG=""$/DILLA_RELEASE_TAG="v9.9.9-test"/' "$INSTALL" >"$TMP/stamped/install.sh"
 seed_root
 EXTRA_PATH="$CURLSTUB" RUN_SCRIPT="$TMP/stamped/install.sh" KEEP_ROOT=1 run $PUBLIC_ARGS
-if [ "$RC" -ne 0 ] && has "$(cat "$LOG")" "curl https://github.com/jonasthim/dilla/releases/download/v9.9.9-test/dillad-linux-amd64"; then
+if [ "$RC" -ne 0 ] && has "$(cat "$LOG")" "curl https://github.com/dilla-chat/dilla/releases/download/v9.9.9-test/dillad-linux-amd64"; then
 	pass "a stamped install.sh downloads from its own tag by default"
 else
 	fail "a stamped install.sh downloads from its own tag by default" "log: $(cat "$LOG")" "stderr: $ERR"
 fi
 seed_root
 EXTRA_PATH="$CURLSTUB" KEEP_ROOT=1 run $PUBLIC_ARGS --version v1.2.3
-if has "$(cat "$LOG")" "curl https://github.com/jonasthim/dilla/releases/download/v1.2.3/dillad-linux-amd64"; then
+if has "$(cat "$LOG")" "curl https://github.com/dilla-chat/dilla/releases/download/v1.2.3/dillad-linux-amd64"; then
 	pass "--version TAG downloads from releases/download/TAG"
 else
 	fail "--version TAG downloads from releases/download/TAG" "log: $(cat "$LOG")" "stderr: $ERR"

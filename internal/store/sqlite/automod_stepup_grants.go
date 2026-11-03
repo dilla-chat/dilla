@@ -5,8 +5,8 @@ import (
 	"context"
 	"database/sql"
 
-	"github.com/jonasthim/dilla/internal/store"
-	"github.com/jonasthim/dilla/internal/store/sqlite/sqlitedb"
+	"github.com/dilla-chat/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/store/sqlite/sqlitedb"
 )
 
 func autoModGrantRow(v sqlitedb.AutomodStepupGrants) store.BotAutoModerationGrantRow {

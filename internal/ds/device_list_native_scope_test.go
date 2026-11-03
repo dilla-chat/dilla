@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/ds"
-	"github.com/jonasthim/dilla/internal/mlswasi"
+	"github.com/dilla-chat/dilla/internal/ds"
+	"github.com/dilla-chat/dilla/internal/mlswasi"
 )
 
 func TestNativeDeviceListScopePreservesSignaturesLifetimeRuntimeAndCancellation(t *testing.T) {

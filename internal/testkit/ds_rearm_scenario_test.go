@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
-	"github.com/jonasthim/dilla/internal/testkit"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/testkit"
 )
 
 // runDSScenario runs one scenario of testkit/scenarios on an instance of its own and fails the test

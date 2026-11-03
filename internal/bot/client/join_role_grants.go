@@ -5,8 +5,8 @@ import (
 	"crypto/sha256"
 	"net/http"
 
-	"github.com/jonasthim/dilla/internal/cborx"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // JoinRoleGrantReceipt is the stable receipt returned for one installation,

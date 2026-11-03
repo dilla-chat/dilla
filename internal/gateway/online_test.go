@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/auth"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/auth"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // A client that has read `ready` is online. The internal/ds election tests assert exactly that

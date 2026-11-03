@@ -30,8 +30,8 @@ import (
 	pmedia "github.com/pion/webrtc/v4/pkg/media"
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/jonasthim/dilla/internal/obs"
-	"github.com/jonasthim/dilla/internal/sfu/sfutest"
+	"github.com/dilla-chat/dilla/internal/obs"
+	"github.com/dilla-chat/dilla/internal/sfu/sfutest"
 )
 
 func testConfig() Config {
@@ -318,11 +318,11 @@ func TestDilladDoesNotImportTheMediaPackages(t *testing.T) {
 	}
 	for _, line := range strings.Split(string(out), "\n") {
 		switch strings.TrimSpace(line) {
-		case "github.com/jonasthim/dilla/internal/sframe", "github.com/jonasthim/dilla/internal/media":
+		case "github.com/dilla-chat/dilla/internal/sframe", "github.com/dilla-chat/dilla/internal/media":
 			t.Errorf("cmd/dillad imports %s", strings.TrimSpace(line))
 		}
 	}
-	if !strings.Contains(string(out), "github.com/jonasthim/dilla/internal/sfu\n") {
+	if !strings.Contains(string(out), "github.com/dilla-chat/dilla/internal/sfu\n") {
 		t.Error("go list -deps ./cmd/dillad does not list internal/sfu; the check passed vacuously")
 	}
 }

@@ -15,7 +15,7 @@ exclude = ["core/vendor"]
 [workspace.package]
 edition = "2024"
 rust-version = "1.98"
-repository = "https://github.com/jonasthim/dilla"
+repository = "https://github.com/dilla-chat/dilla"
 
 [workspace.lints.rust]
 unsafe_code = "warn"          # dilla-core forbids it outright; the wasi crate opts back in

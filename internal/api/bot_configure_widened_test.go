@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // botPollsRemindersMask is capability bits 8 (Polls) and 9 (Reminders).

@@ -15,7 +15,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/jonasthim/dilla/internal/bot/music"
+	"github.com/dilla-chat/dilla/internal/bot/music"
 )
 
 func TestSDKLoggerFiltersLevelsAndRedactsEveryDerivedLogger(t *testing.T) {

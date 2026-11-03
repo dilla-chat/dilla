@@ -16,10 +16,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/jonasthim/dilla/internal/media"
-	"github.com/jonasthim/dilla/internal/sframe"
-	"github.com/jonasthim/dilla/internal/sfu"
-	"github.com/jonasthim/dilla/internal/sfu/sfutest"
+	"github.com/dilla-chat/dilla/internal/media"
+	"github.com/dilla-chat/dilla/internal/sframe"
+	"github.com/dilla-chat/dilla/internal/sfu"
+	"github.com/dilla-chat/dilla/internal/sfu/sfutest"
 )
 
 func TestTheMatrixExpandsToTheStatedCells(t *testing.T) {

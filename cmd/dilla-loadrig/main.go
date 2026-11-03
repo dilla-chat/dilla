@@ -25,7 +25,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/jonasthim/dilla/internal/sfu"
+	"github.com/dilla-chat/dilla/internal/sfu"
 )
 
 // stunSentinel is the rtc.stun_servers entry of the in-process LiveKit: a loopback port nothing

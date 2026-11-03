@@ -131,7 +131,7 @@ DOWNLOAD=0
 [ -n "$MODULE" ] || DOWNLOAD=1
 if [ "$DOWNLOAD" -eq 1 ] && [ -z "$RELEASE_URL" ]; then
 	[ -n "$VERSION" ] || die "this install-bot.sh is not from a release; pass --version <tag> or --release-url <url>"
-	RELEASE_URL="https://github.com/jonasthim/dilla/releases/download/$VERSION"
+	RELEASE_URL="https://github.com/dilla-chat/dilla/releases/download/$VERSION"
 fi
 if [ -n "$BINARY$HELPER$MODULE" ] && [ -z "$SUMS" ] && [ "$INSECURE" -eq 0 ]; then
 	[ "$DOWNLOAD" -eq 1 ] || die "local assets require --sums FILE, or explicitly use --insecure-skip-verify"
@@ -199,7 +199,7 @@ fi
 cat >"$WORK/dillabot.service" <<'UNIT'
 [Unit]
 Description=Dilla community bot
-Documentation=https://github.com/jonasthim/dilla/blob/main/docs/deploy/README.md
+Documentation=https://github.com/dilla-chat/dilla/blob/main/docs/deploy/README.md
 After=network-online.target dilla.service
 Wants=network-online.target
 Requires=dilla.service

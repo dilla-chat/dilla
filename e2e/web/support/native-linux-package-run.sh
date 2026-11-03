@@ -2,7 +2,7 @@
 # Disposable GitHub runners only. Normal distribution managers install the
 # stock package; the app/test process always runs as a separate ordinary UID.
 set -euo pipefail
-[[ "${GITHUB_ACTIONS:-}" == true && "${GITHUB_REPOSITORY:-}" == jonasthim/dilla ]]
+[[ "${GITHUB_ACTIONS:-}" == true && "${GITHUB_REPOSITORY:-}" == dilla-chat/dilla ]]
 [[ "$(node -p 'process.versions.node.split(".")[0]')" == 24 ]]
 format=${2:-${1:-}}
 [[ "$format" == deb || "$format" == rpm || "$format" == aur ]]

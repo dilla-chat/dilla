@@ -6,8 +6,8 @@ import (
 	"io"
 	"strings"
 
-	"github.com/jonasthim/dilla/internal/config"
-	"github.com/jonasthim/dilla/internal/exit"
+	"github.com/dilla-chat/dilla/internal/config"
+	"github.com/dilla-chat/dilla/internal/exit"
 )
 
 // runMigrate applies or inspects schema migrations: `up` (the default),

@@ -19,7 +19,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/jonasthim/dilla/internal/desktopsandbox"
+	"github.com/dilla-chat/dilla/internal/desktopsandbox"
 )
 
 var manualVersion = regexp.MustCompile(`\A(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-beta\.(0|[1-9][0-9]*))?\z`)
@@ -56,7 +56,7 @@ func fetchManualSignature(version string, e EmbeddedCapsule, transport http.Roun
 		}
 		return nil
 	}}
-	base := "https://github.com/jonasthim/dilla/releases/download/desktop-v" + version + "/dilla-" + version + "-linux-x64.sandbox"
+	base := "https://github.com/dilla-chat/dilla/releases/download/desktop-v" + version + "/dilla-" + version + "-linux-x64.sandbox"
 	get := func(suffix string, limit int64) ([]byte, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+suffix, nil)
 		if err != nil || !allowedManualURL(req.URL) {

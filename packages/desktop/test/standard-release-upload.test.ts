@@ -5,7 +5,7 @@ import { GitHubPublisher } from 'electron-publish/out/gitHubPublisher.js';
 // @ts-expect-error publishing tooling is JavaScript
 import { createReleaseAssetUploader } from '../scripts/standard-release-upload.mjs';
 
-const repository = 'jonasthim/dilla';
+const repository = 'dilla-chat/dilla';
 const bytes = Buffer.from('accepted native installer\0\xff', 'latin1');
 const digest = 'sha256:' + createHash('sha256').update(bytes).digest('hex');
 const release = (draft = false, tag = 'desktop-v1.2.3') => ({ id: 42, tag_name: tag, draft, prerelease: false,
@@ -81,7 +81,7 @@ test('silent publisher skips and incorrect GitHub digests fail publication', asy
 
 test('standard transport cannot upload outside the approved repository, release or asset namespace', async () => {
  for (const change of [
-  { upload_url: 'https://example.com/repos/jonasthim/dilla/releases/42/assets{?name,label}' },
+  { upload_url: 'https://example.com/repos/dilla-chat/dilla/releases/42/assets{?name,label}' },
   { upload_url: 'https://uploads.github.com/repos/other/repo/releases/42/assets{?name,label}' },
   { upload_url: `https://uploads.github.com/repos/${repository}/releases/99/assets{?name,label}` },
   { tag_name: 'v1.2.3' },

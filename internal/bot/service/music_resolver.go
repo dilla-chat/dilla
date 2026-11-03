@@ -4,9 +4,9 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/jonasthim/dilla/internal/bot/music"
-	"github.com/jonasthim/dilla/internal/bot/music/youtube"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/bot/music"
+	"github.com/dilla-chat/dilla/internal/bot/music/youtube"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // LoggingMusicTrackResolver records diagnostics without recording its input.

@@ -5,8 +5,8 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/jonasthim/dilla/internal/desktopauth"
-	"github.com/jonasthim/dilla/internal/server"
+	"github.com/dilla-chat/dilla/internal/desktopauth"
+	"github.com/dilla-chat/dilla/internal/server"
 )
 
 func (d Deps) registerDesktopAuth(m *server.Mux) {

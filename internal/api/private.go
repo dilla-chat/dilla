@@ -5,8 +5,8 @@ import (
 	"errors"
 	"slices"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // eligibleUsersPage is how many community members one page of EligibleUsers reads.

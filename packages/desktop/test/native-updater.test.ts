@@ -17,7 +17,7 @@ async function fixture(t: { after(callback: () => Promise<void>): void }) {
  const file = join(root, 'update.exe'), bytes = Buffer.from('authenticated installer'); await writeFile(file, bytes);
  const keys = generateKeyPairSync('ed25519'), now = Date.now();
  const release = Buffer.from(JSON.stringify({format:1,version:'1.0.1',channel:'stable',publishedAt:new Date(now-1000).toISOString(),expiresAt:new Date(now+3600000).toISOString(),artifacts:[{
-  platform:'win32',arch:'x64',url:'https://github.com/jonasthim/dilla/releases/download/desktop-v1.0.1/dilla-1.0.1-win-x64.exe',size:bytes.length,sha512:createHash('sha512').update(bytes).digest('base64'),
+  platform:'win32',arch:'x64',url:'https://github.com/dilla-chat/dilla/releases/download/desktop-v1.0.1/dilla-1.0.1-win-x64.exe',size:bytes.length,sha512:createHash('sha512').update(bytes).digest('base64'),
  }]}));
  const signature = sign(null,release,keys.privateKey).toString('base64');
  const compiled = await build({ entryPoints:[resolve(import.meta.dirname,'../src/updater.ts')],bundle:true,write:false,platform:'node',format:'cjs',external:['electron','electron-updater','electron-updater/*'],plugins:[{name:'fixture-key',setup(plugin){

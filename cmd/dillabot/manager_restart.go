@@ -5,7 +5,7 @@ import (
 	"errors"
 	"slices"
 
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // DisableAndWait retires the installation and waits for every native borrower

@@ -7,10 +7,10 @@ import (
 
 	"github.com/pressly/goose/v3"
 
-	"github.com/jonasthim/dilla/internal/clock"
-	"github.com/jonasthim/dilla/internal/ops"
-	"github.com/jonasthim/dilla/internal/store/postgres"
-	pgmigrations "github.com/jonasthim/dilla/internal/store/postgres/migrations"
+	"github.com/dilla-chat/dilla/internal/clock"
+	"github.com/dilla-chat/dilla/internal/ops"
+	"github.com/dilla-chat/dilla/internal/store/postgres"
+	pgmigrations "github.com/dilla-chat/dilla/internal/store/postgres/migrations"
 )
 
 // TestRevokeAllDevicesOnPostgres runs the revoke-all on the Postgres engine: a database of the

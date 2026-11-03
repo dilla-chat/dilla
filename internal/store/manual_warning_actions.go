@@ -3,7 +3,7 @@ package store
 import (
 	"context"
 
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // ManualWarningActionRow is the non-sensitive authoritative receipt for a human warning.

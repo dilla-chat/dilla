@@ -36,7 +36,7 @@ export function comparePayloads(expected, observed) {
  if (fields.some(field => typeof expected[field] !== 'string' || expected[field] !== observed[field])) throw new Error('Native format payload differs from accepted DEB');
 }
 function context() {
- if (process.env.GITHUB_ACTIONS !== 'true' || process.env.GITHUB_REPOSITORY !== 'jonasthim/dilla' || process.platform !== 'linux' || process.arch !== 'x64' || process.versions.node.split('.')[0] !== '24') throw new Error('Dedicated GitHub Linux x64 / Node 24 acceptance required');
+ if (process.env.GITHUB_ACTIONS !== 'true' || process.env.GITHUB_REPOSITORY !== 'dilla-chat/dilla' || process.platform !== 'linux' || process.arch !== 'x64' || process.versions.node.split('.')[0] !== '24') throw new Error('Dedicated GitHub Linux x64 / Node 24 acceptance required');
  const commit = run('git', ['rev-parse', 'HEAD']), tree = run('git', ['rev-parse', 'HEAD^{tree}']);
  if (commit !== process.env.GITHUB_SHA || !/^[1-9]\d*$/.test(process.env.GITHUB_RUN_ID ?? '')) throw new Error('Wrong acceptance source/run');
  if (run('git', ['status', '--porcelain', '--untracked-files=all']) !== '') throw new Error('Acceptance requires a clean source checkout');

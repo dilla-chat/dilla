@@ -3,7 +3,7 @@ package operationid
 import (
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 func TestAutomaticOperationIDIsStableAndSourceBound(t *testing.T) {

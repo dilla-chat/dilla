@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/bot/music"
+	"github.com/dilla-chat/dilla/internal/bot/music"
 )
 
 func TestNormalizeInputAcceptsSearchVideoAndPlaylist(t *testing.T) {

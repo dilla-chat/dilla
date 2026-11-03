@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 func TestMemberTimeoutRoundTripAndExpiry(t *testing.T) {

@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/clock"
+	"github.com/dilla-chat/dilla/internal/clock"
 )
 
 // Gate is one readiness condition. A gate starts red: an instance is not ready

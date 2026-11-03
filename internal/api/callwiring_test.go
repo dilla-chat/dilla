@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/api"
-	"github.com/jonasthim/dilla/internal/blob"
+	"github.com/dilla-chat/dilla/internal/api"
+	"github.com/dilla-chat/dilla/internal/blob"
 )
 
 // Task 10 re-review n2: a visibility PATCH re-derives who may be in the channel and re-syncs its

@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/clock"
+	"github.com/dilla-chat/dilla/internal/clock"
 )
 
 type ringLimits struct {

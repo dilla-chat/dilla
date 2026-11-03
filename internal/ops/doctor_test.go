@@ -23,8 +23,8 @@ import (
 
 	"github.com/pion/turn/v5"
 
-	"github.com/jonasthim/dilla/internal/config"
-	"github.com/jonasthim/dilla/internal/ops"
+	"github.com/dilla-chat/dilla/internal/config"
+	"github.com/dilla-chat/dilla/internal/ops"
 )
 
 func TestClockSkewParsesTheDateHeader(t *testing.T) {

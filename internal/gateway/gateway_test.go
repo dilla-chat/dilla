@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // A slow consumer is closed 4008 and, on reconnect, resumes every frame it missed: 4008 is

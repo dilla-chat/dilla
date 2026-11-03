@@ -3,9 +3,9 @@ package dillad
 import (
 	"context"
 
-	"github.com/jonasthim/dilla/internal/gateway"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/gateway"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // gatewayScopeResolver keeps the gateway's compatibility lookup narrow while sourcing the same

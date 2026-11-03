@@ -3,8 +3,8 @@ package client
 import (
 	"context"
 
-	"github.com/jonasthim/dilla/internal/cborx"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // MaxInteractionContextResponse bounds the signed server snapshot and its CBOR

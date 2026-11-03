@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/clock"
+	"github.com/dilla-chat/dilla/internal/clock"
 )
 
 func TestTheRingIsBoundedOnCountBytesAndTTL(t *testing.T) {

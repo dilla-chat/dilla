@@ -5,8 +5,8 @@ import (
 	"context"
 	"database/sql"
 
-	"github.com/jonasthim/dilla/internal/store"
-	"github.com/jonasthim/dilla/internal/store/postgres/pgdb"
+	"github.com/dilla-chat/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/store/postgres/pgdb"
 )
 
 func autoModGrantRow(v pgdb.AutomodStepupGrants) store.BotAutoModerationGrantRow {

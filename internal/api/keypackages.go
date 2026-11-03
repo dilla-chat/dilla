@@ -16,8 +16,8 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/jonasthim/dilla/internal/auth"
-	"github.com/jonasthim/dilla/internal/server"
+	"github.com/dilla-chat/dilla/internal/auth"
+	"github.com/dilla-chat/dilla/internal/server"
 )
 
 // RegisterDirectory mounts the four directory routes. It is a third method on Groups rather than

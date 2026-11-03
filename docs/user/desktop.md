@@ -150,7 +150,7 @@ missing platform acceptance, measured performance, an independent security revie
 or unauthenticated artifacts. Before publication, the verifier requires complete
 acceptance evidence for the exact final source and installer bytes. After
 publication, consult the signed metadata and authenticated acceptance records on
-the [versioned desktop release](https://github.com/jonasthim/dilla/releases/tag/desktop-v0.1.0-beta.1)
+the [versioned desktop release](https://github.com/dilla-chat/dilla/releases/tag/desktop-v0.1.0-beta.1)
 for that version’s final status. Application publication alone does not change
 `--desktop-downloads` or roll out a desktop-only server.
 

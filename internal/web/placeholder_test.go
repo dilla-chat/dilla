@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/web"
+	"github.com/dilla-chat/dilla/internal/web"
 )
 
 // The committed placeholder is a tree its own manifest describes, and it is what a binary built

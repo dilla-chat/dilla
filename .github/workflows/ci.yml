@@ -763,7 +763,7 @@ jobs:
       # alone took ~620 s locally under -race and hit a 20-minute timeout here (run 39486567482), so
       # go-api runs it with a budget of its own.
       - name: Unit tests with the race detector (cgo required, do not set CGO_ENABLED=0 here)
-        run: go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx -e github.com/jonasthim/dilla/internal/ds -e github.com/jonasthim/dilla/internal/api)
+        run: go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx -e github.com/dilla-chat/dilla/internal/ds -e github.com/dilla-chat/dilla/internal/api)
         env:
           GORACE: halt_on_error=1
       - name: TURN permission timer backport regression

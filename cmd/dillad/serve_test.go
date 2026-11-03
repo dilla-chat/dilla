@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/config"
+	"github.com/dilla-chat/dilla/internal/config"
 )
 
 // syncBuffer is an io.Writer the serving goroutine writes to while the test

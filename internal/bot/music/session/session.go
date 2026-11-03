@@ -9,12 +9,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/bot/client"
-	"github.com/jonasthim/dilla/internal/bot/music"
-	"github.com/jonasthim/dilla/internal/bot/music/livekit"
-	musicruntime "github.com/jonasthim/dilla/internal/bot/music/runtime"
-	"github.com/jonasthim/dilla/internal/bot/music/youtube"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/bot/music"
+	"github.com/dilla-chat/dilla/internal/bot/music/livekit"
+	musicruntime "github.com/dilla-chat/dilla/internal/bot/music/runtime"
+	"github.com/dilla-chat/dilla/internal/bot/music/youtube"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 var ErrInvalid = errors.New("music session: invalid configuration")

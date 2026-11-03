@@ -19,8 +19,8 @@ import (
 	"github.com/livekit/protocol/logger"
 	"github.com/pion/webrtc/v4"
 
-	dillaconfig "github.com/jonasthim/dilla/internal/config"
-	"github.com/jonasthim/dilla/internal/obs"
+	dillaconfig "github.com/dilla-chat/dilla/internal/config"
+	"github.com/dilla-chat/dilla/internal/obs"
 )
 
 // fakeNow is a clock the bridge's rate limiter reads.

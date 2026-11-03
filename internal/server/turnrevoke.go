@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/clock"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/clock"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // BarredLookup answers whether a device may no longer take part in calls — revoked, quarantined, or

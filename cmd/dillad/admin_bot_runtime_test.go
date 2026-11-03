@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	botruntime "github.com/jonasthim/dilla/internal/bot/runtime"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	botruntime "github.com/dilla-chat/dilla/internal/bot/runtime"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 func TestProtectedRuntimeSecretFilesAndAdminLifecycle(t *testing.T) {

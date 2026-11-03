@@ -12,8 +12,8 @@ import (
 
 	"golang.org/x/crypto/argon2"
 
-	"github.com/jonasthim/dilla/internal/config"
-	"github.com/jonasthim/dilla/internal/server"
+	"github.com/dilla-chat/dilla/internal/config"
+	"github.com/dilla-chat/dilla/internal/server"
 )
 
 // PasswordParams is one Argon2id cost setting. The defaults are OWASP's 2026

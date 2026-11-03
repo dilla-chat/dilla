@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/testkit"
+	"github.com/dilla-chat/dilla/internal/testkit"
 )
 
 // The Global Constraints give every DS invariant both a Go test and a testkit scenario, and

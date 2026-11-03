@@ -4,8 +4,8 @@ import (
 	"context"
 	"math"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 func (r *Repo) PutManualWarningAction(ctx context.Context, v store.ManualWarningActionRow) error {

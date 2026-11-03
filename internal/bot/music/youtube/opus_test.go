@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/bot/music"
-	"github.com/jonasthim/dilla/internal/bot/music/encode"
+	"github.com/dilla-chat/dilla/internal/bot/music"
+	"github.com/dilla-chat/dilla/internal/bot/music/encode"
 )
 
 type pcmStarterFunc func(context.Context, string) (io.ReadCloser, error)

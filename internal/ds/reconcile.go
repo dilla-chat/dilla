@@ -3,8 +3,8 @@ package ds
 import (
 	"context"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // reconcilePage is how many open groups one sweep tick reconciles. The sweeper ticks every minute

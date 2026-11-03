@@ -15,10 +15,10 @@ import (
 	"github.com/coder/websocket"
 	"github.com/fxamacker/cbor/v2"
 
-	"github.com/jonasthim/dilla/internal/bot/client"
-	"github.com/jonasthim/dilla/internal/cborx"
-	"github.com/jonasthim/dilla/internal/gateway"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/gateway"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 func TestRunResumesThroughServerReplayBarrierAndRotatesToken(t *testing.T) {

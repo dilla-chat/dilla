@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // registry is the live connection index. Everything a producer needs — the device's connections,

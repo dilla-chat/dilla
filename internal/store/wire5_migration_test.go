@@ -9,7 +9,7 @@ import (
 
 	"github.com/pressly/goose/v3"
 
-	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
+	sqlitemigrations "github.com/dilla-chat/dilla/internal/store/sqlite/migrations"
 )
 
 func TestAWire4SessionSurvivesTheWire5Migration(t *testing.T) {

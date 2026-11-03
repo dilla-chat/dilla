@@ -7,9 +7,9 @@ import (
 	"net/http"
 	"slices"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/server"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/server"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // The voice snapshot routes (web-3, L-HTTP-100 and L-HTTP-101): which call group a client joins or

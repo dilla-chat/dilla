@@ -28,18 +28,18 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	_ "modernc.org/sqlite"
 
-	"github.com/jonasthim/dilla/internal/auth"
-	"github.com/jonasthim/dilla/internal/cborx"
-	"github.com/jonasthim/dilla/internal/clock"
-	"github.com/jonasthim/dilla/internal/config"
-	"github.com/jonasthim/dilla/internal/dillad"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/obs"
-	"github.com/jonasthim/dilla/internal/server"
-	"github.com/jonasthim/dilla/internal/store"
-	"github.com/jonasthim/dilla/internal/store/sqlite"
-	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
-	"github.com/jonasthim/dilla/internal/web"
+	"github.com/dilla-chat/dilla/internal/auth"
+	"github.com/dilla-chat/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/clock"
+	"github.com/dilla-chat/dilla/internal/config"
+	"github.com/dilla-chat/dilla/internal/dillad"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/obs"
+	"github.com/dilla-chat/dilla/internal/server"
+	"github.com/dilla-chat/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/store/sqlite"
+	sqlitemigrations "github.com/dilla-chat/dilla/internal/store/sqlite/migrations"
+	"github.com/dilla-chat/dilla/internal/web"
 )
 
 // testConfig writes a dilla.toml under t.TempDir(), migrates the database it
@@ -680,7 +680,7 @@ func TestTheReleaseBinaryDoesNotLinkTheTestHelpers(t *testing.T) {
 	// internal/dillad, where that relative path does not exist and go list exits
 	// non-zero on every run.
 	out, err := exec.CommandContext(t.Context(), goToolPath(t), "list", "-deps",
-		"github.com/jonasthim/dilla/cmd/dillad").Output()
+		"github.com/dilla-chat/dilla/cmd/dillad").Output()
 	if err != nil {
 		t.Fatalf("go list: %v", err)
 	}

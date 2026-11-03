@@ -31,7 +31,7 @@ jobs:
         with:
           github-token: ${{ github.token }}
           run-id: ${{ steps.plan.outputs.run }}
-          repository: jonasthim/dilla
+          repository: dilla-chat/dilla
           pattern: desktop-installers-*
           merge-multiple: true
           path: desktop-release-artifacts

@@ -6,7 +6,7 @@ import (
 	"maps"
 	"sync"
 
-	"github.com/jonasthim/dilla/internal/sframe"
+	"github.com/dilla-chat/dilla/internal/sframe"
 )
 
 // Counters tracks decrypted frames, empty audio DTX markers, and drops by reason: an E_SFRAME_* code,

@@ -8,7 +8,7 @@ import (
 	"context"
 	"database/sql"
 
-	id "github.com/jonasthim/dilla/internal/id"
+	id "github.com/dilla-chat/dilla/internal/id"
 )
 
 type Querier interface {

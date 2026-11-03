@@ -10,9 +10,9 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
-	"github.com/jonasthim/dilla/internal/store/sqlite/sqlitedb"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/store/sqlite/sqlitedb"
 )
 
 // Repo adapts the generated sqlitedb.Querier to store.Repository. Reads go to

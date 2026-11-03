@@ -25,8 +25,8 @@ import (
 	"github.com/pion/webrtc/v4"
 	pmedia "github.com/pion/webrtc/v4/pkg/media"
 
-	"github.com/jonasthim/dilla/internal/media"
-	"github.com/jonasthim/dilla/internal/sframe"
+	"github.com/dilla-chat/dilla/internal/media"
+	"github.com/dilla-chat/dilla/internal/sframe"
 )
 
 // PromQLEgress is SFU egress as the capacity card defines it (G37): RTP-level bytes counted once —

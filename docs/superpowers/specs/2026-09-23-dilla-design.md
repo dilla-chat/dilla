@@ -343,8 +343,8 @@ Mesh reskins, three full concepts from a judged panel) were rejected; the founde
 
 ### Decisions taken at spec review (2026-09-23)
 
-- **Repository and module path:** `github.com/jonasthim/dilla`, public from day one. Go module
-  `github.com/jonasthim/dilla`; Rust crate `dilla-core`; npm packages under `@dilla/*`.
+- **Repository and module path:** `github.com/dilla-chat/dilla`, public from day one. Go module
+  `github.com/dilla-chat/dilla`; Rust crate `dilla-core`; npm packages under `@dilla/*`.
 - **UI vocabulary:** *server*, *channel*, *DMs*, *voice* (Discord's words; the Mesh handoff's
   team/kanal/PMs labels are replaced in copy). Code, API and protocol keep *community* / *channel*.
 - **Brand and sound:** the Mesh mono D-tile with blinking caret in the top bar; dilla-chat's branding

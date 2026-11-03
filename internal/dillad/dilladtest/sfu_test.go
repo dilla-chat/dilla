@@ -20,10 +20,10 @@ import (
 	"github.com/livekit/protocol/auth"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 
-	"github.com/jonasthim/dilla/internal/api"
-	"github.com/jonasthim/dilla/internal/cborx"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/api"
+	"github.com/dilla-chat/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // freePorts asks the kernel for an unused TCP port and an unused UDP port on loopback, so this
@@ -575,7 +575,7 @@ func TestWithholdDropsParticipantLeftOnly(t *testing.T) {
 // The withhold hook lives in the test host's package, so it is reachable only where that package is
 // linked: no production binary (dillad) may depend on dilladtest.
 func TestTheWithholdHookIsNotLinkedIntoProductionDillad(t *testing.T) {
-	out, err := exec.CommandContext(t.Context(), "go", "list", "-deps", "github.com/jonasthim/dilla/cmd/dillad").Output()
+	out, err := exec.CommandContext(t.Context(), "go", "list", "-deps", "github.com/dilla-chat/dilla/cmd/dillad").Output()
 	if err != nil {
 		t.Fatalf("go list -deps ./cmd/dillad: %v", err)
 	}
