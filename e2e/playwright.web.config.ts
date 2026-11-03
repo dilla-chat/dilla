@@ -20,7 +20,9 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   retries: 0,
-  maxFailures: process.env.CI === 'true' ? 1 : 0,
+  // DILLA_E2E_FAIL_FAST=0 (desktop.yml stabilisation mode) reports every failure of a CI run instead of
+  // stopping at the first; CI otherwise stops at one failure.
+  maxFailures: process.env.CI === 'true' && process.env.DILLA_E2E_FAIL_FAST !== '0' ? 1 : 0,
   forbidOnly: !!process.env.CI,
   timeout: 180_000,
   expect: { timeout: process.env.CI === 'true' ? 90_000 : 30_000 },

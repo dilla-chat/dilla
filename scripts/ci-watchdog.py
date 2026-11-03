@@ -24,8 +24,21 @@ def failure_state(job):
     return completed_failure, step_failure
 
 
+def compile_ignore(pattern):
+    """A bounded, anchored-by-the-author job-name pattern from CI_WATCHDOG_IGNORE_JOBS, or None."""
+    if pattern is None or pattern == "":
+        return None
+    if not isinstance(pattern, str) or len(pattern) > 200:
+        raise ValueError("invalid CI_WATCHDOG_IGNORE_JOBS")
+    try:
+        return re.compile(pattern)
+    except re.error:
+        raise ValueError("invalid CI_WATCHDOG_IGNORE_JOBS") from None
+
+
 class GitHubRun:
-    def __init__(self, repository, run_id, token, *, opener=None, sleep=time.sleep, monotonic=time.monotonic):
+    def __init__(self, repository, run_id, token, *, opener=None, sleep=time.sleep, monotonic=time.monotonic,
+                 ignore_jobs=None):
         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
             raise ValueError("invalid GITHUB_REPOSITORY")
         if not re.fullmatch(r"[1-9][0-9]*", run_id):
@@ -34,6 +47,9 @@ class GitHubRun:
             raise ValueError("missing job token")
         self.url = f"https://api.github.com/repos/{repository}/actions/runs/{run_id}"
         self.token = token
+        # Stabilisation mode: jobs whose name matches never trigger a cancellation, so every one of
+        # them reports. They still have to complete before the watcher finishes, and ci-ok stays red.
+        self.ignore_jobs = compile_ignore(ignore_jobs)
         self.open = opener or build_opener(NoRedirect()).open
         self.sleep = sleep
         self.monotonic = monotonic
@@ -111,13 +127,19 @@ class GitHubRun:
             # Never let an unread page or its recovery budget delay a failure
             # already observed. Partial results are returned only for failure;
             # completion still requires every page below.
-            if any(j["name"] not in {"ci-watchdog", "ci-ok"} and any(failure_state(j)) for j in batch):
+            if any(self.watched(j) and any(failure_state(j)) for j in batch):
                 return jobs
             if len(jobs) >= data["total_count"]:
                 return jobs
             if not batch:
                 raise RuntimeError("GitHub returned an incomplete jobs page")
         raise RuntimeError("GitHub job pagination exceeded its bound")
+
+    def watched(self, job):
+        """Whether a failure of this job cancels the run."""
+        if job["name"] in {"ci-watchdog", "ci-ok"}:
+            return False
+        return self.ignore_jobs is None or not self.ignore_jobs.search(job["name"])
 
     def cancel(self):
         self.request("/cancel", "POST")
@@ -131,7 +153,8 @@ def from_environment(env, event):
     main_push = event_name == "push" and env.get("GITHUB_REF") == "refs/heads/main"
     if not (same_repo_pr or main_push):
         raise ValueError("watchdog requires a same-repository pull request or main push")
-    return GitHubRun(repository, env.get("GITHUB_RUN_ID", ""), env.get("GH_TOKEN", ""))
+    return GitHubRun(repository, env.get("GITHUB_RUN_ID", ""), env.get("GH_TOKEN", ""),
+                     ignore_jobs=env.get("CI_WATCHDOG_IGNORE_JOBS"))
 
 
 def watch(api, *, sleep=time.sleep, monotonic=time.monotonic, max_seconds=89 * 60):
@@ -141,6 +164,8 @@ def watch(api, *, sleep=time.sleep, monotonic=time.monotonic, max_seconds=89 * 6
         # including reusable-workflow children that GitHub discovers after startup.
         jobs = [j for j in api.jobs(deadline=deadline) if j["name"] not in {"ci-watchdog", "ci-ok"}]
         for job in jobs:
+            if not api.watched(job):
+                continue
             completed_failure, step_failure = failure_state(job)
             if completed_failure or step_failure:
                 print("CI failure detected; cancelling this workflow run.", flush=True)

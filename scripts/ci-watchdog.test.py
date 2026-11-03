@@ -366,6 +366,45 @@ class WatchdogTests(unittest.TestCase):
         self.assertEqual(clock.now, 10)
         self.assertEqual(len(transport.requests), 2)
 
+    def test_ignored_job_failures_never_cancel_and_still_block_completion(self):
+        roots = [job("changes"), job("docs")]
+        failed = job("desktop / desktop-voice-win-x64", conclusion="failure")
+        api, transport, clock = self.client([
+            {"total_count": 4, "jobs": roots + [failed, job("desktop / desktop-client-mac-arm64-1", "in_progress", None)]},
+            {"total_count": 5, "jobs": roots + [failed, job("desktop / desktop-client-mac-arm64-1", conclusion="failure"),
+                                               job("ci-work-complete")]},
+        ])
+        api.ignore_jobs = watchdog.compile_ignore("^desktop / ")
+        result = watchdog.watch(api, sleep=clock.sleep, monotonic=lambda: clock.now, max_seconds=100)
+        self.assertEqual(result, "complete")
+        self.assertEqual(clock.waits, [5])
+        self.assertTrue(all(r.get_method() == "GET" for r, _ in transport.requests))
+
+    def test_ignored_first_page_failure_still_reads_later_pages_and_watched_failures_still_cancel(self):
+        ignored = job("desktop / desktop-voice-win-x64", conclusion="failure")
+        api, transport, clock = self.client([
+            {"total_count": 101, "jobs": [ignored] + [job(f"go-{i}", "in_progress", None) for i in range(99)]},
+            {"total_count": 101, "jobs": [job("rust-native", conclusion="failure")]},
+            {},
+        ])
+        api.ignore_jobs = watchdog.compile_ignore("^desktop / ")
+        result = watchdog.watch(api, sleep=clock.sleep, monotonic=lambda: clock.now, max_seconds=100)
+        self.assertEqual(result, "cancelled")
+        self.assertEqual([r.get_method() for r, _ in transport.requests], ["GET", "GET", "POST"])
+
+    def test_ignore_pattern_comes_from_the_environment_and_must_be_a_bounded_valid_pattern(self):
+        base = {"GITHUB_REPOSITORY": "owner/repo", "GITHUB_RUN_ID": "123", "GH_TOKEN": "token",
+                "GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/heads/main"}
+        self.assertIsNone(watchdog.from_environment(base, {}).ignore_jobs)
+        self.assertIsNone(watchdog.from_environment(base | {"CI_WATCHDOG_IGNORE_JOBS": ""}, {}).ignore_jobs)
+        api = watchdog.from_environment(base | {"CI_WATCHDOG_IGNORE_JOBS": "^desktop / "}, {})
+        self.assertFalse(api.watched(job("desktop / desktop-voice-win-x64", conclusion="failure")))
+        self.assertTrue(api.watched(job("go", conclusion="failure")))
+        self.assertFalse(api.watched(job("ci-ok", conclusion="failure")))
+        for bad in ["(", "x" * 201]:
+            with self.assertRaises(ValueError):
+                watchdog.from_environment(base | {"CI_WATCHDOG_IGNORE_JOBS": bad}, {})
+
     def test_untrusted_events_and_arbitrary_run_paths_are_rejected_before_http(self):
         self.assertTrue(hasattr(watchdog, "GitHubRun"), "the run-scoped watchdog is missing")
         for repo, run in [("owner/repo/other", "123"), ("owner/repo", "../456"),

@@ -1205,7 +1205,10 @@ export function checkDesktopWorkflow(root) {
   catch (error) { if (error.code === 'ENOENT') return ['desktop.yml: missing desktop acceptance workflow']; throw error; }
   const problems = [];
   problems.push(...checkNativeStockFeasibility(text, { workflow: true }).map(problem => `${file}: native stock feasibility: ${problem}`));
-  if (/fail-fast:\s*false|--max-failures=(?!1\b)\d+/.test(text)) {
+  // Stabilisation mode: a workflow-level `DILLA_E2E_FAIL_FAST: '0'` lets every suite and matrix run to the end
+  // so one run reports every failure. Without it, desktop validation stops at the first failure.
+  const stabilisation = /^env:\n(?:  [^\n]+\n)*  DILLA_E2E_FAIL_FAST: '0'\n/m.test(text);
+  if (/--max-failures=(?!1\b)\d+/.test(text) || (!stabilisation && /fail-fast:\s*false/.test(text))) {
     problems.push(`${file}: desktop validation must stop on the first failure`);
   }
   text.split('\n').forEach((line, i) => {
@@ -1388,7 +1391,7 @@ run: node packages/desktop/scripts/test-linux-sandbox-package.mjs packages/deskt
       'needs: test-tools', 'DILLA_E2E_TOOLING_DIR: ${{ github.workspace }}/artifacts/e2e-test-tools',
       'name: dilla-e2e-tools-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.sha }}',
       'path: artifacts/e2e-test-tools', 'node scripts/e2e-test-tools.mjs verify artifacts/e2e-test-tools',
-      '--max-failures=1',
+      ...(stabilisation ? [] : ['--max-failures=1']),
     ]) if (!consumer.includes(required)) problems.push(`${file}: ${job} tooling consumer missing ${required}`);
     if (!consumer.includes("go test ./internal/ops -run 'Lock|BackupAndServe|ServeAdmits'")) {
       problems.push(`${file}: ${job} must retain native test-host directory locks coverage`);
