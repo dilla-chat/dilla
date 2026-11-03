@@ -186,7 +186,9 @@ export function partitionProblems(packages, shards) {
 }
 
 /** The `go test` argument lists of one shard, longest expected first. */
-export function invocations(shard, flags) {
+export function invocations(shard, flags, packageParallelism = null) {
+  // -p bounds how many test binaries one invocation runs at once; with runAll's limit it caps the shard's total.
+  if (packageParallelism !== null && !flags.some((f) => f === '-p' || f.startsWith('-p='))) flags = [...flags, `-p=${packageParallelism}`];
   const out = [];
   const groups = new Map();
   for (const w of shard.whole) {
@@ -307,7 +309,12 @@ async function main(argv) {
     const { packages, shards } = plan(setName, { race: flags.includes('-race'), timings });
     process.stdout.write(`${describe(setName, shards, timings)}\ngo-shard: the ${shards.length} shards cover all ${packages.length} packages of ${setName} exactly once\n`);
     const shard = shards[index - 1];
-    const commands = invocations(shard, flags);
+    // A CPU budget like the old single job's (go test -p = CPUs): half the CPUs as side-by-side invocations, each with
+    // -p so their product is the CPU count. CPUs x CPUs race binaries starved a timing-sensitive test (PR #144's first
+    // run: the sandbox probe reaping test in go-3).
+    const cpus = Math.max(1, availableParallelism());
+    const sideBySide = Math.max(1, Math.floor(cpus / 2));
+    const commands = invocations(shard, flags, Math.max(1, Math.floor(cpus / sideBySide)));
     if (dryRun) {
       for (const c of commands) process.stdout.write(`go ${c.args.map(quote).join(' ')}\n`);
       return 0;
@@ -316,7 +323,7 @@ async function main(argv) {
     const problems = listProblems(splitPkgs, listTests(splitPkgs, flags));
     if (problems.length > 0) throw new Error(`${setName}: the scan and go test -list disagree:\n  ${problems.join('\n  ')}`);
     process.stdout.write(`go-shard: go test -list agrees with the scan for the ${splitPkgs.length} split packages of shard ${index}\n`);
-    const failed = await runAll(commands, Math.max(1, availableParallelism()));
+    const failed = await runAll(commands, sideBySide);
     return failed === 0 ? 0 : 1;
   }
   throw new Error('usage: go-shard.mjs plan [SET...] | go-shard.mjs run SET SHARD [--dry-run] -- GO_TEST_FLAGS');

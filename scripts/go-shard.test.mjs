@@ -8,6 +8,13 @@ import {
 } from './go-shard.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./go-shard.mjs', import.meta.url));
+
+test('invocations bound package parallelism with -p unless the caller set it', () => {
+  const shard = { whole: [{ pkg: './a', run: null, seconds: 3 }, { pkg: './b', run: null, seconds: 2 }], split: [{ pkg: './c', tests: ['TestX'], seconds: 4 }] };
+  for (const c of invocations(shard, ['-race'], 2)) assert.ok(c.args.includes('-p=2'), c.args.join(' '));
+  for (const c of invocations(shard, ['-race'])) assert.ok(!c.args.some((a) => a.startsWith('-p')), c.args.join(' '));
+  for (const c of invocations(shard, ['-race', '-p=1'], 2)) assert.deepEqual(c.args.filter((a) => a.startsWith('-p')), ['-p=1']);
+});
 const TIMINGS = { defaults: { packageSeconds: 2, testSeconds: 1 }, splitAboveSeconds: 100, packages: {}, tests: {} };
 
 /** n packages of a few tests each, plus one slow package of `big` tests. */
