@@ -83,8 +83,8 @@ public:
         return record.birth;
     }
 };
-static bool descendant(DWORD pid, DWORD root, ProcessTree& tree) {
-    return application_audio::descendant(pid, root, tree.graph, [&](uint32_t current) { return tree.birth(current); });
+static bool related(DWORD pid, DWORD root, ProcessTree& tree) {
+    return application_audio::related(pid, root, tree.graph, [&](uint32_t current) { return tree.birth(current); });
 }
 static std::string label(HANDLE process) {
     wchar_t path[32768]; DWORD length = DWORD(std::size(path)); if (!QueryFullProcessImageNameW(process, 0, path, &length)) return "Application";
@@ -120,9 +120,9 @@ static void list(DWORD excluded) {
             ComPtr<IAudioSessionControl2> control; if (FAILED(session.As(&control))) continue;
             DWORD pid = 0; AudioSessionState state{};
             auto processResult = control->GetProcessId(&pid); auto stateResult = control->GetState(&state);
-            if (diagnostic) std::fprintf(stderr, "WASAPI session=%d pid=%lu state=%d process-HRESULT=%lu state-HRESULT=%lu excluded=%d\n", i, static_cast<unsigned long>(pid), static_cast<int>(state), static_cast<unsigned long>(processResult), static_cast<unsigned long>(stateResult), descendant(pid, excluded, graph) || descendant(excluded, pid, graph));
+            if (diagnostic) std::fprintf(stderr, "WASAPI session=%d pid=%lu state=%d process-HRESULT=%lu state-HRESULT=%lu excluded=%d\n", i, static_cast<unsigned long>(pid), static_cast<int>(state), static_cast<unsigned long>(processResult), static_cast<unsigned long>(stateResult), related(pid, excluded, graph));
             if (FAILED(processResult) || !pid || FAILED(stateResult) || state != AudioSessionStateActive) continue;
-            if (!descendant(pid, excluded, graph) && !descendant(excluded, pid, graph)) found.insert(pid);
+            if (!related(pid, excluded, graph)) found.insert(pid);
         }
     }
     std::printf("["); bool first = true;
@@ -149,7 +149,7 @@ static void capture(const char* id, DWORD excluded) {
     std::string key(id); auto colon = key.find(':'); if (colon == std::string::npos) throw std::runtime_error("invalid source");
     auto expected = number(key.substr(0, colon).c_str()); auto pid64 = number(key.substr(colon + 1).c_str());
     if (pid64 > MAXDWORD) throw std::runtime_error("invalid process"); auto pid = DWORD(pid64); ProcessTree graph(std::getenv("DILLA_AUDIO_DIAGNOSTICS") != nullptr);
-    if (descendant(pid, excluded, graph) || descendant(excluded, pid, graph)) throw std::runtime_error("cannot capture Dilla call audio");
+    if (related(pid, excluded, graph)) throw std::runtime_error("cannot capture Dilla call audio");
     auto process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, pid);
     if (!process || creation(process) != expected) throw std::runtime_error("selected application is no longer available");
     AUDIOCLIENT_ACTIVATION_PARAMS params{}; params.ActivationType = AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK;
