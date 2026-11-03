@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
+import { createRequire } from 'node:module';
 import { buildReleaseFixture, isolatedReleaseTools, acceptedJobs } from './support/release-fixture.mjs';
 // @ts-expect-error publishing tooling is JavaScript
 import { appcast, signedAppcast } from '../scripts/feed-format.mjs';
@@ -513,9 +514,22 @@ test('publisher refuses a bad rotation proof before anything is uploaded', async
 });
 
 test('publish job installs no npm dependencies', async () => {
+ // The keyed workflow's publish job runs no npm command (scripts/check-ci-workflow.mjs pins this too).
+ const yaml = createRequire(import.meta.url)('js-yaml');
+ const workflow = yaml.load(await readFile(resolve(import.meta.dirname, '../../../.github/workflows/desktop-release.yml'), 'utf8'));
+ const steps: { run?: string; uses?: string }[] = workflow.jobs.publish.steps;
+ assert.ok(steps.some(step => step.run?.includes('publish-release.mjs publish')));
+ for (const step of steps) assert.ok(!/\bnpm\b|\bnpx\b/.test(step.run ?? ''), step.run);
  // Every static import the publisher loads is a node: built-in or a repository file, so `publish` runs without npm ci.
- const repo = resolve(import.meta.dirname, '../../..'), entry = resolve(repo, 'packages/desktop/scripts/publish-release.mjs');
- const seen = new Set<string>(), pending = [entry];
+ // The same holds for every script the keyed workflow runs: none of its jobs runs npm ci.
+ const repo = resolve(import.meta.dirname, '../../..');
+ const entries = ['publish-release', 'verify-published', 'release-gate', 'release-download-check', 'release-assemble', 'release-notes', 'release-sign-job', 'candidate-digest', 'pages-feed']
+  .map(name => resolve(repo, `packages/desktop/scripts/${name}.mjs`));
+ for (const step of Object.values(workflow.jobs as Record<string, { steps: { run?: string }[] }>).flatMap(job => job.steps)) {
+  const script = /^node (packages\/desktop\/scripts\/[a-z-]+\.mjs)/.exec(step.run ?? '')?.[1];
+  if (script) assert.ok(entries.includes(resolve(repo, script)), `${script} is loaded without node_modules`);
+ }
+ const seen = new Set<string>(), pending = [...entries];
  while (pending.length) {
   const file = pending.pop()!;
   if (seen.has(file)) continue;
@@ -534,7 +548,9 @@ test('publish job installs no npm dependencies', async () => {
  try {
   for (const file of seen) { const copy = join(isolated, file.slice(repo.length)); await mkdir(dirname(copy), { recursive: true }); await copyFile(file, copy); }
   await writeFile(join(isolated, 'package.json'), JSON.stringify({ type: 'module' }));
-  const result = spawnSync(process.execPath, ['--input-type=module', '-e', `await import(${JSON.stringify(pathToFileURL(join(isolated, 'packages/desktop/scripts/publish-release.mjs')).href)})`], { encoding: 'utf8', env: { PATH: process.env.PATH }, timeout: 60000 });
-  assert.equal(result.status, 0, result.stderr);
+  for (const entry of entries) {
+   const result = spawnSync(process.execPath, ['--input-type=module', '-e', `await import(${JSON.stringify(pathToFileURL(join(isolated, entry.slice(repo.length))).href)})`], { encoding: 'utf8', env: { PATH: process.env.PATH }, timeout: 60000 });
+   assert.equal(result.status, 0, `${entry}: ${result.stderr}`);
+  }
  } finally { await rm(isolated, { recursive: true, force: true }); }
 });

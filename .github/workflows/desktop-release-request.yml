@@ -1,0 +1,12 @@
+name: desktop release request
+on:
+  push:
+    tags: ['desktop-v*']
+permissions:
+  contents: read
+jobs:
+  request:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - run: echo "Desktop release requested; the privileged workflow re-derives everything from main."

@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { TAG, runGate, writeOutputs } from '../scripts/release-gate.mjs';
 import { EXPECTED_ARTIFACTS } from '../scripts/ci-run.mjs';
 import { acceptedJobs } from './support/release-fixture.mjs';
@@ -89,8 +90,10 @@ test('gate passes for the current main with a green run, matching version, exact
  const s = scenario();
  try {
   const result = await s.go();
-  assert.deepEqual(result, { tag: 'desktop-v1.2.3', version: '1.2.3', channel: 'stable', sha: s.shas.tagged, tree: s.repo.run(['rev-parse', `${s.shas.tagged}^{tree}`]), ciRun: 77, artifactIds: EXPECTED_ARTIFACTS.map((_, i) => 300 + i), previous: 'desktop-v1.2.2' });
-  assert.equal(readFileSync(s.outputFile, 'utf8'), `tag=desktop-v1.2.3\nversion=1.2.3\nchannel=stable\nsha=${result.sha}\ntree=${result.tree}\nrun=77\nartifact_ids=${result.artifactIds.join(',')}\nprevious=desktop-v1.2.2\n`);
+  const digests = EXPECTED_ARTIFACTS.map(() => 'sha256:' + 'e'.repeat(64));
+  const record = name => createHash('sha256').update(readFileSync(join(s.outputDirectory, name))).digest('hex');
+  assert.deepEqual(result, { tag: 'desktop-v1.2.3', version: '1.2.3', channel: 'stable', sha: s.shas.tagged, tree: s.repo.run(['rev-parse', `${s.shas.tagged}^{tree}`]), ciRun: 77, artifactIds: EXPECTED_ARTIFACTS.map((_, i) => 300 + i), artifactDigests: digests, runRecord: record('ci-run.json'), jobsRecord: record('ci-jobs.json'), previous: 'desktop-v1.2.2' });
+  assert.equal(readFileSync(s.outputFile, 'utf8'), `tag=desktop-v1.2.3\nversion=1.2.3\nchannel=stable\nsha=${result.sha}\ntree=${result.tree}\nrun=77\nartifact_ids=${result.artifactIds.join(',')}\nartifact_digests=${digests.join(',')}\nrun_record=${result.runRecord}\njobs_record=${result.jobsRecord}\nprevious=desktop-v1.2.2\n`);
   assert.equal(JSON.parse(readFileSync(join(s.outputDirectory, 'ci-run.json'), 'utf8')).id, 77);
   assert.equal(JSON.parse(readFileSync(join(s.outputDirectory, 'ci-jobs.json'), 'utf8')).length, acceptedJobs().length);
   await assert.rejects(s.go(), /EEXIST/, 'gate files are created exclusively');
@@ -319,14 +322,17 @@ test('gate output values containing a newline or = are refused before any write'
  const work = mkdtempSync(join(tmpdir(), 'dilla-gate-output-'));
  try {
   const file = join(work, 'out'); writeFileSync(file, '');
-  const good = { tag: 'desktop-v1.2.3', version: '1.2.3', channel: 'stable', sha: 'a'.repeat(40), tree: 'b'.repeat(40), run: '77', artifact_ids: '1,2,3', previous: '' };
-  for (const [key, value] of [['tag', 'desktop-v1.2.3\nstaged=B'], ['version', '1.2.3=x'], ['channel', 'beta\n'], ['sha', 'a'.repeat(39) + '\n'], ['tree', 'x'], ['run', '0'], ['run', '7\n8'], ['artifact_ids', '1,,2'], ['artifact_ids', '1=2'], ['previous', 'desktop-v1.0.0\nx=y'], ['previous', 'a=b']]) {
+  const d = 'sha256:' + 'c'.repeat(64);
+  const good = { tag: 'desktop-v1.2.3', version: '1.2.3', channel: 'stable', sha: 'a'.repeat(40), tree: 'b'.repeat(40), run: '77', artifact_ids: '1,2,3', artifact_digests: [d, d, d].join(','), run_record: 'd'.repeat(64), jobs_record: 'e'.repeat(64), previous: '' };
+  for (const [key, value] of [['tag', 'desktop-v1.2.3\nstaged=B'], ['version', '1.2.3=x'], ['channel', 'beta\n'], ['sha', 'a'.repeat(39) + '\n'], ['tree', 'x'], ['run', '0'], ['run', '7\n8'], ['artifact_ids', '1,,2'], ['artifact_ids', '1=2'],
+   ['artifact_digests', [d, d].join(',')], ['artifact_digests', [d, d, d + '\nx=y'].join(',')], ['artifact_digests', [d, d, 'sha256:' + 'C'.repeat(64)].join(',')], ['run_record', 'd'.repeat(63)], ['jobs_record', 'e'.repeat(64) + '\n'],
+   ['previous', 'desktop-v1.0.0\nx=y'], ['previous', 'a=b']]) {
    assert.throws(() => writeOutputs(file, { ...good, [key]: value }), /output/i, `${key}=${JSON.stringify(value)}`);
    assert.equal(readFileSync(file, 'utf8'), '');
   }
   assert.throws(() => writeOutputs(file, { ...good, extra: 'x' }), /output/i);
   assert.throws(() => writeOutputs(undefined, good), /output/i);
   writeOutputs(file, good);
-  assert.equal(readFileSync(file, 'utf8'), `tag=desktop-v1.2.3\nversion=1.2.3\nchannel=stable\nsha=${'a'.repeat(40)}\ntree=${'b'.repeat(40)}\nrun=77\nartifact_ids=1,2,3\nprevious=\n`);
+  assert.equal(readFileSync(file, 'utf8'), `tag=desktop-v1.2.3\nversion=1.2.3\nchannel=stable\nsha=${'a'.repeat(40)}\ntree=${'b'.repeat(40)}\nrun=77\nartifact_ids=1,2,3\nartifact_digests=${[d, d, d].join(',')}\nrun_record=${'d'.repeat(64)}\njobs_record=${'e'.repeat(64)}\nprevious=\n`);
  } finally { rmSync(work, { recursive: true, force: true }); }
 });

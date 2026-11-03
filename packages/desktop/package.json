@@ -8,7 +8,7 @@
   "type": "module",
   "main": "dist/main.cjs",
   "scripts": {
-    "test": "node --test test/*.test.ts test/linux-sandbox-package.test.mjs test/linux-sandbox-probe-entry.test.mjs test/inspect-linux-sandbox-package.test.mjs test/native-linux-packages.test.mjs test/native-build-version.test.mjs test/ci-run.test.mjs test/release-notes.test.mjs test/release-assemble.test.mjs test/release-gate.test.mjs test/candidate-digest.test.mjs test/release-sign-job.test.mjs test/verify-published.test.mjs test/pages-feed.test.mjs",
+    "test": "node --test test/*.test.ts test/linux-sandbox-package.test.mjs test/linux-sandbox-probe-entry.test.mjs test/inspect-linux-sandbox-package.test.mjs test/native-linux-packages.test.mjs test/native-build-version.test.mjs test/ci-run.test.mjs test/release-notes.test.mjs test/release-assemble.test.mjs test/release-gate.test.mjs test/candidate-digest.test.mjs test/release-sign-job.test.mjs test/verify-published.test.mjs test/pages-feed.test.mjs test/release-download-check.test.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "build": "node scripts/build.mjs",
     "build:validation": "vite build --config validation.vite.config.ts && node ../../scripts/write-manifest.mjs validation-dist",

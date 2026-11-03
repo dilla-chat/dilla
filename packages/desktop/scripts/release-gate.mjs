@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { appendFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
@@ -30,6 +31,11 @@ const OUTPUTS = Object.freeze({
  tree: value => COMMIT.test(value),
  run: value => /^[1-9]\d*$/.test(value),
  artifact_ids: value => /^[1-9]\d*(,[1-9]\d*)*$/.test(value),
+ // One API digest per artifact id, in the same order; the sign job re-checks them after the download.
+ artifact_digests: value => /^sha256:[a-f0-9]{64}(,sha256:[a-f0-9]{64})*$/.test(value),
+ // sha256 of the gate's ci-run.json and ci-jobs.json, re-checked after the download.
+ run_record: value => /^[a-f0-9]{64}$/.test(value),
+ jobs_record: value => /^[a-f0-9]{64}$/.test(value),
  previous: value => value === '' || TAG.test(value),
 });
 /** Validates every value before appending anything: a newline or "=" can never add an output. */
@@ -38,6 +44,7 @@ export function writeOutputs(file, values) {
  const keys = Object.keys(values);
  if (keys.length !== Object.keys(OUTPUTS).length || keys.some((key, i) => key !== Object.keys(OUTPUTS)[i])) throw new Error('Unexpected gate output set');
  for (const [key, check] of Object.entries(OUTPUTS)) if (typeof values[key] !== 'string' || !check(values[key])) throw new Error('Invalid gate output: ' + key);
+ if (values.artifact_ids.split(',').length !== values.artifact_digests.split(',').length) throw new Error('Invalid gate output: artifact_digests must pair with artifact_ids');
  appendFileSync(file, keys.map(key => `${key}=${values[key]}\n`).join(''));
 }
 
@@ -102,7 +109,8 @@ export async function runGate({ env, git, api, outputDirectory, now = Date.now()
  // 8. The green ci push run of exactly this commit, its jobs and its exact artifact set.
  const run = await findGreenPushRun(api, sha);
  const jobs = await fetchCiJobs(api, run.id);
- const { ids: artifactIds } = selectReleaseArtifacts(await listRunArtifacts(api, run.id));
+ const { ids: artifactIds, byName } = selectReleaseArtifacts(await listRunArtifacts(api, run.id));
+ const artifactDigests = Object.values(byName).map(artifact => artifact.digest);
 
  // 9. Not yet published, and newer than every published release of the channel.
  const published = [];
@@ -129,10 +137,12 @@ export async function runGate({ env, git, api, outputDirectory, now = Date.now()
 
  // Every check passed: write the gate's records, then the validated outputs.
  await mkdir(outputDirectory, { recursive: true, mode: 0o700 });
- await writeFile(join(outputDirectory, 'ci-run.json'), JSON.stringify(run) + '\n', { flag: 'wx' });
- await writeFile(join(outputDirectory, 'ci-jobs.json'), JSON.stringify(jobs) + '\n', { flag: 'wx' });
- writeOutputs(env.GITHUB_OUTPUT, { tag, version, channel, sha, tree, run: String(run.id), artifact_ids: artifactIds.join(','), previous: previous ?? '' });
- return { tag, version, channel, sha, tree, ciRun: run.id, artifactIds, previous };
+ const runBytes = Buffer.from(JSON.stringify(run) + '\n'), jobsBytes = Buffer.from(JSON.stringify(jobs) + '\n');
+ const runRecord = createHash('sha256').update(runBytes).digest('hex'), jobsRecord = createHash('sha256').update(jobsBytes).digest('hex');
+ await writeFile(join(outputDirectory, 'ci-run.json'), runBytes, { flag: 'wx' });
+ await writeFile(join(outputDirectory, 'ci-jobs.json'), jobsBytes, { flag: 'wx' });
+ writeOutputs(env.GITHUB_OUTPUT, { tag, version, channel, sha, tree, run: String(run.id), artifact_ids: artifactIds.join(','), artifact_digests: artifactDigests.join(','), run_record: runRecord, jobs_record: jobsRecord, previous: previous ?? '' });
+ return { tag, version, channel, sha, tree, ciRun: run.id, artifactIds, artifactDigests, runRecord, jobsRecord, previous };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
