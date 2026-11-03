@@ -1544,6 +1544,8 @@ const DR_ACTION_KINDS = { checkout: 'checkout', 'setup-node': 'setup-node', 'upl
 /** Exact env of the steps that see the event hints, the keys or the candidate before signing. */
 const DR_ENV = {
   'gate release-gate': { GH_TOKEN: '${{ github.token }}', HINT_TAG: '${{ github.event.workflow_run.head_branch }}', HINT_RUN: '${{ github.event.workflow_run.id }}' },
+  // The notes range starts at the gate's validated previous published release; the notes never read tags.
+  'collect release-notes generate': { GH_TOKEN: '${{ github.token }}', VERSION: '${{ needs.gate.outputs.version }}', SHA: '${{ needs.gate.outputs.sha }}', PREVIOUS: '${{ needs.gate.outputs.previous }}' },
   'sign release-candidate verify-and-rederive': { GH_TOKEN: '${{ github.token }}', VERSION: '${{ needs.gate.outputs.version }}', SHA: '${{ needs.gate.outputs.sha }}',
     TREE: '${{ needs.gate.outputs.tree }}', RUN: '${{ needs.gate.outputs.run }}', RUN_RECORD: '${{ needs.gate.outputs.run_record }}', JOBS_RECORD: '${{ needs.gate.outputs.jobs_record }}',
     PREVIOUS: '${{ needs.gate.outputs.previous }}', CANDIDATE_DIGEST: '${{ needs.collect.outputs.candidate_digest }}', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' },

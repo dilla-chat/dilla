@@ -145,6 +145,10 @@ test('signInJob refuses a staged slot whose public key is not in the pins', asyn
   s => { s.trust.sparkleNextPublicKey = rawPublic(generateKeyPairSync('ed25519').privateKey); },
   s => { s.env = { ...s.env, ...slotEnv('B', { ...s.next, sandbox: generateKeyPairSync('ed25519').privateKey }) }; },
   s => { s.env = { ...s.env, ...slotEnv('B', s.active) }; },
+  // The staged Sparkle key must be dedicated: not the staged metadata or sandbox key, nor any pinned one.
+  s => { s.next.sparkle = s.next.metadata; s.trust.sparkleNextPublicKey = rawPublic(s.next.metadata); s.env = { ...s.env, ...slotEnv('B', s.next) }; },
+  s => { s.next.sparkle = s.next.sandbox; s.trust.sparkleNextPublicKey = rawPublic(s.next.sandbox); s.env = { ...s.env, ...slotEnv('B', s.next) }; },
+  s => { s.next.sparkle = s.active.metadata; s.trust.sparkleNextPublicKey = rawPublic(s.active.metadata); s.env = { ...s.env, ...slotEnv('B', s.next) }; },
  ];
  for (const [index, change] of variants.entries()) {
   const s = await signingSetup({ staged: true });
@@ -159,9 +163,21 @@ test('signInJob refuses a staged slot whose public key is not in the pins', asyn
 
 test('no key file is ever created', async () => {
  const s = await signingSetup({ staged: true });
+ // The signing runs in a child whose TMPDIR and HOME are fresh, so a write to os.tmpdir() or $HOME is seen too.
+ const scratch = await mkdtemp(join(tmpdir(), 'dilla-sign-job-scratch-'));
  try {
+  const tmp = join(scratch, 'tmp'), home = join(scratch, 'home'); await mkdir(tmp); await mkdir(home);
+  await writeFile(join(s.root, 'trust-for-child.json'), JSON.stringify(s.trust));
+  const runner = join(s.root, 'run-sign.mjs');
+  await writeFile(runner, `const job = await import(${JSON.stringify(pathToFileURL(join(s.tools, 'scripts/release-sign-job.mjs')).href)});
+const { readFile } = await import('node:fs/promises');
+const trust = JSON.parse(await readFile(${JSON.stringify(join(s.root, 'trust-for-child.json'))}, 'utf8'));
+await job.signInJob({ env: process.env, version: ${JSON.stringify(s.fixture.version)}, candidateDirectory: ${JSON.stringify(s.candidate)}, outputDirectory: ${JSON.stringify(s.output)}, trust });
+`);
   const before = new Set(await filesUnder(s.root));
-  await s.job.signInJob({ env: { ...s.env }, version: s.fixture.version, candidateDirectory: s.candidate, outputDirectory: s.output, trust: s.trust });
+  const child = spawnSync(process.execPath, [runner], { env: { PATH: process.env.PATH, TMPDIR: tmp, HOME: home, ...s.env }, encoding: 'utf8', timeout: 120000 });
+  assert.equal(child.status, 0, child.stderr);
+  assert.deepEqual(await filesUnder(scratch), [], 'nothing is written to TMPDIR or HOME');
   const created = (await filesUnder(s.root)).filter(file => !before.has(file));
   assert.deepEqual(created.map(file => file.slice(s.output.length + 1)).sort(), (await readdir(s.output)).sort(), 'only the signed output is created');
   const forms = [...secretForms(s.active), ...secretForms(s.next)], buffers = [...secretBuffers(s.active), ...secretBuffers(s.next)];
@@ -171,7 +187,23 @@ test('no key file is ever created', async () => {
    for (const form of forms) assert.ok(!text.includes(form), `${file} holds a key form`);
    for (const bytes of buffers) assert.equal(content.indexOf(bytes), -1, `${file} holds key bytes`);
   }
- } finally { await s.cleanup(); }
+ } finally { await s.cleanup(); await rm(scratch, { recursive: true, force: true }); }
+});
+
+test('the Sparkle seeds are imported as PKCS8 DER, never turned into a string, and the DER is zeroed', async () => {
+ const s = await signingSetup({ staged: true });
+ const seeds = [seedOf(s.active.sparkle), seedOf(s.next.sparkle)];
+ const holdsSeed = buffer => Buffer.isBuffer(buffer) && seeds.some(seed => buffer.length >= 32 && buffer.indexOf(seed) !== -1);
+ const stringified = [], concatenated = [];
+ const toString = Buffer.prototype.toString, concat = Buffer.concat;
+ Buffer.prototype.toString = function (...args) { if (holdsSeed(this)) stringified.push(args[0]); return toString.apply(this, args); };
+ Buffer.concat = function (...args) { const out = concat.apply(Buffer, args); if (holdsSeed(out)) concatenated.push(out); return out; };
+ try {
+  await s.job.signInJob({ env: { ...s.env }, version: s.fixture.version, candidateDirectory: s.candidate, outputDirectory: s.output, trust: s.trust });
+ } finally { Buffer.prototype.toString = toString; Buffer.concat = concat; await s.cleanup(); }
+ assert.deepEqual(stringified, [], 'a seed Buffer was turned into a string');
+ assert.ok(concatenated.length >= 2, 'both seeds are imported through a PKCS8 DER Buffer');
+ for (const der of concatenated) assert.ok(der.every(byte => byte === 0), 'the PKCS8 DER holding a seed is zeroed');
 });
 
 test('process.env no longer holds the key variables while signing', async () => {

@@ -15,6 +15,16 @@ function validKeys(keys) {
  return keys;
 }
 
+// The PKCS8 DER prefix of an Ed25519 private key; the 32-byte seed follows it.
+const ED25519_PKCS8_PREFIX = Buffer.from('302e020100300506032b657004220420', 'hex');
+/** The Sparkle private key from its 32-byte seed, imported as PKCS8 DER so the seed never becomes a
+ * (non-zeroable) string; the DER Buffer is zeroed after import. The caller zeroes the seed. */
+export function sparkleKeyFromSeed(seed) {
+ if (!Buffer.isBuffer(seed) || seed.length !== 32) throw new Error('Sparkle signer must use its 32-byte seed format');
+ const der = Buffer.concat([ED25519_PKCS8_PREFIX, seed]);
+ try { return createPrivateKey({ key: der, format: 'der', type: 'pkcs8' }); } finally { der.fill(0); }
+}
+
 /** Signs an accepted candidate. Keys come either from a keys directory (offline
  * signing) or as in-memory key objects (the release workflow), never both; with
  * `keys`, nothing is read from or written to a keys directory. Publishing
@@ -31,8 +41,8 @@ export async function signDesktopRelease({ version, artifactsDirectory, keysDire
  // A private copy: the caller's seed Buffer stays the caller's to zero.
  const seed = keys ? Buffer.from(keys.sparkleSeed) : Buffer.from((await readFile(join(keysDirectory, 'sparkle-private.key'), 'utf8')).trim(), 'base64');
  if (seed.length !== 32) { seed.fill(0); throw new Error('Sparkle signer must use its 32-byte seed format'); }
- const sparkleKey = createPrivateKey({ key: { kty: 'OKP', crv: 'Ed25519', d: seed.toString('base64url'), x: Buffer.from(trust.sparklePublicKey, 'base64').toString('base64url') }, format: 'jwk' });
- seed.fill(0);
+ let sparkleKey;
+ try { sparkleKey = sparkleKeyFromSeed(seed); } finally { seed.fill(0); }
  if (createPublicKey(sparkleKey).export({ type: 'spki', format: 'der' }).subarray(-32).toString('base64') !== trust.sparklePublicKey) throw new Error('Sparkle signer does not match installed trust');
  const component = parsePublicConfiguration(await readFile(new URL('../linux-sandbox-component.json', import.meta.url), 'utf8'));
  assertDedicatedKeys(component, trust);

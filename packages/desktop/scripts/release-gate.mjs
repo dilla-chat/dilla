@@ -3,7 +3,7 @@ import { appendFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { DOC_PATTERNS } from '../../../scripts/ci-areas.mjs';
+import { classifyFile } from '../../../scripts/ci-areas.mjs';
 import { REPOSITORY, createGithubApi, hardenedGit, findGreenPushRun, fetchCiJobs, resolveTagCommit, listRunArtifacts, selectReleaseArtifacts } from './ci-run.mjs';
 import { DESKTOP_TAG, compareDesktopVersions, previousDesktopVersion } from './release-notes.mjs';
 
@@ -37,20 +37,28 @@ const OUTPUTS = Object.freeze({
  jobs_record: value => /^[a-f0-9]{64}$/.test(value),
  previous: value => value === '' || TAG.test(value),
 });
-/** Validates every value before appending anything: a newline or "=" can never add an output. */
-export function writeOutputs(file, values) {
+/** Validates the output file and every value: a newline or "=" can never add an output. */
+export function validateOutputs(file, values) {
  if (typeof file !== 'string' || !file) throw new Error('Missing Actions output file');
  const keys = Object.keys(values);
  if (keys.length !== Object.keys(OUTPUTS).length || keys.some((key, i) => key !== Object.keys(OUTPUTS)[i])) throw new Error('Unexpected gate output set');
  for (const [key, check] of Object.entries(OUTPUTS)) if (typeof values[key] !== 'string' || !check(values[key])) throw new Error('Invalid gate output: ' + key);
  if (values.artifact_ids.split(',').length !== values.artifact_digests.split(',').length) throw new Error('Invalid gate output: artifact_digests must pair with artifact_ids');
- appendFileSync(file, keys.map(key => `${key}=${values[key]}\n`).join(''));
+}
+/** Validates every value before appending anything. */
+export function writeOutputs(file, values) {
+ validateOutputs(file, values);
+ appendFileSync(file, Object.keys(values).map(key => `${key}=${values[key]}\n`).join(''));
 }
 
 function succeeds(git, args) { try { git(args); return true; } catch { return false; } }
-/** True when the two commits have no difference outside the repository's documentation patterns. */
+/** True when every path that differs between the two commits is documentation by the CI classifier itself
+ * (classifyFile: a directory named LICENSE or DCO is code). Any git error counts as a difference. */
 function codeEqual(git, a, b) {
- return succeeds(git, ['diff', '--quiet', '--no-renames', '--no-ext-diff', '--no-textconv', a, b, '--', '.', ...DOC_PATTERNS.map(pattern => `:(exclude)${pattern}`)]);
+ let names;
+ try { names = git(['diff', '--name-only', '-z', '--no-renames', '--no-ext-diff', '--no-textconv', a, b, '--']); } catch { return false; }
+ if (typeof names !== 'string') return false;
+ return names.split('\0').filter(Boolean).every(path => classifyFile(path).docs === true);
 }
 async function posture(label, read) {
  try { return await read(); } catch (error) { throw new Error(`Cannot read the ${label} posture: ${error.message}`); }
@@ -125,22 +133,23 @@ export async function runGate({ env, git, api, outputDirectory, now = Date.now()
   const other = TAG.exec(name)[1];
   if ((other.includes('-beta.') ? 'beta' : 'stable') === channel && compareDesktopVersions(version, other) <= 0) throw new Error(`desktop ${version} must be greater than every published ${channel} release (${other})`);
  }
- const refs = await api(`${R}/git/matching-refs/tags/desktop-v`);
- if (!Array.isArray(refs)) throw new Error('Malformed tag list');
- const previous = previousDesktopVersion(refs.map(ref => typeof ref?.ref === 'string' && ref.ref.startsWith('refs/tags/') ? ref.ref.slice('refs/tags/'.length) : '').filter(Boolean), version);
+ // The notes range starts at the newest published release below this one; a bare or draft tag is never one.
+ const previous = previousDesktopVersion(published, version);
 
  // 10. Main's Linux sandbox component stays valid long enough to update into.
  let expiresAt;
  try { expiresAt = Date.parse(JSON.parse(git(['show', 'HEAD:packages/desktop/linux-sandbox-component.json'])).expiresAt); } catch { expiresAt = NaN; }
  if (!Number.isFinite(expiresAt) || expiresAt - Number(now) < SANDBOX_MINIMUM_VALIDITY) throw new Error('The Linux sandbox component expires within 30 days; refresh it first');
 
- // Every check passed: write the gate's records, then the validated outputs.
- await mkdir(outputDirectory, { recursive: true, mode: 0o700 });
+ // Every check passed: validate the outputs, write the gate's records, then append the outputs.
  const runBytes = Buffer.from(JSON.stringify(run) + '\n'), jobsBytes = Buffer.from(JSON.stringify(jobs) + '\n');
  const runRecord = createHash('sha256').update(runBytes).digest('hex'), jobsRecord = createHash('sha256').update(jobsBytes).digest('hex');
+ const outputs = { tag, version, channel, sha, tree, run: String(run.id), artifact_ids: artifactIds.join(','), artifact_digests: artifactDigests.join(','), run_record: runRecord, jobs_record: jobsRecord, previous: previous ?? '' };
+ validateOutputs(env.GITHUB_OUTPUT, outputs);
+ await mkdir(outputDirectory, { recursive: true, mode: 0o700 });
  await writeFile(join(outputDirectory, 'ci-run.json'), runBytes, { flag: 'wx' });
  await writeFile(join(outputDirectory, 'ci-jobs.json'), jobsBytes, { flag: 'wx' });
- writeOutputs(env.GITHUB_OUTPUT, { tag, version, channel, sha, tree, run: String(run.id), artifact_ids: artifactIds.join(','), artifact_digests: artifactDigests.join(','), run_record: runRecord, jobs_record: jobsRecord, previous: previous ?? '' });
+ writeOutputs(env.GITHUB_OUTPUT, outputs);
  return { tag, version, channel, sha, tree, ciRun: run.id, artifactIds, artifactDigests, runRecord, jobsRecord, previous };
 }
 

@@ -3,7 +3,7 @@ import { appendFileSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { signDesktopRelease } from './release-feed.mjs';
+import { signDesktopRelease, sparkleKeyFromSeed } from './release-feed.mjs';
 import { parsePublicConfiguration } from './linux-sandbox-package.mjs';
 
 /**
@@ -77,7 +77,10 @@ function stagedPins(staged, active, trust, component) {
  if (sandbox === rawOf(active.sandbox) || !component.publicKeys.includes(sandbox)) throw new Error('The staged sandbox key is not in the pins');
  const sparkle = trust.sparkleNextPublicKey;
  if (typeof sparkle !== 'string' || !/^[A-Za-z0-9+/]{43}=$/.test(sparkle) || sparkle === trust.sparklePublicKey) throw new Error('The staged Sparkle key is not in the pins');
- const sparkleKey = createPrivateKey({ key: { kty: 'OKP', crv: 'Ed25519', d: staged.sparkleSeed.toString('base64url'), x: Buffer.from(sparkle, 'base64').toString('base64url') }, format: 'jwk' });
+ // Dedicated keys: the staged Sparkle key is none of the metadata or sandbox keys, staged or pinned.
+ const others = new Set([rawOf(staged.metadata), sandbox, ...component.publicKeys, ...trust.metadataPublicKeys.map(pem => rawOf(pem))]);
+ if (others.has(sparkle)) throw new Error('The staged Sparkle key is not a dedicated key in the pins');
+ const sparkleKey = sparkleKeyFromSeed(staged.sparkleSeed);
  if (rawOf(sparkleKey) !== sparkle) throw new Error('The staged Sparkle key is not in the pins');
  return { metadata, sandbox, sparkle, sparkleKey };
 }

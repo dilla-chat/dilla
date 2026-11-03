@@ -136,6 +136,28 @@ test('gate allows a tagged commit that differs from main\'s HEAD only in docs', 
  try { assert.equal((await s.go()).sha, s.shas.tagged); } finally { s.cleanup(); }
 });
 
+test('gate treats a root directory named LICENSE or DCO as code, as classifyFile does', async () => {
+ for (const name of ['LICENSE', 'LICENSE-APACHE', 'DCO']) {
+  const s = scenario({ layout: (repo, c1) => { const c2 = repo.commit({ [`${name}/evil.js`]: 'export const x = 1;\n' }, 'code under a doc name'); return { tagged: c1, head: c2, main: c2 }; } });
+  try { await refused(s, /code difference/i); } finally { s.cleanup(); }
+ }
+});
+
+test('gate takes previous from published releases only, never from a bare or draft tag', async () => {
+ const s = scenario();
+ try {
+  s.routes[`${R}/releases?per_page=100&page=1`] = [{ tag_name: 'desktop-v1.2.0', draft: false }, { tag_name: 'desktop-v1.2.2', draft: true }, { tag_name: 'desktop-v1.3.0-beta.1', draft: false }];
+  s.routes[`${R}/git/matching-refs/tags/desktop-v`] = [{ ref: 'refs/tags/desktop-v1.2.0' }, { ref: 'refs/tags/desktop-v1.2.2' }, { ref: 'refs/tags/desktop-v1.2.2-beta.9' }, { ref: 'refs/tags/desktop-v1.2.3' }];
+  assert.equal((await s.go()).previous, 'desktop-v1.2.0');
+  assert.ok(!s.calls.some(path => path.includes('matching-refs')), 'tags are not consulted');
+ } finally { s.cleanup(); }
+});
+
+test('gate validates its outputs before writing any record file', async () => {
+ const s = scenario();
+ try { await refused(s, /output/i, { GITHUB_OUTPUT: '' }); } finally { s.cleanup(); }
+});
+
 test('gate resolves an annotated tag through the API ignoring the tag message', async () => {
  const s = scenario();
  try {

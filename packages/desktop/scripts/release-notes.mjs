@@ -63,25 +63,39 @@ export async function generateNotes({ api, version, sha, previous }) {
  if (previous !== null && (typeof previous !== 'string' || !DESKTOP_TAG.test(previous))) throw new Error('Invalid previous desktop tag');
  const header = `# Dilla desktop ${version}\n\n`;
  if (previous === null) return header + 'First desktop release.\n';
- const commits = [];
+ const commits = new Set();
+ let oldest = Infinity;
  for (let page = 1; ; page++) {
   const list = (await api(`${REPO}/compare/${previous}...${sha}?per_page=100&page=${page}`))?.commits;
   if (!Array.isArray(list)) throw new Error('Malformed compare response');
-  for (const entry of list) { if (typeof entry?.sha !== 'string' || !COMMIT.test(entry.sha)) throw new Error('Malformed compare commit'); commits.push(entry.sha); }
+  for (const entry of list) {
+   const date = Date.parse(entry?.commit?.committer?.date);
+   if (typeof entry?.sha !== 'string' || !COMMIT.test(entry.sha) || !Number.isFinite(date)) throw new Error('Malformed compare commit');
+   commits.add(entry.sha); oldest = Math.min(oldest, date);
+  }
   if (list.length < 100) break;
   if (page >= 100) throw new Error('Too many commits since the previous desktop release');
  }
+ // One listing of closed PRs into main, newest update first, instead of a lookup per commit (rate limit).
+ // A PR whose merge commit is in the range was merged, and so last updated, no earlier than the range's
+ // oldest commit; the listing stops at the first page that ends a day before it.
  const titles = new Map();
- for (const commit of commits) {
-  const pulls = await api(`${REPO}/commits/${commit}/pulls?per_page=100`);
+ for (let page = 1; commits.size; page++) {
+  const pulls = await api(`${REPO}/pulls?state=closed&base=main&sort=updated&direction=desc&per_page=100&page=${page}`);
   if (!Array.isArray(pulls)) throw new Error('Malformed pull request list');
+  let last = Infinity;
   for (const pull of pulls) {
-   // Only number, merge state, base branch and title are ever read.
+   // Only number, merge state and commit, base branch, update time and title are ever read.
+   const updated = Date.parse(pull.updated_at);
+   if (!Number.isFinite(updated)) throw new Error('Malformed pull request list');
+   last = updated;
    const number = pull.number;
-   if (!Number.isSafeInteger(number) || number < 1 || !pull.merged_at || pull.base?.ref !== 'main' || titles.has(number)) continue;
+   if (!Number.isSafeInteger(number) || number < 1 || !pull.merged_at || pull.base?.ref !== 'main' || titles.has(number) || !commits.has(pull.merge_commit_sha)) continue;
    const title = pull.title;
    titles.set(number, typeof title === 'string' ? title : '');
   }
+  if (pulls.length < 100 || last < oldest - 86400000) break;
+  if (page >= 100) throw new Error('Too many pull requests since the previous desktop release');
  }
  const numbers = [...titles.keys()].sort((a, b) => a - b);
  if (!numbers.length) return header + 'No pull requests were merged since the previous desktop release.\n';
@@ -92,17 +106,17 @@ export async function generateNotes({ api, version, sha, previous }) {
 
 export async function cli(argv, env, { fetchImpl = fetch } = {}) {
  const [command, version, sha, output] = argv;
- if (command !== 'generate' || argv.length !== 4) throw new Error('Usage: release-notes.mjs generate VERSION SHA OUTPUT_FILE');
+ if (command !== 'generate' || argv.length !== 4) throw new Error('Usage: PREVIOUS=<gate previous> release-notes.mjs generate VERSION SHA OUTPUT_FILE');
  parseDesktopVersion(version);
  if (!COMMIT.test(sha)) throw new Error('Invalid commit sha');
+ // The gate's validated `previous` (the newest published release below VERSION, or empty); tags are never read here.
+ const previous = env.PREVIOUS;
+ if (typeof previous !== 'string' || (previous !== '' && !DESKTOP_TAG.test(previous))) throw new Error('Invalid PREVIOUS');
  // Exclusive create before any network use: an existing file is never overwritten.
  const file = resolve(output), handle = await open(file, 'wx', 0o644);
  try {
   const api = createGithubApi({ token: env.GH_TOKEN, fetchImpl });
-  const refs = await api(`${REPO}/git/matching-refs/tags/desktop-v`);
-  if (!Array.isArray(refs)) throw new Error('Malformed tag list');
-  const tags = refs.map(ref => typeof ref?.ref === 'string' && ref.ref.startsWith('refs/tags/') ? ref.ref.slice('refs/tags/'.length) : null).filter(Boolean);
-  await handle.writeFile(await generateNotes({ api, version, sha, previous: previousDesktopVersion(tags, version) }));
+  await handle.writeFile(await generateNotes({ api, version, sha, previous: previous || null }));
   await handle.close();
  } catch (error) {
   await handle.close().catch(() => {});

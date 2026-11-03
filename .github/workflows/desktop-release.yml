@@ -110,6 +110,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.gate.outputs.version }}
           SHA: ${{ needs.gate.outputs.sha }}
+          PREVIOUS: ${{ needs.gate.outputs.previous }}
       - name: Derive acceptance.json and the automated attestation
         run: node packages/desktop/scripts/release-assemble.mjs assemble "$VERSION" "$RUNNER_TEMP/candidate" "$TREE"
         env:

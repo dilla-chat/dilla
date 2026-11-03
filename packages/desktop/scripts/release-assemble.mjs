@@ -87,12 +87,6 @@ async function readJson(file) { await regularFile(file, file); return JSON.parse
 
 export async function cli(argv) {
  const [command, ...args] = argv;
- if (command === 'collect' && args.length === 3) {
-  // The publish job: the same exact-set collection, without gate records (it re-reads the run from the API).
-  const [version, downloadRoot, candidateDirectory] = args.map((value, i) => i === 0 ? value : resolve(value));
-  await collectArtifacts({ downloadRoot, candidateDirectory, version });
-  return 'Collected the accepted CI artifacts without merging.';
- }
  if (command === 'collect' && args.length === 4) {
   const [version, downloadRoot, candidateDirectory, gateDirectory] = args.map((value, i) => i === 0 ? value : resolve(value));
   await collectArtifacts({ downloadRoot, candidateDirectory, version });
@@ -109,7 +103,7 @@ export async function cli(argv) {
   await writeFile(join(candidateDirectory, 'acceptance.json'), JSON.stringify(acceptance, null, 2) + '\n', { flag: 'wx' });
   return 'Derived acceptance.json with the automated CI attestation.';
  }
- throw new Error('Usage: release-assemble.mjs collect VERSION DOWNLOAD_ROOT CANDIDATE_DIR [GATE_DIR] | assemble VERSION CANDIDATE_DIR COMMIT_TREE');
+ throw new Error('Usage: release-assemble.mjs collect VERSION DOWNLOAD_ROOT CANDIDATE_DIR GATE_DIR | assemble VERSION CANDIDATE_DIR COMMIT_TREE');
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) console.log(await cli(process.argv.slice(2)));

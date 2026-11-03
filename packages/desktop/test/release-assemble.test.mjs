@@ -164,13 +164,12 @@ test('assemble CLI never overwrites acceptance.json', async () => {
  } finally { await s.cleanup(); }
 });
 
-test('collect without a gate directory (the publish job) copies exactly the artifact files', async () => {
+test('collect requires the gate directory: the 3-argument form is gone', async () => {
  const s = await setup();
  try {
-  assert.equal(cli('collect', s.version, s.downloadRoot, s.candidate).status, 0);
-  const expected = Object.values(s.fixture.files).flatMap(byTarget => Object.values(byTarget).flat()).sort();
-  assert.deepEqual((await readdir(s.candidate)).sort(), expected);
-  await writeFile(join(s.downloadRoot, 'desktop-performance-linux-x64', 'ci-run.json'), '{}');
-  assert.notEqual(cli('collect', s.version, s.downloadRoot, join(s.root, 'second')).status, 0, 'the same exact-set rules');
+  const result = cli('collect', s.version, s.downloadRoot, s.candidate);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Usage/);
+  await assert.rejects(readdir(s.candidate), /ENOENT/, 'nothing is collected');
  } finally { await s.cleanup(); }
 });

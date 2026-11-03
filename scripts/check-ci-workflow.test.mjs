@@ -2511,6 +2511,12 @@ test('an extra or missing key in the Sign step env is reported', () => {
   reported({ [KEYED]: edit(doc => { step(doc, 'sign', 'Sign (').run += ' --debug'; }) }, 'run changed');
 });
 
+test('the notes step takes previous from the gate output, not from tags or another value', () => {
+  reported({ [KEYED]: edit(doc => { delete step(doc, 'collect', 'Generate release notes').env.PREVIOUS; }) }, 'missing PREVIOUS');
+  reported({ [KEYED]: edit(doc => { step(doc, 'collect', 'Generate release notes').env.PREVIOUS = ''; }) }, 'empty PREVIOUS');
+  reported({ [KEYED]: edit(doc => { step(doc, 'collect', 'Generate release notes').env.EXTRA = 'x'; }) }, 'extra env');
+});
+
 test('defaults, shell, working-directory, container, services, NODE_OPTIONS in sign are reported', () => {
   for (const [label, change] of [
     ['defaults', doc => { doc.jobs.sign.defaults = { run: { shell: 'bash' } }; }],
