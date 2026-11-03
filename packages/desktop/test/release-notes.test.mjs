@@ -208,5 +208,5 @@ test('rendered notes contain no anchor except #n', { skip: process.env.GH_TOKEN 
  const list = html.slice(html.search(/<ul\b/i));
  assert.ok(list.length > 0 && (list.match(/<li>/gi) ?? []).length === hostile.length);
  for (const [anchor, inner] of list.matchAll(/<a\b[^>]*>([\s\S]*?)<\/a>/gi)) assert.match(inner, /^#\d+$/, anchor);
- for (const item of html.matchAll(/<li>([\s\S]*?)<\/li>/gi)) assert.match(item[1], /^(?:<a\b[^>]*>#\d+<\/a>|#\d+) <code>[\s\S]*<\/code>$/, item[1]);
+ for (const item of html.matchAll(/<li>([\s\S]*?)<\/li>/gi)) assert.match(item[1], /^(?:<a\b[^>]*>#\d+<\/a>|#\d+) <code(?: class="notranslate")?>[^<]*<\/code>$/, item[1]);
 });
