@@ -4,10 +4,10 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/jonasthim/dilla/internal/auth"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/server"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/auth"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/server"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // GetBotActorChannelAuthority resolves a human member's current permissions

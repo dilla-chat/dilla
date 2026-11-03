@@ -9,7 +9,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/cborx"
 )
 
 func testNativeBotCredential(t *testing.T) (credential, dskPub []byte) {

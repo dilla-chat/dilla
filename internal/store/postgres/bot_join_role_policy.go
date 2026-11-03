@@ -5,8 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 func (r *Repo) SetBotJoinRolePolicy(ctx context.Context, installation, role, approver id.ID, at int64) error {

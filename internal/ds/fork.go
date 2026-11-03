@@ -5,8 +5,8 @@ import (
 	"errors"
 	"unicode/utf8"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // forkQuorum is how many DISTINCT reporter devices quarantine a committer. The distinctness is the

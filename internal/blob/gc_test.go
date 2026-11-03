@@ -15,14 +15,14 @@ import (
 	"github.com/pressly/goose/v3"
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/jonasthim/dilla/internal/api"
-	"github.com/jonasthim/dilla/internal/blob"
-	"github.com/jonasthim/dilla/internal/clock"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/obs"
-	"github.com/jonasthim/dilla/internal/store"
-	"github.com/jonasthim/dilla/internal/store/sqlite"
-	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
+	"github.com/dilla-chat/dilla/internal/api"
+	"github.com/dilla-chat/dilla/internal/blob"
+	"github.com/dilla-chat/dilla/internal/clock"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/obs"
+	"github.com/dilla-chat/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/store/sqlite"
+	sqlitemigrations "github.com/dilla-chat/dilla/internal/store/sqlite/migrations"
 )
 
 // gcHarness is a real migrated SQLite repository, a real blob directory, a fake

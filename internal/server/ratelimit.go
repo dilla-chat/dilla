@@ -7,8 +7,8 @@ import (
 
 	"golang.org/x/time/rate"
 
-	"github.com/jonasthim/dilla/internal/clock"
-	"github.com/jonasthim/dilla/internal/config"
+	"github.com/dilla-chat/dilla/internal/clock"
+	"github.com/dilla-chat/dilla/internal/config"
 )
 
 // Class is one metered thing: a name, a rate and a burst.

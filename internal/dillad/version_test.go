@@ -12,12 +12,12 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/jonasthim/dilla/internal/api"
-	"github.com/jonasthim/dilla/internal/auth"
-	"github.com/jonasthim/dilla/internal/cborx"
-	"github.com/jonasthim/dilla/internal/gateway"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/api"
+	"github.com/dilla-chat/dilla/internal/auth"
+	"github.com/dilla-chat/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/gateway"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // Session capability negotiation adds bot wire 3 while preserving wire 2. Wire 1 remains

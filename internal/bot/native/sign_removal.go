@@ -5,9 +5,9 @@ import (
 	"errors"
 	"math"
 
-	"github.com/jonasthim/dilla/internal/bot/protocol"
-	"github.com/jonasthim/dilla/internal/cborx"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/bot/protocol"
+	"github.com/dilla-chat/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // SignRemoval asks the native identity to sign a short-lived moderator request.

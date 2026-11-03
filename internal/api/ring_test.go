@@ -16,11 +16,11 @@ import (
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/webhook"
 
-	"github.com/jonasthim/dilla/internal/api"
-	"github.com/jonasthim/dilla/internal/cborx"
-	"github.com/jonasthim/dilla/internal/gateway"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/api"
+	"github.com/dilla-chat/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/gateway"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // ringFrame is one op 53 a device received, decoded: [call_id, channel_id, user_id, state, expires_ts].

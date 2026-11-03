@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/dilla-chat/dilla/internal/auth"
 )
 
 // unformat is the spelling the stored hash is taken over: the code without the

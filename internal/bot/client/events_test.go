@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	botprotocol "github.com/jonasthim/dilla/internal/bot/protocol"
-	"github.com/jonasthim/dilla/internal/id"
+	botprotocol "github.com/dilla-chat/dilla/internal/bot/protocol"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 func TestStructuralEventsPageDecodesStrictlyAndAcknowledges(t *testing.T) {

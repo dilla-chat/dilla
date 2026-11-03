@@ -13,12 +13,12 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/jonasthim/dilla/internal/cborx"
-	"github.com/jonasthim/dilla/internal/clock"
-	"github.com/jonasthim/dilla/internal/config"
-	"github.com/jonasthim/dilla/internal/dillad"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/clock"
+	"github.com/dilla-chat/dilla/internal/config"
+	"github.com/dilla-chat/dilla/internal/dillad"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // coldstart_test.go is gap G5's runtime proof (web-1 task 10, C12). A group in which nobody commits

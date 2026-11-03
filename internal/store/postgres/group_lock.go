@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // LockGroup is the cross-process fence shared by human and managed-Bot message

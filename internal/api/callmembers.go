@@ -8,10 +8,10 @@ import (
 
 	"github.com/livekit/protocol/livekit"
 
-	botaccess "github.com/jonasthim/dilla/internal/bot/access"
-	"github.com/jonasthim/dilla/internal/ds"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	botaccess "github.com/dilla-chat/dilla/internal/bot/access"
+	"github.com/dilla-chat/dilla/internal/ds"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // The call group's members against the room (server-half fix wave, integration round): which

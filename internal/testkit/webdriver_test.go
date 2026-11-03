@@ -37,11 +37,11 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/jonasthim/dilla/internal/api"
-	"github.com/jonasthim/dilla/internal/cborx"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
-	"github.com/jonasthim/dilla/internal/testkit"
+	"github.com/dilla-chat/dilla/internal/api"
+	"github.com/dilla-chat/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/testkit"
 )
 
 var hex32 = regexp.MustCompile(`^[0-9a-f]{32}$`)

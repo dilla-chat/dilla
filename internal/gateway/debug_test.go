@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // debugUntil polls Debug until ok accepts the report: the writer counts a frame written only

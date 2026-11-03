@@ -5,8 +5,8 @@ package main
 import (
 	"log/slog"
 
-	"github.com/jonasthim/dilla/internal/bot/client"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 func logBotRateLimit(logger *slog.Logger, installation id.ID, refusal *client.APIError) {

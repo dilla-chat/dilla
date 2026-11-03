@@ -15,7 +15,7 @@ import (
 	"github.com/pion/webrtc/v4/pkg/media"
 	"github.com/pion/webrtc/v4/pkg/media/ivfreader"
 
-	"github.com/jonasthim/dilla/internal/sframe"
+	"github.com/dilla-chat/dilla/internal/sframe"
 )
 
 // h264Fmtp is the one H.264 registration dilla negotiates (DEV-06): packetization mode 1,

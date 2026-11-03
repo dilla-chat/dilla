@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 var ErrUnauthorized = errors.New("bot runtime: invalid credential")

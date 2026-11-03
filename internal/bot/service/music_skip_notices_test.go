@@ -13,13 +13,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/bot/client"
-	helperpkg "github.com/jonasthim/dilla/internal/bot/helper"
-	"github.com/jonasthim/dilla/internal/bot/music"
-	"github.com/jonasthim/dilla/internal/bot/native"
-	"github.com/jonasthim/dilla/internal/bot/protocol"
-	"github.com/jonasthim/dilla/internal/cborx"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/bot/client"
+	helperpkg "github.com/dilla-chat/dilla/internal/bot/helper"
+	"github.com/dilla-chat/dilla/internal/bot/music"
+	"github.com/dilla-chat/dilla/internal/bot/native"
+	"github.com/dilla-chat/dilla/internal/bot/protocol"
+	"github.com/dilla-chat/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 func TestMusicAnnounceRegistersPausedDestinationBeforeStart(t *testing.T) {

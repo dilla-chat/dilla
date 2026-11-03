@@ -11,9 +11,9 @@ import (
 
 	"github.com/livekit/protocol/livekit"
 
-	"github.com/jonasthim/dilla/internal/api"
-	"github.com/jonasthim/dilla/internal/auth"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/api"
+	"github.com/dilla-chat/dilla/internal/auth"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // shareEnv is an open call with the owner's device a leaf, and n more devices of the owner, each a

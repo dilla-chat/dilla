@@ -5,10 +5,10 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/api"
-	"github.com/jonasthim/dilla/internal/bot/protocol"
-	"github.com/jonasthim/dilla/internal/cborx"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/api"
+	"github.com/dilla-chat/dilla/internal/bot/protocol"
+	"github.com/dilla-chat/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 func TestHumanWarningRequiresModeratorAndReturnsAcceptedAction(t *testing.T) {

@@ -9,9 +9,9 @@ import (
 
 	"github.com/livekit/protocol/livekit"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/server"
-	"github.com/jonasthim/dilla/internal/sfu"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/server"
+	"github.com/dilla-chat/dilla/internal/sfu"
 )
 
 // clientProto is the v0 query parameter both livekit-client 2.22.3 and the Go SDK send.

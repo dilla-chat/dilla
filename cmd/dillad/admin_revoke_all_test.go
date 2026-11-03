@@ -5,10 +5,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/auth"
-	"github.com/jonasthim/dilla/internal/exit"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/auth"
+	"github.com/dilla-chat/dilla/internal/exit"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // sessionLive reports whether the bearer token still names a session.

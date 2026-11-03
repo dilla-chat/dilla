@@ -14,7 +14,7 @@ import (
 	"github.com/caddyserver/certmagic"
 	"github.com/pelletier/go-toml/v2"
 
-	"github.com/jonasthim/dilla/internal/config"
+	"github.com/dilla-chat/dilla/internal/config"
 )
 
 // TLSMode is config.TLSMode: dilla.toml's one mode switch. The four spellings

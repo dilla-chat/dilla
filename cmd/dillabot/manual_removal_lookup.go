@@ -6,9 +6,9 @@ import (
 	"context"
 	"math"
 
-	"github.com/jonasthim/dilla/internal/bot/client"
-	"github.com/jonasthim/dilla/internal/bot/service"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/bot/service"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 type manualRemovalLookup struct{ Session *client.Session }

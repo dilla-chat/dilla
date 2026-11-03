@@ -4,7 +4,7 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // KeyPackageInventory is the server's current directory snapshot for one

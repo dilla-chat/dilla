@@ -13,14 +13,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/bot/client"
-	"github.com/jonasthim/dilla/internal/bot/music"
-	"github.com/jonasthim/dilla/internal/bot/music/persistence"
-	"github.com/jonasthim/dilla/internal/bot/native"
-	"github.com/jonasthim/dilla/internal/bot/protocol"
-	botstrings "github.com/jonasthim/dilla/internal/bot/strings"
-	"github.com/jonasthim/dilla/internal/cborx"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/bot/music"
+	"github.com/dilla-chat/dilla/internal/bot/music/persistence"
+	"github.com/dilla-chat/dilla/internal/bot/native"
+	"github.com/dilla-chat/dilla/internal/bot/protocol"
+	botstrings "github.com/dilla-chat/dilla/internal/bot/strings"
+	"github.com/dilla-chat/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 const musicNoticeQueueLimit = 32

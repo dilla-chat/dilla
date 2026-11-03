@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // ErrCompatibilityUnavailable is returned when the gateway cannot resolve a scoped resource or

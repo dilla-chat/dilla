@@ -551,7 +551,7 @@ test('Rust CI and release setup use the pinned rustup toolchain without third-pa
 });
 
 // The go job's test step: every package but internal/ds and internal/api, which go-ds and go-api run (CI budget, fix wave).
-const GO_TEST = 'go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx -e github.com/jonasthim/dilla/internal/ds -e github.com/jonasthim/dilla/internal/api)';
+const GO_TEST = 'go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx -e github.com/dilla-chat/dilla/internal/ds -e github.com/dilla-chat/dilla/internal/api)';
 
 /** The browser jobs of GOOD, generated from BROWSER_WEB_JOBS: one job per engine, suite and web shard. */
 function browserJobsFixture() {
@@ -723,7 +723,7 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev
       - run: go vet ./...
       - run: CGO_ENABLED=0 go build -tags dillapins ./internal/deps
-      - run: go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx -e github.com/jonasthim/dilla/internal/ds -e github.com/jonasthim/dilla/internal/api)
+      - run: go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx -e github.com/dilla-chat/dilla/internal/ds -e github.com/dilla-chat/dilla/internal/api)
       - run: ${NON_RACE_STEP}
       - run: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' ./cmd/dillad
 
@@ -1219,7 +1219,7 @@ test('a go job whose test step is narrowed to a package list is reported', () =>
 // CI budget (fix wave): the go job leaves out internal/ds and nothing else, and go-ds runs it.
 test('a go job that leaves out more than internal/ds and internal/api is reported', () => {
   const problems = checkWorkflow(
-    fixture(GOOD.replace('-e github.com/jonasthim/dilla/internal/api)', '-e github.com/jonasthim/dilla/internal/api -e github.com/jonasthim/dilla/internal/store)')),
+    fixture(GOOD.replace('-e github.com/dilla-chat/dilla/internal/api)', '-e github.com/dilla-chat/dilla/internal/api -e github.com/dilla-chat/dilla/internal/store)')),
   );
   assert.ok(problems.some((p) => p.includes('must be exactly')), problems.join('\n'));
 });
@@ -1301,7 +1301,7 @@ test('a go-api job with a shorter budget is reported', () => {
 });
 
 test('a go job that stopped leaving out internal/api is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace(' -e github.com/jonasthim/dilla/internal/api', '')));
+  const problems = checkWorkflow(fixture(GOOD.replace(' -e github.com/dilla-chat/dilla/internal/api', '')));
   assert.ok(problems.some((p) => p.includes('must be exactly')), problems.join('\n'));
 });
 

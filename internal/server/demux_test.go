@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/server"
+	"github.com/dilla-chat/dilla/internal/server"
 )
 
 // The one certificate every TLS test in this package verifies against: an

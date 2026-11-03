@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/dilla-chat/dilla/internal/auth"
 )
 
 // with puts the rune r between an "a" and a "b". The invisible characters are written as code points, never

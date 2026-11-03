@@ -10,9 +10,9 @@ import (
 
 	"github.com/livekit/protocol/livekit"
 
-	"github.com/jonasthim/dilla/internal/api"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/api"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // removedDevice reports whether RemoveParticipants was asked to cut dev from room.

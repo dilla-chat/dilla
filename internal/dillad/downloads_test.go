@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/clock"
-	"github.com/jonasthim/dilla/internal/dillad"
+	"github.com/dilla-chat/dilla/internal/clock"
+	"github.com/dilla-chat/dilla/internal/dillad"
 )
 
 func TestDesktopDownloadsAreAnExplicitServerOption(t *testing.T) {

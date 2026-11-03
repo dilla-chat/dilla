@@ -7,7 +7,7 @@ import (
 
 	"github.com/tetratelabs/wazero/api"
 
-	"github.com/jonasthim/dilla/internal/prioritygate"
+	"github.com/dilla-chat/dilla/internal/prioritygate"
 )
 
 // ErrTrap is returned when the guest traps. The caller must discard the

@@ -1,4 +1,4 @@
-module github.com/jonasthim/dilla
+module github.com/dilla-chat/dilla
 
 go 1.27.3
 

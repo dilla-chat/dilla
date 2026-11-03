@@ -13,7 +13,7 @@ export type SandboxSidecarTrust = Omit<SandboxSidecars, 'capsule' | 'manifest' |
 export function authenticateSandboxSidecars(input: SandboxSidecars): { generation: number; compatibilityEpoch: 1 } {
  if (/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-beta\.(0|[1-9]\d*))?$/.exec(input.version)?.[0] !== input.version) throw Error('Invalid sandbox version');
  const name = `dilla-${input.version}-linux-x64.sandbox`;
- if (input.descriptor.compatibilityEpoch !== 1 || input.descriptor.bundle.url !== `https://github.com/jonasthim/dilla/releases/download/desktop-v${input.version}/${name}`) throw Error('Invalid sandbox descriptor');
+ if (input.descriptor.compatibilityEpoch !== 1 || input.descriptor.bundle.url !== `https://github.com/dilla-chat/dilla/releases/download/desktop-v${input.version}/${name}`) throw Error('Invalid sandbox descriptor');
  const files = [input.capsule, input.manifest, input.signature], limits = [48 * 1024 ** 2, 65536, 89];
  for (let i = 0; i < files.length; i++) {
   const matches = input.assets.filter(a => a.name === name + ['', '.json', '.sig'][i]);

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 func deviceListFixture(t *testing.T, user byte, version uint64, prev, sig []byte, entries []any) []byte {

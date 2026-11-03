@@ -9,7 +9,7 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/jonasthim/dilla/internal/clock"
+	"github.com/dilla-chat/dilla/internal/clock"
 )
 
 // sink is the transport half a connection drives: the writer owns its write end, `serve` and

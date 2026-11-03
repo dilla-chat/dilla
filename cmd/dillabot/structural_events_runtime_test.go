@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/bot/service"
+	"github.com/dilla-chat/dilla/internal/bot/service"
 )
 
 func TestDrainStructuralEventsResumesMoreWithinBound(t *testing.T) {

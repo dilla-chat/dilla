@@ -11,7 +11,7 @@ import (
 	"os"
 	"sort"
 
-	"github.com/jonasthim/dilla/internal/exit"
+	"github.com/dilla-chat/dilla/internal/exit"
 )
 
 // Version is the release's tag without its leading v, stamped at link time by

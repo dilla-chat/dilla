@@ -44,7 +44,7 @@ export async function runMaintenance(t){
   const hash=async name=>createHash('sha512').update(await readFile(join(build,name))).digest('base64');
   const now=Date.now(),published=new Date(now-60_000).toISOString(),expires=new Date(now+86_400_000).toISOString();
   const values={nativeRunID:job[0],nativeAttempt:job[1],nativeHead:job[2],nativePublished:published,nativeExpires:expires,nativeHelper1Hash:await hash('credential-v1'),nativeHelper2Hash:await hash('credential-v2')};
-  const flags=Object.entries(values).map(([key,value])=>'-X github.com/jonasthim/dilla/internal/desktopsandbox.'+key+'='+value).join(' ');
+  const flags=Object.entries(values).map(([key,value])=>'-X github.com/dilla-chat/dilla/internal/desktopsandbox.'+key+'='+value).join(' ');
   proof.stage='build-go';command('go',['test','-c','-tags=dilla_sandbox_native','-ldflags='+flags,'-o',join(build,'native.test'),'./internal/desktopsandbox'],{env:{...process.env,CGO_ENABLED:'0'}});
   proof.stage='preflight';command(join(build,'native.test'),['-test.run=^TestNativeCompiledConfiguration$']);
   const hashes=await Promise.all(['native.test','credential-v1','credential-v2','held-fd'].map(hash));commands=maintenanceCommands({build,identity:job,hashes});

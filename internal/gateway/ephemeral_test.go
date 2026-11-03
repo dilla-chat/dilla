@@ -9,8 +9,8 @@ import (
 
 	"github.com/fxamacker/cbor/v2"
 
-	"github.com/jonasthim/dilla/internal/cborx"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 func ephemeralInbound(t *testing.T, op Op, payload ...any) Inbound {

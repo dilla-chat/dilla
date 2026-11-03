@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/bot/client"
 )
 
 const (

@@ -13,10 +13,10 @@ import (
 
 	"github.com/fxamacker/cbor/v2"
 
-	"github.com/jonasthim/dilla/internal/blob"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/server"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/blob"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/server"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 const (

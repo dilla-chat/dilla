@@ -6,9 +6,9 @@ import (
 	"net"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/bot/music"
-	"github.com/jonasthim/dilla/internal/bot/music/livekit"
-	"github.com/jonasthim/dilla/internal/bot/music/youtube"
+	"github.com/dilla-chat/dilla/internal/bot/music"
+	"github.com/dilla-chat/dilla/internal/bot/music/livekit"
+	"github.com/dilla-chat/dilla/internal/bot/music/youtube"
 )
 
 func TestProviderFailuresDiscardOnlyPermanentCauses(t *testing.T) {

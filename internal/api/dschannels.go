@@ -5,10 +5,10 @@ import (
 	"errors"
 	"fmt"
 
-	botaccess "github.com/jonasthim/dilla/internal/bot/access"
-	"github.com/jonasthim/dilla/internal/ds"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	botaccess "github.com/dilla-chat/dilla/internal/bot/access"
+	"github.com/dilla-chat/dilla/internal/ds"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // StructureChannels is the real ds.Channels: invariant 1's channel-mode source

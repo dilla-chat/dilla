@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 
-	"github.com/jonasthim/dilla/internal/bot/capability"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/server"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/bot/capability"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/server"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // requireCommunityWire applies the community compatibility policy to the already-authorized

@@ -23,9 +23,9 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/ds"
-	"github.com/jonasthim/dilla/internal/mlswasi"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/ds"
+	"github.com/dilla-chat/dilla/internal/mlswasi"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // otherSenderKeys is testInstanceKeys with the external-sender signing key perturbed by one byte:

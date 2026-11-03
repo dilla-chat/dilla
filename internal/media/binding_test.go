@@ -10,7 +10,7 @@ import (
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
 
-	"github.com/jonasthim/dilla/internal/sframe"
+	"github.com/dilla-chat/dilla/internal/sframe"
 )
 
 // RIGS-07: the rig parsed identities with hex.Decode into a 16-byte array, which accepted uppercase

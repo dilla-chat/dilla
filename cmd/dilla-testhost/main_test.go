@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/dillad/dilladtest"
+	"github.com/dilla-chat/dilla/internal/dillad/dilladtest"
 )
 
 func TestTheWebRootAndACLFlagsReachTheHostOptions(t *testing.T) {

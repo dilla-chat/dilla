@@ -7,11 +7,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/bot/music"
-	"github.com/jonasthim/dilla/internal/bot/music/persistence"
-	"github.com/jonasthim/dilla/internal/bot/protocol"
-	"github.com/jonasthim/dilla/internal/cborx"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/bot/music"
+	"github.com/dilla-chat/dilla/internal/bot/music/persistence"
+	"github.com/dilla-chat/dilla/internal/bot/protocol"
+	"github.com/dilla-chat/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 func TestMusicSnapshotsBoundLargeQueuesWithoutMutatingTheirContents(t *testing.T) {

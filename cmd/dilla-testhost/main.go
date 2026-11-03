@@ -18,11 +18,11 @@ import (
 	"syscall"
 	"time"
 
-	botruntime "github.com/jonasthim/dilla/internal/bot/runtime"
-	"github.com/jonasthim/dilla/internal/dillad"
-	"github.com/jonasthim/dilla/internal/dillad/dilladtest"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store/sqlite"
+	botruntime "github.com/dilla-chat/dilla/internal/bot/runtime"
+	"github.com/dilla-chat/dilla/internal/dillad"
+	"github.com/dilla-chat/dilla/internal/dillad/dilladtest"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store/sqlite"
 )
 
 func main() {

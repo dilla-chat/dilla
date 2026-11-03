@@ -5,9 +5,9 @@ import (
 	"maps"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/api"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/api"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // I-1 and m-2 of the SRV-POS review: the lowering of channels at 2^30 or above cannot fail, and it runs

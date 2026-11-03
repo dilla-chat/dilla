@@ -11,7 +11,7 @@ import (
 	"github.com/livekit/protocol/livekit"
 	"github.com/twitchtv/twirp"
 
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // ErrNoParticipant is UpdatePermission's answer for an identity the room does not hold (LiveKit's

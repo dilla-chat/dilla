@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/bot/music"
-	"github.com/jonasthim/dilla/internal/bot/music/persistence"
-	"github.com/jonasthim/dilla/internal/bot/music/youtube"
-	"github.com/jonasthim/dilla/internal/bot/native"
+	"github.com/dilla-chat/dilla/internal/bot/music"
+	"github.com/dilla-chat/dilla/internal/bot/music/persistence"
+	"github.com/dilla-chat/dilla/internal/bot/music/youtube"
+	"github.com/dilla-chat/dilla/internal/bot/native"
 )
 
 type reviewPermanentFailure struct{}

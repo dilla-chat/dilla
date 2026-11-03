@@ -8,10 +8,10 @@ import (
 
 	"github.com/fxamacker/cbor/v2"
 
-	"github.com/jonasthim/dilla/internal/api"
-	"github.com/jonasthim/dilla/internal/auth"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/api"
+	"github.com/dilla-chat/dilla/internal/auth"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // Task 10c: max_uses 0 is "∞" and ttl_seconds 0 is "never". Either needs manage_community on

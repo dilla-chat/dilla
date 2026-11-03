@@ -14,8 +14,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/dillad/dilladtest"
-	"github.com/jonasthim/dilla/internal/web"
+	"github.com/dilla-chat/dilla/internal/dillad/dilladtest"
+	"github.com/dilla-chat/dilla/internal/web"
 )
 
 // webRootDir writes a built client and its manifest to a directory, as `npm run build -w

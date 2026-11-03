@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/dilla-chat/dilla/internal/auth"
 )
 
 func TestNewInviteCodeIsTwentySixBase32Characters(t *testing.T) {

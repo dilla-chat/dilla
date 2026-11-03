@@ -3,9 +3,9 @@ package dillad
 import (
 	"context"
 
-	"github.com/jonasthim/dilla/internal/gateway"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/ops"
+	"github.com/dilla-chat/dilla/internal/gateway"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/ops"
 )
 
 // ResetFactors is ops.ResetFactors with this server's live seams (web3.6 S3). After the commit,

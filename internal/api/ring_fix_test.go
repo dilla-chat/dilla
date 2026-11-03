@@ -12,12 +12,12 @@ import (
 
 	"github.com/fxamacker/cbor/v2"
 
-	"github.com/jonasthim/dilla/internal/api"
-	"github.com/jonasthim/dilla/internal/cborx"
-	"github.com/jonasthim/dilla/internal/clock"
-	"github.com/jonasthim/dilla/internal/gateway"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/api"
+	"github.com/dilla-chat/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/clock"
+	"github.com/dilla-chat/dilla/internal/gateway"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // ringCounter counts the state-1 rings each user received.

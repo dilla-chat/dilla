@@ -8,11 +8,11 @@ import (
 	"net/http"
 	"reflect"
 
-	"github.com/jonasthim/dilla/internal/cborx"
-	"github.com/jonasthim/dilla/internal/ds"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/server"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/ds"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/server"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 type currentInteractionContextWire struct {

@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/cborx"
 )
 
 func TestDecodeServerFrameValidatesOpcodeShapeAndScope(t *testing.T) {

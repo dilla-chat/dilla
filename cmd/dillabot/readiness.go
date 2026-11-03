@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/jonasthim/dilla/internal/bot/client"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 type readinessSession interface {

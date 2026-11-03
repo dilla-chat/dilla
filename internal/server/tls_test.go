@@ -11,8 +11,8 @@ import (
 
 	"github.com/libdns/libdns"
 
-	"github.com/jonasthim/dilla/internal/config"
-	"github.com/jonasthim/dilla/internal/server"
+	"github.com/dilla-chat/dilla/internal/config"
+	"github.com/dilla-chat/dilla/internal/server"
 )
 
 func TestBuildTLSKeepsACMETLS1FirstAndAppendsH2(t *testing.T) {

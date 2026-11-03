@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/blob"
+	"github.com/dilla-chat/dilla/internal/blob"
 )
 
 func newStore(t *testing.T) (*blob.Store, string) {

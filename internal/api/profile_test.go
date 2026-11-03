@@ -8,8 +8,8 @@ import (
 
 	"github.com/fxamacker/cbor/v2"
 
-	"github.com/jonasthim/dilla/internal/config"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/config"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // PATCH /v1/accounts/me is [display|null, status_msg|null, bio|null]; a null leaves the field alone.

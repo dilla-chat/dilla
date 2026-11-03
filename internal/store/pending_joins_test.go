@@ -6,8 +6,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // Plan 1 follow-up card 8 (deviation B22, ruling 43), taken by Plan 2 task 7: the tail of a join

@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/bot/protocol"
-	"github.com/jonasthim/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/bot/protocol"
+	"github.com/dilla-chat/dilla/internal/cborx"
 )
 
 func removalEntryForTest(t *testing.T, group, community [16]byte, revision uint64) RemovalFeedEntry {

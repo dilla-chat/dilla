@@ -7,8 +7,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // dmChannel is a DM (kind 3) or group DM (kind 4) row: no community, e2ee,

@@ -5,9 +5,9 @@ import (
 	"errors"
 	"slices"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/mlswasi"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/mlswasi"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // BatchPlan is the split of a set of devices into commit-sized batches.

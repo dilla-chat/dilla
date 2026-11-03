@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/ds"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/ds"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // Options carries the three injected seams of interfaces.md §6.2 — Channels, ACL and DeviceLists

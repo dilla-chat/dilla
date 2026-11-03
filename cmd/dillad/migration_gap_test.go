@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/exit"
-	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
+	"github.com/dilla-chat/dilla/internal/exit"
+	sqlitemigrations "github.com/dilla-chat/dilla/internal/store/sqlite/migrations"
 )
 
 // gapHarness is an instance whose goose table lacks one migration below its highest: the second

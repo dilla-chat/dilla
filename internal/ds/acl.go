@@ -3,8 +3,8 @@ package ds
 import (
 	"context"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // ACL is the eligibility half of invariant 4's Add clause: "a credential whose user is eligible

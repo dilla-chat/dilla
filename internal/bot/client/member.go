@@ -5,7 +5,7 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // MemberProfile contains the current community nick and the user's bounded

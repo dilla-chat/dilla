@@ -6,8 +6,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 func TestBotJoinRoleGrantIsEpisodeBoundIdempotentAndSourceSeparated(t *testing.T) {

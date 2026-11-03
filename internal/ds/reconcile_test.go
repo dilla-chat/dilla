@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/ds"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/mlswasi"
+	"github.com/dilla-chat/dilla/internal/ds"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/mlswasi"
 )
 
 // C3 (fix wave): a kick, ban or leave issues its Removes after the change commits, and a Remove

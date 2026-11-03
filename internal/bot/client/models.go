@@ -1,6 +1,6 @@
 package client
 
-import "github.com/jonasthim/dilla/internal/id"
+import "github.com/dilla-chat/dilla/internal/id"
 
 type Discovery struct {
 	WireVersions, E2EEVersions, MediaVersions []uint64

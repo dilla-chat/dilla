@@ -11,9 +11,9 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/config"
-	"github.com/jonasthim/dilla/internal/exit"
-	"github.com/jonasthim/dilla/internal/store/sqlite"
+	"github.com/dilla-chat/dilla/internal/config"
+	"github.com/dilla-chat/dilla/internal/exit"
+	"github.com/dilla-chat/dilla/internal/store/sqlite"
 )
 
 // Review minor 1: removing restrictUmask() from dispatch must fail a test. Not parallel.

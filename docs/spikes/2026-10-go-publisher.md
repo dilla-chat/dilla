@@ -80,7 +80,7 @@ What the files measured on this box:
     spike_go_publisher_test.go:389: SPIKE cgo_media_packages_in_spike_graph=0
 --- PASS: TestSpikeTheSpikeBuildPullsNoCgoMediaPackage (0.08s)
 PASS
-ok  	github.com/jonasthim/dilla/internal/sfu	22.916s
+ok  	github.com/dilla-chat/dilla/internal/sfu	22.916s
 ```
 
 An earlier run on the same tree also passed all five tests (`ok … 23.074s`), with

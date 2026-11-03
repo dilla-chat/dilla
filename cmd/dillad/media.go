@@ -13,11 +13,11 @@ import (
 
 	"github.com/livekit/protocol/livekit"
 
-	"github.com/jonasthim/dilla/internal/clock"
-	"github.com/jonasthim/dilla/internal/config"
-	"github.com/jonasthim/dilla/internal/exit"
-	"github.com/jonasthim/dilla/internal/obs"
-	"github.com/jonasthim/dilla/internal/sfu"
+	"github.com/dilla-chat/dilla/internal/clock"
+	"github.com/dilla-chat/dilla/internal/config"
+	"github.com/dilla-chat/dilla/internal/exit"
+	"github.com/dilla-chat/dilla/internal/obs"
+	"github.com/dilla-chat/dilla/internal/sfu"
 )
 
 // runMedia keeps the SFU in its own process while dillad serve is replaced. It opens no database,

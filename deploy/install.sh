@@ -96,7 +96,7 @@ options:
   --version TAG          the release to install, e.g. v0.1.0 (default: the tag this copy
                          was released with; a copy from git has none)
   --release-url URL      where the release assets are downloaded from (default:
-                         https://github.com/jonasthim/dilla/releases/download/TAG)
+                         https://github.com/dilla-chat/dilla/releases/download/TAG)
   --binary FILE          use this dillad binary instead of downloading one
   --core FILE            use this dilla_core_wasi.wasm instead of downloading one
   --sums FILE            the SHA256SUMS to check local files and downloaded assets against
@@ -350,8 +350,8 @@ if [ -n "$VERSION" ]; then
 	esac
 fi
 if [ -z "$RELEASE_URL" ] && [ "$DOWNLOAD" -eq 1 ]; then
-	[ -n "$VERSION" ] || die "this install.sh is not from a release, so it has no default version: pass --version <tag> (see https://github.com/jonasthim/dilla/releases) or --release-url <url>"
-	RELEASE_URL="https://github.com/jonasthim/dilla/releases/download/$VERSION"
+	[ -n "$VERSION" ] || die "this install.sh is not from a release, so it has no default version: pass --version <tag> (see https://github.com/dilla-chat/dilla/releases) or --release-url <url>"
+	RELEASE_URL="https://github.com/dilla-chat/dilla/releases/download/$VERSION"
 fi
 
 if [ "$CHECK_ARGS" -eq 1 ]; then
@@ -489,7 +489,7 @@ write_media_unit() {
 	cat >"$WORK/dilla-media.service" <<'UNIT'
 [Unit]
 Description=dilla media SFU
-Documentation=https://github.com/jonasthim/dilla/blob/main/docs/deploy/README.md
+Documentation=https://github.com/dilla-chat/dilla/blob/main/docs/deploy/README.md
 After=network-online.target
 Wants=network-online.target
 PartOf=dilla.service
@@ -753,7 +753,7 @@ put "$WORK/$CORE_NAME" "$BIN_DIR/$CORE_NAME" 0644
 cat >"$WORK/dilla.service" <<'UNIT'
 [Unit]
 Description=dilla server (dillad)
-Documentation=https://github.com/jonasthim/dilla/blob/main/docs/deploy/README.md
+Documentation=https://github.com/dilla-chat/dilla/blob/main/docs/deploy/README.md
 After=network-online.target dilla-media.service
 Wants=network-online.target dilla-media.service
 

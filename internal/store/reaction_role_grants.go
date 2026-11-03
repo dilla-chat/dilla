@@ -3,7 +3,7 @@ package store
 import (
 	"context"
 
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // ReactionRoleGrant identifies one panel/message/reaction assignment source.

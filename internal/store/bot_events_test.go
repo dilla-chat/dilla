@@ -7,9 +7,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/bot/protocol"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/bot/protocol"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 func structuralEvent(community, eventID id.ID, timestamp int64) protocol.Event {

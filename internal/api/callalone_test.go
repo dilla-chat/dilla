@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/api"
+	"github.com/dilla-chat/dilla/internal/api"
 )
 
 // DELETE /v1/calls/{call_id}?if_alone=1 (web-3 task 10 fix, f10app I1): a leave by a person who

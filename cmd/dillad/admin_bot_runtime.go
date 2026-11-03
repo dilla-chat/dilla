@@ -12,10 +12,10 @@ import (
 	"reflect"
 	"time"
 
-	botruntime "github.com/jonasthim/dilla/internal/bot/runtime"
-	"github.com/jonasthim/dilla/internal/exit"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	botruntime "github.com/dilla-chat/dilla/internal/bot/runtime"
+	"github.com/dilla-chat/dilla/internal/exit"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 func adminBotRuntime(verb string, args []string, stdout, stderr io.Writer) error {

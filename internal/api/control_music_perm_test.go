@@ -3,9 +3,9 @@ package api_test
 import (
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/api"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/permbits"
+	"github.com/dilla-chat/dilla/internal/api"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/permbits"
 )
 
 // The Bot decodes authority with permbits.All; it must be exactly PermAll (fix round 1, S-H).

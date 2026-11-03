@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // protocol/04-envelope-and-franking.md: T = HMAC-SHA256(K_frank, "dilla frank tag v1" ||

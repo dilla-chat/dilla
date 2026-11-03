@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/cborx"
-	"github.com/jonasthim/dilla/internal/permbits"
+	"github.com/dilla-chat/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/permbits"
 )
 
 // authorityServer answers every authority route with body.

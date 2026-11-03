@@ -16,7 +16,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 
-	"github.com/jonasthim/dilla/internal/sfu/sfutest"
+	"github.com/dilla-chat/dilla/internal/sfu/sfutest"
 )
 
 // series counts the series of family in g's output, and the distinct values its label takes.

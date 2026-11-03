@@ -16,10 +16,10 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/mlswasi"
-	"github.com/jonasthim/dilla/internal/store"
-	"github.com/jonasthim/dilla/internal/testkit"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/mlswasi"
+	"github.com/dilla-chat/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/testkit"
 )
 
 // runScript runs a scenario written here rather than committed under testkit/scenarios: a test

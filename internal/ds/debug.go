@@ -3,7 +3,7 @@ package ds
 import (
 	"context"
 
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // DebugState is the counter bundle the test control listener reports (task 29's GET

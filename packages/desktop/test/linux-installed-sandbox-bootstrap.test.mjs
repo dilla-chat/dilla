@@ -18,7 +18,7 @@ test('CI auth replacement only selects noninteractive sudo and the exact reviewe
  for(const index of [0,1,2,3,4]){const changed=[...argv];changed[index]='/user/program';assert.throws(()=>sudoBootstrapArguments(changed));}assert.throws(()=>sudoBootstrapArguments([...argv,'extra']));
 });
 test('hosted bootstrap boundary rejects local, self-hosted, wrong repository and missing immutable job identity',async()=>{
- const {validateHostedContext}=await import('./support/linux-installed-sandbox-bootstrap.mjs');const env={GITHUB_ACTIONS:'true',RUNNER_ENVIRONMENT:'github-hosted',GITHUB_REPOSITORY:'jonasthim/dilla',GITHUB_RUN_ID:'123',GITHUB_RUN_ATTEMPT:'1',GITHUB_SHA:'a'.repeat(40)};
+ const {validateHostedContext}=await import('./support/linux-installed-sandbox-bootstrap.mjs');const env={GITHUB_ACTIONS:'true',RUNNER_ENVIRONMENT:'github-hosted',GITHUB_REPOSITORY:'dilla-chat/dilla',GITHUB_RUN_ID:'123',GITHUB_RUN_ATTEMPT:'1',GITHUB_SHA:'a'.repeat(40)};
  assert.deepEqual(validateHostedContext({env,platform:'linux',arch:'x64',uid:1000}),{runId:'123',attempt:'1',sha:'a'.repeat(40)});
  for(const [key,value]of [['GITHUB_ACTIONS','false'],['RUNNER_ENVIRONMENT','self-hosted'],['GITHUB_REPOSITORY','other/repo'],['GITHUB_RUN_ID',''],['GITHUB_SHA','unknown']])assert.throws(()=>validateHostedContext({env:{...env,[key]:value},platform:'linux',arch:'x64',uid:1000}));
  for(const changed of [{platform:'darwin'},{arch:'arm64'},{uid:0}])assert.throws(()=>validateHostedContext({env,platform:'linux',arch:'x64',uid:1000,...changed}));

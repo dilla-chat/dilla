@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/exit"
-	"github.com/jonasthim/dilla/internal/ops"
+	"github.com/dilla-chat/dilla/internal/exit"
+	"github.com/dilla-chat/dilla/internal/ops"
 )
 
 func TestSQLiteBackupIsConsistentWithAReaderOpen(t *testing.T) {

@@ -7,10 +7,10 @@ import (
 	"errors"
 	"slices"
 
-	botaccess "github.com/jonasthim/dilla/internal/bot/access"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/server"
-	"github.com/jonasthim/dilla/internal/store"
+	botaccess "github.com/dilla-chat/dilla/internal/bot/access"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/server"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // Bits is the permission vector stored in roles.allow / roles.deny and in

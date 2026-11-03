@@ -8,12 +8,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/bot/music"
+	"github.com/dilla-chat/dilla/internal/bot/music"
 
-	"github.com/jonasthim/dilla/internal/bot/client"
-	"github.com/jonasthim/dilla/internal/bot/protocol"
-	"github.com/jonasthim/dilla/internal/cborx"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/bot/protocol"
+	"github.com/dilla-chat/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // View channel, send messages and read history (api.PermViewChannel|PermSendMessages|PermReadHistory), as a poll needs.

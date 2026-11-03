@@ -14,6 +14,6 @@ export async function fixtureSandboxFeed(image, version, pair, configuration, no
  verifyLinuxSandboxRelease({capsule,manifest,signature:signature.toString('utf8'),keys:configuration.publicKeys,now,minimumGeneration:generation});
  const base=`dilla-${version}-linux-x64.sandbox`, hash=bytes=>createHash('sha512').update(bytes).digest('base64');
  const assets=[[base,capsule],[base+'.json',manifest],[base+'.sig',signature]].map(([name,bytes])=>({name,size:bytes.length,sha512:hash(bytes)}));
- const linuxSandbox={compatibilityEpoch:1,minimumGeneration:generation,bundle:{url:`https://github.com/jonasthim/dilla/releases/download/desktop-v${version}/${base}`,size:capsule.length,sha512:hash(capsule)}};
+ const linuxSandbox={compatibilityEpoch:1,minimumGeneration:generation,bundle:{url:`https://github.com/dilla-chat/dilla/releases/download/desktop-v${version}/${base}`,size:capsule.length,sha512:hash(capsule)}};
  return {linuxSandbox,assets,signature,fixturePublicKey:publicKey};
 }

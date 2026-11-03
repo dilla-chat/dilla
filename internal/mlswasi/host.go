@@ -49,7 +49,7 @@ import (
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 	"github.com/tetratelabs/wazero/sys"
 
-	"github.com/jonasthim/dilla/internal/prioritygate"
+	"github.com/dilla-chat/dilla/internal/prioritygate"
 )
 
 // ABIVersion is the version every request carries as its first element and every module must

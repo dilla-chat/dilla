@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/config"
-	"github.com/jonasthim/dilla/internal/exit"
+	"github.com/dilla-chat/dilla/internal/config"
+	"github.com/dilla-chat/dilla/internal/exit"
 )
 
 type netipPrefix = netip.Prefix

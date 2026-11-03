@@ -7,13 +7,13 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/bot/client"
-	"github.com/jonasthim/dilla/internal/bot/music/encode"
-	"github.com/jonasthim/dilla/internal/bot/music/livekit"
-	musicruntime "github.com/jonasthim/dilla/internal/bot/music/runtime"
-	"github.com/jonasthim/dilla/internal/bot/music/youtube"
-	"github.com/jonasthim/dilla/internal/bot/native"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/bot/music/encode"
+	"github.com/dilla-chat/dilla/internal/bot/music/livekit"
+	musicruntime "github.com/dilla-chat/dilla/internal/bot/music/runtime"
+	"github.com/dilla-chat/dilla/internal/bot/music/youtube"
+	"github.com/dilla-chat/dilla/internal/bot/native"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // YouTubePCM maps the provider-native video ID stored in a queue entry to the

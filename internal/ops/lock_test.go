@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/ops"
+	"github.com/dilla-chat/dilla/internal/ops"
 )
 
 func TestTheLockIsExclusiveWithinOneProcess(t *testing.T) {

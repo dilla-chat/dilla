@@ -4,8 +4,8 @@ import (
 	"crypto/sha256"
 	"math"
 
-	"github.com/jonasthim/dilla/internal/cborx"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 const MaxGroupRegistrationBody = 65_505

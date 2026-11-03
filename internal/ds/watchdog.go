@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // watchdogInterval is the tick, and never a non-positive duration: time.NewTicker panics on one,

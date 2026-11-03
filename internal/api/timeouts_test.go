@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/api"
-	"github.com/jonasthim/dilla/internal/cborx"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/api"
+	"github.com/dilla-chat/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 func TestHumanTimeoutRoutesRequireModeratorAndExpireAutomatically(t *testing.T) {

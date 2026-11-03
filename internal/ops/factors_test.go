@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/ops"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/ops"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // seedFactorUser is a person holding a confirmed TOTP, a passkey and backup codes, owing nothing,

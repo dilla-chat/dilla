@@ -6,12 +6,12 @@ import (
 	"context"
 	"errors"
 
-	"github.com/jonasthim/dilla/internal/bot/client"
-	"github.com/jonasthim/dilla/internal/bot/community/welcome"
-	"github.com/jonasthim/dilla/internal/bot/native"
-	"github.com/jonasthim/dilla/internal/bot/protocol"
-	"github.com/jonasthim/dilla/internal/bot/service"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/bot/community/welcome"
+	"github.com/dilla-chat/dilla/internal/bot/native"
+	"github.com/dilla-chat/dilla/internal/bot/protocol"
+	"github.com/dilla-chat/dilla/internal/bot/service"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 func configuredWelcomeChannel(rows []client.Channel, community, channel id.ID) (client.Channel, error) {

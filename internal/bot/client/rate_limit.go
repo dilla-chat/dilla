@@ -13,7 +13,7 @@ import (
 
 	"golang.org/x/time/rate"
 
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // RateLimits may be overridden by [rate_limits] in bot.toml. Zero fields use

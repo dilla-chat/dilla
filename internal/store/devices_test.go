@@ -10,8 +10,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // seedDeviceAt creates one device of user with the given creation time and revocation.

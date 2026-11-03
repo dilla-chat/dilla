@@ -40,48 +40,48 @@ sql:
           - { column: "*.token_hash",  go_type: { type: "byte", slice: true } }
           - { column: "*.blob_sha256", go_type: { type: "byte", slice: true } }
           - { column: "*.rp_id",      go_type: { type: "string" } }
-          - { column: "bot_installations.runtime_id", go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
-          - { column: "bot_installations.user_id", go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
-          - { column: "bot_installations.device_id", go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
-          - { column: "bot_installations.role_id", go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
-          - { column: "bot_operations.actor_device", go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
-          - { column: "bot_installations.approved_by", go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
+          - { column: "bot_installations.runtime_id", go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "bot_installations.user_id", go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "bot_installations.device_id", go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "bot_installations.role_id", go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "bot_operations.actor_device", go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "bot_installations.approved_by", go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID" } }
           # 2. nullable ids: a `column` override IGNORES nullability, so each is
           #    named explicitly with pointer: true, BEFORE the wildcards.
           - { column: "invites.community_id",
-              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+              go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "invites.created_by",
-              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+              go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "webauthn_ceremonies.user_id",
-              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+              go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "login_attempts.user_id",
-              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+              go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "audit_log.actor",
-              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+              go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "mls_groups.community_id",
-              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+              go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "mls_groups.call_id",
-              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+              go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           # 006a_channels.sql (Plan 2 task 2): a DM has no community, a top-level
           # channel no parent.
           - { column: "channels.community_id",
-              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+              go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "channels.parent_id",
-              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+              go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           # 006f_voice.sql (Plan 2 task 16): a call recorded before its group is known.
           - { column: "voice_sessions.group_id",
-              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+              go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "community_afk.channel_id",
-              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+              go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           # 3. the NOT NULL wildcards.
-          - { column: "*.id",              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
-          - { column: "*.*_id",            go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
-          - { column: "*.uploader_device", go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
-          - { column: "*.reporter_device", go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
-          - { column: "*.by_user",         go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
-          - { column: "*.owner",           go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
-          - { column: "*.sender",          go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
-          - { column: "*.reporter",        go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
+          - { column: "*.id",              go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID" } }
+          - { column: "*.*_id",            go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID" } }
+          - { column: "*.uploader_device", go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID" } }
+          - { column: "*.reporter_device", go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID" } }
+          - { column: "*.by_user",         go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID" } }
+          - { column: "*.owner",           go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID" } }
+          - { column: "*.sender",          go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID" } }
+          - { column: "*.reporter",        go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID" } }
   - engine: "postgresql"
     schema: "internal/store/postgres/schema"
     queries: "internal/store/postgres/queries"
@@ -110,12 +110,12 @@ sql:
           - { column: "*.token_hash",  go_type: { type: "byte", slice: true } }
           - { column: "*.blob_sha256", go_type: { type: "byte", slice: true } }
           - { column: "*.rp_id",      go_type: { type: "string" } }
-          - { column: "bot_installations.runtime_id", go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
-          - { column: "bot_installations.user_id", go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
-          - { column: "bot_installations.device_id", go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
-          - { column: "bot_installations.role_id", go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
-          - { column: "bot_operations.actor_device", go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
-          - { column: "bot_installations.approved_by", go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
+          - { column: "bot_installations.runtime_id", go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "bot_installations.user_id", go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "bot_installations.device_id", go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "bot_installations.role_id", go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "bot_operations.actor_device", go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "bot_installations.approved_by", go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID" } }
           # 1b. the SMALLINT enum columns. §4.2 spells every enum SMALLINT on
           #     Postgres, which sqlc types int16, while the same column is
           #     INTEGER (int64) on SQLite — so the two Querier interfaces would
@@ -158,33 +158,33 @@ sql:
           # INTEGER NULL rather than sqlc's sql.NullInt16.
           - { column: "mls_app_messages.class", go_type: "database/sql.NullInt64" }
           - { column: "invites.community_id",
-              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+              go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "invites.created_by",
-              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+              go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "webauthn_ceremonies.user_id",
-              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+              go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "login_attempts.user_id",
-              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+              go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "audit_log.actor",
-              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+              go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "mls_groups.community_id",
-              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+              go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "mls_groups.call_id",
-              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+              go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "channels.community_id",
-              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+              go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "channels.parent_id",
-              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+              go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           # 006f_voice.sql (Plan 2 task 16): a call recorded before its group is known.
           - { column: "voice_sessions.group_id",
-              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+              go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "community_afk.channel_id",
-              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
-          - { column: "*.id",              go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
-          - { column: "*.*_id",            go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
-          - { column: "*.uploader_device", go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
-          - { column: "*.reporter_device", go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
-          - { column: "*.by_user",         go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
-          - { column: "*.owner",           go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
-          - { column: "*.sender",          go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
-          - { column: "*.reporter",        go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID" } }
+              go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID", pointer: true } }
+          - { column: "*.id",              go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID" } }
+          - { column: "*.*_id",            go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID" } }
+          - { column: "*.uploader_device", go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID" } }
+          - { column: "*.reporter_device", go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID" } }
+          - { column: "*.by_user",         go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID" } }
+          - { column: "*.owner",           go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID" } }
+          - { column: "*.sender",          go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID" } }
+          - { column: "*.reporter",        go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID" } }

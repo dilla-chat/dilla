@@ -99,7 +99,7 @@ formatters:
   settings:
     goimports:
       local-prefixes:               # a LIST in v2, not the v1 string
-        - github.com/jonasthim/dilla
+        - github.com/dilla-chat/dilla
 
 issues:
   # The defaults (50 / 3 / true) silently drop real findings.

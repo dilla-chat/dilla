@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/dillad/dilladtest"
+	"github.com/dilla-chat/dilla/internal/dillad/dilladtest"
 )
 
 func TestMusicEnqueueResumeJoinsRealCallGroup(t *testing.T) {

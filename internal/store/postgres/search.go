@@ -3,7 +3,7 @@ package postgres
 import (
 	"context"
 
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // searchSQL is hand-written for symmetry with SQLite, where sqlc cannot type the

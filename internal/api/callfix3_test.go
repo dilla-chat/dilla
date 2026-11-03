@@ -12,8 +12,8 @@ import (
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/webhook"
 
-	"github.com/jonasthim/dilla/internal/api"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/api"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // admitThroughProxy is what the /rtc proxy does for a fresh join it lets through: the gate's checks

@@ -3,7 +3,7 @@ package sqlite
 import (
 	"context"
 
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // searchSQL never aliases readable_messages_fts: `snippet(f, …)` and

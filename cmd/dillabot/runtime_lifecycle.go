@@ -3,7 +3,7 @@ package main
 import (
 	"sync"
 
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // installationLifecycle serializes changes to one installation while leaving

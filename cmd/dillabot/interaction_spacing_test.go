@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 func TestCommandWorkerSpacingIsPerInstallation(t *testing.T) {

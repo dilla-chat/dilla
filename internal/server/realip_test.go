@@ -5,7 +5,7 @@ import (
 	"net/netip"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/server"
+	"github.com/dilla-chat/dilla/internal/server"
 )
 
 func TestRealIPTrustsOnlyConfiguredProxies(t *testing.T) {

@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 
-	botaccess "github.com/jonasthim/dilla/internal/bot/access"
-	"github.com/jonasthim/dilla/internal/ds"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	botaccess "github.com/dilla-chat/dilla/internal/bot/access"
+	"github.com/dilla-chat/dilla/internal/ds"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // ResolverACL is the real ds.ACL: invariant 4's "a credential whose user is

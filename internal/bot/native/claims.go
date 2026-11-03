@@ -3,7 +3,7 @@ package native
 import (
 	"sync"
 
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // TryClaimSource prevents overlapping history synchronization for one group

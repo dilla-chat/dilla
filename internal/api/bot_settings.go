@@ -7,9 +7,9 @@ import (
 	"slices"
 	"strconv"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/server"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/server"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // Task 10c: the Bot page's Restart, the runtime's reported version, and the Music page's default

@@ -18,7 +18,7 @@ test('the actual tray availability action opens only the validated immutable rel
  vm.runInContext((await transform(body + '\nrefreshMenu();', { loader: 'ts' })).code, context);
  const update = menus[0].find(item => item.label === 'Update using your package manager');
  assert.ok(update); assert.equal(menus[0].some(item => item.label === 'Restart to update'), false);
- update.click(); assert.deepEqual(opened, ['https://github.com/jonasthim/dilla/releases/tag/desktop-v0.1.0-beta.10']);
+ update.click(); assert.deepEqual(opened, ['https://github.com/dilla-chat/dilla/releases/tag/desktop-v0.1.0-beta.10']);
  updater.state.version = 'https://evil.test/'; assert.throws(() => update.click(), /version/);
  assert.equal(opened.length, 1);
 });

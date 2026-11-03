@@ -11,13 +11,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/blob"
-	"github.com/jonasthim/dilla/internal/ds"
-	"github.com/jonasthim/dilla/internal/exit"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/ops"
-	"github.com/jonasthim/dilla/internal/store"
-	"github.com/jonasthim/dilla/internal/store/sqlite"
+	"github.com/dilla-chat/dilla/internal/blob"
+	"github.com/dilla-chat/dilla/internal/ds"
+	"github.com/dilla-chat/dilla/internal/exit"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/ops"
+	"github.com/dilla-chat/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/store/sqlite"
 )
 
 func (h *opsHarness) backup(t *testing.T) []byte {

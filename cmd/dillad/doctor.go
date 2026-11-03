@@ -16,13 +16,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/blob"
-	"github.com/jonasthim/dilla/internal/config"
-	"github.com/jonasthim/dilla/internal/exit"
-	"github.com/jonasthim/dilla/internal/mlswasi"
-	"github.com/jonasthim/dilla/internal/ops"
-	"github.com/jonasthim/dilla/internal/store"
-	"github.com/jonasthim/dilla/internal/store/sqlite"
+	"github.com/dilla-chat/dilla/internal/blob"
+	"github.com/dilla-chat/dilla/internal/config"
+	"github.com/dilla-chat/dilla/internal/exit"
+	"github.com/dilla-chat/dilla/internal/mlswasi"
+	"github.com/dilla-chat/dilla/internal/ops"
+	"github.com/dilla-chat/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/store/sqlite"
 )
 
 // fileJournalMode reads path's own journal mode on a connection that sets no

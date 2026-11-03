@@ -19,7 +19,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 const keyPackageSetDir = "../../testkit/fixtures/key-packages"

@@ -6,8 +6,8 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // MaxPurgeReasonBytes bounds the reason a purge records in the audit log.

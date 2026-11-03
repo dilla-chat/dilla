@@ -8,9 +8,9 @@ import (
 	"io"
 	"sync"
 
-	"github.com/jonasthim/dilla/internal/bot/client"
-	"github.com/jonasthim/dilla/internal/bot/music/encode"
-	"github.com/jonasthim/dilla/internal/media"
+	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/bot/music/encode"
+	"github.com/dilla-chat/dilla/internal/media"
 )
 
 var ErrInvalidConfig = errors.New("music runtime: invalid configuration")

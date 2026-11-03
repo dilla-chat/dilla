@@ -3,8 +3,8 @@ package ds
 import (
 	"context"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/mlswasi"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/mlswasi"
 )
 
 // freezeState reports whether the group is frozen and, if so, the refs a committer must reference.

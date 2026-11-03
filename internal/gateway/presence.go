@@ -6,8 +6,8 @@ import (
 
 	"golang.org/x/time/rate"
 
-	"github.com/jonasthim/dilla/internal/clock"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/clock"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // typingTTL is how long one typing signal lives. Ephemeral state is never persisted and never

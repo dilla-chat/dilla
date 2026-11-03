@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // A new account has an empty status message and bio; UpdateProfile writes all three profile fields

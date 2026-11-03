@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/jonasthim/dilla/internal/gateway"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/gateway"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // contentTypeApplication is RFC 9420's ContentType `application`, the only one endpoint 7

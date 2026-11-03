@@ -12,13 +12,13 @@ import (
 
 	"github.com/pressly/goose/v3"
 
-	"github.com/jonasthim/dilla/internal/api"
-	"github.com/jonasthim/dilla/internal/ds"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/server"
-	"github.com/jonasthim/dilla/internal/store"
-	"github.com/jonasthim/dilla/internal/store/postgres"
-	pgmigrations "github.com/jonasthim/dilla/internal/store/postgres/migrations"
+	"github.com/dilla-chat/dilla/internal/api"
+	"github.com/dilla-chat/dilla/internal/ds"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/server"
+	"github.com/dilla-chat/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/store/postgres"
+	pgmigrations "github.com/dilla-chat/dilla/internal/store/postgres/migrations"
 )
 
 // The post policy (web3.7 SB1, protocol/02 § Upload class): a class-0 upload into a community

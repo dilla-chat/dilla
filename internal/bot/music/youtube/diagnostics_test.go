@@ -16,7 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/jonasthim/dilla/internal/bot/music"
+	"github.com/dilla-chat/dilla/internal/bot/music"
 )
 
 func TestYouTubeDiagnosticTextIsBoundedAndPrintable(t *testing.T) {

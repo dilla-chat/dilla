@@ -6,7 +6,7 @@ import (
 
 	"github.com/pquerna/otp/totp"
 
-	"github.com/jonasthim/dilla/internal/config"
+	"github.com/dilla-chat/dilla/internal/config"
 )
 
 func totpParams() TOTPParams {

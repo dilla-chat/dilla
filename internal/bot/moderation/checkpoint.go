@@ -6,7 +6,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/cborx"
 )
 
 // MaxCheckpointBytes bounds each of 256 fixed actor checkpoint shards. A transaction writes only shards

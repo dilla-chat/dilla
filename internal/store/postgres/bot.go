@@ -6,9 +6,9 @@ import (
 	"math"
 	"slices"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
-	"github.com/jonasthim/dilla/internal/store/postgres/pgdb"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/store/postgres/pgdb"
 )
 
 func (r *Repo) CreateBotRuntime(ctx context.Context, b store.BotRuntimeRow) error {

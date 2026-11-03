@@ -6,7 +6,7 @@ const builderRequire = createRequire(createRequire(import.meta.url).resolve('ele
 const publisherRequire = createRequire(builderRequire.resolve('app-builder-lib/package.json'));
 const { GitHubPublisher } = publisherRequire('electron-publish/out/gitHubPublisher');
 const { CancellationToken } = builderRequire('builder-util-runtime');
-const repository = 'jonasthim/dilla';
+const repository = 'dilla-chat/dilla';
 
 export function createReleaseAssetUploader({ api, token, Publisher = GitHubPublisher }) {
  return async function upload(target, name, bytes, replace) {
@@ -35,7 +35,7 @@ export function createReleaseAssetUploader({ api, token, Publisher = GitHubPubli
    }
   }
   const publisher = new AcceptedReleasePublisher({ cancellationToken: new CancellationToken() },
-   { provider: 'github', owner: 'jonasthim', repo: 'dilla', token, tagPrefix: versionTag ? 'desktop-v' : 'desktop-', timeout: 300000 },
+   { provider: 'github', owner: 'dilla-chat', repo: 'dilla', token, tagPrefix: versionTag ? 'desktop-v' : 'desktop-', timeout: 300000 },
    versionTag ? versionTag[1] : target.tag_name.slice('desktop-'.length));
   await publisher.upload({ file: name, safeArtifactName: name, fileContent: bytes, timeout: 300000 });
   // Standard upload() can resolve without uploading. Verify actual remote

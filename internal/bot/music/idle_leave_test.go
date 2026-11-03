@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	music "github.com/jonasthim/dilla/internal/bot/music"
-	"github.com/jonasthim/dilla/internal/bot/music/persistence"
-	"github.com/jonasthim/dilla/internal/bot/native"
+	music "github.com/dilla-chat/dilla/internal/bot/music"
+	"github.com/dilla-chat/dilla/internal/bot/music/persistence"
+	"github.com/dilla-chat/dilla/internal/bot/native"
 )
 
 // idleStarter is a supervisorStarter that can leave its voice room (Task 10c idle-leave).

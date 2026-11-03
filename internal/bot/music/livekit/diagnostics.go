@@ -13,7 +13,7 @@ import (
 	protoLogger "github.com/livekit/protocol/logger"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 
-	"github.com/jonasthim/dilla/internal/bot/music"
+	"github.com/dilla-chat/dilla/internal/bot/music"
 )
 
 // classifiedFailure adds only a bounded diagnostic class; the original typed

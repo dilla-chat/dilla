@@ -9,17 +9,17 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/bot/client"
-	"github.com/jonasthim/dilla/internal/bot/music"
-	"github.com/jonasthim/dilla/internal/bot/music/encode"
-	"github.com/jonasthim/dilla/internal/bot/music/livekit"
-	"github.com/jonasthim/dilla/internal/bot/music/persistence"
-	"github.com/jonasthim/dilla/internal/bot/music/session"
-	"github.com/jonasthim/dilla/internal/bot/music/youtube"
-	"github.com/jonasthim/dilla/internal/bot/native"
-	"github.com/jonasthim/dilla/internal/bot/service"
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/bot/music"
+	"github.com/dilla-chat/dilla/internal/bot/music/encode"
+	"github.com/dilla-chat/dilla/internal/bot/music/livekit"
+	"github.com/dilla-chat/dilla/internal/bot/music/persistence"
+	"github.com/dilla-chat/dilla/internal/bot/music/session"
+	"github.com/dilla-chat/dilla/internal/bot/music/youtube"
+	"github.com/dilla-chat/dilla/internal/bot/native"
+	"github.com/dilla-chat/dilla/internal/bot/service"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 const (

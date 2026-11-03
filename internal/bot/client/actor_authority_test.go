@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/cborx"
 )
 
 func TestSessionBotActorAuthorityParsesExactAuthenticatedTuple(t *testing.T) {

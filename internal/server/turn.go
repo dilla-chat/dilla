@@ -22,9 +22,9 @@ import (
 	"github.com/pion/transport/v4/stdnet"
 	"github.com/pion/turn/v5"
 
-	"github.com/jonasthim/dilla/internal/clock"
-	"github.com/jonasthim/dilla/internal/config"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/clock"
+	"github.com/dilla-chat/dilla/internal/config"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // TURNMetrics is the relay's metric surface; *obs.Metrics is one. QuotaRefused counts one 486 at

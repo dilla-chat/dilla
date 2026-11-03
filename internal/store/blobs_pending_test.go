@@ -9,10 +9,10 @@ import (
 
 	"github.com/pressly/goose/v3"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/store"
-	"github.com/jonasthim/dilla/internal/store/sqlite"
-	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/store/sqlite"
+	sqlitemigrations "github.com/dilla-chat/dilla/internal/store/sqlite/migrations"
 )
 
 // dilla-web-2b task 4 (L-SQL-31): a PUT's reference is pending until its uploader confirms it, a

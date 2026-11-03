@@ -5,8 +5,8 @@ import (
 	"encoding/hex"
 	"sync"
 
-	"github.com/jonasthim/dilla/internal/auth"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/auth"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // fakeAuth is the other side of `gateway.Options.Auth`, which is an interface declared in the

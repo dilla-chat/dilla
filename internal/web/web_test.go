@@ -14,8 +14,8 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/jonasthim/dilla/internal/server"
-	"github.com/jonasthim/dilla/internal/web"
+	"github.com/dilla-chat/dilla/internal/server"
+	"github.com/dilla-chat/dilla/internal/web"
 )
 
 type manifestEntry struct {

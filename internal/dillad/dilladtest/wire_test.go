@@ -12,7 +12,7 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/jonasthim/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/cborx"
 )
 
 // wireLists reads the hello's wire_versions and GET /v1/instance's wire_versions from h.

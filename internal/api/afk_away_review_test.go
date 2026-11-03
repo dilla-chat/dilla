@@ -7,7 +7,7 @@ import (
 
 	"github.com/livekit/protocol/livekit"
 
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // countRemoved is how many RemoveParticipants calls the stub SFU took for dev in room.

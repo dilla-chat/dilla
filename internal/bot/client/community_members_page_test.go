@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 func TestCommunityMembersPageUsesAfterAndValidatesRowsAndOrder(t *testing.T) {

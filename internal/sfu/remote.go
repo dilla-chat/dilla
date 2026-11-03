@@ -5,7 +5,7 @@ import (
 
 	"github.com/livekit/protocol/livekit"
 
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // Remote controls a LiveKit SFU in another process on this host. The same API key signs both

@@ -16,9 +16,9 @@ import (
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media/h264reader"
 
-	"github.com/jonasthim/dilla/internal/sframe"
-	"github.com/jonasthim/dilla/internal/sfu"
-	"github.com/jonasthim/dilla/internal/sfu/sfutest"
+	"github.com/dilla-chat/dilla/internal/sframe"
+	"github.com/dilla-chat/dilla/internal/sfu"
+	"github.com/dilla-chat/dilla/internal/sfu/sfutest"
 )
 
 var (

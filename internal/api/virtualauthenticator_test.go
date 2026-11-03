@@ -30,9 +30,9 @@ import (
 	"github.com/fxamacker/cbor/v2"
 	"github.com/go-webauthn/webauthn/protocol"
 
-	"github.com/jonasthim/dilla/internal/api"
-	"github.com/jonasthim/dilla/internal/cborx"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/api"
+	"github.com/dilla-chat/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // virtualAuthenticator is one discoverable credential on one relying party.

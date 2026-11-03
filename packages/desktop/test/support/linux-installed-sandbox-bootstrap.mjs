@@ -14,7 +14,7 @@ const exact=(x,keys)=>x&&typeof x==='object'&&!Array.isArray(x)&&Object.keys(x).
 const validHash=x=>typeof x==='string'&&/^[A-Za-z0-9+/]{86}==$/.test(x)&&Buffer.from(x,'base64').toString('base64')===x;
 function invalid(){throw Error('Invalid installed sandbox prerequisite');}
 export function validateHostedContext({env,platform,arch,uid}){
- if(platform!=='linux'||arch!=='x64'||!Number.isInteger(uid)||uid<=0||env.GITHUB_ACTIONS!=='true'||env.RUNNER_ENVIRONMENT!=='github-hosted'||env.GITHUB_REPOSITORY!=='jonasthim/dilla'||!['GITHUB_RUN_ID','GITHUB_RUN_ATTEMPT'].every(k=>typeof env[k]==='string'&&/^[1-9][0-9]{0,19}$/.test(env[k]))||typeof env.GITHUB_SHA!=='string'||!/^[0-9a-f]{40}$/.test(env.GITHUB_SHA))invalid();
+ if(platform!=='linux'||arch!=='x64'||!Number.isInteger(uid)||uid<=0||env.GITHUB_ACTIONS!=='true'||env.RUNNER_ENVIRONMENT!=='github-hosted'||env.GITHUB_REPOSITORY!=='dilla-chat/dilla'||!['GITHUB_RUN_ID','GITHUB_RUN_ATTEMPT'].every(k=>typeof env[k]==='string'&&/^[1-9][0-9]{0,19}$/.test(env[k]))||typeof env.GITHUB_SHA!=='string'||!/^[0-9a-f]{40}$/.test(env.GITHUB_SHA))invalid();
  return {runId:env.GITHUB_RUN_ID,attempt:env.GITHUB_RUN_ATTEMPT,sha:env.GITHUB_SHA};
 }
 function gitOutput(checkout,args,{input,maxBuffer=4*1024**2}={}){

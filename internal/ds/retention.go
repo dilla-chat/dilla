@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/mlswasi"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/mlswasi"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // SweepReport is what one sweeper run did. Every field is a count, never an error budget: a sweep

@@ -15,8 +15,8 @@ import (
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/webhook"
 
-	"github.com/jonasthim/dilla/internal/api"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/api"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // rejoinLeaf rewrites dev's member row of group as a rejoin at the same leaf index would leave it:

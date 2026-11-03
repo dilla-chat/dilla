@@ -1,6 +1,6 @@
 # Handoff: Signal, the dilla web client redesign
 
-> Target: `jonasthim/dilla`, `packages/design-tokens` and `packages/ui` (React 19, Vite, Storybook 10).
+> Target: `dilla-chat/dilla`, `packages/design-tokens` and `packages/ui` (React 19, Vite, Storybook 10).
 > Spec: `docs/design/brief.md` (the merged design brief; `docs/design/brief-signal.md` is the original handoff brief, included here as `brief-signal.md`).
 > Reference build: `Dilla Signal Prototype.dc.html` (included).
 

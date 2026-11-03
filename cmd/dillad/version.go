@@ -9,7 +9,7 @@ import (
 	"runtime/debug"
 	"strings"
 
-	"github.com/jonasthim/dilla/internal/exit"
+	"github.com/dilla-chat/dilla/internal/exit"
 )
 
 // newFlagSet registers the flags every verb shares. --config is registered on

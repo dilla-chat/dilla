@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/jonasthim/dilla/packages/desktop/native/linux-sandbox/frontend"
+	"github.com/dilla-chat/dilla/packages/desktop/native/linux-sandbox/frontend"
 )
 
 func main() {

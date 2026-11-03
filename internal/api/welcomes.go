@@ -3,8 +3,8 @@ package api
 import (
 	"net/http"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/server"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/server"
 )
 
 // welcomeItem is one row of protocol/02's row 15 response. RatchetTree is the tree of the

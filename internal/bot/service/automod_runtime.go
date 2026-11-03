@@ -8,8 +8,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/bot/moderation"
-	"github.com/jonasthim/dilla/internal/bot/native"
+	"github.com/dilla-chat/dilla/internal/bot/moderation"
+	"github.com/dilla-chat/dilla/internal/bot/native"
 )
 
 // ModerationAction is the bounded information handed to an action or audit

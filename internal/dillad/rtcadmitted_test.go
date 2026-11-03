@@ -6,8 +6,8 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/server"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/server"
 )
 
 // M-2 of the integration re-review: the proxy tells the call gate a join was admitted only once its

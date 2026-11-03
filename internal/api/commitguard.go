@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/id"
-	"github.com/jonasthim/dilla/internal/server"
+	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/server"
 )
 
 // The bounds on POST /v1/groups/{id}/commit that deviation B37's 16 MiB body needs (final review):
