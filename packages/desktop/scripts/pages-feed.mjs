@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, createPublicKey, verify } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -17,10 +17,13 @@ import { listReleaseAssets } from './standard-release-upload.mjs';
  * output of this run, and must equal the assets of the channel's latest
  * published release, which must be this version: that is the forward-only
  * baseline. The other channel's files come from its latest published release,
- * verified under the pins of the commit that release was signed for. The
- * live Pages site is never read before the deploy: it is only overwritten,
- * then checked to serve the signed bytes. So a defaced live file, or a live
- * feed signed by keys that a later rotation retired, cannot block a release.
+ * which the release workflow must have made (Actions bot author, signed source
+ * commit equal to its tag's commit on main). They must be authentic under the
+ * pins of the commit that release was signed for, and still signed only by
+ * keys main pins today: a release signed by a retired key is left off the site,
+ * never re-served. The live Pages site is never read before the deploy: it is
+ * only overwritten, then checked to serve the signed bytes. So neither a
+ * defaced live file nor a key rotation can block a release.
  */
 export const FEED_SITE = 'https://dilla-chat.github.io/dilla/';
 const CHANNELS = ['beta', 'stable'];
@@ -28,6 +31,8 @@ const VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-beta\.(0|[1-9]\d*)
 const MAX_FILE = 1024 ** 2;
 const R = `/repos/${REPOSITORY}`;
 const DOWNLOAD_ORIGINS = new Set(['https://github.com', 'https://release-assets.githubusercontent.com', 'https://objects.githubusercontent.com']);
+const ACTIONS_BOT = 'github-actions[bot]';
+const SANDBOX_CONTEXT = 'Dilla Linux sandbox capsule v1\0';
 const channelOf = version => version.includes('-beta.') ? 'beta' : 'stable';
 
 function validChannel(channel) { if (!CHANNELS.includes(channel)) throw new Error('Invalid desktop channel'); return channel; }
@@ -77,14 +82,17 @@ export async function latestPublished(api, channel) {
   if (page >= 100) throw new Error('Too many releases');
  }
  if (latest && (latest.release.immutable !== true || latest.release.prerelease !== (channel === 'beta'))) throw new Error(`The latest published ${channel} release (${latest.version}) is not an immutable ${channel} release`);
+ // Provenance, checkable with contents: read: the publish job creates releases with the workflow token, so
+ // GitHub records the Actions bot as the author. A release a person (or another token) made is refused.
+ if (latest && (latest.release.author?.login !== ACTIONS_BOT || latest.release.author?.type !== 'Bot')) throw new Error(`The latest published ${channel} release (${latest.version}) was not made by the release workflow`);
  return latest;
 }
 
-/** The three channel files a published release carries, each checked against GitHub's size and sha256 for the asset. */
-async function releaseChannelFiles({ api, fetchImpl, release, channel }) {
+/** Named assets of a published release, each checked against GitHub's size and sha256 for the asset. */
+async function releaseFiles({ api, fetchImpl, release, names }) {
  const assets = await listReleaseAssets(api, release.id);
  const files = new Map();
- for (const name of channelFiles(channel)) {
+ for (const name of names) {
   const matches = assets.filter(asset => asset?.name === name);
   if (matches.length !== 1) throw new Error(`The published release ${release.tag_name} lacks ${name}`);
   const [asset] = matches, expected = `https://github.com/${REPOSITORY}/releases/download/${release.tag_name}/${name}`;
@@ -99,6 +107,25 @@ async function releaseChannelFiles({ api, fetchImpl, release, channel }) {
  return files;
 }
 
+/**
+ * Whether an authentic other-channel release is still signed only by keys main pins today: its metadata
+ * under a metadata key main still pins, its appcast under main's Sparkle key (or the staged next one), and its
+ * Linux sandbox manifest under a key main's sandbox component still lists. A retired key never authenticates a
+ * channel again, so such a release is not re-served (its channel is left off the site).
+ */
+function signedByCurrentKeys({ files, channel, historical, trust, sandboxKeys, sandbox, release, now }) {
+ if (![trust.sparklePublicKey, trust.sparkleNextPublicKey].filter(Boolean).includes(historical.sparklePublicKey)) return false;
+ const shared = (historical.metadataPublicKeys ?? []).filter(pem => trust.metadataPublicKeys.includes(pem));
+ if (!shared.length) return false;
+ try { authenticateChannel(files, channel, { ...historical, metadataPublicKeys: shared }, now); } catch { return false; }
+ const manifestName = `dilla-${release.version}-linux-x64.sandbox.json`, manifest = sandbox.get(manifestName);
+ const recorded = release.assets.find(asset => asset.name === manifestName);
+ if (!recorded || recorded.sha512 !== createHash('sha512').update(manifest).digest('base64')) throw new Error(`The ${channel} release's sandbox manifest is not the one its metadata signs`);
+ const signature = Buffer.from(sandbox.get(manifestName.replace(/\.json$/, '.sig')).toString('utf8').trim(), 'base64');
+ const message = Buffer.concat([Buffer.from(SANDBOX_CONTEXT), manifest]);
+ return sandboxKeys.some(raw => verify(null, message, createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x: Buffer.from(raw, 'base64').toString('base64url') }, format: 'jwk' }), signature));
+}
+
 async function readSigned(signedDirectory, channel) {
  const files = new Map();
  for (const name of channelFiles(channel)) files.set(name, await readFile(join(signedDirectory, name)));
@@ -106,10 +133,11 @@ async function readSigned(signedDirectory, channel) {
 }
 
 /**
- * `trust` is main's pins (this release's). `trustAt(tag)` returns the pins of
- * the commit another published release was signed for.
+ * `trust` is main's pins (this release's) and `sandboxKeys` main's sandbox component keys. `trustAt(tag)`
+ * returns `{ trust, commit }`: the pins at the commit another published release's tag names, and that commit.
  */
-export async function buildSite({ signedDirectory, channel, version, siteDirectory, api, fetchImpl = fetch, trust, trustAt, now = Date.now() }) {
+export async function buildSite({ signedDirectory, channel, version, siteDirectory, api, fetchImpl = fetch, trust, sandboxKeys, trustAt, now = Date.now() }) {
+ if (!Array.isArray(sandboxKeys) || !sandboxKeys.length) throw new Error('Missing main\'s sandbox component keys');
  validChannel(channel);
  if (typeof version !== 'string' || !VERSION.test(version) || channelOf(version) !== channel) throw new Error('Invalid desktop version');
  const signed = await readSigned(signedDirectory, channel);
@@ -120,25 +148,32 @@ export async function buildSite({ signedDirectory, channel, version, siteDirecto
  const latest = await latestPublished(api, channel);
  if (!latest || compareDesktopVersions(latest.version, version) < 0) throw new Error(`desktop ${version} is not published; the feed only follows published releases`);
  if (latest.version !== version) throw new Error(`The latest published ${channel} release (${latest.version}) is newer than ${version}; refusing to roll the feed back`);
- const published = await releaseChannelFiles({ api, fetchImpl, release: latest.release, channel });
+ const published = await releaseFiles({ api, fetchImpl, release: latest.release, names: channelFiles(channel) });
  if (![...signed].every(([name, bytes]) => published.get(name).equals(bytes))) throw new Error(`The published ${version} release's channel files differ from the signed output`);
 
- const site = new Map([[channel, signed]]), channels = { [channel]: version }, dropped = [];
+ const site = new Map([[channel, signed]]), channels = { [channel]: version }, dropped = [], retired = [];
  for (const other of CHANNELS.filter(item => item !== channel)) {
   const otherLatest = await latestPublished(api, other);
   if (!otherLatest) continue;
-  const files = await releaseChannelFiles({ api, fetchImpl, release: otherLatest.release, channel: other });
-  const result = authenticateChannel(files, other, await trustAt(otherLatest.release.tag_name), now);
-  if (result.release.version !== otherLatest.version) throw new Error(`The ${other} release ${otherLatest.release.tag_name} carries another version's feed`);
+  const v = otherLatest.version, tag = otherLatest.release.tag_name;
+  const files = await releaseFiles({ api, fetchImpl, release: otherLatest.release, names: channelFiles(other) });
+  const { trust: historical, commit } = await trustAt(tag);
+  // Authentic under the pins it was signed for (anything else is tampering and fails the job) ...
+  const result = authenticateChannel(files, other, historical, now);
+  if (result.release.version !== v) throw new Error(`The ${other} release ${tag} carries another version's feed`);
+  if (result.release.source?.commit !== commit) throw new Error(`The ${other} release ${tag}'s signed source commit is not its tag's commit`);
+  // ... and still signed only by keys main pins today; otherwise it is left off the site.
+  const sandbox = await releaseFiles({ api, fetchImpl, release: otherLatest.release, names: [`dilla-${v}-linux-x64.sandbox.json`, `dilla-${v}-linux-x64.sandbox.sig`] });
+  if (!signedByCurrentKeys({ files, channel: other, historical, trust, sandboxKeys, sandbox, release: result.release, now })) { retired.push(other); continue; }
   if (!result.current) { dropped.push(other); continue; }
-  site.set(other, files); channels[other] = otherLatest.version;
+  site.set(other, files); channels[other] = v;
  }
  await mkdir(siteDirectory, { mode: 0o755 });
  for (const [name, files] of site) {
   await mkdir(join(siteDirectory, name));
   for (const [file, bytes] of files) await writeFile(join(siteDirectory, name, file), bytes, { flag: 'wx' });
  }
- return { siteDirectory, channels, dropped };
+ return { siteDirectory, channels, dropped, retired };
 }
 
 /** One channel from the live site: null when it was never deployed (metadata 404). Read only after the deploy. */
@@ -176,7 +211,7 @@ export function trustAtTag({ api, git }) {
   if (!DESKTOP_TAG.test(tag ?? '')) throw new Error('Invalid desktop release tag');
   const sha = await resolveTagCommit(api, tag);
   try { git(['merge-base', '--is-ancestor', sha, 'origin/main']); } catch { throw new Error(`${tag} is not on main`); }
-  return JSON.parse(git(['show', `${sha}:packages/desktop/release-trust.json`]));
+  return { trust: JSON.parse(git(['show', `${sha}:packages/desktop/release-trust.json`])), commit: sha };
  };
 }
 
@@ -187,8 +222,9 @@ export async function cli(argv, { trust, env = process.env } = {}) {
   const [signedDirectory, channel, version, siteDirectory] = args;
   const api = createGithubApi({ token: env.GH_TOKEN });
   const git = hardenedGit(resolve(import.meta.dirname, '../../..'));
-  const result = await buildSite({ signedDirectory: resolve(signedDirectory), channel, version, siteDirectory: resolve(siteDirectory), api, trust, trustAt: trustAtTag({ api, git }) });
-  return `Built the desktop feed site: ${Object.entries(result.channels).map(([name, value]) => `${name} ${value}`).join(', ')}${result.dropped.length ? `; dropped expired ${result.dropped.join(', ')}` : ''}.`;
+  const sandboxKeys = JSON.parse(await readFile(new URL('../linux-sandbox-component.json', import.meta.url), 'utf8')).publicKeys;
+  const result = await buildSite({ signedDirectory: resolve(signedDirectory), channel, version, siteDirectory: resolve(siteDirectory), api, trust, sandboxKeys, trustAt: trustAtTag({ api, git }) });
+  return `Built the desktop feed site: ${Object.entries(result.channels).map(([name, value]) => `${name} ${value}`).join(', ')}${result.dropped.length ? `; dropped expired ${result.dropped.join(', ')}` : ''}${result.retired.length ? `; left off ${result.retired.join(', ')} (signed by keys main no longer pins)` : ''}.`;
  }
  if (command === 'verify' && args.length === 2) {
   await verifyLiveFeed({ signedDirectory: resolve(args[0]), channel: args[1] });

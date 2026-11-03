@@ -17,7 +17,9 @@ export function fakeGithub({ tags = {}, runs = {}, jobs = {}, releases = [], imm
  const uploadUrl = id => `https://uploads.github.com/repos/${REPOSITORY}/releases/${id}/assets{?name,label}`;
  function addRelease(fields) {
   const release = { id: state.nextRelease++, tag_name: fields.tag_name, name: fields.name ?? '', body: fields.body ?? '', draft: fields.draft ?? false, prerelease: fields.prerelease ?? false,
-   target_commitish: fields.target_commitish ?? 'main', immutable: fields.immutable ?? false, assets: [] };
+   target_commitish: fields.target_commitish ?? 'main', immutable: fields.immutable ?? false, assets: [],
+   // Releases the workflow creates are authored by the Actions bot; a test can name a person instead.
+   author: fields.author ?? { login: 'github-actions[bot]', type: 'Bot' } };
   release.upload_url = uploadUrl(release.id);
   state.releases.push(release);
   for (const [name, bytes] of Object.entries(fields.files ?? {})) addAsset(release, name, Buffer.from(bytes));

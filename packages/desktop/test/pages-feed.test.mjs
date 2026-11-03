@@ -55,21 +55,24 @@ function pages(site = new Map()) {
 }
 
 /** A published, immutable versioned release carrying the channel files as assets (plus an installer). */
+let sandbox; // the current setup's sandbox fixture: its manifest and detached signature are release assets
 const release = (version, files, fields = {}) => ({ tag_name: `desktop-v${version}`, draft: false, prerelease: version.includes('-beta.'), immutable: true,
- files: { ...Object.fromEntries(files), [`dilla-${version}-win-x64.exe`]: Buffer.from('installer') }, ...fields });
+ files: { ...Object.fromEntries(files), [`dilla-${version}-win-x64.exe`]: Buffer.from('installer'),
+  [`dilla-${version}-linux-x64.sandbox.json`]: sandbox.manifest, [`dilla-${version}-linux-x64.sandbox.sig`]: sandbox.signature, ...fields.extraFiles }, ...fields });
 
 async function setup({ releases = s => [release('1.2.3', s.signedFiles)] } = {}) {
  const root = await mkdtemp(join(tmpdir(), 'dilla-pages-feed-'));
  const f = await buildReleaseFixture({ directory: await mkdir(join(root, 'fixture')).then(() => join(root, 'fixture')) });
+ sandbox = f.sandbox;
  const signed = join(root, 'signed'); await mkdir(signed);
  const signedFiles = signedChannel(f, '1.2.3');
  for (const [name, bytes] of signedFiles) await writeFile(join(signed, name), bytes);
  const s = { root, f, signed, signedFiles };
  const github = fakeGithub({ releases: releases(s) });
  const trustCalls = [];
- const trustAt = async tag => { trustCalls.push(tag); return f.trust; };
+ const trustAt = async tag => { trustCalls.push(tag); return { trust: f.trust, commit: f.source.commit }; };
  const build = (options = {}) => buildSite({ signedDirectory: signed, channel: 'stable', version: '1.2.3', siteDirectory: join(root, `site-${Math.random()}`),
-  api: createGithubApi({ token: 'workflow-token', fetchImpl: options.fetchImpl ?? github.fetch }), fetchImpl: github.fetch, trust: f.trust, trustAt, now: f.context.now, ...options });
+  api: createGithubApi({ token: 'workflow-token', fetchImpl: options.fetchImpl ?? github.fetch }), fetchImpl: github.fetch, trust: f.trust, sandboxKeys: f.sandbox.config.publicKeys, trustAt, now: f.context.now, ...options });
  return { ...s, github, trustAt, trustCalls, build, cleanup: () => rm(root, { recursive: true, force: true }) };
 }
 const tree = async directory => (await readdir(directory, { recursive: true })).sort();
@@ -156,12 +159,71 @@ test('promote, then release: releases signed under the previous keys do not bloc
   assert.throws(() => authenticateChannel(oldBeta, 'beta', promoted, s.f.context.now), 'the old beta feed does not verify under main’s promoted pins');
   // The live site still serves the transition release, signed by the old keys: it is never read.
   const live = pages(); live.publish('stable', oldStable); live.publish('beta', oldBeta);
-  const pins = { 'desktop-v1.3.0-beta.2': s.f.trust };
+  const pins = { 'desktop-v1.3.0-beta.2': { trust: s.f.trust, commit: s.f.source.commit } };
   const fetchImpl = (input, init) => String(input).startsWith(FEED_SITE) ? live.fetchImpl(input, init) : s.github.fetch(input, init);
   const result = await s.build({ trust: promoted, trustAt: async tag => pins[tag], fetchImpl });
-  assert.deepEqual(result.channels, { stable: '1.2.3', beta: '1.3.0-beta.2' });
-  for (const [name, bytes] of oldBeta) assert.deepEqual(await readFile(join(result.siteDirectory, 'beta', name)), bytes);
+  // The release goes out; the beta feed, signed by keys main no longer pins, is not re-served (a retired key never authenticates again).
+  assert.deepEqual(result.channels, { stable: '1.2.3' });
+  assert.deepEqual(result.retired, ['beta']);
+  assert.deepEqual(await tree(result.siteDirectory), ['stable', 'stable/appcast-arm64.xml', 'stable/desktop-stable.json', 'stable/desktop-stable.json.sig']);
   assert.equal(live.log.length, 0);
+ } finally { await s.cleanup(); }
+});
+
+test('during a staged rotation, the other channel signed by the still-pinned keys is re-served', async () => {
+ const s = await setup({ releases: s => [release('1.2.3', s.signedFiles), release('1.3.0-beta.2', signedChannel(s.f, '1.3.0-beta.2'))] });
+ try {
+  const next = generateKeyPairSync('ed25519'), nextSparkle = generateKeyPairSync('ed25519');
+  // Main's pins at the transition: both metadata keys, the Sparkle key unchanged plus the staged next one.
+  const staged = { ...s.f.trust, metadataPublicKeys: [...s.f.trust.metadataPublicKeys, next.publicKey.export({ type: 'spki', format: 'pem' }).toString()],
+   sparkleNextPublicKey: nextSparkle.publicKey.export({ type: 'spki', format: 'der' }).subarray(-32).toString('base64') };
+  const result = await s.build({ trust: staged });
+  assert.deepEqual(result.channels, { stable: '1.2.3', beta: '1.3.0-beta.2' });
+  assert.deepEqual(result.retired, []);
+ } finally { await s.cleanup(); }
+});
+
+test('an other-channel release signed under a retired metadata, Sparkle or sandbox key is not re-served', async () => {
+ const other = generateKeyPairSync('ed25519');
+ const raw = key => key.publicKey.export({ type: 'spki', format: 'der' }).subarray(-32).toString('base64');
+ const cases = {
+  // The release's pins held the key; main's current pins no longer do.
+  // Main pins only `other` for that role; this release is signed accordingly, the beta release by the old keys.
+  metadata: s => ({ trust: { ...s.f.trust, metadataPublicKeys: [other.publicKey.export({ type: 'spki', format: 'pem' }).toString()] }, keys: { metadata: other.privateKey, sparkle: s.f.sparkle.privateKey } }),
+  sparkle: s => ({ trust: { ...s.f.trust, sparklePublicKey: raw(other) }, keys: { metadata: s.f.key.privateKey, sparkle: other.privateKey } }),
+  sandbox: () => ({ sandboxKeys: [raw(other)] }),
+ };
+ for (const [label, change] of Object.entries(cases)) {
+  const s = await setup({ releases: s => [release('1.2.3', s.signedFiles), release('1.3.0-beta.2', signedChannel(s.f, '1.3.0-beta.2'))] });
+  try {
+   const { trust, keys, sandboxKeys } = change(s);
+   if (keys) {
+    const current = signedChannel(s.f, '1.2.3', { keys });
+    for (const [name, bytes] of current) await writeFile(join(s.signed, name), bytes);
+    for (const asset of s.github.state.releases.find(item => item.tag_name === 'desktop-v1.2.3').assets) {
+     if (current.has(asset.name)) Object.assign(asset, { bytes: current.get(asset.name), size: current.get(asset.name).length, digest: s.github.sha256(current.get(asset.name)) });
+    }
+   }
+   const result = await s.build({ ...(trust ? { trust } : {}), ...(sandboxKeys ? { sandboxKeys } : {}) });
+   assert.deepEqual(result.channels, { stable: '1.2.3' }, label);
+   assert.deepEqual(result.retired, ['beta'], label);
+  } finally { await s.cleanup(); }
+ }
+});
+
+test('only releases the release workflow made are followed: a hand-made release or a foreign source commit is refused', async () => {
+ const person = { login: 'someone', type: 'User' };
+ for (const [error, releases] of [
+  [/release workflow/i, s => [release('1.2.3', s.signedFiles), release('1.3.0-beta.2', signedChannel(s.f, '1.3.0-beta.2'), { author: person })]],
+  [/release workflow/i, s => [release('1.2.3', s.signedFiles, { author: person })]],
+  [/release workflow/i, s => [release('1.2.3', s.signedFiles), release('1.3.0-beta.2', signedChannel(s.f, '1.3.0-beta.2'), { author: { login: 'github-actions[bot]', type: 'User' } })]],
+ ]) {
+  const s = await setup({ releases });
+  try { await assert.rejects(s.build(), error); } finally { await s.cleanup(); }
+ }
+ const s = await setup({ releases: s => [release('1.2.3', s.signedFiles), release('1.3.0-beta.2', signedChannel(s.f, '1.3.0-beta.2'))] });
+ try {
+  await assert.rejects(s.build({ trustAt: async () => ({ trust: s.f.trust, commit: 'f'.repeat(40) }) }), /source commit/i);
  } finally { await s.cleanup(); }
 });
 
@@ -187,7 +249,7 @@ test('feed fetches stay on the API and the release download hosts, and never fol
   const api = s.github.state.log.filter(entry => entry.url.startsWith('https://api.github.com/'));
   assert.ok(api.length >= 3 && api.every(entry => entry.redirect === 'error' && entry.method === 'GET'));
   const downloads = s.github.state.log.filter(entry => !entry.url.startsWith('https://api.github.com/'));
-  assert.equal(downloads.length, 6);
+  assert.equal(downloads.length, 8, 'three channel files each, plus the other release\'s sandbox manifest and signature');
   for (const entry of downloads) assert.match(entry.url, /^https:\/\/github\.com\/dilla-chat\/dilla\/releases\/download\/desktop-v[^/]+\/[^/]+$/);
   const elsewhere = async (input, init) => {
    const response = await s.github.fetch(input, init);
@@ -214,7 +276,7 @@ test('the pins of a published release are release-trust.json at its tag’s comm
   git(['checkout', '-q', '-b', 'side', old]); git(['commit', '-q', '--allow-empty', '-m', 'off main']); const side = git(['rev-parse', 'HEAD']);
   const github = fakeGithub({ tags: { 'desktop-v1.3.0-beta.2': old, 'desktop-v1.3.0-beta.3': side } });
   const trustAt = trustAtTag({ api: createGithubApi({ token: 't', fetchImpl: github.fetch }), git });
-  assert.deepEqual(await trustAt('desktop-v1.3.0-beta.2'), { sparklePublicKey: 'old' });
+  assert.deepEqual(await trustAt('desktop-v1.3.0-beta.2'), { trust: { sparklePublicKey: 'old' }, commit: old });
   await assert.rejects(trustAt('desktop-v1.3.0-beta.3'), /not on main/);
   await assert.rejects(trustAt('v1.0.0'), /Invalid/);
  } finally { await rm(root, { recursive: true, force: true }); }

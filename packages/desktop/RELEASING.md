@@ -94,6 +94,9 @@ reinstall. **macOS:** Sparkle 2 trusts one EdDSA key per build; an update may ca
 verifies under the installed one, and every later archive must verify under the new one. A staged window of
 several releases cannot satisfy that, so `SUPublicEDKey` stays on the active key while staged and changes at
 `--promote`: macOS installs older than the promote release must be reinstalled once. `rotate` prints this.
+The Pages feed never re-serves a release signed by a key that main no longer pins. So after `--promote`, the other
+channel's feed (still signed by the old Sparkle key) leaves the site with the first release of the promoted keys.
+It comes back with that channel's next release, so release both channels soon after promoting.
 
 ## Sandbox component freshness
 
