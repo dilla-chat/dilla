@@ -137,7 +137,9 @@ describe('the server bot settings', () => {
     expect(screen.queryByText(en['admin.bot.automod.loaded'])).not.toBeInTheDocument();
     expect(fake.callsOf('ackBotInteractionResponses')).toHaveLength(0);
     prefixOpen = true;
-    await screen.findByText(en['admin.bot.automod.loaded']);
+    // The panel polls once a second, so the response arrives on the next poll: up to a full interval plus the
+    // call itself. The default 1 s findBy timeout loses that race whenever the flip lands just after a poll.
+    await screen.findByText(en['admin.bot.automod.loaded'], undefined, { timeout: 5_000 });
     await waitFor(() => expect(fake.callsOf('ackBotInteractionResponses')).toHaveLength(1));
   });
 
