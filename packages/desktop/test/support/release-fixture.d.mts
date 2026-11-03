@@ -26,4 +26,4 @@ export interface ReleaseFixture {
 export const RELEASE_TOOL_FILES: readonly string[];
 export function isolatedReleaseTools(directory: string, options: { trust: FixtureTrust; sandboxConfig: unknown; files?: string[] }): Promise<{ verifier: any; signer: any }>;
 export function acceptedJobs(): FixtureJob[];
-export function buildReleaseFixture(options?: { version?: string; directory?: string; now?: number }): Promise<ReleaseFixture>;
+export function buildReleaseFixture(options?: { version?: string; directory?: string; now?: number; commit?: string; head?: string; tree?: string }): Promise<ReleaseFixture>;
