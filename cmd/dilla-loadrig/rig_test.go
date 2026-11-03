@@ -213,6 +213,20 @@ func TestADropDuringTheHoldFailsTheCellByCode(t *testing.T) {
 	}
 }
 
+// Up to two key frames that lost their parameter-set packet ("incomplete", a transport loss) are
+// tolerated during the hold; a third, or any E_SFRAME_* code, fails the cell.
+func TestAFewIncompleteKeyFramesDuringTheHoldAreTolerated(t *testing.T) {
+	if err := holdDrops("c", nil, map[string]uint64{"incomplete": 2}); err != nil {
+		t.Fatalf("two incomplete: %v", err)
+	}
+	if err := holdDrops("c", nil, map[string]uint64{"incomplete": 3}); err == nil {
+		t.Fatal("three incomplete passed")
+	}
+	if err := holdDrops("c", nil, map[string]uint64{"incomplete": 1, "E_SFRAME_AUTH": 1}); err == nil || !strings.Contains(err.Error(), "E_SFRAME_AUTH") {
+		t.Fatalf("an auth failure beside an incomplete one: %v", err)
+	}
+}
+
 // RIGS-02: the scrape sends the token as a Bearer token; a 401 is an error that names the flag and
 // never the token.
 func TestTheMetricsScrapeSendsTheTokenAndNamesTheFlagOn401(t *testing.T) {

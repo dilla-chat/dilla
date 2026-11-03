@@ -507,12 +507,21 @@ func verifyViewerActivity(c Cell, viewers []*viewer, before []tally) error {
 	return nil
 }
 
+// maxIncompleteDrops is how many key frames that lost their parameter-set packet (media.DropIncomplete,
+// a transport loss and not a crypto failure) a hold tolerates; they stay in Result.Dropped.
+const maxIncompleteDrops = 2
+
 // holdDrops is an error naming every drop code other than "sif" (LiveKit's own injected frames)
 // whose count grew between before and after: a frame the rig published that a viewer could not
-// decrypt during the hold.
+// decrypt during the hold. Up to maxIncompleteDrops "incomplete" frames are tolerated; every
+// E_SFRAME_* code still fails.
 func holdDrops(name string, before, after map[string]uint64) error {
 	var codes []string
 	for code, n := range after {
+		grew := n - before[code]
+		if code == media.DropIncomplete && grew <= maxIncompleteDrops {
+			continue
+		}
 		if code != "sif" && n > before[code] {
 			codes = append(codes, fmt.Sprintf("%s ×%d", code, n-before[code]))
 		}

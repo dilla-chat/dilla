@@ -58,6 +58,22 @@ func (c *Counters) Snapshot() (decrypted uint64, dropped map[string]uint64) {
 	return c.decrypted, dropped
 }
 
+// DropIncomplete is the drop code of an H.264 key frame whose parameter sets (SPS/PPS) never
+// arrived: a transport loss, counted before decryption and never an E_SFRAME_* code.
+const DropIncomplete = "incomplete"
+
+// startsWithIDR reports whether the Annex-B frame's first NAL is an IDR slice (type 5), that is,
+// the key frame has no SPS before it.
+func startsWithIDR(frame []byte) bool {
+	switch {
+	case len(frame) >= 5 && frame[0] == 0 && frame[1] == 0 && frame[2] == 0 && frame[3] == 1:
+		return frame[4]&0x1f == 5
+	case len(frame) >= 4 && frame[0] == 0 && frame[1] == 0 && frame[2] == 1:
+		return frame[3]&0x1f == 5
+	}
+	return false
+}
+
 // FrameDecryptor is one subscribed track's e2eetypes.FrameDecryptor: the participant's key ring,
 // the track's codec, the device its identity names and the slot its source maps to.
 type FrameDecryptor struct {
@@ -87,6 +103,14 @@ func (d *FrameDecryptor) DecryptFrame(payload []byte) ([]byte, error) {
 	}
 	if len(d.sif) > 0 && bytes.HasSuffix(payload, d.sif) {
 		d.counters.addDropped("sif")
+		return nil, nil
+	}
+	if d.codec == sframe.H264 && startsWithIDR(payload) {
+		// The sender's key access unit is SPS, PPS, IDR, and the parameter sets sit in the
+		// authenticated prefix, so an IDR with none lost its STAP-A packet in transport. Decrypting
+		// it would fail closed as E_SFRAME_AUTH, indistinguishable from a forgery. Only clear NAL
+		// header bytes are read; no SFrame check is relaxed.
+		d.counters.addDropped(DropIncomplete)
 		return nil, nil
 	}
 	dec, err := d.ring.Decrypt(d.codec, payload, &d.device, d.slot)

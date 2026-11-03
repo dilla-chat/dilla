@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dilla-chat/dilla/internal/media"
 	"github.com/dilla-chat/dilla/internal/sframe"
 	"github.com/dilla-chat/dilla/internal/sfu"
 	"github.com/dilla-chat/dilla/internal/sfu/sfutest"
@@ -300,8 +301,12 @@ func TestTwoBotsDecryptEachOtherThroughTheSFU(t *testing.T) {
 		t.Fatalf("the subscriber decrypted nothing: %+v", subRep)
 	}
 	for code, n := range subRep.Dropped {
-		if code != "sif" && n > 0 {
-			t.Errorf("dropped[%s] = %d; only SFU-injected SIF frames may be dropped", code, n)
+		switch {
+		case code == "sif" || n == 0:
+		case code == media.DropIncomplete && n <= 2:
+			t.Logf("dropped[%s] = %d: a key frame lost its parameter-set packet in transport", code, n)
+		default:
+			t.Errorf("dropped[%s] = %d; only SFU-injected SIF frames and up to 2 incomplete key frames may be dropped", code, n)
 		}
 	}
 }

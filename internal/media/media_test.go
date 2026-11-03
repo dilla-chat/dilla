@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"io"
+	"maps"
 	"os"
 	"strings"
 	"sync"
@@ -13,6 +15,8 @@ import (
 
 	"github.com/livekit/protocol/livekit"
 	lksdk "github.com/livekit/server-sdk-go/v2"
+	"github.com/pion/rtp"
+	"github.com/pion/rtp/codecs"
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media/h264reader"
 
@@ -536,4 +540,119 @@ func TestGoPublisherToGoSubscriberDecryptsThroughTheSFU(t *testing.T) {
 	if custom != 3 {
 		t.Fatalf("LiveKit lists %d CUSTOM tracks for alice, want 3", custom)
 	}
+}
+
+// h264Packets makes n real access units from the bars fixture, SFrame-encrypted and packetized as the
+// publisher sends them: a key unit is one STAP-A (SPS+PPS) packet, then the IDR's FU-A run.
+func h264Packets(t *testing.T, n int) [][]*rtp.Packet {
+	t.Helper()
+	p, err := newH264AUProvider("testdata/bars.h264")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	sender, err := sframe.NewSender(base, 0, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pay := &codecs.H264Payloader{}
+	var seq uint16 = 1000
+	var out [][]*rtp.Packet
+	for i := range n {
+		s, err := p.NextSample(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		enc, err := sender.Encrypt(sframe.H264, sframe.ScreenVideo, 0, s.Data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		payloads := pay.Payload(1188, enc)
+		var pk []*rtp.Packet
+		for j, pl := range payloads {
+			pk = append(pk, &rtp.Packet{Header: rtp.Header{Version: 2, SequenceNumber: seq, Timestamp: uint32(3000 * (i + 1)), Marker: j == len(payloads)-1, PayloadType: 96}, Payload: pl})
+			seq++
+		}
+		out = append(out, pk)
+	}
+	return out
+}
+
+// receiveH264 feeds the packets of frames, minus those skip names, to decryptPackets and answers what
+// the decryptor counted.
+func receiveH264(t *testing.T, frames [][]*rtp.Packet, skip func(frame, packet int) bool) (uint64, map[string]uint64) {
+	t.Helper()
+	var q []*rtp.Packet
+	for f, pk := range frames {
+		for j, p := range pk {
+			if !skip(f, j) {
+				q = append(q, p)
+			}
+		}
+	}
+	ring := sframe.NewKeyRing(nil)
+	ring.InstallEpoch(1, base, roster, 1)
+	var c Counters
+	d := NewFrameDecryptor(ring, sframe.H264, alice, sframe.ScreenVideo, nil, &c)
+	read := func() (*rtp.Packet, error) {
+		if len(q) == 0 {
+			return nil, io.EOF
+		}
+		p := q[0]
+		q = q[1:]
+		return p, nil
+	}
+	codec := webrtc.RTPCodecParameters{RTPCodecCapability: webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeH264, ClockRate: 90000}}
+	if err := decryptPackets(t.Context(), read, codec, d); err != nil {
+		t.Fatal(err)
+	}
+	return c.Snapshot()
+}
+
+func TestAKeyFrameMissingItsParameterSetsIsDroppedAsIncompleteNotAsAnAuthFailure(t *testing.T) {
+	frames := h264Packets(t, 90)
+	var keys []int
+	for f, pk := range frames {
+		if pk[0].Payload[0]&0x1f == 24 { // a STAP-A leads only a key unit
+			keys = append(keys, f)
+		}
+	}
+	if len(keys) < 2 || keys[0] != 0 {
+		t.Fatalf("fixture key units at %v, want one at 0 and a later one", keys)
+	}
+	last := keys[len(keys)-1]
+	want := map[string]uint64{"incomplete": 1}
+	cases := []struct {
+		name      string
+		frames    [][]*rtp.Packet
+		skip      func(f, p int) bool
+		decrypted uint64
+	}{
+		{"mid-stream", frames, func(f, p int) bool { return f == last && p == 0 }, 89},
+		{"first packet of the stream", frames, func(f, p int) bool { return f == 0 && p == 0 }, 89},
+		{"end of stream", frames[:last+1], func(f, p int) bool { return f == last && p == 0 }, uint64(last)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			n, dropped := receiveH264(t, tc.frames, tc.skip)
+			if !maps.Equal(dropped, want) || n != tc.decrypted {
+				t.Fatalf("decrypted %d, dropped %v; want %d and %v", n, dropped, tc.decrypted, want)
+			}
+		})
+	}
+	t.Run("a flipped ciphertext byte of a complete key frame still fails authentication", func(t *testing.T) {
+		flipped := h264Packets(t, 90)
+		pk := flipped[last]
+		pk[len(pk)-1].Payload[len(pk[len(pk)-1].Payload)-2] ^= 0x01
+		n, dropped := receiveH264(t, flipped, func(int, int) bool { return false })
+		if want := map[string]uint64{"E_SFRAME_AUTH": 1}; !maps.Equal(dropped, want) || n != 89 {
+			t.Fatalf("decrypted %d, dropped %v; want 89 and %v", n, dropped, want)
+		}
+	})
+	t.Run("no loss drops nothing", func(t *testing.T) {
+		n, dropped := receiveH264(t, frames, func(int, int) bool { return false })
+		if n != 90 || len(dropped) != 0 {
+			t.Fatalf("decrypted %d, dropped %v; want 90 and none", n, dropped)
+		}
+	})
 }
