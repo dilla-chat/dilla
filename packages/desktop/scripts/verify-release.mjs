@@ -85,7 +85,14 @@ export async function stagePublicReleaseRecords({ candidate, directory, channel,
  const sandboxSignatureName = `dilla-${version}-linux-x64.sandbox.sig`;
  for (const name of BUILD_PROVENANCE_RECORDS) await verifyCandidateBuildRecord(join(candidate, name), join(directory, name));
  for (const name of [...records, sandboxSignatureName]) if (!BUILD_PROVENANCE_RECORDS.includes(name)) {
-  await writeFile(join(directory, name), await readFile(join(candidate, name)), { flag: 'wx' });
+  const bytes = await readFile(join(candidate, name));
+  try { await writeFile(join(directory, name), bytes, { flag: 'wx' }); }
+  catch (error) {
+   // A record the CI artifacts already delivered (performance, installed-account) must be byte-identical.
+   if (error?.code !== 'EEXIST') throw error;
+   const info = await lstat(join(directory, name));
+   if (info.isSymbolicLink() || !info.isFile() || !(await readFile(join(directory, name))).equals(bytes)) throw new Error('A CI-collected record differs from the signed candidate: ' + name);
+  }
  }
 }
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -205,13 +212,19 @@ async function verifyBundle({ metadata, signature, trust, directory, run, jobs, 
   if (artifact.platform === 'darwin') {
    const archive = await readFile(join(directory, asset.name));
    if (!verify(null, archive, sparkleKey, Buffer.from(artifact.sparkleSignature, 'base64'))) throw new Error('Sparkle archive signature mismatch');
-   const feed = feeds?.[artifact.arch] ?? await readFile(join(directory, `appcast-${artifact.arch}.xml`));
-   const marker = Buffer.from('<!-- sparkle-signatures:\n'), boundary = feed.lastIndexOf(marker);
-   if (boundary < 0) throw new Error('Unsigned Sparkle feed');
-   const block = /^<!-- sparkle-signatures:\nedSignature: ([A-Za-z0-9+/]{86}==)\nlength: (\d+)\n-->\n$/.exec(feed.subarray(boundary).toString());
-   if (!block || Number(block[2]) !== boundary || !verify(null, feed.subarray(0, boundary), sparkleKey, Buffer.from(block[1], 'base64'))
-     || feed.subarray(0, boundary).toString() !== appcast(release, artifact, artifact.sparkleSignature)) throw new Error('Sparkle feed signature or authenticated target mismatch');
+   verifySparkleFeed(release, artifact, feeds?.[artifact.arch] ?? await readFile(join(directory, `appcast-${artifact.arch}.xml`)), trust);
   }
  }
  return release;
+}
+
+/** A signed appcast must carry a valid Sparkle signature under the pinned key and be exactly the appcast of this authenticated release. */
+export function verifySparkleFeed(release, artifact, feed, trust) {
+ if (typeof trust.sparklePublicKey !== 'string' || Buffer.from(trust.sparklePublicKey, 'base64').length !== 32) throw new Error('Missing installed Sparkle trust');
+ const sparkleKey = createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x: Buffer.from(trust.sparklePublicKey, 'base64').toString('base64url') }, format: 'jwk' });
+ const marker = Buffer.from('<!-- sparkle-signatures:\n'), boundary = feed.lastIndexOf(marker);
+ if (boundary < 0) throw new Error('Unsigned Sparkle feed');
+ const block = /^<!-- sparkle-signatures:\nedSignature: ([A-Za-z0-9+/]{86}==)\nlength: (\d+)\n-->\n$/.exec(feed.subarray(boundary).toString());
+ if (!block || Number(block[2]) !== boundary || !verify(null, feed.subarray(0, boundary), sparkleKey, Buffer.from(block[1], 'base64'))
+   || feed.subarray(0, boundary).toString() !== appcast(release, artifact, artifact.sparkleSignature)) throw new Error('Sparkle feed signature or authenticated target mismatch');
 }

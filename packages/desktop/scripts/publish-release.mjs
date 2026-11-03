@@ -1,65 +1,135 @@
-import { readFile, appendFile, mkdir } from 'node:fs/promises';
+import { readFile, lstat } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, resolve, sep } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { verifyRelease } from '../src/update.ts';
-import { verifyDesktopBundle, publicReleaseRecords, stagePublicReleaseRecords } from './verify-release.mjs';
-import { REPOSITORY as repository, createGithubApi, fetchCiJobs } from './ci-run.mjs';
+import * as releaseVerifier from './verify-release.mjs';
+import { REPOSITORY, createGithubApi, fetchCiJobs, resolveTagCommit } from './ci-run.mjs';
+import { DESKTOP_TAG } from './release-notes.mjs';
+import { createReleaseAssetUploader, listReleaseAssets, releaseAssetDigest } from './standard-release-upload.mjs';
 
-const root = resolve(import.meta.dirname, '../../..');
-const mode = process.argv[2];
-const ref = process.env.GITHUB_REF_NAME ?? '';
-const match = /^desktop-v((0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-beta\.(0|[1-9]\d*))?)$/.exec(ref);
-if (!['plan', 'verify', 'publish'].includes(mode) || process.env.GITHUB_ACTIONS !== 'true' || process.env.GITHUB_REPOSITORY !== repository || !match || process.env.GITHUB_REF !== `refs/tags/${ref}`) throw new Error('Desktop publication runs only for this repository’s desktop version tags');
-const version = match[1], channel = version.includes('-beta.') ? 'beta' : 'stable';
-const candidate = join(root, 'packages/desktop/releases', version);
-const directory = join(root, 'desktop-release-artifacts');
-const metadataName = `desktop-${channel}.json`;
-const metadata = await readFile(join(candidate, metadataName));
-const signature = (await readFile(join(candidate, metadataName + '.sig'), 'utf8')).trim();
-const trust = JSON.parse(await readFile(join(root, 'packages/desktop/release-trust.json'), 'utf8'));
-const release = verifyRelease(metadata, signature, { publicKeys: trust.metadataPublicKeys, channel, platform: 'linux', arch: 'x64', currentVersion: '0.0.0', now: Date.now() });
-if (release.version !== version || !release.source || !Number.isSafeInteger(release.source.ciRun) || release.source.ciRun < 1
- || ![release.source.commit, release.source.head, release.source.tree].every(value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value))) throw new Error('Missing authenticated release source');
-const git = args => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
-git(['merge-base', '--is-ancestor', process.env.GITHUB_SHA, 'origin/main']);
-git(['fetch', 'origin', release.source.commit]);
-if (git(['rev-parse', release.source.commit + '^{tree}']) !== release.source.tree) throw new Error('Accepted CI source tree mismatch');
-// Only public signing/review/measurement records may follow the accepted build.
-git(['diff', '--exit-code', release.source.commit, process.env.GITHUB_SHA, '--', '.', `:(exclude)packages/desktop/releases/${version}`]);
-if (mode === 'plan') {
- if (!process.env.GITHUB_OUTPUT) throw new Error('Missing Actions output file');
- await appendFile(process.env.GITHUB_OUTPUT, `run=${release.source.ciRun}\nversion=${version}\nchannel=${channel}\n`);
- console.log('Authenticated release source and main-branch tag.');
- process.exit(0);
-}
-const token = process.env.GH_TOKEN;
-if (!token) throw new Error('Publishing requires the workflow’s scoped GitHub token');
-const api = createGithubApi({ token });
-const run = await api(`/repos/${repository}/actions/runs/${release.source.ciRun}`);
-const jobs = await fetchCiJobs(api, release.source.ciRun);
-await mkdir(directory, { recursive: true });
-const records = publicReleaseRecords(channel);
-await stagePublicReleaseRecords({ candidate, directory, channel, version });
-await verifyDesktopBundle({ metadata, signature, trust, directory, run, jobs, version });
-console.log('Verified accepted native/client CI, native build provenance, installed-account proofs, review, performance reports, installer/update hashes and Linux sandbox signatures.');
-if (mode === 'verify') process.exit(0);
+/**
+ * The keyless `publish` job of desktop-release.yml. It re-verifies the signed
+ * release handed over by `sign` against main's pins and the accepted CI run,
+ * then creates (or adopts and normalises) the versioned draft, uploads exactly
+ * the signed inventory plus public records, publishes it and re-checks the
+ * published result. The channel feed is not a release: a later keyless job
+ * deploys it to GitHub Pages.
+ */
+const R = `/repos/${REPOSITORY}`;
+const COMMIT = /^[a-f0-9]{40}$/;
+const ROTATION_PROOF = 'rotation-proof.json';
 
-async function findRelease(tag) { return api(`/repos/${repository}/releases/tags/${encodeURIComponent(tag)}`, {}, true); }
-const { createReleaseAssetUploader } = await import('./standard-release-upload.mjs');
-const upload = createReleaseAssetUploader({ api, token });
-const notes = await readFile(join(candidate, 'release-notes.md'), 'utf8');
-let target = await findRelease(ref);
-if (!target) target = await api(`/repos/${repository}/releases`, { method: 'POST', body: { tag_name: ref, target_commitish: process.env.GITHUB_SHA, name: `Dilla desktop ${version}`, body: notes, draft: true, prerelease: channel === 'beta' } });
-for (const name of [...release.assets.map(asset => asset.name), ...records]) await upload(target, name, await readFile(join(directory, name)), target.draft === true);
-if (target.draft) await api(`/repos/${repository}/releases/${target.id}`, { method: 'PATCH', body: { draft: false } });
-// The channel feed moves only after the immutable version is downloadable.
-const feedTag = `desktop-${channel}`;
-let feed = await findRelease(feedTag);
-if (!feed) feed = await api(`/repos/${repository}/releases`, { method: 'POST', body: { tag_name: feedTag, target_commitish: process.env.GITHUB_SHA, name: `Dilla desktop ${channel}`, body: `Authenticated desktop ${channel} update feed. Versioned artifacts remain in their desktop-v releases.`, draft: true, prerelease: true } });
-for (const asset of release.assets) {
- const name = asset.name.replace(`dilla-${version}-`, 'dilla-');
- await upload(feed, name, await readFile(join(directory, asset.name)), true);
+/** The run context; DESKTOP_TAG and DESKTOP_SHA come from the sign job's validated outputs. */
+export function publicationContext(env) {
+ if (env.GITHUB_ACTIONS !== 'true' || env.GITHUB_REPOSITORY !== REPOSITORY || env.GITHUB_EVENT_NAME !== 'workflow_run' || env.GITHUB_REF !== 'refs/heads/main') {
+  throw new Error('Desktop publication runs only as the main-branch workflow_run of desktop-release.yml');
+ }
+ const match = DESKTOP_TAG.exec(env.DESKTOP_TAG ?? '');
+ if (!match) throw new Error('Invalid DESKTOP_TAG');
+ if (!COMMIT.test(env.DESKTOP_SHA ?? '')) throw new Error('Invalid DESKTOP_SHA');
+ if (env.DESKTOP_STAGED !== 'true' && env.DESKTOP_STAGED !== 'false') throw new Error('Invalid DESKTOP_STAGED');
+ const version = match[1];
+ return { tag: match[0], version, channel: version.includes('-beta.') ? 'beta' : 'stable', sha: env.DESKTOP_SHA, staged: env.DESKTOP_STAGED === 'true' };
 }
-for (const name of [metadataName + '.sig', metadataName, 'appcast-arm64.xml']) await upload(feed, name, await readFile(join(directory, name)), true);
-if (feed.draft) await api(`/repos/${repository}/releases/${feed.id}`, { method: 'PATCH', body: { draft: false } });
-console.log(`Published desktop ${version} and promoted the authenticated ${channel} feed.`);
+
+/** An existing, normalised, absolute directory strictly inside $RUNNER_TEMP. */
+async function runnerDirectory(env, name) {
+ const temp = env.RUNNER_TEMP, value = env[name];
+ if (typeof temp !== 'string' || !isAbsolute(temp) || resolve(temp) !== temp) throw new Error('RUNNER_TEMP must be an absolute path');
+ if (typeof value !== 'string' || !isAbsolute(value) || resolve(value) !== value || !value.startsWith(temp + sep)) throw new Error(`${name} must be an absolute path inside RUNNER_TEMP`);
+ let info;
+ try { info = await lstat(value); } catch { throw new Error(`${name} does not exist`); }
+ if (info.isSymbolicLink() || !info.isDirectory()) throw new Error(`${name} must be a directory`);
+ return value;
+}
+
+async function findDraft(api, tag) {
+ if (await api(`${R}/releases/tags/${encodeURIComponent(tag)}`, {}, true)) throw new Error(`desktop ${tag} is already published`);
+ const matches = [];
+ for (let page = 1; ; page++) {
+  const list = await api(`${R}/releases?per_page=100&page=${page}`);
+  if (!Array.isArray(list)) throw new Error('Malformed release list');
+  matches.push(...list.filter(release => release?.tag_name === tag));
+  if (list.length < 100) break;
+  if (page >= 100) throw new Error('Too many releases');
+ }
+ if (matches.some(release => release.draft !== true)) throw new Error(`desktop ${tag} is already published`);
+ if (matches.length > 1) throw new Error(`Refusing to publish: more than one draft exists for ${tag}`);
+ return matches[0] ?? null;
+}
+
+/** Asserts a release's assets are exactly `expected` (name -> bytes): same names, sizes and digests. */
+export function assertExactAssets(assets, expected, digest) {
+ const names = assets.map(asset => asset?.name).sort(), wanted = [...expected.keys()].sort();
+ if (names.length !== wanted.length || names.some((name, i) => name !== wanted[i])) throw new Error('The published asset set differs from the signed set');
+ for (const asset of assets) {
+  const bytes = expected.get(asset.name);
+  if (asset.size !== bytes.length || asset.digest !== digest(bytes)) throw new Error('The published asset set differs from the signed set: ' + asset.name);
+ }
+}
+
+export async function runPublisher({ mode, env, git, fetchImpl = fetch, trust, verifier = releaseVerifier, now = Date.now() }) {
+ if (mode !== 'plan' && mode !== 'publish') throw new Error('Usage: publish-release.mjs plan | publish');
+ const { tag, version, channel, sha, staged } = publicationContext(env);
+ const candidate = await runnerDirectory(env, 'DESKTOP_RELEASE_CANDIDATE');
+ const directory = await runnerDirectory(env, 'DESKTOP_INSTALLERS');
+ const api = createGithubApi({ token: env.GH_TOKEN, fetchImpl });
+
+ // The signed metadata, verified under main's pins, must name exactly DESKTOP_SHA.
+ const metadataName = `desktop-${channel}.json`;
+ const metadata = await readFile(join(candidate, metadataName));
+ const signature = (await readFile(join(candidate, metadataName + '.sig'), 'utf8')).trim();
+ const release = verifyRelease(metadata, signature, { publicKeys: trust.metadataPublicKeys, channel, platform: 'linux', arch: 'x64', currentVersion: '0.0.0', now });
+ const source = release.source;
+ if (release.version !== version || !source || !Number.isSafeInteger(source.ciRun) || source.ciRun < 1 || !COMMIT.test(source.tree ?? '')) throw new Error('Missing authenticated release source');
+ if (source.commit !== sha || source.head !== sha) throw new Error('The signed source commit is not DESKTOP_SHA');
+ if (await resolveTagCommit(api, tag) !== sha) throw new Error('The tag resolves to another commit than DESKTOP_SHA');
+ try { git(['merge-base', '--is-ancestor', sha, 'origin/main']); } catch { throw new Error('DESKTOP_SHA is not an ancestor of main'); }
+ if (git(['rev-parse', `${sha}^{tree}`]) !== source.tree) throw new Error('The signed source tree differs from DESKTOP_SHA’s tree');
+
+ // The signed records join the independently collected CI files; then the whole bundle is re-verified.
+ await verifier.stagePublicReleaseRecords({ candidate, directory, channel, version });
+ const run = await api(`${R}/actions/runs/${source.ciRun}`);
+ const jobs = await fetchCiJobs(api, source.ciRun);
+ await verifier.verifyDesktopBundle({ metadata, signature, trust, directory, run, jobs, version, now });
+ const expected = new Map();
+ for (const name of [...release.assets.map(asset => asset.name), ...verifier.publicReleaseRecords(channel)]) expected.set(name, await readFile(join(directory, name)));
+ if (staged) expected.set(ROTATION_PROOF, await readFile(join(candidate, ROTATION_PROOF)));
+ if (mode === 'plan') return { release, expected: [...expected.keys()] };
+
+ // A pre-existing draft is adopted only after it is normalised to exactly what was signed.
+ const body = (await readFile(join(directory, 'release-notes.md'))).toString('utf8');
+ const fields = { name: `Dilla desktop ${version}`, body, prerelease: channel === 'beta', target_commitish: sha };
+ let target = await findDraft(api, tag);
+ if (target) {
+  target = await api(`${R}/releases/${target.id}`, { method: 'PATCH', body: { ...fields, draft: true } });
+  for (const asset of await listReleaseAssets(api, target.id)) {
+   if (!expected.has(asset.name)) await api(`${R}/releases/assets/${asset.id}`, { method: 'DELETE' });
+  }
+ } else {
+  target = await api(`${R}/releases`, { method: 'POST', body: { tag_name: tag, ...fields, draft: true } });
+ }
+ if (target?.tag_name !== tag || target.draft !== true) throw new Error('GitHub returned an unexpected release draft');
+ const upload = createReleaseAssetUploader({ api, token: env.GH_TOKEN, fetchImpl });
+ for (const [name, bytes] of expected) await upload(target, name, bytes);
+ assertExactAssets(await listReleaseAssets(api, target.id), expected, releaseAssetDigest);
+ await api(`${R}/releases/${target.id}`, { method: 'PATCH', body: { draft: false } });
+
+ // Re-read what is now public: exact assets, immutability, and the tag still on DESKTOP_SHA.
+ const after = await api(`${R}/releases/${target.id}`);
+ if (after?.draft !== false || after.tag_name !== tag) throw new Error('The versioned release did not publish');
+ assertExactAssets(await listReleaseAssets(api, target.id), expected, releaseAssetDigest);
+ if (after.immutable !== true) throw new Error('The published release is not immutable; enable immutable releases');
+ if (await resolveTagCommit(api, tag) !== sha) throw new Error('The tag moved off DESKTOP_SHA after publishing');
+ return { release, published: after };
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+ if (process.argv.length !== 3) throw new Error('Usage: publish-release.mjs plan | publish');
+ const root = resolve(import.meta.dirname, '../../..');
+ const git = args => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+ const trust = JSON.parse(await readFile(join(root, 'packages/desktop/release-trust.json'), 'utf8'));
+ const result = await runPublisher({ mode: process.argv[2], env: process.env, git, trust });
+ console.log(process.argv[2] === 'plan' ? `Verified the signed desktop ${result.release.version} release for publication.` : `Published desktop ${result.release.version}.`);
+}
