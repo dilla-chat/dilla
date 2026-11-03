@@ -2617,6 +2617,8 @@ test('release-keys.mjs importing a non-node module or adding a tag policy is rep
   reported({ [keys]: text => text + "\nawait import('left-pad');\n" }, 'dynamic import');
   reported({ [keys]: text => text + "\nconst policy = { name: 'desktop-v*', type: 'tag' };\n" }, 'tag policy');
   reported({ [keys]: text => text + "\n// deployment-branch-policies\nconst policies = [{ name: 'main', type: 'branch' }, { name: 'dev', type: 'branch' }];\n" }, 'two branch policies');
+  // Unconditional: removing the environment setup altogether (and with it the policy literal) is reported too.
+  reported({ [keys]: text => text.replaceAll('deployment-branch-policies', 'policies').replace(/\{ name: 'main', type: 'branch' \}/g, '{}') }, 'no main policy');
   reported({ [signer]: text => "import { x } from 'https://example.com/x.mjs';\n" + text }, 'remote import');
   reported({ [signer]: text => "import { x } from '@dilla/other';\n" + text }, 'package import in signer');
 });

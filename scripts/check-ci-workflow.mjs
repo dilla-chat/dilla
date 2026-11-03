@@ -1714,8 +1714,8 @@ export function checkDesktopReleaseWorkflow(root) {
   checkScriptImports(root, 'packages/desktop/scripts/release-sign-job.mjs', problems);
   if (keys !== null) {
     if (/type\s*:\s*['"]tag['"]/.test(keys)) problems.push('release-keys.mjs: the desktop-release environment admits no tag policy');
-    // Task 11 adds the environment setup; once it does, the policy is the single branch main.
-    if (/deployment-branch-policies/.test(keys) && ((keys.match(/type\s*:\s*['"]branch['"]/g) ?? []).length !== 1 || !/\{\s*name\s*:\s*['"]main['"]\s*,\s*type\s*:\s*['"]branch['"]\s*\}/.test(keys))) {
+    // The environment setup names exactly one deployment policy: the branch main.
+    if (!/deployment-branch-policies/.test(keys) || ((keys.match(/type\s*:\s*['"]branch['"]/g) ?? []).length !== 1 || !/\{\s*name\s*:\s*['"]main['"]\s*,\s*type\s*:\s*['"]branch['"]\s*\}/.test(keys))) {
       problems.push("release-keys.mjs: the environment policy must be the single { name: 'main', type: 'branch' }");
     }
   }

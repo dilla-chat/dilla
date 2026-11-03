@@ -2,13 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
-import { createHash, createPrivateKey, sign } from 'node:crypto';
+import { createHash, createPublicKey, generateKeyPairSync, sign } from 'node:crypto';
 import { mkdtemp, readFile, writeFile, mkdir, rm, rename, open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { build } from 'esbuild';
-import { createReleaseKeys } from '../../scripts/release-keys.mjs';
 import { appcast, signedAppcast } from '../../scripts/release-feed.mjs';
 import { bundleDigest, serveArchive } from '../support/mac-installed-upgrade.ts';
 
@@ -100,10 +99,9 @@ test('installed ad-hoc macOS Sparkle rejects feed/archive/download faults, safel
  };
  try {
   originalDigest = sha256(await readFile(native));
-  await createReleaseKeys(join(root, 'keys'));
-  const trust = JSON.parse(await readFile(join(root, 'keys/release-trust.json'), 'utf8'));
-  const seed = Buffer.from((await readFile(join(root, 'keys/sparkle-private.key'), 'utf8')).trim(), 'base64');
-  const key = createPrivateKey({ format: 'jwk', key: { kty: 'OKP', crv: 'Ed25519', d: seed.toString('base64url'), x: Buffer.from(trust.sparklePublicKey, 'base64').toString('base64url') } }); seed.fill(0);
+  // A throwaway in-memory Sparkle key: no key file is ever written.
+  const key = generateKeyPairSync('ed25519').privateKey;
+  const trust = { sparklePublicKey: createPublicKey(key).export({ type: 'spki', format: 'der' }).subarray(-32).toString('base64') };
   execFileSync(process.execPath, [join(desktop, 'scripts/build-sparkle.mjs'), '--acceptance'], { stdio: 'inherit' });
   assert.equal(sha256(await readFile(native)), originalDigest, 'acceptance build overwrote production bridge');
   const pack = async (version, signature = '') => {
