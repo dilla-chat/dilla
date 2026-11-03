@@ -51,6 +51,7 @@ test('the CI emitter reads real clean Git HEAD/tree and GITHUB_SHA, never caller
  try {
   const scripts = join(root, 'packages/desktop/scripts'), out = join(root, 'out'); await mkdir(scripts, { recursive: true }); await mkdir(out);
   await copyFile(resolve(import.meta.dirname, '../scripts/build-provenance.mjs'), join(scripts, 'build-provenance.mjs'));
+  await copyFile(resolve(import.meta.dirname, '../scripts/is-main.mjs'), join(scripts, 'is-main.mjs'));
   await writeFile(join(root, 'packages/desktop/package.json'), JSON.stringify({ version: '1.2.3' })); await writeFile(join(root, '.gitignore'), 'out/\n');
   const git = (args: string[]) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
   git(['init', '-q']); git(['config', 'core.hooksPath', join(root, 'no-hooks')]); git(['add', '.']); git(['-c', 'user.name=Build fixture', '-c', 'user.email=build@invalid.example', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'Fixture source']);
