@@ -8,6 +8,24 @@ import { SyncError } from './errors';
 import type { SyncInternals } from './internals';
 
 const groupKey = (g: Id): string => `g:${toHex(g)}`;
+/** The core's INTERACTION_CLOCK_TOLERANCE_SECS (core/dilla-core/src/bot/mod.rs): an instance-clock issued_at may lie this
+ *  far ahead of this device's clock. Used here only to name a refusal; the core alone decides acceptance. */
+const INTERACTION_CLOCK_TOLERANCE_S = 5n;
+
+/** Diagnostics only: whether a current-context proof the core refused lies outside the core's clock window for `now`
+ *  (issued_at more than the tolerance ahead, or not_after already passed). A freshly fetched proof can only do so when
+ *  this device's clock is off from the instance's. Reads the two timestamps of the signed payload
+ *  `[version,instance_id,instance_key_id,instance_signer_pub,issued_at,not_after,...]` and nothing else. */
+export function proofOutsideClockWindow(payload: Uint8Array, now: bigint): boolean {
+  try {
+    const fields = arr(decode(payload), 18);
+    const issuedAt = u64(fields[4]);
+    const notAfter = u64(fields[5]);
+    return issuedAt > now + INTERACTION_CLOCK_TOLERANCE_S || notAfter <= now;
+  } catch {
+    return false;
+  }
+}
 const same = (a: Id, b: Id): boolean => toHex(a) === toHex(b);
 function reportUnexpected(s: SyncInternals, group: Id): void {
   const hex = toHex(group);
@@ -39,20 +57,26 @@ async function applyWelcomeRows(s: SyncInternals, raw: Uint8Array, rows: CborVal
     }
     if (s.stopped()) return;
 
+    const now = BigInt(Math.floor(s.deps.now() / 1000));
+    // A refusal of a proof outside the clock window repeats on every poll while this device's clock is off: retrying
+    // cannot fix it, so it is named (diagnostics E_CLOCK_SKEW, and the Bot request's refusal detail) rather than silent.
+    const refused = (): void => {
+      if (proofOutsideClockWindow(proof.payload, now)) s.deps.onWelcomeClockSkew?.(group);
+      reportUnexpected(s, group);
+    };
     let outcomes: WelcomeOutcome[];
     try {
-      const now = BigInt(Math.floor(s.deps.now() / 1000));
       outcomes = s.deps.core.humanInteractionWelcomeApply(encode([row]), encode([proof.payload, proof.signature]), now);
     } catch {
       // A successful proof lookup identifies a kind-3 candidate. Any local verification or
       // storage refusal leaves the Welcome queued for recovery; generic apply could delete it.
-      reportUnexpected(s, group);
+      refused();
       continue;
     }
     const outcome = outcomes[0];
     if (outcomes.length !== 1 || outcome?.welcomeId !== welcomeId || !same(outcome.groupId, group)
       || (outcome.outcome !== 0 && outcome.outcome !== 1)) {
-      reportUnexpected(s, group);
+      refused();
       continue;
     }
 

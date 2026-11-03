@@ -2,6 +2,7 @@
 
 use super::error::{E_CORE_INPUT, E_CORE_STATE};
 use super::{ClientCore, ClientError, bot_identity, bot_intents, wire};
+use crate::bot::INTERACTION_CLOCK_TOLERANCE_SECS;
 use crate::bot::interaction_admission::Expected;
 use crate::cbor::Encoder;
 use crate::identity::CredentialIdentity;
@@ -10,8 +11,6 @@ use openmls::prelude::{BasicCredential, CredentialWithKey, MlsMessageBodyIn, Mls
 use openmls_traits::OpenMlsProvider;
 use rusqlite::params;
 use tls_codec::Deserialize as _;
-
-const INTERACTION_CLOCK_TOLERANCE_SECS: u64 = 5;
 
 fn rejected(reason: &'static str) -> ClientError {
     // This fixed reason is private to the native helper boundary; the helper still returns its

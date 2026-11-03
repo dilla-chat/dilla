@@ -21,6 +21,13 @@ pub const RECEIPT_MAX: usize = 512;
 pub const HELPER_MAX: usize = 1_048_576;
 pub const HELPER_PAYLOAD_MAX: usize = 1_048_480;
 
+/// Seconds a server-issued interaction timestamp may lie ahead of the verifying client's own
+/// clock. Instance timestamps (`issued_at`, `accepted_at`, snapshot `now`) and the client's wall
+/// clock are different clocks; both the Bot side (interaction snapshots) and the human side
+/// (current interaction context proofs) allow the same skew so the two cannot drift apart.
+/// Expiry (`not_after`) gets no extra allowance on the human side.
+pub const INTERACTION_CLOCK_TOLERANCE_SECS: u64 = 5;
+
 /// Sanitized, stable bot-codec failure categories. No variant retains caller data.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, thiserror::Error)]
 pub enum CodecError {

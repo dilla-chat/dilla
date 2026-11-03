@@ -426,10 +426,119 @@ fn provider_status_response_survives_authenticated_journal_restart_and_ack() {
     authenticated_response_roundtrip(24);
 }
 
-fn authenticated_response_roundtrip(operation: u64) {
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_secs()
+}
+
+/// Build a proof issued at `issued_at` (valid for 30 s, registration accepted at
+/// `accepted_at`) and apply the fixture's Welcome with the client clock at `client_now`.
+fn apply_with_clock(
+    fixture: &mut WelcomeFixture,
+    issued_at: u64,
+    accepted_at: u64,
+    client_now: u64,
+) -> Result<Vec<u8>, dilla_core::client::ClientError> {
+    let proof = current_context_proof(
+        &fixture.server_key,
+        &fixture.human,
+        &fixture.bot,
+        &fixture.human_identity,
+        &fixture.human_list,
+        &fixture.human_dsk,
+        &fixture.tree_hash,
+        issued_at,
+        accepted_at,
+        GROUP_ID,
+    );
+    fixture
+        .human
+        .core
+        .human_interaction_welcome_apply(&fixture.welcomes, &proof, client_now)
+}
+
+fn assert_applied(applied: Result<Vec<u8>, dilla_core::client::ClientError>, human: &Core) {
+    let applied = applied.expect("interaction Welcome is applied");
+    let outcome = decode_strict(&applied, |d| {
+        d.array(1)?;
+        d.array(4)?;
+        d.uint()?;
+        let group = d.bytes_exact::<16>()?;
+        let outcome = d.uint()?;
+        let reason = d.text()?.to_owned();
+        Ok((group, outcome, reason))
+    })
+    .expect("applied outcome");
+    assert_eq!(outcome, (GROUP_ID, 0, String::new()));
+    let groups = client_support::groups(&human.core);
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].group_id, GROUP_ID);
+    assert_eq!(groups[0].kind, 3);
+}
+
+/// The proof's `issued_at` and `accepted_at` come from the instance clock and `now` from the
+/// client's. A client clock up to 5 s behind the instance is the same skew the Bot side of this
+/// protocol allows (`bot::INTERACTION_CLOCK_TOLERANCE_SECS`). Before the allowance, a client 1 s
+/// behind could never apply an interaction Welcome.
+#[test]
+fn human_accepts_interaction_welcome_from_an_instance_clock_up_to_five_seconds_ahead() {
+    let client_now = unix_now();
+    for ahead in [1, 4] {
+        let mut fixture = welcome_fixture(&format!("skew-{ahead}"));
+        let applied = apply_with_clock(
+            &mut fixture,
+            client_now + ahead,
+            client_now + ahead,
+            client_now,
+        );
+        assert_applied(applied, &fixture.human);
+    }
+}
+
+#[test]
+fn human_refuses_interaction_welcome_beyond_five_seconds_ahead_or_expired_and_accepts_the_boundary()
+{
+    let client_now = unix_now();
+    let mut fixture = welcome_fixture("skew-bounds");
+    let beyond = apply_with_clock(&mut fixture, client_now + 6, client_now + 6, client_now)
+        .expect_err("a proof issued 6 s ahead of the client clock is refused");
+    assert_eq!(beyond.code, "E_BINDING");
+    // Expiry has no allowance: not_after = issued_at + 30 = client_now is already expired.
+    let expired = apply_with_clock(&mut fixture, client_now - 30, client_now - 31, client_now)
+        .expect_err("a proof whose not_after equals the client clock is refused");
+    assert_eq!(expired.code, "E_BINDING");
+    let long_expired = apply_with_clock(&mut fixture, client_now - 36, client_now - 37, client_now)
+        .expect_err("a long-expired proof is refused");
+    assert_eq!(long_expired.code, "E_BINDING");
+    assert!(client_support::groups(&fixture.human.core).is_empty());
+    // Exactly 5 s ahead is the boundary and is accepted.
+    let boundary = apply_with_clock(&mut fixture, client_now + 5, client_now + 5, client_now);
+    assert_applied(boundary, &fixture.human);
+}
+
+/// A human core with a real two-leaf Bot interaction Welcome waiting to be applied, plus
+/// everything a test needs to build current-context proofs for it.
+struct WelcomeFixture {
+    encrypted_store: EncryptedTestStore,
+    store_key: String,
+    human: Core,
+    provider: OpenMlsRustCrypto,
+    human_identity: CredentialIdentity,
+    human_list: DeviceList,
+    human_dsk: [u8; 32],
+    bot: BotIdentity,
+    group: MlsGroup,
+    server_key: SigningKey,
+    tree_hash: [u8; 32],
+    welcomes: Vec<u8>,
+}
+
+fn welcome_fixture(label: &str) -> WelcomeFixture {
     let server_key = SigningKey::from_bytes(&[0xa7; 32]);
     let server_public = server_key.verifying_key().to_bytes();
-    let encrypted_store = EncryptedTestStore::new(&format!("op-{operation}"));
+    let encrypted_store = EncryptedTestStore::new(label);
     let store_key = "c3".repeat(32);
     let connection = open_encrypted_test_connection(encrypted_store.path(), &store_key);
     let mut human = enrolled_human_with_connection(&server_public, connection);
@@ -533,6 +642,37 @@ fn authenticated_response_roundtrip(operation: u64) {
         .core
         .instance_signer_key_matches(&server_public)
         .expect("server key remains pinned after enrollment");
+    WelcomeFixture {
+        encrypted_store,
+        store_key,
+        human,
+        provider,
+        human_identity,
+        human_list,
+        human_dsk,
+        bot,
+        group,
+        server_key,
+        tree_hash,
+        welcomes,
+    }
+}
+
+fn authenticated_response_roundtrip(operation: u64) {
+    let WelcomeFixture {
+        encrypted_store,
+        store_key,
+        mut human,
+        provider: _bot_provider,
+        human_identity,
+        human_list,
+        human_dsk,
+        bot,
+        mut group,
+        server_key,
+        tree_hash,
+        welcomes,
+    } = welcome_fixture(&format!("op-{operation}"));
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock")

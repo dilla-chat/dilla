@@ -7,6 +7,7 @@ import { parseInvite } from './driver.ts';
 import { verifyShippingCoreWasmInDist } from './shipping-wasm.mjs';
 import { verifyTestTools } from '../../../scripts/e2e-test-tools.mjs';
 import { arr, decode } from '../../../packages/client-core/src/cbor/index';
+import { followWallClock, readFakeClock, wallClockFollower } from './wall-clock.ts';
 
 /** web3.8 E2 (pre-flight C-13): `wire` is the one wire version the host's hello offers (`-wire`; 1 or more); the version-reload suite
  *  starts a host that offers a version unsupported by the browser bundle. `keepData` leaves the host data directory in place at start and at stop,
@@ -169,17 +170,11 @@ export async function startTestHost(c: HostConfig): Promise<StartedHost> {
       await assertWallClock(clockURL, 'before Bot runtime startup');
       // Timer callbacks can be delayed under CI load. Advance by elapsed wall
       // time so the fake host clock stays within the Bot's signed-time window.
-      let advancedThrough = Date.now();
+      const follower = followWallClock(clockURL);
       clockTicker = setInterval(() => {
         if (clockTickInFlight) return;
-        const seconds = Math.floor((Date.now() - advancedThrough) / 1_000);
-        if (seconds < 1) return;
         clockTickInFlight = true;
-        void fetch(clockURL, {
-          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ seconds }),
-        }).then((response) => {
-          if (response.ok) advancedThrough += seconds * 1_000;
-        }).catch(() => undefined).finally(() => { clockTickInFlight = false; });
+        void follower.tick().catch(() => undefined).finally(() => { clockTickInFlight = false; });
       }, 1_000);
     }
     if (c.botRuntime === true) bot = await startBotRuntime(url, dataDir, c.port, c.advanceClockWithWall === true ? `http://127.0.0.1:${c.control}/debug/clock` : undefined, c.botReconcileInterval);
@@ -344,28 +339,16 @@ async function startBotRuntime(baseURL: string, dataDir: string, port: number, c
 }
 
 async function assertWallClock(clockURL: string, stage: string): Promise<void> {
-  const response = await fetch(clockURL);
-  if (!response.ok) throw new Error(`Bot host clock probe failed ${stage}: HTTP ${response.status}`);
-  const now = (await response.json() as { now?: unknown }).now;
-  if (typeof now !== 'number' || !Number.isSafeInteger(now) || Math.abs(now - Math.floor(Date.now() / 1000)) > 5) {
+  const now = await readFakeClock(clockURL, stage);
+  if (Math.abs(now - Math.floor(Date.now() / 1000)) > 5) {
     throw new Error(`Bot host fake clock is outside the 5-second wall-clock bound ${stage}`);
   }
 }
 
 async function alignWallClock(clockURL: string, stage: string): Promise<void> {
-  // Restoring a server snapshot restores its fake clock too. The periodic wall
-  // ticker cannot account for that rewind, so catch up before starting Bot.
-  const response = await fetch(clockURL);
-  if (!response.ok) throw new Error(`Bot host clock probe failed ${stage}: HTTP ${response.status}`);
-  const now = (await response.json() as { now?: unknown }).now;
-  if (typeof now !== 'number' || !Number.isSafeInteger(now)) throw new Error(`Bot host clock probe returned invalid time ${stage}`);
-  const seconds = Math.floor(Date.now() / 1_000) - now;
-  if (seconds > 0) {
-    const advanced = await fetch(clockURL, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ seconds }),
-    });
-    if (!advanced.ok) throw new Error(`Bot host clock catch-up failed ${stage}: HTTP ${advanced.status}`);
-  }
+  // Restoring a server snapshot restores its fake clock too, so catch up before starting Bot. The ticker's follower
+  // does it and restarts its tick baseline, so the ticker never applies these seconds a second time.
+  await wallClockFollower(clockURL).align(stage);
   await assertWallClock(clockURL, stage);
 }
 

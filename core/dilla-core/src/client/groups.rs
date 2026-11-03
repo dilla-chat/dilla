@@ -1547,7 +1547,11 @@ impl ClientCore {
                 .signer
                 .ok_or_else(|| ClientError::new(E_CORE_STATE, "identity signer is unavailable"))?;
             let fresh_now = human.now;
-            if fresh_now < context.issued_at || fresh_now >= context.not_after {
+            if !crate::bot::human_interaction_context::is_current(
+                context.issued_at,
+                context.not_after,
+                fresh_now,
+            ) {
                 return Err(ClientError::new(E_BINDING, "interaction Welcome context expired"));
             }
             let already_used = unit.with_conn(|c| super::schema::meta_get(c, &receipt_key))?;

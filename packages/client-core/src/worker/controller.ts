@@ -134,6 +134,17 @@ E_TIER_MISMATCH E_TRAY_NOT_READY E_UMK_CHANGED E_UNAUTHENTICATED E_UNAVAILABLE E
 E_CALL_FULL E_CALL_SHARERS_FULL E_CALL_ACTIVE E_REMOVE_PENDING E_NO_CALL E_DISCONNECTED E_MEDIA_MISROUTE
 E_FACTOR_REQUIRED E_PASSKEY_UNKNOWN E_STEP_UP E_TARGET_NO_FACTOR`.split(/\s+/));
 
+const NO_INTERACTION_GROUP = 'no active interaction group for this community';
+const AMBIGUOUS_INTERACTION_GROUP = 'multiple active interaction groups make the Bot target ambiguous';
+const INTERACTION_CLOCK_SKEW = 'no active interaction group: its Welcome was refused because this device clock is off from the instance clock';
+/** The only E_CORE_STATE refusals whose detail leaves the worker, each as a fixed code: a bounded allowlist of local
+ *  states, never message content, ids or key material. Every other refusal keeps detail ''. */
+const CORE_STATE_DETAILS: ReadonlyMap<string, string> = new Map([
+  [NO_INTERACTION_GROUP, 'missing_interaction_group'],
+  [AMBIGUOUS_INTERACTION_GROUP, 'ambiguous_interaction_group'],
+  [INTERACTION_CLOCK_SKEW, 'interaction_clock_skew'],
+]);
+
 /** The sole mapping of worker-local exceptions into page-bound data. */
 export function sanitizeWorkerError(e: unknown): WorkerError {
   // A store a newer client wrote (C4x): core_open rejects with a plain Error, so it is read from the message here.
@@ -147,7 +158,8 @@ export function sanitizeWorkerError(e: unknown): WorkerError {
   if (!ALLOWED_CODES.has(code)) code = 'E_INTERNAL';
   const status = e instanceof DillaHttpError && Number.isInteger(e.status) && e.status >= 100 && e.status <= 599 ? e.status : 0;
   const retry = e instanceof DillaHttpError ? e.retryAfterMs : null;
-  return { code, detail: '', status, retryAfterMs: typeof retry === 'number' && Number.isFinite(retry) && retry >= 0 && retry <= 86_400_000 ? retry : null,
+  const detail = e instanceof Refusal && code === 'E_CORE_STATE' ? CORE_STATE_DETAILS.get(e.detail) ?? '' : '';
+  return { code, detail, status, retryAfterMs: typeof retry === 'number' && Number.isFinite(retry) && retry >= 0 && retry <= 86_400_000 ? retry : null,
     ...(e instanceof Refusal && e.reason !== undefined && REFUSAL_REASONS.has(e.reason) ? { reason: e.reason } : {}) };
 }
 /** The stable reasons a local refusal may carry to the page. None since web3.8 R5 removed 'announce.noHeldRole' (an
@@ -1117,6 +1129,10 @@ export class Controller {
   /** The one pending expiry sweep per channel, and the deadline (deps.now() ms) it is set for. */
   private readonly typingSweeps = new Map<string, { handle: number; at: number }>();
   private readonly diagnosticsErrors: { code: string; at: number }[] = [];
+  /** deps.now() ms of the last kind-3 Welcome refused for clock skew (sync's onWelcomeClockSkew), and of the last
+   *  E_CLOCK_SKEW diagnostics entry: a kept Welcome is refused on every poll, so the entry repeats at most once a minute. */
+  private welcomeClockSkewSeenMs: number | null = null;
+  private welcomeClockSkewLoggedMs: number | null = null;
   private deviceCount = 0;
   /** web-3: voice presence, calls and rings (L-TS-56). */
   private readonly calls: CallController;
@@ -1579,12 +1595,19 @@ export class Controller {
     // Registration follows the daemon's 30-second reconciliation interval. Keep
     // the original request pending while its per-device Welcome is being issued.
     const welcomeAttempts = 90;
+    const startedMs = this.deps.now();
     for (let attempt = 0; rows.length === 0 && attempt < welcomeAttempts; attempt++) {
       if (sync.stopped()) throw new SyncError('E_SYNC_STOPPED');
       await sync.pollWelcomes();
       rows = activeGroups();
       if (rows.length === 0 && attempt + 1 < welcomeAttempts) await this.deps.sleep(500);
     }
+    // A Welcome refused for clock skew during this wait is refused again on every poll while the skew lasts, so the
+    // request names that instead of the generic missing group.
+    if (rows.length === 0 && this.welcomeClockSkewSeenMs !== null && this.welcomeClockSkewSeenMs >= startedMs) {
+      throw new Refusal('E_CORE_STATE', INTERACTION_CLOCK_SKEW);
+    }
+    if (rows.length === 0) throw new Refusal('E_CORE_STATE', NO_INTERACTION_GROUP);
     return rows;
   }
 
@@ -1606,8 +1629,7 @@ export class Controller {
     const communityId = fromHex(communityHex);
     const requestId = fromHex(requestHex);
     const groupRows = await this.waitForActiveInteractionGroup(communityHex);
-    if (groupRows.length !== 1) throw new Refusal('E_CORE_STATE', groupRows.length === 0
-      ? 'no active interaction group for this community' : 'multiple active interaction groups make the Bot target ambiguous');
+    if (groupRows.length !== 1) throw new Refusal('E_CORE_STATE', AMBIGUOUS_INTERACTION_GROUP);
     const groupId = groupRows[0].groupId;
     const mutation = operation === 2 || operation >= 12 && operation <= 23 || operation === 25 || operation === 31 || operation === 51 || operation === 52
       || operation === 61 || operation === 63 || operation === 70 || operation === 73 || operation === 74 || operation === 80
@@ -1799,8 +1821,7 @@ export class Controller {
     const sync = this.requireSync();
     const communityId = fromHex(communityHex);
     const groupRows = await this.waitForActiveInteractionGroup(communityHex);
-    if (groupRows.length === 0) throw new Refusal('E_CORE_STATE', 'no active interaction group for this community');
-    if (groupRows.length !== 1) throw new Refusal('E_CORE_STATE', 'multiple active interaction groups make the Bot target ambiguous');
+    if (groupRows.length !== 1) throw new Refusal('E_CORE_STATE', AMBIGUOUS_INTERACTION_GROUP);
     const groupId = groupRows[0].groupId;
     const requestId = fromHex(requestHex);
     return sync.runOnGroup(groupId, async () => {
@@ -2093,6 +2114,14 @@ export class Controller {
     this.connectionState = { ...this.connectionState, ...patch };
     this.slices.set('connection', this.connectionState);
     this.publishDiagnostics();
+  }
+
+  private onWelcomeClockSkew(): void {
+    const now = this.deps.now();
+    this.welcomeClockSkewSeenMs = now;
+    if (this.welcomeClockSkewLoggedMs !== null && now - this.welcomeClockSkewLoggedMs < 60_000) return;
+    this.welcomeClockSkewLoggedMs = now;
+    this.recordError('E_CLOCK_SKEW');
   }
 
   private recordError(code: string): void {
@@ -2419,6 +2448,7 @@ export class Controller {
         void this.barrier.track(this.reloadDms().catch(() => {}));
         if (this.selected !== null) this.scheduleCommunityReload(this.selected);
       },
+      onWelcomeClockSkew: () => { this.onWelcomeClockSkew(); },
       beforeSend: (g, row) => this.beforeSend(g, row),
       onDiscarded: (g, row) => { this.onDiscarded(g, row); },
       refreshGroupTrust: (g) => this.refreshGroupTrust(g),

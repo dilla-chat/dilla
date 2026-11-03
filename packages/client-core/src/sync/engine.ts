@@ -34,6 +34,10 @@ export interface SyncDeps {
   onJoinAll(progress: { done: number; total: number; failed: number }): void;
   /** A Welcome for an unexpected group; the controller reloads DMs. */
   onUnexpectedWelcome(groupId: Id): void;
+  /** The core refused a kind-3 Welcome whose freshly fetched current-context proof lies outside the clock window for
+   *  this device's clock (the instance's clock is more than 5 s ahead, or this device's is ahead past the proof's
+   *  expiry). Called on every such refusal; the Welcome stays queued. */
+  onWelcomeClockSkew?(groupId: Id): void;
   /** Called by drainOne before sendEncrypt for an outbox row with attachments, every attempt. Rejecting with a DillaHttpError
    *  404 fails the row with 'E_ATTACHMENT_MISSING'; any other rejection fails it with its code (the person may retry).
    *  (Pre-flight ruling F5: a DillaHttpError of status 0, 429 or 5xx is transient and leaves the row queued for the next ready.) */
