@@ -11,7 +11,7 @@ const PACKAGES = ['clang-23', 'llvm-23', 'libllvm23', 'libclang-cpp23', 'libclan
 const FPR = '6084F3CF814B57C1CF12EFD515CF4D18AF4F7421';
 const ARCHIVE_BUILD = '1:23.1.0~++20261103081500+0123456789ab-1~exp1~20261103201612.42';
 const CACHED_BUILD = '1:23.1.0~++20261020081500+fedcba987654-1~exp1~20261020201612.17';
-const debName = (p, v) => `${p}_${v.replace(':', '%3a')}_amd64.deb`;
+const debName = (p, v) => `${p}_${v.replaceAll(':', '%3a')}_amd64.deb`;
 
 /** A runner with fake tools on PATH: the fakes record every apt-get call and act out one archive state. */
 function runner({ codename = 'noble', archive = 'up', candidate = ARCHIVE_BUILD, cached = null, fingerprint = FPR } = {}) {
