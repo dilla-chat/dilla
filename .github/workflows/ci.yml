@@ -10,9 +10,6 @@ concurrency:
   cancel-in-progress: true
 env:
   CARGO_TERM_COLOR: always
-  # Stabilisation mode (see desktop.yml): a failing desktop job no longer cancels the run, so every
-  # platform reports. ci-ok still goes red. Remove together with the desktop.yml env block.
-  CI_WATCHDOG_IGNORE_JOBS: '^desktop / '
 jobs:
   # Runs independently of changes so the first failing root job is covered too. The write
   # token belongs only to trusted same-repository PRs/main pushes; fork code never runs here.

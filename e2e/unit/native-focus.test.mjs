@@ -11,6 +11,7 @@ function fixture({ focus = false, unavailable = false, hanging = false } = {}) {
     isMinimized: () => { calls.push('isMinimized'); return false; },
     restore: () => calls.push('restore'), show: () => calls.push('show'), focus: () => calls.push('focus'),
     isDestroyed: () => false, isFocused: () => true, isVisible: () => true, isFullScreen: () => false,
+    isAlwaysOnTop: () => false, setAlwaysOnTop: value => calls.push(`setAlwaysOnTop:${value}`), moveTop: () => calls.push('moveTop'),
     webContents: { isDestroyed: () => false, isFocused: () => false, getURL: () => 'PRIVATE_URL_TOKEN' },
   };
   let acquired = 0;
@@ -65,48 +66,6 @@ test('a stolen focus raises the window on top only for the request and puts the 
   assert.deepEqual(f.reports, []);
 });
 
-test('the request is repeated while the renderer proof is pending and stops once it is settled', async () => {
-  const f = fixture();
-  let focusRequests = 0;
-  const { application, page } = f;
-  application.browserWindow = async () => ({
-    async evaluate(fn, argument) { return fn({ isMinimized: () => false, show() {}, focus() { focusRequests++; } }, argument); },
-    async dispose() {},
-  });
-  // The OS grants the third request: the renderer proof polls until document focus arrives.
-  page.waitForFunction = async () => {
-    const started = Date.now();
-    while (focusRequests < 3) {
-      if (Date.now() - started > 1500) throw new Error('renderer proof timed out');
-      await new Promise(resolve => setTimeout(resolve, 5));
-    }
-  };
-  await focusNativePage(application, page, facts => f.reports.push(facts), { steal: false, repeatMs: 20 });
-  assert.ok(focusRequests >= 3, `repeated requests: ${focusRequests}`);
-  const after = focusRequests;
-  await new Promise(resolve => setTimeout(resolve, 100));
-  assert.equal(focusRequests, after, 'no request may follow a settled proof');
-  assert.deepEqual(f.reports, []);
-});
-
-test('a refused or hung repeat never delays or replaces the failed renderer proof', async () => {
-  const f = fixture();
-  const { application, page, failure } = f;
-  let acquisitions = 0;
-  application.browserWindow = async () => {
-    acquisitions++;
-    if (acquisitions === 2) throw new Error('PRIVATE_REFUSED');
-    if (acquisitions > 2) return new Promise(() => {});
-    return { async evaluate(fn, argument) { return fn({ isMinimized: () => false, show() {}, focus() {} }, argument); }, async dispose() {} };
-  };
-  page.waitForFunction = async () => { await new Promise(resolve => setTimeout(resolve, 120)); throw failure; };
-  const started = Date.now();
-  await assert.rejects(focusNativePage(application, page, facts => f.reports.push(facts), { steal: false, repeatMs: 20 }), error => error === failure);
-  assert.ok(Date.now() - started < 1000, 'the proof failure must not wait on a hung repeat');
-  assert.ok(acquisitions >= 3, `repeats attempted: ${acquisitions}`);
-  assert.ok(!JSON.stringify(f.reports).includes('PRIVATE'));
-});
-
 test('a failed renderer focus proof reports only allowlisted native facts and rethrows the exact original error', async () => {
   const f = fixture();
   await assert.rejects(focusNativePage(f.application, f.page, facts => f.reports.push(facts)), error => error === f.failure);
@@ -134,3 +93,40 @@ test('a hung native diagnostic cannot hold the original focus failure indefinite
   assert.deepEqual(f.reports[0].native, { available: false });
   assert.equal(f.reports[0].renderer.available, true);
 });
+
+for (const delayedPhase of ['acquisition', 'evaluation']) {
+  test(`no stale focus mutation after a delayed ${delayedPhase} outlives the renderer proof`, { timeout: 5000 }, async () => {
+    const f = fixture();
+    let resolveProof, resolveLate;
+    const proof = new Promise(resolve => { resolveProof = resolve; });
+    const late = new Promise(resolve => { resolveLate = resolve; });
+    let acquisitions = 0, evaluations = 0;
+    const mutations = [];
+    const target = { isMinimized: () => false, show() { mutations.push('show'); }, focus() { mutations.push('focus'); } };
+    f.application.browserWindow = async () => {
+      const ordinal = ++acquisitions;
+      if (delayedPhase === 'acquisition' && ordinal > 1) await late;
+      return {
+        async evaluate(fn, argument) {
+          evaluations++;
+          if (delayedPhase === 'evaluation' && ordinal > 1) await late;
+          return fn(target, argument);
+        },
+        async dispose() {},
+      };
+    };
+    f.page.waitForFunction = async () => proof;
+    const pending = focusNativePage(f.application, f.page, facts => f.reports.push(facts), { steal: false });
+    // Stay pending past the former default repeat interval, not a test-only override.
+    await new Promise(resolve => setTimeout(resolve, 2050));
+    resolveProof();
+    await pending;
+    mutations.push('next-peer-focus');
+    resolveLate();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.deepEqual(mutations, ['show', 'focus', 'next-peer-focus'], 'completed focus work must not steal focus back from the next peer');
+    assert.equal(acquisitions, 1, 'there is only one awaited request, not a detached repeat');
+    assert.equal(evaluations, 1);
+    assert.deepEqual(f.reports, []);
+  });
+}

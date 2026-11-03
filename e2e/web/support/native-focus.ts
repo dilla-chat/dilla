@@ -5,8 +5,6 @@ type FocusOptions = {
   /** Raise the window above every other one for the request. Windows refuses a plain focus() while
    * another process, such as the second Electron device of the same test, owns the foreground. */
   steal?: boolean;
-  /** How often the request is repeated while the renderer proof is still pending. */
-  repeatMs?: number;
 };
 
 /** Failure-only evidence: no URLs, titles, process arguments, page text or exception strings. */
@@ -53,28 +51,17 @@ async function requestNativeFocus(application: ElectronApplication, page: Page, 
   } finally { await win.dispose(); }
 }
 
-/** Request native focus and require the renderer's proof of it. The request is repeated while the proof is
- * pending, since the OS can refuse one request and grant a later one; a repeat is bounded and never replaces
- * the proof's own failure. A failed proof gets bounded evidence and rethrows the exact original error. */
+/** Complete one native request before requiring the renderer's proof. Detached repeat RPCs can finish after
+ * that proof and steal focus from the next peer. A failed proof retains bounded evidence and its original error. */
 export async function focusNativePage(application: ElectronApplication, page: Page,
   report: (facts: FocusFacts) => void = facts => console.log('Native focus diagnostic: ' + JSON.stringify(facts)),
   options: FocusOptions = {},
 ): Promise<void> {
   const steal = options.steal ?? process.platform === 'win32';
-  const repeatMs = options.repeatMs ?? 2000;
   await requestNativeFocus(application, page, steal);
-  let settled = false, timer: ReturnType<typeof setTimeout> | undefined;
-  void (async () => {
-    while (!settled) {
-      await new Promise<void>(resolve => { timer = setTimeout(resolve, repeatMs); });
-      if (settled) return;
-      await Promise.race([requestNativeFocus(application, page, steal).catch(() => {}),
-        new Promise<void>(resolve => setTimeout(resolve, 500))]);
-    }
-  })();
   try { await page.waitForFunction(() => document.hasFocus()); }
   catch (error) {
     try { report(await focusFacts(application, page)); } catch { /* Evidence must not replace the original focus failure. */ }
     throw error;
-  } finally { settled = true; clearTimeout(timer); }
+  }
 }

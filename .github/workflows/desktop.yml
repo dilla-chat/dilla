@@ -3,13 +3,6 @@ on:
   workflow_call:
 permissions:
   contents: read
-# Stabilisation mode (feat/desktop-apps): one run reports every failing Electron test on every platform.
-# Each suite runs to the end (the Playwright configs read DILLA_E2E_FAIL_FAST), the suite matrices do not
-# cancel their siblings, and ci.yml tells the watchdog to leave desktop jobs alone. Remove this env block,
-# restore `fail-fast: true` and `--max-failures=1` below and drop CI_WATCHDOG_IGNORE_JOBS from ci.yml before
-# the branch merges: check:ci demands the fail-closed form as soon as the switch is gone.
-env:
-  DILLA_E2E_FAIL_FAST: '0'
 jobs:
   test-tools:
     name: desktop-test-tools-${{ matrix.platform }}-${{ matrix.arch }}
@@ -172,7 +165,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         include:
           - { format: deb, label: DEB }
@@ -222,7 +215,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         include:
           - { os: ubuntu-24.04, platform: linux, arch: x64 }
@@ -372,7 +365,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         os: [ubuntu-24.04, windows-latest, macos-15-intel, macos-15]
         include:
@@ -434,12 +427,12 @@ jobs:
         if: runner.os == 'Linux'
         env:
           DILLA_E2E_NOTIFICATIONS: '1'
-        run: xvfb-run -a dbus-run-session -- bash packages/desktop/scripts/with-window-manager.sh npm exec -w @dilla/e2e -- playwright test --config playwright.desktop-voice.config.ts --project=electron-voice --workers=1
+        run: xvfb-run -a dbus-run-session -- bash packages/desktop/scripts/with-window-manager.sh npm exec -w @dilla/e2e -- playwright test --config playwright.desktop-voice.config.ts --project=electron-voice --workers=1 --max-failures=1
       - name: Desktop voice end-to-end coverage in Electron
         if: runner.os != 'Linux'
         env:
           DILLA_E2E_MAC_NOTIFICATION_DIAGNOSTICS: '1'
-        run: npm exec -w @dilla/e2e -- playwright test --config playwright.desktop-voice.config.ts --project=electron-voice --workers=1
+        run: npm exec -w @dilla/e2e -- playwright test --config playwright.desktop-voice.config.ts --project=electron-voice --workers=1 --max-failures=1
       - run: npm exec -w @dilla/e2e -- playwright install --with-deps chromium
       - if: runner.os == 'Linux'
         run: node packages/desktop/scripts/prepare-browser-sandbox.mjs
@@ -484,7 +477,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         shard: [1, 2, 3]
         os: [ubuntu-24.04, windows-latest, macos-15-intel, macos-15]
@@ -544,10 +537,10 @@ jobs:
         if: runner.os == 'Linux'
         env:
           CHROME_DEVEL_SANDBOX: ${{ github.workspace }}/node_modules/electron/dist/chrome-sandbox
-        run: xvfb-run -a bash e2e/web/support/installed-keyring.sh bash packages/desktop/scripts/with-window-manager.sh npm exec -w @dilla/e2e -- playwright test --config playwright.desktop.config.ts --project=electron-client --shard=${{ matrix.shard }}/3
+        run: xvfb-run -a bash e2e/web/support/installed-keyring.sh bash packages/desktop/scripts/with-window-manager.sh npm exec -w @dilla/e2e -- playwright test --config playwright.desktop.config.ts --project=electron-client --shard=${{ matrix.shard }}/3 --max-failures=1
       - name: Shared client end-to-end coverage in Electron
         if: runner.os != 'Linux'
-        run: npm exec -w @dilla/e2e -- playwright test --config playwright.desktop.config.ts --project=electron-client --shard=${{ matrix.shard }}/3
+        run: npm exec -w @dilla/e2e -- playwright test --config playwright.desktop.config.ts --project=electron-client --shard=${{ matrix.shard }}/3 --max-failures=1
       - name: Collect installed account upgrade proof
         id: installed-account
         run: node packages/desktop/scripts/installed-account-proof.mjs e2e/desktop-client-results ${{ matrix.platform }}-${{ matrix.arch }} packages/desktop/test-report

@@ -382,40 +382,15 @@ test('installed proof is produced after Playwright clears output and uploaded af
   assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('Playwright cleanup')));
 });
 
-const STABILISATION_ENV = "env:\n  DILLA_E2E_FAIL_FAST: '0'\n";
-/** desktop.yml in its fail-closed form: no stabilisation switch, siblings cancel, suites stop at one failure. */
-const FAIL_CLOSED_DESKTOP = REAL_DESKTOP.replace(STABILISATION_ENV, '')
-  .replaceAll('fail-fast: false', 'fail-fast: true').replaceAll('--max-failures=3', '--max-failures=1')
-  .replaceAll('--project=electron-voice --workers=1\n', '--project=electron-voice --workers=1 --max-failures=1\n')
-  .replaceAll('--shard=${{ matrix.shard }}/3\n', '--shard=${{ matrix.shard }}/3 --max-failures=1\n');
-
-function desktopProblems(text) {
-  const root = mkdtempSync(join(tmpdir(), 'dilla-desktop-first-failure-'));
-  mkdirSync(join(root, '.github/workflows'), { recursive: true });
-  addE2ePackage(root);
-  writeFileSync(join(root, '.github/workflows/desktop.yml'), text);
-  return checkDesktopWorkflow(root);
-}
-
 test('desktop CI refuses continuing matrix jobs or tests after the first failure', () => {
-  const good = FAIL_CLOSED_DESKTOP;
-  assert.ok(good.includes('--max-failures=1') && !good.includes('fail-fast: false'));
-  assert.ok(!desktopProblems(good).some(problem => problem.includes('first failure') || problem.includes('--max-failures=1')));
+  const good = REAL_DESKTOP.replaceAll('fail-fast: false', 'fail-fast: true').replaceAll('--max-failures=3', '--max-failures=1');
   for (const [before, after] of [['fail-fast: true', 'fail-fast: false'], ['--max-failures=1', '--max-failures=3']]) {
-    assert.ok(desktopProblems(good.replace(before, after)).some(problem => problem.includes('first failure')), after);
+    const root = mkdtempSync(join(tmpdir(), 'dilla-desktop-first-failure-'));
+    mkdirSync(join(root, '.github/workflows'), { recursive: true });
+    addE2ePackage(root);
+    writeFileSync(join(root, '.github/workflows/desktop.yml'), good.replace(before, after));
+    assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('first failure')), after);
   }
-  assert.ok(desktopProblems(good.replaceAll(' --max-failures=1', '')).some(problem => problem.includes('--max-failures=1')));
-});
-
-test('desktop stabilisation mode is one explicit workflow-level switch and still forbids a bounded failure count', () => {
-  const stabilised = FAIL_CLOSED_DESKTOP.replace('permissions:\n  contents: read\n', `permissions:\n  contents: read\n${STABILISATION_ENV}`)
-    .replaceAll('fail-fast: true', 'fail-fast: false').replaceAll(' --max-failures=1', '');
-  assert.ok(!desktopProblems(stabilised).some(problem => problem.includes('first failure') || problem.includes('--max-failures=1')));
-  assert.ok(desktopProblems(stabilised.replace('--workers=1\n', '--workers=1 --max-failures=3\n')).some(problem => problem.includes('first failure')));
-  // A step-level or job-level spelling of the switch is not the switch.
-  const stepLevel = FAIL_CLOSED_DESKTOP.replaceAll('fail-fast: true', 'fail-fast: false')
-    .replace("    env:\n      DILLA_E2E_TOOLING_DIR", "    env:\n      DILLA_E2E_FAIL_FAST: '0'\n      DILLA_E2E_TOOLING_DIR");
-  assert.ok(desktopProblems(stepLevel).some(problem => problem.includes('first failure')));
 });
 
 test('CI rejects removing the whole-run watcher or its completion barrier', () => {
