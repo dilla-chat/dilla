@@ -93,19 +93,38 @@ export function prepareMacElectronRuntime(options: { execPath: string; platform?
 }
 
 type NotificationServiceState = { disabled: boolean; available: boolean; running: boolean };
+type NotificationServiceOperation = 'print-disabled' | 'print' | 'enable' | 'bootstrap' | 'kickstart';
+type NotificationServiceReport = (NotificationServiceState & { phase: 'before' | 'after' })
+ | { phase: 'unchanged'; reason: 'unaffected-architecture' | 'not-disabled' }
+ | { phase: 'command'; operation: NotificationServiceOperation; status: 'passed' | 'failed' | 'unavailable'; exitCode: number | null;
+     reason: 'input-output' | 'permission-denied' | 'not-found' | 'unavailable' | 'other' | null };
 
 /** The macos-15/20260824.0482 Intel runner image unloads this user agent with -w.
+ * Restore only an explicit disabled override on Intel; ARM has a different
+ * effective service configuration and already passed native notifications.
  * Restore that normal OS service for native acceptance, without changing any
  * app authorization, TCC policy, system daemon or notification preference. */
-export function prepareMacNotificationService(options: { platform?: string; environment?: NodeJS.ProcessEnv; uid?: number;
- report?: (facts: NotificationServiceState & { phase: 'before' | 'after' }) => void } = {}, run: Run = spawnSync) {
+export function prepareMacNotificationService(options: { platform?: string; arch?: string; environment?: NodeJS.ProcessEnv; uid?: number;
+ report?: (facts: NotificationServiceReport) => void } = {}, run: Run = spawnSync) {
  const environment = options.environment ?? process.env, uid = options.uid ?? process.getuid?.();
  if ((options.platform ?? process.platform) !== 'darwin' || environment.CI !== 'true' || environment.GITHUB_ACTIONS !== 'true' || environment.RUNNER_OS !== 'macOS'
   || !Number.isSafeInteger(uid) || uid! <= 0 || uid! > 2147483647) throw new Error('Notification Center preparation requires a macOS CI user');
+ if ((options.arch ?? process.arch) !== 'x64') {
+  options.report?.({ phase: 'unchanged', reason: 'unaffected-architecture' });
+  return { before: null, after: null };
+ }
  const domain = `gui/${uid}`, target = `${domain}/com.apple.notificationcenterui`;
- const command = (args: string[]) => {
-  try { return run('/bin/launchctl', args, { shell: false, encoding: 'utf8', timeout: 5000, maxBuffer: 8192, windowsHide: true }); }
-  catch { return undefined; }
+ const command = (args: [NotificationServiceOperation, ...string[]]) => {
+  let result: SpawnSyncReturns<string> | undefined;
+  try { result = run('/bin/launchctl', args, { shell: false, encoding: 'utf8', timeout: 5000, maxBuffer: 8192, windowsHide: true }); }
+  catch { /* Report only a fixed status, never exception or command output. */ }
+  const outcome = status(result), error = result?.stderr ?? '';
+  const exitCode = typeof result?.status === 'number' && Number.isInteger(result.status) && result.status >= 0 && result.status <= 255 ? result.status : null;
+  const reason = outcome === 'passed' ? null : outcome === 'unavailable' ? 'unavailable'
+   : /Input\/output error/.test(error) ? 'input-output' : /Operation not permitted|Permission denied/.test(error) ? 'permission-denied'
+   : /Could not find service|No such file or directory|No such process/.test(error) ? 'not-found' : 'other';
+  options.report?.({ phase: 'command', operation: args[0], status: outcome, exitCode, reason });
+  return result;
  };
  const read = (): NotificationServiceState => {
   const disabled = command(['print-disabled', domain]), service = command(['print', target]);
@@ -114,8 +133,12 @@ export function prepareMacNotificationService(options: { platform?: string; envi
    available: status(service) === 'passed', running: status(service) === 'passed' && /^\s*state = running\s*$/m.test(service!.stdout) && /^\s*pid = [1-9]\d*\s*$/m.test(service!.stdout) };
  };
  const before = read(); options.report?.({ phase: 'before', ...before });
- const requireSuccess = (args: string[]) => { if (status(command(args)) !== 'passed') throw new Error(`Could not ${args[0]} the macOS Notification Center user service`); };
- if (before.disabled) requireSuccess(['enable', target]);
+ if (!before.disabled) {
+  options.report?.({ phase: 'unchanged', reason: 'not-disabled' });
+  return { before, after: before };
+ }
+ const requireSuccess = (args: [NotificationServiceOperation, ...string[]]) => { if (status(command(args)) !== 'passed') throw new Error(`Could not ${args[0]} the macOS Notification Center user service`); };
+ requireSuccess(['enable', target]);
  if (!before.available) requireSuccess(['bootstrap', domain, '/System/Library/LaunchAgents/com.apple.notificationcenterui.plist']);
  if (!before.running) requireSuccess(['kickstart', target]);
  const after = read(); options.report?.({ phase: 'after', ...after });

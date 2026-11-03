@@ -172,7 +172,7 @@ test('macOS CI restores only its disabled Notification Center user service and v
  assert.equal(typeof diagnostics.prepareMacNotificationService, 'function');
  const calls = [], reports = [];
  let disabled = true, available = false, running = false;
- const options = { platform: 'darwin', environment: { CI: 'true', GITHUB_ACTIONS: 'true', RUNNER_OS: 'macOS' }, uid: 501, report: facts => reports.push(facts) };
+ const options = { platform: 'darwin', arch: 'x64', environment: { CI: 'true', GITHUB_ACTIONS: 'true', RUNNER_OS: 'macOS' }, uid: 501, report: facts => reports.push(facts) };
  const facts = diagnostics.prepareMacNotificationService(options, (file, args, options) => {
   assert.equal(file, '/bin/launchctl'); assert.equal(options.shell, false);
   calls.push(args);
@@ -194,7 +194,7 @@ test('macOS CI restores only its disabled Notification Center user service and v
 
 test('an enabled running Notification Center is inspected without changing it', () => {
  assert.equal(typeof diagnostics.prepareMacNotificationService, 'function');
- const options = { platform: 'darwin', environment: { CI: 'true', GITHUB_ACTIONS: 'true', RUNNER_OS: 'macOS' }, uid: 501 };
+ const options = { platform: 'darwin', arch: 'x64', environment: { CI: 'true', GITHUB_ACTIONS: 'true', RUNNER_OS: 'macOS' }, uid: 501 };
  const facts = diagnostics.prepareMacNotificationService(options, (_file, args) => {
   assert.ok(['print-disabled', 'print'].includes(args[0]));
   return args[0] === 'print-disabled' ? commandResult('disabled services = {}') : commandResult('state = running\npid = 123\n');
@@ -205,7 +205,7 @@ test('an enabled running Notification Center is inspected without changing it', 
 
 test('Notification Center preparation refuses non-CI or root users and fails on unavailable service commands', () => {
  assert.equal(typeof diagnostics.prepareMacNotificationService, 'function');
- const options = { platform: 'darwin', environment: { CI: 'true', GITHUB_ACTIONS: 'true', RUNNER_OS: 'macOS' }, uid: 501 };
+ const options = { platform: 'darwin', arch: 'x64', environment: { CI: 'true', GITHUB_ACTIONS: 'true', RUNNER_OS: 'macOS' }, uid: 501 };
  for (const input of [{ ...options, environment: {} }, { ...options, platform: 'linux' }, ...[0, -1, 1.2, NaN].map(uid => ({ ...options, uid }))]) {
   assert.throws(() => diagnostics.prepareMacNotificationService(input, () => assert.fail('No command allowed')), /macOS CI user/);
  }
@@ -218,7 +218,44 @@ test('Notification Center preparation refuses non-CI or root users and fails on 
   }), error => /Notification Center/.test(error.message) && !error.message.includes('PRIVATE_ERROR_SECRET'));
  }
  assert.throws(() => diagnostics.prepareMacNotificationService(options, (_file, args) =>
-  args[0] === 'print-disabled' ? commandResult('disabled services = {}') : commandResult()), /Notification Center.*running/);
+  args[0] === 'print-disabled' ? commandResult('"com.apple.notificationcenterui" => true\n') : commandResult()), /Notification Center.*running/);
+});
+
+test('unaffected ARM runners execute no Notification Center service commands', () => {
+ const reports = []; let calls = 0;
+ const facts = diagnostics.prepareMacNotificationService({ platform: 'darwin', arch: 'arm64', uid: 501,
+  environment: { CI: 'true', GITHUB_ACTIONS: 'true', RUNNER_OS: 'macOS' }, report: facts => reports.push(facts) }, () => { calls++; assert.fail('ARM must not inspect or mutate the Intel service'); });
+ assert.equal(calls, 0);
+ assert.deepEqual(facts, { before: null, after: null });
+ assert.deepEqual(reports, [{ phase: 'unchanged', reason: 'unaffected-architecture' }]);
+});
+
+test('Intel service absence without an explicit disabled override cannot trigger restoration', () => {
+ const calls = [], reports = [];
+ const facts = diagnostics.prepareMacNotificationService({ platform: 'darwin', arch: 'x64', uid: 501,
+  environment: { CI: 'true', GITHUB_ACTIONS: 'true', RUNNER_OS: 'macOS' }, report: facts => reports.push(facts) }, (_file, args) => {
+  calls.push(args);
+  if (args[0] === 'print-disabled') return commandResult('disabled services = {}');
+  if (args[0] === 'print') return commandResult('', 'Could not find service PRIVATE_SECRET', 113);
+  assert.fail('Only an explicitly disabled Intel service can be changed');
+ });
+ assert.deepEqual(calls, [['print-disabled', 'gui/501'], ['print', 'gui/501/com.apple.notificationcenterui']]);
+ assert.deepEqual(facts, { before: { disabled: false, available: false, running: false }, after: { disabled: false, available: false, running: false } });
+ assert.deepEqual(reports.at(-1), { phase: 'unchanged', reason: 'not-disabled' });
+ assert.doesNotMatch(JSON.stringify(reports), /PRIVATE_SECRET/);
+});
+
+test('a failed restoration reports bounded operation, exit status and reason without command output', () => {
+ const reports = [];
+ assert.throws(() => diagnostics.prepareMacNotificationService({ platform: 'darwin', arch: 'x64', uid: 501,
+  environment: { CI: 'true', GITHUB_ACTIONS: 'true', RUNNER_OS: 'macOS' }, report: facts => reports.push(facts) }, (_file, args) => {
+  if (args[0] === 'print-disabled') return commandResult('"com.apple.notificationcenterui" => true\n');
+  if (args[0] === 'print') return commandResult('', 'Could not find service PRIVATE_SECRET', 113);
+  if (args[0] === 'bootstrap') return commandResult('', 'Bootstrap failed: 5: Input/output error\nPRIVATE_SECRET', 5);
+  return commandResult();
+ }), /Could not bootstrap/);
+ assert.ok(reports.some(facts => facts.phase === 'command' && facts.operation === 'bootstrap' && facts.status === 'failed' && facts.exitCode === 5 && facts.reason === 'input-output'));
+ assert.doesNotMatch(JSON.stringify(reports), /PRIVATE_SECRET|Bootstrap failed|Could not find/);
 });
 
 test('an unsigned bundle is distinguishable from an unavailable codesign command without retaining its error text', () => {
