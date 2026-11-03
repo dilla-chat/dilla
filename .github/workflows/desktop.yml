@@ -420,16 +420,13 @@ jobs:
           DILLA_E2E_MAC_NOTIFICATION_DIAGNOSTICS: '1'
         run: |
           npm exec -w @dilla/e2e -- playwright test --config playwright.desktop-voice.config.ts --project=electron-voice ring.spec.ts --grep "answer: bob rings" --workers=1 --max-failures=1
+      # The voice suite is the same Chromium media stack on every OS; Linux runs it. Windows and macOS keep their
+      # native pieces here: the macOS notification diagnostic above and the performance comparison below.
       - name: Desktop voice end-to-end coverage in Electron
         if: runner.os == 'Linux'
         env:
           DILLA_E2E_NOTIFICATIONS: '1'
         run: xvfb-run -a dbus-run-session -- bash packages/desktop/scripts/with-window-manager.sh npm exec -w @dilla/e2e -- playwright test --config playwright.desktop-voice.config.ts --project=electron-voice --workers=1 --max-failures=1
-      - name: Desktop voice end-to-end coverage in Electron
-        if: runner.os != 'Linux'
-        env:
-          DILLA_E2E_MAC_NOTIFICATION_DIAGNOSTICS: '1'
-        run: npm exec -w @dilla/e2e -- playwright test --config playwright.desktop-voice.config.ts --project=electron-voice --workers=1 --max-failures=1
       - run: npm exec -w @dilla/e2e -- playwright install --with-deps chromium
       - if: runner.os == 'Linux'
         run: node packages/desktop/scripts/prepare-browser-sandbox.mjs
@@ -475,13 +472,16 @@ jobs:
     timeout-minutes: 60
     strategy:
       fail-fast: true
+      # The shared client suite is the same Chromium renderer on every OS: Linux runs all of it, in three shards.
+      # Windows and macOS run the desktop-specific specs alone: the installed upgrade of a real account (the release
+      # verifier's per-target proof) and the native window shell.
       matrix:
-        shard: [1, 2, 3]
-        os: [ubuntu-24.04, windows-latest, macos-15]
         include:
-          - { os: ubuntu-24.04, platform: linux, arch: x64 }
-          - { os: windows-latest, platform: win, arch: x64 }
-          - { os: macos-15, platform: mac, arch: arm64 }
+          - { os: ubuntu-24.04, platform: linux, arch: x64, shard: 1 }
+          - { os: ubuntu-24.04, platform: linux, arch: x64, shard: 2 }
+          - { os: ubuntu-24.04, platform: linux, arch: x64, shard: 3 }
+          - { os: windows-latest, platform: win, arch: x64, shard: 1, specs: 'web/installed-upgrade-account.spec.ts web/signup.spec.ts' }
+          - { os: macos-15, platform: mac, arch: arm64, shard: 1, specs: 'web/installed-upgrade-account.spec.ts web/signup.spec.ts' }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -534,9 +534,9 @@ jobs:
         env:
           CHROME_DEVEL_SANDBOX: ${{ github.workspace }}/node_modules/electron/dist/chrome-sandbox
         run: xvfb-run -a bash e2e/web/support/installed-keyring.sh bash packages/desktop/scripts/with-window-manager.sh npm exec -w @dilla/e2e -- playwright test --config playwright.desktop.config.ts --project=electron-client --shard=${{ matrix.shard }}/3 --max-failures=1
-      - name: Shared client end-to-end coverage in Electron
+      - name: Desktop-specific client coverage in Electron
         if: runner.os != 'Linux'
-        run: npm exec -w @dilla/e2e -- playwright test --config playwright.desktop.config.ts --project=electron-client --shard=${{ matrix.shard }}/3 --max-failures=1
+        run: npm exec -w @dilla/e2e -- playwright test --config playwright.desktop.config.ts --project=electron-client ${{ matrix.specs }} --max-failures=1
       - name: Collect installed account upgrade proof
         id: installed-account
         run: node packages/desktop/scripts/installed-account-proof.mjs e2e/desktop-client-results ${{ matrix.platform }}-${{ matrix.arch }} packages/desktop/test-report

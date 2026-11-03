@@ -32,8 +32,11 @@ browser download navigation.
   custom crash-recovery, rollback and Windows launcher layer has been removed.
 - AppImage, per-user NSIS and ad-hoc macOS packaging configuration. Hardened packaged
   fuses are checked on the binary. CI adds the three native targets without deleting
-  the shared protocol/security jobs. Product client/voice acceptance runs in Electron
-  on each target; Firefox/WebKit and duplicate browser client jobs are retired.
+  the shared protocol/security jobs. The shared client and voice suites run in Electron
+  on Linux, the same Chromium renderer and media stack as on every other OS; Windows
+  and macOS run the native acceptance, the desktop-specific client specs (the installed
+  upgrade of a real account, the native window shell) and the performance comparison.
+  Firefox/WebKit and duplicate browser client jobs are retired.
   Validation does not publish artifacts as desktop releases.
 
 - Linux PipeWire, Windows WASAPI process-loopback and macOS ScreenCaptureKit

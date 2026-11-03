@@ -79,7 +79,8 @@ async function verifyBundle({ metadata, signature, trust, directory, run, jobs, 
    ? 'Installed unsigned Sparkle upgrade and signed-feed rejection' : 'Installed upgrade acceptance'];
   if(target==='linux-x64')gates.push('Linux AppImage sandbox native acceptance');
   for (const gate of gates) if (!native.steps?.some(step => step.name === gate && step.conclusion === 'success')) throw new Error(`${target}: missing accepted ${gate}`);
-  for (let shard = 1; shard <= 3; shard++) {
+  // Linux runs the shared client suite in three shards; the other targets run the desktop-specific specs in one job.
+  for (const shard of target === 'linux-x64' ? [1, 2, 3] : [1]) {
    if (!jobs.some(job => job.name.endsWith(`desktop-client-${target}-${shard}`) && job.conclusion === 'success')) throw new Error(`Missing Electron client coverage: ${target}-${shard}`);
   }
   const accountProofs = jobs.filter(job => job.conclusion === 'success' && [1, 2, 3].some(shard => job.name.endsWith(`desktop-client-${target}-${shard}`)))

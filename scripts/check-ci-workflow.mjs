@@ -1417,11 +1417,13 @@ run: node packages/desktop/scripts/test-linux-sandbox-package.mjs packages/deskt
     problems.push(`${file}: installed account proof must upload only from its owning shard`);
   }
   for (const required of [
-    'shard: [1, 2, 3]', 'os: [ubuntu-24.04, windows-latest, macos-15]',
-    'os: ubuntu-24.04, platform: linux, arch: x64', 'os: windows-latest, platform: win, arch: x64',
-    'os: macos-15, platform: mac, arch: arm64',
+    'os: ubuntu-24.04, platform: linux, arch: x64, shard: 1', 'os: ubuntu-24.04, platform: linux, arch: x64, shard: 2',
+    'os: ubuntu-24.04, platform: linux, arch: x64, shard: 3',
+    "os: windows-latest, platform: win, arch: x64, shard: 1, specs: 'web/installed-upgrade-account.spec.ts",
+    "os: macos-15, platform: mac, arch: arm64, shard: 1, specs: 'web/installed-upgrade-account.spec.ts",
     'name: dilla-core-wasi', 'node packages/desktop/scripts/prepare-browser-sandbox.mjs',
     'playwright test --config playwright.desktop.config.ts --project=electron-client --shard=${{ matrix.shard }}/3',
+    'playwright test --config playwright.desktop.config.ts --project=electron-client ${{ matrix.specs }} --max-failures=1',
   ]) if (!client.includes(required)) problems.push(`${file}: shared Electron client coverage missing ${required}`);
   const voice = body('voice');
   for (const required of ['desktop-voice-${{ matrix.platform }}-${{ matrix.arch }}',
