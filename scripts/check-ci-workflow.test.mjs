@@ -2448,7 +2448,7 @@ test('keyed workflow gaining push, pull_request, workflow_dispatch, a branches f
     ['branches', edit(doc => { doc.on.workflow_run.branches = ['main']; })],
     ['upstream name', edit(doc => { doc.on.workflow_run.workflows = ['ci']; })],
     ['types', edit(doc => { delete doc.on.workflow_run.types; })],
-    ['concurrency', edit(doc => { doc.concurrency['cancel-in-progress'] = true; })],
+    ['concurrency', edit(doc => { doc.concurrency = { group: 'desktop-release', 'cancel-in-progress': true }; })],
   ]) reported({ [KEYED]: change }, label);
 });
 
@@ -2576,6 +2576,42 @@ test('download-artifact with pattern, merge-multiple, the triggering run id or n
     ['raw CI artifacts in publish', doc => { step(doc, 'publish', 'Fetch the signed candidate').with = { ...step(doc, 'collect', 'Fetch the accepted').with }; }],
     ['signed release by name in feed', doc => { const w = step(doc, 'feed', 'Fetch the signed').with; delete w['artifact-ids']; w.name = 'desktop-signed-release'; }],
   ]) reported({ [KEYED]: edit(change) }, label);
+});
+
+test('review batch B minors: quoted inherit, Pages deploys elsewhere, unpinned step env, a workflow concurrency group', () => {
+  // m1: a quoted inherit is the same YAML value.
+  // (A new caller: ci.yml's desktop call already has a secrets mapping, so editing it would only make the YAML invalid.)
+  const caller = quoted => () => `name: caller\non: push\npermissions: {}\njobs:\n  call:\n    uses: ./.github/workflows/desktop.yml\n    secrets: ${quoted}\n`;
+  for (const quoted of ['"inherit"', "'inherit'", 'inherit']) {
+    const problems = reported({ '.github/workflows/caller.yml': caller(quoted) }, `${quoted} inherit`);
+    assert.ok(problems.some(problem => /caller\.yml: secrets: inherit is forbidden/.test(problem)), quoted);
+  }
+  // Flow style with no space after the colon's key hides it from a naive text match; the parsed check still sees it.
+  const flow = reported({ '.github/workflows/caller.yml': () => 'name: caller\non: push\npermissions: {}\njobs: { call: { uses: ./.github/workflows/desktop.yml, "secrets": "inherit" } }\n' }, 'flow-style inherit');
+  assert.ok(flow.some(problem => /caller\.yml: secrets: inherit is forbidden/.test(problem)));
+  // m2: only desktop-release.yml's feed job may deploy GitHub Pages.
+  const docs = body => () => `name: docs\non: push\npermissions: {}\njobs:\n  site:\n    runs-on: ubuntu-24.04\n${body}    steps:\n      - run: echo\n`;
+  reported({ '.github/workflows/docs.yml': docs('    environment: github-pages\n') }, 'github-pages environment elsewhere');
+  reported({ '.github/workflows/docs.yml': docs('    permissions:\n      pages: write\n      id-token: write\n') }, 'pages: write elsewhere');
+  reported({ '.github/workflows/docs.yml': () => 'name: docs\non: push\npermissions:\n  pages: write\njobs:\n  site:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo\n' }, 'workflow-level pages: write');
+  reported({ '.github/workflows/docs.yml': () => 'name: docs\non: push\npermissions: {}\njobs:\n  site:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346\n' }, 'deploy-pages elsewhere');
+  reported({ '.github/workflows/docs.yml': () => 'name: docs\non: push\npermissions: {}\njobs:\n  site:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: actions/upload-pages-artifact@v5\n        with:\n          path: site\n' }, 'upload-pages-artifact elsewhere');
+  reported({ [KEYED]: edit(doc => { doc.jobs.publish.permissions.pages = 'write'; }) }, 'pages on publish');
+  // m3: every run step's env is pinned; loader and shell variables are refused anywhere.
+  for (const [label, change] of [
+    ['publish DIGEST from collect', doc => { step(doc, 'publish', 'Verify the signed release').env.DIGEST = '${{ needs.gate.outputs.run_record }}'; }],
+    ['BASH_ENV in collect', doc => { step(doc, 'collect', 'Collect').env.BASH_ENV = '/tmp/x'; }],
+    ['LD_PRELOAD after signing', doc => { step(doc, 'sign', 'Digest the signed output').env.LD_PRELOAD = '/tmp/x.so'; }],
+    ['NODE_EXTRA_CA_CERTS in feed', doc => { step(doc, 'feed', 'Build the channel feed').env.NODE_EXTRA_CA_CERTS = '/tmp/ca'; }],
+    ['GIT_DIR in publish', doc => { step(doc, 'publish', 'Publish the versioned').env.GIT_DIR = '/tmp/g'; }],
+    ['extra value in verify-published', doc => { step(doc, 'verify-published', 'Re-download').env.EXTRA = 'x'; }],
+    ['env on an unpinned step', doc => { step(doc, 'collect', 'Derive acceptance').env.TREE = '${{ needs.gate.outputs.sha }}'; }],
+  ]) reported({ [KEYED]: edit(change) }, label);
+  // m5: no workflow-level group (it silently cancels a pending run); the gate refuses while another run is active.
+  reported({ [KEYED]: edit(doc => { doc.concurrency = { group: 'desktop-release', 'cancel-in-progress': false }; }) }, 'workflow concurrency');
+  reported({ [KEYED]: edit(doc => { delete doc.jobs.feed.concurrency; }) }, 'feed deploys unserialised');
+  reported({ [KEYED]: edit(doc => { doc.jobs.feed.concurrency['cancel-in-progress'] = true; }) }, 'feed cancels in progress');
+  reported({ [KEYED]: edit(doc => { doc.jobs.sign.concurrency = { group: 'x' }; }) }, 'concurrency on sign');
 });
 
 test('sign runs no download action at all, and nothing collect produces reaches sign or publish (review batch B, I1/I2)', () => {

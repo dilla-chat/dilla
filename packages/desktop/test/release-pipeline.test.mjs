@@ -61,6 +61,9 @@ test('the release pipeline publishes exactly the signed inventory from a tagged 
    [`${R}/releases?per_page=100&page=1`]: [{ tag_name: 'desktop-v1.2.2', draft: false }],
    [`${R}/compare/desktop-v1.2.2...${sha}?per_page=100&page=1`]: { commits: [{ sha, commit: { committer: { date: '2026-11-01T00:00:00Z' } } }] },
    [`${R}/pulls?state=closed&base=main&sort=updated&direction=desc&per_page=100&page=1`]: pulls,
+   // No other desktop release run is active: only this one (5000).
+   ...Object.fromEntries(['queued', 'in_progress', 'waiting', 'requested', 'pending'].map(status =>
+    [`${R}/actions/workflows/desktop-release.yml/runs?status=${status}&per_page=100`, { workflow_runs: status === 'in_progress' ? [{ id: 5000 }] : [] }])),
   };
   const api = async (path, options = {}, optional404 = false) => {
    if (options.method && options.method !== 'GET') throw new Error('read-only');
@@ -73,7 +76,7 @@ test('the release pipeline publishes exactly the signed inventory from a tagged 
   // gate
   const outputFile = join(root, 'github-output'); await writeFile(outputFile, '');
   const gateDirectory = join(root, 'gate');
-  const gate = await runGate({ env: { GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: 'workflow_run', GITHUB_REPOSITORY: 'dilla-chat/dilla', GITHUB_REF: 'refs/heads/main', GITHUB_WORKFLOW_REF: 'dilla-chat/dilla/.github/workflows/desktop-release.yml@refs/heads/main', GITHUB_SHA: sha, HINT_TAG: tag, HINT_RUN: '900', GITHUB_OUTPUT: outputFile }, git: gateGit, api, outputDirectory: gateDirectory, now });
+  const gate = await runGate({ env: { GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: 'workflow_run', GITHUB_REPOSITORY: 'dilla-chat/dilla', GITHUB_REF: 'refs/heads/main', GITHUB_WORKFLOW_REF: 'dilla-chat/dilla/.github/workflows/desktop-release.yml@refs/heads/main', GITHUB_SHA: sha, HINT_TAG: tag, HINT_RUN: '900', GITHUB_RUN_ID: '5000', GITHUB_OUTPUT: outputFile }, git: gateGit, api, outputDirectory: gateDirectory, now });
   assert.equal(gate.previous, 'desktop-v1.2.2');
   for (const args of gitCalls) {
    assert.ok(!['checkout', 'switch', 'worktree', 'reset', 'restore'].includes(args[0]), 'the tagged commit is never checked out: ' + args.join(' '));

@@ -19,7 +19,7 @@ const R = `/repos/${REPOSITORY}`;
 const COMMIT = /^[a-f0-9]{40}$/;
 const ROTATION_PROOF = 'rotation-proof.json';
 
-/** The run context; DESKTOP_TAG and DESKTOP_SHA come from the sign job's validated outputs. */
+/** The run context; DESKTOP_TAG and DESKTOP_SHA come from the gate job's validated outputs, DESKTOP_STAGED from sign's. */
 export function publicationContext(env) {
  if (env.GITHUB_ACTIONS !== 'true' || env.GITHUB_REPOSITORY !== REPOSITORY || env.GITHUB_EVENT_NAME !== 'workflow_run' || env.GITHUB_REF !== 'refs/heads/main') {
   throw new Error('Desktop publication runs only as the main-branch workflow_run of desktop-release.yml');
@@ -121,6 +121,8 @@ export async function runPublisher({ mode, env, git, fetchImpl = fetch, trust, v
  if (target?.tag_name !== tag || target.draft !== true) throw new Error('GitHub returned an unexpected release draft');
  const upload = createReleaseAssetUploader({ api, token: env.GH_TOKEN, fetchImpl });
  for (const [name, bytes] of expected) await upload(target, name, bytes);
+ // Keep this window minimal: nothing but the one list call between the last check and publication. A swap inside
+ // it is caught after publishing but cannot be withdrawn; RELEASING.md (Recovery) has the response.
  assertExactAssets(await listReleaseAssets(api, target.id), expected, releaseAssetDigest);
  await api(`${R}/releases/${target.id}`, { method: 'PATCH', body: { draft: false } });
 

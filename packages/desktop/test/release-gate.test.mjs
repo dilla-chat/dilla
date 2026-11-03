@@ -35,6 +35,11 @@ const baseFiles = (version, expiresAt = '2027-01-31T00:00:00Z') => ({
 function ciRun(sha, overrides = {}) {
  return { id: 77, run_number: 5, name: 'ci', path: '.github/workflows/ci.yml', event: 'push', head_branch: 'main', head_sha: sha, status: 'completed', conclusion: 'success', repository: { full_name: 'dilla-chat/dilla' }, head_repository: { full_name: 'dilla-chat/dilla' }, ...overrides };
 }
+/** The keyed workflow's unfinished runs, by status: only this run (5000) by default. */
+function activeRuns(byStatus = { in_progress: [{ id: 5000 }] }) {
+ return Object.fromEntries(['queued', 'in_progress', 'waiting', 'requested', 'pending'].map(status =>
+  [`${R}/actions/workflows/desktop-release.yml/runs?status=${status}&per_page=100`, { workflow_runs: byStatus[status] ?? [] }]));
+}
 function requestRun(sha, tag, overrides = {}) {
  return { id: 900, name: 'desktop release request', path: '.github/workflows/desktop-release-request.yml', event: 'push', head_branch: tag, head_sha: sha, status: 'completed', conclusion: 'success', repository: { full_name: 'dilla-chat/dilla' }, head_repository: { full_name: 'dilla-chat/dilla' }, ...overrides };
 }
@@ -61,6 +66,7 @@ function scenario({ version = '1.2.3', expiresAt, layout } = {}) {
   [`${R}/actions/runs/77/artifacts?per_page=100&page=1`]: { artifacts: [...EXPECTED_ARTIFACTS.map((name, i) => ({ id: 300 + i, name, digest: 'sha256:' + 'e'.repeat(64), expired: false })), { id: 1, name: 'desktop-validation-linux-x64', digest: null, expired: false }] },
   [`${R}/releases?per_page=100&page=1`]: [{ tag_name: 'desktop-v1.2.2', draft: false }, { tag_name: 'desktop-v1.3.0-beta.1', draft: false }, { tag_name: 'desktop-beta', draft: false }],
   [`${R}/git/matching-refs/tags/desktop-v`]: [{ ref: 'refs/tags/desktop-v1.2.2' }, { ref: `refs/tags/${tag}` }, { ref: 'refs/tags/desktop-v1.3.0-beta.1' }],
+  ...activeRuns(),
  };
  const calls = [];
  const api = async (path, options = {}, optional404 = false) => {
@@ -75,7 +81,7 @@ function scenario({ version = '1.2.3', expiresAt, layout } = {}) {
  const work = mkdtempSync(join(tmpdir(), 'dilla-gate-out-'));
  const outputFile = join(work, 'github-output');
  writeFileSync(outputFile, '');
- const env = { GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: 'workflow_run', GITHUB_REPOSITORY: 'dilla-chat/dilla', GITHUB_REF: 'refs/heads/main', GITHUB_WORKFLOW_REF: 'dilla-chat/dilla/.github/workflows/desktop-release.yml@refs/heads/main', GITHUB_SHA: shas.head, HINT_TAG: tag, HINT_RUN: '900', GITHUB_OUTPUT: outputFile };
+ const env = { GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: 'workflow_run', GITHUB_REPOSITORY: 'dilla-chat/dilla', GITHUB_REF: 'refs/heads/main', GITHUB_WORKFLOW_REF: 'dilla-chat/dilla/.github/workflows/desktop-release.yml@refs/heads/main', GITHUB_SHA: shas.head, HINT_TAG: tag, HINT_RUN: '900', GITHUB_RUN_ID: '5000', GITHUB_OUTPUT: outputFile };
  const outputDirectory = join(work, 'gate');
  const go = (overrides = {}) => runGate({ env: { ...env, ...overrides }, git, api, outputDirectory, now: NOW });
  return { repo, routes, calls, gitCalls, env, go, shas, tag, version, outputFile, outputDirectory, cleanup: () => { repo.cleanup(); rmSync(work, { recursive: true, force: true }); } };
@@ -109,6 +115,21 @@ test('gate refuses when not running as the main-branch workflow_run', async () =
    await refused(s, /main-branch workflow_run|HEAD/, overrides);
   }
   assert.equal(s.calls.length, 0, 'no API call before the run context is proven');
+ } finally { s.cleanup(); }
+});
+
+test('gate fails loudly while another desktop release run is queued or in progress (no silent drop)', async () => {
+ for (const status of ['queued', 'in_progress', 'waiting', 'requested', 'pending']) {
+  const s = scenario();
+  try {
+   Object.assign(s.routes, activeRuns({ in_progress: [{ id: 5000 }], [status]: [...(status === 'in_progress' ? [{ id: 5000 }] : []), { id: 4999 }] }));
+   await refused(s, /another desktop release run \(4999\)/i);
+  } finally { s.cleanup(); }
+ }
+ const s = scenario();
+ try {
+  for (const overrides of [{ GITHUB_RUN_ID: '' }, { GITHUB_RUN_ID: '12a' }]) await refused(s, /GITHUB_RUN_ID/, overrides);
+  await s.go(); // only this run is active
  } finally { s.cleanup(); }
 });
 

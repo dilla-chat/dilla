@@ -1503,7 +1503,11 @@ const DR_OUTPUTS = {
   publish: undefined, 'verify-published': undefined, feed: undefined,
 };
 const DR_ENVIRONMENTS = { sign: 'desktop-release', feed: 'github-pages' };
-const DR_JOB_KEYS = new Set(['if', 'needs', 'runs-on', 'timeout-minutes', 'environment', 'permissions', 'outputs', 'steps']);
+const DR_JOB_KEYS = new Set(['if', 'needs', 'runs-on', 'timeout-minutes', 'environment', 'concurrency', 'permissions', 'outputs', 'steps']);
+/** Only the Pages deploy is serialised (a superseded pending feed is harmless: every feed deploys the newest published releases). */
+const DR_CONCURRENCY = { feed: { group: 'desktop-release-feed', 'cancel-in-progress': false } };
+/** Never in a release step's env, pinned or not: loader, shell, runtime, git and proxy overrides (review batch B, m3). */
+const DR_BANNED_ENV = /^(LD_|DYLD_|BASH_ENV$|ENV$|BASH_FUNC_|SHELLOPTS$|BASHOPTS$|PS4$|IFS$|NODE_|NPM_CONFIG_|GIT_|SSL_CERT_|CURL_|HTTPS?_PROXY$|ALL_PROXY$|NO_PROXY$|PATH$|HOME$|TMPDIR$|PYTHON|PERL5|RUBY|GCONV_PATH$|GITHUB_|RUNNER_|ACTIONS_)/i;
 const DR_STEP_KEYS = new Set(['name', 'id', 'uses', 'with', 'run', 'env']);
 const S = 'node packages/desktop/scripts/';
 /** Every job's exact step sequence, by step kind (see drKind). */
@@ -1555,11 +1559,24 @@ const DR_WITH = {
   'deploy-pages': () => undefined,
 };
 const DR_ACTION_KINDS = { checkout: 'checkout', 'setup-node': 'setup-node', 'upload-pages-artifact': 'upload-pages', 'deploy-pages': 'deploy-pages' };
-/** Exact env of the steps that see the event hints, the keys or the candidate before signing. */
+const PUBLISH_ENV = { GH_TOKEN: '${{ github.token }}', DESKTOP_TAG: GATE_OUT('tag'), DESKTOP_SHA: GATE_OUT('sha'), DESKTOP_STAGED: '${{ needs.sign.outputs.staged }}',
+  DESKTOP_RELEASE_CANDIDATE: '${{ runner.temp }}/signed', DESKTOP_INSTALLERS: '${{ runner.temp }}/candidate' };
+/** Exact env of every run step (review batch B, m3): a value from collect, or a loader variable, cannot slip in. */
 const DR_ENV = {
   'gate release-gate': { GH_TOKEN: '${{ github.token }}', HINT_TAG: '${{ github.event.workflow_run.head_branch }}', HINT_RUN: '${{ github.event.workflow_run.id }}' },
   // The notes range starts at the gate's validated previous published release; the notes never read tags.
   'collect release-notes generate': { GH_TOKEN: '${{ github.token }}', VERSION: '${{ needs.gate.outputs.version }}', SHA: '${{ needs.gate.outputs.sha }}', PREVIOUS: '${{ needs.gate.outputs.previous }}' },
+  'collect release-download-check': { GH_TOKEN: '${{ github.token }}', ...Object.fromEntries(['run', 'artifact_ids', 'artifact_digests', 'run_record', 'jobs_record'].map(name => [name.toUpperCase(), GATE_OUT(name)])) },
+  'collect release-assemble collect': { VERSION: GATE_OUT('version') },
+  'collect release-assemble assemble': { VERSION: GATE_OUT('version'), TREE: GATE_OUT('tree') },
+  'sign candidate-digest write': { CHANNEL: GATE_OUT('channel'), VERSION: GATE_OUT('version'), STAGED: '${{ steps.sign.outputs.staged }}' },
+  'sign release-candidate digest': { VERSION: GATE_OUT('version') },
+  'publish candidate-digest verify': { CHANNEL: GATE_OUT('channel'), VERSION: GATE_OUT('version'), STAGED: '${{ needs.sign.outputs.staged }}', DIGEST: '${{ needs.sign.outputs.digest }}' },
+  'publish publish-release plan': PUBLISH_ENV,
+  'publish publish-release publish': PUBLISH_ENV,
+  'verify-published verify-published': { GH_TOKEN: '${{ github.token }}', DESKTOP_TAG: GATE_OUT('tag'), DESKTOP_SHA: GATE_OUT('sha'), DESKTOP_STAGED: '${{ needs.sign.outputs.staged }}' },
+  'feed candidate-digest verify': { CHANNEL: GATE_OUT('channel'), VERSION: GATE_OUT('version'), STAGED: '${{ needs.sign.outputs.staged }}', DIGEST: '${{ needs.sign.outputs.digest }}' },
+  'feed pages-feed verify': { CHANNEL: GATE_OUT('channel') },
   // Every id and digest the zip fetch trusts comes from the gate's outputs, never from collect.
   'sign release-candidate build': { GH_TOKEN: '${{ github.token }}', ...Object.fromEntries(['version', 'sha', 'tree', 'run', 'artifact_ids', 'artifact_digests', 'records_id', 'records_digest', 'run_record', 'jobs_record', 'previous']
     .map(name => [name.toUpperCase(), GATE_OUT(name)])) },
@@ -1634,7 +1651,23 @@ export function checkDesktopReleaseWorkflow(root) {
   // Rules that hold in every workflow: the release environment and secrets are confined.
   for (const [name, { text, doc }] of Object.entries(files)) {
     if (/secrets\s*\[/.test(text)) problems.push(`${name}: secrets[...] indexing is forbidden`);
-    if (/secrets\s*:\s*inherit/.test(text)) problems.push(`${name}: secrets: inherit is forbidden; pass named secrets`);
+    // Parsed first (a quoted "inherit" is the same YAML value), with the text match as a backstop.
+    const inherits = Object.values(doc?.jobs ?? {}).some(body => body && typeof body === 'object' && body.secrets === 'inherit');
+    if (inherits || /secrets\s*:\s*['"]?inherit\b/.test(text)) problems.push(`${name}: secrets: inherit is forbidden; pass named secrets`);
+    // GitHub Pages serves the desktop update feed: only desktop-release.yml's feed job may deploy it (review batch B, m2).
+    if (name !== 'desktop-release.yml') {
+      const pagesWrite = permissions => permissions === 'write-all' || (permissions && typeof permissions === 'object' && permissions.pages === 'write');
+      if (pagesWrite(doc?.permissions)) problems.push(`${name}: pages: write is reserved for desktop-release.yml's feed job`);
+      for (const [job, body] of Object.entries(doc?.jobs ?? {})) {
+        if (!body || typeof body !== 'object') continue;
+        const environment = typeof body.environment === 'string' ? body.environment : body.environment?.name;
+        if (environment === 'github-pages') problems.push(`${name}: ${job}: the github-pages environment is reserved for desktop-release.yml's feed job`);
+        if (pagesWrite(body.permissions)) problems.push(`${name}: ${job}: pages: write is reserved for desktop-release.yml's feed job`);
+        for (const step of Array.isArray(body.steps) ? body.steps : []) {
+          if (typeof step?.uses === 'string' && /^actions\/(deploy-pages|upload-pages-artifact)@/.test(step.uses)) problems.push(`${name}: ${job}: ${step.uses.split('@')[0]} is reserved for desktop-release.yml's feed job`);
+        }
+      }
+    }
     if (/toJSON\(\s*secrets\s*\)/i.test(text)) problems.push(`${name}: toJSON(secrets) is forbidden`);
     for (const [job, body] of Object.entries(doc?.jobs ?? {})) {
       if (!body || typeof body !== 'object' || !Object.hasOwn(body, 'environment')) continue;
@@ -1669,10 +1702,11 @@ export function checkDesktopReleaseWorkflow(root) {
 
   if (keyed) {
     const { doc, text } = keyed, k = 'desktop-release.yml';
-    if (!drSame(Object.keys(doc ?? {}), ['name', 'on', 'concurrency', 'permissions', 'jobs'])) problems.push(`${k}: top level must be exactly name, on, concurrency, permissions and jobs (no env or defaults)`);
+    // No workflow concurrency group: GitHub keeps one pending run per group and silently cancels it when a third
+    // arrives (review batch B, m5). The gate fails loudly instead while another run is active.
+    if (!drSame(Object.keys(doc ?? {}), ['name', 'on', 'permissions', 'jobs'])) problems.push(`${k}: top level must be exactly name, on, permissions and jobs (no concurrency, env or defaults)`);
     if (doc?.name !== 'desktop release') problems.push(`${k}: name must be "desktop release"`);
     if (!drSame(doc?.on, { workflow_run: { workflows: [DR_REQUEST_NAME], types: ['completed'] } })) problems.push(`${k}: must trigger only on workflow_run of "${DR_REQUEST_NAME}", types [completed], no branches`);
-    if (!drSame(doc?.concurrency, { group: 'desktop-release', 'cancel-in-progress': false })) problems.push(`${k}: concurrency must be group desktop-release without cancel-in-progress`);
     if (!drSame(doc?.permissions, {})) problems.push(`${k}: top-level permissions must be {}`);
     if (/always\(\)|\|\|\s*true|continue-on-error|cancelled\(\)|failure\(\)/.test(text)) problems.push(`${k}: no always(), || true, continue-on-error, cancelled() or failure()`);
     if (/NODE_OPTIONS|NODE_PATH/.test(text) || /NODE_OPTIONS|NODE_PATH/.test(request?.text ?? '')) problems.push(`${k}: NODE_OPTIONS and NODE_PATH are forbidden in the release workflows`);
@@ -1692,6 +1726,7 @@ export function checkDesktopReleaseWorkflow(root) {
       if (DR_ENVIRONMENTS[name] !== undefined && job.environment !== DR_ENVIRONMENTS[name]) problems.push(`${k}: ${name}: environment must be ${DR_ENVIRONMENTS[name]}`);
       if (DR_ENVIRONMENTS[name] === undefined && Object.hasOwn(job, 'environment')) problems.push(`${k}: ${name}: must not have an environment`);
       if (!drSame(job.outputs, DR_OUTPUTS[name])) problems.push(`${k}: ${name}: outputs must be exactly ${JSON.stringify(DR_OUTPUTS[name] ?? null)}`);
+      if (!drSame(job.concurrency, DR_CONCURRENCY[name])) problems.push(`${k}: ${name}: concurrency must be exactly ${JSON.stringify(DR_CONCURRENCY[name] ?? null)}`);
       const steps = Array.isArray(job.steps) ? job.steps : [];
       const kinds = steps.map(drKind);
       // Review batch B, I1/I2: no action in sign ever extracts a zip another job could have produced.
@@ -1712,7 +1747,9 @@ export function checkDesktopReleaseWorkflow(root) {
           if (step.run.includes('${{')) problems.push(`${where}: no \${{ }} inside run; pass values through env`);
           if (DR_RUNS[kind] === undefined || step.run !== DR_RUNS[kind]) problems.push(`${where}: run must be exactly a pinned release command`);
           if (/\b(npm|npx|git)\b/.test(step.run)) problems.push(`${where}: no npm, npx or git in the release workflow`);
-          for (const key of Object.keys(step.env ?? {})) if (/^(NODE_OPTIONS|NODE_PATH)$/.test(key)) problems.push(`${where}: ${key} is forbidden`);
+          for (const key of Object.keys(step.env ?? {})) if (DR_BANNED_ENV.test(key)) problems.push(`${where}: ${key} is forbidden in a release step's env`);
+          // Every run step's env is pinned exactly, as its run line is.
+          if (!Object.hasOwn(DR_ENV, `${name} ${kind}`)) problems.push(`${where}: no pinned env for ${kind} in ${name}`);
         }
         const pinnedEnv = DR_ENV[`${name} ${kind}`];
         if (pinnedEnv !== undefined && !drSame(step.env, pinnedEnv)) problems.push(`${where}: env must be exactly ${Object.keys(pinnedEnv).join(', ')}`);

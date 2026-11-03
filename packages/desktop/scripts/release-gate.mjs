@@ -21,6 +21,7 @@ const WORKFLOW_REF = `${REPOSITORY}/.github/workflows/desktop-release.yml@refs/h
 const REQUEST_WORKFLOW = '.github/workflows/desktop-release-request.yml';
 const CI_OK_INTEGRATION = 15368;
 const SANDBOX_MINIMUM_VALIDITY = 30 * 86400000;
+const ACTIVE_STATUSES = Object.freeze(['queued', 'in_progress', 'waiting', 'requested', 'pending']);
 
 const OUTPUTS = Object.freeze({
  tag: value => TAG.test(value),
@@ -69,12 +70,23 @@ export async function runGate({ env, git, api, outputDirectory, now = Date.now()
  if (env.GITHUB_ACTIONS !== 'true' || env.GITHUB_EVENT_NAME !== 'workflow_run' || env.GITHUB_REPOSITORY !== REPOSITORY
   || env.GITHUB_REF !== 'refs/heads/main' || env.GITHUB_WORKFLOW_REF !== WORKFLOW_REF || !COMMIT.test(env.GITHUB_SHA ?? '')) throw new Error('The release gate runs only as the main-branch workflow_run of desktop-release.yml');
  if (git(['rev-parse', 'HEAD']) !== env.GITHUB_SHA) throw new Error('The checked-out HEAD differs from GITHUB_SHA');
+ if (!/^[1-9]\d*$/.test(env.GITHUB_RUN_ID ?? '') || !Number.isSafeInteger(Number(env.GITHUB_RUN_ID))) throw new Error('Invalid GITHUB_RUN_ID');
 
  // 2. The tag hint is only a name to look up; the commit comes from the API.
  const hint = TAG.exec(env.HINT_TAG ?? '');
  if (!hint) throw new Error('The hint is not a desktop version tag');
  if (!/^[1-9]\d*$/.test(env.HINT_RUN ?? '') || !Number.isSafeInteger(Number(env.HINT_RUN))) throw new Error('Invalid triggering run id');
  const tag = hint[0], version = hint[1], channel = version.includes('-beta.') ? 'beta' : 'stable';
+
+ // 2b. One release at a time, failing loudly. The workflow has no concurrency group: GitHub keeps one pending
+ // run per group and cancels it silently when a third arrives (review batch B, m5). Every run starts instead,
+ // and a run that finds another unfinished desktop release run refuses before anything else.
+ for (const status of ACTIVE_STATUSES) {
+  const result = await api(`${R}/actions/workflows/desktop-release.yml/runs?status=${status}&per_page=100`);
+  if (!Array.isArray(result?.workflow_runs)) throw new Error('Malformed workflow run list');
+  const other = result.workflow_runs.find(run => String(run?.id) !== env.GITHUB_RUN_ID);
+  if (other) throw new Error(`Another desktop release run (${other.id}) is ${status}; re-run this release's request run after it finishes`);
+ }
  const sha = await resolveTagCommit(api, tag);
 
  // 3. The triggering run must be this tag's request workflow push run.

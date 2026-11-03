@@ -13,9 +13,9 @@ on:
   workflow_run:
     workflows: ['desktop release request']
     types: [completed]
-concurrency:
-  group: desktop-release
-  cancel-in-progress: false
+# No workflow concurrency group: GitHub keeps one pending run per group and
+# silently cancels it when a third arrives. Every run starts, and the gate fails
+# loudly while another desktop release run is queued or in progress.
 permissions: {}
 jobs:
   gate:
@@ -299,6 +299,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment: github-pages
+    # Pages deploys never overlap (say, a re-run feed and a newer release's feed).
+    concurrency:
+      group: desktop-release-feed
+      cancel-in-progress: false
     permissions:
       contents: read
       pages: write

@@ -53,6 +53,11 @@ A desktop release needs no CT 144 upgrade.
 - The gate releases only a commit with no code difference from `main`'s current tip (docs-only merges after it are
   fine; a later code merge cancels the older `ci` run and blocks the tag, so tag the new tip once it is green), a
   `package.json` version equal to the tag, and a version above every published release of its channel.
+- **One tag at a time.** The keyed workflow has no concurrency group, because GitHub would silently cancel a
+  pending run when a third arrived. Instead every run starts, and its gate **fails loudly** ("Another desktop
+  release run (id) is …") while another `desktop release` run is queued or in progress. Wait for that run, then
+  re-run the refused release's request run (`gh run rerun <request run id>`). Only the `feed` job is serialised
+  (group `desktop-release-feed`), so two Pages deploys never overlap.
 
 ## Recovery
 
@@ -70,6 +75,17 @@ A desktop release needs no CT 144 upgrade.
   site is simply overwritten.
 - **A red `verify-published`** cannot unpublish an immutable release; treat it as an incident and investigate
   before the next tag.
+- **A red `publish` after `draft: false`, or a red `verify-published`, with an asset mismatch:** a
+  `contents: write` token swapped a same-named asset between the last pre-publish check and publication, and the
+  release is now immutable. The updater is safe: it checks every installer against the sha512 in the signed
+  metadata and rejects the swapped file. People who download from the release page are not. Respond at once:
+  1. Edit the release notes (still editable on an immutable release) to warn at the top: name the asset that does
+     not match `SHA256SUMS`/the signed metadata and say not to install it.
+     `gh release edit desktop-v<version> --notes-file <warning + original notes>`.
+  2. Treat the token as stolen: rotate it, and audit Apps, collaborators and agent sessions with write access.
+  3. Publish a superseding release: bump the version on `main`, wait for green `ci`, and tag it. The feed moves to
+     it; the bad release stays, marked by its notes.
+  4. Do not delete the bad release (deleting frees the tag for reuse); leave it, warned.
 
 ## Who can release
 
