@@ -24,3 +24,16 @@ export function signalCloseGuard(): {
     },
   };
 }
+
+/** SDK disconnect and reconnection lines are informational, but must reach the
+ * same per-client guard before any error-only consumer filters the stream. */
+export function observeSignalConsole(
+  context: Pick<import('@playwright/test').BrowserContext, 'on'>,
+  guard: ReturnType<typeof signalCloseGuard>,
+  unexpectedError: (text: string) => void,
+): void {
+  context.on('console', message => {
+    const expected = guard.observe(message.text());
+    if (message.type() === 'error' && !expected) unexpectedError(message.text());
+  });
+}

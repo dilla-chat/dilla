@@ -30,7 +30,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  expect, type BrowserContext, type ConsoleMessage, type Locator, type Page, type PlaywrightWorkerArgs, type PlaywrightWorkerOptions, type Request,
+  expect, type BrowserContext, type Locator, type Page, type PlaywrightWorkerArgs, type PlaywrightWorkerOptions, type Request,
 } from '@playwright/test';
 import {
   ABORTED_FONT_LINE, ABORTED_JUGGLER_LINE, BY_DESIGN_RESOURCE_LINE, FIREFOX_FAVICON_LINE, TEST_TIMEOUT, WAIT, addServerVia, channelRow, channelsNav, completeSignUp, copy,
@@ -43,6 +43,7 @@ import { desktopApplication, desktopE2E, launchDesktopContext, suspendDesktopCon
 import { FIREFOX_MEDIA_PREFS, chromiumMediaArgs, writeFixtures } from '../media/support/fixtures';
 import { closeSettings, connected, dock, micLive, noiseOff, openVoiceSettings, phaseOf, sendsAudio, stage, voiceRow, watchAudio } from '../voice/support/voice';
 import { markSignalLifecycle, signalLifecycleDiagnostics } from '../voice/support/signal-lifecycle.ts';
+import { observeSignalConsole, signalCloseGuard } from '../voice/support/signal-close-guard.ts';
 import { arr, decode, encode, type CborInput, type CborValue } from '../../packages/client-core/src/cbor/index';
 
 /** Its own ports (web3.9 reservation): the host, its control listener, and its LiveKit's signalling and ICE ports. */
@@ -66,7 +67,7 @@ let bjornAccount: Account | null = null;
 
 /** One person's client: a persistent context of its own (Electron in the desktop lane, otherwise the project's browser), its page, the bearer the
  *  page's worker last sent (for the spec's reads), and what it printed that the guard refuses. */
-interface Person { name: string; diagnosticActor: 'ada' | 'bjorn' | 'phone'; context: BrowserContext; page: Page; bearer: string; errors: string[]; afkPosts: number; awayPuts: number }
+interface Person { name: string; diagnosticActor: 'ada' | 'bjorn' | 'phone'; context: BrowserContext; page: Page; bearer: string; errors: string[]; afkPosts: number; awayPuts: number; signal: ReturnType<typeof signalCloseGuard> }
 let ada: Person | null = null;
 let bjorn: Person | null = null;
 let phone: Person | null = null;
@@ -118,7 +119,7 @@ async function openPerson(name: string, f: Launch, projectName: string, workerIn
 /** Attach the same evidence collectors after an actual desktop process restart as after its first launch. */
 async function observePerson(name: string, context: BrowserContext, firefox = false, prior?: Person, actor: Person['diagnosticActor'] = prior?.diagnosticActor ?? 'bjorn'): Promise<Person> {
   const p: Person = { name, diagnosticActor: actor, context, page: context.pages()[0] ?? (await context.newPage()),
-    bearer: prior?.bearer ?? '', errors: prior?.errors ?? [], afkPosts: prior?.afkPosts ?? 0, awayPuts: prior?.awayPuts ?? 0 };
+    bearer: prior?.bearer ?? '', errors: prior?.errors ?? [], afkPosts: prior?.afkPosts ?? 0, awayPuts: prior?.awayPuts ?? 0, signal: signalCloseGuard() };
   if (desktopE2E()) {
     // A secondary person must exercise the shipping native transport and sandbox too. A browser launched directly
     // here used to make the desktop AFK lane pass through an unrelated, unused Electron fixture.
@@ -148,9 +149,7 @@ async function observePerson(name: string, context: BrowserContext, firefox = fa
     // pass-through route, so API checks keep using the person's real session without changing any response.
     await context.route(`${ORIGIN}/v1/communities`, route => route.continue());
   }
-  context.on('console', (m: ConsoleMessage) => {
-    if (m.type() !== 'error') return;
-    const text = m.text();
+  observeSignalConsole(context, p.signal, text => {
     if (!firefox && BY_DESIGN_RESOURCE_LINE.test(text)) return;
     if (firefox && (ABORTED_FONT_LINE.test(text) || ABORTED_JUGGLER_LINE.test(text) || FIREFOX_FAVICON_LINE.test(text))) return;
     if (restarting && RESTART_LINE.test(text)) return;
@@ -180,6 +179,15 @@ async function observePerson(name: string, context: BrowserContext, firefox = fa
 async function closePerson(p: Person | null): Promise<void> {
   if (p === null) return;
   await p.context.close().catch(() => undefined);
+}
+
+/** An explicit person action leaves this call. The shared guard still requires this same client's SDK disconnect;
+ *  active transport failures and a subsequent connection keep their normal error checks. */
+async function leaveFrom(p: Person, control: Locator): Promise<void> {
+  await markSignalLifecycle(p.page, 'before-leave');
+  p.signal.beginLeave();
+  await control.click();
+  await markSignalLifecycle(p.page, 'after-leave');
 }
 
 /** What this page's live regions said since `resetSaid`. */
@@ -620,9 +628,7 @@ test('5. Björn goes back to general with his own mute state and leaves the rost
 
   // R-AW3: Ada chooses AFK. Her call is left first (the dock goes), and no call starts in Idle.
   const posts = a.afkPosts;
-  await markSignalLifecycle(a.page, 'before-leave');
-  await voiceRow(a.page, RENAMED).click();
-  await markSignalLifecycle(a.page, 'after-leave');
+  await leaveFrom(a, voiceRow(a.page, RENAMED));
   await expect(dock(a.page).locator('.d-voice-dock')).toHaveCount(0, { timeout: WAIT });
   for (const p of [a, b]) await expect(awayPeople(p.page, RENAMED).filter({ hasText: OWNER })).toHaveCount(1, { timeout: WAIT });
   await expect(roomPeople(b.page, 'general').filter({ hasText: OWNER })).toHaveCount(0, { timeout: WAIT });
@@ -717,9 +723,7 @@ test('7. with view_channel left out of his roles community-wide, Björn still se
   // The browser phone case ends his call. Desktop omits that mobile case, so leave the call from step 5 explicitly;
   // going AFK here would pre-mark him away and stop the permission test below from proving its own AFK click.
   if (desktopE2E()) {
-    await markSignalLifecycle(b.page, 'before-leave');
-    await stage(b.page).locator('[data-control="leave"]').click();
-    await markSignalLifecycle(b.page, 'after-leave');
+    await leaveFrom(b, stage(b.page).locator('[data-control="leave"]'));
   }
   await expect(dock(b.page).locator('.d-voice-dock')).toHaveCount(0, { timeout: WAIT });
   // The role editor: @everyone loses "view channels", so none of Björn's roles grants it anywhere (R35).
@@ -809,9 +813,7 @@ test('9. a web3.8 pick: after the upgrade the server has a new AFK, and lounge a
   await connected(b.page);
   await sendsAudio(b);
   // Signal §5.6: on the joined channel's stage the dock draws nothing; leave from the call bar.
-  await markSignalLifecycle(b.page, 'before-leave');
-  await stage(b.page).locator('[data-control="leave"]').click();
-  await markSignalLifecycle(b.page, 'after-leave');
+  await leaveFrom(b, stage(b.page).locator('[data-control="leave"]'));
   await expect(dock(b.page).locator('.d-voice-dock')).toHaveCount(0, { timeout: WAIT });
 
   // The old Idle is a plain voice channel too: it has its delete and its permissions; only the new AFK has neither.

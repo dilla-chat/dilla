@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { signalCloseGuard } from '../voice/support/signal-close-guard.ts';
+import { EventEmitter } from 'node:events';
+import { observeSignalConsole, signalCloseGuard } from '../voice/support/signal-close-guard.ts';
 
 const closeError = 'error reading from signal stream { error: ConnectionError: WS closed unexpectedly with code 1006 }';
 const disconnect = 'disconnect from room { room: REDACTED }';
@@ -67,4 +68,28 @@ test('a failed security-leave postcondition rejects the scope and revokes its au
   }
   assert.equal(rejected, true, 'failed security postconditions cannot produce a successful scope');
   assert.equal(guard.observe(closeError), false);
+});
+
+
+test('the AFK console observer consumes info-level SDK state while retaining unexpected errors per client', () => {
+  const aliceContext = new EventEmitter(), bobContext = new EventEmitter();
+  const alice = signalCloseGuard(), bob = signalCloseGuard();
+  const aliceErrors = [], bobErrors = [];
+  observeSignalConsole(aliceContext, alice, text => aliceErrors.push(text));
+  observeSignalConsole(bobContext, bob, text => bobErrors.push(text));
+  const emit = (context, type, text) => context.emit('console', { type: () => type, text: () => text });
+  emit(aliceContext, 'error', closeError); // Active transport loss is always an error.
+  alice.beginLeave();
+  emit(aliceContext, 'error', closeError); // Explicit intent without SDK disconnect is insufficient.
+  emit(aliceContext, 'info', disconnect);
+  emit(aliceContext, 'error', closeError); // The recorded AFK leave's SDK-then-1006 sequence.
+  emit(bobContext, 'info', disconnect);
+  emit(bobContext, 'error', closeError); // Alice's leave authorizes nothing in Bob's context.
+  const otherClose = closeError.replace('1006', '1011');
+  emit(aliceContext, 'error', otherClose);
+  emit(aliceContext, 'error', 'unrelated application failure');
+  emit(aliceContext, 'info', 'connection state changed: disconnected -> connecting { room: REDACTED }');
+  emit(aliceContext, 'error', closeError);
+  assert.deepEqual(aliceErrors, [closeError, closeError, otherClose, 'unrelated application failure', closeError]);
+  assert.deepEqual(bobErrors, [closeError]);
 });
