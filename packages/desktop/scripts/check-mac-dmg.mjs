@@ -18,7 +18,7 @@ import { isMain } from './is-main.mjs';
  *
  * `run(command, args)` returns stdout (with stderr for codesign and spctl) and throws on a non-zero exit.
  */
-export function checkMacDiskImage({ out, version, trust, env = process.env, run = defaultRun, log = console.log }) {
+export function checkMacDiskImage({ out, version, trust, env = process.env, run = defaultRun, log = console.log, list = readdirSync }) {
  const name = `dilla-${version}-mac-arm64.dmg`;
  const images = readdirSync(out).filter(file => file.endsWith('.dmg'));
  if (images.length !== 1 || images[0] !== name) throw new Error(`Expected exactly the disk image ${name}, found ${images.join(', ') || 'none'}`);
@@ -26,15 +26,21 @@ export function checkMacDiskImage({ out, version, trust, env = process.env, run 
  const rotation = macRotationOf(trust);
  const mount = mkdtempSync(join(env.RUNNER_TEMP || tmpdir(), 'dilla-dmg-'));
  let appTeam;
- run('hdiutil', ['attach', '-nobrowse', '-readonly', '-noautoopen', '-mountpoint', mount, image]);
+ // hdiutil reports where it really mounted the image: an image an earlier step left attached is not mounted again at
+ // -mountpoint, so the empty requested directory would hide the app (PR #143: "Info.plist does not exist").
+ const attached = run('hdiutil', ['attach', '-nobrowse', '-readonly', '-noautoopen', '-plist', '-mountpoint', mount, image]);
+ const mounted = /<key>mount-point<\/key>\s*<string>([^<]+)<\/string>/.exec(attached)?.[1] ?? mount;
  try {
-  const plist = join(mount, 'Dilla.app', 'Contents', 'Info.plist');
+  // The image's single app bundle, found rather than assumed, so a layout change fails with what the image holds.
+  const entries = list(mounted), apps = entries.filter(entry => entry.endsWith('.app'));
+  if (apps.length !== 1) throw new Error(`Expected exactly one .app in ${name}, found: ${entries.join(', ') || 'nothing'}`);
+  const app = join(mounted, apps[0]), plist = join(app, 'Contents', 'Info.plist');
   const value = key => run('plutil', ['-extract', key, 'raw', '-o', '-', plist]).trim();
   if (value('SUPublicEDKey') !== trust.sparklePublicKey) throw new Error('The disk image\'s app does not carry main\'s Sparkle key (SUPublicEDKey)');
   for (const key of ['SURequireSignedFeed', 'SUVerifyUpdateBeforeExtraction']) if (value(key) !== 'true') throw new Error(`The disk image's app does not set ${key}`);
-  if (rotation) appTeam = /^TeamIdentifier=(.+)$/m.exec(run('codesign', ['-dvv', join(mount, 'Dilla.app')]))?.[1];
+  if (rotation) appTeam = /^TeamIdentifier=(.+)$/m.exec(run('codesign', ['-dvv', app]))?.[1];
  } finally {
-  run('hdiutil', ['detach', mount]);
+  run('hdiutil', ['detach', mounted]);
   rmSync(mount, { recursive: true, force: true });
  }
  if (!rotation) { log(`${name}: carries main's Sparkle key; no macOS key change is pending, so the zip is the update.`); return { rotation: false }; }

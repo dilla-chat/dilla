@@ -186,7 +186,7 @@ test('the macOS CI disk image check: main\'s key always, and a notarized Develop
    };
    return { calls, run };
   };
-  const check = (trust, options, env = { GITHUB_EVENT_NAME: 'push' }) => { const f = fake(options); return { result: checkMacDiskImage({ out, version, trust, env, run: f.run, log: () => {} }), calls: f.calls }; };
+  const check = (trust, options, env = { GITHUB_EVENT_NAME: 'push' }, list = () => ['.background', 'Applications', 'Dilla.app']) => { const f = fake(options); return { result: checkMacDiskImage({ out, version, trust, env, run: f.run, log: () => {}, list }), calls: f.calls }; };
 
   const plain = check(settled);
   assert.deepEqual(plain.result, { rotation: false });
@@ -200,6 +200,18 @@ test('the macOS CI disk image check: main\'s key always, and a notarized Develop
   assert.deepEqual(check(pending, { signed: false }, { GITHUB_EVENT_NAME: 'pull_request' }).result, { rotation: true, skipped: true }, 'a fork pull request has no credentials');
   assert.throws(() => check(pending, { imageTeam: 'OTHERTEAM1' }), /same Developer ID team/);
   assert.throws(() => check(pending, { notarized: false }), /notarized/);
+  assert.throws(() => check(settled, {}, undefined, () => ['Applications']), /exactly one \.app .*found: Applications/);
+  // An image an earlier step left attached: hdiutil reports its existing mount point, and the check reads that one.
+  {
+   const seen = [], f = fake({});
+   const run = (command, args) => command === 'hdiutil' && args[0] === 'attach'
+    ? '<plist><dict><key>mount-point</key>\n\t<string>/Volumes/Dilla 1.2.3</string></dict></plist>' : f.run(command, args);
+   checkMacDiskImage({ out, version, trust: settled, env: { GITHUB_EVENT_NAME: 'push' }, run, log: () => {}, list: dir => { seen.push(dir); return ['Dilla.app']; } });
+   assert.deepEqual(seen, ['/Volumes/Dilla 1.2.3']);
+   assert.ok(f.calls.some(call => call[0] === 'plutil' && call.at(-1) === '/Volumes/Dilla 1.2.3/Dilla.app/Contents/Info.plist'));
+   assert.ok(f.calls.some(call => call[0] === 'hdiutil' && call[1] === 'detach' && call[2] === '/Volumes/Dilla 1.2.3'));
+  }
+  assert.throws(() => check(settled, {}, undefined, () => ['A.app', 'B.app']), /exactly one \.app/);
   await writeFile(join(out, 'extra.dmg'), 'x');
   assert.throws(() => check(pending), /exactly the disk image/);
  } finally { await rm(out, { recursive: true, force: true }); }
