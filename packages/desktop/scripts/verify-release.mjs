@@ -10,6 +10,8 @@ import { verifyAurRecipe } from './build-native-linux-packages.mjs';
 import { buildProvenanceName, readBuildProvenanceFile, verifyBuildProvenance, verifyCandidateBuildRecord } from './build-provenance.mjs';
 
 export const TARGETS = ['linux-x64', 'win-x64', 'mac-arm64'];
+/** The Linux client suite's shards in desktop.yml (WEB_SHARDS in scripts/check-ci-workflow.mjs pins the same number). */
+export const LINUX_CLIENT_SHARDS = 6;
 export const BUILD_TARGETS = Object.freeze([...TARGETS, 'linux-packages-x64']);
 export const BUILD_PROVENANCE_RECORDS = Object.freeze(BUILD_TARGETS.map(buildProvenanceName));
 export const PUBLIC_ACCEPTANCE_RECORDS = Object.freeze(['release-notes.md', 'security-review.md',
@@ -79,11 +81,12 @@ async function verifyBundle({ metadata, signature, trust, directory, run, jobs, 
    ? 'Installed unsigned Sparkle upgrade and signed-feed rejection' : 'Installed upgrade acceptance'];
   if(target==='linux-x64')gates.push('Linux AppImage sandbox native acceptance');
   for (const gate of gates) if (!native.steps?.some(step => step.name === gate && step.conclusion === 'success')) throw new Error(`${target}: missing accepted ${gate}`);
-  // Linux runs the shared client suite in three shards; the other targets run the desktop-specific specs in one job.
-  for (const shard of target === 'linux-x64' ? [1, 2, 3] : [1]) {
+  // Linux runs the shared client suite in LINUX_CLIENT_SHARDS shards; the other targets run the desktop-specific specs in one job.
+  const shards = target === 'linux-x64' ? Array.from({ length: LINUX_CLIENT_SHARDS }, (_, i) => i + 1) : [1];
+  for (const shard of shards) {
    if (!jobs.some(job => job.name.endsWith(`desktop-client-${target}-${shard}`) && job.conclusion === 'success')) throw new Error(`Missing Electron client coverage: ${target}-${shard}`);
   }
-  const accountProofs = jobs.filter(job => job.conclusion === 'success' && [1, 2, 3].some(shard => job.name.endsWith(`desktop-client-${target}-${shard}`)))
+  const accountProofs = jobs.filter(job => job.conclusion === 'success' && shards.some(shard => job.name.endsWith(`desktop-client-${target}-${shard}`)))
    .flatMap(job => job.steps ?? []).filter(step => step.name === 'Installed account upgrade proof' && step.conclusion === 'success');
   if (accountProofs.length !== 1) throw new Error(`${target}: installed-account upgrade proof must succeed in exactly one client shard`);
   const voice = jobs.find(job => job.name.endsWith(`desktop-voice-${target}`) && job.conclusion === 'success');

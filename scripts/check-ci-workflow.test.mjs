@@ -9,7 +9,8 @@ import { fileURLToPath } from 'node:url';
 const TEST_ROOT = mkdtempSync(join(tmpdir(), 'dilla-ci-run-'));
 process.on('exit', () => rmSync(TEST_ROOT, { recursive: true, force: true }));
 import { gateExpression, JOB_GATES } from './ci-areas.mjs';
-import { BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopWorkflow, checkReleaseWorkflow, checkWorkflow, jobSteps, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_BLOCK, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEPS, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION, WEB_SHARDS } from './check-ci-workflow.mjs';
+import { assertGoShards, BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopWorkflow, checkReleaseWorkflow, checkWorkflow, goShardCommand, goShardMatrix, jobSteps, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_BLOCK, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEPS, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION, WEB_SHARDS } from './check-ci-workflow.mjs';
+import { POSTGRES_API_RUN, SETS as GO_SHARD_SETS } from './go-shard.mjs';
 
 const NPM_TEST = "      - if: needs.changes.outputs.web != 'false'\n        run: npm test\n";
 const SCRIPT_PATH = fileURLToPath(new URL('./check-ci-workflow.mjs', import.meta.url));
@@ -17,17 +18,17 @@ const REPO_ROOT = join(dirname(SCRIPT_PATH), '..');
 const REAL_CI = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
 
 test('whole-module Go jobs provision GTK development files before package loading', () => {
-  for (const name of ['go', 'go-lint', 'go-vuln']) {
+  for (const name of ['go', 'go-checks', 'go-lint', 'go-vuln']) {
     const body = new RegExp(`^  ${name}:\\n[\\s\\S]*?(?=^  [a-z][\\w-]*:|$(?![\\s\\S]))`, 'm').exec(REAL_CI)[0];
     const steps = jobSteps(body);
     const gtk = steps.findIndex(step => step.length === 1 && step[0] === 'run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev');
-    const load = steps.findIndex(step => step.some(line => /(?:go vet|golangci-lint run|govulncheck@\S+) \.\/\.\.\./.test(line)));
+    const load = steps.findIndex(step => step.some(line => /(?:go vet|golangci-lint run|govulncheck@\S+) \.\/\.\.\.|node scripts\/go-shard\.mjs run go /.test(line)));
     assert.ok(gtk >= 0 && gtk < load, name + ' must install GTK before loading the Linux cgo frontend');
   }
 });
 
 test('GTK provisioning cannot be omitted, postponed or bypassed by excluding cgo', () => {
-  for (const name of ['go', 'go-lint', 'go-vuln']) {
+  for (const name of ['go', 'go-checks', 'go-lint', 'go-vuln']) {
     const body = jobBody(name), setup = '      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev\n';
     assert.ok(body.includes(setup), name);
     for (const changed of [body.replace(setup, ''), body.replace('libgtk-3-dev', 'libgtk-3-0'),
@@ -345,6 +346,23 @@ test('desktop voice cannot shard its frozen-clock suite', () => {
   assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('single frozen-clock worker')));
 });
 
+test('the Linux client suite runs in exactly WEB_SHARDS shards, each given its share', () => {
+  const last = `          - { os: ubuntu-24.04, platform: linux, arch: x64, shard: ${WEB_SHARDS} }\n`;
+  const flag = `--shard=\${{ matrix.shard }}/${WEB_SHARDS} `;
+  assert.ok(REAL_DESKTOP.includes(last) && REAL_DESKTOP.includes(flag));
+  for (const changed of [
+    REAL_DESKTOP.replace(last, ''),
+    REAL_DESKTOP.replace(last, `${last}          - { os: ubuntu-24.04, platform: linux, arch: x64, shard: ${WEB_SHARDS + 1} }\n`),
+    REAL_DESKTOP.replace(flag, '--shard=${{ matrix.shard }}/3 '),
+  ]) {
+    const root = mkdtempSync(join(TEST_ROOT, 'dilla-desktop-shards-'));
+    mkdirSync(join(root, '.github/workflows'), { recursive: true });
+    addE2ePackage(root);
+    writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
+    assert.ok(checkDesktopWorkflow(root).some(problem => /client (?:coverage missing|suite must run in exactly)/.test(problem)));
+  }
+});
+
 test('Electron voice runs before downloading the browser performance baseline', () => {
   const root = mkdtempSync(join(TEST_ROOT, 'dilla-voice-baseline-order-'));
   mkdirSync(join(root, '.github/workflows'), { recursive: true });
@@ -553,8 +571,8 @@ test('Rust CI and release setup use the pinned rustup toolchain without third-pa
   }
 });
 
-// The go job's test step: every package but internal/ds and internal/api, which go-ds and go-api run (CI budget, fix wave).
-const GO_TEST = 'go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx -e github.com/dilla-chat/dilla/internal/ds -e github.com/dilla-chat/dilla/internal/api)';
+// The go job's test step: a shard of every package but internal/ds and internal/api, which go-ds and go-api run.
+const GO_TEST = goShardCommand('go');
 
 /** The browser jobs of GOOD, generated from BROWSER_WEB_JOBS: one job per engine, suite and web shard. */
 function browserJobsFixture() {
@@ -715,18 +733,34 @@ jobs:
       - run: bash scripts/install-ci-tool.sh cargo-deny
       - run: cargo deny --all-features check advisories bans licenses sources
   go:
+    name: go-\${{ matrix.shard }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    needs: [rust-wasi]
+${goShardMatrix('go')}    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev
+      - run: ${GO_TEST}
+        env:
+          GORACE: halt_on_error=1
+
+  go-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [rust-wasi]
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
+      - run: go mod verify
       - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev
       - run: go vet ./...
       - run: CGO_ENABLED=0 go build -tags dillapins ./internal/deps
-      - run: go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx -e github.com/dilla-chat/dilla/internal/ds -e github.com/dilla-chat/dilla/internal/api)
+      - run: go test -race github.com/pion/turn/v5/internal/allocation -run '^TestAddPermissionPublishesInitializedTimer$' -count=20
       - run: ${NON_RACE_STEP}
       - run: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' ./cmd/dillad
 
@@ -803,32 +837,35 @@ ${browserJobsFixture()}
           DILLA_BOT_HELPER_BIN: \${{ github.workspace }}/target/release/dilla-bot-core
 
   go-ds:
+    name: go-ds-\${{ matrix.shard }}
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    timeout-minutes: 35
     needs: [rust-wasi]
-    steps:
+${goShardMatrix('go-ds')}    steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
-      - run: go test -race -shuffle=on -timeout 45m ./internal/ds/...
+      - run: ${goShardCommand('go-ds')}
 
   go-api:
+    name: go-api-\${{ matrix.shard }}
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    timeout-minutes: 35
     needs: [rust-wasi]
-    steps:
+${goShardMatrix('go-api')}    steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
-      - run: go test -race -shuffle=on -timeout 50m ./internal/api/...
+      - run: ${goShardCommand('go-api')}
 
   go-harness:
+    name: go-harness-\${{ matrix.shard }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 35
     needs: [rust-wasi, rust-native]
-    steps:
+${goShardMatrix('go-harness')}    steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-core-wasi
@@ -837,7 +874,7 @@ ${browserJobsFixture()}
         with:
           name: dilla-testkit
           path: artifacts
-      - run: go test -race -shuffle=on -timeout 38m ./internal/testkit/...
+      - run: ${goShardCommand('go-harness')}
         env:
           DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
           DILLA_TESTKIT_REQUIRED: '1'
@@ -869,18 +906,16 @@ ${browserJobsFixture()}
       - run: git diff --exit-code
 
   go-postgres:
+    name: go-postgres-\${{ matrix.shard }}
     runs-on: ubuntu-latest
     needs: [rust-wasi]
-    services:
+${goShardMatrix('go-postgres')}    services:
       postgres:
         image: postgres:18.6-alpine3.24
         env:
           POSTGRES_INITDB_ARGS: --locale-provider=builtin --builtin-locale=C.UTF-8
     steps:
-      - run: go test -race -shuffle=on -timeout 20m ./internal/store/... ./internal/ops/...
-        env:
-          DILLA_TEST_PG: postgres://dilla:dilla@127.0.0.1:5432/dilla?sslmode=disable
-      - run: go test -race -shuffle=on -timeout 20m -run 'AFK|Afk|HiddenCategory|HiddenParent|ParentAnywhere|Marker|ConcurrentEnsures|ReadsThePointer' ./internal/api/...
+      - run: ${goShardCommand('go-postgres')}
         env:
           DILLA_TEST_PG: postgres://dilla:dilla@127.0.0.1:5432/dilla?sslmode=disable
 
@@ -1156,8 +1191,10 @@ test('a workflow without the go-harness job is reported', () => {
 });
 
 test('a go-harness job that lost its own timeout is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace(/(  go-harness:\n(?:    (?:name|needs|if):.*\n)*    runs-on: ubuntu-latest\n)    timeout-minutes: 45\n/, '$1')));
-  assert.ok(problems.some((p) => p.includes('timeout-minutes: 45')), problems.join('\n'));
+  const changed = GOOD.replace(/(  go-harness:\n(?:    (?:name|needs|if):.*\n)*    runs-on: ubuntu-latest\n)    timeout-minutes: 35\n/, '$1');
+  assert.notEqual(changed, GOOD, 'fixture sanity');
+  const problems = checkWorkflow(fixture(changed));
+  assert.ok(problems.some((p) => p.includes('"go-harness"') && p.includes('timeout-minutes: 35')), problems.join('\n'));
 });
 
 test('a node job that stopped running the checker\'s own tests is reported', () => {
@@ -1216,15 +1253,57 @@ test('a go job whose test step is narrowed to a package list is reported', () =>
   const problems = checkWorkflow(
     fixture(GOOD.replace(GO_TEST, 'go test -race -shuffle=on -timeout 15m ./internal/store/...')),
   );
-  assert.ok(problems.some((p) => p.includes('must be exactly')), problems.join('\n'));
+  assert.ok(problems.some((p) => p.includes('"go"') && p.includes('exactly one step')), problems.join('\n'));
+  assert.ok(problems.some((p) => p.includes('"go"') && p.includes('through scripts/go-shard.mjs only')), problems.join('\n'));
 });
 
-// CI budget (fix wave): the go job leaves out internal/ds and nothing else, and go-ds runs it.
-test('a go job that leaves out more than internal/ds and internal/api is reported', () => {
-  const problems = checkWorkflow(
-    fixture(GOOD.replace('-e github.com/dilla-chat/dilla/internal/api)', '-e github.com/dilla-chat/dilla/internal/api -e github.com/dilla-chat/dilla/internal/store)')),
-  );
-  assert.ok(problems.some((p) => p.includes('must be exactly')), problems.join('\n'));
+/** The go-shard set problems of the real workflow's jobs with one set replaced. */
+function setProblems(set, value) {
+  const jobs = {};
+  const problems = [];
+  assertGoShards(jobs, problems, { ...GO_SHARD_SETS, [set]: value });
+  return problems;
+}
+
+// CI budget (fix wave): the go set leaves out internal/ds and internal/api and nothing else; go-ds and go-api run them.
+test('a go set that leaves out more than internal/ds and internal/api is reported', () => {
+  assert.deepEqual(setProblems('go', GO_SHARD_SETS.go), []);
+  const problems = setProblems('go', { shards: 4, packages: [{ pattern: './...', exclude: ['./internal/ds', './internal/api', './internal/store'] }] });
+  assert.ok(problems.some((p) => p.includes('the go set must be exactly')), problems.join('\n'));
+});
+
+test('a sharded set with no shard count, or a set too many or too few, is reported', () => {
+  assert.ok(setProblems('go-ds', { packages: GO_SHARD_SETS['go-ds'].packages }).some((p) => p.includes('positive shard count')));
+  assert.ok(setProblems('go-extra', { shards: 2, packages: [{ pattern: './cmd/...' }] }).some((p) => p.includes('must be exactly go, go-api')));
+  const problems = [];
+  const { 'go-harness': _dropped, ...rest } = GO_SHARD_SETS;
+  assertGoShards({}, problems, rest);
+  assert.ok(problems.some((p) => p.includes('the go-harness set must be exactly')), problems.join('\n'));
+});
+
+test('a sharded job whose matrix does not match its set\'s shard count is reported', () => {
+  for (const set of Object.keys(GO_SHARD_SETS)) {
+    const matrix = goShardMatrix(set);
+    const shorter = matrix.replace(/, \d+\]/, ']');
+    assert.notEqual(shorter, matrix, set);
+    const problems = checkWorkflow(fixture(editJob(set, (b) => b.replace(matrix, shorter))));
+    assert.ok(problems.some((p) => p.includes(`"${set}"`) && p.includes('fail-fast matrix')), problems.join('\n'));
+    const loose = checkWorkflow(fixture(editJob(set, (b) => b.replace('fail-fast: true', 'fail-fast: false'))));
+    assert.ok(loose.some((p) => p.includes(`"${set}"`) && p.includes('fail-fast matrix')), loose.join('\n'));
+  }
+});
+
+test('a sharded job that runs another set, a fixed shard or a second go test is reported', () => {
+  const problems = checkWorkflow(fixture(editJob('go-api', (b) => b.replace('run go-api ', 'run go-ds '))));
+  assert.ok(problems.some((p) => p.includes('"go-api"') && p.includes('exactly one step')), problems.join('\n'));
+  const fixed = checkWorkflow(fixture(editJob('go-ds', (b) => b.replace('run go-ds ${{ matrix.shard }}', 'run go-ds 1'))));
+  assert.ok(fixed.some((p) => p.includes('"go-ds"') && p.includes('exactly one step')), fixed.join('\n'));
+  const twice = checkWorkflow(fixture(editJob('go-harness', (b) => b.replace('    steps:\n', '    steps:\n      - run: go test -race ./internal/testkit/...\n'))));
+  assert.ok(twice.some((p) => p.includes('"go-harness"') && p.includes('through scripts/go-shard.mjs only')), twice.join('\n'));
+  const unnamed = checkWorkflow(fixture(editJob('go-postgres', (b) => b.replace('    name: go-postgres-${{ matrix.shard }}\n', ''))));
+  assert.ok(unnamed.some((p) => p.includes('"go-postgres"') && p.includes('must be named')), unnamed.join('\n'));
+  const skipped = checkWorkflow(fixture(editJob('go', (b) => b.replace(`      - run: ${GO_TEST}`, `      - if: matrix.shard != 4\n        run: ${GO_TEST}`))));
+  assert.ok(skipped.some((p) => p.includes('"go"') && p.includes('must not be conditional')), skipped.join('\n'));
 });
 
 // web3.9: the css checker's own test and the check itself, and the AFK / channel-parent tests on Postgres.
@@ -1235,9 +1314,11 @@ test('a node job without the css checker steps is reported', () => {
   }
 });
 
-test('a go-postgres job that stopped running the api AFK tests is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace(/      - run: go test -race -shuffle=on -timeout 20m -run 'AFK[^\n]*\n        env:\n[^\n]*\n/, '')));
-  assert.ok(problems.some((p) => p.includes('"go-postgres"') && p.includes('./internal/api/...')), problems.join('\n'));
+test('a go-postgres set that stopped running the api AFK tests is reported', () => {
+  const packages = GO_SHARD_SETS['go-postgres'].packages;
+  const problems = setProblems('go-postgres', { shards: 2, packages: packages.filter((p) => p.pattern !== './internal/api/...') });
+  assert.ok(problems.some((p) => p.includes('the go-postgres set must be exactly') && p.includes('./internal/api/...')), problems.join('\n'));
+  assert.ok(packages.some((p) => p.pattern === './internal/api/...' && p.run === POSTGRES_API_RUN));
 });
 
 function withAPITests(body) {
@@ -1265,23 +1346,23 @@ test('a workflow without the go-ds job is reported', () => {
 
 test('a go-ds job that stopped running internal/ds is reported', () => {
   const problems = checkWorkflow(
-    fixture(GOOD.replace('      - run: go test -race -shuffle=on -timeout 45m ./internal/ds/...\n', '')),
+    fixture(GOOD.replace(`      - run: ${goShardCommand('go-ds')}\n`, '')),
   );
-  assert.ok(problems.some((p) => p.includes('"go-ds"') && p.includes('./internal/ds/...')), problems.join('\n'));
+  assert.ok(problems.some((p) => p.includes('"go-ds"') && p.includes('run go-ds')), problems.join('\n'));
 });
 
 test('a go-ds job with a shorter test budget is reported', () => {
   const problems = checkWorkflow(
-    fixture(GOOD.replace('      - run: go test -race -shuffle=on -timeout 45m ./internal/ds/...', '      - run: go test -race -shuffle=on -timeout 20m ./internal/ds/...')),
+    fixture(GOOD.replace(goShardCommand('go-ds'), goShardCommand('go-ds').replace('-timeout 25m', '-timeout 10m'))),
   );
-  assert.ok(problems.some((p) => p.includes('"go-ds"') && p.includes('-timeout 45m')), problems.join('\n'));
+  assert.ok(problems.some((p) => p.includes('"go-ds"') && p.includes('-timeout 25m')), problems.join('\n'));
 });
 
 test('a go-ds job with too little wall-clock margin is reported', () => {
   const start = GOOD.indexOf('  go-ds:\n');
   const body = GOOD.slice(start, GOOD.indexOf('\n\n', start));
-  const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace('timeout-minutes: 55', 'timeout-minutes: 25'))));
-  assert.ok(problems.some((p) => p.includes('"go-ds"') && p.includes('timeout-minutes: 55')), problems.join('\n'));
+  const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace('timeout-minutes: 35', 'timeout-minutes: 25'))));
+  assert.ok(problems.some((p) => p.includes('"go-ds"') && p.includes('timeout-minutes: 35')), problems.join('\n'));
 });
 
 test('a workflow without the go-api job is reported', () => {
@@ -1291,21 +1372,21 @@ test('a workflow without the go-api job is reported', () => {
 
 test('a go-api job that stopped running internal/api is reported', () => {
   const problems = checkWorkflow(
-    fixture(GOOD.replace('      - run: go test -race -shuffle=on -timeout 50m ./internal/api/...\n', '')),
+    fixture(GOOD.replace(`      - run: ${goShardCommand('go-api')}\n`, '')),
   );
-  assert.ok(problems.some((p) => p.includes('"go-api"') && p.includes('./internal/api/...')), problems.join('\n'));
+  assert.ok(problems.some((p) => p.includes('"go-api"') && p.includes('run go-api')), problems.join('\n'));
 });
 
 test('a go-api job with a shorter budget is reported', () => {
   const start = GOOD.indexOf('  go-api:\n');
   const body = GOOD.slice(start, GOOD.indexOf('\n\n', start));
-  const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace('timeout-minutes: 55', 'timeout-minutes: 30'))));
-  assert.ok(problems.some((p) => p.includes('"go-api"') && p.includes('timeout-minutes: 55')), problems.join('\n'));
+  const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace('timeout-minutes: 35', 'timeout-minutes: 20'))));
+  assert.ok(problems.some((p) => p.includes('"go-api"') && p.includes('timeout-minutes: 35')), problems.join('\n'));
 });
 
-test('a go job that stopped leaving out internal/api is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace(' -e github.com/dilla-chat/dilla/internal/api', '')));
-  assert.ok(problems.some((p) => p.includes('must be exactly')), problems.join('\n'));
+test('a go set that stopped leaving out internal/api is reported', () => {
+  const problems = setProblems('go', { shards: 4, packages: [{ pattern: './...', exclude: ['./internal/ds'] }] });
+  assert.ok(problems.some((p) => p.includes('the go set must be exactly')), problems.join('\n'));
 });
 
 test('a go-api job without needs: rust-wasi is reported', () => {
@@ -1329,7 +1410,7 @@ for (const [job, needle] of [
   ['rust-wasm-node', 'npm run typecheck -w @dilla/media'],
   ['rust-wasm-node', 'npm run test:wasm -w @dilla/media'],
   ['rust-wasm-node', 'npm run check:schema -w @dilla/media'],
-  ['go-harness', 'go test -race -shuffle=on -timeout 38m ./internal/testkit/...'],
+  ['go-harness', goShardCommand('go-harness')],
   ['go-harness', 'name: dilla-testkit'],
   ['go-lint', 'golangci-lint run ./...'],
   ['go-vuln', '-scan package -tags dillapins ./internal/deps'],
@@ -1339,7 +1420,7 @@ for (const [job, needle] of [
   ['go-postgres', 'DILLA_TEST_PG'],
   // I7 (fix wave): internal/ops holds the only Postgres backup, restore and heal tests; a step that
   // drops it skips them in every job. The -timeout is explicit so a slow package fails by name.
-  ['go-postgres', 'go test -race -shuffle=on -timeout 20m ./internal/store/... ./internal/ops/...'],
+  ['go-postgres', goShardCommand('go-postgres')],
   ['go-release', 'if-no-files-found: error'],
 ]) {
   test(`a ${job} job that lost "${needle}" is reported`, () => {
@@ -1517,7 +1598,7 @@ test('a browser-spike job without its timeout is reported', () => {
 
 test('the video publishing tests retain a non-race CI step', () => {
   const problems = checkWorkflow(fixture(GOOD.replace(NON_RACE_STEP, 'go test ./cmd/dilla-mediabot')));
-  assert.ok(problems.some((p) => p.includes('job "go"') && p.includes(NON_RACE_STEP)), problems.join('\n'));
+  assert.ok(problems.some((p) => p.includes('job "go-checks"') && p.includes(NON_RACE_STEP)), problems.join('\n'));
   assert.ok(problems.some((p) => p.includes('no non-race') && p.includes('5 race-gated')), problems.join('\n'));
 });
 
@@ -1703,7 +1784,7 @@ for (const job of Object.keys(BROWSER_WEB_JOBS)) {
 test('shared core integration uses only the Electron-compatible engine', () => {
   assert.deepEqual(BROWSER_WEB_JOBS, { 'core-integration': { engine: 'chromium', suite: 'core', shard: null, timeout: 20 } });
   assert.equal(browserSuiteCommand(BROWSER_WEB_JOBS['core-integration']), 'npm run test:e2e:core:chromium -w @dilla/e2e');
-  assert.equal(WEB_SHARDS, 3, 'desktop client acceptance still has three shards');
+  assert.equal(WEB_SHARDS, 6, 'desktop client acceptance runs in six shards');
 });
 
 test('the core security job cannot be deleted, folded into another suite or given too little time', () => {
@@ -2272,7 +2353,7 @@ test('the CLI checks release.yml too', () => {
 });
 
 test('a job that lost its change gate is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace("    if: needs.changes.outputs.go != 'false'\n    runs-on: ubuntu-latest\n    timeout-minutes: 55\n", '    runs-on: ubuntu-latest\n    timeout-minutes: 55\n')));
+  const problems = checkWorkflow(fixture(GOOD.replace("    if: needs.changes.outputs.go != 'false'\n    runs-on: ubuntu-latest\n    timeout-minutes: 20\n", '    runs-on: ubuntu-latest\n    timeout-minutes: 20\n')));
   assert.ok(problems.some((p) => p.includes('must carry the job-level if:')), problems.join('\n'));
 });
 
