@@ -4,6 +4,7 @@ import { appendFile, readFile, stat, access, mkdtemp, rm } from 'node:fs/promise
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { electronChildEnvironment, notificationLogFacts, macNotificationIdentity, prepareMacNotificationDiagnostic } from '../web/support/mac-notification-diagnostics.ts';
+import * as diagnostics from '../web/support/mac-notification-diagnostics.ts';
 
 const presenter = message => `[123:1102/200000.000000:INFO:notification_presenter_mac.mm(61)] ${message}\n`;
 const cocoa = message => `[123:1102/200000.000000:INFO:cocoa_notification.mm(201)] ${message}\n`;
@@ -88,6 +89,70 @@ test('diagnostic command errors yield unavailable facts without exposing errors'
  assert.equal(facts.signature.verify, 'unavailable');
  assert.equal(facts.bundleId, null);
  assert.doesNotMatch(JSON.stringify(facts), /TOKEN_SECRET/);
+});
+
+test('stock linker signatures are distinguished from a sealed ad-hoc app identity', () => {
+ const inspect = display => macNotificationIdentity({ execPath, isPackaged: false }, (file, args) =>
+  file === '/usr/bin/plutil' ? commandResult('com.github.Electron\n')
+   : args.includes('--verify') ? commandResult()
+   : commandResult('', display)).signature;
+ const linker = inspect('Identifier=Electron\nCodeDirectory v=20400 size=492 flags=0x20002(adhoc,linker-signed) hashes=12+0 location=embedded\nSignature=adhoc\nInfo.plist=not bound\nSealed Resources=none\n');
+ assert.equal(linker.linkerSigned, true);
+ assert.equal(linker.infoPlistBound, false);
+ assert.equal(linker.resourcesSealed, false);
+ const sealed = inspect('Identifier=com.github.Electron\nCodeDirectory v=20400 size=492 flags=0x2(adhoc) hashes=12+7 location=embedded\nSignature=adhoc\nInfo.plist entries=29\nSealed Resources version=2 rules=13 files=1\n');
+ assert.equal(sealed.linkerSigned, false);
+ assert.equal(sealed.infoPlistBound, true);
+ assert.equal(sealed.resourcesSealed, true);
+});
+
+test('signature verification failures retain an allowlisted cause without exposing paths or error text', () => {
+ for (const [error, expected] of [
+  ['PRIVATE_PATH_SECRET: invalid Info.plist (plist or signature have been modified)\n', 'invalid-info-plist'],
+  ['PRIVATE_PATH_SECRET: a sealed resource is missing or invalid\n', 'invalid-resource-seal'],
+  ['PRIVATE_PATH_SECRET: code object is not signed at all\n', 'unsigned'],
+  ['PRIVATE_PATH_SECRET: UNKNOWN_SECRET\n', 'other'],
+ ]) {
+  const facts = macNotificationIdentity({ execPath, isPackaged: false }, (file, args) =>
+   file === '/usr/bin/plutil' ? commandResult('com.github.Electron\n')
+    : args.includes('--verify') ? commandResult('', error, 1) : commandResult());
+  assert.equal(facts.signature.verifyReason, expected);
+  assert.doesNotMatch(JSON.stringify(facts), /SECRET/);
+ }
+});
+
+test('macOS CI preparation seals the npm runtime as an app before accepting its identity', () => {
+ assert.equal(typeof diagnostics.prepareMacElectronRuntime, 'function');
+ const calls = [];
+ const run = (file, args, options) => {
+  calls.push([file, args]);
+  assert.equal(options.shell, false);
+  if (args.includes('--sign')) return commandResult();
+  if (file === '/usr/bin/plutil') return commandResult('com.github.Electron\n');
+  if (args.includes('--verify')) return commandResult();
+  return commandResult('', 'Identifier=com.github.Electron\nCodeDirectory v=20400 size=492 flags=0x2(adhoc)\nSignature=adhoc\nInfo.plist entries=29\nSealed Resources version=2 rules=13 files=1\n');
+ };
+ const identity = diagnostics.prepareMacElectronRuntime({ execPath, platform: 'darwin', environment: { CI: 'true', GITHUB_ACTIONS: 'true', RUNNER_OS: 'macOS' } }, run);
+ assert.equal(identity.signature.verify, 'passed');
+ assert.equal(identity.signature.identifier, identity.bundleId);
+ assert.deepEqual(calls[0], ['/usr/bin/codesign', ['--force', '--deep', '--sign', '-', '/Users/runner/work/dilla/node_modules/electron/dist/Electron.app']]);
+});
+
+test('macOS runtime preparation refuses local hosts and cannot accept an unsealed or mismatched identity', () => {
+ assert.equal(typeof diagnostics.prepareMacElectronRuntime, 'function');
+ const environment = { CI: 'true', GITHUB_ACTIONS: 'true', RUNNER_OS: 'macOS' };
+ const options = { execPath, platform: 'darwin', environment };
+ for (const input of [ { ...options, environment: {} }, { ...options, platform: 'linux' }, { ...options, execPath: '/tmp/other.app/Contents/MacOS/Electron' } ]) {
+  assert.throws(() => diagnostics.prepareMacElectronRuntime(input, () => { assert.fail('No command allowed'); }), /macOS CI npm Electron/);
+ }
+ const inspect = (id, bound, verified) => (file, args) => args.includes('--sign') ? commandResult()
+  : file === '/usr/bin/plutil' ? commandResult('com.github.Electron\n')
+  : args.includes('--verify') ? commandResult('', 'PRIVATE_ERROR_SECRET', verified ? 0 : 1)
+  : commandResult('', `Identifier=${id}\nCodeDirectory v=20400 size=492 flags=0x2(adhoc)\nSignature=adhoc\nInfo.plist${bound ? ' entries=29' : '=not bound'}\nSealed Resources version=2 rules=13 files=1\n`);
+ for (const input of [['Electron', true, true], ['com.github.Electron', false, true], ['com.github.Electron', true, false]]) {
+  assert.throws(() => diagnostics.prepareMacElectronRuntime(options, inspect(...input)), /valid sealed Electron app/);
+ }
+ assert.throws(() => diagnostics.prepareMacElectronRuntime(options, () => commandResult('', 'PRIVATE_ERROR_SECRET', 1)), error => /seal the Electron app/.test(error.message) && !error.message.includes('PRIVATE_ERROR_SECRET'));
 });
 
 test('an unsigned bundle is distinguishable from an unavailable codesign command without retaining its error text', () => {

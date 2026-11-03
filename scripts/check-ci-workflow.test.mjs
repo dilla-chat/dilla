@@ -265,6 +265,25 @@ test('native desktop Go setup remains unconditional for every platform', () => {
  writeFileSync(join(root,'.github/workflows/desktop.yml'),reordered); assert.ok(checkDesktopWorkflow(root).some(problem=>problem.includes('pinned native Go')));
 });
 
+test('every macOS Electron consumer seals its npm runtime immediately after installation', () => {
+ assert.deepEqual(checkDesktopWorkflow(REPO_ROOT), []);
+ const seal = "      - name: Seal macOS npm Electron runtime for native notifications\n        if: runner.os == 'macOS'\n        run: node e2e/web/support/prepare-mac-electron-runtime.ts\n";
+ const install = '      - run: node node_modules/electron/install.js\n';
+ for (const job of ['native', 'client', 'voice']) {
+  const start = REAL_DESKTOP.indexOf(`\n  ${job}:\n`);
+  const tail = REAL_DESKTOP.slice(start), next = /\n  [a-z][a-z0-9-]*:\n/.exec(tail.slice(1));
+  const end = next ? start + 1 + next.index : REAL_DESKTOP.length;
+  const body = REAL_DESKTOP.slice(start, end);
+  assert.ok(body.includes(install + seal), job);
+  for (const changed of [body.replace(seal, ''), body.replace(seal, seal.replace("runner.os == 'macOS'", "runner.os == 'Linux'")),
+   body.replace(install + seal, seal + install), body.replace(seal, '') + seal]) {
+   const root = fixture(GOOD);
+   writeFileSync(join(root, '.github/workflows/desktop.yml'), REAL_DESKTOP.slice(0, start) + changed + REAL_DESKTOP.slice(end));
+   assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('macOS npm Electron runtime') && problem.includes(job)), job);
+  }
+ }
+});
+
 test('native failure diagnostics run only after a successful desktop build', () => {
  const guard="if: failure() && steps.desktop-build.outcome == 'success'";
  const before=`${guard}\n        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7\n        with:\n          name: desktop-failure-`;

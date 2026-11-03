@@ -1228,6 +1228,14 @@ export function checkDesktopWorkflow(root) {
   ]) if (!text.includes(required)) problems.push(`${file}: missing ${required}`);
   if (/--no-sandbox|contents: write|--publish always/.test(text)) problems.push(`${file}: desktop validation must keep sandboxing and cannot publish`);
   const body = job => text.split(`\n  ${job}:\n`)[1]?.split(/\n  [a-z][a-z0-9-]*:\n/)[0] ?? '';
+  for (const job of ['native', 'client', 'voice']) {
+    const steps = jobSteps(body(job));
+    const install = steps.findIndex(step => step.join('\n') === 'run: node node_modules/electron/install.js');
+    const seal = steps.map((step, index) => step.some(line => line.includes('prepare-mac-electron-runtime.ts')) ? index : -1).filter(index => index >= 0);
+    const expected = "name: Seal macOS npm Electron runtime for native notifications\nif: runner.os == 'macOS'\nrun: node e2e/web/support/prepare-mac-electron-runtime.ts";
+    if (install < 0 || seal.length !== 1 || seal[0] !== install + 1 || steps[seal[0]].join('\n') !== expected)
+      problems.push(`${file}: ${job} must seal the macOS npm Electron runtime immediately after installation`);
+  }
   const nativeSteps = jobSteps(body('native'));
   const formatAcceptance = body('native-linux-package-acceptance');
   for (const required of [

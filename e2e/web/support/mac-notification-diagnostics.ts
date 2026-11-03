@@ -53,13 +53,42 @@ export function macNotificationIdentity(runtime: { execPath: string; isPackaged:
  const display = command('/usr/bin/codesign', ['-d', '--verbose=4', bundle!]);
  const verify = command('/usr/bin/codesign', ['--verify', '--deep', '--strict', bundle!]);
  const publicFields = display && status(display) === 'passed' ? `${display.stdout}\n${display.stderr}` : '';
+ const verifyError = status(verify) === 'failed' ? verify!.stderr : '';
+ const verifyReason = !verifyError ? null : /(?:^|: )invalid Info\.plist \(plist or signature have been modified\)\r?$/m.test(verifyError) ? 'invalid-info-plist'
+  : /(?:^|: )a sealed resource is missing or invalid\r?$/m.test(verifyError) ? 'invalid-resource-seal'
+  : /(?:^|: )code object is not signed at all\r?$/m.test(verifyError) ? 'unsigned' : 'other';
  return { execPath: valid ? runtime.execPath : null, isPackaged: typeof runtime.isPackaged === 'boolean' ? runtime.isPackaged : null,
   bundleId: status(plist) === 'passed' ? identifier(plist!.stdout.trim()) : null,
-  signature: { display: status(display), verify: status(verify),
+  signature: { display: status(display), verify: status(verify), verifyReason,
    kind: /^Signature=adhoc$/m.test(publicFields) ? 'adhoc' : /^Authority=.+$/m.test(publicFields) ? 'identity'
     : status(display) === 'failed' && /(?:^|: )code object is not signed at all\r?$/m.test(display!.stderr) ? 'unsigned' : 'unknown',
    identifier: identifier(/^Identifier=(.+)$/m.exec(publicFields)?.[1]),
+   linkerSigned: /^CodeDirectory [^\r\n]*flags=0x[0-9a-f]+\([^\r\n)]*\blinker-signed\b[^\r\n)]*\)(?: |\r?$)/m.test(publicFields),
+   infoPlistBound: /^Info\.plist entries=\d+\r?$/m.test(publicFields),
+   resourcesSealed: /^Sealed Resources version=\d+ rules=\d+ files=\d+\r?$/m.test(publicFields),
    authorityPresent: /^Authority=.+$/m.test(publicFields), teamIdentifierPresent: /^TeamIdentifier=[A-Z0-9]{10}$/m.test(publicFields) } };
+}
+
+/** Disposable GitHub macOS runners only. The npm archive's linker signature has
+ * no bound Info.plist/resources and its identifier is just "Electron". A real
+ * ad-hoc bundle seal supplies the app identity required by UNUserNotificationCenter.
+ * This prepares the test executable; it neither grants OS authorization nor
+ * changes the shipping app's signing or notification consent policy. */
+export function prepareMacElectronRuntime(options: { execPath: string; platform?: string; environment?: NodeJS.ProcessEnv }, run: Run = spawnSync) {
+ const environment = options.environment ?? process.env;
+ if ((options.platform ?? process.platform) !== 'darwin' || environment.CI !== 'true' || environment.GITHUB_ACTIONS !== 'true' || environment.RUNNER_OS !== 'macOS'
+  || !/^\/(?:[^/\x00-\x1f\x7f]+\/)*node_modules\/electron\/dist\/Electron\.app\/Contents\/MacOS\/Electron$/.test(options.execPath)
+  || options.execPath.split('/').some(segment => segment === '.' || segment === '..')) throw new Error('Runtime preparation requires the macOS CI npm Electron executable');
+ const bundle = options.execPath.slice(0, -'/Contents/MacOS/Electron'.length);
+ // Let codesign derive each nested app/framework identifier from its own plist.
+ // An explicit --identifier would also apply to every nested item with --deep.
+ const signed = run('/usr/bin/codesign', ['--force', '--deep', '--sign', '-', bundle], { shell: false, encoding: 'utf8', timeout: 60000, maxBuffer: 8192, windowsHide: true });
+ if (status(signed) !== 'passed') throw new Error('Could not seal the Electron app for macOS CI');
+ const identity = macNotificationIdentity({ execPath: options.execPath, isPackaged: false }, run);
+ if (identity.bundleId !== 'com.github.Electron' || identity.signature.identifier !== identity.bundleId || identity.signature.verify !== 'passed'
+  || identity.signature.kind !== 'adhoc' || identity.signature.linkerSigned || !identity.signature.infoPlistBound || !identity.signature.resourcesSealed)
+  throw new Error('macOS CI requires a valid sealed Electron app with a matching bundle and signing identity');
+ return identity;
 }
 
 type Facts = { version: number; platform: 'darwin'; finished: boolean; logUnavailable: boolean; logTruncated: boolean;
