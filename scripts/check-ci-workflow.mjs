@@ -1373,6 +1373,11 @@ run: node packages/desktop/test/support/linux-installed-runtime-proof.mjs packag
 if: runner.os == 'Linux'
 run: node packages/desktop/scripts/test-linux-sandbox-package.mjs packages/desktop/out`);
   if(mutation<=finalDistribution || mutation>=buildProvenance)problems.push(`${file}: installed sandbox final-image mutation command must run unfiltered after distribution and before provenance`);
+  const macDiskImage = nativeSteps.map((step, index) => step.join('\n') === `name: macOS update disk image check
+if: runner.os == 'macOS'
+run: node packages/desktop/scripts/check-mac-dmg.mjs packages/desktop/out` ? index : -1).filter(index => index >= 0);
+  if (macDiskImage.length !== 1 || nativeSteps.filter(step => step.some(line => line.includes('check-mac-dmg.mjs'))).length !== 1 || macDiskImage[0] <= finalFuses || macDiskImage[0] >= buildProvenance)
+    problems.push(`${file}: the macOS update disk image (the key-rotation update) must be checked exactly once after the final fused distribution and before provenance`);
   for(const glob of ['packages/desktop/out/*.sandbox','packages/desktop/out/*.sandbox.json'])if(!nativeSteps[installerUpload]?.some(line=>line.trim()===glob))problems.push(`${file}: installed sandbox accepted component sidecars must accompany final AppImage`);
   const lastPlaywright = nativeSteps.findLastIndex(step => step.some(line => /npm run test:electron|playwright test/.test(line)));
   const installed = nativeSteps.map((step, index) => step.some(line => /node --test packages\/desktop\/test\/native\/(?:mac-upgrade|installed-upgrade)\.test\.mjs/.test(line)) ? index : -1).filter(index => index >= 0);
@@ -1495,7 +1500,7 @@ const DR_NEEDS = { collect: ['gate'], sign: ['gate', 'collect'], publish: ['gate
 const GATE_OUT = name => `\${{ needs.gate.outputs.${name} }}`;
 /** Exact job outputs: collect has none, so nothing it produces can reach sign or publish. */
 const DR_OUTPUTS = {
-  gate: { ...Object.fromEntries(['tag', 'version', 'channel', 'sha', 'tree', 'run', 'artifact_ids', 'artifact_digests', 'run_record', 'jobs_record', 'previous'].map(name => [name, `\${{ steps.gate.outputs.${name} }}`])),
+  gate: { ...Object.fromEntries(['tag', 'version', 'channel', 'sha', 'tree', 'run', 'artifact_ids', 'artifact_digests', 'run_record', 'jobs_record', 'previous', 'mac_update'].map(name => [name, `\${{ steps.gate.outputs.${name} }}`])),
     records_id: '${{ steps.records.outputs.artifact-id }}', records_digest: '${{ steps.records.outputs.artifact-digest }}' },
   collect: undefined,
   sign: { staged: '${{ steps.sign.outputs.staged }}', digest: '${{ steps.digest.outputs.digest }}', candidate_digest: '${{ steps.candidate_digest.outputs.candidate_digest }}',
@@ -1560,7 +1565,7 @@ const DR_WITH = {
 };
 const DR_ACTION_KINDS = { checkout: 'checkout', 'setup-node': 'setup-node', 'upload-pages-artifact': 'upload-pages', 'deploy-pages': 'deploy-pages' };
 const PUBLISH_ENV = { GH_TOKEN: '${{ github.token }}', DESKTOP_TAG: GATE_OUT('tag'), DESKTOP_SHA: GATE_OUT('sha'), DESKTOP_STAGED: '${{ needs.sign.outputs.staged }}',
-  DESKTOP_RELEASE_CANDIDATE: '${{ runner.temp }}/signed', DESKTOP_INSTALLERS: '${{ runner.temp }}/candidate' };
+  DESKTOP_MAC_UPDATE: GATE_OUT('mac_update'), DESKTOP_RELEASE_CANDIDATE: '${{ runner.temp }}/signed', DESKTOP_INSTALLERS: '${{ runner.temp }}/candidate' };
 /** Exact env of every run step (review batch B, m3): a value from collect, or a loader variable, cannot slip in. */
 const DR_ENV = {
   'gate release-gate': { GH_TOKEN: '${{ github.token }}', HINT_TAG: '${{ github.event.workflow_run.head_branch }}', HINT_RUN: '${{ github.event.workflow_run.id }}' },
@@ -1574,16 +1579,17 @@ const DR_ENV = {
   'publish candidate-digest verify': { CHANNEL: GATE_OUT('channel'), VERSION: GATE_OUT('version'), STAGED: '${{ needs.sign.outputs.staged }}', DIGEST: '${{ needs.sign.outputs.digest }}' },
   'publish publish-release plan': PUBLISH_ENV,
   'publish publish-release publish': PUBLISH_ENV,
-  'verify-published verify-published': { GH_TOKEN: '${{ github.token }}', DESKTOP_TAG: GATE_OUT('tag'), DESKTOP_SHA: GATE_OUT('sha'), DESKTOP_STAGED: '${{ needs.sign.outputs.staged }}' },
+  'verify-published verify-published': { GH_TOKEN: '${{ github.token }}', DESKTOP_TAG: GATE_OUT('tag'), DESKTOP_SHA: GATE_OUT('sha'), DESKTOP_STAGED: '${{ needs.sign.outputs.staged }}', DESKTOP_MAC_UPDATE: GATE_OUT('mac_update') },
   'feed candidate-digest verify': { CHANNEL: GATE_OUT('channel'), VERSION: GATE_OUT('version'), STAGED: '${{ needs.sign.outputs.staged }}', DIGEST: '${{ needs.sign.outputs.digest }}' },
   'feed pages-feed verify': { CHANNEL: GATE_OUT('channel') },
   // Every id and digest the zip fetch trusts comes from the gate's outputs, never from collect.
   'sign release-candidate build': { GH_TOKEN: '${{ github.token }}', ...Object.fromEntries(['version', 'sha', 'tree', 'run', 'artifact_ids', 'artifact_digests', 'records_id', 'records_digest', 'run_record', 'jobs_record', 'previous']
     .map(name => [name.toUpperCase(), GATE_OUT(name)])) },
-  'sign release-sign-job': { VERSION: GATE_OUT('version'), ...Object.fromEntries(DESKTOP_RELEASE_SECRETS.map(name => [name, `\${{ secrets.${name} }}`])) },
+  // MAC_UPDATE: the gate's decision; 'dmg' only for a channel's rotation release of a pending macOS key change.
+  'sign release-sign-job': { VERSION: GATE_OUT('version'), MAC_UPDATE: GATE_OUT('mac_update'), ...Object.fromEntries(DESKTOP_RELEASE_SECRETS.map(name => [name, `\${{ secrets.${name} }}`])) },
   'sign release-candidate record-id': { SIGNED_ID: '${{ steps.signed_upload.outputs.artifact-id }}', CANDIDATE_ID: '${{ steps.candidate_upload.outputs.artifact-id }}' },
   // The feed reads published releases through the API (contents: read), never the live site.
-  'feed pages-feed build': { GH_TOKEN: '${{ github.token }}', CHANNEL: GATE_OUT('channel'), VERSION: GATE_OUT('version') },
+  'feed pages-feed build': { GH_TOKEN: '${{ github.token }}', CHANNEL: GATE_OUT('channel'), VERSION: GATE_OUT('version'), MAC_UPDATE: GATE_OUT('mac_update') },
   'publish release-candidate verify': { ...Object.fromEntries(['version', 'sha', 'tree', 'run', 'run_record', 'jobs_record'].map(name => [name.toUpperCase(), GATE_OUT(name)])),
     CANDIDATE_DIGEST: '${{ needs.sign.outputs.candidate_digest }}' },
 };

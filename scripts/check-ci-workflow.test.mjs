@@ -2425,6 +2425,34 @@ test('desktop release workflows as committed have no problems', () => {
   assert.match(cli.stderr, /desktop-release\.yml/);
 });
 
+test('the gate\'s macOS update decision reaches sign, publish, verify-published and feed, and only from the gate', () => {
+  for (const [label, change] of [
+    ['no gate output', edit(doc => { delete doc.jobs.gate.outputs.mac_update; })],
+    ['sign without MAC_UPDATE', edit(doc => { delete step(doc, 'sign', 'Sign (the only').env.MAC_UPDATE; })],
+    ['sign MAC_UPDATE from a literal', edit(doc => { step(doc, 'sign', 'Sign (the only').env.MAC_UPDATE = 'dmg'; })],
+    ['publish plan without DESKTOP_MAC_UPDATE', edit(doc => { delete step(doc, 'publish', 'Re-verify').env.DESKTOP_MAC_UPDATE; })],
+    ['publish from sign', edit(doc => { step(doc, 'publish', 'Publish the versioned').env.DESKTOP_MAC_UPDATE = '${{ needs.sign.outputs.staged }}'; })],
+    ['verify-published without DESKTOP_MAC_UPDATE', edit(doc => { delete step(doc, 'verify-published', 'Re-download').env.DESKTOP_MAC_UPDATE; })],
+    ['feed without MAC_UPDATE', edit(doc => { delete step(doc, 'feed', 'Build the channel feed').env.MAC_UPDATE; })],
+  ]) reported({ [KEYED]: change }, label);
+});
+
+test('the macOS update disk image check runs once on macOS after the final fused distribution and before provenance', () => {
+  const check = "      - name: macOS update disk image check\n        if: runner.os == 'macOS'\n        run: node packages/desktop/scripts/check-mac-dmg.mjs packages/desktop/out\n";
+  assert.ok(REAL_DESKTOP.includes(check));
+  for (const [label, changed] of [
+    ['removed', REAL_DESKTOP.replace(check, '')],
+    ['skipped', REAL_DESKTOP.replace(check, check.replace("runner.os == 'macOS'", 'false'))],
+    ['before the fuses', REAL_DESKTOP.replace(check, '').replace('      - run: node packages/desktop/scripts/check-fuses.mjs\n', check + '      - run: node packages/desktop/scripts/check-fuses.mjs\n')],
+    ['twice', REAL_DESKTOP.replace(check, check + check)],
+    ['another directory', REAL_DESKTOP.replace(check, check.replace('packages/desktop/out\n', 'packages/desktop/other\n'))],
+  ]) {
+    assert.notEqual(changed, REAL_DESKTOP, label);
+    const root = fixture(GOOD); writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
+    assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('disk image')), label);
+  }
+});
+
 test('request workflow gaining secrets, an environment, contents: write, any uses or a checkout is reported', () => {
   for (const [label, change] of [
     ['secrets', edit(doc => { doc.jobs.request.steps[0].env = { K: '${{ secrets.DESKTOP_METADATA_KEY_A }}' }; })],

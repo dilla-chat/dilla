@@ -1,7 +1,7 @@
 import { createHash, createPublicKey, verify } from 'node:crypto';
 import { readFile, writeFile, lstat } from 'node:fs/promises';
 import { join, basename } from 'node:path';
-import { appcast } from './feed-format.mjs';
+import { appcast, macArtifactKind, macRotationOf, macUpdateKind, sparkleFeedKey } from './feed-format.mjs';
 import { verifyRelease, verifyArtifact } from '../src/update.ts';
 import { inspectLinuxSandboxCapsule, verifyLinuxSandboxRelease } from '../src/linux-sandbox-release.ts';
 import { assertDedicatedKeys, parsePublicConfiguration } from './linux-sandbox-package.mjs';
@@ -102,8 +102,12 @@ const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const preSigning = Symbol('pre-signing acceptance only');
 export async function verifyDesktopSigningCandidate(options) { return verifyBundle(options, preSigning); }
 export async function verifyDesktopBundle(options) { return verifyBundle(options); }
-async function verifyBundle({ metadata, signature, trust, directory, run, jobs, version, feeds, now = Date.now(), sandboxSignature }, mode) {
+/** `macUpdate` is the macOS update kind the gate decided for this release ('zip', the default, or 'dmg' for a channel's
+ * rotation release): the signed darwin artifact must be exactly that archive, and a DMG needs a pending macOS key change. */
+async function verifyBundle({ metadata, signature, trust, directory, run, jobs, version, feeds, now = Date.now(), sandboxSignature, macUpdate = 'zip' }, mode) {
  const channel = version.includes('-beta.') ? 'beta' : 'stable';
+ macUpdateKind(macUpdate);
+ if (macUpdate === 'dmg' && !macRotationOf(trust)) throw new Error('A macOS disk image update is only allowed for the rotation release of a pending macOS key change');
  const release = verifyRelease(metadata, signature.trim(), { publicKeys: trust.metadataPublicKeys, channel, platform: 'linux', arch: 'x64', currentVersion: '0.0.0', now });
  if (release.version !== version) throw new Error('Release tag and authenticated version differ');
  verifyRelease(metadata, signature.trim(), { publicKeys: trust.metadataPublicKeys, channel, platform: 'win32', arch: 'x64', currentVersion: '0.0.0', now });
@@ -210,6 +214,9 @@ async function verifyBundle({ metadata, signature, trust, directory, run, jobs, 
   const asset = assets.find(asset => asset.name === new URL(artifact.url).pathname.split('/').at(-1));
   if (!asset || asset.sha512 !== artifact.sha512 || asset.size !== artifact.size) throw new Error('Update and installer descriptor mismatch');
   if (artifact.platform === 'darwin') {
+   if (artifact.url !== `https://github.com/dilla-chat/dilla/releases/download/desktop-v${version}/dilla-${version}-mac-${artifact.arch}.${macUpdate}`) {
+    throw new Error(macUpdate === 'dmg' ? 'The rotation release must update macOS through its disk image, not the zip' : 'Only the rotation release of a pending macOS key change may update macOS through a disk image');
+   }
    const archive = await readFile(join(directory, asset.name));
    if (!verify(null, archive, sparkleKey, Buffer.from(artifact.sparkleSignature, 'base64'))) throw new Error('Sparkle archive signature mismatch');
    verifySparkleFeed(release, artifact, feeds?.[artifact.arch] ?? await readFile(join(directory, `appcast-${artifact.arch}.xml`)), trust);
@@ -269,10 +276,12 @@ export async function verifyRotationProof(proofBytes, { trust, version, channel,
  return proof;
 }
 
-/** A signed appcast must carry a valid Sparkle signature under the pinned key and be exactly the appcast of this authenticated release. */
+/** A signed appcast must carry a valid Sparkle signature under the installed apps' pinned key and be exactly the appcast
+ * of this authenticated release. That key is the active one, except for a DMG rotation release (feed-format.mjs). */
 export function verifySparkleFeed(release, artifact, feed, trust) {
  if (typeof trust.sparklePublicKey !== 'string' || Buffer.from(trust.sparklePublicKey, 'base64').length !== 32) throw new Error('Missing installed Sparkle trust');
- const sparkleKey = createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x: Buffer.from(trust.sparklePublicKey, 'base64').toString('base64url') }, format: 'jwk' });
+ const feedKey = sparkleFeedKey(trust, macArtifactKind(artifact));
+ const sparkleKey = createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x: Buffer.from(feedKey, 'base64').toString('base64url') }, format: 'jwk' });
  const marker = Buffer.from('<!-- sparkle-signatures:\n'), boundary = feed.lastIndexOf(marker);
  if (boundary < 0) throw new Error('Unsigned Sparkle feed');
  const block = /^<!-- sparkle-signatures:\nedSignature: ([A-Za-z0-9+/]{86}==)\nlength: (\d+)\n-->\n$/.exec(feed.subarray(boundary).toString());

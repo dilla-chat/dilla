@@ -53,7 +53,7 @@ export async function publishFixture({ sha = SHA, commit = sha, tree = TREE, sta
  const gh = fakeGithub({ tags: { [tag]: sha }, runs: { [fixture.run.id]: fixture.run }, jobs: { [fixture.run.id]: fixture.jobs }, ...github });
  const env = {
   GITHUB_ACTIONS: 'true', GITHUB_REPOSITORY: 'dilla-chat/dilla', GITHUB_EVENT_NAME: 'workflow_run', GITHUB_REF: 'refs/heads/main',
-  GH_TOKEN: 'workflow-token', RUNNER_TEMP: root, DESKTOP_TAG: tag, DESKTOP_SHA: sha, DESKTOP_STAGED: staged ? 'true' : 'false',
+  GH_TOKEN: 'workflow-token', RUNNER_TEMP: root, DESKTOP_TAG: tag, DESKTOP_SHA: sha, DESKTOP_STAGED: staged ? 'true' : 'false', DESKTOP_MAC_UPDATE: 'zip',
   DESKTOP_RELEASE_CANDIDATE: candidate, DESKTOP_INSTALLERS: installers,
  };
  const ancestors = new Set([sha]);

@@ -26,8 +26,14 @@ function makeRepo() {
  };
  return { dir, run, commit, originMain: sha => run(['update-ref', 'refs/remotes/origin/main', sha]), checkout: sha => run(['checkout', '-q', '--detach', sha]), cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
-const baseFiles = (version, expiresAt = '2027-01-31T00:00:00Z') => ({
+/** Raw Ed25519 public keys standing in for Sparkle keys: OLD before a promote, NEW after it. */
+const OLD_SPARKLE = Buffer.alloc(32, 1).toString('base64'), NEW_SPARKLE = Buffer.alloc(32, 2).toString('base64');
+const TRUST = { metadataPublicKeys: [], sparklePublicKey: OLD_SPARKLE, signing: { active: 'A', staged: null } };
+/** main after `rotate --promote`: B active, a macOS key change from slot A's Sparkle key pending. */
+const PROMOTED = { metadataPublicKeys: [], sparklePublicKey: NEW_SPARKLE, signing: { active: 'B', staged: null, macRotation: { fromSlot: 'A', fromSparklePublicKey: OLD_SPARKLE } } };
+const baseFiles = (version, expiresAt = '2027-01-31T00:00:00Z', trust = TRUST) => ({
  'packages/desktop/package.json': JSON.stringify({ name: '@dilla/desktop', version }) + '\n',
+ 'packages/desktop/release-trust.json': JSON.stringify(trust) + '\n',
  'packages/desktop/linux-sandbox-component.json': JSON.stringify({ generation: 1, expiresAt }) + '\n',
  'src/app.js': 'export const v = 1;\n', 'README.md': '# dilla\n', 'docs/guide.md': 'guide\n',
 });
@@ -48,9 +54,9 @@ function requestRun(sha, tag, overrides = {}) {
  * Builds a passing scenario; `adjust` may change the repository layout, routes and env before running.
  * layout: (repo) => { tagged, head, main } shas.
  */
-function scenario({ version = '1.2.3', expiresAt, layout } = {}) {
+function scenario({ version = '1.2.3', expiresAt, layout, trust } = {}) {
  const repo = makeRepo();
- const c1 = repo.commit(baseFiles(version, expiresAt), 'release commit');
+ const c1 = repo.commit(baseFiles(version, expiresAt, trust), 'release commit');
  const shas = layout ? layout(repo, c1) : { tagged: c1, head: c1, main: c1 };
  repo.originMain(shas.main); repo.checkout(shas.head);
  const tag = `desktop-v${version}`;
@@ -98,8 +104,8 @@ test('gate passes for the current main with a green run, matching version, exact
   const result = await s.go();
   const digests = EXPECTED_ARTIFACTS.map(() => 'sha256:' + 'e'.repeat(64));
   const record = name => createHash('sha256').update(readFileSync(join(s.outputDirectory, name))).digest('hex');
-  assert.deepEqual(result, { tag: 'desktop-v1.2.3', version: '1.2.3', channel: 'stable', sha: s.shas.tagged, tree: s.repo.run(['rev-parse', `${s.shas.tagged}^{tree}`]), ciRun: 77, artifactIds: EXPECTED_ARTIFACTS.map((_, i) => 300 + i), artifactDigests: digests, runRecord: record('ci-run.json'), jobsRecord: record('ci-jobs.json'), previous: 'desktop-v1.2.2' });
-  assert.equal(readFileSync(s.outputFile, 'utf8'), `tag=desktop-v1.2.3\nversion=1.2.3\nchannel=stable\nsha=${result.sha}\ntree=${result.tree}\nrun=77\nartifact_ids=${result.artifactIds.join(',')}\nartifact_digests=${digests.join(',')}\nrun_record=${result.runRecord}\njobs_record=${result.jobsRecord}\nprevious=desktop-v1.2.2\n`);
+  assert.deepEqual(result, { tag: 'desktop-v1.2.3', version: '1.2.3', channel: 'stable', sha: s.shas.tagged, tree: s.repo.run(['rev-parse', `${s.shas.tagged}^{tree}`]), ciRun: 77, artifactIds: EXPECTED_ARTIFACTS.map((_, i) => 300 + i), artifactDigests: digests, runRecord: record('ci-run.json'), jobsRecord: record('ci-jobs.json'), previous: 'desktop-v1.2.2', macUpdate: 'zip' });
+  assert.equal(readFileSync(s.outputFile, 'utf8'), `tag=desktop-v1.2.3\nversion=1.2.3\nchannel=stable\nsha=${result.sha}\ntree=${result.tree}\nrun=77\nartifact_ids=${result.artifactIds.join(',')}\nartifact_digests=${digests.join(',')}\nrun_record=${result.runRecord}\njobs_record=${result.jobsRecord}\nprevious=desktop-v1.2.2\nmac_update=zip\n`);
   assert.equal(JSON.parse(readFileSync(join(s.outputDirectory, 'ci-run.json'), 'utf8')).id, 77);
   assert.equal(JSON.parse(readFileSync(join(s.outputDirectory, 'ci-jobs.json'), 'utf8')).length, acceptedJobs().length);
   await assert.rejects(s.go(), /EEXIST/, 'gate files are created exclusively');
@@ -366,16 +372,72 @@ test('gate output values containing a newline or = are refused before any write'
  try {
   const file = join(work, 'out'); writeFileSync(file, '');
   const d = 'sha256:' + 'c'.repeat(64);
-  const good = { tag: 'desktop-v1.2.3', version: '1.2.3', channel: 'stable', sha: 'a'.repeat(40), tree: 'b'.repeat(40), run: '77', artifact_ids: '1,2,3', artifact_digests: [d, d, d].join(','), run_record: 'd'.repeat(64), jobs_record: 'e'.repeat(64), previous: '' };
+  const good = { tag: 'desktop-v1.2.3', version: '1.2.3', channel: 'stable', sha: 'a'.repeat(40), tree: 'b'.repeat(40), run: '77', artifact_ids: '1,2,3', artifact_digests: [d, d, d].join(','), run_record: 'd'.repeat(64), jobs_record: 'e'.repeat(64), previous: '', mac_update: 'zip' };
   for (const [key, value] of [['tag', 'desktop-v1.2.3\nstaged=B'], ['version', '1.2.3=x'], ['channel', 'beta\n'], ['sha', 'a'.repeat(39) + '\n'], ['tree', 'x'], ['run', '0'], ['run', '7\n8'], ['artifact_ids', '1,,2'], ['artifact_ids', '1=2'],
    ['artifact_digests', [d, d].join(',')], ['artifact_digests', [d, d, d + '\nx=y'].join(',')], ['artifact_digests', [d, d, 'sha256:' + 'C'.repeat(64)].join(',')], ['run_record', 'd'.repeat(63)], ['jobs_record', 'e'.repeat(64) + '\n'],
-   ['previous', 'desktop-v1.0.0\nx=y'], ['previous', 'a=b']]) {
+   ['previous', 'desktop-v1.0.0\nx=y'], ['previous', 'a=b'], ['mac_update', 'dmg\nx=y'], ['mac_update', 'pkg'], ['mac_update', '']]) {
    assert.throws(() => writeOutputs(file, { ...good, [key]: value }), /output/i, `${key}=${JSON.stringify(value)}`);
    assert.equal(readFileSync(file, 'utf8'), '');
   }
   assert.throws(() => writeOutputs(file, { ...good, extra: 'x' }), /output/i);
   assert.throws(() => writeOutputs(undefined, good), /output/i);
   writeOutputs(file, good);
-  assert.equal(readFileSync(file, 'utf8'), `tag=desktop-v1.2.3\nversion=1.2.3\nchannel=stable\nsha=${'a'.repeat(40)}\ntree=${'b'.repeat(40)}\nrun=77\nartifact_ids=1,2,3\nartifact_digests=${[d, d, d].join(',')}\nrun_record=${'d'.repeat(64)}\njobs_record=${'e'.repeat(64)}\nprevious=\n`);
+  assert.equal(readFileSync(file, 'utf8'), `tag=desktop-v1.2.3\nversion=1.2.3\nchannel=stable\nsha=${'a'.repeat(40)}\ntree=${'b'.repeat(40)}\nrun=77\nartifact_ids=1,2,3\nartifact_digests=${[d, d, d].join(',')}\nrun_record=${'d'.repeat(64)}\njobs_record=${'e'.repeat(64)}\nprevious=\nmac_update=zip\n`);
  } finally { rmSync(work, { recursive: true, force: true }); }
+});
+
+/**
+ * A rotation scenario on main's history c1 -> c0 -> c2: c1 is the pre-promote commit (slot A, OLD Sparkle key), c0 a
+ * commit pinning an unrelated Sparkle key, c2 the tagged promote merge (`mainTrust`, PROMOTED by default).
+ * `published` lists [version, commit ('c1' | 'c0' | 'c2'), extra release fields] of the published releases.
+ */
+function rotationScenario({ version = '1.2.3', published, mainTrust = PROMOTED }) {
+ const commits = {};
+ const s = scenario({ version, layout: (repo, c1) => {
+  commits.c1 = c1;
+  commits.c0 = repo.commit({ 'packages/desktop/release-trust.json': JSON.stringify({ ...TRUST, sparklePublicKey: Buffer.alloc(32, 9).toString('base64') }) + '\n' }, 'unrelated key');
+  commits.c2 = repo.commit({ 'packages/desktop/release-trust.json': JSON.stringify(mainTrust) + '\n' }, 'rotate --promote');
+  return { tagged: commits.c2, head: commits.c2, main: commits.c2 };
+ } });
+ s.routes[`${R}/releases?per_page=100&page=1`] = published.map(([v, , fields = {}]) => ({ tag_name: `desktop-v${v}`, draft: false, prerelease: v.includes('-beta.'), immutable: true, author: { login: 'github-actions[bot]', type: 'Bot' }, ...fields }));
+ for (const [v, commit] of published) s.routes[`${R}/git/ref/tags/desktop-v${v}`] = { ref: `refs/tags/desktop-v${v}`, object: { type: 'commit', sha: commits[commit] } };
+ return { ...s, commits };
+}
+
+test('after a promote, a channel\'s first release (its Macs still on the old Sparkle key) updates macOS with a DMG', async () => {
+ for (const [version, published] of [
+  ['1.2.3', [['1.2.2', 'c1'], ['1.3.0-beta.1', 'c1']]],
+  ['1.3.0-beta.2', [['1.2.2', 'c1'], ['1.3.0-beta.1', 'c1']]],
+  // Per channel: the beta rotation release does not move the stable Macs.
+  ['1.2.3', [['1.2.2', 'c1'], ['1.3.0-beta.2', 'c2']]],
+ ]) {
+  const s = rotationScenario({ version, published });
+  try {
+   const result = await s.go();
+   assert.equal(result.macUpdate, 'dmg', `${version} after ${JSON.stringify(published)}`);
+   assert.match(readFileSync(s.outputFile, 'utf8'), /\nmac_update=dmg\n$/);
+  } finally { s.cleanup(); }
+ }
+});
+
+test('after a channel\'s rotation release, its next release reverts to the zip; a channel with no release has no Macs to move', async () => {
+ for (const [version, published] of [
+  ['1.2.4', [['1.2.3', 'c2'], ['1.2.2', 'c1']]],
+  ['1.2.3', [['1.3.0-beta.1', 'c1']]],
+ ]) {
+  const s = rotationScenario({ version, published });
+  try { assert.equal((await s.go()).macUpdate, 'zip', `${version} after ${JSON.stringify(published)}`); } finally { s.cleanup(); }
+ }
+ // Without a pending macOS key change every release is a zip, whatever was published before.
+ const plain = rotationScenario({ published: [['1.2.2', 'c1']], mainTrust: { ...PROMOTED, signing: { active: 'B', staged: null } } });
+ try { assert.equal((await plain.go()).macUpdate, 'zip'); } finally { plain.cleanup(); }
+});
+
+test('the gate refuses to pick a macOS update for Macs on a key the pending change does not start from, or from a release it did not make', async () => {
+ const unrelated = rotationScenario({ published: [['1.2.2', 'c0']] });
+ try { await refused(unrelated, /neither main's nor/); } finally { unrelated.cleanup(); }
+ const handMade = rotationScenario({ published: [['1.2.2', 'c1', { author: { login: 'someone', type: 'User' } }]] });
+ try { await refused(handMade, /not made by the release workflow/); } finally { handMade.cleanup(); }
+ const mutable = rotationScenario({ published: [['1.2.2', 'c1', { immutable: false }]] });
+ try { await refused(mutable, /immutable/); } finally { mutable.cleanup(); }
 });

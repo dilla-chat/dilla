@@ -101,18 +101,74 @@ wrong first (bump the version). They cannot release older code and cannot reach 
    metadata, sandbox manifest and macOS archive), and every app built from it trusts both key sets.
 2. Wait at least 60 days and check that installs have moved to a transition build.
 3. `rotate --promote` (typed confirmation `promote B`): B becomes active, A's keys stay pinned for one more
-   release. Merge, release (signed by B).
-4. After that release is out: `rotate --retire` (typed confirmation `retire A`) deletes slot A's three secrets,
-   only once `origin/main` has B active with nothing staged.
+   release, and `signing.macRotation` records the pending macOS key change (`fromSlot: A` and A's Sparkle key).
+   Merge, then release **each channel** once: that channel's first release after the promote is its **rotation
+   release** (signed by B; macOS updates through the DMG, below).
+4. After every channel's rotation release is out: `rotate --retire` (typed confirmation `retire A`) deletes slot
+   A's three secrets, only once `origin/main` has B active with nothing staged, and clears `signing.macRotation`.
+   Merge that `release-trust.json`; from then on every release updates macOS with the zip again.
 
-Caveats: a Windows or Linux client that skipped the transition release rejects releases signed by B and must
-reinstall. **macOS:** Sparkle 2 trusts one EdDSA key per build; an update may carry a new key only if its archive
-verifies under the installed one, and every later archive must verify under the new one. A staged window of
-several releases cannot satisfy that, so `SUPublicEDKey` stays on the active key while staged and changes at
-`--promote`: macOS installs older than the promote release must be reinstalled once. `rotate` prints this.
-The Pages feed never re-serves a release signed by a key that main no longer pins. So after `--promote`, the other
-channel's feed (still signed by the old Sparkle key) leaves the site with the first release of the promoted keys.
-It comes back with that channel's next release, so release both channels soon after promoting.
+### macOS: the DMG rotation release
+
+Sparkle 2 trusts one EdDSA key per build (`SUPublicEDKey`), so the Sparkle key cannot span a staged window: it stays
+on the active key while staged and changes at `--promote`. Sparkle's documented rule
+(<https://sparkle-project.org/documentation/>, "Rotating signing keys") is what moves the installed Macs:
+
+> Sparkle allows rotating keys by issuing a new update that changes either your Apple code signing certificate or
+> your EdDSA keys (but not both). For applications that opt into enabling SUVerifyUpdateBeforeExtraction, changing
+> your EdDSA keys can only be done if the update archive is a Developer ID code signed disk image (dmg).
+
+We set `SUVerifyUpdateBeforeExtraction` and `SURequireSignedFeed`, and keep the Developer ID certificate, so the
+EdDSA key changes through a DMG. Sparkle 2 (`SUUpdateValidator`, `AppInstaller`, `SUAppcastDriver`) applies the rule
+this way, and the rotation release follows it exactly:
+
+- **The update archive is the DMG**, Developer ID signed by the same team as the installed app, notarized and
+  stapled. `electron-builder.cjs` sets `dmg.sign` and `scripts/mac-rotation-dmg.cjs` notarizes and staples it while
+  `signing.macRotation` is set; a zip cannot carry a code signature, so a zip with a new key is refused.
+- **Its app carries the new key** in `SUPublicEDKey` (main's `sparklePublicKey`, B since the promote).
+- **The archive's EdDSA signature is by the new key (B).** The installed app first checks it under its own key (A);
+  that fails, so Sparkle falls back to the DMG's Developer ID signature (team match), and after extraction requires
+  the archive signature to verify under the new `SUPublicEDKey`. An archive not signed by the key the update declares
+  is rejected.
+- **The appcast is signed by the old key (A)**, the key the installed apps trust: `SURequireSignedFeed` checks the
+  feed under the installed app's key. The sign job loads slot A for exactly this (`MAC_UPDATE=dmg`).
+
+Macs then move to the new key by updating normally, with no reinstall. Every other release keeps the zip.
+
+How the flow knows: the gate outputs `mac_update`. It is `dmg` when `signing.macRotation` is set on main **and** the
+channel's newest published release (immutable, made by the workflow) was built at a commit whose `release-trust.json`
+pinned the old Sparkle key. Once a channel's rotation release is out its newest release carries the new key, so its
+next release is a zip again, with or without `--retire`. A channel with no published release has no Macs to move.
+`sign`, `publish`, `verify-published` and `feed` all receive the gate's decision and refuse a DMG for any other
+release and a zip for the rotation release. Installed apps (`update.ts`, `SparkleBridge.mm`) accept a `.dmg` update URL
+inside the version's release; the workflow decides which archive the signed metadata names.
+
+While the change is pending the Pages feed keeps serving the other channel's last release (signed by the old keys,
+still pinned) until that channel's own rotation release. After `--retire`, a channel whose newest release is still
+its DMG rotation release (appcast signed by A) leaves the site until its next release.
+
+**Timing.** A Mac reaches the new key only through its channel's rotation release, while that is the channel's
+newest release: the rotation build verifies the next (B-signed) feed, but a Mac still on A cannot. So leave each
+rotation release live long enough for Macs to update (as with the 60-day transition wait) before that channel's next
+release. A Mac that skips it reinstalls once.
+
+**The first real rotation, checked by hand** (CI cannot: its unsigned acceptance build has no Developer ID team, and
+Sparkle's key-change path needs one). Before tagging a channel's rotation release:
+
+1. The macOS `desktop-mac-arm64` job of the tagged commit's `ci` run passed `macOS update disk image check`
+   (`scripts/check-mac-dmg.mjs`): the DMG's app carries B's `SUPublicEDKey`; the DMG is Developer ID signed by the
+   app's team, stapled, and `spctl --assess --type open --context context:primary-signature` reports
+   `source=Notarized Developer ID`.
+2. After `verify-published`: download `appcast-arm64.xml` from the release and check its enclosure is
+   `dilla-<version>-mac-arm64.dmg`; its `sparkle:edSignature` verifies under B (`sparklePublicKey`) and the feed's
+   signature under A (`signing.macRotation.fromSparklePublicKey`), e.g. with Sparkle's `sign_update --verify`.
+3. On a Mac running the channel's previous release (built for A): Check for Updates installs the rotation release
+   and relaunches; `defaults read /Applications/Dilla.app/Contents/Info SUPublicEDKey` then shows B. Keep Console
+   open filtered on `Sparkle`: a failure says which check refused it.
+4. After the channel's next release (zip, all B): the updated Mac installs it as usual.
+
+Caveat: a Windows or Linux client that skipped the transition release rejects releases signed by B and must
+reinstall. `rotate` and `--promote` print the macOS summary.
 
 ## Sandbox component freshness
 
@@ -141,6 +197,9 @@ transition release, `rotation-proof.json`.
 - The signed record attests that CI passed, not that a human reviewed the release.
 - `/proc/<pid>/environ` of the Sign step holds the secrets for its lifetime, on an ephemeral runner; V8 strings and
   `gh`'s own memory cannot be zeroed.
-- Key rotation strands clients that skipped the transition release, and every macOS install at `--promote`.
+- Key rotation strands Windows and Linux clients that skipped the transition release, and Macs that skipped their
+  channel's DMG rotation release.
+- The DMG rotation path is exercised end to end only by the first real rotation (see the hand checks above); CI
+  checks the rotation DMG's signature, notarization and key, and the release flow's key use, but not Sparkle itself.
 - First-use behaviour of the environment, secrets and `workflow_run` is only exercised by the first real tag; every
   failure before `publish` leaves nothing public.

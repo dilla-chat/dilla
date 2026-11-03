@@ -133,6 +133,17 @@ test('macOS metadata authenticates the exact Sparkle archive signature', () => {
  assert.equal(verifyRelease(valid.body, valid.signature, { ...context, platform: 'darwin' }).artifacts[0].sparkleSignature, Buffer.alloc(64).toString('base64'));
 });
 
+test('an installed Mac accepts a key-rotation release that updates through its disk image, and no other archive type', () => {
+ const base = { ...release.artifacts[0], linuxSandbox: undefined, platform: 'darwin', sparkleSignature: Buffer.alloc(64).toString('base64') };
+ const at = (name: string) => signed({ ...release, artifacts: [{ ...base, url: `https://github.com/dilla-chat/dilla/releases/download/desktop-v0.1.1/${name}` }] });
+ const dmg = at('dilla-0.1.1-mac-arm64.dmg');
+ assert.equal(verifyRelease(dmg.body, dmg.signature, { ...context, platform: 'darwin' }).artifacts[0].url.split('/').at(-1), 'dilla-0.1.1-mac-arm64.dmg');
+ for (const name of ['dilla-0.1.1-mac-arm64.pkg', 'dilla-0.1.1-mac-arm64.tar.xz', 'dilla-0.1.1-mac-arm64.dmg.blockmap']) {
+  const other = at(name);
+  assert.throws(() => verifyRelease(other.body, other.signature, { ...context, platform: 'darwin' }), /type/, name);
+ }
+});
+
 test('package manager updates expose authenticated availability without downloading or installing', async () => {
  let downloads = 0, installs = 0;
  const phases: string[] = [];

@@ -8,6 +8,7 @@ import { verifySparkleFeed } from './verify-release.mjs';
 import { REPOSITORY, createGithubApi, hardenedGit, resolveTagCommit } from './ci-run.mjs';
 import { DESKTOP_TAG, compareDesktopVersions } from './release-notes.mjs';
 import { listReleaseAssets } from './standard-release-upload.mjs';
+import { macArtifactKind, macRotationOf, macUpdateKind, sparkleFeedKey } from './feed-format.mjs';
 
 /**
  * The channel feed lives on GitHub Pages, not in a release: with immutable
@@ -109,12 +110,15 @@ async function releaseFiles({ api, fetchImpl, release, names }) {
 
 /**
  * Whether an authentic other-channel release is still signed only by keys main pins today: its metadata
- * under a metadata key main still pins, its appcast under main's Sparkle key (or the staged next one), and its
- * Linux sandbox manifest under a key main's sandbox component still lists. A retired key never authenticates a
- * channel again, so such a release is not re-served (its channel is left off the site).
+ * under a metadata key main still pins, its macOS archive and appcast under Sparkle keys main still pins (the active
+ * one, the staged next one, or the one a pending macOS key change starts from, which signs the old Macs' appcasts until
+ * `rotate --retire`), and its Linux sandbox manifest under a key main's sandbox component still lists. A retired key
+ * never authenticates a channel again, so such a release is not re-served (its channel is left off the site).
  */
 function signedByCurrentKeys({ files, channel, historical, trust, sandboxKeys, sandbox, release, now }) {
- if (![trust.sparklePublicKey, trust.sparkleNextPublicKey].filter(Boolean).includes(historical.sparklePublicKey)) return false;
+ const sparkle = [trust.sparklePublicKey, trust.sparkleNextPublicKey, macRotationOf(trust)?.fromSparklePublicKey].filter(Boolean);
+ const darwin = release.artifacts.find(artifact => artifact.platform === 'darwin' && artifact.arch === 'arm64');
+ if (!sparkle.includes(historical.sparklePublicKey) || !sparkle.includes(sparkleFeedKey(historical, macArtifactKind(darwin)))) return false;
  const shared = (historical.metadataPublicKeys ?? []).filter(pem => trust.metadataPublicKeys.includes(pem));
  if (!shared.length) return false;
  try { authenticateChannel(files, channel, { ...historical, metadataPublicKeys: shared }, now); } catch { return false; }
@@ -136,13 +140,16 @@ async function readSigned(signedDirectory, channel) {
  * `trust` is main's pins (this release's) and `sandboxKeys` main's sandbox component keys. `trustAt(tag)`
  * returns `{ trust, commit }`: the pins at the commit another published release's tag names, and that commit.
  */
-export async function buildSite({ signedDirectory, channel, version, siteDirectory, api, fetchImpl = fetch, trust, sandboxKeys, trustAt, now = Date.now() }) {
+/** `macUpdate` is the gate's decision for this release: the signed macOS update must be that archive kind. */
+export async function buildSite({ signedDirectory, channel, version, siteDirectory, api, fetchImpl = fetch, trust, sandboxKeys, trustAt, now = Date.now(), macUpdate }) {
  if (!Array.isArray(sandboxKeys) || !sandboxKeys.length) throw new Error('Missing main\'s sandbox component keys');
  validChannel(channel);
+ macUpdateKind(macUpdate);
  if (typeof version !== 'string' || !VERSION.test(version) || channelOf(version) !== channel) throw new Error('Invalid desktop version');
  const signed = await readSigned(signedDirectory, channel);
  const { release, current } = authenticateChannel(signed, channel, trust, now);
  if (!current || release.version !== version) throw new Error('The signed feed does not carry the current version ' + version);
+ if (release.artifacts.some(artifact => artifact.platform === 'darwin' && macArtifactKind(artifact) !== macUpdate)) throw new Error(`The signed macOS update is not the ${macUpdate} the gate decided for this release`);
 
  // Forward only: the channel's latest published immutable release must be exactly this one, carrying exactly these files.
  const latest = await latestPublished(api, channel);
@@ -223,7 +230,7 @@ export async function cli(argv, { trust, env = process.env } = {}) {
   const api = createGithubApi({ token: env.GH_TOKEN });
   const git = hardenedGit(resolve(import.meta.dirname, '../../..'));
   const sandboxKeys = JSON.parse(await readFile(new URL('../linux-sandbox-component.json', import.meta.url), 'utf8')).publicKeys;
-  const result = await buildSite({ signedDirectory: resolve(signedDirectory), channel, version, siteDirectory: resolve(siteDirectory), api, trust, sandboxKeys, trustAt: trustAtTag({ api, git }) });
+  const result = await buildSite({ signedDirectory: resolve(signedDirectory), channel, version, siteDirectory: resolve(siteDirectory), api, trust, sandboxKeys, trustAt: trustAtTag({ api, git }), macUpdate: env.MAC_UPDATE });
   return `Built the desktop feed site: ${Object.entries(result.channels).map(([name, value]) => `${name} ${value}`).join(', ')}${result.dropped.length ? `; dropped expired ${result.dropped.join(', ')}` : ''}${result.retired.length ? `; left off ${result.retired.join(', ')} (signed by keys main no longer pins)` : ''}.`;
  }
  if (command === 'verify' && args.length === 2) {

@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { verifyRelease } from '../src/update.ts';
 import { BUILD_TARGETS, TARGETS, publicReleaseRecords, verifyRotationProof, verifySparkleFeed } from './verify-release.mjs';
+import { macArtifactKind } from './feed-format.mjs';
 import { buildProvenanceName } from './build-provenance.mjs';
 import { REPOSITORY, createGithubApi, resolveTagCommit } from './ci-run.mjs';
 import { publicationContext } from './publish-release.mjs';
@@ -42,7 +43,7 @@ async function download(fetchImpl, tag, asset, keep) {
 const sha256hex = bytes => createHash('sha256').update(bytes).digest('hex');
 
 export async function verifyPublished({ env, fetchImpl = fetch, trust, verifier = { verifyRotationProof }, now = Date.now() }) {
- const { tag, version, channel, sha, staged } = publicationContext(env);
+ const { tag, version, channel, sha, staged, macUpdate } = publicationContext(env);
  const api = createGithubApi({ token: env.GH_TOKEN, fetchImpl });
  const published = await api(`${R}/releases/tags/${encodeURIComponent(tag)}`);
  if (published?.tag_name !== tag || published.draft !== false || published.prerelease !== (channel === 'beta')) throw new Error('The versioned release is not published as expected');
@@ -59,6 +60,8 @@ export async function verifyPublished({ env, fetchImpl = fetch, trust, verifier 
  const signature = (await download(fetchImpl, tag, byName.get(metadataName + '.sig'), true)).bytes.toString('utf8').trim();
  const release = verifyRelease(metadata, signature, { publicKeys: trust.metadataPublicKeys, channel, platform: 'linux', arch: 'x64', currentVersion: '0.0.0', now });
  if (release.version !== version || release.source?.commit !== sha) throw new Error('The published signed metadata names another version or commit');
+ // The macOS update is the archive the gate decided: the DMG for exactly a channel's rotation release, else the zip.
+ if (release.artifacts.filter(item => item.platform === 'darwin').some(item => macArtifactKind(item) !== macUpdate)) throw new Error(`The published macOS update is not the ${macUpdate} the gate decided for this release`);
 
  const signedAssets = new Map(release.assets.map(asset => [asset.name, asset]));
  const records = [...publicReleaseRecords(channel), ...(staged ? ['rotation-proof.json'] : [])];

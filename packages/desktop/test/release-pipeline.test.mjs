@@ -32,7 +32,8 @@ test('the release pipeline publishes exactly the signed inventory from a tagged 
   const git = args => execFileSync('git', ['-c', 'core.hooksPath=/dev/null', ...args], { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   git(['init', '-q', '-b', 'main']);
   for (const [key, value] of [['user.email', 'test@example.invalid'], ['user.name', 'test'], ['commit.gpgsign', 'false']]) git(['config', key, value]);
-  const files = { 'packages/desktop/package.json': JSON.stringify({ name: '@dilla/desktop', version: '1.2.3' }) + '\n', 'packages/desktop/linux-sandbox-component.json': JSON.stringify({ generation: 1, expiresAt: '2027-01-31T00:00:00Z' }) + '\n', 'src/app.js': 'export {};\n' };
+  const files = { 'packages/desktop/package.json': JSON.stringify({ name: '@dilla/desktop', version: '1.2.3' }) + '\n', 'packages/desktop/linux-sandbox-component.json': JSON.stringify({ generation: 1, expiresAt: '2027-01-31T00:00:00Z' }) + '\n', 'src/app.js': 'export {};\n',
+   'packages/desktop/release-trust.json': JSON.stringify({ signing: { active: 'A', staged: null } }) + '\n' };
   for (const [path, content] of Object.entries(files)) { await mkdir(dirname(join(repo, path)), { recursive: true }); await writeFile(join(repo, path), content); }
   git(['add', '-A']); git(['commit', '-q', '-m', 'release']);
   const sha = git(['rev-parse', 'HEAD']), tree = git(['rev-parse', 'HEAD^{tree}']);
@@ -80,13 +81,14 @@ test('the release pipeline publishes exactly the signed inventory from a tagged 
   assert.equal(gate.previous, 'desktop-v1.2.2');
   for (const args of gitCalls) {
    assert.ok(!['checkout', 'switch', 'worktree', 'reset', 'restore'].includes(args[0]), 'the tagged commit is never checked out: ' + args.join(' '));
-   if (args[0] === 'show') assert.ok([`${sha}:packages/desktop/package.json`, 'HEAD:packages/desktop/linux-sandbox-component.json'].includes(args[1]), args.join(' '));
+   if (args[0] === 'show') assert.ok([`${sha}:packages/desktop/package.json`, 'HEAD:packages/desktop/linux-sandbox-component.json', 'HEAD:packages/desktop/release-trust.json'].includes(args[1]), args.join(' '));
   }
 
   // The gate uploaded its records; the ci run's zips are what GitHub stores under the gate's ids and digests.
   for (const name of ['ci-run.json', 'ci-jobs.json']) assert.deepEqual(await readFile(join(gateDirectory, name)), name === 'ci-run.json' ? runBytes : jobsBytes);
   const outputs = Object.fromEntries((await readFile(outputFile, 'utf8')).trim().split('\n').map(line => line.split(/=(.*)/s).slice(0, 2)));
   assert.equal(outputs.artifact_digests, host.env.ARTIFACT_DIGESTS);
+  assert.equal(outputs.mac_update, 'zip', 'no macOS key change is pending');
 
   // sign: fetch the gate-digested zips itself and build the candidate in-process; nothing from collect reaches it.
   const candidate = join(root, 'candidate');
@@ -98,7 +100,7 @@ test('the release pipeline publishes exactly the signed inventory from a tagged 
   const tools = await isolatedReleaseTools(join(root, 'tools'), { trust, sandboxConfig: fixture.sandbox.config, files: ['scripts/release-sign-job.mjs'] });
   const job = await import(pathToFileURL(join(root, 'tools/scripts/release-sign-job.mjs')).href);
   const secrets = { DESKTOP_METADATA_KEY_A: der(fixture.key.privateKey).toString('base64'), DESKTOP_SPARKLE_KEY_A: der(fixture.sparkle.privateKey).subarray(-32).toString('base64'), DESKTOP_SANDBOX_KEY_A: der(fixture.sandbox.pair.privateKey).toString('base64') };
-  const signEnv = { GITHUB_ACTIONS: 'true', GITHUB_REF: 'refs/heads/main', GITHUB_EVENT_NAME: 'workflow_run', ...secrets };
+  const signEnv = { GITHUB_ACTIONS: 'true', GITHUB_REF: 'refs/heads/main', GITHUB_EVENT_NAME: 'workflow_run', MAC_UPDATE: outputs.mac_update, ...secrets };
   const signed = join(root, 'signed');
   assert.deepEqual(await job.signInJob({ env: signEnv, version, candidateDirectory: candidate, outputDirectory: signed, trust, now: new Date(now) }), { staged: false });
   for (const name of Object.keys(secrets)) assert.ok(!(name in signEnv), 'the key variables are removed');
@@ -112,7 +114,7 @@ test('the release pipeline publishes exactly the signed inventory from a tagged 
   // publish: plan, then publish into an in-memory GitHub; then verify what was published.
   const github = fakeGithub({ tags: { [tag]: sha }, runs: { [run.id]: run }, jobs: { [run.id]: fixture.jobs } });
   const env = { GITHUB_ACTIONS: 'true', GITHUB_REPOSITORY: 'dilla-chat/dilla', GITHUB_EVENT_NAME: 'workflow_run', GITHUB_REF: 'refs/heads/main', GH_TOKEN: 'workflow-token', RUNNER_TEMP: root,
-   DESKTOP_TAG: tag, DESKTOP_SHA: sha, DESKTOP_STAGED: 'false', DESKTOP_RELEASE_CANDIDATE: signed, DESKTOP_INSTALLERS: candidate };
+   DESKTOP_TAG: tag, DESKTOP_SHA: sha, DESKTOP_STAGED: 'false', DESKTOP_MAC_UPDATE: outputs.mac_update, DESKTOP_RELEASE_CANDIDATE: signed, DESKTOP_INSTALLERS: candidate };
   for (const mode of ['plan', 'publish']) await runPublisher({ mode, env, git, fetchImpl: github.fetch, trust, verifier: tools.verifier, now });
   const release = github.state.releases.find(item => item.tag_name === tag);
   assert.equal(release.draft, false);

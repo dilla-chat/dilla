@@ -80,7 +80,7 @@ static napi_value Prepare(napi_env env,napi_callback_info info) {
  size_t argc=3;napi_value args[3];napi_get_cb_info(env,info,&argc,args,nullptr,nullptr);
  if(argc!=3 || ![NSThread isMainThread]) {napi_throw_error(env,nullptr,"Invalid Sparkle call");return nullptr;}
  NSString *version=String(env,args[0]),*url=String(env,args[1]),*signature=String(env,args[2]);
- BOOL targetAllowed = [url hasPrefix:[@"https://github.com/dilla-chat/dilla/releases/download/desktop-v" stringByAppendingFormat:@"%@/",version]] && [url hasSuffix:@".zip"];
+ BOOL targetAllowed = [url hasPrefix:[@"https://github.com/dilla-chat/dilla/releases/download/desktop-v" stringByAppendingFormat:@"%@/",version]] && ([url hasSuffix:@".zip"] || [url hasSuffix:@".dmg"]);
 #if defined(DILLA_SPARKLE_ACCEPTANCE)
  // This branch is compiled only into a separate test addon, never native-bin.
  targetAllowed = [NSBundle.mainBundle.bundleIdentifier isEqualToString:@"dev.dilla.desktop.update-acceptance"] && [url isEqualToString:@"http://127.0.0.1:18849/DillaUpdateAcceptance.zip"];
@@ -95,7 +95,8 @@ static napi_value Prepare(napi_env env,napi_callback_info info) {
 #else
   @"x64";
 #endif
-  NSString *expected=[[bundle objectForInfoDictionaryKey:@"DillaDesktopChannel"] isEqualToString:@"beta"] ? @"https://github.com/dilla-chat/dilla/releases/download/desktop-beta/" : @"https://github.com/dilla-chat/dilla/releases/download/desktop-stable/";
+  // The channel feed is served from GitHub Pages (electron-builder.cjs SUFeedURL, pages-feed.mjs FEED_SITE).
+  NSString *expected=[[bundle objectForInfoDictionaryKey:@"DillaDesktopChannel"] isEqualToString:@"beta"] ? @"https://dilla-chat.github.io/dilla/beta/" : @"https://dilla-chat.github.io/dilla/stable/";
   expected=[expected stringByAppendingFormat:@"appcast-%@.xml",arch];
 #if defined(DILLA_SPARKLE_ACCEPTANCE)
   expected=@"http://127.0.0.1:18849/appcast.xml";

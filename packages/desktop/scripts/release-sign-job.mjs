@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { signDesktopRelease, sparkleKeyFromSeed } from './release-feed.mjs';
 import { parsePublicConfiguration } from './linux-sandbox-package.mjs';
+import { macRotationOf, macUpdateKind } from './feed-format.mjs';
 
 /**
  * The Sign step of the keyed workflow: the only process that holds the private
@@ -18,6 +19,11 @@ import { parsePublicConfiguration } from './linux-sandbox-package.mjs';
  *   DESKTOP_METADATA_KEY_A / _B   base64 of the PKCS8 DER of the Ed25519 metadata key
  *   DESKTOP_SPARKLE_KEY_A  / _B   base64 of the 32-byte Sparkle seed
  *   DESKTOP_SANDBOX_KEY_A  / _B   base64 of the PKCS8 DER of the Ed25519 sandbox key
+ *
+ * MAC_UPDATE (the gate's mac_update output) is 'dmg' only for a channel's rotation
+ * release of a pending macOS key change: the slot the rotation starts from
+ * (signing.macRotation.fromSlot) then also loads, and only its Sparkle seed is
+ * used, to sign the appcast the installed Macs check (feed-format.mjs).
  */
 const SLOTS = Object.freeze(['A', 'B']);
 const KINDS = Object.freeze({ metadata: 'DESKTOP_METADATA_KEY', sparkle: 'DESKTOP_SPARKLE_KEY', sandbox: 'DESKTOP_SANDBOX_KEY' });
@@ -116,12 +122,18 @@ export async function signInJob({ env, version, candidateDirectory, outputDirect
  try {
   if (env.GITHUB_ACTIONS !== 'true' || env.GITHUB_REF !== 'refs/heads/main' || env.GITHUB_EVENT_NAME !== 'workflow_run') throw new Error('Signing runs only in the main-branch workflow_run');
   const signing = signingSlots(trust);
+  const macUpdate = macUpdateKind(env.MAC_UPDATE);
+  const rotation = macUpdate === 'dmg' ? macRotationOf(trust) : null;
+  if (macUpdate === 'dmg' && !rotation) throw new Error('A macOS disk image update is only allowed for the rotation release of a pending macOS key change');
   const active = loadKeys(env, signing.active); loaded.push(active);
   const staged = signing.staged === null ? null : loadKeys(env, signing.staged);
   if (staged) loaded.push(staged);
+  const previous = rotation ? loadKeys(env, rotation.fromSlot) : null;
+  if (previous) loaded.push(previous);
   removeKeyVariables(env);
   const pins = staged ? stagedPins(staged, active, trust, await readComponent()) : null;
-  await sign({ version, artifactsDirectory: candidateDirectory, outputDirectory, keys: { metadata: active.metadata, sparkleSeed: active.sparkleSeed, sandbox: active.sandbox }, ...(now === undefined ? {} : { now }) });
+  await sign({ version, artifactsDirectory: candidateDirectory, outputDirectory, macUpdate,
+   keys: { metadata: active.metadata, sparkleSeed: active.sparkleSeed, sandbox: active.sandbox, ...(previous ? { feedSparkleSeed: previous.sparkleSeed } : {}) }, ...(now === undefined ? {} : { now }) });
   if (staged) await writeRotationProof({ staged, slot: signing.staged, pins, version, channel: version.includes('-beta.') ? 'beta' : 'stable', candidateDirectory, outputDirectory });
   return { staged: staged !== null };
  } finally {

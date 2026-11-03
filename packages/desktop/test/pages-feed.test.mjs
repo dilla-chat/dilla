@@ -72,7 +72,7 @@ async function setup({ releases = s => [release('1.2.3', s.signedFiles)] } = {})
  const trustCalls = [];
  const trustAt = async tag => { trustCalls.push(tag); return { trust: f.trust, commit: f.source.commit }; };
  const build = (options = {}) => buildSite({ signedDirectory: signed, channel: 'stable', version: '1.2.3', siteDirectory: join(root, `site-${Math.random()}`),
-  api: createGithubApi({ token: 'workflow-token', fetchImpl: options.fetchImpl ?? github.fetch }), fetchImpl: github.fetch, trust: f.trust, sandboxKeys: f.sandbox.config.publicKeys, trustAt, now: f.context.now, ...options });
+  api: createGithubApi({ token: 'workflow-token', fetchImpl: options.fetchImpl ?? github.fetch }), fetchImpl: github.fetch, trust: f.trust, sandboxKeys: f.sandbox.config.publicKeys, trustAt, now: f.context.now, macUpdate: 'zip', ...options });
  return { ...s, github, trustAt, trustCalls, build, cleanup: () => rm(root, { recursive: true, force: true }) };
 }
 const tree = async directory => (await readdir(directory, { recursive: true })).sort();
@@ -180,6 +180,58 @@ test('during a staged rotation, the other channel signed by the still-pinned key
   const result = await s.build({ trust: staged });
   assert.deepEqual(result.channels, { stable: '1.2.3', beta: '1.3.0-beta.2' });
   assert.deepEqual(result.retired, []);
+ } finally { await s.cleanup(); }
+});
+
+/** A rotation release's channel files: the DMG is the macOS update, its archive signed by the new Sparkle key and its
+ * appcast by the old one the installed Macs trust (feed-format.mjs). */
+function rotationChannel(f, version, { metadata, archive, feed }) {
+ const text = JSON.stringify(f.release).replaceAll(`dilla-${f.version}-`, `dilla-${version}-`).replaceAll(`desktop-v${f.version}/`, `desktop-v${version}/`);
+ const release = { ...JSON.parse(text), version, channel: version.includes('-beta.') ? 'beta' : 'stable' };
+ const darwin = release.artifacts.find(artifact => artifact.platform === 'darwin'), dmg = release.assets.find(asset => asset.name.endsWith('-mac-arm64.dmg'));
+ Object.assign(darwin, { url: darwin.url.replace(/\.zip$/, '.dmg'), size: dmg.size, sha512: dmg.sha512, sparkleSignature: sign(null, Buffer.from(dmg.name), archive).toString('base64') });
+ const bytes = Buffer.from(JSON.stringify(release));
+ const [json, sig, appcastName] = channelFiles(release.channel);
+ return new Map([[json, bytes], [sig, Buffer.from(sign(null, bytes, metadata).toString('base64') + '\n')], [appcastName, signedAppcast(appcast(release, darwin, darwin.sparkleSignature), feed)]]);
+}
+
+test('while a macOS key change is pending, the DMG rotation feed is built and the old-key feeds stay served; after retire they leave the site', async () => {
+ const s = await setup({ releases: () => [] });
+ try {
+  const raw = key => key.export({ type: 'spki', format: 'der' }).subarray(-32).toString('base64');
+  const metadata = generateKeyPairSync('ed25519'), sparkle = generateKeyPairSync('ed25519');
+  const newPem = metadata.publicKey.export({ type: 'spki', format: 'pem' }).toString();
+  // Main after `rotate --promote`: slot B active, the old keys pinned one more release, slot A's Sparkle key pending.
+  const promoted = { metadataPublicKeys: [newPem, ...s.f.trust.metadataPublicKeys], sparklePublicKey: raw(sparkle.publicKey),
+   signing: { active: 'B', staged: null, macRotation: { fromSlot: 'A', fromSparklePublicKey: s.f.trust.sparklePublicKey } } };
+  const before = { ...s.f.trust, signing: { active: 'A', staged: null } };
+  const stable = rotationChannel(s.f, '1.2.3', { metadata: metadata.privateKey, archive: sparkle.privateKey, feed: s.f.sparkle.privateKey });
+  for (const [name, bytes] of stable) await writeFile(join(s.signed, name), bytes);
+  const oldBeta = signedChannel(s.f, '1.3.0-beta.2');
+  s.github.addRelease(release('1.3.0-beta.2', oldBeta)); s.github.addRelease(release('1.2.3', stable));
+  const pins = { 'desktop-v1.3.0-beta.2': { trust: before, commit: s.f.source.commit }, 'desktop-v1.2.3': { trust: promoted, commit: s.f.source.commit }, 'desktop-v1.3.0-beta.3': { trust: promoted, commit: s.f.source.commit } };
+  const trustAt = async tag => pins[tag];
+  const result = await s.build({ trust: promoted, trustAt, macUpdate: 'dmg' });
+  assert.deepEqual(result.channels, { stable: '1.2.3', beta: '1.3.0-beta.2' }, 'the beta Macs still read their old-key feed until beta\'s rotation release');
+  assert.deepEqual(result.retired, []);
+  await assert.rejects(s.build({ trust: promoted, trustAt, macUpdate: 'zip' }), /not the zip the gate decided/);
+  // The stable DMG feed verifies only while the change is pending.
+  assert.throws(() => authenticateChannel(stable, 'stable', { ...promoted, signing: { active: 'B', staged: null } }, s.f.context.now), /disk image update is only allowed/);
+
+  // Beta's own rotation release goes out while the change is pending; then `rotate --retire` clears it.
+  const beta = rotationChannel(s.f, '1.3.0-beta.3', { metadata: metadata.privateKey, archive: sparkle.privateKey, feed: s.f.sparkle.privateKey });
+  s.github.addRelease(release('1.3.0-beta.3', beta));
+  for (const [name, bytes] of beta) await writeFile(join(s.signed, name), bytes);
+  const betaBuild = await s.build({ trust: promoted, trustAt, macUpdate: 'dmg', channel: 'beta', version: '1.3.0-beta.3' });
+  assert.deepEqual(betaBuild.channels, { beta: '1.3.0-beta.3', stable: '1.2.3' });
+  // After retire, a channel whose newest release is still its DMG release (appcast signed by the retired key) leaves the site.
+  const retired = { ...promoted, signing: { active: 'B', staged: null } };
+  const next = signedChannel(s.f, '1.3.0-beta.4', { keys: { metadata: metadata.privateKey, sparkle: sparkle.privateKey } });
+  s.github.addRelease(release('1.3.0-beta.4', next));
+  for (const [name, bytes] of next) await writeFile(join(s.signed, name), bytes);
+  const after = await s.build({ trust: retired, trustAt, macUpdate: 'zip', channel: 'beta', version: '1.3.0-beta.4' });
+  assert.deepEqual(after.channels, { beta: '1.3.0-beta.4' });
+  assert.deepEqual(after.retired, ['stable']);
  } finally { await s.cleanup(); }
 });
 

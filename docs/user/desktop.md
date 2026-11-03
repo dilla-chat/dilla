@@ -117,8 +117,9 @@ root. Private signing keys live only in the release workflow's `desktop-release`
 admits the `main` branch only; CI builds and the publishing job never hold them. Checks fail closed with a visible,
 retryable error. A publishing token is not a signing key. The channel feeds are served from GitHub Pages
 (`https://dilla-chat.github.io/dilla/beta/` and `/stable/`); the installed version fixes
-the channel. A signing key rotation is seamless for Windows and Linux installs that take the transition release;
-macOS installs older than the rotation's promote release must be reinstalled once. Metadata must expire within 93 days and list versioned GitHub artifacts.
+the channel. A signing key rotation is seamless for Windows and Linux installs that take the transition release,
+and for Macs that take their channel's rotation release: that one update arrives as a Developer-ID-signed, notarized
+disk image carrying the new key, so Macs move to it by updating normally. Metadata must expire within 93 days and list versioned GitHub artifacts.
 There is no instance-supplied feed, downgrade path, or forced installation.
 
 Verified downloads use `electron-updater`. Installation runs only after an actual

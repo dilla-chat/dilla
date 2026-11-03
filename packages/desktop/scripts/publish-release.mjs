@@ -19,7 +19,7 @@ const R = `/repos/${REPOSITORY}`;
 const COMMIT = /^[a-f0-9]{40}$/;
 const ROTATION_PROOF = 'rotation-proof.json';
 
-/** The run context; DESKTOP_TAG and DESKTOP_SHA come from the gate job's validated outputs, DESKTOP_STAGED from sign's. */
+/** The run context; DESKTOP_TAG, DESKTOP_SHA and DESKTOP_MAC_UPDATE come from the gate job's validated outputs, DESKTOP_STAGED from sign's. */
 export function publicationContext(env) {
  if (env.GITHUB_ACTIONS !== 'true' || env.GITHUB_REPOSITORY !== REPOSITORY || env.GITHUB_EVENT_NAME !== 'workflow_run' || env.GITHUB_REF !== 'refs/heads/main') {
   throw new Error('Desktop publication runs only as the main-branch workflow_run of desktop-release.yml');
@@ -28,8 +28,9 @@ export function publicationContext(env) {
  if (!match) throw new Error('Invalid DESKTOP_TAG');
  if (!COMMIT.test(env.DESKTOP_SHA ?? '')) throw new Error('Invalid DESKTOP_SHA');
  if (env.DESKTOP_STAGED !== 'true' && env.DESKTOP_STAGED !== 'false') throw new Error('Invalid DESKTOP_STAGED');
+ if (env.DESKTOP_MAC_UPDATE !== 'zip' && env.DESKTOP_MAC_UPDATE !== 'dmg') throw new Error('Invalid DESKTOP_MAC_UPDATE');
  const version = match[1];
- return { tag: match[0], version, channel: version.includes('-beta.') ? 'beta' : 'stable', sha: env.DESKTOP_SHA, staged: env.DESKTOP_STAGED === 'true' };
+ return { tag: match[0], version, channel: version.includes('-beta.') ? 'beta' : 'stable', sha: env.DESKTOP_SHA, staged: env.DESKTOP_STAGED === 'true', macUpdate: env.DESKTOP_MAC_UPDATE };
 }
 
 /** An existing, normalised, absolute directory strictly inside $RUNNER_TEMP. */
@@ -70,7 +71,7 @@ export function assertExactAssets(assets, expected, digest) {
 
 export async function runPublisher({ mode, env, git, fetchImpl = fetch, trust, verifier = releaseVerifier, now = Date.now() }) {
  if (mode !== 'plan' && mode !== 'publish') throw new Error('Usage: publish-release.mjs plan | publish');
- const { tag, version, channel, sha, staged } = publicationContext(env);
+ const { tag, version, channel, sha, staged, macUpdate } = publicationContext(env);
  const candidate = await runnerDirectory(env, 'DESKTOP_RELEASE_CANDIDATE');
  const directory = await runnerDirectory(env, 'DESKTOP_INSTALLERS');
  const api = createGithubApi({ token: env.GH_TOKEN, fetchImpl });
@@ -91,7 +92,7 @@ export async function runPublisher({ mode, env, git, fetchImpl = fetch, trust, v
  await verifier.stagePublicReleaseRecords({ candidate, directory, channel, version });
  const run = await api(`${R}/actions/runs/${source.ciRun}`);
  const jobs = await fetchCiJobs(api, source.ciRun);
- await verifier.verifyDesktopBundle({ metadata, signature, trust, directory, run, jobs, version, now });
+ await verifier.verifyDesktopBundle({ metadata, signature, trust, directory, run, jobs, version, now, macUpdate });
  const expected = new Map();
  for (const name of [...release.assets.map(asset => asset.name), ...verifier.publicReleaseRecords(channel)]) expected.set(name, await readFile(join(directory, name)));
  // The rotation proof is public and permanent once published: it must verify before anything is written.

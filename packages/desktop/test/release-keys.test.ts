@@ -369,7 +369,7 @@ test('rotate refuses while a rotation is already staged', async () => {
  } finally { await s.cleanup(); }
 });
 
-test('rotate --promote flips signing.active, clears staged and sparkleNextPublicKey and requires the typed confirmation', async () => {
+test('rotate --promote flips signing.active, clears staged and sparkleNextPublicKey, records the pending macOS key change and requires the typed confirmation', async () => {
  const s = await setUp();
  try {
   await rotate(s);
@@ -384,14 +384,18 @@ test('rotate --promote flips signing.active, clears staged and sparkleNextPublic
   await rotate(s, { promote: true, confirm: async () => 'promote B' });
   assert.equal(s.github.calls.length, calls, 'promote changes files only');
   const after = JSON.parse(await readFile(join(s.root, 'release-trust.json'), 'utf8'));
-  assert.deepEqual(after.signing, { active: 'B', staged: null });
+  // The installed Macs trust slot A's Sparkle key: each channel's next release is its DMG rotation release.
+  assert.deepEqual(after.signing, { active: 'B', staged: null, macRotation: { fromSlot: 'A', fromSparklePublicKey: staged.sparklePublicKey } });
   assert.equal(after.sparklePublicKey, staged.sparkleNextPublicKey);
   assert.equal(after.sparkleNextPublicKey, undefined);
   assert.deepEqual(after.metadataPublicKeys, [staged.metadataPublicKeys[1], staged.metadataPublicKeys[0]], 'the old key stays one more release');
   const component = JSON.parse(await readFile(join(s.root, 'linux-sandbox-component.json'), 'utf8'));
   assert.deepEqual(component.publicKeys, [stagedComponent.publicKeys[1], stagedComponent.publicKeys[0]]);
-  // The next rotate drops the old key.
+  // No new rotation while the macOS key change is pending; retire clears it, and the next rotate drops the old key.
+  await assert.rejects(rotate(s), /macOS key change is still pending/);
   await rotate(s, { retire: true, git: fakeGit({ originTrust: JSON.stringify(after) }), confirm: async () => 'retire A' });
+  const retired = JSON.parse(await readFile(join(s.root, 'release-trust.json'), 'utf8'));
+  assert.deepEqual(retired, { ...after, signing: { active: 'B', staged: null } }, 'retire clears only the pending macOS key change');
   await rotate(s);
   const next = JSON.parse(await readFile(join(s.root, 'release-trust.json'), 'utf8'));
   assert.equal(next.metadataPublicKeys.length, 2);

@@ -10,7 +10,7 @@ import { loadKeys, signInJob, KEY_VARIABLES } from '../scripts/release-sign-job.
 import { writeDigest, verifyDigest } from '../scripts/candidate-digest.mjs';
 import { buildReleaseFixture, isolatedReleaseTools, currentSandboxDates } from './support/release-fixture.mjs';
 
-const RUN_ENV = Object.freeze({ GITHUB_ACTIONS: 'true', GITHUB_REF: 'refs/heads/main', GITHUB_EVENT_NAME: 'workflow_run' });
+const RUN_ENV = Object.freeze({ GITHUB_ACTIONS: 'true', GITHUB_REF: 'refs/heads/main', GITHUB_EVENT_NAME: 'workflow_run', MAC_UPDATE: 'zip' });
 const der = key => key.export({ type: 'pkcs8', format: 'der' });
 const seedOf = key => der(key).subarray(-32);
 const rawPublic = key => createPublicKey(key).export({ type: 'spki', format: 'der' }).subarray(-32).toString('base64');

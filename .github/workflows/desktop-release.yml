@@ -37,6 +37,7 @@ jobs:
       run_record: ${{ steps.gate.outputs.run_record }}
       jobs_record: ${{ steps.gate.outputs.jobs_record }}
       previous: ${{ steps.gate.outputs.previous }}
+      mac_update: ${{ steps.gate.outputs.mac_update }}
       records_id: ${{ steps.records.outputs.artifact-id }}
       records_digest: ${{ steps.records.outputs.artifact-digest }}
     steps:
@@ -167,6 +168,7 @@ jobs:
         run: node packages/desktop/scripts/release-sign-job.mjs "$VERSION" "$RUNNER_TEMP/candidate" "$RUNNER_TEMP/signed"
         env:
           VERSION: ${{ needs.gate.outputs.version }}
+          MAC_UPDATE: ${{ needs.gate.outputs.mac_update }}
           DESKTOP_METADATA_KEY_A: ${{ secrets.DESKTOP_METADATA_KEY_A }}
           DESKTOP_SPARKLE_KEY_A: ${{ secrets.DESKTOP_SPARKLE_KEY_A }}
           DESKTOP_SANDBOX_KEY_A: ${{ secrets.DESKTOP_SANDBOX_KEY_A }}
@@ -260,6 +262,7 @@ jobs:
           DESKTOP_TAG: ${{ needs.gate.outputs.tag }}
           DESKTOP_SHA: ${{ needs.gate.outputs.sha }}
           DESKTOP_STAGED: ${{ needs.sign.outputs.staged }}
+          DESKTOP_MAC_UPDATE: ${{ needs.gate.outputs.mac_update }}
           DESKTOP_RELEASE_CANDIDATE: ${{ runner.temp }}/signed
           DESKTOP_INSTALLERS: ${{ runner.temp }}/candidate
       - name: Publish the versioned release
@@ -269,6 +272,7 @@ jobs:
           DESKTOP_TAG: ${{ needs.gate.outputs.tag }}
           DESKTOP_SHA: ${{ needs.gate.outputs.sha }}
           DESKTOP_STAGED: ${{ needs.sign.outputs.staged }}
+          DESKTOP_MAC_UPDATE: ${{ needs.gate.outputs.mac_update }}
           DESKTOP_RELEASE_CANDIDATE: ${{ runner.temp }}/signed
           DESKTOP_INSTALLERS: ${{ runner.temp }}/candidate
 
@@ -293,6 +297,7 @@ jobs:
           DESKTOP_TAG: ${{ needs.gate.outputs.tag }}
           DESKTOP_SHA: ${{ needs.gate.outputs.sha }}
           DESKTOP_STAGED: ${{ needs.sign.outputs.staged }}
+          DESKTOP_MAC_UPDATE: ${{ needs.gate.outputs.mac_update }}
 
   feed:
     needs: [gate, sign, publish, verify-published]
@@ -335,6 +340,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           CHANNEL: ${{ needs.gate.outputs.channel }}
           VERSION: ${{ needs.gate.outputs.version }}
+          MAC_UPDATE: ${{ needs.gate.outputs.mac_update }}
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: ${{ runner.temp }}/site

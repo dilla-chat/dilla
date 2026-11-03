@@ -6,6 +6,8 @@ import { pathToFileURL } from 'node:url';
 import { classifyFile } from '../../../scripts/ci-areas.mjs';
 import { REPOSITORY, createGithubApi, hardenedGit, findGreenPushRun, fetchCiJobs, resolveTagCommit, listRunArtifacts, selectReleaseArtifacts } from './ci-run.mjs';
 import { DESKTOP_TAG, compareDesktopVersions, previousDesktopVersion } from './release-notes.mjs';
+import { macRotationOf } from './feed-format.mjs';
+import { latestPublished, trustAtTag } from './pages-feed.mjs';
 
 /**
  * The keyed workflow's first step. Everything is re-derived from the GitHub API
@@ -37,6 +39,8 @@ const OUTPUTS = Object.freeze({
  run_record: value => /^[a-f0-9]{64}$/.test(value),
  jobs_record: value => /^[a-f0-9]{64}$/.test(value),
  previous: value => value === '' || TAG.test(value),
+ // 'dmg' only for a channel's rotation release of a pending macOS key change (macUpdateFor); 'zip' otherwise.
+ mac_update: value => value === 'zip' || value === 'dmg',
 });
 /** Validates the output file and every value: a newline or "=" can never add an output. */
 export function validateOutputs(file, values) {
@@ -63,6 +67,24 @@ function codeEqual(git, a, b) {
 }
 async function posture(label, read) {
  try { return await read(); } catch (error) { throw new Error(`Cannot read the ${label} posture: ${error.message}`); }
+}
+
+/**
+ * The macOS update kind of this release. A pending key change (signing.macRotation, committed by `rotate --promote`)
+ * reaches a channel's Macs through exactly one release: the first one built while that channel's newest published
+ * release (immutable, made by the workflow) was still built for the old Sparkle key. That release updates macOS with
+ * a disk image; once it is out, the channel's newest release carries the new key and every later one is a zip again.
+ * A channel with no published release has no Macs to move.
+ */
+export async function macUpdateFor({ trust, channel, api, trustAt }) {
+ const rotation = macRotationOf(trust);
+ if (!rotation) return 'zip';
+ const latest = await latestPublished(api, channel);
+ if (!latest) return 'zip';
+ const { trust: built } = await trustAt(latest.release.tag_name);
+ if (built?.sparklePublicKey === trust.sparklePublicKey) return 'zip';
+ if (built?.sparklePublicKey === rotation.fromSparklePublicKey) return 'dmg';
+ throw new Error(`The latest published ${channel} release (${latest.version}) was built for a Sparkle key that is neither main's nor the one the pending macOS key change starts from`);
 }
 
 export async function runGate({ env, git, api, outputDirectory, now = Date.now() }) {
@@ -153,16 +175,21 @@ export async function runGate({ env, git, api, outputDirectory, now = Date.now()
  try { expiresAt = Date.parse(JSON.parse(git(['show', 'HEAD:packages/desktop/linux-sandbox-component.json'])).expiresAt); } catch { expiresAt = NaN; }
  if (!Number.isFinite(expiresAt) || expiresAt - Number(now) < SANDBOX_MINIMUM_VALIDITY) throw new Error('The Linux sandbox component expires within 30 days; refresh it first');
 
+ // 11. The macOS update kind, from main's committed key-change pointer and this channel's published releases.
+ let trust;
+ try { trust = JSON.parse(git(['show', 'HEAD:packages/desktop/release-trust.json'])); } catch { throw new Error('Cannot read main\'s release-trust.json'); }
+ const macUpdate = await macUpdateFor({ trust, channel, api, trustAt: trustAtTag({ api, git }) });
+
  // Every check passed: validate the outputs, write the gate's records, then append the outputs.
  const runBytes = Buffer.from(JSON.stringify(run) + '\n'), jobsBytes = Buffer.from(JSON.stringify(jobs) + '\n');
  const runRecord = createHash('sha256').update(runBytes).digest('hex'), jobsRecord = createHash('sha256').update(jobsBytes).digest('hex');
- const outputs = { tag, version, channel, sha, tree, run: String(run.id), artifact_ids: artifactIds.join(','), artifact_digests: artifactDigests.join(','), run_record: runRecord, jobs_record: jobsRecord, previous: previous ?? '' };
+ const outputs = { tag, version, channel, sha, tree, run: String(run.id), artifact_ids: artifactIds.join(','), artifact_digests: artifactDigests.join(','), run_record: runRecord, jobs_record: jobsRecord, previous: previous ?? '', mac_update: macUpdate };
  validateOutputs(env.GITHUB_OUTPUT, outputs);
  await mkdir(outputDirectory, { recursive: true, mode: 0o700 });
  await writeFile(join(outputDirectory, 'ci-run.json'), runBytes, { flag: 'wx' });
  await writeFile(join(outputDirectory, 'ci-jobs.json'), jobsBytes, { flag: 'wx' });
  writeOutputs(env.GITHUB_OUTPUT, outputs);
- return { tag, version, channel, sha, tree, ciRun: run.id, artifactIds, artifactDigests, runRecord, jobsRecord, previous };
+ return { tag, version, channel, sha, tree, ciRun: run.id, artifactIds, artifactDigests, runRecord, jobsRecord, previous, macUpdate };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
@@ -170,5 +197,5 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
  const root = resolve(import.meta.dirname, '../../..');
  const git = hardenedGit(root);
  const result = await runGate({ env: process.env, git, api: createGithubApi({ token: process.env.GH_TOKEN }), outputDirectory: resolve(process.argv[2]) });
- console.log(`Release gate passed: ${result.tag} at ${result.sha}, ci run ${result.ciRun}, ${result.artifactIds.length} artifacts.`);
+ console.log(`Release gate passed: ${result.tag} at ${result.sha}, ci run ${result.ciRun}, ${result.artifactIds.length} artifacts, macOS update ${result.macUpdate}.`);
 }
