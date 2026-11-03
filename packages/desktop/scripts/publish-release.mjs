@@ -71,6 +71,6 @@ for (const asset of release.assets) {
  const name = asset.name.replace(`dilla-${version}-`, 'dilla-');
  await upload(feed, name, await readFile(join(directory, asset.name)), true);
 }
-for (const name of [metadataName + '.sig', metadataName, 'appcast-x64.xml', 'appcast-arm64.xml']) await upload(feed, name, await readFile(join(directory, name)), true);
+for (const name of [metadataName + '.sig', metadataName, 'appcast-arm64.xml']) await upload(feed, name, await readFile(join(directory, name)), true);
 if (feed.draft) await api(`/repos/${repository}/releases/${feed.id}`, { method: 'PATCH', body: { draft: false } });
 console.log(`Published desktop ${version} and promoted the authenticated ${channel} feed.`);

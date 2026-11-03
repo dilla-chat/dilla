@@ -30,7 +30,7 @@ export function combinePerformance(browser, desktop) {
  if (!/^[a-f0-9]{40}$/.test(browser.sourceCommit) || browser.sourceCommit !== desktop.sourceCommit) throw new Error('Performance source mismatch');
  if (typeof browser.sourceDirty !== 'boolean' || typeof desktop.sourceDirty !== 'boolean') throw new Error('Missing performance source status');
  if (!/^[a-f0-9]{64}$/.test(browser.environment?.manifestSHA) || browser.environment.manifestSHA !== desktop.environment?.manifestSHA) throw new Error('Performance UI bundle mismatch');
- if (!['linux-x64', 'win-x64', 'mac-x64', 'mac-arm64'].includes(browser.target) || browser.target !== desktop.target) throw new Error('Performance target mismatch');
+ if (!['linux-x64', 'win-x64', 'mac-arm64'].includes(browser.target) || browser.target !== desktop.target) throw new Error('Performance target mismatch');
  if (!Array.isArray(browser.samples) || browser.samples.length < 3 || browser.samples.length !== desktop.samples?.length) throw new Error('Need at least three paired samples');
  for (const record of [browser, desktop]) for (const sample of record.samples) {
   for (const metric of Object.keys(PERFORMANCE_UNITS)) if (!Number.isFinite(sample[metric]) || sample[metric] < 0) throw new Error('Missing performance measurement: ' + metric);

@@ -4,7 +4,7 @@ import { lstat, open, readFile, writeFile } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const PLATFORMS = Object.freeze({ 'linux-x64': ['linux', 'x64'], 'linux-packages-x64': ['linux', 'x64'], 'win-x64': ['win32', 'x64'], 'mac-x64': ['darwin', 'x64'], 'mac-arm64': ['darwin', 'arm64'] });
+const PLATFORMS = Object.freeze({ 'linux-x64': ['linux', 'x64'], 'linux-packages-x64': ['linux', 'x64'], 'win-x64': ['win32', 'x64'], 'mac-arm64': ['darwin', 'arm64'] });
 const COMMIT = /^[a-f0-9]{40}$/, HASH = /^[A-Za-z0-9+/]{86}==$/;
 function exact(value, fields) { return value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === fields.length && fields.every(key => Object.hasOwn(value, key)); }
 function validVersion(version) {

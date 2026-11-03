@@ -126,7 +126,7 @@ test('cancelled prerequisite authorization retains the working app and is retrya
 });
 
 test('macOS metadata authenticates the exact Sparkle archive signature', () => {
- const artifact = { ...release.artifacts[0], linuxSandbox: undefined, platform: 'darwin', url: 'https://github.com/jonasthim/dilla/releases/download/desktop-v0.1.1/dilla-0.1.1-mac-x64.zip' };
+ const artifact = { ...release.artifacts[0], linuxSandbox: undefined, platform: 'darwin', url: 'https://github.com/jonasthim/dilla/releases/download/desktop-v0.1.1/dilla-0.1.1-mac-arm64.zip' };
  const missing = signed({ ...release, artifacts: [artifact] });
  assert.throws(() => verifyRelease(missing.body, missing.signature, { ...context, platform: 'darwin' }));
  const valid = signed({ ...release, artifacts: [{ ...artifact, sparkleSignature: Buffer.alloc(64).toString('base64') }] });

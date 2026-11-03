@@ -14,7 +14,6 @@ jobs:
         include:
           - { os: ubuntu-24.04, platform: linux, arch: x64 }
           - { os: windows-latest, platform: win, arch: x64 }
-          - { os: macos-15-intel, platform: mac, arch: x64 }
           - { os: macos-15, platform: mac, arch: arm64 }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -220,7 +219,6 @@ jobs:
         include:
           - { os: ubuntu-24.04, platform: linux, arch: x64 }
           - { os: windows-latest, platform: win, arch: x64 }
-          - { os: macos-15-intel, platform: mac, arch: x64 }
           - { os: macos-15, platform: mac, arch: arm64 }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -367,11 +365,10 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        os: [ubuntu-24.04, windows-latest, macos-15-intel, macos-15]
+        os: [ubuntu-24.04, windows-latest, macos-15]
         include:
           - { os: ubuntu-24.04, platform: linux, arch: x64 }
           - { os: windows-latest, platform: win, arch: x64 }
-          - { os: macos-15-intel, platform: mac, arch: x64 }
           - { os: macos-15, platform: mac, arch: arm64 }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -480,11 +477,10 @@ jobs:
       fail-fast: true
       matrix:
         shard: [1, 2, 3]
-        os: [ubuntu-24.04, windows-latest, macos-15-intel, macos-15]
+        os: [ubuntu-24.04, windows-latest, macos-15]
         include:
           - { os: ubuntu-24.04, platform: linux, arch: x64 }
           - { os: windows-latest, platform: win, arch: x64 }
-          - { os: macos-15-intel, platform: mac, arch: x64 }
           - { os: macos-15, platform: mac, arch: arm64 }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

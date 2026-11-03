@@ -9,7 +9,7 @@ import { verifyInstalledAccountReport } from './installed-account-proof.mjs';
 import { verifyAurRecipe } from './build-native-linux-packages.mjs';
 import { buildProvenanceName, readBuildProvenanceFile, verifyBuildProvenance, verifyCandidateBuildRecord } from './build-provenance.mjs';
 
-export const TARGETS = ['linux-x64', 'win-x64', 'mac-x64', 'mac-arm64'];
+export const TARGETS = ['linux-x64', 'win-x64', 'mac-arm64'];
 export const BUILD_TARGETS = Object.freeze([...TARGETS, 'linux-packages-x64']);
 export const BUILD_PROVENANCE_RECORDS = Object.freeze(BUILD_TARGETS.map(buildProvenanceName));
 export const PUBLIC_ACCEPTANCE_RECORDS = Object.freeze(['release-notes.md', 'security-review.md',
@@ -18,7 +18,7 @@ export const PUBLIC_ACCEPTANCE_RECORDS = Object.freeze(['release-notes.md', 'sec
  * authenticated acceptance records enter a candidate or versioned release. */
 export function publicReleaseRecords(channel) {
  if (!['stable', 'beta'].includes(channel)) throw new Error('Invalid desktop publication channel');
- return [`desktop-${channel}.json`, `desktop-${channel}.json.sig`, ...PUBLIC_ACCEPTANCE_RECORDS, 'appcast-x64.xml', 'appcast-arm64.xml'];
+ return [`desktop-${channel}.json`, `desktop-${channel}.json.sig`, ...PUBLIC_ACCEPTANCE_RECORDS, 'appcast-arm64.xml'];
 }
 /** The publisher downloads these independent records inside the accepted installer
  * artifacts. Verify their independent copies before staging candidate records;
@@ -44,8 +44,8 @@ async function verifyBundle({ metadata, signature, trust, directory, run, jobs, 
  const release = verifyRelease(metadata, signature.trim(), { publicKeys: trust.metadataPublicKeys, channel, platform: 'linux', arch: 'x64', currentVersion: '0.0.0', now });
  if (release.version !== version) throw new Error('Release tag and authenticated version differ');
  verifyRelease(metadata, signature.trim(), { publicKeys: trust.metadataPublicKeys, channel, platform: 'win32', arch: 'x64', currentVersion: '0.0.0', now });
- const expectedTargets = ['linux-x64', 'win32-x64', 'darwin-x64', 'darwin-arm64'];
- if (release.artifacts.length !== 4 || expectedTargets.some(target => !release.artifacts.some(a => `${a.platform}-${a.arch}` === target))) throw new Error('All desktop platforms must release together');
+ const expectedTargets = ['linux-x64', 'win32-x64', 'darwin-arm64'];
+ if (release.artifacts.length !== expectedTargets.length || expectedTargets.some(target => !release.artifacts.some(a => `${a.platform}-${a.arch}` === target))) throw new Error('All desktop platforms must release together');
  const source = release.source;
  if (!source || source.format !== 1 || !Number.isSafeInteger(source.ciRun) || source.ciRun < 1
    || ![source.commit, source.head, source.tree].every(value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value))) throw new Error('Missing authenticated acceptance source');
@@ -119,7 +119,7 @@ async function verifyBundle({ metadata, signature, trust, directory, run, jobs, 
  const requiredNames = [
   ...['deb', 'rpm', 'aur.tar.gz'].map(ext => `dilla-${version}-linux-x64.${ext}`),
   `dilla-${version}-linux-x64.AppImage`, ...['sandbox','sandbox.json','sandbox.sig'].map(ext => `dilla-${version}-linux-x64.${ext}`), `dilla-${version}-win-x64.exe`,
-  ...['x64', 'arm64'].flatMap(arch => [`dilla-${version}-mac-${arch}.zip`, `dilla-${version}-mac-${arch}.dmg`]),
+  `dilla-${version}-mac-arm64.zip`, `dilla-${version}-mac-arm64.dmg`,
  ];
  if (!Array.isArray(assets) || assets.length !== requiredNames.length || requiredNames.some(name => assets.filter(asset => asset.name === name).length !== 1)) throw new Error('All installable/update artifacts must be authenticated');
  for (const asset of assets) {

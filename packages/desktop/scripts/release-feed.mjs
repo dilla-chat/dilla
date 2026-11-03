@@ -27,7 +27,7 @@ export async function signDesktopRelease({ version, artifactsDirectory, keysDire
  const run = JSON.parse(await readFile(join(artifactsDirectory, 'ci-run.json'), 'utf8'));
  const jobs = JSON.parse(await readFile(join(artifactsDirectory, 'ci-jobs.json'), 'utf8'));
  const release = { format: 1, version, channel, publishedAt: now.toISOString(), expiresAt: new Date(now.getTime() + 90 * 86400000).toISOString(), source, assets: [], artifacts: [] };
- for (const [platform, arch, os, ext] of [['linux', 'x64', 'linux', 'AppImage'], ['win32', 'x64', 'win', 'exe'], ['darwin', 'x64', 'mac', 'zip'], ['darwin', 'arm64', 'mac', 'zip']]) {
+ for (const [platform, arch, os, ext] of [['linux', 'x64', 'linux', 'AppImage'], ['win32', 'x64', 'win', 'exe'], ['darwin', 'arm64', 'mac', 'zip']]) {
   const name = `dilla-${version}-${os}-${arch}.${ext}`, file = join(artifactsDirectory, name);
   if (!(await lstat(file)).isFile()) throw new Error('Installer must be a regular file: ' + name);
   const bytes = await readFile(file);
@@ -52,7 +52,7 @@ export async function signDesktopRelease({ version, artifactsDirectory, keysDire
   release.artifacts.push(artifact);
   release.assets.push({ name, size: bytes.length, sha512: artifact.sha512 });
  }
- for (const suffix of ['mac-x64.dmg', 'mac-arm64.dmg', 'linux-x64.deb', 'linux-x64.rpm', 'linux-x64.aur.tar.gz']) {
+ for (const suffix of ['mac-arm64.dmg', 'linux-x64.deb', 'linux-x64.rpm', 'linux-x64.aur.tar.gz']) {
   const name = `dilla-${version}-${suffix}`, file = join(artifactsDirectory, name);
   if (!(await lstat(file)).isFile()) throw new Error('Installer must be a regular file: ' + name);
   const bytes = await readFile(file);

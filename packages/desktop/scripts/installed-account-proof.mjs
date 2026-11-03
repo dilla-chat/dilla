@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 export const ACCOUNT_CHECKS = Object.freeze(['productionFuses', 'actualSignup', 'sameDeviceAfterUpgrade',
  'wrappedRecordUnchanged', 'encryptedHistoryReadable', 'draftBlockedInstallation', 'selectedFileBlockedInstallation',
  'selectedFileVerifiedByPeer', 'expiredSessionReauthenticated', 'recoveryEnrolledNewDevice']);
-const PLATFORMS = { 'linux-x64': ['linux', 'x64'], 'win-x64': ['win32', 'x64'], 'mac-x64': ['darwin', 'x64'], 'mac-arm64': ['darwin', 'arm64'] };
+const PLATFORMS = { 'linux-x64': ['linux', 'x64'], 'win-x64': ['win32', 'x64'], 'mac-arm64': ['darwin', 'arm64'] };
 function validate(proof, target, report) {
  const expected = PLATFORMS[target];
  if (!expected || proof?.platform !== expected[0] || proof.arch !== expected[1]) throw new Error('Installed-account platform mismatch');

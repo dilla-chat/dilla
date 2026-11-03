@@ -1215,7 +1215,7 @@ export function checkDesktopWorkflow(root) {
   for (const required of [
     'workflow_call:', 'contents: read', 'fail-fast: true',
     'os: ubuntu-24.04, platform: linux, arch: x64', 'os: windows-latest, platform: win, arch: x64',
-    'os: macos-15-intel, platform: mac, arch: x64', 'os: macos-15, platform: mac, arch: arm64',
+    'os: macos-15, platform: mac, arch: arm64',
     'name: dilla-web-dist', 'name: dilla-desktop-core', 'node node_modules/electron/install.js',
     'npm test -w @dilla/desktop', 'npm run typecheck -w @dilla/desktop',
     'npm run build -w @dilla/desktop -- --existing-client', 'npm run build:validation -w @dilla/desktop',
@@ -1374,7 +1374,7 @@ run: node packages/desktop/scripts/test-linux-sandbox-package.mjs packages/deskt
   const tooling = body('test-tools');
   for (const required of [
     'os: ubuntu-24.04, platform: linux, arch: x64', 'os: windows-latest, platform: win, arch: x64',
-    'os: macos-15-intel, platform: mac, arch: x64', 'os: macos-15, platform: mac, arch: arm64',
+    'os: macos-15, platform: mac, arch: arm64',
     'node scripts/e2e-test-tools.mjs build artifacts/e2e-test-tools',
     'name: dilla-e2e-tools-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.sha }}', 'path: artifacts/e2e-test-tools', 'overwrite: true',
   ]) if (!tooling.includes(required)) problems.push(`${file}: native tooling producer missing ${required}`);
@@ -1417,15 +1417,15 @@ run: node packages/desktop/scripts/test-linux-sandbox-package.mjs packages/deskt
     problems.push(`${file}: installed account proof must upload only from its owning shard`);
   }
   for (const required of [
-    'shard: [1, 2, 3]', 'os: [ubuntu-24.04, windows-latest, macos-15-intel, macos-15]',
+    'shard: [1, 2, 3]', 'os: [ubuntu-24.04, windows-latest, macos-15]',
     'os: ubuntu-24.04, platform: linux, arch: x64', 'os: windows-latest, platform: win, arch: x64',
-    'os: macos-15-intel, platform: mac, arch: x64', 'os: macos-15, platform: mac, arch: arm64',
+    'os: macos-15, platform: mac, arch: arm64',
     'name: dilla-core-wasi', 'node packages/desktop/scripts/prepare-browser-sandbox.mjs',
     'playwright test --config playwright.desktop.config.ts --project=electron-client --shard=${{ matrix.shard }}/3',
   ]) if (!client.includes(required)) problems.push(`${file}: shared Electron client coverage missing ${required}`);
   const voice = body('voice');
   for (const required of ['desktop-voice-${{ matrix.platform }}-${{ matrix.arch }}',
-    'os: [ubuntu-24.04, windows-latest, macos-15-intel, macos-15]',
+    'os: [ubuntu-24.04, windows-latest, macos-15]',
     'playwright.desktop-voice.config.ts --project=electron-voice --workers=1', 'DILLA_E2E_NOTIFICATIONS', 'dunst',
     'name: dilla-core-wasi', 'node packages/desktop/scripts/prepare-browser-sandbox.mjs',
     'name: Desktop performance comparison', 'node packages/desktop/scripts/run-performance.mjs', 'name: desktop-performance-']) {

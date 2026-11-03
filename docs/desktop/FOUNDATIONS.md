@@ -31,7 +31,7 @@ browser download navigation.
   Native package managers own DEB/RPM/AUR updates; macOS retains Sparkle. The
   custom crash-recovery, rollback and Windows launcher layer has been removed.
 - AppImage, per-user NSIS and ad-hoc macOS packaging configuration. Hardened packaged
-  fuses are checked on the binary. CI adds all four native targets without deleting
+  fuses are checked on the binary. CI adds the three native targets without deleting
   the shared protocol/security jobs. Product client/voice acceptance runs in Electron
   on each target; Firefox/WebKit and duplicate browser client jobs are retired.
   Validation does not publish artifacts as desktop releases.
@@ -117,7 +117,7 @@ passing a hardware gate.
 
 ## Mandatory acceptance snapshot (2026-11-01)
 
-| Gate | Linux x64 | Windows x64 | macOS Intel / Apple Silicon |
+| Gate | Linux x64 | Windows x64 | macOS Apple Silicon |
 |---|---|---|---|
 | Bundled shell and encrypted loopback video | Native CI passed | Native CI passed | Native CI passed on both architectures |
 | Real encrypted SFU call; mic/camera permission denial | Voice CI passed; denial coverage open | Voice CI pending | Voice CI pending |
@@ -161,7 +161,11 @@ has been made here.
   EdDSA archive signatures and signed feeds. Documentation alone does not prove the
   required unsigned Electron upgrade.
 - [GitHub hosted runners](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
-  distinguishes `macos-15-intel` from the Apple Silicon `macos-15` runner.
+  distinguishes `macos-15-intel` from the Apple Silicon `macos-15` runner. Intel Macs
+  are out of the first release (2026-11-03): their installed Sparkle upgrade installs
+  but does not relaunch on that runner, and Apple has sold no Intel Mac since 2023.
+  The `macos-15-intel` jobs and the `mac-x64` release target return together, after
+  that upgrade passes there.
 
 ## Comparative performance protocol
 
@@ -187,4 +191,4 @@ claim about all machines or physical audio latency.
 
 CI attaches `performance-<target>.json` and the raw browser/desktop records. The
 release verifier requires the matching successful comparison step, source commit,
-and authenticated report digest for all four targets before publication.
+and authenticated report digest for all three targets before publication.

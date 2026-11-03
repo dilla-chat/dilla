@@ -2,8 +2,8 @@
 
 Validation snapshot, 2026-11-02: the desktop application is under development.
 **Keep using the existing browser client.**
-The first supported desktop release must ship Linux x64, Windows x64, and macOS Intel
-and Apple Silicon together. No desktop-only server release is ready.
+The first supported desktop release must ship Linux x64, Windows x64 and macOS Apple
+Silicon together; Intel Macs are not supported by it. No desktop-only server release is ready.
 
 The development shell in `packages/desktop` bundles the existing React client, core
 worker and media implementation. It serves those installed bytes locally at the
@@ -27,7 +27,7 @@ This preparation does not retire browser access or publish a desktop release.
 
 When selected after acceptance, normal browser navigation and `/download` serve a
 static Signal download page. Linux x64 AppImage, Windows x64 installer and macOS
-Intel/Apple Silicon DMGs link to the fixed public GitHub `desktop-beta` aliases.
+Apple Silicon DMG link to the fixed public GitHub `desktop-beta` aliases.
 Downloads start only when a person follows a link. There is no instance-defined
 download host, update feed or executable remote UI. The existing API, gateway,
 RTC, invite content negotiation and browser sign-in handoff retain their routes.
@@ -101,7 +101,7 @@ path-scoped invite URLs do not yet have a deep-link representation.
 Application audio and the system-browser sign-in handoff are implemented. Linux
 selected-application capture passes its encrypted delivery and exclusion checks.
 Windows hosted CI provisions a signed virtual USB audio device. Native capture
-gates have passed on Linux x64, Windows x64, macOS Intel and Apple Silicon, including
+gates have passed on Linux x64, Windows x64 and macOS Apple Silicon, including
 selected-application delivery, own-call and unrelated-application exclusion, and
 fail-closed capture errors. Full duplex-voice, shared-client and performance gates
 remain open. A failed capture must remain a visible
@@ -136,8 +136,9 @@ account/key continuity and tampered-feed/artifact rejection remain acceptance ga
 Windows and normal FUSE AppImage acceptance must be rerun on the final source tree.
 
 macOS uses a narrow Sparkle bridge with signed update feeds and archives. Actual
-unsigned-to-unsigned installed upgrades passed on Intel and Apple Silicon using
-ad-hoc signing and normal OS protections. The installed-account and complete release gates still apply.
+unsigned-to-unsigned installed upgrades passed on Apple Silicon using ad-hoc signing
+and normal OS protections; on Intel the upgrade installs but does not relaunch, so
+Intel Macs are out of the first release. The installed-account and complete release gates still apply.
 
 Preview packaging is available with `npm run pack -w @dilla/desktop`; it creates an
 unpacked app for validation and never publishes. Installer targets are configured
@@ -153,8 +154,8 @@ for that version’s final status. Application publication alone does not change
 Each native job records its actual clean Git commit/tree, workflow run and final
 installer hashes after fuse verification. Its `build-provenance-<target>.json`
 travels in the same installer artifact. `acceptance.json` supplies exact
-`builds` digests for `linux-x64`, `linux-packages-x64`, `win-x64`, `mac-x64` and
-`mac-arm64`. The `installedAccounts` map retains the four client targets; every entry contains the SHA-256 of that target's canonical JSON
+`builds` digests for `linux-x64`, `linux-packages-x64`, `win-x64` and
+`mac-arm64`. The `installedAccounts` map retains the three client targets; every entry contains the SHA-256 of that target's canonical JSON
 report. The offline signer authenticates those digests. Publication independently
 downloads the accepted run's build records, compares them byte for byte with the
 signing candidate, and never replaces them with candidate-supplied provenance.

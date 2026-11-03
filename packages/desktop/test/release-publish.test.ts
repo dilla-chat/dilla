@@ -35,7 +35,7 @@ test('publication refuses missing native acceptance even when the generic CI sta
    jobs.push({ name: `desktop / desktop-voice-${target}`, conclusion: 'success', steps: [{ name: 'Desktop performance comparison', conclusion: 'success' }] });
    const report = Buffer.from(JSON.stringify({ format: 1, target, sourceCommit: source.commit, sourceDirty: false, status: 'measured', ...Object.fromEntries(['startup', 'memory', 'idleCPU', 'interaction', 'callAudio'].map(metric => [metric, [{ browser: 1, desktop: 2 }]])) }));
    await writeFile(join(directory, `performance-${target}.json`), report); source.performance[target] = { sha256: createHash('sha256').update(report).digest('hex') };
-   const [platform, arch] = ({ 'linux-x64': ['linux', 'x64'], 'win-x64': ['win32', 'x64'], 'mac-x64': ['darwin', 'x64'], 'mac-arm64': ['darwin', 'arm64'] } as Record<string, string[]>)[target];
+   const [platform, arch] = ({ 'linux-x64': ['linux', 'x64'], 'win-x64': ['win32', 'x64'], 'mac-arm64': ['darwin', 'arm64'] } as Record<string, string[]>)[target];
    const account = Buffer.from(JSON.stringify({ format: 1, platform, arch, from: '1.0.0', to: '1.0.1', ...Object.fromEntries(ACCOUNT_CHECKS.map((check: string) => [check, true])),
     target, sourceCommit: source.commit, sourceDirty: false, status: 'passed' }));
    await writeFile(join(directory, `installed-account-${target}.json`), account); source.installedAccounts[target] = { sha256: createHash('sha256').update(account).digest('hex') };
@@ -43,7 +43,7 @@ test('publication refuses missing native acceptance even when the generic CI sta
   for (const format of ['deb', 'rpm', 'aur']) jobs.push({ name: `desktop / desktop-linux-package-acceptance-${format}-x64`, conclusion: 'success', steps: [{ name: `Installed ${format.toUpperCase()} package acceptance`, conclusion: 'success' }] });
   jobs.push({ name: 'desktop / desktop-linux-packages-x64', conclusion: 'success', steps: ['Build native Linux release packages', 'Record native Linux package build provenance'].map(name => ({ name, conclusion: 'success' })) });
   const assets: Array<{name:string;size:number;sha512:string}> = [];
-  for (const name of [...['deb', 'rpm', 'aur.tar.gz'].map(ext => `dilla-${version}-linux-x64.${ext}`), `dilla-${version}-linux-x64.AppImage`, ...['sandbox','sandbox.json','sandbox.sig'].map(ext => `dilla-${version}-linux-x64.${ext}`), `dilla-${version}-win-x64.exe`, ...['x64', 'arm64'].flatMap(arch => [`dilla-${version}-mac-${arch}.zip`, `dilla-${version}-mac-${arch}.dmg`])]) {
+  for (const name of [...['deb', 'rpm', 'aur.tar.gz'].map(ext => `dilla-${version}-linux-x64.${ext}`), `dilla-${version}-linux-x64.AppImage`, ...['sandbox','sandbox.json','sandbox.sig'].map(ext => `dilla-${version}-linux-x64.${ext}`), `dilla-${version}-win-x64.exe`, `dilla-${version}-mac-arm64.zip`, `dilla-${version}-mac-arm64.dmg`]) {
    const bytes = name.endsWith('.sandbox.sig') ? sandbox.signature : name.endsWith('.sandbox.json') ? sandbox.manifest : name.endsWith('.sandbox') ? sandbox.capsule : Buffer.from(name); await writeFile(join(directory, name), bytes); assets.push({ name, size: bytes.length, sha512: createHash('sha512').update(bytes).digest('base64') });
   }
   const recipeDirectory = join(directory, 'recipe'); await mkdir(recipeDirectory);
@@ -58,8 +58,8 @@ test('publication refuses missing native acceptance even when the generic CI sta
    await writeFile(join(directory, buildProvenanceName(target)), record); source.builds[target] = { sha256: createHash('sha256').update(record).digest('hex') };
   }
   const release = { format: 1, version, channel: 'stable', publishedAt: '2026-11-01T00:00:00Z', expiresAt: '2026-12-01T00:00:00Z', source, assets, artifacts: assets.filter(asset => /\.(AppImage|exe|zip)$/.test(asset.name)).map(({name, ...asset}) => ({ ...asset, platform: name.includes('-linux-') ? 'linux' : name.includes('-win-') ? 'win32' : 'darwin', arch: name.includes('arm64') ? 'arm64' : 'x64', url: `https://github.com/jonasthim/dilla/releases/download/desktop-v${version}/${name}`, ...(name.endsWith('-linux-x64.AppImage') ? {linuxSandbox:{compatibilityEpoch:1,minimumGeneration:1,bundle:{url:`https://github.com/jonasthim/dilla/releases/download/desktop-v${version}/dilla-${version}-linux-x64.sandbox`,size:sandbox.capsule.length,sha512:sandbox.hash(sandbox.capsule)}}} : {}), ...(name.endsWith('.zip') ? { sparkleSignature: sign(null, Buffer.from(name), sparkle.privateKey).toString('base64') } : {}) })) };
-  assert.equal(release.assets.length, 12, 'nine installable/recipe assets plus three authenticated Linux sandbox assets');
-  assert.equal(release.artifacts.length, 4, 'package managers own native-format updates');
+  assert.equal(release.assets.length, 10, 'seven installable/recipe assets plus three authenticated Linux sandbox assets');
+  assert.equal(release.artifacts.length, 3, 'package managers own native-format updates');
   for (const artifact of release.artifacts.filter(a => a.platform === 'darwin')) await writeFile(join(directory, `appcast-${artifact.arch}.xml`), signedAppcast(appcast(release, artifact, artifact.sparkleSignature), sparkle.privateKey));
   const metadata = Buffer.from(JSON.stringify(release)), signature = sign(null, metadata, key.privateKey).toString('base64');
   const context = { metadata, signature, trust: { metadataPublicKeys: [key.publicKey.export({ type: 'spki', format: 'pem' }).toString()], sparklePublicKey: sparkle.publicKey.export({ type: 'spki', format: 'der' }).subarray(-32).toString('base64') }, directory, run: { id: 10, head_sha: source.head, name: 'ci', status: 'completed', conclusion: 'success', repository: { full_name: 'jonasthim/dilla' }, head_repository: { full_name: 'jonasthim/dilla' } }, jobs, version, now: Date.parse('2026-11-02') };
@@ -211,7 +211,7 @@ test('publication refuses missing native acceptance even when the generic CI sta
   const trustedPath = join(downloaded, buildProvenanceName('linux-packages-x64')), candidatePath = join(candidate, buildProvenanceName('linux-packages-x64')), trusted = await readFile(trustedPath);
   await writeFile(candidatePath, JSON.stringify({ ...JSON.parse(trusted.toString()), sourceCommit: 'a'.repeat(40) }));
   await assert.rejects(stagePublicReleaseRecords({ candidate, directory: downloaded, channel: 'stable', version }), /CI.*build provenance/i);
-  assert.deepEqual(await readFile(trustedPath), trusted); assert.equal((await readdir(downloaded)).length, 5, 'reject before staging any candidate records');
+  assert.deepEqual(await readFile(trustedPath), trusted); assert.equal((await readdir(downloaded)).length, buildTargets.length, 'reject before staging any candidate records');
   await writeFile(candidatePath, trusted); await rm(trustedPath);
   await assert.rejects(stagePublicReleaseRecords({ candidate, directory: downloaded, channel: 'stable', version }), /ENOENT|build provenance/i);
   await writeFile(trustedPath, trusted); await stagePublicReleaseRecords({ candidate, directory: downloaded, channel: 'stable', version });
@@ -240,10 +240,10 @@ test('publication refuses missing native acceptance even when the generic CI sta
   await assert.rejects(verifyDesktopBundle({ ...context, jobs: jobs.filter(job => !job.name.endsWith('desktop-client-mac-arm64-3')) }), /Missing Electron/);
   const noAudio = structuredClone(jobs); noAudio[0].steps = noAudio[0].steps!.filter(step => !step.name.includes('audio encryption'));
   await assert.rejects(verifyDesktopBundle({ ...context, jobs: noAudio }), /missing accepted Application audio/);
-  const originalFeed = await import('node:fs/promises').then(fs => fs.readFile(join(directory, 'appcast-x64.xml')));
-  await writeFile(join(directory, 'appcast-x64.xml'), 'tampered feed');
+  const originalFeed = await import('node:fs/promises').then(fs => fs.readFile(join(directory, 'appcast-arm64.xml')));
+  await writeFile(join(directory, 'appcast-arm64.xml'), 'tampered feed');
   await assert.rejects(verifyDesktopBundle(context), /Unsigned Sparkle/);
-  await writeFile(join(directory, 'appcast-x64.xml'), originalFeed);
+  await writeFile(join(directory, 'appcast-arm64.xml'), originalFeed);
   await writeFile(join(directory, 'release-notes.md'), 'tampered release notes');
   await assert.rejects(verifyDesktopBundle(context), /Release notes/);
   await writeFile(join(directory, 'release-notes.md'), notes);

@@ -11,7 +11,7 @@ import { createRequire } from 'node:module';
 // @ts-expect-error build tooling is JavaScript
 import { buildArtifactNames, buildProvenanceName, verifyBuildProvenance, emitBuildProvenance, verifyCandidateBuildRecord } from '../scripts/build-provenance.mjs';
 
-const targets = ['linux-x64', 'win-x64', 'mac-x64', 'mac-arm64'];
+const targets = ['linux-x64', 'win-x64', 'mac-arm64'];
 const platform = ({ linux: 'linux', win32: 'win', darwin: 'mac' } as Record<string, string>)[process.platform];
 const target = platform + '-' + process.arch;
 const sha = (bytes: Uint8Array) => createHash('sha512').update(bytes).digest('base64');
@@ -38,7 +38,7 @@ test('the actual AppImage desktop entry preserves Chromium sandboxing', async ()
 test('every target binds exactly its native installable bytes, with no recovery sidecar', () => {
  assert.deepEqual(targets.map(value => buildArtifactNames(value, '1.2.3-beta.4')), [
   ['dilla-1.2.3-beta.4-linux-x64.AppImage', 'dilla-1.2.3-beta.4-linux-x64.sandbox', 'dilla-1.2.3-beta.4-linux-x64.sandbox.json'], ['dilla-1.2.3-beta.4-win-x64.exe'],
-  ['dilla-1.2.3-beta.4-mac-x64.dmg', 'dilla-1.2.3-beta.4-mac-x64.zip'], ['dilla-1.2.3-beta.4-mac-arm64.dmg', 'dilla-1.2.3-beta.4-mac-arm64.zip'],
+  ['dilla-1.2.3-beta.4-mac-arm64.dmg', 'dilla-1.2.3-beta.4-mac-arm64.zip'],
  ]);
  for (const value of ['../outside', 'linux-arm64', 'win32-x64']) assert.throws(() => buildArtifactNames(value, '1.2.3'));
  for (const version of ['../outside', '01.2.3', '1.2.3-unknown']) assert.throws(() => buildArtifactNames('linux-x64', version));
