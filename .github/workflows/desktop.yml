@@ -499,7 +499,8 @@ jobs:
     timeout-minutes: 60
     strategy:
       fail-fast: true
-      # The shared client suite is the same Chromium renderer on every OS: Linux runs all of it, in three shards.
+      # The shared client suite is the same Chromium renderer on every OS: Linux runs all of it, in six shards
+      # (WEB_SHARDS in scripts/check-ci-workflow.mjs; one worker per shard, each with its own test host and clock).
       # Windows and macOS run the desktop-specific specs alone: the installed upgrade of a real account (the release
       # verifier's per-target proof) and the native window shell.
       matrix:
@@ -507,6 +508,9 @@ jobs:
           - { os: ubuntu-24.04, platform: linux, arch: x64, shard: 1 }
           - { os: ubuntu-24.04, platform: linux, arch: x64, shard: 2 }
           - { os: ubuntu-24.04, platform: linux, arch: x64, shard: 3 }
+          - { os: ubuntu-24.04, platform: linux, arch: x64, shard: 4 }
+          - { os: ubuntu-24.04, platform: linux, arch: x64, shard: 5 }
+          - { os: ubuntu-24.04, platform: linux, arch: x64, shard: 6 }
           - { os: windows-latest, platform: win, arch: x64, shard: 1, specs: 'web/installed-upgrade-account.spec.ts web/signup.spec.ts' }
           - { os: macos-15, platform: mac, arch: arm64, shard: 1, specs: 'web/installed-upgrade-account.spec.ts web/signup.spec.ts' }
     steps:
@@ -560,7 +564,7 @@ jobs:
         if: runner.os == 'Linux'
         env:
           CHROME_DEVEL_SANDBOX: ${{ github.workspace }}/node_modules/electron/dist/chrome-sandbox
-        run: xvfb-run -a bash e2e/web/support/installed-keyring.sh bash packages/desktop/scripts/with-window-manager.sh npm exec -w @dilla/e2e -- playwright test --config playwright.desktop.config.ts --project=electron-client --shard=${{ matrix.shard }}/3 --max-failures=1
+        run: xvfb-run -a bash e2e/web/support/installed-keyring.sh bash packages/desktop/scripts/with-window-manager.sh npm exec -w @dilla/e2e -- playwright test --config playwright.desktop.config.ts --project=electron-client --shard=${{ matrix.shard }}/6 --max-failures=1
       - name: Desktop-specific client coverage in Electron
         if: runner.os != 'Linux'
         run: npm exec -w @dilla/e2e -- playwright test --config playwright.desktop.config.ts --project=electron-client ${{ matrix.specs }} --max-failures=1

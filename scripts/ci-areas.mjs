@@ -96,6 +96,7 @@ export const JOB_GATES = {
   'core-integration': ['e2e'],
   deny: ['core'],
   go: ['go'],
+  'go-checks': ['go'],
   'go-native': ['go'],
   'go-ds': ['go'],
   'go-api': ['go'],

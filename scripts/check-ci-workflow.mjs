@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join, posix } from 'node:path';
 import { gateExpression, JOB_GATES, jobRuns, reachableOutputs } from './ci-areas.mjs';
 import { checkNativeStockFeasibility } from './check-native-stock-feasibility.mjs';
+import { POSTGRES_API_RUN, SETS as GO_SHARD_SETS } from './go-shard.mjs';
 import { createRequire } from 'node:module';
 const yaml = createRequire(import.meta.url)('js-yaml');
 
@@ -28,7 +29,10 @@ export const REQUIRED_JOBS = [
   'browser-spike',
   'browser-media',
   'deny',
+  // The race-detector unit tests, in GO_SHARD_SETS.go.shards shards (scripts/go-shard.mjs), and beside them the
+  // once-only steps (vet, the pinned graph, the non-race and TURN reruns, the static build) in go-checks.
   'go',
+  'go-checks',
   'go-native',
   // internal/ds under -race in a job of its own (fix wave, CI run 36697379567): it is the slowest
   // package by far, and in the go job it pushed a 4-vCPU runner past the job's 25 minutes.
@@ -87,16 +91,36 @@ export const NON_RACE_STEP =
 
 /** Shared core-worker/OPFS integration uses the Chromium engine embedded in
  * Electron. Product chat and voice acceptance run only in desktop.yml. */
-export const WEB_SHARDS = 3;
+export const WEB_SHARDS = 6;
 export const BROWSER_WEB_JOBS = {
   'core-integration': { engine: 'chromium', suite: 'core', shard: null, timeout: 20 },
 };
 export const MIN_BROWSER_WEB_TIMEOUT = 20;
 
+/**
+ * The sharded Go jobs (GO_SHARD_SETS in scripts/go-shard.mjs): each is a matrix of its set's shard count whose one test
+ * step hands its `go test` flags to the partitioner. The partitioner checks the union of the shards before it runs a
+ * test, so these flags and the matrix are all the workflow has to get right.
+ */
+export const GO_SHARD_FLAGS = {
+  go: '-race -shuffle=on -timeout 20m',
+  'go-api': '-race -shuffle=on -timeout 25m',
+  'go-ds': '-race -shuffle=on -timeout 25m',
+  'go-harness': '-race -shuffle=on -timeout 25m',
+  'go-postgres': '-race -shuffle=on -timeout 20m',
+};
+export function goShardCommand(set) {
+  return `node scripts/go-shard.mjs run ${set} \${{ matrix.shard }} -- ${GO_SHARD_FLAGS[set]}`;
+}
+export function goShardMatrix(set) {
+  const shards = Array.from({ length: GO_SHARD_SETS[set].shards }, (_, i) => i + 1).join(', ');
+  return `    strategy:\n      fail-fast: true\n      matrix:\n        shard: [${shards}]\n`;
+}
+
 /** The testkit binary's env line, which every suite step that drives the native peer carries. */
 const TESTKIT_ENV = 'DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit';
 
-/** The one suite command a browser job runs, a shard of the web suite carrying its `--shard=i/3` flag. */
+/** The one suite command a browser job runs, a shard of the web suite carrying its `--shard=i/WEB_SHARDS` flag. */
 export function browserSuiteCommand({ engine, suite, shard }) {
   return `npm run test:e2e:${suite}:${engine} -w @dilla/e2e${shard === null ? '' : ` -- --shard=${shard}/${WEB_SHARDS}`}`;
 }
@@ -269,47 +293,58 @@ const REQUIRED_STEPS = {
   // Task 26/C18: each engine and the native peer against the downloaded web and core builds, one job per engine.
   ...Object.fromEntries(Object.entries(BROWSER_WEB_JOBS).map(([job, spec]) => [job, browserWebSteps(job, spec)])),
   deny: ['cargo deny --all-features check advisories bans licenses sources'],
-  // Ruling M. The first two lines are the hand-off from `rust-wasi`: without the download, or with it
-  // landing anywhere but `internal/mlswasi/testdata`, the wazero tests skip themselves and the job is
-  // green having proved nothing. The third is the only compile of the pinned LiveKit/wazero/sqlite
-  // graph — `internal/deps` sits behind the `dillapins` tag precisely so no ordinary build pulls the
-  // SFU in, which also means no other step in this workflow would notice that graph breaking. The
-  // fourth is the race-detector run itself; it needs cgo, so it must never be reduced to a plain
-  // `go test`.
+  // Ruling M. The download lines are the hand-off from `rust-wasi`: without the download, or with it landing anywhere
+  // but `internal/mlswasi/testdata`, the wazero tests skip themselves and the job is green having proved nothing. The
+  // race-detector run needs cgo, so it must never be reduced to a plain `go test`; its shards are pinned by
+  // assertGoShards.
   go: [
     'timeout-minutes: 30',
     'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8',
     'path: internal/mlswasi/testdata',
-    'CGO_ENABLED=0 go build -tags dillapins ./internal/deps',
-    'go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx -e github.com/dilla-chat/dilla/internal/ds -e github.com/dilla-chat/dilla/internal/api)',
     'name: dilla-core-wasi',
+    goShardCommand('go'),
+    'GORACE: halt_on_error=1',
+  ],
+  // The go job's once-only steps. `internal/deps` sits behind the `dillapins` tag precisely so no ordinary build pulls
+  // the SFU in, which also means no other step in this workflow would notice the pinned LiveKit/wazero/sqlite graph
+  // breaking.
+  'go-checks': [
+    'timeout-minutes: 20',
+    'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8',
+    'path: internal/mlswasi/testdata',
+    'name: dilla-core-wasi',
+    'go mod verify',
+    'go vet ./...',
+    'CGO_ENABLED=0 go build -tags dillapins ./internal/deps',
+    "go test -race github.com/pion/turn/v5/internal/allocation -run '^TestAddPermissionPublishesInitializedTimer$' -count=20",
     NON_RACE_STEP,
+    "CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' ./cmd/dillad",
   ],
   // The one package the go job leaves out, with the wasi core it needs and a budget of its own.
   'go-ds': [
-    'timeout-minutes: 55',
+    'timeout-minutes: 35',
     'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8',
     'name: dilla-core-wasi',
     'path: internal/mlswasi/testdata',
-    'go test -race -shuffle=on -timeout 45m ./internal/ds/...',
+    goShardCommand('go-ds'),
   ],
   // The other package the go job leaves out, with the same wasi hand-off and a budget that leaves margin.
   'go-api': [
-    'timeout-minutes: 55',
+    'timeout-minutes: 35',
     'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8',
     'name: dilla-core-wasi',
     'path: internal/mlswasi/testdata',
-    'go test -race -shuffle=on -timeout 50m ./internal/api/...',
+    goShardCommand('go-api'),
   ],
   // The harness job: both hand-offs, the binary, and a run that FAILS without it.
   'go-harness': [
-    'timeout-minutes: 45',
+    'timeout-minutes: 35',
     'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8',
     'path: internal/mlswasi/testdata',
     'name: dilla-core-wasi',
     'name: dilla-testkit',
     'artifacts/dilla-testkit',
-    'go test -race -shuffle=on -timeout 38m ./internal/testkit/...',
+    goShardCommand('go-harness'),
     'DILLA_TESTKIT',
     // `DILLA_TESTKIT` above is a prefix of this one, so both are named: without the second, a
     // missing binary would skip every scenario test and the job would stay green.
@@ -332,27 +367,55 @@ const REQUIRED_STEPS = {
     'postgres:18.6-alpine3.24',
     '--locale-provider=builtin --builtin-locale=C.UTF-8',
     'DILLA_TEST_PG',
-    // I7 (fix wave): the packages with a Postgres leg, internal/ops's backup, restore and heal tests
-    // among them, with an explicit -timeout that fits the job's budget.
-    'go test -race -shuffle=on -timeout 20m ./internal/store/... ./internal/ops/...',
-    // web3.9: the AFK backfill and the channel-parent rules have Postgres legs in internal/api.
-    "go test -race -shuffle=on -timeout 20m -run 'AFK|Afk|HiddenCategory|HiddenParent|ParentAnywhere|Marker|ConcurrentEnsures|ReadsThePointer' ./internal/api/...",
+    // I7 (fix wave): the packages with a Postgres leg, internal/ops's backup, restore and heal tests among them, and
+    // (web3.9) internal/api's AFK backfill and channel-parent tests: the go-postgres set of scripts/go-shard.mjs.
+    goShardCommand('go-postgres'),
   ],
   // Task 26/C9: release verifies the downloaded client before embedding it.
   'go-release': ['CGO_ENABLED=0', 'if-no-files-found: error', 'name: dilla-web-dist', 'path: internal/web/dist', 'content="placeholder"', 'go test -tags webdist ./internal/web/...', 'DILLA_WEB_DIST: ${{ github.workspace }}/internal/web/dist'],
 };
 
 /**
- * The `go` job's test step is a module-wide wildcard on purpose: every new internal/… package is
- * picked up with zero workflow edits. Narrowing it to a package list is how a whole subsystem
- * silently stops being tested, so the exact text is pinned. It leaves out exactly two packages,
- * internal/ds and internal/api, by their full import paths, and only because the go-ds and go-api jobs (whose
- * steps are pinned in REQUIRED_STEPS) run them: the union of the two is still the whole module.
+ * The race-detector sets are module-wide on purpose: `go` is `./...` minus exactly internal/ds and internal/api, which
+ * go-ds and go-api run, so every new internal/… package is picked up with zero workflow edits and the union of the
+ * three is still the whole module. Narrowing a set is how a whole subsystem silently stops being tested, so the sets
+ * are pinned here, and each sharded job must be a matrix of its set's shard count that hands the partitioner its set
+ * and shard (its job name carries the shard). The partitioner fails a shard whose set is not covered exactly once.
  */
-function assertTestStepIsNotNarrowed(workflow, fail) {
-  const line = 'go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx -e github.com/dilla-chat/dilla/internal/ds -e github.com/dilla-chat/dilla/internal/api)';
-  if (!workflow.includes(line)) {
-    fail(`the go job's test step must be exactly "${line}"`);
+const EXPECTED_GO_SETS = {
+  go: [{ pattern: './...', exclude: ['./internal/ds', './internal/api'] }],
+  'go-api': [{ pattern: './internal/api/...' }],
+  'go-ds': [{ pattern: './internal/ds/...' }],
+  'go-harness': [{ pattern: './internal/testkit/...' }],
+  'go-postgres': [{ pattern: './internal/store/...' }, { pattern: './internal/ops/...' }, { pattern: './internal/api/...', run: POSTGRES_API_RUN }],
+};
+
+export function assertGoShards(jobs, problems, sets = GO_SHARD_SETS) {
+  const names = Object.keys(sets).sort();
+  if (JSON.stringify(names) !== JSON.stringify(Object.keys(EXPECTED_GO_SETS).sort())) {
+    problems.push(`scripts/go-shard.mjs: the sharded sets must be exactly ${Object.keys(EXPECTED_GO_SETS).join(', ')}`);
+  }
+  for (const [set, packages] of Object.entries(EXPECTED_GO_SETS)) {
+    if (JSON.stringify(sets[set]?.packages) !== JSON.stringify(packages)) {
+      problems.push(`scripts/go-shard.mjs: the ${set} set must be exactly ${JSON.stringify(packages)}`);
+    }
+    if (!Number.isInteger(sets[set]?.shards) || sets[set].shards < 1) problems.push(`scripts/go-shard.mjs: the ${set} set needs a positive shard count`);
+    const body = jobs[set];
+    if (body === undefined || !Number.isInteger(sets[set]?.shards)) continue;
+    if (!body.includes(goShardMatrix(set))) {
+      problems.push(`ci.yml: job "${set}" must be a fail-fast matrix of exactly its ${sets[set].shards} shards (scripts/go-shard.mjs SETS): ${goShardMatrix(set).trim().replaceAll('\n', ' ')}`);
+    }
+    if (!body.split('\n').includes(`    name: ${set}-\${{ matrix.shard }}`)) problems.push(`ci.yml: job "${set}" must be named ${set}-\${{ matrix.shard }}`);
+    const steps = jobSteps(body);
+    const shardSteps = steps.filter((step) => step.some((line) => line.includes('scripts/go-shard.mjs')));
+    if (shardSteps.length !== 1 || !shardSteps[0].some((line) => line === `run: ${goShardCommand(set)}`)) {
+      problems.push(`ci.yml: job "${set}" must run its shard in exactly one step: ${goShardCommand(set)}`);
+    } else if (shardSteps[0].some((line) => /^if:/.test(line))) {
+      problems.push(`ci.yml: job "${set}"'s shard step must not be conditional`);
+    }
+    if (steps.some((step) => step.some((line) => /\bgo test\b/.test(line)))) {
+      problems.push(`ci.yml: job "${set}" must run its tests through scripts/go-shard.mjs only (another go test step would run them twice or outside the union check)`);
+    }
   }
 }
 
@@ -386,18 +449,15 @@ export function raceGatedTests(root) {
 }
 
 /**
- * web3.9: go-postgres runs internal/api through a -run regex, and `go test` passes when a regex matches nothing,
- * so a test it misses is silently not run on Postgres. Every Test* in internal/api's afk*_test.go and
- * channels_parent_test.go must match that regex.
+ * web3.9: go-postgres runs internal/api through POSTGRES_API_RUN (scripts/go-shard.mjs), and a test it misses is
+ * silently not run on Postgres. Every Test* in internal/api's afk*_test.go and channels_parent_test.go must match it.
  */
-function assertPostgresAPITestsMatchRun(root, pgJob, problems) {
-  const regex = /-run '([^']*)'[^\n]*\.\/internal\/api\/\.\.\./.exec(pgJob)?.[1];
-  if (regex === undefined) return; // the missing line is reported by REQUIRED_STEPS
+function assertPostgresAPITestsMatchRun(root, problems, regex = POSTGRES_API_RUN) {
   let re;
   try {
     re = new RegExp(regex);
   } catch {
-    problems.push('ci.yml: job "go-postgres"\'s internal/api -run regex is not a valid expression');
+    problems.push('scripts/go-shard.mjs: POSTGRES_API_RUN is not a valid expression');
     return;
   }
   const dir = join(root, 'internal', 'api');
@@ -409,13 +469,13 @@ function assertPostgresAPITestsMatchRun(root, pgJob, problems) {
   }
   for (const f of files) {
     for (const m of readFileSync(join(dir, f), 'utf8').matchAll(/^func (Test\w+)\(/gm)) {
-      if (!re.test(m[1])) problems.push(`ci.yml: job "go-postgres"'s internal/api -run does not match ${m[1]} (internal/api/${f})`);
+      if (!re.test(m[1])) problems.push(`scripts/go-shard.mjs: go-postgres's internal/api filter (POSTGRES_API_RUN) does not match ${m[1]} (internal/api/${f})`);
     }
   }
 }
 
 /**
- * The `go` job's non-race step (the `go test` without -race that names its tests with -run) runs the
+ * The `go-checks` job's non-race step (the `go test` without -race that names its tests with -run) runs the
  * package of every race-gated test and names each one exactly, and names no test that is not gated:
  * a renamed or deleted test leaves a -run alternative that matches nothing, which go test passes.
  */
@@ -424,7 +484,7 @@ function assertRaceGatedTestsRunWithoutRace(root, goJob, problems) {
   const line = goJob.split('\n').find((l) => /\bgo test\b/.test(l) && !/-race\b/.test(l) && / -run '/.test(l));
   if (line === undefined) {
     if (gated.length > 0) {
-      problems.push(`ci.yml: job "go" has no non-race "go test ... -run '...'" step for the ${gated.length} race-gated test(s)`);
+      problems.push(`ci.yml: job "go-checks" has no non-race "go test ... -run '...'" step for the ${gated.length} race-gated test(s)`);
     }
     return;
   }
@@ -435,12 +495,12 @@ function assertRaceGatedTestsRunWithoutRace(root, goJob, problems) {
       problems.push(`${g.file}: an "if raceEnabled {" gate outside a Test function; the non-race step cannot name it`);
       continue;
     }
-    if (!pkgs.has(g.pkg)) problems.push(`ci.yml: job "go"'s non-race step does not run ${g.pkg}, the package of race-gated ${g.name}`);
-    if (!names.has(g.name)) problems.push(`ci.yml: job "go"'s non-race step does not name race-gated ${g.name} (${g.pkg}) in -run`);
+    if (!pkgs.has(g.pkg)) problems.push(`ci.yml: job "go-checks"'s non-race step does not run ${g.pkg}, the package of race-gated ${g.name}`);
+    if (!names.has(g.name)) problems.push(`ci.yml: job "go-checks"'s non-race step does not name race-gated ${g.name} (${g.pkg}) in -run`);
   }
   const known = new Set(gated.map((g) => g.name));
   for (const n of names) {
-    if (!known.has(n)) problems.push(`ci.yml: job "go"'s non-race step names ${n || '(empty)'}, which is no race-gated test`);
+    if (!known.has(n)) problems.push(`ci.yml: job "go-checks"'s non-race step names ${n || '(empty)'}, which is no race-gated test`);
   }
 }
 
@@ -626,7 +686,9 @@ export function jobSteps(body) {
 // Keep it in vet/lint/vulnerability/race coverage, including future full-tree
 // jobs: provide headers before loading rather than hiding the package with cgo.
 function checkWholeModuleGTK(jobs, problems) {
-  const loadsAll = line => /(?:\bgo\s+(?:vet|test|list|build)\b|\bgolangci-lint\s+run\b|\bgovulncheck(?:@\S+)?\b)[^\n]*\s\.\/\.\.\.(?=\s|$|[);|])/.test(line);
+  // The go set's shards load ./... through the partitioner (scripts/go-shard.mjs).
+  const loadsAll = line => /(?:\bgo\s+(?:vet|test|list|build)\b|\bgolangci-lint\s+run\b|\bgovulncheck(?:@\S+)?\b)[^\n]*\s\.\/\.\.\.(?=\s|$|[);|])/.test(line) ||
+    /\bnode scripts\/go-shard\.mjs run go\s/.test(line);
   for (const [name, body] of Object.entries(jobs)) {
     if (!/^ {4}runs-on: ubuntu-\S+$/m.test(body)) continue;
     const steps = jobSteps(body), consumers = steps.map((step, index) => step.some(loadsAll) ? index : -1).filter(index => index >= 0);
@@ -941,7 +1003,8 @@ export function checkWorkflow(root) {
     }
   }
 
-  assertTestStepIsNotNarrowed(text, (msg) => problems.push(`ci.yml: ${msg}`));
+  assertGoShards(jobs, problems);
+  assertPostgresAPITestsMatchRun(root, problems);
   assertEveryUploadFailsOnNoFiles(text, problems);
   assertWasmPackUsesTheSizeProfile(text, problems);
   assertWasmJobsUseClang23(text, jobs, problems);
@@ -954,29 +1017,26 @@ export function checkWorkflow(root) {
   // says so, and whichever plan lands second has to add the edge. Nobody owned that rule, so it lives
   // here. The job is required above; the guard keeps this block from piling a second, confusing
   // complaint on top of the plain "missing job" one.
-  if ('go' in jobs) {
-    if (!/^\s*needs:.*rust-wasi/m.test(jobs.go)) {
-      problems.push('ci.yml: job "go" downloads the rust-wasi artifact but has no "needs: rust-wasi"');
-    }
-    // The go job has no testkit binary, so requiring one there fails every run.
-    if (jobs.go.includes('DILLA_TESTKIT_REQUIRED')) {
-      problems.push('ci.yml: job "go" requires the testkit but does not download it; the harness is go-harness\'s');
+  for (const job of ['go', 'go-checks']) {
+    if (!(job in jobs)) continue;
+    if (!/^\s*needs:.*rust-wasi/m.test(jobs[job])) {
+      problems.push(`ci.yml: job "${job}" downloads the rust-wasi artifact but has no "needs: rust-wasi"`);
     }
     // gap-31 §4 item 2 / NV-14 (resolved): the current majors deliberately pair
     // `actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7` (this file's `rust-wasi` job) with `actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8`.
-    // Nobody else owns this half of the hand-off either — a `go` job written from facts/plan-B.md's
-    // now-stale deviation B15 text (`download-artifact@v4`) would pair v7 with v4, the untested
-    // combination B15 was created to avoid, and neither this checker nor Plan B's own Go test would
-    // catch it unless this rule lives here.
-    if (!jobs.go.includes('actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8')) {
+    // A `go` job written from facts/plan-B.md's now-stale deviation B15 text (`download-artifact@v4`) would pair v7
+    // with v4, the untested combination B15 was created to avoid.
+    if (!jobs[job].includes('actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8')) {
       problems.push(
-        'ci.yml: job "go" must use actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8 to pair with rust-wasi\'s actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7 (gap-31 §4 item 2)',
+        `ci.yml: job "${job}" must use actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8 to pair with rust-wasi's actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7 (gap-31 §4 item 2)`,
       );
     }
-    assertRaceGatedTestsRunWithoutRace(root, jobs.go, problems);
   }
-
-  if ('go-postgres' in jobs) assertPostgresAPITestsMatchRun(root, jobs['go-postgres'], problems);
+  // The go job has no testkit binary, so requiring one there fails every run.
+  if ('go' in jobs && jobs.go.includes('DILLA_TESTKIT_REQUIRED')) {
+    problems.push('ci.yml: job "go" requires the testkit but does not download it; the harness is go-harness\'s');
+  }
+  if ('go-checks' in jobs) assertRaceGatedTestsRunWithoutRace(root, jobs['go-checks'], problems);
 
   if ('go-ds' in jobs && !/^\s*needs:.*rust-wasi/m.test(jobs['go-ds'])) {
     problems.push('ci.yml: job "go-ds" downloads the rust-wasi artifact but has no "needs: rust-wasi"');
@@ -1436,14 +1496,16 @@ run: node packages/desktop/scripts/check-mac-dmg.mjs packages/desktop/out` ? ind
     problems.push(`${file}: installed account proof must upload only from its owning shard`);
   }
   for (const required of [
-    'os: ubuntu-24.04, platform: linux, arch: x64, shard: 1', 'os: ubuntu-24.04, platform: linux, arch: x64, shard: 2',
-    'os: ubuntu-24.04, platform: linux, arch: x64, shard: 3',
+    ...Array.from({ length: WEB_SHARDS }, (_, i) => `os: ubuntu-24.04, platform: linux, arch: x64, shard: ${i + 1} }`),
     "os: windows-latest, platform: win, arch: x64, shard: 1, specs: 'web/installed-upgrade-account.spec.ts",
     "os: macos-15, platform: mac, arch: arm64, shard: 1, specs: 'web/installed-upgrade-account.spec.ts",
     'name: dilla-core-wasi', 'node packages/desktop/scripts/prepare-browser-sandbox.mjs',
-    'playwright test --config playwright.desktop.config.ts --project=electron-client --shard=${{ matrix.shard }}/3',
+    `playwright test --config playwright.desktop.config.ts --project=electron-client --shard=\${{ matrix.shard }}/${WEB_SHARDS} `,
     'playwright test --config playwright.desktop.config.ts --project=electron-client ${{ matrix.specs }} --max-failures=1',
   ]) if (!client.includes(required)) problems.push(`${file}: shared Electron client coverage missing ${required}`);
+  // Every Linux shard and no more: an extra one would run nothing, a missing one would drop part of the suite.
+  const linuxShards = client.match(/^ {10}- \{ os: ubuntu-24\.04, platform: linux, arch: x64, shard: \d+ \}$/gm) ?? [];
+  if (linuxShards.length !== WEB_SHARDS) problems.push(`${file}: the Linux client suite must run in exactly ${WEB_SHARDS} shards, not ${linuxShards.length}`);
   const voice = body('voice');
   for (const required of ['desktop-voice-${{ matrix.platform }}-${{ matrix.arch }}',
     'os: [ubuntu-24.04, windows-latest, macos-15]',

@@ -11,7 +11,7 @@ import { buildReleaseFixture, isolatedReleaseTools, acceptedJobs } from './suppo
 // @ts-expect-error publishing tooling is JavaScript
 import { appcast, signedAppcast } from '../scripts/feed-format.mjs';
 // @ts-expect-error publishing tooling is JavaScript
-import { verifyDesktopBundle, TARGETS, publicReleaseRecords, stagePublicReleaseRecords, PUBLIC_ACCEPTANCE_RECORDS, requiredJobInventory, inventoryDigest } from '../scripts/verify-release.mjs';
+import { verifyDesktopBundle, TARGETS, LINUX_CLIENT_SHARDS, publicReleaseRecords, stagePublicReleaseRecords, PUBLIC_ACCEPTANCE_RECORDS, requiredJobInventory, inventoryDigest } from '../scripts/verify-release.mjs';
 // @ts-expect-error build tooling is JavaScript
 import { ACCOUNT_CHECKS } from '../scripts/installed-account-proof.mjs';
 // @ts-expect-error build tooling is JavaScript
@@ -140,7 +140,7 @@ test('publication refuses missing native acceptance even when the generic CI sta
     await assert.rejects(verifyDesktopBundle(resign(signed)), /installed.account/i);
    }
    await writeFile(path, clean);
-   const clientJobs = (job: {name: string}) => [1, 2, 3].some(shard => job.name.endsWith(`desktop-client-${target}-${shard}`));
+   const clientJobs = (job: {name: string}) => Array.from({ length: LINUX_CLIENT_SHARDS }, (_, i) => i + 1).some(shard => job.name.endsWith(`desktop-client-${target}-${shard}`));
    const absent = structuredClone(jobs); for (const job of absent.filter(clientJobs)) job.steps = [];
    await assert.rejects(verifyDesktopBundle({ ...context, jobs: absent }), /installed.account.*proof/i);
    // A second successful proof for the target, from another shard on Linux and from a second upload step elsewhere.
@@ -207,7 +207,7 @@ test('publication refuses missing native acceptance even when the generic CI sta
   await assert.rejects(verifyDesktopBundle({ ...context, metadata: dirtyMetadata, signature: sign(null, dirtyMetadata, key.privateKey).toString('base64') }), /Incomplete measured/);
   await writeFile(path, clean);
   await assert.rejects(verifyDesktopBundle({ ...context, jobs: jobs.filter(job => !job.name.endsWith('desktop-client-mac-arm64-1')) }), /Missing Electron/);
-  await assert.rejects(verifyDesktopBundle({ ...context, jobs: jobs.filter(job => !job.name.endsWith('desktop-client-linux-x64-3')) }), /Missing Electron/);
+  await assert.rejects(verifyDesktopBundle({ ...context, jobs: jobs.filter(job => !job.name.endsWith('desktop-client-linux-x64-6')) }), /Missing Electron/);
   const noAudio = structuredClone(jobs); noAudio[0].steps = noAudio[0].steps!.filter(step => !step.name.includes('audio encryption'));
   await assert.rejects(verifyDesktopBundle({ ...context, jobs: noAudio }), /missing accepted Application audio/);
   const originalFeed = await import('node:fs/promises').then(fs => fs.readFile(join(directory, 'appcast-arm64.xml')));
