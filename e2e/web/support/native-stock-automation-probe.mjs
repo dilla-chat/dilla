@@ -57,7 +57,9 @@ try {
  const deadlinePicker = Date.now() + 10000;
  while (Date.now() < deadlinePicker && browser.contexts()[0].pages().length !== 1) await new Promise(resolve => setTimeout(resolve, 200));
  if (browser.contexts()[0].pages().length !== 1) throw new Error('Expected the picker to close when the instance opened');
- await instance.getByRole('heading', { name: `Join ${instanceName}`, exact: true }).waitFor({ state: 'visible', timeout: 90000 });
+ // Wave B's onboarding heading (en.ts onboarding.connect.title) no longer names the instance; the page is the instance's
+ // own origin (checked above), so its first step is the instance's real onboarding.
+ await instance.getByRole('heading', { name: 'Join with an invite', exact: true }).waitFor({ state: 'visible', timeout: 90000 });
  if (process.env.DILLA_NATIVE_ACCEPTANCE_OUTPUT) {
   const sandbox = await observeRendererSandbox(browser, child.pid, [instance]);
   await writeFile(process.env.DILLA_NATIVE_ACCEPTANCE_OUTPUT, JSON.stringify({ httpsOnboarding: true, sandbox }) + '\n', { flag: 'wx', mode: 0o644 });

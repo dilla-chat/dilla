@@ -104,19 +104,17 @@ test('passkeys: sign up with one, sign in with a copy of it, add the app, remove
   const second = await launchSecond(playwright, browserName, { launchOptions, headless, channel, viewport, baseURL: `http://localhost:${String(e2ePort(8497))}` }, secondDir);
   try {
     await guard.attach(second);
-    // Wave B task 3: where the browser has conditional mediation, the login step offers passkeys in the username field's
-    // autofill and draws no button. Checked in a page of its own, closed before the sign-in page opens.
-    const look = await second.newPage();
-    await look.goto('/welcome');
-    await expectHeading(look, COPY.connectTitle, { instance });
-    await look.getByRole('button', { name: copy(SIGNIN.entry), exact: true }).click();
-    await expectHeading(look, SIGNIN.loginTitle, { instance });
-    await expect(look.getByLabel(copy(SIGNIN.username), { exact: true })).toHaveAttribute('autocomplete', 'username webauthn');
-    await look.close();
-
+    // One page per device profile: the desktop harness refuses a second tab for one instance (#137).
     const page2 = second.pages()[0] ?? (await second.newPage());
     const authenticator2 = await addAuthenticator(page2);
     expect(await copyCredentials(authenticator, authenticator2)).toBe(1);
+    // Wave B task 3: where passkeys can be used, the login step's username field offers them in its autofill. Checked on
+    // this page before the autofill is switched off below; the login is left again without focusing the field.
+    await page2.goto('/welcome');
+    await expectHeading(page2, COPY.connectTitle, { instance });
+    await page2.getByRole('button', { name: copy(SIGNIN.entry), exact: true }).click();
+    await expectHeading(page2, SIGNIN.loginTitle, { instance });
+    await expect(page2.getByLabel(copy(SIGNIN.username), { exact: true })).toHaveAttribute('autocomplete', 'username webauthn');
     // Chromium's virtual authenticator answers no autofill (conditional) request without a person picking from the popup,
     // so this page is a browser without conditional mediation: the login keeps "Sign in with a passkey" (Jonas, fix round
     // 2), which runs the ordinary ceremony. The autofill path is covered by the unit tests (SignInFactor.test.tsx).
