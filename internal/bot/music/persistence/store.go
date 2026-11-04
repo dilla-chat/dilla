@@ -146,6 +146,11 @@ func (s *Store) quarantineUnsupported(ctx context.Context, channel id.ID, origin
 		return Snapshot{}, ErrUnsupportedProvider
 	}
 	state.Revision++
+	if !state.Paused {
+		// As in Load: only a stored pause has an authoritative position. A queue saved while
+		// playing restarts its current track from zero, with or without a removed provider.
+		state.PositionMS, state.PositionAtMS = 0, 0
+	}
 	state.Paused = true
 	value, err := encode(state)
 	if err != nil {
