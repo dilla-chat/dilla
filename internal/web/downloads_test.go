@@ -35,10 +35,14 @@ func TestDownloadsServeNavigationWithoutStartingTheClient(t *testing.T) {
 		if rec.Header().Get("Content-Security-Policy") != do(t, client, "GET", "/", nil).Header().Get("Content-Security-Policy") || rec.Header().Get("Referrer-Policy") != "no-referrer" {
 			t.Errorf("headers = %v", rec.Header())
 		}
-		for _, artifact := range []string{"linux-x64.AppImage", "linux-x64.deb", "linux-x64.rpm", "linux-x64.aur.tar.gz", "win-x64.exe", "mac-x64.dmg", "mac-arm64.dmg"} {
-			if !strings.Contains(rec.Body.String(), `href="https://github.com/dilla-chat/dilla/releases/download/desktop-beta/dilla-`+artifact+`"`) {
-				t.Errorf("missing fixed %s link", artifact)
+		// Each button asks this server, which redirects to the verified release asset (internal/desktopdownload).
+		for _, platform := range []string{"linux-appimage", "linux-deb", "linux-rpm", "linux-aur", "win-x64", "mac-arm64"} {
+			if !strings.Contains(rec.Body.String(), `href="/download/`+platform+`"`) {
+				t.Errorf("missing %s link", platform)
 			}
+		}
+		if strings.Contains(rec.Body.String(), "github.com") || strings.Contains(rec.Body.String(), "mac-x64") {
+			t.Errorf("%s links a fixed release or a macOS Intel build", route)
 		}
 	}
 	head := do(t, h, http.MethodHead, "/", nil)

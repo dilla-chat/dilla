@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"net/http"
 	"os"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -86,6 +87,9 @@ type Options struct {
 	// DesktopDownloads opts into public download navigation after all desktop
 	// acceptance gates pass. False retains the original browser client/test host.
 	DesktopDownloads bool
+	// DesktopDownloadRoutes answers GET /download/{platform} when DesktopDownloads is on;
+	// nil means desktopdownload.New over the pinned GitHub Pages feed. Tests pass their own.
+	DesktopDownloadRoutes http.Handler
 	// LiveKitURL replaces the signalling URL the call routes hand a client ("wss://" plus the
 	// instance's host); "" keeps it. `dillad serve` never sets it: the test host passes its own
 	// ws:// listener, which a browser on loopback can reach (web-3 task 3).

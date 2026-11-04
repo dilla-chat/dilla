@@ -27,6 +27,7 @@ import (
 	"github.com/dilla-chat/dilla/internal/bot/capability"
 	botidentity "github.com/dilla-chat/dilla/internal/bot/identity"
 	botruntime "github.com/dilla-chat/dilla/internal/bot/runtime"
+	"github.com/dilla-chat/dilla/internal/desktopdownload"
 	"github.com/dilla-chat/dilla/internal/ds"
 	"github.com/dilla-chat/dilla/internal/gateway"
 	"github.com/dilla-chat/dilla/internal/id"
@@ -636,6 +637,16 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	// The browser client answers only what no route and no reserved prefix answers
 	// (internal/web.Fallback): the mux keeps its own 404s and 405s, and the
 	// method-less /rtc patterns mountRTC adds stay legal.
+	// /download/{platform} redirects to the verified desktop release asset on a desktop-only
+	// instance, and is a plain 404 otherwise (never the browser client's navigation fallback).
+	downloads := desktopdownload.NotFound()
+	if o.DesktopDownloads {
+		downloads = o.DesktopDownloadRoutes
+		if downloads == nil {
+			downloads = desktopdownload.New(desktopdownload.Options{})
+		}
+	}
+	mux.Handle("GET /download/{platform}", downloads)
 	h := client.Fallback(mux)
 	if o.DesktopDownloads {
 		h = client.DownloadsFallback(mux)
