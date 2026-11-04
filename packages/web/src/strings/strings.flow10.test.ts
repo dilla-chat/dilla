@@ -12,7 +12,7 @@ describe('flow 10 (v0.1.0-web3.6, second factor)', () => {
   const pairs = [...copy.matchAll(/`([a-zA-Z][\w.]*)='([^`]*)'`/g)].map(m => [m[1], m[2]] as const);
   it('strings: every flow-10 copy key equals en.ts byte for byte, and every new key is in the flow', () => {
     const table = en as Readonly<Record<string, string>>;
-    expect(pairs.length).toBe(137); // Includes desktop identity-provider sign-in copy.
+    expect(pairs.length).toBe(143); // Includes desktop identity-provider sign-in copy and the desktop "instance needs an update" / rate-limit copy.
     for (const [key, value] of pairs) expect(table[key], key).toBe(value);
     for (const [key, value] of pairs) {
       for (const f of FORBIDDEN as { word: string; re: RegExp }[]) expect(f.re.test(value), `${key}: ${f.word}`).toBe(false);
