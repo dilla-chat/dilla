@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Cancel only this trusted CI run at its first failure, using its job-local token."""
+from http.client import HTTPException
 import json
 import os
 import re
@@ -94,6 +95,9 @@ class GitHubRun:
             except TimeoutError:
                 last_reason = "timeout"
             except OSError:
+                last_reason = "network"
+            except HTTPException:
+                # A response cut off mid-body (IncompleteRead, main run 41917570494) is a network failure too.
                 last_reason = "network"
             if attempt + 1 < attempts:
                 delay = attempt + 1 if attempt < 2 else 5
