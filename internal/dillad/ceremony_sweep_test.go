@@ -10,12 +10,12 @@ import (
 
 	"github.com/pressly/goose/v3"
 
-	"github.com/jonasthim/dilla/internal/auth"
-	"github.com/jonasthim/dilla/internal/clock"
-	"github.com/jonasthim/dilla/internal/config"
-	"github.com/jonasthim/dilla/internal/server"
-	"github.com/jonasthim/dilla/internal/store/sqlite"
-	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
+	"github.com/dilla-chat/dilla/internal/auth"
+	"github.com/dilla-chat/dilla/internal/clock"
+	"github.com/dilla-chat/dilla/internal/config"
+	"github.com/dilla-chat/dilla/internal/server"
+	"github.com/dilla-chat/dilla/internal/store/sqlite"
+	sqlitemigrations "github.com/dilla-chat/dilla/internal/store/sqlite/migrations"
 )
 
 // Wave B task 3 security review I1: the maintenance tick prunes expired WebAuthn ceremonies, so a login begin nobody

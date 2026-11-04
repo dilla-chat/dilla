@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/cborx"
-	"github.com/jonasthim/dilla/internal/config"
-	"github.com/jonasthim/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/config"
+	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // Wave B task 3 (Jonas): POST /v1/auth/passkey/login/begin is metered on its own passkey_begin bucket, so the sign-in

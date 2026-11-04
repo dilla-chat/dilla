@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonasthim/dilla/internal/gateway"
+	"github.com/dilla-chat/dilla/internal/gateway"
 )
 
 func TestShutdownFlushesProfileHintsBeforeGatewayStops(t *testing.T) {

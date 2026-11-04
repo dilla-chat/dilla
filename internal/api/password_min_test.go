@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/cborx"
-	"github.com/jonasthim/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // Wave B task 3b (Jonas, 2026-10-30): a password set at registration or by a change has at least 12 characters

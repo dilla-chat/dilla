@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/jonasthim/dilla/internal/config"
+	"github.com/dilla-chat/dilla/internal/config"
 )
 
 // Wave B task 3: a password login that owes a second factor carries a third element, 1 when the account
