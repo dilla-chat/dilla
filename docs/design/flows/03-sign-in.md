@@ -738,7 +738,12 @@ it, so the id stays visible whatever the name says. Then the
 tier tag (`devices.tier.web` for a browser, `devices.tier.native` for an app), the tag
 `devices.thisBrowser` on this browser's row, a state (`devices.unlisted` when the device is not in the
 account's newest device list, `devices.revoked` when it was removed, nothing otherwise) and
-`devices.lastSeen`. Rows are ordered: this browser first, then the others by last seen, newest first,
+`devices.lastSeen`. This device's own row also carries a platform tag (Jonas, 2026-11-04): `devices.platform.desktop`
+with the OS the desktop shell's bridge reports (macOS, Windows or Linux), `devices.platform.browser` with the browser its
+user agent names, or `devices.platform.desktopUnknown` / `devices.platform.browserUnknown`, with `devices.platform.note`
+as its title. It is informational, never a trust signal: the tier in the signed credential stays the trust signal (the
+desktop app keeps browser-tier custody, tier 1), the label is only what the device says about itself, and it is never
+sent anywhere, so other devices' rows have none. Rows are ordered: this browser first, then the others by last seen, newest first,
 removed devices last. `devices.revoke` is offered on every other device that is not removed: on a listed
 device it opens the remove dialog with the recovery key; on a device that is not yet in the device list
 it opens the remove-unlisted dialog without a key (ruling 30: no signed list names such a device, so
@@ -921,6 +926,11 @@ while a command runs, when they do nothing. Focus then returns to the button tha
 | `devices.thisBrowser` | `This browser` | tag on this browser's row |
 | `devices.tier.web` | `Browser` | tier tag of a browser |
 | `devices.tier.native` | `App` | tier tag of an app |
+| `devices.platform.desktop` | `Desktop · {os}` | informational platform tag of this device's row in the desktop app |
+| `devices.platform.desktopUnknown` | `Desktop` | the same, when the shell reports an OS it does not name |
+| `devices.platform.browser` | `Browser · {browser}` | informational platform tag of this device's row in a browser |
+| `devices.platform.browserUnknown` | `Browser` | the same, when the user agent names no known browser |
+| `devices.platform.note` | `Where this device runs, as it says itself. It is not a security check.` | title of the platform tag |
 | `devices.lastSeen` | `last seen {when}` | second line of every row |
 | `devices.unlisted` | `not yet in the device list` | state of a device the newest device list does not name |
 | `devices.revoked` | `removed` | state of a removed device |

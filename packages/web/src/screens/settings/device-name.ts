@@ -21,3 +21,8 @@ export function suggestDeviceName(userAgent: string): DeviceNameParts | null {
   const os = SYSTEMS.find(([re]) => re.test(userAgent))?.[1];
   return browser === undefined || os === undefined ? null : { browser, os };
 }
+
+/** The browser a user agent names ("Firefox"), or null when it is not one of the known ones. */
+export function browserName(userAgent: string): string | null {
+  return BROWSERS.find(([re]) => re.test(userAgent))?.[1] ?? null;
+}

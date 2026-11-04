@@ -53,6 +53,19 @@ async function typeKey(user: UserEvent, text = GROUPED) {
 }
 
 describe('the device list', () => {
+  it('labels this device "Desktop · <os>" in the desktop app, and leaves the tier and the other rows as they are', () => {
+    (globalThis as unknown as { dillaDesktop?: unknown }).dillaDesktop = { platform: 'darwin', info: () => Promise.resolve({}), send: () => Promise.resolve(), onEvent: () => () => {} };
+    try {
+      setup();
+      const own = rowOf(OWN);
+      expect(own.querySelector('[data-kind="platform"]')?.textContent).toBe('Desktop · macOS');
+      expect(own.getAttribute('data-tier')).toBe('web');
+      expect(own.querySelector('[data-kind="tier"]')).toBeNull();
+      expect(rowOf(PHONE).querySelector('[data-kind="platform"]')).toBeNull();
+      expect(rowOf(PHONE).getAttribute('data-tier')).toBe('native');
+    } finally { Reflect.deleteProperty(globalThis, 'dillaDesktop'); }
+  });
+
   it('asks for a fresh list once and lists every device, this browser first', async () => {
     const { fake, view } = setup();
     expect(fake.callsOf('refreshDevices')).toEqual([{ m: 'refreshDevices' }]);
@@ -64,7 +77,12 @@ describe('the device list', () => {
     const own = rowOf(OWN);
     expect(within(own).getByText('This browser')).toBeInTheDocument();
     // Signal task 10 fix round 1 (README §5.9): no tier tags; this browser's row signs out, and every live device can be named.
-    expect(within(own).queryByText('Browser')).toBeNull();
+    for (const row of rows()) expect(row.querySelector('[data-kind="tier"]')).toBeNull();
+    // Jonas, 2026-11-04: this device's row says where it runs (jsdom's user agent names no browser), as an informational tag.
+    const platform = own.querySelector('[data-kind="platform"]');
+    expect(platform?.textContent).toBe('Browser');
+    expect(platform?.getAttribute('title')).toBe('Where this device runs, as it says itself. It is not a security check.');
+    for (const id of [PHONE, FORGOTTEN, OLD]) expect(rowOf(id).querySelector('[data-kind="platform"]')).toBeNull();
     expect(within(own).getAllByRole('button').map(b => b.textContent)).toEqual(['Sign out']);
     expect(within(rowOf(PHONE)).getByRole('button', { name: 'Remove' })).toBeInTheDocument();
     expect(within(rowOf(FORGOTTEN)).getByText('not yet in the device list')).toBeInTheDocument();

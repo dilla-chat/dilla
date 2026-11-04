@@ -70,7 +70,7 @@ describe('the copy rules', () => {
     expect(en['devices.rootMismatch']).toBe('The recovery data stored for this account on {instance} is not this account’s. The recovery key will not work until the operator resets it.');
     // Flow 15 (change password) adds 23: settings.password.*.
     // Flow 06 (web-3) adds 19: settings.nav.voice, settings.voice.* (15), settings.notify.sounds and settings.sound.voice / .ring.
-    expect(Object.keys(en).filter(k => /^(settings|devices|notify|appearance)\./.test(k))).toHaveLength(156); // wave B Task 5 adds devices.removed and devices.unnamed; fix round 2 adds devices.subOwn and devices.subOther; flow 17 adds settings.nav.profile, EOD E7 adds six devices.rename*, web3.12.1 devices.renameServerReads; Signal task 10 fix round 1 adds the twelve notify.* of the prototype's rows and drops settings.voice.automaticBeta; task 10b drops the nine strings of the record-and-play test and the input meter (Let's check is signalSettings.voice.*)
+    expect(Object.keys(en).filter(k => /^(settings|devices|notify|appearance)\./.test(k))).toHaveLength(161); // 2026-11-04 adds the five devices.platform.* (the own device's informational platform tag); wave B Task 5 adds devices.removed and devices.unnamed; fix round 2 adds devices.subOwn and devices.subOther; flow 17 adds settings.nav.profile, EOD E7 adds six devices.rename*, web3.12.1 devices.renameServerReads; Signal task 10 fix round 1 adds the twelve notify.* of the prototype's rows and drops settings.voice.automaticBeta; task 10b drops the nine strings of the record-and-play test and the input meter (Let's check is signalSettings.voice.*)
     expect(Object.keys(en)).not.toContain('devices.error.other');
     expect(Object.keys(en)).not.toContain('devices.cap');
   });

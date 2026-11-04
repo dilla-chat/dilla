@@ -15,6 +15,12 @@ export interface DeviceRowProps {
   tier: 'web' | 'native';
   /** The tier tag; Settings draws none (the prototype's row, Signal task 10), so it is optional. */
   tierLabel?: string;
+  /**
+   * Where the device runs ("Desktop · macOS", "Browser · Firefox"). Informational only: the tier is the trust signal, and
+   * this label is whatever the device reported about itself. `platformNote` says so to anyone who hovers or asks.
+   */
+  platformLabel?: string;
+  platformNote?: string;
   own?: boolean;
   ownLabel?: string;
   state?: string;
@@ -34,7 +40,7 @@ export interface DeviceRowProps {
  * fact is shown, and nowhere in the chrome (F9). The action, when given, is described by the
  * device's name, so "remove" is heard with the device it removes; so is the extra one. Every text arrives as a prop.
  */
-export function DeviceRow({ name, idHint, tier, tierLabel, own, ownLabel, state, lastSeen, action, extraAction, menu }: DeviceRowProps) {
+export function DeviceRow({ name, idHint, tier, tierLabel, platformLabel, platformNote, own, ownLabel, state, lastSeen, action, extraAction, menu }: DeviceRowProps) {
   const [at, setAt] = useState<{ x: number; y: number } | null>(null);
   const rowRef = useRef<HTMLLIElement>(null);
   const trigger = useContextMenuTrigger<HTMLLIElement>(menu === undefined ? undefined : (_el, point) => setAt(point));
@@ -56,6 +62,7 @@ export function DeviceRow({ name, idHint, tier, tierLabel, own, ownLabel, state,
           <span id={nameId} className="d-device-row__name"><bdi>{name}</bdi></span>
           {idHint ? <span id={idId} className="d-device-row__id">{idHint}</span> : null}
           {tierLabel ? <span className="d-device-row__tag" data-kind="tier">{tierLabel}</span> : null}
+          {platformLabel ? <span className="d-device-row__tag" data-kind="platform" title={platformNote}>{platformLabel}</span> : null}
           {own && ownLabel ? <span className="d-device-row__tag" data-kind="own">{ownLabel}</span> : null}
         </div>
         {state || lastSeen ? (

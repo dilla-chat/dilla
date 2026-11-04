@@ -24,6 +24,9 @@ if (process.isMainFrame) {
       window.postMessage({ type: 'dilla-screen-capture-port', id }, location.origin, [event.ports[0]]);
     });
     const bridge: DesktopBridge = {
+      // The OS this shell runs on, fixed here: the page reads it to label its own device "Desktop · macOS". A display hint
+      // only, never a trust signal (the device's custody tier, 1 for this app, is in its signed credential).
+      platform: process.platform,
       info: () => ipcRenderer.invoke('dilla:info'),
       send: (command: DesktopCommand) => ipcRenderer.invoke('dilla:command', command),
       browserAuth: request => ipcRenderer.invoke('dilla:browser-auth', request),
