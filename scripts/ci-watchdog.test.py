@@ -321,6 +321,28 @@ class WatchdogTests(unittest.TestCase):
         self.assertTrue(all(0 < timeout <= watchdog.JOBS_REQUEST_TIMEOUT for _, timeout in requests))
         self.assertNotIn("PRIVATE_", str(caught.exception))
 
+    def test_a_jobs_read_cut_off_mid_body_is_retried(self):
+        # Main run 41917570494: GitHub cut a jobs response off; IncompleteRead crashed the watcher, which cancelled the run.
+        from http.client import IncompleteRead
+        clock = Clock()
+        calls = []
+        class CutOff:
+            def __enter__(self):
+                return self
+            def __exit__(self, *_):
+                return False
+            def read(self):
+                raise IncompleteRead(b'{"total_count": 1, "jo')
+        def opener(request, timeout):
+            calls.append(request)
+            if len(calls) == 1:
+                return CutOff()
+            return io.BytesIO(json.dumps({"total_count": 0, "jobs": []}).encode())
+        api = watchdog.GitHubRun("owner/repo", "123", "test-token", opener=opener,
+                                 sleep=clock.sleep, monotonic=lambda: clock.now)
+        self.assertEqual(api.jobs(), [])
+        self.assertEqual(len(calls), 2)
+
     def test_a_jobs_read_slower_than_eight_seconds_still_succeeds(self):
         # PR #149's main run: GitHub answered the jobs read in ~9 s every time; an 8 s socket timeout cancelled the run.
         clock = Clock()
