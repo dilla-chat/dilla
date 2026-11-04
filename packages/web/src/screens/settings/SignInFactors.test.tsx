@@ -479,7 +479,8 @@ describe('review fixes', () => {
     const { user } = setup({ ...ONLY_PASSKEY }, (c, f) => c.m === 'factorTotpBegin' ? Promise.reject(refusal({ code: 'E_NETWORK' })) : happy(c, f));
     await user.click(await screen.findByRole('button', { name: en['factorSettings.totp.add'] }));
     await confirmPassword(user);
-    expect(within(await screen.findByRole('dialog', { name: en['factorSettings.stepUp.title'] })).getByText(en['factorSettings.stepUp.again'])).toBeInTheDocument();
+    // The step-up dialog can be found before the refusal re-renders it with the notice (PR #149's CI, under load): wait for both.
+    await waitFor(() => expect(within(screen.getByRole('dialog', { name: en['factorSettings.stepUp.title'] })).getByText(en['factorSettings.stepUp.again'])).toBeInTheDocument());
   });
   it('hands a passkey the instance refused back to the password with the nothing-was-added notice', async () => {
     vi.mocked(createPasskey).mockResolvedValueOnce('{"c":1}');
@@ -546,7 +547,8 @@ describe('review fixes', () => {
     await waitFor(() => expect(within(dialog).getByRole('button', { name: en['factor.passkey.submit'] })).toHaveFocus());
     // The begin spent the token: the next try asks for the password again, saying nothing was added.
     await user.click(within(dialog).getByRole('button', { name: en['factor.passkey.submit'] }));
-    expect(within(await screen.findByRole('dialog', { name: en['factorSettings.stepUp.title'] })).getByText(en['factorSettings.stepUp.again'])).toBeInTheDocument();
+    // The step-up dialog can be found before the refusal re-renders it with the notice (PR #149's CI, under load): wait for both.
+    await waitFor(() => expect(within(screen.getByRole('dialog', { name: en['factorSettings.stepUp.title'] })).getByText(en['factorSettings.stepUp.again'])).toBeInTheDocument());
     expect(fake.callsOf('factorPasskeyBegin')).toHaveLength(1);
   });
   it('has no axe violations with the step-up, the remove confirm and the add dialog open', async () => {
