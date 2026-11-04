@@ -53,6 +53,9 @@ try {
  }
  if (!instance) throw new Error('Stock app did not open the selected instance');
  // Connecting replaces the picker: the instance is the only window left, so the picker page is no longer there to observe.
+ // The picker is destroyed once openInstance resolves, a moment after the instance page appears: poll briefly.
+ const deadlinePicker = Date.now() + 10000;
+ while (Date.now() < deadlinePicker && browser.contexts()[0].pages().length !== 1) await new Promise(resolve => setTimeout(resolve, 200));
  if (browser.contexts()[0].pages().length !== 1) throw new Error('Expected the picker to close when the instance opened');
  await instance.getByRole('heading', { name: `Join ${instanceName}`, exact: true }).waitFor({ state: 'visible', timeout: 90000 });
  if (process.env.DILLA_NATIVE_ACCEPTANCE_OUTPUT) {
