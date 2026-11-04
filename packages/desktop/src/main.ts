@@ -504,7 +504,12 @@ ipcMain.handle('dilla:manager', async (event, value: unknown) => {
   if (command.type === 'list' && Object.keys(command).length === 1) return preferences.instances;
   if (command.type === 'connect' && Object.keys(command).length === 2 && typeof command.instance === 'string') {
     const instance = canonicalInstance(command.instance, allowLoopback);
-    if (await confirmInstance(instance)) await openInstance(instance);
+    if (await confirmInstance(instance)) {
+      await openInstance(instance);
+      // One window: the instance replaces the picker. destroy(), not close(): lockWindow turns close into hide, and a hidden
+      // picker would come back stale. "Your instances…" in the menu opens a fresh one. A cancelled confirm or a throw keeps it.
+      manager?.destroy();
+    }
     return;
   }
   throw new Error('Invalid manager request');

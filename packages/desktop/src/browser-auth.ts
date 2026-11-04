@@ -17,9 +17,13 @@ export async function browserAuth(instance: string, value: unknown, deps: {
   const signal = AbortSignal.any([AbortSignal.timeout(120000), ...(deps.signal ? [deps.signal] : [])]);
   const verifier = randomBytes(32).toString('base64url');
   const transport = deps.fetch ?? fetch;
-  async function post(url: URL, body: unknown): Promise<{ status: number; value: Record<string, unknown> }> {
+  async function post(url: URL, body: unknown, first = false): Promise<{ status: number; value: Record<string, unknown> }> {
     const response = await transport(url.href, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), redirect: 'error', signal, credentials: 'omit', cache: 'no-store' });
     if (response.status === 202) { await response.body?.cancel(); return { status: 202, value: {} }; }
+    // An instance older than the desktop sign-in has no such route: say so, so the page does not blame the passkey.
+    // These two codes are stable strings the web client reads out of the wrapped IPC message.
+    if (first && (response.status === 404 || response.status === 405)) { await response.body?.cancel(); throw new Error('desktop-auth-unsupported'); }
+    if (response.status === 429) { await response.body?.cancel(); throw new Error('desktop-auth-rate-limited'); }
     if (!response.ok) { await response.body?.cancel(); throw new Error('Browser sign-in unavailable. Start again in Dilla.'); }
     const reader = response.body?.getReader(); if (!reader) throw new Error('Invalid browser reply');
     let size = 0; const parts: Uint8Array[] = [];
@@ -29,7 +33,7 @@ export async function browserAuth(instance: string, value: unknown, deps: {
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid browser reply');
     return { status: response.status, value: value as Record<string, unknown> };
   }
-  const created = await post(new URL('request', base), { ...request, challenge: createHash('sha256').update(verifier).digest('base64url') });
+  const created = await post(new URL('request', base), { ...request, challenge: createHash('sha256').update(verifier).digest('base64url') }, true);
   if (typeof created.value.id !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(created.value.id)) throw new Error('Invalid browser request ID');
   const navigation = new URL(created.value.id, base);
   await deps.open(navigation.href);

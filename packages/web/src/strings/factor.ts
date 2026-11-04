@@ -55,5 +55,7 @@ export const factor = {
   'factor.error.nameLong': 'That name is too long. Try a shorter one.',
   'factor.error.tooMany': 'Too many attempts. Try again in {seconds} s.',
   'factor.error.network': 'The connection dropped. Check it and try again.',
+  'factor.error.desktopUnsupported': 'This Dilla instance needs an update before the desktop app can use passkeys. Do this from your browser.',
+  'factor.error.rateLimited': 'Too many attempts. Wait a moment, then try again.',
   'factor.error.other': 'That did not work ({code}). Try again.',
 } as const;

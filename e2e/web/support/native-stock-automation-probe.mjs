@@ -52,9 +52,11 @@ try {
   if (!instance) await new Promise(resolve => setTimeout(resolve, 200));
  }
  if (!instance) throw new Error('Stock app did not open the selected instance');
+ // Connecting replaces the picker: the instance is the only window left, so the picker page is no longer there to observe.
+ if (browser.contexts()[0].pages().length !== 1) throw new Error('Expected the picker to close when the instance opened');
  await instance.getByRole('heading', { name: `Join ${instanceName}`, exact: true }).waitFor({ state: 'visible', timeout: 90000 });
  if (process.env.DILLA_NATIVE_ACCEPTANCE_OUTPUT) {
-  const sandbox = await observeRendererSandbox(browser, child.pid, [page, instance]);
+  const sandbox = await observeRendererSandbox(browser, child.pid, [instance]);
   await writeFile(process.env.DILLA_NATIVE_ACCEPTANCE_OUTPUT, JSON.stringify({ httpsOnboarding: true, sandbox }) + '\n', { flag: 'wx', mode: 0o644 });
   console.log('Installed stock client reached HTTPS onboarding with observed renderer sandboxing.');
  } else console.log('Stock client reached its real test instance onboarding. This is not installed acceptance.');
