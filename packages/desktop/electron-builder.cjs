@@ -34,10 +34,10 @@ module.exports = {
   protocols: [{ name: 'Dilla invite', schemes: ['dilla'] }],
   publish: [{ provider: 'github', owner: 'dilla-chat', repo: 'dilla', releaseType: 'draft' }],
   // AppImage expands ${arch} to x86_64; release descriptors use canonical x64.
-  linux: { artifactName: 'dilla-${version}-linux-x64.${ext}', syncDesktopName: true, target: [{ target: 'AppImage', arch: ['x64'] }], category: 'Network', icon: 'assets/icon.png' },
+  linux: { artifactName: 'dilla-${version}-linux-x64.${ext}', syncDesktopName: true, target: [{ target: 'AppImage', arch: ['x64'] }], category: 'Network', icon: 'assets/icons/linux' },
   // The pinned legacy AppImage target otherwise adds --no-sandbox to Exec.
   appImage: { executableArgs: [] },
-  win: { target: [{ target: 'nsis', arch: ['x64'] }], icon: 'assets/icon.png', verifyUpdateCodeSignature: false, forceCodeSigning: false },
+  win: { target: [{ target: 'nsis', arch: ['x64'] }], icon: 'assets/icons/dilla.ico', verifyUpdateCodeSignature: false, forceCodeSigning: false },
   nsis: { perMachine: false, oneClick: true, allowElevation: false, packElevateHelper: false, differentialPackage: false, deleteAppDataOnUninstall: false },
   dmg: { sign: macSigning && macRotationPending },
   mac: {
@@ -45,7 +45,7 @@ module.exports = {
     extraFiles: [{ from: 'native-bin/Sparkle.framework', to: 'Frameworks/Sparkle.framework' }],
     // The hardened runtime's entitlements are assets/entitlements.mac.plist and, for the helper processes,
     // assets/entitlements.mac.inherit.plist, which electron-builder reads from the build resources by those names.
-    icon: 'assets/icon.png', ...(macSigning ? {} : { identity: '-' }), notarize: macNotarizing,
+    icon: 'assets/icons/Dilla.icns', ...(macSigning ? {} : { identity: '-' }), notarize: macNotarizing,
     hardenedRuntime: true, gatekeeperAssess: false,
     extendInfo: {
       CFBundleVersion: require('./package.json').version.replace('-beta.', 'b'),
