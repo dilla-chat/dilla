@@ -531,7 +531,13 @@ test('polls publish in channels and threads, accept real votes, reject forged ma
     const forged = `[dilla-poll:v1:${'a'.repeat(32)}]`;
     await sendText(member, GENERAL, forged);
     await expect(logRegion(member, GENERAL).locator('.dw-poll-card')).toHaveCount(0);
-    for (let index = 0; index < 8; index++) await sendText(page, GENERAL, `observer scroll filler ${index} ${Date.now()}`);
+    // Signal groups one author's rows (about 26 px each), so a fixed count left the log a few pixels taller than its view
+    // and the card below still in view at the top. Fill until the log overflows by more than a row, whatever the window.
+    const fillerLog = logRegion(page, GENERAL);
+    for (let index = 0; index < 60; index++) {
+      await sendText(page, GENERAL, `observer scroll filler ${index} ${Date.now()}`);
+      if (index >= 7 && await fillerLog.evaluate(node => node.scrollHeight > node.clientHeight + 48)) break;
+    }
 
     const question = `Channel poll ${Date.now()}?`;
     await openPollDialog(page, composerBox(page, GENERAL), question);
@@ -828,7 +834,7 @@ test('reminders sync across devices and remain due after Bot restart and reload'
     await enableBot(page, owner.password);
     const reminderText = `cross-device reminder ${Date.now()}`;
     await invoke(composerBox(page, GENERAL), page, `/remind when:1m text:"${reminderText}"`);
-    await expect(commandResult(page)).toContainText('Reminder set.', { timeout: BOT_WAIT });
+    await expect(commandResult(page)).toContainText(new RegExp(`^Saved\\. I’ll remind you .+: ${reminderText}$`, 'u'), { timeout: BOT_WAIT });
     await expect.poll(() => lastReminderRequestId(page), { timeout: BOT_WAIT }).toMatch(/^[0-9a-f]{32}$/u);
     const reminderId = await lastReminderRequestId(page);
     expect(reminderId).toMatch(/^[0-9a-f]{32}$/u);
@@ -923,7 +929,7 @@ test('a reminder set from the picker chips appears under Upcoming', async ({ pag
     const text = region.getByRole('textbox', { name: 'text', exact: true });
     await text.fill(reminderText);
     await text.press('Enter');
-    await expect(commandResult(page)).toContainText('Reminder set.', { timeout: BOT_WAIT });
+    await expect(commandResult(page)).toContainText(new RegExp(`^Saved\\. I’ll remind you .+: ${reminderText}$`, 'u'), { timeout: BOT_WAIT });
     await expect(region).toHaveCount(0);
     const list = await chooseCommand(composerBox(page, GENERAL), page, 'reminders list');
     await list.getByRole('textbox', { name: 'press ↵ to run', exact: true }).press('Enter');

@@ -114,7 +114,7 @@ test('a reply in a thread shows its count on both sides, the pane sits in the as
   const peer = await ThreadPeer.start(started());
   try {
     const { general } = await enter(page, peer);
-    await test.step('Ada posts, then opens the thread from the toolbar: the pane is in the aside and takes focus', async () => {
+    await test.step('Ada posts, then opens the thread from the toolbar: the pane is in the aside and leaves its composer unfocused', async () => {
       const plan = `plan ${tag()}`;
       await sendText(page, GENERAL, plan);
       const root = await peer.waitFor(plan, general);
@@ -132,7 +132,8 @@ test('a reply in a thread shows its count on both sides, the pane sits in the as
         const aside = await threadPane(page).boundingBox();
         return aside!.x - (log!.x + log!.width);
       }, { message: 'the thread pane starts where the channel ends', timeout: WAIT }).toBeGreaterThanOrEqual(-1);
-      await expect(threadComposer(page)).toBeFocused();
+      // Wave B parity round 2 (ThreadView.test "leaves the thread composer unfocused on opening"): no script focus on open.
+      await expect(threadComposer(page)).not.toBeFocused();
       await expectAccessible(page, 'thread pane in the aside');
 
       // Björn replies through the thread id: it shows in the pane and as a chip on the root, never in the channel.
@@ -248,7 +249,7 @@ test('Ada edits and deletes her own reply in the thread', async ({ page }) => {
     await sendText(page, GENERAL, plan);
     const root = await peer.waitFor(plan, general);
     await openFromToolbar(rowById(page, GENERAL, root.msg_id));
-    await expect(threadComposer(page)).toBeFocused({ timeout: WAIT });
+    await expect(threadComposer(page)).toBeVisible({ timeout: WAIT });
     const first = `first ${tag()}`;
     await threadComposer(page).fill(first);
     await threadComposer(page).press('Enter');
