@@ -42,19 +42,9 @@ export const JOB_MAP = {
   'browser-spike': { weight: 3, group: 'e2e', ports: 'fixed' },
   'browser-media': { weight: 3, group: 'e2e', ports: 'fixed' },
   'web-build': { weight: 4 },
-  'chromium-core': { weight: 2, group: 'e2e', ports: 'block' },
-  'chromium-voice': { weight: 2, group: 'e2e', ports: 'block' },
-  'chromium-web-1': { weight: 2, group: 'e2e', ports: 'block' },
-  'chromium-web-2': { weight: 2, group: 'e2e', ports: 'block' },
-  'chromium-web-3': { weight: 2, group: 'e2e', ports: 'block' },
-  'firefox-core': { weight: 2, group: 'e2e', ports: 'block' },
-  'firefox-voice': { weight: 2, group: 'e2e', ports: 'block' },
-  'firefox-web-1': { weight: 2, group: 'e2e', ports: 'block' },
-  'firefox-web-2': { weight: 2, group: 'e2e', ports: 'block' },
-  'firefox-web-3': { weight: 2, group: 'e2e', ports: 'block' },
-  'webkit-web': { weight: 2, group: 'e2e', ports: 'block' },
   deny: { weight: 1 },
   go: { weight: 4, group: 'go' },
+  'go-checks': { weight: 3, group: 'go' },
   'go-native': { weight: 4, group: 'go' },
   'go-ds': { weight: 4, group: 'go' },
   'go-api': { weight: 4, group: 'go' },
@@ -172,6 +162,7 @@ const IF_ATOMS = [
   [/^success\(\)$/, (m, ctx) => ctx.failed !== true],
   [/^always\(\)$/, () => true],
   [/^steps\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_-]+) != 'true'$/, (m, ctx) => ctx.steps?.[m[1]]?.[m[2]] !== 'true'],
+  [/^steps\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_-]+) == 'true'$/, (m, ctx) => ctx.steps?.[m[1]]?.[m[2]] === 'true'],
   [/^contains\(needs\.\*\.result, '(failure|cancelled)'\)$/, (m, ctx) => (ctx.needResults ?? []).includes(m[1])],
 ];
 
@@ -234,11 +225,13 @@ export function classifyStep(step, job = {}) {
   const script = String(step.run).replace(/\n$/, '');
   const clang = CLANG_STEP_NAME.exec(step.name ?? '');
   if (clang) {
-    const version = /clang version (\d+\.\d+)\./.exec(script)?.[1];
+    // scripts/ci-llvm.sh pins the apt.llvm.org build of the line the step names; an inline step checks its version.
+    const version = script === 'bash scripts/ci-llvm.sh install' ? clang[1] : /clang version (\d+\.\d+)\./.exec(script)?.[1];
     if (!version) throw new Error(`step "${step.name}" no longer checks a clang version`);
     return { kind: 'prereq', tool: 'llvm', version, reason: 'apt.llvm.org packages: the local LLVM of the same line stands in' };
   }
   if (/^sudo apt-get update && sudo apt-get install -y libgtk-3-dev(?: pkg-config)?$/.test(script)) return { kind: 'prereq', tool: 'gtk', reason: 'GTK3 headers and pkg-config must be installed locally' };
+  if (script === 'sudo apt-get update && sudo apt-get install -y libarchive-tools') return { kind: 'prereq', tool: 'bsdtar', reason: 'libarchive-tools: bsdtar must be installed locally' };
   if (APT_RUNS.some((re) => re.test(script))) return { kind: 'noop', reason: 'apt cache: no apt here' };
   const pw = PLAYWRIGHT_INSTALL.exec(script);
   if (pw) {
@@ -258,15 +251,38 @@ export function classifyStep(step, job = {}) {
   return { kind: 'run', script: mapped, memo, note: prlimit >= 0 ? 'sudo prlimit: raised without sudo where the hard limit allows' : null };
 }
 
-/** The jobs of a parsed workflow, a matrix job expanded into one job per leg (one job per native target). */
+/**
+ * A job's matrix legs: the product of its axes (`shard: [1, 2, 3]`, the sharded Go jobs) or its `include` list (one leg
+ * per native target), or [null] without a strategy. `fail-fast` is inert locally (the scheduler stops at the first
+ * failure anyway); anything else (exclude, include beside axes, max-parallel) throws, never guessed at.
+ */
+function matrixLegs(name, strategy) {
+  if (strategy === undefined || strategy === null) return [null];
+  for (const key of Object.keys(strategy)) if (key !== 'matrix' && key !== 'fail-fast') throw new Error(`job "${name}": strategy key "${key}" is unmapped`);
+  const matrix = strategy.matrix ?? {};
+  const axes = Object.entries(matrix).filter(([key]) => key !== 'include');
+  if (matrix.include !== undefined) {
+    if (axes.length > 0 || !Array.isArray(matrix.include)) throw new Error(`job "${name}": strategy.matrix.include beside axes is unmapped`);
+    return matrix.include;
+  }
+  if (axes.length === 0) throw new Error(`job "${name}": strategy.matrix has no axes`);
+  let legs = [{}];
+  for (const [key, values] of axes) {
+    if (!Array.isArray(values) || values.length === 0) throw new Error(`job "${name}": matrix axis "${key}" is not a list`);
+    legs = legs.flatMap((leg) => values.map((v) => ({ ...leg, [key]: v })));
+  }
+  return legs;
+}
+
+/** The jobs of a parsed workflow, a matrix job expanded into one job per leg (one job per native target or shard). */
 export function expandJobs(workflow) {
   const out = [];
   for (const [name, body] of Object.entries(workflow.jobs ?? {})) {
-    const allowed = new Set(['needs', 'if', 'runs-on', 'steps', 'env', 'timeout-minutes', 'strategy', 'services', 'outputs', 'name', 'permissions', 'uses']);
+    // secrets: a reusable workflow's named secrets (the skipped desktop job); nothing local reads them.
+    const allowed = new Set(['needs', 'if', 'runs-on', 'steps', 'env', 'timeout-minutes', 'strategy', 'services', 'outputs', 'name', 'permissions', 'uses', 'secrets']);
     for (const key of Object.keys(body)) if (!allowed.has(key)) throw new Error(`job "${name}": key "${key}" is unmapped`);
     const needs = body.needs === undefined || body.needs === null ? [] : Array.isArray(body.needs) ? body.needs : [body.needs];
-    const legs = body.strategy?.matrix?.include ?? [null];
-    if (body.strategy && !body.strategy.matrix?.include) throw new Error(`job "${name}": only strategy.matrix.include is mapped`);
+    const legs = matrixLegs(name, body.strategy);
     for (const matrix of legs) {
       const id = matrix === null ? name : `${name}-${Object.values(matrix)[0]}`;
       const runsOn = substitute(body['runs-on'], { matrix: matrix ?? {} });

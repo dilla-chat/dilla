@@ -53,10 +53,17 @@ test('the YAML subset: mappings, `- key:` items, block scalars, flow sequences, 
   });
 });
 
-test('the YAML subset refuses anchors, flow mappings and duplicate keys instead of guessing', () => {
+test('the YAML subset refuses anchors, nested flow collections and duplicate keys instead of guessing', () => {
   assert.throws(() => parseYaml('a: &x 1\nb: *x\n'), /unsupported YAML construct/);
-  assert.throws(() => parseYaml('a: {b: 1}\n'), /unsupported YAML construct/);
+  assert.throws(() => parseYaml('a: {b: [1]}\n'), /nested flow collections/);
+  assert.throws(() => parseYaml('a: {b: 1, b: 2}\n'), /duplicate key/);
   assert.throws(() => parseYaml('a: 1\na: 2\n'), /duplicate key/);
+});
+
+test('the YAML subset reads a one-line flow mapping of scalars, as a matrix include leg', () => {
+  assert.deepEqual(parseYaml('include:\n  - { os: ubuntu-22.04, lane: namespace }\n  - { os: "a b", lane: managed } # c\n'), {
+    include: [{ os: 'ubuntu-22.04', lane: 'namespace' }, { os: 'a b', lane: 'managed' }],
+  });
 });
 
 test('ci.yml parses exactly as js-yaml reads it (when js-yaml is installed)', async (t) => {
@@ -108,15 +115,20 @@ test('an unmapped action, sudo step, if: form, expression or service fails the s
 test('a matrix job becomes one job per leg, and an arm64 leg is skipped with its reason on x64', () => {
   const matrix = expandJobs({ jobs: { native: { 'runs-on': '${{ matrix.os }}', strategy: { matrix: { include: [{ arch: 'amd64', os: 'ubuntu-latest' }, { arch: 'arm64', os: 'ubuntu-24.04-arm' }] } } } } });
   assert.deepEqual(matrix.map(j => j.id), ['native-amd64', 'native-arm64']);
+  // Axes multiply into legs: the sharded Go jobs.
+  const shards = expandJobs({ jobs: { go: { name: 'go-${{ matrix.shard }}', 'runs-on': 'ubuntu-24.04', strategy: { 'fail-fast': true, matrix: { shard: ['1', '2'] } } } } });
+  assert.deepEqual(shards.map(j => [j.id, j.matrix.shard]), [['go-1', '1'], ['go-2', '2']]);
+  assert.throws(() => expandJobs({ jobs: { go: { 'runs-on': 'x', strategy: { 'max-parallel': 1, matrix: { shard: ['1'] } } } } }), /strategy key "max-parallel" is unmapped/);
+  assert.deepEqual(['go-1', 'go-2', 'go-3', 'go-4'].map((id) => job(id)?.matrix.shard), ['1', '2', '3', '4']);
   assert.match(skipReason(matrix[1], 'x64'), /native linux\/arm64 runner/);
   assert.match(skipReason(job('go-fts5-arm64'), 'x64'), /native linux\/arm64 runner/);
   assert.equal(skipReason(job('go-fts5-arm64'), 'arm64'), null);
 });
 
 test('the needs graph: a job brings what it needs, in dependency order, and a cycle or unknown need throws', () => {
-  const order = dependencyClosure(JOBS, ['chromium-web-1']);
-  assert.deepEqual(order.slice(-1), ['chromium-web-1']);
-  assert.deepEqual(new Set(order), new Set(['changes', 'rust-native', 'rust-wasi', 'web-build', 'chromium-web-1']));
+  const order = dependencyClosure(JOBS, ['core-integration']);
+  assert.deepEqual(order.slice(-1), ['core-integration']);
+  assert.deepEqual(new Set(order), new Set(['changes', 'rust-native', 'rust-wasi', 'web-build', 'core-integration']));
   for (const id of order) for (const need of job(id).needs) assert.ok(order.indexOf(need) < order.indexOf(id), `${need} before ${id}`);
   const fake = [{ id: 'a', name: 'a', needs: ['b'] }, { id: 'b', name: 'b', needs: ['a'] }];
   assert.throws(() => dependencyClosure(fake, ['a']), /cycle/);
@@ -124,8 +136,10 @@ test('the needs graph: a job brings what it needs, in dependency order, and a cy
 });
 
 test('--only picks those jobs and their needs; --no-deps leaves the needs out; an unknown name lists the jobs', () => {
-  assert.deepEqual(selectJobs(JOBS, { only: ['go'], outputs: EVERYTHING }), ['changes', 'rust-wasi', 'go']);
-  assert.deepEqual(selectJobs(JOBS, { only: ['go'], outputs: EVERYTHING, deps: false }), ['go']);
+  // A matrix job's name selects every shard; one leg can be named alone.
+  assert.deepEqual(selectJobs(JOBS, { only: ['go'], outputs: EVERYTHING }), ['changes', 'rust-wasi', 'go-1', 'go-2', 'go-3', 'go-4']);
+  assert.deepEqual(selectJobs(JOBS, { only: ['go'], outputs: EVERYTHING, deps: false }), ['go-1', 'go-2', 'go-3', 'go-4']);
+  assert.deepEqual(selectJobs(JOBS, { only: ['go-api-2'], outputs: EVERYTHING, deps: false }), ['go-api-2']);
   assert.deepEqual(selectJobs(JOBS, { only: ['codeql'], outputs: EVERYTHING }), ['codeql']);
   // ci-ok aggregates what ran; naming it does not pull in the whole workflow.
   assert.deepEqual(selectJobs(JOBS, { only: ['docs', 'ci-ok'], outputs: EVERYTHING }), ['docs', 'ci-ok']);
@@ -148,7 +162,7 @@ test('--changed runs what the ci-areas gates would: a docs-only diff runs only c
 test('--changed: a Go file runs the Go jobs and the browser suites, not the Rust lint or ui', () => {
   const outputs = changedOutputs('base', ['internal/api/x.go']);
   const chosen = selectJobs(JOBS, { only: null, outputs });
-  for (const id of ['go', 'go-api', 'go-postgres', 'chromium-web-1', 'webkit-web', 'rust-wasi', 'rust-native', 'codeql']) assert.ok(chosen.includes(id), id);
+  for (const id of ['go-1', 'go-checks', 'go-api-1', 'go-postgres-2', 'core-integration', 'browser-media', 'rust-wasi', 'rust-native', 'codeql']) assert.ok(chosen.includes(id), id);
   for (const id of ['ui', 'vectors', 'deny', 'rust-wasm-node']) assert.ok(!chosen.includes(id), id);
   // rust-native runs for its artifact; its lint and test steps are core-gated.
   const fmt = job('rust-native').steps.find((s) => s.run === 'cargo fmt --all --check');
@@ -179,30 +193,33 @@ test('if: expressions of the forms ci.yml uses', () => {
 
 test('step mapping: GitHub-only steps become local equivalents, the rest runs as written', () => {
   const steps = (id) => job(id).steps.map((s) => classifyStep(s, job(id)));
-  const web1 = steps('chromium-web-1');
-  assert.deepEqual(web1[0], { kind: 'noop', reason: 'the working tree is the checkout' });
-  assert.deepEqual(web1.filter((m) => m.kind === 'prereq').map((m) => m.tool), ['go', 'node']);
-  assert.deepEqual(web1.filter((m) => m.kind === 'download').map((m) => [m.name, m.path]), [
+  const core = steps('core-integration');
+  assert.deepEqual(core[0], { kind: 'noop', reason: 'the working tree is the checkout' });
+  assert.deepEqual(core.filter((m) => m.kind === 'prereq').map((m) => m.tool), ['go', 'node']);
+  assert.deepEqual(core.filter((m) => m.kind === 'download').map((m) => [m.name, m.path]), [
     ['dilla-core-wasi', 'internal/mlswasi/testdata'], ['dilla-testkit', 'artifacts'], ['dilla-web-dist', 'packages/web/dist'], ['dilla-core-harness', 'packages/client-core/harness-dist'],
   ]);
-  const pw = web1.find((m) => m.memo === 'playwright install chromium');
+  const pw = core.find((m) => m.memo === 'playwright install chromium');
   assert.equal(pw.script, 'npx playwright install chromium');
-  assert.ok(web1.some((m) => m.kind === 'run' && m.script === 'npm run test:e2e:web:chromium -w @dilla/e2e -- --shard=1/3' && m.memo === null));
-  assert.match(web1.at(-1).reason, /failure upload/);
-  assert.equal(web1.filter((m) => m.kind === 'noop' && /apt cache/.test(m.reason)).length, 3);
+  assert.ok(core.some((m) => m.kind === 'run' && m.script === 'npm run test:e2e:core:chromium -w @dilla/e2e' && m.memo === null));
+  assert.match(core.at(-1).reason, /failure upload/);
+  assert.equal(core.filter((m) => m.kind === 'noop' && /apt cache/.test(m.reason)).length, 3);
   // ui installs through the playwright CLI file; it shares the same once-per-run install.
   assert.ok(steps('ui').some((m) => m.memo === 'playwright install chromium'));
-  // The clang step checks the local LLVM line instead of apt-installing it.
+  // The clang step (scripts/ci-llvm.sh) checks the local LLVM line its name gives instead of apt-installing it.
   const clang = steps('web-build').find((m) => m.tool === 'llvm');
-  assert.equal(clang.version, '23.1');
+  assert.equal(clang.version, '23');
+  // The apt installs of GTK3 headers and bsdtar are prerequisites, never sudo.
+  assert.ok(steps('go-lint').some((m) => m.kind === 'prereq' && m.tool === 'gtk'));
+  assert.ok(steps('node').some((m) => m.kind === 'prereq' && m.tool === 'bsdtar'));
   // install-ci-tool runs as written (pinned, hash-checked downloads), once per run.
   assert.ok(steps('go-lint').some((m) => m.memo === 'bash scripts/install-ci-tool.sh golangci-lint'));
   // sudo prlimit becomes an unprivileged prlimit; the cargo test still runs.
   const prl = steps('rust-native').find((m) => m.kind === 'run' && /cargo test --workspace/.test(m.script));
   assert.doesNotMatch(prl.script, /sudo/);
   assert.match(prl.script, /^prlimit --pid "\$\$" --memlock=268435456:268435456 /);
-  // The audio server is a prerequisite, the rest of firefox-voice runs.
-  assert.ok(steps('firefox-voice').some((m) => m.tool === 'audio'));
+  // The audio server is a prerequisite, the rest of browser-media runs.
+  assert.ok(steps('browser-media').some((m) => m.tool === 'audio'));
   // Uploads keep their paths and the if-no-files-found rule.
   assert.deepEqual(steps('rust-wasi').at(-1), { kind: 'upload', name: 'dilla-core-wasi', paths: ['target/wasm32-wasip1/release/dilla_core_wasi.wasm'], required: true });
 });
@@ -221,13 +238,13 @@ test('expressions in steps that run: workspace, runner.temp and matrix values, n
 });
 
 test('the postgres service: same image, env and initdb args, a readiness command, published on a port of its own', () => {
-  const svc = mapService('postgres', job('go-postgres').services.postgres);
+  const svc = mapService('postgres', job('go-postgres-1').services.postgres);
   assert.equal(svc.image, 'postgres:18.6-alpine3.24');
   assert.deepEqual(svc.env, { POSTGRES_PASSWORD: 'dilla', POSTGRES_USER: 'dilla', POSTGRES_DB: 'dilla', POSTGRES_INITDB_ARGS: '--locale-provider=builtin --builtin-locale=C.UTF-8' });
   assert.deepEqual(svc.ports, [{ host: 5432, container: 5432 }]);
   assert.equal(svc.health, 'pg_isready -U dilla');
   assert.deepEqual(svc.options, []);
-  const pgEnv = job('go-postgres').steps.find((s) => s.env?.DILLA_TEST_PG).env.DILLA_TEST_PG;
+  const pgEnv = job('go-postgres-1').steps.find((s) => s.env?.DILLA_TEST_PG).env.DILLA_TEST_PG;
   assert.match(pgEnv, /127\.0\.0\.1:5432/);
 });
 
@@ -353,7 +370,7 @@ test('F1: every database or credential variable the Go code and the e2e helpers 
   assert.ok(sensitive.includes('DILLA_TEST_PG'));
   for (const n of sensitive) assert.match(n, SCRUBBED_ENV, `${n} is read by the tests but would pass through to a job`);
   // go-postgres still gets its DSN, from ci.yml's step env (pointed at the throwaway container).
-  assert.ok(job('go-postgres').steps.some((st) => /127\.0\.0\.1:5432/.test(st.env?.DILLA_TEST_PG ?? '')));
+  assert.ok(job('go-postgres-1').steps.some((st) => /127\.0\.0\.1:5432/.test(st.env?.DILLA_TEST_PG ?? '')));
 });
 
 const scratch = () => mkdtempSync(join(tmpdir(), 'ci-local-test-'));

@@ -199,6 +199,13 @@ function checkPrereq(m, job) {
     }
     return { ok: true, text: notes.join('\n'), env };
   }
+  if (m.tool === 'gtk') {
+    const r = spawnSync('pkg-config', ['--exists', 'gtk+-3.0'], { encoding: 'utf8' });
+    return r.status === 0 ? { ok: true, text: 'GTK3 headers found by pkg-config' } : { ok: false, text: 'pkg-config cannot find gtk+-3.0: install the GTK3 headers and pkg-config (Arch: pacman -S gtk3 pkgconf; Debian/Ubuntu: apt install libgtk-3-dev pkg-config)' };
+  }
+  if (m.tool === 'bsdtar') {
+    return has('bsdtar') ? { ok: true, text: 'bsdtar is on PATH' } : { ok: false, text: 'no bsdtar: install libarchive (Arch: pacman -S libarchive; Debian/Ubuntu: apt install libarchive-tools)' };
+  }
   if (m.tool === 'audio') {
     if (!has('pactl')) return { ok: false, text: `no pactl: install ${TOOL_HINTS.pactl}` };
     const r = spawnSync('pactl', ['info'], { encoding: 'utf8' });
@@ -474,7 +481,8 @@ class Runner {
         } else if (m.kind === 'download') {
           ({ ok, why } = this.download(m, write));
         } else if (m.kind === 'run') {
-          let script = m.script;
+          // A sharded job's run names its leg (`${{ matrix.shard }}`): the expressions resolve as the step env's do.
+          let script = substitute(m.script, { root: ROOT, runnerTemp: RUNNER_TEMP, jobName: job.name, matrix: job.matrix });
           for (const r of rewrites) script = r(script);
           const stepEnv = { ...env };
           for (const [k, v] of Object.entries(step.env ?? {})) {

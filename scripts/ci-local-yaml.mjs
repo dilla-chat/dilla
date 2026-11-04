@@ -1,9 +1,10 @@
 /**
  * The block-YAML subset .github/workflows/ci.yml is written in, parsed without a dependency (scripts/ci-local.mjs runs
  * before `npm ci` has to, and scripts/check-ci-workflow.mjs runs it in the docs job): block mappings and sequences,
- * `- key: value` items, `|`/`|-`/`>`/`>-` block scalars, `[a, b]` flow sequences, single- and double-quoted scalars and
- * comments. Every scalar stays a string. Anchors, aliases, tags, flow mappings and multi-document streams are refused
- * with the line they are on, never guessed at (check-ci-workflow.mjs forbids anchors in ci.yml as well).
+ * `- key: value` items, `|`/`|-`/`>`/`>-` block scalars, `[a, b]` flow sequences, one-line `{ k: v, … }` flow mappings
+ * of scalars (a matrix include leg), single- and double-quoted scalars and comments. Every scalar stays a string.
+ * Anchors, aliases, tags, nested flow collections and multi-document streams are refused with the line they are on,
+ * never guessed at (check-ci-workflow.mjs forbids anchors in ci.yml as well).
  */
 
 class YamlError extends Error {
@@ -30,10 +31,49 @@ function scalar(text, line) {
     return m[1].replace(/\\(.)/g, (_, c) => ({ n: '\n', t: '\t', '"': '"', '\\': '\\', '/': '/' })[c] ?? `\\${c}`);
   }
   if (t.startsWith('[')) return flowSequence(t, line);
+  if (t.startsWith('{')) return flowMapping(t, line);
   if (/^[&*!{]/.test(t) || /^[|>]/.test(t)) throw new YamlError(`unsupported YAML construct: ${t}`, line);
   // A plain scalar ends at " #".
   const hash = t.search(/\s#/);
   return (hash < 0 ? t : t.slice(0, hash)).trimEnd();
+}
+
+/** Items of a one-line flow collection body, split at top-level commas; nested collections are refused. */
+function flowItems(body, t, line) {
+  const items = [];
+  let current = '';
+  let quote = null;
+  for (const ch of body) {
+    if (quote !== null) {
+      current += ch;
+      if (ch === quote) quote = null;
+    } else if (ch === "'" || ch === '"') {
+      quote = ch;
+      current += ch;
+    } else if (ch === ',') {
+      items.push(current);
+      current = '';
+    } else if (ch === '[' || ch === '{') {
+      throw new YamlError(`nested flow collections are unsupported: ${t}`, line);
+    } else current += ch;
+  }
+  if (current.trim() !== '' || items.length > 0) items.push(current);
+  return items;
+}
+
+function flowMapping(t, line) {
+  const m = /^\{(.*)\}\s*(?:#.*)?$/.exec(t);
+  if (!m) throw new YamlError(`unsupported flow mapping: ${t}`, line);
+  const out = {};
+  for (const item of flowItems(m[1], t, line)) {
+    if (item.trim() === '') continue;
+    const kv = /^\s*((?:[^\s:'"][^:]*?)|'[^']*'|"[^"]*"):\s+(.*)$/.exec(item);
+    if (!kv) throw new YamlError(`unsupported flow mapping entry "${item.trim()}": ${t}`, line);
+    const key = scalar(kv[1], line);
+    if (Object.hasOwn(out, key)) throw new YamlError(`duplicate key "${key}"`, line);
+    out[key] = scalar(kv[2], line);
+  }
+  return out;
 }
 
 function flowSequence(t, line) {
@@ -147,7 +187,7 @@ export function parseYaml(text) {
       const line = i;
       const rest = content(i) === '-' ? '' : content(i).slice(2);
       const restIndent = at + 2 + (rest.length - rest.trimStart().length);
-      if (KEY.test(rest.trim()) && !/^['"]/.test(rest.trim())) {
+      if (KEY.test(rest.trim()) && !/^['"{]/.test(rest.trim())) {
         overrides.set(i, { indent: restIndent, content: rest.trim() });
         out.push(mapping(restIndent));
       } else {
