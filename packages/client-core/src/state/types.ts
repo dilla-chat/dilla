@@ -23,7 +23,10 @@ export interface AccountState {
   /** Set during signin-*; null otherwise. `factor` is what the code step asks after: 'totp' after a login owing an app code
    *  (needs 1), 'passkey' after a login owing a passkey (needs 2) and after a passkey that did not verify the user (the
    *  copy says why a code is asked). */
-  signIn: { username: string | null; factor: 'totp' | 'passkey' | null } | null;
+  signIn: { username: string | null; factor: 'totp' | 'passkey' | null;
+    /** Wave B task 3: set (true) only when the password login said the account holds a passkey for this instance, so
+     *  the code step can offer "Use a passkey". */
+    passkey?: true } | null;
   /** web3.6: set while the phase is factor-setup; null otherwise. */
   factorSetup: { origin: FactorSetupOrigin } | null;
   /** BACKUPS-RECOVERY-04: the instance holds a root object this account did not seal (E_ROOT_MISMATCH at ready), so

@@ -2,11 +2,12 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { MessageRow } from './MessageRow.tsx';
 import { MessageToolbar } from '../MessageToolbar/MessageToolbar.tsx';
+import { PollCard } from '../PollCard/PollCard.tsx';
 import { ReactionBar } from '../ReactionBar/ReactionBar.tsx';
 import { AttachmentCard } from '../AttachmentCard/AttachmentCard.tsx';
 import { PhoneLayoutProvider } from '../internal/phoneLayout.ts';
 import { useDrawnImage } from '../internal/drawn-image.ts';
-import { GeneralLog, RAID_JSON, Row, rowReactions, yamlBody } from './conversation.fixture.tsx';
+import { GeneralLog, RAID_JSON, RAID_YAML, Row, rowReactions, yamlBody } from './conversation.fixture.tsx';
 
 // The state strings are task 24's to own in en.ts; these are the drafts it starts from.
 const meta = {
@@ -117,14 +118,14 @@ export const Grouped: Story = { args: { grouped: true, time: '10:06 PM', body: '
 export const DeviceTagAlways: Story = { args: { author: 'björn', body: 'after nine, still on the boat', tag: 'web' } };
 const phoneToolbar = (
   <MessageToolbar moreLabel="more actions" label="actions for this message" tabbable items={[
-    { id: 'react', label: 'react', onAction: () => {} }, { id: 'reply', label: 'reply', onAction: () => {} }, { id: 'pin', label: 'pin', onAction: () => {} },
+    { id: 'react', label: 'react', onAction: () => {} }, { id: 'reply', label: 'reply', onAction: () => {} }, { id: 'thread', label: 'reply in thread', onAction: () => {} }, { id: 'pin', label: 'pin', onAction: () => {} },
   ]} />
 );
 function PhoneRow({ startRevealed }: { startRevealed: boolean }) {
   const [revealed, setRevealed] = useState(startRevealed);
   return (
     <PhoneLayoutProvider value>
-      <div data-layout="phone" style={{ maxWidth: 390 }}>
+      <div className="d-app-shell" data-layout="phone" style={{ maxWidth: 390, display: 'block', position: 'relative', height: 'auto', background: 'var(--bg)' }}>
         <MessageRow author="ada" time="21:02" body="anyone up for a round tonight?" state="ok" toolbar={phoneToolbar} revealed={revealed} onReveal={setRevealed} />
       </div>
     </PhoneLayoutProvider>
@@ -132,6 +133,26 @@ function PhoneRow({ startRevealed }: { startRevealed: boolean }) {
 }
 export const PhoneHidden: Story = { render: () => <PhoneRow startRevealed={false} /> };
 export const PhoneRevealed: Story = { render: () => <PhoneRow startRevealed /> };
+
+/** A phone poll lives in the same revealed message row as any other card. */
+function PhonePollRow({ initialClosed = false, multi = false }: { initialClosed?: boolean; multi?: boolean }) {
+  const [revealed, setRevealed] = useState(!multi);
+  const [closed, setClosed] = useState(initialClosed);
+  const [choices, setChoices] = useState<number[]>(initialClosed ? [] : multi ? [0, 1] : [0]);
+  return <PhoneLayoutProvider value><div className="d-app-shell" data-layout="phone"
+    style={{ width: 390, maxWidth: '100%', display: 'block', position: 'relative', height: 'auto', paddingTop: 16, background: 'var(--bg)' }}>
+    <MessageRow author="Glenn" time="21:02" body="Mira asked:" state="ok" tag="bot" toolbar={phoneToolbar}
+      revealed={revealed} onReveal={setRevealed} card={<PollCard question="What should we raid on Friday?" closed={closed} multi={multi}
+        canVote={!closed} canClose meta={`${closed ? 'Final results' : 'Open for 24 hours'} · ${multi ? 'pick any' : 'pick one'} · 3 voters`}
+        options={[{ text: 'the bridge', pct: 67, mine: choices.includes(0), winner: closed, voters: [{ name: 'Ada' }, { name: 'Kari' }] },
+          { text: 'the harbour', pct: 33, mine: choices.includes(1), winner: false, voters: [{ name: 'Björn' }] }]}
+        labels={{ closed: 'CLOSED', close: 'Close poll' }} onClose={() => setClosed(true)}
+        onVote={index => setChoices(current => current.includes(index) ? current.filter(choice => choice !== index) : multi ? [...current, index] : [index])} />} />
+  </div></PhoneLayoutProvider>;
+}
+export const PhonePollVoted: Story = { globals: { theme: 'signal' }, render: () => <PhonePollRow /> };
+export const PhonePollMultiChoice: Story = { globals: { theme: 'signal' }, render: () => <PhonePollRow multi /> };
+export const PhonePollClosedWinner: Story = { globals: { theme: 'signal' }, render: () => <PhonePollRow initialClosed /> };
 
 // ---- Task 7 (Signal §8): the prototype's conversation states, with the props packages/web passes (conversation.fixture.tsx).
 const wide = (Story: () => ReactNode) => <div style={{ maxWidth: 900, paddingTop: 16, background: 'var(--bg)' }}><Story /></div>;
@@ -175,3 +196,5 @@ export const SignalGifAttachment: Story = { ...signal, render: () => <SignalGif 
 export const SignalReplyingTarget: Story = { ...signal, render: () => <Row author="Ada" time="20:27" replying body="raid tonight at 20:00? bring the good shields" nameColor={0xE9B6EC} /> };
 /** The prototype's #general feed, top to bottom (the now-playing card is Task 8b's). */
 export const SignalFeed: Story = { globals: { theme: 'signal' }, decorators: [Story => <div style={{ height: 720, maxWidth: 1000, display: 'flex', flexDirection: 'column' }}><Story /></div>], render: () => <GeneralLog /> };
+
+export const SignalCodeOnly: Story = { ...signal, render: () => <Row author="Björn" time="20:29" grouped forceHover body={[{ kind: 'codeblock', lang: 'yaml', text: RAID_YAML }]} /> };

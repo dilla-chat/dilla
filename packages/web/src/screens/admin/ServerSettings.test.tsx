@@ -229,11 +229,11 @@ describe('ServerSettings tabs', () => {
   });
   it('shows every tab to an owner, with the delete tab last', () => {
     setup(FULL);
-    expect(navNames()).toEqual(['Overview', 'Channels', 'GIFs', 'Members', 'Roles', 'Invites', 'Self-assignable roles', 'Bot', 'Welcome messages', 'Join roles', 'Music', 'Automoderation', 'Bans', 'Ownership / Leave']);
+    expect(navNames()).toEqual(['Overview', 'Roles', 'Invites', 'Bot', 'Music', 'Channels', 'GIFs', 'Members', 'Self-assignable roles', 'Welcome messages', 'Join roles', 'Automoderation', 'Bans', 'Ownership / Leave']);
   });
-  it('shows the roles tab only with manageRoles, after channels', () => {
+  it('shows the roles tab only with manageRoles, before extra sections', () => {
     setup({ ...NONE, manageChannels: true, manageRoles: true });
-    expect(navNames()).toEqual(['Channels', 'Members', 'Roles', 'Self-assignable roles', 'Ownership / Leave']);
+    expect(navNames()).toEqual(['Roles', 'Channels', 'Members', 'Self-assignable roles', 'Ownership / Leave']);
   });
   it('shows no roles tab without manageRoles', () => {
     setup({ ...NONE, manageChannels: true });

@@ -20,6 +20,8 @@ export const SETTINGS = {
   notifyCommunity: (hex: string) => `notify.community.${hex}`, // 'all' | 'mentions' | 'nothing'
   muteCommunity: (hex: string) => `mute.community.${hex}`,     // '1' when the whole server is muted
   everyoneCommunity: (hex: string) => `everyone.community.${hex}`, // '1' = ignore @everyone and @here
+  // Consent and the last disclosed GIF proxy, scoped to one account and device. 'on' asks for a fresh notice; absent = off.
+  dmGifs: (instance: string, user: string, device: string) => `privacy.dmGifs.${instance}.${user}.${device}`,
   density: 'density',
   reduceMotion: 'reduceMotion',
   searchScope: 'searchScope',
@@ -58,6 +60,7 @@ export const VOICE_DEFAULTS = { mode: 'vad', pttKey: null, noise: 'on', volume: 
 export type NotifyMode = 'all' | 'mentions' | 'nothing';
 
 const HEX32 = /^[0-9a-f]{32}$/;
+const DM_GIFS = /^privacy\.dmGifs\.[0-9a-f]{32}\.[0-9a-f]{32}\.[0-9a-f]{32}$/;
 const NOTIFY_CHANNEL = 'notify.channel.';
 const MUTE_CHANNEL = 'mute.channel.';
 const DEFAULTS: readonly string[] = ['dms-mentions', 'everything', 'nothing'];
@@ -87,7 +90,7 @@ const FIXED_KEYS: ReadonlySet<string> = new Set([
 ]);
 
 export function isSettingKey(key: string): boolean {
-  if (FIXED_KEYS.has(key)) return true;
+  if (FIXED_KEYS.has(key) || DM_GIFS.test(key)) return true;
   if (key.startsWith(NOTIFY_CHANNEL)) return HEX32.test(key.slice(NOTIFY_CHANNEL.length));
   if (key.startsWith(MUTE_CHANNEL)) return HEX32.test(key.slice(MUTE_CHANNEL.length));
   if (key.startsWith(NOTIFY_COMMUNITY)) return HEX32.test(key.slice(NOTIFY_COMMUNITY.length));
@@ -102,6 +105,7 @@ export function isSettingKey(key: string): boolean {
 /** The value set each key shape admits (notify.default: the three; notify.channel.*: the three modes; mute.channel.*: '1'). */
 export function isSettingValue(key: string, value: string): boolean {
   if (!isSettingKey(key)) return false;
+  if (DM_GIFS.test(key)) return value === 'on' || HEX32.test(value);
   if (key === SETTINGS.notifyDefault) return DEFAULTS.includes(value);
   if (key === SETTINGS.density) return value === 'regular' || value === 'compact';
   if (key === SETTINGS.reduceMotion) return value === 'system' || value === 'on' || value === 'off';

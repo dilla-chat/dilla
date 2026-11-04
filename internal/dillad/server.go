@@ -27,6 +27,7 @@ import (
 	"github.com/dilla-chat/dilla/internal/bot/capability"
 	botidentity "github.com/dilla-chat/dilla/internal/bot/identity"
 	botruntime "github.com/dilla-chat/dilla/internal/bot/runtime"
+	"github.com/dilla-chat/dilla/internal/desktopdownload"
 	"github.com/dilla-chat/dilla/internal/ds"
 	"github.com/dilla-chat/dilla/internal/gateway"
 	"github.com/dilla-chat/dilla/internal/id"
@@ -59,6 +60,8 @@ type Server struct {
 	// (a channel group being populated after its 201) before it stops the delivery service they
 	// issue proposals through.
 	groups *api.Groups
+	// presence drains committed profile hints before the gateway and repository stop.
+	presence *api.PresenceService
 	// events is the dispatcher of the SFU's webhooks and the delivery service's call evictor
 	// (dilla-media task 12).
 	events *api.CallEvents
@@ -77,8 +80,10 @@ type Server struct {
 
 	// throttle and limiter are swept by the gateway's maintenance loop, whose stop function
 	// Shutdown calls before it stops the gateway.
-	throttle    *auth.Throttle
-	limiter     *server.RateLimiter
+	throttle *auth.Throttle
+	limiter  *server.RateLimiter
+	// passkeys' expired ceremonies are pruned on the same tick (wave B task 3 security review); nil without passkeys.
+	passkeys    *auth.Passkeys
 	maintenance func()
 
 	shutdownOnce sync.Once
@@ -177,6 +182,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		if err != nil {
 			return nil, fmt.Errorf("dillad: passkeys: %w", err)
 		}
+		passkeys.SetLimits(o.Config.Auth.WebAuthn.MaxOpenLogins, o.Config.Auth.WebAuthn.MaxOpenPerUser)
 	}
 
 	deps := api.Deps{
@@ -358,7 +364,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		FramesPerSecond: float64(o.Config.Gateway.FrameBurst),
 		FrameBurst:      o.Config.Gateway.FrameBurstMax,
 	})
-	presence = api.NewPresenceService(o.Repo, gw, o.Clock)
+	presence = api.NewPresenceService(o.Repo, gw, o.Clock, o.Log)
 	deps.Presence = presence
 	channels, acl := deliverySeams(o)
 	delivery, err = ds.New(ds.Options{
@@ -455,7 +461,13 @@ func New(ctx context.Context, o Options) (*Server, error) {
 				"user", userID, "err", err)
 		}
 	}
-	deps.BotRevoked = func(ctx context.Context, installation store.BotInstallationRow, _ bool) {
+	botRoleNotify := api.NewStructureNotifier(gw, o.Repo, o.Log)
+	deps.BotRevoked = func(ctx context.Context, installation store.BotInstallationRow, remove bool) {
+		if remove {
+			// Removal deletes the Bot's member row and managed role: a leave, so live members re-read the
+			// member list (op 54) instead of keeping the Bot until a focus or reconnect.
+			defer botRoleNotify.Changed(ctx, installation.CommunityID)
+		}
 		if installation.DeviceID == nil {
 			return
 		}
@@ -476,6 +488,9 @@ func New(ctx context.Context, o Options) (*Server, error) {
 			o.Log.ErrorContext(ctx, "bringing channel groups in line after bot enrollment failed",
 				"community", installation.CommunityID.String(), "user", installation.UserID.String(), "err", err)
 		}
+		// Enrollment commits the Bot's membership and role: a join, so live members re-read the
+		// member list (op 54) and name the Bot without waiting for a focus or reconnect.
+		botRoleNotify.Changed(ctx, installation.CommunityID)
 	}
 	deps.BotMembershipPending = func(ctx context.Context, installation store.BotInstallationRow, channels []id.ID) {
 		if installation.UserID == nil {
@@ -499,7 +514,6 @@ func New(ctx context.Context, o Options) (*Server, error) {
 			}
 		}
 	}
-	botRoleNotify := api.NewStructureNotifier(gw, o.Repo, o.Log)
 	deps.BotProfileChanged = botRoleNotify.Changed
 	deps.BotJoinRoleGranted = func(ctx context.Context, communityID, memberID id.ID) {
 		if err := api.SyncBotChannelEligibility(ctx, o.Repo, delivery, communityID, memberID, o.Clock.Now().Unix()); err != nil {
@@ -631,6 +645,16 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	// The browser client answers only what no route and no reserved prefix answers
 	// (internal/web.Fallback): the mux keeps its own 404s and 405s, and the
 	// method-less /rtc patterns mountRTC adds stay legal.
+	// /download/{platform} redirects to the verified desktop release asset on a desktop-only
+	// instance, and is a plain 404 otherwise (never the browser client's navigation fallback).
+	downloads := desktopdownload.NotFound()
+	if o.DesktopDownloads {
+		downloads = o.DesktopDownloadRoutes
+		if downloads == nil {
+			downloads = desktopdownload.New(desktopdownload.Options{})
+		}
+	}
+	mux.Handle("GET /download/{platform}", downloads)
 	h := client.Fallback(mux)
 	if o.DesktopDownloads {
 		h = client.DownloadsFallback(mux)
@@ -648,10 +672,10 @@ func New(ctx context.Context, o Options) (*Server, error) {
 
 	s := &Server{
 		o: o, mux: mux, handler: h, sessions: sessions, instance: instance,
-		wasm: wasm, ownsWasm: ownsWasm, gw: gw, cutDevice: cutFromCalls, ds: delivery, groups: groups, events: events,
+		wasm: wasm, ownsWasm: ownsWasm, gw: gw, cutDevice: cutFromCalls, ds: delivery, groups: groups, presence: presence, events: events,
 		calls: callRoutes,
 		blobs: blobs, ownsBlobs: ownsBlobs,
-		throttle: throttle, limiter: limiter,
+		throttle: throttle, limiter: limiter, passkeys: passkeys,
 	}
 	// One http.Server for whichever listener tls.mode chooses (Plan 2 task 16):
 	// ReadHeaderTimeout is never zero, ReadTimeout and WriteTimeout stay unset
@@ -697,6 +721,12 @@ func (s *Server) sweep(ctx context.Context) {
 	s.limiter.Sweep()
 	if _, err := s.o.Repo.PruneSessions(ctx, s.o.Clock.Now().Unix()); err != nil {
 		s.o.Log.Warn("pruning expired sessions failed", "err", err)
+	}
+	// Expired WebAuthn ceremonies (a login begin nobody finished) go too, so webauthn_ceremonies holds only live ones.
+	if s.passkeys != nil {
+		if _, err := s.passkeys.PruneCeremonies(ctx); err != nil {
+			s.o.Log.Warn("pruning expired passkey ceremonies failed", "err", err)
+		}
 	}
 	// R-AW5: once, after the boot grace, the away rows of users with no gateway connection go, and a
 	// boot-time AFK-call end that failed is retried. It runs on its own goroutine (one pass at a time,
@@ -789,6 +819,9 @@ func (s *Server) shutdown(ctx context.Context) error {
 	// populating a registered group finish before the delivery service they propose through stops.
 	if gerr := s.groups.Drain(ctx); gerr != nil {
 		keep(fmt.Errorf("dillad: wait for the registered groups being populated: %w", gerr))
+	}
+	if perr := s.presence.Drain(ctx); perr != nil {
+		keep(fmt.Errorf("dillad: drain profile hints: %w", perr))
 	}
 	if s.maintenance != nil {
 		s.maintenance()

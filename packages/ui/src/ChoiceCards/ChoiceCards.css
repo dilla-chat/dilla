@@ -1,15 +1,22 @@
 /* Task 10, the prototype's second-factor choice: 12px of padding, radius 9, a --control-edge-field edge on no fill; the
-   picked card takes the accent edge and its 0.06 tint. The title 12.5/600 over the hint 11px --fg-2. */
+   picked card takes the accent edge and its 0.06 tint. The title 12.5/600 over the hint 11px --fg-2. Wave B task 3b, the
+   rest of the prototype's card: a 32px tile (radius 8, --choice-tile, a 16px accent icon) at the left, 12px gaps, and at
+   the right a 14px dot in --control-edge-key, picked: the accent edge with the card's colour ring inside a filled accent
+   centre (inset 3px --bg-2, then 8px accent). Every change eases over 160ms. */
 .d-choice-cards { display: grid; gap: 8px; min-width: 0; }
 .d-choice-cards__label { margin: 0; }
-.d-choice-cards__card { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 12px; padding: 12px; min-height: 3rem; background: transparent; border: 1px solid var(--control-edge-field); border-radius: var(--r-menu); cursor: pointer; transition: border-color var(--duration-tab), background var(--duration-tab); }
+.d-choice-cards__card { position: relative; display: flex; align-items: center; gap: 12px; padding: 12px; min-height: 3rem; background: transparent; border: 1px solid var(--control-edge-field); border-radius: var(--r-menu); cursor: pointer; transition: border-color var(--duration-tab), background var(--duration-tab); }
 .d-choice-cards__card[data-checked="true"] { border-color: var(--accent); background: var(--accent-pick); }
 .d-choice-cards__card:has(.d-choice-cards__radio:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
 .d-choice-cards__card[data-disabled="true"] { cursor: not-allowed; }
 .d-choice-cards__card[data-disabled="true"] .d-choice-cards__title, .d-choice-cards__card[data-disabled="true"] .d-choice-cards__hint { color: var(--fg-3); }
-.d-choice-cards__radio { width: 1.5rem; height: 1.5rem; margin: 0; accent-color: var(--accent); cursor: inherit; }
-.d-choice-cards__body { display: grid; gap: 0; min-width: 0; line-height: 1.35; }
+.d-choice-cards__tile { flex: none; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; border-radius: var(--r-lg); background: var(--choice-tile); color: var(--accent); }
+.d-choice-cards__radio { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: inherit; }
+.d-choice-cards__dot { flex: none; box-sizing: content-box; width: 14px; height: 14px; border-radius: var(--r-pill); border: 1px solid var(--control-edge-key); transition: border-color var(--duration-tab), box-shadow var(--duration-tab); }
+.d-choice-cards__radio:checked + .d-choice-cards__dot { border-color: var(--accent); box-shadow: inset 0 0 0 3px var(--bg-2), inset 0 0 0 8px var(--accent); }
+.d-choice-cards__body { flex: 1 1 auto; display: grid; gap: 0; min-width: 0; line-height: 1.35; }
 .d-choice-cards__title { font-size: var(--text-sm); font-weight: var(--weight-label); color: var(--fg); }
 .d-choice-cards__hint { font-size: var(--text-xs); color: var(--fg-2); }
 .d-choice-cards__reason { font-size: var(--text-xs); color: var(--fg); }
-@media (prefers-reduced-motion: reduce) { .d-choice-cards__card { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .d-choice-cards__card, .d-choice-cards__dot { transition: none; } }
+@media (forced-colors: active) { .d-choice-cards__radio:checked + .d-choice-cards__dot { background: Highlight; border-color: Highlight; } }

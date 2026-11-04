@@ -486,12 +486,27 @@ const CASES: Case[] = [
   {
     name: 'passwordLogin sends both strings without a token', call: (r) => r.passwordLogin('ada', 'hunter2 hunter2'),
     method: 'POST', path: '/v1/auth/password/login', bucket: 'none', idempotent: false, auth: false, sent: encode(['ada', 'hunter2 hunter2']),
-    reply: () => cborReply(200, [ASSERTION, 1]), expected: { assertion: ASSERTION, needs: 1 },
+    reply: () => cborReply(200, [ASSERTION, 1]), expected: { assertion: ASSERTION, needs: 1, passkey: false },
   },
   {
     name: 'passwordLogin without a second factor', call: (r) => r.passwordLogin('ada', 'pw'),
     method: 'POST', path: '/v1/auth/password/login', bucket: 'none', idempotent: false, auth: false, sent: encode(['ada', 'pw']),
-    reply: () => cborReply(200, [ASSERTION, 0]), expected: { assertion: ASSERTION, needs: 0 },
+    reply: () => cborReply(200, [ASSERTION, 0]), expected: { assertion: ASSERTION, needs: 0, passkey: false },
+  },
+  {
+    name: 'passwordLogin owing a code from an account that also holds a passkey (wave B task 3)', call: (r) => r.passwordLogin('ada', 'pw'),
+    method: 'POST', path: '/v1/auth/password/login', bucket: 'none', idempotent: false, auth: false, sent: encode(['ada', 'pw']),
+    reply: () => cborReply(200, [ASSERTION, 1, 1]), expected: { assertion: ASSERTION, needs: 1, passkey: true },
+  },
+  {
+    name: 'passwordLogin owing a code from an account with no passkey', call: (r) => r.passwordLogin('ada', 'pw'),
+    method: 'POST', path: '/v1/auth/password/login', bucket: 'none', idempotent: false, auth: false, sent: encode(['ada', 'pw']),
+    reply: () => cborReply(200, [ASSERTION, 1, 0]), expected: { assertion: ASSERTION, needs: 1, passkey: false },
+  },
+  {
+    name: 'passwordLogin ignores a passkey element on a login that owes nothing', call: (r) => r.passwordLogin('ada', 'pw'),
+    method: 'POST', path: '/v1/auth/password/login', bucket: 'none', idempotent: false, auth: false, sent: encode(['ada', 'pw']),
+    reply: () => cborReply(200, [ASSERTION, 0, 1]), expected: { assertion: ASSERTION, needs: 0, passkey: false },
   },
   {
     name: 'totpVerify', call: (r) => r.totpVerify(ASSERTION, '123456'),
@@ -667,7 +682,7 @@ const FACTOR_CASES: Case[] = [
   {
     name: 'passwordLogin reads needs 2', call: (r) => r.passwordLogin('ada', 'pw'),
     method: 'POST', path: '/v1/auth/password/login', bucket: 'none', idempotent: false, auth: false, sent: encode(['ada', 'pw']),
-    reply: () => cborReply(200, [ASSERTION, 2]), expected: { assertion: ASSERTION, needs: 2 },
+    reply: () => cborReply(200, [ASSERTION, 2]), expected: { assertion: ASSERTION, needs: 2, passkey: false },
   },
   {
     name: 'getFactors reads the six elements (Task 11: password_changed)', call: (r) => r.getFactors(),
@@ -719,6 +734,12 @@ const FACTOR_CASES: Case[] = [
   {
     name: 'passkeyLoginFinish with user verification', call: (r) => r.passkeyLoginFinish(CEREMONY, RESPONSE),
     method: 'POST', path: '/v1/auth/passkey/login/finish', bucket: 'none', idempotent: false, auth: false, sent: encode([CEREMONY, RESPONSE]),
+    reply: () => cborReply(200, [ASSERTION, 0]), expected: { assertion: ASSERTION, needs: 0 },
+  },
+  {
+    name: 'passkeyLoginFinish bound to a password login sends its assertion as a third element (wave B task 3)',
+    call: (r) => r.passkeyLoginFinish(CEREMONY, RESPONSE, 'held-asrt'),
+    method: 'POST', path: '/v1/auth/passkey/login/finish', bucket: 'none', idempotent: false, auth: false, sent: encode([CEREMONY, RESPONSE, 'held-asrt']),
     reply: () => cborReply(200, [ASSERTION, 0]), expected: { assertion: ASSERTION, needs: 0 },
   },
   {

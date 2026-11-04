@@ -1,5 +1,5 @@
 .d-attachment-card { display: grid; gap: 0.25rem; min-width: 0; max-width: 100%; }
-/* The image's box: its own proportions, at most 20rem (320 px) wide, never wider than the row. */
+/* Prototype image tile: 280×210 with cover cropping, never wider than the row. */
 .d-attachment-card__open, .d-attachment-card__frame { display: block; width: min(100%, var(--d-card-w)); aspect-ratio: var(--d-card-ratio); padding: 0; background: transparent; border: 0; border-radius: var(--r-md); }
 .d-attachment-card__open { display: flex; align-items: center; justify-content: center; width: min(100%, max(1.5rem, var(--d-card-w))); min-width: 1.5rem; min-height: 1.5rem; aspect-ratio: auto; cursor: pointer; font: inherit; color: inherit; }
 .d-attachment-card__thumb { display: block; box-sizing: border-box; width: min(100%, var(--d-card-w)); height: auto; aspect-ratio: var(--d-card-ratio); object-fit: cover; border: 1px solid var(--hairline-2); border-radius: var(--r-lg); }
@@ -10,8 +10,8 @@
 .d-attachment-card__open .d-attachment-card__box { width: min(100%, var(--d-card-w)); height: auto; aspect-ratio: var(--d-card-ratio); }
 .d-attachment-card__open:hover .d-attachment-card__box { background: var(--surface-hi); }
 .d-attachment-card__meta { margin: 0; display: flex; gap: 0.5rem; min-width: 0; font-size: var(--text-sm); }
-/* A file (§6.8): 300px, padding 10px 12px, bg-3 in the hairline-2 line, radius 8px; a 32px glyph tile, the name over "size · EXT", download. */
-.d-attachment-card__file { display: flex; align-items: center; gap: 0.625rem; box-sizing: border-box; width: 18.75rem /* 300px */; min-width: 0; max-width: 100%; padding: 0.625rem 0.75rem; background: var(--bg-3); border: 1px solid var(--hairline-2); border-radius: var(--r-lg); animation: d-up var(--duration-slow) both; }
+/* Prototype file card: 300px wide, 10px/12px padding and 32px glyph; stretches beside an image. */
+.d-attachment-card__file { display: flex; align-items: center; gap: 0.625rem; box-sizing: border-box; width: 18.75rem /* 300px */; min-width: 0; max-width: 100%; height: 100%; padding: 0.625rem 0.75rem; background: var(--bg-3); border: 1px solid var(--hairline-2); border-radius: var(--r-lg); animation: d-up var(--duration-slow) both; }
 .d-attachment-card__glyph { width: 2rem; height: 2rem; flex: none; border-radius: var(--r-seg); background: var(--hover); color: var(--accent-2); display: flex; align-items: center; justify-content: center; }
 .d-attachment-card__text { flex: 1; display: grid; min-width: 0; line-height: 1.35; }
 .d-attachment-card__file .d-attachment-card__name { font-size: var(--text-sm); }
@@ -33,3 +33,6 @@
 /* The media card's save matches the player's buttons: 40 × 40 on a desktop, 44 × 44 on a phone (flow 06). */
 .d-attachment-card__media .d-attachment-card__media-save { height: auto; min-height: 2.5rem; min-width: 2.5rem; padding: 0 0.875rem; }
 @media (max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem) { .d-attachment-card__media .d-attachment-card__media-save { min-height: 2.75rem; min-width: 2.75rem; } }
+
+/* The flex item follows the drawn tile rather than the thumbnail’s intrinsic width. */
+.d-attachment-card[data-kind="image"] { width: var(--d-card-w); }

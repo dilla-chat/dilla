@@ -107,11 +107,11 @@ func TestPatchMeWritesOnlyTheFieldsGiven(t *testing.T) {
 	h, deps := newTestAPI(t)
 	user, _, token := seedSession(t, deps)
 	ctx := context.Background()
-	if err := deps.Repo.UpdateProfile(ctx, user.ID, nil, profileStr("old status"), profileStr("old bio")); err != nil {
+	if _, err := deps.Repo.UpdateProfile(ctx, user.ID, nil, profileStr("old status"), profileStr("old bio")); err != nil {
 		t.Fatal(err)
 	}
 	// Another device changes the bio after this one last read the account.
-	if err := deps.Repo.UpdateProfile(ctx, user.ID, nil, nil, profileStr("bio from device two")); err != nil {
+	if _, err := deps.Repo.UpdateProfile(ctx, user.ID, nil, nil, profileStr("bio from device two")); err != nil {
 		t.Fatal(err)
 	}
 	if rec := cborCall(t, h, http.MethodPatch, "/v1/accounts/me", token, []any{nil, "status from device one", nil}); rec.Code != http.StatusNoContent {
@@ -163,7 +163,7 @@ func TestMemberListCarriesStatusAndBio(t *testing.T) {
 	e := communityEnv(t)
 	owner, ownerTok := e.NewUser("owner")
 	cid := discCreate(t, e, ownerTok, "alpha")
-	if err := e.Repo.UpdateProfile(t.Context(), owner, profileStr("Owner"), profileStr("afk"), profileStr("hello there")); err != nil {
+	if _, err := e.Repo.UpdateProfile(t.Context(), owner, profileStr("Owner"), profileStr("afk"), profileStr("hello there")); err != nil {
 		t.Fatal(err)
 	}
 	member, memberTok := e.NewUser("member")

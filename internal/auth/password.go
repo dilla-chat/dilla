@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"runtime"
 	"strings"
+	"unicode/utf8"
 
 	"golang.org/x/crypto/argon2"
 
@@ -34,6 +35,14 @@ func ParamsFromConfig(c config.Password) PasswordParams {
 		Parallelism: c.Argon2Parallelism, SaltBytes: c.Argon2SaltBytes, KeyBytes: c.Argon2KeyBytes,
 	}
 }
+
+// PasswordMinChars is the shortest password a person may set, at registration or when changing it
+// (Jonas, 2026-10-30: 12). It counts Unicode code points, as the web client does. Only a password being
+// set is measured: a stored one that is shorter, set before the minimum, still signs in.
+const PasswordMinChars = 12
+
+// PasswordTooShort reports whether pw is below PasswordMinChars.
+func PasswordTooShort(pw string) bool { return utf8.RuneCountInString(pw) < PasswordMinChars }
 
 var (
 	ErrPHCMalformed = errors.New("auth: malformed PHC string")

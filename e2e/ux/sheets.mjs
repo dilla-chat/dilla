@@ -1,13 +1,13 @@
 // Contact sheets: one PNG per width and theme, a grid of that width's shots with each one's screen name under it.
 //   node e2e/ux/sheets.mjs [--only d1440-signal,p390-light] [--cols 4]
-// Reads target/ui-screens/web3.9/<d|p><width>-<theme>-<screen>.png, writes target/ui-screens/web3.9/sheets/<d|p><width>-<theme>.png.
+// Reads target/ui-screens/signal-b/<d|p><width>-<theme>-<screen>.png, writes target/ui-screens/signal-b/sheets/<d|p><width>-<theme>.png.
 import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const OUT = path.join(REPO, 'target', 'ui-screens', 'web3.9');
+const OUT = path.join(REPO, 'target', 'ui-screens', 'signal-b');
 const SHEETS = path.join(OUT, 'sheets');
 const require = createRequire(path.join(REPO, 'e2e', 'package.json'));
 const { chromium } = require('@playwright/test');

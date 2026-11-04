@@ -4,7 +4,7 @@ import { themes } from '../../packages/design-tokens/src/tokens.ts';
 //   node e2e/ux/shots.mjs --list                   the steps
 //   node e2e/ux/shots.mjs shell dm --size 1440     named steps, one width
 //   node e2e/ux/shots.mjs phone-servers --theme light
-// Files are target/ui-screens/web3.9/<d|p><width>-<theme>-<step>.png. A step that cannot run says so and the rest go on.
+// Files are target/ui-screens/signal-b/<d|p><width>-<theme>-<step>.png. A step that cannot run says so and the rest go on.
 // Desktop steps run in Ada's browser at 1440x900 and 1024x768 (signal, light and high-contrast); phone steps run in her phone
 // (390x844 and 360x740; signal and light); `auth` runs in browsers of its own (the invite page, a sign-up, a sign-in).
 import path from 'node:path';
@@ -332,35 +332,28 @@ async function authScreens() {
     await by('heading', 'onboarding.identity.title').waitFor({ timeout: 60_000 });
     await shotAll(page, 'signup-2-identity-empty');
     await page.getByLabel(t('onboarding.identity.username'), { exact: true }).fill('sigrid');
-    await page.getByLabel(t('onboarding.identity.display'), { exact: true }).fill('Sigrid');
     const pw = page.getByLabel(t('onboarding.identity.password'), { exact: true });
     if (await pw.count() > 0) await pw.fill('ux-sigrid-password');
     await shotAll(page, 'signup-2-identity');
-    await by('button', 'onboarding.next').click();
+    // Wave B task 3b: Create account makes the keys; I saved it, once ticked, creates the account.
+    await by('button', 'onboarding.identity.submit').click();
     await by('heading', 'onboarding.keys.title').waitFor({ timeout: 60_000 });
     await page.locator('.d-recovery-key li').first().waitFor({ timeout: 60_000 });
     await shotAll(page, 'signup-3-recovery-key');
     await by('checkbox', 'onboarding.keys.acknowledge').check();
-    await by('button', 'onboarding.next').click();
-    await by('heading', 'onboarding.browser.title').waitFor({ timeout: 60_000 });
-    await shotAll(page, 'signup-4-browser');
-    await by('button', 'onboarding.browser.submit').click();
+    await by('button', 'onboarding.keys.submit').click();
     await by('heading', 'factor.choose.title').waitFor({ timeout: 60_000 });
-    await shotAll(page, 'signup-5-factor-choose');
+    await shotAll(page, 'signup-4-factor-choose');
     await page.getByRole('radio', { name: new RegExp(t('factor.choose.app')) }).check();
     await by('button', 'factor.choose.next').click();
-    await by('heading', 'factor.totp.title').waitFor({ timeout: 60_000 });
+    await by('heading', 'factor.totp.titleSignup').waitFor({ timeout: 60_000 });
     await page.waitForFunction(() => /^[A-Z2-7]{16,}$/.test(document.querySelector('#factor-totp-key')?.value ?? ''), null, { timeout: 60_000 });
-    await shotAll(page, 'signup-6-factor-app');
+    await shotAll(page, 'signup-5-factor-app');
     const a = { totpSecret: await page.getByLabel(t('factor.totp.key'), { exact: true }).inputValue(), lastCounter: -1 };
+    // Wave B task 3: the sixth digit in the code boxes sends the code; there is no button to press.
     await page.getByLabel(t('factor.totp.code'), { exact: true }).fill(await nextCode(state.controlUrl, a));
-    await by('button', 'factor.totp.submit').click();
-    await by('heading', 'factor.codes.title').waitFor({ timeout: 60_000 });
-    await shotAll(page, 'signup-7-factor-codes');
-    await by('checkbox', 'factor.codes.ack').check();
-    await by('button', 'factor.codes.next').click();
     await by('heading', 'onboarding.done.title').waitFor({ timeout: 60_000 });
-    await shotAll(page, 'signup-8-done');
+    await shotAll(page, 'signup-6-done');
     await ctx.close();
 
     // Björn, on a fresh browser.
@@ -380,7 +373,6 @@ async function authScreens() {
     await by2('heading', 'signin.totp.title').waitFor({ timeout: 60_000 });
     await pg.getByLabel(t('signin.totp.code'), { exact: true }).fill(await nextCode(state.controlUrl, bj.totp));
     await shotAll(pg, 'signin-2-code');
-    await by2('button', 'signin.login.submit').click();
     await by2('heading', 'signin.key.title').waitFor({ timeout: 60_000 });
     await pg.getByRole('textbox', { name: t('signin.key.label'), exact: true }).fill(bj.recoveryKey);
     await shotAll(pg, 'signin-3-recovery-key');

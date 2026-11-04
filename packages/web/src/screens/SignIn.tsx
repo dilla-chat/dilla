@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
+import type { MutableRefObject } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { BACKUP_CODE, normaliseBackupCode, normaliseRecoveryKey } from '@dilla/client-core';
-import { Banner, Button, OnboardingFrame, RecoveryKeyField, Splash, TextField } from '@dilla/ui';
+import { Banner, Button, CodeBoxes, Icon, OnboardingFrame, RecoveryKeyField, Splash, TextField, type IconName } from '@dilla/ui';
 import { useCore } from '../core/context.tsx';
 import { errorOf, type UiError } from '../core/errors.ts';
-import { useSlice } from '../core/use-slice.ts';
+import { useSlice, useSlices } from '../core/use-slice.ts';
+import { orderChannels } from './shell-model.ts';
 import { t, type StringKey } from '../strings/index.ts';
-import { PasskeyError, getPasskey, passkeysUsable } from '../webauthn.ts';
+import { PasskeyError, conditionalMediationAvailable, desktopAuthKind, getPasskey, passkeysUsable } from '../webauthn.ts';
 import { desktopBridge } from '../desktop.ts';
 import { useAnnouncer } from './announcer.ts';
 import { doneProblem, type DoneProblem } from './factor/doneRefusal.ts';
@@ -23,6 +25,11 @@ const FIELD_ID: Readonly<Record<Field, string>> = {
 };
 const FIELD_ORDER: readonly Field[] = ['username', 'password', 'code', 'backup', 'key'];
 const LENGTH_ID = 'signin-key-length';
+const CODE_BODY_ID = 'signin-code-body';
+const CODE_ERROR_ID = 'signin-code-error';
+const SIX_DIGITS = /^\d{6}$/;
+/** The done panel's check (prototype: d-icon check, 16, stroke 3). */
+const READY_ICON: IconName = 'check';
 const BACKUP_ID = 'signin-key-backup';
 /** How long the key field rests before a backup code is named (R44): a key being typed passes 26 characters on the way. */
 const BACKUP_NOTE_MS = 600;
@@ -32,6 +39,9 @@ interface RefusalView { field?: Field; fieldKey?: StringKey; focus?: Field; bann
 
 /** What a passkey ceremony that ended in the browser (cancelled, the wrong address, nothing usable) shows. */
 const PASSKEY_FAILED: BannerState = { tone: 'danger', key: 'factorSignin.passkey.failed', vars: {} };
+const PASSKEY_UNSUPPORTED: BannerState = { tone: 'danger', key: 'factorSignin.passkey.unsupported', vars: {} };
+const PASSKEY_RATE_LIMITED: BannerState = { tone: 'danger', key: 'factorSignin.passkey.rateLimited', vars: {} };
+const OIDC_UNSUPPORTED: BannerState = { tone: 'danger', key: 'factorSignin.oidc.unsupported', vars: {} };
 
 /**
  * The refusal table of flow 03 (L-COPY-02 as task 15 froze it), first match wins. It reads the code, the HTTP
@@ -49,6 +59,11 @@ function signInRefusal(e: UiError, command: SignInCommand, instance: string): Re
   // web3.8 (R6, pre-flight C-15/C-16): the held assertion ran out during the key, from the registration or from the
   // backup code on its path; nothing was spent and the worker is back at signin-login. The person logs in again.
   if (e.code === 'E_SIGNIN_EXPIRED') return { banner: { tone: 'warn', key: 'enrol.expired', vars: {} }, focus: 'password' };
+  // Wave B task 3 (Jonas, M2): a passkey of another account than the password login on the code or passkey step; the
+  // instance refused it and issued nothing. The step stays, with focus on the passkey control that started it.
+  if (e.code === 'E_PASSKEY_OTHER_ACCOUNT' && command === 'passkey') {
+    return { banner: { tone: 'danger', key: 'factorSignin.passkey.otherAccount', vars: {} }, focus: 'passkey' };
+  }
   // web3.6: the instance gives an unknown passkey its own code (never read from the detail text).
   if (e.code === 'E_PASSKEY_UNKNOWN' && command === 'passkey') {
     return { banner: { tone: 'danger', key: 'factorSignin.passkey.unknown', vars: { instance } }, focus: 'passkey' };
@@ -82,6 +97,84 @@ function signInRefusal(e: UiError, command: SignInCommand, instance: string): Re
   return { banner: { tone: 'danger', key: 'signin.error.other', vars: { code: e.code } } };
 }
 
+/** Where "Open dilla" lands: the server and channel the done panel names. */
+export interface SignInTarget { communityId: string; channelId: string }
+
+/**
+ * Wave B task 3 fix round 1 (Jonas): the login step offers passkeys in the username field's own autofill (WebAuthn
+ * conditional mediation) in place of a "Sign in with a passkey" button. Mounted only while the login step shows: it asks
+ * the instance for a ceremony (signInPasskeyBegin, the same discoverable options the button used) and leaves a
+ * conditional request open; the person picking a passkey from the autofill resolves it. Unmounting (the step is left)
+ * aborts it, and so does `abortRef` (the password is submitted). A browser without conditional mediation never starts
+ * one: the password, then "Use a passkey" on the code step, is its way. Nothing here sends the assertion: the parent's
+ * onCredential does, with the same guards as every other passkey ceremony.
+ */
+/** Re-check I1: a discoverable login ceremony lives 120 s on the instance, and an autofill request has no timeout of its
+ *  own, so the request is renewed (aborted and begun again) this long after each begin, while the username field still
+ *  has focus. An unfocused field renews nothing: no begin, so no rate-limit cost, while the page sits idle. */
+export const CONDITIONAL_RENEW_MS = 110_000;
+
+function ConditionalPasskey(props: {
+  begin: () => Promise<{ ceremonyId: string; options: string }>;
+  onCredential: (ceremonyId: string, response: string) => void;
+  onFailed: () => void;
+  abortRef: MutableRefObject<AbortController | null>;
+  /** Whether a renewal is still wanted (the username field has focus). */
+  stillWanted: () => boolean;
+  /** No renewal: the request is left closed until the field is focused again. */
+  onIdle: () => void;
+}): null {
+  const latest = useRef(props);
+  useEffect(() => { latest.current = props; });
+  useEffect(() => {
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let current: AbortController | null = null;
+    const clearRenewal = () => { if (timer !== undefined) { clearTimeout(timer); timer = undefined; } };
+    const round = () => {
+      const abort = new AbortController();
+      current = abort;
+      latest.current.abortRef.current = abort;
+      const go = async () => {
+        if (!(await conditionalMediationAvailable()) || abort.signal.aborted) return;
+        let began: { ceremonyId: string; options: string };
+        try { began = await latest.current.begin(); } catch { return; }
+        if (abort.signal.aborted) return;
+        timer = setTimeout(() => {
+          timer = undefined;
+          // A request the page already ended (the password was sent, the step left) is not renewed.
+          if (stopped || abort.signal.aborted) return;
+          abort.abort();
+          if (latest.current.stillWanted()) round();
+          else latest.current.onIdle();
+        }, CONDITIONAL_RENEW_MS);
+        let response: string;
+        try {
+          response = await getPasskey(began.options, { signal: abort.signal });
+        } catch (e) {
+          // An aborted request (renewed, the password sent, the step left) and the browser's own cancel say nothing.
+          if (abort.signal.aborted || (e instanceof PasskeyError && e.kind === 'cancelled')) return;
+          clearRenewal();
+          latest.current.onFailed();
+          return;
+        }
+        clearRenewal();
+        if (abort.signal.aborted) return;
+        latest.current.onCredential(began.ceremonyId, response);
+      };
+      void go();
+    };
+    round();
+    return () => {
+      stopped = true;
+      clearRenewal();
+      current?.abort();
+      if (latest.current.abortRef.current === current) latest.current.abortRef.current = null;
+    };
+  }, []);
+  return null;
+}
+
 /** The four-step sign-in ceremony of L-COPY-02. Rendered by App for the phases signin-login, signin-totp,
  *  signin-passkey, signin-key and enrolling, and kept mounted after the phase turns ready until its done step calls
  *  onFinish. web3.8 (R6): the login first, then the second factor, then the recovery key. The login and the factor
@@ -90,7 +183,7 @@ function signInRefusal(e: UiError, command: SignInCommand, instance: string): Re
  *  code waits in page memory and goes only with the key (signInBackupCode), so an assertion that ran out meanwhile
  *  spends none. Phase signin-key is the key step, before or after the registration (a wrong key, a reload after it):
  *  its step sends signInKey. Step numbers follow R7. */
-export function SignIn(props: { onFinish(): void }): React.JSX.Element {
+export function SignIn(props: { onFinish(target?: SignInTarget): void }): React.JSX.Element {
   const client = useCore();
   const account = useSlice('account');
   const [username, setUsername] = useState(() => account?.signIn?.username ?? '');
@@ -119,6 +212,30 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
   const [factorDone, setFactorDone] = useState<{ busy: boolean; problem: DoneProblem | null }>({ busy: false, problem: null });
   const { text: announcement, announce } = useAnnouncer();
   const factors = useSlice('factors');
+  // Wave B task 3 (Jonas, Q4): the done step's green panel names the account's first server and its first text channel.
+  const communities = useSlice('communities');
+  const firstServer = communities?.[0] ?? null;
+  // Fix round 1: the channel list is read only when there is a server to read it for.
+  const [firstChannels] = useSlices(firstServer === null ? [] : [`channels:${firstServer.id}` as const]);
+  // The login step's conditional passkey request, aborted when the password is sent (fix round 1).
+  const conditionalAbort = useRef<AbortController | null>(null);
+  // Commit review fix: the autofill request starts only when the username field gains focus. Each start is a passkey
+  // login begin, which costs the instance a stored ceremony (metered on its own passkey_begin bucket and an instance-wide
+  // cap), so nothing starts on its own: not on showing the step, not after a refused password or passkey, until the field
+  // is focused again.
+  const [autofillArmed, setAutofillArmed] = useState(false);
+  // Back is on its way to the worker; a second press sends nothing (fix round 1).
+  const [goingBack, setGoingBack] = useState(false);
+  // Fix round 2 (Jonas): whether this browser offers passkeys in the username autofill; null until known. Without it the
+  // login step keeps the "Sign in with a passkey" button, the only way in for an account with no password.
+  const [autofill, setAutofill] = useState<boolean | null>(null);
+  const passkeysOn = passkeysUsable(account?.instance ?? null);
+  useEffect(() => {
+    if (!passkeysOn) return undefined;
+    let live = true;
+    void conditionalMediationAvailable().then((on) => { if (live) setAutofill(on); });
+    return () => { live = false; };
+  }, [passkeysOn]);
   const [focusRequest, setFocusRequest] = useState<{ target: 'heading' | Field; n: number }>({ target: 'heading', n: 0 });
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -138,7 +255,7 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
   const phase = account?.phase;
   const instance = account?.instance ?? null;
   const enrolling = phase === 'enrolling';
-  const blocked = busy !== null || enrolling;
+  const blocked = busy !== null || enrolling || goingBack;
   // Requirement 10: a reload in the ceremony meets E_NO_BACKUP only through the slice. No other code is read there.
   const noBackupKey: StringKey | null = phase !== 'signin-key' ? null
     : noBackup ?? (busy === null && account?.error?.code === 'E_NO_BACKUP' ? 'signin.error.noBackup' : null);
@@ -154,6 +271,8 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
               : enrolling ? busyStep ?? 'key'
                 : 'login';
 
+  // The autofill request is armed again only by focusing the username field on a fresh login step.
+  useEffect(() => { if (shown !== 'login') setAutofillArmed(false); }, [shown]);
   // A cancel and a fresh ceremony start clean.
   useEffect(() => { if (phase !== 'signin-key') setNoBackup(null); }, [phase]);
   // The backup-code form and its held code belong to the code and passkey steps; a refused code, an expiry or a cancel
@@ -172,6 +291,11 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
   // The typed key belongs to one person's attempt: back at the login, whoever signs in next starts with an empty field.
   // A refusal at the key step itself (a wrong key) keeps the text for the same person's retry.
   useEffect(() => { if (phase === 'signin-login') setKey(''); }, [phase]);
+  // Wave B task 3: the typed code lives only while its step shows; any other phase drops it (it is never stored).
+  useEffect(() => { if (phase !== 'signin-totp' && phase !== 'enrolling') setCode(''); }, [phase]);
+  // The prototype's code step opens on its boxes (its focusRef), so a one-time-code autofill offers itself at once; the
+  // step's instruction is the field's description.
+  useEffect(() => { if (shown === 'totp') setFocusRequest(f => ({ target: 'code', n: f.n + 1 })); }, [shown]);
 
   // OnboardingFrame focuses its heading when the title changes; this effect runs after the frame's (child effects
   // first), so a field request after a step change lands on the field.
@@ -231,16 +355,23 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
     if (username.trim() === '') next.username = 'signin.error.required';
     if (password === '') next.password = 'signin.error.required';
     if (showErrors(next)) return;
+    conditionalAbort.current?.abort();
     begin('login', 'login');
     // web3.8 (R6): the login carries no key; the factor step or the key step follows it.
-    run('login', client.call({ m: 'signInLogin', username: username.trim().toLowerCase(), password }), () => {
+    // A refused password keeps the login step; its autofill request (aborted above) starts again only when the username
+    // field is focused again.
+    setAutofillArmed(false);
+    const call = client.call({ m: 'signInLogin', username: username.trim().toLowerCase(), password });
+    run('login', call, () => {
       setPassword('');
     });
   };
-  const submitTotp = () => {
+  /** Wave B task 3: the code boxes keep digits only, and the sixth digit sends the code (onComplete) with no press. A
+   *  code that is not six digits is never sent: a refused code spends the assertion and the person logs in again. */
+  const submitTotp = (value: string = code) => {
     // A11Y-DESIGN-06: an authenticator may copy the code grouped ("123 456"); the spaces are not part of it.
-    const trimmed = code.replace(/\s/g, '');
-    if (showErrors(trimmed === '' ? { code: 'signin.error.required' } : {})) return;
+    const trimmed = value.replace(/\s/g, '');
+    if (showErrors(trimmed === '' ? { code: 'signin.error.required' } : SIX_DIGITS.test(trimmed) ? {} : { code: 'factor.error.codeFormat' })) return;
     begin('totp', 'totp');
     run('totp', client.call({ m: 'signInTotp', code: trimmed }), () => setCode(''));
   };
@@ -276,7 +407,13 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
     if (blocked || !bridge?.browserAuth) return;
     setBanner(null); setErrors({}); begin('oidc', 'login');
     const go = async () => {
-      const result = await bridge.browserAuth!({ kind: 'oidc', options: '' });
+      const result = await bridge.browserAuth!({ kind: 'oidc', options: '' }).catch((e: unknown) => {
+        const kind = desktopAuthKind(e);
+        if (kind === null) throw e;
+        setBanner(kind === 'unsupported' ? OIDC_UNSUPPORTED : PASSKEY_RATE_LIMITED);
+        return null;
+      });
+      if (result === null) return;
       if (!result.assertion || ![0, 1, 2].includes(result.needs)) throw new Error('Invalid browser sign-in');
       await client.call({ m: 'signInOIDC', assertion: result.assertion, needs: result.needs as 0 | 1 | 2 });
     };
@@ -285,6 +422,8 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
   /** The passkey on its own: the instance's options go to the browser and its answer back; the page makes no challenge. */
   const submitPasskey = (from: Shown) => {
     if (blocked) return;
+    // A passkey signs in without the password: none stays in page memory.
+    setPassword('');
     setBanner(null);
     setErrors({});
     begin('passkey', from);
@@ -296,7 +435,7 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
         await client.call({ m: 'signInPasskey', ceremonyId: began.ceremonyId, response });
       } catch (e) {
         if (e instanceof PasskeyError) {
-          setBanner(PASSKEY_FAILED);
+          setBanner(e.kind === 'unsupported' ? PASSKEY_UNSUPPORTED : e.kind === 'rateLimited' ? PASSKEY_RATE_LIMITED : PASSKEY_FAILED);
           requestFocus('passkey');
         } else {
           apply(errorOf(e), 'passkey');
@@ -307,8 +446,28 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
     };
     void go();
   };
-  const openBackup = () => { if (blocked) return; setBanner(null); setErrors({}); setBackupMode(true); requestFocus('backup'); };
-  const closeBackup = () => { if (blocked) return; setBanner(null); setErrors({}); setBackupMode(false); setBackup(''); requestFocus('heading'); };
+  /** The login step's autofill passkey: sent exactly as the button's was, then the code (needs 1) or the key follows. A
+   *  refusal shows its banner on the login and puts focus on the username field; a new request waits for the field to be
+   *  focused again. The password typed so far is dropped at once: the passkey signs in without it. */
+  const conditionalCredential = (ceremonyId: string, response: string) => {
+    if (blocked) return;
+    setPassword('');
+    setBanner(null);
+    setErrors({});
+    setAutofillArmed(false);
+    begin('passkey', 'login');
+    void client.call({ m: 'signInPasskey', ceremonyId, response })
+      .then(() => undefined, (e: unknown) => {
+        apply(errorOf(e), 'passkey');
+        requestFocus('username');
+      })
+      .finally(() => setBusy(null));
+  };
+  // A browser that failed the request (not a cancel) is not asked again until the step shows anew: no loop of ceremonies.
+  const conditionalFailed = () => { setBanner(PASSKEY_FAILED); };
+  // Fix round 1: the typed code belongs to the code form; opening or leaving the backup-code form drops it.
+  const openBackup = () => { if (blocked) return; setBanner(null); setErrors({}); setCode(''); setBackupMode(true); requestFocus('backup'); };
+  const closeBackup = () => { if (blocked) return; setBanner(null); setErrors({}); setCode(''); setBackupMode(false); setBackup(''); requestFocus('heading'); };
   // The factor was set up here: the worker reads the factors again, then the browser is ready.
   // Returns the call so FactorSetup knows when it ended: a refusal re-arms its button, which retries.
   const finishFactor = (): Promise<void> => {
@@ -316,6 +475,13 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
     return client.call({ m: 'factorSetupDone', invite: null }).then(
       () => { setFactorDone({ busy: false, problem: null }); },
       (e: unknown) => { setFactorDone({ busy: false, problem: doneProblem(errorOf(e)) }); throw e; });
+  };
+  /** The sixth digit landed: the same path as Verify, so a running command (or the press that follows) sends nothing twice. */
+  const completeCode = (value: string) => {
+    if (blocked || shown !== 'totp') return;
+    setBanner(null);
+    setErrors({});
+    submitTotp(value);
   };
   const onSubmit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -330,6 +496,23 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
       case 'backup': submitBackup(); break;
       default: break;
     }
+  };
+  /** Wave B task 3 (Jonas, Q1): Back on the code and key steps. The worker drops the held assertion (signInBack), so nothing
+   *  half-signed-in survives; the page drops the typed code, key and any held backup code, and the login asks for the
+   *  password again with the username kept. */
+  const goBack = () => {
+    if (blocked) return;
+    setGoingBack(true);
+    setPassword('');
+    setBanner(null);
+    setErrors({});
+    setCode('');
+    setKey('');
+    setBackupHeld(false);
+    setBackup('');
+    client.call({ m: 'signInBack' })
+      .then(() => { requestFocus('password'); }, (e: unknown) => { apply(errorOf(e), 'login'); })
+      .finally(() => { setGoingBack(false); });
   };
   const cancel = () => {
     if (blocked) return;
@@ -356,6 +539,14 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
   const cancelButton = (label: StringKey) => (
     <Button variant="ghost" type="button" onClick={cancel} {...blockedProps}>{t(label)}</Button>
   );
+  // The prototype's row under the button on the code and key steps: Back at the left, the new-account link at the right
+  // (signInCancel, which lands on the new-account screen, as Cancel did).
+  const navRow = (
+    <div className="d-onboarding-frame__nav">
+      <Button variant="ghost" type="button" data-back="" onClick={goBack} {...blockedProps}>{t('factor.back')}</Button>
+      <Button variant="ghost" type="button" onClick={cancel} {...blockedProps}>{t('signin.login.createInstead')}</Button>
+    </div>
+  );
   const bannerEl = banner === null ? null : <Banner tone={banner.tone}>{t(banner.key, banner.vars)}</Banner>;
   const form = (title: string, n: number, foot: ReactNode, children: ReactNode) => (
     <form noValidate onSubmit={onSubmit}>
@@ -370,10 +561,20 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
   if (shown === 'done') {
     const who = account.user?.username ?? account.signIn?.username ?? username.trim().toLowerCase();
     const left = usedBackup && factors !== undefined ? factors.backupCodesLeft : null;
+    const channel = firstChannels === undefined ? null : orderChannels(firstChannels).find(c => c.kind === 0 && c.mode === 0) ?? null;
     content = (
       <OnboardingFrame title={t('signin.done.title')} stepLabel={stepLabel(total)} progress={progress(total)}
-        footer={<Button variant="accent" type="button" onClick={() => props.onFinish()}>{t('signin.done.next')}</Button>}>
+        // Fix round 1: "Open dilla" lands where the panel says.
+        footer={<Button variant="accent" type="button"
+          onClick={() => props.onFinish(firstServer === null || channel === null ? undefined : { communityId: firstServer.id, channelId: channel.id })}>
+          {t('signin.done.next')}</Button>}>
         <p>{t('signin.done.body', { username: who, instance: name })}</p>
+        {firstServer === null || channel === null ? null : (
+          <div className="d-onboarding-frame__ready">
+            <span className="d-onboarding-frame__ready-mark"><Icon name={READY_ICON} size={16} stroke={3} /></span>
+            <span>{t('signin.done.ready', { server: firstServer.name, channel: channel.name })}</span>
+          </div>
+        )}
         {left === null ? null : <p>{t(left === 1 ? 'factorSignin.left.one' : 'factorSignin.left.other', { count: left })}</p>}
       </OnboardingFrame>
     );
@@ -420,16 +621,31 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
       </OnboardingFrame>
     );
   } else if (shown === 'totp') {
+    // Wave B task 3, the prototype's code step: six boxes over one input, then "Use a passkey" (for an account that just
+    // used one, or whose password login said it holds one, in a browser that can run one) and "Use a backup code", which
+    // open today's passkey ceremony and backup-code step.
+    const passkeyLink = (account.signIn?.factor === 'passkey' || account.signIn?.passkey === true) && passkeysUsable(instance);
+    const codeError = errorText('code');
     content = form(t('signin.totp.title'), 2, <>
-      {cancelButton('signin.cancel')}
-      <Button variant="accent" type="submit" {...blockedProps}>{t(busy === 'totp' ? 'signin.login.working' : 'signin.login.submit')}</Button>
+      {navRow}
+      <Button variant="accent" type="submit" {...(blocked || !SIX_DIGITS.test(code) ? { 'aria-disabled': true } : {})}>
+        {t(busy === 'totp' ? 'signin.login.working' : 'signin.totp.submit')}
+      </Button>
     </>, <>
       {account.signIn?.factor === 'passkey' ? <p>{t('factorSignin.passkey.needsCode', { instance: name })}</p> : null}
-      <p>{t('signin.totp.body')}</p>
-      <TextField id={FIELD_ID.code} label={t('signin.totp.code')} value={code} onChange={change('code', setCode)}
-        error={errorText('code')} required inputMode="numeric" autoComplete="one-time-code" spellCheck={false} />
-      <Button variant="ghost" type="button" onClick={openBackup} {...blockedProps}>{t('factorSignin.useBackup')}</Button>
-      <p>{t('factorSignin.lost', { instance: name })}</p>
+      <p id={CODE_BODY_ID}>{t('signin.totp.body')}</p>
+      <CodeBoxes id={FIELD_ID.code} label={t('signin.totp.code')} value={code} onChange={change('code', setCode)}
+        onComplete={completeCode} invalid={codeError !== undefined}
+        describedBy={codeError === undefined ? CODE_BODY_ID : `${CODE_BODY_ID} ${CODE_ERROR_ID}`} />
+      {codeError === undefined ? null : <p id={CODE_ERROR_ID} className="d-onboarding-frame__error" role="alert">{codeError}</p>}
+      <div className="d-onboarding-frame__links">
+        {passkeyLink ? (
+          <Button id={FIELD_ID.passkey} variant="ghost" type="button" onClick={() => { submitPasskey('totp'); }} {...blockedProps}>
+            {t(busy === 'passkey' ? 'factorSignin.passkey.working' : 'factorSignin.code.usePasskey')}
+          </Button>
+        ) : null}
+        <Button variant="ghost" type="button" onClick={openBackup} {...blockedProps}>{t('factorSignin.useBackup')}</Button>
+      </div>
       <p role="status">{enrolling ? t('signin.key.working') : null}</p>
     </>);
   } else if (shown === 'key') {
@@ -439,18 +655,18 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
     // The text cannot change under a running enrolment.
     const onKey = change('key', setKey);
     content = form(t('signin.key.title'), keyStep, <>
-      {cancelButton('signin.cancel')}
+      {navRow}
       <Button variant="accent" type="submit" {...(short || blocked ? { 'aria-disabled': true } : {})}
         aria-describedby={short ? LENGTH_ID : undefined}>{t('signin.key.submit')}</Button>
     </>, <>
       <p>{t('signin.key.body')}</p>
-      <RecoveryKeyField id={FIELD_ID.key} label={t('signin.key.label')} value={key}
+      <RecoveryKeyField id={FIELD_ID.key} label={t('signin.key.label')} value={key} placeholder={t('signin.key.placeholder')}
         onChange={value => { if (!blocked) { setNoteSettled(false); onKey(value); } }}
         onBlur={() => { if (looksBackup) setNoteSettled(true); }}
         describedBy={showBackup ? BACKUP_ID : undefined}
         hint={t('signin.key.hint', { n })} error={errorText('key')} />
       {showBackup ? <p id={BACKUP_ID}>{t('signIn.key.isBackupCode')}</p> : null}
-      {short ? <p id={LENGTH_ID}>{t('signin.error.keyLength')}</p> : null}
+      {short ? <p id={LENGTH_ID} className="d-onboarding-frame__note">{t('signin.error.keyLength')}</p> : null}
       {/* A11Y-DESIGN-04: the live region is there before its text, so the text is announced when it arrives. */}
       <p role="status">{working ? t('signin.key.working') : null}</p>
       <p className="d-sr-only" aria-live="polite" data-testid="signin-announcer">{announcement}</p>
@@ -464,18 +680,27 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
       <p>{t('signin.login.body', { instance: name })}</p>
       <TextField id={FIELD_ID.username} label={t('signin.login.username')} value={username}
         onChange={change('username', (value) => { setUsername(value); setKey(''); })} error={errorText('username')}
-        required autoComplete="username" spellCheck={false} maxLength={32} />
+        required autoComplete={passkeysUsable(instance) ? 'username webauthn' : 'username'} spellCheck={false} maxLength={32}
+        onFocus={() => { if (!blocked) setAutofillArmed(true); }} />
       <TextField id={FIELD_ID.password} type="password" label={t('signin.login.password')} value={password}
         onChange={change('password', setPassword)} error={errorText('password')} required autoComplete="current-password" />
       {instance?.oidc && desktopBridge()?.browserAuth ? <Button variant="ghost" type="button" onClick={submitOIDC} {...blockedProps}>
         {t(busy === 'oidc' ? 'factorSignin.oidc.working' : 'factorSignin.oidc.submit')}
       </Button> : null}
-      {passkeysUsable(instance) ? (
+      {/* Fix round 1 (Jonas): passkeys come from the username field's autofill; no button. Fix round 2: a browser without
+          conditional mediation keeps the button (an accepted deviation for those browsers only). */}
+      {passkeysUsable(instance) && autofillArmed ? (
+        <ConditionalPasskey abortRef={conditionalAbort}
+          begin={() => client.call({ m: 'signInPasskeyBegin' }) as Promise<{ ceremonyId: string; options: string }>}
+          onCredential={conditionalCredential} onFailed={conditionalFailed}
+          stillWanted={() => document.activeElement?.id === FIELD_ID.username} onIdle={() => { setAutofillArmed(false); }} />
+      ) : null}
+      {passkeysUsable(instance) && autofill === false ? (
         <Button id={FIELD_ID.passkey} variant="ghost" type="button" onClick={() => { submitPasskey('login'); }} {...blockedProps}>
           {t(busy === 'passkey' ? 'factorSignin.passkey.working' : 'factorSignin.usePasskey')}
         </Button>
       ) : null}
-      <p role="status">{enrolling ? t('signin.key.working') : null}</p>
+      <p role="status">{enrolling ? t('signin.key.working') : busy === 'passkey' ? t('factorSignin.passkey.working') : null}</p>
     </>);
   }
   return <div ref={rootRef}>{content}</div>;

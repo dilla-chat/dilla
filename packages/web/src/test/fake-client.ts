@@ -190,6 +190,8 @@ export interface FakeSounds { played: ('join' | 'leave')[]; ringing: boolean; st
 export interface FakeNote { title: string; options: NotificationOptions; closed: boolean; onclick: ((ev: Event) => unknown) | null; close(): void }
 
 export interface VoiceHarnessOptions {
+  /** The signed-in person is timed out in the community until this unix second (getMemberTimeout answers it). */
+  timeoutUntil?: number;
   update?: import('../screens/Shell.tsx').ShellUpdateDeps;
   path?: string;
   settings?: Record<string, string>;
@@ -249,6 +251,7 @@ export function renderVoiceShell(o: VoiceHarnessOptions = {}) {
 
   const fake = new FakeClient();
   fake.handler = command => {
+    if (command.m === 'getMemberTimeout' && o.timeoutUntil !== undefined) return Promise.resolve(String(o.timeoutUntil));
     if (command.m === 'callJoin') {
       log.push(`callJoin:${command.channelId}`);
       // As the worker: phase 'in' is published before callJoin answers (L-TS-56 step 1), unless a test holds it.

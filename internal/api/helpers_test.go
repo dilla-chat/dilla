@@ -40,21 +40,32 @@ var (
 	testVerifierErr  error
 )
 
+// TestMain starts the shared verifier before any test runs. Started lazily, the first caller could
+// be a test inside a synctest bubble: the pool's channels would then belong to that bubble, and
+// every later test outside it that acquires an instance dies with "select on synctest channel
+// from outside bubble" (seen under -shuffle in PR #149's CI).
+func TestMain(m *testing.M) {
+	testVerifierOnce.Do(startSharedTestVerifier)
+	os.Exit(m.Run())
+}
+
+func startSharedTestVerifier() {
+	wasm, err := os.ReadFile("../mlswasi/testdata/dilla_core_wasi.wasm")
+	if err != nil {
+		testVerifierErr = err
+		return
+	}
+	runtime, err := mlswasi.New(context.Background(), wasm, mlswasi.Options{PoolSize: 4})
+	if err != nil {
+		testVerifierErr = err
+		return
+	}
+	testVerifier = identity.NewVerifier(runtime)
+}
+
 func sharedTestVerifier(t *testing.T) *identity.Verifier {
 	t.Helper()
-	testVerifierOnce.Do(func() {
-		wasm, err := os.ReadFile("../mlswasi/testdata/dilla_core_wasi.wasm")
-		if err != nil {
-			testVerifierErr = err
-			return
-		}
-		runtime, err := mlswasi.New(context.Background(), wasm, mlswasi.Options{PoolSize: 4})
-		if err != nil {
-			testVerifierErr = err
-			return
-		}
-		testVerifier = identity.NewVerifier(runtime)
-	})
+	testVerifierOnce.Do(startSharedTestVerifier)
 	if testVerifierErr != nil {
 		t.Fatalf("start shared WASI credential verifier: %v", testVerifierErr)
 	}

@@ -317,16 +317,25 @@ func (r *Repo) TombstoneUser(ctx context.Context, userID id.ID, at int64) error 
 	}))
 }
 
-// UpdateProfile is ErrNotFound unless the UPDATE matched a live user's row.
-func (r *Repo) UpdateProfile(ctx context.Context, userID id.ID, display, statusMsg, bio *string) error {
+// UpdateProfile reports changes from the UPDATE predicate, never from a prior read.
+func (r *Repo) UpdateProfile(ctx context.Context, userID id.ID, display, statusMsg, bio *string) (bool, error) {
 	n, err := r.w.UpdateProfile(ctx, sqlitedb.UpdateProfileParams{Display: nullString(display), StatusMsg: nullString(statusMsg), Bio: nullString(bio), ID: userID})
 	if err != nil {
-		return wrap(err)
+		return false, wrap(err)
 	}
-	if n != 1 {
-		return store.ErrNotFound
+	if n == 1 {
+		return true, nil
 	}
-	return nil
+	// This read distinguishes a no-op from a missing/tombstoned account only;
+	// whether a hint is needed was already decided atomically by the UPDATE.
+	user, err := r.GetUser(ctx, userID)
+	if err != nil {
+		return false, err
+	}
+	if user.DeletedAt != nil {
+		return false, store.ErrNotFound
+	}
+	return false, nil
 }
 
 // SetFactorOwed is ErrNotFound unless the UPDATE matched the user's row.
@@ -1017,6 +1026,46 @@ func (r *Repo) takeCeremonyTx(ctx context.Context, q *sqlitedb.Queries, ceremony
 func (r *Repo) PruneCeremonies(ctx context.Context, now int64) (int64, error) {
 	n, err := r.w.PruneCeremonies(ctx, sqlitedb.PruneCeremoniesParams{Expires: now})
 	return n, wrap(err)
+}
+
+func (r *Repo) CountOpenCeremonies(ctx context.Context, userID *id.ID, now int64) (int64, error) {
+	if userID == nil {
+		n, err := r.w.CountOpenDiscoverableLogins(ctx, sqlitedb.CountOpenDiscoverableLoginsParams{Expires: now})
+		return n, wrap(err)
+	}
+	n, err := r.w.CountOpenUserCeremonies(ctx, sqlitedb.CountOpenUserCeremoniesParams{UserID: userID, Expires: now})
+	return n, wrap(err)
+}
+
+func (r *Repo) PutCeremonyCapped(ctx context.Context, c store.CeremonyRow, limit int, now int64) (int64, error) {
+	var evicted int64
+	put := func(tx store.Repository) error {
+		rr, ok := tx.(*Repo)
+		if !ok {
+			return fmt.Errorf("store: PutCeremonyCapped: unexpected transaction type %T", tx)
+		}
+		if err := rr.PutCeremony(ctx, c); err != nil {
+			return err
+		}
+		open, err := rr.CountOpenCeremonies(ctx, c.UserID, now)
+		if err != nil {
+			return err
+		}
+		over := open - int64(limit)
+		if over <= 0 {
+			return nil
+		}
+		if c.UserID == nil {
+			evicted, err = rr.w.EvictOldestDiscoverableLogins(ctx, sqlitedb.EvictOldestDiscoverableLoginsParams{Now: now, Keep: c.ID, N: over})
+		} else {
+			evicted, err = rr.w.EvictOldestUserCeremonies(ctx, sqlitedb.EvictOldestUserCeremoniesParams{UserID: c.UserID, Now: now, Keep: c.ID, N: over})
+		}
+		return wrap(err)
+	}
+	if r.inTx {
+		return evicted, put(r)
+	}
+	return evicted, r.Tx(ctx, put)
 }
 
 func (r *Repo) PutOIDCIdentity(ctx context.Context, issuer, subject string, userID id.ID, created int64) error {

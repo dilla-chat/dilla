@@ -29,7 +29,9 @@ describe('the copy rules', () => {
   });
   it('never exclaims and never reassures', () => {
     for (const [key, value] of values) {
-      expect(value, key).not.toMatch(/!|\bsecure\b|\bsafe\b|\bprotected\b|\u{1F512}/iu);
+      // Wave B task 3b: "somewhere safe" is the prototype's instruction where to keep a key or codes (its check-box labels),
+      // not a claim about dilla; any other "safe" still fails.
+      expect(value.replace(/\bsomewhere safe\b/g, ''), key).not.toMatch(/!|\bsecure\b|\bsafe\b|\bprotected\b|\u{1F512}/iu);
     }
   });
   it('keeps the boot truth rule of L-COPY-01 and names the dialog close button', () => {
@@ -37,15 +39,17 @@ describe('the copy rules', () => {
     expect(en['boot.storeLost.detail']).not.toMatch(/recovery/i);
     expect(en['dialog.close']).toBe('Close');
   });
-  it('says what the recovery key does now, and promises no history on a second browser (L-COPY-02)', () => {
-    expect(en['onboarding.keys.loss']).toBe('This key is the only way to get your account back or to add another browser. If every browser you use loses its data and you do not have the key, the account and its history are gone, and the host cannot bring them back.');
-    expect(en['onboarding.browser.oneBrowser']).toBe('To use this account in another browser, sign in there with your password and the second factor you add next, then this recovery key. Messages sent before that browser joins are not shown in it.');
-    expect(en['signin.done.body']).toBe('This browser is now a device of {username} on {instance}. Messages sent before now are not shown here.');
+  // Wave B task 3b (Jonas, "match the prototype"): the key step says it in the prototype's words; the loss paragraph and
+  // the "What this browser keeps" step are gone.
+  it('says what the recovery key does now, in the words of the prototype (L-COPY-02, task 3b)', () => {
+    expect(en['onboarding.keys.body']).toBe('Shown once. You need it to add another browser.');
+    expect(Object.keys(en).filter(k => k.startsWith('onboarding.browser.') || k === 'onboarding.keys.loss')).toEqual([]);
+    expect(en['signin.done.body']).toBe('This browser is now one of your devices.');
     expect(en['signin.step']).toBe('Sign in · step {n} of {total}');
     expect(en['signin.error.totpFailed']).toBe('That code did not work. Sign in again with a fresh code.');
     expect(en['signin.error.required']).toBe('Fill in this field.');
     expect(en['signin.error.evicted']).toBe('Someone else is signing in to this account. Change your password from a device you still have, or ask the operator.');
-    expect(Object.keys(en).filter(k => k.startsWith('signin.'))).toHaveLength(34);
+    expect(Object.keys(en).filter(k => k.startsWith('signin.'))).toHaveLength(37);
   });
   // Flow 03 as task 15 froze it (L-COPY-02): the count line has two forms, `devices.cap.one` and `devices.cap.other`, in
   // place of the one `devices.cap`, so the settings rows are 62; the two buttons under the list are lower-case chrome.
@@ -66,7 +70,7 @@ describe('the copy rules', () => {
     expect(en['devices.rootMismatch']).toBe('The recovery data stored for this account on {instance} is not this account’s. The recovery key will not work until the operator resets it.');
     // Flow 15 (change password) adds 23: settings.password.*.
     // Flow 06 (web-3) adds 19: settings.nav.voice, settings.voice.* (15), settings.notify.sounds and settings.sound.voice / .ring.
-    expect(Object.keys(en).filter(k => /^(settings|devices|notify|appearance)\./.test(k))).toHaveLength(154); // fix round 2 adds devices.subOwn and devices.subOther; flow 17 adds settings.nav.profile, EOD E7 adds six devices.rename*, web3.12.1 devices.renameServerReads; Signal task 10 fix round 1 adds the twelve notify.* of the prototype's rows and drops settings.voice.automaticBeta; task 10b drops the nine strings of the record-and-play test and the input meter (Let's check is signalSettings.voice.*)
+    expect(Object.keys(en).filter(k => /^(settings|devices|notify|appearance)\./.test(k))).toHaveLength(161); // 2026-11-04 adds the five devices.platform.* (the own device's informational platform tag); wave B Task 5 adds devices.removed and devices.unnamed; fix round 2 adds devices.subOwn and devices.subOther; flow 17 adds settings.nav.profile, EOD E7 adds six devices.rename*, web3.12.1 devices.renameServerReads; Signal task 10 fix round 1 adds the twelve notify.* of the prototype's rows and drops settings.voice.automaticBeta; task 10b drops the nine strings of the record-and-play test and the input meter (Let's check is signalSettings.voice.*)
     expect(Object.keys(en)).not.toContain('devices.error.other');
     expect(Object.keys(en)).not.toContain('devices.cap');
   });
@@ -81,13 +85,13 @@ describe('the copy rules', () => {
     expect(en['shell.dm.composer']).toBe('message @{name}');
     // Flow 07 and 04 add the start-server, empty-DM, empty-log and GIF copy; Bot moderation adds recovery copy.
     // The later GIF attachment label adds one more shell key.
-    // Task 6b fix round 1 (Ruling Z): the DM header topic adds shell.dm.topic, topicHandle, topicGroup and you.
+    // Task 6b fix round 1 (Ruling Z): the DM header topic adds shell.dm.topic, topicGroup and you.
     // Task 7 (Signal §5.5, §6.4, §6.8): the toolbar's "more", the code block's four, the composer's five, the welcome's three
     // and the tray's remove tooltip. shell.composer.attach is the prototype's sentence-case tooltip (fix round 1).
     // Task 11: the DM composer's placeholder, the prototype's 'Message {name}' (the label keeps 'message @{name}').
     expect(en['shell.dm.placeholder']).toBe('Message {name}');
     // Task 11 (Jonas, Q2): the DM list's head: shell.dms.title, section, online and count.
-    expect(Object.keys(en).filter(k => k.startsWith('shell.'))).toHaveLength(218);
+    expect(Object.keys(en).filter(k => k.startsWith('shell.'))).toHaveLength(220);
   });
   it('holds the conversation copy of L-COPY-03: chrome lower case, dialogs and refusals sentence case', () => {
     expect(Object.keys(en).filter(k => k.startsWith('shell.emoji.'))).toHaveLength(33);
@@ -108,7 +112,8 @@ describe('the copy rules', () => {
     expect(en['shell.message.attachmentGone']).toBe('A file of this message is no longer on the server. Discard it and attach the file again.');
     expect(Object.keys(en)).not.toContain('shell.composer.mentionHere');
     expect(en['shell.drop.body']).toBe('Up to 4 files, 25 MB each.');
-    expect(en['shell.tray.tooLarge']).toBe('{name} is over 25 MB and cannot be sent from a browser.');
+    expect(en['shell.tray.overLimitToast']).toBe('Files over 25 MB can’t be sent from a browser');
+    expect(Object.keys(en)).not.toContain('shell.tray.tooLarge');
     expect(en['shell.pins.by']).toBe('pinned by {name}');
   });
 

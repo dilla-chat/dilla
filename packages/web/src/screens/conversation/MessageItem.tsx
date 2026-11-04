@@ -1,6 +1,6 @@
 // One folded timeline item, with its controls and focus hand-off.
-import { useLayoutEffect, useRef, type PointerEvent } from 'react';
-import { PERM, type TimelineItem, type TimelineItemState } from '@dilla/client-core';
+import { useCallback, useLayoutEffect, useRef, useState, type PointerEvent } from 'react';
+import { PERM, type PollSummary, type TimelineItem, type TimelineItemState } from '@dilla/client-core';
 import { MessageEditor, MessageRow, MessageToolbar, ReactionBar } from '@dilla/ui';
 import { reactionDisplay, reactionName } from '../../emoji.ts';
 import { formatTime, t, type StringKey } from '../../strings/index.ts';
@@ -9,6 +9,8 @@ import { AttachmentList } from './Attachments.tsx';
 import { focusLog } from './Conversation.tsx';
 import type { CoreClient } from '@dilla/client-core';
 import { PollCard, finalPollMarker } from '../commands/PollCard.tsx';
+import { utilityText } from '../commands/utility-copy.ts';
+import { localUtilityTime } from '../commands/utility-time.ts';
 import { isCommunityBot, MusicMessageCard, musicMarker, useMusicRoomName } from '../voice/music.tsx';
 
 const STATE_LABEL: Record<TimelineItemState, StringKey | null> = {
@@ -81,6 +83,12 @@ const codeLabels = () => ({ copy: t('shell.code.copy'), copied: t('shell.code.co
 export function MessageItem(p: MessageItemProps): React.JSX.Element {
   const { item } = p;
   const rowEl = useRef<HTMLElement | null>(null);
+  const pollScope = [p.communityId, p.channelId, p.threadId, p.book.self?.id, item.senderUser, item.body, item.edited, item.state].join('\u0000');
+  const [verified, setVerified] = useState<{ client: CoreClient | undefined; scope: string; poll: PollSummary } | null>(null);
+  const onVerified = useCallback((poll: PollSummary | null) => {
+    setVerified(current => poll === null ? current?.scope === pollScope && current.client === p.client ? null : current
+      : current?.poll === poll && current.scope === pollScope && current.client === p.client ? current : { client: p.client, scope: pollScope, poll });
+  }, [p.client, pollScope]);
   const priorReactions = useRef(item.reactions.length);
   const focusedReaction = useRef<string | null>(null);
   useLayoutEffect(() => {
@@ -150,14 +158,18 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
   // Security review M1: only an unedited message from this community's managed Bot account.
   const music = bot && marker === null && !item.edited ? musicMarker(item.body) : null;
   const musicRoom = useMusicRoomName(p.communityId ?? null, music === null || p.client === undefined ? null : music.voiceChannelId);
+  const fallback = marker === null ? item.body : item.body.replace(/\n?\[dilla-poll:v1:[0-9a-f]{32}\]$/u, '')
+    .replace(/<t:(\d+):[tTdDfFR]>/gu, (raw, seconds: string) => localUtilityTime(Number(seconds)) ?? raw);
+  const verifiedPoll = bot && marker !== null && !item.edited && item.state === 'ok' && verified?.client === p.client && verified?.scope === pollScope ? verified.poll : null;
   const displayBody = !shown ? '' : music !== null
     ? t('music.started', { name: authorName({ senderUser: music.requesterId, senderDevice: null }, p.book.members, p.book.self), room: musicRoom })
-    : markdownParts(marker === null ? item.body : item.body.replace(/\n?\[dilla-poll:v1:[0-9a-f]{32}\]$/u, ''), p.book, item.mention);
+    : verifiedPoll !== null ? utilityText('poll.asked', { name: authorName({ senderUser: verifiedPoll.creatorId, senderDevice: null }, p.book.members, p.book.self) })
+    : markdownParts(fallback, p.book, item.mention);
   const card = music !== null && p.client !== undefined && shown
     ? <MusicMessageCard client={p.client} communityId={p.communityId ?? null} voiceChannelId={music.voiceChannelId} item={music.item} bot={author} />
     : marker !== null && p.client !== undefined ? <PollCard client={p.client} communityId={p.communityId ?? null} channelId={p.channelId} threadId={p.threadId ?? null}
-    body={item.body} authorId={item.senderUser} bot={bot} edited={item.edited} deleted={item.state !== 'ok'} selfId={p.book.self?.id ?? null} bits={p.bits ?? null}
-    onOpenThread={p.onOpenThread} /> : undefined;
+      body={item.body} authorId={item.senderUser} bot={bot} edited={item.edited} deleted={item.state !== 'ok'} selfId={p.book.self?.id ?? null} bits={p.bits ?? null}
+      onVerified={onVerified} /> : undefined;
   const gutterTime = formatTime(item.ts);
   const openProfile = p.onOpenProfile;
   return <MessageRow rowRef={el => { rowEl.current = el; p.rowRef(el); }} author={author} time={time} gutterTime={gutterTime}
@@ -166,7 +178,7 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
       openProfile(userId, anchor, from, knownName(from === 'author' ? author : (anchor.textContent ?? '').replace(/^@/, ''), userId))} body={displayBody} card={card}
     grouped={p.grouped} revealed={p.revealed} onReveal={p.onReveal} replying={p.replying === true}
     nameColor={bot ? 0 : nameColorOf(item.senderUser, p.book)} codeLabels={codeLabels()}
-    own={item.own} tag={bot ? 'bot' : item.web ? 'web' : undefined} state={item.state}
+    own={item.own} tag={bot ? 'bot' : undefined} state={item.state}
     stateLabel={label === null ? undefined : t(label)} detail={gone ? undefined : item.state === 'failed' ? item.reason : cannotReadDetail}
     actions={!gone && item.state === 'failed' && item.msgId !== null ? [
       { label: t('shell.message.retry'), onAction: () => { handOnFromRow(0); emit({ kind: 'retry', msgId: item.msgId! }); } },

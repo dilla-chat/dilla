@@ -1,6 +1,7 @@
 import {expect,test} from './support/peer-browser';
 import {watchContexts} from './support/leaks';
 import {VoicePeer,WAIT,copy,onboard,openVoiceSettings,closeSettings,joinVoice,noiseOff,pushToTalk,sentCount,heardCount,framesPass,self} from './support/voice';
+import { e2ePort } from '../web/support/ports';
 watchContexts(test);
 test.skip(process.env.DILLA_NOISE_MODE!=='beta','Requires an explicit beta build');
 test('beta requires opt-in, enhances preview and encrypted calls, and can be left during a call',async({peerBrowser})=>{
@@ -8,7 +9,7 @@ test('beta requires opt-in, enhances preview and encrypted calls, and can be lef
   const assets:string[]=[],thirdParty:string[]=[];
   alice.context.on('request',r=>{
     if(/noise-(model|wasm|glue)-/.test(r.url()))assets.push(r.url());
-    if(!['http://127.0.0.1:8481','ws://127.0.0.1:8481'].includes(new URL(r.url()).origin))thirdParty.push(r.url());
+    if(![`http://127.0.0.1:${String(e2ePort(8481))}`,`ws://127.0.0.1:${String(e2ePort(8481))}`].includes(new URL(r.url()).origin))thirdParty.push(r.url());
   });
   try{
     await peer.setup();await onboard(alice,peer,'alice');await onboard(bob,peer,'bob');await peer.seat(2);

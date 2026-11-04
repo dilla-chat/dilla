@@ -52,9 +52,16 @@ try {
   if (!instance) await new Promise(resolve => setTimeout(resolve, 200));
  }
  if (!instance) throw new Error('Stock app did not open the selected instance');
- await instance.getByRole('heading', { name: `Join ${instanceName}`, exact: true }).waitFor({ state: 'visible', timeout: 90000 });
+ // Connecting replaces the picker: the instance is the only window left, so the picker page is no longer there to observe.
+ // The picker is destroyed once openInstance resolves, a moment after the instance page appears: poll briefly.
+ const deadlinePicker = Date.now() + 10000;
+ while (Date.now() < deadlinePicker && browser.contexts()[0].pages().length !== 1) await new Promise(resolve => setTimeout(resolve, 200));
+ if (browser.contexts()[0].pages().length !== 1) throw new Error('Expected the picker to close when the instance opened');
+ // Wave B's onboarding heading (en.ts onboarding.connect.title) no longer names the instance; the page is the instance's
+ // own origin (checked above), so its first step is the instance's real onboarding.
+ await instance.getByRole('heading', { name: 'Join with an invite', exact: true }).waitFor({ state: 'visible', timeout: 90000 });
  if (process.env.DILLA_NATIVE_ACCEPTANCE_OUTPUT) {
-  const sandbox = await observeRendererSandbox(browser, child.pid, [page, instance]);
+  const sandbox = await observeRendererSandbox(browser, child.pid, [instance]);
   await writeFile(process.env.DILLA_NATIVE_ACCEPTANCE_OUTPUT, JSON.stringify({ httpsOnboarding: true, sandbox }) + '\n', { flag: 'wx', mode: 0o644 });
   console.log('Installed stock client reached HTTPS onboarding with observed renderer sandboxing.');
  } else console.log('Stock client reached its real test instance onboarding. This is not installed acceptance.');

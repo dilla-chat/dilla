@@ -1,0 +1,1308 @@
+[
+  {
+    "name": "task3b-invite-desktop",
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "signin"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=Have an invite? Create an account"
+        },
+        {
+          "wait": 900
+        }
+      ]
+    },
+    "app": {
+      "who": "fresh",
+      "path": "{invite}",
+      "steps": [
+        {
+          "click": "role=link[name=\"Open dilla in this browser\"s]"
+        },
+        {
+          "waitFor": ".d-onboarding-frame h1"
+        },
+        {
+          "wait": 1200
+        }
+      ]
+    },
+    "judge": {
+      "elements": [
+        {
+          "id": "card",
+          "name": "the sign-up card in the middle of the window"
+        },
+        {
+          "id": "flow_label",
+          "name": "the small uppercase step line at the top left of the card",
+          "copy": "New account · step 1 of 6",
+          "anchor": "card"
+        },
+        {
+          "id": "title",
+          "name": "the bold heading of the card",
+          "copy": "Join with an invite",
+          "anchor": "card"
+        },
+        {
+          "id": "subtitle",
+          "name": "the line of text under the heading",
+          "copy": "Paste the link someone sent you.",
+          "anchor": "card"
+        },
+        {
+          "id": "field",
+          "name": "the text field labelled Invite link",
+          "anchor": "card"
+        },
+        {
+          "id": "button",
+          "name": "the wide button at the bottom of the card",
+          "copy": "Continue",
+          "anchor": "card"
+        },
+        {
+          "id": "switch",
+          "name": "the link under the button that offers signing in instead",
+          "copy": "Already have an account? Sign in",
+          "anchor": "card"
+        },
+        {
+          "id": "back",
+          "name": "a Back link under the button",
+          "expect": "absent",
+          "anchor": "card"
+        }
+      ]
+    }
+  },
+  {
+    "name": "task3b-invite-phone",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "signin",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=Have an invite? Create an account"
+        },
+        {
+          "wait": 900
+        }
+      ]
+    },
+    "app": {
+      "who": "freshPhone",
+      "path": "{invite}",
+      "steps": [
+        {
+          "click": "role=link[name=\"Open dilla in this browser\"s]"
+        },
+        {
+          "waitFor": ".d-onboarding-frame h1"
+        },
+        {
+          "wait": 1200
+        }
+      ]
+    },
+    "judge": {
+      "elements": [
+        {
+          "id": "card",
+          "name": "the sign-up card in the middle of the window",
+          "edge": "top"
+        },
+        {
+          "id": "flow_label",
+          "name": "the small uppercase step line at the top left of the card",
+          "copy": "New account · step 1 of 6",
+          "anchor": "card"
+        },
+        {
+          "id": "title",
+          "name": "the bold heading of the card",
+          "copy": "Join with an invite",
+          "anchor": "card"
+        },
+        {
+          "id": "subtitle",
+          "name": "the line of text under the heading",
+          "copy": "Paste the link someone sent you.",
+          "anchor": "card"
+        },
+        {
+          "id": "field",
+          "name": "the text field labelled Invite link",
+          "anchor": "card"
+        },
+        {
+          "id": "button",
+          "name": "the wide button at the bottom of the card",
+          "copy": "Continue",
+          "anchor": "card"
+        },
+        {
+          "id": "switch",
+          "name": "the link under the button that offers signing in instead",
+          "copy": "Already have an account? Sign in",
+          "anchor": "card"
+        },
+        {
+          "id": "back",
+          "name": "a Back link under the button",
+          "expect": "absent",
+          "anchor": "card"
+        }
+      ]
+    }
+  },
+  {
+    "name": "task3b-account-desktop",
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "signin"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=Have an invite? Create an account"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=Continue"
+        },
+        {
+          "wait": 900
+        }
+      ]
+    },
+    "app": {
+      "who": "fresh",
+      "path": "{invite}",
+      "steps": [
+        {
+          "click": "role=link[name=\"Open dilla in this browser\"s]"
+        },
+        {
+          "waitFor": ".d-onboarding-frame h1"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "click": "role=button[name=\"Continue\"s]"
+        },
+        {
+          "waitFor": "#onboarding-username"
+        },
+        {
+          "wait": 600
+        }
+      ]
+    },
+    "judge": {
+      "elements": [
+        {
+          "id": "card",
+          "name": "the sign-up card in the middle of the window"
+        },
+        {
+          "id": "flow_label",
+          "name": "the small uppercase step line at the top left of the card",
+          "copy": "New account · step 2 of 6",
+          "anchor": "card"
+        },
+        {
+          "id": "title",
+          "name": "the bold heading of the card",
+          "copy": "Create your account",
+          "anchor": "card"
+        },
+        {
+          "id": "subtitle",
+          "name": "the line of text under the heading",
+          "copy": "Pick a username and a password. Your username is how people mention you.",
+          "anchor": "card"
+        },
+        {
+          "id": "username",
+          "name": "the text field labelled Username",
+          "anchor": "card"
+        },
+        {
+          "id": "password",
+          "name": "the password field labelled Password",
+          "anchor": "card"
+        },
+        {
+          "id": "display",
+          "name": "a field for a display name",
+          "expect": "absent",
+          "anchor": "card"
+        },
+        {
+          "id": "button",
+          "name": "the wide button at the bottom of the card",
+          "copy": "Create account",
+          "anchor": "card"
+        },
+        {
+          "id": "back",
+          "name": "the Back link under the button at the left",
+          "copy": "Back",
+          "anchor": "card"
+        },
+        {
+          "id": "switch",
+          "name": "the link under the button that offers signing in instead",
+          "copy": "Already have an account? Sign in",
+          "anchor": "card"
+        }
+      ]
+    }
+  },
+  {
+    "name": "task3b-account-phone",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "signin",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=Have an invite? Create an account"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=Continue"
+        },
+        {
+          "wait": 900
+        }
+      ]
+    },
+    "app": {
+      "who": "freshPhone",
+      "path": "{invite}",
+      "steps": [
+        {
+          "click": "role=link[name=\"Open dilla in this browser\"s]"
+        },
+        {
+          "waitFor": ".d-onboarding-frame h1"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "click": "role=button[name=\"Continue\"s]"
+        },
+        {
+          "waitFor": "#onboarding-username"
+        },
+        {
+          "wait": 600
+        }
+      ]
+    },
+    "judge": {
+      "elements": [
+        {
+          "id": "card",
+          "name": "the sign-up card in the middle of the window",
+          "edge": "top"
+        },
+        {
+          "id": "flow_label",
+          "name": "the small uppercase step line at the top left of the card",
+          "copy": "New account · step 2 of 6",
+          "anchor": "card"
+        },
+        {
+          "id": "title",
+          "name": "the bold heading of the card",
+          "copy": "Create your account",
+          "anchor": "card"
+        },
+        {
+          "id": "subtitle",
+          "name": "the line of text under the heading",
+          "copy": "Pick a username and a password. Your username is how people mention you.",
+          "anchor": "card"
+        },
+        {
+          "id": "username",
+          "name": "the text field labelled Username",
+          "anchor": "card"
+        },
+        {
+          "id": "password",
+          "name": "the password field labelled Password",
+          "anchor": "card"
+        },
+        {
+          "id": "display",
+          "name": "a field for a display name",
+          "expect": "absent",
+          "anchor": "card"
+        },
+        {
+          "id": "button",
+          "name": "the wide button at the bottom of the card",
+          "copy": "Create account",
+          "anchor": "card"
+        },
+        {
+          "id": "back",
+          "name": "the Back link under the button at the left",
+          "copy": "Back",
+          "anchor": "card"
+        },
+        {
+          "id": "switch",
+          "name": "the link under the button that offers signing in instead",
+          "copy": "Already have an account? Sign in",
+          "anchor": "card"
+        }
+      ]
+    }
+  },
+  {
+    "name": "task3b-key-desktop",
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "signin"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=Have an invite? Create an account"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=Continue"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=Create account"
+        },
+        {
+          "wait": 900
+        }
+      ]
+    },
+    "app": {
+      "who": "fresh",
+      "path": "{invite}",
+      "steps": [
+        {
+          "click": "role=link[name=\"Open dilla in this browser\"s]"
+        },
+        {
+          "waitFor": ".d-onboarding-frame h1"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "click": "role=button[name=\"Continue\"s]"
+        },
+        {
+          "waitFor": "#onboarding-username"
+        },
+        {
+          "wait": 600
+        },
+        {
+          "type": [
+            "#onboarding-username",
+            "parity3bkd"
+          ]
+        },
+        {
+          "type": [
+            "#onboarding-password",
+            "ux-parity-3b-password"
+          ]
+        },
+        {
+          "click": "role=button[name=\"Create account\"s]"
+        },
+        {
+          "waitFor": ".d-recovery-key li"
+        },
+        {
+          "wait": 900
+        }
+      ]
+    },
+    "judge": {
+      "exclude": "types a password and shows the recovery key"
+    }
+  },
+  {
+    "name": "task3b-key-phone",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "signin",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=Have an invite? Create an account"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=Continue"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=Create account"
+        },
+        {
+          "wait": 900
+        }
+      ]
+    },
+    "app": {
+      "who": "freshPhone",
+      "path": "{invite}",
+      "steps": [
+        {
+          "click": "role=link[name=\"Open dilla in this browser\"s]"
+        },
+        {
+          "waitFor": ".d-onboarding-frame h1"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "click": "role=button[name=\"Continue\"s]"
+        },
+        {
+          "waitFor": "#onboarding-username"
+        },
+        {
+          "wait": 600
+        },
+        {
+          "type": [
+            "#onboarding-username",
+            "parity3bkp"
+          ]
+        },
+        {
+          "type": [
+            "#onboarding-password",
+            "ux-parity-3b-password"
+          ]
+        },
+        {
+          "click": "role=button[name=\"Create account\"s]"
+        },
+        {
+          "waitFor": ".d-recovery-key li"
+        },
+        {
+          "wait": 900
+        }
+      ]
+    },
+    "judge": {
+      "exclude": "types a password and shows the recovery key"
+    }
+  },
+  {
+    "name": "task3b-factor-desktop",
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "signin"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=Have an invite? Create an account"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=Continue"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=Create account"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=I saved my recovery key somewhere safe"
+        },
+        {
+          "click": "text=I saved it"
+        },
+        {
+          "wait": 900
+        }
+      ]
+    },
+    "app": {
+      "who": "fresh",
+      "path": "{invite}",
+      "steps": [
+        {
+          "click": "role=link[name=\"Open dilla in this browser\"s]"
+        },
+        {
+          "waitFor": ".d-onboarding-frame h1"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "click": "role=button[name=\"Continue\"s]"
+        },
+        {
+          "waitFor": "#onboarding-username"
+        },
+        {
+          "wait": 600
+        },
+        {
+          "type": [
+            "#onboarding-username",
+            "parity3bfd"
+          ]
+        },
+        {
+          "type": [
+            "#onboarding-password",
+            "ux-parity-3b-password"
+          ]
+        },
+        {
+          "click": "role=button[name=\"Create account\"s]"
+        },
+        {
+          "waitFor": ".d-recovery-key li"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "role=checkbox[name=\"I saved my recovery key somewhere safe\"s]"
+        },
+        {
+          "click": "role=button[name=\"I saved it\"s]"
+        },
+        {
+          "waitFor": "role=heading[name=\"Add a second factor\"s]"
+        },
+        {
+          "wait": 900
+        }
+      ]
+    },
+    "mutates": true,
+    "judge": {
+      "exclude": "types a password; the account is created after the recovery key"
+    }
+  },
+  {
+    "name": "task3b-factor-phone",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "signin",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=Have an invite? Create an account"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=Continue"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=Create account"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=I saved my recovery key somewhere safe"
+        },
+        {
+          "click": "text=I saved it"
+        },
+        {
+          "wait": 900
+        }
+      ]
+    },
+    "app": {
+      "who": "freshPhone",
+      "path": "{invite}",
+      "steps": [
+        {
+          "click": "role=link[name=\"Open dilla in this browser\"s]"
+        },
+        {
+          "waitFor": ".d-onboarding-frame h1"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "click": "role=button[name=\"Continue\"s]"
+        },
+        {
+          "waitFor": "#onboarding-username"
+        },
+        {
+          "wait": 600
+        },
+        {
+          "type": [
+            "#onboarding-username",
+            "parity3bfp"
+          ]
+        },
+        {
+          "type": [
+            "#onboarding-password",
+            "ux-parity-3b-password"
+          ]
+        },
+        {
+          "click": "role=button[name=\"Create account\"s]"
+        },
+        {
+          "waitFor": ".d-recovery-key li"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "role=checkbox[name=\"I saved my recovery key somewhere safe\"s]"
+        },
+        {
+          "click": "role=button[name=\"I saved it\"s]"
+        },
+        {
+          "waitFor": "role=heading[name=\"Add a second factor\"s]"
+        },
+        {
+          "wait": 900
+        }
+      ]
+    },
+    "mutates": true,
+    "judge": {
+      "exclude": "types a password; the account is created after the recovery key"
+    }
+  },
+  {
+    "name": "task3b-code-desktop",
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "signin"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=Have an invite? Create an account"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=Continue"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=Create account"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=I saved my recovery key somewhere safe"
+        },
+        {
+          "click": "text=I saved it"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=Continue"
+        },
+        {
+          "wait": 900
+        }
+      ]
+    },
+    "app": {
+      "who": "fresh",
+      "path": "{invite}",
+      "steps": [
+        {
+          "click": "role=link[name=\"Open dilla in this browser\"s]"
+        },
+        {
+          "waitFor": ".d-onboarding-frame h1"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "click": "role=button[name=\"Continue\"s]"
+        },
+        {
+          "waitFor": "#onboarding-username"
+        },
+        {
+          "wait": 600
+        },
+        {
+          "type": [
+            "#onboarding-username",
+            "parity3bcd"
+          ]
+        },
+        {
+          "type": [
+            "#onboarding-password",
+            "ux-parity-3b-password"
+          ]
+        },
+        {
+          "click": "role=button[name=\"Create account\"s]"
+        },
+        {
+          "waitFor": ".d-recovery-key li"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "role=checkbox[name=\"I saved my recovery key somewhere safe\"s]"
+        },
+        {
+          "click": "role=button[name=\"I saved it\"s]"
+        },
+        {
+          "waitFor": "role=heading[name=\"Add a second factor\"s]"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "role=button[name=\"Continue\"s]"
+        },
+        {
+          "waitFor": "#factor-totp-key[value]"
+        },
+        {
+          "wait": 1200
+        }
+      ]
+    },
+    "mutates": true,
+    "judge": {
+      "exclude": "types a password and shows the authenticator setup key"
+    }
+  },
+  {
+    "name": "task3b-code-phone",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "signin",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=Have an invite? Create an account"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=Continue"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=Create account"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=I saved my recovery key somewhere safe"
+        },
+        {
+          "click": "text=I saved it"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=Continue"
+        },
+        {
+          "wait": 900
+        }
+      ]
+    },
+    "app": {
+      "who": "freshPhone",
+      "path": "{invite}",
+      "steps": [
+        {
+          "click": "role=link[name=\"Open dilla in this browser\"s]"
+        },
+        {
+          "waitFor": ".d-onboarding-frame h1"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "click": "role=button[name=\"Continue\"s]"
+        },
+        {
+          "waitFor": "#onboarding-username"
+        },
+        {
+          "wait": 600
+        },
+        {
+          "type": [
+            "#onboarding-username",
+            "parity3bcp"
+          ]
+        },
+        {
+          "type": [
+            "#onboarding-password",
+            "ux-parity-3b-password"
+          ]
+        },
+        {
+          "click": "role=button[name=\"Create account\"s]"
+        },
+        {
+          "waitFor": ".d-recovery-key li"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "role=checkbox[name=\"I saved my recovery key somewhere safe\"s]"
+        },
+        {
+          "click": "role=button[name=\"I saved it\"s]"
+        },
+        {
+          "waitFor": "role=heading[name=\"Add a second factor\"s]"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "role=button[name=\"Continue\"s]"
+        },
+        {
+          "waitFor": "#factor-totp-key[value]"
+        },
+        {
+          "wait": 1200
+        }
+      ]
+    },
+    "mutates": true,
+    "judge": {
+      "exclude": "types a password and shows the authenticator setup key"
+    }
+  },
+  {
+    "name": "task3b-done-desktop",
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "signin"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=Have an invite? Create an account"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=Continue"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=Create account"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=I saved my recovery key somewhere safe"
+        },
+        {
+          "click": "text=I saved it"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=Continue"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "type": [
+            "input[maxlength='6']",
+            "123456"
+          ]
+        },
+        {
+          "wait": 1200
+        }
+      ]
+    },
+    "app": {
+      "who": "fresh",
+      "path": "{invite}",
+      "steps": [
+        {
+          "click": "role=link[name=\"Open dilla in this browser\"s]"
+        },
+        {
+          "waitFor": ".d-onboarding-frame h1"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "click": "role=button[name=\"Continue\"s]"
+        },
+        {
+          "waitFor": "#onboarding-username"
+        },
+        {
+          "wait": 600
+        },
+        {
+          "type": [
+            "#onboarding-username",
+            "parity3bdd"
+          ]
+        },
+        {
+          "type": [
+            "#onboarding-password",
+            "ux-parity-3b-password"
+          ]
+        },
+        {
+          "click": "role=button[name=\"Create account\"s]"
+        },
+        {
+          "waitFor": ".d-recovery-key li"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "role=checkbox[name=\"I saved my recovery key somewhere safe\"s]"
+        },
+        {
+          "click": "role=button[name=\"I saved it\"s]"
+        },
+        {
+          "waitFor": "role=heading[name=\"Add a second factor\"s]"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "role=button[name=\"Continue\"s]"
+        },
+        {
+          "waitFor": "#factor-totp-key[value]"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "totpFrom": [
+            "#factor-totp-key",
+            "#factor-totp-code"
+          ]
+        },
+        {
+          "waitFor": "role=heading[name=\"You’re in\"s]"
+        },
+        {
+          "wait": 1500
+        }
+      ]
+    },
+    "mutates": true,
+    "judge": {
+      "exclude": "types a password and a one-time code, and shows the backup codes"
+    }
+  },
+  {
+    "name": "task3b-done-phone",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "signin",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=Have an invite? Create an account"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=Continue"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=Create account"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=I saved my recovery key somewhere safe"
+        },
+        {
+          "click": "text=I saved it"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "text=Continue"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "type": [
+            "input[maxlength='6']",
+            "123456"
+          ]
+        },
+        {
+          "wait": 1200
+        }
+      ]
+    },
+    "app": {
+      "who": "freshPhone",
+      "path": "{invite}",
+      "steps": [
+        {
+          "click": "role=link[name=\"Open dilla in this browser\"s]"
+        },
+        {
+          "waitFor": ".d-onboarding-frame h1"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "click": "role=button[name=\"Continue\"s]"
+        },
+        {
+          "waitFor": "#onboarding-username"
+        },
+        {
+          "wait": 600
+        },
+        {
+          "type": [
+            "#onboarding-username",
+            "parity3bdp"
+          ]
+        },
+        {
+          "type": [
+            "#onboarding-password",
+            "ux-parity-3b-password"
+          ]
+        },
+        {
+          "click": "role=button[name=\"Create account\"s]"
+        },
+        {
+          "waitFor": ".d-recovery-key li"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "role=checkbox[name=\"I saved my recovery key somewhere safe\"s]"
+        },
+        {
+          "click": "role=button[name=\"I saved it\"s]"
+        },
+        {
+          "waitFor": "role=heading[name=\"Add a second factor\"s]"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "role=button[name=\"Continue\"s]"
+        },
+        {
+          "waitFor": "#factor-totp-key[value]"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "totpFrom": [
+            "#factor-totp-key",
+            "#factor-totp-code"
+          ]
+        },
+        {
+          "waitFor": "role=heading[name=\"You’re in\"s]"
+        },
+        {
+          "wait": 1500
+        }
+      ]
+    },
+    "mutates": true,
+    "judge": {
+      "exclude": "types a password and a one-time code, and shows the backup codes"
+    }
+  }
+]

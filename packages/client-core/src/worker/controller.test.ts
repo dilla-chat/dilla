@@ -4381,6 +4381,65 @@ describe('Controller sign-in (L-TS-23)', () => {
     expect(w.ret(6)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY', detail: '' } });
   });
 
+  it('wave B task 3: signInBack from the code step drops the held assertion and returns to the login, username kept', async () => {
+    const w = world({ phase: 0 });
+    w.enrol.login.mockImplementationOnce(() => { w.calls.push('enrol.login'); return Promise.resolve({ needs: 1 as const, passkey: true }); });
+    await toKeyStep(w);
+    expect(w.account()).toMatchObject({ phase: 'signin-totp', signIn: { username: 'web', factor: 'totp', passkey: true } });
+    w.call(4, { m: 'signInBack' });
+    await vi.waitFor(() => expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: true, value: null }));
+    expect(w.enrol.reset).toHaveBeenCalledTimes(1);
+    expect(w.account()).toMatchObject({ phase: 'signin-login', signIn: { username: 'web', factor: null }, error: null });
+    expect(w.account()?.signIn).not.toHaveProperty('passkey');
+    // Back at the login a code is refused: nothing half-signed-in is left to finish.
+    w.call(5, { m: 'signInTotp', code: '123456' });
+    await vi.waitFor(() => expect(w.ret(5)).toBeDefined());
+    expect(w.ret(5)).toMatchObject({ ok: false });
+    expect(w.enrol.totp).not.toHaveBeenCalled();
+  });
+
+  it('wave B task 3: signInBack from the key step drops the assertion; it is refused at the login itself', async () => {
+    const w = world({ phase: 0 });
+    await toKeyStep(w);
+    expect(w.account()?.phase).toBe('signin-key');
+    w.call(4, { m: 'signInBack' });
+    await vi.waitFor(() => expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: true, value: null }));
+    expect(w.enrol.reset).toHaveBeenCalledTimes(1);
+    expect(w.account()).toMatchObject({ phase: 'signin-login', error: null });
+    w.call(5, { m: 'signInBack' });
+    await vi.waitFor(() => expect(w.ret(5)).toBeDefined());
+    expect(w.ret(5)).toMatchObject({ ok: false });
+    expect(w.enrol.reset).toHaveBeenCalledTimes(1);
+  });
+
+  it('a login with no passkey flag leaves signIn without one', async () => {
+    const w = world({ phase: 0 });
+    w.enrol.login.mockImplementationOnce(() => Promise.resolve({ needs: 1 as const }));
+    await toKeyStep(w);
+    expect(w.account()?.signIn).toEqual({ username: 'web', factor: 'totp' });
+  });
+
+  it('wave B task 3 fix round 1: Back and Cancel are refused while a sign-in step runs, and change nothing', async () => {
+    const w = world({ phase: 0 });
+    let release!: () => void;
+    w.enrol.login.mockImplementationOnce(() => Promise.resolve({ needs: 1 as const }));
+    w.enrol.totp.mockImplementationOnce(() => new Promise<void>((resolve) => { release = resolve; }));
+    await toKeyStep(w);
+    expect(w.account()?.phase).toBe('signin-totp');
+    w.call(4, { m: 'signInTotp', code: '123456' });
+    await vi.waitFor(() => expect(w.enrol.totp).toHaveBeenCalledTimes(1));
+    w.call(5, { m: 'signInBack' });
+    w.call(6, { m: 'signInCancel' });
+    await vi.waitFor(() => expect(w.ret(6)).toBeDefined());
+    expect(w.ret(5)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY' } });
+    expect(w.ret(6)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY' } });
+    expect(w.enrol.reset).not.toHaveBeenCalled();
+    release();
+    await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
+    expect(w.ret(4)).toMatchObject({ ok: true });
+    expect(w.account()?.phase).toBe('signin-key');
+  });
+
   it('signInCancel resets the enrolment and returns to needs-signup', async () => {
     const w = world({ phase: 0 });
     w.enrol.login.mockImplementationOnce(() => { w.calls.push('enrol.login'); return Promise.resolve({ needs: 1 as const }); });
@@ -6205,7 +6264,7 @@ describe('Controller say more (L-TS-34, L-TS-35, L-TS-36)', () => {
     await vi.waitFor(() => expect(trayOf(w)?.[0]?.phase).toBe('ready'));
   });
 
-  it('attachFiles refuses five files and an oversize file by code, before any upload', async () => {
+  it('attachFiles refuses five files and keeps an oversize failed card without upload', async () => {
     const w = world();
     await toReady(w);
     await openGeneral(w);
@@ -6215,7 +6274,10 @@ describe('Controller say more (L-TS-34, L-TS-35, L-TS-36)', () => {
     await vi.waitFor(() => expect(w.ret(6)).toBeDefined());
     await vi.waitFor(() => expect(w.ret(5)).toBeDefined());
     expect((w.ret(4) as Refused).error).toMatchObject({ code: 'E_ATTACHMENT_COUNT', status: 0 });
-    expect((w.ret(5) as Refused).error).toMatchObject({ code: 'E_ATTACHMENT_TOO_LARGE', status: 0 });
+    expect(w.ret(5)).toMatchObject({ ok: true });
+    expect(w.last(`tray:${CH_HEX}`)).toEqual([expect.objectContaining({ name: 'big.bin', phase: 'failed', reason: 'E_ATTACHMENT_TOO_LARGE' })]);
+    w.call(7, { m: 'checkpointFiles', channelId: CH_HEX });
+    await vi.waitFor(() => expect(w.ret(7)).toMatchObject({ ok: true, value: [] }));
     expect((w.ret(6) as Refused).error).toEqual({ code: 'E_BAD_INPUT', detail: '', status: 0, retryAfterMs: null });
     expect(w.routes.putBlob).not.toHaveBeenCalled();
   });
@@ -7408,6 +7470,20 @@ describe('threads (web3.7 TB2)', () => {
     await vi.waitFor(() => expect(w.ret(11)).toMatchObject({ ok: true }));
     expect(thread(w)?.items.at(-1)?.reply?.threadRoot).toBe(ROOT_HEX);
   });
+});
+
+it('privacy refresh replaces a cached contact username with their current display name', async () => {
+  const w = world();
+  let display = '';
+  const original = w.routes.listMembers.getMockImplementation()!;
+  w.routes.listMembers.mockImplementation(async community => [...await original(community), { userId: STRANGER, username: 'mira-user', display, kind: 0, nick: '', roleIds: [] }]);
+  w.core.trustState.mockReturnValue([{ userId: STRANGER, umk: new Uint8Array(32).fill(7), firstSeen: 1n, verified: false, changedUmk: null, blocked: null }]);
+  await toReady(w);
+  await vi.waitFor(() => expect(w.last<TrustSummary[]>('trust')?.find(row => row.userId === toHex(STRANGER))?.name).toBe('mira-user'));
+  display = 'Mira';
+  w.call(99_881, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(99_881)).toMatchObject({ ok: true }));
+  expect(w.last<TrustSummary[]>('trust')?.find(row => row.userId === toHex(STRANGER))?.name).toBe('Mira');
 });
 
 it('sends input activity only over WSS and drops unavailable samples with no HTTP', async () => {

@@ -16,9 +16,10 @@ export async function readFakeClock(clockURL: string, stage: string): Promise<nu
   return now;
 }
 
-async function advance(clockURL: string, seconds: number, stage: string): Promise<void> {
+async function advance(clockURL: string, seconds: number, stage: string, sweep = true): Promise<void> {
+  // sweep: false defers the forced test-clock retention sweep (the UX world, e2e/ux/README.md); hooks still run.
   const response = await fetch(clockURL, {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ seconds }),
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ seconds, ...(sweep ? {} : { sweep: false }) }),
   });
   if (!response.ok) throw new Error(`Bot host clock catch-up failed ${stage}: HTTP ${response.status}`);
 }
@@ -26,13 +27,15 @@ async function advance(clockURL: string, seconds: number, stage: string): Promis
 export class WallClockFollower {
   readonly clockURL: string;
   private readonly wallMs: () => number;
+  private readonly sweep: boolean;
   /** Wall ms through which the fake clock has been advanced. */
   private advancedThrough: number;
   private chain: Promise<unknown> = Promise.resolve();
 
-  constructor(clockURL: string, wallMs: () => number = Date.now) {
+  constructor(clockURL: string, wallMs: () => number = Date.now, sweep = true) {
     this.clockURL = clockURL;
     this.wallMs = wallMs;
+    this.sweep = sweep;
     this.advancedThrough = wallMs();
   }
 
@@ -52,7 +55,7 @@ export class WallClockFollower {
       const wall = this.wallMs();
       const behind = Math.floor(wall / 1_000) - now;
       if (behind <= 0) return elapsed;
-      await advance(this.clockURL, behind, stage);
+      await advance(this.clockURL, behind, stage, this.sweep);
       this.advancedThrough = wall;
       return elapsed + behind;
     });
@@ -61,7 +64,7 @@ export class WallClockFollower {
   private async applyElapsed(stage: string): Promise<number> {
     const seconds = Math.floor((this.wallMs() - this.advancedThrough) / 1_000);
     if (seconds < 1) return 0;
-    await advance(this.clockURL, seconds, stage);
+    await advance(this.clockURL, seconds, stage, this.sweep);
     this.advancedThrough += seconds * 1_000;
     return seconds;
   }
@@ -76,8 +79,8 @@ export class WallClockFollower {
 const followers = new Map<string, WallClockFollower>();
 
 /** Starts following the wall clock for a host's clock URL, replacing the follower of an earlier host on the same port. */
-export function followWallClock(clockURL: string): WallClockFollower {
-  const follower = new WallClockFollower(clockURL);
+export function followWallClock(clockURL: string, sweep = true): WallClockFollower {
+  const follower = new WallClockFollower(clockURL, Date.now, sweep);
   followers.set(clockURL, follower);
   return follower;
 }

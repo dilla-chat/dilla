@@ -6,7 +6,7 @@ import { TrailingSlot } from '../TrailingSlot/TrailingSlot.tsx';
 import './ChannelRow.css';
 
 export type ChannelRowProps = {
-  name: string; kind: 'text' | 'voice' | 'dm' | 'announcement' | 'afk'; active?: boolean; unread?: number; mentions?: number;
+  name: string; kind: 'text' | 'voice' | 'dm' | 'announcement' | 'afk'; active?: boolean; /** Marked like the open row but not the open page (no aria-current): a phone list's last-opened row. */ selected?: boolean; unread?: number; mentions?: number;
   muted?: boolean; readable?: boolean; private?: boolean; onSelect: () => void;
   ariaLabel?: string;
   /** A short note after the name ("slow mode"). It is part of the row's accessible name unless `ariaLabel` replaces it. */
@@ -42,13 +42,13 @@ const cap = (n: number) => (n > 99 ? '99+' : String(n));
  * "@2" mention tag, else the "1 new" unread tag, else nothing. Active is the selected fill, a 600 name, the accent glyph and
  * a 2px accent bar at the left edge that grows with scaleY; unread or a mention is a bright 600 name.
  */
-export function ChannelRow({ name, kind, active, unread = 0, mentions = 0, muted, readable, private: isPrivate, onSelect, ariaLabel, badge, newLabel, person }: ChannelRowProps) {
+export function ChannelRow({ name, kind, active, selected, unread = 0, mentions = 0, muted, readable, private: isPrivate, onSelect, ariaLabel, badge, newLabel, person }: ChannelRowProps) {
   // A muted channel hides its unread count; its mention count still shows (ruling 15).
   const shown = muted ? 0 : unread;
   if (person !== undefined) {
     return (
       <button type="button" className="d-chrow" data-row data-kind={kind} data-person="true" data-group={person.group ? 'true' : undefined}
-        data-unread={String(shown)} data-mentions={String(mentions)} data-muted={muted ? 'true' : undefined}
+        data-unread={String(shown)} data-mentions={String(mentions)} data-muted={muted ? 'true' : undefined} data-selected={selected ? 'true' : undefined}
         aria-current={active ? 'page' : undefined} aria-label={ariaLabel} aria-description={person.sub !== undefined && person.sub !== '' ? person.sub : undefined} onClick={onSelect}>
         <span className="d-chrow__bar" aria-hidden="true" />
         <span className="d-chrow__avatar" aria-hidden="true">
@@ -67,7 +67,7 @@ export function ChannelRow({ name, kind, active, unread = 0, mentions = 0, muted
   }
   return (
     <button type="button" className="d-chrow" data-row data-kind={kind} data-unread={String(shown)} data-mentions={String(mentions)}
-      data-muted={muted ? 'true' : undefined} aria-current={active ? 'page' : undefined} aria-label={ariaLabel} onClick={onSelect}>
+      data-muted={muted ? 'true' : undefined} data-selected={selected ? 'true' : undefined} aria-current={active ? 'page' : undefined} aria-label={ariaLabel} onClick={onSelect}>
       <span className="d-chrow__bar" aria-hidden="true" />
       <Glyph kind={kind} />
       <span className="d-chrow__name">{name}</span>

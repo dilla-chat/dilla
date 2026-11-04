@@ -1,0 +1,14 @@
+/* Wave B task 3, the prototype's code step (`codeBoxes`): six 48px boxes in a 6-column grid with 8px gaps, --surface-2 with
+   a 1px edge (empty #252A33, filled #3A404A, the caret's box the accent with its 3px 0.15 ring), radius 8, the digit
+   20px/700. The real input lies over the row, transparent, at 16px so a phone never zooms into it. */
+.d-code-boxes { position: relative; min-width: 0; }
+.d-code-boxes__row { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
+.d-code-boxes__box { box-sizing: content-box; height: 3rem /* 48px inside the 1px edge, as the prototype draws it */; display: flex; align-items: center; justify-content: center; min-width: 0; background: var(--surface-2); border: 1px solid var(--control-edge-field); border-radius: var(--r-lg); color: var(--fg); font-size: var(--text-heading); font-weight: var(--weight-display); line-height: 1; transition: border-color var(--duration-fast), box-shadow var(--duration-fast); }
+.d-code-boxes__box[data-filled] { border-color: var(--control-edge-key); }
+.d-code-boxes:focus-within .d-code-boxes__box[data-caret] { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); }
+.d-code-boxes[data-invalid="true"] .d-code-boxes__box { border-color: var(--danger); }
+.d-code-boxes__input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0; opacity: 0; font-size: 16px; color: transparent; background: transparent; caret-color: transparent; cursor: text; }
+/* The boxes are the focus indicator; the input itself is invisible, so its own ring would be too. */
+.d-code-boxes__input:focus-visible { outline: none; }
+@media (prefers-reduced-motion: reduce) { .d-code-boxes__box { transition: none; } }
+@media (forced-colors: active) { .d-code-boxes:focus-within .d-code-boxes__box[data-caret] { outline: 2px solid Highlight; } }

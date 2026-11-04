@@ -9,7 +9,7 @@
   box-shadow: var(--shadow-menu); animation: d-modal var(--duration-focus) var(--ease-out) both;
 }
 .d-action-menu__popup[data-placement="top"] { top: auto; bottom: 100%; }
-.d-action-menu__items { display: grid; }
+.d-action-menu__items { display: grid; grid-template-columns: minmax(0, 1fr); }
 /* An item: 32px, 8px in, 5px corners, 12px --fg; the glyph at 0.85; --surface-hi under the pointer or focus, the danger tint on a danger item. */
 .d-action-menu__item {
   display: flex; align-items: center; gap: 10px; height: 32px; padding: 0 8px; font: inherit; font-size: var(--text-ui); text-align: left; white-space: nowrap;
@@ -32,4 +32,15 @@
 .d-action-menu__check[data-on] { border-color: var(--accent); background: var(--accent); }
 @media (prefers-reduced-motion: reduce) { .d-action-menu__popup { animation: none; } }
 /* Signal task 10: a labelled group of items (a notify mode's radios) keeps the popup's one column. */
-.d-action-menu__group { display: grid; }
+.d-action-menu__group { display: grid; grid-template-columns: minmax(0, 1fr); }
+/* Wave B task 4 (the prototype's person menu): a trailing hint (10px --fg-faint), the "Move to" heading (10px 600, 0.12em, uppercase,
+   --fg-3) and its room rows (30px, 12px in on the left, the glyph at 13px, 12px --fg-chip; the count is the hint at 10.5px). */
+.d-action-menu__hint { font-size: var(--text-micro); color: var(--fg-faint); }
+.d-action-menu__heading { padding: 6px 8px 2px; font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking-wide); text-transform: uppercase; color: var(--fg-3); }
+.d-action-menu__item[data-room="true"] { height: 30px; padding: 0 8px 0 12px; color: var(--fg-chip); }
+.d-action-menu__item[data-room="true"] .d-action-menu__icon { opacity: 1; }
+.d-action-menu__item[data-room="true"] .d-action-menu__hint { font-size: var(--text-meta); }
+/* Wave B parity fix: a grid track is as wide as its widest item unless it may shrink, so a long room name ("Late night lounge for
+   people") widened the 236px menu, scrolled it sideways and pushed every keycap and head count out of sight. The track is
+   minmax(0, 1fr) (above); the label ends in an ellipsis and the hint keeps its width at the right edge. */
+.d-action-menu__hint { flex: none; }

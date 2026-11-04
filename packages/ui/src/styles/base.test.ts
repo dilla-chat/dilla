@@ -63,8 +63,8 @@ describe('web3.9 base.css rules (UI-1)', () => {
     expect(css).toContain(rule);
     expect(css.indexOf(rule)).toBeGreaterThan(css.indexOf('.d-root :focus-visible { outline: var(--focus-ring); outline-offset: 2px; }'));
   });
-  it('gives a button, a segmented option and an icon button 44px on a phone layout (H4)', () => {
-    expect(css).toContain('.d-app-shell[data-layout="phone"] :is(.d-btn, .d-segmented__option, .d-icon-button):not(.d-phone-header__actions *, .d-channel-list__head-btn, .d-user-panel *) { min-height: 2.75rem; min-width: 2.75rem; }');
+  it('keeps the 44px phone minimum for segmented and icon controls while Buttons retain context heights', () => {
+    expect(css).toContain('.d-app-shell[data-layout="phone"] :is(.d-segmented__option, .d-icon-button):not(.d-phone-header__actions *, .d-channel-list__head-btn, .d-user-panel *) { min-height: 2.75rem; min-width: 2.75rem; }');
   });
   it('adds no @media of its own for it (the phone-query count stays with phone-query.test.ts)', () => {
     expect(css.split('(max-width: 47.99rem), (pointer: coarse)').length - 1).toBe(1);

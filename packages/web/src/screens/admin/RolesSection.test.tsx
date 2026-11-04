@@ -17,6 +17,30 @@ const toggle = (label: string) => screen.getByRole('switch', { name: label });
 const MUSIC = 1 << 25;
 
 describe('RolesSection (Signal task 10c: the inline editor)', () => {
+  it('labels only the installation’s managed role with its Bot member name and follows display-name updates', async () => {
+    const BOT = 'b7'.repeat(16); const OTHER_BOT = 'b8'.repeat(16); const MANAGED = 'e4'.repeat(16);
+    const LOOKALIKE = 'e5'.repeat(16); const INSTALLATION = '42c4523b' + 'ab'.repeat(12);
+    const members = [
+      { userId: OTHER_BOT, kind: 1 as const, username: 'other', display: 'Other Bot', roleIds: [LOOKALIKE] },
+      { userId: BOT, kind: 1 as const, username: 'bot', display: 'Glenn', roleIds: [MANAGED, CREW] },
+    ];
+    const { fake, user } = setup({
+      access: { ...OWNER_ACCESS, manageCommunity: false }, members,
+      roles: [...ROLES, role(MANAGED, 'bot_42c4523b', 1, { members: 1 }), role(LOOKALIKE, 'bot_42c4523b', 3, { members: 1 })],
+      handler: c => Promise.resolve(c.m === 'getBotCommandStatus'
+        ? { installationId: INSTALLATION, botUserId: BOT, state: 3, revision: '1' } : null),
+    });
+    expect(await screen.findByRole('button', { name: 'Glenn, 1 member' })).toBeInTheDocument();
+    expect(roleButton('bot_42c4523b, 1 member')).toBeInTheDocument();
+    expect(roleButton('crew, 1 member')).toBeInTheDocument();
+    await user.click(roleButton('Glenn, 1 member'));
+    expect(screen.getByRole('textbox', { name: en['roles.editor.name'] })).toHaveValue('Glenn');
+    fireEvent.blur(screen.getByRole('textbox', { name: en['roles.editor.name'] }));
+    act(() => fake.set(`members:${SERVER}`, members.map(member => member.userId === BOT ? { ...member, display: 'Renamed Glenn' } : member)));
+    expect(roleButton('Renamed Glenn, 1 member')).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: en['roles.editor.name'] })).toHaveValue('Renamed Glenn');
+    expect(fake.callsOf('updateRole')).toHaveLength(0);
+  });
   it('lists @everyone first, then the roles from the highest down, each with its member count', () => {
     setup();
     expect(list().getAllByRole('button').map(b => b.getAttribute('aria-label') ?? b.textContent))

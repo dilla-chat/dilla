@@ -26,7 +26,10 @@
     "ux:world": "node ux/world.mjs",
     "ux:shots": "node ux/shots.mjs",
     "ux:sheets": "node ux/sheets.mjs",
-    "test:e2e:voice": "playwright test --config playwright.desktop-voice.config.ts --project=electron-voice"
+    "test:e2e:voice": "playwright test --config playwright.desktop-voice.config.ts --project=electron-voice",
+    "test:voice-fixture": "node --test unit/voice-join-fixture.test.mjs",
+    "test:layout-source": "node --test unit/conversation-layout.test.mjs",
+    "test:e2e:desktop": "playwright test --config playwright.desktop.config.ts --project=electron-client"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",

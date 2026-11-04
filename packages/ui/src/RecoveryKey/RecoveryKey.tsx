@@ -1,5 +1,6 @@
 import { useId } from 'react';
 import { Button } from '../Button/Button.tsx';
+import { Icon } from '../Icon/Icon.tsx';
 import './RecoveryKey.css';
 
 export interface RecoveryKeyProps {
@@ -10,6 +11,9 @@ export interface RecoveryKeyProps {
   onAcknowledge(value: boolean): void;
   printLabel: string;
   onPrint(): void;
+  /** Wave B task 3b (Jonas): the prototype's "Save as file", beside Print. Optional; never a copy control (protocol/03). */
+  saveLabel?: string;
+  onSave?(): void;
 }
 
 /**
@@ -18,22 +22,30 @@ export interface RecoveryKeyProps {
  * kind (protocol/03 "Recovery"), and no handler interferes with selecting or
  * copying the text; the person may print it or write it down.
  */
-export function RecoveryKey({ groups, label, acknowledgeLabel, acknowledged, onAcknowledge, printLabel, onPrint }: RecoveryKeyProps) {
+export function RecoveryKey({ groups, label, acknowledgeLabel, acknowledged, onAcknowledge, printLabel, onPrint, saveLabel, onSave }: RecoveryKeyProps) {
   const labelId = useId();
   const ackId = useId();
+  // Wave B task 3b, the prototype's key step: the grid (its name is for assistive technology only; the prototype draws no
+  // label), the row of actions under it (Print where the prototype has Copy, which protocol/03 forbids, then Save as file),
+  // then the 16px check box and its 12px label. The native checkbox covers the whole row, transparent, so
+  // the row is its target; the drawn box follows its state.
   return (
     <div className="d-recovery-key">
-      <p id={labelId} className="d-recovery-key__label d-label">{label}</p>
+      <p id={labelId} className="d-recovery-key__label d-sr-only">{label}</p>
       <ol role="list" className="d-recovery-key__grid" aria-labelledby={labelId}>
         {groups.map((g, i) => <li key={i} className="d-recovery-key__group">{g}</li>)}
       </ol>
       <div className="d-recovery-key__actions">
-        <div className="d-recovery-key__ack">
-          <input id={ackId} type="checkbox" className="d-recovery-key__box" checked={acknowledged}
-            onChange={e => onAcknowledge(e.currentTarget.checked)} />
-          <label htmlFor={ackId}>{acknowledgeLabel}</label>
-        </div>
-        <Button className="d-recovery-key__print" onClick={onPrint}>{printLabel}</Button>
+        <Button className="d-recovery-key__print" onClick={onPrint}><Icon name="printer" size={13} />{printLabel}</Button>
+        {onSave && saveLabel ? (
+          <Button className="d-recovery-key__print" onClick={onSave}><Icon name="download" size={13} />{saveLabel}</Button>
+        ) : null}
+      </div>
+      <div className="d-recovery-key__ack">
+        <input id={ackId} type="checkbox" className="d-recovery-key__box" checked={acknowledged}
+          onChange={e => onAcknowledge(e.currentTarget.checked)} />
+        <span className="d-recovery-key__tick" aria-hidden="true"><Icon name="check" size={11} stroke={3} /></span>
+        <label htmlFor={ackId}>{acknowledgeLabel}</label>
       </div>
     </div>
   );

@@ -49,6 +49,8 @@ type Querier interface {
 	// groups, whose rows the closed-group void clears. Old open-group rows cannot be committed.
 	CountLiveInstanceProposals(ctx context.Context) ([]CountLiveInstanceProposalsRow, error)
 	CountLoginFailures(ctx context.Context, arg CountLoginFailuresParams) (int64, error)
+	CountOpenDiscoverableLogins(ctx context.Context, arg CountOpenDiscoverableLoginsParams) (int64, error)
+	CountOpenUserCeremonies(ctx context.Context, arg CountOpenUserCeremoniesParams) (int64, error)
 	CountPendingJoins(ctx context.Context, arg CountPendingJoinsParams) (int64, error)
 	CountRecoveryCodes(ctx context.Context, arg CountRecoveryCodesParams) (int64, error)
 	CountSessionsByDevice(ctx context.Context, arg CountSessionsByDeviceParams) (int64, error)
@@ -123,6 +125,8 @@ type Querier interface {
 	// to `voice_sessions` rather than declaring a second method (deviation B13, P2-D19).
 	EndAllVoiceSessions(ctx context.Context, arg EndAllVoiceSessionsParams) error
 	EndVoiceSession(ctx context.Context, arg EndVoiceSessionParams) (int64, error)
+	EvictOldestDiscoverableLogins(ctx context.Context, arg EvictOldestDiscoverableLoginsParams) (int64, error)
+	EvictOldestUserCeremonies(ctx context.Context, arg EvictOldestUserCeremoniesParams) (int64, error)
 	FinalizeBotDeviceCredential(ctx context.Context, arg FinalizeBotDeviceCredentialParams) (int64, error)
 	GetActiveBotInstallationByCommunity(ctx context.Context, arg GetActiveBotInstallationByCommunityParams) (BotInstallations, error)
 	GetAppMessage(ctx context.Context, arg GetAppMessageParams) (MlsAppMessages, error)
@@ -279,6 +283,9 @@ type Querier interface {
 	LockBotCommunity(ctx context.Context, arg LockBotCommunityParams) (id.ID, error)
 	LockBotInstallation(ctx context.Context, arg LockBotInstallationParams) (id.ID, error)
 	LockBotRuntime(ctx context.Context, arg LockBotRuntimeParams) (id.ID, error)
+	// SQLite serialises writers already (one write connection, immediate transactions): a no-op kept so both engines
+	// expose the same Querier; Postgres takes a transaction-scoped advisory lock.
+	LockCeremonies(ctx context.Context, arg LockCeremoniesParams) error
 	// SQLite has no row locks and needs none: every write transaction is BEGIN
 	// IMMEDIATE on a one-connection pool, so the join's and the ban's transactions
 	// are already exclusive. This is the existence read the Postgres form shares.

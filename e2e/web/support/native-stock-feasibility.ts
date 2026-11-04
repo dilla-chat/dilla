@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { createNativeHttpsProxy } from './native-https-proxy.mjs';
 import { createTestCertificate } from './native-test-cert.mjs';
 import { REPO_ROOT, startTestHost } from './host.ts';
+import { e2ePort } from './ports.ts';
 import { arr, decode } from '../../../packages/client-core/src/cbor/index.ts';
 
 export async function runNativeStockFeasibility(): Promise<void> {
@@ -14,10 +15,10 @@ if (process.env.GITHUB_ACTIONS !== 'true' || process.platform !== 'linux' || !pr
 const home = process.env.HOME;
 await mkdir(join(home, '.pki'), { mode: 0o700 });
 const certificate = await createTestCertificate(join(home, 'native-test-certificate'), join(home, '.pki/nssdb'));
-const host = await startTestHost({ port: 8463, control: 8464, webRoot: 'packages/web/dist', sfu: { port: 8465, udpPort: 8466 } });
+const host = await startTestHost({ port: e2ePort(8463), control: e2ePort(8464), webRoot: 'packages/web/dist', sfu: { port: e2ePort(8465), udpPort: e2ePort(8466) } });
 let proxy: Server | undefined;
 try {
- proxy = await createNativeHttpsProxy({ key: await readFile(certificate.key), cert: await readFile(certificate.cert), upstreamPort: 8463 });
+ proxy = await createNativeHttpsProxy({ key: await readFile(certificate.key), cert: await readFile(certificate.cert), upstreamPort: e2ePort(8463) });
  let instanceResponses = 0;
  proxy.on('request', (request, response) => {
   if (request.method === 'GET' && request.url === '/v1/instance') response.once('finish', () => { if (response.statusCode === 200) instanceResponses++; });

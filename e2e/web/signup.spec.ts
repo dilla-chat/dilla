@@ -1,12 +1,52 @@
 import { clickNative } from './support/native-click.ts';
 import { desktopApplication, desktopE2E } from './support/electron.ts';
-import { expect } from '@playwright/test';
+import { expect, type BrowserContext, type Page } from '@playwright/test';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { instanceSlug } from '../../packages/web/src/screens/recovery-file';
 import {
   CLASS, COPY, HEX32, PUBLIC_URL, RK_GROUP, TEST_TIMEOUT, WAIT, copy, escapeRegExp, expectHeading, expectShell, nextButton, onboardingFrame,
-  completeFactorStep, newAccount, openChannel, railItem, railNav, readKekRecord, readRecoveryKey, submitButton, test,
+  completeFactorStep, keysSubmitButton, newAccount, openChannel, railItem, railNav, readKekRecord, readRecoveryKey, submitButton, test,
 } from './support/app';
 
 test.describe.configure({ timeout: TEST_TIMEOUT });
+
+/** Presses Save as file and returns the file it produced. In a browser that is Playwright's download. The desktop shell lets a
+ * same-origin blob: download through to Electron's native save dialog, which a headless run cannot answer, so there the main
+ * process names the save path instead and the same file is read back. */
+async function saveRecoveryFile(page: Page, context: BrowserContext): Promise<{ filename: string; body: string }> {
+  const save = page.getByRole('button', { name: copy('onboarding.keys.save'), exact: true });
+  if (!desktopE2E()) {
+    const [download] = await Promise.all([page.waitForEvent('download'), save.click()]);
+    const body = readFileSync(await download.path(), 'utf8');
+    await download.delete();
+    return { filename: download.suggestedFilename(), body };
+  }
+  const app = desktopApplication(context);
+  const dir = mkdtempSync(join(tmpdir(), 'dilla-recovery-'));
+  try {
+    await app.evaluate(({ webContents }, target) => {
+      const g = globalThis as { dillaRecoveryDownload?: Promise<{ filename: string; state: string; path: string }> };
+      g.dillaRecoveryDownload = new Promise((resolve) => {
+        const sessions = [...new Set(webContents.getAllWebContents().map((contents) => contents.session))];
+        const listener = (_event: unknown, item: Electron.DownloadItem) => {
+          for (const ses of sessions) ses.removeListener('will-download', listener);
+          const path = `${target}/${item.getFilename()}`;
+          item.setSavePath(path);
+          item.once('done', (_done, state) => { resolve({ filename: item.getFilename(), state, path }); });
+        };
+        for (const ses of sessions) ses.on('will-download', listener);
+      });
+    }, dir);
+    await save.click();
+    const saved = await app.evaluate(() => (globalThis as { dillaRecoveryDownload?: Promise<{ filename: string; state: string; path: string }> }).dillaRecoveryDownload!);
+    expect(saved.state).toBe('completed');
+    return { filename: saved.filename, body: readFileSync(saved.path, 'utf8') };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 test('a server invite, a name and a written-down key make an account that lands in that server', async ({ page, context, peer, instanceName }) => {
   const setup = await peer.setup();
@@ -29,11 +69,12 @@ test('a server invite, a name and a written-down key make an account that lands 
   await expect(page.getByLabel(copy(COPY.inviteLabel), { exact: true })).toHaveValue(invite);
   await nextButton(page).click();
 
+  // Wave B task 3b: step 2 asks for a username and a password only; Create account makes the keys, nothing more.
   await expectHeading(page, COPY.identityTitle);
+  await expect(page.getByLabel(/Display name/)).toHaveCount(0);
   await page.getByLabel(copy(COPY.usernameLabel), { exact: true }).fill(`w${setup.user_id.slice(0, 8)}`);
-  await page.getByLabel(copy(COPY.displayLabel), { exact: true }).fill('signup tester');
   await page.getByLabel(copy(COPY.passwordLabel), { exact: true }).fill('e2e-password-1234');
-  await nextButton(page).click();
+  await submitButton(page).click();
 
   // The recovery key: 13 groups of 4 Crockford characters, selectable, never offered for copying (F2).
   await expectHeading(page, COPY.keysTitle);
@@ -41,15 +82,20 @@ test('a server invite, a name and a written-down key make an account that lands 
   expect(groups).toHaveLength(13);
   for (const group of groups) expect(group).toMatch(RK_GROUP);
   await expect(page.locator(CLASS.recoveryKey).getByRole('button', { name: /copy/i })).toHaveCount(0);
-  await expect(nextButton(page)).toBeDisabled();
+  // Task 3b security review MEDIUM-1: Save as file reaches a download in this engine (chromium, firefox, webkit, the desktop shell),
+  // as a file whose bytes are the explanation, a blank line and the key once.
+  const { filename, body: saved } = await saveRecoveryFile(page, context);
+  expect(filename).toBe(`dilla-recovery-key-${instanceSlug(instanceName)}.txt`);
+  expect(saved).toBe(`${copy('onboarding.keys.fileBody', { instance: instanceName })}\n\n${groups.join('-')}\n`);
+  expect(saved.split(groups.join('-'))).toHaveLength(2);
+  await expect(keysSubmitButton(page)).toBeDisabled();
   await page.getByRole('checkbox', { name: copy(COPY.keysAcknowledge), exact: true }).check();
-  await expect(nextButton(page)).toBeEnabled();
-  await nextButton(page).click();
-
-  // Step 4 registers: its forward button is `Create account`, not `Continue` (L-COPY-01).
-  await expectHeading(page, COPY.deviceTitle);
-  await submitButton(page).click();
-  await completeFactorStep(page, newAccount());
+  await expect(keysSubmitButton(page)).toBeEnabled();
+  // Step 3 registers: its forward button is `I saved it`, and only once the key is ticked (task 3b).
+  await keysSubmitButton(page).click();
+  const account = newAccount();
+  await completeFactorStep(page, account);
+  expect(account.backupCodes.length).toBeGreaterThan(0);
   await expectHeading(page, COPY.doneTitle);
   await page.getByRole('button', { name: copy(COPY.finish), exact: true }).click();
   await expectShell(page);

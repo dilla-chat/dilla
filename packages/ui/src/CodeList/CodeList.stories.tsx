@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
+import { useState } from 'react';
 import { CodeList } from './CodeList.tsx';
 
 // The server's backup codes: 26 base32 characters in hyphenated groups of five (internal/auth/recovery.go).
@@ -44,3 +45,26 @@ export const Wide: Story = { decorators: [Story => <div style={{ width: '100%', 
 export const Narrow: Story = { decorators: [Story => <div style={{ width: 360 }}><Story /></div>] };
 // 200 % zoom of a 360 px viewport leaves 180 CSS px.
 export const Zoom200: Story = { decorators: [Story => <div style={{ width: 180 }}><Story /></div>] };
+
+// The signup done step uses this same in-memory disclosure at desktop and phone widths.
+export const CollapsedDesktop: Story = {
+  render: function Collapsed(args) {
+    const [expanded, setExpanded] = useState(false);
+    return <div style={{ width: '100%', maxWidth: 400 }}><CodeList {...args} disclosure={{
+      expanded, onToggle: () => { setExpanded(value => !value); },
+      count: `${args.codes.length} backup codes`, show: 'Show', hide: 'Hide',
+    }} /></div>;
+  },
+  play: async ({ canvasElement }) => {
+    const codes = () => canvasElement.querySelectorAll('.d-code-list__code');
+    const toggle = () => canvasElement.querySelector<HTMLButtonElement>('button[aria-expanded]')!;
+    if (codes().length !== 0 || toggle().getAttribute('aria-expanded') !== 'false') throw new Error('Collapsed desktop codes must be absent from the DOM');
+    toggle().click();
+    await new Promise<void>(resolve => { requestAnimationFrame(() => resolve()); });
+    if (codes().length !== CODES.length || toggle().getAttribute('aria-expanded') !== 'true') throw new Error('Show must mount every desktop backup code');
+    await assertNoOverflow(canvasElement);
+    toggle().click();
+    await new Promise<void>(resolve => { requestAnimationFrame(() => resolve()); });
+    if (codes().length !== 0 || toggle().getAttribute('aria-expanded') !== 'false') throw new Error('Hide must remove desktop backup codes from the DOM');
+  },
+};

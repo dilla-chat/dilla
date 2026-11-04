@@ -1716,7 +1716,8 @@ describe('review M2-M6', () => {
     const rows = v.slice('voice')[v.voice]?.participants ?? [];
     expect(rows).toHaveLength(1024);
     expect(rows.some((p) => p.deviceId === toHex(PEER.device))).toBe(false);
-  });
+    // 2,125 frames through the controller: about 1.7 s alone, over the 5 s default under parallel CI load.
+  }, 15_000);
 
   // M6. Attacker question: can the instance turn a lost call-group state into a commit? No: a call group is never
   // re-joined by the engine's text resync; the call ends here as removed and the group is forgotten.

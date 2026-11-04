@@ -37,6 +37,8 @@ export interface ScreenCaptureSource { id: string; displaySurface: 'monitor' | '
 export interface AudioSource { id: string; label: string }
 
 export interface DesktopBridge {
+  /** process.platform of the shell ('darwin', 'win32', 'linux'), set by the preload. Display only, not a trust signal. */
+  readonly platform?: string;
   info(): Promise<DesktopInfo>;
   send(command: DesktopCommand): Promise<void>;
   onEvent(listener: (event: DesktopEvent) => void): () => void;

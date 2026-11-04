@@ -358,6 +358,64 @@ async function checkReactionHitAreas(page: Page, context: StoryContext): Promise
 }
 const REACTION_HIT_STORIES = (id: string) => id.startsWith('conversation-reactionbar--') || id === 'conversation-messagerow--signal-reactions';
 
+/** Native prototype .dc.html:533/535; Question alone has the 3px, 15%-accent outer shadow. */
+export async function checkPollFieldFocus(page: Page): Promise<void> {
+  const fields = page.locator('.d-poll-dialog input');
+  for (const index of [0, 1]) {
+    const field = fields.nth(index);
+    for (const mode of ['pointer', 'keyboard']) {
+      if (mode === 'pointer') await field.click();
+      else {
+        await fields.first().focus();
+        await page.keyboard.press('Tab');
+        if (index === 0) await page.keyboard.press('Shift+Tab');
+      }
+      const got = await field.evaluate(el => {
+        const s = getComputedStyle(el);
+        const probe = document.createElement('span');
+        probe.style.color = 'var(--accent)';
+        probe.style.boxShadow = el.matches('.d-poll-dialog__question input') ? '0 0 0 3px var(--accent-ring)' : 'none';
+        el.parentElement?.appendChild(probe);
+        const expected = getComputedStyle(probe);
+        const result = { active: document.activeElement === el, border: s.borderColor, shadow: s.boxShadow,
+          outline: s.outlineStyle, offset: s.outlineOffset, accent: expected.color, expectedShadow: expected.boxShadow };
+        probe.remove();
+        return result;
+      });
+      if (!got.active || got.border !== got.accent || got.shadow !== got.expectedShadow || got.outline !== 'none' || got.offset !== '0px') {
+        throw new Error(`PollDialog ${index === 0 ? 'Question' : 'Answer'} ${mode} focus differs from the native prototype: ${JSON.stringify(got)}`);
+      }
+      await field.evaluate(el => el.blur());
+    }
+  }
+  const answer = fields.nth(1);
+  const original = await answer.inputValue();
+  await answer.fill('x'.repeat(101));
+  const expected = await answer.evaluate(el => {
+    const probe = document.createElement('span');
+    el.parentElement?.appendChild(probe);
+    probe.style.color = 'var(--accent)';
+    const accent = getComputedStyle(probe).color;
+    probe.style.color = 'var(--danger)';
+    const danger = getComputedStyle(probe).color;
+    probe.remove();
+    return { accent, danger };
+  });
+  for (const mode of ['pointer', 'keyboard']) {
+    await fields.first().focus();
+    const blurred = await answer.evaluate(el => getComputedStyle(el).borderColor);
+    if (blurred !== expected.danger) throw new Error(`PollDialog overlong Answer must restore its danger border on blur: ${blurred}`);
+    if (mode === 'pointer') await answer.click();
+    else await page.keyboard.press('Tab');
+    const focused = await answer.evaluate(el => ({ active: document.activeElement === el, border: getComputedStyle(el).borderColor }));
+    if (!focused.active || focused.border !== expected.accent) {
+      throw new Error(`PollDialog overlong Answer ${mode} focus must override its danger border: ${JSON.stringify(focused)}`);
+    }
+  }
+  await answer.fill(original);
+  await answer.evaluate(el => el.blur());
+}
+
 export async function checkStory(page: Page, context: StoryContext): Promise<void> {
     if (context.id === 'settings-settingsframe--phone-index') {
       await page.setViewportSize({ width: 640, height: 400 });
@@ -368,10 +426,14 @@ export async function checkStory(page: Page, context: StoryContext): Promise<voi
     const signal = await page.evaluate(() => document.documentElement.getAttribute('data-theme') === 'signal');
     const excepted = signal ? PROTOTYPE_CONTRAST.filter(e => e.story(context.id)).map(e => e.selector) : [];
     const present = excepted.length === 0 ? [] : await page.evaluate(sels => sels.filter(s => document.querySelector(`#storybook-root ${s}`) !== null), excepted);
-    const rules = { ...(strict ? { 'target-size': { enabled: true } } : {}) };
+    // Wave B Task 2 (fix round 1): the command list's scroll area is out of the tab order on purpose: the draft field keeps
+    // focus and ↑↓ move the selection, which scrolls the active row into view (CommandList). A tab stop there would take
+    // focus from the field the list belongs to. Scoped to the command picker's stories.
+    const pickerScroll = context.id.startsWith('conversation-commandpicker--');
+    const rules = { ...(strict ? { 'target-size': { enabled: true } } : {}), ...(pickerScroll ? { 'scrollable-region-focusable': { enabled: false } } : {}) };
     await checkA11y(page, present.length === 0 ? '#storybook-root' : { include: [['#storybook-root']], exclude: present.map(s => [`#storybook-root ${s}`]) }, {
       detailedReport: true, detailedReportOptions: { html: true }, includedImpacts: ['critical', 'serious'],
-      ...(strict ? { axeOptions: { rules } } : {}),
+      ...(strict || pickerScroll ? { axeOptions: { rules } } : {}),
     });
     // The excepted elements still pass every other rule.
     if (present.length > 0) {
@@ -417,7 +479,7 @@ export async function checkStory(page: Page, context: StoryContext): Promise<voi
     // row's inset bar, the pressed button's underline) cannot swallow it.
     // Tab once: if anything takes focus, its computed outline must be the
     // 2px solid accent ring.
-    // One exception (Jonas, 2026-10-14): the composer's textarea draws no visible ring; its box shows
+    // Composer exception (Jonas, 2026-10-14): the composer's textarea draws no visible ring; its box shows
     // focus instead, its border turning the resolved --accent (WCAG 2.4.7 still holds). The textarea keeps
     // a transparent outline, so under Windows forced colors it is painted and focus still shows.
     await page.keyboard.press('Tab');
@@ -439,9 +501,39 @@ export async function checkStory(page: Page, context: StoryContext): Promise<voi
         const sides = [b.borderTopColor, b.borderRightColor, b.borderBottomColor, b.borderLeftColor];
         composer = { border: sides.every(c => c === sides[0]) ? sides[0] : sides.join(' / '), accent, outlineColor: s.outlineColor };
       }
+      // Jonas 2026-10-31 supersedes D6: match the native prototype; Question adds a 3px accent shadow, answers keep the accent border.
+      let pollField: { borders: { side: string; color: string; style: string; width: string }[]; accent: string; outline: string; offset: string; shadow: string; expectedShadow: string } | null = null;
+      if (el.matches('.d-poll-dialog input')) {
+        for (const a of el.getAnimations()) a.finish();
+        const probe = document.createElement('span');
+        probe.style.color = 'var(--accent)';
+        el.parentElement?.appendChild(probe);
+        const accent = getComputedStyle(probe).color;
+        probe.remove();
+        probe.style.boxShadow = el.matches('.d-poll-dialog__question input') ? '0 0 0 3px var(--accent-ring)' : 'none';
+        el.parentElement?.appendChild(probe);
+        const expectedShadow = getComputedStyle(probe).boxShadow;
+        probe.remove();
+        pollField = { borders: ['top', 'right', 'bottom', 'left'].map(side => ({ side,
+          color: s.getPropertyValue(`border-${side}-color`), style: s.getPropertyValue(`border-${side}-style`), width: s.getPropertyValue(`border-${side}-width`),
+        })), accent, outline: s.outlineStyle, offset: s.outlineOffset, shadow: s.boxShadow, expectedShadow };
+      }
       // Ruling AK (Jonas, task 9 fix round 1): the search palette's textbox draws no ring either (the caret shows focus).
       const palette = el.matches('.d-search-palette input') ? s.outlineColor : null;
-      return { tag: el.tagName.toLowerCase(), outlineStyle: s.outlineStyle, outlineWidth: s.outlineWidth, composer, palette };
+      // Wave B task 3: the code boxes' input is transparent; the box at the caret shows focus with the accent edge and ring.
+      let codeBox: { border: string; shadow: string; accent: string } | null = null;
+      if (el.matches('.d-code-boxes__input')) {
+        const caret = el.closest('.d-code-boxes')?.querySelector<HTMLElement>('.d-code-boxes__box[data-caret]') ?? null;
+        if (caret) for (const a of caret.getAnimations()) a.finish();
+        const probe = document.createElement('span');
+        probe.style.color = 'var(--accent)';
+        el.parentElement?.appendChild(probe);
+        const accent = getComputedStyle(probe).color;
+        probe.remove();
+        const c = caret ? getComputedStyle(caret) : null;
+        codeBox = { border: c?.borderTopColor ?? 'none', shadow: c?.boxShadow ?? 'none', accent };
+      }
+      return { tag: el.tagName.toLowerCase(), outlineStyle: s.outlineStyle, outlineWidth: s.outlineWidth, composer, palette, codeBox, pollField };
     });
     if (focused?.composer) {
       const { composer } = focused;
@@ -469,6 +561,23 @@ export async function checkStory(page: Page, context: StoryContext): Promise<voi
           `with only a transparent ring (${bad.join('; ')})`,
         );
       }
+    } else if (focused?.codeBox) {
+      const { codeBox } = focused;
+      if (codeBox.border !== codeBox.accent || codeBox.shadow === 'none') {
+        throw new Error(`${context.title} / ${context.name}: the focused code boxes show no caret box in the accent (border ${codeBox.border}, ring ${codeBox.shadow}; expected --accent ${codeBox.accent})`);
+      }
+    } else if (focused?.pollField) {
+      const { pollField } = focused;
+      const bad: string[] = [];
+      for (const border of pollField.borders) {
+        if (border.color !== pollField.accent || border.style !== 'solid' || parseFloat(border.width) < 1) {
+          bad.push(`${border.side} border ${border.width} ${border.style} ${border.color}, expected at least 1px solid --accent ${pollField.accent}`);
+        }
+      }
+      if (pollField.outline !== 'none') bad.push(`outline-style ${pollField.outline}, expected none`);
+      if (pollField.offset !== '0px') bad.push(`outline-offset ${pollField.offset}, expected 0px`);
+      if (pollField.shadow !== pollField.expectedShadow) bad.push(`box-shadow ${pollField.shadow}, expected ${pollField.expectedShadow}`);
+      if (bad.length > 0) throw new Error(`${context.title} / ${context.name}: the focused poll field should match the native prototype accent border and Question ring (${bad.join('; ')})`);
     } else if (focused?.palette != null) {
       if (focused.palette !== 'rgba(0, 0, 0, 0)') throw new Error(`${context.title} / ${context.name}: the palette textbox draws a ring (${focused.palette}); Ruling AK wants none`);
     } else if (focused && (focused.outlineStyle !== 'solid' || focused.outlineWidth !== '2px')) {

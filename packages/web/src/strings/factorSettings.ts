@@ -52,6 +52,7 @@ export const factorSettings = {
   'factorSettings.error.only': 'You cannot remove your only second factor.',
   'factorSettings.error.changed': 'Your sign-in settings changed on another device. Check them and try again.',
   'factorSettings.error.other': 'That did not work ({code}). Try again.',
+  'factorSettings.stepUp.passkeyUnsupported': 'This Dilla instance needs an update before the desktop app can use passkeys. Use a backup code, or do this from your browser.',
   'factorSettings.stepUp.passkeyFailed': 'Your passkey did not confirm it is you. Try again.',
   'factorSettings.added.totp': 'Authenticator app added.',
   'factorSettings.added.passkey': '{name} added.',

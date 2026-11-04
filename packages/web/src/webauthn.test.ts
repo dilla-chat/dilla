@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { PasskeyError, createPasskey, getPasskey, passkeysUsable, passkeyErrorKind } from './webauthn.ts';
+import { PasskeyError, conditionalMediationAvailable, createPasskey, desktopAuthKind, getPasskey, passkeysUsable, passkeyErrorKind } from './webauthn.ts';
 
 // A go-webauthn options document: every binary member is base64url without padding, as the library marshals it.
 const CHALLENGE = 'Zm9vYmFyLWNoYWxsZW5nZS1fLQ';
@@ -33,6 +33,38 @@ function install(credentials: Partial<CredentialsContainer>): void {
   Object.defineProperty(navigator, 'credentials', { value: credentials, configurable: true });
 }
 afterEach(() => { Reflect.deleteProperty(navigator, 'credentials'); vi.restoreAllMocks(); });
+
+it('uses explicit browser handoffs in the desktop shell instead of starting conditional autofill', async () => {
+  const browserAuth = vi.fn(() => Promise.resolve({ response: 'browser credential' }));
+  const conditional = vi.fn(() => Promise.resolve(true));
+  vi.stubGlobal('dillaDesktop', { browserAuth });
+  vi.stubGlobal('PublicKeyCredential', { isConditionalMediationAvailable: conditional });
+  vi.stubGlobal('isSecureContext', true);
+  try {
+    expect(await conditionalMediationAvailable()).toBe(false);
+    expect(conditional).not.toHaveBeenCalled();
+    expect(browserAuth).not.toHaveBeenCalled();
+    expect(await getPasskey(GET)).toBe('browser credential');
+    expect(await createPasskey(CREATE)).toBe('browser credential');
+    expect(browserAuth.mock.calls).toEqual([[{ kind: 'get', options: GET }], [{ kind: 'create', options: CREATE }]]);
+  } finally { vi.unstubAllGlobals(); }
+});
+
+// Desktop merge security review M1: a conditional request in the desktop shell would open the system browser on a
+// username field's focus and spend a passkey_begin token; it is refused before any handoff or browser call.
+it('refuses a conditional passkey request in the desktop shell', async () => {
+  const browserAuth = vi.fn(() => Promise.resolve({ response: 'browser credential' }));
+  const get = vi.fn();
+  install({ get });
+  vi.stubGlobal('dillaDesktop', { browserAuth });
+  try {
+    const refused = await getPasskey(GET, { signal: new AbortController().signal }).then(() => null, (e: unknown) => e);
+    expect(refused).toBeInstanceOf(PasskeyError);
+    expect((refused as PasskeyError).kind).toBe('cancelled');
+    expect(browserAuth).not.toHaveBeenCalled();
+    expect(get).not.toHaveBeenCalled();
+  } finally { vi.unstubAllGlobals(); }
+});
 
 function created(extra: Record<string, unknown> = {}) {
   return { id: CRED, rawId: bytes(251, 255, 191, 0, 1, 2, 3), type: 'public-key', authenticatorAttachment: 'platform',
@@ -169,6 +201,25 @@ describe('passkeyErrorKind', () => {
   it('is other for anything that is not a DOMException', () => {
     expect(passkeyErrorKind(new Error('NotAllowedError'))).toBe('other');
     expect(passkeyErrorKind('NotAllowedError')).toBe('other');
+  });
+});
+
+describe('the desktop app’s browser sign-in errors', () => {
+  afterEach(() => { Reflect.deleteProperty(globalThis, 'dillaDesktop'); });
+  const via = (message: string) => {
+    (globalThis as unknown as { dillaDesktop?: unknown }).dillaDesktop = { browserAuth: () => Promise.reject(new Error(`Error invoking remote method 'dilla:browser-auth': Error: ${message}`)) };
+  };
+  it.each([['desktop-auth-unsupported', 'unsupported'], ['desktop-auth-rate-limited', 'rateLimited'], ['Browser sign-in failed', 'other']] as const)('%s is %s', async (message, kind) => {
+    via(message);
+    for (const call of [() => getPasskey(GET), () => createPasskey(CREATE)]) {
+      await expect(call()).rejects.toMatchObject({ name: 'PasskeyError', kind });
+    }
+  });
+  it('desktopAuthKind reads the code out of the wrapped message', () => {
+    expect(desktopAuthKind(new Error('x desktop-auth-unsupported'))).toBe('unsupported');
+    expect(desktopAuthKind(new Error('desktop-auth-rate-limited'))).toBe('rateLimited');
+    expect(desktopAuthKind(new Error('nope'))).toBeNull();
+    expect(desktopAuthKind('desktop-auth-unsupported')).toBeNull();
   });
 });
 

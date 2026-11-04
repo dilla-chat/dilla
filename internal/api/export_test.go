@@ -145,3 +145,11 @@ func (h *Calls) AFKAdmissionStateForTest(user, dev id.ID) (pending, admitSeq uin
 	defer h.afkMu.Unlock()
 	return h.afkPending[dev].reason, h.afkAdmits[user][dev].seq
 }
+
+// LiveForTest is how many unexpired assertions the store holds.
+func (a *Assertions) LiveForTest() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.sweepLocked()
+	return len(a.items)
+}

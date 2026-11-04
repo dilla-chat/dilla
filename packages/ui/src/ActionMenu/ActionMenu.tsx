@@ -20,6 +20,16 @@ export interface ActionMenuItem {
    * items is a group with a label). Signal task 10: a conversation's or a server's notify mode.
    */
   group?: string;
+  /** Wave B task 4: a trailing hint, 10px --fg-faint (a shortcut's keys, a room's head count). */
+  hint?: string;
+  /** Wave B task 4: a small uppercase heading above the item (the person menu's "Move to"). */
+  heading?: string;
+  /** Wave B task 4: a room row of the person menu's "Move to" block (30px, indented, the room glyph at 13px). */
+  room?: boolean;
+  /** `aria-keyshortcuts` of the item (Control+Shift+M). */
+  keys?: string;
+  /** The item's accessible name when its visible text (a label and a hint) reads badly ('lounge, 2 in voice'). */
+  ariaLabel?: string;
 }
 
 export interface ActionMenuProps {
@@ -165,12 +175,13 @@ export function ActionMenu({ label, items, open, onOpenChange, onSelect, at, foc
 
   const popupClass = popupClassName === undefined ? 'd-action-menu__popup' : `d-action-menu__popup ${popupClassName}`;
   const itemButton = (item: ActionMenuItem) => (
-    <Fragment key={item.id}>{item.sep === true ? <div className="d-action-menu__sep" role="separator" /> : null}<button type="button" role={item.check !== undefined ? 'menuitemcheckbox' : item.checked === undefined ? 'menuitem' : 'menuitemradio'}
-      aria-checked={item.check ?? item.checked} tabIndex={-1} className="d-action-menu__item" data-id={item.id}
+    <Fragment key={item.id}>{item.sep === true ? <div className="d-action-menu__sep" role="separator" /> : null}{item.heading !== undefined ? <div className="d-action-menu__heading" aria-hidden="true">{item.heading}</div> : null}<button type="button" role={item.check !== undefined ? 'menuitemcheckbox' : item.checked === undefined ? 'menuitem' : 'menuitemradio'}
+      aria-checked={item.check ?? item.checked} tabIndex={-1} className="d-action-menu__item" data-id={item.id} data-room={item.room ? 'true' : undefined} aria-keyshortcuts={item.keys} aria-label={item.ariaLabel}
       data-danger={item.danger ? 'true' : undefined} onClick={() => select(item)}>
-      {item.icon !== undefined ? <span className="d-action-menu__icon" aria-hidden="true"><Icon name={item.icon} size={14} /></span> : null}
+      {item.icon !== undefined ? <span className="d-action-menu__icon" aria-hidden="true"><Icon name={item.icon} size={item.room ? 13 : 14} /></span> : null}
       {/* A label longer than the menu ends in an ellipsis; its full text is the title (fix round 2). */}
       <span className="d-action-menu__label" title={item.label}>{item.label}</span>
+      {item.hint !== undefined ? <span className="d-action-menu__hint" aria-hidden="true">{item.hint}</span> : null}
       {item.checked === true ? <span className="d-action-menu__tick" aria-hidden="true"><Icon name="check" size={13} /></span> : null}
       {item.check !== undefined ? <span className="d-action-menu__check" data-on={item.check ? 'true' : undefined} aria-hidden="true"><Icon name="check" size={10} stroke={3} /></span> : null}
     </button></Fragment>

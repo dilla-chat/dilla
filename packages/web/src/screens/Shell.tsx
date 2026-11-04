@@ -8,7 +8,7 @@ import {
 import { useCore } from '../core/context.tsx';
 import { errorOf, type UiError } from '../core/errors.ts';
 import { useSlice, useSlices } from '../core/use-slice.ts';
-import { useChannelBits } from '../core/use-channel-bits.ts';
+import { useChannelBits, useChannelBitsOf } from '../core/use-channel-bits.ts';
 import { useDocumentVisible } from '../core/use-visible.ts';
 import { baseRoute, goBack, subscribeCommittedTraversal, pushedFrom, readJoinError, routeOf, routePath, tabOf, useRoute, type Route, type SettingsSection } from '../router.ts';
 import { searchSettings } from '../settings/registry.ts';
@@ -18,9 +18,9 @@ import { JoinCommunity } from './JoinCommunity.tsx';
 import { CreateChannelFlow, CreateServerFlow } from './Create.tsx';
 import { Conversation, focusComposer, focusLog, useConversationUi, type ConversationAction, type ConversationUi } from './conversation/Conversation.tsx';
 import { ComposerArea, type OutgoingMessage } from './conversation/ComposerArea.tsx';
+import { communityActivityOwner, rememberCommunityActivity } from './community-activity.ts';
 import type { ProfileOpener } from './conversation/MessageItem.tsx';
 import { ThreadView } from './conversation/ThreadView.tsx';
-import { ThreadList } from './conversation/ThreadList.tsx';
 import { Search, type SearchHitView } from './Search.tsx';
 import { actionsProvider, channelsProvider, messagesProvider, paletteGroups, peopleProvider, settingsProvider, type PaletteProvider } from './palette.ts';
 import { messageTime } from './shell-model.ts';
@@ -150,8 +150,8 @@ function focusEmptyAction(pane: 'content' | 'sidebar'): boolean {
 type ListRow = { id: string; name: string; kind: 'text' | 'voice' | 'dm' | 'announcement'; badge?: string; readable: boolean; unread: number; mentions: number; muted: boolean; parentId?: string | null;
   person?: { sub?: string; presence?: 'online' | 'idle' | 'dnd' | 'offline'; group?: boolean; initials?: string } };
 
-/** What the aside shows instead of the member list (web3.7): a channel's thread, or the list of its threads. */
-type Side = { channelId: string; view: 'list' } | { channelId: string; view: 'thread'; rootMsgId: string };
+/** What the aside shows instead of the member list (web3.7): a channel's thread, or its empty thread aside. */
+type Side = { channelId: string; view: 'empty' } | { channelId: string; view: 'thread'; rootMsgId: string };
 
 function restoredConversationUi(value: unknown): ConversationUi | null {
   if (typeof value !== 'object' || value === null) return null;
@@ -227,6 +227,12 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   useEffect(() => {
     if (routeCommunity !== null) setLastCommunity(routeCommunity);
   }, [routeCommunity]);
+  const activityOwner = communityActivityOwner(account);
+  useEffect(() => {
+    if (base.name === 'channel' && routeCommunity !== null && communities?.some(row => row.id === routeCommunity)) {
+      rememberCommunityActivity(client, activityOwner, routeCommunity);
+    }
+  }, [client, activityOwner, base.name, routeCommunity, communities]);
   const fallbackCommunity = lastCommunity !== null && communities?.some(c => c.id === lastCommunity) === true
     ? lastCommunity : communities?.[0]?.id ?? null;
   const communityId = routeCommunity ?? (dmId !== null || base.name === 'dms' ? fallbackCommunity : null);
@@ -258,6 +264,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   const members = useSlice(`members:${communityId ?? ''}`);
   // Signal §5.4: the sidebar's stat line counts the server's members who are not offline (the members aside's own presence slice).
   const presence = useSlice(`presence:${communityId ?? ''}`);
+  // Wave B task 4: the composer's mention insert, kept for the voice person menu (set once its binding exists, further down).
+  const mentionRef = useRef<((username: string) => void) | undefined>(undefined);
   const afkLists = useSlices((communities ?? []).map(c => `afk:${c.id}` as const));
   const railSlices = useSlices((communities ?? []).map(c => `channels:${c.id}` as const));
   // AW5: every listed server's built-in AFK channel. Nobody joins a call there (R-AW1): a press on it chooses AFK, which
@@ -361,9 +369,12 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     query.addEventListener('change', onChange);
     return () => query.removeEventListener('change', onChange);
   }, []);
-  // web3.7: one aside. A thread or the thread list of the open channel takes the member list's place; the members' own state is kept
+  // web3.7: one aside. A thread or the empty aside of the open channel takes the member list's place; the members' own state is kept
   // under it, so closing the thread gives back what was there. The toggle shows the members and ends the thread.
   const [side, setSide] = useState<Side | null>(null);
+  const lastThread = useRef(new Map<string, string>());
+  const channelThreads = useSlice(`threads:${channelId ?? ''}`);
+  useEffect(() => { lastThread.current.clear(); }, [account?.instance?.id, account?.user?.id]);
   const [threadDraft, setThreadDraft] = useState<{ channelId: string; rootMsgId: string; text: string } | null>(null);
   const threadDrafts = useRef(new Map<string, string>());
   const threadDraftKey = (channelId: string, rootMsgId: string) => `${channelId}/${rootMsgId}`;
@@ -419,12 +430,22 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   const pendingFocus = useRef<{ id: string; from: string | null } | null>(null);
   // The DM picker (requirement 5).
   const [pickerOpen, setPickerOpen] = useState(false);
+  const pickerOpenRef = useRef(pickerOpen); pickerOpenRef.current = pickerOpen;
   const [pickerBusy, setPickerBusy] = useState(false);
   const [pickerError, setPickerError] = useState<UiError | null>(null);
 
   const ordered = useMemo(() => orderChannels(channels ?? [], afkChannels), [channels, afkChannels]);
   const community = communities?.find(c => c.id === communityId) ?? null;
   const channel = ordered.find(c => c.id === channelId) ?? null;
+  // Wave B (the prototype's phone list marks the open channel): the channel last opened in each server, and the DM last opened, stay
+  // marked on the list (not as the open page). State, so the mark is not read from a ref during render.
+  const [lastOpened, setLastOpened] = useState<{ channels: Record<string, string>; dm: string | null }>({ channels: {}, dm: null });
+  useEffect(() => {
+    if (communityId !== null && channelId !== null) setLastOpened(prev => prev.channels[communityId] === channelId ? prev : { ...prev, channels: { ...prev.channels, [communityId]: channelId } });
+  }, [communityId, channelId]);
+  useEffect(() => {
+    if (dmId !== null) setLastOpened(prev => prev.dm === dmId ? prev : { ...prev, dm: dmId });
+  }, [dmId]);
   const dm = dmId === null ? null : dms?.find(d => d.id === dmId) ?? null;
   // A voice channel shows the voice view (web-3): no timeline, no composer.
   const voiceChannel = channel !== null && isVoice(channel) ? channel : null;
@@ -513,6 +534,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   const candidates = mentionCandidates(conversationMembers, self?.id ?? null);
   // Fallback only: what I may do in the open channel (roles, overwrites, access), null while unknown and for a DM.
   const bits = useChannelBits(channel === null ? null : communityId, channel?.id ?? null);
+  const bitsOf = useChannelBitsOf(communityId);
   const roles = useSlice(`roles:${communityId ?? ''}`);
   const broadcast = channel !== null;
   const [ui, rawDispatch] = useConversationUi(targetId);
@@ -985,7 +1007,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
           void navigate({ name: 'dm', channelId: id });
         }
       } catch (e) {
-        setPickerError(errorOf(e));
+        if (pickerOpenRef.current) setPickerError(errorOf(e)); else report(e);
       } finally {
         picking.current = false;
         setPickerBusy(false);
@@ -1094,7 +1116,26 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     onCompare: userId => void navigate({ name: 'settings', section: 'privacy', from: null, compare: userId }),
     onVoiceSettings: () => void navigate({ name: 'settings', section: 'voice', from: null }),
     onJoinVoice: id => call.join(id),
-    afkPage: id => (afkChannels.has(id) && afkHere?.channelId === id ? { people: awayPeople, away: selfAway } : null),
+    afkPage: id => (afkChannels.has(id) && afkHere?.channelId === id ? { people: awayPeople, away: selfAway, timeoutSeconds: afkHere.timeoutSeconds } : null),
+    // Wave B task 4 (Jonas, Q3): "Come back" leaves the AFK channel for a text channel the person can send in (the last opened), and
+    // never for a voice or AFK channel: with none it stays. It does not clear the away mark (no server change).
+    onLeaveAfk: () => { const to = textChannelHere(); if (to !== null) openComposerIn(to.id, null); },
+    // Wave B task 4: the person menu's Profile, Message, Mention, Edit roles and Move to. These read later bindings (the voice rows,
+    // the composer's mention) only when the menu is built, long after this render's body ran.
+    people: {
+      onProfile: (userId, name, anchor) => { if (anchor !== null) openProfile(userId, anchor, 'mention', name); },
+      onMessage: startDm,
+      get onMention() { return mentionRef.current; },
+      ...(communityId !== null && access?.loaded === true && access.manageRoles
+        ? { onEditRoles: () => void navigate({ name: 'serverSettings', communityId, section: 'roles', from: null }) } : {}),
+      rooms: excludeId => voiceRows.filter(r => !afkChannels.has(r.id) && r.id !== excludeId)
+        .map(r => ({ id: r.id, name: r.name, count: new Set((r.room?.participants ?? []).map(x => x.userId)).size })),
+      onMove: id => {
+        call.join(id);
+        openVoice(id);
+        announce(t('callStage.menu.moved', { room: voiceRows.find(r => r.id === id)?.name ?? '' }));
+      },
+    },
   };
 
   // Flow 07: with no server, the one way in is to start one or to join one.
@@ -1261,7 +1302,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     const serverMenu = (
       <ActionMenu label={t('admin.open')} focusKey="admin-open" open={headMenu === 'server'} onOpenChange={open => setHeadMenu(open ? 'server' : null)}
         triggerClassName="d-channel-list__head-btn" triggerContent={<Icon name={SERVER_MENU} size={15} />}
-        items={[{ id: 'settings', label: t('signalSettings.menu.serverSettings') }, { id: 'mute', label: t('signalSettings.menu.muteServer'), check: serverMuted },
+        items={[{ id: 'settings', label: t('signalSettings.menu.serverSettings') },
+          { id: 'mute', label: t('signalSettings.menu.muteServer'), check: serverMuted },
           ...NOTIFY_MODES.map(m => ({ id: `mode:${m.value}`, label: t(m.key), checked: serverMode === m.value, group: t('notify.title') }))]}
         onSelect={item => {
           if (item === 'settings') { openAdmin(null); return; }
@@ -1294,7 +1336,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     sidebar = (<div className="dw-sidebar">
       <ChannelList label={t(onDms ? 'shell.dms.label' : 'shell.channels.label')}
         title={onDms ? t('shell.dms.title') : community?.name ?? account?.instance?.name ?? t('shell.status.unknown')}
-        {...(onDms ? { sectionLabel: t('shell.dms.section'), stats: [{ text: t('shell.dms.online', { n: dmOnline }), live: true }, { text: t('shell.dms.count', { n: (dms ?? []).length }) }] } : {})}
+        {...(onDms ? { sectionLabel: t('shell.dms.section'), stats: [{ text: t('shell.dms.online', { n: dmOnline }), live: true }, { text: t((dms ?? []).length === 1 ? 'shell.dms.countOne' : 'shell.dms.count', { n: (dms ?? []).length }) }] } : {})}
         headerAction={headerAction}
         // A1: with no categories the new-channel "+" sits in the head beside the gear (headerAction); with them each
         // category header carries its own, for a person who can manage channels.
@@ -1307,17 +1349,22 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
         channels={onDms ? dmRows : channelRows}
         // Web3.8 (item 12): the voice channels stand in position among the text rows, their people nested under them.
         voice={onDms ? undefined : { labels: { ...rowLabels(), join: t('voice.join'), joined: t('voice.row.joined') }, rooms: voiceRooms,
-          onJoin: id => { openVoice(id); voiceCtx.onJoinVoice?.(id); },
+          // Wave B (the prototype's phone rows have no join icon): a phone's tap joins as a desktop click does.
+          ...(phone ? {} : { onJoin: (id: string) => { openVoice(id); voiceCtx.onJoinVoice?.(id); } }),
           // Fix round 1 (Jonas): an occupant's person menu (right-click, long press, Shift+F10); the AFK roster is nobody in voice.
           personMenu: (roomId, person) => afkChannels.has(roomId) ? undefined : personMenu(voiceCtx, voiceRows.find(r => r.id === roomId)?.name ?? '',
-            { userId: person.userId, name: person.name, bot: person.bot, own: person.userId === self?.id,
+            { userId: person.userId, name: person.name, bot: person.bot, own: person.userId === self?.id, roomId,
               ...(person.userId === self?.id ? { title: t('callStage.tile.you', { name: person.name }) } : {}) }) }}
         activeId={onDms ? dmId : channelId}
+        {...(phone ? { selectedId: onDms ? lastOpened.dm ?? dmRows[0]?.id ?? null
+          : communityId === null ? null : lastOpened.channels[communityId] ?? defaultChannel(ordered)?.id ?? null } : {})}
         onSelect={id => {
           void navigate(onDms || serverId === null ? { name: 'dm', channelId: id } : { name: 'channel', communityId: serverId, channelId: id });
-          // R24: on a desktop a click on a voice row opens it and joins; a phone's tap only opens it (the 44px icon joins).
+          // R24, wave B: a click or tap on a voice row opens it and joins (the prototype's phone row has no join icon).
+          // The AFK channel is the exception, on desktop and phone alike (the prototype's open() only shows its page): the row
+          // opens "Nobody is away", and only its Go AFK button joins.
           const room = voiceRooms[id];
-          if (!onDms && !phone && room !== undefined && !room.joined && !room.held) voiceCtx.onJoinVoice?.(id);
+          if (!onDms && room !== undefined && !room.joined && !room.held && !afkChannels.has(id)) voiceCtx.onJoinVoice?.(id);
         }}
         emptyLabel={onDms ? t('shell.dms.empty') : channels === undefined ? t('shell.channels.loading') : t('shell.channels.empty')}
         rowLabel={badgeLabel}
@@ -1433,6 +1480,40 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     else if (document.querySelector('.d-app-shell__backdrop') !== null) setMembersOpen(false);
     setMentionTick(n => n + 1);
   } : undefined;
+  // Wave B task 4 fix rounds 1-2 (Jonas): Mention on a community route without a composer (the voice view, the AFK page, settings)
+  // goes to a text channel this person can send in: the last one opened (kept per community in `lastText`), else the first one in
+  // order; it puts "@username " in that channel's draft and focuses its composer there. Announcement channels they cannot post in,
+  // read-only ones, a timeout and a voice-only server leave no target: Mention is not offered and Come back stays where it is.
+  const lastText = useRef(new Map<string, string>());
+  const canSendIn = (c: ChannelSummary): boolean => {
+    if (c.kind !== 0 || c.mode !== 0 || c.group === 'unsupported') return false;
+    if (selfTimeout?.communityId === communityId) return false;
+    const channelBits = bitsOf(c.id);
+    // Unknown bits (a slice still loading) behave as the composer does: sending is not refused here.
+    return channelBits === null ? !everyoneDenied(c.id) && !c.announcement : (channelBits & PERM.sendMessages) !== 0;
+  };
+  useEffect(() => {
+    if (communityId !== null && channel !== null && voiceChannel === null && canSendIn(channel)) lastText.current.set(communityId, channel.id);
+  });
+  const textChannelHere = (): ChannelSummary | null => {
+    const last = communityId === null ? undefined : lastText.current.get(communityId);
+    return ordered.find(c => c.id === last && canSendIn(c)) ?? ordered.find(canSendIn) ?? null;
+  };
+  const openComposerIn = (id: string, username: string | null) => {
+    if (username !== null) {
+      const base = draft.channelId === id ? draft.text : ordinaryDrafts.current.get(id) ?? '';
+      const text = `${base}${base === '' || /\s$/.test(base) ? '' : ' '}@${username} `;
+      rememberDraft(ordinaryDrafts.current, id, text);
+      setDraft({ channelId: id, text, typed: true });
+    }
+    mentionFocus.current = true;
+    setMentionTick(n => n + 1);
+    if (communityId !== null) void navigate({ name: 'channel', communityId, channelId: id });
+  };
+  const mentionTarget = communityId === null || mentionFromMembers !== undefined ? null : textChannelHere();
+  const mentionAnywhere = mentionFromMembers ?? (mentionTarget === null ? undefined
+    : (username: string) => { const to = textChannelHere(); if (to !== null) openComposerIn(to.id, username); });
+  mentionRef.current = mentionAnywhere;
   // Where focus goes when the sheet or drawer closes: the control that opened it (kept from the first open, not from a list row),
   // else the root's message row, else the header's button.
   const sideOpener = useRef<Element | null>(null);
@@ -1453,6 +1534,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   function openThread(rootMsgId: string): void {
     if (channel === null) return;
     noteOpener();
+    lastThread.current.set(channel.id, rootMsgId);
     sideRoot.current = rootMsgId;
     setSide({ channelId: channel.id, view: 'thread', rootMsgId });
   }
@@ -1466,14 +1548,24 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     if (channel === null) return;
     takeThreadRequest();
     sideOpener.current = null;
+    lastThread.current.set(channel.id, threadRequest.rootMsgId);
     sideRoot.current = threadRequest.rootMsgId;
     if (phone) setMembersOpen(false);
     setSide({ channelId: channel.id, view: 'thread', rootMsgId: threadRequest.rootMsgId });
   }, [threadRequest, channelId, channel, phone]);
-  function openList(): void {
+  const openChannelRef = useRef(channelId);
+  openChannelRef.current = channelId;
+  function openHeaderThread(): void {
     if (channel === null) return;
     noteOpener();
-    setSide({ channelId: channel.id, view: 'list' });
+    void client.call({ m: 'loadThreads', channelId: channel.id }).then(() => {
+      if (openChannelRef.current !== channel.id) return;
+      const threads = client.get(`threads:${channel.id}`) ?? channelThreads ?? [];
+      const remembered = lastThread.current.get(channel.id);
+      const root = threads.some(thread => thread.rootMsgId === remembered && thread.rootSeq !== null) ? remembered : [...threads].sort((a, b) => b.lastTs - a.lastTs)[0]?.rootMsgId;
+      if (root !== undefined) openThread(root);
+      else setSide({ channelId: channel.id, view: 'empty' });
+    }, report);
   }
   const sideReturn = useMemo<RefObject<HTMLElement | null>>(() => ({
     get current() {
@@ -1484,7 +1576,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     },
   }), []);
   // The list ends on Escape from wherever focus is (the pane is no drawer in a wide shell), and focus goes back to its button.
-  const listOpen = sideNow?.view === 'list';
+  const listOpen = sideNow?.view === 'empty';
   useEffect(() => {
     if (!listOpen) return;
     const onKey = (e: KeyboardEvent) => {
@@ -1526,7 +1618,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     }
     const other = others[0];
     if (other === undefined) return undefined;
-    return other.statusMsg ? t('shell.dm.topic', { handle: other.username, status: other.statusMsg }) : t('shell.dm.topicHandle', { handle: other.username });
+    return other.statusMsg ? t('shell.dm.topic', { handle: other.username, status: other.statusMsg }) : t('shell.dm.topic', { handle: other.username, status: t(`presence.${presenceOf(other.userId)}`) });
   };
   // E2: the voice stage's phone header carries search too (a touch device has no Control+K).
   // Signal §5.5, §5.10 (Ruling U): a channel's header has the prototype's controls. Threads (its icon and label; an icon alone on a
@@ -1535,9 +1627,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   // search is the top bar's (and Control/⌘+K) on a desktop, the reminders inbox the top bar's bell or the phone's Activity tab.
   const memberCount = members == null ? null : members.length;
   const membersName = memberCount === null ? t('layout.header.members') : t('layout.header.membersCount', { n: memberCount });
-  // Task 11 (the prototype's thrBg): Threads is pressed while the aside shows a thread or the thread list; a press closes it.
+  // Task 11 (the prototype's thrBg): Threads is pressed while the thread aside is open; a press closes it.
   const threadsOn = sideNow !== null;
-  const toggleThreads = () => (threadsOn ? closeSide() : openList());
+  const toggleThreads = () => (threadsOn ? closeSide() : openHeaderThread());
   const membersButton = (
     <Tooltip label={t('layout.header.members')}>
       <Button variant="ghost" mark={false} data-members-toggle="" aria-label={membersName} pressed={membersShown} onClick={toggleMembers}>
@@ -1549,9 +1641,10 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   // a chat (a text channel or a DM) adds Threads (labelled on a desktop) when it has threads, Members with the count on a server,
   // and Search on a phone. A voice channel has no controls. The DM call and pins are in the DM row's context menu (and the call
   // under Control/⌘+Shift+Enter), search is the top bar's and Control/⌘+K, the reminders the bell and the Activity tab.
-  const voiceTopic = voiceChannel === null ? undefined : call.channelId === voiceChannel.id
+  const voiceIsAfk = voiceChannel !== null && afkChannels.has(voiceChannel.id);
+  const voiceTopic = voiceChannel === null ? undefined : voiceIsAfk ? t('voice.header.afk') : call.channelId === voiceChannel.id
     ? t('voice.count', { n: voiceCtx.voice?.[voiceChannel.id]?.participants.length ?? 0 }) : t('voice.header.idle');
-  const header = voiceChannel !== null ? (phone ? <ChannelHeader kind="voice" name={voiceChannel.name} topic={voiceTopic}
+  const header = voiceChannel !== null ? (phone ? <ChannelHeader kind={voiceIsAfk ? 'afk' : 'voice'} name={voiceChannel.name} topic={voiceTopic}
     phone={{ backLabel: t('nav.back'), onBack, ...dotProp }} /> : null) : channel !== null
     ? <ChannelHeader name={channel.name} kind={isAnnouncement(channel) ? 'announcement' : 'channel'} topic={channel.topic === '' ? undefined : channel.topic}
       readable={channel.mode === 1} readableLabel={t('shell.readable')}
@@ -1639,6 +1732,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
       leaveSearchLayer();
       // The palette is gone, so the root's row is where focus goes back to; a phone's members sheet gives way to the thread.
       sideOpener.current = null;
+      lastThread.current.set(hit.channelId, threadRoot);
       sideRoot.current = threadRoot;
       if (phone) setMembersOpen(false);
       setSide({ channelId: hit.channelId, view: 'thread', rootMsgId: threadRoot });
@@ -1754,11 +1848,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     }
     return tabRoot(to);
   };
-  // Home's badge is what the `@` tile carries: unread direct messages (servers carry theirs on the rail).
-  const homeCount = dmCounts.unread;
   const activityCount = railItems.reduce((n, item) => n + item.mentions, 0) + dmCounts.unread;
   const tabLabel = (to: PhoneTab) => t(to === 'home' ? 'home.tab' : `nav.tab.${to}`);
-  const tabItem = (to: PhoneTab, icon: 'house' | 'bell' | 'user', count?: number) => ({
+  const tabItem = (to: PhoneTab, icon: 'home' | 'bell' | 'user', count?: number) => ({
     id: to, label: tabLabel(to), href: routePath(tabTarget(to)), icon, current: phoneTab === to,
     ...(count !== undefined && count > 0 ? { count, countLabel: t('nav.tab.unread', { name: tabLabel(to), count }) } : {}),
   });
@@ -1796,7 +1888,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
         });
       } else openTab(to, current);
     }} items={[
-      tabItem('home', 'house', homeCount), tabItem('activity', 'bell', activityCount), tabItem('you', 'user'),
+      tabItem('home', 'home'), tabItem('activity', 'bell', activityCount), tabItem('you', 'user'),
     ]} />
   );
   // The call bar stands on a phone while this device is in a call and its stage is not on screen.
@@ -1922,7 +2014,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
           setDraft({ channelId: saved.draft.channelId, text: saved.draft.text });
           if (saved.draft.channelId !== null) rememberDraft(ordinaryDrafts.current, saved.draft.channelId, saved.draft.text);
         }
-        if (saved.side?.channelId === channelId && (saved.side.view === 'list'
+        if (saved.side?.channelId === channelId && (saved.side.view === 'empty'
           || (saved.side.view === 'thread' && typeof saved.side.rootMsgId === 'string' && HEX32.test(saved.side.rootMsgId)))) setSide(saved.side);
         if (channelId !== null && saved.threadDraft !== null && saved.threadDraft?.channelId === channelId
           && typeof saved.threadDraft.rootMsgId === 'string' && HEX32.test(saved.threadDraft.rootMsgId)
@@ -2119,16 +2211,16 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
             initialDraft={threadDrafts.current.get(threadDraftKey(channel.id, sideNow.rootMsgId)) ?? (threadDraft?.channelId === channel.id && threadDraft.rootMsgId === sideNow.rootMsgId ? threadDraft.text : '')}
             onEditingChange={setThreadEditing} onOpenProfile={openProfile}
             onDraftChange={text => { rememberDraft(threadDrafts.current, threadDraftKey(channel.id, sideNow.rootMsgId), text); setThreadDraft({ channelId: channel.id, rootMsgId: sideNow.rootMsgId, text }); }} />
-          : sideNow?.view === 'list' && channel !== null
-            ? <ThreadPane title={t('thread.list')} closeLabel={t(phone ? 'nav.back' : 'dialog.close')} onClose={closeSide} phone={phone} root={null} composer={null}>
-              <ThreadList channelId={channel.id} channelName={channel.name} communityId={communityId} onOpen={openThread} heading={false} />
+          : sideNow?.view === 'empty' && channel !== null
+            ? <ThreadPane title={t('thread.title')} closeLabel={t(phone ? 'nav.back' : 'dialog.close')} onClose={closeSide} phone={phone} root={null} composer={null}>
+              <p className="dw-thread-empty">{t('shell.thread.empty')}</p>
             </ThreadPane>
             : membersShown && community !== null && self !== null ? <MemberPane communityId={community.id} selfId={self.id}
               onMessage={startDm} onCompare={userId => void navigate({ name: 'settings', section: 'privacy', from: null, compare: userId })}
               onMention={mentionFromMembers}
               announce={announce} messageCard={profileCard} onCardOpen={() => setProfileCard(null)}
               onClose={phone ? () => { memberSheet.close(); } : () => setMembersOpen(false)} /> : undefined}
-        asideLabel={sideNow?.view === 'thread' ? t('thread.title') : sideNow?.view === 'list' ? t('thread.list')
+        asideLabel={sideNow?.view === 'thread' ? t('thread.title') : sideNow?.view === 'empty' ? t('thread.title')
           : community === null ? undefined : t('members.region', { server: community.name })}
         asideOpen={asideShown}
         onAsideClose={sideNow !== null ? closeSide : phone ? memberSheet.close : () => setMembersOpen(false)}

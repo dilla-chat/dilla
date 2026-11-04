@@ -391,6 +391,14 @@ describe('CallStage', () => {
       expect(preview.join.onJoin).toHaveBeenCalledTimes(1);
     });
 
+    it('with nobody there the faces row is still drawn, empty, so the prototype gap above the room stands (gap71, gap99)', () => {
+      const { container } = render(<CallStage {...base} preview={{ ...preview, people: [] }} />);
+      const faces = container.querySelector('.d-call-stage__preview > .d-call-stage__faces');
+      expect(faces).not.toBeNull();
+      expect(faces?.children).toHaveLength(0);
+      expect(container.querySelector('.d-call-stage__preview')?.firstElementChild).toBe(faces);
+    });
+
     it('a held join shows no Join voice', () => {
       render(<CallStage {...base} preview={{ ...preview, join: null }} />);
       expect(screen.queryByRole('button', { name: 'Join voice' })).toBeNull();
@@ -406,5 +414,32 @@ describe('CallStage', () => {
       expect(container.querySelector('.d-call-stage__code')).toBeNull();
       expect(bar).toContainElement(screen.getByRole('button', { name: 'Mute' }));
     });
+  });
+});
+
+describe('CallStage: the AFK page (wave B task 4)', () => {
+  const afk = { title: 'Nobody is away', text: 'After 15 minutes idle in voice, a computer is moved here. Phones are never moved.', action: { label: 'Go AFK', onAction: vi.fn() } };
+  const page = (more: Partial<CallStageProps> = {}) => (
+    <CallStage title="voice AFK" tiles={[]} code={null} notice={null} controls={null} outgoing={null} labels={labels} afk={afk} {...more} />
+  );
+  it('draws the moon tile, the title, the explainer and one button; no tiles, no call bar, no list', () => {
+    const { container } = render(page());
+    expect(container.querySelector('.d-call-stage__afk-tile [data-icon="moon"]')).not.toBeNull();
+    expect(screen.getByText('Nobody is away')).toBeInTheDocument();
+    expect(screen.getByText(afk.text)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Go AFK' })).toBeInTheDocument();
+    expect(container.querySelector('.d-call-stage__controls, .d-call-stage__tiles, .d-call-stage__empty')).toBeNull();
+    expect(screen.queryByRole('list')).toBeNull();
+  });
+  it('the button runs its action; the title is a status so a change is announced', () => {
+    const onAction = vi.fn();
+    render(page({ afk: { ...afk, action: { label: 'Come back', onAction } } }));
+    fireEvent.click(screen.getByRole('button', { name: 'Come back' }));
+    expect(onAction).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('Nobody is away')).toHaveAttribute('role', 'status');
+  });
+  it('passes axe', async () => {
+    const { container } = render(page());
+    expect((await axe(container, { rules: { 'color-contrast': { enabled: false }, region: { enabled: false } } })).violations).toEqual([]);
   });
 });

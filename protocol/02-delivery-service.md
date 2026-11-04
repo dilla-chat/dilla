@@ -474,15 +474,24 @@ sends it, after the change commits, to every live connection of every member of 
 when a channel of it is created, updated or deleted (`09` § Channels) and when the community is
 patched (`09` § Communities). It is also sent after a member joins, leaves, is kicked or is
 banned; after a role is created, changed, deleted, granted or revoked; after a channel overwrite is
-put or deleted; and after a community is deleted (to its members at that moment). The user a
-leave, kick or ban removed is sent it once, after the commit, to every live connection; a ban of a
-non-member sends nothing to that user. No one else is sent it. It names the
+put or deleted; after a member's display name, status message or bio changed; and after a community
+is deleted (to its members at that moment). The user a leave, kick or ban removed is sent it once,
+after the commit, to every live connection; a ban of a non-member sends nothing to that user. No one else is sent it. It names the
 community and nothing else: a client that lists the community reads its channels and members
 again through the routes that check its permissions, and may wait a moment so that a burst of
 changes costs one read. It is never persisted or replayed, so a client also reads the lists on
 `ready`. A client's decoder refuses a `community_changed` of any other shape as `E_FRAME_SHAPE`
 and drops it without disconnecting; it ignores one for a community it does not list. Sent by a
 client, any op 54 is `E_FRAME_TYPE` at the instance.
+
+Profile-caused hints coalesce over a fixed 10-second window per community, shared by all editors
+and all their devices: any number of admitted edits in that window sends one `community_changed`
+to each live connection of each current member. Each editor may trigger hints for at most six
+changed profile edits per rolling minute, across devices; further edits still save but send no
+hint until budget becomes available. Only communities the editor still belongs to at delivery
+are notified. A member whose presence choice is Invisible sends no profile hint, including when
+they become Invisible during the window; their changes appear at co-members' next normal
+member-list read. A no-op profile PATCH sends nothing.
 
 `afk_away` keeps a community's away roster current (`09` § Voice, the AFK channel). A member who
 is away is listed under the community's AFK channel and has no voice connection: no device of that
@@ -955,6 +964,7 @@ E_VERSION         : [code, detail, null, wire([uint]), e2ee([uint]), media([uint
 | 401 | `E_UNAUTHENTICATED` | no device session, or an expired or revoked one | establish a session (`§ Device sessions`) |
 | 401 | `E_PASSKEY_UNKNOWN` | the passkey is not registered on this instance | use another sign-in |
 | 403 | `E_FORBIDDEN` | the session is authenticated but not permitted | none |
+| 403 | `E_PASSKEY_OTHER_ACCOUNT` | a passkey login bound to a password or OIDC login's assertion used another account's passkey | use that account's passkey, its code, or a backup code |
 | 403 | `E_CHANNEL_MODE` | the operation is not allowed for this channel's mode | use the surface the mode does allow |
 | 403 | `E_FACTOR_REQUIRED` | the session's account owes a second factor | add one (`09` § Second factors) |
 | 403 | `E_LEAF_NOT_CURRENT` | the sending device's leaf is not in the current tree | resync by external commit; show "you are no longer a member" if refused |
@@ -1007,8 +1017,9 @@ factor: an account that owes one (§ Device sessions item 8), a `require_mod_2fa
 who holds none (`09` § Communities), and a factor change without a valid step-up. Each is 403 and
 distinct, so a client tells the three apart by code, never by detail. `E_PASSKEY_UNKNOWN` (401)
 came with them: a passkey login whose credential this instance does not hold (`09` § Second
-factors), distinct from `E_UNAUTHENTICATED` so the client can say which. None is a
-delivery-service code.
+factors), distinct from `E_UNAUTHENTICATED` so the client can say which. `E_PASSKEY_OTHER_ACCOUNT`
+(403) came with wave B task 3: a passkey login bound to a password or OIDC login (`09` § Second factors)
+whose passkey belongs to another account. None is a delivery-service code.
 
 The four Plan 2 consumes are declared **here**, in the one task that owns the vocabulary, even though their
 only call sites are Plan 2's. The three `E_ENVELOPE_*` codes are 400 and mirror the Rust envelope

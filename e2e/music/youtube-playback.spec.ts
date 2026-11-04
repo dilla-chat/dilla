@@ -186,11 +186,10 @@ test('two communities run isolated YouTube playback with independent Bot identit
     const composer = composerBox(musicPage, 'general');
     await composer.fill('/');
     const region = musicPage.getByRole('region', { name: 'Command composer', exact: true });
-    const picker = region.getByRole('combobox', { name: 'Command', exact: true });
+    const picker = region.getByRole('textbox', { name: 'Command', exact: true });
     await picker.fill(commandId);
     const option = region.getByRole('option').filter({ has: musicPage.getByText(`/${commandId}`, { exact: true }) });
     await expect(option).toBeVisible({ timeout: WAIT });
-    await picker.press('ArrowDown');
     await picker.press('Enter');
     if (commandId === 'play') {
       const query = region.getByRole('combobox', { name: 'query-or-url', exact: true });
@@ -202,8 +201,9 @@ test('two communities run isolated YouTube playback with independent Bot identit
     // which also counts the grouped bot rows the old `[data-kind="bot"]` locator missed.
     const publicBotMessages = log.locator('.d-message-row:has(.d-message-row__author[data-bot])');
     const publicCount = await publicBotMessages.count();
-    await region.getByRole('button', { name: 'Run command', exact: true }).click();
-    const status = region.getByRole('status');
+    await region.getByRole('button', { name: 'send', exact: true }).click();
+    // Signal wave B Task 2: a run that ends well leaves command mode; the host speaks its result.
+    const status = musicPage.locator('[data-command-result]');
     await expect(status).toContainText(expected, { timeout: 90_000 });
     const result = await status.innerText();
     await expect(publicBotMessages).toHaveCount(publicCount + announces, { timeout: 30_000 });
@@ -212,7 +212,7 @@ test('two communities run isolated YouTube playback with independent Bot identit
       await expect(announcement).toContainText('started music in general');
       await expect(announcement.getByRole('group', { name: 'Music player', exact: true })).toBeVisible();
     }
-    await region.getByRole('button', { name: 'Cancel', exact: true }).click();
+    if (await region.count() > 0) { await region.locator('input, textarea').first().focus(); await musicPage.keyboard.press('Escape'); }
     await voiceRow(musicPage, 'general').click();
     return result;
   };

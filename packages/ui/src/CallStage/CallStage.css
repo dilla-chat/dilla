@@ -125,6 +125,17 @@
 .d-call-stage__join:active { transform: scale(0.96); }
 .d-call-stage__join:focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
 
+/* The AFK channel's page (wave B task 4, the prototype's AFK view): a centred column, 12px apart: a 48px moon tile (12px corners, --surface-tile
+   in --hairline-2, the moon in --warn), the title (15px 700), the explainer (12px --fg-2, 340px wide) and a 36px outline button whose
+   edge turns --warn under the pointer. */
+.d-call-stage__afk { flex: 1 1 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.75rem; padding: 1.5rem; text-align: center; animation: d-up var(--duration-focus-in) both; }
+.d-call-stage__afk-tile { display: flex; align-items: center; justify-content: center; width: 3rem; height: 3rem; box-sizing: content-box; border-radius: var(--r-xxl); background: var(--surface-tile); border: 1px solid var(--hairline-2); color: var(--warn); }
+.d-call-stage__afk-title { font-size: var(--text-card); font-weight: var(--weight-display); color: var(--fg); }
+.d-call-stage__afk-text { max-width: 340px; font-size: var(--text-ui); color: var(--fg-2); text-wrap: pretty; }
+.d-call-stage__afk-action { display: flex; align-items: center; box-sizing: content-box; height: 2.25rem; padding: 0 1rem; font: inherit; font-size: var(--text-ui); color: var(--fg); background: transparent; border: 1px solid var(--control-edge); border-radius: var(--r-seg); cursor: pointer; transition: border-color var(--duration-fast); }
+.d-call-stage__afk-action:hover { border-color: var(--warn); }
+.d-call-stage__afk-action:focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
+
 /* The phone (Signal §5.6, §5.10): one 16:9 tile per row across the width, a 150px filmstrip, and the call bar's icons only, centred. */
 [data-layout="phone"] .d-call-stage { --d-strip-w: 9.375rem; }
 [data-layout="phone"] .d-call-stage__tiles[data-tiles="stage"] > .d-call-stage__tile[data-stage] { width: 100%; }

@@ -1,0 +1,16 @@
+.d-bot-result__meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-top: 3px; font-size: var(--text-meta); color: var(--fg-3); }
+.d-bot-result__status { display: inline-flex; align-items: center; gap: 5px; height: 18px; padding: 0 6px; border-radius: var(--r-sm); background: var(--hover); color: var(--fg-3); }
+.d-bot-result[data-status="pending"] .d-bot-result__status { background: var(--accent-soft); color: var(--accent-2); }
+.d-bot-result[data-status="success"] .d-bot-result__status { background: var(--ok-result); color: var(--ok); }
+.d-bot-result[data-status="failed"] .d-bot-result__status { background: var(--danger-soft); color: var(--danger); }
+.d-bot-result[data-status="cancelled"] .d-bot-result__status { background: var(--warn-result); color: var(--warn-result-text); }
+.d-bot-result__icon, .d-bot-result__privacy { display: inline-flex; align-items: center; }
+.d-bot-result__privacy { gap: 4px; }
+.d-bot-result[data-status="pending"] .d-bot-result__icon { animation: d-spin var(--duration-result-spin) linear infinite; }
+.d-bot-result[data-status="pending"] .d-message-row__body { color: var(--fg-2); }
+.d-bot-result__dismiss { padding: 0; border: 0; background: transparent; font: inherit; color: var(--fg-2); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.d-bot-result__dismiss:hover { color: var(--fg); }
+.d-bot-result__time { display: none; font-size: var(--text-meta); color: var(--fg-faint); }
+[data-layout="phone"] .d-bot-result__time { display: inline; }
+.d-bot-result__tile { display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: var(--r-sm); background: var(--brand); color: var(--brand-ink); font-weight: var(--weight-display); font-size: var(--text-sm); }
+@media (prefers-reduced-motion: reduce) { .d-bot-result__icon { animation: none !important; } }

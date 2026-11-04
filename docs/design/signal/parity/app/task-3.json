@@ -1,0 +1,417 @@
+[
+ {
+  "name": "signin-creds-desktop",
+  "viewport": {
+   "width": 1280,
+   "height": 800
+  },
+  "prototype": {
+   "props": {
+    "startAt": "signin"
+   },
+   "steps": [
+    {
+     "wait": 900
+    }
+   ]
+  },
+  "app": {
+   "who": "fresh",
+   "path": "/welcome",
+   "steps": [
+    {
+     "wait": 900
+    },
+    {
+     "click": "button:has-text('Already have an account? Sign in')"
+    },
+    {
+     "wait": 600
+    },
+    {
+     "type": [
+      "#signin-username",
+      "ada"
+     ]
+    },
+    {
+     "type": [
+      "#signin-password",
+      "ux-ada-password"
+     ]
+    },
+    {
+     "click": "role=heading[name=/^Sign in to /]"
+    }
+   ]
+  }
+ },
+ {
+  "name": "signin-code-desktop",
+  "viewport": {
+   "width": 1280,
+   "height": 800
+  },
+  "prototype": {
+   "props": {
+    "startAt": "signin"
+   },
+   "steps": [
+    {
+     "wait": 900
+    },
+    {
+     "click": "text=Continue"
+    },
+    {
+     "wait": 900
+    }
+   ]
+  },
+  "app": {
+   "who": "fresh",
+   "path": "/welcome",
+   "steps": [
+    {
+     "wait": 900
+    },
+    {
+     "click": "button:has-text('Already have an account? Sign in')"
+    },
+    {
+     "wait": 600
+    },
+    {
+     "type": [
+      "#signin-username",
+      "ada"
+     ]
+    },
+    {
+     "type": [
+      "#signin-password",
+      "ux-ada-password"
+     ]
+    },
+    {
+     "click": "button:has-text('Continue')"
+    },
+    {
+     "wait": 1200
+    }
+   ]
+  }
+ },
+ {
+  "name": "signin-recover-desktop",
+  "viewport": {
+   "width": 1280,
+   "height": 800
+  },
+  "prototype": {
+   "props": {
+    "startAt": "signin"
+   },
+   "steps": [
+    {
+     "wait": 900
+    },
+    {
+     "click": "text=Continue"
+    },
+    {
+     "wait": 900
+    },
+    {
+     "type": [
+      "input[maxlength='6']",
+      "123456"
+     ]
+    },
+    {
+     "wait": 1200
+    }
+   ]
+  },
+  "app": {
+   "who": "fresh",
+   "path": "/welcome",
+   "steps": [
+    {
+     "wait": 900
+    },
+    {
+     "click": "button:has-text('Already have an account? Sign in')"
+    },
+    {
+     "wait": 600
+    },
+    {
+     "type": [
+      "#signin-username",
+      "ada"
+     ]
+    },
+    {
+     "type": [
+      "#signin-password",
+      "ux-ada-password"
+     ]
+    },
+    {
+     "click": "button:has-text('Continue')"
+    },
+    {
+     "wait": 1200
+    },
+    {
+     "totp": [
+      "#signin-code",
+      "ada"
+     ]
+    },
+    {
+     "wait": 1500
+    }
+   ]
+  }
+ },
+ {
+  "name": "signin-creds-phone",
+  "viewport": {
+   "width": 390,
+   "height": 844
+  },
+  "prototype": {
+   "props": {
+    "startAt": "signin",
+    "device": "phone"
+   },
+   "steps": [
+    {
+     "wait": 900
+    }
+   ]
+  },
+  "app": {
+   "who": "freshPhone",
+   "path": "/welcome",
+   "steps": [
+    {
+     "wait": 900
+    },
+    {
+     "click": "button:has-text('Already have an account? Sign in')"
+    },
+    {
+     "wait": 600
+    },
+    {
+     "type": [
+      "#signin-username",
+      "ada"
+     ]
+    },
+    {
+     "type": [
+      "#signin-password",
+      "ux-ada-password"
+     ]
+    },
+    {
+     "click": "role=heading[name=/^Sign in to /]"
+    }
+   ]
+  }
+ },
+ {
+  "name": "signin-code-phone",
+  "viewport": {
+   "width": 390,
+   "height": 844
+  },
+  "prototype": {
+   "props": {
+    "startAt": "signin",
+    "device": "phone"
+   },
+   "steps": [
+    {
+     "wait": 900
+    },
+    {
+     "click": "text=Continue"
+    },
+    {
+     "wait": 900
+    }
+   ]
+  },
+  "app": {
+   "who": "freshPhone",
+   "path": "/welcome",
+   "steps": [
+    {
+     "wait": 900
+    },
+    {
+     "click": "button:has-text('Already have an account? Sign in')"
+    },
+    {
+     "wait": 600
+    },
+    {
+     "type": [
+      "#signin-username",
+      "ada"
+     ]
+    },
+    {
+     "type": [
+      "#signin-password",
+      "ux-ada-password"
+     ]
+    },
+    {
+     "click": "button:has-text('Continue')"
+    },
+    {
+     "wait": 1200
+    }
+   ]
+  }
+ },
+ {
+  "name": "signin-recover-phone",
+  "viewport": {
+   "width": 390,
+   "height": 844
+  },
+  "prototype": {
+   "props": {
+    "startAt": "signin",
+    "device": "phone"
+   },
+   "steps": [
+    {
+     "wait": 900
+    },
+    {
+     "click": "text=Continue"
+    },
+    {
+     "wait": 900
+    },
+    {
+     "type": [
+      "input[maxlength='6']",
+      "123456"
+     ]
+    },
+    {
+     "wait": 1200
+    }
+   ]
+  },
+  "app": {
+   "who": "freshPhone",
+   "path": "/welcome",
+   "steps": [
+    {
+     "wait": 900
+    },
+    {
+     "click": "button:has-text('Already have an account? Sign in')"
+    },
+    {
+     "wait": 600
+    },
+    {
+     "type": [
+      "#signin-username",
+      "ada"
+     ]
+    },
+    {
+     "type": [
+      "#signin-password",
+      "ux-ada-password"
+     ]
+    },
+    {
+     "click": "button:has-text('Continue')"
+    },
+    {
+     "wait": 1200
+    },
+    {
+     "totp": [
+      "#signin-code",
+      "ada"
+     ]
+    },
+    {
+     "wait": 1500
+    }
+   ]
+  }
+ },
+ {
+  "name": "signin-code-card",
+  "viewport": {
+   "width": 1280,
+   "height": 800
+  },
+  "prototype": {
+   "props": {
+    "startAt": "signin"
+   },
+   "steps": [
+    {
+     "wait": 900
+    },
+    {
+     "click": "text=Continue"
+    },
+    {
+     "wait": 900
+    }
+   ],
+   "clip": "div[style*='max-width: 400px']"
+  },
+  "app": {
+   "who": "fresh",
+   "path": "/welcome",
+   "steps": [
+    {
+     "wait": 900
+    },
+    {
+     "click": "button:has-text('Already have an account? Sign in')"
+    },
+    {
+     "wait": 600
+    },
+    {
+     "type": [
+      "#signin-username",
+      "ada"
+     ]
+    },
+    {
+     "type": [
+      "#signin-password",
+      "ux-ada-password"
+     ]
+    },
+    {
+     "click": "button:has-text('Continue')"
+    },
+    {
+     "wait": 1200
+    }
+   ],
+   "clip": ".d-onboarding-frame__card"
+  }
+ }
+]

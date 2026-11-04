@@ -3,6 +3,8 @@ import { ActionMenu, type ActionMenuItem } from '../ActionMenu/ActionMenu.tsx';
 import { Avatar } from '../Avatar/Avatar.tsx';
 import './PersonContextMenu.css';
 
+const MOVE = 'move:';
+
 export interface PersonContextMenuProps {
   /** Who the menu is about: the name (the own one "{name} (you)"), where they are ("in harbour"), and a bot's square avatar. */
   person: { name: string; where: string; bot?: boolean; /** The avatar's name (initials, hue) when `name` carries a suffix. */ avatarName?: string };
@@ -19,15 +21,21 @@ export interface PersonContextMenuProps {
   /** The client-side items: Mute for me (an on/off item that keeps the menu open), Copy username. */
   items: readonly ActionMenuItem[];
   onSelect(id: string): void;
+  /**
+   * Wave B task 4 (the prototype's "Move to" block, your own menu in a call): the community's other voice channels with the
+   * head count in each, under a heading, after the items and before a danger item (Leave voice). Choosing one calls
+   * `onMove(id)` and closes the menu.
+   */
+  move?: { label: string; rooms: readonly { id: string; name: string; count: number }[]; /** A room's accessible name: 'lounge, 2 in voice'. */ roomLabel(room: { name: string; count: number }): string; onMove(id: string): void };
 }
 
 /**
  * The person menu (Signal §5.4, the prototype's context menu of a voice occupant and a stage tile), on ActionMenu: 236px on
  * --surface-2 with the --line-strong edge, 9px corners; a header with the 28px avatar, the name (12.5px 700) and where they
  * are (10.5px --fg-3); the "User volume" range; then the items, 32px, a 14px glyph, a check box on an on/off item. Wave C's
- * Move to, Server mute and Disconnect are not drawn.
+ * Server mute and Disconnect are not drawn; Move to is on your own menu (wave B).
  */
-export function PersonContextMenu({ person, label, open, at, onOpenChange, returnFocus, volume, items, onSelect }: PersonContextMenuProps) {
+export function PersonContextMenu({ person, label, open, at, onOpenChange, returnFocus, volume, items, onSelect, move }: PersonContextMenuProps) {
   const volumeId = useId();
   const head = (
     <>
@@ -48,8 +56,17 @@ export function PersonContextMenu({ person, label, open, at, onOpenChange, retur
       ) : null}
     </>
   );
+  // The Move to rooms sit after the plain items and before the danger ones (Leave voice), the rule above the block.
+  const rooms: ActionMenuItem[] = move === undefined || move.rooms.length === 0 ? [] : move.rooms.map((r, i) => ({
+    id: `${MOVE}${r.id}`, label: r.name, icon: 'volume-2' as const, room: true, hint: String(r.count), ariaLabel: move.roomLabel(r), group: move.label,
+    ...(i === 0 ? { sep: true, heading: move.label } : {}),
+  }));
+  const danger = items.findIndex(i => i.danger === true);
+  const all: readonly ActionMenuItem[] = rooms.length === 0 ? items
+    : danger < 0 ? [...items, ...rooms] : [...items.slice(0, danger), ...rooms, { ...items[danger], sep: false }, ...items.slice(danger + 1)];
+  const choose = (id: string) => { if (move !== undefined && id.startsWith(MOVE)) move.onMove(id.slice(MOVE.length)); else onSelect(id); };
   return (
-    <ActionMenu label={label} items={items} open={open} trigger="none" at={at} returnFocus={returnFocus}
-      onOpenChange={onOpenChange} onSelect={onSelect} head={head} popupClassName="d-person-menu" />
+    <ActionMenu label={label} items={all} open={open} trigger="none" at={at} returnFocus={returnFocus}
+      onOpenChange={onOpenChange} onSelect={choose} head={head} popupClassName="d-person-menu" />
   );
 }

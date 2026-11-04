@@ -8,9 +8,10 @@ import { join } from 'node:path';
 import { addServerVia, TEST_TIMEOUT, WAIT, copy, signUp, test } from './support/app';
 import { REPO_ROOT, startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
+import { e2ePort } from './support/ports';
 import { desktopE2E } from './support/electron.ts';
 
-const EMPTY: HostConfig = { port: 8517, control: 8518, webRoot: 'packages/web/dist' };
+const EMPTY: HostConfig = { port: e2ePort(8517), control: e2ePort(8518), webRoot: 'packages/web/dist' };
 const SERVER = 'Midgard Crew';
 const SHOTS = join(REPO_ROOT, 'target', 'ui-screens', 'web3.9');
 

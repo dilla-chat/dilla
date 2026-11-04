@@ -10,8 +10,9 @@ import { addServerVia,
 import { WebDriver } from './support/driver';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
+import { e2ePort } from './support/ports';
 
-const HOST: HostConfig = { port: 8503, control: 8504, webRoot: 'packages/web/dist' };
+const HOST: HostConfig = { port: e2ePort(8503), control: e2ePort(8504), webRoot: 'packages/web/dist' };
 const PHONE = { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 3 } as const;
 const GENERAL = 'general';
 const SECOND = 'general-2';
@@ -113,7 +114,7 @@ test('a reply in a thread shows its count on both sides, the pane sits in the as
   const peer = await ThreadPeer.start(started());
   try {
     const { general } = await enter(page, peer);
-    await test.step('Ada posts, then opens the thread from the toolbar: the pane is in the aside and takes focus', async () => {
+    await test.step('Ada posts, then opens the thread from the toolbar: the pane is in the aside and leaves its composer unfocused', async () => {
       const plan = `plan ${tag()}`;
       await sendText(page, GENERAL, plan);
       const root = await peer.waitFor(plan, general);
@@ -131,7 +132,8 @@ test('a reply in a thread shows its count on both sides, the pane sits in the as
         const aside = await threadPane(page).boundingBox();
         return aside!.x - (log!.x + log!.width);
       }, { message: 'the thread pane starts where the channel ends', timeout: WAIT }).toBeGreaterThanOrEqual(-1);
-      await expect(threadComposer(page)).toBeFocused();
+      // Wave B parity round 2 (ThreadView.test "leaves the thread composer unfocused on opening"): no script focus on open.
+      await expect(threadComposer(page)).not.toBeFocused();
       await expectAccessible(page, 'thread pane in the aside');
 
       // Björn replies through the thread id: it shows in the pane and as a chip on the root, never in the channel.
@@ -177,10 +179,21 @@ test('a reply in a thread shows its count on both sides, the pane sits in the as
       await expect(threadPane(page)).toBeHidden();
       await expect(chip(rootRow, 'thread.summary.other', 2)).toBeFocused();
 
+      // Q9: Threads reopens the last thread directly, without a list in between.
+      await page.getByRole('button', { name: copy('layout.header.threads'), exact: true }).click();
+      await expect(threadPane(page)).toBeVisible({ timeout: WAIT });
+      await expect(page.locator('.dw-thread-list')).toHaveCount(0);
+      await expect(paneRow(page, ok)).toBeVisible({ timeout: WAIT });
+      await threadPane(page).getByRole('button', { name: copy('thread.close'), exact: true }).click();
+      await expect(threadPane(page)).toBeHidden();
+
       // A real pointer click on the chip opens it (pointerdown must not move the chip out from under the pointer).
       await chip(rootRow, 'thread.summary.other', 2).click();
       await expect(threadPane(page)).toBeVisible({ timeout: WAIT });
       await expect(paneRow(page, go)).toBeVisible();
+      // Escape closes the pane from inside it (ThreadView.test "closes on Escape inside it"); since wave B the opened pane
+      // leaves its composer unfocused, so focus is still on the chip until the reader moves into the pane.
+      await threadComposer(page).click();
       await page.keyboard.press('Escape');
       await expect(threadPane(page)).toBeHidden();
 
@@ -239,7 +252,7 @@ test('Ada edits and deletes her own reply in the thread', async ({ page }) => {
     await sendText(page, GENERAL, plan);
     const root = await peer.waitFor(plan, general);
     await openFromToolbar(rowById(page, GENERAL, root.msg_id));
-    await expect(threadComposer(page)).toBeFocused({ timeout: WAIT });
+    await expect(threadComposer(page)).toBeVisible({ timeout: WAIT });
     const first = `first ${tag()}`;
     await threadComposer(page).fill(first);
     await threadComposer(page).press('Enter');

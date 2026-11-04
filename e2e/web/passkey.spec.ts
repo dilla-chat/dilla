@@ -7,7 +7,7 @@
 import { expect, type Locator, type Page } from '@playwright/test';
 import {
   COPY, SIGNIN, TEST_TIMEOUT, WAIT, copy, escapeRegExp, expectAccessible, expectHeading, expectShell, keyField, keySubmit, keyText,
-  newAccount, nextButton, readRecoveryKey, submitButton, test,
+  newAccount, nextButton, signUpToFactor, test,
   settingsGear,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
@@ -16,9 +16,10 @@ import { nextCode } from './support/totp';
 import { addAuthenticator, copyCredentials } from './support/webauthn';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
 import { rmSync } from 'node:fs';
+import { e2ePort } from './support/ports';
 
 /** Its own ports (E2 reservation). The page is opened at localhost, the relying party's origin. */
-const EMPTY: HostConfig = { port: 8497, control: 8498, webRoot: 'packages/web/dist', webauthnOrigin: 'http://localhost:8497' };
+const EMPTY: HostConfig = { port: e2ePort(8497), control: e2ePort(8498), webRoot: 'packages/web/dist', webauthnOrigin: `http://localhost:${String(e2ePort(8497))}` };
 const BJORN = 'Björn';
 const PASSKEY = 'Laptop';
 
@@ -26,7 +27,7 @@ let host: StartedHost | null = null;
 let instance = '';
 
 test.describe.configure({ mode: 'serial', timeout: TEST_TIMEOUT });
-test.use({ baseURL: 'http://localhost:8497' });
+test.use({ baseURL: `http://localhost:${String(e2ePort(8497))}` });
 test.skip(({ browserName }) => browserName !== 'chromium', 'CDP virtual authenticator');
 
 test.beforeAll(async () => {
@@ -78,20 +79,7 @@ test('passkeys: sign up with one, sign in with a copy of it, add the app, remove
   const authenticator = await addAuthenticator(page);
   const bjorn = newAccount(BJORN, h.control);
   await page.goto(`/welcome?invite=${encodeURIComponent(h.invite.split(',')[0] ?? '')}`);
-  await expectHeading(page, COPY.connectTitle, { instance });
-  await nextButton(page).click();
-  await expectHeading(page, COPY.identityTitle);
-  await page.getByLabel(copy(COPY.usernameLabel), { exact: true }).fill(bjorn.username);
-  await page.getByLabel(copy(COPY.displayLabel), { exact: true }).fill(bjorn.display);
-  await page.getByLabel(copy(COPY.passwordLabel), { exact: true }).fill(bjorn.password);
-  await nextButton(page).click();
-  await expectHeading(page, COPY.keysTitle);
-  bjorn.recoveryKey = await readRecoveryKey(page);
-  await page.getByRole('checkbox', { name: copy(COPY.keysAcknowledge), exact: true }).check();
-  await nextButton(page).click();
-  await expectHeading(page, COPY.deviceTitle);
-  await submitButton(page).click();
-  await expectHeading(page, 'factor.choose.title');
+  await signUpToFactor(page, bjorn, instance);
   await page.getByRole('radio', { name: new RegExp(escapeRegExp(copy('factor.choose.passkey'))) }).check();
   await page.getByRole('button', { name: copy('factor.choose.next'), exact: true }).click();
   await expectHeading(page, 'factor.passkey.title');
@@ -99,24 +87,41 @@ test('passkeys: sign up with one, sign in with a copy of it, add the app, remove
   await name.fill(PASSKEY);
   await expectAccessible(page, 'passkey: name');
   await button(page, 'factor.passkey.submit').click();
-  await expectHeading(page, 'factor.codes.title');
-  bjorn.backupCodes = (await page.getByRole('list', { name: copy('factor.codes.label'), exact: true }).locator('li').allInnerTexts())
-    .map((c) => c.replace(/\s+/g, ''));
-  expect(bjorn.backupCodes).toHaveLength(10);
-  await page.getByRole('checkbox', { name: copy('factor.codes.ack'), exact: true }).check();
-  await page.getByRole('button', { name: copy('factor.codes.next'), exact: true }).click();
+  // Wave B task 3b: the backup codes are on the done step, whose Open dilla waits for their tick.
   await expectHeading(page, COPY.doneTitle);
+  // The codes are collapsed on desktop too (parity decision); Show codes opens them.
+  await page.getByRole('button', { name: copy('onboarding.done.codesShow'), exact: true }).click();
+  const codes = page.getByRole('list', { name: copy('factor.codes.label'), exact: true }).locator('li');
+  await expect(codes).toHaveCount(10, { timeout: WAIT });
+  bjorn.backupCodes = (await codes.allInnerTexts()).map((c) => c.replace(/\s+/g, ''));
+  expect(bjorn.backupCodes).toHaveLength(10);
+  await page.getByRole('checkbox', { name: copy(COPY.codesAck), exact: true }).check();
   await page.getByRole('button', { name: copy(COPY.finish), exact: true }).click();
   await expectShell(page);
 
   // 2. A second browser holding a copy of the passkey: the passkey on the login step, no password typed; then the key.
   const secondDir = secondProfileDir(testInfo.project.name, testInfo.workerIndex);
-  const second = await launchSecond(playwright, browserName, { launchOptions, headless, channel, viewport, baseURL: 'http://localhost:8497' }, secondDir);
+  const second = await launchSecond(playwright, browserName, { launchOptions, headless, channel, viewport, baseURL: `http://localhost:${String(e2ePort(8497))}` }, secondDir);
   try {
     await guard.attach(second);
+    // One page per device profile: the desktop harness refuses a second tab for one instance (#137).
     const page2 = second.pages()[0] ?? (await second.newPage());
     const authenticator2 = await addAuthenticator(page2);
     expect(await copyCredentials(authenticator, authenticator2)).toBe(1);
+    // Wave B task 3: where passkeys can be used, the login step's username field offers them in its autofill. Checked on
+    // this page before the autofill is switched off below; the login is left again without focusing the field.
+    await page2.goto('/welcome');
+    await expectHeading(page2, COPY.connectTitle, { instance });
+    await page2.getByRole('button', { name: copy(SIGNIN.entry), exact: true }).click();
+    await expectHeading(page2, SIGNIN.loginTitle, { instance });
+    await expect(page2.getByLabel(copy(SIGNIN.username), { exact: true })).toHaveAttribute('autocomplete', 'username webauthn');
+    // Chromium's virtual authenticator answers no autofill (conditional) request without a person picking from the popup,
+    // so this page is a browser without conditional mediation: the login keeps "Sign in with a passkey" (Jonas, fix round
+    // 2), which runs the ordinary ceremony. The autofill path is covered by the unit tests (SignInFactor.test.tsx).
+    await page2.addInitScript(() => {
+      const pkc = (window as unknown as { PublicKeyCredential?: { isConditionalMediationAvailable?: () => Promise<boolean> } }).PublicKeyCredential;
+      if (pkc) pkc.isConditionalMediationAvailable = async () => false;
+    });
     await page2.goto('/welcome');
     await expectHeading(page2, COPY.connectTitle, { instance });
     await page2.getByRole('button', { name: copy(SIGNIN.entry), exact: true }).click();
@@ -146,8 +151,8 @@ test('passkeys: sign up with one, sign in with a copy of it, add the app, remove
   const key = adding.getByLabel(copy('factor.totp.key'), { exact: true });
   await expect(key).toHaveValue(/^[A-Z2-7]{16,}$/, { timeout: WAIT });
   bjorn.totpSecret = await key.inputValue();
+  // Wave B task 3: the sixth digit in the code boxes sends the code; there is no button to press.
   await adding.getByLabel(copy('factor.totp.code'), { exact: true }).fill(await nextCode(bjorn.control, bjorn));
-  await button(adding, 'factor.totp.submit').click();
   // The account already holds backup codes, so the add ends here with no list of new ones.
   await expect(adding).toBeHidden({ timeout: WAIT });
   await expect(page.getByText(copy('factorSettings.added.totp'), { exact: true })).toBeAttached();

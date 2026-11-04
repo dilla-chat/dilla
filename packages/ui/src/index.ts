@@ -132,7 +132,7 @@ export type { VoiceDockProps } from './VoiceDock/VoiceDock.tsx';
 export { CallControls, VOICE_ICONS, VOICE_SHORTCUTS, voiceWhy } from './CallControls/CallControls.tsx';
 export type { CallControlsProps, VoiceWhyLabels } from './CallControls/CallControls.tsx';
 export { CallStage } from './CallStage/CallStage.tsx';
-export type { CallStageProps, CallStageNotice, CallStagePreview } from './CallStage/CallStage.tsx';
+export type { CallStageProps, CallStageNotice, CallStagePreview, CallStageAfk } from './CallStage/CallStage.tsx';
 export { AudioMeter } from './AudioMeter/AudioMeter.tsx';
 export type { AudioMeterProps } from './AudioMeter/AudioMeter.tsx';
 export { VoiceSettings } from './VoiceSettings/VoiceSettings.tsx';
@@ -185,3 +185,15 @@ export { KeyboardTable } from './KeyboardTable/KeyboardTable.tsx';
 export type { KeyboardTableProps } from './KeyboardTable/KeyboardTable.tsx';
 export { SettingsFooter } from './SettingsFrame/SettingsFooter.tsx';
 export { PhoneLayoutProvider } from './internal/phoneLayout.ts';
+// Wave B Task 2
+export { CommandList, CommandChips, CommandField, CommandSuggestions, CommandBar, commandOptionId } from './CommandPicker/CommandPicker.tsx';
+export type { CommandListItem, CommandListProps, CommandChipsProps, CommandFieldProps, CommandSuggestion, CommandSuggestionsProps, CommandBarProps } from './CommandPicker/CommandPicker.tsx';
+// Wave B Task 3
+export { CodeBoxes } from './CodeBoxes/CodeBoxes.tsx';
+export type { CodeBoxesProps } from './CodeBoxes/CodeBoxes.tsx';
+export { COMPLETE_DELAY_MS } from './CodeBoxes/CodeBoxes.tsx';
+export { BotResult, type BotResultProps, type BotStatus } from './BotResult/BotResult.tsx';
+export { PollCard, type PollCardProps, type PollCardOption } from './PollCard/PollCard.tsx';
+export { PollDialog, type PollDialogProps, type PollDialogLabels, type PollDraft } from './PollDialog/PollDialog.tsx';
+
+export { ReactionTooltip, type ReactionTooltipProps } from './ReactionTooltip/ReactionTooltip.tsx';

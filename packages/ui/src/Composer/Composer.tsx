@@ -20,6 +20,8 @@ export interface ComposerProps {
   disabledReason?: string;
   onSend(text: string): void;
   sendLabel: string;
+  /** The thread reply line sends with Enter and has no visible send control. Defaults to true. */
+  showSend?: boolean;
   counterLabel(remaining: number): string;
   /** The attach button (`+`) before the textarea, shown when both are given. */
   attachLabel?: string;
@@ -65,6 +67,12 @@ export interface ComposerProps {
   hint?: string;
   /** A reply bar sits on the box (in `top`): the box's top corners square off so the two join. */
   replying?: boolean;
+  /**
+   * Wave B Task 2: the command picker's chips (or its `/` draft field) in place of the textarea, inside the same box (the
+   * prototype's command mode keeps the › prompt, "send ↵" and the footer). With it, send hands `value` to `onSend`
+   * whatever it holds: the owner runs the command.
+   */
+  input?: ReactNode;
 }
 
 /** The prototype's `</>` insert: the draft (ending in one line break) and a yaml fence, the caret on the empty line inside. */
@@ -99,7 +107,7 @@ function labelParts(label: string): { lead: string; target: string | null } {
 export function Composer({
   label, placeholder, maxLength, value, onChange, disabled, disabledReason, onSend, sendLabel, counterLabel,
   attachLabel, onAttach, gif, top, notice, measure, combobox, onCaret, onArrowUpEmpty, onPasteFiles, textareaRef, canSendEmpty,
-  emoji, codeLabel, typing, hint, replying,
+  emoji, codeLabel, typing, hint, replying, input, showSend = true,
 }: ComposerProps) {
   const ownInput = useRef<HTMLTextAreaElement | null>(null);
   const pendingCaret = useRef<number | null>(null);
@@ -146,6 +154,7 @@ export function Composer({
 
   const submit = () => {
     if (disabled) return;
+    if (input !== undefined) { onSend(value); return; }
     // A blank text is sent only when the owner says it may be (an attachment-only message).
     if (value.trim() === '' && canSendEmpty !== true) return;
     // Over the budget the text stays in the field; the counter already says by how much.
@@ -218,21 +227,21 @@ export function Composer({
       data-replying={replying ? 'true' : undefined} data-typing={showTyping ? 'true' : undefined} noValidate onSubmit={onSubmit}>
       {top !== undefined ? <div className="d-composer__top">{top}</div> : null}
       {showNotice ? <div id={noticeId} className="d-composer__notice">{notice}</div> : null}
-      <label className="d-composer__label d-label d-sr-only" htmlFor={inputId}>
+      {input !== undefined ? null : <label className="d-composer__label d-label d-sr-only" htmlFor={inputId}>
         {lead}{target === null ? null : <span className="d-composer__target">{target}</span>}
-      </label>
+      </label>}
       <div className="d-composer__box">
         {/* The 2px typing sweep on the box's top edge (§5.5), shown while someone else types. */}
         <div className="d-composer__sweep" aria-hidden="true"><span /></div>
         <div className="d-composer__row">
           <span className="d-composer__prompt" aria-hidden="true">›</span>
-          <textarea ref={setInput} id={inputId} className="d-composer__input" rows={1} value={value} placeholder={placeholder}
+          {input !== undefined ? input : <textarea ref={setInput} id={inputId} className="d-composer__input" rows={1} value={value} placeholder={placeholder}
             readOnly={disabled} aria-disabled={disabled ? true : undefined} aria-describedby={describedBy} {...listAttributes}
-            onChange={onInput} onKeyDown={onKeyDown} onSelect={reportCaret} onKeyUp={reportCaret} onPaste={onPaste} />
-          <button type="submit" className="d-composer__send" disabled={disabled === true}
+            onChange={onInput} onKeyDown={onKeyDown} onSelect={reportCaret} onKeyUp={reportCaret} onPaste={onPaste} />}
+          {showSend ? <button type="submit" className="d-composer__send" disabled={disabled === true}
             aria-disabled={sendRefused ? true : undefined} aria-describedby={sendRefused ? counterId : undefined}>
             {sendLabel}<span className="d-composer__send-key" aria-hidden="true"> ↵</span>
-          </button>
+          </button> : null}
         </div>
         <div className="d-composer__foot">
           {attachLabel !== undefined && onAttach ? (

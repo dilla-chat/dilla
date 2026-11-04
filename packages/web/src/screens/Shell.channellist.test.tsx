@@ -49,6 +49,19 @@ describe('one channel list (web3.8 item 12)', () => {
     expect(order.every(i => i >= 0)).toBe(true);
   });
 
+  it('opens the AFK page from its row without joining; only Go AFK joins (wave B task 4)', async () => {
+    const app = mount();
+    act(() => app.client.publish(`afk:${A}`, { channelId: VV, timeoutSeconds: 300, pending: false }));
+    const row = await within(list()).findByRole('button', { name: 'voice lounge' });
+    await app.user.click(row);
+    expect(await screen.findByText('Nobody is away')).toBeInTheDocument();
+    expect(app.client.callsOf('afkAway')).toEqual([]);
+    expect(app.sessions).toHaveLength(0);
+    await app.user.click(screen.getByRole('button', { name: 'Go AFK' }));
+    await waitFor(() => expect(app.client.callsOf('afkAway')).toHaveLength(1));
+    expect(app.sessions).toHaveLength(0);
+  });
+
   it('has no "active voice" and no "voice" heading, and gives the voice row its speaker icon', async () => {
     mount();
     const lounge = await within(list()).findByRole('button', { name: 'voice lounge' });

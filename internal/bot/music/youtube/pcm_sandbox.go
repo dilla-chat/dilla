@@ -6,11 +6,13 @@ import (
 	_ "embed"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -66,7 +68,7 @@ func (s PCMStarter) startIsolated(ctx context.Context, source string) (io.ReadCl
 	if node != "" {
 		tools = append(tools, node)
 	}
-	args := []string{"pcm", ytdlp, ffmpeg, node, source, strconv.FormatInt(limit, 10)}
+	args := []string{"pcm", ytdlp, ffmpeg, node, source, strconv.FormatInt(limit, 10), strconv.FormatFloat(float64(max(0, s.StartAtMS))/1000, 'f', 3, 64)}
 	process, err := launchNetworkWorker(ctx, bwrap, python, tools, args, startupTimeout, maxDuration)
 	if err != nil {
 		return nil, err
@@ -97,7 +99,7 @@ func launchNetworkWorker(ctx context.Context, bwrap, python string, tools, worke
 		_ = os.RemoveAll(root)
 		return nil, ErrSandboxUnavailable
 	}
-	broker := newEgressBroker(listener)
+	broker := newEgressBroker(ctx, listener)
 	runCtx, cancel := context.WithTimeout(ctx, maxDuration)
 	cmd, stdout, err := sandboxCommand(runCtx, bwrap, python, tools, workerArgs, socketPath)
 	if err != nil {
@@ -217,7 +219,7 @@ func sandboxCommand(ctx context.Context, bwrap, python string, tools, workerArgs
 	}
 	cmd.WaitDelay = 2 * time.Second
 	cmd.Env = []string{"PATH=/usr/bin:/bin", "LANG=C"}
-	cmd.Stderr = &sandboxStderr{}
+	cmd.Stderr = &sandboxStderr{ctx: ctx, logger: diagnosticLogger(ctx)}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, nil, err
@@ -336,14 +338,28 @@ var _ io.ReadCloser = (*boundedProcessPCM)(nil)
 
 // sandboxStderr bounds memory while continuing to drain the subprocess pipe.
 type sandboxStderr struct {
-	mu   sync.Mutex
-	data bytes.Buffer
+	mu        sync.Mutex
+	data      bytes.Buffer
+	ctx       context.Context
+	logger    *slog.Logger
+	line      []byte
+	seenMarks uint8
 }
 
 func (b *sandboxStderr) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	n := len(p)
+	if b.logger != nil {
+		for _, c := range p {
+			if c == '\n' {
+				b.logMark(string(b.line))
+				b.line = b.line[:0]
+			} else if len(b.line) < 512 {
+				b.line = append(b.line, c)
+			}
+		}
+	}
 	if remaining := 4096 - b.data.Len(); remaining > 0 {
 		_, _ = b.data.Write(p[:min(len(p), remaining)])
 	}
@@ -401,4 +417,40 @@ func (p *isolatedPCM) startupFailure(cause error) *ProcessError {
 // the completed process diagnostics for either pipe termination signal.
 func processReadEnded(err error) bool {
 	return errors.Is(err, io.EOF) || errors.Is(err, os.ErrClosed) || errors.Is(err, io.ErrClosedPipe)
+}
+
+func (r *boundedProcessPCM) SourceGone() bool {
+	select {
+	case <-r.process.done:
+		return true
+	default:
+		return false
+	}
+}
+
+func (b *sandboxStderr) logMark(line string) {
+	fields := strings.Fields(line)
+	if len(fields) != 3 || fields[0] != "DILLA_YT_TIMING" {
+		return
+	}
+	var bit uint8
+	switch fields[1] {
+	case "spawn":
+		bit = 1
+	case "first_yt_dlp_byte":
+		bit = 2
+	case "first_pcm":
+		bit = 4
+	default:
+		return
+	}
+	ns, err := strconv.ParseInt(fields[2], 10, 64)
+	if err != nil || ns <= 0 {
+		return
+	}
+	if b.seenMarks&bit != 0 {
+		return
+	}
+	b.seenMarks |= bit
+	b.logger.DebugContext(b.ctx, "youtube worker timing", "mark", fields[1], "monotonic_ns", ns)
 }

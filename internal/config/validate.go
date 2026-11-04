@@ -125,21 +125,23 @@ type rateBucket struct {
 	burst     int
 }
 
-// rateBuckets returns the twelve (per_second, burst) pairs by name.
+// rateBuckets returns the thirteen (per_second, burst) pairs by name.
 func (c *Config) rateBuckets() map[string]rateBucket {
 	r := c.Limits.Rate
 	return map[string]rateBucket{
-		"message":      {r.MessagePerSecond, r.MessageBurst},
-		"commit":       {r.CommitPerSecond, r.CommitBurst},
-		"proposal":     {r.ProposalPerSecond, r.ProposalBurst},
-		"read":         {r.ReadPerSecond, r.ReadBurst},
-		"write":        {r.WritePerSecond, r.WriteBurst},
-		"login":        {r.LoginPerSecond, r.LoginBurst},
-		"login_failed": {r.LoginFailedPerSecond, r.LoginFailedBurst},
-		"register":     {r.RegisterPerSecond, r.RegisterBurst},
-		"invite":       {r.InvitePerSecond, r.InviteBurst},
-		"unauth":       {r.UnauthPerSecond, r.UnauthBurst},
-		"invalid":      {r.InvalidPerSecond, r.InvalidBurst},
+		"message":           {r.MessagePerSecond, r.MessageBurst},
+		"commit":            {r.CommitPerSecond, r.CommitBurst},
+		"proposal":          {r.ProposalPerSecond, r.ProposalBurst},
+		"read":              {r.ReadPerSecond, r.ReadBurst},
+		"write":             {r.WritePerSecond, r.WriteBurst},
+		"login":             {r.LoginPerSecond, r.LoginBurst},
+		"login_failed":      {r.LoginFailedPerSecond, r.LoginFailedBurst},
+		"register":          {r.RegisterPerSecond, r.RegisterBurst},
+		"invite":            {r.InvitePerSecond, r.InviteBurst},
+		"unauth":            {r.UnauthPerSecond, r.UnauthBurst},
+		"invalid":           {r.InvalidPerSecond, r.InvalidBurst},
+		"passkey_begin":     {r.PasskeyBeginPerSecond, r.PasskeyBeginBurst},
+		"passkey_begin_net": {r.PasskeyBeginNetPerSecond, r.PasskeyBeginNetBurst},
 	}
 }
 
@@ -307,6 +309,12 @@ func (c *Config) Validate() error {
 	if int(p.Argon2MemoryKiB) > p.HashMemoryBudgetMiB*1024 {
 		add("auth.password.argon2_memory_kib (%d) exceeds hash_memory_budget_mib (%d MiB); the hashing semaphore would block every login until its context expired",
 			p.Argon2MemoryKiB, p.HashMemoryBudgetMiB)
+	}
+	if n := c.Auth.WebAuthn.MaxOpenLogins; n < 1 || n > 1000000 {
+		add("auth.webauthn.max_open_logins is %d; the range is 1..1000000", n)
+	}
+	if n := c.Auth.WebAuthn.MaxOpenPerUser; n < 1 || n > 100 {
+		add("auth.webauthn.max_open_per_user is %d; the range is 1..100", n)
 	}
 	if n := c.Auth.Session.MaxDevicesPerUser; n < 1 || n > 64 {
 		add("auth.session.max_devices_per_user is %d; the range is 1..64", n)

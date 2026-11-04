@@ -41,7 +41,7 @@ describe('R9 (web half): app.css reads the same phone query and has the containe
 
   it('every phone-only rule of the @container d-shell blocks has a [data-layout="phone"] twin with identical declarations (pre-flight C-7)', () => {
     const opens = [...app.matchAll(/@container d-shell \(max-width: 47\.99rem\) \{/g)];
-    expect(opens.length).toBe(2);
+    expect(opens.length).toBe(1);
     const flat = rules(app.replace(/@(container|media)[^{]*\{(?:[^{}]*\{[^{}]*\})*[^{}]*\}/g, ''));
     let count = 0;
     for (const m of opens) {

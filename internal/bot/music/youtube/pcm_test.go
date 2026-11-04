@@ -382,3 +382,24 @@ func (s *blockingPCMSource) Close() error {
 	}
 	return nil
 }
+
+func TestPCMResumeOffsetIsOutputSide(t *testing.T) {
+	dir := t.TempDir()
+	yt := writeScript(t, dir, "yt", `printf encoded`)
+	ff := writeScript(t, dir, "ff", `printf '%s\n' "$@"; cat >/dev/null`)
+	source, err := (PCMStarter{YTDLP: yt, FFmpeg: ff, StartAtMS: 42500}).Start(t.Context(), "https://www.youtube.com/watch?v=aqz-KE-bpKQ")
+	if errors.Is(err, ErrSandboxUnavailable) {
+		t.Skipf("network sandbox unavailable: %v", err)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	data, err := io.ReadAll(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "-i\npipe:0\n-ss\n42.500\n-f\ns16le") {
+		t.Fatalf("ffmpeg offset is not output-side: %s", data)
+	}
+}

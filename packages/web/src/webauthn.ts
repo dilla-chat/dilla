@@ -13,8 +13,9 @@ import { desktopBridge } from './desktop.ts';
 
 /** Why a ceremony ended without a passkey. `cancelled`: the person or the browser stopped it; `wrongAddress`: the page's
  *  address is not valid for the instance's relying party id; `exists`: this authenticator already holds a passkey for the
- *  account; `other`: anything else, including a document or an answer the browser cannot use. */
-export type PasskeyErrorKind = 'cancelled' | 'wrongAddress' | 'exists' | 'other';
+ *  account; `unsupported`: the instance is too old for the desktop app's browser sign-in; `rateLimited`: the instance
+ *  answered too many attempts; `other`: anything else, including a document or an answer the browser cannot use. */
+export type PasskeyErrorKind = 'cancelled' | 'wrongAddress' | 'exists' | 'unsupported' | 'rateLimited' | 'other';
 
 export class PasskeyError extends Error {
   readonly kind: PasskeyErrorKind;
@@ -34,6 +35,15 @@ export function passkeyErrorKind(e: unknown): PasskeyErrorKind {
     case 'InvalidStateError': return 'exists';
     default: return 'other';
   }
+}
+
+/** What the desktop shell's browser sign-in says when the instance cannot take the request. Electron wraps the shell's
+ *  message ("Error invoking remote method …"), so the code is read out of it. */
+export function desktopAuthKind(e: unknown): 'unsupported' | 'rateLimited' | null {
+  if (!(e instanceof Error)) return null;
+  if (e.message.includes('desktop-auth-unsupported')) return 'unsupported';
+  if (e.message.includes('desktop-auth-rate-limited')) return 'rateLimited';
+  return null;
 }
 
 /** Whether this page can run a passkey ceremony at all: the instance offers passkeys, the browser has the API and the
@@ -142,7 +152,7 @@ export async function createPasskey(optionsJson: string): Promise<string> {
       const result = await bridge.browserAuth({ kind: 'create', options: optionsJson });
       if (typeof result.response !== 'string') throw new Error('Missing browser credential');
       return result.response;
-    } catch (error) { throw new PasskeyError('other', error instanceof Error ? error.message : 'Browser sign-in failed'); }
+    } catch (error) { throw new PasskeyError(desktopAuthKind(error) ?? 'other', error instanceof Error ? error.message : 'Browser sign-in failed'); }
   }
   const pk = publicKeyOf(optionsJson);
   if (!isObject(pk.rp) || !isObject(pk.user)) throw bad('no rp or user');
@@ -165,16 +175,30 @@ export async function createPasskey(optionsJson: string): Promise<string> {
   return JSON.stringify({ ...head, response, clientExtensionResults: {} });
 }
 
+/** Wave B task 3 (Jonas, fix round 1): whether the browser can offer passkeys in the username field's autofill (WebAuthn
+ *  conditional mediation). False where the API is missing or the check throws. */
+export async function conditionalMediationAvailable(): Promise<boolean> {
+  if (desktopBridge()?.browserAuth) return false; // The native shell uses an explicit system-browser handoff.
+  if (typeof window === 'undefined' || !('PublicKeyCredential' in window) || !window.isSecureContext) return false;
+  const check = (window.PublicKeyCredential as unknown as { isConditionalMediationAvailable?: () => Promise<boolean> }).isConditionalMediationAvailable;
+  if (typeof check !== 'function') return false;
+  try { return await check.call(window.PublicKeyCredential) === true; } catch { return false; }
+}
+
 /** Signs a challenge with a passkey from the instance's login options (`{publicKey:{…}}`, base64url members). Resolves
- *  with the assertion as JSON; rejects with a PasskeyError. */
-export async function getPasskey(optionsJson: string): Promise<string> {
+ *  with the assertion as JSON; rejects with a PasskeyError. `conditional` makes it the username field's autofill request
+ *  (mediation 'conditional'), ended by aborting its signal; the same options and the same rules apply. */
+export async function getPasskey(optionsJson: string, conditional?: { signal: AbortSignal }): Promise<string> {
   const bridge = desktopBridge();
   if (bridge?.browserAuth) {
+    // The shell has no autofill: a conditional request would open the system browser on a field's focus and spend a
+    // ceremony, so it is refused here whatever the caller checked (desktop merge review M1).
+    if (conditional !== undefined) throw new PasskeyError('cancelled', 'Passkey autofill is not available in the desktop app');
     try {
       const result = await bridge.browserAuth({ kind: 'get', options: optionsJson });
       if (typeof result.response !== 'string') throw new Error('Missing browser credential');
       return result.response;
-    } catch (error) { throw new PasskeyError('other', error instanceof Error ? error.message : 'Browser sign-in failed'); }
+    } catch (error) { throw new PasskeyError(desktopAuthKind(error) ?? 'other', error instanceof Error ? error.message : 'Browser sign-in failed'); }
   }
   const pk = publicKeyOf(optionsJson);
   const publicKey = {
@@ -186,7 +210,8 @@ export async function getPasskey(optionsJson: string): Promise<string> {
   if (allow === undefined) delete publicKey.allowCredentials;
   else publicKey.allowCredentials = allow;
   const api = credentialsApi();
-  const credential = await ceremony(false, () => api.get({ publicKey }));
+  const credential = await ceremony(false, () => (conditional === undefined ? api.get({ publicKey })
+    : api.get({ publicKey, mediation: 'conditional', signal: conditional.signal })));
   const { head, response, raw } = envelope(credential);
   response.authenticatorData = toBase64Url(buffer(raw.authenticatorData, 'authenticatorData'));
   response.signature = toBase64Url(buffer(raw.signature, 'signature'));

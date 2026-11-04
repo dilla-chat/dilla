@@ -21,6 +21,45 @@ function grid() {
 }
 
 describe('EmojiGrid', () => {
+  const previewItems = [{ emoji: '👍', name: 'thumbs up' }, { emoji: '👎', name: 'thumbs down' }, { emoji: '🛡️', name: 'shield' }];
+  function searchable(items = previewItems) {
+    return render(<EmojiGrid label="Emoji" items={items} search={{ label: 'Search emoji', placeholder: 'Search emoji' }}
+      onPick={() => {}} onClose={() => {}} />);
+  }
+  it('opens the searchable picker with search focused and the prototype shield preview', () => {
+    const { container } = searchable();
+    expect(screen.getByRole('searchbox', { name: 'Search emoji' })).toHaveFocus();
+    expect(container.querySelector('.d-emoji-grid__foot')).toHaveTextContent('🛡️:shield:');
+    expect(screen.getAllByRole('button').map(button => button.getAttribute('data-emoji'))).toEqual(['👍', '👎', '🛡️']);
+    expect(screen.getAllByRole('button').filter(button => button.tabIndex === 0)).toEqual([screen.getByRole('button', { name: 'thumbs up' })]);
+  });
+  it('updates the preview from actual keyboard grid focus', async () => {
+    const user = userEvent.setup();
+    const { container } = searchable();
+    const footer = container.querySelector('.d-emoji-grid__foot');
+    await user.keyboard('{ArrowDown}');
+    expect(screen.getByRole('button', { name: 'thumbs up' })).toHaveFocus();
+    expect(footer).toHaveTextContent('👍:thumbs_up:');
+    await user.keyboard('{ArrowRight}');
+    expect(screen.getByRole('button', { name: 'thumbs down' })).toHaveFocus();
+    expect(footer).toHaveTextContent('👎:thumbs_down:');
+  });
+  it('retains the last pointer preview when the pointer leaves an emoji', async () => {
+    const user = userEvent.setup();
+    const { container } = searchable();
+    await user.keyboard('{ArrowDown}{End}');
+    expect(screen.getByRole('button', { name: 'shield' })).toHaveFocus();
+    const thumbs = screen.getByRole('button', { name: 'thumbs up' });
+    await user.hover(thumbs);
+    expect(container.querySelector('.d-emoji-grid__foot')).toHaveTextContent('👍:thumbs_up:');
+    await user.unhover(thumbs);
+    expect(container.querySelector('.d-emoji-grid__foot')).toHaveTextContent('👍:thumbs_up:');
+  });
+  it('uses an inventory item when a searchable picker has no shield', () => {
+    const { container } = searchable([{ emoji: '🔥', name: 'fire' }]);
+    expect(container.querySelector('.d-emoji-grid__foot')).toHaveTextContent('🔥:fire:');
+    expect(screen.getAllByRole('button')).toHaveLength(1);
+  });
   it('is a non-modal dialog of 32 named buttons, the first focused and the only tab stop', () => {
     const { b } = grid();
     const dialog = screen.getByRole('dialog', { name: 'pick a reaction' });

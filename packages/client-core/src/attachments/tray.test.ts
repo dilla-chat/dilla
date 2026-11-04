@@ -81,15 +81,15 @@ describe('Tray (L-TS-32, ruling 7)', () => {
     expect(five.every((x) => x.read.mock.calls.length === 0)).toBe(true);
   });
 
-  it('refuses an oversize file before any read, and admits a file of exactly the cap', async () => {
+  it('retains an oversize failed card without reading it, uploads its valid sibling and admits exactly the cap', async () => {
     const h = harness();
     const over = spyFile('big.bin', BROWSER_ATTACHMENT_CAP + 1, 'application/octet-stream');
     const small = spyFile('small.txt', 1, 'text/plain');
-    await expect(h.tray.add([small.file, over.file])).rejects.toMatchObject({ code: 'E_ATTACHMENT_TOO_LARGE' });
-    expect([small.read.mock.calls.length, over.read.mock.calls.length]).toEqual([0, 0]);
-    expect(h.tray.entries()).toEqual([]);
-    expect(h.changes).toEqual([]);
-    expect(h.puts).toEqual([]);
+    await h.tray.add([small.file, over.file]);
+    expect(h.tray.entries()).toEqual([expect.objectContaining({ name: 'small.txt', phase: 'ready' }), expect.objectContaining({ name: 'big.bin', phase: 'failed', reason: 'E_ATTACHMENT_TOO_LARGE' })]);
+    expect([small.read.mock.calls.length, over.read.mock.calls.length]).toEqual([1, 0]);
+    expect(h.puts).toHaveLength(1);
+    expect(() => h.tray.take(['2'])).toThrow('E_TRAY_NOT_READY');
     const exact = spyFile('exact.bin', BROWSER_ATTACHMENT_CAP, 'application/octet-stream');
     await h.tray.add([exact.file]);
     expect(exact.read).toHaveBeenCalledTimes(1);
@@ -161,4 +161,16 @@ describe('Tray (L-TS-32, ruling 7)', () => {
     expect(h.tray.take([b]).map((d) => toHex(d.blobId))).toEqual([h.puts[1].blobId]);
     expect(h.tray.entries().map((entry) => entry.id)).toEqual([a]);
   });
+});
+
+it('checkpoint files omit oversized and other failed entries without reading them', async () => {
+  const h = harness();
+  const good = spyFile('ready.txt', 3, 'text/plain');
+  const huge = spyFile('huge.bin', BROWSER_ATTACHMENT_CAP + 1, 'application/octet-stream');
+  await h.tray.add([good.file, huge.file]);
+  expect(h.tray.files()).toEqual([good.file]);
+  expect(huge.read).not.toHaveBeenCalled();
+  const failed = harness({ failPut: new Error('offline') });
+  await failed.tray.add([good.file]);
+  expect(failed.tray.files()).toEqual([]);
 });

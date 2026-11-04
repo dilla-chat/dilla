@@ -6,3 +6,6 @@
 .d-message-toolbar .d-action-menu { display: inline-flex; }
 /* The ⋯ menu is the prototype's popover: surface-2 in the #2A303A line, radius 10px, shadow-2 (fix round 1). */
 .d-message-toolbar .d-action-menu__popup { background: var(--surface-2); border-color: var(--line-strong); border-radius: var(--r-xl); box-shadow: var(--shadow-2); }
+
+/* Keep the prototype’s compact pill even for the phone action-menu trigger. */
+.d-app-shell[data-layout="phone"] .d-message-toolbar .d-action-menu__trigger.d-message-toolbar__btn { min-width: 0; min-height: 0; height: 1.5rem; }

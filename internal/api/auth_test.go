@@ -148,7 +148,7 @@ func TestPasswordLoginReturnsAnAssertionAndNeedsTOTP(t *testing.T) {
 		t.Fatalf("login status = %d, want 200", status)
 	}
 	if len(out) != 2 {
-		t.Fatalf("login returned %d elements, want [assertion, needs_totp]", len(out))
+		t.Fatalf("login returned %d elements, want [assertion, needs_totp] (no passkey flag while nothing is owed)", len(out))
 	}
 	assertion, ok := out[0].(string)
 	if !ok || assertion == "" {
@@ -166,6 +166,10 @@ func TestPasswordLoginReturnsAnAssertionAndNeedsTOTP(t *testing.T) {
 	}
 	if needs, ok := out[1].(uint64); !ok || needs != 1 {
 		t.Fatalf("needs_totp = %#v, want 1 once TOTP is confirmed", out[1])
+	}
+	// Wave B task 3: a login that owes a factor says whether a passkey would work; this account has none.
+	if len(out) != 3 || out[2] != uint64(0) {
+		t.Fatalf("login owing a code = %#v, want [assertion, 1, passkey 0]", out)
 	}
 }
 
@@ -721,8 +725,8 @@ func owe(t *testing.T, d api.Deps, uid id.ID) {
 func needsOf(t *testing.T, h http.Handler, username, pw string) (string, uint64) {
 	t.Helper()
 	status, out := login(t, h, username, pw)
-	if status != http.StatusOK || len(out) != 2 {
-		t.Fatalf("login = %d %#v, want 200 [assertion, needs]", status, out)
+	if status != http.StatusOK || len(out) < 2 || len(out) > 3 {
+		t.Fatalf("login = %d %#v, want 200 [assertion, needs] or [assertion, needs, passkey]", status, out)
 	}
 	needs, ok := out[1].(uint64)
 	if !ok {

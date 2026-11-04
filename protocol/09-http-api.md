@@ -66,7 +66,7 @@ before it ("every route below is `E`").
 
 | Method and path | Auth | Request | Response |
 |---|---|---|---|
-| `POST /v1/accounts` | — | `[code(tstr), username(tstr), display(tstr), umk_pub(bstr32), ssk_pub(bstr32), sig_umk_ssk(bstr64), password(tstr\|null), device(array)]` where `device = [device_id(bstr16), dsk_pub(bstr32), tier(uint), signer_tier(uint), credential(bstr)]` | `[user_id(bstr16), device_id(bstr16), token(tstr), expires(uint)]` |
+| `POST /v1/accounts` | — | `[code(tstr), username(tstr), display(tstr), umk_pub(bstr32), ssk_pub(bstr32), sig_umk_ssk(bstr64), password(tstr\|null), device(array)]` where `device = [device_id(bstr16), dsk_pub(bstr32), tier(uint), signer_tier(uint), credential(bstr)]`; a non-empty `password` has at least 12 characters (Unicode code points), else `400 E_INVALID_REQUEST` and nothing is stored | `[user_id(bstr16), device_id(bstr16), token(tstr), expires(uint)]` |
 | `GET /v1/accounts/me` | E, F | — | `[user_id, username, display, kind, flags, created, presence_choice, status_msg, bio]` |
 | `PATCH /v1/accounts/me/presence` | E | `[choice(uint)]` | `204`; choice: 1 Online, 2 Idle, 3 Do Not Disturb, 4 Invisible |
 | `POST /v1/accounts/me/presence/activity` | E | — | `204`; refreshes this live device's activity time |
@@ -440,16 +440,16 @@ Errors: `410 E_INVITE_INVALID` when the invite is expired, exhausted or revoked.
 
 | Method and path | Auth | Request | Response |
 |---|---|---|---|
-| `POST /v1/auth/password/login` | — | `[username(tstr), password(tstr)]` | `[assertion(tstr), needs(uint)]` (`needs`: § Second factors) |
-| `POST /v1/auth/password` | E (step-up) | `[old(tstr\|null), new(tstr), stepup(tstr\|null)]`; the third element may be left out (a null `stepup`) | `204`; a wrong `old` is `403 E_FORBIDDEN`, counted on the step-up ledgers (§ Second factors), so past their free attempts every attempt, the right one included, is `429 E_RATE_LIMITED`; `429` too, before any guess, while the client address's login failure budget is spent. A **first** password (the account has none, `old` is null) needs a session established within `auth.session.reauth_window` (`403 E_FORBIDDEN` otherwise) and, when the account holds a second factor, a step-up token, checked after the window check and before the new password is hashed (`403 E_STEP_UP` without a valid one) and spent once it is hashed, so a failed hash leaves it unspent; `stepup` is ignored when a password exists, where `old` is the step-up |
+| `POST /v1/auth/password/login` | — | `[username(tstr), password(tstr)]` | `[assertion(tstr), needs(uint)]`, or `[assertion(tstr), needs(uint), passkey(uint)]` when `needs` is not 0 (`needs`, `passkey`: § Second factors) |
+| `POST /v1/auth/password` | E (step-up) | `[old(tstr\|null), new(tstr), stepup(tstr\|null)]`; the third element may be left out (a null `stepup`) | `204`; a `new` shorter than 12 characters (Unicode code points) is `400 E_INVALID_REQUEST`, answered before `old` or `stepup` is checked; a stored password set before this minimum still logs in; a wrong `old` is `403 E_FORBIDDEN`, counted on the step-up ledgers (§ Second factors), so past their free attempts every attempt, the right one included, is `429 E_RATE_LIMITED`; `429` too, before any guess, while the client address's login failure budget is spent. A **first** password (the account has none, `old` is null) needs a session established within `auth.session.reauth_window` (`403 E_FORBIDDEN` otherwise) and, when the account holds a second factor, a step-up token, checked after the window check and before the new password is hashed (`403 E_STEP_UP` without a valid one) and spent once it is hashed, so a failed hash leaves it unspent; `stepup` is ignored when a password exists, where `old` is the step-up |
 | `POST /v1/auth/totp/enroll` | E, F | `[stepup(tstr\|null)]` | `[secret(tstr), otpauth_url(tstr)]` (§ Second factors) |
 | `POST /v1/auth/totp/confirm` | E, F | `[code(tstr)]` | `[backup_codes([tstr])]` (§ Second factors) |
 | `POST /v1/auth/totp/verify` | — | `[assertion(tstr), code(tstr)]` | `[assertion(tstr)]`; accepts an assertion owing `needs` 1 only; `429 E_RATE_LIMITED` while the account is locked out (the assertion is spent) |
 | `POST /v1/auth/recovery/verify` | — | `[assertion(tstr), code(tstr)]` | `[assertion(tstr)]`; accepts an assertion owing `needs` 1 or 2 |
 | `POST /v1/auth/passkey/register/begin` | E, F | `[stepup(tstr\|null)]` | `[ceremony_id(bstr16), options(tstr)]` (the library's JSON, opaque to the client's CBOR layer) |
 | `POST /v1/auth/passkey/register/finish` | E, F | `[ceremony_id(bstr16), response(tstr), name(tstr)]` | `[cred_id(bstr), backup_codes([tstr])]` (§ Second factors) |
-| `POST /v1/auth/passkey/login/begin` | — | `[]` | `[ceremony_id(bstr16), options(tstr)]` |
-| `POST /v1/auth/passkey/login/finish` | — | `[ceremony_id(bstr16), response(tstr)]` | `[assertion(tstr), needs(uint 0\|1)]` (§ Second factors) |
+| `POST /v1/auth/passkey/login/begin` | — | `[]` | `[ceremony_id(bstr16), options(tstr)]`; metered per address on its own `passkey_begin` bucket (`limits.rate.passkey_begin_per_second` / `_burst`, default 0.2 / 10) and per network (IPv4 /24, IPv6 /48) on `passkey_begin_net` (default 1 / 40), never on `login`: a begin spends no password attempt. `429 E_RATE_LIMITED` past either. The ceremony lives 120 s (the options' `timeout`). Past `auth.webauthn.max_open_logins` (default 10000) open discoverable ceremonies the oldest (by creation second) is evicted with the write, so a begin always succeeds; a finish on an evicted ceremony fails as an expired one does. Registration and step-up ceremonies are capped per user (`auth.webauthn.max_open_per_user`, default 5, oldest evicted). Expired ceremonies are pruned on the maintenance tick |
+| `POST /v1/auth/passkey/login/finish` | — | `[ceremony_id(bstr16), response(tstr)]`, or `[ceremony_id(bstr16), response(tstr), assertion(tstr)]` binding it to a password or OIDC (first-factor) login | `[assertion(tstr), needs(uint 0\|1)]` (§ Second factors) |
 | `GET /v1/auth/oidc/start` | — | — | `302` to the IdP, PKCE `S256`, state cookie `__Secure-dilla-oidc` scoped to this route only |
 | `GET /v1/auth/oidc/callback` | — | — | `302` back to the client with a one-time `assertion` |
 
@@ -466,13 +466,13 @@ full contract.
 
 | Method and path | Auth | Request | Response |
 |---|---|---|---|
-| `POST /v1/auth/password/login` | — | `[username, password]` | `[assertion(tstr), needs(uint)]`: `0` nothing owed; `1` a TOTP code or a backup code (`/totp/verify`, `/recovery/verify`); `2` the account has passkeys and no TOTP: a passkey login, or a backup code |
+| `POST /v1/auth/password/login` | — | `[username, password]` | `[assertion(tstr), needs(uint)]`: `0` nothing owed; `1` a TOTP code or a backup code (`/totp/verify`, `/recovery/verify`); `2` the account has passkeys and no TOTP: a passkey login, or a backup code. When `needs` is 1 or 2 a third element `passkey(uint)` follows: `1` when the account holds at least one passkey for this instance's `rp_id` (a passkey login would find one), else `0`. It is written only after the password verified, on an answer that already says a factor is owed; a refusal, and a login owing nothing, never carry it. An older server leaves it out, and a client reads its absence as `0` |
 | `POST /v1/auth/totp/enroll` | E, F | `[stepup(tstr\|null)]` | `[secret(tstr), otpauth_url(tstr)]`; `403 E_STEP_UP` when the account holds a factor and `stepup` is missing or not valid; `403 E_FORBIDDEN` over a confirmed secret (unchanged) |
 | `POST /v1/auth/totp/confirm` | E, F | `[code(tstr)]` | `[backup_codes([tstr])]`: `auth.totp.recovery_codes` of them (1–16, default 10) when the account held no unused code, else `[]` (the same for `register/finish`); clears `factor_owed` in the same transaction; `403 E_STEP_UP` when a factor appeared since an enroll that carried no step-up; `404 E_NOT_FOUND` with no pending enrolment (none, or already confirmed); `400 E_INVALID_REQUEST` for a code that does not match |
 | `POST /v1/auth/recovery/verify` | — | `[assertion, code]` | `[assertion]`; accepts an assertion owing `needs` 1 **or 2**; `429 E_RATE_LIMITED` while the account is locked out (the assertion is spent) |
 | `POST /v1/auth/passkey/register/begin` | E, F | `[stepup(tstr\|null)]` | `[ceremony_id(bstr16), options(tstr)]`; the user's credentials are excluded; `409 E_INVALID_REQUEST` when the account already holds 1024 passkeys (checked before the step-up token is spent) |
 | `POST /v1/auth/passkey/register/finish` | E, F | `[ceremony_id, response(tstr), name(tstr)]` | `[cred_id(bstr), backup_codes([tstr])]`; `name` is 1–64 bytes of UTF-8 without control characters (`400` otherwise, the ceremony kept); an unknown, spent or expired ceremony, another account's, or a response that does not verify is `400 E_INVALID_REQUEST` (another account's ceremony is not spent); clears `factor_owed`; `403 E_STEP_UP` as for confirm; `409 E_INVALID_REQUEST` at 1024 passkeys |
-| `POST /v1/auth/passkey/login/finish` | — | `[ceremony_id, response]` | `[assertion(tstr), needs(uint 0\|1)]`: 0 when the authenticator verified the user, else 1; `401 E_PASSKEY_UNKNOWN` for a passkey this instance does not hold; `429 E_RATE_LIMITED`, and no assertion, when it would owe 1 while the account is locked out |
+| `POST /v1/auth/passkey/login/finish` | — | `[ceremony_id, response]` or `[ceremony_id, response, assertion(tstr)]` | `[assertion(tstr), needs(uint 0\|1)]`: 0 when the authenticator verified the user, else 1; `401 E_PASSKEY_UNKNOWN` for a passkey this instance does not hold. The optional third element binds the passkey to a first-factor login: it must be a live assertion that `/password/login` or the OIDC callback (browser or desktop) issued and that still owes a factor, else `401 E_UNAUTHENTICATED` before the ceremony runs, alike for unknown, expired, spent, complete and other assertions; a passkey of another account than that assertion's is `403 E_PASSKEY_OTHER_ACCOUNT` and issues nothing (counted as a failed login); a matching one spends the bound assertion. Without it nothing changes, so older clients are unaffected; a finish whose ceremony is absent (expired, evicted, spent or unknown) is `401 E_UNAUTHENTICATED` and is not counted on the address's login failure budget, while a present ceremony with an assertion that does not verify is; `429 E_RATE_LIMITED`, and no assertion, when it would owe 1 while the account is locked out. Each finish spends one `login` token, and a refused one is recorded on the address's login failure budget as a wrong password is, so a passkey is no way around the login throttle |
 | `GET /v1/auth/factors` | E, F | — | `[owed(uint), totp(uint\|null), passkeys([[cred_id(bstr), name(tstr), created(uint), last_used(uint\|null)]]), backup_codes_left(uint), password(uint), password_changed(uint\|null)]`: `password_changed` is when the password was last changed (`POST /v1/auth/password`), null when unknown (set before migration 00052) or there is none; an account marked as owing that holds a factor is cleared first and answers `owed` 0 (§ Second factors) |
 | `POST /v1/auth/stepup` | E | `[method(uint 0 password\|1 totp\|2 backup code), secret(tstr)]` | `201 [stepup(tstr), expires(uint)]`; a wrong secret is `403 E_STEP_UP`; `429 E_RATE_LIMITED` with `retry_after_ms` from the failure that crosses the step-up ledger's free attempts on, or while the client address's login failure budget is spent; `400 E_INVALID_REQUEST` for another method |
 | `POST /v1/auth/stepup/passkey/begin` | E | `[]` | `[ceremony_id, options]` (this user's credentials only; UV required); `400 E_INVALID_REQUEST` for an account that holds no passkey |
@@ -1030,7 +1030,8 @@ are CBOR as everywhere else.
 
 An optional GIF picker, per server. A server manager enters that server's Giphy API key in its settings; a server
 without a key has no GIFs (every search and media route answers `404 E_NOT_FOUND`), and the web client shows no
-picker. There are no GIFs in direct messages: the routes belong to a community. Every route is `E`.
+picker. A DM client may use a shared community's existing routes after explicit consent; there is no DM GIF route,
+and the existing community membership checks still apply. Every route is `E`.
 
 | Method and path | Request | Response | Errors |
 |---|---|---|---|
@@ -1049,6 +1050,18 @@ picker. There are no GIFs in direct messages: the routes belong to a community. 
   person. The instance sees the search terms and which GIF a member picked and when, and can probably link a pick to
   the attachment that follows from its timing and size; it cannot read the message or learn who reads it. The GIF
   is sent as an ordinary encrypted attachment (`04` § Envelope), so a reader's client never contacts Giphy.
+- **Client privacy in DMs.** Opening a DM performs no GIF status, search or media request. Only an explicit GIF-button
+  press may check shared communities' status, most recently active first, to find a key. That status request contains
+  no DM id, peer, content or search text. The client then names the selected server in a privacy notice; no search
+  (including trending), preview or full media request is permitted before **Use GIFs**. **Not now** stores no consent.
+  No available key leaves the picker closed. Consent and the last disclosed proxy are persisted only in the existing
+  client settings store, scoped to instance, account and device, never sent as a server setting or synced to another
+  device. Settings → Privacy reflects and revokes it; enabling there still requires the named-server notice before
+  loading GIFs. A different selected proxy requires a fresh notice. Revocation stops subsequent requests and discards
+  pending downloads; a file already added to the attachment tray remains there, and an already dispatched request
+  cannot be recalled. The proxy and Giphy observe search text and media
+  identifiers outside DM E2EE. Correlating a full fetch with the following encrypted upload's timing and size can let
+  the instance infer which GIF was attached to the DM; encryption does not hide that correlation.
 - **No URL comes from the caller.** The instance builds the one upstream URL from the checked `gif_id` and a host on a
   fixed allow-list of Giphy's own hosts, over HTTPS; a redirect off the list, a non-GIF content type or magic, a body
   over the cap (counted on the bytes, not the header), a timeout, a connection to a non-public address, or no free

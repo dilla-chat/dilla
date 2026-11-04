@@ -143,10 +143,7 @@ func Apply(state State, expectedRevision uint64, op Operation) (State, error) {
 			startNext(&next)
 		}
 		if next.Current != nil {
-			// Fix round 2 (Ruling AI, the truth): a provider starts a track from its beginning; it has no offset.
-			if next.Paused {
-				next.PositionMS = 0
-			}
+			// YouTube retains the playhead, so resume continues from it.
 			next.Paused = false
 		}
 	case OpStop:

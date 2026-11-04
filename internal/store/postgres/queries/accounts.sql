@@ -21,7 +21,10 @@ UPDATE users SET disabled_at = $1 WHERE id = $2;
 -- A NULL argument leaves that column as it is, so a write names only the fields it changes.
 UPDATE users SET display = COALESCE(sqlc.narg(display)::text, display), status_msg = COALESCE(sqlc.narg(status_msg)::text, status_msg),
                  bio = COALESCE(sqlc.narg(bio)::text, bio)
-WHERE id = sqlc.arg(id) AND deleted_at IS NULL;
+WHERE id = sqlc.arg(id) AND deleted_at IS NULL
+  AND (display <> COALESCE(sqlc.narg(display)::text, display)
+    OR status_msg <> COALESCE(sqlc.narg(status_msg)::text, status_msg)
+    OR bio <> COALESCE(sqlc.narg(bio)::text, bio));
 
 -- name: TombstoneUser :exec
 UPDATE users SET deleted_at = $1, display = '', status_msg = '', bio = '', umk_pub = '\x0000000000000000000000000000000000000000000000000000000000000000'::bytea, ssk_pub = '\x0000000000000000000000000000000000000000000000000000000000000000'::bytea,

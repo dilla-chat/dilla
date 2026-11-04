@@ -20,6 +20,8 @@
 .d-onboarding-frame__step { margin: 0; font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking-wide); text-transform: uppercase; color: var(--fg-3); }
 .d-onboarding-frame__body { display: grid; gap: 14px; margin-top: -14px; font-size: var(--text-sm); color: var(--fg-2); min-width: 0; animation: d-up var(--duration-step) var(--ease-out) both; }
 .d-onboarding-frame__body p { margin: 0; }
+/* Fix round 1: the prototype's subtitle wraps with text-wrap: pretty. */
+.d-onboarding-frame__body > p:first-child { text-wrap: pretty; }
 /* Fix round 2 (the prototype's auth card): 20px under the subtitle (the grid's 14 + 6), 14px from the last field to the
    button (the card's 20 - 6), and the links 16px under the button (8 + 8, the link's 24px target reaching 3.5px into the
    padding so the card keeps the prototype's height). */
@@ -32,7 +34,40 @@
 .d-onboarding-frame__footer > .d-btn[data-variant="ghost"] { height: auto; min-height: 1.5rem; margin-bottom: -3.5px; padding: 0; font-size: var(--text-btn); color: var(--fg-link); }
 .d-onboarding-frame__footer > .d-btn[data-variant="ghost"]:hover { color: var(--accent-2); background: transparent; }
 .d-onboarding-frame .d-text-field__input { height: 2.5rem; }
+/* Wave B task 3b: the prototype's auth placeholders ("https://", "at least 12 characters") in --fg-3. */
+.d-onboarding-frame .d-text-field__input::placeholder { color: var(--fg-3); opacity: 1; }
 .d-onboarding-frame__footer .d-btn[data-variant="accent"]::after { content: "" / ""; flex: none; width: 15px; height: 15px; background: currentColor; mask: var(--d-mask-arrow-right) center / contain no-repeat; }
-/* min-height: the prototype's 40px on a phone too (rule 0), over Button.css's 44px phone tier. */
+/* The prototype's auth action is 40px on desktop and phone (prototype line 80). */
 .d-onboarding-frame__footer .d-btn[data-variant="accent"] { justify-content: center; height: 2.5rem /* 40px */; min-height: 2.5rem; border-radius: var(--r-lg); font-size: var(--text-input); font-weight: var(--weight-display); }
+/* Wave B task 3, the prototype's code step: its links row ("Use a passkey", "Use a backup code") is 11.5px --fg-link text 14px
+   apart, 6px over the button; the code's error sits under the boxes. A primary action that is not ready yet (a short code, a
+   short key, a step at work) is the prototype's #1A1E25 bar with --fg-3 text, not a faded accent. */
+.d-onboarding-frame__links { display: flex; flex-wrap: wrap; gap: 0 14px; margin: -1.5px 0 -11.5px /* the 24px link boxes, centred on the prototype's 17px line */; }
+/* The step's status region stays in place (A11Y-DESIGN-04) but, while empty, out of the flow: no gap (fix round 1). */
+.d-onboarding-frame__body > [role="status"]:empty { position: absolute; }
+.d-onboarding-frame__links > .d-btn[data-variant="ghost"] { height: auto; min-height: 1.5rem; padding: 0; font-size: var(--text-btn); font-weight: inherit; color: var(--fg-link); background: transparent; }
+.d-onboarding-frame__links > .d-btn[data-variant="ghost"]:hover { color: var(--accent-2); background: transparent; }
+.d-onboarding-frame__error { margin: 0; font-size: var(--text-sm); color: var(--danger); }
+.d-onboarding-frame__footer .d-btn[data-variant="accent"][aria-disabled="true"] { opacity: 1; background: var(--hover-hi); border-color: var(--hover-hi); color: var(--fg-3); }
+/* Wave B task 3 continuation (Jonas, Q1/Q3/Q4). The code and key steps' row under the button: "Back" in --fg-2 at the
+   left, the new-account link at the right, 11.5px, 16px under the button (the footer gap 12, the 24px boxes centred on the 17px line). */
+.d-onboarding-frame__nav { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: 0 0 -3.5px; }
+.d-onboarding-frame__nav > .d-btn[data-variant="ghost"] { height: auto; min-height: 1.5rem; padding: 0; font-size: var(--text-btn); font-weight: inherit; color: var(--fg-link); background: transparent; }
+.d-onboarding-frame__nav > .d-btn[data-variant="ghost"][data-back] { color: var(--fg-2); }
+.d-onboarding-frame__nav > .d-btn[data-variant="ghost"]:hover { color: var(--accent-2); background: transparent; }
+/* The key step's length line (an accepted deviation): the prototype's quiet 11.5px --fg-3 meta text. */
+.d-onboarding-frame__note { font-size: var(--text-btn); color: var(--fg-3); }
+.d-onboarding-frame .d-recovery-key-field__hint { font-size: var(--text-btn); }
+/* Fix round 1 (gap03): in the auth card the key field is the prototype's auth input: typed text and placeholder 13px
+   (font: inherit, no tracking), the placeholder --fg-3. */
+.d-onboarding-frame .d-recovery-key-field__input { font-size: var(--text-input); letter-spacing: normal; }
+.d-onboarding-frame .d-recovery-key-field__input::placeholder { color: var(--fg-3); opacity: 1; }
+/* The done step's panel: 14px padding, the 0.06 --ok fill in a 0.25 --ok edge, radius 9, a 30px --ok disc with the
+   16px check in --ok-ink, then 12px --ok-panel-text. */
+.d-onboarding-frame__ready { display: flex; align-items: center; gap: 12px; padding: 14px; background: var(--ok-panel); border: 1px solid var(--ok-border); border-radius: var(--r-menu); margin-bottom: -2px /* 12px over the button */; font-size: var(--text-ui); color: var(--ok-panel-text); animation: d-up var(--duration-step) var(--ease-out) both; }
+.d-onboarding-frame__ready-mark { flex: none; width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; border-radius: var(--r-pill); background: var(--ok); color: var(--ok-ink); }
+@media (prefers-reduced-motion: reduce) { .d-onboarding-frame__ready { animation: none; } }
+/* Wave B task 3b (security review LOW-3): a line the printed key sheet carries and the screen does not. */
+.d-onboarding-frame__print-only { display: none; }
+@media print { .d-onboarding-frame__print-only { display: block; } }
 @media print { .d-onboarding-frame__bar, .d-onboarding-frame__head, .d-onboarding-frame__footer { display: none; } .d-onboarding-frame { color-scheme: light; } .d-onboarding-frame, .d-onboarding-frame__card, .d-onboarding-frame__title, .d-onboarding-frame__body { color: CanvasText; background: Canvas; border-color: CanvasText; box-shadow: none; } }

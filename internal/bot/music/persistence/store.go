@@ -69,10 +69,11 @@ func New(n Native, community id.ID) (*Store, error) {
 }
 
 // Load returns a fresh paused queue for an absent row. Existing state is
-// validated before use and always returned paused, preserving its position but
-// preventing a process restart from resuming audio. Unsupported providers are
-// removed only after atomically archiving the exact original snapshot through
-// the encrypted helper.
+// validated before use and always returned paused. Only a stored pause has an
+// authoritative position; a playing snapshot contains an old playhead and
+// restarts from zero after the process loses its live playback. Unsupported
+// providers are removed only after atomically archiving the exact original
+// snapshot through the encrypted helper.
 func (s *Store) Load(ctx context.Context, channel id.ID) (Snapshot, error) {
 	if s == nil || channel.IsZero() {
 		return Snapshot{}, errors.New("invalid music voice channel")
@@ -129,6 +130,10 @@ func (s *Store) Load(ctx context.Context, channel id.ID) (Snapshot, error) {
 	if !valid(state) {
 		return Snapshot{}, ErrMalformed
 	}
+	if !state.Paused {
+		state.PositionMS = 0
+		state.PositionAtMS = 0
+	}
 	state.Paused = true
 	return Snapshot{State: state, Revision: v.Revision}, nil
 }
@@ -141,6 +146,11 @@ func (s *Store) quarantineUnsupported(ctx context.Context, channel id.ID, origin
 		return Snapshot{}, ErrUnsupportedProvider
 	}
 	state.Revision++
+	if !state.Paused {
+		// As in Load: only a stored pause has an authoritative position. A queue saved while
+		// playing restarts its current track from zero, with or without a removed provider.
+		state.PositionMS, state.PositionAtMS = 0, 0
+	}
 	state.Paused = true
 	value, err := encode(state)
 	if err != nil {

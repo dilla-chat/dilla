@@ -13,8 +13,8 @@ const ITEMS = ['cat typing', 'dog', 'fish', '', 'bird', 'otter', 'owl'].map((tit
 const meta = {
   title: 'Conversation/GifPicker', component: GifPicker,
   args: {
-    label: 'gifs', searchLabel: 'search gifs', searchPlaceholder: 'search giphy', query: '', onQuery: () => {}, items: ITEMS,
-    status: null, poweredBy: 'Powered by GIPHY', untitled: 'gif', moreLabel: 'more', hasMore: true, onMore: () => {},
+    label: 'gifs', searchLabel: 'search gifs', searchPlaceholder: 'Search Giphy', query: '', onQuery: () => {}, items: ITEMS,
+    status: null, poweredBy: 'VIA GIPHY', untitled: 'gif', moreLabel: 'more', hasMore: true, onMore: () => {},
     pickingId: null, onPick: () => {}, onClose: () => {},
   },
   decorators: [Story => <div style={{ maxWidth: 420 }}><Story /></div>],

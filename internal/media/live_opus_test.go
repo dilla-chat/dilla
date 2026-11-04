@@ -1,6 +1,7 @@
 package media
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -192,5 +193,36 @@ func TestLiveOpusProviderRejectsInvalidSamplesAndUses20msFrames(t *testing.T) {
 	}
 	if sample.Duration != 20*time.Millisecond || sample.Data[1] != 1 {
 		t.Fatalf("sample = %x, %s; want copied data and 20ms", sample.Data, sample.Duration)
+	}
+}
+
+func TestPausedProviderSendsSilenceAndNoSourceSamples(t *testing.T) {
+	p, err := NewLiveOpusProvider(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	if err = p.WriteSample(t.Context(), []byte{0xfc, 42}); err != nil {
+		t.Fatal(err)
+	}
+	p.Pause()
+	for range 3 {
+		sample, err := p.NextSample(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(sample.Data, []byte{0xf8, 0xff, 0xfe}) || sample.Duration != 20*time.Millisecond {
+			t.Fatalf("paused sample=%+v", sample)
+		}
+	}
+	if p.PositionMS() != 0 {
+		t.Fatalf("silence advanced source position: %d", p.PositionMS())
+	}
+	if err = p.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	sample, err := p.NextSample(t.Context())
+	if err != nil || !bytes.Equal(sample.Data, []byte{0xfc, 42}) || p.PositionMS() != 20 {
+		t.Fatalf("resume sample=%v position=%d err=%v", sample.Data, p.PositionMS(), err)
 	}
 }

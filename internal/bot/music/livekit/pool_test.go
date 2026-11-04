@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
@@ -705,4 +706,41 @@ func TestPoolReportsTheRoomRTTOnChange(t *testing.T) {
 		t.Fatalf("a report after the room closed: %d", ms)
 	case <-time.After(50 * time.Millisecond):
 	}
+}
+
+type pausedPoolSource struct{ *poolSourceStub }
+
+func (*pausedPoolSource) Paused() bool { return true }
+func TestPausedPublisherRetainsTrackWhenEncoderEnds(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		for _, pooled := range []bool{true, false} {
+			ctx, cancel := context.WithCancel(t.Context())
+			source := &pausedPoolSource{newPoolSource()}
+			unpublished := 0
+			s := &Session{source: source, cancel: cancel, done: make(chan struct{}), unpublish: func() error { unpublished++; return nil }}
+			initial := native.CallMediaEpoch{OwnLeaf: 0, BaseKey: [16]byte{1}, Roster: []native.CallMediaMember{{Leaf: 0}}}
+			if pooled {
+				s.pool = &Pool{}
+				go s.monitorPooled(ctx, id.New(), &epochStub{}, initial)
+			} else {
+				go s.monitor(ctx, id.New(), &epochStub{}, initial, time.Minute)
+			}
+			close(source.done)
+			source.once.Do(func() {})
+			synctest.Wait()
+			select {
+			case <-s.Done():
+				t.Fatalf("pooled=%v: encoder exit unpublished a paused track", pooled)
+			default:
+			}
+			if unpublished != 0 {
+				t.Fatal("paused publication was removed")
+			}
+			cancel()
+			<-s.Done()
+			if unpublished != 1 {
+				t.Fatal("explicit close did not release publication")
+			}
+		}
+	})
 }

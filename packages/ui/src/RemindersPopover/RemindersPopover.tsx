@@ -36,6 +36,8 @@ export interface RemindersPopoverProps {
   botInitials?: string;
   /** A loading or error line, spoken politely. */
   status?: string;
+  /** The status is the loading line: the list is not known yet, so the tab's empty line is not drawn under it. */
+  loading?: boolean;
   labels: {
     title: string; tabs: string; due: string; upcoming: string; dismiss: string; cancel: string;
     emptyDue: string; emptyUpcoming: string; footer: string;
@@ -49,7 +51,7 @@ export interface RemindersPopoverProps {
  * It is a dialog that does not trap focus: focus goes to the picked tab when it opens, Escape closes it and gives focus back,
  * a press outside closes it. On a phone the same panel is a bottom sheet.
  */
-export function RemindersPopover({ items, tab, onTab, onAction, onOpen, onClose, returnFocus, anchor, layout = 'popover', botInitials, status, labels }: RemindersPopoverProps) {
+export function RemindersPopover({ items, tab, onTab, onAction, onOpen, onClose, returnFocus, anchor, layout = 'popover', botInitials, status, loading = false, labels }: RemindersPopoverProps) {
   const id = useId();
   const root = useRef<HTMLDivElement>(null);
   const due = items.filter(i => i.due);
@@ -101,7 +103,7 @@ export function RemindersPopover({ items, tab, onTab, onAction, onOpen, onClose,
       </div>
       <div id={`${id}-panel`} className="d-reminders__body" role="tabpanel" aria-labelledby={`${id}-${tab}`}>
         {status !== undefined ? <p className="d-reminders__status" role="status">{status}</p> : null}
-        {shown.length === 0 ? (
+        {shown.length === 0 ? (loading ? null :
           <p className="d-reminders__empty">{tab === 'due' ? labels.emptyDue : labels.emptyUpcoming}</p>
         ) : (
           <ul className="d-reminders__list">

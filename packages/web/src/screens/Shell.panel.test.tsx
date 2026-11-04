@@ -166,7 +166,7 @@ describe('the desktop user panel', () => {
   it('the status button is named by the stored choice and has no old sidebar select beside it', async () => {
     const app = shell();
     await screen.findByRole('main');
-    expect(screen.queryByRole('combobox', { name: t('presence.label') })).toBeNull();
+    expect(screen.queryByRole('combobox')).toBeNull();
     act(() => app.client.publish('account', account({ presenceChoice: 'dnd' })));
     expect(await inPanel().findByRole('button', { name: new RegExp(`${t('panel.status', { status: t('presence.dnd') })}$`) })).toBeInTheDocument();
     expect(panel()!.querySelector('.d-avatar__presence')).toHaveAttribute('data-presence', 'dnd');

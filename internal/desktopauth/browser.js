@@ -29,6 +29,12 @@
         return "other";
     }
   }
+  function desktopAuthKind(e) {
+    if (!(e instanceof Error)) return null;
+    if (e.message.includes("desktop-auth-unsupported")) return "unsupported";
+    if (e.message.includes("desktop-auth-rate-limited")) return "rateLimited";
+    return null;
+  }
   var bad = (what) => new PasskeyError("other", `passkey options: ${what}`);
   var URL_ALPHABET = /^[A-Za-z0-9_-]*={0,2}$/;
   function fromBase64Url(s, what) {
@@ -122,7 +128,7 @@
         if (typeof result.response !== "string") throw new Error("Missing browser credential");
         return result.response;
       } catch (error) {
-        throw new PasskeyError("other", error instanceof Error ? error.message : "Browser sign-in failed");
+        throw new PasskeyError(desktopAuthKind(error) ?? "other", error instanceof Error ? error.message : "Browser sign-in failed");
       }
     }
     const pk = publicKeyOf(optionsJson);
@@ -145,15 +151,16 @@
     response.transports = Array.isArray(transports) ? transports.filter((x) => typeof x === "string") : [];
     return JSON.stringify({ ...head, response, clientExtensionResults: {} });
   }
-  async function getPasskey(optionsJson) {
+  async function getPasskey(optionsJson, conditional) {
     const bridge = desktopBridge();
     if (bridge?.browserAuth) {
+      if (conditional !== void 0) throw new PasskeyError("cancelled", "Passkey autofill is not available in the desktop app");
       try {
         const result = await bridge.browserAuth({ kind: "get", options: optionsJson });
         if (typeof result.response !== "string") throw new Error("Missing browser credential");
         return result.response;
       } catch (error) {
-        throw new PasskeyError("other", error instanceof Error ? error.message : "Browser sign-in failed");
+        throw new PasskeyError(desktopAuthKind(error) ?? "other", error instanceof Error ? error.message : "Browser sign-in failed");
       }
     }
     const pk = publicKeyOf(optionsJson);
@@ -166,7 +173,7 @@
     if (allow === void 0) delete publicKey.allowCredentials;
     else publicKey.allowCredentials = allow;
     const api = credentialsApi();
-    const credential = await ceremony(false, () => api.get({ publicKey }));
+    const credential = await ceremony(false, () => conditional === void 0 ? api.get({ publicKey }) : api.get({ publicKey, mediation: "conditional", signal: conditional.signal }));
     const { head, response, raw } = envelope(credential);
     response.authenticatorData = toBase64Url(buffer(raw.authenticatorData, "authenticatorData"));
     response.signature = toBase64Url(buffer(raw.signature, "signature"));

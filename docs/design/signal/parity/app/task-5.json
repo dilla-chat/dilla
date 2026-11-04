@@ -1,0 +1,548 @@
+[
+ {
+  "name": "gap16-reminders-empty-due",
+  "viewport": {
+   "width": 1280,
+   "height": 800
+  },
+  "prototype": {
+   "props": {
+    "startAt": "app"
+   },
+   "steps": [
+    {
+     "wait": 300
+    },
+    {
+     "click": "div[data-rem='1'] > div >> nth=0"
+    },
+    {
+     "wait": 500
+    },
+    {
+     "click": "div[data-rem='1'] >> text=Dismiss"
+    },
+    {
+     "wait": 3600
+    }
+   ]
+  },
+  "app": {
+   "who": "ada",
+   "path": "{server}",
+   "steps": [
+    {
+     "click": "role=button[name=\"Reminders\"s]"
+    },
+    {
+     "waitFor": ".d-reminders__empty"
+    },
+    {
+     "click": "role=tab[name=/^Due/]"
+    },
+    {
+     "wait": 600
+    }
+   ]
+  }
+ },
+ {
+  "name": "gap16-reminders-empty-upcoming",
+  "viewport": {
+   "width": 1280,
+   "height": 800
+  },
+  "prototype": {
+   "props": {
+    "startAt": "app"
+   },
+   "steps": [
+    {
+     "wait": 300
+    },
+    {
+     "click": "div[data-rem='1'] > div >> nth=0"
+    },
+    {
+     "wait": 500
+    },
+    {
+     "click": "div[data-rem='1'] >> text=Dismiss"
+    },
+    {
+     "wait": 400
+    },
+    {
+     "click": "div[data-rem='1'] >> text=Upcoming"
+    },
+    {
+     "wait": 400
+    },
+    {
+     "click": "div[data-rem='1'] >> text=Cancel"
+    },
+    {
+     "wait": 3600
+    }
+   ]
+  },
+  "app": {
+   "who": "ada",
+   "path": "{server}",
+   "steps": [
+    {
+     "click": "role=button[name=\"Reminders\"s]"
+    },
+    {
+     "waitFor": ".d-reminders__empty"
+    },
+    {
+     "click": "role=tab[name=/Upcoming/]"
+    },
+    {
+     "wait": 600
+    }
+   ]
+  }
+ },
+ {
+  "name": "gap85-devices-remove-other-browser",
+  "viewport": {
+   "width": 1280,
+   "height": 800
+  },
+  "prototype": {
+   "props": {
+    "startAt": "app"
+   },
+   "steps": [
+    {
+     "wait": 600
+    },
+    {
+     "click": "div:has(> d-icon[name='settings']) >> nth=0"
+    },
+    {
+     "wait": 600
+    },
+    {
+     "click": "nav >> text='Devices'"
+    },
+    {
+     "wait": 900
+    },
+    {
+     "click": "text=Remove >> nth=0"
+    },
+    {
+     "wait": 800
+    }
+   ]
+  },
+  "app": {
+   "who": "ada",
+   "path": "{server}",
+   "steps": [
+    {
+     "click": "role=button[name=\"Open settings\"s]"
+    },
+    {
+     "wait": 600
+    },
+    {
+     "click": "role=dialog >> role=button[name=\"Devices\"s]"
+    },
+    {
+     "wait": 1200
+    },
+    {
+     "click": "role=button[name=/^remove/i] >> nth=0"
+    },
+    {
+     "wait": 1000
+    }
+   ]
+  }
+ },
+ {
+  "name": "gap87-phone-members-sheet",
+  "viewport": {
+   "width": 390,
+   "height": 844
+  },
+  "prototype": {
+   "props": {
+    "startAt": "app",
+    "device": "phone"
+   },
+   "steps": [
+    {
+     "wait": 600
+    },
+    {
+     "click": "aside >> text=general >> nth=0"
+    },
+    {
+     "wait": 1200
+    }
+   ]
+  },
+  "app": {
+   "who": "phone",
+   "path": "{community}",
+   "steps": [
+    {
+     "click": "role=button[name=\"general\"s]"
+    },
+    {
+     "wait": 1500
+    },
+    {
+     "click": "role=button[name=/^Members/]"
+    },
+    {
+     "waitFor": ".d-member-list__open"
+    }
+   ]
+  }
+ },
+ {
+  "name": "gap97-phone-dm-list",
+  "viewport": {
+   "width": 390,
+   "height": 844
+  },
+  "prototype": {
+   "props": {
+    "startAt": "app",
+    "device": "phone"
+   },
+   "steps": [
+    {
+     "wait": 600
+    },
+    {
+     "click": "d-icon[name='at-sign'] >> nth=0"
+    },
+    {
+     "wait": 1200
+    }
+   ]
+  },
+  "app": {
+   "who": "phone",
+   "path": "{community}",
+   "steps": [
+    {
+     "click": "role=button[name=/^direct messages/]"
+    },
+    {
+     "wait": 1200
+    }
+   ]
+  }
+ },
+ {
+  "name": "gap102-phone-settings-profile",
+  "viewport": {
+   "width": 390,
+   "height": 844
+  },
+  "prototype": {
+   "props": {
+    "startAt": "app",
+    "device": "phone"
+   },
+   "steps": [
+    {
+     "wait": 600
+    },
+    {
+     "click": "text=You >> nth=-1"
+    },
+    {
+     "wait": 600
+    },
+    {
+     "click": "div:has(> d-icon[name='settings']):visible >> nth=0"
+    },
+    {
+     "wait": 900
+    }
+   ]
+  },
+  "app": {
+   "who": "phone",
+   "path": "{community}",
+   "steps": [
+    {
+     "click": "role=link[name=\"You\"s]"
+    },
+    {
+     "wait": 1000
+    },
+    {
+     "click": "role=button[name=/settings/i] >> nth=0"
+    },
+    {
+     "wait": 1200
+    },
+    {
+     "hover": "h2#profile-title"
+    },
+    {
+     "wait": 500
+    }
+   ]
+  }
+ },
+ {
+  "name": "gap102-phone-settings-signin",
+  "viewport": {
+   "width": 390,
+   "height": 844
+  },
+  "prototype": {
+   "props": {
+    "startAt": "app",
+    "device": "phone"
+   },
+   "steps": [
+    {
+     "wait": 600
+    },
+    {
+     "click": "text=You >> nth=-1"
+    },
+    {
+     "wait": 600
+    },
+    {
+     "click": "div:has(> d-icon[name='settings']):visible >> nth=0"
+    },
+    {
+     "wait": 700
+    },
+    {
+     "click": "nav >> text='Sign-in'"
+    },
+    {
+     "wait": 900
+    }
+   ]
+  },
+  "app": {
+   "who": "phone",
+   "path": "{community}",
+   "steps": [
+    {
+     "click": "role=link[name=\"You\"s]"
+    },
+    {
+     "wait": 1000
+    },
+    {
+     "click": "role=button[name=/settings/i] >> nth=0"
+    },
+    {
+     "wait": 1200
+    },
+    {
+     "click": "role=dialog >> role=button[name=\"Sign-in\"s]"
+    },
+    {
+     "wait": 1000
+    }
+   ]
+  }
+ },
+ {
+  "name": "gap102-phone-settings-devices",
+  "viewport": {
+   "width": 390,
+   "height": 844
+  },
+  "prototype": {
+   "props": {
+    "startAt": "app",
+    "device": "phone"
+   },
+   "steps": [
+    {
+     "wait": 600
+    },
+    {
+     "click": "text=You >> nth=-1"
+    },
+    {
+     "wait": 600
+    },
+    {
+     "click": "div:has(> d-icon[name='settings']):visible >> nth=0"
+    },
+    {
+     "wait": 700
+    },
+    {
+     "click": "nav >> text='Devices'"
+    },
+    {
+     "wait": 900
+    }
+   ]
+  },
+  "app": {
+   "who": "phone",
+   "path": "{community}",
+   "steps": [
+    {
+     "click": "role=link[name=\"You\"s]"
+    },
+    {
+     "wait": 1000
+    },
+    {
+     "click": "role=button[name=/settings/i] >> nth=0"
+    },
+    {
+     "wait": 1200
+    },
+    {
+     "click": "role=dialog >> role=button[name=\"Devices\"s]"
+    },
+    {
+     "wait": 1000
+    }
+   ]
+  }
+ },
+ {
+  "name": "standing-desktop-chat",
+  "viewport": {
+   "width": 1280,
+   "height": 800
+  },
+  "prototype": {
+   "props": {
+    "startAt": "app"
+   },
+   "steps": [
+    {
+     "wait": 600
+    },
+    {
+     "click": "main header >> text=6"
+    },
+    {
+     "wait": 900
+    }
+   ]
+  },
+  "app": {
+   "who": "ada",
+   "path": "{server}",
+   "steps": [
+    {
+     "click": "role=button[name=/^Members/]"
+    },
+    {
+     "wait": 900
+    },
+    {
+     "waitFor": "button[aria-label=\"add a gif\"]:enabled"
+    }
+   ]
+  }
+ },
+ {
+  "name": "standing-desktop-members-open",
+  "viewport": {
+   "width": 1280,
+   "height": 800
+  },
+  "prototype": {
+   "props": {
+    "startAt": "app"
+   },
+   "steps": [
+    {
+     "wait": 1200
+    }
+   ]
+  },
+  "app": {
+   "who": "ada",
+   "path": "{server}",
+   "steps": [
+    {
+     "waitFor": "button[aria-label=\"add a gif\"]:enabled"
+    }
+   ]
+  }
+ },
+ {
+  "name": "standing-phone-list",
+  "viewport": {
+   "width": 390,
+   "height": 844
+  },
+  "prototype": {
+   "props": {
+    "startAt": "app",
+    "device": "phone"
+   }
+  },
+  "app": {
+   "who": "phone",
+   "path": "{community}"
+  }
+ },
+ {
+  "name": "standing-phone-conversation",
+  "viewport": {
+   "width": 390,
+   "height": 844
+  },
+  "prototype": {
+   "props": {
+    "startAt": "app",
+    "device": "phone"
+   },
+   "steps": [
+    {
+     "wait": 600
+    },
+    {
+     "click": "aside >> text=general >> nth=0"
+    },
+    {
+     "wait": 900
+    },
+    {
+     "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0"
+    },
+    {
+     "wait": 900
+    }
+   ]
+  },
+  "app": {
+   "who": "phone",
+   "path": "{community}",
+   "steps": [
+    {
+     "click": "role=button[name=\"general\"s]"
+    },
+    {
+     "waitFor": ".d-message-row"
+    },
+    {
+     "wait": 800
+    },
+    {
+     "waitFor": "button[aria-label=\"add a gif\"]:enabled"
+    }
+   ]
+  }
+ }
+]

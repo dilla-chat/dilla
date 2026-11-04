@@ -6,6 +6,7 @@ import { CoreProvider } from "../../core/context.tsx";
 import { FakeClient } from "../../test/fake-client.ts";
 import { account, ME } from "../../test/fixtures.ts";
 import { CommandHost, clearCommandDraftMemory } from "./CommandHost.tsx";
+import { privateResults } from "./private-results.ts";
 import { CommandProvider } from "./CommandContext.tsx";
 import { Shell } from "../Shell.tsx";
 import { replaceHistoryState } from "../../router.ts";
@@ -67,12 +68,12 @@ describe("Task4 fix1 focused lifecycle probes", () => {
     const v = render(
       <Host fake={new FakeClient()} draft="/me private-token" />,
     );
-    expect(screen.getByRole("combobox", { name: "text" })).toHaveValue(
+    expect(screen.getByRole("textbox", { name: "text" })).toHaveValue(
       "private-token",
     );
     v.unmount();
     render(<Host fake={new FakeClient()} self={BOB} />);
-    expect(screen.queryByRole("combobox", { name: "text" })).toBeNull();
+    expect(screen.queryByRole("textbox", { name: "text" })).toBeNull();
   });
   it("invalidates a live execution when the client or self changes at the same conversation", async () => {
     let captured: CommandExecutionContext | undefined;
@@ -90,14 +91,14 @@ describe("Task4 fix1 focused lifecycle probes", () => {
     const v = render(
       <Host fake={new FakeClient()} handlers={handlers} draft="/me hello" />,
     );
-    await user.click(screen.getByRole("button", { name: /run/i }));
+    await user.click(screen.getByRole("button", { name: "send" }));
     v.rerender(<Host fake={new FakeClient()} self={BOB} handlers={handlers} />);
     expect(captured?.isCurrent()).toBe(false);
   });
   it("clears active command text when the signed-in member changes on the same client", () => {
     const fake = new FakeClient();
     const v = render(<Host fake={fake} draft="/me private-token" />);
-    expect(screen.getByRole("combobox", { name: "text" })).toHaveValue(
+    expect(screen.getByRole("textbox", { name: "text" })).toHaveValue(
       "private-token",
     );
     v.rerender(<Host fake={fake} self={BOB} />);
@@ -128,12 +129,12 @@ describe("Task4 fix1 focused lifecycle probes", () => {
     const user = userEvent.setup();
     const v = render(<Host fake={fake} draft="/dm" handlers={handlers} />);
     await user.type(screen.getByRole("combobox", { name: "user" }), "bob");
-    await user.click(await screen.findByRole("option", { name: "bob" }));
-    await user.click(screen.getByRole("button", { name: /run/i }));
-    await screen.findByText("pending");
+    await user.click(await screen.findByRole("option", { name: /^bob/ }));
+    await user.click(screen.getByRole("button", { name: "send" }));
+    await waitFor(() => expect(privateResults(fake, ":", `${CID}/${CH}/`).rows().at(-1)?.text).toBe("pending"));
     v.unmount();
     render(<Host fake={fake} handlers={handlers} />);
-    await user.click(screen.getByRole("button", { name: /run/i }));
+    await user.click(screen.getByRole("button", { name: "send" }));
     expect(calls).toHaveLength(2);
     expect(calls[1]?.invocationId).toBe(BOB);
     expect(calls[1]?.requestId).toBe(calls[0]?.requestId);
@@ -365,10 +366,10 @@ describe("Task4 fix1 focused lifecycle probes", () => {
     const user = userEvent.setup();
     const v = render(<H channel={CH} draft="/unban" />);
     await user.type(screen.getByRole("combobox", { name: "user" }), "bob");
-    await user.click(await screen.findByRole("option", { name: "bob" }));
-    await user.click(screen.getByRole("button", { name: /run/i }));
+    await user.click(await screen.findByRole("option", { name: /^bob/ }));
+    await user.click(screen.getByRole("button", { name: "send" }));
     v.rerender(<H channel={OTHER} draft="/me new" />);
-    await screen.findByRole("combobox", { name: "text" });
+    await screen.findByRole("textbox", { name: "text" });
     act(() => resolveLoad(null));
     expect(screen.queryByRole("dialog", { name: "Unban bob?" })).toBeNull();
   });
@@ -436,11 +437,11 @@ describe("Task4 fix1 focused lifecycle probes", () => {
     };
     const user = userEvent.setup();
     render(<Host fake={fake} draft="/warn user:bob reason:spam" />);
-    await user.click(await screen.findByRole("option", { name: "bob" }));
+    await user.click(await screen.findByRole("option", { name: /^bob/ }));
     for (let n = 0; n < 2; n++) {
-      await user.click(screen.getByRole("button", { name: /run/i }));
+      await user.click(screen.getByRole("button", { name: "send" }));
       await user.click(await screen.findByRole("button", { name: "Continue" }));
-      await screen.findByText(/result is uncertain \(E_NETWORK\)/);
+      await waitFor(() => expect(privateResults(fake, ":", `${CID}/${CH}/`).rows().at(-1)?.text).toMatch(/result is uncertain \(E_NETWORK\)/));
     }
     expect(ids).toHaveLength(2);
     expect(ids[1]).toBe(ids[0]);

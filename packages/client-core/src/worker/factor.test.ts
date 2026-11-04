@@ -109,6 +109,33 @@ describe('the factor-setup phase (web3.6 C2)', () => {
     expect(plain(r.last('settings'))).not.toContain('friends-code');
   });
 
+  // Wave B task 3b: the page creates the account only at the key step's "I saved it". A refused creation leaves the keys
+  // pending with no session; the page then discards them (signupReset), and its next Create account makes new ones. No
+  // second key is ever shown for the same pending keys: signupBegin is refused while they are pending.
+  it('a refused signupSubmit registers nothing; signupReset forgets the keys, and only then does signupBegin make new ones', async () => {
+    const w = world({ phase: 0, owed: true });
+    await toKeys(w);
+    w.signup.submit.mockImplementationOnce(() => Promise.reject(refusal(409, 'E_INVALID_REQUEST')));
+    w.call(3, SUBMIT);
+    expect(await answered(w, 3)).toMatchObject({ ok: false, error: { code: 'E_INVALID_REQUEST', status: 409 } });
+    expect(w.account()).toMatchObject({ phase: 'signup-keys', error: { code: 'E_INVALID_REQUEST' } });
+    expect(w.state.phase).toBe(1);
+    // A second begin over pending keys is not accepted in this phase.
+    w.call(4, { m: 'signupBegin' });
+    expect(await answered(w, 4)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY' } });
+    w.call(5, { m: 'signupReset' });
+    expect(await answered(w, 5)).toMatchObject({ ok: true });
+    expect(w.account()).toMatchObject({ phase: 'needs-signup', recoveryKey: null });
+    expect(w.state.resets).toBe(1);
+    w.call(6, { m: 'signupBegin' });
+    expect(await answered(w, 6)).toMatchObject({ ok: true });
+    expect(w.account()?.phase).toBe('signup-keys');
+    w.call(7, SUBMIT);
+    expect(await answered(w, 7)).toMatchObject({ ok: true, value: { factorOwed: true } });
+    expect(w.signup.submit).toHaveBeenCalledTimes(2);
+    expect(w.account()).toMatchObject({ phase: 'factor-setup', factorSetup: { origin: 'signup' }, recoveryKey: null });
+  });
+
   it('factorSetupDone without a pending join redeems the invite it is given', async () => {
     const w = world({ phase: 2, owed: true });
     w.call(1, { m: 'start' });
@@ -169,10 +196,14 @@ describe('the factor-setup phase (web3.6 C2)', () => {
 
   it('factor-setup accepts factorSetupDone, forgetBrowser and the five enrol commands (C3)', () => {
     expect(ACCEPTS['factor-setup']).toEqual(['factorSetupDone', 'forgetBrowser', 'refreshFactors', 'factorTotpBegin', 'factorTotpConfirm', 'factorPasskeyBegin', 'factorPasskeyFinish', 'resign']);
-    expect(ACCEPTS['signin-passkey']).toEqual(['signInPasskeyBegin', 'signInPasskey', 'signInBackupCode', 'signInCancel']);
+    expect(ACCEPTS['signin-passkey']).toEqual(['signInPasskeyBegin', 'signInPasskey', 'signInBackupCode', 'signInCancel', 'signInBack']);
     // C2 review finding 8: the two sign-in rows the wave widened.
     expect(ACCEPTS['signin-login']).toEqual(['signInOIDC', 'signInLogin', 'signInPasskeyBegin', 'signInPasskey', 'signInCancel']);
-    expect(ACCEPTS['signin-totp']).toEqual(['signInTotp', 'signInPasskeyBegin', 'signInPasskey', 'signInBackupCode', 'signInCancel']);
+    expect(ACCEPTS['signin-totp']).toEqual(['signInTotp', 'signInPasskeyBegin', 'signInPasskey', 'signInBackupCode', 'signInCancel', 'signInBack']);
+    // Wave B task 3: Back from the code and key steps; never from the login (nothing to go back to) or while enrolling.
+    expect(ACCEPTS['signin-key']).toEqual(['signInKey', 'signInCancel', 'signInBack']);
+    expect(ACCEPTS['signin-login']).not.toContain('signInBack');
+    expect(ACCEPTS['enrolling']).not.toContain('signInBack');
   });
 });
 
@@ -382,6 +413,25 @@ describe('passkey and backup-code sign-in (web3.6 C2)', () => {
     expect(w.account()).toMatchObject({ phase: 'signin-totp', signIn: { username: 'web', factor: 'totp' } });
   });
 
+  it('wave B task 3 fix round 1: "Use a passkey" from signin-totp after a password login owing the code (needs 1)', async () => {
+    const w = world({ phase: 0 });
+    w.enrol.login.mockImplementationOnce(() => Promise.resolve({ needs: 1, passkey: true }));
+    await toLoginStep(w);
+    w.call(3, LOGIN);
+    await answered(w, 3);
+    expect(w.account()).toMatchObject({ phase: 'signin-totp', signIn: { factor: 'totp', passkey: true } });
+    w.call(4, { m: 'signInPasskeyBegin' });
+    await answered(w, 4);
+    w.call(5, { m: 'signInPasskey', ceremonyId: CEREMONY_HEX, response: '{"id":"x"}' });
+    expect(await answered(w, 5)).toEqual({ t: 'ret', id: 5, ok: true, value: { needs: 0 } });
+    // The passkey's own assertion replaces the password's: no code is asked, and the key step follows.
+    expect(w.enrol.totp).not.toHaveBeenCalled();
+    expect(w.account()?.phase).toBe('signin-key');
+    w.call(6, KEY);
+    expect(await answered(w, 6)).toEqual({ t: 'ret', id: 6, ok: true, value: null });
+    expect(w.account()?.phase).toBe('ready');
+  });
+
   it('a passkey on its own signs in from the login step', async () => {
     const w = world({ phase: 0 });
     await toLoginStep(w);
@@ -404,6 +454,23 @@ describe('passkey and backup-code sign-in (web3.6 C2)', () => {
     w.call(3, { m: 'signInPasskey', ceremonyId: CEREMONY_HEX, response: 'r' });
     expect(await answered(w, 3)).toMatchObject({ ok: false, error: { code: 'E_PASSKEY_UNKNOWN', status: 401 } });
     expect(w.account()).toMatchObject({ phase: 'signin-login', error: { code: 'E_PASSKEY_UNKNOWN' } });
+  });
+
+  it('wave B task 3 (M2): another account\'s passkey on the code step is refused before this browser is enrolled', async () => {
+    const w = world({ phase: 0 });
+    w.enrol.login.mockImplementationOnce(() => Promise.resolve({ needs: 1, passkey: true }));
+    await toLoginStep(w);
+    w.call(3, LOGIN);
+    await answered(w, 3);
+    w.enrol.passkey.mockImplementationOnce(() => Promise.reject(refusal(403, 'E_PASSKEY_OTHER_ACCOUNT')));
+    w.call(4, { m: 'signInPasskey', ceremonyId: CEREMONY_HEX, response: 'r' });
+    expect(await answered(w, 4)).toMatchObject({ ok: false, error: { code: 'E_PASSKEY_OTHER_ACCOUNT', status: 403 } });
+    // Fail closed: the code step stays, nothing was registered, and the result was dropped.
+    expect(w.account()).toMatchObject({ phase: 'signin-totp', error: { code: 'E_PASSKEY_OTHER_ACCOUNT' } });
+    expect(w.enrol.register).not.toHaveBeenCalled();
+    w.call(5, KEY);
+    expect(await answered(w, 5)).toMatchObject({ ok: false });
+    expect(w.enrol.register).not.toHaveBeenCalled();
   });
 
   it('a backup code after needs 2 signs in; it is sent normalised', async () => {

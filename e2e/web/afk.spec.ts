@@ -20,10 +20,10 @@ import { openInviteInClient } from './support/invite';
 // - the AFK channel never hosts a call: an idle desktop is cut by itself, `afk.moved` is said once and no removal line
 //   ever, on the cut person's screen reader and on that of the other person in the call he left, and it joins nothing;
 //   both lists show him under AFK as away (`afk.away`), from the away roster;
-// - joining voice takes him off the roster; a click on AFK leaves the current call and lists the person away, a second
-//   click does nothing, and a message in that server takes them off it (Q1);
+// - joining voice takes him off the roster; a click on AFK opens its page, Go AFK there leaves the current call and lists the person away, a second
+//   click on the row only opens the page, and a message in that server takes them off it (Q1);
 // - a phone is never cut (its desktop twin, idle beside it in the same call, is, and is not listed away: R-AW3);
-// - a member whose roles leave out view_channel community-wide still sees AFK and a click lists him away there;
+// - a member whose roles leave out view_channel community-wide still sees AFK and its page lists him away there with Go AFK;
 // - his last connection closing takes him off the roster once a 30 s grace ends (Q2, revised), and coming back joins nothing;
 // - a web3.8 server whose administrator picked an AFK gets a new one, and the old one becomes ordinary.
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -45,9 +45,10 @@ import { closeSettings, connected, dock, micLive, noiseOff, openVoiceSettings, p
 import { markSignalLifecycle, signalLifecycleDiagnostics } from '../voice/support/signal-lifecycle.ts';
 import { observeSignalConsole, signalCloseGuard } from '../voice/support/signal-close-guard.ts';
 import { arr, decode, encode, type CborInput, type CborValue } from '../../packages/client-core/src/cbor/index';
+import { e2ePort } from './support/ports';
 
 /** Its own ports (web3.9 reservation): the host, its control listener, and its LiveKit's signalling and ICE ports. */
-const HOST: HostConfig = { port: 8613, control: 8614, webRoot: 'packages/web/dist', keepData: true, sfu: { port: 7896, udpPort: 7898 } };
+const HOST: HostConfig = { port: e2ePort(8613), control: e2ePort(8614), webRoot: 'packages/web/dist', keepData: true, sfu: { port: e2ePort(7896), udpPort: e2ePort(7898) } };
 const ORIGIN = `http://127.0.0.1:${String(HOST.port)}`;
 const SERVER = 'Midgard Crew';
 const OWNER = 'Ada';
@@ -629,15 +630,18 @@ test('5. Björn goes back to general with his own mute state and leaves the rost
 
   // R-AW3: Ada chooses AFK. Her call is left first (the dock goes), and no call starts in Idle.
   const posts = a.afkPosts;
-  await leaveFrom(a, voiceRow(a.page, RENAMED));
+  // The row opens the AFK page and joins nothing (the prototype's open()); its Go AFK button is the choice.
+  await voiceRow(a.page, RENAMED).click();
+  await leaveFrom(a, button(stage(a.page), 'afk.go'));
   await expect(dock(a.page).locator('.d-voice-dock')).toHaveCount(0, { timeout: WAIT });
   for (const p of [a, b]) await expect(awayPeople(p.page, RENAMED).filter({ hasText: OWNER })).toHaveCount(1, { timeout: WAIT });
   await expect(roomPeople(b.page, 'general').filter({ hasText: OWNER })).toHaveCount(0, { timeout: WAIT });
   await expect(stage(a.page)).not.toContainText(copy('voice.removed'));
   expect(a.afkPosts - posts, 'Ada’s client asks for no call or token in the AFK channel').toBe(0);
-  // The AFK page (Jonas, concern 2): it lists the roster with her in it, and, away, the line in place of go AFK.
-  await expect(stage(a.page).locator('.dw-afk-roster .d-voice-row__person').filter({ hasText: OWNER })).toHaveCount(1, { timeout: WAIT });
-  await expect(stage(a.page).getByText(copy('afk.youAway'), { exact: true })).toBeVisible();
+  // The AFK page (wave B task 4): away, the title says so and Come back stands in place of Go AFK; the roster is the row's, not the page's.
+  await expect(stage(a.page).getByText(copy('afk.title.you'), { exact: true })).toBeVisible({ timeout: WAIT });
+  await expect(button(stage(a.page), 'afk.comeBack')).toBeVisible();
+  await expect(stage(a.page).locator('.d-voice-row__person')).toHaveCount(0);
   await expect(button(stage(a.page), 'afk.go')).toHaveCount(0);
   await expect(button(stage(a.page), 'callStage.preview.join')).toHaveCount(0);
   await expectAccessible(a.page, 'the AFK channel with its away roster');
@@ -669,7 +673,7 @@ test('6. a phone in general is never cut, its desktop twin cut beside it is not 
     return r.method() === 'POST' && r.url() === `${ORIGIN}/v1/communities/${communityId}/afk/activity`
       && body !== null && body.length === 19 && body[0] === 0x82 && body[18] === 0x01;
   } });
-  // On a phone a voice row opens the stage (no one-click join, R24): join from the stage.
+  // Visiting the voice channel's address opens the stage without joining (only a tap on its list row joins, as the prototype's phone does): join from the stage.
   await button(stage(ph.page), 'callStage.preview.join').click();
   expect((await (await exempt).response())?.status(), 'the exempt report').toBe(204);
   // A phone has no dock (flow 12): the stage's phase says it is in.
@@ -709,7 +713,7 @@ test('6. a phone in general is never cut, its desktop twin cut beside it is not 
   await expect(dock(b.page).locator('.d-voice-dock')).toHaveCount(0);
   await expect(stage(b.page).locator('.d-call-stage__notice')).toHaveAttribute('data-kind', 'info');
   for (const r of [copy('voice.removed'), copy('voice.removedNotMember')]) await expect(b.page.getByText(r)).toHaveCount(0);
-  await expect(stage(ph.page).getByText(copy('afk.youAway'), { exact: true })).toBeVisible({ timeout: WAIT });
+  await expect(stage(ph.page).getByText(copy('afk.title.you'), { exact: true })).toBeVisible({ timeout: WAIT });
   await expect(awayPeople(a.page, RENAMED).filter({ hasText: FRIEND })).toHaveCount(1, { timeout: WAIT });
   await expect(roomPeople(a.page, 'general').filter({ hasText: FRIEND })).toHaveCount(0, { timeout: WAIT });
   await sweepRan(b);
@@ -727,6 +731,11 @@ test('7. with view_channel left out of his roles community-wide, Björn still se
     await leaveFrom(b, stage(b.page).locator('[data-control="leave"]'));
   }
   await expect(dock(b.page).locator('.d-voice-dock')).toHaveCount(0, { timeout: WAIT });
+  // Test 6 leaves Björn away while his desktop stays connected. A message clears that state
+  // before his channel permissions change, so Idle offers Go AFK.
+  await openChannel(b.page, SERVER, 'general');
+  await sendText(b.page, 'general', 'back at the desk');
+  for (const p of [a, b]) await expect(awayPeople(p.page, RENAMED)).toHaveCount(0, { timeout: WAIT });
   // The role editor: @everyone loses "view channels", so none of Björn's roles grants it anywhere (R35).
   await setEveryone(a, 'perm.view', false);
   await expect(channelRow(b.page, 'general')).toHaveCount(0, { timeout: WAIT });
@@ -738,6 +747,7 @@ test('7. with view_channel left out of his roles community-wide, Björn still se
 
   const posts = b.afkPosts;
   await voiceRow(b.page, RENAMED).click();
+  await button(stage(b.page), 'afk.go').click();
   for (const p of [a, b]) await expect(awayPeople(p.page, RENAMED).filter({ hasText: FRIEND })).toHaveCount(1, { timeout: WAIT });
   await expect(dock(b.page).locator('.d-voice-dock')).toHaveCount(0);
   expect(b.afkPosts - posts, 'no call or token is asked for in Idle').toBe(0);
@@ -852,13 +862,13 @@ test('10. accessible: the channel list, the AFK row with its away roster and ser
   await expectAccessible(b.page, 'the channel list with the AFK channel');
   // The AFK page opened by its path (no click on the row): nobody is away yet, and go AFK stands in place of join voice.
   await a.page.goto(`/c/${communityId}/${afkId}`);
-  await expect(stage(a.page).getByText(copy('afk.empty'), { exact: true })).toBeVisible({ timeout: WAIT });
+  await expect(stage(a.page).getByText(copy('afk.title.nobody'), { exact: true })).toBeVisible({ timeout: WAIT });
   await expect(button(stage(a.page), 'callStage.preview.join')).toHaveCount(0);
   await expectAccessible(a.page, 'the AFK page with nobody away');
   const posts = a.afkPosts;
   await button(stage(a.page), 'afk.go').click();
   for (const p of [a, b]) await expect(awayPeople(p.page, 'AFK').filter({ hasText: OWNER })).toHaveCount(1, { timeout: WAIT });
-  await expect(stage(a.page).getByText(copy('afk.youAway'), { exact: true })).toBeFocused({ timeout: WAIT });
+  await expect(button(stage(a.page), 'afk.comeBack')).toBeFocused({ timeout: WAIT });
   await expect(button(stage(a.page), 'afk.go')).toHaveCount(0);
   await expect(dock(a.page).locator('.d-voice-dock')).toHaveCount(0);
   expect(a.afkPosts - posts, 'go AFK asks for no call or token').toBe(0);

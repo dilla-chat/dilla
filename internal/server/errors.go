@@ -91,6 +91,10 @@ const (
 	// (web3.6). Distinct from E_UNAUTHENTICATED so the client can say "this passkey is not
 	// registered here" without reading a detail.
 	CodePasskeyUnknown Code = "E_PASSKEY_UNKNOWN"
+	// CodePasskeyOtherAccount is 403: a passkey login on the code step, bound to a first-factor (password or OIDC)
+	// login's assertion, whose passkey belongs to another account than that assertion's (wave B task 3, Jonas). No
+	// assertion is issued.
+	CodePasskeyOtherAccount Code = "E_PASSKEY_OTHER_ACCOUNT"
 	// CodeUnsupportedMedia is not in the table: a wrong Content-Type is answered
 	// with 415 and E_INVALID_REQUEST, because the table's rule is "malformed
 	// request" and a client that sent JSON has exactly that problem.
@@ -124,7 +128,7 @@ func (e *Error) Status() int {
 		return http.StatusUnauthorized
 	case CodeForbidden, CodeLeafNotCurrent, CodeModeReadable, CodeNotUploader,
 		CodeProvisionalOutsidePairing, CodeChannelMode,
-		CodeFactorRequired, CodeTargetNoFactor, CodeStepUp:
+		CodeFactorRequired, CodeTargetNoFactor, CodeStepUp, CodePasskeyOtherAccount:
 		return http.StatusForbidden
 	case CodeNotFound:
 		return http.StatusNotFound

@@ -25,6 +25,11 @@ function Harness({ items = ITEMS, onAction = vi.fn(), onClose = vi.fn() }: { ite
 }
 
 describe('RemindersPopover', () => {
+  it('says only that it is loading, with no empty line under it, until the list is known', () => {
+    render(<RemindersPopover items={[]} tab="due" onTab={vi.fn()} onAction={vi.fn()} onClose={vi.fn()} labels={LABELS} status="Loading reminders…" loading />);
+    expect(screen.getByText('Loading reminders…')).toBeInTheDocument();
+    expect(screen.queryByText('Nothing due.')).toBeNull();
+  });
   it('is a non-modal dialog named Reminders; focus starts on the picked tab; the due tab lists the due ones with Dismiss', () => {
     render(<Harness />);
     const dialog = screen.getByRole('dialog', { name: 'Reminders' });

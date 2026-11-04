@@ -43,7 +43,7 @@ async function renameFrom(user: UserEvent, row: HTMLElement): Promise<void> {
   await user.click(await screen.findByRole('menuitem', { name: 'Rename' }));
 }
 const rowOf = (id: string) => {
-  const row = rows().find(r => within(r).queryByText(id.slice(0, 8)) !== null);
+  const row = rows().find(r => (r.textContent ?? '').includes(id.slice(0, 6)));
   if (row === undefined) throw new Error(`no row for ${id}`);
   return row;
 };
@@ -53,16 +53,36 @@ async function typeKey(user: UserEvent, text = GROUPED) {
 }
 
 describe('the device list', () => {
+  it('labels this device "Desktop · <os>" in the desktop app, and leaves the tier and the other rows as they are', () => {
+    (globalThis as unknown as { dillaDesktop?: unknown }).dillaDesktop = { platform: 'darwin', info: () => Promise.resolve({}), send: () => Promise.resolve(), onEvent: () => () => {} };
+    try {
+      setup();
+      const own = rowOf(OWN);
+      expect(own.querySelector('[data-kind="platform"]')?.textContent).toBe('Desktop · macOS');
+      expect(own.getAttribute('data-tier')).toBe('web');
+      expect(own.querySelector('[data-kind="tier"]')).toBeNull();
+      expect(rowOf(PHONE).querySelector('[data-kind="platform"]')).toBeNull();
+      expect(rowOf(PHONE).getAttribute('data-tier')).toBe('native');
+    } finally { Reflect.deleteProperty(globalThis, 'dillaDesktop'); }
+  });
+
   it('asks for a fresh list once and lists every device, this browser first', async () => {
     const { fake, view } = setup();
     expect(fake.callsOf('refreshDevices')).toEqual([{ m: 'refreshDevices' }]);
     expect(screen.getByRole('heading', { level: 2, name: 'Devices' })).toBeInTheDocument();
     expect(screen.getByText('Every browser that holds your keys.')).toBeInTheDocument();
-    expect(rows().map(r => within(r).getByText(/^[0-9a-f]{8}$/).textContent)).toEqual([OWN, PHONE, FORGOTTEN, OLD].map(id => id.slice(0, 8)));
+    // Wave B (Jonas): no row is titled by an opaque id; this browser reads its user agent, another unnamed device is "Unnamed device".
+    expect(rows().map(r => (r.textContent ?? '').includes('Unnamed device'))).toEqual([true, true, true, true]); // jsdom's user agent names no browser
+    expect(rows().some(r => /\b[0-9a-f]{8}\b/.test(r.textContent ?? ''))).toBe(false);
     const own = rowOf(OWN);
     expect(within(own).getByText('This browser')).toBeInTheDocument();
     // Signal task 10 fix round 1 (README §5.9): no tier tags; this browser's row signs out, and every live device can be named.
-    expect(within(own).queryByText('Browser')).toBeNull();
+    for (const row of rows()) expect(row.querySelector('[data-kind="tier"]')).toBeNull();
+    // Jonas, 2026-11-04: this device's row says where it runs (jsdom's user agent names no browser), as an informational tag.
+    const platform = own.querySelector('[data-kind="platform"]');
+    expect(platform?.textContent).toBe('Browser');
+    expect(platform?.getAttribute('title')).toBe('Where this device runs, as it says itself. It is not a security check.');
+    for (const id of [PHONE, FORGOTTEN, OLD]) expect(rowOf(id).querySelector('[data-kind="platform"]')).toBeNull();
     expect(within(own).getAllByRole('button').map(b => b.textContent)).toEqual(['Sign out']);
     expect(within(rowOf(PHONE)).getByRole('button', { name: 'Remove' })).toBeInTheDocument();
     expect(within(rowOf(FORGOTTEN)).getByText('not yet in the device list')).toBeInTheDocument();
@@ -111,6 +131,14 @@ describe('removing a device', () => {
     expect(screen.queryByRole('dialog', { name: 'Remove this device?' })).toBeNull();
     await user.click(within(rowOf(PHONE)).getByRole('button', { name: 'Remove' }));
     expect(screen.getByRole('textbox', { name: 'Recovery key' })).toHaveValue('');
+  });
+  it('shows the prototype\u2019s toast "{device} removed" once the key is accepted', async () => {
+    const named = [dev(OWN, { own: true }), dev(PHONE, { label: 'Chrome on macOS' })];
+    const { user } = setup(undefined, named);
+    await user.click(within(rowOf(PHONE)).getByRole('button', { name: 'Remove' }));
+    await typeKey(user);
+    await user.click(within(screen.getByRole('dialog', { name: 'Remove this device?' })).getByRole('button', { name: 'Remove' }));
+    expect(await screen.findByText('Chrome on macOS removed')).toBeInTheDocument();
   });
   it('a wrong key keeps the text and puts focus on the field', async () => {
     const { user } = setup(c => (c.m === 'revokeDevice' ? Promise.reject(refusal({ code: 'E_RECOVERY_KEY' })) : Promise.resolve(null)));
@@ -198,13 +226,14 @@ describe('naming a device', () => {
   const list = () => [dev(OWN, { own: true }), dev(NAMED, { label: 'work laptop', lastSeen: NOW - 30 }), dev(PHONE, { tier: 0, signerTier: 0, lastSeen: NOW - 60 }),
     dev(OLD, { lastSeen: NOW - 3 * 86_400, revokedAt: NOW - 3_600, listed: false })];
   const rowNamed = (name: string) => {
-    const row = rows().find(r => within(r).queryByText(name) !== null);
+    // A nameless device is found by the id in its sub line (wave B: the title is never the id).
+    const row = rows().find(r => /^[0-9a-f]{8}$/.test(name) ? (r.textContent ?? '').includes(name.slice(0, 6)) : within(r).queryByText(name) !== null);
     if (row === undefined) throw new Error(`no row named ${name}`);
     return row;
   };
   const field = () => screen.getByRole('textbox', { name: 'Device name' });
 
-  it('shows the name where there is one and the first eight characters where there is not, and offers rename on live devices only', () => {
+  it('shows the name where there is one and "Unnamed device" where there is not, and offers rename on live devices only', () => {
     setup(undefined, list());
     expect(within(rowNamed('work laptop')).getByText(new RegExp(` · ${NAMED.slice(0, 6)}$`))).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Rename' })).toBeNull();
@@ -219,8 +248,8 @@ describe('naming a device', () => {
     const row = rowNamed('work laptop');
     expect(within(row).getByText('work laptop').tagName).toBe('BDI');
     expect(within(row).getByText(new RegExp(` · ${NAMED.slice(0, 6)}$`))).toBeInTheDocument();
-    // An unnamed device shows its id once.
-    expect(within(rowNamed(PHONE.slice(0, 8))).getAllByText(PHONE.slice(0, 8))).toHaveLength(1);
+    // An unnamed device is titled "Unnamed device", never by its id.
+    expect(within(rowNamed(PHONE.slice(0, 8))).getByText('Unnamed device')).toBeInTheDocument();
   });
   it('names the device by its label and its id in both remove dialogs', async () => {
     const named = [dev(OWN, { own: true }), dev(NAMED, { label: 'work laptop' }), dev(FORGOTTEN, { label: 'old tablet', listed: false })];
@@ -277,6 +306,19 @@ describe('naming a device', () => {
       await user.click(screen.getByRole('button', { name: 'Close' }));
       await renameFrom(user, rowNamed(PHONE.slice(0, 8)));
       expect(field()).toHaveValue('');
+    } finally { spy.mockRestore(); }
+  });
+  it('shows this browser\u2019s user agent as its title locally and never sends a name on its own', async () => {
+    const ua = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
+    const spy = vi.spyOn(window.navigator, 'userAgent', 'get').mockReturnValue(ua);
+    try {
+      const { fake, user } = setup(undefined, list());
+      expect(within(rowNamed(OWN.slice(0, 8))).getByText('Chrome on macOS')).toBeInTheDocument();
+      // Another device is never named from this browser's user agent.
+      expect(within(rowNamed(PHONE.slice(0, 8))).getByText('Unnamed device')).toBeInTheDocument();
+      act(() => fake.set('devices', [dev(OWN, { own: true, label: null }), dev(PHONE, { tier: 0, signerTier: 0 })]));
+      await user.keyboard('{Escape}');
+      expect(fake.callsOf('renameDevice')).toEqual([]);
     } finally { spy.mockRestore(); }
   });
   it('shows a refusal by its code and keeps the dialog and the text', async () => {

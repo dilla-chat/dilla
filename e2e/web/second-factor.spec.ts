@@ -7,7 +7,7 @@
 import { expect, type Locator, type Page } from '@playwright/test';
 import {
   COPY, SIGNIN, TEST_TIMEOUT, WAIT, completeFactorStep, copy, expectAccessible, expectHeading, expectShell, finishWithKey,
-  keyField, keySubmit, keyText, newAccount, nextButton, readRecoveryKey, signInToKeyStep, submitButton, test, type Account,
+  keyField, keySubmit, keyText, newAccount, nextButton, signInToKeyStep, signUpToFactor, test, type Account,
   settingsGear,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
@@ -15,9 +15,10 @@ import { launchSecond, secondProfileDir } from './support/second-harness';
 import { hostNow, totp } from './support/totp';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
 import { rmSync } from 'node:fs';
+import { e2ePort } from './support/ports';
 
 /** Its own ports (E1 reservation). */
-const EMPTY: HostConfig = { port: 8495, control: 8496, webRoot: 'packages/web/dist' };
+const EMPTY: HostConfig = { port: e2ePort(8495), control: e2ePort(8496), webRoot: 'packages/web/dist' };
 const ADA = 'Ada';
 
 let host: StartedHost | null = null;
@@ -118,19 +119,7 @@ test('second factor: sign-up step 5, a code and a backup code on new browsers, a
   // 1. Ada signs up. Step 5 is the factor: axe on the choice and on the app step, a wrong code, the right code, ten backup codes.
   const ada = newAccount(ADA, h.control);
   await page.goto(`/welcome?invite=${encodeURIComponent(h.invite.split(',')[0] ?? '')}`);
-  await expectHeading(page, COPY.connectTitle, { instance });
-  await nextButton(page).click();
-  await expectHeading(page, COPY.identityTitle);
-  await page.getByLabel(copy(COPY.usernameLabel), { exact: true }).fill(ada.username);
-  await page.getByLabel(copy(COPY.displayLabel), { exact: true }).fill(ada.display);
-  await page.getByLabel(copy(COPY.passwordLabel), { exact: true }).fill(ada.password);
-  await nextButton(page).click();
-  await expectHeading(page, COPY.keysTitle);
-  ada.recoveryKey = await readRecoveryKey(page);
-  await page.getByRole('checkbox', { name: copy(COPY.keysAcknowledge), exact: true }).check();
-  await nextButton(page).click();
-  await expectHeading(page, COPY.deviceTitle);
-  await submitButton(page).click();
+  await signUpToFactor(page, ada, instance);
   await completeFactorStep(page, ada, async (state) => {
     if (state === 'choose') {
       await expectAccessible(page, 'second factor: choose');
@@ -138,11 +127,12 @@ test('second factor: sign-up step 5, a code and a backup code on new browsers, a
       const code = page.getByLabel(copy('factor.totp.code'), { exact: true });
       await expectAccessible(page, 'second factor: authenticator app');
       await code.fill(await wrongCode(await page.getByLabel(copy('factor.totp.key'), { exact: true }).inputValue(), h.control));
-      await page.getByRole('button', { name: copy('factor.totp.submit'), exact: true }).click();
+      // Wave B task 3: the sixth digit in the code boxes sends the code; there is no button to press.
       await expect(page.getByText(copy('factor.error.code'), { exact: true })).toBeVisible({ timeout: WAIT });
       await expect(code).toBeFocused();
     } else {
-      await expect(page.getByText(copy('factor.codes.notKey'), { exact: true })).toBeVisible();
+      // Wave B task 3b: at sign-up the backup codes are on the done step (step 6), under its prototype copy.
+      await expect(page.getByText(copy('onboarding.done.codesBody'), { exact: true })).toBeVisible();
       await expect(page.getByRole('list', { name: copy('factor.codes.label'), exact: true }).locator('li')).toHaveCount(10);
       await expectOneColumn(page.getByRole('list', { name: copy('factor.codes.label'), exact: true }).locator('li'));
       await expectAccessible(page, 'second factor: backup codes');
@@ -205,7 +195,7 @@ test('second factor: sign-up step 5, a code and a backup code on new browsers, a
   await another(async (p) => {
     await toLogin(p, ada);
     await p.getByLabel(copy('signin.totp.code'), { exact: true }).fill(await wrongCode(secret(ada), h.control));
-    await p.getByRole('button', { name: copy(SIGNIN.loginSubmit), exact: true }).click();
+    // Wave B task 3: the sixth digit in the code boxes sends the code; there is no button to press.
     await expect(p.getByText(copy('signin.error.totpFailed'), { exact: true })).toBeVisible({ timeout: WAIT });
     await expectHeading(p, SIGNIN.loginTitle, { instance });
   });

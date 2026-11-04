@@ -629,17 +629,20 @@ jobs:
     steps:
       - if: needs.changes.outputs.web != 'false'
         run: npm test
+        env:
+          DILLA_UCD_DIR: \${{ runner.temp }}/ucd
       - name: vectors are up to date
         if: needs.changes.outputs.web != 'false'
         run: npm run vectors
       - run: npm run test:css-check
       - run: npm run check:css
+      - run: npm run check:desktop-auth
       - run: npm run test:ci-check
       - run: npm run test:wasm-size-check
       - run: npm run test:manifest-writer
       - run: npm run test:install
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        if: needs.changes.outputs.text != 'false'
+        if: needs.changes.outputs.web != 'false' || needs.changes.outputs.text != 'false'
         with:
           path: \${{ runner.temp }}/ucd
           key: ucd-\${{ hashFiles('scripts/gen-profile-text-tables.mjs') }}
@@ -1319,6 +1322,12 @@ test('a node job without the css checker steps is reported', () => {
     const problems = checkWorkflow(fixture(GOOD.replace(`      - run: ${step}\n`, '')));
     assert.ok(problems.some((p) => p.includes('"node"') && p.includes(step)), problems.join('\n'));
   }
+});
+
+// Desktop merge security review M2: the go:embed'ed desktop auth script must match its generator's output.
+test('a node job that stopped checking the embedded desktop auth script is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace('      - run: npm run check:desktop-auth\n', '')));
+  assert.ok(problems.some((p) => p.includes('"node"') && p.includes('npm run check:desktop-auth')), problems.join('\n'));
 });
 
 test('a go-postgres set that stopped running the api AFK tests is reported', () => {

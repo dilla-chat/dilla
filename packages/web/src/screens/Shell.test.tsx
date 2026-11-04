@@ -904,9 +904,8 @@ describe('timeline', () => {
     expect(within(log).getAllByText('Ada L')).toHaveLength(3);
     expect(within(log).getByText('4a4a4a4a')).toBeInTheDocument();
     expect(within(log).getByText('device 29292929')).toBeInTheDocument();
-    // MP4 removed the device tag from grouped rows: Ada's s3 and the pending row head runs of their own (s4 to s6 sit between),
-    // the failed row is grouped under the pending one and carries none. (Caused by MP4, not by MP1's member-list change.)
-    expect(within(log).getAllByText('web')).toHaveLength(2);
+    // Human feed headers omit WEB; the managed Bot keeps its tag.
+    expect(within(log).queryByText('web')).not.toBeInTheDocument();
     expect(within(log).getAllByText('bot')).toHaveLength(1);
     // Each row names its time once in its head (heard) and once in its gutter (seen; Task 7, Signal §5.5): 8 rows, 16 times.
     expect(within(log).getAllByText(formatTime(NOW))).toHaveLength(16);
@@ -1903,6 +1902,18 @@ describe('direct messages', () => {
       .toHaveTextContent('That did not work (E_FORBIDDEN). Try again, or reload the page.');
     expect(path()).toBe('/dm');
   });
+  it('shows a refused Bot Message action when the member picker is closed', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`, { before: f => {
+      withDms(f);
+      f.set(`timeline:${GEN}`, timeline({ items: [item({ key: 'bot-message', senderUser: BOT, bot: true, body: 'hello' })] }));
+    } });
+    fake.handler = c => c.m === 'openDm' ? Promise.reject(refusal({ code: 'E_FORBIDDEN', status: 403 })) : Promise.resolve(null);
+    await user.click(within(screen.getByRole('log')).getByRole('button', { name: 'Helper' }));
+    await user.click(within(await screen.findByRole('dialog', { name: 'Helper' })).getByRole('button', { name: 'Message' }));
+    await waitFor(() => expect(fake.callsOf('openDm')).toEqual([{ m: 'openDm', userId: BOT }]));
+    expect(await screen.findByText('That did not work (E_FORBIDDEN). Try again, or reload the page.')).toBeVisible();
+    expect(screen.queryByRole('dialog', { name: 'Message someone' })).toBeNull();
+  });
 });
 
 describe('badges', () => {
@@ -2116,8 +2127,8 @@ it('selects a builtin member through the shipping Shell provider and executes dm
   fireEvent.change(composer(), { target: { value: '/dm' } });
   const member = await screen.findByRole('combobox', { name: 'user' });
   await user.type(member, 'bob');
-  await user.click(await screen.findByRole('option', { name: 'bob' }));
-  await user.click(screen.getByRole('button', { name: /run command/i }));
+  await user.click(await screen.findByRole('option', { name: /^bob/ }));
+  await user.click(screen.getByRole('button', { name: 'send' }));
   await waitFor(() => expect(fake.callsOf('openDm')).toEqual([{ m: 'openDm', userId: PEER }]));
 });
 

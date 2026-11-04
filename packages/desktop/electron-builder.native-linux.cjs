@@ -21,7 +21,7 @@ module.exports = {
  extraMetadata: { homepage: 'https://github.com/dilla-chat/dilla', ...(override === undefined ? {} : { version }) },
  extraResources: [{ from: 'native-bin', to: 'native', filter: ['dilla-audio*'] }],
  protocols: [{ name: 'Dilla invite', schemes: ['dilla'] }],
- linux: { artifactName: 'dilla-${version}-linux-x64.${ext}', syncDesktopName: true, target: [{ target: 'deb', arch: ['x64'] }, { target: 'rpm', arch: ['x64'] }], category: 'Network', icon: 'assets/icon.png', maintainer: 'Dilla contributors', vendor: 'Dilla contributors' },
+ linux: { artifactName: 'dilla-${version}-linux-x64.${ext}', syncDesktopName: true, target: [{ target: 'deb', arch: ['x64'] }, { target: 'rpm', arch: ['x64'] }], category: 'Network', icon: 'assets/icons/linux', maintainer: 'Dilla contributors', vendor: 'Dilla contributors' },
  deb: { packageName: 'dilla', fpm: ['--depends', 'libpipewire-0.3-0t64 | libpipewire-0.3-0', '--version', `${base}${beta === undefined ? '' : `~beta.${beta}`}`, '--iteration', '1'] },
  rpm: { packageName: 'dilla', afterRemove: 'packaging/linux/rpm-after-remove.tpl', fpm: ['--depends', 'libpipewire-0.3.so.0()(64bit)', '--version', base, '--iteration', beta === undefined ? '1' : `0.beta.${beta}.1`] },
  electronFuses: { runAsNode: false, enableCookieEncryption: true, enableNodeOptionsEnvironmentVariable: false, enableNodeCliInspectArguments: false, enableEmbeddedAsarIntegrityValidation: true, onlyLoadAppFromAsar: true, grantFileProtocolExtraPrivileges: false },

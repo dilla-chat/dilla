@@ -195,3 +195,8 @@ describe('inline players (flow 06, L-UI-71, R9)', () => {
     expect(screen.queryByRole('button', { name: 'play long.flac' })).toBeNull();
   });
 });
+
+it('shows compact sent-file metadata in prototype size · EXT order (gap52)', () => {
+  renderConversation({ items: [peerRow(P1, '7', 'sent', { attachments: [file({ name: 'raid-notes.txt', size: 1234 })] })] });
+  expect(screen.getByText('1.2 KB · TXT')).toBeInTheDocument();
+});

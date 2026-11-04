@@ -3,7 +3,7 @@
 // Playwright directly while preserving the checks in story-a11y.ts.
 import { chromium } from 'playwright';
 import { VIEWPORT, declaredViewport, storyParameters } from './shoot-stories.mjs';
-import { checkStory } from './story-a11y.ts';
+import { checkStory, checkPollFieldFocus } from './story-a11y.ts';
 
 const base = process.argv[2] === '--url' ? process.argv[3] : (process.argv[2] ?? 'http://127.0.0.1:6006');
 const url = new URL(base);
@@ -65,6 +65,148 @@ try {
           new Promise(resolve => setTimeout(resolve, 2_000)),
         ]));
         await checkStory(page, story);
+        // Task 8: actual browser geometry and hit testing for the conversation findings.
+        if (story.id === 'conversation-messagerow--signal-code-only') {
+          const copy = page.getByRole('button', { name: 'Copy', exact: true });
+          await page.locator('.d-message-row').hover();
+          const targets = page.locator('.d-message-toolbar button, .d-code-block__copy');
+          if (await targets.count() !== 5) throw new Error('gap53: expected four toolbar controls and Copy');
+          const reachable = await targets.evaluateAll(buttons => buttons.every(button => {
+            const r = button.getBoundingClientRect();
+            return [[r.width / 2, 1], [r.width / 2, r.height - 1], [1, r.height / 2], [r.width - 1, r.height / 2], [r.width / 2, r.height / 2]]
+              .every(([x, y]) => button.contains(document.elementFromPoint(r.x + x, r.y + y)));
+          }));
+          const separated = await page.evaluate(() => document.querySelector('.d-message-toolbar').getBoundingClientRect().bottom
+            <= document.querySelector('.d-code-block__copy').getBoundingClientRect().top);
+          if (!reachable || !separated) throw new Error('gap53: toolbar and Copy must be fully reachable without overlap');
+          await copy.click();
+          await page.getByRole('button', { name: 'Copied', exact: true }).waitFor();
+        }
+        if (story.id === 'conversation-messagerow--phone-revealed') {
+          const pill = page.locator('.d-message-toolbar');
+          const geometry = await pill.evaluate(el => {
+            const r = el.getBoundingClientRect(), row = el.closest('.d-message-row').getBoundingClientRect();
+            return { height: r.height, top: r.top - row.top, buttons: el.querySelectorAll('button').length };
+          });
+          if (Math.abs(geometry.height - 30) > 0.05 || Math.abs(geometry.top + 12) > 0.05 || geometry.buttons !== 4) throw new Error(`gap89 phone toolbar: ${JSON.stringify(geometry)}`);
+        }
+        if (story.id === 'conversation-messagerow--signal-reply-flash') {
+          await page.emulateMedia({ reducedMotion: 'reduce' });
+          await page.locator('[data-flash="true"]').evaluate(el => {
+            const composer = document.createElement('textarea');
+            document.body.append(composer); composer.focus();
+            el.tabIndex = -1; el.dataset.jump = 'pointer'; el.focus(); composer.remove();
+          });
+          const flash = await page.locator('[data-flash="true"]').evaluate(el => {
+            const s = getComputedStyle(el); return { fill: s.backgroundColor, edge: s.boxShadow, outline: s.outlineStyle };
+          });
+          if (flash.fill !== 'rgba(90, 168, 230, 0.18)' || !flash.edge.includes('inset') || flash.outline !== 'none') throw new Error(`gap44 reply flash: ${JSON.stringify(flash)}`);
+          await page.locator('[data-flash="true"]').evaluate(el => el.removeAttribute('data-jump'));
+          await page.keyboard.press('Shift');
+          if (await page.locator('[data-flash="true"]').evaluate(el => getComputedStyle(el).outlineStyle) !== 'solid') throw new Error('gap44: keyboard focus must keep its ring');
+        }
+        if (story.id === 'conversation-messagerow--signal-attachments') {
+          const sizes = await page.evaluate(() => {
+            const image = document.querySelector('.d-attachment-card__open').getBoundingClientRect();
+            const file = document.querySelector('.d-attachment-card__file').getBoundingClientRect();
+            return { image: [image.width, image.height], file: [file.width, file.height], top: image.top === file.top };
+          });
+          if (sizes.image[0] !== 280 || sizes.image[1] !== 210 || sizes.file[0] !== 300 || sizes.file[1] !== 210 || !sizes.top) throw new Error(`gap52 sent attachments: ${JSON.stringify(sizes)}`);
+        }
+        if (story.id === 'voice-nowplaying--no-permission') {
+          await page.setViewportSize({ width: 390, height: 844 });
+          await page.locator('.d-np button[aria-disabled="true"]').first().dispatchEvent('click');
+          const toast = await page.locator('.d-np-toast').evaluate(async el => {
+            await Promise.all(el.getAnimations().map(a => a.finished));
+            const r = el.getBoundingClientRect();
+            return { width: r.width, height: r.height, left: r.left, right: r.right };
+          });
+          if (Math.abs((toast.left + toast.right) / 2 - 195) > .5 || toast.left < 8 || toast.right > 382 || toast.height !== 38) throw new Error(`Phone toast must keep its intrinsic centered line within the viewport: ${JSON.stringify(toast)}`);
+        }
+        if (story.id === 'feedback-toast--over-25-mb') {
+          for (const width of [390, 320]) {
+            await page.setViewportSize({ width, height: 844 });
+            await page.getByRole('button', { name: 'Show toast', exact: true }).click();
+            const toast = await page.locator('.d-np-toast').evaluate(async el => {
+              await Promise.all(el.getAnimations().map(a => a.finished));
+              const r = el.getBoundingClientRect();
+              return { width: r.width, height: r.height, left: r.left, right: r.right, overflows: el.scrollWidth > el.clientWidth + 1 };
+            });
+            if (Math.abs((toast.left + toast.right) / 2 - width / 2) > .5 || toast.left < 8 || toast.right > width - 8 || toast.overflows
+              || (width === 390 ? Math.abs(toast.width - 367) > .5 || toast.height !== 38 : toast.width !== 304 || toast.height <= 38)) {
+              throw new Error(`Over-25-MB toast must keep one intrinsic line at 390px and clamp narrower screens: ${JSON.stringify(toast)}`);
+            }
+          }
+        }
+        // Task 7: the poll's exact prototype geometry and winner style (Ruling C).
+        if (story.id.startsWith('conversation-pollcard--')) {
+          const got = await page.evaluate(() => {
+            const card = document.querySelector('.d-poll-card');
+            const option = card.querySelector('.d-poll-card__option');
+            const text = option.querySelector('.d-poll-card__text');
+            const avatar = card.querySelector('.d-avatar');
+            return { width: card.getBoundingClientRect().width, max: getComputedStyle(card).maxWidth, border: getComputedStyle(card).borderColor,
+              row: option.getBoundingClientRect().height, weight: getComputedStyle(text).fontWeight,
+              avatar: avatar.getBoundingClientRect().width, fill: getComputedStyle(option.querySelector('.d-poll-card__fill')).backgroundColor,
+              closed: card.dataset.closed === 'true', winner: option.dataset.winner === 'true', mine: option.dataset.mine === 'true' };
+          });
+          if (got.width !== 466 || got.max !== '440px' || got.border !== 'rgb(37, 42, 51)' || got.row !== 36 || got.avatar !== 18) throw new Error(`PollCard geometry: ${JSON.stringify(got)}`);
+          // Plays may vote and close the poll. Check its rendered state, including a winner that is also the viewer's pick.
+          if (got.weight !== (got.winner ? '700' : '400')) throw new Error(`PollCard winner weight: ${JSON.stringify(got)}`);
+          const fill = got.mine ? 'rgba(90, 168, 230, 0.2)' : got.winner ? 'rgba(124, 255, 142, 0.12)' : 'rgba(255, 255, 255, 0.05)';
+          if (got.fill !== fill) throw new Error(`PollCard fill: ${JSON.stringify(got)}`);
+          if (got.closed) {
+            const expectedBorder = got.mine ? 'rgb(90, 168, 230)' : 'rgb(37, 42, 51)';
+            await page.locator('.d-poll-card__option').first().hover();
+            await page.waitForFunction(expected => getComputedStyle(document.querySelector('.d-poll-card__option')).borderColor === expected, expectedBorder, { timeout: 2000 });
+            const border = await page.locator('.d-poll-card__option').first().evaluate(el => getComputedStyle(el).borderColor);
+            if (border !== expectedBorder) throw new Error(`PollCard closed winner hover: ${border}`);
+          }
+        }
+        if (story.id.startsWith('conversation-pollcard--')) {
+          const motion = await page.evaluate(() => ({ card: getComputedStyle(document.querySelector('.d-poll-card')).animationDuration, ease: getComputedStyle(document.querySelector('.d-poll-card')).animationTimingFunction,
+            pop: getComputedStyle(document.querySelector('.d-poll-card__voters > span')).animationDuration,
+            check: getComputedStyle(document.querySelector('.d-poll-card__check')).transitionDuration }));
+          if (motion.ease !== 'ease' || motion.card !== '0.36s' || motion.pop !== '0.36s' || motion.check !== '0.16s') throw new Error(`Poll motion: ${JSON.stringify(motion)}`);
+          await page.emulateMedia({ reducedMotion: 'reduce' });
+          const reduced = await page.locator('.d-poll-card').evaluate(el => getComputedStyle(el).animationName);
+          if (reduced !== 'none' || await page.locator('.d-poll-card__check').first().evaluate(el => getComputedStyle(el).transitionDuration) !== '0s' || await page.locator('.d-poll-card__voters > span').first().evaluate(el => getComputedStyle(el).animationName) !== 'none') throw new Error(`Poll reduced motion: ${reduced}`);
+          await page.emulateMedia({ reducedMotion: 'no-preference' });
+        }
+        if (story.id.startsWith('form-polldialog--')) {
+          const check = async phone => {
+            const got = await page.evaluate(() => {
+              const dialog = document.querySelector('.d-poll-dialog dialog');
+              const input = dialog.querySelector('input');
+              const selected = dialog.querySelector('[role="radio"][aria-checked="true"]');
+              const icon = dialog.querySelector('.d-poll-dialog__bot').getBoundingClientRect();
+              const title = dialog.querySelector('.d-dialog__title').getBoundingClientRect();
+              return { width: dialog.getBoundingClientRect().width, top: dialog.getBoundingClientRect().top,
+                titleGap: title.left - icon.right,
+                font: getComputedStyle(input).fontSize, weight: getComputedStyle(input).fontWeight, height: input.getBoundingClientRect().height,
+                answer: dialog.querySelector('.d-poll-dialog__answer input').getBoundingClientRect().height, header: dialog.querySelector('.d-dialog__head').getBoundingClientRect().height,
+                field: getComputedStyle(input).backgroundColor, segment: getComputedStyle(selected.parentElement).backgroundColor, selected: getComputedStyle(selected).backgroundColor, footerButtons: Array.from(dialog.querySelectorAll('.d-dialog__footer button')).filter(b => getComputedStyle(b).display !== 'none').length };
+            });
+            if (Math.abs(got.titleGap - 10) > .05) throw new Error(`PollDialog title must start 10px after the Bot icon: ${JSON.stringify(got)}`);
+            if (got.width !== (phone ? 366 : 520) || Math.abs(got.top - (phone ? 20 : page.viewportSize().height * .12)) > 1 || got.height !== 40 || got.answer !== 36 || got.header !== 57 || got.weight !== '400' || got.font !== (phone ? '16px' : '13px') || got.field !== 'rgb(15, 18, 22)' || got.segment !== 'rgb(15, 18, 22)' || got.selected !== 'rgb(90, 168, 230)' || got.footerButtons !== 2) throw new Error(`PollDialog geometry: ${JSON.stringify(got)}`);
+          };
+          const motion = await page.evaluate(() => ({ answer: getComputedStyle(document.querySelector('.d-poll-dialog__answer')).animationDuration,
+            press: getComputedStyle(document.querySelector('.d-poll-dialog__post')).transitionDuration }));
+          if (motion.answer !== '0.22s' || motion.press !== '0.16s') throw new Error(`Poll dialog motion: ${JSON.stringify(motion)}`);
+          await page.locator('.d-poll-dialog__post').hover(); await page.mouse.down();
+          await page.waitForFunction(() => Math.abs(new DOMMatrix(getComputedStyle(document.querySelector('.d-poll-dialog__post')).transform).a - .96) < .001);
+          await page.mouse.up();
+          await page.emulateMedia({ reducedMotion: 'reduce' });
+          if (await page.locator('.d-poll-dialog__answer').first().evaluate(el => getComputedStyle(el).animationName) !== 'none') throw new Error('Poll answer reduced motion');
+          await page.emulateMedia({ reducedMotion: 'no-preference' });
+          await page.evaluate(() => Promise.all(document.getAnimations().filter(a => a.effect?.getTiming().iterations !== Infinity).map(a => a.finished.catch(() => {}))));
+          await check(false);
+          await checkPollFieldFocus(page);
+          await page.setViewportSize({ width: 390, height: 844 });
+          await check(true);
+          await checkPollFieldFocus(page);
+        }
+
         // Task 10b fix round 1: a press on the sensitivity meter sets the value under the pointer (the slider's thumb is 2px,
         // so the native value and the drawn line agree at every point, ends included).
         if (story.id === 'settings-sensitivitymeter--manual-drag') {
@@ -80,6 +222,70 @@ try {
             const expected = box.x + box.width * (got + 100) / 100;
             if (Math.abs(centre - expected) > 1.5) throw new Error(`SensitivityMeter: the line is at ${centre}, the value at ${expected}`);
           }
+        }
+        // Wave B Task 6: private result geometry and the prototype's chip colours, on both layouts.
+        if (story.id.startsWith('conversation-botresult--')) {
+          const got = await page.evaluate(() => {
+            const row = document.querySelector('.d-bot-result');
+            const chip = row.querySelector('.d-bot-result__status');
+            const cs = getComputedStyle(chip);
+            const avatar = row.querySelector('.d-message-row__avatar');
+            return { status: row.dataset.status, chipHeight: chip.getBoundingClientRect().height,
+              font: cs.fontSize, bg: cs.backgroundColor, fg: cs.color, radius: cs.borderRadius,
+              avatar: [avatar.getBoundingClientRect().width, avatar.getBoundingClientRect().height],
+              spin: getComputedStyle(row.querySelector('.d-bot-result__icon') ?? chip).animationDuration,
+              tileRadius: row.querySelector('.d-bot-result__tile') ? getComputedStyle(row.querySelector('.d-bot-result__tile')).borderRadius : null,
+              icon: chip.querySelector('[data-icon]')?.getAttribute('data-icon'),
+              columns: getComputedStyle(row).gridTemplateColumns.split(' ').slice(0, 2),
+              phone: document.querySelector('[data-layout="phone"]') !== null };
+          });
+          if (got.chipHeight !== 18 || got.font !== '10.5px' || got.radius !== '4px') throw new Error(`BotResult: wrong chip geometry ${JSON.stringify(got)}`);
+          if (got.avatar.some(size => size !== 30)) throw new Error(`BotResult: wrong avatar ${got.avatar}`);
+          if (got.columns[0] !== (got.phone ? '4px' : '44px') || got.columns[1] !== '30px') throw new Error(`BotResult: wrong row columns ${got.columns}`);
+          const fills = { pending: 'rgba(90, 168, 230, 0.12)', success: 'rgba(124, 255, 142, 0.1)', failed: 'rgba(255, 110, 110, 0.1)', cancelled: 'rgba(255, 209, 106, 0.1)' };
+          if (got.bg !== fills[got.status]) throw new Error(`BotResult: wrong fill ${got.bg}`);
+          if (got.tileRadius !== null && got.tileRadius !== '4px') throw new Error(`BotResult: wrong D tile radius ${got.tileRadius}`);
+          if (got.status === 'cancelled' && (got.fg !== 'rgb(255, 209, 106)' || got.icon !== 'triangle-alert')) throw new Error(`BotResult: wrong Not confirmed ink/icon ${got.fg} ${got.icon}`);
+          if (got.status === 'pending' && got.spin !== '0.9s') throw new Error(`BotResult: wrong spinner duration ${got.spin}`);
+        }
+        // Wave B Task 2: the command picker's prototype geometry (a 260px list, rows of at least 40px, the chip rings) and
+        // no keyboard hints on a phone.
+        if (story.id.startsWith('conversation-commandpicker--')) {
+          const got = await page.evaluate(() => {
+            const style = selector => { const el = document.querySelector(selector); return el === null ? null : getComputedStyle(el); };
+            return {
+              listMax: style('.d-cmd-list__scroll')?.maxHeight ?? null,
+              rows: [...document.querySelectorAll('.d-cmd-row')].map(el => el.getBoundingClientRect().height),
+              ring: style('.d-cmd-field[data-active="true"]')?.boxShadow ?? null,
+              invalid: document.querySelector('.d-cmd-field[data-invalid="true"]') !== null,
+              hints: [...document.querySelectorAll('.d-cmd-list__hint, .d-cmd-bar__hint')].map(el => getComputedStyle(el).display),
+              phone: document.querySelector('[data-layout="phone"]') !== null,
+            };
+          });
+          if (got.listMax !== null && got.listMax !== '260px') throw new Error(`CommandPicker: the list's max height is ${got.listMax}, want 260px`);
+          if (got.rows.some(h => h < 40)) throw new Error(`CommandPicker: a command row is under 40px (${got.rows.join(', ')})`);
+          const wantRing = got.invalid ? 'rgba(255, 110, 110, 0.15) 0px 0px 0px 3px' : 'rgba(90, 168, 230, 0.12) 0px 0px 0px 3px';
+          if (got.ring !== null && got.ring !== wantRing) throw new Error(`CommandPicker: the active chip's ring is ${got.ring}, want ${wantRing}`);
+          if (got.phone && got.hints.some(display => display !== 'none')) throw new Error('CommandPicker: a keyboard hint shows on a phone');
+          if (!got.phone && got.hints.some(display => display === 'none')) throw new Error('CommandPicker: a keyboard hint is hidden on a desktop');
+        }
+        // Wave B parity fix: a long room name ends in an ellipsis inside the person menu's 236px; the menu does not scroll sideways
+        // and every keycap and head count lies inside it.
+        if (story.id === 'voice-personcontextmenu--you-long-room-name' || story.id === 'voice-personcontextmenu--you') {
+          const got = await page.evaluate(() => {
+            const popup = document.querySelector('.d-person-menu');
+            if (popup === null) return null;
+            const box = popup.getBoundingClientRect();
+            return {
+              width: box.width, scrolls: popup.scrollWidth > popup.clientWidth,
+              hints: [...popup.querySelectorAll('.d-action-menu__hint')].map(el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.right <= box.right; }),
+              truncated: [...popup.querySelectorAll('[data-room="true"] .d-action-menu__label')].some(el => el.scrollWidth > el.clientWidth),
+            };
+          });
+          if (got === null) throw new Error('PersonContextMenu: no menu is open');
+          if (got.scrolls || got.width !== 236) throw new Error(`PersonContextMenu: the menu is ${got.width}px wide and ${got.scrolls ? 'scrolls sideways' : 'fits'}, want 236px without scrolling`);
+          if (got.hints.length < 4 || got.hints.some(ok => !ok)) throw new Error(`PersonContextMenu: a keycap or head count is out of view (${got.hints.join(', ')})`);
+          if (story.id.endsWith('long-room-name') && !got.truncated) throw new Error('PersonContextMenu: the long room name is not truncated');
         }
         process.stdout.write(`PASS ${story.id}\n`);
       } catch (error) {

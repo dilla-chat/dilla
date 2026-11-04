@@ -11,6 +11,21 @@ const items = (over: Partial<Record<string, Partial<TabBarItem>>> = {}): TabBarI
 ];
 
 describe('TabBar', () => {
+  it.each([true, false])('draws the prototype Home alias with the pinned house geometry (current=%s)', current => {
+    render(<TabBar label="main" items={[{ id: 'home', label: 'Home', href: '/', icon: 'home', current }]} onSelect={() => {}} />);
+    const home = screen.getByRole('link', { name: 'Home' });
+    const svg = home.querySelector('svg')!;
+    // Lucide 0.460.0 exports Home = House; lucide-static exposes only icons/house.svg.
+    expect(Array.from(svg.querySelectorAll('path'), path => path.getAttribute('d'))).toEqual([
+      'M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8',
+      'M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z',
+    ]);
+    expect(svg).toHaveAttribute('width', '19');
+    expect(svg).toHaveAttribute('height', '19');
+    expect(svg).toHaveAttribute('stroke-width', '2');
+    expect(svg).toHaveAttribute('stroke', 'currentColor');
+    expect(home.getAttribute('aria-current')).toBe(current ? 'page' : null);
+  });
   it('renders four links in order inside a named navigation', () => {
     render(<TabBar label="main" items={items()} onSelect={() => {}} />);
     expect(screen.getByRole('navigation', { name: 'main' })).toHaveClass('d-tab-bar');

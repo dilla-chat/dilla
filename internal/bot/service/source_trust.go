@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/bot/native"
 	"github.com/dilla-chat/dilla/internal/cborx"
 	"github.com/dilla-chat/dilla/internal/id"
@@ -240,6 +241,16 @@ func (t *SourceTrust) trustSender(ctx context.Context, session senderHistorySess
 		return 0, ErrSourceTrustBusy
 	}
 	defer release()
+	// A previous claim holder may have advanced the shared cache since the caller's snapshot.
+	leaves, err := t.native.PendingLeaves(ctx)
+	if err != nil {
+		return 0, trustPhaseError(TrustPhasePendingLeaves, err)
+	}
+	for _, fresh := range leaves {
+		if fresh.User == user && fresh.CachedVersion > cachedVersion {
+			cachedVersion = fresh.CachedVersion
+		}
+	}
 	history, head, _, err := readSenderHistory(ctx, session, user, cachedVersion)
 	if err != nil {
 		return 0, trustPhaseError(TrustPhaseSenderHistory, err)
@@ -490,4 +501,29 @@ func bytesEqual(a, b []byte) bool {
 		}
 	}
 	return true
+}
+
+// CauseClass is a bounded diagnostic; signed lists, URLs and native free text stay private.
+func (e *TrustPhaseError) CauseClass() string {
+	switch {
+	case errors.Is(e.err, context.Canceled):
+		return "ctx_canceled"
+	case errors.Is(e.err, context.DeadlineExceeded):
+		return "deadline"
+	case errors.Is(e.err, ErrSenderHistoryStale):
+		return "history_stale"
+	case errors.Is(e.err, ErrSourceTrustBusy):
+		return "busy"
+	case errors.Is(e.err, client.ErrProtocol):
+		return "protocol"
+	}
+	var api *client.APIError
+	if errors.As(e.err, &api) {
+		return "http_error"
+	}
+	var status *helper.StatusError
+	if errors.As(e.err, &status) {
+		return "native_refusal"
+	}
+	return "unknown"
 }

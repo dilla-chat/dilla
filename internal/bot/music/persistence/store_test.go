@@ -176,7 +176,7 @@ func TestLoadRejectsMalformedPersistedState(t *testing.T) {
 
 func fmtJSON(state music.State) ([]byte, error) { return json.Marshal(state) }
 
-func TestRestartAlwaysLoadsPausedAndPreservesPosition(t *testing.T) {
+func TestRestartWhilePlayingResetsStalePosition(t *testing.T) {
 	ctx := context.Background()
 	n := newMemoryNative()
 	s := newStore(t, n, testID(1))
@@ -195,8 +195,8 @@ func TestRestartAlwaysLoadsPausedAndPreservesPosition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !restarted.State.Paused || restarted.State.Current == nil || restarted.State.PositionMS != 1234 {
-		t.Fatalf("restart did not preserve paused position: %#v", restarted.State)
+	if !restarted.State.Paused || restarted.State.Current == nil || restarted.State.PositionMS != 0 {
+		t.Fatalf("restart retained a stale playing position: %#v", restarted.State)
 	}
 }
 
@@ -330,22 +330,35 @@ func TestQuarantineValidatesSupportedRemainderBeforeWriting(t *testing.T) {
 	}
 }
 
-func TestQuarantinePreservesSupportedCurrentTrackAndPosition(t *testing.T) {
-	n := newMemoryNative()
-	s := newStore(t, n, testID(1))
-	channel := testID(2)
-	state := legacyQueueState()
-	current := testTrack("current")
-	state.Current = &current
-	original := unsupportedStateValue(t, state)
-	key := rowKey{stateArea, string(s.key(channel))}
-	n.rows[key] = native.StateValue{Revision: 1, Value: original}
-	got, err := s.Load(t.Context(), channel)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.State.Current == nil || got.State.Current.ID != "current" || got.State.PositionMS != state.PositionMS || got.State.PositionAtMS != state.PositionAtMS || !got.State.Paused {
-		t.Fatalf("supported current track changed: %+v", got.State)
+func TestQuarantineKeepsSupportedCurrentTrackAndOnlyAPausedPosition(t *testing.T) {
+	for _, paused := range []bool{false, true} {
+		t.Run(fmt.Sprint("paused=", paused), func(t *testing.T) {
+			n := newMemoryNative()
+			s := newStore(t, n, testID(1))
+			channel := testID(2)
+			state := legacyQueueState()
+			current := testTrack("current")
+			state.Current = &current
+			state.Paused = paused
+			original := unsupportedStateValue(t, state)
+			key := rowKey{stateArea, string(s.key(channel))}
+			n.rows[key] = native.StateValue{Revision: 1, Value: original}
+			got, err := s.Load(t.Context(), channel)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.State.Current == nil || got.State.Current.ID != "current" || !got.State.Paused {
+				t.Fatalf("supported current track changed: %+v", got.State)
+			}
+			// Jonas, 2026-11-04: a queue saved while playing restarts from zero, removed provider or not.
+			wantMS, wantAt := int64(0), int64(0)
+			if paused {
+				wantMS, wantAt = state.PositionMS, state.PositionAtMS
+			}
+			if got.State.PositionMS != wantMS || got.State.PositionAtMS != wantAt {
+				t.Fatalf("position=%d at=%d, want %d at %d", got.State.PositionMS, got.State.PositionAtMS, wantMS, wantAt)
+			}
+		})
 	}
 }
 

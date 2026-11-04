@@ -296,6 +296,15 @@ leaves. Read it aloud: if every screen shows the same code, everyone is hearing 
 Space opens and closes it, Escape closes it. It is the one thing to compare during a call; comparing safety numbers
 with each person (Settings → privacy) is still how you know who they are.
 
+### Your voice menu
+
+Open your own tile or voice row’s menu with right-click, a long press or Shift+F10. It offers **Mute**, **Deafen**
+(with their keyboard shortcuts), **Profile**, **Move to** with channel counts, and **Leave voice**. Mute and Deafen
+change to their undo actions while active. A row for yourself connected from another device offers Profile only.
+Other people’s menus offer Profile, Message, Mention, Copy username and Edit roles when permitted, along with
+local volume and **Mute for me** (checked while muted). A bot’s menu leaves out Message. Mention opens a text
+channel where you may send and puts their mention in the composer.
+
 ## AFK channels
 
 Every server has a channel called "AFK". It is made with the server, and a server's owner or anyone who manages
@@ -306,10 +315,10 @@ camera and no media server, and nobody hears anything. The channel instead lists
 
 ![Mira's view of Midgard Crew: the AFK row lists the people who are away, with the word "away" after each name](screenshots/afk-call-desktop.png)
 
-- **The away list.** Each person who is away is listed under the AFK row with the word "away", and counted ("2 in AFK").
-  Opening the AFK channel shows the same list, or "Nobody is away."
-- **Go AFK.** Click the AFK row, or press **go AFK** on its page. You leave any call you are in, and you are listed as
-  away. Once you are away the page says "You’re away. Join a voice channel, or send a message or type in this server, to come back."
+- **The away list.** Each person who is away is listed under the AFK row with the word "away", with a count beside AFK.
+  Opening the AFK channel shows its page with “Nobody is away”, “{name} is away” or “{names} are away”.
+- **Go AFK.** Click the AFK row to open its page, then press **Go AFK**. You leave your call and are listed as
+  away. The page says “You are away” and explains the server’s idle timeout; phones are never moved.
 - **After the inactive timeout**, a computer that has sat in a voice channel with no keyboard, pointer, touch or
   speech is disconnected from the call and listed as away, and the screen announces "Moved to AFK for inactivity".
   Quiet listening counts as idle, and activity on another of your devices does not count. The owner or a manager sets
@@ -323,9 +332,9 @@ camera and no media server, and nobody hears anything. The channel instead lists
   channel says "You left the call while away." and **join voice** takes you back in. A shorter drop, such as a Wi-Fi
   blip or a quick sleep, still rejoins by itself. On a server without an AFK channel, when the AFK settings cannot be
   read, and in direct-message calls, a lost call keeps trying to rejoin as before.
-- **To come back**, join a voice channel, send a message or start typing in that server. Closing every tab and device
-  also removes you from the list, 30 seconds later; reloading the page or a short network drop keeps you away. There
-  is no separate "leave AFK" button.
+- **Come back** opens the last text channel where you may send, if one is available. Joining a voice channel,
+  sending a message or typing in that server clears your away status. Closing every tab and device
+  also removes you from the list, 30 seconds later; reloading the page or a short network drop keeps you away. **Come back** does not rejoin your old call.
 
 ## Sounds
 

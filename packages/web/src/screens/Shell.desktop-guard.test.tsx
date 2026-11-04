@@ -129,8 +129,8 @@ it('protects a retained thread draft after another thread sends, then releases o
   await app.user.type(within(thread).getByRole('textbox'), 'keep thread A');
   app.navigate(B);
   thread = await openThread();
-  await app.user.type(within(thread).getByRole('textbox'), 'send thread B');
-  await app.user.click(within(thread).getByRole('button', { name: 'send' }));
+  // Wave B: the thread composer has no Send button (the prototype's); Enter sends.
+  await app.user.type(within(thread).getByRole('textbox'), 'send thread B{Enter}');
   await waitFor(() => expect(within(thread).getByRole('textbox')).toHaveValue(''));
   expectProtected(app, true);
   app.navigate(A);

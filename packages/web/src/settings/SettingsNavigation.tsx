@@ -7,6 +7,16 @@ import './workspace.css';
 const SERVER = 'server:';
 /** No server selected: a permissions slice no server has, so the hook reads nothing. */
 const NONE = '0'.repeat(32);
+// Prototype navItems order, followed by the live sections the prototype does not draw (Jonas, wave B D2).
+const PROTOTYPE_SECTIONS: Readonly<Record<SettingsScope, readonly SettingsEntry['id'][]>> = {
+  user: ['profile', 'signin', 'devices', 'notifications', 'voice', 'keyboard'],
+  server: ['overview', 'roles', 'invites', 'bot', 'music'],
+};
+function navigationSections(scope: SettingsScope, access?: SettingsAccess): readonly SettingsEntry[] {
+  const entries = availableSettings(scope, access);
+  const first = PROTOTYPE_SECTIONS[scope];
+  return [...first.flatMap(id => entries.filter(entry => entry.id === id)), ...entries.filter(entry => !first.includes(entry.id))];
+}
 
 export interface SettingsNavigationProps {
   /** The section on show, in either scope. */
@@ -27,10 +37,10 @@ export function SettingsNavigation({ active, communityId, onUser, onServer, labe
   const communities = useSlice('communities');
   const access: SettingsAccess | undefined = useSlice(`permissions:${communityId ?? NONE}`);
   const server = communityId === null ? undefined : communities?.find(c => c.id === communityId);
-  const serverItems = server === undefined || access?.loaded !== true ? [] : availableSettings('server', access)
+  const serverItems = server === undefined || access?.loaded !== true ? [] : navigationSections('server', access)
     .map(entry => ({ id: `${SERVER}${entry.id}`, label: t(entry.labelKey), group: server.name, icon: SETTINGS_ICONS[entry.id] }));
   const items = [
-    ...availableSettings('user').map(entry => ({ id: entry.id, label: t(entry.labelKey), group: t(entry.group), icon: SETTINGS_ICONS[entry.id] })),
+    ...navigationSections('user').map(entry => ({ id: entry.id, label: t(entry.labelKey), group: t(entry.group), icon: SETTINGS_ICONS[entry.id] })),
     ...serverItems,
   ];
   const activeId = active.id === null ? '' : active.scope === 'server' ? `${SERVER}${active.id}` : active.id;

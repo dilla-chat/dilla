@@ -26,10 +26,11 @@ import { removeHostData, startTestHost, type HostConfig, type StartedHost } from
 import { chromiumMediaArgs, FIREFOX_MEDIA_PREFS, writeFixtures } from '../media/support/fixtures';
 import { arr, decode, encode } from '../../packages/client-core/src/cbor/index';
 import { mkdirSync, rmSync } from 'node:fs';
+import { e2ePort } from './support/ports';
 
 const CHECK_WEBROOT = process.env.DILLA_E2E_CHECK_WEBROOT === undefined ? null : relative(REPO_ROOT, resolve(process.env.DILLA_E2E_CHECK_WEBROOT));
-const LAYOUT_PORT = Number(process.env.DILLA_E2E_LAYOUT_PORT ?? 8555);
-const LAYOUT_SFU_PORT = Number(process.env.DILLA_E2E_LAYOUT_SFU_PORT ?? 8559);
+const LAYOUT_PORT = Number(process.env.DILLA_E2E_LAYOUT_PORT ?? e2ePort(8555));
+const LAYOUT_SFU_PORT = Number(process.env.DILLA_E2E_LAYOUT_SFU_PORT ?? e2ePort(8559));
 const EMPTY: HostConfig = { port: LAYOUT_PORT, control: LAYOUT_PORT + 1, webRoot: 'packages/web/dist', sfu: { port: LAYOUT_SFU_PORT, udpPort: LAYOUT_SFU_PORT + 2 }, ...(CHECK_WEBROOT === null ? {} : { keepData: true }) };
 const SERVER = 'Midgard Crew';
 const OWNER = 'Ada';
@@ -280,7 +281,7 @@ async function expectBar(page: Page, tag: string, name: string, bar: string, wan
 
 const nav = (page: Page) => channelsNav(page);
 /** AW6 fix round 1: the AFK page's one action: go AFK, or the away line once this person is away. */
-const AFK_ACTION = '.dw-voice-stage .dw-voice-join, .dw-voice-stage .dw-afk-away';
+const AFK_ACTION = '.dw-voice-stage .d-call-stage__afk-action';
 async function makeCategory(page: Page, name: string): Promise<void> {
   await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
   const settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
@@ -678,8 +679,9 @@ async function phoneGrammar(page: Page, size: Size, serverPath: string, voicePat
     expectAt(`R22 rail tile "${tile.t}" is 38 wide at ${tag}`, tile.w, 38, 0.5);
     expectAt(`R22 rail tile "${tile.t}" is 38 high at ${tag}`, tile.h, 38, 0.5);
   }
-  // The controller addition (UI-2 review): in the real app the voice join button and the category "+" are 44 on a phone.
-  for (const [selector, what] of [['.d-voice-row__join button', 'the voice join button'], ['.d-channel-list__cat-add button', 'the category "+"']] as const) {
+  // The controller addition (UI-2 review): in the real app the category "+" is 44 on a phone. (A phone's voice rows have no join
+  // button since wave B: a tap joins.)
+  for (const [selector, what] of [['.d-channel-list__cat-add button', 'the category "+"']] as const) {
     const found = await boxes(page, selector);
     expect.soft(found.length, `R9 ${what} is on the home tab at ${tag}`).toBeGreaterThan(0);
     for (const b of found) {
@@ -1011,7 +1013,7 @@ test('the DM and the voice layout give each element its room', async ({ page, pl
     // AW5: the AFK channel hosts no call, so its preview has no tiles.
     await expect(page.locator('.dw-voice-stage .d-call-stage__tile'), 'N4 the AFK preview is empty').toHaveCount(0, { timeout: WAIT });
     const join = (await boxes(page, AFK_ACTION))[0];
-    const texts = await boxes(page, '.d-call-stage__outgoing, .d-call-stage__empty, .d-call-stage__title');
+    const texts = await boxes(page, '.d-call-stage__outgoing, .d-call-stage__empty, .d-call-stage__title, .d-call-stage__afk-title, .d-call-stage__afk-text');
     expect.soft(texts.length, 'N4 the preview has its text').toBeGreaterThan(0);
     if (join !== undefined && texts.length > 0) {
       const lowest = Math.max(...texts.map(b => b.b));
@@ -1040,20 +1042,17 @@ test('the DM and the voice layout give each element its room', async ({ page, pl
     const afkAction = page.locator(AFK_ACTION);
     await expect(afkAction).toBeVisible({ timeout: WAIT });
     const pjoin = (await boxes(page, AFK_ACTION))[0];
-    const ptexts = await boxes(page, '.d-call-stage__outgoing, .d-call-stage__empty');
+    const ptexts = await boxes(page, '.d-call-stage__outgoing, .d-call-stage__empty, .d-call-stage__afk-title, .d-call-stage__afk-text');
     if (pjoin !== undefined && ptexts.length > 0) {
       expect.soft(pjoin.y - Math.max(...ptexts.map(b => b.b)), 'N4 on a phone the join sits within 120 of its text').toBeLessThanOrEqual(120);
     }
     // AW5: the AFK channel hosts no call, so D4 measures the call stage of voice general, joined with a microphone. Cy's browser
     // has the fake one (Firefox's default page has none and would hold the join at the permission prompt): the phone's
-    // server list, a tap on its row (a phone's tap only opens the stage, R24), then its join.
+    // server list, then a tap on its row, which joins (Jonas, wave B: the prototype's phone tap joins).
     await cy.setViewportSize({ width: 390, height: 844 });
     await cy.goto(afkPath.split('/').slice(0, 3).join('/'));
     await expect(cy.locator('.d-app-shell')).toHaveAttribute('data-layout', 'phone', { timeout: WAIT });
     await nav(cy).getByRole('button', { name: copy('voice.open', { name: 'general' }), exact: true }).click();
-    const phoneJoin = cy.locator('.d-call-stage__join');
-    await expect(phoneJoin).toBeVisible({ timeout: WAIT });
-    await phoneJoin.click();
     await expect(cy.locator('.dw-voice-stage')).toHaveAttribute('data-call-phase', 'in', { timeout: WAIT });
     await expectNoPhoneReminders(cy, 'joined voice at 390x844');
     const tabs = (await boxes(cy, '.d-tab-bar'))[0];

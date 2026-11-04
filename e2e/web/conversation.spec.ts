@@ -321,7 +321,7 @@ test('images and files go both ways', async ({ page, peer, instanceName }) => {
   await expect.poll(() => peer.blobStatus(mapSent.blob_id), { timeout: WAIT }).toBe(404);
 });
 
-test('a 25 MB file goes through and one byte more is refused', async ({ page, context, peer, instanceName }, testInfo) => {
+test('a 25 MB file goes through and one byte more stays as an oversized card with a toast', async ({ page, context, peer, instanceName }, testInfo) => {
   const puts: string[] = [];
   context.on('request', (r) => {
     if (r.method() === 'PUT' && BLOB_PUT.test(new URL(r.url()).pathname)) puts.push(r.url());
@@ -349,12 +349,28 @@ test('a 25 MB file goes through and one byte more is refused', async ({ page, co
     expect(fetched.size).toBe(26_214_400);
 
     await attachInput(page).setInputFiles(overPath);
-    await expect(page.getByRole('alert').filter({ hasText: copy('shell.tray.tooLarge', { name: 'over.bin' }) })).toBeVisible({ timeout: WAIT });
-    await expect(trayEntries(page)).toHaveCount(0);
+    await expect(page.locator('.d-np-toast')).toHaveText(copy('shell.tray.overLimitToast'), { timeout: WAIT });
+    await expect(trayEntries(page)).toHaveCount(1);
+    await expect(trayEntries(page).first()).toContainText('Over 25 MB');
+    await expect(trayEntries(page).first()).toHaveAttribute('data-failed', 'true');
+    expect(puts).toHaveLength(1);
+    await trayEntries(page).first().getByRole('button', { name: copy('shell.tray.remove', { name: 'over.bin' }), exact: true }).click();
 
-    // The positive control: the next upload is seen, so the refused one made no request.
+    // Hold the next real upload: Send must toast without creating a message.
+    let releaseUpload!: () => void;
+    const uploadGate = new Promise<void>(resolve => { releaseUpload = resolve; });
+    const uploadPattern = '**/v1/channels/*/blobs/*';
+    await context.route(uploadPattern, async route => { if (route.request().method() === 'PUT') await uploadGate; await route.continue(); });
     await attachInput(page).setInputFiles({ name: 'small.bin', mimeType: 'application/octet-stream', buffer: Buffer.from('ten bytes!') });
+    await expect(trayEntries(page).first()).toHaveAttribute('data-phase', 'uploading', { timeout: WAIT });
+    const waitingText = `waiting ${tag()}`;
+    await composerBox(page, channel).fill(waitingText);
+    await composerBox(page, channel).press('Enter');
+    await expect(page.locator('.d-np-toast')).toHaveText(copy('shell.tray.notReady'));
+    await expect(messageRow(page, channel, waitingText)).toHaveCount(0);
+    releaseUpload();
     await expect(trayEntries(page).first()).toHaveAttribute('data-phase', 'ready', { timeout: WAIT });
+    await context.unroute(uploadPattern);
     expect(puts).toHaveLength(2);
     await trayEntries(page).first().getByRole('button', { name: copy('shell.tray.remove', { name: 'small.bin' }), exact: true }).click();
     await expect(trayEntries(page)).toHaveCount(0, { timeout: WAIT });

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { act, render, screen, within } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { DeviceSummary } from '@dilla/client-core';
 import { CoreProvider } from '../core/context.tsx';
@@ -25,8 +25,8 @@ function setup(onOpenSettings = vi.fn(), connection: { status: 'online' | 'offli
   return { fake, user, view, onOpenSettings };
 }
 
-// Task 11 (Jonas, Q3): the prototype's You: the account, one box with the connection and this device, and the rows Settings,
-// Status and Sign out. The full facts stay in Settings → Diagnostics.
+// Task 11 (Jonas, Q3): the prototype's You: the account, one box with the connection and this device, and the rows Settings
+// and Sign out. The full facts stay in Settings → Diagnostics.
 describe('You', () => {
   it('has a heading for the tab, the account and its line ("@handle · status")', () => {
     setup();
@@ -63,30 +63,12 @@ describe('You', () => {
     expect(onOpenSettings).toHaveBeenCalledWith(null);
   });
 
-  it('offers the status as a row that opens its four choices, not a native select', async () => {
-    const { fake, user, view } = setup();
-    expect(screen.queryByRole('combobox')).toBeNull();
-    const row = screen.getByRole('button', { name: new RegExp(t('you.statusRow')) });
-    expect(row).toHaveAttribute('aria-expanded', 'false');
-    expect(row).toHaveTextContent(t('presence.online'));
-    await user.click(row);
-    const group = screen.getByRole('group', { name: t('presence.label') });
-    expect(within(group).getAllByRole('button').map(b => b.textContent)).toEqual(
-      [t('presence.online'), t('presence.idle'), t('presence.dnd'), t('presence.invisible')]);
-    expect(within(group).getByRole('button', { name: t('presence.online') })).toHaveAttribute('aria-pressed', 'true');
-    await expectNoAxeViolations(view.container);
-    await user.click(within(group).getByRole('button', { name: t('presence.dnd') }));
-    expect(fake.callsOf('setPresenceChoice')).toEqual([{ m: 'setPresenceChoice', choice: 'dnd' }]);
-    expect(screen.queryByRole('group', { name: t('presence.label') })).toBeNull();
-    expect(row).toHaveFocus();
-  });
-
-  it('says so, in an alert, when the status could not be changed', async () => {
-    const { fake, user } = setup();
-    fake.handler = () => Promise.reject(new Error('no'));
-    await user.click(screen.getByRole('button', { name: new RegExp(t('you.statusRow')) }));
-    await user.click(screen.getByRole('button', { name: t('presence.idle') }));
-    expect(await screen.findByRole('alert')).toHaveTextContent(t('presence.error'));
+  // Wave B (Jonas): the prototype's You has no status row; the status menu is the sidebar user panel's.
+  it('has no status row and no status choices', () => {
+    setup();
+    expect(screen.queryByRole('button', { name: /status/i })).toBeNull();
+    expect(screen.queryByRole('group', { name: /status/i })).toBeNull();
+    expect(screen.getAllByRole('button').map(b => b.textContent)).toEqual([t('you.settings'), t('workspace.signOut')]);
   });
 
   it('ends with Sign out, which asks for the recovery key, and has no axe violations', async () => {

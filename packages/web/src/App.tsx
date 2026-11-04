@@ -15,7 +15,7 @@ import { ForcedFactor } from './screens/factor/ForcedFactor.tsx';
 import { Onboarding, type SignupResult } from './screens/Onboarding.tsx';
 import { Shell } from './screens/Shell.tsx';
 import { visibleChannel } from './screens/shell-model.ts';
-import { SignIn } from './screens/SignIn.tsx';
+import { SignIn, type SignInTarget } from './screens/SignIn.tsx';
 import { OtherTab } from './screens/OtherTab.tsx';
 import { requestHandover } from './handover.ts';
 import { flushSync } from 'react-dom';
@@ -256,9 +256,10 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
       void navigate({ name: 'root' }, true);
     }
   };
-  const finishSignIn = () => {
+  // Wave B task 3 fix round 1: the done step's panel names a server and channel; "Open dilla" opens exactly that one.
+  const finishSignIn = (target?: SignInTarget) => {
     setSigningIn(false);
-    void navigate({ name: 'root' }, true);
+    void navigate(target === undefined ? { name: 'root' } : { name: 'channel', communityId: target.communityId, channelId: target.channelId }, true);
   };
   const windowMode = screen === 'shell' && !onboarding && !signingIn ? 'workspace'
     : screen === 'boot' ? 'starting' : 'authentication';

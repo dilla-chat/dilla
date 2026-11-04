@@ -207,9 +207,9 @@ export function GifPicker({
   const tab = Math.min(focus, Math.max(items.length - 1, 0));
   return (
     <div ref={ref} id={id} role="dialog" aria-label={label} className="d-gif-picker" onKeyDown={onKeyDown}>
-      <input ref={searchRef} type="search" className="d-gif-picker__search" aria-label={searchLabel} placeholder={searchPlaceholder}
+      <div className="d-gif-picker__field"><input ref={searchRef} type="search" className="d-gif-picker__search" aria-label={searchLabel} placeholder={searchPlaceholder}
         value={query} autoComplete="off" spellCheck={false} aria-describedby={statusId}
-        onChange={(e: ChangeEvent<HTMLInputElement>) => onQuery(e.currentTarget.value)} />
+        onChange={(e: ChangeEvent<HTMLInputElement>) => onQuery(e.currentTarget.value)} /><span className="d-gif-picker__powered">{poweredBy}</span></div>
       <div ref={gridRef} role="group" aria-label={label} className="d-gif-picker__grid" onFocus={onFocus}>
         {items.map((item, i) => (
           <button key={item.id} type="button" className="d-gif-picker__cell" data-gif-id={item.id}
@@ -226,7 +226,6 @@ export function GifPicker({
       <p id={statusId} className="d-gif-picker__status" role="status" data-kind={status?.kind}>{status?.text ?? ''}</p>
       <div className="d-gif-picker__foot">
         {hasMore ? <button type="button" className="d-gif-picker__more" onClick={onMore}>{moreLabel}</button> : <span />}
-        <span className="d-gif-picker__powered">{poweredBy}</span>
       </div>
     </div>
   );

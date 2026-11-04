@@ -7,6 +7,7 @@ import type { CallView } from '../voice/useCall.tsx';
 import { timelineItem } from '../../test/fixtures.ts';
 
 const client = new FakeClient();
+client.set('account', { user: { id: '33'.repeat(16), username: 'mira', display: 'Mira' } } as never);
 const context: CommandExecutionContext = {
   requestId: 'attempt-1', binding: { communityId: '11'.repeat(16), channelId: '22'.repeat(16), bits: 0 },
   client, call: {} as never, isCurrent: () => true, getCurrentBinding: () => context.binding, getCall: () => context.call, navigate: () => undefined, openThread: () => undefined, openSearch: () => undefined,
@@ -20,7 +21,7 @@ describe('built-in command handlers', () => {
       ...context, binding: { ...context.binding, threadId: thread },
     });
     expect(result).toEqual({ status: 'success', private: false, message: 'Sent.' });
-    expect(client.callsOf('send')).toEqual([{ m: 'send', channelId: context.binding.channelId, threadId: thread, text: '_waves 👋_' }]);
+    expect(client.callsOf('send')).toEqual([{ m: 'send', channelId: context.binding.channelId, threadId: thread, text: '_Mira waves 👋_' }]);
   });
 
   it('refuses an edit when the selected message is not mine and makes no worker call', async () => {

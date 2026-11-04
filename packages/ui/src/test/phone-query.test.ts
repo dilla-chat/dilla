@@ -45,12 +45,12 @@ function rules(css: string): Array<{ selector: string; body: string }> {
 describe('R9: the phone media query', () => {
   it('every @media rule with 47.99rem in packages/ui reads the full phone query', () => {
     const found = files.flatMap(f => preludes(f.css, 'media').map(p => ({ file: f.file, prelude: p })));
-    expect(found.length).toBe(8); // Task 10: SettingsRow and VoiceSettings left the tier (prototype sizes on a phone). SettingsFrame, and since Signal task 8 CallStage, CallTile and RingBanner, get phone geometry from the shell's data-layout.
+    expect(found.length).toBe(7); // Jonas 2026-10-31: Button no longer adds a viewport minimum; its context sets the height.
     for (const { file, prelude } of found) expect(`${file}: ${prelude}`).toBe(`${file}: ${PHONE_MEDIA}`);
   });
 
-  it('the eight rules R9 names are all there', () => {
-    const named = ['AttachmentCard/AttachmentCard.css', 'MediaPlayer/MediaPlayer.css', 'CallControls/CallControls.css', 'styles/base.css'];
+  it('the seven remaining viewport phone stylesheets are present', () => {
+    const named = ['AttachmentCard/AttachmentCard.css', 'CallControls/CallControls.css', 'Dialog/Dialog.css', 'Lightbox/Lightbox.css', 'MediaPlayer/MediaPlayer.css', 'Toggle/Toggle.css', 'styles/base.css'];
     for (const n of named) expect(files.find(f => f.file === n)?.css.includes(PHONE_MEDIA), n).toBe(true);
     expect(files.find(f => f.file === 'styles/base.css')?.css.split(PHONE_MEDIA).length).toBe(2);
   });

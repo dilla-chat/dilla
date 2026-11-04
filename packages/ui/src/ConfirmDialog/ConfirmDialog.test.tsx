@@ -1,5 +1,5 @@
 import { themes } from '@dilla/design-tokens';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ConfirmDialog, type ConfirmDialogProps } from './ConfirmDialog.tsx';
@@ -156,4 +156,29 @@ describe('ConfirmDialog', () => {
       unmount();
     }
   });
+});
+
+
+it('can lock dismissal for a local save, then restores Cancel, Escape and backdrop handling', async () => {
+  const user = userEvent.setup();
+  const p = props({ busy: true, onBackdrop: vi.fn() });
+  const { rerender } = render(<ConfirmDialog {...p} canClose={false} />);
+  const dialog = screen.getByRole('dialog');
+  expect(screen.getByRole('button', { name: 'cancel' })).toBeDisabled();
+  await user.click(screen.getByRole('button', { name: 'cancel' }));
+  fireEvent(dialog, new Event('cancel', { bubbles: true, cancelable: true }));
+  dialog.focus();
+  await user.keyboard('{Escape}');
+  await user.click(dialog);
+  expect(p.onClose).not.toHaveBeenCalled();
+  expect(p.onBackdrop).not.toHaveBeenCalled();
+  rerender(<ConfirmDialog {...p} busy={false} canClose />);
+  expect(screen.getByRole('button', { name: 'cancel' })).toBeEnabled();
+  fireEvent(dialog, new Event('cancel', { bubbles: true, cancelable: true }));
+  expect(p.onClose).toHaveBeenCalledOnce();
+  dialog.focus();
+  await user.keyboard('{Escape}');
+  expect(p.onClose).toHaveBeenCalledTimes(2);
+  await user.click(dialog);
+  expect(p.onBackdrop).toHaveBeenCalledOnce();
 });

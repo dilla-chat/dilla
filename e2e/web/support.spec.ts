@@ -5,6 +5,7 @@ import { PROFILE_ROOT, expect, test } from './support/persistent';
 import { WebDriver, testHostUrl, testkitEnv } from './support/driver';
 import { injectAxe, runAxe } from './support/axe';
 import { totp } from './support/totp';
+import { e2ePort } from './support/ports';
 
 const HEX32 = /^[0-9a-f]{32}$/;
 const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -12,7 +13,7 @@ const WAIT = process.env.CI === 'true' ? 90_000 : 30_000;
 // L-HTTP-10, exactly, with HOST = 127.0.0.1:8453.
 const CSP =
   "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob:; font-src 'self'; " +
-  "connect-src 'self' ws://127.0.0.1:8453 wss://127.0.0.1:8453; worker-src 'self'; media-src blob:; " +
+  `connect-src 'self' ws://127.0.0.1:${String(e2ePort(8453))} wss://127.0.0.1:${String(e2ePort(8453))}; worker-src 'self'; media-src blob:; ` +
   "object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 // The invite landing's own policy (internal/api/invites.go:107), set on every answer of GET /i/{code}.
 const LANDING_CSP = "default-src 'none'; style-src 'unsafe-inline'; font-src 'self'";

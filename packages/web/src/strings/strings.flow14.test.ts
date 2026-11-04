@@ -12,13 +12,13 @@ describe('flow 14 (v0.1.0-web3.9, layout grammar, Discord layout and the built-i
   const pairs = [...copy.matchAll(/`([a-zA-Z][\w.]*)='([^`]*)'`/g)].map(m => [m[1], m[2]] as const);
   it('strings: every flow-14 copy key equals en.ts byte for byte, and every new key is in the flow', () => {
     const table = en as Readonly<Record<string, string>>;
-    expect(pairs.length).toBe(53);
+    expect(pairs.length).toBe(59);
     // M2 (Jonas): a call cut because AFK was chosen on another device says so, calmly.
     expect(table['afk.elsewhere']).toBe('You went AFK on another device.');
     // AW5/AW6 fix round 1: the AFK page's button, its away line, its empty roster, and a refused away mark.
-    expect(table['afk.go']).toBe('go AFK');
-    expect(table['afk.youAway']).toBe('You’re away. Join a voice channel, or send a message or type in this server, to come back.');
-    expect(table['afk.empty']).toBe('Nobody is away.');
+    expect(table['afk.go']).toBe('Go AFK');
+    expect(table['afk.title.you']).toBe('You are away');
+    expect(table['afk.title.nobody']).toBe('Nobody is away');
     expect(table['afk.failed']).toBe('Could not go AFK. Try again.');
     // AW6: the AFK channel hosts no call, so its stage line and the failed move's join are gone; `afk.away` is new.
     expect(table['afk.away']).toBe('away');

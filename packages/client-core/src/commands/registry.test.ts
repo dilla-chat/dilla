@@ -163,3 +163,8 @@ describe('seek position grammar', () => {
     expect(validateCommandArgs(commandById('seek')!, { position }).valid).toBe(false);
   });
 });
+
+it('allows permanent only for ban duration and preserves the argument', () => {
+  expect(validateCommandArgs(commandById('ban')!, { user: 'user-123', duration: 'permanent' })).toMatchObject({ valid: true, args: { duration: 'permanent' } });
+  expect(validateCommandArgs(commandById('timeout')!, { user: 'user-123', duration: 'permanent' }).valid).toBe(false);
+});

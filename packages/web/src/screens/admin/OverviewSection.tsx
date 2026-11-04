@@ -25,13 +25,15 @@ export function OverviewSection({ communityId, serverName, announce, owner = fal
   const [afkFailure, setAfkFailure] = useState(false);
   const { busy, error: actionError, run, reset: resetAction } = useRun();
   const afk = useSlice(`afk:${communityId}`);
+  const access = useSlice(`permissions:${communityId}`);
+  const canRename = access?.loaded === true && access.manageCommunity;
   const channels = useSlice(`channels:${communityId}`);
   const [afkTimeout, setAFKTimeout] = useState(300);
   const [afkBase, setAFKBase] = useState<number | null>(null);
   const [afkLoadError, setAFKLoadError] = useState(false);
   const afkEdited = useRef(false);
   const shownName = useRef(serverName);
-  const nameChanged = nfc(name) !== nfc(nameBase);
+  const nameChanged = canRename && nfc(name) !== nfc(nameBase);
   const timeoutChanged = afkBase !== null && afkTimeout !== afkBase;
   const dirty = nameChanged || timeoutChanged;
 
@@ -118,13 +120,13 @@ export function OverviewSection({ communityId, serverName, announce, owner = fal
   return <section className="dw-settings-section" aria-labelledby={`${base}-title`}>
     <h2 id={`${base}-title`} tabIndex={-1}>{t('admin.overview.title')}</h2>
     <p>{serverName}</p>
-    <SettingsRow id={`${base}-name-row`} icon="server" label={t('admin.overview.name')} hint={t('admin.overview.hint')}>
+    {canRename ? <SettingsRow id={`${base}-name-row`} icon="server" label={t('admin.overview.name')} hint={t('admin.overview.hint')}>
       <div className="dw-overview-field">
         <TextField id={fieldId} label={t('admin.overview.name')} value={name}
           onChange={value => { setName(value); setLocalError(null); setAfkFailure(false); resetAction(); }}
           error={afkFailure ? undefined : error ?? undefined} required autoComplete="off" spellCheck={false} disabled={busy} />
       </div>
-    </SettingsRow>
+    </SettingsRow> : null}
     <SettingsRow id={`${base}-afk-row`} icon="moon" label={t('admin.overview.afk')} hint={t('admin.overview.afkHint')}>
       <Segmented id={`${base}-afk`} label={t('admin.overview.afk')} value={String(afkTimeout)} disabled={afkBase === null || busy}
         options={TIMEOUTS.map(n => ({ value: String(n), label: t(`admin.overview.afk.${n}` as StringKey) }))}

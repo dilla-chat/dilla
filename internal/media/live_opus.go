@@ -29,12 +29,14 @@ var (
 // LiveOpusProvider is a bounded bridge from an Opus encoder to LiveKit. Producers call
 // WriteSample; the SDK consumes one copied packet at a time. It creates no goroutines of its own.
 type LiveOpusProvider struct {
-	mu      sync.Mutex
-	queue   [][]byte
-	head    int
-	size    int
-	closed  bool
-	changed chan struct{}
+	mu         sync.Mutex
+	queue      [][]byte
+	head       int
+	size       int
+	closed     bool
+	changed    chan struct{}
+	paused     bool
+	positionMS int64
 }
 
 var _ lksdk.SampleProvider = (*LiveOpusProvider)(nil)
@@ -109,11 +111,16 @@ func (p *LiveOpusProvider) NextSample(ctx context.Context) (media.Sample, error)
 			return media.Sample{}, err
 		}
 		p.mu.Lock()
+		if p.paused {
+			p.mu.Unlock()
+			return media.Sample{Data: append([]byte(nil), silentOpusFrame[:]...), Duration: LiveOpusSampleDuration}, nil
+		}
 		if p.size != 0 {
 			data := p.queue[p.head]
 			p.queue[p.head] = nil
 			p.head = (p.head + 1) % len(p.queue)
 			p.size--
+			p.positionMS += 20
 			p.signalLocked()
 			p.mu.Unlock()
 			return media.Sample{Data: data, Duration: LiveOpusSampleDuration}, nil
@@ -144,4 +151,45 @@ func (p *LiveOpusProvider) Close() error { return p.CloseInput() }
 func (p *LiveOpusProvider) signalLocked() {
 	close(p.changed)
 	p.changed = make(chan struct{})
+}
+
+// RFC 6716's 20ms Opus silence packet. LiveKit paces samples by Duration.
+var silentOpusFrame = [...]byte{0xf8, 0xff, 0xfe}
+
+func (p *LiveOpusProvider) Pause() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.paused = true
+	p.signalLocked()
+}
+func (p *LiveOpusProvider) Resume() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.paused = false
+	p.signalLocked()
+	return nil
+}
+func (p *LiveOpusProvider) PositionMS() int64 { p.mu.Lock(); defer p.mu.Unlock(); return p.positionMS }
+func (p *LiveOpusProvider) Paused() bool      { p.mu.Lock(); defer p.mu.Unlock(); return p.paused }
+
+// WaitUnpaused gates PCM reads as well as the published samples. Closing wakes a blocked reader.
+func (p *LiveOpusProvider) WaitUnpaused(ctx context.Context) error {
+	for {
+		p.mu.Lock()
+		if p.closed {
+			p.mu.Unlock()
+			return ErrLiveOpusClosed
+		}
+		if !p.paused {
+			p.mu.Unlock()
+			return nil
+		}
+		changed := p.changed
+		p.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-changed:
+		}
+	}
 }

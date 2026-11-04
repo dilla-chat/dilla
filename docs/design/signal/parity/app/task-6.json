@@ -1,0 +1,1871 @@
+[
+  {
+    "name": "private-result-pending-desktop",
+    "mutates": true,
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "type": [
+            "main textarea",
+            "/remind"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "type": [
+            "main input[placeholder='in 1 hour']",
+            "in 1 hour"
+          ]
+        },
+        {
+          "press": "Tab"
+        },
+        {
+          "type": [
+            "main input[placeholder='bring two ropes']",
+            "bring two ropes"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "wait": 100
+        }
+      ],
+      "settleMs": 0
+    },
+    "app": {
+      "who": "mira",
+      "path": "{server}",
+      "steps": [
+        {
+          "type": [
+            "main textarea.d-composer__input",
+            "/"
+          ]
+        },
+        {
+          "waitFor": "textarea[aria-label=\"Command\"]"
+        },
+        {
+          "waitFor": ".d-cmd-row[aria-label^=\"/remind,\"]"
+        },
+        {
+          "type": [
+            "textarea[aria-label=\"Command\"]",
+            "/remind"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "type": [
+            "role=combobox[name=\"when\"s]",
+            "in 1 hour"
+          ]
+        },
+        {
+          "press": "Tab"
+        },
+        {
+          "type": [
+            "role=textbox[name=\"text\"s]",
+            "bring two ropes"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "waitFor": ".d-bot-result[data-status=\"pending\"]"
+        }
+      ],
+      "settleMs": 0
+    }
+  },
+  {
+    "name": "private-result-success-remind-desktop",
+    "mutates": true,
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "type": [
+            "main textarea",
+            "/remind"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "type": [
+            "main input[placeholder='in 1 hour']",
+            "in 1 hour"
+          ]
+        },
+        {
+          "press": "Tab"
+        },
+        {
+          "type": [
+            "main input[placeholder='bring two ropes']",
+            "bring two ropes"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "wait": 1400
+        }
+      ]
+    },
+    "app": {
+      "who": "mira",
+      "path": "{server}",
+      "steps": [
+        {
+          "type": [
+            "main textarea.d-composer__input",
+            "/"
+          ]
+        },
+        {
+          "waitFor": "textarea[aria-label=\"Command\"]"
+        },
+        {
+          "waitFor": ".d-cmd-row[aria-label^=\"/remind,\"]"
+        },
+        {
+          "type": [
+            "textarea[aria-label=\"Command\"]",
+            "/remind"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "type": [
+            "role=combobox[name=\"when\"s]",
+            "in 1 hour"
+          ]
+        },
+        {
+          "press": "Tab"
+        },
+        {
+          "type": [
+            "role=textbox[name=\"text\"s]",
+            "bring two ropes"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "waitFor": ".d-bot-result[data-status=\"success\"]"
+        }
+      ]
+    }
+  },
+  {
+    "name": "private-result-failed-play-desktop",
+    "mutates": true,
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "type": [
+            "main textarea",
+            "/play"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "type": [
+            "main input[placeholder='song, video or playlist']",
+            "sea shanty"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "wait": 1400
+        }
+      ]
+    },
+    "app": {
+      "who": "mira",
+      "path": "{server}",
+      "steps": [
+        {
+          "type": [
+            "main textarea.d-composer__input",
+            "/"
+          ]
+        },
+        {
+          "waitFor": "textarea[aria-label=\"Command\"]"
+        },
+        {
+          "waitFor": ".d-cmd-row[aria-label^=\"/play,\"]"
+        },
+        {
+          "type": [
+            "textarea[aria-label=\"Command\"]",
+            "/play"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "type": [
+            "role=combobox[name=\"query-or-url\"s]",
+            "sea shanty"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "waitFor": ".d-bot-result[data-status=\"failed\"]"
+        }
+      ]
+    }
+  },
+  {
+    "name": "private-result-unknown-desktop",
+    "mutates": true,
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "type": [
+            "main textarea",
+            "/xyz"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "wait": 900
+        }
+      ]
+    },
+    "app": {
+      "who": "mira",
+      "path": "{server}",
+      "steps": [
+        {
+          "type": [
+            "main textarea.d-composer__input",
+            "/"
+          ]
+        },
+        {
+          "waitFor": "textarea[aria-label=\"Command\"]"
+        },
+        {
+          "waitFor": ".d-cmd-row[aria-label^=\"/play,\"]"
+        },
+        {
+          "type": [
+            "textarea[aria-label=\"Command\"]",
+            "/xyz"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "waitFor": ".d-bot-result[data-status=\"failed\"]"
+        }
+      ]
+    }
+  },
+  {
+    "name": "private-result-confirm-kick-desktop",
+    "mutates": true,
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "type": [
+            "main textarea",
+            "/kick"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "type": [
+            "main input >> nth=0",
+            "Björn"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "waitFor": "text=Kick Björn from"
+        },
+        {
+          "wait": 600
+        }
+      ]
+    },
+    "app": {
+      "who": "ada",
+      "path": "{server}",
+      "steps": [
+        {
+          "type": [
+            "main textarea.d-composer__input",
+            "/"
+          ]
+        },
+        {
+          "waitFor": "textarea[aria-label=\"Command\"]"
+        },
+        {
+          "waitFor": ".d-cmd-row[aria-label^=\"/play,\"]"
+        },
+        {
+          "type": [
+            "textarea[aria-label=\"Command\"]",
+            "/kick"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "type": [
+            "role=combobox[name=\"user\"s]",
+            "Björn"
+          ]
+        },
+        {
+          "click": "role=option[name=/^Björn,/]"
+        },
+        {
+          "click": "button.d-composer__send"
+        },
+        {
+          "waitFor": "role=dialog[name=/^Kick /]"
+        }
+      ]
+    }
+  },
+  {
+    "name": "private-result-cancelled-kick-desktop",
+    "mutates": true,
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "type": [
+            "main textarea",
+            "/kick"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "type": [
+            "main input >> nth=0",
+            "Björn"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "waitFor": "text=Kick Björn from"
+        },
+        {
+          "wait": 600
+        },
+        {
+          "click": "span:text-is(\"Cancel\")"
+        },
+        {
+          "wait": 600
+        }
+      ]
+    },
+    "app": {
+      "who": "ada",
+      "path": "{server}",
+      "steps": [
+        {
+          "type": [
+            "main textarea.d-composer__input",
+            "/"
+          ]
+        },
+        {
+          "waitFor": "textarea[aria-label=\"Command\"]"
+        },
+        {
+          "waitFor": ".d-cmd-row[aria-label^=\"/play,\"]"
+        },
+        {
+          "type": [
+            "textarea[aria-label=\"Command\"]",
+            "/kick"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "type": [
+            "role=combobox[name=\"user\"s]",
+            "Björn"
+          ]
+        },
+        {
+          "click": "role=option[name=/^Björn,/]"
+        },
+        {
+          "click": "button.d-composer__send"
+        },
+        {
+          "waitFor": "role=dialog[name=/^Kick /]"
+        },
+        {
+          "click": "role=dialog >> role=button[name=\"Cancel\"s]"
+        },
+        {
+          "waitFor": ".d-bot-result[data-status=\"cancelled\"]"
+        }
+      ]
+    }
+  },
+  {
+    "name": "private-result-confirm-ban-desktop",
+    "mutates": true,
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "type": [
+            "main textarea",
+            "/ban"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "type": [
+            "main input >> nth=0",
+            "Björn"
+          ]
+        },
+        {
+          "type": [
+            "main input[placeholder='permanent']",
+            "1 day"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "waitFor": "text=Ban Björn from"
+        },
+        {
+          "wait": 600
+        }
+      ]
+    },
+    "app": {
+      "who": "ada",
+      "path": "{server}",
+      "steps": [
+        {
+          "type": [
+            "main textarea.d-composer__input",
+            "/"
+          ]
+        },
+        {
+          "waitFor": "textarea[aria-label=\"Command\"]"
+        },
+        {
+          "waitFor": ".d-cmd-row[aria-label^=\"/play,\"]"
+        },
+        {
+          "type": [
+            "textarea[aria-label=\"Command\"]",
+            "/ban"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "type": [
+            "role=combobox[name=\"user\"s]",
+            "Björn"
+          ]
+        },
+        {
+          "click": "role=option[name=/^Björn,/]"
+        },
+        {
+          "type": [
+            "role=combobox[name=\"duration\"s]",
+            "1 day"
+          ]
+        },
+        {
+          "click": "button.d-composer__send"
+        },
+        {
+          "waitFor": "role=dialog[name=/^Ban /]"
+        }
+      ]
+    }
+  },
+  {
+    "name": "private-result-cancelled-ban-desktop",
+    "mutates": true,
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "type": [
+            "main textarea",
+            "/ban"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "type": [
+            "main input >> nth=0",
+            "Björn"
+          ]
+        },
+        {
+          "type": [
+            "main input[placeholder='permanent']",
+            "1 day"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "waitFor": "text=Ban Björn from"
+        },
+        {
+          "wait": 600
+        },
+        {
+          "click": "span:text-is(\"Cancel\")"
+        },
+        {
+          "wait": 600
+        }
+      ]
+    },
+    "app": {
+      "who": "ada",
+      "path": "{server}",
+      "steps": [
+        {
+          "type": [
+            "main textarea.d-composer__input",
+            "/"
+          ]
+        },
+        {
+          "waitFor": "textarea[aria-label=\"Command\"]"
+        },
+        {
+          "waitFor": ".d-cmd-row[aria-label^=\"/play,\"]"
+        },
+        {
+          "type": [
+            "textarea[aria-label=\"Command\"]",
+            "/ban"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "type": [
+            "role=combobox[name=\"user\"s]",
+            "Björn"
+          ]
+        },
+        {
+          "click": "role=option[name=/^Björn,/]"
+        },
+        {
+          "type": [
+            "role=combobox[name=\"duration\"s]",
+            "1 day"
+          ]
+        },
+        {
+          "click": "button.d-composer__send"
+        },
+        {
+          "waitFor": "role=dialog[name=/^Ban /]"
+        },
+        {
+          "click": "role=dialog >> role=button[name=\"Cancel\"s]"
+        },
+        {
+          "waitFor": ".d-bot-result[data-status=\"cancelled\"]"
+        }
+      ]
+    }
+  },
+  {
+    "name": "private-result-pending-phone",
+    "mutates": true,
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 600
+        },
+        {
+          "click": "aside >> text=general >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "type": [
+            "main textarea",
+            "/remind"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "type": [
+            "main input[placeholder='in 1 hour']",
+            "in 1 hour"
+          ]
+        },
+        {
+          "press": "Tab"
+        },
+        {
+          "type": [
+            "main input[placeholder='bring two ropes']",
+            "bring two ropes"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "wait": 100
+        }
+      ],
+      "settleMs": 0
+    },
+    "app": {
+      "who": "phone",
+      "path": "{community}",
+      "steps": [
+        {
+          "click": "role=button[name=\"general\"s]"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "type": [
+            "main textarea.d-composer__input",
+            "/"
+          ]
+        },
+        {
+          "waitFor": "textarea[aria-label=\"Command\"]"
+        },
+        {
+          "waitFor": ".d-cmd-row[aria-label^=\"/remind,\"]"
+        },
+        {
+          "type": [
+            "textarea[aria-label=\"Command\"]",
+            "/remind"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "type": [
+            "role=combobox[name=\"when\"s]",
+            "in 1 hour"
+          ]
+        },
+        {
+          "press": "Tab"
+        },
+        {
+          "type": [
+            "role=textbox[name=\"text\"s]",
+            "bring two ropes"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "waitFor": ".d-bot-result[data-status=\"pending\"]"
+        }
+      ],
+      "settleMs": 0
+    }
+  },
+  {
+    "name": "private-result-success-remind-phone",
+    "mutates": true,
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 600
+        },
+        {
+          "click": "aside >> text=general >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "type": [
+            "main textarea",
+            "/remind"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "type": [
+            "main input[placeholder='in 1 hour']",
+            "in 1 hour"
+          ]
+        },
+        {
+          "press": "Tab"
+        },
+        {
+          "type": [
+            "main input[placeholder='bring two ropes']",
+            "bring two ropes"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "wait": 1400
+        }
+      ]
+    },
+    "app": {
+      "who": "phone",
+      "path": "{community}",
+      "steps": [
+        {
+          "click": "role=button[name=\"general\"s]"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "type": [
+            "main textarea.d-composer__input",
+            "/"
+          ]
+        },
+        {
+          "waitFor": "textarea[aria-label=\"Command\"]"
+        },
+        {
+          "waitFor": ".d-cmd-row[aria-label^=\"/remind,\"]"
+        },
+        {
+          "type": [
+            "textarea[aria-label=\"Command\"]",
+            "/remind"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "type": [
+            "role=combobox[name=\"when\"s]",
+            "in 1 hour"
+          ]
+        },
+        {
+          "press": "Tab"
+        },
+        {
+          "type": [
+            "role=textbox[name=\"text\"s]",
+            "bring two ropes"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "waitFor": ".d-bot-result[data-status=\"success\"]"
+        }
+      ]
+    }
+  },
+  {
+    "name": "private-result-failed-play-phone",
+    "mutates": true,
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 600
+        },
+        {
+          "click": "aside >> text=general >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "type": [
+            "main textarea",
+            "/play"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "type": [
+            "main input[placeholder='song, video or playlist']",
+            "sea shanty"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "wait": 1400
+        }
+      ]
+    },
+    "app": {
+      "who": "phone",
+      "path": "{community}",
+      "steps": [
+        {
+          "click": "role=button[name=\"general\"s]"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "type": [
+            "main textarea.d-composer__input",
+            "/"
+          ]
+        },
+        {
+          "waitFor": "textarea[aria-label=\"Command\"]"
+        },
+        {
+          "waitFor": ".d-cmd-row[aria-label^=\"/play,\"]"
+        },
+        {
+          "type": [
+            "textarea[aria-label=\"Command\"]",
+            "/play"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "type": [
+            "role=combobox[name=\"query-or-url\"s]",
+            "sea shanty"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "waitFor": ".d-bot-result[data-status=\"failed\"]"
+        }
+      ]
+    }
+  },
+  {
+    "name": "private-result-unknown-phone",
+    "mutates": true,
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 600
+        },
+        {
+          "click": "aside >> text=general >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "type": [
+            "main textarea",
+            "/xyz"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "wait": 900
+        }
+      ]
+    },
+    "app": {
+      "who": "phone",
+      "path": "{community}",
+      "steps": [
+        {
+          "click": "role=button[name=\"general\"s]"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "type": [
+            "main textarea.d-composer__input",
+            "/"
+          ]
+        },
+        {
+          "waitFor": "textarea[aria-label=\"Command\"]"
+        },
+        {
+          "waitFor": ".d-cmd-row[aria-label^=\"/play,\"]"
+        },
+        {
+          "type": [
+            "textarea[aria-label=\"Command\"]",
+            "/xyz"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "waitFor": ".d-bot-result[data-status=\"failed\"]"
+        }
+      ]
+    }
+  },
+  {
+    "name": "private-result-confirm-kick-phone",
+    "mutates": true,
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 600
+        },
+        {
+          "click": "aside >> text=general >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "type": [
+            "main textarea",
+            "/kick"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "type": [
+            "main input >> nth=0",
+            "Björn"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "waitFor": "text=Kick Björn from"
+        },
+        {
+          "wait": 600
+        }
+      ]
+    },
+    "app": {
+      "who": "phone",
+      "path": "{community}",
+      "steps": [
+        {
+          "click": "role=button[name=\"general\"s]"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "type": [
+            "main textarea.d-composer__input",
+            "/"
+          ]
+        },
+        {
+          "waitFor": "textarea[aria-label=\"Command\"]"
+        },
+        {
+          "waitFor": ".d-cmd-row[aria-label^=\"/play,\"]"
+        },
+        {
+          "type": [
+            "textarea[aria-label=\"Command\"]",
+            "/kick"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "type": [
+            "role=combobox[name=\"user\"s]",
+            "Björn"
+          ]
+        },
+        {
+          "click": "role=option[name=/^Björn,/]"
+        },
+        {
+          "click": "button.d-composer__send"
+        },
+        {
+          "waitFor": "role=dialog[name=/^Kick /]"
+        }
+      ]
+    }
+  },
+  {
+    "name": "private-result-cancelled-kick-phone",
+    "mutates": true,
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 600
+        },
+        {
+          "click": "aside >> text=general >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "type": [
+            "main textarea",
+            "/kick"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "type": [
+            "main input >> nth=0",
+            "Björn"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "waitFor": "text=Kick Björn from"
+        },
+        {
+          "wait": 600
+        },
+        {
+          "click": "span:text-is(\"Cancel\")"
+        },
+        {
+          "wait": 600
+        }
+      ]
+    },
+    "app": {
+      "who": "phone",
+      "path": "{community}",
+      "steps": [
+        {
+          "click": "role=button[name=\"general\"s]"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "type": [
+            "main textarea.d-composer__input",
+            "/"
+          ]
+        },
+        {
+          "waitFor": "textarea[aria-label=\"Command\"]"
+        },
+        {
+          "waitFor": ".d-cmd-row[aria-label^=\"/play,\"]"
+        },
+        {
+          "type": [
+            "textarea[aria-label=\"Command\"]",
+            "/kick"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "type": [
+            "role=combobox[name=\"user\"s]",
+            "Björn"
+          ]
+        },
+        {
+          "click": "role=option[name=/^Björn,/]"
+        },
+        {
+          "click": "button.d-composer__send"
+        },
+        {
+          "waitFor": "role=dialog[name=/^Kick /]"
+        },
+        {
+          "click": "role=dialog >> role=button[name=\"Cancel\"s]"
+        },
+        {
+          "waitFor": ".d-bot-result[data-status=\"cancelled\"]"
+        }
+      ]
+    }
+  },
+  {
+    "name": "private-result-confirm-ban-phone",
+    "mutates": true,
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 600
+        },
+        {
+          "click": "aside >> text=general >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "type": [
+            "main textarea",
+            "/ban"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "type": [
+            "main input >> nth=0",
+            "Björn"
+          ]
+        },
+        {
+          "type": [
+            "main input[placeholder='permanent']",
+            "1 day"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "waitFor": "text=Ban Björn from"
+        },
+        {
+          "wait": 600
+        }
+      ]
+    },
+    "app": {
+      "who": "phone",
+      "path": "{community}",
+      "steps": [
+        {
+          "click": "role=button[name=\"general\"s]"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "type": [
+            "main textarea.d-composer__input",
+            "/"
+          ]
+        },
+        {
+          "waitFor": "textarea[aria-label=\"Command\"]"
+        },
+        {
+          "waitFor": ".d-cmd-row[aria-label^=\"/play,\"]"
+        },
+        {
+          "type": [
+            "textarea[aria-label=\"Command\"]",
+            "/ban"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "type": [
+            "role=combobox[name=\"user\"s]",
+            "Björn"
+          ]
+        },
+        {
+          "click": "role=option[name=/^Björn,/]"
+        },
+        {
+          "type": [
+            "role=combobox[name=\"duration\"s]",
+            "1 day"
+          ]
+        },
+        {
+          "click": "button.d-composer__send"
+        },
+        {
+          "waitFor": "role=dialog[name=/^Ban /]"
+        }
+      ]
+    }
+  },
+  {
+    "name": "private-result-cancelled-ban-phone",
+    "mutates": true,
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 600
+        },
+        {
+          "click": "aside >> text=general >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "type": [
+            "main textarea",
+            "/ban"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "type": [
+            "main input >> nth=0",
+            "Björn"
+          ]
+        },
+        {
+          "type": [
+            "main input[placeholder='permanent']",
+            "1 day"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "waitFor": "text=Ban Björn from"
+        },
+        {
+          "wait": 600
+        },
+        {
+          "click": "span:text-is(\"Cancel\")"
+        },
+        {
+          "wait": 600
+        }
+      ]
+    },
+    "app": {
+      "who": "phone",
+      "path": "{community}",
+      "steps": [
+        {
+          "click": "role=button[name=\"general\"s]"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "type": [
+            "main textarea.d-composer__input",
+            "/"
+          ]
+        },
+        {
+          "waitFor": "textarea[aria-label=\"Command\"]"
+        },
+        {
+          "waitFor": ".d-cmd-row[aria-label^=\"/play,\"]"
+        },
+        {
+          "type": [
+            "textarea[aria-label=\"Command\"]",
+            "/ban"
+          ]
+        },
+        {
+          "press": "Enter"
+        },
+        {
+          "type": [
+            "role=combobox[name=\"user\"s]",
+            "Björn"
+          ]
+        },
+        {
+          "click": "role=option[name=/^Björn,/]"
+        },
+        {
+          "type": [
+            "role=combobox[name=\"duration\"s]",
+            "1 day"
+          ]
+        },
+        {
+          "click": "button.d-composer__send"
+        },
+        {
+          "waitFor": "role=dialog[name=/^Ban /]"
+        },
+        {
+          "click": "role=dialog >> role=button[name=\"Cancel\"s]"
+        },
+        {
+          "waitFor": ".d-bot-result[data-status=\"cancelled\"]"
+        }
+      ]
+    }
+  },
+  {
+    "name": "standing-desktop-chat",
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "wait": 600
+        },
+        {
+          "click": "main header >> text=6"
+        },
+        {
+          "wait": 900
+        }
+      ]
+    },
+    "app": {
+      "who": "ada",
+      "path": "{server}",
+      "steps": [
+        {
+          "click": "role=button[name=/^Members/]"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "waitFor": "button[aria-label=\"add a gif\"]:enabled"
+        }
+      ]
+    }
+  },
+  {
+    "name": "standing-desktop-members-open",
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "wait": 1200
+        }
+      ]
+    },
+    "app": {
+      "who": "ada",
+      "path": "{server}",
+      "steps": [
+        {
+          "waitFor": "button[aria-label=\"add a gif\"]:enabled"
+        }
+      ]
+    }
+  },
+  {
+    "name": "standing-voice-focus",
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app"
+      },
+      "steps": [
+        {
+          "wait": 600
+        },
+        {
+          "click": "aside >> text=harbour >> nth=0"
+        },
+        {
+          "wait": 1200
+        }
+      ]
+    },
+    "app": {
+      "who": "ada",
+      "path": "{server}",
+      "steps": [
+        {
+          "click": "role=button[name=\"voice harbour\"i]"
+        },
+        {
+          "waitFor": {
+            "selector": ".d-call-stage__tile[data-source=\"screen\"][data-focused=\"true\"] .d-call-tile[data-media=\"true\"]",
+            "timeout": 120000
+          }
+        },
+        {
+          "waitFor": {
+            "selector": ".dw-voice-stage .d-call-tile[data-bot=\"true\"]",
+            "timeout": 60000
+          }
+        },
+        {
+          "waitFor": {
+            "selector": ".dw-voice-stage .d-np--stage[data-playing=\"true\"]",
+            "timeout": 60000
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "standing-phone-list",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app",
+        "device": "phone"
+      }
+    },
+    "app": {
+      "who": "phone",
+      "path": "{community}"
+    }
+  },
+  {
+    "name": "standing-phone-conversation",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "prototype": {
+      "props": {
+        "startAt": "app",
+        "device": "phone"
+      },
+      "steps": [
+        {
+          "wait": 600
+        },
+        {
+          "click": "aside >> text=general >> nth=0"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "click": "aside:has-text('Members') d-icon[name='x'] >> nth=0"
+        },
+        {
+          "wait": 900
+        }
+      ]
+    },
+    "app": {
+      "who": "phone",
+      "path": "{community}",
+      "steps": [
+        {
+          "click": "role=button[name=\"general\"s]"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "waitFor": "button[aria-label=\"add a gif\"]:enabled"
+        }
+      ]
+    },
+    "judge": {
+      "elements": [
+        {
+          "id": "header",
+          "name": "the channel header at the top of the screen, with a back arrow",
+          "edge": "top"
+        },
+        {
+          "id": "header_topic",
+          "name": "the grey channel topic next to the channel name in the header",
+          "compare": [
+            "presence"
+          ]
+        },
+        {
+          "id": "members_button",
+          "name": "the members button with a number near the right end of the header",
+          "compare": [
+            "presence"
+          ]
+        },
+        {
+          "id": "code_block",
+          "name": "the code block with line numbers in the conversation",
+          "data": true
+        },
+        {
+          "id": "composer",
+          "name": "the message composer above the bottom tab bar",
+          "edge": "bottom"
+        },
+        {
+          "id": "send_button",
+          "name": "the send button at the right end of the message composer",
+          "compare": [
+            "presence",
+            "size"
+          ],
+          "state": {
+            "active": {
+              "phrase": "drawn as ready to send",
+              "true": "the button has a filled blue background",
+              "false": "the button has a dark background like the composer around it"
+            }
+          }
+        },
+        {
+          "id": "tab_bar",
+          "name": "the bottom tab bar with Home, Activity and You tabs",
+          "edge": "bottom"
+        },
+        {
+          "id": "home_tab",
+          "name": "the Home tab of the bottom tab bar",
+          "compare": [
+            "presence"
+          ],
+          "state": {
+            "selected": {
+              "phrase": "drawn as the selected tab",
+              "true": "a blue line above the tab and brighter text than the other tabs",
+              "false": "no line above the tab and the same grey text as the other tabs"
+            }
+          }
+        }
+      ]
+    }
+  }
+]

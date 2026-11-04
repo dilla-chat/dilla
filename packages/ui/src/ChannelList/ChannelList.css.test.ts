@@ -32,9 +32,9 @@ describe('the row grammar (CSS pin)', () => {
     expect(d).toMatch(/flex: none;/);
   });
   it('selected is the fill and a 2px accent bar that grows with scaleY; active, unread and mention names are 600 (Signal §5.4)', () => {
-    expect(rule(chrow, '.d-chrow[aria-current="page"]')).toMatch(/background: var\(--surface-hi\);/);
+    expect(rule(chrow, '.d-chrow:is([aria-current="page"], [data-selected="true"])')).toMatch(/background: var\(--surface-hi\);/);
     expect(rule(chrow, '.d-chrow__bar')).toMatch(/width: 2px;[^]*transform: scaleY\(0\);[^]*transition: transform var\(--duration-normal\) var\(--ease-out\);/);
-    expect(rule(chrow, '.d-chrow[aria-current="page"] .d-chrow__bar')).toMatch(/transform: scaleY\(1\);/);
+    expect(rule(chrow, '.d-chrow:is([aria-current="page"], [data-selected="true"]) .d-chrow__bar')).toMatch(/transform: scaleY\(1\);/);
     expect(chrow).toMatch(/:not\(\[data-mentions="0"\]\)\) \.d-chrow__name \{ font-weight: var\(--weight-label\); \}/);
     expect(chrow).not.toMatch(/inset 4px 0 0/);
   });

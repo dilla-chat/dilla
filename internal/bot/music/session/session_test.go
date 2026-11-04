@@ -1,9 +1,11 @@
 package session
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -363,8 +365,8 @@ func TestExplicitStartRefreshesBindingAfterDelayedRoomDisconnect(t *testing.T) {
 type schedulingPCM struct{ api *client.Client }
 
 func (p schedulingPCM) Start(ctx context.Context, _ string) (io.ReadCloser, error) {
-	if client.RequestPriority(ctx) != 0 || client.CooperativeCheckpoint(ctx) != nil {
-		return nil, errors.New("playback retained a worker turn")
+	if client.RequestPriority(ctx) < 1 || client.CooperativeCheckpoint(ctx) != nil {
+		return nil, errors.New("playback lost interactive priority or retained cooperative stop")
 	}
 	_, err := p.api.Discover(ctx)
 	var response *client.APIError
@@ -379,7 +381,7 @@ type schedulingTransport struct{}
 func (schedulingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	return &http.Response{StatusCode: 503, Header: http.Header{"Content-Type": []string{"application/cbor"}}, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
 }
-func TestPlaybackSessionClearsInteractiveScheduling(t *testing.T) {
+func TestPlaybackSessionPreservesInteractivePriorityAndClearsCooperativeStop(t *testing.T) {
 	api, err := client.New(client.Config{BaseURL: "https://example.invalid", InstanceID: id.New(), HTTPClient: &http.Client{Transport: schedulingTransport{}}})
 	if err != nil {
 		t.Fatal(err)
@@ -421,5 +423,105 @@ func TestStartClosesAudioOnLateCallFailure(t *testing.T) {
 				t.Fatalf("cleanup pcm=%d encoder=%d publisher=%d", pcm.closed.Load(), enc.closed.Load(), pub.closed.Load())
 			}
 		})
+	}
+}
+
+func TestSessionResumeDetectsSourceDeathWhilePaused(t *testing.T) {
+	for _, kind := range []string{"process_exit", "read_error", "encoder_exit"} {
+		t.Run(kind, func(t *testing.T) {
+			enc := &encoderStub{done: make(chan struct{})}
+			pub := &pubStub{done: make(chan struct{})}
+			pcm := &healthPCM{}
+			o := options(&pcmStart{}, enc, pub)
+			o.Call.GroupID = o.Group
+			o.PCM = healthPCMStart{pcm}
+			s, err := Start(t.Context(), o)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			s.Pause()
+			switch kind {
+			case "process_exit":
+				pcm.gone.Store(true)
+			case "read_error":
+				pcm.readErr.Store(true)
+				_, _ = s.pcm.Read(make([]byte, 4))
+			case "encoder_exit":
+				close(enc.done)
+			}
+			if err = s.Resume(); !errors.Is(err, music.ErrSourceGone) {
+				t.Fatalf("resume=%v", err)
+			}
+		})
+	}
+}
+
+type healthPCM struct{ gone, readErr atomic.Bool }
+
+func (p *healthPCM) Read([]byte) (int, error) {
+	if p.readErr.Load() {
+		return 0, io.ErrUnexpectedEOF
+	}
+	return 0, nil
+}
+func (*healthPCM) Close() error       { return nil }
+func (p *healthPCM) SourceGone() bool { return p.gone.Load() }
+
+type healthPCMStart struct{ p *healthPCM }
+
+func (p healthPCMStart) Start(context.Context, string) (io.ReadCloser, error) { return p.p, nil }
+
+func TestPublishedStageIncludesJoinBranch(t *testing.T) {
+	enc := &encoderStub{done: make(chan struct{})}
+	pub := &pubStub{done: make(chan struct{})}
+	o := options(&pcmStart{}, enc, pub)
+	o.PrepareCall = func(ctx context.Context) (client.Call, error) {
+		music.RecordCallJoinBranch(ctx, "already_member")
+		return client.Call{CallID: id.New(), GroupID: id.New()}, nil
+	}
+	var logs bytes.Buffer
+	ctx := music.WithPlaybackLogger(t.Context(), slog.New(slog.NewJSONHandler(&logs, nil)))
+	s, err := Start(ctx, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if !strings.Contains(logs.String(), `"branch":"already_member"`) || !strings.Contains(logs.String(), `"stage":"published"`) {
+		t.Fatalf("missing published branch: %s", logs.String())
+	}
+}
+
+type locallyPausedPCM struct {
+	healthPCM
+	paused bool
+}
+
+func (p *locallyPausedPCM) SetPaused(v bool) { p.paused = v }
+
+type locallyPausedStart struct{ p *locallyPausedPCM }
+
+func (p locallyPausedStart) Start(context.Context, string) (io.ReadCloser, error) { return p.p, nil }
+func TestSessionPropagatesLocalSourcePauseWithoutHelperControls(t *testing.T) {
+	enc := &encoderStub{done: make(chan struct{})}
+	pub := &pubStub{done: make(chan struct{})}
+	pcm := &locallyPausedPCM{}
+	o := options(&pcmStart{}, enc, pub)
+	o.Call.GroupID = o.Group
+	o.PCM = locallyPausedStart{pcm}
+	s, err := Start(t.Context(), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	s.Pause()
+	if !pcm.paused {
+		t.Fatal("source watchdog did not learn about pause")
+	}
+	if err = s.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	if pcm.paused {
+		t.Fatal("source watchdog stayed paused")
 	}
 }

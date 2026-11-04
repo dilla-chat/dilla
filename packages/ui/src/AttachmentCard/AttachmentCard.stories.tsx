@@ -41,8 +41,8 @@ export const SmallImage: Story = {
     if (!button || !image) throw new Error('SmallImage: missing open target or thumbnail');
     const target = button.getBoundingClientRect();
     const thumb = image.getBoundingClientRect();
-    if (target.width < 24 || target.height < 24 || thumb.width !== 16 || thumb.height !== 16) {
-      throw new Error(`SmallImage: the 16 px image needs a 24 px target without enlarging the image (${JSON.stringify({
+    if (target.width < 24 || target.height < 24 || thumb.width !== 280 || thumb.height !== 210) {
+      throw new Error(`SmallImage: even a small source uses the prototype’s 280×210 cover tile (${JSON.stringify({
         targetWidth: target.width, targetHeight: target.height, imageWidth: thumb.width, imageHeight: thumb.height,
       })})`);
     }

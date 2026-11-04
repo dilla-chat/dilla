@@ -41,6 +41,17 @@ describe('RecoveryKey', () => {
     expect(screen.queryByText(/copy/i)).toBeNull();
   });
 
+  // Wave B task 3b (Jonas): Save as file beside Print; still no copy control (protocol/03).
+  it('offers Save as file beside Print when the host gives it, and still no copy control', async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    renderKey({ saveLabel: 'Save as file', onSave });
+    expect(screen.getAllByRole('button').map(b => b.textContent)).toEqual([PRINT, 'Save as file']);
+    expect(screen.queryByRole('button', { name: /copy/i })).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Save as file' }));
+    expect(onSave).toHaveBeenCalledTimes(1);
+  });
+
   it('does not cancel copying the key text', () => {
     renderKey();
     expect(fireEvent.copy(screen.getByRole('list', { name: LABEL }))).toBe(true);
@@ -60,19 +71,24 @@ describe('RecoveryKey', () => {
     expect(onAcknowledge).toHaveBeenLastCalledWith(false);
   });
 
-  it('is operable by keyboard: Tab reaches the checkbox first, Space ticks it, then print', async () => {
+  // Wave B task 3b: the prototype's order, the actions row (Print) under the grid and the check box under it.
+  it('is operable by keyboard: Tab reaches print first, then the checkbox, which Space ticks', async () => {
     const user = userEvent.setup();
     const onAcknowledge = vi.fn();
     const onPrint = vi.fn();
     renderKey({ onAcknowledge, onPrint });
     await user.tab();
-    expect(screen.getByRole('checkbox', { name: ACK })).toHaveFocus();
-    await user.keyboard(' ');
-    expect(onAcknowledge).toHaveBeenCalledWith(true);
-    await user.tab();
     expect(screen.getByRole('button', { name: PRINT })).toHaveFocus();
     await user.keyboard('{Enter}');
     expect(onPrint).toHaveBeenCalledTimes(1);
+    await user.tab();
+    expect(screen.getByRole('checkbox', { name: ACK })).toHaveFocus();
+    await user.keyboard(' ');
+    expect(onAcknowledge).toHaveBeenCalledWith(true);
+  });
+  it('names the grid for assistive technology only, as the prototype draws no label', () => {
+    renderKey();
+    expect(screen.getByText(LABEL)).toHaveClass('d-sr-only');
   });
 
   it('has no serious axe violations', async () => {

@@ -23,11 +23,12 @@ const ALLOWED = { path: ['d'], polyline: ['points'], rect: ['x', 'y', 'width', '
 const attrs = s => Object.fromEntries([...s.matchAll(/([a-zA-Z][\w-]*)="([^"]*)"/g)].map(m => [m[1], m[2]]));
 
 // Icons Jonas approved from another Lucide release than <tag> (the prototype's icon loader fetches lucide-static 0.460.0, and
-// these two glyphs differ from 1.57.0). Pass their SVGs from that package; the header records each one's own version and
+// these glyphs differ from 1.57.0). Pass their SVGs from that package; the header records each one's own version and
 // hash, and the note is written above the entry, so a regeneration keeps both geometry and provenance.
 const VERSIONS = {
   key: { from: 'lucide-static@0.460.0', note: "Fix round 3: the prototype's key (lucide-static 0.460.0, the version its icon loader fetches): the bow at the lower left." },
   youtube: { from: 'lucide-static@0.460.0', note: "Fix round 3: the prototype's YouTube provider glyph (lucide-static 0.460.0 'youtube', which its icon loader fetches)." },
+  house: { from: 'lucide-static@0.460.0', note: "The prototype's Home glyph: Lucide 0.460.0 exports Home = House; lucide-static names the asset house.svg." },
 };
 
 // Other comments kept above an entry.

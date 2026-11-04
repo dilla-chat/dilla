@@ -1,13 +1,15 @@
-import { createElement, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Button, Dialog, RemindersPopover, type ReminderItem } from '@dilla/ui';
+import { createElement, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { Button, PollDialog, RemindersPopover, showToast, type PollDraft, type ReminderItem } from '@dilla/ui';
 import { BotUtilitiesError, BotUtilitiesProviderUnavailableError, BotUtilitiesStatusError, BotUtilitiesUncertainMutationError,
   createBotUtilities, encode, fromHex, parseReminderTime, resolveReminderTimeCandidate,
   type BotUtilities, type CoreClient, type ReminderSummary, type ReminderTimeResult } from '@dilla/client-core';
 import { channelBitsOf, PERM, type CommandContext as Binding, type CommandInvocation, type CommandResult } from '@dilla/client-core';
+import { BOT_ACCOUNT_KIND } from '../bot-member.ts';
 import { shouldNotify, notificationCtor } from '../../notify.ts';
-import { t } from '../../strings/index.ts';
 import type { CommandExecutionContext, CommandProviderHandlers, CommandSuggestion, CommandSuggestionProvider } from './command-types.ts';
 import { utilityText as copy } from './utility-copy.ts';
+import { localUtilityTime } from './utility-time.ts';
+import { pollDialogLabels } from './poll-dialog-labels.ts';
 import './UtilityCards.css';
 
 const DURATIONS: Readonly<Record<string, number>> = { '1h': 3600, '4h': 14_400, '8h': 28_800, '24h': 86_400, '3d': 259_200, '7d': 604_800 };
@@ -83,78 +85,58 @@ const caught = (error: unknown, kind: 'poll' | 'reminder' = 'poll'): CommandResu
 };
 
 export interface UtilityDialogBase { isCurrent(): boolean; onCancel(): void; }
-export type UtilityDialogInput =
-  | { kind: 'poll'; question: string; answers: string; multi: boolean; duration: string; channelId: string; threadId: string | null }
-  | { kind: 'reminder'; when: string; text: string; timezone: string; chosen?: number };
-export type UtilityDialogState =
-  | (UtilityDialogBase & { kind: 'poll'; question: string; answers: string; multi: boolean; duration: string; channelId: string; threadId: string | null; onSubmit(value: { question: string; answers: string[]; multi: boolean; duration: number }): void })
-  | (UtilityDialogBase & { kind: 'reminder'; when: string; text: string; timezone: string; chosen?: number; onSubmit(value: { when: string; text: string; timezone: string; result: Extract<ReminderTimeResult, { kind: 'valid' }> }): void });
+// Signal wave B Task 2: `/remind` runs from its chips (the browser's zone, Q10); only the poll keeps a dialog (Task 7).
+export type UtilityDialogInput = { kind: 'poll'; question: string; answers: string; multi: boolean; duration: string; channelId: string; threadId: string | null };
+export type UtilityDialogState = UtilityDialogBase & { kind: 'poll'; question: string; answers: string; multi: boolean; duration: string; channelId: string; threadId: string | null; onSubmit(value: { question: string; answers: string[]; multi: boolean; duration: number }): void };
 
-export function UtilityCommandDialogs({ dialog }: { dialog: UtilityDialogState | null }): React.JSX.Element | null {
+/** A reminder's time from the picker's chips: `when` (a duration or an ISO local time), the zone, and a DST fold's pick. */
+export function reminderFromArgs(args: Readonly<Record<string, string>>, now: Date): { value: { when: string; text: string; timezone: string; result: Extract<ReminderTimeResult, { kind: 'valid' }> } } | { error: string } {
+  const timezone = args.timezone ?? (Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
+  const when = (args.when ?? '').trim().replace(/^in\s+/iu, '');
+  const text = (args.text ?? '').trim();
+  const parsed = parseReminderTime(when, timezone, now);
+  const chosen = args.chosen === undefined ? null : Number(args.chosen);
+  const result = parsed.kind === 'ambiguous' && chosen !== null ? resolveReminderTimeCandidate(parsed, chosen, now) : parsed;
+  if (result.kind === 'ambiguous') return { error: copy('reminder.ambiguous') };
+  if (new TextEncoder().encode(text).length > 1500) return { error: copy('reminder.textTooLong') };
+  if (result.kind !== 'valid' || text === '') return { error: copy('reminder.invalid') };
+  return { value: { when: args.when ?? '', text, timezone, result } };
+}
+
+export function UtilityCommandDialogs({ dialog, channelName, botName }: { dialog: UtilityDialogState | null; channelName: string; botName: string }): React.JSX.Element | null {
   useEffect(() => {
     if (dialog === null) return;
     const timer = window.setInterval(() => { if (!dialog.isCurrent()) dialog.onCancel(); }, 100);
     return () => window.clearInterval(timer);
   }, [dialog]);
   if (dialog === null) return null;
-  return dialog.kind === 'poll' ? <PollCreateDialog key="poll" dialog={dialog} /> : <ReminderCreateDialog key="reminder" dialog={dialog} />;
+  return <PollEditor key="poll" dialog={dialog} channelName={channelName} botName={botName} />;
 }
-function PollCreateDialog({ dialog }: { dialog: Extract<UtilityDialogState, { kind: 'poll' }> }): React.JSX.Element {
-  const [question, setQuestion] = useState(dialog.question); const [answers, setAnswers] = useState(dialog.answers);
-  const [multi, setMulti] = useState(dialog.multi); const [duration, setDuration] = useState(dialog.duration); const [error, setError] = useState('');
-  const lines = answers.split(/\r?\n/u).map(value => value.trim());
-  let bytes: number | null = null; let aggregateError = false;
-  if (duration in DURATIONS && question.trim() !== '' && lines.length >= 2 && lines.length <= 10 && lines.every(value => value !== '')) {
-    try { bytes = encode([1n, fromHex(dialog.channelId), dialog.threadId === null ? null : fromHex(dialog.threadId), question.trim(), lines, multi ? 1n : 0n, BigInt(DURATIONS[duration]) ]).length; aggregateError = bytes > 1800; }
-    catch { aggregateError = new TextEncoder().encode(question + lines.join('')).length > 1600; }
-  }
-  const liveError = question.trim() === '' || Array.from(question).length > 300 || lines.length < 2 || lines.length > 10
-    || lines.some(value => value === '' || Array.from(value).length > 100) || new Set(lines).size !== lines.length || !(duration in DURATIONS)
-    ? copy('poll.validation') : aggregateError ? copy('poll.aggregateValidation') : '';
+function PollEditor({ dialog, channelName, botName }: { dialog: UtilityDialogState; channelName: string; botName: string }): React.JSX.Element {
+  const [value, setValue] = useState<PollDraft>(() => {
+    const answers = dialog.answers ? dialog.answers.split(/\r?\n/u) : ['', ''];
+    while (answers.length < 2) answers.push('');
+    return { question: dialog.question, answers, multi: dialog.multi, duration: (dialog.duration in DURATIONS ? dialog.duration : '24h') as PollDraft['duration'] };
+  });
+  const [error, setError] = useState<string | null>(null);
   const submit = () => {
-    if (liveError !== '') { setError(liveError); return; }
-    dialog.onSubmit({ question: question.trim(), answers: lines, multi, duration: DURATIONS[duration] });
+    const question = value.question.trim(); const answers = value.answers.map(answer => answer.trim()).filter(Boolean);
+    let invalid: string | null = question === '' ? copy('poll.questionRequired') : Array.from(question).length > 300 ? copy('poll.questionLong')
+      : answers.length < 2 ? copy('poll.answersRequired') : answers.some(answer => Array.from(answer).length > 100) ? copy('poll.answerLong')
+      : answers.length > 10 || new Set(answers).size !== answers.length ? copy('poll.duplicates') : null;
+    if (invalid === null) {
+      let aggregateError = false;
+      try { aggregateError = encode([1n, fromHex(dialog.channelId), dialog.threadId === null ? null : fromHex(dialog.threadId), question, answers, value.multi ? 1n : 0n, BigInt(DURATIONS[value.duration])]).length > 1800; }
+      catch { aggregateError = new TextEncoder().encode(question + answers.join('')).length > 1600; }
+      if (aggregateError) invalid = copy('poll.aggregateValidation');
+    }
+    setError(invalid);
+    if (invalid === null) dialog.onSubmit({ question, answers, multi: value.multi, duration: DURATIONS[value.duration] });
   };
-  return <Dialog open title={copy('poll.createTitle')} closeLabel={t('dialog.close')} onClose={() => dialog.onCancel()}
-    footer={<><Button onClick={() => dialog.onCancel()}>{t('chperm.cancel')}</Button><Button variant="accent" onClick={submit}>{t('botCommand.save')}</Button></>}>
-    <label>{copy('poll.question')}<textarea value={question} onChange={event => {
-      const next = event.currentTarget.value;
-      if (Array.from(next).length <= 300) setQuestion(next);
-    }} data-autofocus /></label>
-    <p>{copy('poll.charCount', { current: Array.from(question).length, limit: 300 })}</p>
-    <label>{copy('poll.answers')}<textarea value={answers} onChange={event => setAnswers(event.currentTarget.value)} /></label><p>{copy('poll.answerHelp')}</p>
-    <p>{copy('poll.byteCount', { current: bytes ?? new TextEncoder().encode(question + lines.join('')).length, limit: 1800 })}{aggregateError ? <span role="alert">{copy('poll.aggregateLimit')}</span> : null}</p>
-    <label><input type="checkbox" checked={multi} onChange={event => setMulti(event.currentTarget.checked)} />{copy('poll.multiple')}</label>
-    <label>{copy('poll.duration')}<select value={duration} onChange={event => setDuration(event.currentTarget.value)}>
-      {Object.keys(DURATIONS).map(value => <option key={value} value={value}>{value}</option>)}</select></label>
-    {error ? <p role="alert">{error}</p> : null}
-  </Dialog>;
+  return <PollDialog labels={pollDialogLabels} open channelName={channelName} bot={{ name: botName }} value={value} error={error}
+    canPost={value.question.trim() !== '' && value.answers.filter(answer => answer.trim()).length >= 2}
+    onChange={next => { setValue(next); setError(null); }} onPost={submit} onCancel={() => dialog.onCancel()} />;
 }
-function ReminderCreateDialog({ dialog }: { dialog: Extract<UtilityDialogState, { kind: 'reminder' }> }): React.JSX.Element {
-  const foldGroupId = useId();
-  const [when, setWhen] = useState(dialog.when); const [text, setText] = useState(dialog.text); const [timezone, setTimezone] = useState(dialog.timezone);
-  const [chosen, setChosen] = useState<number | null>(dialog.chosen ?? null); const [error, setError] = useState(''); const [now, setNow] = useState(() => new Date());
-  useEffect(() => { const timer = window.setInterval(() => setNow(new Date()), 15_000); return () => window.clearInterval(timer); }, []);
-  const parsed = useMemo(() => parseReminderTime(when.trim().replace(/^in\s+/iu, ''), timezone, now), [when, timezone, now]);
-  const resolved = parsed.kind === 'ambiguous' && chosen !== null ? resolveReminderTimeCandidate(parsed, chosen, now) : parsed;
-  const textBytes = new TextEncoder().encode(text).length;
-  const submit = () => {
-    if (text.trim() === '' || textBytes > 1500 || resolved.kind !== 'valid') { setError(resolved.kind === 'ambiguous' ? copy('reminder.ambiguous') : copy('reminder.invalid')); return; }
-    dialog.onSubmit({ when, text: text.trim(), timezone, result: resolved });
-  };
-  return <Dialog open title={copy('reminder.createTitle')} closeLabel={t('dialog.close')} onClose={() => dialog.onCancel()}
-    footer={<><Button onClick={() => dialog.onCancel()}>{t('chperm.cancel')}</Button><Button variant="accent" onClick={submit}>{t('botCommand.save')}</Button></>}>
-    <label>{copy('reminder.when')}<input value={when} onChange={event => { setWhen(event.currentTarget.value); setChosen(null); }} data-autofocus placeholder={copy('reminder.whenPlaceholder')} /></label>
-    <label>{copy('reminder.timezone')}<input value={timezone} onChange={event => { setTimezone(event.currentTarget.value); setChosen(null); }} /></label>
-    <label>{copy('reminder.text')}<textarea value={text} onChange={event => setText(event.currentTarget.value)} /></label><p>{copy('reminder.byteCount', { current: textBytes, limit: 1500 })}</p>
-    {resolved.kind === 'valid' ? <p aria-live="polite">{copy('reminder.preview', { preview: resolved.preview })}</p> : null}
-    {parsed.kind === 'ambiguous' ? <fieldset><legend>{copy('reminder.ambiguous')}</legend>{parsed.candidates.map((candidate, index) => <label key={candidate.unixSeconds}>
-      <input type="radio" name={foldGroupId} checked={chosen === candidate.unixSeconds} onChange={() => setChosen(candidate.unixSeconds)} />
-      {copy('reminder.timeChoice', { choice: copy(index === 0 ? 'reminder.earlier' : 'reminder.later', { offset: candidate.offsetLabel }), preview: candidate.preview })}</label>)}</fieldset> : null}
-    {error ? <p role="alert">{error}</p> : null}
-  </Dialog>;
-}
-
 export interface ReminderInboxEntry { communityId: string; reminder: ReminderSummary; }
 export type UtilityNavigate = (communityId: string, channelId: string, threadId: string | null) => void;
 function sourceAccessible(client: CoreClient, communityId: string, channelId: string | null): boolean {
@@ -337,7 +319,7 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
   const refreshRequestId = useCallback(() => { void fetchInbox(); }, [fetchInbox]);
   const open = useCallback(async (state: UtilityDialogInput, context: CommandExecutionContext) => {
     if (communityId === null || !canCreateFromContext(context, communityId)) return null;
-    const operation = state.kind === 'poll' ? 70 : 80;
+    const operation = 70;
     try {
       const caps = await utilityFor(communityId).capabilities();
       if (!canCreateFromContext(context, communityId) || !caps.supportedOperations.includes(operation)) return null;
@@ -366,7 +348,7 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
           const poll = await utility.pollGet(context.requestId, { channelId: context.binding.channelId, threadId: thread(context.binding) });
           if (poll.question === saved?.question && poll.answers.join('\u0000') === saved?.answers.join('\u0000')
             && poll.multi === saved?.multi && pollPublished(context, poll.id, context.binding.channelId, thread(context.binding), caps.botUserId)) {
-            attempts.delete(context.requestId); return success(copy('poll.created') + ` ${poll.id}`);
+            attempts.delete(context.requestId); showToast(copy('poll.created')); return success(copy('poll.created'));
           }
           if (receipt?.status === 0 || (receipt !== null && receipt?.status !== 5)) return uncertain(copy('poll.createdUncertain'));
         } catch { return uncertain(copy('poll.createdUncertain')); }
@@ -375,13 +357,14 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
       // part of the retry even though the original request ID is body-bound.
       const raw = saved ?? await open({ kind: 'poll', question: invocation.args.question ?? '', answers: answers.replace(/\s*,\s*/gu, '\n'), multi: invocation.args.multiple === 'on', duration: invocation.args.duration ?? '24h', channelId: context.binding.channelId, threadId: thread(context.binding) }, context) as { question: string; answers: string[]; multi: boolean; duration: number } | null;
       if (raw === null) return prior ? uncertain(copy('poll.createdUncertain')) : failure('Poll creation cancelled.');
+      context.startResult?.();
       const submitted = saved ?? raw;
       const attempt = prior ?? { kind: 'poll' as const, scope, installationId: caps.installationId, value: { ...raw, answers: [...raw.answers] } };
       attempts.set(context.requestId, attempt);
       try { if (!canCreateFromContext(context, communityId)) return uncertain(copy('poll.createdUncertain'));
-        const poll = await utility.pollCreate({ requestId: context.requestId, channelId: context.binding.channelId, threadId: thread(context.binding), question: submitted.question, answers: submitted.answers, multi: submitted.multi, durationSeconds: submitted.duration });
+        await utility.pollCreate({ requestId: context.requestId, channelId: context.binding.channelId, threadId: thread(context.binding), question: submitted.question, answers: submitted.answers, multi: submitted.multi, durationSeconds: submitted.duration });
         attempts.delete(context.requestId);
-        return success(copy('poll.created') + ` ${poll.id}`);
+        showToast(copy('poll.created')); return success(copy('poll.created'));
       } catch (error) {
         if (error instanceof BotUtilitiesStatusError && (error.status === 4 || (!prior && error.status !== 5))) attempts.delete(context.requestId);
         return caught(error);
@@ -453,14 +436,15 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
             || found?.sourceChannelId === null && found.sourceThreadId === null;
           if (found && found.text === saved?.text && canonicalTimezone(found.timezone) !== null
             && canonicalTimezone(found.timezone) === canonicalTimezone(saved?.timezone ?? '') && sourceMatches) {
-            attempts.delete(context.requestId); refreshRequestId(); return success(`${copy('reminder.created')} ${found.id}`);
+            attempts.delete(context.requestId); refreshRequestId(); return success(copy('reminder.created', { time: localUtilityTime(Number(found.dueUnixSeconds)) ?? '', text: found.text }));
           }
           return uncertain(copy('reminder.uncertain'));
         } catch { return uncertain(copy('reminder.uncertain')); }
       }
-      const value = await open({ kind: 'reminder', when: invocation.args.when, text: invocation.args.text, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' }, context) as { when: string; text: string; timezone: string; result: Extract<ReminderTimeResult, { kind: 'valid' }> } | null;
-      if (value === null) return prior ? uncertain(copy('reminder.uncertain')) : failure('Reminder creation cancelled.');
-      const submitted = saved ?? value;
+      // Wave B Task 2: the chips carry the time (the dialog is gone); the browser's zone unless the picker named one.
+      const fromChips = reminderFromArgs(invocation.args, new Date());
+      if ('error' in fromChips) return failure(fromChips.error);
+      const submitted = saved ?? fromChips.value;
       attempts.set(context.requestId, prior ?? { kind: 'reminder', scope, installationId: caps.installationId,
         value: { when: submitted.when, text: submitted.text, timezone: submitted.timezone, result: submitted.result } });
       try {
@@ -470,7 +454,7 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
           when: submitted.result.mode === 'relative' ? submitted.result.seconds : submitted.result.unixSeconds,
           text: submitted.text, timezone: submitted.timezone, sourceChannelId: context.binding.channelId, sourceThreadId: thread(context.binding) });
         attempts.delete(context.requestId);
-        refreshRequestId(); return success(`${copy('reminder.created')} ${reminder.id}`);
+        refreshRequestId(); return success(copy('reminder.created', { time: localUtilityTime(Number(reminder.dueUnixSeconds)) ?? '', text: reminder.text }));
       } catch (error) {
         if (error instanceof BotUtilitiesStatusError && (error.status === 4 || (!prior && error.status !== 5))) attempts.delete(context.requestId);
         return caught(error, 'reminder');
@@ -478,6 +462,8 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
     };
     handlers['reminders list'] = async (_invocation, context) => {
       if (!context.isCurrent()) return failure('The conversation changed.');
+      // Wave B Task 2 (the prototype's exec): the bell's popover opens on Upcoming while the list loads.
+      inboxOpener.current = null; setInboxTab('upcoming'); setInboxOpen(true);
       const snapshot = await fetchInbox(true, true);
       if (!context.isCurrent()) return failure('The conversation changed.');
       if (snapshot === null) return failure(copy('reminder.loadError'));
@@ -575,7 +561,7 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
   };
   const closeInbox = () => setInboxOpen(false);
   const remindersPanel = (layout: 'popover' | 'sheet', anchor?: () => HTMLElement | null) => !inboxOpen ? null : (
-    <ReminderPanel client={client} ownerKey={ownerKey} rows={currentRecords} sourceAccessVersion={sourceAccessVersion} loading={loading} error={loadError}
+    <ReminderPanel client={client} ownerKey={ownerKey} communityId={communityId} rows={currentRecords} sourceAccessVersion={sourceAccessVersion} loading={loading} error={loadError}
       layout={layout} tab={inboxTab ?? (dueCount > 0 ? 'due' : 'upcoming')} onTab={setInboxTab} onClose={closeInbox} returnFocus={() => inboxOpener.current} anchor={anchor}
       onRefresh={() => void fetchInbox(true, true)} onNavigate={onNavigate} utilityFor={utilityFor} />
   );
@@ -585,7 +571,7 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
     {remindersPanel('popover', () => triggerRef.current)}</span>;
   const dueReminders = currentRecords.filter(row => row.reminder.state === 'due')
     .map(row => ({ key: `${row.communityId}:${row.reminder.id}`, text: row.reminder.text, where: sourceWhere(client, row) }));
-  return { handlers: commandHandlers, suggest, dialogs: createElement(UtilityCommandDialogs, { dialog: visibleDialog }), inbox, dueCount, dueReminders,
+  return { handlers: commandHandlers, suggest, dialogs: createElement(UtilityCommandDialogs, { dialog: visibleDialog, channelName: client.get(`channels:${communityId}`)?.find(row => row.id === visibleDialog?.channelId)?.name ?? '', botName: client.get(`members:${communityId}`)?.find(row => row.kind === BOT_ACCOUNT_KIND)?.display || copy('poll.botName') }), inbox, dueCount, dueReminders,
     remindersOpen: inboxOpen, openInbox, closeInbox, remindersPanel };
 }
 
@@ -614,7 +600,7 @@ export function reminderWhen(unixSeconds: number, now: Date = new Date()): strin
  * scheduled ones with Cancel (the prototype's two actions, both the bot's own operations). A reminder's text opens the message it
  * was set from when that is still reachable. There is no Snooze: the bot has no snooze operation (see the task 6b report).
  */
-function ReminderPanel(props: { client: CoreClient; ownerKey: string; rows: ReminderInboxEntry[]; sourceAccessVersion: number; loading: boolean; error: boolean;
+function ReminderPanel(props: { client: CoreClient; ownerKey: string; communityId: string | null; rows: ReminderInboxEntry[]; sourceAccessVersion: number; loading: boolean; error: boolean;
   layout: 'popover' | 'sheet'; tab: 'due' | 'upcoming'; onTab(tab: 'due' | 'upcoming'): void; onClose(): void; returnFocus(): HTMLElement | null;
   anchor?: () => HTMLElement | null; onRefresh(): void; onNavigate?: UtilityNavigate; utilityFor(id: string): BotUtilities }): React.JSX.Element {
   const [busy, setBusy] = useState<string | null>(null); const [error, setError] = useState('');
@@ -692,7 +678,13 @@ function ReminderPanel(props: { client: CoreClient; ownerKey: string; rows: Remi
     due: row.reminder.state === 'due', busy: busy !== null, canOpen: row.reminder.sourceChannelId !== null && sourceAvailable(row),
   }));
   const status = props.loading ? copy('reminder.loading') : props.error ? copy('reminder.loadError') : error !== '' ? error : undefined;
-  return <RemindersPopover items={items} tab={props.tab} onTab={tab => props.onTab(tab)} layout={props.layout} status={status}
+  // The prototype's header tile ("GL"): the initials of the server's Bot, the account that keeps the reminders.
+  const membersName = `members:${props.communityId ?? props.rows[0]?.communityId ?? ''}` as const;
+  const members = useSyncExternalStore(useCallback((listener: () => void) => props.client.subscribe(membersName, listener), [props.client, membersName]),
+    () => props.client.get(membersName));
+  const botMember = (members ?? []).find(m => m.kind === BOT_ACCOUNT_KIND);
+  const botName = botMember === undefined ? '' : (botMember.display || botMember.username).trim();
+  return <RemindersPopover items={items} {...(botName === '' ? {} : { botInitials: botName.slice(0, 2).toUpperCase() })} tab={props.tab} onTab={tab => props.onTab(tab)} layout={props.layout} status={status} loading={props.loading}
     onAction={(id, action) => { const row = listed.find(r => keyOf(r) === id); if (row !== undefined) void mutate(row, action); }}
     onOpen={id => { const row = listed.find(r => keyOf(r) === id); if (row !== undefined) { props.onClose(); jump(row); } }}
     onClose={() => props.onClose()} returnFocus={() => props.returnFocus()} anchor={props.anchor}

@@ -1,3 +1,5 @@
+import * as Ui from '@dilla/ui';
+import * as ClientCore from '@dilla/client-core';
 import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { BROWSER_ATTACHMENT_CAP, type TrayItem } from '@dilla/client-core';
@@ -5,7 +7,7 @@ import { refusal } from '../../test/fake-client.ts';
 import { PHONE_QUERY } from '../../layout.ts';
 import { expectNoAxeViolations } from '../../test/setup.ts';
 import { clearCommandDraftMemory } from '../commands/CommandHost.tsx';
-import { GEN, O1, O2, P1, PEER, ownRow, peerRow, renderConversation, rowOf } from '../../test/conversation.tsx';
+import { A, GEN, O1, O2, P1, PEER, ownRow, peerRow, renderConversation, rowOf } from '../../test/conversation.tsx';
 
 const box = (name = 'message #general') => screen.getByRole('textbox', { name });
 const chip = () => document.querySelector('.d-reply-chip');
@@ -19,6 +21,87 @@ const entry = (id: string, phase: TrayItem['phase'], over: Partial<TrayItem> = {
 
 beforeEach(() => clearCommandDraftMemory());
 
+describe('command composer focus', () => {
+  it.each([
+    { phone: false, action: 'keyboard' }, { phone: false, action: 'pointer' },
+    { phone: true, action: 'keyboard' }, { phone: true, action: 'pointer' },
+  ])('returns to the empty composer after $action /help on phone=$phone', async ({ phone, action }) => {
+    if (phone) window.matchMedia = vi.fn((query: string) => ({
+      matches: query === PHONE_QUERY, media: query, addEventListener: () => undefined, removeEventListener: () => undefined,
+    })) as unknown as typeof window.matchMedia;
+    try {
+      const { fake, user } = renderConversation();
+      fireEvent.change(box(), { target: { value: '/help' } });
+      await screen.findByRole('combobox', { name: 'command' });
+      if (action === 'keyboard') await user.keyboard('{Enter}');
+      else await user.click(screen.getByRole('button', { name: 'send' }));
+      await waitFor(() => expect(document.querySelector('.d-bot-result[data-status="success"]')).toHaveTextContent('/help'));
+      expect(box()).toHaveValue('');
+      expect(box()).toHaveFocus();
+      await user.keyboard('next message{Enter}');
+      await waitFor(() => expect(fake.callsOf('send')).toEqual([{ m: 'send', channelId: GEN, text: 'next message' }]));
+    } finally {
+      if (phone) Reflect.deleteProperty(window, 'matchMedia');
+    }
+  });
+});
+
+describe('poll form composer focus', () => {
+  it.each([
+    { phone: false, trigger: 'keyboard', close: 'post' }, { phone: false, trigger: 'pointer', close: 'post' },
+    { phone: false, trigger: 'keyboard', close: 'cancel' }, { phone: false, trigger: 'pointer', close: 'cancel' },
+    { phone: true, trigger: 'keyboard', close: 'post' }, { phone: true, trigger: 'pointer', close: 'post' },
+    { phone: true, trigger: 'keyboard', close: 'cancel' }, { phone: true, trigger: 'pointer', close: 'cancel' },
+  ])('leaves the ordinary composer unfocused after $trigger poll $close on phone=$phone', async ({ phone, trigger, close }) => {
+    const spy = vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({
+      capabilities: () => Promise.resolve({ installationId: 'd1'.repeat(16), botUserId: 'd2'.repeat(16), supportedOperations: [70] }),
+      pollCreate: () => Promise.resolve(),
+    } as unknown as ClientCore.BotUtilities);
+    if (phone) window.matchMedia = vi.fn((query: string) => ({
+      matches: query === PHONE_QUERY, media: query, addEventListener: () => undefined, removeEventListener: () => undefined,
+    })) as unknown as typeof window.matchMedia;
+    try {
+      const { fake, user } = renderConversation({ before: core => {
+        core.set('communities', [{ id: A, name: 'Midgard', owner: core.get('account')!.user!.id }]);
+        core.set(`roles:${A}`, []); core.set(`overwrites:${A}`, {});
+        core.set(`permissions:${A}`, { loaded: true, top: 0, owner: true, manageCommunity: true, kickMembers: true,
+          banMembers: true, manageMessages: true, manageRoles: true, manageChannels: true, createInvite: true,
+          everyoneId: 'e0'.repeat(16), overwritesLoaded: true });
+      } });
+      fireEvent.change(box(), { target: { value: '/' } });
+      await screen.findByRole('option', { name: /^\/poll create,/ });
+      fireEvent.change(screen.getByRole('textbox', { name: 'Command' }), { target: { value: '/poll create' } });
+      if (trigger === 'keyboard') await user.keyboard('{Enter}');
+      else await user.click(screen.getByRole('option', { name: /^\/poll create,/ }));
+      const dialog = await screen.findByRole('dialog', { name: 'New poll in #general' });
+      expect(dialog).toContainElement(document.activeElement as HTMLElement);
+      expect(box()).not.toHaveFocus();
+      if (close === 'post') {
+        await user.type(within(dialog).getByRole('textbox', { name: /Question/ }), 'Lunch?');
+        await user.type(within(dialog).getByRole('textbox', { name: 'Answer 1' }), 'Soup');
+        await user.type(within(dialog).getByRole('textbox', { name: 'Answer 2' }), 'Salad');
+      }
+      const finish = within(dialog).getByRole('button', { name: close === 'post' ? 'Post poll' : 'Cancel' });
+      if (trigger === 'keyboard') {
+        for (let n = 0; n < 25 && document.activeElement !== finish; n++) await user.tab();
+        expect(finish).toHaveFocus();
+        await user.keyboard('{Enter}');
+      } else await user.click(finish);
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'New poll in #general' })).toBeNull());
+      if (close === 'post') await waitFor(() => expect(document.querySelector('.d-bot-result[data-status="success"]')).toHaveTextContent('Poll posted'));
+      else expect(document.querySelector('.d-bot-result')).toBeNull();
+      expect(box()).toHaveValue('');
+      expect(box()).not.toHaveFocus();
+      await user.click(box());
+      await user.keyboard('after poll{Enter}');
+      await waitFor(() => expect(fake.callsOf('send')).toEqual([{ m: 'send', channelId: GEN, text: 'after poll' }]));
+    } finally {
+      spy.mockRestore();
+      if (phone) Reflect.deleteProperty(window, 'matchMedia');
+    }
+  });
+});
+
 describe('mentions in the composer (L-TS-37)', () => {
   it('renders the GIF search picker while a slash command is active', async () => {
     const { fake, user } = renderConversation({ handler: command => {
@@ -29,7 +112,7 @@ describe('mentions in the composer (L-TS-37)', () => {
     await waitFor(() => expect(fake.callsOf('gifStatus')).toHaveLength(1));
     await waitFor(() => expect(screen.getByRole('button', { name: 'add a gif' })).toBeInTheDocument());
     fireEvent.change(box(), { target: { value: '/giphy cats' } });
-    await user.click(await screen.findByRole('button', { name: /run/i }));
+    await user.click(await screen.findByRole('button', { name: 'send' }));
     expect(await screen.findByRole('dialog', { name: 'gifs' })).toBeInTheDocument();
     expect(fake.callsOf('gifSearch')).toContainEqual(expect.objectContaining({ m: 'gifSearch', q: 'cats' }));
   });
@@ -47,9 +130,10 @@ describe('mentions in the composer (L-TS-37)', () => {
   it('reopens command mode after a canceled slash draft is edited to a new slash command', async () => {
     const { user } = renderConversation();
     fireEvent.change(box(), { target: { value: '/me first' } });
-    await user.click(await screen.findByRole('button', { name: /cancel/i }));
+    await screen.findByRole('textbox', { name: 'text' });
+    await user.keyboard('{Escape}');
     fireEvent.change(box(), { target: { value: '/search second' } });
-    expect(await screen.findByRole('combobox', { name: 'query' })).toHaveValue('second');
+    expect(await screen.findByRole('textbox', { name: 'query' })).toHaveValue('second');
   });
   it('opens a fresh @ query at the same position after Escape and deletion', async () => {
     const { user } = renderConversation();
@@ -203,7 +287,6 @@ describe('attaching (L-TS-35, Q16)', () => {
     expect(fake.callsOf('attachFiles')[1]).toEqual({ m: 'attachFiles', channelId: GEN, files: [b] });
   });
   it.each([
-    ['E_ATTACHMENT_TOO_LARGE', 'huge.bin is over 25 MB and cannot be sent from a browser.'],
     ['E_ATTACHMENT_COUNT', 'A message carries at most 4 files.'],
     ['E_NETWORK', 'That did not work (E_NETWORK). Try again, or reload the page.'],
   ])('shows the refusal %s by its code, never its detail', async (code, text) => {
@@ -272,7 +355,7 @@ describe('attaching (L-TS-35, Q16)', () => {
     const { fake, user } = renderConversation({ before: f => f.set(`tray:${GEN}`, [entry('t1', 'ready'), entry('t2', 'uploading')]) });
     await user.type(box(), 'x{Enter}');
     expect(fake.callsOf('send')).toEqual([]);
-    expect(screen.getByRole('alert')).toHaveTextContent('Wait until every file is ready, or remove it.');
+    expect(await screen.findByText('Waiting for uploads to finish')).toBeInTheDocument();
     act(() => fake.set(`tray:${GEN}`, [entry('t1', 'ready'), entry('t2', 'ready')]));
     await user.keyboard('{Enter}');
     expect(fake.callsOf('send')).toEqual([{ m: 'send', channelId: GEN, text: 'x', attachments: ['t1', 't2'] }]);
@@ -330,4 +413,42 @@ describe('tray focus handoff (F4)', () => {
     act(() => fake.set(`tray:${GEN}`, [entry('t2', 'ready')]));
     expect(box()).toHaveFocus();
   });
+});
+
+it('Send while an upload is unfinished toasts and sends nothing', async () => {
+  const { fake, user } = renderConversation({ before: f => f.set(`tray:${GEN}`, [entry('pending', 'uploading')]) });
+  await user.type(box(), 'wait for this');
+  await user.click(screen.getByRole('button', { name: 'send' }));
+  expect(await screen.findByText('Waiting for uploads to finish')).toBeInTheDocument();
+  expect(fake.callsOf('send')).toHaveLength(0);
+});
+
+it('retains an oversized card with Over 25 MB meta and toasts once for the whole pick', async () => {
+  const toast = vi.spyOn(Ui, 'showToast');
+  const { fake } = renderConversation();
+  fake.handler = command => {
+    if (command.m === 'attachFiles') fake.publish(`tray:${GEN}`, command.files.map((f, i) => entry(String(i), 'failed', { name: f.name, size: f.size, reason: 'E_ATTACHMENT_TOO_LARGE' })));
+    return Promise.resolve(null);
+  };
+  const huge = new File(['x'], 'huge.bin');
+  Object.defineProperty(huge, 'size', { value: BROWSER_ATTACHMENT_CAP + 1 });
+  fireEvent.change(input(), { target: { files: [huge, huge] } });
+  expect(await screen.findByText('Files over 25 MB can’t be sent from a browser')).toBeInTheDocument();
+  expect(toast).toHaveBeenCalledExactlyOnceWith('Files over 25 MB can’t be sent from a browser');
+  toast.mockRestore();
+  expect(screen.getAllByText('Over 25 MB')).toHaveLength(2);
+  expect(document.querySelectorAll('.d-attachment-tray__item[data-failed="true"]')).toHaveLength(2);
+});
+
+it('sends a ready file beside an oversized card, ignoring the failed card', async () => {
+  const { fake, user } = renderConversation({ before: f => f.set(`tray:${GEN}`, [entry('huge', 'failed', { reason: 'E_ATTACHMENT_TOO_LARGE' }), entry('ready', 'ready')]) });
+  await user.click(screen.getByRole('button', { name: 'send' }));
+  expect(fake.callsOf('send')).toEqual([{ m: 'send', channelId: GEN, text: '', attachments: ['ready'] }]);
+  expect(screen.queryByText('Waiting for uploads to finish')).toBeNull();
+});
+it('an oversized card alone sends nothing and never shows a waiting toast', async () => {
+  const { fake, user } = renderConversation({ before: f => f.set(`tray:${GEN}`, [entry('huge', 'failed', { reason: 'E_ATTACHMENT_TOO_LARGE' })]) });
+  await user.click(screen.getByRole('button', { name: 'send' }));
+  expect(fake.callsOf('send')).toEqual([]);
+  expect(screen.queryByText('Waiting for uploads to finish')).toBeNull();
 });

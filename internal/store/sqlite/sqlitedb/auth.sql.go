@@ -100,6 +100,37 @@ func (q *Queries) CountLoginFailures(ctx context.Context, arg CountLoginFailures
 	return count, err
 }
 
+const countOpenDiscoverableLogins = `-- name: CountOpenDiscoverableLogins :one
+SELECT COUNT(*) FROM webauthn_ceremonies WHERE user_id IS NULL AND kind = 1 AND expires > ?
+`
+
+type CountOpenDiscoverableLoginsParams struct {
+	Expires int64
+}
+
+func (q *Queries) CountOpenDiscoverableLogins(ctx context.Context, arg CountOpenDiscoverableLoginsParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countOpenDiscoverableLogins, arg.Expires)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countOpenUserCeremonies = `-- name: CountOpenUserCeremonies :one
+SELECT COUNT(*) FROM webauthn_ceremonies WHERE user_id = ? AND expires > ?
+`
+
+type CountOpenUserCeremoniesParams struct {
+	UserID  *id.ID
+	Expires int64
+}
+
+func (q *Queries) CountOpenUserCeremonies(ctx context.Context, arg CountOpenUserCeremoniesParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countOpenUserCeremonies, arg.UserID, arg.Expires)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countRecoveryCodes = `-- name: CountRecoveryCodes :one
 SELECT count(*) FROM recovery_codes WHERE user_id = ? AND used_at IS NULL
 `
@@ -186,6 +217,56 @@ type DeleteWebauthnCredentialsByUserParams struct {
 func (q *Queries) DeleteWebauthnCredentialsByUser(ctx context.Context, arg DeleteWebauthnCredentialsByUserParams) error {
 	_, err := q.db.ExecContext(ctx, deleteWebauthnCredentialsByUser, arg.UserID)
 	return err
+}
+
+const evictOldestDiscoverableLogins = `-- name: EvictOldestDiscoverableLogins :execrows
+DELETE FROM webauthn_ceremonies WHERE id IN (
+  SELECT c.id FROM webauthn_ceremonies c
+  WHERE c.user_id IS NULL AND c.kind = 1 AND c.expires > ?1 AND c.id <> ?2
+  ORDER BY c.created, c.id LIMIT ?3
+)
+`
+
+type EvictOldestDiscoverableLoginsParams struct {
+	Now  int64
+	Keep id.ID
+	N    int64
+}
+
+func (q *Queries) EvictOldestDiscoverableLogins(ctx context.Context, arg EvictOldestDiscoverableLoginsParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, evictOldestDiscoverableLogins, arg.Now, arg.Keep, arg.N)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const evictOldestUserCeremonies = `-- name: EvictOldestUserCeremonies :execrows
+DELETE FROM webauthn_ceremonies WHERE id IN (
+  SELECT c.id FROM webauthn_ceremonies c
+  WHERE c.user_id = ?1 AND c.expires > ?2 AND c.id <> ?3
+  ORDER BY c.created, c.id LIMIT ?4
+)
+`
+
+type EvictOldestUserCeremoniesParams struct {
+	UserID *id.ID
+	Now    int64
+	Keep   id.ID
+	N      int64
+}
+
+func (q *Queries) EvictOldestUserCeremonies(ctx context.Context, arg EvictOldestUserCeremoniesParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, evictOldestUserCeremonies,
+		arg.UserID,
+		arg.Now,
+		arg.Keep,
+		arg.N,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const getCeremony = `-- name: GetCeremony :one
@@ -386,6 +467,21 @@ func (q *Queries) ListWebauthnCredentials(ctx context.Context, arg ListWebauthnC
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockCeremonies = `-- name: LockCeremonies :exec
+SELECT CAST(?1 AS INTEGER)
+`
+
+type LockCeremoniesParams struct {
+	Key int64
+}
+
+// SQLite serialises writers already (one write connection, immediate transactions): a no-op kept so both engines
+// expose the same Querier; Postgres takes a transaction-scoped advisory lock.
+func (q *Queries) LockCeremonies(ctx context.Context, arg LockCeremoniesParams) error {
+	_, err := q.db.ExecContext(ctx, lockCeremonies, arg.Key)
+	return err
 }
 
 const pruneCeremonies = `-- name: PruneCeremonies :execrows

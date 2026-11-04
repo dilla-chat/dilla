@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { COMMANDS, decode, encode, fromHex, PERM, parseCommand, type CoreClient, type CommandContext as Binding } from '@dilla/client-core';
 import type { CommandExecutionContext } from './command-types.ts';
 import { useBotCommandProvider } from './bot-handlers.ts';
-import { CommandComposer } from './CommandComposer.tsx';
+import { CommandPicker } from './CommandPicker.tsx';
 
 const COMMUNITY = '11'.repeat(16); const TEXT = '22'.repeat(16); const VOICE = '33'.repeat(16); const OTHER_VOICE = '34'.repeat(16); const USER = '44'.repeat(16);
 const INSTALLATION = '55'.repeat(16); const ITEM = '66'.repeat(16); const OTHER_ITEM = '67'.repeat(16); const CURRENT_ITEM = '65'.repeat(16); const PARENT = '77'.repeat(16);
@@ -125,7 +125,7 @@ function mountProvider(client: CoreClient, capture: { value?: ReturnType<typeof 
 function mountMusicPicker(client: CoreClient, initialText = '/play') {
   function Picker() {
     const provider = useBotCommandProvider(client, COMMUNITY);
-    return createElement(CommandComposer, { definitions: COMMANDS, initialText, contextKey: 'music-search',
+    return createElement(CommandPicker, { definitions: COMMANDS, initialText, contextKey: 'music-search',
       onExecute: () => Promise.resolve({ status: 'success' as const, private: true }), onCancel: () => undefined, onSendLiteral: () => undefined,
       suggest: async (command, option, query) => await provider.suggest(command, option, query, { communityId: COMMUNITY, channelId: TEXT }) ?? [] });
   }
@@ -293,7 +293,7 @@ describe('Bot slash command provider', () => {
     const f = fixture(); const capture: { value?: ReturnType<typeof useBotCommandProvider> } = {};
     mountProvider(f.client, capture); await waitFor(() => expect(capture.value).toBeDefined());
     const result = await capture.value!.handlers.pause!({ commandId: 'pause', args: {} }, commandContext(f.client, { getCall: () => ({ channelId: VOICE, session: null } as never) }));
-    expect(result).toMatchObject({ status: 'failure', private: true });
+    expect(result).toMatchObject({ status: 'failure', private: true, message: 'Join a voice channel first. Glenn plays where you are.' });
     expect(f.requests.filter(row => row.m === 'humanInteractionRequest')).toHaveLength(0);
   });
 
@@ -571,7 +571,7 @@ describe('Bot slash command provider', () => {
       const f = fixture({ failedOperations: [11] }); mountMusicPicker(f.client, '/play harbor');
       await act(() => vi.advanceTimersByTimeAsync(250));
       expect(f.requests.find(row => row.operation === 11)).toMatchObject({ args: ['harbor'] });
-      expect(screen.getByRole('note')).toHaveTextContent('Music search failed. Try again.');
+      expect(screen.getByText('Music search failed. Try again.')).toBeInTheDocument();
       expect(screen.queryByRole('option')).toBeNull();
       expect(screen.getByRole('combobox', { name: 'query-or-url' })).toHaveValue('harbor');
     } finally { vi.useRealTimers(); }

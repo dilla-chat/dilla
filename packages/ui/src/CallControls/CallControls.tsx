@@ -291,6 +291,8 @@ export interface CallControlsProps {
   };
   /** Optional: the mute and deafen shortcuts as the tooltips show them, formatted per platform by the caller. */
   shortcuts?: { mute: string; deafen: string };
+  /** The call bar's keycaps (the prototype's ⌘⇧M, Ctrl⇧M off Apple platforms); absent, `shortcuts` is drawn. */
+  keycaps?: { mute: string; deafen: string };
   /**
    * Task 8c (Signal §5.6): the share picker. Given, Share opens it while not sharing (Share still stops a running share), and a
    * live Share gets the prototype's 30px "Stream quality" chevron (`quality`, its name) that opens it with Apply. The picker hangs
@@ -311,7 +313,7 @@ export interface CallControlsProps {
  * Mute and deafen carry their shortcuts. Busy (joining) makes every control aria-disabled; it stays focusable.
  */
 export function CallControls({
-  muted, deafened, camera, sharing, canCamera, canShare, hideShare, busy, paused, labels, shortcuts, keyshortcuts, picker, onMute, onDeafen, onCamera, onShare, onLeave,
+  muted, deafened, camera, sharing, canCamera, canShare, hideShare, busy, paused, labels, shortcuts, keycaps, keyshortcuts, picker, onMute, onDeafen, onCamera, onShare, onLeave,
 }: CallControlsProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const [toastHost] = useState(newToastHostId);
@@ -326,9 +328,9 @@ export function CallControls({
   const words = (text: string | undefined, keycap?: string) => (bar === undefined ? {} : { text, swap: true, ...(keycap !== undefined ? { keycap } : {}) });
   const controls: ToolbarControl[] = [
     { id: 'mute', label: labels.mute, on: muteOn, inert: busy, keys: VOICE_SHORTCUTS.mute, shortcut: shortcuts?.mute, ...VOICE_ICONS.mute,
-      ...words(muteOn ? bar?.unmute : bar?.mute, shortcuts?.mute), onAction: onMute },
+      ...words(muteOn ? bar?.unmute : bar?.mute, keycaps?.mute ?? shortcuts?.mute), onAction: onMute },
     { id: 'deafen', label: labels.deafen, on: deafened, inert: busy, keys: VOICE_SHORTCUTS.deafen, shortcut: shortcuts?.deafen, ...VOICE_ICONS.deafen,
-      ...words(deafened ? bar?.undeafen : bar?.deafen, shortcuts?.deafen), onAction: onDeafen },
+      ...words(deafened ? bar?.undeafen : bar?.deafen, keycaps?.deafen ?? shortcuts?.deafen), onAction: onDeafen },
     { id: 'camera', label: labels.camera, on: camera, inert: busy || !canCamera, why: why.camera, ...VOICE_ICONS.camera,
       ...(bar === undefined ? {} : { text: bar.camera }), onAction: onCamera },
     { id: 'share', label: labels.share, on: sharing, inert: shareInert, why: why.share, ...VOICE_ICONS.share,

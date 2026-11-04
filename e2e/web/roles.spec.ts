@@ -15,9 +15,10 @@ import { startTestHost, type HostConfig, type StartedHost } from './support/host
 import { launchSecond, secondProfileDir } from './support/second-harness';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
 import { rmSync } from 'node:fs';
+import { e2ePort } from './support/ports';
 
 /** Its own ports (E1 reservation). */
-const EMPTY: HostConfig = { port: 8491, control: 8492, webRoot: 'packages/web/dist' };
+const EMPTY: HostConfig = { port: e2ePort(8491), control: e2ePort(8492), webRoot: 'packages/web/dist' };
 const SERVER = 'Midgard Crew';
 const OWNER = 'Ada';
 const FRIEND = 'Björn';

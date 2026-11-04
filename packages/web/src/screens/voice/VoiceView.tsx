@@ -5,7 +5,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 're
 import type { CallState, CoreClient, MemberSummary, SendBlocksState, TrustSummary, VoiceCall } from '@dilla/client-core';
 import { SETTINGS } from '@dilla/client-core';
 import {
-  Avatar, Button, CallControls, CallStage, ChannelHeader, VoiceDock,
+  Button, CallControls, CallStage, ChannelHeader, VoiceDock,
   type CallControlsProps, type CallStageNotice, type CallTileProps, type SharePickerSource, type SharePickerValue, type TileMenu, type VoiceDockProps,
   type VoiceParticipantView,
 } from '@dilla/ui';
@@ -19,7 +19,7 @@ import { MusicPlayer, type MusicPlayerView } from './music.tsx';
 import { codecStat, frameStat, useTileStats } from './tile-stats.ts';
 import type { TileStats } from '../../call/session.ts';
 import { usePhoneLayout } from '../../layout.ts';
-import { voiceShortcutText } from './shortcuts.ts';
+import { voiceKeycapText, voiceShortcutText } from './shortcuts.ts';
 
 /** What the voice surfaces read besides the CallView. */
 export interface VoiceContext {
@@ -42,10 +42,29 @@ export interface VoiceContext {
    * AW6 fix round 1 (Jonas, concern 2): for the built-in AFK channel, its page: the away roster (as its sidebar row lists
    * it) and whether this user is away there; null for any other channel. `onJoinVoice` on it chooses AFK (useCall).
    */
-  afkPage?(channelId: string): { people: readonly VoiceParticipantView[]; away: boolean } | null;
+  afkPage?(channelId: string): { people: readonly VoiceParticipantView[]; away: boolean; /** The community's AFK timeout, from `afkRead`. */ timeoutSeconds: number } | null;
+  /** Wave B task 4: "Come back" leaves the AFK channel (Jonas, Q3): the shell opens a text channel the person can send in (the last opened), or stays. */
+  onLeaveAfk?(): void;
+  /** Wave B task 4: what the person menu's Profile, Message, Mention, Edit roles and Move to do; absent items are not drawn. */
+  people?: VoicePeople;
   /** Task 8b: the music player of this device's call (useMusicPlayer), null while the Bot plays nothing there; the dock's row and
    *  the stage's bar both read it. */
   music?: MusicPlayerView | null;
+}
+
+/** Wave B task 4: the shell's side of the person menu (a call in a DM has none of it but Mute, Deafen and Leave). */
+export interface VoicePeople {
+  /** Profile: opens the profile card on the element the menu returned focus to. */
+  onProfile(userId: string, name: string, anchor: HTMLElement | null): void;
+  onMessage(userId: string): void;
+  /** Mention: "@username " into the open text channel's composer; absent while there is none. */
+  onMention?(username: string): void;
+  /** Edit roles: only for a person who may manage roles. */
+  onEditRoles?(): void;
+  /** The community's other voice channels, the AFK channel excluded, with how many are in each. */
+  rooms(excludeId: string | null): readonly { id: string; name: string; count: number }[];
+  /** Move to: joining the room moves this device there. */
+  onMove(id: string): void;
 }
 
 const VOLUME = /^(0|[1-9]0|1[0-9]0|200)$/;
@@ -69,34 +88,79 @@ const tileId = (deviceId: string, kind: 'person' | 'screen') => `${deviceId}:${k
 type TileBase = Omit<CallTileProps, 'media' | 'id' | 'source' | 'title' | 'fullscreenLabel' | 'mirror' | 'menu'>;
 
 /**
- * Fix round 1 (Jonas): the person menu of a voice occupant or a stage tile (Signal §5.4), with the client-side items only:
- * the volume (0–200 %, `voice.volume.<user>`; a shared screen's own `voice.streamVolume.<user>`), Mute for me (the volume at 0,
- * and back to what it was), Copy username. Not for yourself: no volume, no mute. A screen without sound has no volume.
- * Wave C's Move to, Server mute and Disconnect are not offered.
+ * The person menu of a voice occupant or a stage tile (Signal §5.4). Yourself (wave B task 4): Mute and Deafen with their
+ * shortcuts, Profile, Move to the community's other voice channels, Leave voice. Another person: the volume (0-200 %,
+ * `voice.volume.<user>`; a shared screen's own `voice.streamVolume.<user>`), Profile, Message, Mention, Mute for me (the volume
+ * at 0, and back to what it was), Copy username, Edit roles with Manage roles. A bot keeps the volume, Mute for me and Copy
+ * username; a screen without sound has no volume. Wave C's Server mute and Disconnect are not offered.
  */
 const beforeMute = new Map<string, number>();
-export function personMenu(v: Pick<VoiceContext, 'call' | 'settings' | 'members'>, room: string,
-  p: { userId: string; name: string; bot: boolean; own: boolean; title?: string }, source: 'person' | 'screen' = 'person', screenAudio = true): TileMenu {
+export function personMenu(v: Pick<VoiceContext, 'call' | 'settings' | 'members' | 'people'>, room: string,
+  p: { userId: string; name: string; bot: boolean; own: boolean; title?: string; roomId?: string }, source: 'person' | 'screen' = 'person', screenAudio = true): TileMenu {
   const stream = source === 'screen';
   const level = stream ? streamVolumeOf(v.settings, p.userId) : volumeOf(v.settings, p.userId);
   const set = (n: number) => { if (stream) v.call.setStreamVolume(p.userId, n); else v.call.setVolume(p.userId, n); };
   const key = `${stream ? 's' : 'v'}:${p.userId}`;
   const tunable = !p.own && (!stream || screenAudio);
   const username = v.members.find(m => m.userId === p.userId)?.username ?? p.name;
-  return {
+  const people = v.people;
+  const head = {
     person: { name: p.title ?? p.name, avatarName: p.name, where: t('callStage.menu.where', { room }), ...(p.bot ? { bot: true } : {}) },
     label: t('callStage.menu.label', { name: p.name }),
+  };
+  // The element the menu gave focus back to (the row or the tile) is what a card opens beside.
+  const opener = () => (document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null);
+  if (p.own) {
+    // Only while this device is in that room's call (a row of yourself from another device has Profile alone).
+    const inCall = p.roomId === undefined || v.call.channelId === p.roomId;
+    if (!inCall) {
+      return { ...head, items: [people !== undefined ? { id: 'profile', label: t('members.menu.profile'), icon: 'user' as const }
+        : { id: 'copy', label: t('callStage.menu.copy'), icon: 'copy' as const }],
+        onSelect: id => { if (id === 'profile') people?.onProfile(p.userId, p.name, opener()); } };
+    }
+    const keys = voiceKeycapText();
+    const { selfMuted: muted, selfDeafened: deafened } = v.call;
+    const rooms = people?.rooms(p.roomId ?? null) ?? [];
+    return {
+      ...head,
+      items: [
+        { id: 'mute', label: t(muted ? 'callStage.bar.unmute' : 'callStage.bar.mute'), icon: muted ? 'mic' as const : 'mic-off' as const, hint: keys.mute, keys: keys.ariaMute },
+        { id: 'deafen', label: t(deafened ? 'callStage.bar.undeafen' : 'callStage.bar.deafen'), icon: deafened ? 'headphones' as const : 'headphone-off' as const, hint: keys.deafen, keys: keys.ariaDeafen },
+        ...(people !== undefined ? [{ id: 'profile', label: t('members.menu.profile'), icon: 'user' as const }] : []),
+        { id: 'leave', label: t('callStage.menu.leave'), icon: 'phone-off' as const, danger: true, sep: true },
+      ],
+      ...(people !== undefined && rooms.length > 0 ? { move: { label: t('callStage.menu.moveTo'), rooms,
+        roomLabel: (r: { name: string; count: number }) => `${r.name}, ${t('voice.count', { n: r.count })}`, onMove: (id: string) => people.onMove(id) } } : {}),
+      onSelect: id => {
+        if (id === 'mute') v.call.toggleMute();
+        else if (id === 'deafen') v.call.toggleDeafen();
+        else if (id === 'profile') people?.onProfile(p.userId, p.name, opener());
+        else if (id === 'leave') v.call.leave();
+      },
+    };
+  }
+  const person = !stream && people !== undefined;
+  return {
+    ...head,
     ...(tunable ? { volume: { label: t(stream ? 'callStage.menu.streamVolume' : 'callStage.menu.volume'), value: level,
       valueText: t('callStage.menu.value', { n: level }), onChange: set } } : {}),
     items: [
+      ...(person ? [{ id: 'profile', label: t('members.menu.profile'), icon: 'user' as const }] : []),
+      ...(person ? [{ id: 'message', label: t('members.menu.message'), icon: 'message-square' as const }] : []),
+      ...(person && people.onMention !== undefined ? [{ id: 'mention', label: t('members.menu.mention'), icon: 'at-sign' as const }] : []),
       ...(tunable ? [{ id: 'mute', label: t('callStage.menu.muteForMe'), icon: 'volume-x' as const, check: level === 0 }] : []),
       { id: 'copy', label: t('callStage.menu.copy'), icon: 'copy' as const },
+      ...(person && people.onEditRoles !== undefined ? [{ id: 'roles', label: t('members.menu.roles'), icon: 'shield' as const }] : []),
     ],
     onSelect: id => {
       if (id === 'mute') {
         if (level === 0) { set(beforeMute.get(key) ?? 100); beforeMute.delete(key); } else { beforeMute.set(key, level); set(0); }
         return;
       }
+      if (id === 'profile') { people?.onProfile(p.userId, p.name, opener()); return; }
+      if (id === 'message') { people?.onMessage(p.userId); return; }
+      if (id === 'mention') { people?.onMention?.(username); return; }
+      if (id === 'roles') { people?.onEditRoles?.(); return; }
       void navigator.clipboard?.writeText(`@${username}`).catch(() => undefined);
       v.call.announce(t('callStage.menu.copied', { name: username }));
     },
@@ -156,7 +220,7 @@ function callTiles(v: VoiceContext, channelId: string, roomName: string): CallTi
     own: true, volume: 100, labels: tileLabels(ownName),
   }, { camera: state?.localCamera ?? null, screen: state?.localScreen ?? null, sharing: state?.sharing ?? false, mirrorCamera: true,
     name: ownName, title: ownTitle,
-    menu: source => personMenu(v, roomName, { userId: self.id, name: ownName, bot: false, own: true, title: ownTitle }, source) });
+    menu: source => personMenu(v, roomName, { userId: self.id, name: ownName, bot: false, own: true, title: ownTitle, roomId: channelId }, source) });
   const others = (state?.tiles ?? []).flatMap(tile => {
     const p = room?.participants.find(r => r.deviceId === tile.deviceId);
     const name = p?.name ?? userName(tile.userId, v.members, v.trust);
@@ -166,7 +230,7 @@ function callTiles(v: VoiceContext, channelId: string, roomName: string): CallTi
     const title = view.bot ? t('callStage.tile.bot', { name }) : undefined;
     return deviceTiles({ view, own: false, volume: volumeOf(v.settings, tile.userId), labels: tileLabels(name) },
     { camera: tile.video, screen: tile.screen, sharing: false, mirrorCamera: false, name, ...(title !== undefined ? { title } : {}),
-      menu: source => personMenu(v, roomName, { userId: tile.userId, name, bot: view.bot, own: false, ...(title !== undefined ? { title } : {}) }, source, tile.screenAudio),
+      menu: source => personMenu(v, roomName, { userId: tile.userId, name, bot: view.bot, own: false }, source, tile.screenAudio),
       remoteScreen: { screenAudio: tile.screenAudio },
       // Task 8c fix round 1: the ping that device publishes about itself (its `dilla.rtt`), never this page's own link.
       ...(tile.rttMs != null ? { personStat: t('callStage.stat.ping', { ms: tile.rttMs }) } : {}) });
@@ -333,6 +397,7 @@ function stageTarget(root: HTMLElement | null, joined: boolean): HTMLElement | n
 
 /** The mute and deafen shortcuts as the tooltips write them; the platform cannot change during a session. */
 const VOICE_SHORTCUT_TEXT = voiceShortcutText();
+const VOICE_KEYCAPS = voiceKeycapText();
 
 /** Why an inert camera or share is inert, the same for the stage and the dock (founder, 2026-10-15). */
 const VOICE_WHY = () => ({ paused: t('voice.why.paused'), joining: t('voice.why.joining'), noShare: t('voice.why.noShare') });
@@ -441,7 +506,7 @@ function Controls({ v, paused, dm }: { v: VoiceContext; paused: boolean; dm: boo
   return (
     <CallControls muted={s?.muted ?? false} deafened={s?.deafened ?? false} camera={s?.camera ?? false} sharing={s?.sharing ?? false}
       canCamera={!paused} canShare={!paused && canShare} hideShare={hideShare} busy={v.call.session === null}
-      paused={paused} shortcuts={VOICE_SHORTCUT_TEXT} keyshortcuts={phone}
+      paused={paused} shortcuts={VOICE_SHORTCUT_TEXT} keycaps={VOICE_KEYCAPS} keyshortcuts={phone}
       labels={{ region: t(dm ? 'voice.controls.region' : 'voice.controls.voice'), mute: t('voice.mute'), deafen: t('voice.deafen'),
         camera: t('voice.cameraOn'), share: t('voice.shareOn'), leave: t('voice.leave'), why: VOICE_WHY(),
         // Signal §5.6: a channel's call bar shows the prototype's words (the DM call box keeps the icon toolbar).
@@ -557,45 +622,38 @@ function Stage({ v, channelId, title, name, outgoing, dm }: { v: VoiceContext; c
 }
 
 /**
- * AW6 fix round 1 (Jonas, concern 2): the AFK channel's page. It hosts no call (R-AW1): it lists who is away, on the
- * sidebar row's grammar (`afk.away`, or `afk.empty`), and offers `afk.go`, which runs the AFK row's path (leave the call,
- * then mark away). Once this user is away the button goes and `afk.youAway` says how to come back (Q3: no leave action).
+ * The AFK channel's page (Signal, the prototype's AFK view; wave B task 4). It hosts no call (R-AW1): the moon tile, a title that
+ * says who is away ("Nobody is away", "You are away", or the others' names when you are not), the explainer with the server's
+ * timeout (phones are never moved: the instance exempts a device that cannot be idle-detected), and one button. "Go AFK" runs the
+ * AFK row's path (leave the call, then mark away); once away it reads "Come back" and leaves the page for a text channel
+ * this person can send in (Jonas, Q3), and stays when there is none.
  */
-function AfkPage({ v, channelId, name, people, away }: { v: VoiceContext; channelId: string; name: string; people: readonly VoiceParticipantView[];
-  away: boolean }) {
+export function afkTitle(away: boolean, names: readonly string[]): string {
+  if (away) return t('afk.title.you');
+  if (names.length === 0) return t('afk.title.nobody');
+  if (names.length === 1) return t('afk.title.one', { name: names[0] });
+  return t('afk.title.many', { names: names.join(t('callStage.preview.and')) });
+}
+
+export function afkExplainer(timeoutSeconds: number): string {
+  const minutes = Math.round(timeoutSeconds / 60);
+  if (timeoutSeconds <= 0) return t('afk.explain.off');
+  return t(minutes === 1 ? 'afk.explain.one' : 'afk.explain', { minutes });
+}
+
+function AfkPage({ v, channelId, name, people, away, timeoutSeconds }: { v: VoiceContext; channelId: string; name: string; people: readonly VoiceParticipantView[];
+  away: boolean; timeoutSeconds: number }) {
   const phone = usePhoneLayout();
   const notice = stageNotice(v, channelId);
-  // Fix round 1 (M6): the press that made this user away keeps focus here: the away line that replaces the button takes it.
-  const pressed = useRef(false);
-  const line = useRef<HTMLParagraphElement>(null);
-  useEffect(() => {
-    if (!away || !pressed.current) return;
-    pressed.current = false;
-    line.current?.focus();
-  }, [away]);
+  const others = people.filter(p => p.userId !== v.self?.id).map(p => p.name);
   return (
     <div className="dw-voice-stage" data-doc-state="voice-stage" data-call-phase="idle" data-afk="true">
-      <CallStage title={t('voice.open', { name })} tiles={[]} {...(!phone ? { header: <ChannelHeader kind="voice" name={name} /> } : {})}
-        code={null} notice={notice} outgoing={null}
-        controls={<div className="dw-afk-page">
-          {people.length > 0 ? (
-            <ul className="d-voice-row__people dw-afk-roster" aria-label={t('voice.open', { name })}>
-              {people.map(p => (
-                <li key={p.userId} className="d-voice-row__person" data-away="true">
-                  <span className="d-voice-row__avatar" aria-hidden="true"><Avatar name={p.name} size="xs" /></span>
-                  <span className="d-voice-row__person-name">{p.name}</span>
-                  <span className="d-voice-row__states">{' '}<span className="d-voice-row__state" data-state="away">{t('afk.away')}</span></span>
-                </li>
-              ))}
-            </ul>
-          ) : null}
-          {away ? <p ref={line} className="dw-afk-away" tabIndex={-1}>{t('afk.youAway')}</p>
-            : <Button variant="accent" className="dw-voice-join" onClick={() => {
-              pressed.current = true;
-              if (v.onJoinVoice) v.onJoinVoice(channelId); else v.call.join(channelId);
-            }}>{t('afk.go')}</Button>}
-        </div>}
-        labels={{ ...STAGE_LABELS(), empty: people.length === 0 ? t('afk.empty') : '' }} />
+      <CallStage title={t('voice.open', { name })} tiles={[]} {...(!phone ? { header: <ChannelHeader kind="afk" name={name} topic={t('voice.header.afk')} /> } : {})}
+        code={null} notice={notice} outgoing={null} controls={null}
+        afk={{ title: afkTitle(away, others), text: afkExplainer(timeoutSeconds), action: away
+          ? { label: t('afk.comeBack'), onAction: () => v.onLeaveAfk?.() }
+          : { label: t('afk.go'), onAction: () => { if (v.onJoinVoice) v.onJoinVoice(channelId); else v.call.join(channelId); } } }}
+        labels={STAGE_LABELS()} />
     </div>
   );
 }
@@ -603,7 +661,7 @@ function AfkPage({ v, channelId, name, people, away }: { v: VoiceContext; channe
 /** The voice view of a voice channel route (`/c/<community>/<voice channel>`). */
 export function VoiceView({ v, channelId, name }: { v: VoiceContext; channelId: string; name: string }): React.JSX.Element {
   const afk = v.afkPage?.(channelId) ?? null;
-  if (afk !== null) return <AfkPage v={v} channelId={channelId} name={name} people={afk.people} away={afk.away} />;
+  if (afk !== null) return <AfkPage v={v} channelId={channelId} name={name} people={afk.people} away={afk.away} timeoutSeconds={afk.timeoutSeconds} />;
   return <div className="dw-voice-channel">
     <Stage v={v} channelId={channelId} title={t('voice.open', { name })} name={name} outgoing={null} dm={false} />
   </div>;
@@ -643,7 +701,14 @@ export function dmCallStart(v: VoiceContext, channelId: string): { label: string
   return { label: t(live ? 'call.join' : 'call.start'), onStart: () => { if (v.onJoinVoice) v.onJoinVoice(channelId); else v.call.join(channelId); } };
 }
 
-export function DmCall({ v, channelId, name }: { v: VoiceContext; channelId: string; name: string }): React.JSX.Element {
+/** A DM call has no server: its menus carry no Profile, Message, Mention, Edit roles or Move to. */
+function withoutPeople(v: VoiceContext): VoiceContext {
+  const { people, ...rest } = v;
+  return people === undefined ? v : rest;
+}
+
+export function DmCall({ v: voice, channelId, name }: { v: VoiceContext; channelId: string; name: string }): React.JSX.Element {
+  const v = withoutPeople(voice);
   const outgoing = v.slice?.channelId === channelId ? v.slice.outgoing : null;
   // A ring lasts 30 s (R5, useCall's clock): once that long has passed with nobody answering, the strip says so.
   const inThisCall = v.call.channelId === channelId;

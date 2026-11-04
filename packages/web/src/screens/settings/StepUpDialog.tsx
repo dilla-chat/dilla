@@ -75,7 +75,7 @@ export function StepUpDialog({ open, hasPassword, code = false, notice: reason, 
     if (g !== attempt.current) return;
     running.current = false;
     // The browser ending a ceremony (cancelled, no key) is not an answer of the instance: it has no code of ours.
-    refused(e instanceof PasskeyError ? t('factorSettings.stepUp.passkeyFailed') : say(errorOf(e), hasPassword, code));
+    refused(e instanceof PasskeyError ? t(e.kind === 'unsupported' ? 'factorSettings.stepUp.passkeyUnsupported' : e.kind === 'rateLimited' ? 'factor.error.rateLimited' : 'factorSettings.stepUp.passkeyFailed') : say(errorOf(e), hasPassword, code));
   };
 
   const submit = () => {

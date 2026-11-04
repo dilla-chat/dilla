@@ -11,5 +11,4 @@ export const you = {
   'you.device': '{browser} on {os} · device {id}',
   'you.deviceUnknown': 'This browser · device {id}',
   'you.settings': 'Settings',
-  'you.statusRow': 'Status',
 } as const;

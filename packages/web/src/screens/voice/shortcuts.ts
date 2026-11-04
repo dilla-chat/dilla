@@ -7,6 +7,15 @@ export function voiceShortcutText(apple: boolean = isApplePlatform()): { mute: s
   return apple ? { mute: '⌘⇧M', deafen: '⌘⇧D' } : { mute: 'Ctrl+Shift+M', deafen: 'Ctrl+Shift+D' };
 }
 
+/**
+ * The same shortcuts as the prototype's keycaps (the call bar's, the menu's hint): ⌘⇧M on a Mac, Ctrl⇧M on Windows and Linux
+ * (Jonas, wave B task 4 fix round 1). `aria` is the same key for `aria-keyshortcuts`.
+ */
+export function voiceKeycapText(apple: boolean = isApplePlatform()): { mute: string; deafen: string; ariaMute: string; ariaDeafen: string } {
+  return apple ? { mute: '⌘⇧M', deafen: '⌘⇧D', ariaMute: 'Meta+Shift+M', ariaDeafen: 'Meta+Shift+D' }
+    : { mute: 'Ctrl⇧M', deafen: 'Ctrl⇧D', ariaMute: 'Control+Shift+M', ariaDeafen: 'Control+Shift+D' };
+}
+
 interface PlatformSource { userAgentData?: { platform?: string }; platform?: string }
 
 /**

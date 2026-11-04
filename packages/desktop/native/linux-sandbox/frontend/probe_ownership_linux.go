@@ -284,6 +284,15 @@ func cleanupProbeChildren(cmd *exec.Cmd, deadline time.Time, known map[int]known
 	}
 	escaped := false
 	for time.Now().Before(deadline) {
+		// Read the leader's state before the children snapshot, never after it. The kernel
+		// reparents an exiting leader's children to this subreaper before the leader turns
+		// zombie, so a leader already exited here has handed every descendant to the
+		// snapshot below. Read after it, the leader could exit in between and leave a
+		// just-reparented child out of a snapshot that then looks empty.
+		leaderExited, e := leaderWaitState(pid)
+		if e != nil {
+			return nil, errProbeCleanup
+		}
 		children, e := selfChildren(deadline)
 		if e != nil {
 			return nil, errProbeCleanup
@@ -320,11 +329,7 @@ func cleanupProbeChildren(cmd *exec.Cmd, deadline time.Time, known map[int]known
 		if !hasLeader {
 			return nil, errProbeCleanup
 		}
-		exited, e := leaderWaitState(pid)
-		if e != nil {
-			return nil, errProbeCleanup
-		}
-		if exited && !others {
+		if leaderExited && !others {
 			waitErr := cmd.Wait()
 			remaining, e := selfChildren(deadline)
 			if e != nil || len(remaining) != 0 {

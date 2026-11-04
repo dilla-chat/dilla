@@ -72,6 +72,8 @@ describe('structural tokens', () => {
       // Task 9
       card: '0.9375rem',
       heading: '1.25rem',
+      // Task 7
+      'poll-voter': '0.4375rem',
     });
     for (const [step, size] of Object.entries(structural.text)) {
       expect(size, `--text-${step} must be rem so browser text size and 200 % zoom scale it`).toMatch(/rem$/);
@@ -121,6 +123,40 @@ describe('Task 11 button weight and toggle track', () => {
     expect(structural.weight.btn).toBe('400');
     expect(structural.motion.track).toBe('200ms');
   });
+});
+
+// Wave B Task 2: the command picker's prototype values (an invalid chip's ring, the source tag's tracking, a row's 100ms).
+describe('Wave B Task 2 command picker tokens', () => {
+  it('carries the prototype literals', () => {
+    expect(themes.signal.dangerRing).toBe('rgba(255,110,110,0.15)');
+    expect(structural.trackingTag).toBe('0.06em');
+    expect(structural.motion.cmdRow).toBe('100ms');
+  });
+});
+
+it('Task 6: uses the prototype success result fill', () => {
+  expect(themes.signal.okResult).toBe('rgba(124,255,142,.1)');
+});
+
+it('Task 6 I2: the Not confirmed chip uses the prototype warning fill and ink', () => {
+  expect(themes.signal.warnResult).toBe('rgba(255,209,106,.1)');
+  expect(themes.signal.warnResultText).toBe('#FFD16A');
+});
+
+// Task 7
+it('preserves the prototype poll fill and winner tokens', () => {
+  expect(themes.signal.pollMineFill).toBe('rgba(90,168,230,.2)');
+  expect(themes.signal.pollWinnerFill).toBe('rgba(124,255,142,.12)');
+  expect(themes.signal.pollFill).toBe('rgba(255,255,255,.05)');
+  expect(themes.signal.pollWinnerEdge).toBe('rgba(124,255,142,.5)');
+});
+
+it('reuses hoverHi without a duplicate pollIdle token', () => {
+  for (const theme of Object.values(themes)) expect(theme).not.toHaveProperty('pollIdle');
+});
+
+it('pins the Task 8 reaction tooltip shadow to the prototype', () => {
+  expect(structural.shadow.reaction).toBe('0 12px 30px rgba(0,0,0,0.55)');
 });
 
 it('ships one named theme while keeping the shared token catalog', () => {

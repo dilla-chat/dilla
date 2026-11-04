@@ -247,7 +247,14 @@ type Rate struct {
 	UnauthBurst          int      `toml:"unauth_burst"`
 	InvalidPerSecond     float64  `toml:"invalid_per_second"`
 	InvalidBurst         int      `toml:"invalid_burst"`
-	PasswordConcurrency  int      `toml:"password_concurrency"`
+	// PasskeyBegin* meter POST /v1/auth/passkey/login/begin per address, apart from `login` (wave B task 3): the sign-in
+	// page opens a passkey ceremony when the username field gains focus, and those begins must not spend password attempts.
+	PasskeyBeginPerSecond float64 `toml:"passkey_begin_per_second"`
+	PasskeyBeginBurst     int     `toml:"passkey_begin_burst"`
+	// PasskeyBeginNet* meter the same begins per network (IPv4 /24, IPv6 /48), beside the per-address bucket.
+	PasskeyBeginNetPerSecond float64 `toml:"passkey_begin_net_per_second"`
+	PasskeyBeginNetBurst     int     `toml:"passkey_begin_net_burst"`
+	PasswordConcurrency      int     `toml:"password_concurrency"`
 }
 
 type Retention struct {
@@ -297,6 +304,12 @@ type WebAuthn struct {
 	RPDisplayName    string   `toml:"rp_display_name"`
 	RPOrigins        []string `toml:"rp_origins"`
 	UserVerification string   `toml:"user_verification"`
+	// MaxOpenLogins caps the unexpired discoverable passkey login ceremonies the instance holds at once (wave B task 3
+	// security review): past it a begin evicts the oldest, in the same transaction, so begins spread over many addresses
+	// cannot fill webauthn_ceremonies and an honest begin still works.
+	MaxOpenLogins int `toml:"max_open_logins"`
+	// MaxOpenPerUser caps one user's open registration and step-up ceremonies; past it the oldest is evicted.
+	MaxOpenPerUser int `toml:"max_open_per_user"`
 }
 
 type OIDC struct {

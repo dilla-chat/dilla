@@ -12,6 +12,11 @@ instance. Each complete canonical instance URL gets a separate persistent Chromi
 partition and one window. API and gateway requests include the selected base path.
 An instance cannot replace the installed JavaScript or set the desktop update URL.
 
+The desktop app needs a server at v0.1.0-signal1.5 or later. Passkey and identity-provider
+sign-in go through the server's `/desktop-auth` routes; an older instance cannot take them,
+and the app says the instance needs an update. Connecting to an instance from "Your
+instances" closes that window and opens the instance; reopen the list from the Dilla menu.
+
 Desktop storage is a new device. Browser keys and storage are never copied or wiped.
 Use the existing recovery/enrolment flow when testing a desktop device, and keep a
 working browser device and your recovery key. A reload must preserve IndexedDB and

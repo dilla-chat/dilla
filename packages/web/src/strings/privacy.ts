@@ -1,5 +1,12 @@
 /** Copy for the key comparison ceremony. */
 export const privacy = {
+  'gif.dm.title': 'GIFs in direct messages',
+  'gif.dm.notice': 'GIF searches and picks in direct messages go through {server} and Giphy. They are not end-to-end encrypted.',
+  'gif.dm.use': 'Use GIFs',
+  'gif.dm.notNow': 'Not now',
+  'gif.dm.saving': 'Saving…',
+  'gif.dm.hint': 'Searches and picks go through a shared server and Giphy, outside end-to-end encryption. This choice applies to this account on this device. Turning it on asks for confirmation before using a new server.',
+
   'privacy.section': 'Privacy',
   'privacy.compare': 'Compare with {name}',
   'privacy.title': 'Compare safety numbers',
