@@ -5,8 +5,11 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/dilla-chat/dilla/internal/media"
 )
 
 type testSource struct {
@@ -74,3 +77,29 @@ func TestSessionCloseIsSafeWhenRepeated(t *testing.T) {
 		t.Fatalf("NextSample() after close = %v, want EOF", err)
 	}
 }
+
+func TestPausedRuntimeDoesNotReadPCM(t *testing.T) {
+	provider, err := media.NewLiveOpusProvider(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider.Pause()
+	source := &countedPausePCM{}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	gated := &gatedPCM{ReadCloser: source, provider: provider, ctx: ctx}
+	entered := make(chan struct{})
+	done := make(chan struct{})
+	go func() { close(entered); _, _ = gated.Read(make([]byte, 4)); close(done) }()
+	<-entered
+	cancel()
+	<-done
+	if source.reads.Load() != 0 {
+		t.Fatalf("paused source read %d times", source.reads.Load())
+	}
+}
+
+type countedPausePCM struct{ reads atomic.Int32 }
+
+func (p *countedPausePCM) Read([]byte) (int, error) { p.reads.Add(1); return 0, io.EOF }
+func (*countedPausePCM) Close() error               { return nil }

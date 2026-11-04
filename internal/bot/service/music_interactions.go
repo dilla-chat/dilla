@@ -229,8 +229,8 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 			if revision == snapshot.Revision && state.Revision == snapshot.Revision {
 				snapshot.State = state
 			}
-			if op != protocol.OpMusicState && !immediate && (revision != snapshot.Revision || state.Revision != snapshot.Revision) {
-				reason = "revision_conflict"
+			if op != protocol.OpMusicState && op != protocol.OpMusicEnqueue && !immediate && (revision != snapshot.Revision || state.Revision != snapshot.Revision) {
+				reason = "runtime_revision_mismatch"
 				currentRevision := snapshot.Revision
 				return InteractionResult{Status: interactionStatusConflict, Revision: &currentRevision}, nil
 			}
@@ -250,8 +250,8 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 		revision := snapshot.Revision
 		return InteractionResult{Status: 0, Revision: &revision, Data: data}, nil
 	}
-	reason = "revision_conflict"
-	if !immediate && (req.Revision == nil || *req.Revision != snapshot.Revision) {
+	reason = "client_revision_stale"
+	if op != protocol.OpMusicEnqueue && !immediate && (req.Revision == nil || *req.Revision != snapshot.Revision) {
 		revision := snapshot.Revision
 		return InteractionResult{Status: interactionStatusConflict, Revision: &revision}, nil
 	}
@@ -325,131 +325,156 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 	if op == protocol.OpMusicShuffle {
 		opValue.Enabled = !snapshot.State.Shuffle
 	}
-	opValue.NowMS = h.clock().UnixMilli()
-	base := snapshot.State
-	if (op == protocol.OpMusicEnqueue) && h.DefaultVolume != nil && base.Current == nil && len(base.Queue) == 0 {
-		// A new session: nothing plays and nothing waits, so the default volume applies.
-		if v := h.DefaultVolume(); v >= 1 && v <= 100 {
-			base.Volume = v
+
+	// Enqueue resolves once, then rebases each bounded CAS attempt onto current state.
+	// Other mutations retain their single revision-checked attempt.
+	for attempt := 0; ; attempt++ {
+		if op == protocol.OpMusicEnqueue {
+			reason = "state_read"
+			snapshot, err = h.Store.Load(ctx, channel)
+			if err != nil {
+				return InteractionResult{}, err
+			}
+			if h.CurrentState != nil {
+				reason = "runtime_state_read"
+				state, revision, readErr := h.CurrentState(ctx, h.InstallationID, h.CommunityID, channel)
+				if readErr != nil {
+					return InteractionResult{}, readErr
+				}
+				if revision == snapshot.Revision && state.Revision == snapshot.Revision {
+					snapshot.State = state
+				}
+			}
 		}
-	}
-	staleSkip := false
-	if !directImmediate && opValue.Kind == music.OpSkip && opValue.ExpectedCurrentItemID != nil {
-		currentID := ""
-		if snapshot.State.Current != nil {
-			currentID = snapshot.State.Current.ID
+		opValue.NowMS = h.clock().UnixMilli()
+		base := snapshot.State
+		if (op == protocol.OpMusicEnqueue) && h.DefaultVolume != nil && base.Current == nil && len(base.Queue) == 0 {
+			// A new session: nothing plays and nothing waits, so the default volume applies.
+			if v := h.DefaultVolume(); v >= 1 && v <= 100 {
+				base.Volume = v
+			}
 		}
-		staleSkip = currentID != *opValue.ExpectedCurrentItemID
-	}
-	var next music.State
-	if !directImmediate && !staleSkip {
-		reason = "apply_failed"
-		next, err = music.Apply(base, snapshot.Revision, opValue)
-		diagnostic = err
-		if errors.Is(err, music.ErrRevisionConflict) {
-			return InteractionResult{Status: interactionStatusConflict}, nil
+		staleSkip := false
+		if !directImmediate && opValue.Kind == music.OpSkip && opValue.ExpectedCurrentItemID != nil {
+			currentID := ""
+			if snapshot.State.Current != nil {
+				currentID = snapshot.State.Current.ID
+			}
+			staleSkip = currentID != *opValue.ExpectedCurrentItemID
 		}
-		if errors.Is(err, music.ErrInvalidOperation) || errors.Is(err, music.ErrInvalidTrack) || errors.Is(err, music.ErrQueueFull) {
-			return InteractionResult{Status: interactionStatusUnavailable}, nil
+		var next music.State
+		if !directImmediate && !staleSkip {
+			reason = "apply_failed"
+			next, err = music.Apply(base, snapshot.Revision, opValue)
+			diagnostic = err
+			if errors.Is(err, music.ErrRevisionConflict) {
+				return InteractionResult{Status: interactionStatusConflict}, nil
+			}
+			if errors.Is(err, music.ErrInvalidOperation) || errors.Is(err, music.ErrInvalidTrack) || errors.Is(err, music.ErrQueueFull) {
+				return InteractionResult{Status: interactionStatusUnavailable}, nil
+			}
+			if err != nil {
+				return InteractionResult{}, err
+			}
 		}
+		// Recheck the call binding and role immediately before CAS persistence.
+		reason = "current_call_lookup"
+		current, err := h.Authority.CurrentCall(ctx, channel)
 		if err != nil {
 			return InteractionResult{}, err
 		}
-	}
-	// Recheck the call binding and role immediately before CAS persistence.
-	reason = "current_call_lookup"
-	current, err := h.Authority.CurrentCall(ctx, channel)
-	if err != nil {
-		return InteractionResult{}, err
-	}
-	reason = "call_changed"
-	if current != call {
-		return InteractionResult{Status: interactionStatusConflict}, nil
-	}
-	if op == protocol.OpMusicStop {
-		reason = "can_dj_lookup"
-		allowed, err = h.Authority.CanDJ(ctx, actor, current)
+		reason = "call_changed"
+		if current != call {
+			return InteractionResult{Status: interactionStatusConflict}, nil
+		}
+		if op == protocol.OpMusicStop {
+			reason = "can_dj_lookup"
+			allowed, err = h.Authority.CanDJ(ctx, actor, current)
+			if err != nil {
+				return InteractionResult{}, err
+			}
+			reason = "forbidden"
+			if !allowed {
+				reason = "can_emergency_stop_lookup"
+				allowed, err = h.Authority.CanEmergencyStop(ctx, actor, current)
+				if err != nil {
+					return InteractionResult{}, err
+				}
+			}
+		} else {
+			reason = "can_dj_lookup"
+			allowed, err = h.Authority.CanDJ(ctx, actor, current)
+		}
 		if err != nil {
 			return InteractionResult{}, err
 		}
 		reason = "forbidden"
 		if !allowed {
-			reason = "can_emergency_stop_lookup"
-			allowed, err = h.Authority.CanEmergencyStop(ctx, actor, current)
-			if err != nil {
-				return InteractionResult{}, err
+			return InteractionResult{Status: interactionStatusForbidden}, nil
+		}
+		reason = "expired"
+		if req.Expires != nil {
+			now := time.Now
+			if h.Now != nil {
+				now = h.Now
+			}
+			currentTime := now().Unix()
+			if currentTime >= 0 && *req.Expires <= uint64(currentTime) {
+				return InteractionResult{Status: interactionStatusExpired}, nil
 			}
 		}
-	} else {
-		reason = "can_dj_lookup"
-		allowed, err = h.Authority.CanDJ(ctx, actor, current)
-	}
-	if err != nil {
-		return InteractionResult{}, err
-	}
-	reason = "forbidden"
-	if !allowed {
-		return InteractionResult{Status: interactionStatusForbidden}, nil
-	}
-	reason = "expired"
-	if req.Expires != nil {
-		now := time.Now
-		if h.Now != nil {
-			now = h.Now
+		if directImmediate || staleSkip {
+			reason = "immediate_control"
+			state := snapshot.State
+			if directImmediate {
+				var controlErr error
+				state, controlErr = h.OnImmediateControl(ctx, h.InstallationID, h.CommunityID, channel, opValue)
+				if controlErr != nil {
+					return InteractionResult{}, controlErr
+				}
+			}
+			// A stale fallback skip returns the unchanged snapshot only after the
+			// same final authority and expiry checks as a queue mutation.
+			// A bounded authenticated snapshot lets the client settle the control in
+			// one Bot operation, including queues whose visible prefix is truncated.
+			data, encodeErr := encodeMusicSnapshot(state, true, h.clock().UnixMilli())
+			if encodeErr != nil {
+				return InteractionResult{}, encodeErr
+			}
+			revision := state.Revision
+			return InteractionResult{Status: 0, Revision: &revision, Data: data}, nil
 		}
-		currentTime := now().Unix()
-		if currentTime >= 0 && *req.Expires <= uint64(currentTime) {
-			return InteractionResult{Status: interactionStatusExpired}, nil
+		reason = "save_failed"
+		saved, err := h.Store.Save(ctx, channel, snapshot.Revision, next)
+		diagnostic = err
+		if errors.Is(err, persistence.ErrConflict) || errors.Is(err, music.ErrRevisionConflict) {
+			if op == protocol.OpMusicEnqueue && attempt < 2 {
+				continue
+			}
+			return InteractionResult{Status: interactionStatusConflict}, nil
 		}
-	}
-	if directImmediate || staleSkip {
-		reason = "immediate_control"
-		state := snapshot.State
-		if directImmediate {
-			var controlErr error
-			state, controlErr = h.OnImmediateControl(ctx, h.InstallationID, h.CommunityID, channel, opValue)
-			if controlErr != nil {
-				return InteractionResult{}, controlErr
+		if err != nil {
+			return InteractionResult{}, err
+		}
+		appliedRevision := saved.Revision
+		if h.OnPersistedSnapshot != nil {
+			startPlayback := op == protocol.OpMusicResume || op == protocol.OpMusicSkip && !snapshot.State.Paused && next.Current != nil
+			var handoffErr error
+			appliedRevision, handoffErr = h.OnPersistedSnapshot(ctx, h.InstallationID, h.CommunityID, channel, saved.State, saved.Revision, startPlayback)
+			reason, diagnostic = "snapshot_handoff", handoffErr
+			if handoffErr != nil {
+				if startPlayback {
+					appliedRevision = h.pauseUnstartedPlayback(ctx, channel, saved.Revision, appliedRevision)
+				}
+				if appliedRevision == 0 {
+					appliedRevision = saved.Revision
+				}
+				return InteractionResult{Status: interactionStatusUnavailable, Revision: &appliedRevision}, nil
 			}
 		}
-		// A stale fallback skip returns the unchanged snapshot only after the
-		// same final authority and expiry checks as a queue mutation.
-		// A bounded authenticated snapshot lets the client settle the control in
-		// one Bot operation, including queues whose visible prefix is truncated.
-		data, encodeErr := encodeMusicSnapshot(state, true, h.clock().UnixMilli())
-		if encodeErr != nil {
-			return InteractionResult{}, encodeErr
-		}
-		revision := state.Revision
-		return InteractionResult{Status: 0, Revision: &revision, Data: data}, nil
+		revision := appliedRevision
+		return InteractionResult{Status: 0, Revision: &revision, Data: []byte{0x80}}, nil
 	}
-	reason = "save_failed"
-	saved, err := h.Store.Save(ctx, channel, snapshot.Revision, next)
-	diagnostic = err
-	if errors.Is(err, persistence.ErrConflict) || errors.Is(err, music.ErrRevisionConflict) {
-		return InteractionResult{Status: interactionStatusConflict}, nil
-	}
-	if err != nil {
-		return InteractionResult{}, err
-	}
-	appliedRevision := saved.Revision
-	if h.OnPersistedSnapshot != nil {
-		startPlayback := op == protocol.OpMusicResume || op == protocol.OpMusicSkip && !snapshot.State.Paused && next.Current != nil
-		var handoffErr error
-		appliedRevision, handoffErr = h.OnPersistedSnapshot(ctx, h.InstallationID, h.CommunityID, channel, saved.State, saved.Revision, startPlayback)
-		reason, diagnostic = "snapshot_handoff", handoffErr
-		if handoffErr != nil {
-			if startPlayback {
-				appliedRevision = h.pauseUnstartedPlayback(ctx, channel, saved.Revision, appliedRevision)
-			}
-			if appliedRevision == 0 {
-				appliedRevision = saved.Revision
-			}
-			return InteractionResult{Status: interactionStatusUnavailable, Revision: &appliedRevision}, nil
-		}
-	}
-	revision := appliedRevision
-	return InteractionResult{Status: 0, Revision: &revision, Data: []byte{0x80}}, nil
 }
 
 func (h MusicInteractions) clock() time.Time {

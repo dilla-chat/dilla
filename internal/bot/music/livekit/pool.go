@@ -626,6 +626,7 @@ func (p *Pool) releaseTrack(s *Session) {
 }
 
 func (s *Session) monitorPooled(ctx context.Context, groupID id.ID, epochs EpochSource, initial native.CallMediaEpoch) {
+	sourceDone := s.source.Done()
 	defer close(s.done)
 	defer s.pool.releaseTrack(s)
 	ticker := time.NewTicker(epochPollInterval)
@@ -635,7 +636,11 @@ func (s *Session) monitorPooled(ctx context.Context, groupID id.ID, epochs Epoch
 		case <-ctx.Done():
 			s.finish(s.pool.deadCause(s.generation, ctx.Err()))
 			return
-		case <-s.source.Done():
+		case <-sourceDone:
+			if sourceIsPaused(s.source) {
+				sourceDone = nil
+				continue
+			}
 			s.finish(s.source.Wait())
 			return
 		case <-ticker.C:

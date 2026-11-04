@@ -184,6 +184,7 @@ func (s *Session) monitor(ctx context.Context, groupID id.ID, epochs EpochSource
 	defer timer.Stop()
 	var terminal error
 	finished := false
+	sourceDone := s.source.Done()
 	for !finished {
 		select {
 		case <-ctx.Done():
@@ -192,7 +193,11 @@ func (s *Session) monitor(ctx context.Context, groupID id.ID, epochs EpochSource
 		case <-timer.C:
 			terminal = context.DeadlineExceeded
 			finished = true
-		case <-s.source.Done():
+		case <-sourceDone:
+			if sourceIsPaused(s.source) {
+				sourceDone = nil
+				continue
+			}
 			terminal = s.source.Wait()
 			finished = true
 		case <-ticker.C:
@@ -275,4 +280,9 @@ func allZero(b []byte) bool {
 		v |= x
 	}
 	return v == 0
+}
+
+func sourceIsPaused(source sourceLifecycle) bool {
+	p, ok := source.(interface{ Paused() bool })
+	return ok && p.Paused()
 }

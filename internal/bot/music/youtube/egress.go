@@ -38,8 +38,8 @@ type egressBroker struct {
 	used      int64
 }
 
-func newEgressBroker(listener net.Listener) *egressBroker {
-	ctx, cancel := context.WithCancel(context.Background())
+func newEgressBroker(parent context.Context, listener net.Listener) *egressBroker {
+	ctx, cancel := context.WithCancel(parent)
 	b := &egressBroker{listener: listener, ready: make(chan struct{}), ctx: ctx, cancel: cancel, sem: make(chan struct{}, 32), active: map[net.Conn]struct{}{}}
 	b.wg.Add(1)
 	go b.accept()
@@ -239,10 +239,22 @@ func publicEgressAddress(raw string) bool {
 }
 
 func dialPublicHTTPS(ctx context.Context, host string) (net.Conn, error) {
+	dialer := net.Dialer{Timeout: 3 * time.Second}
+	return dialPublicHTTPSWith(ctx, host, net.DefaultResolver.LookupIPAddr, dialer.DialContext)
+}
+func dialPublicHTTPSWith(ctx context.Context, host string, lookup func(context.Context, string) ([]net.IPAddr, error), dial func(context.Context, string, string) (net.Conn, error)) (net.Conn, error) {
+	dnsMS, dialMS := int64(0), int64(0)
+	family := "none"
+	failed := 0
+	defer func() {
+		diagnosticLogger(ctx).DebugContext(ctx, "youtube CONNECT", "host_class", youtubeHostClass(host), "dns_ms", dnsMS, "dial_ms", dialMS, "family", family, "failed_addresses", failed)
+	}()
 	if !allowedYouTubeHost(host) {
 		return nil, errEgressPolicy
 	}
-	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	dnsStart := time.Now()
+	ips, err := lookup(ctx, host)
+	dnsMS = time.Since(dnsStart).Milliseconds()
 	if err != nil || len(ips) == 0 || len(ips) > 64 {
 		return nil, errEgressPolicy
 	}
@@ -254,12 +266,18 @@ func dialPublicHTTPS(ctx context.Context, host string) (net.Conn, error) {
 		}
 		addresses = append(addresses, addr)
 	}
-	dialer := net.Dialer{Timeout: 3 * time.Second}
+	dialStart := time.Now()
+	defer func() { dialMS = time.Since(dialStart).Milliseconds() }()
 	for _, addr := range addresses {
-		conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(addr.String(), "443"))
+		conn, err := dial(ctx, "tcp", net.JoinHostPort(addr.String(), "443"))
 		if err == nil {
+			family = "ipv6"
+			if addr.Is4() {
+				family = "ipv4"
+			}
 			return conn, nil
 		}
+		failed++
 	}
 	return nil, errors.New("youtube: egress connection failed")
 }
@@ -427,4 +445,15 @@ func addParentDirs(args []string, path string) []string {
 		args = append(args, "--dir", dirs[i])
 	}
 	return args
+}
+
+func youtubeHostClass(host string) string {
+	switch {
+	case host == "youtube.com" || host == "youtu.be" || strings.HasSuffix(host, ".youtube.com"):
+		return "youtube"
+	case host == "googlevideo.com" || strings.HasSuffix(host, ".googlevideo.com"):
+		return "googlevideo"
+	default:
+		return "other"
+	}
 }

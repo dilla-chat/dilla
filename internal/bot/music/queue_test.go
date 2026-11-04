@@ -257,18 +257,18 @@ func TestApplyStampsAndSettlesThePlayhead(t *testing.T) {
 		t.Fatalf("a paused playhead stays: %d", got)
 	}
 	state, err = Apply(state, state.Revision, Operation{Kind: OpResume, NowMS: 7_000})
-	if err != nil || state.PositionMS != 0 || state.PositionAtMS != 7_000 {
-		t.Fatalf("a resumed track restarts at 0 (providers have no offset) and restamps: %+v err=%v", state, err)
+	if err != nil || state.PositionMS != 4_000 || state.PositionAtMS != 7_000 {
+		t.Fatalf("a resumed track keeps its position and restamps: %+v err=%v", state, err)
 	}
 	if got := PlayheadMS(state, 100_000); got != 10_000 {
 		t.Fatalf("the playhead clamps to the duration: %d", got)
 	}
 	state, err = Apply(state, state.Revision, Operation{Kind: OpSeek, PositionMS: 1_234, NowMS: 8_000})
-	if err != nil || state.PositionMS != 1_000 || state.PositionAtMS != 8_000 {
+	if err != nil || state.PositionMS != 5_000 || state.PositionAtMS != 8_000 {
 		t.Fatalf("a seek settles but does not move the playhead (no provider seeks): %+v err=%v", state, err)
 	}
 	unstamped, err := Apply(state, state.Revision, Operation{Kind: OpSetVolume, Volume: 50})
-	if err != nil || unstamped.PositionMS != 1_000 || unstamped.PositionAtMS != 8_000 {
+	if err != nil || unstamped.PositionMS != 5_000 || unstamped.PositionAtMS != 8_000 {
 		t.Fatalf("an operation without NowMS leaves the playhead fields: %+v err=%v", unstamped, err)
 	}
 	if _, err := Apply(state, state.Revision, Operation{Kind: OpSetVolume, Volume: 50, NowMS: -1}); err == nil {
@@ -276,8 +276,8 @@ func TestApplyStampsAndSettlesThePlayhead(t *testing.T) {
 	}
 }
 
-// Fix round 2 (task review): pause at 80 s, resume: the snapshot says 0 (the provider restarts the track), then it advances.
-func TestResumeAfterPauseAt80sRestartsThePlayhead(t *testing.T) {
+// Pause at 80s, resume at 80s, then advance from that position.
+func TestResumeAfterPauseAt80sRetainsThePlayhead(t *testing.T) {
 	track := Track{ID: "a", Provider: ProviderYouTube, CanonicalID: "abcdefghijk", Title: "A", RequesterID: "member", DurationMS: 200_000}
 	state, _ := Apply(InitialState(), 0, Operation{Kind: OpEnqueue, Tracks: []Track{track}, NowMS: 1})
 	state, _ = Apply(state, state.Revision, Operation{Kind: OpResume, NowMS: 10_000})
@@ -286,10 +286,10 @@ func TestResumeAfterPauseAt80sRestartsThePlayhead(t *testing.T) {
 		t.Fatalf("paused at %d, want 80000 (err %v)", state.PositionMS, err)
 	}
 	state, err = Apply(state, state.Revision, Operation{Kind: OpResume, NowMS: 100_000})
-	if err != nil || state.PositionMS != 0 || PlayheadMS(state, 100_000) != 0 {
-		t.Fatalf("resumed snapshot position %d, want 0 (err %v)", state.PositionMS, err)
+	if err != nil || state.PositionMS != 80_000 || PlayheadMS(state, 100_000) != 80_000 {
+		t.Fatalf("resumed snapshot position %d, want 80000 (err %v)", state.PositionMS, err)
 	}
-	if got := PlayheadMS(state, 105_000); got != 5_000 {
-		t.Fatalf("then it advances: %d, want 5000", got)
+	if got := PlayheadMS(state, 105_000); got != 85_000 {
+		t.Fatalf("then it advances: %d, want 85000", got)
 	}
 }

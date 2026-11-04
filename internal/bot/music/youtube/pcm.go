@@ -102,6 +102,7 @@ type PCMStarter struct {
 	Timeout     time.Duration
 	MaxDuration time.Duration
 	MaxPCMBytes int64
+	StartAtMS   int64
 }
 
 func (s PCMStarter) Start(ctx context.Context, source string) (io.ReadCloser, error) {
@@ -113,4 +114,9 @@ func (s PCMStarter) Start(ctx context.Context, source string) (io.ReadCloser, er
 		return nil, ErrInvalidInput
 	}
 	return s.startIsolated(WithDiagnosticLogger(ctx, s.Logger), canonical)
+}
+
+func (s PCMStarter) StartAt(ctx context.Context, source string, ms int64) (io.ReadCloser, error) {
+	s.StartAtMS = max(0, ms)
+	return s.Start(ctx, source)
 }

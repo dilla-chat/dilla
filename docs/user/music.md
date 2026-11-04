@@ -75,7 +75,9 @@ people's microphone or screen-share tracks; the voice list labels it
 **playback only**. This restriction is enforced by the server as well as the
 music publisher.
 
-Pause and Stop release the audio stream and its provider resources. The Bot can
+Pause keeps your place: the Bot holds the YouTube stream, and play continues from the same second. After 10 minutes
+paused, the Bot leaves the stream, and play continues from where you paused, just a few seconds slower. Stop releases the audio stream
+and its provider resources. The Bot can
 remain silently in the voice channel so the next track does not disconnect and
 rejoin, for the **Leave voice when idle** time at most. This connection lasts at most
 30 minutes and ends when the Bot is disabled or the channel is removed. A server disconnect stops playback; use a new playback

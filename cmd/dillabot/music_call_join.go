@@ -14,7 +14,9 @@ import (
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
 	"github.com/dilla-chat/dilla/internal/bot/helper"
+	"github.com/dilla-chat/dilla/internal/bot/music"
 	"github.com/dilla-chat/dilla/internal/bot/native"
+	"github.com/dilla-chat/dilla/internal/bot/service"
 	"github.com/dilla-chat/dilla/internal/cborx"
 	"github.com/dilla-chat/dilla/internal/id"
 )
@@ -42,6 +44,7 @@ type musicCallJoinReader interface {
 	DeviceListHistory(context.Context, id.ID, uint64) ([][]any, error)
 }
 type musicCallJoinCore interface {
+	TryClaimTrust(id.ID) (func(), bool)
 	musicCallMembershipForgetter
 	Groups(context.Context) ([]native.GroupInfo, error)
 	GroupIntentResult(context.Context, id.ID) (*native.GroupIntentResult, error)
@@ -97,7 +100,7 @@ func retryMusicCallGroupJoin(ctx context.Context, calls musicCallJoinReader, cor
 			continue
 		}
 		var conflict *errMusicCallJoinConflict
-		if !errors.As(err, &conflict) || conflicts == len(delays) {
+		if (!errors.As(err, &conflict) && !errors.Is(err, service.ErrSourceTrustBusy)) || conflicts == len(delays) {
 			return err
 		}
 		if err = wait(ctx, delays[conflicts]); err != nil {
@@ -118,7 +121,15 @@ func ensureMusicCallGroupJoined(ctx context.Context, calls *client.Session, core
 }
 
 func musicCallGroupJoinAttempt(ctx context.Context, calls musicCallJoinReader, core musicCallJoinCore, installation, community, channel id.ID, policy uint64) error {
-	call, err := calls.ChannelCall(ctx, channel)
+	branch := "external_join"
+	timing := &musicJoinTimings{}
+	defer func() {
+		music.RecordCallJoinBranch(ctx, branch)
+		for _, entry := range timing.entries {
+			music.PlaybackLogger(ctx).DebugContext(ctx, "music call-group join sub-call", "branch", branch, "stage", entry.stage, "elapsed_ms", entry.ms)
+		}
+	}()
+	call, err := timedMusicJoinCall(timing, "ChannelCall", func() (client.ChannelCallState, error) { return calls.ChannelCall(ctx, channel) })
 	if err != nil {
 		return musicCallJoinStageError("channel_call", err)
 	}
@@ -126,11 +137,11 @@ func musicCallGroupJoinAttempt(ctx context.Context, calls musicCallJoinReader, c
 		return errors.New("music channel has no active call group")
 	}
 	group := *call.GroupID
-	groups, err := core.Groups(ctx)
+	groups, err := timedMusicJoinCall(timing, "Groups", func() ([]native.GroupInfo, error) { return core.Groups(ctx) })
 	if err != nil {
 		return musicCallJoinStageError("native_groups", err)
 	}
-	if err := forgetSupersededMusicCallGroups(ctx, core, groups, community, channel, group); err != nil {
+	if err := timing.run("forgetSupersededMusicCallGroups", func() error { return forgetSupersededMusicCallGroups(ctx, core, groups, community, channel, group) }); err != nil {
 		return musicCallJoinStageError("forget_superseded_group", err)
 	}
 	var localJoinEpoch, localEpoch uint64
@@ -144,20 +155,23 @@ func musicCallGroupJoinAttempt(ctx context.Context, calls musicCallJoinReader, c
 		}
 		localState, localEpoch = int64(existing.State), existing.Epoch
 		if existing.State == 4 {
-			if err = core.CallGroupForget(ctx, group); err != nil {
+			branch = "forgot_stale_leaf"
+			if err = timing.run("CallGroupForget", func() error { return core.CallGroupForget(ctx, group) }); err != nil {
 				return musicCallJoinStageError("forget_gone_group", err)
 			}
 			continue
 		}
 		if existing.State == 2 {
-			current, membershipErr := prepareMusicCallGroupMembership(ctx, calls, core, group)
+			current, membershipErr := timedMusicJoinCall(timing, "prepareMusicCallGroupMembership", func() (bool, error) { return prepareMusicCallGroupMembership(ctx, calls, core, group) })
 			if membershipErr != nil {
 				return musicCallJoinStageError("active_membership_check", membershipErr)
 			}
 			if current {
-				_, err = core.CallMediaEpoch(ctx, group)
+				branch = "already_member"
+				_, err = timedMusicJoinCall(timing, "CallMediaEpoch", func() (native.CallMediaEpoch, error) { return core.CallMediaEpoch(ctx, group) })
 				return musicCallJoinStageError("active_media_gate", err)
 			}
+			branch = "forgot_stale_leaf"
 			break
 		}
 		if existing.State != 1 {
@@ -165,7 +179,7 @@ func musicCallGroupJoinAttempt(ctx context.Context, calls musicCallJoinReader, c
 		}
 		localJoinEpoch = existing.Epoch
 	}
-	info, err := calls.GroupInfo(ctx, group)
+	info, err := timedMusicJoinCall(timing, "GroupInfo", func() (client.GroupInfo, error) { return calls.GroupInfo(ctx, group) })
 	if err != nil {
 		return musicCallJoinStageError("group_info", err)
 	}
@@ -182,7 +196,7 @@ func musicCallGroupJoinAttempt(ctx context.Context, calls musicCallJoinReader, c
 		if generation >= 64 {
 			return errors.New("music call-group join intent retry limit exceeded")
 		}
-		intent, err = core.GroupIntentResult(ctx, operation)
+		intent, err = timedMusicJoinCall(timing, "GroupIntentResult", func() (*native.GroupIntentResult, error) { return core.GroupIntentResult(ctx, operation) })
 		if err != nil {
 			return musicCallJoinStageError("intent_read", err)
 		}
@@ -213,23 +227,24 @@ func musicCallGroupJoinAttempt(ctx context.Context, calls musicCallJoinReader, c
 	// supervisor serializes starts. No competing join can stage a new upload
 	// between this snapshot, discard and forget.
 	if (intent == nil || len(intent.Result) == 0) && !nonResumable.IsZero() && localState == 1 {
-		if err = core.DiscardGroup(ctx, nonResumable, group); err != nil {
+		if err = timing.run("DiscardGroup", func() error { return core.DiscardGroup(ctx, nonResumable, group) }); err != nil {
 			return musicCallJoinStageError("discard_non_resumable", err)
 		}
 		// An already resolved discard may leave a historical JOINING row behind.
-		if err = core.CallGroupForget(ctx, group); err != nil {
+		if err = timing.run("CallGroupForget", func() error { return core.CallGroupForget(ctx, group) }); err != nil {
 			return musicCallJoinStageError("forget_non_resumable", err)
 		}
 		slog.WarnContext(ctx, "music call-group join retry", "stage", "discard_non_resumable", "group_id", group.String(), "local_state", localState, "epoch", localEpoch)
 		return errMusicCallJoinDiscarded
 	}
 	if intent != nil {
+		branch = "resumed_intent"
 		joined, err = decodeMusicExternalJoinResult(intent.Result)
 		if err != nil {
 			return musicCallJoinStageError("intent_decode", err)
 		}
 	} else {
-		tree, treeErr := calls.GroupTree(ctx, group)
+		tree, treeErr := timedMusicJoinCall(timing, "GroupTree", func() (client.GroupTree, error) { return calls.GroupTree(ctx, group) })
 		if treeErr != nil {
 			return musicCallJoinStageError("group_tree", treeErr)
 		}
@@ -244,7 +259,9 @@ func musicCallGroupJoinAttempt(ctx context.Context, calls musicCallJoinReader, c
 		if encodeErr != nil {
 			return client.ErrProtocol
 		}
-		joined, err = core.ExternalJoin(ctx, operation, group, channel, 1, policy, infoBody, treeBody)
+		joined, err = timedMusicJoinCall(timing, "ExternalJoin", func() (native.GroupExternalJoinResult, error) {
+			return core.ExternalJoin(ctx, operation, group, channel, 1, policy, infoBody, treeBody)
+		})
 		if err != nil {
 			var status *helper.StatusError
 			if errors.As(err, &status) && status.Status == 4 {
@@ -254,23 +271,25 @@ func musicCallGroupJoinAttempt(ctx context.Context, calls musicCallJoinReader, c
 			return musicCallJoinStageError("external_join", err)
 		}
 	}
-	if err = refreshMusicCallJoinLeaves(ctx, calls, core, group); err != nil {
+	if err = timing.run("refreshMusicCallJoinLeaves", func() error { return refreshMusicCallJoinLeaves(ctx, calls, core, group) }); err != nil {
 		return musicCallJoinStageError("trust_refresh", err)
 	}
-	if err = core.CallJoinCheck(ctx, group); err != nil {
+	if err = timing.run("CallJoinCheck", func() error { return core.CallJoinCheck(ctx, group) }); err != nil {
 		return musicCallJoinStageError("staged_media_gate", err)
 	}
-	accepted, err := calls.Resync(ctx, group, joined.Commit, joined.GroupInfo)
+	accepted, err := timedMusicJoinCall(timing, "Resync", func() (client.SequenceResult, error) {
+		return calls.Resync(ctx, group, joined.Commit, joined.GroupInfo)
+	})
 	if err != nil {
 		var apiErr *client.APIError
 		if errors.As(err, &apiErr) && apiErr.Outcome == client.OutcomeDefinitive {
-			if discardErr := core.DiscardGroup(ctx, operation, group); discardErr != nil {
+			if discardErr := timing.run("DiscardGroup", func() error { return core.DiscardGroup(ctx, operation, group) }); discardErr != nil {
 				return errors.Join(musicCallJoinStageError("resync", err), musicCallJoinStageError("discard", discardErr))
 			}
 			return musicCallJoinStageError("resync", err)
 		}
 		// A lost response is resolved only when the exact staged GroupInfo is now current.
-		current, readErr := calls.GroupInfo(ctx, group)
+		current, readErr := timedMusicJoinCall(timing, "GroupInfo", func() (client.GroupInfo, error) { return calls.GroupInfo(ctx, group) })
 		if readErr != nil || current.NextSequence == 0 || !bytes.Equal(current.Info, joined.GroupInfo) {
 			return musicCallJoinStageError("resync", err)
 		}
@@ -279,10 +298,10 @@ func musicCallGroupJoinAttempt(ctx context.Context, calls musicCallJoinReader, c
 	if accepted.Sequence == 0 || accepted.Sequence > math.MaxInt64 {
 		return errors.New("music call-group resync returned an invalid sequence")
 	}
-	if err = core.GroupJoined(ctx, operation, group, accepted.Sequence); err != nil {
+	if err = timing.run("GroupJoined", func() error { return core.GroupJoined(ctx, operation, group, accepted.Sequence) }); err != nil {
 		return musicCallJoinStageError("resolve_join_intent", err)
 	}
-	if _, err = core.CallMediaEpoch(ctx, group); err != nil {
+	if _, err = timedMusicJoinCall(timing, "CallMediaEpoch", func() (native.CallMediaEpoch, error) { return core.CallMediaEpoch(ctx, group) }); err != nil {
 		return musicCallJoinStageError("joined_media_gate", err)
 	}
 	return nil
@@ -390,19 +409,45 @@ func refreshMusicCallJoinLeaves(ctx context.Context, calls musicCallJoinReader, 
 	if len(pending) > maxMusicCallJoinLeaves {
 		return errors.New("music call-group trust refresh exceeds limit")
 	}
+
+	refreshed := make(map[id.ID]bool)
 	for _, leaf := range pending {
-		history, head, err := musicDeviceListHistory(ctx, calls, leaf.User, leaf.CachedVersion)
+		if refreshed[leaf.User] {
+			continue
+		}
+		release, claimed := core.TryClaimTrust(leaf.User)
+		if !claimed {
+			return service.ErrSourceTrustBusy
+		}
+		err = func() error {
+			defer release()
+			// The user cache can have advanced after the initial pending snapshot but before this claim.
+			current, err := core.PendingLeaves(ctx)
+			if err != nil {
+				return err
+			}
+			for _, fresh := range current {
+				if fresh.User == leaf.User && fresh.CachedVersion > leaf.CachedVersion {
+					leaf.CachedVersion = fresh.CachedVersion
+				}
+			}
+			history, head, err := musicDeviceListHistory(ctx, calls, leaf.User, leaf.CachedVersion)
+			if err != nil {
+				return err
+			}
+			now := time.Now().Unix()
+			if now < 0 {
+				return errors.New("music call-group trust refresh clock is invalid")
+			}
+			_, err = core.TrustSender(ctx, group, uint64(leaf.Leaf), leaf.User, history, head, uint64(now))
+			return err
+		}()
 		if err != nil {
 			return err
 		}
-		now := time.Now().Unix()
-		if now < 0 {
-			return errors.New("music call-group trust refresh clock is invalid")
-		}
-		if _, err = core.TrustSender(ctx, group, uint64(leaf.Leaf), leaf.User, history, head, uint64(now)); err != nil {
-			return err
-		}
+		refreshed[leaf.User] = true
 	}
+
 	return nil
 }
 
@@ -463,4 +508,22 @@ func musicDeviceListHistory(ctx context.Context, calls musicCallJoinReader, user
 		return nil, nil, client.ErrProtocol
 	}
 	return history, headList, nil
+}
+
+type musicJoinTiming struct {
+	stage string
+	ms    int64
+}
+type musicJoinTimings struct{ entries []musicJoinTiming }
+
+func timedMusicJoinCall[T any](timing *musicJoinTimings, stage string, call func() (T, error)) (T, error) {
+	start := time.Now()
+	defer func() {
+		timing.entries = append(timing.entries, musicJoinTiming{stage, time.Since(start).Milliseconds()})
+	}()
+	return call()
+}
+func (t *musicJoinTimings) run(stage string, call func() error) error {
+	_, err := timedMusicJoinCall(t, stage, func() (struct{}, error) { return struct{}{}, call() })
+	return err
 }

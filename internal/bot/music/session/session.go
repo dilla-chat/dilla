@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
@@ -105,7 +106,7 @@ func (s QueueStarter) StartExplicit(ctx context.Context, track music.Track) (mus
 			return nil, err
 		}
 	}
-	ctx = context.WithValue(ctx, explicitStartKey{}, true)
+	ctx = context.WithValue(client.WithInteractive(ctx), explicitStartKey{}, true)
 	playback, err := s.Start(ctx, track)
 	if !errors.Is(err, livekit.ErrBinding) || ctx.Err() != nil || s.ResetConnection == nil {
 		return playback, err
@@ -200,7 +201,7 @@ func Start(ctx context.Context, o Options) (*Session, error) {
 	if o.Community.IsZero() || o.Channel.IsZero() || o.Track == "" || o.PCM == nil || o.Encoder == nil || o.Publisher == nil || o.Epochs == nil || (o.PrepareCall == nil && (o.Call.CallID.IsZero() || o.Group.IsZero() || o.Call.GroupID != o.Group)) || provider != music.ProviderYouTube {
 		return nil, music.StartStage(ctx, "provider_check", ErrInvalid)
 	}
-	ctx = client.WithoutCooperativeStop(client.WithBackground(ctx))
+	ctx = music.WithCallJoinTrace(client.WithoutCooperativeStop(ctx))
 	if !o.Group.IsZero() {
 		ctx = music.WithPlaybackGroup(ctx, o.Group)
 	}
@@ -251,34 +252,81 @@ func Start(ctx context.Context, o Options) (*Session, error) {
 		return nil, err
 	}
 	_ = music.StartStage(ctx, "published", nil)
-	s := &Session{pcm: pcm, encoder: encoder, publisher: pub, done: make(chan struct{}), stop: make(chan struct{})}
+	s := &Session{startAtMS: music.StartAtMS(ctx), pcm: pcm, encoder: encoder, publisher: pub, done: make(chan struct{}), stop: make(chan struct{})}
 	go s.monitor(ctx)
 	return s, nil
 }
 
 type Session struct {
-	pcm       io.ReadCloser
-	encoder   Encoder
-	publisher Publisher
-	done      chan struct{}
-	stop      chan struct{}
-	once      sync.Once
-	mu        sync.RWMutex
-	err       error
+	pcm        io.ReadCloser
+	encoder    Encoder
+	publisher  Publisher
+	done       chan struct{}
+	stop       chan struct{}
+	once       sync.Once
+	mu         sync.RWMutex
+	err        error
+	paused     bool
+	sourceGone bool
+	startAtMS  int64
+	resumedAt  time.Time
 }
+
+const sourceRecoveryWindow = 5 * time.Second
 
 func (s *Session) monitor(ctx context.Context) {
 	select {
 	case <-ctx.Done():
 		s.finish(ctx.Err())
 	case <-s.publisher.Done():
-		s.finish(s.publisher.Wait())
+		s.finish(s.resumeSourceError(s.publisher.Wait()))
 	case <-s.encoder.Done():
-		s.finish(s.encoder.Wait())
+		s.mu.Lock()
+		paused := s.paused
+		s.sourceGone = true
+		s.mu.Unlock()
+		if paused { // Keep the published silence until Resume or the pause bound closes it.
+			select {
+			case <-ctx.Done():
+				s.finish(ctx.Err())
+			case <-s.publisher.Done():
+				s.finish(s.publisher.Wait())
+			case <-s.stop:
+			}
+		} else {
+			s.finish(s.resumeSourceError(s.encoder.Wait()))
+		}
 	case <-s.stop:
 	}
 	close(s.done)
 }
+
+// A blocked source can reveal its failure only once reads resume. The publisher
+// can observe that encoder failure first, so both terminal paths classify it.
+// Offer one cold replacement; a new session has no resume window.
+func (s *Session) resumeSourceError(err error) error {
+	if err == nil {
+		return nil
+	}
+	select {
+	case <-s.encoder.Done():
+	default:
+		return err
+	}
+	sourceErr := s.encoder.Wait()
+	if sourceErr == nil || !errors.Is(err, sourceErr) ||
+		errors.Is(sourceErr, context.Canceled) || errors.Is(sourceErr, context.DeadlineExceeded) {
+		return err
+	}
+	s.mu.RLock()
+	paused, resumedAt := s.paused, s.resumedAt
+	s.mu.RUnlock()
+	if !paused && !resumedAt.IsZero() && time.Since(resumedAt) <= sourceRecoveryWindow {
+		return errors.Join(music.ErrSourceGone, err)
+	}
+	return err
+}
+
 func (s *Session) finish(err error) {
 	s.once.Do(func() {
 		s.mu.Lock()
@@ -304,8 +352,9 @@ func (s *Session) Close() error {
 // provider's PCM format.
 type ownedPCM struct {
 	io.ReadCloser
-	once sync.Once
-	err  error
+	failed atomic.Bool
+	once   sync.Once
+	err    error
 }
 
 func (p *ownedPCM) Close() error { p.once.Do(func() { p.err = p.ReadCloser.Close() }); return p.err }
@@ -337,3 +386,76 @@ func (e *providerFailureClass) Unwrap() error        { return e.error }
 func (e *providerFailureClass) FailureClass() string { return e.class }
 
 func (e *providerFailureClass) PermanentPlaybackFailure() bool { return e.permanent }
+
+func (p *ownedPCM) Read(b []byte) (int, error) {
+	n, err := p.ReadCloser.Read(b)
+	if err != nil {
+		p.failed.Store(true)
+	}
+	return n, err
+}
+func (p *ownedPCM) SourceGone() bool {
+	if p.failed.Load() {
+		return true
+	}
+	if src, ok := p.ReadCloser.(interface{ SourceGone() bool }); ok {
+		return src.SourceGone()
+	}
+	return false
+}
+func (s *Session) Pause() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.paused = true
+	if p, ok := s.pcm.(interface{ SetPaused(bool) }); ok {
+		p.SetPaused(true)
+	}
+	if p, ok := s.encoder.(music.Pausable); ok {
+		p.Pause()
+	}
+}
+func (s *Session) PositionMS() int64 {
+	if p, ok := s.encoder.(music.Pausable); ok {
+		return s.startAtMS + p.PositionMS()
+	}
+	return s.startAtMS
+}
+func (s *Session) Resume() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sourceGone {
+		return music.ErrSourceGone
+	}
+	select {
+	case <-s.encoder.Done():
+		return music.ErrSourceGone
+	default:
+	}
+	select {
+	case <-s.done:
+		return music.ErrSourceGone
+	default:
+	}
+	if p, ok := s.pcm.(interface{ SourceGone() bool }); ok && p.SourceGone() {
+		return music.ErrSourceGone
+	}
+	if p, ok := s.encoder.(music.Pausable); ok {
+		if err := p.Resume(); err != nil {
+			return err
+		}
+	}
+	if p, ok := s.pcm.(interface{ SetPaused(bool) }); ok {
+		p.SetPaused(false)
+	}
+	s.paused = false
+	s.resumedAt = time.Now()
+	return nil
+}
+
+var _ music.Pausable = (*Session)(nil)
+
+func (p *ownedPCM) SetPaused(paused bool) {
+	if source, ok := p.ReadCloser.(interface{ SetPaused(bool) }); ok {
+		source.SetPaused(paused)
+	}
+}

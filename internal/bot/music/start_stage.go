@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
 	"github.com/dilla-chat/dilla/internal/id"
@@ -41,6 +42,11 @@ func PlaybackLogger(ctx context.Context) *slog.Logger {
 // StartStage emits exactly one result for a boundary. It never logs error text.
 func StartStage(ctx context.Context, stage string, err error) error {
 	logger := PlaybackLogger(ctx)
+	if stage == "published" {
+		if branch := callJoinBranch(ctx); branch != "" {
+			logger = logger.With("branch", branch)
+		}
+	}
 	if err == nil {
 		logger.InfoContext(ctx, "bot music playback start", "group_id", PlaybackGroup(ctx).String(), "stage", stage, "class", "ok")
 		return nil
@@ -105,4 +111,28 @@ func WithPlaybackGroup(ctx context.Context, group id.ID) context.Context {
 func PlaybackGroup(ctx context.Context) id.ID {
 	group, _ := ctx.Value(playbackGroupKey{}).(id.ID)
 	return group
+}
+
+type callJoinTraceKey struct{}
+
+func WithCallJoinTrace(ctx context.Context) context.Context {
+	return context.WithValue(ctx, callJoinTraceKey{}, new(atomic.Pointer[string]))
+}
+func RecordCallJoinBranch(ctx context.Context, branch string) {
+	switch branch {
+	case "already_member", "external_join", "resumed_intent", "forgot_stale_leaf":
+	default:
+		return
+	}
+	if trace, ok := ctx.Value(callJoinTraceKey{}).(*atomic.Pointer[string]); ok {
+		trace.Store(&branch)
+	}
+}
+func callJoinBranch(ctx context.Context) string {
+	if trace, ok := ctx.Value(callJoinTraceKey{}).(*atomic.Pointer[string]); ok {
+		if branch := trace.Load(); branch != nil {
+			return *branch
+		}
+	}
+	return ""
 }
