@@ -7,8 +7,8 @@ runner. Run it before every push.
 npm run ci:local                          # every job, fail fast
 npm run ci:local:changed                  # only the jobs the ci-areas gates run for this branch's diff
 npm run ci:local -- --only go,go-api      # some jobs, plus the jobs they need
-npm run ci:local -- --only chromium-web-1 --no-deps   # reuse the artifacts of an earlier run
-npm run ci:local -- --stress --only go-api,firefox-web-2   # under CPU contention, like a loaded runner
+npm run ci:local -- --only core-integration --no-deps   # reuse the artifacts of an earlier run
+npm run ci:local -- --stress --only go-api,browser-media   # under CPU contention, like a loaded runner
 npm run ci:local -- --dry-run             # print the plan: jobs, needs, how each step maps
 npm run ci:local -- --doctor              # check the prerequisites and exit
 ```
@@ -96,7 +96,7 @@ throwaway container. `CI=true` and the `GITHUB_*`/`RUNNER_*` variables are set a
 - `--changed`: the jobs the `changes` job would turn on for this branch against `origin/main` (or `main`). Committed,
   staged, unstaged and untracked files all count. As in CI, the diff fails safe to everything.
 - `--only <job,…>`: those jobs and the jobs they need. A ci.yml name selects every matrix leg; a leg is
-  `linux-sandbox-foundation-ubuntu-22.04`. `--no-deps` leaves the needed jobs out and reuses their artifacts from an earlier run.
+  `linux-sandbox-foundation-ubuntu-22.04` or a Go shard such as `go-api-2`. `--no-deps` leaves the needed jobs out and reuses their artifacts from an earlier run.
 - `--stress`: the Go and browser jobs run pinned (`taskset`) to a quarter of the CPUs (at least 2), beside one
   busy-loop process per pinned CPU. This brings out the timing flakes a loaded runner does: TOTP window edges,
   animation waits, fixed-millisecond checks and package timeouts.
@@ -124,9 +124,10 @@ anything else.
 - Go of `go.mod`'s `go` line (1.27.3)
 - rustup; `rust-toolchain.toml` pins the toolchain, with clippy, rustfmt and the wasm32 targets
 - clang and llvm-ar from the LLVM 23.1 line (`/usr/bin/clang-23`, or a `clang`/`llvm-ar` on PATH that reports 23.1)
-- the system libraries Playwright's Chromium, Firefox and WebKit need (`npx playwright install-deps` on Debian/Ubuntu,
-  or your distribution's packages)
-- a running PipeWire-Pulse or PulseAudio server and `pactl`, for the Firefox audio suites
+- the system libraries Playwright's Chromium needs (`npx playwright install-deps chromium` on Debian/Ubuntu, or your
+  distribution's packages)
+- a running PipeWire-Pulse or PulseAudio server and `pactl`, for the browser-media audio suites
+- the GTK3 headers and pkg-config (the Go jobs) and bsdtar from libarchive (the node job)
 - podman or docker, for go-postgres
 - network access to the release hosts that `install-ci-tool.sh` downloads from, to proxy.golang.org (govulncheck), and
   to unicode.org for the profile-text tables

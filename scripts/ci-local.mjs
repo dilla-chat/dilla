@@ -123,7 +123,7 @@ const TOOL_HINTS = {
   tar: 'tar',
   prlimit: 'util-linux prlimit',
   taskset: 'util-linux taskset (for --stress)',
-  pactl: 'pactl (libpulse) and a running PipeWire-Pulse or PulseAudio server: headless Firefox needs one for AudioContext',
+  pactl: 'pactl (libpulse) and a running PipeWire-Pulse or PulseAudio server: the browser-media suites need one',
   container: 'podman or docker, for go-postgres (a throwaway postgres container)',
 };
 
