@@ -489,7 +489,8 @@ describe('review fixes', () => {
     await confirmPassword(user);
     const dialog = await screen.findByRole('dialog', { name: en['factor.passkey.title'] });
     await user.click(within(dialog).getByRole('button', { name: en['factor.passkey.submit'] }));
-    expect(within(await screen.findByRole('dialog', { name: en['factorSettings.stepUp.title'] })).getByText(en['factorSettings.stepUp.again'])).toBeInTheDocument();
+    // The step-up dialog can be found before the refusal re-renders it with the notice (PR #149's CI, under load): wait for both.
+    await waitFor(() => expect(within(screen.getByRole('dialog', { name: en['factorSettings.stepUp.title'] })).getByText(en['factorSettings.stepUp.again'])).toBeInTheDocument());
   });
   it('walk I3: keeps the passkeys together, one row each, with the add row after them and before the backup codes', async () => {
     const { view } = setup();
