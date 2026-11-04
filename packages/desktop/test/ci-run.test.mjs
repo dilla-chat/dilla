@@ -154,6 +154,78 @@ test('createGithubApi rejects a path outside the repository', async () => {
  assert.throws(() => createGithubApi({ token: '' }), /token/i);
 });
 
+/** Release desktop-v0.1.0-beta.1: the gate failed on one GitHub API 502. Reads retry a transient 5xx or network error; writes never do. */
+function retrying(handler) {
+ const fetchImpl = fakeFetch(handler), slept = [], logged = [];
+ const api = createGithubApi({ token: 's3cret-token', fetchImpl, sleep: async ms => { slept.push(ms); }, log: line => logged.push(line) });
+ return { api, fetchImpl, slept, logged };
+}
+const queryPath = `/repos/${REPOSITORY}/actions/runs/7/jobs?filter=latest&per_page=100&page=1`;
+
+test('createGithubApi retries a GET once GitHub answers 502, then succeeds', async () => {
+ const statuses = [502];
+ const r = retrying(() => statuses.length ? json({ message: 'Bad Gateway' }, statuses.shift()) : json({ jobs: [] }));
+ assert.deepEqual(await r.api(queryPath), { jobs: [] });
+ assert.equal(r.fetchImpl.calls.length, 2);
+ assert.deepEqual(r.slept, [1000]);
+ assert.equal(r.logged.length, 1);
+ assert.match(r.logged[0], /502/);
+ assert.match(r.logged[0], new RegExp(`/repos/${REPOSITORY}/actions/runs/7/jobs`));
+ assert.ok(r.logged.every(line => !line.includes('s3cret-token') && !line.includes('?') && !line.includes('filter=latest') && !line.includes('https://')), 'the log names the path only: ' + r.logged);
+ assert.ok(r.fetchImpl.calls.every(call => call.init.signal instanceof AbortSignal));
+ assert.notEqual(r.fetchImpl.calls[0].init.signal, r.fetchImpl.calls[1].init.signal, 'each attempt has its own timeout');
+});
+
+test('createGithubApi gives up after three 5xx answers to a GET', async () => {
+ const statuses = [500, 503, 502];
+ const r = retrying(() => json({}, statuses.shift() ?? 200));
+ await assert.rejects(r.api(queryPath), /GitHub API request failed \(502\)/);
+ assert.equal(r.fetchImpl.calls.length, 3);
+ assert.deepEqual(r.slept, [1000, 3000]);
+ assert.equal(r.logged.length, 2);
+});
+
+test('createGithubApi retries a GET network error, at most three attempts', async () => {
+ const once = retrying(handler => { if (once.fetchImpl.calls.length === 1) throw new TypeError('fetch failed'); return json({ ok: true }); });
+ assert.deepEqual(await once.api(`/repos/${REPOSITORY}/releases`), { ok: true });
+ assert.equal(once.fetchImpl.calls.length, 2);
+ assert.match(once.logged[0], /network error/i);
+ const always = retrying(() => { throw new TypeError('fetch failed'); });
+ await assert.rejects(always.api(`/repos/${REPOSITORY}/releases`), /fetch failed/);
+ assert.equal(always.fetchImpl.calls.length, 3);
+ assert.deepEqual(always.slept, [1000, 3000]);
+});
+
+test('createGithubApi never retries a 4xx', async () => {
+ for (const status of [400, 401, 403, 404, 422, 429]) {
+  const r = retrying(() => json({}, status));
+  await assert.rejects(r.api(`/repos/${REPOSITORY}/releases/tags/x`), new RegExp(`\\(${status}\\)`));
+  assert.equal(r.fetchImpl.calls.length, 1, String(status));
+  assert.deepEqual([r.slept, r.logged], [[], []]);
+ }
+ const optional = retrying(() => json({}, 404));
+ assert.equal(await optional.api(`/repos/${REPOSITORY}/releases/tags/x`, {}, true), null);
+ assert.equal(optional.fetchImpl.calls.length, 1);
+});
+
+test('createGithubApi never retries a write: a POST, PATCH, PUT or DELETE that hits a 5xx or a network error fails at once', async () => {
+ for (const method of ['POST', 'PATCH', 'PUT', 'DELETE']) {
+  const r = retrying(() => json({}, 502));
+  await assert.rejects(r.api(`/repos/${REPOSITORY}/releases`, { method, body: method === 'DELETE' ? undefined : { draft: true } }), /502/, method);
+  assert.equal(r.fetchImpl.calls.length, 1, method);
+  assert.deepEqual([r.slept, r.logged], [[], []], method);
+  const n = retrying(() => { throw new TypeError('fetch failed'); });
+  await assert.rejects(n.api(`/repos/${REPOSITORY}/releases`, { method }), /fetch failed/, method);
+  assert.equal(n.fetchImpl.calls.length, 1, method);
+ }
+});
+
+test('createGithubApi refuses a bad destination before any attempt, without retrying', async () => {
+ const r = retrying(() => json({}, 502));
+ await assert.rejects(r.api('/user'), /destination/i);
+ assert.deepEqual([r.fetchImpl.calls.length, r.slept.length], [0, 0]);
+});
+
 test('createGithubApi never follows redirects', async () => {
  const fetchImpl = fakeFetch(() => new Response(null, { status: 302, headers: { location: 'https://evil.example/' } }));
  const api = createGithubApi({ token: 't', fetchImpl });

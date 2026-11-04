@@ -89,11 +89,11 @@ test('the release pipeline publishes exactly the signed inventory from a tagged 
   assert.equal(outputs.artifact_digests, host.env.ARTIFACT_DIGESTS);
   assert.equal(outputs.mac_update, 'zip', 'no macOS key change is pending');
 
-  // sign: fetch the gate-digested zips itself and build the candidate in-process; nothing from collect reaches it.
+  // sign: fetch the gate-digested zips itself (RECORDS_DIGEST in upload-artifact's bare-hex `artifact-digest` form, as the workflow passes it) and build the candidate in-process; nothing from collect reaches it.
   const candidate = join(root, 'candidate');
   await buildCandidate({ api, git, fetchImpl: host.fetchImpl, zipDirectory: join(root, 'zips'), candidateDirectory: candidate, env: { GITHUB_SHA: sha, GITHUB_RUN_ID: '5000', GITHUB_RUN_ATTEMPT: '1', GH_TOKEN: 'workflow-token',
    VERSION: outputs.version, SHA: outputs.sha, TREE: outputs.tree, RUN: outputs.run, ARTIFACT_IDS: outputs.artifact_ids, ARTIFACT_DIGESTS: outputs.artifact_digests,
-   RECORDS_ID: host.env.RECORDS_ID, RECORDS_DIGEST: host.env.RECORDS_DIGEST, RUN_RECORD: outputs.run_record, JOBS_RECORD: outputs.jobs_record, PREVIOUS: outputs.previous } });
+   RECORDS_ID: host.env.RECORDS_ID, RECORDS_DIGEST: host.env.RECORDS_DIGEST.replace(/^sha256:/, ''), RUN_RECORD: outputs.run_record, JOBS_RECORD: outputs.jobs_record, PREVIOUS: outputs.previous } });
   const notes = await readFile(join(candidate, 'release-notes.md'), 'utf8');
   assert.equal(notes, `# Dilla desktop ${version}\n\n- #7 \`Ship the desktop release [x](http://e)\`\n`);
   const tools = await isolatedReleaseTools(join(root, 'tools'), { trust, sandboxConfig: fixture.sandbox.config, files: ['scripts/release-sign-job.mjs'] });
