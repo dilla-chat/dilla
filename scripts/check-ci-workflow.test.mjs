@@ -629,6 +629,8 @@ jobs:
     steps:
       - if: needs.changes.outputs.web != 'false'
         run: npm test
+        env:
+          DILLA_UCD_DIR: \${{ runner.temp }}/ucd
       - name: vectors are up to date
         if: needs.changes.outputs.web != 'false'
         run: npm run vectors
@@ -640,7 +642,7 @@ jobs:
       - run: npm run test:manifest-writer
       - run: npm run test:install
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        if: needs.changes.outputs.text != 'false'
+        if: needs.changes.outputs.web != 'false' || needs.changes.outputs.text != 'false'
         with:
           path: \${{ runner.temp }}/ucd
           key: ucd-\${{ hashFiles('scripts/gen-profile-text-tables.mjs') }}

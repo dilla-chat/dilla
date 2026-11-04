@@ -94,21 +94,24 @@ jobs:
       - run: bash deploy/install_bot_test.sh
       - if: needs.changes.outputs.web != 'false'
         run: sudo apt-get update && sudo apt-get install -y libarchive-tools
+      # The Unicode inputs are cached under a key of the generator file, which holds their pinned checksums: they are
+      # downloaded once per pin change. npm test's profile-tables check reads the same directory (DILLA_UCD_DIR), so
+      # neither it nor the tables step below reaches unicode.org on a cache hit (PR #149: its 522s failed npm test).
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: needs.changes.outputs.web != 'false' || needs.changes.outputs.text != 'false'
+        with:
+          path: ${{ runner.temp }}/ucd
+          key: ucd-${{ hashFiles('scripts/gen-profile-text-tables.mjs') }}
       - if: needs.changes.outputs.web != 'false'
         run: npm test
+        env:
+          DILLA_UCD_DIR: ${{ runner.temp }}/ucd
       - name: vectors are up to date
         if: needs.changes.outputs.web != 'false'
         run: |
           [ ! -d packages ] || npm run vectors --workspaces --if-present
           git diff --exit-code -- protocol/vectors
           test -z "$(git status --porcelain -- protocol/vectors)"
-      # The Unicode inputs are cached under a key of the generator file, which holds their pinned checksums: they are
-      # downloaded once, and only when the generator, the tables or the rule change (the `text` area).
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        if: needs.changes.outputs.text != 'false'
-        with:
-          path: ${{ runner.temp }}/ucd
-          key: ucd-${{ hashFiles('scripts/gen-profile-text-tables.mjs') }}
       - name: profile-text tables are current
         if: needs.changes.outputs.text != 'false'
         run: node scripts/gen-profile-text-tables.mjs --download --check "$RUNNER_TEMP/ucd"
