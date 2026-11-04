@@ -461,7 +461,13 @@ func New(ctx context.Context, o Options) (*Server, error) {
 				"user", userID, "err", err)
 		}
 	}
-	deps.BotRevoked = func(ctx context.Context, installation store.BotInstallationRow, _ bool) {
+	botRoleNotify := api.NewStructureNotifier(gw, o.Repo, o.Log)
+	deps.BotRevoked = func(ctx context.Context, installation store.BotInstallationRow, remove bool) {
+		if remove {
+			// Removal deletes the Bot's member row and managed role: a leave, so live members re-read the
+			// member list (op 54) instead of keeping the Bot until a focus or reconnect.
+			defer botRoleNotify.Changed(ctx, installation.CommunityID)
+		}
 		if installation.DeviceID == nil {
 			return
 		}
@@ -482,6 +488,9 @@ func New(ctx context.Context, o Options) (*Server, error) {
 			o.Log.ErrorContext(ctx, "bringing channel groups in line after bot enrollment failed",
 				"community", installation.CommunityID.String(), "user", installation.UserID.String(), "err", err)
 		}
+		// Enrollment commits the Bot's membership and role: a join, so live members re-read the
+		// member list (op 54) and name the Bot without waiting for a focus or reconnect.
+		botRoleNotify.Changed(ctx, installation.CommunityID)
 	}
 	deps.BotMembershipPending = func(ctx context.Context, installation store.BotInstallationRow, channels []id.ID) {
 		if installation.UserID == nil {
@@ -505,7 +514,6 @@ func New(ctx context.Context, o Options) (*Server, error) {
 			}
 		}
 	}
-	botRoleNotify := api.NewStructureNotifier(gw, o.Repo, o.Log)
 	deps.BotProfileChanged = botRoleNotify.Changed
 	deps.BotJoinRoleGranted = func(ctx context.Context, communityID, memberID id.ID) {
 		if err := api.SyncBotChannelEligibility(ctx, o.Repo, delivery, communityID, memberID, o.Clock.Now().Unix()); err != nil {
