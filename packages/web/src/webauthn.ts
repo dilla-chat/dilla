@@ -13,8 +13,9 @@ import { desktopBridge } from './desktop.ts';
 
 /** Why a ceremony ended without a passkey. `cancelled`: the person or the browser stopped it; `wrongAddress`: the page's
  *  address is not valid for the instance's relying party id; `exists`: this authenticator already holds a passkey for the
- *  account; `other`: anything else, including a document or an answer the browser cannot use. */
-export type PasskeyErrorKind = 'cancelled' | 'wrongAddress' | 'exists' | 'other';
+ *  account; `unsupported`: the instance is too old for the desktop app's browser sign-in; `rateLimited`: the instance
+ *  answered too many attempts; `other`: anything else, including a document or an answer the browser cannot use. */
+export type PasskeyErrorKind = 'cancelled' | 'wrongAddress' | 'exists' | 'unsupported' | 'rateLimited' | 'other';
 
 export class PasskeyError extends Error {
   readonly kind: PasskeyErrorKind;
@@ -34,6 +35,15 @@ export function passkeyErrorKind(e: unknown): PasskeyErrorKind {
     case 'InvalidStateError': return 'exists';
     default: return 'other';
   }
+}
+
+/** What the desktop shell's browser sign-in says when the instance cannot take the request. Electron wraps the shell's
+ *  message ("Error invoking remote method …"), so the code is read out of it. */
+export function desktopAuthKind(e: unknown): 'unsupported' | 'rateLimited' | null {
+  if (!(e instanceof Error)) return null;
+  if (e.message.includes('desktop-auth-unsupported')) return 'unsupported';
+  if (e.message.includes('desktop-auth-rate-limited')) return 'rateLimited';
+  return null;
 }
 
 /** Whether this page can run a passkey ceremony at all: the instance offers passkeys, the browser has the API and the
@@ -142,7 +152,7 @@ export async function createPasskey(optionsJson: string): Promise<string> {
       const result = await bridge.browserAuth({ kind: 'create', options: optionsJson });
       if (typeof result.response !== 'string') throw new Error('Missing browser credential');
       return result.response;
-    } catch (error) { throw new PasskeyError('other', error instanceof Error ? error.message : 'Browser sign-in failed'); }
+    } catch (error) { throw new PasskeyError(desktopAuthKind(error) ?? 'other', error instanceof Error ? error.message : 'Browser sign-in failed'); }
   }
   const pk = publicKeyOf(optionsJson);
   if (!isObject(pk.rp) || !isObject(pk.user)) throw bad('no rp or user');
@@ -188,7 +198,7 @@ export async function getPasskey(optionsJson: string, conditional?: { signal: Ab
       const result = await bridge.browserAuth({ kind: 'get', options: optionsJson });
       if (typeof result.response !== 'string') throw new Error('Missing browser credential');
       return result.response;
-    } catch (error) { throw new PasskeyError('other', error instanceof Error ? error.message : 'Browser sign-in failed'); }
+    } catch (error) { throw new PasskeyError(desktopAuthKind(error) ?? 'other', error instanceof Error ? error.message : 'Browser sign-in failed'); }
   }
   const pk = publicKeyOf(optionsJson);
   const publicKey = {

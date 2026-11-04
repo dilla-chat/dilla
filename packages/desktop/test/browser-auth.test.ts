@@ -31,6 +31,26 @@ test('browser handoff rejects malformed replies and arbitrary capability argumen
   assert.equal(opened, false);
 });
 
+test('an instance without desktop sign-in (404 or 405 on the first request) is reported as unsupported', async () => {
+  for (const status of [404, 405]) {
+    let opened = false;
+    await assert.rejects(browserAuth('https://chat.test/', { kind: 'get', options: '{}' }, {
+      open: async () => { opened = true; }, fetch: async () => new Response('nope', { status }),
+    }), /^Error: desktop-auth-unsupported$/);
+    assert.equal(opened, false);
+  }
+});
+
+test('too many attempts (429) is reported as rate-limited, and a later 404 is not unsupported', async () => {
+  await assert.rejects(browserAuth('https://chat.test/', { kind: 'get', options: '{}' }, {
+    open: async () => {}, fetch: async () => new Response('slow down', { status: 429 }),
+  }), /^Error: desktop-auth-rate-limited$/);
+  await assert.rejects(browserAuth('https://chat.test/', { kind: 'get', options: '{}' }, {
+    open: async () => {},
+    fetch: async input => String(input).endsWith('/request') ? Response.json({ id: 'A'.repeat(43) }) : new Response('gone', { status: 404 }),
+  }), /Browser sign-in unavailable/);
+});
+
 test('loopback ceremonies require the development-only authorization used by the native instance boundary', async () => {
  const request = { kind: 'get', options: '{}' };
  const deps = { open: async (_url: string) => {}, fetch: async (url: string | URL | Request) => Response.json(String(url).endsWith('/request') ? { id: 'A'.repeat(43) } : { response: '{}', needs: 0 }) };

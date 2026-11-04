@@ -8,7 +8,7 @@ import { errorOf, type UiError } from '../core/errors.ts';
 import { useSlice, useSlices } from '../core/use-slice.ts';
 import { orderChannels } from './shell-model.ts';
 import { t, type StringKey } from '../strings/index.ts';
-import { PasskeyError, conditionalMediationAvailable, getPasskey, passkeysUsable } from '../webauthn.ts';
+import { PasskeyError, conditionalMediationAvailable, desktopAuthKind, getPasskey, passkeysUsable } from '../webauthn.ts';
 import { desktopBridge } from '../desktop.ts';
 import { useAnnouncer } from './announcer.ts';
 import { doneProblem, type DoneProblem } from './factor/doneRefusal.ts';
@@ -39,6 +39,9 @@ interface RefusalView { field?: Field; fieldKey?: StringKey; focus?: Field; bann
 
 /** What a passkey ceremony that ended in the browser (cancelled, the wrong address, nothing usable) shows. */
 const PASSKEY_FAILED: BannerState = { tone: 'danger', key: 'factorSignin.passkey.failed', vars: {} };
+const PASSKEY_UNSUPPORTED: BannerState = { tone: 'danger', key: 'factorSignin.passkey.unsupported', vars: {} };
+const PASSKEY_RATE_LIMITED: BannerState = { tone: 'danger', key: 'factorSignin.passkey.rateLimited', vars: {} };
+const OIDC_UNSUPPORTED: BannerState = { tone: 'danger', key: 'factorSignin.oidc.unsupported', vars: {} };
 
 /**
  * The refusal table of flow 03 (L-COPY-02 as task 15 froze it), first match wins. It reads the code, the HTTP
@@ -404,7 +407,13 @@ export function SignIn(props: { onFinish(target?: SignInTarget): void }): React.
     if (blocked || !bridge?.browserAuth) return;
     setBanner(null); setErrors({}); begin('oidc', 'login');
     const go = async () => {
-      const result = await bridge.browserAuth!({ kind: 'oidc', options: '' });
+      const result = await bridge.browserAuth!({ kind: 'oidc', options: '' }).catch((e: unknown) => {
+        const kind = desktopAuthKind(e);
+        if (kind === null) throw e;
+        setBanner(kind === 'unsupported' ? OIDC_UNSUPPORTED : PASSKEY_RATE_LIMITED);
+        return null;
+      });
+      if (result === null) return;
       if (!result.assertion || ![0, 1, 2].includes(result.needs)) throw new Error('Invalid browser sign-in');
       await client.call({ m: 'signInOIDC', assertion: result.assertion, needs: result.needs as 0 | 1 | 2 });
     };
@@ -426,7 +435,7 @@ export function SignIn(props: { onFinish(target?: SignInTarget): void }): React.
         await client.call({ m: 'signInPasskey', ceremonyId: began.ceremonyId, response });
       } catch (e) {
         if (e instanceof PasskeyError) {
-          setBanner(PASSKEY_FAILED);
+          setBanner(e.kind === 'unsupported' ? PASSKEY_UNSUPPORTED : e.kind === 'rateLimited' ? PASSKEY_RATE_LIMITED : PASSKEY_FAILED);
           requestFocus('passkey');
         } else {
           apply(errorOf(e), 'passkey');

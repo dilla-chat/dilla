@@ -503,6 +503,8 @@ function passkeyProblem(e: unknown, instanceName: string): Pick<Problem, 'key' |
       case 'cancelled': return { key: 'factor.error.cancelled', vars: {} };
       case 'wrongAddress': return { key: 'factor.error.wrongAddress', vars: { instance: instanceName } };
       case 'exists': return { key: 'factor.error.exists', vars: {} };
+      case 'unsupported': return { key: 'factor.error.desktopUnsupported', vars: {} };
+      case 'rateLimited': return { key: 'factor.error.rateLimited', vars: {} };
       default: return { key: 'factor.error.other', vars: { code: 'E_PASSKEY' } };
     }
   }

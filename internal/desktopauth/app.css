@@ -1,0 +1,51 @@
+/* The desktop sign-in hand-off page, in the web client's Signal design. The :root values are copied from
+   packages/design-tokens/dist/tokens.css (a Go test keeps them equal). The page has no remote fonts: the
+   mono stack falls back to the system monospace face. */
+:root {
+  --bg: #08090B;
+  --bg-2: #0B0D10;
+  --hairline: #1A1D23;
+  --fg: #E4E8EE;
+  --fg-3: #767D89;
+  --accent: #5AA8E6;
+  --accent-2: #8CC4F0;
+  --accent-ink: #03121E;
+  --brand-glow: rgba(0,87,153,0.28);
+  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --text-micro: 0.625rem;
+  --text-btn: 0.71875rem;
+  --text-base: 0.84375rem;
+  --text-heading: 1.25rem;
+  --weight-display: 700;
+  --weight-label: 600;
+  --label-tracking-wide: 0.12em;
+  --r-md: 6px;
+  --r-xxl: 12px;
+  --shadow-card: 0 30px 80px rgba(0,0,0,0.55);
+  color-scheme: dark;
+}
+html, body { margin: 0; min-height: 100%; background: var(--bg); }
+body {
+  box-sizing: border-box; min-height: 100dvh; display: grid; place-items: center; padding: 20px;
+  background: radial-gradient(900px 420px at 50% -10%, var(--brand-glow), transparent 70%), var(--bg);
+  color: var(--fg); font-family: var(--font-mono); font-size: var(--text-base); line-height: 1.5;
+}
+main {
+  box-sizing: border-box; width: 100%; max-width: 25rem; padding: 28px; display: grid; gap: 20px; align-content: start; min-width: 0;
+  background: var(--bg-2); border: 1px solid var(--hairline); border-radius: var(--r-xxl); box-shadow: var(--shadow-card);
+}
+.step { margin: 0; font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking-wide); text-transform: uppercase; color: var(--fg-3); }
+h1 { margin: 0; font-size: var(--text-heading); font-weight: var(--weight-display); line-height: 1.5; letter-spacing: -0.01em; color: var(--fg); }
+p { margin: 0; overflow-wrap: anywhere; }
+#status { color: var(--fg-3); }
+button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px; justify-self: start;
+  height: 2rem; padding: 0 12px; font: inherit; font-size: var(--text-btn);
+  color: var(--accent-ink); background: var(--accent); border: 1px solid var(--accent); border-radius: var(--r-md);
+  cursor: pointer; transition: background 150ms;
+}
+button:hover:not(:disabled) { background: var(--accent-2); }
+button:disabled { opacity: 0.4; cursor: not-allowed; background: transparent; color: var(--fg-3); box-shadow: inset 0 0 0 1px var(--hairline); }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button[hidden] { display: none; }
+@media (max-width: 47.99rem) { button { min-height: 2.75rem; } }

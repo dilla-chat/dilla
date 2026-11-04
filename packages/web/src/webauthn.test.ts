@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { PasskeyError, conditionalMediationAvailable, createPasskey, getPasskey, passkeysUsable, passkeyErrorKind } from './webauthn.ts';
+import { PasskeyError, conditionalMediationAvailable, createPasskey, desktopAuthKind, getPasskey, passkeysUsable, passkeyErrorKind } from './webauthn.ts';
 
 // A go-webauthn options document: every binary member is base64url without padding, as the library marshals it.
 const CHALLENGE = 'Zm9vYmFyLWNoYWxsZW5nZS1fLQ';
@@ -201,6 +201,25 @@ describe('passkeyErrorKind', () => {
   it('is other for anything that is not a DOMException', () => {
     expect(passkeyErrorKind(new Error('NotAllowedError'))).toBe('other');
     expect(passkeyErrorKind('NotAllowedError')).toBe('other');
+  });
+});
+
+describe('the desktop app’s browser sign-in errors', () => {
+  afterEach(() => { Reflect.deleteProperty(globalThis, 'dillaDesktop'); });
+  const via = (message: string) => {
+    (globalThis as unknown as { dillaDesktop?: unknown }).dillaDesktop = { browserAuth: () => Promise.reject(new Error(`Error invoking remote method 'dilla:browser-auth': Error: ${message}`)) };
+  };
+  it.each([['desktop-auth-unsupported', 'unsupported'], ['desktop-auth-rate-limited', 'rateLimited'], ['Browser sign-in failed', 'other']] as const)('%s is %s', async (message, kind) => {
+    via(message);
+    for (const call of [() => getPasskey(GET), () => createPasskey(CREATE)]) {
+      await expect(call()).rejects.toMatchObject({ name: 'PasskeyError', kind });
+    }
+  });
+  it('desktopAuthKind reads the code out of the wrapped message', () => {
+    expect(desktopAuthKind(new Error('x desktop-auth-unsupported'))).toBe('unsupported');
+    expect(desktopAuthKind(new Error('desktop-auth-rate-limited'))).toBe('rateLimited');
+    expect(desktopAuthKind(new Error('nope'))).toBeNull();
+    expect(desktopAuthKind('desktop-auth-unsupported')).toBeNull();
   });
 });
 

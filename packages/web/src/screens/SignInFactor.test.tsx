@@ -583,6 +583,31 @@ describe('the passkey (flow 10 states 14 and 15)', () => {
     expect(loud.fake.callsOf('signInPasskeyBegin')).toHaveLength(1);
   });
 
+  describe('in the desktop app', () => {
+    const asDesktop = (message: string) => {
+      (globalThis as unknown as { dillaDesktop?: unknown }).dillaDesktop = { browserAuth: () => Promise.reject(new Error(`Error invoking remote method 'dilla:browser-auth': Error: ${message}`)) };
+    };
+    afterEach(() => { Reflect.deleteProperty(globalThis, 'dillaDesktop'); });
+
+    it('says the instance needs an update when it has no desktop sign-in', async () => {
+      // Wave B: the shell has no passkey autofill, so the login step shows the button once that is known.
+      asDesktop('desktop-auth-unsupported');
+      const { user } = setup('signin-login', worker());
+      await user.click(await screen.findByRole('button', { name: en['factorSignin.usePasskey'] }));
+      const alert = await screen.findByRole('alert');
+      expect(alert).toHaveTextContent(en['factorSignin.passkey.unsupported']);
+      expect(alert).not.toHaveTextContent(en['factorSignin.passkey.failed']);
+    });
+
+    it('says to wait when the instance answers too many attempts', async () => {
+      // Wave B: the shell has no passkey autofill, so the login step shows the button once that is known.
+      asDesktop('desktop-auth-rate-limited');
+      const { user } = setup('signin-login', worker());
+      await user.click(await screen.findByRole('button', { name: en['factorSignin.usePasskey'] }));
+      expect(await screen.findByRole('alert')).toHaveTextContent(en['factorSignin.passkey.rateLimited']);
+    });
+  });
+
   it('on the passkey step a cancelled ceremony keeps the step and focuses its button', async () => {
     const { user } = setup('signin-login', worker({ needs: 2 }));
     await login(user);

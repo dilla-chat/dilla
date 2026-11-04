@@ -29,6 +29,12 @@
         return "other";
     }
   }
+  function desktopAuthKind(e) {
+    if (!(e instanceof Error)) return null;
+    if (e.message.includes("desktop-auth-unsupported")) return "unsupported";
+    if (e.message.includes("desktop-auth-rate-limited")) return "rateLimited";
+    return null;
+  }
   var bad = (what) => new PasskeyError("other", `passkey options: ${what}`);
   var URL_ALPHABET = /^[A-Za-z0-9_-]*={0,2}$/;
   function fromBase64Url(s, what) {
@@ -122,7 +128,7 @@
         if (typeof result.response !== "string") throw new Error("Missing browser credential");
         return result.response;
       } catch (error) {
-        throw new PasskeyError("other", error instanceof Error ? error.message : "Browser sign-in failed");
+        throw new PasskeyError(desktopAuthKind(error) ?? "other", error instanceof Error ? error.message : "Browser sign-in failed");
       }
     }
     const pk = publicKeyOf(optionsJson);
@@ -154,7 +160,7 @@
         if (typeof result.response !== "string") throw new Error("Missing browser credential");
         return result.response;
       } catch (error) {
-        throw new PasskeyError("other", error instanceof Error ? error.message : "Browser sign-in failed");
+        throw new PasskeyError(desktopAuthKind(error) ?? "other", error instanceof Error ? error.message : "Browser sign-in failed");
       }
     }
     const pk = publicKeyOf(optionsJson);
