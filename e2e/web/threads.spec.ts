@@ -191,6 +191,9 @@ test('a reply in a thread shows its count on both sides, the pane sits in the as
       await chip(rootRow, 'thread.summary.other', 2).click();
       await expect(threadPane(page)).toBeVisible({ timeout: WAIT });
       await expect(paneRow(page, go)).toBeVisible();
+      // Escape closes the pane from inside it (ThreadView.test "closes on Escape inside it"); since wave B the opened pane
+      // leaves its composer unfocused, so focus is still on the chip until the reader moves into the pane.
+      await threadComposer(page).click();
       await page.keyboard.press('Escape');
       await expect(threadPane(page)).toBeHidden();
 
