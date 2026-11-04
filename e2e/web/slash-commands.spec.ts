@@ -717,7 +717,9 @@ musicTest('music snapshot and clear report privately or explain unavailable encr
     await expect(source).toHaveText(realName, { timeout: BOT_WAIT });
     const botName = await source.innerText();
     await commands.getByRole('textbox', { name: 'Command', exact: true }).fill('/queue');
+    // Send on a typed name in the open list picks the command (CommandPicker enterTyped); its chip row then runs it.
     await commands.getByRole('button', { name: copy('shell.composer.send'), exact: true }).click();
+    await commands.getByRole('textbox', { name: 'press ↵ to run', exact: true }).press('Enter');
     await expect(commandResult(page)).toContainText(/music queue is empty/i, { timeout: BOT_WAIT });
     await expect(logRegion(page, GENERAL).locator('.d-bot-result .d-message-row__author')).toHaveText(botName);
     await logRegion(page, GENERAL).locator('.d-bot-result').getByRole('button', { name: /^Dismiss:/ }).click();
@@ -731,17 +733,20 @@ musicTest('music snapshot and clear report privately or explain unavailable encr
     const evidence = await page.evaluate(() => {
       const trace = (window as unknown as { __slashWorkerTrace?: { calls: unknown[]; returns: unknown[]; events: unknown[] } }).__slashWorkerTrace;
       const methods = /call|voice|sfu|account|diagnostics|connection/iu;
+      // The worker's values carry BigInts, which plain JSON.stringify throws on.
+      const text = (value: unknown) => JSON.stringify(value, (_key, v: unknown) => typeof v === 'bigint' ? v.toString() : v);
       return {
         nativeMedia: (window as unknown as { __slashNativeVoice?: unknown[] }).__slashNativeVoice?.slice(-30),
         url: location.pathname,
         call: document.querySelector('[data-call-phase]')?.getAttribute('data-call-phase'),
         dock: document.querySelector('.d-voice-dock')?.getAttribute('data-phase'),
-        calls: trace?.calls.filter(value => methods.test(JSON.stringify(value))).slice(-40),
-        events: trace?.events.filter(value => methods.test(JSON.stringify(value))).slice(-60),
+        calls: trace?.calls.filter(value => methods.test(text(value))).slice(-40),
+        events: trace?.events.filter(value => methods.test(text(value))).slice(-60),
       };
     }).catch(captureError => ({ captureError: String(captureError) }));
     await testInfo.attach('slash-music-failure.json', {
-      body: Buffer.from(JSON.stringify({ error: String(error), evidence }, null, 2)), contentType: 'application/json',
+      body: Buffer.from(JSON.stringify({ error: String(error), evidence }, (_key, v: unknown) => typeof v === 'bigint' ? v.toString() : v, 2)),
+      contentType: 'application/json',
     });
     const summary = await page.evaluate(() => {
       const root = window as unknown as { __slashNativeVoice?: unknown[]; __slashWorkerTrace?: { calls: unknown[]; returns: unknown[] } };
