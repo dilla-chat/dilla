@@ -316,10 +316,24 @@ class WatchdogTests(unittest.TestCase):
                                  sleep=clock.sleep, monotonic=lambda: clock.now)
         with self.assertRaisesRegex(RuntimeError, "recovery budget.*timeout") as caught:
             api.jobs()
-        self.assertLessEqual(clock.now, 120)
-        self.assertGreater(clock.now, 100)
-        self.assertTrue(all(0 < timeout <= 8 for _, timeout in requests))
+        self.assertLessEqual(clock.now, watchdog.JOBS_READ_BUDGET)
+        self.assertGreater(clock.now, watchdog.JOBS_READ_BUDGET - watchdog.JOBS_REQUEST_TIMEOUT)
+        self.assertTrue(all(0 < timeout <= watchdog.JOBS_REQUEST_TIMEOUT for _, timeout in requests))
         self.assertNotIn("PRIVATE_", str(caught.exception))
+
+    def test_a_jobs_read_slower_than_eight_seconds_still_succeeds(self):
+        # PR #149's main run: GitHub answered the jobs read in ~9 s every time; an 8 s socket timeout cancelled the run.
+        clock = Clock()
+        def slow(request, timeout):
+            if timeout < 9:
+                clock.now += timeout
+                raise TimeoutError("PRIVATE_TIMEOUT_SECRET")
+            clock.now += 9
+            return io.BytesIO(json.dumps({"total_count": 0, "jobs": []}).encode())
+        api = watchdog.GitHubRun("owner/repo", "123", "test-token", opener=slow,
+                                 sleep=clock.sleep, monotonic=lambda: clock.now)
+        self.assertEqual(api.jobs(), [])
+        self.assertEqual(clock.now, 9)
 
     def test_repeated_read_outage_stays_red_and_attempts_existing_fallback_cancellation(self):
         def read_outage(request, _timeout):
@@ -337,14 +351,14 @@ class WatchdogTests(unittest.TestCase):
         for seconds in [12, 3600]:
             error = HTTPError("https://api.github.com", 429, "PRIVATE_SECRET", {"Retry-After": str(seconds)}, io.BytesIO())
             api, transport, clock = self.client([error, {"total_count": 0, "jobs": []}])
-            if seconds < 120:
+            if seconds < watchdog.JOBS_READ_BUDGET:
                 self.assertEqual(api.jobs(), [])
                 self.assertEqual(clock.waits, [12])
                 self.assertEqual(len(transport.requests), 2)
             else:
                 with self.assertRaisesRegex(RuntimeError, "recovery budget.*HTTP 429"):
                     api.jobs()
-                self.assertEqual(clock.now, 120)
+                self.assertEqual(clock.now, watchdog.JOBS_READ_BUDGET)
                 self.assertEqual(len(transport.requests), 1)
 
     def test_definitive_auth_and_malformed_responses_do_not_enter_read_recovery(self):

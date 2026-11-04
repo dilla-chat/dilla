@@ -9,6 +9,14 @@ from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
+# A jobs read on a large or rerun workflow took ~9 s per request on 2026-11-04 (PR #149's main run), so an
+# 8 s socket timeout failed every read and the watcher cancelled healthy runs. Jobs reads get a longer socket
+# timeout and budget; cancellation and other reads keep the short one.
+JOBS_REQUEST_TIMEOUT = 30
+JOBS_READ_BUDGET = 300
+OTHER_REQUEST_TIMEOUT = 8
+
+
 class NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         # Never forward the bearer token to an API-supplied redirect destination.
@@ -47,7 +55,7 @@ class GitHubRun:
         attempts = 32 if deadline is not None else 3
         last_reason = "not-observed"
         for attempt in range(attempts):
-            remaining = deadline - self.monotonic() if deadline is not None else 8
+            remaining = deadline - self.monotonic() if deadline is not None else OTHER_REQUEST_TIMEOUT
             if remaining <= 0:
                 break
             retry_after = 0
@@ -57,7 +65,8 @@ class GitHubRun:
                 "X-GitHub-Api-Version": "2026-03-10",
             })
             try:
-                with self.open(request, timeout=min(8, remaining)) as response:
+                cap = JOBS_REQUEST_TIMEOUT if deadline is not None else OTHER_REQUEST_TIMEOUT
+                with self.open(request, timeout=min(cap, remaining)) as response:
                     body = response.read()
                     return json.loads(body) if body else {}
             except (json.JSONDecodeError, UnicodeDecodeError):
@@ -101,7 +110,7 @@ class GitHubRun:
     def jobs(self, *, deadline=None):
         # Include socket timeouts, retry waits and all pages in one finite read
         # budget, also bounded by the watcher's existing overall deadline.
-        read_deadline = self.monotonic() + 120
+        read_deadline = self.monotonic() + JOBS_READ_BUDGET
         if deadline is not None:
             read_deadline = min(read_deadline, deadline)
         jobs = []

@@ -91,6 +91,7 @@ func (p *supervisorPlayback) Close() error {
 type supervisorStarter struct {
 	explicitStarts int
 	closed         atomic.Int32
+	mu             sync.Mutex // guards starts and current against the supervisor's EOF goroutine
 	starts         []music.Track
 	current        *supervisorPlayback
 	fail           bool
@@ -115,9 +116,18 @@ func (s *supervisorStarter) Start(ctx context.Context, t music.Track) (music.Pla
 	if s.fail {
 		return nil, errors.New("start failed")
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.starts = append(s.starts, t)
 	s.current = &supervisorPlayback{done: make(chan struct{})}
 	return s.current, nil
+}
+
+// startsSnapshot reads starts under the lock, for tests whose starts come from the EOF goroutine.
+func (s *supervisorStarter) startsSnapshot() []music.Track {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]music.Track(nil), s.starts...)
 }
 func (s *supervisorStarter) StartExplicit(ctx context.Context, track music.Track) (music.Playback, error) {
 	s.explicitStarts++
@@ -560,9 +570,10 @@ func TestSupervisorAdvancesAfterTrackEOF(t *testing.T) {
 	close(starter.current.done)
 	waitCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
+	// The supervisor publishes B as current before it starts B's playback: wait for both.
 	for {
 		current := s.State()
-		if current.Current != nil && current.Current.ID == "b" {
+		if current.Current != nil && current.Current.ID == "b" && len(starter.startsSnapshot()) == 2 {
 			break
 		}
 		select {
@@ -574,8 +585,8 @@ func TestSupervisorAdvancesAfterTrackEOF(t *testing.T) {
 	if starter.explicitStarts != 1 {
 		t.Fatalf("EOF must not authorize a room reconnect: explicit starts=%d", starter.explicitStarts)
 	}
-	if len(starter.starts) != 2 || s.State().Current == nil || s.State().Current.ID != "b" {
-		t.Fatalf("did not advance: starts=%v state=%+v", starter.starts, s.State())
+	if starts := starter.startsSnapshot(); len(starts) != 2 || s.State().Current == nil || s.State().Current.ID != "b" {
+		t.Fatalf("did not advance: starts=%v state=%+v", starts, s.State())
 	}
 }
 
