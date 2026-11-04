@@ -209,9 +209,9 @@ active row (never over the row above); cards fill the width; the lightbox and th
 | a GIF card that is still (before it plays, after the five minutes, over 8 MiB, or with `prefers-reduced-motion: reduce`, which never plays one) | a small `shell.attachment.gif` badge on the card, visual only (`aria-hidden`); the card's name stays `shell.attachment.open`; activating it opens the lightbox with the full, animated file |
 | an image card whose open failed | the box or thumbnail and `could not open ({code})` |
 | an attachment over 25 MB received in a browser | the card with `too large to open in a browser` and no button |
-| a file picked over 25 MB | nothing is uploaded; an alert above the tray in the composer says `{name} is over 25 MB and cannot be sent from a browser.` |
+| a file picked over 25 MB | a failed card stays with `Over 25 MB`; a toast says `Files over 25 MB can’t be sent from a browser` once per pick; its bytes are never read or uploaded |
 | a fifth file | nothing is added; the alert says `A message carries at most 4 files.` |
-| send while a file is not ready | nothing is sent; the alert says `Wait until every file is ready, or remove it.` |
+| send while a file is not ready | nothing is sent; the toast says `Waiting for uploads to finish` |
 | a tray entry that failed | `failed ({code})` and, under it, `Remove it and attach it again.` (`shell.tray.failedHint`) |
 | a message failed because a file is no longer on the server | `shell.message.attachmentGone` (`A file of this message is no longer on the server. Discard it and attach the file again.`), discard only |
 | a mention of me, of a role I hold, `@everyone` or a received `@here` | the pill in the mention colour; the row has the mention bar |
@@ -254,7 +254,7 @@ When the focused control goes away, focus never falls to the page:
   emoji grid is a popover outside the log and is never read as log content.
 - A tray entry's phase is a polite live region: `reading`, `preparing`, `uploading`, `ready`, `failed ({code})`; a failed
   entry adds `Remove it and attach it again.`
-- A tray refusal (`shell.tray.tooLarge`, `.tooMany`, `.notReady`) is an alert (`role="alert"`) above the tray in the
+- A tray refusal (`shell.tray.tooMany`) is an alert (`role="alert"`) above the tray in the
   composer; `shell.message.replyNotLoaded` is an info banner above the log with a dismiss action. Neither is shown by
   colour alone.
 - A pending action is announced through the row's state text, never by colour alone.
@@ -275,7 +275,7 @@ When the focused control goes away, focus never falls to the page:
 - A free emoji picker, custom emoji, emoji in the composer: the fixed 32 reactions. Message bodies show a small markdown subset (below), never raw HTML; there is no formatting toolbar, and `[text](url)` links are not links.
 - Byte progress for uploads: `fetch` reports none; the tray shows phases.
 - Deleting someone else's message: only its author can.
-- Files over 25 MB in a browser: refused at the tray, shown as too large on receipt.
+- Files over 25 MB in a browser: retained as a failed tray card without reading or uploading bytes; shown as too large on receipt.
 - An `@here` option in the mention list: the client has no presence (ruling 29 as amended); a typed `@here` is still sent and counts as everyone.
 
 ## Copy
@@ -309,36 +309,36 @@ the mention list): they are not keys of `en.ts` and have no row in this table.
 | `shell.emoji.label` | `pick a reaction` | the emoji grid's name |
 | `shell.emoji.01` | `thumbs up` | 👍 |
 | `shell.emoji.02` | `thumbs down` | 👎 |
-| `shell.emoji.03` | `red heart` | ❤️ |
-| `shell.emoji.04` | `grinning face` | 😄 |
-| `shell.emoji.05` | `tears of joy` | 😂 |
-| `shell.emoji.06` | `crying face` | 😢 |
-| `shell.emoji.07` | `angry face` | 😡 |
-| `shell.emoji.08` | `heart eyes` | 😍 |
-| `shell.emoji.09` | `party popper` | 🎉 |
-| `shell.emoji.10` | `fire` | 🔥 |
-| `shell.emoji.11` | `hundred points` | 💯 |
-| `shell.emoji.12` | `sparkles` | ✨ |
-| `shell.emoji.13` | `folded hands` | 🙏 |
-| `shell.emoji.14` | `eyes` | 👀 |
-| `shell.emoji.15` | `thinking face` | 🤔 |
-| `shell.emoji.16` | `sleeping face` | 😴 |
-| `shell.emoji.17` | `hammer and wrench` | 🛠 |
-| `shell.emoji.18` | `rocket` | 🚀 |
-| `shell.emoji.19` | `check mark` | ✅ |
-| `shell.emoji.20` | `cross mark` | ❌ |
-| `shell.emoji.21` | `light bulb` | 💡 |
-| `shell.emoji.22` | `pushpin` | 📌 |
-| `shell.emoji.23` | `bug` | 🐛 |
-| `shell.emoji.24` | `package` | 📦 |
-| `shell.emoji.25` | `hot beverage` | ☕ |
-| `shell.emoji.26` | `pizza` | 🍕 |
-| `shell.emoji.27` | `taco` | 🌮 |
-| `shell.emoji.28` | `artist palette` | 🎨 |
-| `shell.emoji.29` | `musical note` | 🎵 |
-| `shell.emoji.30` | `crescent moon` | 🌙 |
-| `shell.emoji.31` | `sun` | ☀️ |
-| `shell.emoji.32` | `crab` | 🦀 |
+| `shell.emoji.03` | `joy` | 😂 |
+| `shell.emoji.04` | `heart` | ❤️ |
+| `shell.emoji.05` | `fire` | 🔥 |
+| `shell.emoji.06` | `tada` | 🎉 |
+| `shell.emoji.07` | `open mouth` | 😮 |
+| `shell.emoji.08` | `cry` | 😢 |
+| `shell.emoji.09` | `rage` | 😡 |
+| `shell.emoji.10` | `pray` | 🙏 |
+| `shell.emoji.11` | `eyes` | 👀 |
+| `shell.emoji.12` | `100` | 💯 |
+| `shell.emoji.13` | `check` | ✅ |
+| `shell.emoji.14` | `x` | ❌ |
+| `shell.emoji.15` | `shield` | 🛡️ |
+| `shell.emoji.16` | `crossed swords` | ⚔️ |
+| `shell.emoji.17` | `bow and arrow` | 🏹 |
+| `shell.emoji.18` | `axe` | 🪓 |
+| `shell.emoji.19` | `beers` | 🍻 |
+| `shell.emoji.20` | `pizza` | 🍕 |
+| `shell.emoji.21` | `video game` | 🎮 |
+| `shell.emoji.22` | `music` | 🎵 |
+| `shell.emoji.23` | `wave` | 🌊 |
+| `shell.emoji.24` | `sailboat` | ⛵ |
+| `shell.emoji.25` | `dragon` | 🐉 |
+| `shell.emoji.26` | `crown` | 👑 |
+| `shell.emoji.27` | `skull` | 💀 |
+| `shell.emoji.28` | `handshake` | 🤝 |
+| `shell.emoji.29` | `sunglasses` | 😎 |
+| `shell.emoji.30` | `thinking` | 🤔 |
+| `shell.emoji.31` | `salute` | 🫡 |
+| `shell.emoji.32` | `compass` | 🧭 |
 | `shell.delete.title` | `Delete this message?` | delete dialog heading |
 | `shell.delete.body` | `It is removed for everyone in this conversation, with its reactions and files. Copies someone already saved stay with them. This cannot be undone.` | delete dialog body |
 | `shell.delete.confirm` | `Delete` | delete dialog, danger button |
@@ -370,9 +370,10 @@ the mention list): they are not keys of `en.ts` and have no row in this table.
 | `shell.tray.failedHint` | `Remove it and attach it again.` | beside a failed tray entry |
 | `shell.tray.remove` | `remove {name}` | a tray entry's `×` |
 | `shell.tray.removeTip` | `Remove` | the `×`'s tooltip (Signal §6.8) |
-| `shell.tray.tooLarge` | `{name} is over 25 MB and cannot be sent from a browser.` | alert above the tray in the composer |
+| `shell.tray.overLimitToast` | `Files over 25 MB can’t be sent from a browser` | toast once per pick |
+| `shell.tray.overLimit` | `Over 25 MB` | failed oversized card meta |
 | `shell.tray.tooMany` | `A message carries at most 4 files.` | alert above the tray in the composer |
-| `shell.tray.notReady` | `Wait until every file is ready, or remove it.` | alert above the tray in the composer |
+| `shell.tray.notReady` | `Waiting for uploads to finish` | toast |
 | `shell.attachment.open` | `open {name}` | image card button |
 | `shell.attachment.save` | `save {name}` | file card button |
 | `shell.attachment.opening` | `opening…` | card state while opening |

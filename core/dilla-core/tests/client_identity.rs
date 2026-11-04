@@ -1388,6 +1388,45 @@ fn signup_reset_forgets_the_pending_identity_and_its_device_key() {
     assert_ne!(again.dsk_pub, reg.dsk_pub);
 }
 
+/// Wave B task 3b: the web sign-up discards a shown key (Back, a refused creation) with `signup_reset`, and its next
+/// "Create account" calls `signup_begin` again. That begin makes a new random recovery key and a new root object, which
+/// the discarded key cannot open; while keys are pending a second begin is refused, so no key is ever handed out twice.
+#[test]
+fn a_begin_after_a_reset_makes_a_new_recovery_key_the_old_one_cannot_open() {
+    let (mut core, c, old_rk, old_reg) = begun();
+    assert_eq!(
+        err(core.signup_begin(&INSTANCE)).code,
+        "E_CORE_STATE",
+        "a second begin over pending keys is refused"
+    );
+    core.signup_reset().expect("reset");
+    let new_text = core
+        .signup_begin(&INSTANCE)
+        .expect("a new signup may start");
+    let new_rk = recovery_key_from_base32(&new_text).expect("decodes");
+    assert_ne!(new_rk, old_rk, "a new recovery key");
+    let root = meta(&c, "root_sealed").expect("a new root object");
+    let (umk, ssk) = root_keys(&root, &new_rk);
+    let reg = registration(&core.signup_request("i", "u", "", None).expect("request"));
+    assert_eq!(UmkSigner::from_bytes(&umk).public(), reg.umk_pub);
+    assert_eq!(SskSigner::from_bytes(&ssk).public(), reg.ssk_pub);
+    assert_ne!(reg.umk_pub, old_reg.umk_pub, "new account keys");
+    let (_, nonce, ct) = stored_parts(&root);
+    assert!(
+        Aes256Gcm::new_from_slice(&k_header(&old_rk))
+            .expect("key")
+            .decrypt(
+                &Nonce::from(nonce),
+                Payload {
+                    msg: &ct,
+                    aad: b"dilla root v1"
+                }
+            )
+            .is_err(),
+        "the discarded key does not open the new root object"
+    );
+}
+
 #[test]
 fn signup_reset_refuses_while_a_session_is_stored() {
     let (mut core, c) = core();

@@ -7,6 +7,14 @@ task 23 (the onboarding screen). The rules come from `protocol/03-identity.md` "
 random bits shown once as 52 Crockford base32 characters in 13 groups of 4, the person must acknowledge
 that they wrote it down before continuing, and the screen offers no copy button.
 
+**Wave B task 3b (2026-10-30).** The step follows the Signal prototype's "Save your recovery key": one paragraph
+(`onboarding.keys.body`), the grid (its name `onboarding.keys.label` is for assistive technology only), the actions row
+under it with `Print` (where the prototype has Copy, which protocol/03 forbids) and `Save as file` (`onboarding.keys.save`: a
+text file with the key, made in the page, its object URL revoked shortly after the download starts), the 16px check
+box `onboarding.keys.acknowledge`, and the button `I saved it` (`onboarding.keys.submit`), blocked until the tick, which
+creates the account (protocol/03: the key is shown before the account is registered). Back and a refused creation discard
+the key; the next pass shows a new one. The wireframes below are the web-1 layout.
+
 ## What is on the screen
 
 - The heading `onboarding.keys.title`, the step line, and the two paragraphs `onboarding.keys.body` and
@@ -107,11 +115,10 @@ The print rules use system colours (`CanvasText` on `Canvas`), because browsers 
 
 | key | text |
 |---|---|
-| `onboarding.keys.title` | `Your recovery key` |
-| `onboarding.keys.body` | `This key is shown once and is kept nowhere. Write it down or print it, and keep it away from this computer.` |
-| `onboarding.keys.loss` | `This key is the only way to get your account back or to add another browser. If every browser you use loses its data and you do not have the key, the account and its history are gone, and the host cannot bring them back.` |
+| `onboarding.keys.title` | `Save your recovery key` |
+| `onboarding.keys.body` | `Shown once. You need it to add another browser.` |
 | `onboarding.keys.label` | `Recovery key` |
-| `onboarding.keys.acknowledge` | `I have written down or printed my recovery key` |
+| `onboarding.keys.acknowledge` | `I saved my recovery key somewhere safe` |
 | `onboarding.keys.ackHint` | `Tick the box to continue.` |
 | `onboarding.keys.print` | `Print` |
 | `onboarding.keys.preparing` | `Making your keys` |
