@@ -71,6 +71,8 @@ A desktop release needs no CT 144 upgrade.
   The recovery is always a fresh keyed run: re-run the **request** run, or tag again.
 - **A red `gate`, `collect` or `sign`** leaves nothing public. Fix on `main` and tag the new green commit, or
   re-run the **request** run (`gh run rerun <request run id>`): that starts a fresh keyed run on current `main`.
+  "GitHub API request failed (5xx)" means a read failed three times (1 s, then 3 s apart) or a write failed once
+  (writes are never retried); it is GitHub's outage, not the release's: re-run the request run once GitHub recovers.
 - **A red `gate` on the first tag** (a posture read, a first-use assumption about `workflow_run`, the environment or
   the secrets): nothing is public and the version is not published, but the tagged commit is no longer `main`'s
   tip once the fix lands. Fix on `main`, wait for its green `ci` push run, delete the unpublished tag

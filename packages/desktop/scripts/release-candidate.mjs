@@ -26,6 +26,8 @@ const SUMS = 'SHA256SUMS';
 const MAX_FILE = 4 * 1024 ** 3;
 const VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-beta\.(0|[1-9]\d*))?$/;
 const COMMIT = /^[a-f0-9]{40}$/, HEX = /^[a-f0-9]{64}$/, ID = /^[1-9]\d*$/, DIGEST = /^sha256:[a-f0-9]{64}$/;
+/** The gate's record artifact digest arrives as actions/upload-artifact's `artifact-digest` output: the bare 64-hex SHA-256 (release desktop-v0.1.0-beta.1, run 41787307813). The API's `sha256:` form is accepted too; nothing looser. */
+const RECORDS_DIGEST = /^(?:sha256:)?([a-f0-9]{64})$/;
 const RECORDS = Object.freeze(['ci-jobs.json', 'ci-run.json']);
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const safeId = value => ID.test(value ?? '') && Number.isSafeInteger(Number(value));
@@ -90,8 +92,9 @@ function artifactContext(env) {
  if (ids.length !== EXPECTED_ARTIFACTS.length || !ids.every(safeId) || new Set(ids).size !== ids.length) throw new Error('Invalid ARTIFACT_IDS: the gate records exactly ten distinct ids');
  if (digests.length !== ids.length || !digests.every(value => DIGEST.test(value))) throw new Error('Invalid ARTIFACT_DIGESTS: one sha256 digest per artifact id');
  if (!safeId(env.RECORDS_ID) || ids.includes(env.RECORDS_ID)) throw new Error('Invalid RECORDS_ID');
- if (!DIGEST.test(env.RECORDS_DIGEST ?? '')) throw new Error('Invalid RECORDS_DIGEST');
- return { ids, digests, recordsId: env.RECORDS_ID, recordsDigest: env.RECORDS_DIGEST };
+ const records = RECORDS_DIGEST.exec(env.RECORDS_DIGEST ?? '');
+ if (!records) throw new Error('Invalid RECORDS_DIGEST');
+ return { ids, digests, recordsId: env.RECORDS_ID, recordsDigest: 'sha256:' + records[1] };
 }
 
 /**

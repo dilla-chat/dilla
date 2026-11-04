@@ -127,6 +127,26 @@ test('a forged installer with rewritten provenance (or a forged record) in any o
  } finally { await s.cleanup(); }
 });
 
+/** Release desktop-v0.1.0-beta.1 (run 41787307813): upload-artifact's `artifact-digest` output is the bare 64-hex SHA-256, not the API's `sha256:` form. */
+test('RECORDS_DIGEST takes upload-artifact’s bare hex or the sha256: form, and nothing looser', async () => {
+ const s = await setup();
+ try {
+  const prefixed = s.env.RECORDS_DIGEST, hex = prefixed.slice('sha256:'.length);
+  assert.match(prefixed, /^sha256:[a-f0-9]{64}$/);
+  const zipUrl = 'https://api.github.com/repos/dilla-chat/dilla/actions/artifacts/299/zip';
+  // The bare hex is accepted and normalised: the records zip is still checked against its digest.
+  await s.build({ RECORDS_DIGEST: hex });
+  await s.build({ RECORDS_DIGEST: prefixed });
+  const other = 'f'.repeat(64);
+  await assert.rejects(s.build({ RECORDS_DIGEST: other }), /digest the gate recorded/, 'a bare hex is still compared, not trusted');
+  for (const RECORDS_DIGEST of [hex.toUpperCase(), 'sha256:' + hex.toUpperCase(), 'SHA256:' + hex, hex.slice(1), hex + '0', 'sha256:' + hex.slice(1), 'sha512:' + hex, 'sha512:' + hex + hex, 'sha256:', '', ' ' + hex, hex + '\n', 'sha256:sha256:' + hex, undefined]) {
+   const before = s.host.log.filter(entry => entry.url === zipUrl).length;
+   await assert.rejects(s.build({ RECORDS_DIGEST }), /Invalid RECORDS_DIGEST/, JSON.stringify(RECORDS_DIGEST));
+   assert.equal(s.host.log.filter(entry => entry.url === zipUrl).length, before, 'a refused digest fetches nothing');
+  }
+ } finally { await s.cleanup(); }
+});
+
 test('a CI artifact zip that the gate digested but that slips, duplicates or adds entries is refused', async () => {
  const cases = {
   'zip slip': files => [...files.slice(1), { ...files[0], name: '../' + files[0].name }],

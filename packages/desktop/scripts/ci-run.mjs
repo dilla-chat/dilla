@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { setTimeout as delay } from 'node:timers/promises';
 import { BUILD_TARGETS, TARGETS } from './verify-release.mjs';
 
 /** git for the release jobs: no hooks, no fsmonitor, no system or global config, whatever the checkout holds. */
@@ -23,21 +24,40 @@ export const EXPECTED_ARTIFACTS = Object.freeze([
 ]);
 const RELEASE_ARTIFACT = /^desktop-(installers|performance|installed-account)-/;
 
-export function createGithubApi({ token, fetchImpl = fetch }) {
+/** Reads (GET only) retry a 5xx or a network error: three attempts, 1 s then 3 s apart. A 4xx is never retried,
+ * and neither is any write (POST, PATCH, PUT, DELETE): publish must not double-create a release or double-delete an asset. */
+export const API_RETRY_DELAYS = Object.freeze([1000, 3000]);
+
+export function createGithubApi({ token, fetchImpl = fetch, sleep = ms => delay(ms), log = line => console.warn(line) }) {
  if (typeof token !== 'string' || !token) throw new Error('The release flow requires the workflow’s scoped GitHub token');
  return async function api(path, options = {}, optional404 = false) {
   const url = new URL(path, API_ORIGIN);
   if (url.origin !== API_ORIGIN || !url.pathname.startsWith(`/repos/${REPOSITORY}/`)) throw new Error('Invalid GitHub API destination');
+  const method = options.method ?? 'GET';
   const body = options.body === undefined ? undefined : JSON.stringify(options.body);
-  const response = await fetchImpl(url, {
-   method: options.method ?? 'GET',
-   headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
-   ...(body === undefined ? {} : { body }),
-   redirect: 'error', signal: AbortSignal.timeout(30000),
-  });
-  if (optional404 && response.status === 404) return null;
-  if (!response.ok) throw new Error(`GitHub API request failed (${response.status})`);
-  return response.status === 204 ? null : response.json();
+  const attempts = method === 'GET' ? API_RETRY_DELAYS.length + 1 : 1;
+  for (let attempt = 1; ; attempt++) {
+   const last = attempt >= attempts;
+   // The log names the method, path (no query) and status or error class only: never the token or the full URL.
+   const retry = async reason => { log(`GitHub API ${method} ${url.pathname} ${reason}; retrying (attempt ${attempt + 1} of ${attempts})`); await sleep(API_RETRY_DELAYS[attempt - 1]); };
+   let response;
+   try {
+    response = await fetchImpl(url, {
+     method,
+     headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+     ...(body === undefined ? {} : { body }),
+     redirect: 'error', signal: AbortSignal.timeout(30000),
+    });
+   } catch (error) {
+    if (last) throw error;
+    await retry(`network error (${error?.name ?? 'Error'})`);
+    continue;
+   }
+   if (response.status >= 500 && response.status <= 599 && !last) { await response.body?.cancel(); await retry(`failed (${response.status})`); continue; }
+   if (optional404 && response.status === 404) return null;
+   if (!response.ok) throw new Error(`GitHub API request failed (${response.status})`);
+   return response.status === 204 ? null : response.json();
+  }
  };
 }
 
