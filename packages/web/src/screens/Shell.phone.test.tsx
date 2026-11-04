@@ -41,6 +41,16 @@ const here = () => window.location.pathname;
 const manage = (fake: ReturnType<typeof renderVoiceShell>['client']) =>
   act(() => { fake.publish(`permissions:${A}`, { loaded: true, manageChannels: true } as never); });
 
+describe('the DM list conversation count', () => {
+  it.each([[0, '0 conversations'], [1, '1 conversation'], [2, '2 conversations']] as const)('shows %s with the correct plural', async (count, expected) => {
+    const { client } = phone({ path: '/dm' });
+    await screen.findByRole('navigation', { name: t('shell.dms.label') });
+    const dm = client.get('dms')![0];
+    act(() => client.set('dms', Array.from({ length: count }, (_, i) => ({ ...dm, id: `${i}`.padStart(32, '0'), name: `person ${i}` }))));
+    expect(screen.getByText(expected)).toBeInTheDocument();
+  });
+});
+
 describe('the phone shell: the servers list', () => {
   it('shows the tab bar, stays on the server (no first-channel redirect) and has no status bar or sidebar tabs, and exactly three tabs', async () => {
     phone({ path: `/c/${A}` });
@@ -86,15 +96,31 @@ describe('the phone shell: the servers list', () => {
     expect(within(dialog).getByRole('button', { name: t('layout.add.create') })).toBeInTheDocument();
   });
 
-  it('a tap on a voice row only opens it; the join icon joins', async () => {
+  // Jonas, wave B: a phone's tap on a voice row joins the call, as the prototype and a desktop click do (the old R24 rule is gone).
+  it('a tap on a voice row opens it and joins; the row has no join icon', async () => {
     const app = phone({ path: `/c/${A}` });
+    const music = (await screen.findByRole('button', { name: 'voice music' })).closest('li') as HTMLElement;
+    expect(within(music).queryByRole('button', { name: t('voice.join') })).toBeNull();
     await app.user.click(await screen.findByRole('button', { name: 'voice general' }));
     await waitFor(() => expect(here()).toBe(`/c/${A}/${GENV}`));
-    expect(app.log).not.toContain(`callJoin:${GENV}`);
-    goto(`/c/${A}`);
-    const row = (await screen.findByRole('button', { name: 'voice music' })).closest('li') as HTMLElement;
-    await app.user.click(within(row).getByRole('button', { name: t('voice.join') }));
-    await waitFor(() => expect(app.log).toContain(`callJoin:${MUSIC}`));
+    await waitFor(() => expect(app.log).toContain(`callJoin:${GENV}`));
+  });
+
+  it('a tap that joins keeps the saved mute state, as a desktop join does', async () => {
+    const app = phone({ path: `/c/${A}`, settings: { 'voice.self': 'muted' } });
+    await app.user.click(await screen.findByRole('button', { name: 'voice general' }));
+    await waitFor(() => expect(app.log).toContain(`callJoin:${GENV}`));
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    // The same option a desktop join passes (Shell.panel.test: "the next join starts muted").
+    expect(app.module.startPageCall).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(app.module.startPageCall).mock.calls[0][2].self).toBe('muted');
+  });
+
+  it('marks the channel last opened on the list without making it the open page', async () => {
+    phone({ path: `/c/${A}` });
+    const row = await screen.findByRole('button', { name: 'lobby' });
+    expect(row).toHaveAttribute('data-selected', 'true');
+    expect(row).not.toHaveAttribute('aria-current');
   });
 
   it('has no axe violations', async () => {
@@ -177,13 +203,16 @@ describe('the phone shell: pushed views', () => {
 
   // Ruling Z: a DM's phone header is back, name, topic and Search; its pins (and call) are in the DM row's context menu.
   it('opens a DM as a pushed view whose header has search alone; pins are in its row menu', async () => {
-    const { user } = phone({ path: '/dm' });
+    const { user, client } = phone({ path: '/dm' });
+    act(() => client.set(`timeline:${DM}`, { channelId: DM, group: 'active', items: [], hasEarlier: false }));
     let menu = await openRowMenu(user, 'bob', 'dms');
     expect(within(menu).getAllByRole('menuitem').map(i => i.textContent)).toEqual([t('call.start'), t('shell.pins.open')]);
     expect(within(menu).getByRole('menuitemcheckbox', { name: t('notify.mute') })).toBeInTheDocument();
     await user.keyboard('{Escape}');
     await user.click(await screen.findByRole('button', { name: 'bob' }));
     expect(here()).toBe(`/dm/${DM}`);
+    expect(document.querySelector('.d-phone-header__topic')).toHaveTextContent('@bob · offline');
+    expect(screen.getByText(t('shell.log.welcomeDmBody'))).toBeInTheDocument();
     expect(window.history.state).toMatchObject({ phoneBack: true });
     expect(tabs()).not.toBeNull();
     const actions = document.querySelector<HTMLElement>('.d-phone-header__actions')!;
@@ -276,12 +305,17 @@ describe('the phone shell: tabs', () => {
     expect(await screen.findByRole('heading', { level: 2, name: t('you.title') })).toBeInTheDocument();
   });
 
-  it('counts DMs unread on Home, and activity as channel mentions plus DM unread', async () => {
+  it('keeps Home unbadged while Activity and the @ tile report positive DM unread', async () => {
     const { client } = phone({ path: '/dm' });
     await screen.findByRole('button', { name: 'bob' });
     act(() => client.set('badges', { [TEXT]: { unread: 5, mentions: 2 }, [DM]: { unread: 3, mentions: 0 } }));
-    expect(tab(t('nav.tab.unread', { name: 'Home', count: 3 }))).toBeInTheDocument();
-    expect(tab(t('nav.tab.unread', { name: 'Activity', count: 5 }))).toBeInTheDocument();
+    expect(tab('Home')).not.toHaveAttribute('aria-label');
+    expect(tab('Home').querySelector('.d-tab-bar__dot')).toBeNull();
+    const activity = tab(t('nav.tab.unread', { name: 'Activity', count: 5 }));
+    expect(activity.querySelector('.d-tab-bar__dot')).toBeInTheDocument();
+    const dmTile = within(screen.getByRole('navigation', { name: t('shell.rail.label') }))
+      .getByRole('button', { name: t('home.tileLabel', { unread: 3, mentions: 0 }) });
+    expect(dmTile).toHaveAttribute('data-unread', '3');
   });
 
   it('opens a tab where it was left', async () => {
@@ -305,12 +339,15 @@ describe('the phone shell: tabs', () => {
   });
 
   it('Home opens where it was left: a DM, then a channel', async () => {
-    const { user } = phone({ path: `/dm/${DM}` });
+    const { user, client } = phone({ path: `/dm/${DM}` });
+    act(() => client.set(`timeline:${DM}`, { channelId: DM, group: 'active', items: [], hasEarlier: false }));
     await screen.findByRole('main');
     goto('/activity', { phoneBack: true });
     await screen.findByText(t('activity.emptyTitle'));
     await user.click(tab('Home'));
     expect(here()).toBe(`/dm/${DM}`);
+    expect(document.querySelector('.d-phone-header__topic')).toHaveTextContent('@bob · offline');
+    expect(screen.getByText(t('shell.log.welcomeDmBody'))).toBeInTheDocument();
     goto(`/c/${A}/${TEXT}`, { phoneBack: true });
     goto('/activity', { phoneBack: true });
     await user.click(tab('Home'));
@@ -427,10 +464,13 @@ describe('the phone shell: tabs', () => {
   });
 
   it('a DM opened from the @ list: the current Home tab goes back to /dm', async () => {
-    const { user } = phone({ path: `/c/${A}` });
+    const { user, client } = phone({ path: `/c/${A}` });
+    act(() => client.set(`timeline:${DM}`, { channelId: DM, group: 'active', items: [], hasEarlier: false }));
     await user.click(homeTile());
     await user.click(await screen.findByRole('button', { name: 'bob' }));
     expect(here()).toBe(`/dm/${DM}`);
+    expect(document.querySelector('.d-phone-header__topic')).toHaveTextContent('@bob · offline');
+    expect(screen.getByText(t('shell.log.welcomeDmBody'))).toBeInTheDocument();
     await screen.findByRole('textbox');
     await user.click(tab('Home'));
     await waitFor(() => expect(here()).toBe('/dm'));
@@ -866,4 +906,10 @@ describe('the phone shell: Mention', () => {
     expect(box.value).toBe('@bob ');
     expect(box.selectionStart).toBe(box.value.length);
   });
+});
+
+it('keeps the channel topic in the phone conversation header (gap49/gap89)', async () => {
+  const { client } = phone({ path: `/c/${A}/${TEXT}` });
+  act(() => client.publish(`channels:${A}`, CHANNELS.map(channel => channel.id === TEXT ? { ...channel, topic: 'raids, plans and the bridge troll' } : channel)));
+  await waitFor(() => expect(document.querySelector('.d-phone-header__topic')).toHaveTextContent('raids, plans and the bridge troll'));
 });

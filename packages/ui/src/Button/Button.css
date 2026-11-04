@@ -8,6 +8,8 @@
   cursor: pointer; transition: background var(--duration-fast), border-color var(--duration-fast), color var(--duration-fast), transform var(--duration-press) var(--ease-out);
 }
 .d-btn:active:not(:disabled):not([aria-disabled="true"]) { transform: scale(0.94); }
+/* Icon children and their text share the prototype's centered 8px row inside the label wrapper. */
+.d-btn__label { display: inline-flex; align-items: center; gap: 8px; }
 .d-btn[data-size="sm"] { height: 1.375rem /* 22px */; padding: 0 7px; font-size: var(--text-xs); }
 .d-btn:hover { background: var(--hover); }
 .d-btn[data-variant="accent"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
@@ -31,7 +33,3 @@
 /* A touch screen has no Escape or shortcut keys: a hint would be noise. */
 @media (pointer: coarse) { .d-btn__kbd { display: none; } }
 @media (prefers-reduced-motion: reduce) { .d-btn:active:not(:disabled):not([aria-disabled="true"]) { transform: none; } }
-/* web3.9 AUDIT-2 (H4, N3): a primary control is 44 high on a phone page. This is the page media query (web/src/layout.ts PHONE_QUERY), so it also reaches onboarding and sign-in, which stand outside the shell and its [data-layout="phone"] rules. */
-@media (max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem) {
-  .d-btn { min-height: 2.75rem; }
-}

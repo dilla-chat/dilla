@@ -8,7 +8,8 @@ import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-export const OUT_ROOT = path.join(REPO, 'target', 'ui-screens', 'web3.9');
+const outFlag = process.argv.indexOf('--out');
+export const OUT_ROOT = path.resolve(outFlag >= 0 && process.argv[outFlag + 1] !== undefined ? process.argv[outFlag + 1] : path.join(REPO, 'target', 'ui-screens', 'signal-b'));
 export const STATE = path.join(OUT_ROOT, 'state.json');
 const require = createRequire(path.join(REPO, 'e2e', 'package.json'));
 const { chromium } = require('@playwright/test');
@@ -60,7 +61,9 @@ export async function connect(who, { out = OUT_ROOT } = {}) {
 }
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const [who, step, ...args] = process.argv.slice(2);
+  const rest = process.argv.slice(2);
+  if (outFlag >= 0) rest.splice(outFlag - 2, 2);
+  const [who, step, ...args] = rest;
   if (who === undefined || step === undefined) { console.error('usage: node e2e/ux/run.mjs <who> <step.mjs> [args...]'); process.exit(2); }
   const h = await connect(who);
   try { await (await import(path.resolve(step))).default({ ...h, args }); } finally { await h.close(); }

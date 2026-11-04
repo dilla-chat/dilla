@@ -62,6 +62,7 @@ func newPasskeyAPITuned(t *testing.T, uv string, hooked bool, tune func(*config.
 	if err != nil {
 		t.Fatalf("NewPasskeys: %v", err)
 	}
+	pk.SetLimits(c.MaxOpenLogins, c.MaxOpenPerUser)
 	d.Passkeys = pk
 	var hook *beforeTx
 	if hooked {

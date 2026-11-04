@@ -39,6 +39,8 @@ export interface GifPickerPanelProps {
   dispatch(a: ConversationAction): void;
   /** Speaks a line once, politely (the shell's announcer). */
   announce?: (text: string) => void;
+  /** Rechecked before requests and after awaits, including settings pushes before unmount cleanup. */
+  canLoad?: (() => boolean) | undefined;
   onClose(reason: 'escape' | 'outside' | 'picked'): void;
 }
 
@@ -52,6 +54,8 @@ export function GifPickerPanel(p: GifPickerPanelProps): React.JSX.Element {
   const [srcs, setSrcs] = useState<Readonly<Record<string, string>>>({});
   const [picking, setPicking] = useState<string | null>(null);
   const alive = useRef(true);
+  const permission = useRef(p.canLoad); permission.current = p.canLoad;
+  const live = useCallback(() => alive.current && permission.current?.() !== false, []);
   const seq = useRef(0);
   const urls = useRef(new Map<string, string>());
   const wanted = useRef(new Set<string>());
@@ -75,20 +79,20 @@ export function GifPickerPanel(p: GifPickerPanelProps): React.JSX.Element {
   }, []);
 
   const pump = useCallback(() => {
-    while (alive.current && inFlight.current < GIF_PREVIEWS_AT_ONCE) {
+    while (live() && inFlight.current < GIF_PREVIEWS_AT_ONCE) {
       const gifId = queue.current.shift();
       if (gifId === undefined) return;
       inFlight.current += 1;
       const attempt = (tries.current.get(gifId) ?? 0) + 1;
       tries.current.set(gifId, attempt);
       void client.call({ m: 'gifFetch', communityId, gifId, variant: 'preview' }).then(result => {
-        if (!alive.current || !isBlobResult(result)) return;
+        if (!live() || !isBlobResult(result)) return;
         const url = URL.createObjectURL(result.blob);
         urls.current.set(gifId, url);
         setSrcs(cur => ({ ...cur, [gifId]: url }));
       }, (e: unknown) => {
         // Busy or limited: ask again after a pause that doubles; any other refusal leaves the tile blank.
-        if (!alive.current || !busy(e) || attempt >= GIF_PREVIEW_TRIES) return;
+        if (!live() || !busy(e) || attempt >= GIF_PREVIEW_TRIES) return;
         const handle = window.setTimeout(() => {
           timers.current.delete(handle);
           queue.current.push(gifId);
@@ -100,32 +104,34 @@ export function GifPickerPanel(p: GifPickerPanelProps): React.JSX.Element {
         pump();
       });
     }
-  }, [client, communityId]);
+  }, [client, communityId, live]);
 
   const want = useCallback((found: readonly Found[]) => {
+    if (!live()) return;
     for (const f of found) {
       if (wanted.current.has(f.id)) continue;
       wanted.current.add(f.id);
       queue.current.push(f.id);
     }
     pump();
-  }, [pump]);
+  }, [pump, live]);
 
   const search = useCallback((q: string, offset: number) => {
+    if (!live()) return;
     const mine = ++seq.current;
     setStatus({ kind: 'loading', text: t('gif.loading') });
     void client.call({ m: 'gifSearch', communityId, q, offset }).then(result => {
-      if (!alive.current || mine !== seq.current) return;
+      if (!live() || mine !== seq.current) return;
       if (!isPage(result)) throw new Error('E_GIF_SHAPE');
       setItems(cur => offset === 0 ? result.items : [...cur, ...result.items.filter(f => !cur.some(c => c.id === f.id))]);
       setNext(result.next);
       setStatus(offset === 0 && result.items.length === 0 ? { kind: 'empty', text: t('gif.empty') } : null);
       want(result.items);
     }).catch(() => {
-      if (!alive.current || mine !== seq.current) return;
+      if (!live() || mine !== seq.current) return;
       setStatus({ kind: 'error', text: t('gif.error') });
     });
-  }, [client, communityId, want]);
+  }, [client, communityId, want, live]);
 
   // The first search (trending) is at once; a changed query waits for the typing to stop.
   useEffect(() => {
@@ -139,7 +145,7 @@ export function GifPickerPanel(p: GifPickerPanelProps): React.JSX.Element {
   }, [query, search]);
 
   const pick = (gifId: string) => {
-    if (picking !== null) return;
+    if (!live() || picking !== null) return;
     setPicking(gifId);
     setStatus({ kind: 'busy', text: t('gif.picking') });
     const run = async () => {
@@ -147,12 +153,13 @@ export function GifPickerPanel(p: GifPickerPanelProps): React.JSX.Element {
         const result = await client.call({ m: 'gifFetch', communityId, gifId, variant: 'full' });
         if (!isBlobResult(result)) throw new Error('E_GIF_SHAPE');
         const file = new File([result.blob], `giphy-${gifId}.gif`, { type: 'image/gif' });
-        if (!alive.current) return;
-        if (!(await attachFiles(client, p.channelId, [file], a => { p.dispatch(a); }))) throw new Error('E_GIF_ATTACH');
+        if (!live()) return;
+        if (!(await attachFiles(client, p.channelId, [file], a => { if (live()) p.dispatch(a); }))) throw new Error('E_GIF_ATTACH');
+        if (!live()) return;
         p.announce?.(t('gif.added'));
         p.onClose('picked');
       } catch {
-        if (!alive.current) return;
+        if (!live()) return;
         setPicking(null);
         setStatus({ kind: 'error', text: t('gif.pickFailed') });
       }

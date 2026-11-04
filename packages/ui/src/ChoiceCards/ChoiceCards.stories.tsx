@@ -3,8 +3,8 @@ import { useState } from 'react';
 import { ChoiceCards, type ChoiceCardsProps } from './ChoiceCards.tsx';
 
 const OPTIONS: ChoiceCardsProps['options'] = [
-  { id: 'app', title: 'Authenticator app', hint: 'Codes from an app on your phone' },
-  { id: 'passkey', title: 'Passkey', hint: 'Use this device or a security key' },
+  { id: 'app', title: 'Authenticator app', hint: 'A six-digit code that changes every 30 s', icon: 'smartphone' },
+  { id: 'passkey', title: 'Passkey', hint: 'Touch ID, Windows Hello or a security key', icon: 'fingerprint' },
 ];
 
 function Controlled(args: ChoiceCardsProps) {

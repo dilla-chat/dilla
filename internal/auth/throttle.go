@@ -40,6 +40,10 @@ func Classes(c config.Rate) map[string]server.Class {
 		"register":     {Name: "register", PerSecond: c.RegisterPerSecond, Burst: c.RegisterBurst},
 		"invite":       {Name: "invite", PerSecond: c.InvitePerSecond, Burst: c.InviteBurst},
 		"unauth":       {Name: "unauth", PerSecond: c.UnauthPerSecond, Burst: c.UnauthBurst},
+		// Wave B task 3: the passkey login begin's own bucket, so begins never spend `login` tokens.
+		"passkey_begin": {Name: "passkey_begin", PerSecond: c.PasskeyBeginPerSecond, Burst: c.PasskeyBeginBurst},
+		// Security review A2: the same begins per network (IPv4 /24, IPv6 /48; server.RatePrefixKey).
+		"passkey_begin_net": {Name: "passkey_begin_net", PerSecond: c.PasskeyBeginNetPerSecond, Burst: c.PasskeyBeginNetBurst},
 	}
 }
 

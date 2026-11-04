@@ -2,12 +2,13 @@ import { createElement, useEffect } from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { decode, encode as importEncode, fromHex, PERM, type BotUtilities, type CoreClient, type CommandContext as Binding, type CommandResult, type PollSummary, type ReminderSummary } from '@dilla/client-core';
+import { COMMANDS, decode, encode as importEncode, fromHex, PERM, type BotUtilities, type CoreClient, type CommandContext as Binding, type CommandResult, type PollSummary, type ReminderSummary } from '@dilla/client-core';
 import * as ClientCore from '@dilla/client-core';
 import { FakeClient } from '../../test/fake-client.ts';
 import type { CommandExecutionContext } from './command-types.ts';
 import { finalPollMarker, PollCard } from './PollCard.tsx';
-import { notifyReminder, useUtilityCommandProvider } from './UtilityCommandProvider.tsx';
+import { CommandPicker } from './CommandPicker.tsx';
+import { notifyReminder, reminderFromArgs, useUtilityCommandProvider } from './UtilityCommandProvider.tsx';
 
 const COMMUNITY = '11'.repeat(16); const CHANNEL = '22'.repeat(16); const USER = '33'.repeat(16);
 const INSTALLATION = '44'.repeat(16); const BOT = '55'.repeat(16); const POLL = '77'.repeat(16);
@@ -61,7 +62,7 @@ function utilityFixture() {
       return { responses: responses.filter(response => operations.includes(response.operation) && (ids === undefined || ids.includes(response.requestId))), through: null, blocked: false }; }
     if (command.m === 'ackBotInteractionResponses') return null; return null;
   });
-  return { client: core, requests, responses, get poll() { return row; }, get reminder() { return reminder; }, failNext(operation: number, apply = true) { failOperation = operation; failApplies = apply; },
+  return { client: core, requests, responses, get poll() { return row; }, setPoll(over: Partial<PollSummary>) { row = { ...row, ...over }; }, get reminder() { return reminder; }, failNext(operation: number, apply = true) { failOperation = operation; failApplies = apply; },
     markReminderDue() { if (reminder !== null) reminder = [...reminder.slice(0, 2), BigInt(Math.floor(Date.now() / 1000)) - 60n, ...reminder.slice(3, 6), 1n, BigInt(reminder[7] as bigint) + 1n]; } };
 }
 function commandContext(client: CoreClient, requestId: string, over: Partial<CommandExecutionContext> = {}): CommandExecutionContext {
@@ -72,14 +73,28 @@ function commandContext(client: CoreClient, requestId: string, over: Partial<Com
 function mount(client: CoreClient, community: string | null = COMMUNITY, onNavigate?: (communityId: string, channelId: string, threadId: string | null) => void) { const captured: { value?: ReturnType<typeof useUtilityCommandProvider> } = {};
   function Probe() { const value = useUtilityCommandProvider(client, community, onNavigate); useEffect(() => { captured.value = value; }); return createElement('div', null, value.dialogs, value.inbox); }
   const view = render(createElement(Probe)); return { captured, ...view, rerenderProbe: () => view.rerender(createElement(Probe)) }; }
-afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe('utility command provider', () => {
+  it('/poll create from the picker opens the New poll dialog', async () => {
+    const f = utilityFixture();
+    function Picker() {
+      const provider = useUtilityCommandProvider(f.client, COMMUNITY);
+      return <>{provider.dialogs}<CommandPicker definitions={COMMANDS} initialText="/" contextKey="poll-picker-test"
+        suggest={() => Promise.resolve([])} onExecute={() => Promise.resolve({ status: 'success', private: true, message: '' })} onCancel={() => {}} onSendLiteral={() => {}}
+        onRunDetached={invocation => { void provider.handlers['poll create']!(invocation, commandContext(f.client, 'af'.repeat(16))); }} /> </>;
+    }
+    render(<Picker />);
+    await userEvent.click(screen.getByRole('option', { name: /^\/poll create,/ }));
+    expect(await screen.findByRole('dialog', { name: 'New poll in #lobby' })).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('the bridge')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  });
   it('publishes a poll through the adapter from the focused create dialog', async () => {
     const user = userEvent.setup(); const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
     let run!: Promise<unknown>; act(() => { run = mounted.captured.value!.handlers['poll create']!({ commandId: 'poll create', args: { question: 'Lunch?', answers: 'Soup, Salad', multiple: 'on' } }, commandContext(f.client, 'aa'.repeat(16))); });
-    await screen.findByRole('heading', { name: 'Create a poll' }); await user.click(screen.getByRole('button', { name: 'Save' }));
-    const result = await run; expect(result).toMatchObject({ status: 'success', private: true });
+    await screen.findByRole('heading', { name: 'New poll in #lobby' }); await user.click(screen.getByRole('button', { name: 'Post poll' }));
+    const result = await run; expect(result).toMatchObject({ status: 'success', private: true, message: 'Poll posted' });
     expect(f.requests.filter(row => row.operation === 70)).toHaveLength(1);
     const created = f.requests.find(row => row.operation === 70)!; expect(created.requestId).toBe('aa'.repeat(16));
     expect(decode(created.args[0] as Uint8Array)).toMatchObject([1n, asBytes(CHANNEL), null, 'Lunch?', ['Soup', 'Salad'], 1n, 86_400n]);
@@ -90,9 +105,9 @@ describe('utility command provider', () => {
     const invocation = { commandId: 'poll create', args: { question: 'Original?', answers: 'A, B' } };
     const context = commandContext(f.client, 'ac'.repeat(16)); let run!: Promise<unknown>;
     act(() => { run = mounted.captured.value!.handlers['poll create']!(invocation, context); });
-    await screen.findByRole('heading', { name: 'Create a poll' });
+    await screen.findByRole('heading', { name: 'New poll in #lobby' });
     await user.clear(screen.getByLabelText('Question')); await user.type(screen.getByLabelText('Question'), 'Edited?');
-    f.failNext(70); await user.click(screen.getByRole('button', { name: 'Save' })); expect(await run).toMatchObject({ status: 'uncertain' });
+    f.failNext(70); await user.click(screen.getByRole('button', { name: 'Post poll' })); expect(await run).toMatchObject({ status: 'uncertain' });
     const botPost = { key: 's9', state: 'ok' as const, reason: '', senderUser: BOT, senderDevice: null, own: false, web: false, bot: true,
       ts: 1_800_000_000, body: `Edited?\n[dilla-poll:v1:${context.requestId}]`, msgId: 'bc'.repeat(16), seq: '9', edited: false, reply: null,
       reactions: [], pinned: false, attachments: [], mention: false, actions: [], thread: null };
@@ -100,7 +115,7 @@ describe('utility command provider', () => {
     act(() => { run = mounted.captured.value!.handlers['poll create']!(invocation, context); });
     expect(await run).toMatchObject({ status: 'uncertain' });
     act(() => { run = mounted.captured.value!.handlers['poll create']!(invocation, retryContext); });
-    expect(await run).toMatchObject({ status: 'success' });
+    expect(await run).toMatchObject({ status: 'success', message: 'Poll posted' });
     const writes = f.requests.filter(row => row.operation === 70); expect(writes).toHaveLength(1);
     expect(new Set(writes.map(row => row.requestId))).toEqual(new Set(['ac'.repeat(16)]));
     const payloads = writes.map(row => decode(row.args[0] as Uint8Array) as unknown[]);
@@ -111,60 +126,71 @@ describe('utility command provider', () => {
     const user = userEvent.setup(); const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
     let bits = PERM.sendMessages; const context = commandContext(f.client, 'b1'.repeat(16), { getCurrentBinding: () => ({ communityId: COMMUNITY, channelId: CHANNEL, bits }) });
     const invoke = () => mounted.captured.value!.handlers['poll create']!({ commandId: 'poll create', args: { question: 'Q?', answers: 'A, B' } }, context);
-    let run!: Promise<unknown>; act(() => { run = invoke(); }); await screen.findByRole('heading', { name: 'Create a poll' });
-    f.failNext(70); await user.click(screen.getByRole('button', { name: 'Save' })); expect(await run).toMatchObject({ status: 'uncertain' });
+    let run!: Promise<unknown>; act(() => { run = invoke(); }); await screen.findByRole('heading', { name: 'New poll in #lobby' });
+    f.failNext(70); await user.click(screen.getByRole('button', { name: 'Post poll' })); expect(await run).toMatchObject({ status: 'uncertain' });
     bits = 0; expect(await invoke()).toMatchObject({ status: 'uncertain' });
     expect(f.requests.filter(row => row.operation === 70).map(row => row.requestId)).toEqual(['b1'.repeat(16)]); mounted.unmount();
+  });
+  it('uses the prototype reminder reply with a local zoned time and text, without the id', async () => {
+    const f = utilityFixture(); const mounted = mount(f.client);
+    await waitFor(() => expect(mounted.captured.value).toBeDefined());
+    const requestId = 'c2'.repeat(16);
+    const invocation = { commandId: 'remind', args: { when: 'in 1h', text: 'bring two ropes', timezone: 'Europe/Stockholm' } };
+    let result!: CommandResult;
+    await act(async () => { result = await mounted.captured.value!.handlers.remind!(invocation, commandContext(f.client, requestId)); });
+    const due = Number(f.reminder![2]);
+    const time = new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' }).format(new Date(due * 1000));
+    expect(result).toMatchObject({ status: 'success', message: `Saved. I’ll remind you ${time}: bring two ropes` });
+    expect(result.message).not.toContain(requestId); mounted.unmount();
   });
   it('reconciles an accepted reminder from its owner list before opening a retry dialog', async () => {
     const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
     const context = commandContext(f.client, 'b2'.repeat(16)); const invoke = () => mounted.captured.value!.handlers.remind!({ commandId: 'remind', args: { when: 'in 1h', text: 'Keep one copy' } }, context);
-    const user = userEvent.setup(); let run!: Promise<unknown>; act(() => { run = invoke(); }); await screen.findByRole('heading', { name: 'Set a reminder' });
-    f.failNext(80); await user.click(screen.getByRole('button', { name: 'Save' })); expect(await run).toMatchObject({ status: 'uncertain' }); expect(f.reminder).not.toBeNull();
-    act(() => { run = invoke(); }); expect(await run).toMatchObject({ status: 'success' });
+    let run!: Promise<unknown>; f.failNext(80); act(() => { run = invoke(); });
+    expect(await run).toMatchObject({ status: 'uncertain' }); expect(f.reminder).not.toBeNull();
+    act(() => { run = invoke(); }); const recovered = await run as CommandResult; expect(recovered).toMatchObject({ status: 'success' }); expect(recovered.message).toContain('Saved. I’ll remind you '); expect(recovered.message).toContain(': Keep one copy'); expect(recovered.message).not.toContain(context.requestId);
     expect(screen.queryByRole('heading', { name: 'Set a reminder' })).not.toBeInTheDocument();
     expect(f.requests.filter(row => row.operation === 80).map(row => row.requestId)).toEqual(['b2'.repeat(16)]); mounted.unmount();
   });
   it('returns an explicit reminder list only after its owned snapshot completes', async () => {
-    const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined()); const user = userEvent.setup();
+    const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
     let created!: Promise<unknown>;
     act(() => { created = mounted.captured.value!.handlers.remind!({ commandId: 'remind', args: { when: 'in 1h', text: 'Listed reminder' } }, commandContext(f.client, 'b4'.repeat(16))); });
-    await screen.findByRole('heading', { name: 'Set a reminder' }); await user.click(screen.getByRole('button', { name: 'Save' })); expect(await created).toMatchObject({ status: 'success' });
+    expect(await created).toMatchObject({ status: 'success' });
     let result: CommandResult | undefined; act(() => { void mounted.captured.value!.handlers['reminders list']!({ commandId: 'reminders list', args: {} }, commandContext(f.client, 'b5'.repeat(16))).then(value => { result = value; }); });
     await waitFor(() => { expect(result?.status).toBe('success'); expect(result?.message).toContain('Listed reminder'); }); mounted.unmount();
   });
   it.each(['reminders cancel', 'reminders dismiss'] as const)('%s resolves its first target lookup before dispatch', async commandId => {
-    const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined()); const user = userEvent.setup();
+    const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
     let created!: Promise<unknown>;
     act(() => { created = mounted.captured.value!.handlers.remind!({ commandId: 'remind', args: { when: 'in 1h', text: `Target for ${commandId}` } }, commandContext(f.client, 'b6'.repeat(16))); });
-    await screen.findByRole('heading', { name: 'Set a reminder' }); await user.click(screen.getByRole('button', { name: 'Save' })); await created;
+    await created;
     let result: CommandResult | undefined; act(() => { void mounted.captured.value!.handlers[commandId]!({ commandId, args: { reminder: 'b6'.repeat(16) } }, commandContext(f.client, 'b7'.repeat(16))).then(value => { result = value; }); });
     await waitFor(() => expect(result).toMatchObject({ status: 'success' })); expect(f.requests.some(row => row.operation === (commandId.endsWith('cancel') ? 82 : 83))).toBe(true); mounted.unmount();
   });
   it('reconciles timezone aliases using the adapter canonical zone', async () => {
-    const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined()); const user = userEvent.setup();
-    const invocation = { commandId: 'remind', args: { when: 'in 1h', text: 'Alias zone' } }; const context = commandContext(f.client, 'b8'.repeat(16)); let run!: Promise<unknown>;
-    act(() => { run = mounted.captured.value!.handlers.remind!(invocation, context); }); await screen.findByRole('heading', { name: 'Set a reminder' });
-    await user.clear(screen.getByLabelText('Time zone')); await user.type(screen.getByLabelText('Time zone'), 'US/Eastern');
-    f.failNext(80); await user.click(screen.getByRole('button', { name: 'Save' })); expect(await run).toMatchObject({ status: 'uncertain' });
+    const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
+    const invocation = { commandId: 'remind', args: { when: 'in 1h', text: 'Alias zone', timezone: 'US/Eastern' } }; const context = commandContext(f.client, 'b8'.repeat(16)); let run!: Promise<unknown>;
+    f.failNext(80); act(() => { run = mounted.captured.value!.handlers.remind!(invocation, context); });
+    expect(await run).toMatchObject({ status: 'uncertain' });
     act(() => { run = mounted.captured.value!.handlers.remind!(invocation, context); }); expect(await run).toMatchObject({ status: 'success' });
     expect(screen.queryByRole('heading', { name: 'Set a reminder' })).not.toBeInTheDocument(); mounted.unmount();
   });
   it('keeps the poll question limit in Unicode code points', async () => {
     const user = userEvent.setup(); const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
     let run!: Promise<unknown>; act(() => { run = mounted.captured.value!.handlers['poll create']!({ commandId: 'poll create', args: { question: 'Q', answers: 'A, B' } }, commandContext(f.client, 'b0'.repeat(16))); });
-    await screen.findByRole('heading', { name: 'Create a poll' }); const question = screen.getByLabelText('Question');
+    await screen.findByRole('heading', { name: 'New poll in #lobby' }); const question = screen.getByLabelText('Question');
     fireEvent.change(question, { target: { value: '😀'.repeat(300) } }); expect(question).toHaveValue('😀'.repeat(300));
-    expect(screen.getByText('300 of 300 characters')).toBeInTheDocument();
-    fireEvent.change(question, { target: { value: '😀'.repeat(301) } }); expect(question).toHaveValue('😀'.repeat(300));
+    expect(screen.getByText('300 / 300')).toBeInTheDocument();
+    fireEvent.change(question, { target: { value: '😀'.repeat(301) } }); expect(question).toHaveValue('😀'.repeat(301)); expect(screen.getByText('301 / 300')).toHaveAttribute('data-danger', 'true');
     await user.click(screen.getByRole('button', { name: 'Cancel' })); await run; mounted.unmount();
   });
   it('closes a creation dialog when live send permission is revoked', async () => {
     const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
     let bits = PERM.sendMessages | PERM.manageMessages; const context = commandContext(f.client, 'b1'.repeat(16), { getCurrentBinding: () => ({ communityId: COMMUNITY, channelId: CHANNEL, bits }) });
     let run!: Promise<unknown>; act(() => { run = mounted.captured.value!.handlers['poll create']!({ commandId: 'poll create', args: { question: 'Q?', answers: 'A, B' } }, context); });
-    await screen.findByRole('heading', { name: 'Create a poll' }); bits = PERM.manageMessages;
-    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Create a poll' })).not.toBeInTheDocument());
+    await screen.findByRole('heading', { name: 'New poll in #lobby' }); bits = PERM.manageMessages;
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'New poll in #lobby' })).not.toBeInTheDocument());
     expect(await run).toMatchObject({ status: 'failure' }); expect(f.requests.some(row => row.operation === 70)).toBe(false); mounted.unmount();
   });
   it('replaces a vote with the selected answer and reports the returned count', async () => {
@@ -177,16 +203,15 @@ describe('utility command provider', () => {
   it('requires an explicit DST fold choice before creating an ambiguous reminder', async () => {
     // Pin "now" before the 2026-11-01 fold: reminders reach at most 365 days ahead, and New York's next fold after
     // this one (2027-11-07) is further away than that, so a real clock turns this test into a time bomb.
-    vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-10-15T12:00:00Z'));
-    const user = userEvent.setup(); const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
-    let run!: Promise<unknown>; act(() => { run = mounted.captured.value!.handlers.remind!({ commandId: 'remind', args: { when: '2026-11-01 01:30', text: 'Call home' } }, commandContext(f.client, 'cc'.repeat(16))); });
-    await screen.findByRole('heading', { name: 'Set a reminder' }); await user.clear(screen.getByLabelText('Time zone')); await user.type(screen.getByLabelText('Time zone'), 'America/New_York');
-    expect(await screen.findByText('This local time occurs twice. Choose which time you mean.')).toBeInTheDocument();
-    const choices = screen.getAllByRole('radio'); expect(choices).toHaveLength(2); await user.click(choices[1]); await user.click(screen.getByRole('button', { name: 'Save' }));
-    const result = await run; expect(result).toMatchObject({ status: 'success' }); const mutation = f.requests.find(row => row.operation === 80)!;
+    vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-10-30T17:00:00Z'));
+    const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
+    const args = { when: '2026-11-01 01:30', text: 'Call home', timezone: 'America/New_York' };
+    expect(await mounted.captured.value!.handlers.remind!({ commandId: 'remind', args }, commandContext(f.client, 'cc'.repeat(16))))
+      .toMatchObject({ status: 'failure', message: 'This local time occurs twice. Choose which time you mean.' });
+    // The picker sends the later candidate the person chose from the two (Wave B Task 2: the chips, not a dialog).
+    const result = await mounted.captured.value!.handlers.remind!({ commandId: 'remind', args: { ...args, chosen: '1793514600' } }, commandContext(f.client, 'cc'.repeat(16))); expect(result).toMatchObject({ status: 'success' }); const mutation = f.requests.find(row => row.operation === 80)!;
     expect(mutation.requestId).toBe('cc'.repeat(16)); const payload = decode(mutation.args[0] as Uint8Array) as unknown[];
     expect(payload[1]).toBe(1n); expect(payload[4]).toBe('America/New_York'); expect(payload[2]).toBe(1_793_514_600n); mounted.unmount();
-    vi.useRealTimers();
   });
 
   it('shows due reminders in the inbox and reuses an uncertain dismissal attempt', async () => {
@@ -195,12 +220,11 @@ describe('utility command provider', () => {
     await waitFor(() => expect(f.requests.some(row => row.operation === 81)).toBe(true));
     let create!: Promise<unknown>;
     act(() => { create = mounted.captured.value!.handlers.remind!({ commandId: 'remind', args: { when: 'in 1h', text: 'Call home' } }, commandContext(f.client, 'dd'.repeat(16))); });
-    await screen.findByRole('heading', { name: 'Set a reminder' }); await user.click(screen.getByRole('button', { name: 'Save' }));
     expect(await create).toMatchObject({ status: 'success' });
     f.markReminderDue();
     await act(async () => { await mounted.captured.value!.handlers['reminders list']!({ commandId: 'reminders list', args: {} }, commandContext(f.client, 'ee'.repeat(16))); });
     await waitFor(() => expect(screen.getByRole('button', { name: /1 due/ })).toBeInTheDocument());
-    await user.click(screen.getByRole('button', { name: /Reminders/ }));
+    await user.click(await screen.findByRole('tab', { name: /^Due/ }));
     expect(await screen.findByText('Call home')).toBeInTheDocument();
     f.failNext(83, false); await user.click(screen.getByRole('button', { name: 'Dismiss' }));
     expect(await screen.findByText('The change may have been saved. Refresh reminders before trying again.')).toBeInTheDocument();
@@ -214,9 +238,9 @@ describe('utility command provider', () => {
   it('cancels an upcoming reminder from the Upcoming tab; a due one offers Dismiss only', async () => {
     const user = userEvent.setup(); const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
     let create!: Promise<unknown>; act(() => { create = mounted.captured.value!.handlers.remind!({ commandId: 'remind', args: { when: 'in 1h', text: 'Cancel me' } }, commandContext(f.client, 'ad'.repeat(16))); });
-    await screen.findByRole('heading', { name: 'Set a reminder' }); await user.click(screen.getByRole('button', { name: 'Save' })); await create;
+    await create;
     await act(async () => { await mounted.captured.value!.handlers['reminders list']!({ commandId: 'reminders list', args: {} }, commandContext(f.client, 'ae'.repeat(16))); });
-    await user.click(screen.getByRole('button', { name: /Reminders/ })); await screen.findByText('Cancel me');
+    await screen.findByText('Cancel me');
     expect(screen.getByRole('tab', { name: /^Upcoming/ })).toHaveAttribute('aria-selected', 'true');
     expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Cancel' })); await waitFor(() => expect(f.requests.some(row => row.operation === 82)).toBe(true));
@@ -238,7 +262,7 @@ describe('utility command provider', () => {
   it('redacts a source link immediately when the source channel is no longer active', async () => {
     const user = userEvent.setup(); const f = utilityFixture(); const mounted = mount(f.client, COMMUNITY, vi.fn());
     let create!: Promise<unknown>; act(() => { create = mounted.captured.value!.handlers.remind!({ commandId: 'remind', args: { when: 'in 1h', text: 'Still private' } }, commandContext(f.client, 'af'.repeat(16))); });
-    await screen.findByRole('heading', { name: 'Set a reminder' }); await user.click(screen.getByRole('button', { name: 'Save' })); await create;
+    await create;
     // The text is the link to its source message (a button drawn as text); a source that went away leaves plain text.
     await user.click(screen.getByRole('button', { name: 'Reminders' })); await screen.findByRole('button', { name: 'Still private' });
     act(() => f.client.set(`channels:${COMMUNITY}`, f.client.get(`channels:${COMMUNITY}`)!.map(row => ({ ...row, group: 'removed' })) as never)); mounted.rerenderProbe();
@@ -314,10 +338,9 @@ describe('utility command provider', () => {
     await waitFor(() => expect(mounted.captured.value).toBeDefined());
     let create!: Promise<unknown>;
     act(() => { create = mounted.captured.value!.handlers.remind!({ commandId: 'remind', args: { when: 'in 1h', text: 'Private account reminder' } }, commandContext(f.client, 'ff'.repeat(16))); });
-    await screen.findByRole('heading', { name: 'Set a reminder' }); await user.click(screen.getByRole('button', { name: 'Save' }));
     expect(await create).toMatchObject({ status: 'success' }); f.markReminderDue();
     await act(async () => { await mounted.captured.value!.handlers['reminders list']!({ commandId: 'reminders list', args: {} }, commandContext(f.client, '01'.repeat(16))); });
-    await user.click(screen.getByRole('button', { name: /Reminders/ }));
+    await user.click(await screen.findByRole('tab', { name: /^Due/ }));
     expect(await screen.findByText('Private account reminder')).toBeInTheDocument();
     const nextAccount = { ...f.client.get('account')!, user: { ...f.client.get('account')!.user!, id: 'ab'.repeat(16) } };
     act(() => f.client.set('account', nextAccount)); mounted.rerenderProbe();
@@ -360,12 +383,12 @@ describe('poll card binding', () => {
     f.poll.revision = 2n; f.poll.counts = [1n, 0n];
     const before = f.requests.length;
     await user.click(screen.getByRole('button', { name: 'Close poll' }));
-    expect(await screen.findByText('Poll closed')).toBeInTheDocument();
+    expect(await screen.findByText('CLOSED')).toBeInTheDocument();
     const action = f.requests.slice(before).filter(row => row.operation === 74 || row.operation === 71);
     expect(action.map(row => row.operation)).toEqual([74, 71, 74]);
     expect(action.filter(row => row.operation === 74).map(row => row.revision)).toEqual(['1', '2']);
     expect(new Set(action.filter(row => row.operation === 74).map(row => row.requestId)).size).toBe(2);
-    expect(screen.getByRole('button', { name: '1 · Soup' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Soup/ })).toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument(); view.unmount();
   });
 
@@ -412,7 +435,7 @@ describe('poll card binding', () => {
     await waitFor(() => expect(release).toBeDefined());
     await act(async () => { tick(); await Promise.resolve(); });
     await act(async () => { release!(); await Promise.resolve(); });
-    expect(await screen.findByText('Poll closed')).toBeInTheDocument();
+    expect(await screen.findByText('CLOSED')).toBeInTheDocument();
     expect(f.requests.slice(before).filter(row => row.operation === 74 || row.operation === 71).map(row => row.operation)).toEqual([74, 71, 74]);
     view.unmount();
   });
@@ -439,10 +462,10 @@ describe('poll card binding', () => {
     f.poll.counts = [1n, 0n];
     act(() => { tick(); });
     // The new counts prove the periodic read has completed before checking the notice.
-    await screen.findByRole('button', { name: '1 · Soup' });
+    await screen.findByText('100%');
     expect(screen.getByText(closeConflict)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Close poll' }));
-    await screen.findByText('Poll closed');
+    await screen.findByText('CLOSED');
     expect(screen.queryByRole('alert')).not.toBeInTheDocument(); view.unmount();
   });
 
@@ -460,18 +483,20 @@ describe('poll card binding', () => {
     expect(screen.queryByRole('heading', { name: 'Lunch?' })).not.toBeInTheDocument();
   });
   it('loads a bot-authored record and supports multivote replacement, withdrawal, voters and creator close', async () => {
-    const user = userEvent.setup(); const f = utilityFixture();
+    const user = userEvent.setup(); const f = utilityFixture(); f.setPoll({ counts: [1n, 1n] });
     render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null, body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: 0 }));
     expect(await screen.findByRole('heading', { name: 'Lunch?' })).toBeInTheDocument(); expect(f.requests.some(row => row.operation === 71)).toBe(true);
-    await user.click(screen.getByRole('button', { name: '0 · Soup' })); expect(await screen.findByText('Ada')).toBeInTheDocument();
-    const choices = screen.getAllByRole('checkbox'); await user.click(choices[0]); await user.click(choices[1]); await user.click(screen.getByRole('button', { name: 'Submit vote' }));
+    await waitFor(() => expect(screen.getAllByRole('img', { name: 'Ada' })).toHaveLength(2));
+    const choices = screen.getAllByRole('button', { name: /^(Soup|Salad)/ }); await user.click(choices[0]); await user.click(choices[1]);
     await waitFor(() => expect(f.poll.myChoices).toEqual([0, 1]));
-    await user.click(screen.getByRole('button', { name: 'Withdraw vote' })); await waitFor(() => expect(f.poll.myChoices).toEqual([]));
+    await user.click(choices[0]); await user.click(choices[1]); await waitFor(() => expect(f.poll.myChoices).toEqual([]));
     await user.click(screen.getByRole('button', { name: 'Close poll' })); await waitFor(() => expect(f.poll.closed).toBe(true));
-    expect(f.requests.filter(row => row.operation === 73).map(row => row.requestId)).toHaveLength(2); expect(f.requests.some(row => row.operation === 74)).toBe(true);
+    expect(f.requests.filter(row => row.operation === 73).map(row => row.requestId)).toHaveLength(4); expect(f.requests.some(row => row.operation === 74)).toBe(true);
   });
   it('finishes an authenticated poll read when its next refresh tick arrives before the response', async () => {
     const f = utilityFixture(); const base = f.client.handler;
+    const real = ClientCore.createBotUtilities(f.client, COMMUNITY);
+    vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ ...real, get binding() { return real.binding; }, pollVoters: () => Promise.resolve({ voters: [], nextCursor: null }) });
     let tick!: () => void; let firstRead: (() => void) | undefined; let firstRequest: string | undefined;
     const setInterval = window.setInterval.bind(window);
     vi.spyOn(window, 'setInterval').mockImplementation(((fn: () => void, ms: number) => {
@@ -498,61 +523,56 @@ describe('poll card binding', () => {
     act(() => { tick(); });
     await waitFor(() => expect(f.requests.filter(row => row.operation === 71)).toHaveLength(2));
   });
-  it('shows an authenticated voter page after an ordinary poll refresh completes while it is pending', async () => {
-    const f = utilityFixture(); const base = f.client.handler; let release: (() => void) | undefined; let tick!: () => void;
+  it.each([false, true])('keeps a pending walk and refreshes changed revisions on the next cadence (%s)', async changed => {
+    const f = utilityFixture(); f.setPoll({ counts: [1n, 1n] }); let clock = performance.now(); vi.spyOn(performance, 'now').mockImplementation(() => clock); const real = ClientCore.createBotUtilities(f.client, COMMUNITY);
+    let tick!: () => void; let release!: () => void; let started = false;
     const setInterval = window.setInterval.bind(window);
     vi.spyOn(window, 'setInterval').mockImplementation(((fn: () => void, ms: number) => {
       if (ms === 30_000) { tick = fn; return 900001; }
       return setInterval(fn, ms);
     }) as never);
-    f.client.handler = command => command.m === 'readBotInteractionResponses' && command.operations.includes(75)
-      ? new Promise(resolve => { release = () => { void base(command).then(resolve); }; }) : base(command);
-    const user = userEvent.setup();
-    render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
-      body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: 0 }));
-    await screen.findByRole('heading', { name: 'Lunch?' });
-    await user.click(screen.getByRole('button', { name: '0 · Soup' }));
-    await waitFor(() => expect(release).toBeDefined());
-    act(() => { tick(); });
-    await waitFor(() => expect(f.requests.filter(row => row.operation === 71)).toHaveLength(3));
-    act(() => { release!(); });
-    expect(await screen.findByText('Ada')).toBeInTheDocument();
-  });
-  it('keeps the latest requested answer when authenticated voter pages complete out of order', async () => {
-    const f = utilityFixture(); const base = f.client.handler;
-    f.client.handler = async command => {
-      const result = await base(command);
-      if (command.m === 'humanInteractionRequest' && command.operation === 75 && command.args[1] === 1)
-        f.responses.find(row => row.requestId === command.requestId)!.data = wire([1n, [], null]);
-      return result;
-    };
-    const real = ClientCore.createBotUtilities(f.client, COMMUNITY); const pending = new Map<number, () => void>();
-    vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ ...real, get binding() { return real.binding; }, pollVoters: async input => {
-      const page = await real.pollVoters(input); return new Promise(resolve => { pending.set(input.option, () => resolve(page)); });
+    vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ ...real, get binding() { return real.binding; }, pollVoters: async () => {
+      if (!started) { started = true; return new Promise(resolve => { release = () => resolve({ voters: [USER], nextCursor: null }); }); }
+      return { voters: [], nextCursor: null };
     } });
-    const user = userEvent.setup();
     render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
       body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: 0 }));
-    await screen.findByRole('heading', { name: 'Lunch?' });
-    await user.click(screen.getByRole('button', { name: '0 · Soup' })); await waitFor(() => expect(pending.has(0)).toBe(true));
-    await user.click(screen.getByRole('button', { name: '0 · Salad' })); await waitFor(() => expect(pending.has(1)).toBe(true));
-    act(() => { pending.get(1)!(); }); await screen.findByText('No votes yet.');
-    await act(async () => { pending.get(0)!(); await Promise.resolve(); });
-    expect(screen.queryByText('Ada')).not.toBeInTheDocument(); expect(screen.getByText('No votes yet.')).toBeInTheDocument();
+    await waitFor(() => expect(release).toBeDefined());
+    await act(async () => { await Promise.resolve(); });
+    if (changed) f.setPoll({ revision: 2n });
+    act(() => { clock += 30_000; tick(); });
+    await waitFor(() => expect(f.requests.filter(row => row.operation === 71)).toHaveLength(2));
+    await act(async () => { release(); await Promise.resolve(); });
+    await screen.findByText('Open for 1 hour · pick any · 1 voter');
+    if (changed) {
+      act(() => { clock += 30_000; tick(); });
+      await screen.findByText('Open for 1 hour · pick any · 0 voters');
+      expect(screen.queryByRole('img', { name: 'Ada' })).not.toBeInTheDocument();
+    } else expect(await screen.findByRole('img', { name: 'Ada' })).toBeInTheDocument();
+  });
+  it('loads an independent first-page preview for every answer', async () => {
+    const f = utilityFixture(); f.setPoll({ counts: [1n, 1n] }); const real = ClientCore.createBotUtilities(f.client, COMMUNITY);
+    vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ ...real, get binding() { return real.binding; }, pollVoters: async input => {
+      await real.pollVoters(input); return { voters: input.option === 0 ? [USER] : [], nextCursor: null };
+    } });
+    render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
+      body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: 0 }));
+    expect(await screen.findByRole('img', { name: 'Ada' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Soup/ }).querySelector('[role="img"]')).not.toBeNull();
+    expect(screen.getByRole('button', { name: /^Salad/ }).querySelector('[role="img"]')).toBeNull();
   });
   it.each(['access', 'owner', 'installation'] as const)('rejects a pending voter page after its %s context changes', async change => {
-    const f = utilityFixture(); const base = f.client.handler; let replaced = false;
+    const f = utilityFixture(); f.setPoll({ counts: [1n, 1n] }); const base = f.client.handler; let replaced = false;
     f.client.handler = command => replaced && command.m === 'getBotCommandStatus'
       ? Promise.resolve({ installationId: 'ab'.repeat(16), botUserId: BOT, state: 3, revision: '1' }) : base(command);
     const real = ClientCore.createBotUtilities(f.client, COMMUNITY); let release: (() => void) | undefined;
     vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ ...real, get binding() { return real.binding; }, pollVoters: async input => {
-      const page = await real.pollVoters(input); return new Promise(resolve => { release = () => resolve(page); });
+      const page = await real.pollVoters(input); if (input.option !== 0) return page; return new Promise(resolve => { release = () => resolve(page); });
     } });
-    const user = userEvent.setup();
     render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
       body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: 0 }));
     await screen.findByRole('heading', { name: 'Lunch?' });
-    await user.click(screen.getByRole('button', { name: '0 · Soup' })); await waitFor(() => expect(release).toBeDefined());
+     await waitFor(() => expect(release).toBeDefined());
     if (change === 'access') {
       const access = f.client.get(`permissions:${COMMUNITY}`)!;
       f.client.publish(`permissions:${COMMUNITY}`, { ...access, loaded: false });
@@ -560,7 +580,7 @@ describe('poll card binding', () => {
     } else if (change === 'owner') f.client.publish('account', { ...f.client.get('account')!, deviceId: 'ac'.repeat(16) });
     else replaced = true;
     await act(async () => { release!(); await Promise.resolve(); });
-    expect(screen.queryByText('Ada')).not.toBeInTheDocument();
+    expect(screen.queryByRole('img', { name: 'Ada' })).not.toBeInTheDocument();
   });
   it('retries an uncertain poll vote with the same request id', async () => {
     const user = userEvent.setup(); const f = utilityFixture();
@@ -568,15 +588,15 @@ describe('poll card binding', () => {
     const view = render(createElement(PollCard, props));
     expect(await screen.findByRole('heading', { name: 'Lunch?' })).toBeInTheDocument();
     f.failNext(73, false);
-    await user.click(screen.getAllByRole('checkbox')[0]); await user.click(screen.getByRole('button', { name: 'Submit vote' }));
-    await screen.findByText('The vote result is uncertain. Refresh the poll before trying again.');
+    await user.click(screen.getAllByRole('button', { name: /^(Soup|Salad)/ })[0]);
+    await screen.findByText('Your vote may not have counted. Tap it again to retry.');
     const first = f.requests.find(row => row.operation === 73)!;
     view.rerender(createElement(PollCard, { ...props, bits: PERM.viewChannel | PERM.sendMessages }));
-    expect(screen.getAllByRole('checkbox')[0]).toBeChecked(); view.unmount();
+    expect(screen.getAllByRole('button', { name: /^(Soup|Salad)/ })[0]).toHaveAttribute('aria-pressed', 'true'); view.unmount();
     render(createElement(PollCard, { ...props, bits: PERM.viewChannel | PERM.sendMessages }));
-    expect(await screen.findByRole('button', { name: 'Retry vote' })).toBeEnabled(); expect(screen.getAllByRole('checkbox')[0]).toBeChecked();
-    await user.click(screen.getByRole('button', { name: 'Retry vote' }));
-    await screen.findByText('The vote result is uncertain. Refresh the poll before trying again.');
+    expect(await screen.findByRole('button', { name: /^Soup/ })).toBeEnabled(); expect(screen.getAllByRole('button', { name: /^(Soup|Salad)/ })[0]).toHaveAttribute('aria-pressed', 'true');
+    await user.click(screen.getByRole('button', { name: /^Soup/ }));
+    await screen.findByText('Your vote may not have counted. Tap it again to retry.');
     const mutations = f.requests.filter(row => row.operation === 73);
     expect(mutations.length).toBeGreaterThan(0); expect(mutations.every(row => row.requestId === first.requestId)).toBe(true);
     const selectedMutation = mutations[0]; expect(selectedMutation).toBeDefined();
@@ -590,12 +610,12 @@ describe('poll card binding', () => {
     const user = userEvent.setup(); const props = { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
       body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: PERM.viewChannel | PERM.sendMessages };
     const view = render(createElement(PollCard, props)); await screen.findByRole('heading', { name: 'Lunch?' }); f.failNext(73, false);
-    await user.click(screen.getAllByRole('checkbox')[0]); await user.click(screen.getByRole('button', { name: 'Submit vote' }));
-    await screen.findByText('The vote result is uncertain. Refresh the poll before trying again.');
-    const originalId = f.requests.find(row => row.operation === 73)!.requestId; ready = false; await user.click(screen.getByRole('button', { name: 'Retry vote' }));
+    await user.click(screen.getAllByRole('button', { name: /^(Soup|Salad)/ })[0]);
+    await screen.findByText('Your vote may not have counted. Tap it again to retry.');
+    const originalId = f.requests.find(row => row.operation === 73)!.requestId; ready = false; await user.click(screen.getByRole('button', { name: /^Soup/ }));
     await waitFor(() => expect(screen.queryByRole('heading', { name: 'Lunch?' })).not.toBeInTheDocument());
     ready = true; act(() => { refresh(); }); await screen.findByRole('heading', { name: 'Lunch?' });
-    await user.click(screen.getByRole('button', { name: 'Retry vote' }));
+    await user.click(screen.getByRole('button', { name: /^Soup/ }));
     expect(f.requests.filter(row => row.operation === 73).every(row => row.requestId === originalId)).toBe(true); view.unmount();
   });
   it('reconciles a threaded poll from its authoritative host items, independent of quote metadata', async () => {
@@ -604,7 +624,7 @@ describe('poll card binding', () => {
     const binding = { communityId: COMMUNITY, channelId: CHANNEL, threadId: rootId, bits: PERM.sendMessages | PERM.viewChannel };
     const context = commandContext(f.client, requestId, { binding, getCurrentBinding: () => binding }); const invocation = { commandId: 'poll create', args: { question: 'Thread poll?', answers: 'A, B' } };
     let run!: Promise<unknown>; act(() => { run = mounted.captured.value!.handlers['poll create']!(invocation, context); });
-    await screen.findByRole('heading', { name: 'Create a poll' }); f.failNext(70); await user.click(screen.getByRole('button', { name: 'Save' })); expect(await run).toMatchObject({ status: 'uncertain' });
+    await screen.findByRole('heading', { name: 'New poll in #lobby' }); f.failNext(70); await user.click(screen.getByRole('button', { name: 'Post poll' })); expect(await run).toMatchObject({ status: 'uncertain' });
     const message = { key: 's10', state: 'ok' as const, reason: '', senderUser: BOT, senderDevice: null, own: false, web: false, bot: true, ts: 1_800_000_000,
       body: `Thread poll?\n[dilla-poll:v1:${requestId}]`, msgId: 'be'.repeat(16), seq: '10', edited: false,
       reply: { msgId: 'bf'.repeat(16), senderUser: BOT, seq: null, excerpt: 'quoted from another thread', state: 'ok' as const, threadRoot: 'c0'.repeat(16) },
@@ -642,19 +662,18 @@ describe('utility outcome and privacy regressions', () => {
     const user = userEvent.setup(); const view = render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
       body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: PERM.viewChannel | PERM.sendMessages }));
     await screen.findByRole('heading', { name: 'Lunch?' }); f.failNext(operation, false);
-    if (operation === 73) await user.click(screen.getAllByRole('checkbox')[0]);
-    await user.click(screen.getByRole('button', { name: operation === 73 ? 'Submit vote' : 'Close poll' }));
+    await user.click(screen.getByRole('button', { name: operation === 73 ? /^Soup/ : 'Close poll' }));
     await waitFor(() => expect(uncertain && failedRead).toBe(true));
     const originalId = f.requests.find(row => row.operation === operation)!.requestId;
     act(() => { refresh(); });
-    const retry = await screen.findByRole('button', { name: operation === 73 ? 'Retry vote' : 'Retry close' });
-    expect(retry).toBeEnabled(); expect(screen.getAllByRole('checkbox')[0]).toBeDisabled();
-    if (operation === 73) expect(screen.getAllByRole('checkbox')[0]).toBeChecked();
+    const retry = await screen.findByRole('button', { name: operation === 73 ? /^Soup/ : 'Close poll' });
+    expect(retry).toBeEnabled(); expect(screen.getAllByRole('button', { name: /^(Soup|Salad)/ })[0])[operation === 73 ? 'toBeEnabled' : 'toBeDisabled']();
+    if (operation === 73) expect(screen.getAllByRole('button', { name: /^(Soup|Salad)/ })[0]).toHaveAttribute('aria-pressed', 'true');
     corrupt = false; await user.click(retry);
     // The transport retains its original undecodable receipt even after the wire recovers.
     await waitFor(() => expect(retry).toBeEnabled());
     expect(attemptedIds).toEqual([originalId, originalId]);
-    expect(screen.getAllByRole('checkbox')[0]).toBeDisabled();
+    expect(screen.getAllByRole('button', { name: /^(Soup|Salad)/ })[0])[operation === 73 ? 'toBeEnabled' : 'toBeDisabled']();
     view.unmount();
   });
 
@@ -670,14 +689,13 @@ describe('utility outcome and privacy regressions', () => {
     const user = userEvent.setup(); const view = render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
       body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: PERM.viewChannel | PERM.sendMessages }));
     await screen.findByRole('heading', { name: 'Lunch?' });
-    if (operation === 73) await user.click(screen.getAllByRole('checkbox')[0]);
-    await user.click(screen.getByRole('button', { name: operation === 73 ? 'Submit vote' : 'Close poll' }));
+    await user.click(screen.getByRole('button', { name: operation === 73 ? /^Soup/ : 'Close poll' }));
     await waitFor(() => expect(failedRead).toBe(true));
-    await waitFor(() => expect(screen.getAllByRole('checkbox')[0]).toBeEnabled());
+    await waitFor(() => expect(screen.getAllByRole('button', { name: /^(Soup|Salad)/ })[0]).toBeEnabled());
     expect(screen.queryByRole('button', { name: /Retry/ })).not.toBeInTheDocument();
     act(() => { refresh(); });
-    if (operation === 74) await screen.findByText('Poll closed');
-    else await waitFor(() => expect(screen.getByRole('button', { name: '1 · Soup' })).toBeInTheDocument());
+    if (operation === 74) await screen.findByText('CLOSED');
+    else await waitFor(() => expect(screen.getByRole('button', { name: /^Soup/ })).toBeInTheDocument());
     expect(f.requests.filter(row => row.operation === operation)).toHaveLength(1); view.unmount();
   });
   it('keeps a typed accepted close definitive when the following capability check fails', async () => {
@@ -688,7 +706,7 @@ describe('utility outcome and privacy regressions', () => {
     const user = userEvent.setup(); const view = render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
       body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: PERM.viewChannel | PERM.sendMessages }));
     await screen.findByRole('heading', { name: 'Lunch?' }); await user.click(screen.getByRole('button', { name: 'Close poll' }));
-    await screen.findByText('Poll closed'); expect(screen.queryByRole('button', { name: /Retry/ })).not.toBeInTheDocument();
+    await screen.findByText('CLOSED'); expect(screen.queryByRole('button', { name: /Retry/ })).not.toBeInTheDocument();
     expect(f.requests.filter(row => row.operation === 74)).toHaveLength(1); view.unmount();
   });
   it.each([73, 74] as const)('keeps operation %s uncertain across unrelated typed capability statuses', async operation => {
@@ -699,18 +717,17 @@ describe('utility outcome and privacy regressions', () => {
     const user = userEvent.setup(); const view = render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
       body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: PERM.viewChannel | PERM.sendMessages }));
     await screen.findByRole('heading', { name: 'Lunch?' }); f.failNext(operation, false);
-    if (operation === 73) await user.click(screen.getAllByRole('checkbox')[0]);
-    await user.click(screen.getByRole('button', { name: operation === 73 ? 'Submit vote' : 'Close poll' }));
-    await screen.findByText('The vote result is uncertain. Refresh the poll before trying again.');
+    await user.click(screen.getByRole('button', { name: operation === 73 ? /^Soup/ : 'Close poll' }));
+    await screen.findByText(operation === 73 ? 'Your vote may not have counted. Tap it again to retry.' : 'The vote result is uncertain. Refresh the poll before trying again.');
     const original = f.requests.find(row => row.operation === operation)!.requestId;
     for (const status of [2, 3, 4]) {
-      rejectedStatus = status; await user.click(screen.getByRole('button', { name: operation === 73 ? 'Retry vote' : 'Retry close' }));
+      rejectedStatus = status; await user.click(screen.getByRole('button', { name: operation === 73 ? /^Soup/ : 'Close poll' }));
       await waitFor(() => expect(screen.queryByRole('heading', { name: 'Lunch?' })).not.toBeInTheDocument());
       rejectedStatus = null; act(() => { refresh(); }); await screen.findByRole('heading', { name: 'Lunch?' });
-      expect(screen.getByRole('button', { name: operation === 73 ? 'Retry vote' : 'Retry close' })).toBeEnabled();
-      if (operation === 73) expect(screen.getAllByRole('checkbox')[0]).toBeChecked();
+      expect(screen.getByRole('button', { name: operation === 73 ? /^Soup/ : 'Close poll' })).toBeEnabled();
+      if (operation === 73) expect(screen.getAllByRole('button', { name: /^(Soup|Salad)/ })[0]).toHaveAttribute('aria-pressed', 'true');
     }
-    await user.click(screen.getByRole('button', { name: operation === 73 ? 'Retry vote' : 'Retry close' }));
+    await user.click(screen.getByRole('button', { name: operation === 73 ? /^Soup/ : 'Close poll' }));
     expect(f.requests.filter(row => row.operation === operation).every(row => row.requestId === original)).toBe(true); view.unmount();
   });
   it.each(['reminders list', 'reminders cancel', 'reminders dismiss', 'partial list'] as const)('%s validates a superseded snapshot after community revocation', async action => {
@@ -747,10 +764,9 @@ describe('utility outcome and privacy regressions', () => {
     const user = userEvent.setup(); const view = render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
       body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: PERM.viewChannel | PERM.sendMessages }));
     await screen.findByRole('heading', { name: 'Lunch?' }); f.failNext(operation, false);
-    if (operation === 73) await user.click(screen.getAllByRole('checkbox')[0]);
-    await user.click(screen.getByRole('button', { name: operation === 73 ? 'Submit vote' : 'Close poll' }));
-    await screen.findByText('The vote result is uncertain. Refresh the poll before trying again.');
-    expect(screen.getByRole('button', { name: operation === 73 ? 'Retry vote' : 'Retry close' })).toBeEnabled(); view.unmount();
+    await user.click(screen.getByRole('button', { name: operation === 73 ? /^Soup/ : 'Close poll' }));
+    await screen.findByText(operation === 73 ? 'Your vote may not have counted. Tap it again to retry.' : 'The vote result is uncertain. Refresh the poll before trying again.');
+    expect(screen.getByRole('button', { name: operation === 73 ? /^Soup/ : 'Close poll' })).toBeEnabled(); view.unmount();
   });
   it.each([73, 74] as const)('releases a fresh operation %s when its preflight proves nothing was dispatched', async operation => {
     const f = utilityFixture(); const real = ClientCore.createBotUtilities(f.client, COMMUNITY); let reject = false;
@@ -761,8 +777,8 @@ describe('utility outcome and privacy regressions', () => {
     const user = userEvent.setup(); const view = render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
       body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: PERM.viewChannel | PERM.sendMessages }));
     await screen.findByRole('heading', { name: 'Lunch?' }); reject = true;
-    await user.click(screen.getByRole('button', { name: operation === 73 ? 'Submit vote' : 'Close poll' }));
-    await waitFor(() => expect(screen.getAllByRole('checkbox')[0]).toBeEnabled());
+    await user.click(screen.getByRole('button', { name: operation === 73 ? /^Soup/ : 'Close poll' }));
+    await waitFor(() => expect(screen.getAllByRole('button', { name: /^(Soup|Salad)/ })[0]).toBeEnabled());
     expect(screen.queryByRole('button', { name: /Retry/ })).not.toBeInTheDocument(); expect(f.requests.some(row => row.operation === operation)).toBe(false); view.unmount();
   });
   it('keeps an accepted vote definitive when its following capability check fails', async () => {
@@ -772,9 +788,9 @@ describe('utility outcome and privacy regressions', () => {
       pollVote: async input => { const result = await real.pollVote(input); reject = true; return result; } });
     const user = userEvent.setup(); const view = render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
       body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: PERM.viewChannel | PERM.sendMessages }));
-    await screen.findByRole('heading', { name: 'Lunch?' }); await user.click(screen.getAllByRole('checkbox')[0]); await user.click(screen.getByRole('button', { name: 'Submit vote' }));
-    await waitFor(() => expect(screen.getAllByRole('checkbox')[0]).toBeEnabled()); expect(screen.getAllByRole('checkbox')[0]).toBeChecked();
-    await user.click(screen.getAllByRole('checkbox')[1]); await user.click(screen.getByRole('button', { name: 'Submit vote' }));
+    await screen.findByRole('heading', { name: 'Lunch?' }); await user.click(screen.getAllByRole('button', { name: /^(Soup|Salad)/ })[0]);
+    await waitFor(() => expect(screen.getAllByRole('button', { name: /^(Soup|Salad)/ })[0]).toBeEnabled()); expect(screen.getAllByRole('button', { name: /^(Soup|Salad)/ })[0]).toHaveAttribute('aria-pressed', 'true');
+    await user.click(screen.getAllByRole('button', { name: /^(Soup|Salad)/ })[1]);
     await waitFor(() => expect(f.poll.myChoices).toEqual([0, 1])); expect(new Set(f.requests.filter(row => row.operation === 73).map(row => row.requestId)).size).toBe(2); view.unmount();
   });
   it.each(['disabled', 'reinstalled', 'device'] as const)('revalidates %s before returning an earlier community reminder page', async change => {
@@ -809,12 +825,12 @@ describe('utility outcome and privacy regressions', () => {
     await screen.findByRole('heading', { name: 'Lunch?' });
     for (const terminal of [2, 3, 4]) {
       const before = ids.length;
-      status = terminal; await user.click(screen.getByRole('button', { name: operation === 73 ? 'Submit vote' : 'Close poll' }));
-      await waitFor(() => expect(screen.getAllByRole('checkbox')[0]).toBeEnabled());
+      status = terminal; await user.click(screen.getByRole('button', { name: operation === 73 ? /^Soup/ : 'Close poll' }));
+      await waitFor(() => expect(screen.getAllByRole('button', { name: /^(Soup|Salad)/ })[0]).toBeEnabled());
       expect(screen.queryByRole('button', { name: /Retry/ })).not.toBeInTheDocument();
       expect(ids).toHaveLength(before + (operation === 74 && terminal === 4 ? 2 : 1));
     }
-    status = null; await user.click(screen.getByRole('button', { name: operation === 73 ? 'Submit vote' : 'Close poll' }));
+    status = null; await user.click(screen.getByRole('button', { name: operation === 73 ? /^Soup/ : 'Close poll' }));
     await waitFor(() => expect(f.requests.some(row => row.operation === operation)).toBe(true));
     expect(new Set(ids).size).toBe(operation === 74 ? 4 : 3); expect(ids).not.toContain(f.requests.find(row => row.operation === operation)!.requestId); view.unmount();
   });
@@ -826,9 +842,8 @@ describe('byte-bounded utility discovery and reconciliation', () => {
   it('recovers a created reminder after six other long one-record pages', async () => {
     const f = utilityFixture(); const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
     const context = commandContext(f.client, 'c1'.repeat(16)); const invoke = { commandId: 'remind', args: { when: 'in 1h', text: 'Recovered seventh reminder' } };
-    const user = userEvent.setup(); let first!: Promise<CommandResult>;
-    act(() => { first = mounted.captured.value!.handlers.remind!(invoke, context); });
-    await screen.findByRole('heading', { name: 'Set a reminder' }); f.failNext(80); await user.click(screen.getByRole('button', { name: 'Save' }));
+    let first!: Promise<CommandResult>;
+    f.failNext(80); act(() => { first = mounted.captured.value!.handlers.remind!(invoke, context); });
     expect(await first).toMatchObject({ status: 'uncertain' });
     const saved = f.reminder!; const base = f.client.handler; let pages = 0;
     f.client.handler = command => {
@@ -906,4 +921,12 @@ it('keeps the reminders popover open, once, when its trigger moves between actio
   act(() => { screen.getByRole('dialog', { name: 'Reminders' }).querySelector<HTMLElement>('[role="tab"]')?.focus(); });
   await user.keyboard('{Escape}');
   expect(screen.queryByRole('dialog', { name: 'Reminders' })).toBeNull();
+});
+
+// Wave B Task 2 fix round 1: a reminder's text over 1500 bytes has its own message.
+it('says a reminder text over 1500 bytes is too long', () => {
+  const now = new Date('2026-10-30T17:00:00Z');
+  expect(reminderFromArgs({ when: '1h', text: 'x'.repeat(1501), timezone: 'Europe/Stockholm' }, now)).toEqual({ error: 'A reminder is at most 1500 bytes. Shorten the text.' });
+  expect(reminderFromArgs({ when: 'soon', text: 'ok', timezone: 'Europe/Stockholm' }, now)).toEqual({ error: 'Choose a valid time from 1 minute to 365 days away and enter reminder text.' });
+  expect(reminderFromArgs({ when: '1h', text: 'ok', timezone: 'Europe/Stockholm' }, now)).toMatchObject({ value: { text: 'ok', timezone: 'Europe/Stockholm' } });
 });

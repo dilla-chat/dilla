@@ -26,7 +26,7 @@ describe('the Signal message row', () => {
     expect(rule('.d-message-row')).toMatch(/animation: d-up var\(--duration-enter\) var\(--ease-out\) backwards;\s*animation-delay: calc\(var\(--d-enter-i, 0\) \* var\(--duration-stagger\)\)/);
   });
   it('hovers with bg-3 and a 2px accent bar; a mention of me is warn-soft with the mention bar', () => {
-    expect(css).toMatch(/\.d-message-row:hover, \.d-message-row\[data-hover="true"\] \{ background: var\(--bg-3\); box-shadow: inset 2px 0 0 var\(--accent\); \}/);
+    expect(css).toMatch(/\.d-message-row:hover, \.d-message-row\[data-hover="true"\], \.d-message-row\[data-revealed="true"\] \{ background: var\(--bg-3\); box-shadow: inset 2px 0 0 var\(--accent\); \}/);
     expect(rule('.d-message-row[data-mention="true"]')).toContain('background: var(--warn-soft); box-shadow: inset 2px 0 0 var(--mention)');
   });
   it('keeps the gutter time on one line, clipped inside its column', () => {

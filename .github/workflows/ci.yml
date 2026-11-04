@@ -86,6 +86,7 @@ jobs:
       - run: npm run check:css
       - run: npm run test:bot-ops-check
       - run: npm run check:bot-ops
+      - run: npm run check:desktop-auth
       - run: npm run test:ci-check
       - run: npm run test:wasm-size-check
       - run: npm run test:manifest-writer
@@ -481,6 +482,9 @@ jobs:
         with:
           path: ~/.cache/apt-debs
           key: ${{ steps.apt-browser-media.outputs.cache-primary-key }}
+      # The voice join fixture's own unit tests (e2e/ux/voice-fixture.mjs) drive a real page, so they run here,
+      # where Chromium is installed; the node job has no Playwright browsers.
+      - run: npm run test:voice-fixture -w @dilla/e2e
       - run: sh scripts/ci-audio-server.sh
       - run: npm run test:e2e:media -w @dilla/e2e
         env:

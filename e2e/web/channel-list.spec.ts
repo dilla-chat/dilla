@@ -12,8 +12,9 @@ import { addServerVia,
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { chromiumMediaArgs, writeFixtures } from '../media/support/fixtures';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
+import { e2ePort } from './support/ports';
 
-const EMPTY: HostConfig = { port: 8525, control: 8526, webRoot: 'packages/web/dist', sfu: { port: 7892, udpPort: 7894 } };
+const EMPTY: HostConfig = { port: e2ePort(8525), control: e2ePort(8526), webRoot: 'packages/web/dist', sfu: { port: e2ePort(7892), udpPort: e2ePort(7894) } };
 const SERVER = 'Midgard Crew';
 const OWNER = 'Ada';
 

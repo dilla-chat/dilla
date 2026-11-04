@@ -5,6 +5,7 @@ import { themes } from '../../packages/design-tokens/src/tokens.ts';
 //   npm run build -w @dilla/web
 //   GO=/path/to/go npm run docs:shots -w @dilla/e2e            # or: node e2e/scripts/shoot-docs.mjs
 //   node e2e/scripts/shoot-docs.mjs --port 8471 --control 8472 --out docs/user/screenshots
+//   npm run docs:shots -w @dilla/e2e -- --wave-b-state /absolute/ux-world/state.json
 //
 // What it does, in order:
 //   1. builds target/dilla-testhost (`go build`, $GO or `go`) and starts it on 127.0.0.1:<port> and
@@ -39,7 +40,7 @@ import { themes } from '../../packages/design-tokens/src/tokens.ts';
 // deleted with the host's data directory. Not part of CI: nothing runs it but a person.
 import { execFileSync, spawn } from 'node:child_process';
 import { randomBytes, randomInt } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
@@ -155,6 +156,8 @@ export function parseArgs(argv) {
       out[flag.slice(2)] = n;
     } else if (flag === '--out') {
       out.outDir = path.resolve(process.cwd(), value);
+    } else if (flag === '--wave-b-state') {
+      out.waveBState = path.resolve(process.cwd(), value);
     } else if (flag === '--ui-out') {
       out.uiOut = path.resolve(process.cwd(), value);
     } else if (flag === '--fullscreen-settings-out') {
@@ -310,40 +313,51 @@ async function onboard(page, person, invite, shots) {
   await byText(page, 'button', 'onboarding.next').click();
   await byText(page, 'heading', 'onboarding.identity.title').waitFor({ timeout: WAIT });
   await page.getByLabel(t('onboarding.identity.username'), { exact: true }).fill(person.username);
-  await page.getByLabel(t('onboarding.identity.display'), { exact: true }).fill(person.display);
   const password = page.getByLabel(t('onboarding.identity.password'), { exact: true });
   if (await password.count() > 0) await password.fill(person.username === 'mira' ? MIRA_PASSWORD : `docs-${hex(randomBytes(8))}`);
   await shot('onboarding-2-name');
-  await byText(page, 'button', 'onboarding.next').click();
+  // Wave B task 3b: Create account makes the keys; I saved it, once ticked, creates the account.
+  await byText(page, 'button', 'onboarding.identity.submit').click();
   await byText(page, 'heading', 'onboarding.keys.title').waitFor({ timeout: WAIT });
   await page.locator('.d-recovery-key li').first().waitFor({ timeout: WAIT });
   const recoveryKey = person.username === 'mira' ? (await page.locator('.d-recovery-key li').allTextContents()).join(' ') : null;
   await shot('onboarding-3-recovery-key');
   await byText(page, 'checkbox', 'onboarding.keys.acknowledge').check();
-  await byText(page, 'button', 'onboarding.next').click();
-  await byText(page, 'heading', 'onboarding.browser.title').waitFor({ timeout: WAIT });
-  await shot('onboarding-4-browser');
-  await byText(page, 'button', 'onboarding.browser.submit').click();
+  await byText(page, 'button', 'onboarding.keys.submit').click();
   await byText(page, 'heading', 'factor.choose.title').waitFor({ timeout: WAIT });
   await shot('onboarding-5-factor-choose');
   await page.getByRole('radio', { name: new RegExp(t('factor.choose.app')) }).check();
   await byText(page, 'button', 'factor.choose.next').click();
-  await byText(page, 'heading', 'factor.totp.title').waitFor({ timeout: WAIT });
+  await byText(page, 'heading', 'factor.totp.titleSignup').waitFor({ timeout: WAIT });
   const keyField = page.getByLabel(t('factor.totp.key'), { exact: true });
   await page.waitForFunction(() => /^[A-Z2-7]{16,}$/.test(document.querySelector('#factor-totp-key')?.value ?? ''), null, { timeout: WAIT });
   const authenticator = { totpSecret: await keyField.inputValue(), lastCounter: -1 };
   authenticators.set(person.username, authenticator);
   await shot('onboarding-5-factor-app');
+  // Wave B task 3: the sixth digit in the code boxes submits automatically; Verify also submits.
   await page.getByLabel(t('factor.totp.code'), { exact: true }).fill(await nextCode(controlBase, authenticator));
-  await byText(page, 'button', 'factor.totp.submit').click();
-  await byText(page, 'heading', 'factor.codes.title').waitFor({ timeout: WAIT });
-  await shot('onboarding-5-factor-codes');
-  await byText(page, 'checkbox', 'factor.codes.ack').check();
-  await byText(page, 'button', 'factor.codes.next').click();
+  // Step 6: the backup codes, whose box gates Open dilla.
   await byText(page, 'heading', 'onboarding.done.title').waitFor({ timeout: WAIT });
   await shot('onboarding-5-done');
+  if (shots) {
+    const previous = page.viewportSize();
+    await page.setViewportSize(PHONE_APP);
+    await shot('onboarding-6-done-phone');
+    if (previous) await page.setViewportSize(previous);
+  }
+  await byText(page, 'checkbox', 'onboarding.done.codesAck').check();
   await byText(page, 'button', 'onboarding.done.next').click();
   await byText(page, 'navigation', 'shell.rail.label').waitFor({ timeout: WAIT });
+  // Sign-up asks for no display name (task 3b): the person sets it in Settings → Profile.
+  if (person.display) {
+    await page.goto('/settings/profile');
+    const display = page.getByRole('textbox', { name: t('profile.display.label'), exact: true });
+    await display.waitFor({ timeout: WAIT });
+    await display.fill(person.display);
+    await page.getByRole('status').filter({ hasText: t('profile.saved') }).first().waitFor({ timeout: WAIT });
+    await page.keyboard.press('Escape');
+    await byText(page, 'navigation', 'shell.rail.label').waitFor({ timeout: WAIT });
+  }
   return recoveryKey;
 }
 
@@ -514,8 +528,88 @@ async function leaveVoice(page) {
   await dock(page).waitFor({ state: 'detached', timeout: WAIT });
 }
 
+// Wave B needs the managed Bot. Reuse an isolated UX world instead of running a second
+// host beside it: npm run docs:shots -w @dilla/e2e -- --wave-b-state /absolute/world/state.json
+// This mode changes the world (it posts a reminder and poll); restart before parity.
+export const WAVE_B_SHOTS = ['signal-command-list', 'signal-command-chips', 'signal-private-result',
+  'signal-poll-dialog', 'signal-poll-card', 'signal-code-step'];
+async function shootWaveB(o) {
+  const state = JSON.parse(readFileSync(o.waveBState, 'utf8'));
+  if (state.ready !== true) throw new Error('The UX world is not READY');
+  mkdirSync(o.outDir, { recursive: true });
+  const remote = await chromium.connectOverCDP(`http://127.0.0.1:${state.cdp.mira}`);
+  const page = remote.contexts()[0].pages()[0];
+  const viewport = page.viewportSize();
+  let fresh;
+  const shot = async (name, source = page) => {
+    await source.evaluate(() => document.fonts.ready);
+    await source.waitForTimeout(600);
+    await source.screenshot({ path: path.join(o.outDir, `${name}.png`) });
+    console.log(`shoot-docs: ${name}.png`);
+  };
+  const command = async (name) => {
+    await page.goto(new URL(state.serverPath, state.publicUrl).href);
+    await page.locator('main textarea.d-composer__input').fill('/');
+    const field = page.getByRole('textbox', { name: 'Command', exact: true });
+    await field.waitFor();
+    if (name) await field.fill(name);
+    return field;
+  };
+  try {
+    await page.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' });
+    await page.setViewportSize(DESKTOP);
+    await command();
+    await page.getByRole('option', { name: /^\/remind,/ }).waitFor({ timeout: WAIT });
+    await shot('signal-command-list');
+    const field = page.getByRole('textbox', { name: 'Command', exact: true });
+    await field.fill('/remind');
+    await field.press('Enter');
+    await page.getByRole('combobox', { name: 'when', exact: true }).fill('in 1 hour');
+    await page.keyboard.press('Tab');
+    const text = page.getByRole('textbox', { name: 'text', exact: true });
+    await text.fill('bring two ropes');
+    await shot('signal-command-chips');
+    await text.press('Enter');
+    await page.locator('.d-bot-result[data-status="success"]').waitFor({ timeout: WAIT });
+    await shot('signal-private-result');
+    await command('/poll create');
+    await page.getByRole('option', { name: /^\/poll create,/ }).click();
+    const poll = page.locator('.d-poll-dialog dialog[open]');
+    await poll.getByRole('textbox', { name: 'Question', exact: true }).fill('What should we raid on Friday?');
+    await poll.getByRole('textbox', { name: 'Answer 1', exact: true }).fill('the bridge');
+    await poll.getByRole('textbox', { name: 'Answer 2', exact: true }).fill('the harbour');
+    await shot('signal-poll-dialog');
+    await poll.getByRole('button', { name: 'Post poll', exact: true }).click();
+    const card = page.locator('.d-poll-card').last();
+    await card.waitFor({ timeout: WAIT });
+    await page.locator('.d-bot-result[data-status="success"]').filter({ hasText: 'Poll posted' }).waitFor({ timeout: WAIT });
+    await page.getByRole('log').evaluate(log => { log.scrollTop = log.scrollHeight; });
+    await card.screenshot({ path: path.join(o.outDir, 'signal-poll-card.png') });
+    console.log('shoot-docs: signal-poll-card.png');
+    fresh = await chromium.launch({ headless: true });
+    const context = await fresh.newContext({ viewport: DESKTOP, baseURL: state.publicUrl,
+      colorScheme: 'dark', reducedMotion: 'reduce' });
+    const login = await context.newPage();
+    await login.goto('/welcome');
+    await byText(login, 'button', 'onboarding.connect.signIn').click();
+    await login.getByLabel(t('signin.login.username'), { exact: true }).fill('mira');
+    await login.getByLabel(t('signin.login.password'), { exact: true }).fill(state.people.mira.password);
+    await byText(login, 'button', 'signin.login.submit').click();
+    await byText(login, 'heading', 'signin.totp.title').waitFor();
+    await shot('signal-code-step', login);
+  } finally {
+    await fresh?.close();
+    await page.keyboard.press('Escape').catch(() => {});
+    if (viewport) await page.setViewportSize(viewport);
+    await page.goto(new URL(state.serverPath, state.publicUrl).href).catch(() => {});
+    await remote.close();
+  }
+  return 0;
+}
+
 async function main(argv) {
   const o = parseArgs(argv);
+  if (o.waveBState) return shootWaveB(o);
   const publicUrl = `http://127.0.0.1:${o.port}`;
   const controlUrl = `http://127.0.0.1:${o.control}`;
   controlBase = controlUrl;
@@ -562,7 +656,7 @@ async function main(argv) {
     const pages = {};
     const shotsOf = (page) => async (name) => {
       const file = path.join(o.outDir, `${name}.png`);
-      await page.screenshot({ path: file });
+      await page.screenshot({ path: file, fullPage: name === 'onboarding-5-done' });
       written.push(file);
     };
 
@@ -776,10 +870,10 @@ async function main(argv) {
     await byId(pages.bjorn, packId).locator('button[data-emoji="👍"][aria-pressed="true"]')
       .waitFor({ timeout: WAIT });
     await toolbarAction(pages.bjorn, packId, 'shell.message.react');
-    await pickEmoji(pages.bjorn, 'shell.emoji.10');
+    await pickEmoji(pages.bjorn, 'shell.emoji.05');
     await byId(pages.bjorn, packId).locator('button[data-emoji="🔥"][aria-pressed="true"]')
       .waitFor({ timeout: WAIT });
-    for (const [key, count] of [['shell.emoji.01', 2], ['shell.emoji.10', 1]]) {
+    for (const [key, count] of [['shell.emoji.01', 2], ['shell.emoji.05', 1]]) {
       await byId(mira, packId).getByRole('button', {
         name: t('shell.message.reaction', { name: t(key), count }), exact: true,
       }).waitFor({ timeout: WAIT });
@@ -898,10 +992,10 @@ async function main(argv) {
     await shootSecond('signin-1-login');
     await byText(second, 'button', 'signin.login.submit').click();
     await byText(second, 'heading', 'signin.totp.title').waitFor({ timeout: WAIT });
-    await second.getByLabel(t('signin.totp.code'), { exact: true }).fill(await nextCode(controlUrl, authenticators.get(PEOPLE.mira.username)));
+    // Capture before the sixth digit submits and advances to the recovery-key step.
     await settle(second);
     await shootSecond('signin-2-code');
-    await byText(second, 'button', 'signin.login.submit').click();
+    await second.getByLabel(t('signin.totp.code'), { exact: true }).fill(await nextCode(controlUrl, authenticators.get(PEOPLE.mira.username)));
     await byText(second, 'heading', 'signin.key.title').waitFor({ timeout: WAIT });
     if (miraKey === null) throw new Error('mira recovery key was not captured');
     await second.getByRole('textbox', { name: t('signin.key.label'), exact: true }).fill(miraKey);
@@ -1372,9 +1466,10 @@ async function main(argv) {
     await mira.mouse.move(-10, -10);
     if (!membersWereOpen) await membersButton.click();
 
-    // AW6: the built-in AFK channel hosts no call. One click marks Mira away; the AFK row lists her with `afk.away`.
+    // Wave B: the AFK row opens its page; Go AFK marks Mira away without joining a call.
     await railServer(mira, SERVER).click();
     await voiceRow(mira, 'AFK').click();
+    await byText(mira, 'button', 'afk.go').click();
     await mira.locator('.d-voice-row__person[data-away="true"]').first().waitFor({ timeout: WAIT });
     await settle(mira);
     await shoot('afk-call-desktop');

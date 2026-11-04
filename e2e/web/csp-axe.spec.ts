@@ -4,7 +4,7 @@ import { expect } from '@playwright/test';
 import { addServerVia,
   COPY, HOST, TEST_TIMEOUT, WAIT, copy, escapeRegExp, expectAccessible, expectHeading, expectShell, instanceInvite,
   joinCommunity, messageRow, nextButton, openChannel, railNav, readManifest, readRecoveryKey, splash, submitButton,
-  tag, test, completeFactorStep, newAccount,
+  tag, test, completeFactorStep, keysSubmitButton, newAccount,
 } from './support/app';
 
 test.describe.configure({ timeout: TEST_TIMEOUT });
@@ -86,28 +86,24 @@ test('every state of the slice passes axe with target-size, in the Signal theme,
   await expectAccessible(page, 'onboarding: connect');
   await nextButton(page).click();
 
-  // One field in error, and only one: the display name and the password are valid when the step is
-  // submitted, so the single alert is the username's.
+  // One field in error, and only one: the password is valid when the step is submitted, so the single alert is the
+  // username's. Wave B task 3b: step 2 has no display name, and Create account makes the keys.
   await expectHeading(page, COPY.identityTitle);
-  await expectAccessible(page, 'onboarding: identity');
-  await page.getByLabel(copy(COPY.displayLabel), { exact: true }).fill('axe tester');
+  await expectAccessible(page, 'onboarding: account');
   await page.getByLabel(copy(COPY.passwordLabel), { exact: true }).fill('e2e-password-1234');
   await page.getByLabel(copy(COPY.usernameLabel), { exact: true }).fill('A');
-  await nextButton(page).click();
+  await submitButton(page).click();
   await expect(page.getByRole('alert')).toHaveCount(1, { timeout: WAIT });
   await expect(page.getByRole('alert')).toBeVisible();
-  await expectAccessible(page, 'onboarding: identity with a field error');
+  await expectAccessible(page, 'onboarding: account with a field error');
   await page.getByLabel(copy(COPY.usernameLabel), { exact: true }).fill(`a${setup.user_id.slice(0, 8)}`);
-  await nextButton(page).click();
+  await submitButton(page).click();
 
   await expectHeading(page, COPY.keysTitle);
   expect(await readRecoveryKey(page)).toHaveLength(13);
   await expectAccessible(page, 'onboarding: keys');
   await page.getByRole('checkbox', { name: copy(COPY.keysAcknowledge), exact: true }).check();
-  await nextButton(page).click();
-  await expectHeading(page, COPY.deviceTitle);
-  await expectAccessible(page, 'onboarding: what this browser keeps');
-  await submitButton(page).click();
+  await keysSubmitButton(page).click();
   await completeFactorStep(page, newAccount(), (state) => expectAccessible(page, `onboarding: second factor ${state}`));
   await expectHeading(page, COPY.doneTitle);
   await expectAccessible(page, 'onboarding: done');

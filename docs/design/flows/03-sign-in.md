@@ -43,7 +43,7 @@ On a closed instance (registration mode 2) the closed frame of `01-onboarding.md
 button stands under the closed frame's paragraph instead (see "States"): a closed instance still has
 accounts that want a second browser.
 
-Worker commands (R6, R7). `Use an existing account` sends `signInBegin` (phase `signin-login`). Step 1 asks
+Worker commands (R6, R7). `Already have an account? Sign in` (onboarding steps 1 to 3) sends `signInBegin` (phase `signin-login`). Step 1 asks
 for the username and the password, and its `Continue` sends `signInLogin` with them and no key. The login
 and the second factor never register this browser: the worker holds the settled assertion (`Enrol.hold`)
 and registers only inside `signInKey`, back to back with the fetch, the enrolment and the list `PUT`, so
@@ -78,8 +78,8 @@ by the page.
 | n | name | heading (`<h1>`) | parts |
 |---|---|---|---|
 | 1 | login | `signin.login.title` | `OnboardingFrame`, one paragraph, `TextField` username and password, ghost `Button` `signin.login.createInstead` and `Button` Continue (`signin.login.submit`) |
-| 2 | second factor | `signin.totp.title` | one paragraph, `TextField` code, `Button` Cancel and Continue |
-| 3 | recovery key | `signin.key.title` | one paragraph, `RecoveryKeyField`, `Button` Cancel and `signin.key.submit`; step 2 when no factor step was shown (R7) |
+| 2 | second factor | `signin.totp.title` | one paragraph, `CodeBoxes` (six boxes over one input; the sixth digit sends the code), the links `factorSignin.code.usePasskey` and `factorSignin.useBackup`, `signin.totp.submit`, then the row Back (`signInBack`: back to the login, the held assertion dropped) and `signin.login.createInstead` (`signInCancel`) |
+| 3 | recovery key | `signin.key.title` | one paragraph, `RecoveryKeyField`, `signin.key.submit`, then Back and `signin.login.createInstead` as on step 2; step 2 when no factor step was shown (R7) |
 | 4 | done | `signin.done.title` | one paragraph, `Button` `signin.done.next` |
 
 Step 2 has three forms, all in flow 10 (`10-second-factor.md`): an authenticator code, a passkey or a backup code. The set-up for an account that has no second factor yet comes after the enrolment, as step 3.
@@ -91,13 +91,17 @@ one up after the enrolment goes 1 → 2 (key) → 3 (set-up) → 4 (`signin.step
 The step line of the forced screen, which belongs to no ceremony, is empty.
 
 Step 2, by account state. The code form (an app, `signin.totp.title`) also holds the ghost button
-`factorSignin.useBackup`, which switches to the backup-code form, and the line `factorSignin.lost`; after a
+`factorSignin.useBackup`, which switches to the backup-code form (wave B task 3: a link under the code boxes); after a
 passkey that did not check the person it holds `factorSignin.passkey.needsCode` above the code field. The passkey
 screen (`factorSignin.passkey.title`, no code field) holds `factorSignin.passkey.submit` and the same
 `factorSignin.useBackup`: an account that owes only a passkey is never asked for an app code and sees only the
 passkey and backup-code options. The backup-code form (`factorSignin.backup.title`) has one field, with a
 format check (`factorSignin.backup.format`) and a ghost `factor.back` that returns to the form it came from.
-Step 1 gains the ghost button `factorSignin.usePasskey` under the password field, only where the instance offers
+Step 1 offers passkeys in the username field's own autofill (`autocomplete="username webauthn"` and a conditional
+`navigator.credentials.get`, wave B task 3 fix round 1; started only when the username field gains focus, since each start is a passkey-login
+begin (metered on its own `passkey_begin` bucket and an instance-wide cap of open ceremonies); aborted when the password is sent or the step left, and not restarted until
+the field is focused again; a picked passkey drops the typed password; a browser without conditional mediation
+shows the ghost button `factorSignin.usePasskey` instead, fix round 2), only where the instance offers
 passkeys and the browser can use them. A passkey-only account in a browser that cannot run passkeys never sees
 the passkey screen: step 2 opens as the backup-code form, with `Cancel` in place of `Back` and the line
 `factorSignin.passkey.unusable` above the body.
@@ -630,7 +634,7 @@ phase to `signin-login`, and the person signs in again.
 Tab order inside each step: the fields in visual order, then the footer: on step 1 (the login)
 `Have an invite? Create an account`, then `Continue`; on the second factor and on the key step,
 `Cancel`, then the forward button. On onboarding step 1: the
-invite field, `Use an existing account`, `Continue`. On the closed frame: `Use an existing account`.
+invite field, `Continue`, `Already have an account? Sign in`. On the closed frame: `Already have an account? Sign in`.
 There are no single-key shortcuts.
 
 ## Error placement
@@ -859,7 +863,7 @@ while a command runs, when they do nothing. Focus then returns to the button tha
 | not offered | why |
 |---|---|
 | signing in with a single sign-on provider | this version offers password (+ second factor) and passkeys only (Q03); the entry is hidden on instances without password logins |
-| messages from before this browser joined | a browser-only account has no archive writer; `signin.done.body` and `onboarding.browser.oneBrowser` say so |
+| messages from before this browser joined | a browser-only account has no archive writer; `onboarding.browser.oneBrowser` says so (wave B task 3: `signin.done.body` is the prototype's line) |
 | a copy button for the recovery key, anywhere | `protocol/03-identity.md` "Recovery" (F2); paste into the key field is allowed |
 | removing a listed device without the recovery key | a new device list must be signed with the account's signing key, which only the recovery key opens in a browser; a device that is not yet in the device list is removed without the key, because no list changes (ruling 30) |
 | naming a device, or a "verified" mark | devices have no names in this version, and the browser's lower trust is stated by its tier tag (F9) |
@@ -868,9 +872,7 @@ while a command runs, when they do nothing. Focus then returns to the button tha
 
 | key | text | where |
 |---|---|---|
-| `onboarding.connect.signIn` | `Use an existing account` | ghost button under the invite field, onboarding step 1, and under the closed frame's paragraph, when `instance.passwordSignup` |
-| `onboarding.keys.loss` | `This key is the only way to get your account back or to add another browser. If every browser you use loses its data and you do not have the key, the account and its history are gone, and the host cannot bring them back.` | second paragraph, onboarding step 3 (changed for web-2a) |
-| `onboarding.browser.oneBrowser` | `To use this account in another browser, sign in there with your password and the second factor you add next, then this recovery key. Messages sent before that browser joins are not shown in it.` | third paragraph, onboarding step 4 (changed for web-2a and web3.6) |
+| `onboarding.connect.signIn` | `Already have an account? Sign in` | ghost button under the invite field, onboarding step 1, and under the closed frame's paragraph, when `instance.passwordSignup` |
 | `signin.step` | `Sign in · step {n} of {total}` | step line, steps 1–4 (Signal task 10: {total} is 4, or 3 with no factor step shown; the dots follow it) |
 | `signin.login.title` | `Sign in to {instance}` | step heading, step 1 |
 | `signin.login.body` | `Use your dilla username and password.` | paragraph, step 1 |
@@ -879,17 +881,19 @@ while a command runs, when they do nothing. Focus then returns to the button tha
 | `signin.login.submit` | `Continue` | button, forward on steps 1 (login) and 2 (second factor) |
 | `signin.login.working` | `Checking…` | the forward button of steps 1 and 2 while their command runs |
 | `signin.login.createInstead` | `Have an invite? Create an account` | ghost button, first in the footer of step 1; sends `signInCancel` |
-| `signin.totp.title` | `Your second factor` | step heading, step 2 |
-| `signin.totp.body` | `Enter the six-digit code from your authenticator app.` | paragraph, step 2 |
-| `signin.totp.code` | `Code` | field label, step 2 |
-| `signin.key.title` | `Your recovery key` | step heading, step 3 (2 when no factor step was shown) |
-| `signin.key.body` | `Type or paste the 52-character recovery key you wrote down when you created the account. Spaces and hyphens do not matter. Backup codes are not your recovery key: they stand in for the app code.` | paragraph, step 3 (2 when no factor step was shown) (or step 2 when no factor) |
+| `signin.totp.title` | `Enter your code` | step heading, step 2 |
+| `signin.totp.body` | `Six digits from your authenticator app.` | paragraph, step 2; the code's description |
+| `signin.totp.code` | `Code` | the code input's label (not drawn), step 2 |
+| `signin.totp.submit` | `Verify` | button, forward on step 2 |
+| `signin.key.title` | `Add this browser` | step heading, step 3 (2 when no factor step was shown) |
+| `signin.key.body` | `This browser is new. Paste your recovery key to read your conversations here.` | paragraph, step 3 (2 when no factor step was shown) (or step 2 when no factor) |
 | `signin.key.label` | `Recovery key` | field label, step 3 (2 when no factor step was shown) |
 | `signin.key.hint` | `{n} of 52 characters` | hint under the key field (its description, not live), step 3 (2 when no factor step was shown) and the two key dialogs |
-| `signin.key.submit` | `Add this browser` | button, forward on the key step (3, or 2 when no factor step was shown): it registers this browser, then enrols |
+| `signin.key.submit` | `Add browser` | button, forward on the key step (3, or 2 when no factor step was shown): it registers this browser, then enrols |
 | `signin.key.working` | `Adding this browser to your account…` | status line, steps 1–3, while the enrolment runs |
 | `signin.done.title` | `You’re in` | step heading, step 4 |
-| `signin.done.body` | `This browser is now a device of {username} on {instance}. Messages sent before now are not shown here.` | paragraph, step 4 |
+| `signin.done.body` | `This browser is now one of your devices.` | paragraph, step 4 |
+| `signin.done.ready` | `{server} is waiting in #{channel}.` | the done step's green panel: the account's first server and its first text channel (wave B task 3); no panel when there is none |
 | `signin.done.next` | `Open dilla` | button, step 4 |
 | `signin.cancel` | `Cancel` | button, first in the footer of steps 2 and 3 (the second factor and the recovery key); sends `signInCancel` |
 | `signin.error.loginFailed` | `That username and password did not work.` | field error, password, step 1 |

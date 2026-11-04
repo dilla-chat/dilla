@@ -95,10 +95,10 @@ describe('the forced screen', () => {
 });
 
 describe('the origin picks the screen', () => {
-  it('signup mounts onboarding at step 5 of 6', () => {
+  it('signup mounts onboarding at step 4 of 6 (wave B task 3b)', () => {
     setup(happy, 'signup');
     expect(h1()).toHaveTextContent('Add a second factor');
-    expect(screen.getByText('New account · step 5 of 6')).toBeInTheDocument();
+    expect(screen.getByText('New account · step 4 of 6')).toBeInTheDocument();
   });
   it('signin mounts the sign-in ceremony at step 3 of 4', () => {
     setup(happy, 'signin');

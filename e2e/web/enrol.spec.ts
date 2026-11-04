@@ -108,8 +108,8 @@ test('a wrong recovery key is refused in place, and the right one typed in lower
   await forward.click();
   await expectHeading(b, 'signin.totp.title');
   await expect(b.getByText(copy(SIGNIN.step, { n: 2, total: 4 }), { exact: true })).toBeVisible();
+  // Wave B task 3: the sixth digit in the code boxes sends the code; there is no button to press.
   await b.getByLabel(copy('signin.totp.code'), { exact: true }).fill(await nextCode(account.control, account));
-  await forward.click();
 
   await expectHeading(b, SIGNIN.keyTitle);
   await expect(b.getByText(copy(SIGNIN.step, { n: 3, total: 4 }), { exact: true })).toBeVisible();

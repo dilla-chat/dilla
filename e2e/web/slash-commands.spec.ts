@@ -11,8 +11,9 @@ import { installWorkerPort, portCall, portSlice } from './support/worker-port';
 import { connected, dock, joinVoice, voiceRow } from '../voice/support/voice';
 import { leaveIfInCall } from '../voice/support/peer-browser';
 import { FIREFOX_MEDIA_PREFS } from '../media/support/fixtures';
+import { e2ePort } from './support/ports';
 
-const PORT = Number(process.env.DILLA_E2E_SLASH_PORT ?? 8581);
+const PORT = Number(process.env.DILLA_E2E_SLASH_PORT ?? e2ePort(8581));
 const HOST: HostConfig = { port: PORT, control: PORT + 1, webRoot: 'packages/web/dist', botRuntime: true, advanceClockWithWall: true };
 const COMMUNITY = 'Slash command acceptance';
 const GENERAL = 'general';
@@ -111,16 +112,20 @@ async function invoke(box: ReturnType<typeof composerBox>, page: Page, command: 
   await box.fill(command.startsWith('/') ? command : `/${command}`);
   const region = page.getByRole('region', { name: 'Command composer', exact: true });
   await expect(region).toBeVisible({ timeout: WAIT });
-  await region.getByRole('button', { name: 'Run command', exact: true }).click();
+  await region.getByRole('button', { name: copy('shell.composer.send'), exact: true }).click();
+}
+
+/** The last private command result in the feed. */
+function commandResult(page: Page): Locator {
+  return page.locator('.d-bot-result .d-message-row__body').last();
 }
 
 async function chooseCommand(box: ReturnType<typeof composerBox>, page: Page, command: string): Promise<Locator> {
   await box.fill('/');
   const region = page.getByRole('region', { name: 'Command composer', exact: true });
-  const picker = region.getByRole('combobox', { name: 'Command', exact: true });
-  await picker.fill(command);
-  await expect(region.getByRole('option', { name: new RegExp(`/${command}(?:\\s|$)`) })).toBeVisible({ timeout: WAIT });
-  await picker.press('ArrowDown');
+  const picker = region.getByRole('textbox', { name: 'Command', exact: true });
+  await picker.fill(`/${command}`);
+  await expect(region.getByRole('option', { name: new RegExp(`^/${command},`) })).toBeVisible({ timeout: WAIT });
   await picker.press('Enter');
   return region;
 }
@@ -324,11 +329,11 @@ async function reminderReceipt(page: Page, requestId: string): Promise<{ communi
   }, requestId);
 }
 
-async function runKickFromPicker(page: Page, box: ReturnType<typeof composerBox>, member: Page): Promise<Locator> {
+async function runKickFromPicker(page: Page, box: ReturnType<typeof composerBox>, member: Page, targetName: string): Promise<Locator> {
   const region = await chooseCommand(box, page, 'kick');
   const user = region.getByRole('combobox', { name: 'user', exact: true });
-  await user.fill('Bea');
-  const memberOption = region.getByRole('option', { name: 'Bea', exact: true });
+  await user.fill(targetName);
+  const memberOption = region.getByRole('option', { name: new RegExp(`^${targetName},`) });
   try { await expect(memberOption).toBeVisible({ timeout: WAIT }); }
   catch (error) {
     await test.info().attach('slash-moderation.json', {
@@ -336,15 +341,14 @@ async function runKickFromPicker(page: Page, box: ReturnType<typeof composerBox>
     });
     throw error;
   }
-  await user.press('ArrowDown');
-  await user.press('Enter');
-  await region.getByRole('button', { name: 'Run command', exact: true }).click();
+  await user.press('Tab');
+  await region.getByRole('button', { name: copy('shell.composer.send'), exact: true }).click();
   return region;
 }
 
 async function leaveCommandMode(page: Page): Promise<void> {
   const region = page.getByRole('region', { name: 'Command composer', exact: true });
-  if (await region.count() > 0 && await region.isVisible()) await region.getByRole('button', { name: 'Cancel', exact: true }).click();
+  if (await region.count() > 0) { await region.locator('input, textarea').first().focus(); await page.keyboard.press('Escape'); }
   await expect(region).toHaveCount(0, { timeout: WAIT });
 }
 
@@ -356,20 +360,24 @@ async function stopAppBeforeHost(page: Page, host: StartedHost | null): Promise<
 }
 
 async function openPollDialog(page: Page, box: Locator, question: string, answers = 'Soup, Salad'): Promise<void> {
-  await invoke(box, page, `/poll create question:"${question}" answers:"${answers}" multiple:on`);
-  const dialog = page.getByRole('dialog', { name: 'Create a poll', exact: true });
+  await chooseCommand(box, page, 'poll create');
+  const dialog = page.getByRole('dialog', { name: /^New poll in #/ });
   await expect(dialog).toBeVisible({ timeout: BOT_WAIT });
-  await expect(dialog.getByRole('textbox', { name: 'Question', exact: true })).toHaveValue(question);
-  await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+  await dialog.getByRole('textbox', { name: 'Question', exact: true }).fill(question);
+  const choices = answers.split(',').map(answer => answer.trim());
+  for (const [index, answer] of choices.entries()) {
+    if (index >= 2) await dialog.getByRole('button', { name: 'Add answer', exact: true }).click();
+    await dialog.getByRole('textbox', { name: `Answer ${index + 1}`, exact: true }).fill(answer);
+  }
+  await dialog.getByRole('button', { name: 'Post poll', exact: true }).click();
   await expect(dialog).toBeHidden({ timeout: BOT_WAIT });
   await leaveCommandMode(page);
 }
 
 async function pollOption(card: Locator, answer: string): Promise<Locator> {
-  // Shipping labels include the live vote count in the checkbox's accessible name (for
-  // example, "Soup 0"). Match the exact answer plus its numeric count.
-  const option = card.getByRole('checkbox', { name: new RegExp(`^${answer}\\s+\\d+$`, 'u') });
+  const option = card.getByRole('button', { name: new RegExp(`^${answer}\\b`, 'u') });
   await expect(option).toHaveCount(1, { timeout: WAIT });
+  await expect(option).toBeEnabled({ timeout: BOT_WAIT });
   return option;
 }
 
@@ -387,17 +395,27 @@ test('composer keeps private results private, publishes only explicit text, and 
     await expect(root).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
 
     const composer = await chooseCommand(box, page, 'help');
-    await composer.getByRole('button', { name: 'Run command', exact: true }).click();
-    await expect(composer.getByRole('status')).toContainText('/help');
-    await expect(logRegion(page, GENERAL)).not.toContainText('/help');
-    await expect(page.locator('[data-kind="bot"]')).toHaveCount(0);
-    await page.keyboard.press('Escape');
+    await composer.getByRole('button', { name: copy('shell.composer.send'), exact: true }).click();
+    await expect(commandResult(page)).toContainText('/help');
+    await expect(logRegion(page, GENERAL).locator('.d-bot-result')).toContainText('/help');
+    await expect(logRegion(page, GENERAL).locator('.d-bot-result')).toContainText('Only you can see this');
+    await expect(logRegion(page, GENERAL).locator('.d-bot-result .d-message-row__author')).toHaveText('dilla');
+    await expect(logRegion(page, GENERAL).locator('.d-bot-result')).toHaveCount(1);
+    await expect(logRegion(page, GENERAL).locator('.d-message-row[data-msg-id]').filter({ hasText: '/help' })).toHaveCount(0);
+    await page.reload();
+    await openChannel(page, COMMUNITY, GENERAL);
+    await expect(root).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
+    await expect(logRegion(page, GENERAL).locator('.d-bot-result')).toHaveCount(0);
+    await expect(logRegion(page, GENERAL).locator('.d-message-row[data-msg-id]').filter({ hasText: '/help' })).toHaveCount(0);
+    await box.fill('/xyz');
+    await page.getByRole('textbox', { name: 'Command', exact: true }).press('Enter');
+    await expect(logRegion(page, GENERAL).locator('.d-bot-result[data-status="failed"]')).toContainText('/xyz isn’t a command here. To post it as text, start with //.');
+    await logRegion(page, GENERAL).locator('.d-bot-result').getByRole('button', { name: /^Dismiss:/ }).click();
     await expect(composer).toHaveCount(0, { timeout: WAIT });
 
     const shrug = await chooseCommand(box, page, 'shrug');
-    await shrug.getByRole('button', { name: 'Add optional text', exact: true }).click();
     await shrug.getByLabel('text', { exact: true }).fill('made by the command');
-    await shrug.getByRole('button', { name: 'Run command', exact: true }).click();
+    await shrug.getByLabel('text', { exact: true }).press('Enter');
     await expect(messageRow(page, GENERAL, '¯\\_(ツ)_/¯ made by the command')).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
     await leaveCommandMode(page);
 
@@ -406,9 +424,10 @@ test('composer keeps private results private, publishes only explicit text, and 
     await expect(messageRow(page, GENERAL, literal)).toHaveCount(0);
     await page.getByRole('button', { name: 'Send as text', exact: true }).click();
     await expect(messageRow(page, GENERAL, literal)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
+    // `//` at the start posts the rest with one leading slash (the prototype's send()).
     const escaped = `//exact slash ${Date.now()}`;
     await box.fill(escaped);
-    await page.getByRole('button', { name: 'Send as text', exact: true }).click();
+    await page.getByRole('textbox', { name: 'Command', exact: true }).press('Enter');
     await expect(messageRow(page, GENERAL, '/exact slash ' + escaped.split(' ').at(-1))).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
 
     await rowAction(root, 'reply');
@@ -431,7 +450,7 @@ test('composer keeps private results private, publishes only explicit text, and 
 
     await box.fill('/shrug text:"main draft stays here"');
     const mainDraft = page.getByRole('main').getByRole('region', { name: 'Command composer', exact: true })
-      .getByRole('combobox', { name: 'text', exact: true });
+      .getByRole('textbox', { name: 'text', exact: true });
     await expect(mainDraft).toHaveValue('main draft stays here');
     const threadButton = rowToolbar(root).getByRole('button', { name: copy('thread.open'), exact: true });
     await root.focus();
@@ -441,7 +460,7 @@ test('composer keeps private results private, publishes only explicit text, and 
     const threadBox = thread.getByRole('textbox', { name: copy('thread.composer'), exact: true });
     await threadBox.fill('/shrug text:"thread draft stays here"');
     const threadDraft = thread.getByRole('region', { name: 'Command composer', exact: true })
-      .getByRole('combobox', { name: 'text', exact: true });
+      .getByRole('textbox', { name: 'text', exact: true });
     await expect(threadDraft).toHaveValue('thread draft stays here');
     await thread.getByRole('button', { name: copy('thread.close'), exact: true }).click();
     await expect(mainDraft).toHaveValue('main draft stays here');
@@ -557,26 +576,22 @@ test('polls publish in channels and threads, accept real votes, reject forged ma
       return reattachedTarget !== undefined && leftAt >= 0 && observer!.transitions.slice(leftAt + 1)
         .some(entry => entry.target === reattachedTarget && entry.intersecting);
     }), { timeout: WAIT, message: 'the browser IntersectionObserver must reactivate the card on return' }).toBe(true);
-    await (await pollOption(memberCard, 'Soup')).check();
-    await memberCard.getByRole('button', { name: 'Submit vote', exact: true }).click();
-    const soupResults = memberCard.getByRole('button', { name: /1 · Soup/ });
+    await (await pollOption(memberCard, 'Soup')).click();
+    const soupResults = await pollOption(memberCard, 'Soup');
     await expect(soupResults).toBeVisible({ timeout: BOT_WAIT });
-    await soupResults.click();
-    try { await expect(memberCard).toContainText('Bea', { timeout: BOT_WAIT }); }
+    await expect(soupResults).toHaveAttribute('aria-pressed', 'true', { timeout: BOT_WAIT });
+    try { await expect(memberCard.getByRole('img', { name: 'Bea' })).toBeVisible({ timeout: BOT_WAIT }); }
     catch (error) {
       const evidence = { card: await memberCard.evaluate(element => (element as HTMLElement).outerHTML), worker: await pollFailureEvidence(member, question) };
       await testInfo.attach('slash-poll-voters.json', { body: Buffer.from(JSON.stringify(evidence, null, 2)), contentType: 'application/json' });
       throw error;
     }
-    await (await pollOption(memberCard, 'Soup')).uncheck();
-    await (await pollOption(memberCard, 'Salad')).check();
-    const submitChangedVote = memberCard.getByRole('button', { name: 'Submit vote', exact: true });
-    await expect(submitChangedVote).toBeEnabled({ timeout: BOT_WAIT });
-    await submitChangedVote.click();
-    await expect(memberCard.getByRole('button', { name: /1 · Salad/ })).toBeVisible({ timeout: BOT_WAIT });
-    await expect(memberCard).toContainText('Bea', { timeout: BOT_WAIT });
-    await memberCard.getByRole('button', { name: 'Withdraw vote', exact: true }).click();
-    await expect(memberCard.getByRole('button', { name: /1 · Salad/ })).toHaveCount(0, { timeout: BOT_WAIT });
+    await (await pollOption(memberCard, 'Salad')).click();
+    await expect(await pollOption(memberCard, 'Salad')).toHaveAttribute('aria-pressed', 'true', { timeout: BOT_WAIT });
+    await expect(await pollOption(memberCard, 'Soup')).toHaveAttribute('aria-pressed', 'false', { timeout: BOT_WAIT });
+    await expect(memberCard.getByRole('img', { name: 'Bea' })).toBeVisible({ timeout: BOT_WAIT });
+    await (await pollOption(memberCard, 'Salad')).click();
+    await expect(await pollOption(memberCard, 'Salad')).toHaveAttribute('aria-pressed', 'false', { timeout: BOT_WAIT });
 
     const rootText = `Poll thread ${Date.now()}`;
     await sendText(page, GENERAL, rootText);
@@ -593,7 +608,7 @@ test('polls publish in channels and threads, accept real votes, reject forged ma
 
     await thread.getByRole('button', { name: copy('thread.close'), exact: true }).click();
     await card.getByRole('button', { name: 'Close poll', exact: true }).click();
-    await expect(card).toContainText('Poll closed', { timeout: BOT_WAIT });
+    await expect(card).toContainText('CLOSED', { timeout: BOT_WAIT });
     const communityId = await page.evaluate(() => {
       const trace = (window as unknown as { __slashWorkerTrace?: { calls: unknown[] } }).__slashWorkerTrace;
       const request = trace?.calls.map(value => value as { command?: { m?: string; operation?: number; communityId?: string } })
@@ -612,7 +627,7 @@ test('polls publish in channels and threads, accept real votes, reject forged ma
     if (afterEnable.installationId === beforeDisable.installationId && afterEnable.botUserId === beforeDisable.botUserId) {
       // Re-enabling the same authenticated installation keeps this closed backing poll valid.
       await expect(card).toBeVisible({ timeout: BOT_WAIT });
-      await expect(card).toContainText('Poll closed', { timeout: BOT_WAIT });
+      await expect(card).toContainText('CLOSED', { timeout: BOT_WAIT });
     } else {
       await expect(card).toHaveCount(0, { timeout: BOT_WAIT });
     }
@@ -629,6 +644,7 @@ musicTest('music snapshot and clear report privately or explain unavailable encr
     host = await startTestHost(VOICE_HOST);
     await traceCoreWorker(page);
     await traceNativeVoice(page);
+    await installWorkerPort(page.context());
     const owner = await signUp(page, host.invite.split(',')[0] ?? '', instanceName, 'Ada', host.control);
     await createCommunity(page);
     await enableBot(page, owner.password, ['music']);
@@ -655,10 +671,9 @@ musicTest('music snapshot and clear report privately or explain unavailable encr
       await channelRow(page, GENERAL).click();
       for (const command of ['/queue', '/queue clear']) {
         await invoke(composerBox(page, GENERAL), page, command);
-        const region = page.getByRole('region', { name: 'Command composer', exact: true });
-        await expect(region.getByRole('alert')).toHaveText('Join a voice channel in this community before using music commands.');
-        await expect(region.getByRole('status')).toHaveText('');
-        await expect(page.locator('[data-kind="bot"]')).toHaveCount(0);
+        await expect(page.getByRole('region', { name: 'Command composer', exact: true })).toHaveCount(0);
+        await expect(logRegion(page, GENERAL).locator('.d-bot-result[data-status="failed"]')).toContainText('Join a voice channel first. Glenn plays where you are.');
+        await logRegion(page, GENERAL).locator('.d-bot-result').getByRole('button', { name: /^Dismiss:/ }).click();
         await leaveCommandMode(page);
       }
       expect(await page.evaluate(() => {
@@ -686,15 +701,31 @@ musicTest('music snapshot and clear report privately or explain unavailable encr
     await expect(voiceRow(page, GENERAL)).toContainText('connected', { timeout: WAIT });
     await expect(page.getByRole('toolbar', { name: 'voice controls', exact: true })).toBeVisible({ timeout: WAIT });
     const box = composerBox(page, GENERAL);
-    await invoke(box, page, '/queue');
-    await expect(page.getByRole('region', { name: 'Command composer', exact: true }).getByRole('status'))
-      .toContainText(/music queue is empty/i, { timeout: BOT_WAIT });
-    await expect(page.locator('[data-kind="bot"]')).toHaveCount(0);
+    // The member list need not include the Bot yet. Compare with CommandHost's live source tag in the picker.
+    await box.fill('/');
+    const commands = page.getByRole('region', { name: 'Command composer', exact: true });
+    const source = commands.getByRole('option', { name: /^\/queue,/ }).locator('.d-cmd-row__source');
+    const communityId = new URL(page.url()).pathname.split('/')[2]!;
+    const identity = await currentBotIdentity(page, communityId);
+    let realName = '';
+    await expect.poll(async () => {
+      const members = await portSlice<{ userId: string; display: string; username: string }[]>(page, `members:${communityId}`);
+      const bot = members?.find(member => member.userId === identity.botUserId);
+      realName = bot?.display || bot?.username || '';
+      return realName;
+    }, { timeout: BOT_WAIT }).not.toBe('');
+    await expect(source).toHaveText(realName, { timeout: BOT_WAIT });
+    const botName = await source.innerText();
+    await commands.getByRole('textbox', { name: 'Command', exact: true }).fill('/queue');
+    await commands.getByRole('button', { name: copy('shell.composer.send'), exact: true }).click();
+    await expect(commandResult(page)).toContainText(/music queue is empty/i, { timeout: BOT_WAIT });
+    await expect(logRegion(page, GENERAL).locator('.d-bot-result .d-message-row__author')).toHaveText(botName);
+    await logRegion(page, GENERAL).locator('.d-bot-result').getByRole('button', { name: /^Dismiss:/ }).click();
     await leaveCommandMode(page);
     await invoke(box, page, '/queue clear');
-    await expect(page.getByRole('region', { name: 'Command composer', exact: true }).getByRole('status'))
-      .toContainText('Music queue cleared.', { timeout: BOT_WAIT });
-    await expect(page.locator('[data-kind="bot"]')).toHaveCount(0);
+    await expect(commandResult(page)).toContainText('Music queue cleared.', { timeout: BOT_WAIT });
+    await expect(logRegion(page, GENERAL).locator('.d-bot-result .d-message-row__author')).toHaveText(botName);
+    await logRegion(page, GENERAL).locator('.d-bot-result').getByRole('button', { name: /^Dismiss:/ }).click();
   } catch (error) {
     primaryFailure = error;
     const evidence = await page.evaluate(() => {
@@ -759,20 +790,21 @@ test('moderation requires confirmation and applies to a distinct joined member',
     expect(bea.username).not.toBe(owner.username);
     await openChannel(page, COMMUNITY, GENERAL);
     const box = composerBox(page, GENERAL);
-    const region = await runKickFromPicker(page, box, member);
-    const confirmation = page.getByRole('dialog').filter({ has: page.getByRole('button', { name: 'Continue', exact: true }) });
+    await runKickFromPicker(page, box, member, bea.username);
+    const confirmation = page.getByRole('dialog').filter({ has: page.getByRole('button', { name: 'Kick', exact: true }) });
     await expect(confirmation).toBeVisible({ timeout: WAIT });
     await confirmation.getByRole('button', { name: 'Cancel', exact: true }).click();
     await expect(confirmation).toBeHidden();
+    await expect(logRegion(page, GENERAL).locator('.d-bot-result[data-status="cancelled"]')).toContainText('Kick cancelled. Nothing changed.');
     await leaveCommandMode(page);
     await expect(page.getByRole('navigation', { name: copy('shell.rail.label'), exact: true }).getByRole('button', { name: COMMUNITY })).toBeVisible();
 
-    await runKickFromPicker(page, box, member);
-    const confirmAgain = page.getByRole('dialog').filter({ has: page.getByRole('button', { name: 'Continue', exact: true }) });
+    await runKickFromPicker(page, box, member, bea.username);
+    const confirmAgain = page.getByRole('dialog').filter({ has: page.getByRole('button', { name: 'Kick', exact: true }) });
     await expect(confirmAgain).toBeVisible({ timeout: WAIT });
-    await confirmAgain.getByRole('button', { name: 'Continue', exact: true }).click();
+    await confirmAgain.getByRole('button', { name: 'Kick', exact: true }).click();
     await expect(member.getByRole('navigation', { name: copy('shell.rail.label'), exact: true }).getByRole('button', { name: COMMUNITY })).toHaveCount(0, { timeout: WAIT });
-    await expect(region.getByRole('status')).toContainText('Bea was kicked.', { timeout: WAIT });
+    await expect(logRegion(page, GENERAL).locator('.d-bot-result[data-status="success"]')).toContainText(`${bea.username} was kicked.`, { timeout: WAIT });
   } finally {
     try { await secondContext?.close(); }
     finally { await stopAppBeforeHost(page, host); }
@@ -791,11 +823,7 @@ test('reminders sync across devices and remain due after Bot restart and reload'
     await enableBot(page, owner.password);
     const reminderText = `cross-device reminder ${Date.now()}`;
     await invoke(composerBox(page, GENERAL), page, `/remind when:1m text:"${reminderText}"`);
-    const dialog = page.getByRole('dialog', { name: 'Set a reminder', exact: true });
-    await expect(dialog).toBeVisible({ timeout: BOT_WAIT });
-    await expect(dialog.getByRole('textbox', { name: 'Reminder', exact: true })).toHaveValue(reminderText);
-    await dialog.getByRole('button', { name: 'Save', exact: true }).click();
-    await expect(dialog).toBeHidden({ timeout: BOT_WAIT });
+    await expect(commandResult(page)).toContainText('Reminder set.', { timeout: BOT_WAIT });
     await expect.poll(() => lastReminderRequestId(page), { timeout: BOT_WAIT }).toMatch(/^[0-9a-f]{32}$/u);
     const reminderId = await lastReminderRequestId(page);
     expect(reminderId).toMatch(/^[0-9a-f]{32}$/u);
@@ -868,4 +896,34 @@ test('reminders sync across devices and remain due after Bot restart and reload'
     try { await secondContext?.close(); }
     finally { await stopAppBeforeHost(page, host); }
   }
+});
+
+// Signal wave B Task 2: `/remind` from the picker's chips (the browser's time zone, Q10) creates a reminder, and
+// `/reminders list` opens the bell's popover on Upcoming with it.
+test('a reminder set from the picker chips appears under Upcoming', async ({ page, instanceName }) => {
+  let host: StartedHost | null = null;
+  try {
+    host = await startTestHost(HOST);
+    const owner = await signUp(page, host.invite.split(',')[0] ?? '', instanceName, 'Ada', host.control);
+    await createCommunity(page);
+    await enableBot(page, owner.password);
+    const reminderText = `chip reminder ${Date.now()}`;
+    const region = await chooseCommand(composerBox(page, GENERAL), page, 'remind');
+    const when = region.getByRole('combobox', { name: 'when', exact: true });
+    await expect(when).toBeFocused();
+    await expect(region.getByRole('listbox', { name: 'When', exact: true })).toBeVisible();
+    await when.fill('in 1 hour');
+    await expect(region.getByText(/^Reminds you /u)).toBeVisible();
+    await when.press('Tab');
+    const text = region.getByRole('textbox', { name: 'text', exact: true });
+    await text.fill(reminderText);
+    await text.press('Enter');
+    await expect(commandResult(page)).toContainText('Reminder set.', { timeout: BOT_WAIT });
+    await expect(region).toHaveCount(0);
+    const list = await chooseCommand(composerBox(page, GENERAL), page, 'reminders list');
+    await list.getByRole('textbox', { name: 'press ↵ to run', exact: true }).press('Enter');
+    const inbox = page.getByRole('dialog', { name: 'Reminders', exact: true });
+    await expect(inbox.getByRole('tab', { name: /^Upcoming/u })).toHaveAttribute('aria-selected', 'true', { timeout: BOT_WAIT });
+    await expect(inbox).toContainText(reminderText, { timeout: BOT_WAIT });
+  } finally { await stopAppBeforeHost(page, host); }
 });

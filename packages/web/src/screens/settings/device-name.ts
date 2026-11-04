@@ -4,7 +4,7 @@ export interface DeviceNameParts { browser: string; os: string }
 // Order matters: Edge, Opera and Samsung Internet also say Chrome, and Chrome also says Safari.
 const BROWSERS: readonly (readonly [RegExp, string])[] = [
   [/\bEdg(?:e|A|iOS)?\//, 'Edge'], [/\bOPR\//, 'Opera'], [/\bSamsungBrowser\//, 'Samsung Internet'],
-  [/\b(?:Firefox|FxiOS)\//, 'Firefox'], [/\b(?:Chrome|CriOS)\//, 'Chrome'], [/\bSafari\//, 'Safari'],
+  [/\b(?:Firefox|FxiOS)\//, 'Firefox'], [/(?:\b|Headless)(?:Chrome|CriOS)\//, 'Chrome'], [/\bSafari\//, 'Safari'],
 ];
 // iPhone and iPad say "like Mac OS X", Android says "Linux", and ChromeOS says "X11": the narrow ones go first.
 const SYSTEMS: readonly (readonly [RegExp, string])[] = [

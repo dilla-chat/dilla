@@ -1,11 +1,23 @@
 /* Task 10, the prototype's recovery key: four columns in a 12px-padded box on --surface-2 (--control-edge-field, radius 8),
-   each group 13px/600 with 0.06em tracking, centred. */
-.d-recovery-key { display: grid; gap: 10px; min-width: 0; }
+   each group 13px/600 with 0.06em tracking, centred. Wave B task 3b, the rest of the prototype's key step: the grid 10px
+   over the actions row, whose 32px buttons share the row (flex 1, --control-edge-field, radius 7, 12px, a 13px icon 6px
+   before the label), 14px over the 16px check box (radius 4, --control-edge-key; ticked: the accent with an --accent-ink
+   check) and its 12px --fg-strong label 10px after it; then 8px to the button. */
+.d-recovery-key { display: grid; gap: 0; min-width: 0; margin-bottom: -14px /* the box 8px over the button: the card's 14 less 14, then the box's 8 */; }
 .d-recovery-key__label { margin: 0; }
-.d-recovery-key__grid { list-style: none; margin: 0; padding: 12px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; background: var(--surface-2); border: 1px solid var(--control-edge-field); border-radius: var(--r-lg); counter-reset: d-rk; user-select: text; }
+.d-recovery-key__grid { list-style: none; margin: 0 0 10px; padding: 12px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; background: var(--surface-2); border: 1px solid var(--control-edge-field); border-radius: var(--r-lg); counter-reset: d-rk; user-select: text; }
 .d-recovery-key__group { counter-increment: d-rk; padding: 4px 0; text-align: center; font-size: var(--text-input); font-weight: var(--weight-label); letter-spacing: 0.06em; color: var(--fg); white-space: nowrap; }
-.d-recovery-key__actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.75rem 1rem; }
-.d-recovery-key__ack { display: flex; align-items: flex-start; gap: 10px; font-size: var(--text-ui); color: var(--fg-strong); }
-.d-recovery-key__box { width: 1.5rem; height: 1.5rem; margin: 0; flex-shrink: 0; accent-color: var(--accent); cursor: pointer; }
-.d-recovery-key__ack label { padding-top: 0.125rem; cursor: pointer; }
-@media print { .d-recovery-key__actions { display: none; } .d-recovery-key { color-scheme: light; } .d-recovery-key, .d-recovery-key__label, .d-recovery-key__grid, .d-recovery-key__group { color: CanvasText; background: Canvas; border-color: CanvasText; } }
+.d-recovery-key__actions { display: flex; gap: 8px; margin-bottom: 14px; }
+.d-recovery-key .d-recovery-key__print { flex: 1 1 0; justify-content: center; gap: 6px; height: 34px; min-height: 34px; padding: 0 12px; background: transparent; border: 1px solid var(--control-edge-field); border-radius: var(--r-seg); font-size: var(--text-ui); font-weight: var(--weight-body); color: var(--fg); transition: border-color var(--duration-tab); }
+.d-recovery-key .d-recovery-key__print .d-btn__label { display: inline-flex; align-items: center; gap: 6px; }
+.d-recovery-key .d-recovery-key__print:hover { border-color: var(--accent); background: transparent; }
+.d-recovery-key__ack { position: relative; display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-size: var(--text-ui); color: var(--fg-strong); cursor: pointer; }
+/* The native box covers the whole row, transparent: the row is its target, and its focus ring is drawn on the tick. */
+.d-recovery-key__box { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.d-recovery-key__tick { flex: none; box-sizing: content-box; width: 16px; height: 16px; display: flex; align-items: center; justify-content: center; border: 1px solid var(--control-edge-key); border-radius: var(--r-sm); background: transparent; color: var(--accent-ink); transition: background var(--duration-tab), border-color var(--duration-tab); }
+.d-recovery-key__box:checked + .d-recovery-key__tick { background: var(--accent); border-color: var(--accent); }
+.d-recovery-key__box:focus-visible + .d-recovery-key__tick { outline: var(--focus-ring); outline-offset: 2px; }
+.d-recovery-key__ack label { cursor: pointer; }
+@media (prefers-reduced-motion: reduce) { .d-recovery-key__tick, .d-recovery-key .d-recovery-key__print { transition: none; } }
+@media (forced-colors: active) { .d-recovery-key__box:checked + .d-recovery-key__tick { background: Highlight; border-color: Highlight; color: HighlightText; } }
+@media print { .d-recovery-key__actions, .d-recovery-key__ack { display: none; } .d-recovery-key { color-scheme: light; } .d-recovery-key, .d-recovery-key__label, .d-recovery-key__grid, .d-recovery-key__group { color: CanvasText; background: Canvas; border-color: CanvasText; } }

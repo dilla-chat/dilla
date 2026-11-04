@@ -11,7 +11,7 @@ import { useRun } from '../admin/shared.ts';
 import { sharedRefusal } from '../factor/FactorSetup.tsx';
 
 /** The same floor as the sign-up password (Onboarding). */
-const PASSWORD_MIN = 8;
+const PASSWORD_MIN = 12;
 /** The instance bounds a password only by its request size; this is a clean limit before that. */
 const PASSWORD_MAX = 1024;
 const OLD = 'password-old';

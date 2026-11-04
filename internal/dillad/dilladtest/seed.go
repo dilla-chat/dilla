@@ -35,6 +35,7 @@ func ControlHandler(h *Host) http.Handler {
 	mux.HandleFunc("POST /debug/clock", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Seconds int64 `json:"seconds"`
+			Sweep   *bool `json:"sweep"`
 		}
 		if !decode(w, r, &body) {
 			return
@@ -43,7 +44,7 @@ func ControlHandler(h *Host) http.Handler {
 			http.Error(w, "the clock only moves forward", http.StatusBadRequest)
 			return
 		}
-		if err := h.Advance(r.Context(), time.Duration(body.Seconds)*time.Second); err != nil {
+		if err := h.advance(r.Context(), time.Duration(body.Seconds)*time.Second, body.Sweep == nil || *body.Sweep); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -576,6 +577,12 @@ func writeJSON(w http.ResponseWriter, v any) {
 // wall-clock and keep running; this makes a scenario's `advance_clock` observable by the very next
 // statement instead of up to a minute later.
 func (h *Host) Advance(ctx context.Context, d time.Duration) error {
+	return h.advance(ctx, d, true)
+}
+
+// advance optionally defers the forced sweep for wall-clock-driven visual fixtures.
+// Hooks and the watchdog still run; the delivery service's normal tickers are unchanged.
+func (h *Host) advance(ctx context.Context, d time.Duration, sweep bool) error {
 	s := h.Server()
 	// The proposals a registration or a KeyPackage publish issues run after the answer, on hooks of
 	// their own; they finish first, so what the scenario did before `advance_clock` has landed
@@ -585,8 +592,10 @@ func (h *Host) Advance(ctx context.Context, d time.Duration) error {
 	}
 	h.clk.Advance(d)
 	s.DS().RunWatchdogOnce(ctx)
-	if _, err := s.DS().Sweep(ctx); err != nil {
-		return fmt.Errorf("dilladtest: sweep after advancing the clock: %w", err)
+	if sweep {
+		if _, err := s.DS().Sweep(ctx); err != nil {
+			return fmt.Errorf("dilladtest: sweep after advancing the clock: %w", err)
+		}
 	}
 	return nil
 }

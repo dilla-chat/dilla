@@ -28,6 +28,10 @@ export const stage = {
   'callStage.menu.muteForMe': 'Mute for me',
   'callStage.menu.copy': 'Copy username',
   'callStage.menu.copied': '@{name} copied',
+  // Wave B task 4: your own menu in a call (the prototype's): Mute and Deafen are the call bar's words with their shortcuts.
+  'callStage.menu.moveTo': 'Move to',
+  'callStage.menu.leave': 'Leave voice',
+  'callStage.menu.moved': 'You moved to {room}',
   // Task 8c (README §5.6): the share picker, the prototype's copy. The preview's line names what the browser will offer: this
   // display's size, or the window or tab the person picks in the browser's own picker next (the prototype's sample names).
   'callStage.share.title': 'Share your screen',

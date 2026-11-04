@@ -29,6 +29,16 @@ export interface CallStagePreview {
   join: { label: string; onJoin(): void } | null;
 }
 
+/**
+ * The AFK channel's page (Signal, the prototype's AFK view; wave B task 4): the moon tile, a title ("Nobody is away"), the
+ * explainer line and one outline button ("Go AFK" / "Come back"). It hosts no call, so no tiles and no call bar.
+ */
+export interface CallStageAfk {
+  title: string;
+  text: string;
+  action: { label: string; onAction(): void };
+}
+
 export interface CallStageProps {
   /** The stage's heading, e.g. 'voice harbour' or the DM's name. */
   title: string;
@@ -60,6 +70,8 @@ export interface CallStageProps {
   bar?: { name: string; stats: ReactNode };
   /** Not in the call: the preview stands where the tiles and the call bar would. */
   preview?: CallStagePreview;
+  /** The AFK channel's page, in place of the tiles and the controls. */
+  afk?: CallStageAfk;
   /** The DM call strip while this device's call rings others ('ringing {names}', '{name} declined.', 'No answer.'). */
   outgoing: { text: string } | null;
   /** `grid` is the focused tile's Grid button (the prototype's "Grid"). */
@@ -91,7 +103,7 @@ function band(n: number): 'two' | 'four' | 'many' {
  * `data-focused` on the tile, and CSS does the rest (R27): a wrapping row of 16:9 tiles in the grid, the focused tile over
  * a filmstrip when focused. Escape unfocuses a tile, unless full screen is on.
  */
-export function CallStage({ title, tiles: allTiles, focusedId = null, onFocus, header, nowPlaying, code, notice, controls, bar, preview,
+export function CallStage({ title, tiles: allTiles, focusedId = null, onFocus, header, nowPlaying, code, notice, controls, bar, preview, afk,
   outgoing, labels }: CallStageProps) {
   const titleId = useId();
   const detailsRef = useRef<HTMLDetailsElement>(null);
@@ -147,18 +159,27 @@ export function CallStage({ title, tiles: allTiles, focusedId = null, onFocus, h
     </details>
   ) : null;
   let body: ReactNode;
-  if (preview !== undefined) {
+  if (afk !== undefined) {
+    body = (
+      <div className="d-call-stage__afk">
+        <span className="d-call-stage__afk-tile" aria-hidden="true"><Icon name="moon" size={20} /></span>
+        <span className="d-call-stage__afk-title" role="status">{afk.title}</span>
+        <span className="d-call-stage__afk-text">{afk.text}</span>
+        <button type="button" className="d-call-stage__afk-action" onClick={afk.action.onAction}>{afk.action.label}</button>
+      </div>
+    );
+  } else if (preview !== undefined) {
     body = (
       <div className="d-call-stage__preview">
-        {preview.people.length > 0 ? (
-          <span className="d-call-stage__faces" aria-hidden="true">
-            {preview.people.map(p => (
-              <span key={p.id} className="d-call-stage__face" data-speaking={p.speaking ? 'true' : 'false'}>
-                <Avatar name={p.name} size="lg" {...(p.bot === true ? { shape: 'bot' as const } : {})} />
-              </span>
-            ))}
-          </span>
-        ) : null}
+        {/* The faces row is always drawn, empty with nobody there: the prototype's empty row is a flex item too, so its 16px gap
+            still stands above the room name and the block sits 8px below the centre of the stage (gap71, gap99). */}
+        <span className="d-call-stage__faces" aria-hidden="true">
+          {preview.people.map(p => (
+            <span key={p.id} className="d-call-stage__face" data-speaking={p.speaking ? 'true' : 'false'}>
+              <Avatar name={p.name} size="lg" {...(p.bot === true ? { shape: 'bot' as const } : {})} />
+            </span>
+          ))}
+        </span>
         <span className="d-call-stage__preview-text">
           <span className="d-call-stage__preview-name">{preview.name}</span>
           <span className="d-call-stage__preview-who">{preview.text}</span>
@@ -194,9 +215,9 @@ export function CallStage({ title, tiles: allTiles, focusedId = null, onFocus, h
       data-focused-stage={focusedLayout ? 'true' : undefined} data-preview={preview !== undefined ? 'true' : undefined}
       data-bar={bar !== undefined && preview === undefined ? 'true' : undefined} onKeyDown={onStageKey}>
       {hasHeader ? <div className="d-call-stage__bar">{header}</div> : null}
-      <header className="d-call-stage__head" data-bare={hasHeader || bar !== undefined || preview !== undefined ? 'true' : undefined}
+      <header className="d-call-stage__head" data-bare={hasHeader || bar !== undefined || preview !== undefined || afk !== undefined ? 'true' : undefined}
         data-empty={outgoing === null && (code === null || bar !== undefined) ? 'true' : undefined}>
-        {hasHeader || bar !== undefined || preview !== undefined
+        {hasHeader || bar !== undefined || preview !== undefined || afk !== undefined
           ? <span id={titleId} className="d-sr-only">{title}</span>
           : <h2 id={titleId} className="d-call-stage__title">{title}</h2>}
         {outgoing !== null ? <p className="d-call-stage__outgoing">{outgoing.text}</p> : null}
@@ -219,7 +240,7 @@ export function CallStage({ title, tiles: allTiles, focusedId = null, onFocus, h
         {nowPlaying ?? null}
         {body}
       </div>
-      {preview !== undefined ? null : bar !== undefined ? (
+      {preview !== undefined || afk !== undefined ? null : bar !== undefined ? (
         <div className="d-call-stage__controls" data-bar="true">
           <div className="d-call-stage__where">
             <span className="d-call-stage__room"><span className="d-call-stage__dot" aria-hidden="true" />{bar.name}</span>

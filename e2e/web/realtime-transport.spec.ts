@@ -4,6 +4,7 @@ import { decodeFrame } from '../../packages/client-core/src/gateway/frames';
 import { addServerVia, copy, instanceInvite, joinCommunity, openChannel, signUp, test, WAIT } from './support/app';
 import { installWorkerPort, portCall, portSlice } from './support/worker-port';
 import { removeHostData, startTestHost, type StartedHost } from './support/host';
+import { e2ePort } from './support/ports';
 import { desktopE2E } from './support/electron.ts';
 import { expectDesktopQuitBlocked } from './support/desktop-quit.ts';
 
@@ -124,7 +125,7 @@ test('wire 5 stays free of periodic version/activity/stats HTTP for fifteen idle
 });
 
 test.describe('no HTTP transport fallback', () => {
-  const port = 8921;
+  const port = e2ePort(8601);
   let host: StartedHost;
   let instanceName: string;
   test.use({ baseURL: `http://127.0.0.1:${String(port)}` });

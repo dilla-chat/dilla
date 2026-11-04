@@ -8,6 +8,8 @@ import { useCore } from '../../core/context.tsx';
 import { errorOf, type UiError } from '../../core/errors.ts';
 import { useSlice } from '../../core/use-slice.ts';
 import { t, type StringKey } from '../../strings/index.ts';
+import { communityBotMember } from '../bot-member.ts';
+import { installationBotName } from '../commands/bot-name.ts';
 import { signalPalette } from './role-palette.ts';
 import { forbidden, statusIs, useRun, type SectionProps } from './shared.ts';
 
@@ -50,6 +52,26 @@ export function RolesSection({ communityId, announce }: SectionProps): React.JSX
   const members = useSlice(`members:${communityId}`);
   const account = useSlice('account');
   const community = useSlice('communities')?.find(c => c.id === communityId);
+  const botAccounts = (members ?? []).filter(member => member.kind === 1).map(member => member.userId).sort().join('/');
+  const installationKey = `${account?.instance?.id ?? ''}/${account?.user?.id ?? ''}/${communityId}/${botAccounts}`;
+  const [installation, setInstallation] = useState<{ key: string; installationId: string; botUserId: string } | null>(null);
+  useEffect(() => {
+    if (botAccounts === '') return;
+    let cancelled = false;
+    // This member-readable identity route also works for role managers without Manage server.
+    void client.call({ m: 'getBotCommandStatus', communityId }).then(value => {
+      const status = value as { installationId?: string; botUserId?: string | null } | null;
+      if (!cancelled && typeof status?.installationId === 'string' && typeof status.botUserId === 'string') {
+        setInstallation({ key: installationKey, installationId: status.installationId, botUserId: status.botUserId });
+      }
+    }).catch(() => { /* The original role name stays available if identity cannot be read. */ });
+    return () => { cancelled = true; };
+  }, [client, communityId, installationKey, botAccounts]);
+  const currentInstallation = installation?.key === installationKey ? installation : null;
+  const bot = communityBotMember(members, currentInstallation?.botUserId);
+  const roleName = (r: RoleSummary): string => r.id === (access?.everyoneId ?? '') ? t('roles.everyone')
+    : currentInstallation !== null && bot?.roleIds.includes(r.id) && r.name === `bot_${currentInstallation.installationId.slice(0, 8)}`
+      ? installationBotName(members, currentInstallation.botUserId) : r.name;
   const everyoneId = access?.everyoneId ?? '';
   const ordered = roles === undefined ? [] : orderRoles(roles, everyoneId);
   const [selected, setSelected] = useState<string | null>(() => { const id = pending.get(communityId) ?? null; pending.delete(communityId); return id; });
@@ -110,7 +132,7 @@ export function RolesSection({ communityId, announce }: SectionProps): React.JSX
   const editable = canManage && !locked(role) && (awaiting === null || role.id === awaiting);
   const allow = override?.roleId === role.id && override.allow !== undefined ? override.allow : role.allow;
   const color = override?.roleId === role.id && override.color !== undefined ? override.color : role.color;
-  const name = draft?.roleId === role.id ? draft.name : isEveryone ? t('roles.everyone') : role.name;
+  const name = draft?.roleId === role.id ? draft.name : roleName(role);
   const values: Record<string, PermValue> = Object.fromEntries((Object.keys(PERM_BY_KEY) as PermKey[])
     .map(k => [k, (allow & PERM_BY_KEY[k]) !== 0 ? 'allow' : 'inherit']));
   const groups = ROLE_PERM_GROUPS.map(g => ({
@@ -122,7 +144,7 @@ export function RolesSection({ communityId, announce }: SectionProps): React.JSX
     }),
   }));
   const list: RoleEditorRole[] = ordered.map(r => {
-    const shown = r.id === everyoneId ? t('roles.everyone') : r.name;
+    const shown = roleName(r);
     return { id: r.id, name: shown, color: r.color, count: r.members,
       label: locked(r) && r.id !== everyoneId ? t('serverSettings.roles.row.locked', { name: shown, count: r.members })
         : t(r.members === 1 ? 'serverSettings.roles.row.one' : 'serverSettings.roles.row.other', { name: shown, count: r.members }) };

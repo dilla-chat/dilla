@@ -1,12 +1,16 @@
 // The open conversation: folded rows, navigation, reactions, pins and overlays.
-import { phoneNow } from '../../layout.ts';
-import { Fragment, useEffect, useLayoutEffect, useReducer, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
+import { useResultBotName } from '../commands/result-bot-name.ts';
+import { phoneNow, usePhoneLayout } from '../../layout.ts';
+import { Fragment, useEffect, useLayoutEffect, useReducer, useRef, useState, useSyncExternalStore, type KeyboardEvent, type PointerEvent } from 'react';
 import { encodeMentions, PERM, type MentionMember, type RoleSummary, type TimelineItem, type TimelineState } from '@dilla/client-core';
-import { Banner, Button, DateDivider, Dialog, DropOverlay, EmojiGrid, MessageLog, type IconName } from '@dilla/ui';
+import { BotResult, Banner, Button, DateDivider, Dialog, DropOverlay, EmojiGrid, MessageLog, type IconName } from '@dilla/ui';
+import { privateResults } from '../commands/private-results.ts';
+import { privateResultCopy } from '../commands/copy.ts';
+import { useSlice } from '../../core/use-slice.ts';
 import { useCore } from '../../core/context.tsx';
 import { useRoute } from '../../router.ts';
 import { REACTION_EMOJI } from '../../emoji.ts';
-import { t } from '../../strings/index.ts';
+import { t, formatTime } from '../../strings/index.ts';
 import { madeHere } from '../Create.tsx';
 import { authorName, editableText, excerpt, editRoles, mentionRoles, plainBody, withRoles, withSenders, type NameBook } from '../shell-model.ts';
 import { attachFiles, AttachmentLightbox, type LightboxState } from './Attachments.tsx';
@@ -78,9 +82,15 @@ export interface ConversationProps { channelId: string; logKey: string; label: s
   welcome?: { icon: IconName; title: string; body: string } }
 
 export function Conversation(props: ConversationProps): React.JSX.Element {
+  const phone = usePhoneLayout();
   const client = useCore();
   const [route] = useRoute();
   const communityId = route.name === 'channel' ? route.communityId : null;
+  const account = useSlice('account');
+  const resultMembers = useSlice(`members:${communityId ?? ''}`);
+  const privateStore = privateResults(client, `${account?.instance?.id ?? ''}:${account?.user?.id ?? ''}`, `${communityId ?? 'dm'}/${props.channelId}/`);
+  const privateRows = useSyncExternalStore(privateStore.subscribe, privateStore.rows);
+  const botName = useResultBotName(client, communityId, resultMembers, privateRows.some(row => row.provider === 'bot'));
   // Role names and colours, and the broadcast right, once known; until then the shell's own book and rule stand.
   const bits = props.bits ?? null;
   const broadcast = bits !== null ? (bits & PERM.mentionEveryone) !== 0 : props.broadcast;
@@ -95,9 +105,10 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
   const [moderateDialogOpen, setModerateDialogOpen] = useState(false);
   const [lightbox, setLightbox] = useState<LightboxState | null>(null);
   const [flashKey, setFlashKey] = useState<string | null>(null);
+  const [jumpScroll, setJumpScroll] = useState<{ key: string; behavior: ScrollBehavior } | null>(null);
   const [dragDepth, setDragDepth] = useState(0);
   const [gridPos, setGridPos] = useState<{ top: number; left: number } | null>(null);
-  // R30: one revealed row at a time (phone), hidden by a second tap, Escape or a scroll of the log. `at` is when it was shown.
+  // R30: one revealed row at a time (phone), hidden by a second tap, Escape or a new scroll of the log.
   const [revealFor, setRevealFor] = useState<{ log: string; key: string } | null>(null);
   const revealedKey = revealFor !== null && revealFor.log === p.logKey && items.some(i => i.key === revealFor.key) ? revealFor.key : null;
   // The reader's own scrolling (wheel, touch, scroll keys); a scroll with none of these before it is the log's own.
@@ -108,8 +119,11 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
   const dragged = useRef(false); // a touch that moved is a scroll; one that did not is a tap, and a tap's reveal grows the row
   const markUserScroll = () => { userScrollAt.current = Date.now(); };
   const reveal = (key: string, on: boolean) => {
-    if (on) setRevealFor({ log: p.logKey, key });
-    else setRevealFor(cur => (cur?.key === key ? null : cur));
+    if (on) {
+      // A new tap/focus supersedes the earlier scroll gesture; a poll update can re-pin within its remaining 800ms window.
+      userScrollAt.current = 0;
+      setRevealFor({ log: p.logKey, key });
+    } else setRevealFor(cur => (cur?.key === key ? null : cur));
   };
   // R29: the log is away from the newest message (the "viewing older messages" bar), per log.
   const [awayFrom, setAwayFrom] = useState<string | null>(null);
@@ -183,7 +197,17 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
   const jump = (msgId: string) => p.dispatch({ type: 'jump', msgId });
   // Focusing a reply button on pointer down activates its row. In a narrow log the toolbar then enters the layout
   // and moves the button before pointer up, so no click reaches it. The jump itself supplies the focus target.
-  const keepJumpPointerStable = (e: PointerEvent<HTMLButtonElement>) => e.preventDefault();
+  const pointerJump = useRef(false);
+  const pointerJumpRow = useRef<HTMLElement | null>(null);
+  const clearPointerJump = () => {
+    pointerJump.current = false;
+    pointerJumpRow.current?.removeAttribute('data-jump');
+    pointerJumpRow.current = null;
+  };
+  const keepJumpPointerStable = (e: PointerEvent<HTMLButtonElement>) => {
+    pointerJump.current = true;
+    e.preventDefault();
+  };
 
   useEffect(() => {
     if (deleteFor !== null || deleted.current === null) return;
@@ -201,6 +225,8 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
   useEffect(() => {
     const target = jumpTarget;
     if (target === null) return;
+    const byPointer = pointerJump.current;
+    clearPointerJump();
     const item = jumpInputs.current.items.find(i => i.msgId === target.msgId);
     if (item === undefined) {
       jumpInputs.current.dispatch({ type: 'notice', notice: 'shell.message.replyNotLoaded' });
@@ -208,13 +234,25 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
     }
     setActiveKey(item.key);
     const row = rowEls.current.get(item.key);
-    row?.focus();
+    if (byPointer && row) {
+      row.dataset.jump = 'pointer';
+      pointerJumpRow.current = row;
+    }
+    row?.focus({ preventScroll: true });
     const behavior = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
-    row?.scrollIntoView?.({ block: 'center', behavior });
     setFlashKey(item.key);
+    setJumpScroll({ key: item.key, behavior });
     if (flashTimer.current !== null) window.clearTimeout(flashTimer.current);
     flashTimer.current = window.setTimeout(() => setFlashKey(null), FLASH_MS);
   }, [jumpTarget]);
+  useLayoutEffect(() => {
+    // Apply the prototype's 80px feed offset after active/flash/focus rendering
+    // and MessageLog's child layout effect, so pinning cannot undo this jump.
+    if (jumpScroll === null) return;
+    const row = rowEls.current.get(jumpScroll.key);
+    const log = row?.closest<HTMLElement>('[role="log"]');
+    if (row && log) log.scrollBy?.({ top: row.getBoundingClientRect().top - log.getBoundingClientRect().top - 80, behavior: jumpScroll.behavior });
+  }, [jumpScroll]);
   useLayoutEffect(() => {
     if (!noticeDismissed.current || p.ui.notice !== null) return;
     noticeDismissed.current = false;
@@ -336,7 +374,7 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
       pointerTimer.current = window.setTimeout(() => { byPointer.current = false; }, POINTER_FOCUS_MS);
     }}
     onClickCapture={() => { byPointer.current = false; }}
-    onKeyDownCapture={e => { byPointer.current = false; if (SCROLL_KEYS.includes(e.key)) markUserScroll(); }}
+    onKeyDownCapture={e => { byPointer.current = false; clearPointerJump(); if (SCROLL_KEYS.includes(e.key)) markUserScroll(); }}
     onFocus={e => { const row = (e.target as Element).closest<HTMLElement>('.d-message-row'); if (row) {
       const key = items.find(i => rowEls.current.get(i.key) === row)?.key;
       if (key) setActiveKey(key);
@@ -354,10 +392,10 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
       noticeDismissed.current = true; p.dispatch({ type: 'notice', notice: null });
     }}>{t('shell.banner.dismiss')}</Button></Banner> : null}
     <MessageLog key={p.logKey} label={p.label} emptyLabel={p.timeline === undefined ? t('shell.log.loading')
-      : t(madeHere(client, p.channelId) ? 'shell.log.emptyMade' : 'shell.log.empty')}
+      : communityId === null ? '' : t(madeHere(client, p.channelId) ? 'shell.log.emptyMade' : 'shell.log.empty')}
       earlier={p.timeline?.hasEarlier ? { label: t('shell.log.earlier'), onLoad: () => p.onLoadEarlier() } : undefined}
       busy={p.timeline === undefined || p.loadingEarlier} onKeyDown={rowKey}
-      present={{ atPresent: awayFrom !== p.logKey, olderLabel: t('layout.log.older'), jumpLabel: t('layout.log.jump'), onJumpToPresent: jumpToPresent }}
+      {...(!phone ? { present: { atPresent: awayFrom !== p.logKey, olderLabel: t('layout.log.older'), jumpLabel: t('layout.log.jump'), onJumpToPresent: jumpToPresent } } : {})}
       {...(p.welcome !== undefined && p.timeline !== undefined && !p.timeline.hasEarlier ? { welcome: p.welcome } : {})}>
       {items.map((item, index) => <Fragment key={item.key}>
         {startsDay(items[index - 1], item) ? <DateDivider label={dayLabel(item.ts, now)} /> : null}
@@ -380,6 +418,8 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
         {...(p.onOpenThread !== undefined ? { onOpenThread: p.onOpenThread } : {})}
         {...(p.onOpenProfile !== undefined ? { onOpenProfile: p.onOpenProfile } : {})} />
       </Fragment>)}
+      {privateRows.map(row => <BotResult key={row.id} author={{ name: (row.provider === 'bot' ? botName : privateResultCopy.author.builtin), avatarName: (row.provider === 'bot' ? botName : privateResultCopy.author.builtin), shape: row.provider === 'bot' ? 'bot' : 'circle' }}
+        time={formatTime(row.at / 1000)} status={row.status} body={row.text} labels={{ ...privateResultCopy.labels, dismissName: privateResultCopy.dismissName(row.text) }} onDismiss={() => privateStore.dismiss(row.id)} />)}
     </MessageLog>
     <div className="dw-overlay">{emojiFor !== null && gridPos !== null ? <div ref={gridRef} style={gridPos}
       onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) closeEmoji(false); }}>

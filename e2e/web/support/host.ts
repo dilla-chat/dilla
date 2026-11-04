@@ -14,7 +14,7 @@ import { followWallClock, readFakeClock, wallClockFollower } from './wall-clock.
  *  so a second host on the same ports serves the same accounts (the caller removes it with `removeHostData`).
  *  L-E2E-31: `sfu` starts the host's in-process LiveKit (`-sfu -sfu-port -sfu-udp-port`); the voice suite sets it.
  *  `departureTimeout` (seconds, `-sfu-departure-timeout`) lengthens the rooms' departure timeout (task-10 fix review N3). */
-export interface HostConfig { port: number; control: number; webRoot: string | null; webauthnOrigin?: string; wire?: number; keepData?: boolean; botRuntime?: boolean; botReconcileInterval?: string; advanceClockWithWall?: boolean; sfu?: { port: number; udpPort: number; departureTimeout?: number } }
+export interface HostConfig { port: number; control: number; webRoot: string | null; webauthnOrigin?: string; wire?: number; keepData?: boolean; botRuntime?: boolean; prebuilt?: boolean; botReconcileInterval?: string; advanceClockWithWall?: boolean; wallClockSweep?: boolean; sfu?: { port: number; udpPort: number; departureTimeout?: number } }
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const TOOLING_DIR = process.env.DILLA_E2E_TOOLING_DIR;
 const verifyPrebuiltTools = () => TOOLING_DIR === undefined ? undefined : verifyTestTools(TOOLING_DIR, { repoRoot: REPO_ROOT });
@@ -26,6 +26,8 @@ export const BOT_HELPER_BIN = prebuiltTools?.botHelper ?? join(CARGO_TARGET_ROOT
 export const WASI_CORE = join(REPO_ROOT, 'internal', 'mlswasi', 'testdata', 'dilla_core_wasi.wasm');
 const WAIT_MS = process.env.CI === 'true' ? 90_000 : 60_000;
 const HOST_DATA_ROOT = process.env.DILLA_E2E_HOST_DATA_ROOT ?? '/tmp/dw';
+/** The suite's Playwright outputDir (DILLA_E2E_OUTPUT_DIR, as the configs read it): the host and Bot logs go beside the traces. */
+export const RESULTS_DIR = process.env.DILLA_E2E_OUTPUT_DIR ?? join(REPO_ROOT, 'e2e', 'test-results');
 const hostDataDir = (port: number): string => join(HOST_DATA_ROOT, `host-${String(port)}`);
 
 function ensureShippingCoreWasm(): void {
@@ -120,14 +122,16 @@ export interface StartedHost { url: string; control: string; invite: string; run
 /**
  * Starts target/dilla-testhost (already built) with `c`, in a fresh data directory under `DILLA_E2E_HOST_DATA_ROOT`
  * (default `/tmp/dw`), logging to
- * e2e/test-results/testhost-<port>.log with the invite redacted. The host starts empty: one instance, its bootstrap
+ * <RESULTS_DIR>/testhost-<port>.log (e2e/test-results by default) with the invite redacted. The host starts empty: one instance, its bootstrap
  * invite, no account, no server, no channel (v0.1.0-web3.1's create-flow suite starts a second one of these).
  */
 export async function startTestHost(c: HostConfig): Promise<StartedHost> {
   verifyPrebuiltTools();
   // Browser CI uses the web-build and rust-wasi artifacts from this commit.
   // Local runs rebuild both so acceptance cannot pass on stale UI or core code.
-  if (c.botRuntime === true && c.webRoot !== null) {
+  // `prebuilt` (the ux world): the caller built the web client and the core already, so nothing here rebuilds them and two starts
+  // in one tree cannot race on packages/web/dist or the wasm core.
+  if (c.botRuntime === true && c.webRoot !== null && c.prebuilt !== true) {
     ensureShippingCoreWasm();
     if (process.env.CI !== 'true' && prebuiltTools === undefined) {
       rebuildShippingWasiCore();
@@ -137,10 +141,10 @@ export async function startTestHost(c: HostConfig): Promise<StartedHost> {
   const dataDir = hostDataDir(c.port);
   if (c.keepData !== true) rmSync(dataDir, { recursive: true, force: true });
   mkdirSync(HOST_DATA_ROOT, { recursive: true });
-  mkdirSync(join(REPO_ROOT, 'e2e', 'test-results'), { recursive: true });
+  mkdirSync(RESULTS_DIR, { recursive: true });
   // Appended, not truncated: tests in one file share a port, so a truncating open let the next test erase the log of the
   // one that failed (PR #121, bot-runtime.spec.ts device 2). Each start writes a header to tell the runs apart.
-  const log = createWriteStream(join(REPO_ROOT, 'e2e', 'test-results', `testhost-${c.port}.log`), { flags: 'a' });
+  const log = createWriteStream(join(RESULTS_DIR, `testhost-${c.port}.log`), { flags: 'a' });
   log.write(`=== testhost start ${new Date().toISOString()} ===\n`);
   const host = spawn(TESTHOST_BIN, hostArgs(c, dataDir), { stdio: ['ignore', 'pipe', 'pipe'] });
   let bot: ChildProcess | null = null;
@@ -170,7 +174,7 @@ export async function startTestHost(c: HostConfig): Promise<StartedHost> {
       await assertWallClock(clockURL, 'before Bot runtime startup');
       // Timer callbacks can be delayed under CI load. Advance by elapsed wall
       // time so the fake host clock stays within the Bot's signed-time window.
-      const follower = followWallClock(clockURL);
+      const follower = followWallClock(clockURL, c.wallClockSweep !== false);
       clockTicker = setInterval(() => {
         if (clockTickInFlight) return;
         clockTickInFlight = true;
@@ -274,7 +278,7 @@ async function startBotRuntime(baseURL: string, dataDir: string, port: number, c
   const runtimeToken = join(dataDir, 'bot-runtime.token');
   const stateDir = join(dataDir, 'bot-state');
   const configPath = join(dataDir, 'bot.toml');
-  const runtimeLogPath = join(REPO_ROOT, 'e2e', 'test-results', `dillabot-${port}.log`);
+  const runtimeLogPath = join(RESULTS_DIR, `dillabot-${port}.log`);
   const discoveryResponse = await fetch(`${baseURL}/v1/instance`, { headers: { accept: 'application/cbor' } });
   if (!discoveryResponse.ok) throw new Error(`bot test discovery failed: HTTP ${discoveryResponse.status}`);
   const instanceIdBytes = arr(decode(new Uint8Array(await discoveryResponse.arrayBuffer())))[3];

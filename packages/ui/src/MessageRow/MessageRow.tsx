@@ -76,7 +76,7 @@ export interface MessageRowProps {
   forceHover?: boolean;
 }
 
-/** A click that starts on one of these is that control's own, not a tap on the row body. */
+/** Controls own their clicks unless they explicitly keep the containing row tap (poll answers). */
 const INTERACTIVE = 'button, a, [data-profile="true"], input, textarea, select, summary, label, [role="button"], [role="toolbar"], [contenteditable="true"]';
 
 const flag = (on: boolean | undefined): 'true' | undefined => (on === true ? 'true' : undefined);
@@ -217,7 +217,8 @@ export function MessageRow({
 
   const onRowClick = (e: MouseEvent<HTMLElement>) => {
     if (!reveals) return;
-    if ((e.target as Element).closest(INTERACTIVE)) return;
+    const control = (e.target as Element).closest(INTERACTIVE);
+    if (control !== null && control.getAttribute('data-message-row-tap') !== 'true') return;
     onReveal(revealed !== true);
   };
   const showToolbar = toolbar !== undefined && (!reveals || revealed === true);

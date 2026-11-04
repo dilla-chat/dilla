@@ -7,15 +7,16 @@ import { expect, type BrowserContext, type Locator, type Page, type PlaywrightWo
 import { mkdirSync, rmSync } from 'node:fs';
 import { addServerVia,
   COPY, SIGNIN, TEST_TIMEOUT, WAIT, channelRow, homeTile, newChannelButton, completeFactorStep, composerBox, copy, expectAccessible, expectComposerReady,
-  expectHeading, expectShell, nextButton, newAccount, railItem, railNav, readRecoveryKey, sendText, keyField, submitButton, test,
-  messageRow, signIn, type Account, membersToggle,
+  expectHeading, expectShell, nextButton, newAccount, railItem, railNav, readRecoveryKey, sendText, keyField, submitButton, keysSubmitButton, test,
+  messageRow, signIn, signUp, type Account, membersToggle,
 } from './support/app';
 import { PROFILE_ROOT } from './support/persistent';
 import { nextCode } from './support/totp';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
+import { e2ePort } from './support/ports';
 
-const PHONE_PORT = Number(process.env.DILLA_E2E_PHONE_PORT ?? 8557);
+const PHONE_PORT = Number(process.env.DILLA_E2E_PHONE_PORT ?? e2ePort(8557));
 const HOST: HostConfig = { port: PHONE_PORT, control: PHONE_PORT + 1, webRoot: 'packages/web/dist' };
 const SERVER = 'Midgard Crew';
 const PHONE = { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 3 } as const;
@@ -153,22 +154,20 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expectHeading(page, COPY.connectTitle, { instance });
       await expectFieldSizes(page, 'connect');
       await nextButton(page).click();
+      // Wave B task 3b: step 2 has the username and the password (no display name); Create account makes the keys and
+      // the key step's I saved it creates the account.
       await expectHeading(page, COPY.identityTitle);
-      await expectFieldSizes(page, 'identity', 3);
+      await expectFieldSizes(page, 'account', 2);
       await expectUnzoomedOnFocus(page, page.getByLabel(copy(COPY.usernameLabel), { exact: true }), 'the username');
       await page.getByLabel(copy(COPY.usernameLabel), { exact: true }).fill(ada.username);
-      await page.getByLabel(copy(COPY.displayLabel), { exact: true }).fill(ada.display);
       await expectUnzoomedOnFocus(page, page.getByLabel(copy(COPY.passwordLabel), { exact: true }), 'the password');
       await page.getByLabel(copy(COPY.passwordLabel), { exact: true }).fill(ada.password);
-      await nextButton(page).click();
+      await submitButton(page).click();
       await expectHeading(page, COPY.keysTitle);
       ada.recoveryKey = await readRecoveryKey(page);
       await expectFieldSizes(page, 'recovery key', 0);
       await page.getByRole('checkbox', { name: copy(COPY.keysAcknowledge), exact: true }).check();
-      await nextButton(page).click();
-      await expectHeading(page, COPY.deviceTitle);
-      await expectFieldSizes(page, 'browser', 0);
-      await submitButton(page).click();
+      await keysSubmitButton(page).click();
       await completeFactorStep(page, ada, async (state) => { await expectFieldSizes(page, `factor ${state}`, state === 'totp' ? 1 : 0); });
       await expectHeading(page, COPY.doneTitle);
       await page.getByRole('button', { name: copy(COPY.finish), exact: true }).click();
@@ -458,7 +457,7 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await tab(page, 'nav.tab.you').tap();
       await expect(tab(page, 'nav.tab.you')).toHaveAttribute('aria-current', 'page');
       await expect(page.getByRole('heading', { level: 2, name: copy('you.title'), exact: true })).toBeFocused();
-      // Task 11 (Jonas, Q3): the prototype's You: the account, the connection box, and the rows Settings, Status and Sign out
+      // Task 11 (Jonas, Q3): the prototype's You: the account, the connection box, and the rows Settings and Sign out (Jonas, wave B: Status is the sidebar user panel's)
       // (48px each, no native select); Diagnostics keeps the node, link, generation and devices.
       await expect(page.locator('.dw-you select')).toHaveCount(0);
       // The box's first line in full: "Connected to {host} · {ms} ms" (or without the ms before the first heartbeat's ack).
@@ -468,7 +467,6 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       for (const name of [copy('you.settings'), copy('workspace.signOut')]) {
         expect((await page.getByRole('button', { name, exact: true }).boundingBox())!.height, `${name} is a 48px row`).toBeGreaterThanOrEqual(47);
       }
-      await expectTapTargets(page.getByRole('button', { name: new RegExp(`^${copy('you.statusRow')}`) }), 'the status row');
       await expectAccessible(page, 'You');
     });
 
@@ -623,8 +621,8 @@ test('the sign-in fields stay at 16 px and unzoomed on a phone', async ({ playwr
     await expectHeading(page, 'signin.totp.title');
     await expectFieldSizes(page, 'sign-in code');
     await expectUnzoomedOnFocus(page, page.getByLabel(copy('signin.totp.code'), { exact: true }), 'the code');
+    // Wave B task 3: the sixth digit in the code boxes sends the code; there is no button to press.
     await page.getByLabel(copy('signin.totp.code'), { exact: true }).fill(await nextCode(account.control, account));
-    await page.getByRole('button', { name: copy(SIGNIN.loginSubmit), exact: true }).click();
     await expectHeading(page, SIGNIN.keyTitle);
     await expectFieldSizes(page, 'sign-in key');
     await expectUnzoomedOnFocus(page, keyField(page), 'the recovery key');
@@ -648,13 +646,32 @@ test('the sign-in fields stay at 16 px and unzoomed on a phone', async ({ playwr
 // coarse pointer under 32rem tall gives it the phone one, the container rules' data-layout twins apply, and the page lock is
 // the attribute the phone shell sets.
 test('a landscape phone (844 x 390) gets the phone layout', async ({ playwright, browserName, launchOptions, headless, channel, guard }, testInfo) => {
-  started();
+  const h = started();
+  // This test is selectable on its own: create its account and server without relying on the earlier portrait test.
+  // Close that browser before opening the landscape one, so sign-in still exercises a fresh phone browser.
+  const seedDir = phoneDir(testInfo.project.name, testInfo.workerIndex, 4);
+  const seed = await phoneContext({ playwright, browserName, launchOptions, headless, channel }, seedDir);
+  await guard.attach(seed);
+  let account: Account;
+  try {
+    const setup = await seed.newPage();
+    account = await signUp(setup, h.invite.split(',')[0], instance, 'Ada', h.control);
+    await addServerVia(setup, 'create');
+    const dialog = setup.getByRole('dialog', { name: copy('create.server.title'), exact: true });
+    const name = dialog.getByRole('textbox', { name: copy('create.server.name'), exact: true });
+    await name.fill(SERVER);
+    await name.press('Enter');
+    await expect(dialog).toBeHidden({ timeout: WAIT });
+    await expectComposerReady(setup, 'general');
+  } finally {
+    await guard.collectWorkers();
+    await seed.close();
+    rmSync(seedDir, { recursive: true, force: true });
+  }
   const dir = phoneDir(testInfo.project.name, testInfo.workerIndex, 3);
   const context = await phoneContext({ playwright, browserName, launchOptions, headless, channel }, dir, LANDSCAPE);
   await guard.attach(context);
   const page = await context.newPage();
-  if (signedUp === null) throw new Error('the phone shell test did not sign up an account');
-  const account = signedUp;
   try {
     await signIn(page, account, instance);
     await expect(page.locator('.d-app-shell')).toHaveAttribute('data-layout', 'phone');
@@ -662,6 +679,8 @@ test('a landscape phone (844 x 390) gets the phone layout', async ({ playwright,
     await test.step('three tabs, the @ tile, and a /dm deep link at 844 x 390', async () => {
       await expect(tabBar(page).getByRole('link')).toHaveCount(3);
       await expectTapTargets(tabBar(page).getByRole('link'), 'the tab bar at 844 x 390');
+      // Sign-in restores the conversation; Home returns to the list where the rail is visible.
+      await tab(page, 'home.tab').tap();
       await expectPrototypeSize(homeTile(page), 'the @ tile at 844 x 390', { w: 38, h: 38 });
       await homeTile(page).tap();
       await expect(homeTile(page)).toHaveAttribute('aria-current', 'page');

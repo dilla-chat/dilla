@@ -2,8 +2,9 @@ import { createElement, useCallback, useEffect, useMemo, useRef, useState, type 
 import { BotInteractionBindingMismatchError, BotInteractionRejectedError, BotInteractionUncertainError, createBotInteractionClient, createVoiceMusicAdapter, decode, encode, fromHex, PERM, type BotInteractionResult, type BotInteractionScope, type CoreClient,
   COMMANDS, parseSeekPosition, type CommandContext as Binding, type CommandInvocation, type CommandResult } from '@dilla/client-core';
 import type { CommandExecutionContext, CommandProviderHandlers, CommandSuggestionProvider } from './command-types.ts';
+import { privateResultCopy } from './copy.ts';
 import { BotCommandDialogs, type BotCommandDialogState, type BotCommandDialogValue } from './BotCommandDialogs.tsx';
-import { commandComposerCopy as copy } from './copy.ts';
+import { commandPickerCopy as copy } from './copy.ts';
 import { t } from '../../strings/index.ts';
 
 const ID = /^[0-9a-f]{32}$/u;
@@ -225,7 +226,7 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
       : fail('The command context is no longer active.');
     const channelId = requireCommunity(context, cid);
     if (channelId === null) return pendingAttempt ? uncertain('This music attempt is still pending. Rejoin its community voice call before reconciling it.')
-      : fail('Join a voice channel in this community before using music commands.');
+      : fail(privateResultCopy.joinVoice);
     const originalChannelId = musicCommandAttemptTarget(client, cid, context.requestId);
     if (originalChannelId !== undefined && channelId !== originalChannelId)
       return uncertain('This music attempt is still pending in its original voice channel. Return to that call to reconcile it; the attempt cannot be retargeted.');

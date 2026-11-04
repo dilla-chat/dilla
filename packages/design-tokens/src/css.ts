@@ -21,7 +21,7 @@ function structuralDecls(): string {
     `  --font-mono: ${s.font.mono};`, `  --font-serif-italic: ${s.font.serifItalic};`,
     ...Object.entries(s.text).map(([k, v]) => `  --text-${k}: ${v};`),
     ...Object.entries(s.weight).map(([k, v]) => `  --weight-${k}: ${v};`),
-    `  --label-tracking: ${s.labelTracking};`, `  --label-tracking-wide: ${s.labelTrackingWide};`, `  --tracking-soft: ${s.trackingSoft};`,
+    `  --label-tracking: ${s.labelTracking};`, `  --label-tracking-wide: ${s.labelTrackingWide};`, `  --tracking-soft: ${s.trackingSoft};`, `  --tracking-tag: ${s.trackingTag};`,
     ...Object.entries(s.radius).map(([k, v]) => `  --r-${k}: ${v};`),
     ...Object.entries(s.opacity).map(([k, v]) => `  --opacity-${k}: ${v};`),
     ...Object.entries(s.shadow).map(([k, v]) => `  --shadow-${k.replace(/^s(\d)$/, "$1")}: ${v};`),
@@ -33,7 +33,7 @@ function structuralDecls(): string {
 }
 
 /** Durations zeroed under reduced motion; `meter` is a live level readout, never zeroed. One list for the media query and `data-motion`. */
-const REDUCED = ['toggle', 'track', 'press', 'fast', 'normal', 'slow', 'enter', 'badge', 'pop', 'turn', 'aside', 'bar', 'toast', 'pulse', 'caret', 'flash', 'hover', 'tab', 'spin', 'dock', 'rail-badge', 'popover', 'switch', 'switch-rise', 'focus', 'rise', 'stagger', 'stage', 'focus-in', 'beat', 'player', 'player-row', 'player-bar', 'queue', 'progress', 'scrim', 'dialog', 'profile', 'modal', 'card', 'step'];
+const REDUCED = ['toggle', 'track', 'press', 'fast', 'normal', 'slow', 'enter', 'badge', 'pop', 'turn', 'aside', 'bar', 'toast', 'pulse', 'caret', 'flash', 'hover', 'tab', 'spin', 'dock', 'rail-badge', 'popover', 'switch', 'switch-rise', 'focus', 'rise', 'stagger', 'stage', 'focus-in', 'beat', 'player', 'player-row', 'player-bar', 'queue', 'progress', 'scrim', 'dialog', 'profile', 'modal', 'card', 'step', 'cmd-row'];
 
 export function renderCss(): string {
   const reduced = REDUCED.map(k => `    --duration-${k}: 0ms;`).join('\n');

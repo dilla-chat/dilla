@@ -12,7 +12,7 @@ describe('flow 12 (v0.1.0-web3.7, phone shell)', () => {
   const pairs = [...copy.matchAll(/`([a-zA-Z][\w.]*)='([^`]*)'`/g)].map(m => [m[1], m[2]] as const);
   it('strings: every flow-12 copy key equals en.ts byte for byte, and every new key is in the flow', () => {
     const table = en as Readonly<Record<string, string>>;
-    expect(pairs.length).toBe(35); // Task 11 (Q3): the prototype's Activity and You copy
+    expect(pairs.length).toBe(34); // Task 11 (Q3): the prototype's Activity and You copy
     for (const [key, value] of pairs) expect(table[key], key).toBe(value);
     for (const [key, value] of pairs) {
       for (const f of FORBIDDEN as { word: string; re: RegExp }[]) expect(f.re.test(value), `${key}: ${f.word}`).toBe(false);

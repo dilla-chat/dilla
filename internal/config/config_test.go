@@ -604,10 +604,14 @@ func TestTheEnrolmentLimitsAreValidated(t *testing.T) {
 		t.Fatalf("the defaults: %v", err)
 	}
 	for name, set := range map[string]func(*config.Config){
-		"auth.session.max_devices_per_user 0":  func(c *config.Config) { c.Auth.Session.MaxDevicesPerUser = 0 },
-		"auth.session.max_devices_per_user 65": func(c *config.Config) { c.Auth.Session.MaxDevicesPerUser = 65 },
-		"auth.session.enrolments_per_hour 0":   func(c *config.Config) { c.Auth.Session.EnrolmentsPerHour = 0 },
-		"auth.session.enrolments_per_hour 61":  func(c *config.Config) { c.Auth.Session.EnrolmentsPerHour = 61 },
+		"auth.webauthn.max_open_logins 0":       func(c *config.Config) { c.Auth.WebAuthn.MaxOpenLogins = 0 },
+		"auth.webauthn.max_open_logins 1000001": func(c *config.Config) { c.Auth.WebAuthn.MaxOpenLogins = 1000001 },
+		"auth.webauthn.max_open_per_user 0":     func(c *config.Config) { c.Auth.WebAuthn.MaxOpenPerUser = 0 },
+		"auth.webauthn.max_open_per_user 101":   func(c *config.Config) { c.Auth.WebAuthn.MaxOpenPerUser = 101 },
+		"auth.session.max_devices_per_user 0":   func(c *config.Config) { c.Auth.Session.MaxDevicesPerUser = 0 },
+		"auth.session.max_devices_per_user 65":  func(c *config.Config) { c.Auth.Session.MaxDevicesPerUser = 65 },
+		"auth.session.enrolments_per_hour 0":    func(c *config.Config) { c.Auth.Session.EnrolmentsPerHour = 0 },
+		"auth.session.enrolments_per_hour 61":   func(c *config.Config) { c.Auth.Session.EnrolmentsPerHour = 61 },
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := valid(t)

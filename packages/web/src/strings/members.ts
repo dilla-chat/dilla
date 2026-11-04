@@ -5,7 +5,6 @@ export const members = {
   'members.group': '{name} — {count}',
   'members.groupMembers': 'members',
   'members.groupOffline': 'Offline',
-  'presence.label': 'Your status',
   'presence.online': 'online',
   'presence.idle': 'idle',
   'presence.dnd': 'do not disturb',

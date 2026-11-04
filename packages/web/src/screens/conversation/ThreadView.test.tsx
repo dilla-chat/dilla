@@ -1,5 +1,6 @@
+import * as ClientCore from '@dilla/client-core';
 import { describe, expect, it, vi } from 'vitest';
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { PERM, type ThreadState } from '@dilla/client-core';
@@ -11,6 +12,7 @@ import { en } from '../../strings/index.ts';
 import { formatTime } from '../../strings/index.ts';
 import { A, GEN, NOW, MEMBERS, O1, P1, P2, PEER, ownRow, peerRow } from '../../test/conversation.tsx';
 import { ThreadView } from './ThreadView.tsx';
+import { privateResults } from "../commands/private-results.ts";
 import type { ProfileOpener } from './MessageItem.tsx';
 import { toolbarButton, toolbarLabels } from '../../test/toolbar.ts';
 
@@ -23,9 +25,10 @@ function thread(over: Partial<ThreadState> = {}): ThreadState {
   };
 }
 
-function setup(over: { thread?: ThreadState | null; phone?: boolean; initialDraft?: string; blocked?: string | null; onDraftChange?: (text: string) => void; onOpenProfile?: ProfileOpener } = {}) {
+function setup(over: { handler?: FakeClient['handler']; thread?: ThreadState | null; phone?: boolean; initialDraft?: string; blocked?: string | null; onDraftChange?: (text: string) => void; onOpenProfile?: ProfileOpener } = {}) {
   window.history.replaceState(null, '', `/c/${A}/${GEN}`);
   const fake = new FakeClient();
+  if (over.handler) fake.handler = over.handler;
   fake.set('account', account());
   fake.set(`members:${A}`, MEMBERS);
   fake.set(`thread:${GEN}`, over.thread === undefined ? thread() : over.thread);
@@ -71,9 +74,9 @@ describe('ThreadView (web3.7)', () => {
   });
   it('opens the thread on mount and closes it on unmount, in that order', () => {
     const { fake, view } = setup();
-    expect(fake.calls).toEqual([{ m: 'openThread', channelId: GEN, rootMsgId: ROOT }]);
+    expect(fake.calls.filter(call => call.m !== 'getBotCommandStatus')).toEqual([{ m: 'openThread', channelId: GEN, rootMsgId: ROOT }]);
     view.unmount();
-    expect(fake.calls).toEqual([{ m: 'openThread', channelId: GEN, rootMsgId: ROOT }, { m: 'closeThread', channelId: GEN }]);
+    expect(fake.calls.filter(call => call.m !== 'getBotCommandStatus')).toEqual([{ m: 'openThread', channelId: GEN, rootMsgId: ROOT }, { m: 'closeThread', channelId: GEN }]);
   });
   it('shows the title, a close control, the root and the replies', () => {
     const { onClose } = setup();
@@ -100,9 +103,21 @@ describe('ThreadView (web3.7)', () => {
     expect(document.querySelector('.d-thread-pane')).toHaveAttribute('data-phone', 'true');
     expect(screen.getByRole('button', { name: en['thread.close'] })).toBeInTheDocument();
   });
-  it('focuses the thread composer on opening', () => {
+  it('leaves the thread composer unfocused on opening', () => {
     setup();
+    expect(box()).not.toHaveFocus();
+  });
+  it.each([false, true])('has no Send button with empty or nonempty replies on phone=%s and sends with Enter', async phone => {
+    const { fake, user } = setup({ phone });
+    const composer = within(document.querySelector('.d-thread-pane__composer') as HTMLElement);
+    expect(composer.queryByRole('button', { name: 'send' })).toBeNull();
+    await user.type(box(), 'a thread reply');
+    expect(composer.queryByRole('button', { name: 'send' })).toBeNull();
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(fake.callsOf('send')).toEqual([{ m: 'send', channelId: GEN, text: 'a thread reply', threadId: ROOT }]));
+    expect(box()).toHaveValue('');
     expect(box()).toHaveFocus();
+    expect(composer.queryByRole('button', { name: 'send' })).toBeNull();
   });
   it('focuses no field on a phone (script focus opens no keyboard there)', () => {
     setup({ phone: true });
@@ -110,6 +125,7 @@ describe('ThreadView (web3.7)', () => {
   });
   it('closes on Escape inside it', async () => {
     const { user, onClose } = setup();
+    await user.click(box());
     await user.keyboard('{Escape}');
     expect(onClose).toHaveBeenCalledTimes(1);
   });
@@ -278,7 +294,7 @@ describe('ThreadView (web3.7)', () => {
     const user = userEvent.setup();
     render(<CoreProvider client={fake}><Host /></CoreProvider>);
     await user.click(screen.getByRole('button', { name: 'open it' }));
-    expect(box()).toHaveFocus();
+    expect(screen.getByRole('button', { name: 'open it' })).toHaveFocus();
     await user.click(screen.getByRole('button', { name: en['thread.close'] }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'open it' })).toHaveFocus());
   });
@@ -312,3 +328,39 @@ describe('ThreadView (web3.7)', () => {
 });
 
 void act; void PEER;
+
+it('shows only this thread’s private results and dismisses without a request', async () => {
+  const { fake, user } = setup(); const self = fake.get('account');
+  const scope = `${self?.instance?.id ?? ''}:${self?.user?.id ?? ''}`;
+  act(() => {
+    privateResults(fake, scope, `${A}/${GEN}/`).add({ at: 1, status: 'success', text: 'channel private', provider: 'builtin' });
+    privateResults(fake, scope, `${A}/${GEN}/${ROOT}`).add({ at: 2, status: 'success', text: 'thread private', provider: 'builtin' });
+  });
+  expect(screen.queryByText('channel private')).not.toBeInTheDocument();
+  expect(screen.getByText('thread private')).toBeInTheDocument();
+  const calls = fake.calls.length;
+  await user.click(screen.getByRole('button', { name: 'Dismiss: thread private' }));
+  expect(screen.queryByText('thread private')).not.toBeInTheDocument();
+  expect(box()).toHaveFocus();
+  expect(fake.calls).toHaveLength(calls);
+});
+
+it('thread Bot results use the live renamed member', async () => {
+  const spy = vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ capabilities: () => Promise.resolve({ botUserId: 'ab'.repeat(16), supportedOperations: [] }) } as unknown as ClientCore.BotUtilities);
+  const { fake } = setup({ handler: command => Promise.resolve(command.m === 'getBotCommandStatus' ? { botUserId: 'ab'.repeat(16) } : null) }); const self = fake.get('account');
+  act(() => {
+    fake.publish(`members:${A}`, [...MEMBERS, { userId: 'ab'.repeat(16), username: 'bot', display: 'Freja', kind: 1, roleIds: [] }]);
+    privateResults(fake, `${self?.instance?.id ?? ''}:${self?.user?.id ?? ''}`, `${A}/${GEN}/${ROOT}`).add({ at: 1, status: 'success', text: 'thread Bot result', provider: 'bot' });
+  });
+  const row = document.querySelector('.d-bot-result') as HTMLElement;
+  await waitFor(() => expect(within(row).getByText('Freja')).toBeInTheDocument());
+  expect(within(row).getByRole('img', { name: 'Freja' })).toBeInTheDocument();
+  spy.mockRestore();
+});
+it('CommandHost and ThreadView share the production thread result key', async () => {
+  const { user } = setup();
+  fireEvent.change(box(), { target: { value: '/help' } });
+  await screen.findByRole('combobox', { name: 'command' });
+  await user.keyboard('{Enter}');
+  await waitFor(() => expect(document.querySelector('.d-thread-pane__replies .d-bot-result[data-status="success"]')).toHaveTextContent('/help'));
+});

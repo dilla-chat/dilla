@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { BotUtilitiesStatusError, BotUtilitiesUncertainMutationError, PERM, createBotUtilities, decodePollVote, decodePollClose, type CoreClient, type PollSummary } from '@dilla/client-core';
-import { Button } from '@dilla/ui';
+import { PollCard as SignalPollCard, showToast } from '@dilla/ui';
 import { utilityText as t } from './utility-copy.ts';
+import { walkPollVoters } from './poll-voters.ts';
 import './UtilityCards.css';
 
 const MARKER = /^\[dilla-poll:v1:([0-9a-f]{32})\]$/u;
-type PollAttempt = { id: string; kind: 'vote' | 'close'; choices: number[]; revision: string; scope: string };
+type PollAttempt = { id: string; kind: 'vote' | 'close'; choices: number[]; revision: string; scope: string; answer?: number };
 const attemptsByClient = new WeakMap<CoreClient, Map<string, PollAttempt>>();
 function attemptMap(client: CoreClient): Map<string, PollAttempt> {
   const prior = attemptsByClient.get(client); if (prior) return prior; const map = new Map<string, PollAttempt>(); attemptsByClient.set(client, map); return map;
@@ -35,7 +36,6 @@ function requestId(): string {
   if (bytes.every(value => value === 0)) bytes[15] = 1;
   return [...bytes].map(value => value.toString(16).padStart(2, '0')).join('');
 }
-function countLabel(value: bigint): string { return value.toString(); }
 function definiteMutationError(cause: unknown, attempt: PollAttempt, operation: 73 | 74): boolean {
   return cause instanceof BotUtilitiesStatusError && cause.operation === operation && cause.requestId === attempt.id
     && (cause.status === 2 || cause.status === 3 || cause.status === 4);
@@ -44,7 +44,8 @@ function definiteMutationError(cause: unknown, attempt: PollAttempt, operation: 
 export interface PollCardProps {
   client: CoreClient; communityId: string | null; channelId: string; threadId: string | null; body: string;
   authorId: string | null; bot: boolean; edited: boolean; deleted: boolean; selfId: string | null; bits: number | null;
-  onOpenThread?(rootMessageId: string): void;
+  /** Update the message heading before paint, without replacing its focusable row. */
+  onVerified?: (poll: PollSummary | null) => void;
 }
 
 /** A poll is interactive only after the authenticated bot author, final marker and durable record agree. */
@@ -72,10 +73,9 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
   const [verifiedScope, setVerifiedScope] = useState<string | null>(null);
   const [active, setActive] = useState(false);
   const [busy, setBusy] = useState(false);
-  const busyRef = useRef(busy); busyRef.current = busy;
+  const busyRef = useRef(false);
   const [error, setError] = useState('');
   const [selected, setSelected] = useState<number[] | null>(null);
-  const selectedRef = useRef<number[] | null>(selected); selectedRef.current = selected;
   const accessScopeRef = useRef(accessScope); accessScopeRef.current = accessScope;
   const sourceAccessibleRef = useRef(sourceAccessible); sourceAccessibleRef.current = sourceAccessible;
   const attemptKey = scopeKey;
@@ -87,11 +87,14 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
     if (next === null) attemptMap(props.client).delete(actualAttemptKey); else attemptMap(props.client).set(next.scope, next);
     setStoredAttempt({ key: attemptKey, value: next });
   };
-  const [voters, setVoters] = useState<{ option: number; ids: string[]; cursor: Uint8Array | null } | null>(null);
-  const ref = useRef<HTMLElement>(null); const generation = useRef(0); const voterGeneration = useRef(0);
+  const [voterData, setVoterData] = useState<{ scope: string; revision: bigint; previews: string[][]; distinct: number; capped: boolean } | null>(null);
+  const ref = useRef<HTMLDivElement>(null); const generation = useRef(0); const voterGeneration = useRef(0);
+  const voterTarget = useRef<string | null>(null);
+  const voterPending = useRef(false);
+  const lastVoterWalk = useRef<number | null>(null);
   const utilities = useMemo(() => createBotUtilities(props.client, props.communityId!), [props.client, props.communityId]);
-  const invalidate = useCallback(() => { voterGeneration.current++; setRecord(null); setVerifiedScope(null); setVoters(null); }, []);
-  const refresh = useCallback(async (): Promise<PollSummary | null> => {
+  const invalidate = useCallback(() => { voterGeneration.current++; voterTarget.current = null; setRecord(null); setVerifiedScope(null); setVoterData(null); }, []);
+  const refresh = useCallback(async (walkVoters = false): Promise<PollSummary | null> => {
     const current = ++generation.current;
     try {
       const caps = await utilities.capabilities();
@@ -110,9 +113,33 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
       }
       const boundScope = `${identityScope}:${caps.installationId}`;
       setRecord({ client: props.client, scope: boundScope, poll }); setVerifiedScope(boundScope);
+      // Only the initial/cadence refresh may start a full walk. Mutation refreshes
+      // preserve the last completed count; a pending read survives record revisions.
+      const voterKey = `${boundScope}:${poll.revision}:${accessScope}`;
+      if (walkVoters && !voterPending.current && voterTarget.current !== voterKey
+        && (lastVoterWalk.current === null || performance.now() - lastVoterWalk.current >= 30_000)) {
+        voterTarget.current = voterKey; voterPending.current = true; lastVoterWalk.current = performance.now();
+        const voterRequest = ++voterGeneration.current;
+        const votersCurrent = () => voterGeneration.current === voterRequest && isSameOwner()
+          && sourceAccessibleRef.current && accessScope === accessScopeRef.current;
+        void (async () => {
+          try {
+            const data = await walkPollVoters(poll.counts, poll.multi, (option, cursor) => utilities.pollVoters({ pollId: poll.id,
+              channelId: poll.channelId, threadId: poll.threadId, option, cursor }), votersCurrent);
+            if (!votersCurrent()) return;
+            const latest = await utilities.capabilities();
+            if (!votersCurrent() || latest.installationId !== caps.installationId || latest.botUserId !== props.authorId) return;
+            setVoterData({ scope: boundScope, revision: poll.revision, ...data });
+          } catch {
+            if (votersCurrent()) { voterTarget.current = null; setError(t('poll.readError')); }
+          } finally { voterPending.current = false; }
+        })();
+      }
+
       const retained = [...attemptMap(props.client)].find(([key]) => key.startsWith(`${identityScope}:`))?.[1];
-      if (retained?.scope !== undefined && retained.scope !== boundScope) setError(t('poll.uncertain'));
-      if (selectedRef.current === null) setSelected(retained?.choices ?? poll.myChoices ?? []);
+      if (!busyRef.current || retained === undefined || poll.closed) setSelected(retained?.kind === 'vote' ? retained.choices : poll.myChoices ?? []);
+      // Refreshes update the record without dismissing a mutation or voter-read notice.
+      if (!busyRef.current && retained !== undefined) setError(t(retained.kind === 'vote' ? 'poll.voteUncertain' : 'poll.uncertain'));
       return poll;
     } catch { if (generation.current === current) invalidate(); return null; }
   }, [utilities, isSameOwner, invalidate, identityScope, sourceAccessible, accessScope, props.client, props.authorId, props.pollId, props.channelId, props.threadId]);
@@ -123,7 +150,7 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
     observer.observe(node); return () => observer.disconnect();
   }, []);
   useEffect(() => {
-    if (!active) { generation.current++; voterGeneration.current++; return; }
+    if (!active) { generation.current++; voterGeneration.current++; voterTarget.current = null; return; }
     const currentGeneration = generation;
     const currentVoterGeneration = voterGeneration;
     // A complete authenticated refresh can span several Bot gateway rounds. A
@@ -131,19 +158,29 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
     // Mutations also own their refresh until the action finishes.
     let pending = false;
     const update = async () => {
-      if (pending) return;
+      if (pending || busyRef.current) return;
       pending = true;
-      try { await refresh(); } finally { pending = false; }
+      try { await refresh(true); } finally { pending = false; }
     };
-    void update(); const timer = window.setInterval(() => { if (!busyRef.current) void update(); }, 30_000);
-    return () => { window.clearInterval(timer); currentGeneration.current++; currentVoterGeneration.current++; };
+    void update(); const timer = window.setInterval(() => { void update(); }, 30_000);
+    return () => { window.clearInterval(timer); currentGeneration.current++; currentVoterGeneration.current++; voterTarget.current = null; };
   }, [active, refresh]);
   const poll = sourceAccessible && record?.client === props.client && record.scope === scopeKey && verifiedScope === scopeKey ? record.poll : null;
+  const { onVerified } = props;
+  useLayoutEffect(() => {
+    onVerified?.(poll);
+    return () => onVerified?.(null);
+  }, [onVerified, poll]);
   const canClose = poll !== null && (poll.creatorId === props.selfId || (props.bits !== null && (props.bits & PERM.manageMessages) !== 0));
-  if (poll === null) return <section ref={ref} className="dw-poll-card" aria-hidden="true" />;
+  if (poll === null) return <div ref={ref} className="dw-poll-card" aria-hidden="true" />;
   const visibleSelected = selected ?? poll.myChoices ?? [];
   const live = () => isSameOwner() && sourceAccessibleRef.current && accessScopeRef.current === accessScope && scopeRef.current === scopeKey
     && installationRef.current === installationId;
+  const dropWithdrawnSelf = (choices: readonly number[] | null) => {
+    if (choices === null) return;
+    setVoterData(current => current?.scope === scopeKey ? { ...current,
+      previews: current.previews.map((ids, index) => choices.includes(index) ? ids : ids.filter(id => id !== props.selfId)) } : current);
+  };
   const reconcile = async (prior: PollAttempt, operation: 73 | 74): Promise<'accepted' | 'conflict' | 'unknown' | 'stale'> => {
     let accepted = false;
     try {
@@ -163,16 +200,16 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
       const latest = await utilities.pollGet(poll.id, { channelId: props.channelId, threadId: props.threadId });
       if (!live() || latest.channelId !== props.channelId || latest.threadId !== props.threadId) return 'stale';
       setRecord({ client: props.client, scope: scopeKey, poll: latest }); setVerifiedScope(scopeKey);
-      setSelected(latest.myChoices ?? []);
+      setSelected(latest.myChoices ?? []); dropWithdrawnSelf(latest.myChoices);
       return 'accepted';
     } catch (cause) { return accepted ? 'accepted' : definiteMutationError(cause, prior, operation) ? 'conflict' : 'unknown'; }
   };
-  const submit = async (choices: number[]) => {
+  const submit = async (choices: number[], answer: number) => {
     if (busy || (attempt !== null && (attempt.kind !== 'vote' || attempt.choices.join(',') !== choices.join(',')))) return;
-    const pending = attempt ?? { id: requestId(), kind: 'vote' as const, choices: [...choices], revision: poll.revision.toString(), scope: scopeKey };
+    const pending = attempt ?? { id: requestId(), kind: 'vote' as const, choices: [...choices], revision: poll.revision.toString(), scope: scopeKey, answer };
     if (pending.scope !== scopeKey || pending.kind !== 'vote') return;
     const immutable = { ...pending, choices: [...pending.choices] };
-    rememberAttempt(immutable); setBusy(true);
+    rememberAttempt(immutable); setSelected(choices); busyRef.current = true; setBusy(true); setError('');
     let started = false; let accepted = false;
     try {
       const caps = await utilities.capabilities();
@@ -182,7 +219,7 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
       accepted = true;
       const after = await utilities.capabilities();
       if (!live() || after.installationId !== installationId || after.botUserId !== props.authorId) return;
-      setRecord({ client: props.client, scope: scopeKey, poll: updated }); setSelected(updated.myChoices ?? []); rememberAttempt(null); setError('');
+      setRecord({ client: props.client, scope: scopeKey, poll: updated }); setSelected(updated.myChoices ?? []); dropWithdrawnSelf(updated.myChoices); rememberAttempt(null); await refresh();
     } catch (cause) {
       if (!live()) return;
       if (accepted || (attempt === null && !started)) { rememberAttempt(null); await refresh(); setError(t('poll.readError')); }
@@ -191,15 +228,15 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
         const recovered = await reconcile(immutable, 73);
         if (recovered === 'accepted') { rememberAttempt(null); setError(''); }
         else if (recovered === 'conflict') { rememberAttempt(null); await refresh(); setError(t('poll.conflict')); }
-        else if (recovered !== 'stale') { await refresh(); setError(t('poll.uncertain')); }
-      } else { await refresh(); setError(t('poll.uncertain')); }
-    } finally { setBusy(false); }
+        else if (recovered !== 'stale') { await refresh(); setError(t('poll.voteUncertain')); }
+      } else { await refresh(); setError(t('poll.voteUncertain')); }
+    } finally { busyRef.current = false; setBusy(false); }
   };
   const close = async () => {
     if (!canClose || busy || (attempt !== null && attempt.kind !== 'close')) return;
     let pending = attempt ?? { id: requestId(), kind: 'close' as const, choices: [], revision: poll.revision.toString(), scope: scopeKey };
     if (pending.scope !== scopeKey || pending.kind !== 'close') return;
-    rememberAttempt(pending); setBusy(true);
+    rememberAttempt(pending); busyRef.current = true; setBusy(true); setError('');
     let started = false; let accepted = false; let refreshed = false;
     try { const caps = await utilities.capabilities(); if (!live() || caps.installationId !== installationId || caps.botUserId !== props.authorId) { await refresh(); return; }
       started = true;
@@ -221,7 +258,7 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
       }
       accepted = true;
       const after = await utilities.capabilities(); if (!live() || after.installationId !== installationId || after.botUserId !== props.authorId) return;
-      setRecord({ client: props.client, scope: scopeKey, poll: updated }); rememberAttempt(null); setError(''); }
+      setRecord({ client: props.client, scope: scopeKey, poll: updated }); rememberAttempt(null); setError(''); showToast(t('poll.closed')); }
     catch (cause) {
       if (!live()) return;
       if (accepted || (attempt === null && !started)) { rememberAttempt(null); await refresh(); setError(t('poll.readError')); }
@@ -233,41 +270,29 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
         else if (recovered !== 'stale') { await refresh(); setError(t('poll.uncertain')); }
       } else { await refresh(); setError(t('poll.uncertain')); }
     }
-    finally { setBusy(false); }
+    finally { busyRef.current = false; setBusy(false); }
   };
-  const loadVoters = async (option: number, cursor: Uint8Array | null = null) => {
-    // Record refreshes may complete while this authenticated page is loading.
-    // Only a newer voter query or a changed/invalidated context supersedes it.
-    const identity = owner; const installation = installationId; const source = scopeKey; const request = ++voterGeneration.current;
-    try { const page = await utilities.pollVoters({ pollId: poll.id, channelId: poll.channelId, threadId: poll.threadId, option, cursor });
-      const caps = await utilities.capabilities();
-      if (!isSameOwner() || identity !== owner || installationRef.current !== installation || scopeRef.current !== source || voterGeneration.current !== request
-        || accessScopeRef.current !== accessScope || !sourceAccessibleRef.current || caps.installationId !== installation || caps.botUserId !== props.authorId) return;
-      setVoters(previous => ({ option, ids: cursor !== null && previous?.option === option ? [...previous.ids, ...page.voters] : page.voters, cursor: page.nextCursor })); setError(''); }
-    catch { if (voterGeneration.current === request && scopeRef.current === source && isSameOwner()) setError(t('poll.readError')); }
+  const vote = (index: number) => {
+    if (poll.closed || busy) return;
+    if (attempt?.kind === 'vote') { if (attempt.answer === index) void submit(attempt.choices, index); return; }
+    const choices = visibleSelected.includes(index) ? visibleSelected.filter(value => value !== index) : poll.multi ? [...visibleSelected, index] : [index];
+    void submit(choices, index);
   };
-  const toggle = (index: number) => setSelected(current => {
-    const selectedNow = current ?? poll.myChoices ?? [];
-    return selectedNow.includes(index) ? selectedNow.filter(value => value !== index) : poll.multi ? [...selectedNow, index] : [index];
-  });
-  return <section ref={ref} className="dw-poll-card" aria-labelledby={`poll-${poll.id}-question`}>
-    <h3 id={`poll-${poll.id}-question`}>{poll.question}</h3>
-    <fieldset disabled={busy || attempt !== null || poll.closed}>
-      <legend>{poll.multi ? t('poll.chooseMany') : t('poll.chooseOne')}</legend>
-      {poll.answers.map((answer, index) => <label className="dw-poll-card__answer" key={`${poll.id}:${index}`}>
-        <input type={poll.multi ? 'checkbox' : 'radio'} name={`poll-${poll.id}`} checked={visibleSelected.includes(index)} onChange={() => toggle(index)} />
-        <span>{answer}</span><span className="dw-poll-card__count">{countLabel(poll.counts[index] ?? 0n)}</span>
-      </label>)}
-    </fieldset>
-    <div className="dw-poll-card__actions">
-      {!poll.closed ? <Button variant="accent" disabled={busy || (attempt !== null && (attempt.scope !== scopeKey || attempt.kind !== 'vote' || attempt.choices.join(',') !== visibleSelected.join(',')))} onClick={() => void submit(attempt?.kind === 'vote' ? attempt.choices : visibleSelected)}>{attempt?.kind === 'vote' ? t('poll.retryVote') : t('poll.submit')}</Button> : null}
-      {!poll.closed && poll.myChoices !== null && poll.myChoices.length > 0 ? <Button variant="ghost" disabled={busy || (attempt !== null && (attempt.scope !== scopeKey || attempt.kind !== 'vote' || attempt.choices.length !== 0))} onClick={() => void submit(attempt?.kind === 'vote' ? attempt.choices : [])}>{attempt?.kind === 'vote' && attempt.choices.length === 0 ? t('poll.retryWithdraw') : t('poll.withdraw')}</Button> : null}
-      {canClose && !poll.closed ? <Button variant="ghost" disabled={busy || (attempt !== null && (attempt.scope !== scopeKey || attempt.kind !== 'close'))} onClick={() => void close()}>{attempt?.kind === 'close' ? t('poll.retryClose') : t('poll.close')}</Button> : null}
-    </div>
-    <p className="dw-poll-card__due">{poll.closed ? t('poll.closed') : t('poll.closes', { time: new Date(Number(poll.dueAt) * 1000).toLocaleString() })}</p>
-    {poll.answers.map((answer, index) => <div className="dw-poll-card__voters" key={`voters-${index}`}><Button variant="ghost" onClick={() => void loadVoters(index)}>{t('poll.voters', { answer, count: countLabel(poll.counts[index] ?? 0n) })}</Button></div>)}
-    {voters !== null ? <div className="dw-poll-card__voter-list" aria-live="polite">{voters.ids.length ? <ul>{voters.ids.map(id => { const member = props.client.get(`members:${props.communityId}`)?.find(row => row.userId === id); return <li key={id}>{member?.display || member?.username || id.slice(0, 8)}</li>; })}</ul> : t('poll.noVoters')}{voters.cursor ? <Button variant="ghost" onClick={() => void loadVoters(voters.option, voters.cursor)}>{t('poll.moreVoters')}</Button> : null}</div> : null}
+  const votes = poll.counts.reduce((sum, count) => sum + count, 0n);
+  const max = poll.counts.reduce((largest, count) => count > largest ? count : largest, 0n);
+  const currentVoters = voterData?.scope === scopeKey ? voterData : null;
+  const durationSeconds = Number(poll.dueAt - poll.createdAt);
+  const duration = durationSeconds >= 86400 * 3 ? t('poll.days', { count: durationSeconds / 86400 }) : durationSeconds === 3600 ? t('poll.hour') : t('poll.hours', { count: durationSeconds / 3600 });
+  const count = poll.multi ? currentVoters?.distinct : Number(votes);
+  const meta = [poll.closed ? t('poll.final') : t('poll.openFor', { duration }), t(poll.multi ? 'poll.pickAny' : 'poll.pickOne'),
+    ...(count === undefined ? [] : [t(poll.multi && currentVoters?.capped ? 'poll.voterLowerBound' : count === 1 ? 'poll.voter' : 'poll.voterCount', { count })])].join(' · ');
+  return <div ref={ref} className="dw-poll-card">
+    <SignalPollCard question={poll.question} closed={poll.closed} multi={poll.multi} meta={meta}
+      options={poll.answers.map((text, index) => ({ text, pct: votes > 0n ? Math.round(Number(poll.counts[index] ?? 0n) / Number(votes) * 100) : 0,
+        mine: visibleSelected.includes(index), winner: poll.closed && max > 0n && poll.counts[index] === max,
+        voters: (currentVoters?.previews[index] ?? []).map(id => { const member = props.client.get(`members:${props.communityId}`)?.find(row => row.userId === id); return { name: member?.display || member?.username || id.slice(0, 8) }; }) }))}
+      canVote={attempt === null || (attempt.scope === scopeKey && attempt.kind === 'vote')} canClose={canClose} busy={busy} pendingAnswer={attempt?.kind === 'vote' ? attempt.answer : undefined}
+      labels={{ closed: t('poll.closedTag'), close: t('poll.close') }} onVote={vote} onClose={() => void close()} />
     {error ? <p role="alert">{error}</p> : null}
-    {poll.threadId !== null && props.onOpenThread ? <Button variant="ghost" onClick={() => props.onOpenThread?.(poll.threadId!)}>{t('poll.openThread')}</Button> : null}
-  </section>;
+  </div>;
 }

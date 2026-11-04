@@ -1,6 +1,6 @@
 # Flow 16: the GIF picker and the server's Giphy setting (E8)
 
-GIFs are a per-server setting. A person who manages a server enters that server's Giphy key in its settings; the key is write-only and a visible configured status replaces the field afterwards. A server without a key has no GIF button. Search and the preview and full downloads go through the instance, so Giphy sees the instance and never a person. The picked GIF is attached like any file: it is encrypted like any file, and a reader's browser never contacts giphy.com. There are no GIFs in direct messages.
+GIFs are a per-server setting. A person who manages a server enters that server's Giphy key in its settings; the key is write-only and a visible configured status replaces the field afterwards. A server without a key has no GIF button. Search and the preview and full downloads go through the instance, so Giphy sees the instance and never a person. The picked GIF is attached like any file: it is encrypted like any file, and a reader's browser never contacts giphy.com. Direct-message GIFs are opt-in after a named shared-server privacy notice (Jonas, 2026-10-31).
 
 ## States
 
@@ -9,7 +9,14 @@ GIFs are a per-server setting. A person who manages a server enters that server'
 | a channel of a server with no Giphy key | no `gif` button in any composer |
 | a channel of a server with a Giphy key | a `gif` button (`gif.button`) after the attach `+`, in a channel's composer (a thread's composer has none); the button appears once the server's setting has been read |
 | reading the setting fails | no button |
-| a direct message or group message, or a thread | never a `gif` button; the setting is not even asked for |
+| a direct message with a possible shared server | the GIF button is available, but opening the DM makes no GIF request; only pressing the button checks shared servers, most recently active first, for a key |
+| a DM with no available key after pressing | no notice or picker; `gif.unavailable`; the button stays closed |
+| a DM before consent, or using a different proxy | the existing confirm dialog names the selected server in `gif.dm.notice`, with `gif.dm.use` and `gif.dm.notNow`; no search, trending, preview or full fetch before Use GIFs |
+| saving consent | `gif.dm.saving`; dismissal is disabled until the indivisible local save completes; failure leaves an alert and permits retry or Not now |
+| a consenting DM on this account/device using the last disclosed proxy | pressing the button checks key availability, then opens the picker without another notice |
+| Settings → Privacy | `gif.dm.title` toggle reflects consent and revokes it locally; enabling requires the named-server notice on next use; `gif.dm.hint` explains the disclosure |
+| consent revoked while open | close the picker, stop subsequent queued requests and discard pending downloads; a GIF already added to the file tray remains an attachment the person can remove |
+| a group message or thread | never a `gif` button; the setting is not asked for |
 | the composer is blocked (read-only, no permission) | the `gif` button is disabled with the rest of the composer |
 | picker open, nothing typed | trending results; the search box (`gif.search`, placeholder `gif.search.placeholder`) is focused; `aria-expanded="true"` on the button |
 | searching | `gif.loading` in the status line; results of the last search stay until the new ones arrive |
@@ -45,7 +52,8 @@ GIFs are a per-server setting. A person who manages a server enters that server'
 
 ## Focus rules
 
-- Opening focuses the search box
+- Opening the picker focuses the search box; the DM notice initially focuses Not now
+- Not now or Escape closes the notice and returns to the GIF button; accepting moves to search after the local save
 - Escape returns focus to the `gif` button
 - A pick moves focus to the message box, with the GIF in the tray
 - A pointer down outside the picker closes it, except on the `gif` button, which toggles
@@ -63,10 +71,10 @@ GIFs are a per-server setting. A person who manages a server enters that server'
 `gif.button='add a gif'`
 `gif.picker='gifs'`
 `gif.search='search gifs'`
-`gif.search.placeholder='search giphy'`
+`gif.search.placeholder='Search Giphy'`
 `gif.untitled='gif'`
 `gif.more='more'`
-`gif.powered='Powered by GIPHY'`
+`gif.powered='VIA GIPHY'`
 `gif.loading='searching'`
 `gif.empty='no gifs for that'`
 `gif.error='could not reach the gif service'`
@@ -74,7 +82,7 @@ GIFs are a per-server setting. A person who manages a server enters that server'
 `gif.pickFailed='could not add that gif'`
 `gif.added='gif added. press enter to send.'`
 `gif.settings.title='GIFs (Giphy)'`
-`gif.settings.hint='Members can search and send GIFs in this server’s channels. The key stays on this instance, is never shown again and is used only to ask Giphy for GIFs. There are no GIFs in direct messages.'`
+`gif.settings.hint='Members can search and send GIFs in this server’s channels. The key stays on this instance, is never shown again and is used only to ask Giphy for GIFs. Direct-message GIFs use a shared server only after a privacy notice and consent.'`
 `gif.settings.getKey='get a key at developers.giphy.com'`
 `gif.settings.key='giphy api key'`
 `gif.settings.save='save'`
@@ -95,3 +103,11 @@ GIFs are a per-server setting. A person who manages a server enters that server'
 `gif.rating.pg='pg'`
 `gif.rating.pg-13='pg-13'`
 `gif.rating.r='r'`
+
+`gif.unavailable='GIFs aren't available here'`
+`gif.dm.title='GIFs in direct messages'`
+`gif.dm.notice='GIF searches and picks in direct messages go through {server} and Giphy. They are not end-to-end encrypted.'`
+`gif.dm.use='Use GIFs'`
+`gif.dm.notNow='Not now'`
+`gif.dm.saving='Saving…'`
+`gif.dm.hint='Searches and picks go through a shared server and Giphy, outside end-to-end encryption. This choice applies to this account on this device. Turning it on asks for confirmation before using a new server.'`

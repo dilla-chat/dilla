@@ -41,8 +41,10 @@ open a browser store a wire-4 build has opened.
 
 Wire 5 adds only ephemeral gateway transport (ops 56–58): served-build notices, actual input activity
 and coarse call reports. E2EE, media and the browser store schema stay unchanged. Wire-5 clients
-retain the wire-4 HTTP baseline and attestation. Older instances negotiate 4, 3 or 2 and retain
-HTTP fallback; old sessions resumed under a wire-5 instance keep their actual selected version.
+retain the wire-4 HTTP baseline and attestation. Older instances negotiate 4, 3 or 2; the current web app drops activity and coarse
+call reports when wire-5 WSS is unavailable and never polls versions periodically. Existing
+clients may still use the HTTP APIs. Old sessions resumed under a wire-5 instance keep their
+actual selected version.
 Managed Bots remain on 3. Migration 00055 admits 5 without changing legacy sessions; its down
 migration maps 5 to 4, preserving bearer sessions for rollback to a wire-4 build. Never roll back
 below the existing attestation/store floor described above.
@@ -75,7 +77,7 @@ Encrypted envelopes and media stay at version1; no existing MLS group migrates.
 
 | date | version | change |
 |---|---|---|
-| 2026-10-31 | e2ee 1, media 1, wire 5 | Ephemeral ops 56–58 move build notices, actual input activity and coarse call telemetry onto the existing gateway. Ready/resumed shapes and replay numbers are unchanged. Human offers `[5,4,3,2]`; managed Bots stay on 3; HTTP remains the compatibility fallback. |
+| 2026-10-31 | e2ee 1, media 1, wire 5 | Ephemeral ops 56–58 move build notices, actual input activity and coarse call telemetry onto the existing gateway. Ready/resumed shapes and replay numbers are unchanged. Human offers `[5,4,3,2]`; managed Bots stay on 3; HTTP APIs remain available to existing clients, while the current web app uses WSS-only telemetry and no periodic version polling. |
 | 2026-10-29 | e2ee 1, media 1, wire 4 | `09` § Voice: `POST /v1/calls/{call_id}/rtt` (`[ms]` 0..5000 or `[]`) lets a call member report its RTT to the SFU, which the instance writes as its `dilla.rtt` participant attribute (one per 1.5 s per device, current leaves only); call tokens state that they never carry LiveKit's own-metadata right (an attribute flood). `08` records the RTT's visibility. The default `livekit.max_share_bitrate_kbps` rises from 2500 to 8000. A new route on the unreleased wire, no version bump. |
 | 2026-10-28 | e2ee 1, media 1, wire 4 | **Wire 4: the instance-signed account kind** (Task S1 part 2). `03` gains § Account kind attestation: the external-sender key signs `"dilla account kind v1" \|\| CBOR([1, instance_id, user_id, kind])` (Ruling AW: no key; the attestation holds for every key of the account), encoded `[1, key_id, kind, sig]`; clients judge every leaf's credential kind against it, with a one-way per-instance "attestation seen" flag (missing = pending once seen). `09`'s `GET /v1/users/{id}/device-list` head gains the attestation as a fifth element on wire-4 sessions only; wire 2 and 3 heads are unchanged. Sessions may record wire 4 (store migration 00051). The browser core's app schema goes to 13 (`app_account_kinds`; older clients refuse the store) and gains `account_kind_ingest`. `vectors/identity.json` gains `account_kind`. Managed Bots stay on wire 3. The compatibility matrix is in § Negotiation. |
 | 2026-10-22 | e2ee 1, media 1, wire 3 | The unreleased typed Bot interaction binding in `01` adds the human participant device ID as its twelfth field; the draft eleven-field form is rejected. Legacy v1 interaction bindings remain readable, while Bot admission stays disabled until the server, native client and dispatcher validate the installation and authenticated MLS roster end to end. No shipped format or version axis changes. |

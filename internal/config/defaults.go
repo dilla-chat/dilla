@@ -60,6 +60,10 @@ func Default() *Config {
 			InvitePerSecond: 0.1, InviteBurst: 5,
 			UnauthPerSecond: 1.0, UnauthBurst: 20,
 			InvalidPerSecond: 0.2, InvalidBurst: 60,
+			// As strict as the session challenge (1/s, burst 10) or stricter: one begin every 5 s after a burst of 10.
+			PasskeyBeginPerSecond: 0.2, PasskeyBeginBurst: 10,
+			// A network's share: a few busy sign-in pages behind one NAT, not a botnet's /24.
+			PasskeyBeginNetPerSecond: 1.0, PasskeyBeginNetBurst: 40,
 			PasswordConcurrency: 0,
 		},
 	}
@@ -74,7 +78,7 @@ func Default() *Config {
 		TOTP: TOTP{Period: 30, Skew: 1, Digits: 6, Algorithm: "SHA1", SecretSize: 20, RecoveryCodes: 10},
 		// "required" (web3.6 D2): a passkey counts as the account's whole second factor only when
 		// its assertion verified the user, so the default asks every authenticator for it.
-		WebAuthn: WebAuthn{UserVerification: "required"},
+		WebAuthn: WebAuthn{UserVerification: "required", MaxOpenLogins: 10000, MaxOpenPerUser: 5},
 		OIDC:     OIDC{Scopes: []string{"openid", "profile", "email"}},
 		Session: Session{
 			NativeLifetime: "720h", BrowserLifetime: "168h", BrowserIdle: "12h",

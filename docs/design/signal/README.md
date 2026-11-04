@@ -319,8 +319,8 @@ All sizes are at a 16px root, desktop unless noted. Below **770px of shell width
   `padding-bottom: env(safe-area-inset-bottom)`. The active tab has `--fg` text and a 2px `--accent` bar on
   top that grows with `scaleX`.
 - Conversation header 52px, with a 44px back button.
-- Every target is at least 44px. Channel rows are 44px and DM rows 52px. Inputs use 16px text so iOS
-  doesn't zoom.
+- Buttons follow each prototype context’s height without a global 44px minimum (Jonas, 2026-10-31).
+  Channel rows are 44px and DM rows 52px. Inputs use 16px text so iOS doesn’t zoom.
 - The message toolbar appears on tap, not hover. The time gutter is hidden.
 - Members aside and profile card become full-screen or bottom sheets (`sSheetUp` 300ms).
 - The search palette sits 12px from the top at full width minus 24px.
@@ -386,7 +386,7 @@ All sizes are at a 16px root, desktop unless noted. Below **770px of shell width
   author in bold and a one-line excerpt in `--fg-3`. Click it to scroll to the original, which flashes
   `--accent-soft` for 1.4s.
 - Reactions: 22px chips, radius 5px. Your own are `--accent-soft` with an `--accent` border. Hover shows a
-  tooltip ("Ada, Björn and you reacted with 🛡️"). Click toggles.
+  tooltip ("Ada, Björn and you reacted with :shield:"). Click toggles.
 
 ### 6.6 Music (now playing)
 

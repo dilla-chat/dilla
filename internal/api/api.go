@@ -265,8 +265,10 @@ func Register(m *server.Mux, d Deps) {
 
 	// Passkeys. The two register legs are enrolled sessions adding a credential
 	// to an account that already exists; the two login legs are unauthenticated
-	// and meter themselves on the `login` bucket inside the handler, exactly as
-	// the password and second-factor ceremonies above do.
+	// and meter themselves inside the handler: the begin on its own
+	// `passkey_begin` bucket and an instance-wide cap on open ceremonies, the
+	// finish on the `login` bucket and the login failure budget, as the password
+	// and second-factor ceremonies above do (wave B task 3).
 	m.Handle("POST /v1/auth/passkey/register/begin", d.owedOK(d.BeginPasskeyRegistration))
 	m.Handle("POST /v1/auth/passkey/register/finish", d.owedOK(d.FinishPasskeyRegistration))
 	m.Handle("POST /v1/auth/passkey/login/begin", http.HandlerFunc(d.BeginPasskeyLogin))

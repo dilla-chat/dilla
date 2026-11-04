@@ -151,7 +151,8 @@ pub enum Element3<'a> {
     Registration(&'a Registration),
 }
 /// `POST /v1/auth/password/login` → `[assertion, needs]` (protocol/09): `0` nothing owed, `1` a TOTP code (or a backup
-/// code), `2` a passkey login (or a backup code) for an account that holds no TOTP.
+/// code), `2` a passkey login (or a backup code) for an account that holds no TOTP. A login owing a factor appends
+/// `passkey` (0|1), which the testkit reads past.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PasswordLogin {
     pub assertion: String,
@@ -828,12 +829,23 @@ fn decode_established(bytes: &[u8]) -> Result<Established, CborError> {
 
 fn decode_password_login(bytes: &[u8]) -> Result<PasswordLogin, CborError> {
     decode_strict(bytes, |d| {
-        d.array(2)?;
+        // Wave B task 3: a login owing a factor appends passkey (uint 0|1); the testkit does not use it.
+        let len = d.array_len()?;
+        if !(2..=3).contains(&len) {
+            return Err(CborError::WrongArrayLen {
+                expected: 2,
+                actual: len,
+            });
+        }
         let assertion = d.text()?.to_owned();
         let needs = match d.uint()? {
             n @ 0..=2 => n as u8,
             _ => return Err(CborError::IntegerOverflow),
         };
+        // The flag is sent only on a login that owes a factor (protocol/09).
+        if len == 3 && (needs == 0 || d.uint()? > 1) {
+            return Err(CborError::IntegerOverflow);
+        }
         Ok(PasswordLogin { assertion, needs })
     })
 }
@@ -4112,6 +4124,16 @@ mod tests {
                 needs: 1
             }
         );
+        // Wave B task 3: the optional third element (passkey 0|1) is accepted and ignored.
+        let login = cbor(|e| {
+            e.array(3).text("asrt").uint(1).uint(1);
+        });
+        assert_eq!(decode_password_login(&login).unwrap().needs, 1);
+        // A login owing nothing carries no flag; one that does is refused.
+        let login = cbor(|e| {
+            e.array(3).text("asrt").uint(0).uint(0);
+        });
+        assert!(decode_password_login(&login).is_err());
         // `needs` is 0, 1 or 2 (protocol/09); anything else is a protocol error.
         for (wire, want) in [(0, Some(0)), (1, Some(1)), (2, Some(2)), (3, None)] {
             let login = cbor(|e| {

@@ -20,12 +20,15 @@ export interface ConfirmDialogProps {
   attempt?: number;
   /** False keeps the confirm button disabled (a typed name that does not match yet). Defaults to true. */
   canConfirm?: boolean;
+  /** Prevent cancellation while an indivisible local save is pending. Defaults to true. */
+  canClose?: boolean;
   /** The person the action is about (kick, ban, time out, warn): their 40px avatar beside the title (the prototype's confirmation). */
   person?: string;
   /** Extra fields under the body (a reason, the typed name). */
   children?: ReactNode;
   onConfirm(): void;
   onClose(): void;
+  onBackdrop?(): void;
 }
 
 /**
@@ -35,7 +38,7 @@ export interface ConfirmDialogProps {
  */
 export function ConfirmDialog({
   open, title, body, confirmLabel, busyLabel, cancelLabel, tone = 'danger', busy, error, attempt = 0, canConfirm = true,
-  person, children, onConfirm, onClose,
+  person, children, onConfirm, onClose, onBackdrop, canClose = true,
 }: ConfirmDialogProps) {
   const bodyRef = useRef<HTMLDivElement>(null);
   // After Dialog's own open effect (a child's effects run first): a field or Cancel holds focus, not the dialog.
@@ -56,7 +59,7 @@ export function ConfirmDialog({
   }, [busy, open, error]);
   const bodyId = `${useId()}-body`;
   return (
-    <Dialog open={open} kind="confirm" title={title} closeLabel={cancelLabel} onClose={onClose} describedBy={bodyId}
+    <Dialog open={open} canClose={canClose} kind="confirm" title={title} closeLabel={cancelLabel} onClose={onClose} onBackdrop={onBackdrop} describedBy={bodyId}
       lead={person === undefined ? undefined : <span className="d-confirm-dialog__avatar" aria-hidden="true"><Avatar name={person} size="confirm" /></span>}
       description={<p id={bodyId} className="d-confirm-dialog__body">{body}</p>}
       footer={<Button variant={tone} type="button" disabled={!canConfirm || busy} onClick={onConfirm}>{busy ? busyLabel : confirmLabel}</Button>}>

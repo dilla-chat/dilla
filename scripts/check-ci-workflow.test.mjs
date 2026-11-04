@@ -634,6 +634,7 @@ jobs:
         run: npm run vectors
       - run: npm run test:css-check
       - run: npm run check:css
+      - run: npm run check:desktop-auth
       - run: npm run test:ci-check
       - run: npm run test:wasm-size-check
       - run: npm run test:manifest-writer
@@ -1319,6 +1320,12 @@ test('a node job without the css checker steps is reported', () => {
     const problems = checkWorkflow(fixture(GOOD.replace(`      - run: ${step}\n`, '')));
     assert.ok(problems.some((p) => p.includes('"node"') && p.includes(step)), problems.join('\n'));
   }
+});
+
+// Desktop merge security review M2: the go:embed'ed desktop auth script must match its generator's output.
+test('a node job that stopped checking the embedded desktop auth script is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace('      - run: npm run check:desktop-auth\n', '')));
+  assert.ok(problems.some((p) => p.includes('"node"') && p.includes('npm run check:desktop-auth')), problems.join('\n'));
 });
 
 test('a go-postgres set that stopped running the api AFK tests is reported', () => {

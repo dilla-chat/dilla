@@ -10,8 +10,9 @@ import { addServerVia,
 import { WebDriver } from './support/driver';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
+import { e2ePort } from './support/ports';
 
-const HOST: HostConfig = { port: 8503, control: 8504, webRoot: 'packages/web/dist' };
+const HOST: HostConfig = { port: e2ePort(8503), control: e2ePort(8504), webRoot: 'packages/web/dist' };
 const PHONE = { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 3 } as const;
 const GENERAL = 'general';
 const SECOND = 'general-2';
@@ -176,6 +177,14 @@ test('a reply in a thread shows its count on both sides, the pane sits in the as
       await threadPane(page).getByRole('button', { name: copy('thread.close'), exact: true }).click();
       await expect(threadPane(page)).toBeHidden();
       await expect(chip(rootRow, 'thread.summary.other', 2)).toBeFocused();
+
+      // Q9: Threads reopens the last thread directly, without a list in between.
+      await page.getByRole('button', { name: copy('layout.header.threads'), exact: true }).click();
+      await expect(threadPane(page)).toBeVisible({ timeout: WAIT });
+      await expect(page.locator('.dw-thread-list')).toHaveCount(0);
+      await expect(paneRow(page, ok)).toBeVisible({ timeout: WAIT });
+      await threadPane(page).getByRole('button', { name: copy('thread.close'), exact: true }).click();
+      await expect(threadPane(page)).toBeHidden();
 
       // A real pointer click on the chip opens it (pointerdown must not move the chip out from under the pointer).
       await chip(rootRow, 'thread.summary.other', 2).click();

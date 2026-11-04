@@ -8,7 +8,7 @@
 import { expect, type Locator, type Page } from '@playwright/test';
 import {
   COPY, SIGNIN, TEST_TIMEOUT, WAIT, completeFactorStep, copy, expectAccessible, expectHeading, expectShell, keyField, keySubmit,
-  keyText, newAccount, nextButton, readRecoveryKey, submitButton, test, type Account,
+  keyText, newAccount, nextButton, signUpToFactor, test, type Account,
   settingsGear,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
@@ -16,9 +16,10 @@ import { launchSecond, secondProfileDir } from './support/second-harness';
 import { nextCode } from './support/totp';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
 import { rmSync } from 'node:fs';
+import { e2ePort } from './support/ports';
 
 /** Its own ports (web3.8 reservation). */
-const EMPTY: HostConfig = { port: 8513, control: 8514, webRoot: 'packages/web/dist' };
+const EMPTY: HostConfig = { port: e2ePort(8513), control: e2ePort(8514), webRoot: 'packages/web/dist' };
 
 let host: StartedHost | null = null;
 let instance = '';
@@ -79,19 +80,7 @@ test('sign-in order: the password, then the factor, then the recovery key; a bac
   // 1. Ada signs up with the bootstrap invite and an authenticator app.
   const ada = newAccount('Ada', h.control);
   await page.goto(`/welcome?invite=${encodeURIComponent(h.invite.split(',')[0] ?? '')}`);
-  await expectHeading(page, COPY.connectTitle, { instance });
-  await nextButton(page).click();
-  await expectHeading(page, COPY.identityTitle);
-  await page.getByLabel(copy(COPY.usernameLabel), { exact: true }).fill(ada.username);
-  await page.getByLabel(copy(COPY.displayLabel), { exact: true }).fill(ada.display);
-  await page.getByLabel(copy(COPY.passwordLabel), { exact: true }).fill(ada.password);
-  await nextButton(page).click();
-  await expectHeading(page, COPY.keysTitle);
-  ada.recoveryKey = await readRecoveryKey(page);
-  await page.getByRole('checkbox', { name: copy(COPY.keysAcknowledge), exact: true }).check();
-  await nextButton(page).click();
-  await expectHeading(page, COPY.deviceTitle);
-  await submitButton(page).click();
+  await signUpToFactor(page, ada, instance);
   await completeFactorStep(page, ada);
   expect(ada.backupCodes).toHaveLength(10);
   await expectHeading(page, COPY.doneTitle);
@@ -118,8 +107,8 @@ test('sign-in order: the password, then the factor, then the recovery key; a bac
     await expectHeading(p, 'signin.totp.title');
     await expect(stepLine(p, 2)).toBeVisible();
     await expectAccessible(p, 'sign-in order: code');
+    // Wave B task 3: the sixth digit in the code boxes sends the code; there is no button to press.
     await p.getByLabel(copy('signin.totp.code'), { exact: true }).fill(await nextCode(ada.control, ada));
-    await button(p, SIGNIN.loginSubmit).click();
 
     await expectHeading(p, SIGNIN.keyTitle);
     await expect(stepLine(p, 3)).toBeVisible();

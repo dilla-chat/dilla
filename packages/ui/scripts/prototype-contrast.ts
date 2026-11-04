@@ -5,6 +5,11 @@
  * every theme) can put in a `:not()`; the runner above keeps light and high-contrast strict. No imports: Storybook bundles it.
  */
 export const CONVERSATION_PROTOTYPE_CONTRAST: readonly { selector: string; simple: string; why: string }[] = [
+  // Wave B Task 6: the phone’s quiet time, exactly as specified.
+  { selector: '.d-bot-result__time', simple: '.d-bot-result__time', why: 'a private result phone time in #636A75 on bg (3.65:1)' },
+  // Wave B Task 7: the poll dialog's prototype counter and inactive Post poll text (Ruling Y).
+  { selector: '.d-poll-dialog__counter[data-danger="false"]', simple: '.d-poll-dialog__counter', why: 'the poll question counter in #636A75 on #0D1014 (3.49:1)' },
+  { selector: '.d-poll-dialog__post[data-ready="false"]', simple: '.d-poll-dialog__post', why: 'the inactive Post poll text in #767D89 on #1A1E25 (4.03:1)' },
   { selector: '.d-message-row__gutter', simple: '.d-message-row__gutter', why: 'the time gutter in #5C636E on bg (3.28:1)' },
   { selector: '.d-message-row__time', simple: '.d-message-row__time', why: 'a phone row\'s time beside the name in #636A75 (3.65:1)' },
   { selector: '.d-composer[data-empty="true"] .d-composer__send', simple: '.d-composer__send', why: 'the empty composer\'s send in #5C636E on #171B22 (2.84:1)' },
@@ -33,8 +38,15 @@ export const CONVERSATION_PROTOTYPE_CONTRAST: readonly { selector: string; simpl
   // Task 10b (README §5.9): the sensitivity meter's scale (−100 dB / −50 / 0 dB) is the prototype's 9.5px #636A75 on bg (3.65:1).
   // It is aria-hidden: the threshold slider's value text and the readouts beside the pill carry the numbers.
   { selector: '.d-sens__tick', simple: '.d-sens__tick', why: 'the sensitivity meter scale in #636A75 on bg (3.65:1)' },
+  // Wave B task 4: the person menu's trailing hint (a shortcut's keys, a room's head count) is the prototype's #636A75 at 10px; under the
+  // pointer or focus (--surface-hi #171B22) that is 3.16:1. The keys are also the shortcuts' own announcements (the user panel).
+  { selector: '.d-action-menu__hint', simple: '.d-action-menu__hint', why: 'the person menu\'s hint in #636A75 on the #171B22 hover (3.16:1)' },
   // Not listed because axe cannot see it: a code block's line numbers, the prototype's #4A5059 on bg-2 (2.4:1), are CSS-generated
   // (`::before` counters) and decorative (never part of the code's text). Light and high-contrast draw them in fg-3 / #C8C8C8.
+  // Wave B Task 2 (README §6.1): the command picker's selected row keeps the prototype's #767D89 args and handle on #171B22
+  // (4.16:1). Both are aria-hidden: the row's name ("/remind, A private one-time reminder") and the suggestion's name carry them.
+  { selector: '.d-cmd-row[aria-selected="true"] .d-cmd-row__args', simple: '.d-cmd-row__args', why: 'the selected command row\'s args in #767D89 on #171B22 (4.16:1)' },
+  { selector: '.d-cmd-sug[aria-selected="true"] .d-cmd-sug__sub', simple: '.d-cmd-sug__sub', why: 'the selected suggestion\'s handle or preview in #767D89 on #171B22 (4.16:1)' },
 ];
 
 /** The `:not()` chain Storybook's a11y config appends to its color-contrast selector. */

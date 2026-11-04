@@ -355,8 +355,9 @@ type Accounts interface {
 	// UpdateProfile writes the display name, status message and bio in one statement (EOD E6); the
 	// caller has validated them. A nil field is left as it is (COALESCE in SQL, so two writers that
 	// change different fields never overwrite each other); "" clears one. ErrNotFound for an unknown
-	// or tombstoned user.
-	UpdateProfile(ctx context.Context, userID id.ID, display, statusMsg, bio *string) error
+	// or tombstoned user. The bool reports whether stored values actually changed,
+	// decided by the UPDATE itself (including under concurrent PATCHes).
+	UpdateProfile(ctx context.Context, userID id.ID, display, statusMsg, bio *string) (bool, error)
 	// SetFactorOwed writes users.factor_owed (web3.6 S1); ErrNotFound for an unknown user.
 	SetFactorOwed(ctx context.Context, userID id.ID, owed bool) error
 	// MarkFactorOwedWithoutFactor sets factor_owed on every live human account that holds no
@@ -455,6 +456,13 @@ type Auth interface {
 	PutCeremony(ctx context.Context, c CeremonyRow) error
 	TakeCeremony(ctx context.Context, ceremonyID id.ID, now int64) (CeremonyRow, error) // single use
 	PruneCeremonies(ctx context.Context, now int64) (int64, error)
+	// CountOpenCeremonies counts unexpired ceremonies (wave B task 3): with a nil userID the discoverable login
+	// ceremonies (kind 1, no user), else every ceremony of that user (registrations and passkey step-ups).
+	CountOpenCeremonies(ctx context.Context, userID *id.ID, now int64) (int64, error)
+	// PutCeremonyCapped writes c and, in the same transaction, evicts the oldest unexpired ceremonies of its scope (the
+	// discoverable logins when c.UserID is nil, else c's user's) beyond limit, never c itself. It returns how many it
+	// evicted. A finish on an evicted ceremony fails as one on an expired ceremony does (TakeCeremony finds none).
+	PutCeremonyCapped(ctx context.Context, c CeremonyRow, limit int, now int64) (int64, error)
 	PutOIDCIdentity(ctx context.Context, issuer, subject string, userID id.ID, created int64) error
 	GetOIDCIdentity(ctx context.Context, issuer, subject string) (id.ID, error)
 	RecordLoginAttempt(ctx context.Context, a LoginAttemptRow) error

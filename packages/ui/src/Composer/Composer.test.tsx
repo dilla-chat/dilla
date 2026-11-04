@@ -495,3 +495,31 @@ describe('the Signal composer (task 7)', () => {
     expect(screen.getByText('⇧↵ new line')).toHaveAttribute('aria-hidden', 'true');
   });
 });
+
+// Wave B Task 2 (fix round 1): the command picker's chips replace the textarea inside the same box; send hands the
+// owner's value over whatever it holds (the owner runs the command), and the footer stays.
+describe('Composer input slot', () => {
+  const props = { label: 'message #general', placeholder: 'Message #general', maxLength: 4000, onChange: () => {}, sendLabel: 'send', counterLabel: (n: number) => String(n) };
+  it('draws the slot in the row in place of the textarea, keeping the prompt, send and footer', () => {
+    const { container } = render(<Composer {...props} value="" onSend={() => {}} attachLabel="attach files" onAttach={() => {}} codeLabel="Code block"
+      input={<input aria-label="when" />} />);
+    expect(container.querySelector('textarea')).toBeNull();
+    expect(screen.getByRole('textbox', { name: 'when' }).closest('.d-composer__row')).not.toBeNull();
+    expect(container.querySelector('.d-composer__prompt')).not.toBeNull();
+    expect(screen.getByRole('button', { name: 'attach files' })).toBeInTheDocument();
+    expect(container.querySelector('label.d-composer__label')).toBeNull();
+  });
+  it('hands send to the owner even with an empty value, and keeps the empty look', () => {
+    const onSend = vi.fn();
+    const { container } = render(<Composer {...props} value="" onSend={onSend} input={<input aria-label="when" />} />);
+    expect(container.querySelector('.d-composer')).toHaveAttribute('data-empty', 'true');
+    fireEvent.click(screen.getByRole('button', { name: 'send' }));
+    expect(onSend).toHaveBeenCalledWith('');
+  });
+  it('sends nothing while disabled', () => {
+    const onSend = vi.fn();
+    render(<Composer {...props} value="/re" onSend={onSend} disabled disabledReason="read only" input={<input aria-label="when" />} />);
+    fireEvent.submit(screen.getByRole('textbox', { name: 'when' }).closest('form')!);
+    expect(onSend).not.toHaveBeenCalled();
+  });
+});

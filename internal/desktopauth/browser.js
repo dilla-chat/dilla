@@ -145,9 +145,10 @@
     response.transports = Array.isArray(transports) ? transports.filter((x) => typeof x === "string") : [];
     return JSON.stringify({ ...head, response, clientExtensionResults: {} });
   }
-  async function getPasskey(optionsJson) {
+  async function getPasskey(optionsJson, conditional) {
     const bridge = desktopBridge();
     if (bridge?.browserAuth) {
+      if (conditional !== void 0) throw new PasskeyError("cancelled", "Passkey autofill is not available in the desktop app");
       try {
         const result = await bridge.browserAuth({ kind: "get", options: optionsJson });
         if (typeof result.response !== "string") throw new Error("Missing browser credential");
@@ -166,7 +167,7 @@
     if (allow === void 0) delete publicKey.allowCredentials;
     else publicKey.allowCredentials = allow;
     const api = credentialsApi();
-    const credential = await ceremony(false, () => api.get({ publicKey }));
+    const credential = await ceremony(false, () => conditional === void 0 ? api.get({ publicKey }) : api.get({ publicKey, mediation: "conditional", signal: conditional.signal }));
     const { head, response, raw } = envelope(credential);
     response.authenticatorData = toBase64Url(buffer(raw.authenticatorData, "authenticatorData"));
     response.signature = toBase64Url(buffer(raw.signature, "signature"));

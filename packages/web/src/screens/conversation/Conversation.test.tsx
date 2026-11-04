@@ -1,8 +1,10 @@
+import * as ClientCore from '@dilla/client-core';
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { act, waitFor, fireEvent, screen, within } from '@testing-library/react';
 import { en } from '../../strings/en.ts';
 import { formatDay, formatTime } from '../../strings/index.ts';
 import { REACTION_EMOJI } from '../../emoji.ts';
+import { privateResults } from "../commands/private-results.ts";
 import { ME } from '../../test/fixtures.ts';
 import { PHONE_QUERY } from '../../layout.ts';
 import { expectNoAxeViolations } from '../../test/setup.ts';
@@ -276,15 +278,15 @@ describe('reactions (Q18, ruling 28)', () => {
     ] })] });
     const bar = within(rowOf(P1)).getByRole('group', { name: 'reactions' });
     expect(within(bar).getByRole('button', { name: 'thumbs up, 2' })).toHaveAttribute('aria-pressed', 'true');
-    expect(within(bar).getByRole('button', { name: 'tears of joy, 1' })).toHaveAttribute('aria-pressed', 'false');
+    expect(within(bar).getByRole('button', { name: 'joy, 1' })).toHaveAttribute('aria-pressed', 'false');
     expect(within(bar).getByRole('button', { name: '\u{1F984}, 1' })).toBeInTheDocument();
     await user.click(within(bar).getByRole('button', { name: 'thumbs up, 2' }));
-    await user.click(within(bar).getByRole('button', { name: 'tears of joy, 1' }));
+    await user.click(within(bar).getByRole('button', { name: 'joy, 1' }));
     const react = toolbarButton(toolbarOf(rowOf(P1)), 'react');
     await user.click(react);
     const grid = screen.getByRole('dialog', { name: 'pick a reaction' });
     expect(within(grid).getAllByRole('button').map(b => b.getAttribute('aria-label'))).toEqual(REACTION_EMOJI.map(e => en[e.key]));
-    await user.click(within(grid).getByRole('button', { name: 'rocket' }));
+    await user.click(within(grid).getByRole('button', { name: 'shield' }));
     expect(screen.queryByRole('dialog', { name: 'pick a reaction' })).toBeNull();
     expect(react).toHaveFocus();
     const add = within(bar).getByRole('button', { name: 'add a reaction' });
@@ -301,7 +303,7 @@ describe('reactions (Q18, ruling 28)', () => {
     expect(fake.callsOf('react')).toEqual([
       { m: 'react', channelId: GEN, msgId: P1, emoji: '\u{1F44D}', on: false },
       { m: 'react', channelId: GEN, msgId: P1, emoji: '\u{1F602}', on: true },
-      { m: 'react', channelId: GEN, msgId: P1, emoji: '\u{1F680}', on: true },
+      { m: 'react', channelId: GEN, msgId: P1, emoji: '🛡️', on: true },
       { m: 'react', channelId: GEN, msgId: P1, emoji: '\u{1F44D}', on: false },
     ]);
   });
@@ -315,28 +317,42 @@ describe('the reply line and the jump (brief:186)', () => {
   let scroll: ReturnType<typeof vi.fn>;
   beforeEach(() => {
     scroll = vi.fn();
-    Object.defineProperty(Element.prototype, 'scrollIntoView', { configurable: true, writable: true, value: scroll });
+    Object.defineProperty(Element.prototype, 'scrollBy', { configurable: true, writable: true, value: scroll });
   });
   afterEach(() => {
     vi.useRealTimers();
-    delete (Element.prototype as unknown as Record<string, unknown>).scrollIntoView;
+    delete (Element.prototype as unknown as Record<string, unknown>).scrollBy;
     delete (window as unknown as Record<string, unknown>).matchMedia;
   });
   it('keeps a pointer press on the reply jump from activating and moving the log before release', () => {
     renderConversation({ items: [peerRow(P1, '1', 'the original'), ownRow(O1, '2', 'my answer', { reply: reply() })] });
     const jump = replyButton(rowOf(O1));
-    composer().focus();
+    act(() => composer().focus());
     const down = new Event('pointerdown', { bubbles: true, cancelable: true });
     jump.dispatchEvent(down);
     expect(down.defaultPrevented).toBe(true);
     expect(composer()).toHaveFocus();
     fireEvent.click(jump);
     expect(rowOf(P1)).toHaveFocus();
+    expect(rowOf(P1)).toHaveAttribute('data-jump', 'pointer');
   });
-  it('jumps to a loaded original, focuses it and flashes it for 1.4 s', () => {
+  it('restores keyboard focus styling after a pointer reply jump and keeps it for a keyboard jump', async () => {
+    const { user } = renderConversation({ items: [peerRow(P1, '1', 'the original'), ownRow(O1, '2', 'my answer', { reply: reply() })] });
+    await user.click(replyButton(rowOf(O1)));
+    expect(rowOf(P1)).toHaveAttribute('data-jump', 'pointer');
+    await user.keyboard('{ArrowDown}');
+    expect(rowOf(P1)).not.toHaveAttribute('data-jump');
+    act(() => replyButton(rowOf(O1)).focus());
+    await user.keyboard('{Enter}');
+    expect(rowOf(P1)).toHaveFocus();
+    expect(rowOf(P1)).not.toHaveAttribute('data-jump');
+  });
+  it('jumps to the prototype 80px feed offset, focuses the original and flashes it for 1.4 s', () => {
     vi.useFakeTimers();
     renderConversation({ items: [peerRow(P1, '1', 'the original'), ownRow(O1, '2', 'my answer', { reply: reply() })] });
     const jump = replyButton(rowOf(O1));
+    vi.spyOn(rowOf(P1), 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 300, 200, 40));
+    vi.spyOn(screen.getByRole('log'), 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 40, 200, 500));
     expect(jump).toHaveTextContent('bob');
     expect(jump).toHaveTextContent('the original');
     expect(jump).toHaveAccessibleName('bob the original');
@@ -344,7 +360,7 @@ describe('the reply line and the jump (brief:186)', () => {
     fireEvent.click(jump);
     expect(rowOf(P1)).toHaveFocus();
     expect(rowOf(P1)).toHaveAttribute('data-flash', 'true');
-    expect(scroll).toHaveBeenCalledWith({ block: 'center', behavior: 'smooth' });
+    expect(scroll).toHaveBeenCalledWith({ top: 180, behavior: 'smooth' });
     act(() => { vi.advanceTimersByTime(1399); });
     expect(rowOf(P1)).toHaveAttribute('data-flash', 'true');
     act(() => { vi.advanceTimersByTime(1); });
@@ -355,8 +371,10 @@ describe('the reply line and the jump (brief:186)', () => {
       value: (q: string) => ({ matches: q === '(prefers-reduced-motion: reduce)', media: q, onchange: null,
         addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {}, dispatchEvent: () => false }) });
     renderConversation({ items: [peerRow(P1, '1', 'the original'), ownRow(O1, '2', 'my answer', { reply: reply() })] });
+    vi.spyOn(rowOf(P1), 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 300, 200, 40));
+    vi.spyOn(screen.getByRole('log'), 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 40, 200, 500));
     fireEvent.click(replyButton(rowOf(O1)));
-    expect(scroll).toHaveBeenCalledWith({ block: 'center', behavior: 'auto' });
+    expect(scroll).toHaveBeenCalledWith({ top: 180, behavior: 'auto' });
     expect(rowOf(P1)).toHaveAttribute('data-flash', 'true');
   });
   it('says the original is further back when it is not loaded, and the notice can be dismissed', async () => {
@@ -440,7 +458,7 @@ describe('focus handoffs (F4)', () => {
     await user.click(within(rowOf(P1)).getByRole('button', { name: 'thumbs up, 1' }));
     act(() => fake.set(`timeline:${GEN}`, { channelId: GEN, group: 'active', hasEarlier: false,
       items: [peerRow(P1, '1', 'x', { reactions: [reactions[1]] })] }));
-    expect(within(rowOf(P1)).getByRole('button', { name: 'crab, 2' })).toBeInTheDocument();
+    expect(within(rowOf(P1)).getByRole('button', { name: '🦀, 2' })).toBeInTheDocument();
     expect(rowOf(P1)).toHaveFocus();
   });
   it('dismisses the reply not loaded banner to the active log row', async () => {
@@ -564,7 +582,7 @@ describe('grouping, day dividers and the present bar (R29)', () => {
     await user.click(screen.getByRole('button', { name: en['layout.log.jump'] }));
     expect(log.scrollTop).toBe(1500);
   });
-  it('tags a web client and a bot always', () => {
+  it('omits WEB from human message headers and keeps the BOT tag', () => {
     const glenn = '9f'.repeat(16);
     renderConversation({
       items: [ownRow(O1, '1', 'sent here'), peerRow(P1, '2', 'sent by a bot', { bot: true, senderUser: glenn, ts: NOON + 3600 })],
@@ -572,7 +590,7 @@ describe('grouping, day dividers and the present bar (R29)', () => {
       before: fake => fake.set(`members:${A}`, [...MEMBERS, { userId: glenn, username: 'glenn', display: 'Glenn', kind: 1, roleIds: [] }]),
     });
     expect(rowOf(O1).querySelector('[data-reveal]')).toBeNull();
-    expect(rowOf(O1).querySelector('.d-tag')).toHaveAttribute('data-kind', 'web');
+    expect(rowOf(O1).querySelector('.d-tag')).toBeNull();
     expect(rowOf(P1).querySelector('[data-reveal]')).toBeNull();
     expect(rowOf(P1).querySelector('.d-tag')).toHaveAttribute('data-kind', 'bot');
   });
@@ -589,4 +607,71 @@ describe('received reactions', () => {
     await user.click(chip);
     expect(fake.callsOf('react')).toEqual([{ m: 'react', channelId: GEN, msgId: P1, emoji, on: true }]);
   });
+});
+
+it('renders private results after messages, in time order, with authors and a local dismiss', async () => {
+  const { fake, user } = renderConversation({ items: [peerRow(P1, '1', 'public text')] });
+  const account = fake.get('account');
+  const store = privateResults(fake, `${account?.instance?.id ?? ''}:${account?.user?.id ?? ''}`, `${A}/${GEN}/`);
+  act(() => {
+    store.add({ at: 20, status: 'success', text: 'bot result', provider: 'bot' });
+    store.add({ at: 10, status: 'failed', text: 'builtin result', provider: 'builtin' });
+  });
+  const rows = [...document.querySelectorAll('.d-message-log__rows > .d-message-row')];
+  expect(rows.map(row => row.textContent)).toEqual([expect.stringContaining('public text'), expect.stringContaining('builtin result'), expect.stringContaining('bot result')]);
+  expect(within(rows[1] as HTMLElement).getByText('dilla')).toBeInTheDocument();
+  expect(within(rows[2] as HTMLElement).getByText('Glenn')).toBeInTheDocument();
+  const calls = fake.calls.length;
+  await user.click(within(rows[2] as HTMLElement).getByRole('button', { name: 'Dismiss: bot result' }));
+  expect(screen.queryByText('bot result')).not.toBeInTheDocument();
+  expect(composer()).toHaveFocus();
+  expect(fake.calls).toHaveLength(calls);
+});
+
+it('uses the Bot’s current display name, and falls back to Glenn when unknown', async () => {
+  const spy = vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ capabilities: () => Promise.resolve({ botUserId: 'ab'.repeat(16), supportedOperations: [80] }) } as unknown as ClientCore.BotUtilities);
+  const { fake } = renderConversation({ handler: command => Promise.resolve(command.m === 'getBotCommandStatus' ? { botUserId: 'ab'.repeat(16) } : null) }); const account = fake.get('account');
+  const store = privateResults(fake, `${account?.instance?.id ?? ''}:${account?.user?.id ?? ''}`, `${A}/${GEN}/`);
+  act(() => { store.add({ at: 1, status: 'success', text: 'bot result', provider: 'bot' }); });
+  expect(screen.getByText('Glenn')).toBeInTheDocument();
+  act(() => fake.publish(`members:${A}`, [...MEMBERS, { userId: 'cd'.repeat(16), username: 'wrong', display: 'Other Bot', kind: 1, roleIds: [] }, { userId: 'ab'.repeat(16), username: 'bot', display: 'Freja', kind: 1, roleIds: [] }]));
+  const row = document.querySelector('.d-bot-result') as HTMLElement;
+  await waitFor(() => expect(within(row).getByText('Freja')).toBeInTheDocument());
+  expect(within(row).getByRole('img', { name: 'Freja' })).toBeInTheDocument();
+  fireEvent.change(composer(), { target: { value: '/' } });
+  await waitFor(() => expect([...document.querySelectorAll('.d-cmd-row__source')].map(tag => tag.textContent)).toContain('Freja'));
+  expect([...document.querySelectorAll('.d-cmd-row__source')].map(tag => tag.textContent)).not.toContain('Other Bot');
+  spy.mockRestore();
+});
+it('CommandHost and Conversation share the production result key', async () => {
+  const { user } = renderConversation();
+  fireEvent.change(composer(), { target: { value: '/help' } });
+  await user.click(await screen.findByRole('button', { name: 'send' }));
+  const row = await waitFor(() => {
+    const result = document.querySelector('.d-message-log .d-bot-result[data-status="success"]');
+    expect(result).not.toBeNull(); return result as HTMLElement;
+  });
+  expect(row).toHaveTextContent('/help');
+  expect(row).toHaveTextContent('dilla');
+  expect(row.querySelectorAll('[aria-live="polite"]')).toHaveLength(1);
+  expect(document.querySelector('[data-command-result]')).toBeNull();
+});
+
+it('keeps the phone toolbar view free of the extra older-messages bar (gap89)', () => {
+  window.matchMedia = vi.fn((query: string) => ({ matches: query === PHONE_QUERY, media: query, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
+  try {
+    renderConversation({ items: [peerRow(P1, '1', 'one')] });
+    const log = screen.getByRole('log');
+    Object.defineProperty(log, 'scrollHeight', { configurable: true, value: 2000 });
+    Object.defineProperty(log, 'clientHeight', { configurable: true, value: 500 });
+    log.scrollTop = 200;
+    fireEvent.scroll(log);
+    expect(document.querySelector('.d-message-log__present')).toBeNull();
+  } finally { Reflect.deleteProperty(window, 'matchMedia'); }
+});
+
+it('keeps the DM welcome subtitle while omitting the separate empty-state sentence (gap97)', () => {
+  renderConversation({ dm: true });
+  expect(document.querySelector('.d-message-log__empty')).toBeNull();
+  expect(document.querySelector('.d-message-log__welcome-body')).toHaveTextContent('This is the start of your conversation.');
 });

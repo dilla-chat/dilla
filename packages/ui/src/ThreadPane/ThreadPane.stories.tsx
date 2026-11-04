@@ -29,7 +29,7 @@ const replies = (
   </MessageLog>
 );
 const composer = (
-  <Composer label="Reply in thread" placeholder="Reply in thread" maxLength={4000} value="" onChange={noop} onSend={noop} sendLabel="send" counterLabel={n => `${n} left`} />
+  <Composer showSend={false} label="Reply in thread" placeholder="Reply in thread" maxLength={4000} value="" onChange={noop} onSend={noop} sendLabel="send" counterLabel={n => `${n} left`} />
 );
 
 const column: CSSProperties = { width: '20rem', height: 640, background: 'var(--surface)', border: '1px solid var(--hairline)' };

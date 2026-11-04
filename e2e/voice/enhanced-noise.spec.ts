@@ -5,6 +5,7 @@ import { writeFileSync,readFileSync } from 'node:fs';
 import os from 'node:os';
 // @ts-ignore -- local evaluation utility, never imported by the app
 import {processingP99} from '../../experiments/noise/runtime-metrics.mjs';
+import { e2ePort } from '../web/support/ports';
 watchContexts(test);
 test.skip(process.env.DILLA_NOISE_MODE!=='evaluation','Requires the explicitly enabled evaluation build');
 test('Automatic enhances the local test and encrypted calls, enforces PTT, and remains stable under load',async({peerBrowser,browserName,browser})=>{
@@ -13,7 +14,7 @@ test('Automatic enhances the local test and encrypted calls, enforces PTT, and r
   test.setTimeout((seconds+180)*1000);
   const peer=peerBrowser.track(await VoicePeer.start()),alice=await peerBrowser.open('alice'),bob=await peerBrowser.open('bob');
   const thirdParty:string[]=[];
-  alice.context.on('request',r=>{if(!['http://127.0.0.1:8481','ws://127.0.0.1:8481'].includes(new URL(r.url()).origin))thirdParty.push(r.url());});
+  alice.context.on('request',r=>{if(![`http://127.0.0.1:${String(e2ePort(8481))}`,`ws://127.0.0.1:${String(e2ePort(8481))}`].includes(new URL(r.url()).origin))thirdParty.push(r.url());});
   try{
     await alice.page.addInitScript(()=>{
       const events:Record<string,unknown>[]=[];

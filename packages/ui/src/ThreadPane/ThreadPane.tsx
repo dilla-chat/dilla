@@ -17,7 +17,7 @@ export interface ThreadPaneProps {
   repliesLabel?: string;
   /** The place after the title in the head (`#general`, 10.5px --fg-3), as the prototype draws it. */
   sub?: string;
-  /** True: a full-screen sheet (Task 11: the same head, × closes; the send button stays). False: a column in the shell's aside. */
+  /** True: a full-screen sheet (Task 11: the same head, × closes; the reply line sends with Enter). False: a column in the shell's aside. */
   phone?: boolean;
 }
 

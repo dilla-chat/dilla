@@ -73,5 +73,3 @@
 @media (prefers-reduced-motion: reduce) {
   .d-settings-frame__close, .d-settings-frame__close-ring { transition: none; }
 }
-/* README §5.10 and Jonas (2026-10-27): settings controls keep the prototype's sizes on a phone, not the 44px page tier. */
-.d-settings-frame[data-layout="phone"] .d-btn { min-height: 0; }

@@ -19,6 +19,16 @@ function setup(access?: Record<string, boolean>, communityId: string | null = SE
 
 // Signal task 10 fix round 1 (Jonas): one settings workspace, its nav the group "You" and the selected server's name.
 describe('the one settings workspace nav', () => {
+  it('keeps each workspace’s prototype entries first and all 13 extra sections reachable afterwards', () => {
+    setup({ loaded: true, owner: true, manageCommunity: true, manageChannels: true, manageRoles: true,
+      createInvite: true, viewAuditLog: true, banMembers: true });
+    const nav = screen.getByRole('navigation', { name: 'Settings sections' });
+    expect(within(nav).getAllByRole('button').map(button => button.textContent)).toEqual([
+      'Profile', 'Sign-in', 'Devices', 'Notifications', 'Voice', 'Keyboard', 'Appearance', 'Privacy', 'Diagnostics',
+      'Overview', 'Roles', 'Invites', 'Bot', 'Music', 'Channels', 'GIFs', 'Members', 'Self-assignable roles',
+      'Welcome messages', 'Join roles', 'Automoderation', 'Moderation log', 'Bans', 'Ownership / Leave',
+    ]);
+  });
   it('lists "You" first, then the selected server under its name with only the sections the person may use', () => {
     const { onUser, onServer } = setup({ loaded: true, manageCommunity: true });
     const nav = screen.getByRole('navigation', { name: 'Settings sections' });

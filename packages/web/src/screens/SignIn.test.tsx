@@ -8,6 +8,10 @@ import { account, INSTANCE } from '../test/fixtures.ts';
 import { expectNoAxeViolations } from '../test/setup.ts';
 import { en } from '../strings/en.ts';
 import { SignIn } from './SignIn.tsx';
+import { COMPLETE_DELAY_MS } from '@dilla/ui';
+// Wave B task 3 fix round 1: the code boxes send the sixth digit after the prototype's 350 ms.
+const settleCode = () => act(async () => { await new Promise<void>((resolve) => { setTimeout(resolve, COMPLETE_DELAY_MS + 20); }); });
+
 
 const KEY = '7K2MQX9DH4TBR8NWC3VFJ6PZA1GEY5KSM0QTB7XHW2DNF9RCP4ZA';
 const GROUPED = '7K2M-QX9D-H4TB-R8NW-C3VF-J6PZ-A1GE-Y5KS-M0QT-B7XH-W2DN-F9RC-P4ZA';
@@ -40,7 +44,7 @@ const password = () => screen.getByLabelText('Password');
 
 
 const BACKUP = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-const KEY_BODY = 'Type or paste the 52-character recovery key you wrote down when you created the account. Spaces and hyphens do not matter. Backup codes are not your recovery key: they stand in for the app code.';
+const KEY_BODY = 'This browser is new. Paste your recovery key to read your conversations here.';
 const EXPIRED = 'Adding this browser took longer than 5 minutes, so the sign-in ran out. Sign in again.';
 const EXPIRED_ERROR = { code: 'E_SIGNIN_EXPIRED', detail: '', status: 0, retryAfterMs: null };
 const readyMe = { phase: 'ready', user: ME, deviceId: 'dd'.repeat(16), signIn: null } as const;
@@ -61,6 +65,9 @@ const worker = (opts: { totp?: boolean } = {}): Script => (c, fake) => {
       return Promise.resolve(null);
     case 'signInCancel':
       move(fake, { phase: 'needs-signup', signIn: null });
+      return Promise.resolve(null);
+    case 'signInBack':
+      move(fake, { phase: 'signin-login', signIn: { username: fake.get('account')!.signIn?.username ?? null, factor: null } });
       return Promise.resolve(null);
     default:
       return Promise.resolve(null);
@@ -93,22 +100,22 @@ describe('the ceremony', () => {
     await expectNoAxeViolations(view.container);
     await login(user);
     expect(fake.callsOf('signInLogin')).toEqual([{ m: 'signInLogin', username: 'ada', password: 'correct horse' }]);
-    expect(h1()).toHaveTextContent('Your recovery key');
+    expect(h1()).toHaveTextContent('Add this browser');
     expect(document.activeElement).toBe(h1());
     expect(screen.getByText('Sign in · step 2 of 3')).toBeInTheDocument();
     expect(screen.getByText(KEY_BODY)).toBeInTheDocument();
-    expect(button('Cancel')).toHaveAttribute('type', 'button');
-    expect(button('Add this browser')).toHaveAttribute('type', 'submit');
+    expect(button('Have an invite? Create an account')).toHaveAttribute('type', 'button');
+    expect(button('Add browser')).toHaveAttribute('type', 'submit');
     await expectNoAxeViolations(view.container);
     expect(fake.callsOf('signInKey')).toEqual([]);
     await pasteKey(user);
     expect(field('Recovery key')).toHaveAccessibleDescription(expect.stringContaining('52 of 52 characters'));
-    await user.click(button('Add this browser'));
+    await user.click(button('Add browser'));
     expect(fake.callsOf('signInKey')).toEqual([{ m: 'signInKey', recoveryKey: GROUPED }]);
     expect(h1()).toHaveTextContent('You’re in');
     expect(document.activeElement).toBe(h1());
     expect(screen.getByText('Sign in · step 3 of 3')).toBeInTheDocument();
-    expect(screen.getByText('This browser is now a device of ada on dilla.test. Messages sent before now are not shown here.')).toBeInTheDocument();
+    expect(screen.getByText('This browser is now one of your devices.')).toBeInTheDocument();
     expect(screen.queryByRole('textbox')).toBeNull();
     await expectNoAxeViolations(view.container);
     expect(onFinish).not.toHaveBeenCalled();
@@ -119,20 +126,21 @@ describe('the ceremony', () => {
   it('counts the second-factor step when the account has one: the code is step 2, the key step 3', async () => {
     const { fake, user, view } = setup('signin-login', worker({ totp: true }));
     await login(user);
-    expect(h1()).toHaveTextContent('Your second factor');
+    expect(h1()).toHaveTextContent('Enter your code');
     expect(screen.getByText('Sign in · step 2 of 4')).toBeInTheDocument();
-    expect(screen.getByText('Enter the six-digit code from your authenticator app.')).toBeInTheDocument();
-    expect(button('Cancel')).toHaveAttribute('type', 'button');
+    expect(screen.getByText('Six digits from your authenticator app.')).toBeInTheDocument();
+    expect(button('Have an invite? Create an account')).toHaveAttribute('type', 'button');
     await expectNoAxeViolations(view.container);
-    await user.type(field('Code'), '123456{Enter}');
+    await user.type(field('Code'), '123456');
+    await settleCode();
     expect(fake.callsOf('signInTotp')).toEqual([{ m: 'signInTotp', code: '123456' }]);
-    expect(h1()).toHaveTextContent('Your recovery key');
+    expect(h1()).toHaveTextContent('Add this browser');
     expect(document.activeElement).toBe(h1());
     expect(screen.getByText('Sign in · step 3 of 4')).toBeInTheDocument();
     expect(screen.getByText(KEY_BODY)).toBeInTheDocument();
     await expectNoAxeViolations(view.container);
     await pasteKey(user);
-    await user.click(button('Add this browser'));
+    await user.click(button('Add browser'));
     expect(fake.callsOf('signInKey')).toEqual([{ m: 'signInKey', recoveryKey: GROUPED }]);
     expect(h1()).toHaveTextContent('You’re in');
     expect(screen.getByText('Sign in · step 4 of 4')).toBeInTheDocument();
@@ -146,13 +154,13 @@ describe('the ceremony', () => {
     expect(screen.getByText('Sign in · step 2 of 4')).toBeInTheDocument();
     await user.type(field('Backup code'), 'abcde fghij-klmno pqrst uvwxy z{Enter}');
     expect(fake.callsOf('signInBackupCode')).toEqual([]);
-    expect(h1()).toHaveTextContent('Your recovery key');
+    expect(h1()).toHaveTextContent('Add this browser');
     expect(document.activeElement).toBe(h1());
     expect(screen.getByText('Sign in · step 3 of 4')).toBeInTheDocument();
     expect(screen.getByText(KEY_BODY)).toBeInTheDocument();
     await expectNoAxeViolations(view.container);
     await pasteKey(user);
-    await user.click(button('Add this browser'));
+    await user.click(button('Add browser'));
     expect(fake.callsOf('signInBackupCode')).toEqual([{ m: 'signInBackupCode', code: BACKUP, recoveryKey: GROUPED }]);
     expect(fake.callsOf('signInKey')).toEqual([]);
     expect(fake.calls.map(c => c.m)).toEqual(['signInLogin', 'signInBackupCode']);
@@ -181,10 +189,31 @@ describe('the ceremony', () => {
     const { fake, user } = setup('signin-login', worker({ totp: true }));
     await login(user);
     await user.click(field('Code'));
+    // Wave B task 3 (Review Focus 1): the boxes keep the digits, all six fill, and the code goes once with no press.
     await user.paste('123 456');
-    expect(field('Code')).toHaveValue('123 456');
-    await user.keyboard('{Enter}');
+    await settleCode();
     expect(fake.callsOf('signInTotp')).toEqual([{ m: 'signInTotp', code: '123456' }]);
+    await user.keyboard('{Enter}');
+    expect(fake.callsOf('signInTotp')).toHaveLength(1);
+  });
+
+  it('a complete code submits once however often Enter and Verify follow it, and a short code is never sent', async () => {
+    let settle: () => void = () => {};
+    const { fake, user } = setup('signin-totp', (c, f) => {
+      if (c.m !== 'signInTotp') return worker({ totp: true })(c, f);
+      return new Promise(resolve => { settle = () => { move(f, { phase: 'signin-key', signIn: { username: 'ada', factor: null } }); resolve(null); }; });
+    }, { signIn: { username: 'ada', factor: 'totp' } });
+    await user.type(field('Code'), '12345{Enter}');
+    expect(field('Code')).toHaveAccessibleDescription('Six digits from your authenticator app. A code has six digits.');
+    expect(fake.callsOf('signInTotp')).toEqual([]);
+    expect(button('Verify')).toHaveAttribute('aria-disabled', 'true');
+    await user.type(field('Code'), '6');
+    await user.keyboard('{Enter}');
+    await user.click(button('Checking…'));
+    expect(fake.callsOf('signInTotp')).toEqual([{ m: 'signInTotp', code: '123456' }]);
+    await act(async () => { settle(); await Promise.resolve(); });
+    expect(h1()).toHaveTextContent('Add this browser');
+    expect(fake.callsOf('signInTotp')).toHaveLength(1);
   });
 
   it('a key refused by its form after the login stays on the key step with the text kept and the field in error', async () => {
@@ -196,10 +225,10 @@ describe('the ceremony', () => {
     const typo = GROUPED.replace('P4ZA', 'P4ZU');
     await login(user);
     await pasteKey(user, typo);
-    await user.click(button('Add this browser'));
+    await user.click(button('Add browser'));
     expect(fake.callsOf('signInLogin')).toEqual([{ m: 'signInLogin', username: 'ada', password: 'correct horse' }]);
     expect(fake.callsOf('signInKey')).toEqual([{ m: 'signInKey', recoveryKey: typo }]);
-    expect(h1()).toHaveTextContent('Your recovery key');
+    expect(h1()).toHaveTextContent('Add this browser');
     expect(field('Recovery key')).toHaveValue(typo);
     expect(field('Recovery key')).toHaveAccessibleDescription(expect.stringContaining('This is not the recovery key of this account. Check every character.'));
     expect(document.activeElement).toBe(field('Recovery key'));
@@ -212,8 +241,8 @@ describe('the ceremony', () => {
 
   it('an empty code shows the required text and sends nothing', async () => {
     const { fake, user } = setup('signin-totp', worker({ totp: true }), { signIn: { username: 'ada', factor: 'totp' } });
-    await user.click(button('Continue'));
-    expect(field('Code')).toHaveAccessibleDescription('Fill in this field.');
+    await user.click(button('Verify'));
+    expect(field('Code')).toHaveAccessibleDescription('Six digits from your authenticator app. Fill in this field.');
     expect(document.activeElement).toBe(field('Code'));
     expect(fake.callsOf('signInTotp')).toEqual([]);
   });
@@ -247,18 +276,18 @@ describe('the ceremony', () => {
     const { fake, user } = setup('signin-key', worker());
     await user.type(field('Recovery key'), KEY.slice(0, 51));
     expect(field('Recovery key')).toHaveAccessibleDescription(expect.stringContaining('51 of 52 characters'));
-    expect(button('Add this browser')).toHaveAttribute('aria-disabled', 'true');
-    expect(button('Add this browser')).toHaveAccessibleDescription(LENGTH);
+    expect(button('Add browser')).toHaveAttribute('aria-disabled', 'true');
+    expect(button('Add browser')).toHaveAccessibleDescription(LENGTH);
     await user.keyboard('{Enter}');
     expect(fake.callsOf('signInKey')).toEqual([]);
     expect(document.activeElement).toBe(field('Recovery key'));
     expect(field('Recovery key')).toHaveAccessibleDescription(expect.stringContaining(LENGTH));
-    await user.click(button('Add this browser'));
+    await user.click(button('Add browser'));
     expect(fake.callsOf('signInKey')).toEqual([]);
     await user.type(field('Recovery key'), KEY.slice(51));
-    expect(button('Add this browser')).not.toHaveAttribute('aria-disabled');
+    expect(button('Add browser')).not.toHaveAttribute('aria-disabled');
     expect(screen.queryByText(LENGTH)).toBeNull();
-    await user.click(button('Add this browser'));
+    await user.click(button('Add browser'));
     expect(fake.callsOf('signInKey')).toEqual([{ m: 'signInKey', recoveryKey: KEY }]);
   });
 
@@ -268,29 +297,29 @@ describe('the ceremony', () => {
       return new Promise(() => {});
     });
     await pasteKey(user);
-    await user.click(button('Add this browser'));
-    expect(h1()).toHaveTextContent('Your recovery key');
+    await user.click(button('Add browser'));
+    expect(h1()).toHaveTextContent('Add this browser');
     expect(screen.getByRole('status')).toHaveTextContent('Adding this browser to your account…');
-    expect(button('Add this browser')).toHaveAttribute('aria-disabled', 'true');
-    expect(button('Cancel')).toHaveAttribute('aria-disabled', 'true');
-    expect(document.activeElement).toBe(button('Add this browser'));
-    await user.click(button('Add this browser'));
-    await user.click(button('Cancel'));
+    expect(button('Add browser')).toHaveAttribute('aria-disabled', 'true');
+    expect(button('Have an invite? Create an account')).toHaveAttribute('aria-disabled', 'true');
+    expect(document.activeElement).toBe(button('Add browser'));
+    await user.click(button('Add browser'));
+    await user.click(button('Have an invite? Create an account'));
     expect(fake.callsOf('signInKey')).toHaveLength(1);
     expect(fake.callsOf('signInCancel')).toEqual([]);
   });
 
   it('keeps its place after a reload into a registered enrolment, as step 2', () => {
     setup('signin-key');
-    expect(h1()).toHaveTextContent('Your recovery key');
+    expect(h1()).toHaveTextContent('Add this browser');
     expect(screen.getByText('Sign in · step 2 of 3')).toBeInTheDocument();
     expect(field('Recovery key')).toHaveValue('');
-    expect(button('Cancel')).toHaveAttribute('type', 'button');
+    expect(button('Have an invite? Create an account')).toHaveAttribute('type', 'button');
   });
 
   it('shows the working state when it mounts in enrolling', () => {
     const { fake } = setup('enrolling');
-    expect(h1()).toHaveTextContent('Your recovery key');
+    expect(h1()).toHaveTextContent('Add this browser');
     expect(screen.getByRole('status')).toHaveTextContent('Adding this browser to your account…');
     expect(fake.calls).toEqual([]);
   });
@@ -301,13 +330,122 @@ describe('the ceremony', () => {
     expect(first.fake.callsOf('signInCancel')).toEqual([{ m: 'signInCancel' }]);
     first.view.unmount();
     const second = setup('signin-totp', worker({ totp: true }), { signIn: { username: 'ada', factor: 'totp' } });
-    await second.user.click(button('Cancel'));
+    await second.user.click(button('Have an invite? Create an account'));
     expect(second.fake.callsOf('signInCancel')).toEqual([{ m: 'signInCancel' }]);
     second.view.unmount();
     const third = setup('signin-key', worker());
-    await third.user.click(button('Cancel'));
+    await third.user.click(button('Have an invite? Create an account'));
     expect(third.fake.callsOf('signInCancel')).toEqual([{ m: 'signInCancel' }]);
     expect(third.fake.callsOf('signInKey')).toEqual([]);
+  });
+
+  it('wave B task 3: Back on the code step returns to the login with the code dropped and the password asked again', async () => {
+    const { fake, user } = setup('signin-login', worker({ totp: true }));
+    await login(user);
+    expect(h1()).toHaveTextContent('Enter your code');
+    await user.type(field('Code'), '123');
+    await user.click(button('Back'));
+    expect(fake.callsOf('signInBack')).toEqual([{ m: 'signInBack' }]);
+    expect(fake.callsOf('signInCancel')).toEqual([]);
+    expect(fake.callsOf('signInTotp')).toEqual([]);
+    expect(h1()).toHaveTextContent('Sign in to dilla.test');
+    expect(field('Username')).toHaveValue(' Ada ');
+    expect(password()).toHaveValue('');
+    expect(document.activeElement).toBe(password());
+    // A second login shows an empty code: the three digits typed before Back are gone.
+    await user.type(password(), 'correct horse');
+    await user.click(button('Continue'));
+    expect(field('Code')).toHaveValue('');
+  });
+
+  it('wave B task 3: Back on the key step drops the typed key and sends no key', async () => {
+    const { fake, user } = setup('signin-login', worker());
+    await login(user);
+    await pasteKey(user);
+    await user.click(button('Back'));
+    expect(fake.callsOf('signInBack')).toEqual([{ m: 'signInBack' }]);
+    expect(fake.callsOf('signInKey')).toEqual([]);
+    expect(h1()).toHaveTextContent('Sign in to dilla.test');
+  });
+
+  it('wave B task 3: Back and the new-account link sit under the button on the code and key steps, blocked while a step works', async () => {
+    const { user } = setup('signin-key', (c, f) => {
+      if (c.m === 'signInKey') move(f, { phase: 'enrolling' });
+      return new Promise(() => {});
+    });
+    expect(button('Back')).toHaveAttribute('type', 'button');
+    expect(button('Back').closest('.d-onboarding-frame__nav')).not.toBeNull();
+    await pasteKey(user);
+    await user.click(button('Add browser'));
+    expect(button('Back')).toHaveAttribute('aria-disabled', 'true');
+  });
+
+  it('wave B task 3: the done step names the first server and its first text channel in the green panel', () => {
+    const { fake, view } = setup('ready', idle, { user: ME, deviceId: 'dd'.repeat(16), signIn: null });
+    expect(view.container.querySelector('.d-onboarding-frame__ready')).toBeNull();
+    const cid = 'c1'.repeat(16);
+    const row = (id: string, kind: 0 | 1 | 2, name: string, position: number, parentId: string | null = null) => ({
+      id, communityId: cid, kind, mode: 0 as const, name, topic: '', parentId, position, slowmode: 0, announcement: false, group: 'active' as const });
+    act(() => {
+      fake.set('communities', [{ id: cid, name: 'Midgard Crew', owner: 'aa'.repeat(16) }]);
+      fake.set(`channels:${cid}`, [row('v1'.repeat(16), 1, 'harbour', 0), row('t2'.repeat(16), 0, 'random', 2), row('t1'.repeat(16), 0, 'general', 1)]);
+    });
+    expect(screen.getByText('Midgard Crew is waiting in #general.')).toBeInTheDocument();
+  });
+
+  it('fix round 1: "Open dilla" lands on the server and channel the panel names; without a panel, on the default', async () => {
+    const named = setup('ready', idle, { user: ME, deviceId: 'dd'.repeat(16), signIn: null });
+    const cid = 'c1'.repeat(16);
+    act(() => {
+      named.fake.set('communities', [{ id: cid, name: 'Midgard Crew', owner: 'aa'.repeat(16) }]);
+      named.fake.set(`channels:${cid}`, [{ id: 't1'.repeat(16), communityId: cid, kind: 0, mode: 0, name: 'general', topic: '', parentId: null,
+        position: 0, slowmode: 0, announcement: false, group: 'active' as const }]);
+    });
+    await named.user.click(button('Open dilla'));
+    expect(named.onFinish).toHaveBeenCalledWith({ communityId: cid, channelId: 't1'.repeat(16) });
+    named.view.unmount();
+    const plain = setup('ready', idle, { user: ME, deviceId: 'dd'.repeat(16), signIn: null });
+    await plain.user.click(button('Open dilla'));
+    expect(plain.onFinish).toHaveBeenCalledWith(undefined);
+  });
+
+  it('wave B task 3: no panel when the first server has no text channel', () => {
+    const { fake, view } = setup('ready', idle, { user: ME, deviceId: 'dd'.repeat(16), signIn: null });
+    const cid = 'c1'.repeat(16);
+    act(() => {
+      fake.set('communities', [{ id: cid, name: 'Midgard Crew', owner: 'aa'.repeat(16) }]);
+      fake.set(`channels:${cid}`, [{ id: 'v1'.repeat(16), communityId: cid, kind: 1, mode: 0, name: 'harbour', topic: '', parentId: null,
+        position: 0, slowmode: 0, announcement: false, group: 'active' as const }]);
+    });
+    expect(view.container.querySelector('.d-onboarding-frame__ready')).toBeNull();
+    expect(h1()).toHaveTextContent('You’re in');
+  });
+
+  it('fix round 1: the typed code is dropped by "Use a backup code" and stays dropped after Back', async () => {
+    const { user } = setup('signin-login', worker({ totp: true }));
+    await login(user);
+    await user.type(field('Code'), '123');
+    await user.click(button('Use a backup code'));
+    expect(h1()).toHaveTextContent('Use a backup code');
+    await user.click(button('Back'));
+    expect(h1()).toHaveTextContent('Enter your code');
+    expect(field('Code')).toHaveValue('');
+  });
+
+  it('fix round 1: a second Back while the first is on its way sends nothing', async () => {
+    let release!: () => void;
+    const { fake, user } = setup('signin-login', (c, f) => {
+      if (c.m === 'signInBack') return new Promise(resolve => { release = () => { void worker()(c, f); resolve(null); }; });
+      return worker({ totp: true })(c, f);
+    });
+    await login(user);
+    await user.click(button('Back'));
+    expect(button('Back')).toHaveAttribute('aria-disabled', 'true');
+    await user.click(button('Back'));
+    await user.click(button('Have an invite? Create an account'));
+    expect(fake.callsOf('signInBack')).toHaveLength(1);
+    expect(fake.callsOf('signInCancel')).toEqual([]);
+    await act(async () => { release(); await Promise.resolve(); });
   });
 
   it('shows the loading splash without an instance', () => {
@@ -360,7 +498,8 @@ describe('refusals', () => {
     });
     await login(user);
     expect(screen.getByText('Sign in · step 2 of 4')).toBeInTheDocument();
-    await user.type(field('Code'), '000000{Enter}');
+    await user.type(field('Code'), '000000');
+    await settleCode();
     expect(fake.callsOf('signInTotp')).toEqual([{ m: 'signInTotp', code: '000000' }]);
     expect(h1()).toHaveTextContent('Sign in to dilla.test');
     expect(screen.getByText('Sign in · step 1 of 4')).toBeInTheDocument();
@@ -387,7 +526,7 @@ describe('refusals', () => {
     });
     await login(user);
     await pasteKey(user);
-    await user.click(button('Add this browser'));
+    await user.click(button('Add browser'));
     expect(h1()).toHaveTextContent('Sign in to dilla.test');
     expect(screen.getByText('Sign in · step 1 of 4')).toBeInTheDocument();
     expect(screen.getByRole('alert')).toHaveTextContent(text);
@@ -404,9 +543,10 @@ describe('refusals', () => {
       return Promise.reject(refusal({ code: 'E_SIGNIN_EXPIRED' }));
     });
     await login(user);
-    await user.type(field('Code'), '123456{Enter}');
+    await user.type(field('Code'), '123456');
+    await settleCode();
     await pasteKey(user);
-    await user.click(button('Add this browser'));
+    await user.click(button('Add browser'));
     expect(fake.callsOf('signInKey')).toEqual([{ m: 'signInKey', recoveryKey: GROUPED }]);
     expect(h1()).toHaveTextContent('Sign in to dilla.test');
     expect(screen.getByText('Sign in · step 1 of 4')).toBeInTheDocument();
@@ -431,7 +571,7 @@ describe('refusals', () => {
     await user.click(button(en['factorSignin.useBackup']));
     await user.type(field('Backup code'), `${BACKUP}{Enter}`);
     await pasteKey(user);
-    await user.click(button('Add this browser'));
+    await user.click(button('Add browser'));
     expect(fake.callsOf('signInBackupCode')).toEqual([{ m: 'signInBackupCode', code: BACKUP, recoveryKey: GROUPED }]);
     expect(h1()).toHaveTextContent('Sign in to dilla.test');
     expect(screen.getByRole('alert')).toHaveTextContent(EXPIRED);
@@ -442,7 +582,7 @@ describe('refusals', () => {
     // Signing in again starts at the code: the held code went with the refusal.
     await user.type(password(), 'correct horse');
     await user.click(button('Continue'));
-    expect(h1()).toHaveTextContent('Your second factor');
+    expect(h1()).toHaveTextContent('Enter your code');
     expect(fake.callsOf('signInLogin').at(-1)).toEqual({ m: 'signInLogin', username: 'ada', password: 'correct horse' });
   });
 
@@ -460,14 +600,14 @@ describe('refusals', () => {
     });
     await login(user);
     await pasteKey(user);
-    await user.click(button('Add this browser'));
+    await user.click(button('Add browser'));
     expect(screen.getByRole('alert')).toHaveTextContent(EXPIRED);
     await user.clear(field('Username'));
     await user.type(field('Username'), 'bob');
     await user.type(password(), 'battery staple');
     await user.click(button('Continue'));
     expect(fake.callsOf('signInLogin').at(-1)).toEqual({ m: 'signInLogin', username: 'bob', password: 'battery staple' });
-    expect(h1()).toHaveTextContent('Your recovery key');
+    expect(h1()).toHaveTextContent('Add this browser');
     expect(field('Recovery key')).toHaveValue('');
     expect(field('Recovery key')).toHaveAccessibleDescription(expect.stringContaining('0 of 52 characters'));
   });
@@ -485,11 +625,11 @@ describe('refusals', () => {
     });
     await login(user);
     await pasteKey(user);
-    await user.click(button('Add this browser'));
+    await user.click(button('Add browser'));
     expect(field('Username')).toHaveValue(' Ada ');
     await user.type(password(), 'correct horse');
     await user.click(button('Continue'));
-    expect(h1()).toHaveTextContent('Your recovery key');
+    expect(h1()).toHaveTextContent('Add this browser');
     expect(field('Recovery key')).toHaveValue('');
   });
 
@@ -501,8 +641,8 @@ describe('refusals', () => {
       return Promise.reject(refusal({ code: 'E_NO_BACKUP' }));
     });
     await pasteKey(user);
-    await user.click(button('Add this browser'));
-    expect(h1()).toHaveTextContent('Your recovery key');
+    await user.click(button('Add browser'));
+    expect(h1()).toHaveTextContent('Add this browser');
     expect(screen.getByRole('alert')).toHaveTextContent('This account has no backup to recover from on dilla.test.');
     expect(screen.queryByRole('textbox')).toBeNull();
     expect(screen.getAllByRole('button').map(b => b.textContent)).toEqual(['Cancel']);
@@ -520,8 +660,8 @@ describe('refusals', () => {
       return Promise.reject(refusal({ code: 'E_NO_BACKUP' }));
     });
     await pasteKey(user);
-    await user.click(button('Add this browser'));
-    expect(h1()).toHaveTextContent('Your recovery key');
+    await user.click(button('Add browser'));
+    expect(h1()).toHaveTextContent('Add this browser');
     // BACKUPS-RECOVERY-03: the copy names the action that repairs the backup.
     expect(screen.getByRole('alert')).toHaveTextContent('This account has no backup to recover from on dilla.test. Sign in on a device that still holds this account and open dilla there; it repairs the backup. Then try again.');
     expect(screen.queryByRole('textbox')).toBeNull();
@@ -556,13 +696,13 @@ describe('refusals', () => {
       return Promise.resolve(null);
     });
     await pasteKey(user, GROUPED.replace('7K2M', '7K2N'));
-    await user.click(button('Add this browser'));
+    await user.click(button('Add browser'));
     expect(field('Recovery key')).toHaveValue(GROUPED.replace('7K2M', '7K2N'));
     expect(field('Recovery key')).toHaveAccessibleDescription(expect.stringContaining('This is not the recovery key of this account. Check every character.'));
     expect(document.activeElement).toBe(field('Recovery key'));
     await user.clear(field('Recovery key'));
     await pasteKey(user);
-    await user.click(button('Add this browser'));
+    await user.click(button('Add browser'));
     expect(fake.callsOf('signInKey')).toEqual([
       { m: 'signInKey', recoveryKey: GROUPED.replace('7K2M', '7K2N') }, { m: 'signInKey', recoveryKey: GROUPED },
     ]);
@@ -573,7 +713,7 @@ describe('refusals', () => {
     const { user } = setup('signin-key', c => (c.m === 'signInKey'
       ? Promise.reject(refusal({ code: 'E_TIER_MISMATCH', detail: 'E_RECOVERY_KEY wrong recovery key', status: 400 })) : Promise.resolve(null)));
     await pasteKey(user);
-    await user.click(button('Add this browser'));
+    await user.click(button('Add browser'));
     expect(screen.getByRole('alert')).toHaveTextContent('Signing in did not work (E_TIER_MISMATCH). Try again.');
     expect(screen.queryByText(/not the recovery key/)).toBeNull();
   });
@@ -609,7 +749,7 @@ describe('the key step recognises a backup code (R44)', () => {
     expect(note()).toHaveTextContent(NOTE);
     expect(note()).not.toHaveAttribute('role');
     expect(key().getAttribute('aria-describedby')).toContain('signin-key-backup');
-    expect(button('Add this browser')).toHaveAttribute('aria-disabled', 'true');
+    expect(button('Add browser')).toHaveAttribute('aria-disabled', 'true');
     vi.useRealTimers(); // axe schedules with timers
     await expectNoAxeViolations(document.body);
   });

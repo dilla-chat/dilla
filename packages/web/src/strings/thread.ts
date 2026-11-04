@@ -8,9 +8,6 @@ export const thread = {
   'thread.title': 'Thread',
   'thread.close': 'close thread',
   'thread.composer': 'Reply in thread',
-  'thread.list': 'threads',
-  'thread.empty': 'No threads in #{name} yet.',
-  'thread.loadFailed': 'Threads could not be loaded.',
   'thread.noReplies': 'No replies yet.',
   'thread.rootMissing': 'The message that started this thread cannot be shown here.',
 } as const;

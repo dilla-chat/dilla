@@ -7,8 +7,9 @@ import type {
 import { WebDriver, instanceInvite, testHostUrl, testkitEnv, type PeerReceived } from './support/driver';
 import { expect, test } from './support/second-harness';
 import { completeFactor, nextCode } from './support/totp';
+import { e2ePort } from './support/ports';
 
-const CONTROL = process.env.DILLA_TESTKIT_CONTROL ?? 'http://127.0.0.1:8454';
+const CONTROL = process.env.DILLA_TESTKIT_CONTROL ?? `http://127.0.0.1:${String(e2ePort(8454))}`;
 
 const CI = process.env.CI === 'true';
 const WAIT = CI ? 90_000 : 30_000;

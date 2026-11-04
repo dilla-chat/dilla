@@ -169,6 +169,11 @@ func (d Deps) CreateAccount(w http.ResponseWriter, r *http.Request) {
 				"this instance does not accept a password at registration"))
 			return
 		}
+		if auth.PasswordTooShort(*req.Password) {
+			server.WriteError(w, server.Errorf(server.CodeInvalidRequest,
+				"the password is shorter than %d characters", auth.PasswordMinChars))
+			return
+		}
 		phc, err = d.Hasher.Hash(ctx, *req.Password)
 		if err != nil {
 			server.WriteError(w, err)
@@ -335,11 +340,15 @@ func (d Deps) PatchMe(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	// One UPDATE that names only the given fields, so two devices changing different fields never
-	// overwrite each other (a null leaves the column as it is).
-	if err := d.Repo.UpdateProfile(r.Context(), sess.UserID, display, status, bio); err != nil {
+	// The UPDATE compares and writes in one statement; a concurrent PATCH cannot
+	// invalidate the change decision. Null fields preserve another device's edits.
+	visibleChanged, err := d.Repo.UpdateProfile(r.Context(), sess.UserID, display, status, bio)
+	if err != nil {
 		server.WriteError(w, d.storeError(r, err))
 		return
+	}
+	if visibleChanged {
+		d.Presence.ProfileChanged(r.Context(), sess.UserID)
 	}
 	d.noContent(w, r)
 }

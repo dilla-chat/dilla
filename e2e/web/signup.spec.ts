@@ -1,9 +1,11 @@
 import { clickNative } from './support/native-click.ts';
 import { desktopApplication, desktopE2E } from './support/electron.ts';
 import { expect } from '@playwright/test';
+import { readFileSync } from 'node:fs';
+import { instanceSlug } from '../../packages/web/src/screens/recovery-file';
 import {
   CLASS, COPY, HEX32, PUBLIC_URL, RK_GROUP, TEST_TIMEOUT, WAIT, copy, escapeRegExp, expectHeading, expectShell, nextButton, onboardingFrame,
-  completeFactorStep, newAccount, openChannel, railItem, railNav, readKekRecord, readRecoveryKey, submitButton, test,
+  completeFactorStep, keysSubmitButton, newAccount, openChannel, railItem, railNav, readKekRecord, readRecoveryKey, submitButton, test,
 } from './support/app';
 
 test.describe.configure({ timeout: TEST_TIMEOUT });
@@ -29,11 +31,12 @@ test('a server invite, a name and a written-down key make an account that lands 
   await expect(page.getByLabel(copy(COPY.inviteLabel), { exact: true })).toHaveValue(invite);
   await nextButton(page).click();
 
+  // Wave B task 3b: step 2 asks for a username and a password only; Create account makes the keys, nothing more.
   await expectHeading(page, COPY.identityTitle);
+  await expect(page.getByLabel(/Display name/)).toHaveCount(0);
   await page.getByLabel(copy(COPY.usernameLabel), { exact: true }).fill(`w${setup.user_id.slice(0, 8)}`);
-  await page.getByLabel(copy(COPY.displayLabel), { exact: true }).fill('signup tester');
   await page.getByLabel(copy(COPY.passwordLabel), { exact: true }).fill('e2e-password-1234');
-  await nextButton(page).click();
+  await submitButton(page).click();
 
   // The recovery key: 13 groups of 4 Crockford characters, selectable, never offered for copying (F2).
   await expectHeading(page, COPY.keysTitle);
@@ -41,15 +44,25 @@ test('a server invite, a name and a written-down key make an account that lands 
   expect(groups).toHaveLength(13);
   for (const group of groups) expect(group).toMatch(RK_GROUP);
   await expect(page.locator(CLASS.recoveryKey).getByRole('button', { name: /copy/i })).toHaveCount(0);
-  await expect(nextButton(page)).toBeDisabled();
+  // Task 3b security review MEDIUM-1: Save as file reaches the browser's download in this engine (chromium, firefox, webkit),
+  // as a file whose bytes are the explanation, a blank line and the key once.
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByRole('button', { name: copy('onboarding.keys.save'), exact: true }).click(),
+  ]);
+  expect(download.suggestedFilename()).toBe(`dilla-recovery-key-${instanceSlug(instanceName)}.txt`);
+  const saved = readFileSync(await download.path(), 'utf8');
+  expect(saved).toBe(`${copy('onboarding.keys.fileBody', { instance: instanceName })}\n\n${groups.join('-')}\n`);
+  expect(saved.split(groups.join('-'))).toHaveLength(2);
+  await download.delete();
+  await expect(keysSubmitButton(page)).toBeDisabled();
   await page.getByRole('checkbox', { name: copy(COPY.keysAcknowledge), exact: true }).check();
-  await expect(nextButton(page)).toBeEnabled();
-  await nextButton(page).click();
-
-  // Step 4 registers: its forward button is `Create account`, not `Continue` (L-COPY-01).
-  await expectHeading(page, COPY.deviceTitle);
-  await submitButton(page).click();
-  await completeFactorStep(page, newAccount());
+  await expect(keysSubmitButton(page)).toBeEnabled();
+  // Step 3 registers: its forward button is `I saved it`, and only once the key is ticked (task 3b).
+  await keysSubmitButton(page).click();
+  const account = newAccount();
+  await completeFactorStep(page, account);
+  expect(account.backupCodes.length).toBeGreaterThan(0);
   await expectHeading(page, COPY.doneTitle);
   await page.getByRole('button', { name: copy(COPY.finish), exact: true }).click();
   await expectShell(page);

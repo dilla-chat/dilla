@@ -38,7 +38,7 @@
 /* The prototype's thread draws no client tag beside an author (fix round 2); a bot keeps its BOT tag. */
 .d-thread-pane .d-message-row .d-tag[data-kind="web"] { display: none; }
 /* The reply input (Ruling AL): 8px 12px 12px around a --bg-3 box in the --hairline-2 line, 8px corners, the accent › and a 30px line; no
-   send button on a desktop (Enter sends, as the prototype); a phone keeps it (a soft keyboard's Enter is a new line). */
+   send button on either layout (Enter sends, as the prototype). */
 .d-thread-pane__composer .d-composer { padding: 8px 12px 12px; background: transparent; }
 .d-thread-pane__composer .d-composer__box { position: relative; background: var(--bg-3); border-color: var(--hairline-2); border-radius: var(--r-lg); }
 /* The prototype's reply box is 40px (4px + the 30px line + 4px, in its 1px line): the typing sweep lies over its top edge instead of
@@ -51,7 +51,7 @@
 .d-thread-pane__composer .d-composer__box:focus-within { border-color: var(--accent); box-shadow: none; }
 .d-thread-pane__composer .d-composer__row { padding: 4px 4px 4px 10px; }
 .d-thread-pane__composer .d-composer__input { min-height: 30px; font-size: var(--text-input); }
-.d-thread-pane:not([data-phone]) .d-composer__send { display: none; }
+.d-thread-pane .d-composer__send { display: none; }
 
 /* The sheet: the composer clears the home indicator, and every control on it is a finger's size (44 px). */
 .d-thread-pane[data-phone] .d-thread-pane__composer { padding-bottom: env(safe-area-inset-bottom); }

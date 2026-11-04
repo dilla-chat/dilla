@@ -87,7 +87,13 @@ function setup(o: { phone?: boolean; base?: number; path?: string; timeout?: str
 }
 const members = () => screen.queryByRole('complementary', { name: 'members of Midgard' });
 const threadPane = () => screen.queryByRole('complementary', { name: en['thread.title'] });
-const listPane = () => screen.queryByRole('complementary', { name: en['thread.list'] });
+function expectThreadAside() {
+  const aside = screen.getByRole('complementary', { name: en['thread.title'] });
+  expect(aside.tagName).toBe('ASIDE');
+  expect(within(aside).getByRole('heading', { name: en['thread.title'], level: 2 })).toBeInTheDocument();
+  expect(screen.queryByRole('complementary', { name: en['layout.header.threads'] })).toBeNull();
+  expect(screen.queryByRole('list', { name: en['layout.header.threads'] })).toBeNull();
+}
 const toggle = () => screen.getByRole('button', { name: /^Members/ });
 const wait = (fake: FakeClient) => fake.set(`slow:${GEN}`, { until: Date.now() + 60_000, queued: false });
 
@@ -181,24 +187,30 @@ describe('threads on a desktop shell (one aside)', () => {
   });
 });
 
-describe('the thread list', () => {
-  it('opens from the header button, lists the threads, opens one in its place, and Escape closes the list returning focus to the button', async () => {
+describe('Threads header opens directly (Q9)', () => {
+  it('opens the most recently active thread, never ThreadList', async () => {
     const { fake, user } = setup();
     await user.click(await screen.findByRole('button', { name: en['layout.header.threads'] }));
-    const aside = await screen.findByRole('complementary', { name: en['thread.list'] });
-    expect(members()).toBeNull();
-    expect(fake.callsOf('loadThreads')).toEqual([{ m: 'loadThreads', channelId: GEN }]);
-    await user.click(within(aside).getByRole('button', { name: /the second root/ }));
-    expect(await screen.findByRole('complementary', { name: en['thread.title'] })).toBeInTheDocument();
+    await screen.findByRole('complementary', { name: en['thread.title'] });
     expect(fake.callsOf('openThread').at(-1)).toEqual({ m: 'openThread', channelId: GEN, rootMsgId: ROOT2 });
-    expect(listPane()).toBeNull();
-    await user.click(screen.getByRole('button', { name: en['thread.close'] }));
-    await waitFor(() => expect(threadPane()).toBeNull());
+    expectThreadAside();
+  });
+  it('remembers the last opened thread in this channel ahead of activity order', async () => {
+    const { fake, user } = setup();
+    await user.click(await screen.findByRole('button', { name: '2 replies' }));
+    await user.click(await screen.findByRole('button', { name: en['thread.close'] }));
     await user.click(screen.getByRole('button', { name: en['layout.header.threads'] }));
-    await screen.findByRole('complementary', { name: en['thread.list'] });
-    await user.keyboard('{Escape}');
-    await waitFor(() => expect(listPane()).toBeNull());
-    expect(screen.getByRole('button', { name: en['layout.header.threads'] })).toHaveFocus();
+    await screen.findByRole('complementary', { name: en['thread.title'] });
+    expect(fake.callsOf('openThread').at(-1)).toEqual({ m: 'openThread', channelId: GEN, rootMsgId: ROOT });
+  });
+  it('opens an empty thread aside when the channel has no threads', async () => {
+    const { fake, user } = setup();
+    act(() => fake.set(`threads:${GEN}`, []));
+    await user.click(await screen.findByRole('button', { name: en['layout.header.threads'] }));
+    const aside = await screen.findByRole('complementary', { name: en['thread.title'] });
+    expect(within(aside).getByText('No threads yet')).toBeInTheDocument();
+    expectThreadAside();
+    expect(fake.callsOf('openThread')).toHaveLength(0);
   });
 });
 
@@ -262,16 +274,15 @@ describe('threads on a phone (a sheet)', () => {
     expect(window.history.length).toBe(length);
   });
 
-  it('opens the thread list from the channel menu as a sheet, and a row opens its thread in the same entry', async () => {
+  it('opens the thread directly as one phone history entry', async () => {
     const { user } = setup({ phone: true });
     // Signal (Ruling U): Threads is a header button on a phone too.
     await user.click(await screen.findByRole('button', { name: en['layout.header.threads'] }));
-    const sheet = await screen.findByRole('complementary', { name: en['thread.list'] });
+    await screen.findByRole('complementary', { name: en['thread.title'] });
     expect(window.history.state).toMatchObject({ phoneSheet: 'thread' });
     const length = window.history.length;
-    await user.click(within(sheet).getByRole('button', { name: /the first root/ }));
     expect(await screen.findByRole('complementary', { name: en['thread.title'] })).toBeInTheDocument();
-    expect(listPane()).toBeNull();
+    expectThreadAside();
     expect(window.history.length).toBe(length);
     act(() => { window.history.back(); });
     await waitFor(() => expect(threadPane()).toBeNull());
@@ -335,13 +346,12 @@ async function searchThread(fake: FakeClient, user: ReturnType<typeof userEvent.
 }
 
 describe('where focus lands (fix round 2)', () => {
-  it('lands in the thread composer when a thread is picked from the list', async () => {
+  it('keeps focus on Threads when it opens the thread directly', async () => {
     const { user } = setup();
     await user.click(await screen.findByRole('button', { name: en['layout.header.threads'] }));
-    const aside = await screen.findByRole('complementary', { name: en['thread.list'] });
-    await user.click(within(aside).getByRole('button', { name: /the second root/ }));
     await screen.findByRole('complementary', { name: en['thread.title'] });
-    await waitFor(() => expect(threadBox()).toHaveFocus());
+    expect(threadBox()).not.toHaveFocus();
+    expect(screen.getByRole('button', { name: en['layout.header.threads'] })).toHaveFocus();
   });
 
   it('returns to the root row when a thread opened from a search hit closes', async () => {
@@ -484,4 +494,13 @@ describe('the channel header of an announcement channel (walk 17)', () => {
     expect(plain.closest('.d-channel-header__title')!.textContent).toBe('general');
     expect(plain.closest('.d-channel-header__title')!.querySelector('[data-icon="hash"]')).not.toBeNull();
   });
+});
+
+it('falls back to recent activity when the remembered thread root was removed', async () => {
+  const { fake, user } = setup();
+  await user.click(await screen.findByRole('button', { name: '2 replies' }));
+  await user.click(await screen.findByRole('button', { name: en['thread.close'] }));
+  act(() => fake.set(`threads:${GEN}`, [{ rootMsgId: ROOT2, rootSeq: '4', count: 1, lastTs: 9, excerpt: 'the second root' }]));
+  await user.click(screen.getByRole('button', { name: en['layout.header.threads'] }));
+  await waitFor(() => expect(fake.callsOf('openThread').at(-1)).toEqual({ m: 'openThread', channelId: GEN, rootMsgId: ROOT2 }));
 });

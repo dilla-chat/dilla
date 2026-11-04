@@ -1,4 +1,6 @@
 import { useId, useRef, type KeyboardEvent } from 'react';
+import { Icon } from '../Icon/Icon.tsx';
+import type { IconName } from '../Icon/Icon.tsx';
 import './ChoiceCards.css';
 
 export interface ChoiceCardOption {
@@ -7,6 +9,8 @@ export interface ChoiceCardOption {
   hint: string;
   disabled?: boolean;
   reason?: string;
+  /** Wave B task 3b: the prototype's 32px tile at the card's left (smartphone, fingerprint). */
+  icon?: IconName;
 }
 
 export interface ChoiceCardsProps {
@@ -48,7 +52,8 @@ export function ChoiceCards({ name, label, options, value, onChange }: ChoiceCar
 
   return (
     <div className="d-choice-cards" role="radiogroup" aria-labelledby={labelId} onKeyDown={onKeyDown}>
-      <p id={labelId} className="d-choice-cards__label d-label">{label}</p>
+      {/* Wave B task 3b: the prototype draws no label over the cards; it names the group for assistive technology. */}
+      <p id={labelId} className="d-choice-cards__label d-sr-only">{label}</p>
       {options.map(o => {
         const titleId = `${uid}-${o.id}-title`;
         const hintId = `${uid}-${o.id}-hint`;
@@ -57,16 +62,19 @@ export function ChoiceCards({ name, label, options, value, onChange }: ChoiceCar
         return (
           <label key={o.id} className="d-choice-cards__card" data-checked={o.id === value ? 'true' : undefined}
             data-disabled={o.disabled ? 'true' : undefined}>
-            <input type="radio" className="d-choice-cards__radio" name={name} value={o.id} checked={o.id === value}
-              disabled={o.disabled} tabIndex={o.id === stop ? 0 : -1}
-              aria-labelledby={titleId} aria-describedby={reason ? `${hintId} ${reasonId}` : hintId}
-              ref={el => { if (el) inputs.current.set(o.id, el); else inputs.current.delete(o.id); }}
-              onChange={() => { if (!o.disabled) onChange(o.id); }} />
+            {o.icon ? <span className="d-choice-cards__tile" aria-hidden="true"><Icon name={o.icon} size={16} /></span> : null}
             <span className="d-choice-cards__body">
               <span id={titleId} className="d-choice-cards__title">{o.title}</span>
               <span id={hintId} className="d-choice-cards__hint">{o.hint}</span>
               {reason ? <span id={reasonId} className="d-choice-cards__reason">{reason}</span> : null}
             </span>
+            {/* The native radio covers the whole card, transparent: the card is its target; the dot at the right is drawn. */}
+            <input type="radio" className="d-choice-cards__radio" name={name} value={o.id} checked={o.id === value}
+              disabled={o.disabled} tabIndex={o.id === stop ? 0 : -1}
+              aria-labelledby={titleId} aria-describedby={reason ? `${hintId} ${reasonId}` : hintId}
+              ref={el => { if (el) inputs.current.set(o.id, el); else inputs.current.delete(o.id); }}
+              onChange={() => { if (!o.disabled) onChange(o.id); }} />
+            <span className="d-choice-cards__dot" aria-hidden="true" />
           </label>
         );
       })}

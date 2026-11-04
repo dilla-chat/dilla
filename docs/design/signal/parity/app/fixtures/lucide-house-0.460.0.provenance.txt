@@ -1,0 +1,8 @@
+Canonical Lucide 0.460.0 House SVG (ISC license; upstream file preserved byte for byte).
+Source: https://cdn.jsdelivr.net/npm/lucide-static@0.460.0/icons/house.svg
+SHA-256: 9a58539fef2871ca76cae55ae876273db11caa5d3ae9e92630ff22fc00dd9feb
+
+Official alias evidence: https://cdn.jsdelivr.net/npm/lucide@0.460.0/dist/cjs/lucide.js
+The package exports `Home: House` and `exports.Home = House`.
+The prototype dilla-icons.js requests icons/home.svg, which the static package does not publish.
+The parity shooter resolves only that exact URL to this canonical asset, without editing the prototype.

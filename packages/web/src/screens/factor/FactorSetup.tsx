@@ -7,7 +7,7 @@
 // app or the passkey step, has no choice and no Back, and sends the step-up token its host holds as `stepup`.
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
-import { Banner, Button, ChoiceCards, CodeList, Dialog, OnboardingFrame, QrCode, TextField } from '@dilla/ui';
+import { Banner, Button, ChoiceCards, CodeBoxes, CodeList, Dialog, OnboardingFrame, QrCode, TextField, type IconName } from '@dilla/ui';
 import { browser } from '../../browser.ts';
 import { useCore } from '../../core/context.tsx';
 import { errorOf, type UiError } from '../../core/errors.ts';
@@ -15,13 +15,23 @@ import { useSlice } from '../../core/use-slice.ts';
 import { t, type StringKey } from '../../strings/index.ts';
 import { PasskeyError, createPasskey, passkeysUsable } from '../../webauthn.ts';
 
-export interface FactorSetupResult { kind: 'totp' | 'passkey'; /** The passkey's name, when one was just added here. */ name?: string }
+export interface FactorSetupResult {
+  kind: 'totp' | 'passkey';
+  /** The passkey's name, when one was just added here. */
+  name?: string;
+  /** Wave B task 3b: the sign-up shows the backup codes on its done step, so this origin hands them over (memory only)
+   *  instead of showing its own codes step. Absent for the other origins, and empty when the factor was already in place. */
+  backupCodes?: string[];
+}
 
 export interface FactorSetupProps {
   origin: 'signup' | 'signin' | 'required' | 'settings';
   stepLabel: string;
   /** The flow's progress dots (Signal task 10 fix round 1); none in Settings. */
   progress?: { n: number; total: number };
+  /** Wave B task 3b: the step line and dots of every step after the choice (the sign-up's code step is its own step 5);
+   *  without it every step shows `stepLabel` and `progress`. */
+  laterStep?: { stepLabel: string; progress?: { n: number; total: number } };
   instanceName: string;
   username: string;
   announce: (text: string) => void;
@@ -44,9 +54,14 @@ interface Problem { key: StringKey; vars: Record<string, string | number>; n: nu
 const SIX_DIGITS = /^\d{6}$/;
 const NAME_MAX = 64;
 const FIELD_CODE = 'factor-totp-code';
+const CODE_HINT = 'factor-totp-code-hint';
+const CODE_ERROR = 'factor-totp-code-error';
 const FIELD_NAME = 'factor-passkey-name';
 const BUTTON_PASSKEY = 'factor-passkey-submit';
 const KIND_GROUP = 'factor-kind';
+// Wave B task 3b: the prototype's card icons.
+const APP_ICON: IconName = 'smartphone';
+const PASSKEY_ICON: IconName = 'fingerprint';
 
 const NAME_MAX_BYTES = 64;
 const CONTROL = /\p{Cc}/u;
@@ -67,7 +82,7 @@ export function sharedRefusal(e: UiError): Pick<Problem, 'key' | 'vars'> | null 
 }
 
 export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
-  const { origin, stepLabel, progress, instanceName, username, announce, onDone, embedded } = props;
+  const { origin, instanceName, username, announce, onDone, embedded } = props;
   const client = useCore();
   const account = useSlice('account');
   const factors = useSlice('factors');
@@ -180,6 +195,8 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
     return true;
   };
   const addedName = useRef<string | undefined>(undefined);
+  /** Sign-up: the codes the add returned, handed to onDone and kept for a retry of a refused finish. */
+  const handedCodes = useRef<string[]>([]);
   /** Embedded: a passkey begin has spent the step-up token. */
   const tokenSpent = useRef(false);
   const fail = (shown: Pick<Problem, 'key' | 'vars'>) => setProblem(p => ({ ...shown, n: (p?.n ?? 0) + 1 }));
@@ -205,12 +222,16 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
   /** The factor is in place: show the codes, or skip them when the account already held some. */
   const added = (which: 'totp' | 'passkey', backupCodes: string[]) => {
     addedHere.current = true;
-    setKey(null);
     setKind(which);
     setCode('');
+    generation.current += 1;
+    // Wave B task 3b: the sign-up's done step shows the codes (with its own tick), so the set-up ends here and hands them
+    // over; the step stays as it is, at work, until the host has finished. The factor is in place either way, so a page
+    // closed now reopens ready, as it does from today's codes step.
+    if (origin === 'signup') { handedCodes.current = backupCodes; setBusy(true); complete(which); return; }
+    setKey(null);
     setCodes(backupCodes);
     setBusy(false);
-    generation.current += 1;
     if (backupCodes.length > 0) { setStep('codes'); return; }
     finish(which);
   };
@@ -227,16 +248,29 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
     if (completed.current) return;
     completed.current = true;
     let pending: void | Promise<void>;
-    try { pending = onDone(which === 'passkey' && addedName.current !== undefined ? { kind: which, name: addedName.current } : { kind: which }); } catch (e) { completed.current = false; throw e; }
+    const result: FactorSetupResult = which === 'passkey' && addedName.current !== undefined ? { kind: which, name: addedName.current } : { kind: which };
+    if (origin === 'signup') result.backupCodes = handedCodes.current;
+    try { pending = onDone(result); } catch (e) { completed.current = false; throw e; }
     if (pending === undefined) { setCodes([]); return; }
     pending.then(() => { if (mounted.current) setCodes([]); }, (e: unknown) => {
       completed.current = false;
       // The instance still finds the account owing (its factor is gone): back to the choice, which says so.
       if (stillOwed(e) && mounted.current) {
         addedHere.current = false;
+        handedCodes.current = [];
         setCodes([]);
         setAcknowledged(false);
         toChoose();
+        return;
+      }
+      // Sign-up: another refusal of the finish leaves the factor in place. Security review LOW-4: the person must not leave
+      // without the backup codes, so the retry is the codes step (the codes and their tick, then Continue retries the
+      // finish); with no codes to show (a factor already in place), the done step retries it. The host's banner says why.
+      if (origin === 'signup' && mounted.current) {
+        setKey(null);
+        setBusy(false);
+        if (handedCodes.current.length > 0) { setCodes(handedCodes.current); setAcknowledged(false); setStep('codes'); }
+        else setStep('done');
       }
     });
   };
@@ -250,6 +284,8 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
       const r = v as { secret: string; uri: string };
       setKey({ secret: r.secret, uri: r.uri });
       setBusy(false);
+      // Wave B task 3b: the sign-up's code step opens on its boxes, as the prototype's does, so autofill offers itself.
+      if (origin === 'signup') requestFocus(FIELD_CODE);
     }).catch((e: unknown) => {
       if (!live(g)) return;
       const err = errorOf(e);
@@ -259,9 +295,10 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
     });
   };
 
-  const submitTotp = () => {
+  /** Wave B task 3: the sixth digit in the code boxes sends the code with no press (`value`); Continue sends the same. */
+  const submitTotp = (value: string = code) => {
     if (busy || key === null) return;
-    const digits = code.replace(/\s/g, '');
+    const digits = value.replace(/\s/g, '');
     if (digits === '') { setCodeError('factor.error.required'); requestFocus(FIELD_CODE); return; }
     if (!SIX_DIGITS.test(digits)) { setCodeError('factor.error.codeFormat'); requestFocus(FIELD_CODE); return; }
     setCodeError(null);
@@ -345,6 +382,8 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
     <Banner key={problem.n} tone="danger">{t(problem.key, problem.vars)}</Banner>
   );
   const blocked = busy ? { 'aria-disabled': true as const } : {};
+  const { stepLabel, progress } = step !== 'choose' && props.laterStep !== undefined
+    ? { stepLabel: props.laterStep.stepLabel, progress: props.laterStep.progress } : props;
   const frame = (title: string, foot: ReactNode, children: ReactNode) => embedded === undefined ? (
     <form noValidate onSubmit={onSubmit}>
       <OnboardingFrame title={title} stepLabel={stepLabel} progress={progress} footer={foot}>
@@ -364,30 +403,38 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
     </form>
   );
   // Back always returns to the choice, even with a request out: the step's generation moves, so a late answer is dropped.
-  const back = embedded !== undefined ? null
-    : <Button variant="ghost" type="button" onClick={toChoose}>{t('factor.back')}</Button>;
+  // Wave B task 3b: in the auth card Back is the prototype's link at the left of the row under the button.
+  const back = embedded !== undefined ? null : (
+    <div className="d-onboarding-frame__nav">
+      <Button variant="ghost" type="button" data-back="" onClick={toChoose}>{t('factor.back')}</Button>
+    </div>
+  );
 
+  const hint = <p id={CODE_HINT} className="dw-factor-code-hint">{t('factor.totp.codeHint')}</p>;
   let content: React.JSX.Element;
   if (step === 'choose') {
     const options = [
-      ...(hasPassword ? [{ id: 'app', title: t('factor.choose.app'), hint: t('factor.choose.appHint') }] : []),
-      { id: 'passkey', title: t('factor.choose.passkey'), hint: t('factor.choose.passkeyHint'),
+      ...(hasPassword ? [{ id: 'app', title: t('factor.choose.app'), hint: t('factor.choose.appHint'), icon: APP_ICON }] : []),
+      { id: 'passkey', title: t('factor.choose.passkey'), hint: t('factor.choose.passkeyHint'), icon: PASSKEY_ICON,
         ...(usable ? {} : { disabled: true, reason: t('factor.choose.passkeyOff') }) },
     ];
     const cannot = effective === 'passkey' && !usable;
     content = frame(t('factor.choose.title'),
       <Button variant="accent" type="submit" {...(cannot ? { 'aria-disabled': true } : {})}>{t('factor.choose.next')}</Button>, <>
-        <p>{origin === 'required' ? t('factor.choose.required', { instance: instanceName }) : t('factor.choose.body', { instance: instanceName })}</p>
+        <p>{origin === 'required' ? t('factor.choose.required', { instance: instanceName })
+          : origin === 'signup' ? t('factor.choose.bodySignup') : t('factor.choose.body', { instance: instanceName })}</p>
         {hasPassword ? null : <p>{t('factor.choose.noPassword')}</p>}
         <ChoiceCards name={KIND_GROUP} label={t('factor.choose.label')} options={options} value={effective}
           onChange={(id) => { setChoice(id === 'passkey' ? 'passkey' : 'app'); }} />
       </>);
   } else if (step === 'totp') {
-    content = frame(t('factor.totp.title'),
+    // Wave B task 3b: the sign-up's code step takes the prototype's title and Verify; the QR code, the setup key and the hint
+    // stay (accepted deviation, Jonas Q6).
+    content = frame(t(origin === 'signup' ? 'factor.totp.titleSignup' : 'factor.totp.title'),
       <>
         {back}
-        <Button variant="accent" type="submit" {...(busy || key === null ? { 'aria-disabled': true } : {})}>
-          {t(busy && key !== null ? 'factor.totp.working' : 'factor.totp.submit')}
+        <Button variant="accent" type="submit" {...(busy || key === null || !SIX_DIGITS.test(code) ? { 'aria-disabled': true } : {})}>
+          {t(busy && key !== null ? 'factor.totp.working' : origin === 'signup' ? 'factor.totp.verify' : 'factor.totp.submit')}
         </Button>
       </>,
       key === null ? (busy ? <p role="status">{t('factor.totp.loading')}</p> : null) : <>
@@ -403,9 +450,16 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
             </div>
           </div>
         </div>
-        <TextField id={FIELD_CODE} label={t('factor.totp.code')} hint={t('factor.totp.codeHint')} value={code}
-          onChange={(v) => { setCode(v); setCodeError(null); }} {...(codeError === null ? {} : { error: t(codeError) })}
-          autoComplete="one-time-code" inputMode="numeric" spellCheck={false} required />
+        {/* Wave B task 3b (Jonas): at sign-up the QR code, the setup key and the hint stay above the code boxes (an accepted
+            deviation from the prototype's code step, which has only the boxes); every other set-up keeps the hint under them. */}
+        {origin === 'signup' ? hint : null}
+        {/* Wave B task 3: the prototype's six code boxes over one input that takes paste and one-time-code autofill. At sign-up
+            the boxes take focus once the key is shown (beginTotp), as the prototype's code step opens on them (its focusRef). */}
+        <CodeBoxes id={FIELD_CODE} label={t('factor.totp.code')} value={code}
+          onChange={(v) => { setCode(v); setCodeError(null); }} onComplete={(v) => { submitTotp(v); }}
+          invalid={codeError !== null} describedBy={codeError === null ? CODE_HINT : `${CODE_HINT} ${CODE_ERROR}`} />
+        {origin === 'signup' ? null : hint}
+        {codeError === null ? null : <p id={CODE_ERROR} className="d-onboarding-frame__error" role="alert">{t(codeError)}</p>}
       </>);
   } else if (step === 'passkey') {
     content = frame(t('factor.passkey.title'),

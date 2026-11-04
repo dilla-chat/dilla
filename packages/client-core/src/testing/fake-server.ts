@@ -104,7 +104,7 @@ export class FakeServer {
   readonly passwords = new Map<string, { password: string; totp: string | null }>();
   /** Every assertion issued, including ones subsequently spent. */
   readonly assertions: string[] = [];
-  private readonly activeAssertions = new Map<string, { user: string; needs: 0 | 1 | 2; expires: number }>();
+  private readonly activeAssertions = new Map<string, { user: string; needs: 0 | 1 | 2; expires: number; firstFactor?: true }>();
   /** When true, an account created through POST /v1/accounts is owed a second factor, as dillad does. */
   factorRequired = false;
   private readonly factorStates = new Map<string, FakeFactorState>();
@@ -432,7 +432,9 @@ export class FakeServer {
       if (stored === undefined || stored.password !== password) return this.loginFailure(username);
       const needs = this.needsOf(username);
       if (needs === 0) this.loginFailures.delete(username);
-      return reply(200, [this.assertion(username, needs), needs]);
+      // Wave B task 3 (protocol/09): a login owing a factor says whether the account holds a passkey.
+      if (needs === 0) return reply(200, [this.assertion(username, needs, true), needs]);
+      return reply(200, [this.assertion(username, needs, true), needs, this.factorsOf(username).passkeys.length > 0 ? 1 : 0]);
     }
     if (line === 'POST /v1/auth/totp/verify') {
       const body = arr(decode(r.body), 2);
@@ -466,7 +468,17 @@ export class FakeServer {
       return reply(200, [this.ceremonyBytes(id), '{"publicKey":{"challenge":"fake"}}']);
     }
     if (line === 'POST /v1/auth/passkey/login/finish') {
-      const body = arr(decode(r.body), 2);
+      const body = arr(decode(r.body));
+      if (body.length !== 2 && body.length !== 3) return refuse(400, 'E_INVALID_REQUEST');
+      // Wave B task 3: an optional third element binds the passkey to a live first-factor (password or OIDC) login owing a factor.
+      let boundUser: string | null = null;
+      if (body.length === 3) {
+        const held = this.activeAssertions.get(str(body[2] ?? null));
+        if (held === undefined || held.firstFactor !== true || held.needs === 0 || this.nowS > held.expires) {
+          return refuse(401, 'E_UNAUTHENTICATED');
+        }
+        boundUser = held.user;
+      }
       const ceremony = this.takeCeremony(body[0] ?? null, 'login');
       const response = str(body[1] ?? null);
       if (ceremony === null) return refuse(401, 'E_UNAUTHENTICATED');
@@ -479,6 +491,8 @@ export class FakeServer {
         // dillad: a login that would owe a code the lockout forbids guessing gets no assertion; a complete one clears it.
         if (needs === 1 && this.loginLocked(account.username)) return refuse(429, 'E_RATE_LIMITED', '', 30_000);
         if (needs === 0) this.loginFailures.delete(account.username);
+        if (boundUser !== null && boundUser !== account.username) return refuse(403, 'E_PASSKEY_OTHER_ACCOUNT');
+        if (boundUser !== null) this.activeAssertions.delete(str(body[2] ?? null));
         held.lastUsed = this.nowS;
         return reply(200, [this.assertion(account.username, needs), needs]);
       }
@@ -672,10 +686,10 @@ export class FakeServer {
     return reply(200, [userId, deviceId, this.mint(toHex(deviceId), 0), this.nowS + SESSION_S]);
   }
 
-  private assertion(user: string, needs: 0 | 1 | 2): string {
+  private assertion(user: string, needs: 0 | 1 | 2, firstFactor = false): string {
     const value = `asrt-${++this.assertionN}`;
     this.assertions.push(value);
-    this.activeAssertions.set(value, { user, needs, expires: this.nowS + ASSERTION_TTL_S });
+    this.activeAssertions.set(value, { user, needs, expires: this.nowS + ASSERTION_TTL_S, ...(firstFactor ? { firstFactor: true as const } : {}) });
     return value;
   }
   /** auth.Assertions.SpendNeeds: single use, and undefined once past its expiry (dillad: now after expires). */

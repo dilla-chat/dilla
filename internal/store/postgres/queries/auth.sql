@@ -78,6 +78,29 @@ DELETE FROM webauthn_ceremonies WHERE id = $1;
 -- name: PruneCeremonies :execrows
 DELETE FROM webauthn_ceremonies WHERE expires <= $1;
 
+-- name: CountOpenDiscoverableLogins :one
+SELECT COUNT(*) FROM webauthn_ceremonies WHERE user_id IS NULL AND kind = 1 AND expires > $1;
+
+-- name: CountOpenUserCeremonies :one
+SELECT COUNT(*) FROM webauthn_ceremonies WHERE user_id = $1 AND expires > $2;
+
+-- name: EvictOldestDiscoverableLogins :execrows
+DELETE FROM webauthn_ceremonies WHERE id IN (
+  SELECT c.id FROM webauthn_ceremonies c
+  WHERE c.user_id IS NULL AND c.kind = 1 AND c.expires > sqlc.arg(now) AND c.id <> sqlc.arg(keep)
+  ORDER BY c.created, c.id LIMIT sqlc.arg(n)::bigint
+);
+
+-- name: EvictOldestUserCeremonies :execrows
+DELETE FROM webauthn_ceremonies WHERE id IN (
+  SELECT c.id FROM webauthn_ceremonies c
+  WHERE c.user_id = sqlc.arg(user_id) AND c.expires > sqlc.arg(now) AND c.id <> sqlc.arg(keep)
+  ORDER BY c.created, c.id LIMIT sqlc.arg(n)::bigint
+);
+
+-- name: LockCeremonies :exec
+SELECT pg_advisory_xact_lock(sqlc.arg(key)::bigint);
+
 -- name: PutOIDCIdentity :exec
 INSERT INTO oidc_identities (issuer, subject, user_id, created) VALUES ($1, $2, $3, $4)
 ON CONFLICT (issuer, subject) DO NOTHING;

@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect } from 'react';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
 import { Dialog } from './Dialog.tsx';
@@ -246,4 +246,19 @@ describe('Dialog focus, review minors', () => {
     expect(screen.getByRole('button', { name: 'new role' })).toHaveFocus();
     expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument();
   });
+});
+
+it('distinguishes a backdrop dismissal from an explicit close choice', async () => {
+  const close = vi.fn(); const backdrop = vi.fn();
+  render(<Dialog open title="Confirm" onClose={close} onBackdrop={backdrop}><p>Details</p></Dialog>);
+  fireEvent.click(screen.getByRole('dialog'));
+  expect(backdrop).toHaveBeenCalledOnce();
+  expect(close).not.toHaveBeenCalled();
+  await userEvent.click(screen.getByRole('button', { name: 'Close' }));
+  expect(close).toHaveBeenCalledOnce();
+});
+
+it('omits its default Close when showDefaultClose is false', () => {
+  render(<Dialog open title="New poll" onClose={() => {}} showDefaultClose={false} footer={<button>Post poll</button>}>Fields</Dialog>);
+  expect(screen.queryByRole('button', { name: 'Close' })).not.toBeInTheDocument(); expect(screen.getByRole('button', { name: 'Post poll' })).toBeInTheDocument();
 });

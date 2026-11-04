@@ -349,7 +349,10 @@ user may write down: 24 BIP-39 English words (BIP-39 checksum, 256-bit entropy) 
 base32 characters in 13 groups of 4 (no checksum). 256 bits split into 5-bit Crockford groups is 52
 characters, not 64 — an arithmetic slip in an earlier draft of the design spec, noted here so it is
 not re-litigated. The client MUST require the user to acknowledge that the key was written down
-before continuing; it MUST NOT offer a copy button on that screen.
+before continuing; it MUST NOT offer a copy button on that screen. It MAY offer to print the key or to save it as a
+text file (the web client's "Save as file": built in the page and handed to the browser's download, which usually puts
+it in the Downloads folder without asking; its object URL is revoked shortly after the download starts); either way
+the client itself keeps no copy of `RK`.
 The client shows `RK` before it registers the account and never stores it: the device performing
 signup keeps only the root object sealed under `K_header` and, after registration, the state object
 sealed under `K_backup`.

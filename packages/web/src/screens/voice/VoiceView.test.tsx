@@ -1,15 +1,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { dmMenuItems, startDmCall } from '../../test/row-menu.ts';
-import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { PERM } from '@dilla/client-core';
+import { PersonContextMenu } from '@dilla/ui';
 import { t } from '../../strings/index.ts';
 import {
-  A, BOB, BOB_DEV, CAROL, CAROL_DEV, MEMBERS, OWN_DEV, bobChanged, callState, DM, GENV, MUSIC, renderVoiceShell, TEXT, type VoiceHarnessOptions,
+  A, BOB, BOB_DEV, CAROL, CAROL_DEV, CHANNELS, MEMBERS, OWN_DEV, bobChanged, callState, DM, GENV, MUSIC, renderVoiceShell, TEXT, type VoiceHarnessOptions,
 } from '../../test/fake-client.ts';
 import { ME } from '../../test/fixtures.ts';
 import { REMOVED_HOLD_MS } from './useCall.tsx';
 import { expectNoAxeViolations } from '../../test/setup.ts';
 import { PHONE_QUERY } from '../../layout.ts';
-import { isApplePlatform, voiceShortcutText } from './shortcuts.ts';
+import { isApplePlatform, voiceKeycapText, voiceShortcutText } from './shortcuts.ts';
+import { personMenu } from './VoiceView.tsx';
 
 afterEach(() => { vi.unstubAllGlobals(); });
 
@@ -627,7 +630,7 @@ describe('review round 1', () => {
 describe('AW5: the AFK channel in the shell never hosts a call', () => {
   const afkSlice = (over: Record<string, unknown> = {}) => ({ channelId: MUSIC, timeoutSeconds: 300, pending: false, seq: 1, away: [], ...over });
   const order = (app: ReturnType<typeof renderVoiceShell>) => app.client.calls.map(c => c.m).filter(m => m === 'callLeave' || m === 'afkAway' || m === 'callJoin');
-  it('the AFK row is a voice row with no join icon; its desktop click starts no call and marks the person away', async () => {
+  it('the AFK row is a voice row with no join icon; its click opens the page and nothing else; only Go AFK marks the person away', async () => {
     const app = renderVoiceShell();
     app.client.publish(`afk:${A}`, afkSlice());
     const rowButton = await screen.findByRole('button', { name: 'voice music' });
@@ -635,9 +638,12 @@ describe('AW5: the AFK channel in the shell never hosts a call', () => {
     // Signal §5.4: the AFK row's glyph is the moon.
     expect(row.querySelector('svg[data-icon="moon"]')).not.toBeNull();
     expect(row.querySelector('[aria-disabled="true"]')).toBeNull();
-    // Final review M4: no "join voice" icon on the AFK row; the page offers go AFK, and a desktop click goes AFK.
+    // Final review M4: no "join voice" icon on the AFK row; the page offers go AFK; the row's click only opens it (the prototype's open()).
     expect(within(row).queryByRole('button', { name: /join/i })).toBeNull();
     await app.user.click(rowButton);
+    await main().findByRole('button', { name: 'Go AFK' });
+    expect(app.client.callsOf('afkAway')).toEqual([]);
+    await app.user.click(await main().findByRole('button', { name: 'Go AFK' }));
     await waitFor(() => expect(app.client.callsOf('afkAway')).toEqual([{ m: 'afkAway', communityId: A }]));
     expect(app.module.startPageCall).not.toHaveBeenCalled();
     expect(order(app)).toEqual(['afkAway']);
@@ -649,7 +655,7 @@ describe('AW5: the AFK channel in the shell never hosts a call', () => {
     go(`/c/${A}/${MUSIC}`);
     expect(await screen.findByRole('toolbar', { name: t('voice.dock.region') })).toBeInTheDocument();
     expect(main().queryByRole('button', { name: 'Join voice' })).toBeNull();
-    await app.user.click(await main().findByRole('button', { name: t('afk.go') }));
+    await app.user.click(await main().findByRole('button', { name: 'Go AFK' }));
     await waitFor(() => expect(app.client.callsOf('afkAway')).toHaveLength(1));
     expect(app.session.leave).toHaveBeenCalledWith('user');
     expect(order(app).slice(-2)).toEqual(['callLeave', 'afkAway']);
@@ -716,32 +722,45 @@ describe('AW6: the AFK row lists the away roster', () => {
 describe('AW6 fix round 1: the AFK channel’s page (Jonas, concern 2)', () => {
   const since = 1_900_000_000;
   const afkSlice = (away: { userId: string; since: number }[]) => ({ channelId: MUSIC, timeoutSeconds: 300, pending: false, seq: 1, away });
-  const rosterOf = () => [...document.querySelectorAll<HTMLElement>('.dw-voice-stage .dw-afk-roster .d-voice-row__person')]
-    .map(p => `${p.querySelector('.d-voice-row__person-name')?.textContent ?? ''}:${p.querySelector('[data-state="away"]')?.textContent ?? ''}`);
-  it('lists the away roster, as the row does, with go AFK in place of join voice', async () => {
+  it('wave B task 4: the moon tile, the title, the explainer from the server timeout and Go AFK; no roster list', async () => {
     const app = renderVoiceShell({ path: `/c/${A}/${MUSIC}` });
-    app.client.publish(`afk:${A}`, afkSlice([{ userId: BOB, since }, { userId: CAROL, since }]));
-    await waitFor(() => expect(rosterOf()).toEqual([`bob:${t('afk.away')}`, `carol:${t('afk.away')}`]));
-    expect(main().getByRole('button', { name: t('afk.go') })).toBeInTheDocument();
+    app.client.publish(`afk:${A}`, afkSlice([]));
+    expect(await main().findByText(t('afk.title.nobody'))).toBeInTheDocument();
+    expect(main().getByText(t('afk.explain', { minutes: 5 }))).toBeInTheDocument();
+    expect(main().getByRole('button', { name: 'Go AFK' })).toBeInTheDocument();
+    expect(document.querySelector('.d-call-stage__afk-tile .d-icon, .d-call-stage__afk-tile svg')).not.toBeNull();
     expect(main().queryByRole('button', { name: 'Join voice' })).toBeNull();
-    expect(main().queryByText(t('afk.empty'))).toBeNull();
+    expect(document.querySelector('.d-voice-row__person-name')).toBeNull();
     await expectNoAxeViolations(screen.getByRole('main'));
   });
 
-  it('an empty roster says nobody is away', async () => {
+  it('with others away and you not, the title names them (Jonas, Q3)', async () => {
     const app = renderVoiceShell({ path: `/c/${A}/${MUSIC}` });
-    app.client.publish(`afk:${A}`, afkSlice([]));
-    expect(await main().findByText(t('afk.empty'))).toBeInTheDocument();
-    expect(rosterOf()).toEqual([]);
+    app.client.publish(`afk:${A}`, afkSlice([{ userId: BOB, since }]));
+    expect(await main().findByText('bob is away')).toBeInTheDocument();
+    app.client.publish(`afk:${A}`, afkSlice([{ userId: BOB, since }, { userId: CAROL, since }]));
+    expect(await main().findByText('bob and carol are away')).toBeInTheDocument();
+    expect(main().getByRole('button', { name: 'Go AFK' })).toBeInTheDocument();
   });
 
-  it('a person already away sees the away line and no button', async () => {
+  it('a minute and an hour read as minutes: one minute is singular', async () => {
     const app = renderVoiceShell({ path: `/c/${A}/${MUSIC}` });
-    app.client.publish(`afk:${A}`, afkSlice([{ userId: ME.id, since }]));
-    expect(await main().findByText(t('afk.youAway'))).toBeInTheDocument();
-    expect(main().queryByRole('button', { name: t('afk.go') })).toBeNull();
-    expect(main().queryByRole('button', { name: 'Join voice' })).toBeNull();
-    expect(rosterOf()).toEqual([`ada:${t('afk.away')}`]);
+    app.client.publish(`afk:${A}`, { ...afkSlice([]), timeoutSeconds: 60 });
+    expect(await main().findByText(t('afk.explain.one'))).toBeInTheDocument();
+    app.client.publish(`afk:${A}`, { ...afkSlice([]), timeoutSeconds: 3600, seq: 2 });
+    expect(await main().findByText(t('afk.explain', { minutes: 60 }))).toBeInTheDocument();
+  });
+
+  it('a person already away reads "You are away" and Come back; Come back leaves the AFK channel (Jonas, Q3)', async () => {
+    const app = renderVoiceShell({ path: `/c/${A}/${MUSIC}` });
+    app.client.publish(`afk:${A}`, afkSlice([{ userId: ME.id, since }, { userId: BOB, since }]));
+    expect(await main().findByText(t('afk.title.you'))).toBeInTheDocument();
+    expect(main().queryByRole('button', { name: 'Go AFK' })).toBeNull();
+    await app.user.click(main().getByRole('button', { name: 'Come back' }));
+    await waitFor(() => expect(window.location.pathname).not.toBe(`/c/${A}/${MUSIC}`));
+    expect(window.location.pathname.startsWith(`/c/${A}/`)).toBe(true);
+    expect(main().queryByText(t('afk.title.you'))).toBeNull();
+    await waitFor(() => expect(screen.getByRole('textbox', { name: /message/i })).toHaveFocus());
   });
 
   it('M2: a call cut because AFK was chosen on another device says so as a calm notice on its stage', async () => {
@@ -755,20 +774,20 @@ describe('AW6 fix round 1: the AFK channel’s page (Jonas, concern 2)', () => {
     expect(main().queryByText(t('voice.removed'))).toBeNull();
   });
 
-  it('the away line that replaces go AFK takes its focus (fix round 1, M6)', async () => {
+  it('the button keeps its focus when Go AFK turns into Come back', async () => {
     const app = renderVoiceShell({ path: `/c/${A}/${MUSIC}` });
     app.client.publish(`afk:${A}`, afkSlice([]));
-    await app.user.click(await main().findByRole('button', { name: t('afk.go') }));
+    await app.user.click(await main().findByRole('button', { name: 'Go AFK' }));
     await waitFor(() => expect(app.client.callsOf('afkAway')).toHaveLength(1));
     app.client.publish(`afk:${A}`, afkSlice([{ userId: ME.id, since }]));
-    await waitFor(() => expect(main().getByText(t('afk.youAway'))).toHaveFocus());
+    await waitFor(() => expect(main().getByRole('button', { name: 'Come back' })).toHaveFocus());
   });
 
   it('go AFK in a call leaves the call before it sends the away mark', async () => {
     const app = await inVoice();
     app.client.publish(`afk:${A}`, afkSlice([]));
     go(`/c/${A}/${MUSIC}`);
-    await app.user.click(await main().findByRole('button', { name: t('afk.go') }));
+    await app.user.click(await main().findByRole('button', { name: 'Go AFK' }));
     await waitFor(() => expect(app.client.callsOf('afkAway')).toEqual([{ m: 'afkAway', communityId: A }]));
     expect(app.client.calls.map(c => c.m).filter(m => m === 'callLeave' || m === 'afkAway')).toEqual(['callLeave', 'afkAway']);
     expect(app.module.startPageCall).toHaveBeenCalledTimes(1);
@@ -1506,5 +1525,319 @@ describe('fix round 1 (Jonas): no sound-source picker for a share', () => {
     await waitFor(() => expect(main().getByRole('button', { name: t('callStage.bar.stopShare') })).toBeInTheDocument());
     expect(main().queryByRole('combobox')).toBeNull();
     expect(document.querySelector('.d-call-stage__notice-action')).toBeNull();
+  });
+});
+
+describe('wave B task 4: your own voice menu and the rest of the person menu', () => {
+  const li = (id: string) => document.querySelector<HTMLElement>(`li.d-call-stage__tile[data-tile-id="${id}"]`)!;
+  const room = (extra: NonNullable<VoiceHarnessOptions['voice']>[string]['participants'] = []) => ({ [GENV]: { callId: GENV, participants: [
+    { userId: ME.id, deviceId: OWN_DEV, name: 'me', flags: 0, own: true, web: true, bot: false },
+    { userId: BOB, deviceId: BOB_DEV, name: 'bob', flags: 0, own: false, web: false, bot: false }, ...extra] } });
+  const names = (menu: HTMLElement) => [...menu.querySelectorAll('[role^="menuitem"]')].map(i => i.textContent);
+  const bobTile = { deviceId: BOB_DEV, userId: BOB, state: 'ok' as const, speaking: false, video: null, screen: null, screenAudio: false };
+
+  it('yourself: Mute and Deafen with their keys, Profile, Move to the other voice channels, Leave voice; no Copy username', async () => {
+    const app = await inVoice({ voice: room() });
+    const keys = voiceKeycapText();
+    fireEvent.contextMenu(li(`${OWN_DEV}:person`), { clientX: 20, clientY: 20 });
+    const menu = await screen.findByRole('menu');
+    expect(names(menu)).toEqual([`Mute${keys.mute}`, `Deafen${keys.deafen}`, 'Profile', 'music0', 'Leave voice']);
+    // The hint is decoration; the shortcut is aria-keyshortcuts and a room reads like the row's count.
+    expect(within(menu).getByRole('menuitem', { name: 'Mute' })).toHaveAttribute('aria-keyshortcuts', keys.ariaMute);
+    expect(within(menu).getByRole('menuitem', { name: 'music, 0 in voice' })).toBeInTheDocument();
+    expect(within(menu).queryByRole('menuitem', { name: t('callStage.menu.copy') })).toBeNull();
+    expect(within(menu).queryByRole('slider')).toBeNull();
+    expect(within(menu).getByRole('group', { name: 'Move to' })).toBeInTheDocument();
+    expect(within(menu).getByRole('menuitem', { name: 'Leave voice' })).toHaveAttribute('data-danger', 'true');
+    await app.user.click(within(menu).getByRole('menuitem', { name: /^Mute/ }));
+    await waitFor(() => expect(app.session.log).toContain('muted:true'));
+    fireEvent.contextMenu(li(`${OWN_DEV}:person`), { clientX: 20, clientY: 20 });
+    expect(names(await screen.findByRole('menu'))[0]).toBe(`Unmute${keys.mute}`);
+  });
+
+  it('the call bar draws the keycaps of this platform, not plain Ctrl+Shift+M', async () => {
+    await inVoice({ voice: room() });
+    const keys = voiceKeycapText();
+    const caps = [...document.querySelectorAll('.d-call-stage__controls .d-voice-toolbar__keycap')].map(c => c.textContent);
+    expect(caps).toEqual([keys.mute, keys.deafen]);
+  });
+
+  it('yourself: Deafen, and Leave voice leaves the call', async () => {
+    const app = await inVoice({ voice: room() });
+    fireEvent.contextMenu(li(`${OWN_DEV}:person`), { clientX: 20, clientY: 20 });
+    await app.user.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: /^Deafen/ }));
+    await waitFor(() => expect(app.session.log).toContain('deafened:true'));
+    fireEvent.contextMenu(li(`${OWN_DEV}:person`), { clientX: 20, clientY: 20 });
+    await app.user.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Leave voice' }));
+    await waitFor(() => expect(app.session.log.some(l => l.startsWith('leave:'))).toBe(true));
+  });
+
+  it('yourself: choosing a channel under Move to joins it, leaving this call first', async () => {
+    const app = await inVoice({ voice: room() });
+    fireEvent.contextMenu(li(`${OWN_DEV}:person`), { clientX: 20, clientY: 20 });
+    await app.user.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: /^music/ }));
+    await waitFor(() => expect(app.session.log).toContain('leave:switch'));
+    // It opens that room's view and says so.
+    await waitFor(() => expect(window.location.pathname).toBe(`/c/${A}/${MUSIC}`));
+    await waitFor(() => expect(document.querySelector('[role="status"]:not(:empty)')?.textContent ?? '').toContain('You moved to music'));
+  });
+
+  it('the sidebar row of yourself has the same menu', async () => {
+    await inVoice({ voice: room() });
+    const own = [...document.querySelectorAll<HTMLElement>('.d-voice-row__person')].find(p => p.textContent?.includes('me'))!;
+    fireEvent.contextMenu(own, { clientX: 20, clientY: 20 });
+    const menu = await screen.findByRole('menu');
+    expect(names(menu)).toContain('Leave voice');
+    expect(names(menu)).toContain('music0');
+  });
+
+  it('another person: volume, Profile, Message, Mention, Mute for me, Copy username', async () => {
+    const app = await inVoice({ voice: room() });
+    act(() => app.session.update({ tiles: [bobTile] }));
+    await waitFor(() => expect(li(`${BOB_DEV}:person`)).not.toBeNull());
+    fireEvent.contextMenu(li(`${BOB_DEV}:person`), { clientX: 20, clientY: 20 });
+    const menu = await screen.findByRole('menu', { name: t('callStage.menu.label', { name: 'bob' }) });
+    expect(screen.getByRole('slider', { name: t('callStage.menu.volume') })).toBeInTheDocument();
+    expect(names(menu)).toEqual(['Profile', 'Message', 'Mention', 'Mute for me', 'Copy username']);
+    await app.user.click(within(menu).getByRole('menuitem', { name: 'Message' }));
+    await waitFor(() => expect(app.client.callsOf('openDm')).toContainEqual({ m: 'openDm', userId: BOB }));
+  });
+
+  it('another person: Profile opens their card beside the tile', async () => {
+    const app = await inVoice({ voice: room() });
+    act(() => app.session.update({ tiles: [bobTile] }));
+    await waitFor(() => expect(li(`${BOB_DEV}:person`)).not.toBeNull());
+    fireEvent.contextMenu(li(`${BOB_DEV}:person`), { clientX: 20, clientY: 20 });
+    await app.user.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Profile' }));
+    expect(await screen.findByText(/^@bob/)).toBeInTheDocument();
+  });
+
+  it('with Manage roles: Edit roles after Copy username opens the roles settings; the sidebar row has Mention while a text channel is open', async () => {
+    const app = await inVoice({ voice: room() });
+    act(() => app.client.publish(`permissions:${A}`, { top: 5, owner: true, manageCommunity: true, manageChannels: true, kickMembers: true, banMembers: true,
+      createInvite: true, manageRoles: true, loaded: true, everyoneId: A, overwritesLoaded: true }));
+    act(() => app.session.update({ tiles: [bobTile] }));
+    await waitFor(() => expect(li(`${BOB_DEV}:person`)).not.toBeNull());
+    fireEvent.contextMenu(li(`${BOB_DEV}:person`), { clientX: 20, clientY: 20 });
+    const menu = await screen.findByRole('menu', { name: t('callStage.menu.label', { name: 'bob' }) });
+    expect(names(menu)).toEqual(['Profile', 'Message', 'Mention', 'Mute for me', 'Copy username', 'Edit roles']);
+    await app.user.click(within(menu).getByRole('menuitem', { name: 'Edit roles' }));
+    await waitFor(() => expect(window.location.pathname).toBe(`/c/${A}/settings/roles`));
+  });
+
+  it('Mention, from a sidebar occupant while a text channel is open, puts @username in the composer', async () => {
+    const app = await inVoice({ voice: room() });
+    await offStage();
+    const bob = [...document.querySelectorAll<HTMLElement>('.d-voice-row__person')].find(p => p.textContent?.includes('bob'))!;
+    fireEvent.contextMenu(bob, { clientX: 20, clientY: 20 });
+    const menu = await screen.findByRole('menu', { name: t('callStage.menu.label', { name: 'bob' }) });
+    expect(names(menu)).toEqual(['Profile', 'Message', 'Mention', 'Mute for me', 'Copy username']);
+    await app.user.click(within(menu).getByRole('menuitem', { name: 'Mention' }));
+    await waitFor(() => expect(screen.getByRole<HTMLTextAreaElement>('textbox', { name: /message/i }).value).toMatch(/@bob $/));
+  });
+
+  it('Mention in the voice view opens the server\'s last text channel with @username in its composer', async () => {
+    const app = await inVoice({ voice: room() });
+    act(() => app.session.update({ tiles: [bobTile] }));
+    await waitFor(() => expect(li(`${BOB_DEV}:person`)).not.toBeNull());
+    fireEvent.contextMenu(li(`${BOB_DEV}:person`), { clientX: 20, clientY: 20 });
+    await app.user.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Mention' }));
+    await waitFor(() => expect(window.location.pathname).toBe(`/c/${A}/${TEXT}`));
+    const box = await screen.findByRole<HTMLTextAreaElement>('textbox', { name: /message/i });
+    await waitFor(() => expect(box.value).toMatch(/@bob $/));
+    await waitFor(() => expect(box).toHaveFocus());
+  });
+
+  it('a DM call\'s own menu has Mute, Deafen and Leave voice only: no server items', async () => {
+    const app = renderVoiceShell({ path: `/dm/${DM}` });
+    await startDmCall(app.user, 'bob');
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    app.client.publish('call', callState({ phase: 'in', channelId: DM, callId: DM }));
+    await waitFor(() => expect(li(`${OWN_DEV}:person`)).not.toBeNull());
+    fireEvent.contextMenu(li(`${OWN_DEV}:person`), { clientX: 20, clientY: 20 });
+    const menu = await screen.findByRole('menu');
+    expect(names(menu).map(n => n?.replace(/(Ctrl⇧|⌘⇧)[MD]$/, ''))).toEqual(['Mute', 'Deafen', 'Leave voice']);
+  });
+
+  it('your own row from a call you are not in has Profile alone', () => {
+    const v = { call: { channelId: GENV, selfMuted: false, selfDeafened: false, toggleMute: () => {}, toggleDeafen: () => {}, leave: () => {} }, settings: {}, members: [],
+      people: { onProfile: () => {}, onMessage: () => {}, rooms: () => [], onMove: () => {} } } as unknown as Parameters<typeof personMenu>[0];
+    const there = personMenu(v, 'music', { userId: 'u', name: 'me', bot: false, own: true, roomId: MUSIC });
+    expect(there.items.map(i => i.label)).toEqual(['Profile']);
+    expect(personMenu(v, 'general', { userId: 'u', name: 'me', bot: false, own: true, roomId: GENV }).items.map(i => i.id)).toEqual(['mute', 'deafen', 'profile', 'leave']);
+  });
+
+  it('your own menu in a call carries the platform keycaps on Mute and Deafen and the head counts on the Move to rooms', () => {
+    const v = { call: { channelId: GENV, selfMuted: false, selfDeafened: false, toggleMute: () => {}, toggleDeafen: () => {}, leave: () => {} }, settings: {}, members: [],
+      people: { onProfile: () => {}, onMessage: () => {}, onMove: () => {}, rooms: () => [{ id: 'r1', name: 'Late night lounge for people', count: 3 }, { id: 'r2', name: 'general', count: 0 }] } } as unknown as Parameters<typeof personMenu>[0];
+    const menu = personMenu(v, 'harbour', { userId: 'u', name: 'me', bot: false, own: true, roomId: GENV });
+    const keys = voiceKeycapText();
+    expect(menu.items.filter(i => i.id === 'mute' || i.id === 'deafen').map(i => i.hint)).toEqual([keys.mute, keys.deafen]);
+    expect(keys.mute).toMatch(/^(Ctrl|⌘)⇧M$/);
+    expect(menu.move?.rooms.map(r => [r.name, r.count])).toEqual([['Late night lounge for people', 3], ['general', 0]]);
+    render(<PersonContextMenu {...menu} open at={{ x: 10, y: 10 }} onOpenChange={() => {}} returnFocus={() => null} />);
+    expect([...document.querySelectorAll('.d-action-menu__hint')].map(h => h.textContent)).toEqual([keys.mute, keys.deafen, '3', '0']);
+    expect(document.querySelector('[data-id="move:r1"] .d-action-menu__label')).toHaveAttribute('title', 'Late night lounge for people');
+  });
+
+  it('a bot person menu uses the plain name while its tile retains playback only', async () => {
+    const app = await inVoice({ voice: room([{ userId: CAROL, deviceId: CAROL_DEV, name: 'glenn', flags: 0, own: false, web: false, bot: true }]) });
+    act(() => app.session.update({ tiles: [{ ...bobTile, deviceId: CAROL_DEV, userId: CAROL }] }));
+    await waitFor(() => expect(li(`${CAROL_DEV}:person`)).not.toBeNull());
+    expect(within(li(`${CAROL_DEV}:person`)).getByText('glenn · playback only')).toBeInTheDocument();
+    fireEvent.contextMenu(li(`${CAROL_DEV}:person`), { clientX: 20, clientY: 20 });
+    await screen.findByRole('menu', { name: t('callStage.menu.label', { name: 'glenn' }) });
+    expect(document.querySelector('.d-person-menu__name')).toHaveTextContent(/^glenn$/);
+  });
+
+  it('a bot person menu opens the real DM flow from Message', async () => {
+    const app = await inVoice({ voice: room([{ userId: CAROL, deviceId: CAROL_DEV, name: 'glenn', flags: 0, own: false, web: false, bot: true }]) });
+    act(() => app.session.update({ tiles: [{ ...bobTile, deviceId: CAROL_DEV, userId: CAROL }] }));
+    await waitFor(() => expect(li(`${CAROL_DEV}:person`)).not.toBeNull());
+    fireEvent.contextMenu(li(`${CAROL_DEV}:person`), { clientX: 20, clientY: 20 });
+    const menu = await screen.findByRole('menu', { name: t('callStage.menu.label', { name: 'glenn' }) });
+    expect(names(menu)).toEqual(['Profile', 'Message', 'Mention', 'Mute for me', 'Copy username']);
+    await app.user.click(within(menu).getByRole('menuitem', { name: 'Message' }));
+    await waitFor(() => expect(app.client.callsOf('openDm')).toContainEqual({ m: 'openDm', userId: CAROL }));
+  });
+});
+
+describe('wave B task 4 fix round 2: where Mention and Come back go', () => {
+  const li = (id: string) => document.querySelector<HTMLElement>(`li.d-call-stage__tile[data-tile-id="${id}"]`)!;
+  const names = (menu: HTMLElement) => [...menu.querySelectorAll('[role^="menuitem"]')].map(i => i.textContent);
+  const channelsOf = (ids: string[]) => CHANNELS.filter(c => ids.includes(c.id));
+  const NEWS = 'b7'.repeat(16);
+  const EVERYONE = 'ab'.repeat(16);
+  const text = (id: string, name: string, position: number) =>
+    ({ id, communityId: A, kind: 0 as const, mode: 0 as const, name, topic: '', parentId: null, position, slowmode: 0, announcement: false, group: 'active' as const });
+  const room = { [GENV]: { callId: GENV, participants: [
+    { userId: ME.id, deviceId: OWN_DEV, name: 'me', flags: 0, own: true, web: true, bot: false },
+    { userId: BOB, deviceId: BOB_DEV, name: 'bob', flags: 0, own: false, web: false, bot: false }] } };
+  const bobTile = { deviceId: BOB_DEV, userId: BOB, state: 'ok' as const, speaking: false, video: null, screen: null, screenAudio: false };
+  const publishRoles = (app: Awaited<ReturnType<typeof inVoice>>, deny: string[]) => {
+    const bits = PERM.viewChannel | PERM.sendMessages | PERM.readHistory | PERM.connect | PERM.speak;
+    app.client.publish(`roles:${A}`, [{ id: EVERYONE, name: '@everyone', color: 0, position: 0, hoist: false, mentionable: true, allow: bits, deny: 0, members: 0 }]);
+    app.client.publish(`overwrites:${A}`, Object.fromEntries(deny.map(id => [id, [{ kind: 0 as const, targetId: EVERYONE, allow: 0, deny: PERM.sendMessages }]])));
+    app.client.publish(`permissions:${A}`, { top: 0, owner: false, manageCommunity: false, manageChannels: false, kickMembers: false, banMembers: false,
+      createInvite: false, manageRoles: false, loaded: true, overwritesLoaded: true, everyoneId: EVERYONE });
+  };
+  const mentionOf = async (app: Awaited<ReturnType<typeof inVoice>>) => {
+    act(() => app.session.update({ tiles: [bobTile] }));
+    await waitFor(() => expect(li(`${BOB_DEV}:person`)).not.toBeNull());
+    fireEvent.contextMenu(li(`${BOB_DEV}:person`), { clientX: 20, clientY: 20 });
+    return screen.findByRole('menu', { name: t('callStage.menu.label', { name: 'bob' }) });
+  };
+
+  it('a voice-only community: no Mention', async () => {
+    const app = await inVoice({ voice: room });
+    act(() => app.client.publish(`channels:${A}`, channelsOf([GENV, MUSIC])));
+    expect(names(await mentionOf(app))).toEqual(['Profile', 'Message', 'Mute for me', 'Copy username']);
+  });
+
+  it('a voice-only community: Come back does not go to a voice channel', async () => {
+    const app = renderVoiceShell({ path: `/c/${A}/${MUSIC}` });
+    act(() => app.client.publish(`channels:${A}`, channelsOf([GENV, MUSIC])));
+    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, pending: false, seq: 1, away: [{ userId: ME.id, since: 1_900_000_000 }] });
+    await app.user.click(await main().findByRole('button', { name: 'Come back' }));
+    expect(window.location.pathname).toBe(`/c/${A}/${MUSIC}`);
+  });
+
+  it('the last opened text channel is read-only: Mention falls back to a sendable one', async () => {
+    const app = await inVoice({ voice: room });
+    act(() => app.client.publish(`channels:${A}`, [text(TEXT, 'lobby', 0), text(NEWS, 'news', 1), ...channelsOf([GENV, MUSIC])]));
+    publishRoles(app, [NEWS]);
+    go(`/c/${A}/${NEWS}`);
+    await waitFor(() => expect(window.location.pathname).toBe(`/c/${A}/${NEWS}`));
+    go(`/c/${A}/${GENV}`);
+    const menu = await mentionOf(app);
+    await app.user.click(within(menu).getByRole('menuitem', { name: 'Mention' }));
+    await waitFor(() => expect(window.location.pathname).toBe(`/c/${A}/${TEXT}`));
+  });
+
+  it('every text channel is read-only: no Mention', async () => {
+    const app = await inVoice({ voice: room });
+    act(() => app.client.publish(`channels:${A}`, [text(TEXT, 'lobby', 0), ...channelsOf([GENV, MUSIC])]));
+    publishRoles(app, [TEXT]);
+    expect(names(await mentionOf(app))).not.toContain('Mention');
+  });
+});
+
+describe('wave B task 4 fix round 2b: announcement, timeout, unknown bits and a positive Come back', () => {
+  const li = (id: string) => document.querySelector<HTMLElement>(`li.d-call-stage__tile[data-tile-id="${id}"]`)!;
+  const names = (menu: HTMLElement) => [...menu.querySelectorAll('[role^="menuitem"]')].map(i => i.textContent);
+  const NEWS = 'b7'.repeat(16);
+  const EVERYONE = 'ab'.repeat(16);
+  const channelsOf = (ids: string[]) => CHANNELS.filter(c => ids.includes(c.id));
+  const text = (id: string, name: string, position: number, announcement = false) =>
+    ({ id, communityId: A, kind: 0 as const, mode: 0 as const, name, topic: '', parentId: null, position, slowmode: 0, announcement, group: 'active' as const });
+  const room = { [GENV]: { callId: GENV, participants: [
+    { userId: ME.id, deviceId: OWN_DEV, name: 'me', flags: 0, own: true, web: true, bot: false },
+    { userId: BOB, deviceId: BOB_DEV, name: 'bob', flags: 0, own: false, web: false, bot: false }] } };
+  const bobTile = { deviceId: BOB_DEV, userId: BOB, state: 'ok' as const, speaking: false, video: null, screen: null, screenAudio: false };
+  type App = Awaited<ReturnType<typeof inVoice>>;
+  const publishAccess = (app: App, deny: string[], overwritesLoaded = true) => {
+    const bits = PERM.viewChannel | PERM.sendMessages | PERM.readHistory | PERM.connect | PERM.speak;
+    app.client.publish(`roles:${A}`, [{ id: EVERYONE, name: '@everyone', color: 0, position: 0, hoist: false, mentionable: true, allow: bits, deny: 0, members: 0 }]);
+    app.client.publish(`overwrites:${A}`, Object.fromEntries(deny.map(id => [id, [{ kind: 0 as const, targetId: EVERYONE, allow: 0, deny: PERM.sendMessages }]])));
+    app.client.publish(`permissions:${A}`, { top: 0, owner: false, manageCommunity: false, manageChannels: false, kickMembers: false, banMembers: false,
+      createInvite: false, manageRoles: false, loaded: true, overwritesLoaded, everyoneId: EVERYONE });
+  };
+  const bobMenu = async (app: App) => {
+    act(() => app.session.update({ tiles: [bobTile] }));
+    await waitFor(() => expect(li(`${BOB_DEV}:person`)).not.toBeNull());
+    fireEvent.contextMenu(li(`${BOB_DEV}:person`), { clientX: 20, clientY: 20 });
+    return screen.findByRole('menu', { name: t('callStage.menu.label', { name: 'bob' }) });
+  };
+  const away = (app: ReturnType<typeof renderVoiceShell>) => app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, pending: false, seq: 1,
+    away: [{ userId: ME.id, since: 1_900_000_000 }] });
+
+  it('an announcement channel the person cannot post in is skipped by Mention', async () => {
+    const app = await inVoice({ voice: room });
+    act(() => app.client.publish(`channels:${A}`, [text(TEXT, 'news', 0, true), text(NEWS, 'chat', 1), ...channelsOf([GENV, MUSIC])]));
+    publishAccess(app, [TEXT]);
+    await app.user.click(within(await bobMenu(app)).getByRole('menuitem', { name: 'Mention' }));
+    await waitFor(() => expect(window.location.pathname).toBe(`/c/${A}/${NEWS}`));
+  });
+
+  it('with only an announcement channel to post in: no Mention, and Come back stays', async () => {
+    const app = await inVoice({ voice: room });
+    act(() => app.client.publish(`channels:${A}`, [text(TEXT, 'news', 0, true), ...channelsOf([GENV, MUSIC])]));
+    publishAccess(app, [TEXT]);
+    expect(names(await bobMenu(app))).not.toContain('Mention');
+    go(`/c/${A}/${MUSIC}`);
+    away(app);
+    await app.user.click(await main().findByRole('button', { name: 'Come back' }));
+    expect(window.location.pathname).toBe(`/c/${A}/${MUSIC}`);
+  });
+
+  it('Come back with a sendable text channel opens it and focuses its composer', async () => {
+    const app = renderVoiceShell({ path: `/c/${A}/${MUSIC}` });
+    act(() => app.client.publish(`channels:${A}`, [text(TEXT, 'lobby', 0), text(NEWS, 'chat', 1), ...channelsOf([GENV, MUSIC])]));
+    publishAccess(app, []);
+    away(app);
+    go(`/c/${A}/${NEWS}`);
+    await waitFor(() => expect(window.location.pathname).toBe(`/c/${A}/${NEWS}`));
+    go(`/c/${A}/${MUSIC}`);
+    await app.user.click(await main().findByRole('button', { name: 'Come back' }));
+    await waitFor(() => expect(window.location.pathname).toBe(`/c/${A}/${NEWS}`));
+    await waitFor(() => expect(screen.getByRole('textbox', { name: /message/i })).toHaveFocus());
+  });
+
+  it('a self-timeout in the community: no Mention target, and Come back stays', async () => {
+    const app = await inVoice({ voice: room, timeoutUntil: Math.floor(Date.now() / 1000) + 3600 });
+    expect(names(await bobMenu(app))).not.toContain('Mention');
+    await app.user.keyboard('{Escape}');
+    go(`/c/${A}/${MUSIC}`);
+    away(app);
+    await app.user.click(await main().findByRole('button', { name: 'Come back' }));
+    expect(window.location.pathname).toBe(`/c/${A}/${MUSIC}`);
+  });
+
+  it('unknown bits (overwrites not loaded yet): the overwrite and announcement fallback decides', async () => {
+    const app = await inVoice({ voice: room });
+    act(() => app.client.publish(`channels:${A}`, [text(TEXT, 'news', 0, true), text(NEWS, 'closed', 1), text('d9'.repeat(16), 'chat', 2), ...channelsOf([GENV, MUSIC])]));
+    publishAccess(app, [NEWS], false);
+    await app.user.click(within(await bobMenu(app)).getByRole('menuitem', { name: 'Mention' }));
+    await waitFor(() => expect(window.location.pathname).toBe(`/c/${A}/${'d9'.repeat(16)}`));
   });
 });

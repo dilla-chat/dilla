@@ -42,6 +42,9 @@ type assertion struct {
 	userID  id.ID
 	needs   uint8
 	expires time.Time
+	// firstFactor marks an assertion a first-factor login issued, a password or an OIDC login (IssueFirstFactor): the
+	// only kind a passkey finish may be bound to (PeekFirstFactor, wave B task 3; desktop merge review I1).
+	firstFactor bool
 }
 
 // The `needs` of protocol/09 § Second factors: what a login still owes before its assertion is
@@ -62,7 +65,27 @@ func NewAssertions(clk clock.Clock, ttl time.Duration) *Assertions {
 	return &Assertions{clk: clk, ttl: ttl, items: map[string]assertion{}}
 }
 
-func (a *Assertions) Issue(userID id.ID, needs uint8) string {
+func (a *Assertions) Issue(userID id.ID, needs uint8) string { return a.issue(userID, needs, false) }
+
+// IssueFirstFactor is Issue for a first-factor login's answer (a password or an OIDC login), marked so a passkey
+// finish on the second step can be bound to it.
+func (a *Assertions) IssueFirstFactor(userID id.ID, needs uint8) string {
+	return a.issue(userID, needs, true)
+}
+
+// PeekFirstFactor reports the account of a live assertion that a first-factor login issued and that still owes a
+// factor, without spending it. Anything else (unknown, expired, spent, complete, not a first factor's) is false, alike.
+func (a *Assertions) PeekFirstFactor(token string) (id.ID, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	item, ok := a.items[token]
+	if !ok || !item.firstFactor || item.needs == needsNothing || a.clk.Now().After(item.expires) {
+		return id.ID{}, false
+	}
+	return item.userID, true
+}
+
+func (a *Assertions) issue(userID id.ID, needs uint8, firstFactor bool) string {
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
 		panic("api: crypto/rand failed: " + err.Error())
@@ -71,7 +94,7 @@ func (a *Assertions) Issue(userID id.ID, needs uint8) string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.sweepLocked()
-	a.items[token] = assertion{userID: userID, needs: needs, expires: a.clk.Now().Add(a.ttl)}
+	a.items[token] = assertion{userID: userID, needs: needs, expires: a.clk.Now().Add(a.ttl), firstFactor: firstFactor}
 	return token
 }
 
@@ -137,6 +160,17 @@ const classLogin = "login"
 // writer; PasswordLogin only peeks at it.
 const classLoginFailed = "login_failed"
 
+// classPasskeyBegin is the passkey login begin's own per-address bucket (wave B task 3, Jonas). A begin proves
+// nothing and guesses nothing: it only mints a ceremony. The web sign-in opens one when the username field gains
+// focus, so charging it to `login` let a page left open spend the address's password attempts. The finish still
+// spends a `login` token and records a failure like a wrong password, so a passkey is no way around the login
+// throttle.
+const classPasskeyBegin = "passkey_begin"
+
+// classPasskeyBeginNet meters the same begins per network (IPv4 /24, IPv6 /48), so an attacker spreading begins over
+// one network's addresses meets one bucket (security review A2).
+const classPasskeyBeginNet = "passkey_begin_net" //nolint:gosec // G101: a rate-limit class name, not a credential
+
 func secondFactorKey(addr string) string { return "2fa\x00" + addr }
 
 // passwordLoginRequest is [username(tstr), password(tstr)].
@@ -155,7 +189,11 @@ type assertionRequest struct {
 }
 
 // PasswordLogin is POST /v1/auth/password/login →
-// [assertion(tstr), needs(uint)]: what the login still owes (loginNeeds).
+// [assertion(tstr), needs(uint)] or [assertion(tstr), needs(uint), passkey(uint)]: what the login
+// still owes (loginNeeds) and, only when it owes a factor, whether the account holds a passkey for
+// this rp_id (1) or not (0), so the code step can offer a passkey that would work. The third element
+// is written only after the password verified and only on an answer that already says a factor is
+// owed: it is never an oracle on the account to anyone who has not passed the password.
 //
 // An unknown handle, a handle that fails normalisation, an account with no
 // password credential and a wrong password are four different server-side facts
@@ -267,7 +305,9 @@ func (d Deps) PasswordLogin(w http.ResponseWriter, r *http.Request) {
 
 	d.recordAttempt(r, user, true, addrKey, methodPassword, true)
 
-	needs, terr := d.loginNeeds(ctx, user.ID)
+	// Wave B task 3 fix round 1: the passkey flag comes from the same read of the credentials as `needs`, before the
+	// assertion is issued, so the two cannot disagree.
+	needs, passkey, terr := d.loginState(ctx, user.ID)
 	if terr != nil {
 		server.WriteError(w, d.storeError(r, terr))
 		return
@@ -282,7 +322,15 @@ func (d Deps) PasswordLogin(w http.ResponseWriter, r *http.Request) {
 			d.logf(r, "api: ClearLoginFailures", "err", cerr)
 		}
 	}
-	d.write(w, r, http.StatusOK, []any{d.Assertions.Issue(user.ID, needs), uint64(needs)})
+	answer := []any{d.Assertions.IssueFirstFactor(user.ID, needs), uint64(needs)}
+	if needs != needsNothing {
+		flag := uint64(0)
+		if passkey {
+			flag = 1
+		}
+		answer = append(answer, flag)
+	}
+	d.write(w, r, http.StatusOK, answer)
 }
 
 // rpID is the instance's relying party, auth.webauthn.rp_id: a passkey counts as a factor only
@@ -319,21 +367,34 @@ func holdsFactor(ctx context.Context, repo store.Repository, userID id.ID, rpID 
 // It is one function because every route that ends a login has to make the same decision; one
 // that answered differently would be a way around the factor the other enforces.
 func (d Deps) loginNeeds(ctx context.Context, userID id.ID) (uint8, error) {
+	needs, _, err := d.loginState(ctx, userID)
+	return needs, err
+}
+
+// loginState is loginNeeds plus whether the account holds a passkey for this rp_id (the password
+// login's third element, wave B task 3), both from one read of the credentials.
+func (d Deps) loginState(ctx context.Context, userID id.ID) (uint8, bool, error) {
 	t, err := d.Repo.GetTOTP(ctx, userID)
+	confirmed := false
 	switch {
 	case err == nil && t.ConfirmedAt != nil:
-		return needsCode, nil
+		confirmed = true
 	case err != nil && !errors.Is(err, store.ErrNotFound):
-		return 0, err
+		return 0, false, err
 	}
 	creds, err := d.Repo.ListWebauthnCredentials(ctx, userID, d.rpID())
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
-	if len(creds) > 0 {
-		return needsPasskey, nil
+	passkey := len(creds) > 0
+	switch {
+	case confirmed:
+		return needsCode, passkey, nil
+	case passkey:
+		return needsPasskey, true, nil
+	default:
+		return needsNothing, false, nil
 	}
-	return needsNothing, nil
 }
 
 // loginLedger is the key a login attempt's failures are counted under. A found
@@ -445,6 +506,12 @@ func (d Deps) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.New == "" {
 		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "the new password is empty"))
+		return
+	}
+	// Measured before the old password or the step-up is checked: a short new password spends no guess
+	// and no token. A stored password below the minimum still signs in; only the new one is measured.
+	if auth.PasswordTooShort(req.New) {
+		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "the new password is shorter than %d characters", auth.PasswordMinChars))
 		return
 	}
 	ctx := r.Context()
@@ -1030,8 +1097,12 @@ func validPasskeyName(name string) bool {
 // [] → [ceremony_id(bstr16), options(tstr)].
 //
 // It is unauthenticated and discoverable — no username is presented and none is
-// revealed — so it meters itself on the `login` bucket by address, exactly as
-// the password and second-factor ceremonies above do.
+// revealed. It meters itself per address on its own `passkey_begin` bucket, not on
+// `login` (wave B task 3): a begin guesses nothing, and the web sign-in opens one when
+// the username field gains focus. The finish spends `login`. A network bucket (/24,
+// /48) sits beside the address's; past either it answers 429. Past
+// auth.webauthn.max_open_logins open discoverable ceremonies the oldest is evicted,
+// so the table stays bounded and an honest begin still works.
 func (d Deps) BeginPasskeyLogin(w http.ResponseWriter, r *http.Request) {
 	if d.Throttle == nil || d.Config == nil {
 		d.logf(r, "api: the passkey login route is not wired")
@@ -1043,11 +1114,18 @@ func (d Deps) BeginPasskeyLogin(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	addrKey := server.RateKey(server.RealIP(r, d.Config.Server.TrustedProxyCIDRs))
-	if ok, wait := d.Throttle.Allow(classLogin, addrKey); !ok {
+	ip := server.RealIP(r, d.Config.Server.TrustedProxyCIDRs)
+	if ok, wait := d.Throttle.Allow(classPasskeyBegin, server.RateKey(ip)); !ok {
 		server.WriteError(w, server.RateLimitedAfter(wait))
 		return
 	}
+	// The network's bucket beside the address's (security review A2): many addresses of one /24 or /48 share it.
+	if ok, wait := d.Throttle.Allow(classPasskeyBeginNet, server.RatePrefixKey(ip)); !ok {
+		server.WriteError(w, server.RateLimitedAfter(wait))
+		return
+	}
+	// Past auth.webauthn.max_open_logins the oldest open discoverable ceremony is evicted in the same transaction
+	// (security review A1), so a fresh begin always works; the maintenance tick prunes expired ones.
 	ceremonyID, options, err := p.BeginLogin(r.Context())
 	if err != nil {
 		server.WriteError(w, d.storeError(r, err))
@@ -1083,10 +1161,25 @@ func (d Deps) FinishPasskeyLogin(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	var req ceremonyRequest
-	if err := server.DecodeBody(w, r, maxCBORBody, &req); err != nil {
+	// [ceremony_id, response] or, on the code step (wave B task 3, Jonas), [ceremony_id, response, assertion]: the
+	// first-factor (password or OIDC) login's held assertion the passkey must belong to.
+	var raw []cbor.RawMessage
+	if err := server.DecodeBody(w, r, maxCBORBody, &raw); err != nil {
 		server.WriteError(w, err)
 		return
+	}
+	if len(raw) != 2 && len(raw) != 3 {
+		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "the body is [ceremony_id, response] or [ceremony_id, response, assertion]"))
+		return
+	}
+	var req ceremonyRequest
+	var bindTo string
+	fields := []any{&req.CeremonyID, &req.Response, &bindTo}
+	for i, el := range raw {
+		if err := cborx.Unmarshal(el, fields[i]); err != nil {
+			server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "body element %d: %v", i, err))
+			return
+		}
 	}
 	ctx := r.Context()
 	ip := server.RealIP(r, d.Config.Server.TrustedProxyCIDRs)
@@ -1102,17 +1195,47 @@ func (d Deps) FinishPasskeyLogin(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.RateLimitedAfter(wait))
 		return
 	}
+	// The binding is checked before the ceremony runs: an unknown, expired, spent or complete assertion, or one no
+	// first-factor login (a password or OIDC) issued, is refused like any failed passkey login, saying nothing about
+	// which (and the ceremony is left for its own expiry).
+	var boundTo *id.ID
+	if len(raw) == 3 {
+		owner, ok := d.Assertions.PeekFirstFactor(bindTo)
+		if !ok {
+			d.recordAttempt(r, store.UserRow{}, false, addrKey, methodPasskey, false)
+			d.Throttle.RecordFailure(passkeyFailureLedger, ip)
+			server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
+			return
+		}
+		boundTo = &owner
+	}
 	userID, uv, err := p.FinishLogin(ctx, req.CeremonyID, []byte(req.Response))
 	if err != nil {
 		d.logf(r, "api: finish passkey login", "err", err)
 		d.recordAttempt(r, store.UserRow{}, false, addrKey, methodPasskey, false)
-		d.Throttle.RecordFailure(passkeyFailureLedger, ip)
+		// An absent ceremony (expired, evicted, spent, unknown) is the same 401 but no failure on the address: nothing
+		// was guessed. A present ceremony with an assertion that does not verify is a failure, as a wrong password is.
+		if !errors.Is(err, auth.ErrCeremonyGone) {
+			d.Throttle.RecordFailure(passkeyFailureLedger, ip)
+		}
 		code := server.CodeUnauthenticated
 		if errors.Is(err, auth.ErrPasskeyUnknown) {
 			code = server.CodePasskeyUnknown
 		}
 		server.WriteError(w, server.Errorf(code, ""))
 		return
+	}
+	// A passkey of another account than the first-factor login it is bound to signs in no one (fail closed): no assertion,
+	// and the attempt counts as a failure.
+	if boundTo != nil && *boundTo != userID {
+		d.recordAttempt(r, store.UserRow{ID: userID}, true, addrKey, methodPasskey, false)
+		d.Throttle.RecordFailure(passkeyFailureLedger, ip)
+		server.WriteError(w, server.Errorf(server.CodePasskeyOtherAccount, ""))
+		return
+	}
+	if boundTo != nil {
+		// The first-factor login's assertion is superseded by the passkey's: spend it.
+		d.Assertions.SpendNeeds(bindTo)
 	}
 	needs := needsNothing
 	if !uv {
@@ -1348,9 +1471,14 @@ func (d Deps) CallbackOIDC(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, d.storeError(r, terr))
 		return
 	}
-	assertion := d.Assertions.Issue(userID, needs)
+	// Bound to its first factor, as a password login's is: a passkey that finishes the second step must be this
+	// account's (desktop merge review I1).
+	assertion := d.Assertions.IssueFirstFactor(userID, needs)
 	if pend.DesktopRequest != "" {
 		if d.desktopAuth == nil || d.desktopAuth.CompleteOIDC(pend.DesktopRequest, assertion, needs) != nil {
+			// The request expired or was taken: the assertion reaches no one, so it is spent here rather than left live
+			// until AssertionTTL (review M3).
+			d.Assertions.SpendNeeds(assertion)
 			server.WriteError(w, server.Errorf(server.CodeUnauthenticated, "desktop browser request expired"))
 			return
 		}
@@ -1358,6 +1486,7 @@ func (d Deps) CallbackOIDC(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusFound)
 		return
 	}
+	//nolint:gosec // G710: the target is https://{configured domain}/ with a server-minted one-time token in the fragment; no request input reaches it
 	http.Redirect(w, r, d.oidcReturnURL(assertion), http.StatusFound)
 }
 

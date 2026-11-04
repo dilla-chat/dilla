@@ -9,9 +9,10 @@ import { expect, type Page, type TestInfo } from '@playwright/test';
 import { addServerVia, TEST_TIMEOUT, WAIT, copy, composerBox, expectAccessible, expectComposerReady, railNav, signUp, test } from './support/app';
 import { hostArgs, removeHostData, startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
+import { e2ePort } from './support/ports';
 import { desktopE2E } from './support/electron';
 
-const WIRE2: HostConfig = { port: 8515, control: 8516, webRoot: 'packages/web/dist', keepData: true, wire: 2 };
+const WIRE2: HostConfig = { port: e2ePort(8515), control: e2ePort(8516), webRoot: 'packages/web/dist', keepData: true, wire: 2 };
 const WIRE6: HostConfig = { ...WIRE2, wire: 6 };
 const SERVER = 'Midgard Crew';
 const DRAFT = 'a half-written thought that must outlive the reload';

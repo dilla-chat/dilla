@@ -89,15 +89,15 @@
    thread sheet's and the other phone-only surfaces' hook, which sit outside the shell element. */
 /* Fix round 2 (rule 0): the prototype's phone rows keep their 1px margins, so they step 46. */
 .d-app-shell[data-layout="phone"], [data-phone] { --row-h: 2.75rem; --row-h-sub: 2.25rem; --row-h-2: 3.25rem; --slot-w: 44px; --list-gap: 0.0625rem; }
-/* web3.9 (H4, R9): the primary tier is 44 x 44 on a phone layout, whatever size the control is drawn at on a desktop. The phone
-   header's actions are drawn at the prototype's sizes instead (Jonas 2026-10-27; PhoneHeader.css). */
-.d-app-shell[data-layout="phone"] :is(.d-btn, .d-segmented__option, .d-icon-button):not(.d-phone-header__actions *, .d-channel-list__head-btn, .d-user-panel *) { min-height: 2.75rem; min-width: 2.75rem; }
+/* Buttons keep their context's prototype height on a phone (Jonas 2026-10-31). The app-only icon and segmented
+   targets keep their separate phone tier; the prototype header and user panel retain their explicit sizes. */
+.d-app-shell[data-layout="phone"] :is(.d-segmented__option, .d-icon-button):not(.d-phone-header__actions *, .d-channel-list__head-btn, .d-user-panel *) { min-height: 2.75rem; min-width: 2.75rem; }
 /* The list heading of a phone tab (activity, you): mono, not the display serif, which is the server name's alone. */
 .d-phone-heading { margin: 0; padding: 0.75rem var(--row-pad-x) 0.5rem; font-family: var(--font-mono); font-style: normal; font-weight: var(--weight-display); font-size: var(--text-md); letter-spacing: var(--label-tracking); color: var(--fg); }
 /* A ring above the pane's header already cleared the notch (it pads by the safe area and the grid moves down by it). */
 .d-app-shell[data-layout="phone"]:has(.d-app-shell__ring) .d-app-shell__main .d-phone-header { padding-top: 0; }
 /* The server menu and its items: 44px on a phone. The channel list head's ⌄ (an ActionMenu trigger since task 10) keeps the
-   prototype's 26px square there, as the .d-btn rule above already exempts it. */
+   prototype's 26px square there, as its component rule sets it. */
 .d-app-shell[data-layout="phone"] .d-action-menu__trigger:not(.d-user-panel *, .d-channel-list__head-btn) { min-width: 2.75rem; min-height: 2.75rem; color: var(--fg-2); }
 /* Ruling AE: the phone's user panel is the prototype's, at its desktop sizes (30px avatar, 30px mute and deafen, 64 high). */
 /* Task 9 fix round 2: a menu item keeps the prototype's 32px on a phone too (rule 0: phone sizes follow the prototype). */

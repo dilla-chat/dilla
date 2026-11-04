@@ -1,0 +1,76 @@
+/* Signal wave B Task 2: the prototype's command picker (README §6.1). Every value is the prototype's inline style. */
+
+/* The prototype sets no box-sizing: its heights and max-heights are content-box (a 40px row with 4px padding is 48px tall,
+   the 260px list 268px, a 26px chip with its 1px border 28px). */
+.d-cmd-list__scroll, .d-cmd-row, .d-cmd-sugs__list, .d-cmd-sug, .d-cmd-field, .d-cmd-list__send, .d-cmd-chips__name, .d-cmd-field__input { box-sizing: content-box; }
+
+/* The `/` list: surface-2 on the #2A303A line, radius 10px, the 0 20px 50px shadow; sModal over 180ms. */
+.d-cmd-list { overflow: hidden; color: var(--fg); background: var(--surface-2); border: 1px solid var(--line-strong); border-radius: var(--r-xl); box-shadow: var(--shadow-2); animation: d-modal var(--duration-spin) var(--ease-out) both; }
+.d-cmd-list__head { display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--hairline); font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking-wide); text-transform: uppercase; color: var(--fg-3); }
+.d-cmd-list__spacer { flex: 1; }
+.d-cmd-list__hint { text-transform: none; letter-spacing: normal; font-weight: var(--weight-btn); }
+.d-cmd-list__scroll { max-height: 16.25rem /* 260px */; overflow: auto; padding: 0.25rem; }
+.d-cmd-row { display: flex; align-items: center; gap: 0.625rem; min-height: 2.5rem /* 40px */; padding: 0.25rem 0.625rem; border-radius: var(--r-seg); cursor: pointer; background: transparent; transition: background var(--duration-cmd-row); }
+.d-cmd-row[aria-selected="true"] { background: var(--surface-hi); box-shadow: inset 2px 0 0 var(--accent); }
+.d-cmd-row__icon { display: flex; flex: none; align-items: center; justify-content: center; width: 1.625rem; height: 1.625rem /* 26px */; border-radius: var(--r-md); background: var(--hover); color: var(--fg-2); }
+.d-cmd-row[aria-selected="true"] .d-cmd-row__icon { color: var(--accent); }
+.d-cmd-row__text { display: grid; flex: 1; min-width: 0; line-height: 1.35; }
+.d-cmd-row__line { font-size: var(--text-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.d-cmd-row__name { font-weight: var(--weight-display); }
+.d-cmd-row__args { color: var(--fg-3); }
+.d-cmd-row__desc { font-size: var(--text-meta); color: var(--fg-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.d-cmd-row__source { flex: none; padding: 0 0.3125rem; border: 1px solid var(--line-strong); border-radius: var(--r-tag); font-size: var(--text-chip); line-height: 0.9375rem /* 15px */; color: var(--fg-2); letter-spacing: var(--tracking-tag); }
+.d-cmd-list__none { display: flex; align-items: center; gap: 0.625rem; padding: 0.625rem; font-size: var(--text-ui); color: var(--fg-2); }
+.d-cmd-list__none-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.d-cmd-list__send { display: flex; align-items: center; height: 1.75rem /* 28px */; padding: 0 0.625rem; font: inherit; color: var(--fg); background: transparent; border: 1px solid var(--control-edge); border-radius: var(--r-md); white-space: nowrap; cursor: pointer; }
+.d-cmd-list__send:hover { border-color: var(--accent); }
+
+/* The chips in the composer row (sFade 160ms): the accent `/name` token, then each argument. */
+.d-cmd-chips { display: flex; flex: 1; flex-wrap: wrap; align-items: center; gap: 0.375rem; min-width: 0; padding: 0.125rem 0; animation: d-fade var(--duration-tab) both; }
+.d-cmd-chips__name { display: flex; align-items: center; gap: 0.375rem; height: 1.625rem /* 26px */; padding: 0 0.5rem; border-radius: var(--r-row); background: var(--accent-tag); color: var(--accent-2); font-size: var(--text-ui); font-weight: var(--weight-display); white-space: nowrap; }
+.d-cmd-field { display: flex; align-items: stretch; height: 1.625rem /* 26px */; overflow: hidden; border: 1px solid var(--control-edge-field); border-radius: var(--r-row); background: var(--surface-2); box-shadow: none; transition: border-color var(--duration-hover), box-shadow var(--duration-hover); cursor: text; }
+.d-cmd-field[data-active="true"] { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.d-cmd-field[data-invalid="true"] { border-color: var(--danger); }
+.d-cmd-field[data-active="true"][data-invalid="true"] { box-shadow: 0 0 0 3px var(--danger-ring); }
+.d-cmd-field__label { display: flex; align-items: center; padding: 0 0.375rem; font-size: var(--text-meta); color: var(--fg-2); background: var(--hover); white-space: nowrap; transition: color var(--duration-hover), background var(--duration-hover); }
+.d-cmd-field[data-active="true"] .d-cmd-field__label { color: var(--accent-ink); background: var(--accent); }
+.d-cmd-field[data-invalid="true"] .d-cmd-field__label { color: var(--accent-ink); background: var(--danger); }
+.d-cmd-field__input { min-width: 0; max-width: 100%; padding: 0 0.4375rem /* 7px */; font: inherit; font-size: var(--text-input); color: var(--fg); background: transparent; border: 0; outline: none; }
+.d-cmd-field__input::placeholder { color: var(--fg-faint); }
+/* The box's accent border shows focus (as for the textarea); a transparent outline survives forced colours. */
+.d-cmd-field .d-cmd-field__input:focus-visible { outline: 2px solid transparent; }
+.d-cmd-field[data-ghost="true"] { cursor: default; }
+/* A free-text chip (fix round 1): a one-row textarea the same 26px as the input (4px + 18px + 4px), a line taller per
+   Shift+Enter; the chip's fixed height gives way while it holds more than one line. */
+textarea.d-cmd-field__input { display: block; height: auto; padding: 0.25rem 0.4375rem; line-height: 1.125rem; resize: none; overflow: hidden; white-space: pre; }
+.d-cmd-field[data-multiline="true"] { height: auto; }
+
+/* The suggestions above the active chip: the mention popover's look, 34px rows (sModal 160ms). */
+.d-cmd-sugs { overflow: hidden; color: var(--fg); background: var(--surface-2); border: 1px solid var(--line-strong); border-radius: var(--r-xl); box-shadow: var(--shadow-2); animation: d-modal var(--duration-tab) var(--ease-out) both; }
+.d-cmd-sugs__title { padding: 0.5rem 0.75rem 0.375rem; font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking-wide); text-transform: uppercase; color: var(--fg-3); }
+.d-cmd-sugs__list { max-height: 13.75rem /* 220px */; overflow: auto; padding: 0 0.25rem 0.25rem; }
+.d-cmd-sug { display: flex; align-items: center; gap: 0.625rem; min-height: 2.125rem /* 34px */; padding: 0.125rem 0.5rem; border-radius: var(--r-md); cursor: pointer; }
+.d-cmd-sug[aria-selected="true"] { background: var(--surface-hi); box-shadow: inset 2px 0 0 var(--accent); }
+.d-cmd-sug__avatar { display: inline-flex; flex: none; }
+.d-cmd-sug__icon { display: flex; flex: none; align-items: center; justify-content: center; width: 1.375rem; height: 1.375rem /* 22px */; border-radius: var(--r-row); background: var(--hover); color: var(--fg-2); }
+.d-cmd-sug__text { display: grid; flex: 1; min-width: 0; line-height: 1.3; }
+.d-cmd-sug__label { font-size: var(--text-ui); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.d-cmd-sug__sub { font-size: var(--text-meta); color: var(--fg-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* The line above the chips (sUp 200ms): 11px --fg-3 (brief --fg-3 is --fg-2 here), the icon in the accent; an error in --danger. */
+.d-cmd-bar { display: flex; align-items: center; gap: 0.5rem; min-width: 0; margin-bottom: 0.375rem; padding: 0 0.25rem; font-size: var(--text-xs); color: var(--fg-2); animation: d-up var(--duration-turn) both; }
+.d-cmd-bar__icon { display: inline-flex; color: var(--accent); }
+.d-cmd-bar[data-tone="danger"] { color: var(--danger); }
+.d-cmd-bar[data-tone="danger"] .d-cmd-bar__icon { color: var(--danger); }
+.d-cmd-bar__text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.d-cmd-bar__hint { color: var(--fg-3); white-space: nowrap; }
+
+/* In the composer: the popovers float 6px above it, inset by its 16px padding (10px on a phone); the bar sits in flow. */
+.d-composer__top > .d-cmd-list { position: absolute; z-index: 6; left: 1rem; right: 1rem; bottom: calc(100% + 6px); }
+.d-composer__top > .d-cmd-sugs { position: absolute; z-index: 6; left: 1rem; bottom: calc(100% + 6px); width: min(21.25rem /* 340px */, calc(100% - 2rem)); }
+[data-layout="phone"] .d-composer__top > .d-cmd-list { left: 0.625rem; right: 0.625rem; }
+[data-layout="phone"] .d-composer__top > .d-cmd-sugs { left: 0.625rem; }
+/* The prototype's dLabels: no keyboard hints on a phone. */
+[data-layout="phone"] .d-cmd-bar__hint, [data-layout="phone"] .d-cmd-list__hint { display: none; }
+
+@media (prefers-reduced-motion: reduce) { .d-cmd-list, .d-cmd-sugs, .d-cmd-bar, .d-cmd-chips { animation: none; } .d-cmd-row, .d-cmd-field, .d-cmd-field__label { transition: none; } }

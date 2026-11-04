@@ -165,11 +165,25 @@ export async function createPasskey(optionsJson: string): Promise<string> {
   return JSON.stringify({ ...head, response, clientExtensionResults: {} });
 }
 
+/** Wave B task 3 (Jonas, fix round 1): whether the browser can offer passkeys in the username field's autofill (WebAuthn
+ *  conditional mediation). False where the API is missing or the check throws. */
+export async function conditionalMediationAvailable(): Promise<boolean> {
+  if (desktopBridge()?.browserAuth) return false; // The native shell uses an explicit system-browser handoff.
+  if (typeof window === 'undefined' || !('PublicKeyCredential' in window) || !window.isSecureContext) return false;
+  const check = (window.PublicKeyCredential as unknown as { isConditionalMediationAvailable?: () => Promise<boolean> }).isConditionalMediationAvailable;
+  if (typeof check !== 'function') return false;
+  try { return await check.call(window.PublicKeyCredential) === true; } catch { return false; }
+}
+
 /** Signs a challenge with a passkey from the instance's login options (`{publicKey:{…}}`, base64url members). Resolves
- *  with the assertion as JSON; rejects with a PasskeyError. */
-export async function getPasskey(optionsJson: string): Promise<string> {
+ *  with the assertion as JSON; rejects with a PasskeyError. `conditional` makes it the username field's autofill request
+ *  (mediation 'conditional'), ended by aborting its signal; the same options and the same rules apply. */
+export async function getPasskey(optionsJson: string, conditional?: { signal: AbortSignal }): Promise<string> {
   const bridge = desktopBridge();
   if (bridge?.browserAuth) {
+    // The shell has no autofill: a conditional request would open the system browser on a field's focus and spend a
+    // ceremony, so it is refused here whatever the caller checked (desktop merge review M1).
+    if (conditional !== undefined) throw new PasskeyError('cancelled', 'Passkey autofill is not available in the desktop app');
     try {
       const result = await bridge.browserAuth({ kind: 'get', options: optionsJson });
       if (typeof result.response !== 'string') throw new Error('Missing browser credential');
@@ -186,7 +200,8 @@ export async function getPasskey(optionsJson: string): Promise<string> {
   if (allow === undefined) delete publicKey.allowCredentials;
   else publicKey.allowCredentials = allow;
   const api = credentialsApi();
-  const credential = await ceremony(false, () => api.get({ publicKey }));
+  const credential = await ceremony(false, () => (conditional === undefined ? api.get({ publicKey })
+    : api.get({ publicKey, mediation: 'conditional', signal: conditional.signal })));
   const { head, response, raw } = envelope(credential);
   response.authenticatorData = toBase64Url(buffer(raw.authenticatorData, 'authenticatorData'));
   response.signature = toBase64Url(buffer(raw.signature, 'signature'));

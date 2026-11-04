@@ -48,7 +48,22 @@ export type ColorTokens = {
   /** The sensitivity meter (Settings → Voice), each the prototype's literal: an unlit segment (#161A20), the heard pill's
    *  0.3 --ok edge, the too-quiet pill's 0.08 --warn fill and 0.3 --warn edge. */
   meterOff: string; okLine: string; warnFaint: string; warnLine: string;
+  // Wave B Task 2
+  /** The command picker: an invalid chip's 3px ring (the prototype's rgba(255,110,110,.15)). */
+  dangerRing: string;
+  // Wave B Task 3
+  /** The sign-in done panel, each the prototype's literal: its 0.06 --ok fill and its #C9F7D0 text. */
+  okPanel: string; okPanelText: string;
+  // Wave B Task 3b
+  /** The second factor's choice cards (the sign-up's step 4): the 32px icon tile's fill, the prototype's #141820. */
+  choiceTile: string;
+  // Task 6
+  okResult: string;
+  // Task 6 fix round 1: the prototype Not confirmed chip.
+  warnResult: string; warnResultText: string;
   linkUnderline: 0 | 1;
+  // Task 7
+  pollMineFill: string; pollWinnerFill: string; pollFill: string; pollWinnerEdge: string;
 };
 
 export const themes: Record<ThemeName, ColorTokens> = {
@@ -72,7 +87,19 @@ export const themes: Record<ThemeName, ColorTokens> = {
     accentSplit: 'rgba(3,18,30,0.25)',
     // Task 10b
     meterOff: '#161A20', okLine: 'rgba(124,255,142,0.3)', warnFaint: 'rgba(255,209,106,0.08)', warnLine: 'rgba(255,209,106,0.3)',
+    // Wave B Task 2
+    dangerRing: 'rgba(255,110,110,0.15)',
+    // Wave B Task 3
+    okPanel: 'rgba(124,255,142,0.06)', okPanelText: '#C9F7D0',
+    // Wave B Task 3b
+    choiceTile: '#141820',
+    // Task 6
+    okResult: 'rgba(124,255,142,.1)',
+    // Task 6 fix round 1
+    warnResult: 'rgba(255,209,106,.1)', warnResultText: '#FFD16A',
     linkUnderline: 0,
+    // Task 7
+    pollMineFill: 'rgba(90,168,230,.2)', pollWinnerFill: 'rgba(124,255,142,.12)', pollFill: 'rgba(255,255,255,.05)', pollWinnerEdge: 'rgba(124,255,142,.5)',
   },
 
 };
@@ -83,7 +110,7 @@ export type ColorKey = Exclude<keyof ColorTokens, 'linkUnderline'>;
 export const TEXT_PAIRS: ReadonlyArray<readonly [ColorKey, ColorKey]> = [
   ['fg', 'bg'], ['fg', 'bg2'], ['fg', 'surface'], ['fg', 'surface2'], ['fg', 'surfaceHi'],
   ['fg2', 'bg'], ['fg2', 'bg2'], ['fg2', 'surface2'], ['fg2', 'surfaceHi'],
-  ['fgBody', 'bg'], ['fgStrong', 'surface2'], ['okText', 'bg2'], ['fgChip', 'surface2'],
+  ['fgBody', 'bg'], ['fgStrong', 'surface2'], ['okText', 'bg2'], ['fgChip', 'surface2'], ['okPanelText', 'bg2'],
   ['fg3', 'bg'], ['fg3', 'bg2'], ['fg3', 'surface'], ['fg3', 'surface2'],
   ['fgLink', 'bg'], ['danger', 'bg'], ['warn', 'bg'], ['ok', 'bg2'],
   ['accentInk', 'accent'], ['accentInk', 'accent2'], ['mentionInk', 'mention'], ['brandInk', 'brand'], ['okInk', 'ok'], ['dangerInk', 'danger'], ['dangerInk', 'dangerHover'],
@@ -148,11 +175,15 @@ export const structural = {
     card: '0.9375rem',    // 15px (the profile card's name and a confirmation's title)
     // Task 10
     heading: '1.25rem',   // 20px (a settings section's and a sign-in step's title)
+    // Task 7
+    'poll-voter': '0.4375rem', // 7px (poll voter initials)
   },
   // Task 11 (Task 4 minor): 'btn' is the prototype's settings and dialog button weight (400; body text stays 420).
   weight: { display: '700', body: '420', label: '600', btn: '400' },
   labelTracking: '0.08em',
   trackingSoft: '0.04em',
+  // Wave B Task 2: the command list's source tag (the prototype's .06em).
+  trackingTag: '0.06em',
   labelTrackingWide: '0.12em',
   radius: { sm: '4px', md: '6px', lg: '8px', xl: '10px', xxl: '12px', pill: '999px', avatar: '999px', bot: '6px', seg: '7px', row: '5px', tag: '3px', tile: '14px', menu: '9px',
     // Task 9: the phone bottom sheet's top corners (the profile card).
@@ -163,7 +194,9 @@ export const structural = {
     // Task 9: the profile card (the prototype's 0 24px 60px .6) and the user panel's status menu (0 16px 40px .55).
     profile: '0 24px 60px rgba(0,0,0,0.6)', status: '0 16px 40px rgba(0,0,0,0.55)',
     // Task 10: the sign-in card.
-    card: '0 30px 80px rgba(0,0,0,0.55)' },
+    card: '0 30px 80px rgba(0,0,0,0.55)',
+    // Task 8: the prototype reaction tooltip.
+    reaction: '0 12px 30px rgba(0,0,0,0.55)' },
   /**
    * Pane widths stay px: they are furniture the user drags, and a rail or a
    * sidebar that grew with the text size would eat the message pane. The
@@ -203,7 +236,11 @@ export const structural = {
     // Task 10: Settings entering (sModal), the sign-in card entering, and a sign-in step's rise.
     modal: '260ms', card: '420ms', step: '360ms',
     // Task 10b: the sensitivity meter's segment fade (70ms). Like `meter`, a live level readout: never zeroed under reduced motion.
-    meterSegment: '70ms' },
+    meterSegment: '70ms',
+    // Wave B Task 2: the command list's row background (the prototype's 100ms).
+    cmdRow: '100ms',
+    // Task 6: the private result's pending loader.
+    resultSpin: '900ms' },
   sounds: ['join', 'leave', 'mention', 'mute', 'unmute', 'deafen', 'undeafen', 'ping', 'error'] as const,
 } as const;
 

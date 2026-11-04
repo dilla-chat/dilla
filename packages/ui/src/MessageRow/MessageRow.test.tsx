@@ -1,8 +1,10 @@
 import { readFileSync } from 'node:fs';
+import { useState } from 'react';
 import { render, screen, fireEvent, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
 import { MessageRow } from './MessageRow.tsx';
+import { PollCard } from '../PollCard/PollCard.tsx';
 import { MessageToolbar } from '../MessageToolbar/MessageToolbar.tsx';
 import { PhoneLayoutProvider } from '../internal/phoneLayout.ts';
 import { expectNoAxeViolations } from '../test/setup.ts';
@@ -389,6 +391,61 @@ describe('MessageRow mention colour dot', () => {
       await userEvent.setup().click(screen.getByRole('button', { name: '2 replies' }));
       expect(onReveal).not.toHaveBeenCalled();
     });
+    it('a phone poll vote toggles its message toolbar, and closing preserves the revealed row', async () => {
+      function PollMessage() {
+        const [revealed, setRevealed] = useState(false);
+        const [choices, setChoices] = useState<number[]>([]);
+        const [closed, setClosed] = useState(false);
+        return <PhoneLayoutProvider value><MessageRow author="Glenn" time="21:02" body="Mira asked:" state="ok"
+          toolbar={toolbar} revealed={revealed} onReveal={setRevealed} card={<PollCard question="Raid?" multi closed={closed}
+            canVote={!closed} canClose meta="pick any" labels={{ closed: 'CLOSED', close: 'Close poll' }}
+            options={['Bridge', 'Harbour'].map((text, index) => ({ text, pct: choices.includes(index) ? 50 : 0,
+              mine: choices.includes(index), winner: choices.includes(index), voters: [] }))}
+            onVote={index => setChoices(current => current.includes(index) ? current.filter(choice => choice !== index) : [...current, index])}
+            onClose={() => setClosed(true)} />} /></PhoneLayoutProvider>;
+      }
+      render(<PollMessage />);
+      const user = userEvent.setup();
+      await user.click(screen.getByRole('button', { name: /Bridge/ }));
+      expect(screen.getByRole('button', { name: /Bridge/ })).toHaveAttribute('aria-pressed', 'true');
+      expect(screen.getByRole('toolbar', { name: 'actions' })).toBeInTheDocument();
+      expect(screen.getByRole('article')).toHaveAttribute('data-revealed', 'true');
+      await user.click(screen.getByRole('button', { name: /Harbour/ }));
+      expect(screen.getByRole('button', { name: /Harbour/ })).toHaveAttribute('aria-pressed', 'true');
+      expect(screen.queryByRole('toolbar')).toBeNull();
+      await user.click(screen.getByText('Mira asked:'));
+      await user.click(screen.getByRole('button', { name: 'Close poll' }));
+      expect(screen.getByText('CLOSED')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Bridge/ })).toHaveAttribute('data-winner', 'true');
+      expect(screen.getByRole('toolbar', { name: 'actions' })).toBeInTheDocument();
+      // Closed answers still bubble a row tap, while their vote stays unchanged.
+      await user.click(screen.getByRole('button', { name: /Bridge/ }));
+      expect(screen.getByRole('button', { name: /Bridge/ })).toHaveAttribute('aria-pressed', 'true');
+      expect(screen.queryByRole('toolbar')).toBeNull();
+    });
+
+    it('a revealed phone row paints the hover fill and stripe, below mention and reply styling', () => {
+      const style = document.createElement('style');
+      // jsdom does not resolve custom properties in background declarations; give those tokens literal fixture values.
+      style.textContent = readFileSync('src/MessageRow/MessageRow.css', 'utf8')
+        .replaceAll('var(--bg-3)', '#0d1014').replaceAll('var(--accent)', '#5aa8e6')
+        .replaceAll('var(--warn-soft)', '#171510').replaceAll('var(--mention)', '#ffd16a')
+        .replaceAll('var(--accent-faint)', '#111820');
+      document.head.append(style);
+      try {
+        const { rerender } = render(row({ revealed: true }));
+        const article = screen.getByRole('article');
+        expect(getComputedStyle(article).backgroundColor).toBe('rgb(13, 16, 20)');
+        expect(getComputedStyle(article).boxShadow).toBe('inset 2px 0 0 #5aa8e6');
+        rerender(<PhoneLayoutProvider value><MessageRow author="ada" time="21:02" body={BODY} state="ok" revealed mention /></PhoneLayoutProvider>);
+        expect(getComputedStyle(article).backgroundColor).toBe('rgb(23, 21, 16)');
+        expect(getComputedStyle(article).boxShadow).toBe('inset 2px 0 0 #ffd16a');
+        rerender(<PhoneLayoutProvider value><MessageRow author="ada" time="21:02" body={BODY} state="ok" revealed mention replying /></PhoneLayoutProvider>);
+        expect(getComputedStyle(article).backgroundColor).toBe('rgb(17, 24, 32)');
+        expect(getComputedStyle(article).boxShadow).toBe('inset 2px 0 0 #5aa8e6');
+      } finally { style.remove(); }
+    });
+
     it('off a phone the toolbar is always rendered and a click does not reveal', async () => {
       const onReveal = vi.fn();
       render(<MessageRow author="ada" time="21:02" body={BODY} state="ok" toolbar={toolbar} onReveal={onReveal} />);

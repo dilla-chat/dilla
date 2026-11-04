@@ -8,8 +8,8 @@
 | the AFK channel renamed and moved into a category | |
 | idle in voice on desktop (past the inactive timeout) | the sweep cuts the call; the stage or the region that outlives the dock says `afk.moved`, and nothing joins (no AFK call, no microphone, no dock) |
 | the AFK row | no call, no LiveKit room and no microphone; its away roster: each person away there, with no voice connection, listed under the row with `afk.away` and counted; a click leaves the current call and marks the person away |
-| the AFK channel's page | the away roster as on its row (`afk.away`), or `afk.empty`; the `afk.go` button, which leaves the current call and then marks the person away |
-| the AFK page while away | no button; the line `afk.youAway` |
+| the AFK channel's page | the moon tile, the title (`afk.title.nobody`, or the others' names with `afk.title.one` / `afk.title.many`), the explainer with the server's timeout (`afk.explain`); the `afk.go` button, which leaves the current call and then marks the person away. The people away are listed on the AFK row, not on the page (wave B task 4) |
+| the AFK page while away | the title `afk.title.you` and the `afk.comeBack` button, which leaves the AFK channel for a text channel the person can send in (the last opened, else the first), and stays when there is none (Jonas, Q3) |
 | going AFK failed | the line `afk.failed`; the call left stays left |
 | AFK chosen on another device | the call here is cut and its stage (or the region that outlives the dock) says `afk.elsewhere`, a calm notice, never a removal |
 | a phone in voice | never cut for inactivity |
@@ -65,9 +65,15 @@
 `afk.channel.note='This is the server’s AFK channel. Nobody is connected here; people who are away are listed.'`
 `afk.moved='Moved to {channel} for inactivity'`
 `afk.away='away'`
-`afk.go='go AFK'`
-`afk.youAway='You’re away. Join a voice channel, or send a message or type in this server, to come back.'`
-`afk.empty='Nobody is away.'`
+`afk.go='Go AFK'`
+`afk.comeBack='Come back'`
+`afk.title.nobody='Nobody is away'`
+`afk.title.you='You are away'`
+`afk.title.one='{name} is away'`
+`afk.title.many='{names} are away'`
+`afk.explain='After {minutes} minutes idle in voice, a computer is moved here. Phones are never moved.'`
+`afk.explain.one='After 1 minute idle in voice, a computer is moved here. Phones are never moved.'`
+`afk.explain.off='Computers idle in voice are not moved here. Phones are never moved.'`
 `afk.failed='Could not go AFK. Try again.'`
 `afk.elsewhere='You went AFK on another device.'`
 `layout.dock.where='{channel} · {server}'`

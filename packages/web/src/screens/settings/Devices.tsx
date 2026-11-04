@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Command, DeviceSummary } from '@dilla/client-core';
-import { Banner, Button, DeviceRow, Dialog } from '@dilla/ui';
+import { Banner, Button, DeviceRow, Dialog, newToastHostId, showToast, ToastHost } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
 import { errorOf, type UiError } from '../../core/errors.ts';
 import { useSlice } from '../../core/use-slice.ts';
@@ -79,14 +79,14 @@ export function Devices(): React.JSX.Element {
   };
   const close = () => { if (!plainRunning.current) setTarget(null); };
 
-  const confirmPlain = async (command: Command, removal: boolean) => {
+  const confirmPlain = async (command: Command, removal: boolean, removedName?: string) => {
     if (plainRunning.current) return;
     plainRunning.current = true;
     setPlainBusy(true);
     setPlainError(null);
     try {
       await client.call(command);
-      if (removal) focusHeading.current = true;
+      if (removal) { focusHeading.current = true; if (removedName !== undefined) showToast(t('devices.removed', { device: removedName })); }
       setTarget(null);
     } catch (e) {
       setPlainError(errorOf(e));
@@ -99,6 +99,12 @@ export function Devices(): React.JSX.Element {
   const ordered = devices === undefined ? [] : orderDevices(devices);
   const now = Date.now();
 
+  // Wave B (Jonas): a device is titled by what the client knows, "Chrome on macOS", never by an opaque id. This browser reads its own
+  // user agent when it has no label, for display only: nothing here sends it, a name reaches the server only through an explicit
+  // Rename. Any other device shows the label it stored, and a nameless one "Unnamed device" (never a guess from a user agent).
+  const titleOf = (d: DeviceSummary): string => d.label ?? (d.own && suggestedName() !== '' ? suggestedName() : t('devices.unnamed'));
+  const [toastHost] = useState(newToastHostId);
+
   // The name dialog starts on the current name; this browser without one starts on "Firefox on Linux" and the like.
   const renaming = target?.kind === 'rename' ? devices?.find(d => d.id === target.deviceId) : undefined;
   const renameStart = renaming === undefined ? '' : renaming.label ?? (renaming.own ? suggestedName() : '');
@@ -107,9 +113,7 @@ export function Devices(): React.JSX.Element {
   const subjectOf = (deviceId: string | null) => {
     const device = deviceId === null ? undefined : devices?.find(d => d.id === deviceId);
     if (deviceId === null) return undefined;
-    return device?.label == null
-      ? <span>{deviceId.slice(0, 8)}</span>
-      : <><bdi>{device.label}</bdi> <span>{deviceId.slice(0, 8)}</span></>;
+    return device === undefined ? <span>{deviceId.slice(0, 8)}</span> : <><bdi>{titleOf(device)}</bdi> <span>{deviceId.slice(0, 8)}</span></>;
   };
   const revokeId = target?.kind === 'revoke' ? target.deviceId : null;
   const unlistedId = target?.kind === 'removeUnlisted' ? target.deviceId : null;
@@ -136,19 +140,19 @@ export function Devices(): React.JSX.Element {
         {/* Signal task 10 fix round 3: Sign out lives on this browser's row, so while the list is missing (not loaded yet, or
             refused) this browser's row is drawn from the local identity and stays reachable. */}
         {!ordered.some(d => d.own) && account?.deviceId != null ? (
-          <DeviceRow key="own" name={account.deviceId.slice(0, 8)} tier="web" own ownLabel={t('devices.thisBrowser')}
+          <DeviceRow key="own" name={suggestedName() || t('devices.unnamed')} tier="web" own ownLabel={t('devices.thisBrowser')}
             action={{ label: t('workspace.signOut'), onAction: signOut.requestOpen }} />
         ) : null}
         {ordered.map(d => (
           // Fix round 2 (the prototype's sub line): "this browser · active now · d3f9a1" for this browser, "active 2 days ago ·
           // 8b20ce" for another; the id stays on every row, since a label is the server's to change.
-          <DeviceRow key={d.id} name={d.label ?? d.id.slice(0, 8)} tier={d.tier === 1 ? 'web' : 'native'}
+          <DeviceRow key={d.id} name={titleOf(d)} tier={d.tier === 1 ? 'web' : 'native'}
             own={d.own} ownLabel={d.own ? t('devices.thisBrowser') : undefined}
             state={d.revokedAt !== null ? t('devices.revoked') : !d.listed ? t('devices.unlisted') : undefined}
             lastSeen={d.own ? t('devices.subOwn', { id: d.id.slice(0, 6) })
               : d.lastSeen > 0 ? t('devices.subOther', { when: timeAgo(d.lastSeen, now), id: d.id.slice(0, 6) }) : d.id.slice(0, 6)}
             // Signal task 10 fix round 2 (Jonas): Rename is in the row's context menu (right-click, long press, Shift+F10).
-            menu={d.revokedAt === null ? { label: t('signalSettings.menu.device', { name: d.label ?? d.id.slice(0, 8) }), items: [{ id: 'rename', label: t('devices.rename') }],
+            menu={d.revokedAt === null ? { label: t('signalSettings.menu.device', { name: titleOf(d) }), items: [{ id: 'rename', label: t('devices.rename') }],
               onSelect: () => choose({ kind: 'rename', deviceId: d.id }) } : undefined}
             // README §5.9: this browser's row signs out (the prototype's plain button); every other live device is removed.
             action={d.revokedAt !== null ? undefined : d.own ? { label: t('workspace.signOut'), onAction: signOut.requestOpen } : {
@@ -158,19 +162,25 @@ export function Devices(): React.JSX.Element {
         ))}
       </ul>
       {signOut.dialog}
+      <ToastHost id={toastHost} />
 
       <KeyDialog open={revokeId !== null} id="devices-revoke" subject={subjectOf(revokeId)} title={t('devices.revokeTitle')} body={t('devices.revokeBody')}
         confirmLabel={t('devices.confirmRevoke')} onClose={() => setTarget(null)}
         onConfirm={async key => {
           if (revokeId === null) return;
+          const device = devices?.find(d => d.id === revokeId);
           await client.call({ m: 'revokeDevice', deviceId: revokeId, recoveryKey: key });
           focusHeading.current = true;
+          if (device !== undefined) showToast(t('devices.removed', { device: titleOf(device) }));
         }} />
       <RenameDialog open={renaming !== undefined} id="devices-rename" initial={renameStart} onClose={close}
         onSave={label => client.call({ m: 'renameDevice', deviceId: renaming?.id ?? '', label })} />
       <Dialog open={unlistedId !== null} title={t('devices.removeUnlistedTitle')} closeLabel={t('dialog.close')} onClose={close}
         footer={plainConfirm('devices.confirmRevoke', () => {
-          if (unlistedId !== null) void confirmPlain({ m: 'revokeDevice', deviceId: unlistedId, recoveryKey: null }, true);
+          if (unlistedId !== null) {
+            const device = devices?.find(d => d.id === unlistedId);
+            void confirmPlain({ m: 'revokeDevice', deviceId: unlistedId, recoveryKey: null }, true, device === undefined ? undefined : titleOf(device));
+          }
         })}>
         {plainBanner}
         <p className="dw-device-subject">{subjectOf(unlistedId)}</p>

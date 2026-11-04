@@ -18,9 +18,10 @@ import { holdUploads, installWorkerPort, portCall, portSlice } from './support/w
 import type { AccountState, ChannelSummary, SearchState, TimelineState } from '../../packages/client-core/src/state/types';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
 import { rmSync } from 'node:fs';
+import { e2ePort } from './support/ports';
 
 /** Its own ports (E3 reservation). */
-const EMPTY: HostConfig = { port: 8501, control: 8502, webRoot: 'packages/web/dist' };
+const EMPTY: HostConfig = { port: e2ePort(8501), control: e2ePort(8502), webRoot: 'packages/web/dist' };
 const SERVER = 'Midgard Crew';
 const OWNER = 'Ada';
 const FRIEND = 'Björn';

@@ -10,13 +10,15 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
    person's colour, the 48px avatar 24px up with a 4px ring, the name 14px/700, "@handle · status" 11px --fg-2, the bio 11.5px. */
 .dw-profile { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 24px; align-items: start; }
 [data-layout="phone"] .dw-profile, .d-settings-frame[data-layout="phone"] .dw-profile { grid-template-columns: minmax(0, 1fr); }
-.dw-profile-form { display: grid; gap: 14px; }
+.dw-profile-form { position: relative; display: grid; gap: 14px; }
 /* Fix round 2: the prototype's profile fields are 36px of content inside a 1px edge (38), and the bio's three rows sit in 10px
    12px of padding; the preview's bio keeps its 8px top margin over the section's paragraph reset. */
 .dw-profile-form .d-text-field__input { height: 2.375rem; }
 .dw-profile-form textarea.d-text-field__input { height: auto; padding: 10px 12px; line-height: 1.5; }
 .dw-profile-form__note { margin: 0; font-size: var(--text-xs); color: var(--fg-3); }
-.dw-profile-form__saved { margin: 0; min-height: 1lh; font-size: var(--text-xs); color: var(--fg-3); }
+.dw-profile-form__saved { position: absolute; top: 100%; inset-inline: 0; margin: 0; padding-top: 4px; font-size: var(--text-xs); color: var(--fg-3); }
+/* Wave B (gap 102): the "Saved" live region hangs in the 24px gap under the form, so the hint sits the prototype's 24px over the card
+   and nothing moves when it says something. */
 .dw-profile-preview { overflow: hidden; background: var(--bg-3); border: 1px solid var(--control-edge-field); border-radius: 10px; }
 .dw-profile-preview__band { height: 52px; background: linear-gradient(135deg, hsl(var(--avatar-hue) var(--avatar-s, 45%) 32%), hsl(var(--avatar-hue) var(--avatar-s, 45%) 18%)); }
 .dw-profile-preview__body { padding: 0 14px 14px; margin-top: -24px; }
@@ -43,6 +45,7 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
 .dw-conversation { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .dw-conversation > .d-message-log, .dw-conversation > .d-message-log-frame { flex: 1 1 auto; }
 .dw-attachments { display: flex; flex-wrap: wrap; gap: var(--row-gap); }
+.dw-attachments > div { display: grid; }
 .dw-overlay { position: absolute; inset: 0; pointer-events: none; }
 .dw-overlay > * { pointer-events: auto; position: absolute; }
 
@@ -159,14 +162,6 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
 /* H7: the voice preview's join is a primary target (44) and sits in the stage's 18px gutter (--d-stage-px, CallStage). */
 [data-layout="phone"] .dw-voice-stage .dw-voice-join { min-height: 2.75rem; width: 100%; }
 [data-layout="phone"] .dw-voice-stage[data-call-phase="idle"] .d-call-stage > .d-call-stage__empty ~ .d-call-stage__controls .dw-voice-join { min-height: 2.75rem; width: auto; padding-inline: 1.5rem; }
-/* AW6 fix round 1: the AFK page lists its away roster above its one action (go AFK) or the away line. With #50 it is the
-   empty room's centred group: the roster, then the action, each centred under the message. */
-.dw-afk-page { display: flex; flex-direction: column; align-items: center; gap: 0.75rem; width: 100%; }
-.dw-afk-roster { width: auto; max-width: 100%; box-sizing: border-box; padding: 0; }
-.dw-afk-away { margin: 0; color: var(--fg-2); text-align: center; }
-/* Final review N1: a notice on the AFK page (afk.failed) drops the stage's empty line, which #50's centring keys on; the
-   page's controls stay centred on their own, rather than taking the idle preview's left start. */
-.d-app-shell:not([data-layout="phone"]) .dw-voice-stage[data-call-phase="idle"][data-afk="true"]:not(.dw-dm-call .dw-voice-stage) .d-call-stage__controls { justify-content: center; }
 [data-layout="phone"] .dw-dm-call .d-call-stage__controls { position: static; }
 [data-layout="phone"] .dw-voice-stage:not(.dw-dm-call .dw-voice-stage) { overflow: hidden; }
 [data-layout="phone"] .dw-voice-stage:not(.dw-dm-call .dw-voice-stage) .d-call-stage { height: 100%; min-height: 0; box-sizing: border-box; }
@@ -210,6 +205,7 @@ html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[d
 .dw-composer-cannot { margin: 0; padding: var(--row-gap) var(--group-gap); color: var(--fg-2); }
 
 /* Second factor set-up (flow 10): the QR code beside its setup key; the key and Copy on one line; on a phone (30rem and below) Copy drops under the key and the key is set tighter so all 32 characters show */
+.dw-factor-code-hint { margin: 0; font-size: var(--text-sm); color: var(--fg-3); }
 .dw-factor-key { display: flex; flex-wrap: wrap; gap: var(--group-gap); align-items: flex-start; }
 .dw-factor-key__text { flex: 1 1 14rem; min-width: 0; display: flex; flex-direction: column; gap: var(--row-gap); }
 .dw-factor-key__field { display: flex; flex-wrap: nowrap; align-items: flex-end; gap: 0; }
@@ -223,6 +219,20 @@ html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[d
 .dw-factor-ack { display: flex; align-items: flex-start; gap: 0.5rem; min-height: 24px; }
 .dw-factor-ack > label { padding-top: 2px; }
 .dw-factor-ack > input { width: 24px; height: 24px; flex: none; margin: 0; }
+/* Wave B task 3b: the sign-up's done step holds the backup codes (accepted deviation, Jonas) under the prototype's panel,
+   with the key step's check box (RecoveryKey's classes) gating Open dilla. */
+.dw-signup-codes { display: grid; gap: 10px; min-width: 0; }
+.dw-signup-codes > p { margin: 0; }
+.dw-signup-codes .d-code-list__summary { display: flex; align-items: center; gap: 8px; font-size: var(--text-btn); color: var(--fg-3); }
+.dw-signup-codes .d-code-list__summary > span { flex: none; }
+.dw-signup-codes .d-code-list__summary > .d-code-list__actions { flex: 1; }
+.dw-signup-codes .d-code-list__summary .d-code-list__actions .d-btn { min-width: 0; padding-inline: 4px; }
+.dw-signup-codes .d-code-list { gap: 10px; }
+/* Task 3b review M3: the codes' Copy and Print drawn as the key step's actions (RecoveryKey.css): 32px, sharing the row,
+   --control-edge-field, radius 7, 12px. */
+.dw-signup-codes .d-code-list__actions { flex-wrap: nowrap; gap: 8px; }
+.dw-signup-codes .d-code-list__actions .d-btn { flex: 1 1 0; justify-content: center; height: 32px; min-height: 32px; padding: 0 12px; background: transparent; border: 1px solid var(--control-edge-field); border-radius: var(--r-seg); font-size: var(--text-ui); font-weight: var(--weight-body); color: var(--fg); }
+.dw-signup-codes .d-code-list__actions .d-btn:hover { border-color: var(--accent); background: transparent; }
 @media (max-width: 30rem) { .dw-factor-key .d-qr { width: 160px; height: 160px; } }
 @media (max-width: 30rem) {
   .dw-factor-key__field { flex-wrap: wrap; }
@@ -288,11 +298,7 @@ html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[d
 .dw-you__row:focus-visible { outline: var(--focus-ring); outline-offset: -2px; }
 .dw-you__row[data-danger="true"] { color: var(--danger); }
 .dw-you__row[data-danger="true"]:hover { background: var(--danger-faint); }
-.dw-you__choice { padding-left: 30px; background: var(--surface-2); }
 .dw-you__label { flex: 1; min-width: 0; }
-.dw-you__value { font-size: var(--text-btn); color: var(--fg-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dw-you__dot { display: inline-flex; margin: 0 4px; }
-.dw-you__error { margin: 0; font-size: var(--text-xs); color: var(--danger); }
 
 /* Settings on a phone (R40): the frame fills the screen, one column, the PhoneHeader in place of the section nav. */
 @media (max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem) {
@@ -303,20 +309,6 @@ html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[d
 }
 
 
-/* web3.7: the threads of a channel, rows like the channel list's. */
-.dw-thread-list { padding: 0.5rem var(--row-pad-x, 0.75rem); }
-.dw-thread-list__title { margin: 0 0 0.5rem; font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking); text-transform: uppercase; color: var(--fg-3); }
-.dw-thread-list__empty { margin: 0; font-size: var(--text-base); color: var(--fg-3); }
-.dw-thread-list ul { margin: 0; padding: 0; list-style: none; }
-.dw-thread-list__row { display: flex; flex-direction: column; align-items: stretch; gap: 2px; width: 100%; min-height: 1.75rem; padding: var(--row-pad-y) 8px; margin: var(--row-gap) 0; font: inherit; font-size: var(--text-base); color: var(--fg-2); background: transparent; border: 0; border-radius: var(--r-md); text-align: left; cursor: pointer; transition: background var(--duration-fast), color var(--duration-fast); }
-.dw-thread-list__author { font-size: var(--text-micro); color: var(--fg-3); }
-.dw-thread-list__excerpt { min-width: 0; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
-.dw-thread-list__count { font-size: var(--text-micro); color: var(--fg-3); }
-.dw-thread-list__row:hover { background: var(--surface-2); color: var(--fg); }
-@container d-shell (max-width: 47.99rem) {
-  .dw-thread-list__row { min-height: 2.75rem; }
-}
-[data-layout="phone"] .dw-thread-list__row { min-height: 2.75rem; }
 /* The thread pane fills the aside or the phone sheet, so its composer sits at the bottom. */
 .dw-thread { height: 100%; min-height: 0; }
 /* The thread composer's label is its accessible name; the pane's title gives the context. */

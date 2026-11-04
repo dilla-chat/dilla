@@ -217,7 +217,7 @@ export function validateCommandArgs(command: CommandDefinition, input: Record<st
         || (option.min !== undefined && number < option.min) || (option.max !== undefined && number > option.max)) {
         issues.push(issue('invalid', name, `${name} must be a number${option.min !== undefined || option.max !== undefined ? ` from ${option.min ?? '−∞'} to ${option.max ?? '∞'}` : ''}`));
       }
-    } else if (option.kind === 'duration' && !isDuration(value)) {
+    } else if (option.kind === 'duration' && !isDuration(value) && !(command.id === 'ban' && value === 'permanent')) {
       issues.push(issue('invalid', name, `${name} must be a duration such as 10m or 2h`));
     } else if (command.id === 'seek' && name === 'position' && parseSeekPosition(value) === null) {
       issues.push(issue('invalid', name, 'position must be seconds, mm:ss or hh:mm:ss'));

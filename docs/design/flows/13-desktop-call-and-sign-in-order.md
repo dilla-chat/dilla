@@ -55,7 +55,7 @@ Desktop layout with the call panel at the bottom left above the user panel, stag
 ## Copy
 
 - `enrol.expired='Adding this browser took longer than 5 minutes, so the sign-in ran out. Sign in again.'`
-- `signin.key.body='Type or paste the 52-character recovery key you wrote down when you created the account. Spaces and hyphens do not matter. Backup codes are not your recovery key: they stand in for the app code.'` (true on the key step as step 2 or step 3)
+- `signin.key.body='This browser is new. Paste your recovery key to read your conversations here.'` (true on the key step as step 2 or step 3)
 - `reload.action='reload'`
 - `pane.resize.sidebar='resize the channel list'`
 - `pane.resize.aside='resize the side panel'`

@@ -4,6 +4,7 @@ import { CallStage, type CallStageProps } from './CallStage.tsx';
 import { CallControls, type CallControlsProps } from '../CallControls/CallControls.tsx';
 import type { CallTileProps, VoiceParticipantView } from '../CallTile/CallTile.tsx';
 import { nextFrame } from '../CallControls/CallControls.stories.tsx';
+import { ChannelHeader } from '../ChannelHeader/ChannelHeader.tsx';
 import { harbourStageBar } from '../NowPlaying/np.fixture.tsx';
 import { HarbourPreview, HarbourStage, harbourTiles, personTile, STAGE_LABELS, STAGE_STATE, stageControls, tileMenu, WithPictures } from './stage.fixture.tsx';
 
@@ -12,6 +13,7 @@ const CONTROL_LABELS: CallControlsProps['labels'] = {
   region: 'call controls', mute: 'mute', deafen: 'deafen', camera: 'camera', share: 'share screen', leave: 'leave',
 };
 const noop = () => {};
+const AFK_TEXT = 'After 15 minutes idle in voice, a computer is moved here. Phones are never moved.';
 const dmControls = (more: Partial<CallControlsProps> = {}) => (
   <CallControls muted={false} deafened={false} camera={false} sharing={false} canCamera canShare busy={false} labels={CONTROL_LABELS}
     onMute={noop} onDeafen={noop} onCamera={noop} onShare={noop} onLeave={noop} {...more} />
@@ -102,6 +104,24 @@ export const FocusPerson: Story = {
 };
 /** Not joined: the overlapping 48px faces, the room, who is there and the green Join voice. */
 export const NotJoinedPreview: Story = { decorators: [desk], render: () => <HarbourPreview /> };
+/** The AFK channel's page (wave B task 4), as VoiceView's AfkPage composes it: nobody away, the moon tile, the explainer, Go AFK. */
+export const AfkEmpty: Story = {
+  decorators: [desk],
+  render: () => <CallStage title="voice AFK" tiles={[]} header={<ChannelHeader kind="afk" name="AFK" topic="away list" />} code={null} notice={null} outgoing={null} controls={null} labels={STAGE_LABELS}
+    afk={{ title: 'Nobody is away', text: AFK_TEXT, action: { label: 'Go AFK', onAction: noop } }} />,
+};
+/** You are away: the title says so and the button reads Come back. */
+export const AfkAway: Story = {
+  decorators: [desk],
+  render: () => <CallStage title="voice AFK" tiles={[]} header={<ChannelHeader kind="afk" name="AFK" topic="away list" />} code={null} notice={null} outgoing={null} controls={null} labels={STAGE_LABELS}
+    afk={{ title: 'You are away', text: AFK_TEXT, action: { label: 'Come back', onAction: noop } }} />,
+};
+/** The phone (390): the same page, no bar. */
+export const AfkPhone: Story = {
+  decorators: [phone],
+  render: () => <CallStage title="voice AFK" tiles={[]} code={null} notice={null} outgoing={null} controls={null} labels={STAGE_LABELS}
+    afk={{ title: 'Nobody is away', text: AFK_TEXT, action: { label: 'Go AFK', onAction: noop } }} />,
+};
 /** The phone (390): one 16:9 tile per row, a focused share over the 150px filmstrip, the call bar's icons centred. */
 export const Phone: Story = {
   decorators: [phone],

@@ -104,6 +104,22 @@ describe('changing the password', () => {
     expect(within(d).getByLabelText(en['settings.password.confirm'])).toHaveFocus();
     expect(fake.callsOf('changePassword')).toEqual([]);
   });
+  // Wave B task 3b (Jonas): a new password has at least 12 characters, counted in code points; 11 is refused here.
+  it('refuses 11 characters and sends 12 (code points, not UTF-16 units)', async () => {
+    const { fake, user } = setup(WITH_PASSWORD);
+    await user.click(await screen.findByRole('button', { name: en['settings.password.change'] }));
+    const d = dialog(en['settings.password.titleChange']);
+    expect(en['settings.password.newHint']).toBe('At least 12 characters.');
+    await fill(user, d, { old: 'old password', next: '🔑'.repeat(11), again: '🔑'.repeat(11) });
+    await user.click(within(d).getByRole('button', { name: en['settings.password.confirmChange'] }));
+    expect(within(d).getByText('Use at least 12 characters.')).toBeInTheDocument();
+    expect(fake.callsOf('changePassword')).toEqual([]);
+    await user.type(within(d).getByLabelText(en['settings.password.new']), '🔑');
+    await user.type(within(d).getByLabelText(en['settings.password.confirm']), '🔑');
+    await user.click(within(d).getByRole('button', { name: en['settings.password.confirmChange'] }));
+    await waitFor(() => { expect(fake.callsOf('changePassword')).toHaveLength(1); });
+    expect(fake.callsOf('changePassword')[0]).toMatchObject({ next: '🔑'.repeat(12) });
+  });
   it('a wrong old password is an alert, empties the old field and puts focus there; the new ones stay', async () => {
     const { fake, user } = setup(WITH_PASSWORD, (c, f) => c.m === 'changePassword' ? Promise.reject(refusal({ code: 'E_FORBIDDEN', status: 403 })) : happy(c, f));
     await user.click(await screen.findByRole('button', { name: en['settings.password.change'] }));

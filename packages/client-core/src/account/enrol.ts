@@ -13,6 +13,9 @@ export class Enrol {
   /** What the held assertion still owes (web3.6 `needs`): 0 nothing, 1 an app code or a backup code, 2 a passkey or a
    *  backup code. It is the assertion's debt, not the account's factor_owed flag. */
   private assertionOwes: 0 | 1 | 2 = 0;
+  /** Wave B task 3: the held assertion is a first-factor login's, a password or an OIDC login (still owing a factor). A
+   *  passkey finish then carries it, so the instance refuses a passkey of another account (E_PASSKEY_OTHER_ACCOUNT). */
+  private boundFirstFactor = false;
   constructor(private readonly deps: { core: CorePort; routes: Routes; session: Session; now(): number }) {}
 
   /** Spends the held assertion when it owes what `want` asks: 'settled' nothing (the registration), 'code' an app code
@@ -24,32 +27,41 @@ export class Enrol {
     const assertion = this.assertion;
     this.assertion = null;
     this.assertionOwes = 0;
+    this.boundFirstFactor = false;
     return assertion;
   }
 
   private hold(assertion: string, owes: 0 | 1 | 2): void {
     this.assertion = assertion;
     this.assertionOwes = owes;
+    this.boundFirstFactor = false;
   }
 
   /** OIDC spends the same server assertion as password login. The server still
-   * enforces its factor debt when the assertion is used for enrollment. */
+   * enforces its factor debt when the assertion is used for enrollment, and, as after a password, a passkey that
+   * settles that debt must be the signed-in account's (desktop merge review I1). */
   oidc(assertion: string, needs: 0 | 1 | 2): void {
     this.hold(assertion, needs);
+    this.boundFirstFactor = needs !== 0;
   }
 
-  async login(username: string, password: string): Promise<{ needs: 0 | 1 | 2 }> {
+  async login(username: string, password: string): Promise<{ needs: 0 | 1 | 2; passkey?: boolean }> {
     this.assertion = null;
     this.assertionOwes = 0;
     const answer = await this.deps.routes.passwordLogin(username, password);
     this.hold(answer.assertion, answer.needs);
-    return { needs: answer.needs };
+    this.boundFirstFactor = answer.needs !== 0;
+    // Wave B task 3: whether a passkey would work on the code step (only said on a login owing a factor).
+    return { needs: answer.needs, passkey: answer.passkey };
   }
 
   /** A discoverable passkey login (web3.6): needs 0 when the authenticator verified the user, else 1 (a code follows).
    *  A refused finish leaves any assertion held from an earlier login in place. */
   async passkey(ceremonyId: Id, response: string): Promise<{ needs: 0 | 1 }> {
-    const answer = await this.deps.routes.passkeyLoginFinish(ceremonyId, response);
+    // Wave B task 3 (Jonas): on the code or passkey step after a password or OIDC login, the passkey must be that account's;
+    // the instance checks it and refuses another's before any assertion is issued (fail closed).
+    const boundTo = this.boundFirstFactor && this.assertion !== null && this.assertionOwes !== 0 ? this.assertion : null;
+    const answer = await this.deps.routes.passkeyLoginFinish(ceremonyId, response, boundTo);
     this.hold(answer.assertion, answer.needs);
     return { needs: answer.needs };
   }
@@ -124,6 +136,7 @@ export class Enrol {
   reset(): void {
     this.assertion = null;
     this.assertionOwes = 0;
+    this.boundFirstFactor = false;
     if (this.deps.core.identity().phase === 3) this.deps.core.enrolReset();
   }
 }

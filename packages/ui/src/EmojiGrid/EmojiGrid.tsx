@@ -32,8 +32,9 @@ export function EmojiGrid({ label, items: all, onPick, onClose, search, id }: Em
   const [query, setQuery] = useState('');
   const q = query.trim().toLowerCase();
   const items = q === '' ? all : all.filter(i => i.name.toLowerCase().includes(q));
-  // The footer names the emoji under the pointer or the focus (the prototype's ":shield:" line).
-  const [shown, setShown] = useState<{ emoji: string; name: string } | null>(null);
+  // Search takes initial focus; the prototype previews shield until a real grid hover or focus replaces it.
+  const [shown, setShown] = useState<{ emoji: string; name: string } | null>(() =>
+    search === undefined ? null : all.find(item => item.emoji === '🛡️') ?? null);
   const named = shown ?? items[Math.min(focus, items.length - 1)] ?? null;
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
@@ -82,7 +83,7 @@ export function EmojiGrid({ label, items: all, onPick, onClose, search, id }: Em
 
   const onFocus = (e: FocusEvent<HTMLDivElement>) => {
     const i = indexOfTarget(buttons(), e.target);
-    if (i >= 0) setFocus(i);
+    if (i >= 0) { setFocus(i); setShown(items[i]); }
   };
 
   return (
@@ -101,7 +102,7 @@ export function EmojiGrid({ label, items: all, onPick, onClose, search, id }: Em
         {items.map((item, i) => (
           <button key={item.emoji} type="button" className="d-emoji-grid__emoji" aria-label={item.name} data-emoji={item.emoji}
             tabIndex={i === focus ? 0 : -1} onClick={() => onPick(item.emoji)}
-            onMouseEnter={() => setShown(item)} onMouseLeave={() => setShown(null)}>
+            onMouseEnter={() => setShown(item)}>
             <span aria-hidden="true">{item.emoji}</span>
           </button>
         ))}
