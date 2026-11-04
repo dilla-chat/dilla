@@ -39,11 +39,13 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
   await tabTo(page, page.getByRole('radio', { name: new RegExp(escapeRegExp(copy('factor.choose.app'))) }));
   await tabTo(page, page.getByRole('button', { name: copy('factor.choose.next'), exact: true }));
   await press('Enter');
-  await expect(heading(page, 'factor.totp.titleSignup')).toBeFocused({ timeout: WAIT });
+  // Wave B task 3b: the step's title takes focus, then the code boxes take it once the key is shown (OnboardingFactor.test
+  // "shows the code as step 5 of 6"). Asserting the title raced the key's arrival; the boxes are where focus settles.
+  await expect(heading(page, 'factor.totp.titleSignup')).toBeVisible({ timeout: WAIT });
   const setupKey = page.getByLabel(copy('factor.totp.key'), { exact: true });
   await expect(setupKey).toHaveValue(/^[A-Z2-7]{16,}$/, { timeout: WAIT });
   account.totpSecret = await setupKey.inputValue();
-  await tabTo(page, page.getByLabel(copy('factor.totp.code'), { exact: true }));
+  await expect(page.getByLabel(copy('factor.totp.code'), { exact: true })).toBeFocused({ timeout: WAIT });
   // Wave B task 3: the sixth digit typed into the code boxes sends the code; there is no button to press.
   await page.keyboard.type(await nextCode(account.control, account));
   // Step 6: the backup codes and their box gate Open dilla.
