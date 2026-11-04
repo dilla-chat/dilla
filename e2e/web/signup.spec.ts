@@ -1,7 +1,9 @@
 import { clickNative } from './support/native-click.ts';
 import { desktopApplication, desktopE2E } from './support/electron.ts';
-import { expect } from '@playwright/test';
-import { readFileSync } from 'node:fs';
+import { expect, type BrowserContext, type Page } from '@playwright/test';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { instanceSlug } from '../../packages/web/src/screens/recovery-file';
 import {
   CLASS, COPY, HEX32, PUBLIC_URL, RK_GROUP, TEST_TIMEOUT, WAIT, copy, escapeRegExp, expectHeading, expectShell, nextButton, onboardingFrame,
@@ -9,6 +11,42 @@ import {
 } from './support/app';
 
 test.describe.configure({ timeout: TEST_TIMEOUT });
+
+/** Presses Save as file and returns the file it produced. In a browser that is Playwright's download. The desktop shell lets a
+ * same-origin blob: download through to Electron's native save dialog, which a headless run cannot answer, so there the main
+ * process names the save path instead and the same file is read back. */
+async function saveRecoveryFile(page: Page, context: BrowserContext): Promise<{ filename: string; body: string }> {
+  const save = page.getByRole('button', { name: copy('onboarding.keys.save'), exact: true });
+  if (!desktopE2E()) {
+    const [download] = await Promise.all([page.waitForEvent('download'), save.click()]);
+    const body = readFileSync(await download.path(), 'utf8');
+    await download.delete();
+    return { filename: download.suggestedFilename(), body };
+  }
+  const app = desktopApplication(context);
+  const dir = mkdtempSync(join(tmpdir(), 'dilla-recovery-'));
+  try {
+    await app.evaluate(({ webContents }, target) => {
+      const g = globalThis as { dillaRecoveryDownload?: Promise<{ filename: string; state: string; path: string }> };
+      g.dillaRecoveryDownload = new Promise((resolve) => {
+        const sessions = [...new Set(webContents.getAllWebContents().map((contents) => contents.session))];
+        const listener = (_event: unknown, item: Electron.DownloadItem) => {
+          for (const ses of sessions) ses.removeListener('will-download', listener);
+          const path = `${target}/${item.getFilename()}`;
+          item.setSavePath(path);
+          item.once('done', (_done, state) => { resolve({ filename: item.getFilename(), state, path }); });
+        };
+        for (const ses of sessions) ses.on('will-download', listener);
+      });
+    }, dir);
+    await save.click();
+    const saved = await app.evaluate(() => (globalThis as { dillaRecoveryDownload?: Promise<{ filename: string; state: string; path: string }> }).dillaRecoveryDownload!);
+    expect(saved.state).toBe('completed');
+    return { filename: saved.filename, body: readFileSync(saved.path, 'utf8') };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 test('a server invite, a name and a written-down key make an account that lands in that server', async ({ page, context, peer, instanceName }) => {
   const setup = await peer.setup();
@@ -44,17 +82,12 @@ test('a server invite, a name and a written-down key make an account that lands 
   expect(groups).toHaveLength(13);
   for (const group of groups) expect(group).toMatch(RK_GROUP);
   await expect(page.locator(CLASS.recoveryKey).getByRole('button', { name: /copy/i })).toHaveCount(0);
-  // Task 3b security review MEDIUM-1: Save as file reaches the browser's download in this engine (chromium, firefox, webkit),
+  // Task 3b security review MEDIUM-1: Save as file reaches a download in this engine (chromium, firefox, webkit, the desktop shell),
   // as a file whose bytes are the explanation, a blank line and the key once.
-  const [download] = await Promise.all([
-    page.waitForEvent('download'),
-    page.getByRole('button', { name: copy('onboarding.keys.save'), exact: true }).click(),
-  ]);
-  expect(download.suggestedFilename()).toBe(`dilla-recovery-key-${instanceSlug(instanceName)}.txt`);
-  const saved = readFileSync(await download.path(), 'utf8');
+  const { filename, body: saved } = await saveRecoveryFile(page, context);
+  expect(filename).toBe(`dilla-recovery-key-${instanceSlug(instanceName)}.txt`);
   expect(saved).toBe(`${copy('onboarding.keys.fileBody', { instance: instanceName })}\n\n${groups.join('-')}\n`);
   expect(saved.split(groups.join('-'))).toHaveLength(2);
-  await download.delete();
   await expect(keysSubmitButton(page)).toBeDisabled();
   await page.getByRole('checkbox', { name: copy(COPY.keysAcknowledge), exact: true }).check();
   await expect(keysSubmitButton(page)).toBeEnabled();
