@@ -11,7 +11,10 @@ import (
 //go:embed browser.js
 var browserJS []byte
 
-const page = `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Dilla desktop sign-in</title><h1>Dilla desktop sign-in</h1><p>Continue only if you started this request in your Dilla desktop app.</p><p id="status">Your passkey stays in your authenticator.</p><button id="continue" type="button">Continue</button><script src="../app.js"></script></html>`
+//go:embed app.css
+var appCSS []byte
+
+const page = `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Dilla desktop sign-in</title><link rel="stylesheet" href="../app.css"><main><p class="step">Desktop app</p><h1>Dilla desktop sign-in</h1><p>Continue only if you started this request in your Dilla desktop app.</p><p id="status" role="status" aria-live="polite">Your passkey stays in your authenticator.</p><button id="continue" type="button">Continue</button></main><script src="../app.js"></script></html>`
 
 // Handler is an optional, same-origin browser ceremony surface. The caller meters
 // requests before dispatch. Only opaque identifiers occur in navigation URLs.
@@ -20,7 +23,7 @@ func Handler(b *Broker, origin string, allow func(*http.Request) bool) http.Hand
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 		reject := func(code int) { http.Error(w, "Desktop browser request unavailable", code) }
 		if (r.Header.Get("Origin") != "" && r.Header.Get("Origin") != origin) || r.Header.Get("Sec-Fetch-Site") == "cross-site" {
 			reject(403)
@@ -34,6 +37,11 @@ func Handler(b *Broker, origin string, allow func(*http.Request) bool) http.Hand
 		if path == "app.js" && r.Method == "GET" {
 			w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 			_, _ = w.Write(browserJS)
+			return
+		}
+		if path == "app.css" && r.Method == "GET" {
+			w.Header().Set("Content-Type", "text/css; charset=utf-8")
+			_, _ = w.Write(appCSS)
 			return
 		}
 		read := func(out any) bool {
