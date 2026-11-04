@@ -41,8 +41,9 @@ packages/client-core/harness-dist/
 
 # go build output when run from the repository root (CI builds it in a runner)
 /dillad
-# the testkit binary the browser and harness jobs download (npm run ci:local copies it here too)
-/artifacts/
+# the testkit binary the browser and harness jobs download (npm run ci:local copies it here too). Only that file:
+# any other output under artifacts/ must still dirty the tree (packages/desktop's installed-account proof requires it).
+/artifacts/dilla-testkit
 /dillabot
 
 # Desktop builds and native helpers
