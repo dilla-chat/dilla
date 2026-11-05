@@ -64,7 +64,9 @@ The lines arrive under the `Capacitor/Console` tag.
 
 ## iPhone (Mac, Xcode 16+)
 
-The iOS project is committed (Swift Package Manager, no CocoaPods). The Mac needs Xcode 16+ (App Store, then open it
+The iOS project is committed (Swift Package Manager, no CocoaPods), with deployment target iOS 17 and the UIScene
+lifecycle (`SceneDelegate.swift`): Xcode 27's iOS 27 SDK rejects targets below 15 and refuses to launch apps without a
+scene manifest. The Mac needs Xcode 16+ (App Store, then open it
 once to install its components), Node 24+ and, on the default route (Path B), the wasm toolchain.
 
 Mac prerequisites:
