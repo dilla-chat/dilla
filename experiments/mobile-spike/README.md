@@ -131,7 +131,8 @@ Report both `DILLA_PROBE` lines verbatim, plus the `DILLA_PROBE_DETAIL` lines an
 A second page, reached by the "call probe" link under the capability probe's button (the `DILLA_PROBE` page and its
 contract are unchanged). "Start call" sets up a loopback of two `RTCPeerConnection`s carrying one audio track. The
 sender's encoded transform prepends a 2-byte magic (`d1 1a`) and XORs the frame; the receiver XORs it back, checks and
-strips the magic, and counts `framesOk` / `framesBad` (a frame without the magic passes through unchanged). Paths:
+strips the magic, and counts `framesOk` / `framesBad` (a frame without the magic passes through unchanged; the first one
+is recorded as `firstBadFrame` in `DILLA_CALL_DETAIL` with its size and first bytes, on both paths). Paths:
 `createEncodedStreams` on Chromium, `RTCRtpScriptTransform` (`call-transform-worker.ts`) on WebKit, picked by the
 repo's `isVoiceSupported()`. The received audio plays through an `<audio>` element, as in a real call. Every 10 s:
 
@@ -147,6 +148,12 @@ inbound-rtp. `DILLA_CALL_DETAIL` carries `source` (`mic` when the mic shows any 
 `totalSamplesReceived`, `packetsLost`) and `at`. Opus DTX is stripped, so 20 ms frames flow on silence too (about 50
 per second each way, 500 per line). The page also lists every `DILLA_CALL` line it logged (newest first), so the
 history can be read on screen. "End call" logs a final line and `DILLA_CALL_END`.
+
+A small `framesBad` is expected: Chromium (Android WebView 124, measured) sends about 0.6 RTP audio packets per second
+with a 0-byte payload that never pass through the send transform, so they arrive without the magic
+(`packetsSent` = `framesIn` = `framesOut` + `framesBad`). They carry no audio and so cannot leak anything. A
+`firstBadFrame` with `"bytes":0` is this bypass; a non-empty one, or `framesOk` falling behind `framesOut`, is a real
+transform failure.
 
 On iOS, "Start call" first calls the native `CallProbe` plugin (`ios/App/App/CallProbe.swift`, registered by
 `SpikeBridgeViewController`, which `Main.storyboard` uses): a CallKit `CXStartCallAction`, whose handler sets the
@@ -213,5 +220,6 @@ Report:
   `DILLA_CALL_DETAIL` from before the lock and one from after the unlock (plus one from during the lock if any was
   logged). Point out `source`, `visibility`, `micTrack.muted`, `audioContext` and `inboundRtp`.
 - The lock and unlock clock times, and for the first line after the unlock: `t`, `framesIn`, `framesOk`, `framesBad`
-  and `framesIn / (50 × t)`. Whether lines kept coming while locked, whether `framesBad` stayed 0, and whether the
-  audio came back after the unlock.
+  and `framesIn / (50 × t)`. Whether lines kept coming while locked; whether `framesOk` ≈ `framesOut` and `framesBad`
+  stayed small, with `firstBadFrame` (a 0-byte one is the harmless bypass above; a non-empty one is a failure); and
+  whether the audio came back after the unlock.

@@ -21,6 +21,8 @@ const KEY = 0x5a;
 const MAGIC = [0xd1, 0x1a];
 const counts = { framesOut: 0, framesIn: 0, framesOk: 0, framesBad: 0 };
 const detail: Record<string, unknown> = {};
+/** The first receive-side frame without the magic, from either path; logged with `at` relative to the call start. */
+let firstBadFrame: { bytes: number; head: number[]; atEpoch: number } | null = null;
 let started = 0;
 let timer: ReturnType<typeof setInterval> | undefined;
 let pcs: RTCPeerConnection[] = [];
@@ -115,7 +117,7 @@ function openTransform(): TransformStream {
         counts.framesOk++;
       } else {
         counts.framesBad++;
-        if (!detail.firstBadFrame) detail.firstBadFrame = { bytes: src.length, head: Array.from(src.slice(0, 4)), at: Date.now() - started };
+        firstBadFrame ??= { bytes: src.length, head: Array.from(src.slice(0, 4)), atEpoch: Date.now() };
       }
       ctrl.enqueue(frame);
     },
@@ -141,9 +143,10 @@ async function loopback(track: MediaStreamTrack): Promise<void> {
 
   if (script) {
     worker = new Worker(new URL('./call-transform-worker.ts', import.meta.url), { type: 'module' });
-    worker.onmessage = (e: MessageEvent<Record<string, unknown>>) => {
-      if ('pipeError' in e.data) detail.pipeError = e.data.pipeError;
-      else Object.assign(counts, e.data);
+    worker.onmessage = (e: MessageEvent<{ pipeError?: string; counts?: typeof counts; firstBadFrame?: typeof firstBadFrame }>) => {
+      if (e.data.pipeError) detail.pipeError = e.data.pipeError;
+      if (e.data.counts) Object.assign(counts, e.data.counts);
+      if (e.data.firstBadFrame) firstBadFrame ??= e.data.firstBadFrame;
     };
   }
   const Script = (globalThis as unknown as { RTCRtpScriptTransform: new (w: Worker, o: unknown) => unknown }).RTCRtpScriptTransform;
@@ -220,6 +223,8 @@ async function log(): Promise<void> {
     audioContext: ctx?.state ?? null,
     audioPaused: audioEl?.paused ?? null,
     inboundRtp: stats.inbound,
+    // A 0-byte first bad frame is Chromium's empty-payload bypass packet (harmless); a non-empty one is a real failure.
+    firstBadFrame: firstBadFrame && { bytes: firstBadFrame.bytes, head: firstBadFrame.head, at: firstBadFrame.atEpoch - started },
   });
   console.log(line);
   console.log(`DILLA_CALL_DETAIL ${JSON.stringify(detail)}`);
@@ -262,7 +267,7 @@ async function end(): Promise<void> {
   await ctx?.close().catch(() => undefined);
   if (nativeCall) detail.callKitEnd = await CallProbe.endCall().catch((e: unknown) => String(e));
   console.log(`DILLA_CALL_END ${JSON.stringify(detail)}`);
-  pcs = []; streams = []; worker = undefined; analyser = undefined; ctx = undefined; nativeCall = false;
+  pcs = []; streams = []; worker = undefined; firstBadFrame = null; delete detail.firstBadFrame; analyser = undefined; ctx = undefined; nativeCall = false;
   for (const k of Object.keys(counts) as (keyof typeof counts)[]) counts[k] = 0;
   startBtn.disabled = false;
 }
