@@ -339,7 +339,9 @@ it.each([['kick', false], ['kick', true], ['ban', false], ['ban', true]] as cons
   expect(screen.getByText('modlog · visible to moderators')).toBeInTheDocument();
   expect(screen.getAllByRole('button', { name: /^(Close|Cancel|Kick|Ban)$/ })).toHaveLength(2);
   expect(within(dialog).getByText('Duration').parentElement).toHaveTextContent(action === 'kick' ? /^Duration—$/ : /^Duration1 day$/);
-  expect(within(dialog).getByText('Reason').parentElement).toHaveTextContent(/^Reasonnone given$/);
+  // Jonas, 2026-11-05: kick records no reason, so its confirm has no Reason row either; ban's reads "none given".
+  if (action === 'kick') expect(within(dialog).queryByText('Reason')).not.toBeInTheDocument();
+  else expect(within(dialog).getByText('Reason').parentElement).toHaveTextContent(/^Reasonnone given$/);
   expect(within(dialog).getByText('Logged').parentElement).toHaveTextContent(/^Loggedmodlog · visible to moderators$/);
   // Jonas, 2026-11-05: kick records no reason, so its composer has no "reason?" chip; ban keeps it.
   if (action === 'kick') expect(screen.queryByRole('textbox', { name: 'reason' })).not.toBeInTheDocument();

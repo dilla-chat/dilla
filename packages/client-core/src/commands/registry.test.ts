@@ -168,3 +168,12 @@ it('allows permanent only for ban duration and preserves the argument', () => {
   expect(validateCommandArgs(commandById('ban')!, { user: 'user-123', duration: 'permanent' })).toMatchObject({ valid: true, args: { duration: 'permanent' } });
   expect(validateCommandArgs(commandById('timeout')!, { user: 'user-123', duration: 'permanent' }).valid).toBe(false);
 });
+
+// Jonas, 2026-11-05: kick records no reason (kickMember carries none), so its entry takes the user alone; ban keeps its reason.
+it('kick takes no reason and ban does', () => {
+  const kick = commandById('kick')!;
+  expect(kick.options.map(option => option.name)).toEqual(['user']);
+  expect(validateCommandArgs(kick, { user: 'someone', reason: 'spam' })).toMatchObject({ valid: false, issues: [{ code: 'unexpected', name: 'reason', message: 'Unexpected argument: reason' }] });
+  expect(parseCommand('/kick someone spam')).toMatchObject({ type: 'invalid', issues: [{ code: 'unexpected', message: 'Unexpected argument: spam' }] });
+  expect(commandById('ban')!.options.map(option => option.name)).toContain('reason');
+});
