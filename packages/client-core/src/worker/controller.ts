@@ -134,9 +134,12 @@ E_NOT_FOUND E_NOT_READY E_NOT_UPLOADER E_NO_ASSERTION E_NO_BACKUP E_OWN_UNKNOWN 
 E_READ_MAX E_RECOVERY_KEY E_REGISTER_RACE E_ROOT_MISMATCH E_ROUTE_INPUT E_SENDER_MISMATCH E_SESSION_SCOPE
 E_SETTING_KEY E_SIGNIN_EVICTED E_SIGNIN_EXPIRED E_STORAGE_FULL E_STORE_BUSY E_STORE_KEY E_STORE_NEWER E_STORE_OPEN E_STORE_PAUSED E_SYNC_STOPPED
 E_TIER_MISMATCH E_TRAY_NOT_READY E_UMK_CHANGED E_UNAUTHENTICATED E_UNAVAILABLE E_UNREADABLE E_UNSUPPORTED
-E_CALL_FULL E_CALL_SHARERS_FULL E_CALL_ACTIVE E_REMOVE_PENDING E_NO_CALL E_DISCONNECTED E_MEDIA_MISROUTE
+E_CALL_FULL E_CALL_SHARERS_FULL E_CALL_ACTIVE E_REMOVE_PENDING E_NO_CALL E_DISCONNECTED E_MEDIA_MISROUTE E_BOT_CAPABILITIES
 E_FACTOR_REQUIRED E_PASSKEY_UNKNOWN E_PASSKEY_OTHER_ACCOUNT E_STEP_UP E_TARGET_NO_FACTOR E_KEYPACKAGES_EXHAUSTED`.split(/\s+/));
 
+/** Catch-up fetch delays while a request waits for its interaction group's Welcome (45 s in all). */
+const WELCOME_BACKOFF_MS: readonly number[] = [1_000, 2_000, 4_000, 8_000, 15_000, 15_000];
+const NO_GROUP_MEMORY_MS = 30_000;
 const NO_INTERACTION_GROUP = 'no active interaction group for this community';
 const AMBIGUOUS_INTERACTION_GROUP = 'multiple active interaction groups make the Bot target ambiguous';
 const INTERACTION_CLOCK_SKEW = 'no active interaction group: its Welcome was refused because this device clock is off from the instance clock';
@@ -656,7 +659,7 @@ const VDEC = /^(vp8|h264|vp9)(,(vp8|h264|vp9)){0,2}$/;
 const validVdec = (v: unknown): boolean => typeof v === 'string' && (v === '' || (VDEC.test(v) && new Set(v.split(',')).size === v.split(',').length));
 const STATS_MAX = 1_048_576;
 /** fix/firefox-misrouted-audio: the stable codes a page may note for Diagnostics (callNote); nothing else is taken. */
-const CALL_NOTES: ReadonlySet<string> = new Set(['E_MEDIA_MISROUTE']);
+const CALL_NOTES: ReadonlySet<string> = new Set(['E_MEDIA_MISROUTE', 'E_BOT_CAPABILITIES']);
 /** f10app m3: a voice-driven member-list re-read of a community starts no sooner than this after the last one ended, and
  *  at most this many users per community enter the looked-up set from voice_state frames (the instance's, unauthenticated). */
 export const MEMBER_REREAD_MIN_MS = 5_000;
@@ -1144,6 +1147,10 @@ export class Controller {
    *  it was last refused for clock skew (sync's onWelcomeClockSkew). A Bot request names the skew only for its own
    *  community. The last E_CLOCK_SKEW diagnostics entry: a kept Welcome is refused on every poll, so the entry repeats
    *  at most once a minute. */
+  /** Community hex → when its remembered "no interaction group" answer lapses (ms). */
+  private readonly noInteractionGroupUntil = new Map<string, number>();
+  /** Requests waiting for a Welcome push; each is woken when a group turns active. */
+  private readonly interactionGroupWaiters = new Set<() => void>();
   private readonly welcomeClockSkew = new Map<string, { communityHex: string; atMs: number }>();
   private welcomeClockSkewLoggedMs: number | null = null;
   private deviceCount = 0;
@@ -1601,22 +1608,43 @@ export class Controller {
     return saved;
   }
 
+  /** Resolves when a group becomes active (the gateway's Welcome push applied) or after `ms`, whichever is first. */
+  private async waitForInteractionWelcome(ms: number): Promise<void> {
+    const abort = new AbortController();
+    let wake: () => void = () => undefined;
+    const pushed = new Promise<void>((resolve) => { wake = resolve; });
+    this.interactionGroupWaiters.add(wake);
+    try { await Promise.race([this.deps.sleep(ms, abort.signal).catch(() => undefined), pushed]); }
+    finally { abort.abort(); this.interactionGroupWaiters.delete(wake); }
+  }
+
   private async waitForActiveInteractionGroup(communityHex: string): Promise<ReturnType<CorePort['groups']>> {
     const core = this.requireCore();
     const sync = this.requireSync();
     const activeGroups = () => core.groups().filter((row) => row.kind === 3 && row.state === 2
       && row.communityId !== null && toHex(row.communityId) === communityHex);
     let rows = activeGroups();
-    // Registration follows the daemon's 30-second reconciliation interval. Keep
-    // the original request pending while its per-device Welcome is being issued.
-    const welcomeAttempts = 90;
     const startedMs = this.deps.now();
-    for (let attempt = 0; rows.length === 0 && attempt < welcomeAttempts; attempt++) {
+    // A "no group" answer is remembered per community for 30 s, so repeated capability reads fail fast and do not each
+    // wait out the registration window.
+    const knownEmptyUntil = this.noInteractionGroupUntil.get(communityHex);
+    const knownEmpty = knownEmptyUntil !== undefined && startedMs < knownEmptyUntil;
+    if (rows.length === 0 && !knownEmpty) {
+      // Check once. Registration follows the daemon's 30-second reconciliation interval, so the original request stays
+      // pending: the gateway's Welcome push wakes it, and a catch-up fetch backs off (1 s doubling to 15 s) as the net.
       if (sync.stopped()) throw new SyncError('E_SYNC_STOPPED');
       await sync.pollWelcomes();
       rows = activeGroups();
-      if (rows.length === 0 && attempt + 1 < welcomeAttempts) await this.deps.sleep(500);
+      for (let attempt = 0; rows.length === 0 && attempt < WELCOME_BACKOFF_MS.length; attempt++) {
+        if (sync.stopped()) throw new SyncError('E_SYNC_STOPPED');
+        await this.waitForInteractionWelcome(WELCOME_BACKOFF_MS[attempt]);
+        if (sync.stopped()) throw new SyncError('E_SYNC_STOPPED');
+        rows = activeGroups();
+        if (rows.length === 0) { await sync.pollWelcomes(); rows = activeGroups(); }
+      }
+      if (rows.length === 0) this.noInteractionGroupUntil.set(communityHex, this.deps.now() + NO_GROUP_MEMORY_MS);
     }
+    if (rows.length > 0) this.noInteractionGroupUntil.delete(communityHex);
     // A Welcome refused for clock skew during this wait is refused again on every poll while the skew lasts, so the
     // request names that instead of the generic missing group.
     if (rows.length === 0 && [...this.welcomeClockSkew.values()]
@@ -4806,7 +4834,11 @@ export class Controller {
     // A state-2 apply ends a resync, never a not-member report: a frame applied to the group after a refused resync (the
     // docs shoot's removal) proves nothing about this device's leaf. Not-member ends with a rejoin ('resyncing') or a
     // catch-up the DS served ('member').
-    if (result.state === 2) this.resyncing.delete(hex);
+    if (result.state === 2) {
+      this.resyncing.delete(hex);
+      this.noInteractionGroupUntil.clear();
+      for (const wake of [...this.interactionGroupWaiters]) wake();
+    }
     const seen: { groups: readonly GroupInfo[] | null } = { groups: null };
     this.safely(() => { this.refreshTrustGeneration(); seen.groups = this.touchGroup(groupId); });
     this.safely(() => { this.authorityGroupState(groupId, seen.groups ?? this.core?.groups() ?? []); });

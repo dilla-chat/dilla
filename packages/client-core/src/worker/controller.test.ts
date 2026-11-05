@@ -706,7 +706,7 @@ describe('Controller', () => {
     let welcomePolls = 0;
     w.sync.pollWelcomes.mockImplementation(() => {
       welcomePolls++;
-      if (welcomePolls === 20) w.state.groups.push({ ...textGroup(2), groupId, kind: 3 });
+      if (welcomePolls === 4) w.state.groups.push({ ...textGroup(2), groupId, kind: 3 });
       return Promise.resolve();
     });
     w.core.humanInteractionSendPrepare.mockImplementation((rid) => {
@@ -715,7 +715,7 @@ describe('Controller', () => {
     });
     w.call(98, { m: 'listManualModerationEvidence', communityId: toHex(COMMUNITY), requestId: toHex(requestId), cursor: null });
     await vi.waitFor(() => expect(w.core.humanInteractionSendPrepare).toHaveBeenCalledTimes(1));
-    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(20);
+    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(4);
     expect(w.routes.postMessage).toHaveBeenCalledWith(groupId, expect.any(Uint8Array));
   });
 
@@ -726,8 +726,55 @@ describe('Controller', () => {
     w.call(99, { m: 'listManualModerationEvidence', communityId: toHex(COMMUNITY), requestId: toHex(requestId), cursor: null });
     await vi.waitFor(() => expect(w.ret(99)).toMatchObject({ ok: false,
       error: { code: 'E_CORE_STATE', detail: 'missing_interaction_group' } }));
-    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(90);
+    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(7);
     expect(w.last<DiagnosticsState>('diagnostics')?.errors ?? []).not.toContainEqual(expect.objectContaining({ code: 'E_CLOCK_SKEW' }));
+  });
+
+  it('waits for the Welcome push with backoff instead of polling every 500 ms, and remembers "no group" for 30 s', async () => {
+    let nowMs = 1_700_000_000_000;
+    const delays: number[] = [];
+    const w = world({ now: () => nowMs, sleep: (ms, signal) => new Promise<void>((resolve) => {
+      delays.push(ms);
+      const done = (): void => { clearTimeout(timer); resolve(); };
+      const timer = setTimeout(done, 0);
+      signal?.addEventListener('abort', done);
+    }) });
+    await toReady(w);
+    const ask = (id: number, fill: number): void => w.call(id, { m: 'listManualModerationEvidence', communityId: toHex(COMMUNITY),
+      requestId: toHex(new Uint8Array(16).fill(fill)), cursor: null });
+    ask(110, 0x61);
+    await vi.waitFor(() => expect(w.ret(110)).toMatchObject({ ok: false, error: { detail: 'missing_interaction_group' } }));
+    expect(delays).toEqual([1_000, 2_000, 4_000, 8_000, 15_000, 15_000]);
+    expect(delays).not.toContain(500);
+    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(7);
+    // A second read within 30 s fails fast: no further polls or waits.
+    nowMs += 10_000;
+    ask(111, 0x62);
+    await vi.waitFor(() => expect(w.ret(111)).toMatchObject({ ok: false, error: { detail: 'missing_interaction_group' } }));
+    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(7);
+    expect(delays).toHaveLength(6);
+    // After the memory lapses it checks again.
+    nowMs += 30_000;
+    ask(112, 0x63);
+    await vi.waitFor(() => expect(w.ret(112)).toMatchObject({ ok: false }));
+    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(14);
+  });
+
+  it('a Welcome push that activates the group wakes a waiting request before its backoff ends', async () => {
+    const w = world({ sleep: (_ms, signal) => new Promise<void>((resolve) => { signal?.addEventListener('abort', () => { resolve(); }); }) });
+    await toReady(w);
+    const groupId = new Uint8Array(16).fill(0x52);
+    const requestId = new Uint8Array(16).fill(0x64);
+    w.core.humanInteractionSendPrepare.mockImplementation((rid) => {
+      w.state.outbox.push({ msgId: rid, state: 0, error: '', created: 1n, body: 'evidence page request', type: 0, replyTo: null, attachments: [] });
+      return rid;
+    });
+    w.call(113, { m: 'listManualModerationEvidence', communityId: toHex(COMMUNITY), requestId: toHex(requestId), cursor: null });
+    await vi.waitFor(() => expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(1));
+    w.state.groups.push({ ...textGroup(2), groupId, kind: 3 });
+    w.sync.deps!.onGroupChanged(groupId, { state: 2, epochChanged: false } as never);
+    await vi.waitFor(() => expect(w.core.humanInteractionSendPrepare).toHaveBeenCalledTimes(1));
+    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(1);
   });
 
   it('names a Welcome refused for clock skew in the refusal and logs E_CLOCK_SKEW once', async () => {
@@ -742,7 +789,7 @@ describe('Controller', () => {
     w.call(100, { m: 'listManualModerationEvidence', communityId: toHex(COMMUNITY), requestId: toHex(requestId), cursor: null });
     await vi.waitFor(() => expect(w.ret(100)).toMatchObject({ ok: false,
       error: { code: 'E_CORE_STATE', detail: 'interaction_clock_skew' } }));
-    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(90);
+    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(7);
     const skew = (w.last<DiagnosticsState>('diagnostics')?.errors ?? []).filter(error => error.code === 'E_CLOCK_SKEW');
     expect(skew).toHaveLength(1);
     expect(w.core.humanInteractionSendPrepare).not.toHaveBeenCalled();

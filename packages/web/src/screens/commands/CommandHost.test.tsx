@@ -630,3 +630,99 @@ it.each(['post', 'cancel'] as const)('keeps poll dialog out of the feed until Po
     view.unmount();
   } finally { spy.mockRestore(); }
 });
+
+describe('the Bot command list outlives the picker', () => {
+  const cid = 'a1'.repeat(16); const channel = 'a2'.repeat(16);
+  const caps = (ops: number[]) => ({ installationId: '33'.repeat(16), botUserId: '34'.repeat(16), version: 1 as const, supportedOperations: ops });
+  function setup(load: () => Promise<unknown>) {
+    vi.useFakeTimers();
+    const core = new FakeClient();
+    const capabilities = vi.fn(load);
+    vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ capabilities } as unknown as ClientCore.BotUtilities);
+    let ordinary = '';
+    const run = vi.fn(() => Promise.resolve({ status: 'success' as const, private: true, message: 'ok' }));
+    function Harness() {
+      const [, rerender] = useState(0);
+      return <CommandProvider handlers={{ play: run }}>
+        <textarea aria-label="message" value={ordinary} onChange={event => { ordinary = event.currentTarget.value; rerender(n => n + 1); }} />
+        <CommandHost communityId={cid} channelId={channel} bits={0x1ffffff} items={[]} selfId={'22'.repeat(16)} draft={ordinary}
+          onDraft={text => { ordinary = text; rerender(n => n + 1); }} onSendLiteral={() => undefined} encodeMessage={text => text} openGif={() => undefined} gifsEnabled />
+      </CommandProvider>;
+    }
+    const view = render(<CoreProvider client={core}><Harness /></CoreProvider>);
+    // The first slash opens the picker; the rest is typed into it, as a person does.
+    const typeSlash = (text: string) => {
+      fireEvent.change(screen.getByRole('textbox', { name: 'message' }), { target: { value: '/' } });
+      if (text !== '/') fireEvent.change(screen.getByRole('textbox', { name: 'Command' }), { target: { value: text } });
+    };
+    return { core, capabilities, view, typeSlash, run };
+  }
+  const slow = (ms: number, ops = [3, 12]) => () => new Promise(resolve => { setTimeout(() => { resolve(caps(ops)); }, ms); });
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+
+  it('the list survives the picker closing', async () => {
+    const { capabilities, typeSlash } = setup(slow(5_000));
+    typeSlash('/');
+    await act(() => vi.advanceTimersByTimeAsync(1_000));
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Command' }), { key: 'Escape' });
+    expect(screen.queryByRole('textbox', { name: 'Command' })).not.toBeInTheDocument();
+    await act(() => vi.advanceTimersByTimeAsync(5_000));
+    typeSlash('/');
+    expect(screen.getByRole('option', { name: /\/play/ })).toBeInTheDocument();
+    expect(capabilities).toHaveBeenCalledTimes(1);
+  });
+
+  it('the picker says it is loading while the list is unknown', async () => {
+    const { typeSlash } = setup(slow(5_000));
+    typeSlash('/play');
+    await act(() => vi.advanceTimersByTimeAsync(500));
+    expect(screen.getByText('Loading Bot commands…')).toBeInTheDocument();
+    expect(screen.queryByText(/No command matches/)).not.toBeInTheDocument();
+    await act(() => vi.advanceTimersByTimeAsync(5_000));
+    expect(screen.queryByText('Loading Bot commands…')).not.toBeInTheDocument();
+    expect(screen.getByRole('option', { name: /\/play/ })).toBeInTheDocument();
+  });
+
+  it('Enter before the list loads waits for it', async () => {
+    const { core, typeSlash } = setup(slow(5_000));
+    const refusals = () => privateResults(core, ':', `${cid}/${channel}/`).rows().filter(row => /isn’t a command here/.test(row.text));
+    typeSlash('/play x');
+    await act(() => vi.advanceTimersByTimeAsync(1_000));
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Command' }), { key: 'Enter' });
+    await act(() => vi.advanceTimersByTimeAsync(500));
+    expect(refusals()).toHaveLength(0);
+    await act(() => vi.advanceTimersByTimeAsync(5_000));
+    expect(refusals()).toHaveLength(0);
+    expect(screen.getByLabelText('query-or-url')).toHaveValue('x');
+  });
+
+  it('Enter on a name that never loads gives the refusal after at most 10 s', async () => {
+    const { core, typeSlash } = setup(() => new Promise(() => undefined));
+    const refusals = () => privateResults(core, ':', `${cid}/${channel}/`).rows().filter(row => /isn’t a command here/.test(row.text));
+    typeSlash('/play x');
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Command' }), { key: 'Enter' });
+    await act(() => vi.advanceTimersByTimeAsync(9_000));
+    expect(refusals()).toHaveLength(0);
+    await act(() => vi.advanceTimersByTimeAsync(1_500));
+    expect(refusals()).toHaveLength(1);
+  });
+
+  it('a failed load keeps the last good list and retries; a failure never replaces a good list', async () => {
+    let attempt = 0;
+    const { core, capabilities, typeSlash } = setup(() => {
+      attempt += 1;
+      if (attempt === 1) return Promise.reject(new Error('no active interaction group'));
+      if (attempt === 2) return Promise.resolve(caps([3, 12]));
+      return Promise.reject(new Error('timed out'));
+    });
+    typeSlash('/');
+    await act(() => vi.advanceTimersByTimeAsync(100));
+    expect(screen.queryByRole('option', { name: /\/play/ })).not.toBeInTheDocument();
+    await act(() => vi.advanceTimersByTimeAsync(30_000));
+    expect(screen.getByRole('option', { name: /\/play/ })).toBeInTheDocument();
+    await act(() => vi.advanceTimersByTimeAsync(30_000));
+    expect(capabilities).toHaveBeenCalledTimes(3);
+    expect(screen.getByRole('option', { name: /\/play/ })).toBeInTheDocument();
+    expect(core.calls.filter(call => call.m === 'callNote')).toEqual([{ m: 'callNote', code: 'E_BOT_CAPABILITIES' }, { m: 'callNote', code: 'E_BOT_CAPABILITIES' }]);
+  });
+});

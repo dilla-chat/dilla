@@ -170,9 +170,9 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
       ? builtinHandlers[command.id] !== undefined || extra[command.id] !== undefined
       : extra[command.id] !== undefined));
   }, [binding, handlers, gifsEnabled]);
-  // Wave B Task 2: a Bot command is listed only while the server's Bot reports its operation (read when the picker opens
-  // and every 30 s while it is open); its source tag is the Bot's display name.
-  const bot = useCommandBot(client, props.communityId, active);
+  // Wave B Task 2: a Bot command is listed only while the server's Bot reports its operation (held per community by command-bot-store: loaded when this
+  // composer mounts, refreshed every 30 s, kept when the picker closes); its source tag is the Bot's display name.
+  const bot = useCommandBot(client, props.communityId);
   const listed = useMemo(() => new Set(definitions.filter(command => commandListed(command, bot.operations)).map(command => command.id)), [definitions, bot.operations]);
   const members = useSlice(`members:${props.communityId ?? ''}`);
   const botName = installationBotName(members, bot.botUserId);
@@ -365,6 +365,6 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
     onConfirm={() => { setConfirmation(null); confirmationResolve.current?.('confirm'); confirmationResolve.current = null; }}
     onClose={() => { setConfirmation(null); confirmationResolve.current?.('cancel'); confirmationResolve.current = null; }} /> : null}{active ? <CommandPicker key={contextKey} definitions={definitions} initialText={saved}
     onUnknown={text => { resultStore.add({ at: Date.now(), status: 'failed', text, provider: 'builtin' }); leaveAfterRun(); }} onExecute={execution} onCancel={cancel} onDone={leaveAfterRun} onSendLiteral={sendLiteral} suggest={suggest} suggestionSources={suggestionSources} contextKey={contextKey}
-    moderationConfirmOpen={confirmation?.moderation !== undefined} listed={listed} room={room} onRunDetached={runDetached} {...(botName !== undefined ? { botName } : {})} {...(props.renderFrame !== undefined ? { frame: props.renderFrame } : {})}
+    moderationConfirmOpen={confirmation?.moderation !== undefined} listed={listed} loading={bot.waiting} room={room} onRunDetached={runDetached} {...(botName !== undefined ? { botName } : {})} {...(props.renderFrame !== undefined ? { frame: props.renderFrame } : {})}
     onDraftChange={text => { setCommandText(text); const row = memory.get(key); remember(memory, key, { text, requestId: row?.requestId ?? requestId(), invocationKey: row?.invocationKey ?? text, mode: 'active' }); }} /> : null}</>;
 }
