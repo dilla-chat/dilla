@@ -5,11 +5,13 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/cborx"
 	"github.com/dilla-chat/dilla/internal/id"
 )
 
@@ -119,8 +121,9 @@ func TestPublishClearsBackoff(t *testing.T) {
 	f.s.keyPackageErrFor[device] = exhaustedKeyPackageError()
 	f.queue(t, f.request.ParticipantUser)
 	f.pass()
-	if jobs := f.queuedJobs(t); len(jobs) != 1 || len(jobs[0].Backoff) != 1 || jobs[0].Backoff[0].Device != device {
-		t.Fatalf("backoff after an exhausted take: %+v", jobs)
+	key := interactionRegistrationBackoffKey{installation: f.install, user: f.request.ParticipantUser, episode: f.episode, device: device}
+	if !f.coordinator.backoff.has(key) {
+		t.Fatal("no backoff entry after an exhausted take")
 	}
 	delete(f.s.keyPackageErrFor, device)
 	clock.t = clock.t.Add(31 * time.Second)
@@ -129,7 +132,10 @@ func TestPublishClearsBackoff(t *testing.T) {
 		t.Fatalf("registered %d devices, want 2", f.s.registerCalls)
 	}
 	if jobs := f.queuedJobs(t); len(jobs) != 0 {
-		t.Fatalf("finished job still queued with its backoff: %+v", jobs)
+		t.Fatalf("finished job still queued: %+v", jobs)
+	}
+	if f.coordinator.backoff.has(key) {
+		t.Fatal("backoff entry survived a successful take")
 	}
 }
 
@@ -184,5 +190,122 @@ func TestBackoffLogsOnce(t *testing.T) {
 	f.pass()
 	if n := strings.Count(logs.String(), "level=WARN"); n != 2 {
 		t.Fatalf("%d warnings after a second device ran dry, want 2:\n%s", n, logs.String())
+	}
+}
+
+func TestQueueStaysVersionOneAfterBackoff(t *testing.T) {
+	f, _, _ := newBackoffFixture(t)
+	device := id.New()
+	f.s.candidates = []id.ID{device}
+	f.s.keyPackageErrFor[device] = exhaustedKeyPackageError()
+	f.queue(t, f.request.ParticipantUser)
+	f.pass()
+	value, err := f.n.StateGet(context.Background(), interactionRegistrationStateArea, []byte(interactionRegistrationQueueKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded []any
+	if err := cborx.Unmarshal(value.Value, &decoded); err != nil || len(decoded) != 2 || decoded[0] != uint64(1) {
+		t.Fatalf("queue after a backoff = %v (err %v), want wire version 1", decoded, err)
+	}
+	if jobs := f.queuedJobs(t); len(jobs) != 1 {
+		t.Fatalf("queue lost the stuck job: %+v", jobs)
+	}
+}
+
+func TestUnclassifiedFailureKeepsABackoff(t *testing.T) {
+	f, clock, logs := newBackoffFixture(t)
+	device := id.New()
+	f.s.candidates = []id.ID{device}
+	f.s.keyPackageErrFor[device] = exhaustedKeyPackageError()
+	f.queue(t, f.request.ParticipantUser)
+	f.pass()
+	f.s.keyPackageErrFor[device] = &client.APIError{Status: http.StatusInternalServerError, Code: "E_INTERNAL", Outcome: client.OutcomeDefinitive}
+	clock.t = clock.t.Add(time.Minute)
+	f.pass()
+	f.s.keyPackageErrFor[device] = exhaustedKeyPackageError()
+	clock.t = clock.t.Add(time.Minute)
+	f.pass()
+	if n := strings.Count(logs.String(), "level=WARN"); n != 1 {
+		t.Fatalf("%d warnings, want 1 (a transient failure must not reset the backoff):\n%s", n, logs.String())
+	}
+}
+
+func TestRealClientRefusalBacksOff(t *testing.T) {
+	f, clock, _ := newBackoffFixture(t)
+	device := id.New()
+	f.s.candidates = []id.ID{device}
+	instance := id.New()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/cbor")
+		var status int
+		var reply any
+		if strings.HasSuffix(r.URL.Path, "/instance") {
+			status, reply = http.StatusOK, []any{[]any{uint64(3), uint64(2)}, []any{uint64(1)}, []any{uint64(1)}, instance, uint64(1), "chat.example", uint64(0), []any{uint64(0)}, uint64(1), id.New(), make([]byte, 32)}
+		} else {
+			status, reply = http.StatusNotFound, []any{"E_KEYPACKAGES_EXHAUSTED", "key package", nil}
+		}
+		w.WriteHeader(status)
+		body, _ := cborx.Marshal(reply)
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+	c, err := client.New(client.Config{BaseURL: srv.URL, InstanceID: instance, AllowLoopbackHTTP: true, Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Discover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	session, _ := c.Session("device")
+	_, takeErr := session.KeyPackage(context.Background(), device)
+	f.s.keyPackageErrFor[device] = takeErr
+	f.queue(t, f.request.ParticipantUser)
+	f.pass()
+	calls := f.s.keyPackageCalls
+	clock.t = clock.t.Add(5 * time.Second)
+	f.pass()
+	if f.s.keyPackageCalls != calls {
+		t.Fatal("device taken again inside its backoff window: the client error was not classified")
+	}
+}
+
+func TestOneJobWithEightExhaustedDevicesDoesNotStarveLaterMembers(t *testing.T) {
+	f, _, _ := newBackoffFixture(t)
+	var stuck []id.ID
+	for i := 0; i < 8; i++ {
+		d := id.New()
+		stuck = append(stuck, d)
+		f.s.keyPackageErrFor[d] = exhaustedKeyPackageError()
+	}
+	f.s.candidatesByUser = []userDevices{{id.New(), stuck}, {id.New(), []id.ID{id.New()}}}
+	f.queueAll(t)
+	f.pass()
+	f.pass()
+	if f.s.registerCalls != 1 {
+		t.Fatalf("healthy member registered %d times within 2 passes, want 1", f.s.registerCalls)
+	}
+}
+
+func TestFourSingleDeviceStuckJobsDoNotStarveLaterMembers(t *testing.T) {
+	f, _, _ := newBackoffFixture(t)
+	for i := 0; i < 4; i++ {
+		d := id.New()
+		f.s.keyPackageErrFor[d] = exhaustedKeyPackageError()
+		f.s.candidatesByUser = append(f.s.candidatesByUser, userDevices{id.New(), []id.ID{d}})
+	}
+	f.s.candidatesByUser = append(f.s.candidatesByUser, userDevices{id.New(), []id.ID{id.New()}})
+	f.queueAll(t)
+	f.pass()
+	f.pass()
+	if f.s.registerCalls != 1 {
+		t.Fatalf("healthy member registered %d times within 2 passes, want 1", f.s.registerCalls)
+	}
+}
+
+func (f *interactionRegistrationFixture) queueAll(t *testing.T) {
+	t.Helper()
+	for _, u := range f.s.candidatesByUser {
+		f.queue(t, u.user)
 	}
 }

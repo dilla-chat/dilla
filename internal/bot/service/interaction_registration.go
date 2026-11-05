@@ -71,13 +71,14 @@ type InteractionRegistrationCoordinator struct {
 	session                           interactionRegistrationSessionAPI
 	now                               func() time.Time
 	logger                            *slog.Logger
+	backoff                           *InteractionRegistrationBackoff
 }
 
 func NewInteractionRegistrationCoordinator(instance, community, installation id.ID, n interactionRegistrationNativeAPI, discovery interactionRegistrationDiscoveryAPI, session interactionRegistrationSessionAPI) (*InteractionRegistrationCoordinator, error) {
 	if instance.IsZero() || community.IsZero() || installation.IsZero() || n == nil || discovery == nil || session == nil || n.Binding() != (native.Binding{Instance: instance, Community: community, Installation: installation}) {
 		return nil, errors.New("invalid bot interaction registration binding")
 	}
-	return &InteractionRegistrationCoordinator{instance: instance, community: community, installation: installation, native: n, discovery: discovery, session: session, now: time.Now, logger: slog.Default()}, nil
+	return &InteractionRegistrationCoordinator{instance: instance, community: community, installation: installation, native: n, discovery: discovery, session: session, now: time.Now, logger: slog.Default(), backoff: NewInteractionRegistrationBackoff()}, nil
 }
 
 type InteractionRegistrationRequest struct {
@@ -784,6 +785,14 @@ var _ = fmt.Sprintf
 func (c *InteractionRegistrationCoordinator) WithLogger(logger *slog.Logger) *InteractionRegistrationCoordinator {
 	if logger != nil {
 		c.logger = logger
+	}
+	return c
+}
+
+// WithBackoff shares a backoff store across coordinators rebuilt each pass.
+func (c *InteractionRegistrationCoordinator) WithBackoff(backoff *InteractionRegistrationBackoff) *InteractionRegistrationCoordinator {
+	if backoff != nil {
+		c.backoff = backoff
 	}
 	return c
 }

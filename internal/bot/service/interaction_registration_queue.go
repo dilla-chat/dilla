@@ -5,8 +5,6 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	"math"
-	"time"
 
 	"github.com/dilla-chat/dilla/internal/bot/native"
 	"github.com/dilla-chat/dilla/internal/cborx"
@@ -18,12 +16,6 @@ const (
 	maxInteractionRegistrationQueue       = 256
 	maxInteractionRegistrationJobsPerPass = 4
 	maxInteractionRegistrationDevicesPass = 8
-
-	interactionRegistrationBackoffBase = 30 * time.Second
-	interactionRegistrationBackoffMax  = time.Hour
-	// The persisted wire version that carries per-device backoff. Version 1
-	// rows have no backoff and still decode.
-	interactionRegistrationQueueVersion = 2
 )
 
 var ErrInteractionRegistrationQueueFull = errors.New("bot interaction registration queue is full")
@@ -39,39 +31,6 @@ type interactionRegistrationCandidateProvider interface {
 type interactionRegistrationJob struct {
 	User, Episode id.ID
 	Processed     []id.ID
-	Backoff       []interactionRegistrationBackoff
-}
-
-// interactionRegistrationBackoff holds a device that has no KeyPackage to take
-// out of the passes until NotBefore. It lives in the job so a restart neither
-// forgets it nor repeats the entry warning.
-type interactionRegistrationBackoff struct {
-	Device    id.ID
-	Failures  uint64
-	NotBefore time.Time
-}
-
-func interactionRegistrationBackoffDelay(failures uint64) time.Duration {
-	delay := interactionRegistrationBackoffBase
-	for ; failures > 1 && delay < interactionRegistrationBackoffMax; failures-- {
-		delay *= 2
-	}
-	return min(delay, interactionRegistrationBackoffMax)
-}
-
-func (j *interactionRegistrationJob) backoffIndex(device id.ID) int {
-	for i, b := range j.Backoff {
-		if b.Device == device {
-			return i
-		}
-	}
-	return -1
-}
-
-func (j *interactionRegistrationJob) clearBackoff(device id.ID) {
-	if i := j.backoffIndex(device); i >= 0 {
-		j.Backoff = append(j.Backoff[:i:i], j.Backoff[i+1:]...)
-	}
 }
 
 // QueueMemberJoin durably records a member-episode trigger. It performs no
@@ -151,6 +110,7 @@ func (c *InteractionRegistrationCoordinator) ProcessPending(ctx context.Context,
 			continue
 		}
 		if !present || current != job.Episode {
+			c.backoff.dropJob(c.installation, job.User, job.Episode)
 			jobs = removeRegistrationJob(jobs, i)
 			continue
 		}
@@ -180,7 +140,8 @@ func (c *InteractionRegistrationCoordinator) ProcessPending(ctx context.Context,
 			if _, done := processed[device]; done {
 				continue
 			}
-			if b := job.backoffIndex(device); b >= 0 && now.Before(job.Backoff[b].NotBefore) {
+			slot := interactionRegistrationBackoffKey{installation: c.installation, user: job.User, episode: job.Episode, device: device}
+			if !c.backoff.due(slot, now) {
 				continue
 			}
 			if devicesVisited >= deviceBudget {
@@ -200,15 +161,17 @@ func (c *InteractionRegistrationCoordinator) ProcessPending(ctx context.Context,
 			_, err = c.Register(ctx, InteractionRegistrationRequest{Group: group, ParticipantUser: job.User, ParticipantDevice: device})
 			if errors.Is(err, ErrInteractionRegistrationManualRecovery) {
 				failures = append(failures, fmt.Errorf("manual recovery required for device registration: %w", err))
+				c.backoff.clear(slot)
 				processed[device] = struct{}{}
 				job.Processed = append(job.Processed, device)
 				continue
 			}
 			if code := keyPackageUnavailableCode(err); code != "" {
-				c.backOffDevice(&job, device, code, now)
+				if c.backoff.fail(slot, now) {
+					c.logger.Warn("bot interaction registration backing off a device with no key packages", "installation_id", c.installation.String(), "device_id", device.String(), "reason", code)
+				}
 				continue
 			}
-			job.clearBackoff(device)
 			if err != nil {
 				// Eligibility can change while the member episode remains current.
 				// Keep rejected candidates pending so a later bounded pass can
@@ -217,14 +180,16 @@ func (c *InteractionRegistrationCoordinator) ProcessPending(ctx context.Context,
 				failures = append(failures, fmt.Errorf("register eligible device: %w", err))
 				continue
 			}
+			c.backoff.clear(slot)
 			processed[device] = struct{}{}
 			job.Processed = append(job.Processed, device)
 		}
-		job.pruneBackoff(devices)
 		if stale {
+			c.backoff.dropJob(c.installation, job.User, job.Episode)
 			jobs = removeRegistrationJob(jobs, i)
 			continue
 		}
+		c.backoff.retain(c.installation, job.User, job.Episode, devices)
 		allDone := true
 		for _, device := range devices {
 			if _, done := processed[device]; !done {
@@ -233,6 +198,7 @@ func (c *InteractionRegistrationCoordinator) ProcessPending(ctx context.Context,
 			}
 		}
 		if allDone {
+			c.backoff.dropJob(c.installation, job.User, job.Episode)
 			jobs = removeRegistrationJob(jobs, i)
 			continue
 		}
@@ -243,47 +209,6 @@ func (c *InteractionRegistrationCoordinator) ProcessPending(ctx context.Context,
 		return errors.Join(err, errors.Join(failures...))
 	}
 	return errors.Join(failures...)
-}
-
-// backOffDevice records one more KeyPackage-less attempt. The warning fires
-// only when the device first enters backoff; later doublings are silent.
-func (c *InteractionRegistrationCoordinator) backOffDevice(job *interactionRegistrationJob, device id.ID, code string, now time.Time) {
-	i := job.backoffIndex(device)
-	if i < 0 {
-		job.Backoff = append(job.Backoff, interactionRegistrationBackoff{Device: device})
-		i = len(job.Backoff) - 1
-		c.logger.Warn("bot interaction registration backing off a device with no key packages", "installation_id", c.installation.String(), "device_id", device.String(), "reason", code)
-	}
-	b := &job.Backoff[i]
-	b.Failures++
-	b.NotBefore = now.Add(interactionRegistrationBackoffDelay(b.Failures))
-}
-
-// pruneBackoff drops entries for devices that are done or no longer candidates.
-func (j *interactionRegistrationJob) pruneBackoff(devices []id.ID) {
-	kept := j.Backoff[:0:0]
-	for _, b := range j.Backoff {
-		for _, d := range devices {
-			if d == b.Device {
-				kept = append(kept, b)
-				break
-			}
-		}
-	}
-	for _, done := range j.Processed {
-		kept = slicesDeleteDevice(kept, done)
-	}
-	j.Backoff = kept
-}
-
-func slicesDeleteDevice(rows []interactionRegistrationBackoff, device id.ID) []interactionRegistrationBackoff {
-	out := rows[:0]
-	for _, b := range rows {
-		if b.Device != device {
-			out = append(out, b)
-		}
-	}
-	return out
 }
 
 func interactionRegistrationGroupID(installation, community, episode, user, device id.ID) id.ID {
@@ -348,19 +273,9 @@ func encodeInteractionRegistrationJobs(jobs []interactionRegistrationJob) ([]byt
 			}
 			processed[j] = device
 		}
-		if len(job.Backoff) > 256 {
-			return nil, ErrInteractionRegistrationRecovery
-		}
-		backoff := make([]any, len(job.Backoff))
-		for j, b := range job.Backoff {
-			if b.Device.IsZero() || b.Failures == 0 || b.NotBefore.UnixMilli() < 0 {
-				return nil, ErrInteractionRegistrationRecovery
-			}
-			backoff[j] = []any{b.Device, b.Failures, uint64(b.NotBefore.UnixMilli())}
-		}
-		rows[i] = []any{job.User, job.Episode, processed, backoff}
+		rows[i] = []any{job.User, job.Episode, processed}
 	}
-	return cborx.Marshal([]any{uint64(interactionRegistrationQueueVersion), rows})
+	return cborx.Marshal([]any{uint64(1), rows})
 }
 
 func decodeInteractionRegistrationJobs(raw []byte) ([]interactionRegistrationJob, error) {
@@ -373,13 +288,13 @@ func decodeInteractionRegistrationJobs(raw []byte) ([]interactionRegistrationJob
 	}
 	version, ok := value[0].(uint64)
 	rows, rok := value[1].([]any)
-	if !ok || (version != 1 && version != interactionRegistrationQueueVersion) || !rok || len(rows) > maxInteractionRegistrationQueue {
+	if !ok || version != 1 || !rok || len(rows) > maxInteractionRegistrationQueue {
 		return nil, ErrInteractionRegistrationRecovery
 	}
 	jobs := make([]interactionRegistrationJob, len(rows))
 	for i, rawRow := range rows {
 		row, ok := rawRow.([]any)
-		if !ok || (version == 1 && len(row) != 3) || (version == interactionRegistrationQueueVersion && len(row) != 4) {
+		if !ok || len(row) != 3 {
 			return nil, ErrInteractionRegistrationRecovery
 		}
 		user, uok := registrationID(row[0])
@@ -400,26 +315,6 @@ func decodeInteractionRegistrationJobs(raw []byte) ([]interactionRegistrationJob
 			}
 			seen[device] = struct{}{}
 			jobs[i].Processed[j] = device
-		}
-		if version == 1 {
-			continue
-		}
-		backoff, ok := row[3].([]any)
-		if !ok || len(backoff) > 256 {
-			return nil, ErrInteractionRegistrationRecovery
-		}
-		for _, rawBackoff := range backoff {
-			entry, ok := rawBackoff.([]any)
-			if !ok || len(entry) != 3 {
-				return nil, ErrInteractionRegistrationRecovery
-			}
-			device, dok := registrationID(entry[0])
-			failures, fok := entry[1].(uint64)
-			notBefore, nok := entry[2].(uint64)
-			if !dok || device.IsZero() || !fok || failures == 0 || !nok || notBefore > math.MaxInt64 || jobs[i].backoffIndex(device) >= 0 {
-				return nil, ErrInteractionRegistrationRecovery
-			}
-			jobs[i].Backoff = append(jobs[i].Backoff, interactionRegistrationBackoff{Device: device, Failures: failures, NotBefore: time.UnixMilli(int64(notBefore))})
 		}
 	}
 	return jobs, nil
