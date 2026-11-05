@@ -37,6 +37,19 @@ describe('Splash', () => {
     expect(onAction).toHaveBeenCalledTimes(1);
   });
 
+  it('renders an optional second action beside the first, outside the status region', async () => {
+    const user = userEvent.setup();
+    const onAction = vi.fn();
+    const onSecondary = vi.fn();
+    render(<Splash status="dilla could not start" action={{ label: 'Try again', onAction }} secondary={{ label: 'Switch instance', onAction: onSecondary }} />);
+    expect(screen.getAllByRole('button').map(b => b.textContent)).toEqual(['Try again', 'Switch instance']);
+    const second = screen.getByRole('button', { name: 'Switch instance' });
+    expect(screen.getByRole('status')).not.toContainElement(second);
+    await user.click(second);
+    expect(onSecondary).toHaveBeenCalledTimes(1);
+    expect(onAction).not.toHaveBeenCalled();
+  });
+
   it('has no serious axe violations', async () => {
     const { container } = render(<div className="d-root"><Splash status={STATUS} detail={DETAIL} action={{ label: 'try again', onAction: () => {} }} /></div>);
     await expectNoAxeViolations(container);

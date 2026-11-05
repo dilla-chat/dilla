@@ -35,6 +35,18 @@ describe('You', () => {
     expect(screen.getByText(t('you.line', { handle: 'ada', status: t('presence.online') }))).toBeInTheDocument();
   });
 
+  // Final review I2: the mobile app has a way back to its instance picker from You.
+  it('offers Switch instance in the mobile app, and only there', async () => {
+    expect(setup().view.container.textContent).not.toContain(t('mobile.switchInstance'));
+    const send = vi.fn(() => Promise.resolve());
+    vi.stubGlobal('dillaMobile', { send, onEvent: () => () => {} });
+    try {
+      const { user } = setup();
+      await user.click(screen.getByRole('button', { name: t('mobile.switchInstance') }));
+      expect(send).toHaveBeenCalledWith({ type: 'switch-instance' });
+    } finally { vi.unstubAllGlobals(); }
+  });
+
   it('falls back to the username when no server knows a display name', () => {
     const { fake } = setup();
     act(() => fake.set(`members:${A}`, []));

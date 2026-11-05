@@ -1,6 +1,6 @@
 // The instance picker: a port of packages/desktop/src/manager.ts (list, add, connect) over @capacitor/preferences.
 import { Preferences } from '@capacitor/preferences';
-import { addInstance, CONNECT_ERROR, currentInstance, listInstances, selectInstance } from './instances.ts';
+import { addInstance, CONNECT_ERROR, currentInstance, listInstances, reachInstance, selectInstance } from './instances.ts';
 
 const form = document.querySelector('form')!;
 const input = document.querySelector<HTMLInputElement>('#instance')!;
@@ -28,5 +28,5 @@ async function render(): Promise<void> {
     item.append(button); list.append(item);
   }
 }
-form.addEventListener('submit', event => { event.preventDefault(); void connect(() => addInstance(Preferences, input.value)); });
+form.addEventListener('submit', event => { event.preventDefault(); void connect(() => addInstance(Preferences, input.value, reachInstance(window.fetch.bind(window)))); });
 void render().catch(() => { error.textContent = 'Could not read your instances. Restart Dilla to try again.'; });

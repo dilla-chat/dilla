@@ -36,6 +36,32 @@ describe('Boot', () => {
     await expectNoAxeViolations(view.container);
   });
 
+  // Final review I2/item 5: in the mobile app the error splash speaks app words and offers the way back to the picker.
+  it('offers Try again and Switch instance on the error splash in the mobile app', async () => {
+    const send = vi.fn(() => Promise.resolve());
+    vi.stubGlobal('dillaMobile', { send, onEvent: () => () => {} });
+    try {
+      const reload = vi.spyOn(browser, 'reload').mockImplementation(() => {});
+      const user = userEvent.setup();
+      const { view } = show(null, { code: 'E_NETWORK', detail: '', status: 0, retryAfterMs: null });
+      expect(screen.getByRole('status')).toHaveTextContent('Error E_NETWORK. Try again, or switch to another instance.');
+      expect(screen.getByRole('status')).not.toHaveTextContent(/reload the page/i);
+      expect(screen.getAllByRole('button').map(b => b.textContent)).toEqual(['Try again', 'Switch instance']);
+      await user.click(screen.getByRole('button', { name: 'Switch instance' }));
+      expect(send).toHaveBeenCalledWith({ type: 'switch-instance' });
+      await user.click(screen.getByRole('button', { name: 'Try again' }));
+      expect(reload).toHaveBeenCalledTimes(1);
+      reload.mockRestore();
+      await expectNoAxeViolations(view.container);
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it('keeps the browser wording and offers no Switch instance outside the mobile app', () => {
+    show(null, { code: 'E_NETWORK', detail: '', status: 0, retryAfterMs: null });
+    expect(screen.getByRole('status')).toHaveTextContent('Error E_NETWORK. Reload the page to try again.');
+    expect(screen.getAllByRole('button').map(b => b.textContent)).toEqual(['Reload']);
+  });
+
   it('explains the other tab', () => {
     show('other-tab');
     expect(screen.getByRole('status')).toHaveTextContent('Use that tab, or close it. This tab takes over as soon as the other one closes.');

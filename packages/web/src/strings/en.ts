@@ -144,6 +144,13 @@ export const en = {
   'boot.error.status': 'dilla could not start',
   'boot.error.detail': 'Error {code}. Reload the page to try again.',
   'boot.error.action': 'Reload',
+  // The mobile app (packages/mobile): it bundles its client, so "Reload the page" is browser wording there. The app's
+  // way back to its instance picker is Switch instance (MobileCommand switch-instance).
+  'mobile.switchInstance': 'Switch instance',
+  'mobile.retry': 'Try again',
+  'mobile.boot.error.detail': 'Error {code}. Try again, or switch to another instance.',
+  'mobile.onboarding.error.network': 'The connection dropped while creating your account. Try again to finish.',
+  'mobile.shell.banner.clientTooOld': 'This server needs a newer client. Update the app.',
   'dialog.close': 'Close',
   'onboarding.step': 'New account · step {n} of {total}',
   'onboarding.back': 'Back',

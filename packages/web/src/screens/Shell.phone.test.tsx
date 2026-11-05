@@ -530,6 +530,21 @@ describe('the phone shell: history', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'gen' })).toHaveFocus());
   });
 
+  // Item 5: the app bundles its client, so a reload cannot fetch a newer one; the banner says to update the app instead.
+  it('asks the mobile app to be updated, with no reload action, when the server needs a newer client', async () => {
+    vi.stubGlobal('dillaMobile', { send: () => Promise.resolve(), onEvent: () => () => {}, info: () => Promise.resolve({ platform: 'ios', version: '0.1.0', instance: 'https://chat.example/' }),
+      notificationPermission: () => Promise.resolve('default'), requestNotificationPermission: () => Promise.resolve('default') });
+    try {
+      const { client } = phone({ path: `/c/${A}` });
+      await screen.findByRole('navigation', { name: t('shell.channels.label') });
+      act(() => client.set('connection', { status: 'offline', generation: '1', reason: 'version' }));
+      const banner = screen.getByText(t('mobile.shell.banner.clientTooOld'));
+      expect(banner).toHaveTextContent('This server needs a newer client. Update the app.');
+      expect(screen.queryByText(t('shell.banner.clientTooOld'))).toBeNull();
+      expect(screen.queryByRole('button', { name: t('reload.action') })).toBeNull();
+    } finally { vi.unstubAllGlobals(); }
+  });
+
   it('closes a direct Settings link with Escape without adding history', async () => {
     const { user } = phone({ path: '/settings/devices', withSettings: true });
     await screen.findByRole('dialog', { name: t('settings.title') });

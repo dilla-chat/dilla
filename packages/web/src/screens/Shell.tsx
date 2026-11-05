@@ -1819,7 +1819,10 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
           {t(ownTrust === 'changed' ? 'privacy.ownChanged' : 'privacy.ownUnlisted')}
         </Banner>
       ) : null}
-      {offline && linkReason === 'version' ? (
+      {offline && linkReason === 'version' && mobileBridge() !== undefined ? (
+        // The mobile app bundles its client: a reload cannot fetch a newer one, so the banner asks for an app update.
+        <Banner tone="warn">{t('mobile.shell.banner.clientTooOld')}</Banner>
+      ) : offline && linkReason === 'version' ? (
         <Banner tone="warn" action={{ label: t('reload.action'), onAction: () => {
           // The update effect checkpoints the draft, route and files, then reloads; with no update flow or storage it is a plain reload.
           if (update === undefined || updateScope === null) browser.reload();

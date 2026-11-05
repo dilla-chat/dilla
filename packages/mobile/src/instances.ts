@@ -58,9 +58,27 @@ export async function currentInstance(store: PreferenceStore): Promise<string | 
   return value && (await listInstances(store)).includes(value) ? value : null;
 }
 
-/** Validates, stores once (a duplicate add is a no-op), and makes the instance current. */
-export async function addInstance(store: PreferenceStore, input: string): Promise<string> {
+/** Checks that an instance answers, before the picker stores it. Rejects when it cannot be reached. */
+export type InstanceProbe = (instance: string) => Promise<void>;
+
+type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
+
+/** The picker's probe: GET <instance>/v1/instance through the WebView's own fetch, so it also proves the server
+ *  answers the app's origin (http.mobile_origins, CORS). No credentials, no redirects, a 10 s cap, and a 2xx only. */
+export function reachInstance(fetchImpl: Fetch): InstanceProbe {
+  return async instance => {
+    const response = await fetchImpl(new URL('v1/instance', instance).href, {
+      method: 'GET', credentials: 'omit', redirect: 'error', cache: 'no-store', signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) throw new Error(`instance answered ${response.status}`);
+  };
+}
+
+/** Validates, probes, stores once (a duplicate add is a no-op), and makes the instance current. An instance that cannot
+ *  be reached is refused with the desktop copy and nothing is stored. */
+export async function addInstance(store: PreferenceStore, input: string, probe: InstanceProbe): Promise<string> {
   const instance = mobileInstance(input);
+  try { await probe(instance); } catch { throw new Error(CONNECT_ERROR); }
   const instances = await listInstances(store);
   if (!instances.includes(instance)) await store.set({ key: 'instances', value: JSON.stringify([...instances, instance]) });
   await store.set({ key: 'current', value: instance });
