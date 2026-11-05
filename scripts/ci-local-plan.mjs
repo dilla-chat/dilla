@@ -41,6 +41,7 @@ export const JOB_MAP = {
     'ci-watchdog': SHARED_JOBS['ci-watchdog'],
     'server-work-complete': { kind: 'aggregate', weight: 0 },
     docs: { weight: 1 },
+    'server-scripts': { weight: 1 },
     'rust-native': SHARED_JOBS['rust-native'],
     'rust-wasi': SHARED_JOBS['rust-wasi'],
     vectors: { weight: 2, locks: ['tracked-tree'] },

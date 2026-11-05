@@ -53,7 +53,14 @@ test('a UI-only change runs the web jobs and the browsers, no Go jobs', () => {
   assert.deepEqual(outputs, { go: false, core: false, web: true, e2e: true, text: false, code: true });
   assert.deepEqual(ranJobs('desktop', outputs), Object.keys(JOB_GATES.desktop));
   // The release binaries embed the web client, so server rebuilds and embeds it; no Go tests run.
-  assert.deepEqual(ranJobs('server', outputs).sort(), ['go-release', 'rust-native', 'rust-wasi', 'web-build']);
+  assert.deepEqual(ranJobs('server', outputs).sort(), ['go-release', 'rust-native', 'rust-wasi', 'server-scripts', 'web-build']);
+});
+
+test('a change to anything release.yml ships or the bot-ops guard reads runs server-scripts', () => {
+  for (const file of ['deploy/install.sh', 'deploy/install-bot.sh', 'deploy/install_bot_test.sh', 'scripts/check-bot-operations.mjs', 'internal/bot/protocol/codec.go', 'packages/client-core/src/bot/utilities.ts', 'package.json']) {
+    assert.ok(jobRuns('server', 'server-scripts', areasFor([file])), file);
+  }
+  assert.ok(!jobRuns('server', 'server-scripts', areasFor(['docs/deploy/README.md'])));
 });
 
 test('the design tokens are read by a Go test, so they run the Go jobs too', () => {

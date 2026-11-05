@@ -77,6 +77,25 @@ jobs:
       # must run whatever the change was.
       - run: npm run check:ci
 
+  # The scripts release.yml ships (deploy/install.sh, deploy/install-bot.sh) and the Bot operation drift guard, with
+  # their tests, so a server release is cut only from a commit whose installers passed here. deploy/** is go, scripts/**
+  # forces everything and the drift guard reads Go and client sources, so `code` is the one gate that covers them all.
+  server-scripts:
+    needs: [changes]
+    if: needs.changes.outputs.code != 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run test:bot-ops-check
+      - run: npm run check:bot-ops
+      - run: npm run test:install
+      - run: bash deploy/install_bot_test.sh
+
   rust-native:
     needs: [changes]
     if: needs.changes.outputs.code != 'false'
@@ -618,7 +637,7 @@ jobs:
   # A DAG barrier prevents the watcher exiting between root jobs and later matrix/reusable
   # children. This does no build work and never depends on the watcher or final aggregator.
   server-work-complete:
-    needs: [changes, docs, rust-native, rust-wasi, vectors, web-build, deny, go, go-checks, go-native, go-ds, go-api, go-harness, go-fts5-arm64, go-lint, go-vuln, go-sqlc, go-postgres, go-release]
+    needs: [changes, docs, server-scripts, rust-native, rust-wasi, vectors, web-build, deny, go, go-checks, go-native, go-ds, go-api, go-harness, go-fts5-arm64, go-lint, go-vuln, go-sqlc, go-postgres, go-release]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -627,7 +646,7 @@ jobs:
 
   # One check for the whole workflow: red on any failure/cancellation, green for success or intentional skips.
   server-ok:
-    needs: [ci-watchdog, server-work-complete, changes, docs, rust-native, rust-wasi, vectors, web-build, deny, go, go-checks, go-native, go-ds, go-api, go-harness, go-fts5-arm64, go-lint, go-vuln, go-sqlc, go-postgres, go-release]
+    needs: [ci-watchdog, server-work-complete, changes, docs, server-scripts, rust-native, rust-wasi, vectors, web-build, deny, go, go-checks, go-native, go-ds, go-api, go-harness, go-fts5-arm64, go-lint, go-vuln, go-sqlc, go-postgres, go-release]
     if: always()
     runs-on: ubuntu-latest
     steps:

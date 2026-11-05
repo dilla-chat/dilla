@@ -79,8 +79,6 @@ jobs:
       - run: npm run test:ci-check
       - run: npm run test:wasm-size-check
       - run: npm run test:manifest-writer
-      - run: npm run test:install
-      - run: bash deploy/install_bot_test.sh
       - if: needs.changes.outputs.web != 'false'
         run: sudo apt-get update && sudo apt-get install -y libarchive-tools
       # The Unicode inputs are cached under a key of the generator file, which holds their pinned checksums: they are

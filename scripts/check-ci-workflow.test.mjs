@@ -700,7 +700,6 @@ jobs:
       - run: npm run test:ci-check
       - run: npm run test:wasm-size-check
       - run: npm run test:manifest-writer
-      - run: npm run test:install
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: needs.changes.outputs.web != 'false' || needs.changes.outputs.text != 'false'
         with:
@@ -709,6 +708,14 @@ jobs:
       - name: profile-text tables are current
         if: needs.changes.outputs.text != 'false'
         run: node scripts/gen-profile-text-tables.mjs --download --check "$RUNNER_TEMP/ucd"
+  server-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - run: npm ci
+      - run: npm run test:bot-ops-check
+      - run: npm run check:bot-ops
+      - run: npm run test:install
+      - run: bash deploy/install_bot_test.sh
   ui:
     runs-on: ubuntu-latest
     steps:
@@ -1885,7 +1892,10 @@ for (const [job, needle] of [
   ['go-release', 'content="placeholder"'],
   ['go-release', 'go test -tags webdist ./internal/web/...'],
   ['node', 'npm run test:manifest-writer'],
-  ['node', 'npm run test:install'],
+  ['server-scripts', 'npm run test:bot-ops-check'],
+  ['server-scripts', 'npm run check:bot-ops'],
+  ['server-scripts', 'npm run test:install'],
+  ['server-scripts', 'bash deploy/install_bot_test.sh'],
   ['rust-wasm-node', 'npm run typecheck -w @dilla/core-wasm'],
   ['rust-wasm-node', 'cargo clippy -p dilla-core-wasm --target wasm32-unknown-unknown --lib --locked -- -D warnings'],
   ['rust-wasm-node', '- run: rustup show active-toolchain'],
@@ -1898,6 +1908,21 @@ for (const [job, needle] of [
     assert.ok(problems.some((p) => p.includes(`"${job}"`) && p.includes(needle)), problems.join('\n'));
   });
 }
+
+// release.yml publishes deploy/install.sh and deploy/install-bot.sh, so the server workflow (server-ok gates the release)
+// runs their tests and the Bot operation drift guard; desktop's node job no longer carries the installer tests.
+const SERVER_SCRIPT_STEPS = ['npm run test:bot-ops-check', 'npm run check:bot-ops', 'npm run test:install', 'bash deploy/install_bot_test.sh'];
+test('the server workflow runs the scripts release.yml ships, gated on any code change', () => {
+  const body = /^  server-scripts:\n[\s\S]*?(?=^  [a-z][\w-]*:)/m.exec(REAL_SERVER)?.[0] ?? '';
+  assert.match(body, /^    needs: \[changes\]\n    if: needs\.changes\.outputs\.code != 'false'$/m);
+  for (const step of SERVER_SCRIPT_STEPS) assert.ok(body.includes(`      - run: ${step}\n`), step);
+  assert.match(REAL_SERVER, /^  server-ok:\n    needs: \[[^\]\n]*\bserver-scripts\b/m);
+  assert.doesNotMatch(REAL_DESKTOP_CI, /npm run test:install|install_bot_test\.sh/);
+  for (const step of SERVER_SCRIPT_STEPS) {
+    const problems = checkServerWorkflow(fixture(REAL_CI.replace(`      - run: ${step}\n`, '')));
+    assert.ok(problems.some((p) => p.includes('job "server-scripts" is missing') && p.includes(step)), `${step}\n${problems.join('\n')}`);
+  }
+});
 
 for (const job of Object.keys(BROWSER_WEB_JOBS)) {
   for (const need of ['rust-native', 'rust-wasi', 'web-build']) {

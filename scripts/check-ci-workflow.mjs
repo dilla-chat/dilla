@@ -23,6 +23,8 @@ export const REQUIRED_JOBS = {
     'server-work-complete',
     // The aggregator: one check that is red when any job failed or was cancelled and green when the rest passed or were skipped by design.
     'server-ok',
+    // The installers release.yml publishes and the Bot operation drift guard, with their tests.
+    'server-scripts',
     'rust-native',
     'rust-wasi',
     'vectors',
@@ -199,6 +201,9 @@ const REQUIRED_STEPS = {
   // The cheap docs gates, for every change.
   // Their unit tests and the real checks against the real files; check:ci reads the Go tree for the race and Postgres rules.
   docs: ['npm run test:docs-check', 'npm run test:brief-check', 'npm run test:copy-check', 'npm run check:docs', 'npm run check:brief', 'npm run check:copy', 'npm run check:ci'],
+  // release.yml publishes deploy/install.sh and deploy/install-bot.sh, so the server workflow runs their tests (and
+  // shellcheck, which the runner image carries) and the Bot operation drift guard.
+  'server-scripts': ['npm run test:bot-ops-check', 'npm run check:bot-ops', 'npm run test:install', 'bash deploy/install_bot_test.sh'],
   // The final gate of each workflow runs regardless of dependency results, alongside its no-op completion barrier.
   'server-ok': ["contains(needs.*.result, 'failure')", "contains(needs.*.result, 'cancelled')"],
   'desktop-ok': ["contains(needs.*.result, 'failure')", "contains(needs.*.result, 'cancelled')"],
@@ -249,10 +254,9 @@ const REQUIRED_STEPS = {
   // `node` job (test:docs-check, test:brief-check, test:copy-check). This gate enforces that for
   // itself, so it cannot silently rot.
   // Task 26: exercise the manifest writer beside the other script gates.
-  // install-release: deploy/install.sh's own tests (and shellcheck, which the runner image carries).
   // Desktop merge security review M2: internal/desktopauth/browser.js (go:embed) is generated from the web client's
   // webauthn.ts, and a stale copy would ship passkey code the web client no longer has.
-  node: ["- if: needs.changes.outputs.web != 'false'\n        run: npm test\n        env:\n          DILLA_UCD_DIR: ${{ runner.temp }}/ucd", "name: vectors are up to date\n        if: needs.changes.outputs.web != 'false'", 'npm run test:css-check', 'npm run check:css', 'npm run check:desktop-auth', 'npm run test:ci-check', 'npm run test:wasm-size-check', 'npm run test:manifest-writer', 'npm run test:install', "uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n        if: needs.changes.outputs.web != 'false' || needs.changes.outputs.text != 'false'", "name: profile-text tables are current\n        if: needs.changes.outputs.text != 'false'\n        run: node scripts/gen-profile-text-tables.mjs --download --check \"$RUNNER_TEMP/ucd\""],
+  node: ["- if: needs.changes.outputs.web != 'false'\n        run: npm test\n        env:\n          DILLA_UCD_DIR: ${{ runner.temp }}/ucd", "name: vectors are up to date\n        if: needs.changes.outputs.web != 'false'", 'npm run test:css-check', 'npm run check:css', 'npm run check:desktop-auth', 'npm run test:ci-check', 'npm run test:wasm-size-check', 'npm run test:manifest-writer', "uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n        if: needs.changes.outputs.web != 'false' || needs.changes.outputs.text != 'false'", "name: profile-text tables are current\n        if: needs.changes.outputs.text != 'false'\n        run: node scripts/gen-profile-text-tables.mjs --download --check \"$RUNNER_TEMP/ucd\""],
   // Task 26/F16 (web-1), task 23 (web-2a), task 11 (web-2b): capture the seven story groups and three web-2b-only prefixes in all three themes.
   // Task 11 (web-2c, L-CI-22): the web-2c families at both viewports go up as a second artifact, both directories named.
   ui: [

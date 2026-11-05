@@ -101,6 +101,8 @@ export const WORKFLOWS = {
 const RUST_ARTIFACTS = { 'rust-native': ['code'], 'rust-wasi': ['code'] };
 export const JOB_GATES = {
   server: {
+    // deploy/** (go), scripts/** (every area) and the bot-ops sources (go, web): any code change.
+    'server-scripts': ['code'],
     ...RUST_ARTIFACTS,
     vectors: ['core'],
     'web-build': ['go', 'web'],
