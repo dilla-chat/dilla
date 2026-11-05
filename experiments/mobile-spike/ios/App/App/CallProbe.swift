@@ -1,7 +1,9 @@
 // M0 spike only (throwaway): a CallKit outgoing call for the call probe (call.html / call-probe.ts).
 // startCall: CXStartCallAction through CXCallController. perform(CXStartCallAction) sets the session to
 // .playAndRecord / .voiceChat and fulfills; CallKit activates the session, and the promise resolves in
-// provider(_:didActivate:). endCall ends the call. status() returns the audio session, the record permission, the
+// provider(_:didActivate:). endCall ends the call. audioSessionInfo() logs/returns the session (force-mic follow-up);
+// configureSession() sets .playAndRecord/.voiceChat and activates it without CallKit (mode "no-callkit+session").
+// status() returns the audio session, the record permission, the
 // CallKit calls and the native log so far; requestMic() asks for the record permission natively.
 // Every native event is a "DILLA_CALL_NATIVE ..." line: NSLog'ed (Console.app / devicectl --console) and also sent to
 // the page as a "nativeLog" event (retained until the page listens), so the page history interleaves both sides.
@@ -22,6 +24,8 @@ public class CallProbePlugin: CAPPlugin, CAPBridgedPlugin, CXProviderDelegate, C
         CAPPluginMethod(name: "endCall", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "status", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "requestMic", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "audioSessionInfo", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "configureSession", returnType: CAPPluginReturnPromise),
     ]
 
     private var provider: CXProvider?
@@ -235,6 +239,57 @@ public class CallProbePlugin: CAPPlugin, CAPBridgedPlugin, CXProviderDelegate, C
                 self.nlog("requestMic granted=\(granted) now=\(self.recordPermission())")
                 call.resolve(["before": before, "granted": granted, "now": self.recordPermission()])
             }
+        }
+    }
+
+    /// Force-mic follow-up: the session as WebKit left it (e.g. right after getUserMedia resolved). Does WebKit switch
+    /// the session to PlayAndRecord while capturing? If it stays SoloAmbient, that would explain a silent mic.
+    @objc func audioSessionInfo(_ call: CAPPluginCall) {
+        let label = call.getString("label") ?? "page"
+        DispatchQueue.main.async {
+            let s = AVAudioSession.sharedInstance()
+            let available = (s.availableInputs ?? []).map { "\($0.portType.rawValue):\($0.portName)" }
+            let preferred = s.preferredInput.map { "\($0.portType.rawValue):\($0.portName)" } ?? "nil"
+            self.nlog("audioSessionInfo(\(label)) \(self.sessionDescription()) availableInputs=\(available) preferredInput=\(preferred) inputGain=\(s.inputGain) inputChannels=\(s.inputNumberOfChannels) record=\(self.recordPermission())")
+            call.resolve([
+                "label": label,
+                "category": s.category.rawValue,
+                "mode": s.mode.rawValue,
+                "options": Int(s.categoryOptions.rawValue),
+                "inputAvailable": s.isInputAvailable,
+                "availableInputs": available,
+                "preferredInput": preferred,
+                "route": self.routeDescription(s.currentRoute),
+                "inputGain": Double(s.inputGain),
+                "inputChannels": s.inputNumberOfChannels,
+                "sampleRate": s.sampleRate,
+                "otherAudio": s.isOtherAudioPlaying,
+                "record": self.recordPermission(),
+            ])
+        }
+    }
+
+    /// Mode "no-callkit+session": the app itself sets .playAndRecord / .voiceChat and activates the session (no
+    /// CallKit) before the page calls getUserMedia. Resolves with the session after activation; rejects on error.
+    @objc func configureSession(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            let s = AVAudioSession.sharedInstance()
+            self.nlog("configureSession before=\(self.sessionDescription())")
+            do {
+                try s.setCategory(.playAndRecord, mode: .voiceChat, options: bluetoothOptions())
+                try s.setActive(true)
+            } catch {
+                self.nlog("configureSession failed: \(error.localizedDescription)")
+                call.reject("configureSession failed: \(error.localizedDescription)")
+                return
+            }
+            self.nlog("configureSession after=\(self.sessionDescription())")
+            call.resolve([
+                "category": s.category.rawValue,
+                "mode": s.mode.rawValue,
+                "route": self.routeDescription(s.currentRoute),
+                "inputAvailable": s.isInputAvailable,
+            ])
         }
     }
 

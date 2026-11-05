@@ -21,6 +21,17 @@
 //                  getUserMedia, resume, loopback (the order that hung, minus the early AudioContext)
 // A fatal step timeout aborts the run and ends the CallKit call (CallProbe.endCall), as do "End call" and pagehide, so
 // a hung run never leaves a call behind (CallKit error 7, maximumCallGroupsReached, on the next start).
+//
+// Force-mic follow-up (2026-11-05: micPeakAtStart 0 in every mode on the iPhone): is the WKWebView mic really silent?
+//   no-callkit+session  the native plugin sets .playAndRecord/.voiceChat and activates the session (no CallKit) in
+//                       the tap; AudioContext created after that (no gesture), getUserMedia, resume, loopback
+//   "force mic" checkbox (all modes): never fall back to the oscillator; the raw getUserMedia track goes through the
+//   loopback. The analyser (connected to the destination through a zero gain, so the graph is pulled) is sampled every
+//   50 ms for the whole run: DILLA_CALL_DETAIL micPeak0_2 / micPeak2_5 (peak over 0-2 s / 2-5 s after the analyser
+//   was attached) and micLevel (peak since the previous line). Sender-independent evidence: outbound media-source
+//   audioLevel / totalAudioEnergy (sender A) and inbound-rtp audioLevel / totalAudioEnergy (receiver B decodes what
+//   the mic sent), with the energy delta per 10 s line. After getUserMedia: track getSettings / getCapabilities and,
+//   on iOS, the native AVAudioSession (CallProbe.audioSessionInfo).
 import { Capacitor, registerPlugin, type PluginListenerHandle } from '@capacitor/core';
 import { isVoiceSupported } from '../../packages/media/src/support';
 
@@ -29,12 +40,14 @@ interface CallProbePlugin {
   endCall(opts: { reason: string }): Promise<{ ended: boolean; results?: string[] }>;
   status(): Promise<Record<string, unknown>>;
   requestMic(): Promise<{ before: string; granted: boolean; now: string }>;
+  audioSessionInfo(opts: { label: string }): Promise<Record<string, unknown>>;
+  configureSession(): Promise<Record<string, unknown>>;
   addListener(event: 'nativeLog', cb: (e: { line: string }) => void): Promise<PluginListenerHandle>;
 }
 const CallProbe = registerPlugin<CallProbePlugin>('CallProbe');
 const isIos = Capacitor.getPlatform() === 'ios';
 
-type Mode = 'no-callkit' | 'gum-first' | 'callkit-first';
+type Mode = 'no-callkit' | 'gum-first' | 'callkit-first' | 'no-callkit+session';
 const STEP_TIMEOUT_MS = 8_000;
 const KEY = 0x5a;
 const MAGIC = [0xd1, 0x1a];
@@ -57,6 +70,13 @@ let analyser: AnalyserNode | undefined;
 let worker: Worker | undefined;
 let workerReady = false;
 let audioEl: HTMLAudioElement | undefined;
+let forceMic = false;
+/** Continuous analyser sampling (every 50 ms from analyser attach to run end). */
+let sampler: ReturnType<typeof setInterval> | undefined;
+let samplerStart = 0;
+const micPeaks = { p0_2: 0, p2_5: 0, sinceLine: 0, samples: 0 };
+/** totalAudioEnergy at the previous DILLA_CALL line, for the per-line delta. */
+let prevEnergy: { inbound: number | null; source: number | null } = { inbound: null, source: null };
 /** Steps started and not yet settled (name -> start epoch ms), shown by the heartbeat. */
 const pending = new Map<string, number>();
 
@@ -69,6 +89,7 @@ const endBtn = document.getElementById('end') as HTMLButtonElement;
 const resumeBtn = document.getElementById('resume') as HTMLButtonElement;
 const statusBtn = document.getElementById('status') as HTMLButtonElement;
 const micBtn = document.getElementById('mic') as HTMLButtonElement;
+const forceMicEl = document.getElementById('force-mic') as HTMLInputElement;
 
 // ---------------------------------------------------------------------------------------------------------------
 // Logging
@@ -188,6 +209,21 @@ function micLevel(): number | null {
   return Math.round(peak * 1e4) / 1e4;
 }
 
+function startSampler(): void {
+  if (sampler) clearInterval(sampler);
+  samplerStart = Date.now();
+  micPeaks.p0_2 = 0; micPeaks.p2_5 = 0; micPeaks.sinceLine = 0; micPeaks.samples = 0;
+  sampler = setInterval(() => {
+    const level = micLevel();
+    if (level === null) return;
+    micPeaks.samples++;
+    const t = Date.now() - samplerStart;
+    if (t < 2_000) micPeaks.p0_2 = Math.max(micPeaks.p0_2, level);
+    else if (t < 5_000) micPeaks.p2_5 = Math.max(micPeaks.p2_5, level);
+    micPeaks.sinceLine = Math.max(micPeaks.sinceLine, level);
+  }, 50);
+}
+
 function createContext(where: string): AudioContext {
   const t0 = Date.now();
   const c = new AudioContext({ sampleRate: 48_000 });
@@ -211,7 +247,13 @@ async function getMic(): Promise<MediaStream | undefined> {
     track.onmute = () => { event('mic.mute'); };
     track.onunmute = () => { event('mic.unmute'); };
     track.onended = () => { event('mic.ended'); };
+    try {
+      event('mic.settings', { settings: track.getSettings(), capabilities: track.getCapabilities?.() ?? 'absent', constraints: track.getConstraints() });
+    } catch (e) {
+      event('mic.settings', errText(e));
+    }
   }
+  if (isIos) await softStep('native.audioSessionInfo (after gUM)', () => CallProbe.audioSessionInfo({ label: 'after gUM' }), { timeoutMs: 3_000, describe: (r) => r });
   return mic;
 }
 
@@ -233,7 +275,17 @@ async function pickSource(mic: MediaStream | undefined): Promise<MediaStreamTrac
       analyser = audio.createAnalyser();
       analyser.fftSize = 2048;
       audio.createMediaStreamSource(mic!).connect(analyser);
+      // Pull the graph: an analyser with no path to the destination may not be processed on every engine.
+      const mute = audio.createGain();
+      mute.gain.value = 0;
+      analyser.connect(mute).connect(audio.destination);
     });
+    startSampler();
+    if (forceMic) {
+      detail.source = `mic (forced; AudioContext ${audio.state})`;
+      stepLog('source', 'ok', 0, detail.source);
+      return track;
+    }
     if (audio.state !== 'running') {
       detail.source = `mic (AudioContext ${audio.state}, level not measurable)`;
       stepLog('source', 'ok', 0, detail.source);
@@ -256,6 +308,7 @@ async function pickSource(mic: MediaStream | undefined): Promise<MediaStreamTrac
     detail.source = 'oscillator (mic silent)';
   } else {
     detail.source = 'oscillator (no mic: see getUserMedia step)';
+    if (forceMic) throw new Error('force mic: getUserMedia gave no audio track');
   }
   const dest = await step('oscillator.setup', () => {
     const osc = audio.createOscillator();
@@ -415,31 +468,57 @@ function watchFirstFrames(): void {
   void softStep('firstFrame.ok', () => waitFor(() => counts.framesOk > 0), { describe: () => ({ ...counts }) });
 }
 
-async function rtpStats(): Promise<{ packetsSent: number | null; packetsReceived: number | null; inbound: Record<string, unknown> | null }> {
+function num(v: unknown): number | null {
+  return typeof v === 'number' ? v : null;
+}
+
+function round(v: number | null, digits = 6): number | null {
+  return v === null ? null : Math.round(v * 10 ** digits) / 10 ** digits;
+}
+
+async function rtpStats(): Promise<{ packetsSent: number | null; packetsReceived: number | null; inbound: Record<string, unknown> | null; source: Record<string, unknown> | null }> {
   let packetsSent: number | null = null;
   let packetsReceived: number | null = null;
   let inbound: Record<string, unknown> | null = null;
+  let source: Record<string, unknown> | null = null;
   try {
     const [a, b] = pcs;
-    if (!a || !b) return { packetsSent, packetsReceived, inbound };
+    if (!a || !b) return { packetsSent, packetsReceived, inbound, source };
     (await a.getStats()).forEach((s: Record<string, unknown>) => {
       if (s.type === 'outbound-rtp' && s.kind === 'audio') packetsSent = s.packetsSent as number;
+      // The sender's own view of the mic track (before encoding).
+      if (s.type === 'media-source' && s.kind === 'audio') {
+        const energy = num(s.totalAudioEnergy);
+        source = {
+          audioLevel: s.audioLevel ?? null,
+          totalAudioEnergy: round(energy),
+          energyDelta: energy !== null && prevEnergy.source !== null ? round(energy - prevEnergy.source) : null,
+          totalSamplesDuration: s.totalSamplesDuration ?? null,
+        };
+        prevEnergy.source = energy;
+      }
     });
     (await b.getStats()).forEach((s: Record<string, unknown>) => {
       if (s.type === 'inbound-rtp' && s.kind === 'audio') {
         packetsReceived = s.packetsReceived as number;
+        const energy = num(s.totalAudioEnergy);
         inbound = {
-          audioLevel: s.audioLevel,
+          audioLevel: s.audioLevel ?? null,
+          totalAudioEnergy: round(energy),
+          // > 0 per 10 s means the decoded RTP audio carries signal; 0 means the mic sent digital silence.
+          energyDelta: energy !== null && prevEnergy.inbound !== null ? round(energy - prevEnergy.inbound) : null,
+          totalSamplesDuration: s.totalSamplesDuration ?? null,
           concealedSamples: s.concealedSamples,
           totalSamplesReceived: s.totalSamplesReceived,
           packetsLost: s.packetsLost,
         };
+        prevEnergy.inbound = energy;
       }
     });
   } catch (e) {
     detail.statsError = String(e);
   }
-  return { packetsSent, packetsReceived, inbound };
+  return { packetsSent, packetsReceived, inbound, source };
 }
 
 async function log(): Promise<void> {
@@ -452,14 +531,21 @@ async function log(): Promise<void> {
     t,
     at: new Date().toISOString(),
     visibility: document.visibilityState,
-    micLevel: micLevel(),
+    forceMic,
+    micLevel: analyser ? micPeaks.sinceLine : null,
+    micLevelNow: micLevel(),
+    micPeak0_2: analyser ? micPeaks.p0_2 : null,
+    micPeak2_5: analyser ? micPeaks.p2_5 : null,
+    micSamples: micPeaks.samples,
     micTrack: micTrack ? { readyState: micTrack.readyState, muted: micTrack.muted, enabled: micTrack.enabled } : null,
     audioContext: ctx?.state ?? null,
     audioPaused: audioEl?.paused ?? null,
     inboundRtp: stats.inbound,
+    mediaSource: stats.source,
     // A 0-byte first bad frame is Chromium's empty-payload bypass packet (harmless); a non-empty one is a real failure.
     firstBadFrame: firstBadFrame && { bytes: firstBadFrame.bytes, head: firstBadFrame.head, at: firstBadFrame.atEpoch - started },
   });
+  micPeaks.sinceLine = 0;
   console.log(line);
   console.log(`DILLA_CALL_DETAIL ${JSON.stringify(detail)}`);
   out.textContent = line;
@@ -500,12 +586,13 @@ async function environment(): Promise<void> {
  */
 async function startRun(m: Mode): Promise<void> {
   mode = m;
+  forceMic = forceMicEl.checked;
   run++;
   runStart = Date.now();
   runActive = true;
   for (const btn of startBtns) btn.disabled = true;
   out.textContent = `starting (${m})…`;
-  event('run.start', { ua: navigator.userAgent, platform: Capacitor.getPlatform() });
+  event('run.start', { ua: navigator.userAgent, platform: Capacitor.getPlatform(), forceMic });
   heartbeat = setInterval(() => {
     if (started) return;
     event('heartbeat', { pending: Array.from(pending.entries()).map(([k, t0]) => `${k} ${Date.now() - t0}ms`) });
@@ -515,6 +602,16 @@ async function startRun(m: Mode): Promise<void> {
     if (m === 'callkit-first') {
       await startCallKit();
       createContext('after didActivate, no gesture');
+      mic = await getMic();
+      await resumeCtx('ctx.resume (no gesture)');
+    } else if (m === 'no-callkit+session') {
+      // The native call is made synchronously in the tap; the AudioContext follows the app-configured session.
+      if (isIos) {
+        await step('native.configureSession', () => CallProbe.configureSession(), { describe: (r) => r });
+      } else {
+        stepLog('native.configureSession', 'ok', 0, 'skipped (not iOS)');
+      }
+      createContext('after configureSession, no gesture');
       mic = await getMic();
       await resumeCtx('ctx.resume (no gesture)');
     } else {
@@ -530,6 +627,7 @@ async function startRun(m: Mode): Promise<void> {
     watchFirstFrames();
     await log();
     timer = setInterval(() => { void log(); }, 10_000);
+    if (isIos) void softStep('native.audioSessionInfo (call up)', () => CallProbe.audioSessionInfo({ label: 'call up' }), { timeoutMs: 3_000, describe: (r) => r });
   } catch (e) {
     detail.error = errText(e);
     console.log(`DILLA_CALL_DETAIL ${JSON.stringify({ ...detail, mode, run })}`);
@@ -543,6 +641,8 @@ async function endRun(reason: string): Promise<void> {
   event('run.end', reason);
   if (timer) clearInterval(timer);
   if (heartbeat) clearInterval(heartbeat);
+  if (sampler) clearInterval(sampler);
+  sampler = undefined;
   timer = undefined;
   heartbeat = undefined;
   if (started) await log();
@@ -553,6 +653,7 @@ async function endRun(reason: string): Promise<void> {
   if (ctx) await softStep('ctx.close', () => ctx!.close(), { timeoutMs: 3_000 });
   if (isIos) detail.callKitEnd = await softStep('callkit.endCall', () => CallProbe.endCall({ reason }), { describe: (r) => r });
   console.log(`DILLA_CALL_END ${JSON.stringify({ ...detail, mode, run, reason })}`);
+  prevEnergy = { inbound: null, source: null };
   pcs = []; streams = []; worker = undefined; workerReady = false; firstBadFrame = null; delete detail.firstBadFrame;
   analyser = undefined; ctx = undefined; micTrack = undefined; audioEl = undefined; started = 0;
   for (const k of Object.keys(counts) as (keyof typeof counts)[]) counts[k] = 0;
@@ -576,7 +677,11 @@ resumeBtn.addEventListener('click', () => {
   const c = ctx;
   void softStep('ctx.resume (tap)', () => c.resume(), { describe: () => ({ stateAfter: c.state }) });
 });
-statusBtn.addEventListener('click', () => { void environment(); event('status', { pending: Array.from(pending.keys()), counts: { ...counts } }); });
+statusBtn.addEventListener('click', () => {
+  void environment();
+  if (isIos) void softStep('native.audioSessionInfo (status)', () => CallProbe.audioSessionInfo({ label: 'status' }), { timeoutMs: 3_000, describe: (r) => r });
+  event('status', { pending: Array.from(pending.keys()), counts: { ...counts } });
+});
 micBtn.addEventListener('click', () => {
   if (!isIos) { event('native.requestMic', 'not iOS'); return; }
   void softStep('native.requestMic', () => CallProbe.requestMic(), { timeoutMs: 30_000, describe: (r) => r });
