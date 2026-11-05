@@ -235,3 +235,15 @@ describe('one-click voice join on desktop (web3.9)', () => {
     expect(app.log.filter(l => l === `callJoin:${VW}`)).toHaveLength(1);
   });
 });
+
+describe('native badge', () => {
+  it('sends the unread total to the mobile bridge', async () => {
+    const send = vi.fn(async () => {});
+    vi.stubGlobal('dillaMobile', { send, onEvent: () => () => {} });
+    try {
+      const app = mount();
+      act(() => app.client.publish('badges', { [TA]: { unread: 3, mentions: 0 }, [TB]: { unread: 2, mentions: 0 } }));
+      await waitFor(() => expect(send).toHaveBeenCalledWith({ type: 'badge', count: 5 }));
+    } finally { vi.unstubAllGlobals(); }
+  });
+});

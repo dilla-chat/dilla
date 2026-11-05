@@ -49,6 +49,7 @@ import type { watchUpdates } from '../update.ts';
 import type { createUpdateCheckpointStore } from '../update-checkpoint.ts';
 import { updateTabId } from '../update-checkpoint.ts';
 import { desktopBridge, setDesktopGuard } from '../desktop.ts';
+import { mobileBridge } from '../mobile.ts';
 import { captureViewPlace, restoreViewPlace, validViewPlace, type ViewPlace } from '../update-view.ts';
 import { browser } from '../browser.ts';
 import { CommandProvider } from './commands/CommandContext.tsx';
@@ -1222,7 +1223,10 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     return { id: c.id, name: c.name, unread: counts.unread, mentions: counts.mentions };
   });
   const nativeUnread = Math.min(9999, Object.values(badges ?? {}).reduce((total, value) => total + value.unread, 0));
-  useEffect(() => { void desktopBridge()?.send({ type: 'badge', count: nativeUnread }).catch(() => {}); }, [nativeUnread]);
+  useEffect(() => {
+    void desktopBridge()?.send({ type: 'badge', count: nativeUnread }).catch(() => {});
+    void mobileBridge()?.send({ type: 'badge', count: nativeUnread }).catch(() => {});
+  }, [nativeUnread]);
 
   // Flow 07: the instance serves no role bits before the permissions read, so ownership stands in for ManageChannels until then.
   const owner = community !== null && self !== null && community.owner === self.id;
