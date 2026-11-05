@@ -73,8 +73,8 @@ release build), `desktop` (`.github/workflows/desktop-ci.yml`: the script gates,
 integration suites and the `desktop.yml` acceptance) and `mobile` (`.github/workflows/mobile.yml`: the iOS and Android
 apps' unit tests, the mobile client build, the debug and release APKs with the release network-config check, the
 Android emulator smoke test and the iOS simulator build). Each reports one check, `server-ok`, `desktop-ok` and
-`mobile-ok`, so a failure in one never blocks a change to another. `server-ok` and `desktop-ok` are the required checks
-for `main`.
+`mobile-ok`, so a failure in one never blocks a change to another. `server-ok`, `desktop-ok` and `mobile-ok` are the
+required checks for `main`.
 
 The `desktop` and `mobile` workflows also run nightly on main at 02:17 UTC with every area on, so test drift surfaces
 within a day.

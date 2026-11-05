@@ -13,7 +13,11 @@ A Capacitor 8.6 shell around the bundled `@dilla/web` client. The app ships the 
   `Origin` header. `/desktop-auth/` refuses any foreign Origin, so the WebView's own `fetch` cannot be used there.
 - The instance picker (`src/picker.html`, `src/picker.ts`) keeps `instances` and `current` in `@capacitor/preferences`.
   Instances are HTTPS origins with a DNS name (no base path, no IP literal), validated with a copy of desktop's
-  `canonicalInstance`.
+  `canonicalInstance`, and probed with `GET <instance>/v1/instance` through the WebView's `fetch` (so through the
+  server's CORS) before they are stored. The client's **Switch instance** (You, and the boot error screen) sends
+  `switch-instance`, which returns to the picker.
+- App data is not backed up: Android sets `allowBackup="false"`, and iOS marks `Library/WebKit`, `Library/Cookies`
+  and `Library/Application Support` as excluded from backup at launch (`AppDelegate.swift`).
 - All instances share the app's one origin, so the core worker keys each instance's OPFS store, KEK record and leader
   lock on `SHA-256(instance URL, 0x00, instanceId)` (client-core `worker/storage-key.ts`), never on the instanceId alone.
 - CSP (a `<meta>` in every page): desktop's policy with `'self'` for the local assets. Capacitor's native bridge
