@@ -1423,7 +1423,7 @@ if-no-files-found: error`;
   const collectLogs = `name: Collect the Windows audio logs
 if: failure() && steps.desktop-build.outcome == 'success'
 shell: bash
-run: if [ -d "$RUNNER_TEMP/dilla-windows-audio" ]; then mkdir -p packages/desktop/test-results && cp -R "$RUNNER_TEMP/dilla-windows-audio" packages/desktop/test-results/windows-audio; fi`;
+run: for f in "$RUNNER_TEMP"/dilla-windows-audio/*.log "$RUNNER_TEMP"/dilla-windows-audio/*.out "$RUNNER_TEMP"/dilla-windows-audio/*.err; do if [ -f "$f" ]; then mkdir -p packages/desktop/test-results/windows-audio && cp "$f" packages/desktop/test-results/windows-audio/; fi; done`;
   const failureUploads = nativeSteps.map((step,index)=>step.join('\n')===failureUpload ? index : -1).filter(index=>index>=0);
   if(desktopBuild<0 || failureUploads.length!==1 || failureUploads[0]<=desktopBuild || nativeSteps[failureUploads[0]-1]?.join('\n')!==collectLogs)problems.push(`${file}: native failure diagnostics require the exact post-build upload`);
   const unitSteps = nativeSteps.filter(step => step.some(line => line.includes('run: npm test -w @dilla/desktop')));

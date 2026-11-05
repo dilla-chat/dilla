@@ -300,8 +300,8 @@ test('native failure diagnostics run only after a successful desktop build', () 
  const block=`${before}\${{ matrix.platform }}-\${{ matrix.arch }}\n          path: packages/desktop/test-results\n          if-no-files-found: error`;
  assert.ok(REAL_DESKTOP.includes(block));
  for(const changed of [REAL_DESKTOP.replace(block,block.replace('if-no-files-found: error','if-no-files-found: warn')),REAL_DESKTOP.replace(block,block.replace('packages/desktop/test-results','packages/desktop/missing')),REAL_DESKTOP.replace('id: desktop-build','id: other-build'),
-  REAL_DESKTOP.replace('        shell: bash\n        run: if [ -d "$RUNNER_TEMP/dilla-windows-audio" ]','        shell: bash\n        continue-on-error: true\n        run: if [ -d "$RUNNER_TEMP/dilla-windows-audio" ]'),
-  REAL_DESKTOP.replace('test-results/windows-audio; fi','test-results/windows-audio || true; fi'),
+  REAL_DESKTOP.replace('        shell: bash\n        run: for f in "$RUNNER_TEMP"/dilla-windows-audio/*.log','        shell: bash\n        continue-on-error: true\n        run: for f in "$RUNNER_TEMP"/dilla-windows-audio/*.log'),
+  REAL_DESKTOP.replace('windows-audio/; fi; done','windows-audio/ || true; fi; done'),
   REAL_DESKTOP.replace("name: Collect the Windows audio logs\n        if: failure() && steps.desktop-build.outcome == 'success'","name: Collect the Windows audio logs\n        if: always()")]) {
   const root=fixture(GOOD);writeFileSync(join(root,'.github/workflows/desktop.yml'),changed);assert.ok(checkDesktopWorkflow(root).some(p=>p.includes('native failure diagnostics')));
  }

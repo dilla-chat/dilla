@@ -375,7 +375,7 @@ jobs:
       - name: Collect the Windows audio logs
         if: failure() && steps.desktop-build.outcome == 'success'
         shell: bash
-        run: if [ -d "$RUNNER_TEMP/dilla-windows-audio" ]; then mkdir -p packages/desktop/test-results && cp -R "$RUNNER_TEMP/dilla-windows-audio" packages/desktop/test-results/windows-audio; fi
+        run: for f in "$RUNNER_TEMP"/dilla-windows-audio/*.log "$RUNNER_TEMP"/dilla-windows-audio/*.out "$RUNNER_TEMP"/dilla-windows-audio/*.err; do if [ -f "$f" ]; then mkdir -p packages/desktop/test-results/windows-audio && cp "$f" packages/desktop/test-results/windows-audio/; fi; done
       - if: failure() && steps.desktop-build.outcome == 'success' && hashFiles('packages/desktop/test-results/**') != ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
