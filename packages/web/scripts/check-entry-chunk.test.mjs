@@ -37,6 +37,13 @@ beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'dilla-web-entry-')); });
 afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
 
 describe('checkEntryChunk (L-WEB-51, decision 5)', () => {
+  // Review I1 (Task 6): the mobile app's worker branch exists only in the mobile build (__DILLA_MOBILE__ true).
+  it('fails a web or desktop build that still carries the mobile worker branch, and passes it in the mobile build', () => {
+    cleanDist();
+    put('assets/entry-Wrk000.js', 'const o=self.location.origin;if(o==="capacitor://localhost"||o==="https://localhost");\n');
+    expect(checkEntryChunk(dir)).toEqual(['assets/entry-Wrk000.js: the mobile-only worker branch is in a web or desktop build']);
+    expect(checkEntryChunk(dir, { mobile: true })).toEqual([]);
+  });
   it('passes a clean dist', () => {
     cleanDist();
     expect(checkEntryChunk(dir)).toEqual([]);

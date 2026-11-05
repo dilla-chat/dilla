@@ -42,8 +42,13 @@ function entryChunks(html) {
   return chunks;
 }
 
-/** @returns {string[]} One line per problem, or [] when the build keeps the call code lazy and the core wasm single. */
-export function checkEntryChunk(dir) {
+/** The mobile app's origin, which only the mobile build's worker names (client-core worker/mobile-build.ts). */
+const MOBILE_MARKER = 'capacitor://localhost';
+
+/** @returns {string[]} One line per problem, or [] when the build keeps the call code lazy and the core wasm single.
+ *  `mobile`: the mobile app's build (DILLA_MOBILE_BUILD=1). Any other build must not carry the mobile worker branch:
+ *  __DILLA_MOBILE__ false folds it away (review I1, Task 6). */
+export function checkEntryChunk(dir, { mobile = false } = {}) {
   const problems = [];
   const html = existsSync(join(dir, 'index.html')) ? readFileSync(join(dir, 'index.html'), 'utf8') : '';
   const entries = entryChunks(html);
@@ -58,6 +63,12 @@ export function checkEntryChunk(dir) {
     const lower = body.toLowerCase();
     for (const word of FORBIDDEN_IN_ENTRY) {
       if (lower.includes(word)) problems.push(`${path}: the entry chunk contains ${word}`);
+    }
+  }
+
+  if (!mobile) {
+    for (const path of walk(dir).filter(p => p.endsWith('.js')).sort()) {
+      if (readFileSync(join(dir, path), 'utf8').includes(MOBILE_MARKER)) problems.push(`${path}: the mobile-only worker branch is in a web or desktop build`);
     }
   }
 
@@ -82,7 +93,7 @@ function main(argv) {
     console.error('usage: check-entry-chunk.mjs <dist-dir>');
     return 2;
   }
-  const problems = checkEntryChunk(argv[2]);
+  const problems = checkEntryChunk(argv[2], { mobile: process.env.DILLA_MOBILE_BUILD === '1' });
   for (const problem of problems) console.error(problem);
   if (problems.length) return 1;
   console.log('entry chunk: no livekit, no rnnoise; one core wasm, one rnnoise wasm');

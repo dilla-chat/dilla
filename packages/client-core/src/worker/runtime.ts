@@ -4,9 +4,9 @@
 import { boot, lazyStoreExists, wasmCoreOpener } from '../account/boot';
 import { indexedDbKekStore } from '../account/kek';
 import type { CoreWasmModule } from '../core-port';
-import { toHex } from '../hex';
 import { Controller, type ControllerParts } from './controller';
 import { workerInstanceURL } from './instance-url';
+import { instanceStorageKey, storageBinding } from './storage-key';
 import { localRuntimeReadiness } from './runtime-readiness';
 
 type WasmModule = CoreWasmModule & { default(): Promise<unknown> };
@@ -37,8 +37,13 @@ export function startCoreWorker(scope: DedicatedWorkerGlobalScope, options: { te
     signal?.addEventListener('abort', onAbort, { once: true });
   });
   const kek = indexedDbKekStore(scope.indexedDB, scope.crypto.subtle, (a) => scope.crypto.getRandomValues(a));
+  const origin = workerInstanceURL(options.instanceURL, scope.location.origin);
+  // One function keys the lock (in the controller), the store and the KEK (boot, resetDevice): review C1, Task 6.
+  const binding = storageBinding(scope.location.origin, origin);
+  const storageKey = (instanceId: Uint8Array): Promise<string> => instanceStorageKey(instanceId, binding);
   const controller = new Controller({
-    origin: workerInstanceURL(options.instanceURL, scope.location.origin),
+    origin,
+    storageKey,
     fetch: scope.fetch.bind(scope),
     // The worker's global WebSocket; lib.webworker declares it as a global, not as a member of the scope type.
     WebSocket: (scope as DedicatedWorkerGlobalScope & typeof globalThis).WebSocket,
@@ -58,6 +63,7 @@ export function startCoreWorker(scope: DedicatedWorkerGlobalScope, options: { te
       // The root is asked for lazily: a private WebKit window rejects getDirectory(), and boot()'s probe must report that first.
       return boot({
         instance,
+        storeKey: await storageKey(instance.instanceId),
         probePersistence: () => mod.probe_persistence(),
         storeExists: lazyStoreExists(() => scope.navigator.storage.getDirectory()),
         kek,
@@ -65,7 +71,7 @@ export function startCoreWorker(scope: DedicatedWorkerGlobalScope, options: { te
       });
     },
     resetDevice: async (instance) => {
-      const hex = toHex(instance.instanceId);
+      const hex = await storageKey(instance.instanceId);
       await kek.remove(hex);
       const root = await scope.navigator.storage.getDirectory();
       try {
