@@ -4,7 +4,7 @@
 import { expect, type Locator, type Page } from '@playwright/test';
 import { addServerVia,
   CLASS, COPY, HEX32, TEST_TIMEOUT, WAIT, channelRow, composerBox, copy, deleteDialog, editorBox, expectAccessible,
-  logRegion, openChannel, pinsDialog, railItem, railNav, rowById, rowToolbar, sendText, signUp, tag, test, isPeerMessage,
+  logRegion, openChannel, dmsNav, dmComposer, homeTile, pinsDialog, railItem, railNav, rowById, rowToolbar, sendText, signUp, tag, test, isPeerMessage,
   type PeerMessage, type PeerReceived, type PeerSetup, channelRowMenuItem, expectRowMenuAction, rowAction
 } from './support/app';
 import { WebDriver } from './support/driver';
@@ -76,6 +76,22 @@ class ThreadPeer {
     await expect.poll(async () => { await this.sync(channelId); return (await this.driver.members(channelId)).devices.length; },
       { timeout: WAIT, intervals: [250, 500, 1000, 2000] }).toBe(count);
   }
+  async openDm(userId: string): Promise<string> {
+    const opened = await this.driver.openDm(userId);
+    await expect.poll(async () => (await this.driver.syncDm(opened.channel_id)).members, { timeout: WAIT, intervals: [250, 500, 1000, 2000] }).toBe(2);
+    return opened.channel_id;
+  }
+  async waitForDmRow(channelId: string, body: string): Promise<PeerMessage> {
+    let found: PeerMessage | undefined;
+    await expect.poll(async () => {
+      this.inbox.push(...(await this.driver.syncDm(channelId)).received);
+      found = [...this.inbox].reverse().filter(isPeerMessage).find((m) => m.type === 0 && m.body === body);
+      return found !== undefined;
+    }, { timeout: WAIT, intervals: [250, 500, 1000, 2000], message: `the peer never saw ${body} in its DM` }).toBe(true);
+    if (found === undefined) throw new Error('unreachable');
+    return found;
+  }
+  sendDm(channelId: string, body: string, threadId: string): Promise<{ seq: number; msg_id?: string }> { return this.driver.sendDm(channelId, body, threadId); }
   close(): Promise<void> { return this.driver.close(); }
 }
 
@@ -395,6 +411,40 @@ test('on a phone the thread is a full-screen sheet, the system back closes it an
     await expect.poll(() => row.evaluate((r) => r.contains(document.activeElement)), { timeout: WAIT, message: 'focus returns to the opener row' }).toBe(true);
   } finally {
     await context.close();
+    await peer.close();
+  }
+});
+
+test('two people thread in a DM', async ({ page }) => {
+  const peer = await ThreadPeer.start(started());
+  try {
+    const { general } = await enter(page, peer);
+    // Ada's user id as the peer's MLS state authenticates it: one message into #general.
+    const hello = `hello ${tag()}`;
+    await sendText(page, GENERAL, hello);
+    const user = (await peer.waitFor(hello, general)).sender_user;
+    expect(user).toMatch(HEX32);
+    const dm = await peer.openDm(user);
+    await homeTile(page).click();
+    await dmsNav(page).locator(CLASS.channelRow).click();
+    await expect(page).toHaveURL(new RegExp(`/dm/${dm}$`), { timeout: WAIT });
+    const mainLog = page.locator('main').getByRole('log');
+    const root = `dm root ${tag()}`;
+    const box = dmComposer(page);
+    await box.fill(root);
+    await box.press('Enter');
+    const row = mainLog.locator(CLASS.messageRow).filter({ hasText: root });
+    await expect(row).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
+    const heard = await peer.waitForDmRow(dm, root);
+    const reply = `dm reply ${tag()}`;
+    await peer.sendDm(dm, reply, heard.msg_id as string);
+    await expect(chip(row, 'thread.summary.one')).toBeVisible({ timeout: WAIT });
+    await expect(mainLog.locator(CLASS.messageRow).filter({ hasText: reply }), 'the reply is held out of the DM timeline').toHaveCount(0);
+    await openFromToolbar(row);
+    await expect(threadPane(page)).toBeVisible({ timeout: WAIT });
+    await expect(paneRow(page, reply)).toBeVisible({ timeout: WAIT });
+    await expect(mainLog.locator(CLASS.messageRow).filter({ hasText: reply }), "still out of the timeline with the pane open").toHaveCount(0);
+  } finally {
     await peer.close();
   }
 });

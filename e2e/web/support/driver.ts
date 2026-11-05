@@ -116,7 +116,10 @@ export class WebDriver {
   }
   async openDm(userId: string): Promise<PeerOpenedDm> { return this.strip(await this.request<PeerOpenedDm & { id: number; ok: boolean }>('open_dm', { user_id: userId })); }
   async dms(): Promise<{ dms: PeerDm[] }> { return this.strip(await this.request<{ dms: PeerDm[]; id: number; ok: boolean }>('dms', {})); }
-  async sendDm(channelId: string, body: string): Promise<{ seq: number }> { return this.strip(await this.request<{ seq: number; id: number; ok: boolean }>('send_dm', { channel_id: channelId, body })); }
+  /** `threadId` (a held root's msg_id) makes the row a thread reply; the answer then also carries its msg_id. */
+  async sendDm(channelId: string, body: string, threadId?: string): Promise<{ seq: number; msg_id?: string }> {
+    return this.strip(await this.request<{ seq: number; msg_id?: string; id: number; ok: boolean }>('send_dm', { channel_id: channelId, body, ...(threadId === undefined ? {} : { thread_id: threadId }) }));
+  }
   async syncDm(channelId: string): Promise<PeerSync> { return this.strip(await this.request<PeerSync & { id: number; ok: boolean }>('sync_dm', { channel_id: channelId })); }
   async deleteMessage(a: { msgId: string; seq: number; channelId?: string }): Promise<{ seq: number }> {
     return this.strip(await this.request<{ seq: number; id: number; ok: boolean }>('delete', {

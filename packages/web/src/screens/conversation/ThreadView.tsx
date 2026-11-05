@@ -2,7 +2,7 @@
 // slices, so a shell mounts it and nothing else: mounted it opens the thread, unmounted it closes it and gives focus back.
 import { useResultBotName } from '../commands/result-bot-name.ts';
 import { useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore, type KeyboardEvent } from 'react';
-import { encodeMentions, PERM, type TimelineItem } from '@dilla/client-core';
+import { encodeMentions, PERM, type MemberSummary, type TimelineItem } from '@dilla/client-core';
 import { BotResult, Button, Dialog, EmojiGrid, MessageLog, ThreadPane } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
 import { errorOf } from '../../core/errors.ts';
@@ -33,6 +33,8 @@ export function ThreadView(p: {
   onEditingChange?: (editing: boolean) => void;
   /** Opens a profile card for a mentioned user or a row's author (MP7); without it neither is a button. */
   onOpenProfile?: ProfileOpener;
+  /** A DM's or group DM's thread: its people stand in for a server's member list, the pane is titled by the conversation's name, nothing broadcasts. */
+  dm?: { members: readonly MemberSummary[] };
 }): React.JSX.Element {
   const client = useCore();
   const [route] = useRoute();
@@ -40,7 +42,8 @@ export function ThreadView(p: {
   const thread = useSlice(`thread:${p.channelId}`);
   const account = useSlice('account');
   const privateStore = privateResults(client, `${account?.instance?.id ?? ''}:${account?.user?.id ?? ''}`, `${communityId ?? 'dm'}/${p.channelId}/${p.rootMsgId}`);
-  const members = useSlice(`members:${communityId ?? ''}`);
+  const serverMembers = useSlice(`members:${communityId ?? ''}`);
+  const members = p.dm?.members ?? serverMembers;
   const privateRows = useSyncExternalStore(privateStore.subscribe, privateStore.rows);
   const botName = useResultBotName(client, communityId, members, privateRows.some(row => row.provider === 'bot'));
   const roles = useSlice(`roles:${communityId ?? ''}`);
@@ -96,7 +99,7 @@ export function ThreadView(p: {
   const active = ordered.some(i => i.key === activeKey) ? activeKey : ordered.at(-1)?.key ?? null;
   const now = Date.now();
 
-  const broadcast = bits !== null ? (bits & PERM.mentionEveryone) !== 0 : true;
+  const broadcast = p.dm !== undefined ? false : bits !== null ? (bits & PERM.mentionEveryone) !== 0 : true;
   const roleMentionsFor = (body: string) => mentionRoles(editRoles(roles ?? [], broadcast, body), encodeWith);
   const report = (e: unknown) => dispatch({ type: 'trayError', text: t('shell.banner.commandError', { code: errorOf(e).code }) });
   const command = (m: Parameters<typeof client.call>[0]) => { client.call(m).catch(report); };
@@ -227,11 +230,11 @@ export function ThreadView(p: {
       const key = el === null ? undefined : ordered.find(i => rowEls.current.get(i.key) === el)?.key;
       if (key !== undefined) setActiveKey(key);
     }} onKeyDown={rowKey}>
-      <ThreadPane title={t('thread.title')} sub={`#${p.channelName}`}
+      <ThreadPane title={t('thread.title')} sub={p.dm !== undefined ? p.channelName : `#${p.channelName}`}
         repliesLabel={replyCount === 0 ? undefined : replyCount === 1 ? t('thread.summary.one') : t('thread.summary.other', { count: replyCount })} closeLabel={t('thread.close')} onClose={p.onClose} phone={p.phone} root={rootNode}
         composer={
           <ComposerArea channelId={p.channelId} label={t('thread.composer')} placeholder={t('thread.composer')} blocked={p.blocked ?? null}
-            broadcast bits={bits} roles={roles} channelName={p.channelName} encodeWith={encodeWith} candidates={candidates} items={items}
+            broadcast={broadcast} bits={bits} roles={roles} channelName={p.channelName} encodeWith={encodeWith} candidates={candidates} items={items}
             book={book} draft={draft} onDraft={setDraft} ui={ui} dispatch={dispatch} onSend={send} onError={report}
             threadId={p.rootMsgId} />
         }>

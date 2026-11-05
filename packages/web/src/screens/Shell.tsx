@@ -185,6 +185,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   const routeCommunity = base.name === 'channel' ? base.communityId : route.name === 'serverSettings' && route.from === null ? route.communityId : null;
   const channelId = base.name === 'channel' ? base.channelId : null;
   const dmId = base.name === 'dm' ? base.channelId : null;
+  // The conversation a thread belongs to: a text channel or a DM (a group DM included).
+  const conversationId = channelId ?? dmId;
 
   const account = useSlice('account');
   const connection = useSlice('connection');
@@ -373,12 +375,12 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   // under it, so closing the thread gives back what was there. The toggle shows the members and ends the thread.
   const [side, setSide] = useState<Side | null>(null);
   const lastThread = useRef(new Map<string, string>());
-  const channelThreads = useSlice(`threads:${channelId ?? ''}`);
+  const channelThreads = useSlice(`threads:${conversationId ?? ''}`);
   useEffect(() => { lastThread.current.clear(); }, [account?.instance?.id, account?.user?.id]);
   const [threadDraft, setThreadDraft] = useState<{ channelId: string; rootMsgId: string; text: string } | null>(null);
   const threadDrafts = useRef(new Map<string, string>());
   const threadDraftKey = (channelId: string, rootMsgId: string) => `${channelId}/${rootMsgId}`;
-  useEffect(() => { setSide(current => (current !== null && current.channelId !== channelId ? null : current)); }, [channelId]);
+  useEffect(() => { setSide(current => (current !== null && current.channelId !== conversationId ? null : current)); }, [conversationId]);
   const toggleMembers = () => {
     const narrowNow = typeof window.matchMedia !== 'function' || !window.matchMedia('(min-width: 64rem)').matches;
     const open = side !== null && side.channelId === channelId ? true : !membersOpen;
@@ -1079,7 +1081,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     logKey={logKey} label={label} timeline={timeline} book={book} encodeWith={encodeWith} broadcast={broadcast} bits={bits} roles={roles}
     pinsTitle={channel !== null ? t('shell.pins.title', { channel: channel.name }) : t('shell.pins.titleDm', { name: dm?.name ?? '' })}
     ui={ui} dispatch={dispatch} loadingEarlier={loadingEarlier === targetId} onLoadEarlier={loadEarlier} onError={report}
-    {...(channel !== null ? { onOpenThread: openThread } : {})}
+    onOpenThread={openThread}
     welcome={channel !== null
       ? { icon: channel.announcement ? 'megaphone' : 'hash', title: t('shell.log.welcome', { channel: channel.name }), body: t('shell.log.welcomeBody', { channel: channel.name }) }
       : { icon: 'at-sign', title: dm?.name ?? '', body: t('shell.log.welcomeDmBody') }}
@@ -1457,7 +1459,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
 
   // The pane belongs to a server shown by a channel route; a DM route, voice stage or Settings has none beside it.
   const channelAside = base.name === 'channel' && community !== null && channel !== null && voiceChannel === null;
-  const sideNow = channelAside && side !== null && side.channelId === channel.id ? side : null;
+  // A DM (or group DM) has the same thread aside, and no member list beside it.
+  const dmAside = base.name === 'dm' && dm !== null;
+  const sideNow = (channelAside || dmAside) && side !== null && side.channelId === targetId ? side : null;
   const membersShown = membersOpen && channelAside && sideNow === null;
   const asideShown = membersShown || sideNow !== null;
   // On a phone the member list is a sheet: a history entry, so the system back closes it and not the channel under it (R13).
@@ -1525,6 +1529,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     document.addEventListener('pointerdown', note, true);
     return () => document.removeEventListener('pointerdown', note, true);
   }, []);
+  // The conversation whose threads the shell can open now: the open text channel or DM (never a voice stage).
+  const openThreadId = voiceChannel === null ? channel?.id ?? dm?.id ?? null : null;
   const noteOpener = () => {
     if (side !== null && side.channelId === channelId) return;
     const pointer = lastPointer.current;
@@ -1532,11 +1538,11 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     sideRoot.current = null;
   };
   function openThread(rootMsgId: string): void {
-    if (channel === null) return;
+    if (openThreadId === null) return;
     noteOpener();
-    lastThread.current.set(channel.id, rootMsgId);
+    lastThread.current.set(openThreadId, rootMsgId);
     sideRoot.current = rootMsgId;
-    setSide({ channelId: channel.id, view: 'thread', rootMsgId });
+    setSide({ channelId: openThreadId, view: 'thread', rootMsgId });
   }
   openThreadRef.current = openThread;
   // FX-core (final review I1): a notice of a thread reply (an Activity row, a notification click) opens its thread once its
@@ -1544,27 +1550,28 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   const threadRequest = useThreadRequest();
   useEffect(() => {
     if (threadRequest === null) return;
-    if (channelId !== threadRequest.channelId) { takeThreadRequest(); return; }
-    if (channel === null) return;
+    if (conversationId !== threadRequest.channelId) { takeThreadRequest(); return; }
+    if (openThreadId === null) return;
     takeThreadRequest();
     sideOpener.current = null;
-    lastThread.current.set(channel.id, threadRequest.rootMsgId);
+    lastThread.current.set(openThreadId, threadRequest.rootMsgId);
     sideRoot.current = threadRequest.rootMsgId;
     if (phone) setMembersOpen(false);
-    setSide({ channelId: channel.id, view: 'thread', rootMsgId: threadRequest.rootMsgId });
-  }, [threadRequest, channelId, channel, phone]);
-  const openChannelRef = useRef(channelId);
-  openChannelRef.current = channelId;
+    setSide({ channelId: openThreadId, view: 'thread', rootMsgId: threadRequest.rootMsgId });
+  }, [threadRequest, conversationId, openThreadId, phone]);
+  const openChannelRef = useRef(conversationId);
+  openChannelRef.current = conversationId;
   function openHeaderThread(): void {
-    if (channel === null) return;
+    if (openThreadId === null) return;
+    const target = openThreadId;
     noteOpener();
-    void client.call({ m: 'loadThreads', channelId: channel.id }).then(() => {
-      if (openChannelRef.current !== channel.id) return;
-      const threads = client.get(`threads:${channel.id}`) ?? channelThreads ?? [];
-      const remembered = lastThread.current.get(channel.id);
+    void client.call({ m: 'loadThreads', channelId: target }).then(() => {
+      if (openChannelRef.current !== target) return;
+      const threads = client.get(`threads:${target}`) ?? channelThreads ?? [];
+      const remembered = lastThread.current.get(target);
       const root = threads.some(thread => thread.rootMsgId === remembered && thread.rootSeq !== null) ? remembered : [...threads].sort((a, b) => b.lastTs - a.lastTs)[0]?.rootMsgId;
       if (root !== undefined) openThread(root);
-      else setSide({ channelId: channel.id, view: 'empty' });
+      else setSide({ channelId: target, view: 'empty' });
     }, report);
   }
   const sideReturn = useMemo<RefObject<HTMLElement | null>>(() => ({
@@ -1660,11 +1667,12 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
           <Icon name={THREADS_GLYPH} size={14} />{t('layout.header.threads')}</Button> : null}
         {membersButton}
       </>} />
-    // A DM has no threads in this client (threads are a server channel's), so its header carries no Threads button.
     : dm !== null ? <ChannelHeader kind="dm" name={dm.name} topic={dmTopic(dm)}
       phone={phone ? { backLabel: t('nav.back'), onBack, ...dotProp, menu: (
         <IconButton icon="search" size={28} label={t('search.open')} onClick={e => startSearch(e.currentTarget)} />
-      ) } : undefined} /> : null;
+      ) } : undefined}
+      actions={<Button variant="ghost" mark={false} data-thread-list-toggle="" pressed={threadsOn} onClick={toggleThreads}>
+        <Icon name={THREADS_GLYPH} size={14} />{t('layout.header.threads')}</Button>} /> : null;
   // While Settings covers the conversation, its Privacy section carries the alert and the action instead.
   const changedHere = overlay ? [] : changedMembers;
 
@@ -1726,9 +1734,10 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
       : (railSlices.flat() as ChannelSummary[]).some(row => row.id === hit.channelId && row.communityId === hit.communityId);
     if (!known) return false;
     const threadRoot = (hit as SearchHitView & { threadRoot?: string | null }).threadRoot ?? null;
-    if (threadRoot !== null && hit.communityId !== null) {
-      // A reply shows in its thread, not in the channel's timeline: the thread opens beside the channel.
-      void navigate({ name: 'channel', communityId: hit.communityId, channelId: hit.channelId });
+    if (threadRoot !== null) {
+      // A reply shows in its thread, not in the conversation's timeline: the thread opens beside the channel or DM.
+      void navigate(hit.communityId === null ? { name: 'dm', channelId: hit.channelId }
+        : { name: 'channel', communityId: hit.communityId, channelId: hit.channelId });
       leaveSearchLayer();
       // The palette is gone, so the root's row is where focus goes back to; a phone's members sheet gives way to the thread.
       sideOpener.current = null;
@@ -2014,13 +2023,13 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
           setDraft({ channelId: saved.draft.channelId, text: saved.draft.text });
           if (saved.draft.channelId !== null) rememberDraft(ordinaryDrafts.current, saved.draft.channelId, saved.draft.text);
         }
-        if (saved.side?.channelId === channelId && (saved.side.view === 'empty'
+        if (saved.side?.channelId === conversationId && (saved.side.view === 'empty'
           || (saved.side.view === 'thread' && typeof saved.side.rootMsgId === 'string' && HEX32.test(saved.side.rootMsgId)))) setSide(saved.side);
-        if (channelId !== null && saved.threadDraft !== null && saved.threadDraft?.channelId === channelId
+        if (conversationId !== null && saved.threadDraft !== null && saved.threadDraft?.channelId === conversationId
           && typeof saved.threadDraft.rootMsgId === 'string' && HEX32.test(saved.threadDraft.rootMsgId)
           && typeof saved.threadDraft.text === 'string') {
-          setThreadDraft({ channelId, rootMsgId: saved.threadDraft.rootMsgId, text: saved.threadDraft.text });
-          rememberDraft(threadDrafts.current, threadDraftKey(channelId, saved.threadDraft.rootMsgId), saved.threadDraft.text);
+          setThreadDraft({ channelId: conversationId, rootMsgId: saved.threadDraft.rootMsgId, text: saved.threadDraft.text });
+          rememberDraft(threadDrafts.current, threadDraftKey(conversationId, saved.threadDraft.rootMsgId), saved.threadDraft.text);
         }
         if (typeof saved.membersOpen === 'boolean') setMembersOpen(saved.membersOpen);
         const view = validViewPlace(saved.view);
@@ -2055,7 +2064,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
       setRestoreDone(true);
     }).catch(() => { if (active) setRestoreError(true); });
     return () => { active = false; };
-  }, [update, updateScope, client, channelId, restoreRetry]);
+  }, [update, updateScope, client, conversationId, restoreRetry]);
   useEffect(() => {
     if (pendingUi === null || pendingUi.channelId !== targetId) return;
     rawDispatch({ type: 'restore', ui: pendingUi.ui });
@@ -2204,14 +2213,15 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
             connecting: t('nav.link.connecting', { node: account?.instance?.name ?? t('shell.status.unknown') }) }} />}
           {banner}
         </>}
-        aside={sideNow?.view === 'thread' && channel !== null
-          ? <ThreadView key={sideNow.rootMsgId} channelId={channel.id} rootMsgId={sideNow.rootMsgId} channelName={channel.name} phone={phone}
+        aside={sideNow?.view === 'thread' && targetId !== null && (channel !== null || dm !== null)
+          ? <ThreadView key={sideNow.rootMsgId} channelId={targetId} rootMsgId={sideNow.rootMsgId} channelName={channel?.name ?? dm?.name ?? ''} phone={phone}
+            {...(channel === null ? { dm: { members: conversationMembers } } : {})}
             onClose={closeSide} announce={announce} returnFocus={() => sideReturn.current}
             blocked={timeoutReason}
-            initialDraft={threadDrafts.current.get(threadDraftKey(channel.id, sideNow.rootMsgId)) ?? (threadDraft?.channelId === channel.id && threadDraft.rootMsgId === sideNow.rootMsgId ? threadDraft.text : '')}
+            initialDraft={threadDrafts.current.get(threadDraftKey(targetId, sideNow.rootMsgId)) ?? (threadDraft?.channelId === targetId && threadDraft.rootMsgId === sideNow.rootMsgId ? threadDraft.text : '')}
             onEditingChange={setThreadEditing} onOpenProfile={openProfile}
-            onDraftChange={text => { rememberDraft(threadDrafts.current, threadDraftKey(channel.id, sideNow.rootMsgId), text); setThreadDraft({ channelId: channel.id, rootMsgId: sideNow.rootMsgId, text }); }} />
-          : sideNow?.view === 'empty' && channel !== null
+            onDraftChange={text => { rememberDraft(threadDrafts.current, threadDraftKey(targetId, sideNow.rootMsgId), text); setThreadDraft({ channelId: targetId, rootMsgId: sideNow.rootMsgId, text }); }} />
+          : sideNow?.view === 'empty' && targetId !== null
             ? <ThreadPane title={t('thread.title')} closeLabel={t(phone ? 'nav.back' : 'dialog.close')} onClose={closeSide} phone={phone} root={null} composer={null}>
               <p className="dw-thread-empty">{t('shell.thread.empty')}</p>
             </ThreadPane>

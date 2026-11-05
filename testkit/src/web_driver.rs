@@ -459,6 +459,12 @@ impl WebDriver {
                 if !(1..=BODY_MAX_BYTES).contains(&body.len()) {
                     return Err(scenario("body must be 1..=4000 bytes"));
                 }
+                if req.get("thread_id").is_some() {
+                    if !req["thread_id"].is_string() {
+                        return Err(scenario("thread_id is not 32 lowercase hex"));
+                    }
+                    Self::hex16(req, "thread_id")?;
+                }
             }
             "sync_dm" => {
                 Self::hex16(req, "channel_id")?;
@@ -975,10 +981,24 @@ impl WebDriver {
         let group = self.dm_group(req)?;
         let name = self.peer().name.clone();
         let body = Self::text(req, "body")?;
-        let seq = self
-            .runner
-            .with_member(&name, |c, ds| c.send_seq(ds, &group, body))?;
-        Ok(json!({"seq": seq}))
+        let thread_id = req
+            .get("thread_id")
+            .map(|_| Self::hex16(req, "thread_id").map(MsgId::from_bytes))
+            .transpose()?;
+        match thread_id {
+            Some(root) => {
+                let (seq, msg_id) = self.runner.with_member(&name, |c, ds| {
+                    c.send_in_thread(ds, &group, root, None, body)
+                })?;
+                Ok(json!({"seq": seq, "msg_id": msg_id.to_hex()}))
+            }
+            None => {
+                let seq = self
+                    .runner
+                    .with_member(&name, |c, ds| c.send_seq(ds, &group, body))?;
+                Ok(json!({"seq": seq}))
+            }
+        }
     }
 
     fn sync_dm(&mut self, req: &Value) -> Result<Value, TestkitError> {

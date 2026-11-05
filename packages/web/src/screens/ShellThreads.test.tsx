@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { rowMenuItem } from '../test/row-menu.ts';
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { PERM, type ChannelSummary, type CommunityAccess, type MemberSummary, type RoleSummary, type TimelineItem } from '@dilla/client-core';
+import { PERM, type ChannelSummary, type DmSummary, type CommunityAccess, type MemberSummary, type RoleSummary, type TimelineItem } from '@dilla/client-core';
 import { CoreProvider } from '../core/context.tsx';
 import { FakeClient } from '../test/fake-client.ts';
 import { account, ME, timelineItem } from '../test/fixtures.ts';
@@ -59,7 +59,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function setup(o: { phone?: boolean; base?: number; path?: string; timeout?: string | null } = {}) {
+function setup(o: { phone?: boolean; base?: number; path?: string; timeout?: string | null; dms?: DmSummary[] } = {}) {
   media(o.phone === true);
   replaceHistoryState(null, '', o.path ?? `/c/${A}/${GEN}`);
   const fake = new FakeClient();
@@ -72,6 +72,7 @@ function setup(o: { phone?: boolean; base?: number; path?: string; timeout?: str
   fake.set(`overwrites:${A}`, { [NEWS]: [{ kind: 0, targetId: EVERYONE, allow: 0, deny: PERM.sendMessages }] });
   fake.set(`permissions:${A}`, access());
   fake.set('removals', []);
+  if (o.dms !== undefined) fake.set('dms', o.dms);
   fake.set(`timeline:${GEN}`, { channelId: GEN, group: 'active', hasEarlier: false, items: [rootRow(ROOT, '1', 'the first root', 2)] });
   fake.set(`timeline:${NEWS}`, { channelId: NEWS, group: 'active', items: [], hasEarlier: false });
   fake.set(`timeline:${SLOW}`, { channelId: SLOW, group: 'active', items: [], hasEarlier: false });
@@ -503,4 +504,109 @@ it('falls back to recent activity when the remembered thread root was removed', 
   act(() => fake.set(`threads:${GEN}`, [{ rootMsgId: ROOT2, rootSeq: '4', count: 1, lastTs: 9, excerpt: 'the second root' }]));
   await user.click(screen.getByRole('button', { name: en['layout.header.threads'] }));
   await waitFor(() => expect(fake.callsOf('openThread').at(-1)).toEqual({ m: 'openThread', channelId: GEN, rootMsgId: ROOT2 }));
+});
+
+// Wave C: threads in DMs and group DMs reuse the channel's thread pane.
+const DM = '9a'.repeat(16);
+const GDM = '9b'.repeat(16);
+const DMS: DmSummary[] = [
+  { id: DM, kind: 3, members: [ME.id, BOB], name: 'Bob', group: 'active' },
+  { id: GDM, kind: 4, members: [ME.id, BOB, OWNER], name: 'Bob, Cleo', group: 'active' },
+];
+const dmRoot = rootRow(ROOT, '1', 'a DM root', 1);
+function setupDm(o: { path?: string; replies?: number; phone?: boolean } = {}) {
+  const made = setup({ path: o.path ?? `/dm/${DM}`, dms: DMS, ...(o.phone === undefined ? {} : { phone: o.phone }) });
+  const { fake } = made;
+  fake.set(`timeline:${DM}`, { channelId: DM, group: 'active', hasEarlier: false, items: [{ ...dmRoot, thread: { count: o.replies ?? 1, lastTs: 1_700_000_100 } }] });
+  fake.set(`threads:${DM}`, [{ rootMsgId: ROOT, rootSeq: '1', count: o.replies ?? 1, lastTs: 5, excerpt: 'a DM root' }]);
+  fake.set(`thread:${DM}`, { channelId: DM, rootMsgId: ROOT, root: dmRoot, items: [], hasEarlier: false });
+  return made;
+}
+
+describe('threads in a DM (wave C)', () => {
+  it('a DM message offers Reply in thread and opens the thread pane', async () => {
+    const { fake, user } = setupDm();
+    const message = (await screen.findByText('a DM root')).closest<HTMLElement>('.d-message-row')!;
+    message.focus();
+    await user.click(within(message).getByRole('button', { name: en['thread.open'] }));
+    const aside = await screen.findByRole('complementary', { name: en['thread.title'] });
+    expect(aside.querySelector('.d-thread-pane__sub')).toHaveTextContent(/^Bob$/);
+    expect(fake.callsOf('openThread')).toEqual([{ m: 'openThread', channelId: DM, rootMsgId: ROOT }]);
+    expect(members()).toBeNull();
+    expect(screen.getByRole('textbox', { name: en['thread.composer'] })).toBeInTheDocument();
+  });
+
+  it('a reply count on a DM root opens the thread, in a group DM too', async () => {
+    const { fake, user } = setupDm({ path: `/dm/${GDM}` });
+    fake.set(`timeline:${GDM}`, { channelId: GDM, group: 'active', hasEarlier: false, items: [{ ...dmRoot, thread: { count: 1, lastTs: 1_700_000_100 } }] });
+    fake.set(`thread:${GDM}`, { channelId: GDM, rootMsgId: ROOT, root: dmRoot, items: [], hasEarlier: false });
+    await user.click(await screen.findByRole('button', { name: '1 reply' }));
+    expect(await screen.findByRole('complementary', { name: en['thread.title'] })).toBeInTheDocument();
+    expect(fake.callsOf('openThread')).toEqual([{ m: 'openThread', channelId: GDM, rootMsgId: ROOT }]);
+  });
+
+  it("the DM header has a Threads button that lists the DM's threads", async () => {
+    const { fake, user } = setupDm();
+    await user.click(await screen.findByRole('button', { name: en['layout.header.threads'] }));
+    expect(await screen.findByRole('complementary', { name: en['thread.title'] })).toBeInTheDocument();
+    expect(fake.callsOf('loadThreads')).toEqual([{ m: 'loadThreads', channelId: DM }]);
+    expect(fake.callsOf('openThread').at(-1)).toEqual({ m: 'openThread', channelId: DM, rootMsgId: ROOT });
+    expect(screen.getByRole('button', { name: en['layout.header.threads'] })).toHaveAttribute('aria-pressed', 'true');
+    await user.click(screen.getByRole('button', { name: en['thread.close'] }));
+    await waitFor(() => expect(threadPane()).toBeNull());
+  });
+
+  it('opens an empty thread aside when the DM has no threads', async () => {
+    const { fake, user } = setupDm();
+    fake.set(`threads:${DM}`, []);
+    await user.click(await screen.findByRole('button', { name: en['layout.header.threads'] }));
+    expect(await screen.findByText(en['shell.thread.empty'])).toBeInTheDocument();
+  });
+
+  it('switching from a DM with an open thread to a channel closes the pane', async () => {
+    const { user } = setupDm();
+    await user.click(await screen.findByRole('button', { name: '1 reply' }));
+    await screen.findByRole('complementary', { name: en['thread.title'] });
+    await user.click(within(screen.getByRole('navigation', { name: 'servers' })).getByRole('button', { name: 'Midgard' }));
+    await waitFor(() => expect(window.location.pathname).toBe(`/c/${A}/${GEN}`));
+    await waitFor(() => expect(threadPane()).toBeNull());
+  });
+
+  it('a search hit in a DM thread opens the DM and its thread', async () => {
+    const { fake, user } = setup({ dms: DMS });
+    fake.set(`timeline:${DM}`, { channelId: DM, group: 'active', hasEarlier: false, items: [{ ...dmRoot, thread: { count: 1, lastTs: 1_700_000_100 } }] });
+    fake.set(`thread:${DM}`, { channelId: DM, rootMsgId: ROOT, root: dmRoot, items: [], hasEarlier: false });
+    await screen.findByRole('button', { name: '2 replies' });
+    await user.keyboard('{Control>}k{/Control}');
+    await user.type(screen.getByRole('combobox', { name: 'Search channels, people and messages' }), 'reply');
+    act(() => fake.set('search', { requestId: 4, hits: [{ channelId: DM, communityId: null, seq: '4', snippet: 'a dm reply', rank: '1', threadRoot: ROOT }], cursor: null }));
+    await user.click(await screen.findByRole('option', { name: /a dm reply/ }));
+    expect(await screen.findByRole('complementary', { name: en['thread.title'] })).toBeInTheDocument();
+    expect(window.location.pathname).toBe(`/dm/${DM}`);
+    expect(fake.callsOf('openThread').at(-1)).toEqual({ m: 'openThread', channelId: DM, rootMsgId: ROOT });
+  });
+
+  it('a held thread reply raises the DM badge, and reading the open DM clears it as a channel does', async () => {
+    const { fake } = setupDm();
+    await screen.findByText('a DM root');
+    expect(fake.callsOf('markRead')).toEqual([]);
+    act(() => fake.set('badges', { [DM]: { unread: 1, mentions: 0 } }));
+    await waitFor(() => expect(fake.callsOf('markRead')).toEqual([{ m: 'markRead', channelId: DM }]));
+  });
+
+  it('marks the DM read while its thread is open', async () => {
+    const { fake, user } = setupDm();
+    await user.click(await screen.findByRole('button', { name: '1 reply' }));
+    await screen.findByRole('complementary', { name: en['thread.title'] });
+    act(() => fake.set('badges', { [DM]: { unread: 2, mentions: 1 } }));
+    await waitFor(() => expect(fake.callsOf('markRead')).toEqual([{ m: 'markRead', channelId: DM }]));
+  });
+
+  it("the DM list shows no held thread reply as the DM's last message", async () => {
+    const { fake } = setupDm();
+    fake.set(`thread:${DM}`, { channelId: DM, rootMsgId: ROOT, root: dmRoot,
+      items: [timelineItem({ key: 's7', msgId: '73'.repeat(16), seq: '7', body: 'secret held reply', senderUser: BOB, senderDevice: BOB, ts: 1_700_000_300 })], hasEarlier: false });
+    await screen.findByText('a DM root');
+    expect(screen.queryByText(/secret held reply/)).toBeNull();
+  });
 });
