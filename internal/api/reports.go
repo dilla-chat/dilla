@@ -81,6 +81,11 @@ type Reports struct {
 	maxCiphertext int64
 }
 
+// reportWrapperBytes is the headroom a report body has over the readable cap: the request wraps the
+// envelope in [group_id, seq, envelope, k_f], about 65 bytes of CBOR heads and ids. 256 keeps a
+// readable envelope that fits the cap reportable.
+const reportWrapperBytes = 256
+
 // WithMaxCiphertextBytes sets the instance's max_ciphertext_bytes and returns h.
 func (h *Reports) WithMaxCiphertextBytes(n int64) *Reports {
 	h.maxCiphertext = n
@@ -246,7 +251,7 @@ func (h *Reports) create(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, "file report", err)
 		return
 	}
-	req, err := decodeReportRequest(w, r, readableBodyCap(h.maxCiphertext))
+	req, err := decodeReportRequest(w, r, readableBodyCap(h.maxCiphertext)+reportWrapperBytes)
 	if err != nil {
 		h.fail(w, r, "file report", err)
 		return

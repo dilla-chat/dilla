@@ -117,7 +117,7 @@ func (d *DS) fanOutWelcomes(ctx context.Context, groupID id.ID, epoch uint64, tr
 		return
 	}
 	// The ratchet tree is the one payload in the protocol with no bound of its own — a 1,500-leaf
-	// tree is 620 KiB against a frame budget of 131 584 — and a client sizes its websocket read
+	// tree is 620 KiB against a frame budget of max_frame_bytes (197 120 by default) — and a client sizes its websocket read
 	// limit from the `max_frame_bytes` this same gateway advertised in `hello`. Sending an oversize
 	// frame therefore does not merely fail to arrive: it closes the joiner's connection, and the
 	// joiner comes back to be closed by it again.

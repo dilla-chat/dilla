@@ -701,3 +701,20 @@ func TestTheFrankingCorpusVerifiesThroughTheReportRoute(t *testing.T) {
 		}
 	}
 }
+
+// A readable envelope that fits the cap must be reportable: the report wraps it in about 65 bytes
+// of ids and heads, which the report body cap allows for.
+func TestACapSizedReadableMessageCanBeReported(t *testing.T) {
+	env := maximalTenFileEnvelope(t)
+	capBytes := int64(len(env)) + 8
+	f := newReadableFixtureCap(t, capBytes)
+	e := f.e
+	api.NewReports(e.Repo, f.keys, e.Clk, slog.New(slog.DiscardHandler)).WithMaxCiphertextBytes(capBytes).Register(e.Mux)
+	ch := readableChannel(t, e, f.cid, f.ownerTok)
+	seq := postReadable(t, e, ch, f.ownerTok, env)
+	re := &reportEnv{env: e}
+	_, tok := e.NewUser("reporter")
+	if row := re.report(t, tok, ch, seq, env, bytes.Repeat([]byte{0x06}, 32)); row.VerificationResult != "verified" {
+		t.Fatalf("a cap-sized readable message verified as %q", row.VerificationResult)
+	}
+}

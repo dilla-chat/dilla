@@ -71,13 +71,20 @@ type readableFixture struct {
 
 func newReadableFixture(t *testing.T) *readableFixture {
 	t.Helper()
+	return newReadableFixtureCap(t, 0)
+}
+
+// newReadableFixtureCap is the fixture with the instance's max_ciphertext_bytes set to capBytes
+// (0 is the default).
+func newReadableFixtureCap(t *testing.T, capBytes int64) *readableFixture {
+	t.Helper()
 	e, cid, ownerTok := channelEnv(t)
 	log := slog.New(slog.DiscardHandler)
 	roles := api.NewRoles(e.Repo, e.Clk, "dilla.example", log)
 	roles.Register(e.Mux)
 	fan := &recordingFanout{}
 	keys := api.NewStaticFrankingKeys(api.FrankingKey{ID: id.New(), Key: bytes.Repeat([]byte{0x09}, 32)})
-	api.NewReadable(e.Repo, api.NewResolver(e.Repo), fan, keys, e.Clk, log).WithRoles(roles).Register(e.Mux)
+	api.NewReadable(e.Repo, api.NewResolver(e.Repo), fan, keys, e.Clk, log).WithRoles(roles).WithMaxCiphertextBytes(capBytes).Register(e.Mux)
 	return &readableFixture{e: e, cid: cid, ownerTok: ownerTok, roles: roles, fan: fan, keys: keys}
 }
 
@@ -420,6 +427,28 @@ func TestAReadableBodyOverTheCapIs413(t *testing.T) {
 	}
 }
 
+// A configured max_ciphertext_bytes moves the readable cap: at 131072 the ten-file maximum is
+// refused with 413, and an instance whose cap is just above the envelope's size accepts it, with
+// one byte over that cap refused.
+func TestTheReadableCapFollowsTheConfiguredCiphertextCap(t *testing.T) {
+	env := maximalTenFileEnvelope(t)
+	post := func(f *readableFixture, body []byte) int {
+		ch := readableChannel(t, f.e, f.cid, f.ownerTok)
+		status, _ := f.e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/messages", f.ownerTok, []any{body})
+		return status
+	}
+	if got := post(newReadableFixtureCap(t, 131072), env); got != http.StatusRequestEntityTooLarge {
+		t.Fatalf("a %d-byte envelope at max_ciphertext_bytes 131072 = %d, want 413", len(env), got)
+	}
+	tight := int64(len(env)) + 8 // the request wraps the envelope in a 6-byte array head and byte-string head
+	if got := post(newReadableFixtureCap(t, tight), env); got != http.StatusOK && got != http.StatusCreated {
+		t.Fatalf("a %d-byte envelope at cap %d = %d, want 201", len(env), tight, got)
+	}
+	if got := post(newReadableFixtureCap(t, tight-16), env); got != http.StatusRequestEntityTooLarge {
+		t.Fatalf("a %d-byte envelope at cap %d = %d, want 413", len(env), tight-16, got)
+	}
+}
+
 // A readable message at the cap must still fit the gateway frame that fans it out:
 // the frame is the ciphertext cap plus 512 bytes, and the frame's own fields (the
 // channel, seq, sender, tag, timestamps) must fit inside those 512.
@@ -435,7 +464,15 @@ func TestACapSizedReadableMessageFitsItsFanOutFrame(t *testing.T) {
 	if len(frames) != 1 {
 		t.Fatalf("delivered %d frames, want 1", len(frames))
 	}
-	raw, err := gateway.Encode(frames[0].frame, 1<<40)
+	// The delivered frame has seq 1; re-encode it with the widest numbers (a seq and timestamps
+	// that need the 9-byte CBOR head) so this is the largest frame shape the route can produce.
+	widest, err := gateway.MessagePlainPayload(ch, 1<<32, userOf(t, e, f.ownerTok), env, bytes.Repeat([]byte{0xAB}, 32), 1<<40, 1<<40)
+	if err != nil {
+		t.Fatalf("payload: %v", err)
+	}
+	frame := frames[0].frame
+	frame.Payload = widest
+	raw, err := gateway.Encode(frame, 1<<40)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
