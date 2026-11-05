@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Cancel only this trusted CI run at its first failure, using its job-local token."""
+"""Cancel only this trusted CI run at its first failure, using its job-local token.
+
+If the watchdog itself breaks it stops watching and exits 0: losing the watcher must not fail or cancel CI."""
 from http.client import HTTPException
 import json
 import os
@@ -24,7 +26,21 @@ class NoRedirect(HTTPRedirectHandler):
         raise HTTPError(req.full_url, code, "redirect refused", headers, fp)
 
 
+# GitHub reports a job that waited for a runner until it gave up as cancelled, with no runner and no steps.
+# That is a capacity problem, not a defect in the change.
+def NEVER_STARTED(job):
+    return (job.get("status") == "completed" and job.get("conclusion") == "cancelled" and
+            not job.get("runner_name") and not job.get("steps"))
+
+
+# Desktop e2e shards are flaky enough that one failure must not abort the other shards. ci-ok still fails
+# on a failed shard, so letting the run finish hides nothing.
+E2E_SHARD = re.compile(r"^desktop / desktop-(client|voice)-")
+
+
 def failure_state(job):
+    if NEVER_STARTED(job) or E2E_SHARD.match(job["name"]):
+        return False, False
     acceptable = {"success", "skipped", "neutral"}
     completed_failure = (job["status"] == "completed" and
                          job.get("conclusion") not in acceptable)
@@ -183,7 +199,6 @@ def watch(api, *, sleep=time.sleep, monotonic=time.monotonic, max_seconds=89 * 6
 
 
 def main():
-    api = None
     try:
         with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as event_file:
             event = json.load(event_file)
@@ -196,15 +211,7 @@ def main():
         token = os.environ.get("GH_TOKEN")
         if token:
             detail = detail.replace(token, "***")
-        print(f"::error::CI watchdog failed: {detail}", file=sys.stderr)
-        # Only a fully validated trusted client may act. Losing monitoring must
-        # abort the expensive jobs too, while keeping this watcher visibly red.
-        if api is not None:
-            try:
-                api.cancel()
-            except Exception:
-                print("::error::CI watchdog could not confirm workflow cancellation", file=sys.stderr)
-        return 1
+        print(f"::warning::CI watchdog stopped watching: {detail}", file=sys.stderr)
     return 0
 
 

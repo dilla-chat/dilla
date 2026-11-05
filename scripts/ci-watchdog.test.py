@@ -20,9 +20,9 @@ watchdog = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(watchdog)
 
 
-def job(name, status="completed", conclusion="success", steps=None):
+def job(name, status="completed", conclusion="success", steps=None, runner_name="runner-1"):
     return {"id": 1, "name": name, "status": status, "conclusion": conclusion,
-            "steps": steps or []}
+            "runner_name": runner_name, "steps": steps or []}
 
 
 class Clock:
@@ -79,7 +79,7 @@ class WatchdogTests(unittest.TestCase):
         self.assertLessEqual(timeout, 10)
 
     def test_failed_step_gives_uploads_three_seconds_then_cancels(self):
-        failed = job("desktop / desktop-voice-mac-arm64", "in_progress", None,
+        failed = job("desktop / build-mac-arm64", "in_progress", None,
                      [{"name": "voice", "status": "completed", "conclusion": "failure"},
                       {"name": "upload trace", "status": "in_progress", "conclusion": None}])
         result, transport, clock = self.watch([{"total_count": 1, "jobs": [failed]}, {}])
@@ -135,43 +135,30 @@ class WatchdogTests(unittest.TestCase):
                 result = watchdog.main()
         return result, transport, stderr.getvalue()
 
-    def test_terminal_jobs_api_error_attempts_cancel_and_keeps_failure_exit(self):
+    def test_terminal_jobs_api_error_fails_open_without_cancelling(self):
         error = HTTPError("https://api.github.com", 403, "test-token", {}, io.BytesIO(b"test-token"))
-        result, transport, stderr = self.run_main([error, {}])
-        self.assertEqual(result, 1)
-        self.assertEqual([(r.get_method(), r.full_url) for r, _ in transport.requests], [
-            ("GET", "https://api.github.com/repos/owner/repo/actions/runs/123/jobs?filter=latest&per_page=100&page=1"),
-            ("POST", "https://api.github.com/repos/owner/repo/actions/runs/123/cancel"),
-        ])
+        result, transport, stderr = self.run_main([error])
+        self.assertEqual(result, 0)
+        self.assertEqual([r.get_method() for r, _ in transport.requests], ["GET"])
+        self.assertIn("::warning::CI watchdog stopped watching", stderr)
         self.assertNotIn("test-token", stderr)
 
-    def test_deadline_attempts_cancel_and_keeps_failure_exit(self):
+    def test_deadline_fails_open_without_cancelling(self):
         result, transport, stderr = self.run_main([
             {"total_count": 1, "jobs": [job("go", "in_progress", None)]},
-            {"total_count": 1, "jobs": [job("go", "in_progress", None)]}, {},
+            {"total_count": 1, "jobs": [job("go", "in_progress", None)]},
         ], deadline=True)
-        self.assertEqual(result, 1)
-        self.assertEqual(transport.requests[-1][0].get_method(), "POST")
-        self.assertEqual(transport.requests[-1][0].full_url,
-                         "https://api.github.com/repos/owner/repo/actions/runs/123/cancel")
+        self.assertEqual(result, 0)
+        self.assertTrue(all(r.get_method() == "GET" for r, _ in transport.requests))
+        self.assertIn("stopped watching", stderr)
         self.assertIn("deadline", stderr)
-
-    def test_best_effort_cancel_failure_stays_nonzero_and_redacts_error_bodies(self):
-        errors = [HTTPError("https://api.github.com", 403, "test-token", {}, io.BytesIO(b"test-token"))
-                  for _ in range(2)]
-        result, transport, stderr = self.run_main(errors)
-        self.assertEqual(result, 1)
-        self.assertEqual(len(transport.requests), 2)
-        self.assertEqual(transport.requests[-1][0].get_method(), "POST")
-        self.assertIn("cancellation", stderr)
-        self.assertNotIn("test-token", stderr)
 
     def test_invalid_or_untrusted_environment_never_attempts_cancellation(self):
         for changes in [{"GITHUB_RUN_ID": "../456"}, {"GITHUB_EVENT_NAME": "pull_request"},
                         {"GH_TOKEN": ""}, {"GITHUB_REF": "refs/heads/feature"}]:
             with self.subTest(changes=changes):
                 result, transport, _ = self.run_main([], env_changes=changes)
-                self.assertEqual(result, 1)
+                self.assertEqual(result, 0)
                 self.assertEqual(transport.requests, [])
 
     def test_startup_and_finished_roots_do_not_hide_later_matrix_children(self):
@@ -357,17 +344,53 @@ class WatchdogTests(unittest.TestCase):
         self.assertEqual(api.jobs(), [])
         self.assertEqual(clock.now, 9)
 
-    def test_repeated_read_outage_stays_red_and_attempts_existing_fallback_cancellation(self):
+    def test_own_api_failure_fails_open(self):
         def read_outage(request, _timeout):
             return URLError("PRIVATE_SECRET") if request.get_method() == "GET" else {}
         result, transport, stderr = self.run_main([read_outage] * 100)
-        self.assertEqual(result, 1)
+        self.assertEqual(result, 0)
+        self.assertIn("::warning::CI watchdog stopped watching", stderr)
         self.assertIn("recovery budget", stderr)
-        self.assertIn("network", stderr)
         self.assertNotIn("PRIVATE_SECRET", stderr)
-        self.assertEqual(transport.requests[-1][0].get_method(), "POST")
+        self.assertNotIn("test-token", stderr)
+        self.assertTrue(all(r.get_method() == "GET" for r, _ in transport.requests))
         self.assertLess(len(transport.requests), 100)
-        self.assertNotIn("could not confirm workflow cancellation", stderr)
+
+    def test_a_job_that_never_got_a_runner_is_not_a_failure(self):
+        # Seen on macOS jobs that queued ~15 min without a runner: completed, cancelled, no runner, no steps.
+        never = job("native / mac", conclusion="cancelled", runner_name="")
+        running = job("go", "in_progress", None)
+        api, transport, clock = self.client([
+            {"total_count": 2, "jobs": [never, running]},
+            {"total_count": 2, "jobs": [dict(never, runner_name=None), job("go")]},
+            {"total_count": 5, "jobs": [job("changes"), job("docs"), job("ci-work-complete"),
+                                        dict(never, runner_name=None), job("go")]},
+        ])
+        result = watchdog.watch(api, sleep=clock.sleep, monotonic=lambda: clock.now, max_seconds=100)
+        self.assertEqual(result, "complete")
+        self.assertTrue(all(r.get_method() == "GET" for r, _ in transport.requests))
+
+    def test_an_e2e_shard_failure_does_not_cancel_the_run(self):
+        shard = job("desktop / desktop-client-linux-x64-3", conclusion="failure")
+        voice = job("desktop / desktop-voice-mac-arm64", "in_progress", None,
+                    [{"name": "voice", "status": "completed", "conclusion": "failure"}])
+        roots = [job("changes"), job("docs"), job("ci-work-complete")]
+        api, transport, clock = self.client([
+            {"total_count": 5, "jobs": roots + [shard, voice]},
+            {"total_count": 5, "jobs": roots + [shard, dict(voice, status="completed", conclusion="failure")]},
+        ])
+        result = watchdog.watch(api, sleep=clock.sleep, monotonic=lambda: clock.now, max_seconds=100)
+        self.assertEqual(result, "complete")
+        self.assertEqual(clock.waits, [5])
+        self.assertTrue(all(r.get_method() == "GET" for r, _ in transport.requests))
+
+    def test_a_build_failure_still_cancels(self):
+        result, transport, _ = self.watch([
+            {"total_count": 2, "jobs": [job("go-api-1", conclusion="failure"), job("go", "in_progress", None)]},
+            {},
+        ])
+        self.assertEqual(result, "cancelled")
+        self.assertEqual(transport.requests[-1][0].get_method(), "POST")
 
     def test_retry_after_is_respected_without_exceeding_read_budget(self):
         for seconds in [12, 3600]:
