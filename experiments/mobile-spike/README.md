@@ -158,6 +158,10 @@ history can be read on screen. "End call" logs a final line and `DILLA_CALL_END`
 | `no-callkit` | AudioContext created in the tap, `getUserMedia`, `resume()`, loopback. No CallKit: does the WebView pipeline work on the device at all? |
 | `gum-first` | AudioContext created in the tap, `getUserMedia`, `resume()`, then CallKit `startCall`, then loopback |
 | `callkit-first` | CallKit `startCall` in the tap; the AudioContext is created only after `didActivate` (no user gesture), then `getUserMedia`, `resume()`, loopback |
+| `no-callkit+session` | Native `CallProbe.configureSession` in the tap (`.playAndRecord` / `.voiceChat`, `setActive(true)`, no CallKit); the AudioContext is created after that (no gesture), then `getUserMedia`, `resume()`, loopback. Does an app-configured session fix capture? |
+
+**Force mic** (checkbox, on by default, applies to every mode): never fall back to the oscillator; the raw
+`getUserMedia` track goes through the loopback. See "Force-mic run" below for the extra fields.
 
 **Step tracing** (added after the 2026-11-05 iPhone hang: `startCall` resolved, then nothing). Every await in the
 start path is a step with an 8 s timeout:
@@ -285,6 +289,43 @@ without an `ok`, and its `timeout` line, name the step; wait 20 s more for a pos
 
 A devicectl-launched process may be treated differently from a home-screen launch for suspension, so the lock test
 below still launches from the home screen.
+
+### Force-mic run (is the WebView mic really silent?)
+
+On 2026-11-05 (iPhone 17 Pro, iOS 27.0.1, commit `5d1706e2`) every mode fell back to the oscillator with
+`micPeakAtStart: 0`. With "force mic" ticked the mic track is sent as is, and the page reports, besides the usual lines:
+
+- `DILLA_CALL_EVENT ... "mic.settings"`: the track's `getSettings()`, `getCapabilities()` and `getConstraints()`;
+  the `enumerateDevices` step lists every device kind and label.
+- `DILLA_CALL_STEP ... "native.audioSessionInfo (after gUM)"` and `(call up)` (also on "status"), plus the native
+  line `DILLA_CALL_NATIVE ... audioSessionInfo(...)`: the `AVAudioSession` category, mode, options, `inputAvailable`,
+  available inputs, current route, input gain and channels. If WebKit capture left the session at `SoloAmbient`,
+  that explains a silent mic.
+- In `DILLA_CALL_DETAIL`: `micPeak0_2` and `micPeak2_5` (analyser peak over 0-2 s and 2-5 s after it was attached;
+  sampled every 50 ms; the analyser now feeds the destination through a zero gain so the graph is pulled),
+  `micLevel` (peak since the previous line), `micLevelNow`, `micSamples`; `inboundRtp.audioLevel`,
+  `inboundRtp.totalAudioEnergy` and `inboundRtp.energyDelta` (the receiver decodes what the mic sent, so this does not
+  depend on the AudioContext at all); `mediaSource.*` (the sender's own measurement of the mic track, same fields).
+  `energyDelta` is per 10 s line; with speech it is clearly above 0, digital silence gives 0.
+
+Procedure (one mode per fresh launch with the devicectl command from the diagnostic run; "force mic" ticked):
+
+1. `no-callkit`
+2. `no-callkit+session`
+3. `callkit-first`
+4. `gum-first` (expected to hang in `interrupted`/`suspended`; inbound energy still tells whether RTP carries audio)
+
+For each: tap the mode, then **talk continuously ("one, two, three, ...") for 20 s** starting right at the tap, so the
+0-2 s and 2-5 s windows contain speech. Listen whether you hear your own voice in the loopback (earpiece or
+speaker; note which). Then "status" once, then "End call".
+
+Report per mode: `micPeak0_2`, `micPeak2_5` and `micLevel` from the lines at `t: 0`, 10 and 20; `inboundRtp.audioLevel`
+and `inboundRtp.energyDelta` (and `mediaSource.energyDelta`) from the `t: 10` and `t: 20` lines; the `mic.settings`
+event; the `audioSessionInfo` lines (after gUM, call up); whether you heard yourself; and the whole log.
+
+Reading it: `energyDelta > 0` while `micPeak*` are 0 means the mic delivers audio and only the Web Audio measurement is
+blind (an artifact). Both 0 with the session at `SoloAmbient` and the `no-callkit+session` run non-zero means the
+WebView needs an app-configured `playAndRecord` session. Both 0 everywhere means the WKWebView mic is truly silent.
 
 ### Lock run (5 minutes)
 
