@@ -919,18 +919,19 @@ func scrapeToken(o Options) (string, error) {
 // ReadHeaderTimeout is the listener's header deadline.
 func (s *Server) ReadHeaderTimeout() time.Duration { return s.httpSrv.ReadHeaderTimeout }
 
-// generationHeader stamps X-Dilla-Generation on every response, so an HTTP-only
-// client notices a restore without holding a gateway connection.
 // mobileCORS answers the mobile app's cross-origin requests (http.mobile_origins) on the routes
-// the app calls: the API under /v1/, invite links under /i/ and the desktop sign-in hand-off under
-// /desktop-auth/. It sits outside the mux because a preflight is an OPTIONS request, which no
-// method-qualified route pattern matches. Every other path, the browser client's included, is
-// left same-origin.
+// the app calls from its WebView: the API under /v1/ and invite links under /i/. It sits outside
+// the mux because a preflight is an OPTIONS request, which no method-qualified route pattern
+// matches. Every other path, the browser client's included, is left same-origin.
+//
+// /desktop-auth/ is deliberately not here (mobile M1 task 4 review ruling): internal/desktopauth
+// refuses any foreign Origin, and the mobile app calls it through native HTTP with no Origin
+// header, as the desktop main process does, so it stays strict.
 func mobileCORS(next http.Handler, origins []string) http.Handler {
 	cors := api.CORS(origins)(next)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.Path
-		if strings.HasPrefix(p, "/v1/") || strings.HasPrefix(p, "/i/") || strings.HasPrefix(p, "/desktop-auth/") {
+		if strings.HasPrefix(p, "/v1/") || strings.HasPrefix(p, "/i/") {
 			cors.ServeHTTP(w, r)
 			return
 		}
@@ -938,6 +939,8 @@ func mobileCORS(next http.Handler, origins []string) http.Handler {
 	})
 }
 
+// generationHeader stamps X-Dilla-Generation on every response, so an HTTP-only
+// client notices a restore without holding a gateway connection.
 func generationHeader(next http.Handler, generation uint64) http.Handler {
 	value := strconv.FormatUint(generation, 10)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
