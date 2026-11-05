@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>dilla spike call</title>
+  <style>
+    body { margin: 0; padding: env(safe-area-inset-top) 16px 16px; background: #0b0d10; color: #e6e6e6; font: 14px/1.4 ui-monospace, Menlo, monospace; }
+    pre { white-space: pre-wrap; word-break: break-all; }
+    button { font: inherit; padding: 8px 12px; margin-right: 8px; }
+  </style>
+</head>
+<body>
+  <h1>DILLA_CALL</h1>
+  <button id="start" type="button">Start call</button>
+  <button id="end" type="button" disabled>End call</button>
+  <a href="./index.html">capability probe</a>
+  <pre id="out">idle</pre>
+  <pre id="detail"></pre>
+  <script type="module" src="./call-probe.ts"></script>
+</body>
+</html>
