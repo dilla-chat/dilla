@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { loadBundle, bundledResponse, type Bundle } from './bundle.ts';
 import { canonicalInstance, externalLink, isAppNavigation, parseInvite, partitionFor, trustedFrame, validateCommand, instanceRequestURL, permissionOriginMatches } from './policy.ts';
-import { Preferences } from './preferences.ts';
+import { Preferences, GRANTABLE_PERMISSIONS } from './preferences.ts';
 import { fetchInstanceData } from './request-forwarding.ts';
 import { linuxAutostart, rebindLinuxAutostart } from './autostart.ts';
 import { createUpdater } from './updater.ts';
@@ -147,12 +147,11 @@ function focus(win: BrowserWindow): void { if (win.isMinimized()) win.restore();
 
 function lockWindow(win: BrowserWindow, permits: (url: string) => boolean): void {
   win.webContents.on('will-prevent-unload', event => {
-    // A last-moment draft/recovery transition still cancels an unload; never leave the quit latch set.
-    const wasQuitting = quitting;
-    quitting = false;
+    // The user already confirmed Quit: ignore the renderer's beforeunload so the quit really happens.
+    if (quitting) { event.preventDefault(); return; }
     updater.cancelledQuit();
     for (const client of windows.values()) client.setEnabled(true);
-    if (!wasQuitting && dialog.showMessageBoxSync(win, { type: 'question', title: 'Reload Dilla?',
+    if (dialog.showMessageBoxSync(win, { type: 'question', title: 'Reload Dilla?',
       message: 'Reloading ends any active call. Unsaved changes may be lost.',
       buttons: ['Stay', 'Reload'], defaultId: 0, cancelId: 0, noLink: true }) === 1) event.preventDefault();
   });
@@ -203,7 +202,7 @@ async function openInstance(input: string, path = '/', show = true): Promise<Bro
       || (details.resourceType === 'mainFrame' && !isAppNavigation(details.url, instance));
     callback({ cancel });
   });
-  const allowed = permissions.get(instance) ?? new Set<string>();
+  const allowed = permissions.get(instance) ?? new Set<string>(preferences.grants(instance));
   permissions.set(instance, allowed);
   ses.setPermissionCheckHandler((contents, permission, requestingOrigin, details) => {
     const trusted = contents === win.webContents && details.isMainFrame
@@ -224,7 +223,7 @@ async function openInstance(input: string, path = '/', show = true): Promise<Bro
     if (allowed.has(permission)) { callback(true); return; }
     const label = permission === 'media' ? 'microphone or camera' : permission === 'notifications' ? 'notifications' : permission === 'local-network' ? 'local network connections for calls' : permission === 'loopback-network' ? 'connections to a local Dilla service' : 'audio output selection';
     void dialog.showMessageBox(win, { type: 'question', title: 'Dilla permission', message: `Allow ${new URL(instance).host} to use ${label}?`, buttons: ['Deny', 'Allow'], defaultId: 0, cancelId: 0 })
-      .then(result => { if (result.response === 1) allowed.add(permission); callback(result.response === 1); }).catch(() => callback(false));
+      .then(result => { if (result.response === 1) { allowed.add(permission); if ((GRANTABLE_PERMISSIONS as readonly string[]).includes(permission)) void preferences.grant(instance, permission).catch(() => {}); } callback(result.response === 1); }).catch(() => callback(false));
   });
   ses.setDisplayMediaRequestHandler((_request, callback) => { callback(null); }, { useSystemPicker: false });
   ses.on('will-download', (event, item) => { if (!item.getURL().startsWith(`blob:${origin}/`)) event.preventDefault(); });
@@ -288,6 +287,11 @@ async function collectQuitGuards(): Promise<boolean> {
       }
       if (waiting.size === 0) quitProbe.done();
     });
+    if (updater.inUse() && !updater.unknownGuard()) {
+      const answer = await dialog.showMessageBox({ type: 'question', title: 'Quit Dilla?', message: "Quitting leaves your call and discards text you haven't sent.", buttons: ['Cancel', 'Quit'], defaultId: 0, cancelId: 0, noLink: true });
+      if (answer.response !== 1) return false;
+      updater.releaseInUse();
+    }
     if (updater.protected()) {
       await dialog.showMessageBox({ type: 'info', title: 'Dilla is still in use', message: 'Finish your call and save your drafts before quitting or updating.', detail: 'You can close the window to keep Dilla running in the tray.', buttons: ['Keep Dilla open'] });
       return false;

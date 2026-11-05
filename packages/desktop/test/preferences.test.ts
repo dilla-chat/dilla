@@ -24,6 +24,36 @@ test('persists only authorized canonical instances and startup choice, without l
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test('remembers only Allow answers for the fixed permission set, per instance, and forgets them on removal', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dilla-grants-'));
+  try {
+    const prefs = new Preferences(root);
+    await prefs.load();
+    await prefs.addInstance('https://a.example/');
+    await prefs.addInstance('https://b.example/');
+    await prefs.grant('https://a.example/', 'media');
+    await prefs.grant('https://a.example/', 'media');
+    await prefs.grant('https://a.example/', 'notifications');
+    await assert.rejects(prefs.grant('https://a.example/', 'local-network'), /permission/i);
+    await assert.rejects(prefs.grant('https://a.example/', 'geolocation'), /permission/i);
+    await assert.rejects(prefs.grant('https://c.example/', 'media'), /instance/i);
+    const restored = new Preferences(root);
+    await restored.load();
+    assert.deepEqual(restored.grants('https://a.example/'), ['media', 'notifications']);
+    assert.deepEqual(restored.grants('https://b.example/'), []);
+    await restored.removeInstance('https://a.example/');
+    const again = new Preferences(root);
+    await again.load();
+    assert.deepEqual(again.instances, ['https://b.example/']);
+    assert.deepEqual(again.grants('https://a.example/'), []);
+    assert.equal('grants' in JSON.parse(await readFile(join(root, 'desktop.json'), 'utf8')), false);
+    for (const grants of [{ 'https://b.example/': ['local-network'] }, { 'https://z.example/': ['media'] }, { 'https://b.example/': 'media' }, []]) {
+      await writeFile(join(root, 'desktop.json'), JSON.stringify({ version: 1, instances: ['https://b.example/'], autostart: false, grants }));
+      await assert.rejects(new Preferences(root).load(), /grants/i);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test('Linux autostart quotes the exact executable and never interpolates shell syntax', () => {
   assert.match(desktopEntry('/opt/Dilla App/dilla'), /Exec="\/opt\/Dilla App\/dilla" --hidden/);
   assert.throws(() => desktopEntry('/opt/dilla\nExec=evil'));

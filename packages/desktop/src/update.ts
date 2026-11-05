@@ -124,6 +124,11 @@ export class UpdateCoordinator {
     if (this.state.phase === 'installing') this.set({ phase: 'error', message: 'Restart was cancelled. The app is still running; retry after saving your drafts.' });
   }
   protected(): boolean { return [...this.guards.values()].some(guard => guard === null || guard.activeCall || guard.unsavedDraft); }
+  /** A renderer that has not reported is unknown, which still blocks; a reported call or draft is a choice the user can confirm. */
+  unknownGuard(): boolean { return [...this.guards.values()].some(guard => guard === null); }
+  inUse(): boolean { return [...this.guards.values()].some(guard => guard !== null && (guard.activeCall || guard.unsavedDraft)); }
+  /** The user confirmed quitting: the reported call/draft no longer blocks the quit or the update install. */
+  releaseInUse(): void { for (const [instance, guard] of this.guards) if (guard !== null) this.guards.set(instance, { activeCall: false, unsavedDraft: false }); }
   async preparePrerequisites(): Promise<boolean> {
     if (this.driver.ownership === 'package-manager' || this.state.phase !== 'ready' || this.protected()) return false;
     try { await this.driver.preparePrerequisites?.(); return this.state.phase === 'ready'; }
