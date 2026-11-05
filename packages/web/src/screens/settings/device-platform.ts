@@ -23,3 +23,11 @@ export function devicePlatformLabel(bridge = desktopBridge(), userAgent = global
   const browser = browserName(userAgent);
   return browser === null ? t('devices.platform.browserUnknown') : t('devices.platform.browser', { browser });
 }
+
+/**
+ * The tag on this device's own row: "Desktop · macOS" in the desktop app, nothing in a browser. Jonas's decision of
+ * 2026-11-05 (parity sweep): the prototype's row has no "Browser · Chrome" tag, so a browser draws none.
+ */
+export function ownPlatformTag(bridge = desktopBridge(), userAgent = globalThis.navigator?.userAgent ?? ''): string | undefined {
+  return bridge === undefined ? undefined : devicePlatformLabel(bridge, userAgent);
+}

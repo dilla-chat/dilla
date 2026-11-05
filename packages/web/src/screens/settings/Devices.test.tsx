@@ -78,10 +78,8 @@ describe('the device list', () => {
     expect(within(own).getByText('This browser')).toBeInTheDocument();
     // Signal task 10 fix round 1 (README §5.9): no tier tags; this browser's row signs out, and every live device can be named.
     for (const row of rows()) expect(row.querySelector('[data-kind="tier"]')).toBeNull();
-    // Jonas, 2026-11-04: this device's row says where it runs (jsdom's user agent names no browser), as an informational tag.
-    const platform = own.querySelector('[data-kind="platform"]');
-    expect(platform?.textContent).toBe('Browser');
-    expect(platform?.getAttribute('title')).toBe('Where this device runs, as it says itself. It is not a security check.');
+    // Jonas, 2026-11-05 (parity sweep): a browser draws no "Browser · Chrome" tag; the prototype's row has none (the desktop app keeps its own, above).
+    expect(own.querySelector('[data-kind="platform"]')).toBeNull();
     for (const id of [PHONE, FORGOTTEN, OLD]) expect(rowOf(id).querySelector('[data-kind="platform"]')).toBeNull();
     expect(within(own).getAllByRole('button').map(b => b.textContent)).toEqual(['Sign out']);
     expect(within(rowOf(PHONE)).getByRole('button', { name: 'Remove' })).toBeInTheDocument();

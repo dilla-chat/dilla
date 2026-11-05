@@ -35,7 +35,7 @@ const PROTOTYPE: Readonly<Record<string, Override>> = {
   'poll create': { icon: 'vote', description: 'Ask the channel a question', opensForm: true },
   remind: { icon: 'alarm-clock', description: 'A private one-time reminder', fields: { when: { placeholder: 'in 1 hour' }, text: { placeholder: 'bring two ropes' } } },
   'reminders list': { icon: 'bell', description: 'Open your reminders inbox' },
-  kick: { icon: 'user-x', description: 'Remove someone from the server', fields: { user: { placeholder: '' } } },
+  kick: { icon: 'user-x', description: 'Remove someone from the server', fields: { user: { placeholder: '' }, reason: { placeholder: 'optional' } } },
   ban: { icon: 'ban', description: 'Ban for a while, or for good', fields: { user: { placeholder: '' }, duration: { placeholder: 'permanent' }, reason: { placeholder: 'optional' } } },
   timeout: { icon: 'timer', description: 'Stop someone sending or speaking for a while', fields: { user: { placeholder: '' }, duration: { placeholder: '10 minutes' } } },
   warn: { icon: 'triangle-alert', description: 'A private warning, logged in modlog', fields: { user: { placeholder: '' }, reason: { placeholder: 'what happened' } } },

@@ -110,7 +110,7 @@ is given in parentheses: `--text-micro`
 0.625rem (10px), `--text-xs` 0.6875rem (11px), `--text-sm` 0.78125rem (12.5px), `--text-base`
 0.84375rem (13.5px), `--text-md` 0.875rem (14px), `--text-lg` 1.0625rem (17px), `--text-xl`
 1.375rem (22px). Weights: `--weight-display` 700,
-`--weight-body` 420, `--weight-label` 600. Labels in chrome: uppercase, `letter-spacing: 0.08em`
+`--weight-body` 400, `--weight-label` 600. Labels in chrome: uppercase, `letter-spacing: 0.08em`
 (`--label-tracking`); uppercase micro labels use `--label-tracking-wide` 0.12em. Phone inputs are 16px
 text so iOS does not zoom.
 

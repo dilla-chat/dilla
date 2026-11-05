@@ -105,7 +105,7 @@ const seeds: Array<{ id: string; description: string; scope?: 'any' | 'community
   { id: 'queue clear', description: 'Clear the music queue' },
   { id: 'music', description: 'Show music command help' },
   { id: 'music help', description: 'Show music command help' },
-  { id: 'kick', description: 'Remove a member from the community', permissionBit: 1 << 12, options: [entity('user', 'user')] },
+  { id: 'kick', description: 'Remove a member from the community', permissionBit: 1 << 12, options: [entity('user', 'user'), text('reason', false)] },
   { id: 'ban', description: 'Ban a member', permissionBit: 1 << 13, options: [entity('user', 'user'), o('duration', 'duration', false), text('reason', false)] },
   { id: 'unban', description: 'Unban a member', permissionBit: 1 << 13, options: [entity('user', 'user')] },
   { id: 'timeout', description: 'Temporarily restrict a member', permissionBit: 1 << 24, options: [entity('user', 'user'), o('duration', 'duration')] },

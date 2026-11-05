@@ -423,8 +423,8 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
 
   // Task 10c: the Music page's defaults save as they are picked (manage_community; the Bot enforces the same options).
   const [musicError, setMusicError] = useState<string | null>(null);
-  const musicVolume = currentInstallation?.musicVolume ?? 100;
-  const musicIdle = currentInstallation?.musicIdleMinutes ?? 30;
+  const musicVolume = currentInstallation?.musicVolume ?? 50;
+  const musicIdle = currentInstallation?.musicIdleMinutes ?? 15;
   const saveMusic = (volume: number, idleMinutes: number) => {
     if (!manager || currentInstallation === null || busy) return;
     setMusicError(null);

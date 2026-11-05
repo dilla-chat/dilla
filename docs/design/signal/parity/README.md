@@ -176,6 +176,8 @@ The following decisions also apply:
 - Reduced-motion reply jumps keep the prototype's initial tint and accent bar without animation (Jonas, 2026-10-30).
 - Phone buttons follow each prototype context's actual height; the former global 44px minimum is removed, including inside the phone shell. Preserve the prototype's explicit auth and dialog sizes rather than impose a blanket minimum (Jonas, 2026-10-31, round 3).
 - Phone inputs keep the [phone grammar's 16px text](../README.md) to prevent iOS focus zoom, including sign-in and poll fields.
+- The Bot settings page keeps its own layout: the identity row is a card above the features card, and the features are finer-grained (Welcome, Roles, Announcements, Warnings, Message removal, Kick, Ban) than the prototype's single card with Moderation (Jonas, 2026-11-05, parity sweep).
+- Body text weight is the prototype's 400 (`--weight-body`), not 420; keycaps read ⌘ and ⌥ on macOS and Ctrl and Alt on Windows and Linux in Settings → Keyboard, as in the top bar; this browser's row in Settings → Devices carries no "Browser · Chrome" tag; the Music page's instance defaults are volume 50 and leave when idle 15m, while saved settings are kept; kick and ban show the optional "reason?" chip (Jonas, 2026-11-05, parity sweep).
 
 These are accepted only for the named state; unrelated differences still need
 routing.
