@@ -446,14 +446,14 @@ jobs:
         env:
           DILLA_E2E_MAC_NOTIFICATION_DIAGNOSTICS: '1'
         run: |
-          npm exec -w @dilla/e2e -- playwright test --config playwright.desktop-voice.config.ts --project=electron-voice ring.spec.ts --grep "answer: bob rings" --workers=1 --max-failures=1
+          npm exec -w @dilla/e2e -- playwright test --config playwright.desktop-voice.config.ts --project=electron-voice ring.spec.ts --grep "answer: bob rings" --workers=1
       # The voice suite is the same Chromium media stack on every OS; Linux runs it. Windows and macOS keep their
       # native pieces here: the macOS notification diagnostic above and the performance comparison below.
       - name: Desktop voice end-to-end coverage in Electron
         if: runner.os == 'Linux'
         env:
           DILLA_E2E_NOTIFICATIONS: '1'
-        run: xvfb-run -a dbus-run-session -- bash packages/desktop/scripts/with-window-manager.sh npm exec -w @dilla/e2e -- playwright test --config playwright.desktop-voice.config.ts --project=electron-voice --workers=1 --max-failures=1
+        run: xvfb-run -a dbus-run-session -- bash packages/desktop/scripts/with-window-manager.sh npm exec -w @dilla/e2e -- playwright test --config playwright.desktop-voice.config.ts --project=electron-voice --workers=1
       - run: npm exec -w @dilla/e2e -- playwright install --with-deps chromium
       - if: runner.os == 'Linux'
         run: node packages/desktop/scripts/prepare-browser-sandbox.mjs
@@ -566,10 +566,10 @@ jobs:
         if: runner.os == 'Linux'
         env:
           CHROME_DEVEL_SANDBOX: ${{ github.workspace }}/node_modules/electron/dist/chrome-sandbox
-        run: xvfb-run -a bash e2e/web/support/installed-keyring.sh bash packages/desktop/scripts/with-window-manager.sh npm exec -w @dilla/e2e -- playwright test --config playwright.desktop.config.ts --project=electron-client --shard=${{ matrix.shard }}/6 --max-failures=1
+        run: xvfb-run -a bash e2e/web/support/installed-keyring.sh bash packages/desktop/scripts/with-window-manager.sh npm exec -w @dilla/e2e -- playwright test --config playwright.desktop.config.ts --project=electron-client --shard=${{ matrix.shard }}/6
       - name: Desktop-specific client coverage in Electron
         if: runner.os != 'Linux'
-        run: npm exec -w @dilla/e2e -- playwright test --config playwright.desktop.config.ts --project=electron-client ${{ matrix.specs }} --max-failures=1
+        run: npm exec -w @dilla/e2e -- playwright test --config playwright.desktop.config.ts --project=electron-client ${{ matrix.specs }}
       - name: Collect installed account upgrade proof
         id: installed-account
         run: node packages/desktop/scripts/installed-account-proof.mjs e2e/desktop-client-results ${{ matrix.platform }}-${{ matrix.arch }} packages/desktop/test-report

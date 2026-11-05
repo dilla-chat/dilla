@@ -349,12 +349,12 @@ test('desktop voice cannot shard its frozen-clock suite', () => {
 
 test('the Linux client suite runs in exactly WEB_SHARDS shards, each given its share', () => {
   const last = `          - { os: ubuntu-24.04, platform: linux, arch: x64, shard: ${WEB_SHARDS} }\n`;
-  const flag = `--shard=\${{ matrix.shard }}/${WEB_SHARDS} `;
+  const flag = `--shard=\${{ matrix.shard }}/${WEB_SHARDS}`;
   assert.ok(REAL_DESKTOP.includes(last) && REAL_DESKTOP.includes(flag));
   for (const changed of [
     REAL_DESKTOP.replace(last, ''),
     REAL_DESKTOP.replace(last, `${last}          - { os: ubuntu-24.04, platform: linux, arch: x64, shard: ${WEB_SHARDS + 1} }\n`),
-    REAL_DESKTOP.replace(flag, '--shard=${{ matrix.shard }}/3 '),
+    REAL_DESKTOP.replace(flag, '--shard=${{ matrix.shard }}/3'),
   ]) {
     const root = mkdtempSync(join(TEST_ROOT, 'dilla-desktop-shards-'));
     mkdirSync(join(root, '.github/workflows'), { recursive: true });
@@ -404,14 +404,34 @@ test('installed proof is produced after Playwright clears output and uploaded af
   assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('Playwright cleanup')));
 });
 
-test('desktop CI refuses continuing matrix jobs or tests after the first failure', () => {
-  const good = REAL_DESKTOP.replaceAll('fail-fast: false', 'fail-fast: true').replaceAll('--max-failures=3', '--max-failures=1');
-  for (const [before, after] of [['fail-fast: true', 'fail-fast: false'], ['--max-failures=1', '--max-failures=3']]) {
-    const root = mkdtempSync(join(TEST_ROOT, 'dilla-desktop-first-failure-'));
-    mkdirSync(join(root, '.github/workflows'), { recursive: true });
-    addE2ePackage(root);
-    writeFileSync(join(root, '.github/workflows/desktop.yml'), good.replace(before, after));
-    assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('first failure')), after);
+test('desktop CI refuses continuing matrix jobs after the first failure', () => {
+  const root = mkdtempSync(join(TEST_ROOT, 'dilla-desktop-first-failure-'));
+  mkdirSync(join(root, '.github/workflows'), { recursive: true });
+  addE2ePackage(root);
+  writeFileSync(join(root, '.github/workflows/desktop.yml'), REAL_DESKTOP.replace('fail-fast: true', 'fail-fast: false'));
+  assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('first failure')));
+});
+
+test('the real desktop workflow passes without --max-failures', () => {
+  assert.ok(!REAL_DESKTOP.includes('--max-failures'));
+  const root = mkdtempSync(join(TEST_ROOT, 'dilla-desktop-no-max-failures-'));
+  mkdirSync(join(root, '.github/workflows'), { recursive: true });
+  addE2ePackage(root);
+  writeFileSync(join(root, '.github/workflows/desktop.yml'), REAL_DESKTOP);
+  assert.deepEqual(checkDesktopWorkflow(root).filter(problem => problem.includes('--max-failures')), []);
+});
+
+test('a desktop client or voice step with --max-failures is reported', () => {
+  for (const anchor of ['--project=electron-voice --workers=1\n', '--shard=${{ matrix.shard }}/6\n', '${{ matrix.specs }}\n']) {
+    for (const flag of ['--max-failures=1', '--max-failures=3']) {
+      const changed = REAL_DESKTOP.replace(anchor, `${anchor.slice(0, -1)} ${flag}\n`);
+      assert.notEqual(changed, REAL_DESKTOP, anchor);
+      const root = mkdtempSync(join(TEST_ROOT, 'dilla-desktop-max-failures-'));
+      mkdirSync(join(root, '.github/workflows'), { recursive: true });
+      addE2ePackage(root);
+      writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
+      assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('--max-failures')), `${anchor} ${flag}`);
+    }
   }
 });
 

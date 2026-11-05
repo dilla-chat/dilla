@@ -1282,8 +1282,12 @@ export function checkDesktopWorkflow(root) {
   catch (error) { if (error.code === 'ENOENT') return ['desktop.yml: missing desktop acceptance workflow']; throw error; }
   const problems = [];
   problems.push(...checkNativeStockFeasibility(text, { workflow: true }).map(problem => `${file}: native stock feasibility: ${problem}`));
-  if (/fail-fast:\s*false|--max-failures=(?!1\b)\d+/.test(text)) {
+  if (/fail-fast:\s*false/.test(text)) {
     problems.push(`${file}: desktop validation must stop on the first failure`);
+  }
+  // The e2e shards run every test so one round shows every failing test; the watchdog leaves their failures running too.
+  if (/--max-failures/.test(text)) {
+    problems.push(`${file}: desktop e2e shards must run every test, so --max-failures is not allowed`);
   }
   text.split('\n').forEach((line, i) => {
     checkActionReference(line, file, i + 1, problems);
@@ -1470,7 +1474,6 @@ run: node packages/desktop/scripts/check-mac-dmg.mjs packages/desktop/out` ? ind
       'needs: test-tools', 'DILLA_E2E_TOOLING_DIR: ${{ github.workspace }}/artifacts/e2e-test-tools',
       'name: dilla-e2e-tools-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.sha }}',
       'path: artifacts/e2e-test-tools', 'node scripts/e2e-test-tools.mjs verify artifacts/e2e-test-tools',
-      '--max-failures=1',
     ]) if (!consumer.includes(required)) problems.push(`${file}: ${job} tooling consumer missing ${required}`);
     if (!consumer.includes("go test ./internal/ops -run 'Lock|BackupAndServe|ServeAdmits'")) {
       problems.push(`${file}: ${job} must retain native test-host directory locks coverage`);
@@ -1503,8 +1506,8 @@ run: node packages/desktop/scripts/check-mac-dmg.mjs packages/desktop/out` ? ind
     "os: windows-latest, platform: win, arch: x64, shard: 1, specs: 'web/installed-upgrade-account.spec.ts",
     "os: macos-15, platform: mac, arch: arm64, shard: 1, specs: 'web/installed-upgrade-account.spec.ts",
     'name: dilla-core-wasi', 'node packages/desktop/scripts/prepare-browser-sandbox.mjs',
-    `playwright test --config playwright.desktop.config.ts --project=electron-client --shard=\${{ matrix.shard }}/${WEB_SHARDS} `,
-    'playwright test --config playwright.desktop.config.ts --project=electron-client ${{ matrix.specs }} --max-failures=1',
+    `playwright test --config playwright.desktop.config.ts --project=electron-client --shard=\${{ matrix.shard }}/${WEB_SHARDS}`,
+    'playwright test --config playwright.desktop.config.ts --project=electron-client ${{ matrix.specs }}',
   ]) if (!client.includes(required)) problems.push(`${file}: shared Electron client coverage missing ${required}`);
   // Every Linux shard and no more: an extra one would run nothing, a missing one would drop part of the suite.
   const linuxShards = client.match(/^ {10}- \{ os: ubuntu-24\.04, platform: linux, arch: x64, shard: \d+ \}$/gm) ?? [];
