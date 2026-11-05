@@ -13,9 +13,26 @@ export function canonicalInstance(input: string, allowLoopback = false): string 
   const local = allowLoopback && ['127.0.0.1', '[::1]', 'localhost'].includes(url.hostname);
   if (url.protocol !== 'https:' && !(local && url.protocol === 'http:')) throw new Error('An HTTPS instance is required');
   if (!url.hostname || url.hostname.endsWith('.')) throw new Error('Invalid instance host');
+  // A pasted browser page (https://host/welcome, /c/<id>/<id>, /i/<code>) names the server, not a base path.
+  if (isPageRoute(url)) url.pathname = '/';
   if (!url.pathname.endsWith('/')) url.pathname += '/';
   if (url.pathname.startsWith('/assets/')) throw new Error('The installed client reserves /assets/; choose another instance base path');
   return url.href;
+}
+
+const inviteRoute = /^\/i\/([A-Za-z0-9_-]{1,128})\/?$/;
+
+function isPageRoute(url: URL): boolean {
+  const path = url.pathname.length > 1 ? url.pathname.replace(/\/$/, '') : url.pathname;
+  if (path === '/') return false;
+  return inviteRoute.test(path) || isAppNavigation(`${url.origin}${path}`, url.origin);
+}
+
+/** What the user typed or pasted: the instance, and the invite code when it was an /i/<code> page link. */
+export function instanceInput(input: string, allowLoopback = false): { instance: string; invite: string | null } {
+  const instance = canonicalInstance(input, allowLoopback);
+  const match = inviteRoute.exec(new URL(input).pathname);
+  return { instance, invite: match ? match[1] : null };
 }
 
 export function partitionFor(instance: string): string {

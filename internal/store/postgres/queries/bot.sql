@@ -20,8 +20,8 @@ UPDATE bot_runtimes SET revoked_at = $1 WHERE id = $2 AND revoked_at IS NULL;
 SELECT * FROM bot_runtimes WHERE id > $1 ORDER BY id LIMIT sqlc.arg(max_rows)::bigint;
 
 -- name: CreateBotInstallation :exec
-INSERT INTO bot_installations(id, community_id, runtime_id, user_id, device_id, role_id, state, revision, capabilities, approved_by, approved_at, credential_verified_at, created, updated, removed_at, feature_capabilities)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16);
+INSERT INTO bot_installations(id, community_id, runtime_id, user_id, device_id, role_id, state, revision, capabilities, approved_by, approved_at, credential_verified_at, created, updated, removed_at, feature_capabilities, music_volume, music_idle_minutes)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, 50, 15);
 
 -- name: GetBotInstallation :one
 SELECT * FROM bot_installations WHERE id = $1;

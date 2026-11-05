@@ -18,11 +18,29 @@ import (
 	"github.com/dilla-chat/dilla/internal/store"
 )
 
-// maxEnvelopeBody bounds POST and PATCH of a readable message. §5.3 caps every
-// other CBOR route at 64 KiB, which is BELOW protocol/04's own worst-case legal
-// envelope (4 attachments + 2 previews + a 4 000-byte body + CBOR heads ≈ 74 KiB).
-// Recorded as P2-D28.
-const maxEnvelopeBody = 96 * 1024
+// readableBodyHeadroom is subtracted from the instance's ciphertext cap to give
+// the body cap of a readable message. It is 0: the measured overhead of the
+// message.plain frame (90 bytes, TestACapSizedReadableMessageFitsItsFanOutFrame) is
+// below the 512 bytes the frame budget adds to the ciphertext cap, so a body at
+// the cap still fans out. The test pins that; raise this, in steps of 256, if it
+// ever fails.
+const readableBodyHeadroom = 0
+
+// minReadableBody is the floor: max_ciphertext_bytes cannot be set below 4096.
+const minReadableBody = 4096
+
+// readableBodyCap bounds POST and PATCH of a readable message and POST of a report
+// that carries one. It follows the instance's max_ciphertext_bytes, so one number
+// governs both channel modes: protocol/04's worst-case legal envelope (10
+// attachments + 2 previews + a 4 000-byte body) is 131 643 bytes plus the request
+// wrapper, which the 192 KiB default holds with room to spare. §5.3's 64 KiB for
+// other CBOR routes is below it (P2-D28), and so was the old 96 KiB.
+func readableBodyCap(ciphertextCap int64) int64 {
+	if ciphertextCap <= 0 {
+		ciphertextCap = defaultMaxCiphertextBytes
+	}
+	return max(ciphertextCap-readableBodyHeadroom, minReadableBody)
+}
 
 // readBody is the cap of the one small body on these routes, PUT read-state.
 const readBody = 64 * 1024
@@ -58,6 +76,8 @@ type Readable struct {
 	log   *slog.Logger
 	roles *Roles
 	afk   AFKActivity
+	// maxCiphertext is the instance's max_ciphertext_bytes; zero means the default.
+	maxCiphertext int64
 }
 
 // NewReadable wires the routes. fan may be nil, which stores and answers
@@ -70,6 +90,13 @@ func NewReadable(repo store.Repository, res *Resolver, fan Fanout, keys Franking
 // membership/call synchronization to the readable message route.
 func (h *Readable) WithRoles(roles *Roles) *Readable {
 	h.roles = roles
+	return h
+}
+
+// WithMaxCiphertextBytes sets the instance's max_ciphertext_bytes, from which the body cap of a
+// readable message is derived, and returns h.
+func (h *Readable) WithMaxCiphertextBytes(n int64) *Readable {
+	h.maxCiphertext = n
 	return h
 }
 
@@ -175,7 +202,7 @@ func (h *Readable) post(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req envelopeRequest
-	if err := server.DecodeBody(w, r, maxEnvelopeBody, &req); err != nil {
+	if err := server.DecodeBody(w, r, readableBodyCap(h.maxCiphertext), &req); err != nil {
 		h.fail(w, r, "post readable message", err)
 		return
 	}
@@ -427,7 +454,7 @@ func (h *Readable) patch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req envelopeRequest
-	if err := server.DecodeBody(w, r, maxEnvelopeBody, &req); err != nil {
+	if err := server.DecodeBody(w, r, readableBodyCap(h.maxCiphertext), &req); err != nil {
 		h.fail(w, r, "edit readable message", err)
 		return
 	}

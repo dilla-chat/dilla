@@ -500,7 +500,7 @@ const CASES: Case[] = [
   {
     name: 'getLimits reads elements 0, 4, 5, 7 and 8', call: (r) => r.getLimits(),
     method: 'GET', path: '/v1/instance/limits', bucket: 'read', idempotent: true, auth: false, sent: null,
-    reply: () => cborReply(200, [131072, 104857600, 4, 2, 32, 8, 10737418240, 30000, 131584, 30, 30]),
+    reply: () => cborReply(200, [131072, 104857600, 10, 2, 32, 8, 10737418240, 30000, 131584, 30, 30]),
     expected: { maxCiphertextBytes: 131072, keypackagesPerDevice: 32, keypackageRefillThreshold: 8, heartbeatMs: 30000, maxFrameBytes: 131584 },
   },
   {

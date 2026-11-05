@@ -95,7 +95,7 @@ rejects	envelope reject: an attachment name one byte over 255	decode
 rejects	envelope reject: an attachment of eight elements	decode
 rejects	envelope reject: an edit with no reply_to	decode
 rejects	envelope reject: delete tombstone with a non-empty body	decode
-rejects	envelope reject: five attachments	decode
+rejects	envelope reject: eleven attachments	decode
 rejects	envelope reject: mime one byte over 255	decode
 rejects	envelope reject: preview description one byte over 1024	decode
 rejects	envelope reject: preview image one byte over 16384	decode

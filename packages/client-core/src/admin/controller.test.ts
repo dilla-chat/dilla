@@ -243,6 +243,21 @@ describe('AdminController: moderation', () => {
     ]);
   });
 
+  it('loadInvites lists unlimited-use and never-expiring links (0 means no limit) and drops exhausted and expired ones', async () => {
+    const w = world();
+    await toReady(w);
+    const now = 1_700_000_000n;
+    const row = (n: number, over: Partial<InviteRow>): InviteRow => ({
+      id: id16(n), communityId: COMMUNITY, createdBy: USER, maxUses: 5, uses: 1, created: now - 100n, expires: now + 100n, revokedAt: null, ...over,
+    });
+    w.routes.listInvites.mockResolvedValue([
+      row(1, { maxUses: 0, uses: 40 }), row(2, { expires: 0n }), row(3, { maxUses: 0, expires: 0n }),
+      row(4, { uses: 5 }), row(5, { expires: now - 1n }), row(6, { maxUses: 0, expires: now - 1n }),
+    ]);
+    expect(await run(w, { m: 'loadInvites', communityId: CID })).toMatchObject({ ok: true, value: null });
+    expect(w.last<InviteSummary[]>(`invites:${CID}`)?.map((i) => i.id)).toEqual([toHex(id16(1)), toHex(id16(2)), toHex(id16(3))]);
+  });
+
   it('loadInvites keeps only invites that are not revoked, not expired and not used up', async () => {
     const w = world();
     await toReady(w);

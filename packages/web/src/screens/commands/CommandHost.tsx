@@ -14,6 +14,7 @@ import { t } from '../../strings/index.ts';
 import { useCommandProviders } from './CommandContext.tsx';
 import { CommandPicker, type PickerFrame } from './CommandPicker.tsx';
 import { commandListed, useCommandBot } from './capabilities.ts';
+import { refreshCommandBotForPicker } from './command-bot-store.ts';
 import { builtinHandlers, eligibleAssignableRole, eligibleModerationTarget } from './builtin.ts';
 import type { CommandExecutionContext, CommandSuggestionList } from './command-types.ts';
 import type { TimelineItem } from '@dilla/client-core';
@@ -170,9 +171,9 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
       ? builtinHandlers[command.id] !== undefined || extra[command.id] !== undefined
       : extra[command.id] !== undefined));
   }, [binding, handlers, gifsEnabled]);
-  // Wave B Task 2: a Bot command is listed only while the server's Bot reports its operation (read when the picker opens
-  // and every 30 s while it is open); its source tag is the Bot's display name.
-  const bot = useCommandBot(client, props.communityId, active);
+  // Wave B Task 2: a Bot command is listed only while the server's Bot reports its operation (held per community by command-bot-store: loaded when this
+  // composer mounts, refreshed every 30 s, kept when the picker closes); its source tag is the Bot's display name.
+  const bot = useCommandBot(client, props.communityId);
   const listed = useMemo(() => new Set(definitions.filter(command => commandListed(command, bot.operations)).map(command => command.id)), [definitions, bot.operations]);
   const members = useSlice(`members:${props.communityId ?? ''}`);
   const botName = installationBotName(members, bot.botUserId);
@@ -359,12 +360,12 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
       lead={<Avatar name={confirmation.moderation.name} size="confirm" />} closeLabel={resultCopy.cancel} onBackdrop={abandonDialog}
       onClose={() => { setConfirmation(null); confirmationResolve.current?.('cancel'); confirmationResolve.current = null; }}
       footer={<Button variant="danger" onClick={() => { const resolve = confirmationResolve.current; confirmationResolve.current = null; setConfirmation(null); resolve?.('confirm'); }}><Icon name={confirmation.moderation.action === 'kick' ? 'user-x' : 'ban'} size={14} />{resultCopy.action[confirmation.moderation.action]}</Button>}>
-      <div className="dw-command-confirm"><div><span>{resultCopy.duration}</span>{confirmation.moderation.action === 'kick' ? '—' : confirmation.moderation.duration}</div><div><span>{resultCopy.reason}</span>{confirmation.moderation.reason}</div>
+      <div className="dw-command-confirm"><div><span>{resultCopy.duration}</span>{confirmation.moderation.action === 'kick' ? '—' : confirmation.moderation.duration}</div>{confirmation.moderation.action === 'kick' ? null : <div><span>{resultCopy.reason}</span>{confirmation.moderation.reason}</div>}
         <div><span>{resultCopy.logged}</span>{resultCopy.loggedNote}</div></div>
     </Dialog> : confirmation !== null ? <ConfirmDialog open title={confirmation.title} body={confirmation.body} confirmLabel="Continue" busyLabel="Working…" cancelLabel="Cancel" onBackdrop={abandonDialog} busy={false} error={null}
     onConfirm={() => { setConfirmation(null); confirmationResolve.current?.('confirm'); confirmationResolve.current = null; }}
     onClose={() => { setConfirmation(null); confirmationResolve.current?.('cancel'); confirmationResolve.current = null; }} /> : null}{active ? <CommandPicker key={contextKey} definitions={definitions} initialText={saved}
     onUnknown={text => { resultStore.add({ at: Date.now(), status: 'failed', text, provider: 'builtin' }); leaveAfterRun(); }} onExecute={execution} onCancel={cancel} onDone={leaveAfterRun} onSendLiteral={sendLiteral} suggest={suggest} suggestionSources={suggestionSources} contextKey={contextKey}
-    moderationConfirmOpen={confirmation?.moderation !== undefined} listed={listed} room={room} onRunDetached={runDetached} {...(botName !== undefined ? { botName } : {})} {...(props.renderFrame !== undefined ? { frame: props.renderFrame } : {})}
+    moderationConfirmOpen={confirmation?.moderation !== undefined} listed={listed} loading={bot.waiting} onListOpen={() => props.communityId === null ? undefined : refreshCommandBotForPicker(client, props.communityId)} room={room} onRunDetached={runDetached} {...(botName !== undefined ? { botName } : {})} {...(props.renderFrame !== undefined ? { frame: props.renderFrame } : {})}
     onDraftChange={text => { setCommandText(text); const row = memory.get(key); remember(memory, key, { text, requestId: row?.requestId ?? requestId(), invocationKey: row?.invocationKey ?? text, mode: 'active' }); }} /> : null}</>;
 }

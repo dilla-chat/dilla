@@ -466,6 +466,18 @@ describe('Controller', () => {
     expect(w.core.humanInteractionEventsAckSelected).not.toHaveBeenCalled();
   });
 
+  it('reads the Bot command status once for 25 pending interaction requests polling together', async () => {
+    const w = world(); await toReady(w);
+    w.core.humanInteractionEventsRead.mockReturnValue({ events: [], next: 0n, highWater: 0n });
+    w.core.humanInteractionReceiptsRead.mockReturnValue([]);
+    w.routes.getBotCommandStatus.mockClear();
+    for (let i = 0; i < 25; i++) {
+      w.call(11_000 + i, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [84], requestIds: [toHex(new Uint8Array(16).fill(i + 1))] });
+    }
+    await vi.waitFor(() => { for (let i = 0; i < 25; i++) expect(w.ret(11_000 + i)).toMatchObject({ ok: true }); });
+    expect(w.routes.getBotCommandStatus).toHaveBeenCalledTimes(1);
+  });
+
   it('does not query archived receipts when the current Bot installation is disabled', async () => {
     const w = world(); await toReady(w);
     w.routes.getBotCommandStatus.mockResolvedValue({ installationId: new Uint8Array(16).fill(0x73), botUserId: USER, state: 4, revision: 2n });
@@ -706,7 +718,7 @@ describe('Controller', () => {
     let welcomePolls = 0;
     w.sync.pollWelcomes.mockImplementation(() => {
       welcomePolls++;
-      if (welcomePolls === 20) w.state.groups.push({ ...textGroup(2), groupId, kind: 3 });
+      if (welcomePolls === 4) w.state.groups.push({ ...textGroup(2), groupId, kind: 3 });
       return Promise.resolve();
     });
     w.core.humanInteractionSendPrepare.mockImplementation((rid) => {
@@ -715,7 +727,7 @@ describe('Controller', () => {
     });
     w.call(98, { m: 'listManualModerationEvidence', communityId: toHex(COMMUNITY), requestId: toHex(requestId), cursor: null });
     await vi.waitFor(() => expect(w.core.humanInteractionSendPrepare).toHaveBeenCalledTimes(1));
-    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(20);
+    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(4);
     expect(w.routes.postMessage).toHaveBeenCalledWith(groupId, expect.any(Uint8Array));
   });
 
@@ -726,8 +738,163 @@ describe('Controller', () => {
     w.call(99, { m: 'listManualModerationEvidence', communityId: toHex(COMMUNITY), requestId: toHex(requestId), cursor: null });
     await vi.waitFor(() => expect(w.ret(99)).toMatchObject({ ok: false,
       error: { code: 'E_CORE_STATE', detail: 'missing_interaction_group' } }));
-    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(90);
+    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(7);
     expect(w.last<DiagnosticsState>('diagnostics')?.errors ?? []).not.toContainEqual(expect.objectContaining({ code: 'E_CLOCK_SKEW' }));
+  });
+
+  it('waits for the Welcome push with backoff instead of polling every 500 ms, and remembers "no group" for 30 s', async () => {
+    let nowMs = 1_700_000_000_000;
+    const delays: number[] = [];
+    const w = world({ now: () => nowMs, sleep: (ms, signal) => new Promise<void>((resolve) => {
+      delays.push(ms);
+      const done = (): void => { clearTimeout(timer); resolve(); };
+      const timer = setTimeout(done, 0);
+      signal?.addEventListener('abort', done);
+    }) });
+    await toReady(w);
+    const ask = (id: number, fill: number): void => w.call(id, { m: 'listManualModerationEvidence', communityId: toHex(COMMUNITY),
+      requestId: toHex(new Uint8Array(16).fill(fill)), cursor: null });
+    ask(110, 0x61);
+    await vi.waitFor(() => expect(w.ret(110)).toMatchObject({ ok: false, error: { detail: 'missing_interaction_group' } }));
+    expect(delays).toEqual([1_000, 2_000, 4_000, 8_000, 15_000, 15_000]);
+    expect(delays).not.toContain(500);
+    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(7);
+    // A second read within 30 s fails fast: no further polls or waits.
+    nowMs += 10_000;
+    ask(111, 0x62);
+    await vi.waitFor(() => expect(w.ret(111)).toMatchObject({ ok: false, error: { detail: 'missing_interaction_group' } }));
+    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(7);
+    expect(delays).toHaveLength(6);
+    // After the memory lapses it checks again.
+    nowMs += 30_000;
+    ask(112, 0x63);
+    await vi.waitFor(() => expect(w.ret(112)).toMatchObject({ ok: false }));
+    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(14);
+  });
+
+  // Task 7 review Minor 1: the "no group" memory is per community, and a Welcome clears it.
+  it('remembers "no group" per community and forgets it when a Welcome turns a group active', async () => {
+    let nowMs = 1_700_000_000_000;
+    const other = new Uint8Array(16).fill(0x77);
+    const w = world({ now: () => nowMs, sleep: (_ms, signal) => new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 0);
+      signal?.addEventListener('abort', () => { clearTimeout(timer); resolve(); });
+    }) });
+    await toReady(w);
+    // A second listed community (the controller refuses an unlisted one before it looks for a group).
+    const slices = (w.controller as unknown as { slices: Map<string, { id: string; name: string; owner: string }[]> }).slices;
+    slices.set('communities', [...(slices.get('communities') ?? []), { id: toHex(other), name: 'second', owner: toHex(USER) }]);
+    const ask = (id: number, community: Uint8Array, fill: number): void => w.call(id, { m: 'listManualModerationEvidence', communityId: toHex(community),
+      requestId: toHex(new Uint8Array(16).fill(fill)), cursor: null });
+    const refused = (id: number) => vi.waitFor(() => expect(w.ret(id)).toMatchObject({ ok: false, error: { detail: 'missing_interaction_group' } }));
+    ask(120, COMMUNITY, 0x71);
+    await refused(120);
+    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(7);
+    // X's memory does not fail community Y fast: Y checks for itself.
+    nowMs += 1_000;
+    ask(121, other, 0x72);
+    await refused(121);
+    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(14);
+    // X is still remembered...
+    nowMs += 1_000;
+    ask(122, COMMUNITY, 0x73);
+    await refused(122);
+    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(14);
+    // Final review I1: ordinary chat in a channel group, and an interaction group of ANOTHER community, prove nothing
+    // about X: its memory stays.
+    w.sync.deps!.onGroupChanged(GROUP, { state: 2, epochChanged: false } as never);
+    const otherGroup = new Uint8Array(16).fill(0x56);
+    w.state.groups.push({ ...textGroup(2), groupId: otherGroup, kind: 3, communityId: other });
+    w.sync.deps!.onGroupChanged(otherGroup, { state: 2, epochChanged: false } as never);
+    ask(124, COMMUNITY, 0x75);
+    await refused(124);
+    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(14);
+    // ...until a Welcome turns X's interaction group active: then X's memory is forgotten. (The group is taken out
+    // again so the next read still looks, which proves the memory was cleared.)
+    const ownGroup = new Uint8Array(16).fill(0x55);
+    w.state.groups.push({ ...textGroup(2), groupId: ownGroup, kind: 3 });
+    w.sync.deps!.onGroupChanged(ownGroup, { state: 2, epochChanged: false } as never);
+    w.state.groups.splice(w.state.groups.findIndex((row) => row.groupId === ownGroup), 1);
+    ask(123, COMMUNITY, 0x74);
+    await refused(123);
+    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(21);
+  });
+
+  // Final review I1: chat traffic in other groups during the wait neither ends it early nor costs extra polls; an
+  // interaction group of another community does not wake it either.
+  it('unrelated group applies during the Welcome wait do not wake it, and it runs to its 45 s deadline', async () => {
+    let nowMs = 1_700_000_000_000;
+    const sleeps: { ms: number; fire: () => void }[] = [];
+    const w = world({ now: () => nowMs, sleep: (ms, signal) => new Promise<void>((resolve) => {
+      sleeps.push({ ms, fire: resolve });
+      signal?.addEventListener('abort', () => { resolve(); });
+    }) });
+    await toReady(w);
+    const other = new Uint8Array(16).fill(0x77);
+    w.call(125, { m: 'listManualModerationEvidence', communityId: toHex(COMMUNITY),
+      requestId: toHex(new Uint8Array(16).fill(0x76)), cursor: null });
+    await vi.waitFor(() => expect(sleeps).toHaveLength(1));
+    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(1);
+    for (let i = 0; i < 10; i++) w.sync.deps!.onGroupChanged(GROUP, { state: 2, epochChanged: false } as never);
+    const otherGroup = new Uint8Array(16).fill(0x56);
+    w.state.groups.push({ ...textGroup(2), groupId: otherGroup, kind: 3, communityId: other });
+    w.sync.deps!.onGroupChanged(otherGroup, { state: 2, epochChanged: false } as never);
+    await new Promise((resolve) => { setTimeout(resolve, 20); });
+    expect(w.ret(125)).toBeUndefined();
+    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(1);
+    expect(sleeps).toHaveLength(1);
+    // The backoff timers run out the window: each expiry polls once, and the request ends at the deadline.
+    let fired = 0;
+    while (w.ret(125) === undefined && fired < 20) {
+      const next = sleeps[sleeps.length - 1];
+      nowMs += next.ms;
+      next.fire();
+      fired++;
+      await new Promise((resolve) => { setTimeout(resolve, 5); });
+    }
+    expect(w.ret(125)).toMatchObject({ ok: false, error: { detail: 'missing_interaction_group' } });
+    expect(sleeps.map((s) => s.ms)).toEqual([1_000, 2_000, 4_000, 8_000, 15_000, 15_000]);
+    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(7);
+  });
+
+  it('a wait woken early by its own group returns at once without spending the deadline', async () => {
+    let nowMs = 1_700_000_000_000;
+    const sleeps: number[] = [];
+    const w = world({ now: () => nowMs, sleep: (ms, signal) => new Promise<void>((resolve) => {
+      sleeps.push(ms);
+      signal?.addEventListener('abort', () => { resolve(); });
+    }) });
+    await toReady(w);
+    const groupId = new Uint8Array(16).fill(0x52);
+    w.core.humanInteractionSendPrepare.mockImplementation((rid) => {
+      w.state.outbox.push({ msgId: rid, state: 0, error: '', created: 1n, body: 'evidence page request', type: 0, replyTo: null, attachments: [] });
+      return rid;
+    });
+    w.call(126, { m: 'listManualModerationEvidence', communityId: toHex(COMMUNITY),
+      requestId: toHex(new Uint8Array(16).fill(0x78)), cursor: null });
+    await vi.waitFor(() => expect(sleeps).toHaveLength(1));
+    nowMs += 300;
+    w.state.groups.push({ ...textGroup(2), groupId, kind: 3 });
+    w.sync.deps!.onGroupChanged(groupId, { state: 2, epochChanged: false } as never);
+    await vi.waitFor(() => expect(w.core.humanInteractionSendPrepare).toHaveBeenCalledTimes(1));
+    expect(sleeps).toHaveLength(1);
+  });
+
+  it('a Welcome push that activates the group wakes a waiting request before its backoff ends', async () => {
+    const w = world({ sleep: (_ms, signal) => new Promise<void>((resolve) => { signal?.addEventListener('abort', () => { resolve(); }); }) });
+    await toReady(w);
+    const groupId = new Uint8Array(16).fill(0x52);
+    const requestId = new Uint8Array(16).fill(0x64);
+    w.core.humanInteractionSendPrepare.mockImplementation((rid) => {
+      w.state.outbox.push({ msgId: rid, state: 0, error: '', created: 1n, body: 'evidence page request', type: 0, replyTo: null, attachments: [] });
+      return rid;
+    });
+    w.call(113, { m: 'listManualModerationEvidence', communityId: toHex(COMMUNITY), requestId: toHex(requestId), cursor: null });
+    await vi.waitFor(() => expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(1));
+    w.state.groups.push({ ...textGroup(2), groupId, kind: 3 });
+    w.sync.deps!.onGroupChanged(groupId, { state: 2, epochChanged: false } as never);
+    await vi.waitFor(() => expect(w.core.humanInteractionSendPrepare).toHaveBeenCalledTimes(1));
+    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(1);
   });
 
   it('names a Welcome refused for clock skew in the refusal and logs E_CLOCK_SKEW once', async () => {
@@ -742,7 +909,7 @@ describe('Controller', () => {
     w.call(100, { m: 'listManualModerationEvidence', communityId: toHex(COMMUNITY), requestId: toHex(requestId), cursor: null });
     await vi.waitFor(() => expect(w.ret(100)).toMatchObject({ ok: false,
       error: { code: 'E_CORE_STATE', detail: 'interaction_clock_skew' } }));
-    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(90);
+    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(7);
     const skew = (w.last<DiagnosticsState>('diagnostics')?.errors ?? []).filter(error => error.code === 'E_CLOCK_SKEW');
     expect(skew).toHaveLength(1);
     expect(w.core.humanInteractionSendPrepare).not.toHaveBeenCalled();
@@ -6163,7 +6330,7 @@ describe('Controller say more (L-TS-34, L-TS-35, L-TS-36)', () => {
     h.call(8, { m: 'openAttachment', channelId: CH_HEX, seq: '01', index: 0, thumb: false });
     h.call(9, { m: 'openAttachment', channelId: CH_HEX, seq: '7', index: -1, thumb: false });
     h.call(10, { m: 'send', channelId: CH_HEX, text: 'x', replyTo: 'nope' });
-    h.call(11, { m: 'send', channelId: CH_HEX, text: 'x', attachments: ['a', 'b', 'c', 'd', 'e'] });
+    h.call(11, { m: 'send', channelId: CH_HEX, text: 'x', attachments: Array.from({ length: 11 }, (_, i) => String(i)) });
     h.call(12, { m: 'discardAttachment', channelId: CH_HEX, trayId: '' });
     h.call(13, { m: 'react', channelId: CH_HEX, msgId: MSG_HEX, emoji: '👍', on: 1 });
     h.call(14, { m: 'openAttachment', channelId: CH_HEX, seq: '7', index: 0, thumb: 'no' });
@@ -6264,11 +6431,11 @@ describe('Controller say more (L-TS-34, L-TS-35, L-TS-36)', () => {
     await vi.waitFor(() => expect(trayOf(w)?.[0]?.phase).toBe('ready'));
   });
 
-  it('attachFiles refuses five files and keeps an oversize failed card without upload', async () => {
+  it('attachFiles refuses eleven files and keeps an oversize failed card without upload', async () => {
     const w = world();
     await toReady(w);
     await openGeneral(w);
-    w.call(4, { m: 'attachFiles', channelId: CH_HEX, files: [1, 2, 3, 4, 5].map((n) => file(`${String(n)}.txt`, 'text/plain', 1)) });
+    w.call(4, { m: 'attachFiles', channelId: CH_HEX, files: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map((n) => file(`${String(n)}.txt`, 'text/plain', 1)) });
     w.call(5, { m: 'attachFiles', channelId: CH_HEX, files: [file('big.bin', 'application/octet-stream', BROWSER_ATTACHMENT_CAP + 1)] });
     w.call(6, { m: 'attachFiles', channelId: 'e'.repeat(32), files: [file('x.txt', 'text/plain', 1)] });
     await vi.waitFor(() => expect(w.ret(6)).toBeDefined());

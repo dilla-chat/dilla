@@ -86,17 +86,17 @@ func TestAnUploadFromADeviceWhoseLeafIsGoneIsRefused(t *testing.T) {
 	}
 }
 
-// R6/R32/D7: the cap is 131072 bytes of MLS ciphertext, exactly.
-func TestTheCiphertextCapIsExactlyOneHundredAndThirtyOneThousandAndSeventyTwoBytes(t *testing.T) {
+// R6/R32/D7: the cap is 196608 bytes of MLS ciphertext, exactly.
+func TestTheCiphertextCapIsExactlyOneHundredAndNinetySixThousandSixHundredAndEightBytes(t *testing.T) {
 	h := newDSHarness(t)
 	g := h.group(t)
-	if _, err := h.ds.Upload(context.Background(), g.session, g.id, g.Epoch(), h.messageOfSize(t, g, 131072), 0); err != nil {
-		t.Fatalf("131072 bytes must be accepted: %v", err)
+	if _, err := h.ds.Upload(context.Background(), g.session, g.id, g.Epoch(), h.messageOfSize(t, g, 196608), 0); err != nil {
+		t.Fatalf("196608 bytes must be accepted: %v", err)
 	}
-	_, err := h.ds.Upload(context.Background(), g.session, g.id, g.Epoch(), h.messageOfSize(t, g, 131073), 0)
+	_, err := h.ds.Upload(context.Background(), g.session, g.id, g.Epoch(), h.messageOfSize(t, g, 196609), 0)
 	var dsErr *ds.Error
 	if !errors.As(err, &dsErr) || dsErr.Code != "E_TOO_LARGE" {
-		t.Fatalf("131073 bytes: got %v, want E_TOO_LARGE", err)
+		t.Fatalf("196609 bytes: got %v, want E_TOO_LARGE", err)
 	}
 	if dsErr.Status != 413 {
 		t.Errorf("status = %d, want 413", dsErr.Status)

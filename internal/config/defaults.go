@@ -11,7 +11,7 @@ const DefaultWebhookListen = "127.0.0.1:7883"
 // Default returns the struct that is pre-populated BEFORE decoding, so deleting
 // any line from dilla.toml leaves behaviour unchanged (gap-74 §2.4). Three
 // values here are a ruling's rather than the gap file's: max_ciphertext_bytes
-// 131072 (R6/R32), the argon2 triple 19456/2/1 (R15, OWASP 2026) and the
+// 196608 (R6/R32, raised from 131072 for ten-file messages), the argon2 triple 19456/2/1 (R15, OWASP 2026) and the
 // 30s/90s gateway pair (R10).
 func Default() *Config {
 	c := &Config{}
@@ -45,7 +45,7 @@ func Default() *Config {
 		UploadsPerMinute: 20, UploadBytesPerDay: 5368709120,
 	}
 	c.Limits = Limits{
-		MaxCiphertextBytes: 131072, MaxAttachmentBytes: 104857600,
+		MaxCiphertextBytes: 196608, MaxAttachmentBytes: 104857600,
 		MaxKeypackagesPerDevice: 32, KeypackageRefillThreshold: 8,
 		Rate: Rate{
 			Enabled: true, SweepInterval: "30s", MaxKeys: 100000, MaxRetryAfter: "1h",
@@ -155,7 +155,7 @@ func (c *Config) Derive() {
 	// One derivation, two readers: GET /v1/instance/limits element 8 and the
 	// gateway's hello frame must advertise the same number, and
 	// limits.max_ciphertext_bytes is operator-settable over 4096..1048576, so a
-	// literal 131584 in either place is wrong the moment an operator changes it.
+	// literal 197120 in either place is wrong the moment an operator changes it.
 	c.maxFrameBytes = uint64(c.Limits.MaxCiphertextBytes) + 512 //nolint:gosec // G115: a config value that Validate keeps positive
 }
 

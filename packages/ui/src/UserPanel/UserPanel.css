@@ -15,10 +15,12 @@
 .d-user-panel .d-user-panel__menu { display: flex; }
 .d-user-panel__menu .d-user-panel__who { flex: 1 1 auto; justify-content: flex-start; padding: 3px 6px; border: 0; }
 .d-user-panel__text { display: grid; min-width: 0; }
-/* Task 9: the prototype's status menu: 220px above the block, 8px corners in the --control-edge-field line, its 0 16px 40px shadow, d-modal
+/* Task 9: the prototype's status menu: 220px of rows (230px with its padding and edge, its content-box width) floating 7px above the block (its bottom: 56px), 8px corners in the --control-edge-field line, its 0 16px 40px shadow, d-modal
    200ms; an item 0 10px with its 8px status dot, the chosen one ticked. */
-.d-user-panel__menu .d-action-menu__popup { left: 0; right: auto; width: 220px; min-width: 0; border-color: var(--control-edge-field); border-radius: var(--r-lg); box-shadow: var(--shadow-status); animation-duration: var(--duration-popover); }
+.d-user-panel__menu .d-action-menu__popup { left: 0; right: auto; width: 230px; min-width: 0; margin-bottom: 7px; border-color: var(--control-edge-field); border-radius: var(--r-lg); box-shadow: var(--shadow-status); animation-duration: var(--duration-popover); }
 .d-user-panel__menu .d-action-menu__item { padding: 0 10px; }
+/* The prototype draws the current status row with the active fill (--hover, #14171C); the pointer and focus keep --surface-hi. */
+.d-user-panel__menu .d-action-menu__item[aria-checked="true"]:not(:hover, :focus-visible) { background: var(--hover); }
 .d-user-panel__menu .d-action-menu__item::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: var(--r-pill); background: var(--fg-3); }
 .d-user-panel__menu .d-action-menu__item[data-id="online"]::before { background: var(--ok); }
 .d-user-panel__menu .d-action-menu__item[data-id="idle"]::before { background: var(--warn); }

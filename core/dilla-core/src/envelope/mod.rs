@@ -17,11 +17,14 @@ use crate::ids::MsgId;
 pub const MAX_BODY_LONG: usize = 4_000;
 /// `body` limit in UTF-8 bytes for types 3 and 4 (the emoji).
 pub const MAX_BODY_SHORT: usize = 32;
-/// interfaces.md §2.8 (R6, R32): the tightened envelope limits. The worst case
-/// is 4 × (32+32+12+8+255+255+8192) + 2 × (2048+256+1024+16384) + 4000 ≈ 74 KiB plus
-/// CBOR heads, which fits the 128 KiB ciphertext cap of protocol/02 with padding
-/// to 256-byte buckets.
-pub const MAX_ATTACHMENTS: usize = 4;
+/// interfaces.md §2.8 (R6, R32): the tightened envelope limits. One maximal attachment is
+/// 32+32+12+8+255+255+8192 = 8 786 bytes of content, so ten are 87 860 bytes (~86 KiB) before
+/// CBOR heads. Add 2 × (2048+256+1024+16384) = 39 424 bytes of previews and a 4 000-byte body and
+/// the theoretical worst case is 131 284 bytes plus heads; the real encoded maximum is 131 643
+/// bytes (measured by `TestAMaximalTenFileEnvelopeIsAccepted` in the Go server). That is above the
+/// old 131 072-byte ciphertext cap and well inside the 196 608-byte default (192 KiB) of
+/// protocol/02, raised for this limit.
+pub const MAX_ATTACHMENTS: usize = 10;
 pub const MAX_PREVIEWS: usize = 2;
 pub const MAX_THUMB: usize = 8_192;
 pub const MAX_PREVIEW_IMAGE: usize = 16_384;
@@ -854,7 +857,7 @@ mod tests {
     /// interfaces.md §2.8 / protocol/04 "Limits": the tightened per-field bounds.
     #[test]
     fn tightened_limits_have_the_r6_values() {
-        assert_eq!(MAX_ATTACHMENTS, 4);
+        assert_eq!(MAX_ATTACHMENTS, 10);
         assert_eq!(MAX_PREVIEWS, 2);
         assert_eq!(MAX_THUMB, 8_192);
         assert_eq!(MAX_PREVIEW_IMAGE, 16_384);
@@ -862,6 +865,17 @@ mod tests {
         assert_eq!(MAX_URL, 2_048);
         assert_eq!(MAX_TITLE, 256);
         assert_eq!(MAX_DESCRIPTION, 1_024);
+    }
+
+    /// Wave C: a message carries up to ten files, and the tenth decodes.
+    #[test]
+    fn ten_attachments_encode_and_decode() {
+        let mut env = base();
+        env.attachments = vec![sample_attachment(); 10];
+        let bytes = env.encode().unwrap();
+        assert_eq!(Envelope::decode(&bytes).unwrap(), env);
+        env.attachments = vec![sample_attachment(); 11];
+        assert_eq!(env.validate(), Err(ProtocolError::EnvelopeLimit));
     }
 
     /// Each new bound refuses at exactly one byte over, and accepts at the bound.

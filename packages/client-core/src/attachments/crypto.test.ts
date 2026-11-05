@@ -31,7 +31,7 @@ describe('the attachment AEAD reproduces protocol/vectors/attachment.json (L-COR
     expect(vectors.aad_blob).toBe(utf8(AAD_BLOB));
     expect(vectors.aad_thumb).toBe(utf8(AAD_THUMB));
     expect([AAD_BLOB, AAD_THUMB]).toEqual(['dilla attachment v1', 'dilla thumb v1']);
-    expect([MAX_THUMB_PLAINTEXT, BROWSER_ATTACHMENT_CAP, MAX_ATTACHMENTS]).toEqual([8176, 26_214_400, 4]);
+    expect([MAX_THUMB_PLAINTEXT, BROWSER_ATTACHMENT_CAP, MAX_ATTACHMENTS]).toEqual([8176, 26_214_400, 10]);
   });
 
   for (const c of vectors.cases) {

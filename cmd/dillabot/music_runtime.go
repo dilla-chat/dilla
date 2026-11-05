@@ -446,11 +446,12 @@ type musicDefaults struct {
 	idle   time.Duration
 }
 
-// Today's behaviour, used until the server reports settings or when it reports a value outside
-// the Music page's options.
+// The instance defaults (the prototype's Music page: volume 50, leave when idle after 15 minutes), used
+// until the server reports settings or when it reports a value outside the Music page's options. A
+// saved setting is never rewritten: an installation that stored 100 and 30 keeps them.
 const (
-	defaultMusicVolume uint8 = 100
-	defaultMusicIdle         = 30 * time.Minute
+	defaultMusicVolume uint8 = 50
+	defaultMusicIdle         = 15 * time.Minute
 )
 
 func newMusicQueueRegistry() *musicQueueRegistry {
@@ -459,7 +460,7 @@ func newMusicQueueRegistry() *musicQueueRegistry {
 
 // SetMusicDefaults records an installation's Music page settings as the server reported them.
 // The Bot enforces the options itself: anything outside 25/50/75/100 or 5/15/30 minutes falls
-// back to today's behaviour (100, 30 minutes), as does a server that does not report them.
+// back to the instance defaults (50, 15 minutes), as does a server that does not report them.
 func (r *musicQueueRegistry) SetMusicDefaults(installation id.ID, reported bool, volume, idleMinutes uint64) {
 	if r == nil || installation.IsZero() {
 		return

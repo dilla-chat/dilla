@@ -134,9 +134,14 @@ E_NOT_FOUND E_NOT_READY E_NOT_UPLOADER E_NO_ASSERTION E_NO_BACKUP E_OWN_UNKNOWN 
 E_READ_MAX E_RECOVERY_KEY E_REGISTER_RACE E_ROOT_MISMATCH E_ROUTE_INPUT E_SENDER_MISMATCH E_SESSION_SCOPE
 E_SETTING_KEY E_SIGNIN_EVICTED E_SIGNIN_EXPIRED E_STORAGE_FULL E_STORE_BUSY E_STORE_KEY E_STORE_NEWER E_STORE_OPEN E_STORE_PAUSED E_SYNC_STOPPED
 E_TIER_MISMATCH E_TRAY_NOT_READY E_UMK_CHANGED E_UNAUTHENTICATED E_UNAVAILABLE E_UNREADABLE E_UNSUPPORTED
-E_CALL_FULL E_CALL_SHARERS_FULL E_CALL_ACTIVE E_REMOVE_PENDING E_NO_CALL E_DISCONNECTED E_MEDIA_MISROUTE
+E_CALL_FULL E_CALL_SHARERS_FULL E_CALL_ACTIVE E_REMOVE_PENDING E_NO_CALL E_DISCONNECTED E_MEDIA_MISROUTE E_BOT_CAPABILITIES
 E_FACTOR_REQUIRED E_PASSKEY_UNKNOWN E_PASSKEY_OTHER_ACCOUNT E_STEP_UP E_TARGET_NO_FACTOR E_KEYPACKAGES_EXHAUSTED`.split(/\s+/));
 
+/** Catch-up fetch delays while a request waits for its interaction group's Welcome (45 s in all). */
+const WELCOME_BACKOFF_MS: readonly number[] = [1_000, 2_000, 4_000, 8_000, 15_000, 15_000];
+const NO_GROUP_MEMORY_MS = 30_000;
+/** The Welcome wait's window: the backoff schedule's sum (45 s), held as a deadline so a wake never shortens it. */
+const WELCOME_WAIT_MS = WELCOME_BACKOFF_MS.reduce((sum, ms) => sum + ms, 0);
 const NO_INTERACTION_GROUP = 'no active interaction group for this community';
 const AMBIGUOUS_INTERACTION_GROUP = 'multiple active interaction groups make the Bot target ambiguous';
 const INTERACTION_CLOCK_SKEW = 'no active interaction group: its Welcome was refused because this device clock is off from the instance clock';
@@ -656,7 +661,7 @@ const VDEC = /^(vp8|h264|vp9)(,(vp8|h264|vp9)){0,2}$/;
 const validVdec = (v: unknown): boolean => typeof v === 'string' && (v === '' || (VDEC.test(v) && new Set(v.split(',')).size === v.split(',').length));
 const STATS_MAX = 1_048_576;
 /** fix/firefox-misrouted-audio: the stable codes a page may note for Diagnostics (callNote); nothing else is taken. */
-const CALL_NOTES: ReadonlySet<string> = new Set(['E_MEDIA_MISROUTE']);
+const CALL_NOTES: ReadonlySet<string> = new Set(['E_MEDIA_MISROUTE', 'E_BOT_CAPABILITIES']);
 /** f10app m3: a voice-driven member-list re-read of a community starts no sooner than this after the last one ended, and
  *  at most this many users per community enter the looked-up set from voice_state frames (the instance's, unauthenticated). */
 export const MEMBER_REREAD_MIN_MS = 5_000;
@@ -1140,6 +1145,11 @@ export class Controller {
   /** The one pending expiry sweep per channel, and the deadline (deps.now() ms) it is set for. */
   private readonly typingSweeps = new Map<string, { handle: number; at: number }>();
   private readonly diagnosticsErrors: { code: string; at: number }[] = [];
+  /** Community hex → when its remembered "no interaction group" answer lapses (ms). */
+  private readonly noInteractionGroupUntil = new Map<string, number>();
+  /** Requests waiting for a Welcome push; each is woken when a group turns active. */
+  /** community hex → wakers of requests waiting for that community's interaction group (kind 3) to become active. */
+  private readonly interactionGroupWaiters = new Map<string, Set<() => void>>();
   /** Per kept kind-3 Welcome group (hex): its community (hex, from the proof; '' when unreadable) and the deps.now() ms
    *  it was last refused for clock skew (sync's onWelcomeClockSkew). A Bot request names the skew only for its own
    *  community. The last E_CLOCK_SKEW diagnostics entry: a kept Welcome is refused on every poll, so the entry repeats
@@ -1601,22 +1611,58 @@ export class Controller {
     return saved;
   }
 
+  /**
+   * Resolves `true` when this community's interaction group becomes active (the gateway's Welcome push applied), or
+   * `false` after `ms`, whichever is first. Traffic in any other group does not wake it.
+   */
+  private async waitForInteractionWelcome(communityHex: string, ms: number): Promise<boolean> {
+    const abort = new AbortController();
+    let wake: () => void = () => undefined;
+    const pushed = new Promise<true>((resolve) => { wake = () => { resolve(true); }; });
+    let waiters = this.interactionGroupWaiters.get(communityHex);
+    if (waiters === undefined) { waiters = new Set(); this.interactionGroupWaiters.set(communityHex, waiters); }
+    waiters.add(wake);
+    try { return await Promise.race([this.deps.sleep(ms, abort.signal).then(() => false, () => false), pushed]); }
+    finally {
+      abort.abort();
+      waiters.delete(wake);
+      if (waiters.size === 0 && this.interactionGroupWaiters.get(communityHex) === waiters) this.interactionGroupWaiters.delete(communityHex);
+    }
+  }
+
   private async waitForActiveInteractionGroup(communityHex: string): Promise<ReturnType<CorePort['groups']>> {
     const core = this.requireCore();
     const sync = this.requireSync();
     const activeGroups = () => core.groups().filter((row) => row.kind === 3 && row.state === 2
       && row.communityId !== null && toHex(row.communityId) === communityHex);
     let rows = activeGroups();
-    // Registration follows the daemon's 30-second reconciliation interval. Keep
-    // the original request pending while its per-device Welcome is being issued.
-    const welcomeAttempts = 90;
     const startedMs = this.deps.now();
-    for (let attempt = 0; rows.length === 0 && attempt < welcomeAttempts; attempt++) {
+    // A "no group" answer is remembered per community for 30 s, so repeated capability reads fail fast and do not each
+    // wait out the registration window.
+    const knownEmptyUntil = this.noInteractionGroupUntil.get(communityHex);
+    const knownEmpty = knownEmptyUntil !== undefined && startedMs < knownEmptyUntil;
+    if (rows.length === 0 && !knownEmpty) {
+      // Check once. Registration follows the daemon's 30-second reconciliation interval, so the original request stays
+      // pending until a 45 s deadline: the gateway's Welcome push wakes it (only an apply that activates this
+      // community's interaction group does), and a catch-up fetch backs off (1 s doubling to 15 s) as the net. A wake
+      // never uses up a backoff step; only an expired step polls.
       if (sync.stopped()) throw new SyncError('E_SYNC_STOPPED');
       await sync.pollWelcomes();
       rows = activeGroups();
-      if (rows.length === 0 && attempt + 1 < welcomeAttempts) await this.deps.sleep(500);
+      const deadlineMs = startedMs + WELCOME_WAIT_MS;
+      let step = 0;
+      while (rows.length === 0 && step < WELCOME_BACKOFF_MS.length) {
+        const leftMs = deadlineMs - this.deps.now();
+        if (leftMs <= 0) break;
+        if (sync.stopped()) throw new SyncError('E_SYNC_STOPPED');
+        const woken = await this.waitForInteractionWelcome(communityHex, Math.min(WELCOME_BACKOFF_MS[step], leftMs));
+        if (sync.stopped()) throw new SyncError('E_SYNC_STOPPED');
+        rows = activeGroups();
+        if (rows.length === 0 && !woken) { step++; await sync.pollWelcomes(); rows = activeGroups(); }
+      }
+      if (rows.length === 0) this.noInteractionGroupUntil.set(communityHex, this.deps.now() + NO_GROUP_MEMORY_MS);
     }
+    if (rows.length > 0) this.noInteractionGroupUntil.delete(communityHex);
     // A Welcome refused for clock skew during this wait is refused again on every poll while the skew lasts, so the
     // request names that instead of the generic missing group.
     if (rows.length === 0 && [...this.welcomeClockSkew.values()]
@@ -1723,6 +1769,22 @@ export class Controller {
     });
   }
 
+  /**
+   * The Bot command status the interaction poll gates archived-receipt reads on. Every pending request polls every 200 ms, so
+   * 25 of them would spend the device's whole read budget (http/pacing.ts, 8/s) on this one GET: concurrent polls share one
+   * request and its answer is reused for a second. A failure is never kept.
+   */
+  private readonly botStatusForPoll = new Map<string, { at: number; read: ReturnType<Routes['getBotCommandStatus']> }>();
+  private pollBotCommandStatus(communityHex: string): ReturnType<Routes['getBotCommandStatus']> {
+    const kept = this.botStatusForPoll.get(communityHex);
+    if (kept !== undefined && this.deps.now() - kept.at < 1_000) return kept.read;
+    const read = this.routes.getBotCommandStatus(fromHex(communityHex));
+    const entry = { at: this.deps.now(), read };
+    this.botStatusForPoll.set(communityHex, entry);
+    read.catch(() => { if (this.botStatusForPoll.get(communityHex) === entry) this.botStatusForPoll.delete(communityHex); });
+    return read;
+  }
+
   private async readBotInteractionResponses(communityHex: string, operations: readonly number[], requestIds?: readonly string[]): Promise<{
     responses: { deliveryId: string; requestId: string; communityId: string; operation: number; channelId: string | null;
       status: number; revision: string | null; data: Uint8Array; sourceSeq: string }[];
@@ -1736,7 +1798,7 @@ export class Controller {
       && (requested === null || requested.has(toHex(event.requestId)))).slice(0, 100);
     let archivedEvents: HumanInteractionEvent[] = [];
     if (requestIds !== undefined && requestIds.length > 0) {
-      const status = await this.routes.getBotCommandStatus(fromHex(communityHex));
+      const status = await this.pollBotCommandStatus(communityHex);
       if (status === null || status.state !== 3 || status.botUserId === null) {
         throw new Refusal('E_FORBIDDEN', 'current active Bot installation and community membership are required');
       }
@@ -4436,6 +4498,7 @@ export class Controller {
    * else or reset the store before this one leads again, so the next lead rebuilds from the store alone.
    */
   private forgetAccount(): void {
+    this.botStatusForPoll.clear();
     this.clearInteractionAckLeases();
     this.selfDisplay = null;
     this.clearReauthTimer();
@@ -4806,7 +4869,18 @@ export class Controller {
     // A state-2 apply ends a resync, never a not-member report: a frame applied to the group after a refused resync (the
     // docs shoot's removal) proves nothing about this device's leaf. Not-member ends with a rejoin ('resyncing') or a
     // catch-up the DS served ('member').
-    if (result.state === 2) this.resyncing.delete(hex);
+    if (result.state === 2) {
+      this.resyncing.delete(hex);
+      // Final review I1: only an apply that leaves this community's interaction group (kind 3) active ends that
+      // community's Welcome wait and its "no group" memory. Chat in any other group proves nothing.
+      this.safely(() => {
+        const row = this.core?.groups().find((g) => toHex(g.groupId) === hex);
+        if (row === undefined || row.kind !== 3 || row.state !== 2 || row.communityId === null) return;
+        const communityHex = toHex(row.communityId);
+        this.noInteractionGroupUntil.delete(communityHex);
+        for (const wake of [...(this.interactionGroupWaiters.get(communityHex) ?? [])]) wake();
+      });
+    }
     const seen: { groups: readonly GroupInfo[] | null } = { groups: null };
     this.safely(() => { this.refreshTrustGeneration(); seen.groups = this.touchGroup(groupId); });
     this.safely(() => { this.authorityGroupState(groupId, seen.groups ?? this.core?.groups() ?? []); });

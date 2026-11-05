@@ -368,14 +368,14 @@ export class AdminController {
 
   // ---- invites ----
 
-  /** Only the invites that can still be used: not revoked, not expired, not used up. */
+  /** Only the invites that can still be used: not revoked, not expired, not used up. 0 means no limit (max uses and expiry). */
   async loadInvites(communityId: string): Promise<null> {
     this.requireListed(communityId);
     const rows = await this.guarded(communityId, () => this.deps.routes.listInvites(fromHex(communityId)));
     if (!this.deps.listed(communityId)) return null;
     const now = BigInt(Math.floor(this.deps.now() / 1000));
     this.deps.publish(`invites:${communityId}`, rows
-      .filter((i) => i.revokedAt === null && i.expires > now && i.uses < i.maxUses)
+      .filter((i) => i.revokedAt === null && (i.expires === 0n || i.expires > now) && (i.maxUses === 0 || i.uses < i.maxUses))
       .map((i): InviteSummary => ({ id: toHex(i.id), createdBy: i.createdBy === null ? null : toHex(i.createdBy), maxUses: i.maxUses,
         uses: i.uses, created: Number(i.created), expires: Number(i.expires) })));
     return null;

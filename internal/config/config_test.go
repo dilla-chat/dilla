@@ -105,8 +105,8 @@ func TestMinimalFileLoadsAndValidates(t *testing.T) {
 	if c.Instance.DataDir != "/var/lib/dilla" {
 		t.Fatalf("data_dir = %q, want the default", c.Instance.DataDir)
 	}
-	if c.Limits.MaxCiphertextBytes != 131072 {
-		t.Fatalf("max_ciphertext_bytes = %d, want 131072 (R6/R32)", c.Limits.MaxCiphertextBytes)
+	if c.Limits.MaxCiphertextBytes != 196608 || c.MaxFrameBytes() != 197120 {
+		t.Fatalf("max_ciphertext_bytes = %d, frame = %d, want 196608 and 197120 (wave C: ten files)", c.Limits.MaxCiphertextBytes, c.MaxFrameBytes())
 	}
 	if c.Auth.Password.Argon2MemoryKiB != 19456 || c.Auth.Password.Argon2Iterations != 2 || c.Auth.Password.Argon2Parallelism != 1 {
 		t.Fatalf("argon2 defaults = %d/%d/%d, want 19456/2/1 (R15)",
@@ -757,5 +757,18 @@ func TestLegacyConfigStillRejectsUnknownKeys(t *testing.T) {
 				t.Fatal("legacy config rewritten")
 			}
 		})
+	}
+}
+
+// Wave C: a 10-file message needs more than 128 KiB, so the default ciphertext cap
+// is 192 KiB and the derived frame budget is 512 bytes above it.
+func TestDefaultCiphertextCapIs196608(t *testing.T) {
+	c := config.Default()
+	c.Derive()
+	if c.Limits.MaxCiphertextBytes != 196608 {
+		t.Fatalf("max_ciphertext_bytes = %d, want 196608", c.Limits.MaxCiphertextBytes)
+	}
+	if c.MaxFrameBytes() != 197120 {
+		t.Fatalf("max frame = %d, want 197120", c.MaxFrameBytes())
 	}
 }

@@ -487,6 +487,10 @@ A thread keeps the replies to one message together, out of the channel's main co
   phones too. A thread whose first message is unavailable says “The message that started this thread cannot be shown here.”
 - Replies in a thread do not appear in the channel, but they still count as unread and as mentions. Opening the channel
   marks its thread replies read; a thread has no unread count of its own.
+- **Threads** also works in a direct message and a group direct message. Open a thread from its reply chip, from
+  **reply in thread** or from a search result; on a computer it opens in the side column, and a direct message has no
+  member list beside it. The header of a direct message stays the name and topic, with no buttons.
+  Direct messages sent before this release stay unthreaded, so their replies show in the conversation.
 
 ## Second factor
 
@@ -1256,11 +1260,12 @@ their profile card ([Members](#members)); role mentions and @everyone are not.
 ![Björn's message with the image card of saturday-map.png and the file card of loot-list.txt, and under it the
 list "files to send" with packing-list.txt and bridge-sketch.png, both ready](screenshots/conversation-attachments.png)
 
-**attach files** next to the message field, dropping files on the conversation ("Drop to attach", "Up to 4 files,
+**attach files** next to the message field, dropping files on the conversation ("Drop to attach", "Up to 10 files,
 25 MB each.") or pasting them into the message field adds them to "files to send". Each file goes through
 "reading", "preparing", "uploading" and "ready", or shows "failed ({code})"; **remove {name}** takes it off the
-list. A message carries at most four files ("A message carries at most 4 files."), each at most 25 MB
-(26,214,400 bytes) in a browser. An oversized card says “Over 25 MB” and the toast says “Files over 25 MB can’t be sent from a browser”. The message goes when
+list. A message carries at most ten files ("A message carries at most 10 files."), each at most 25 MB
+(26,214,400 bytes) in a browser. A message with the largest files and link previews can be too large for the server to
+accept; the send then says "This message is too large to send. Send fewer files or remove a link preview." An oversized card says “Over 25 MB” and the toast says “Files over 25 MB can’t be sent from a browser”. The message goes when
 its uploads are ready, with or without text. Pressing Send while an upload is pending shows “Waiting for uploads to finish”.
 Failed cards stay visible; remove one and attach the file again to retry. They do not stop your text and ready files from being sent. Files are uploaded
 as soon as you add them and become part of the conversation only when the message is sent; a file that is never
@@ -1465,6 +1470,9 @@ them into a report.
 `E_MEDIA_MISROUTE` among them means a person's audio in a call was briefly lost in Firefox and was reconnected
 automatically: you heard them again about four seconds after they joined or came back.
 
+`E_BOT_CAPABILITIES` means the app could not load the Bot's command list for a community. It tries again by itself
+(after 2, 5 and 10 seconds while it has no list yet, otherwise every 30), and opening the command picker tries at once.
+
 ![Diagnostics at 390 pixels wide](screenshots/fullscreen-settings-diagnostics-phone.png)
 
 ### Typing
@@ -1511,7 +1519,8 @@ and when the other tab closes it takes over by itself.
 - Tabs open from before web-3.9 must reload: they show "This server needs a newer client. Reload the page." with a
   **reload** button that keeps your draft ([Other messages](#other-messages)).
 - Threads show their first 200 replies, a thread cannot start on a reply, and there is no unread count for a thread on
-  its own.
+  its own. Direct messages sent before this release have no threads. An older desktop app (before 0.1.0-beta.3) shows
+  thread replies in direct messages flat, and a message of more than four files, until it is updated.
 - Voice, calls and audio and video files have limits of their own: see [Voice, calls and media
   files](voice.md#known-limits).
 - No link previews, custom emoji or emoji in the message text; reactions use a fixed set of 32.

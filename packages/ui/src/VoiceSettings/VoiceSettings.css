@@ -1,6 +1,5 @@
 /* README §5.9 (task 10), the prototype's Voice page: bordered groups (hairline, radius 10, 16px padding, 14px inside,
-   16px apart) under 10px uppercase headings; labels 11px --fg-2; the device selects 36px fields in --control-edge-field
-   (content-box, as the prototype draws them); the push-to-talk key a 36px box with its Change button beside it. */
+   16px apart) under 10px uppercase headings; labels 11px --fg-2; the device selects 36px fields (border included) in --control-edge-field; the push-to-talk key a 36px box with its Change button beside it. */
 .d-voice-settings { display: grid; gap: 16px; min-width: 0; font-family: var(--font-mono); }
 .d-voice-settings__group { display: grid; gap: 14px; min-width: 0; margin: 0; padding: 16px; border: 1px solid var(--hairline); border-radius: var(--r-xl); }
 .d-voice-settings__heading { margin: 0; font-size: var(--text-micro); font-weight: var(--weight-label); line-height: 1.5; letter-spacing: var(--label-tracking-wide); text-transform: uppercase; color: var(--fg-3); }
@@ -9,7 +8,7 @@
 .d-voice-settings__label { font-size: var(--text-xs); line-height: 1.5; color: var(--fg-2); }
 .d-voice-settings__note { margin: 0; font-size: var(--text-meta); line-height: 1.5; color: var(--fg-3); }
 .d-voice-settings__select {
-  box-sizing: border-box; height: 2.375rem /* the prototype's 36px of content in a 1px border */; min-width: 0; max-width: 100%; padding: 0 10px; font: inherit; font-size: var(--text-sm); color: var(--fg);
+  box-sizing: border-box; height: 2.25rem /* the prototype's 36px, border included (measured on the prototype's select) */; min-width: 0; max-width: 100%; padding: 0 10px; font: inherit; font-size: var(--text-sm); color: var(--fg);
   background: var(--surface-2); border: 1px solid var(--control-edge-field); border-radius: var(--r-seg);
 }
 .d-voice-settings__select:focus-visible { border-color: var(--accent); }

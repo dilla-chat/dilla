@@ -1035,10 +1035,10 @@ controller resolved it to 403). Declaring all four here is what keeps
 diffs the table against `internal/server/errors.go` in both directions and a code in one and not
 the other fails CI.
 
-`E_TOO_LARGE` fires at **131072 bytes** of MLS ciphertext on `POST /v1/groups/{id}/message`. The
+`E_TOO_LARGE` fires at **196608 bytes** (the default `max_ciphertext_bytes`; 192 KiB, so a message of ten files fits) of MLS ciphertext on `POST /v1/groups/{id}/message`. The
 gateway's inbound read limit is **16384 bytes** (`gateway.read_limit_bytes`) because no inbound
 frame carries ciphertext; the outbound `max_frame_bytes` advertised in `hello` is
-`max_ciphertext_bytes + 512` = **131584**, and a client sets its own WebSocket read limit from it.
+`max_ciphertext_bytes + 512` = **197120** by default, and a client sets its own WebSocket read limit from it.
 
 ## Retention
 

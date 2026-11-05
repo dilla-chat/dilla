@@ -46,8 +46,8 @@ const frameOverhead = 32
 // bytes, and a non-blocking enqueue so no producer ever blocks on a slow socket. Overflow closes
 // 4008, which is deliberately resumable — the client reconnects and replays from its ring.
 //
-// The byte bound is not decoration: QueueFrames is 256 and MaxFrameBytes is 131 584, so a
-// frame-only bound lets one stalled connection pin ~32 MiB. interfaces §6.1 makes QueueBytes part
+// The byte bound is not decoration: QueueFrames is 256 and MaxFrameBytes is 197 120, so a
+// frame-only bound lets one stalled connection pin ~48 MiB. interfaces §6.1 makes QueueBytes part
 // of the contract, and `withDefaults` raises RingBytes to match it, so whatever the queue refuses
 // is still replayable from the ring.
 type writer struct {

@@ -83,10 +83,13 @@ export class InstalledAccountApp {
     // handler or a direct call into the updater implementation.
     await this.page.evaluate(() => { void (window as unknown as { dillaDesktop: DesktopBridge }).dillaDesktop.send({ type: 'restart-update' }); });
   }
+  /** Restart to update with unsent work asks first ("Quit Dilla?", Cancel / Quit); the packaged stub answers Cancel, so the
+   * update is not installed and this same 1.0.0 process keeps running. */
   async expectDraftBlocked(): Promise<void> {
     await rm(join(this.packages.reports, 'protected-quit.json'), { force: true });
     await this.requestUpdate();
-    await expect.poll(async () => JSON.parse(await readFile(join(this.packages.reports, 'protected-quit.json'), 'utf8')).version, { timeout: WAIT }).toBe('1.0.0');
+    await expect.poll(async () => JSON.parse(await readFile(join(this.packages.reports, 'protected-quit.json'), 'utf8')), { timeout: WAIT })
+      .toMatchObject({ version: '1.0.0', buttons: ['Cancel', 'Quit'], cancelId: 0 });
     expect((await this.page.evaluate(() => (window as unknown as { dillaDesktop: DesktopBridge }).dillaDesktop.info())).version).toBe('1.0.0');
   }
   private async reports(): Promise<ProcessReport[]> {

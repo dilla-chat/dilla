@@ -98,9 +98,9 @@ func TestBotMusicSettingsNeedManageCommunityAndThePrototypeValues(t *testing.T) 
 		t.Run(engine, func(t *testing.T) {
 			f := newBotSettingsFixture(t, repo)
 			value := f.humanInstallation(t)
-			// An installation from before 00050: no restart asked, no version, today's defaults.
-			if value[8] != uint64(0) || value[9] != uint64(0) || value[10] != nil || value[11] != uint64(100) || value[12] != uint64(30) {
-				t.Fatalf("defaults = %v, want 0 0 null 100 30", value[8:])
+			// A new installation: no restart asked, no version, the prototype's defaults (volume 50, idle 15 minutes).
+			if value[8] != uint64(0) || value[9] != uint64(0) || value[10] != nil || value[11] != uint64(50) || value[12] != uint64(15) {
+				t.Fatalf("defaults = %v, want 0 0 null 50 15", value[8:])
 			}
 			path := "/v1/communities/" + f.cid.String() + "/bot/music-settings"
 			for _, tc := range []struct {
@@ -120,18 +120,18 @@ func TestBotMusicSettingsNeedManageCommunityAndThePrototypeValues(t *testing.T) 
 					t.Fatalf("%s: PUT music settings = %d (%x), want %d", tc.name, rec.Code, rec.Body.Bytes(), tc.want)
 				}
 			}
-			if v := f.humanInstallation(t); v[11] != uint64(100) || v[12] != uint64(30) {
+			if v := f.humanInstallation(t); v[11] != uint64(50) || v[12] != uint64(15) {
 				t.Fatalf("a refused PUT changed the settings: %v", v[11:])
 			}
-			rec := putCBORAuth(f.h, path, mustCBOR(t, []any{f.installation, uint64(50), uint64(15)}), f.ownerToken)
+			rec := putCBORAuth(f.h, path, mustCBOR(t, []any{f.installation, uint64(75), uint64(30)}), f.ownerToken)
 			var got []any
-			if rec.Code != http.StatusOK || cborx.Unmarshal(rec.Body.Bytes(), &got) != nil || len(got) != 13 || got[11] != uint64(50) || got[12] != uint64(15) {
+			if rec.Code != http.StatusOK || cborx.Unmarshal(rec.Body.Bytes(), &got) != nil || len(got) != 13 || got[11] != uint64(75) || got[12] != uint64(30) {
 				t.Fatalf("owner PUT = %d %v", rec.Code, got)
 			}
 			// The runtime sees them in the widened list.
 			list := doBotCBOR(f.h, http.MethodGet, "/v1/bot-runtime/installations?v=2", nil, "Bearer "+f.runtimeToken)
 			var rows [][]any
-			if list.Code != http.StatusOK || cborx.Unmarshal(list.Body.Bytes(), &rows) != nil || len(rows) != 1 || rows[0][11] != uint64(50) || rows[0][12] != uint64(15) {
+			if list.Code != http.StatusOK || cborx.Unmarshal(list.Body.Bytes(), &rows) != nil || len(rows) != 1 || rows[0][11] != uint64(75) || rows[0][12] != uint64(30) {
 				t.Fatalf("runtime list = %d %v", list.Code, rows)
 			}
 		})

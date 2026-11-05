@@ -499,7 +499,7 @@ export class FakeServer {
       return refuse(401, 'E_PASSKEY_UNKNOWN');
     }
     if (line === 'GET /v1/instance/limits') {
-      return reply(200, [131072, 104857600, 4, 2, 32, 8, 1073741824, 30000, 131584, 30, 30]);
+      return reply(200, [131072, 104857600, 10, 2, 32, 8, 1073741824, 30000, 131584, 30, 30]);
     }
     const challenge = /^POST \/v1\/devices\/([0-9a-f]{32})\/sessions\/challenge$/.exec(line);
     if (challenge?.[1] !== undefined) {

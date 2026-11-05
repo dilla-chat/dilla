@@ -7,8 +7,8 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { loadBundle, bundledResponse, type Bundle } from './bundle.ts';
-import { canonicalInstance, externalLink, isAppNavigation, parseInvite, partitionFor, trustedFrame, validateCommand, instanceRequestURL, permissionOriginMatches } from './policy.ts';
-import { Preferences } from './preferences.ts';
+import { canonicalInstance, instanceInput, externalLink, isAppNavigation, parseInvite, partitionFor, trustedFrame, validateCommand, instanceRequestURL, permissionOriginMatches } from './policy.ts';
+import { Preferences, permissionTokens } from './preferences.ts';
 import { fetchInstanceData } from './request-forwarding.ts';
 import { linuxAutostart, rebindLinuxAutostart } from './autostart.ts';
 import { createUpdater } from './updater.ts';
@@ -147,12 +147,11 @@ function focus(win: BrowserWindow): void { if (win.isMinimized()) win.restore();
 
 function lockWindow(win: BrowserWindow, permits: (url: string) => boolean): void {
   win.webContents.on('will-prevent-unload', event => {
-    // A last-moment draft/recovery transition still cancels an unload; never leave the quit latch set.
-    const wasQuitting = quitting;
-    quitting = false;
+    // The user already confirmed Quit: ignore the renderer's beforeunload so the quit really happens.
+    if (quitting) { event.preventDefault(); return; }
     updater.cancelledQuit();
     for (const client of windows.values()) client.setEnabled(true);
-    if (!wasQuitting && dialog.showMessageBoxSync(win, { type: 'question', title: 'Reload Dilla?',
+    if (dialog.showMessageBoxSync(win, { type: 'question', title: 'Reload Dilla?',
       message: 'Reloading ends any active call. Unsaved changes may be lost.',
       buttons: ['Stay', 'Reload'], defaultId: 0, cancelId: 0, noLink: true }) === 1) event.preventDefault();
   });
@@ -203,7 +202,7 @@ async function openInstance(input: string, path = '/', show = true): Promise<Bro
       || (details.resourceType === 'mainFrame' && !isAppNavigation(details.url, instance));
     callback({ cancel });
   });
-  const allowed = permissions.get(instance) ?? new Set<string>();
+  const allowed = permissions.get(instance) ?? new Set<string>(preferences.grants(instance));
   permissions.set(instance, allowed);
   ses.setPermissionCheckHandler((contents, permission, requestingOrigin, details) => {
     const trusted = contents === win.webContents && details.isMainFrame
@@ -214,17 +213,19 @@ async function openInstance(input: string, path = '/', show = true): Promise<Bro
     // grant here also permits legacy capture that bypasses source selection.
     if (permission === 'display-capture') return false;
     if (permission === 'clipboard-sanitized-write' || permission === 'fullscreen') return trusted && win.isVisible() && win.isFocused();
-    return trusted && allowed.has(permission);
+    return trusted && permissionTokens(permission, [(details as { mediaType?: string }).mediaType ?? '']).every(token => allowed.has(token));
   });
   ses.setPermissionRequestHandler((contents, permission, callback, details) => {
     if (contents !== win.webContents || details.isMainFrame === false || !trustedFrame({ url: details.requestingUrl, top: true }, instance)) { callback(false); return; }
     if (permission === 'display-capture') { callback(false); return; }
     if (permission === 'clipboard-sanitized-write' || permission === 'fullscreen') { callback(win.isVisible() && win.isFocused()); return; }
     if (!['media', 'notifications', 'speaker-selection', 'local-network', 'loopback-network'].includes(permission)) { callback(false); return; }
-    if (allowed.has(permission)) { callback(true); return; }
+    const tokens = permissionTokens(permission, (details as { mediaTypes?: string[] }).mediaTypes ?? []);
+    const needed = tokens.filter(token => !allowed.has(token));
+    if (needed.length === 0) { callback(true); return; }
     const label = permission === 'media' ? 'microphone or camera' : permission === 'notifications' ? 'notifications' : permission === 'local-network' ? 'local network connections for calls' : permission === 'loopback-network' ? 'connections to a local Dilla service' : 'audio output selection';
     void dialog.showMessageBox(win, { type: 'question', title: 'Dilla permission', message: `Allow ${new URL(instance).host} to use ${label}?`, buttons: ['Deny', 'Allow'], defaultId: 0, cancelId: 0 })
-      .then(result => { if (result.response === 1) allowed.add(permission); callback(result.response === 1); }).catch(() => callback(false));
+      .then(result => { if (result.response === 1) { for (const token of needed) { allowed.add(token); if (token !== 'local-network' && token !== 'loopback-network') void preferences.grant(instance, token).catch(() => {}); } } callback(result.response === 1); }).catch(() => callback(false));
   });
   ses.setDisplayMediaRequestHandler((_request, callback) => { callback(null); }, { useSystemPicker: false });
   ses.on('will-download', (event, item) => { if (!item.getURL().startsWith(`blob:${origin}/`)) event.preventDefault(); });
@@ -275,7 +276,7 @@ async function setAutostart(enabled: boolean): Promise<void> {
   refreshMenu();
 }
 
-async function collectQuitGuards(): Promise<boolean> {
+async function collectQuitGuards(restart = false): Promise<boolean> {
     // Ask every live renderer for a fresh snapshot. A hung, crashed or uninitialised client blocks installation.
     await new Promise<void>(done => {
       const id = randomUUID();
@@ -288,6 +289,18 @@ async function collectQuitGuards(): Promise<boolean> {
       }
       if (waiting.size === 0) quitProbe.done();
     });
+    if (updater.quitConfirmed) return true;
+    if (!restart && updater.unknownGuard()) {
+      const answer = await dialog.showMessageBox({ type: 'warning', title: 'Dilla is not responding', message: 'A Dilla window has not reported whether it is in use.', detail: 'Quitting may end a call or discard text you have not sent.', buttons: ['Keep Dilla open', 'Quit anyway'], defaultId: 0, cancelId: 0, noLink: true });
+      if (answer.response !== 1) return false;
+      updater.confirmQuit();
+      return true;
+    }
+    if (updater.inUse() && !updater.unknownGuard()) {
+      const answer = await dialog.showMessageBox({ type: 'question', title: 'Quit Dilla?', message: "Quitting leaves your call and discards text you haven't sent.", buttons: ['Cancel', 'Quit'], defaultId: 0, cancelId: 0, noLink: true });
+      if (answer.response !== 1) return false;
+      updater.confirmQuit();
+    }
     if (updater.protected()) {
       await dialog.showMessageBox({ type: 'info', title: 'Dilla is still in use', message: 'Finish your call and save your drafts before quitting or updating.', detail: 'You can close the window to keep Dilla running in the tray.', buttons: ['Keep Dilla open'] });
       return false;
@@ -300,7 +313,7 @@ async function requestQuit(restart = false): Promise<void> {
   askingQuit = true;
   for (const selection of audioSelections.values()) selection.abort();
   try {
-    if (!await collectQuitGuards()) return;
+    if (!await collectQuitGuards(restart)) return;
     if (restart && updater.state.phase !== 'ready') return;
     const ready = updater.state.phase === 'ready';
     if (ready) {
@@ -308,7 +321,7 @@ async function requestQuit(restart = false): Promise<void> {
         dialog.showErrorBox('Dilla update failed', updater.state.message ?? 'The update could not be installed. Check for updates to retry.');
         return;
       }
-      if (!await collectQuitGuards()) return;
+      if (!await collectQuitGuards(restart)) return;
     }
     for (const win of windows.values()) win.setEnabled(false);
     const prepared = await updater.quit(true, restart);
@@ -318,7 +331,7 @@ async function requestQuit(restart = false): Promise<void> {
       return;
     }
     quitting = true; app.quit();
-  } finally { askingQuit = false; }
+  } finally { askingQuit = false; if (!quitting) updater.clearQuitConfirmation(); }
 }
 
 function refreshMenu(): void {
@@ -503,9 +516,9 @@ ipcMain.handle('dilla:manager', async (event, value: unknown) => {
   if (command.type === 'window-menu' && Object.keys(command).length === 1) { showWindowMenu(manager); return; }
   if (command.type === 'list' && Object.keys(command).length === 1) return preferences.instances;
   if (command.type === 'connect' && Object.keys(command).length === 2 && typeof command.instance === 'string') {
-    const instance = canonicalInstance(command.instance, allowLoopback);
+    const { instance, invite } = instanceInput(command.instance, allowLoopback);
     if (await confirmInstance(instance)) {
-      await openInstance(instance);
+      await openInstance(instance, invite ? `/welcome?invite=${encodeURIComponent(invite)}` : '/');
       // One window: the instance replaces the picker. destroy(), not close(): lockWindow turns close into hide, and a hidden
       // picker would come back stale. "Your instances…" in the menu opens a fresh one. A cancelled confirm or a throw keeps it.
       manager?.destroy();

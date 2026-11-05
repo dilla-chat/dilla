@@ -52,11 +52,6 @@ const (
 )
 
 const (
-	// maxReportBody bounds POST /v1/reports: the submitted envelope is a whole
-	// envelope, and protocol/04's largest legal one is above the 64 KiB every
-	// other CBOR route takes (P2-D28), so the report route takes the envelope
-	// routes' 96 KiB. A legal message must never be unreportable for its size.
-	maxReportBody = maxEnvelopeBody
 	// maxReportResultBytes bounds PATCH's result text.
 	maxReportResultBytes = 1024
 	// defaultReportLimit and maxReportLimit bound one GET /v1/reports page.
@@ -81,6 +76,20 @@ type Reports struct {
 	keys FrankingKeys
 	clk  clock.Clock
 	log  *slog.Logger
+	// maxCiphertext is the instance's max_ciphertext_bytes; zero means the default. A report
+	// carries a whole envelope, so a legal message is never unreportable for its size.
+	maxCiphertext int64
+}
+
+// reportWrapperBytes is the headroom a report body has over the readable cap: the request wraps the
+// envelope in [group_id, seq, envelope, k_f], about 65 bytes of CBOR heads and ids. 256 keeps a
+// readable envelope that fits the cap reportable.
+const reportWrapperBytes = 256
+
+// WithMaxCiphertextBytes sets the instance's max_ciphertext_bytes and returns h.
+func (h *Reports) WithMaxCiphertextBytes(n int64) *Reports {
+	h.maxCiphertext = n
+	return h
 }
 
 // NewReports wires the routes over the instance's franking key history: the
@@ -200,9 +209,9 @@ type reportRequest struct {
 	KF       []byte
 }
 
-func decodeReportRequest(w http.ResponseWriter, r *http.Request) (reportRequest, error) {
+func decodeReportRequest(w http.ResponseWriter, r *http.Request, bodyCap int64) (reportRequest, error) {
 	var raw []cbor.RawMessage
-	if err := server.DecodeBody(w, r, maxReportBody, &raw); err != nil {
+	if err := server.DecodeBody(w, r, bodyCap, &raw); err != nil {
 		return reportRequest{}, err
 	}
 	if len(raw) != reportRequestElements {
@@ -242,7 +251,7 @@ func (h *Reports) create(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, "file report", err)
 		return
 	}
-	req, err := decodeReportRequest(w, r)
+	req, err := decodeReportRequest(w, r, readableBodyCap(h.maxCiphertext)+reportWrapperBytes)
 	if err != nil {
 		h.fail(w, r, "file report", err)
 		return

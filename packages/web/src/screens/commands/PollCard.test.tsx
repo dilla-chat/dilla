@@ -5,23 +5,129 @@ import * as Core from '@dilla/client-core';
 import type { PollSummary } from '@dilla/client-core';
 import { FakeClient } from '../../test/fake-client.ts';
 import { PollCard } from './PollCard.tsx';
+import { commandBotSnapshot } from './command-bot-store.ts';
 const communityId = '11'.repeat(16), channelId = '22'.repeat(16), selfId = '33'.repeat(16), authorId = '44'.repeat(16), installationId = '55'.repeat(16), id = '66'.repeat(16);
-function fixture(over: Partial<PollSummary> = {}) {
-  let tick!: () => void; let clock = performance.now(); vi.spyOn(performance, 'now').mockImplementation(() => clock); const interval = window.setInterval.bind(window);
+// The clock starts on a whole millisecond: from a fractional start, 30 s later minus the start can fall a hair under 30 000 and skip the walk.
+function fixture(over: Partial<PollSummary> = {}, capabilities: () => Promise<unknown> = () => Promise.resolve({ installationId, botUserId: authorId, supportedOperations: [3, 70] })) {
+  let tick!: () => void; let clock = Math.round(performance.now()); vi.spyOn(performance, 'now').mockImplementation(() => clock); const interval = window.setInterval.bind(window);
   vi.spyOn(window, 'setInterval').mockImplementation(((fn: () => void, ms: number) => { if (ms === 30_000) { tick = fn; return 900001; } return interval(fn, ms); }) as never);
-  const client = new FakeClient(); client.set('account', { instance: { id: 'instance' }, user: { id: selfId }, deviceId: 'device' } as never);
+  const client = new FakeClient(); const base = client.handler;
+  client.handler = command => command.m === 'getBotCommandStatus' ? Promise.resolve({ installationId, botUserId: authorId, state: 3, revision: '1' }) : base(command);
+  client.set('account', { instance: { id: 'instance' }, user: { id: selfId }, deviceId: 'device' } as never);
   client.set('communities', [{ id: communityId }] as never); client.set(`channels:${communityId}`, [{ id: channelId, kind: 0, group: 'active' }] as never);
   client.set(`members:${communityId}`, [{ userId: selfId, display: 'Ada' }, { userId: 'other', display: 'Bea' }] as never);
   let poll: PollSummary = { id, channelId, threadId: null, creatorId: selfId, question: 'Raid?', answers: ['Bridge', 'Harbour'], multi: false, counts: [1n, 2n], myChoices: [0], closed: false, revision: 1n, createdAt: 100n, dueAt: 86500n, ...over };
   const pollVote = vi.fn((input: { choices: number[] }) => { poll = { ...poll, myChoices: input.choices, revision: poll.revision + 1n }; return Promise.resolve(poll); });
   const pollGet = vi.fn(() => Promise.resolve(poll));
   const pollVoters = vi.fn(({ option, cursor }: { option: number; cursor?: Uint8Array | null }) => Promise.resolve({ voters: cursor || option === 1 ? ['other'] : [selfId], nextCursor: poll.multi && option === 0 && !cursor ? new Uint8Array([1]) : null }));
-  vi.spyOn(Core, 'createBotUtilities').mockReturnValue({ binding: { installationId, botUserId: authorId }, capabilities: () => Promise.resolve({ installationId, botUserId: authorId }), pollGet, pollVote, pollVoters } as never);
+  const capabilitiesSpy = vi.fn(capabilities);
+  vi.spyOn(Core, 'createBotUtilities').mockReturnValue({ binding: { installationId, botUserId: authorId }, capabilities: capabilitiesSpy, pollGet, pollVote, pollVoters } as never);
   render(<PollCard {...{ client, communityId, channelId, selfId, authorId }} threadId={null} body={`[dilla-poll:v1:${id}]`} bot edited={false} deleted={false} bits={0} />);
-  return { pollVote, pollVoters, pollGet, tick: () => { clock += 30_000; tick(); }, refreshNow: () => tick(), get poll() { return poll; }, setPoll(over: Partial<PollSummary>) { poll = { ...poll, ...over }; }, close() { poll = { ...poll, closed: true }; } };
+  return { client, capabilities: capabilitiesSpy, pollVote, pollVoters, pollGet, tick: () => { clock += 30_000; tick(); }, refreshNow: () => tick(), get poll() { return poll; }, setPoll(over: Partial<PollSummary>) { poll = { ...poll, ...over }; }, close() { poll = { ...poll, closed: true }; } };
 }
 afterEach(() => vi.restoreAllMocks());
 describe('Signal poll adapter', () => {
+  it('shows a Loading poll… skeleton before verification and retries a failed verification at 2 s, 5 s and 10 s', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = fixture(); f.pollGet.mockRejectedValue(new Error('down'));
+      expect(screen.getByRole('status')).toHaveTextContent('Loading poll…');
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(f.pollGet).toHaveBeenCalledTimes(1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(2_000); }); expect(f.pollGet).toHaveBeenCalledTimes(2);
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); }); expect(f.pollGet).toHaveBeenCalledTimes(3);
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); }); expect(f.pollGet).toHaveBeenCalledTimes(4);
+      // The retries ran out: the card steps aside and the post's own text stands, instead of "Loading poll…" forever.
+      expect(screen.queryByRole('status')).toBeNull();
+      await act(async () => { await vi.advanceTimersByTimeAsync(9_000); }); expect(f.pollGet).toHaveBeenCalledTimes(4);
+    // Restore the spies while the fake timers are still installed: fixture() spied on window.setInterval then, and restoring
+    // afterwards would put the fake one back for every later test.
+    } finally { vi.restoreAllMocks(); vi.useRealTimers(); }
+  });
+  it('shows the post text at once, without the retry chain, when a loaded Bot is not the post\'s author', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = fixture({}, () => Promise.resolve({ installationId, botUserId: 'ee'.repeat(16), supportedOperations: [3, 70] }));
+      expect(screen.getByRole('status')).toHaveTextContent('Loading poll…');
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(screen.queryByRole('status')).toBeNull(); expect(f.pollGet).not.toHaveBeenCalled();
+      // The shared list was reloaded once to cover a newly installed Bot, and no quick retry follows.
+      expect(f.capabilities).toHaveBeenCalledTimes(2);
+      await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+      expect(f.capabilities).toHaveBeenCalledTimes(2);
+    } finally { vi.restoreAllMocks(); vi.useRealTimers(); }
+  });
+  it('shows the post text at once when the community has no ready Bot', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = fixture({}, () => Promise.reject(new Core.BotUtilitiesProviderUnavailableError()));
+      expect(screen.getByRole('status')).toHaveTextContent('Loading poll…');
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(screen.queryByRole('status')).toBeNull();
+      await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+      expect(f.capabilities).toHaveBeenCalledTimes(1);
+    } finally { vi.restoreAllMocks(); vi.useRealTimers(); }
+  });
+  // Final review M1: "the installation changed while capabilities were loading" is transient, not "no ready Bot".
+  it('an installation change during verification refreshes the shared list once and retries, instead of giving up', async () => {
+    vi.useFakeTimers();
+    try {
+      const changed = () => new Core.BotUtilitiesProviderUnavailableError(3, '77'.repeat(16), 'The Bot installation changed while capabilities were loading.');
+      const f = fixture(); f.pollGet.mockRejectedValueOnce(changed());
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(f.pollGet).toHaveBeenCalledTimes(1);
+      expect(f.capabilities).toHaveBeenCalledTimes(2); // the shared list reloaded once
+      expect(screen.getByRole('status')).toHaveTextContent('Loading poll…');
+      await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+      expect(f.pollGet).toHaveBeenCalledTimes(2);
+      expect(screen.getByText('Raid?')).toBeInTheDocument();
+    } finally { vi.restoreAllMocks(); vi.useRealTimers(); }
+  });
+  it('an installation change while the shared list loads is a failure the card retries, not a refusal', async () => {
+    vi.useFakeTimers();
+    try {
+      let attempt = 0;
+      const f = fixture({}, () => {
+        attempt += 1;
+        return attempt === 1 ? Promise.reject(new Core.BotUtilitiesProviderUnavailableError(3, '77'.repeat(16), 'The Bot installation changed while capabilities were loading.'))
+          : Promise.resolve({ installationId, botUserId: authorId, supportedOperations: [3, 70] });
+      });
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(commandBotSnapshot(f.client, communityId).unavailable).toBe(false);
+      expect(screen.getByRole('status')).toHaveTextContent('Loading poll…');
+      await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+      expect(screen.getByText('Raid?')).toBeInTheDocument();
+    } finally { vi.restoreAllMocks(); vi.useRealTimers(); }
+  });
+  it('verifies from the shared Bot list: no capability read of its own, and none for a second card', async () => {
+    const f = fixture(); await screen.findByText('Raid?');
+    // One load, made by the shared store (not three by the card).
+    expect(f.capabilities).toHaveBeenCalledTimes(1);
+    expect(commandBotSnapshot(f.client, communityId).botUserId).toBe(authorId);
+    render(<PollCard {...{ client: f.client, communityId, channelId, selfId, authorId }} threadId={null} body={`[dilla-poll:v1:${id}]`} bot edited={false} deleted={false} bits={0} />);
+    await waitFor(() => expect(screen.getAllByText('Raid?')).toHaveLength(2));
+    expect(f.capabilities).toHaveBeenCalledTimes(1);
+  });
+  it('pauses its 30 s refresh while the window is hidden and refreshes once when it is shown again, only if overdue', async () => {
+    vi.useFakeTimers();
+    let state: DocumentVisibilityState = 'visible';
+    const spy = vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => state);
+    try {
+      const f = fixture();
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      const reads = f.pollGet.mock.calls.length;
+      const setVisibility = (next: DocumentVisibilityState) => { state = next; document.dispatchEvent(new Event('visibilitychange')); };
+      setVisibility('hidden');
+      await act(async () => { f.tick(); f.tick(); await vi.advanceTimersByTimeAsync(0); });
+      expect(f.pollGet).toHaveBeenCalledTimes(reads);
+      await act(async () => { setVisibility('visible'); await vi.advanceTimersByTimeAsync(0); });
+      expect(f.pollGet).toHaveBeenCalledTimes(reads + 1);
+      await act(async () => { setVisibility('hidden'); setVisibility('visible'); await vi.advanceTimersByTimeAsync(0); });
+      expect(f.pollGet).toHaveBeenCalledTimes(reads + 1);
+      await act(async () => { f.tick(); await vi.advanceTimersByTimeAsync(0); });
+      expect(f.pollGet).toHaveBeenCalledTimes(reads + 2);
+    } finally { spy.mockRestore(); vi.restoreAllMocks(); vi.useRealTimers(); }
+  });
   it('single choice switches to [1] and clicking your pick withdraws []', async () => { const f = fixture(); await userEvent.click(await screen.findByRole('button', { name: /Harbour/ })); await waitFor(() => expect(f.pollVote).toHaveBeenCalledWith(expect.objectContaining({ choices: [1] }))); await userEvent.click(screen.getByRole('button', { name: /Harbour/ })); await waitFor(() => expect(f.pollVote).toHaveBeenLastCalledWith(expect.objectContaining({ choices: [] }))); });
   it('multi toggles within the set and counts distinct voters across every page', async () => { const f = fixture({ multi: true, counts: [2n, 2n] }); await userEvent.click(await screen.findByRole('button', { name: /Harbour/ })); await waitFor(() => expect(f.pollVote).toHaveBeenCalledWith(expect.objectContaining({ choices: [0, 1] }))); await userEvent.click(screen.getByRole('button', { name: /Bridge/ })); await waitFor(() => expect(f.pollVote).toHaveBeenLastCalledWith(expect.objectContaining({ choices: [1] })));  await waitFor(() => expect(screen.getByText('Open for 24 hours · pick any · 2 voters')).toBeInTheDocument()); expect(f.pollVoters).toHaveBeenCalledWith(expect.objectContaining({ option: 0, cursor: new Uint8Array([1]) })); expect(screen.queryByRole('img', { name: 'other' })).not.toBeInTheDocument(); });
   it('uses dueAt minus createdAt, rounds vote percentages and previews first-page voters per answer', async () => { const f = fixture(); expect(await screen.findByText('Open for 24 hours · pick one · 3 voters')).toBeInTheDocument(); expect(screen.getByText('33%')).toBeInTheDocument(); await waitFor(() => expect(screen.getAllByRole('img', { name: 'Ada' })).toHaveLength(1)); expect(f.pollVoters).toHaveBeenCalledWith(expect.objectContaining({ option: 1, cursor: null })); });

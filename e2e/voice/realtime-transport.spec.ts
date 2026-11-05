@@ -2,7 +2,7 @@ import { decodeFrame } from '../../packages/client-core/src/gateway/frames';
 import { expect, test } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
 import { desktopE2E } from '../web/support/electron.ts';
-import { expectDesktopQuitBlocked } from '../web/support/desktop-quit.ts';
+import { expectDesktopQuitCancelled } from '../web/support/desktop-quit.ts';
 import { VoicePeer, WAIT, copy, joinVoice, noiseOff, onboard, tile } from './support/voice';
 
 watchContexts(test);
@@ -50,8 +50,9 @@ test('a live call sends coarse reports over the existing socket and defers an up
     const versions = http.version;
     await alice.page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
     if (desktopE2E()) {
+      // Web hints never update a desktop client. A native quit (the only route to an install) asks first; Cancel keeps the call.
       expect(http.version).toBe(versions);
-      await expectDesktopQuitBlocked(alice.context);
+      await expectDesktopQuitCancelled(alice.context);
       await expect(tile(alice.page, 'bob')).toHaveAttribute('data-voice-state', 'ok');
       await expect(tile(bob.page, 'alice')).toHaveAttribute('data-voice-state', 'ok');
       return;

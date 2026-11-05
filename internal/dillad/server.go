@@ -123,6 +123,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	if err := o.validate(ctx); err != nil {
 		return nil, err
 	}
+	warnSmallCiphertextCap(o.Log, o.Config)
 	instance, err := o.Repo.GetInstance(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("dillad: read instance row (has `dillad init` run?): %w", err)

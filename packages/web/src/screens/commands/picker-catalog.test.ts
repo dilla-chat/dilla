@@ -25,6 +25,7 @@ describe('picker catalog', () => {
     expect(entry('remind').fields).toEqual({ when: { label: 'when', placeholder: 'in 1 hour', suggest: 'when' }, text: { label: 'text', placeholder: 'bring two ropes', suggest: 'none' } });
     expect(entry('reminders list')).toMatchObject({ icon: 'bell', description: 'Open your reminders inbox' });
     expect(entry('kick')).toMatchObject({ icon: 'user-x', description: 'Remove someone from the server', args: '<user>' });
+    expect(entry('kick').fields.reason).toBeUndefined(); // kick records no reason, so it has no "reason?" chip (Jonas, 2026-11-05); ban keeps it
     expect(entry('ban')).toMatchObject({ icon: 'ban', description: 'Ban for a while, or for good', args: '<user> [duration] [reason]' });
     expect(entry('ban').fields.duration).toEqual({ label: 'duration', placeholder: 'permanent', suggest: 'duration' });
     expect(entry('timeout')).toMatchObject({ icon: 'timer', description: 'Stop someone sending or speaking for a while', args: '<user> <duration>' });

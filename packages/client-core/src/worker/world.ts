@@ -25,7 +25,7 @@ export const LOCK = `dilla-core:${INSTANCE_HEX}`;
 // policy_version, external_sender_key_id, external_sender_pub] (interfaces.md A3, protocol/09).
 export const INSTANCE_DOC: CborInput = [[1], [1], [1], INSTANCE_ID, 7, 'dilla.test', 0, [0], 1, new Uint8Array(16).fill(1), new Uint8Array(32).fill(2)];
 // GET /v1/instance/limits, eleven elements.
-export const LIMITS: CborInput = [131_072, 104_857_600, 4, 2, 32, 8, 10_737_418_240, 30_000, 131_584, 30, 30];
+export const LIMITS: CborInput = [131_072, 104_857_600, 10, 2, 32, 8, 10_737_418_240, 30_000, 131_584, 30, 30];
 
 export function cbor(value: CborInput, status = 200): Response {
   return new Response(encode(value).slice(), { status, headers: { 'content-type': 'application/cbor' } });
@@ -212,7 +212,7 @@ export const NOW_S = 1_700_000_000n;
 // Gateway over `WebSocket`, and `httpTicket` sends postTicket through the real Routes and HttpClient over `fetch`, so a
 // refused ticket reaches the controller's HttpDeps.onRefusal as it does in the worker.
 export function world(opts: {
-  phase?: 0 | 1 | 2 | 3; enrolUser?: boolean; realRoutes?: boolean; realAccount?: boolean; fetch?: typeof fetch; now?: () => number;
+  phase?: 0 | 1 | 2 | 3; enrolUser?: boolean; realRoutes?: boolean; realAccount?: boolean; fetch?: typeof fetch; now?: () => number; sleep?: ControllerDeps['sleep'];
   /** web3.8 C1 fix m3: the monotonic clock (deps.monotonic), apart from the wall clock `now`. */
   monotonic?: () => number;
   owed?: boolean; realGateway?: boolean; WebSocket?: typeof WebSocket; httpTicket?: boolean;
@@ -604,6 +604,7 @@ export function world(opts: {
     resetDevice: (instance) => { calls.push('resetDevice'); wiped.push(toHex(instance.instanceId)); return Promise.resolve(); },
     ...(opts.fetch ? { fetch: opts.fetch } : {}),
     ...(opts.now ? { now: opts.now } : {}),
+    ...(opts.sleep ? { sleep: opts.sleep } : {}),
     ...(opts.monotonic ? { monotonic: opts.monotonic } : {}),
     ...(opts.WebSocket ? { WebSocket: opts.WebSocket } : {}),
     parts,

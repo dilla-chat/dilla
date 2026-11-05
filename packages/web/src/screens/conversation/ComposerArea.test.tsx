@@ -287,7 +287,7 @@ describe('attaching (L-TS-35, Q16)', () => {
     expect(fake.callsOf('attachFiles')[1]).toEqual({ m: 'attachFiles', channelId: GEN, files: [b] });
   });
   it.each([
-    ['E_ATTACHMENT_COUNT', 'A message carries at most 4 files.'],
+    ['E_ATTACHMENT_COUNT', 'A message carries at most 10 files.'],
     ['E_NETWORK', 'That did not work (E_NETWORK). Try again, or reload the page.'],
   ])('shows the refusal %s by its code, never its detail', async (code, text) => {
     renderConversation({ handler: c => (c.m === 'attachFiles' ? Promise.reject(refusal({ code, detail: 'ignored detail' })) : Promise.resolve(null)) });
@@ -374,7 +374,7 @@ describe('attaching (L-TS-35, Q16)', () => {
     expect(status()).toBe('');
     fireEvent.dragEnter(zone, { dataTransfer: { types: ['Files'], files: [] } });
     expect(status()).toBe('Drop to attach');
-    expect(document.querySelector('.d-drop-overlay')).toHaveTextContent('Up to 4 files, 25 MB each.');
+    expect(document.querySelector('.d-drop-overlay')).toHaveTextContent('Up to 10 files, 25 MB each.');
     const f = new File(['a'], 'a.txt', { type: 'text/plain' });
     fireEvent.drop(zone, { dataTransfer: { types: ['Files'], files: [f] } });
     await waitFor(() => expect(fake.callsOf('attachFiles')).toEqual([{ m: 'attachFiles', channelId: GEN, files: [f] }]));

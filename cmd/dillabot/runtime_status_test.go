@@ -92,28 +92,33 @@ func TestRuntimeStatusTrackerWithoutAVersionDoesNotRepeatReports(t *testing.T) {
 	}
 }
 
-// The Bot enforces the Music page's options itself: anything else, or no report, is today's
-// behaviour (100, 30 minutes).
+// The Bot enforces the Music page's options itself: anything else, or no report, is the instance
+// defaults (the prototype's 50 and 15 minutes). A reported setting, such as an older installation's
+// stored 100 and 30, is kept as it is.
 func TestMusicDefaultsAreEnforcedByTheBot(t *testing.T) {
 	registry := newMusicQueueRegistry()
 	installation := id.New()
-	if registry.DefaultVolume(installation) != 100 || registry.IdleLeave(installation) != 30*time.Minute {
-		t.Fatal("unknown installation is not on today's defaults")
-	}
-	registry.SetMusicDefaults(installation, true, 50, 15)
 	if registry.DefaultVolume(installation) != 50 || registry.IdleLeave(installation) != 15*time.Minute {
+		t.Fatal("unknown installation is not on the instance defaults")
+	}
+	registry.SetMusicDefaults(installation, true, 100, 30)
+	if registry.DefaultVolume(installation) != 100 || registry.IdleLeave(installation) != 30*time.Minute {
+		t.Fatal("saved settings of 100 and 30 were not kept")
+	}
+	registry.SetMusicDefaults(installation, true, 75, 5)
+	if registry.DefaultVolume(installation) != 75 || registry.IdleLeave(installation) != 5*time.Minute {
 		t.Fatal("reported settings not applied")
 	}
 	for _, bad := range [][2]uint64{{60, 15}, {50, 10}, {300, 15}, {50, 1 << 40}} {
 		registry.SetMusicDefaults(installation, true, bad[0], bad[1])
 		vol, idle := registry.DefaultVolume(installation), registry.IdleLeave(installation)
-		if bad[0] != 50 && vol != 100 || bad[1] != 15 && idle != 30*time.Minute {
+		if bad[0] != 50 && vol != 50 || bad[1] != 15 && idle != 15*time.Minute {
 			t.Fatalf("out-of-range %v applied: volume %d idle %v", bad, vol, idle)
 		}
 	}
 	registry.SetMusicDefaults(installation, false, 25, 5)
-	if registry.DefaultVolume(installation) != 100 || registry.IdleLeave(installation) != 30*time.Minute {
-		t.Fatal("an older server's missing settings did not fall back to today's defaults")
+	if registry.DefaultVolume(installation) != 50 || registry.IdleLeave(installation) != 15*time.Minute {
+		t.Fatal("an older server's missing settings did not fall back to the instance defaults")
 	}
 }
 

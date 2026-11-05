@@ -1,7 +1,10 @@
 // Signal wave B Task 2: which Bot commands the picker lists. A Bot command shows only while the server's Bot reports its
 // operation (`createBotUtilities(...).capabilities().supportedOperations`); while that is unknown, none show.
-import { useEffect, useState } from 'react';
-import { createBotUtilities, type CommandDefinition, type CoreClient } from '@dilla/client-core';
+import { useCallback, useEffect, useSyncExternalStore } from 'react';
+import type { CommandDefinition, CoreClient } from '@dilla/client-core';
+import { commandBotSnapshot, mountCommandBot, NO_BOT, subscribeCommandBot, type CommandBotSnapshot } from './command-bot-store.ts';
+
+export type { CommandBot } from './command-bot-store.ts';
 
 /** The Bot operation each Bot command needs. */
 export const COMMAND_OPERATIONS: Readonly<Record<string, number>> = Object.freeze({
@@ -13,9 +16,6 @@ export const COMMAND_OPERATIONS: Readonly<Record<string, number>> = Object.freez
   remind: 80, 'reminders list': 81, 'reminders cancel': 82, 'reminders dismiss': 83,
 });
 
-/** Re-read every 30 s while the picker is open (an owner may turn a feature off in another tab). */
-export const CAPABILITY_REFRESH_MS = 30_000;
-
 /** Whether the picker lists `command`: built-ins always; a Bot command only with its operation reported. */
 export function commandListed(command: CommandDefinition, operations: ReadonlySet<number> | null): boolean {
   if (command.provider !== 'bot') return true;
@@ -23,32 +23,21 @@ export function commandListed(command: CommandDefinition, operations: ReadonlySe
   return operations !== null && operation !== undefined && operations.has(operation);
 }
 
-export interface CommandBot { operations: ReadonlySet<number> | null; botUserId: string | null }
-
 /**
- * The server Bot's operations and user id: read when the composer opens command mode (`open` turns true) and every 30 s
- * while it stays open; `null` while unknown, in a DM, or when the server has no Bot.
+ * The server Bot's operations and user id, from the per-community store (command-bot-store.ts): loaded when the
+ * composer first mounts and re-checked when the picker opens (a status read on a list older than 30 s or after a "no Bot"
+ * answer; a full reload on a change, no answer, a failed load or a Bot change made in this client; bounded retries while the
+ * picker stays open); no timer runs while the client is idle. `operations` is `null`
+ * while unknown, in a DM, or when the server has no Bot; `waiting` says a first load is still running.
  */
-export function useCommandBot(client: CoreClient, communityId: string | null, open = true): CommandBot {
-  const [state, setState] = useState<{ key: string; bot: CommandBot } | null>(null);
-  const key = communityId ?? '';
-  useEffect(() => {
-    if (communityId === null || !open) return;
-    let live = true;
-    const read = () => {
-      void createBotUtilities(client, communityId).capabilities().then(caps => {
-        if (live) setState({ key: communityId, bot: { operations: new Set(caps.supportedOperations), botUserId: caps.botUserId } });
-      }, () => { if (live) setState({ key: communityId, bot: { operations: null, botUserId: null } }); });
-    };
-    read();
-    const timer = window.setInterval(read, CAPABILITY_REFRESH_MS);
-    return () => { live = false; window.clearInterval(timer); };
-  }, [client, communityId, open]);
-  return state !== null && state.key === key && communityId !== null ? state.bot : NO_BOT;
+export function useCommandBot(client: CoreClient, communityId: string | null): CommandBotSnapshot {
+  useEffect(() => communityId === null ? undefined : mountCommandBot(client, communityId), [client, communityId]);
+  const subscribe = useCallback((listener: () => void) => communityId === null ? () => undefined : subscribeCommandBot(client, communityId, listener), [client, communityId]);
+  const snapshot = useCallback(() => communityId === null ? NO_BOT : commandBotSnapshot(client, communityId), [client, communityId]);
+  return useSyncExternalStore(subscribe, snapshot);
 }
-const NO_BOT: CommandBot = Object.freeze({ operations: null, botUserId: null });
 
 /** The operations alone (the plan's interface): `null` while unknown. */
-export function useCommandCapabilities(client: CoreClient, communityId: string | null, open = true): ReadonlySet<number> | null {
-  return useCommandBot(client, communityId, open).operations;
+export function useCommandCapabilities(client: CoreClient, communityId: string | null): ReadonlySet<number> | null {
+  return useCommandBot(client, communityId).operations;
 }

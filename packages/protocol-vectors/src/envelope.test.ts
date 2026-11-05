@@ -82,9 +82,9 @@ describe('envelope', () => {
       expect(() => decodeEnvelope(encodeEnvelope({ ...tombstone, body: '' }))).not.toThrow();
     }
   });
-  it('rejects more than 4 attachments', () => {
+  it('rejects more than 10 attachments', () => {
     const a = sample.attachments[0];
-    const many: Envelope = { ...sample, attachments: Array.from({ length: 5 }, () => a) };
+    const many: Envelope = { ...sample, attachments: Array.from({ length: 11 }, () => a) };
     expect(() => decodeEnvelope(encodeEnvelope(many))).toThrow();
   });
   it('rejects more than 2 previews', () => {

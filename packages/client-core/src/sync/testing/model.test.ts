@@ -821,17 +821,40 @@ describe('ModelCore keeps public threads as the core does (web3.7)', () => {
     expect(core.timeline(G, 0n, 200).map((x) => x.seq)).toEqual([1n]);
   });
 
-  // FX-core (final review I2): threads exist only in community channel groups.
-  it('keeps a DM row with a thread id in the DM timeline, and refuses a DM thread send', () => {
+  // Wave C: threads apply to DMs and group DMs too.
+  const dm = (): ModelCore => {
     const core = new ModelCore(ME);
     core.groupCreate(G, null, CHANNEL);
     core.groupRegistered(G, 1n);
-    apply(core, threadApp(1n, R, 'the root', null), threadApp(2n, reply(1), 'hidden?', R));
+    return core;
+  };
+
+  it('holds a DM thread reply out of the DM timeline, counts it and lists the root', () => {
+    const core = dm();
+    apply(core, threadApp(1n, R, 'the root', null), threadApp(2n, reply(1), 'a reply', R));
+    expect(core.timeline(G, 0n, 200).map((x) => [x.seq, x.thread?.count ?? null])).toEqual([[1n, 1]]);
+    expect(core.threads(G).map((x) => [x.rootSeq, x.count])).toEqual([[1n, 1]]);
+    expect(core.threadTimeline(G, R, 0n, 50).rows.map((x) => x.seq)).toEqual([2n]);
+  });
+
+  it('accepts a thread id on a DM send', () => {
+    const core = dm();
+    apply(core, threadApp(1n, R, 'the root', null));
+    core.sendPrepare(G, { ...request(0, null, 'x'), threadId: R }, 9n);
+    expect(core.outbox(G)).toHaveLength(1);
+  });
+
+  it('shows a DM reply before its root flat and holds the one after the root', () => {
+    const core = dm();
+    apply(core, threadApp(1n, reply(1), 'early', R), threadApp(2n, R, 'root', null), threadApp(3n, reply(3), 'reply', R));
+    expect(core.timeline(G, 0n, 200).map((x) => [x.seq, x.thread?.count ?? null])).toEqual([[1n, null], [2n, 1]]);
+    expect(core.threadTimeline(G, R, 0n, 50).rows.map((x) => x.seq)).toEqual([3n]);
+  });
+
+  it('keeps a pre-release DM row without a thread id in the timeline', () => {
+    const core = dm();
+    apply(core, threadApp(1n, R, 'the root', null), threadApp(2n, reply(1), 'old reply', null));
     expect(core.timeline(G, 0n, 200).map((x) => [x.seq, x.thread])).toEqual([[1n, null], [2n, null]]);
-    expect(core.threads(G)).toEqual([]);
-    expect(core.threadTimeline(G, R, 0n, 50).rows).toEqual([]);
-    expect(() => core.sendPrepare(G, { ...request(0, null, 'x'), threadId: R }, 9n)).toThrow('threads are for channel groups only');
-    expect(core.outbox(G)).toEqual([]);
   });
 
   it('gives a thread to the first root before it, never to a later row with its id (fix round 1, I1)', () => {
@@ -1095,6 +1118,12 @@ describe('ModelCore folds envelope types 1–6 as the core does (L-CORE-33, L-CO
 });
 
 describe('ModelCore sends every type as the core does (L-CORE-36…38)', () => {
+  it('sendPrepare accepts ten attachments and refuses eleven, as the Rust core does', () => {
+    const core = fresh();
+    expect(() => core.sendPrepare(G, request(0, null, 'x', Array.from({ length: 10 }, () => FILE)), 1n)).not.toThrow();
+    expect(thrown(() => core.sendPrepare(G, request(0, null, 'x', Array.from({ length: 11 }, () => FILE)), 2n))).toMatchObject({ code: 'E_ENVELOPE_LIMIT' });
+  });
+
   it('refuses every send_prepare rule with its code and detail and writes nothing', () => {
     const core = fresh();
     apply(core, app(1n, PEER, T, 'theirs'), app(2n, PEER, T2, 'deleted'), app(3n, PEER, fold(3n), '', { type: 2, replyTo: T2 }));
@@ -1116,7 +1145,7 @@ describe('ModelCore sends every type as the core does (L-CORE-36…38)', () => {
       [request(5, T, 'x'), 'E_CORE_INPUT', 'body must be empty'],
       [request(6, T, 'x'), 'E_CORE_INPUT', 'body must be empty'],
       [request(2, mine, 'x'), 'E_CORE_INPUT', 'body must be empty'],
-      [request(0, null, 'x', [FILE, FILE, FILE, FILE, FILE]), 'E_ENVELOPE_LIMIT', ''],
+      [request(0, null, 'x', Array.from({ length: 11 }, () => FILE)), 'E_ENVELOPE_LIMIT', ''],
       [request(0, null, 'x', [{ ...FILE, name: 'n'.repeat(256) }]), 'E_ENVELOPE_LIMIT', ''],
       [request(0, null, 'x', [{ ...FILE, mime: 'm'.repeat(256) }]), 'E_ENVELOPE_LIMIT', ''],
       [request(0, null, '€'.repeat(1334)), 'E_ENVELOPE_LIMIT', ''],

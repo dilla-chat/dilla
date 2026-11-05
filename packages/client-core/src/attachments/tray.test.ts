@@ -69,16 +69,16 @@ describe('Tray (L-TS-32, ruling 7)', () => {
     expect(new TextDecoder().decode(await openBlob(d, h.puts[0].stored))).toBe('hello tray');
   });
 
-  it('refuses more than four files in the tray before reading any', async () => {
+  it('refuses more than ten files in the tray before reading any', async () => {
     const h = harness();
-    await h.tray.add([text('a'), text('b'), text('c')]);
-    const extra = [spyFile('d', 1, 'text/plain'), spyFile('e', 1, 'text/plain')];
+    await h.tray.add(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i'].map((s) => text(s)));
+    const extra = [spyFile('j', 1, 'text/plain'), spyFile('k', 1, 'text/plain')];
     await expect(h.tray.add(extra.map((x) => x.file))).rejects.toMatchObject({ code: 'E_ATTACHMENT_COUNT' });
     expect(extra.map((x) => x.read.mock.calls.length)).toEqual([0, 0]);
-    expect(h.tray.entries()).toHaveLength(3);
-    const five = Array.from({ length: 5 }, (_, i) => spyFile(String(i), 1, 'text/plain'));
-    await expect(harness().tray.add(five.map((x) => x.file))).rejects.toMatchObject({ code: 'E_ATTACHMENT_COUNT' });
-    expect(five.every((x) => x.read.mock.calls.length === 0)).toBe(true);
+    expect(h.tray.entries()).toHaveLength(9);
+    const eleven = Array.from({ length: 11 }, (_, i) => spyFile(String(i), 1, 'text/plain'));
+    await expect(harness().tray.add(eleven.map((x) => x.file))).rejects.toMatchObject({ code: 'E_ATTACHMENT_COUNT' });
+    expect(eleven.every((x) => x.read.mock.calls.length === 0)).toBe(true);
   });
 
   it('retains an oversize failed card without reading it, uploads its valid sibling and admits exactly the cap', async () => {

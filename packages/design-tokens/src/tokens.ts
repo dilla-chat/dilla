@@ -178,8 +178,8 @@ export const structural = {
     // Task 7
     'poll-voter': '0.4375rem', // 7px (poll voter initials)
   },
-  // Task 11 (Task 4 minor): 'btn' is the prototype's settings and dialog button weight (400; body text stays 420).
-  weight: { display: '700', body: '420', label: '600', btn: '400' },
+  // Task 11 (Task 4 minor): 'btn' is the prototype's settings and dialog button weight (400, as is body text since Wave C task 11).
+  weight: { display: '700', body: '400', label: '600', btn: '400' },
   labelTracking: '0.08em',
   trackingSoft: '0.04em',
   // Wave B Task 2: the command list's source tag (the prototype's .06em).

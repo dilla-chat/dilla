@@ -18,10 +18,10 @@
 .d-settings-frame .d-settings-frame__bar[data-visible="false"],
 .d-settings-frame .d-settings-frame__activity[data-visible="false"] { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 
-/* The close button: a 34px circle in --control-edge with the x, turning 90° on hover over 200ms; ESC under it. */
+/* The close button: a 36px circle (the prototype's 34px content-box and 1px border) in --control-edge with the x, turning 90° on hover over 200ms; ESC under it. */
 .d-settings-frame__close { position: absolute; z-index: 2; top: 22px; right: 16px; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 0; font: inherit; font-family: var(--font-mono); color: var(--fg-2); background: transparent; border: 0; cursor: pointer; transition: color var(--duration-fast); }
 .d-settings-frame__close:hover { color: var(--fg); }
-.d-settings-frame__close-ring { box-sizing: border-box; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; border: 1px solid var(--control-edge); border-radius: var(--r-pill); transition: transform var(--duration-turn) var(--ease-out); }
+.d-settings-frame__close-ring { box-sizing: border-box; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; border: 1px solid var(--control-edge); border-radius: var(--r-pill); transition: transform var(--duration-turn) var(--ease-out); }
 .d-settings-frame__close:hover .d-settings-frame__close-ring { transform: rotate(90deg); }
 .d-settings-frame__close-key { font-size: var(--text-chip); line-height: 1.5; letter-spacing: 0.1em; }
 

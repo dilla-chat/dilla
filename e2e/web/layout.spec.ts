@@ -854,10 +854,11 @@ async function expectPrototypeSizes(page: Page, what: string, sizes: readonly (r
 }
 /** The sign-in card: 40px fields and the 40px primary button. */
 const AUTH_SIZES = [['.d-onboarding-frame .d-text-field__input', 40], ['.d-onboarding-frame__footer .d-btn[data-variant="accent"]', 40]] as const;
-/** A settings button is 32 (30 of content); a device select and the push-to-talk key 38. Merge of Task 10b: the Voice page has
- *  no .d-btn under voice activity; its Let's check is the prototype's 32px of content and its 1px border (34). */
-const SETTINGS_SIZES = [['.d-settings-frame__body .d-btn:not(.d-voice-settings__capture)', 32], ['.d-voice-settings__select', 38]] as const;
-const VOICE_SIZES = [['.d-voice-settings__check', 34], ['.d-voice-settings__select', 38]] as const;
+/** A settings button is 32 (30 of content); a device select 36, border included (wave C Task 11 parity item 2: the prototype's
+ *  select measures 36, the app drew 38). Merge of Task 10b: the Voice page has no .d-btn under voice activity; its Let's check is
+ *  the prototype's 32px of content and its 1px border (34). */
+const SETTINGS_SIZES = [['.d-settings-frame__body .d-btn:not(.d-voice-settings__capture)', 32], ['.d-voice-settings__select', 36]] as const;
+const VOICE_SIZES = [['.d-voice-settings__check', 34], ['.d-voice-settings__select', 36]] as const;
 
 test('FA1: phone controls outside the shell keep the prototype sizes, and the invites section keeps the settings grammar', async ({ page }) => {
   const h = started();

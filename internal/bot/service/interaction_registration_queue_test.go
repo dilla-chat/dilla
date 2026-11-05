@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/cborx"
 	"github.com/dilla-chat/dilla/internal/id"
 )
@@ -307,5 +308,34 @@ func (f *interactionRegistrationFixture) queueAll(t *testing.T) {
 	t.Helper()
 	for _, u := range f.s.candidatesByUser {
 		f.queue(t, u.user)
+	}
+}
+
+func TestAnInvalidCreateBacksOffPerDevice(t *testing.T) {
+	f, clock, logs := newBackoffFixture(t)
+	device := id.New()
+	f.s.candidates = []id.ID{device}
+	f.n.createErr = &helper.StatusError{Status: 1}
+	f.queue(t, f.request.ParticipantUser)
+	key := interactionRegistrationBackoffKey{installation: f.install, user: f.request.ParticipantUser, episode: f.episode, device: device}
+	for i := 0; i < 20; i++ { // a pass every 30 s for 10 minutes
+		f.pass()
+		if !f.coordinator.backoff.has(key) {
+			t.Fatalf("pass %d: no backoff entry after a refused create", i)
+		}
+		clock.t = clock.t.Add(30 * time.Second)
+	}
+	// Delays 30 s, 60 s, 120 s, 240 s: attempts at 0, 30, 90, 210 and 450 s.
+	if f.n.createCalls != 5 || f.s.keyPackageCalls != 5 {
+		t.Fatalf("creates=%d takes=%d over 10 minutes, want 5 each", f.n.createCalls, f.s.keyPackageCalls)
+	}
+	if n := strings.Count(logs.String(), "level=WARN"); n != 5 {
+		t.Fatalf("%d warnings, want one per backoff step (5):\n%s", n, logs.String())
+	}
+	if !strings.Contains(logs.String(), device.String()) {
+		t.Fatalf("warning lacks the device:\n%s", logs.String())
+	}
+	if jobs := f.queuedJobs(t); len(jobs) != 1 {
+		t.Fatalf("queue lost the refused device's job: %+v", jobs)
 	}
 }

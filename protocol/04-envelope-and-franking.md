@@ -22,7 +22,7 @@ Every application message in a `text` or `interaction` group is one **envelope**
 ```
 
 Limits: `body` ≤ 4 000 UTF-8 bytes for type 0/1; ≤ 32 bytes for type 3/4; **0 bytes for type
-2/5/6**. At most **4** attachments; at most **2** previews. In an attachment: `mime` ≤ **255**
+2/5/6**. At most **10** attachments; at most **2** previews. In an attachment: `mime` ≤ **255**
 bytes, `name` ≤ **255** bytes, `thumb` ≤ **8 192** bytes. In a preview: `url` ≤ **2 048** bytes,
 `title` ≤ **256** bytes, `description` ≤ **1 024** bytes, `image` ≤ **16 384** bytes. An envelope of
 type 1 to 6 names its target: its `reply_to` is not null, and its `attachments` and `previews` are
@@ -155,9 +155,7 @@ A client shows a mention as the name it stands for, never as the raw token.
 ## Threads
 
 A thread is a run of type-0 envelopes under one root message (a public thread: every member of the
-group reads it). Threads apply to community channel groups only: a sender sets no `thread_id` in
-any other group (a DM or a group DM), and a receiver ignores one there and shows the envelope in
-the timeline as a message without a thread.
+group reads it). Threads apply to every text group: community channel groups, DMs and group DMs.
 
 - **Root.** A type-0 envelope's `thread_id` names its root: in an end-to-end encrypted group the
   root's `msg_id`, on a server-readable channel the root's channel `seq` (§ Envelope). The root is
@@ -229,14 +227,14 @@ every attachment, and rejects: the wrong element count; an unknown `type`; `msg_
 wrong length; non-minimal CBOR or trailing bytes; an attachment that is not a nine-element array; an
 envelope of type 1 to 6 without `reply_to` or with attachments or previews; and any limit exceeded
 (`body` over 4 000 bytes for type 0/1, over 32 bytes for type 3/4, or non-empty for type 2/5/6; more
-than 4 attachments; more than 2 previews; `mime` or `name` over 255 bytes; `url` over 2 048 bytes;
+than 10 attachments; more than 2 previews; `mime` or `name` over 255 bytes; `url` over 2 048 bytes;
 `title` over 256 bytes; `description` over 1 024 bytes; a preview `image` over 16 384 bytes; a
 `thumb` over 8 192 bytes).
 
 `vectors/envelope.json` also carries a `rejects` array: each entry is well-formed deterministic
 CBOR that a conforming decoder must nevertheless refuse, with the `error` code it must refuse it
 with. It holds thirteen cases: a delete tombstone with a non-empty body, `mime` at 256, `thumb` at
-8 193, five attachments, three previews, a preview `url` at 2 049, `title` at 257, `description` at
+8 193, eleven attachments, three previews, a preview `url` at 2 049, `title` at 257, `description` at
 1 025, a preview `image` at 16 385 and an attachment `name` at 256 — each refused with
 `E_ENVELOPE_LIMIT` — and an edit with no `reply_to`, a reaction carrying an attachment and an
 attachment of eight elements, each refused with `E_ENVELOPE_SHAPE`.

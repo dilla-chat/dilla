@@ -7,7 +7,7 @@ import { useSlice } from '../../core/use-slice.ts';
 import { t } from '../../strings/index.ts';
 import { timeAgo } from './SignInFactors.tsx';
 import { suggestDeviceName } from './device-name.ts';
-import { devicePlatformLabel } from './device-platform.ts';
+import { ownPlatformTag } from './device-platform.ts';
 import { RenameDialog } from './RenameDialog.tsx';
 import { KeyDialog } from './KeyDialog.tsx';
 import { useSignOut } from './SignOut.tsx';
@@ -142,7 +142,7 @@ export function Devices(): React.JSX.Element {
             refused) this browser's row is drawn from the local identity and stays reachable. */}
         {!ordered.some(d => d.own) && account?.deviceId != null ? (
           <DeviceRow key="own" name={suggestedName() || t('devices.unnamed')} tier="web" own ownLabel={t('devices.thisBrowser')}
-            platformLabel={devicePlatformLabel()} platformNote={t('devices.platform.note')}
+            platformLabel={ownPlatformTag()} platformNote={t('devices.platform.note')}
             action={{ label: t('workspace.signOut'), onAction: signOut.requestOpen }} />
         ) : null}
         {ordered.map(d => (
@@ -152,7 +152,7 @@ export function Devices(): React.JSX.Element {
             own={d.own} ownLabel={d.own ? t('devices.thisBrowser') : undefined}
             // Only this device knows where it runs; the server stores no platform, and a guess is never published
             // (wave B: the user agent title is display only). Other devices show their label alone.
-            platformLabel={d.own ? devicePlatformLabel() : undefined} platformNote={d.own ? t('devices.platform.note') : undefined}
+            platformLabel={d.own ? ownPlatformTag() : undefined} platformNote={d.own ? t('devices.platform.note') : undefined}
             state={d.revokedAt !== null ? t('devices.revoked') : !d.listed ? t('devices.unlisted') : undefined}
             lastSeen={d.own ? t('devices.subOwn', { id: d.id.slice(0, 6) })
               : d.lastSeen > 0 ? t('devices.subOther', { when: timeAgo(d.lastSeen, now), id: d.id.slice(0, 6) }) : d.id.slice(0, 6)}

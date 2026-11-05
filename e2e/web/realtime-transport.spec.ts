@@ -6,7 +6,7 @@ import { installWorkerPort, portCall, portSlice } from './support/worker-port';
 import { removeHostData, startTestHost, type StartedHost } from './support/host';
 import { e2ePort } from './support/ports';
 import { desktopE2E } from './support/electron.ts';
-import { expectDesktopQuitBlocked } from './support/desktop-quit.ts';
+import { expectDesktopQuitCancelled } from './support/desktop-quit.ts';
 
 interface Probe { offset: number; packets: number[][]; socket: WebSocket | null }
 
@@ -113,7 +113,7 @@ test('wire 5 stays free of periodic version/activity/stats HTTP for fifteen idle
   if (desktopE2E()) {
     await page.clock.runFor(900_000);
     expect(seen.version).toBe(beforeHint);
-    await expectDesktopQuitBlocked(context);
+    await expectDesktopQuitCancelled(context);
     await expect(dialog.getByRole('textbox', { name: copy('create.server.name'), exact: true })).toHaveValue('unfinished form');
     return;
   }

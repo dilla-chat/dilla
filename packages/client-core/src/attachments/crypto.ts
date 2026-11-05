@@ -3,7 +3,7 @@ export const AAD_BLOB = 'dilla attachment v1';
 export const AAD_THUMB = 'dilla thumb v1';
 export const MAX_THUMB_PLAINTEXT = 8176;
 export const BROWSER_ATTACHMENT_CAP = 25 * 1024 * 1024;
-export const MAX_ATTACHMENTS = 4;
+export const MAX_ATTACHMENTS = 10;
 
 export class AttachmentError extends Error {
   readonly code: 'E_BLOB_HASH' | 'E_BLOB_OPEN' | 'E_ATTACHMENT_TOO_LARGE' | 'E_ATTACHMENT_COUNT' | 'E_ATTACHMENT_MISSING';

@@ -23,4 +23,9 @@ describe('thread pane CSS (web3.7)', () => {
     expect(row).toMatch(/\.d-message-row__thread \{[^}]*height: 1\.5rem/);
     expect(row).not.toMatch(/@container d-shell/);
   });
+  // Parity sweep 2026-11-05: the prototype's aside head is 44px plus its rule, and its root and replies sit in one 12px-gap column.
+  it('draws the head 45px (the prototype\'s 44px content box and its rule) and no slot for absent attachments', () => {
+    expect(pane).toMatch(/\.d-thread-pane__head \{[^}]*height: calc\(var\(--bar-h\) \+ 1px\)/);
+    expect(pane).toMatch(/\.d-thread-pane \.d-message-row__attachments:empty \{ display: none; \}/);
+  });
 });

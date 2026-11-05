@@ -19,8 +19,8 @@
 .d-search-palette[data-layout="phone"] input { font-size: 16px; }
 .d-search-palette__esc { flex: none; padding: 0 6px; font: inherit; font-size: var(--text-micro); line-height: 18px; color: var(--fg-2); background: transparent; border: 1px solid var(--line-strong); border-radius: var(--r-sm); cursor: pointer; }
 .d-search-palette__esc:hover { color: var(--fg); }
-/* The results: at most 380px, 6px in; the group heading 10px 600 uppercase --fg-3 at 0.12em, 8px 10px 4px. */
-.d-search-palette__results { flex: 0 1 auto; min-height: 0; max-height: 380px; overflow: auto; padding: 6px; }
+/* The results: at most 380px of content plus the 6px padding (the prototype's box is content-box, so 392px outside; .d-root's border-box would make 380 include the padding), 6px in; the group heading 10px 600 uppercase --fg-3 at 0.12em, 8px 10px 4px. */
+.d-search-palette__results { flex: 0 1 auto; min-height: 0; max-height: 392px; overflow: auto; padding: 6px; }
 .d-search-palette__group { padding: 8px 10px 4px; font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking-wide); text-transform: uppercase; color: var(--fg-3); }
 .d-search-palette [role="listbox"] { display: grid; }
 /* A row: at least 38px of content (46 with its 4px padding, as the prototype's content-box), 4px 10px, gap 10px, 7px corners; the selected one --surface-hi with the 2px accent bar inside and the ↵. */

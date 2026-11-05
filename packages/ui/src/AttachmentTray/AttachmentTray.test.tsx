@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
@@ -68,5 +69,15 @@ describe('AttachmentTray', () => {
     expect(cards[2]!.querySelector('.d-attachment-tray__gif-name')).toHaveTextContent('victory.gif');
     expect(screen.getAllByRole('button')[0]).toHaveAttribute('title', 'Remove');
     expect(screen.getAllByRole('button')[0]).toHaveAccessibleName('remove file3.png');
+  });
+
+  // Parity sweep 2026-11-05: the prototype's cards are content-box (112x84, 200 wide for a file, inside the 1px line).
+  it('draws cards content-box: 112x84 images and 200px files inside their line, as the prototype', () => {
+    const css = readFileSync(`${process.cwd()}/src/AttachmentTray/AttachmentTray.css`, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const item = /\.d-attachment-tray__item \{([^}]*)\}/.exec(css)?.[1] ?? '';
+    expect(item).toMatch(/width: 12\.5rem\s*;/);
+    expect(item).toMatch(/height: 5\.25rem\s*;/);
+    expect(item).toMatch(/box-sizing: content-box;/);
+    expect(/\.d-attachment-tray__item:is\(\[data-kind="image"\], \[data-kind="gif"\]\) \{([^}]*)\}/.exec(css)?.[1]).toMatch(/width: 7rem\s*;/);
   });
 });

@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { BotUtilitiesStatusError, BotUtilitiesUncertainMutationError, PERM, createBotUtilities, decodePollVote, decodePollClose, type CoreClient, type PollSummary } from '@dilla/client-core';
+import { BotUtilitiesProviderUnavailableError, BotUtilitiesStatusError, BotUtilitiesUncertainMutationError, PERM, createBotUtilities, decodePollVote, decodePollClose, type CoreClient, type PollSummary } from '@dilla/client-core';
 import { PollCard as SignalPollCard, showToast } from '@dilla/ui';
 import { utilityText as t } from './utility-copy.ts';
+import { botDefinitelyUnavailable, loadedCommandBot, refreshCommandBot } from './command-bot-store.ts';
 import { walkPollVoters } from './poll-voters.ts';
 import './UtilityCards.css';
 
+const RETRY_DELAYS = [2_000, 5_000, 10_000];
 const MARKER = /^\[dilla-poll:v1:([0-9a-f]{32})\]$/u;
 type PollAttempt = { id: string; kind: 'vote' | 'close'; choices: number[]; revision: string; scope: string; answer?: number };
 const attemptsByClient = new WeakMap<CoreClient, Map<string, PollAttempt>>();
@@ -46,6 +48,8 @@ export interface PollCardProps {
   authorId: string | null; bot: boolean; edited: boolean; deleted: boolean; selfId: string | null; bits: number | null;
   /** Update the message heading before paint, without replacing its focusable row. */
   onVerified?: (poll: PollSummary | null) => void;
+  /** True once verification has given up (the row then shows the post's own text); false while loading or verified. */
+  onGaveUp?: (gaveUp: boolean) => void;
 }
 
 /** A poll is interactive only after the authenticated bot author, final marker and durable record agree. */
@@ -72,6 +76,10 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
   const [record, setRecord] = useState<{ client: CoreClient; scope: string; poll: PollSummary } | null>(null);
   const [verifiedScope, setVerifiedScope] = useState<string | null>(null);
   const [active, setActive] = useState(false);
+  // Verification failed for good (a refusal, or the 2/5/10 s retries ran out): the card steps aside so the post's own text stands.
+  const [gaveUp, setGaveUp] = useState(false);
+  // A refusal (not a failure) was the reason: the quick retries are pointless, only the 30 s tick tries again.
+  const definitive = useRef(false);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const [error, setError] = useState('');
@@ -97,20 +105,40 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
   const refresh = useCallback(async (walkVoters = false): Promise<PollSummary | null> => {
     const current = ++generation.current;
     try {
-      const caps = await utilities.capabilities();
-      if (generation.current !== current || !isSameOwner() || !sourceAccessible || accessScope !== accessScopeRef.current || caps.botUserId !== props.authorId
-        || utilities.binding?.installationId !== caps.installationId || utilities.binding?.botUserId !== caps.botUserId) {
+      // The Bot's identity comes from the shared per-community store (one load for every card and the composer); pollGet's own
+      // authorisation refreshes utilities.binding, which must still agree with it after the read.
+      let bot = await loadedCommandBot(props.client, props.communityId!);
+      if (bot.botUserId !== null && bot.botUserId !== props.authorId) {
+        // The stored Bot is not this post's author: reload once (a newly installed Bot has a new user id); if it still is not, the
+        // answer is definitive and the post's text shows at once.
+        refreshCommandBot(props.client, props.communityId!);
+        bot = await loadedCommandBot(props.client, props.communityId!);
+        if (bot.botUserId !== null && bot.botUserId !== props.authorId) {
+          if (generation.current === current) { definitive.current = true; setGaveUp(true); invalidate(); }
+          return null;
+        }
+      }
+      if (bot.botUserId === null || bot.installationId === null) {
+        // No ready Bot is a definitive refusal; a failed load is retried by the cadence below, and shows the post's text if it never lands.
+        if (generation.current === current) { if (bot.unavailable) { definitive.current = true; setGaveUp(true); } invalidate(); }
+        return null;
+      }
+      const caps = { installationId: bot.installationId, botUserId: bot.botUserId };
+      if (generation.current !== current || !isSameOwner() || !sourceAccessible || accessScope !== accessScopeRef.current || caps.botUserId !== props.authorId) {
         if (generation.current === current) { setInstallationId(caps.installationId); invalidate(); }
         return null;
       }
       setInstallationId(caps.installationId);
       const poll = await utilities.pollGet(props.pollId, { channelId: props.channelId, threadId: props.threadId });
-      const latestCaps = await utilities.capabilities();
-      if (generation.current !== current || !isSameOwner() || !sourceAccessible || accessScope !== accessScopeRef.current || latestCaps.installationId !== caps.installationId || latestCaps.botUserId !== props.authorId
+      const latest = utilities.binding;
+      if (generation.current !== current || !isSameOwner() || !sourceAccessible || accessScope !== accessScopeRef.current || latest === null
+        || latest.installationId !== caps.installationId || latest.botUserId !== props.authorId
         || poll.channelId !== props.channelId || poll.threadId !== props.threadId) {
-        if (generation.current === current) invalidate();
+        // A different installation than the stored one: reload the shared list so the next attempt binds to the new one.
+        if (generation.current === current) { if (latest !== null && latest.installationId !== caps.installationId) refreshCommandBot(props.client, props.communityId!); invalidate(); }
         return null;
       }
+      definitive.current = false; setGaveUp(false);
       const boundScope = `${identityScope}:${caps.installationId}`;
       setRecord({ client: props.client, scope: boundScope, poll }); setVerifiedScope(boundScope);
       // Only the initial/cadence refresh may start a full walk. Mutation refreshes
@@ -127,8 +155,9 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
             const data = await walkPollVoters(poll.counts, poll.multi, (option, cursor) => utilities.pollVoters({ pollId: poll.id,
               channelId: poll.channelId, threadId: poll.threadId, option, cursor }), votersCurrent);
             if (!votersCurrent()) return;
-            const latest = await utilities.capabilities();
-            if (!votersCurrent() || latest.installationId !== caps.installationId || latest.botUserId !== props.authorId) return;
+            // The walk's pages were bound when each was read; a status read (no Bot round trip) confirms the installation did not change since.
+            const latest = await props.client.call({ m: 'getBotCommandStatus', communityId: props.communityId! }) as { installationId?: unknown; botUserId?: unknown; state?: unknown } | null;
+            if (!votersCurrent() || latest?.state !== 3 || latest.installationId !== caps.installationId || latest.botUserId !== props.authorId) return;
             setVoterData({ scope: boundScope, revision: poll.revision, ...data });
           } catch {
             if (votersCurrent()) { voterTarget.current = null; setError(t('poll.readError')); }
@@ -141,8 +170,17 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
       // Refreshes update the record without dismissing a mutation or voter-read notice.
       if (!busyRef.current && retained !== undefined) setError(t(retained.kind === 'vote' ? 'poll.voteUncertain' : 'poll.uncertain'));
       return poll;
-    } catch { if (generation.current === current) invalidate(); return null; }
-  }, [utilities, isSameOwner, invalidate, identityScope, sourceAccessible, accessScope, props.client, props.authorId, props.pollId, props.channelId, props.threadId]);
+    } catch (cause) {
+      if (generation.current === current) {
+        // No ready Bot, or a poll operation it does not offer, is definitive. The installation changing mid-check (an op-3 refusal) is
+        // transient: reload the shared list once and let the 2/5/10 s retries verify against the new installation.
+        if (botDefinitelyUnavailable(cause)) { definitive.current = true; setGaveUp(true); }
+        else if (cause instanceof BotUtilitiesProviderUnavailableError) refreshCommandBot(props.client, props.communityId!);
+        invalidate();
+      }
+      return null;
+    }
+  }, [utilities, isSameOwner, invalidate, identityScope, sourceAccessible, accessScope, props.client, props.communityId, props.authorId, props.pollId, props.channelId, props.threadId]);
   useEffect(() => {
     const node = ref.current; if (node === null) return;
     if (typeof IntersectionObserver === 'undefined') { setActive(true); return; }
@@ -156,23 +194,40 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
     // A complete authenticated refresh can span several Bot gateway rounds. A
     // cadence tick must not supersede that read before its record can be shown.
     // Mutations also own their refresh until the action finishes.
-    let pending = false;
-    const update = async () => {
+    let pending = false; let failures = 0; let retry: number | undefined; let overdue = false;
+    // A hidden window does not poll: the tick and the quick retries wait, and one refresh runs when it is shown again.
+    const update = async (scheduled = true) => {
+      if (scheduled && document.visibilityState === 'hidden') { overdue = true; return; }
       if (pending || busyRef.current) return;
+      overdue = false;
       pending = true;
-      try { await refresh(true); } finally { pending = false; }
+      try {
+        const poll = await refresh(true);
+        window.clearTimeout(retry); retry = undefined;
+        // A failed verification retries quickly (2, 5, 10 s) before it waits for the 30 s tick.
+        if (poll === null && !definitive.current && failures < RETRY_DELAYS.length) retry = window.setTimeout(() => { void update(); }, RETRY_DELAYS[failures++]);
+        else if (poll !== null) failures = 0;
+        else setGaveUp(true);
+      } finally { pending = false; }
     };
-    void update(); const timer = window.setInterval(() => { void update(); }, 30_000);
-    return () => { window.clearInterval(timer); currentGeneration.current++; currentVoterGeneration.current++; voterTarget.current = null; };
+    const shown = () => { if (overdue && document.visibilityState === 'visible') void update(); };
+    document.addEventListener('visibilitychange', shown);
+    void update(false); const timer = window.setInterval(() => { void update(); }, 30_000);
+    return () => { document.removeEventListener('visibilitychange', shown); window.clearInterval(timer); window.clearTimeout(retry); currentGeneration.current++; currentVoterGeneration.current++; voterTarget.current = null; };
   }, [active, refresh]);
   const poll = sourceAccessible && record?.client === props.client && record.scope === scopeKey && verifiedScope === scopeKey ? record.poll : null;
-  const { onVerified } = props;
+  const { onVerified, onGaveUp } = props;
+  useLayoutEffect(() => {
+    onGaveUp?.(gaveUp && poll === null);
+    return () => onGaveUp?.(false);
+  }, [onGaveUp, gaveUp, poll]);
   useLayoutEffect(() => {
     onVerified?.(poll);
     return () => onVerified?.(null);
   }, [onVerified, poll]);
   const canClose = poll !== null && (poll.creatorId === props.selfId || (props.bits !== null && (props.bits & PERM.manageMessages) !== 0));
-  if (poll === null) return <div ref={ref} className="dw-poll-card" aria-hidden="true" />;
+  if (poll === null && gaveUp) return <div ref={ref} className="dw-poll-card" aria-hidden="true" />;
+  if (poll === null) return <div ref={ref} className="dw-poll-card dw-poll-card--loading" role="status">{t('poll.loading')}</div>;
   const visibleSelected = selected ?? poll.myChoices ?? [];
   const live = () => isSameOwner() && sourceAccessibleRef.current && accessScopeRef.current === accessScope && scopeRef.current === scopeKey
     && installationRef.current === installationId;

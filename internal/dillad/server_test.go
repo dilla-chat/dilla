@@ -425,7 +425,7 @@ func TestRegisterEstablishAndReadTheInstanceDocument(t *testing.T) {
 	}{
 		{0, "max_ciphertext_bytes", uint64(cfg.Limits.MaxCiphertextBytes)},
 		{1, "max_blob_bytes", uint64(cfg.Blobs.MaxBlobBytes)},
-		{2, "max_attachments", 4},
+		{2, "max_attachments", 10},
 		{3, "max_previews", 2},
 		{4, "max_keypackages_per_device", uint64(cfg.Limits.MaxKeypackagesPerDevice)},
 		{5, "keypackage_refill_threshold", uint64(cfg.Limits.KeypackageRefillThreshold)},
@@ -441,8 +441,8 @@ func TestRegisterEstablishAndReadTheInstanceDocument(t *testing.T) {
 	}
 	// The wave-wide ciphertext cap and the derived frame size, spelled out so
 	// a config default that drifts is caught here and not in a client.
-	if limits[0] != 131072 {
-		t.Fatalf("max_ciphertext_bytes = %d, want 131072", limits[0])
+	if limits[0] != 196608 {
+		t.Fatalf("max_ciphertext_bytes = %d, want 196608", limits[0])
 	}
 	if limits[8] != limits[0]+512 {
 		t.Fatalf("max_frame_bytes = %d, want max_ciphertext_bytes + 512 = %d", limits[8], limits[0]+512)

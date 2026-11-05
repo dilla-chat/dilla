@@ -17,6 +17,7 @@ import { useRoute } from '../../router.ts';
 import { useBotDraftState, useBotMutation } from './bot-settings-context.tsx';
 import { openRoleOnNextVisit } from './RolesSection.tsx';
 import { communityBotMember } from '../bot-member.ts';
+import { invalidateCommandBot } from '../commands/command-bot-store.ts';
 
 export type BotPageKind = 'bot' | 'welcome' | 'joinRoles' | 'music' | 'automoderation' | 'moderationLog';
 
@@ -196,6 +197,18 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
       if (statusTimer !== undefined) window.clearTimeout(statusTimer);
     };
   }, [client, communityId, installationCommunityId, installationState, loadedFor, statusPollGeneration, setInstallation, setSelectedCapabilities]);
+
+  // PR #156 CI round 2: the composer's Bot command list re-checks only on a picker open, so a change seen here (enabled, ready,
+  // reconfigured, disabled) marks it for a full load on the next open. The first reading of a community only records it.
+  const installationKey = loadedFor === communityId && installation?.communityId === communityId
+    ? `${installation.id}:${String(installation.state)}:${installation.revision}` : installation === null && loadedFor === communityId ? 'none' : null;
+  const seenInstallation = useRef<{ communityId: string; key: string } | null>(null);
+  useEffect(() => {
+    if (installationKey === null) return;
+    const seen = seenInstallation.current;
+    seenInstallation.current = { communityId, key: installationKey };
+    if (seen !== null && seen.communityId === communityId && seen.key !== installationKey) invalidateCommandBot(client, communityId);
+  }, [client, communityId, installationKey]);
 
   const current = loadedFor === communityId;
   const currentInstallation = current && installation?.communityId === communityId ? installation : null;
@@ -423,8 +436,8 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
 
   // Task 10c: the Music page's defaults save as they are picked (manage_community; the Bot enforces the same options).
   const [musicError, setMusicError] = useState<string | null>(null);
-  const musicVolume = currentInstallation?.musicVolume ?? 100;
-  const musicIdle = currentInstallation?.musicIdleMinutes ?? 30;
+  const musicVolume = currentInstallation?.musicVolume ?? 50;
+  const musicIdle = currentInstallation?.musicIdleMinutes ?? 15;
   const saveMusic = (volume: number, idleMinutes: number) => {
     if (!manager || currentInstallation === null || busy) return;
     setMusicError(null);

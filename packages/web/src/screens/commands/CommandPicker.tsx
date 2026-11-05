@@ -9,6 +9,7 @@ import { parseCommand, validateCommandArgs, type CommandDefinition, type Command
 import { CommandBar, CommandChips, CommandField, CommandList, CommandSuggestions, Composer, commandOptionId, type CommandListItem, type CommandSuggestion as UiSuggestion, type IconName } from '@dilla/ui';
 import { t } from '../../strings/index.ts';
 import { commandPickerCopy as copy } from './copy.ts';
+import { COMMAND_LIST_WAIT_MS } from './command-bot-store.ts';
 import type { CommandSuggestionList } from './command-types.ts';
 import { DURATION_SUGGESTIONS, MODERATION_COMMANDS, MUSIC_COMMANDS, PERMANENT, WHEN_SUGGESTIONS, pickerEntry, registryDuration, type PickerEntry, type PickerSuggest } from './picker-catalog.ts';
 import { browserTimeZone, resolveWhen, type WhenResult } from './picker-when.ts';
@@ -36,6 +37,10 @@ export interface CommandComposerProps {
   // ---- Wave B Task 2 (optional; the host passes them) ----
   /** The ids the `/` list shows (a Bot command needs its Bot operation, capabilities.ts); all `definitions` when absent. */
   listed?: ReadonlySet<string>;
+  /** The Bot's command list is still loading for the first time: the list says so, and Enter on a name not yet listed waits (at most 10 s). */
+  loading?: boolean;
+  /** The `/` list opened (the host re-checks the Bot list then); a returned function runs when the list closes. */
+  onListOpen?: () => void | (() => void);
   /** The Bot's display name, a Bot command's source tag (the prototype's "Glenn"). */
   botName?: string;
   /** The voice room this device is in, for a music command's bar; null: not in voice. */
@@ -146,6 +151,8 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
   const [sugSel, setSugSel] = useState(0);
   const [error, setError] = useState<FieldError | null>(null);
   const [listError, setListError] = useState<string | null>(null);
+  /** The draft Enter was pressed on while the Bot's list was still loading: it runs when its command is listed. */
+  const [waiting, setWaiting] = useState<string | null>(null);
   const [status, setStatus] = useState('');
   const [pending, setPending] = useState(false);
   const [focused, setFocused] = useState(true);
@@ -211,6 +218,7 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
   }, [selected, active]);
 
   // ---- The `/` list ----
+  const listOpenNow = useRef(props.onListOpen); listOpenNow.current = props.onListOpen;
   const listState = useMemo((): { open: false } | { open: true; items: CommandDefinition[] } => {
     if (selected !== null || !draft.startsWith('/') || draft.startsWith('//')) return { open: false };
     const parsed = parseCommand(draft);
@@ -223,6 +231,12 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
     const contains = listedCommands.filter(command => !command.id.startsWith(query) && command.id.includes(query));
     return { open: true, items: [...starts, ...contains] };
   }, [selected, draft, definitionsById, listedCommands]);
+  const listIsOpen = listState.open;
+  useEffect(() => {
+    if (!listIsOpen) return undefined;
+    const closed = listOpenNow.current?.();
+    return typeof closed === 'function' ? closed : undefined;
+  }, [listIsOpen]);
   const listItems = listState.open ? listState.items : [];
   const listSel = Math.min(cmdSel, Math.max(listItems.length - 1, 0));
 
@@ -242,6 +256,11 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
     const empty = command.options.findIndex(option => (filled[option.name] ?? '') === '');
     setActive(empty < 0 ? 0 : empty);
     setCmdSel(0); setSugSel(0); setError(null); setStatus('');
+  };
+
+  const refuse = (name: string) => {
+    const text = copy.notACommand(name.toLowerCase());
+    if (props.onUnknown !== undefined) props.onUnknown(text); else setListError(text);
   };
 
   const enterTyped = (): boolean => {
@@ -273,9 +292,11 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
       if (event.repeat) return;
       if (draft.startsWith('//')) { sendLiteralOnce(draft.slice(1)); return; }
       if (enterTyped()) return;
-      // The prototype's send(): an unknown name says so (Task 6 turns this into a failed private result).
+      // The prototype's send(): an unknown name says so (Task 6 turns this into a failed private result). While the
+      // Bot's list is still loading, a name that is defined but not yet listed waits for it instead.
       const name = draft.slice(1).trim().split(/\s+/u)[0] ?? '';
-      if (name !== '') { const text = copy.notACommand(name.toLowerCase()); if (props.onUnknown !== undefined) props.onUnknown(text); else setListError(text); }
+      if (name !== '' && props.loading === true && definitionsById.has(name.toLowerCase())) { setWaiting(draft); return; }
+      if (name !== '') refuse(name);
       return;
     }
     if (event.key === 'Escape') {
@@ -299,6 +320,25 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
     if (!value.startsWith('/')) { onCancel(value); return; }
     setDraft(value); setCmdSel(0); setListError(null);
   };
+
+  // Enter on a Bot command typed before its list arrived: run it once listed; refuse once the load ends without it or after 10 s.
+  const waitingNow = useRef({ enterTyped, refuse });
+  waitingNow.current = { enterTyped, refuse };
+  useEffect(() => {
+    if (waiting === null) return;
+    const name = waiting.slice(1).trim().split(/\s+/u)[0] ?? '';
+    if (draft !== waiting) { setWaiting(null); return; }
+    if (waitingNow.current.enterTyped()) { setWaiting(null); return; }
+    if (props.loading !== true) { setWaiting(null); waitingNow.current.refuse(name); }
+  }, [waiting, draft, props.listed, props.loading]);
+  useEffect(() => {
+    if (waiting === null) return;
+    const timer = window.setTimeout(() => {
+      setWaiting(null);
+      waitingNow.current.refuse(waiting.slice(1).trim().split(/\s+/u)[0] ?? '');
+    }, COMMAND_LIST_WAIT_MS);
+    return () => { window.clearTimeout(timer); };
+  }, [waiting]);
 
   // ---- The chips ----
   const options = selected?.options ?? [];
@@ -565,7 +605,7 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
   const activeListId = listItemsUi[listSel]?.id ?? null;
 
   const top = <>
-    {listOpen ? <CommandList id={listId} items={listItemsUi} activeId={activeListId} showHint labels={{ title: copy.commands, hint: copy.listHint, noMatch: copy.noMatch(draft), sendAsText: copy.sendAsText }}
+    {listOpen ? <CommandList id={listId} items={listItemsUi} activeId={activeListId} showHint labels={{ title: copy.commands, hint: copy.listHint, noMatch: props.loading === true ? t('commands.loading') : copy.noMatch(draft), sendAsText: copy.sendAsText }}
       query={draft} onActive={id => setCmdSel(Math.max(listItems.findIndex(command => command.id === id), 0))}
       onPick={id => { const command = definitionsById.get(id); if (command !== undefined) enterCommand(command); }}
       onSendAsText={() => sendLiteralOnce(draft)} /> : null}

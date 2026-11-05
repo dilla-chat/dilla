@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { themes, TEXT_PAIRS, UI_PAIRS, CONTROL_EDGE_KEYS, CONTROL_EDGE_EXEMPT, structural, densities, type ThemeName } from './tokens.ts';
 import { contrastRatio } from './contrast.ts';
+import { renderCss } from './css.ts';
 
 const names = Object.keys(themes) as ThemeName[];
 
@@ -122,6 +123,14 @@ describe('Task 11 button weight and toggle track', () => {
   it('weight.btn is 400 and motion.track is 200ms', () => {
     expect(structural.weight.btn).toBe('400');
     expect(structural.motion.track).toBe('200ms');
+  });
+});
+
+// Wave C Task 11 (parity sweep 2026-11-05, Jonas): body text weight is the prototype's 400, not 420.
+describe('Wave C Task 11 body weight', () => {
+  it('weight.body is 400 and the css carries --weight-body: 400', () => {
+    expect(structural.weight.body).toBe('400');
+    expect(renderCss()).toContain('--weight-body: 400;');
   });
 });
 

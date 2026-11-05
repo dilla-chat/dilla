@@ -31,6 +31,7 @@ const (
 
 var (
 	ErrInteractionRegistrationRecovery       = errors.New("bot interaction registration requires recovery")
+	errInteractionCreateRefused              = errors.New("native create refused")
 	ErrInteractionRegistrationOutcomeUnknown = errors.New("bot interaction registration outcome is unknown")
 	ErrInteractionRegistrationManualRecovery = errors.New("bot interaction registration outcome is unknown; manual recovery required")
 	ErrInteractionNotEligible                = errors.New("member is not eligible for bot interaction registration")
@@ -268,6 +269,20 @@ func (c *InteractionRegistrationCoordinator) Register(ctx context.Context, req I
 					return InteractionRegistrationResult{}, fmt.Errorf("persist renewed interaction admission: %w", saveErr)
 				}
 				return InteractionRegistrationResult{}, ErrInteractionRegistrationRecovery
+			}
+			if errors.As(err, &statusErr) && statusErr.Status == 1 {
+				// The core refused the create's input (a stale device-list pin, a
+				// bad KeyPackage, a rejected admission). It writes the intent only
+				// in its successful write unit, so nothing exists and starting over
+				// is safe. Drop the KeyPackage as well as the admission: retrying a
+				// refused package or a pinned snapshot would refuse the same way
+				// forever. The queue backs the device off before the next take.
+				renewInteractionAdmission(&in)
+				in.KeyPackage = nil
+				if _, saveErr := c.saveInteractionRegistration(ctx, key, revision, in); saveErr != nil {
+					return InteractionRegistrationResult{}, fmt.Errorf("persist renewed interaction admission: %w", saveErr)
+				}
+				return InteractionRegistrationResult{}, fmt.Errorf("%w: %w: restarting with a fresh admission and KeyPackage: %w", ErrInteractionRegistrationRecovery, errInteractionCreateRefused, err)
 			}
 			return InteractionRegistrationResult{}, interactionRegistrationError(ErrInteractionRegistrationRecovery, "native create remains pending", err)
 		}
