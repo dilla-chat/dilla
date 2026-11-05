@@ -9,11 +9,19 @@
 // the page as a "nativeLog" event (retained until the page listens), so the page history interleaves both sides.
 // Diagnostics after the iPhone hang (2026-11-05): providerDidReset / providerDidBegin, didDeactivate with context,
 // CXCallObserver changes, AVAudioSession interruption / route-change / media-services notifications with reasons.
+// Capture-state round (2026-11-05, round 4): WebKit mutes in-page capture once a CallKit call is active in the
+// foreground. captureState() / setMicCapture({state}) read and set WKWebView.microphoneCaptureState through
+// setMicrophoneCaptureState(_:completionHandler:) (WebKit API, iOS 15+; the target is iOS 17, so no #available).
+// microphoneCaptureState / cameraCaptureState are KVO-observed on the bridge's webView: every change is a
+// "DILLA_CALL_NATIVE capture ..." line and a "captureState" event to the page (which may force it back to active).
+// WKUIDelegate media-capture permission requests are logged by a thin proxy in front of Capacitor's
+// WebViewDelegationHandler (it forwards every other selector and calls Capacitor's own decision handler).
 import AVFoundation
 import CallKit
 import Capacitor
 import Foundation
 import UIKit
+import WebKit
 
 @objc(CallProbePlugin)
 public class CallProbePlugin: CAPPlugin, CAPBridgedPlugin, CXProviderDelegate, CXCallObserverDelegate {
@@ -26,6 +34,8 @@ public class CallProbePlugin: CAPPlugin, CAPBridgedPlugin, CXProviderDelegate, C
         CAPPluginMethod(name: "requestMic", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "audioSessionInfo", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "configureSession", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "captureState", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setMicCapture", returnType: CAPPluginReturnPromise),
     ]
 
     private var provider: CXProvider?
@@ -36,6 +46,10 @@ public class CallProbePlugin: CAPPlugin, CAPBridgedPlugin, CXProviderDelegate, C
     /// Every native line since load (the page reads it through status()); main thread only.
     private var lines: [String] = []
     private let loadedAt = Date()
+    /// KVO on the bridge's WKWebView capture states (kept alive here).
+    private var captureObservations: [NSKeyValueObservation] = []
+    /// The WKUIDelegate proxy (WKWebView.uiDelegate is weak, so the plugin retains it).
+    private var uiDelegateProxy: CaptureLoggingUIDelegate?
 
     /// NSLog plus a "nativeLog" event to the page. The event is retained until the page adds a listener, so lines
     /// from before the page loaded (provider ready, the launch didDeactivate) still reach it, without a JS eval.
@@ -61,6 +75,7 @@ public class CallProbePlugin: CAPPlugin, CAPBridgedPlugin, CXProviderDelegate, C
         self.provider = provider
         controller.callObserver.setDelegate(self, queue: nil)
         observeSession()
+        observeCapture()
         nlog("provider ready app=\(appState()) record=\(recordPermission()) calls=\(callsDescription()) session=\(sessionDescription())")
         // A call left over from an earlier run (hung page, never ended) blocks the next start with CallKit error 7
         // (maximumCallGroupsReached): end whatever is still active.
@@ -213,6 +228,88 @@ public class CallProbePlugin: CAPPlugin, CAPBridgedPlugin, CXProviderDelegate, C
             guard let self = self else { return }
             self.nlog("app willEnterForeground call=\(self.ours())")
         })
+    }
+
+    // MARK: WKWebView capture state
+
+    private func captureStateName(_ st: WKMediaCaptureState) -> String {
+        switch st {
+        case .none: return "none"
+        case .active: return "active"
+        case .muted: return "muted"
+        @unknown default: return "raw=\(st.rawValue)"
+        }
+    }
+
+    private func captureDescription(_ wv: WKWebView) -> [String: Any] {
+        return ["mic": captureStateName(wv.microphoneCaptureState), "camera": captureStateName(wv.cameraCaptureState)]
+    }
+
+    /// KVO on microphoneCaptureState / cameraCaptureState (with the initial value), plus the permission-log proxy.
+    private func observeCapture() {
+        guard let wv = bridge?.webView else {
+            nlog("capture: no bridge webView at load; KVO not installed")
+            return
+        }
+        captureObservations.append(wv.observe(\.microphoneCaptureState, options: [.initial, .new]) { [weak self] w, _ in
+            self?.captureChanged(kind: "mic", webView: w)
+        })
+        captureObservations.append(wv.observe(\.cameraCaptureState, options: [.initial, .new]) { [weak self] w, _ in
+            self?.captureChanged(kind: "camera", webView: w)
+        })
+        if let inner = wv.uiDelegate {
+            let proxy = CaptureLoggingUIDelegate(inner: inner) { [weak self] msg in self?.nlog(msg) }
+            uiDelegateProxy = proxy
+            wv.uiDelegate = proxy
+            nlog("capture: uiDelegate proxy installed in front of \(type(of: inner))")
+        } else {
+            nlog("capture: webView has no uiDelegate; permission requests not logged")
+        }
+    }
+
+    private func captureChanged(kind: String, webView wv: WKWebView) {
+        let send = {
+            var data = self.captureDescription(wv)
+            data["changed"] = kind
+            data["app"] = self.appState()
+            self.nlog("capture \(kind)=\(data[kind] ?? "?") (mic=\(data["mic"] ?? "?") camera=\(data["camera"] ?? "?")) app=\(self.appState()) call=\(self.ours()) session=\(self.sessionDescription())")
+            self.notifyListeners("captureState", data: data)
+        }
+        if Thread.isMainThread { send() } else { DispatchQueue.main.async(execute: send) }
+    }
+
+    @objc func captureState(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            guard let wv = self.bridge?.webView else { call.reject("no webView"); return }
+            var data = self.captureDescription(wv)
+            data["app"] = self.appState()
+            self.nlog("captureState mic=\(data["mic"] ?? "?") camera=\(data["camera"] ?? "?")")
+            call.resolve(data)
+        }
+    }
+
+    /// setMicCapture({state: "active"|"muted"|"none"}): WKWebView.setMicrophoneCaptureState. "active" on a muted
+    /// capture unmutes it; on .none (no capture) WebKit does nothing. Resolves with the state before and after.
+    @objc func setMicCapture(_ call: CAPPluginCall) {
+        let wanted = call.getString("state") ?? "active"
+        let reason = call.getString("reason") ?? "page"
+        let target: WKMediaCaptureState
+        switch wanted {
+        case "active": target = .active
+        case "muted": target = .muted
+        case "none": target = .none
+        default: call.reject("state must be active|muted|none"); return
+        }
+        DispatchQueue.main.async {
+            guard let wv = self.bridge?.webView else { call.reject("no webView"); return }
+            let before = self.captureStateName(wv.microphoneCaptureState)
+            self.nlog("setMicCapture \(wanted) (\(reason)) before=\(before) app=\(self.appState()) call=\(self.ours())")
+            wv.setMicrophoneCaptureState(target) {
+                let after = self.captureStateName(wv.microphoneCaptureState)
+                self.nlog("setMicCapture \(wanted) (\(reason)) done after=\(after)")
+                call.resolve(["requested": wanted, "before": before, "after": after])
+            }
+        }
     }
 
     // MARK: Plugin methods
@@ -410,6 +507,52 @@ private func bluetoothOptions() -> AVAudioSession.CategoryOptions {
     }
     #endif
     return [.allowBluetooth]
+}
+
+/// Logs WKUIDelegate media-capture permission requests and Capacitor's decision, and forwards everything else to
+/// Capacitor's WebViewDelegationHandler (responds(to:) / forwardingTarget(for:)), so its alert, confirm, prompt and
+/// window-open handling keep working.
+final class CaptureLoggingUIDelegate: NSObject, WKUIDelegate {
+    private let innerAny: WKUIDelegate
+    private let log: (String) -> Void
+
+    init(inner: WKUIDelegate, log: @escaping (String) -> Void) {
+        self.innerAny = inner
+        self.log = log
+    }
+
+    override func responds(to aSelector: Selector!) -> Bool {
+        if super.responds(to: aSelector) { return true }
+        return (innerAny as AnyObject).responds(to: aSelector)
+    }
+
+    override func forwardingTarget(for aSelector: Selector!) -> Any? {
+        return innerAny
+    }
+
+    func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin,
+                 initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType,
+                 decisionHandler: @escaping (WKPermissionDecision) -> Void) {
+        let kind: String
+        switch type {
+        case .camera: kind = "camera"
+        case .microphone: kind = "microphone"
+        case .cameraAndMicrophone: kind = "cameraAndMicrophone"
+        @unknown default: kind = "raw=\(type.rawValue)"
+        }
+        let what = "\(origin.protocol)://\(origin.host):\(origin.port) \(kind) mainFrame=\(frame.isMainFrame)"
+        log("permission request \(what)")
+        let wrapped: (WKPermissionDecision) -> Void = { [log] d in
+            let name = d == .grant ? "grant" : (d == .deny ? "deny" : (d == .prompt ? "prompt" : "raw=\(d.rawValue)"))
+            log("permission decision \(name) for \(what)")
+            decisionHandler(d)
+        }
+        if (innerAny as AnyObject).responds(to: #selector(WKUIDelegate.webView(_:requestMediaCapturePermissionFor:initiatedByFrame:type:decisionHandler:))) {
+            innerAny.webView?(webView, requestMediaCapturePermissionFor: origin, initiatedByFrame: frame, type: type, decisionHandler: wrapped)
+        } else {
+            wrapped(.prompt)
+        }
+    }
 }
 
 /// Main.storyboard's view controller. Plugins inside the app target are not auto-registered; register CallProbe here.

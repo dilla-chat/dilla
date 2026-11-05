@@ -327,6 +327,73 @@ Reading it: `energyDelta > 0` while `micPeak*` are 0 means the mic delivers audi
 blind (an artifact). Both 0 with the session at `SoloAmbient` and the `no-callkit+session` run non-zero means the
 WebView needs an app-configured `playAndRecord` session. Both 0 everywhere means the WKWebView mic is truly silent.
 
+### Round 4: WKWebView capture state (does WebKit mute the mic under a foreground CallKit call?)
+
+Force-mic results (iPhone 17 Pro, iOS 27.0.1, `a625e8ce`): without CallKit the mic works (`no-callkit` and
+`no-callkit+session`). Under CallKit it does not. In `callkit-first` the track is `muted: true` from the start; in
+`gum-first` WebKit fires `mic.mute` at `didActivate`. In the earlier lock test, WebKit fired `mic.unmute` when the app
+went to the background. Hypothesis: WebKit mutes in-page capture while a CallKit call is active and the page is in the
+foreground.
+
+`CallProbe.swift` changed on Linux again and is **uncompiled**; fix any build error and report it. It uses only
+WebKit API: `WKWebView.microphoneCaptureState` / `cameraCaptureState` (KVO) and
+`setMicrophoneCaptureState(_:completionHandler:)`, both iOS 15+ (the target is iOS 17).
+
+New on the page and in native:
+
+- `DILLA_CALL_NATIVE ... capture mic=<none|active|muted> (...)` on every KVO change of either capture state (the
+  initial value at load too), with the app state and the session. On the page the same change is
+  `DILLA_CALL_EVENT ... "capture.change"`, and `run.end` lists every change of the run with its `at`.
+- `DILLA_CALL_NATIVE ... permission request ...` / `permission decision grant ...`: WebKit's media-capture permission
+  request and Capacitor's answer (a logging proxy in front of Capacitor's `WKUIDelegate`).
+- Checkbox **"force capture active after didActivate"**: right after `didActivate` (and, in `callkit-first`, once
+  more after `getUserMedia`, since no capture existed at `didActivate`) the page calls
+  `setMicCapture("active")`. Whenever KVO reports `mic=muted` while the call is up, it calls it again, at most 5 times
+  per run (`capture.retry` n of 5, then `capture.retry.exhausted`). Native lines `setMicCapture active (...) before=...`
+  and `... done after=...`.
+- Checkbox **"re-gUM after didActivate"**: once the loopback is up, a second `getUserMedia`. The new track replaces
+  the old one on the sender (`replaceTrack`) and feeds the analyser, and the old one is stopped. The `regum.track`
+  and `regum.track+1s` events log whether the new track is muted. Its mute and unmute events are `regum.mic.*`.
+- Buttons **"force capture active"** (manual `setMicCapture("active")`) and **"capture state"**. "status" also logs
+  the capture state.
+- `DILLA_CALL_DETAIL` gains `forceCapture`, `reGum`, `captureRetries`, `capture` (last KVO state) and `regum`.
+
+Procedure: each step is a fresh launch with the devicectl command from the diagnostic run (`--console
+--terminate-existing ... | tee r4-<step>.log`). Keep "force mic" ticked, tick only the checkbox named, and **count
+aloud continuously** from the tap. Then "status", then "End call", then Ctrl-C.
+
+a. `callkit-first` + "force capture active": 30 s in the foreground.
+b. `gum-first` + "force capture active": 30 s in the foreground.
+c. `callkit-first` + "re-gUM after didActivate": 30 s in the foreground.
+d. Whichever of a-c gave mic audio (you heard yourself, or `energyDelta` > 0): repeat it in a fresh devicectl
+   launch (no debugger is attached, so iOS can suspend it). Run 30 s in the foreground, then go to the home screen
+   and lock for **5 minutes**, counting aloud the whole time, then unlock, return to the app and run 20 s more. Note
+   the lock and unlock clock times. If none of a-c worked, run d with a anyway: the KVO lines while locked are still
+   evidence. If the result looks suspiciously good, repeat it launched from the home screen with Console.app (see the
+   lock run below), since a devicectl launch may be treated differently.
+e. `no-callkit+session`, a 5-minute lock run like d. Does background capture and playback survive without
+   CallKit? Note whether the orange mic indicator stays on while locked, and whether the app is suspended.
+
+Report for each step:
+
+- the mic fields: `micPeak0_2`, `micPeak2_5` and `micLevel`, plus `inboundRtp` / `mediaSource` `audioLevel` and
+  `energyDelta`, per `DILLA_CALL_DETAIL` line;
+- every KVO capture-state change with its timestamp (native `+ms` and page `at`), and every `setMicCapture` before
+  and after;
+- the `mic.mute` / `mic.unmute` (and `regum.mic.*`) events with `at`, and in c the `regum.track` and
+  `regum.track+1s` muted values;
+- `framesIn` / `framesOk` against 50 × `t` on each `DILLA_CALL` line;
+- whether you heard yourself: in the foreground, while locked, and after the unlock;
+- for d and e, whether the app was suspended: gaps in the line cadence, counters short of 50 × `t`, and the
+  `app didEnterBackground` / `willEnterForeground` lines;
+- the whole logs.
+
+Reading it: if a or b turn the KVO state from `muted` back to `active` and the energy is non-zero, the iOS app can
+keep CallKit and capture in the WebView, as long as it forces the capture state. If KVO says `active` but the energy
+stays 0, `setMicrophoneCaptureState` only changes the indicator. If only c works, WebKit mutes the tracks that were
+live at activation, not capture as a whole. If nothing works under CallKit and e survives the lock, the choice is
+between no CallKit (and the orange indicator) and native capture.
+
 ### Lock run (5 minutes)
 
 With whichever mode reached `DILLA_CALL` frames (`framesOk` growing) in the diagnostic run, preferring `callkit-first`,
