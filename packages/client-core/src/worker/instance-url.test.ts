@@ -25,7 +25,7 @@ it('in the mobile build, a mobile app origin binds to an HTTPS instance origin a
     expect(mobile('https://chat.example/', app)).toBe('https://chat.example');
     expect(mobile('https://chat.example:8443', app)).toBe('https://chat.example:8443');
     for (const input of ['http://chat.example/', 'wss://chat.example/', 'capacitor://chat.example/', 'https://u:p@chat.example/',
-      'https://chat.example/?q', 'https://chat.example/#x', 'https://chat.example/team/', 'https://chat.example/assets/',
+      'https://chat.example/?q', 'https://chat.example/#x', 'https://chat.example/chat/', 'https://chat.example/assets/',
       'https://10.0.2.2:18443/', 'https://127.0.0.1/', 'https://[::1]/', 'https://[2001:db8::1]:8443/', 'https://chat.example./',
       // round 2 item 4: the app's own origin and every *.localhost name
       'https://localhost/', 'https://localhost:8443/', 'https://chat.localhost/', 'https://LOCALHOST/', 'https://a.b.localhost:443/']) {
