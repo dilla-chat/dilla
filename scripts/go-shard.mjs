@@ -27,7 +27,7 @@ export const TIMINGS_FILE = join(ROOT, 'scripts', 'go-shard-timings.json');
 export const POSTGRES_API_RUN = 'AFK|Afk|HiddenCategory|HiddenParent|ParentAnywhere|Marker|ConcurrentEnsures|ReadsThePointer';
 
 /**
- * The sharded Go jobs of ci.yml, by job name: how many shards each matrix has and which packages it tests. `go` is
+ * The sharded Go jobs of server.yml, by job name: how many shards each matrix has and which packages it tests. `go` is
  * the module minus exactly internal/ds and internal/api (go-ds and go-api run them; the union is the whole module).
  * An entry's `run` keeps only the tests whose name it matches, as `go test -run` would.
  */

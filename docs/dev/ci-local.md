@@ -1,7 +1,8 @@
-# ci-local: the CI workflow on your machine
+# ci-local: the CI workflows on your machine
 
-`npm run ci:local` runs `.github/workflows/ci.yml` locally, so a failure shows up before the push instead of on the
-runner. Run it before every push.
+`npm run ci:local` runs the two CI workflows, `.github/workflows/server.yml` (check `server-ok`) and
+`.github/workflows/desktop-ci.yml` (check `desktop-ok`), locally, so a failure shows up before the push instead of on
+the runner. Run it before every push.
 
 ```sh
 npm run ci:local                          # every job, fail fast
@@ -9,14 +10,16 @@ npm run ci:local:changed                  # only the jobs the ci-areas gates run
 npm run ci:local -- --only go,go-api      # some jobs, plus the jobs they need
 npm run ci:local -- --only core-integration --no-deps   # reuse the artifacts of an earlier run
 npm run ci:local -- --stress --only go-api,browser-media   # under CPU contention, like a loaded runner
+npm run ci:local -- --list                # each workflow's jobs and what ci-local does with them
 npm run ci:local -- --dry-run             # print the plan: jobs, needs, how each step maps
 npm run ci:local -- --doctor              # check the prerequisites and exit
 ```
 
 ## How it works
 
-ci-local doesn't keep its own list of commands. `scripts/ci-local-plan.mjs` reads ci.yml and builds the jobs from it.
-Matrix jobs are expanded into one job per leg, `needs:` and the job and step `if:` area gates are respected, and each
+ci-local doesn't keep its own list of commands. `scripts/ci-local-plan.mjs` reads both workflows and builds the jobs
+from them. A job both carry (`changes`, `rust-native`, `rust-wasi`, `web-build`) runs once: it runs when either
+workflow's gate holds, and its steps must be the same in both files. Matrix jobs are expanded into one job per leg, `needs:` and the job and step `if:` area gates are respected, and each
 job's `run:` steps run as written in the order they appear, with `bash -eo pipefail`, `CI=true` and the
 `timeout-minutes` from the workflow. Jobs that don't depend on each other run in parallel within a CPU budget
 (`--jobs`, which defaults to the number of CPUs). Each job has a weight, about the number of cores it keeps busy (a
@@ -24,7 +27,7 @@ GitHub runner has 4).
 
 Steps that only make sense on GitHub are mapped to local equivalents:
 
-| ci.yml | locally |
+| workflow | locally |
 | --- | --- |
 | `actions/checkout`, `actions/cache*` | nothing: the working tree is the checkout, and `target/` and `~/.cargo` persist |
 | `actions/setup-node`, `actions/setup-go` | prerequisite checks against `.nvmrc` and `go.mod` |
@@ -35,7 +38,7 @@ Steps that only make sense on GitHub are mapped to local equivalents:
 | `sudo prlimit` (rust-native) | the same `prlimit` without sudo, within the hard limit |
 | the `postgres` service (go-postgres) | a throwaway `podman` (or `docker`) container with the same image, env and initdb args, published on a free local port. `DILLA_TEST_PG` points at that port. The container is removed after the job, on failure, and on Ctrl-C |
 | `changes` | computed in process by `scripts/ci-areas.mjs`: every area for a full run, the diff's areas for `--changed` |
-| `ci-ok` | the summary's verdict |
+| `server-ok`, `desktop-ok` and their `*-work-complete` barriers | the summary's verdict |
 
 The node job's `npm run test:ci-check` runs in a fresh copy of the tracked and untracked files
 (`target/ci-local/clean-tree/node`), as on a runner's checkout. ci-areas.test.mjs's reader scan skips paths that
@@ -47,8 +50,9 @@ CI tools that `install-ci-tool.sh` downloads (golangci-lint with its gosec rules
 cargo-deny and sqlc) land in `target/ci-local/runner-temp/dilla-ci-tools`. They go ahead of your own copies on PATH,
 so the lint is the one CI runs.
 
-`npm run check:ci` (the docs job) runs `localMirrorProblems`. If ci.yml gains a job, step, action, service, `if:` form
-or `${{ }}` expression that ci-local can't map or doesn't explicitly skip, the check fails, so the two can't drift.
+`npm run check:ci` (server's docs job) runs `localMirrorProblems`. If either workflow gains a job, step, action, service,
+`if:` form or `${{ }}` expression that ci-local can't map or doesn't explicitly skip (`JOB_MAP.server` and
+`JOB_MAP.desktop`), or a shared job's two copies differ, the check fails, so the mirror can't drift.
 
 ## Jobs it skips, and why
 
@@ -85,7 +89,7 @@ they share one lock: your lanes queue for those two jobs instead of clashing.
 Every job starts from your environment without the variables that change what a test touches or where a build goes:
 every `DILLA_*` (among them `DILLA_TEST_PG`, which points the store and API tests at a server they create and drop
 databases on, and the e2e port pins), `PG*`, `DATABASE_URL`, and the tool overrides `GO`, `NPM`, `CARGO`, `WASM_PACK`
-and `CARGO_TARGET_DIR`. A job then gets only what ci.yml sets, so go-postgres's `DILLA_TEST_PG` points only at its own
+and `CARGO_TARGET_DIR`. A job then gets only what its workflow sets, so go-postgres's `DILLA_TEST_PG` points only at its own
 throwaway container. `CI=true` and the `GITHUB_*`/`RUNNER_*` variables are set as on a runner.
 
 ## Modes
@@ -95,7 +99,8 @@ throwaway container. `CI=true` and the `GITHUB_*`/`RUNNER_*` variables are set a
 - `--keep-going`: every job runs. A job whose needed job failed is skipped, and the summary says which job it needed.
 - `--changed`: the jobs the `changes` job would turn on for this branch against `origin/main` (or `main`). Committed,
   staged, unstaged and untracked files all count. As in CI, the diff fails safe to everything.
-- `--only <job,…>`: those jobs and the jobs they need. A ci.yml name selects every matrix leg; a leg is
+- `--list`: each workflow's jobs, their matrix legs, which jobs both carry, and which ci-local skips and why.
+- `--only <job,…>`: those jobs and the jobs they need. A job name from either workflow selects every matrix leg; a leg is
   `linux-sandbox-foundation-ubuntu-22.04` or a Go shard such as `go-api-2`. `--no-deps` leaves the needed jobs out and reuses their artifacts from an earlier run.
 - `--stress`: the Go and browser jobs run pinned (`taskset`) to a quarter of the CPUs (at least 2), beside one
   busy-loop process per pinned CPU. This brings out the timing flakes a loaded runner does: TOTP window edges,
