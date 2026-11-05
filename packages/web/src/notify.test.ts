@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import type { ChannelSummary, Notice } from '@dilla/client-core';
 import { FakeClient } from './test/fake-client.ts';
 import { account, ME } from './test/fixtures.ts';
-import { noticeTitle, ringNotification, shouldNotify, startNotifier, type NotificationCtor, type NotifyContext } from './notify.ts';
+import { noticeTitle, notificationCtor, ringNotification, shouldNotify, startNotifier, type NotificationCtor, type NotifyContext } from './notify.ts';
 import type { Ring } from '@dilla/client-core';
 
 const A = 'a1'.repeat(16);
@@ -296,5 +296,24 @@ describe('ringNotification (flow 06, R1, R8)', () => {
       expect(requestPermission).not.toHaveBeenCalled();
     }
     expect(ringNotification(ring(), deps(undefined))).toBeNull();
+  });
+});
+
+describe('mobile notifications', () => {
+  it('mobile notifications go through the bridge', () => {
+    const listeners: Array<(e: { type: 'notification-click'; id: string }) => void> = [];
+    const send = vi.fn(async () => {});
+    vi.stubGlobal('dillaMobile', { send, onEvent: (l: (typeof listeners)[number]) => { listeners.push(l); return () => {}; } });
+    try {
+      const Ctor = notificationCtor()!;
+      expect(Ctor.permission).toBe('granted');
+      const note = new Ctor('t'.repeat(300), { body: 'b'.repeat(5000), tag: 'dilla:x' });
+      expect(send).toHaveBeenCalledWith({ type: 'notify', id: 'dilla:x', title: 't'.repeat(256), body: 'b'.repeat(4096) });
+      const click = vi.fn(); note.onclick = click;
+      listeners.forEach(l => l({ type: 'notification-click', id: 'dilla:x' }));
+      expect(click).toHaveBeenCalled();
+      note.close();
+      expect(send).toHaveBeenLastCalledWith({ type: 'dismiss-notification', id: 'dilla:x' });
+    } finally { vi.unstubAllGlobals(); }
   });
 });

@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { pushHistoryState, replaceHistoryState } from './router.ts';
-import { PHONE_QUERY, readPaneWidths, rememberedTab, rememberTab, writePaneWidths, usePhoneLayout, usePhoneSheet, useVisualViewportHeight } from './layout.ts';
+import { PHONE_QUERY, phoneNow, readPaneWidths, rememberedTab, rememberTab, writePaneWidths, usePhoneLayout, usePhoneSheet, useVisualViewportHeight } from './layout.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -372,4 +372,17 @@ it('installed desktop clients keep desktop layout even at a phone media-query ma
  vi.stubGlobal('matchMedia', () => ({ matches: true, addEventListener() {}, removeEventListener() {} }));
  try { const view = renderHook(() => usePhoneLayout()); expect(view.result.current).toBe(false); view.unmount(); }
  finally { vi.unstubAllGlobals(); }
+});
+
+describe('phone layout is forced in the mobile app', () => {
+  it('phone layout is forced in the mobile app', () => {
+    vi.stubGlobal('dillaMobile', {});
+    vi.stubGlobal('matchMedia', () => ({ matches: false, media: '', addEventListener() {}, removeEventListener() {} }));
+    try {
+      expect(phoneNow()).toBe(true);
+      const view = renderHook(() => usePhoneLayout());
+      expect(view.result.current).toBe(true);
+      view.unmount();
+    } finally { vi.unstubAllGlobals(); }
+  });
 });
