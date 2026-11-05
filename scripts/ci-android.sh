@@ -43,8 +43,18 @@ sdk)
   fi
   ;;
 avd)
-  echo no | "$bin/avdmanager" create avd --force --name "$AVD" --package "$IMAGE" --device pixel_6
-  config="${ANDROID_AVD_HOME:-$HOME/.android/avd}/$AVD.avd/config.ini"
+  # Pin the AVD directory: avdmanager's default differs between cmdline-tools versions and runner images (on the
+  # hosted runner the AVD did not land in ~/.android/avd), and the emulator in the next steps must find the same one.
+  export ANDROID_AVD_HOME="${ANDROID_AVD_HOME:-$HOME/.android/avd}"
+  mkdir -p "$ANDROID_AVD_HOME"
+  echo "ANDROID_AVD_HOME=$ANDROID_AVD_HOME" >> "$GITHUB_ENV"
+  echo no | "$bin/avdmanager" create avd --force --name "$AVD" --package "$IMAGE" --device pixel_6 --path "$ANDROID_AVD_HOME/$AVD.avd"
+  config="$ANDROID_AVD_HOME/$AVD.avd/config.ini"
+  if [ ! -f "$config" ]; then
+    echo "ci-android: avdmanager did not write $config; AVDs it knows:" >&2
+    "$bin/avdmanager" list avd >&2 || true
+    exit 1
+  fi
   # No GPU on the runner: SwiftShader. The smoke test starts the emulator with -no-window and no -gpu flag, so the
   # AVD's own config carries the mode.
   sed -i -E '/^(hw\.gpu\.enabled|hw\.gpu\.mode|hw\.ramSize|disk\.dataPartition\.size|hw\.keyboard) *=/d' "$config"
