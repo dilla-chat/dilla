@@ -927,6 +927,13 @@ func (s *Server) ReadHeaderTimeout() time.Duration { return s.httpSrv.ReadHeader
 // /desktop-auth/ is deliberately not here (mobile M1 task 4 review ruling): internal/desktopauth
 // refuses any foreign Origin, and the mobile app calls it through native HTTP with no Origin
 // header, as the desktop main process does, so it stays strict.
+//
+// A preflight answered here never reaches a handler, so it takes no rate-limit token. That is not
+// a bypass: the limits are per route, inside the handlers (server.RateLimiter.Allow via
+// api.Deps.meter, auth.Throttle), and they meter the actual request that follows exactly as
+// before. The preflight itself is constant-cost — no body read, no database, no Argon2id — and
+// answers an empty 204 with fixed headers, so it returns no data and cannot amplify.
+// TestMobileOriginsPreflightIsConstantCostAndUnmetered pins both halves.
 func mobileCORS(next http.Handler, origins []string) http.Handler {
 	cors := api.CORS(origins)(next)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

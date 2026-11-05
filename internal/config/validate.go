@@ -462,10 +462,17 @@ func validWebhookListen(v string) error {
 // wholeOrigin checks one http.mobile_origins entry: a single scheme://host[:port] origin. CORS
 // compares it as an exact string and the gateway's upgrade as a scheme://host glob, so a glob
 // character, a missing scheme or a path, query, fragment or userinfo would make the two disagree
-// or never match a browser's Origin header.
+// or never match a browser's Origin header. A backslash and any uppercase letter are refused, not
+// normalised, for the same reason.
 func wholeOrigin(origin string) error {
 	if strings.ContainsAny(origin, "*?[") {
 		return errors.New("must not contain a glob character (*, ? or [): it is matched whole")
+	}
+	if strings.Contains(origin, `\`) {
+		return errors.New(`must not contain a backslash (\): parsers disagree on where its host ends`)
+	}
+	if strings.ToLower(origin) != origin {
+		return errors.New("must be lowercase: a browser sends the Origin header's scheme and host in lowercase, so this would never match")
 	}
 	if !strings.Contains(origin, "://") {
 		return errors.New(`must carry its scheme, e.g. "capacitor://localhost"`)

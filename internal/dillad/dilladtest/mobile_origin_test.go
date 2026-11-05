@@ -79,6 +79,9 @@ func TestMobileOriginsCORSRoutes(t *testing.T) {
 		{"/v1/instance", true},
 		{"/i/abc", true},
 		{"/desktop-auth/start", false},
+		{"/desktop-auth/", false},
+		{"/gateway", false},
+		{"/download/linux", false},
 		{"/healthz", false},
 		{"/", false},
 	} {
@@ -124,5 +127,87 @@ func TestMobileOriginsVaryOnOrigin(t *testing.T) {
 				t.Fatalf("GET /v1/instance from %q: Vary = %q, want Origin", origin, w.Header().Values("Vary"))
 			}
 		})
+	}
+}
+
+// No response anywhere ever carries Access-Control-Allow-Credentials: the app authenticates with a
+// bearer token, never a cookie, so a credentialed cross-origin read is never on offer. The table
+// covers preflights and actual requests, a listed origin, an unlisted one and none, on the CORS
+// prefixes and on every path beside them.
+func TestMobileOriginsNeverAllowCredentials(t *testing.T) {
+	h, err := NewHost(t.Context(), HostOptions{DataDir: t.TempDir(), CorePath: corePath(t)})
+	if err != nil {
+		t.Fatalf("NewHost: %v", err)
+	}
+	t.Cleanup(func() { _ = h.Close(t.Context()) })
+	paths := []string{"/v1/instance", "/v1/auth/login", "/i/abc", "/gateway", "/desktop-auth/start", "/download/linux", "/healthz", "/"}
+	origins := []string{"", "capacitor://localhost", "https://localhost", "https://evil.example"}
+	for _, p := range paths {
+		for _, origin := range origins {
+			for _, preflight := range []bool{true, false} {
+				method := http.MethodGet
+				if preflight {
+					method = http.MethodOptions
+				}
+				r := httptest.NewRequestWithContext(t.Context(), method, p, nil)
+				if origin != "" {
+					r.Header.Set("Origin", origin)
+				}
+				if preflight {
+					r.Header.Set("Access-Control-Request-Method", "POST")
+					r.Header.Set("Access-Control-Request-Headers", "authorization, cookie")
+				}
+				w := httptest.NewRecorder()
+				h.Handler().ServeHTTP(w, r)
+				if v, ok := w.Header()["Access-Control-Allow-Credentials"]; ok {
+					t.Errorf("%s %s from %q: Access-Control-Allow-Credentials = %q", method, p, origin, v)
+				}
+			}
+		}
+	}
+}
+
+// Allow-Headers and Expose-Headers are fixed lists: a preflight that asks for extra headers gets
+// the same answer as one that asks for none, and the asked-for names are never echoed back.
+func TestMobileOriginsPreflightNeverEchoesRequestHeaders(t *testing.T) {
+	h, err := NewHost(t.Context(), HostOptions{DataDir: t.TempDir(), CorePath: corePath(t)})
+	if err != nil {
+		t.Fatalf("NewHost: %v", err)
+	}
+	t.Cleanup(func() { _ = h.Close(t.Context()) })
+	const allow = "Authorization, Content-Type, Accept"
+	const expose = "X-Dilla-Generation, Retry-After"
+	for _, asked := range []string{"", "authorization", "x-evil, cookie, authorization", "X-Dilla-Admin"} {
+		t.Run("asked="+asked, func(t *testing.T) {
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodOptions, "/v1/instance", nil)
+			r.Header.Set("Origin", "capacitor://localhost")
+			r.Header.Set("Access-Control-Request-Method", "GET")
+			if asked != "" {
+				r.Header.Set("Access-Control-Request-Headers", asked)
+			}
+			w := httptest.NewRecorder()
+			h.Handler().ServeHTTP(w, r)
+			if w.Code != http.StatusNoContent {
+				t.Fatalf("preflight = %d, want 204", w.Code)
+			}
+			if got := w.Header().Values("Access-Control-Allow-Headers"); len(got) != 1 || got[0] != allow {
+				t.Fatalf("Allow-Headers = %q, want exactly %q", got, allow)
+			}
+			for _, name := range []string{"x-evil", "cookie", "X-Dilla-Admin"} {
+				for _, v := range w.Header().Values("Access-Control-Allow-Headers") {
+					if strings.Contains(strings.ToLower(v), strings.ToLower(name)) {
+						t.Fatalf("Allow-Headers %q echoes %q", v, name)
+					}
+				}
+			}
+		})
+	}
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/v1/instance", nil)
+	r.Header.Set("Origin", "capacitor://localhost")
+	r.Header.Set("Access-Control-Request-Headers", "x-evil")
+	w := httptest.NewRecorder()
+	h.Handler().ServeHTTP(w, r)
+	if got := w.Header().Values("Access-Control-Expose-Headers"); len(got) != 1 || got[0] != expose {
+		t.Fatalf("Expose-Headers = %q, want exactly %q", got, expose)
 	}
 }

@@ -253,6 +253,13 @@ func TestValidationRules(t *testing.T) {
 			"capacitor://*", "https://local?ost", "https://[a-z]ocalhost", "localhost",
 			"https://localhost/app", "https://localhost/", "https://localhost?x=1", "https://localhost#top",
 			"https://localhost#", "https://user@localhost", "https://",
+			// A backslash: some URL parsers read it as a path separator, so the two matchers could
+			// disagree about where the host ends.
+			`https://localhost\`, `https://localhost\@evil.example`, `capacitor:\\localhost`,
+			// Uppercase is refused, not lowercased: a browser serialises the Origin header in
+			// lowercase, so "Capacitor://Localhost" would never match and folding it silently would
+			// hide the typo.
+			"Capacitor://localhost", "capacitor://Localhost", "HTTPS://LOCALHOST", "https://localHost:8443",
 		} {
 			c := base()
 			c.Derive()
