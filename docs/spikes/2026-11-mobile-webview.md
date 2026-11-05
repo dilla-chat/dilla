@@ -57,12 +57,12 @@ kill on all three.
 
 Notes from the probe runs:
 
-- The Android and iOS results used the same bundle: `voiceSupport` picks `insertable-streams` on Chromium and the
+- The platforms ran different spike builds: Android at the `855f228e`/`23e26c9f` era, iOS at `1dfe3c88` and later. `voiceSupport` picks `insertable-streams` on Chromium and the
   script-transform path on WebKit, the same split `packages/media/src/support.ts` already makes.
 - The simulator run was labelled SIMULATOR; the device run repeated every field.
 - The iPhone's first build needs `-allowProvisioningDeviceRegistration`.
-- A stale CallKit `didDeactivate` was seen at launch on the device (calls left over from earlier runs; the probe now
-  ends stale calls).
+- A stale CallKit `didDeactivate` was seen at launch on the device (cause unconfirmed; the probe now ends stale
+  calls).
 
 ## Calls
 
@@ -73,7 +73,7 @@ expected rate.
 
 ### Android emulator, app backgrounded for 5 minutes, no foreground service
 
-Two runs (Home at t of about 45 s, foreground at about 350 s; run 1 took the app to t=387 s).
+Two runs (Home at t of about 45 s, foreground at t of about 365 s in run 1; run 1 ended at t=387 s; run 2 has no t value for these points).
 
 - Frames kept flowing at the full rate the whole time: +500 `framesOut` per 10 s, in the background too.
 - The process stayed alive (same PID throughout), JS timers were not throttled, the peer connection stayed
@@ -110,7 +110,7 @@ workable on iOS 27.0.1. The only way to keep CallKit is a native audio path.
 ### iPhone without CallKit: works, including 5 minutes locked
 
 The app's own native plugin sets `AVAudioSession` to `playAndRecord`/`voiceChat` and activates it before
-getUserMedia. `Info.plist` has `UIBackgroundModes: audio`.
+getUserMedia. `Info.plist` had `UIBackgroundModes` `audio` **and** `voip` (no PushKit), and the 388 s lock run below was measured with both set. `audio` alone, the planned v1 configuration, is **untested** and must be verified on a device in wave M3.
 
 - Foreground, no CallKit: the mic works (Jonas heard himself; `micPeak` 1). An earlier 0 was a warm-up artifact in
   the first 1.5 s, not a capture failure. WebKit captures out of process, and the app session itself stays
@@ -140,7 +140,7 @@ getUserMedia. `Info.plist` has `UIBackgroundModes: audio`.
   floor and is not used. Keep one root-controller source (storyboard or code), and drop the `armv7` capability.
 - **Deployment target 17** (plan floor iOS 17; Xcode 27 needs 15 or higher).
 - **"JS Eval error" at every launch** (simulator and device) was Capacitor 7.6.10 evaluating JavaScript before the
-  WebView loaded (resume-before-load). It is gone in 8.6 per the M1 shell work; still to be confirmed on a device build.
+  WebView loaded (resume-before-load; this cause is reasoning, not a measurement). It is gone in 8.6 per the M1 shell work; still to be confirmed on a device build.
 - **The user agent is frozen at iOS 18_7** on iOS 27. Never detect the OS from the UA.
 - **WebKit's 7-day ITP script-storage cap** is a Safari/ITP policy and does not apply to an app's WKWebView.
 - **First device build** needs `xcodebuild -allowProvisioningDeviceRegistration`.
@@ -150,13 +150,13 @@ getUserMedia. `Info.plist` has `UIBackgroundModes: audio`.
 
 ## Decision
 
-**GO.** Every gate item passes on all three targets: `opfsSyncHandle`, `opfsPersisted` and `encodedTransform` are true
+**GO.** Every gate item passes on all three targets: `opfsSyncHandle`, `opfsPersisted` and `encodedTransform` pass
 on the Android emulator, the iOS simulator and the iPhone, and iOS did not lose call frames while locked in the mode
 we will ship.
 
 - M1: Capacitor 8.6.x shells on both platforms, deployment target iOS 17.
 - iOS calls: no CallKit in v1 (Jonas, 2026-11-05, via AskUserQuestion, re-confirmed "no call screen in v1"). App-owned
-  `playAndRecord`/`voiceChat` session with `UIBackgroundModes: audio`, rings as time-sensitive pushes, no PushKit.
+  `playAndRecord`/`voiceChat` session with `UIBackgroundModes: audio` (the spike measured `audio` + `voip`; `audio` alone is untested, verify in M3), rings as time-sensitive pushes, no PushKit.
   CallKit returns only with a native audio path (native WebRTC with dilla's frame encryption), a later project.
 - M3: Android foreground service of type microphone plus ConnectionService; iOS swaps the sender to the raw mic while
   hidden; the receive transform passes empty frames.
