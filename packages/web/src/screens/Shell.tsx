@@ -1645,8 +1645,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     </Tooltip>
   );
   // Ruling Z (Jonas 2026-10-27): every conversation header is the prototype's one template: back (phone), glyph and name, topic;
-  // a chat (a text channel or a DM) adds Threads (labelled on a desktop) when it has threads, Members with the count on a server,
-  // and Search on a phone. A voice channel has no controls. The DM call and pins are in the DM row's context menu (and the call
+  // a text channel adds Threads (labelled on a desktop) and Members with the count on a server, and Search on a phone. A DM header is
+  // name and topic only, no buttons (a DM's threads open from the reply chip, Reply in thread and search). A voice channel has no
+  // controls. The DM call and pins are in the DM row's context menu (and the call
   // under Control/⌘+Shift+Enter), search is the top bar's and Control/⌘+K, the reminders the bell and the Activity tab.
   const voiceIsAfk = voiceChannel !== null && afkChannels.has(voiceChannel.id);
   const voiceTopic = voiceChannel === null ? undefined : voiceIsAfk ? t('voice.header.afk') : call.channelId === voiceChannel.id
@@ -1670,9 +1671,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     : dm !== null ? <ChannelHeader kind="dm" name={dm.name} topic={dmTopic(dm)}
       phone={phone ? { backLabel: t('nav.back'), onBack, ...dotProp, menu: (
         <IconButton icon="search" size={28} label={t('search.open')} onClick={e => startSearch(e.currentTarget)} />
-      ) } : undefined}
-      actions={<Button variant="ghost" mark={false} data-thread-list-toggle="" pressed={threadsOn} onClick={toggleThreads}>
-        <Icon name={THREADS_GLYPH} size={14} />{t('layout.header.threads')}</Button>} /> : null;
+      ) } : undefined} /> : null;
   // While Settings covers the conversation, its Privacy section carries the alert and the action instead.
   const changedHere = overlay ? [] : changedMembers;
 

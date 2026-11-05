@@ -545,22 +545,16 @@ describe('threads in a DM (wave C)', () => {
     expect(fake.callsOf('openThread')).toEqual([{ m: 'openThread', channelId: GDM, rootMsgId: ROOT }]);
   });
 
-  it("the DM header has a Threads button that lists the DM's threads", async () => {
-    const { fake, user } = setupDm();
-    await user.click(await screen.findByRole('button', { name: en['layout.header.threads'] }));
+  it('the DM header has no buttons (Ruling Z)', async () => {
+    const { user } = setupDm();
+    await screen.findByText('a DM root');
+    const header = document.querySelector('.d-channel-header')!;
+    expect(header.querySelectorAll('button')).toHaveLength(0);
+    expect(screen.queryByRole('button', { name: en['layout.header.threads'] })).toBeNull();
+    await user.click(await screen.findByRole('button', { name: '1 reply' }));
     expect(await screen.findByRole('complementary', { name: en['thread.title'] })).toBeInTheDocument();
-    expect(fake.callsOf('loadThreads')).toEqual([{ m: 'loadThreads', channelId: DM }]);
-    expect(fake.callsOf('openThread').at(-1)).toEqual({ m: 'openThread', channelId: DM, rootMsgId: ROOT });
-    expect(screen.getByRole('button', { name: en['layout.header.threads'] })).toHaveAttribute('aria-pressed', 'true');
     await user.click(screen.getByRole('button', { name: en['thread.close'] }));
     await waitFor(() => expect(threadPane()).toBeNull());
-  });
-
-  it('opens an empty thread aside when the DM has no threads', async () => {
-    const { fake, user } = setupDm();
-    fake.set(`threads:${DM}`, []);
-    await user.click(await screen.findByRole('button', { name: en['layout.header.threads'] }));
-    expect(await screen.findByText(en['shell.thread.empty'])).toBeInTheDocument();
   });
 
   it('switching from a DM with an open thread to a channel closes the pane', async () => {
