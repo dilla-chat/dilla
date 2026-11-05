@@ -20,6 +20,10 @@ watchdog = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(watchdog)
 
 
+SERVER_BARRIER = frozenset({"changes", "docs", "server-work-complete"})
+DESKTOP_BARRIER = frozenset({"changes", "desktop-work-complete"})
+
+
 def job(name, status="completed", conclusion="success", steps=None, runner_name="runner-1"):
     return {"id": 1, "name": name, "status": status, "conclusion": conclusion,
             "runner_name": runner_name, "steps": steps or []}
@@ -57,6 +61,7 @@ class WatchdogTests(unittest.TestCase):
         clock = clock or Clock()
         api = watchdog.GitHubRun("owner/repo", "123", "test-token", opener=transport,
                                  sleep=clock.sleep, monotonic=lambda: clock.now)
+        api.completion_jobs = SERVER_BARRIER
         return api, transport, clock
 
     def watch(self, responses, limit=100):
@@ -117,8 +122,10 @@ class WatchdogTests(unittest.TestCase):
     def run_main(self, responses, *, event=None, env_changes=None, deadline=False):
         transport = Transport(responses)
         environment = {"GITHUB_REPOSITORY": "owner/repo", "GITHUB_RUN_ID": "123", "GH_TOKEN": "test-token",
-                       "GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/heads/main"}
+                       "GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/heads/main",
+                       "CI_COMPLETION_JOBS": "changes docs server-work-complete"}
         environment.update(env_changes or {})
+        environment = {key: value for key, value in environment.items() if value is not None}
         clock = Clock()
         original_watch = watchdog.watch
         with TemporaryDirectory(prefix="watchdog-test-", dir=path.parent) as directory:
@@ -167,8 +174,8 @@ class WatchdogTests(unittest.TestCase):
             {"total_count": 0, "jobs": []},
             {"total_count": 2, "jobs": roots},
             {"total_count": 3, "jobs": roots + [job("desktop / client", "in_progress", None)]},
-            {"total_count": 6, "jobs": roots + [job("desktop / client"), job("ci-work-complete"),
-              job("ci-watchdog", "in_progress", None), job("ci-ok", "queued", None)]},
+            {"total_count": 6, "jobs": roots + [job("desktop / client"), job("server-work-complete"),
+              job("ci-watchdog", "in_progress", None), job("server-ok", "queued", None)]},
         ])
         self.assertEqual(result, "complete")
         self.assertEqual(clock.waits, [5, 5, 5])
@@ -176,7 +183,7 @@ class WatchdogTests(unittest.TestCase):
 
     def test_a_rerun_ignores_the_previous_attempts_records_until_its_own_jobs_report(self):
         # filter=latest returns a job's attempt-1 record until the rerun creates its attempt-2 job.
-        roots = [job("changes"), job("docs"), job("ci-work-complete")]
+        roots = [job("changes"), job("docs"), job("server-work-complete")]
         stale = dict(job("desktop / voice", conclusion="cancelled"), run_attempt=1)
         api, transport, clock = self.client([
             {"total_count": 4, "jobs": roots + [stale]},
@@ -200,9 +207,9 @@ class WatchdogTests(unittest.TestCase):
     def test_completion_requires_real_roots_and_all_real_jobs(self):
         roots = [job("changes"), job("docs")]
         result, transport, clock = self.watch([
-            {"total_count": 1, "jobs": [job("ci-work-complete")]},
-            {"total_count": 4, "jobs": roots + [job("ci-work-complete"), job("go", "queued", None)]},
-            {"total_count": 4, "jobs": roots + [job("ci-work-complete"), job("go", conclusion="skipped")]},
+            {"total_count": 1, "jobs": [job("server-work-complete")]},
+            {"total_count": 4, "jobs": roots + [job("server-work-complete"), job("go", "queued", None)]},
+            {"total_count": 4, "jobs": roots + [job("server-work-complete"), job("go", conclusion="skipped")]},
         ])
         self.assertEqual(result, "complete")
         self.assertEqual(clock.waits, [5, 5])
@@ -241,7 +248,7 @@ class WatchdogTests(unittest.TestCase):
                 self.assertEqual(transport.requests[-1][0].get_method(), "POST")
 
     def test_first_page_completed_roots_and_ignored_failure_cannot_hide_second_page_work(self):
-        first = [job("changes"), job("docs"), job("ci-work-complete"), job("ci-watchdog", conclusion="failure")]
+        first = [job("changes"), job("docs"), job("server-work-complete"), job("ci-watchdog", conclusion="failure")]
         first += [job("passing") for _ in range(96)]
         result, transport, clock = self.watch([
             {"total_count": 101, "jobs": first},
@@ -363,7 +370,7 @@ class WatchdogTests(unittest.TestCase):
         api, transport, clock = self.client([
             {"total_count": 2, "jobs": [never, running]},
             {"total_count": 2, "jobs": [dict(never, runner_name=None), job("go")]},
-            {"total_count": 5, "jobs": [job("changes"), job("docs"), job("ci-work-complete"),
+            {"total_count": 5, "jobs": [job("changes"), job("docs"), job("server-work-complete"),
                                         dict(never, runner_name=None), job("go")]},
         ])
         result = watchdog.watch(api, sleep=clock.sleep, monotonic=lambda: clock.now, max_seconds=100)
@@ -374,7 +381,7 @@ class WatchdogTests(unittest.TestCase):
         shard = job("desktop / desktop-client-linux-x64-3", conclusion="failure")
         voice = job("desktop / desktop-voice-mac-arm64", "in_progress", None,
                     [{"name": "voice", "status": "completed", "conclusion": "failure"}])
-        roots = [job("changes"), job("docs"), job("ci-work-complete")]
+        roots = [job("changes"), job("docs"), job("server-work-complete")]
         api, transport, clock = self.client([
             {"total_count": 5, "jobs": roots + [shard, voice]},
             {"total_count": 5, "jobs": roots + [shard, dict(voice, status="completed", conclusion="failure")]},
@@ -455,7 +462,8 @@ class WatchdogTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 watchdog.GitHubRun(repo, run, "token")
         base = {"GITHUB_REPOSITORY": "owner/repo", "GITHUB_RUN_ID": "123", "GH_TOKEN": "token",
-                "GITHUB_EVENT_NAME": "pull_request", "GITHUB_REF": "refs/pull/1/merge"}
+                "GITHUB_EVENT_NAME": "pull_request", "GITHUB_REF": "refs/pull/1/merge",
+                "CI_COMPLETION_JOBS": "changes desktop-work-complete"}
         trusted = {"pull_request": {"head": {"repo": {"full_name": "owner/repo"}}}}
         self.assertIsInstance(watchdog.from_environment(base, trusted), watchdog.GitHubRun)
         for event, changes in [({"pull_request": {"head": {"repo": {"full_name": "fork/repo"}}}}, {}),
@@ -465,6 +473,62 @@ class WatchdogTests(unittest.TestCase):
                 watchdog.from_environment(base | changes, event)
         self.assertIsInstance(watchdog.from_environment(base | {"GITHUB_EVENT_NAME": "push",
                               "GITHUB_REF": "refs/heads/main"}, {}), watchdog.GitHubRun)
+
+
+    def test_the_completion_barrier_comes_from_the_workflow_step_env(self):
+        base = {"GITHUB_REPOSITORY": "owner/repo", "GITHUB_RUN_ID": "123", "GH_TOKEN": "token",
+                "GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/heads/main"}
+        for value, barrier in [("changes docs server-work-complete", SERVER_BARRIER),
+                               ("changes desktop-work-complete", DESKTOP_BARRIER),
+                               ("  changes   desktop-work-complete ", DESKTOP_BARRIER)]:
+            with self.subTest(value=value):
+                api = watchdog.from_environment(base | {"CI_COMPLETION_JOBS": value}, {})
+                self.assertEqual(api.completion_jobs, barrier)
+
+    def test_a_missing_or_malformed_completion_barrier_fails_open_before_any_request(self):
+        # Without its own workflow's barrier the watcher could call a run complete too early, or never.
+        for value in [None, "", "docs server-work-complete", "changes", "changes docs",
+                      "changes server-work-complete;rm", "changes ci-watchdog server-work-complete",
+                      "changes server-ok server-work-complete", "changes server-work-complete desktop-work-complete"]:
+            with self.subTest(value=value):
+                result, transport, stderr = self.run_main([], env_changes={"CI_COMPLETION_JOBS": value})
+                self.assertEqual(result, 0)
+                self.assertEqual(transport.requests, [])
+                self.assertIn("::warning::CI watchdog stopped watching", stderr)
+                self.assertIn("CI_COMPLETION_JOBS", stderr)
+
+    def test_the_desktop_barrier_completes_without_a_docs_job(self):
+        api, transport, clock = self.client([
+            {"total_count": 4, "jobs": [job("changes"), job("desktop / client", "in_progress", None),
+                                        job("ci-watchdog", "in_progress", None), job("desktop-ok", "queued", None)]},
+            {"total_count": 5, "jobs": [job("changes"), job("desktop / client"), job("desktop-work-complete"),
+                                        job("ci-watchdog", "in_progress", None), job("desktop-ok", "queued", None)]},
+        ])
+        api.completion_jobs = DESKTOP_BARRIER
+        result = watchdog.watch(api, sleep=clock.sleep, monotonic=lambda: clock.now, max_seconds=100)
+        self.assertEqual(result, "complete")
+        self.assertEqual(clock.waits, [5])
+        self.assertTrue(all(r.get_method() == "GET" for r, _ in transport.requests))
+
+    def test_the_server_barrier_waits_for_docs(self):
+        result, transport, clock = self.watch([
+            {"total_count": 2, "jobs": [job("changes"), job("server-work-complete")]},
+            {"total_count": 3, "jobs": [job("changes"), job("server-work-complete"), job("docs", "in_progress", None)]},
+            {"total_count": 3, "jobs": [job("changes"), job("server-work-complete"), job("docs")]},
+        ])
+        self.assertEqual(result, "complete")
+        self.assertEqual(clock.waits, [5, 5])
+
+    def test_the_aggregate_checks_are_never_watched(self):
+        # Each *-ok job needs the watcher, so its result is never the watcher's business.
+        for aggregate in ["server-ok", "desktop-ok"]:
+            with self.subTest(aggregate=aggregate):
+                result, transport, _ = self.watch([
+                    {"total_count": 4, "jobs": [job("changes"), job("docs"), job("server-work-complete"),
+                                                job(aggregate, conclusion="failure")]},
+                ])
+                self.assertEqual(result, "complete")
+                self.assertTrue(all(r.get_method() == "GET" for r, _ in transport.requests))
 
 
 if __name__ == "__main__":

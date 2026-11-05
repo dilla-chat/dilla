@@ -33,9 +33,23 @@ def NEVER_STARTED(job):
             not job.get("runner_name") and not job.get("steps"))
 
 
-# Desktop e2e shards are flaky enough that one failure must not abort the other shards. ci-ok still fails
-# on a failed shard, so letting the run finish hides nothing.
+# Desktop e2e shards are flaky enough that one failure must not abort the other shards. desktop-ok still
+# fails on a failed shard, so letting the run finish hides nothing.
 E2E_SHARD = re.compile(r"^desktop / desktop-(client|voice)-")
+
+# The watcher itself and each workflow's aggregate check, which waits for the watcher: never watched.
+UNWATCHED = frozenset({"ci-watchdog", "server-ok", "desktop-ok"})
+JOB_NAME = re.compile(r"[a-z0-9][a-z0-9-]*")
+
+
+def completion_jobs(value):
+    """The workflow's completion barrier from its watchdog step's CI_COMPLETION_JOBS: `changes`, any other
+    always-on root, and exactly one `*-work-complete` DAG barrier, space-separated."""
+    names = (value or "").split()
+    if (not all(JOB_NAME.fullmatch(name) for name in names) or "changes" not in names or
+            len([name for name in names if name.endswith("-work-complete")]) != 1 or UNWATCHED & set(names)):
+        raise ValueError("invalid CI_COMPLETION_JOBS: name changes and exactly one *-work-complete job")
+    return frozenset(names)
 
 
 def failure_state(job):
@@ -65,6 +79,8 @@ class GitHubRun:
         # A rerun's jobs?filter=latest keeps returning a job's earlier-attempt record until
         # the rerun creates its own job; watch() treats such records as still pending.
         self.run_attempt = 1
+        # Set from the environment: each workflow has its own completion barrier.
+        self.completion_jobs = None
 
     def request(self, suffix, method="GET", *, deadline=None):
         # Only jobs() supplies a recovery deadline. Cancellation and other reads
@@ -143,7 +159,7 @@ class GitHubRun:
             # Never let an unread page or its recovery budget delay a failure
             # already observed. Partial results are returned only for failure;
             # completion still requires every page below.
-            if any(j["name"] not in {"ci-watchdog", "ci-ok"} and any(failure_state(j)) for j in batch):
+            if any(j["name"] not in UNWATCHED and any(failure_state(j)) for j in batch):
                 return jobs
             if len(jobs) >= data["total_count"]:
                 return jobs
@@ -168,15 +184,16 @@ def from_environment(env, event):
     if not re.fullmatch(r"[1-9][0-9]*", attempt):
         raise ValueError("invalid GITHUB_RUN_ATTEMPT")
     api.run_attempt = int(attempt)
+    api.completion_jobs = completion_jobs(env.get("CI_COMPLETION_JOBS"))
     return api
 
 
 def watch(api, *, sleep=time.sleep, monotonic=time.monotonic, max_seconds=89 * 60):
     deadline = monotonic() + max_seconds
     while monotonic() < deadline:
-        # ci-ok waits for us. The completion barrier waits for every real DAG leaf,
+        # The aggregate check waits for us. The completion barrier waits for every real DAG leaf,
         # including reusable-workflow children that GitHub discovers after startup.
-        jobs = [j for j in api.jobs(deadline=deadline) if j["name"] not in {"ci-watchdog", "ci-ok"}]
+        jobs = [j for j in api.jobs(deadline=deadline) if j["name"] not in UNWATCHED]
         jobs = [dict(j, status="queued", conclusion=None, steps=[])
                 if isinstance(j.get("run_attempt"), int) and j["run_attempt"] < api.run_attempt else j
                 for j in jobs]
@@ -191,7 +208,7 @@ def watch(api, *, sleep=time.sleep, monotonic=time.monotonic, max_seconds=89 * 6
                 api.cancel()
                 return "cancelled"
         names = {j["name"] for j in jobs if j["status"] == "completed"}
-        if {"changes", "docs", "ci-work-complete"} <= names and all(j["status"] == "completed" for j in jobs):
+        if api.completion_jobs <= names and all(j["status"] == "completed" for j in jobs):
             print("All CI work completed; watcher finished.", flush=True)
             return "complete"
         sleep(min(5, max(0, deadline - monotonic())))
