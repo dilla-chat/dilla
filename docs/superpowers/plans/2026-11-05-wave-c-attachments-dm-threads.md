@@ -130,3 +130,60 @@
 - [ ] **Step 1:** write the notes and docs; every number matches Tasks 1-2 (10, 196608, 197120).
 - [ ] **Step 2:** `npm run check:docs`.
 - [ ] **Step 3: Commit** `docs: signal3 notes, 10 files and DM threads`.
+
+---
+
+## Addendum 2026-11-05: the two Bot bugs found after signal2.1 (same PR, same release)
+
+**Spec:** the root-cause report `/home/thim/.claude/jobs/da223a73/tmp/bot-helper-invalid-root-cause.md` (§4, §10) and production evidence from CT 144. Jonas's rule: batch concurrent fixes into one PR. They ship as `v0.1.0-signal3` + `desktop-v0.1.0-beta.3`.
+
+Added Review Focus:
+6. A registration whose saved KeyPackage the core refuses (helper status 1) must start over with a fresh admission, snapshot and KeyPackage, not loop forever on the same input. Owner: Task 6.
+7. A person who types `/play x` and presses Enter before the Bot's command list has loaded gets the command run (or a clear wait), never "isn't a command here". Owner: Task 7.
+
+### Task 6: The Bot recovers from a refused interaction create
+
+**Files:**
+- Modify: `internal/bot/service/interaction_registration.go` (~259-272, the op-21 create result handling; `renewInteractionAdmission`)
+- Modify: `core/dilla-core/src/client/bot_interaction_create.rs` (~101-116: classify an expired snapshot before the trust check)
+- Modify: `cmd/dillabot/main.go` (~625-627: a registration error for a device that is backing off is logged at WARN once per backoff step, not INFO)
+- Test: `internal/bot/service/interaction_registration_test.go`, the Rust test next to the create's existing tests
+
+- [ ] **Step 1: Failing tests.**
+  - Go `TestRegisterRestartsAfterAnInvalidCreate`: a fake helper returns `&helper.StatusError{Status: 1}` on create with a KeyPackage saved in the intent → that `Register` returns the recovery error; the saved intent has a new Operation, no Admission, no Snapshot and no KeyPackage; the next `Register` takes a new admission, snapshot and KeyPackage and calls create with them.
+  - Go `TestAnInvalidCreateBacksOffPerDevice`: repeated status-1 creates for the same device back off on the existing per-device schedule (30 s doubling to 1 h), so a permanently refused device consumes at most one KeyPackage per backoff step.
+  - Rust: a create with an expired snapshot that would also fail trust returns the expired classification (helper status 3), not input (status 1).
+- [ ] **Step 2: Run, expect FAIL:** `go test ./internal/bot/... -race -run 'Invalid'`, `cargo test -p dilla-core bot_interaction`.
+- [ ] **Step 3: Implement.** On status 1 from the create: `renewInteractionAdmission(&in)`, set `in.KeyPackage = nil`, save, record a backoff failure for the device, return the recovery error. A status-1 create guarantees nothing was stored (the core writes the intent only in its successful write unit), so restarting is safe. Core: move the freshness check before `bot_verify_interaction_snapshot`.
+- [ ] **Step 4: Run, expect PASS:** `go test ./internal/bot/... ./cmd/dillabot/... -race`, `cargo test -p dilla-core --features vectors`, the wasi build (`cargo build -p dilla-core-wasi --target wasm32-wasip1 --release --locked`) and `go test ./internal/mlswasi/...`.
+- [ ] **Step 5: Commit** `fix(bot): a refused interaction create starts over with a fresh admission and KeyPackage`.
+
+### Task 7: The command picker keeps the Bot's command list
+
+**Files:**
+- Modify: `packages/web/src/screens/commands/capabilities.ts` (`useCommandBot`), `CommandHost.tsx`, `CommandPicker.tsx` (~247-279, ~568)
+- Create: a per-community command-list store next to `capabilities.ts` (one file)
+- Modify: `packages/client-core/src/worker/controller.ts` (~1594-1617 `waitForActiveInteractionGroup`)
+- Modify: `packages/web/src/strings/en.ts`: `'commands.loading': 'Loading Bot commands…'`
+- Test: `packages/web/src/screens/commands/CommandHost.test.tsx`, a controller test for the wait
+
+- [ ] **Step 1: Failing tests** (fake timers, a Bot catalogue load that takes 5 s):
+  - `the list survives the picker closing`: open, close at 1 s, reopen at 6 s → `/play` is listed at once.
+  - `Enter before the list loads waits for it`: type `/play x`, press Enter at 1 s → the command runs once the load finishes; no "isn't a command here" row.
+  - `a failed load keeps the last good list and retries`: first load fails, second succeeds → the commands appear without a remount; a failure never replaces a good list.
+  - `the picker says it is loading`: while the list is unknown, the picker shows `commands.loading`, not "No command matches".
+  - Controller: `waitForActiveInteractionGroup` with no group checks once, then waits for the gateway's welcome push with backoff (no 500 ms poll), and a "no group" answer is remembered per community for 30 s.
+- [ ] **Step 2: Run, expect FAIL:** `npx vitest run src/screens/commands` (inside packages/web), the controller test inside packages/client-core.
+- [ ] **Step 3: Implement.** The store loads a community's list when that community opens and refreshes it in the background every 30 s. It keeps the result even if the picker closed, keeps the last good list plus a loading or error flag, and the picker subscribes. Enter on a name that is not yet known waits at most 10 s for the load, then gives the existing refusal. Load failures are recorded as a Diagnostics error code (reuse the existing error-code list).
+- [ ] **Step 4: Run, expect PASS:** vitest in packages/web and packages/client-core, `npm run lint`, `npm run typecheck`.
+- [ ] **Step 5: Commit** `fix(web): the command picker keeps the Bot's command list and waits for it`.
+
+### Task 8: Release notes, heal and the re-shot DM screenshot
+
+**Files:**
+- Modify: `docs/deploy/releases/v0.1.0-signal3.md`: a "Bot fixes" section (the stuck registration and how it heals: upgrade dillabot, nothing else; the picker; the welcome poll), and the desktop beta.3 pairing.
+- Re-shoot: `docs/user/screenshots/dm-conversation.png` (DM header with the Threads button) with `e2e/scripts/shoot-docs.mjs`.
+
+- [ ] **Step 1:** write the section; every claim matches Tasks 6-7.
+- [ ] **Step 2:** re-shoot; `npm run check:docs`.
+- [ ] **Step 3: Commit** `docs: signal3 Bot fixes and the DM screenshot`.
