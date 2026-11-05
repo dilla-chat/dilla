@@ -65,7 +65,10 @@ export interface ControllerDeps {
   sleep(ms: number, signal?: AbortSignal): Promise<void>;
   boot(instance: Instance): Promise<BootOutcome>;
   runtimeReady?(): Promise<null>;                    // local WASM/persistence capability; no identity work
-  resetDevice(instance: Instance): Promise<void>;  // removes the KEK record and the OPFS directory dilla/<instance hex>
+  resetDevice(instance: Instance): Promise<void>;  // removes the KEK record and the OPFS directory dilla/<storage key>
+  /** The instance's storage key, which also names the leader lock (worker/storage-key.ts; runtime.ts uses the same
+   *  function for boot and resetDevice). Absent: the instanceId in hex, as before. */
+  storageKey?(instanceId: Uint8Array): Promise<string>;
   /** Posts to the own page; `transfer` moves buffers (a callKeys key, L-TS-52) instead of copying them. */
   post(message: FromWorker, transfer?: Transferable[]): void;
   testHooks: boolean;
@@ -2234,7 +2237,8 @@ export class Controller {
 
   private async lead(instance: Instance): Promise<void> {
     try {
-      this.leadership = await acquireLeadership(this.deps.locks, lockName(toHex(instance.instanceId)), () => {
+      const key = this.deps.storageKey ? await this.deps.storageKey(instance.instanceId) : toHex(instance.instanceId);
+      this.leadership = await acquireLeadership(this.deps.locks, lockName(key), () => {
         // Pre-flight ruling 4: the blocking request is already queued; other-tab shows only after the grace.
         this.graceTimer = this.deps.setTimeout(() => {
           this.graceTimer = null;

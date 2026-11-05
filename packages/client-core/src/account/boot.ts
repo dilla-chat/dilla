@@ -6,6 +6,8 @@ import type { KekStore } from './kek';
 export interface OpenedStore { core: CorePort; reserveCapacity(n: number): Promise<void>; }
 export interface BootDeps {
   instance: Instance;
+  /** The instance's storage key (worker/storage-key.ts); absent, the instanceId in hex, as desktop and the browser use. */
+  storeKey?: string;
   probePersistence(): Promise<string>;
   storeExists(directory: string): Promise<boolean>;
   kek: KekStore;
@@ -35,7 +37,7 @@ export async function boot(deps: BootDeps): Promise<BootOutcome> {
   try { probe = JSON.parse(await deps.probePersistence()) as unknown; } catch { return { kind: 'unsupported', reason: 'probe' }; }
   if (typeof probe !== 'object' || probe === null || !('mode' in probe)) return { kind: 'unsupported', reason: 'probe' };
   if (probe.mode !== 'opfs') return { kind: 'unsupported', reason: 'reason' in probe && typeof probe.reason === 'string' ? probe.reason : '' };
-  const hex = toHex(deps.instance.instanceId);
+  const hex = deps.storeKey ?? toHex(deps.instance.instanceId);
   const dir = storeDirectory(hex);
   let kek: Uint8Array | null;
   try { kek = await deps.kek.load(hex); }
