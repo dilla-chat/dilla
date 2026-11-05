@@ -3174,3 +3174,82 @@ test('each pinned property of the re-run-starved workflow is enforced', () => {
     assert.ok(rerunProblems(change).some((problem) => problem.includes(needle)), `not reported: ${label}`);
   }
 });
+
+// Plan Review Focus 3: ci-watchdog fails open (an API error ends it with exit 0), so a green watcher says nothing about
+// the work. Each ok job's own steps must still turn red on a failed or cancelled need. This runs the real ok job's
+// steps against crafted `needs` results with a small evaluator for the expression forms they use.
+function evalExpression(source, ctx) {
+  const tokens = source.match(/'[^']*'|&&|\|\||==|!=|[(),]|[A-Za-z_][\w.*-]*/g);
+  assert.equal(tokens.join(''), source.replace(/\s+/g, ''), `unparsed expression: ${source}`);
+  let at = 0;
+  const peek = () => tokens[at];
+  const take = (want) => { const token = tokens[at++]; if (want !== undefined) assert.equal(token, want, source); return token; };
+  const lookup = (path) => {
+    const [head, ...rest] = path.split('.');
+    if (head === 'needs' && rest[0] === '*') return Object.values(ctx.needs).map((need) => need[rest[1]]);
+    return rest.reduce((value, key) => value?.[key], ctx[head]);
+  };
+  const primary = () => {
+    const token = take();
+    if (token === '(') { const value = or(); take(')'); return value; }
+    if (token.startsWith("'")) return token.slice(1, -1);
+    if (token === 'contains') { take('('); const list = or(); take(','); const item = or(); take(')'); return list.includes(item); }
+    return lookup(token);
+  };
+  const comparison = () => {
+    const left = primary();
+    if (peek() === '==' || peek() === '!=') { const op = take(); const right = primary(); return op === '==' ? left === right : left !== right; }
+    return left;
+  };
+  const and = () => { let value = comparison(); while (peek() === '&&') { take(); const right = comparison(); value = value && right; } return value; };
+  const or = () => { let value = and(); while (peek() === '||') { take(); const right = and(); value = value || right; } return value; };
+  const value = or();
+  assert.equal(at, tokens.length, `trailing tokens in: ${source}`);
+  return Boolean(value);
+}
+
+/** Whether the ok job ends green: its steps run in order and the first one that runs `exit 1` fails it. */
+function okJobPasses(job, needs, github) {
+  for (const step of job.steps) {
+    if (step.if !== undefined && !evalExpression(String(step.if), { needs, github })) continue;
+    if (/^\s*exit 1\s*$/.test(step.run)) return false;
+  }
+  return true;
+}
+
+const SAME_REPO_PR = { event_name: 'pull_request', repository: 'o/r', event: { pull_request: { head: { repo: { full_name: 'o/r' } } } } };
+const FORK_PR = { ...SAME_REPO_PR, event: { pull_request: { head: { repo: { full_name: 'fork/r' } } } } };
+const MAIN_PUSH = { event_name: 'push', repository: 'o/r', event: {} };
+
+for (const [workflow, text] of [['server', REAL_SERVER], ['desktop', REAL_DESKTOP_CI]]) {
+  const ok = WORKFLOWS[workflow].ok;
+  const job = yaml.load(text).jobs[ok];
+  const results = (over = {}) => Object.fromEntries(job.needs.map((name) => [name, { result: over[name] ?? 'success' }]));
+
+  test(`${ok} fails on a failed or cancelled need even though ci-watchdog succeeded after failing open`, () => {
+    assert.equal(job.if, 'always()');
+    assert.ok(job.needs.includes('ci-watchdog'));
+    for (const github of [SAME_REPO_PR, MAIN_PUSH]) {
+      assert.equal(okJobPasses(job, results(), github), true, 'every need green');
+      for (const need of job.needs.filter((name) => name !== 'ci-watchdog')) {
+        for (const result of ['failure', 'cancelled']) {
+          assert.equal(okJobPasses(job, results({ [need]: result }), github), false, `${need} ${result} on ${github.event_name}`);
+        }
+        assert.equal(okJobPasses(job, results({ [need]: 'skipped' }), github), true, `${need} skipped by its area gate`);
+      }
+    }
+  });
+
+  test(`${ok} accepts a skipped ci-watchdog only on a fork pull request`, () => {
+    assert.equal(okJobPasses(job, results({ 'ci-watchdog': 'skipped' }), FORK_PR), true);
+    assert.equal(okJobPasses(job, results({ 'ci-watchdog': 'skipped' }), SAME_REPO_PR), false);
+    assert.equal(okJobPasses(job, results({ 'ci-watchdog': 'skipped' }), MAIN_PUSH), false);
+    assert.equal(okJobPasses(job, results({ 'ci-watchdog': 'failure' }), FORK_PR), false);
+  });
+
+  test(`${ok} without its failure step would pass a failed need (the test can fail)`, () => {
+    const gutted = { ...job, steps: job.steps.filter((step) => !String(step.if ?? '').includes("contains(needs.*.result, 'failure')")) };
+    const need = job.needs.find((name) => name !== 'ci-watchdog' && name !== 'changes');
+    assert.equal(okJobPasses(gutted, results({ [need]: 'failure' }), MAIN_PUSH), true);
+  });
+}
