@@ -61,7 +61,10 @@ func TestMobileOriginsGatewayUpgrade(t *testing.T) {
 	}
 }
 
-// The instance's /v1/, /i/ and /desktop-auth/ routes answer the app's preflight; other paths do not.
+// The instance's /v1/ and /i/ routes answer the app's preflight; other paths do not. /desktop-auth/
+// stays strict on purpose (task 4 review ruling): internal/desktopauth refuses any foreign Origin,
+// so the mobile app calls it through native HTTP with no Origin header, as the desktop main
+// process does, and a WebView preflight there gets no Allow-* header.
 func TestMobileOriginsCORSRoutes(t *testing.T) {
 	h, err := NewHost(t.Context(), HostOptions{DataDir: t.TempDir(), CorePath: corePath(t)})
 	if err != nil {
@@ -75,7 +78,7 @@ func TestMobileOriginsCORSRoutes(t *testing.T) {
 		{"/v1/auth/login", true},
 		{"/v1/instance", true},
 		{"/i/abc", true},
-		{"/desktop-auth/start", true},
+		{"/desktop-auth/start", false},
 		{"/healthz", false},
 		{"/", false},
 	} {
@@ -90,8 +93,35 @@ func TestMobileOriginsCORSRoutes(t *testing.T) {
 			if tc.cors && (w.Code != http.StatusNoContent || got != "capacitor://localhost") {
 				t.Fatalf("preflight %s = %d, Allow-Origin %q", tc.path, w.Code, got)
 			}
-			if !tc.cors && got != "" {
-				t.Fatalf("preflight %s got Allow-Origin %q", tc.path, got)
+			if !tc.cors {
+				for name := range w.Header() {
+					if strings.HasPrefix(name, "Access-Control-Allow-") {
+						t.Fatalf("preflight %s got %s: %q", tc.path, name, w.Header().Get(name))
+					}
+				}
+			}
+		})
+	}
+}
+
+// Every response under the CORS prefixes varies on Origin, a request without one included, so a
+// shared cache never hands a same-origin response to the app or the reverse.
+func TestMobileOriginsVaryOnOrigin(t *testing.T) {
+	h, err := NewHost(t.Context(), HostOptions{DataDir: t.TempDir(), CorePath: corePath(t)})
+	if err != nil {
+		t.Fatalf("NewHost: %v", err)
+	}
+	t.Cleanup(func() { _ = h.Close(t.Context()) })
+	for _, origin := range []string{"", "capacitor://localhost", "https://evil.example"} {
+		t.Run("origin="+origin, func(t *testing.T) {
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/v1/instance", nil)
+			if origin != "" {
+				r.Header.Set("Origin", origin)
+			}
+			w := httptest.NewRecorder()
+			h.Handler().ServeHTTP(w, r)
+			if !strings.Contains(strings.Join(w.Header().Values("Vary"), ","), "Origin") {
+				t.Fatalf("GET /v1/instance from %q: Vary = %q, want Origin", origin, w.Header().Values("Vary"))
 			}
 		})
 	}

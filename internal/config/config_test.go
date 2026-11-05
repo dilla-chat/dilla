@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -243,6 +244,33 @@ func TestValidationRules(t *testing.T) {
 		c.Auth.Methods = []string{"password", "totp"}
 		if err := c.Validate(); err != nil {
 			t.Fatalf("auth.methods = [password, totp]: Validate = %v, want nil", err)
+		}
+	})
+	// Mobile M1 task 4: each http.mobile_origins entry is one whole origin, matched exactly by CORS
+	// and as a scheme://host pattern by the gateway, so nothing may make the two disagree.
+	t.Run("http.mobile_origins entries are whole origins", func(t *testing.T) {
+		for _, bad := range []string{
+			"capacitor://*", "https://local?ost", "https://[a-z]ocalhost", "localhost",
+			"https://localhost/app", "https://localhost/", "https://localhost?x=1", "https://localhost#top",
+			"https://localhost#", "https://user@localhost", "https://",
+		} {
+			c := base()
+			c.Derive()
+			c.HTTP.MobileOrigins = []string{"capacitor://localhost", bad}
+			err := c.Validate()
+			if err == nil || !strings.Contains(err.Error(), "http.mobile_origins") || !strings.Contains(err.Error(), strconv.Quote(bad)) {
+				t.Fatalf("mobile_origins entry %q: Validate = %v, want an error naming the key and the entry", bad, err)
+			}
+		}
+		c := base()
+		c.Derive()
+		c.HTTP.MobileOrigins = []string{"capacitor://localhost", "https://localhost", "https://localhost:8443"}
+		if err := c.Validate(); err != nil {
+			t.Fatalf("default-shaped mobile_origins: Validate = %v, want nil", err)
+		}
+		c.HTTP.MobileOrigins = nil
+		if err := c.Validate(); err != nil {
+			t.Fatalf("empty mobile_origins: Validate = %v, want nil", err)
 		}
 	})
 	// web3.6 review (wire 7): the client decodes at most 16 backup codes.

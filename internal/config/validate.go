@@ -6,6 +6,7 @@ import (
 	"math"
 	"net"
 	"net/netip"
+	"net/url"
 	"os"
 	"runtime"
 	"slices"
@@ -158,6 +159,12 @@ func (c *Config) Validate() error {
 	}
 	if c.Server.ReadBodyTimeout.Value() < 0 {
 		add("server.read_body_timeout must not be negative")
+	}
+
+	for _, origin := range c.HTTP.MobileOrigins {
+		if err := wholeOrigin(origin); err != nil {
+			add("http.mobile_origins entry %q %v", origin, err)
+		}
 	}
 
 	if c.Instance.Domain == "" {
@@ -448,6 +455,39 @@ func validWebhookListen(v string) error {
 	}
 	if a, err := netip.ParseAddr(host); err != nil || !a.IsLoopback() {
 		return fmt.Errorf("%q is not a loopback address (127.0.0.0/8, ::1 or localhost)", v)
+	}
+	return nil
+}
+
+// wholeOrigin checks one http.mobile_origins entry: a single scheme://host[:port] origin. CORS
+// compares it as an exact string and the gateway's upgrade as a scheme://host glob, so a glob
+// character, a missing scheme or a path, query, fragment or userinfo would make the two disagree
+// or never match a browser's Origin header.
+func wholeOrigin(origin string) error {
+	if strings.ContainsAny(origin, "*?[") {
+		return errors.New("must not contain a glob character (*, ? or [): it is matched whole")
+	}
+	if !strings.Contains(origin, "://") {
+		return errors.New(`must carry its scheme, e.g. "capacitor://localhost"`)
+	}
+	if strings.Contains(origin, "#") {
+		return errors.New("must not carry a fragment")
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return fmt.Errorf("is not an origin: %w", err)
+	}
+	if u.Host == "" {
+		return errors.New("has no host")
+	}
+	if u.User != nil {
+		return errors.New("must not carry userinfo")
+	}
+	if u.Path != "" || u.RawPath != "" {
+		return errors.New("must not carry a path, not even a trailing /")
+	}
+	if u.RawQuery != "" || u.ForceQuery {
+		return errors.New("must not carry a query")
 	}
 	return nil
 }

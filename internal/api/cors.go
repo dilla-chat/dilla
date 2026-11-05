@@ -22,20 +22,23 @@ const (
 //
 // The app authenticates with a bearer token and never a cookie, so Access-Control-Allow-Credentials
 // is never sent. CORS is advisory, not access control: a request from an unlisted origin, or with
-// no Origin at all, gets no Access-Control-Allow-* header and still reaches the handler, where the
+// no Origin at all, gets no Access-Control-Allow-* header (only Vary: Origin) and still reaches
+// the handler, where the
 // session check is what refuses it. A preflight from a listed origin is answered here with 204 and
 // never reaches the handler.
 func CORS(origins []string) func(http.Handler) http.Handler {
 	allowed := slices.Clone(origins)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Vary: Origin goes on every response, a request without Origin included, so a shared
+			// cache never serves a same-origin answer to the app or the reverse.
+			h := w.Header()
+			h.Add("Vary", "Origin")
 			origin := r.Header.Get("Origin")
 			if origin == "" {
 				next.ServeHTTP(w, r)
 				return
 			}
-			h := w.Header()
-			h.Add("Vary", "Origin")
 			if !slices.Contains(allowed, origin) {
 				next.ServeHTTP(w, r)
 				return

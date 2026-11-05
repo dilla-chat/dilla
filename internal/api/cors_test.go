@@ -126,7 +126,14 @@ func TestCORSNoOrigin(t *testing.T) {
 	if !reached || w.Code != http.StatusOK {
 		t.Fatalf("reached = %v, status = %d", reached, w.Code)
 	}
-	if len(w.Header()) != 0 {
+	// Only Vary: Origin is added, so a cache keeps the same-origin and cross-origin answers apart.
+	if got := w.Header().Values("Vary"); len(got) != 1 || got[0] != "Origin" {
+		t.Fatalf("Vary = %q, want [Origin]", got)
+	}
+	if got := allowHeaders(w.Header()); len(got) != 0 {
+		t.Fatalf("a same-origin request gained %v", got)
+	}
+	if len(w.Header()) != 1 {
 		t.Fatalf("a same-origin request gained headers: %v", w.Header())
 	}
 }
