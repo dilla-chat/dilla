@@ -304,8 +304,8 @@ describe('mobile notifications', () => {
   function bridge(initial: NotificationPermission, granted: NotificationPermission = 'granted') {
     const listeners: Array<(e: { type: string; id?: string }) => void> = [];
     const send = vi.fn(async () => {});
-    const requestNotificationPermission = vi.fn(async () => granted);
-    vi.stubGlobal('dillaMobile', { send, requestNotificationPermission, notificationPermission: async () => initial,
+    const requestNotificationPermission = vi.fn(() => Promise.resolve(granted));
+    vi.stubGlobal('dillaMobile', { send, requestNotificationPermission, notificationPermission: () => Promise.resolve(initial),
       onEvent: (l: (typeof listeners)[number]) => { listeners.push(l); return () => {}; } });
     return { listeners, send, requestNotificationPermission };
   }

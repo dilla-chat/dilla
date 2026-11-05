@@ -125,8 +125,8 @@ describe('the sounds', () => {
 
 describe('inside the mobile app', () => {
   it('shows the bridge permission and clicking the toggle from default calls requestNotificationPermission', async () => {
-    const requestNotificationPermission = vi.fn(async () => 'granted' as NotificationPermission);
-    vi.stubGlobal('dillaMobile', { requestNotificationPermission, notificationPermission: async () => 'default', onEvent: () => () => {}, send: async () => {} });
+    const requestNotificationPermission = vi.fn((): Promise<NotificationPermission> => Promise.resolve('granted'));
+    vi.stubGlobal('dillaMobile', { requestNotificationPermission, notificationPermission: () => Promise.resolve('default'), onEvent: () => () => {}, send: async () => {} });
     const { user } = setup({ permission: null });
     const toggle = screen.getByRole('switch', { name: 'Desktop notifications' });
     expect(toggle).not.toBeDisabled();
