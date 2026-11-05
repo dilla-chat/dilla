@@ -741,6 +741,9 @@ function checkWholeModuleGTK(jobs, problems, file) {
 /** The retried module download every Go job runs right after its Go (and, where present, Node) setup. */
 const GO_MOD_DOWNLOAD_NAME = 'name: Download Go modules (retried only on known network errors)';
 const GO_MOD_DOWNLOAD_RUN = "node scripts/retry-on.mjs --pattern 'proxy\\.golang\\.org[^\\n]*:\\s(50[0-4]|429)\\b|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset|i/o timeout' -- go mod download";
+/** The Electron binary comes from GitHub releases: only a gateway error, a rate limit or a transport error repeats it, never a 404 or a checksum mismatch. */
+const ELECTRON_INSTALL_NAME = 'name: Download the Electron binary (retried only on known network errors)';
+const ELECTRON_INSTALL_RUN = "node scripts/retry-on.mjs --pattern 'Response code (50[0-4]|429)\\b|ETIMEDOUT|ECONNRESET|EAI_AGAIN|socket hang up' -- node node_modules/electron/install.js";
 /** The macOS stapling retry: only Apple-service errors repeat the (re-notarizing) build. */
 const STAPLE_RETRY = "node scripts/retry-on.mjs --pattern 'staple and validate action failed|NSURLErrorDomain|\\bError 68\\b' -- npm run dist -w @dilla/desktop";
 
@@ -758,6 +761,18 @@ export function checkGoModuleDownloads(jobs, problems, file) {
     const expected = [GO_MOD_DOWNLOAD_NAME, ...(setupIf === undefined ? [] : [setupIf]), `run: ${GO_MOD_DOWNLOAD_RUN}`];
     if (downloads.length !== 1 || step.join('\n') !== expected.join('\n') || downloads[0] <= go || downloads[0] <= node || (firstGoUse >= 0 && downloads[0] > firstGoUse)) {
       problems.push(`${file}: job "${name}" must run exactly one retried "go mod download" step (${GO_MOD_DOWNLOAD_RUN}) after its setup-go and setup-node steps and before the first Go build or test, with setup-go's condition`);
+    }
+  }
+}
+
+/** Every step that runs electron/install.js is the one retried step, byte for byte. */
+export function checkElectronInstalls(jobs, problems, file) {
+  for (const [name, body] of Object.entries(jobs)) {
+    for (const step of jobSteps(body)) {
+      if (!step.some((line) => line.includes('electron/install.js'))) continue;
+      if (step.join('\n') !== `${ELECTRON_INSTALL_NAME}\nrun: ${ELECTRON_INSTALL_RUN}`) {
+        problems.push(`${file}: job "${name}" must download the Electron binary through the retried step (${ELECTRON_INSTALL_RUN}), with no other condition or flag`);
+      }
     }
   }
 }
@@ -835,7 +850,8 @@ function checkLinuxSandboxFoundationJob(jobs, problems, file) {
     "*) exit 1 ;;",
     "esac",
     "- run: npm ci",
-    "- run: node node_modules/electron/install.js",
+    `- ${ELECTRON_INSTALL_NAME}`,
+    `run: ${ELECTRON_INSTALL_RUN}`,
     ...SANDBOX_MAINTENANCE_CONTROLS.split('\n').map(line => line.trim()),
     ...SANDBOX_MAINTENANCE_CLEANUP.split('\n').map(line => line.trim()),
     ...SANDBOX_MAINTENANCE_ARTIFACT.split('\n').map(line => line.trim()),
@@ -1031,6 +1047,7 @@ function checkCiWorkflow(root, workflow) {
   }
   checkWholeModuleGTK(jobs, problems, file);
   checkGoModuleDownloads(jobs, problems, file);
+  checkElectronInstalls(jobs, problems, file);
   checkLinuxSandboxFoundationJob(jobs, problems, file);
 
   // Every test/build job needs `changes` and carries its gate, or it would run on a docs-only pull
@@ -1421,13 +1438,14 @@ export function checkDesktopWorkflow(root) {
   }
   for (const job of ['native', 'client', 'voice']) {
     const steps = jobSteps(body(job));
-    const install = steps.findIndex(step => step.join('\n') === 'run: node node_modules/electron/install.js');
+    const install = steps.findIndex(step => step.join('\n') === `${ELECTRON_INSTALL_NAME}\nrun: ${ELECTRON_INSTALL_RUN}`);
     const seal = steps.map((step, index) => step.some(line => line.includes('prepare-mac-electron-runtime.ts')) ? index : -1).filter(index => index >= 0);
     const expected = "name: Seal macOS npm Electron runtime for native notifications\nif: runner.os == 'macOS'\nrun: node e2e/web/support/prepare-mac-electron-runtime.ts";
     if (install < 0 || seal.length !== 1 || seal[0] !== install + 1 || steps[seal[0]].join('\n') !== expected)
       problems.push(`${file}: ${job} must seal the macOS npm Electron runtime immediately after installation`);
   }
   checkGoModuleDownloads(splitJobs(text), problems, file);
+  checkElectronInstalls(splitJobs(text), problems, file);
   // Three notarizing macOS builds (STAPLE_RETRY's attempts) do not fit in 30 minutes.
   if (!/^ {4}timeout-minutes: 60$/m.test(body('native'))) problems.push(`${file}: the native job must carry timeout-minutes: 60, room for the macOS staple retry's three builds`);
   const nativeSteps = jobSteps(body('native'));

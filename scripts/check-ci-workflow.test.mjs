@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 const TEST_ROOT = mkdtempSync(join(tmpdir(), 'dilla-ci-run-'));
 process.on('exit', () => rmSync(TEST_ROOT, { recursive: true, force: true }));
 import { gateExpression, JOB_GATES, WORKFLOWS } from './ci-areas.mjs';
-import { checkRerunStarvedWorkflow, assertGoShards,checkGoModuleDownloads, BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopCiWorkflow, checkDesktopReleaseWorkflow, checkDesktopWorkflow, checkReleaseWorkflow, checkServerWorkflow, DESKTOP_RELEASE_ACTIONS, REQUIRED_JOBS, DESKTOP_RELEASE_SECRETS, goShardCommand, goShardMatrix, jobSteps, NIGHTLY_CRON, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_BLOCK, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEPS, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION, WEB_SHARDS } from './check-ci-workflow.mjs';
+import { checkRerunStarvedWorkflow, assertGoShards,checkGoModuleDownloads, checkElectronInstalls, BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopCiWorkflow, checkDesktopReleaseWorkflow, checkDesktopWorkflow, checkReleaseWorkflow, checkServerWorkflow, DESKTOP_RELEASE_ACTIONS, REQUIRED_JOBS, DESKTOP_RELEASE_SECRETS, goShardCommand, goShardMatrix, jobSteps, NIGHTLY_CRON, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_BLOCK, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEPS, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION, WEB_SHARDS } from './check-ci-workflow.mjs';
 import { POSTGRES_API_RUN, SETS as GO_SHARD_SETS } from './go-shard.mjs';
 
 const NPM_TEST = "      - if: needs.changes.outputs.web != 'false'\n        run: npm test\n";
@@ -179,6 +179,7 @@ test('Linux sandbox foundation is required exactly once by completion and final 
 });
 const REAL_RELEASE = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'release.yml'), 'utf8');
 
+const ELECTRON_RUN = "node scripts/retry-on.mjs --pattern 'Response code (50[0-4]|429)\\b|ETIMEDOUT|ECONNRESET|EAI_AGAIN|socket hang up' -- node node_modules/electron/install.js";
 const REAL_DESKTOP = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'desktop.yml'), 'utf8');
 test('desktop checker refuses missing installed native package acceptance gates', () => {
  const block = REAL_DESKTOP.split('\n  native-linux-package-acceptance:\n')[1]?.split(/\n  [a-z][a-z0-9-]*:\n/)[0] ?? '';
@@ -281,7 +282,7 @@ test('native desktop Go setup remains unconditional for every platform', () => {
 test('every macOS Electron consumer seals its npm runtime immediately after installation', () => {
  assert.deepEqual(checkDesktopWorkflow(REPO_ROOT), []);
  const seal = "      - name: Seal macOS npm Electron runtime for native notifications\n        if: runner.os == 'macOS'\n        run: node e2e/web/support/prepare-mac-electron-runtime.ts\n";
- const install = '      - run: node node_modules/electron/install.js\n';
+ const install = `      - name: Download the Electron binary (retried only on known network errors)\n        run: ${ELECTRON_RUN}\n`;
  for (const job of ['native', 'client', 'voice']) {
   const start = REAL_DESKTOP.indexOf(`\n  ${job}:\n`);
   const tail = REAL_DESKTOP.slice(start), next = /\n  [a-z][a-z0-9-]*:\n/.exec(tail.slice(1));
@@ -3084,6 +3085,30 @@ test('every Go job downloads its modules through the retry wrapper, after its se
     body.slice(0, end) + body.slice(start, end) + body.slice(end),
   ]) {
     assert.ok(collect(changed).some((p) => p.includes('go mod download')));
+  }
+});
+
+test('every Electron binary download goes through the retry wrapper', () => {
+  assert.deepEqual(checkDesktopWorkflow(REPO_ROOT), []);
+  assert.deepEqual(checkWorkflow(REPO_ROOT), []);
+  const step = `      - name: Download the Electron binary (retried only on known network errors)\n        run: ${ELECTRON_RUN}\n`;
+  for (const [file, real, check] of [['desktop.yml', REAL_DESKTOP, checkDesktopWorkflow], ['desktop-ci.yml', REAL_DESKTOP_CI, null]]) {
+    assert.ok(real.includes(step), file);
+    for (const changed of [
+      real.replace(step, '      - run: node node_modules/electron/install.js\n'),
+      real.replace(ELECTRON_RUN, 'node node_modules/electron/install.js'),
+      real.replace(ELECTRON_RUN, ELECTRON_RUN.replace('|socket hang up', '|socket hang up|404')),
+      real.replace(step, step + '        continue-on-error: true\n'),
+    ]) {
+      const found = [];
+      checkElectronInstalls({ native: changed }, found, file);
+      assert.ok(found.some((p) => p.includes('Electron binary')), file);
+      if (check !== null) {
+        const root = fixture(GOOD);
+        writeFileSync(join(root, '.github/workflows/' + file), changed);
+        assert.ok(check(root).some((p) => p.includes('Electron binary') || p.includes('macOS npm Electron runtime')), file);
+      }
+    }
   }
 });
 

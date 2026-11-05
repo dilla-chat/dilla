@@ -98,7 +98,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y rpm libpipewire-0.3-dev libgtk-3-dev pkg-config xvfb openbox x11-utils dbus-x11 libnss3-tools gnome-keyring
       - run: npm ci
-      - run: node node_modules/electron/install.js
+      - name: Download the Electron binary (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'Response code (50[0-4]|429)\b|ETIMEDOUT|ECONNRESET|EAI_AGAIN|socket hang up' -- node node_modules/electron/install.js
       - name: Test Linux feasibility helpers
         run: |
           node --test e2e/unit/native-https-proxy.test.mjs e2e/unit/native-test-cert.test.mjs e2e/unit/native-stock-manager.test.mjs e2e/unit/native-stock-connect.test.mjs
@@ -150,7 +151,8 @@ jobs:
           path: packages/core-wasm/pkg
       - run: sudo apt-get update && sudo apt-get install -y rpm libpipewire-0.3-dev pkg-config
       - run: npm ci
-      - run: node node_modules/electron/install.js
+      - name: Download the Electron binary (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'Response code (50[0-4]|429)\b|ETIMEDOUT|ECONNRESET|EAI_AGAIN|socket hang up' -- node node_modules/electron/install.js
       - name: Build native Linux release packages
         run: |
           version="$(node -p "require('./packages/desktop/package.json').version")"
@@ -259,7 +261,8 @@ jobs:
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev pipewire wireplumber libgtk-3-dev pkg-config libarchive-tools
       - run: npm ci
-      - run: node node_modules/electron/install.js
+      - name: Download the Electron binary (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'Response code (50[0-4]|429)\b|ETIMEDOUT|ECONNRESET|EAI_AGAIN|socket hang up' -- node node_modules/electron/install.js
       - name: Seal macOS npm Electron runtime for native notifications
         if: runner.os == 'macOS'
         run: node e2e/web/support/prepare-mac-electron-runtime.ts
@@ -451,7 +454,8 @@ jobs:
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev pipewire wireplumber libgtk-3-dev pkg-config xvfb openbox x11-utils dbus-x11 libgbm1 libnss3 libasound2t64 dunst
       - run: npm ci
-      - run: node node_modules/electron/install.js
+      - name: Download the Electron binary (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'Response code (50[0-4]|429)\b|ETIMEDOUT|ECONNRESET|EAI_AGAIN|socket hang up' -- node node_modules/electron/install.js
       - name: Seal macOS npm Electron runtime for native notifications
         if: runner.os == 'macOS'
         run: node e2e/web/support/prepare-mac-electron-runtime.ts
@@ -571,7 +575,8 @@ jobs:
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev pipewire wireplumber libgtk-3-dev pkg-config xvfb openbox x11-utils dbus-x11 libgbm1 libnss3 libasound2t64 gnome-keyring libfuse2t64
       - run: npm ci
-      - run: node node_modules/electron/install.js
+      - name: Download the Electron binary (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'Response code (50[0-4]|429)\b|ETIMEDOUT|ECONNRESET|EAI_AGAIN|socket hang up' -- node node_modules/electron/install.js
       - name: Seal macOS npm Electron runtime for native notifications
         if: runner.os == 'macOS'
         run: node e2e/web/support/prepare-mac-electron-runtime.ts

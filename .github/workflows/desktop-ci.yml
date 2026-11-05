@@ -579,7 +579,8 @@ jobs:
             *) exit 1 ;;
           esac
       - run: npm ci
-      - run: node node_modules/electron/install.js
+      - name: Download the Electron binary (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'Response code (50[0-4]|429)\b|ETIMEDOUT|ECONNRESET|EAI_AGAIN|socket hang up' -- node node_modules/electron/install.js
       - name: Portable sandbox maintenance controls
         if: matrix.lane == 'managed'
         run: node --test packages/desktop/test/linux-sandbox-maintenance.test.mjs
