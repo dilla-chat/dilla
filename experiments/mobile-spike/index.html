@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>dilla spike</title>
+  <style>
+    body { margin: 0; padding: env(safe-area-inset-top) 16px 16px; background: #0b0d10; color: #e6e6e6; font: 14px/1.4 ui-monospace, Menlo, monospace; }
+    pre { white-space: pre-wrap; word-break: break-all; }
+    button { font: inherit; padding: 8px 12px; }
+  </style>
+</head>
+<body>
+  <h1>DILLA_PROBE</h1>
+  <pre id="out">probing…</pre>
+  <button id="again" type="button">Run again (with a tap)</button>
+  <pre id="detail"></pre>
+  <script type="module" src="./probe.ts"></script>
+</body>
+</html>

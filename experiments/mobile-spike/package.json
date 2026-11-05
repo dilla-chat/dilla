@@ -1,0 +1,24 @@
+{
+  "name": "dilla-mobile-spike",
+  "private": true,
+  "version": "0.0.0",
+  "license": "AGPL-3.0-or-later",
+  "description": "Throwaway M0 spike: a Capacitor 7 app that logs one DILLA_PROBE line of WebView capabilities. Not a workspace, not in ci:local.",
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "prebuild": "node prepare.mjs",
+    "build": "vite build",
+    "android": "npm run build && cap sync android && cap run android --target dilla35",
+    "ios": "npm run build && cap sync ios && cap open ios"
+  },
+  "dependencies": {
+    "@capacitor/android": "^7.6.10",
+    "@capacitor/core": "^7.6.10",
+    "@capacitor/ios": "^7.6.10"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^7.6.10",
+    "vite": "^7.3.7"
+  }
+}
