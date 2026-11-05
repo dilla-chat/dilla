@@ -54,23 +54,27 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
       changed: () => setPreLoginUpdate(true) });
   }, [props.update, updateSignedIn]);
   const checkpointOwner = useRef<CheckpointScope | null>(null);
+  const instanceId = account?.instance?.id;
+  const instanceStorageKey = account?.instance?.storageKey;
+  const userId = account?.user?.id;
   useEffect(() => {
     if (props.update === undefined) return;
     const previous = checkpointOwner.current;
-    const current = account?.phase === 'ready' && account.instance?.id && account.user?.id
+    const current = account?.phase === 'ready' && instanceId && userId
       ? (() => {
         try {
           // eslint-disable-next-line no-restricted-globals -- only a random content-free tab identifier enters Web Storage
           const tab = updateTabId(sessionStorage, crypto);
           // The scope the shell saved under (Shell.tsx): on mobile the worker's storage key, not the raw instance id.
-          return checkpointScope(account.instance, account.user.id, tab);
+          return checkpointScope({ id: instanceId, storageKey: instanceStorageKey }, userId, tab);
         } catch { return null; }
       })() : null;
     if (previous !== null && (current === null || previous.instance !== current.instance || previous.user !== current.user)) {
       void props.update.store.remove(previous).catch(() => undefined);
     }
     checkpointOwner.current = current;
-  }, [account?.phase, account?.instance, account?.user?.id, props.update]);
+    // The strings, not the instance object (final review I1): a re-posted account slice is the same owner.
+  }, [account?.phase, instanceId, instanceStorageKey, userId, props.update]);
   const diagnostics = useSlice('diagnostics');
   const settings = useSlice('settings');
   const [tabPhase, setTabPhase] = useState<'other-tab' | 'waiting' | 'failed' | 'paused' | 'confirm'>('other-tab');

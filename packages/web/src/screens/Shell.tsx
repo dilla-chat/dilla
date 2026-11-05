@@ -2001,15 +2001,20 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   useEffect(() => { if (call.recoverySharing) setSharingStopped(true); }, [call.recoverySharing]);
   const updating = useRef(false);
   const update = props.update;
+  // Keyed on the strings, not the instance object: a re-posted account slice (a new object, same instance) must not
+  // re-run the restore below while one is in flight (final review I1).
+  const instanceId = account?.instance?.id;
+  const instanceStorageKey = account?.instance?.storageKey;
+  const userId = account?.user?.id;
   const updateScope = useMemo(() => {
-    if (update === undefined || account?.instance?.id === undefined || account.user?.id === undefined) return null;
+    if (update === undefined || instanceId === undefined || userId === undefined) return null;
     try {
       // eslint-disable-next-line no-restricted-globals -- only a random content-free tab identifier enters Web Storage
       const tab = updateTabId(sessionStorage, crypto);
-      return checkpointScope(account.instance, account.user.id, tab);
+      return checkpointScope({ id: instanceId, storageKey: instanceStorageKey }, userId, tab);
     }
     catch { return null; }
-  }, [update, account?.instance, account?.user?.id]);
+  }, [update, instanceId, instanceStorageKey, userId]);
   useEffect(() => {
     if (update === undefined || updateScope === null) { setRestoreDone(true); return; }
     let active = true;
