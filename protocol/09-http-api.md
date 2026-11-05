@@ -897,7 +897,7 @@ channel — an end-to-end encrypted one, a voice channel or a category — every
   `400 E_ENVELOPE_TYPE`; and any bound of `04`'s § Envelope limits (`body` per type, 10 attachments,
   2 previews, `mime`, `name`, `thumb`, `url`, `title`, `description`, preview `image`) is
   `400 E_ENVELOPE_LIMIT`. The envelope of a `PATCH` is refused by the same rules. The body cap is
-  96 KiB (§ Rate limits). Only a message's (type 0) or an edit's (type 1) `body` is search content,
+  `max_ciphertext_bytes` (§ Rate limits). Only a message's (type 0) or an edit's (type 1) `body` is search content,
   and only there does the instance count mentions: the number of distinct `<@…>` targets (a
   32-hex-digit user or role id, `everyone` or `here`), stored with the message for moderation.
 - **Message references.** On a server-readable channel an envelope's `reply_to` and `thread_id`
@@ -1643,7 +1643,7 @@ status are instance-admin only (§ Flags), `403 E_FORBIDDEN` for anyone else.
   same franking tuple with the channel id in the `group_id` slot and epoch `0` (§ Readable
   channels). A message the instance never stored is `404 E_NOT_FOUND`; a deleted one is still
   reportable, because the tuple outlives the content. A malformed body, or a `k_f` that is not 32
-  bytes, is `400 E_INVALID_REQUEST`. The body cap is 96 KiB, as on the envelope routes, so a
+  bytes, is `400 E_INVALID_REQUEST`. The body cap is `max_ciphertext_bytes`, as on the envelope routes, so a
   maximal legal envelope can be reported.
 - **Verification.** The instance recomputes `04`'s `C` from the submitted `envelope` and `k_f` and
   compares it with the `C` it stored at upload, then recomputes `T` from its own stored `(group_id,
@@ -1814,10 +1814,10 @@ header carries the same value in whole seconds. The commit and proposal paths ar
 separately and loosely, so the delivery service's own throttle never becomes the reason its
 committer-election watchdog removes a device.
 
-Body caps: `max_ciphertext_bytes + 4096` on `POST /v1/groups/{id}/message`; 96 KiB on
+Body caps: `max_ciphertext_bytes + 4096` on `POST /v1/groups/{id}/message`; `max_ciphertext_bytes` (default 196608) on
 `POST /v1/channels/{id}/messages`, `PATCH /v1/channels/{id}/messages/{seq}` and `POST /v1/reports`
-(`protocol/04`'s own worst-case legal envelope is ≈ 74 KiB, so a smaller cap would refuse a maximal
-but valid envelope before the validator ever saw it); `PUT /v1/backups/0/0` 256 bytes,
+(`protocol/04`'s own worst-case legal envelope, ten attachments and two previews, is ≈ 129 KiB, so a
+64 KiB cap would refuse a maximal but valid envelope before the validator ever saw it); `PUT /v1/backups/0/0` 256 bytes,
 `PUT /v1/backups/1/0` 1,048,640 bytes (1 MiB + 64); 64 KiB on every other CBOR route;
 `blobs.max_blob_bytes` on a blob `PUT`.
 

@@ -20,9 +20,10 @@ pub const MAX_BODY_SHORT: usize = 32;
 /// interfaces.md §2.8 (R6, R32): the tightened envelope limits. One maximal attachment is
 /// 32+32+12+8+255+255+8192 = 8 786 bytes of content, so ten are 87 860 bytes (~86 KiB) before
 /// CBOR heads. Add 2 × (2048+256+1024+16384) = 39 424 bytes of previews and a 4 000-byte body and
-/// the theoretical worst case is 131 284 bytes plus heads, just past the 131 072-byte ciphertext
-/// cap of protocol/02. Task 2 of wave C (raising the size caps) owns that gap; the ten-file
-/// limit itself is the wave C contract.
+/// the theoretical worst case is 131 284 bytes plus heads; the real encoded maximum is 131 643
+/// bytes (measured by `TestAMaximalTenFileEnvelopeIsAccepted` in the Go server). That is above the
+/// old 131 072-byte ciphertext cap and well inside the 196 608-byte default (192 KiB) of
+/// protocol/02, raised for this limit.
 pub const MAX_ATTACHMENTS: usize = 10;
 pub const MAX_PREVIEWS: usize = 2;
 pub const MAX_THUMB: usize = 8_192;

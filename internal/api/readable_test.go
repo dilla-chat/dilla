@@ -370,11 +370,81 @@ func TestAMaximalEnvelopeIsAccepted(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("a maximal legal envelope (%d bytes) = %d (%x), want 200", len(env), status, body)
 	}
-	// Past 96 KiB is 413.
-	huge, _ := cborx.Marshal([]any{uint64(1), id.New(), uint64(0), nil, nil, strings.Repeat("x", 97*1024),
-		[]any{}, []any{}, bytes.Repeat([]byte{6}, 32)})
-	if status, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/messages", f.ownerTok, []any{huge}); status != http.StatusRequestEntityTooLarge {
-		t.Fatalf("a 97 KiB envelope = %d (%x), want 413", status, body)
+}
+
+// maximalTenFileEnvelope is the largest legal type-0 envelope: ten attachments with
+// maximal mime, name and thumbnail, two maximal previews and a 4000-byte body.
+func maximalTenFileEnvelope(t *testing.T) []byte {
+	t.Helper()
+	att := []any{bytes.Repeat([]byte{3}, 32), bytes.Repeat([]byte{4}, 32), bytes.Repeat([]byte{5}, 12),
+		uint64(1 << 40), strings.Repeat("m", 255), uint64(1 << 20), uint64(1 << 20), bytes.Repeat([]byte{7}, 8192), strings.Repeat("n", 255)}
+	prev := []any{strings.Repeat("u", 2048), strings.Repeat("t", 256), strings.Repeat("d", 1024), bytes.Repeat([]byte{8}, 16384)}
+	env, err := cborx.Marshal([]any{uint64(1), id.New(), uint64(0), id.New(), id.New(), strings.Repeat("b", 4000),
+		[]any{att, att, att, att, att, att, att, att, att, att}, []any{prev, prev}, bytes.Repeat([]byte{6}, 32)})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return env
+}
+
+// Wave C: a message carries ten files, so the largest legal envelope is above the
+// old 131072-byte cap and must be accepted at the default configuration.
+func TestAMaximalTenFileEnvelopeIsAccepted(t *testing.T) {
+	f := newReadableFixture(t)
+	e := f.e
+	ch := readableChannel(t, e, f.cid, f.ownerTok)
+	env := maximalTenFileEnvelope(t)
+	t.Logf("maximal ten-file envelope: %d bytes", len(env))
+	if len(env) <= 131072 {
+		t.Fatalf("the maximal envelope is %d bytes; it must exceed the old 131072 cap to test anything", len(env))
+	}
+	status, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/messages", f.ownerTok, []any{env})
+	if status != http.StatusOK && status != http.StatusCreated {
+		t.Fatalf("a maximal ten-file envelope (%d bytes) = %d (%x), want 201", len(env), status, body)
+	}
+}
+
+// The readable cap follows the instance's ciphertext cap: past it is 413.
+func TestAReadableBodyOverTheCapIs413(t *testing.T) {
+	f := newReadableFixture(t)
+	e := f.e
+	ch := readableChannel(t, e, f.cid, f.ownerTok)
+	const capBytes = 196608
+	over, _ := cborx.Marshal([]any{uint64(1), id.New(), uint64(0), nil, nil, "x", []any{}, []any{}, bytes.Repeat([]byte{6}, 32),
+		bytes.Repeat([]byte{0}, capBytes)})
+	if len(over) <= capBytes {
+		t.Fatalf("test body is %d bytes, want over %d", len(over), capBytes)
+	}
+	if status, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/messages", f.ownerTok, []any{over}); status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("a %d-byte envelope = %d (%x), want 413", len(over), status, body)
+	}
+}
+
+// A readable message at the cap must still fit the gateway frame that fans it out:
+// the frame is the ciphertext cap plus 512 bytes, and the frame's own fields (the
+// channel, seq, sender, tag, timestamps) must fit inside those 512.
+func TestACapSizedReadableMessageFitsItsFanOutFrame(t *testing.T) {
+	f := newReadableFixture(t)
+	e := f.e
+	ch := readableChannel(t, e, f.cid, f.ownerTok)
+	env := maximalTenFileEnvelope(t)
+	if status, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/messages", f.ownerTok, []any{env}); status != http.StatusOK && status != http.StatusCreated {
+		t.Fatalf("post = %d (%x)", status, body)
+	}
+	frames := f.fan.delivered()
+	if len(frames) != 1 {
+		t.Fatalf("delivered %d frames, want 1", len(frames))
+	}
+	raw, err := gateway.Encode(frames[0].frame, 1<<40)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	overhead := len(raw) - len(env)
+	t.Logf("fan-out frame: %d bytes for a %d-byte envelope, overhead %d", len(raw), len(env), overhead)
+	const ciphertextCap, frameBudget = 196608, 196608 + 512
+	if overhead > frameBudget-ciphertextCap {
+		t.Fatalf("frame overhead %d exceeds the %d bytes between the ciphertext cap and the frame budget; the readable cap needs headroom",
+			overhead, frameBudget-ciphertextCap)
 	}
 }
 

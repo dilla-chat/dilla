@@ -126,7 +126,7 @@ func (o Options) withDefaults() Options {
 		o.ReadLimit = 16384
 	}
 	if o.MaxFrameBytes == 0 {
-		o.MaxFrameBytes = 131584
+		o.MaxFrameBytes = 197120
 	}
 	if o.QueueFrames == 0 {
 		o.QueueFrames = 256

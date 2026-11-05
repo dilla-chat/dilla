@@ -179,7 +179,7 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
     grouped={p.grouped} revealed={p.revealed} onReveal={p.onReveal} replying={p.replying === true}
     nameColor={bot ? 0 : nameColorOf(item.senderUser, p.book)} codeLabels={codeLabels()}
     own={item.own} tag={bot ? 'bot' : undefined} state={item.state}
-    stateLabel={label === null ? undefined : t(label)} detail={gone ? undefined : item.state === 'failed' ? item.reason : cannotReadDetail}
+    stateLabel={label === null ? undefined : t(label)} detail={gone ? undefined : item.state === 'failed' ? (item.reason === 'E_TOO_LARGE' ? t('send.tooLarge') : item.reason) : cannotReadDetail}
     actions={!gone && item.state === 'failed' && item.msgId !== null ? [
       { label: t('shell.message.retry'), onAction: () => { handOnFromRow(0); emit({ kind: 'retry', msgId: item.msgId! }); } },
       { label: t('shell.message.discard'), onAction: () => { handOnFromRow(1); emit({ kind: 'discard', msgId: item.msgId! }); } },

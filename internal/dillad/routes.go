@@ -141,9 +141,10 @@ func mountPlanTwo(mux *server.Mux, p planTwo) (*api.Calls, *api.Roles) {
 	api.NewInvites(repo, clk, "https://"+urlHost(cfg.Instance.Domain), log).Register(m)
 	api.NewDMs(repo, p.delivery, clk, p.instance.InstanceID, maxGroupDM, log).Register(m)
 	// A readable post is activity: it takes the sender out of the community's AFK list (AW2, Q1).
-	api.NewReadable(repo, res, p.gw, p.keys, clk, log).WithRoles(roles).WithAFK(calls).Register(m)
+	api.NewReadable(repo, res, p.gw, p.keys, clk, log).WithRoles(roles).WithAFK(calls).
+		WithMaxCiphertextBytes(cfg.Limits.MaxCiphertextBytes).Register(m)
 	api.NewBlobs(repo, p.blobs, res, cfg.Blobs, clk, log).WithUploadMeter(p.uploads).Register(m)
-	api.NewReports(repo, p.keys, clk, log).Register(m)
+	api.NewReports(repo, p.keys, clk, log).WithMaxCiphertextBytes(cfg.Limits.MaxCiphertextBytes).Register(m)
 	// E8: the GIF picker. The Giphy key is a per-server setting; a server without one answers 404.
 	api.NewGifs(repo, p.limiter, clk, log).Register(m)
 	calls.Register(m)

@@ -37,10 +37,10 @@ type Messages struct {
 
 func (h *Messages) WithRoles(roles *Roles) *Messages { h.roles = roles; return h }
 
-// defaultMaxCiphertextBytes is the MLS ciphertext cap of the Global Constraints, 131072 bytes. The
+// defaultMaxCiphertextBytes is the MLS ciphertext cap of the Global Constraints, 196608 bytes. The
 // delivery service enforces it again on the decoded `private_message`, which is the enforcement
 // that counts; the body cap here is the cheaper one, applied before the whole request is read.
-const defaultMaxCiphertextBytes = 131072
+const defaultMaxCiphertextBytes = 196608
 
 func (h *Messages) maxCiphertext() int64 {
 	if h.MaxCiphertextBytes == 0 {

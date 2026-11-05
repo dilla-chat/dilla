@@ -916,7 +916,8 @@ describe('timeline', () => {
     expect(screen.queryByText(/GONE-TEXT/)).toBeNull();
     expect(within(log).getByText('sending…')).toBeInTheDocument();
     expect(within(log).getByText('not sent')).toBeInTheDocument();
-    expect(within(log).getByText('E_TOO_LARGE')).toBeInTheDocument();
+    expect(within(log).getByText('This message is too large to send. Send fewer files or remove a link preview.')).toBeInTheDocument();
+    expect(within(log).queryByText('E_TOO_LARGE')).toBeNull();
     await user.click(within(log).getByRole('button', { name: 'retry' }));
     await user.click(within(log).getByRole('button', { name: 'discard' }));
     expect(fake.callsOf('retrySend')).toEqual([{ m: 'retrySend', msgId: 'cd'.repeat(16) }]);

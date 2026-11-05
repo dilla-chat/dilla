@@ -83,7 +83,7 @@ type Policy struct {
 	FreezeWarn time.Duration // 24h  (gap-21-ds §5.3, §11)
 	FreezeMax  time.Duration // 30d  (gap-21-ds §5.3, §11; R26)
 
-	MaxCiphertextBytes int // 131072
+	MaxCiphertextBytes int // 196608
 	MaxAddsPerCommit   int // 256
 
 	// MaxKeyPackagesPerDevice bounds one device's KeyPackage directory: the number of packages
@@ -131,7 +131,7 @@ func DefaultPolicy() Policy {
 		InactivityRemove:      90 * 24 * time.Hour,
 		FreezeWarn:            24 * time.Hour,
 		FreezeMax:             30 * 24 * time.Hour,
-		MaxCiphertextBytes:    131072,
+		MaxCiphertextBytes:    196608,
 		MaxAddsPerCommit:      256,
 		// config.Default().Limits.MaxKeypackagesPerDevice, kept in step by
 		// TestPublishRefusesMoreThanThePolicyCap rather than by a comment.

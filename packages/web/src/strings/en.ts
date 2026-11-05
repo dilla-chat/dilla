@@ -267,6 +267,7 @@ export const en = {
   'shell.message.unknownAuthor': 'device {id}',
   'shell.message.pending': 'sending…',
   'shell.message.failed': 'not sent',
+  'send.tooLarge': 'This message is too large to send. Send fewer files or remove a link preview.',
   'shell.message.cannotRead': 'This message could not be read on this device.',
   'shell.message.deleted': 'message deleted',
   'shell.message.retry': 'retry',
