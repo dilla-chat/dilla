@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -349,13 +350,16 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		CommitAck: func(ctx context.Context, groupID, deviceID id.ID, round uint64) {
 			_ = delivery.AckCommitNeeded(ctx, groupID, deviceID, round)
 		},
-		InstanceID:     instance.InstanceID,
-		Generation:     instance.Generation,
-		HeartbeatMS:    uint64(o.Config.Gateway.HeartbeatInterval.Value() / time.Millisecond), //nolint:gosec // G115: a non-negative duration in milliseconds
-		IdleClose:      o.Config.Gateway.SessionIdleClose.Value(),
-		ReadLimit:      o.Config.Gateway.ReadLimitBytes,
-		MaxFrameBytes:  o.Config.MaxFrameBytes(),
-		TrustedOrigins: o.Config.HTTP.TrustedOrigins,
+		InstanceID:    instance.InstanceID,
+		Generation:    instance.Generation,
+		HeartbeatMS:   uint64(o.Config.Gateway.HeartbeatInterval.Value() / time.Millisecond), //nolint:gosec // G115: a non-negative duration in milliseconds
+		IdleClose:     o.Config.Gateway.SessionIdleClose.Value(),
+		ReadLimit:     o.Config.Gateway.ReadLimitBytes,
+		MaxFrameBytes: o.Config.MaxFrameBytes(),
+		// The mobile app's origins open the gateway too. Each entry carries its scheme, so
+		// coder/websocket matches it against the Origin's scheme://host whole: capacitor://localhost
+		// and https://localhost pass, http://localhost does not.
+		TrustedOrigins: slices.Concat(o.Config.HTTP.TrustedOrigins, o.Config.HTTP.MobileOrigins),
 		// Invariant 7's back-off window, advertised in hello (deviation B23).
 		Backoff:       policy.Backoff,
 		BackoffJitter: policy.BackoffJitter,
@@ -660,6 +664,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		h = client.DownloadsFallback(mux)
 	}
 	h = generationHeader(h, instance.Generation)
+	h = mobileCORS(h, o.Config.HTTP.MobileOrigins)
 	// Recover sits INSIDE RequestLog, not outside it. server.RequestLog logs
 	// and calls observe after next.ServeHTTP returns, with no defer, so a panic
 	// unwinding past it skips both: the outer-Recover order produced no
@@ -915,6 +920,23 @@ func (s *Server) ReadHeaderTimeout() time.Duration { return s.httpSrv.ReadHeader
 
 // generationHeader stamps X-Dilla-Generation on every response, so an HTTP-only
 // client notices a restore without holding a gateway connection.
+// mobileCORS answers the mobile app's cross-origin requests (http.mobile_origins) on the routes
+// the app calls: the API under /v1/, invite links under /i/ and the desktop sign-in hand-off under
+// /desktop-auth/. It sits outside the mux because a preflight is an OPTIONS request, which no
+// method-qualified route pattern matches. Every other path, the browser client's included, is
+// left same-origin.
+func mobileCORS(next http.Handler, origins []string) http.Handler {
+	cors := api.CORS(origins)(next)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.Path
+		if strings.HasPrefix(p, "/v1/") || strings.HasPrefix(p, "/i/") || strings.HasPrefix(p, "/desktop-auth/") {
+			cors.ServeHTTP(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func generationHeader(next http.Handler, generation uint64) http.Handler {
 	value := strconv.FormatUint(generation, 10)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

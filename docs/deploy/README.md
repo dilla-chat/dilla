@@ -895,6 +895,10 @@ factor up, until it adds one. This section is what the operator does about that.
 - **`auth.webauthn.rp_origins`** lists the origins a browser may use, and defaults to `https://<instance.domain>` plus
   `http.trusted_origins`. The browser's origin includes its port, and the host of each `http` or `https` entry
   must be `rp_id` or a subdomain of it.
+- **`http.mobile_origins`** lists the mobile app's origins, `capacitor://localhost` (iOS) and `https://localhost`
+  (Android) by default. They may call `/v1/`, `/i/` and `/desktop-auth/` cross-origin with a bearer token (CORS,
+  never cookies) and open the gateway. Each entry is a whole origin, scheme included, so `http://localhost` stays
+  refused. They are never added to `rp_origins`, so a passkey ceremony from the app's origin does not verify here.
 
 Behind a proxy (`tls.mode = "behind_proxy"`) the address the browser uses is the proxy's, so set both explicitly when
 the public address is not `https://<instance.domain>` on 443. An instance reached at `https://chat.example.org:8443`:

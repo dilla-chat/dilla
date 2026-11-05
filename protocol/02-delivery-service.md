@@ -262,7 +262,8 @@ the response.
 
 An upgrade whose `Origin` header names a host other than the request's `Host` (compared with the
 port, case-insensitively) and matches none of the instance's `http.trusted_origins` (default
-`dilla://app`) is refused with `403`; a request without `Origin` is not refused on this rule. A
+`dilla://app`) or `http.mobile_origins` (default `capacitor://localhost` and `https://localhost`,
+the mobile app; an entry with a scheme matches the origin's scheme too) is refused with `403`; a request without `Origin` is not refused on this rule. A
 client served by the instance from its own origin therefore needs no configuration.
 
 ### Control (0–15) — `group_id = null`, `n = 0`
