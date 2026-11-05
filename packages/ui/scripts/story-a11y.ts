@@ -26,7 +26,7 @@ function boundarySelector(id: string): { selector: string; colour: string } | nu
   return null;
 }
 
-/** README §5.1: the column aside's settled width (members 232, thread 340, closed 0). */
+/** README §5.1: the column aside's settled open width (members 232, thread 340, closed 0). The prototype's aside is content-box with a 1px left line, so it measures 233 / 341 outside (main 747 at 1280) and its body keeps the 232 / 340. */
 const ASIDE_STORIES: Record<string, number> = {
   'shell-appshell--aside-wide': 232, 'shell-appshell--frame-members': 232, 'shell-appshell--aside-thread': 340,
   'shell-appshell--aside-closed': 0, 'shell-appshell--frame-members-closed': 0,
@@ -49,22 +49,23 @@ async function checkAside(page: Page, context: StoryContext, want: number): Prom
   });
   const name = `${context.title} / ${context.name}`;
   if (got === null) throw new Error(`${name}: no aside`);
-  if (Math.abs(got.width - want) > 0.5) throw new Error(`${name}: the aside is ${String(got.width)} wide, want ${String(want)}`);
+  const outer = want === 0 ? 0 : want + 1;
+  if (Math.abs(got.width - outer) > 0.5) throw new Error(`${name}: the aside is ${String(got.width)} wide, want ${String(outer)}`);
   if (got.clipped) throw new Error(`${name}: the aside or its body has a clip-path, which would cut its fixed-position popovers`);
   if (want === 0) {
     if (got.visibility !== 'hidden' || !got.inert) throw new Error(`${name}: the closed aside is ${got.visibility} and inert=${String(got.inert)}`);
     if (got.focused) throw new Error(`${name}: a control in the closed aside takes focus`);
   } else {
     if (got.visibility !== 'visible' || got.inert) throw new Error(`${name}: the open aside is ${got.visibility} and inert=${String(got.inert)}`);
-    // The body is the open width less the 1px hairline, whatever the column is doing.
-    if (Math.abs(got.bodyWidth - (want - 1)) > 0.5) throw new Error(`${name}: the aside body is ${String(got.bodyWidth)} wide, want ${String(want - 1)}`);
+    // The body is the open width: the aside's 1px hairline is outside it, whatever the column is doing.
+    if (Math.abs(got.bodyWidth - want) > 0.5) throw new Error(`${name}: the aside body is ${String(got.bodyWidth)} wide, want ${String(want)}`);
     await page.evaluate(() => { (document.activeElement as HTMLElement | null)?.blur(); });
   }
 }
 
 /**
  * Fix round 2: the web app's close path (the content goes with the close). The same aside element animates its width to 0:
- * some animation frame of the close is between 0 and 232 wide, then it ends hidden or unmounted; a reopen animates from 0 again.
+ * some animation frame of the close is between 0 and 233 wide, then it ends hidden or unmounted; a reopen animates from 0 again.
  */
 async function checkAsideTransition(page: Page, context: StoryContext): Promise<void> {
   const name = `${context.title} / ${context.name}`;
@@ -74,7 +75,7 @@ async function checkAsideTransition(page: Page, context: StoryContext): Promise<
   });
   await page.waitForTimeout(600);
   const before = await read();
-  if (before === null || Math.abs(before.width - 232) > 0.5) throw new Error(`${name}: the open aside is ${String(before?.width)} wide, want 232`);
+  if (before === null || Math.abs(before.width - 233) > 0.5) throw new Error(`${name}: the open aside is ${String(before?.width)} wide, want 233`);
   await page.evaluate(() => { (document.querySelector('#storybook-root .d-app-shell__aside') as (HTMLElement & { __mark?: boolean }) | null)!.__mark = true; });
   // Task 11 (Task 5 minor): the toggle is clicked in the page and the width is sampled every animation frame for 400ms, so a
   // slow machine cannot miss the transition the way one read 100ms after a click could. Some frame must lie strictly between
@@ -96,15 +97,15 @@ async function checkAsideTransition(page: Page, context: StoryContext): Promise<
   const wide = closing.filter(x => x.width > 0.5);
   if (wide.length === 0 || wide.some(x => !x.same)) throw new Error(`${name}: closing replaced or removed the aside at once`);
   if (wide.some(x => x.open !== 'false')) throw new Error(`${name}: the closing aside is not data-open false in every frame`);
-  if (!closing.some(x => x.width > 0.5 && x.width < 231.5)) throw new Error(`${name}: no frame of the close is between 0 and 232 wide (${closing.map(x => x.width.toFixed(0)).join(', ')})`);
+  if (!closing.some(x => x.width > 0.5 && x.width < 232.5)) throw new Error(`${name}: no frame of the close is between 0 and 233 wide (${closing.map(x => x.width.toFixed(0)).join(', ')})`);
   await page.waitForTimeout(800);
   const after = await read();
   if (after !== null && (after.width > 0.5 || after.visibility !== 'hidden')) throw new Error(`${name}: the closed aside is ${String(after.width)} wide and ${after.visibility}`);
   const opening = await toggleAndSample();
-  if (!opening.some(x => x.width > 0.5 && x.width < 231.5)) throw new Error(`${name}: no frame of the reopen is between 0 and 232 wide (${opening.map(x => x.width.toFixed(0)).join(', ')})`);
+  if (!opening.some(x => x.width > 0.5 && x.width < 232.5)) throw new Error(`${name}: no frame of the reopen is between 0 and 233 wide (${opening.map(x => x.width.toFixed(0)).join(', ')})`);
   await page.waitForTimeout(600);
   const reopened = await read();
-  if (reopened === null || Math.abs(reopened.width - 232) > 0.5) throw new Error(`${name}: the reopened aside is ${String(reopened?.width)} wide, want 232`);
+  if (reopened === null || Math.abs(reopened.width - 233) > 0.5) throw new Error(`${name}: the reopened aside is ${String(reopened?.width)} wide, want 233`);
   await page.evaluate(() => { (document.activeElement as HTMLElement | null)?.blur(); });
 }
 
@@ -630,8 +631,8 @@ export async function checkStory(page: Page, context: StoryContext): Promise<voi
     // A11Y-DESIGN-01: desktop settings keep the sidebar and body as independent scroll regions. At 200% zoom,
     // the effective 640 × 400 CSS viewport enters the existing phone breakpoint: the section frame stays fullscreen,
     // with the nav's chips and the footer outside the scrolling body.
-    // Task 10 (README §5.9): the 240px nav, the content column at most 720px, rows at least 56px, and the 34px close
-    // circle 22px from the top and 16px from the right.
+    // Task 10 (README §5.9): the 240px nav, the content column at most 720px, rows at least 56px, and the 36px close
+    // circle (the prototype's 34px content-box and 1px border) 22px from the top and 16px from the right.
     if (context.id === 'settings-settingsframe--zoomed-in') {
       const desktop = await page.evaluate(() => {
         const frame = document.querySelector('.d-settings-frame');
@@ -661,7 +662,7 @@ export async function checkStory(page: Page, context: StoryContext): Promise<voi
       });
       if (!desktop || desktop.width !== 1280 || desktop.height !== 800 || desktop.x !== 0 || desktop.y !== 0
         || desktop.columns < 2 || desktop.sideWidth !== 240 || desktop.sectionWidth > 720 || desktop.itemHeight !== 34
-        || desktop.close.w !== 34 || desktop.close.h !== 34 || desktop.close.top !== 22 || desktop.close.right !== 16 || !desktop.escShown
+        || desktop.close.w !== 36 || desktop.close.h !== 36 || desktop.close.top !== 22 || desktop.close.right !== 16 || !desktop.escShown
         || desktop.minRow < 56 || desktop.sideOverflow !== 'auto' || desktop.bodyOverflow !== 'auto' || desktop.horizontalOverflow) {
         throw new Error(`${context.title} / ${context.name}: desktop settings geometry or independent scrolling is incorrect (${JSON.stringify(desktop)})`);
       }
