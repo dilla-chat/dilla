@@ -20,9 +20,13 @@ export interface CommandBotSnapshot extends CommandBot {
   loading: boolean;
   /** The list has never loaded (no good list) and a load is in flight or a quick retry is waiting: the picker says so instead of "no match". */
   waiting: boolean;
+  /** The Bot's installation id from the last good load: a binding check for callers that verify against that Bot (poll cards). */
+  installationId: string | null;
+  /** The last load found no ready Bot (a definitive refusal, not a fault): nothing will retry until the next refresh. */
+  unavailable: boolean;
 }
 
-export const NO_BOT: CommandBotSnapshot = Object.freeze({ operations: null, botUserId: null, loading: false, waiting: false });
+export const NO_BOT: CommandBotSnapshot = Object.freeze({ operations: null, botUserId: null, loading: false, waiting: false, installationId: null, unavailable: false });
 
 interface Entry {
   snapshot: CommandBotSnapshot;
@@ -70,13 +74,13 @@ export function refreshCommandBot(client: CoreClient, communityId: string): void
   publish(entry, { ...entry.snapshot, loading: true, waiting: entry.snapshot.operations === null });
   void createBotUtilities(client, communityId).capabilities().then(caps => {
     entry.inFlight = false; entry.settledAt = Date.now(); entry.failed = false; entry.failures = 0;
-    publish(entry, { operations: new Set(caps.supportedOperations), botUserId: caps.botUserId, loading: false, waiting: false });
+    publish(entry, { operations: new Set(caps.supportedOperations), botUserId: caps.botUserId, installationId: caps.installationId, loading: false, waiting: false, unavailable: false });
   }, (error: unknown) => {
     entry.inFlight = false; entry.settledAt = Date.now();
     if (error instanceof BotUtilitiesProviderUnavailableError) {
       // A community without a ready Bot is not a fault: its commands go (a removed Bot's list must not linger) and nothing retries quickly.
       entry.failed = false; entry.failures = 0;
-      publish(entry, { operations: null, botUserId: null, loading: false, waiting: false });
+      publish(entry, { operations: null, botUserId: null, installationId: null, loading: false, waiting: false, unavailable: true });
       return;
     }
     void client.call({ m: 'callNote', code: 'E_BOT_CAPABILITIES' }).catch(() => undefined);
@@ -118,4 +122,19 @@ export function subscribeCommandBot(client: CoreClient, communityId: string, lis
 
 export function commandBotSnapshot(client: CoreClient, communityId: string): CommandBotSnapshot {
   return entryOf(client, communityId).snapshot;
+}
+
+/**
+ * The Bot's identity for a verifier that is not a composer (a poll card): the stored one when a list is already held, else a load
+ * (started now unless one is in flight) awaited to its end. Resolves with the snapshot either way; botUserId is null when the load
+ * failed or there is no ready Bot (unavailable says which). No timer is mounted, so nothing refreshes after this.
+ */
+export function loadedCommandBot(client: CoreClient, communityId: string): Promise<CommandBotSnapshot> {
+  const entry = entryOf(client, communityId);
+  if (entry.snapshot.botUserId === null) refreshCommandBot(client, communityId);
+  if (!entry.snapshot.loading) return Promise.resolve(entry.snapshot);
+  return new Promise(resolve => {
+    const listener = () => { if (!entry.snapshot.loading) { entry.listeners.delete(listener); resolve(entry.snapshot); } };
+    entry.listeners.add(listener);
+  });
 }

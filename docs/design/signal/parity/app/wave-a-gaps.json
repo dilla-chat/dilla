@@ -88,7 +88,7 @@
     "name": "gap52-sent-image-and-file", "mutates": true,
     "viewport": { "width": 1280, "height": 800 },
     "prototype": { "props": { "startAt": "app" }, "steps": [{ "wait": 900 }, { "upload": ["input[type=file]", "docs/design/signal/parity/app/fixtures/harbour.png", "docs/design/signal/parity/app/fixtures/raid-notes.txt"] }, { "wait": 3500 }, { "click": "main textarea" }, { "press": "Enter" }, { "wait": 1500 }] },
-    "app": { "who": "ada", "path": "{server}", "steps": [{ "upload": ["input[type=file]", "docs/design/signal/parity/app/fixtures/harbour.png", "docs/design/signal/parity/app/fixtures/raid-notes.txt"] }, { "wait": 3500 }, { "click": "role=textbox[name=/^message/i]" }, { "press": "Enter" }, { "wait": 3000 }] },
+    "app": { "who": "ada", "path": "{server}", "steps": [ { "waitFor": { "selector": ".d-poll-card", "timeout": 60000 } }, { "upload": ["input[type=file]", "docs/design/signal/parity/app/fixtures/harbour.png", "docs/design/signal/parity/app/fixtures/raid-notes.txt"] }, { "wait": 3500 }, { "click": "role=textbox[name=/^message/i]" }, { "press": "Enter" }, { "wait": 3000 }] },
     "judge": { "elements": [
       {"id":"search","name":"the search box at the top centre of the window"},
       {"id":"composer","name":"the message composer at the bottom of the main column"},
@@ -103,7 +103,7 @@
     "name": "gap53-code-block-copied", "mutates": true,
     "viewport": { "width": 1280, "height": 800 },
     "prototype": { "props": { "startAt": "app" }, "steps": [{"wait":900},{"hover":"article:has-text(\"put it in the raid file so nobody argues later:\")"},{"click":"main >> text=Copy >> nth=0"},{"wait":400}] },
-    "app": { "who": "ada", "path": "{server}", "steps": [{"click":"role=textbox[name=/^message/i]"},{"type":["role=textbox[name=/^message/i]","put it in the raid file so nobody argues later:\n```yaml\nraid:\n  when: \"2026-10-30T20:00\"\n  where: the bridge\n  bring:\n    - rope      # two, Mira insists\n    - torches\n    - snacks\n  troll: true\n  max_party: 6\n```"]},{"press":"Enter"},{"wait":2500},{"waitFor":".d-message-row[data-state=\"ok\"]:has(.d-code-block):has-text(\"put it in the raid file so nobody argues later:\") >> nth=-1"},{"hover":".d-message-row:has(.d-code-block) >> nth=-1"},{"click":".d-code-block__copy >> nth=-1"},{"wait":400}] },
+    "app": { "who": "ada", "path": "{server}", "steps": [ { "waitFor": { "selector": ".d-poll-card", "timeout": 60000 } }, {"click":"role=textbox[name=/^message/i]"},{"type":["role=textbox[name=/^message/i]","put it in the raid file so nobody argues later:\n```yaml\nraid:\n  when: \"2026-10-30T20:00\"\n  where: the bridge\n  bring:\n    - rope      # two, Mira insists\n    - torches\n    - snacks\n  troll: true\n  max_party: 6\n```"]},{"press":"Enter"},{"wait":2500},{"waitFor":".d-message-row[data-state=\"ok\"]:has(.d-code-block):has-text(\"put it in the raid file so nobody argues later:\") >> nth=-1"},{"hover":".d-message-row:has(.d-code-block) >> nth=-1"},{"click":".d-code-block__copy >> nth=-1"},{"wait":400}] },
     "judge": { "elements": [
       {"id":"search","name":"the search box at the top centre of the window"},
       {"id":"composer","name":"the message composer at the bottom of the main column"},

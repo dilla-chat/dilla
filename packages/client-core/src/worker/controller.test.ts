@@ -466,6 +466,18 @@ describe('Controller', () => {
     expect(w.core.humanInteractionEventsAckSelected).not.toHaveBeenCalled();
   });
 
+  it('reads the Bot command status once for 25 pending interaction requests polling together', async () => {
+    const w = world(); await toReady(w);
+    w.core.humanInteractionEventsRead.mockReturnValue({ events: [], next: 0n, highWater: 0n });
+    w.core.humanInteractionReceiptsRead.mockReturnValue([]);
+    w.routes.getBotCommandStatus.mockClear();
+    for (let i = 0; i < 25; i++) {
+      w.call(11_000 + i, { m: 'readBotInteractionResponses', communityId: toHex(COMMUNITY), operations: [84], requestIds: [toHex(new Uint8Array(16).fill(i + 1))] });
+    }
+    await vi.waitFor(() => { for (let i = 0; i < 25; i++) expect(w.ret(11_000 + i)).toMatchObject({ ok: true }); });
+    expect(w.routes.getBotCommandStatus).toHaveBeenCalledTimes(1);
+  });
+
   it('does not query archived receipts when the current Bot installation is disabled', async () => {
     const w = world(); await toReady(w);
     w.routes.getBotCommandStatus.mockResolvedValue({ installationId: new Uint8Array(16).fill(0x73), botUserId: USER, state: 4, revision: 2n });

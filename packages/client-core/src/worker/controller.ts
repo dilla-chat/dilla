@@ -1751,6 +1751,22 @@ export class Controller {
     });
   }
 
+  /**
+   * The Bot command status the interaction poll gates archived-receipt reads on. Every pending request polls every 200 ms, so
+   * 25 of them would spend the device's whole read budget (http/pacing.ts, 8/s) on this one GET: concurrent polls share one
+   * request and its answer is reused for a second. A failure is never kept.
+   */
+  private readonly botStatusForPoll = new Map<string, { at: number; read: ReturnType<Routes['getBotCommandStatus']> }>();
+  private pollBotCommandStatus(communityHex: string): ReturnType<Routes['getBotCommandStatus']> {
+    const kept = this.botStatusForPoll.get(communityHex);
+    if (kept !== undefined && Date.now() - kept.at < 1_000) return kept.read;
+    const read = this.routes.getBotCommandStatus(fromHex(communityHex));
+    const entry = { at: Date.now(), read };
+    this.botStatusForPoll.set(communityHex, entry);
+    read.catch(() => { if (this.botStatusForPoll.get(communityHex) === entry) this.botStatusForPoll.delete(communityHex); });
+    return read;
+  }
+
   private async readBotInteractionResponses(communityHex: string, operations: readonly number[], requestIds?: readonly string[]): Promise<{
     responses: { deliveryId: string; requestId: string; communityId: string; operation: number; channelId: string | null;
       status: number; revision: string | null; data: Uint8Array; sourceSeq: string }[];
@@ -1764,7 +1780,7 @@ export class Controller {
       && (requested === null || requested.has(toHex(event.requestId)))).slice(0, 100);
     let archivedEvents: HumanInteractionEvent[] = [];
     if (requestIds !== undefined && requestIds.length > 0) {
-      const status = await this.routes.getBotCommandStatus(fromHex(communityHex));
+      const status = await this.pollBotCommandStatus(communityHex);
       if (status === null || status.state !== 3 || status.botUserId === null) {
         throw new Refusal('E_FORBIDDEN', 'current active Bot installation and community membership are required');
       }

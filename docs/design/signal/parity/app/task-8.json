@@ -420,6 +420,12 @@
       "path": "{server}",
       "steps": [
         {
+          "waitFor": {
+            "selector": ".d-poll-card",
+            "timeout": 60000
+          }
+        },
+        {
           "upload": [
             "input[type=file]",
             "docs/design/signal/parity/app/fixtures/harbour.png",
@@ -538,6 +544,12 @@
       "path": "{server}",
       "steps": [
         {
+          "waitFor": {
+            "selector": ".d-poll-card",
+            "timeout": 60000
+          }
+        },
+        {
           "upload": [
             "input[type=file]",
             "docs/design/signal/parity/app/fixtures/harbour.png",
@@ -629,6 +641,12 @@
       "who": "ada",
       "path": "{server}",
       "steps": [
+        {
+          "waitFor": {
+            "selector": ".d-poll-card",
+            "timeout": 60000
+          }
+        },
         {
           "click": "role=textbox[name=/^message/i]"
         },
@@ -760,6 +778,12 @@
       "who": "phone",
       "path": "{server}",
       "steps": [
+        {
+          "waitFor": {
+            "selector": ".d-poll-card",
+            "timeout": 60000
+          }
+        },
         {
           "click": "role=textbox[name=/^message/i]"
         },
