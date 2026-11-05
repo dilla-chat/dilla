@@ -17,7 +17,7 @@ export function goodPosture() {
   rules: [
    { type: 'deletion', ruleset_id: 25709839 }, { type: 'non_fast_forward', ruleset_id: 25709839 },
    { type: 'pull_request', ruleset_id: 25709839, parameters: { required_approving_review_count: 0 } },
-   { type: 'required_status_checks', ruleset_id: 25709839, parameters: { required_status_checks: [{ context: 'ci-ok', integration_id: 15368 }] } },
+   { type: 'required_status_checks', ruleset_id: 25709839, parameters: { required_status_checks: [{ context: 'server-ok', integration_id: 15368 }, { context: 'desktop-ok', integration_id: 15368 }] } },
   ],
   rulesets: { 25709839: { id: 25709839, name: 'main', enforcement: 'active', bypass_actors: [{ actor_id: 5, actor_type: 'RepositoryRole', bypass_mode: 'always' }] } },
   collaborators: [{ login: 'jonasthim', role_name: 'admin', permissions: { admin: true, push: true } }],

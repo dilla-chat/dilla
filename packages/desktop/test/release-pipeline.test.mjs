@@ -43,7 +43,7 @@ test('the release pipeline publishes exactly the signed inventory from a tagged 
   const fixtureDirectory = join(root, 'fixture'); await mkdir(fixtureDirectory);
   const fixture = await buildReleaseFixture({ directory: fixtureDirectory, commit: sha, head: sha, tree });
   const { version, channel } = fixture, tag = `desktop-v${version}`, now = fixture.context.now;
-  const run = { ...fixture.run, run_number: 5, path: '.github/workflows/ci.yml', event: 'push', head_branch: 'main' };
+  const run = { ...fixture.run, run_number: 5, path: '.github/workflows/desktop-ci.yml', event: 'push', head_branch: 'main' };
   const trust = { ...fixture.trust, signing: { active: 'A', staged: null } };
   // The gate's record bytes are the API's run and jobs as JSON lines; the host stores the ci run's ten zips and the gate's record zip.
   const runBytes = Buffer.from(JSON.stringify(run) + '\n'), jobsBytes = Buffer.from(JSON.stringify(fixture.jobs) + '\n');
@@ -52,10 +52,10 @@ test('the release pipeline publishes exactly the signed inventory from a tagged 
   const routes = {
    [`${R}/git/ref/tags/${tag}`]: { ref: `refs/tags/${tag}`, object: { type: 'commit', sha } },
    [`${R}/actions/runs/900`]: { id: 900, path: '.github/workflows/desktop-release-request.yml', event: 'push', head_branch: tag, head_sha: sha, status: 'completed', conclusion: 'success', repository: { full_name: 'dilla-chat/dilla' }, head_repository: { full_name: 'dilla-chat/dilla' } },
-   [`${R}/rules/branches/main`]: [{ type: 'deletion' }, { type: 'non_fast_forward' }, { type: 'pull_request' }, { type: 'required_status_checks', parameters: { required_status_checks: [{ context: 'ci-ok', integration_id: 15368 }] } }],
+   [`${R}/rules/branches/main`]: [{ type: 'deletion' }, { type: 'non_fast_forward' }, { type: 'pull_request' }, { type: 'required_status_checks', parameters: { required_status_checks: [{ context: 'server-ok', integration_id: 15368 }, { context: 'desktop-ok', integration_id: 15368 }] } }],
    [`${R}/environments/desktop-release`]: { deployment_branch_policy: { protected_branches: false, custom_branch_policies: true } },
    [`${R}/environments/desktop-release/deployment-branch-policies?per_page=100`]: { total_count: 1, branch_policies: [{ id: 1, name: 'main', type: 'branch' }] },
-   [`${R}/actions/workflows/ci.yml/runs?head_sha=${sha}&event=push&branch=main&status=completed&per_page=100`]: { workflow_runs: [run] },
+   [`${R}/actions/workflows/desktop-ci.yml/runs?head_sha=${sha}&event=push&branch=main&status=completed&per_page=100`]: { workflow_runs: [run] },
    [`${R}/actions/runs/${run.id}/jobs?filter=latest&per_page=100&page=1`]: { jobs: fixture.jobs },
    [`${R}/actions/runs/${run.id}/artifacts?per_page=100&page=1`]: { artifacts: EXPECTED_ARTIFACTS.map((name, i) => ({ id: host.ids[i], name, digest: host.digests[i], expired: false })) },
    [`${R}/releases?per_page=100&page=1`]: [{ tag_name: 'desktop-v1.2.2', draft: false }],

@@ -67,15 +67,15 @@ function runId(value) {
  return text;
 }
 
-/** The newest successful `ci` push run on main for exactly this commit. */
+/** The newest successful `desktop` push run on main for exactly this commit. */
 export async function findGreenPushRun(api, sha) {
  if (typeof sha !== 'string' || !COMMIT.test(sha)) throw new Error('Invalid commit sha');
- const result = await api(`/repos/${REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${sha}&event=push&branch=main&status=completed&per_page=100`);
- const runs = (Array.isArray(result?.workflow_runs) ? result.workflow_runs : []).filter(run => run && run.name === 'ci' && run.path === '.github/workflows/ci.yml'
+ const result = await api(`/repos/${REPOSITORY}/actions/workflows/desktop-ci.yml/runs?head_sha=${sha}&event=push&branch=main&status=completed&per_page=100`);
+ const runs = (Array.isArray(result?.workflow_runs) ? result.workflow_runs : []).filter(run => run && run.name === 'desktop' && run.path === '.github/workflows/desktop-ci.yml'
   && run.event === 'push' && run.head_branch === 'main' && run.head_sha === sha && run.status === 'completed' && run.conclusion === 'success'
   && run.repository?.full_name === REPOSITORY && run.head_repository?.full_name === REPOSITORY
   && Number.isSafeInteger(run.id) && run.id > 0 && Number.isSafeInteger(run.run_number));
- if (!runs.length) throw new Error(`There is no green ci push run on main for ${sha}`);
+ if (!runs.length) throw new Error(`There is no green desktop push run on main for ${sha}`);
  return runs.reduce((best, run) => run.run_number > best.run_number ? run : best);
 }
 

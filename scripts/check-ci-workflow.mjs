@@ -1205,6 +1205,10 @@ const RELEASE_STEPS = {
     '*-*) prerelease=true ;;',
     // Only a commit on main, which the CI workflows have gated, is released (review M6).
     'git merge-base --is-ancestor "$GITHUB_SHA" origin/main',
+    // The server release gates on its own workflow: a green server push run on main for exactly the tagged commit.
+    'name: The tagged commit has a green server run on main',
+    'TAG_SHA: ${{ github.sha }}',
+    'run: node scripts/server-release-gate.mjs "$TAG_SHA"',
     // v0.1.0-web3.1: the version go-release stamps into dillad is the validated tag without its leading v.
     'echo "version=${tag#v}" >> "$GITHUB_OUTPUT"',
   ],
@@ -1317,6 +1321,13 @@ export function checkReleaseWorkflow(root) {
   }
   for (const [name, body] of Object.entries(jobs)) {
     if (name !== 'release' && /contents: write/.test(body)) problems.push(`${file}: job "${name}" asks for contents: write; only the release job writes`);
+  }
+  // The gate lists the server workflow's runs: only the tag job reads actions, and a job-level block replaces the workflow's.
+  if ('tag' in jobs && !/^ {4}permissions:\n {6}contents: read\n {6}actions: read$/m.test(jobs.tag)) {
+    problems.push(`${file}: job "tag" needs exactly permissions: contents: read, actions: read for the server release gate`);
+  }
+  for (const [name, body] of Object.entries(jobs)) {
+    if (name !== 'tag' && /actions: (?:read|write)/.test(body)) problems.push(`${file}: job "${name}" asks for actions access; only the tag job reads workflow runs`);
   }
   if ('tag' in jobs && !/^ {6}version: \$\{\{ steps\.tag\.outputs\.version \}\}$/m.test(jobs.tag)) {
     problems.push(`${file}: job "tag" must output version: \${{ steps.tag.outputs.version }}`);

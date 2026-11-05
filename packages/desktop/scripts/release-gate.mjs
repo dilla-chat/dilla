@@ -22,7 +22,9 @@ const COMMIT = /^[a-f0-9]{40}$/;
 const VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-beta\.(0|[1-9]\d*))?$/;
 const WORKFLOW_REF = `${REPOSITORY}/.github/workflows/desktop-release.yml@refs/heads/main`;
 const REQUEST_WORKFLOW = '.github/workflows/desktop-release-request.yml';
-const CI_OK_INTEGRATION = 15368;
+const OK_INTEGRATION = 15368;
+// The aggregate checks main requires: one per CI workflow (server.yml, desktop-ci.yml).
+const REQUIRED_CHECKS = Object.freeze(['server-ok', 'desktop-ok']);
 const SANDBOX_MINIMUM_VALIDITY = 30 * 86400000;
 
 const OUTPUTS = Object.freeze({
@@ -127,9 +129,9 @@ export async function runGate({ env, git, api, outputDirectory, now = Date.now()
  // published release is immutable, and latestPublished refuses a mutable release, so the gate does not read it.
  const rules = await posture('the main ruleset', () => api(`${R}/rules/branches/main`));
  const has = type => Array.isArray(rules) && rules.some(rule => rule?.type === type);
- const ciOk = Array.isArray(rules) && rules.some(rule => rule?.type === 'required_status_checks'
-  && rule.parameters?.required_status_checks?.some?.(check => check?.context === 'ci-ok' && check.integration_id === CI_OK_INTEGRATION));
- for (const [ok, what] of [[has('pull_request'), 'pull_request'], [ciOk, `required ci-ok from integration ${CI_OK_INTEGRATION}`], [has('non_fast_forward'), 'non_fast_forward'], [has('deletion'), 'deletion']]) {
+ const requires = context => Array.isArray(rules) && rules.some(rule => rule?.type === 'required_status_checks'
+  && rule.parameters?.required_status_checks?.some?.(check => check?.context === context && check.integration_id === OK_INTEGRATION));
+ for (const [ok, what] of [[has('pull_request'), 'pull_request'], ...REQUIRED_CHECKS.map(context => [requires(context), `required ${context} from integration ${OK_INTEGRATION}`]), [has('non_fast_forward'), 'non_fast_forward'], [has('deletion'), 'deletion']]) {
   if (!ok) throw new Error('The main ruleset lacks ' + what);
  }
  const environment = await posture('the desktop-release environment', () => api(`${R}/environments/desktop-release`));
@@ -138,7 +140,7 @@ export async function runGate({ env, git, api, outputDirectory, now = Date.now()
  if (environment?.deployment_branch_policy?.custom_branch_policies !== true || environment.deployment_branch_policy.protected_branches !== false
   || policies?.total_count !== 1 || !Array.isArray(list) || list.length !== 1 || list[0]?.name !== 'main' || list[0]?.type !== 'branch') throw new Error('The desktop-release environment must admit exactly the branch main');
 
- // 8. The green ci push run of exactly this commit, its jobs and its exact artifact set.
+ // 8. The green desktop push run of exactly this commit, its jobs and its exact artifact set.
  const run = await findGreenPushRun(api, sha);
  const jobs = await fetchCiJobs(api, run.id);
  const { ids: artifactIds, byName } = selectReleaseArtifacts(await listRunArtifacts(api, run.id));

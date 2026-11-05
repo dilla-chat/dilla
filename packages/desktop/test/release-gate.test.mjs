@@ -39,7 +39,7 @@ const baseFiles = (version, expiresAt = '2027-01-31T00:00:00Z', trust = TRUST) =
 });
 
 function ciRun(sha, overrides = {}) {
- return { id: 77, run_number: 5, name: 'ci', path: '.github/workflows/ci.yml', event: 'push', head_branch: 'main', head_sha: sha, status: 'completed', conclusion: 'success', repository: { full_name: 'dilla-chat/dilla' }, head_repository: { full_name: 'dilla-chat/dilla' }, ...overrides };
+ return { id: 77, run_number: 5, name: 'desktop', path: '.github/workflows/desktop-ci.yml', event: 'push', head_branch: 'main', head_sha: sha, status: 'completed', conclusion: 'success', repository: { full_name: 'dilla-chat/dilla' }, head_repository: { full_name: 'dilla-chat/dilla' }, ...overrides };
 }
 /** The keyed workflow's unfinished runs, by status: only this run (5000) by default. */
 function activeRuns(byStatus = { in_progress: [{ id: 5000 }] }) {
@@ -64,10 +64,10 @@ function scenario({ version = '1.2.3', expiresAt, layout, trust } = {}) {
   [`${R}/git/ref/tags/${tag}`]: { ref: `refs/tags/${tag}`, object: { type: 'commit', sha: shas.tagged } },
   [`${R}/actions/runs/900`]: requestRun(shas.tagged, tag),
   [`${R}/immutable-releases`]: { enabled: true, enforced_by_owner: false },
-  [`${R}/rules/branches/main`]: [{ type: 'deletion' }, { type: 'non_fast_forward' }, { type: 'pull_request', parameters: { required_approving_review_count: 0 } }, { type: 'required_status_checks', parameters: { required_status_checks: [{ context: 'ci-ok', integration_id: 15368 }] } }],
+  [`${R}/rules/branches/main`]: [{ type: 'deletion' }, { type: 'non_fast_forward' }, { type: 'pull_request', parameters: { required_approving_review_count: 0 } }, { type: 'required_status_checks', parameters: { required_status_checks: [{ context: 'server-ok', integration_id: 15368 }, { context: 'desktop-ok', integration_id: 15368 }] } }],
   [`${R}/environments/desktop-release`]: { name: 'desktop-release', deployment_branch_policy: { protected_branches: false, custom_branch_policies: true } },
   [`${R}/environments/desktop-release/deployment-branch-policies?per_page=100`]: { total_count: 1, branch_policies: [{ id: 1, name: 'main', type: 'branch' }] },
-  [`${R}/actions/workflows/ci.yml/runs?head_sha=${shas.tagged}&event=push&branch=main&status=completed&per_page=100`]: { workflow_runs: [ciRun(shas.tagged)] },
+  [`${R}/actions/workflows/desktop-ci.yml/runs?head_sha=${shas.tagged}&event=push&branch=main&status=completed&per_page=100`]: { workflow_runs: [ciRun(shas.tagged)] },
   [`${R}/actions/runs/77/jobs?filter=latest&per_page=100&page=1`]: { jobs: acceptedJobs() },
   [`${R}/actions/runs/77/artifacts?per_page=100&page=1`]: { artifacts: [...EXPECTED_ARTIFACTS.map((name, i) => ({ id: 300 + i, name, digest: 'sha256:' + 'e'.repeat(64), expired: false })), { id: 1, name: 'desktop-validation-linux-x64', digest: null, expired: false }] },
   [`${R}/releases?per_page=100&page=1`]: [{ tag_name: 'desktop-v1.2.2', draft: false }, { tag_name: 'desktop-v1.3.0-beta.1', draft: false }, { tag_name: 'desktop-beta', draft: false }],
@@ -268,8 +268,8 @@ test('gate refuses red, cancelled, PR and other-sha ci runs', async () => {
  for (const bad of [{ conclusion: 'failure' }, { conclusion: 'cancelled' }, { event: 'pull_request' }, { head_sha: 'f'.repeat(40) }]) {
   const s = scenario();
   try {
-   s.routes[`${R}/actions/workflows/ci.yml/runs?head_sha=${s.shas.tagged}&event=push&branch=main&status=completed&per_page=100`] = { workflow_runs: [ciRun(s.shas.tagged, bad)] };
-   await refused(s, /no green ci push run/);
+   s.routes[`${R}/actions/workflows/desktop-ci.yml/runs?head_sha=${s.shas.tagged}&event=push&branch=main&status=completed&per_page=100`] = { workflow_runs: [ciRun(s.shas.tagged, bad)] };
+   await refused(s, /no green desktop push run/);
   } finally { s.cleanup(); }
  }
 });
@@ -312,13 +312,16 @@ test('a posture read the job token cannot do is reported as unreadable, never as
  }
 });
 
-test('gate refuses when the main ruleset lacks pull_request, ci-ok(15368), non_fast_forward or deletion', async () => {
+test('gate refuses when the main ruleset lacks pull_request, server-ok and desktop-ok(15368), non_fast_forward or deletion', async () => {
  const variants = [
   rules => rules.filter(rule => rule.type !== 'pull_request'),
   rules => rules.filter(rule => rule.type !== 'required_status_checks'),
-  rules => rules.map(rule => rule.type === 'required_status_checks' ? { ...rule, parameters: { required_status_checks: [{ context: 'ci-ok', integration_id: 999 }] } } : rule),
-  rules => rules.map(rule => rule.type === 'required_status_checks' ? { ...rule, parameters: { required_status_checks: [{ context: 'ci-ok' }] } } : rule),
-  rules => rules.map(rule => rule.type === 'required_status_checks' ? { ...rule, parameters: { required_status_checks: [{ context: 'ci', integration_id: 15368 }] } } : rule),
+  rules => rules.map(rule => rule.type === 'required_status_checks' ? { ...rule, parameters: { required_status_checks: [{ context: 'server-ok', integration_id: 999 }, { context: 'desktop-ok', integration_id: 15368 }] } } : rule),
+  rules => rules.map(rule => rule.type === 'required_status_checks' ? { ...rule, parameters: { required_status_checks: [{ context: 'server-ok', integration_id: 15368 }, { context: 'desktop-ok' }] } } : rule),
+  rules => rules.map(rule => rule.type === 'required_status_checks' ? { ...rule, parameters: { required_status_checks: [{ context: 'server-ok', integration_id: 15368 }] } } : rule),
+  rules => rules.map(rule => rule.type === 'required_status_checks' ? { ...rule, parameters: { required_status_checks: [{ context: 'desktop-ok', integration_id: 15368 }] } } : rule),
+  rules => rules.map(rule => rule.type === 'required_status_checks' ? { ...rule, parameters: { required_status_checks: [{ context: 'ci-ok', integration_id: 15368 }] } } : rule),
+  rules => rules.map(rule => rule.type === 'required_status_checks' ? { ...rule, parameters: { required_status_checks: [{ context: 'ci', integration_id: 15368 }, { context: 'desktop', integration_id: 15368 }] } } : rule),
   rules => rules.filter(rule => rule.type !== 'non_fast_forward'),
   rules => rules.filter(rule => rule.type !== 'deletion'),
   () => [],

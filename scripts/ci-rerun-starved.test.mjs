@@ -54,7 +54,7 @@ test('a cancelled run with a starved job does not rerun', async () => {
 });
 
 test('a starved job plus a failed aggregate reruns', () => {
-  for (const name of ['ci-ok', 'server-ok', 'desktop-ok', 'ci-watchdog']) {
+  for (const name of ['server-ok', 'desktop-ok', 'ci-watchdog']) {
     assert.equal(shouldRerun({ attempt: 1, conclusion: 'failure', jobs: [starved(), job(name, { conclusion: 'failure' })] }), true, name);
   }
 });

@@ -34,7 +34,9 @@ const KINDS = ['METADATA', 'SPARKLE', 'SANDBOX'];
 export const secretNamesFor = slot => KINDS.map(kind => `DESKTOP_${kind}_KEY_${slot}`);
 const SECRET_NAME = /^DESKTOP_(METADATA|SPARKLE|SANDBOX)_KEY_[AB]$/;
 const SHA = /^[a-f0-9]{40}$/;
-const CI_OK_INTEGRATION = 15368;
+const OK_INTEGRATION = 15368;
+// The aggregate checks main requires: one per CI workflow (server.yml, desktop-ci.yml).
+const REQUIRED_CHECKS = Object.freeze(['server-ok', 'desktop-ok']);
 // The only deployment policy the desktop-release environment may have (pinned by scripts/check-ci-workflow.mjs).
 const MAIN_POLICY = Object.freeze({ name: 'main', type: 'branch' });
 const DAY = 86400000;
@@ -205,8 +207,8 @@ export async function preflight({ gh, repo = DEFAULT_REPO, acceptUnprotectedMain
  const rules = await read(gh, `${R}/rules/branches/main`, 'the main branch rules');
  if (!Array.isArray(rules)) throw new Error('Cannot read the main branch rules');
  const has = type => rules.some(rule => rule?.type === type);
- const ciOk = rules.some(rule => rule?.type === 'required_status_checks' && rule.parameters?.required_status_checks?.some?.(check => check?.context === 'ci-ok' && check.integration_id === CI_OK_INTEGRATION));
- const missing = [['pull_request', has('pull_request')], [`required status check ci-ok (integration ${CI_OK_INTEGRATION})`, ciOk], ['non_fast_forward', has('non_fast_forward')], ['deletion', has('deletion')]].filter(([, ok]) => !ok).map(([name]) => name);
+ const requires = context => rules.some(rule => rule?.type === 'required_status_checks' && rule.parameters?.required_status_checks?.some?.(check => check?.context === context && check.integration_id === OK_INTEGRATION));
+ const missing = [['pull_request', has('pull_request')], ...REQUIRED_CHECKS.map(context => [`required status check ${context} (integration ${OK_INTEGRATION})`, requires(context)]), ['non_fast_forward', has('non_fast_forward')], ['deletion', has('deletion')]].filter(([, ok]) => !ok).map(([name]) => name);
  log(`main rules: ${rules.map(rule => rule?.type).join(', ') || '(none)'}`);
  for (const id of [...new Set(rules.map(rule => rule?.ruleset_id).filter(Number.isSafeInteger))]) {
   const ruleset = await read(gh, `${R}/rulesets/${id}`, `ruleset ${id}`);

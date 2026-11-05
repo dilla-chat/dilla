@@ -14,7 +14,7 @@ export function starvedJobs(jobs) {
 }
 
 /** Aggregate jobs fail because a starved job did, so they say nothing about whether the change is broken. */
-export const AGGREGATE_JOBS = ['ci-ok', 'server-ok', 'desktop-ok', 'ci-watchdog'];
+export const AGGREGATE_JOBS = ['server-ok', 'desktop-ok', 'ci-watchdog'];
 
 /** A job that really ran and failed: failure or timeout, or cancelled after it started (a runner or steps). */
 function realFailure(job) {

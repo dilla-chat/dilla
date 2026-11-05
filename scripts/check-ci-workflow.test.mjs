@@ -2388,6 +2388,16 @@ test('a tag job that releases a commit off main is reported', () => {
   assertReported(releaseProblems((t) => t.replace(/ {10}git merge-base --is-ancestor .*\n/, '')), 'origin/main');
 });
 
+test('a tag job without the server release gate step is reported', () => {
+  assertReported(releaseProblems((t) => t.replace(/ {6}- name: The tagged commit has a green server run on main\n(?: {8,}.*\n)+/, '')), 'green server run');
+  assertReported(releaseProblems((t) => t.replace('node scripts/server-release-gate.mjs "$TAG_SHA"', 'node scripts/server-release-gate.mjs "${{ github.sha }}"')), 'server-release-gate');
+});
+
+test('a tag job without actions: read, or another job with actions access, is reported', () => {
+  assertReported(releaseProblems((t) => t.replace('      contents: read\n      actions: read\n', '      contents: read\n')), 'actions: read');
+  assertReported(releaseProblems((t) => t.replace('  web-build:\n    runs-on: ubuntu-24.04\n', '  web-build:\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n      actions: read\n')), 'only the tag job reads workflow runs');
+});
+
 test('a build cache in the release workflow is reported', () => {
   assertReported(releaseProblems((t) => t.replace('          node-version-file: .nvmrc\n', '          node-version-file: .nvmrc\n          cache: npm\n')), 'build cache');
 });
