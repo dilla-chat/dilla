@@ -25,7 +25,8 @@ export function commandListed(command: CommandDefinition, operations: ReadonlySe
 
 /**
  * The server Bot's operations and user id, from the per-community store (command-bot-store.ts): loaded when the
- * composer mounts and refreshed every 30 s while it stays, whether or not the picker is open. `operations` is `null`
+ * composer mounts and kept fresh while it stays and the window is visible (a 30 s status check; a full reload only on
+ * a change, or when the picker opens on a list older than 5 min), whether or not the picker is open. `operations` is `null`
  * while unknown, in a DM, or when the server has no Bot; `waiting` says a first load is still running.
  */
 export function useCommandBot(client: CoreClient, communityId: string | null): CommandBotSnapshot {

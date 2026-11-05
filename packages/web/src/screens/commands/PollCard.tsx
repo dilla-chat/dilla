@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useLayoutEffect, useRef, useState, use
 import { BotUtilitiesProviderUnavailableError, BotUtilitiesStatusError, BotUtilitiesUncertainMutationError, PERM, createBotUtilities, decodePollVote, decodePollClose, type CoreClient, type PollSummary } from '@dilla/client-core';
 import { PollCard as SignalPollCard, showToast } from '@dilla/ui';
 import { utilityText as t } from './utility-copy.ts';
-import { loadedCommandBot, refreshCommandBot } from './command-bot-store.ts';
+import { botDefinitelyUnavailable, loadedCommandBot, refreshCommandBot } from './command-bot-store.ts';
 import { walkPollVoters } from './poll-voters.ts';
 import './UtilityCards.css';
 
@@ -170,7 +170,16 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
       // Refreshes update the record without dismissing a mutation or voter-read notice.
       if (!busyRef.current && retained !== undefined) setError(t(retained.kind === 'vote' ? 'poll.voteUncertain' : 'poll.uncertain'));
       return poll;
-    } catch (cause) { if (generation.current === current) { if (cause instanceof BotUtilitiesProviderUnavailableError) { definitive.current = true; setGaveUp(true); } invalidate(); } return null; }
+    } catch (cause) {
+      if (generation.current === current) {
+        // No ready Bot, or a poll operation it does not offer, is definitive. The installation changing mid-check (an op-3 refusal) is
+        // transient: reload the shared list once and let the 2/5/10 s retries verify against the new installation.
+        if (botDefinitelyUnavailable(cause)) { definitive.current = true; setGaveUp(true); }
+        else if (cause instanceof BotUtilitiesProviderUnavailableError) refreshCommandBot(props.client, props.communityId!);
+        invalidate();
+      }
+      return null;
+    }
   }, [utilities, isSameOwner, invalidate, identityScope, sourceAccessible, accessScope, props.client, props.communityId, props.authorId, props.pollId, props.channelId, props.threadId]);
   useEffect(() => {
     const node = ref.current; if (node === null) return;

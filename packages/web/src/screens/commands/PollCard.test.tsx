@@ -68,6 +68,37 @@ describe('Signal poll adapter', () => {
       expect(f.capabilities).toHaveBeenCalledTimes(1);
     } finally { vi.restoreAllMocks(); vi.useRealTimers(); }
   });
+  // Final review M1: "the installation changed while capabilities were loading" is transient, not "no ready Bot".
+  it('an installation change during verification refreshes the shared list once and retries, instead of giving up', async () => {
+    vi.useFakeTimers();
+    try {
+      const changed = () => new Core.BotUtilitiesProviderUnavailableError(3, '77'.repeat(16), 'The Bot installation changed while capabilities were loading.');
+      const f = fixture(); f.pollGet.mockRejectedValueOnce(changed());
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(f.pollGet).toHaveBeenCalledTimes(1);
+      expect(f.capabilities).toHaveBeenCalledTimes(2); // the shared list reloaded once
+      expect(screen.getByRole('status')).toHaveTextContent('Loading poll…');
+      await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+      expect(f.pollGet).toHaveBeenCalledTimes(2);
+      expect(screen.getByText('Raid?')).toBeInTheDocument();
+    } finally { vi.restoreAllMocks(); vi.useRealTimers(); }
+  });
+  it('an installation change while the shared list loads is a failure the card retries, not a refusal', async () => {
+    vi.useFakeTimers();
+    try {
+      let attempt = 0;
+      const f = fixture({}, () => {
+        attempt += 1;
+        return attempt === 1 ? Promise.reject(new Core.BotUtilitiesProviderUnavailableError(3, '77'.repeat(16), 'The Bot installation changed while capabilities were loading.'))
+          : Promise.resolve({ installationId, botUserId: authorId, supportedOperations: [3, 70] });
+      });
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(commandBotSnapshot(f.client, communityId).unavailable).toBe(false);
+      expect(screen.getByRole('status')).toHaveTextContent('Loading poll…');
+      await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+      expect(screen.getByText('Raid?')).toBeInTheDocument();
+    } finally { vi.restoreAllMocks(); vi.useRealTimers(); }
+  });
   it('verifies from the shared Bot list: no capability read of its own, and none for a second card', async () => {
     const f = fixture(); await screen.findByText('Raid?');
     // One load, made by the shared store (not three by the card).
