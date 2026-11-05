@@ -98,6 +98,11 @@ type HostOptions struct {
 	// takes it from DILLA_METRICS_TOKEN, as dillad does). Empty keeps dillad's default: a random
 	// token nobody holds, so every scrape is refused.
 	ScrapeToken string
+	// AdminInvite makes the first of the harness's invites grant instance administration, as the
+	// single-use invite `dillad init` writes does: the first account to redeem it gets
+	// UserFlagInstanceAdmin through the ordinary signup path. That invite admits one account, so
+	// the next signup moves on to a plain one.
+	AdminInvite bool
 	// WebRoot is a built client directory, its dilla-manifest.json included, served at the
 	// instance's own origin instead of the embedded placeholder (dillad.Options.Web =
 	// os.DirFS(WebRoot)); "" keeps the placeholder. A directory its manifest does not describe
@@ -247,7 +252,7 @@ func NewHost(ctx context.Context, o HostOptions) (*Host, error) {
 	h := &Host{
 		o: o, clk: clk, cfg: hostConfig(o), kicked: map[id.ID][]kicked{}, channels: &ChannelModes{},
 	}
-	invites, err := bootstrap(ctx, h.cfg, clk.Now())
+	invites, err := bootstrap(ctx, h.cfg, clk.Now(), o.AdminInvite)
 	if err != nil {
 		return nil, err
 	}
@@ -314,7 +319,7 @@ func hostConfig(o HostOptions) *config.Config {
 
 // bootstrap migrates the database and inserts the instance row and Invites invites, as `dillad init`
 // does, except that each invite admits InviteUses accounts and none expires within a scenario.
-func bootstrap(ctx context.Context, c *config.Config, now time.Time) ([]string, error) {
+func bootstrap(ctx context.Context, c *config.Config, now time.Time, adminInvite bool) ([]string, error) {
 	if err := os.MkdirAll(c.Instance.DataDir, 0o700); err != nil {
 		return nil, err
 	}
@@ -364,12 +369,16 @@ func bootstrap(ctx context.Context, c *config.Config, now time.Time) ([]string, 
 		}); err != nil {
 			return err
 		}
-		for range Invites {
+		for i := range Invites {
 			code, hash := auth.NewInviteCode()
-			if err := tx.CreateInvite(ctx, store.InviteRow{
+			row := store.InviteRow{
 				ID: id.New(), CodeHash: hash, MaxUses: InviteUses, Created: unix,
 				ExpiresAt: unix + int64(10*365*24*time.Hour/time.Second),
-			}); err != nil {
+			}
+			if adminInvite && i == 0 {
+				row.GrantsAdmin, row.MaxUses = 1, 1
+			}
+			if err := tx.CreateInvite(ctx, row); err != nil {
 				return err
 			}
 			codes = append(codes, code)
