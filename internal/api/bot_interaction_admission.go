@@ -16,6 +16,11 @@ import (
 	"github.com/dilla-chat/dilla/internal/store"
 )
 
+// BotInteractionAdmissionLifetimeSeconds bounds a signed interaction admission
+// and so every context snapshot built on it: the DS and the native core refuse
+// a snapshot once its admission's not_after has passed.
+const BotInteractionAdmissionLifetimeSeconds = 30
+
 type botInteractionAdmissionRequest struct {
 	_                 struct{} `cbor:",toarray"`
 	RequestID         id.ID
@@ -235,7 +240,7 @@ func (d Deps) issueBotInteractionAdmission(w http.ResponseWriter, r *http.Reques
 		}
 		now := d.Clock.Now().Unix()
 		nowUnix, nowOK := checkedUint64(now)
-		if !nowOK || now > math.MaxInt64-30 {
+		if !nowOK || now > math.MaxInt64-BotInteractionAdmissionLifetimeSeconds {
 			return server.Errorf(server.CodeUnavailable, "server time outside admission range")
 		}
 		receipts, ok := tx.(store.BotInteractionAdmissionReceipts)
@@ -265,7 +270,7 @@ func (d Deps) issueBotInteractionAdmission(w http.ResponseWriter, r *http.Reques
 		if receiptErr != nil && !errors.Is(receiptErr, store.ErrNotFound) {
 			return receiptErr
 		}
-		v := botInteractionAdmissionPayload{Version: 1, AdmissionID: id.New(), InstanceID: d.Instance.InstanceID, InstallationID: installation.ID, CommunityID: installation.CommunityID, BotUserID: *installation.UserID, BotDeviceID: *installation.DeviceID, ParticipantUserID: participant.ID, ParticipantDeviceID: device.ID, GroupID: req.GroupID, EligibilityRevision: revision, NotAfter: nowUnix + 30}
+		v := botInteractionAdmissionPayload{Version: 1, AdmissionID: id.New(), InstanceID: d.Instance.InstanceID, InstallationID: installation.ID, CommunityID: installation.CommunityID, BotUserID: *installation.UserID, BotDeviceID: *installation.DeviceID, ParticipantUserID: participant.ID, ParticipantDeviceID: device.ID, GroupID: req.GroupID, EligibilityRevision: revision, NotAfter: nowUnix + BotInteractionAdmissionLifetimeSeconds}
 		payload, err = cborx.Marshal(v)
 		if err != nil {
 			return err
@@ -274,7 +279,7 @@ func (d Deps) issueBotInteractionAdmission(w http.ResponseWriter, r *http.Reques
 		if err != nil || len(signature) != 64 {
 			return server.Errorf(server.CodeUnavailable, "interaction admission signing failed")
 		}
-		newReceipt := store.BotInteractionAdmissionReceipt{InstallationID: installation.ID, RequestID: req.RequestID, RequestHash: requestHash[:], Payload: payload, Signature: signature, NotAfter: now + 30}
+		newReceipt := store.BotInteractionAdmissionReceipt{InstallationID: installation.ID, RequestID: req.RequestID, RequestHash: requestHash[:], Payload: payload, Signature: signature, NotAfter: now + BotInteractionAdmissionLifetimeSeconds}
 		if reissue {
 			return receipts.UpdateBotInteractionAdmissionReceipt(r.Context(), newReceipt)
 		}
